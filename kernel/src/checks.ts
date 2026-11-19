@@ -19,7 +19,7 @@ import type { Resolver } from "./net.ts";
 import { gateMode } from "./gates.ts";
 import { fail } from "./proxy.ts";
 
-export type Check = { module: string; at: string; url: string; auth_secret: string; agents?: string[]; label?: string; mode?: "observe" };
+export type Check = { module: string; at: string; url: string; rubric?: string; auth_secret: string; agents?: string[]; label?: string; mode?: "observe" };
 type Verdict = { verdict: "ok" | "hold" | "pending" | "reopen" | "deny"; reason?: string; until?: string; state?: string; status?: number; unlabel?: boolean; accepts?: boolean };
 export type Finish = { pass: true } | { pass: false; held: true; state: string; reason: string } | { pass: false; reopened: true; reason: string };
 type Issue = { id: string; identifier?: string; companyId?: string; status?: string; assigneeAgentId?: string | null; assigneeUserId?: string | null; createdByAgentId?: string | null; parentId?: string | null; labelIds?: string[]; labels?: { id: string }[]; executionPolicy?: Record<string, unknown> | null };
@@ -52,6 +52,7 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
   log?: (msg: string, f?: Record<string, unknown>) => void;
 }) {
   db.exec("CREATE TABLE IF NOT EXISTS check_holds (task TEXT NOT NULL, check_id TEXT NOT NULL, at TEXT NOT NULL, PRIMARY KEY (task, check_id))");
+  db.exec("CREATE TABLE IF NOT EXISTS graded_tasks (task TEXT PRIMARY KEY, module TEXT NOT NULL)"); // written by modtasks.ts
   db.exec("CREATE TABLE IF NOT EXISTS events (id TEXT PRIMARY KEY, type TEXT NOT NULL, at TEXT NOT NULL, data TEXT NOT NULL)");
   const finishing = () => {
     try {
@@ -89,12 +90,12 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
     if (l && ids.includes(l.id)) await patch(i, { labelIds: ids.filter((x) => x !== l.id) });
   }
 
-  function ask(id: string, c: Check, body: unknown): Promise<Verdict> {
+  function ask(id: string, c: Check, body: unknown, at = c.url): Promise<Verdict> {
     const key = secret(c.auth_secret);
     if (!key) return Promise.reject(new Error("its key is missing"));
-    return resolver.resolve(c.url).then((to) => new Promise<Verdict>((resolve, reject) => {
+    return resolver.resolve(at).then((to) => new Promise<Verdict>((resolve, reject) => {
       const data = Buffer.from(JSON.stringify(body));
-      const req = http.request({ host: to.host, port: to.port, path: to.path, method: "POST", timeout: 10_000, headers: { host: new URL(c.url).host, authorization: `Bearer ${key}`, "content-type": "application/json", "content-length": data.length } }, (res) => {
+      const req = http.request({ host: to.host, port: to.port, path: to.path, method: "POST", timeout: 10_000, headers: { host: new URL(at).host, authorization: `Bearer ${key}`, "content-type": "application/json", "content-length": data.length } }, (res) => {
         let text = "";
         res.setEncoding("utf8").on("data", (d) => { if (text.length < 100_000) text += d; }).on("end", () => {
           let v: Verdict;
@@ -104,7 +105,7 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
         });
       });
       req.on("timeout", () => req.destroy(new Error("didn't answer in 10 s")));
-      req.on("error", (e) => { resolver.forget(c.url); reject(e); });
+      req.on("error", (e) => { resolver.forget(at); reject(e); });
       req.end(data);
     })).catch((e: Error) => { throw fail(503, "check_failed", `the finish check ${id} failed (${e.message}): the task stays as it is; try again`); });
   }
@@ -129,7 +130,7 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
     const scoped = all.filter(([, c]) => !c.agents?.length || (key !== undefined && c.agents.includes(key)));
     const mine = scoped.filter(([, c]) => c.mode !== "observe");
     const observing = scoped.filter(([, c]) => c.mode === "observe");
-    const task = { id: i.id, identifier: i.identifier, status: i.status, assigneeAgentId: i.assigneeAgentId ?? null, assigneeUserId: i.assigneeUserId ?? null, createdByAgentId: i.createdByAgentId ?? null, parentId: i.parentId ?? null };
+    const task = { id: i.id, identifier: i.identifier, status: i.status, assigneeAgentId: i.assigneeAgentId ?? null, assigneeUserId: i.assigneeUserId ?? null, createdByAgentId: i.createdByAgentId ?? null, parentId: i.parentId ?? null, ...(db.prepare("SELECT 1 FROM graded_tasks WHERE task = ?").get(i.id) ? { graded: true } : {}) };
     const body = { task, agent: caller.agent ?? null, tool: caller.tool ?? null, via: caller.via };
     // Observing checks run beside the gate and never change its outcome.
     const watched = Promise.all(observing.map(async ([id, c]) => {
@@ -198,6 +199,16 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
   }
   /** Whether one of this module's finish checks holds the task now (its label is on it): the module's work is that task. */
   const held = (module: string, task: string) => finishing().some(([id, c]) => c.module === module && db.prepare("SELECT 1 FROM check_holds WHERE task = ? AND check_id = ?").get(task, id) !== undefined);
-  return { finish, resolve, held };
+  /**
+   * A rubric for a task a module filed (modtasks.ts, after its own check of kernel.tasks): asked of the finish checks that take
+   * one (`rubric:`), with their own key, so the filer is the kernel's word and never a body field. They answer `ok`. None
+   * takes one, or one fails: the filing fails and the module files again (same source, same task, same rubric row).
+   */
+  async function rubric(task: { id: string; identifier?: string }, module: string, b: { rubric: string[]; deliverable: unknown }) {
+    const takers = finishing().filter(([, c]) => c.rubric);
+    if (!takers.length) throw fail(409, "conflict", "no check takes a rubric, so this task can't be graded");
+    for (const [id, c] of takers) await ask(id, c, { task, module, ...b }, c.rubric);
+  }
+  return { finish, resolve, held, rubric };
 }
 export type Checks = ReturnType<typeof createChecks>;

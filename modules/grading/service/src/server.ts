@@ -1,6 +1,7 @@
 // The grading module's service (lean-core 3h): the grade rows (grades.ts, its own SQLite file) and every route that reads or
 // moves them, each behind its own caller's key:
 //   POST /check/finish                     the kernel (grading_check_key): the task.finish check (kernel/src/checks.ts)
+//   POST /check/rubric                     the kernel (grading_check_key): the rubric of a task a module filed (kernel.tasks)
 //   POST /grades                           the tasks module, as the delegating agent (its caller assertion, aud tasks): file a rubric
 //   POST /board/grades, POST /board/grades/<task>/settle   the board (grading_board_key): its reads
 // It reads tasks and settings from the kernel with its own token (kernel.cp-read) and releases its label there
@@ -34,11 +35,12 @@ export function createGrading({ db, kernel, keys, kernelUrl = "", jwks = kernelJ
   };
 
   /** The finish check (spec §3.5): the board's completion gate as it was, answered as a verdict the kernel acts on. */
-  async function finish(b: { task?: Issue; agent?: string | null; via?: string }) {
+  async function finish(b: { task?: Issue & { graded?: boolean }; agent?: string | null; via?: string }) {
     const issue = b.task!;
     if (!issue?.id || typeof b.via !== "string") throw new HttpError(400, "send {task, agent, via}");
     // Ungraded (no row): pass before anything else, so the gate never blocks other closes.
-    if (!grades.get(issue.id)) return { verdict: "ok" };
+    // A task filed with a rubric whose row isn't there (the filing failed after the task was made) never passes ungraded.
+    if (!grades.get(issue.id)) return b.task!.graded ? { verdict: "deny", status: 409, reason: "this task is graded and its rubric isn't filed yet: its filer files it again" } : { verdict: "ok" };
     const runner = b.via === "finish_turn" || b.via === "finish_merges";
     if (!runner && !b.agent) return { verdict: "deny", status: 403, reason: "only an agent's own close or the runner's moves a graded task" };
     // A cancelled task is never graded or moved by a late close: its row ends, and the close is refused before the hold
@@ -77,18 +79,34 @@ export function createGrading({ db, kernel, keys, kernelUrl = "", jwks = kernelJ
     return { verdict: "pending", state: r.state, reason: NOTE, until: new Date(Date.now() + GRADE_CHECK_MS).toISOString() };
   }
 
+  /** The grader reads only the task's own PRs; a ref naming another org's repo is refused. */
+  async function refAllowed(d: { kind: string; ref: string }) {
+    if (d.kind === "pr" && !prRefAllowed(d.ref, await kernel.settings())) throw new HttpError(400, "deliverable.ref: a repo or PR in the agents org, a codehost:local repo or change, or the product repo, or empty for the task's own PRs");
+  }
+
   async function file(req: http.IncomingMessage, body: unknown) {
     const caller = await verifyCaller(req, jwks, "tasks").catch((e: Error) => { throw new HttpError(403, `refused: ${e.message}`); });
     const tool = String(caller.tool ?? "").split(".").pop()!;
     if (!FILERS.includes(tool)) throw new HttpError(403, `only an agent granted one of ${FILERS.join(", ")} may file a rubric`);
     const b = parseFiling(body);
-    // The grader reads only the task's own PRs; a ref naming another org's repo is refused here too.
-    if (b.deliverable.kind === "pr" && !prRefAllowed(b.deliverable.ref, await kernel.settings())) throw new HttpError(400, "deliverable.ref: a repo or PR in the agents org, a codehost:local repo or change, or the product repo, or empty for the task's own PRs");
+    await refAllowed(b.deliverable);
     const issue = await kernel.issue(b.issue);
     if (issue.createdByAgentId !== caller.agent) throw new HttpError(403, "only the agent that delegated a task files its rubric");
     const r = grades.file(issue.id, b.rubric, b.deliverable);
     if (r.created) log("rubric filed", { task: issue.identifier, kind: b.deliverable.kind, criteria: b.rubric.length });
     return { created: r.created, state: r.grade.state };
+  }
+
+  /** A module-filed task's rubric: the kernel's own call (its key), after it checked the filing module holds kernel.tasks. */
+  async function fileForModule(b: { task?: { id?: string }; module?: string; rubric?: unknown; deliverable?: unknown }) {
+    if (!b?.task?.id || typeof b.module !== "string") throw new HttpError(400, "send {task, module, rubric, deliverable}");
+    const f = parseFiling({ issue: b.task.id, rubric: b.rubric, deliverable: b.deliverable });
+    await refAllowed(f.deliverable);
+    const r = grades.file(b.task.id, f.rubric, f.deliverable);
+    // A row already there stays as its filer made it: the same filing again is a retry, any other is refused.
+    if (!r.created && (JSON.stringify(r.grade.rubric) !== JSON.stringify(f.rubric) || JSON.stringify(r.grade.deliverable) !== JSON.stringify(f.deliverable))) throw new HttpError(409, "this task already has another rubric");
+    if (r.created) log("rubric filed for a module's task", { task: b.task.id, module: b.module, kind: f.deliverable.kind, criteria: f.rubric.length });
+    return { verdict: "ok", created: r.created };
   }
 
   async function runner(method: string, path: string, body: unknown) {
@@ -158,6 +176,7 @@ export function createGrading({ db, kernel, keys, kernelUrl = "", jwks = kernelJ
       try { body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : undefined; } catch { throw new HttpError(400, "the body must be JSON"); }
       const method = String(req.method);
       if (method === "POST" && path === "/check/finish") return (keyed(req, keys.check), send(200, await finish((body ?? {}) as never)));
+      if (method === "POST" && path === "/check/rubric") return (keyed(req, keys.check), send(200, await fileForModule((body ?? {}) as never)));
       if (method === "POST" && path === "/grades") return send(200, await file(req, body));
       // The Fleet Steward's read (its own module token, vouched for by the kernel): which grader passes failed lately, and why.
       if (method === "GET" && path === "/steward/grade-failures") {

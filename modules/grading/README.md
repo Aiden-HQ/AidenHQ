@@ -1,3 +1,3 @@
 # grading
 
-Graded done: a delegated deliverable (graded agents, `graded: true`, or a `task_delegate` rubric) closes only once the grader finds it meeting its rubric; 3 rejected versions, a grader that can't judge, or evidence still missing a day after a close go to the owner. The standard criteria per deliverable kind are `rubrics/<kind>.md`.
+Graded done: a delegated deliverable (graded agents, `graded: true`, or a `task_delegate` rubric) closes only once the grader finds it meeting its rubric; 3 rejected versions, a grader that can't judge, or evidence still missing a day after a close go to the owner. The standard criteria per deliverable kind are `rubrics/<kind>.md`. A module holding `kernel.tasks` files a task with `{deliverable, rubric}` (`POST /v1/tasks`): the kernel asks `/check/rubric` (its key) to file the row, so that task is graded too; an `issue` deliverable is read from GitHub (state, close reason, the cited PR).

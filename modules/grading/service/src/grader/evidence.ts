@@ -382,6 +382,43 @@ export function appEvidence(app: any, name: string | undefined): any {
   return { version: `${app.name}@${app.sha}`, facts, data: {} };
 }
 
+/**
+ * A GitHub issue ("owner/name#number") as evidence: its state and how it closed, its labels, and the PR its closing comment
+ * cites, each read by code (state, merge). The closing comment is the closer's newest comment up to the close; the newest comments
+ * go fenced as ISSUE_COMMENTS (strangers' words, data), each with its author's association so an owner's word shows. An open issue
+ * is evidence too: its criteria are unmet, and the task goes back. deps.issue(repo, n), deps.pr(repo, n).
+ */
+export async function issueEvidence(ref: string, deps: any): Promise<any> {
+  const [, repo = "", n = ""] = /^([\w.-]+\/[\w.-]+)#(\d+)$/.exec(ref) ?? [];
+  const read = repo ? await deps.issue(repo, Number(n)).catch(() => null) : null;
+  const i = read?.repository?.issue;
+  if (!i) return { awaiting: `issue ${ref || "(none)"} can't be read yet` };
+  const comments: any[] = i.comments?.nodes ?? [];
+  const closer = i.closedEvents?.nodes?.[0]?.actor?.login;
+  const closing = i.state === "CLOSED" ? comments.findLast((c) => c.author?.login === closer && Date.parse(c.createdAt) <= Date.parse(i.closedAt) + 120_000) : undefined;
+  // Anyone with close rights can close an issue: a close counts only by the instance's App or by an owner, member or collaborator.
+  // The App is a Bot actor (a user account is never one, whatever it is named) whose login is exactly its slug, which GraphQL
+  // gives without the `[bot]` REST adds.
+  const actor = i.closedEvents?.nodes?.[0]?.actor;
+  const trusted = Boolean(closer) && ((Boolean(read.appSlug) && actor?.__typename === "Bot" && [read.appSlug, `${read.appSlug}[bot]`].includes(closer)) || ["OWNER", "MEMBER", "COLLABORATOR"].includes(closing?.authorAssociation));
+  const facts = [`${ref}: ${i.state === "CLOSED" ? `closed${i.stateReason ? ` as ${String(i.stateReason).toLowerCase()}` : ""} at ${i.closedAt}${closer ? ` by ${closer}` : ""}` : "open"}; labels: ${(i.labels?.nodes ?? []).map((l: any) => l.name).join(", ") || "none"}`];
+  const merges: string[] = [];
+  if (i.state === "CLOSED" && !trusted) facts.push(`the close does not count: ${closer ?? "its closer"} is not the instance's App, and no comment shows them as an owner, member or collaborator, so the issue is treated as not resolved`);
+  else if (closing) {
+    const prs = findPrs(closing.body).slice(0, 3);
+    facts.push(prs.length ? `the closing comment (by ${closer}, ${closing.createdAt}) cites ${prs.map((p) => p.url).join(", ")}` : `the closing comment (by ${closer}, ${closing.createdAt}) cites no PR`);
+    for (const p of prs) {
+      if (p.repo.toLowerCase() !== repo.toLowerCase()) { facts.push(`${p.url}: not in ${repo}, so it does not count as this issue's fix`); continue; }
+      const pr = (await deps.pr(p.repo, p.number).catch(() => null))?.repository?.pullRequest;
+      if (pr?.state === "MERGED") merges.push(pr.mergeCommit?.oid ?? pr.headRefOid);
+      facts.push(`${p.url}: ${!pr ? "could not be read just now" : pr.state === "MERGED" ? `merged${pr.mergedAt ? ` at ${pr.mergedAt}` : ""}${pr.mergeCommit?.oid ? ` (merge commit ${pr.mergeCommit.oid})` : ""}` : pr.state === "OPEN" ? "open, not merged" : "closed without merging"}`);
+    }
+  } else if (i.state === "CLOSED") facts.push(`no comment by ${closer} just before the close: nothing is cited`);
+  const text = comments.slice(-5).map((c) => `--- ${c.author?.login ?? "ghost"} (${c.authorAssociation}) ${c.createdAt} ---\n${String(c.body ?? "").slice(0, 2000)}`).join("\n\n");
+  const closed = i.state === "CLOSED" ? `${trusted ? "" : "untrusted:"}${i.stateReason}:${i.closedAt}:${merges.map((m) => m.slice(0, 12)).join(",")}+${hash(closing?.body ?? "")}` : "open";
+  return { version: `${ref}@${closed}`.slice(0, 200), facts, data: { ISSUE_COMMENTS: text || "(none)" } };
+}
+
 /** The task's latest fleet apply (its approval records) as evidence: its state and outcome. */
 export function applyEvidence(cards: any[]): any {
   const applied = cards.filter((a: any) => a.action === "apply").at(-1);

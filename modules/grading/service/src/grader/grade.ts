@@ -8,7 +8,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { GRADER_MARKER, appEvidence, applyEvidence, deploysOf, fileEvidence, namedTasks, otherTaskEvidence, predatesDeploys, presentNow, prEvidence, stamp, wordsEvidence } from "./evidence.ts";
+import { GRADER_MARKER, appEvidence, applyEvidence, deploysOf, fileEvidence, issueEvidence, namedTasks, otherTaskEvidence, predatesDeploys, presentNow, prEvidence, stamp, wordsEvidence } from "./evidence.ts";
 import { stripRubric } from "./text.ts";
 import { GLM, LUNA, MAX_DIFF } from "../aidenhq-sdk/judge.ts";
 import { dataBlock as fence } from "../aidenhq-sdk/fence.ts";
@@ -94,7 +94,7 @@ export async function gather(deliverable: any, deps: any, rubric: string[] = [])
   if (open.length) return { awaiting: `an approval card is still open (${open.map((a: any) => `${a.id} ${a.action}`).join(", ")})` };
   const kind = deliverable.kind;
   let app = kind === "app" ? await deps.app(deliverable.ref) : null; // the deployed app whose live pages are evidence
-  let ev = kind === "pr" ? await prEvidence(await deps.taskPrs(), deliverable.ref, deps) : kind === "app" ? appEvidence(app, deliverable.ref) : kind === "apply" ? applyEvidence(cards) : null;
+  let ev = kind === "pr" ? await prEvidence(await deps.taskPrs(), deliverable.ref, deps) : kind === "app" ? appEvidence(app, deliverable.ref) : kind === "apply" ? applyEvidence(cards) : kind === "issue" ? await issueEvidence(deliverable.ref, deps) : null;
   // `missing`: the deliverable doesn't exist at all (no PR, no apply, nothing posted), as opposed to evidence still coming.
   // A pr task's rubric may define its deliverable another way than a pull request: then the task's own words are graded and
   // the absent PR is not missing. The rubric is read here, before the wait, because nothing else on this path reads it.

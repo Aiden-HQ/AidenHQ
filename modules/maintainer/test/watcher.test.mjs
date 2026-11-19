@@ -95,8 +95,10 @@ test("a labelled issue files one task for the maintainer role, keyed by its sour
     assert.deepEqual([body.role, body.source], ["maintainer", `maintainer-issue:${R}#12`]);
     assert.match(body.description, new RegExp(`^${R}#12\n`));
     assert.doesNotMatch(JSON.stringify(body), /Issue 12/, "the issue's own title never reaches the task");
+    assert.deepEqual([body.deliverable, body.rubric.length], [{ kind: "issue", ref: `${R}#12` }, 3], "the labelled-issue task is graded on its issue");
     assert.equal(await maintainerTriageWake(env)(R, 9), true);
     assert.equal(JSON.parse(sent[1].init.body).source, `maintainer-triage:${R}#9`);
+    assert.equal(JSON.parse(sent[1].init.body).rubric, undefined, "a triage task has its verdict line, not an issue to resolve");
   } finally {
     mock.restoreAll();
   }

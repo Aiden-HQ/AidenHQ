@@ -7,6 +7,7 @@
 // same source twice is one task. Its assignment wakes the agent (wakes.ts): no comment is needed to start it. The module
 // closes its own tasks (POST /v1/tasks/:task/close) when their work is moot.
 import { createHash } from "node:crypto";
+import type { DatabaseSync } from "node:sqlite";
 import { neutral, type Api } from "./channels.ts";
 import { agentPaused } from "../sdk/src/agent-paused.ts";
 
@@ -21,12 +22,17 @@ export class TaskError extends Error {
   constructor(status: number, message: string) { super(message); this.status = status; }
 }
 
-export function createModuleTasks({ owner, agents, log = () => {} }: {
+export function createModuleTasks({ db, owner, agents, rubric, log = () => {} }: {
+  /** The kernel's database: which tasks were filed graded, by which module (the finish check holds one with no grade row). */
+  db: DatabaseSync;
   owner: Api;
   /** The grants table's agents, by Paperclip id. */
   agents: () => Record<string, { roles?: string[] } | undefined>;
+  /** Files the grading rubric of a task the module filed (checks.ts rubric), as that module. */
+  rubric?: (task: { id: string; identifier?: string }, module: string, b: { rubric: string[]; deliverable: unknown }) => Promise<void>;
   log?: (msg: string, f?: Record<string, unknown>) => void;
 }) {
+  db.exec("CREATE TABLE IF NOT EXISTS graded_tasks (task TEXT PRIMARY KEY, module TEXT NOT NULL)");
   /**
    * Close a task this module filed (its marker, and no agent made it): done or cancelled, with one line why. The line carries
    * the kernel's tag (wakes.ts SELF_TAG), so it wakes nobody and is never read as the owner's words.
@@ -44,11 +50,14 @@ export function createModuleTasks({ owner, agents, log = () => {} }: {
     return { status: String(b.status), already: false };
   }
 
-  async function file(module: string, b: { title?: unknown; description?: unknown; role?: unknown; agent?: unknown; source?: unknown; parent?: unknown }) {
+  async function file(module: string, b: { title?: unknown; description?: unknown; role?: unknown; agent?: unknown; source?: unknown; parent?: unknown; deliverable?: unknown; rubric?: unknown }) {
     const title = typeof b.title === "string" ? neutral(b.title).trim().slice(0, 200) : "";
     const description = typeof b.description === "string" ? neutral(b.description).trim().slice(0, 20_000) : "";
     const by = typeof b.role === "string" ? "role" : typeof b.agent === "string" ? "agent" : "";
-    if (!title || !description || !by || (b.role !== undefined && b.agent !== undefined) || typeof b.source !== "string" || !SOURCE.test(b.source)) throw new TaskError(400, "send {title, description, role | agent, source, parent?}");
+    if (!title || !description || !by || (b.role !== undefined && b.agent !== undefined) || typeof b.source !== "string" || !SOURCE.test(b.source)) throw new TaskError(400, "send {title, description, role | agent, source, parent?, deliverable?, rubric?}");
+    // A rubric is graded against its deliverable: both or neither (grading checks their contents).
+    const graded = b.deliverable !== undefined || b.rubric !== undefined;
+    if (graded && !(b.deliverable && typeof b.deliverable === "object" && Array.isArray(b.rubric) && b.rubric.every((c) => typeof c === "string"))) throw new TaskError(400, "deliverable {kind, ref} and rubric [criteria] go together");
     if (b.parent !== undefined && (typeof b.parent !== "string" || !UUID.test(b.parent))) throw new TaskError(400, "parent is a task id");
     const role = String(b.role ?? "");
     // The first agent holding the role, in the grants table's order (setup writes it in the compiled order): one per role. Or
@@ -61,9 +70,18 @@ export function createModuleTasks({ owner, agents, log = () => {} }: {
     const r = await owner("POST", `/api/companies/${encodeURIComponent(String(a.json.companyId))}/issues`, {
       title, description: `${description}\n\n<!-- source:${b.source} -->\n${MODULE_TASK(module)}`, status: "todo", priority: "medium",
       assigneeAgentId: agent, assigneeUserId: null, allowDuplicate: true, ...(b.parent ? { parentId: b.parent } : {}),
-      idempotencyKey: `pw-${createHash("sha256").update(b.source).digest("hex").slice(0, 32)}`,
+      // A graded task's key names its module, so another module's source can never hit it (and its rubric is never attached to it).
+      idempotencyKey: `pw-${createHash("sha256").update(graded ? `${module}\0${b.source}` : b.source).digest("hex").slice(0, 32)}`,
     });
     if (r.status >= 300 || !r.json?.id) throw new TaskError(502, `the control plane answered ${r.status}`);
+    // Graded status is the kernel's own row, never the task's editable text. A dedup hit takes a rubric only on a task this
+    // module filed graded.
+    if (graded) {
+      const had = (db.prepare("SELECT module FROM graded_tasks WHERE task = ?").get(String(r.json.id)) as { module: string } | undefined)?.module;
+      if (r.json.deduplicated ? had !== module : false) throw new TaskError(409, `${r.json.identifier ?? "that task"} isn't a graded task ${module} filed`);
+      db.prepare("INSERT OR IGNORE INTO graded_tasks (task, module) VALUES (?, ?)").run(String(r.json.id), module);
+    }
+    if (graded) await rubric!({ id: String(r.json.id), identifier: String(r.json.identifier ?? "") }, module, { rubric: b.rubric as string[], deliverable: b.deliverable }).catch((e: { name?: string; status?: number; message: string }) => { throw new TaskError(e.status ?? 502, `the task is filed but not graded (${e.message}): file it again`); });
     log("module task filed", { module, task: r.json.identifier, agent, source: b.source, deduplicated: Boolean(r.json.deduplicated) });
     return { id: String(r.json.id), identifier: String(r.json.identifier ?? ""), agent, deduplicated: Boolean(r.json.deduplicated) };
   }

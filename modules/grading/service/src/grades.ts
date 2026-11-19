@@ -13,7 +13,7 @@ import type { DatabaseSync } from "node:sqlite";
  */
 export type GradeState = "open" | "pending" | "awaiting_evidence" | "satisfied" | "needs_revision" | "grading_failed" | "escalated" | "not_graded";
 export interface Deliverable {
-  kind: "pr" | "app" | "apply" | "file" | "report";
+  kind: "pr" | "app" | "apply" | "file" | "report" | "issue";
   ref: string;
 }
 /** One grader verdict, bound to the exact deliverable version it graded (PR head SHA, deployed SHA, apply record). */
@@ -80,7 +80,8 @@ const only = (o: Record<string, unknown>, keys: string[], at: string) => { for (
 const str = (v: unknown, max: number, at: string, min = 0) => (typeof v === "string" && v.length >= min && v.length <= max ? v : bad(`${at}: a string of ${min}-${max} characters`));
 const oneOf = <T extends string>(v: unknown, values: readonly T[], at: string): T => (values.includes(v as T) ? (v as T) : bad(`${at}: one of ${values.join(", ")}`));
 
-export const KINDS = ["pr", "app", "apply", "file", "report"] as const;
+export const ISSUE_REF = /^[\w.-]+\/[\w.-]+#\d+$/;
+export const KINDS = ["pr", "app", "apply", "file", "report", "issue"] as const;
 /** A delegation's rubric: 3-8 checkable criteria, or none (the grader then uses modules/grading/rubrics/<kind>.md). */
 export function parseFiling(b: unknown): { issue: string; rubric: string[]; deliverable: Deliverable } {
   if (!isMap(b)) return bad("send {issue, rubric, deliverable}");
@@ -89,7 +90,9 @@ export function parseFiling(b: unknown): { issue: string; rubric: string[]; deli
   if (rubric.length > 8 || (rubric.length > 0 && rubric.length < 3)) bad("rubric: 3-8 criteria, or none for the template");
   const d = isMap(b.deliverable) ? b.deliverable : bad("deliverable: {kind, ref}");
   only(d, ["kind", "ref"], "deliverable.");
-  return { issue: str(b.issue, 100, "issue", 1), rubric, deliverable: { kind: oneOf(d.kind, KINDS, "deliverable.kind"), ref: d.ref === undefined ? "" : str(d.ref, 500, "deliverable.ref") } };
+  const deliverable = { kind: oneOf(d.kind, KINDS, "deliverable.kind"), ref: d.ref === undefined ? "" : str(d.ref, 500, "deliverable.ref") };
+  if (deliverable.kind === "issue" && !ISSUE_REF.test(deliverable.ref)) bad("deliverable.ref: owner/name#number for an issue");
+  return { issue: str(b.issue, 100, "issue", 1), rubric, deliverable };
 }
 const OUTCOMES = ["awaiting_evidence", "satisfied", "needs_revision", "cannot_judge", "grading_failed", "error"] as const;
 export type VerdictInput = { version: string; outcome: (typeof OUTCOMES)[number]; model: string; criteria: Verdict["criteria"]; reason?: string };

@@ -13,14 +13,15 @@ checks:
   - id: finish
     at: task.finish
     post: http://grading:8096/check/finish
+    rubric: http://grading:8096/check/rubric # a task a module files with {deliverable, rubric} (POST /v1/tasks) is graded from its filing
     auth: grading_check_key
     label: grading
-# PR evidence: a read token for the fleet's own repositories from the kernel's broker (POST /v1/codehost/token, with this module's
+# PR and issue evidence: a read token for the fleet's own repositories from the kernel's broker (POST /v1/codehost/token, with this module's
 # token; service/src/github.ts), to read a PR, its checks and its diff from GitHub. Checks and statuses are the PR's rollup.
 codehost:
   token:
     repos: [ "@agents/*", "@product" ]
-    perms: { pull_requests: read, contents: read, checks: read, statuses: read }
+    perms: { pull_requests: read, contents: read, checks: read, statuses: read, issues: read }
 labels:
   - { name: grading, color: "#7c3aed" }
 # The board's reads (held parts, wake-ups, rollover, Fleet Ops' stale grades), with its own key, until the board is a module.

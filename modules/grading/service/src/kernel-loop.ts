@@ -106,7 +106,7 @@ export function createKernelGradeLoop({ db, runner, due, kernel, kernelBytes, ap
       taskMerged: async () => (await records(issue, "merge", ["done"])).flatMap(verifiedMerges),
       // The grant reads only the fleet's own repositories (the agents org and the product): a PR that reads is an own PR.
       ownRepo: () => true,
-      pr: github.pr, diff: github.diff,
+      pr: github.pr, issue: github.issue, diff: github.diff,
       ...appsEvidence(apps),
       assignee: issue.assigneeAgentId,
       delegator: { agentId: issue.createdByAgentId, userId: issue.createdByUserId },
