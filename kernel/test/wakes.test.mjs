@@ -162,6 +162,38 @@ test("a dispatcher cancels only an open or blocked routine run of an agent it di
   assert.deepEqual(w.posts.map((p) => [p.agent, p.task, p.kind, p.status]), [[AGENT, "r1", "coalesced", "cancelled"]]);
 });
 
+test("a routine run whose dropped wake is re-armed on the next poll starts once, and not again once a job has started", async () => {
+  const w = world();
+  w.issue("r1", { originKind: "routine_execution", originId: "rt" });
+  await w.wakes.poll();
+  assert.deepEqual(w.rows("r1"), ["routine-run:r1 open"]);
+  const [claimed] = w.wakes.claim("dispatch");
+  assert.equal(claimed.key, "routine-run:r1");
+  w.tick();
+  assert.equal(w.wakes.drop("dispatch", "routine-run:r1", "control plane GET routine → 403").dropped, true);
+  assert.deepEqual(w.rows("r1"), ["routine-run:r1 dropped"]);
+  for (let i = 0; i < 5; i++) { w.tick(60_000); await w.wakes.poll(); }
+  assert.deepEqual(w.rows("r1"), ["routine-run:r1 open"]);
+  const again = w.wakes.claim("dispatch");
+  assert.deepEqual(again.map((x) => x.key), ["routine-run:r1"], "re-armed once and claimable");
+  assert.deepEqual(w.wakes.claim("dispatch"), [], "claimed once, not twice");
+  // The dispatcher starts the job; later polls leave the run alone.
+  w.db.prepare("UPDATE wakes SET job = 'j-r1' WHERE key = 'routine-run:r1'").run();
+  w.db.prepare("INSERT INTO jobs VALUES ('j-r1', 'r1', ?, 'running', ?)").run(AGENT, w.tick());
+  for (let i = 0; i < 3; i++) { w.tick(60_000); await w.wakes.poll(); }
+  assert.deepEqual(w.rows("r1"), ["routine-run:r1 claimed"]);
+  assert.deepEqual(w.wakes.claim("dispatch"), [], "no second wake while the run's job is live");
+  // The job ends (the wake is done, and the task can still be `todo` briefly): no second wake is filed for the run.
+  w.db.prepare("UPDATE jobs SET state = 'done' WHERE id = 'j-r1'").run();
+  for (let i = 0; i < 3; i++) { w.tick(60_000); await w.wakes.poll(); }
+  assert.deepEqual(w.rows("r1"), ["routine-run:r1 done"]);
+  assert.deepEqual(w.wakes.claim("dispatch"), [], "a run that already had its job is never woken twice");
+  // Even with its row gone, a run that already had a job is not woken again.
+  w.db.prepare("DELETE FROM wakes WHERE task = 'r1'").run();
+  for (let i = 0; i < 2; i++) { w.tick(60_000); await w.wakes.poll(); }
+  assert.deepEqual(w.rows("r1"), [], "a started run is not filed again");
+});
+
 test("task facts: one change seen by the event and the poll is one fact; an unassigned task's change is recorded; a reassignment says from and to", async () => {
   const w = world();
   w.issue("t1", { status: "todo" });

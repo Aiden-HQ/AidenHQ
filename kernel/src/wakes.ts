@@ -98,6 +98,18 @@ export function createWakes({ db, owner, post, dispatches, routineKey = () => un
       fact({ type: "wake.opened", subject: `wake:${key}`, version: "opened", at: iso(at), actor: author, task, data: { cause, author } });
     }
   };
+  /**
+   * A routine run's dropped wake comes back: dispatch drops a 4xx for good (the pre-#790 403 on the routine read), and without a
+   * re-arm the run then sits in `todo` with no job until someone writes its status. Only a dropped row moves; open, claimed,
+   * delivered and done rows stay as they are, so a run still gets exactly one job.
+   */
+  const rearmRoutine = (key: string, task: string, agent: string, cause: string, author: string) => {
+    const t = now();
+    const r = q("UPDATE wakes SET state = 'open', agent = ?, cause = ?, claimed_by = NULL, job = NULL, until = NULL, at = ? WHERE key = ? AND task = ? AND state = 'dropped'").run(agent, cause, t, key, task);
+    if (!r.changes) return;
+    fact({ type: "wake.opened", subject: `wake:${key}`, version: `reopened@${t}`, at: iso(t), actor: author, task, data: { cause, author } });
+    log("wake reopened", { key, task });
+  };
   const dropped = (w: { key: string; task: string }, why: string) => fact({ type: "wake.dropped", subject: `wake:${w.key}`, version: "dropped", at: iso(now()), actor: "kernel", task: w.task, data: { why: why.slice(0, 200) } });
   const blockedKey = (i: Issue) => (i.blockedBy ? i.blockedBy.map((b) => b.id).sort().join(",") : null);
 
@@ -172,6 +184,13 @@ export function createWakes({ db, owner, post, dispatches, routineKey = () => un
         insert(`routine-run:${issue.id}`, issue.id, agent, key ? `routine:${key}` : "routine", at, null, actor);
       }
       else insert(`issue:${issue.id}:${issue.updatedAt}`, issue.id, agent, prev?.agent === agent ? "status" : "assigned", at, null, actor);
+    }
+    // A routine run's first sight files its wake above; a wake a dispatcher then drops is re-armed here on the next scan, where
+    // without this it waited for an external status write. Only a dropped row moves: open, claimed, delivered and done rows are
+    // left alone, so one run still gets exactly one job.
+    if (status === "todo" && !reopened && issue.originKind === "routine_execution" && !liveJob(issue.id) && !lastJob(issue.id)) {
+      const key = routineKey(String(issue.originId ?? ""));
+      rearmRoutine(`routine-run:${issue.id}`, issue.id, agent, key ? `routine:${key}` : "routine", actor);
     }
     const newest = prev?.comment && !all.length ? prev.comment : all.at(-1)?.id ?? null;
     q("INSERT INTO wake_tasks (task, agent, status, comment, blocked, polled) VALUES (?, ?, ?, ?, ?, 1) ON CONFLICT(task) DO UPDATE SET agent = excluded.agent, status = excluded.status, comment = excluded.comment, blocked = COALESCE(excluded.blocked, blocked), polled = 1").run(issue.id, agent, status, newest, blockedKey(issue));
