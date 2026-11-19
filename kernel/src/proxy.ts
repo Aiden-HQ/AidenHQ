@@ -13,7 +13,8 @@ import type { Rec, Requester } from "./records.ts";
 import { CONN_TOOL, type Writes } from "./writes.ts";
 
 type Log = (msg: string, fields?: Record<string, unknown>) => void;
-const MAX_BODY = 4 * 1024 * 1024;
+// A 10 MB task file as base64 (~13.4 MB), inside its tools/call JSON (tasks-mcp task_file_upload).
+const MAX_BODY = 14 * 1024 * 1024 + 64 * 1024;
 const MAX_ANSWER = 16 * 1024 * 1024;
 const FORWARDED = new Set(["initialize", "notifications/initialized", "ping", "tools/list", "tools/call"]);
 // Request headers passed on: the MCP transport's own. Nothing else (the caller's bearer above all) leaves.

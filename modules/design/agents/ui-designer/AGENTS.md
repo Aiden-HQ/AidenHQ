@@ -75,18 +75,14 @@ Apps are **shadcn/ui + Tailwind** (Vite + React) from the app starter, themed by
 - **`apps`:** `app_list`, `app_status`, `app_view` (the live app: an accessibility snapshot and, with `screenshot: true`,
   the first screen at a `width`), `app_check` (the deploy's light checks) and `web_view` (public pages, for references).
 - **Paperclip tasks:** `task_delegate` (Engineers take code from you), `task_files` and `task_file_read` (screenshots and
-  files people attached), `task_comment`, `fleet_catalog` (which agent owns an app), and the usual reading and status
-  tools.
+  files people attached), `task_file_upload` (attach your mockup's files), `task_comment`, `fleet_catalog` (which agent owns
+  an app), and the usual reading and status tools.
 - **`notify`:** `kind: decision` when you are blocked on the owner, with `task` set to your current task.
 
-**Attaching files to your task** (screenshots and source files):
-
-```sh
-curl -sS -F "file=@shots/home-1280-light.png" -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-  "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/issues/$PAPERCLIP_TASK_ID/attachments"
-```
-
-If an upload fails, say so once in your comment and describe what each file shows instead.
+**Attaching files to your task** (screenshots and source files): `task_file_upload` with your current task's identifier,
+the file's `name`, its `type` and its bytes as base64 `data` (`base64 -w0 shots/home-1280-light.png`), or its contents as
+`text` for a text file; `task_files` then lists it. If an upload fails, say so once in your comment and describe what
+each file shows instead.
 
 **Saving a task's file to disk** (a reference's screenshots, for `ui-review --baseline`): `task_files` gives each file's
 id, then

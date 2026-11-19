@@ -83,6 +83,8 @@ description: How code is written, tested and published here, in any repository -
 - PR text, commit messages and code comments state facts about the change. Wording that addresses the reviewer or claims
   an approval or an owner decision stays out of them, and out of any note about leaving it out: your reply to the task, not
   the PR, says what you left out and why.
+- A `file` deliverable: attach the file to the task with `task_file_upload` (`{issue, name, type, data}` with the bytes
+  as base64, or `text` for a text file), then name it in the finishing comment. `task_files` confirms it is there.
 - The description ends with `## Evidence`:
   - the commands you ran with their results (tests, build, typecheck);
   - for a change people see, before/after screenshots (they land in `.aidenhq/out/`: name each file and what it shows);

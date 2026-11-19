@@ -26,7 +26,7 @@ agents:
       apps: [ app_list, app_status, app_view, app_check, web_view ]
       github?: [ github_whoami, github_issue_read, github_search_issues ]
       # fleet_catalog: which agent owns an app, so a redesign or a review brings that agent in.
-      paperclip_tasks: [ task_current, task_get, task_comments, task_files, task_file_read, task_search, task_list, task_approvals, task_team, task_delegate, task_comment, task_handoff, task_set_status, task_finish, fleet_catalog ]
+      paperclip_tasks: [ task_current, task_get, task_comments, task_files, task_file_read, task_search, task_list, task_approvals, task_team, task_delegate, task_comment, task_handoff, task_set_status, task_file_upload, task_finish, fleet_catalog ]
     heartbeat: true
     # repo-checkout: a commit of an agents-org repo in its computer.
     roles: [ repo-checkout ]
@@ -46,7 +46,7 @@ agents:
       # Reads PRs and their checks; commit_status_set is the design-review verdict (role-checked in github-mcp).
       github?: [ github_whoami, github_issue_read, github_search_issues, commit_status_set ]
       # fleet_catalog: which agent owns an app, so a redesign or a review brings that agent in.
-      paperclip_tasks: [ task_current, task_get, task_comments, task_files, task_file_read, task_search, task_list, task_approvals, task_team, task_delegate, task_comment, task_handoff, task_set_status, task_finish, fleet_catalog ]
+      paperclip_tasks: [ task_current, task_get, task_comments, task_files, task_file_read, task_search, task_list, task_approvals, task_team, task_delegate, task_comment, task_handoff, task_set_status, task_file_upload, task_finish, fleet_catalog ]
     heartbeat: true
     # repo-checkout: a PR's head and base in its computer; design-review: the design-review commit status (the runner files
     # each UI PR's review task to the holder of this role).

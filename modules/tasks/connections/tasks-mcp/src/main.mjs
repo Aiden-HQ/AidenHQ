@@ -7,7 +7,8 @@ import { SERVICE_KEY, TOOL_LIST, callTool } from "./tools.mjs";
 
 const MODULE = process.env.AIDENHQ_MODULE || "tasks";
 const jwks = kernelJwks();
-const MAX_BODY = 4 * 1024 * 1024;
+// A task_file_upload's body is a 10 MB file as base64 (~13.4 MB) plus its JSON: the board's own upload limit.
+const MAX_BODY = 14 * 1024 * 1024 + 64 * 1024;
 
 const sameKey = (got) => {
   const a = Buffer.from(String(got)), b = Buffer.from(`Bearer ${SERVICE_KEY}`);

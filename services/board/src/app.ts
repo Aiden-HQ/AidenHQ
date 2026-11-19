@@ -40,7 +40,7 @@ import { setupFlowRoutes, type SetupFlowPoint } from "./setup-flows.js";
 import type { SetupField } from "./config.js";
 import { welcomeRoutes } from "./welcome.js";
 import { GoogleAuthFailed, loopbackPort, type GoogleAuth } from "./google.js";
-import { OPEN, Paperclip, PaperclipError, actingAccount, type Agent, type Comment, type Issue, type Label } from "./paperclip.js";
+import { OPEN, Paperclip, PaperclipError, actingAccount, type Agent, type Attachment, type Comment, type Issue, type Label } from "./paperclip.js";
 import { accountSession, type BoardSession, type SessionOf } from "./session.js";
 import { laneAgents, laneMessages, laneSend, type LaneOptions } from "./lane.js";
 import { NOTICE_MARKER, asksOwner, chatAgent, chatAgentMarker, chatState, conversation, lastWord, needsYou, openAsk, pickAgent, shownState, type Message } from "./chats.js";
@@ -748,15 +748,14 @@ export function createApp(opts: AppOptions): Server {
     return { answer: await askGateway(opts.gateway, model, prompt) };
   }
 
-  /** Attach a file to a task; a PDF also gets its text as `<name>.txt`, for the agents. */
-  async function attach(ref: string, body: unknown) {
-    const { issue } = await editableIssue(ref);
+  /** Upload one file to a task (validation, decoding, a PDF's text); returns the new attachment and whether a PDF was readable. */
+  async function upload(issue: Issue, body: unknown): Promise<{ attachment: Attachment; readable?: boolean }> {
     const input = parse(UploadSchema, body);
     const data = decode(input.data);
     if (typeof data === "string") throw new BadRequest(data);
     const name = safeName(input.name);
     const type = fileType(input.type, name);
-    await pc.addAttachment(issue.id, name, type, data);
+    const attachment = await pc.addAttachment(issue.id, name, type, data);
     log.info({ issue: issue.identifier, type, bytes: data.length }, "file attached");
     if (isPdf(type, name)) {
       const text = await pdfText(data);
@@ -764,13 +763,20 @@ export function createApp(opts: AppOptions): Server {
         // Nothing ends silently: the person hears the file can't be read, instead of the agent skipping it.
         log.warn({ issue: issue.identifier }, "no text in an attached PDF");
         await pc.addComment(issue.id, `I couldn't read ${name} (it looks scanned or protected). Send it as a picture or another format.\n\n${NOTICE_MARKER}`);
-        return { ...(await issueView(issue.id)), readable: false };
+        return { attachment, readable: false };
       } else
         await pc
           .addAttachment(issue.id, `${name}.txt`, "text/plain", Buffer.from(text, "utf8"))
           .catch((err) => log.warn({ err: String(err.message ?? err).slice(0, 300), issue: issue.identifier }, "couldn't attach a PDF's text"));
     }
-    return issueView(issue.id);
+    return { attachment };
+  }
+
+  /** Attach a file to a task the board may change; a PDF also gets its text as `<name>.txt`, for the agents. */
+  async function attach(ref: string, body: unknown) {
+    const { issue } = await editableIssue(ref);
+    const { readable } = await upload(issue, body);
+    return readable === false ? { ...(await issueView(issue.id)), readable: false } : issueView(issue.id);
   }
 
   /** A task's file, for the user: downloaded, except plain images, which open in the browser. */
@@ -961,6 +967,25 @@ export function createApp(opts: AppOptions): Server {
     { method: "POST", path: /^\/internal\/issues\/([^/]+)\/schedule$/, handle: async (m, body, _u, req) => (await requireAgentTool(req, "task_schedule", "board-writer"), await refuseMemoryInbox(decodeURIComponent(m[1]!)), schedule(decodeURIComponent(m[1]!), body)) },
     { method: "POST", path: /^\/internal\/issues\/([^/]+)\/recurring$/, handle: async (m, body, _u, req) => (await requireAgentTool(req, "task_recurring", "board-writer"), await refuseMemoryInbox(decodeURIComponent(m[1]!)), recurringChange(decodeURIComponent(m[1]!), body)) },
     { method: "POST", path: /^\/internal\/issues\/([^/]+)\/merge$/, handle: async (m, body, _u, req) => (await requireAgentTool(req, "task_merge", "board-writer"), await refuseMemoryInbox(decodeURIComponent(m[1]!), parse(MergeSchema, body).into), merge(decodeURIComponent(m[1]!), body)) },
+    {
+      // An agent attaches a file to the task it is working on (a `file` deliverable): only that task, never another's.
+      // The body is the browser route's ({name, type, data} base64); the reply is the new file as the board lists it.
+      method: "POST",
+      path: /^\/internal\/issues\/([^/]+)\/files$/,
+      maxBody: MAX_UPLOAD_BODY + 1024,
+      handle: async (m, body, _u, req) => {
+        const agent = await requireAgentTool(req, "task_file_upload");
+        const ref = decodeURIComponent(m[1]!);
+        if (!REF.test(ref)) throw new HttpError(400, "bad task reference");
+        await refuseMemoryInbox(ref);
+        const issue = await pc.issue(ref);
+        if (issue.assigneeAgentId !== agent.id) throw new HttpError(403, "a file may be attached only to the task assigned to you");
+        const { attachment } = await upload(issue, body);
+        const [all, owner] = await Promise.all([pc.attachments(issue.id).catch(() => [attachment]), pc.me()]);
+        // fileViews gives the same shape the browser's file list has (a PDF's text version is `textOf`).
+        return { file: fileViews(all.some((f) => f.id === attachment.id) ? all : [...all, attachment], owner).find((f) => f.id === attachment.id) };
+      },
+    },
     {
       // An agent passes one of the user's messages on to another agent on the same task. Only the
       // user's own comment travels, word for word: the agent picks which one and for whom, never the words.
@@ -1743,7 +1768,7 @@ export function createApp(opts: AppOptions): Server {
   async function handleInternal(req: IncomingMessage, res: ServerResponse, url: URL, internal: typeof routes) {
     const route = internal.find((r) => r.method === req.method && r.path.test(url.pathname));
     if (!route) throw new HttpError(404, "not found");
-    const body = await readJson(req);
+    const body = await readJson(req, route.maxBody);
     send(res, 200, JSON.stringify(await route.handle(url.pathname.match(route.path)!, body, url, req)), "application/json");
   }
 
