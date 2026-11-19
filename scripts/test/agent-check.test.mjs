@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { knownTools, namedTools } from "../handbook-tools.mjs";
-import { liveVerdict, newGrants, staticCheck } from "../agent-check.mjs";
+import { connectionHealth, liveVerdict, newGrants, staticCheck } from "../agent-check.mjs";
 
 const servers = { paperclip_tasks: { tools: { read: ["task_get"], write: ["task_create", "task_finish"] } }, slack: { url: "http://slack-mcp:8082/mcp", tools: { read: ["slack_search"], write: ["slack_post"] } } };
 
@@ -35,9 +35,28 @@ test("compile check: a bad model id or a trial agent's write tool fails; an ungr
 test("live check: a failing connection fails the apply only where it is newly granted", () => {
   const prev = { agents: { old: { mcp_servers: ["slack"] } } };
   const cfg = { agents: { old: { mcp_servers: ["slack"] }, fresh: { mcp_servers: ["slack", "jira"] } } };
-  const v = liveVerdict(cfg, { slack: { ok: false, detail: "SLACK_TOKEN not set" }, jira: { ok: true } }, newGrants(cfg, prev));
-  assert.deepEqual(v, { errors: ["connection slack isn't healthy or signed in (SLACK_TOKEN not set); granted to old, fresh: newly granted to fresh"], warnings: [] });
-  assert.deepEqual(liveVerdict(prev, { slack: { ok: false, detail: "x" } }, newGrants(prev, prev)), { errors: [], warnings: ["connection slack isn't healthy or signed in (x); granted to old"] });
+  const v = liveVerdict(cfg, { slack: { ok: false, state: "expired", detail: "Slack sign-in expired" }, jira: { ok: true } }, newGrants(cfg, prev));
+  assert.deepEqual(v, { errors: ["connection slack isn't healthy or signed in (Slack sign-in expired); granted to old, fresh: newly granted to fresh"], warnings: [], notes: [] });
+  assert.deepEqual(liveVerdict(prev, { slack: { ok: false, detail: "x" } }, newGrants(prev, prev)), { errors: [], warnings: ["connection slack isn't healthy or signed in (x); granted to old"], notes: [] });
+});
+
+test("live check: an upgrade that grants connections nobody has set up passes with notes; a set-up one that fails still fails", () => {
+  // The upgrade adds the default bundle's connections to a new agent: github answers "missing" (no token), jira's service
+  // was compiled out (no jira_url yet), ops_mcp is set up but broken.
+  const prev = { agents: { old: { mcp_servers: [] } } };
+  const cfg = { agents: { old: { mcp_servers: [] }, fresh: { mcp_servers: ["github", "jira", "ops_mcp"] } } };
+  const health = { github: { ok: false, state: "missing", detail: "no GitHub token" }, jira: { ok: false, idle: true, detail: "no jira-mcp container until it is set up" } };
+  assert.deepEqual(liveVerdict(cfg, health, newGrants(cfg, prev)), {
+    errors: [],
+    warnings: [],
+    notes: ["connection github isn't set up yet (no GitHub token); granted to fresh", "connection jira isn't set up yet (no jira-mcp container until it is set up); granted to fresh"],
+  });
+  assert.deepEqual(liveVerdict(cfg, { ...health, ops_mcp: { ok: false, detail: "503" } }, newGrants(cfg, prev)).errors, ["connection ops_mcp isn't healthy or signed in (503); granted to fresh: newly granted to fresh"]);
+});
+
+test("live check: a connection whose service the compiled compose doesn't define isn't probed; it is idle", () => {
+  const cfg = { mcp_servers: { jira: { url: "http://jira-mcp:8091/mcp" } }, agents: { fresh: { mcp_servers: ["jira"] } } };
+  assert.deepEqual(connectionHealth(cfg, "/nowhere", new Set(["paperclip"])), { jira: { ok: false, idle: true, detail: "no jira-mcp container until it is set up" } });
 });
 
 test("compile check: trial_writes, the second lock: the four names, granted ones only, trial only, a list only", () => {

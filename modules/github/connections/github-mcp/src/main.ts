@@ -442,8 +442,9 @@ const kernelUrl = process.env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130";
 const http = createServer(async (req, res) => {
   const url = new URL(req.url ?? "/", "http://localhost");
   if (url.pathname === "/healthz") {
+    // No token: not set up yet (state "missing"), which the apply's live agent check notes rather than fails.
     const ok = github.available();
-    res.writeHead(ok ? 200 : 503, { "content-type": "application/json" }).end(JSON.stringify({ ok, detail: ok ? undefined : "no GitHub token (run scripts/github-auth.sh)" }));
+    res.writeHead(ok ? 200 : 503, { "content-type": "application/json" }).end(JSON.stringify({ ok, ...(ok ? {} : { state: "missing", detail: "no GitHub token (run scripts/github-auth.sh)" }) }));
     return;
   }
   // The Maintainer's watcher: each maintained repo's open labelled issues updated since its cursor (`cursors`, JSON
