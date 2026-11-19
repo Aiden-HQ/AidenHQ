@@ -1,6 +1,6 @@
 // Reads of the kernel's jobs (phase 2 W7, W12): what the grading module and the monitoring side see, from the jobs table and the
 // records. Read-only; the loops that use them are started at the big switch, where the runner's copies are deleted.
-//   GET /v1/work?task=<id>   a task's jobs (newest first) and the write records filed on it (with their args and outcome text, which the grading module reads PRs from): { owned, busy, jobs, records }
+//   GET /v1/work?task=<id>   a task's jobs (newest first) and the write records filed on it (with their args and outcome text, which the grading module reads PRs from): { status, busy, jobs, records }
 //   GET /v1/work             what runs now, what waits (queued) and what ended lately, and the agents failing (their last 3 jobs all failed or were lost): the board's Agents view;
 //                            `waiting` (claimable wakes: count, oldest_at, oldest_cause) and `last_started_at` say whether dispatch has stalled
 //   GET /v1/work?job=<id>    one job for its run page (the board): state, times, why it ended, its engine's token count, its
@@ -32,8 +32,11 @@ export function createWork({ db, records, generationsFile = "" }: { db: Database
     task(task: string) {
       const jobs = rows("SELECT * FROM jobs WHERE task = ? ORDER BY at DESC LIMIT 20", task).map(job);
       const recs = records.list(["review", "owner", "approved", "claimed", "done", "failed", "rejected", "stale", "cancelled", "unknown"], 100, { task });
+      // The task's status as the wake scan last saw it (wake_tasks): the one thing of the task itself a module reads here.
+      let status: string | null = null;
+      try { status = (db.prepare("SELECT status FROM wake_tasks WHERE task = ?").get(task) as { status: string | null } | undefined)?.status ?? null; } catch { /* the wake inbox is off */ }
       return {
-        busy: jobs.some((j) => j.state === "running"), jobs,
+        status, busy: jobs.some((j) => j.state === "running"), jobs,
         records: recs.map((r) => ({ id: r.id, kind: r.kind, state: r.state, ok: r.outcome?.ok ?? null, args: r.args ?? null, outcome_text: r.outcome?.text ?? null, decided_at: r.decided_at ?? null, updated_at: r.updated_at, created_at: r.created_at })),
       };
     },

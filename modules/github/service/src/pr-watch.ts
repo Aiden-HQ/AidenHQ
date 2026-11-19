@@ -224,7 +224,7 @@ export function startPrWatch(o: PrWatchOptions) {
       if (isDependabot(pr) || pr.isCrossRepository !== false || !opener || opener.branch !== pr.headRefName) continue;
       // A cancelled task's PR is closed with its branch, once; a done task's is left alone (it may be merging).
       if (!state.abandoned[url]) {
-        const status = await kernel("GET", `/v1/cp/read/api/issues/${encodeURIComponent(opener.task)}`).then((t) => t?.status, (e) => (log("task read failed", { pr: pr.url, err: String(e.message).slice(0, 200) }), undefined));
+        const status = await kernel("GET", `/v1/work?task=${encodeURIComponent(opener.task)}`).then((t) => t?.status, (e) => (log("task read failed", { pr: pr.url, err: String(e.message).slice(0, 200) }), undefined));
         if (status === "cancelled") { await abandon(pr, opener.task); continue; }
       }
       if (pr.mergeable === "MERGEABLE" && !pr.isDraft && named.length && named.every((c) => c.ok) && state.greened[url] !== pr.headRefOid) {

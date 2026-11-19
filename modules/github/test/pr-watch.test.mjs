@@ -104,7 +104,7 @@ async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name:
     let body = "";
     for await (const c of req) body += c;
     if (req.url === "/v1/wakes") woke.push(JSON.parse(body));
-    res.writeHead(200).end(JSON.stringify(req.url.startsWith("/v1/cp/read/") ? { status: taskStatus } : {}));
+    res.writeHead(200).end(JSON.stringify(req.url.startsWith("/v1/work") ? { status: taskStatus } : {}));
   });
   t.after(() => kernel.s.close());
   let open = [];
