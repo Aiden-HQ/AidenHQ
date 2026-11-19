@@ -48,8 +48,9 @@ compiler's is the last gate.
    `hostApply` routes by the repo: codehost-local's `write` for a `local/…` instance, codehost-github's
    `/aidenhq/v1/apply/write` otherwise), only while main is still the commit the kernel read.
 5. The kernel files that commit as a `kernel.apply` on the task (requester `SETTINGS`, kind `kernel`, with no exemption in
-   any rule), and its planner tiers it on its merits like any instance change (`kernel/src/apply-tier.ts`): a setting is
-   the panel's, spend caps and quiet start are the owner's, an agent's `model` / `reasoning_effort` / `heartbeat`
+   any rule: the autonomy caps hold it as they hold an agent, only the release updater is exempt), and its planner tiers it
+   on its merits like any instance change (`kernel/src/apply-tier.ts`): a setting is the panel's, spend caps, quiet start
+   and any loosening of `autonomy` are the owner's, an agent's `model` / `reasoning_effort` / `heartbeat`
    override is Tier 1, a module turned on or off or a grants override is judged by the module authority diff. On approval
    the code host lands exactly that commit and the apply runs `ops/apply-config.sh`.
 6. The board shows the change's progress from the task and its apply record (filed, waiting for approval, applying,

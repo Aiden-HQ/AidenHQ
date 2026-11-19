@@ -14,6 +14,8 @@ import { urlSettingProblem } from "../../services/shared/url-setting.ts";
 import type { Write } from "./apply.ts";
 
 export class Refused extends Error { status = 422; }
+/** The label the board files a settings task with (services/board/src/settings-change.ts SETTINGS_LABEL). */
+const SETTINGS_LABEL = "settings-change";
 const refuse = (msg: string): never => {
   throw new Refused(msg);
 };
@@ -29,6 +31,8 @@ const SHA = /^[0-9a-f]{40}$/;
 const MODEL = /^[A-Za-z0-9~][\w./~:@-]{0,119}$/;
 const plain = (s: unknown) => typeof s === "string" && !/[\x00-\x1f\x7f$]/.test(s);
 const isMap = (v: unknown): v is Dict => !!v && typeof v === "object" && !Array.isArray(v);
+/** An own key of a map (never `constructor` or another prototype key). */
+const has = (o: unknown, k: string) => isMap(o) && Object.hasOwn(o, k);
 const only = (ch: Dict, keys: string[]) => Object.keys(ch).every((k) => keys.includes(k)) || refuse(`${ch.kind}: unknown fields (${Object.keys(ch).filter((k) => !keys.includes(k)).join(", ")})`);
 /** Handbook texts: Markdown, no NUL or other control characters but tab and newlines. */
 const text = (t: unknown, max: number) => (typeof t === "string" && t.length <= max && !/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(t)) || refuse(`text must be at most ${max} characters, without control characters`);
@@ -44,7 +48,7 @@ export function checkTyped(ch: unknown, { compiled, catalog }: Sources): void {
   const c = ch as Change;
   const agentOf = (key: unknown, { module = false } = {}) => {
     if (!AGENT.test(String(key))) refuse(`${key} isn't an agent key`);
-    const a = compiled?.agents?.[String(key)] ?? refuse(`there is no agent ${key}`);
+    const a = (has(compiled?.agents, String(key)) && compiled.agents[String(key)]) || refuse(`there is no agent ${key}`);
     if (module && a.module === "instance") refuse(`${key} is the instance's own agent: its handbook and grants are its agents/${key}/ files`);
     return a;
   };
@@ -53,8 +57,8 @@ export function checkTyped(ch: unknown, { compiled, catalog }: Sources): void {
     case "setting": {
       only(c, ["kind", "key", "value"]);
       if (!KEY.test(String(c.key)) || /token|secret|password/i.test(c.key)) refuse(`${c.key} isn't a setting the board may change`);
-      const def = catalog.find((m) => m.enabled && m.settings?.[c.key])?.settings?.[c.key];
-      if (!def && !compiled?.settings?.[c.key]) refuse(`there is no setting ${c.key}`);
+      const def = catalog.find((m) => m.enabled && has(m.settings, c.key))?.settings?.[c.key];
+      if (!def && !has(compiled?.settings, c.key)) refuse(`there is no setting ${c.key}`);
       const each = [c.value].flat();
       if ((Array.isArray(c.value) && c.value.length > 50) || each.some((v) => !["string", "number", "boolean"].includes(typeof v) || (typeof v === "string" && (v.length > 500 || !plain(v))))) refuse(`${c.key}: plain values only`);
       if (def?.values && each.some((v) => !def.values.includes(v))) refuse(`${c.key}: one of ${def.values.join(", ")}`);
@@ -64,7 +68,8 @@ export function checkTyped(ch: unknown, { compiled, catalog }: Sources): void {
     case "agent": {
       only(c, ["kind", "agent", "field", "value"]);
       agentOf(c.agent);
-      const ok = ({ model: (v: unknown) => typeof v === "string" && MODEL.test(v), reasoning_effort: (v: unknown) => typeof v === "string" && /^[a-z]{1,20}$/.test(v), heartbeat: (v: unknown) => v === false || (Number.isInteger(v) && (v as number) >= 1 && (v as number) <= 24) } as Record<string, (v: unknown) => boolean>)[c.field];
+      const okFor = ({ model: (v: unknown) => typeof v === "string" && MODEL.test(v), reasoning_effort: (v: unknown) => typeof v === "string" && /^[a-z]{1,20}$/.test(v), heartbeat: (v: unknown) => v === false || (Number.isInteger(v) && (v as number) >= 1 && (v as number) <= 24) } as Record<string, (v: unknown) => boolean>);
+      const ok = Object.hasOwn(okFor, c.field) ? okFor[c.field] : undefined;
       if (!ok) refuse(`${c.field} isn't an agent field the board may change`);
       if (!ok!(c.value)) refuse(`${c.agent}.${c.field} can't be ${JSON.stringify(c.value)}`);
       return;
@@ -85,10 +90,11 @@ export function checkTyped(ch: unknown, { compiled, catalog }: Sources): void {
     }
     case "routine": {
       only(c, ["kind", "routine", "field", "value"]);
-      if (!KEY.test(String(c.routine).replace(/-/g, "_")) || !compiled?.routines?.[c.routine]) refuse(`there is no routine ${c.routine}`);
+      if (!KEY.test(String(c.routine).replace(/-/g, "_")) || !has(compiled?.routines, c.routine)) refuse(`there is no routine ${c.routine}`);
       const v = c.value;
       const schedule = (s: unknown) => isMap(s) && Object.keys(s).every((k) => ["cron", "timezone", "label"].includes(k)) && typeof s.cron === "string" && /^[0-9*/,\- ]{9,100}$/.test(s.cron) && (s.timezone == null || (typeof s.timezone === "string" && /^[A-Za-z_]+(\/[A-Za-z0-9_+\-]+){0,2}$|^UTC$/.test(s.timezone))) && (s.label == null || (plain(s.label) && s.label.length <= 60));
-      const ok = ({ schedules: () => Array.isArray(v) && v.length <= 10 && v.every(schedule), status: () => v === "active" || v === "paused", model: () => typeof v === "string" && MODEL.test(v) } as Record<string, () => boolean>)[c.field];
+      const okFor = ({ schedules: () => Array.isArray(v) && v.length <= 10 && v.every(schedule), status: () => v === "active" || v === "paused", model: () => typeof v === "string" && MODEL.test(v) } as Record<string, () => boolean>);
+      const ok = Object.hasOwn(okFor, c.field) ? okFor[c.field] : undefined;
       if (!ok) refuse(`${c.field} isn't a routine field the board may change`);
       if (!ok!()) refuse(`${c.routine}.${c.field} can't be ${JSON.stringify(v).slice(0, 200)}`);
       return;
@@ -131,7 +137,7 @@ export function checkTyped(ch: unknown, { compiled, catalog }: Sources): void {
     case "grants": {
       only(c, ["kind", "agent", "connection", "tools"]);
       agentOf(c.agent, { module: true });
-      const conn = (KEY.test(String(c.connection)) && compiled?.mcp_servers?.[c.connection]) || refuse(`there is no connection ${c.connection}`);
+      const conn = (KEY.test(String(c.connection)) && has(compiled?.mcp_servers, c.connection) && compiled.mcp_servers[c.connection]) || refuse(`there is no connection ${c.connection}`);
       const all = [...(conn.tools?.read ?? []), ...(conn.tools?.write ?? []), ...(conn.tools?.destructive ?? [])];
       if (c.tools !== null && (!Array.isArray(c.tools) || c.tools.length > 200 || c.tools.some((t: unknown) => !all.includes(t)) || new Set(c.tools).size !== c.tools.length)) refuse(`${c.connection}: tools it declares, each once`);
       return;
@@ -159,7 +165,7 @@ const PATHS: Record<string, (ch: Change, isInstance: IsInstance) => string[]> = 
   handbook: (ch) => [`agents/${ch.agent}/AGENTS.md`, "instance.yaml"],
   unfork: (ch) => [`agents/${ch.agent}/AGENTS.md`, "instance.yaml"],
 };
-export const allowedPaths = (changes: Change[], isInstance: IsInstance) => [...new Set(changes.flatMap((ch) => (PATHS[ch.kind] ?? refuse(`${ch.kind} writes nothing`))(ch, isInstance)))].sort();
+export const allowedPaths = (changes: Change[], isInstance: IsInstance) => [...new Set(changes.flatMap((ch) => ((Object.hasOwn(PATHS, ch.kind) && PATHS[ch.kind]) || refuse(`${ch.kind} writes nothing`))(ch, isInstance)))].sort();
 
 const entryId = (item: unknown) => String(YAML.isMap(item) ? item.get("id") : YAML.isScalar(item) ? item.value : item);
 const entryName = (item: unknown) => entryId(item).split("@")[0];
@@ -294,8 +300,11 @@ export type SettingsDeps = {
   /** The instance repo (owner/name or local/name) and its files on main: { base: main's commit, read(path) }. */
   instanceRepo: () => string | undefined;
   main: (paths: string[]) => Promise<{ base: string; texts: Map<string, string> }>;
-  /** The control plane's task, as the owner reads it. */
+  /** The control plane's task, as the owner reads it, and the owner's Paperclip user (the board's key, which files the task). */
   task: (id: string) => Promise<Dict | undefined>;
+  owner: () => Promise<string>;
+  /** Whether a settings change was already filed on this task (a kernel.apply with requester SETTINGS). */
+  filed: (task: string) => boolean;
   /** The code host's write (apply.ts hostApply): the commit, on `branch`. */
   write: (w: Write) => Promise<{ sha: string }>;
   /** Files the kernel.apply on the task (writes.fileKernel with SETTINGS). */
@@ -310,17 +319,20 @@ export function createSettingsChanges(d: SettingsDeps) {
     if (!Array.isArray(changes) || !changes.length || changes.length > 10) refuse("changes: one to ten typed changes");
     // The owner's own task, held by no agent: the board filed it a moment ago with the owner's key.
     const issue = (await d.task(taskId as string)) ?? refuse("no such task");
-    if (issue.createdByAgentId || issue.assigneeAgentId) refuse("a settings change is the owner's own task, held by no agent");
+    const owner = await d.owner();
+    if (!owner || issue.createdByUserId !== owner || issue.createdByAgentId || issue.assigneeAgentId) refuse("a settings change is the owner's own task, made by the board and held by no agent");
+    if (!(issue.labels ?? []).some((l: Dict) => l?.name === SETTINGS_LABEL)) refuse(`that task isn't a settings change (no ${SETTINGS_LABEL} label)`);
     if (["done", "cancelled"].includes(String(issue.status))) refuse("that task is closed");
+    if (d.filed(taskId as string)) refuse("a settings change was already written on that task: file a new one");
     const repo = d.instanceRepo() ?? refuse("this kernel has no instance repo (AIDENHQ_INSTANCE_REPO)");
     const src: Sources = { compiled: YAML.parse(readFileSync(join(d.configDir, "paperclip.yaml"), "utf8")) ?? {}, catalog: JSON.parse(readFileSync(join(d.configDir, "modules.json"), "utf8")) };
     for (const ch of changes as unknown[]) checkTyped(ch, src);
     const typed = changes as Change[];
-    const isInstance = (key: string) => src.compiled.agents?.[key]?.module === "instance";
+    const isInstance = (key: string) => has(src.compiled.agents, key) && src.compiled.agents[key].module === "instance";
     const allowed = allowedPaths(typed, isInstance);
     const { base, texts } = await d.main(allowed);
     const moduleHandbook = (key: string) => {
-      const a = src.compiled.agents?.[key];
+      const a = has(src.compiled.agents, key) ? src.compiled.agents[key] : undefined;
       try { return readFileSync(a?.handbook_fork ? join(d.product, "modules", a.module, "agents", key, "AGENTS.md") : String(a?.instructions), "utf8"); } catch { return undefined; }
     };
     const bundle: string[] = JSON.parse(readFileSync(join(d.product, "modules", "marketplace.json"), "utf8")).bundle ?? [];

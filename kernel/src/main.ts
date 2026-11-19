@@ -230,6 +230,8 @@ const brake = createBrake({ db: records.db, owner: ownerApi });
 const settingsChange = createSettingsChanges({
   product: repo, configDir, instanceRepo: () => repos().instance, main: checkoutMain(instanceDir), log,
   task: (id) => cpJson(`/api/issues/${encodeURIComponent(id)}`).catch(() => undefined) as never,
+  owner: async () => (ownerUser ||= String(((await cpJson("/api/cli-auth/me")) as { userId?: string }).userId ?? "")),
+  filed: (task) => records.list(["review", "owner", "approved", "claimed", "done", "failed", "rejected", "stale", "cancelled", "unknown"], 50, { task, kinds: ["kernel.apply"] }).some((r) => r.requester.kind === SETTINGS.kind && r.requester.name === SETTINGS.name),
   write: applyHost.codehost.write,
   file: (args, task) => writes.fileKernel("kernel.apply", { args, task, requester: SETTINGS }),
 });

@@ -215,6 +215,9 @@ function instanceParts(s: any) {
       if (base.settings?.quiet_start === "on" && head.settings?.quiet_start !== "on") parts.push(OWNER_AFTER_REVIEW("quiet-start", "turns quiet start off, so every module schedule and heartbeat starts: the owner's authority"));
       // Release updates (docs/design/release-updates.md): auto-updates on is the owner's standing authority to install releases.
       if (base.settings?.auto_update === "off" && head.settings?.auto_update !== "off") parts.push(OWNER_AFTER_REVIEW("auto-update", "turns release auto-updates back on, so each new release installs itself at night: the owner's authority"));
+      // Autonomy is the owner's authority: any loosening (off → tier0 or full, tier0 → full; unset is off) is theirs to tap.
+      const rank = (v: unknown) => ({ tier0: 1, full: 2 } as Record<string, number>)[String(v)] ?? 0;
+      if (rank(head.settings?.autonomy) > rank(base.settings?.autonomy)) parts.push(OWNER_AFTER_REVIEW("autonomy", `loosens autonomy (${base.settings?.autonomy ?? "off"} → ${String(head.settings?.autonomy).slice(0, 20)}): the owner's authority`));
     } else if (k === "overrides") {
       for (const kind of changedKeys(base.overrides, head.overrides)) {
         const safe = OVERRIDE_SAFE[kind];

@@ -43,7 +43,9 @@ function setup() {
   const filed = [];
   const apply = createSettingsChanges({
     product, configDir: config, instanceRepo: () => "local/acme-instance", main: checkoutMain(checkout),
-    task: async () => ({ identifier: "WOR-5", status: "todo" }),
+    task: async (id) => (id === OTHER ? { identifier: "WOR-6", status: "todo", createdByUserId: "agent-user", labels: [{ name: "settings-change" }] } : { identifier: "WOR-5", status: "todo", createdByUserId: "owner-user", labels: [{ name: "settings-change" }] }),
+    owner: async () => "owner-user",
+    filed: (task) => filed.some((f) => f.task === task),
     write: (w) => host.write(w),
     file: async (args, task) => (filed.push({ args, task }), { id: "k-0000000000000001", tier: 1, state: "review" }),
   });
@@ -51,6 +53,7 @@ function setup() {
   return { bare, host, apply, filed, at };
 }
 const TASK = "00000000-0000-4000-8000-000000000005";
+const OTHER = "00000000-0000-4000-8000-000000000006";
 
 test("turning off a default module edits only modules: and modules_removed, commits it and files one apply", async () => {
   const { bare, host, apply, filed, at } = setup();
@@ -76,7 +79,9 @@ test("a setting change sets exactly that key; an unknown kind or a stray field i
   const [before, after] = [at(main), at(r.sha)];
   assert.deepEqual(after, { ...before, settings: { ...before.settings, timezone: "Asia/Dubai" } });
   assert.equal(git(bare, "diff", "--numstat", main, r.sha), "1\t1\tinstance.yaml");
-  for (const bad of [[{ kind: "yaml", text: "modules: []" }], [{ kind: "setting", key: "timezone", value: "UTC", also: 1 }], [{ kind: "setting", key: "api_token", value: "x" }], [{ kind: "module", name: "slack", on: true }]])
-    await assert.rejects(apply(TASK, bad), { name: "Error" });
+  await assert.rejects(apply(TASK, [{ kind: "setting", key: "timezone", value: "UTC" }]), /already written/, "one write per task");
+  await assert.rejects(apply(OTHER, [{ kind: "setting", key: "timezone", value: "UTC" }]), /owner's own task/);
+  for (const bad of [[{ kind: "setting", key: "constructor", value: "x" }], [{ kind: "agent", agent: "constructor", field: "model", value: "x" }], [{ kind: "yaml", text: "modules: []" }], [{ kind: "setting", key: "timezone", value: "UTC", also: 1 }], [{ kind: "setting", key: "api_token", value: "x" }], [{ kind: "module", name: "slack", on: true }]])
+    await assert.rejects(apply("00000000-0000-4000-8000-000000000007", bad), (e) => e.status === 422 && !/already written|own task/.test(e.message));
   assert.equal(filed.length, 1);
 });

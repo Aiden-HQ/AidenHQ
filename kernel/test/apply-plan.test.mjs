@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { createApply } from "../src/apply.ts";
 import { createApplyPlanner } from "../src/apply-tier.ts";
 import { KERNEL_KINDS } from "../src/kinds.ts";
-import { UPDATER, openRecords } from "../src/records.ts";
+import { SETTINGS, UPDATER, openRecords } from "../src/records.ts";
 import { createWrites } from "../src/writes.ts";
 
 const [OLD, NEW, COMMIT] = ["a".repeat(40), "b".repeat(40), "c".repeat(40)];
@@ -168,4 +168,13 @@ test("a release move is the reviewer's only as the updater's verified move under
   assert.equal(record.state, "approved");
   await settle();
   assert.equal(k.h.lands.length, 1, "landed on the reviewer's yes");
+});
+
+test("the owner's settings change is capped like anyone's: under autonomy off, loosening autonomy is an owner card", async () => {
+  const texts = { base: `product: ${OLD}\nmodules: [core]\nsettings: { autonomy: "off" }\n`, head: `product: ${OLD}\nmodules: [core]\nsettings: { autonomy: "full" }\n` };
+  const r = await kernel({ texts, autonomy: "off" }).writes.fileKernel("kernel.apply", { args: BUMP, task: "TASK-1", requester: SETTINGS });
+  assert.deepEqual([r.tier, r.merit, r.rule, r.state], [2, 2, "autonomy", "review"], "the owner's on its merits, after the reviewer");
+  // A merit-1 change (a setting the panel reads) is capped too: under off it waits for the owner, never the panel alone.
+  const plain = { base: texts.base, head: `product: ${OLD}\nmodules: [core]\nsettings: { autonomy: "off", timezone: UTC }\n` };
+  assert.equal((await kernel({ texts: plain, autonomy: "off" }).writes.fileKernel("kernel.apply", { args: BUMP, task: "TASK-1", requester: SETTINGS })).tier, 2);
 });
