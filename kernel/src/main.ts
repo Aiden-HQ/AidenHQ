@@ -233,12 +233,16 @@ const sandbox = sandboxConfig(env);
 const tasksDir = path.join(sandbox.workDir, "tasks"), localScratch = path.join(sandbox.workDir, "codehost-scratch");
 mkdirSync(localScratch, { recursive: true });
 const instanceRemote = env("AIDENHQ_INSTANCE_REMOTE", "");
+const localChecks = new Map<string, string>();
 const localCode = codehostLocal({
   root: path.join(dataDir, "codehost"), tasksDir, scratchDir: localScratch, instanceRepo: baseRepos.instance, productRepo: baseRepos.product,
   sources: baseRepos.instance && instanceRemote.startsWith("/") ? { [baseRepos.instance]: instanceRemote } : {},
-  checks: async (repo, head, base) => {
-    const v = checkJobs.start("codehost-local", { repo, head, run: "change", spec: { base } });
-    return [{ ok: v.state === "done" && checkJobs.verify(v.receipt, { repo, head, run: "change" }).ok, pending: v.state === "running" }];
+  // A check that couldn't run (no box) starts again only for a new request; a merge waiting on it reads it as it stands.
+  checks: async (repo, head, base, retry) => {
+    const key = `${repo} ${head} ${base}`, had = localChecks.get(key);
+    const v = had && !retry ? await checkJobs.get("codehost-local", had) : checkJobs.start("codehost-local", { repo, head, run: "change", spec: { base } });
+    localChecks.set(key, v.id);
+    return [{ ok: v.state === "done" && checkJobs.verify(v.receipt, { repo, head, run: "change" }).ok, pending: v.state === "running", summary: v.receipt?.summary ?? v.error ?? v.state }];
   },
 });
 // A kernel-admitted job's computer (boxes.ts): made below, once the gateway it needs is up; a job that ends releases it.

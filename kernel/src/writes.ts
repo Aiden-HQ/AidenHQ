@@ -16,7 +16,7 @@ import type { Connection, Identity } from "./identity.ts";
 import type { Resolver } from "./net.ts";
 import { UPDATER, canonical, digestOf, type Card, type Rec, type Records, type Requester } from "./records.ts";
 import type { Reviews } from "./reviews.ts";
-import { repoKey, type Repos } from "./kinds.ts";
+import { LOCAL_ORG, repoKey, type Repos } from "./kinds.ts";
 import { REFUSALS_DDL } from "./jobs.ts";
 import { routeKind } from "./codehost.ts";
 import type { Executor } from "../sdk/src/executor.ts";
@@ -293,6 +293,10 @@ export function createWrites({ records, registry, connections, secret, resolver,
     kindOf,
     /** POST /v1/writes, and the proxy for a tool mapped to a kind. */
     async request(who: Identity, { kind: asked, args, task, evidence }: { kind: string; args: unknown; task?: string; evidence?: unknown }): Promise<Rec> {
+      // A new repo named without its org goes to the instance's default agents org: GitHub's once it is connected
+      // (AIDENHQ_GITHUB_AGENTS_ORG), else this server's. An existing repo keeps its host: routing reads only the repo.
+      const newRepo = (args as { repo?: unknown } | null)?.repo;
+      if (asked === "codehost.create_repo" && typeof newRepo === "string" && !newRepo.includes("/")) args = { ...(args as object), repo: `${repos().agentsOrg ?? LOCAL_ORG}/${newRepo}` };
       let kind: string;
       try { kind = routeKind(asked, args); } catch (e) { throw fail(400, "bad_args", (e as Error).message); }
       const k = kindOf_(kind);

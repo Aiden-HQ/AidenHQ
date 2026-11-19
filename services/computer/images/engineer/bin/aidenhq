@@ -10,7 +10,8 @@
 //                                                    update) its PR (a change request on this server): one codehost.pr write each
 //   aidenhq merge <PR link> <head sha>...            merge each PR only at that head: one codehost.merge write each
 //   aidenhq close <PR link>...                       close superseded or duplicate PRs: one codehost.close write each
-//   aidenhq create-repo <org/name>                   a new app's repository: one codehost.create_repo write
+//   aidenhq create-repo [<org>/]<name>               a new app's repository (no org: the instance's default agents org):
+//                                                    one codehost.create_repo write
 //
 // A PR link is a GitHub pull request's (https://github.com/<org>/<repo>/pull/<n>) or a change request's on this server
 // (codehost:local/<name>/change/<n>), as publish printed it.
@@ -30,10 +31,10 @@
 // names the job: the kernel takes the job, its task and its workspace from it, never from the request) and
 // AIDENHQ_TASK_WORKTREE (the task's workspace folder, whose clones <name> or <org>--<name> the code host pushes from).
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
-const usage = `usage: aidenhq publish <org/repo> <branch>... [--title <title> --body-file <file>] | merge <PR link> <head sha>... | close <PR link>... | create-repo <org/name> | apply <org/repo> <branch> | task <PEN-N> | tasks <words> | advise "<question>" [--file <brief>] | reset | engine <kind> [model] | cleanup`;
+const usage = `usage: aidenhq publish <org/repo> <branch>... [--title <title> --body-file <file>] | merge <PR link> <head sha>... | close <PR link>... | create-repo [<org>/]<name> | apply <org/repo> <branch> | task <PEN-N> | tasks <words> | advise "<question>" [--file <brief>] | reset | engine <kind> [model] | cleanup`;
 const COMMANDS = ["publish", "merge", "close", "create-repo", "apply", "task", "tasks", "advise", "reset", "engine", "cleanup"];
 const [command, ...rest] = process.argv.slice(2);
 const fail = (msg, code = 1) => {
@@ -103,16 +104,23 @@ const pr = (link) => {
   if (!m) fail(`\`${link}\` isn't a pull request link (https://github.com/<org>/<repo>/pull/<n>, or codehost:local/<name>/change/<n>)`, 2);
   return { repo: m[1], number: Number(m[2]) };
 };
-/** A branch's commit in this workspace's clone of org/repo (<name> or <org>--<name>), the one the code host fetches. */
+/**
+ * A branch's commit in this workspace's clone of org/repo (<name> or <org>--<name>), the one the code host takes, with the
+ * branch's bundle beside it (.aidenhq/bundles/<sha>.bundle): a host-side code host reads that one file, never the clone's .git.
+ */
 const commitOf = (repo, branch) => {
   const [org, name] = repo.split("/");
   const dir = [name, `${org}--${name}`].map((d) => join(workspace, d)).find((d) => existsSync(join(d, ".git")));
   if (!dir) fail(`this workspace has no clone of ${repo} (${name} or ${org}--${name})`, 2);
+  let sha;
   try {
-    return execFileSync("git", ["-C", dir, "rev-parse", "--verify", "--quiet", `refs/heads/${branch}^{commit}`], { encoding: "utf8" }).trim();
+    sha = execFileSync("git", ["-C", dir, "rev-parse", "--verify", "--quiet", `refs/heads/${branch}^{commit}`], { encoding: "utf8" }).trim();
   } catch {
     fail(`${repo} has no branch \`${branch}\` in ${dir}`, 2);
   }
+  mkdirSync(join(workspace, ".aidenhq", "bundles"), { recursive: true });
+  execFileSync("git", ["-C", dir, "bundle", "create", "--quiet", join(workspace, ".aidenhq", "bundles", `${sha}.bundle`), `refs/heads/${branch}`], { stdio: ["ignore", "ignore", "inherit"] });
+  return sha;
 };
 /** One tool of tasks-mcp, through the kernel's tool proxy as this job (its frozen tools), as the box's own MCP config calls it. */
 async function tool(name, args) {
@@ -155,7 +163,7 @@ if (command === "publish") {
   if (!words.length) fail("name the pull requests to close", 2);
   for (const link of words) lines.push(`${link}: ${(await write("codehost.close", { prs: [pr(link)] }))}`);
 } else if (command === "create-repo") {
-  if (words.length !== 1) fail("usage: aidenhq create-repo <org/name>", 2);
+  if (words.length !== 1) fail("usage: aidenhq create-repo [<org>/]<name>", 2);
   lines.push(`${words[0]}: ${(await write("codehost.create_repo", { repo: words[0] }))}`);
 } else if (command === "apply") {
   if (words.length !== 2) fail("usage: aidenhq apply <org/repo> <branch>", 2);

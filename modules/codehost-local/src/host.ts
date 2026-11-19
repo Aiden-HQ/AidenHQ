@@ -7,9 +7,9 @@
 //   refs/changes/<n>/head    its head                      refs/changes/<n>/merged  the squash commit, once merged
 //   refs/changes/<n>/base    the default branch's tip when it last moved          refs/changes/<n>/closed  written when it is closed
 //   refs/changes/<n>/meta    { title, body, branch, base (the branch it merges into), task, opened_at, draft }
-// Its URL is codehost:local/<name>/change/<n>. A merge needs the change's checks green on its exact head: the `change` check
+// Its URL is codehost:local/<name>/change/<n>. A job's commits come in as a bundle its box wrote (git.ts ingest). A merge needs the change's checks green on its exact head: the `change` check
 // job (check_jobs in module.yaml, run in a credential-free box from a snapshot) with a receipt the kernel signed.
-import { existsSync, lstatSync, mkdirSync, realpathSync } from "node:fs";
+import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync } from "node:fs";
 import { join, sep } from "node:path";
 import { plan as planRules } from "../../codehost-github/service/src/plan.mjs";
 import { IDENTITY, bareOf, fail, git, ingest } from "./git.ts";
@@ -39,7 +39,8 @@ export const LOCAL_KINDS = Object.fromEntries(Object.entries({
 }).map(([action, args]) => [`codehost-local.${action}`, { module: "codehost-local", floor: 0 as const, tools: [] as string[], args, card: CARD }]));
 
 /** Each change's checks, as plan.mjs reads them ({ ok, pending }); the kernel's `change` check job on (repo, head, base). */
-export type ChangeChecks = (repo: string, head: string, base: string) => Promise<{ ok: boolean; pending: boolean }[]>;
+/** `retry`: run again a check that couldn't run (a new request); otherwise the one asked for before, as it stands. `summary`: its receipt's. */
+export type ChangeChecks = (repo: string, head: string, base: string, retry?: boolean) => Promise<{ ok: boolean; pending: boolean; summary?: string }[]>;
 
 export function localHost({ root, sources = {}, tasksDir, scratchDir, instanceRepo, productRepo, checks, waitMs = 30 * 60_000 }: {
   /** <data dir>/codehost: the org folders. */ root: string;
@@ -66,7 +67,7 @@ export function localHost({ root, sources = {}, tasksDir, scratchDir, instanceRe
   const refs = (repo: string, lines: string[]) => g(repo, ["update-ref", "--stdin"], { input: `start\n${lines.join("\n")}\nprepare\ncommit\n` });
   const diffText = async (repo: string, from: string, to: string) => {
     const d = await git(["--git-dir", bare(repo), "-c", "core.attributesFile=/dev/null", "diff", "--no-ext-diff", "--no-textconv", "--text", "--no-renames", from, to], { raw: true });
-    return d.length > MAX_DIFF ? `${d.slice(0, MAX_DIFF)}\n… (the diff is cut at ${MAX_DIFF} characters)` : d;
+    return d;
   };
 
   async function readChange(repo: string, n: number) {
@@ -139,7 +140,7 @@ export function localHost({ root, sources = {}, tasksDir, scratchDir, instanceRe
         const c = await readChange(p.repo, Number(p.number));
         if (c.state !== "open") throw fail(409, `${changeUrl(p.repo, c.n)} is ${c.state}`);
         if (action === "merge") diff += await diffText(p.repo, c.base || "4b825dc642cb6eb9a060e54bf8d69288fbee4904", c.head);
-        prs.push({ repo: p.repo, number: c.n, head: c.head, base: c.base, headMatches: !p.head || p.head === c.head, files: c.files, ownHead: true, dependabot: false, checks: action === "merge" ? await checks(p.repo, c.head, c.base) : [] });
+        prs.push({ repo: p.repo, number: c.n, head: c.head, base: c.base, headMatches: !p.head || p.head === c.head, files: c.files, ownHead: true, dependabot: false, checks: action === "merge" ? (await checks(p.repo, c.head, c.base, true)).map(({ ok, pending }) => ({ ok, pending })) : [] });
       }
       const urls = prs.map((p) => changeUrl(p.repo, p.number)).join(", ");
       return { state: { ...base(requester), prs }, target: urls, sentence: `${action === "merge" ? "Merge" : "Close"} ${urls}${action === "merge" ? " at its approved head, once its checks are green" : ""}.`, diff };
@@ -159,12 +160,13 @@ export function localHost({ root, sources = {}, tasksDir, scratchDir, instanceRe
     return { state: { ...base(requester), branches }, target: names, sentence: `${action === "pr" ? "Publish and open a change request for" : "Push"} ${names}.`, diff };
   }
 
-  /** Waits until the change's checks are all green (true), or one is red or they don't finish in time (false). */
+  /** Waits until the change's checks are all green (""), or one is red or they don't finish in time (why, with its summary). */
   async function green(repo: string, head: string, baseSha: string) {
     for (const until = Date.now() + waitMs; ;) {
       const cs = await checks(repo, head, baseSha);
-      if (cs.length && cs.every((c) => c.ok)) return true;
-      if (!cs.length || cs.some((c) => !c.ok && !c.pending) || Date.now() > until) return false;
+      if (cs.length && cs.every((c) => c.ok)) return "";
+      const red = cs.find((c) => !c.ok && !c.pending);
+      if (!cs.length || red || Date.now() > until) return red ? `failed: ${red.summary ?? "no summary"}` : "didn't finish in time";
       await new Promise((r) => setTimeout(r, 2000));
     }
   }
@@ -175,7 +177,10 @@ export function localHost({ root, sources = {}, tasksDir, scratchDir, instanceRe
       const s = await stateFor(action, req.args ?? {}, req.requester);
       // plan.mjs's rules, as codehost-github's: the bare action, so it reads the same parts.
       const p = planRules({ kind: action, args: req.args }, s.state);
-      return { ...p, facts: { target: s.target, sentence: s.sentence, diff: s.diff } };
+      // A reviewer reads the whole diff or nothing: one too large for the card is refused, never cut.
+      const big = s.diff.length > MAX_DIFF;
+      if (big && p.raise) throw fail(413, `the diff is over ${MAX_DIFF} characters, too large for the reviewer to read: split it into smaller changes`);
+      return { ...p, facts: { target: s.target, sentence: s.sentence, diff: big ? `(the diff is over ${MAX_DIFF} characters)` : s.diff } };
     },
     async execute(rec: { kind: string; args: any }) {
       const a = rec.args ?? {}, action = rec.kind.replace(/^codehost-local\./, "");
@@ -205,12 +210,17 @@ export function localHost({ root, sources = {}, tasksDir, scratchDir, instanceRe
         return { ok: true, text: `${action === "pr" ? "Change requests" : "Pushed"}: ${done.join(", ")}` };
       }
       if (action === "merge") {
+        const merged: { repo: string; number: number; head: string; sha: string }[] = [];
         for (const p of a.prs) {
           const c = await readChange(p.repo, Number(p.number));
-          if (!(await green(p.repo, p.head, c.base))) return { ok: false, text: `${changeUrl(p.repo, c.n)}: its checks aren't green on ${String(p.head).slice(0, 12)}; nothing merged${done.length ? ` after ${done.join(", ")}` : ""}` };
-          done.push(`${changeUrl(p.repo, c.n)} as ${(await land(p.repo, c.n, p.head)).slice(0, 12)}`);
+          const why = await green(p.repo, p.head, c.base);
+          if (why) return { ok: false, text: `${changeUrl(p.repo, c.n)}: nothing merged${done.length ? ` after ${done.join(", ")}` : ""}; its checks on ${String(p.head).slice(0, 12)} ${why}` };
+          const sha = await land(p.repo, c.n, p.head);
+          merged.push({ repo: p.repo, number: c.n, head: p.head, sha });
+          done.push(`${changeUrl(p.repo, c.n)} as ${sha.slice(0, 12)}`);
         }
-        return { ok: true, text: `Merged: ${done.join(", ")}` };
+        // The first line as codehost-github's merge queue writes it (merges.ts MERGED_LINE): what the grader reads as merged.
+        return { ok: true, text: `merged-prs: ${JSON.stringify(merged)}\nMerged: ${done.join(", ")}` };
       }
       if (action === "close") {
         for (const p of a.prs) {
@@ -232,7 +242,8 @@ export function localHost({ root, sources = {}, tasksDir, scratchDir, instanceRe
     parse,
     /**
      * `repo` at `ref` (HEAD: its default branch) cloned into the task workspace `ident` as <ident>/<name>, credential-free and
-     * detached at the commit, with origin/<branch> to diff against; an existing folder is a 409. Its { path, commit }.
+     * detached at the commit, with origin/<branch> to diff against; an existing folder is a 409. Its { path, commit }. The clone
+     * is made in the kernel's scratch and copied in: nothing the workspace holds is ever read by git here.
      */
     async clone(repo: string, ref: string, ident: string) {
       if (!exists(repo)) throw fail(404, `${repo} isn't on this server`);
@@ -244,13 +255,20 @@ export function localHost({ root, sources = {}, tasksDir, scratchDir, instanceRe
       const branch = ref === "HEAD" ? await defaultBranch(repo) : ref;
       const commit = SHA.test(branch) ? branch : await rev(repo, `refs/heads/${branch}`);
       if (!commit || !(await rev(repo, commit))) throw fail(404, `${ref.slice(0, 100)} isn't a commit of ${repo}`);
-      try { mkdirSync(target); } catch (e) { throw fail((e as { code?: string }).code === "EEXIST" ? 409 : 400, `${ident}/${name} can't be made (${(e as Error).message})`); }
-      if (realpathSync(target) !== target) throw fail(400, `${ident}/${name} resolves elsewhere`);
-      await git(["init", "--quiet", target]);
-      // origin names the repo but no transport git has: the workspace pushes nothing (the kernel publishes it).
-      await git(["-C", target, "remote", "add", "origin", `aidenhq://${repo}`]);
-      await git(["-C", target, "fetch", "--quiet", "--no-tags", bare(repo), `+${SHA.test(branch) ? commit : `refs/heads/${branch}`}:refs/remotes/origin/${SHA.test(branch) ? "fetched" : branch}`]);
-      await git(["-C", target, "checkout", "--quiet", "--detach", commit]);
+      // Built in the kernel's own scratch (host git never runs in a workspace), then copied in as plain files.
+      const tmp = mkdtempSync(join(scratchDir, "clone-")), built = join(tmp, name);
+      try {
+        await git(["init", "--quiet", built]);
+        // origin names the repo but no transport git has: the workspace pushes nothing (the kernel publishes it).
+        await git(["-C", built, "remote", "add", "origin", `aidenhq://${repo}`]);
+        await git(["-C", built, "fetch", "--quiet", "--no-tags", bare(repo), `+${SHA.test(branch) ? commit : `refs/heads/${branch}`}:refs/remotes/origin/${SHA.test(branch) ? "fetched" : branch}`]);
+        await git(["-C", built, "-c", "core.attributesFile=/dev/null", "checkout", "--quiet", "--detach", commit]);
+        try { mkdirSync(target); } catch (e) { throw fail((e as { code?: string }).code === "EEXIST" ? 409 : 400, `${ident}/${name} can't be made (${(e as Error).message})`); }
+        if (realpathSync(target) !== target) throw fail(400, `${ident}/${name} resolves elsewhere`);
+        for (const e of readdirSync(built)) cpSync(join(built, e), join(target, e), { recursive: true, verbatimSymlinks: true, force: false, errorOnExist: true });
+      } finally {
+        rmSync(tmp, { recursive: true, force: true });
+      }
       return { path: `${ident}/${name}`, commit };
     },
   };
