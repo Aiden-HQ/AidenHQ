@@ -15,6 +15,7 @@ import type { Resolver } from "./net.ts";
 import { UPDATER, canonical, digestOf, type Card, type Rec, type Records, type Requester } from "./records.ts";
 import type { Reviews } from "./reviews.ts";
 import { repoKey, type Repos } from "./kinds.ts";
+import { REFUSALS_DDL } from "./jobs.ts";
 import { writeRaise, type Inventory } from "./paths.ts";
 import { REVIEW_TRIES, afterReview, capText, codeVerdict, computeTier, failedVerdict, heldInput, shadowed, type Autonomy, type Raise, type ReviewFirst, type ReviewInput, type Cap, type RoutineCap, type Tier, type Verdict } from "./tier.ts";
 
@@ -93,6 +94,7 @@ export function createWrites({ records, registry, connections, secret, resolver,
   resume?: string[];
   log?: (msg: string, f?: { [k: string]: unknown }) => void;
 }) {
+  records.db.exec(REFUSALS_DDL);
   const waiters = new Map<string, ((r: Rec) => void)[]>();
   const settled = (r: Rec) => { for (const w of waiters.get(r.id) ?? []) w(r); waiters.delete(r.id); };
   const policy = (k: Kind) => createHash("sha256").update(canonical({ ...k, executor: undefined })).digest("hex").slice(0, 32);
@@ -295,7 +297,11 @@ export function createWrites({ records, registry, connections, secret, resolver,
         if (!who.workspace) throw fail(409, "no_workspace", "this job has no workspace on record");
         if (args && typeof args === "object" && !Array.isArray(args)) args = { ...args, workspace: who.workspace };
       }
-      const r = await file(kind, k, requesterOf(who, t), args, t, evidence, who.workspace || undefined);
+      // A kernel job's last write attempt is on its row: the reason it was refused at plan time, or nothing once one went through
+      // (dispatch blocks the task of a run that ended on a refusal).
+      const mark = (why: string | null) => { if (who.job) (why ? records.db.prepare("INSERT INTO job_refusals (job, why) VALUES (?, ?) ON CONFLICT DO UPDATE SET why = excluded.why").run(who.job, why) : records.db.prepare("DELETE FROM job_refusals WHERE job = ?").run(who.job)); };
+      const r = await file(kind, k, requesterOf(who, t), args, t, evidence, who.workspace || undefined).catch((e: { status?: number; message?: string }) => { if (e?.status === 422) mark(`${kind}: ${e.message}`.slice(0, 1000)); throw e; });
+      mark(null);
       if (r.state === "claimed") await execute(r, k);
       return r;
     },

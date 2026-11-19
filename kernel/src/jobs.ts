@@ -24,6 +24,8 @@ export interface JobView {
   progress: Progress; version: number;
   /** When the run ended (ms), and whether its dispatcher acknowledged the end (outcome posted, whoever asked told). */
   ended: number | null; acked: boolean;
+  /** Why the run's last write was refused at plan time, when nothing later went through. */
+  refused?: string;
 }
 
 export class JobError extends Error {
@@ -117,6 +119,8 @@ export function insideNoLinks(root: string, path: string, what: string): string 
 export const dispatchesFrom = (modules: () => Record<string, { dispatches?: string[] } | undefined>, agents: () => Record<string, { key?: unknown } | undefined>) =>
   (module: string, agent: string) => { const key = agents()[agent]?.key; return typeof key === "string" && key !== "" && (modules()[module]?.dispatches ?? []).includes(key); };
 
+/** A job's last plan-time write refusal (writes.ts records it; a write that goes through clears it). */
+export const REFUSALS_DDL = "CREATE TABLE IF NOT EXISTS job_refusals (job TEXT PRIMARY KEY, why TEXT NOT NULL)";
 const DDL = `CREATE TABLE IF NOT EXISTS jobs (
   id TEXT PRIMARY KEY, module TEXT NOT NULL, agent TEXT NOT NULL, task TEXT NOT NULL, engine TEXT NOT NULL, pid INTEGER NOT NULL,
   log TEXT NOT NULL, dir TEXT NOT NULL, at INTEGER NOT NULL, jobcaps TEXT NOT NULL, observing INTEGER NOT NULL, live_input INTEGER NOT NULL,
@@ -134,6 +138,8 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
   boxWrap: string;
 }) {
   db.exec(DDL);
+  db.exec(REFUSALS_DDL);
+  const refusal = (id: string) => (db.prepare("SELECT why FROM job_refusals WHERE job = ?").get(id) as { why: string } | undefined)?.why;
   // What admission records (wake, profile, the job that started it) and the routine cap it froze (provenance.ts reads it).
   const have = new Set((db.prepare("PRAGMA table_info(jobs)").all() as { name: string }[]).map((c) => c.name));
   for (const c of ["wake", "profile", "parent_job", "routine", "routine_cap"]) if (!have.has(c)) db.exec(`ALTER TABLE jobs ADD COLUMN ${c} TEXT`);
@@ -158,7 +164,7 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
       id: r.id, module: r.module, agent: r.agent, task: r.task, state: r.state, pid: r.pid, log: r.log, dir: r.dir, at: r.at,
       jobcaps: JSON.parse(r.jobcaps), observing: r.observing === 1, live_input: r.live_input === 1, exit: r.exit ?? null, final: r.final,
       session: r.session ?? null, timedOut: why.timedOut === true,
-      cancelled: why.cancelled === true, usage: r.usage ? JSON.parse(r.usage) : null, progress: JSON.parse(r.progress || "{}"), version: versions.get(r.id) ?? 0, ended: r.ended ?? null, acked: r.acked != null,
+      cancelled: why.cancelled === true, usage: r.usage ? JSON.parse(r.usage) : null, progress: JSON.parse(r.progress || "{}"), version: versions.get(r.id) ?? 0, ended: r.ended ?? null, acked: r.acked != null, ...(refusal(r.id) ? { refused: refusal(r.id) } : {}),
     };
   };
 
