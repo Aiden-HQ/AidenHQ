@@ -327,14 +327,15 @@ export function createWrites({ records, registry, connections, secret, resolver,
       return r;
     },
     /**
-     * A kind the kernel plans (kernel.apply), filed by the kernel's release updater (updates.ts): planned and tiered as any
-     * requester's. Its requester kind `kernel` is set only here, never from a token, so the planner can tell the updater's own
-     * filing (a release move it verifies itself) from anyone else's.
+     * A kind the kernel plans (kernel.apply), filed by the kernel itself: the release updater (updates.ts, UPDATER) or the
+     * owner's typed settings change (settings-change.ts, SETTINGS). Planned and tiered as any requester's. A requester of kind
+     * `kernel` is set only here, never from a token, so the planner can tell the updater's own filing (a release move it
+     * verifies itself) from anyone else's.
      */
-    async fileUpdater(kind: string, { args, task }: { args: unknown; task: string }): Promise<Rec> {
+    async fileKernel(kind: string, { args, task, requester }: { args: unknown; task: string; requester: typeof UPDATER }): Promise<Rec> {
       const k = kindOf_(kind);
       if (!k || !Object.hasOwn(planners, kind)) throw fail(404, "unknown_kind", `no kernel-planned kind ${kind}`);
-      const r = await file(kind, k, UPDATER, args, task);
+      const r = await file(kind, k, requester, args, task);
       if (r.state === "claimed") await execute(r, k);
       return r;
     },

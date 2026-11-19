@@ -81,6 +81,7 @@ import { notice, type Notify } from "./notify.ts";
 import type { JobTools } from "./jobtools.ts";
 import { hostOf } from "./codehost.ts";
 import { fail } from "./proxy.ts";
+import { Refused as SettingsRefused } from "./settings-change.ts";
 import type { Records, State } from "./records.ts";
 import type { Work } from "./work.ts";
 import type { Reviews } from "./reviews.ts";
@@ -148,6 +149,7 @@ export const ROUTES = [
   { method: "POST", path: "/v1/checkout", auth: "job" },
   { method: "GET", path: "/v1/advisories", auth: "board" },
   { method: "GET", path: "/v1/connections/health", auth: "board" },
+  { method: "POST", path: "/v1/settings/change", auth: "board" },
   { method: "POST", path: "/v1/auth/:op", auth: "board" },
   { method: "POST", path: "/v1/accounts/:op", auth: "board+session" },
   { method: "POST", path: "/v1/apps/:op", auth: "module" },
@@ -181,7 +183,7 @@ function workRead(work: Work, p: URLSearchParams) {
   return task ? work.task(task.slice(0, 100)) : work.activity();
 }
 
-export function createBackplane({ whoami, asserter, proxy, cp, boardCp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, reviewerKey = () => "", jobs, codehost, admission, outcomes, wakes, tasks, eventsKey = () => "", work, graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, checkJobs, jobTools, localBundle, ownerRaw, lane, healthProbe, healthKey = () => "", connectionHealth, log = () => {} }: {
+export function createBackplane({ whoami, asserter, proxy, cp, boardCp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, reviewerKey = () => "", jobs, codehost, admission, outcomes, wakes, tasks, eventsKey = () => "", work, graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, checkJobs, jobTools, localBundle, ownerRaw, lane, healthProbe, healthKey = () => "", connectionHealth, settingsChange, log = () => {} }: {
   whoami: Whoami; asserter: Asserter; proxy: Handler; cp: Handler; boardCp?: Handler; grantsFile: () => { agents?: Record<string, Grant> } & Record<string, unknown>;
   writes?: Writes; records?: Records; boardKey?: () => string; log?: (msg: string, f?: Record<string, unknown>) => void;
   /** The reviewer slot, and the key a direct review request asks with (reviewer_key, which the board holds). */
@@ -229,6 +231,8 @@ export function createBackplane({ whoami, asserter, proxy, cp, boardCp, grantsFi
   healthKey?: () => string;
   /** Every connection's /healthz (health.ts createConnectionHealth). */
   connectionHealth?: () => Promise<Record<string, unknown>>;
+  /** The owner's typed settings change on their settings task (settings-change.ts). */
+  settingsChange?: (task: unknown, changes: unknown) => Promise<unknown>;
 }) {
   /** The calling module (its own token), or 401. */
   const moduleOf = async (req: IncomingMessage) => {
@@ -334,6 +338,13 @@ export function createBackplane({ whoami, asserter, proxy, cp, boardCp, grantsFi
         }
         case "GET /v1/connections/health": if (!isBoard(req)) throw fail(401, "unauthorized", "the board's key is required"); return send(res, 200, { probes: connectionHealth ? await connectionHealth() : {} });
         case "GET /v1/advisories": if (!isBoard(req)) throw fail(401, "unauthorized", "the board's key is required"); return send(res, 200, { advisories: advisories() });
+        case "POST /v1/settings/change": {
+          if (!isBoard(req)) throw fail(401, "unauthorized", "the board's key is required");
+          if (!settingsChange) throw fail(503, "unavailable", "settings changes are off");
+          const b = await json(req, 2_000_000);
+          // The owner reads why: a refusal of the change itself, or the code host's or the planner's answer.
+          try { return send(res, 200, await settingsChange(b.task, b.changes)); } catch (e) { throw fail(e instanceof SettingsRefused ? 422 : ((e as { status?: number }).status ?? 502), "refused", String((e as Error).message).slice(0, 1000)); }
+        }
       }
       if (hit?.path.startsWith("/v1/tasks")) {
         const w = await moduleOf(req);

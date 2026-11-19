@@ -7,10 +7,11 @@ export const card = (o: Partial<Approval> & { id: string }): Approval => ({
   createdAt: "2026-11-10T10:00:00.000Z", replaced: false, panel: false, reviewFirst: null, ...o,
 });
 
-export function fakeRecords(cards: Approval[] = []): Records & { cards: Approval[] } {
+export function fakeRecords(cards: Approval[] = []): Records & { cards: Approval[]; settings: { task: string; changes: unknown[] }[] } {
+  const settings: { task: string; changes: unknown[] }[] = [];
   const list: Records["list"] = async (state, { task, limit = 100 } = {}) =>
     cards
       .filter((a) => (!task || a.issueId === task || a.identifier === task) && (state === "owner" ? a.state === "pending" && a.tier === 2 : state === "pending" ? a.state === "pending" : state === "finished" ? a.outcome : true))
       .slice(0, limit);
-  return { cards, list, awaiting: async () => new Set((await list("owner")).map((a) => a.issueId)), advisories: async () => [], connectionHealth: async () => ({}) };
+  return { cards, settings, list, awaiting: async () => new Set((await list("owner")).map((a) => a.issueId)), advisories: async () => [], connectionHealth: async () => ({}), settingsChange: async (task, changes) => (settings.push({ task, changes }), { record: "k-0000000000000001", tier: 1, state: "review" }) };
 }

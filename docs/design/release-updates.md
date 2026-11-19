@@ -41,7 +41,7 @@ charge: auto-updates on by default, off in Settings, and "Update now" for the im
   (GitHub has it; a local mirror gets a fast-forward push); one commit moving `product:` and `release.{name,sha}` (dropping an
   obsolete `aidenhq` marketplace entry) on the instance repo's branch `release/<name>`, built on its main.
 - **Filing it:** the kernel files a task of its own for the platform engineer (no agent works on it) and a `kernel.apply` of
-  that commit on it (`writes.fileUpdater`: the requester kind `kernel`, which no token yields), as the release train files a
+  that commit on it (`writes.fileKernel` with UPDATER: the requester kind `kernel`, which no token yields), as the release train files a
   product bump. The planner tiers it like any apply. Only the updater's own filing, while auto-updates are on, whose head is
   exactly the pin the planner's own verification of that release writes for this base (`updates.ts verify`: tag on the
   distro's main, newer than the current release, the tested stamp, the kernel descending), is the AI reviewer's (`release-pin`,

@@ -331,7 +331,7 @@ export function createApp(opts: AppOptions): Server {
     return ctx.labels.find((l) => l.name === name) ?? (await pc.createLabel(name, color));
   }
 
-  /** A typed settings change (docs/design/settings-changes.md): checked, then filed as the owner's own task, kept here by task id. */
+  /** A typed settings change (docs/design/settings-changes.md): checked, filed as the owner's own task (kept here by task id for the page), and handed to the kernel. */
   async function fileSettingsChange(changes: Change[]) {
     const { compiled, catalog } = readSources(settingsFiles());
     try {
@@ -345,6 +345,15 @@ export function createApp(opts: AppOptions): Server {
     const { title, description } = taskFor(changes, compiled);
     const issue = await pc.createIssue({ title, description, status: "todo", priority: "medium", labelIds: [label.id] });
     store.setMeta(`settings-change:${issue.id}`, JSON.stringify(changes));
+    // The kernel checks it again, has the instance repo's code host write exactly its files and files the apply on the task.
+    try {
+      await records.settingsChange(issue.id, changes);
+    } catch (e) {
+      await pc.addComment(issue.id, `**Not written:** ${String((e as Error).message).slice(0, 500)}`).catch(() => {});
+      await pc.updateIssue(issue.id, { status: "cancelled" }).catch(() => {});
+      log.warn({ issue: issue.identifier, err: String((e as Error).message).slice(0, 300) }, "settings change not written");
+      throw new HttpError(422, `not written: ${(e as Error).message}`);
+    }
     log.info({ issue: issue.identifier, changes: changes.map((c) => c.kind) }, "settings change filed");
     return { identifier: issue.identifier };
   }
@@ -1463,8 +1472,8 @@ export function createApp(opts: AppOptions): Server {
     { method: "GET", path: /^\/api\/settings\/connections$/, handle: async (_m, _b, url) => connectionsData(url.searchParams.has("fresh")) },
     {
       // A typed settings change (docs/design/settings-changes.md): checked here, filed as the owner's own task with no
-      // assignee, and kept here by task id. The runner reads it back with its key (/internal/settings-changes/:id), checks it
-      // again, writes exactly its files and files the apply card on the task.
+      // assignee, and handed to the kernel (POST /v1/settings/change), which checks it again, has the instance repo's code
+      // host write exactly its files and files the kernel.apply on the task.
       method: "POST",
       path: /^\/api\/settings\/change$/,
       handle: async (_m, body) => fileSettingsChange(parse(ChangesSchema, body).changes),

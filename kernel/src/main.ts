@@ -43,13 +43,14 @@ import { createResolver } from "./net.ts";
 import { CODEHOST, covers, createCodehost, type OpsGrant } from "./codehost.ts";
 import { createConnectionHealth, createHealthProbe } from "./health.ts";
 import { createProxy } from "./proxy.ts";
-import { openRecords } from "./records.ts";
+import { SETTINGS, UPDATER, openRecords } from "./records.ts";
 import { createReviews, type ReviewerSlot } from "./reviews.ts";
 import { createReviewLoop } from "./review-loop.ts";
 import { mintToken } from "./gateway/token.ts";
 import { createWrites, type Kind } from "./writes.ts";
 import type { Executor } from "../sdk/src/executor.ts";
 import { createApply, hostApply } from "./apply.ts";
+import { checkoutMain, createSettingsChanges } from "./settings-change.ts";
 import { hostPlanner } from "./apply-tier.ts";
 import { inventoryOf } from "./paths.ts";
 import { taskRoutineCap } from "./tier.ts";
@@ -189,7 +190,7 @@ const updates = createUpdates({
   file: async (r) => {
     const task = await moduleTasks.file("kernel", { title: `Update AidenHQ to ${r.release}`, role: "platform-engineer", source: `release:${r.release}:${r.sha}`, description: `Installs AidenHQ ${r.release} (from ${r.from}), filed by the release updater as one apply. No agent works on this task; it closes when the apply ends.\n\nWhat changed: ${r.compare}` });
     try {
-      return { record: (await writes.fileUpdater("kernel.apply", { args: { repo: repos().instance, branch: r.branch, sha: r.sha }, task: task.id })).id, task: task.id };
+      return { record: (await writes.fileKernel("kernel.apply", { args: { repo: repos().instance, branch: r.branch, sha: r.sha }, task: task.id, requester: UPDATER })).id, task: task.id };
     } catch (e) {
       await moduleTasks.close("kernel", task.id, { status: "cancelled", body: `Not filed: ${(e as Error).message.slice(0, 500)}` }).catch(() => {});
       throw e;
@@ -225,6 +226,13 @@ const reviewLoop = createReviewLoop({
 every(() => void reviewLoop.tick(), 30_000);
 once(() => void reviewLoop.tick(), 5_000);
 const brake = createBrake({ db: records.db, owner: ownerApi });
+// The owner's typed settings changes from the board (settings-change.ts): written by the instance repo's code host, filed as a kernel.apply.
+const settingsChange = createSettingsChanges({
+  product: repo, configDir, instanceRepo: () => repos().instance, main: checkoutMain(instanceDir), log,
+  task: (id) => cpJson(`/api/issues/${encodeURIComponent(id)}`).catch(() => undefined) as never,
+  write: applyHost.codehost.write,
+  file: (args, task) => writes.fileKernel("kernel.apply", { args, task, requester: SETTINGS }),
+});
 // The job settings as configured here (jobs run in their agents' computers; no repo code runs on the host).
 const sandbox = sandboxConfig(env);
 // codehost-local (docs/design/codehost-local.md), run here: the org `local`'s bare repos under <data dir>/codehost, setup's
@@ -356,7 +364,7 @@ const codehost = createCodehost({ repos: codehostRepos, grants: codehostGrants, 
 // Check jobs (checkjobs.ts): credential-free boxes of the launcher's, snapshots from the module that provides them.
 const checkJobs = checkJobsFrom({ db: records.db, secret, recipes: () => modulesFile().check_jobs ?? {}, ask: codehost.ask, call: launcherClient(launcherUrl, () => secret("launcher_kernel_key")), workDir: sandbox.workDir, gatewayUrl: `${sandbox.boxGatewayUrl}/api/v1`, log });
 const lane = createLane({ once: outcomes.once, owner: ownerApi, grantsFile: grantsTable, log, postAsAgent: async (agent, task, job, body) => ({ id: String((await outcomes.post({ id: job, agent, task }, { kind: "lane", body })).comment) }) });
-const backplane = createBackplane({ healthProbe, connectionHealth: createConnectionHealth({ connections, resolver }), healthKey: () => secret("health_probe_key"), codehost: codehost.op, checks, checkJobs, lane, whoami, asserter, grantsFile: grantsTable, log, writes, records, channels, brake, notify, owner: ownerApi, ownerRaw: (p) => cpApi(p), modules: modulesFile, boardKey: () => secret("gateway_board_key"), reviews, reviewerKey: () => secret("reviewer_key"), jobs, admission, outcomes, wakes, tasks: moduleTasks, work, graderToken, dropGraderToken: (task) => graderTokens.delete(task), eventsKey: () => secret("paperclip_events_key"), jobTools, localBundle: (repo: string) => (localHost() ? localCode.bundle(repo) : Promise.reject(Object.assign(new Error("codehost-local isn't enabled here"), { status: 404 }))), advisories: advisories.list, accounts: createAuthApi({ accounts: () => accounts, whoami, boardKey: () => secret("gateway_board_key"), recoveryKeyWaiting: () => Boolean(firstRun.recoveryKey()), modelReady: modelState.ready, operatorKey: () => secret("board_operator_key"), secrets: moduleSecrets }), proxy: (req, res, c) => proxy(req, res, c!), cp: createCp({ appOwners: () => appOwners(), asserter, whoami, plugin, once: outcomes.once, agentKey: (id) => secret(`paperclip-agents/${id}`), grants: () => grantsTable().agents ?? {}, fleetIssues: () => String(grantsTable().fleet_issues ?? ""), controlUrl, checks, provenance, log }) as never, boardCp: createBoardCp({ controlUrl, key: () => secret("paperclip_board_key"), log }) as never });
+const backplane = createBackplane({ healthProbe, settingsChange, connectionHealth: createConnectionHealth({ connections, resolver }), healthKey: () => secret("health_probe_key"), codehost: codehost.op, checks, checkJobs, lane, whoami, asserter, grantsFile: grantsTable, log, writes, records, channels, brake, notify, owner: ownerApi, ownerRaw: (p) => cpApi(p), modules: modulesFile, boardKey: () => secret("gateway_board_key"), reviews, reviewerKey: () => secret("reviewer_key"), jobs, admission, outcomes, wakes, tasks: moduleTasks, work, graderToken, dropGraderToken: (task) => graderTokens.delete(task), eventsKey: () => secret("paperclip_events_key"), jobTools, localBundle: (repo: string) => (localHost() ? localCode.bundle(repo) : Promise.reject(Object.assign(new Error("codehost-local isn't enabled here"), { status: 404 }))), advisories: advisories.list, accounts: createAuthApi({ accounts: () => accounts, whoami, boardKey: () => secret("gateway_board_key"), recoveryKeyWaiting: () => Boolean(firstRun.recoveryKey()), modelReady: modelState.ready, operatorKey: () => secret("board_operator_key"), secrets: moduleSecrets }), proxy: (req, res, c) => proxy(req, res, c!), cp: createCp({ appOwners: () => appOwners(), asserter, whoami, plugin, once: outcomes.once, agentKey: (id) => secret(`paperclip-agents/${id}`), grants: () => grantsTable().agents ?? {}, fleetIssues: () => String(grantsTable().fleet_issues ?? ""), controlUrl, checks, provenance, log }) as never, boardCp: createBoardCp({ controlUrl, key: () => secret("paperclip_board_key"), log }) as never });
 // The admin listener's accounts (data/kernel/auth/auth.db) and pages. Accounts not moved yet, or a malformed URL setting: the
 // listener refuses while every other part of the kernel serves.
 const urlOf = (v: string) => { try { return v ? new URL(v) : undefined; } catch { log("ignoring a malformed URL setting", { value: v.slice(0, 100) }); return undefined; } };

@@ -142,7 +142,7 @@ test("a release move is the reviewer's only as the updater's verified move under
   const asked = [];
   // The updater's verification of 2026.11.3 at D3 on this base writes exactly the head.
   const verified = async (base, name, sha) => (asked.push([name, sha]), base === texts.base && name === "2026.11.3" && sha === D3 ? texts.head : null);
-  const tierOf = async (k, filer) => { const r = filer === "updater" ? await k.writes.fileUpdater("kernel.apply", { args: BUMP, task: "TASK-1" }) : await k.writes.request(codehost, { kind: "kernel.apply", args: BUMP, task: "TASK-1" }); return [r.tier, r.rule]; };
+  const tierOf = async (k, filer) => { const r = filer === "updater" ? await k.writes.fileKernel("kernel.apply", { args: BUMP, task: "TASK-1", requester: UPDATER }) : await k.writes.request(codehost, { kind: "kernel.apply", args: BUMP, task: "TASK-1" }); return [r.tier, r.rule]; };
   assert.deepEqual(await tierOf(kernel({ texts, verifyRelease: verified }), "updater"), [1, "release-pin"], "the updater's verified move");
   assert.deepEqual(asked.at(-1), ["2026.11.3", D3], "verified by the planner, at the head's release and sha");
   // Anyone else filing the same move (an agent's job, a module): the owner's, and never verified for them.
@@ -163,7 +163,7 @@ test("a release move is the reviewer's only as the updater's verified move under
   assert.deepEqual(await tierOf(kernel({ texts, verifyRelease: verified, autonomy: "off" }), "module"), [2, "release-pin"]);
   // ...and the reviewer's yes runs it: no owner card, no shadow note.
   const k = kernel({ texts, verifyRelease: verified, autonomy: "off" });
-  const r = await k.writes.fileUpdater("kernel.apply", { args: BUMP, task: "TASK-1" });
+  const r = await k.writes.fileKernel("kernel.apply", { args: BUMP, task: "TASK-1", requester: UPDATER });
   const { record } = await k.writes.review(r.id, { input: { tier: 1, rule: "release-pin", reason: "verified" }, request: {} });
   assert.equal(record.state, "approved");
   await settle();

@@ -1,5 +1,5 @@
 // A settings change from the board: refused unless it checks out, otherwise filed as the owner's own task with no assignee,
-// the typed change kept by the board for the runner to read with its key (docs/design/settings-changes.md).
+// the typed change handed to the kernel, which writes it (docs/design/settings-changes.md).
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -12,6 +12,7 @@ import { createApp } from "../src/app.js";
 import type { Paperclip } from "../src/paperclip.js";
 import { changesOf, stageOf } from "../src/settings-change.js";
 import { Store } from "../src/store.js";
+import { fakeRecords } from "./fake-records.js";
 
 const dir = mkdtempSync(join(tmpdir(), "settings-change-"));
 writeFileSync(
@@ -44,7 +45,8 @@ const pc = {
 describe("POST /api/settings/change", () => {
   let session: { accountId: string; role: "admin" | "user" } | null = { accountId: "owner", role: "admin" };
   const store = new Store(":memory:");
-  const app = createApp({ paperclip: pc, store, log: pino({ level: "silent" }), allowedHosts: ["localhost:3120"], staticDir: "/nonexistent", timezone: "UTC", session: () => session });
+  const records = fakeRecords();
+  const app = createApp({ paperclip: pc, store, records, log: pino({ level: "silent" }), allowedHosts: ["localhost:3120"], staticDir: "/nonexistent", timezone: "UTC", session: () => session });
   let port = 0;
   beforeAll(async () => {
     await new Promise<void>((r) => app.listen(0, "127.0.0.1", r));
@@ -87,7 +89,7 @@ describe("POST /api/settings/change", () => {
     expect(created).toHaveLength(0);
   });
 
-  it("files the owner's own task with no assignee, and keeps the typed change for the runner", async () => {
+  it("files the owner's own task with no assignee, and hands the typed change to the kernel", async () => {
     const url = "https://acme-be.glean.com/mcp/default";
     const changes = [{ kind: "setting", key: "glean_mcp_url", value: url }, { kind: "agent", agent: "chief-of-staff", field: "reasoning_effort", value: "high" }, { kind: "grants", agent: "chief-of-staff", connection: "crm", tools: ["crm_find"] }];
     const r = await post({ changes });
@@ -97,6 +99,7 @@ describe("POST /api/settings/change", () => {
     expect(t.assigneeAgentId).toBeUndefined();
     expect(changesOf(t.description)?.map((c) => c.kind)).toEqual(["setting", "agent", "grants"]);
     expect(store.meta("settings-change:i1")).toBe(JSON.stringify(changes));
+    expect(records.settings).toEqual([{ task: "i1", changes }]);
   });
 
   it("lists a filed change with where it stands", async () => {
