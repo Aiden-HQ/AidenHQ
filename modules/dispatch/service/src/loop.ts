@@ -164,7 +164,14 @@ export function createDispatch({ kernel, db, owner, log = () => {}, now = Date.n
         log("job ended", { job: v.id, task: v.task, state: v.state, posted: o?.kind ?? null });
       } catch (e) {
         // A job whose outcome the kernel will never take (task or agent gone) is acknowledged, or it is retried every tick forever.
-        if (permanent(e)) { backoff.delete(v.id); await kernel.ack(v.id).then(() => q("DELETE FROM stopped WHERE job = ?").run(v.id), () => {}); log("job given up: its outcome can't be posted", { job: v.id, err: e.message }); continue; }
+        if (permanent(e)) {
+          backoff.delete(v.id);
+          log("job given up: its outcome can't be posted", { job: v.id, err: e.message });
+          // The owner hears once per job that its reply was dropped (a fixed text, the task named).
+          await kernel.notify({ kind: "decision", task: v.task, dedupe_key: `outcome-dropped:${v.id}`, text: `🔧 **The reply for ${(await kernel.task(v.task).catch(() => undefined))?.identifier ?? v.task} was dropped:** the kernel refused to post it, so the task has no word from the agent's last run. Open the task to see where it stands, or re-run it.` }).catch((err: Error) => log("dropped-reply notice failed", { job: v.id, err: err.message }));
+          await kernel.ack(v.id).then(() => q("DELETE FROM stopped WHERE job = ?").run(v.id), () => {});
+          continue;
+        }
         // Anything else is tried again: an ended job's outcome less often each time it fails (a running one is checked each tick).
         if (!ENDED.has(v.state)) { log("job follow failed", { job: v.id, err: (e as Error).message }); continue; }
         const fails = (wait?.fails ?? 0) + 1;

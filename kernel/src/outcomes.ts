@@ -121,6 +121,8 @@ export function createOutcomes({ db, plugin, delegates, finish, provenance, rela
       // A 4xx is final and keeps its status (dispatch's permanent(): acknowledged, never retried forever). A 401 or 403 is a
       // key Paperclip no longer takes: the agent's company is checked again with the key the vault holds next time.
       if (r.status === 401 || r.status === 403) plugin.forget(job.agent);
+      // A 404 is the plugin's route missing while setup reinstalls the plugin during an apply: retried (a 502), never final.
+      if (r.status === 404) throw new OutcomeError(502, "unknown", "the post action isn't there (the plugin is being reinstalled): try again");
       if (r.status >= 300 || !data || data.refused) throw new OutcomeError(r.status >= 400 && r.status !== 429 ? r.status : r.status >= 300 ? 502 : 422, "refused", data?.refused ?? `the post action answered ${r.status}`);
       if (req.child && data.child) provenance.record(data.child, origin);
       log("outcome posted", { job: job.id, kind: req.kind, task: job.task, status: data.status ?? null, ...(gate && !gate.pass ? { finish: "held" in gate ? "held" : "reopened" } : {}) });
