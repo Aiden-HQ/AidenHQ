@@ -14,9 +14,9 @@ import type { Skill } from "./sandbox.ts";
 
 export const PROFILES = ["crew", "engineer", "check"] as const;
 export type Profile = (typeof PROFILES)[number];
-/** The role the code host reads as the product line (requester.platform), and the roles whose filed tasks may carry it (the Architect, the Fleet Steward). */
+/** The role the code host reads as the product line (requester.platform), and the roles whose filed tasks may carry it (the Architect, the Fleet Steward, the Maintainer). */
 const PLATFORM = "platform-engineer";
-const PLATFORM_FILERS = ["architect", "fleet-audit"];
+const PLATFORM_FILERS = ["architect", "fleet-audit", "maintainer"];
 /** The computer image a profile's jobs run in when the agent names none (`image:` wins). */
 const IMAGE: Record<Profile, string> = { crew: "agent-base", engineer: "engineer", check: "engineer" };
 
@@ -83,7 +83,7 @@ export function createAdmission({ db, grants, kinds, capacity, spend, mayDispatc
   log: (msg: string, fields?: Record<string, unknown>) => void;
 }) {
 
-  /** Platform authority belongs to the task: a job holds the platform-engineer role only on a task no agent filed, or one the Architect or the Fleet Steward filed. */
+  /** Platform authority belongs to the task: a job holds the platform-engineer role only on a task no agent filed, or one an agent holding a PLATFORM_FILERS role filed. */
   function platformTask(t: Parameters<typeof provenance.filedBy>[0]): boolean {
     const by = provenance.filedBy(t);
     return by === undefined || (by !== "" && (grants()[by]?.roles ?? []).some((r) => PLATFORM_FILERS.includes(r)));

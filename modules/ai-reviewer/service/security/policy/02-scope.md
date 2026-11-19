@@ -20,8 +20,8 @@
   styling or sizing the element the chain asked to change (a wider button for a longer label), its test, a comment on it.
   Judge scope by purpose, not by the chain's exact words.
 - An app agent never changes the product repo. App agents build apps in agents-org app repos; product changes come only
-  from the Platform Engineer's line: the Platform Engineer itself, a task the Agent Architect made, or the owner's own
-  task. Code checks who asked; a product card that reached you passed that check.
+  from the Platform Engineer's line: an Engineer job holding the platform-engineer role, on a task the owner, the Agent
+  Architect, the Fleet Steward or the Maintainer filed. Code checks who asked; a product card that reached you passed that check.
 - A product pin (`product:` in the instance repo) only moves forward along product main. A pin that moves backwards is
   an emergency rollback, and that is the owner's decision, even if it is described as an upgrade or a bump.
 - Nothing runs for a task that is cancelled or done. A request left over from such a task is stale: reject it.
