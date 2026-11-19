@@ -238,12 +238,20 @@ export function checks(d: { kernel: KernelClient; apps: <T>(path: string) => Pro
   let appsOkAt = now(); // apps-mcp's last answer: a restart (an apply) is not an outage
   const companies = async () => (await d.kernel.read("/api/companies")) as Company[];
   const agents = async () => (await Promise.all((await companies()).map(async (c) => (await d.kernel.read(`/api/companies/${c.id}/agents`)) as AgentRow[]))).flat().filter((a) => a.status !== "terminated");
-  /** A task's id as the owner reads it (the raw id when it can't be read: a failed lookup never hides an incident), or undefined when it is exempt. Lookups last one check run; a failure is not kept. */
-  const lookup = () => {
+  /** One check run's task reads, cached: a task's row, or undefined when it can't be read (a failed lookup never hides an incident). A failure is not kept. */
+  const taskReads = () => {
     const seen = new Map<string, IssueRow>();
     return async (id: string) => {
       let i = seen.get(id);
       if (!i) { i = (await (d.kernel.read(`/api/issues/${encodeURIComponent(id)}`) as Promise<IssueRow>).catch(() => undefined)) ?? undefined; if (i) seen.set(id, i); }
+      return i;
+    };
+  };
+  /** A task's id as the owner reads it (the raw id when it can't be read), or undefined when it is exempt. Lookups last one check run. */
+  const lookup = () => {
+    const read = taskReads();
+    return async (id: string) => {
+      const i = await read(id);
       return i && exempt(i) ? undefined : i?.identifier ?? id;
     };
   };
@@ -343,8 +351,15 @@ export function checks(d: { kernel: KernelClient; apps: <T>(path: string) => Pro
     async stuck() {
       const t = now();
       const out: Incident[] = [];
+      const read = taskReads();
       const items = ((await d.kernel.call("GET", "/v1/flow?idle=1")).items ?? []) as { task: string; identifier: string | null; since: string; reason: string }[];
-      for (const i of items.filter((x) => x.reason === "orphaned" && age(x.since, t) > IDLE_MS && !exempt({ identifier: x.identifier, originKind: null }) && !suppressed(x.task, `stuck:${x.task}`))) out.push({ key: i.task, reason: `task ${i.identifier ?? i.task} idle for ${mins(age(i.since, t))} with nothing running, filed or waiting on it (${slug(i.reason)})` });
+      for (const i of items.filter((x) => x.reason === "orphaned" && age(x.since, t) > IDLE_MS && !exempt({ identifier: x.identifier, originKind: null }) && !suppressed(x.task, `stuck:${x.task}`))) {
+        const task = await read(i.task);
+        // Parked in backlog, or owned by nobody: not someone's stuck work (the inbox, review-log and issues tasks are idle by design).
+        // A task that can't be read stays flagged: a failed lookup never hides an incident.
+        if (task && (task.status === "backlog" || (!task.assigneeAgentId && !task.assigneeUserId))) continue;
+        out.push({ key: i.task, reason: `task ${i.identifier ?? i.task} idle for ${mins(age(i.since, t))} with nothing running, filed or waiting on it (${slug(i.reason)})` });
+      }
       return out;
     },
     // Observe mode (docs/design/flow.md): a stage that got slower week over week is logged as what it would file; nothing is filed until promoted.
