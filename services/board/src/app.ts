@@ -1,7 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { forOthers } from "./aidenhq-sdk/for-others.js";
 import { readFile, stat } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { dirname, extname, join, normalize } from "node:path";
@@ -940,7 +939,7 @@ export function createApp(opts: AppOptions): Server {
         const task = await userTaskOf(issue, ctx);
         if (!task) throw new HttpError(400, "only on the user's tasks and their agents' parts");
         const c = (await pc.comments(issue.id)).find((x) => x.id === comment && !x.deletedAt);
-        if (!c || c.authorType !== "user" || c.authorUserId !== ctx.me || hasMarker(c.body, NOTICE_MARKER) || forOthers(c.body)) throw new HttpError(400, "pass on a comment the user wrote on this task");
+        if (!c || c.authorType !== "user" || c.authorUserId !== ctx.me || hasMarker(c.body, NOTICE_MARKER)) throw new HttpError(400, "pass on a comment the user wrote on this task");
         const named = ctx.assignees.find((a) => a.kind !== "me" && a.key === to);
         const byName = withHandle(ctx.assignees, to);
         const agent = named ?? (byName.length === 1 ? byName[0] : undefined);

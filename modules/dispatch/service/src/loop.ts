@@ -118,7 +118,9 @@ export function createDispatch({ kernel, db, owner, log = () => {} }: { kernel: 
     const first = !ran && !spoke(comments, task);
     const seen = (q("SELECT comment FROM seen WHERE task = ?").get(task.id) as { comment: string } | undefined)?.comment;
     const delivered = new Set((q("SELECT comment FROM delivered WHERE task = ?").all(task.id) as { comment: string }[]).map((r) => r.comment));
-    const fresh = freshWords(comments, task, dir, { seen, delivered });
+    // A task the agent spoke on before this module ran it (no `seen` yet): what came before this comment's wake is history, never new words.
+    const start = seen === undefined && !first && w.cause === "comment" ? w.key.replace(/^comment:/, "") : undefined;
+    const fresh = freshWords(comments, task, dir, { seen, delivered, start });
     // A routine run's wake (routine, or routine:<key> naming the routine) or a module's scheduled wake.
     const scheduled = /^(routine|scheduled)(:|$)/.test(w.cause);
     const said = (who: string) => fresh.filter((f) => f.who === who).map((f) => (who === "agent" ? `${agents.get(f.by!)?.name ?? "An agent"} (an agent, not ${owner}) wrote:\n${fence("AGENT", f.text)}` : f.text));
