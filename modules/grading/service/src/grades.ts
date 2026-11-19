@@ -158,14 +158,35 @@ export class Grades {
     return r && fromRow(r);
   }
 
-  /** Files a delegation's rubric once: a second call (a retried delegation) returns the first row unchanged. */
-  file(issueId: string, rubric: string[], deliverable: Deliverable): { created: boolean; grade: Grade } {
+  /**
+   * Files a delegation's rubric: the first filing creates the row. A second, byte-identical filing (a retried delegation)
+   * returns the stored row unchanged with `created: false`, so the retry path stays a no-op. A filing that differs — another
+   * deliverable kind/ref, or another rubric — replaces both on a row whose grade is not yet settled and restarts it (`open`,
+   * no attempts or verdicts, no delegators, no close reason). A settled row (`satisfied`, `not_graded`) keeps its filing and
+   * `refused` says so; the callers turn that into their refusal.
+   */
+  file(issueId: string, rubric: string[], deliverable: Deliverable): { created: boolean; grade: Grade; replaced: boolean; refused: boolean } {
+    const stored = this.get(issueId);
+    if (!stored) {
+      const now = new Date().toISOString();
+      this.db
+        .prepare("INSERT INTO grades (issue_id, rubric, deliverable, attempts, state, verdicts, created_at, updated_at) VALUES (?, ?, ?, 0, 'open', '[]', ?, ?)")
+        .run(issueId, JSON.stringify(rubric), JSON.stringify(deliverable), now, now);
+      this.events?.emit("grades", issueId);
+      return { created: true, grade: this.get(issueId)!, replaced: false, refused: false };
+    }
+    const same = JSON.stringify(stored.rubric) === JSON.stringify(rubric) && JSON.stringify(stored.deliverable) === JSON.stringify(deliverable);
+    if (same) return { created: false, grade: stored, replaced: false, refused: false };
+    if (stored.state === "satisfied" || stored.state === "not_graded") return { created: false, grade: stored, replaced: false, refused: true };
     const now = new Date().toISOString();
-    const r = this.db
-      .prepare("INSERT OR IGNORE INTO grades (issue_id, rubric, deliverable, attempts, state, verdicts, created_at, updated_at) VALUES (?, ?, ?, 0, 'open', '[]', ?, ?)")
-      .run(issueId, JSON.stringify(rubric), JSON.stringify(deliverable), now, now);
-    if (Number(r.changes) > 0) this.events?.emit("grades", issueId);
-    return { created: Number(r.changes) > 0, grade: this.get(issueId)! };
+    // The corrected deliverable starts a new round: a fresh open row for the same task, keeping its comments, files and runs.
+    // A resubmission mark was about the old deliverable, so it goes; the grader-failure log stays (the Fleet Steward reads it).
+    this.db.prepare("DELETE FROM grade_resubmits WHERE issue_id = ?").run(issueId);
+    this.db
+      .prepare("UPDATE grades SET rubric = ?, deliverable = ?, attempts = 0, state = 'open', verdicts = '[]', failures = 0, failed_at = NULL, delegators = NULL, closed_reason = NULL, updated_at = ? WHERE issue_id = ?")
+      .run(JSON.stringify(rubric), JSON.stringify(deliverable), now, issueId);
+    this.events?.emit("grades", issueId);
+    return { created: false, grade: this.get(issueId)!, replaced: true, refused: false };
   }
 
   /** The rows the runner grades: a completion path hit the gate, the evidence was still coming, or the grader failed (no verdict yet) and its next retry is due. */

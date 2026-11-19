@@ -237,7 +237,7 @@ export async function presentNow(deliverable: any, deps: any) {
   }
   if (kind === "app") {
     const app = await deps.app?.(deliverable.ref).catch(() => null);
-    if (!app) return { present: false, facts: [`no app named ${deliverable.ref || "(none)"} is deployed yet`] };
+    if (!app) return { present: false, facts: [notRegistered(deliverable.ref)] };
     const d = (await deploysOf(app, app.sha, deps)).rows.find((r: any) => r.status === "healthy");
     return { present: Boolean(d), facts: [d ? `app ${app.name}: ${String(app.sha).slice(0, 12)} deployed ${stamp(d.at)} (healthy)` : `app ${app.name}: deployed commit ${String(app.sha ?? "(none)").slice(0, 12)} has no healthy deploy`] };
   }
@@ -370,9 +370,17 @@ export const predatesDeploys = (app: any, mergedAt: unknown): boolean => {
   return at.length > 0 && Number.isFinite(merged) && merged < Math.min(...at);
 };
 
+/**
+ * A `kind: app` ref with no apps-registry row: not an app this instance runs, so the filing itself is the defect and the grade
+ * says that rather than waiting for a deploy that may never come. `deps.app` reads apps-mcp's status, which lists every registry
+ * row whether deployed or not, so a registered app that is merely undeployed comes back as a row and keeps the deploy wording.
+ */
+export const notRegistered = (name: string | undefined) => `app ${name || "(none)"} is not an app this instance runs (no apps registry entry): this deliverable cannot be satisfied as filed`;
+
 /** A deployed app (apps-mcp status row, or null) as evidence: its commit, state, health, incident and recent deploys. */
 export function appEvidence(app: any, name: string | undefined): any {
-  if (!app) return { awaiting: `no app named ${name || "(none)"} is deployed yet` };
+  // Missing, not waiting: no deploy can ever arrive for a name the registry has no row for.
+  if (!app) return { awaiting: notRegistered(name), missing: true };
   if (!app.sha) return { awaiting: `${app.name} is not deployed yet` };
   const facts = [`app ${app.name}: deployed commit ${app.sha}${app.deployed_at ? ` at ${stamp(app.deployed_at)}` : ""}${app.deployed_by ? ` by ${app.deployed_by}` : ""}; state ${app.state}; ${app.healthy ? "healthy" : "not healthy"}; ${app.incident ? `open incident (${app.incident.kind})` : "no open incident"}`];
   // The history, newest first: which commits were deployed, by whom, and how each ended. `by: auto-deploy` is the

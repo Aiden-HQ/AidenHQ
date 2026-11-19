@@ -521,6 +521,27 @@ async function fileGrade(issueId, grade) {
     return { graded: false, grade_error: String(err.message ?? err).slice(0, 200) };
   }
 }
+/** The grade the grading module holds for a task, or undefined when it holds none. A failed read is an error, not a no-op. */
+async function storedGrade(issueId) {
+  const res = await fetch(`${GRADING}/grades/${encodeURIComponent(issueId)}`, { headers: { "x-aidenhq-caller": cx().assertion, accept: "application/json" }, signal: AbortSignal.timeout(20_000) }).catch((err) => {
+    throw new Error(`the task's filed grade couldn't be read (${String(err.message ?? err).slice(0, 160)})`);
+  });
+  if (!res.ok) throw new Error(`the task's filed grade couldn't be read (grading: ${(await res.json().catch(() => ({}))).error ?? res.status})`);
+  return (await res.json())?.grade ?? undefined;
+}
+/**
+ * A corrected delegation of an existing graded task: the same parent and marker, now naming another deliverable ref, re-files
+ * the rubric and deliverable on the task's grade (the grading module restarts a row that is not settled). The stored ref is
+ * compared first, so a plain retry of the same delegation stays a no-op; only a different ref takes this path.
+ */
+async function refileGrade(issueId, grade) {
+  if (!grade) return undefined;
+  const stored = await storedGrade(issueId);
+  if (!stored || stored.deliverable?.ref === grade.deliverable.ref) return undefined;
+  const filed = await fileGrade(issueId, grade);
+  if (!filed.graded) throw new Error(`the corrected deliverable couldn't be filed (${filed.grade_error})`);
+  return { refiled: true, graded: true, deliverable: grade.deliverable };
+}
 /** A graded delegation of this caller's still parked (its rubric failed to file): a retry of the delegation starts it. */
 const parked = (i, me, grade) => Boolean(grade) && i.status === "backlog" && i.createdByAgentId === me.id;
 /**
@@ -572,7 +593,13 @@ async function assignTask(me, target, { title, description, parent, marker, prio
     src = `delegate:${p?.identifier ?? "root"}:${key}`;
     const existing = await findByMarker(src, `${OPEN_STATUSES},done,cancelled`);
     if (existing && parked(existing, me, grade)) return { identifier: existing.identifier, created: false, ...(await startGraded(existing, grade)) };
-    if (existing) return { identifier: existing.identifier, created: false };
+    if (existing) {
+      // A corrected deliverable ref on the same open task re-files its grade; a plain retry, or a task already closed,
+      // returns it untouched.
+      const open = OPEN_STATUSES.split(",").includes(existing.status);
+      const refiled = open && existing.createdByAgentId === me.id ? await refileGrade(existing.id, grade) : undefined;
+      return { identifier: existing.identifier, created: false, ...(refiled ?? {}) };
+    }
   }
   const body = {
     title: String(title).slice(0, 200),

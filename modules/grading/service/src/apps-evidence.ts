@@ -6,6 +6,9 @@ export type AppsCall = (method: string, path: string, body?: unknown) => Promise
 
 export function appsEvidence(apps: AppsCall) {
   const status = (): Promise<{ name: string; repo?: string }[]> => apps("GET", "/internal/status");
+  // /internal/status lists every apps-registry row, deployed or not (a row exists from the first health tick on). So a miss
+  // is "not an app this instance runs" — a delivery ref may name an app about to be created (the create-an-app handoff) —
+  // while a row with no `sha` is a registered app that is merely not deployed yet: two different facts for the grader.
   return {
     app: async (name: string) => (/^[a-z0-9-]{1,63}$/.test(name) ? (await status()).find((a) => a.name === name) ?? null : null),
     // Several apps in one repo: no single app vouches for the PR.

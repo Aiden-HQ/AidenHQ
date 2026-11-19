@@ -15,7 +15,8 @@ describe("graded done", () => {
     const { grades } = new Store();
     expect(completionGate(grades, "plain", "task_finish")).toEqual({ pass: true });
     expect(grades.file("t", ["merged into main", "checks green", "tests cover it"], { kind: "pr", ref: "" }).created).toBe(true);
-    expect(grades.file("t", ["something else", "bbb", "ccc"], { kind: "pr", ref: "" }).created).toBe(false);
+    // A differing filing is a re-file (below); the same one again is the retry that keeps the row.
+    expect(grades.file("t", ["merged into main", "checks green", "tests cover it"], { kind: "pr", ref: "" }).created).toBe(false);
     expect(grades.get("t").rubric[0]).toBe("merged into main");
 
     const reject = (version) => grades.record("t", { version, outcome: "needs_revision", model: "glm", criteria: [{ id: "1", met: "no", evidence: "open" }] });
@@ -274,6 +275,54 @@ describe("graded done", () => {
     }
   });
 
+});
+
+describe("re-filing a grade", () => {
+  const FIRST = ["merged into main", "checks green on the head", "the page shows the total"];
+  const SECOND = ["the PR merges the fix", "the diff covers the retry", "checks green on the head"];
+
+  it("a differing filing replaces the deliverable and rubric on a pending row and restarts it open", () => {
+    const { grades } = new Store();
+    expect(grades.file("t", FIRST, { kind: "app", ref: "apps-mcp" }).created).toBe(true);
+    completionGate(grades, "t", "task_finish");
+    grades.record("t", { version: "v1", outcome: "needs_revision", model: "glm", criteria: [{ id: "1", met: "no", evidence: "not deployed" }] });
+    completionGate(grades, "t", "task_finish");
+    expect(grades.get("t")).toMatchObject({ state: "pending", attempts: 1 });
+
+    const r = grades.file("t", SECOND, { kind: "pr", ref: "acme/app" });
+    expect(r.created).toBe(false);
+    expect(r.replaced).toBe(true);
+    expect(grades.get("t")).toMatchObject({ rubric: SECOND, deliverable: { kind: "pr", ref: "acme/app" }, state: "open", attempts: 0, verdicts: [], delegators: null, closedReason: null, failures: 0, failedAt: null });
+    expect(grades.due()).toEqual([]);
+  });
+
+  it("a repeated, byte-identical filing is a retry: created false, the stored filing untouched", () => {
+    const { grades } = new Store();
+    const first = grades.file("t", FIRST, { kind: "pr", ref: "acme/app" });
+    expect(first.created).toBe(true);
+    completionGate(grades, "t", "task_finish");
+    grades.record("t", { version: "v1", outcome: "needs_revision", model: "glm", criteria: [{ id: "1", met: "no", evidence: "open" }] });
+    const before = grades.get("t");
+
+    const again = grades.file("t", FIRST, { kind: "pr", ref: "acme/app" });
+    expect(again.created).toBe(false);
+    expect(again.replaced).toBe(false);
+    expect(again.grade).toEqual(before);
+    expect(grades.get("t")).toEqual(before);
+  });
+
+  it("a satisfied row refuses a differing filing and keeps its own", () => {
+    const { grades } = new Store();
+    grades.file("t", FIRST, { kind: "pr", ref: "acme/app" });
+    completionGate(grades, "t", "task_finish");
+    grades.record("t", { version: "v1", outcome: "satisfied", model: "glm", criteria: [] });
+    const before = grades.get("t");
+
+    const r = grades.file("t", SECOND, { kind: "app", ref: "maple" });
+    expect(r.refused).toBe(true);
+    expect(r.replaced).toBe(false);
+    expect(grades.get("t")).toEqual(before);
+  });
 });
 
 describe("prRefAllowed", () => {

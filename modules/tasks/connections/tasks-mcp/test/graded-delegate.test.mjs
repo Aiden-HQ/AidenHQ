@@ -277,3 +277,48 @@ test("task_create for a graded agent starts its task only once the rubric is fil
   assert.deepEqual(patches, [{ status: "todo" }], "started once its rubric is on file");
   assert.equal(issues.length, 1, "the same task, not a second one");
 });
+
+test("a corrected delegation on an existing task re-files its deliverable and rubric; a plain retry files nothing", async () => {
+  const origin = "Delegated by Aiden (agent) from WOR-5. This is an agent request, not the owner's words.";
+  const task = { id: "kid", identifier: "WOR-9", title: ask.title, status: "in_review", parentId: "cur", assigneeAgentId: "eng", createdByAgentId: "cos",
+    description: `${origin}\n\n${ask.description}\n\nWhen done: comment your result, then call task_finish.\n\n<!-- source:delegate:WOR-5:vat -->` };
+  const filed = [], reads = [];
+  let stored = { rubric, deliverable: { kind: "app", ref: "apps-mcp" }, state: "escalated", attempts: 0, verdicts: [] };
+  const handler = (req, res) => {
+    let body = "";
+    req.on("data", (d) => (body += d));
+    req.on("end", () => {
+      const url = req.url ?? "";
+      const send = (x, code = 200) => ((res.statusCode = code), res.setHeader("content-type", "application/json"), res.end(JSON.stringify(x)));
+      const json = body ? JSON.parse(body) : {};
+      if (req.method === "GET" && url === "/grades/kid") return (reads.push("kid"), send({ grade: stored }));
+      if (url === "/grades") {
+        filed.push(json);
+        // The grading module replaces a differing filing on an unsettled row and restarts it.
+        if (stored && json.deliverable.ref !== stored.deliverable.ref) stored = { ...stored, rubric: json.rubric, deliverable: json.deliverable, state: "open", attempts: 0, verdicts: [] };
+        return send({ created: !stored, state: stored?.state ?? "open" });
+      }
+      if (url === "/api/agents/me") return send({ id: "cos", name: "Aiden" });
+      if (url.endsWith("/agents")) return send([{ id: "eng", name: "Kai", metadata: { setupKey: "aidenhq:engineer-openrouter", runnerEngine: true }, status: "idle" }]);
+      if (req.method === "GET" && /\/companies\/[^/]+\/issues\?/.test(url)) return send([task]);
+      if (req.method === "PATCH") return send({ ...task, ...json });
+      if (url.startsWith("/api/issues/")) return send({ id: "cur", identifier: "WOR-5", title: "t", status: "in_progress", assigneeAgentId: "cos", parentId: null });
+      send([]);
+    });
+  };
+  const agents = { cos: { key: "chief-of-staff", roles: [] }, eng: { key: "engineer-openrouter", roles: [], graded: true } };
+  const b = bridge({ handler, board: handler, agents, agent: "cos", task: "cur" });
+  const args = { ...ask, marker: "vat", deliverable: { kind: "pr", ref: "acme/app" }, rubric };
+
+  // A corrected ref: the existing task gets the new deliverable and rubric instead of an untouched return.
+  const corrected = await b.call("task_delegate", args);
+  assert.equal(corrected.result?.isError, undefined, corrected.result?.content?.[0]?.text);
+  assert.deepEqual(JSON.parse(corrected.result.content[0].text), { identifier: "WOR-9", created: false, refiled: true, graded: true, deliverable: { kind: "pr", ref: "acme/app" } });
+  assert.deepEqual(filed, [{ issue: "kid", rubric, deliverable: { kind: "pr", ref: "acme/app" } }]);
+  assert.equal(stored.deliverable.ref, "acme/app");
+
+  // The same delegation again is the plain retry the marker branch always was: no read needed past the stored ref, no filing.
+  const retry = await b.call("task_delegate", args);
+  assert.deepEqual(JSON.parse(retry.result.content[0].text), { identifier: "WOR-9", created: false });
+  assert.equal(filed.length, 1);
+});

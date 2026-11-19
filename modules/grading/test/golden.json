@@ -45,7 +45,7 @@
   "patches": []
  },
  {
-  "step": "filing again keeps the first rubric",
+  "step": "a differing filing replaces the rubric while open",
   "body": {
    "created": false,
    "state": "open"
@@ -53,9 +53,9 @@
   "row": {
    "issueId": "11111111-1111-1111-1111-111111111111",
    "rubric": [
-    "merged into main",
-    "checks green on the head",
-    "the page shows the total"
+    "always pass",
+    "ok ok",
+    "yes yes"
    ],
    "deliverable": {
     "kind": "pr",
@@ -78,9 +78,9 @@
   "row": {
    "issueId": "11111111-1111-1111-1111-111111111111",
    "rubric": [
-    "merged into main",
-    "checks green on the head",
-    "the page shows the total"
+    "always pass",
+    "ok ok",
+    "yes yes"
    ],
    "deliverable": {
     "kind": "pr",
@@ -102,9 +102,9 @@
   "row": {
    "issueId": "11111111-1111-1111-1111-111111111111",
    "rubric": [
-    "merged into main",
-    "checks green on the head",
-    "the page shows the total"
+    "always pass",
+    "ok ok",
+    "yes yes"
    ],
    "deliverable": {
     "kind": "pr",
@@ -142,9 +142,9 @@
   "row": {
    "issueId": "11111111-1111-1111-1111-111111111111",
    "rubric": [
-    "merged into main",
-    "checks green on the head",
-    "the page shows the total"
+    "always pass",
+    "ok ok",
+    "yes yes"
    ],
    "deliverable": {
     "kind": "pr",
@@ -181,9 +181,9 @@
   "row": {
    "issueId": "11111111-1111-1111-1111-111111111111",
    "rubric": [
-    "merged into main",
-    "checks green on the head",
-    "the page shows the total"
+    "always pass",
+    "ok ok",
+    "yes yes"
    ],
    "deliverable": {
     "kind": "pr",
@@ -207,9 +207,9 @@
   "row": {
    "issueId": "11111111-1111-1111-1111-111111111111",
    "rubric": [
-    "merged into main",
-    "checks green on the head",
-    "the page shows the total"
+    "always pass",
+    "ok ok",
+    "yes yes"
    ],
    "deliverable": {
     "kind": "pr",
@@ -231,9 +231,9 @@
   "row": {
    "issueId": "11111111-1111-1111-1111-111111111111",
    "rubric": [
-    "merged into main",
-    "checks green on the head",
-    "the page shows the total"
+    "always pass",
+    "ok ok",
+    "yes yes"
    ],
    "deliverable": {
     "kind": "pr",
@@ -268,9 +268,9 @@
   "row": {
    "issueId": "11111111-1111-1111-1111-111111111111",
    "rubric": [
-    "merged into main",
-    "checks green on the head",
-    "the page shows the total"
+    "always pass",
+    "ok ok",
+    "yes yes"
    ],
    "deliverable": {
     "kind": "pr",
@@ -318,9 +318,9 @@
   "row": {
    "issueId": "11111111-1111-1111-1111-111111111111",
    "rubric": [
-    "merged into main",
-    "checks green on the head",
-    "the page shows the total"
+    "always pass",
+    "ok ok",
+    "yes yes"
    ],
    "deliverable": {
     "kind": "pr",
@@ -367,9 +367,9 @@
   "row": {
    "issueId": "11111111-1111-1111-1111-111111111111",
    "rubric": [
-    "merged into main",
-    "checks green on the head",
-    "the page shows the total"
+    "always pass",
+    "ok ok",
+    "yes yes"
    ],
    "deliverable": {
     "kind": "pr",
@@ -416,9 +416,9 @@
   "row": {
    "issueId": "11111111-1111-1111-1111-111111111111",
    "rubric": [
-    "merged into main",
-    "checks green on the head",
-    "the page shows the total"
+    "always pass",
+    "ok ok",
+    "yes yes"
    ],
    "deliverable": {
     "kind": "pr",
@@ -465,9 +465,9 @@
   "row": {
    "issueId": "11111111-1111-1111-1111-111111111111",
    "rubric": [
-    "merged into main",
-    "checks green on the head",
-    "the page shows the total"
+    "always pass",
+    "ok ok",
+    "yes yes"
    ],
    "deliverable": {
     "kind": "pr",
@@ -527,9 +527,9 @@
   "row": {
    "issueId": "11111111-1111-1111-1111-111111111111",
    "rubric": [
-    "merged into main",
-    "checks green on the head",
-    "the page shows the total"
+    "always pass",
+    "ok ok",
+    "yes yes"
    ],
    "deliverable": {
     "kind": "pr",
@@ -588,9 +588,9 @@
   "row": {
    "issueId": "11111111-1111-1111-1111-111111111111",
    "rubric": [
-    "merged into main",
-    "checks green on the head",
-    "the page shows the total"
+    "always pass",
+    "ok ok",
+    "yes yes"
    ],
    "deliverable": {
     "kind": "pr",
@@ -662,9 +662,9 @@
   "row": {
    "issueId": "11111111-1111-1111-1111-111111111111",
    "rubric": [
-    "merged into main",
-    "checks green on the head",
-    "the page shows the total"
+    "always pass",
+    "ok ok",
+    "yes yes"
    ],
    "deliverable": {
     "kind": "pr",
@@ -745,9 +745,9 @@
   "row": {
    "issueId": "11111111-1111-1111-1111-111111111111",
    "rubric": [
-    "merged into main",
-    "checks green on the head",
-    "the page shows the total"
+    "always pass",
+    "ok ok",
+    "yes yes"
    ],
    "deliverable": {
     "kind": "pr",
@@ -820,9 +820,9 @@
   "row": {
    "issueId": "11111111-1111-1111-1111-111111111111",
    "rubric": [
-    "merged into main",
-    "checks green on the head",
-    "the page shows the total"
+    "always pass",
+    "ok ok",
+    "yes yes"
    ],
    "deliverable": {
     "kind": "pr",
@@ -913,9 +913,9 @@
   "row": {
    "issueId": "11111111-1111-1111-1111-111111111111",
    "rubric": [
-    "merged into main",
-    "checks green on the head",
-    "the page shows the total"
+    "always pass",
+    "ok ok",
+    "yes yes"
    ],
    "deliverable": {
     "kind": "pr",
@@ -988,9 +988,9 @@
   "row": {
    "issueId": "11111111-1111-1111-1111-111111111111",
    "rubric": [
-    "merged into main",
-    "checks green on the head",
-    "the page shows the total"
+    "always pass",
+    "ok ok",
+    "yes yes"
    ],
    "deliverable": {
     "kind": "pr",
@@ -1063,9 +1063,9 @@
   "row": {
    "issueId": "11111111-1111-1111-1111-111111111111",
    "rubric": [
-    "merged into main",
-    "checks green on the head",
-    "the page shows the total"
+    "always pass",
+    "ok ok",
+    "yes yes"
    ],
    "deliverable": {
     "kind": "pr",
@@ -1150,9 +1150,9 @@
   "row": {
    "issueId": "11111111-1111-1111-1111-111111111111",
    "rubric": [
-    "merged into main",
-    "checks green on the head",
-    "the page shows the total"
+    "always pass",
+    "ok ok",
+    "yes yes"
    ],
    "deliverable": {
     "kind": "pr",
@@ -1223,9 +1223,9 @@
   "row": {
    "issueId": "11111111-1111-1111-1111-111111111111",
    "rubric": [
-    "merged into main",
-    "checks green on the head",
-    "the page shows the total"
+    "always pass",
+    "ok ok",
+    "yes yes"
    ],
    "deliverable": {
     "kind": "pr",
@@ -1311,9 +1311,9 @@
   "row": {
    "issueId": "11111111-1111-1111-1111-111111111111",
    "rubric": [
-    "merged into main",
-    "checks green on the head",
-    "the page shows the total"
+    "always pass",
+    "ok ok",
+    "yes yes"
    ],
    "deliverable": {
     "kind": "pr",
