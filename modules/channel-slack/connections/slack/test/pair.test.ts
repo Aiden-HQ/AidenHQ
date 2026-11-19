@@ -64,6 +64,15 @@ it("re-pairing notifies the old DM, and an env owner is seeded once", async () =
   expect(pairing.seed("U8", "D8")).toBe(false);
 });
 
+it("an owner seeded without a channel gets one, once, and only for that owner", () => {
+  const { pairing } = setup();
+  pairing.seed("U0", "");
+  expect(pairing.setChannel("U9", "D9")).toBe(false);
+  expect(pairing.setChannel("U0", "D0")).toBe(true);
+  expect(pairing.setChannel("U0", "D1")).toBe(false);
+  expect(pairing.owner()).toEqual({ user: "U0", channel: "D0" });
+});
+
 it("minting a code retires the earlier unused ones", async () => {
   const { pairing, dm } = setup();
   const first = pairing.mint();
