@@ -24,6 +24,9 @@ test("declared 2, marker 1 writes 2 and starts; a staged check writes nothing", 
   const fresh = dir();
   checkDataVersion("acme", 0, fresh);
   assert.equal(marker(fresh), "0\n");
+  const firstDeploy = join(dir(), "modules", "acme"); // a new module: its data dir doesn't exist yet
+  checkDataVersion("acme", 0, firstDeploy);
+  assert.equal(marker(firstDeploy), "0\n");
 });
 
 test("a marker that is a symlink refuses, and its target is never written", () => {
