@@ -1,6 +1,7 @@
 # Release updates: installs from a release update themselves
 
-Status: built (2026-11-18), first shipped in release 2026.11.3; through `kernel.apply` since the big switch (P2).
+Status: built (2026-11-18), first shipped in release 2026.11.3; through `kernel.apply` since the big switch (P2). Graduated
+releases only, with the test instance's candidate exception, since 2026-11-19 (release graduation, below).
 
 ## Intent
 
@@ -28,8 +29,22 @@ charge: auto-updates on by default, off in Settings, and "Update now" for the im
   instance that pins `product:` by hand (the maintainer's, tracking main) follows the release train instead.
 - **The setting.** `settings.auto_update` (kernel setting, `on`/`off`, unset = on). New release installs get `on` written by
   `ops/setup.sh`. Turning it back on is the owner's tap (`auto-update` in `kernel/src/apply-tier.ts`).
+- **Graduated releases only.** The distro publishes every cut as a GitHub pre-release; it graduates (published, not a
+  pre-release, and GitHub's "latest", which get.aidenhq.ai serves) only after a fresh test instance on a GitHub-hosted runner
+  installed the last graduated release, upgraded to it with this updater and passed its smoke checks (the distro's
+  `graduate.yml`, README "Release graduation"). The check reads the distro's Releases API (unauthenticated, every page) and
+  considers only tags that are graduated releases; a pre-release is never offered and never told to the owner (it is a cut
+  still under test, or one that failed it). `verify` checks it again (`releases/tags/<name>`: published, not a pre-release),
+  so the planner's verification refuses a pre-release too. An API error is the network's: retried, never a refusal.
+- **The candidate exception (graduation's test instance).** `AIDENHQ_UPDATE_CANDIDATE=<release> node kernel/src/updates.ts
+  check <release> <by>`, run from the host's own shell, considers that one tag only and may prepare it while it is still a
+  pre-release; every other check (main ancestry, fixed sources, no downgrade, the tested stamp) stays. The prepared release
+  carries a `candidate` mark (its distro commit) in `data/updates/state.json`; the planner's `verify` accepts that pre-release
+  only while the state's ready or filed release is that name and commit, so the exception travels with the one move it was
+  asked for and ends with its record. The variable is read by that CLI run alone: the kernel's own hourly check strips it, it
+  is no `instance.yaml` setting, and nothing an agent runs can set it or write the state file (the data dir is the host's).
 - **The check** (`node kernel/src/updates.ts check`, run by the kernel hourly and at once on Update now) lists the distro
-  repo's release tags (`git ls-remote` over https) newer than the release followed and takes the newest that passes
+  repo's release tags (`git ls-remote` over https) newer than the release followed that are graduated, and takes the newest that passes
   verification (below): a refused one is told to the owner once and the next older is tried; a network error waits for the
   next check, with no message. The result goes to `data/updates/state.json` and a display copy at
   `~/.local/state/aidenhq/board/updates.json` (the board's read-only mount).
@@ -74,6 +89,8 @@ Hard gates, from day one (no observe mode):
   commit is on the repository's `main` (GitHub serves fork and PR commits through the upstream URL,
   so a sha alone proves nothing). The apply then reads the file again at the pinned distro sha, and checks out exactly
   those shas; images are pulled by digest.
+- **Graduated.** A release must be published and not a pre-release (GitHub's Releases API), in discovery and in `verify`,
+  except the host's candidate (above).
 - **No downgrade.** The release name must be newer than the one followed, and the kernel and marketplace commits must
   descend from the running ones. The installer's rerun refuses an older release too.
 - **The tested stamp.** The published asset `<release>.json` must equal the file at the tag except for `tested`, and its
@@ -102,7 +119,9 @@ whatever `auto_update` says.
 
 ## Left out
 
-- Channels other than stable releases (betas), pinning to a release line, or delaying a release: no knob beyond on/off.
+- Channels other than graduated releases (betas), pinning to a release line, or delaying a release: no knob beyond on/off.
+  An install whose updater predates the filter ignores the pre-release flag: it takes a cut as soon as its release run
+  passes, graduated or not. The gate holds for an install once it runs a release that has the filter.
 - Host-level setup a release might need (new packages, units outside apply): an update runs apply only. A release that needs
   `ops/setup.sh` again says so in its notes, and the owner reruns the installer.
 - Retrying a failed release on its own: it waits for Update now. A check that stops before anything was filed is retried at

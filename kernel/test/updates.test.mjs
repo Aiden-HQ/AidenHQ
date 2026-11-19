@@ -10,7 +10,7 @@ import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import YAML from "yaml";
-import { Refused, check, compareRelease, createUpdates, pinText, pinTo, readState, verify } from "../src/updates.ts";
+import { Refused, candidateMarked, check, compareRelease, createUpdates, pinText, pinTo, readState, verify } from "../src/updates.ts";
 import { localApply } from "../../modules/codehost-local/src/apply.ts";
 
 // The owner's own git config (signing, hooks) never reaches the fixtures or the updater's commits.
@@ -81,10 +81,16 @@ settings:
   git(root, "clone", "-q", join(base, "Aiden-HQ", "AidenHQ.git"), "product");
   const published = {};
   for (const [n, f] of Object.entries(files)) published[n] = { ...f, tested: { ci_run: `https://github.com/Aiden-HQ/aidenhq-distro/actions/runs/${n === "2026.11.3" ? 22 : 11}`, suites: ["kernel-only", "swap"] } };
+  // GitHub's Releases API: every tag is a published release; a name in `pre` is a pre-release (not graduated yet).
+  const tags = Object.keys(files), pre = new Set();
+  const rel = (t) => ({ tag_name: t, draft: false, prerelease: pre.has(t) });
   const runs = { 11: { path: ".github/workflows/release.yml", head_sha: D1, head_branch: "2026.11.2", event: "push", status: "completed", conclusion: "success" }, 22: { path: ".github/workflows/release.yml", head_sha: D2, head_branch: "2026.11.3", event: "push", status: "completed", conclusion: "success" } };
   const d = {
     base, fetch: { cacheDir: join(root, "cache") }, inst: join(root, "inst"), product: join(root, "product"), dir: join(root, "state", "updates"), board: join(root, "state", "board", "updates.json"),
     download: async (u) => {
+      const list = /\/releases\?per_page=100&page=(\d+)$/.exec(u), tag = /\/releases\/tags\/([\d.]+)$/.exec(u);
+      if (list) return list[1] === "1" ? tags.map(rel) : [];
+      if (tag) { if (!tags.includes(tag[1])) throw new Error(`${u} answered 404`); return rel(tag[1]); }
       const a = /releases\/download\/([\d.]+)\//.exec(u), r = /actions\/runs\/(\d+)$/.exec(u);
       if (a) return published[a[1]];
       if (r) return runs[r[1]];
@@ -92,7 +98,7 @@ settings:
     },
   };
   const pinned = () => { git(d.inst, "fetch", "-q", "origin"); return YAML.parse(git(d.inst, "show", "origin/main:instance.yaml")); };
-  return { root, d, K1, K2, M1, M2, D1, D2, published, runs, pinned, distro, files };
+  return { root, d, K1, K2, M1, M2, D1, D2, published, runs, pinned, distro, files, tags, pre };
 }
 
 
@@ -170,6 +176,7 @@ test("verification refuses a mismatched sha, a stamp from another or a failed ru
   const D4 = git(side.distro.src, "rev-parse", "HEAD");
   git(side.distro.src, "tag", "2026.11.4", D4);
   side.distro.push();
+  side.tags.push("2026.11.4");
   await assert.rejects(verify(side.d, git(side.d.inst, "show", "HEAD:instance.yaml"), "2026.11.4", D4), /kernel [0-9a-f]{12} isn't on Aiden-HQ\/AidenHQ's main/);
   const s = await check({ ...side.d, now: () => NIGHT });
   assert.equal(s.available.name, "2026.11.3");
@@ -185,6 +192,38 @@ test("a network error is retried, never reported as a refused release", async ()
   assert.match(s.error, /503/);
   assert.ok(!s.events?.some((e) => e.id.startsWith("refused:")));
   assert.equal(s.ready, undefined);
+});
+
+test("only graduated releases install: a pre-release is never offered or said, and the host's candidate run takes exactly the one it names", async () => {
+  const w = world();
+  w.pre.add("2026.11.3");
+  const text = git(w.d.inst, "show", "HEAD:instance.yaml");
+  let s = await check({ ...w.d, now: () => NIGHT });
+  assert.deepEqual([s.available, s.ready, s.error], [null, undefined, undefined]);
+  assert.ok(!s.events?.length, "a cut still being tested is nothing to tell the owner");
+  await assert.rejects(verify(w.d, text, "2026.11.3", w.D2), (e) => e instanceof Refused && /pre-release: it hasn't graduated/.test(e.message));
+  // The kernel's own check (no candidate), even asked by name, never takes it.
+  s = await check({ ...w.d, now: () => DAY }, { release: "2026.11.3", by: "account:a1" });
+  assert.equal(s.ready, undefined);
+  // The host's candidate run: that tag alone, prepared and marked with its distro commit; the planner's verify (the CLI reads
+  // the mark from the state file) accepts it for exactly that release and commit.
+  s = await check({ ...w.d, now: () => DAY }, { release: "2026.11.3", by: "graduate" }, "2026.11.3");
+  assert.deepEqual([s.ready.release, s.ready.by, s.ready.candidate], ["2026.11.3", "graduate", w.D2]);
+  const st = readState(w.d.dir);
+  assert.ok(candidateMarked(st, "2026.11.3", w.D2));
+  assert.ok(!candidateMarked(st, "2026.11.3", w.D1) && !candidateMarked({}, "2026.11.3", w.D2));
+  assert.equal((await verify(w.d, text, "2026.11.3", w.D2, candidateMarked(st, "2026.11.3", w.D2))).name, "2026.11.3");
+  // Graduated: the night takes it as any release.
+  const g = world();
+  assert.equal((await check({ ...g.d, now: () => NIGHT })).ready.release, "2026.11.3");
+  // The releases API failing is the network's: retried, never a refusal.
+  const n = world();
+  const dl = n.d.download;
+  n.d.download = async (u) => { if (/\/releases(\?|\/tags)/.test(u)) throw new Error("api.github.com answered 403"); return dl(u); };
+  s = await check({ ...n.d, now: () => NIGHT });
+  assert.match(s.error, /403/);
+  assert.ok(!s.events?.some((e) => e.id.startsWith("refused:")));
+  await assert.rejects(verify(n.d, text, "2026.11.3", n.D2), (e) => !(e instanceof Refused) && /403/.test(e.message));
 });
 
 test("auto-updates off: at night the release is only offered, never prepared", async () => {
