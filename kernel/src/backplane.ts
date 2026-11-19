@@ -150,6 +150,7 @@ export const ROUTES = [
   { method: "POST", path: "/v1/routines/pause", auth: "module" },
   { method: "POST", path: "/v1/tasks", auth: "module" },
   { method: "POST", path: "/v1/tasks/:task/close", auth: "module" },
+  { method: "POST", path: "/v1/tasks/:task/comment", auth: "module" },
   { method: "GET", path: "/v1/tasks", auth: "module" },
   { method: "POST", path: "/v1/reviews", auth: "reviewer-key" },
   { method: "POST", path: "/v1/reviews/:review", auth: "review-token" },
@@ -540,7 +541,7 @@ export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boar
           return send(res, 200, r);
         }
         const b = await json(req);
-        const r = await (hit.path === "/v1/tasks" ? tasks.file(w.module!, b) : tasks.close(w.module!, decodeURIComponent(m[0]!), b)).catch((e: { name?: string; status?: number; message: string }) => { throw e.name === "TaskError" ? fail(e.status!, "bad_request", e.message) : e; });
+        const r = await (hit.path === "/v1/tasks" ? tasks.file(w.module!, b) : hit.path.endsWith("/comment") ? tasks.comment(w.module!, decodeURIComponent(m[0]!), b) : tasks.close(w.module!, decodeURIComponent(m[0]!), b)).catch((e: { name?: string; status?: number; message: string }) => { throw e.name === "TaskError" ? fail(e.status!, "bad_request", e.message) : e; });
         return send(res, 200, r);
       }
       if (hit?.path === "/v1/routines/pause") {
