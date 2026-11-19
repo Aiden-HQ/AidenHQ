@@ -19,7 +19,8 @@ const MODEL = z.string().regex(/^[A-Za-z0-9~][\w./~:@-]{0,119}$/);
 const TEXT = (max: number) => z.string().max(max).regex(/^[^\x00-\x08\x0b\x0c\x0e-\x1f\x7f]*$/);
 const SCHEDULE = z.object({ cron: z.string().regex(/^[0-9*/,\- ]{9,100}$/), timezone: z.string().regex(/^[A-Za-z_]+(\/[A-Za-z0-9_+\-]+){0,2}$|^UTC$/).optional(), label: z.string().max(60).regex(/^[^\x00-\x1f\x7f$]*$/).optional() }).strict();
 export const ChangeSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("setting"), key: KEY, value: z.union([SCALAR, z.array(z.union([z.string().max(200), z.number().finite()])).max(50)]) }).strict(),
+  // A setting a module declares `type: object` takes a whole map (settings.code_review); the module's own page checks its shape.
+  z.object({ kind: z.literal("setting"), key: KEY, value: z.union([SCALAR, z.array(z.union([z.string().max(200), z.number().finite()])).max(50), z.record(z.string(), z.unknown())]) }).strict(),
   z.object({ kind: z.literal("agent"), agent: AGENT, field: z.enum(["model", "reasoning_effort", "heartbeat", "max_parallel"]), value: SCALAR }).strict(),
   // An agent's own spend caps (overrides.agents.<key>.caps; the owner's, Tier 2), USD.
   z.object({ kind: z.literal("caps"), agent: AGENT, value: z.object({ run_usd: CAP, task_usd: CAP, day_usd: CAP }).partial().strict() }).strict(),
@@ -58,6 +59,25 @@ interface Catalog {
 
 export class ChangeRefused extends Error {}
 
+const isPlainMap = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
+/**
+ * Why a structured setting's value is refused (kernel/src/settings-change.ts boundedValue is the gate; this is the owner's
+ * feedback): at most 6 levels and 2000 values, keys of letters, digits, _ . - / or *, plain strings of at most 500 characters.
+ */
+export function boundedProblem(v: unknown): string | undefined {
+  let n = 0;
+  const walk = (x: unknown, depth: number): string | undefined => {
+    if (++n > 2000) return "too many values";
+    if (depth > 6) return "nested too deep";
+    if (x === null || typeof x === "boolean" || (typeof x === "number" && Number.isFinite(x))) return;
+    if (typeof x === "string") return x.length > 500 || !plain(x) ? "plain text of at most 500 characters, no control characters or $" : undefined;
+    if (Array.isArray(x)) return x.map((y) => walk(y, depth + 1)).find(Boolean);
+    if (isPlainMap(x)) return Object.entries(x).map(([k, y]) => (/^[\w.\/*-]{1,64}$/.test(k) ? walk(y, depth + 1) : `${k.slice(0, 40)} isn't a key`)).find(Boolean);
+    return "plain values only";
+  };
+  return walk(v, 0);
+}
+
 /** The label on the tasks this files, so the page can list them. */
 export const SETTINGS_LABEL = "settings-change";
 
@@ -73,6 +93,13 @@ export function checkChange(ch: Change, compiled: Compiled | null, catalog: Cata
     const current = compiled.settings?.[ch.key];
     if (!def && !current) throw new ChangeRefused(`there is no setting ${ch.key} on this instance`);
     const was = def?.default ?? current?.value;
+    if (def?.type === "object") {
+      if (!isPlainMap(ch.value)) throw new ChangeRefused(`${ch.key} is a map of entries`);
+      const problem = boundedProblem(ch.value);
+      if (problem) throw new ChangeRefused(`${ch.key}: ${problem}`);
+      return ch;
+    }
+    if (isPlainMap(ch.value)) throw new ChangeRefused(`${ch.key} isn't a map`);
     // A list of entries ({ repo, label, ... }) would be flattened by a value the page can send: it is edited in instance.yaml.
     if ([current?.value, was].flat().some((v) => v !== null && typeof v === "object")) throw new ChangeRefused(`${ch.key} holds entries: change it in instance.yaml`);
     if (was !== undefined && was !== null && kindOf(was) !== kindOf(ch.value)) throw new ChangeRefused(`${ch.key} is a ${kindOf(was)}`);
@@ -158,6 +185,7 @@ export function checkChange(ch: Change, compiled: Compiled | null, catalog: Cata
 
 /** One sentence per change, for the task title and the page. */
 export function describe(ch: Change, compiled: Compiled | null): string {
+  if (ch.kind === "setting" && isPlainMap(ch.value)) return `${ch.key} updated`;
   if (ch.kind === "setting") return `${ch.key} → ${Array.isArray(ch.value) ? ch.value.join(", ") || "none" : ch.value === "" ? "not set" : String(ch.value)}`;
   if (ch.kind === "module") return `${ch.on ? "turn on" : "turn off"} the ${ch.name} module`;
   if (ch.kind === "pin") return ch.sha ? `pin the ${ch.name} module at ${ch.sha.slice(0, 12)}` : `the ${ch.name} module follows its marketplace`;

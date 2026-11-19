@@ -37,6 +37,19 @@ const only = (ch: Dict, keys: string[]) => Object.keys(ch).every((k) => keys.inc
 /** Handbook texts: Markdown, no NUL or other control characters but tab and newlines. */
 const text = (t: unknown, max: number) => (typeof t === "string" && t.length <= max && !/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(t)) || refuse(`text must be at most ${max} characters, without control characters`);
 const HANDBOOK_MAX = 120_000;
+/** A structured setting's value: at most 6 levels and 2000 values, keys of letters, digits, _ . - / or *, plain strings (no $). */
+function boundedValue(key: string, v: unknown): void {
+  let n = 0;
+  const walk = (x: unknown, depth: number): void => {
+    if (++n > 2000 || depth > 6) refuse(`${key}: at most 6 levels and 2000 values`);
+    if (x === null || typeof x === "boolean" || (typeof x === "number" && Number.isFinite(x))) return;
+    if (typeof x === "string") return void ((x.length <= 500 && plain(x)) || refuse(`${key}: plain text of at most 500 characters, no control characters or $`));
+    if (Array.isArray(x)) return x.forEach((y) => walk(y, depth + 1));
+    if (!isMap(x)) refuse(`${key}: plain values only`);
+    for (const [k, y] of Object.entries(x as Dict)) (/^[\w.\/*-]{1,64}$/.test(k) || refuse(`${key}: ${k.slice(0, 40)} isn't a key`), walk(y, depth + 1));
+  };
+  walk(v, 0);
+}
 const RULES_MAX = 20_000;
 
 /**
@@ -59,6 +72,8 @@ export function checkTyped(ch: unknown, { compiled, catalog }: Sources): void {
       if (!KEY.test(String(c.key)) || /token|secret|password/i.test(c.key)) refuse(`${c.key} isn't a setting the board may change`);
       const def = catalog.find((m) => m.enabled && has(m.settings, c.key))?.settings?.[c.key];
       if (!def && !has(compiled?.settings, c.key)) refuse(`there is no setting ${c.key}`);
+      // A setting its module declares `type: object` (settings.code_review) takes a whole map, bounded here; its module checks the shape.
+      if (def?.type === "object") return void (isMap(c.value) || refuse(`${c.key} is a map`), boundedValue(c.key, c.value));
       const each = [c.value].flat();
       if ((Array.isArray(c.value) && c.value.length > 50) || each.some((v) => !["string", "number", "boolean"].includes(typeof v) || (typeof v === "string" && (v.length > 500 || !plain(v))))) refuse(`${c.key}: plain values only`);
       if (def?.values && each.some((v) => !def.values.includes(v))) refuse(`${c.key}: one of ${def.values.join(", ")}`);

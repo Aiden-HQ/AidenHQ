@@ -84,6 +84,11 @@
   --heat: light-dark(#e8590c, #ff922b); /* the PR table's sequential tint: slower cells are warmer */
   --hatch: light-dark(rgba(255, 255, 255, 0.62), rgba(17, 18, 21, 0.55));
 
+  /* Code review severities (Reviews.tsx), as GitHub shows them: important red, nit amber, pre-existing violet. */
+  --sev-important: light-dark(#e03131, #ff6b6b);
+  --sev-nit: light-dark(#e8a400, #f0b429);
+  --sev-pre: light-dark(#7048e8, #b197fc);
+
   /* Full-width strips under the top bar (styles.css .offline, .alert), and the inverted toast. */
   --strip-warn-bg: light-dark(#fff3bf, #3d3410); --strip-warn-fg: light-dark(#5c4400, #f5e3a3);
   --strip-bad-bg: light-dark(#ffe3e3, #3d1518); --strip-bad-fg: light-dark(#7a1414, #f5c2c2);

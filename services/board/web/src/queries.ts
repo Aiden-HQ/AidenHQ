@@ -62,6 +62,7 @@ export const VIEW_CHUNKS = {
   modulePage: () => import("./ModulePage"),
   run: () => import("./Run"),
   design: () => import("./Design"),
+  reviews: () => import("./Reviews"),
 };
 
 export function prefetchView(view: string) {
