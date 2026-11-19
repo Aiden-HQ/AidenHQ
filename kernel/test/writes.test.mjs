@@ -5,6 +5,8 @@ import assert from "node:assert/strict";
 import { serveExecutor } from "../sdk/src/executor.ts";
 import { mintToken } from "../src/gateway/token.ts";
 import { verifyCaller } from "../sdk/src/caller.ts";
+import { reviewInput } from "../src/review-loop.ts";
+import { CONN_TOOL_ARGS_MAX } from "../src/writes.ts";
 import { kernel, moduleServer, readBody, serve } from "./helpers.mjs";
 
 // A run's JWT (its run id names the task, TASK-1, through the fake control plane).
@@ -258,6 +260,43 @@ test("a destructive tool with no kind is conn.tool at Tier 1: replayed once, as 
   k.writes.decide(q.approval, { digest: qr.digest, decision: "reject", by: "owner:chat", via: "chat" });
   assert.equal((await pending(await tool("note_drop", { id: 9 }))).tier, 2);
   assert.match(await text(await tool("note_write", { text: "y" })), /note_write done/);
+});
+
+test("a carded conn.tool card names its target, as requestTargets labels it, so the reviewer never reads a blank one", async (t) => {
+  const { k, tool, pending } = await twin(t);
+  // No aim argument: the label is the tool itself.
+  const p = await pending(await tool("note_drop", {}));
+  const rec = k.records.get(p.approval);
+  assert.equal(rec.card.target, "twin.note_drop");
+  const task = { issue: async (id) => ({ id, title: "Drop the note", description: "Drop it." }), comments: async () => [], me: async () => "" };
+  const { request } = await reviewInput(rec, { records: k.records, task, product: [] });
+  assert.equal(request.card.target, "twin.note_drop");
+  // Aim arguments, when named, ride along as requestTargets writes them.
+  const aimed = k.records.get((await pending(await tool("note_drop", { id: 7 }))).approval);
+  assert.equal(aimed.card.target, "twin.note_drop (id=7)");
+});
+
+test("a carded conn.tool call over the limit is refused with its size and the limit: no record, nothing forwarded", async (t) => {
+  const { k, tool, moduleCalls } = await twin(t);
+  const args = { id: 7, body: "x".repeat(CONN_TOOL_ARGS_MAX) };
+  const size = JSON.stringify(args).length;
+  const r = await tool("note_drop", args);
+  const body = await r.json();
+  assert.equal(body.result.isError, true);
+  assert.match(body.result.content[0].text, new RegExp(`${size.toLocaleString("en-US")} characters, over the ${CONN_TOOL_ARGS_MAX.toLocaleString("en-US")}-character limit`));
+  assert.equal(k.records.list(["review", "owner", "approved", "claimed", "done", "failed", "rejected"]).length, 0);
+  assert.deepEqual(moduleCalls(), []);
+});
+
+test("a carded conn.tool call under the limit carries its whole serialised arguments in the card", async (t) => {
+  const { k, tool, pending } = await twin(t);
+  const body = `${"y".repeat(CONN_TOOL_ARGS_MAX - 40)}ZEND`;
+  const args = { id: 7, body };
+  assert.ok(JSON.stringify(args).length < CONN_TOOL_ARGS_MAX);
+  const p = await pending(await tool("note_drop", args));
+  const details = k.records.get(p.approval).card.details;
+  assert.ok(details.endsWith(`${JSON.stringify(args).slice(-60)}`), "the card's arguments end where the JSON does");
+  assert.match(details, /ZEND"\}$/);
 });
 
 test("a replace with a claimed record reconciles it before A stops: its executor's status settles it, open ones are cancelled", async (t) => {
