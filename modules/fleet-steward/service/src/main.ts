@@ -43,7 +43,7 @@ async function apps<T>(path: string): Promise<T> {
   if (!r.ok) throw new Error(`apps-mcp: ${body.slice(0, 300)}`);
   return JSON.parse(body) as T;
 }
-const notify = async (text: string) => void (await kernel.call("POST", "/v1/notify", { kind: "alert", text, dedupe_key: `steward:${createHash("sha256").update(text).digest("hex").slice(0, 16)}` }));
+const notify = async (text: string, key = createHash("sha256").update(text).digest("hex").slice(0, 16)) => void (await kernel.call("POST", "/v1/notify", { kind: "alert", text, dedupe_key: `steward:${key}` }));
 
 /** The check task: fixed text, never an incident's own words (the Steward reads those with fleet_detector, fenced). */
 async function fileCheck(body: { incidents: { key: string; critical?: boolean }[]; recovered: { key: string }[] }, at = new Date()): Promise<boolean> {
@@ -54,7 +54,7 @@ async function fileCheck(body: { incidents: { key: string; critical?: boolean }[
 }
 
 const coach = coachReads({ kernel, kv, apps });
-const all = checks({ kernel, apps, alerts: () => alertIncidents(kv, notify), openKeys: () => Object.keys(detectorState(kv).open) });
+const all = checks({ kernel, apps, alerts: () => alertIncidents(kv, notify), openKeys: () => Object.keys(detectorState(kv).open), notify });
 let busy = false;
 const run = async () => {
   if (busy) return;

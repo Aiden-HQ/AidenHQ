@@ -2,6 +2,8 @@
 // task for the Steward only when something trips or recovers (kernel.tasks). Each incident is filed once until it recovers, then
 // once more with a recovery note. The Steward reads what is open and what recovered with `fleet_detector`. Sources: the kernel's
 // jobs (stuck, failing and silent runs), the control plane's tasks and agents, apps-mcp (apps.read) and Alertmanager's alerts.
+import { createHash } from "node:crypto";
+import { fence } from "./aidenhq-sdk/fence.ts";
 import type { KernelClient } from "./aidenhq-sdk/kernel-client.ts";
 
 const MIN = 60_000;
@@ -168,6 +170,28 @@ export function repeatedFailures(jobs: JobRow[], t: number): { task: string; cat
   return out;
 }
 
+const SHARED_FAIL = { n: 3, windowMs: 30 * MIN, lookups: 30 }; // the same failure on n distinct tasks within windowMs is one component's outage
+
+/** A failure's text as a signature: lowercase, ids and numbers stripped, an HTTP status (3 digits) kept. */
+export const normalizeError = (e: string): string =>
+  e.toLowerCase().replace(/[0-9a-f]{8}-[0-9a-f-]{27}|\b[0-9a-f]{7,}\b|[a-z]{2,5}-\d+|\d+/g, (m) => (/^[1-5]\d\d$/.test(m) ? m : "#")).replace(/\s+/g, " ").trim().slice(0, 160);
+
+/** The cause in the grader's own failure note on a task (grade.ts gradeNote): a retry note or an escalation note, else undefined. */
+export const graderReason = (body: string): string | undefined =>
+  /Grading failed; retrying\.\*\* \((.*)\)\. No rubric verdict yet/s.exec(body)?.[1] ?? /Grading failed; escalated[^(]*\(last: (.*)\) and no rubric criterion/s.exec(body)?.[1];
+
+/** Failures (one per task: its id and the name the owner reads) grouped by component and normalized error. */
+export function groupFailures(hits: { component: string; error: string; id: string; name: string }[]) {
+  const by = new Map<string, { component: string; error: string; tasks: Map<string, string> }>();
+  for (const h of hits) {
+    const error = normalizeError(h.error);
+    const g = by.get(`${h.component}\u0000${error}`) ?? { component: h.component, error, tasks: new Map<string, string>() };
+    g.tasks.set(h.id, h.name);
+    by.set(`${h.component}\u0000${error}`, g);
+  }
+  return [...by.values()];
+}
+
 /** Records the AI reviewer judged and rejected, grouped by (task, branch or PR): the ones at the kernel's retry bound within the window. */
 export function rejectLoops(records: WorkRecord[], t: number): { task: string; identifier: string | null; target: string; n: number }[] {
   const by = new Map<string, { task: string; identifier: string | null; target: string; n: number }>();
@@ -205,7 +229,7 @@ export function rankFollowups(issues: IssueRow[], t: number, top = 10, snoozed: 
 }
 
 /** The owner's alert list, as checks. `apps` reads apps-mcp (a module holding apps.read); `alerts` is Alertmanager's list. */
-export function checks(d: { kernel: KernelClient; apps: <T>(path: string) => Promise<T>; alerts: () => Promise<Incident[]>; openKeys: () => string[]; now?: () => number }): Record<string, Check> {
+export function checks(d: { kernel: KernelClient; apps: <T>(path: string) => Promise<T>; alerts: () => Promise<Incident[]>; openKeys: () => string[]; notify?: (text: string, key: string) => Promise<void>; now?: () => number }): Record<string, Check> {
   const now = d.now ?? (() => Date.now());
   let appsOkAt = now(); // apps-mcp's last answer: a restart (an apply) is not an outage
   const companies = async () => (await d.kernel.read("/api/companies")) as Company[];
@@ -219,8 +243,57 @@ export function checks(d: { kernel: KernelClient; apps: <T>(path: string) => Pro
       return i && exempt(i) ? undefined : i?.identifier ?? id;
     };
   };
-  const jobsOf = async (agent: string) => ((await d.kernel.call("GET", `/v1/work?agent=${encodeURIComponent(agent)}`)).jobs ?? []) as JobRow[];
+  let jobCache = new Map<string, JobRow[]>(); // one check run's job reads, shared by `component` and `run`
+  const jobsOf = async (agent: string) => {
+    let jobs = jobCache.get(agent);
+    if (!jobs) jobCache.set(agent, (jobs = ((await d.kernel.call("GET", `/v1/work?agent=${encodeURIComponent(agent)}`)).jobs ?? []) as JobRow[]));
+    return jobs;
+  };
+  /** Tasks a component incident explains this run: their own incidents are not raised anew (one already open stays until it recovers). */
+  let explained = new Set<string>();
+  const suppressed = (task: string, key: string) => explained.has(task) && !d.openKeys().includes(key);
   return {
+    // The same failure on several tasks is one component down (the grader, the job runner), whatever the per-task checks below see.
+    // Runs first: it fills `explained` for them. The grader's cause is read from its failure note on the task, a job's from its ledger line.
+    async component() {
+      const t = now();
+      jobCache = new Map();
+      explained = new Set();
+      const hits: { component: string; error: string; id: string; name: string }[] = [];
+      for (const c of await companies()) {
+        const label = ((await d.kernel.read(`/api/companies/${c.id}/labels`)) as { id: string; name: string }[]).find((l) => l.name === "grading");
+        if (!label) continue;
+        const held = ((await d.kernel.read(`/api/companies/${c.id}/issues?labelId=${label.id}&status=in_review&limit=100&excludeRoutineExecutions=true`)) as IssueRow[]).filter((i) => !exempt(i) && age(i.updatedAt, t) < 2 * HOUR_MS).slice(0, SHARED_FAIL.lookups);
+        for (const i of held) {
+          const notes = ((await d.kernel.read(`/api/issues/${i.id}/comments?order=desc&limit=20`).catch(() => [])) as CommentRow[]).filter((x) => !x.deletedAt && /<!-- aidenhq:grader -->/.test(String(x.body)));
+          // The newest grader note decides: a later verdict ends the failure.
+          const reason = notes[0] && age(notes[0].createdAt, t) < SHARED_FAIL.windowMs ? graderReason(String(notes[0].body)) : undefined;
+          if (reason) hits.push({ component: "grader", error: reason, id: i.id, name: i.identifier ?? i.id });
+        }
+      }
+      let looked = 0;
+      for (const a of await agents()) {
+        for (const j of await jobsOf(a.id)) {
+          if (!j.task || j.state !== "failed" || age(j.ended_at, t) > SHARED_FAIL.windowMs || looked++ >= SHARED_FAIL.lookups) continue;
+          const final = ((await d.kernel.call("GET", `/v1/work?job=${encodeURIComponent(j.id)}`).catch(() => undefined)) as { final?: string | null } | undefined)?.final ?? "";
+          const error = /^The job failed: (.+)/s.exec(final)?.[1];
+          const name = error ? await lookup()(j.task) : undefined;
+          if (error && name) hits.push({ component: "job runner", error, id: j.task, name });
+        }
+      }
+      const open = d.openKeys();
+      const out: Incident[] = [];
+      for (const g of groupFailures(hits)) {
+        const key = `${g.component.replace(/\W+/g, "-")}:${createHash("sha256").update(g.error).digest("hex").slice(0, 8)}`;
+        const isOpen = open.includes(`component:${key}`);
+        if (g.tasks.size < (isOpen ? 1 : SHARED_FAIL.n)) continue; // once open, one fresh failure keeps it open
+        for (const id of g.tasks.keys()) explained.add(id);
+        const names = [...g.tasks.values()].slice(0, 10).map(slug).join(", ");
+        out.push({ key, critical: true, reason: `${g.component} is failing the same way on ${g.tasks.size} tasks within 30 minutes (${names}); the error as the component reported it:\n${fence(g.error, "component.error")}` });
+        if (!isOpen) await d.notify?.(`A component is down: the ${g.component} has failed the same way on ${SHARED_FAIL.n} or more tasks. The Fleet Steward is on it.`, `component:${key}`).catch(() => {});
+      }
+      return out;
+    },
     // Stuck, failing and silent runs, from the kernel's job ledger.
     async run() {
       const t = now();
@@ -236,7 +309,7 @@ export function checks(d: { kernel: KernelClient; apps: <T>(path: string) => Pro
         if (finished.length === FAILS && finished.every((j) => j.state !== "done")) out.push({ key: `${a.id}:failing`, reason: `${a.name}: its last ${FAILS} runs failed (${finished.map((j) => j.state).join(", ")})` });
         // The same ending three times on one task inside half an hour is a loop (what the last-three check can't tell from three tasks).
         for (const r of repeatedFailures(mine, t)) {
-          const task = await live(r.task);
+          const task = suppressed(r.task, `run:${a.id}:repeat:${slug(await live(r.task))}`) ? undefined : await live(r.task);
           if (task) out.push({ key: `${a.id}:repeat:${slug(task)}`, reason: `${a.name}: ${r.n} runs of task ${task} ended "${r.category}" within 30 minutes` });
         }
         // One heuristic: a job that finished with no steps and no final words, 3+ times in a day. Diagnostic only.
@@ -253,7 +326,7 @@ export function checks(d: { kernel: KernelClient; apps: <T>(path: string) => Pro
         const label = ((await d.kernel.read(`/api/companies/${c.id}/labels`)) as { id: string; name: string }[]).find((l) => l.name === "grading");
         if (!label) continue;
         const held = (await d.kernel.read(`/api/companies/${c.id}/issues?labelId=${label.id}&status=in_review&limit=100&excludeRoutineExecutions=true`)) as IssueRow[];
-        for (const i of held.filter((x) => age(x.updatedAt, t) > DAY_MS)) out.push({ key: i.id, reason: `task ${i.identifier ?? i.id} held for grading for ${mins(age(i.updatedAt, t))}` });
+        for (const i of held.filter((x) => age(x.updatedAt, t) > DAY_MS && !suppressed(x.id, `grade:${x.id}`))) out.push({ key: i.id, reason: `task ${i.identifier ?? i.id} held for grading for ${mins(age(i.updatedAt, t))}` });
       }
       // Finished but not closed: in review 6 hours, and nothing left that could move it (no job, no open card, no open PR).
       const prs = new Set(((await d.apps<{ prs?: PrRow[] }>("/internal/open-prs").catch(() => ({}) as { prs?: PrRow[] })).prs ?? []).map((p) => `${p.repo}#${p.number}`.toLowerCase()));
@@ -264,7 +337,7 @@ export function checks(d: { kernel: KernelClient; apps: <T>(path: string) => Pro
         const w = await d.kernel.call("GET", `/v1/work?task=${encodeURIComponent(i.id)}`).catch(() => undefined) as { busy?: boolean; records?: { state: string; args?: unknown; outcome_text?: string | null }[] } | undefined;
         if (!w || w.busy) continue;
         const open = (w.records ?? []).some((r) => ["review", "owner", "approved", "claimed"].includes(r.state));
-        if (!open && !prRefs(w.records ?? []).some((r) => prs.has(r))) out.push({ key: `${i.id}:unclosed`, reason: `task ${i.identifier ?? i.id} in review for ${mins(age(i.updatedAt, t))} with no running job, open card or open PR` });
+        if (!open && !prRefs(w.records ?? []).some((r) => prs.has(r)) && !suppressed(i.id, `grade:${i.id}:unclosed`)) out.push({ key: `${i.id}:unclosed`, reason: `task ${i.identifier ?? i.id} in review for ${mins(age(i.updatedAt, t))} with no running job, open card or open PR` });
       }
       return out;
     },
