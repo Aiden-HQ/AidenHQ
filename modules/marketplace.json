@@ -188,5 +188,19 @@
     "slack",
     "tasks",
     "warehouse"
+  ],
+  "organisations": [
+    {
+      "id": "polygon",
+      "name": "Polygon Labs",
+      "domains": [
+        "polygon.technology"
+      ],
+      "clients": {
+        "google_client_id": "560856250104-eu75qjclsmf201diqftufei9jhk3iceg.apps.googleusercontent.com",
+        "google_client_secret": "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"
+      },
+      "note": "Google Desktop (installed-app) client: a public client whose secret Google documents as not confidential (https://developers.google.com/identity/protocols/oauth2/native-app); the OAuth client is Internal to Polygon Labs' Workspace, so only polygon.technology accounts can sign in, and Desktop clients redirect only to loopback."
+    }
   ]
 }

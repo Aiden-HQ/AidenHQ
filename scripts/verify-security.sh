@@ -398,7 +398,9 @@ else
 fi
 
 echo "Repository"
-if git ls-files -z --cached --others --exclude-standard -- . ':!scripts/verify-security.sh' | xargs -0 grep -lE '(sk-[A-Za-z0-9]{20,}|pcp_[a-f0-9]{20,}|GOCSPX-[A-Za-z0-9_-]{20,}|refresh_token"\s*:\s*"1//|xox[bp]-[0-9]{6,})' 2>/dev/null | grep -q .; then
+# The one public value allowed through (.gitleaks.toml says why): an organisation's Google Desktop client secret in the catalog.
+if git ls-files -z --cached --others --exclude-standard -- . ':!scripts/verify-security.sh' | xargs -0 grep -hoE '(sk-[A-Za-z0-9]{20,}|pcp_[a-f0-9]{20,}|GOCSPX-[A-Za-z0-9_-]{20,}|refresh_token"\s*:\s*"1//|xox[bp]-[0-9]{6,})' 2>/dev/null \
+  | grep -vxF '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' | grep -q .; then
   fail "possible secrets in tracked files"
 else
   pass "no secret patterns in tracked files"

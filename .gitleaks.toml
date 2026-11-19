@@ -24,3 +24,13 @@ regexes = [
   '''^7F38BBB59D064DBCB3D84D725612B36462313325$''',
   '''^2C6106201985B60E6C7AC87323F3D4EA75716059$''',
 ]
+
+[[allowlists]]
+# Polygon Labs' Google Desktop (installed-app) client secret in modules/marketplace.json `organisations`: a public client whose
+# secret Google documents as not confidential (https://developers.google.com/identity/protocols/oauth2/native-app). The OAuth
+# client is Internal to Polygon Labs' Workspace, so only polygon.technology accounts can sign in, and Desktop clients redirect
+# only to loopback. Published with the owner's approval.
+description = "A Google Desktop client's non-confidential secret (an organisation's public client in the catalog)"
+regexes = [
+  '''^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$''',
+]
