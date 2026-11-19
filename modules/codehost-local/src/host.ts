@@ -18,7 +18,6 @@ import { IDENTITY, bareOf, fail, git, ingest } from "./git.ts";
 export const LOCAL_ORG = "local";
 const ZERO = "0".repeat(40);
 const IDENT = /^[A-Za-z][A-Za-z0-9]*-\d+$/;
-const MAX_DIFF = 80_000;
 /** A change request's URL. */
 export const changeUrl = (repo: string, n: number) => `codehost:${repo}/change/${n}`;
 
@@ -190,10 +189,7 @@ export function localHost({ root, sources = {}, tasksDir, scratchDir, instanceRe
       const action = String(req.kind).replace(/^codehost-local\./, "");
       const s = await stateFor(action, req.args ?? {}, req.requester);
       // plan.mjs's rules, as codehost-github's: the bare action, so it reads the same parts.
-      const p = planRules({ kind: action, args: req.args }, s.state);
-      // A reviewer reads the whole diff or nothing (its tier can still rise after this plan): one too large is refused, never cut.
-      if (s.diff.length > MAX_DIFF) throw fail(413, `the diff is over ${MAX_DIFF} characters, too large for a reviewer to read whole: split it into smaller changes`);
-      return { ...p, facts: { target: s.target, sentence: s.sentence, diff: s.diff } };
+      return planRules({ kind: action, args: req.args }, s.state, { target: s.target, sentence: s.sentence, diff: s.diff });
     },
     async execute(rec: { kind: string; args: any }) {
       const a = rec.args ?? {}, action = rec.kind.replace(/^codehost-local\./, "");

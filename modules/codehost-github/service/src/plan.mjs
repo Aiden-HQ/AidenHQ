@@ -183,9 +183,12 @@ const rank = (p) => p.tier * 2 + (p.panel ? 1 : 0);
  * executor@1's plan for codehost-github.{push,pr,merge,close,create_repo}: `state` is the verified state the code host read
  * for this request (as `s` above). A refusal throws (the kernel answers it as refused); otherwise the tier above 0 comes back
  * as `raise`, and `targets` bind the record to what it acts on: each branch's commit and base, each PR's head. When any of
- * them moves after approval, the revalidating plan's targets differ and the kernel closes the record as stale.
+ * them moves after approval, the revalidating plan's targets differ and the kernel closes the record as stale. `facts` are the
+ * card's (target, sentence, diff), read by the code host from git: a reviewer reads the whole diff or nothing, so one too
+ * large is refused, never cut.
  */
-export function plan({ kind, args }, state) {
+export const MAX_DIFF = 80_000;
+export function plan({ kind, args }, state, facts) {
   const action = String(kind).replace(/^codehost(-github)?\./, "");
   const parts = planParts(action, state).flat();
   if (!parts.length) throw Object.assign(new Error("nothing recognised in the request"), { rule: "unrecognised" });
@@ -196,5 +199,6 @@ export function plan({ kind, args }, state) {
     ? Object.fromEntries((state.prs ?? []).map((p) => [`${p.repo}#${p.number}`, { repo: p.repo, ref: isLocal(p.repo) ? `change/${p.number}` : `pull/${p.number}`, commit: p.head ?? null, base_sha: p.base ?? null }]))
     : action === "create_repo" ? { [String(state.repo)]: { repo: state.repo } }
     : Object.fromEntries((state.branches ?? []).map((b) => [`${b.repo} ${b.branch}`, { repo: b.repo, ref: b.branch, commit: b.sha ?? null, base_sha: b.base ?? null }]));
-  return { args, targets, ...(top.tier > 0 ? { raise: { tier: top.tier, ...(top.panel ? { panel: true } : {}), reason: top.reason, rule: top.rule } } : {}) };
+  if (facts.diff.length > MAX_DIFF) throw Object.assign(new Error(`the diff is over ${MAX_DIFF} characters, too large for a reviewer to read whole: split it into smaller changes`), { rule: "diff-too-large", status: 413 });
+  return { args, targets, facts, ...(top.tier > 0 ? { raise: { tier: top.tier, ...(top.panel ? { panel: true } : {}), reason: top.reason, rule: top.rule } } : {}) };
 }

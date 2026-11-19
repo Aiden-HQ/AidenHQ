@@ -23,7 +23,7 @@ async function codehost(t, state) {
   const verdicts = [];
   const k = await kernel(t, { secrets: { codehost_github_token: "ch-key" }, connections: {}, writes: kinds, reviewer: () => verdicts.shift(), modules: { modules: { "codehost-github": { token: "codehost_github_token" } } } });
   handler = serveExecutor({
-    plan: async (req) => plan(req, state.now),
+    plan: async (req) => plan(req, state.now, { target: "", sentence: "", diff: "" }),
     execute: async (rec) => (fx.executes.push(rec), { ok: true, text: "pushed" }),
   }, { key: "ch-key", kernelUrl: k.url });
   const file = async (kind, args) => (await k.v1("POST", "/v1/writes", { kind, args, task: "TASK-1" }, "ch-key")).json;
