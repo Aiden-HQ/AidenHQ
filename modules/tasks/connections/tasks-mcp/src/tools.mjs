@@ -794,16 +794,20 @@ const TOOLS = {
       // Idempotency keys expire after 7 days in Paperclip, so also look for an open task
       // (or, with dedupe_closed, a closed one) that already carries one of these markers.
       const statuses = dedupe_closed ? `${OPEN_STATUSES},done,cancelled` : OPEN_STATUSES;
-      for (const k of new Set(markers)) {
-        const existing = await findByMarker(k, statuses);
-        if (existing) return { ...brief(existing), deduplicated: true };
-      }
       // Work handed to a graded agent is graded as a delegation is (refused here, before it is created, without a deliverable).
       const grade = target ? gradeFor(target, rubric, deliverable, description) : undefined;
+      const start = status !== "backlog";
+      for (const k of new Set(markers)) {
+        const existing = await findByMarker(k, statuses);
+        // A graded task left parked by a failed rubric filing: this retry files it and starts it.
+        if (existing && start && parked(existing, { id: g.id }, grade)) return { ...brief(existing), deduplicated: true, ...(await startGraded(existing, grade)) };
+        if (existing) return { ...brief(existing), deduplicated: true };
+      }
       const body = {
         title: String(title).slice(0, 200),
         description: `${origin}${String(description).replace(/<!--|-->/g, "").slice(0, 60_000)}${gradedText(grade)}\n\n<!-- source:${m} -->`,
-        status: status === "backlog" && assigneeAgent ? "backlog" : "todo",
+        // A graded task is filed parked and starts only once its rubric is on file (startGraded), so it never runs ungraded.
+        status: (status === "backlog" || grade) && assigneeAgent ? "backlog" : "todo",
         priority: PRIORITIES.includes(priority) ? priority : "medium",
         labelIds: await labelIds(labels ?? []),
         idempotencyKey: idempotencyKey(m),
@@ -818,7 +822,9 @@ const TOOLS = {
         body.assigneeUserId = owner;
       }
       const i = await api("POST", `/api/companies/${encodeURIComponent(COMPANY())}/issues`, body);
-      return { ...brief(i), deduplicated: Boolean(i.deduplicated), ...(i.deduplicated ? {} : await fileGrade(i.id, grade)), ...(warning ? { warning } : {}) };
+      if (i.deduplicated) return { ...brief(i), deduplicated: true, ...(warning ? { warning } : {}) };
+      const graded = start ? await startGraded(i, grade) : await fileGrade(i.id, grade);
+      return { ...brief(start && grade ? { ...i, status: "todo" } : i), deduplicated: false, ...graded, ...(warning ? { warning } : {}) };
     },
   },
   task_team: {
