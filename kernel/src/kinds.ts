@@ -13,10 +13,12 @@ const obj = (properties: Record<string, Schema>, required: string[]): Schema => 
 
 // authority: the module changes the apply brings, one line each (scripts/compiler/authority.ts), shown on the card;
 // ownerRequired: one of them is the owner's under every autonomy (new authority from a module that isn't official, or new
-// spend), so after the reviewer only the owner approves it (in the digest, as args).
+// spend), so after the reviewer only the owner approves it (in the digest, as args); release: the release the owner's
+// auto-updates ask for, set only by the planner on the updater's verified move (apply-tier.ts standingRelease).
 const APPLY_ARGS = obj({
   repo: REPO, branch: REF, sha: SHA, files: { type: "array", minItems: 1, maxItems: 200, items: { type: "string", maxLength: 300 } },
   authority: { type: "array", minItems: 1, maxItems: 200, items: { type: "string", maxLength: 300, pattern: "^[^\\p{Cc}\\p{Cf}]+$" } }, ownerRequired: { type: "boolean" },
+  release: { type: "string", pattern: "^[0-9]{4}\\.[0-9]{1,2}(\\.[0-9]+){0,2}$" },
 }, ["repo", "branch", "sha", "files"]);
 
 const RAISE_ARGS = obj({
