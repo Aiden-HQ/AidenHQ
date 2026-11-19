@@ -85,7 +85,7 @@ const thread = (id: string, finding: string | null, author: string, resolved = f
 const owner = { get: async () => "gho_owner", signedIn: () => true };
 const appCovering = { reviewToken: async () => ({ token: "app_tok", login: "aidenhq-acme[bot]" }) };
 const noApp = { reviewToken: async () => undefined };
-const postArgs = (r: Review, extra: object = {}) => ({ review: r, identity: "auto", run: "run-1", resolve: [], ...extra });
+const postArgs = (r: Review, extra: object = {}) => ({ repo: r.repo, pr: r.pr, head: r.head, review: r, identity: "auto", run: "run-1", resolve: [], ...extra });
 
 describe("posting", () => {
   it("posts one comment review with inline comments on changed lines, the status and one acknowledgement edited in place", async () => {
@@ -114,6 +114,16 @@ describe("posting", () => {
     const out = JSON.parse((await poster.execute("post", postArgs(review([])))).text);
     expect(out.identity).toBe("owner");
     await expect(poster.execute("post", postArgs(review([]), { identity: "app" }))).rejects.toBeInstanceOf(GitHubRefused);
+  });
+
+  it("refuses a review that names another repo, pull request or head than the caller's target", async () => {
+    const w = world();
+    const poster = new ReviewPoster(new GitHub(owner, new Set(), w.impl), owner, appCovering);
+    for (const wrong of [{ repo: "acme/other" }, { pr: 13 }, { head: "d".repeat(40) }]) {
+      expect(() => poster.preview("post", postArgs(review([]), wrong))).toThrow(/not acme|not /);
+      await expect(poster.execute("post", postArgs(review([]), wrong))).rejects.toBeInstanceOf(GitHubRefused);
+    }
+    expect(w.calls).toHaveLength(0);
   });
 
   it("refuses a review of a head that moved, and never repeats a finding it already commented", async () => {

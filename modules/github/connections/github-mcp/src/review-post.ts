@@ -33,6 +33,12 @@ export interface Thread {
 type RawThread = { id: string; isResolved: boolean; isOutdated: boolean; path: string; line: number | null; comments: { nodes: { databaseId: number; url: string; body: string; author: { login: string } | null }[] } };
 type GhPr = { state: string; draft?: boolean; head: { sha: string }; base: { sha: string } };
 
+/** The explicit target must be the review's own: a review of another repo, pull request or commit is refused. */
+function target(a: PostArgs): PostArgs {
+  const r = a.review;
+  if (r.repo.toLowerCase() !== a.repo.toLowerCase() || r.pr !== a.pr || r.head !== a.head) throw new GitHubRefused(`the review is of ${r.repo}#${r.pr} at ${r.head.slice(0, 12)}, not ${a.repo}#${a.pr} at ${a.head.slice(0, 12)}`);
+  return a;
+}
 const norm = (login: string) => login.toLowerCase().replace(/\[bot\]$/, "");
 const split = (repo: string): Ref => { const [owner, name] = repo.split("/"); return { owner: owner!, repo: name!, number: 0 }; };
 const api = (r: Ref) => `/repos/${r.owner}/${r.repo}`;
@@ -140,7 +146,7 @@ export class ReviewPoster {
         targets: { [`${n.repo}#${n.pr}`]: { repo: n.repo, ref: `pull/${n.pr}`, commit: n.head, base_sha: null } },
       };
     }
-    const a = PostArgsSchema.parse(args);
+    const a = target(PostArgsSchema.parse(args));
     const r = a.review;
     const { summary, comments } = renderReview(r, a.run);
     const c = counts(r.findings);
@@ -165,7 +171,7 @@ export class ReviewPoster {
 
   /** Posts what `preview` showed. Throws (a failed outcome) when the pull request isn't open or its head moved. */
   async execute(kind: "post" | "notice", args: unknown): Promise<{ ok: boolean; text: string }> {
-    return kind === "post" ? this.post(PostArgsSchema.parse(args)) : this.notice(NoticeArgsSchema.parse(args));
+    return kind === "post" ? this.post(target(PostArgsSchema.parse(args))) : this.notice(NoticeArgsSchema.parse(args));
   }
 
   private async notice(n: NoticeArgs): Promise<{ ok: boolean; text: string }> {

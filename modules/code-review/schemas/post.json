@@ -2,10 +2,25 @@
  "type": "object",
  "additionalProperties": false,
  "required": [
+  "repo",
+  "pr",
+  "head",
   "review",
   "run"
  ],
  "properties": {
+  "repo": {
+   "type": "string",
+   "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$"
+  },
+  "pr": {
+   "type": "integer",
+   "minimum": 1
+  },
+  "head": {
+   "type": "string",
+   "pattern": "^[0-9a-f]{40}$"
+  },
   "review": {
    "type": "object",
    "additionalProperties": false,

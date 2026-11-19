@@ -45,6 +45,10 @@ export type IdentityWant = z.infer<typeof IdentityWant>;
 
 const RUN = z.string().regex(/^[A-Za-z0-9_.-]{1,64}$/);
 export const PostArgsSchema = z.object({
+  /** The target, from the caller's run row, never from the review's own text: a review naming another repo, PR or head is refused. */
+  repo: z.string().regex(new RegExp(`^${NAME}/${NAME}$`)),
+  pr: z.number().int().min(1),
+  head: z.string().regex(SHA),
   review: ReviewSchema,
   identity: IdentityWant.default("auto"),
   /** Finding ids of an earlier run the state service wants resolved (its own threads only: review-post.ts checks). */
