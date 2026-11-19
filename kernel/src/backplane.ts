@@ -68,6 +68,7 @@ import { pipeline } from "node:stream/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { timingSafeEqual } from "node:crypto";
 import type { Asserter } from "./assert.ts";
+import type { Facts } from "./facts.ts";
 import type { Brake } from "./brake.ts";
 import type { Checks } from "./checks.ts";
 import type { Lane } from "./lane.ts";
@@ -122,6 +123,7 @@ export const ROUTES = [
   { method: "POST", path: "/v1/notify", auth: "board" },
   { method: "GET", path: "/v1/notify/take", auth: "module" },
   { method: "POST", path: "/v1/notify/send", auth: "module" },
+  { method: "POST", path: "/v1/facts", auth: "module" },
   { method: "POST", path: "/v1/wakes/events", auth: "events-key" },
   { method: "POST", path: "/v1/wakes", auth: "module" },
   { method: "POST", path: "/v1/wakes/claim", auth: "module" },
@@ -187,7 +189,12 @@ function workRead(work: Work, p: URLSearchParams) {
   return task ? work.task(task.slice(0, 100)) : work.activity();
 }
 
-export function createBackplane({ whoami, asserter, proxy, cp, boardCp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, reviewerKey = () => "", jobs, codehost, admission, outcomes, wakes, tasks, eventsKey = () => "", work, repos = () => ({}), graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, checkJobs, jobTools, localBundle, ownerRaw, lane, healthProbe, healthKey = () => "", connectionHealth, settingsChange, routing, log = () => {} }: {
+const FACT_AT = /^\d{4}-\d\d-\d\dT[\d:.]+(Z|[+-]\d\d:\d\d)$/;
+const text = (v: unknown, max: number) => typeof v === "string" && v.length > 0 && v.length <= max;
+
+export function createBackplane({ facts, whoami, asserter, proxy, cp, boardCp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, reviewerKey = () => "", jobs, codehost, admission, outcomes, wakes, tasks, eventsKey = () => "", work, repos = () => ({}), graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, checkJobs, jobTools, localBundle, ownerRaw, lane, healthProbe, healthKey = () => "", connectionHealth, settingsChange, routing, log = () => {} }: {
+  /** Flow's fact log (facts.ts): POST /v1/facts. */
+  facts?: Facts;
   whoami: Whoami; asserter: Asserter; proxy: Handler; cp: Handler; boardCp?: Handler; grantsFile: () => { agents?: Record<string, Grant> } & Record<string, unknown>;
   writes?: Writes; records?: Records; boardKey?: () => string; log?: (msg: string, f?: Record<string, unknown>) => void;
   /** The reviewer slot, and the key a direct review request asks with (reviewer_key, which the board holds). */
@@ -265,6 +272,33 @@ export function createBackplane({ whoami, asserter, proxy, cp, boardCp, grantsFi
       switch (hit && `${hit.method} ${hit.path}`) {
         case "GET /healthz": return void res.writeHead(200, { "content-type": "text/plain" }).end("ok");
         case "GET /v1/jwks": return send(res, 200, asserter.jwks);
+        case "POST /v1/facts": {
+          const w = await moduleOf(req);
+          if (!w.roles.includes("kernel.facts")) throw fail(403, "forbidden", `${w.module} may not record facts (role kernel.facts)`);
+          if (!facts || !records) throw fail(503, "unavailable", "the fact log is off");
+          const b = await json(req, 5_000_000);
+          if (!Array.isArray(b.facts) || b.facts.length > 500) throw fail(400, "bad_request", "send {facts: [...]} of at most 500");
+          const declared = modules().modules?.[w.module!]?.facts ?? {};
+          for (const f of b.facts) {
+            if (!f || !text(f.type, 80) || !text(f.subject, 300) || !text(f.version, 300) || typeof f.at !== "string" || !FACT_AT.test(f.at) || Number.isNaN(Date.parse(f.at))) throw fail(400, "bad_request", "each fact is {type, subject, version, at (ISO), task?, data?}");
+            if (!Object.hasOwn(declared, f.type)) throw fail(403, "forbidden", `${w.module} did not declare fact ${f.type} (module.yaml facts:)`);
+          }
+          // The actor is the kernel's call, never the body's: the agent whose job (data.job) or PR (its code host record's requester) it is, else the module.
+          const agentOf = (id: unknown) => { try { const a = (records.db.prepare("SELECT agent FROM jobs WHERE id = ?").get(String(id)) as { agent: string } | undefined)?.agent; const key = a && (grantsFile().agents ?? {})[a]?.key; return key ? `agent:${key}` : undefined; } catch { return undefined; } };
+          const prAgent = (subject: string, task: unknown) => {
+            const repo = /^pr:([^#]+)#/.exec(subject)?.[1];
+            if (!repo || typeof task !== "string") return undefined;
+            const r = records.list(["approved", "claimed", "done", "failed"], 50, { task }).find((x) => /^codehost-[a-z0-9-]+\.pr$/.test(x.kind) && ((x.args as { only?: { repo?: string }[] } | null)?.only ?? []).some((o) => o.repo === repo));
+            return r?.requester.key ? `agent:${r.requester.key}` : undefined;
+          };
+          let recorded = 0;
+          for (const f of b.facts) {
+            const data = f.data && typeof f.data === "object" && !Array.isArray(f.data) ? f.data : {};
+            const actor = (data.job != null ? agentOf(data.job) : undefined) ?? (f.subject.startsWith("pr:") ? prAgent(f.subject, f.task) : undefined) ?? `module:${w.module}`;
+            if (facts.record({ type: f.type, subject: f.subject, version: f.version, at: f.at, actor, ...(typeof f.task === "string" && f.task ? { task: f.task.slice(0, 100) } : {}), source: f.source === "backfill" ? "backfill" : "live", data })) recorded++;
+          }
+          return send(res, 200, { recorded });
+        }
         case "GET /v1/whoami": {
           const w = await whoami(bearer(req)).catch((e: Error) => { throw fail(401, "unauthorized", e.message); });
           return send(res, 200, { kind: w.kind, ...(w.agent ? { agent: w.agent } : {}), roles: w.roles, ...(w.task ? { task: w.task } : {}), ...(w.run ? { run: w.run } : {}), ...(w.module ? { module: w.module } : {}), tools: w.tools });
