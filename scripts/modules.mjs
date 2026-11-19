@@ -1361,7 +1361,8 @@ export function reviewerSlot(defs, binding = {}) {
 /**
  * A module's checks (spec §3.5, P5): `[{id, at: write.filed | task.finish, kinds?, agents?, post?, auth?, label?, mode?}]`. The kernel
  * calls the task.finish ones (config/kernel/checks.json, keyed `<module>.<id>`) at `post` with `auth`, one of the module's own
- * secrets; `rubric` is where the kernel files a rubric for a task a module filed with one (modtasks.ts); `label` is the control-plane label a hold adds.
+ * secrets; `rubric` is where the kernel files a rubric for a task a module filed with one (modtasks.ts); `grade` is where it reads
+ * the task's latest sent-back verdict for the AI reviewer (review-loop.ts); `label` is the control-plane label a hold adds.
  * A write.filed check (`kinds`, the write kinds it runs on) is compiled as { module, at, kinds }: the kernel runs its code in
  * process on every filing of those kinds (kernel/src/writes.ts filedRaises) and refuses the filing when it has none.
  * `mode: observe` (kernel/src/gates.ts) records what a task.finish check would block without blocking; write.filed checks gate
@@ -1372,7 +1373,7 @@ export function checkEntries(name, def) {
   for (const c of def.checks == null ? [] : Array.isArray(def.checks) ? def.checks : fail(`module ${name}: checks must be a list`)) {
     const at = `module ${name}: check ${c?.id}`;
     if (!c || typeof c !== "object" || !/^[a-z][a-z0-9-]{0,40}$/.test(String(c.id))) fail(`module ${name}: each check has an id (a-z, 0-9, -)`);
-    for (const k of Object.keys(c)) if (!["id", "at", "kinds", "agents", "post", "rubric", "auth", "label", "mode"].includes(k)) fail(`${at}: ${k} is not allowed`);
+    for (const k of Object.keys(c)) if (!["id", "at", "kinds", "agents", "post", "rubric", "grade", "auth", "label", "mode"].includes(k)) fail(`${at}: ${k} is not allowed`);
     if (!["write.filed", "task.finish"].includes(c.at)) fail(`${at}: at is write.filed or task.finish`);
     for (const k of ["kinds", "agents"]) if (c[k] != null && !(Array.isArray(c[k]) && c[k].every((x) => typeof x === "string"))) fail(`${at}: ${k} is a list`);
     let mode;
@@ -1386,8 +1387,8 @@ export function checkEntries(name, def) {
     if (!/^https?:\/\/[\w.-]+:\d+\/[\w/.-]*$/.test(c.post ?? "")) fail(`${at}: post must be http://<service>:<port>/<path>`);
     if (!ownSecrets(def).includes(c.auth)) fail(`${at}: auth must name one of its own secrets`);
     if (c.label != null && !/^[a-z][a-z0-9-]{0,40}$/.test(String(c.label))) fail(`${at}: label is a label name (a-z, 0-9, -)`);
-    if (c.rubric != null && !/^https?:\/\/[\w.-]+:\d+\/[\w/.-]*$/.test(c.rubric)) fail(`${at}: rubric must be http://<service>:<port>/<path>`);
-    out[`${name}.${c.id}`] = { module: name, at: c.at, url: c.post, auth_secret: c.auth, ...(c.rubric ? { rubric: c.rubric } : {}), ...(c.agents ? { agents: c.agents } : {}), ...(c.label ? { label: String(c.label) } : {}), ...(mode === "observe" ? { mode } : {}) };
+    for (const k of ["rubric", "grade"]) if (c[k] != null && !/^https?:\/\/[\w.-]+:\d+\/[\w/.-]*$/.test(c[k])) fail(`${at}: ${k} must be http://<service>:<port>/<path>`);
+    out[`${name}.${c.id}`] = { module: name, at: c.at, url: c.post, auth_secret: c.auth, ...(c.rubric ? { rubric: c.rubric } : {}), ...(c.grade ? { grade: c.grade } : {}), ...(c.agents ? { agents: c.agents } : {}), ...(c.label ? { label: String(c.label) } : {}), ...(mode === "observe" ? { mode } : {}) };
   }
   return out;
 }

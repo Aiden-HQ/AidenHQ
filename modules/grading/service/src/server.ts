@@ -2,6 +2,7 @@
 // moves them, each behind its own caller's key:
 //   POST /check/finish                     the kernel (grading_check_key): the task.finish check (kernel/src/checks.ts)
 //   POST /check/rubric                     the kernel (grading_check_key): the rubric of a task a module filed (kernel.tasks)
+//   POST /check/grade                      the kernel (grading_check_key): the latest verdict that sent a task's work back, for the AI reviewer
 //   POST /grades                           the tasks module, as the delegating agent (its caller assertion, aud tasks): file a rubric
 //   POST /board/grades, POST /board/grades/<task>/settle   the board (grading_board_key): its reads
 // It reads tasks and settings from the kernel with its own token (kernel.cp-read) and releases its label there
@@ -10,7 +11,8 @@ import http from "node:http";
 import { timingSafeEqual } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { kernelJwks, verifyCaller, type JWKS } from "./aidenhq-sdk/caller.ts";
-import { ESCALATION_WAIT_MS, GRADE_CHECK_MS, Grades, Invalid, backfillEscalatedDelegators, completionGate, parseFiling, parseVerdict, prRefAllowed, settleClosedGrades, type KnownRepos, type CompletionPath } from "./grades.ts";
+import { ESCALATION_WAIT_MS, GRADE_CHECK_MS, Grades, Invalid, backfillEscalatedDelegators, completionGate, parseFiling, parseVerdict, prRefAllowed, graderNote, settleClosedGrades, type KnownRepos, type CompletionPath } from "./grades.ts";
+import { template } from "./grader/grade.ts";
 
 type Issue = { id: string; identifier?: string; status: string; assigneeAgentId?: string | null; createdByAgentId?: string | null; parentId?: string | null };
 /** The kernel as this module: its control-plane reads, its directory's settings, and its label released on a task. */
@@ -177,6 +179,13 @@ export function createGrading({ db, kernel, keys, kernelUrl = "", jwks = kernelJ
       const method = String(req.method);
       if (method === "POST" && path === "/check/finish") return (keyed(req, keys.check), send(200, await finish((body ?? {}) as never)));
       if (method === "POST" && path === "/check/rubric") return (keyed(req, keys.check), send(200, await fileForModule((body ?? {}) as never)));
+      // The AI reviewer's read of what the grader last sent back (the kernel's own call, its check key): structured, from this store.
+      if (method === "POST" && path === "/check/grade") {
+        keyed(req, keys.check);
+        const id = (body as { task?: { id?: unknown } })?.task?.id;
+        if (typeof id !== "string" || !id) throw new HttpError(400, "send {task: {id}}");
+        return send(200, { verdict: "ok", grade: graderNote(grades.get(id), template) });
+      }
       if (method === "POST" && path === "/grades") return send(200, await file(req, body));
       // The Fleet Steward's read (its own module token, vouched for by the kernel): which grader passes failed lately, and why.
       if (method === "GET" && path === "/steward/grade-failures") {

@@ -7,7 +7,8 @@
 // the next sweep asks once more.
 //
 // What the reviewer reads is the record's own: its card (the change whole, kernelCardDiff), the request chain (the task and
-// a delegating parent's own words), the task's merged sibling PRs (siblings.ts), earlier decisions on the task (tier.ts
+// a delegating parent's own words), the task's merged sibling PRs (siblings.ts), the grader's latest verdict that sent the
+// work back (grader-note.ts, from the grading store, never from comments), earlier decisions on the task (tier.ts
 // priorDecisions: the owner's veto, the same content rejected, retries parked) with the owner's reply after a rejection, and
 // the instance's decisions digest from the instance repo's main. Code decides first where it can (tier.ts codeVerdict): those reads no model.
 import { createHash } from "node:crypto";
@@ -17,6 +18,7 @@ import { MARKER, fenced, type Writes } from "./writes.ts";
 import { UNSURE } from "../sdk/src/reviewer.ts";
 import { dataBlock as fence } from "../sdk/src/fence.ts";
 import { siblingBlock } from "./siblings.ts";
+import { graderBlock, type GraderNote } from "./grader-note.ts";
 
 /** A Paperclip task and comment, as far as the review reads them. */
 export type Issue = { id: string; title?: string; description?: string | null; parentId?: string | null; createdByAgentId?: string | null; createdByUserId?: string | null; status?: string };
@@ -77,11 +79,13 @@ export function cardDiff(action: string, details: string): string {
 }
 
 /** One record's tier input and what the reviewer reads, from the record, the task's other records and the task itself. */
-export async function reviewInput(r: Rec, { records, task, decisions, product }: { records: Records; task: TaskApi; decisions?: { where: string; text: string }; product: string[] }) {
+export async function reviewInput(r: Rec, { records, task, decisions, product, grade = async () => undefined }: { records: Records; task: TaskApi; decisions?: { where: string; text: string }; product: string[];
+  /** The task's latest sent-back grade (checks.ts grade); undefined: none, no grading module, or unread. */
+  grade?: (task: string) => Promise<GraderNote | undefined> }) {
   const action = actionOf(r.kind);
   const issue = await task.issue(r.task);
   // Comments and the owner's id unread: no reply lifts anything (the runner's reading too).
-  const [comments, owner, chain] = await Promise.all([task.comments(r.task).catch(() => []), task.me().catch(() => ""), requestChain(issue, task.issue)]);
+  const [comments, owner, chain, graded] = await Promise.all([task.comments(r.task).catch(() => []), task.me().catch(() => ""), requestChain(issue, task.issue), grade(issue.id)]);
   const chainHash = chain ? createHash("sha256").update(chain).digest("hex").slice(0, 32) : "";
   const split = answered(records.list(ALL, 500, { task: r.task, reviewed: true }).filter((x) => x.id !== r.id).map(asPrior), comments, owner);
   const args = r.args && typeof r.args === "object" ? (r.args as Record<string, unknown>) : {};
@@ -102,6 +106,8 @@ export async function reviewInput(r: Rec, { records, task, decisions, product }:
     chain,
     // The task's other PRs already merged into the change's base, as the code host read them at filing.
     siblings: siblingBlock(r.context?.siblings ?? []),
+    // What the task's grader last sent back, read structured from the grading store (never the task's comments).
+    ...(graded ? { grader_note: graderBlock(graded) } : {}),
     decisions,
     // The job's model (a module's own write has none): the reviewer module never picks a reviewer of its family.
     requesterModel: r.requester.model ?? "",
@@ -113,8 +119,10 @@ export async function reviewInput(r: Rec, { records, task, decisions, product }:
   return { input, request };
 }
 
-export function createReviewLoop({ records, writes, task, decisions, product, log = () => {} }: {
+export function createReviewLoop({ records, writes, task, decisions, product, grade, log = () => {} }: {
   records: Records; writes: Writes; task: TaskApi;
+  /** The task's latest sent-back grade (checks.ts grade); absent: no grading module. */
+  grade?: (task: string) => Promise<GraderNote | undefined>;
   /** The instance's decisions digest, from the instance repo's main (never a card's branch); none is no block. Read once a sweep. */
   decisions: () => Promise<{ where: string; text: string } | undefined>;
   /** The repositories that are one product for scope. */
@@ -122,11 +130,13 @@ export function createReviewLoop({ records, writes, task, decisions, product, lo
   log?: (msg: string, f?: Record<string, unknown>) => void;
 }) {
   const inFlight = new Set<string>();
+  // A grade that can't be read leaves the note out (the reviewer then judges against the whole request), never the review.
+  const noteOf = async (id: string) => (grade ? grade(id).catch((e: Error) => void log("grade unread", { task: id, err: String(e.message ?? e).slice(0, 200) })) : undefined);
 
   async function reviewOne(r: Rec, digest: { where: string; text: string } | undefined): Promise<void> {
     let input: ReviewInput, request: Record<string, unknown>;
     try {
-      ({ input, request } = await reviewInput(r, { records, task, decisions: digest, product: product() }));
+      ({ input, request } = await reviewInput(r, { records, task, decisions: digest, product: product(), grade: noteOf }));
     } catch (e) {
       // The task couldn't be read: no verdict, tried again (REVIEW_TRIES) as a failed review is.
       [input, request] = [{ tier: 1, error: String((e as Error).message ?? e).slice(0, 300) }, {}];

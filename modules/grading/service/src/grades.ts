@@ -416,3 +416,21 @@ export function completionGate(grades: Grades, issueId: string, _via: Completion
   grades.pend(issueId);
   return { pass: false, state: "pending", label: "grading" };
 }
+
+/**
+ * What the AI reviewer reads of a task's grade (POST /check/grade, the kernel's own call): the latest verdict, only when it sent
+ * the work back with a criterion not shown met. Each criterion is its rubric number and code's met; an unmet one carries the
+ * rubric's own text (the delegating agent's words when it filed the task, or the kind's template). Never the grader's evidence:
+ * that is model output over what the PR itself wrote.
+ */
+export type GraderNote = { attempt: number; at: string; version: string; criteria: { id: string; met: "yes" | "no" | "unknown"; rubric?: string }[] };
+export function graderNote(g: Grade | undefined, template: (kind: string) => string[]): GraderNote | null {
+  const v = g?.verdicts.at(-1);
+  if (!g || v?.verdict !== "needs_revision") return null;
+  const rubric = g.rubric.length ? g.rubric : template(g.deliverable.kind);
+  // The grader numbers the rubric 1..N; any other id is not a criterion of this rubric.
+  const criteria = v.criteria.filter((c) => /^[1-9]\d?$/.test(c.id) && Number(c.id) <= rubric.length)
+    .map((c) => ({ id: c.id, met: c.met, ...(c.met === "yes" ? {} : { rubric: rubric[Number(c.id) - 1]! }) }));
+  if (!criteria.some((c) => c.met !== "yes")) return null;
+  return { attempt: g.attempts, at: v.at, version: v.version, criteria };
+}

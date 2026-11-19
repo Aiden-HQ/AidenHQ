@@ -272,6 +272,8 @@ const gitIn = (dir: string, args: string[]) => new Promise<string>((ok, no) => e
 let ownerUser: string | undefined;
 const reviewLoop = createReviewLoop({
   records, writes, log,
+  // Declared after this (it needs the finish checks); asked only once a sweep runs.
+  grade: (id) => checks.grade(id),
   product: () => (repos().product ? [repos().product!] : []),
   task: {
     issue: (id) => cpJson(`/api/issues/${encodeURIComponent(id)}`),
