@@ -33,13 +33,18 @@ export function serveExecutor(ex: Executor, { key, kernelUrl = process.env.AIDEN
     const a = Buffer.from(String(req.headers.authorization ?? "").replace(/^Bearer\s+/i, "")), b = Buffer.from(key);
     return b.length > 0 && a.length === b.length && timingSafeEqual(a, b);
   };
+  /**
+   * The outcome, until the kernel takes it (409: it has one already). A kernel restart or an unreachable kernel is waited out,
+   * backing off to once a minute, never given up on; only a 4xx the kernel means for good (bad request, no such record) ends it.
+   */
   async function report(id: string, ok: boolean, text: string) {
-    for (let i = 0; i < 5; i++) {
+    for (let i = 0; ; i++) {
       const r = await fetch(`${kernelUrl}/v1/writes/${id}/outcome`, { method: "POST", headers: { authorization: `Bearer ${key}`, "content-type": "application/json" }, body: JSON.stringify({ ok, text }), signal: AbortSignal.timeout(15_000) }).catch(() => undefined);
       if (r && (r.ok || r.status === 409)) return;
-      await new Promise((ok) => setTimeout(ok, 2000 * 2 ** i));
+      if (r && r.status >= 400 && r.status < 500 && ![401, 408, 429].includes(r.status)) return log("executor outcome refused", { id, status: r.status });
+      if (i === 4) log("executor outcome not delivered yet: still trying", { id, status: r?.status });
+      await new Promise((ok) => setTimeout(ok, Math.min(2000 * 2 ** i, 60_000)));
     }
-    log("executor outcome not delivered", { id });
   }
   return async function handle(req: IncomingMessage, res: ServerResponse): Promise<boolean> {
     const url = String(req.url ?? "");
