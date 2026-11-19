@@ -129,7 +129,7 @@ bump of `product:` to a different reviewer needs a receipt for that reviewer too
   (`docker compose exec jira-mcp node dist/src/probe.js [tool '<json>']`).
 - **Inbound:** the kernel's admin listener (3120: sign-in, approval pages) and the board (3121) are loopback-only but every
   host process shares that loopback (Tailscale serve), so every route on 3120 and 3121 needs a signed-in
-  admin (beyond sign-in, only OpenRouter's PKCE callback, by a single-use state) (accounts: Better Auth in the kernel, password + TOTP, `data/kernel/auth/auth.db`, which the board's 3129 listener
+  admin (beyond sign-in, only OpenRouter's PKCE callback and GitHub's App manifest return, each by a single-use state an admin's page made) (accounts: Better Auth in the kernel, password + TOTP, `data/kernel/auth/auth.db`, which the board's 3129 listener
   also opens until 3g; no SSO, sign-in beyond that is Cloudflare Access). Cards are decided only on the kernel's pages or
   by channel token. Every admin is an owner: writes as the owner
   (the board through the kernel's `/v1/cp/owner`; only the kernel holds the Paperclip key), taps and typed replies decide (`account:<id>`); the board labels what non-owner admins wrote ("by <name>",
@@ -210,7 +210,7 @@ the board key (it writes as the owner). Agents never claim something is done unt
 
 ## GitHub App and data apps
 
-- The instance's GitHub App (key in the vault at `github-app/{app_id,key.pem}`, made by `ops/github-app-setup.mjs`)
+- The instance's GitHub App (key in the vault at `github-app/{app_id,key.pem}`, made from the board's GitHub setup page, the kernel's `/setup/github-app`)
   gives repo-narrowed tokens. Among services and modules only codehost-github holds the App key; any other caller (apps-mcp
   reading private agents-org app repos and pushing the registry, the kernel cloning an Engineer's repos, checks) gets a
   token, snapshot or clone through the kernel's `POST /v1/codehost/:op`, under a literal `codehost:` grant in its

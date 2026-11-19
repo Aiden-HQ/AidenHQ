@@ -347,7 +347,7 @@ function resolveEnabled(all, wanted) {
 
 /**
  * Where agent-built repos live, one org per enabled code host (the handbooks name them), the org for new repositories first:
- * the GitHub agents org once GitHub is connected (the host's AIDENHQ_GITHUB_AGENTS_ORG, written by ops/github-app-setup.mjs
+ * the GitHub agents org once GitHub is connected (the host's AIDENHQ_GITHUB_AGENTS_ORG, written by the kernel when the GitHub App is created (kernel/src/github-app.ts)
  * beside the App's key), and `local` (this server's repos) while codehost-local is on.
  */
 const codehostOrgs = (enabled, settings) => [...(enabled.includes("github") && settings.agents_org ? [{ org: settings.agents_org, host: "github" }] : []), ...(enabled.includes("codehost-local") ? [{ org: "local", host: "local" }] : [])];
@@ -624,7 +624,7 @@ export function compile(productDir, instanceDir, { revision, bundleState, oldBun
 
 
   // Derived (not settable): the orgs the src_github sync covers, github_orgs plus the agents org.
-  // GitHub is connected once the host records its agents org (AIDENHQ_GITHUB_AGENTS_ORG, written by ops/github-app-setup.mjs
+  // GitHub is connected once the host records its agents org (AIDENHQ_GITHUB_AGENTS_ORG, written by the kernel when the GitHub App is created (kernel/src/github-app.ts)
   // beside the App's key; the kernel reads the same variable): the one fact every GitHub part follows. Unset, codehost-github's
   // service doesn't run (`when: { agents_org: true }`) and the handbooks name only `local`.
   settings.agents_org = githubOrg; // the only org github-mcp's commit_status_set may write to

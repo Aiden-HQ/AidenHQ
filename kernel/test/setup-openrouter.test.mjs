@@ -16,6 +16,12 @@ const vault = new Map();
 // What the kernel's model_ready op answers (main.ts wires the same readiness to it and to the admin pages).
 const state = readiness({ get: (n) => vault.get(n) ?? "", exists: (n) => vault.has(n), save: (n, v) => vault.set(n, v) });
 let accounts, adminSrv, verdict = "ok", exchanged = [];
+const madeApps = [], savedApps = [];
+const githubApp = {
+  defaultOrg: () => "acme-agents", name: () => "AidenHQ acme", ready: () => savedApps.length > 0,
+  convert: async (code, org) => { madeApps.push([code, org]); if (code !== "app-code") throw new Error("GitHub said 404"); return { id: 7, slug: "aidenhq-acme", pem: "-----BEGIN RSA PRIVATE KEY-----", owner: org }; },
+  save: (app) => savedApps.push(app),
+};
 before(async () => {
   accounts = await openAccounts({ dataDir: ":memory:", hosts: [HOST], adminUrl: `http://${HOST}`, edgeSecret: () => "", notify: () => {}, log: silent });
   const firstRun = { ownerEmail: () => undefined, recoveryKey: () => "", fields: () => [field, { ...field, module: "github", secret: "github_bot_token", label: "GitHub token" }], has: (n) => vault.has(n), save: (n, v) => vault.set(n, v), forgetRecoveryKey() {} };
@@ -27,7 +33,7 @@ before(async () => {
     ...state,
   };
   const cards = { ownerCards: async () => ({ live: [], finished: [] }), decideCard: async () => { throw new Error("no"); } };
-  adminSrv = await serve(createAdmin({ accounts, firstRun, model, boardUrl: () => BOARD, cards, ownerMessage: async () => ({ task: { identifier: "WOR-1" } }), owner: async () => ({ status: 200, json: {} }), hosts: () => [HOST], origins: () => [`http://${HOST}`], frameOrigins: () => [] }));
+  adminSrv = await serve(createAdmin({ accounts, firstRun, model, githubApp, boardUrl: () => BOARD, cards, ownerMessage: async () => ({ task: { identifier: "WOR-1" } }), owner: async () => ({ status: 200, json: {} }), hosts: () => [HOST], origins: () => [`http://${HOST}`], frameOrigins: () => [] }));
 });
 after(() => { adminSrv.s.close(); accounts.close(); });
 
@@ -84,4 +90,27 @@ test("model step needs the admin session", async () => {
   const r = await page("GET", "/setup/model", undefined, new Map());
   assert.equal(r.status, 303);
   assert.equal(r.location, "/auth/sign-in?next=%2Fsetup%2Fmodel");
+});
+
+test("the GitHub App: an admin names the org, GitHub's return (no session) saves it once; nobody else starts one", async () => {
+  assert.notEqual((await page("GET", "/setup/github-app", undefined, new Map())).status, 200, "admins only");
+  const ask = await page("GET", "/setup/github-app");
+  assert.match(ask.body, /value="acme-agents"/);
+  assert.equal((await page("POST", "/setup/github-app", { csrf: csrfOf(ask.body), org: "-bad-" })).status, 400);
+  const go = await page("POST", "/setup/github-app", { csrf: csrfOf(ask.body), org: "acme-agents" });
+  assert.match(go.headers["content-security-policy"], /form-action 'self' https:\/\/github\.com;/);
+  const state = /settings\/apps\/new\?state=([\w-]{22})"/.exec(go.body)[1];
+  const manifest = JSON.parse(/name="manifest" value="([^"]+)"/.exec(go.body)[1].replace(/&#34;/g, '"').replace(/&#38;/g, "&"));
+  assert.equal(manifest.redirect_url, `http://${HOST}/setup/github-app/${state}`);
+  // GitHub's return is cross-site: no session cookie. The state must match, once.
+  assert.equal((await page("GET", `/setup/github-app/${state}?code=app-code&state=other`, undefined, new Map())).status, 400);
+  const go2 = await page("POST", "/setup/github-app", { csrf: csrfOf(ask.body), org: "acme-agents" });
+  const state2 = /state=([\w-]{22})"/.exec(go2.body)[1];
+  const back = await page("GET", `/setup/github-app/${state2}?code=app-code&state=${state2}`, undefined, new Map());
+  assert.equal(back.status, 200);
+  assert.match(back.body, /https:\/\/github\.com\/apps\/aidenhq-acme\/installations\/new/);
+  assert.ok(!back.body.includes("PRIVATE KEY"), "the key is never shown");
+  assert.deepEqual(savedApps.map((a) => [a.id, a.owner]), [[7, "acme-agents"]]);
+  assert.equal((await page("GET", `/setup/github-app/${state2}?code=app-code&state=${state2}`, undefined, new Map())).status, 400, "spent");
+  assert.equal(savedApps.length, 1);
 });

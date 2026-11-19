@@ -260,7 +260,7 @@ without the owner reaches Telegram once a day from 21:00.
   green the reviewer is asked once more, and then the merge is parked with a note on the task. In either queue a red check whose Actions job never judged the commit
   (cancelled, timed out, failed to start, or `code-review`'s own "failed"/"incomplete" comment on that head) is re-run
   once per check and head before the merge fails; a second failure, or any real failure beside it, is final. The re-run
-  needs the GitHub App's Actions: write permission (`ops/github-app-setup.mjs`); without it the failure stands as before.
+  needs the GitHub App's Actions: write permission (created from the board's GitHub setup); without it the failure stands as before.
   A red check whose job ran **no step** and carries a failure annotation (GitHub refused to start it: billing, a spending
   limit, no runner) is the environment's, not the commit's: it is classified apart from a failed check, never sent to the
   Engineer to fix or rebase, and the head is never moved for it. It is re-run once at the same head; if it never starts

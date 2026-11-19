@@ -1,5 +1,5 @@
 // The default bundle carries both code hosts. GitHub is connected once the host records its agents org
-// (AIDENHQ_GITHUB_AGENTS_ORG, written by ops/github-app-setup.mjs beside the App's key): before that, codehost-github runs
+// (AIDENHQ_GITHUB_AGENTS_ORG, written by the kernel when the GitHub App is created (kernel/src/github-app.ts) beside the App's key): before that, the code host runs
 // nothing and the handbooks name only `local`; after it, new repositories go to the GitHub org and local ones stay local.
 // The GitHub half end to end: modules/github/test/service.test.mjs ("connected: …"); per-repo routing in the kernel:
 // kernel/test/codehost.test.mjs ("with both code hosts …").
