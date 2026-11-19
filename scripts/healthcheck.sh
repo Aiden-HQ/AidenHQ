@@ -26,6 +26,16 @@ check() { # name, command...
     fails=$((fails + 1))
   fi
 }
+# A /healthz body goes to the child on stdin, never into a shell string: a detail with an apostrophe is data, not syntax.
+health_has_ok() { printf '%s' "$1" | grep -q "\"$2\":{\"ok\":true"; }
+sign_in_detail() { # body, service: its detail (truncated), or "-mcp unreachable"; always a failure
+  printf '%s' "$1" | cut -c1-140 | grep -o '"detail":"[^"]*' | cut -d'"' -f4 | grep . || printf '%s-mcp unreachable\n' "$2"
+  return 1
+}
+# No address or no sign-in yet: the board's Connect is what fixes it, so it is a skip rather than a failure.
+unconfigured() { # body
+  printf '%s' "$1" | grep -q '"state":"missing"' || printf '%s' "$1" | grep -q "isn't set up" || printf '%s' "$1" | grep -q "not connected"
+}
 
 # What this install has configured decides which checks are hard. A module that is installed (config/modules.json, written
 # by every apply), an engine that is configured, stays a hard failure; anything else is skipped and listed at the end.
@@ -69,7 +79,7 @@ if module_on meetings; then
   ops_health="$(curl -s -m 10 "$(svc ops-mcp 8080)/healthz" 2>/dev/null)"
   check "ops-mcp reachable" test -n "$ops_health"
   for k in sqlite_writable transcripts_readable vault_available vault_writable paperclip_api; do
-    check "ops-mcp $k" sh -c "echo '$ops_health' | grep -q '\"$k\":{\"ok\":true'"
+    check "ops-mcp $k" health_has_ok "$ops_health" "$k"
   done
 else
   skip "ops-mcp (meetings module not installed)"
@@ -126,9 +136,9 @@ if echo "$gl_health" | grep -q '"ok":true'; then
   # The jobs' read endpoint, with its own token (agents reach /mcp only through the kernel).
   gltoken="$(cat "${AIDENHQ_SECRETS_DIR:-/nonexistent}/glean_mcp_read_token" 2>/dev/null)"
   check "glean (read tools)" sh -c "curl -fsS -m 30 -X POST '$(svc glean-mcp 8085)/mcp/read' -H 'Authorization: Bearer $gltoken' -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' -d '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}' | grep -q '\"search\"'"
-elif echo "$gl_health" | grep -q '"ok":false' && ! echo "$gl_health" | grep -q "not set"; then
+elif echo "$gl_health" | grep -q '"ok":false' && ! unconfigured "$gl_health"; then
   # Set up but not signed in, or Glean stopped accepting the sign-in.
-  check "glean sign-in" sh -c "echo '$(echo "$gl_health" | cut -c1-140)' | grep -o '\"detail\":\"[^\"]*' | cut -d'\"' -f4 | grep . || echo 'glean-mcp unreachable'; exit 1"
+  check "glean sign-in" sign_in_detail "$gl_health" glean
 else
   printf '  skip  glean (off, or its address is not set: its setup on the board)\n'
 fi
@@ -138,9 +148,9 @@ gf_health="$(curl -s -m 10 "$(svc grafana-mcp 8087)/healthz" 2>/dev/null)"
 if echo "$gf_health" | grep -q '"ok":true'; then
   gftoken="$(cat "${AIDENHQ_SECRETS_DIR:-/nonexistent}/grafana_mcp_token" 2>/dev/null)"
   check "grafana (read tools)" sh -c "curl -fsS -m 30 -X POST '$(svc grafana-mcp 8087)/mcp/read' -H 'Authorization: Bearer $gftoken' -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' -d '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}' | grep -q query_prometheus"
-elif echo "$gf_health" | grep -q '"ok":false' && ! echo "$gf_health" | grep -q "not set"; then
+elif echo "$gf_health" | grep -q '"ok":false' && ! unconfigured "$gf_health"; then
   # Set up but not signed in, or Grafana stopped accepting the sign-in.
-  check "grafana sign-in" sh -c "echo '$(echo "$gf_health" | cut -c1-140)' | grep -o '\"detail\":\"[^\"]*' | cut -d'\"' -f4 | grep . || echo 'grafana-mcp unreachable'; exit 1"
+  check "grafana sign-in" sign_in_detail "$gf_health" grafana
 else
   printf '  skip  grafana (off, or its address is not set: its setup on the board)\n'
 fi
@@ -150,9 +160,9 @@ ch_health="$(curl -s -m 10 "$(svc clickhouse-mcp 8088)/healthz" 2>/dev/null)"
 if echo "$ch_health" | grep -q '"ok":true'; then
   chtoken="$(cat "${AIDENHQ_SECRETS_DIR:-/nonexistent}/clickhouse_mcp_token" 2>/dev/null)"
   check "clickhouse (read tools)" sh -c "curl -fsS -m 30 -X POST '$(svc clickhouse-mcp 8088)/mcp/read' -H 'Authorization: Bearer $chtoken' -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' -d '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}' | grep -q run_select_query"
-elif echo "$ch_health" | grep -q '"ok":false' && ! echo "$ch_health" | grep -q "not set"; then
+elif echo "$ch_health" | grep -q '"ok":false' && ! unconfigured "$ch_health"; then
   # Set up but not signed in, or ClickHouse stopped accepting the sign-in.
-  check "clickhouse sign-in" sh -c "echo '$(echo "$ch_health" | cut -c1-140)' | grep -o '\"detail\":\"[^\"]*' | cut -d'\"' -f4 | grep . || echo 'clickhouse-mcp unreachable'; exit 1"
+  check "clickhouse sign-in" sign_in_detail "$ch_health" clickhouse
 else
   printf '  skip  clickhouse (off, or its address is not set: its setup on the board)\n'
 fi
