@@ -283,9 +283,10 @@ export async function check(d: Deps, asked: Asked = null, candidate = ""): Promi
   if (cur) {
     try {
       // Graduated releases only, never said to the owner: a pre-release is a cut still being tested (or one that failed it).
-      // The host's candidate run looks at that one tag alone.
-      const stable = candidate ? null : await stableReleases(d);
-      const tags = newerTags(d, cur.name).filter((t) => (stable ? stable.has(t.name) : t.name === candidate));
+      // The host's candidate run looks at that one tag alone. The Releases API is read only when a tag is newer.
+      const newer = newerTags(d, cur.name);
+      const stable = candidate || !newer.length ? null : await stableReleases(d);
+      const tags = newer.filter((t) => (candidate ? t.name === candidate : !!stable?.has(t.name)));
       if (candidate && !tags.length) s.error = `${plain(candidate, 40)} isn't a release tag newer than ${cur.name}`;
       for (const tag of tags) {
         try {

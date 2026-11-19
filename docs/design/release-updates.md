@@ -41,8 +41,9 @@ charge: auto-updates on by default, off in Settings, and "Update now" for the im
   pre-release; every other check (main ancestry, fixed sources, no downgrade, the tested stamp) stays. The prepared release
   carries a `candidate` mark (its distro commit) in `data/updates/state.json`; the planner's `verify` accepts that pre-release
   only while the state's ready or filed release is that name and commit, so the exception travels with the one move it was
-  asked for and ends with its record. The variable is read by that CLI run alone: the kernel's own hourly check strips it, it
-  is no `instance.yaml` setting, and nothing an agent runs can set it or write the state file (the data dir is the host's).
+  asked for and ends with its record. The variable is read by that CLI run alone: the kernel's own hourly check strips it, and
+  it is no `instance.yaml` setting. The state file is in the host's data dir: no agent's container or computer mounts
+  `data/updates` (compose mounts only other subdirectories), so only the host's own processes can set the mark.
 - **The check** (`node kernel/src/updates.ts check`, run by the kernel hourly and at once on Update now) lists the distro
   repo's release tags (`git ls-remote` over https) newer than the release followed that are graduated, and takes the newest that passes
   verification (below): a refused one is told to the owner once and the next older is tried; a network error waits for the
