@@ -79,7 +79,7 @@ were withheld. PR title, body, comments and code are fenced as data throughout.
 ### Posting
 
 Code, never the model, turns findings into one GitHub review per head: inline comments with severity markers and a
-collapsed "why flagged", a summary, a neutral check run, and the severity line
+collapsed "why flagged", a summary, a commit status `aidenhq/review`, and the severity line
 `<!-- aidenhq-review: {"important":n,"nit":n,"pre_existing":n} -->`. Threads whose finding is gone on the next run are
 resolved; replies are read by the next run.
 
@@ -95,7 +95,7 @@ anything under src/billing"). It sees findings and metadata, never runs the revi
 
 ### Cost and learning
 
-Every run's spend is a flow fact; the Flow page gains a Review tab: reviews per day, cost per repo and per PR, findings
+Every run's spend is a flow fact; the Reviews page's Insights tab shows reviews per day, cost per repo and per PR, findings
 by severity, auto-resolved rate. Over `month_usd` a run is skipped with a comment saying why. A finding the author
 dismisses with a reason becomes a planted case for the review eval.
 
@@ -110,12 +110,57 @@ dismisses with a reason becomes a planted case for the review eval.
 - **Reviewers page:** the three defaults as cards (what each costs on average per PR, from real runs); "New reviewer"
   opens a form (engine, model, effort, finders, verify, context, focus) with a "try on a recent PR" button that runs it
   once and shows the findings before saving.
-- **Reviews page:** open and recent reviews per repo (PR, reviewer, findings by severity, cost, status), each opening the
+- **Reviews page** (board nav; tabs Reviews · Repos · Reviewers · Insights): open and recent reviews per repo (PR, reviewer, findings by severity, cost, status), each opening the
   findings with links to the GitHub comments; per-repo month spend against its cap.
 - **On GitHub:** the summary comment lists the commands (`@aiden review`, `… <reviewer>`, `always`, `stop`, `focus:`),
   and a skip says why (draft, fork, budget) instead of staying silent.
 - **First run guidance:** after the first review lands, a one-line tip offers adding a `REVIEW.md` with a starter
   template generated from the repo (what to always check, what not to report).
+
+## Simplifications (Codex review, 2026-11-19; all features kept)
+
+- **One watcher:** the Maintainer's watcher gains a PR event kind (own cursor, dedupe key, handler); watching a repo
+  for reviews never authorises fixes.
+- **One recipe, small engine adapters:** reviewers are data; fan-out, verifier, dedupe, schema check and ranking are
+  shared; an engine adapter only invokes and parses. Engine, model and effort are validated together before saving.
+- **One source for the review code:** CI's `code-review.mjs`, `review-tools.mjs`, `codegenie-gate.mjs`,
+  `codegenie-prior.mjs` and `review-checklist.mjs` move to one shared source synced into the CI template and this
+  module (`scripts/sync-shared.mjs`); CI keeps blocking, this stays advisory.
+- **No new publisher:** `github_pr_review` grows inline comment batches, thread reads and resolution, and an explicit
+  identity; the AI reviewer approves the write as today; code renders the findings.
+- **One status, any identity:** a commit status (works with a user sign-in and the App) instead of a check run (App
+  only); the severity line goes in the summary.
+- **One config authority:** `settings.code_review` in instance.yaml (schema and defaults in the module); the board and
+  Aiden write it through the normal settings write. `always`/`stop`/`focus` are PR state, not config.
+- **One page:** the board's **Reviews** page (Reviews · Repos · Reviewers · Insights); Insights reads flow facts.
+- **Triage is a reviewer too:** the manager's summary and risk label come from a cheap `triage` profile on the same
+  runner; the Reviewer Manager agent stays thin (conversation, setup, escalation, replies).
+- **Own eval set:** review fixtures separate from the write-gate cases; a reasoned dismissal becomes a candidate
+  fixture, promoted after its expected answer is checked.
+
+## Cheap additions
+
+- `@aiden review full` (not incremental) and a coverage line on every review: files reviewed and excluded, reviewer,
+  cost, anything incomplete. Partial coverage is never presented as clean.
+- `@aiden review status` / `help`, and one updating acknowledgement (queued, running, done, skipped and why).
+- Effective config per PR (which reviewer, which `REVIEW.md` sections applied), useful in monorepos.
+- Flag guidance (REVIEW.md, AGENTS.md) the change makes stale.
+- "Copy as fix brief" on a finding: location, evidence and the wanted outcome, for the author's coding agent.
+
+## Risks handled
+
+- **Check jobs:** gain a generic model token for review recipes, a bounded findings artifact bound into the receipt
+  (repo, base, head, reviewer, context and recipe hashes, incremental baseline), and history for base diffs.
+- **Forks and access:** fork heads, private forks, deleted branches, revoked access and SSO; commands are authorised
+  against the commenter's current repo permission.
+- **Injection and privacy:** every engine runs without repo hooks, plugins, shell or network beyond the model gateway;
+  replies and context are fenced; base guidance grants no authority; posted evidence is redacted.
+- **Incremental:** force-pushes, retargets and changed guidance or reviewers reset the baseline; a missing finding
+  doesn't prove a fix: previous findings are rechecked before Aiden resolves only its own threads.
+- **Spam and loops:** pushes are debounced, stale runs superseded, command IDs deduped, escalation and reply loops
+  bounded, skip notices updated in place.
+- **Scale and cost:** pagination, rate-limit backoff, huge, binary and generated files, submodules; budget reserved
+  atomically across finders, verifier, triage and retries, under the instance-wide cap.
 
 ## Build lanes (after approval)
 
@@ -126,4 +171,4 @@ dismisses with a reason becomes a planted case for the review eval.
 
 ## Left to the builder
 
-The finder and verifier prompts, the exact JSON schema, App permission bump (`pull_requests: write`, `checks: write`).
+The finder and verifier prompts, the exact JSON schema, App permission bump (`pull_requests: write`) for bot posting.
