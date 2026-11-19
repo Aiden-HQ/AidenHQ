@@ -244,6 +244,11 @@ test("a failed record: the owner is told why, the night doesn't file it again, U
   w.records[filed[0].record] = { state: "failed", outcome: { text: "**Landed, but the apply failed** (exit-code)\nlog" } };
   await u.tick();
   assert.equal(readState(w.d.dir).last.outcome, "failed");
+  // A killed install claims nothing: still on the release it ran, nothing in flight, the release recorded as failed, one notice.
+  const st = readState(w.d.dir);
+  assert.deepEqual([st.current.name, st.flight, st.failed], ["2026.11.2", undefined, ["2026.11.3"]]);
+  await u.tick();
+  assert.equal(lines.filter((l) => /didn't install/.test(l)).length, 1);
   assert.ok(lines.some((l) => /2026\.11\.3 didn't install: \*\*Landed, but the apply failed\*\* \(exit-code\)\. The night won't file it again/.test(l)));
   u.checkNow();
   await u.tick();

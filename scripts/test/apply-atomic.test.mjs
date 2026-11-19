@@ -278,6 +278,24 @@ test("a first install's failed health check isn't re-applied as its own last kno
   assert.deepEqual(w.gens().map((x) => [x.n, x.health]), [[1, "failed"]]);
 });
 
+// An older release's updater unit ran the apply as its child: the apply removes that unit only after its health verdict.
+test("the retired update units are removed once the generation is good, never while a failed one is being reverted", async () => {
+  const w = world();
+  assert.equal((await w.run()).status, 0);
+  const units = w.d("home/.config/systemd/user");
+  mkdirSync(units, { recursive: true });
+  for (const u of ["aidenhq-update.service", "aidenhq-update.timer"]) writeFileSync(join(units, u), "[Unit]\n");
+  writeFileSync(w.d("ctrl/break"), "");
+  const p2 = w.commitProduct("2", { BAD_HEALTH: "" });
+  w.commitInstance(p2);
+  assert.equal((await w.run()).status, 1);
+  assert.ok(existsSync(join(units, "aidenhq-update.service")), "a failed generation leaves them");
+  rmSync(w.d("ctrl/break"));
+  w.commitInstance(w.p1, "x: 1\n");
+  assert.equal((await w.run()).status, 0);
+  assert.ok(!existsSync(join(units, "aidenhq-update.service")) && !existsSync(join(units, "aidenhq-update.timer")), "a good one removes them");
+});
+
 test("A14: a post-apply health failure reverts to the LKG and marks the generation failed; the pair is held until --retry", async () => {
   const w = world();
   assert.equal((await w.run()).status, 0);
