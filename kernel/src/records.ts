@@ -72,6 +72,12 @@ export const digestOf = (r: Pick<Rec, "kind" | "args" | "targets" | "executor" |
 /** What filing takes: the content, its tier, and the optional requester fields (tier.ts, the runner's plan). */
 export type Filing = Omit<Rec, "id" | "digest" | "review" | "owner_reason" | "decided_by" | "via" | "outcome" | "created_at" | "updated_at" | "replaced" | "decided_at" | "review_code">;
 
+/** The PR a write's args name (`prs` of a merge, `only` of a push or PR), as flow's lowercase `owner/repo#n`; none when no PR number exists yet. */
+const prOf = (args: unknown): { pr?: string } => {
+  const a = (args ?? {}) as { prs?: { repo?: unknown; number?: unknown }[]; only?: { repo?: unknown; number?: unknown }[] };
+  const p = [...(a.prs ?? []), ...(a.only ?? [])].find((x) => typeof x?.repo === "string" && Number.isInteger(x.number));
+  return p ? { pr: `${p.repo}#${p.number}`.toLowerCase() } : {};
+};
 export function openRecords(file: string, now = () => new Date()) {
   mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
   const db = new DatabaseSync(file);
@@ -142,7 +148,7 @@ export function openRecords(file: string, now = () => new Date()) {
           .run(id, r.kind, r.module, JSON.stringify(r.args ?? null), JSON.stringify(r.targets), JSON.stringify(r.executor), r.policy, digest, r.tier, r.merit ?? r.tier, r.panel ? 1 : 0, JSON.stringify(r.card), JSON.stringify(r.requester), r.task, r.state, at, at,
             r.review_first ?? null, r.rule ?? null, r.identifier ?? null, replaced ? 1 : 0, r.target ?? null, r.content ?? null, r.chain ?? null, r.cap ? JSON.stringify(r.cap) : null);
         const requester = r.requester.key || r.requester.module || "";
-        fact(id, "record.filed", "filed", r.requester.key ? `agent:${r.requester.key}` : r.requester.module ? `module:${r.requester.module}` : "kernel", () => ({ kind: r.kind, tier: r.tier, panel: r.panel, requester, state: r.state }));
+        fact(id, "record.filed", "filed", r.requester.key ? `agent:${r.requester.key}` : r.requester.module ? `module:${r.requester.module}` : "kernel", () => ({ kind: r.kind, tier: r.tier, panel: r.panel, requester, state: r.state, ...prOf(r.args) }));
         db.exec("COMMIT");
       } catch (e) {
         db.exec("ROLLBACK");

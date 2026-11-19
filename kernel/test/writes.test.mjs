@@ -424,6 +424,9 @@ test("records write facts in the same transaction", () => {
     ["record.decided", "owner:approved", "account:a1"], ["record.claimed", "claimed", "kernel"], ["record.landed", "done", "kernel"]]);
   assert.ok(rows.every((f) => f.subject === `record:${r.id}`));
   assert.deepEqual(rows[0].data, { kind: "twin.post_note", tier: 1, panel: false, requester: "ada", state: "review" });
+  const merge = records.file(filing({ kind: "codehost-github.merge", args: { prs: [{ repo: "Acme/App", number: 7, head: "a".repeat(40) }] }, task: "t2" }));
+  assert.equal(facts.forTask("t2")[0].data.pr, "acme/app#7", "a PR's write names it, lowercase");
+  assert.ok(merge.id);
   const zero = records.file(filing({ tier: 0, state: "approved", task: "t0" }));
   records.claim(zero.id);
   records.finish(zero.id, true, "ran");
