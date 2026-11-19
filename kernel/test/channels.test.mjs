@@ -88,6 +88,8 @@ test("A2: a module without speaks-as-owner can't fetch cards, decide or post the
   // Reads: a channel or kernel.cp-read, read routes only; wakes: kernel.wake only.
   assert.equal((await k.v1("GET", "/v1/cp/read/api/issues/WOR-1", undefined, LANE)).status, 200);
   assert.equal((await k.v1("GET", "/v1/cp/read/api/issues/WOR-1", undefined, PLAIN)).status, 403);
+  // Dispatch reads a routine run's routine before it starts the run (routines.ts coalesce).
+  assert.notEqual((await k.v1("GET", "/v1/cp/read/api/routines/r-1", undefined, LANE)).status, 403);
   assert.equal((await k.v1("GET", "/v1/cp/read/api/agents/me/keys", undefined, TG)).status, 403);
   assert.equal((await k.v1("GET", "/v1/cp/read/api/issues/../agents", undefined, TG)).status, 403);
   assert.equal((await k.v1("POST", "/v1/wakes", { task: "WOR-1", text: "x" }, TG)).status, 403);

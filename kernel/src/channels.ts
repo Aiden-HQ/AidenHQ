@@ -291,4 +291,6 @@ export const CP_READ_PATHS: RegExp[] = [
   new RegExp(`^/api/issues/${ID}/attachments$`),
   new RegExp(`^/api/heartbeat-runs/${ID}/log$`),
   new RegExp(`^/api/agents/${ID}$`),
+  // A routine's concurrency policy: dispatch folds a routine run into an earlier open one unless the routine enqueues every run.
+  new RegExp(`^/api/routines/${ID}$`),
 ];
