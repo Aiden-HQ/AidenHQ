@@ -8,15 +8,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import YAML from "yaml";
 import { createApply } from "../src/apply.ts";
-import { applyParts, createApplyPlanner } from "../src/apply-tier.ts";
+import { applyParts, createApplyPlanner, routingDiff } from "../src/apply-tier.ts";
 import { highest } from "../src/tier.ts";
 import { KERNEL_KINDS } from "../src/kinds.ts";
 import { openRecords } from "../src/records.ts";
-import { createRouting, routingDiff } from "../src/routing-tune.ts";
+import { createRouting } from "../src/routing-tune.ts";
 import { checkoutMain } from "../src/settings-change.ts";
 import { createWakes } from "../src/wakes.ts";
 import { createWrites } from "../src/writes.ts";
 import { localApply } from "../../modules/codehost-local/src/apply.ts";
+import { kernel, moduleServer } from "./helpers.mjs";
 
 process.env.GIT_CONFIG_GLOBAL = "/dev/null";
 process.env.GIT_CONFIG_NOSYSTEM = "1";
@@ -128,13 +129,19 @@ test("the Steward's change is written by the kernel and filed as one Tier 1 rout
   await assert.rejects(w.routing.tune(STEWARD, "t-steward", { base_sha: r.sha, team: "engineering", weights: { load: 2 }, decisions: [t], hypothesis: "more", revert: REVERT }), /still applied: one experiment at a time/);
 });
 
-test("autonomy off: the reviewer's yes on a routing change goes on to the owner", async () => {
+test("autonomy off: the reviewer's yes goes on to the owner; the owner's no closes it and its content stays refused", async () => {
   const w = world({ autonomy: "off" });
   const t = w.decide();
   const { base_sha } = await w.routing.evidence({});
   const r = await w.routing.tune(STEWARD, "t-steward", { base_sha, team: "engineering", weights: { continuity: 2 }, decisions: [t], hypothesis: "continuity matters", revert: REVERT });
   const { record } = await w.writes.review(r.record, { input: { tier: 1, rule: "routing-only", reason: "routing" }, request: {} });
   assert.equal(record.state, "owner");
+  // The owner's no closes the experiment; one proposal a day still holds, and the same change is never filed again unchanged.
+  w.writes.decide(r.record, { digest: record.digest, decision: "reject", by: "owner:telegram", via: "telegram" });
+  const again = { base_sha, team: "engineering", weights: { continuity: 2 }, decisions: [t], hypothesis: "again", revert: REVERT };
+  await assert.rejects(w.routing.tune(STEWARD, "t-steward", again), /already proposed today/);
+  w.db.prepare("UPDATE routing_experiments SET day = '2000-01-01'").run();
+  await assert.rejects(w.routing.tune(STEWARD, "t-steward", again), /was not approved as experiment/);
 });
 
 test("refused before anything is written: a stale base, an unknown member, out-of-bounds weights, other fields, uncited evidence; two at once file one", async () => {
@@ -167,20 +174,20 @@ test("the one routing gate: only members' repos and weights move; anything else,
   assert.ok("problem" in routingDiff(INSTANCE, `${INSTANCE}  engineering:\n    template: x.y\n`), "a repeated key");
   const aliased = INSTANCE.replace("kai: { name: Kai }", "kai: &k { name: Kai, repos: [acme/api] }").replace("    caps: { day_usd: 50 }", "    defaults: *k\n    caps: { day_usd: 50 }");
   assert.ok("problem" in routingDiff(INSTANCE, aliased), "an alias");
-  // The planner's rules: routing-only is the reviewer's; a routing change beside a setting is the panel's for the setting.
-  const parts = (h) => highest(applyParts({ files: ["instance.yaml"], base: { "instance.yaml": INSTANCE }, head: { "instance.yaml": h } }));
-  assert.deepEqual([parts(head((t) => (t.members.kai.repos = ["acme/api"]))).rule, parts(head((t) => (t.members.kai.repos = ["acme/api"]))).tier], ["routing-only", 1]);
-  assert.equal(parts(head((t) => (t.members.kai.model = "~x/y"))).panel, true);
-  const mixed = YAML.parse(head((t) => (t.members.kai.repos = ["acme/api"])));
-  mixed.settings = { autonomy: "full" };
-  assert.notEqual(parts(YAML.stringify(mixed)).rule, "routing-only");
+  // The planner's rules: the loop's own commit, proven, is the reviewer's (routing-only), and one that moves more is refused;
+  // anyone else's teams change keeps its rule (the panel's), routing leaves included.
+  const parts = (h, routingTune = true) => highest(applyParts({ files: ["instance.yaml"], base: { "instance.yaml": INSTANCE }, head: { "instance.yaml": h }, routingTune }));
+  const repos = head((t) => (t.members.kai.repos = ["acme/api"]));
+  assert.deepEqual([parts(repos).rule, parts(repos).tier, parts(repos).panel], ["routing-only", 1, undefined]);
+  assert.deepEqual([parts(repos, false).rule, parts(repos, false).panel], ["teams", true]);
+  assert.equal(parts(head((t) => (t.members.kai.model = "~x/y"))).reject, true);
 });
 
 test("a revert the criterion calls restores only the experiment's own values still as it set them, through the same reviewed apply", async () => {
   const w = world();
   const t = w.decide();
   const { base_sha } = await w.routing.evidence({});
-  const r = await w.routing.tune(STEWARD, "t-steward", { base_sha, team: "engineering", repos: { mina: ["acme/*"] }, weights: { repo: 4 }, decisions: [t], hypothesis: "h", revert: REVERT });
+  const r = await w.routing.tune(STEWARD, "t-steward", { base_sha, team: "engineering", repos: { mina: ["acme/*"] }, weights: { repo: 4 }, decisions: [t], hypothesis: "h", revert: { metric: "reopen_rate", min_sample: 1, threshold: 0.5, deadline_days: 3 } });
   await w.writes.review(r.record, { input: { tier: 1, rule: "routing-only", reason: "routing" }, request: {} });
   await w.land(r.record);
   // The owner changes the repo weight afterwards, straight on main.
@@ -191,16 +198,48 @@ test("a revert the criterion calls restores only the experiment's own values sti
   git(src, "commit", "-qam", "owner: repo weight 5");
   git(src, "push", "-q", "origin", "main");
   assert.equal((await w.routing.judge(STEWARD, "t-steward")).measured.sample, 0, "no decision since it applied: still measuring");
-  w.decide({ at: Date.now(), blocked: true, status: "blocked" });
+  // A task routed since: done, after the grader's finish check had reopened it once (a verdict the kernel recorded).
+  const since = w.decide({ at: Date.now() });
+  w.db.prepare("INSERT INTO events (id, type, at, data) VALUES ('e-1', 'finish.verdict', ?, ?)").run(new Date().toISOString(), JSON.stringify({ task: since, check: "grading.grade", verdict: "reopen" }));
   await settle();
   const j = await w.routing.judge(STEWARD, "t-steward");
   const rb = w.records.get(j.rollback.record);
   assert.deepEqual([rb.rule, rb.tier, rb.requester.key], ["routing-only", 1, "fleet-steward"]);
-  assert.match(rb.card.details, /^Rollback of routing experiment[\s\S]*blocked_rate 1 above 0.5/);
+  assert.match(rb.card.details, /^Rollback of routing experiment[\s\S]*reopen_rate 1 above 0.5/);
   await w.writes.review(rb.id, { input: { tier: 1, rule: "routing-only", reason: "routing" }, request: {} });
   await w.land(rb.id);
   const now = w.yamlAt("main").teams.engineering;
   assert.deepEqual(now.members.mina.repos, ["acme/web"], "its own value restored");
   assert.deepEqual(now.routing.weights, { repo: 5 }, "the owner's later change stays");
   assert.deepEqual(await w.routing.judge(STEWARD, "t-steward"), { open: null });
+});
+
+test("POST /v1/routing/<op>: only a kernel.routing module, serving a routing-tuner job's call in flight; the job comes from its own token", async (t) => {
+  const seen = [];
+  const routing = { evidence: async () => ({}), replay: () => ({}), tune: async (requester, task) => (seen.push({ requester, task }), {}), judge: async (requester, task) => (seen.push({ requester, task }), { open: null }) };
+  let k;
+  // A module's tool that forwards to the route with its own token and the caller assertion it was handed.
+  const forward = (key) => async (msg, req) => {
+    const r = await fetch(`${k.url}/v1/routing/${msg.params.arguments.op}`, { method: "POST", headers: { authorization: `Bearer ${key}`, "x-aidenhq-caller": req.headers["x-aidenhq-caller"], "content-type": "application/json" }, body: "{}" });
+    return { content: [{ type: "text", text: JSON.stringify({ status: r.status, json: await r.json() }) }] };
+  };
+  const fleet = await moduleServer(t, { key: "fleet-key", tools: ["go"], answer: forward("fleet-key") });
+  const other = await moduleServer(t, { key: "other-key", tools: ["go"], answer: forward("other-key") });
+  const conn = (m, url) => ({ url: `${url}/mcp`, auth_secret: `${m}_key`, module: m, returns: "trusted", tools: { read: ["go"], write: [], destructive: [] } });
+  k = await kernel(t, {
+    routing,
+    agents: { steward: { id: "a-steward" }, eve: { id: "a-eve" } },
+    grants: { "a-steward": { key: "fleet-steward", roles: ["routing-tuner"], tools: { fleet: ["go"], other: ["go"] } }, "a-eve": { key: "eve", tools: { fleet: ["go"] } } },
+    modules: { modules: { fleet: { roles: ["kernel.routing"] } } },
+    secrets: { fleet_key: "fleet-key", other_key: "other-key" },
+    connections: { fleet: conn("fleet", fleet.url), other: conn("other", other.url) },
+  });
+  const go = async (who, c, op) => JSON.parse((await (await k.call(c, who, { method: "tools/call", params: { name: "go", arguments: { op } } })).json()).result.content[0].text);
+  assert.deepEqual(await go("steward", "fleet", "judge"), { status: 200, json: { open: null } });
+  assert.deepEqual([seen[0].requester.key, seen[0].requester.kind, seen[0].task], ["fleet-steward", "run", "TASK-1"]);
+  assert.equal((await go("eve", "fleet", "judge")).status, 403, "an agent without routing-tuner");
+  assert.equal((await go("steward", "other", "judge")).status, 403, "a module without kernel.routing");
+  const bare = await fetch(`${k.url}/v1/routing/judge`, { method: "POST", headers: { authorization: "Bearer fleet-key" }, body: "{}" });
+  assert.equal(bare.status, 401, "no call in flight");
+  assert.equal(seen.length, 1);
 });

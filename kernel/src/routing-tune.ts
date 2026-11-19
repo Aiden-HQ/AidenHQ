@@ -7,7 +7,8 @@
 // - replay: code re-runs the recorded decisions (each decision's candidate snapshot) with other weights or repos.
 // - tune (routing.tune): the typed change, written by the kernel as a commit to instance.yaml (the #742 writer's code host) and
 //   filed as one kernel.apply with the Steward as its requester: its tier is computeTier's alone (apply-tier.ts proposes
-//   Tier 1 "routing-only" for a diff routingDiff proves). Anything outside those leaves is refused here, never escalated.
+//   Tier 1 "routing-only" for a commit of this loop that its routingDiff proves). Anything outside those leaves is refused
+//   here, never escalated.
 // - judge: the open experiment against its revert criterion (a finite schema); a revert rolls back only its own leaves still at
 //   their applied values, through the same reviewed apply.
 // One experiment is open at a time and one proposal is filed per UTC day: both held by unique indexes in kernel.db.
@@ -16,9 +17,10 @@ import type { DatabaseSync } from "node:sqlite";
 import YAML from "yaml";
 import type { Write } from "./apply.ts";
 import type { Api } from "./channels.ts";
+import { routingDiff, type Leaf } from "./apply-tier.ts";
 import { canonical, type Rec, type Records, type Requester } from "./records.ts";
 import { yamlText } from "./settings-change.ts";
-import { DEFAULT_WEIGHTS, pickMember, teamProblems, type Candidate, type Weights } from "./team-routing.ts";
+import { DEFAULT_WEIGHTS, pickMember, type Candidate, type Weights } from "./team-routing.ts";
 import type { RouteSnapshot } from "./wakes.ts";
 
 export class Refused extends Error { status = 422; }
@@ -26,53 +28,6 @@ const refuse = (msg: string): never => { throw new Refused(msg); };
 type Dict = Record<string, any>;
 const isMap = (v: unknown): v is Dict => !!v && typeof v === "object" && !Array.isArray(v);
 const same = (a: unknown, b: unknown) => canonical(a ?? null) === canonical(b ?? null);
-
-/** One changed value: its path in instance.yaml and its value before and after (undefined: absent). */
-export type Leaf = { path: string[]; before?: unknown; after?: unknown };
-
-/** A team without the leaves the loop may change (members' repos, routing weights): everything else must stay equal. */
-function fixedPart(t: Dict): Dict {
-  const out: Dict = { ...t, members: Object.fromEntries(Object.entries(isMap(t.members) ? t.members : {}).map(([k, m]) => [k, isMap(m) ? { ...m, repos: undefined } : m])) };
-  if (isMap(t.routing)) { const { weights: _w, ...rest } = t.routing; out.routing = Object.keys(rest).length ? rest : undefined; }
-  return out;
-}
-
-/** Whether a YAML node holds an alias or a merge key: a value shared with another place, which a leaf-wise check can't see. */
-function shares(node: unknown): boolean {
-  let found = false;
-  if (node) YAML.visit(node as YAML.Node, { Alias: () => ((found = true), YAML.visit.BREAK), Pair: (_k, p) => { if (YAML.isScalar(p.key) && p.key.value === "<<") return ((found = true), YAML.visit.BREAK); } });
-  return found;
-}
-
-/**
- * The routing diff between two instance.yaml texts, or why it isn't one: only members' `repos` and `routing.weights` move, on
- * teams and members both sides have, every value valid by the one team schema (team-routing.ts), and no alias, merge key or
- * duplicate key anywhere under `teams`. Other top-level keys aren't looked at (apply-tier judges each key on its own; the
- * writer checks them equal). The single routing gate: apply-tier.ts and the writer both call it.
- */
-export function routingDiff(baseText: string | undefined, headText: string | undefined): { leaves: Leaf[] } | { problem: string } {
-  const docs = [baseText, headText].map((t) => YAML.parseDocument(String(t ?? "")));
-  if (docs.some((d) => d.errors.length)) return { problem: "instance.yaml doesn't parse (or repeats a key)" };
-  if (docs.some((d) => shares(d.get("teams", true)))) return { problem: "teams: uses an alias or a merge key" };
-  const [b, h] = docs.map((d) => (d.toJS() ?? {}).teams);
-  if (!isMap(b) || !isMap(h)) return { problem: "teams: must be a map on both sides" };
-  if (!same(Object.keys(b).sort(), Object.keys(h).sort())) return { problem: "a team is added or removed" };
-  const leaves: Leaf[] = [];
-  for (const t of Object.keys(h)) {
-    if (same(b[t], h[t])) continue;
-    if (!isMap(b[t]) || !isMap(h[t])) return { problem: `teams.${t}: not a map` };
-    if (!same(fixedPart(b[t]), fixedPart(h[t]))) return { problem: `teams.${t}: changes more than members' repos and routing weights` };
-    const problems = teamProblems(t, h[t]);
-    if (problems.length) return { problem: problems[0]! };
-    for (const m of Object.keys(h[t].members)) {
-      const [x, y] = [b[t].members[m]?.repos, h[t].members[m]?.repos];
-      if (!same(x, y)) leaves.push({ path: ["teams", t, "members", m, "repos"], before: x, after: y });
-    }
-    const [bw, hw] = [b[t].routing?.weights ?? {}, h[t].routing?.weights ?? {}];
-    for (const w of Object.keys(DEFAULT_WEIGHTS)) if (!same(bw[w], hw[w])) leaves.push({ path: ["teams", t, "routing", "weights", w], before: bw[w], after: hw[w] });
-  }
-  return leaves.length ? { leaves } : { problem: "teams: nothing changes" };
-}
 
 /** The revert criterion: a metric over the team's decisions since the change applied, above `threshold` on at least `min_sample`. */
 export const METRICS = { reopen_rate: "share of finished or reopened tasks that were reopened", cycle_hours: "mean hours from routing to done", blocked_rate: "share of decisions with no member to take the task" } as const;
@@ -167,7 +122,7 @@ export function createRouting(d: RoutingDeps) {
         status: t.status === 200 ? String(t.json?.status ?? "unknown") : "missing",
         cycle_hours: done ? Math.round(((Date.parse(t.json.completedAt) - r.at) / 3_600_000) * 100) / 100 : null,
         reopens: (q("SELECT COUNT(*) AS n FROM wakes WHERE task = ? AND cause = 'reopen'").get(r.task) as { n: number }).n,
-        gate_reopens: (q("SELECT COUNT(*) AS n FROM events WHERE type = 'finish.reopened' AND json_extract(data, '$.task') = ?").get(r.task) as { n: number }).n,
+        gate_reopens: (q("SELECT COUNT(*) AS n FROM events WHERE type = 'finish.verdict' AND json_extract(data, '$.task') = ? AND json_extract(data, '$.verdict') = 'reopen'").get(r.task) as { n: number }).n,
       });
     }
     return out;

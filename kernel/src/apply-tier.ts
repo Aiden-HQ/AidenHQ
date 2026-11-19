@@ -19,8 +19,8 @@ import { authorityLines, classifyModules, diffAll, forkChanges, grantOverrides, 
 import { effective } from "../../scripts/compiler/release.ts";
 import { hostFetch, officialSides, remoteCodeText, withRemote } from "../../scripts/compiler/sources.ts";
 import { REJECT, T, highest, meritOwner, type Part, type ReviewFirst } from "./tier.ts";
-import { UPDATER, type Requester } from "./records.ts";
-import { routingDiff } from "./routing-tune.ts";
+import { UPDATER, canonical, type Requester } from "./records.ts";
+import { DEFAULT_WEIGHTS, teamProblems } from "./team-routing.ts";
 
 /** Authority-expanding: the reviewer and a second reviewer on another model family must both approve. */
 export const PANEL = (rule: string, reason: string): Part => ({ tier: 1, rule, reason, panel: true });
@@ -245,14 +245,65 @@ function instanceParts(s: any) {
         }
       }
     } else if (k === "teams") {
-      // Only members' repos and routing weights, proven by the one routing gate (routing-tune.ts routingDiff): routing data,
-      // the reviewer's. A team's day cap is a spend cap: the owner's authority. Members and the rest: the panel's.
-      const routing = routingDiff(s.base?.["instance.yaml"], s.head?.["instance.yaml"]);
-      if ("leaves" in routing) parts.push(T(1, "routing-only", `team routing only: ${routing.leaves.map((l) => l.path.slice(1).join(".")).join(", ")}`.slice(0, 300)));
+      // The routing learning loop's own commit (the kernel wrote it: `s.routingTune`), proven by the one routing gate to move
+      // only members' repos and routing weights: routing data, the reviewer's; anything more is refused. Any other change:
+      // a team's day cap is a spend cap, the owner's authority; members, repos, weights and the rest, the panel's.
+      const routing = s.routingTune ? routingDiff(s.base?.["instance.yaml"], s.head?.["instance.yaml"]) : undefined;
+      if (routing) parts.push("leaves" in routing ? T(1, "routing-only", `team routing only: ${routing.leaves.map((l) => l.path.slice(1).join(".")).join(", ")}`.slice(0, 300)) : REJECT("routing-scope", `a routing change moves only members' repos and routing weights: ${routing.problem}`));
       else for (const t of changedKeys(base.teams, head.teams)) parts.push(!eq(base.teams?.[t]?.caps, head.teams?.[t]?.caps) ? OWNER_ONLY("team-caps", `teams ${t}: its day cap is the owner's authority`) : PANEL("teams", `changes team ${t}`));
     } else parts.push(PANEL("instance-key", `changes ${k} in instance.yaml`));
   }
   return parts;
+}
+
+// ---- Team routing (the learning loop, routing-tune.ts): the one routing gate ----
+/** One changed value: its path in instance.yaml and its value before and after (undefined: absent). */
+export type Leaf = { path: string[]; before?: unknown; after?: unknown };
+const isDict = (v: unknown): v is Record<string, any> => !!v && typeof v === "object" && !Array.isArray(v);
+const sameValue = (a: unknown, b: unknown) => canonical(a ?? null) === canonical(b ?? null);
+
+/** A team without the leaves the loop may change (members' repos, routing weights): everything else must stay equal. */
+function fixedPart(t: Record<string, any>): Record<string, any> {
+  const out: Record<string, any> = { ...t, members: Object.fromEntries(Object.entries(isDict(t.members) ? t.members : {}).map(([k, m]) => [k, isDict(m) ? { ...m, repos: undefined } : m])) };
+  if (isDict(t.routing)) { const { weights: _w, ...rest } = t.routing; out.routing = Object.keys(rest).length ? rest : undefined; }
+  return out;
+}
+
+/** Whether a YAML node holds an alias or a merge key: a value shared with another place, which a leaf-wise check can't see. */
+function shares(node: unknown): boolean {
+  let found = false;
+  if (node) YAML.visit(node as YAML.Node, { Alias: () => ((found = true), YAML.visit.BREAK), Pair: (_k, p) => { if (YAML.isScalar(p.key) && p.key.value === "<<") return ((found = true), YAML.visit.BREAK); } });
+  return found;
+}
+
+/**
+ * The routing diff between two instance.yaml texts, or why it isn't one: only members' `repos` and `routing.weights` move, on
+ * teams and members both sides have, every value valid by the one team schema (team-routing.ts), and no alias, merge key or
+ * duplicate key anywhere under `teams`. Other top-level keys aren't looked at (apply-tier judges each key on its own; the
+ * writer checks them equal). The single routing gate: apply-tier.ts and the writer both call it.
+ */
+export function routingDiff(baseText: string | undefined, headText: string | undefined): { leaves: Leaf[] } | { problem: string } {
+  const docs = [baseText, headText].map((t) => YAML.parseDocument(String(t ?? "")));
+  if (docs.some((d) => d.errors.length)) return { problem: "instance.yaml doesn't parse (or repeats a key)" };
+  if (docs.some((d) => shares(d.get("teams", true)))) return { problem: "teams: uses an alias or a merge key" };
+  const [b, h] = docs.map((d) => (d.toJS() ?? {}).teams);
+  if (!isDict(b) || !isDict(h)) return { problem: "teams: must be a map on both sides" };
+  if (!sameValue(Object.keys(b).sort(), Object.keys(h).sort())) return { problem: "a team is added or removed" };
+  const leaves: Leaf[] = [];
+  for (const t of Object.keys(h)) {
+    if (sameValue(b[t], h[t])) continue;
+    if (!isDict(b[t]) || !isDict(h[t])) return { problem: `teams.${t}: not a map` };
+    if (!sameValue(fixedPart(b[t]), fixedPart(h[t]))) return { problem: `teams.${t}: changes more than members' repos and routing weights` };
+    const problems = teamProblems(t, h[t]);
+    if (problems.length) return { problem: problems[0]! };
+    for (const m of Object.keys(h[t].members)) {
+      const [x, y] = [b[t].members[m]?.repos, h[t].members[m]?.repos];
+      if (!sameValue(x, y)) leaves.push({ path: ["teams", t, "members", m, "repos"], before: x, after: y });
+    }
+    const [bw, hw] = [b[t].routing?.weights ?? {}, h[t].routing?.weights ?? {}];
+    for (const w of Object.keys(DEFAULT_WEIGHTS)) if (!sameValue(bw[w], hw[w])) leaves.push({ path: ["teams", t, "routing", "weights", w], before: bw[w], after: hw[w] });
+  }
+  return leaves.length ? { leaves } : { problem: "teams: nothing changes" };
 }
 
 /**
@@ -434,12 +485,15 @@ export function createApplyPlanner(h: {
     const bump = await productBump(productPin(baseI), productPin(headI), h.product);
     if (bump && "error" in bump) throw new Refused(bump.error);
     const st = { ...(c.files.includes("instance.yaml") ? h.modules(baseI, headI) : {}) } as ReturnType<typeof moduleTierState> & { remote?: string };
+    const notes = h.notes?.(a.sha);
+    // The routing learning loop's commit: only instance.yaml's teams may move (the rules refuse anything else).
+    if (notes && (c.files.length !== 1 || c.files[0] !== "instance.yaml" || changedKeys(parse(baseI), parse(headI)).some((k) => k !== "teams"))) throw new Refused("a routing change moves only instance.yaml's teams");
     // The kind's floor is 1 (every apply is read by the reviewer), so the rules' Tier 0 trial exceptions (ownerStarted,
     // trialNoTap) never lower anything here.
     const releaseVerified = !eq(parse(baseI)?.release, parse(headI)?.release) && (await updaterMove(requester, baseI, headI));
-    const t = meritOwner(highest(applyParts({ files: c.files, base: c.texts.base, head: c.texts.head, pin: bump ? { forward: bump.forward, back: bump.back } : null, roles: h.roles(), connections: h.connections(), moduleApps: h.moduleApps(), ownerStarted: false, trialNoTap: false, releaseVerified, ...st })));
+    const t = meritOwner(highest(applyParts({ files: c.files, base: c.texts.base, head: c.texts.head, pin: bump ? { forward: bump.forward, back: bump.back } : null, routingTune: Boolean(notes), roles: h.roles(), connections: h.connections(), moduleApps: h.moduleApps(), ownerStarted: false, trialNoTap: false, releaseVerified, ...st })));
     if (t.reject) throw new Refused(String(t.reason));
-    const details = [h.notes?.(a.sha), c.diff, bump && `${bump.title.replaceAll("`", "")}:\n${bump.log}`, st.remote, c.trial].filter(Boolean).join("\n\n");
+    const details = [notes, c.diff, bump && `${bump.title.replaceAll("`", "")}:\n${bump.log}`, st.remote, c.trial].filter(Boolean).join("\n\n");
     if (details.length > DETAILS_MAX) throw new Refused(`the change is too large to review (${details.length} characters with the commits and code it brings): split it into smaller ones`);
     const full = { repo, branch: a.branch, sha: a.sha, files: c.files, ...authorityArgs(st) };
     const card = applyCard(full, details);

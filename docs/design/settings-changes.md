@@ -72,17 +72,19 @@ module requests the kernel role `kernel.routing`). Its daily routine (`routing-r
 the Steward job's caller assertion; the kernel reads the job from its own token, never from the request.
 
 - **Evidence** (`routing_evidence`): the previous UTC day's decisions from `team_routes`, each with outcomes the kernel
-  recorded: task status and completion time, reopen wakes, and finish-gate reopens such as the grader's (`finish.reopened`
+  recorded: task status and completion time, reopen wakes, and finish-gate reopens such as the grader's (`finish.verdict`
   events). Never task text.
 - **Replay** (`routing_replay`): code re-runs each recorded decision's candidate snapshot (`team_routes.snapshot`) with the
   proposed weights or repos.
 - **Scope**: members' `repos` and `teams.<t>.routing.weights` on existing teams and members, within the one team schema
-  (weights 0 to 10, load at least 1). One gate, `routingDiff`, proves a diff is only that: the writer refuses anything else,
-  and the apply planner (`apply-tier.ts`) proposes Tier 1 `routing-only` for a diff it proves, whoever filed it.
+  (weights 0 to 10, load at least 1). One gate, `routingDiff` in `apply-tier.ts`, proves a diff is only that: the writer
+  refuses anything else, and the apply planner proposes Tier 1 `routing-only` for a commit this loop wrote (and refuses one
+  that moves more). Any other `teams` change keeps its own rules (the panel's; a day cap the owner's).
 - **Filing** (`routing_tune`): `{ base_sha, team, weights?, repos?, decisions, hypothesis, revert }`. The kernel writes the
   commit with the code host and files one `kernel.apply` with the Steward as its requester (no owner identity, no updater
   exemption). `computeTier` alone sets the tier: under autonomy `full` the AI reviewer approves it; with autonomy off or
-  `tier0`, a restrictive routine cap, or an owner veto, the owner decides as for any Tier 1 write. The card leads with the
+  `tier0`, a restrictive routine cap, or an owner veto, the owner decides as for any Tier 1 write. The routine sets
+  `autonomy: full`, so it is the instance's autonomy that decides. The card leads with the
   kernel's notes: the leaves, the replay, the revert criterion and the Steward's hypothesis, fenced as data.
 - **Limits** (kernel.db `routing_experiments`, held by unique indexes): one open experiment per instance, one proposal per
   UTC day. No minimum sample or wait before the next change (owner, 2026-11-19: active discovery). A change the review or the
