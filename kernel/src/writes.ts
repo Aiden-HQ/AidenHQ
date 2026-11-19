@@ -345,6 +345,20 @@ export function createWrites({ records, registry, connections, secret, resolver,
       if (r.state === "claimed") await execute(r, k);
       return r;
     },
+    /**
+     * A change request on this server asked for by the kernel itself, as the task's own agent (main.ts's auto-merge pass): its
+     * task pushed the head, so this is the local equivalent of the agents-org auto-merge, and no Engineer runs `aidenhq merge`.
+     * The same kind, planner, tier (Tier 1 `local-merge`) and reviewer as an Engineer's request: a repeat for the same change
+     * on the task replaces the open one, never files a second card.
+     */
+    async fileLocalMerge({ agent, key, name, task, args }: { agent: string; key: string; name: string; task: string; args: unknown }): Promise<Rec> {
+      const kind = "codehost-local.merge";
+      const k = kindOf_(kind);
+      if (!k || !inProcess(k)) throw fail(404, "unknown_kind", `no in-process kind ${kind}`);
+      const r = await file(kind, k, { agent, key, name, roles: [], kind: "run", task }, args, task);
+      if (r.state === "claimed") await execute(r, k);
+      return r;
+    },
     /** kernel.raise_cap, filed by the kernel itself (the model gateway): the owner's tap alone, with no reviewer call (the cap it raises would refuse one). */
     fileNative(kind: string, b: { task: string; identifier?: string; args: unknown; card: Card; reason: string; rule: string }): Rec {
       const k = kindOf_(kind)!;

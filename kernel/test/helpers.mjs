@@ -45,7 +45,7 @@ export const readBody = (req) => new Promise((r) => { let b = ""; req.on("data",
  * agents: { alias: {id, name, task?} }: each alias stands for a running kernel job of that agent on its task (TASK-1 by default; its authority frozen from
  * its grants); `call`, `v1` and `token(alias)` turn the alias into the job's real token. grants: the grants table's agents; connections(urls): config/kernel/connections.json from the fake servers' URLs.
  */
-export async function kernel(t, { agents = {}, grants = {}, settings = {}, connections, jobcaps = {}, secrets = {}, onControl, writes: kinds = {}, closed = [], modules = {}, board = async () => ({ status: 404, json: {} }), reviewer, native = {}, parents = {}, repos = {}, jobs: jobsApi, admission, outcomes, checks: checkTable, checkJobs, paths, job , routing } = {}) {
+export async function kernel(t, { agents = {}, grants = {}, settings = {}, connections, jobcaps = {}, secrets = {}, onControl, writes: kinds = {}, closed = [], modules = {}, board = async () => ({ status: 404, json: {} }), reviewer, native = {}, parents = {}, repos = {}, jobs: jobsApi, admission, outcomes, checks: checkTable, checkJobs, localChanges, paths, job, routing } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "kernel-"));
   const control = [];
   const cpServer = await serve(async (req, res) => {
@@ -106,7 +106,7 @@ export async function kernel(t, { agents = {}, grants = {}, settings = {}, conne
   const brake = createBrake({ db: records.db, owner });
   // The finish gate (checks.ts) over `checks`, config/kernel/checks.json's shape.
   // `checks` is the table, or a function (to stand for a file that fails to load).
-  const checks = checkTable ? createChecks({ db: records.db, registry: typeof checkTable === "function" ? checkTable : () => checkTable, owner, secret, resolver: createResolver(), log: logf, agentKey: (id) => grants[id]?.key, graded: (id) => grants[id]?.graded === true, pending: (task) => records.list(["review", "owner", "approved"], 100, { task }) }) : undefined;
+  const checks = checkTable ? createChecks({ db: records.db, registry: typeof checkTable === "function" ? checkTable : () => checkTable, owner, secret, resolver: createResolver(), log: logf, agentKey: (id) => grants[id]?.key, graded: (id) => grants[id]?.graded === true, pending: (task) => records.list(["review", "owner", "approved"], 100, { task }), ...(localChanges ? { localChanges } : {}) }) : undefined;
   // The fast lane's exchanges; agent posts (outcomes.ts's, once per job) are kept in `agentPosts`.
   const agentPosts = [];
   const lane = createLane({ once: createOnce(records.db), owner, grantsFile: grantsTable, postAsAgent: async (agent, task, job, body) => {

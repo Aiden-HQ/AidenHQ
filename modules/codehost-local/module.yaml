@@ -2,12 +2,15 @@ name: codehost-local
 description: "Repositories on this server as the code host: bare repos under the data dir, change requests as git refs, the checks receipt, and an atomic squash merge. No GitHub needed."
 license: MIT
 # The code host role (docs/design/codehost-local.md): it owns the org `local` (setup's local/aidenhq-instance included);
-# codehost-github owns every other org. The kernel runs it in process (src/host.ts: its write kinds, clone and snapshot;
-# src/apply.ts: the instance land); nothing here runs as a service.
+# codehost-github owns every other org. The kernel runs it in process, with no service and no GitHub App (src/host.ts declares
+# the `codehost-local.{push,pr,merge,close,create_repo}` write kinds and executes them against the bare repos, plus clone and
+# snapshot; src/apply.ts is the instance land). A green change asks for its merge itself (kernel/src/localmerge.ts, as the
+# task's own agent): Tier 1 `local-merge`, the AI reviewer's, so no Engineer runs `aidenhq merge` either.
 provides: [ codehost ]
 # A change request's checks (host.ts merges only on a passing receipt for its exact head): the same tests a GitHub change runs
 # (the secret scan, supply chain, lint, tests and build; checks/ is a copy of codehost-github's, scripts/sync-shared.mjs), in a
-# credential-free box on the change's snapshot.
+# credential-free box on the change's snapshot. The kernel asks for them when a change is opened, and again when a base moved
+# under an open one, so no Engineer runs a check by hand either.
 check_jobs:
   change:
     dir: checks
