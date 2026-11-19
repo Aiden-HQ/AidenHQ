@@ -328,3 +328,12 @@ test("a routine run is folded into an earlier open run of its routine; a blocked
   assert.equal(cancels.length, 2, "an always_enqueue routine's run is not folded");
   assert.equal(k.started.length, 1);
 });
+
+test("a delegated task left blocked wakes its parent's agent with the reason", async () => {
+  const parent = { id: "p1", identifier: "WOR-10", status: "in_progress" };
+  const k = fake({ task: { id: "t1", identifier: "WOR-3", title: "Create hello", description: "Create local/hello.", status: "blocked", assigneeAgentId: "eng", createdByAgentId: "cos", parentId: "p1" }, tasks: { p1: parent } });
+  k.jobs.set("j1", { id: "j1", task: "t1", agent: "eng", state: "done", exit: 0, final: "Blocked: can't create local/hello", session: null, timedOut: false, at: 1, ended: 1, acked: false });
+  await k.dispatch.tick();
+  assert.deepEqual(k.wakes.map((w) => w.task), ["p1"]);
+  assert.match(k.wakes[0].text, /WOR-3 is blocked:\*\* Blocked: can't create local\/hello/);
+});

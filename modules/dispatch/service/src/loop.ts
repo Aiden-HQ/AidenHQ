@@ -38,11 +38,12 @@ export function createDispatch({ kernel, db, owner, log = () => {} }: { kernel: 
   const stoppedFor = new Map<string, string>();
 
   /**
-   * After a run of an agent's task ends, whoever asked hears what it needs: with a parent, one summary once its last sibling
-   * ends; with none, a run that stopped. Once per batch (`summarized`) or per run (the asker's dedupe). A run's place in the order is when the kernel saw it end.
+   * After a run of an agent's task ends, whoever asked hears what it needs: a task left blocked, with the run's reply as the reason;
+   * with a parent, one summary once its last sibling ends; with none, a run that stopped. Once per batch (`summarized`) or per run (the asker's dedupe). A run's place in the order is when the kernel saw it end.
    */
-  async function report(task: Issue, job: string, stopped: string | undefined) {
+  async function report(task: Issue, job: string, stopped: string | undefined, said: string | undefined) {
     if (!agentMade(task)) return;
+    if (task.status === "blocked") { await asker.tell(task, `**${task.identifier} is blocked:** ${said?.slice(0, 600) || stopped || "its run ended without saying why."}\n\nUnblock it, re-route it, or tell the owner what is needed.`, "is blocked"); return; }
     if (!task.parentId) {
       if (stopped) await asker.tell(task, `**${task.identifier} stopped:** ${stopped}`, "was stopped");
       return;
@@ -78,7 +79,7 @@ export function createDispatch({ kernel, db, owner, log = () => {} }: { kernel: 
         stoppedFor.delete(v.id);
         if (o) await kernel.post(v.id, o);
         const task = await kernel.task(v.task);
-        if (!CLOSED.has(String(task.status))) await report(task, v.id, o?.kind === "notice" ? o.body : undefined);
+        if (!CLOSED.has(String(task.status))) await report(task, v.id, o?.kind === "notice" ? o.body : undefined, o?.body);
         await kernel.ack(v.id);
         log("job ended", { job: v.id, task: v.task, state: v.state, posted: o?.kind ?? null });
       } catch (e) {
