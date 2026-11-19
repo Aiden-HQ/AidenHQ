@@ -7,19 +7,19 @@ import { kernelJwks, verifyCaller } from "./aidenhq-sdk/caller.js";
 import { startLoops } from "./loops.js";
 import { startPeople } from "./people.js";
 import { appTokens, githubHost, readAgentsOrg, readOrgs } from "./github-app.js";
-import { buildServer, type Board, type Caller } from "./mcp.js";
+import { buildServer, refreshRegistry, type Board, type Caller } from "./mcp.js";
 import { appsExecutor } from "./executor.js";
 import { serveExecutor } from "./aidenhq-sdk/executor.js";
 import { createPlatform } from "./platform.js";
 import { resolveOwnImage } from "./self-image.js";
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 import { posix } from "node:path";
 import { show } from "./git.js";
 import { MANIFEST_FILE, parseManifest } from "./manifest.js";
 import { graderView } from "./view.js";
 import { githubApi, startPreviews } from "./previews.js";
-import { inAgentsOrg } from "./git.js";
+import { inAgentsOrg, syncRegistry } from "./git.js";
 import { isLocal, localChanges, localRepos, localRoot, withLocal } from "./codehost.js";
 import { previewApp, previewName } from "./previews.js";
 import { appsReader, bearerIs } from "./readers.js";
@@ -29,8 +29,10 @@ const need = (n: string): string => process.env[n] || (() => { throw new Error(`
 const file = (n: string): string => (process.env[`${n}_FILE`] ? readFileSync(process.env[`${n}_FILE`]!, "utf8").trim() : "");
 
 const repoDir = need("REPO_DIR");
-// The instance repo: holds apps.yaml (agent-created apps), committed and pushed (GitHub App token, else the deploy key).
+// The instance checkout (the apply's): read for instance.yaml only. apps.yaml (agent-created apps) is read and written in
+// apps-mcp's own clone of the instance (registryDir), committed and pushed to main (GitHub App token, else the deploy key).
 const instanceDir = need("INSTANCE_DIR");
+const registryDir = "/data/registry";
 const appsData = need("APPS_DATA");
 const internalToken = file("APPS_INTERNAL_TOKEN");
 if (!internalToken) throw new Error("APPS_INTERNAL_TOKEN(_FILE) is required");
@@ -50,7 +52,7 @@ log.info({ helperImage }, "helper containers run apps-mcp's own image");
 
 const p = createPlatform(
   {
-    registryPath: `${instanceDir}/apps.yaml`,
+    registryPath: `${registryDir}/apps.yaml`,
     modulesRegistryPath: `${repoDir}/config/apps.modules.yaml`,
     appsData,
     secretsDir: process.env.APPS_SECRETS_DIR ?? "/secrets/apps",
@@ -71,9 +73,10 @@ const p = createPlatform(
   log,
 );
 const jwks = kernelJwks();
-// With the GitHub App, the registry is pulled and pushed over https with repo-narrowed App tokens (git.ts registryCmd);
-// without it, the instance checkout's origin remote over SSH with the deploy key.
-const repo = { dir: instanceDir, pushUrl: process.env.REGISTRY_PUSH_URL || (appToken && agentsOrg ? `https://github.com/${agentsOrg}/aidenhq-instance.git` : "origin") };
+// With the GitHub App, the registry is fetched and pushed over https with repo-narrowed App tokens (git.ts registryCmd);
+// without it, the instance checkout's origin URL over SSH with the deploy key.
+const repo = { dir: registryDir, pushUrl: process.env.REGISTRY_PUSH_URL || (appToken && agentsOrg ? `https://github.com/${agentsOrg}/aidenhq-instance.git` : execFileSync("git", ["-C", instanceDir, "config", "--get", "remote.origin.url"], { encoding: "utf8" }).trim()) };
+await syncRegistry(p.cfg.git, repo.dir, repo.pushUrl); // refuses to start without the registry
 
 // In-app requests and app roles (app_requests, app_role_set…) go to the kernel, which holds the accounts and app access
 // (lean 3g): POST /v1/apps/<op> on the backplane with this module's own token (its service key).
@@ -260,7 +263,7 @@ for (const sig of ["SIGTERM", "SIGINT"] as const)
       process.exit(0);
     });
   });
-reconcile = startLoops(p, log);
+reconcile = startLoops(p, log, () => refreshRegistry(p.cfg.git, repo.dir, repo.pushUrl));
 // Preview deploys of open PRs on agents-org app repos and of open change requests on this server's (previews.ts): their own
 // loop, with the GitHub App for GitHub repos and the read-only mount for local ones.
 if ((appToken && agentsOrg) || codehost)

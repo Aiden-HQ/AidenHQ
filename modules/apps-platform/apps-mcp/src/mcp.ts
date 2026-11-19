@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { posix } from "node:path";
-import { checkOrg, commitPush, pullMain, show } from "./git.js";
+import { checkOrg, commitPush, show, syncRegistry, type GitEnv } from "./git.js";
 import type { Platform } from "./platform.js";
 import { appendApp, isSensitive, parseApp, removeApp, type App, checkRemovable } from "./registry.js";
 import { checkPort } from "./tailnet.js";
@@ -33,6 +33,16 @@ export function feedbackOnly(apps: App[], key: string, name: unknown): void {
 }
 
 let busy = false; // registry edits are serialised across requests (a server is built per request)
+/** The registry clone at the instance's main again (the reconcile tick's read), unless an edit holds it. */
+export async function refreshRegistry(env: GitEnv, dir: string, url: string): Promise<void> {
+  if (busy) return;
+  busy = true;
+  try {
+    await syncRegistry(env, dir, url);
+  } finally {
+    busy = false;
+  }
+}
 
 /** The app's own handbook at its deployed commit, read from git (never the work tree); app-authored, so untrusted. */
 async function handbook(p: Platform, a: App): Promise<string | undefined> {
@@ -230,7 +240,7 @@ export function buildServer(p: Platform, caller: Caller, repo: { dir: string; pu
     if (busy) throw new Error("another registry change is in progress");
     busy = true;
     try {
-      await pullMain(p.cfg.git, repo.dir, repo.pushUrl);
+      await syncRegistry(p.cfg.git, repo.dir, repo.pushUrl);
       await fn();
     } finally {
       busy = false;

@@ -142,8 +142,9 @@ export async function reconcileTick(p: Platform, log: Log): Promise<void> {
 }
 
 /** The two loops share one tick: a caller that wants it now (app_create, app_remove) awaits the one in flight, then a fresh one. */
-export function startLoops(p: Platform, log: Log, everyMs = 120_000): () => Promise<void> {
+export function startLoops(p: Platform, log: Log, beforeTick: () => Promise<void>, everyMs = 120_000): () => Promise<void> {
   const tick = async () => {
+    await beforeTick().catch((err) => log.warn({ err: String(err) }, "registry sync failed"));
     await reconcileTick(p, log).catch((err) => log.warn({ err: String(err) }, "reconcile loop failed"));
     await healthTick(p, log).catch((err) => log.warn({ err: String(err) }, "health loop failed"));
   };

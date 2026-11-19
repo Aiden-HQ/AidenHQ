@@ -212,25 +212,30 @@ export const show = (env: GitEnv, app: App, sha: string, path: string): Promise<
 const registrySlug = (url: string) => /^https:\/\/github\.com\/([\w.-]+\/[\w.-]+?)(?:\.git)?$/.exec(url)?.[1];
 
 /**
- * The registry (instance repo) pull or push. An https github.com URL with the GitHub App on: from/to that URL, with a token
- * narrowed to that repo (contents read to pull, write to push) through the hardened helper, which also clears the mounted
- * checkout's own credential.helper (a host-side script that doesn't exist here). Otherwise origin / the URL over SSH with
- * the deploy key.
+ * The registry (instance repo) fetch or push, in apps-mcp's own clone (never the apply's checkout). An https github.com URL
+ * with the GitHub App on: from/to that URL, with a token narrowed to that repo (contents read to fetch, write to push)
+ * through the hardened helper. Otherwise the URL as it is, over SSH with the deploy key.
  */
-export async function registryCmd(env: GitEnv, op: "pull" | "push", url: string): Promise<Cmd> {
+export async function registryCmd(env: GitEnv, op: "fetch" | "push", url: string): Promise<Cmd> {
   const slug = registrySlug(url);
-  const viaApp = !!(slug && env.appToken);
-  const args = op === "pull" ? ["pull", "--rebase", "--autostash", viaApp ? url : "origin", "main"] : ["push", url, "HEAD:main"];
-  if (viaApp) return withGitToken(args, { ...process.env, GIT_TERMINAL_PROMPT: "0" }, await env.appToken!(slug!, op === "push" ? "write" : "read"));
+  const args = op === "fetch" ? ["fetch", url, "main"] : ["push", url, "HEAD:main"];
+  if (slug && env.appToken) return withGitToken(args, { ...process.env, GIT_TERMINAL_PROMPT: "0" }, await env.appToken(slug, op === "push" ? "write" : "read"));
   return plain(env, args, env.sshCommand ? { GIT_SSH_COMMAND: env.sshCommand } : {});
 }
 
-/** Commits one file of the registry and pushes it to main (registryCmd). */
+/** The registry clone at the instance's origin/main, exactly (created on first use; local changes are discarded). */
+export async function syncRegistry(env: GitEnv, dir: string, url: string): Promise<void> {
+  if (!existsSync(`${dir}/.git`)) {
+    mkdirSync(dir, { recursive: true });
+    await git(env, ["init", "-q", dir]);
+  }
+  await runGit(registryCmd(env, "fetch", url), ["fetch"], dir);
+  await git(env, ["reset", "-q", "--hard", "FETCH_HEAD"], dir);
+}
+
+/** Commits one file of the registry clone and pushes it to main (registryCmd); the clone was synced just before the edit. */
 export async function commitPush(env: GitEnv, repoDir: string, file: string, message: string, pushUrl: string): Promise<void> {
   await git(env, ["add", file], repoDir);
   await git(env, ["-c", "user.name=apps-mcp", "-c", "user.email=apps-mcp@agents.local", "commit", "-m", message, "--", file], repoDir);
-  await pullMain(env, repoDir, pushUrl);
   await runGit(registryCmd(env, "push", pushUrl), ["push"], repoDir);
 }
-
-export const pullMain = (env: GitEnv, repoDir: string, url: string): Promise<string> => runGit(registryCmd(env, "pull", url), ["pull"], repoDir);

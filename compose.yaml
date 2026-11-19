@@ -132,9 +132,9 @@ services:
       # Which shared apps' PR previews run, for the gate (modules/apps-platform/apps-mcp/src/previews.ts; scripts/edge.mjs).
       - ${AIDENHQ_DATA_DIR:-./data}/previews:/previews
       # The repo at its own path: Docker resolves bind mounts on the host, so paths must match. Holds each app's checkout and
-      # data under data/apps, and module apps' source (its origin/main, at the pin). The instance repo likewise (apps.yaml registry, commits pushed with the deploy key).
+      # data under data/apps, and module apps' source (its origin/main, at the pin). The instance checkout is read-only (instance.yaml, its origin URL): the apply owns it; the apps.yaml registry lives in apps-mcp's own clone under /data.
       - ${PWD}:${PWD}
-      - ${AIDENHQ_INSTANCE_DIR}:${AIDENHQ_INSTANCE_DIR}
+      - ${AIDENHQ_INSTANCE_DIR}:${AIDENHQ_INSTANCE_DIR}:ro
       # A local instance repo (ops/setup.sh): the bare repo the checkout pushes to, at the same path. Unused otherwise.
       - ${AIDENHQ_INSTANCE_REMOTE:-/dev/null}:${AIDENHQ_INSTANCE_REMOTE:-/aidenhq-no-local-remote}
       - ${AIDENHQ_DATA_DIR:-./data}/apps-mcp:/data
