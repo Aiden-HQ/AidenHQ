@@ -531,7 +531,7 @@ export function setupFlows(defs, compiled, settings = {}) {
  * modules/marketplace.json `organisations`: organisations that run internal apps, each with the public client values (a client
  * ID; Google's Desktop client secret, non-confidential by Google's definition) its members sign in with. Each `clients` key is
  * a module secret whose `setup:` says `public_client: true`, and its value fits that secret's pattern; never a bot token or a
- * confidential secret. The board (points board.organisations) gets each with its clients resolved to the enabled modules':
+ * confidential secret (an optional `note` says why its values are safe to publish). The board (points board.organisations) gets each with its clients resolved to the enabled modules':
  * choosing one writes them through the admin secret write, and the connections sign in as usual.
  */
 export function organisations(list, allDefs, enabledDefs) {
@@ -545,6 +545,10 @@ export function organisations(list, allDefs, enabledDefs) {
     if (ids.has(o.id)) fail(`${where}: listed twice`);
     ids.add(o.id);
     if (typeof o.name !== "string" || !o.name.trim() || o.name.length > 60) fail(`${where}: name is a short text`);
+    // `note`: why its values are safe to publish (JSON has no comments); never shown.
+    const extra = Object.keys(o).filter((k) => !["id", "name", "domains", "clients", "note"].includes(k));
+    if (extra.length) fail(`${where}: unknown ${extra.join(", ")}`);
+    if (o.note != null && (typeof o.note !== "string" || o.note.length > 500)) fail(`${where}: note is a text of 500 characters at most`);
     if (!Array.isArray(o.domains) || !o.domains.length || o.domains.some((d) => typeof d !== "string" || !/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(d))) fail(`${where}: domains are lowercase email domains`);
     if (!o.clients || typeof o.clients !== "object" || Array.isArray(o.clients) || !Object.keys(o.clients).length) fail(`${where}: clients maps a connection's client secret to its public value`);
     const clients = Object.entries(o.clients).map(([secret, value]) => {

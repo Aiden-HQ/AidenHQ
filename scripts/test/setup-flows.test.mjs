@@ -94,4 +94,7 @@ test("organisations: listed clients reach the board for enabled modules, and onl
   assert.throws(() => organisations(org({ m_bot_token: "xoxb" }), defs, defs), /not a module secret marked public_client/);
   assert.throws(() => organisations(org({ m_client_id: "abc" }), defs, defs), /doesn't fit its pattern/);
   assert.deepEqual(organisations(org({ m_client_id: "42" }), defs, {}), []);
+  assert.equal(organisations([{ ...org({ m_client_id: "42" })[0], note: "A client ID is public." }], defs, defs)[0].note, undefined);
+  assert.throws(() => organisations([{ ...org({ m_client_id: "42" })[0], note: "x".repeat(501) }], defs, defs), /note is a text/);
+  assert.throws(() => organisations([{ ...org({ m_client_id: "42" })[0], secrets: {} }], defs, defs), /unknown secrets/);
 });
