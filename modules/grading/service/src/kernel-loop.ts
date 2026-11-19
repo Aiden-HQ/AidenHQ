@@ -65,6 +65,8 @@ export function createKernelGradeLoop({ db, runner, due, kernel, kernelBytes, ap
     agents: async () => read(`/api/companies/${[...tasks.values()][0]?.companyId}/agents`),
     // A verdict's move is the finish check's own resolve: done accepts the work, todo reopens it with the note (which wakes the agent).
     setStatus: async (id: string, status: string, note: string) => void (await kernel("POST", `/v1/checks/${encodeURIComponent(id)}`, { verdict: status === "done" ? "ok" : "reopen", comment: note })),
+    // A grader that keeps failing: the task ends blocked with the error (no wake), and its delegator is told.
+    block: async (id: string, note: string) => void (await kernel("POST", `/v1/checks/${encodeURIComponent(id)}`, { verdict: "block", comment: note })),
     // A note on a task: a labelled wake notice (the kernel posts it and wakes the assignee).
     comment: async (id: string, text: string) => void (await kernel("POST", "/v1/wakes", { task: id, text })),
     attachments: (id: string) => read(`/api/issues/${encodeURIComponent(id)}/attachments`),
@@ -117,7 +119,7 @@ export function createKernelGradeLoop({ db, runner, due, kernel, kernelBytes, ap
   // The kernel mints a grader-kind token for the task (billed to it, never capped) on each model call.
   const graderAsk = (issue: Json) => async (model: string, prompt: { system: string; user: string }) => {
     const { token } = await kernel("POST", "/v1/work/grader-token", { task: issue.id });
-    return openRouterAsk(token, { schema: GRADE_SCHEMA, url: `${gatewayUrl}/chat/completions` })(model, prompt);
+    return openRouterAsk(token, { schema: GRADE_SCHEMA, url: `${gatewayUrl}/api/v1/chat/completions` })(model, prompt);
   };
   const loop = createGradeLoop({
     api: { get: async (path: string) => (path === "/internal/grades" ? due() : runner("GET", path, undefined)), post: (path: string, body: unknown) => runner("POST", path, body) },

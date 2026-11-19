@@ -1,7 +1,8 @@
 // Graded done (wave 1): the grader. A delegated deliverable that hit the board's completion gate is checked against its
 // rubric (trusted storage on the board, never the task's description). Code gathers the evidence per deliverable kind; facts
 // code verified (merged, checks green, deployed SHA, an apply's outcome) go to the model as trusted, everything an agent wrote
-// is fenced as data. One schema-bound, tool-less call to a model of another family than the author's: GPT Luna, then DeepSeek Flash.
+// is fenced as data. One schema-bound, tool-less call to a model of another family than the author's: GPT Luna, then GLM Flash
+// when Luna has no route (no ZDR endpoint).
 // Missing evidence is never a pass, and pending evidence (checks running, a card open, nothing deployed yet) is never a
 // revision request: the row waits (awaiting_evidence) and the runner's poll looks again.
 import { existsSync, readFileSync } from "node:fs";
@@ -9,7 +10,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { GRADER_MARKER, appEvidence, applyEvidence, deploysOf, fileEvidence, namedTasks, otherTaskEvidence, predatesDeploys, presentNow, prEvidence, stamp, wordsEvidence } from "./evidence.ts";
 import { stripRubric } from "./text.ts";
-import { MAX_DIFF, judgeModels } from "../aidenhq-sdk/judge.ts";
+import { GLM, LUNA, MAX_DIFF } from "../aidenhq-sdk/judge.ts";
 import { dataBlock as fence } from "../aidenhq-sdk/fence.ts";
 
 export { GRADER_MARKER };
@@ -32,8 +33,11 @@ export const GRADE_SCHEMA = {
   },
 };
 
-/** The grader models in order: GPT Luna, then DeepSeek Flash, never the author's own family. */
-export const graderModels = (authorModel = "") => judgeModels(authorModel);
+/** The grader models in order (the owner's pick): GPT Luna, then GLM Flash, never the author's own family. */
+const GRADERS: [string, RegExp][] = [[LUNA, /openai|gpt/i], [GLM, /z-ai|glm/i]];
+export const graderModels = (authorModel = "") => GRADERS.filter(([, re]) => !re.test(String(authorModel))).map(([m]) => m);
+/** A call the model has no route for (OpenRouter's 404: no ZDR endpoint for it): the only failure the next model is asked after. */
+const NO_ROUTE = /^OpenRouter 404\b/;
 
 /** The standard criteria for a deliverable kind: the `- ` lines of rubrics/<kind>.md. */
 export function template(kind: string, dir: string = fileURLToPath(new URL("../../rubrics", import.meta.url))) {
@@ -321,9 +325,9 @@ function answerOf(raw: any, n: number): { verdict: string; criteria: { id: strin
 
 /**
  * The verdict on one deliverable version: { outcome: satisfied | needs_revision | cannot_judge | grading_failed | error, model, criteria }.
- * A refused or malformed answer is retried on the next model; a call error (a timeout, a provider failure) goes to the next
- * model too. A call error, or an answer that came back but cannot be parsed into the rubric's criteria, is `grading_failed`
- * (the board retries it, not the owner's decision); only when every model refuses is the pass `error`.
+ * The next model is asked only when this one has no route (a 404). Any other call error (a timeout, a 5xx), or an answer that
+ * cannot be parsed into the rubric's criteria, is `grading_failed` (retried on the ladder, not the owner's decision); a refusal
+ * is `error`.
  */
 export async function grade({ rubric, deliverable, facts, data, request, images = [], authorModel = "", ask }: { rubric: string[]; deliverable: any; facts: string[]; data: Record<string, string>; request?: unknown; images?: { url: string; label?: string }[]; authorModel?: string; ask: (model: string, prompt: any) => Promise<any> }): Promise<any> {
   const models = graderModels(authorModel) as string[];
@@ -331,7 +335,6 @@ export async function grade({ rubric, deliverable, facts, data, request, images 
   if (!rubric.length) return { outcome: "grading_failed", model: "", criteria: [], reason: "the rubric has no criteria to grade" };
   const prompt = gradePrompt({ rubric, deliverable, facts, data, request: stripRubric(request), images });
   let failure: { model: string; reason: string } | undefined;
-  let corrupt: { model: string; why: string } | undefined;
   let cannotJudge: { model: string; criteria: any[] } | undefined;
   for (const model of models) {
     let raw: any;
@@ -339,25 +342,22 @@ export async function grade({ rubric, deliverable, facts, data, request, images 
       raw = await ask(model, prompt);
     } catch (err: any) {
       failure = { model, reason: `the grader failed (${String(err.message ?? err).slice(0, 160)})` };
-      continue;
+      if (NO_ROUTE.test(String(err.message ?? err))) continue;
+      break;
     }
     const a = answerOf(raw, rubric.length);
-    if (a && "unusable" in a) {
-      corrupt = { model, why: a.unusable };
-      continue;
-    }
+    if (!a) return { outcome: "error", model, criteria: [], reason: "the grader refused" };
+    if ("unusable" in a) return { outcome: "grading_failed", model, criteria: [], reason: `the grader returned no usable criteria (${a.unusable})` };
     // An apply's diff is in front of every model: one that cannot judge it is asked of the next, and if none judges it the
     // verdict stays cannot_judge (it escalates, never passes).
-    if (a?.verdict === "cannot_judge" && deliverable.kind === "apply" && data.APPLY_CHANGE && model !== models.at(-1)) {
+    if (a.verdict === "cannot_judge" && deliverable.kind === "apply" && data.APPLY_CHANGE && model !== models.at(-1)) {
       cannotJudge = { model, criteria: a.criteria };
       continue;
     }
-    if (a) return { outcome: a.verdict, model, criteria: a.criteria };
+    return { outcome: a.verdict, model, criteria: a.criteria };
   }
   if (cannotJudge) return { outcome: "cannot_judge", ...cannotJudge };
-  if (failure) return { outcome: "grading_failed", model: failure.model, criteria: [], reason: failure.reason };
-  if (corrupt) return { outcome: "grading_failed", model: corrupt.model, criteria: [], reason: `the grader returned no usable criteria (${corrupt.why})` };
-  return { outcome: "error", model: models.at(-1), criteria: [], reason: "every grader model refused" };
+  return { outcome: "grading_failed", model: failure!.model, criteria: [], reason: failure!.reason };
 }
 
 /** Criteria met or unverified, at least one unverified and none shown unmet: the board escalates it (grades.ts unverifiedOnly). */
@@ -398,7 +398,7 @@ export function gradeNote(g: any, rubric: string[], outcome: string, { version, 
         : outcome === "grading_failed"
           ? `**Grading failed; retrying.** (${reason ?? g.reason ?? "the grader failed or returned no usable criteria"}). No rubric verdict yet: the grader runs again shortly.`
           : outcome === "escalated" && g.outcome === "grading_failed"
-            ? `**Grading failed; escalated to the delegator.** The grader failed 5 times${g.reason ? ` (last: ${g.reason})` : ""} and no rubric criterion was assessed. The delegator judges the work from its evidence: closing the task accepts it; reopening it with what to change sends a new version to the grader.`
+            ? `**Grading failed; the task is blocked.** The grader failed 5 times in a row${g.reason ? ` (last: ${g.reason})` : ""} and no rubric criterion was assessed. Its delegator was told: unblocking it sends it back to the grader once its assignee finishes again.`
             : outcome === "escalated" && unverifiedOnly(g.criteria)
               ? "**Graded: unverified, so it is the delegator's call.** Nothing was shown unmet, but the evidence the grader is given doesn't show the criteria marked not shown. The delegator decides: closing the task accepts it; reopening it with what to change sends a new version to the grader."
               : `**Graded: escalated to the delegator** (${reason ?? (g.outcome === "cannot_judge" ? "the grader couldn't judge it" : "too many rejected versions")}). The delegator decides: closing the task accepts it; reopening it with what to change sends a new version to the grader.`;

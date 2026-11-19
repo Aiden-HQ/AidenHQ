@@ -260,14 +260,7 @@
    "delegators": null,
    "closedReason": null
   },
-  "patches": [
-   {
-    "task": "WOR-1",
-    "patch": {
-     "labelIds": []
-    }
-   }
-  ]
+  "patches": []
  },
  {
   "step": "reopened and finished again",
@@ -309,9 +302,6 @@
     "task": "WOR-1",
     "patch": {
      "status": "in_review",
-     "labelIds": [
-      "lbl-grading"
-     ],
      "executionPolicy": {
       "monitor": {
        "nextCheckAt": "2026-11-17T12:00:00.000Z",
@@ -369,14 +359,7 @@
    "delegators": null,
    "closedReason": null
   },
-  "patches": [
-   {
-    "task": "WOR-1",
-    "patch": {
-     "labelIds": []
-    }
-   }
-  ]
+  "patches": []
  },
  {
   "step": "the runner closes a satisfied, done task",
@@ -528,9 +511,6 @@
     "task": "WOR-1",
     "patch": {
      "status": "in_review",
-     "labelIds": [
-      "lbl-grading"
-     ],
      "executionPolicy": {
       "monitor": {
        "nextCheckAt": "2026-11-17T12:00:00.000Z",
@@ -600,14 +580,7 @@
    "delegators": null,
    "closedReason": null
   },
-  "patches": [
-   {
-    "task": "WOR-1",
-    "patch": {
-     "labelIds": []
-    }
-   }
-  ]
+  "patches": []
  },
  {
   "step": "finished again after the second rejection",
@@ -673,9 +646,6 @@
     "task": "WOR-1",
     "patch": {
      "status": "in_review",
-     "labelIds": [
-      "lbl-grading"
-     ],
      "executionPolicy": {
       "monitor": {
        "nextCheckAt": "2026-11-17T12:00:00.000Z",
