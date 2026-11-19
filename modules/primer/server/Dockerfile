@@ -5,7 +5,7 @@
 # product runs. Bump it here; the Primer source enforces its own dependency age (14 days) and frozen lockfile.
 ARG PRIMER_SHA=18d47ac176203756ebffe131f1ce66bd5872fa9c
 
-FROM node:24.22.2-bookworm-slim@sha256:01d566e8d94d8c619591d78652babfccd3c6992a3dffa9ed5ab39e11cf6c70e9 AS build
+FROM node:24.22.3-bookworm-slim@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54 AS build
 ARG PRIMER_SHA
 ADD --keep-git-dir=false https://github.com/maxsam4/primer.git#${PRIMER_SHA} /src
 WORKDIR /src
@@ -16,7 +16,7 @@ RUN pnpm --filter @primer/api deploy --prod --legacy /out/api \
  && rm -rf /out/api/src /out/api/scripts /out/api/container-tests /out/api/*.test.* /out/api/vitest*.ts \
  && mkdir -p /out/web && cp -r apps/web/dist /out/web/dist
 
-FROM node:24.22.2-bookworm-slim@sha256:01d566e8d94d8c619591d78652babfccd3c6992a3dffa9ed5ab39e11cf6c70e9
+FROM node:24.22.3-bookworm-slim@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54
 # Primer runs on node alone: the bundled npm (with published advisories) is deleted.
 RUN rm -rf /usr/local/lib/node_modules/npm
 ENV NODE_ENV=production SERVE_STATIC=1 STATIC_ROOT=/app/web/dist PORT=3000 STORAGE_BACKEND=filesystem STORAGE_ROOT=/data/blobs
