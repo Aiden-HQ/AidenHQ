@@ -20,9 +20,11 @@ import { gateMode } from "./gates.ts";
 import { fail } from "./proxy.ts";
 
 export type Check = { module: string; at: string; url: string; auth_secret: string; agents?: string[]; label?: string; mode?: "observe" };
-type Verdict = { verdict: "ok" | "hold" | "pending" | "reopen" | "deny"; reason?: string; until?: string; state?: string; status?: number; unlabel?: boolean };
+type Verdict = { verdict: "ok" | "hold" | "pending" | "reopen" | "deny"; reason?: string; until?: string; state?: string; status?: number; unlabel?: boolean; accepts?: boolean };
 export type Finish = { pass: true } | { pass: false; held: true; state: string; reason: string } | { pass: false; reopened: true; reason: string };
 type Issue = { id: string; identifier?: string; companyId?: string; status?: string; assigneeAgentId?: string | null; assigneeUserId?: string | null; createdByAgentId?: string | null; parentId?: string | null; labelIds?: string[]; labels?: { id: string }[]; executionPolicy?: Record<string, unknown> | null };
+/** A hold's resolving verdicts and the status each moves the task to. */
+const RESOLVES = new Map([["ok", "done"], ["reopen", "todo"], ["block", "blocked"]]);
 const VERDICTS = ["ok", "hold", "pending", "reopen", "deny"];
 
 /** config/kernel/checks.json, reread when it changes. Missing, unreadable or not a map throws: a load error, never "no checks". */
@@ -107,8 +109,13 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
     })).catch((e: Error) => { throw fail(503, "check_failed", `the finish check ${id} failed (${e.message}): the task stays as it is; try again`); });
   }
 
-  /** The finish gate for one task: `agent` and `tool` for an agent's own close, `via` for the runner's. Throws on a deny. */
-  async function finish(ref: string, caller: { agent?: string; tool?: string; via: string }): Promise<Finish> {
+  /**
+   * The finish gate for one task: `agent` and `tool` for an agent's own close, `via` for the runner's. Throws on a deny.
+   * `cross`: an agent closing a task that isn't its job's own (its delegator's acceptance of an escalated grade): refused
+   * before anything moves unless a check answers `accepts`, so no other cross-task close passes.
+   */
+  async function finish(ref: string, caller: { agent?: string; tool?: string; via: string; cross?: boolean }): Promise<Finish> {
+    const refuseCross = () => fail(403, "forbidden", `only this job's own task is finished here; ${ref} is finished by its assignee, or accepted by its delegator once grading has escalated it`);
     const all = finishing();
     const i = await issue(ref);
     // An approval card still undecided would be claimed on the closed task and fail its write (writes.ts run): the task
@@ -136,9 +143,11 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
     if (!mine.length) {
       await watched;
       if (i.assigneeAgentId && graded(i.assigneeAgentId)) throw fail(503, "check_failed", `the finish gate is unavailable: ${i.identifier ?? i.id}'s assignee is graded and no finish check covers it: the task stays as it is`);
+      if (caller.cross) throw refuseCross();
       return { pass: true };
     }
     const [verdicts] = await Promise.all([Promise.all(mine.map(async ([id, c]) => ({ id, c, v: await ask(id, c, body) }))), watched]);
+    if (caller.cross && !verdicts.some((x) => x.v.verdict === "ok" && x.v.accepts)) throw refuseCross();
     const deny = verdicts.find((x) => x.v.verdict === "deny");
     if (deny) throw fail(deny.v.status === 409 ? 409 : 403, "refused", String(deny.v.reason ?? `refused by ${deny.id}`).slice(0, 500));
     const reopen = verdicts.find((x) => x.v.verdict === "reopen");
@@ -175,7 +184,7 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
     const mine = finishing().filter(([id, c]) => c.module === module && (b.check === undefined || id === `${module}.${String(b.check)}`));
     if (mine.length !== 1) throw fail(403, "forbidden", `${module} has ${mine.length ? "several finish checks: name one (check)" : "no finish check"}`);
     const [id, c] = mine[0]!;
-    const to = ({ ok: "done", reopen: "todo", block: "blocked" } as Record<string, string>)[String(b.verdict)];
+    const to = RESOLVES.get(String(b.verdict));
     if (!to && b.verdict !== "release") throw fail(400, "bad_request", "verdict is release, ok, reopen or block");
     const i = await issue(ref);
     const held = db.prepare("SELECT 1 FROM check_holds WHERE task = ? AND check_id = ?").get(i.id, id);

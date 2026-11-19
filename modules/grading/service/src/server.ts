@@ -57,7 +57,7 @@ export function createGrading({ db, kernel, keys, kernelUrl = "", jwks = kernelJ
     if (!runner && g.state === "escalated" && delegators.includes(b.agent!)) {
       grades.accept(issue.id, b.agent!);
       log("escalated grade accepted by its delegator", { task: issue.identifier, by: b.agent });
-      return { verdict: "ok", unlabel: true };
+      return { verdict: "ok", unlabel: true, accepts: true };
     }
     // A delegator that stayed silent for a day: the assignee finishing again sends the row back to the grader for a fresh
     // verdict on today's facts. Never an acceptance: only a delegator accepts, and a timeout never records `satisfied`.

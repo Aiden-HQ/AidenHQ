@@ -14,8 +14,8 @@
 //   refused, naming whom to ask. Each write carries a tag (the plugin's once-only key): on the job's own task and the chief of
 //   staff's anywhere-comments the job tag (wakes.ts SELF_TAG: it wakes nobody), elsewhere `aidenhq:op=`, which wakes the
 //   task's assignee as any agent's comment does.
-// - A status change to `done` is for the job's own task only and passes the finish gate first (checks.ts): held or reopened,
-//   nothing is written and the answer says so (202).
+// - A status change to `done` is for the job's own task, or a delegated task whose escalated grade its delegator accepts, and
+//   passes the finish gate first (checks.ts): held or reopened, nothing is written and the answer says so (202).
 // - A task a job creates gets the kernel's provenance row (provenance.ts) from the plugin's answer.
 // A user assignee is only ever the owner; a PATCH hands a task back (assigneeAgentId null), never to another agent.
 // Answers look like Paperclip's: the task as it is now (a PATCH 200, a create 201 with `deduplicated`), a comment's {id} (201).
@@ -203,11 +203,13 @@ export function createCp({ whoami, asserter, plugin, once, agentKey, grants, fle
     const scope = (await scopeOf(t)) ?? (status === undefined && !Object.keys(patch).length ? commentScope(t) : undefined) ?? refuse(t);
     let gated = false;
     if (status === "done") {
-      // The finish gate, for the job's own task only.
-      if (t.id !== task) throw fail(403, "forbidden", `only this job's own task is finished here; ${t.identifier ?? t.id} is finished by its assignee`);
+      // The finish gate. Another task is closed here only by its delegator accepting an escalated grade (the check answers
+      // `accepts`, checks.ts); a job's own task passes the gate as it is.
+      const cross = t.id !== task;
+      if (cross && !checks) throw fail(403, "forbidden", `only this job's own task is finished here; ${t.identifier ?? t.id} is finished by its assignee`);
       if (checks) {
         const tool = String(c.tool ?? "").split(".").pop()!;
-        const f = await checks.finish(t.id, { agent, tool, via: tool });
+        const f = await checks.finish(t.id, { agent, tool, via: tool, ...(cross ? { cross } : {}) });
         if (!f.pass) {
           log("cp", { module: mod.module, agent: c.key, method, path, finish: "held" in f ? "held" : "reopened" });
           return answer(202, Buffer.from(JSON.stringify("held" in f ? { held: { state: f.state, reason: f.reason } } : { reopened: { reason: f.reason } })));
