@@ -41,7 +41,8 @@ export type TrainOptions = {
 };
 type State = {
   open?: { since: string };
-  filing?: { to: string; sha: string; task: string; identifier: string };
+  /** The bump's task, filed; `sha` once its commit is made. */
+  filing?: { to: string; sha?: string; task: string; identifier: string };
   flight?: { to: string; record: string; task: string; identifier: string };
   lastTried?: string;
 };
@@ -111,8 +112,9 @@ export function createReleaseTrain(o: TrainOptions) {
       try {
         // No card at all: a task filed before its card (the gap between filing the task and filing the apply) or one whose
         // process died in it. Nothing is known about its bump, so it is left open rather than closed as never carded.
+        // Any card that has ended settles its task: done, failed, unknown, rejected, and also cancelled (expired, replaced) or stale.
         const r = await cardOn(task.id);
-        if (!r || MOVING.includes(r.state) || !["done", "failed", "unknown", "rejected"].includes(r.state)) continue;
+        if (!r || MOVING.includes(r.state)) continue;
         const body = settleBody(r.state, r.text);
         // A close the kernel refuses is logged by close() and retried on the next poll: it never throws the sweep.
         if (await close(task.id, "done", body)) log("release bump swept", { task: task.identifier ?? task.id, state: r.state });
@@ -122,8 +124,19 @@ export function createReleaseTrain(o: TrainOptions) {
     }
   }
 
-  /** The bump's task, its commit and its kernel.apply: written down before filing, so a restart files the same one. */
+  /**
+   * The bump's task, its commit and its kernel.apply, each written down as soon as it exists: a restart files the same one, and
+   * a lasting refusal after the task is filed closes that task (step), never strands it.
+   */
   async function fileBump(s: State, to: string, pinned: string, text: string) {
+    // The edit is made on instance.yaml as it is at the head the commit builds on, never on the text read in step.
+    const edit = (t: string) => {
+      try {
+        return bumpInstance(t, { product: to });
+      } catch (e) {
+        throw Object.assign(new Error(`instance.yaml can't be bumped in place: ${(e as Error).message}`), { lasting: true });
+      }
+    };
     // `adopt`: the bump's task was filed before, by this process (its own file) or one this process replaced (the kernel's
     // idempotent re-file answers `deduplicated`). Either way its card, if any, is on that task.
     let adopt = Boolean(s.filing?.to === to);
@@ -131,6 +144,7 @@ export function createReleaseTrain(o: TrainOptions) {
       const gate = await o.evalBump(pinned, to);
       if (gate && "wait" in gate) return void log("release bump waits for the reviewer eval", { to, why: gate.wait });
       if (gate) throw Object.assign(new Error(gate.stop), { lasting: true });
+      edit(text); // refused before a task is filed for it
       const carries = await o.github.commits(o.productRepo, pinned, to);
       const source = `release:instance:${to}`;
       // Idempotent per source: a restart adopts the task an earlier process filed for this commit instead of opening a second.
@@ -138,21 +152,15 @@ export function createReleaseTrain(o: TrainOptions) {
         title: "Pin bump: this instance's product", role: "platform-engineer", source,
         description: trainDescription({ what: `Moves this instance's product pin (\`product:\` in ${o.instanceRepo}'s instance.yaml) to the newest green commit of ${o.productRepo}'s main, as one apply.`, carries, windowMinutes: o.windowMinutes, marker: source }),
       });
-      // The edit is made on instance.yaml as it is at the head the commit builds on, never on the text read above.
-      const edit = (t: string) => {
-        try {
-          return bumpInstance(t, { product: to });
-        } catch (e) {
-          throw Object.assign(new Error(`instance.yaml can't be bumped in place: ${(e as Error).message}`), { lasting: true });
-        }
-      };
-      edit(text); // refused before a task is filed for it
-      const sha = await o.commit(o.instanceRepo, "instance.yaml", edit, `chore: product ${to.slice(0, 8)} (${task.identifier})\n\nWritten by the code host's release train; no agent wrote it.`);
-      s.filing = { to, sha, task: task.id, identifier: task.identifier };
+      s.filing = { to, task: task.id, identifier: task.identifier };
       adopt ||= Boolean(task.deduplicated);
       save(s);
     }
     const f = s.filing;
+    if (!f.sha) {
+      f.sha = await o.commit(o.instanceRepo, "instance.yaml", edit, `chore: product ${to.slice(0, 8)} (${f.identifier})\n\nWritten by the code host's release train; no agent wrote it.`);
+      save(s);
+    }
     // A bump whose task already existed may already have its card: it is followed, never filed a second time. Moving, it is left
     // alone; settled, it settles the task. A card that ended where the same commits are filed again is that bump's end, not one
     // to adopt. A read that fails throws: the next poll retries with the same task, never a second card.

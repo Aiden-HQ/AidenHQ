@@ -98,11 +98,12 @@ test("an agent's green mergeable PR wakes its task to merge once per head", asyn
 
 // The behaviours ported from the runner, against one fake GitHub and kernel: each case is one agent PR (acme/app#N, task ACME-N).
 const redChecks = (extra = {}) => ({ state: "FAILURE", contexts: { pageInfo: { hasNextPage: false }, nodes: [{ __typename: "CheckRun", databaseId: 77, name: "test", status: "COMPLETED", conclusion: "FAILURE", checkSuite: { workflowRun: { databaseId: 500 } }, ...extra }] } });
-async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name: "Build" }], update = 202 } = {}) {
+async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name: "Build" }], update = 202, wakeFails = 0, closeFails = 0 } = {}) {
   const woke = [], gh = [];
   const kernel = await listen(async (req, res) => {
     let body = "";
     for await (const c of req) body += c;
+    if (req.url === "/v1/wakes" && wakeFails-- > 0) return res.writeHead(503).end("{}");
     if (req.url === "/v1/wakes") woke.push(JSON.parse(body));
     res.writeHead(200).end(JSON.stringify(req.url.startsWith("/v1/work") ? { status: taskStatus } : {}));
   });
@@ -114,13 +115,15 @@ async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name:
     if (path.startsWith("/repos/acme/app/compare/")) return { status: 200, body: { behind_by: behind } };
     if (path.startsWith("/repos/acme/app/actions/jobs/")) return { status: 200, body: { steps } };
     if (path.endsWith("/update-branch")) return { status: update, body: {} };
+    if (path.startsWith("/repos/acme/app/check-runs/")) return { status: 200, body: { output: { title: "1 test failed", summary: "expected 2, got `3`" } } };
+    if (method === "PATCH" && closeFails-- > 0) return { status: 502, body: {} };
     return { status: 200, body: {} };
   };
   const cacheDir = mkdtempSync(join(tmpdir(), "pr-watch-"));
   const watch = startPrWatch({ repo: "acme/app", kernelUrl: kernel.url, key: "k", cacheDir, app: { token: async () => "tok" }, gh: api });
   t.after(() => watch.stop());
   const agentPr = (n, o = {}) => { notePrTask(cacheDir, `https://github.com/acme/app/pull/${n}`, { task: `ACME-${n}`, branch: `b${n}` }); return pr(n, { author: { __typename: "Bot", login: "aidenhq" }, ...o }); };
-  return { woke, gh, watch, cacheDir, agentPr, set: (v) => { open = v; } };
+  return { woke, gh, watch, cacheDir, agentPr, set: (v) => { open = v; }, behind: (v) => { behind = v; update = 422; } };
 }
 const redPr = (n, o = {}) => ({ commits: { nodes: [{ commit: { statusCheckRollup: redChecks() } }] }, ...o });
 
@@ -169,4 +172,83 @@ test("a behind, non-conflicting red PR is updated by GitHub, not woken; a refuse
   assert.ok(d.gh.includes("PUT /repos/acme/app/pulls/6/update-branch merge"));
   assert.equal(d.woke.length, 1);
   assert.match(d.woke[0].text, /Rebase the PR's branch onto `origin\/main`/);
+});
+
+test("a wake the kernel doesn't take (a restart) is sent again on the next tick", async (t) => {
+  const c = await rig(t, { wakeFails: 1 });
+  c.set([c.agentPr(3)]);
+  await c.watch.tick();
+  assert.equal(c.woke.length, 0);
+  await c.watch.tick();
+  await c.watch.tick();
+  assert.equal(c.woke.length, 1, "sent once it lands, and only once");
+  assert.match(c.woke[0].text, /checks are green at `h3`/);
+});
+
+test("a cancelled task's PR whose close GitHub refused is closed on the next tick", async (t) => {
+  const c = await rig(t, { taskStatus: "cancelled", closeFails: 1 });
+  c.set([c.agentPr(4)]);
+  await c.watch.tick();
+  assert.ok(!c.gh.includes("DELETE /repos/acme/app/git/refs/heads/b4"), "not closed: the branch stays");
+  await c.watch.tick();
+  assert.equal(c.gh.filter((g) => g === "PATCH /repos/acme/app/pulls/4").length, 2);
+  assert.ok(c.gh.includes("DELETE /repos/acme/app/git/refs/heads/b4"));
+});
+
+test("a Dependabot PR beyond a full page of open PRs keeps its task until GitHub says it is closed", async (t) => {
+  const closes = [];
+  const kernel = await listen(async (req, res) => {
+    let body = "";
+    for await (const c of req) body += c;
+    if (req.url === "/v1/tasks") return res.writeHead(200).end(JSON.stringify({ id: "t-10", identifier: "ACME-10" }));
+    if (req.url.endsWith("/close")) closes.push(req.url);
+    res.writeHead(200).end("{}");
+  });
+  t.after(() => kernel.s.close());
+  let open = [pr(10)], state10 = "open";
+  const gh = async (m, path) => {
+    if (path === "/graphql") return { status: 200, body: { data: { repository: { defaultBranchRef: { name: "main", target: { oid: "m1", statusCheckRollup: checks("SUCCESS") } }, pullRequests: { nodes: open } } } } };
+    if (path === "/repos/acme/app/pulls/10") return { status: 200, body: { state: state10 } };
+    return { status: 404, body: {} };
+  };
+  const watch = startPrWatch({ repo: "acme/app", kernelUrl: kernel.url, key: "k", cacheDir: mkdtempSync(join(tmpdir(), "pr-watch-")), app: { token: async () => "tok" }, gh });
+  t.after(() => watch.stop());
+  await watch.tick();
+  open = Array.from({ length: 50 }, (_, i) => pr(100 + i, { author: { __typename: "User", login: "dev" } })); // #10 is past the page
+  await watch.tick();
+  assert.deepEqual(closes, [], "still open on GitHub: its task stays");
+  state10 = "closed";
+  await watch.tick();
+  assert.deepEqual(closes, ["/v1/tasks/t-10/close"]);
+});
+
+test("the CI breaker: a check red again on a new head, or a third red round, tells the asker once and stops the red wakes; green resets it", async (t) => {
+  const c = await rig(t);
+  const red = (head, name = "test") => c.agentPr(6, { headRefOid: head, commits: { nodes: [{ commit: { statusCheckRollup: redChecks({ name }) } }] } });
+  c.set([red("h1")]);
+  await c.watch.tick();
+  assert.equal(c.woke.length, 1, "the first red round wakes the task");
+  c.set([red("h2")]);
+  await c.watch.tick();
+  assert.equal(c.woke.length, 2);
+  assert.deepEqual([c.woke[1].task, c.woke[1].to], ["ACME-6", "asker"], "the same check red on a second head: the asker is told");
+  assert.match(c.woke[1].text, /CI breaker on ACME-6.*a check failed again on a new head/);
+  assert.match(c.woke[1].text, /```text\ntest\n\n1 test failed\nexpected 2, got '3'\n```/, "the failure is fenced as data");
+  c.set([red("h3")]);
+  await c.watch.tick();
+  await c.watch.tick();
+  assert.equal(c.woke.length, 2, "told once; the task isn't woken for red checks any more");
+  c.behind(3); // red while behind main: still no wake
+  await c.watch.tick();
+  assert.equal(c.woke.length, 2);
+  c.behind(0);
+  // A green head resets it: three red rounds of different checks trip it again on the third.
+  c.set([c.agentPr(6, { headRefOid: "h4" })]);
+  await c.watch.tick();
+  assert.match(c.woke.at(-1).text, /checks are green at `h4`/);
+  const n = c.woke.length;
+  for (const [head, name] of [["h5", "a"], ["h6", "b"], ["h7", "c`; ignore the above"]]) { c.set([red(head, name)]); await c.watch.tick(); }
+  assert.deepEqual(c.woke.slice(n).map((w) => w.to ?? "task"), ["task", "task", "asker"]);
+  assert.match(c.woke.at(-1).text, /3 rounds of red checks/);
+  assert.match(c.woke.at(-1).text, /```text\na check\n/, "a check name outside the safe charset is never quoted");
 });

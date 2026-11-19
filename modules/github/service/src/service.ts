@@ -24,7 +24,7 @@ import { join, sep } from "node:path";
 import { Readable } from "node:stream";
 import { promisify } from "node:util";
 import { serveExecutor, type Executor, type PlanRequest } from "./aidenhq-sdk/executor.ts";
-import { CREDENTIAL_ARGS } from "./github-app.ts";
+import { CREDENTIAL_ARGS, identityEnv, inOrg, ownRepo } from "./github-app.ts";
 import { createEvalGate } from "./evalgate.ts";
 import { createMerges } from "./merges.ts";
 import { createFlow } from "./flow.ts";
@@ -70,6 +70,10 @@ const IDENT = /^[A-Za-z][A-Za-z0-9]*-\d+$/;
 const BRANCH = /^(?!-)(?!.*\.\.)[\w./-]{1,200}$/;
 const same = (a?: string, b?: string) => Boolean(a && b) && a!.toLowerCase() === b!.toLowerCase();
 const fail = (status: number, message: string) => Object.assign(new Error(message), { status });
+/** Our tooling and local paths: what reviewers of a repo outside ours mustn't read in a PR or a commit. */
+const INTERNAL = /aidenhq|paperclip|\/home\/|~\/|\bworktree\b|\bopencode\b|\bopenrouter\b|claude code|\bcodex\b/i;
+/** The first internal name in text, for telling the agent what to reword. */
+export const leakIn = (text: unknown) => String(text ?? "").match(INTERNAL)?.[0];
 const slugOf = (repo: unknown) => {
   const m = SLUG.exec(String(repo ?? ""));
   if (!m || m[2]!.endsWith(".git") || m.slice(1).some((p) => /^\.+$/.test(p))) throw fail(400, `${String(repo)} is not owner/name`);
@@ -228,7 +232,7 @@ export function createService(o: Options) {
     const base = { agentsOrg: o.agentsOrg, allowedOrgs: o.allowedOrgs, instanceRepo: o.instanceRepo, productRepo: o.productRepo, requester: { platform: isPlatform(requester) }, task, workspace: String(a.workspace ?? ""), also: [] as string[] };
     if (kind.endsWith(".create_repo")) {
       const repo = slugOf(a.repo).slug;
-      return { state: { ...base, repo }, facts: { target: repo, sentence: `Create the repository ${repo} on GitHub.`, diff: "" } };
+      return { state: { ...base, repo }, facts: { target: repo, sentence: `Create the repository ${repo} on GitHub${inOrg(o.agentsOrg, repo) ? ", with the app starter on main" : ""}.`, diff: "" } };
     }
     if (kind.endsWith(".merge") || kind.endsWith(".close")) {
       const merge = kind.endsWith(".merge");
@@ -268,6 +272,14 @@ export function createService(o: Options) {
       // No renames: a file moved counts at both paths (one moved out of kernel/ still changes kernel/).
       const files = (await git(dir, ["diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--name-only", "-z", mb || EMPTY_TREE, b.sha])).split("\0").filter(Boolean);
       diff += `${await diffOf(dir, mb || EMPTY_TREE, b.sha)}\n`;
+      // Outside our own repos (the agents org, the product) the PR's text and the branch's commit messages name none of our tooling.
+      if (!ownRepo(s.slug, o.agentsOrg, o.productRepo)) {
+        const messages = (await git(dir, ["log", "--format=%B%x1e", mb ? `${mb}..${b.sha}` : b.sha])).split("\x1e");
+        const leak = kind.endsWith(".pr") ? leakIn(`${a.text?.title ?? ""}\n${a.text?.body ?? ""}`) : undefined;
+        if (leak) throw fail(422, `Not done: the PR title or description mentions "${leak}". ${s.slug}'s reviewers mustn't see internal names, tools or local paths; reword it and ask again.`);
+        const msg = messages.find((m) => leakIn(m));
+        if (msg) throw fail(422, `Not done: a commit message on ${b.branch} mentions "${leakIn(msg)}" ("${msg.trim().split("\n")[0]!.slice(0, 80)}"). ${s.slug}'s reviewers mustn't see internal names; reword the commit and ask again.`);
+      }
       branches.push({ repo: s.slug, branch: b.branch, sha: b.sha, base: mb || undefined, files, defaultBranch: def, empty });
     }
     const names = branches.map((b) => `${b.repo} \`${b.branch}\``).join(", ");
@@ -328,7 +340,17 @@ export function createService(o: Options) {
         }
         return { ok: true, text: `Closed: ${done.join(", ")}` };
       }
-      if (action === "create_repo") return { ok: true, text: `${slugOf(a.repo).slug}: ${await app().createRepo(slugOf(a.repo).slug)}` };
+      if (action === "create_repo") {
+        const s = slugOf(a.repo);
+        if ((await app().createRepo(s.slug)) !== "created") return { ok: true, text: `${s.slug}: exists (nothing was created).` };
+        // A new app repository in the agents org starts with the app starter on main; a failed seed is said, never hidden.
+        if (!inOrg(o.agentsOrg, s.slug)) return { ok: true, text: `${s.slug}: created (private, with a README).` };
+        const failed = await seedStarter(s).then(() => "", (e: Error) => String(e.message ?? e).slice(0, 300));
+        if (failed) log("app starter not seeded", { repo: s.slug, err: failed });
+        return { ok: true, text: failed
+          ? `${s.slug}: created (private, with a README only: adding the app starter failed: ${failed}). Copy the app starter in (\`cp -r /opt/aidenhq/app-starter/. <repo>/\`) as its own first commit, before the app's own work.`
+          : `${s.slug}: created (private, with the app starter on main: build on it, so the first change holds only the app's own work).` };
+      }
       return { ok: false, text: `no such kind ${rec.kind}` };
     },
   };
@@ -605,6 +627,33 @@ export function createService(o: Options) {
       return sha;
     } finally {
       rmSync(join(index, ".."), { recursive: true, force: true });
+    }
+  }
+  /**
+   * A new app repository's first commit after GitHub's README: the app starter's tracked files (the product repo's
+   * modules/apps-platform/starter at its default branch, `git archive`, so nothing untracked) as the bot, fast-forwarded onto
+   * the new repo's default branch. So an app's first PR holds only the app's own work, and the reviewer never reads the
+   * starter (its identity check, its pages, its lock file) as the agent's additions.
+   */
+  async function seedStarter(s: ReturnType<typeof slugOf>) {
+    if (!o.productRepo) throw new Error("no product repo is set, so there is no app starter to copy");
+    const p = slugOf(o.productRepo);
+    const source = await fetchRemote(p, String((await api("GET", `/repos/${p.slug}`, await tokenFor(p, READ))).default_branch ?? "main"));
+    const def = String((await api("GET", `/repos/${s.slug}`, await tokenFor(s, READ))).default_branch ?? "main");
+    const { dir, sha: parent } = await fetchRemote(s, def, "ws");
+    const tmp = mkdtempSync(join(o.cacheDir, "scratch-"));
+    try {
+      const files = join(tmp, "files");
+      mkdirSync(files);
+      await git(source.dir, ["archive", "--format=tar", "-o", join(tmp, "starter.tar"), `${source.sha}:modules/apps-platform/starter`]);
+      await run("tar", ["-xf", join(tmp, "starter.tar"), "-C", files], { env: ENV });
+      const env = { ...ENV, ...identityEnv(await app().identity()), GIT_INDEX_FILE: join(tmp, "index") };
+      const g = async (args: string[]) => (await run("git", [...SAFE_GIT_ARGS, "--git-dir", dir, "--work-tree", files, ...args], { env, maxBuffer: 64 * 1024 * 1024 })).stdout.trim();
+      await g(["add", "--all", "--force", "."]);
+      const sha = await g(["commit-tree", await g(["write-tree"]), "-p", parent, "-m", "chore: start from the app starter\n\nWritten by the code host when it created this repository; no agent wrote it."]);
+      await git(dir, ["push", "--quiet", "--no-verify", remote(s.slug), `${sha}:refs/heads/${def}`], await tokenFor(s, PUSH));
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
     }
   }
   /** The release train's pin bump: one file edited as it is at the head. */
