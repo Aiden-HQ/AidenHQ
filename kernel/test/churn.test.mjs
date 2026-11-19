@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { churn } from "../sdk/src/churn.ts";
+import { churn, churnFromGit } from "../sdk/src/churn.ts";
 
 const opts = { windowDays: 14, exclude: ["**/package-lock.json", "**/dist/**"] };
 const day = (n) => new Date(Date.UTC(2026, 0, 1 + n)).toISOString();
@@ -50,4 +50,12 @@ test("excluded paths are ignored", () => {
     { pr: "acme/app#1", mergedAt: day(0), diff: create("web/dist/app.js", body) + create("package-lock.json", body) + create("src/a.js", body) },
   ], opts);
   assert.deepEqual(r.added, { "acme/app#1": 3 });
+});
+
+test("a first pass without a cursor reads only the newest `first` commits", async () => {
+  const asked = [];
+  const git = async (args) => (asked.push(args), args[0] === "log" ? "" : "");
+  await churnFromGit(git, { rev: "main", first: 500, windowDays: 30, exclude: [], prOf: () => undefined });
+  await churnFromGit(git, { rev: "main", cursor: "2026-11-19T00:00:00.000Z", first: 500, windowDays: 30, exclude: [], prOf: () => undefined });
+  assert.deepEqual(asked.map((a) => a.find((x) => /^--(max-count|since)=/.test(x))), ["--max-count=500", "--since=2026-10-20T00:00:00.000Z"]);
 });

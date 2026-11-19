@@ -121,9 +121,10 @@ export function churn(prs: ChurnPr[], opts: { windowDays: number; exclude: strin
  * Churn over a repo's first-parent history through `git` (args → stdout, run in the repo): each commit whose subject
  * names a PR (`prOf`) is one PR. With a `cursor` only the window before it is read again, so lines added just before it keep
  * their owner; `fresh` says which of the results are new since it. `last`: the newest commit's time, the next cursor.
+ * `first`: without a cursor, only the newest that many commits (a first pass on the caller's own thread).
  */
-export async function churnFromGit(git: (args: string[]) => Promise<string>, o: { rev: string; cursor?: string; windowDays: number; exclude: string[]; prOf: (subject: string) => string | undefined; onError?: (commit: string, e: unknown) => void }) {
-  const since = o.cursor ? [`--since=${new Date(Date.parse(o.cursor) - o.windowDays * DAY).toISOString()}`] : [];
+export async function churnFromGit(git: (args: string[]) => Promise<string>, o: { rev: string; cursor?: string; first?: number; windowDays: number; exclude: string[]; prOf: (subject: string) => string | undefined; onError?: (commit: string, e: unknown) => void }) {
+  const since = o.cursor ? [`--since=${new Date(Date.parse(o.cursor) - o.windowDays * DAY).toISOString()}`] : o.first ? [`--max-count=${o.first}`] : [];
   const log = await git(["log", "--first-parent", "--reverse", "--format=%H%x09%cI%x09%s", ...since, o.rev]);
   const prs: (ChurnPr & { commit: string })[] = [];
   for (const line of log.split("\n").filter(Boolean)) {

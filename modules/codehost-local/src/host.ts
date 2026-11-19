@@ -130,12 +130,13 @@ export function localHost({ root, sources = {}, tasksDir, scratchDir, instanceRe
   }
 
   const subject = (repo: string, n: number) => `pr:${repo.toLowerCase()}#${n}`;
-  /** Churn of the repo's merged changes (the squash commits' `(change N)`), a cursor per repo in <root>/churn.json (kernel/sdk/src/churn.ts). */
+  /** Churn of the repo's merged changes (the squash commits' `(change N)`), a cursor per repo in <root>/churn.json (kernel/sdk/src/churn.ts).
+   * It runs on the kernel's thread, so the first pass reads only the last 500 commits. */
   async function churnLocal(repo: string) {
     const file = join(root, "churn.json");
     const cursors = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
     const key = repo.toLowerCase(), def = await defaultBranch(repo);
-    const out = await churnFromGit((args) => g(repo, args), { rev: `refs/heads/${def}`, cursor: cursors[key], windowDays: 30, exclude: DEFAULT_CHURN_EXCLUDE, prOf: (m) => { const n = /\(change (\d+)\)\s*$/.exec(m.split("\n")[0]!)?.[1]; return n ? `${key}#${n}` : undefined; } });
+    const out = await churnFromGit((args) => g(repo, args), { rev: `refs/heads/${def}`, cursor: cursors[key], first: 500, windowDays: 30, exclude: DEFAULT_CHURN_EXCLUDE, prOf: (m) => { const n = /\(change (\d+)\)\s*$/.exec(m.split("\n")[0]!)?.[1]; return n ? `${key}#${n}` : undefined; } });
     const num = (pr: string) => Number(pr.slice(pr.lastIndexOf("#") + 1));
     const task = async (n: number) => ((await meta(repo, n)).task as string | undefined) ?? null;
     for (const [pr, lines] of Object.entries(out.added)) if (lines && out.fresh(out.mergedAt.get(pr)!)) fact({ type: "code.added", subject: subject(repo, num(pr)), version: "1", at: out.mergedAt.get(pr)!, task: await task(num(pr)), data: { pr, lines } });
