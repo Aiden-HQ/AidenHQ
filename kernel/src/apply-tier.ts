@@ -14,6 +14,7 @@ import { join } from "node:path";
 import YAML from "yaml";
 import { readDigest, strayFiles, untrialedNewAgents, productPin, bumpTitle, type Read, type Source } from "./apply.ts";
 import { applyCard, repoKey } from "./kinds.ts";
+import { heldRoles } from "./identity.ts";
 import { authorityLines, classifyModules, diffAll, forkChanges, grantOverrides, marketplaceChanges, moduleInputs, withGrantOverrides, type ModuleInput } from "../../scripts/compiler/authority.ts";
 import { effective } from "../../scripts/compiler/release.ts";
 import { hostFetch, officialSides, remoteCodeText, withRemote } from "../../scripts/compiler/sources.ts";
@@ -460,7 +461,7 @@ export function hostPlanner({ repo, instanceRepo, configDir, read, grants, conne
 }): ApplyPlanner {
   return createApplyPlanner({
     instanceRepo, read, product: hostProduct(repo), modules: (b, h) => moduleTierState(b, h, repo), connections, verifyRelease,
-    roles: () => Object.fromEntries(Object.values(grants()).flatMap((a) => (a?.key ? [[a.key, a.roles ?? []]] : []))),
+    roles: () => Object.fromEntries(Object.entries(grants()).flatMap(([id, a]) => (a?.key ? [[a.key, heldRoles(grants() as never, id)]] : []))),
     moduleApps: () => { try { return ((YAML.parse(readFileSync(join(configDir, "apps.modules.yaml"), "utf8")) ?? {}).apps ?? []).filter(Boolean); } catch { return []; } },
   });
 }

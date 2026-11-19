@@ -12,6 +12,7 @@ import type { Finish } from "./checks.ts";
 import { createOnce } from "./once.ts";
 import type { Provenance } from "./provenance.ts";
 import { signature } from "../../services/paperclip-events/sign.js";
+import { heldRoles } from "./identity.ts";
 
 const PLUGIN = "aidenhq.events";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -136,6 +137,6 @@ export const delegateIds = async (agents: Record<string, Delegator> | undefined,
     if (keys.has("app-owners")) for (const o of await appOwners()) keys.add(o);
     return all.filter(([, g]) => keys.has(g.key!) || (g.member_of !== undefined && keys.has(g.member_of))).map(([id]) => id);
   }
-  if (me?.roles?.includes("fleet-admin")) return all.map(([id]) => id);
+  if (heldRoles(agents, agent).includes("fleet-admin")) return all.map(([id]) => id);
   return all.filter(([, g]) => g.profile === "engineer" || (me?.key !== undefined && g.reports_to === me.key)).map(([id]) => id);
 };

@@ -90,6 +90,14 @@ test("two tasks routed at once never both take the one idle member; a busy membe
   assert.match(w.comments.t1[0].body, /^\*\*Routed to kai\*\* \(team engineering\)\.[\s\S]*- candidate kai: score[\s\S]*- pick: kai\n\n<!-- aidenhq:job=kernel kind=routed -->$/);
 });
 
+test("a duplicated event and the poll place a task once: one reassignment, one decision record", async () => {
+  const w = world();
+  w.issue("t1");
+  await Promise.all([w.wakes.event({ issueId: "t1" }), w.wakes.event({ issueId: "t1" }), w.wakes.poll()]);
+  assert.equal(w.patches.length, 1);
+  assert.equal(w.comments.t1.length, 1);
+});
+
 test("a placement whose reassignment failed is retried with the same pick, never re-scored", async () => {
   const w = world();
   w.issue("t1");

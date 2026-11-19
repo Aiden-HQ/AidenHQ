@@ -86,6 +86,8 @@ test("a team's day cap counts every member's spend: one member may use all of it
   assert.equal((await r.call({ model: "flat", messages: [] })).status, 200); // kai spends $0.06 of the team's $0.05
   assert.match((await r.call({ model: "flat", messages: [] })).json.error.message, /^spend cap reached: agent-day \$0\.06 of \$0\.05;/);
   assert.deepEqual(r.gw.exhausted("ag2", "WOR-9").map((o) => o.scope), ["day"]); // mina never spent, but the team's day is used up
+  r.gw.setCap("day", "tr", "2026-11-16", 1); // an approved raise lands on the team record: every member has room again
+  assert.deepEqual(r.gw.exhausted("ag2", "WOR-9"), []);
 });
 
 test("a definite upstream refusal before any output is released at $0; a cut stream is not", async (t) => {

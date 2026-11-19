@@ -6,7 +6,7 @@
 import { randomBytes } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { CODEHOSTS } from "./codehost.ts";
-import { rolesOf } from "./identity.ts";
+import { heldRoles, rolesOf } from "./identity.ts";
 import { JobError } from "./jobs.ts";
 import type { JobTools } from "./jobtools.ts";
 import type { RoutineCap } from "./tier.ts";
@@ -88,7 +88,7 @@ export function createAdmission({ db, grants, kinds, capacity, spend, mayDispatc
   /** Platform authority belongs to the task: a job holds the platform-engineer role only on a task no agent filed, or one the Architect or the Fleet Steward filed. */
   function platformTask(t: Parameters<typeof provenance.filedBy>[0]): boolean {
     const by = provenance.filedBy(t);
-    return by === undefined || (by !== "" && (grants()[by]?.roles ?? []).some((r) => PLATFORM_FILERS.includes(r)));
+    return by === undefined || (by !== "" && heldRoles(grants(), by).some((r) => PLATFORM_FILERS.includes(r)));
   }
 
   function freeze(g: AgentGrant, cause: string, platform: boolean): Authority {
@@ -139,9 +139,8 @@ export function createAdmission({ db, grants, kinds, capacity, spend, mayDispatc
       const own = grants()[agent];
       if (!own) throw new JobError(403, "no-grants", `agent ${agent} has no grants`);
       if (own.team) throw new JobError(409, "team-record", `agent ${agent} is team ${own.team.name}'s record: the kernel routes its tasks to a member, and it never runs`);
-      // A member holds its team record's roles (the record alone holds them for filing); the platform filter below still applies.
-      const record = own.member_of ? Object.values(grants()).find((x) => x?.key === own.member_of && x?.team) : undefined;
-      const g: AgentGrant = record ? { ...own, roles: [...new Set([...(own.roles ?? []), ...(record.roles ?? [])])] } : own;
+      // A member holds its team record's roles (heldRoles); the platform filter below still applies.
+      const g: AgentGrant = { ...own, roles: heldRoles(grants(), agent) };
       const live = (db.prepare(`SELECT COUNT(*) AS n FROM jobs WHERE ${LIVE}`).get() as { n: number }).n;
       if (live >= capacity()) throw new JobError(429, "busy", `all ${capacity()} computers are taken; try again shortly`);
       const mine = (db.prepare(`SELECT COUNT(*) AS n FROM jobs WHERE agent = ? AND ${LIVE}`).get(agent) as { n: number }).n;

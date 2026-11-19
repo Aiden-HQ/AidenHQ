@@ -1397,7 +1397,8 @@ export function expandTeams(instance, paperclip) {
       names.add(m.name);
       if (instance.overrides?.agents?.[k]?.caps) fail(`overrides.agents.${k}.caps: a member has no cap of its own; set teams.${team}.caps`);
       const { handbook, ...own } = { ...(t.defaults ?? {}), ...m };
-      const { team: _, avatar: __, ...base } = structuredClone(tpl);
+      // The record keeps the template's fast chat lane (chat:) and heartbeat routine (its runs are routed like any team task).
+      const { team: _, avatar: __, chat: ___, heartbeat: ____, ...base } = structuredClone(tpl);
       paperclip.agents[k] = { ...base, ...own, ...(handbook ? { handbook_line: handbook } : {}), member_of: key };
     }
     tpl.team = { name: team, members: Object.keys(t.members), weights: weightsOf(t.routing) };

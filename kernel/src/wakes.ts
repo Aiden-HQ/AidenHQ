@@ -192,8 +192,12 @@ export function createWakes({ db, owner, post, dispatches, routineKey = () => un
     }
     return out;
   }
-  async function place(issue: Issue, teamId: string) {
-    if (!OPEN_SET.has(String(issue.status)) || liveJob(issue.id)) return; // a job of the record from before the team: it finishes first
+  async function place(seen: Issue, teamId: string) {
+    // Read again inside the lock: a duplicated event or the poll may have placed it already (and a list row may lack the description).
+    const fresh = await owner("GET", `/api/issues/${encodeURIComponent(seen.id)}`);
+    if (fresh.status !== 200) throw new Error(`control plane GET issue → ${fresh.status}`);
+    const issue = fresh.json as Issue;
+    if (issue.assigneeAgentId !== teamId || !OPEN_SET.has(String(issue.status)) || liveJob(issue.id)) return; // a job of the record from before the team finishes first
     const team = grants()[teamId]!;
     let row = q("SELECT member, state FROM team_routes WHERE task = ?").get(issue.id) as { member: string | null; state: string } | undefined;
     // Back on the team after a placement or a block (the delegator re-routed it): decided afresh.
