@@ -179,11 +179,13 @@ test("an orphaned item over 2h trips the stuck rule; a slower stage only logs in
     { task: "e", identifier: "WOR-E", since: minsAgo(9000), reason: "orphaned" }, // backlog inbox: parked
     { task: "f", identifier: "WOR-F", since: minsAgo(9000), reason: "orphaned" }, // unassigned todo log
     { task: "g", identifier: "WOR-G", since: minsAgo(300), reason: "orphaned" }, // its read fails: stays flagged
+    { task: "h", identifier: "WOR-H", since: minsAgo(300), reason: "orphaned" }, // owner-assigned todo: not an agent's stuck work
   ];
   const tasks = {
     a: { id: "a", identifier: "WOR-A", status: "todo", assigneeAgentId: "ag1", updatedAt: minsAgo(180) },
     e: { id: "e", identifier: "WOR-E", status: "backlog", updatedAt: minsAgo(9000) },
     f: { id: "f", identifier: "WOR-F", status: "todo", updatedAt: minsAgo(9000) },
+    h: { id: "h", identifier: "WOR-H", status: "todo", assigneeUserId: "u1", assigneeAgentId: null, updatedAt: minsAgo(300) },
   };
   const stage = (p) => ({ name: "review", n: 12, work_p75: p, wait_p75: 0, work_p50: p / 2, waits: {} });
   const logged = [];
