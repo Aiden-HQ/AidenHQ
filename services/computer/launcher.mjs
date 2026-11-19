@@ -48,6 +48,12 @@ if (!secretsDir) throw new Error("AIDENHQ_SECRETS_DIR is not set (.env)");
 const secret = (n) => { try { return readFileSync(path.join(secretsDir, n), "utf8").trim(); } catch { return ""; } };
 
 const readJson = (f) => JSON.parse(readFileSync(f, "utf8"));
+// A fresh install enables this unit before the compile writes computers.json: wait for it quietly, no crash loop.
+const computersJson = path.join(configDir, "computers.json");
+if (!existsSync(computersJson)) {
+  console.log(new Date().toISOString(), `${computersJson} isn't written yet; waiting for the compile`);
+  while (!existsSync(computersJson)) await new Promise((r) => setTimeout(r, 1000));
+}
 const CFG = {
   control: { host: "10.231.0.1", port: 8199 },
   gateway: { host: "10.231.2.1", port: 8200 },
