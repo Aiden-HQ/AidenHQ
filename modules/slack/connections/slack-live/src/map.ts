@@ -13,7 +13,7 @@ export function permalink(channel: string, ts: string): string {
 
 // Socket Mode envelope body (the Events API callback) -> a LiveEvent, or null when it isn't one
 // we keep. Only events_api messages and mentions; bots, system subtypes and empty text are dropped.
-export function toEvent(body: unknown, ignored: Set<string>, now = Date.now()): LiveEvent | null {
+export function toEvent(body: unknown, now = Date.now()): LiveEvent | null {
   const b = rec(body);
   const ev = rec(b?.event);
   const eventId = str(b?.event_id);
@@ -22,7 +22,6 @@ export function toEvent(body: unknown, ignored: Set<string>, now = Date.now()): 
   const ts = str(ev?.ts);
   const text = str(ev?.text)?.trim();
   if (!ev || !eventId || !kind || !KINDS.has(kind) || !channelId || !ts || !text) return null;
-  if (ignored.has(channelId)) return null;
   const subtype = str(ev.subtype);
   if (subtype === "bot_message" || (subtype && SYSTEM_SUBTYPES.has(subtype))) return null;
   if (str(ev.bot_id) || str(ev.app_id)) return null;

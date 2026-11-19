@@ -39,7 +39,7 @@ contributes:
       secrets: [ slack_live_app_token, slack_live_bot_token ]
       pair_url: http://slack-live:8089/pair
       steps: |
-        1. In your own Slack app (make one from step 1 above if you sign in with your organisation's app), open **App Manifest**, replace its contents with `{"display_information":{"name":"AidenHQ","description":"Your AI chief of staff. Reads the Slack you can see; posts only as a labelled bot, or as you when you allow it.","background_color":"#1a1a2e"},"oauth_config":{"redirect_urls":["{redirect_url}"],"scopes":{"user":["search:read.public","search:read.private","search:read.im","search:read.mpim","search:read.users","search:read.files","channels:history","groups:history","im:history","mpim:history","channels:read","groups:read","im:read","mpim:read","users:read","users:read.email","users.profile:read","usergroups:read","emoji:read","files:read","canvases:read","lists:read","reactions:read"],"bot":["chat:write","chat:write.public","reactions:write","app_mentions:read","commands","im:history","im:read","channels:history","groups:history"]}},"settings":{"org_deploy_enabled":false,"socket_mode_enabled":true,"token_rotation_enabled":false,"interactivity":{"is_enabled":true},"event_subscriptions":{"bot_events":["app_mention","message.im","member_joined_channel","channel_left"],"user_events":["message.channels","message.groups","message.im","message.mpim"]}},"features":{"bot_user":{"display_name":"AidenHQ (AI)","always_online":true},"slash_commands":[{"command":"/aiden","description":"Assign this channel to an agent (owner only)","usage_hint":"assign-channel <agent-key> | unassign-channel | channels","should_escape":false}],"app_home":{"home_tab_enabled":false,"messages_tab_enabled":true,"messages_tab_read_only_enabled":false}}}` and press **Save**.
+        1. In your own Slack app (make one from step 1 above if you sign in with your organisation's app), open **App Manifest**, replace its contents with `{"display_information":{"name":"AidenHQ","description":"Your AI chief of staff. Reads the Slack you can see; posts only as a labelled bot, or as you when you allow it.","background_color":"#1a1a2e"},"oauth_config":{"redirect_urls":["{redirect_url}"],"scopes":{"user":["search:read.public","search:read.private","search:read.im","search:read.mpim","search:read.users","search:read.files","channels:history","groups:history","im:history","mpim:history","channels:read","groups:read","im:read","mpim:read","users:read","users:read.email","users.profile:read","usergroups:read","emoji:read","files:read","canvases:read","lists:read","reactions:read"],"bot":["chat:write","chat:write.public","reactions:write","app_mentions:read","commands","im:history","im:read","im:write","channels:history","groups:history","channels:read","groups:read"]}},"settings":{"org_deploy_enabled":false,"socket_mode_enabled":true,"token_rotation_enabled":false,"interactivity":{"is_enabled":true},"event_subscriptions":{"bot_events":["app_mention","message.im","member_joined_channel","channel_left"],"user_events":["message.channels","message.groups","message.im","message.mpim"]}},"features":{"bot_user":{"display_name":"AidenHQ (AI)","always_online":true},"slash_commands":[{"command":"/aiden","description":"Assign this channel to an agent (owner only)","usage_hint":"assign-channel <agent-key> | unassign-channel | channels","should_escape":false}],"app_home":{"home_tab_enabled":false,"messages_tab_enabled":true,"messages_tab_read_only_enabled":false}}}` and press **Save**.
         2. Open **Install App** and press **Install to Workspace** (or **Reinstall**), then **Allow**. A workspace admin may need to approve it.
         3. Open **Basic Information**, scroll to **App-Level Tokens**, press **Generate Token and Scopes**, add the scope `connections:write`, press **Generate**, and paste the `xapp-` token below.
         4. Open **OAuth & Permissions**, copy the **Bot User OAuth Token** (`xoxb-`), and paste it below.
@@ -112,7 +112,7 @@ writes:
       reads: "Nothing new: the note below."
       cost: "No model cost."
       details: "{{note}}"
-  # /aiden assign-channel and unassign-channel (the owner's own command, checked against OWNER_SLACK_USER_ID): the module files it
+  # /aiden assign-channel and unassign-channel (the owner's own command, checked against the paired owner): the module files it
   # itself, Tier 0 (a record, nothing to approve); no agent tool maps to it, so no agent can bind a channel.
   bind:
     args: schemas/bind.json
@@ -202,11 +202,7 @@ services:
       data: ["slack-live:/data"]
       env:
         SLACK_LIVE_DB: /data/slack-live.sqlite
-        # Whose Slack words count and who gets paged is the paired owner (state in /data). These two .env values only seed it once
-        # on an instance that predates pairing; they leave this block once every instance has run it.
-        OWNER_SLACK_USER_ID: "${OWNER_SLACK_USER_ID:-}"
-        IGNORE_CHANNELS: "${SLACK_LIVE_IGNORE_CHANNELS:-}"
-        OWNER_COMMAND_CHANNEL: "${OWNER_COMMAND_CHANNEL:-}"
+        # Whose Slack words count and who gets paged is the paired owner (state in /data).
         SLACK_POST_CHANNELS: "${settings.slack_post_channels}"
         MCP_BEARER_TOKEN_FILE: ${secrets.slack_live_service_key}
         # The kernel's bearer on /transport/send: this module's own token.

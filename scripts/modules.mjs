@@ -120,7 +120,7 @@ export const LEGACY_HOST_ENV = {
   jira: ["AIDENHQ_GATEWAY_URL"],
   tasks: ["AIDENHQ_GATEWAY_URL"],
   github: ["GITHUB_COMMENT_ORGS"],
-  slack: ["SLACK_CLIENT_ID", "OWNER_SLACK_USER_ID", "SLACK_LIVE_IGNORE_CHANNELS", "OWNER_COMMAND_CHANNEL"],
+  slack: ["SLACK_CLIENT_ID"],
 };
 /** Networks the ops shell makes (fixed bridge, subnet and host rule: ops/units/aidenhq-ci-net.service). */
 export const OPS_NETWORKS = { ci: "aidenhq-ci" };

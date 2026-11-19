@@ -45,13 +45,12 @@ const kernelGet = async (path: string) => {
   return res.json() as Promise<any>;
 };
 const store = openStore(process.env.SLACK_LIVE_DB ?? "/data/slack-live.sqlite");
-// The paired owner (the board mints the code, the owner DMs it) is the owner and the command channel. An instance that predates
-// pairing has them in .env: stored once while nothing is paired.
+// The paired owner (the board mints the code, the owner DMs it) is the owner and the command channel.
 const pairing = createPairing(store.db);
-if (pairing.seed(env("OWNER_SLACK_USER_ID"), process.env.OWNER_COMMAND_CHANNEL ?? "")) log.info("owner seeded from env");
 const pairToken = env("PAIR_TOKEN");
 const cfg: SlackConfig = { botToken: env("SLACK_BOT_TOKEN"), ownerId: pairing.owner()?.user ?? "" };
-// An owner seeded without a command channel: their DM with the bot is it (else their DMs to the bot go to triage, not to Aiden).
+// An owner stored without a command channel (an instance that predates pairing seeded it from .env): their DM with the bot is it
+// (else their DMs to the bot go to triage, not to Aiden).
 const unchanneled = pairing.owner();
 if (unchanneled && !unchanneled.channel && cfg.botToken) {
   void fetch("https://slack.com/api/conversations.open", { method: "POST", headers: { authorization: `Bearer ${cfg.botToken}`, "content-type": "application/json; charset=utf-8" }, body: JSON.stringify({ users: unchanneled.user }), signal: AbortSignal.timeout(15_000) })
@@ -64,7 +63,6 @@ if (unchanneled && !unchanneled.channel && cfg.botToken) {
 }
 // The kernel's bearer on /transport/send: this module's own token.
 const channelToken = env("CHANNEL_TOKEN");
-const ignored = new Set((process.env.IGNORE_CHANNELS ?? "").split(",").map((s) => s.trim()).filter(Boolean));
 // slack.post's executor (executor@1): the kernel calls it with the service key; execute only for an approved record.
 const post = poster(store, { botToken: cfg.botToken, allowed: new Set((process.env.SLACK_POST_CHANNELS ?? "").split(",").map((s) => s.trim()).filter(Boolean)) });
 // slack.bind (bind.ts) shares the executor: the kind says which one.
@@ -206,5 +204,5 @@ const binding = cfg.botToken ? {
   mention: (ev: any) => mention(ev, { store, thread: (b) => kernel("/v1/channel/thread", b, channelToken), react: async (channel, timestamp, name) => void (await slackApi("reactions.add", { channel, timestamp, name })) }),
 } : undefined;
 
-if (appToken) void startSocket({ appToken, store, ignored, onKept: poke, chat, pair, ...(binding ? { bind: binding } : {}), ...(tee ? { tee } : {}), log });
+if (appToken) void startSocket({ appToken, store, onKept: poke, chat, pair, ...(binding ? { bind: binding } : {}), ...(tee ? { tee } : {}), log });
 else log.warn("SLACK_APP_TOKEN not set; not listening to Slack");

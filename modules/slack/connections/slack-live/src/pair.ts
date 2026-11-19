@@ -11,7 +11,7 @@ const hash = (code: string): string => createHash("sha256").update(code).digest(
 
 export interface Owner {
   user: string;
-  channel: string; // the DM with the bot; empty only until main.ts opens it for an owner seeded from .env
+  channel: string; // the DM with the bot; empty only until main.ts opens it for an owner an older instance seeded from .env
 }
 
 export function createPairing(db: Database.Database, now: () => number = Date.now) {
@@ -58,13 +58,9 @@ export function createPairing(db: Database.Database, now: () => number = Date.no
       return code;
     },
     redeem: (code: string, user: string, channel: string) => redeemTx(code, user, channel),
-    /** The command channel of an owner stored without one (seeded from .env): main.ts opens the bot's DM with them. */
+    /** The command channel of an owner stored without one (an older instance seeded it from .env): main.ts opens the bot's DM with them. */
     setChannel(user: string, channel: string): boolean {
       return db.prepare(`UPDATE pair_owner SET channel = ? WHERE id = 1 AND user_id = ? AND channel = ''`).run(channel, user).changes === 1;
-    },
-    /** The upgrade path: an existing instance's .env owner, stored once while nothing is paired. */
-    seed(user: string, channel: string): boolean {
-      return Boolean(user) && db.prepare(`INSERT OR IGNORE INTO pair_owner (id, user_id, channel) VALUES (1, ?, ?)`).run(user, channel).changes === 1;
     },
   };
 }

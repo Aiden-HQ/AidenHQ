@@ -10,10 +10,10 @@ describe("slack-live-mcp", () => {
   it("stores a redelivered envelope once", () => {
     const { payload } = JSON.parse(readFileSync(new URL("./fixtures/events_api-message.json", import.meta.url), "utf8"));
     const store = openStore(":memory:");
-    const e = toEvent(payload, new Set())!;
+    const e = toEvent(payload)!;
     expect(e.permalink).toBe("https://slack.com/archives/C0FAKECH01/p1700000000000100");
     expect(store.insertEvent(e)).toBe(true);
-    expect(store.insertEvent(toEvent(payload, new Set())!)).toBe(false);
+    expect(store.insertEvent(toEvent(payload)!)).toBe(false);
     expect(store.takePending(10)).toHaveLength(1);
   });
 

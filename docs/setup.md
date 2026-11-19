@@ -306,8 +306,8 @@ Slack is one module (`slack`) with two parts, both served by one Slack app made 
 2. Save three tokens in the vault: the app-level token (`xapp-`, scope `connections:write`, under Basic Information,
    App-Level Tokens) as `slack_live_app_token`, the bot token (`xoxb-`) as `slack_live_bot_token`, and your user token
    (`xoxp-`) as `slack_live_user_token`. Or paste the first two on the board's Slack setup page.
-3. Set your Slack member id (Slack profile, *Copy member ID*) in `.env`: uncomment the `# OWNER_SLACK_USER_ID=U00000000`
-   line and put your id in it, or pair on the board instead. It decides whose words count and who gets paged.
+3. Pair on the board's Slack setup page: DM the bot the code it shows. The paired account is whose words count and who
+   gets paged.
 4. Apply, then `docker compose up -d --force-recreate slack-live`.
 
 An instance that ran the old `channel-slack` module needs nothing: `replaces` keeps its `instance.yaml` working, and the

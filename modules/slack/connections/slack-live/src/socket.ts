@@ -9,7 +9,6 @@ const { SocketModeClient } = socketMode;
 interface Deps {
   appToken: string;
   store: Store;
-  ignored: Set<string>;
   onKept: () => void;
   /** The owner's own messages in their command channel (the paired DM): chat with Aiden, posted as the owner by the kernel. */
   chat?: { owner: () => { user: string; channel: string } | undefined; deliver: (text: string) => Promise<void> };
@@ -23,7 +22,7 @@ interface Deps {
 
 // Persist BEFORE ack: if the insert throws we do not ack, so Slack redelivers; a duplicate
 // event_id is a no-op. Events during a disconnect are lost (accepted; the scout scan covers it).
-export async function startSocket({ appToken, store, ignored, onKept, chat, pair, bind, tee, log }: Deps): Promise<void> {
+export async function startSocket({ appToken, store, onKept, chat, pair, bind, tee, log }: Deps): Promise<void> {
   const client = new SocketModeClient({ appToken });
   const isDuplicateText = makeDedupe();
   client.on("slack_event", async (msg: { type: string; body: unknown; ack: () => Promise<void> }) => {
@@ -58,7 +57,7 @@ export async function startSocket({ appToken, store, ignored, onKept, chat, pair
         await msg.ack().catch(() => undefined);
         return;
       }
-      const e = msg.type === "events_api" ? toEvent(msg.body, ignored) : null;
+      const e = msg.type === "events_api" ? toEvent(msg.body) : null;
       if (e && !isDuplicateText(e) && store.insertEvent(e)) onKept();
     } catch (err) {
       log.error({ err: String(err) }, "event insert failed; not acking so Slack redelivers");
