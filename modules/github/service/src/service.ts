@@ -247,7 +247,8 @@ export function createService(o: Options) {
     // The bases the change targets, each with a way to read a file there (the owner's source exceptions: never the change's own).
     // `dir` and `tip`: the cache clone holding the base at that commit, where the task's merged sibling PRs are read (siblings.mjs).
     const bases: Base[] = [];
-    // The change's own PRs (`repo#n`) and branches (`repo@branch`), never its siblings.
+    // A merge card's own PRs (`repo#n`), never its siblings. A push or PR card's own PR is open, so never counted as merged:
+    // an earlier merged PR on a reused branch name is a real sibling.
     const own = new Set<string>();
     if (kind.endsWith(".merge") || kind.endsWith(".close")) {
       const merge = kind.endsWith(".merge");
@@ -306,7 +307,6 @@ export function createService(o: Options) {
       for (const f of files) reads.push({ name: `${s.slug} ${f}`, read: () => git(dir, ["show", `${b.sha}:${f}`]) });
       // A branch's PR targets the default branch (execute opens it there); a repo with none yet has no base to read.
       bases.push({ repo: s.slug, base: empty ? "" : def, read: (path) => git(dir, ["show", `refs/remote/${def}:${path}`]), dir, tip });
-      own.add(`${s.slug.toLowerCase()}@${b.branch}`);
       branches.push({ repo: s.slug, branch: b.branch, sha: b.sha, base: mb || undefined, files, defaultBranch: def, empty });
     }
     const names = branches.map((b) => `${b.repo} \`${b.branch}\``).join(", ");

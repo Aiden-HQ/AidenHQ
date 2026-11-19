@@ -9,14 +9,14 @@
 export const MAX_CANDIDATES = 10;
 export const DEADLINE_MS = 10_000;
 
-/** The PRs pr-tasks.json names for task `identifier`, as {repo, number}, less the change's own (`own`: `repo#n` and `repo@branch`, repo in lower case). */
+/** The PRs pr-tasks.json names for task `identifier`, as {repo, number}, less a merge card's own (`own`: `repo#n`, repo in lower case). */
 export function candidatesOf(prTasks, identifier, own = new Set()) {
   if (!identifier) return [];
   const out = [];
   for (const [url, v] of Object.entries(prTasks ?? {})) {
     const m = /^https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d+)$/i.exec(url);
     const repo = m?.[1].toLowerCase();
-    if (!m || v?.task !== identifier || own.has(`${repo}#${m[2]}`) || own.has(`${repo}@${v.branch}`)) continue;
+    if (!m || v?.task !== identifier || own.has(`${repo}#${m[2]}`)) continue;
     out.push({ repo, number: Number(m[2]) });
   }
   return out.slice(-MAX_CANDIDATES);

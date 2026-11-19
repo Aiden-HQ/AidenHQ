@@ -1,4 +1,4 @@
-// The task's merged sibling PRs for the reviewer (siblings.mjs): the task's other PRs from pr-tasks.json, less the change's own;
+// The task's merged sibling PRs for the reviewer (siblings.mjs): the task's other PRs from pr-tasks.json, less a merge card's own;
 // only GitHub's own merge into exactly this base, on the base in the clone, with its files and those the base changed again since.
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -19,11 +19,11 @@ test("a sibling merged into the base names its files and those the base changed 
 
   const prTasks = {
     "https://github.com/acme/app/pull/5": { task: "WOR-1", branch: "part-one" },
-    "https://github.com/acme/app/pull/6": { task: "WOR-1", branch: "part-two" }, // this change's own branch
+    "https://github.com/acme/app/pull/6": { task: "WOR-1", branch: "part-two" }, // the merge card's own PR
     "https://github.com/acme/app/pull/8": { task: "WOR-1", branch: "other-base" },
     "https://github.com/acme/app/pull/3": { task: "WOR-2", branch: "elsewhere" },
   };
-  const candidates = candidatesOf(prTasks, "WOR-1", new Set(["acme/app@part-two"]));
+  const candidates = candidatesOf(prTasks, "WOR-1", new Set(["acme/app#6"]));
   assert.deepEqual(candidates, [{ repo: "acme/app", number: 5 }, { repo: "acme/app", number: 8 }]);
 
   const prs = { 5: { merged: true, merge_commit_sha: merged, base: { ref: "main" } }, 8: { merged: true, merge_commit_sha: merged, base: { ref: "release" } } };
