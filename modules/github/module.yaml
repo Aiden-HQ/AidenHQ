@@ -162,7 +162,8 @@ codehost:
     perms: { contents: read, metadata: read, issues: write, pull_requests: read, checks: read, statuses: write, actions: read, organization_projects: read }
   snapshot: { repos: [ "*/*" ] }
 # The PR watch (service/src/pr-watch.ts, W5) files the Platform Engineer's Dependabot tasks and closes them
-# (kernel.tasks), and wakes the task that opened a PR now conflicting with main (kernel.wake). It holds only its module token.
+# (kernel.tasks), wakes the task that opened a PR (kernel.wake) and reads that task's status (kernel.cp-read) to close a cancelled
+# task's PR. It holds only its module token.
 # The design review's tasks (service/src/design-review.ts, W6) are filed for the UI Reviewer's role and cancelled when
 # superseded (kernel.tasks).
 # The merge queue's reviewer eval (service/src/evalgate.ts) is a kernel check job (kernel.checks) whose signed receipt it
@@ -174,7 +175,7 @@ codehost:
 # whose process is gone. That listing reads no other source and closes no other family (kernel/src/modtasks.ts).
 # All of them go with the code host's own token (codehost_github_token), never with github-mcp's service key.
 roles:
-  requests: [ kernel.tasks, kernel.wake, kernel.checks, kernel.apply, kernel.work-read, kernel.facts ]
+  requests: [ kernel.tasks, kernel.wake, kernel.checks, kernel.apply, kernel.work-read, kernel.facts, kernel.cp-read ]
 # Flow (docs/design/flow.md): the facts the code host emits through the kernel (service/src/flow.ts), each carrying the task that opened
 # the PR (pr-tasks.json). pr.opened and issue.opened carry the author (author_kind: agent, owner or outside, from GitHub's author_association); pr.pushed is a head
 # change after opening (version = the head); pr.closed is a close without a merge. CI is one interval per head (subject pr:<repo>#<n>@<head>); a merge-queue wait and its end are
