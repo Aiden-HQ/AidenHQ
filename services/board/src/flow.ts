@@ -1,5 +1,6 @@
 // The Flow page's reads (web/src/Flow.tsx): the kernel's GET /v1/flow (kernel/src/flow.ts, docs/design/flow.md §5), read the way
-// runs.ts reads /v1/work: summary (bottlenecks, DORA, churn, fleet), idle items, and one item's waterfall. Seconds throughout.
+// runs.ts reads /v1/work: summary (bottlenecks, DORA, churn, fleet, insights), idle items, one item's waterfall, and the journeys
+// (docs/design/flow-insights.md: the PR timeline). Seconds throughout.
 
 /** One stage's row of the summary. With fewer than five occurrences the percentiles are absent and `samples` has the raw durations. */
 export interface FlowStage {
@@ -27,6 +28,76 @@ export interface FlowSummary {
     cost_per_outcome?: number | null;
     [k: string]: unknown;
   };
+  /** The journey analytics (docs/design/flow-insights.md §3); null when no journey has items. */
+  insights?: Insights | null;
+}
+
+/** A metric with its weekly series and its value over the previous period of the same length. */
+export interface Metric {
+  value: number | null;
+  previous: number | null;
+  weekly: { week: string; value: number | null }[];
+}
+
+export type AuthorKind = "agent" | "owner" | "outside";
+
+export interface Insights {
+  phases: { name: string; label: string; n: number; p50: number | null; p85: number | null; p95: number | null; idle_s: number; rounds_mean: number; weekly: { week: string; p50: number | null; n: number }[] }[];
+  scatter: { subject: string; end: string; total_s: number; author_kind: string | null }[];
+  /** Per phase: how many items took each number of rounds. */
+  rounds: Record<string, Record<string, number>>;
+  rejections: { reason: string; n: number }[];
+  first_pass: { week: string; rate: number | null; n: number }[];
+  aging: { subject: string; title: string | null; phase: string; age_s: number; idle_reason: string | null }[];
+  cfd: { day: string; counts: Record<string, number> }[];
+  funnel: { step: string; n: number }[];
+  cost: { per_merged: { week: string; usd: number | null }[]; by_agent: { key: string; usd: number; merged: number }[]; by_model: { key: string; usd: number; merged: number }[]; unmerged_usd: number };
+  dora5: { deploys_per_day: Metric; lead_time_s: Metric; change_fail_rate: Metric; recovery_s: Metric; rework_rate: Metric };
+  throughput: { day: string; merged: number; opened: number }[];
+  bottlenecks: { phase: string; kind: "idle" | "rounds" | "slow"; text: string }[];
+}
+
+/** A journey a module declares (module.yaml `journeys:`), as the kernel lists it. */
+export interface JourneyInfo {
+  name: string;
+  label: string;
+  phases: { name: string; label: string }[];
+}
+
+/** One item of a journey (a PR): its phases as blocks, loops folded into rounds. */
+export interface JourneyItem {
+  subject: string;
+  repo: string;
+  number: number;
+  url: string | null;
+  title: string | null;
+  author: string | null;
+  author_kind: AuthorKind | null;
+  task: string | null;
+  identifier: string | null;
+  state: "open" | "merged" | "closed" | "deployed";
+  start: string;
+  end: string | null;
+  total_s: number;
+  blocks: { phase: string; start: string; end: string; rounds: number; idle_s: number; idle: Record<string, number> }[];
+}
+
+export interface JourneyList extends JourneyInfo {
+  journey: string;
+  items: JourneyItem[];
+  truncated: boolean;
+}
+
+export type JourneySort = "recent" | "slowest" | "rounds";
+
+export interface JourneyQuery {
+  journey: string;
+  since: string;
+  to: string;
+  /** The author kinds to keep; all when absent. */
+  author?: AuthorKind[];
+  sort?: JourneySort;
+  limit?: number;
 }
 
 export interface IdleItem {
@@ -56,6 +127,8 @@ export interface Flow {
   summary(q: FlowQuery): Promise<FlowSummary>;
   idle(): Promise<IdleItem[]>;
   item(id: string): Promise<Waterfall | null>;
+  journeys(): Promise<JourneyInfo[]>;
+  journey(q: JourneyQuery): Promise<JourneyList | null>;
 }
 
 export function kernelFlow(k: { url: string; token: string }): Flow {
@@ -69,5 +142,8 @@ export function kernelFlow(k: { url: string; token: string }): Flow {
     summary: async ({ since, to, scope }) => (await get(new URLSearchParams({ since, to, by: "stage", ...(scope && scope !== "all" ? { scope } : {}) }))) as FlowSummary,
     idle: async () => ((await get(new URLSearchParams({ idle: "1" }))) as { items: IdleItem[] }).items,
     item: async (id) => (await get(new URLSearchParams({ item: id }))) as Waterfall | null,
+    journeys: async () => ((await get(new URLSearchParams({ journeys: "1" }))) as { journeys: JourneyInfo[] } | null)?.journeys ?? [],
+    journey: async ({ journey, since, to, author, sort, limit }) =>
+      (await get(new URLSearchParams({ journey, since, to, ...(author ? { author: author.join(",") } : {}), ...(sort ? { sort } : {}), ...(limit ? { limit: String(limit) } : {}) }))) as JourneyList | null,
   };
 }

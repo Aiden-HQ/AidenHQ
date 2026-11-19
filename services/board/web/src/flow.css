@@ -1,40 +1,192 @@
-/* The Flow page (Flow.tsx): layout only; the parts come from ui/ui.css. */
-.flow-controls { display: flex; align-items: center; justify-content: flex-end; gap: var(--sp-2); flex-wrap: wrap; }
-.flow-controls .ui-select { width: auto; min-width: 8rem; }
+/* The Flow page (Flow.tsx, flow-charts.tsx): layout and the hand-drawn charts; the parts come from ui/ui.css. */
+.flow-page { --fl-row: 30px; grid-auto-rows: max-content; }
+.flow-page > .ui-tabs { margin-top: calc(var(--stack) * -0.4); }
 .flow-loading { min-height: 200px; border-radius: var(--radius); background: var(--surface-2); border: 1px solid var(--border); }
 .flow-note { margin: 0; color: var(--muted); font-size: var(--text-md); }
 .flow-dim { color: var(--muted); }
 
-.flow-stages { display: grid; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); overflow: hidden; }
-.flow-stage + .flow-stage { border-top: 1px solid var(--border); }
-.flow-stage-row { display: grid; grid-template-columns: minmax(6rem, 10rem) minmax(0, 1fr) 5.5rem minmax(0, 16rem); align-items: center; gap: var(--sp-4); width: 100%; padding: 10px var(--sp-4); border: 0; background: none; color: var(--text); font: inherit; font-size: var(--text-md); text-align: left; cursor: pointer; }
-.flow-stage-row:hover { background: var(--hover); }
-.flow-stage-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-.flow-stage-name { font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.flow-stage-value { font-variant-numeric: tabular-nums; text-align: right; }
-.flow-stage-why { color: var(--warn-text); font-size: var(--text-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.flow-stage-few { grid-column: 2 / 4; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.flow-bar { position: relative; display: flex; height: 12px; border-radius: var(--radius-sm); background: var(--col); }
-.flow-bar i { display: block; height: 100%; }
-.flow-bar .work { background: var(--accent); border-radius: var(--radius-sm) 0 0 var(--radius-sm); }
-.flow-bar .wait { background: var(--warn); }
-.flow-bar b { position: absolute; top: -3px; bottom: -3px; width: 2px; margin-left: -1px; background: var(--text); border-radius: 1px; }
-.flow-stage-detail { margin: 0; padding: 0 var(--sp-4) 12px; color: var(--muted); font-size: var(--text-sm); }
-.flow-slow, .flow-idle { list-style: none; margin: 0; padding: 0; }
-.flow-slow { padding: 0 var(--sp-4) 10px; display: grid; gap: 2px; }
-.flow-slow button, .flow-idle button { display: grid; gap: var(--sp-3); width: 100%; border: 0; background: none; color: var(--text); font: inherit; font-size: var(--text-md); text-align: left; cursor: pointer; border-radius: var(--radius-md); }
-.flow-slow button { grid-template-columns: 8rem auto; padding: 4px 8px; }
-.flow-slow button:hover, .flow-idle button:hover { background: var(--hover); }
+/* A panel every chart sits on. */
+.fl-chart, .fl-timeline, .fl-pct, .fl-barlist, .fl-bottlenecks { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); box-shadow: var(--shadow); }
+.fl-chart { display: grid; gap: 8px; padding: 12px 14px 8px; min-width: 0; }
+.fl-plot { min-width: 0; }
+.fl-chart svg { display: block; overflow: visible; }
+.fl-empty { margin: 0; padding: 26px 18px; border: 1px dashed var(--border-strong); border-radius: var(--radius); background: var(--surface-2); color: var(--muted); }
+.fl-chart .fl-empty { border: 0; background: none; padding: 18px 4px; }
+.fl-split { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 30rem), 1fr)); gap: var(--stack); align-items: start; }
+.fl-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr)); gap: var(--sp-3); }
+.fl-tiles .ui-stat { padding: 12px 14px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); box-shadow: var(--shadow); }
 
-.flow-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr)); gap: var(--sp-3); }
+/* SVG parts. */
+.fl-grid { stroke: var(--border); stroke-width: 1; }
+.fl-axis { stroke: var(--border-strong); stroke-width: 1; }
+.fl-tick { fill: var(--faint); font-size: var(--text-2xs); font-variant-numeric: tabular-nums; }
+.fl-hit { fill: transparent; cursor: crosshair; outline: none; }
+.fl-hit:hover, .fl-hit:focus-visible { fill: var(--hover); }
+.fl-line { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.fl-area { stroke: var(--surface); stroke-width: 1.5; stroke-linejoin: round; }
+.fl-cross line { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3 3; }
+.fl-cross circle { stroke: var(--surface); stroke-width: 2; }
+.fl-ref line { stroke: var(--text); stroke-width: 1.25; stroke-dasharray: 4 3; opacity: 0.55; }
+.fl-ref text { fill: var(--muted); font-size: var(--text-2xs); font-variant-numeric: tabular-nums; }
+.fl-dot { stroke: var(--surface); stroke-width: 2; fill-opacity: 0.9; outline: none; transition: r var(--fast) var(--ease); }
+.fl-dot.link { cursor: pointer; }
+.fl-dot:hover, .fl-dot:focus-visible { r: 6.5; stroke: var(--text); stroke-width: 1.5; }
 
-.flow-idle { display: grid; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); overflow: hidden; }
+/* The legend: a swatch and a name, in ink. */
+.fl-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 0; padding: 0; list-style: none; font-size: var(--text-xs); color: var(--muted); }
+.fl-legend li { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.fl-legend i { width: 10px; height: 10px; border-radius: 3px; }
+.fl-legend i.hatch, .fl-idle { background-image: repeating-linear-gradient(135deg, var(--hatch) 0 2px, transparent 2px 5px) !important; }
+.fl-legend i.hatch { background-color: var(--muted) !important; }
+
+/* The tooltip. */
+.fl-tip { position: fixed; z-index: 50; min-width: 10rem; max-width: 20rem; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface); box-shadow: var(--shadow-lg); font-size: var(--text-xs); font-variant-numeric: tabular-nums; pointer-events: none; }
+.fl-tip-head { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; color: var(--text); font-weight: 600; font-size: var(--text-sm); }
+.fl-tip-key { width: 10px; height: 10px; border-radius: 3px; flex: none; }
+.fl-tip-row { display: grid; grid-template-columns: 10px minmax(0, 1fr) auto; align-items: center; gap: 6px; color: var(--muted); white-space: pre; }
+.fl-tip-row i { width: 10px; height: 3px; border-radius: 1px; }
+.fl-tip-row b { color: var(--text); font-weight: 550; }
+.fl-tip-foot { margin-top: 5px; padding-top: 5px; border-top: 1px solid var(--border); color: var(--faint); }
+
+/* ------------------------------------------------------------ PRs: the timeline */
+.fl-prs { display: grid; gap: 12px; min-width: 0; }
+.fl-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.fl-toolbar .ui-select { width: auto; min-width: 10rem; }
+.fl-count { margin-left: auto; color: var(--muted); font-size: var(--text-sm); font-variant-numeric: tabular-nums; }
+.fl-chips { display: inline-flex; gap: 4px; }
+.fl-chips button { display: inline-flex; align-items: center; gap: 7px; padding: 4px 10px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface); color: var(--muted); font: inherit; font-size: var(--text-base); cursor: pointer; transition: background-color var(--fast) var(--ease), border-color var(--fast) var(--ease); }
+.fl-chips svg { fill: none; stroke: var(--border-strong); stroke-width: 1.3; }
+.fl-chips svg path { stroke: transparent; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.fl-chips button[aria-pressed="true"] svg rect { fill: var(--accent); stroke: var(--accent); }
+.fl-chips button[aria-pressed="true"] svg path { stroke: var(--accent-text); }
+.fl-chips button[aria-pressed="true"] { color: var(--text); border-color: var(--border-strong); font-weight: 550; box-shadow: var(--shadow); }
+.fl-chips button:hover { background: var(--hover); }
+.fl-chips button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.fl-timeline { display: grid; min-width: 0; overflow: hidden; }
+.fl-timeline > .fl-legend { padding: 10px 14px; border-bottom: 1px solid var(--border); background: var(--surface-2); }
+.fl-rows { list-style: none; margin: 0; padding: 0; }
+.fl-row, .fl-axisrow { display: grid; grid-template-columns: 4.5rem minmax(0, clamp(10rem, 22vw, 26rem)) minmax(0, 1fr) 5.5rem; align-items: center; gap: 0 14px; padding: 0 14px; }
+.fl-row { height: var(--fl-row); font-size: var(--text-base); border-top: 1px solid var(--border); }
+.fl-row:first-child { border-top: 0; }
+.fl-row:hover { background: var(--hover); }
+.fl-axisrow { height: 28px; border-bottom: 1px solid var(--border); font-size: var(--text-xs); font-weight: 550; color: var(--faint); }
+.fl-axisrow-total { text-align: right; }
+.fl-num { display: inline-flex; align-items: center; gap: 7px; font-variant-numeric: tabular-nums; font-weight: 600; }
+.fl-num a { color: var(--accent); text-decoration: none; }
+.fl-num a:hover { text-decoration: underline; }
+.fl-num a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
+.fl-title { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fl-track { position: relative; height: 16px; }
+.fl-row.has-task { cursor: pointer; }
+.fl-block { position: absolute; top: 0; bottom: 0; display: flex; align-items: center; justify-content: flex-start; overflow: hidden; border-radius: 3px; outline: none; transition: filter var(--fast) var(--ease); }
+.fl-block:hover, .fl-block:focus-visible { filter: brightness(1.12) saturate(1.1); box-shadow: 0 0 0 1.5px var(--surface), 0 0 0 3px var(--text); z-index: 1; }
+.fl-block b { position: relative; padding: 0 4px; color: var(--on-solid); font-size: var(--text-3xs); font-weight: 700; letter-spacing: 0.02em; }
+.fl-idle { position: absolute; top: 0; bottom: 0; right: 0; }
+.fl-live { display: inline-block; width: 6px; height: 6px; margin-right: 4px; vertical-align: 1px; border-radius: 50%; background: var(--working); box-shadow: 0 0 0 3px color-mix(in srgb, var(--working) 25%, transparent); animation: ui-pulse 1.6s ease-in-out infinite; }
+.fl-total { display: grid; justify-items: end; line-height: 1.1; font-variant-numeric: tabular-nums; font-weight: 550; }
+.fl-total small { color: var(--muted); font-size: var(--text-3xs); font-weight: 500; }
+.fl-open .fl-total small { color: var(--ok-text); }
+.fl-closed .fl-block { opacity: 0.55; }
+.fl-closed .fl-title { color: var(--muted); text-decoration: line-through; text-decoration-color: var(--faint); }
+.fl-more { display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-top: 1px solid var(--border); }
+
+/* PRs as a table: sticky header and first column inside its own scroll box; heat tints per phase column. */
+.fl-tablewrap { max-height: min(78vh, 1200px); overflow: auto; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); box-shadow: var(--shadow); }
+.fl-table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: var(--text-base); font-variant-numeric: tabular-nums; }
+.fl-table th, .fl-table td { padding: 0 12px; height: 30px; border-bottom: 1px solid var(--border); white-space: nowrap; text-align: left; }
+.fl-table .num { text-align: right; }
+.fl-table thead th { position: sticky; top: 0; z-index: 2; height: 34px; padding: 0; background: var(--surface-2); color: var(--muted); font-size: var(--text-xs); font-weight: 600; }
+.fl-table thead th:first-child { left: 0; z-index: 3; }
+.fl-table thead button { display: inline-flex; align-items: center; gap: 6px; width: 100%; height: 100%; padding: 0 12px; border: 0; background: none; color: inherit; font: inherit; cursor: pointer; }
+.fl-table thead .num button { justify-content: flex-end; }
+.fl-table thead button:hover { color: var(--text); }
+.fl-table thead button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.fl-table thead i { width: 8px; height: 8px; border-radius: 2px; flex: none; }
+.fl-sort { width: 8px; font-size: var(--text-3xs); color: var(--accent); }
+.fl-table tbody th { position: sticky; left: 0; z-index: 1; background: var(--surface); font-weight: 600; box-shadow: 1px 0 0 var(--border); }
+.fl-table tbody th a { color: var(--accent); text-decoration: none; }
+.fl-table tbody th a:hover { text-decoration: underline; }
+.fl-table tbody tr:last-child > * { border-bottom: 0; }
+.fl-table tbody tr:hover > :not([style]) { background-color: color-mix(in srgb, var(--text) 4%, var(--surface)); }
+.fl-table tbody tr:hover > [style] { box-shadow: inset 0 0 0 100vmax color-mix(in srgb, var(--text) 4%, transparent); }
+.fl-table tbody tr.has-task { cursor: pointer; }
+.fl-table td[style] { background: color-mix(in srgb, var(--heat) calc(var(--h) * 0.5), transparent); }
+.fl-td-none { color: var(--faint); }
+.fl-td-author { color: var(--muted); }
+.fl-td-total { font-weight: 600; }
+.fl-td-total small { color: var(--muted); font-weight: 500; }
+.fl-rounds { margin-right: 6px; padding: 0 4px; border-radius: var(--radius-sm); background: var(--col); color: var(--muted); font-size: var(--text-2xs); font-weight: 600; }
+.fl-table tr.fl-closed td { color: var(--muted); }
+
+/* ------------------------------------------------------------ Overview */
+.fl-dora { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: var(--sp-3); }
+.fl-kpi { display: grid; gap: 3px; padding: 12px 14px 0; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); box-shadow: var(--shadow); overflow: hidden; }
+.fl-kpi-label { color: var(--muted); font-size: var(--text-base); }
+.fl-kpi-value { font-size: var(--text-3xl); font-weight: 600; letter-spacing: -0.02em; line-height: 1.15; font-variant-numeric: tabular-nums; }
+.fl-delta { color: var(--faint); font-size: var(--text-xs); }
+.fl-delta b { font-weight: 600; }
+.fl-delta.good b { color: var(--ok-text); }
+.fl-delta.bad b { color: var(--bad-text); }
+.fl-spark { display: block; width: calc(100% + 28px); height: 34px; margin: 6px -14px 0; }
+.fl-spark-line { fill: none; stroke: var(--series-0); stroke-width: 1.75; stroke-linejoin: round; }
+.fl-spark-area { fill: color-mix(in srgb, var(--series-0) 12%, transparent); }
+.fl-spark-dot { fill: var(--series-0); stroke: var(--surface); stroke-width: 1.5; }
+
+.fl-bottlenecks { list-style: none; margin: 0; padding: 0; overflow: hidden; }
+.fl-bottlenecks li { display: grid; gap: 4px; padding: 12px 14px 12px 16px; border-left: 3px solid var(--ph); }
+.fl-bottlenecks li + li { border-top: 1px solid var(--border); }
+.fl-bottlenecks p { margin: 0; font-size: var(--text-md); line-height: 1.45; }
+.fl-bn-tag { display: inline-flex; align-items: center; gap: 7px; font-size: var(--text-xs); font-weight: 600; color: var(--muted); }
+.fl-bn-tag i { width: 8px; height: 8px; border-radius: 2px; background: var(--ph); }
+.fl-bn-tag em { font-style: normal; font-weight: 500; color: var(--faint); }
+
+/* BarList (HTML bars). */
+.fl-barlist { list-style: none; margin: 0; padding: 6px 0; }
+.fl-barlist li { display: grid; grid-template-columns: minmax(7rem, 13rem) minmax(0, 1fr) 4.5rem minmax(0, 11rem); align-items: center; gap: 12px; padding: 5px 14px; font-size: var(--text-base); outline: none; }
+.fl-barlist li:hover, .fl-barlist li:focus-visible { background: var(--hover); }
+.fl-barlist-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fl-barlist-track { height: 10px; border-radius: 3px; background: var(--col); overflow: hidden; }
+.fl-barlist-track i { display: block; height: 100%; border-radius: 3px; }
+.fl-barlist b { text-align: right; font-weight: 550; font-variant-numeric: tabular-nums; }
+.fl-barlist-sub { color: var(--muted); font-size: var(--text-xs); font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ------------------------------------------------------------ Stages: the percentile table */
+.fl-pct { display: grid; overflow: hidden; font-size: var(--text-base); font-variant-numeric: tabular-nums; }
+.fl-pct-row { display: grid; grid-template-columns: minmax(8rem, 12rem) 4rem 5rem 5rem 5rem minmax(8rem, 1fr) 5.5rem 4.5rem; align-items: center; gap: 12px; padding: 7px 14px; }
+.fl-pct-row + .fl-pct-row { border-top: 1px solid var(--border); }
+.fl-pct-row.head { background: var(--surface-2); color: var(--muted); font-size: var(--text-xs); font-weight: 600; }
+.fl-pct-row > span:not(:first-child, .fl-pct-range) { text-align: right; }
+.fl-pct-name { display: inline-flex; align-items: center; gap: 8px; font-weight: 550; }
+.fl-pct-name i { width: 10px; height: 10px; border-radius: 3px; flex: none; }
+.fl-range { position: relative; display: block; height: 10px; border-radius: 3px; background: var(--col); }
+.fl-range i { position: absolute; top: 0; bottom: 0; border-radius: 3px; }
+.fl-range b { position: absolute; top: -3px; bottom: -3px; width: 2px; margin-left: -1px; border-radius: 1px; background: var(--text); }
+
+/* ------------------------------------------------------------ Rework: rounds histograms */
+.fl-hists { display: grid; grid-template-columns: repeat(auto-fill, minmax(9.5rem, 1fr)); gap: var(--sp-3); }
+.fl-hist { margin: 0; display: grid; gap: 8px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); box-shadow: var(--shadow); }
+.fl-hist figcaption { display: flex; justify-content: space-between; align-items: baseline; font-size: var(--text-base); font-weight: 550; }
+.fl-hist figcaption span { display: inline-flex; align-items: center; gap: 7px; }
+.fl-hist figcaption i { width: 8px; height: 8px; border-radius: 2px; }
+.fl-hist figcaption b { font-size: var(--text-lg); font-variant-numeric: tabular-nums; }
+.fl-hist-bars { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 6px; height: 72px; }
+.fl-hist-bars span { display: grid; grid-template-rows: 1fr auto; align-items: end; justify-items: center; gap: 3px; outline: none; border-radius: 4px; }
+.fl-hist-bars span:hover, .fl-hist-bars span:focus-visible { background: var(--hover); }
+.fl-hist-bars span { border-bottom: 1px solid var(--border-strong); border-radius: 4px 4px 0 0; }
+.fl-hist-bars i { width: 70%; border-radius: 3px 3px 1px 1px; }
+.fl-hist-bars small { font-size: var(--text-3xs); color: var(--faint); font-variant-numeric: tabular-nums; }
+
+/* ------------------------------------------------------------ Queue: idle now */
+.flow-idle { list-style: none; margin: 0; padding: 0; display: grid; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); overflow: hidden; }
 .flow-idle li + li { border-top: 1px solid var(--border); }
-.flow-idle button { grid-template-columns: 7rem 5rem minmax(0, 1fr) minmax(0, 12rem); align-items: center; padding: 10px var(--sp-4); border-radius: 0; }
+.flow-idle button { display: grid; grid-template-columns: 7rem 5rem minmax(0, 1fr) minmax(0, 12rem); align-items: center; gap: var(--sp-3); width: 100%; padding: 10px var(--sp-4); border: 0; background: none; color: var(--text); font: inherit; font-size: var(--text-md); text-align: left; cursor: pointer; }
+.flow-idle button:hover { background: var(--hover); }
 .flow-idle-id { font-weight: 550; }
 .flow-idle-since { font-variant-numeric: tabular-nums; color: var(--muted); }
 .flow-idle-why { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* ------------------------------------------------------------ the waterfall dialog */
 .flow-fall { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
 .flow-fall li { display: grid; grid-template-columns: minmax(8rem, 14rem) minmax(0, 1fr) 7rem; align-items: center; gap: var(--sp-3); font-size: var(--text-md); }
 .flow-fall-track { position: relative; height: 10px; border-radius: var(--radius-sm); background: var(--col); }
@@ -43,14 +195,30 @@
 .flow-fall .idle { color: var(--warn-text); }
 .flow-fall-dur { text-align: right; font-variant-numeric: tabular-nums; }
 
-/* Wide screens: the page keeps its gutters and the stage bars take the room; the tiles add columns. */
-@media (min-width: 1800px) { .flow-stage-row { grid-template-columns: 12rem minmax(0, 1fr) 6rem 20rem; } }
+@media (max-width: 1280px) { .fl-dora { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 1100px) {
+  .fl-row, .fl-axisrow { grid-template-columns: 4.5rem minmax(0, 1fr) 5rem; }
+  .fl-title { display: none; }
+  .fl-axisrow-title { display: none; }
+  .fl-pct-row { grid-template-columns: minmax(7rem, 1fr) 3rem 4.5rem 4.5rem 4.5rem; }
+  .fl-pct-row > :nth-child(n + 6) { display: none; }
+}
 @media (max-width: 720px) {
-  .flow-stage-row { grid-template-columns: minmax(0, 1fr) auto; row-gap: 6px; }
-  .flow-bar, .flow-stage-few, .flow-stage-why { grid-column: 1 / -1; }
-  .flow-stage-value { grid-row: 1; grid-column: 2; }
+  .fl-dora { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .fl-pct-row { grid-template-columns: minmax(0, 1fr) 4.5rem 4.5rem; }
+  .fl-pct-row > :nth-child(2), .fl-pct-row > :nth-child(5) { display: none; }
+  .fl-count { margin-left: 0; width: 100%; }
+  .fl-row { grid-template-columns: auto minmax(0, 1fr) auto; grid-template-rows: auto auto; height: auto; padding: 7px 12px; row-gap: 6px; }
+  .fl-row .fl-title { display: block; grid-column: 2; }
+  .fl-row .fl-track { grid-column: 1 / -1; grid-row: 2; }
+  .fl-row .fl-total { grid-column: 3; grid-row: 1; }
+  .fl-axisrow { display: none; }
+  .fl-barlist li { grid-template-columns: minmax(0, 1fr) 4.5rem; row-gap: 3px; }
+  .fl-barlist-track { grid-column: 1 / -1; grid-row: 2; }
+  .fl-barlist-sub { grid-column: 1 / -1; }
   .flow-idle button { grid-template-columns: auto minmax(0, 1fr); row-gap: 2px; }
   .flow-idle-why { grid-column: 1 / -1; white-space: normal; }
   .flow-fall li { grid-template-columns: minmax(0, 1fr) auto; }
   .flow-fall-track { grid-column: 1 / -1; grid-row: 2; }
 }
+@media (prefers-reduced-motion: reduce) { .fl-live { animation: none; } .fl-dot, .fl-block, .fl-chips button { transition: none; } }

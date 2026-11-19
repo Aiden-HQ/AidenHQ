@@ -25,7 +25,7 @@ import { ControlSchema, CostsSchema, RelaySchema, Refused, holdsRole, appsApi, a
 import { metricsText } from "./monitoring.js";
 import { kernelRecords, type Approval, type Records } from "./records.js";
 import { gatherFacts, scorecard, statusSummary } from "./fleet-stats.js";
-import type { Flow } from "./flow.js";
+import type { AuthorKind, Flow } from "./flow.js";
 import { moduleAuthority, moduleStates } from "./modules.js";
 import { CommitUnreadable, agentGrants, browseModules, createResolver, marketplacesOf } from "./marketplace.js";
 import { connectionsView, readSources, readUpdates, settingsView, type Probe } from "./settings.js";
@@ -1409,6 +1409,27 @@ export function createApp(opts: AppOptions): Server {
         if (!flow) return { summary: null, idle: [] };
         const [summary, idle] = await Promise.all([flow.summary({ since: new Date(now - days * 864e5).toISOString(), to: new Date(now).toISOString(), scope }), flow.idle()]);
         return { summary, idle };
+      },
+    },
+    // The journeys (the PRs tab): which ones modules declare, and one's items over the period, filtered and sorted by the kernel.
+    {
+      method: "GET",
+      path: /^\/api\/flow\/journeys$/,
+      handle: async () => ({ journeys: (await opts.flow?.journeys()) ?? [] }),
+    },
+    {
+      method: "GET",
+      path: /^\/api\/flow\/journey$/,
+      handle: async (_m, _b, url) => {
+        const p = url.searchParams;
+        const name = p.get("name") ?? "pr";
+        if (!/^[a-z0-9-]{1,63}$/.test(name)) throw new HttpError(400, "bad journey");
+        const days = [7, 30, 90].includes(Number(p.get("days"))) ? Number(p.get("days")) : 7;
+        const author = (p.get("author") ?? "agent,owner,outside").split(",").filter((a): a is AuthorKind => a === "agent" || a === "owner" || a === "outside");
+        const sort = (["recent", "slowest", "rounds"] as const).find((x) => x === p.get("sort")) ?? "recent";
+        const now = Date.now();
+        const list = await opts.flow?.journey({ journey: name, since: new Date(now - days * 864e5).toISOString(), to: new Date(now).toISOString(), author, sort, limit: 500 });
+        return list ?? null;
       },
     },
     {
