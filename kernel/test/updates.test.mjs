@@ -300,7 +300,7 @@ test("a failed record: the owner is told why, the night doesn't file it again, U
   assert.deepEqual([st.current.name, st.flight, st.failed], ["2026.11.2", undefined, ["2026.11.3"]]);
   await u.tick();
   assert.equal(lines.filter((l) => /didn't install/.test(l)).length, 1);
-  assert.ok(lines.some((l) => /2026\.11\.3 didn't install: \*\*Landed, but the apply failed\*\* \(exit-code\)\. The night won't file it again/.test(l)));
+  assert.ok(lines.some((l) => /2026\.11\.3 didn't install: \*\*Landed, but the apply failed\*\* \(exit-code\)\. This server stays on 2026\.11\.2: a failed apply puts the host back on it and holds it there.*The night won't file it again/.test(l)));
   u.checkNow();
   await u.tick();
   assert.equal(filed.length, 1, "the night skips it");
