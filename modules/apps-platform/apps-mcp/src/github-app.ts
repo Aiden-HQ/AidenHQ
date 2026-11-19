@@ -23,7 +23,10 @@ export function readOrgs(instanceDir: string): string[] {
 }
 
 /** `more`: permissions beyond contents (previews.ts reads and comments on pull requests: pull_requests write). */
-export type RepoToken = (slug: string, perm?: "read" | "write", more?: Record<string, "read" | "write">) => Promise<string>;
+export type RepoToken = ((slug: string, perm?: "read" | "write", more?: Record<string, "read" | "write">) => Promise<string>) & {
+  /** The App's bot login (`<slug>[bot]`, as the kernel reports it with each token): set once any token has been minted. */
+  botLogin?: string;
+};
 
 /** Whether this instance runs the GitHub code host (codehost-github in config/modules.json): the App's tokens come from it. */
 export function githubHost(repoDir: string): boolean {
@@ -40,7 +43,7 @@ export function githubHost(repoDir: string): boolean {
  */
 export function appTokens(kernelUrl: string, key: string, fetch = globalThis.fetch): RepoToken {
   const cache = new Map<string, { token: string; expires: number }>();
-  return async (slug, perm = "read", more = {}) => {
+  const mint: RepoToken = async (slug, perm = "read", more = {}) => {
     const ck = `${slug.toLowerCase()}:${perm}:${JSON.stringify(more)}`;
     const hit = cache.get(ck);
     if (hit && hit.expires - Date.now() > 5 * 60_000) return hit.token;
@@ -51,8 +54,10 @@ export function appTokens(kernelUrl: string, key: string, fetch = globalThis.fet
     const b = (await r.json().catch(() => ({}))) as any;
     if (r.status !== 200) throw new Error(`couldn't get a GitHub App token for ${slug} (the kernel said ${r.status} ${b?.error?.message ?? b?.error ?? ""})`.trim());
     cache.set(ck, { token: String(b.token), expires: Date.parse(b.expires_at) });
+    if (b.app?.slug) mint.botLogin = `${b.app.slug}[bot]`;
     return String(b.token);
   };
+  return mint;
 }
 
 /**
