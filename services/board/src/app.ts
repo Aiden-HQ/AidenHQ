@@ -216,6 +216,8 @@ export function createApp(opts: AppOptions): Server {
     if (!opts.accounts) return new Map();
     return new Map((await opts.accounts.names()).filter((a) => !a.owner).map((a) => [a.id, a.name || a.email]));
   }
+  /** The account behind the request, named to the kernel when it stops a job (the board's own timers: "operator"). */
+  const stopper = () => perRequest.getStore()?.session?.accountId ?? "operator";
   /** The signed-in admin's name when that admin is not the owner (what the lane labels "by <name>"). */
   async function laneByline(_req: IncomingMessage): Promise<string | undefined> {
     const s = perRequest.getStore()?.session;
@@ -243,7 +245,7 @@ export function createApp(opts: AppOptions): Server {
   const cardsOf = async (state: Parameters<Records["list"]>[0], opt?: Parameters<Records["list"]>[1]) => Promise.all((await records.list(state, opt)).map(named));
 
   const sessionOf = liveActivity(opts.sessions);
-  const work = opts.work ?? { job: async () => null, task: async () => [], activity: async () => ({ running: [], recent: [], queued: [], failing: [] }) };
+  const work = opts.work ?? { job: async () => null, task: async () => [], activity: async () => ({ running: [], recent: [], queued: [], failing: [] }), stop: async () => [] };
   const kernelActivity = cachedActivity(work);
   const liveRuns = async () => liveRunsOf(await kernelActivity());
   const recentRuns = async () => pastRunsOf(await kernelActivity());
@@ -1198,7 +1200,7 @@ export function createApp(opts: AppOptions): Server {
         const agent = agentByKey(await pc.agents(), m[1]!);
         if (!agent) throw new HttpError(404, "no such agent");
         const ask = parse(PauseSchema, body);
-        const done = await setAgentPaused(pc, agent, ask);
+        const done = await setAgentPaused(pc, agent, ask, (id) => work.stop({ agent: id }, stopper()));
         log.info({ agent: m[1], paused: ask.paused }, ask.paused ? "agent paused" : "agent resumed");
         store.events.emit("fleet");
         return done;
@@ -1537,6 +1539,18 @@ export function createApp(opts: AppOptions): Server {
         for (const a of others) parts.push(await deliver(ctx, task!, a, text, { identifier: issue.identifier, commentId: posted?.id, note: `Written in ${where} on ${issue.identifier}.` }));
         // A message that left this chat for another agent's: the board opens that one.
         return { ...(await view()), ...(!posted && parts[0] ? { movedTo: parts[0].identifier } : {}) };
+      },
+    },
+    {
+      // Stop: the kernel ends the task's running job (cancelled), the task stays open with the kernel's own note.
+      method: "POST",
+      path: /^\/api\/issues\/([^/]+)\/stop$/,
+      handle: async (m) => {
+        const { issue } = await editableIssue(decodeURIComponent(m[1]!));
+        const stopped = await work.stop({ task: issue.id }, stopper());
+        log.info({ issue: issue.identifier, stopped }, "run stopped by the owner");
+        store.events.emit("chat", issue.id);
+        return { stopped: stopped.length };
       },
     },
     {

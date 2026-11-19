@@ -20,7 +20,7 @@ type Progress = { said?: string; saidAt?: string; plan?: unknown[]; steps?: unkn
 export interface JobView {
   id: string; module: string; agent: string; task: string; state: string; pid: number; log: string; dir: string; at: number;
   jobcaps: string[]; observing: boolean; live_input: boolean; exit: number | null; final: string; session: string | null;
-  timedOut: boolean; cancelled: boolean; usage: { input: number; cached: number; output: number } | null;
+  timedOut: boolean; cancelled: boolean; /** The account that stopped it (the board's Stop), when the owner did. */ stoppedBy: string | null; usage: { input: number; cached: number; output: number } | null;
   progress: Progress; version: number;
   /** When the run ended (ms), and whether its dispatcher acknowledged the end (outcome posted, whoever asked told). */
   ended: number | null; acked: boolean;
@@ -149,7 +149,7 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
   for (const [c, t] of [["profile", "TEXT"], ["wake", "TEXT"], ["authority", "TEXT"], ["renewed", "INTEGER"], ["released", "INTEGER"], ["identifier", "TEXT"]]) if (!cols.has(c!)) db.exec(`ALTER TABLE jobs ADD COLUMN ${c} ${t}`);
   // `acked`: the dispatcher's completion acknowledgement. Runs that ended before the column existed were dealt with by the old ledger.
   if (!cols.has("acked")) db.exec("ALTER TABLE jobs ADD COLUMN acked INTEGER; UPDATE jobs SET acked = COALESCE(ended, at) WHERE state NOT IN ('admitted', 'running')");
-  const watchers = new Map<string, { stop: () => void; send?: (text: string, from: string) => boolean; cancel: () => void }>();
+  const watchers = new Map<string, { stop: () => void; send?: (text: string, from: string) => boolean; cancel: (by?: string) => void }>();
   const versions = new Map<string, number>();
   const waiters = new Map<string, Set<() => void>>();
   const bump = (id: string) => {
@@ -164,7 +164,7 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
       id: r.id, module: r.module, agent: r.agent, task: r.task, state: r.state, pid: r.pid, log: r.log, dir: r.dir, at: r.at,
       jobcaps: JSON.parse(r.jobcaps), observing: r.observing === 1, live_input: r.live_input === 1, exit: r.exit ?? null, final: r.final,
       session: r.session ?? null, timedOut: why.timedOut === true,
-      cancelled: why.cancelled === true, usage: r.usage ? JSON.parse(r.usage) : null, progress: JSON.parse(r.progress || "{}"), version: versions.get(r.id) ?? 0, ended: r.ended ?? null, acked: r.acked != null, ...(refusal(r.id) ? { refused: refusal(r.id) } : {}),
+      cancelled: why.cancelled === true, stoppedBy: why.by ?? null, usage: r.usage ? JSON.parse(r.usage) : null, progress: JSON.parse(r.progress || "{}"), version: versions.get(r.id) ?? 0, ended: r.ended ?? null, acked: r.acked != null, ...(refusal(r.id) ? { refused: refusal(r.id) } : {}),
     };
   };
 
@@ -179,7 +179,7 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
     const progress: Progress = JSON.parse(r.progress || "{}");
     const usage = { input: 0, cached: 0, output: 0, seen: false, ...(r.usage ? { ...JSON.parse(r.usage), seen: true } : {}) };
     const deadline = r.at + cfg.timeout_minutes * 60_000;
-    let timedOut = false, cancelled = false, killed = false;
+    let timedOut = false, cancelled = false, killed = false, stoppedBy: string | undefined;
     let over = false;
     const save = () => db.prepare("UPDATE jobs SET offset = ?, session = ?, final = ?, progress = ?, usage = ? WHERE id = ?").run(offset, session, final ?? "", JSON.stringify(progress), usage.seen ? JSON.stringify({ input: usage.input, cached: usage.cached, output: usage.output }) : null, id);
     const read = () => {
@@ -240,7 +240,7 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
       const exit = code === null && !killed ? 1 : code;
       const state = cancelled ? "cancelled" : timedOut ? "timeout" : exit ? "failed" : "done";
       db.prepare("UPDATE jobs SET state = ?, exit = ?, final = ?, why = ?, offset = ?, session = ?, ended = ? WHERE id = ?")
-        .run(state, exit, lastMessage, JSON.stringify({ timedOut, cancelled }), offset, session, Date.now(), id);
+        .run(state, exit, lastMessage, JSON.stringify({ timedOut, cancelled, ...(stoppedBy ? { by: stoppedBy } : {}) }), offset, session, Date.now(), id);
       log("job finished", { job: id, task: r.task, state, exit });
       bump(id);
       onEnd(id);
@@ -263,7 +263,7 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
           }
         }
       : undefined;
-    watchers.set(id, { stop: () => (clearInterval(timer), save()), send, cancel: () => { cancelled = true; kill(); } });
+    watchers.set(id, { stop: () => (clearInterval(timer), save()), send, cancel: (by) => { cancelled = true; stoppedBy = by; kill(); } });
     timer = setInterval(tick, POLL_MS);
     tick();
   }
@@ -368,6 +368,16 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
       const r = own(module, id);
       if (r.state === "running") watchers.get(id)?.cancel();
       return view(row(id)!);
+    },
+    /** The owner's Stop (the board, as `by`, an account id): every running job of a task, or of an agent, whatever module runs it. */
+    stopRunning(f: { task: string } | { agent: string }, by: string) {
+      const [col, v] = "task" in f ? ["task", f.task] : ["agent", f.agent];
+      return (db.prepare(`SELECT * FROM jobs WHERE state = 'running' AND ${col} = ?`).all(v) as Record<string, any>[]).flatMap((r) => {
+        const w = watchers.get(r.id);
+        if (!w) return [];
+        w.cancel(by);
+        return [view(r)];
+      });
     },
     /** A comment into a live run's inbox.jsonl: false once the run is over, or for an engine that takes none mid-run. */
     input(module: string, id: string, text: string, from = "owner") {

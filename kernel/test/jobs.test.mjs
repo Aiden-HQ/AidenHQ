@@ -281,3 +281,26 @@ test("a job that fails without a word carries its first error line as its final 
   assert.equal(v.state, "failed");
   assert.equal(v.final, "The job failed: Error: thread/resume failed: no rollout found for thread id s-gone; OPENROUTER_API_KEY=… Bearer … run ahqj_…");
 });
+
+// The owner's Stop (POST /v1/stop): only the board's key; the running job ends cancelled, records the account, and the task gets
+// the kernel's one fixed note. A module's token or an agent's is refused, and nothing is stopped.
+test("the owner stops a running job from the board; a module or agent token cannot", async (t) => {
+  const { kernel } = await import("./helpers.mjs");
+  const sb = sandbox();
+  const jobs = inProcess(sb.cfg);
+  const posts = [];
+  const outcomes = { post: async (job, req) => void posts.push([job.id, job.task, req.kind, req.body]) };
+  const k = await kernel(t, { jobs, outcomes, modules: { modules: { "acme-dispatch": { roles: ["kernel.jobs"], token: "disp_token" } } }, secrets: { disp_token: "disp-key" } });
+  const stop = (token, headers = { "x-aidenhq-account": "acct-1" }) => fetch(`${k.url}/v1/stop`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json", ...headers }, body: JSON.stringify({ task: "task-1" }) }).then(async (r) => ({ status: r.status, json: await r.json() }));
+  const s = jobs.run(sb, "slow");
+  await until("the job going", async () => (await jobs.get("acme-dispatch", s.id)).progress.said);
+  assert.equal((await stop("disp-key")).status, 401);
+  assert.equal((await stop("ahqj_x.sig")).status, 401);
+  assert.equal((await stop("the-boards-key", {})).status, 400, "the admin who stops it is named");
+  assert.equal((await jobs.get("acme-dispatch", s.id)).state, "running");
+  assert.deepEqual((await stop("the-boards-key")).json, { stopped: [s.id] });
+  const v = await finished(jobs, s.id);
+  assert.deepEqual([v.state, v.cancelled, v.stoppedBy], ["cancelled", true, "acct-1"]);
+  assert.deepEqual(posts, [[s.id, "task-1", "notice", "**Stopped by the owner.** Say **continue** to pick up where it stopped."]]);
+  assert.deepEqual((await stop("the-boards-key")).json, { stopped: [] }, "nothing running is left to stop");
+});

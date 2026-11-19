@@ -173,7 +173,7 @@ export const api = {
   roster: () => call<{ roster: RosterAgent[] }>("GET", "/api/agents/roster"),
   agentProfile: (key: string) => call<{ profile: AgentProfile }>("GET", `/api/agents/by-key/${encodeURIComponent(key)}`),
   /** Lane B: pause or resume an agent now; `stop` also cancels its live runs. */
-  pauseAgent: (key: string, body: { paused: boolean }) => call<{ status: string }>("POST", `/api/agents/by-key/${encodeURIComponent(key)}/pause`, body),
+  pauseAgent: (key: string, body: { paused: boolean; stop?: boolean }) => call<{ status: string }>("POST", `/api/agents/by-key/${encodeURIComponent(key)}/pause`, body),
   agentOpenTasks: (key: string) => call<{ needs: TaskRow[]; ongoing: TaskRow[] }>("GET", `/api/agents/by-key/${encodeURIComponent(key)}/tasks?view=open`),
   agentHistory: (key: string, opts: { q?: string; status?: "done" | "cancelled"; offset?: number } = {}) => {
     const p = new URLSearchParams({ view: "history", ...(opts.q ? { q: opts.q } : {}), ...(opts.status ? { status: opts.status } : {}), ...(opts.offset ? { offset: String(opts.offset) } : {}) });
@@ -207,6 +207,8 @@ export const api = {
   run: (id: string) => call<RunTrace>("GET", `/api/runs/${encodeURIComponent(id)}`),
   issue: (ref: string) => call<IssueView>("GET", `/api/issues/${encodeURIComponent(ref)}`),
   lineage: (ref: string) => call<Lineage>("GET", `/api/issues/${encodeURIComponent(ref)}/lineage`),
+  /** The owner's Stop: the kernel ends the task's running job; the task stays open. */
+  stop: (ref: string) => call<{ stopped: number }>("POST", `/api/issues/${encodeURIComponent(ref)}/stop`, {}),
   settle: (ref: string, settled: boolean) => call<{ settled: boolean }>("POST", `/api/issues/${encodeURIComponent(ref)}/settle`, { settled }),
   settledList: (q: string) => call<{ settled: SettledItem[] }>("GET", `/api/settled?q=${encodeURIComponent(q)}`),
   /** The side chat: answered by a model, never posted on the task, never waking its agent. */

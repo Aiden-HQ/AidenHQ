@@ -7,7 +7,7 @@ import type { Agent, Comment, Directory, Issue } from "./thread.ts";
 /** An inbox row the module claimed (kernel wakes.ts); `live_job`: a comment for that running job. */
 export interface Wake { key: string; task: string; agent: string; cause: string; at: number; live_job?: string }
 /** A job as the kernel shows it (jobs.ts JobView, the fields dispatch reads). */
-export interface JobView { id: string; task: string; agent: string; state: string; exit: number | null; final: string; session: string | null; timedOut: boolean; at: number; ended: number | null; acked: boolean; refused?: string; progress?: { steps?: Step[] } }
+export interface JobView { id: string; task: string; agent: string; state: string; exit: number | null; final: string; session: string | null; timedOut: boolean; cancelled: boolean; at: number; ended: number | null; acked: boolean; refused?: string; progress?: { steps?: Step[] } }
 
 export interface Kernel {
   claim(limit: number): Promise<Wake[]>;

@@ -64,7 +64,7 @@ export function AgentPage({ agentKey, tab, go, onSignIn }: { agentKey: string; t
   );
   const chat = `#/c/?to=${encodeURIComponent(profile.id)}`;
   const task = <a className="btn primary" href={chat}>Give it a task</a>;
-  const pause = async (body: { paused: boolean }) => {
+  const pause = async (body: { paused: boolean; stop?: boolean }) => {
     try {
       await api.pauseAgent(agentKey, body);
       setNote("");
@@ -88,7 +88,7 @@ export function AgentPage({ agentKey, tab, go, onSignIn }: { agentKey: string; t
           <>
             <a className="btn" href={chat}>Chat</a>
             {task}
-            <Menu label={`More for ${profile.name}`} items={[paused ? { label: `Resume ${profile.name}`, onSelect: () => void pause({ paused: false }) } : { label: `Pause ${profile.name}`, onSelect: () => void pause({ paused: true }) }]} />
+            <Menu label={`More for ${profile.name}`} items={[paused ? { label: `Resume ${profile.name}`, onSelect: () => void pause({ paused: false }) } : { label: `Pause ${profile.name}`, onSelect: () => void pause({ paused: true }) }, ...(paused ? [] : [{ label: `Pause and stop ${profile.name} now`, onSelect: () => void pause({ paused: true, stop: true }) }])]} />
           </>
         }
       />
