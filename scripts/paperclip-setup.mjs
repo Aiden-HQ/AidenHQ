@@ -512,18 +512,6 @@ function appendRevs(table) {
  * Paperclip lets agents edit their own metadata (setupKey, roles). Written in place, never renamed: the board bind-mounts
  * its directory read-only.
  */
-/** owner/name of the product repo: AIDENHQ_PRODUCT_REPO, else this checkout's GitHub origin */
-function productRepo() {
-  const env = process.env.AIDENHQ_PRODUCT_REPO || dotenv.AIDENHQ_PRODUCT_REPO;
-  if (env) return env;
-  try {
-    const url = execFileSync("git", ["-C", repo, "remote", "get-url", "origin"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
-    return /github[^:/]*[:/]([\w.-]+\/[\w.-]+?)(?:\.git)?\/*$/.exec(url)?.[1] ?? "";
-  } catch {
-    return "";
-  }
-}
-
 /**
  * Each routine's `autonomy` by Paperclip routine id (the runner caps the tasks its runs start; tiers.mjs routineCap). Starts
  * as the last table's, so the first write of an apply keeps it; ensureRoutines adds each routine's and writes the grants
@@ -543,9 +531,8 @@ const routineKeys = { ...lastGrants.routine_keys };
 function writeGrants(agents, memoryInboxes = {}, reviewLogs = {}, chatTasks = {}) {
   if (!isWork) return;
   // autonomy: the board and the runner read the tiered-approvals switch here, fresh on every use.
-  // agents_org, product_repo: the repos a graded PR deliverable may name (the board refuses others; the runner agrees).
   // A member's roles are its team record's, given at admission: the record alone holds them, so role lookups find the team.
-  const table = { autonomy: cfg.autonomy ?? "off", agents_org: cfg.github_agents_org ?? "", product_repo: productRepo(), agents: Object.fromEntries(Object.entries(agents).map(([key, a]) => [a.id, { key, roles: cfg.agents[key].member_of ? [] : cfg.agents[key].roles ?? [], tools: cfg.agents[key].enabled_tools ?? {}, ...grantEntry(key, cfg.agents[key], cfg.routines), rev: revOf(key), description: cfg.agents[key].description, ...(cfg.agents[key].trial ? { trial: true } : {}), ...(cfg.agents[key].delegate_to ? { delegate_to: cfg.agents[key].delegate_to } : {}), ...(cfg.agents[key].image ? { image: cfg.agents[key].image } : {}) }])) };
+  const table = { autonomy: cfg.autonomy ?? "off", agents: Object.fromEntries(Object.entries(agents).map(([key, a]) => [a.id, { key, roles: cfg.agents[key].member_of ? [] : cfg.agents[key].roles ?? [], tools: cfg.agents[key].enabled_tools ?? {}, ...grantEntry(key, cfg.agents[key], cfg.routines), rev: revOf(key), description: cfg.agents[key].description, ...(cfg.agents[key].trial ? { trial: true } : {}), ...(cfg.agents[key].delegate_to ? { delegate_to: cfg.agents[key].delegate_to } : {}), ...(cfg.agents[key].image ? { image: cfg.agents[key].image } : {}) }])) };
   // The shared "Fleet issues" log task (ensureFleetIssues, its identifier): any agent may comment there (kernel cp.ts).
   if (fleetIssues) table.fleet_issues = fleetIssues;
   table.routines = { ...routineAutonomy };

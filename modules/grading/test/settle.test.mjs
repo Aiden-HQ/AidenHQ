@@ -18,7 +18,7 @@ async function harness(tasks, t) {
       if (!i) throw new Error(`no task ${ref}`);
       return i;
     },
-    settings: async () => ({ agents_org: "acme", product_repo: "own/aidenhq" }),
+    repos: async () => ({ agentsOrgs: ["acme"], product: "own/aidenhq" }),
     release: async () => {},
   };
   const { server, grades, runner } = createGrading({ db: new DatabaseSync(":memory:"), kernel, keys: KEYS });
