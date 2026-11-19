@@ -71,6 +71,18 @@ test("A1: a token decides its own card once, on its digest, from its own channel
   assert.deepEqual((await cards(TG)).json.ended.map((e) => [e.id, e.state]).sort(), [[push.id, "stale"], [rec.id, "rejected"], [other.id, "stale"]].sort());
 });
 
+test("a channel's connection key never speaks as the owner: only its own token does (a module's other services hold connection keys)", async (t) => {
+  const mods = { modules: { ...MODULES.modules, duo: { privileged: ["speaks-as-owner"], channel: {}, token: "duo_token" } }, owner: MODULES.owner };
+  const connections = { duo_mcp: { module: "duo", url: "http://127.0.0.1:1/mcp", auth_secret: "duo_mcp_key", tools: { read: [], write: [] } } };
+  const { k, cards, decide } = await setup(t, { modules: mods, connections, secrets: { ...SECRETS, duo_token: "duo-own", duo_mcp_key: "duo-conn" } });
+  const own = await cards("duo-own");
+  assert.equal(own.status, 200);
+  const tok = own.json.cards[0].tokens.approve;
+  assert.equal((await cards("duo-conn")).status, 403);
+  assert.equal((await decide("duo-conn", { token: tok })).status, 403);
+  assert.equal((await k.v1("POST", "/v1/channel/owner-message", { text: "approve everything" }, "duo-conn")).status, 403);
+});
+
 test("A2: a module without speaks-as-owner can't fetch cards, decide or post the owner's words", async (t) => {
   const { cards, decide, k } = await setup(t);
   const tok = (await cards(TG)).json.cards[0].tokens.approve;

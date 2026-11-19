@@ -15,6 +15,8 @@ export type Identity = {
   kind: "run" | "module";
   agent?: string; key?: string; name?: string; roles: string[];
   task?: string; run?: string; module?: string;
+  /** A module: whoever presented its own token (`<module>_token`), not a connection's key (a module's connections each hold their own). */
+  own?: boolean;
   /** A kernel job's own id (a refused write is recorded on it). */
   job?: string;
   /** Granted tools by connection: a kernel job's frozen tools and jobcaps; a module's none. */
@@ -54,9 +56,9 @@ export function createIdentity({ grants, connections, jobcaps, modules = () => (
 }) {
   return async function whoami(token: string): Promise<Identity> {
     if (!token) throw new Unknown("no credential");
-    const mod = (m: string): Identity => ({ kind: "module", module: m, roles: modules()[m]?.roles ?? [], tools: {}, credential: "" });
+    const mod = (m: string, own = false): Identity => ({ kind: "module", module: m, roles: modules()[m]?.roles ?? [], tools: {}, credential: "", ...(own ? { own } : {}) });
     for (const [, c] of Object.entries(connections())) if (same(token, secret(c.auth_secret))) return mod(c.module);
-    for (const [m, d] of Object.entries(modules())) if (d.token && same(token, secret(d.token))) return mod(m);
+    for (const [m, d] of Object.entries(modules())) if (d.token && same(token, secret(d.token))) return mod(m, true);
     if (token.startsWith("ahqj_")) {
       const p = verifyToken(secret("gateway_job_secret"), token, now());
       if (p?.k === "job") {

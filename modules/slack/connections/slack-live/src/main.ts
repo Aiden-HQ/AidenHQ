@@ -33,8 +33,9 @@ const env = (name: string): string => {
 const port = Number(process.env.PORT ?? 8089);
 const inboundToken = env("MCP_BEARER_TOKEN");
 if (!inboundToken) throw new Error("MCP_BEARER_TOKEN(_FILE) is required");
-const kernel = async (path: string, body: unknown) => {
-  const res = await fetch(`${kernelUrl}${path}`, { method: "POST", headers: { authorization: `Bearer ${inboundToken}`, "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(30_000) });
+// `token`: the channel routes (/v1/channel/*) take only the module's own token; everything else, the connection's key.
+const kernel = async (path: string, body: unknown, token = inboundToken) => {
+  const res = await fetch(`${kernelUrl}${path}`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(30_000) });
   if (!res.ok) throw new Error(`POST ${path} -> ${res.status}`);
   return res.json() as Promise<any>;
 };
@@ -169,7 +170,7 @@ http.listen(port, "0.0.0.0", () => log.info({ port }, "slack-live listening"));
 for (const sig of ["SIGTERM", "SIGINT"] as const) process.on(sig, () => http.close(() => process.exit(0)));
 
 // The owner's own messages in their command channel: chat with Aiden, posted by the kernel as the owner, stamped [slack].
-const chat = { owner: pairing.owner, deliver: async (text: string) => void (await kernel("/v1/channel/owner-message", { sender: "owner", text })) };
+const chat = { owner: pairing.owner, deliver: async (text: string) => void (await kernel("/v1/channel/owner-message", { sender: "owner", text }, channelToken)) };
 const pair = (body: unknown) =>
   handlePairingDm(pairing, body, (channel, text) => postMessage(cfg, { channel, text }), (o) => void (cfg.ownerId = o.user));
 
@@ -191,7 +192,7 @@ const binding = cfg.botToken ? {
     if (!res.ok) throw new Error(String(typeof r.error === "object" ? r.error?.message : r.error ?? res.status));
     return { state: String(r.state) };
   } }),
-  mention: (ev: any) => mention(ev, { store, thread: (b) => kernel("/v1/channel/thread", b), react: async (channel, timestamp, name) => void (await slackApi("reactions.add", { channel, timestamp, name })) }),
+  mention: (ev: any) => mention(ev, { store, thread: (b) => kernel("/v1/channel/thread", b, channelToken), react: async (channel, timestamp, name) => void (await slackApi("reactions.add", { channel, timestamp, name })) }),
 } : undefined;
 
 if (appToken) void startSocket({ appToken, store, ignored, onKept: poke, chat, pair, ...(binding ? { bind: binding } : {}), ...(tee ? { tee } : {}), log });

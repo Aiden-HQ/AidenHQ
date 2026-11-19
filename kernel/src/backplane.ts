@@ -540,6 +540,8 @@ export function createBackplane({ facts, whoami, asserter, proxy, cp, boardCp, g
       if (hit && /^\/v1\/(channel|cp\/read|brake)/.test(hit.path)) {
         const w = await moduleOf(req);
         const mod = w.module!;
+        // A channel's authority is its own token's: a module's other services hold connection keys, which never speak as the owner.
+        if (isChannel(modules().modules?.[mod]) && !w.own) throw fail(403, "forbidden", `${mod} speaks as the owner only with its own token, not a connection's key`);
         if (!channels || !brake || !owner) throw fail(503, "unavailable", "channels are off");
         switch (`${hit.method} ${hit.path}`) {
           case "GET /v1/channel/cards": return send(res, 200, await channels.cards(mod, new URLSearchParams(q ?? "").get("resync") === "1"));
