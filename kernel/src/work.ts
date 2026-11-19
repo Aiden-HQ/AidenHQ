@@ -5,7 +5,7 @@
 //                            `waiting` (claimable wakes: count, oldest_at, oldest_cause) and `last_started_at` say whether dispatch has stalled
 //   GET /v1/work?job=<id>    one job for its run page (the board): state, times, why it ended, its engine's token count, its
 //                            progress (said, plan, steps) and final words (both the agent's: untrusted)
-//   GET /v1/work?agent=<id>  an agent's last 50 jobs (newest first), each with how it ended: { jobs }
+//   GET /v1/work?agent=<id>  an agent's last 50 jobs (newest first), each with how it ended and the routine its task traces to: { jobs }
 //   GET /v1/work?since=<iso>[&to=<iso>]  the records filed or decided since then (tier 1 and 2) and the billed cost per agent and
 //                            UTC day from the gateway ledger: { records, usage } (the Fleet Steward's scorecards; each record says
 //                            whether it is a `judged` rejection and the branches or PRs it was aimed at, `targets`)
@@ -45,7 +45,7 @@ export function createWork({ db, records, generationsFile = "" }: { db: Database
     agent(id: string) {
       return { jobs: rows("SELECT * FROM jobs WHERE agent = ? ORDER BY at DESC LIMIT 50", id).map((r) => {
         const why = JSON.parse(r.why || "{}"), progress = JSON.parse(r.progress || "{}");
-        return { ...job(r), exit: r.exit ?? null, timed_out: why.timedOut === true, steps: Array.isArray(progress.steps) ? progress.steps.length : 0, has_final: Boolean(r.final) };
+        return { ...job(r), exit: r.exit ?? null, timed_out: why.timedOut === true, steps: Array.isArray(progress.steps) ? progress.steps.length : 0, has_final: Boolean(r.final), routine: r.routine ?? null };
       }) };
     },
     since(from: string, to = new Date().toISOString()) {

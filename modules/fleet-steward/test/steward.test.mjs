@@ -363,3 +363,40 @@ test("dispatch stalled: queued wakes with no job started for 15 minutes tell the
   assert.deepEqual(stalled.sent, ["No agent work has started for 20 min while 3 wakes wait (oldest: routine-daily-brief)."]);
   assert.deepEqual((await run(20, 2)).found, []);
 });
+
+test("a routine whose last 3 jobs failed is paused once and the owner told; it stays flagged while paused, a resume starts a fresh count, and fleet-wide failures pause nothing", async () => {
+  const job = (id, agent, state, m, routine = "r1", final = "") => ({ id, agent, task: id, routine, state, ended_at: minsAgo(m), final });
+  const world = (jobs, status) => {
+    const paused = [], sent = [], kv = kvOf();
+    const kernel = {
+      read: async (p) => (p === "/api/companies" ? [{ id: "co" }] : p.endsWith("/agents") ? [{ id: "a1", name: "a1" }, { id: "a2", name: "a2" }] : p.endsWith("/routines") ? [{ id: "r1", title: "Daily brief", status: status.v }] : []),
+      call: async (_m, p) => (p.startsWith("/v1/work?agent=a1") ? { jobs: jobs.a1 ?? [] } : p.startsWith("/v1/work?agent=a2") ? { jobs: jobs.a2 ?? [] } : { final: jobs.finals?.[decodeURIComponent(p.split("=")[1])] ?? "" }),
+    };
+    const c = checks({ kernel, kv, pause: async (r) => { paused.push(r); status.v = "paused"; }, apps: async () => [], alerts: async () => [], openKeys: () => [], notify: async (text, key) => void sent.push([text, key]), gradeFailures: async () => [], now: () => NOW });
+    return { c, paused, sent, kv };
+  };
+  const bad = [job("j1", "a1", "failed", 30), job("j2", "a1", "timeout", 20), job("j3", "a1", "failed", 10)];
+  const status = { v: "active" };
+  const w = world({ a1: [...bad, job("j0", "a1", "done", 50)], a2: [job("k1", "a2", "done", 5, null)] }, status);
+  assert.deepEqual((await w.c.routine()).map((i) => i.key), ["r1"]);
+  assert.deepEqual([w.paused, w.sent], [["r1"], [["Routine paused: Daily brief failed 3 runs in a row. Ask Aiden to resume it once it's fixed.", "routine-paused:r1"]]]);
+  assert.match((await w.c.routine())[0].reason, /paused after repeated failures/);
+  assert.equal(w.paused.length, 1, "paused once");
+  status.v = "active"; // resumed: only newer failures count
+  assert.deepEqual(await w.c.routine(), []);
+  // Fleet-wide: every agent failing, or a credits refusal, pauses nothing (the routine stays flagged).
+  const every = world({ a1: bad, a2: [job("k1", "a2", "failed", 5, null)] }, { v: "active" });
+  assert.equal((await every.c.routine()).length, 1);
+  const credits = world({ a1: bad, a2: [job("k2", "a2", "done", 5, null)], finals: { j3: "The job failed: OpenRouter 402 insufficient credits" } }, { v: "active" });
+  assert.equal((await credits.c.routine()).length, 1);
+  assert.deepEqual([every.paused, credits.paused], [[], []]);
+});
+
+test("missed fires: an active routine whose next schedule fire is over 15 minutes overdue is raised; a paused one, a future fire and a recent one are not", async () => {
+  const r = (id, status, nextRunAt) => ({ id, title: id, status, triggers: [{ kind: "schedule", enabled: true, label: "daily", nextRunAt }] });
+  const kernel = { read: async (p) => (p === "/api/companies" ? [{ id: "co" }] : [r("late", "active", minsAgo(20)), r("paused", "paused", minsAgo(60)), r("soon", "active", minsAgo(5)), r("future", "active", new Date(NOW + 3_600_000).toISOString())]) };
+  const c = checks({ kernel, kv: kvOf(), pause: async () => {}, apps: async () => [], alerts: async () => [], openKeys: () => [], now: () => NOW });
+  const found = await c.missed();
+  assert.deepEqual(found.map((i) => i.key), ["late:daily"]);
+  assert.match(found[0].reason, /fire due 20 min ago, no run started/);
+});
