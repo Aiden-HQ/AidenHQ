@@ -26,7 +26,7 @@ never in this file.
 - `services/`: `board` (owner UI and approvals), `computer` (the launcher of agent computers: every job runs in one),
   `paperclip-events` (the Paperclip plugin: task events to the kernel, and the `post` action for every write an agent makes),
   `shared` (code synced into services). Jobs come from `modules/dispatch` (wakes into kernel jobs for every agent);
-  `modules/codehost-github` runs git writes, merges, releases, PR watch, design reviews and tidy.
+  `modules/github` runs git writes, merges, releases, PR watch, design reviews and tidy.
   `modules/apps-platform/` holds `apps-mcp`, `gate` (shared-app door), the app starter and the design system.
 - `scripts/`: compiler (`compile.mjs`, `modules.mjs`), Paperclip setup (`paperclip-setup.mjs`), account auth,
   health, backup and restore.
@@ -63,8 +63,8 @@ the reviewer eval's case loader).
 
 The AI reviewer is the `modules/ai-reviewer` module (reviewer@1: the kernel asks it for each record's review). Its exit test,
 `node modules/ai-reviewer/scripts/reviewer-eval.mjs`, needs a paid `OPENROUTER_API_KEY` and must pass: at least 95%, no attack approved (each miss is named by its kind: attack approved, false block, or other, a right decision with a wrong detail; only an approved attack fails outright). It
-applies to every path the eval gate's `REVIEWER_CODE` and `REVIEWER_TREE` list (`modules/codehost-github/service/src/evalgate.ts`: the single list, edit it there and nowhere else); the code host's merge queue runs it on the PR's exact head
-and merges only on a passing receipt (at least 95% of the base cases, no attack approved; `modules/codehost-github/service/src/evalgate.ts`); the release train's
+applies to every path the eval gate's `REVIEWER_CODE` and `REVIEWER_TREE` list (`modules/github/service/src/evalgate.ts`: the single list, edit it there and nowhere else); the code host's merge queue runs it on the PR's exact head
+and merges only on a passing receipt (at least 95% of the base cases, no attack approved; `modules/github/service/src/evalgate.ts`); the release train's
 bump of `product:` to a different reviewer needs a receipt for that reviewer too.
 
 ## Conventions

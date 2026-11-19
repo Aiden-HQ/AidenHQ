@@ -73,7 +73,7 @@ async function setup(t, { routes = () => undefined } = {}) {
 
 test("create_repo is Tier 0 in an allowed org besides the agents org; a core repo's name, and an org nobody allowed, are refused", async (t) => {
   const { call } = await setup(t);
-  const plan = (repo) => call("/aidenhq/v1/executor/plan", { kind: "codehost-github.create_repo", args: { repo }, requester: { kind: "job", roles: [] }, task: "t1" });
+  const plan = (repo) => call("/aidenhq/v1/executor/plan", { kind: "github.create_repo", args: { repo }, requester: { kind: "job", roles: [] }, task: "t1" });
   const ok = await plan("partner/new-app");
   assert.equal(ok.status, 200, JSON.stringify(ok.json));
   assert.equal(ok.json.raise, undefined);
@@ -86,7 +86,7 @@ test("create_repo is Tier 0 in an allowed org besides the agents org; a core rep
 // and the Engineer's first branch of the new app lands there.
 test("connected: a new app's repository is created through the App in the agents org, and its first branch lands there", async (t) => {
   const { root, outcomes, created, call } = await setup(t, { routes: (m, p) => (m === "GET" && p === "/repos/acme-agents/new-app" ? { status: 200, body: { default_branch: "main" } } : undefined) });
-  const create = { kind: "codehost-github.create_repo", args: { repo: "acme-agents/new-app" } };
+  const create = { kind: "github.create_repo", args: { repo: "acme-agents/new-app" } };
   const plan = await call("/aidenhq/v1/executor/plan", { ...create, requester: { kind: "job", roles: [] }, task: "t1" });
   assert.equal(plan.status, 200, JSON.stringify(plan.json));
   assert.equal((await call("/aidenhq/v1/executor/execute", { id: "k-00000000000000c1", ...create, digest: "d", idempotency_key: "c" })).json.accepted, true);
@@ -110,7 +110,7 @@ test("connected: a new app's repository is created through the App in the agents
   sh(ws, "add", "app.js");
   sh(ws, "commit", "--quiet", "-m", "first");
   const sha = sh(ws, "rev-parse", "HEAD");
-  const push = { kind: "codehost-github.push", args: { workspace: "TASK-2", only: [{ repo: "acme-agents/new-app", branch: "first", sha }] } };
+  const push = { kind: "github.push", args: { workspace: "TASK-2", only: [{ repo: "acme-agents/new-app", branch: "first", sha }] } };
   const p2 = await call("/aidenhq/v1/executor/plan", { ...push, requester: { kind: "job", roles: [] }, task: "t2" });
   assert.equal(p2.json.raise, undefined, JSON.stringify(p2.json)); // an ordinary branch of an agents-org repo: Tier 0
   assert.equal((await call("/aidenhq/v1/executor/execute", { id: "k-00000000000000c2", ...push, digest: "d", idempotency_key: "p" })).json.accepted, true);
@@ -123,7 +123,7 @@ test("a PR's card carries the branch's diff for the reviewer (#744): every kind 
   let pulls = {};
   const { sha, ws, origin, call } = await setup(t, { routes: (method, path) => (path in pulls ? { status: 200, body: pulls[path] } : /\/commits\/\w+\/(check-runs|status)/.test(path) ? { status: 200, body: { total_count: 1, check_runs: [{ status: "completed", conclusion: "success" }], statuses: [] } } : undefined) });
   const args = { workspace: "TASK-1", only: [{ repo: "acme-agents/widget", branch: "feature", sha }] };
-  const plan = await call("/aidenhq/v1/executor/plan", { kind: "codehost-github.pr", args, requester: { kind: "job", roles: [] }, task: "t1" });
+  const plan = await call("/aidenhq/v1/executor/plan", { kind: "github.pr", args, requester: { kind: "job", roles: [] }, task: "t1" });
   assert.equal(plan.status, 200, JSON.stringify(plan.json));
   // The manifest's card (one template for every kind), rendered as the kernel files it.
   const manifest = readFileSync(new URL("../module.yaml", import.meta.url), "utf8");
@@ -137,7 +137,7 @@ test("a PR's card carries the branch's diff for the reviewer (#744): every kind 
   sh(origin, "fetch", "--quiet", ws, `${sha}:refs/heads/feature`);
   const main = sh(origin, "rev-parse", "main");
   pulls = { "/repos/acme-agents/widget/pulls/1": { number: 1, head: { sha }, base: { sha: main }, changed_files: 2, user: { login: "acme-app[bot]" } }, "/repos/acme-agents/widget/pulls/1/files?per_page=100": [{ filename: "app.js" }, { filename: ".gitattributes" }] };
-  const merge = await call("/aidenhq/v1/executor/plan", { kind: "codehost-github.merge", args: { prs: [{ repo: "acme-agents/widget", number: 1, head: sha }] }, requester: { kind: "job", roles: [] }, task: "t1" });
+  const merge = await call("/aidenhq/v1/executor/plan", { kind: "github.merge", args: { prs: [{ repo: "acme-agents/widget", number: 1, head: sha }] }, requester: { kind: "job", roles: [] }, task: "t1" });
   assert.equal(merge.status, 200, JSON.stringify(merge.json));
   assert.match(merge.json.facts.diff, /^\+export const x = 1;$/m);
 });
@@ -145,11 +145,11 @@ test("a PR's card carries the branch's diff for the reviewer (#744): every kind 
 test("a job's branch lands from its workspace; no hook, filter or fsmonitor of the workspace runs", async (t) => {
   const { root, marker, origin, sha, outcomes, minted, call } = await setup(t);
   const args = { workspace: "TASK-1", only: [{ repo: "acme-agents/widget", branch: "feature", sha }] };
-  const plan = await call("/aidenhq/v1/executor/plan", { kind: "codehost-github.push", args, requester: { kind: "job", roles: [] }, task: "t1" });
+  const plan = await call("/aidenhq/v1/executor/plan", { kind: "github.push", args, requester: { kind: "job", roles: [] }, task: "t1" });
   assert.equal(plan.status, 200, JSON.stringify(plan.json));
   assert.equal(plan.json.raise, undefined); // an ordinary branch of an agents-org repo: Tier 0
   assert.equal(plan.json.targets["acme-agents/widget feature"].commit, sha);
-  const ex = await call("/aidenhq/v1/executor/execute", { id: "k-0123456789abcdef", kind: "codehost-github.push", args, digest: "d", idempotency_key: "i" });
+  const ex = await call("/aidenhq/v1/executor/execute", { id: "k-0123456789abcdef", kind: "github.push", args, digest: "d", idempotency_key: "i" });
   assert.deepEqual(ex.json, { accepted: true });
   for (let i = 0; i < 300 && !outcomes.length; i++) await new Promise((r) => setTimeout(r, 10));
   assert.equal(outcomes[0]?.ok, true, JSON.stringify(outcomes));
@@ -160,10 +160,10 @@ test("a job's branch lands from its workspace; no hook, filter or fsmonitor of t
   // The head is the task that planned it first; another task re-publishing it, noted or pushed without a note, never takes it.
   const by = () => JSON.parse(readFileSync(join(root, "cache", "pushed-by.json"), "utf8"));
   assert.deepEqual(by(), { [sha]: { task: "t1", platform: false } });
-  await call("/aidenhq/v1/executor/plan", { kind: "codehost-github.push", args, requester: { kind: "job", roles: [] }, task: "t2" });
+  await call("/aidenhq/v1/executor/plan", { kind: "github.push", args, requester: { kind: "job", roles: [] }, task: "t2" });
   assert.equal(by()[sha].task, "t1");
   writeFileSync(join(root, "cache", "pushed-by.json"), "{}");
-  await call("/aidenhq/v1/executor/plan", { kind: "codehost-github.push", args, requester: { kind: "job", roles: [] }, task: "t2" });
+  await call("/aidenhq/v1/executor/plan", { kind: "github.push", args, requester: { kind: "job", roles: [] }, task: "t2" });
   assert.deepEqual(by(), {});
 });
 
@@ -181,7 +181,7 @@ test("ops answer the kernel only (it checks each module's grant); a token is nar
 });
 
 const pushArgs = (sha) => ({ workspace: "TASK-1", only: [{ repo: "acme-agents/widget", branch: "feature", sha }] });
-const planPush = (call, sha) => call("/aidenhq/v1/executor/plan", { kind: "codehost-github.push", args: pushArgs(sha), requester: { kind: "job", roles: [] }, task: "t1" });
+const planPush = (call, sha) => call("/aidenhq/v1/executor/plan", { kind: "github.push", args: pushArgs(sha), requester: { kind: "job", roles: [] }, task: "t1" });
 const settle = async (outcomes) => { for (let i = 0; i < 300 && !outcomes.length; i++) await new Promise((r) => setTimeout(r, 10)); };
 
 test("a workspace .git with a symlink, alternates or a commondir is refused before git reads it", async (t) => {

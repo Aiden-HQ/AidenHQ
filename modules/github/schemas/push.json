@@ -1,5 +1,5 @@
 {
-  "title": "codehost-github.push: these branches of the task's workspace (task identifier), each at exactly this commit.",
+  "title": "github.push: these branches of the task's workspace (task identifier), each at exactly this commit.",
   "type": "object",
   "additionalProperties": false,
   "required": [

@@ -30,7 +30,7 @@ const RUNNER_RETIRED = Date.parse("2026-11-18T18:23:32Z");
 /** A runner bump's marker is `Date.now()` taken just before its POST: the control plane's own createdAt lands a moment after it. */
 const RUNNER_WINDOW_MS = 60_000;
 /** The code host files these; the family is never opened up to another module. */
-const RELEASE_MODULE = "codehost-github";
+const RELEASE_MODULE = "github";
 
 /**
  * The release family's marker is the task's only source marker: a task that also carries another family's (`<!-- source:x -->`)

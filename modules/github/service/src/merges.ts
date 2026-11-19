@@ -1,4 +1,4 @@
-// The merge queue: an approved codehost-github.merge record becomes a queue here, kept in the service's data dir, and a loop
+// The merge queue: an approved github.merge record becomes a queue here, kept in the service's data dir, and a loop
 // polls each of its PRs with the merge gate (merge-gate.mjs `decide`) until every one merged or was reported not merged. Its
 // outcome is the record's: ok only when every PR it names merged at its bound head.
 //

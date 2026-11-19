@@ -38,14 +38,14 @@ function setup(trees, judge = () => ({ failed: [] })) {
   };
   const db = new DatabaseSync(":memory:");
   const checks = createChecks({ db, secret: () => "receipt-secret", recipes, box, snapshot: () => snapshot, modelToken: (head) => mintToken("job-secret", { kind: "check", component: `eval:${head}` }), gatewayUrl: "http://gw", workDir: dir, log: () => {} });
-  const done = async (v) => { while (v.state === "running") v = await checks.get("codehost-github", v.id, { after: v.version, waitMs: 1000 }); return v; };
+  const done = async (v) => { while (v.state === "running") v = await checks.get("github", v.id, { after: v.version, waitMs: 1000 }); return v; };
   return { checks, runs, done, db };
 }
 
 test("checks: a receipt binds its head, run, judge and policy; the box gets no credential", async () => {
   const pkg = JSON.stringify({ scripts: { "aidenhq:fast-check": "eslint ." } });
   const { checks, runs, done } = setup({ [A]: { "package.json": pkg }, [B]: { "package.json": pkg } });
-  const v = await done(checks.start("codehost-github", { repo: "acme/app", head: A, run: "fast", spec: { base: B } }));
+  const v = await done(checks.start("github", { repo: "acme/app", head: A, run: "fast", spec: { base: B } }));
   assert.equal(v.state, "done");
   assert.deepEqual([v.receipt.verdict, v.receipt.ran], ["pass", true]);
   assert.deepEqual(checks.verify(v.receipt, { repo: "acme/app", head: A, run: "fast" }), { ok: true });
@@ -53,7 +53,7 @@ test("checks: a receipt binds its head, run, judge and policy; the box gets no c
   assert.equal(checks.verify(v.receipt, { repo: "acme/app", head: A, run: "eval" }).ok, false);
   assert.equal(checks.verify({ ...v.receipt, head: B }, { repo: "acme/app", head: B, run: "fast" }).ok, false);
   // Once per head and spec: asking again is the same check.
-  assert.equal(checks.start("codehost-github", { repo: "acme/app", head: A, run: "fast", spec: { base: B } }).id, v.id);
+  assert.equal(checks.start("github", { repo: "acme/app", head: A, run: "fast", spec: { base: B } }).id, v.id);
   // Exactly the allowlisted env: no GitHub, run or tool token, nothing of the kernel's own.
   assert.deepEqual(Object.keys(runs[0].env).sort(), ["CI", "HOME", "npm_config_audit", "npm_config_fund", "npm_config_update_notifier"]);
   assert.equal(runs[0].image, "engineer");
@@ -63,7 +63,7 @@ test("checks: whether a fast check is due is the base's to say, and a check that
   const pkg = JSON.stringify({ scripts: { "aidenhq:fast-check": "eslint ." } });
   const C = "c".repeat(40), D = "d".repeat(40), E = "e".repeat(40);
   const { checks, runs, done } = setup({ [B]: { "package.json": pkg }, [A]: { "package.json": JSON.stringify({ scripts: {} }) }, [C]: { "package.json": "{ not json" }, [D]: {}, [E]: {} });
-  const fast = async (head, base) => (await done(checks.start("codehost-github", { repo: "acme/app", head, run: "fast", spec: { base } }))).receipt;
+  const fast = async (head, base) => (await done(checks.start("github", { repo: "acme/app", head, run: "fast", spec: { base } }))).receipt;
   // The base declares it; the head deletes it: fail, nothing run.
   const dropped = await fast(A, B);
   assert.deepEqual([dropped.verdict, dropped.ran], ["fail", false]);
@@ -77,29 +77,29 @@ test("checks: whether a fast check is due is the base's to say, and a check that
   assert.deepEqual(checks.verify(none, { repo: "acme/app", head: E, run: "fast" }), { ok: false, why: "no check ran" });
   assert.deepEqual(checks.verify(none, { repo: "acme/app", head: E, run: "fast", none: true }), { ok: true });
   // A fast check names its base.
-  assert.throws(() => checks.start("codehost-github", { repo: "acme/app", head: A, run: "fast", spec: {} }), /names base/);
+  assert.throws(() => checks.start("github", { repo: "acme/app", head: A, run: "fast", spec: {} }), /names base/);
 });
 
 test("checks: find reads the check already asked for and never starts one, and a spec that doesn't fit is no check", async () => {
   const pkg = JSON.stringify({ scripts: { "aidenhq:fast-check": "eslint ." } });
   const { checks, runs, done } = setup({ [A]: { "package.json": pkg } });
   // Nothing asked yet: "none", and no run was started by looking.
-  assert.equal(checks.find("codehost-github", { repo: "acme/app", head: A, run: "fast", spec: { base: B } }), undefined);
+  assert.equal(checks.find("github", { repo: "acme/app", head: A, run: "fast", spec: { base: B } }), undefined);
   assert.equal(runs.length, 0);
   // Asked for: the same check, in its state, and still no second run.
-  const v = await done(checks.start("codehost-github", { repo: "acme/app", head: A, run: "fast", spec: { base: B } }));
-  assert.equal(checks.find("codehost-github", { repo: "acme/app", head: A, run: "fast", spec: { base: B } })?.id, v.id);
+  const v = await done(checks.start("github", { repo: "acme/app", head: A, run: "fast", spec: { base: B } }));
+  assert.equal(checks.find("github", { repo: "acme/app", head: A, run: "fast", spec: { base: B } })?.id, v.id);
   assert.equal(runs.length, 1);
   // A spec the recipe can't take (a change with no base) is no check at all, never a throw at a reader.
-  assert.equal(checks.find("codehost-github", { repo: "acme/app", head: A, run: "fast", spec: { base: "" } }), undefined);
-  assert.equal(checks.find("codehost-github", { repo: "acme/app", head: A, run: "deploy", spec: {} }), undefined);
+  assert.equal(checks.find("github", { repo: "acme/app", head: A, run: "fast", spec: { base: "" } }), undefined);
+  assert.equal(checks.find("github", { repo: "acme/app", head: A, run: "deploy", spec: {} }), undefined);
 });
 
 test("checks: a recipe is the installed module's: unknown runs and bad specs are refused, the module's contract kit runs in its own folder", async () => {
   const { checks, runs, done } = setup({ [A]: { "mod/module.yaml": "name: mod" } });
-  assert.throws(() => checks.start("codehost-github", { repo: "acme/mod", head: A, run: "deploy", spec: {} }), /run: .*contract/);
-  for (const path of ["../x", "a/../b", "/abs", ""]) assert.throws(() => checks.start("codehost-github", { repo: "acme/mod", head: A, run: "contract", spec: { path } }), /spec\.path/);
-  const v = await done(checks.start("codehost-github", { repo: "acme/mod", head: A, run: "contract", spec: { path: "mod" } }));
+  assert.throws(() => checks.start("github", { repo: "acme/mod", head: A, run: "deploy", spec: {} }), /run: .*contract/);
+  for (const path of ["../x", "a/../b", "/abs", ""]) assert.throws(() => checks.start("github", { repo: "acme/mod", head: A, run: "contract", spec: { path } }), /spec\.path/);
+  const v = await done(checks.start("github", { repo: "acme/mod", head: A, run: "contract", spec: { path: "mod" } }));
   assert.deepEqual([v.receipt.verdict, v.receipt.ran, runs[0].cwd], ["pass", true, "mod"]);
   assert.match(runs[0].argv.join(" "), /contract\.sh/);
   assert.ok(Object.keys(recipes().contract.files).includes("contract.sh"));
@@ -114,7 +114,7 @@ test("checks: the eval runs by the judging rules and its receipt binds judge and
   // First run: an added case fails; the one re-run passes it.
   const { checks, runs, done } = setup({ [J]: base, [S]: subject }, (cases, n) => ({ failed: n === 1 ? [{ file: "new.json", got: "approve" }] : [] }));
   const spec = { repo: "acme/aidenhq", judge_commit: J, subject_commit: S, cases_from: S, policy_hash: "abc1234" };
-  const v = await done(checks.start("codehost-github", { repo: "acme/product", head: A, run: "eval", spec }));
+  const v = await done(checks.start("github", { repo: "acme/product", head: A, run: "eval", spec }));
   assert.equal(v.receipt.verdict, "pass", v.receipt.summary);
   const evals = runs.filter((r) => r.argv.includes("scripts/reviewer-eval.mjs"));
   assert.equal(evals.length, 2);
@@ -158,10 +158,10 @@ test("checks: the eval's model calls stop at the eval day cap", async (t) => {
 test("checks: each end of a check is a check.ended fact, a re-run's too", async () => {
   const pkg = JSON.stringify({ scripts: { "aidenhq:fast-check": "eslint ." } });
   const { checks, done, db } = setup({ [A]: { "package.json": pkg }, [B]: { "package.json": pkg } });
-  const v = await done(checks.start("codehost-github", { repo: "acme/app", head: A, run: "fast", spec: { base: B } }));
+  const v = await done(checks.start("github", { repo: "acme/app", head: A, run: "fast", spec: { base: B } }));
   const facts = () => db.prepare("SELECT subject, actor, data FROM facts WHERE type = 'check.ended'").all().map((f) => ({ ...f, data: JSON.parse(f.data) }));
-  assert.deepEqual(facts(), [{ subject: `check:${v.id}`, actor: "module:codehost-github", data: { kind: "fast", repo: "acme/app", head: A, verdict: "pass" } }]);
+  assert.deepEqual(facts(), [{ subject: `check:${v.id}`, actor: "module:github", data: { kind: "fast", repo: "acme/app", head: A, verdict: "pass" } }]);
   db.prepare("UPDATE checks SET state = 'error', at = at - 1 WHERE id = ?").run(v.id);
-  await done(checks.start("codehost-github", { repo: "acme/app", head: A, run: "fast", spec: { base: B } }));
+  await done(checks.start("github", { repo: "acme/app", head: A, run: "fast", spec: { base: B } }));
   assert.equal(facts().length, 2);
 });

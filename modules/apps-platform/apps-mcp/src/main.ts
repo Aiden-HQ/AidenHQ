@@ -39,10 +39,10 @@ if (!internalToken) throw new Error("APPS_INTERNAL_TOKEN(_FILE) is required");
 const serviceKey = file("APPS_SERVICE_KEY");
 if (!serviceKey) throw new Error("APPS_SERVICE_KEY(_FILE) is required");
 const tokenFile = process.env.GITHUB_TOKEN_FILE;
-// The agents org is always allowed; its private repos are read with the instance's GitHub App when codehost-github runs.
+// The agents org is always allowed; its private repos are read with the instance's GitHub App when the GitHub App is set up.
 const agentsOrg = readAgentsOrg(instanceDir);
 const orgs = readOrgs(instanceDir);
-const appToken = githubHost(repoDir) ? appTokens((process.env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130").replace(/\/$/, ""), serviceKey) : undefined;
+const appToken = githubHost() ? appTokens((process.env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130").replace(/\/$/, ""), serviceKey) : undefined;
 // This server's repos (codehost-local), read-only at /codehost when the instance enables it: `local/*` apps build from them.
 const codehost = localRoot(repoDir);
 

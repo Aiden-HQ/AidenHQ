@@ -1,5 +1,5 @@
 {
-  "title": "codehost-github.pr: push these branches, then open (or update) each one's PR.",
+  "title": "github.pr: push these branches, then open (or update) each one's PR.",
   "type": "object",
   "additionalProperties": false,
   "required": [

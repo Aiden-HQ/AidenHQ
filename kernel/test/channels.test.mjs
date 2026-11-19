@@ -21,7 +21,7 @@ const TG = "tg-key", OP = "op-key", LANE = "lane-key", PLAIN = "plain-key";
 async function setup(t, extra = {}) {
   const k = await kernel(t, { modules: MODULES, secrets: SECRETS, grants: { "ag-cos": { key: "chief-of-staff", roles: ["fleet-admin"] } }, ...extra });
   const pushCard = { sentence: "Push x.", changes: "c", reads: "r", cost: "0", details: "" };
-  const push = k.records.file({ kind: "codehost-github.push", module: "codehost-github", args: { only: [] }, targets: {}, executor: { module: "codehost-github" }, policy: "p", tier: 2, panel: false, card: pushCard, requester: { agent: "ag-eng", key: "eng", name: "Eng", roles: [], kind: "job" }, task: "t-1", identifier: "WOR-1", state: "owner" });
+  const push = k.records.file({ kind: "github.push", module: "github", args: { only: [] }, targets: {}, executor: { module: "github" }, policy: "p", tier: 2, panel: false, card: pushCard, requester: { agent: "ag-eng", key: "eng", name: "Eng", roles: [], kind: "job" }, task: "t-1", identifier: "WOR-1", state: "owner" });
   const rec = k.records.file({ kind: "twin.post", module: "twin", args: { note: "x" }, targets: {}, executor: { module: "twin" }, policy: "p", tier: 2, panel: false, card: { sentence: "Post x.", changes: "", reads: "", cost: "", details: "" }, requester: { agent: "ag-ada", key: "ada", name: "Ada", roles: [], kind: "run" }, task: "TASK-1", state: "owner" });
   const cards = (token, q = "") => k.v1("GET", `/v1/channel/cards${q}`, undefined, token);
   const decide = (token, body) => k.v1("POST", "/v1/channel/decide", { sender: "owner", ...body }, token);
@@ -33,7 +33,7 @@ test("A1: a token decides its own card once, on its digest, from its own channel
   const tg = (await cards(TG)).json.cards;
   assert.deepEqual(tg.map((c) => c.id).sort(), [push.id, rec.id].sort());
   assert.deepEqual(tg.find((c) => c.id === push.id).identifier, "WOR-1");
-  assert.deepEqual(tg.find((c) => c.id === push.id).kind, "codehost-github.push");
+  assert.deepEqual(tg.find((c) => c.id === push.id).kind, "github.push");
   assert.ok(tg.every((c) => c.tokens.approve.length >= 43 && c.tokens.approve !== c.tokens.reject));
   // Issued once: the next poll carries no tokens; tokens are never stored in the clear.
   assert.ok((await cards(TG)).json.cards.every((c) => !c.tokens));

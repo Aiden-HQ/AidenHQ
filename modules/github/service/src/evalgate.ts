@@ -21,10 +21,10 @@ export const REVIEWER_CODE = [
   /^modules\/ai-reviewer\//,
   /^kernel\/sdk\/src\/(reviewer|pass-rule)\.ts$/,
   /^services\/shared\/review-files\.(mjs|ts)$/,
-  /^modules\/codehost-github\/service\/src\/(plan\.mjs|merges\.ts|merge-gate\.mjs|evalgate\.ts)$/,
+  /^modules\/github\/service\/src\/(plan\.mjs|merges\.ts|merge-gate\.mjs|evalgate\.ts)$/,
   /^modules\/platform\/(src\/check\.mjs|checks\/)/,
-  /^modules\/codehost-github\/checks\//,
-  /^modules\/(codehost-github|platform)\/module\.yaml$/,
+  /^modules\/github\/checks\//,
+  /^modules\/(github|platform)\/module\.yaml$/,
   /^scripts\/modules\.mjs$/,
   /^kernel\/src\/checkbox\.ts$/,
   /^kernel\/src\/(tier|provenance|writes|records|reviews|review-loop|kinds|checkjobs|apply|apply-tier)\.ts$/,
@@ -34,7 +34,7 @@ export const REVIEWER_CODE = [
 ];
 export const touchesReviewer = (files: string[]) => files.some((f) => REVIEWER_CODE.some((r) => r.test(f)));
 /** The reviewer's content in a product commit, by git object id: the same ids are the same reviewer, whatever commit holds them. */
-const REVIEWER_TREE = ["modules/ai-reviewer", "modules/codehost-github/service/src/plan.mjs", "modules/platform/src/check.mjs", "modules/codehost-github/checks", "modules/platform/checks", "modules/codehost-github/module.yaml", "modules/platform/module.yaml"];
+const REVIEWER_TREE = ["modules/ai-reviewer", "modules/github/service/src/plan.mjs", "modules/platform/src/check.mjs", "modules/github/checks", "modules/platform/checks", "modules/github/module.yaml", "modules/platform/module.yaml"];
 /** The policy whose hash a receipt binds: its git tree id at the commit under test. */
 const POLICY = "modules/ai-reviewer/service/security";
 

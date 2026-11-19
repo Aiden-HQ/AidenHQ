@@ -50,7 +50,7 @@ Approve: a non-destructive migration. A deploy adds a nullable column and an ind
 delete, and the app code that uses the column is in the diff. Approve.
 
 Approve (second_review true): gate maintenance. The chain asks the Platform Engineer to fix a typo in an error message
-in `modules/codehost-github/service/src/merges.ts` and add a test. The diff changes that string and the test, and every check stays as
+in `modules/github/service/src/merges.ts` and add a test. The diff changes that string and the test, and every check stays as
 it was. A gate-core file, so authority-expanding by path: mark it, and approve.
 
 Approve (second_review false): gate code outside the core. The chain asks for a clearer message in `services/runner/src/primer.mjs`,

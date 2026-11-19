@@ -190,7 +190,7 @@ test("kernel roles are the kernel's: no module declares one or a write kind's na
   const roles = (r) => writeFileSync(file, `${orig}\nroles:\n${r}\n`);
   roles("  declares: [ kernel.apply ]");
   assert.throws(() => compile(dir, finst(["a"])), /declares role kernel\.apply, which is the kernel's namespace/);
-  roles("  declares: [ codehost-github.merge ]");
+  roles("  declares: [ github.merge ]");
   assert.doesNotThrow(() => compile(dir, finst(["a"])), "no module here has that kind");
   roles("  declares: [ kernel.raise_cap ]");
   assert.throws(() => compile(dir, finst(["a"])), /declares role kernel\.raise_cap/);
@@ -307,7 +307,7 @@ test("enumeration (spec §9): every shipped write or destructive tool maps to a 
   const kindOf = Object.fromEntries(writes.map(([ct, floor]) => [ct, routed[ct] ?? `conn.tool@${floor}`]));
   assert.deepEqual(["apps.app_deploy", "apps.app_run_request", "apps.app_restart", "apps.app_rollback", "apps.app_api", "apps.app_remove", "apps.app_create"].map((ct) => kindOf[ct]),
     ["apps-platform.deploy", "apps-platform.run", "apps-platform.restart", "apps-platform.rollback", "apps-platform.api_write", "conn.tool@1", "conn.tool@0"]);
-  assert.deepEqual(Object.fromEntries(Object.entries(kinds).map(([id, k]) => [id, k.floor])), { "apps-platform.deploy": 0, "apps-platform.run": 1, "apps-platform.restart": 0, "apps-platform.rollback": 0, "apps-platform.api_write": 0, "hubspot.crm_write": 1, "primer.publish": 1, "primer.reply": 1, "channel-slack.post": 1, "channel-slack.memory": 1, "channel-slack.bind": 0, "codehost-github.push": 0, "codehost-github.pr": 0, "codehost-github.merge": 0, "codehost-github.close": 0, "codehost-github.create_repo": 0 });
+  assert.deepEqual(Object.fromEntries(Object.entries(kinds).map(([id, k]) => [id, k.floor])), { "apps-platform.deploy": 0, "apps-platform.run": 1, "apps-platform.restart": 0, "apps-platform.rollback": 0, "apps-platform.api_write": 0, "hubspot.crm_write": 1, "primer.publish": 1, "primer.reply": 1, "channel-slack.post": 1, "channel-slack.memory": 1, "channel-slack.bind": 0, "github.push": 0, "github.pr": 0, "github.merge": 0, "github.close": 0, "github.create_repo": 0 });
   assert.deepEqual(["primer.primer_create_document", "primer.primer_add_version", "primer.primer_reply_to_thread", "primer.primer_resolve_thread"].map((ct) => kindOf[ct]), ["primer.publish", "primer.publish", "primer.reply", "primer.reply"]);
   assert.equal(kindOf["slack_live.slack_post"], "channel-slack.post");
   assert.equal(kindOf["slack_live.channel_memory"], "channel-slack.memory");

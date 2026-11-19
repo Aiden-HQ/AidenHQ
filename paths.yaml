@@ -41,7 +41,14 @@ paths:
       - modules/engine-*/
       - modules/channel-*/
       - modules/ai-reviewer/
-      - modules/codehost-github/
+      # The github module's code host part (its connections hold no App key and no git credential).
+      - modules/github/service/
+      - modules/github/checks/
+      - modules/github/schemas/
+      - modules/github/test/
+      - modules/github/module.yaml
+      - modules/github/package.json
+      - modules/github/README.md
       - modules/codehost-local/
       - modules/platform/
       - modules/grading/

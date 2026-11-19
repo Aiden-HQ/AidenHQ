@@ -17,7 +17,7 @@ import { startTidy } from "./tidy.ts";
 
 const env = process.env;
 const read = (f?: string) => (f && existsSync(f) ? readFileSync(f, "utf8").trim() : "");
-const log = (msg: string, f: Record<string, unknown> = {}) => console.log(JSON.stringify({ svc: "codehost-github", msg, ...f }));
+const log = (msg: string, f: Record<string, unknown> = {}) => console.log(JSON.stringify({ svc: "github", msg, ...f }));
 const key = read(env.CODEHOST_KEY_FILE);
 if (!key) throw new Error("codehost-github: CODEHOST_KEY_FILE is empty");
 const appDir = env.GITHUB_APP_DIR ?? "";

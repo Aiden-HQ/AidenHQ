@@ -59,8 +59,8 @@ test("repo-checkout: a role holder's job gets the code host's snapshot; no role,
   git(work, "push", "--quiet", bare, "main");
   const head = git(work, "rev-parse", "HEAD");
   const codehost = createCodehost({
-    grants: () => [{ module: "codehost-github", snapshot: { repos: ["*/*"] } }, { module: "codehost-local", snapshot: { repos: ["local/*"] } }], repos: () => ({ agentsOrgs: ["acme-agents", "local"] }),
-    kind: () => ({ module: "codehost-github", floor: 0, tools: [], executor: { url: `${host.url}/aidenhq/v1/executor`, auth_secret: "k" } }),
+    grants: () => [{ module: "github", snapshot: { repos: ["*/*"] } }, { module: "codehost-local", snapshot: { repos: ["local/*"] } }], repos: () => ({ agentsOrgs: ["acme-agents", "local"] }),
+    kind: () => ({ module: "github", floor: 0, tools: [], executor: { url: `${host.url}/aidenhq/v1/executor`, auth_secret: "k" } }),
     local: () => ({ snapshot: localSnapshot({ bare: (r) => join(root, "local", `${r.split("/")[1]}.git`) }), clone: async () => { throw new Error("unused"); } }),
     secret: () => "ch-key", resolver: { resolve: async (u) => ({ host: "127.0.0.1", port: Number(new URL(u).port), path: new URL(u).pathname }), forget: () => {} }, workspace: async () => { throw new Error("unused"); },
   });
@@ -76,7 +76,7 @@ test("repo-checkout: a role holder's job gets the code host's snapshot; no role,
   assert.equal(ok.status, 200);
   assert.equal(ok.headers.get("x-aidenhq-commit"), sha);
   assert.equal(await ok.text(), "TARBALL");
-  assert.deepEqual(asked, [{ auth: "Bearer ch-key", module: "codehost-github", repo: "ACME-agents/app", ref: sha }]);
+  assert.deepEqual(asked, [{ auth: "Bearer ch-key", module: "github", repo: "ACME-agents/app", ref: sha }]);
   assert.equal((await post("ag2", "j-b", { repo: "acme-agents/app", sha })).status, 403, "no role");
   assert.equal((await post("ag1", "j-a", { repo: "other-org/app", sha })).status, 403, "not the agents org");
   assert.equal((await post("ag1", "j-a", { repo: "acme-agents/app", sha: "main" })).status, 400, "a full sha only");

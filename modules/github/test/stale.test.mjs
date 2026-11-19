@@ -19,9 +19,9 @@ async function codehost(t, state) {
   const ex = await serve(async (req, res) => { if (!(await handler(req, res))) res.writeHead(404).end(); });
   t.after(() => ex.s.close());
   const executor = { url: `${ex.url}/aidenhq/v1/executor`, auth_secret: "codehost_github_token", rev: "r1" };
-  const kinds = { "codehost-github.push": { module: "codehost-github", floor: 0, tools: [], executor }, "codehost-github.merge": { module: "codehost-github", floor: 1, tools: [], executor } };
+  const kinds = { "github.push": { module: "github", floor: 0, tools: [], executor }, "github.merge": { module: "github", floor: 1, tools: [], executor } };
   const verdicts = [];
-  const k = await kernel(t, { secrets: { codehost_github_token: "ch-key" }, connections: {}, writes: kinds, reviewer: () => verdicts.shift(), modules: { modules: { "codehost-github": { token: "codehost_github_token" } } } });
+  const k = await kernel(t, { secrets: { codehost_github_token: "ch-key" }, connections: {}, writes: kinds, reviewer: () => verdicts.shift(), modules: { modules: { "github": { token: "codehost_github_token" } } } });
   handler = serveExecutor({
     plan: async (req) => plan(req, state.now, { target: "", sentence: "", diff: "" }),
     execute: async (rec) => (fx.executes.push(rec), { ok: true, text: "pushed" }),
@@ -31,7 +31,7 @@ async function codehost(t, state) {
   const approve = async (id) => (verdicts.push({ decision: "approve", reason: "fine", model: "~acme/model-a" }), { status: 200, json: await k.writes.review(id, { input: { model: "~acme/model-b", tier: 1 }, request: { card: {} } }) });
   const updateExecutor = (rev) => {
     const file = join(k.dir, "writes.json");
-    writeFileSync(file, JSON.stringify({ ...kinds, "codehost-github.push": { ...kinds["codehost-github.push"], executor: { ...executor, rev } } }));
+    writeFileSync(file, JSON.stringify({ ...kinds, "github.push": { ...kinds["github.push"], executor: { ...executor, rev } } }));
     utimesSync(file, new Date(), new Date(Date.now() + 5000));
   };
   return { k, fx, file, approve, updateExecutor };
@@ -44,7 +44,7 @@ const pushArgs = { only: [{ repo: "other/lib", branch: "agent/ACME-1/a", sha: sh
 test("an approved push that nothing moved runs once", async (t) => {
   const state = { now: outsidePush() };
   const { k, fx, file, approve } = await codehost(t, state);
-  const r = await file("codehost-github.push", pushArgs);
+  const r = await file("github.push", pushArgs);
   assert.deepEqual({ tier: r.tier, state: r.state }, { tier: 1, state: "review" });
   assert.deepEqual(k.records.get(r.id).targets, { "other/lib agent/ACME-1/a": { repo: "other/lib", ref: "agent/ACME-1/a", commit: sha("a"), base_sha: sha("b") } });
   await approve(r.id);
@@ -56,7 +56,7 @@ test("A8: the workspace commit or the base moving after approval makes the push 
   for (const moved of [{ sha: sha("c") }, { base: sha("d") }]) {
     const state = { now: outsidePush() };
     const { k, fx, file, approve } = await codehost(t, state);
-    const r = await file("codehost-github.push", pushArgs);
+    const r = await file("github.push", pushArgs);
     state.now = outsidePush(moved);
     await approve(r.id);
     await until(() => k.records.get(r.id).state === "stale");
@@ -68,7 +68,7 @@ test("A8: a product PR's head moving after its merge was approved makes the merg
   const pr = (head) => ({ ...repos, requester: { platform: true }, prs: [{ repo: "acme/aidenhq", number: 7, head, files: ["README.md"], checks: [{ name: "ci", ok: true }], headMatches: true, ownHead: true }] });
   const state = { now: pr(sha("e")) };
   const { k, fx, file, approve } = await codehost(t, state);
-  const r = await file("codehost-github.merge", { prs: [{ repo: "acme/aidenhq", number: 7, url: "https://github.com/acme/aidenhq/pull/7", head: sha("e") }] });
+  const r = await file("github.merge", { prs: [{ repo: "acme/aidenhq", number: 7, url: "https://github.com/acme/aidenhq/pull/7", head: sha("e") }] });
   assert.deepEqual({ tier: r.tier, state: r.state }, { tier: 1, state: "review" });
   state.now = pr(sha("f"));
   await approve(r.id);
@@ -79,7 +79,7 @@ test("A8: a product PR's head moving after its merge was approved makes the merg
 test("A9: the code host's executor updated between approval and execution makes the push stale; it never runs", async (t) => {
   const state = { now: outsidePush() };
   const { k, fx, file, approve, updateExecutor } = await codehost(t, state);
-  const r = await file("codehost-github.push", pushArgs);
+  const r = await file("github.push", pushArgs);
   assert.equal(k.records.get(r.id).executor.rev, "r1");
   updateExecutor("r2");
   await approve(r.id);
@@ -88,6 +88,6 @@ test("A9: the code host's executor updated between approval and execution makes 
 });
 
 test("the plan refuses what code refuses: the instance repo, and an agents-org merge with red checks", () => {
-  assert.throws(() => plan({ kind: "codehost-github.push", args: {} }, { ...repos, branches: [{ repo: repos.instanceRepo, branch: "x", sha: sha("a"), files: [] }] }), /only through apply/);
-  assert.throws(() => plan({ kind: "codehost-github.merge", args: {} }, { ...repos, prs: [{ repo: "acme-agents/app", number: 1, files: ["a"], checks: [{ name: "ci", ok: false }], headMatches: true, ownHead: true }] }), /failed on the head/);
+  assert.throws(() => plan({ kind: "github.push", args: {} }, { ...repos, branches: [{ repo: repos.instanceRepo, branch: "x", sha: sha("a"), files: [] }] }), /only through apply/);
+  assert.throws(() => plan({ kind: "github.merge", args: {} }, { ...repos, prs: [{ repo: "acme-agents/app", number: 1, files: ["a"], checks: [{ name: "ci", ok: false }], headMatches: true, ownHead: true }] }), /failed on the head/);
 });

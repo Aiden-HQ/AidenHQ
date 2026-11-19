@@ -12,7 +12,7 @@
 // job (check_jobs in module.yaml, run in a credential-free box from a snapshot) with a receipt the kernel signed.
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { planParts, plan as planRules } from "../../codehost-github/service/src/plan.mjs";
+import { planParts, plan as planRules } from "../../github/service/src/plan.mjs";
 import { DEFAULT_CHURN_EXCLUDE, churnFromGit } from "../../../kernel/sdk/src/churn.ts";
 import type { FactIn } from "../../../kernel/sdk/src/kernel-client.ts";
 import { IDENTITY, bareOf, fail, git, ingest } from "./git.ts";

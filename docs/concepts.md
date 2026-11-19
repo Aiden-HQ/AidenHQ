@@ -43,7 +43,7 @@ and optional roles. Every tool call is checked in code against the grants table 
 (`kernel/src/proxy.ts`), using the caller's Paperclip identity. Roles gate a few extra powers, such as fleet
 tools or deploying apps.
 
-**Code host.** `modules/codehost-github` owns every git write: pushes, pull requests and merges, and checks each in code
+**Code host.** `modules/github` owns every git write: pushes, pull requests and merges, and checks each in code
 before it happens. Engineer coding jobs run in agent computers. See [design/conversational-engineers.md](design/conversational-engineers.md).
 
 **Approvals and tiers.** Every write that matters (push, PR, merge, fleet change, app deploy) is an *approval record*

@@ -283,7 +283,7 @@ export function createService(o: Options) {
     },
     async execute(rec) {
       const a = rec.args ?? {};
-      const action = rec.kind.replace(/^codehost-github\./, "");
+      const action = rec.kind.replace(/^github\./, "");
       const done: string[] = [];
       if (action === "push" || action === "pr") {
         for (const b of a.only) {

@@ -38,9 +38,9 @@ agent, never to the owner.
 - **Authority-expanding goes to the panel.** A change is authority-expanding when it weakens an approval,
   authentication, sandbox or secret control, changes who can approve, widens credentials, grants, public access, data
   destinations or spending, or edits the gate's own core. Code decides most of it (`GATE_CORE` in the platform check,
-  `modules/platform/src/check.mjs`, the git rules in `modules/codehost-github/src/plan.mjs`, the module and apply rules in
+  `modules/platform/src/check.mjs`, the git rules in `modules/github/src/plan.mjs`, the module and apply rules in
   `tiers.mjs`, `panel: true`): the runner's `tiers`, `review-request`, `siblings`, `apply`, `netjail`, `state`, `config`,
-  `main`, the code host module (`modules/codehost-github/`: the GitHub App, git, workspaces, the merge gate and the git
+  `main`, the code host module (`modules/github/`: the GitHub App, git, workspaces, the merge gate and the git
   rules), the platform check, the merge queue, and what a job can reach: `engines` (its sandbox, mounts and env),
   `files`, `commands` (repo access, the owner's words, private reads) and `scripts/computers.mjs`; the AI reviewer module (`modules/ai-reviewer/`: its service, policy, eval cases and
   `scripts/reviewer-eval.mjs`); `agent-auth.ts`, `scripts/modules.mjs`, `scripts/paperclip-setup.mjs` and
@@ -205,8 +205,8 @@ and prints the pass rate. `autonomy: full` is only appropriate when it passes (a
 failure even though it escalates safely. Every false reject the reviewer makes in use is added as a new case, and the
 score must keep passing.
 
-**The eval-receipt gate** (`modules/codehost-github/service/src/evalgate.ts`, owner 2026-11-16). Reviewer code reaches the fleet only on a
-passing receipt (at least 95% of the base cases, no attack approved). The reviewer's own code is the paths `REVIEWER_CODE` lists in `modules/codehost-github/service/src/evalgate.ts` (the single list). The module is the product's own `modules/ai-reviewer` (again since 2026-11-18; it lived
+**The eval-receipt gate** (`modules/github/service/src/evalgate.ts`, owner 2026-11-16). Reviewer code reaches the fleet only on a
+passing receipt (at least 95% of the base cases, no attack approved). The reviewer's own code is the paths `REVIEWER_CODE` lists in `modules/github/service/src/evalgate.ts` (the single list). The module is the product's own `modules/ai-reviewer` (again since 2026-11-18; it lived
 in the official modules repo from 5b), so the eval runs a product commit's `modules/` tree, judged by an earlier one:
 
 - a product PR that changes the reviewer's code: its head, judged by its base branch, receipt for its head. A PR that

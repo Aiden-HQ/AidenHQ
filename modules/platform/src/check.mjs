@@ -42,7 +42,7 @@ function productParts(kind, item, facts) {
   if (!Array.isArray(facts.gateCore) || !facts.gateCore.length) return [REJECT("gate-list-unknown", "the product's gate list (facts.gateCore) wasn't given: the product and the official modules are out of step; update the product")];
   const core = [...facts.gateCore.map((g) => new RegExp(g)), ...GATE_CORE];
   // A Dependabot pin bump: the reviewer's alone when every condition holds; otherwise the file rules below.
-  if (kind === "codehost-github.merge" && item.dependabot === true) {
+  if (kind === "github.merge" && item.dependabot === true) {
     const d = dependabotMergePart(item, `${item.repo}#${item.number ?? "?"}`);
     if (d.tier === 1) return [d];
   }
@@ -69,8 +69,10 @@ export const GATE_CORE = [
   // The code host (privileged git-credential, lean-core 3d): the GitHub App's tokens and their narrowing, host git with the
   // hardened arguments on agent clones, task workspaces and reviewed refs, the merge gate (its only GitHub writes) and the
   // git rules that tier every push, PR, merge and create_repo. The platform check (this file: the gate's core, the
-  // owner-approval records, Dependabot pin-only and supply chain).
-  /^modules\/codehost-github\//,
+  // owner-approval records, Dependabot pin-only and supply chain). The github module's code host part only: its connections
+  // (github-mcp, the official MCP) hold no App key and no git credential.
+  /^modules\/github\/(service|checks|schemas|test)\//,
+  /^modules\/github\/(module\.yaml|package\.json|README\.md)$/,
   // The on-server code host: bare repos, change-request refs, the checks receipt and the compare-and-swap merge.
   /^modules\/codehost-local\//,
   /^modules\/platform\//,
@@ -104,7 +106,13 @@ export const GATE_CORE = [
 export const GATE_DIRS = [
   "modules/grading/",
   "modules/ai-reviewer/",
-  "modules/codehost-github/",
+  "modules/github/service/",
+  "modules/github/checks/",
+  "modules/github/schemas/",
+  "modules/github/test/",
+  "modules/github/module.yaml",
+  "modules/github/package.json",
+  "modules/github/README.md",
   "modules/codehost-local/",
   "modules/platform/",
   "modules/engineering/module.yaml",

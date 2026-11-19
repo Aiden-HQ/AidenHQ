@@ -28,7 +28,7 @@ test("outside the agents org and the product repo: PR-only (no App merge, no wor
   assert.deepEqual(pushPermissions(true, "other/lib", ORG, PRODUCT), { contents: "write" }, "no Workflows: write outside");
   assert.equal(mergePermissions("other/lib", PRODUCT).workflows, undefined);
   assert.equal(mergePermissions(PRODUCT, PRODUCT).workflows, "write", "the product repo's approved merges only");
-  assert.throws(() => plan({ kind: "codehost-github.push", args: {} }, { agentsOrg: ORG, productRepo: PRODUCT, instanceRepo: `${ORG}/aidenhq-instance`, branches: [{ repo: "other/lib", branch: "main", defaultBranch: "main", sha: "a".repeat(40), files: ["a"] }] }), /outside the agents org/);
+  assert.throws(() => plan({ kind: "github.push", args: {} }, { agentsOrg: ORG, productRepo: PRODUCT, instanceRepo: `${ORG}/aidenhq-instance`, branches: [{ repo: "other/lib", branch: "main", defaultBranch: "main", sha: "a".repeat(40), files: ["a"] }] }), /outside the agents org/);
 });
 
 test("a merge-queue write mints no App token outside our repos, and one single-repo token inside them", async () => {

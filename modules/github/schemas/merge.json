@@ -1,5 +1,5 @@
 {
-  "title": "codehost-github.merge: squash-merge these PRs, each only at this head and once its checks are green.",
+  "title": "github.merge: squash-merge these PRs, each only at this head and once its checks are green.",
   "type": "object",
   "additionalProperties": false,
   "required": [

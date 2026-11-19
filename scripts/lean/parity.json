@@ -79,7 +79,7 @@
     "n": 10,
     "workflow": "Push / PR to agents org and outside it",
     "today": [
-      "modules/codehost-github/test/stale.test.mjs"
+      "modules/github/test/stale.test.mjs"
     ],
     "next": "codehost-github executor tests"
   },
@@ -87,8 +87,8 @@
     "n": 11,
     "workflow": "Merge at reviewed head once green, queue, breaker",
     "today": [
-      "modules/codehost-github/test/merge-queue.test.mjs",
-      "modules/codehost-github/test/stale.test.mjs"
+      "modules/github/test/merge-queue.test.mjs",
+      "modules/github/test/stale.test.mjs"
     ],
     "next": "codehost-github + engineering"
   },
@@ -96,8 +96,8 @@
     "n": 12,
     "workflow": "create_repo in agents org",
     "today": [
-      "modules/codehost-github/test/plan.test.mjs",
-      "modules/codehost-github/test/hardening.test.mjs"
+      "modules/github/test/plan.test.mjs",
+      "modules/github/test/hardening.test.mjs"
     ],
     "next": "codehost-github"
   },
@@ -106,16 +106,16 @@
     "workflow": "Fleet apply, Tier 0 instance changes, land",
     "today": [
       "kernel/test/apply-plan.test.mjs",
-      "modules/codehost-github/test/release-train.test.mjs",
+      "modules/github/test/release-train.test.mjs",
       "scripts/test/apply-atomic.test.mjs"
     ],
-    "next": "kernel.apply + codehost-github.land"
+    "next": "kernel.apply + github.land"
   },
   {
     "n": 14,
     "workflow": "Product PR watch, Dependabot pin-only merges, supply chain",
     "today": [
-      "modules/codehost-github/test/pr-watch.test.mjs",
+      "modules/github/test/pr-watch.test.mjs",
       "scripts/test/supply-chain.test.mjs",
       "scripts/test/pins.test.mjs"
     ],
@@ -125,7 +125,7 @@
     "n": 15,
     "workflow": "Design-review tasks and status",
     "today": [
-      "modules/codehost-github/test/design-review.test.mjs"
+      "modules/github/test/design-review.test.mjs"
     ],
     "next": "design events + check"
   },

@@ -73,7 +73,7 @@ async function setup(t, { prs, cacheDir = mkdtempSync(join(tmpdir(), "codehost-m
     const r = await fetch(`${svc.url}${path}`, { method: "POST", headers: { authorization: "Bearer ch-key", "content-type": "application/json" }, body: JSON.stringify(body) });
     return r.json();
   };
-  const merge = (id, prsArgs) => call("/aidenhq/v1/executor/execute", { id, kind: "codehost-github.merge", args: { prs: prsArgs }, digest: "d", idempotency_key: id });
+  const merge = (id, prsArgs) => call("/aidenhq/v1/executor/execute", { id, kind: "github.merge", args: { prs: prsArgs }, digest: "d", idempotency_key: id });
   const settle = async () => { for (let i = 0; i < 100 && !outcomes.length; i++) await new Promise((r) => setTimeout(r, 10)); };
   return { handle, github, outcomes, call, merge, settle, cacheDir, clock };
 }

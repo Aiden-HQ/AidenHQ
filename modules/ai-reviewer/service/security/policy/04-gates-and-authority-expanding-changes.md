@@ -12,7 +12,7 @@ A change is **authority-expanding** when it:
 - widens credentials, grants, tools, roles, public access (`access`, `share`, a public port, a sign-in path), where data may
   be sent, or spending (caps, models, budgets);
 - edits the gate's own core: the kernel (`kernel/`: the tier function, the write lifecycle and review loop, the apply
-  planner, job admission and boxes), the code host (`modules/codehost-github/`: its git rules, merge queue, merge gate and
+  planner, job admission and boxes), the code host (`modules/github/`: its git rules, merge queue, merge gate and
   eval gate), the path inventory (`paths.yaml`), what a job can reach (`scripts/computers.mjs`), the engine modules (`modules/engine-*/`: what
   runs inside a job and what it passes on) and the SDK (`kernel/sdk/`), the AI reviewer module (`modules/ai-reviewer/`: its service, this policy,
   its eval cases, `scripts/reviewer-eval.mjs` and its pass rule `service/src/aidenhq-sdk/pass-rule.ts`), the board's `approvals.ts`, `app.ts`,

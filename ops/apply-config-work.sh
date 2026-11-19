@@ -521,6 +521,20 @@ switchOver() {
     stopBoard
     echo "grades: $(node ops/grades-move.mjs "$data") (data/board/board.sqlite -> data/modules/grading/grades/)"
   fi
+  # codehost-github became the github module's code host part (docs/design/connections-simple.md): its data dir (cache clones,
+  # merge queue, PR-task map, release train) moves once, its old container stopped first so nothing writes mid-move; compose
+  # then starts the new one on it. Compile has just made the new dir's empty subdirs, which give way.
+  if [ -d "$data/modules/codehost-github" ]; then
+    docker ps -q --filter label=com.docker.compose.service=codehost-github-codehost-github | xargs -r docker stop >/dev/null
+    mkdir -p "$data/modules/github"
+    for f in "$data/modules/codehost-github"/* "$data/modules/codehost-github"/.[!.]*; do
+      [ -e "$f" ] || continue
+      t="$data/modules/github/$(basename "$f")"
+      [ -d "$t" ] && rmdir "$t" 2>/dev/null
+      mv "$f" "$t"
+    done
+    rmdir "$data/modules/codehost-github" && echo "code host data: data/modules/codehost-github -> data/modules/github"
+  fi
   if ! cmp -s ops/units/aidenhq-kernel.service "$kn"; then
     cp ops/units/aidenhq-kernel.service "$kn" && systemctl --user daemon-reload && systemctl --user enable --quiet aidenhq-kernel \
       && systemctl --user restart aidenhq-kernel && echo "kernel unit installed/updated"

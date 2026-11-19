@@ -139,7 +139,7 @@ knows the caller's module from its verified caller assertion and checks the type
 A module fact's actor is `module:<name>`, unless it links a job (`data.job`) or a task with a known PR record, in which
 case the kernel resolves the agent from that job. Every module fact names its `task` when it has one:
 
-- `codehost-github` (task from the `codehost-github.pr` record that opened the PR, kept in `pr-tasks.json`): `pr.opened`, `pr.check_completed` (per check run: name, conclusion, started/completed),
+- `codehost-github` (task from the `github.pr` record that opened the PR, kept in `pr-tasks.json`): `pr.opened`, `pr.check_completed` (per check run: name, conclusion, started/completed),
   `pr.merged`, `work.waiting` for each merge-queue wait (`reason`: checks, design_review, eval, retry, conflict) and its
   end.
 - `grading`: `grade.verdict` (pass/fail, attempt, `reasonCode`), `work.waiting` for its retry ladder.

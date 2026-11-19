@@ -1,5 +1,5 @@
 {
-  "title": "codehost-github.create_repo: a new private repository in the agents org.",
+  "title": "github.create_repo: a new private repository in the agents org.",
   "type": "object",
   "additionalProperties": false,
   "required": [

@@ -34,7 +34,7 @@ test("a module's task goes to the agent holding the role, once per source, marke
   const db = new DatabaseSync(":memory:");
   const rubrics = [];
   const tasks = createModuleTasks({ db, owner, agents: () => ({ "a-cos": { roles: ["fleet-admin"] }, [PE]: { roles: ["platform-engineer"] } }), rubric: async (task, module, b) => void rubrics.push({ id: task.identifier, module, ...b }) });
-  const who = { codehost: { kind: "module", module: "codehost-github", roles: ["kernel.tasks"] }, other: { kind: "module", module: "other", roles: [] } };
+  const who = { codehost: { kind: "module", module: "github", roles: ["kernel.tasks"] }, other: { kind: "module", module: "other", roles: [] } };
   const bp = createBackplane({ whoami: async (k) => who[k] ?? Promise.reject(new Error("no")), asserter: { jwks: {} }, proxy: async () => {}, cp: async () => {}, grantsFile: () => ({}), tasks });
   const { s, url } = await serve(bp);
   t.after(() => s.close());
@@ -57,7 +57,7 @@ test("a module's task goes to the agent holding the role, once per source, marke
   const issue = [...made.values()][0];
   assert.equal(issue.assigneeAgentId, PE);
   assert.equal(issue.status, "todo");
-  assert.match(issue.description, /<!-- source:dependabot:acme\/app\/7 -->\n<!-- aidenhq-module:codehost-github -->$/);
+  assert.match(issue.description, /<!-- source:dependabot:acme\/app\/7 -->\n<!-- aidenhq-module:github -->$/);
   assert.doesNotMatch(issue.description, /<!-- source:forged -->/, "the module's text can't add a marker");
   // A rubric asks the kernel to file it with grading, as the module holding kernel.tasks; a module without the role gets nothing filed.
   const graded = { ...req, source: "graded:1", deliverable: { kind: "issue", ref: "acme/app#7" }, rubric: ["closed", "cites a merged PR", "says why"] };
@@ -65,21 +65,21 @@ test("a module's task goes to the agent holding the role, once per source, marke
   assert.deepEqual(rubrics, [], "a forged rubric from a module without kernel.tasks is refused before anything is filed");
   assert.equal((await file("codehost", { ...graded, rubric: undefined })).status, 400, "a deliverable without its rubric is refused");
   assert.equal((await file("codehost", graded)).status, 200);
-  assert.deepEqual(rubrics.map((r) => [r.module, r.deliverable.kind, r.rubric.length]), [["codehost-github", "issue", 3]]);
+  assert.deepEqual(rubrics.map((r) => [r.module, r.deliverable.kind, r.rubric.length]), [["github", "issue", 3]]);
   // Graded status is the kernel's own row, not the task's text: a dedup hit on a task this module didn't file graded takes no rubric.
   const gradedTask = [...made.values()].find((i) => i.description.includes("source:graded:1"));
-  assert.equal(db.prepare("SELECT module FROM graded_tasks WHERE task = ?").get(gradedTask.id).module, "codehost-github");
+  assert.equal(db.prepare("SELECT module FROM graded_tasks WHERE task = ?").get(gradedTask.id).module, "github");
   db.prepare("DELETE FROM graded_tasks WHERE task = ?").run(gradedTask.id);
   assert.equal((await file("codehost", graded)).status, 409, "a rubric is never attached to a task that wasn't filed graded");
   assert.equal(rubrics.length, 1);
   // It closes its own task, tagged so the line wakes nobody; another module can't.
   const close = (key, b) => fetch(`${url}/v1/tasks/${issue.id}/close`, { method: "POST", headers: { authorization: `Bearer ${key}` }, body: JSON.stringify(b) });
-  const otherTasks = { ...who.other, roles: ["kernel.tasks"], module: "github" };
-  who.github = otherTasks;
-  assert.equal((await close("github", { status: "done", body: "merged" })).status, 403);
+  const otherTasks = { ...who.other, roles: ["kernel.tasks"], module: "jira" };
+  who.jira = otherTasks;
+  assert.equal((await close("jira", { status: "done", body: "merged" })).status, 403);
   assert.equal((await close("codehost", { status: "done", body: "acme/app#7 is merged or closed: nothing left to do." })).status, 200);
   assert.equal(issue.status, "done");
-  assert.match(issue.closing, /<!-- aidenhq:job=codehost-github kind=status -->$/);
+  assert.match(issue.closing, /<!-- aidenhq:job=github kind=status -->$/);
 });
 
 /**
@@ -110,8 +110,8 @@ test("the code host closes its own stranded release bump, and no other module's 
   };
   const tasks = createModuleTasks({ db: new DatabaseSync(":memory:"), owner, agents: () => ({ [PE]: { roles: ["platform-engineer"] } }), applies: (task) => cards.get(task) ?? [], ownerUser: async () => OWNER });
   const who = {
-    codehost: { kind: "module", module: "codehost-github", roles: ["kernel.tasks"] },
-    github: { kind: "module", module: "github", roles: ["kernel.tasks"] },
+    codehost: { kind: "module", module: "github", roles: ["kernel.tasks"] },
+    jira: { kind: "module", module: "jira", roles: ["kernel.tasks"] },
   };
   const bp = createBackplane({ whoami: async (k) => who[k] ?? Promise.reject(new Error("no")), asserter: { jwks: {} }, proxy: async () => {}, cp: async () => {}, grantsFile: () => ({}), tasks });
   const { s, url } = await serve(bp);
@@ -143,7 +143,7 @@ test("the code host closes its own stranded release bump, and no other module's 
   assert.equal((await close("codehost", bump.id, { uncarded: true })).status, 200, "the runner's never-carded bump is settled by the sweep's own path");
   assert.equal(bump.status, "done");
   const otherUncarded = seed("release:instance:1795022489867", 8);
-  assert.equal((await close("github", otherUncarded.id, { uncarded: true })).status, 403, "never another module");
+  assert.equal((await close("jira", otherUncarded.id, { uncarded: true })).status, 403, "never another module");
 
   // A forged marker on a task the control plane created after the runner retired is refused: the stamp is not the proof.
   const forged = seed("release:instance:1795022489866", 11, "2026-11-19T10:00:00.000Z");
@@ -171,21 +171,21 @@ test("the code host closes its own stranded release bump, and no other module's 
   const other = seed("dependabot:acme/app/7", 2);
 
   const carded = seed("release:instance:1795025189923", 3);
-  card(carded.id, "codehost-github");
+  card(carded.id, "github");
   assert.equal((await close("codehost", carded.id)).status, 200, "a bump whose only card is the code host's");
 
   // A 40-hex (train-era) bump with a code host card closes the same way: the family covers both stamps.
   const sha = seed(`release:instance:${"d".repeat(40)}`, 10);
-  card(sha.id, "codehost-github");
+  card(sha.id, "github");
   assert.equal((await close("codehost", sha.id)).status, 200, "a train-era bump whose card is the code host's");
 
   const foreign = seed("release:instance:1795025189924", 4);
-  card(foreign.id, "github");
+  card(foreign.id, "jira");
   assert.equal((await close("codehost", foreign.id)).status, 403, "never a card another module filed");
   assert.equal(foreign.status, "in_review", "a refused close changes nothing");
 
   const mixed = seed("release:instance:1795005121449", 5);
-  card(mixed.id, "codehost-github", "github");
+  card(mixed.id, "github", "jira");
   assert.equal((await close("codehost", mixed.id)).status, 403, "one foreign card among them is enough to refuse");
 
   // A task an agent created is never the code host's, whatever its marker says.
@@ -197,7 +197,7 @@ test("the code host closes its own stranded release bump, and no other module's 
   // listing skips it even though the control plane's search matched its release marker.
   const twoFamilies = seed("release:instance:1795025189925", 17);
   twoFamilies.description = `Moves the pin.\n\n<!-- source:release:instance:1795025189925 -->\n<!-- source:dependabot:acme/app/9 -->`;
-  card(twoFamilies.id, "codehost-github");
+  card(twoFamilies.id, "github");
   assert.equal((await close("codehost", twoFamilies.id)).status, 403, "a task with another family's source marker is never the train's");
   const twoFamiliesUncarded = seed("release:instance:1795022489869", 18);
   twoFamiliesUncarded.description = `Moves the pin.\n\n<!-- source:release:instance:1795022489869 -->\n<!-- source:review:head:abc -->`;
@@ -212,5 +212,5 @@ test("the code host closes its own stranded release bump, and no other module's 
   assert.ok(!found.tasks.some((i) => i.id === twoFamilies.id || i.id === twoFamiliesUncarded.id), "a task with a second source family is never listed");
   assert.ok(!found.tasks.some((i) => i.id === other.id || i.id === prose.id || i.id === bump.id || i.id === carded.id || i.id === sha.id), "another family, prose, or a closed task is never listed");
   assert.equal((await list("codehost", "dependabot:")).status, 400, "no other family is listable");
-  assert.equal((await list("github", "release:instance:")).status, 400, "nor by another module");
+  assert.equal((await list("jira", "release:instance:")).status, 400, "nor by another module");
 });

@@ -189,7 +189,7 @@ const rank = (p) => p.tier * 2 + (p.panel ? 1 : 0);
  */
 export const MAX_DIFF = 80_000;
 export function plan({ kind, args }, state, facts) {
-  const action = String(kind).replace(/^codehost(-github)?\./, "");
+  const action = String(kind).replace(/^(codehost|github)\./, "");
   const parts = planParts(action, state).flat();
   if (!parts.length) throw Object.assign(new Error("nothing recognised in the request"), { rule: "unrecognised" });
   const refused = parts.find((p) => p.reject);

@@ -350,7 +350,7 @@ function resolveEnabled(all, wanted) {
  * the GitHub agents org once GitHub is connected (the host's AIDENHQ_GITHUB_AGENTS_ORG, written by ops/github-app-setup.mjs
  * beside the App's key), and `local` (this server's repos) while codehost-local is on.
  */
-const codehostOrgs = (enabled, settings) => [...(enabled.includes("codehost-github") && settings.agents_org ? [{ org: settings.agents_org, host: "github" }] : []), ...(enabled.includes("codehost-local") ? [{ org: "local", host: "local" }] : [])];
+const codehostOrgs = (enabled, settings) => [...(enabled.includes("github") && settings.agents_org ? [{ org: settings.agents_org, host: "github" }] : []), ...(enabled.includes("codehost-local") ? [{ org: "local", host: "local" }] : [])];
 
 /**
  * config/gateway.json `models`, by id: every enabled module's `models:` entries (spec §5.12). USD per million tokens, each the
@@ -1002,7 +1002,8 @@ export function compile(productDir, instanceDir, { revision, bundleState, oldBun
     if (host in (base.services ?? {}) || !Object.values(serviceModule).some((v) => v.module === c.module)) continue;
     const key = serviceOf(c.module, host) ?? fail(`connection ${name}: ${host} isn't one of module ${c.module}'s services`);
     const svc = compose.services[key];
-    if (owners[key]) fail(`connections ${owners[key]} and ${name} share the service ${key}`);
+    // One service may serve several connections of its own module (github-mcp: AidenHQ's tools and GitHub's own MCP, one sign-in).
+    if (owners[key] && paperclip.mcp_servers[owners[key]].module !== c.module) fail(`connections ${owners[key]} and ${name} share the service ${key}`);
     owners[key] = name;
     svc.environment = { PAPERCLIP_URL: "http://paperclip:3100", ...svc.environment, AIDENHQ_MODULE: c.module, AIDENHQ_KERNEL_URL: `\${AIDENHQ_KERNEL_URL:-${KERNEL_URL}}` };
   }
@@ -1229,7 +1230,10 @@ export function kernelModuleTable(defs, settings = {}) {
   for (const [name, def] of Object.entries(defs)) {
     const roles = [def.roles?.requests ?? []].flat().map((r) => String(r).replace(/\?$/, "")).filter((r) => r.startsWith("kernel.") || moduleRoles.has(r));
     const privileged = [def.privileged ?? []].flat().map(String);
-    const token = `${name.replace(/-/g, "_")}_token`;
+    // A module that absorbed another (`replaces`) keeps that one's token when it generates it, so the vault's value and the
+    // kernel's knowledge of the module carry over (github keeps codehost-github's codehost_github_token: github_token is the owner's).
+    const tokens = [name, ...[def.replaces ?? []].flat().map(String)].map((n) => `${n.replace(/-/g, "_")}_token`);
+    const token = tokens.find((t) => (def.generated_secrets ?? []).includes(t)) ?? tokens[0];
     const ch = def.providers?.channel;
     if (ch != null) {
       if (typeof ch !== "object" || Array.isArray(ch)) fail(`module ${name}: providers.channel is a map ({} or {stamp, stale, transport, credentials})`);
@@ -1253,7 +1257,7 @@ export function kernelModuleTable(defs, settings = {}) {
       try { validate(CODEHOST_SCHEMA, codehost, "codehost"); } catch (err) { fail(`module ${name}: ${err.message}`); }
     }
     const { facts, stages, journeys } = flowDecls(name, def, declared);
-    // Two modules may declare one journey (codehost-github and codehost-local both draw `pr`): only the same declaration.
+    // Two modules may declare one journey (github and codehost-local both draw `pr`): only the same declaration.
     for (const j of journeys ?? []) {
       if (seen.has(j.name) && JSON.stringify(seen.get(j.name).j) !== JSON.stringify(j)) fail(`module ${name}: journey ${j.name} differs from module ${seen.get(j.name).name}'s (one journey, one declaration)`);
       seen.set(j.name, { name, j });

@@ -15,7 +15,7 @@ Line numbers are at product `26a5bd5e` and modules `b2b31f1` (`modules/` is the 
 
 | Where | What assumes GitHub |
 |---|---|
-| `main.mjs:23-24,37,40,63`, `tiers.mjs:13`, `apply.ts:8`, `evidence.ts:6-7`, `evalgate.ts:28`, `files.ts:7`, `progress.ts:6`, `primer.ts:8` | Static imports of `modules/codehost-github/src/*`: git, App tokens, workspace, merge gate, repos, plan. These stay valid when the module leaves the bundle, because materialize copies all modules. |
+| `main.mjs:23-24,37,40,63`, `tiers.mjs:13`, `apply.ts:8`, `evidence.ts:6-7`, `evalgate.ts:28`, `files.ts:7`, `progress.ts:6`, `primer.ts:8` | Static imports of `modules/github/src/*`: git, App tokens, workspace, merge gate, repos, plan. These stay valid when the module leaves the bundle, because materialize copies all modules. |
 | `main.mjs:78-108` | The GitHub App client; `appFor` decides per repo between the App and the "old path" (host `gh` login plus deploy keys). |
 | `main.mjs:87,95,4714` | `gho`/`ghoMerge`/`findRealGh`: every read and write shells out to `gh`. |
 | `main.mjs:4463-4479` (`missingRepo`, `addRepo`) | The clone seam: the source is `repo_sources[slug]`, else the App URL, else the default `git@github.com:` (`codehost-github/src/git.mjs:252`). A repo in `repo_sources` skips the existence check. |

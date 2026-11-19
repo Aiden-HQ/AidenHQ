@@ -15,7 +15,7 @@ name: ci
 on:
   pull_request:
   push:
-    # merge-train/<n>: the merge queue's trains (modules/codehost-github merge-gate.mjs), main plus the PRs it tests together,
+    # merge-train/<n>: the merge queue's trains (modules/github merge-gate.mjs), main plus the PRs it tests together,
     # made in one push at the finished commit (they are built on merge-build/<n>, which runs nothing).
     branches: [main, "merge-train/**"]
 
@@ -404,7 +404,7 @@ jobs:
   # The one result a merge waits for: every job above passed (packages, board and image-scan jobs may
   # be skipped: not a pull request, or the change doesn't touch them). Jobs that
   # need another appear only once it finishes, so without this a PR can look all green for a moment before its tests
-  # exist; the code host treats this check as required once the base branch has it (modules/codehost-github/service/src/merge-gate.mjs withGate).
+  # exist; the code host treats this check as required once the base branch has it (modules/github/service/src/merge-gate.mjs withGate).
   ci-required:
     if: always()
     needs: [checks, policy, packages, modules, board, image-scan]

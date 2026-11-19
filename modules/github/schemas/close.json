@@ -1,5 +1,5 @@
 {
-  "title": "codehost-github.close: close these PRs.",
+  "title": "github.close: close these PRs.",
   "type": "object",
   "additionalProperties": false,
   "required": [
