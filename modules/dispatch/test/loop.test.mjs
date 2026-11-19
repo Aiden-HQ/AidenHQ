@@ -378,3 +378,27 @@ test("a wake the kernel refuses is dropped; a transient failure keeps it; a job 
   await k.dispatch.tick();
   assert.deepEqual(acked, ["j1"], "the unpostable outcome is acknowledged once");
 });
+
+test("a refused run on a task its parent waits on isn't blocked on the parent (a cycle); the asker still hears", async () => {
+  const parent = { id: "p1", identifier: "WOR-10", status: "blocked" };
+  const k = fake({ task: { id: "t1", identifier: "WOR-3", title: "Create hello", status: "todo", assigneeAgentId: "eng", createdByAgentId: "cos", parentId: "p1", blocks: [{ id: "p1" }] }, tasks: { p1: parent } });
+  k.jobs.set("j1", { id: "j1", task: "t1", agent: "eng", state: "done", exit: 0, final: "Could not publish.", refused: "publish: no such repo", session: null, timedOut: false, at: 1, ended: 1, acked: false });
+  await k.dispatch.tick();
+  assert.deepEqual(k.posts.filter((p) => p.kind === "status"), []);
+  assert.match(k.wakes[0].text, /WOR-3 is blocked\.\*\*[^]*publish: no such repo/);
+  assert.equal(k.jobs.get("j1").acked, true);
+});
+
+test("an outcome the kernel can't post yet is retried less often each time, not every tick", async () => {
+  let t = 0;
+  const k = fake({ task: { id: "t1", identifier: "WOR-1", title: "Fix", status: "todo", assigneeAgentId: "eng", createdByUserId: "u1" } });
+  k.dispatch = createDispatch({ kernel: k.kernel, db: new DatabaseSync(":memory:"), owner: "Dana", now: () => t });
+  k.jobs.set("j1", { id: "j1", task: "t1", agent: "eng", state: "done", exit: 0, final: "Done.", session: null, timedOut: false, at: 1, ended: 1, acked: false });
+  let tries = 0;
+  k.kernel.post = async () => { tries++; throw new KernelError(502, "the post action answered 502"); };
+  for (t = 0; t < 60_000; t += 5_000) await k.dispatch.tick();
+  assert.equal(tries, 3, "at 0, 15 s and 45 s, not every 5 s tick");
+  k.kernel.post = async () => {};
+  for (; t <= 120_000; t += 5_000) await k.dispatch.tick();
+  assert.equal(k.jobs.get("j1").acked, true, "it lands once the post goes through");
+});

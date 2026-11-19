@@ -31,7 +31,10 @@ type Log = (msg: string, f?: Record<string, unknown>) => void;
 /** A kernel answer that retrying never changes: a refusal (4xx, except 429's "busy") or an agent the kernel holds no key for. */
 const permanent = (e: unknown): e is KernelError => e instanceof KernelError && ((e.status >= 400 && e.status < 500 && e.status !== 429) || /no-agent-key/.test(e.message));
 
-export function createDispatch({ kernel, db, owner, log = () => {} }: { kernel: Kernel; db: DatabaseSync; owner: string; log?: Log }) {
+/** How long a job whose follow failed waits before the next try: doubling from a quarter minute, at most ten minutes. */
+const retryAfter = (fails: number) => Math.min(600_000, 15_000 * 2 ** (fails - 1));
+
+export function createDispatch({ kernel, db, owner, log = () => {}, now = Date.now }: { kernel: Kernel; db: DatabaseSync; owner: string; log?: Log; now?: () => number }) {
   db.exec(DDL);
   const q = (sql: string) => db.prepare(sql);
   const asker = createAsker(kernel);
@@ -39,6 +42,8 @@ export function createDispatch({ kernel, db, owner, log = () => {} }: { kernel: 
   // Each running job's progress judge, and why this module stopped a job (until its outcome is posted; a restart starts both fresh).
   const judges = new Map<string, ReturnType<typeof progressTracker>>();
   const stoppedFor = new Map<string, string>();
+  // Jobs whose follow failed with an error worth retrying: how often, and not before when (a restart starts fresh).
+  const backoff = new Map<string, { fails: number; next: number }>();
 
   /**
    * After a run of an agent's task ends, whoever asked hears what it needs: a task left blocked, with the run's reply as the reason;
@@ -48,7 +53,8 @@ export function createDispatch({ kernel, db, owner, log = () => {} }: { kernel: 
     const job = v.id;
     if (!agentMade(task)) return;
     // A run that ended on a refused write leaves its task blocked (on its parent, the task it was delegated under), with the refusal as the reason.
-    if (v.refused && task.status !== "blocked" && task.parentId) {
+    // Not when the task already blocks its parent (the parent waits on it): Paperclip refuses that cycle, and the asker hears anyway.
+    if (v.refused && task.status !== "blocked" && task.parentId && !task.blocks?.some((b) => b.id === task.parentId)) {
       await kernel.post(job, { kind: "status", body: `**Blocked:** ${v.refused}`, status: "blocked", blocked_by: [task.parentId] });
       task = { ...task, status: "blocked" };
     }
@@ -72,6 +78,8 @@ export function createDispatch({ kernel, db, owner, log = () => {} }: { kernel: 
   /** Each ended job's outcome, once: its reply (none for NO_REPLY), or how it stopped; a run whose task was closed is stopped. */
   async function follow() {
     for (const v of await kernel.open()) {
+      const wait = backoff.get(v.id);
+      if (wait && now() < wait.next) continue;
       try {
         if (!ENDED.has(v.state)) {
           // A task closed while its run goes on (the owner cancelled it): nothing else would end the run or free its computer.
@@ -90,11 +98,16 @@ export function createDispatch({ kernel, db, owner, log = () => {} }: { kernel: 
         const task = await kernel.task(v.task);
         if (!CLOSED.has(String(task.status))) await report(task, v, o?.kind === "notice" ? o.body : undefined, o?.body);
         await kernel.ack(v.id);
+        backoff.delete(v.id);
         log("job ended", { job: v.id, task: v.task, state: v.state, posted: o?.kind ?? null });
       } catch (e) {
         // A job whose outcome the kernel will never take (task or agent gone) is acknowledged, or it is retried every tick forever.
-        if (permanent(e)) { await kernel.ack(v.id).catch(() => {}); log("job given up: its outcome can't be posted", { job: v.id, err: e.message }); }
-        else log("job follow failed", { job: v.id, err: (e as Error).message });
+        if (permanent(e)) { backoff.delete(v.id); await kernel.ack(v.id).catch(() => {}); log("job given up: its outcome can't be posted", { job: v.id, err: e.message }); continue; }
+        // Anything else is tried again: an ended job's outcome less often each time it fails (a running one is checked each tick).
+        if (!ENDED.has(v.state)) { log("job follow failed", { job: v.id, err: (e as Error).message }); continue; }
+        const fails = (wait?.fails ?? 0) + 1;
+        backoff.set(v.id, { fails, next: now() + retryAfter(fails) });
+        log("job follow failed", { job: v.id, err: (e as Error).message, fails, retry_in_s: retryAfter(fails) / 1000 });
       }
     }
   }

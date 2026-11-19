@@ -75,6 +75,14 @@ test("a write whose answer was lost (502 after the plugin wrote) is found on ret
   assert.deepEqual(pc.issues[TASK].blockedBy, [BLOCKER]);
 });
 
+test("Paperclip refusing the blockers (a cycle) is a refusal, not an unknown outcome to retry forever", async (t) => {
+  const pc = await paperclip(t);
+  // As the host relays it: only the message crosses to the worker.
+  pc.ctx.issues.update = async () => { throw new Error("Blocking relations cannot contain cycles"); };
+  await assert.rejects(kernelOf(pc.url).post(JOB, { kind: "status", body: "Blocked.", status: "blocked", blockedBy: [BLOCKER] }), { status: 422, code: "refused", message: /cannot contain cycles/ });
+  assert.equal(pc.comments.length, 0);
+});
+
 test("the action writes only as the calling agent, on its own task, and only the writes it allows", async () => {
   const h = host();
   const agent = { actor: { type: "agent", agentId: AGENT, runId: null, companyId: "c-1" }, companyId: "c-1" };
