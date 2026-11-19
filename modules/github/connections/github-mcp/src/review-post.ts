@@ -53,6 +53,8 @@ export class ReviewPoster {
     if (app) return { kind: "app", token: app.token, login: app.login, why: `the GitHub App is installed on ${owner}/${repo} with pull request and status write` };
     if (want === "app") throw new GitHubRefused(`the GitHub App isn't installed on ${owner}/${repo} with pull request and commit status write`);
     if (!this.owner.signedIn()) throw new GitHubAuthError("GitHub isn't connected (Connect GitHub on the board)");
+    // The owner's token is the one every owner-identity read and write here uses (graphql has no repo path to check later).
+    this.gh.ownerMayWrite(owner);
     this.ownerLogin ??= (await this.gh.whoami()).login;
     return { kind: "owner", token: await this.owner.get(), login: this.ownerLogin, why: want === "owner" ? "the owner's sign-in was asked for" : `the GitHub App isn't installed on ${owner}/${repo} with pull request and status write, so the owner's sign-in posts` };
   }
@@ -120,7 +122,7 @@ export class ReviewPoster {
   private async ack(ref: Ref, who: Who, text: string): Promise<string> {
     for (let page = 1; page <= 10; page++) {
       const cs = await this.gh.request<{ id: number; html_url: string; body?: string; user?: { login: string } }[]>("GET", `${api(ref)}/issues/${ref.number}/comments`, { query: { per_page: 100, page }, auth: who.token });
-      const mine = cs.find((c) => c.body?.includes(ACK_MARK) && norm(c.user?.login ?? "") === norm(who.login));
+      const mine = cs.find((c) => c.body?.startsWith(ACK_MARK) && norm(c.user?.login ?? "") === norm(who.login));
       if (mine) { await this.gh.request("PATCH", `${api(ref)}/issues/comments/${mine.id}`, { body: { body: text }, auth: who.token }); return mine.html_url; }
       if (cs.length < 100) break;
     }
@@ -201,8 +203,8 @@ export class ReviewPoster {
     // A retry after a crash finds its own review by the run's marker instead of posting a second one.
     let review: { html_url: string } | undefined;
     for (let page = 1; page <= 10 && !review; page++) {
-      const rs = await this.gh.request<{ html_url: string; body?: string; user?: { login: string } }[]>("GET", `${api(ref)}/pulls/${ref.number}/reviews`, { query: { per_page: 100, page }, auth: who.token });
-      review = rs.find((x) => x.body?.includes(RUN_MARK(a.run)) && norm(x.user?.login ?? "") === norm(who.login));
+      const rs = await this.gh.request<{ html_url: string; body?: string; user?: { login: string }; commit_id?: string }[]>("GET", `${api(ref)}/pulls/${ref.number}/reviews`, { query: { per_page: 100, page }, auth: who.token });
+      review = rs.find((x) => x.body?.startsWith(RUN_MARK(a.run)) && norm(x.user?.login ?? "") === norm(who.login) && x.commit_id === r.head);
       if (rs.length < 100) break;
     }
     review ??= await this.gh.request<{ html_url: string }>("POST", `${api(ref)}/pulls/${ref.number}/reviews`, {

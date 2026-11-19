@@ -104,9 +104,11 @@ const LISTED_DETAILS = 4;
 const LIST_MAX = 40;
 
 const ASSIGNMENT = /\b((?:pass(?:word|wd)?|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|authorization|credential)s?)(["']?\s*[:=]\s*["']?)[^\s"',;]{4,}/gi;
+/** No `<!--` survives in model text, so it can never contain one of our markers (the ones only this code writes). */
+export const defang = (s: string) => s.replace(/<!--/g, "<\u200b!--");
 /** Credentials and secret-looking values replaced by a marker (scrub.ts's token patterns, assignments, bearer values, URL logins). */
 export function redact(text: string): string {
-  let t = text;
+  let t = defang(text);
   for (const [what, re] of SECRETS) t = t.replace(re, `[redacted ${what}]`);
   return t
     .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]{16,}/g, "Bearer [redacted]")
@@ -134,10 +136,11 @@ export function plain(text: string, max: number): string {
 
 /** A fenced block its content can't close. */
 export const fence = (text: string, lang = "") => {
+  text = defang(text);
   const f = "`".repeat(Math.max(3, ...[...text.matchAll(/`+/g)].map((m) => m[0].length + 1)));
   return `${f}${lang}\n${text}\n${f}`;
 };
-const code = (s: string) => `\`${s.replace(/[`\r\n]/g, "")}\``;
+const code = (s: string) => `\`${defang(s).replace(/[`\r\n]/g, "")}\``;
 const short = (sha: string) => sha.slice(0, 7);
 
 export const counts = (findings: readonly { severity: Finding["severity"] }[]) => ({
@@ -189,8 +192,8 @@ export function renderReview(r: Review, run: string, opts: { inline?: ReadonlySe
   const c = counts(r.findings);
   const incomplete = r.coverage.incomplete;
   const lines = [
-    `<!-- ${MARK.review}: ${JSON.stringify(c)} -->`,
     RUN_MARK(run),
+    `<!-- ${MARK.review}: ${JSON.stringify(c)} -->`,
     `### Aiden review · ${code(r.reviewer)}`,
     "",
     `**${countLine(c)}**`,

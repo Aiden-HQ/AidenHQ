@@ -226,6 +226,11 @@ export class GitHub {
     // user's token can't see the agents org); writes and repos it doesn't cover keep the user's token, and no token is
     // ever logged.
     const repo = method === "GET" ? repoOf(path) : undefined;
+    // One door for the owner's token: a write made as the user (no explicit bearer, or the user's own) targets a comment org.
+    if (method !== "GET" && (opts.auth === undefined || opts.auth === (await this.owner.get().catch(() => "")))) {
+      const target = repoOf(path);
+      if (target) this.ownerMayWrite(target.owner);
+    }
     const scope = method === "GET" && path === "/search/issues" ? searchScope(String(opts.query?.q ?? "")) : undefined;
     const appToken = opts.auth ? undefined : repo ? await this.app?.repoToken(repo.owner, repo.repo) : scope ? await this.app?.orgToken?.(scope) : undefined;
     for (const [k, v] of Object.entries(opts.query ?? {})) url.searchParams.set(k, String(v));
@@ -377,6 +382,11 @@ export class GitHub {
     this.writable(ref.owner, `${ref.owner}/${ref.repo}`, "commenting");
     const c = await this.request<GhComment>("POST", `/repos/${ref.owner}/${ref.repo}/issues/${ref.number}/comments`, { body: { body } });
     return { url: c.html_url, id: c.id };
+  }
+
+  /** Refuses the owner's token for an owner/org outside the comment orgs (the App's writes are governed by its installation). */
+  ownerMayWrite(owner: string): void {
+    if (!this.commentOrgs.has(owner.toLowerCase())) throw new GitHubRefused(`writes as the user are limited to ${[...this.commentOrgs].join(", ") || "no organizations"}; add ${owner} to the GitHub comment orgs to let reviews post there as you`);
   }
 
   /** Writes are limited to the configured organizations. */
