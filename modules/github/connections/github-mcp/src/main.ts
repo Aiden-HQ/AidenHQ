@@ -314,7 +314,7 @@ function buildServer(caller?: Caller): McpServer {
         number: appIssue,
         state: z.enum(["open", "closed"]),
         reason: z.enum(["completed", "not_planned"]).optional(),
-        note: z.string().min(1).max(60_000).optional().describe("a comment posted on the issue before the state change: the fix's pull request and merge commit, and what carries it live when the repo's after_merge is product-pin"),
+        note: z.string().min(1).max(60_000).optional().describe("a comment posted on the issue before the state change: the fix's pull request and merge commit, and what carries it live when the repo's after_merge is product-pin. Write each PR as owner/name#number or its full https://github.com/owner/name/pull/N URL: a bare \"PR #N\" is refused, since citation parsers read only the other two forms"),
       },
       annotations: write,
     },

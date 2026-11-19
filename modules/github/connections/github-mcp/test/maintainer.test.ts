@@ -298,6 +298,32 @@ it("a close whose note carries owner data rejects at the comment step, before th
   expect(f.calls.some((c) => c.method === "PATCH")).toBe(false);
 });
 
+it("a close whose note cites a PR only as a bare PR #N is refused before anything is written", async () => {
+  const f = fake({ issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z" }], timelines: { 1: [labeled("acme-bot[bot]", "2026-01-01T00:00:00Z", APP)] } });
+  const m = maintainer(f);
+  // The exact shape WOR-8689 failed on: PRs merged and live, cited as "PR #722" and "PR #733".
+  await expect(m.state(PRODUCT, 1, "closed", "completed", "Fixed by PR #722 (merge 0ba0db1) and PR #733 (merge 1cd2e3f).")).rejects.toThrow(
+    /cite the PR as owner\/name#number or its full \/pull\/ URL; a bare 'PR #N' is not read as a citation/,
+  );
+  await expect(m.state(PRODUCT, 1, "closed", "not_planned", "duplicate of the PR #9 fix")).rejects.toThrow(/bare 'PR #N'/);
+  await expect(m.state(PRODUCT, 1, "closed", "completed", "Fixed by PR#12, merge 0ba0db1.")).rejects.toThrow(/bare 'PR #N'/);
+  expect(f.posted).toHaveLength(0);
+  expect(f.calls.some((c) => c.method === "PATCH")).toBe(false);
+});
+
+it("a close's note citing a PR as owner/name#number or its /pull/ URL is accepted", async () => {
+  const f = fake({ issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z" }], timelines: { 1: [labeled("acme-bot[bot]", "2026-01-01T00:00:00Z", APP)] } });
+  const m = maintainer(f);
+  for (const note of [
+    "Fixed by acme/product#722, merge 0ba0db1.",
+    "Fixed by https://github.com/acme/product/pull/722, merge 0ba0db1.",
+    "Fixed by https://github.com/acme/product/pull/722 and acme/product#733.",
+  ]) {
+    expect(await m.state(PRODUCT, 1, "closed", "completed", note)).toMatchObject({ state: "closed" });
+  }
+  expect(f.posted.filter((p) => p.path.endsWith("/comments"))).toHaveLength(3);
+});
+
 it("a reopen carrying a note is refused, since a note is posted only when closing", async () => {
   const f = fake({ issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z" }], timelines: { 1: [labeled("acme-bot[bot]", "2026-01-01T00:00:00Z", APP)] } });
   await expect(maintainer(f).state(PRODUCT, 1, "open", undefined, "reopened after the revert")).rejects.toThrow(/only when closing/);
