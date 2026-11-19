@@ -138,7 +138,8 @@ interface WorkRecord { task: string | null; identifier: string | null; judged?: 
 const HOUR_MS = 60 * MIN;
 const REJECT_LOOP = { n: 3, windowMs: 6 * HOUR_MS }; // n = the kernel's MAX_REJECTS (tier.ts): the point where a branch is parked
 const REPEAT_FAILS = { n: 3, spanMs: 30 * MIN, freshMs: HOUR_MS }; // same category on one task within spanMs, the newest within freshMs
-const IDLE_MS = 120 * MIN; // an orphaned item (nothing running, filed or waiting on it) idle this long is stuck
+const IDLE_MS = 120 * MIN;
+const IDLE_WAKE_CAP = 3; // the kernel's idle sweep stops waking a task's agent after this many a day (kernel/src/idle.ts IDLE_CAP) // an orphaned item (nothing running, filed or waiting on it) idle this long is stuck
 const FLOW_RISE = 1.5; // a stage's p75 or wait share this much over last week's (observe mode)
 const FLOW_MIN_N = 10;
 const STALE_FOLLOWUP_MS = 3 * DAY_MS;
@@ -348,18 +349,22 @@ export function checks(d: { kernel: KernelClient; apps: <T>(path: string) => Pro
       return out;
     },
     // Orphaned work: Flow's idle list (nothing running, filed or waiting on the item), over 2 hours. The one stuck-work rule.
+    // A task whose holder the kernel's idle sweep already woke 3 times in a day (kernel idle.ts) is critical at once: waking
+    // it again won't move it, so Fleet Ops looks at it.
     async stuck() {
       const t = now();
       const out: Incident[] = [];
       const read = taskReads();
-      const items = ((await d.kernel.call("GET", "/v1/flow?idle=1")).items ?? []) as { task: string; identifier: string | null; since: string; reason: string }[];
-      for (const i of items.filter((x) => x.reason === "orphaned" && age(x.since, t) > IDLE_MS && !exempt({ identifier: x.identifier, originKind: null }) && !suppressed(x.task, `stuck:${x.task}`))) {
+      const items = ((await d.kernel.call("GET", "/v1/flow?idle=1")).items ?? []) as { task: string; identifier: string | null; since: string; reason: string; idle_wakes?: number }[];
+      const capped = (x: { idle_wakes?: number }) => (x.idle_wakes ?? 0) >= IDLE_WAKE_CAP;
+      for (const i of items.filter((x) => x.reason === "orphaned" && (capped(x) || age(x.since, t) > IDLE_MS) && !exempt({ identifier: x.identifier, originKind: null }) && !suppressed(x.task, `stuck:${x.task}`))) {
         const task = await read(i.task);
         // Parked in backlog, owned by nobody, or owned by the owner (a person, not an agent's work): not someone's stuck work
         // (the inbox, review-log and issues tasks are idle by design; owner-assigned todos are the stale follow-up check's).
         // A task that can't be read stays flagged: a failed lookup never hides an incident.
         if (task && (task.status === "backlog" || !task.assigneeAgentId)) continue;
-        out.push({ key: i.task, reason: `task ${i.identifier ?? i.task} idle for ${mins(age(i.since, t))} with nothing running, filed or waiting on it (${slug(i.reason)})` });
+        if (capped(i)) out.push({ key: `${i.task}:idle-capped`, critical: true, reason: `task ${i.identifier ?? i.task} is still idle after ${i.idle_wakes} idle wakes of its agent today (nothing running, filed or waiting on it, ${mins(age(i.since, t))}): waking it again won't move it` });
+        else out.push({ key: i.task, reason: `task ${i.identifier ?? i.task} idle for ${mins(age(i.since, t))} with nothing running, filed or waiting on it (${slug(i.reason)})` });
       }
       return out;
     },

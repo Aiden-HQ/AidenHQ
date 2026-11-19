@@ -140,8 +140,8 @@ test("the web for every crew agent: web_view and app_view granted (an agent may 
     const writes = Object.entries(a.enabled_tools).flatMap(([c, list]) => list.filter((t) => c !== "paperclip_tasks" && t !== "notify" && writeTools(r.paperclip.mcp_servers[c]).includes(t)).map((t) => `${c}.${t}`));
     assert.deepEqual(writes, [], k);
   }
-  // An Engineer gets no tools added: it has exactly what it grants itself, which includes attaching its own task's file and finishing it.
-  assert.deepEqual(r.paperclip.agents.engineer.enabled_tools, { apps: ["app_list", "app_status", "app_view", "app_check", "web_view"], github: ["github_whoami", "github_project_read", "github_issue_read", "github_search_issues", "github_job_log", "github_pr_files", "github_app_issue_status"], paperclip_tasks: ["task_file_upload", "task_finish"] });
+  // An Engineer gets no tools added: it has exactly what it grants itself, which includes attaching its own task's file, finishing it and recording its wait.
+  assert.deepEqual(r.paperclip.agents.engineer.enabled_tools, { apps: ["app_list", "app_status", "app_view", "app_check", "web_view"], github: ["github_whoami", "github_project_read", "github_issue_read", "github_search_issues", "github_job_log", "github_pr_files", "github_app_issue_status"], paperclip_tasks: ["task_file_upload", "task_finish", "task_wait"] });
   assert.equal(r.paperclip.agents["review-chaser"].web_search, "disabled");
   assert.equal(r.paperclip.agents.assistant.web_search, undefined);
 });
@@ -177,7 +177,7 @@ test("the Fleet Steward's grants: reads, plus exactly its predecessors' writes; 
   const a = r.paperclip.agents["fleet-steward"];
   const writes = Object.entries(a.enabled_tools).flatMap(([c, list]) => list.filter((t) => writeTools(r.paperclip.mcp_servers[c]).includes(t)).map((t) => `${c}.${t}`)).sort();
   // routing_tune and routing_judge: the routing learning loop, each a reviewed kernel.apply of the instance's own routing.
-  assert.deepEqual(writes, ["apps.person_identity_decide", "fleet_steward.routing_judge", "fleet_steward.routing_tune", "ops_mcp.meeting_note_correct", "owner_channel.notify", "paperclip_tasks.coach_record", "paperclip_tasks.task_comment", "paperclip_tasks.task_create", "paperclip_tasks.task_delegate", "paperclip_tasks.task_finish", "paperclip_tasks.task_handoff", "paperclip_tasks.task_propose_rule", "paperclip_tasks.task_set_status"]);
+  assert.deepEqual(writes, ["apps.person_identity_decide", "fleet_steward.routing_judge", "fleet_steward.routing_tune", "ops_mcp.meeting_note_correct", "owner_channel.notify", "paperclip_tasks.coach_record", "paperclip_tasks.task_comment", "paperclip_tasks.task_create", "paperclip_tasks.task_delegate", "paperclip_tasks.task_finish", "paperclip_tasks.task_handoff", "paperclip_tasks.task_propose_rule", "paperclip_tasks.task_set_status", "paperclip_tasks.task_wait"]);
   assert.deepEqual(a.enabled_tools.github, ["github_app_issue_status"]);
   assert.equal(a.web_search, "disabled");
   assert.ok(!a.enabled_tools.apps.includes("web_view"));

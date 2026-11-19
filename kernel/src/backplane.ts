@@ -23,6 +23,9 @@
 //   GET  /v1/notify/take, POST /v1/notify/send  (the module with role kernel.notify) the queued owner messages, each once; one
 //                              message to a channel's transport
 //   POST /v1/wakes/events      (the paperclip-events plugin's key) a Paperclip event's ids: its task is scanned (wakes.ts)
+//   POST /v1/wait              (a module with role kernel.wake, serving a job's task_wait, task_handoff or notify call in flight)
+//                              {reason, until?, on?, task?}: the calling job's own task waits
+//                              (idle.ts): a work.waiting fact and a wake at `until`
 //   POST /v1/wakes             (a module with role kernel.wake) a scheduled wake {task, agent?, at?, cause?, id?}; with
 //                              {task, text}: a labelled wake notice on the task now, which wakes its agent (no scheduled row)
 //   POST /v1/wakes/claim, POST /v1/wakes/:key/drop  (a module with role kernel.jobs) claim inbox rows; give one up
@@ -73,6 +76,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { timingSafeEqual } from "node:crypto";
 import type { Asserter } from "./assert.ts";
 import type { Facts } from "./facts.ts";
+import type { Idle } from "./idle.ts";
 import type { Brake } from "./brake.ts";
 import type { Checks } from "./checks.ts";
 import type { Lane } from "./lane.ts";
@@ -103,6 +107,8 @@ type Handler = (req: IncomingMessage, res: ServerResponse, ...a: string[]) => Pr
 /** Directory fields a module may read; everything else in the grants table (tools, models, caps, images) stays here. */
 const DIRECTORY = ["key", "roles", "profile", "trial", "description", "delegate_to", "memory_inbox", "review_log", "graded", "feedback_for"];
 
+/** The tool calls that record a wait on their job's task (POST /v1/wait, idle.ts). */
+const WAIT_TOOLS = ["task_wait", "task_handoff", "notify"];
 /** What a task shows when the owner stops its run: the kernel's own words, the dispatcher posts nothing else for it. */
 const STOPPED_NOTE = "**Stopped by the owner.** Say **continue** to pick up where it stopped.";
 /** What the listener serves: the router dispatches from this table and scripts/lean/contract-lock.mjs reads it, so the lock can't miss a route. */
@@ -132,6 +138,7 @@ export const ROUTES = [
   { method: "GET", path: "/v1/notify/take", auth: "module" },
   { method: "POST", path: "/v1/notify/send", auth: "module" },
   { method: "POST", path: "/v1/facts", auth: "module" },
+  { method: "POST", path: "/v1/wait", auth: "module+assertion" },
   { method: "POST", path: "/v1/wakes/events", auth: "events-key" },
   { method: "POST", path: "/v1/wakes", auth: "module" },
   { method: "POST", path: "/v1/wakes/claim", auth: "module" },
@@ -231,9 +238,11 @@ function flowRead(flow: Flow, p: URLSearchParams) {
   return flow.summary({ since, to, by: by as By, scope: p.get("scope")?.slice(0, 100) || undefined });
 }
 
-export function createBackplane({ facts, whoami, asserter, proxy, cp, boardCp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, reviewerKey = () => "", jobs, codehost, admission, outcomes, wakes, tasks, eventsKey = () => "", work, flow, repos = () => ({}), graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, checkJobs, jobTools, localBundle, ownerRaw, lane, healthProbe, healthKey = () => "", connectionHealth, settingsChange, routing, boardApi: moduleBoardApi, log = () => {} }: {
+export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boardCp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, reviewerKey = () => "", jobs, codehost, admission, outcomes, wakes, tasks, eventsKey = () => "", work, flow, repos = () => ({}), graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, checkJobs, jobTools, localBundle, ownerRaw, lane, healthProbe, healthKey = () => "", connectionHealth, settingsChange, routing, boardApi: moduleBoardApi, log = () => {} }: {
   /** Flow's fact log (facts.ts): POST /v1/facts. */
   facts?: Facts;
+  /** An agent's own wait on its job's task (idle.ts): POST /v1/wait. */
+  idle?: Idle;
   whoami: Whoami; asserter: Asserter; proxy: Handler; cp: Handler; boardCp?: Handler; grantsFile: () => { agents?: Record<string, Grant> } & Record<string, unknown>;
   writes?: Writes; records?: Records; boardKey?: () => string; log?: (msg: string, f?: Record<string, unknown>) => void;
   /** The reviewer slot, and the key a direct review request asks with (reviewer_key, which the board holds). */
@@ -315,6 +324,18 @@ export function createBackplane({ facts, whoami, asserter, proxy, cp, boardCp, g
       switch (hit && `${hit.method} ${hit.path}`) {
         case "GET /healthz": return void res.writeHead(200, { "content-type": "text/plain" }).end("ok");
         case "GET /v1/jwks": return send(res, 200, asserter.jwks);
+        case "POST /v1/wait": {
+          // A module with role kernel.wake serving a kernel job's task_wait, task_handoff or notify call in flight: the job is
+          // read from its own token (never the assertion's or the body's say-so), and the wait is on that job's own task.
+          const w = await moduleOf(req);
+          if (!w.roles.includes("kernel.wake")) throw fail(403, "forbidden", `${w.module} may not record waits (role kernel.wake)`);
+          if (!idle) throw fail(503, "unavailable", "waits are off");
+          const live = await asserter.inFlight(String(req.headers["x-aidenhq-caller"] ?? ""), w.module!);
+          const job = live?.flight.bearer ? await whoami(live.flight.bearer).catch(() => undefined) : undefined;
+          if (!live || job?.kind !== "run" || !job.task || !job.agent || job.agent !== live.caller.agent) throw fail(401, "unauthorized", "only a kernel job's tool call in flight records a wait on its task");
+          if (!WAIT_TOOLS.includes(String(live.caller.tool ?? "").split(".").pop()!)) throw fail(403, "forbidden", `a wait is recorded by ${WAIT_TOOLS.join(", ")} only`);
+          return send(res, 200, await idle.wait({ agent: job.agent, key: job.key ?? "", task: job.task }, await json(req)));
+        }
         case "POST /v1/facts": {
           const w = await moduleOf(req);
           if (!w.roles.includes("kernel.facts")) throw fail(403, "forbidden", `${w.module} may not record facts (role kernel.facts)`);

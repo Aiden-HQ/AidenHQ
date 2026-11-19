@@ -35,6 +35,7 @@ const d: Deps = {
   send: kernel.send,
   brake: kernel.brake,
   postReply: kernel.postReply,
+  wait: kernel.wait,
   muteFyi: process.env.NOTIFY_FYI === "mute",
   attention: {
     mode: process.env.NOTIFY_ATTENTION === "enforce" ? "enforce" : "observe",

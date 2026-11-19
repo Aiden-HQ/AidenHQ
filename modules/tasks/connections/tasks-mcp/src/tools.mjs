@@ -120,6 +120,14 @@ async function api(method, path, body) {
   return text ? JSON.parse(text) : {};
 }
 
+/** The kernel records a wait on the caller's own task (POST /v1/wait, kernel idle.ts): its reason, and when it resumes. */
+async function kernelWait(body) {
+  const res = await fetch(`${KERNEL}/v1/wait`, { method: "POST", headers: { ...authHeaders(), "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(20_000) });
+  const text = await res.text();
+  if (!res.ok) throw new Error(`the kernel refused the wait (${res.status}): ${text.slice(0, 300)}`);
+  return JSON.parse(text);
+}
+
 async function apiBytes(path) {
   const res = await fetch(`${KERNEL}/v1/cp/agent${path}`, { headers: authHeaders(), signal: AbortSignal.timeout(60_000) });
   if (!res.ok) throw new Error(`Paperclip GET ${path} → ${res.status}`);
@@ -1168,6 +1176,8 @@ const TOOLS = {
       // ending for Paperclip, unlike in_progress), so the user's next comment there wakes it again.
       if (await isOwnPart(current)) {
         const i = await patchIssue(issue, { status: "todo", comment: body });
+        // It waits on the user's reply (their comment wakes it): recorded, so it isn't idle work, with a check in a week.
+        if (current.id === CURRENT()) await kernelWait({ reason: "the user's reply to my handoff", on: "the user's reply", until: new Date(Date.now() + 7 * 864e5 - 60_000).toISOString() }).catch(() => {});
         return brief(i);
       }
       const i = await patchIssue(issue, { assigneeUserId: owner, assigneeAgentId: null, status: "todo", comment: body });
@@ -1183,6 +1193,25 @@ const TOOLS = {
       const last = await postLeadingParts(issue, `${feedbackMark()}${body}`);
       const c = await api("POST", `/api/issues/${issueRef(issue)}/comments`, { body: last });
       return { comment_id: c.id, parts: commentParts(body).length };
+    },
+  },
+  task_wait: {
+    description:
+      "Record that the task this run is working on waits on something, so it isn't left idle: why, and until when (`until`, an ISO time at most 7 days ahead) or for what (`on`, the event, e.g. \"PR #12 merged\", \"the owner's answer\"; then you're woken in 24 hours to check). You're woken by the event when it comes as a comment on the task, and otherwise at `until`. End your turn after it. Only ever touches the current run's task.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        reason: { type: "string", description: "what the task waits on and why, in one line" },
+        until: { type: "string", description: "ISO-8601 time to resume at, at most 7 days ahead" },
+        on: { type: "string", description: "the event it waits for" },
+      },
+      required: ["reason"],
+      additionalProperties: false,
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    run: async ({ reason, until, on }) => {
+      if (!CURRENT()) throw new Error("no current task");
+      return kernelWait({ reason: String(reason), ...(until ? { until: String(until) } : {}), ...(on ? { on: String(on) } : {}) });
     },
   },
   task_finish: {
