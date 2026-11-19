@@ -9,13 +9,15 @@
 // head, beside its checks; with no verdict in time it is asked once more, then the PR isn't merged.
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { namedChecks } from "./aidenhq-sdk/checks.ts";
+import { waitReason, type Flow } from "./flow.ts";
 import { READ, mergePermissions, ownRepo } from "./github-app.ts";
 import { DESIGN_REVIEW, EVAL_WAIT_MINUTES, PR_QUERY, WAIT_MINUTES, awaitsDesignReview, decide, mergeMethod, withGate } from "./merge-gate.mjs";
 
 type Gh = (method: string, path: string, token: string, body?: unknown) => Promise<{ status: number; body: any }>;
 type Outcome = { ok: boolean; text: string };
 export type EvalGate = (repo: string, pr: any) => Promise<undefined | { wait: string } | { stop: string }>;
-type Pr = { repo: string; number: number; head: string; url: string; status: string; note?: string; sha?: string; wait?: { key: string; since: string }; reviewAsked?: string; reviewAskedAgain?: string };
+type Pr = { repo: string; number: number; head: string; url: string; status: string; note?: string; sha?: string; wait?: { key: string; since: string }; reviewAsked?: string; reviewAskedAgain?: string; checked?: string; fw?: { reason: string; since: string } };
 type Queue = { state: string; prs: Pr[]; said: string[]; startedAt: string; finishedAt?: string; outcome?: Outcome; reported?: boolean };
 
 const same = (a?: string, b?: string) => Boolean(a && b) && a!.toLowerCase() === b!.toLowerCase();
@@ -33,6 +35,8 @@ export function createMerges(d: {
   gh: Gh;
   agentsOrg: string; productRepo?: string;
   evalGate: EvalGate;
+  /** Flow facts (flow.ts): CI done on a head, merges, and each wait with its reason. */
+  flow?: Flow;
   /** Files the design reviewer's task for a PR head the queue waits on for its verdict (design-review.ts). */
   designReview?: (ask: { repo: string; number: number; head: string; again?: boolean }) => Promise<unknown>;
   /** Delivers a record's outcome to the kernel (POST /v1/writes/:id/outcome). */
@@ -64,8 +68,18 @@ export function createMerges(d: {
     return r.body?.sha;
   }
 
-  /** One poll of one PR; `merged` holds the repositories that merged a PR this poll. */
+  /** One poll of one PR, then its wait as facts: a wait and its end (a new reason, a merge, a failure) are work.waiting and work.resumed. */
   async function poll(q: Queue, p: Pr, merged: Set<string>) {
+    await pollOne(q, p, merged);
+    const reason = p.status === "pending" && p.wait ? waitReason(p.wait.key) : undefined;
+    if (p.fw?.reason === reason) return;
+    const at = now().toISOString();
+    if (p.fw) d.flow?.resumed(p.repo, p.number, p.fw.reason, p.fw.since, at);
+    p.fw = reason ? { reason, since: at } : undefined;
+    if (p.fw) d.flow?.waiting(p.repo, p.number, p.fw.reason, p.fw.since);
+  }
+  /** One poll of one PR; `merged` holds the repositories that merged a PR this poll. */
+  async function pollOne(q: Queue, p: Pr, merged: Set<string>) {
     const t = now().getTime();
     const fail = (why: string) => {
       Object.assign(p, { status: "failed", note: why });
@@ -87,10 +101,18 @@ export function createMerges(d: {
       const data = await readPr(p.repo, p.number);
       const uiReview = inAgentsOrg(p.repo);
       const v = decide(data, p.head, { uiReview });
+      const pull = data.repository.pullRequest;
+      // CI on this head is over once every named check has finished: seen here, at the first poll that finds it so.
+      const named = namedChecks(pull?.commits?.nodes?.[0]?.commit?.statusCheckRollup);
+      if (p.checked !== p.head && pull?.headRefOid === p.head && named.length && named.every((c) => !c.pending)) {
+        p.checked = p.head;
+        d.flow?.checksCompleted(p.repo, p.number, p.head, named.filter((c) => !c.ok).map((c) => c.name).slice(0, 20));
+      }
       // The design reviewer is asked as soon as a UI head waits without a verdict: its review runs beside the checks.
       if (v.do === "wait" && uiReview && p.reviewAsked !== p.head && awaitsDesignReview(data.repository.pullRequest)) await askReview(false);
       if (v.do === "done") {
         Object.assign(p, { status: "skipped", note: v.why });
+        if (pull?.mergeCommit?.oid) d.flow?.merged(p.repo, p.number, p.head, pull.mergeCommit.oid, pull.mergedAt ?? undefined, String(pull.title ?? ""), String(pull.body ?? ""));
         delete p.wait;
         return void q.said.push(`${p.url} was ${v.why}.`);
       }
@@ -115,7 +137,9 @@ export function createMerges(d: {
         if (/try the merge again|base branch was modified/i.test(says(e))) return wait("retry", "GitHub asked to try the merge again", WAIT_MINUTES);
         return fail(`GitHub refused the merge: ${says(e)}`);
       }
-      Object.assign(p, { status: "merged", mergedAt: now().toISOString() });
+      const mergedAt = now().toISOString();
+      Object.assign(p, { status: "merged", mergedAt });
+      d.flow?.merged(p.repo, p.number, p.head, String(p.sha ?? ""), mergedAt, String(pull?.title ?? ""), String(pull?.body ?? ""));
       delete p.wait;
       merged.add(p.repo.toLowerCase());
       q.said.push(`Merged ${p.url}.`);

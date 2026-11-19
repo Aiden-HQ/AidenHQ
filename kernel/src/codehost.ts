@@ -18,6 +18,7 @@ import type { Readable } from "node:stream";
 import type { ServerResponse } from "node:http";
 import { LOCAL_ORG } from "./kinds.ts";
 import type { Resolver } from "./net.ts";
+import type { Facts } from "./facts.ts";
 import type { Kind } from "./writes.ts";
 
 export const CODEHOST = "codehost-github";
@@ -153,3 +154,11 @@ export function createCodehost({ grants, repos, kind, secret, resolver, workspac
     },
   };
 }
+
+/**
+ * codehost-local's Flow facts (modules/codehost-local/src/host.ts `fact`): recorded straight into the kernel's fact store as
+ * `module:codehost-local`, the same pr.* and code.* facts codehost-github emits through POST /v1/facts. A fact never fails the write it describes.
+ */
+export const localFacts = (facts: Facts) => (f: { type: string; subject: string; version: string; at: string; task?: string | null; data?: Record<string, unknown> }) => {
+  try { facts.record({ ...f, task: f.task ?? undefined, actor: "module:codehost-local" }); } catch { /* a fact write never blocks the action */ }
+};

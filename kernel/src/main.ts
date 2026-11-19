@@ -41,7 +41,7 @@ import { createIdentity, type Connection, type Grant, type Jobcap } from "./iden
 import { createAdvisories } from "./advisories.ts";
 import { hostFetch } from "../../scripts/compiler/sources.ts";
 import { createResolver } from "./net.ts";
-import { CODEHOST, covers, createCodehost, type OpsGrant } from "./codehost.ts";
+import { CODEHOST, covers, createCodehost, localFacts, type OpsGrant } from "./codehost.ts";
 import { createConnectionHealth, createHealthProbe } from "./health.ts";
 import { createProxy } from "./proxy.ts";
 import { SETTINGS, UPDATER, openRecords } from "./records.ts";
@@ -259,6 +259,7 @@ mkdirSync(localScratch, { recursive: true });
 const instanceRemote = env("AIDENHQ_INSTANCE_REMOTE", "");
 const localChecks = new Map<string, string>();
 const localCode = codehostLocal({
+  fact: localFacts(facts),
   root: path.join(dataDir, "codehost"), tasksDir, scratchDir: localScratch, instanceRepo: baseRepos.instance, productRepo: baseRepos.product,
   sources: baseRepos.instance && instanceRemote.startsWith("/") ? { [baseRepos.instance]: instanceRemote } : {},
   // A check that couldn't run (no box) starts again only for a new request; a merge waiting on it reads it as it stands.

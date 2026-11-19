@@ -15,6 +15,9 @@ paths:
 # The code host role (docs/design/codehost-local.md §2): it hosts every org codehost-local doesn't own.
 provides: [ codehost ]
 settings:
+  # Paths the churn pass ignores (service/src/churn.ts; kernel/sdk/src/churn.ts): globs, one per entry.
+  churn_exclude:
+    default: [ "**/package-lock.json", "**/dist/**", "**/vendor/**", "**/*.min.*" ]
   # The org ops/github-app-setup.mjs makes the App for (aidenhq-<instance_name> unless this names another). Connecting records it
   # on the host (AIDENHQ_GITHUB_AGENTS_ORG): from then on it is the agents org, where new repositories go.
   github_agents_org:
@@ -41,7 +44,25 @@ secrets:
 # kernel plans and tiers like any apply (kernel.apply), on a task for the Platform Engineer's role (kernel.tasks).
 # It reads that task's records (kernel.work-read) to adopt a bump whose own state was lost and follow it to its end.
 roles:
-  requests: [ kernel.tasks, kernel.wake, kernel.checks, kernel.apply, kernel.work-read ]
+  requests: [ kernel.tasks, kernel.wake, kernel.checks, kernel.apply, kernel.work-read, kernel.facts ]
+# Flow (docs/design/flow.md): the facts this module emits through the kernel (service/src/flow.ts), each carrying the task that opened
+# the PR (pr-tasks.json). CI is one interval per head (subject pr:<repo>#<n>@<head>); a merge-queue wait and its end are
+# work.waiting and work.resumed with the reason. `code.*` come from the churn pass and the owner's backfill (service/src/churn.ts).
+facts:
+  pr.opened: { subject: pr }
+  pr.checks_started: { subject: pr }
+  pr.checks_completed: { subject: pr }
+  pr.merged: { subject: pr }
+  pr.reverted: { subject: pr }
+  work.waiting: { subject: pr, reasons: [ checks, design_review, eval, retry, conflict ] }
+  work.resumed: { subject: pr, reasons: [ checks, design_review, eval, retry, conflict ] }
+  code.added: { subject: pr }
+  code.rewritten: { subject: pr }
+  issue.opened: { subject: issue }
+  issue.labeled: { subject: issue }
+stages:
+  - { name: ci, label: CI, from: pr.checks_started, to: pr.checks_completed }
+  - { name: merge_queue, label: Merge queue, from: work.waiting, to: work.resumed }
 # The code host's check job recipes (kernel/src/checkjobs.ts), whose signed receipts it verifies before it lands: a repo's fast
 # check and its tests (secret scan, supply chain, lint, tests, build), run in a credential-free box from checks/. The kernel
 # reads whether a fast check is due from the base (`declares`), never from the change.
@@ -86,6 +107,7 @@ services:
         PRODUCT_REPO: "${AIDENHQ_PRODUCT_REPO:-}"
         INSTANCE_REPO: "${AIDENHQ_INSTANCE_REPO:-}"
         OWNER_NAME: "${settings.owner_name}"
+        CHURN_EXCLUDE: "${settings.churn_exclude}" # comma-separated globs
 # The kernel calls the kinds' plan, execute and status here with the module's own token (executor@1); plan is service/src/plan.mjs's
 # rules on the state the service reads itself (the workspace, its cache clone, GitHub), never the args.
 providers:

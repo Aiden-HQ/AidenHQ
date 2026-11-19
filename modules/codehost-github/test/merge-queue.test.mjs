@@ -258,3 +258,26 @@ test("a UI head waiting on its design review gets the UI Reviewer's task beside 
   assert.deepEqual(github.merges(), [], "never merged without the design review's pass");
   assert.equal(outcomes.length, 0);
 });
+
+test("a merge-queue wait and its end become waiting and resumed facts with the reason", async (t) => {
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "PENDING" } };
+  const facts = [];
+  const cacheDir = mkdtempSync(join(tmpdir(), "codehost-flow-"));
+  writeFileSync(join(cacheDir, "pr-tasks.json"), JSON.stringify({ "https://github.com/acme-agents/widget/pull/1": { task: "WOR-9", branch: "feature" } }));
+  const { handle, merge, settle, clock } = await setup(t, { prs, cacheDir, checks: (m, u, b) => (u === "/v1/facts" ? (facts.push(...b.facts), { recorded: b.facts.length }) : undefined) });
+  await merge("k-00000000000000f1", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
+  await handle.stepMerges();
+  await handle.flushFacts();
+  const waiting = facts.find((f) => f.type === "work.waiting");
+  assert.deepEqual([waiting.subject, waiting.task, waiting.data], ["pr:acme-agents/widget#1", "WOR-9", { reason: "checks" }]);
+  assert.equal(facts.some((f) => f.type === "work.resumed"), false, "still waiting");
+  clock.t += 60_000;
+  prs["acme-agents/widget"].checks = "SUCCESS";
+  await handle.stepMerges();
+  await settle();
+  await handle.flushFacts();
+  const resumed = facts.find((f) => f.type === "work.resumed");
+  assert.deepEqual([resumed.version, resumed.data], [waiting.version, { reason: "checks" }], "the end pairs with its wait by version");
+  assert.deepEqual(facts.filter((f) => f.type === "pr.merged").map((f) => [f.task, f.data.head]), [["WOR-9", HEAD]]);
+  assert.deepEqual(facts.filter((f) => f.type === "pr.checks_completed").map((f) => [f.subject, f.data.conclusion]), [[`pr:acme-agents/widget#1@${HEAD}`, "success"]]);
+});
