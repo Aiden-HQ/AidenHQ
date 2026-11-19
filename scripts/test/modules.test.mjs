@@ -213,6 +213,13 @@ test("the intake agents' Slack read grant has no draft tool", () => {
 // The real product: nothing needs Slack; the owner channel is its own module.
 const product = join(here, "../..");
 const owner = { timezone: "Europe/London", owner_name: "Sam", owner_email: "o@x" };
+test("an instance written before the fleet-steward merge (coach, fleet-ops, librarian; no dispatch or owner-channel) compiles as it stands", () => {
+  const old = BUNDLE.filter((n) => !["fleet-steward", "dispatch", "owner-channel"].includes(n));
+  const r = compile(product, inst([...old, "coach", "fleet-ops", "librarian"], { product_repo: "acme/aidenhq", ...owner }));
+  const enabled = enabledOf(r);
+  for (const n of ["fleet-steward", "dispatch", "owner-channel"]) assert.ok(enabled.includes(n), n);
+  for (const n of ["coach", "fleet-ops", "librarian"]) assert.ok(!enabled.includes(n), n);
+});
 test("optional secrets are created only where the secrets dir is really there (never into a locked vault's bare mountpoint)", () => {
   const dir = mkdtempSync(join(tmpdir(), "sec-"));
   assert.deepEqual(ensureOptionalSecrets(dir, ["telegram_notify_bot_token"], "slack_live_mcp_token"), [], "no known secret yet: looks like an unmounted vault");

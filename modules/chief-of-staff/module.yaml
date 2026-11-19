@@ -1,7 +1,7 @@
 name: chief-of-staff
 description: "Aiden (the chief of staff the owner talks to, who delegates and follows up), the Researcher (long research, drafts, task replies and recurring reports) and the daily brief."
 # Aiden and the Researcher hand code work to the Engineers (the "Handing work to an Engineer" section).
-requires: [ engineering ]
+requires: [ engineering, owner-channel ]
 roles:
   declares:
     - { id: fleet-admin, description: "The board's fleet tools and relaying the owner's words; the chief of staff: never paused, never passed to by an agent." }
