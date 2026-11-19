@@ -184,7 +184,15 @@ function world() {
   };
   const gens = () => (existsSync(d("state/generations.jsonl")) ? readFileSync(d("state/generations.jsonl"), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
   const head = (r) => git(d(r), "rev-parse", "HEAD");
-  return { d, p1, i1, commitProduct, commitInstance, run, start, sh, gens, head, calls: () => readFileSync(d("calls"), "utf8") };
+  // What an auto-revert of a product move leaves: the failed generation's instance (the instance's main, not moved) with the
+  // last known good's pin, as a local commit on it, detached, and recorded on the revert's generation.
+  const revertedTo = (product) => {
+    assert.equal(git(d("inst"), "rev-parse", "HEAD^"), git(d("inst"), "rev-parse", "origin/main"), "built on the instance's main");
+    assert.equal(git(d("inst"), "show", "HEAD:instance.yaml"), `product: ${product}`);
+    assert.equal(gens().at(-1).instance, head("inst"));
+    assert.throws(() => git(d("inst"), "symbolic-ref", "-q", "HEAD"), "detached");
+  };
+  return { d, p1, i1, commitProduct, commitInstance, run, start, sh, gens, head, revertedTo, calls: () => readFileSync(d("calls"), "utf8") };
 }
 
 test("a first apply seeds the running pair as the last known good, validates, switches and marks itself good", async () => {
@@ -296,9 +304,14 @@ test("the retired update units are removed once the generation is good, never wh
   assert.ok(!existsSync(join(units, "aidenhq-update.service")) && !existsSync(join(units, "aidenhq-update.timer")), "a good one removes them");
 });
 
-test("A14: a post-apply health failure reverts to the LKG and marks the generation failed; the pair is held until --retry", async () => {
+test("A14: a post-apply health failure reverts to the LKG's product, keeps what the instance gained since, and holds the pair until --retry", async () => {
   const w = world();
   assert.equal((await w.run()).status, 0);
+  // An app registered after the last known good (apps-mcp commits apps.yaml straight to the instance's main).
+  writeFileSync(w.d("iw", "apps.yaml"), "apps:\n  - name: hello\n");
+  git(w.d("iw"), "add", "apps.yaml");
+  git(w.d("iw"), "commit", "-q", "-m", "apps: add hello");
+  git(w.d("iw"), "push", "-q", "origin", "HEAD:main");
   writeFileSync(w.d("ctrl/break"), "");
   const p2 = w.commitProduct("2", { BAD_HEALTH: "" });
   const i2 = w.commitInstance(p2);
@@ -308,11 +321,12 @@ test("A14: a post-apply health failure reverts to the LKG and marks the generati
   assert.deepEqual(g.map((x) => [x.n, x.health]), [[1, "good"], [2, "good"], [3, "failed"], [4, "good"]]);
   assert.match(g[2].reason, /checks that passed before the apply fail now: kernel \(10\.231\.0\.1:3130\)/);
   assert.equal(g[2].log, w.d("state/apply-3.log"));
-  assert.deepEqual([g[3].product, g[3].instance, g[3].revert_of, g[3].lkg], [w.p1, w.i1, 3, 2]);
+  assert.deepEqual([g[3].product, g[3].revert_of, g[3].lkg], [w.p1, 3, 2]);
   assert.equal(w.head("prod"), w.p1, "the product is back at the last known good");
-  assert.equal(w.head("inst"), w.i1, "the instance checkout is back at the last known good");
-  assert.throws(() => git(w.d("inst"), "symbolic-ref", "-q", "HEAD"), "detached");
+  w.revertedTo(w.p1);
+  assert.equal(readFileSync(w.d("inst/apps.yaml"), "utf8"), "apps:\n  - name: hello\n", "the app registered since the last known good is kept");
   assert.equal(git(w.d("inst"), "rev-parse", "origin/main"), i2, "the instance's origin/main is not moved");
+  const reverted = w.head("inst");
   assert.equal(readFileSync(w.d("prod/data/applied-product"), "utf8").trim(), w.p1);
   assert.match(readFileSync(w.d("state/apply-3.log"), "utf8"), /apply alert: generation 3 failed \(checks that passed .*\) and was reverted to generation 2/);
   // The owner's alert: the monitoring textfile the ApplyFailed rule reads.
@@ -326,7 +340,7 @@ test("A14: a post-apply health failure reverts to the LKG and marks the generati
   assert.match(held.out, /failed its health check as generation 3 .* --retry/);
   assert.equal(w.gens().length, 4, "no new generation");
   assert.equal(w.head("prod"), w.p1);
-  assert.equal(w.head("inst"), w.i1);
+  assert.equal(w.head("inst"), reverted);
 
   // --retry from the owner's shell, with the fault gone: it applies, and the instance is back on main.
   rmSync(w.d("ctrl/break"));
@@ -350,7 +364,7 @@ test("a failed auto-revert records its own log naming the step that failed", asy
   assert.equal(r.status, 1, r.out);
   const g = w.gens();
   assert.deepEqual(g.map((x) => [x.n, x.health]), [[1, "good"], [2, "good"], [3, "failed"], [4, "failed"]]);
-  assert.deepEqual([g[3].product, g[3].instance, g[3].revert_of, g[3].lkg], [w.p1, w.i1, 3, 2]);
+  assert.deepEqual([g[3].product, g[3].revert_of, g[3].lkg], [w.p1, 3, 2]);
   assert.equal(g[2].log, w.d("state/apply-3.log"), "the failed generation keeps its own log");
   assert.equal(g[3].log, w.d("state/apply-4.log"), "the failed revert names its own log");
   const revert = readFileSync(g[3].log, "utf8");
@@ -358,7 +372,7 @@ test("a failed auto-revert records its own log naming the step that failed", asy
   assert.match(revert, /compose: recreate failed in the revert/);
   assert.match(revert, /generation 4 failed: the switch failed \(exit 1\)/);
   assert.equal(w.head("prod"), w.p1, "the product is back at the last known good");
-  assert.equal(w.head("inst"), w.i1, "the instance checkout is back at the last known good");
+  w.revertedTo(w.p1);
 
   // The failed pair is still held.
   const held = await w.run();
@@ -437,9 +451,9 @@ const reverted = (w) => {
   assert.deepEqual(g.map((x) => [x.n, x.health]), [[1, "good"], [2, "good"], [3, "failed"], [4, "good"]]);
   assert.equal(g[2].reason, "the apply died mid-run");
   assert.ok(g[2].recovered_at);
-  assert.deepEqual([g[3].product, g[3].instance, g[3].revert_of, g[3].lkg], [w.p1, w.i1, 3, 2]);
+  assert.deepEqual([g[3].product, g[3].revert_of, g[3].lkg], [w.p1, 3, 2]);
   assert.equal(w.head("prod"), w.p1);
-  assert.equal(w.head("inst"), w.i1);
+  w.revertedTo(w.p1);
   assert.equal(readFileSync(w.d("prod/data/applied-product"), "utf8").trim(), w.p1);
   assert.match(readFileSync(w.d("state/apply-3.log"), "utf8"), /generation 3: the apply died mid-run, and no apply is finishing it: reverting[\s\S]*apply alert: generation 3 failed \(the apply died mid-run\) and was reverted to generation 2/);
   assert.match(readFileSync(w.d("state/apply-4.log"), "utf8"), /generation 4: re-applying generation 2[\s\S]*compose: recreated what moved[\s\S]*generation 4 is good/);
