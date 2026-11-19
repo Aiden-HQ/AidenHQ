@@ -10,7 +10,7 @@ import { DEFAULT_IDENTITY, READ, WRITE, identityEnv, appClient, appSlugOf, appJw
 const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048, privateKeyEncoding: { type: "pkcs8", format: "pem" }, publicKeyEncoding: { type: "spki", format: "pem" } });
 
 // Installed on aidenhq-demo (all repos) and Acme (only `selected`).
-function fakeGitHub({ repos = [], refuseCreationPerm = false, status } = {}) {
+function fakeGitHub({ repos = [], refuseCreationPerm = false, status, botStatus } = {}) {
   const calls = [];
   let n = 0;
   const fetch = async (url, init) => {
@@ -18,8 +18,9 @@ function fakeGitHub({ repos = [], refuseCreationPerm = false, status } = {}) {
     const body = init.body ? JSON.parse(init.body) : undefined;
     calls.push({ method: init.method, path, body, auth: init.headers.authorization });
     const res = (status, json) => ({ status, json: async () => json });
-    if (path === "/app") return res(200, { slug: "aidenhq-demo" });
-    if (path === "/users/aidenhq-demo%5Bbot%5D") return res(200, { id: 99 });
+    if (path === "/app") return res(200, { id: 123, slug: "aidenhq-demo" });
+    // The bot user, read with an installation token (GET /user) or publicly (/users/<slug>[bot]).
+    if (path === "/user" || path === "/users/aidenhq-demo%5Bbot%5D") return botStatus ? res(botStatus, { message: "refused" }) : res(200, { id: 99, login: "aidenhq-demo[bot]" });
     if (path.startsWith("/app/installations?")) return res(200, [{ id: 42, account: { login: "aidenhq-demo" } }, { id: 7, account: { login: "Acme" } }]);
     if (path === "/app/installations/42/access_tokens" || path === "/app/installations/7/access_tokens") {
       if (refuseCreationPerm && body?.permissions?.repository_creation) return res(422, { message: "unknown permission" });
@@ -108,7 +109,22 @@ describe("GitHub App", () => {
     assert.deepEqual(await app.identity(), who);
     assert.deepEqual(await app.identity(), who);
     assert.equal(calls.filter((c) => c.path === "/app").length, 1);
+    assert.equal(calls.filter((c) => c.path === "/users/aidenhq-demo%5Bbot%5D").length, 0, "the authenticated read answered first");
     assert.deepEqual(identityEnv(DEFAULT_IDENTITY), { GIT_AUTHOR_NAME: "AidenHQ agent", GIT_AUTHOR_EMAIL: "agent@aidenhq.invalid", GIT_COMMITTER_NAME: "AidenHQ agent", GIT_COMMITTER_EMAIL: "agent@aidenhq.invalid" });
+  });
+
+  it("commits as the App's bot with the fallback email when GitHub refuses the bot user, and doesn't cache the miss", async () => {
+    const fallback = { name: "aidenhq-demo[bot]", email: "aidenhq-demo[bot]@users.noreply.github.com" };
+    for (const botStatus of [403, 500]) {
+      const { app, calls } = fakeGitHub({ botStatus });
+      assert.deepEqual(await app.identity(), fallback, `bot user read answered ${botStatus}`);
+      const botReads = () => calls.filter((c) => c.path === "/user" || c.path.startsWith("/users/")).length;
+      assert.equal(botReads(), 4, "one retry each on GET /user and the public route");
+      // A failed lookup isn't cached as a success: the next call reads again.
+      assert.deepEqual(await app.identity(), fallback);
+      assert.equal(botReads(), 8);
+      assert.equal(calls.filter((c) => c.path === "/app").length, 1, "GET /app is still read once");
+    }
   });
 
   it("gives gh the token only through that child's env, and only for the agents org", async () => {
