@@ -14,7 +14,7 @@ export type PathEntry = { repo: "product" | "modules" | "any"; pattern: string; 
 export type Inventory = { entries: PathEntry[] };
 /** A changed file as the code host read it from git: its path, and for a rename the path it had (both sides are judged). */
 export type ChangedFile = { path: string; from?: string };
-export type PathRaise = { tier: 1 | 2; panel?: boolean; rule: string; reason: string };
+export type PathRaise = { tier: 1 | 2; panel?: boolean; ownerOnly?: boolean; rule: string; reason: string };
 
 export const SENSITIVITIES: Sensitivity[] = [0, 1, "panel", 2];
 const rank = (s: Sensitivity) => SENSITIVITIES.indexOf(s);
@@ -57,7 +57,8 @@ export function sensitivityOf(inv: Inventory, repo: "product" | "modules" | "oth
 
 /**
  * The raise a repository write's files call for (computeTier's checkRaises), or undefined at 0. Every file counts on both
- * sides of a rename. Fails closed: no inventory, or files that weren't read, are the owner's.
+ * sides of a rename. Fails closed: no inventory, or files that weren't read, are the owner's (the panel's under full
+ * autonomy). An owner path (sensitivity 2: a supply-chain source exception) is the owner's at every autonomy (`ownerOnly`).
  */
 export function pathRaise(inv: Inventory | undefined, repo: "product" | "modules" | "other", files: ChangedFile[] | undefined): PathRaise | undefined {
   if (!inv) return { tier: 2, rule: "gate-list-unknown", reason: "the path inventory (config/kernel/paths.json) is missing or malformed, so the owner decides" };
@@ -70,7 +71,7 @@ export function pathRaise(inv: Inventory | undefined, repo: "product" | "modules
   const s = top.sensitivity;
   if (s === 0) return undefined;
   const why = `it changes ${top.path} (${top.entry!.source}: ${top.entry!.pattern})`;
-  return s === "panel" ? { tier: 1, panel: true, rule: "gate-core", reason: `it changes the gate's own core: ${why}` } : s === 2 ? { tier: 2, rule: "owner-path", reason: `the owner's path: ${why}` } : { tier: 1, rule: "reviewed-path", reason: why };
+  return s === "panel" ? { tier: 1, panel: true, rule: "gate-core", reason: `it changes the gate's own core: ${why}` } : s === 2 ? { tier: 2, ownerOnly: true, rule: "owner-path", reason: `the owner's path: ${why}` } : { tier: 1, rule: "reviewed-path", reason: why };
 }
 
 /**
@@ -84,6 +85,6 @@ export function writeRaise(inv: Inventory | undefined, planPaths: unknown, repoK
     const kind = repoKind(String(p?.repo ?? ""));
     return kind ? pathRaise(inv, kind, p?.files) : ({ tier: 2, rule: "unknown-repos", reason: `${String(p?.repo).slice(0, 100)} can't be told apart from the product repo here (not owner/name, or the product repo isn't set), so the owner decides` } as PathRaise);
   }).filter((r): r is PathRaise => Boolean(r));
-  const at = (r: PathRaise) => r.tier * 2 + (r.panel ? 1 : 0);
+  const at = (r: PathRaise) => r.tier * 4 + (r.ownerOnly ? 2 : 0) + (r.panel ? 1 : 0);
   return raises.reduce<PathRaise | undefined>((a, b) => (!a || at(b) > at(a) ? b : a), undefined);
 }

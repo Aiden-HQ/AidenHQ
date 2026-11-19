@@ -60,7 +60,7 @@ test("a release bump files kernel.apply, planned from the code host's read and t
   // The path inventory is a term of the same tier: an owner's path in any repository, or no inventory at all, is the owner's.
   const owned = (autonomy) => kernel({ autonomy, inventory: { entries: [{ repo: "any", pattern: "instance.yaml", sensitivity: 2, source: "paths.yaml" }] } }).writes.request(codehost, { kind: "kernel.apply", args: BUMP, task: "TASK-1" });
   assert.deepEqual([(await owned("off")).tier, (await owned("off")).rule], [2, "owner-path"]);
-  assert.deepEqual([(await owned("full")).tier, (await owned("full")).panel], [1, true], "under full autonomy: the panel's");
+  assert.deepEqual([(await owned("full")).tier, (await owned("full")).rule], [2, "owner-path"], "an owner path (a supply-chain source exception) is the owner's under full autonomy too");
   const blind = kernel({ inventory: null });
   assert.equal((await blind.writes.request(codehost, { kind: "kernel.apply", args: BUMP, task: "TASK-1" })).rule, "gate-list-unknown");
   // Only a module holding the role files it, and only for a kernel kind the kernel plans: a role named after another

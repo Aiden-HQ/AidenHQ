@@ -181,9 +181,10 @@ for every write it tiers, so it is also the pause switch.
   approve goes on to the owner's card with its verdict (`tier.ts` `computeTier`). Tier 2 is reviewed first too, then the owner decides.
 - `tier0`: Tier 0 runs. On Tier 1, the reviewer comments with what it would do and the owner decides (shadow mode).
 - `full`: the reviewer decides Tier 1, and the owner approves only: loosening autonomy, raising spend, new authority from
-  a non-official module, and anything he vetoed (owner, 2026-11-19: "full autonomy mode should not bug me for approval
-  almost ever"). Every other Tier 2 raise (an official module's new authority in a product move, other settings, release
-  and pin moves, an owner path, unknown files or repos, a module's own Tier 2 raise) is Tier 1 for the panel. The rules
+  a non-official module, an owner path (`paths.yaml` sensitivity 2: a supply-chain source exception, a security
+  trade-off), and anything he vetoed (owner, 2026-11-19: "full autonomy mode should not bug me for approval almost
+  ever"). Every other Tier 2 raise (an official module's new authority in a product move, other settings, release and pin
+  moves, unknown files or repos, a module's own Tier 2 raise) is Tier 1 for the panel. The rules
   mark the owner's own with `ownerOnly` (`apply-tier.ts`, the authority diff's `ownerOnly` lines) and `computeTier` alone
   applies it; a kind's own floor (`kernel.raise_cap`, a spend raise) stays the owner's. An official module is one read
   from the product's own `modules/` at the pinned commit (`sources.ts` `officialSides`); a third-party marketplace, a
