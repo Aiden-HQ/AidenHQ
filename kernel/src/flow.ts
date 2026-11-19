@@ -3,6 +3,7 @@
 //   task(id) / item(id)   the waterfall: every stage occurrence (start, end, actor), the facts, and every idle period with its reason
 //   summary({since, to, by, scope})  per stage work and wait (p50/p75, wait by reason), DORA, churn and the fleet metrics
 //   idleNow()             tasks idle now, oldest first
+//   journey({name, ...})  a declared journey's items (journeys.ts), each a bar of phase blocks; the summary adds its insights
 // A stage pairs a `to` fact with the latest open `from` fact of the same subject; a `to` that fails the stage's `where`
 // leaves it open, and an occurrence still open at the end after such a `to` is dropped (the record went the other way).
 // A task is idle while a task fact shows it open, no job of its own is queued (from its wake) or running, and no stage of it
@@ -17,6 +18,7 @@ import { DatabaseSync } from "node:sqlite";
 import type { FactRow } from "./facts.ts";
 import type { Stage } from "./flow-stages.ts";
 import { link, type Change, type Text } from "../sdk/src/quality.ts";
+import { buildItems, insights, listItems, type AuthorKind, type Built, type Dora, type Journey, type Sort } from "./journeys.ts";
 
 export type Occurrence = { name: string; label: string; module: string; from: string; start: string; end: string | null; actor: string; task: string; subject: string; module_fact: boolean };
 export type Idle = { task: string; start: string; end: string | null; reason: string; blocked_on?: string; holder: string };
@@ -234,9 +236,9 @@ function spans(fs: FactRow[], type: string, ends: string[], now: number) {
   return out;
 }
 
-export function createFlow({ db, file, stages, now = () => new Date(), incident = () => false, cacheMs = 60_000 }: {
+export function createFlow({ db, file, stages, journeys = () => [], now = () => new Date(), incident = () => false, cacheMs = 60_000 }: {
   /** The kernel's db (tests), or its file, opened here read-only (the kernel: reads never block the approval path). */
-  db?: DatabaseSync; file?: string; stages: () => Stage[]; now?: () => Date;
+  db?: DatabaseSync; file?: string; stages: () => Stage[]; journeys?: () => Journey[]; now?: () => Date;
   /** Whether a `task.created` fact files an incident (the incident module's marker), for DORA's failure and restore. */
   incident?: (f: FactRow) => boolean;
   /** How long a summary is reused for the same minute-rounded window, by and scope. */
@@ -289,15 +291,107 @@ export function createFlow({ db, file, stages, now = () => new Date(), incident 
     return { rows: [...kept.values()].sort(byTime), truncated };
   };
 
-  function summarize({ since, to, by = "stage", scope }: { since: string; to?: string; by?: By; scope?: string }) {
-    const t0 = ms(since), t1 = to ? ms(to) : now().getTime(), days = Math.max((t1 - t0) / DAY, 1 / 24);
-    // 90 days back, so a stage that began before `since` still pairs
+  /**
+   * One window's read, shared by the summary and the journey lists (reused for `cacheMs` per minute-rounded window): its facts
+   * from 90 days before `t0` (so a stage or journey that began earlier still pairs), the stage occurrences, idle periods, and
+   * every journey's items.
+   */
+  const contexts = new Map<string, { at: number; value: ReturnType<typeof read> }>();
+  function context(t0: number, t1: number) {
+    const k = `${Math.floor(t0 / 60_000)}|${Math.floor(t1 / 60_000)}`, hit = contexts.get(k);
+    if (hit && Date.now() - hit.at < cacheMs) return hit.value;
+    const value = read(t0, t1);
+    for (const [c, v] of contexts) if (Date.now() - v.at >= cacheMs) contexts.delete(c);
+    if (cacheMs > 0) contexts.set(k, { at: Date.now(), value });
+    return value;
+  }
+  function read(t0: number, t1: number) {
     const { rows, truncated } = window(t0 - 90 * DAY, t1);
-    const x = index(rows);
-    const inWin = (f: { at: string } | FactRow) => ms(f.at) >= t0 && ms(f.at) < t1;
-    const idle = new Map<string, Idle[]>();
-    const occs = pair(rows, stages());
+    const x = index(rows), occs = pair(rows, stages()), idle = new Map<string, Idle[]>();
     const idleFor = (task: string) => idle.get(task) ?? (idle.set(task, idleOf(x, task, t1, occs)), idle.get(task)!);
+    const lower = new Map<string, FactRow[]>();
+    for (const [sub, fs] of x.bySubject) { const l = sub.toLowerCase(); lower.set(l, [...(lower.get(l) ?? []), ...fs]); }
+    // a journey block's idle: the subject's own waits, then its tasks' idle periods
+    const segsOf = (tasks: string[], subject: string) => [...spans(lower.get(subject) ?? [], "work.waiting", ["work.resumed"], t1),
+      ...tasks.flatMap((t) => idleFor(t).map((i) => ({ s: ms(i.start), e: i.end ? ms(i.end) : t1, reason: i.reason })))];
+    const links = recordLinks(t0 - 90 * DAY);
+    const built = new Map(journeys().map((j) => [j.name, buildItems(j, { rows, bySubject: x.bySubject, byTask: x.byTask, ident: x.ident, now: t1, links, idle: (tasks, subject, s, e) => cover(segsOf(tasks, subject), s, e) })]));
+    return { rows, truncated, x, occs, idleFor, built, dora: doraOf(rows, x, [...built.values()].flat()) };
+  }
+
+  /**
+   * The PRs each task's done code-host writes name, from the records table (the one link for a PR's review rounds before it
+   * existed: a pr or push write is filed before the PR has a number, so only a merge's record.filed fact names it): `args.prs`
+   * and the PR URL in the outcome. Keyed `pr:<owner>/<repo>#<n>`, lowercase. None when the table isn't there (tests).
+   */
+  function recordLinks(since: number) {
+    const out = new Map<string, string[]>();
+    let rs: { task: string; args: string; outcome: string | null }[];
+    try { rs = conn.prepare("SELECT task, args, outcome FROM records WHERE state = 'done' AND created_at >= ? AND (kind LIKE '%.pr' OR kind LIKE '%.push' OR kind LIKE '%.merge')").all(iso(since)) as typeof rs; } catch { return out; }
+    for (const r of rs) {
+      const args = (() => { try { return JSON.parse(r.args) ?? {}; } catch { return {}; } })(), text = String((() => { try { return JSON.parse(r.outcome ?? "null")?.text ?? ""; } catch { return ""; } })());
+      const prs = [...(Array.isArray(args.prs) ? args.prs : []).filter((p: any) => p?.repo && p?.number).map((p: any) => `${p.repo}#${p.number}`),
+        ...[...text.matchAll(/(?:github\.com\/([\w.-]+\/[\w.-]+)\/pull|codehost:([\w.-]+\/[\w.-]+)\/change)\/(\d+)/gi)].map((m) => `${m[1] ?? m[2]}#${m[3]}`)];
+      for (const pr of new Set(prs.map((p) => `pr:${p.toLowerCase()}`))) out.set(pr, [...new Set([...(out.get(pr) ?? []), r.task])]);
+    }
+    return out;
+  }
+
+  /**
+   * DORA's five over any period, from the window's facts. Deploy frequency: healthy deploys a day. Lead time: a PR's opening to
+   * its deploy (p50). Change failure: deploys with failed health, rolled back, or shipping a PR a revert or an incident names
+   * (quality.ts's linker). Recovery: a failed deploy to the next healthy one, an incident to the deploy of its fix (p50). Rework:
+   * deploys that ship a revert or a fix (a PR titled as a fix that names a deployed PR, or one done for an incident).
+   */
+  function doraOf(rows: FactRow[], x: Index, built: Built[]) {
+    const all = rows.filter((f) => f.type === "deploy.applied");
+    const failedHealth = (f: FactRow) => f.data.health === false || /fail|unhealthy|down/i.test(String(f.data.health ?? ""));
+    const prKey = (subject: string) => subject.replace(/^pr:/, "").replace(/@.*$/, "").toLowerCase();
+    const deployedPr = rows.filter((f) => f.type === "pr.deployed");
+    const genOf = new Map(deployedPr.map((f) => [prKey(str(f.data.pr) ? `pr:${f.data.pr}` : f.subject), String(f.data.generation)]));
+    const merged = new Map(rows.filter((f) => f.type === "pr.merged").map((f) => [prKey(f.subject), str(f.data.sha)]));
+    const changes: Change[] = [...genOf.keys()].map((pr) => ({ id: pr, tier: "ran", at: "", keys: [pr, ...(merged.get(pr) ? [merged.get(pr)!.toLowerCase()] : [])], link: "", label: pr }));
+    const failed = new Set(all.filter(failedHealth).map((d) => String(d.data.generation)));
+    for (const d of all) if (d.data.revert_of != null) failed.add(String(d.data.revert_of));
+    const linked = (t: Text) => { const l = link(t, changes); return l === "unknown" || l === "none" ? undefined : l.change.id; };
+    const rework = new Set<string>();
+    for (const f of rows.filter((f) => f.type === "pr.reverted")) {
+      const [repo, num] = prKey(f.subject).split("#");
+      const g = genOf.get(linked({ id: f.id, title: "Revert", body: [f.data.of_pr, f.data.of_sha].filter((v) => typeof v === "string").join(" "), repo, number: Number(num) || undefined }) ?? "");
+      if (g) failed.add(g);
+      if (genOf.has(prKey(f.subject))) rework.add(genOf.get(prKey(f.subject))!);
+    }
+    const incidents = rows.filter((f) => f.type === "task.created" && incident(f));
+    for (const f of incidents) { const g = genOf.get(linked({ id: f.id, title: String(f.data.title ?? ""), body: String(f.data.source_marker ?? "") }) ?? ""); if (g) failed.add(g); }
+    for (const f of rows) if (f.type === "pr.opened" && /\b(hot)?fix/i.test(String(f.data.title ?? "")) && genOf.has(prKey(f.subject))) {
+      const [repo, num] = prKey(f.subject).split("#");
+      if (linked({ id: f.id, title: String(f.data.title), repo, number: Number(num) || undefined })) rework.add(genOf.get(prKey(f.subject))!);
+    }
+    const incidentTasks = new Set(incidents.flatMap((f) => [f.subject.slice(5), ...(x.children.get(f.subject.slice(5)) ?? [])]));
+    for (const b of built) if (b.tasks.some((t) => incidentTasks.has(t)) && genOf.has(prKey(b.item.subject))) rework.add(genOf.get(prKey(b.item.subject))!);
+    const opened = new Map<string, number>();
+    for (const f of rows) if (f.type === "pr.opened" && !opened.has(prKey(f.subject))) opened.set(prKey(f.subject), ms(f.at));
+    const lead = deployedPr.map((p) => { const o = opened.get(prKey(p.subject)); return o === undefined ? undefined : { at: ms(p.at), s: sec(ms(p.at) - o) }; }).filter((v) => v !== undefined);
+    const restores = [
+      ...all.filter(failedHealth).map((d) => { const n = all.find((g) => ms(g.at) > ms(d.at) && !failedHealth(g)); return n ? { at: ms(d.at), s: sec(ms(n.at) - ms(d.at)) } : undefined; }),
+      ...incidents.map((f) => { const ids = new Set([f.subject.slice(5), ...(x.children.get(f.subject.slice(5)) ?? [])]); const d = deployedPr.find((p) => p.task && ids.has(p.task) && ms(p.at) > ms(f.at)); return d ? { at: ms(f.at), s: sec(ms(d.at) - ms(f.at)) } : undefined; }),
+    ].filter((v) => v !== undefined);
+    return (p0: number, p1: number): Dora => {
+      const inP = (t: number) => t >= p0 && t < p1, ds = all.filter((d) => inP(ms(d.at)));
+      return {
+        deploys_per_day: all.length ? ds.filter((d) => !failedHealth(d)).length / Math.max((p1 - p0) / DAY, 1 / 24) : null,
+        lead_time_s: p50(lead.filter((l) => inP(l.at)).map((l) => l.s)),
+        change_fail_rate: ds.length ? ds.filter((d) => failed.has(String(d.data.generation))).length / ds.length : null,
+        recovery_s: p50(restores.filter((r) => inP(r.at)).map((r) => r.s)),
+        rework_rate: ds.length ? ds.filter((d) => rework.has(String(d.data.generation))).length / ds.length : null,
+      };
+    };
+  }
+
+  function summarize({ since, to, by = "stage", scope }: { since: string; to?: string; by?: By; scope?: string }) {
+    const t0 = ms(since), t1 = to ? ms(to) : now().getTime();
+    const c = context(t0, t1), { rows, truncated, x, occs, idleFor } = c;
+    const inWin = (f: { at: string } | FactRow) => ms(f.at) >= t0 && ms(f.at) < t1;
     const jobEnd = new Map(rows.filter((f) => f.type === "job.ended").map((f) => [f.subject, f]));
     const keyOf = (o: Occurrence): string | undefined => {
       if (by === "stage") return undefined;
@@ -333,37 +427,9 @@ export function createFlow({ db, file, stages, now = () => new Date(), incident 
       };
     });
 
-    // DORA
-    const deploys = rows.filter((f) => f.type === "deploy.applied" && inWin(f));
-    const failedHealth = (f: FactRow) => f.data.health === false || /fail|unhealthy|down/i.test(String(f.data.health ?? ""));
-    const prKey = (subject: string) => subject.replace(/^pr:/, "").replace(/@.*$/, "").toLowerCase();
-    const deployedPr = rows.filter((f) => f.type === "pr.deployed");
-    const genOf = new Map(deployedPr.map((f) => [prKey(str(f.data.pr) ? `pr:${f.data.pr}` : f.subject), String(f.data.generation)]));
-    const merged = new Map(rows.filter((f) => f.type === "pr.merged").map((f) => [prKey(f.subject), str(f.data.sha)]));
-    const changes: Change[] = [...genOf.keys()].map((pr) => ({ id: pr, tier: "ran", at: "", keys: [pr, ...(merged.get(pr) ? [merged.get(pr)!.toLowerCase()] : [])], link: "", label: pr }));
-    const failed = new Set(deploys.filter(failedHealth).map((d) => String(d.data.generation)));
-    for (const d of rows) if (d.type === "deploy.applied" && d.data.revert_of != null) failed.add(String(d.data.revert_of));
-    const linked = (t: Text) => { const l = link(t, changes); return l === "unknown" || l === "none" ? undefined : genOf.get(l.change.id); };
-    for (const f of rows.filter((f) => f.type === "pr.reverted")) {
-      const [repo, num] = prKey(f.subject).split("#");
-      const g = linked({ id: f.id, title: "Revert", body: [f.data.of_pr, f.data.of_sha].filter((v) => typeof v === "string").join(" "), repo, number: Number(num) || undefined });
-      if (g) failed.add(g);
-    }
-    const incidents = rows.filter((f) => f.type === "task.created" && incident(f));
-    for (const f of incidents) { const g = linked({ id: f.id, title: String(f.data.title ?? ""), body: String(f.data.source_marker ?? "") }); if (g) failed.add(g); }
-    const opened = new Map<string, number>();
-    for (const f of rows) if (f.type === "pr.opened" && !opened.has(prKey(f.subject))) opened.set(prKey(f.subject), ms(f.at));
-    const allDeploys = rows.filter((f) => f.type === "deploy.applied");
-    const restores = [
-      ...deploys.filter(failedHealth).map((d) => { const n = allDeploys.find((g) => ms(g.at) > ms(d.at) && !failedHealth(g)); return n ? sec(ms(n.at) - ms(d.at)) : undefined; }),
-      ...incidents.filter(inWin).map((f) => { const ids = new Set([f.subject.slice(5), ...(x.children.get(f.subject.slice(5)) ?? [])]); const d = deployedPr.find((p) => p.task && ids.has(p.task) && ms(p.at) > ms(f.at)); return d ? sec(ms(d.at) - ms(f.at)) : undefined; }),
-    ].filter((v): v is number => v !== undefined);
-    const dora = deploys.length ? {
-      deploys_per_day: deploys.filter((d) => !failedHealth(d)).length / days,
-      lead_p50: p50(deployedPr.filter(inWin).map((p) => { const o = opened.get(prKey(p.subject)); return o === undefined ? undefined : sec(ms(p.at) - o); }).filter((v): v is number => v !== undefined)),
-      failure_rate: deploys.filter((d) => failed.has(String(d.data.generation))).length / deploys.length,
-      restore_p50: p50(restores),
-    } : null;
+    // DORA (the existing four over the window; the insights carry all five with the period before)
+    const d = c.dora(t0, t1);
+    const dora = rows.some((f) => f.type === "deploy.applied" && inWin(f)) ? { deploys_per_day: d.deploys_per_day, lead_p50: d.lead_time_s, failure_rate: d.change_fail_rate, restore_p50: d.recovery_s } : null;
 
     // churn: the mature cohort (PRs merged over 30 days before `to`)
     const added = rows.filter((f) => f.type === "code.added"), rewritten = rows.filter((f) => f.type === "code.rewritten");
@@ -413,7 +479,11 @@ export function createFlow({ db, file, stages, now = () => new Date(), incident 
       cost_per_outcome: ratio(cost(ended), done.size),
       wasted_cost: cost(ended.filter((f) => f.data.acted === false || (f.task && lastStatus(f.task) === "cancelled"))),
     };
-    return { since: iso(t0), to: iso(t1), by, scope: scope ?? "all", truncated, stages: stageRows, dora, churn, fleet };
+    // insights: the first declared journey with items (flow-insights.md §3)
+    const j = journeys().find((j) => c.built.get(j.name)?.length);
+    const idleNow = (b: Built) => b.tasks.map((t) => idleFor(t).at(-1)).find((i) => i && i.end === null)?.reason ?? null;
+    const insight = j ? insights(j, c.built.get(j.name)!, { t0, t1, now: t1, previous: !truncated && t1 - t0 <= 90 * DAY, dora: c.dora, idleNow }) : null;
+    return { since: iso(t0), to: iso(t1), by, scope: scope ?? "all", truncated, stages: stageRows, dora, churn, fleet, insights: insight };
   }
   const cache = new Map<string, { at: number; value: ReturnType<typeof summarize> }>();
 
@@ -435,6 +505,18 @@ export function createFlow({ db, file, stages, now = () => new Date(), incident 
       for (const [k, v] of cache) if (Date.now() - v.at >= cacheMs) cache.delete(k);
       if (cacheMs > 0) cache.set(key, { at: Date.now(), value });
       return value;
+    },
+
+    /** The declared journeys and their phases. */
+    journeys: () => ({ journeys: journeys().map((j) => ({ name: j.name, label: j.label, phases: j.phases.map((p) => ({ name: p.name, label: p.label })) })) }),
+
+    /** A journey's items active in [since, to): undefined when no module declares it. */
+    journey(q: { name: string; since: string; to?: string; authors?: AuthorKind[]; sort?: Sort; limit?: number }) {
+      const j = journeys().find((j) => j.name === q.name);
+      if (!j) return undefined;
+      const t0 = ms(q.since), t1 = q.to ? ms(q.to) : now().getTime(), c = context(t0, t1);
+      const list = listItems(c.built.get(j.name) ?? [], { t0, t1, authors: q.authors, sort: q.sort, limit: q.limit });
+      return { journey: j.name, label: j.label, phases: j.phases.map((p) => ({ name: p.name, label: p.label })), items: list.items, truncated: list.truncated || c.truncated };
     },
 
     /** Tasks idle now (facts of the last 90 days), oldest first. */

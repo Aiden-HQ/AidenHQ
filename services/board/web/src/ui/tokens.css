@@ -77,6 +77,13 @@
   --cost-s4: light-dark(#eda100, #c98500); --cost-s5: light-dark(#e87ba4, #d55181); --cost-s6: light-dark(#6250d6, #9085e9);
   --cost-other: light-dark(#b5b1a8, #5c5a55);
 
+  /* Categorical series in a fixed order (validated for colour-blind separation between neighbours, both themes): a journey's
+     phases (Flow.tsx) by their declared order, and the three author kinds. Idle time inside a block is hatched with --hatch. */
+  --series-0: var(--cost-s1); --series-1: var(--cost-s2); --series-2: var(--cost-s3); --series-3: var(--cost-s4);
+  --series-4: var(--cost-s5); --series-5: light-dark(#4d5b75, #8a9bb8); --series-6: var(--cost-s6); --series-7: light-dark(#e34948, #e66767);
+  --heat: light-dark(#e8590c, #ff922b); /* the PR table's sequential tint: slower cells are warmer */
+  --hatch: light-dark(rgba(255, 255, 255, 0.62), rgba(17, 18, 21, 0.55));
+
   /* Full-width strips under the top bar (styles.css .offline, .alert), and the inverted toast. */
   --strip-warn-bg: light-dark(#fff3bf, #3d3410); --strip-warn-fg: light-dark(#5c4400, #f5e3a3);
   --strip-bad-bg: light-dark(#ffe3e3, #3d1518); --strip-bad-fg: light-dark(#7a1414, #f5c2c2);

@@ -18,6 +18,37 @@ check_jobs:
     timeout_min: 30
     title: "the secret scan, supply-chain checks, lint, tests and build"
     spec: { base: sha }
+# Flow (docs/design/flow.md): the kernel records these itself (kernel/src/codehost.ts localFacts, as module:codehost-local), the same
+# facts codehost-github emits. Every change here is an agent's (author_kind agent); pr.pushed is a head moving on an open change.
+roles:
+  requests: [ kernel.facts ] # the compiler's price of declaring facts: this module has no token, the kernel writes them itself
+facts:
+  pr.opened: { subject: pr }
+  pr.pushed: { subject: pr }
+  pr.closed: { subject: pr }
+  pr.checks_started: { subject: pr }
+  pr.checks_completed: { subject: pr }
+  pr.merged: { subject: pr }
+  work.waiting: { subject: pr, reasons: [ checks ] }
+  work.resumed: { subject: pr, reasons: [ checks ] }
+  code.added: { subject: pr }
+  code.rewritten: { subject: pr }
+# The PR's journey, as codehost-github declares it (a local change has no issue: it starts at its task).
+# One declaration, identical in every code host (the compiler checks): a phase a host never records is simply absent.
+journeys:
+  - name: pr
+    label: Pull requests
+    subject: pr
+    phases:
+      - { name: triage, label: Triage, from: [ issue.opened ] }
+      - { name: pickup, label: Pickup, from: [ issue.labeled, task.created ] }
+      - { name: coding, label: Coding, from: [ job.started ] }
+      - { name: review, label: AI review, from: [ record.filed ], where: { kind: [ codehost-github.pr, codehost-github.push, codehost-local.pr, codehost-local.push, runner.pr, runner.push ] } }
+      - { name: open, label: PR open, from: [ pr.opened ] }
+      - { name: ci, label: CI, from: [ pr.checks_started, pr.pushed ] }
+      - { name: merge, label: Merge review, from: [ record.filed ], where: { kind: [ codehost-github.merge, codehost-local.merge, runner.merge ] } }
+      - { name: deploy, label: Deploy, from: [ pr.merged ] }
+    end: [ pr.deployed, pr.closed ]
 # Its check jobs and an Engineer's repo-checkout read the repos it hosts, through the kernel's broker.
 codehost:
   snapshot: { repos: [ "local/*" ] }

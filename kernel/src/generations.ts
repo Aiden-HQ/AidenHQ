@@ -66,7 +66,7 @@ const contains = (repo: string, a: string, b: string) => {
  */
 export function createDeploys({ db, file, repo, days = 30 }: { db: DatabaseSync; file: string; repo: string; days?: number }): () => number {
   const facts = openFacts(db);
-  let looked = -1;
+  let looked = "";
   return () => {
   if (!existsSync(file)) return 0;
   const gens = readFileSync(file, "utf8").split("\n").filter((l) => l.trim()).flatMap((l) => { try { return [one(JSON.parse(l))]; } catch { return []; } }).filter((g) => g.n !== null && g.at);
@@ -75,10 +75,13 @@ export function createDeploys({ db, file, repo, days = 30 }: { db: DatabaseSync;
     if (g.health !== "good" && g.health !== "failed") continue;
     if (facts.record({ type: "deploy.applied", subject: `deploy:${g.n}`, version: g.health, at: g.at!, actor: "kernel", source: "poll", data: { generation: g.n, product: g.product, health: g.health, revert_of: g.revert_of } })) n++;
   }
+  // What a look covers is the newest good generation and the newest merge fact: merges that arrive after it (a backfill still
+  // running, a late poll) are looked at too, not only when the next generation lands.
   const newest = Math.max(-1, ...gens.filter((g) => g.health === "good").map((g) => g.n!));
-  if (newest <= looked) return n;
+  const state = `${newest}:${(db.prepare("SELECT max(seq) AS s FROM facts WHERE type = 'pr.merged'").get() as { s: number | null }).s ?? 0}`;
+  if (state === looked) return n;
   const slug = productRepo(repo);
-  if (!slug) return (looked = newest), n;
+  if (!slug) return (looked = state), n;
   const since = new Date(Date.now() - days * 864e5).toISOString();
   // Only the product repo's own code host may say a PR merged (its name is in the version, POST /v1/facts and localFacts):
   // any module may declare pr.merged, and none other can claim a deploy.
@@ -89,10 +92,10 @@ export function createDeploys({ db, file, repo, days = 30 }: { db: DatabaseSync;
     .filter((m) => typeof m.sha === "string" && SHA.test(m.sha) && !deployed.has(m.subject.toLowerCase()));
   const good = gens.filter((g) => g.health === "good" && g.product && SHA.test(g.product)).sort((a, b) => a.n! - b.n!);
   for (const m of merged.slice(0, CHECKS)) {
-    const g = good.find((x) => x.at! >= m.at && contains(repo, m.sha as string, x.product!));
+    const g = good.find((x) => Date.parse(x.at!) >= Date.parse(m.at) && contains(repo, m.sha as string, x.product!));
     if (g && facts.record({ type: "pr.deployed", subject: m.subject, version: "deployed", at: g.at!, actor: "kernel", source: "poll", data: { pr: m.subject.slice(3), generation: g.n } })) n++;
   }
-  if (merged.length <= CHECKS) looked = newest;
+  if (merged.length <= CHECKS) looked = state;
   return n;
   };
 }

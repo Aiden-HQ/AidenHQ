@@ -3,7 +3,10 @@
 // a fact's id is type, subject and version, so a re-send, a restart or the owner's backfill never records one twice.
 //
 // Subjects: pr:<repo>#<n>, CI per head pr:<repo>#<n>@<head>, issue:<repo>#<n> (repos in lower case). `task` is the task that opened
-// the PR, from pr-tasks.json (pr-watch.ts notePrTask).
+// the PR, from pr-tasks.json (pr-watch.ts notePrTask). Every `at` is UTC with a Z.
+//
+// Authors: `author_kind` is "agent" for the instance's GitHub App bot (appLogin), "owner" for GitHub's author_association OWNER, MEMBER or
+// COLLABORATOR, "outside" for anyone else. A push (`pr.pushed`, version = the new head) is a head change after the PR opened.
 //
 // The churn pass (every 15 minutes, a cursor per repo in the data dir) reads each repo's merged commits from its cache clone,
 // never the GitHub API. The first pass also runs the GitHub backfill once (no route, no button): the managed repos' history through
@@ -20,6 +23,16 @@ const DAY = 86_400_000;
 /** The backfill stops here: the App's hourly budget is 5,000 points and the rest of the service needs some. */
 const LOW_REMAINING = 400;
 const REPO_READ = { contents: "read", metadata: "read", pull_requests: "read", issues: "read", checks: "read" };
+/** pr.opened and issue.opened carry the author and title from this version on (the id is type, subject and version, so a re-run records them). */
+export const OPENED_VERSION = "2";
+/** The backfill runs again when this changes (v2: authors, titles, pushes, closes, CI per head). */
+const BACKFILL_VERSION = 2;
+const MAX_COMMITS = 60;
+/** Any ISO time as UTC with a Z. */
+export const utc = (at: string | number | Date): string => new Date(at).toISOString();
+/** A GitHub login as bots appear in REST (`slug[bot]`), GraphQL (`slug`) and gh (`app/slug`): one lower-case name. */
+const login = (l?: string | null) => String(l ?? "").toLowerCase().replace(/^app\//, "").replace(/\[bot\]$/, "");
+type Kind = "agent" | "owner" | "outside";
 const FAILED = new Set(["failure", "timed_out", "cancelled", "action_required", "startup_failure"]);
 
 export const prSubject = (repo: string, n: number | string) => `pr:${repo.toLowerCase()}#${n}`;
@@ -46,6 +59,8 @@ export type FlowDeps = {
   /** A GitHub token narrowed to `repo` with these permissions. */
   token?: (repo: string, perms: Record<string, string>) => Promise<string>;
   gh?: Gh;
+  /** The instance's GitHub App bot login (`<slug>[bot]`): its PRs and issues are an agent's. */
+  appLogin?: () => Promise<string | undefined>;
   /** The repo's default branch fetched into the cache clone: its git dir and branch tip. */
   fetchDefault?: (repo: string) => Promise<{ dir: string; sha: string }>;
   git?: (dir: string, args: string[]) => Promise<string>;
@@ -59,12 +74,28 @@ export function createFlow(d: FlowDeps) {
   /** The task that opened `repo#n`, when this service opened it. */
   const taskOf = (repo: string, n: number | string) => (prTasks()[`https://github.com/${repo}/pull/${n}`.toLowerCase()]?.task as string | undefined) ?? null;
   // The owner's backfill sends its facts straight to the kernel in batches (it stops and says so on a failure); every other fact queues.
-  const emit = (x: FactIn) => (x.source === "backfill" ? backfillSend(x) : emitter.emit(x));
+  const emit = (x: FactIn) => { const y = { ...x, at: utc(x.at) }; return y.source === "backfill" ? backfillSend(y) : emitter.emit(y); };
+  let appName: string | undefined;
+  /** Who an author is: the App's bot (agent), someone with OWNER, MEMBER or COLLABORATOR association (owner), anyone else (outside). */
+  async function kindOf(who?: string | null, association?: string | null): Promise<Kind> {
+    appName ??= login(await d.appLogin?.().catch(() => undefined));
+    if (login(who) && login(who) === appName) return "agent";
+    return ["OWNER", "MEMBER", "COLLABORATOR"].includes(String(association ?? "").toUpperCase()) ? "owner" : "outside";
+  }
+  /** `author` and `author_kind` for a fact's data; `association` is GitHub's author_association (REST) or authorAssociation (GraphQL). */
+  const authored = async (who?: string | null, association?: string | null) => ({ author: who ? String(who) : "ghost", author_kind: await kindOf(who, association) });
 
   const f = {
     emit, flush: emitter.flush, stop: emitter.stop, taskOf,
-    opened: (repo: string, n: number, head: string, branch: string, at = now().toISOString(), task = taskOf(repo, n), source?: "backfill") =>
-      emit({ type: "pr.opened", subject: prSubject(repo, n), version: "1", at, task, data: { repo, number: n, head, branch }, ...(source ? { source } : {}) }),
+    kindOf, authored,
+    opened: (repo: string, n: number, head: string, branch: string, at = now().toISOString(), task = taskOf(repo, n), source?: "backfill", extra: Json = {}) =>
+      emit({ type: "pr.opened", subject: prSubject(repo, n), version: OPENED_VERSION, at, task, data: { repo: repo.toLowerCase(), number: n, head, branch, ...extra }, ...(source ? { source } : {}) }),
+    /** A head change after the PR opened: version is the new head, so a repeat from another path records once. */
+    pushed: (repo: string, n: number, head: string, before: string, forced: boolean, author: string, at = now().toISOString(), task = taskOf(repo, n), source?: "backfill") =>
+      emit({ type: "pr.pushed", subject: prSubject(repo, n), version: head, at, task, data: { head, before, forced, author }, ...(source ? { source } : {}) }),
+    /** A PR closed without merging. */
+    closed: (repo: string, n: number, head: string, at = now().toISOString(), task = taskOf(repo, n), source?: "backfill") =>
+      emit({ type: "pr.closed", subject: prSubject(repo, n), version: head, at, task, data: { merged: false }, ...(source ? { source } : {}) }),
     checksStarted: (repo: string, n: number, head: string, at = now().toISOString(), task = taskOf(repo, n), source?: "backfill") =>
       emit({ type: "pr.checks_started", subject: `${prSubject(repo, n)}@${head}`, version: `${head}:1`, at, task, data: { head }, ...(source ? { source } : {}) }),
     checksCompleted: (repo: string, n: number, head: string, failed: string[], at = now().toISOString(), task = taskOf(repo, n), source?: "backfill") =>
@@ -111,12 +142,44 @@ export function createFlow(d: FlowDeps) {
     if (out.last) writeFileSync(cursorFile, JSON.stringify({ ...readJson(cursorFile, {}), [slug]: out.last }));
     return emitted;
   }
+  // ---- live issues ----
+  const issuesFile = join(d.cacheDir, "issues.json");
+  /**
+   * One repo's issues changed since its cursor (a day back on the first pass after the backfill): issue.opened for each and
+   * issue.labeled for each label event, with the ids the backfill uses, so a repeat records once. Stops under the API budget and
+   * keeps its cursor, so the next pass goes on.
+   */
+  async function issuesRepo(repo: string) {
+    if (!d.gh || !d.token) return;
+    const key = repo.toLowerCase(), startedAt = now().toISOString();
+    const since = String(readJson(issuesFile, {})[key] ?? utc(now().getTime() - DAY));
+    lowBudget = "";
+    for (let page = 1; ; page++) {
+      const items: Json[] = (await gh(repo, `/repos/${repo}/issues?state=all&since=${since}&sort=updated&direction=asc&per_page=100&page=${page}`)).body ?? [];
+      for (const i of items) if (!i.pull_request && Date.parse(i.created_at) >= Date.parse(since)) emit({ type: "issue.opened", subject: issueSubject(repo, i.number), version: OPENED_VERSION, at: i.created_at, task: null, data: { repo: key, number: i.number, labels: (i.labels ?? []).map((l: Json) => String(l.name ?? l)), state: i.state, ...(await authored(i.user?.login, i.author_association)) } });
+      if (lowBudget) return;
+      if (items.length < 100) break;
+    }
+    // Events come newest first: read back to the cursor.
+    for (let page = 1, more = true; more; page++) {
+      const events: Json[] = (await gh(repo, `/repos/${repo}/issues/events?per_page=100&page=${page}`)).body ?? [];
+      for (const e of events) {
+        if (Date.parse(e.created_at) <= Date.parse(since)) { more = false; continue; }
+        if (e.event === "labeled" && e.issue && !e.issue.pull_request) emit({ type: "issue.labeled", subject: issueSubject(repo, e.issue.number), version: `${OPENED_VERSION}:${e.id}`, at: e.created_at, task: null, data: { label: String(e.label?.name ?? ""), by: String(e.actor?.login ?? "ghost") } });
+      }
+      if (lowBudget) return;
+      if (events.length < 100) more = false;
+    }
+    writeFileSync(issuesFile, JSON.stringify({ ...readJson(issuesFile, {}), [key]: startedAt }));
+  }
   let churning = false;
   async function churnPass() {
     if (churning || !d.repos) return;
     churning = true;
     try {
       await backfill();
+      // Issues go on from the backfill's end (an unfinished backfill reads them itself).
+      if (status.state === "done") for (const repo of await d.repos()) await issuesRepo(repo).catch((e) => d.log("issue pass failed", { repo, err: String(e?.message ?? e).slice(0, 300) }));
       for (const repo of await d.repos()) await churnRepo(repo).catch((e) => d.log("churn pass failed", { repo, err: String(e?.message ?? e).slice(0, 300) }));
     } finally { churning = false; }
   }
@@ -124,7 +187,9 @@ export function createFlow(d: FlowDeps) {
   // ---- backfill ----
   type Status = { state: "idle" | "running" | "paused" | "done" | "failed"; repo?: string; emitted: number; message?: string };
   const progressFile = join(d.cacheDir, "backfill.json");
-  let status: Status = readJson(progressFile, { state: "idle", emitted: 0 }).status ?? { state: "idle", emitted: 0 };
+  // A recorded backfill of an older version starts over (its facts are idempotent: the new ones record, the old ones don't repeat).
+  const savedProgress = () => { const j = readJson(progressFile, {}); return j.version === BACKFILL_VERSION ? j : {}; };
+  let status: Status = savedProgress().status ?? { state: "idle", emitted: 0 };
   if (status.state === "running") status = { ...status, state: "paused", message: "the service restarted: it goes on at the next pass" };
   let buffer: FactIn[] = [];
   async function backfillFlush() {
@@ -155,30 +220,59 @@ export function createFlow(d: FlowDeps) {
       if (items.length < 100) return;
     }
   }
+  type Head = { sha: string; at: string; forced: boolean; author: string; starts: number[]; ends: number[]; failed: string[] };
+  /**
+   * A PR's heads, oldest first, from its timeline: each commit GitHub still holds check runs for, each force-push, and the current
+   * head. Each carries its CI (a head's check runs: started with its first, ended with its last). A commit pushed in the same push as
+   * a later one has no runs of its own and is no head.
+   */
+  async function headsOf(repo: string, n: number, current: string, currentAt: string): Promise<Head[]> {
+    const events: Json[] = [];
+    await pages(repo, `/repos/${repo}/issues/${n}/timeline`, (e) => { if (e.event === "committed" || e.event === "head_ref_force_pushed") events.push(e); });
+    const by = new Map<string, Head>();
+    const add = (sha: string, at: string, forced: boolean, author: string) => { if (sha && !by.has(sha)) by.set(sha, { sha, at, forced, author, starts: [], ends: [], failed: [] }); };
+    for (const e of events.filter((x) => x.event === "committed").slice(0, MAX_COMMITS)) add(String(e.sha), String(e.committer?.date ?? e.author?.date ?? ""), false, String(e.author?.name ?? "ghost"));
+    for (const e of events.filter((x) => x.event === "head_ref_force_pushed")) { const h = by.get(String(e.commit_id)); if (h) Object.assign(h, { at: e.created_at, forced: true, author: String(e.actor?.login ?? "ghost") }); else add(String(e.commit_id), e.created_at, true, String(e.actor?.login ?? "ghost")); }
+    add(current, currentAt, false, "ghost");
+    const all = [...by.values()];
+    for (const h of all) {
+      const runs = (await gh(repo, `/repos/${repo}/commits/${h.sha}/check-runs?per_page=100`)).body?.check_runs ?? [];
+      h.starts = runs.map((r: Json) => Date.parse(r.started_at)).filter(Number.isFinite);
+      h.ends = runs.map((r: Json) => Date.parse(r.completed_at));
+      h.failed = runs.filter((r: Json) => FAILED.has(String(r.conclusion))).map((r: Json) => String(r.name)).slice(0, 20);
+    }
+    // Heads: a commit with CI, a force-push, the current head; a push's time is when its CI began (a commit's own date predates it).
+    const heads = all.filter((h) => h.starts.length || h.forced || h.sha === current);
+    for (const h of heads) if (!h.forced && h.starts.length) h.at = utc(Math.min(...h.starts));
+    for (const h of heads) h.at = utc(h.at || currentAt);
+    return heads.sort((a, b) => a.at.localeCompare(b.at));
+  }
   async function backfillRepo(repo: string, done: Record<string, number>) {
     status.repo = repo;
-    await pages(repo, `/repos/${repo}/issues?state=all&sort=created&direction=asc`, (i) => {
+    await pages(repo, `/repos/${repo}/issues?state=all&sort=created&direction=asc`, async (i) => {
       if (i.pull_request) return;
-      backfillSend({ type: "issue.opened", subject: issueSubject(repo, i.number), version: "1", at: i.created_at, task: null, data: { repo, number: i.number, labels: (i.labels ?? []).map((l: Json) => String(l.name ?? l)), state: i.state } });
+      emit({ type: "issue.opened", subject: issueSubject(repo, i.number), version: OPENED_VERSION, at: i.created_at, task: null, source: "backfill", data: { repo: repo.toLowerCase(), number: i.number, labels: (i.labels ?? []).map((l: Json) => String(l.name ?? l)), state: i.state, ...(await authored(i.user?.login, i.author_association)) } });
     });
     await pages(repo, `/repos/${repo}/issues/events`, (e) => {
       if (e.event !== "labeled" || !e.issue || e.issue.pull_request) return;
-      backfillSend({ type: "issue.labeled", subject: issueSubject(repo, e.issue.number), version: String(e.id), at: e.created_at, task: null, data: { label: String(e.label?.name ?? "") } });
+      emit({ type: "issue.labeled", subject: issueSubject(repo, e.issue.number), version: `${OPENED_VERSION}:${e.id}`, at: e.created_at, task: null, source: "backfill", data: { label: String(e.label?.name ?? ""), by: String(e.actor?.login ?? "ghost") } });
     });
     const key = repo.toLowerCase();
     await pages(repo, `/repos/${repo}/pulls?state=all&sort=created&direction=asc`, async (p) => {
       if (p.number <= (done[key] ?? 0)) return;
       const head = String(p.head?.sha ?? ""), task = taskOf(repo, p.number);
-      f.opened(repo, p.number, head, String(p.head?.ref ?? ""), p.created_at, task, "backfill");
-      // Check runs of the head GitHub still has: CI started when its first run did and ended with its last.
-      const runs = (await gh(repo, `/repos/${repo}/commits/${head}/check-runs?per_page=100`)).body?.check_runs ?? [];
-      const starts = runs.map((r: Json) => Date.parse(r.started_at)).filter(Number.isFinite);
-      if (starts.length) {
-        f.checksStarted(repo, p.number, head, new Date(Math.min(...starts)).toISOString(), task, "backfill");
-        const ends = runs.map((r: Json) => Date.parse(r.completed_at));
-        if (ends.every(Number.isFinite)) f.checksCompleted(repo, p.number, head, runs.filter((r: Json) => FAILED.has(String(r.conclusion))).map((r: Json) => String(r.name)).slice(0, 20), new Date(Math.max(...ends)).toISOString(), task, "backfill");
+      const heads = await headsOf(repo, p.number, head, p.updated_at ?? p.created_at);
+      // The head the PR opened at is the first of its heads; every later one is a push.
+      const first = heads[0]?.sha ?? head;
+      f.opened(repo, p.number, first, String(p.head?.ref ?? ""), p.created_at, task, "backfill", { title: String(p.title ?? ""), ...(await authored(p.user?.login, p.author_association)) });
+      for (const [i, h] of heads.entries()) {
+        if (i) f.pushed(repo, p.number, h.sha, heads[i - 1]!.sha, h.forced, h.author, h.at, task, "backfill");
+        if (!h.starts.length) continue;
+        f.checksStarted(repo, p.number, h.sha, utc(Math.min(...h.starts)), task, "backfill");
+        if (h.ends.every(Number.isFinite)) f.checksCompleted(repo, p.number, h.sha, h.failed, utc(Math.max(...h.ends)), task, "backfill");
       }
       if (p.merged_at) f.merged(repo, p.number, head, String(p.merge_commit_sha ?? ""), p.merged_at, String(p.title ?? ""), String(p.body ?? ""), task, "backfill");
+      else if (p.state === "closed") f.closed(repo, p.number, head, p.closed_at ?? p.updated_at, task, "backfill");
       done[key] = p.number;
     });
     delete done[key];
@@ -191,7 +285,7 @@ export function createFlow(d: FlowDeps) {
     if (status.state === "done" || !d.repos || !d.token || !d.gh) return Promise.resolve();
     status = { state: "running", emitted: 0 };
     lowBudget = "";
-    const progress = readJson(progressFile, {}).done ?? {};
+    const progress = savedProgress().done ?? {};
     running = (async () => {
       try {
         for (const repo of await d.repos!()) await backfillRepo(repo, progress);
@@ -200,14 +294,14 @@ export function createFlow(d: FlowDeps) {
         status = e instanceof Paused ? { ...status, state: "paused", message: `${e.message}: it goes on at a later pass` } : { ...status, state: "failed", message: String((e as Error).message).slice(0, 300) };
         d.log("backfill stopped", { ...status });
       } finally {
-        writeFileSync(progressFile, JSON.stringify({ done: status.state === "done" ? {} : progress, status }));
+        writeFileSync(progressFile, JSON.stringify({ version: BACKFILL_VERSION, done: status.state === "done" ? {} : progress, status }));
         running = undefined;
       }
     })();
     return running;
   }
   return Object.assign(f, {
-    churnPass, churnRepo, backfill,
+    churnPass, churnRepo, issuesRepo, backfill,
     /** The churn loop: a first pass shortly after start, then every 15 minutes. */
     startChurn() {
       const t = setInterval(() => void churnPass(), 15 * 60_000);

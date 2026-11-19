@@ -66,4 +66,7 @@ test("a fact emitter drops a batch the kernel refuses and keeps one it couldn't 
   await e.flush();
   assert.deepEqual(sent.map((f) => f.version), ["2"]);
   assert.equal(logged.filter((m) => /refused/.test(m)).length, 1);
+  e.emit({ type: "a", subject: "s", version: "3", at: "2026-11-19T14:00:00+04:00" });
+  await e.flush();
+  assert.equal(sent.at(-1).at, "2026-11-19T10:00:00.000Z", "an offset is sent as UTC");
 });

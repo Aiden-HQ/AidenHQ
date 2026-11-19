@@ -48,6 +48,7 @@
     "manifest key generated_secrets": {"state":"experimental","fp":""},
     "manifest key isolation": {"state":"experimental","fp":""},
     "manifest key jobcaps": {"state":"experimental","fp":""},
+    "manifest key journeys": {"state":"experimental","fp":""},
     "manifest key kernel": {"state":"experimental","fp":""},
     "manifest key labels": {"state":"experimental","fp":""},
     "manifest key license": {"state":"experimental","fp":""},
