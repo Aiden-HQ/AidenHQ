@@ -183,6 +183,7 @@ main() {
     genMark "$n" good
     rm -f "$prev_config"
     echo "generation $n is good: the last known good"
+    retireUnits
     echo "apply timing: total $(apply_secs "$apply_t0")s"
     return 0
   else why="$HEALTH_WHY"; fi
@@ -191,6 +192,19 @@ main() {
   genMark "$n" failed "$why" "$log"
   echo "generation $n failed: $why"
   revertTo "$n" "$why" "$log"
+}
+
+# Units this release no longer has, removed only once the generation is good: an older release's updater ran this apply as
+# its own child, and stopping or removing a unit that is this apply's parent kills the apply before its health verdict. The
+# running unit is never stopped here (its file goes, systemd finishes it); only its timer, which parents nothing, is stopped.
+# The release update timer is gone (the kernel checks for releases and files each as an apply).
+retireUnits() {
+  local units="$HOME/.config/systemd/user"
+  if [ -e "$units/aidenhq-update.timer" ] || [ -e "$units/aidenhq-update.service" ]; then
+    systemctl --user disable --quiet aidenhq-update.timer 2>/dev/null || true
+    systemctl --user stop aidenhq-update.timer 2>/dev/null || true
+    rm -f "$units/aidenhq-update.service" "$units/aidenhq-update.timer" && systemctl --user daemon-reload && echo "release update timer removed (the kernel files releases now)"
+  fi
 }
 
 # Generation n failed (marked so already): its whole snapshot put back, then the last known good re-applied by a child in
@@ -502,11 +516,6 @@ switchOver() {
   elif [ -e "$units/aidenhq-backup.timer" ]; then
     systemctl --user disable --now --quiet aidenhq-backup.timer
     rm -f "$units/aidenhq-backup.service" "$units/aidenhq-backup.timer" && systemctl --user daemon-reload && echo "backup timer removed (no backup_repository)"
-  fi
-  # The release update timer is gone (the kernel checks for releases and files each as an apply): an older host's is removed.
-  if [ -e "$units/aidenhq-update.timer" ] || [ -e "$units/aidenhq-update.service" ]; then
-    systemctl --user disable --now --quiet aidenhq-update.timer 2>/dev/null || true
-    rm -f "$units/aidenhq-update.service" "$units/aidenhq-update.timer" && systemctl --user daemon-reload && echo "release update timer removed (the kernel files releases now)"
   fi
   # The monitoring module's host metrics (ops/host-metrics.sh): its timer runs while compile made the textfile directory
   # (the module is on), and is removed once the module is off. Its last EnvironmentFile= names the checkout this apply
