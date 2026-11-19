@@ -2,7 +2,7 @@
 // @mention of the bot in that channel becomes a task for that agent, one Slack thread per task. Only mentions wake the agent;
 // it reads the channel's history and the thread through slack_channel_context, which answers only for the channel bound to
 // the calling agent. A binding is changed only by the owner's own command: the listener files `channel-slack.bind` (Tier 0,
-// a kernel record, so every change is on the record) after checking the Slack user id against OWNER_SLACK_USER_ID, and the
+// a kernel record, so every change is on the record) after checking the Slack user id against the paired owner's, and the
 // executor checks it again. The table lives in this module's store; the kernel never reads it.
 import { randomBytes } from "node:crypto";
 import type { Executor } from "./aidenhq-sdk/executor.js";

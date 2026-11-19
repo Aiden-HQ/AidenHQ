@@ -74,7 +74,7 @@ writes:
       reads: "Nothing new: the note below."
       cost: "No model cost."
       details: "{{note}}"
-  # /aiden assign-channel and unassign-channel (the owner's own command, checked against OWNER_SLACK_USER_ID): the module files it
+  # /aiden assign-channel and unassign-channel (the owner's own command, checked against the paired owner): the module files it
   # itself, Tier 0 (a record, nothing to approve); no agent tool maps to it, so no agent can bind a channel.
   bind:
     args: schemas/bind.json
@@ -105,11 +105,8 @@ services:
       data: ["slack-live:/data"]
       env:
         SLACK_LIVE_DB: /data/slack-live.sqlite
-        # Whose Slack words count and who gets paged is the paired owner (state in /data). These two .env values only seed it once
-        # on an instance that predates pairing; they leave this block once every instance has run it.
-        OWNER_SLACK_USER_ID: "${OWNER_SLACK_USER_ID:-}"
+        # Whose Slack words count and who gets paged is the paired owner (state in /data): pairing on the board is the only way.
         IGNORE_CHANNELS: "${SLACK_LIVE_IGNORE_CHANNELS:-}"
-        OWNER_COMMAND_CHANNEL: "${OWNER_COMMAND_CHANNEL:-}"
         SLACK_POST_CHANNELS: "${settings.slack_post_channels}"
         MCP_BEARER_TOKEN_FILE: ${secrets.slack_live_service_key}
         # The kernel's bearer on /transport/send: this module's own token.
