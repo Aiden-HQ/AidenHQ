@@ -1,14 +1,14 @@
 name: platform
-description: "The product's own gate: what a change to the product repo needs (the gate's core paths, role handbooks, module and compose files by content), the owner-approval records, and the Dependabot pin-only and supply-chain rule for product merges."
+description: "The product's own gate: the platform check on every push, PR and merge (the owner-approval records change alone), the fork switch-back routine and the improving prompts."
 requires: [ engineering ] # the Engineer holds the platform-engineer role its fork routine and pin bumps are filed to
 license: MIT
-# A check (P5, spec §3.5) at write.filed for the code host's pushes, PRs and merges: it raises or denies, never lowers.
-# src/check.mjs; the runner calls it in-process on every git write's tier today, and the kernel dispatches it at
-# write.filed once those kinds are kernel records (lean-core 3b).
+# A check (P5, spec §3.5) at write.filed on the code hosts' pushes, PRs and merges: it raises or denies, never lowers.
+# src/check.mjs, which the kernel runs in process on every filing of these kinds (kernel/src/writes.ts), beside the path
+# inventory (paths.yaml); a hard gate (kernel/src/gates.ts): it always enforces.
 checks:
   - id: product-gate
     at: write.filed
-    kinds: [ github.push, github.pr, github.merge ]
+    kinds: [ github.push, github.pr, github.merge, codehost-local.push, codehost-local.pr, codehost-local.merge ]
 # A module's contract kit as a check job (kernel/src/checkjobs.ts, P8): run in a credential-free box on a snapshot of the module's
 # source, `path` the module's folder in it. It runs only where the asking module's code host grant can snapshot the repository;
 # any other source can't be checked, and its modules stay `declared` (scripts/compiler/sources.ts) until it can.

@@ -91,6 +91,9 @@ test("a job writes on its own task and the tasks it created, as its agent throug
   assert.equal(r.status, 409);
   assert.match(r.json.error.message, /delegates to/);
   assert.equal((await act("ada", "POST", "/api/companies/co/issues", { title: "For someone", assigneeUserId: "u-other" })).status, 403);
+  // Every open task has a holder: a task for nobody is refused.
+  r = await act("ada", "POST", "/api/companies/co/issues", { title: "For nobody" });
+  assert.deepEqual([r.status, /every open task has a holder/.test(r.json.error.message)], [400, true]);
   // One rule, in the kernel (delegateIds): with no delegate_to the chief of staff delegates to anyone in its company, a lead to its
   // direct reports and the Engineers, and the lead is refused for an agent that isn't its own.
   const give = (who, to) => act(who, "POST", "/api/companies/co/issues", { title: "Take this", assigneeAgentId: to, status: "todo" });
@@ -116,6 +119,11 @@ test("a job writes on its own task and the tasks it created, as its agent throug
   r = await act("ada", "PATCH", `/api/issues/${kid.id}`, { status: "done" });
   assert.equal(r.status, 403);
   assert.match(r.json.error.message, /only this job's own task is finished here/);
+  // Handing its own task back names the owner: to nobody is refused, to the owner is written.
+  r = await act("ada", "PATCH", "/api/issues/WOR-1", { assigneeAgentId: null, status: "todo" });
+  assert.deepEqual([r.status, /handing a task back names the owner/.test(r.json.error.message)], [400, true]);
+  r = await act("ada", "PATCH", "/api/issues/WOR-1", { assigneeAgentId: null, assigneeUserId: "u-owner", status: "todo" });
+  assert.equal(r.status, 200);
 });
 
 test("the chief of staff comments on any task of its company, heard by that task's agent, and nothing more", async (t) => {
@@ -131,14 +139,16 @@ test("the chief of staff comments on any task of its company, heard by that task
   assert.equal((await act("ada", "POST", "/api/issues/WOR-2/comments", { body: "Hello." })).status, 403);
 });
 
-test("any agent comments on the shared Fleet issues log, and only comments; a refusal's log line names its agent", async (t) => {
+test("any agent comments on the shared Fleet issues log, and only comments, even the agent that holds it; a refusal's log line names its agent", async (t) => {
   const { k, h, act } = await setup(t);
+  h.issues[FLEET].assigneeAgentId = ADA; // setup's log tasks are held by an agent: holding one never widens what it writes there
   const r = await act("ada", "POST", "/api/issues/WOR-4/comments", { body: "log · fleet-check · nothing changed" });
   assert.equal(r.status, 201);
   assert.equal(h.comments.at(-1).authorAgentId, ADA);
   assert.equal((await act("ada", "PATCH", "/api/issues/WOR-4", { status: "done" })).status, 403);
+  assert.equal((await act("ada", "POST", "/api/companies/co/issues", { title: "Under the log", parentId: FLEET, assigneeAgentId: ADA })).status, 403);
   assert.equal((await act("ada", "POST", "/api/issues/WOR-2/comments", { body: "Hello." })).status, 403);
-  assert.deepEqual(k.log.filter((l) => l.msg === "cp refused").map((l) => [l.module, l.agent, l.path]), [["todo", "ada", "/api/issues/WOR-4"], ["todo", "ada", "/api/issues/WOR-2/comments"]]);
+  assert.deepEqual(k.log.filter((l) => l.msg === "cp refused").map((l) => [l.module, l.agent, l.path]), [["todo", "ada", "/api/issues/WOR-4"], ["todo", "ada", "/api/companies/co/issues"], ["todo", "ada", "/api/issues/WOR-2/comments"]]);
 });
 
 test("no control-plane identity, no call: a caller whose agent the kernel holds no key for is refused before anything runs", async (t) => {

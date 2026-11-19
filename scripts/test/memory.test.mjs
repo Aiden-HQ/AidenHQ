@@ -20,19 +20,21 @@ function inst(settings = {}, memory) {
   return dir;
 }
 
-test("setup: an inbox is only a task it created and nobody holds; the ids go to the grants table", async () => {
+test("setup: an inbox is only a task it created, held by its agent (one found unheld is handed to it); the ids go to the grants table", async () => {
   const issues = [
     { id: "planted", createdByAgentId: "ag", createdByUserId: null, description: "<!-- source:memory-inbox:alpha -->" },
     { id: "taken", createdByUserId: "u1", assigneeAgentId: "ag", description: "<!-- source:memory-inbox:alpha -->" },
-    { id: "real-beta", createdByUserId: "u1", description: "<!-- source:memory-inbox:beta -->" },
+    { id: "real-beta", identifier: "WOR-2", status: "backlog", createdByUserId: "u1", description: "<!-- source:memory-inbox:beta -->" },
   ];
-  const posted = [];
+  const posted = [], patched = [];
   const api = async (method, path, body) => {
     if (path === "/api/cli-auth/me") return { json: { userId: "u1" } };
     if (method === "POST") return (posted.push(body), { json: { id: "new-alpha", identifier: "WOR-1" } });
+    if (method === "PATCH") return (patched.push([path, body]), { json: {} });
     return { json: issues };
   };
   const { ensureMemoryInboxes } = await import("../modules.mjs");
-  assert.deepEqual(await ensureMemoryInboxes({ api, companyId: "co", keys: ["alpha", "beta"], step: () => {} }), { alpha: "new-alpha", beta: "real-beta" });
-  assert.deepEqual(posted.map((p) => p.title), ["Memory inbox: alpha"]);
+  assert.deepEqual(await ensureMemoryInboxes({ api, companyId: "co", keys: ["alpha", "beta"], holders: { alpha: "ag-alpha", beta: "ag-beta" }, step: () => {} }), { alpha: "new-alpha", beta: "real-beta" });
+  assert.deepEqual(posted.map((p) => [p.title, p.assigneeAgentId, p.status]), [["Memory inbox: alpha", "ag-alpha", "backlog"]]);
+  assert.deepEqual(patched, [["/api/issues/real-beta", { assigneeAgentId: "ag-beta", assigneeUserId: null, status: "backlog" }]]);
 });

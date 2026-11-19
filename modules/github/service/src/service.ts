@@ -265,7 +265,8 @@ export function createService(o: Options) {
       const def = String(info.default_branch ?? "main");
       const empty = !(await fetchRemote(s, def, "ws").then(() => true, () => false));
       const mb = empty ? "" : await git(dir, ["merge-base", b.sha, `refs/remote/${def}`]).catch(() => "");
-      const files = (await git(dir, ["diff", "--no-ext-diff", "--no-textconv", "--name-only", "-z", mb || EMPTY_TREE, b.sha])).split("\0").filter(Boolean);
+      // No renames: a file moved counts at both paths (one moved out of kernel/ still changes kernel/).
+      const files = (await git(dir, ["diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--name-only", "-z", mb || EMPTY_TREE, b.sha])).split("\0").filter(Boolean);
       diff += `${await diffOf(dir, mb || EMPTY_TREE, b.sha)}\n`;
       branches.push({ repo: s.slug, branch: b.branch, sha: b.sha, base: mb || undefined, files, defaultBranch: def, empty });
     }

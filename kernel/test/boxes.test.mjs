@@ -3,13 +3,14 @@
 // restarted kernel renewing the lease of a job still running.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { createAdmission } from "../src/admission.ts";
 import { createBoxes, launcherClient } from "../src/boxes.ts";
+import { createOnce } from "../src/once.ts";
 import { createIdentity } from "../src/identity.ts";
 import { admittedJob, createJobs } from "../src/jobs.ts";
 import { createJobTools } from "../src/jobtools.ts";
@@ -73,19 +74,22 @@ async function host(t) {
       mkdirSync(join(cfg.workDir, "tasks", "PEN-3", repo.split("/")[1]), { recursive: true });
     },
   };
-  const make = (now) => createBoxes({ db, cfg, jobs, cleanup: jobTools.cleanup, clones, call: launcherClient(url, () => secret("launcher_kernel_key")), secret, whoami, connections: () => ({ slack: {}, tasks: {} }), identity: (a) => ({ name: "Kai", email: `${grants[a].key}@acme.aidenhq.ai` }), handbook: (a) => (existsSync(join(dir, "config/handbooks", `${a}.md`)) ? readFileSync(join(dir, "config/handbooks", `${a}.md`), "utf8") : undefined), log: () => {}, ...(now ? { now } : {}) });
+  const attached = [];
+  const attachments = { list: async () => attached.map((a) => ({ originalFilename: a.name, byteSize: a.data.length })), add: async (task, name, type, data) => void attached.push({ task, name, type, data }) };
+  const once = createOnce(db);
+  const make = (now) => createBoxes({ db, cfg, jobs, attachments, once, cleanup: jobTools.cleanup, clones, call: launcherClient(url, () => secret("launcher_kernel_key")), secret, whoami, connections: () => ({ slack: {}, tasks: {} }), identity: (a) => ({ name: "Kai", email: `${grants[a].key}@acme.aidenhq.ai` }), handbook: (a) => (existsSync(join(dir, "config/handbooks", `${a}.md`)) ? readFileSync(join(dir, "config/handbooks", `${a}.md`), "utf8") : undefined), log: () => {}, ...(now ? { now } : {}) });
   boxes = make();
   const wakes = new Map();
   const admission = createAdmission({
     provenance: { settled: () => true, filedBy: () => undefined }, routineCap: async () => undefined, nextTurn: jobTools,
     db, grants: () => grants, kinds: () => ({}), capacity: () => 12, spend: () => [], mayDispatch: () => true, log: () => {},
     cp: { task: async (id) => ({ id, identifier: `PEN-${id.split("-")[1]}`, assigneeAgentId: "agent-1", status: "todo" }) },
-    wakes: { claimed: (_m, k) => wakes.get(k), bind: () => {}, unclaim: () => {} },
+    wakes: { claimed: (_m, k) => wakes.get(k), bind: () => [], unclaim: () => {} },
     launch: (job) => boxes.launch(job),
   });
   const admit = (task) => { wakes.set(task, { task, agent: "agent-1" }); return admission.admit("acme-dispatch", { wake: task, prompt: "hello" }); };
   const release = () => writeFileSync(join(cfg.logsDir, "release"), "");
-  return { dir, cfg, db, grants, calls, whoami, admit, release, make, jobTools, cloned };
+  return { attached, dir, cfg, db, grants, calls, whoami, admit, release, make, jobTools, cloned };
 }
 
 test("admit → box → run: the kernel's key, the job token as the box's credential, the frozen tools in its config, the handbook home", async (t) => {
@@ -195,4 +199,41 @@ test("a release runs once however often it is asked; a cleanup spares a workspac
   await boxes.tend();
   assert.ok(existsSync(two));
   assert.ok(h.db.prepare("SELECT released FROM jobs WHERE id = 'j-2'").get().released > 0);
+});
+
+test("a job's .aidenhq/out files are attached to its task when it ends: regular files only (a link is refused, never read), at most 20, once", async (t) => {
+  const h = await host(t);
+  const secretFile = join(h.dir, "host-secret.txt");
+  writeFileSync(secretFile, "host secret");
+  const out = join(h.cfg.workDir, "tasks", "PEN-1", ".aidenhq", "out");
+  const job = await h.admit("task-1"); // creates the workspace
+  mkdirSync(out, { recursive: true });
+  writeFileSync(join(out, "report.md"), "# done\n");
+  writeFileSync(join(out, "home.png"), Buffer.from([137, 80, 78, 71]));
+  writeFileSync(join(out, ".hidden"), "x");
+  symlinkSync(secretFile, join(out, "leak.txt"));
+  mkdirSync(join(out, "sub"));
+  for (let i = 0; i < 25; i++) writeFileSync(join(out, `z${String(i).padStart(2, "0")}.txt`), `n${i}`);
+  h.release();
+  await until("the box released", () => h.db.prepare("SELECT released FROM jobs WHERE id = ?").get(job.id).released > 0);
+  const names = h.attached.map((a) => a.name);
+  assert.equal(names.length, 20);
+  assert.deepEqual(names.slice(0, 2), ["home.png", "report.md"]);
+  assert.equal(h.attached[0].type, "image/png");
+  assert.ok(!names.includes("leak.txt") && !names.includes(".hidden") && !names.includes("sub"));
+  assert.ok(h.attached.every((a) => a.task === "task-1" && !a.data.includes("host secret")));
+});
+
+test("a link where .aidenhq/out should be is never followed", async (t) => {
+  const h = await host(t);
+  const elsewhere = join(h.dir, "elsewhere");
+  mkdirSync(elsewhere);
+  writeFileSync(join(elsewhere, "host-secret.txt"), "host secret");
+  const job = await h.admit("task-1");
+  const ws = join(h.cfg.workDir, "tasks", "PEN-1");
+  mkdirSync(join(ws, ".aidenhq"), { recursive: true });
+  symlinkSync(elsewhere, join(ws, ".aidenhq", "out"));
+  h.release();
+  await until("the box released", () => h.db.prepare("SELECT released FROM jobs WHERE id = ?").get(job.id).released > 0);
+  assert.deepEqual(h.attached, []);
 });

@@ -41,8 +41,8 @@ export interface Hooks {
   args?(name: string, args: Record<string, unknown>, tool: Tool): Record<string, unknown>;
   /** Tools never listed or called (a real security rule; most connections have none). */
   deny?: RegExp;
-  /** A tool's answer as it goes back (ClickHouse: cut to a size). */
-  result?(result: CallToolResult): CallToolResult;
+  /** A tool's answer as it goes back (ClickHouse: cut to a size; Primer: the digest fenced as untrusted). */
+  result?(result: CallToolResult, name: string): CallToolResult;
   /** Whether the upstream says a tool only reads. Default: it marks it readOnlyHint. */
   isRead?(tool: Tool): boolean;
   /** A problem that makes the connection unusable though signed in (Jira: the site isn't reachable). */
@@ -170,7 +170,7 @@ export function createVendorProxy(o: ProxyOptions): VendorProxy {
       if (!tool) throw new Error(`${o.name} doesn't offer ${name}`);
       const sent = hooks.args ? hooks.args(name, args, tool) : args;
       const result = (await u.client.callTool({ name, arguments: sent }, undefined, o.callTimeoutMs ? { timeout: o.callTimeoutMs } : undefined)) as CallToolResult;
-      return hooks.result ? hooks.result(result) : result;
+      return hooks.result ? hooks.result(result, name) : result;
     });
   }
 

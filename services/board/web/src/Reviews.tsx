@@ -511,7 +511,15 @@ function OneOffDialog({ reviewers, orgs, url: url0 = "", reviewer: r0, onClose }
   // Reviews post as the owner only in the orgs the owner allowed: one outside them is added first (a settings change).
   const org = valid ? ownerOf(url.trim().split("/")[3]!) : "";
   const [added, setAdded] = useState<{ org: string; identifier: string } | null>(null);
-  const outside = Boolean(org) && !orgs.includes(org);
+  // The orgs as applied: once an added org's change applies, Run review opens without leaving the dialog.
+  const [allowed, setAllowed] = useState(orgs);
+  const outside = Boolean(org) && !allowed.includes(org);
+  const waiting = outside && added?.org === org;
+  useEffect(() => {
+    if (!waiting) return;
+    const t = setInterval(() => void api.reviewsSetup().then((s) => setAllowed(s.comment_orgs), () => {}), 5_000);
+    return () => clearInterval(t);
+  }, [waiting]);
   const addOrg = async () => {
     setBusy(true);
     setErr("");
@@ -551,8 +559,8 @@ function OneOffDialog({ reviewers, orgs, url: url0 = "", reviewer: r0, onClose }
       }
     >
       <p>Any PR your GitHub sign-in can read. The review posts to the PR like a watched repo's would.</p>
-      {outside && (added?.org === org ? (
-        <Banner action={<a className="btn sm" href={`#/t/${added.identifier}`}>Open {added.identifier}</a>}>Allowing {org}: run the review once the change is applied, usually within a few minutes.</Banner>
+      {outside && (waiting ? (
+        <Banner action={<a className="btn sm" href={`#/t/${added!.identifier}`}>Open {added!.identifier}</a>}>Allowing {org}: Run review opens here once the change is applied, usually within a few minutes.</Banner>
       ) : (
         <Banner tone="warn">Reviews don't comment as you in {org} yet. Allow it, then run the review.</Banner>
       ))}

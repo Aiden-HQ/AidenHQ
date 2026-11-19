@@ -3,7 +3,7 @@ description: "The one way a message reaches the owner: agents' `notify`, and eve
 # It never speaks as the owner and holds no channel token: it takes the kernel's queued owner messages and has the kernel send
 # each one to a channel's transport (kernel.notify), and reads the task a message is about (kernel.cp-read).
 roles:
-  requests: [ kernel.cp-read, kernel.notify, kernel.work-read ] # work-read: whether an agent is running a job on a task (notify's heading)
+  requests: [ kernel.cp-read, kernel.notify, kernel.work-read, kernel.wake ] # work-read: whether an agent is running a job on a task (notify's heading); wake: a decision question's wait on the asker's task (POST /v1/wait)
 connections:
   owner_channel:
     setup: "Nothing to set up: Slack and Telegram are its channels (their own setup flows)."

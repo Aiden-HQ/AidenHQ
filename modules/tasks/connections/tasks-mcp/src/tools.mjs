@@ -45,7 +45,7 @@ export async function directory() {
     const res = await fetch(`${KERNEL}/v1/agents`, { headers: { authorization: `Bearer ${SERVICE_KEY}` }, signal: AbortSignal.timeout(10_000) });
     if (!res.ok) throw new Error(String(res.status));
     const j = await res.json();
-    dirCache = { agents: j.agents ?? {} };
+    dirCache = { agents: j.agents ?? {}, log_tasks: j.log_tasks ?? [] };
     dirAt = Date.now();
   } catch (err) {
     if (!dirCache) throw new Error(`Refused: the agent directory is unavailable (${String(err.message ?? err).slice(0, 100)}).`);
@@ -118,6 +118,14 @@ async function api(method, path, body) {
     throw err;
   }
   return text ? JSON.parse(text) : {};
+}
+
+/** The kernel records a wait on the caller's own task (POST /v1/wait, kernel idle.ts): its reason, and when it resumes. */
+async function kernelWait(body) {
+  const res = await fetch(`${KERNEL}/v1/wait`, { method: "POST", headers: { ...authHeaders(), "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(20_000) });
+  const text = await res.text();
+  if (!res.ok) throw new Error(`the kernel refused the wait (${res.status}): ${text.slice(0, 300)}`);
+  return JSON.parse(text);
 }
 
 async function apiBytes(path) {
@@ -290,6 +298,9 @@ async function ownerUserId() {
   if (!COMPANY()) return undefined;
   return (await memo("owner", async () => (await api("GET", `/api/companies/${encodeURIComponent(COMPANY())}`)).defaultResponsibleUserId ?? null)) ?? undefined;
 }
+
+/** One of setup's log tasks (the kernel's directory, from the grants table): an agent holds it, but it is a log, not work. */
+const isLogTask = (i) => (cx().dir.log_tasks ?? []).some((x) => x === i.id || x === i.identifier);
 
 /** One of the user's own tasks: assigned to them, or theirs to answer for. */
 async function isUsersTask(id) {
@@ -510,6 +521,18 @@ async function fileGrade(issueId, grade) {
     return { graded: false, grade_error: String(err.message ?? err).slice(0, 200) };
   }
 }
+/** A graded delegation of this caller's still parked (its rubric failed to file): a retry of the delegation starts it. */
+const parked = (i, me, grade) => Boolean(grade) && i.status === "backlog" && i.createdByAgentId === me.id;
+/**
+ * Files a graded task's rubric, then starts the task (backlog to todo). A filing that fails leaves the task parked and is an
+ * error: the same delegation again (its marker, or its open sibling) files the rubric (idempotent) and starts it.
+ */
+async function startGraded(i, grade) {
+  const graded = await fileGrade(i.id, grade);
+  if (grade && !graded.graded) throw new Error(`${i.identifier} is filed but not started: its rubric couldn't be filed (${graded.grade_error}). Call the same delegation again in a minute to start it.`);
+  if (i.status === "backlog") await api("PATCH", `/api/issues/${issueRef(i.id)}`, { status: "todo" });
+  return graded;
+}
 /** A close the finish gate held or reopened (202): its last comment part goes on as a comment (it is evidence), the status is the check's. */
 async function heldClose(issue, f, comment) {
   if (!f.held && !f.reopened) return undefined;
@@ -548,6 +571,7 @@ async function assignTask(me, target, { title, description, parent, marker, prio
     if (!key) throw new Error("invalid marker");
     src = `delegate:${p?.identifier ?? "root"}:${key}`;
     const existing = await findByMarker(src, `${OPEN_STATUSES},done,cancelled`);
+    if (existing && parked(existing, me, grade)) return { identifier: existing.identifier, created: false, ...(await startGraded(existing, grade)) };
     if (existing) return { identifier: existing.identifier, created: false };
   }
   const body = {
@@ -562,12 +586,14 @@ async function assignTask(me, target, { title, description, parent, marker, prio
   };
   const open = p ? await openSiblings(p.id, target) : [];
   const same = open.find((o) => similar(o.title, body.title) >= SAME_TITLE || similar(o.description, body.description) >= SAME_BRIEF);
+  if (same && parked(same, me, grade)) return { identifier: same.identifier, created: false, assignee: target.name, ...(await startGraded(same, grade)) };
   if (same)
     throw new Error(
       `Refused: ${same.identifier} ("${String(same.title).slice(0, 120)}", ${same.status}) is already ${(await nameOf(same.assigneeAgentId)) ?? target.name}'s open task for this brief under ${p.identifier}. To change it, comment on ${same.identifier} with what changed (task_comment wakes them). To replace it, cancel ${same.identifier} first (task_set_status cancelled, with why), then delegate again.`,
     );
-  const i = await api("POST", `/api/companies/${encodeURIComponent(COMPANY())}/issues`, body);
-  const graded = await fileGrade(i.id, grade);
+  // A graded task is filed parked and starts only once its rubric is on file, so it never runs (and closes) ungraded.
+  const i = await api("POST", `/api/companies/${encodeURIComponent(COMPANY())}/issues`, { ...body, ...(grade ? { status: "backlog" } : {}) });
+  const graded = await startGraded(i, grade);
   const also = open.length ? { open_tasks: `${target.name} still has ${open.map((o) => `${o.identifier} ("${String(o.title).slice(0, 80)}", ${o.status})`).join(", ")} open under ${p.identifier}: if this task replaces one, cancel it.` } : {};
   return { identifier: i.identifier, created: true, assignee: target.name, ...graded, ...also };
 }
@@ -687,7 +713,8 @@ const TOOLS = {
       let list = await api("GET", `/api/companies/${encodeURIComponent(COMPANY())}/issues?${q}`);
       if (me) {
         // Heartbeat runs are the scan itself, never work to catch up on.
-        list = list.filter((i) => i.assigneeAgentId === me && i.id !== CURRENT() && !String(i.title).startsWith("Heartbeat:"));
+        // Nor setup's log tasks it holds (memory inbox, review log, chat, Fleet issues: scripts/modules.mjs): logs, not work.
+        list = list.filter((i) => i.assigneeAgentId === me && i.id !== CURRENT() && !String(i.title).startsWith("Heartbeat:") && !isLogTask(i));
         // Your chats handed back to the owner: assigned to them, marked as yours when created (the board's chatAgentMarker).
         const owner = await ownerUserId();
         if (owner) {
@@ -767,16 +794,20 @@ const TOOLS = {
       // Idempotency keys expire after 7 days in Paperclip, so also look for an open task
       // (or, with dedupe_closed, a closed one) that already carries one of these markers.
       const statuses = dedupe_closed ? `${OPEN_STATUSES},done,cancelled` : OPEN_STATUSES;
-      for (const k of new Set(markers)) {
-        const existing = await findByMarker(k, statuses);
-        if (existing) return { ...brief(existing), deduplicated: true };
-      }
       // Work handed to a graded agent is graded as a delegation is (refused here, before it is created, without a deliverable).
       const grade = target ? gradeFor(target, rubric, deliverable, description) : undefined;
+      const start = status !== "backlog";
+      for (const k of new Set(markers)) {
+        const existing = await findByMarker(k, statuses);
+        // A graded task left parked by a failed rubric filing: this retry files it and starts it.
+        if (existing && start && parked(existing, { id: g.id }, grade)) return { ...brief(existing), deduplicated: true, ...(await startGraded(existing, grade)) };
+        if (existing) return { ...brief(existing), deduplicated: true };
+      }
       const body = {
         title: String(title).slice(0, 200),
         description: `${origin}${String(description).replace(/<!--|-->/g, "").slice(0, 60_000)}${gradedText(grade)}\n\n<!-- source:${m} -->`,
-        status: status === "backlog" && assigneeAgent ? "backlog" : "todo",
+        // A graded task is filed parked and starts only once its rubric is on file (startGraded), so it never runs ungraded.
+        status: (status === "backlog" || grade) && assigneeAgent ? "backlog" : "todo",
         priority: PRIORITIES.includes(priority) ? priority : "medium",
         labelIds: await labelIds(labels ?? []),
         idempotencyKey: idempotencyKey(m),
@@ -785,11 +816,15 @@ const TOOLS = {
       if (isBrief(`<!-- source:${m} -->`, labels)) warning = [warning, metricWarning(description, Date.now())].filter(Boolean).join(" ") || undefined;
       if (assigneeAgent) body.assigneeAgentId = assigneeAgent;
       else {
+        // Every open task has a holder: without an agent, the owner holds it.
         const owner = await ownerUserId();
-        if (owner) body.assigneeUserId = owner;
+        if (!owner) throw new Error("no owner to hold the task: name its assignee (yourself included)");
+        body.assigneeUserId = owner;
       }
       const i = await api("POST", `/api/companies/${encodeURIComponent(COMPANY())}/issues`, body);
-      return { ...brief(i), deduplicated: Boolean(i.deduplicated), ...(i.deduplicated ? {} : await fileGrade(i.id, grade)), ...(warning ? { warning } : {}) };
+      if (i.deduplicated) return { ...brief(i), deduplicated: true, ...(warning ? { warning } : {}) };
+      const graded = start ? await startGraded(i, grade) : await fileGrade(i.id, grade);
+      return { ...brief(start && grade ? { ...i, status: "todo" } : i), deduplicated: false, ...graded, ...(warning ? { warning } : {}) };
     },
   },
   task_team: {
@@ -1162,6 +1197,8 @@ const TOOLS = {
       // ending for Paperclip, unlike in_progress), so the user's next comment there wakes it again.
       if (await isOwnPart(current)) {
         const i = await patchIssue(issue, { status: "todo", comment: body });
+        // It waits on the user's reply (their comment wakes it): recorded, so it isn't idle work, with a check in a week.
+        if (current.id === CURRENT()) await kernelWait({ reason: "the user's reply to my handoff", on: "the user's reply", until: new Date(Date.now() + 7 * 864e5 - 60_000).toISOString() }).catch(() => {});
         return brief(i);
       }
       const i = await patchIssue(issue, { assigneeUserId: owner, assigneeAgentId: null, status: "todo", comment: body });
@@ -1177,6 +1214,25 @@ const TOOLS = {
       const last = await postLeadingParts(issue, `${feedbackMark()}${body}`);
       const c = await api("POST", `/api/issues/${issueRef(issue)}/comments`, { body: last });
       return { comment_id: c.id, parts: commentParts(body).length };
+    },
+  },
+  task_wait: {
+    description:
+      "Record that the task this run is working on waits on something, so it isn't left idle: why, and until when (`until`, an ISO time at most 7 days ahead) or for what (`on`, the event, e.g. \"PR #12 merged\", \"the owner's answer\"; then you're woken in 24 hours to check). You're woken by the event when it comes as a comment on the task, and otherwise at `until`. End your turn after it. Only ever touches the current run's task.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        reason: { type: "string", description: "what the task waits on and why, in one line" },
+        until: { type: "string", description: "ISO-8601 time to resume at, at most 7 days ahead" },
+        on: { type: "string", description: "the event it waits for" },
+      },
+      required: ["reason"],
+      additionalProperties: false,
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    run: async ({ reason, until, on }) => {
+      if (!CURRENT()) throw new Error("no current task");
+      return kernelWait({ reason: String(reason), ...(until ? { until: String(until) } : {}), ...(on ? { on: String(on) } : {}) });
     },
   },
   task_finish: {

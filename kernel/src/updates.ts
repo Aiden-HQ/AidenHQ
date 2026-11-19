@@ -460,7 +460,7 @@ export function createUpdates({ db, dir, board, inst, ownerLine, check, file, re
       const why = !r ? "its record is gone" : r.state === "failed" ? plain(String(r.outcome?.text ?? "").split("\n")[0], 400) || "the apply failed" : `the card was ${r.state}`;
       s.last = { release: f.release, outcome: "failed", why, at, by: f.by };
       s.failed = [...new Set([...(s.failed ?? []), f.release])];
-      event(s, `failed:${f.release}:${at}`, `AidenHQ ${f.release} didn't install: ${why}. The night won't file it again; Update now in Settings > Instance does.`);
+      event(s, `failed:${f.release}:${at}`, `AidenHQ ${f.release} didn't install: ${why}. This server stays on ${f.from}: a failed apply puts the host back on it and holds it there (if that revert fails too, a separate apply alert says so). The night won't file it again; Update now in Settings > Instance does.`);
     }
     delete s.flight;
     writeState(d, s);

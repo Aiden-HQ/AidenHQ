@@ -49,8 +49,8 @@ agents:
       apps: [ app_list, app_status, app_view, app_check, web_view ]
       github?: read
       # Its own task only, never another's text: a `file` deliverable's file goes on it, and task_finish closes it through the
-      # kernel's finish gate (graded: held for the grader) once its work has landed.
-      paperclip_tasks: [ task_file_upload, task_finish ]
+      # kernel's finish gate (graded: held for the grader) once its work has landed; task_wait records what it waits on.
+      paperclip_tasks: [ task_file_upload, task_finish, task_wait ]
     # Primer reads (optional: only with the primer module); in its computer through the kernel's proxy with its run token.
     jobcaps: [ primer-read? ]
 labels:

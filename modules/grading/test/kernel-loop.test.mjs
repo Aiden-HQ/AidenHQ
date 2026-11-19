@@ -28,7 +28,7 @@ test("a kernel job's graded task is graded, reopened with the unmet criterion, t
     if (path === "/v1/cp/read/api/issues/t1") return issue;
     if (path === "/v1/cp/read/api/issues/t1/comments") return [{ id: "c1", authorType: "agent", authorAgentId: "eng", body: "Legacy is used in acme/app and acme/lib; next step: port app.", createdAt: "2026-11-18T09:00:00Z" }];
     if (path === "/v1/cp/read/api/issues/t1/attachments") return [];
-    if (path === "/v1/cp/read/api/companies/co/agents") return [{ id: "eng", name: "Dana" }];
+    if (path === "/v1/cp/read/api/agents/eng") return { id: "eng", name: "Dana" };
     if (path.startsWith("/v1/cp/read/api/companies/co/issues")) return [];
     if (path === "/v1/work?task=t1") return { busy: false, jobs: [{ id: "j-1", state: "done", engine: "codex", ended_at: new Date(Date.now() - 60_000).toISOString() }], records: [] };
     if (path === "/v1/work/grader-token") return { token: `tok-${body.task}` };
@@ -83,7 +83,7 @@ test("a graded PR task's PR is read through the broker's token and graded; a PR 
     if (path === "/v1/cp/read/api/issues/t2") return issue;
     if (path === "/v1/cp/read/api/issues/t2/comments") return [];
     if (path === "/v1/cp/read/api/issues/t2/attachments") return [];
-    if (path === "/v1/cp/read/api/companies/co/agents") return [{ id: "eng", name: "Dana" }];
+    if (path === "/v1/cp/read/api/agents/eng") return { id: "eng", name: "Dana" };
     if (path === "/v1/work?task=t2") return { busy: false, jobs: [{ id: "j-2", state: "done", engine: "codex", ended_at: new Date(Date.now() - 60_000).toISOString() }], records: [{ id: "r1", kind: "github.pr", state: "done", ok: true, args: { workspace: "WOR-2", only: [{ repo: "acme-agents/app", branch: "fix-it", sha: "a".repeat(40) }] }, outcome_text: "PRs: https://github.com/acme-agents/app/pull/7" }] };
     if (path === "/v1/work/grader-token") return { token: "tok" };
     if (path === "/v1/checks/t2") return calls.resolve.push(body), {};
@@ -129,7 +129,7 @@ function heldKernel(issue, calls) {
     if (path === `/v1/cp/read/api/issues/${issue.id}`) return issue;
     if (path.endsWith("/comments")) return [{ id: "c1", authorType: "agent", authorAgentId: "eng", body: "It is said.", createdAt: "2026-11-18T09:00:00Z" }];
     if (path.endsWith("/attachments")) return [];
-    if (path === "/v1/cp/read/api/companies/co/agents") return [{ id: "eng", name: "Dana" }];
+    if (path === "/v1/cp/read/api/agents/eng") return { id: "eng", name: "Dana" };
     if (path.startsWith("/v1/cp/read/api/companies/co/issues")) return [];
     if (path === `/v1/work?task=${issue.id}`) return { busy: false, jobs: [], records: [] };
     if (path === "/v1/work/grader-token") { if (!held) throw new Error("kernel POST /v1/work/grader-token → 403"); return { token: "tok" }; }
@@ -204,4 +204,57 @@ test("a grader that keeps failing keeps its hold, then blocks the task with the 
   assert.match(calls.wake[0].text, /WOR-4 is blocked: its grader failed 5 times/);
   await loop.runGrades();
   assert.equal(n, 5, "a blocked task is not graded again");
+});
+
+test("a verdict's reopen and its parent's notice that hit a kernel 5xx land on the next pass, never lost", async (t) => {
+  const answers = [answer(["no"]), answer(["yes"])];
+  const gateway = http.createServer(async (req, res) => {
+    for await (const _ of req);
+    res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify(answers.shift()) } }] }));
+  }).listen(0);
+  t.after(() => gateway.close());
+  const issue = { id: "t3", identifier: "WOR-3", title: "report", description: "Report.", status: "in_review", companyId: "co", assigneeAgentId: "eng", createdByAgentId: "cos", parentId: "p1" };
+  const calls = { resolve: [], wake: [] };
+  let fail = 0;
+  const flaky = () => { if (fail) { fail--; throw Object.assign(new Error("kernel 502"), { status: 502 }); } };
+  const kernel = async (method, path, body) => {
+    if (path === "/v1/cp/read/api/issues/t3") return issue;
+    if (path === "/v1/cp/read/api/issues/t3/comments") return [{ id: "c1", authorType: "agent", authorAgentId: "eng", body: "Here it is.", createdAt: "2026-11-18T09:00:00Z" }];
+    if (path === "/v1/cp/read/api/issues/t3/attachments") return [];
+    if (path === "/v1/cp/read/api/agents/eng") return { id: "eng", name: "Dana" };
+    if (path.startsWith("/v1/cp/read/api/companies/co/issues")) return [];
+    if (path === "/v1/work?task=t3") return { busy: false, jobs: [{ id: "j", state: "done", engine: "codex", ended_at: new Date(Date.now() - 60_000).toISOString() }], records: [] };
+    if (path === "/v1/work/grader-token") return { token: "tok" };
+    if (path === "/v1/checks/t3") return flaky(), calls.resolve.push(body.verdict), (issue.status = body.verdict === "ok" ? "done" : "todo"), {};
+    if (path === "/v1/wakes") return flaky(), calls.wake.push(body.task), { posted: true };
+    throw new Error(`unexpected ${method} ${path}`);
+  };
+  const db = new DatabaseSync(":memory:");
+  const { runner, grades } = createGrading({ db, kernel: { issue: async () => issue, settings: async () => ({}), release: async () => {} }, keys: { check: "c", runner: "r", board: "b" } });
+  grades.file("t3", ["says it"], { kind: "report", ref: "" });
+  const loop = createKernelGradeLoop({ db, runner, due: () => ({ grades: grades.due(), resubmitted: [] }), kernel, kernelBytes: async () => { throw new Error("no"); }, apps: async () => { throw new Error("no"); }, gatewayUrl: `http://127.0.0.1:${gateway.address().port}`, log: () => {} });
+  completionGate(grades, "t3", "finish_turn");
+  const realNow = Date.now;
+  let skew = 10_000;
+  Date.now = () => realNow() + skew;
+  t.after(() => { Date.now = realNow; });
+  fail = 1; // the reopen gets a 502
+  await loop.runGrades();
+  assert.deepEqual(calls.resolve, [], "the reopen failed");
+  await loop.runGrades();
+  assert.deepEqual(calls.resolve, ["reopen"], "the next pass reopens it");
+
+  issue.status = "in_review";
+  completionGate(grades, "t3", "finish_turn");
+  skew += 10_000;
+  // The close lands; the parent's notice gets a 502 (the second kernel call fails, so let the close through first).
+  const close = kernel;
+  let closed = false;
+  const k2 = async (m, p, b) => { if (p === "/v1/wakes" && !closed) { closed = true; throw Object.assign(new Error("kernel 502"), { status: 502 }); } return close(m, p, b); };
+  const loop2 = createKernelGradeLoop({ db, runner, due: () => ({ grades: grades.due(), resubmitted: [] }), kernel: k2, kernelBytes: async () => { throw new Error("no"); }, apps: async () => { throw new Error("no"); }, gatewayUrl: `http://127.0.0.1:${gateway.address().port}`, log: () => {} });
+  await loop2.runGrades();
+  assert.deepEqual(calls.resolve, ["reopen", "ok"]);
+  assert.deepEqual(calls.wake, [], "the parent's notice failed");
+  await loop2.runGrades();
+  assert.deepEqual(calls.wake, ["p1"], "the next pass tells the parent");
 });

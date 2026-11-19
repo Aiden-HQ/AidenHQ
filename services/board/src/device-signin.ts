@@ -1,6 +1,7 @@
 // A device sign-in (board.signins `mode: device`, GitHub's model): the board asks the connection's proxy for a code, shows it with
-// the vendor's page, and the proxy polls for the token itself. The code is bound to the admin session that asked for it: only
-// that session reads it, follows it or cancels it, and another session can't start one over it until it ends or expires.
+// the vendor's page, and the proxy polls for the token itself. The code is bound to the admin account that asked for it: only
+// that account reads it, follows it or cancels it (from any of its browsers), a new start by it replaces its pending code, and
+// another account can't start one over it until it ends or expires.
 import { AccountError } from "./kernel-auth.js";
 import type { McpAuth } from "./mcpauth.js";
 import { vendorWords } from "./mcpauth.js";
@@ -10,16 +11,16 @@ export interface DeviceSignIn { id: string; label: string; mode?: "redirect" | "
 
 export function deviceRoutes(d: { signIns: DeviceSignIn[]; onSignedIn: () => void; now?: () => number }): SetupRoute[] {
   const now = d.now ?? Date.now;
-  const pending = new Map<string, { session: string; expires: number }>();
+  const pending = new Map<string, { account: string; expires: number }>();
   const signIn = (id: string) => {
     const s = d.signIns.find((x) => x.id === id && x.mode === "device");
     if (!s) throw new AccountError(404, "no such device sign-in");
     return s;
   };
-  /** The session's own pending sign-in; anyone else's (or none) is not found. */
-  const mine = (id: string, session: string) => {
+  /** The account's own pending sign-in; anyone else's (or none) is not found. */
+  const mine = (id: string, account: string) => {
     const p = pending.get(id);
-    if (!p || p.session !== session) throw new AccountError(404, "no sign-in in progress");
+    if (!p || p.account !== account) throw new AccountError(404, "no sign-in in progress");
     return p;
   };
   const routes: SetupRoute[] = [
@@ -29,7 +30,12 @@ export function deviceRoutes(d: { signIns: DeviceSignIn[]; onSignedIn: () => voi
       handle: async (m, _b, who) => {
         const s = signIn(m[1]!);
         const p = pending.get(s.id);
-        if (p && p.session !== who.session.id && p.expires > now()) throw new AccountError(409, `Another admin is signing in to ${s.label} right now. Try again when they finish, or in a few minutes.`);
+        if (p && p.account !== who.account.id && p.expires > now()) throw new AccountError(409, `Another admin is signing in to ${s.label} right now. Try again when they finish, or in a few minutes.`);
+        // The same admin again (another browser, or after signing in afresh): its old code is cancelled and replaced.
+        if (p) {
+          pending.delete(s.id);
+          await s.auth.deviceCancel().catch(() => {});
+        }
         let code;
         try {
           code = await s.auth.deviceStart();
@@ -38,7 +44,7 @@ export function deviceRoutes(d: { signIns: DeviceSignIn[]; onSignedIn: () => voi
         }
         // The page the person types the code on is the vendor's: an https link, nothing else.
         if (!/^https:\/\/[^\s]+$/.test(code.verification_uri)) throw new AccountError(502, `${s.label} answered with a sign-in page that isn't https`);
-        pending.set(s.id, { session: who.session.id, expires: now() + code.expires_in * 1000 });
+        pending.set(s.id, { account: who.account.id, expires: now() + code.expires_in * 1000 });
         return {
           user_code: code.user_code,
           verification_uri: code.verification_uri,
@@ -53,7 +59,7 @@ export function deviceRoutes(d: { signIns: DeviceSignIn[]; onSignedIn: () => voi
       path: /^\/api\/sign-ins\/([a-z0-9-]{1,63})\/device$/,
       handle: async (m, _b, who) => {
         const s = signIn(m[1]!);
-        mine(s.id, who.session.id);
+        mine(s.id, who.account.id);
         const st = await s.auth.deviceState();
         if (st.state !== "pending") pending.delete(s.id);
         if (st.state === "ok") d.onSignedIn();
@@ -66,7 +72,7 @@ export function deviceRoutes(d: { signIns: DeviceSignIn[]; onSignedIn: () => voi
       path: /^\/api\/sign-ins\/([a-z0-9-]{1,63})\/device\/cancel$/,
       handle: async (m, _b, who) => {
         const s = signIn(m[1]!);
-        mine(s.id, who.session.id);
+        mine(s.id, who.account.id);
         pending.delete(s.id);
         await s.auth.deviceCancel();
         return { ok: true };

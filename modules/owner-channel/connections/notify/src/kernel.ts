@@ -18,9 +18,14 @@ export function kernelClient(url: string, token: string, f: typeof fetch = fetch
     },
     /** A task's kernel jobs, newest first (the job ledger). */
     /** The kernel's running and recently ended jobs (the watcher's health check). */
-    activity: async (): Promise<{ recent: { agent: string; task: string; state: string; ended_at: string | null }[] }> => call("GET", "/v1/work"),
+    activity: async (): Promise<{ recent: { agent: string; task: string; state: string; ended_at: string | null; error: string | null }[] }> => call("GET", "/v1/work"),
     work: async (task: string): Promise<{ jobs: { agent: string; state: string }[] }> => call("GET", `/v1/work?task=${encodeURIComponent(task)}`),
     brake: (task: string, agent: string, decision: boolean): Promise<{ allow: boolean; note?: string }> => call("POST", "/v1/brake/notify", { task, agent, ...(decision ? { decision: true } : {}) }),
+    /** The calling job's own task waits on the owner's answer (kernel idle.ts): it resumes on their reply, or is checked in a day. */
+    wait: async (task: string, assertion: string): Promise<void> => {
+      const r = await raw("POST", "/v1/wait", { task, reason: "the owner's answer to my question", on: "the owner's answer" }, { "x-aidenhq-caller": assertion });
+      if (r.status !== 200) throw new Error(`POST /v1/wait -> ${r.status}`);
+    },
     /** The agent's reply on its chat, posted by the kernel as that agent (this call's assertion). */
     postReply: async (issueId: string, body: string, assertion: string): Promise<boolean> => {
       const r = await raw("POST", `/v1/cp/agent/api/issues/${encodeURIComponent(issueId)}/comments`, { body }, { "x-aidenhq-caller": assertion }).catch(() => ({ status: 0 }));

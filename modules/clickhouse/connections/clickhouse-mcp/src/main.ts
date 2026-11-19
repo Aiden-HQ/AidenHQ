@@ -42,7 +42,7 @@ const http = createVendorProxy({
         throw err;
       }
     },
-    result: truncateResult,
+    result: (r) => truncateResult(r),
   },
 });
 

@@ -16,7 +16,7 @@
     {
       "id": 1,
       "type": "timeseries",
-      "title": "Runner: queued and running jobs",
+      "title": "Jobs running",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -41,8 +41,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "aidenhq_runner_queue_depth",
-          "legendFormat": "queued"
+          "expr": "aidenhq_kernel_jobs_running",
+          "legendFormat": "running"
         },
         {
           "refId": "B",
@@ -50,15 +50,15 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "aidenhq_runner_running_jobs",
-          "legendFormat": "running"
+          "expr": "aidenhq_kernel_jobs_oldest_seconds",
+          "legendFormat": "oldest running (s)"
         }
       ]
     },
     {
       "id": 2,
       "type": "timeseries",
-      "title": "Runner: job duration p50 / p90 (1 h)",
+      "title": "Jobs: duration p50 / p90 (1 h)",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -83,7 +83,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.5, sum by (le) (rate(aidenhq_runner_job_duration_seconds_bucket[1h])))",
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(aidenhq_kernel_jobs_duration_seconds_bucket[1h])))",
           "legendFormat": "p50"
         },
         {
@@ -92,50 +92,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.9, sum by (le) (rate(aidenhq_runner_job_duration_seconds_bucket[1h])))",
+          "expr": "histogram_quantile(0.9, sum by (le) (rate(aidenhq_kernel_jobs_duration_seconds_bucket[1h])))",
           "legendFormat": "p90"
-        }
-      ]
-    },
-    {
-      "id": 3,
-      "type": "timeseries",
-      "title": "Runner: merge queues",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "gridPos": {
-        "x": 0,
-        "y": 8,
-        "w": 12,
-        "h": 8
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "options": {},
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "aidenhq_runner_merge_queues",
-          "legendFormat": "{{state}}"
-        },
-        {
-          "refId": "B",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "aidenhq_runner_merge_prs_waiting",
-          "legendFormat": "PRs waiting"
         }
       ]
     },
@@ -148,7 +106,7 @@
         "uid": "prometheus"
       },
       "gridPos": {
-        "x": 12,
+        "x": 0,
         "y": 8,
         "w": 12,
         "h": 8
@@ -199,8 +157,8 @@
         "uid": "prometheus"
       },
       "gridPos": {
-        "x": 0,
-        "y": 16,
+        "x": 12,
+        "y": 8,
         "w": 12,
         "h": 8
       },
@@ -232,7 +190,7 @@
         "uid": "prometheus"
       },
       "gridPos": {
-        "x": 12,
+        "x": 0,
         "y": 16,
         "w": 12,
         "h": 8
@@ -265,8 +223,8 @@
         "uid": "prometheus"
       },
       "gridPos": {
-        "x": 0,
-        "y": 24,
+        "x": 12,
+        "y": 16,
         "w": 12,
         "h": 8
       },
@@ -307,7 +265,7 @@
         "uid": "prometheus"
       },
       "gridPos": {
-        "x": 12,
+        "x": 0,
         "y": 24,
         "w": 12,
         "h": 8

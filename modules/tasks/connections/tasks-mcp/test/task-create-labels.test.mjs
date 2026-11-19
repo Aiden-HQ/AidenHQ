@@ -18,7 +18,7 @@ async function create(args, existing) {
       if (req.method === "POST" && url.endsWith("/issues")) return (created.push(JSON.parse(body)), send({ id: "n", identifier: "WOR-9", title: "t", status: "todo" }));
       if (existing && url.includes("/issues?")) return send([existing]);
       if (url.includes("/issues?")) return send(/status=todo/.test(url) ? [] : [{ id: "i", labels: [{ id: "00000000-0000-4000-8000-000000000001", name: "security" }] }]);
-      if (url.startsWith("/api/companies/")) return send({});
+      if (url.startsWith("/api/companies/")) return send({ defaultResponsibleUserId: "u-owner" });
       send({});
     });
   };
@@ -51,7 +51,8 @@ test("task_create with an assignee assigns that agent and not the owner; an unkn
 
 test("task_create status backlog parks an assigned task; without an assignee it stays todo for the owner", async () => {
   assert.equal((await create({ assignee: "fleet-ops", status: "backlog" })).created[0].status, "backlog");
-  assert.equal((await create({ status: "backlog" })).created[0].status, "todo");
+  const mine = (await create({ status: "backlog" })).created[0];
+  assert.deepEqual([mine.status, mine.assigneeUserId], ["todo", "u-owner"]);
 });
 
 test("a related marker with the source: prefix finds the task that carries it", async () => {
