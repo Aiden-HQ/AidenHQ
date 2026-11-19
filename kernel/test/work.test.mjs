@@ -56,8 +56,8 @@ test("the board reads GET /v1/work with its key, one job included, and nothing e
 
 test("activity: what waits, and the agents whose last 3 ended jobs all failed or were lost", () => {
   const { work, records } = setup();
-  records.db.exec("CREATE TABLE wakes (key TEXT PRIMARY KEY, agent TEXT, state TEXT)");
-  records.db.prepare("INSERT INTO wakes VALUES ('w1', 'a2', 'open'), ('w2', 'a2', 'done')").run();
+  records.db.exec("CREATE TABLE wakes (key TEXT PRIMARY KEY, agent TEXT, state TEXT, cause TEXT, at INTEGER, until INTEGER, job TEXT)");
+  records.db.prepare("INSERT INTO wakes (key, agent, state) VALUES ('w1', 'a2', 'open'), ('w2', 'a2', 'done')").run();
   const add = (id, agent, state, ended, final) => records.db.prepare("INSERT INTO jobs (id, module, agent, task, engine, pid, log, dir, at, jobcaps, observing, live_input, state, ended, final) VALUES (?, 'dispatch', ?, 't', 'codex', 1, '', '', 1, '[]', 0, 0, ?, ?, ?)").run(id, agent, state, ended, final ?? "");
   for (const [i, state] of ["failed", "lost", "failed"].entries()) add(`f${i}`, "bad", state, 10 + i, state === "failed" ? `The job failed: boom ${i}\nmore` : null);
   for (const [i, state] of ["failed", "done", "failed", "failed"].entries()) add(`m${i}`, "mixed", state, 10 + i);
@@ -101,4 +101,19 @@ test("an agent's jobs and the records and billed cost since a time are reads of 
   records.db.prepare("UPDATE records SET state = 'rejected', decided_by = 'reviewer:m', review_code = ? WHERE id = ?").run("stale_head", stale.id ?? stale);
   const rows = (await (await get("/v1/work?since=2000-01-01T00:00:00Z")).json()).records;
   assert.deepEqual(rows.map((r) => [r.judged, r.targets]), [[true, ["acme/app|feat-a"]], [false, ["acme/app|feat-b"]]]);
+});
+
+test("activity: waiting counts the wakes a module could claim now (open and due, or lease-expired), and says when a job last started", () => {
+  const { work, records } = setup();
+  records.db.exec("CREATE TABLE wakes (key TEXT PRIMARY KEY, task TEXT, agent TEXT, cause TEXT, at INTEGER, state TEXT, claimed_by TEXT, job TEXT, until INTEGER)");
+  const now = Date.now();
+  const add = (key, at, state, until = null, job = null) => records.db.prepare("INSERT INTO wakes (key, task, agent, cause, at, state, until, job) VALUES (?, 't', 'a', ?, ?, ?, ?, ?)").run(key, `cause-${key}`, at, state, until, job);
+  add("open-old", now - 20 * 60_000, "open");
+  add("lease-expired", now - 30 * 60_000, "claimed", now - 1_000);
+  add("leased", now - 40 * 60_000, "claimed", now + 60_000); // a module holds it
+  add("scheduled", now - 50 * 60_000, "open", now + 60_000); // not due yet
+  add("done", now - 60 * 60_000, "done");
+  const a = work.activity();
+  assert.deepEqual(a.waiting, { count: 2, oldest_at: new Date(now - 30 * 60_000).toISOString(), oldest_cause: "cause-lease-expired" });
+  assert.equal(a.last_started_at, new Date(2_000_000).toISOString());
 });

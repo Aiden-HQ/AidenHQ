@@ -1,7 +1,8 @@
 // Reads of the kernel's jobs (phase 2 W7, W12): what the grading module and the monitoring side see, from the jobs table and the
 // records. Read-only; the loops that use them are started at the big switch, where the runner's copies are deleted.
 //   GET /v1/work?task=<id>   a task's jobs (newest first) and the write records filed on it (with their args and outcome text, which the grading module reads PRs from): { owned, busy, jobs, records }
-//   GET /v1/work             what runs now, what waits (queued) and what ended lately, and the agents failing (their last 3 jobs all failed or were lost): the board's Agents view
+//   GET /v1/work             what runs now, what waits (queued) and what ended lately, and the agents failing (their last 3 jobs all failed or were lost): the board's Agents view;
+//                            `waiting` (claimable wakes: count, oldest_at, oldest_cause) and `last_started_at` say whether dispatch has stalled
 //   GET /v1/work?job=<id>    one job for its run page (the board): state, times, why it ended, its engine's token count, its
 //                            progress (said, plan, steps) and final words (both the agent's: untrusted)
 //   GET /v1/work?agent=<id>  an agent's last 50 jobs (newest first), each with how it ended: { jobs }
@@ -70,7 +71,14 @@ export function createWork({ db, records, generationsFile = "" }: { db: Database
       const ends = new Map<string, Record<string, any>[]>();
       for (const r of rows("SELECT agent, state, final FROM jobs WHERE state NOT IN ('admitted', 'running') ORDER BY ended DESC LIMIT 2000")) ends.set(r.agent, [...(ends.get(r.agent) ?? []), r].slice(0, 3));
       const failing = [...ends].filter(([, l]) => l.length === 3 && l.every((r) => r.state === "failed" || r.state === "lost")).map(([agent, l]) => ({ agent, error: String(l[0]!.final || l[0]!.state).split("\n")[0]!.slice(0, 200) }));
-      return { running, recent, latest: [...latest].slice(0, 200).map(([task, state]) => ({ task, state })), queued, failing };
+      // Dispatch health (the Fleet Steward's stall check): the wakes a module could claim now (open and due, or claimed with the lease
+      // expired and no job), and when a job last started.
+      const t = Date.now();
+      const w = rows("SELECT COUNT(*) AS n, MIN(at) AS oldest FROM wakes WHERE (state = 'open' AND (until IS NULL OR until <= ?)) OR (state = 'claimed' AND job IS NULL AND until <= ?)", t, t)[0]!;
+      const oldest = w.n ? rows("SELECT cause FROM wakes WHERE ((state = 'open' AND (until IS NULL OR until <= ?)) OR (state = 'claimed' AND job IS NULL AND until <= ?)) AND at = ? LIMIT 1", t, t, w.oldest)[0] : undefined;
+      const waiting = { count: w.n as number, oldest_at: w.n ? iso(w.oldest) : null, oldest_cause: (oldest?.cause as string | undefined) ?? null };
+      const last_started_at = iso(rows("SELECT MAX(at) AS at FROM jobs WHERE state != 'admitted'")[0]?.at);
+      return { running, recent, latest: [...latest].slice(0, 200).map(([task, state]) => ({ task, state })), queued, failing, waiting, last_started_at };
     },
     metrics(now = Date.now()) {
       const all = rows("SELECT * FROM jobs");

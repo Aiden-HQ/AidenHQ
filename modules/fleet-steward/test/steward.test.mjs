@@ -316,3 +316,16 @@ test("flow_report gives a waterfall's stages and idle periods, never its raw fac
   const r = await tools.find((t) => t.name === "flow_report").run({ task: "t1" });
   assert.deepEqual(r, { task: "t1", stages: [], idle: [] });
 });
+
+test("dispatch stalled: queued wakes with no job started for 15 minutes tell the owner once; a recent start is not a stall", async () => {
+  const run = async (oldest, started) => {
+    const sent = [];
+    const kernel = { call: async () => ({ waiting: { count: 3, oldest_at: minsAgo(oldest), oldest_cause: "routine:daily-brief" }, last_started_at: minsAgo(started) }) };
+    const c = checks({ kernel, apps: async () => [], alerts: async () => [], openKeys: () => [], notify: async (text) => void sent.push(text), gradeFailures: async () => [], now: () => NOW });
+    return { found: await c.dispatch(), sent };
+  };
+  const stalled = await run(20, 20);
+  assert.deepEqual(stalled.found.map((i) => [i.key, i.critical]), [["stalled", true]]);
+  assert.deepEqual(stalled.sent, ["No agent work has started for 20 min while 3 wakes wait (oldest: routine-daily-brief)."]);
+  assert.deepEqual((await run(20, 2)).found, []);
+});

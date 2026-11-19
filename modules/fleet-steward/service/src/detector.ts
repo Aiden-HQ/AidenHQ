@@ -318,6 +318,15 @@ export function checks(d: { kernel: KernelClient; apps: <T>(path: string) => Pro
       }
       return out;
     },
+    // Queued wakes while no job starts: the owner hears at once, with no agent job needed to file or read anything.
+    async dispatch() {
+      const t = now();
+      const w = (await d.kernel.call("GET", "/v1/work")) as { waiting?: { count: number; oldest_at: string | null; oldest_cause: string | null }; last_started_at?: string | null };
+      if (!w.waiting?.count || age(w.waiting.oldest_at, t) <= DOWN_MS || age(w.last_started_at, t) <= DOWN_MS) return [];
+      const text = `No agent work has started for ${mins(Math.min(age(w.last_started_at, t), age(w.waiting.oldest_at, t)))} while ${w.waiting.count} wake${w.waiting.count === 1 ? "" : "s"} wait (oldest: ${slug(w.waiting.oldest_cause)}).`;
+      if (!d.openKeys().includes("dispatch:stalled")) await d.notify?.(text, "dispatch-stalled").catch(() => {});
+      return [{ key: "stalled", critical: true, reason: text }];
+    },
     // A task held for grading (label grading, in review) for over a day: the grader's verdict is overdue.
     async grade() {
       const t = now();
