@@ -224,7 +224,7 @@ export function settingsView(s: Sources) {
   };
 }
 
-/** One connection's live answer: its /healthz (status and body fields), or the error reaching it. */
+/** One connection's live answer from the kernel: its /healthz (status and body fields), or the error reaching it. */
 export interface Probe {
   ok: boolean;
   status?: number;
@@ -233,25 +233,6 @@ export interface Probe {
   channels?: Record<string, boolean>;
   checkedAt: string;
   lastOkAt?: string;
-}
-
-/** GET <url origin>/healthz, as scripts/agent-check.mjs asks it: ok unless the HTTP status or `ok: false` says otherwise. */
-export async function probe(url: string, timeoutMs = 4000): Promise<Omit<Probe, "lastOkAt">> {
-  const checkedAt = new Date().toISOString();
-  try {
-    const r = await fetch(new URL("/healthz", url), { signal: AbortSignal.timeout(timeoutMs) });
-    let j: Record<string, unknown> = {};
-    try {
-      j = JSON.parse(await r.text());
-    } catch {}
-    const ok = r.ok && j.ok !== false;
-    const detail = typeof j.detail === "string" ? j.detail.slice(0, 200) : undefined;
-    const channels = j.channels && typeof j.channels === "object" ? Object.fromEntries(Object.entries(j.channels as Record<string, unknown>).map(([k, v]) => [k, v === true])) : undefined;
-    return { ok, status: r.status, ...(typeof j.state === "string" ? { state: j.state } : {}), ...(detail ? { detail } : {}), ...(channels ? { channels } : {}), checkedAt };
-  } catch (e) {
-    const err = e as Error & { cause?: { code?: string } };
-    return { ok: false, detail: `unreachable: ${err.cause?.code ?? err.message}`.slice(0, 200), checkedAt };
-  }
 }
 
 export interface ConnectionRow {

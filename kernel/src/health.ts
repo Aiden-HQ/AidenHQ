@@ -5,6 +5,7 @@ import { fail } from "./proxy.ts";
 import type { Connection, Grant } from "./identity.ts";
 import { rolesOf } from "./identity.ts";
 import type { Requester } from "./records.ts";
+import type { Resolver } from "./net.ts";
 
 type Log = (msg: string, fields?: Record<string, unknown>) => void;
 const day = () => new Date().toISOString().slice(0, 10);
@@ -38,4 +39,28 @@ export function createHealthProbe({ grants, connections, kindOf, callAs, log = (
     log("proxy", { connection: p.connection, tool: p.tool, method: "tools/call", agent: g.key ?? id, ms, total: ms, outcome: r.ok ? "ok" : "error", via: "health-probe" });
     return r.ok ? { ok: true, ms } : { ok: false, ms, error: r.text.slice(0, 200) };
   };
+}
+
+/**
+ * Every connection's /healthz, asked from the kernel (which reaches each service by its container address, so a module with no
+ * board network is probed the same as any other). ok unless the HTTP status or `ok: false` says otherwise; the board's Connections page reads this.
+ */
+export function createConnectionHealth({ connections, resolver, timeoutMs = 4000 }: { connections: () => Record<string, Connection>; resolver: Resolver; timeoutMs?: number }) {
+  const one = async (url: string) => {
+    const checkedAt = new Date().toISOString();
+    try {
+      const to = await resolver.resolve(new URL("/healthz", url).href);
+      const r = await fetch(`http://${to.host}:${to.port}${to.path}`, { signal: AbortSignal.timeout(timeoutMs) });
+      let j: Record<string, unknown> = {};
+      try { j = JSON.parse(await r.text()); } catch {}
+      const detail = typeof j.detail === "string" ? j.detail.slice(0, 200) : undefined;
+      const channels = j.channels && typeof j.channels === "object" ? Object.fromEntries(Object.entries(j.channels as Record<string, unknown>).map(([k, v]) => [k, v === true])) : undefined;
+      return { ok: r.ok && j.ok !== false, status: r.status, ...(typeof j.state === "string" ? { state: j.state } : {}), ...(detail ? { detail } : {}), ...(channels ? { channels } : {}), checkedAt };
+    } catch (e) {
+      const err = e as Error & { cause?: { code?: string } };
+      resolver.forget(url);
+      return { ok: false, detail: `unreachable: ${err.cause?.code ?? err.message}`.slice(0, 200), checkedAt };
+    }
+  };
+  return async () => Object.fromEntries(await Promise.all(Object.entries(connections()).filter(([, c]) => c.url).map(async ([n, c]) => [n, await one(c.url)] as const)));
 }

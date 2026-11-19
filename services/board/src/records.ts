@@ -1,6 +1,7 @@
 // The kernel's records, read-only (kernel/src/records.ts keeps them; the board keeps no approval store). Cards are decided
 // on the kernel's approval page or in a channel; the board lists them with the board's key (gateway_board_key) and shows them.
 import type { ReviewCode } from "./reason-codes.js";
+import type { Probe } from "./settings.js";
 
 /** auto: a Tier 0 run, made at once with no decision (an audit row only). */
 export type State = "pending" | "approved" | "rejected" | "stale" | "expired" | "used" | "auto";
@@ -80,6 +81,8 @@ export type Records = {
   awaiting(): Promise<Set<string>>;
   /** Marketplace advisories open against installed modules (plan unit 4e): Settings > Modules shows them as a banner. [] when unreachable. */
   advisories(): Promise<Advisory[]>;
+  /** Every connection's /healthz as the kernel reaches it (the one place connection health is probed). {} when the kernel can't be asked. */
+  connectionHealth(): Promise<Record<string, Probe>>;
 };
 export type Advisory = { id: string; module: string; severity: string; fixed: string; summary: string; url: string };
 
@@ -104,5 +107,10 @@ export function kernelRecords(k: { url: string; token: string } | undefined, log
     const res = await fetch(`${k.url}/v1/advisories`, { headers: { authorization: `Bearer ${k.token}` }, signal: AbortSignal.timeout(15_000) }).catch(() => undefined);
     return res?.ok ? (((await res.json()) as { advisories: Advisory[] }).advisories ?? []) : [];
   };
-  return { list, awaiting: async () => new Set((await list("owner")).map((a) => a.issueId)), advisories };
+  const connectionHealth = async (): Promise<Record<string, Probe>> => {
+    if (!k) return {};
+    const res = await fetch(`${k.url}/v1/connections/health`, { headers: { authorization: `Bearer ${k.token}` }, signal: AbortSignal.timeout(15_000) }).catch(() => undefined);
+    return res?.ok ? (((await res.json()) as { probes: Record<string, Probe> }).probes ?? {}) : {};
+  };
+  return { list, connectionHealth, awaiting: async () => new Set((await list("owner")).map((a) => a.issueId)), advisories };
 }

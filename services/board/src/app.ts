@@ -27,7 +27,7 @@ import { wakeCheck } from "./brake.js";
 import { gatherFacts, scorecard, statusSummary } from "./fleet-stats.js";
 import { moduleAuthority, moduleStates } from "./modules.js";
 import { CommitUnreadable, agentGrants, browseModules, createResolver, marketplacesOf } from "./marketplace.js";
-import { connectionsView, probe, readSources, readUpdates, settingsView, type Probe } from "./settings.js";
+import { connectionsView, readSources, readUpdates, settingsView, type Probe } from "./settings.js";
 import { ChangeRefused, ChangesSchema, SETTINGS_LABEL, changesOf, checkChange, stageOf, taskFor, type Change } from "./settings-change.js";
 import { createGrading, gradePassed, type Grading } from "./grading.js";
 import { UsageSchema, keyUsage, prices, spendSummary } from "./costs.js";
@@ -1016,8 +1016,7 @@ export function createApp(opts: AppOptions): Server {
   async function connectionsData(fresh: boolean) {
     const { compiled, catalog } = readSources(settingsFiles());
     if (fresh || !probed || Date.now() - probed.at > 20_000) {
-      const targets = Object.entries(compiled?.mcp_servers ?? {}).filter(([, c]) => c.url);
-      const results = await Promise.all(targets.map(async ([n, c]) => [n, await probe(c.url!)] as const));
+      const results = Object.entries(await records.connectionHealth());
       for (const [n, p] of results) if (p.ok) lastOk.set(n, p.checkedAt);
       probed = { at: Date.now(), probes: Object.fromEntries(results.map(([n, p]) => [n, { ...p, ...(lastOk.has(n) ? { lastOkAt: lastOk.get(n) } : {}) }])) };
     }

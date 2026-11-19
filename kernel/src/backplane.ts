@@ -57,6 +57,7 @@
 //   POST /v1/jobtools/:cmd     (a kernel job's own token) reset | engine {engine, model?} | cleanup: what the running job asks of its
 //                              task's next turn (jobtools.ts)
 //   GET  /v1/advisories        (the board's key) the marketplace advisories open against installed modules (advisories.ts)
+//   GET  /v1/connections/health (the board's key) every connection's /healthz as the kernel reaches it -> {probes: {name: {ok, status?, state?, detail?, channels?, checkedAt}}} (health.ts)
 //   POST /v1/auth/:op, /v1/accounts/:op, /v1/apps/:op, /v1/operator/:op  the accounts' routes (auth-api.ts): module UI
 //                              sessions and account admin (the board), in-app requests (apps-platform), setup links (operator)
 //   POST /v1/health/probe      (the host's health_probe_key, x-health-key) {probe}: one of health.ts's fixed read probes, called as the
@@ -143,6 +144,7 @@ export const ROUTES = [
   { method: "POST", path: "/v1/jobtools/:cmd", auth: "job" },
   { method: "POST", path: "/v1/checkout", auth: "job" },
   { method: "GET", path: "/v1/advisories", auth: "board" },
+  { method: "GET", path: "/v1/connections/health", auth: "board" },
   { method: "POST", path: "/v1/auth/:op", auth: "board" },
   { method: "POST", path: "/v1/accounts/:op", auth: "board+session" },
   { method: "POST", path: "/v1/apps/:op", auth: "module" },
@@ -176,7 +178,7 @@ function workRead(work: Work, p: URLSearchParams) {
   return task ? work.task(task.slice(0, 100)) : work.activity();
 }
 
-export function createBackplane({ whoami, asserter, proxy, cp, boardCp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, reviewerKey = () => "", jobs, codehost, admission, outcomes, wakes, tasks, eventsKey = () => "", work, graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, checkJobs, jobTools, ownerRaw, lane, healthProbe, healthKey = () => "", log = () => {} }: {
+export function createBackplane({ whoami, asserter, proxy, cp, boardCp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, reviewerKey = () => "", jobs, codehost, admission, outcomes, wakes, tasks, eventsKey = () => "", work, graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, checkJobs, jobTools, ownerRaw, lane, healthProbe, healthKey = () => "", connectionHealth, log = () => {} }: {
   whoami: Whoami; asserter: Asserter; proxy: Handler; cp: Handler; boardCp?: Handler; grantsFile: () => { agents?: Record<string, Grant> } & Record<string, unknown>;
   writes?: Writes; records?: Records; boardKey?: () => string; log?: (msg: string, f?: Record<string, unknown>) => void;
   /** The reviewer slot, and the key a direct review request asks with (reviewer_key, which the board holds). */
@@ -220,6 +222,8 @@ export function createBackplane({ whoami, asserter, proxy, cp, boardCp, grantsFi
   /** The host's health probes (health.ts), and the key the host's healthcheck asks with (health_probe_key, held by no container). */
   healthProbe?: (b: Record<string, unknown>) => Promise<{ ok: boolean; ms: number; error?: string }>;
   healthKey?: () => string;
+  /** Every connection's /healthz (health.ts createConnectionHealth). */
+  connectionHealth?: () => Promise<Record<string, unknown>>;
 }) {
   /** The calling module (its own token), or 401. */
   const moduleOf = async (req: IncomingMessage) => {
@@ -309,6 +313,7 @@ export function createBackplane({ whoami, asserter, proxy, cp, boardCp, grantsFi
           if (!boardCp) throw fail(503, "unavailable", "the board's control-plane routes are off");
           return await boardCp(req, res, read ? "read" : "owner", m[0]!, query);
         }
+        case "GET /v1/connections/health": if (!isBoard(req)) throw fail(401, "unauthorized", "the board's key is required"); return send(res, 200, { probes: connectionHealth ? await connectionHealth() : {} });
         case "GET /v1/advisories": if (!isBoard(req)) throw fail(401, "unauthorized", "the board's key is required"); return send(res, 200, { advisories: advisories() });
       }
       if (hit?.path.startsWith("/v1/tasks")) {

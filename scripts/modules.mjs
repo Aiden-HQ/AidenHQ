@@ -72,7 +72,7 @@ const fail = (msg) => { throw new Error(msg); };
 /**
  * What each module still reaches of the root stack until its kernel route lands (scripts/compiler/services.ts `Legacy`).
  * Closed: each list may only shrink (scripts/test/modules.test.mjs pins them). `until` is the unit that removes the entry.
- * links: root services a module's services share a network with (board: sign-ins, connection health, internal API,
+ * links: root services a module's services share a network with (board: sign-ins, internal API,
  * metrics, the lane; paperclip:
  * owner chat, webhooks; one network per pair), or root networks (backplane: the kernel's listener for services without
  * egress, which can't route to it from an internal network; sources: the warehouse).
