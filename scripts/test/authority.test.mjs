@@ -91,7 +91,7 @@ test("dropping enforcement is the owner's: a check removed, or the reviewer or e
   // A check moved to observe mode no longer enforces: dropped too.
   assert.deepEqual(lines(with_({ checks: [{ id: "lint" }, { id: "scan", mode: "observe" }], providers: strict.providers })), ["drops 1 check"]);
   // The same through a replace: B lacking A's check is the owner's.
-  const d = authorityDiff("crm-b", undefined, { name: "crm-b" }, false, { name: "acme-crm", def: strict });
+  const d = authorityDiff("crm-b", undefined, { name: "crm-b" }, false, [{ name: "acme-crm", def: strict }]);
   assert.ok(d.changes.some((c) => c.owner && c.what === "drops 2 checks"));
 });
 
@@ -139,12 +139,31 @@ test("B replacing A with equal authority has an empty diff; B adding a secret is
   const same = diffAll(inputs);
   assert.equal(classifyModules(same).tier, 1);
   assert.deepEqual(same[0].changes.filter((c) => c.owner), []);
-  const more = authorityDiff("chan-b", undefined, { ...b, generated_secrets: [...b.generated_secrets, "chan_b_extra"] }, false, { name: "chan-a", def: a });
+  const more = authorityDiff("chan-b", undefined, { ...b, generated_secrets: [...b.generated_secrets, "chan_b_extra"] }, false, [{ name: "chan-a", def: a }]);
   assert.deepEqual(more.changes.filter((c) => c.owner).map((c) => c.what), ["adds secret chan_b_extra"]);
   // `replaces` counts only when this change removes A: with A staying, B is a plain install, diffed against nothing.
   const kept = moduleInputs({ baseInstance: { modules: ["chan-a"] }, headInstance: { modules: ["chan-a", "chan-b"] }, baseDefs: { "chan-a": a, "chan-b": b }, headDefs: { "chan-a": a, "chan-b": b }, changed: [] });
   assert.equal(kept["chan-b"].replacing, undefined);
   assert.equal(classifyModules(diffAll(kept)).tier, 2);
+});
+
+test("a module folded into one that already ran: moved authority is no line, only what is new (distro#70)", () => {
+  // The product drops chan-a; chan-b, already running, now carries chan-a's write kind, privileged entry, executor and
+  // secret under their old names. instance.yaml still lists chan-a (current() reads it as chan-b): no rewrite.
+  const a = { name: "chan-a", privileged: ["speaks-as-owner"], providers: { executor: { url: "http://a:1/x" } }, generated_secrets: ["chan_a_key"], writes: { "chan-a.post": { floor: 1 } }, codehost: { repos: "all" } };
+  const b0 = { name: "chan-b", connections: { "chan-b": { url: "http://b:1/mcp", tools: { read: ["r"] } } } };
+  const b1 = { ...b0, replaces: ["chan-a"], privileged: ["speaks-as-owner"], providers: { executor: { url: "http://a:1/x" } }, generated_secrets: ["chan_a_key"], writes: { "chan-b.post": { floor: 1 } }, codehost: { repos: "all" } };
+  const diff = (head) => diffAll(moduleInputs({ baseInstance: { modules: ["chan-a", "chan-b"] }, headInstance: { modules: ["chan-a", "chan-b"] }, baseDefs: { "chan-a": a, "chan-b": b0 }, headDefs: { "chan-b": head }, changed: [] }));
+  const moved = diff(b1);
+  assert.deepEqual(moved.map((d) => d.module), ["chan-b"]);
+  assert.deepEqual(moved[0].changes.filter((c) => c.owner), []);
+  assert.ok(moved[0].changes.some((c) => c.what === "replaces chan-a"));
+  const more = diff({ ...b1, generated_secrets: ["chan_a_key", "chan_b_extra"], privileged: ["speaks-as-owner", "git-credential"] });
+  assert.deepEqual(more[0].changes.filter((c) => c.owner).map((c) => c.what), ["adds privileged git-credential", "adds secret chan_b_extra"]);
+  // Two modules replacing chan-a: neither is its successor, so chan-a is removed on its own and chan-b's gains are new.
+  const two = diffAll(moduleInputs({ baseInstance: { modules: ["chan-a", "chan-b"] }, headInstance: { modules: ["chan-b", "chan-c"] }, baseDefs: { "chan-a": a, "chan-b": b0 }, headDefs: { "chan-b": b1, "chan-c": { name: "chan-c", replaces: ["chan-a"] } }, changed: [] }));
+  assert.ok(two.find((d) => d.module === "chan-a").changes.some((c) => c.owner && /removed/.test(c.what)));
+  assert.ok(two.find((d) => d.module === "chan-b").changes.some((c) => c.owner && c.what === "adds privileged speaks-as-owner"));
 });
 
 test("5b: the tree id at the new sha equals the recorded one → empty diff; the official repository is no owner line", () => {
