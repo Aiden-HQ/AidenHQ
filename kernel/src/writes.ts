@@ -220,7 +220,8 @@ export function createWrites({ records, registry, connections, secret, resolver,
   }
 
   /** Plan, tier, card and file. Tier 0 comes back claimed (the caller executes it); `satisfied` comes back done. */
-  async function file(kind: string, k: Kind, requester: Requester, args: unknown, task: string, evidence?: unknown, workspace?: string): Promise<Rec> {
+  /** Plan, tier and card a request, filing nothing: the record file() files (`filed`), or the plan's `satisfied` evidence. */
+  async function prepare(kind: string, k: Kind, requester: Requester, args: unknown, task: string, evidence?: unknown, workspace?: string) {
     const executor = { module: k.module, url: k.executor?.url, ...(k.executor?.rev ? { rev: k.executor.rev } : {}) };
     const own = Object.hasOwn(planners, kind) ? planners[kind] : undefined;
     const plan: Plan = own ? await own({ kind, args, requester, task, ...(workspace ? { workspace } : {}) }) : await call(k, "plan", { kind, args, requester, task, ...(evidence !== undefined ? { evidence } : {}) });
@@ -230,16 +231,27 @@ export function createWrites({ records, registry, connections, secret, resolver,
     const card = render(own ? literal(plan.card ?? {}) : k.card ?? {}, { ...(plan.args && typeof plan.args === "object" ? plan.args : {}), ...plan.facts, ...plan.card });
     // A job's record names its workspace (its task's identifier, from the job's row): where the code host reads its commits.
     const base = { kind, module: k.module, args: plan.args, targets, executor, policy: policy(k), card, requester, task, ...(workspace ? { identifier: workspace } : {}) };
-    if (plan.satisfied) {
-      const r = records.file({ ...base, tier: 0, panel: false, state: "claimed" });
-      records.finish(r.id, true, `Nothing to do: ${String(plan.satisfied.evidence).slice(0, 1000)}`);
-      return records.get(r.id)!;
-    }
+    if (plan.satisfied) return { base, satisfied: String(plan.satisfied.evidence) };
     const raise = plan.raise && (plan.raise.tier === 1 || plan.raise.tier === 2) ? plan.raise : undefined;
     const byPaths = k.paths ? writeRaise(paths(), plan.paths, repoKindOf) : undefined;
     const checkRaises = [...(byPaths ? [byPaths] : []), ...filedRaises(kind, plan)];
     const reviewFirst: ReviewFirst = plan.review_first === "final" ? "final" : "owner";
     const t = computeTier({ floor: k.floor, raise, reviewFirst, checkRaises, priorVeto: task ? records.vetoed(task, kind, { digest: digestOf(base) }) : false, autonomy: autonomy(), routine: await routineOf(task), panel: k.panel === true, uncapped: isUpdater(requester) });
+    // The reason and rule shown: the strictest raise, the plan's on a tie.
+    const weight = (r: Raise | undefined) => (r ? r.tier * 4 + (r.ownerOnly ? 2 : 0) + (r.panel ? 1 : 0) : 0);
+    const top = checkRaises.reduce<Raise | undefined>((a, b) => (weight(b) > weight(a) ? b : a), raise);
+    return { base, filed: { ...base, card: { ...card, reason: (t.rule ? capText(t.cap!) : top?.reason)?.slice(0, 300) ?? "" }, tier: t.tier, merit: t.merit, panel: t.panel, review_first: t.reviewFirst, rule: t.rule ?? top?.rule ?? null, cap: t.cap ?? null, state: t.state, ...(t.tier > 0 && plan.review ? { context: plan.review } : {}) } };
+  }
+
+  /** Plan, tier, card and file. Tier 0 comes back claimed (the caller executes it); `satisfied` comes back done. */
+  async function file(kind: string, k: Kind, requester: Requester, args: unknown, task: string, evidence?: unknown, workspace?: string): Promise<Rec> {
+    const { base, satisfied, filed } = await prepare(kind, k, requester, args, task, evidence, workspace);
+    if (satisfied !== undefined) {
+      const r = records.file({ ...base, tier: 0, panel: false, state: "claimed" });
+      records.finish(r.id, true, `Nothing to do: ${satisfied.slice(0, 1000)}`);
+      return records.get(r.id)!;
+    }
+    const t = filed!;
     if (t.tier > 0 && !task) throw fail(400, "no_task", `${kind} needs approval: pass your current task`);
     // The same requester's same request still open on the task is that record, never a second card that would run twice,
     // while it is at least as strict (tier and panel). A stricter one replaces it only while it waits for the reviewer; a
@@ -248,10 +260,7 @@ export function createWrites({ records, registry, connections, secret, resolver,
     const same = t.tier > 0 ? records.open(task, kind, digestOf(base)).find((r) => who(r.requester) === who(requester)) : undefined;
     if (same && same.tier >= t.tier && (same.panel || !t.panel)) return same;
     if (same?.state === "review") records.close(same.id, "cancelled", "replaced by the same request at a stricter tier");
-    // The reason and rule shown: the strictest raise, the plan's on a tie.
-    const weight = (r: Raise | undefined) => (r ? r.tier * 4 + (r.ownerOnly ? 2 : 0) + (r.panel ? 1 : 0) : 0);
-    const top = checkRaises.reduce<Raise | undefined>((a, b) => (weight(b) > weight(a) ? b : a), raise);
-    return records.file({ ...base, card: { ...card, reason: (t.rule ? capText(t.cap!) : top?.reason)?.slice(0, 300) ?? "" }, tier: t.tier, merit: t.merit, panel: t.panel, review_first: t.reviewFirst, rule: t.rule ?? top?.rule ?? null, cap: t.cap ?? null, state: t.state, ...(t.tier > 0 && plan.review ? { context: plan.review } : {}) });
+    return records.file(t);
   }
 
   // Records this process is executing (a restart's reconcile never calls them unknown; a drain waits for them), and approved
@@ -396,35 +405,41 @@ export function createWrites({ records, registry, connections, secret, resolver,
     return verdict;
   }
 
+  /** Who may ask for `asked` and on which task: the routed kind, its definition, the record's task and the args a job's own workspace is forced into. */
+  function admit(who: Identity, asked: string, args: unknown, task?: string) {
+    // A new repo named without its org goes to the instance's default agents org: GitHub's once it is connected
+    // (AIDENHQ_GITHUB_AGENTS_ORG), else this server's. An existing repo keeps its host: routing reads only the repo.
+    const newRepo = (args as { repo?: unknown } | null)?.repo;
+    if (asked === "codehost.create_repo" && typeof newRepo === "string" && !newRepo.includes("/")) args = { ...(args as object), repo: `${repos().agentsOrg ?? LOCAL_ORG}/${newRepo}` };
+    let kind: string;
+    try { kind = routeKind(asked, args); } catch (e) { throw fail(400, "bad_args", (e as Error).message); }
+    const k = kindOf_(kind);
+    if (!k || !(k.executor || Object.hasOwn(planners, kind) || inProcess(k))) throw fail(404, "unknown_kind", `no write kind ${kind}`);
+    // A job only by the kinds its token names (its minter names them), on the token's task; its tier is the kind's, as any
+    // requester's (floor, the executor's plan, caps and the routine cap: computeTier). A module files its own kinds; a kernel
+    // kind the kernel plans itself (kernel.apply) only by holding the kernel role of that name, which compile allows only as
+    // a request of a defined kernel role (KERNEL_ROLES) and the authority diff marks as owner authority.
+    const kernelRole = k.module === "kernel" && Object.hasOwn(planners, kind) && (who.roles ?? []).includes(kind);
+    // A kernel job (its identity is a run) by the kinds its frozen authority names, or by its tools.
+    const named = Boolean(who.task && who.writes?.includes(kind));
+    const granted = (who.kind === "module" && (who.module === k.module || kernelRole)) || named || k.tools.some((ct) => { const [c, t] = ct.split("."); return who.tools[c!]?.includes(t!); });
+    if (!granted) throw fail(403, "no-grant", `no grant on ${kind}`);
+    // An agent's record is on the task its run is on (its notices land there, as the owner); only a module names one.
+    const t = who.kind === "module" && typeof task === "string" && task ? task : who.task ?? "";
+    // A kernel job's write names its own workspace (its row's task identifier), whatever its args say: set before the plan,
+    // validation and tiering, for any kind whose args take a workspace. No row identifier: refused, never the caller's.
+    if (who.workspace !== undefined && k.args?.properties?.workspace) {
+      if (!who.workspace) throw fail(409, "no_workspace", "this job has no workspace on record");
+      if (args && typeof args === "object" && !Array.isArray(args)) args = { ...args, workspace: who.workspace };
+    }
+    return { kind, k, t, args };
+  }
+
   return {
     kindOf,
     /** POST /v1/writes, and the proxy for a tool mapped to a kind. */
-    async request(who: Identity, { kind: asked, args, task, evidence }: { kind: string; args: unknown; task?: string; evidence?: unknown }): Promise<Rec> {
-      // A new repo named without its org goes to the instance's default agents org: GitHub's once it is connected
-      // (AIDENHQ_GITHUB_AGENTS_ORG), else this server's. An existing repo keeps its host: routing reads only the repo.
-      const newRepo = (args as { repo?: unknown } | null)?.repo;
-      if (asked === "codehost.create_repo" && typeof newRepo === "string" && !newRepo.includes("/")) args = { ...(args as object), repo: `${repos().agentsOrg ?? LOCAL_ORG}/${newRepo}` };
-      let kind: string;
-      try { kind = routeKind(asked, args); } catch (e) { throw fail(400, "bad_args", (e as Error).message); }
-      const k = kindOf_(kind);
-      if (!k || !(k.executor || Object.hasOwn(planners, kind) || inProcess(k))) throw fail(404, "unknown_kind", `no write kind ${kind}`);
-      // A job only by the kinds its token names (its minter names them), on the token's task; its tier is the kind's, as any
-      // requester's (floor, the executor's plan, caps and the routine cap: computeTier). A module files its own kinds; a kernel
-      // kind the kernel plans itself (kernel.apply) only by holding the kernel role of that name, which compile allows only as
-      // a request of a defined kernel role (KERNEL_ROLES) and the authority diff marks as owner authority.
-      const kernelRole = k.module === "kernel" && Object.hasOwn(planners, kind) && (who.roles ?? []).includes(kind);
-      // A kernel job (its identity is a run) by the kinds its frozen authority names, or by its tools.
-      const named = Boolean(who.task && who.writes?.includes(kind));
-      const granted = (who.kind === "module" && (who.module === k.module || kernelRole)) || named || k.tools.some((ct) => { const [c, t] = ct.split("."); return who.tools[c!]?.includes(t!); });
-      if (!granted) throw fail(403, "no-grant", `no grant on ${kind}`);
-      // An agent's record is on the task its run is on (its notices land there, as the owner); only a module names one.
-      const t = who.kind === "module" && typeof task === "string" && task ? task : who.task ?? "";
-      // A kernel job's write names its own workspace (its row's task identifier), whatever its args say: set before the plan,
-      // validation and tiering, for any kind whose args take a workspace. No row identifier: refused, never the caller's.
-      if (who.workspace !== undefined && k.args?.properties?.workspace) {
-        if (!who.workspace) throw fail(409, "no_workspace", "this job has no workspace on record");
-        if (args && typeof args === "object" && !Array.isArray(args)) args = { ...args, workspace: who.workspace };
-      }
+    async request(who: Identity, { kind: asked, args: given, task, evidence }: { kind: string; args: unknown; task?: string; evidence?: unknown }): Promise<Rec> {
+      const { kind, k, t, args } = admit(who, asked, given, task);
       // A kernel job's last write attempt is on its row: the reason it was refused at plan time, or nothing once one went through
       // (dispatch blocks the task of a run that ended on a refusal).
       const mark = (why: string | null) => { if (who.job) (why ? records.db.prepare("INSERT INTO job_refusals (job, why) VALUES (?, ?) ON CONFLICT DO UPDATE SET why = excluded.why").run(who.job, why) : records.db.prepare("DELETE FROM job_refusals WHERE job = ?").run(who.job)); };
@@ -432,6 +447,18 @@ export function createWrites({ records, registry, connections, secret, resolver,
       mark(null);
       if (r.state === "claimed") await execute(r, k);
       return r;
+    },
+    /**
+     * A kernel job's precheck (`aidenhq review`): the record its write would file, planned and tiered as request() files it, and
+     * never filed: no record, no refusal on the job's row, nothing replaced. `satisfied`: the plan has nothing to do.
+     */
+    async preview(who: Identity, { kind: asked, args: given }: { kind: string; args: unknown }): Promise<{ rec?: Rec; satisfied?: string }> {
+      if (who.kind !== "run" || !who.job) throw fail(403, "forbidden", "a precheck is a kernel job's own");
+      const { kind, k, t, args } = admit(who, asked, given);
+      const { base, satisfied, filed } = await prepare(kind, k, requesterOf(who, t), args, t, undefined, who.workspace || undefined);
+      if (satisfied !== undefined) return { satisfied };
+      const at = new Date().toISOString();
+      return { rec: { ...filed!, id: "precheck", digest: digestOf(base), created_at: at, updated_at: at } as Rec };
     },
     /**
      * A kind the kernel plans (kernel.apply), filed by the kernel itself: the release updater (updates.ts, UPDATER) or the

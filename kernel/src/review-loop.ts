@@ -12,7 +12,7 @@
 // repo's main. Code decides first where it can (tier.ts codeVerdict): those reads no model.
 import { createHash } from "node:crypto";
 import type { Rec, Records, State } from "./records.ts";
-import { CODE_REJECTS, MAX_REJECTS, meritOwner, priorDecisions, priorPart, requestKey, requestTargets, type Prior, type ReviewInput } from "./tier.ts";
+import { CODE_REJECTS, MAX_REJECTS, afterReview, codeVerdict, heldInput, meritOwner, priorDecisions, priorPart, requestKey, requestTargets, type Prior, type ReviewInput, type Verdict } from "./tier.ts";
 import { MARKER, fenced, type Writes } from "./writes.ts";
 import { UNSURE } from "../sdk/src/reviewer.ts";
 import { dataBlock as fence } from "../sdk/src/fence.ts";
@@ -146,6 +146,16 @@ export function createReviewLoop({ records, writes, task, decisions, product, lo
   }
 
   return {
+    /**
+     * A job's precheck (`aidenhq review`): the verdict its unfiled record (writes.preview) would get, read as a filed one's is
+     * and decided as writes.review decides (code first, then `ask`, the bound reviewer). Nothing moves and nothing is posted.
+     */
+    async precheck(r: Rec, ask: (request: Record<string, unknown>) => Promise<Verdict>): Promise<Verdict> {
+      const digest = await decisions().catch(() => undefined);
+      const { input, request } = await reviewInput(r, { records, task, decisions: digest, product: product() });
+      const held = heldInput({ ...input, cap: r.cap ?? null }, r.review_first);
+      return codeVerdict(held, "kernel/code") ?? afterReview(held, await ask(request));
+    },
     /**
      * One sweep: the oldest 200 records in review not already being reviewed nor waiting out a failed review's backoff, so a
      * burst never starves its first records. Resolves when they are done.

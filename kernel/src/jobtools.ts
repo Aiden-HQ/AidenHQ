@@ -8,6 +8,8 @@ import type { DatabaseSync } from "node:sqlite";
 import { verifyToken } from "./gateway/token.ts";
 
 export const JOB_TOOLS = ["reset", "engine", "cleanup"] as const;
+/** A job's prechecks (`aidenhq review`): each is a reviewer call. */
+export const PRECHECKS = 3;
 export type NextTurn = { job: string; fresh: boolean; engine: { kind: string; model?: string } | null; cleanup: boolean };
 
 export class JobToolError extends Error {
@@ -32,6 +34,7 @@ export function createJobTools({ db, secret, engines, orgs = () => [], mayClone 
   now?: () => number;
 }) {
   db.exec("CREATE TABLE IF NOT EXISTS jobtools (job TEXT PRIMARY KEY, fresh INTEGER NOT NULL DEFAULT 0, engine TEXT, cleanup INTEGER NOT NULL DEFAULT 0, at INTEGER NOT NULL)");
+  db.exec("CREATE TABLE IF NOT EXISTS jobtool_reviews (job TEXT PRIMARY KEY, n INTEGER NOT NULL)");
   const save = db.prepare(`INSERT INTO jobtools (job, fresh, engine, cleanup, at) VALUES (?, ?, ?, ?, ?)
     ON CONFLICT (job) DO UPDATE SET fresh = MAX(fresh, excluded.fresh), engine = COALESCE(excluded.engine, engine), cleanup = MAX(cleanup, excluded.cleanup), at = excluded.at`);
 
@@ -98,6 +101,12 @@ export function createJobTools({ db, secret, engines, orgs = () => [], mayClone 
       const repo = `local/${m[1]}`;
       if (!mayClone(r!.module, repo)) throw new JobToolError(403, "not-allowed", `${repo} isn't a repository this job's dispatcher may clone`);
       return { repo };
+    },
+    /** One of this live job's prechecks, counted before its reviewer call: at most PRECHECKS a job. */
+    review(token: string): void {
+      const job = jobOf(token);
+      const got = db.prepare("INSERT INTO jobtool_reviews (job, n) VALUES (?, 1) ON CONFLICT (job) DO UPDATE SET n = n + 1 WHERE n < ? RETURNING n").get(job, PRECHECKS);
+      if (!got) throw new JobToolError(429, "precheck-limit", `this job has had its ${PRECHECKS} prechecks: publish, and the AI reviewer decides`);
     },
     /** What the task's last ended job asked of its next turn, if anything (read in the admission transaction). */
     pending(task: string): NextTurn | undefined {
