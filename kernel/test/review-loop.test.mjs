@@ -165,13 +165,14 @@ test("a GLM job's write is reviewed by a non-GLM reviewer; a module's own write 
   await sweep;
 });
 
-test("the reviewer reads the changed files and the PR's Evidence section the code host's plan gave at filing", async (t) => {
+test("the reviewer reads the changed files, the PR's Evidence section and the bases' source exceptions the code host's plan gave at filing", async (t) => {
   const mod = await reviewer(t);
   const k = await side(t, db(), mod);
   const files = { text: "#### acme/app src/a.ts\nexport const a = 1;", leftOut: [], oversized: [] };
+  const sources = { where: "acme/app main .github/supply-chain-source-exceptions.yaml", records: [] };
   const r = fileRecord(k.records);
-  k.records.db.prepare("UPDATE records SET context = ? WHERE id = ?").run(JSON.stringify({ files, evidence: "npm test: 12 pass" }), r.id);
+  k.records.db.prepare("UPDATE records SET context = ? WHERE id = ?").run(JSON.stringify({ files, evidence: "npm test: 12 pass", sources }), r.id);
   void k.loop.tick();
   await until(() => mod.seen.length === 1);
-  assert.deepEqual([mod.seen[0].request.files, mod.seen[0].request.evidence], [files, "npm test: 12 pass"]);
+  assert.deepEqual([mod.seen[0].request.files, mod.seen[0].request.evidence, mod.seen[0].request.sources], [files, "npm test: 12 pass", sources]);
 });

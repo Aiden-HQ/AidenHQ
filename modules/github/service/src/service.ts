@@ -32,6 +32,7 @@ import { createReleaseTrain } from "./train.ts";
 import { LOCAL_ORG, plan as planRules } from "./plan.mjs";
 import { fileContext } from "./review-files.mjs";
 import { evidenceOf } from "./evidence.mjs";
+import { SOURCE_EXCEPTIONS_FILE, readCardSourceExceptions } from "./sources.mjs";
 import { notePrTask } from "./pr-watch.ts";
 import { createDesignReviews, startDesignReviewSweep } from "./design-review.ts";
 import { noteKept } from "./tidy.ts";
@@ -238,6 +239,8 @@ export function createService(o: Options) {
     }
     // What the reviewer reads beside the diff (review): each changed file at the reviewed head, and the PR's Evidence section.
     const reads: { name: string; read: () => Promise<string> }[] = [];
+    // The bases the change targets, each with a way to read a file there (the owner's source exceptions: never the change's own).
+    const bases: { repo: string; base: string; read: (path: string) => Promise<string> }[] = [];
     if (kind.endsWith(".merge") || kind.endsWith(".close")) {
       const merge = kind.endsWith(".merge");
       const prs = [];
@@ -258,6 +261,7 @@ export function createService(o: Options) {
           diff += `${await diffOf(head.dir, mb || EMPTY_TREE, head.sha)}\n`;
           if (pr.changed_files <= listed.length) for (const f of listed.map((x: any) => String(x.filename))) reads.push({ name: `${s.slug} ${f}`, read: () => git(head.dir, ["show", `${head.sha}:${f}`]) });
           evidence.push(`### https://github.com/${s.slug}/pull/${Number(p.number)}\n${evidenceOf(pr.body)}`);
+          bases.push({ repo: s.slug, base: String(pr.base?.ref ?? ""), read: (path) => git(into.dir, ["show", `${into.sha}:${path}`]) });
         }
         prs.push({
           repo: s.slug, number: Number(p.number), head: pr.head?.sha, base: pr.base?.sha, headMatches: !p.head || p.head === pr.head?.sha,
@@ -266,7 +270,7 @@ export function createService(o: Options) {
         });
       }
       const urls = prs.map((p) => `https://github.com/${p.repo}/pull/${p.number}`).join(", ");
-      return { state: { ...base, prs }, facts: { target: urls, sentence: `${merge ? "Merge" : "Close"} ${urls}${merge ? " at its approved head, once its checks are green" : ""}.`, diff: diff.trim() }, reads, ...(merge ? { evidence: evidence.join("\n\n") } : {}) };
+      return { state: { ...base, prs }, facts: { target: urls, sentence: `${merge ? "Merge" : "Close"} ${urls}${merge ? " at its approved head, once its checks are green" : ""}.`, diff: diff.trim() }, reads, bases, ...(merge ? { evidence: evidence.join("\n\n") } : {}) };
     }
     const branches = [];
     let diff = "";
@@ -288,10 +292,12 @@ export function createService(o: Options) {
         if (msg) throw fail(422, `Not done: a commit message on ${b.branch} mentions "${leakIn(msg)}" ("${msg.trim().split("\n")[0]!.slice(0, 80)}"). ${s.slug}'s reviewers mustn't see internal names; reword the commit and ask again.`);
       }
       for (const f of files) reads.push({ name: `${s.slug} ${f}`, read: () => git(dir, ["show", `${b.sha}:${f}`]) });
+      // A branch's PR targets the default branch (execute opens it there); a repo with none yet has no base to read.
+      bases.push({ repo: s.slug, base: empty ? "" : def, read: (path) => git(dir, ["show", `refs/remote/${def}:${path}`]) });
       branches.push({ repo: s.slug, branch: b.branch, sha: b.sha, base: mb || undefined, files, defaultBranch: def, empty });
     }
     const names = branches.map((b) => `${b.repo} \`${b.branch}\``).join(", ");
-    return { state: { ...base, branches }, facts: { target: names, sentence: `${kind.endsWith(".pr") ? "Push and open a PR for" : "Push"} ${names}.`, diff: diff.trim() }, reads, ...(kind.endsWith(".pr") && a.text ? { evidence: evidenceOf(a.text.body) } : {}) };
+    return { state: { ...base, branches }, facts: { target: names, sentence: `${kind.endsWith(".pr") ? "Push and open a PR for" : "Push"} ${names}.`, diff: diff.trim() }, reads, bases, ...(kind.endsWith(".pr") && a.text ? { evidence: evidenceOf(a.text.body) } : {}) };
   }
 
   /**
@@ -306,10 +312,11 @@ export function createService(o: Options) {
 
   const executor: Executor = {
     async plan(req: PlanRequest) {
-      const { state, facts, reads, evidence } = (await stateFor(req.kind, req.args ?? {}, req.requester, req.task)) as Awaited<ReturnType<typeof stateFor>> & { reads?: { name: string; read: () => Promise<string> }[]; evidence?: string };
+      const { state, facts, reads, evidence, bases } = (await stateFor(req.kind, req.args ?? {}, req.requester, req.task)) as Awaited<ReturnType<typeof stateFor>> & { reads?: { name: string; read: () => Promise<string> }[]; evidence?: string; bases?: { repo: string; base: string; read: (path: string) => Promise<string> }[] };
       const planned = planRules({ kind: req.kind, args: req.args }, state, facts);
       // The reviewer's context goes with the filing only (a revalidation compares targets): never part of the record's digest.
-      const out = req.revalidate || (!reads?.length && evidence === undefined) ? planned : { ...planned, review: { ...(reads?.length ? { files: await readFiles(reads) } : {}), ...(evidence !== undefined ? { evidence } : {}) } };
+      const sources = req.revalidate ? undefined : await readCardSourceExceptions(bases ?? [], (repo: string, base: string) => bases!.find((b) => b.repo === repo && b.base === base)!.read(SOURCE_EXCEPTIONS_FILE));
+      const out = req.revalidate || (!reads?.length && evidence === undefined && !sources) ? planned : { ...planned, review: { ...(reads?.length ? { files: await readFiles(reads) } : {}), ...(evidence !== undefined ? { evidence } : {}), ...(sources ? { sources } : {}) } };
       // Its commits were read from this task's workspace (stateFor), so the task is who asked to publish them.
       if (/\.(push|pr)$/.test(req.kind) && req.task) notePushedBy((req.args?.only ?? []).map((b: any) => String(b.sha)), { task: req.task, platform: isPlatform(req.requester) });
       return out;

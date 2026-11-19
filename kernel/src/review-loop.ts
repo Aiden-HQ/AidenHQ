@@ -96,6 +96,8 @@ export async function reviewInput(r: Rec, { records, task, decisions, product }:
     // The changed files at the reviewed head and the PR's Evidence section, as the code host's plan read them at filing.
     ...(r.context?.files ? { files: r.context.files } : {}),
     ...(r.context?.evidence !== undefined ? { evidence: r.context.evidence } : {}),
+    // The owner-approved source exceptions at each base the change targets, as the code host read them at filing.
+    ...(r.context?.sources ? { sources: r.context.sources } : {}),
     chain,
     siblings: "",
     decisions,
