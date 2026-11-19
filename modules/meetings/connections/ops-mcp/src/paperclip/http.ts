@@ -31,7 +31,8 @@ export class HttpPaperclipApi implements PaperclipApi {
     if (input.assignee_agent_id) body.assigneeAgentId = input.assignee_agent_id;
     else {
       const user = await this.ownerUserId();
-      if (user) body.assigneeUserId = user;
+      if (!user) throw new Error("no owner to hold the task: every open task has a holder");
+      body.assigneeUserId = user;
     }
     const issue = await this.request<Record<string, unknown>>("POST", `/api/companies/${this.companyId}/issues`, body);
     return toRef(issue);

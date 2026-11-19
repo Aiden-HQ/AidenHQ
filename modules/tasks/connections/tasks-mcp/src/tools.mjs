@@ -45,7 +45,7 @@ export async function directory() {
     const res = await fetch(`${KERNEL}/v1/agents`, { headers: { authorization: `Bearer ${SERVICE_KEY}` }, signal: AbortSignal.timeout(10_000) });
     if (!res.ok) throw new Error(String(res.status));
     const j = await res.json();
-    dirCache = { agents: j.agents ?? {} };
+    dirCache = { agents: j.agents ?? {}, log_tasks: j.log_tasks ?? [] };
     dirAt = Date.now();
   } catch (err) {
     if (!dirCache) throw new Error(`Refused: the agent directory is unavailable (${String(err.message ?? err).slice(0, 100)}).`);
@@ -290,6 +290,9 @@ async function ownerUserId() {
   if (!COMPANY()) return undefined;
   return (await memo("owner", async () => (await api("GET", `/api/companies/${encodeURIComponent(COMPANY())}`)).defaultResponsibleUserId ?? null)) ?? undefined;
 }
+
+/** One of setup's log tasks (the kernel's directory, from the grants table): an agent holds it, but it is a log, not work. */
+const isLogTask = (i) => (cx().dir.log_tasks ?? []).some((x) => x === i.id || x === i.identifier);
 
 /** One of the user's own tasks: assigned to them, or theirs to answer for. */
 async function isUsersTask(id) {
@@ -687,7 +690,8 @@ const TOOLS = {
       let list = await api("GET", `/api/companies/${encodeURIComponent(COMPANY())}/issues?${q}`);
       if (me) {
         // Heartbeat runs are the scan itself, never work to catch up on.
-        list = list.filter((i) => i.assigneeAgentId === me && i.id !== CURRENT() && !String(i.title).startsWith("Heartbeat:"));
+        // Nor setup's log tasks it holds (memory inbox, review log, chat, Fleet issues: scripts/modules.mjs): logs, not work.
+        list = list.filter((i) => i.assigneeAgentId === me && i.id !== CURRENT() && !String(i.title).startsWith("Heartbeat:") && !isLogTask(i));
         // Your chats handed back to the owner: assigned to them, marked as yours when created (the board's chatAgentMarker).
         const owner = await ownerUserId();
         if (owner) {
@@ -785,8 +789,10 @@ const TOOLS = {
       if (isBrief(`<!-- source:${m} -->`, labels)) warning = [warning, metricWarning(description, Date.now())].filter(Boolean).join(" ") || undefined;
       if (assigneeAgent) body.assigneeAgentId = assigneeAgent;
       else {
+        // Every open task has a holder: without an agent, the owner holds it.
         const owner = await ownerUserId();
-        if (owner) body.assigneeUserId = owner;
+        if (!owner) throw new Error("no owner to hold the task: name its assignee (yourself included)");
+        body.assigneeUserId = owner;
       }
       const i = await api("POST", `/api/companies/${encodeURIComponent(COMPANY())}/issues`, body);
       return { ...brief(i), deduplicated: Boolean(i.deduplicated), ...(i.deduplicated ? {} : await fileGrade(i.id, grade)), ...(warning ? { warning } : {}) };

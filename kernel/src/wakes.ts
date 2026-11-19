@@ -59,7 +59,7 @@ type Comment = { id: string; body?: string; authorAgentId?: string | null; autho
 type Log = (msg: string, f?: Record<string, unknown>) => void;
 const ms = (t?: string) => (t ? Date.parse(t) || 0 : 0);
 
-export function createWakes({ db, owner, post, dispatches, routineKey = () => undefined, grants = () => ({}), knownRepo = () => false, teamDayUsedUp = () => false, tellBlocked = async () => {}, facts, log = () => {}, now = Date.now }: {
+export function createWakes({ db, owner, post, dispatches, containers = () => new Set(), routineKey = () => undefined, grants = () => ({}), knownRepo = () => false, teamDayUsedUp = () => false, tellBlocked = async () => {}, facts, log = () => {}, now = Date.now }: {
   /** Flow's fact log (facts.ts): task changes the scan sees, and each wake's opening, binding and dropping. */
   facts?: Facts;
   db: DatabaseSync;
@@ -69,6 +69,11 @@ export function createWakes({ db, owner, post, dispatches, routineKey = () => un
   post: Outcomes["post"];
   /** Whether a module dispatches an agent (jobs.ts dispatchesFrom), and the agents it dispatches (ids). */
   dispatches: { may: (module: string, agent: string) => boolean; agents: (module: string) => string[] };
+  /**
+   * The log tasks setup makes and an agent holds (grants memory_inbox, review_log, chat_task, fleet_issues), by id or
+   * identifier: written to by many, they wake nobody (the chat lane answers a chat task's words itself).
+   */
+  containers?: () => Set<string>;
   /** A Paperclip routine's compiled key (grants `routine_keys`, setup): none for a routine setup didn't make. */
   routineKey?: (routine: string) => string | undefined;
   /** The grants table's agents by id: teams and members (team routing). */
@@ -88,6 +93,11 @@ export function createWakes({ db, owner, post, dispatches, routineKey = () => un
   const have = new Set((db.prepare("PRAGMA table_info(wake_tasks)").all() as { name: string }[]).map((c) => c.name));
   if (!have.has("blocked")) db.exec("ALTER TABLE wake_tasks ADD COLUMN blocked TEXT");
   if (!have.has("polled")) db.exec("ALTER TABLE wake_tasks ADD COLUMN polled INTEGER NOT NULL DEFAULT 1");
+  // When a row was last claimed (`claimed_at`): the dispatcher reads the task's thread after it claims, so the job a wake starts
+  // covers what happened before its claim, not before its spawn (a box start or a clone can take minutes).
+  if (!(db.prepare("PRAGMA table_info(wakes)").all() as { name: string }[]).some((c) => c.name === "claimed_at")) db.exec("ALTER TABLE wakes ADD COLUMN claimed_at INTEGER");
+  // An unblock half done (unblock): its blocker relations cleared, its move to todo not yet written.
+  db.exec("CREATE TABLE IF NOT EXISTS unblocking (task TEXT PRIMARY KEY, closure TEXT NOT NULL, line TEXT NOT NULL)");
   const q = (sql: string) => db.prepare(sql);
   const fact = factWriter(facts, log);
   const keyOf = (agent: string | null | undefined) => (agent ? grants()[agent]?.key ?? agent : null);
@@ -145,8 +155,9 @@ export function createWakes({ db, owner, post, dispatches, routineKey = () => un
     q("INSERT OR IGNORE INTO dispatch_since (agent, at) VALUES (?, ?)").run(agent, joined);
     return (q("SELECT at FROM dispatch_since WHERE agent = ?").get(agent) as { at: number }).at;
   };
-  const liveJob = (task: string) => q(`SELECT id, at FROM jobs WHERE task = ? AND state IN ${LIVE} ORDER BY at DESC LIMIT 1`).get(task) as { id: string; at: number } | undefined;
-  const lastJob = (task: string) => q("SELECT id, at FROM jobs WHERE task = ? ORDER BY at DESC LIMIT 1").get(task) as { id: string; at: number } | undefined;
+  // A job with `at`: what it covers, the claim of the wake that started it (its spawn time for a job no claimed wake started).
+  const liveJob = (task: string) => q(`SELECT j.id, COALESCE(w.claimed_at, j.at) AS at FROM jobs j LEFT JOIN wakes w ON w.job = j.id WHERE j.task = ? AND j.state IN ${LIVE} ORDER BY j.at DESC LIMIT 1`).get(task) as { id: string; at: number } | undefined;
+  const lastJob = (task: string) => q("SELECT j.id, COALESCE(w.claimed_at, j.at) AS at FROM jobs j LEFT JOIN wakes w ON w.job = j.id WHERE j.task = ? ORDER BY j.at DESC LIMIT 1").get(task) as { id: string; at: number } | undefined;
 
   /** One task's wakes: new comments past its cursor, and a move to todo (or a first sight of an unstarted todo task). */
   async function scan(issue: Issue, { reopened = false, source = "live", actor = "unknown" }: { reopened?: boolean; source?: "live" | "poll"; actor?: string } = {}) {
@@ -155,7 +166,8 @@ export function createWakes({ db, owner, post, dispatches, routineKey = () => un
     // lack the description its first fact reads (a module's markers): read the task once then.
     if (!seen && issue.description === undefined) { const r = await owner("GET", `/api/issues/${encodeURIComponent(issue.id)}`); if (r.status === 200) issue = r.json as Issue; }
     taskFacts(issue, seen, source, actor);
-    const agent = issue.assigneeAgentId;
+    const box = containers();
+    const agent = box.has(issue.id) || (issue.identifier && box.has(issue.identifier)) ? null : issue.assigneeAgentId;
     const joined = agent ? polled().get(agent) : undefined;
     if (!agent || joined === undefined || grants()[agent]?.team) {
       q("INSERT INTO wake_tasks (task, agent, status, blocked, polled) VALUES (?, ?, ?, ?, 0) ON CONFLICT(task) DO UPDATE SET agent = excluded.agent, status = excluded.status, blocked = COALESCE(excluded.blocked, blocked)").run(issue.id, agent ?? null, String(issue.status ?? ""), blockedKey(issue));
@@ -175,8 +187,14 @@ export function createWakes({ db, owner, post, dispatches, routineKey = () => un
       insert(`comment:${c.id}`, issue.id, agent, "comment", ms(c.createdAt) || now(), null, c.authorAgentId ? `agent:${keyOf(c.authorAgentId)}` : c.authorUserId ? `account:${c.authorUserId}` : "unknown");
     }
     const status = String(issue.status ?? "");
-    const moved = prev ? prev.status !== status || prev.agent !== agent : !lastJob(issue.id);
-    if (status === "todo" && (reopened || moved) && !liveJob(issue.id)) {
+    // Handed to this agent since the scan last saw the task (from the owner, say, while nobody polled it): a wake, even if an
+    // earlier job ran on it, and also on a task already in progress.
+    const handed = seen !== undefined && (seen.agent ?? null) !== agent;
+    const moved = prev ? prev.status !== status || prev.agent !== agent : handed || !lastJob(issue.id);
+    const fileable = (status === "todo" || (handed && status === "in_progress")) && (reopened || moved);
+    // A move made while a job runs is filed once that job ends: until then the cursor keeps what it last saw (`deferred`).
+    const deferred = fileable && Boolean(liveJob(issue.id));
+    if (fileable && !deferred) {
       const at = ms(issue.updatedAt) || now();
       if (reopened) insert(`reopen:${issue.id}:${issue.statusVersion ?? issue.updatedAt}`, issue.id, agent, "reopen", at, null, actor);
       else if (!prev && issue.originKind === "routine_execution") {
@@ -193,7 +211,8 @@ export function createWakes({ db, owner, post, dispatches, routineKey = () => un
       rearmRoutine(`routine-run:${issue.id}`, issue.id, agent, key ? `routine:${key}` : "routine", actor);
     }
     const newest = prev?.comment && !all.length ? prev.comment : all.at(-1)?.id ?? null;
-    q("INSERT INTO wake_tasks (task, agent, status, comment, blocked, polled) VALUES (?, ?, ?, ?, ?, 1) ON CONFLICT(task) DO UPDATE SET agent = excluded.agent, status = excluded.status, comment = excluded.comment, blocked = COALESCE(excluded.blocked, blocked), polled = 1").run(issue.id, agent, status, newest, blockedKey(issue));
+    q("INSERT INTO wake_tasks (task, agent, status, comment, blocked, polled) VALUES (?, ?, ?, ?, ?, 1) ON CONFLICT(task) DO UPDATE SET agent = excluded.agent, status = excluded.status, comment = excluded.comment, blocked = COALESCE(excluded.blocked, blocked), polled = 1")
+      .run(issue.id, deferred ? (prev?.agent ?? seen?.agent ?? null) : agent, deferred ? (prev?.status ?? seen?.status ?? null) : status, newest, blockedKey(issue));
   }
 
   /**
@@ -208,9 +227,13 @@ export function createWakes({ db, owner, post, dispatches, routineKey = () => un
     if (r.status !== 200) throw new Error(`control plane GET issue → ${r.status}`);
     const task = r.json as Issue;
     const blockers = task.blockedBy ?? [];
-    if (task.status !== "blocked" || !blockers.length || !blockers.every((b) => b.status === "done" || b.status === "cancelled")) return;
-    const closure = blockers.map((b) => `${b.id}:${b.status}`).sort().join(",");
-    const line = `${blockers.map((b) => b.identifier ?? b.id).join(", ")} closed (${blockers.map((b) => b.status).join(", ")}).`;
+    // An unblock whose relations were cleared but whose move failed is finished from what it recorded, never stranded.
+    const half = q("SELECT closure, line FROM unblocking WHERE task = ?").get(task.id) as { closure: string; line: string } | undefined;
+    if (task.status !== "blocked") { if (half) q("DELETE FROM unblocking WHERE task = ?").run(task.id); return; }
+    if (!half && (!blockers.length || !blockers.every((b) => b.status === "done" || b.status === "cancelled"))) return;
+    const closure = half?.closure ?? blockers.map((b) => `${b.id}:${b.status}`).sort().join(",");
+    const line = half?.line ?? `${blockers.map((b) => b.identifier ?? b.id).join(", ")} closed (${blockers.map((b) => b.status).join(", ")}).`;
+    if (!half) q("INSERT OR REPLACE INTO unblocking (task, closure, line) VALUES (?, ?, ?)").run(task.id, closure, line);
     const patch = (b: object) => owner("PATCH", `/api/issues/${encodeURIComponent(task.id)}`, b);
     const ok = (res: { status: number }) => { if (res.status >= 300) throw new Error(`control plane PATCH issue → ${res.status}`); return res; };
     const keep = blockers.filter((b) => b.status !== "cancelled").map((b) => b.id);
@@ -220,6 +243,7 @@ export function createWakes({ db, owner, post, dispatches, routineKey = () => un
     if (res.status === 409) { ok(await patch({ blockedByIssueIds: [] })); res = await patch(move); }
     ok(res);
     insert(`unblocked:${task.id}:${closure}`, task.id, agent, "unblocked", now(), null, "kernel");
+    q("DELETE FROM unblocking WHERE task = ?").run(task.id);
   }
 
   // ---- Team routing (team-routing.ts picks; this gathers, records and places) ----
@@ -366,8 +390,9 @@ export function createWakes({ db, owner, post, dispatches, routineKey = () => un
     },
     /**
      * Rows for the module to run, claimed at once (one transaction) and leased for LEASE_MS. Per task: with a live job, its
-     * comments newer than the job (to deliver as input, `live_job`) and nothing else; without one, one row that starts the
-     * next job. Rows a job already covered (older than its start) are dropped, or done for comments. Open rows come before
+     * comments newer than the job (to deliver as input, `live_job`), the rest waiting for the next job; without one, one row that
+     * starts the next job, the others waiting for it. Rows a job already covered (older than the claim that started it) are
+     * dropped, or done for comments: a wake is consumed only by a job whose prompt had its cause. Open rows come before
      * re-leased ones, so wakes that keep failing can never fill every slot and starve a new one.
      */
     claim(module: string, limit = 20): (Wake & { live_job?: string })[] {
@@ -377,7 +402,7 @@ export function createWakes({ db, owner, post, dispatches, routineKey = () => un
         q("INSERT OR IGNORE INTO wake_dispatchers (module, since) VALUES (?, ?)").run(module, t);
         const rows = (q("SELECT * FROM wakes WHERE ((state = 'open' AND (until IS NULL OR until <= ?)) OR (state = 'claimed' AND job IS NULL AND claimed_by = ? AND until <= ?)) ORDER BY state = 'claimed', at, key").all(t, module, t) as unknown as Wake[]).filter((w) => dispatches.may(module, w.agent));
         const set = (w: Wake, state: string, why: string) => { q("UPDATE wakes SET state = ?, until = NULL WHERE key = ?").run(state, w.key); log(`wake ${state}`, { key: w.key, why }); if (state === "dropped") dropped(w, why); };
-        const take = q("UPDATE wakes SET state = 'claimed', claimed_by = ?, until = ? WHERE key = ?");
+        const take = { run: (module: string, until: number, key: string) => q("UPDATE wakes SET state = 'claimed', claimed_by = ?, until = ?, claimed_at = ? WHERE key = ?").run(module, until, t, key) };
         const out: (Wake & { live_job?: string })[] = [];
         const started = new Set<string>();
         for (const w of rows) {
@@ -386,16 +411,18 @@ export function createWakes({ db, owner, post, dispatches, routineKey = () => un
           const live = liveJob(w.task);
           const comment = w.cause === "comment";
           if (live) {
-            if (!comment) set(w, "dropped", `task has the live job ${live.id}`);
-            else if (w.at < live.at) set(w, "done", `before the live job ${live.id} started`);
+            // A wake is consumed only by a job whose prompt had its cause: any other waits for the next job (still open).
+            if (!comment) continue;
+            if (w.at < live.at) set(w, "done", `before the live job ${live.id} was claimed`);
             else { take.run(module, t + LEASE_MS, w.key); out.push({ ...w, state: "claimed", claimed_by: module, until: t + LEASE_MS, live_job: live.id }); }
             continue;
           }
           const last = lastJob(w.task);
-          if (last && w.at < last.at) { set(w, comment ? "done" : "dropped", `before the job ${last.id} started`); continue; }
+          if (last && w.at < last.at) { set(w, comment ? "done" : "dropped", `before the job ${last.id} was claimed`); continue; }
           // One starter per task: a pending one (claimed, no job yet, still leased) or the first here.
           const pending = q("SELECT key FROM wakes WHERE task = ? AND state = 'claimed' AND job IS NULL AND until > ? AND key != ?").get(w.task, t, w.key) as { key: string } | undefined;
-          if (started.has(w.task) || pending) { if (!comment) set(w, "dropped", "coalesced into the task's next job"); continue; }
+          // Others stay open: the job the starter brings consumes them (older than its claim); a starter dropped without a job doesn't.
+          if (started.has(w.task) || pending) continue;
           started.add(w.task);
           take.run(module, t + LEASE_MS, w.key);
           out.push({ ...w, state: "claimed", claimed_by: module, until: t + LEASE_MS });

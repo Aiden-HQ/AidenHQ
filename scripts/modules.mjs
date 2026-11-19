@@ -1723,83 +1723,66 @@ export async function mapLimit(items, limit, fn) {
 }
 
 /**
- * One unassigned "Memory inbox: <key>" task per agent that has `memory_note` (marker memory-inbox:<key>): the agent's notes
- * land there as comments, for the Librarian's daily pass. Unassigned, so a note wakes nobody. Idempotent; a missing task is
- * recreated, an existing one is never touched. Only a task this identity created and nobody holds counts (an agent can't
- * plant one: it would be created by the agent). Returns { key: issue id } for the grants table (memory_inbox), which is
- * where memory_note and the bridge's inbox guards read it; nothing searches for the marker at run time.
+ * One setup log task per key (found again by its marker): created by this identity (an agent can't plant one: it would be
+ * created by the agent), held by `holders[key]` (an agent id) in backlog, so every open task has a holder, and the kernel's
+ * wake scan never wakes on it (containers in kernel/src/main.ts). One found unheld, or held by nobody of its own, is handed
+ * to its holder; otherwise an existing one is never touched. Returns { key: issue id } for the grants table.
  */
-export async function ensureMemoryInboxes({ api, companyId, keys, step }) {
+async function ensureLogTasks({ api, companyId, keys, holders, step, marker, title, description, what }) {
   if (!keys.length) return {};
   const { json: me } = await api("GET", "/api/cli-auth/me");
   const ids = await mapLimit(keys, 4, async (key) => {
-    const marker = `memory-inbox:${key}`;
+    const mark = marker(key), holder = holders[key];
+    if (!holder) throw new Error(`no agent to hold the ${what(key)}`);
     const q = new URLSearchParams({ q: key, status: "backlog,todo,in_progress,in_review,blocked", limit: "50", excludeRoutineExecutions: "true" });
     const { json: open } = await api("GET", `/api/companies/${companyId}/issues?${q}`);
-    const ours = open.find((i) => String(i.description ?? "").includes(`<!-- source:${marker} -->`) && me.userId && i.createdByUserId === me.userId && !i.createdByAgentId && !i.assigneeAgentId && !i.assigneeUserId);
-    if (ours) return ours.id;
-    const { json: made } = await api("POST", `/api/companies/${companyId}/issues`, {
-      title: `Memory inbox: ${key}`, status: "backlog", priority: "low",
-      description: `Facts ${key} noted for its memory, one comment each (memory_note). The Librarian curates them daily into agents/${key}/memory.md; nobody else reads or edits this task.\n\n<!-- source:${marker} -->`,
-    });
-    step(`Created task ${made.identifier} (memory inbox of ${key})`);
+    const ours = open.find((i) => String(i.description ?? "").includes(`<!-- source:${mark} -->`) && me.userId && i.createdByUserId === me.userId && !i.createdByAgentId && !i.assigneeUserId && (!i.assigneeAgentId || i.assigneeAgentId === holder));
+    if (ours) {
+      if (ours.assigneeAgentId !== holder || ours.status !== "backlog") {
+        await api("PATCH", `/api/issues/${ours.id}`, { assigneeAgentId: holder, assigneeUserId: null, status: "backlog" });
+        step(`Handed ${ours.identifier ?? ours.id} (${what(key)}) to its agent`);
+      }
+      return ours.id;
+    }
+    const { json: made } = await api("POST", `/api/companies/${companyId}/issues`, { title: title(key), status: "backlog", priority: "low", assigneeAgentId: holder, description: `${description(key)}\n\n<!-- source:${mark} -->` });
+    step(`Created task ${made.identifier} (${what(key)})`);
     return made.id;
   });
   return Object.fromEntries(keys.map((key, i) => [key, ids[i]]));
 }
 
 /**
- * One unassigned backlog "Chat with <name>" task per agent with a `chat:` block (marker chat-task:<key>): the fast chat
- * lane's conversation, where the kernel writes each lane turn (kernel/src/lane.ts). Held by nobody and in backlog, so
- * nothing in Paperclip or the wake inbox runs on it; the lane answers the owner's words there. Returns { key: issue id }.
+ * One "Memory inbox: <key>" task per agent that has `memory_note` (marker memory-inbox:<key>), held by that agent: its notes
+ * land there as comments, for the Librarian's daily pass. memory_note and the bridge's inbox guards read its id from the
+ * grants table (memory_inbox); nothing searches for the marker at run time.
  */
-export async function ensureChatTasks({ api, companyId, agents, ownerName, step }) {
-  const keys = Object.keys(agents);
-  if (!keys.length) return {};
-  const { json: me } = await api("GET", "/api/cli-auth/me");
-  const ids = await mapLimit(keys, 4, async (key) => {
-    const marker = `chat-task:${key}`;
-    const q = new URLSearchParams({ q: key, status: "backlog,todo,in_progress,in_review,blocked", limit: "50", excludeRoutineExecutions: "true" });
-    const { json: open } = await api("GET", `/api/companies/${companyId}/issues?${q}`);
-    const ours = open.find((i) => String(i.description ?? "").includes(`<!-- source:${marker} -->`) && me.userId && i.createdByUserId === me.userId && !i.createdByAgentId && !i.assigneeAgentId && !i.assigneeUserId);
-    if (ours) return ours.id;
-    const { json: made } = await api("POST", `/api/companies/${companyId}/issues`, {
-      title: `Chat with ${agents[key]}`, status: "backlog", priority: "low",
-      description: `${ownerName || "The owner"}'s fast chat with ${agents[key]}: every message and reply, on every channel. Write here to talk to ${agents[key]}.\n\n<!-- source:${marker} -->`,
-    });
-    step(`Created task ${made.identifier} (chat with ${key})`);
-    return made.id;
-  });
-  return Object.fromEntries(keys.map((key, i) => [key, ids[i]]));
-}
+export const ensureMemoryInboxes = ({ api, companyId, keys, holders, step }) => ensureLogTasks({
+  api, companyId, keys, holders, step, marker: (key) => `memory-inbox:${key}`, title: (key) => `Memory inbox: ${key}`, what: (key) => `memory inbox of ${key}`,
+  description: (key) => `Facts ${key} noted for its memory, one comment each (memory_note). The Librarian curates them daily into agents/${key}/memory.md; nobody else reads or edits this task.`,
+});
 
 /**
- * One unassigned "Agent reviews: <key>" task per fleet-audit agent (marker review-log:<key>): the Agent Coach's review log, one
- * record per review (tasks bridge coach_record), which coach_due reads back (only records that agent authored). Created by
- * this identity, held by nobody, so a review wakes nobody; never touched once made. Returns { key: issue id } for the grants table.
+ * One "Chat with <name>" task per agent with a `chat:` block (marker chat-task:<key>), held by that agent: the fast chat
+ * lane's conversation, where the kernel writes each lane turn (kernel/src/lane.ts); the lane answers the owner's words there.
  */
-export async function ensureReviewLogs({ api, companyId, keys, step }) {
-  if (!keys.length) return {};
-  const { json: me } = await api("GET", "/api/cli-auth/me");
-  const ids = await mapLimit(keys, 4, async (key) => {
-    const marker = `review-log:${key}`;
-    const q = new URLSearchParams({ q: key, status: "backlog,todo,in_progress,in_review,blocked", limit: "50", excludeRoutineExecutions: "true" });
-    const { json: open } = await api("GET", `/api/companies/${companyId}/issues?${q}`);
-    const ours = open.find((i) => String(i.description ?? "").includes(`<!-- source:${marker} -->`) && me.userId && i.createdByUserId === me.userId && !i.createdByAgentId && !i.assigneeAgentId && !i.assigneeUserId);
-    if (ours) return ours.id;
-    const { json: made } = await api("POST", `/api/companies/${companyId}/issues`, {
-      title: `Agent reviews: ${key}`, status: "backlog", priority: "low",
-      description: `The review log of ${key}: one record per agent review (coach_record), which decides who is due next. Read it for the history; nobody else writes here.\n\n<!-- source:${marker} -->`,
-    });
-    step(`Created task ${made.identifier} (review log of ${key})`);
-    return made.id;
-  });
-  return Object.fromEntries(keys.map((key, i) => [key, ids[i]]));
-}
+export const ensureChatTasks = ({ api, companyId, agents, holders, ownerName, step }) => ensureLogTasks({
+  api, companyId, keys: Object.keys(agents), holders, step, marker: (key) => `chat-task:${key}`, title: (key) => `Chat with ${agents[key]}`, what: (key) => `chat with ${key}`,
+  description: (key) => `${ownerName || "The owner"}'s fast chat with ${agents[key]}: every message and reply, on every channel. Write here to talk to ${agents[key]}.`,
+});
 
 /**
- * The one unassigned "Fleet issues" task (label system-error) where heartbeat runs note missed wake-ups and stuck work for
- * the watcher to triage. Unassigned, so a note wakes nobody. Found by title and label; returns its identifier.
+ * One "Agent reviews: <key>" task per fleet-audit agent (marker review-log:<key>), held by that agent: the Agent Coach's review
+ * log, one record per review (tasks bridge coach_record), which coach_due reads back (only records that agent authored).
+ */
+export const ensureReviewLogs = ({ api, companyId, keys, holders, step }) => ensureLogTasks({
+  api, companyId, keys, holders, step, marker: (key) => `review-log:${key}`, title: (key) => `Agent reviews: ${key}`, what: (key) => `review log of ${key}`,
+  description: (key) => `The review log of ${key}: one record per agent review (coach_record), which decides who is due next. Read it for the history; nobody else writes here.`,
+});
+
+/**
+ * The one "Fleet issues" task (label system-error) where heartbeat runs note missed wake-ups and stuck work for the watcher to
+ * triage, in backlog. Found by title and label (never one an agent created); a new one is the owner's until holdFleetIssues
+ * hands it to its agent (it is made before the agents, whose handbooks name it). Returns its identifier.
  */
 export async function ensureFleetIssues({ api, companyId, step }) {
   const { json: labels } = await api("GET", `/api/companies/${companyId}/labels`);
@@ -1807,14 +1790,24 @@ export async function ensureFleetIssues({ api, companyId, step }) {
   if (!label) label = (await api("POST", `/api/companies/${companyId}/labels`, { name: "system-error", color: "#dc2626" })).json;
   const q = new URLSearchParams({ labelId: label.id, status: "backlog,todo,in_progress,in_review,blocked", limit: "200", excludeRoutineExecutions: "true" });
   const { json: open } = await api("GET", `/api/companies/${companyId}/issues?${q}`);
-  const found = open.find((i) => i.title === "Fleet issues" && !i.assigneeAgentId);
+  const found = open.find((i) => i.title === "Fleet issues" && !i.createdByAgentId);
   if (found) return found.identifier;
+  const { json: company } = await api("GET", `/api/companies/${companyId}`);
   const { json: made } = await api("POST", `/api/companies/${companyId}/issues`, {
-    title: "Fleet issues", status: "todo", priority: "low", labelIds: [label.id],
+    title: "Fleet issues", status: "backlog", priority: "low", labelIds: [label.id], assigneeUserId: company.defaultResponsibleUserId,
     description: "Missed wake-ups and stuck work that agents noticed on their heartbeat runs, one comment per issue keyed `key: <task> · <failure kind> · <id>`. Triaged by the person or Claude; fixes go to their own tasks.",
   });
   step(`Created task Fleet issues (${made.identifier})`);
   return made.identifier;
+}
+
+/** The Fleet issues task is held by `holder` (the fleet-audit agent; none: it stays as it is), in backlog: a log wakes nobody. */
+export async function holdFleetIssues({ api, identifier, holder, step }) {
+  if (!identifier || !holder) return;
+  const { json: i } = await api("GET", `/api/issues/${encodeURIComponent(identifier)}`);
+  if (i.assigneeAgentId === holder && i.status === "backlog") return;
+  await api("PATCH", `/api/issues/${i.id}`, { assigneeAgentId: holder, assigneeUserId: null, status: "backlog" });
+  step(`Handed Fleet issues (${identifier}) to its agent`);
 }
 
 /**

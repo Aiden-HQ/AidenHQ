@@ -104,7 +104,7 @@ test("A5: a module token without services.grants cannot call another connection;
   assert.deepEqual((await r.json()).error, { code: -32602, message: "no-grant" });
   assert.equal(docs.seen.filter((s) => s.method === "tools/call").length, 0);
   const dir = await fetch(`${k.url}/v1/agents`, { headers: { authorization: "Bearer other-key" } }).then((x) => x.json());
-  assert.deepEqual(dir, { agents: { "ag-ada": { key: "ada", roles: ["writer"], profile: "engineer" }, "ag-bo": { key: "bo", roles: [], trial: true } }, repos: {} });
+  assert.deepEqual(dir, { agents: { "ag-ada": { key: "ada", roles: ["writer"], profile: "engineer" }, "ag-bo": { key: "bo", roles: [], trial: true } }, repos: {}, log_tasks: [] });
   assert.equal((await fetch(`${k.url}/v1/agents`, { headers: { authorization: `Bearer ${k.token("run-jwt-ada")}` } })).status, 401);
   const me = await fetch(`${k.url}/v1/whoami`, { headers: { authorization: `Bearer ${k.token("run-jwt-ada")}` } }).then((x) => x.json());
   assert.deepEqual(me, { kind: "run", agent: "ag-ada", roles: ["writer"], task: "TASK-1", tools: { docs: ["doc_read", "doc_write"] } });
