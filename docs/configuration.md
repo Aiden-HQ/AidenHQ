@@ -15,7 +15,7 @@ ships no compose file: compile generates its services from `services:`. There is
 | `name`, `description` | Identity; shown in the catalog. |
 | `requires` | Modules that must also be enabled. |
 | `settings` | Values the instance supplies: `required`, `default`, `values` (allowed choices). |
-| `agents` | Agent definitions: `adapter`, `model`, `reasoning_effort`, `timeout_sec`, `connections` (grants), `roles`, `persona`, `heartbeat`, `image`, `isolation`. |
+| `agents` | Agent definitions: `adapter`, `model`, `reasoning_effort`, `timeout_sec`, `connections` (grants), `roles`, `heartbeat`, `image`, `isolation`. |
 | `routines` | Scheduled or webhook-triggered runs for an agent: `title`, `agent`, `description`, `concurrency`, `schedules`, `status`, and `model` (see below). |
 | `connections` | MCP servers: `url` (or `command`/`args`), `bearer_token_env_var`, `guide` (shown to agents), `setup` (how to set it up, shown on the board's Settings, Connections), and `tools: { read: [...], write: [...], destructive: [...], named: [...] }` (`destructive`, optional: tools that delete; compile refuses a tool named like delete, trash, remove or purge under `read` or `write`. `named`, optional: `read` tools a grant must name, kept out of the `read` shorthand; a tool tagged `named` without `read`, or with `write` or `destructive`, is a compile error). |
 | `apps` | Apps for `apps-mcp`: `name`, `owner`, `port`, `stateful`, `expose`, `caps`, `secrets`, `repo`, `path`. |
@@ -150,6 +150,30 @@ outcomes:
   build, one dated line each. The runner reads it from the instance repo's default branch (`apply.repo`) for every review,
   never from the change, and the AI reviewer rejects a change that brings back what an entry rules out or reverses a
   decision, unless the owner's own words in the request chain ask for it (policy: "Recorded product decisions").
+
+## Teams
+
+`teams.<name>` in `instance.yaml` turns one module agent into a team of named agents (schema: `kernel/src/team-routing.ts`):
+
+```yaml
+teams:
+  engineering:
+    template: engineering.engineer   # any module agent: <module>.<agent>
+    caps: { day_usd: 90 }            # one day cap for the whole team, over every member's spend
+    routing: { weights: { repo: 3, continuity: 1, load: 1 } }
+    defaults: { max_parallel: 5 }    # over the template, under each member
+    members:
+      kai: { name: Kai, repos: [acme/*] }   # the key is permanent; the name may change
+      mina: { name: Mina, model: openrouter/~deepseek/deepseek-flash-latest, handbook: "Prefers small PRs." }
+```
+
+The template's key (`engineer`) becomes the team record: it keeps its roles, routines and description, so delegation, routines
+and role-filed tasks keep one address, and it never runs. Each member is a real agent (its own record, grants, memory and
+sessions). The kernel's wake path gives every task on the team record to one member (`kernel/src/wakes.ts`): a member named in
+the assignment keeps it; otherwise the best score of repo match, continuity (tasks it finished in that repo in the last 7
+days) and load, ties to the least loaded and then the key, even when that member is busy. A decision record goes on the task.
+With no eligible member (all paused, or the team's day cap used up) the task is blocked and whoever delegated it is told. A
+member with open tasks can't be removed: drain or hand them off first. Every agent commits as `<key>@<instance_name>.aidenhq.ai`.
 
 ## Compile and apply
 

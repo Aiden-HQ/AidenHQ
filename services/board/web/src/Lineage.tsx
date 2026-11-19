@@ -69,7 +69,7 @@ export function LineageStrip({ refId, title, agent, crew, prefix, href, onSignIn
   const shown = table ?? Boolean(pending);
   const portrait = (name: string) => {
     const a = crew.find((c) => c.name === name);
-    return a?.persona?.avatar ?? a?.avatar;
+    return a?.avatar;
   };
   if (!rows.length) return null;
   const t = data!.total;

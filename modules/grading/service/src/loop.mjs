@@ -151,7 +151,7 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
         await api.post(verdictPath, { version: "", outcome: "awaiting_evidence" }).catch(() => {});
         throw err;
       }
-      await tellParent(issue, "done", `${issue.identifier} (${agent?.metadata?.persona?.name ?? agent?.name ?? "its agent"}) is done, graded against its rubric: ${issue.title}. Its result is on ${issue.identifier}.`);
+      await tellParent(issue, "done", `${issue.identifier} (${agent?.name ?? "its agent"}) is done, graded against its rubric: ${issue.title}. Its result is on ${issue.identifier}.`);
     } else if (row.state === "needs_revision") {
       await pc.setStatus(issue.id, "todo", note);
       // The reopen wakes the task's agent through the kernel: nothing to dispatch here.

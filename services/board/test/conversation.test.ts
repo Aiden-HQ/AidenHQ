@@ -71,8 +71,8 @@ describe("conversation: for-others comments", () => {
   const chat = { id: "f", description: `hi\n\n${chatAgentMarker("a1")}`, createdAt: at(0), createdByUserId: "me" };
 
   it("the owner's own @mention shows as the owner's message", () => {
-    const msgs = conversation(chat, [owner(`@Ada please post this\n\n${FOR}`, 1)], "me", name);
-    expect(msgs.at(-1)).toMatchObject({ kind: "owner", text: "@Ada please post this" });
+    const msgs = conversation(chat, [owner(`@Kai please post this\n\n${FOR}`, 1)], "me", name);
+    expect(msgs.at(-1)).toMatchObject({ kind: "owner", text: "@Kai please post this" });
   });
 
   it("a colleague's relayed mention stays 'Someone else'", () => {

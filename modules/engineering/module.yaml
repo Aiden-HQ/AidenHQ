@@ -20,7 +20,6 @@ agents:
     # platform-engineer: settings changes, rule proposals, Dependabot tasks and pin bumps are filed to the agent holding it,
     # and its product-repo writes are the code host's "Platform line" (the kernel's record of who asked, never the args).
     roles: [ platform-engineer ]
-    persona: { name: Linus, voice: "Scrappy; tries the cheap route first and says plainly when it isn't good enough.", avatar: linus }
     # Briefed and graded: deliverables delegated to it are checked against their rubric before they close (the grader).
     brief: true
     graded: true

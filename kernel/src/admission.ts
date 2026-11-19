@@ -6,7 +6,7 @@
 import { randomBytes } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { CODEHOSTS } from "./codehost.ts";
-import { rolesOf } from "./identity.ts";
+import { heldRoles, rolesOf } from "./identity.ts";
 import { JobError } from "./jobs.ts";
 import type { JobTools } from "./jobtools.ts";
 import type { RoutineCap } from "./tier.ts";
@@ -24,6 +24,8 @@ const IMAGE: Record<Profile, string> = { crew: "agent-base", engineer: "engineer
 export type AgentGrant = {
   key?: string; roles?: string[]; trial?: boolean; private_reads?: boolean; web_search?: string; profile?: Profile; image?: string; engine?: string; engines?: string[]; model?: string; effort?: string; models?: string[]; skills?: Skill[];
   tools?: Record<string, string[]>; jobcaps?: string[]; max_parallel?: number; routines?: Record<string, { model?: string; effort?: string }>;
+  /** A team record (compile's teams): it never runs; its members do. A member names its team record's key. */
+  team?: { name: string; members: string[] }; member_of?: string;
 };
 /** What a job may do, frozen at admission: the job token and the tool proxy read this, never the grants table again. */
 export type Authority = {
@@ -86,7 +88,7 @@ export function createAdmission({ db, grants, kinds, capacity, spend, mayDispatc
   /** Platform authority belongs to the task: a job holds the platform-engineer role only on a task no agent filed, or one the Architect or the Fleet Steward filed. */
   function platformTask(t: Parameters<typeof provenance.filedBy>[0]): boolean {
     const by = provenance.filedBy(t);
-    return by === undefined || (by !== "" && (grants()[by]?.roles ?? []).some((r) => PLATFORM_FILERS.includes(r)));
+    return by === undefined || (by !== "" && heldRoles(grants(), by).some((r) => PLATFORM_FILERS.includes(r)));
   }
 
   function freeze(g: AgentGrant, cause: string, platform: boolean): Authority {
@@ -134,8 +136,11 @@ export function createAdmission({ db, grants, kinds, capacity, spend, mayDispatc
       if (db.prepare(`SELECT 1 FROM jobs WHERE task = ? AND ${LIVE}`).get(task)) throw new JobError(409, "job-running", `task ${task} already has a job`);
       // A task the plugin made with no provenance behind it: its routine cap is unknown, so nothing runs on it.
       if (!provenance.settled(t)) throw new JobError(409, "provenance-unsettled", `task ${task} was made through the kernel's plugin with no provenance; it doesn't run`);
-      const g = grants()[agent];
-      if (!g) throw new JobError(403, "no-grants", `agent ${agent} has no grants`);
+      const own = grants()[agent];
+      if (!own) throw new JobError(403, "no-grants", `agent ${agent} has no grants`);
+      if (own.team) throw new JobError(409, "team-record", `agent ${agent} is team ${own.team.name}'s record: the kernel routes its tasks to a member, and it never runs`);
+      // A member holds its team record's roles (heldRoles); the platform filter below still applies.
+      const g: AgentGrant = { ...own, roles: heldRoles(grants(), agent) };
       const live = (db.prepare(`SELECT COUNT(*) AS n FROM jobs WHERE ${LIVE}`).get() as { n: number }).n;
       if (live >= capacity()) throw new JobError(429, "busy", `all ${capacity()} computers are taken; try again shortly`);
       const mine = (db.prepare(`SELECT COUNT(*) AS n FROM jobs WHERE agent = ? AND ${LIVE}`).get(agent) as { n: number }).n;

@@ -65,7 +65,7 @@ import { localSnapshot } from "../../modules/codehost-local/src/snapshot.ts";
 import { LOCAL_KINDS, localHost as codehostLocal } from "../../modules/codehost-local/src/host.ts";
 import { ingest } from "../../modules/codehost-local/src/git.ts";
 import { createJobTools } from "./jobtools.ts";
-import { createWakes } from "./wakes.ts";
+import { createWakes, wakeNotice } from "./wakes.ts";
 import { createWorkspaceSweep } from "./workspaces.ts";
 import { createModuleTasks } from "./modtasks.ts";
 import { createWork } from "./work.ts";
@@ -275,6 +275,14 @@ const wakes = createWakes({
   db: records.db, owner: ownerApi, post: outcomes.post, log,
   routineKey: (id) => (grantsTable().routine_keys as Record<string, string> | undefined)?.[id],
   dispatches: { may: mayDispatch, agents: (module) => Object.keys(grantsTable().agents ?? {}).filter((id) => mayDispatch(module, id)) },
+  // Teams (team-routing.ts): a task on a team record goes to a member; the team's day cap is the gateway's own day scope.
+  grants: () => (grantsTable().agents ?? {}) as never,
+  teamDayUsedUp: (member, task) => gw.exhausted(member, task).some((o) => o.scope === "day" && !o.install),
+  // No member can take it: an open parent hears it as a wake notice (as asker.tell does), else the owner.
+  tellBlocked: async (task, text) => {
+    if (task.parentId && (await wakeNotice(ownerApi, task.parentId, text)) === "posted") return;
+    notify.queue({ kind: "alert", text });
+  },
 });
 setInterval(() => void wakes.poll(), (Number(env("AIDENHQ_WAKE_POLL_SECONDS", "")) || 60) * 1000).unref();
 // A closed task's workspace goes after CLOSED_DAYS (workspaces.ts): hourly, and once soon after start.
@@ -336,6 +344,8 @@ const codehostRepos = () => ({ instance: baseRepos.instance, product: baseRepos.
 boxes = createBoxes({
   db: records.db, cfg: sandbox, jobs, call: launcherClient(launcherUrl, () => secret("launcher_kernel_key")), secret, whoami,
   connections: () => computers().connections ?? {}, handbook: handbookFrom(configDir), cleanup: jobTools.cleanup, log,
+  // Every agent commits as itself: its name and <key>@<commit_domain> (compile's: <instance name>.aidenhq.ai), never the owner.
+  identity: (id) => { const g = (grantsTable().agents ?? {})[id] as { key?: string; name?: string } | undefined; const key = String(g?.key ?? id); return { name: String(g?.name ?? key), email: `${key}@${modulesFile().commit_domain ?? "aidenhq.ai"}` }; },
   clones: {
     text: async (task) => { const i = (await cpJson(`/api/issues/${encodeURIComponent(task)}`)) as { title?: string; description?: string | null }; return `${i.title ?? ""}\n${i.description ?? ""}`; },
     may: (module, repo) => covers(repo, codehostGrants().find((g) => g.module === module)?.clone?.repos, codehostRepos()),

@@ -15,16 +15,8 @@ export interface Assignee {
   engine?: "codex" | "codex-openrouter" | "claude" | "openrouter";
   defaultModel?: string;
   efforts?: string[];
-  /** The crew member's name, voice and portrait. */
-  persona?: Persona;
-  /** A portrait without a persona: /crew/<avatar>.svg. */
+  /** A portrait: /crew/<avatar>.svg. */
   avatar?: string;
-}
-
-export interface Persona {
-  name: string;
-  voice: string;
-  avatar: string;
 }
 
 export interface Card {

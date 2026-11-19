@@ -258,7 +258,7 @@ function AgentRow({ a, assignee, sessions, finished, runsLoaded, now, open, togg
       <div className="fleet-main" onClick={(e) => fromRow(e, toggle)}>
         <div className="fleet-who" role="cell">
           <span className="crew-portrait">
-            <AgentAvatar className="avatar" name={a.name} portrait={assignee.persona?.avatar ?? assignee.avatar ?? a.avatar} size={36} front={a.key === FRONT} />
+            <AgentAvatar className="avatar" name={a.name} portrait={assignee.avatar ?? a.avatar} size={36} front={a.key === FRONT} />
           </span>
           <div className="fleet-name">
             <h3>

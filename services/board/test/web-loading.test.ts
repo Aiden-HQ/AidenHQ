@@ -6,13 +6,13 @@ describe("agent avatars", () => {
   it("draws the same monogram for a name on every load, and the portrait until it fails", () => {
     expect(initials("Slack Scout")).toBe("SS");
     expect(initials("Aiden")).toBe("Ai");
-    expect(initials("Engineer · Linus")).toBe("Li");
+    expect(initials("Engineer · Kai")).toBe("Ka");
     expect(initials("  ")).toBe("?");
     expect(tone("Fleet Ops")).toBe(tone("Fleet Ops"));
-    expect(tone("Engineer · Linus")).toBe(tone("Linus"));
-    expect(new Set(["Aiden", "Alfred", "Slack Scout", "Fleet Ops", "Coach", "Librarian", "Meeting Librarian", "Architect"].map(tone)).size).toBeGreaterThan(3);
-    expect(faceOf("Alfred", "alfred")).toEqual({ kind: "portrait", src: "/crew/alfred.svg" });
-    expect(faceOf("Alfred", "alfred", true)).toEqual({ kind: "monogram", text: "Al", tone: tone("Alfred") });
+    expect(tone("Engineer · Kai")).toBe(tone("Kai"));
+    expect(new Set(["Aiden", "Mina", "Slack Scout", "Fleet Ops", "Coach", "Librarian", "Meeting Librarian", "Architect"].map(tone)).size).toBeGreaterThan(3);
+    expect(faceOf("Mina", "mina")).toEqual({ kind: "portrait", src: "/crew/mina.svg" });
+    expect(faceOf("Mina", "mina", true)).toEqual({ kind: "monogram", text: "Mi", tone: tone("Mina") });
     expect(faceOf("Fleet Ops", undefined)).toMatchObject({ kind: "monogram", text: "FO" });
     expect(faceOf("X", "../etc")).toMatchObject({ kind: "monogram" });
   });

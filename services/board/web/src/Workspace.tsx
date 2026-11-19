@@ -40,7 +40,7 @@ const PANEL_SIDE_BY_SIDE = 1180;
 /** An agent's portrait (/crew/<avatar>.svg), by its key or name, when it has one. */
 export const portraitOf = (crew: Assignee[], keyOrName: string) => {
   const a = crew.find((c) => c.key === keyOrName) ?? crew.find((c) => c.name === keyOrName);
-  return a?.persona?.avatar ?? a?.avatar;
+  return a?.avatar;
 };
 
 /** An agent's face in the chat workspace (AgentAvatar: its portrait, else its monogram). */

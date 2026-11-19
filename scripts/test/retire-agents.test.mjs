@@ -2,7 +2,7 @@
 // in the same department, or back to the owner, before it terminates the agent.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { retireUnconfigured } from "../retire-agents.mjs";
+import { busyRemovedMembers, retireUnconfigured } from "../retire-agents.mjs";
 
 const companyId = "co-1";
 const ownerId = "user-owner";
@@ -165,4 +165,15 @@ test("a listing that fails once is retried, and the agent is retired normally", 
   assert.equal(board.calls.filter((c) => c.method === "GET" && c.path.includes("/issues?")).length, 2);
   assert.deepEqual(board.calls.find((c) => c.method === "PATCH" && c.path === "/api/issues/issue-1").body, { assigneeAgentId: engineer.id, assigneeUserId: null });
   assert.ok(board.calls.some((c) => c.path === `/api/agents/${retired.id}/terminate`));
+});
+
+test("a team member removed while it holds open tasks is listed (setup refuses to go on); a drained one is not", async () => {
+  const agents = [
+    { id: "m-1", name: "Kai", status: "idle", metadata: { setupKey: "aidenhq:kai", memberOf: "engineer" } },
+    { id: "m-2", name: "Mina", status: "idle", metadata: { setupKey: "aidenhq:mina", memberOf: "engineer" } },
+    { id: "m-3", name: "Noor", status: "idle", metadata: { setupKey: "aidenhq:noor", memberOf: "engineer" } },
+  ];
+  const issues = [{ id: "i-1", identifier: "WOR-1", status: "todo", assigneeAgentId: "m-1" }, { id: "i-2", identifier: "WOR-2", status: "done", assigneeAgentId: "m-2" }];
+  const { api } = fakeBoard({ agents, issues });
+  assert.deepEqual(await busyRemovedMembers({ api, companyId, cfg: { agents: { noor: {} } } }), [{ name: "Kai", tasks: ["WOR-1"] }]);
 });

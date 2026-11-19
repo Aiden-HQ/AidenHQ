@@ -12,7 +12,7 @@ async function call({ tool = "task_set_status", args, blockers = [] }) {
     if (i.identifier) issues.set(i.identifier, i);
   };
   add({ id: "cur", identifier: "WOR-3594", title: "Record the wait", status: "in_progress", assigneeAgentId: "me", createdByAgentId: "roadmap-keeper", blockedBy: [...blockers] });
-  add({ id: "child", identifier: "WOR-3583", title: "Dependency", status: "in_progress", assigneeAgentId: "linus" });
+  add({ id: "child", identifier: "WOR-3583", title: "Dependency", status: "in_progress", assigneeAgentId: "kai" });
   add({ id: "finished", identifier: "WOR-3582", title: "Already shipped", status: "done", assigneeAgentId: "sam" });
   const patches = [];
   const comments = [];

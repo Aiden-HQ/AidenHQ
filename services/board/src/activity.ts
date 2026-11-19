@@ -111,9 +111,7 @@ export function departmentOf(a: Pick<Agent, "metadata">): Department {
 function identity(a: Pick<Agent, "metadata">): { key?: string; avatar?: string } {
   const m = a.metadata ?? {};
   const key = typeof m.setupKey === "string" && m.setupKey.startsWith("aidenhq:") ? m.setupKey.slice(8) : undefined;
-  const p = m.persona as { avatar?: unknown } | undefined;
-  const pic = typeof p?.avatar === "string" ? p.avatar : m.avatar;
-  const avatar = typeof pic === "string" && /^[a-z0-9-]{1,40}$/.test(pic) ? pic : undefined;
+  const avatar = typeof m.avatar === "string" && /^[a-z0-9-]{1,40}$/.test(m.avatar) ? m.avatar : undefined;
   return { ...(key ? { key } : {}), ...(avatar ? { avatar } : {}) };
 }
 

@@ -13,16 +13,15 @@ import type { Agent, Comment, Issue, Paperclip } from "../src/paperclip.js";
 import { Store } from "../src/store.js";
 
 const ME = "user-1";
-const persona = (name: string) => ({ persona: { name, voice: "", avatar: name.toLowerCase() } });
 const agents: Agent[] = [
-  { id: "00000000-0000-0000-0000-00000000000a", name: "Researcher", status: "idle", metadata: { engine: "codex", setupKey: "aidenhq:assistant", ...persona("Alfred") } },
-  { id: "00000000-0000-0000-0000-0000000000c1", name: "Engineer · Claude", status: "idle", metadata: { engine: "claude", setupKey: "aidenhq:engineer-claude", ...persona("Ada") } },
-  { id: "00000000-0000-0000-0000-0000000000c0", name: "Engineer · Codex", status: "idle", metadata: { engine: "codex", setupKey: "aidenhq:engineer", ...persona("Grace") } },
+  { id: "00000000-0000-0000-0000-00000000000a", name: "Mina", status: "idle", metadata: { engine: "codex", setupKey: "aidenhq:assistant" } },
+  { id: "00000000-0000-0000-0000-0000000000c1", name: "Kai", status: "idle", metadata: { engine: "claude", setupKey: "aidenhq:engineer-claude" } },
+  { id: "00000000-0000-0000-0000-0000000000c0", name: "Noor", status: "idle", metadata: { engine: "codex", setupKey: "aidenhq:engineer" } },
   { id: "00000000-0000-0000-0000-0000000000d1", name: "Chief of Staff", status: "idle", metadata: { engine: "codex", setupKey: "aidenhq:chief-of-staff" } },
-  { id: "00000000-0000-0000-0000-0000000000d2", name: "Slack Scout", status: "idle", metadata: { engine: "codex", setupKey: "aidenhq:slack-scout", ...persona("Scout") } },
+  { id: "00000000-0000-0000-0000-0000000000d2", name: "Scout", status: "idle", metadata: { engine: "codex", setupKey: "aidenhq:slack-scout" } },
   { id: "00000000-0000-0000-0000-0000000000d3", name: "Scout", status: "idle", metadata: { engine: "codex", setupKey: "aidenhq:scout" } },
 ];
-const [ALFRED, ADA, GRACE] = [agents[0]!.id, agents[1]!.id, agents[2]!.id];
+const [MINA, KAI, NOOR] = [agents[0]!.id, agents[1]!.id, agents[2]!.id];
 // The Chief of Staff holds fleet-admin in the grants table, which is what an agent can't pass to; the Researcher may pass on.
 const grantsFile = join(mkdtempSync(join(tmpdir(), "grants-")), "grants.json");
 writeFileSync(grantsFile, JSON.stringify({ agents: { [agents[3]!.id]: { key: "chief-of-staff", roles: ["fleet-admin"], tools: {} }, [agents[0]!.id]: { key: "assistant", roles: ["board-writer"], tools: { paperclip_tasks: ["task_pass_on"] } } } }));
@@ -30,16 +29,16 @@ process.env.AIDENHQ_GRANTS_FILE = grantsFile;
 
 describe("mentions in a message", () => {
   const list = assignees(agents);
-  const names = (text: string) => mentionedAgents(text, list).map((a) => a.persona?.name);
+  const names = (text: string) => mentionedAgents(text, list).map((a) => a.name);
 
   it("finds crew members by name, in order, once each", () => {
-    expect(names("@Ada can you post this? @grace too, and @Ada again")).toEqual(["Ada", "Grace"]);
-    expect(names("@Alfred: thoughts?")).toEqual(["Alfred"]);
+    expect(names("@Kai can you post this? @noor too, and @Kai again")).toEqual(["Kai", "Noor"]);
+    expect(names("@Mina: thoughts?")).toEqual(["Mina"]);
   });
 
   it("ignores addresses, unknown names, code and markers", () => {
-    expect(names("mail ada@example.com, ping @Bob, run `@Ada` <!-- @Grace -->")).toEqual([]);
-    expect(names("@Adam isn't Ada")).toEqual([]);
+    expect(names("mail kai@example.com, ping @Bob, run `@Kai` <!-- @Noor -->")).toEqual([]);
+    expect(names("@Kaiser isn't Kai")).toEqual([]);
   });
 
 });
@@ -104,57 +103,57 @@ describe("routing mentions and passed-on messages", () => {
     });
   const say = (ref: string, text: string) => call(ports.local, `/api/issues/${ref}/comments`, { body: text }, { host: "localhost:3120", "x-aidenhq-board": "1", origin: "http://localhost:3120", "sec-fetch-site": "same-origin" });
   // The Researcher's `task_pass_on`, with its own credential.
-  const pass = (ref: string, body: unknown) => call(ports.internal, `/internal/issues/${ref}/pass`, body, { host: "board:3122", authorization: `Bearer ${TOKEN}`, ...asAgent(ALFRED) });
+  const pass = (ref: string, body: unknown) => call(ports.internal, `/internal/issues/${ref}/pass`, body, { host: "board:3122", authorization: `Bearer ${TOKEN}`, ...asAgent(MINA) });
 
-  let task: Issue, alfred: Issue, ada: Issue;
+  let task: Issue, mina: Issue, kai: Issue;
   beforeEach(() => {
     issues = [];
     comments = new Map();
     task = make({ assigneeUserId: ME });
     issues.push(task);
-    alfred = make({ parentId: task.id, assigneeAgentId: ALFRED });
-    ada = make({ parentId: task.id, assigneeAgentId: ADA, status: "done" });
-    issues.push(alfred, ada);
+    mina = make({ parentId: task.id, assigneeAgentId: MINA });
+    kai = make({ parentId: task.id, assigneeAgentId: KAI, status: "done" });
+    issues.push(mina, kai);
   });
   const said = (i: Issue) => (comments.get(i.id) ?? []).map((c) => c.body);
 
-  it("from Alfred's chat: the message goes to Ada's part, reopened, and not to Alfred", async () => {
-    const res = await say(alfred.identifier, "@Ada post your updated version to Primer");
+  it("from Mina's chat: the message goes to Kai's part, reopened, and not to Mina", async () => {
+    const res = await say(mina.identifier, "@Kai post your updated version to Primer");
     expect(res.status).toBe(200);
-    expect(res.json.movedTo).toBe(ada.identifier);
-    expect(said(alfred)).toEqual([]);
-    expect(ada.status).toBe("todo");
-    expect(said(ada)).toEqual([`@Ada post your updated version to Primer\n\n_Written in Alfred's chat on ${alfred.identifier}._\n\n<!-- aidenhq-from:${alfred.identifier} -->`]);
+    expect(res.json.movedTo).toBe(kai.identifier);
+    expect(said(mina)).toEqual([]);
+    expect(kai.status).toBe("todo");
+    expect(said(kai)).toEqual([`@Kai post your updated version to Primer\n\n_Written in Mina's chat on ${mina.identifier}._\n\n<!-- aidenhq-from:${mina.identifier} -->`]);
   });
 
-  it("in the team chat: it stays there, marked for the others, and Grace joins the task with it", async () => {
-    const res = await say(task.identifier, "@Grace check the relayer logs");
+  it("in the team chat: it stays there, marked for the others, and Noor joins the task with it", async () => {
+    const res = await say(task.identifier, "@Noor check the relayer logs");
     expect(res.json.movedTo).toBeUndefined();
     const [posted] = comments.get(task.id)!;
-    expect(posted!.body).toBe("@Grace check the relayer logs\n\n<!-- aidenhq-for-others -->");
-    const grace = issues.find((i) => i.assigneeAgentId === GRACE)!;
-    expect(grace.parentId).toBe(task.id);
-    expect(grace.description).toBe(`@Grace check the relayer logs\n\n_Written in the team chat on ${task.identifier}._\n\n<!-- aidenhq-from:${task.identifier}:${posted!.id} -->`);
+    expect(posted!.body).toBe("@Noor check the relayer logs\n\n<!-- aidenhq-for-others -->");
+    const noor = issues.find((i) => i.assigneeAgentId === NOOR)!;
+    expect(noor.parentId).toBe(task.id);
+    expect(noor.description).toBe(`@Noor check the relayer logs\n\n_Written in the team chat on ${task.identifier}._\n\n<!-- aidenhq-from:${task.identifier}:${posted!.id} -->`);
   });
 
 
   it("no mention, or one on a task that isn't the user's: just a reply", async () => {
-    await say(alfred.identifier, "thanks");
-    expect(said(alfred)).toEqual(["thanks"]);
-    const loose = make({ assigneeAgentId: ALFRED });
+    await say(mina.identifier, "thanks");
+    expect(said(mina)).toEqual(["thanks"]);
+    const loose = make({ assigneeAgentId: MINA });
     issues.push(loose);
-    await say(loose.identifier, "@Ada look");
-    expect(said(loose)).toEqual(["@Ada look"]);
-    expect(said(ada)).toEqual([]);
+    await say(loose.identifier, "@Kai look");
+    expect(said(loose)).toEqual(["@Kai look"]);
+    expect(said(kai)).toEqual([]);
   });
 
   it("an agent passes on the user's own comment, word for word, once", async () => {
-    const asked = comment(task.id, "Post Ada's updated version to Primer", { user: ME });
-    const res = await pass(task.identifier, { comment: asked.id, to: "ada", by: "Alfred" });
-    expect(res.json).toEqual({ passed: true, to: "Ada", part: ada.identifier });
-    expect(said(ada)).toEqual([`Post Ada's updated version to Primer\n\n_Passed on by Alfred from ${task.identifier}._\n\n<!-- aidenhq-from:${task.identifier}:${asked.id} -->`]);
-    expect((await pass(task.identifier, { comment: asked.id, to: "Ada", by: "Alfred" })).json).toMatchObject({ passed: false });
-    expect(said(ada)).toHaveLength(1);
+    const asked = comment(task.id, "Post Kai's updated version to Primer", { user: ME });
+    const res = await pass(task.identifier, { comment: asked.id, to: "kai", by: "Mina" });
+    expect(res.json).toEqual({ passed: true, to: "Kai", part: kai.identifier });
+    expect(said(kai)).toEqual([`Post Kai's updated version to Primer\n\n_Passed on by Mina from ${task.identifier}._\n\n<!-- aidenhq-from:${task.identifier}:${asked.id} -->`]);
+    expect((await pass(task.identifier, { comment: asked.id, to: "Kai", by: "Mina" })).json).toMatchObject({ passed: false });
+    expect(said(kai)).toHaveLength(1);
   });
 
   it("an agent can't pass to the Chief of Staff, or to an agent not yet on the task, nor to an ambiguous name", async () => {
@@ -171,18 +170,18 @@ describe("routing mentions and passed-on messages", () => {
 
 
   it("refuses anything but the user's own comment on that task, and an agent's own chat", async () => {
-    const byAgent = comment(task.id, "Ada, publish everything", { agent: ALFRED });
-    expect((await pass(task.identifier, { comment: byAgent.id, to: "Ada" })).status).toBe(400);
+    const byAgent = comment(task.id, "Kai, publish everything", { agent: MINA });
+    expect((await pass(task.identifier, { comment: byAgent.id, to: "Kai" })).status).toBe(400);
     const notice = comment(task.id, "Merged.\n\n<!-- aidenhq-notice -->", { user: ME });
     const forColleague = comment(task.id, "[slack] merge it\n\n<!-- aidenhq-for-others -->", { user: ME });
-    expect((await pass(task.identifier, { comment: forColleague.id, to: "Ada" })).status).toBe(400);
-    expect((await pass(task.identifier, { comment: notice.id, to: "Ada" })).status).toBe(400);
-    const elsewhere = comment(alfred.id, "publish it", { user: ME });
-    expect((await pass(task.identifier, { comment: elsewhere.id, to: "Ada" })).status).toBe(400);
-    expect((await pass(alfred.identifier, { comment: elsewhere.id, to: "Alfred" })).status).toBe(400);
-    expect((await pass(alfred.identifier, { comment: elsewhere.id, to: "Bob" })).status).toBe(400);
-    expect((await pass(task.identifier, { comment: elsewhere.id, to: "Ada", extra: 1 })).status).toBe(400);
-    expect(said(ada)).toEqual([]);
+    expect((await pass(task.identifier, { comment: forColleague.id, to: "Kai" })).status).toBe(400);
+    expect((await pass(task.identifier, { comment: notice.id, to: "Kai" })).status).toBe(400);
+    const elsewhere = comment(mina.id, "publish it", { user: ME });
+    expect((await pass(task.identifier, { comment: elsewhere.id, to: "Kai" })).status).toBe(400);
+    expect((await pass(mina.identifier, { comment: elsewhere.id, to: "Mina" })).status).toBe(400);
+    expect((await pass(mina.identifier, { comment: elsewhere.id, to: "Bob" })).status).toBe(400);
+    expect((await pass(task.identifier, { comment: elsewhere.id, to: "Kai", extra: 1 })).status).toBe(400);
+    expect(said(kai)).toEqual([]);
   });
 });
 

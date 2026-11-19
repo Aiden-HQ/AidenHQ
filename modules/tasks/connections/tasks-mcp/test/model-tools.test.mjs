@@ -14,7 +14,7 @@ function run() {
     let body = "";
     for await (const c of req) body += c;
     const send = (status, x) => res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(x));
-    if (req.url === "/api/agents/me") return send(200, { id: "me", name: "Alfred" });
+    if (req.url === "/api/agents/me") return send(200, { id: "me", name: "Mina" });
     const b = JSON.parse(body);
     calls.push({ url: req.url, model: b.model, auth: req.headers.authorization, caller: req.headers["x-aidenhq-caller"], text: b.messages.at(-1).content });
     if (b.messages.at(-1).content.includes("BAD")) return send(500, { error: { message: "upstream broke" } });

@@ -153,7 +153,7 @@ export function createDispatch({ kernel, db, owner, log = () => {} }: { kernel: 
     const parent = task.parentId ? await kernel.task(task.parentId).catch(() => undefined) : undefined;
     const assignee = agents.get(w.agent);
     const entries = threadEntries(comments, task, { owner, agents, skip: new Set(fresh.map((f) => f.id)) });
-    const build = (resumed: boolean) => buildPrompt({ user: owner, task, parent, profile: dir[w.agent]?.profile ?? "crew", persona: assignee?.metadata?.persona, thread: threadSection(owner, entries, { resumed }), words, resumed });
+    const build = (resumed: boolean) => buildPrompt({ user: owner, task, parent, profile: dir[w.agent]?.profile ?? "crew", agentName: assignee?.name, thread: threadSection(owner, entries, { resumed }), words, resumed });
     try {
       const r = await kernel.start({ wake: w.key, prompt: build(ran), ...(ran ? { full_prompt: build(false) } : {}) });
       if ("busy" in r) return log("busy: the wake comes back", { task: task.identifier, wake: w.key });

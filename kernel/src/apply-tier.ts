@@ -14,6 +14,7 @@ import { join } from "node:path";
 import YAML from "yaml";
 import { readDigest, strayFiles, untrialedNewAgents, productPin, bumpTitle, type Read, type Source } from "./apply.ts";
 import { applyCard, repoKey } from "./kinds.ts";
+import { heldRoles } from "./identity.ts";
 import { authorityLines, classifyModules, diffAll, forkChanges, grantOverrides, marketplaceChanges, moduleInputs, withGrantOverrides, type ModuleInput } from "../../scripts/compiler/authority.ts";
 import { effective } from "../../scripts/compiler/release.ts";
 import { hostFetch, officialSides, remoteCodeText, withRemote } from "../../scripts/compiler/sources.ts";
@@ -236,6 +237,9 @@ function instanceParts(s: any) {
           parts.push(safe && fields.every((x) => safe.has(x)) ? T(1, kind === "agents" ? "model-change" : "routine-schedule", `${kind} ${name}: ${fields.join(", ")}`) : PANEL("overrides", `overrides ${kind} ${name}: ${fields.join(", ")}`));
         }
       }
+    } else if (k === "teams") {
+      // A team's day cap is a spend cap: the owner's authority. Members, repos, weights and the rest: the panel's.
+      for (const t of changedKeys(base.teams, head.teams)) parts.push(!eq(base.teams?.[t]?.caps, head.teams?.[t]?.caps) ? OWNER_AFTER_REVIEW("team-caps", `teams ${t}: its day cap is the owner's authority`) : PANEL("teams", `changes team ${t}`));
     } else parts.push(PANEL("instance-key", `changes ${k} in instance.yaml`));
   }
   return parts;
@@ -457,7 +461,7 @@ export function hostPlanner({ repo, instanceRepo, configDir, read, grants, conne
 }): ApplyPlanner {
   return createApplyPlanner({
     instanceRepo, read, product: hostProduct(repo), modules: (b, h) => moduleTierState(b, h, repo), connections, verifyRelease,
-    roles: () => Object.fromEntries(Object.values(grants()).flatMap((a) => (a?.key ? [[a.key, a.roles ?? []]] : []))),
+    roles: () => Object.fromEntries(Object.entries(grants()).flatMap(([id, a]) => (a?.key ? [[a.key, heldRoles(grants() as never, id)]] : []))),
     moduleApps: () => { try { return ((YAML.parse(readFileSync(join(configDir, "apps.modules.yaml"), "utf8")) ?? {}).apps ?? []).filter(Boolean); } catch { return []; } },
   });
 }

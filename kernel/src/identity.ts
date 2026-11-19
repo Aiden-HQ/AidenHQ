@@ -34,6 +34,12 @@ export class NoGrants extends Error { code = "denied_no_grants"; }
 const same = (a: string, b: string) => Boolean(a && b) && a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
 /** The roles an assertion carries: the agent's own, plus kernel.trial for an agent in trial. */
 export const rolesOf = (g: Grant) => [...(g.roles ?? []), ...(g.trial === true ? ["kernel.trial"] : [])];
+/** An agent's roles as it holds them: its own, and a team member's team record's too (the record alone carries them for filing). */
+export function heldRoles(agents: Record<string, Grant | undefined> | undefined, id: string): string[] {
+  const g = agents?.[id];
+  const record = typeof g?.member_of === "string" ? Object.values(agents ?? {}).find((x) => x?.key === g.member_of && x?.team) : undefined;
+  return [...new Set([...(g?.roles ?? []), ...(record?.roles ?? [])])];
+}
 
 /** A kernel-admitted job as its row says (admission.ts): who, on what, and the authority frozen when it was admitted. */
 export type AdmittedJob = { agent: string; task: string; state: string; identifier: string; authority: { tools: Record<string, string[]>; jobcaps: string[]; writes: string[]; roles: string[]; reads?: boolean; model?: string } };

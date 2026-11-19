@@ -19,7 +19,7 @@ function fake({ task, comments = [], directory = {}, tasks = {}, paused = [] }) 
     fileTask: async (b) => { if (paused.includes(b.agent)) throw new KernelError(409, "paused"); k.filed.push(b); },
     notify: async (b) => void k.notified.push(b),
     comments: async () => comments,
-    agent: async (id) => ({ id, name: { cos: "Aiden", asker: "Researcher", coach: "Coach", eng: "Ada" }[id] ?? id }),
+    agent: async (id) => ({ id, name: { cos: "Aiden", asker: "Researcher", coach: "Coach", eng: "Kai" }[id] ?? id }),
     directory: async () => directory,
     start: async (req) => {
       if (k.busy) return (k.busy--, { busy: true });
@@ -246,6 +246,16 @@ test("a task handed to another agent starts there from its request", async () =>
   await k.dispatch.tick();
   assert.equal(k.started.length, 1);
   assert.match(k.started[0].prompt, /## Instructions from Dana \(authoritative\)\n\nFix the login\n\nIt 500s\./);
+});
+
+test("a task the kernel routed to a team member starts from its request; the routing record is never the owner's words", async () => {
+  const comments = [{ id: "r0", authorType: "user", body: "**Routed to kai** (team engineering).\n\n- pick: kai\n\n<!-- aidenhq:job=kernel kind=routed -->", createdAt: "2026-11-18T09:00:00Z" }];
+  const k = fake({ task: { id: "t1", identifier: "WOR-6", title: "Fix the login", description: "It 500s.", status: "todo", assigneeAgentId: "eng", createdByUserId: "u1" }, comments });
+  k.inbox.push(wake("issue:t1:2", "assigned"));
+  await k.dispatch.tick();
+  assert.equal(k.started.length, 1);
+  assert.match(k.started[0].prompt, /## Instructions from Dana \(authoritative\)\n\nFix the login\n\nIt 500s\./);
+  assert.doesNotMatch(k.started[0].prompt, /Instructions from Dana[^#]*Routed to kai/);
 });
 
 test("a routine run's task starts as a scheduled run, whichever routine it names", async () => {

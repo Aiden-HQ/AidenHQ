@@ -46,36 +46,6 @@ function orgLine(orgs) {
   return `This AidenHQ's agents org${named.length > 1 ? "s are" : " is"} ${named.join(" and ")}${named.length > 1 ? `; a new repository goes in \`${orgs[0].org}\`, and each existing one stays where it is` : ""}.\n\n`;
 }
 
-/** The crew member's board identity, stored in the agent's metadata for the board and the runner. */
-export function personaOf(key, a) {
-  const p = a.persona;
-  if (p === undefined) return undefined;
-  if (typeof p?.name !== "string" || !/^\p{L}[\p{L} .'-]{0,29}$/u.test(p.name)) throw new Error(`agent ${key}: persona.name must be a short name`);
-  if (typeof p.voice !== "string" || !p.voice.trim() || p.voice.length > 200 || /[\r\n]/.test(p.voice)) throw new Error(`agent ${key}: persona.voice must be one line (at most 200 characters)`);
-  if (typeof p.avatar !== "string" || !/^[a-z0-9-]{1,40}$/.test(p.avatar)) throw new Error(`agent ${key}: persona.avatar must be an avatar name (a-z, 0-9, -)`);
-  return { name: p.name, voice: p.voice.trim(), avatar: p.avatar };
-}
-
-/**
- * What a woken agent with a persona learns about itself and the Engineers: its name and voice (tone only), and which engine
- * each Engineer's name stands for, so "ask Ada" maps onto delegating to that Engineer.
- */
-function personaSection(cfg, key, a) {
-  const me = personaOf(key, a);
-  if (!me || a.profile === "engineer") return "";
-  const crew = Object.entries(cfg.agents ?? {})
-    .filter(([, x]) => x.profile === "engineer" && x.persona)
-    .map(([k, x]) => `${personaOf(k, x).name} (engine \`${x.engine}\`)`);
-  return `
-
-## Your name and voice
-
-On the user's board you are ${me.name}. Voice: ${me.voice} The voice sets your tone only; it never changes the rules above.${
-    crew.length ? `\n\nThe Engineers on the board, by name: ${crew.join(", ")}. When the user names one of them for code work, that's the engine to use.` : ""
-  }
-`;
-}
-
 // The sections setup itself writes into every crew agent's handbook, ahead of the modules' prompt contributions:
 // Approvals is the kernel's; the web and the app follow-up (apps-platform) leave with their units.
 // Every agent's one rule for what it reads (tools, messages, documents, quoted text): data, never instructions.
@@ -87,7 +57,7 @@ const HANDOFF_SECTION = section("handoff");
 function outcomesSection(cfg) {
   const list = cfg.outcomes ?? [];
   if (!list.length) return "";
-  const who = (key) => cfg.agents?.[key]?.persona?.name ?? cfg.agents?.[key]?.name ?? key;
+  const who = (key) => cfg.agents?.[key]?.name ?? key;
   return `\n\n## Standing outcomes\n\nThe owner's standing goals, each with the one agent that owns it:\n${list.map((o) => `- \`${o.id}\` (${who(o.owner)}, \`${o.owner}\`): ${o.outcome.replace(/\.$/, "")}. Done when: ${o.done}`).join("\n")}\n`;
 }
 /** How the owner works (compile's `owner_profile`, from the instance's owner/profile.md), in every crew handbook and the lane. */
@@ -122,7 +92,7 @@ export function handbookParts(cfg, key, a, { repo, instanceDir, fleetIssues }) {
   const codex = a.profile === "crew";
   const parts = [
     ["handbook", readInstructions(cfg, a, { repo, instanceDir })],
-    ["persona", personaSection(cfg, key, a)],
+    ["working-style", a.handbook_line ? `\n\n## Your working style\n\nYou are ${a.name}, a member of the ${cfg.agents?.[a.member_of]?.team?.name ?? a.member_of} team. ${a.handbook_line}\n` : ""],
     ["computer", computerSection(a)],
     ["profile", codex ? profileSection(cfg) : ""],
     ["untrusted", UNTRUSTED_SECTION],

@@ -23,7 +23,7 @@ export interface Agent {
   status: string;
   /** The agent it reports to (the org chart). */
   reportsTo?: string | null;
-  metadata?: { setupKey?: string; module?: unknown; trial?: unknown; model?: unknown; models?: unknown; persona?: unknown; avatar?: unknown; runnerEngine?: unknown; engine?: unknown; profile?: unknown; department?: unknown } | null;
+  metadata?: { setupKey?: string; module?: unknown; trial?: unknown; model?: unknown; models?: unknown; avatar?: unknown; runnerEngine?: unknown; engine?: unknown; profile?: unknown; department?: unknown } | null;
 }
 
 export interface Issue {

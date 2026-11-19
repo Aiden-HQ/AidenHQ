@@ -12,7 +12,7 @@ import { SOURCE_NAMES, STATUS_BADGE, addDays, agentShort, ago, dayDate, elapsed,
 /** A crew member's portrait (or its monogram, AgentAvatar), or a letter for you. */
 export function Avatar({ assignee, size }: { assignee: Assignee | undefined; size?: number }) {
   if (!assignee) return null;
-  if (assignee.kind !== "me") return <AgentAvatar className="avatar" name={shortName(assignee)} portrait={assignee.persona?.avatar ?? assignee.avatar} size={size} title={assignee.name} />;
+  if (assignee.kind !== "me") return <AgentAvatar className="avatar" name={shortName(assignee)} portrait={assignee.avatar} size={size} title={assignee.name} />;
   const style = size ? { width: size, height: size, fontSize: Math.round(size * 0.5) } : undefined;
   return (
     <span className="avatar avatar-me" title={assignee.name} style={style}>

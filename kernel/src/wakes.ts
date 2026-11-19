@@ -14,6 +14,8 @@ import { createHash, randomBytes } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { Api } from "./channels.ts";
 import type { Outcomes } from "./outcomes.ts";
+import { mentionedRepos } from "./boxes.ts";
+import { CONTINUITY_MS, decisionText, pickMember, weightsOf, type Candidate, type Weights } from "./team-routing.ts";
 
 /** A comment the kernel posted for a job (outcomes.ts): it never wakes anyone. */
 export const SELF_TAG = /<!-- aidenhq:job=/;
@@ -27,15 +29,32 @@ const DDL = `CREATE TABLE IF NOT EXISTS wakes (key TEXT PRIMARY KEY, task TEXT N
 CREATE INDEX IF NOT EXISTS wakes_task ON wakes (task, state);
 CREATE TABLE IF NOT EXISTS wake_tasks (task TEXT PRIMARY KEY, agent TEXT, status TEXT, comment TEXT);
 CREATE TABLE IF NOT EXISTS wake_dispatchers (module TEXT PRIMARY KEY, since INTEGER NOT NULL);
-CREATE TABLE IF NOT EXISTS dispatch_since (agent TEXT PRIMARY KEY, at INTEGER NOT NULL);`;
+CREATE TABLE IF NOT EXISTS dispatch_since (agent TEXT PRIMARY KEY, at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS team_routes (task TEXT PRIMARY KEY, team TEXT NOT NULL, member TEXT, repos TEXT NOT NULL, at INTEGER NOT NULL,
+  state TEXT NOT NULL, done INTEGER NOT NULL DEFAULT 0, record TEXT NOT NULL DEFAULT '');`;
+/** A grants-table entry as the router reads it (compile's grantEntry): a team record lists its members; a member names its record. */
+type TeamGrant = { key?: string; max_parallel?: number; team?: { name: string; members: string[]; weights?: Partial<Weights> }; member_of?: string; repos?: string[] };
+
+/**
+ * A wake notice: a labelled comment on the task, posted as the owner, which wakes its agent (asker.tell's open-parent path and
+ * the team router's blocked path). A closed task hears nothing (a comment would reopen it).
+ */
+export async function wakeNotice(owner: Api, task: string, text: string): Promise<"posted" | "closed" | "missing"> {
+  const issue = await owner("GET", `/api/issues/${encodeURIComponent(task)}`);
+  if (issue.status !== 200) return "missing";
+  if (["done", "cancelled"].includes(issue.json.status)) return "closed";
+  const c = await owner("POST", `/api/issues/${encodeURIComponent(issue.json.id)}/comments`, { body: `[wake] ${text}\n\n<!-- aidenhq-wake -->` });
+  if (c.status >= 300) throw Object.assign(new Error(`the control plane answered ${c.status}`), { status: 502 });
+  return "posted";
+}
 
 export interface Wake { key: string; task: string; agent: string; cause: string; at: number; state: string; claimed_by: string | null; job: string | null; until: number | null }
-type Issue = { id: string; status?: string; assigneeAgentId?: string | null; updatedAt?: string; createdAt?: string; statusVersion?: number; blockedBy?: { id: string; identifier?: string | null; status: string }[]; originKind?: string | null; originId?: string | null; companyId?: string };
+type Issue = { id: string; identifier?: string; title?: string; description?: string | null; parentId?: string | null; status?: string; assigneeAgentId?: string | null; updatedAt?: string; createdAt?: string; statusVersion?: number; blockedBy?: { id: string; identifier?: string | null; status: string }[]; originKind?: string | null; originId?: string | null; companyId?: string };
 type Comment = { id: string; body?: string; authorAgentId?: string | null; createdAt?: string; deletedAt?: string | null };
 type Log = (msg: string, f?: Record<string, unknown>) => void;
 const ms = (t?: string) => (t ? Date.parse(t) || 0 : 0);
 
-export function createWakes({ db, owner, post, dispatches, routineKey = () => undefined, log = () => {}, now = Date.now }: {
+export function createWakes({ db, owner, post, dispatches, routineKey = () => undefined, grants = () => ({}), teamDayUsedUp = () => false, tellBlocked = async () => {}, log = () => {}, now = Date.now }: {
   db: DatabaseSync;
   /** The control plane as the owner (only reads). */
   owner: Api;
@@ -45,6 +64,12 @@ export function createWakes({ db, owner, post, dispatches, routineKey = () => un
   dispatches: { may: (module: string, agent: string) => boolean; agents: (module: string) => string[] };
   /** A Paperclip routine's compiled key (grants `routine_keys`, setup): none for a routine setup didn't make. */
   routineKey?: (routine: string) => string | undefined;
+  /** The grants table's agents by id: teams and members (team routing). */
+  grants?: () => Record<string, TeamGrant | undefined>;
+  /** Whether the team of this member has used up its day cap (the gateway's own day scope, gateway/lib.ts dayHolder). */
+  teamDayUsedUp?: (member: string, task: string) => boolean;
+  /** A team task no member can take, blocked: whoever delegated it hears why (its open parent's wake notice, else the owner). */
+  tellBlocked?: (task: Issue, text: string) => Promise<void>;
   log?: Log; now?: () => number;
 }) {
   db.exec(DDL);
@@ -72,6 +97,8 @@ export function createWakes({ db, owner, post, dispatches, routineKey = () => un
     const agent = issue.assigneeAgentId;
     const joined = agent ? polled().get(agent) : undefined;
     if (!agent || joined === undefined) return;
+    if (grants()[agent]?.team) return route(issue, agent);
+    if (grants()[agent]?.member_of) named(issue, agent);
     const prev = q("SELECT agent, status, comment FROM wake_tasks WHERE task = ?").get(issue.id) as { agent: string; status: string; comment: string | null } | undefined;
     const path = `/api/issues/${encodeURIComponent(issue.id)}/comments?${prev?.comment ? `order=asc&limit=500&after=${encodeURIComponent(prev.comment)}` : "order=desc&limit=500"}`;
     const r = await owner("GET", path);
@@ -122,6 +149,97 @@ export function createWakes({ db, owner, post, dispatches, routineKey = () => un
     if (res.status === 409) { ok(await patch({ blockedByIssueIds: [] })); res = await patch(move); }
     ok(res);
     insert(`unblocked:${task.id}:${closure}`, task.id, agent, "unblocked", now());
+  }
+
+  // ---- Team routing (team-routing.ts picks; this gathers, records and places) ----
+  // One decision row per task in team_routes: `placing` (picked, the reassignment not yet confirmed: a retry re-applies the
+  // same pick, never re-scores), `placed`, `named` (assigned straight to a member: its delegator's structured choice), or
+  // `blocked`. Selection is serialized in this process (`lock`), and a pending placement counts as its member's load.
+  const OPEN_SET = new Set(OPEN.split(","));
+  const repoText = (i: Issue) => mentionedRepos(`${i.title ?? ""}\n${i.description ?? ""}`).map((r) => r.toLowerCase());
+  const keyId = (key: string) => Object.entries(grants()).find(([, g]) => g?.key === key)?.[0];
+  /** A task given straight to a member: recorded, so its load and continuity count; a placement it confirms is placed. */
+  function named(issue: Issue, member: string) {
+    const team = grants()[member]!.member_of!;
+    q("INSERT OR IGNORE INTO team_routes (task, team, member, repos, at, state) VALUES (?, ?, ?, ?, ?, 'named')").run(issue.id, team, member, JSON.stringify(repoText(issue)), now());
+    q("UPDATE team_routes SET state = 'placed' WHERE task = ? AND member = ? AND state = 'placing'").run(issue.id, member);
+  }
+  let lock: Promise<unknown> = Promise.resolve();
+  const route = (issue: Issue, team: string) => { const run = lock.then(() => place(issue, team)); lock = run.catch(() => {}); return run; };
+  /** The members' snapshot (paused, open tasks, done tasks in the repo), awaited before the decision, which awaits nothing. */
+  async function snapshot(team: TeamGrant, task: string, repos: string[]) {
+    const out: { id: string; key: string; g: TeamGrant; paused: boolean; open: Set<string>; done: number }[] = [];
+    const since = now() - CONTINUITY_MS;
+    for (const key of team.team!.members) {
+      const id = keyId(key);
+      if (!id) continue;
+      const a = await owner("GET", `/api/agents/${encodeURIComponent(id)}`);
+      if (a.status !== 200) throw new Error(`control plane GET agent → ${a.status}`);
+      const l = await owner("GET", `/api/companies/${encodeURIComponent(String(a.json.companyId))}/issues?status=${OPEN}&limit=500&assigneeAgentId=${encodeURIComponent(id)}`);
+      if (l.status !== 200 || !Array.isArray(l.json)) throw new Error(`control plane GET issues → ${l.status}`);
+      // Continuity: distinct tasks this member finished in one of the task's repos within the window (task status done).
+      let done = 0;
+      if (repos.length) for (const r of q("SELECT task, repos, done FROM team_routes WHERE member = ? AND at > ? AND task != ? AND state != 'blocked'").all(id, since, task) as { task: string; repos: string; done: number }[]) {
+        if (!(JSON.parse(r.repos) as string[]).some((x) => repos.includes(x))) continue;
+        if (!r.done) {
+          const t = await owner("GET", `/api/issues/${encodeURIComponent(r.task)}`);
+          if (t.status === 200 && t.json?.status === "done") q("UPDATE team_routes SET done = 1 WHERE task = ?").run(r.task);
+          else continue;
+        }
+        done++;
+      }
+      out.push({ id, key, g: grants()[id] ?? {}, paused: ["paused", "terminated"].includes(String(a.json.status)), open: new Set((l.json as Issue[]).map((i) => i.id)), done });
+    }
+    return out;
+  }
+  async function place(seen: Issue, teamId: string) {
+    // Read again inside the lock: a duplicated event or the poll may have placed it already (and a list row may lack the description).
+    const fresh = await owner("GET", `/api/issues/${encodeURIComponent(seen.id)}`);
+    if (fresh.status !== 200) throw new Error(`control plane GET issue → ${fresh.status}`);
+    const issue = fresh.json as Issue;
+    if (issue.assigneeAgentId !== teamId || !OPEN_SET.has(String(issue.status)) || liveJob(issue.id)) return; // a job of the record from before the team finishes first
+    const team = grants()[teamId]!;
+    let row = q("SELECT member, state FROM team_routes WHERE task = ?").get(issue.id) as { member: string | null; state: string } | undefined;
+    // Back on the team after a placement or a block (the delegator re-routed it): decided afresh.
+    if (row && row.state !== "placing") { q("DELETE FROM team_routes WHERE task = ?").run(issue.id); row = undefined; }
+    const tag = `\n\n<!-- aidenhq:job=kernel kind=routed -->`;
+    if (!row) {
+      const repos = repoText(issue);
+      const snap = await snapshot(team, issue.id, repos);
+      const weights = weightsOf(team.team);
+      const over = snap.length > 0 && teamDayUsedUp(snap[0]!.id, issue.id);
+      const revision = createHash("sha256").update(JSON.stringify([team.team, snap.map((m) => [m.key, m.g.repos ?? [], m.g.max_parallel ?? 1])])).digest("hex").slice(0, 12);
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        const candidates: Candidate[] = snap.map((m) => {
+          const live = new Set((q(`SELECT task FROM jobs WHERE agent = ? AND state IN ${LIVE}`).all(m.id) as { task: string }[]).map((r) => r.task));
+          const waiting = new Set([...m.open, ...(q("SELECT task FROM team_routes WHERE member = ? AND state = 'placing'").all(m.id) as { task: string }[]).map((r) => r.task)]);
+          for (const t of live) waiting.delete(t);
+          return { id: m.id, key: m.key, repos: m.g.repos ?? [], maxParallel: m.g.max_parallel ?? 1, paused: m.paused, running: live.size, queued: waiting.size, done: m.done };
+        });
+        const decision = pickMember({ repos, candidates, weights, overBudget: over });
+        const record = decisionText({ team: team.team!.name, revision, repos, weights, decision });
+        q("INSERT INTO team_routes (task, team, member, repos, at, state, record) VALUES (?, ?, ?, ?, ?, ?, ?)").run(issue.id, String(team.key), decision.pick?.id ?? null, JSON.stringify(repos), now(), decision.pick ? "placing" : "blocked", record);
+        db.exec("COMMIT");
+        log("team routed", { task: issue.id, team: team.team!.name, pick: decision.pick?.key ?? null });
+        if (!decision.pick) {
+          const r = await owner("PATCH", `/api/issues/${encodeURIComponent(issue.id)}`, { status: "blocked", comment: record + tag });
+          if (r.status >= 300) throw new Error(`control plane PATCH issue → ${r.status}`);
+          await tellBlocked(issue, `**${issue.identifier ?? issue.id} is blocked:** no member of team ${team.team!.name} can take it.\n\n${record}\n\nUnpause a member, raise the team's day cap, or re-route it.`);
+          return;
+        }
+        row = { member: decision.pick.id, state: "placing" };
+      } catch (e) {
+        if (db.isTransaction) db.exec("ROLLBACK");
+        throw e;
+      }
+    }
+    const record = (q("SELECT record FROM team_routes WHERE task = ?").get(issue.id) as { record: string }).record;
+    const r = await owner("PATCH", `/api/issues/${encodeURIComponent(issue.id)}`, { assigneeAgentId: row.member, comment: record + tag });
+    if (r.status >= 300) throw new Error(`control plane PATCH issue → ${r.status}`);
+    q("UPDATE team_routes SET state = 'placed' WHERE task = ? AND state = 'placing'").run(issue.id);
+    const now2 = await owner("GET", `/api/issues/${encodeURIComponent(issue.id)}`);
+    if (now2.status === 200 && now2.json?.assigneeAgentId === row.member) await scan(now2.json as Issue);
   }
 
   const companies = new Map<string, string>();
@@ -187,6 +305,7 @@ export function createWakes({ db, owner, post, dispatches, routineKey = () => un
         const started = new Set<string>();
         for (const w of rows) {
           if (out.length >= limit) break;
+          if (grants()[w.agent]?.team) { set(w, "dropped", "a team record never runs: its tasks go to a member"); continue; }
           const live = liveJob(w.task);
           const comment = w.cause === "comment";
           if (live) {

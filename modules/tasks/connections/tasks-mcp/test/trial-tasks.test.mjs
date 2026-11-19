@@ -7,8 +7,8 @@ import { bridge } from "./helpers.mjs";
 
 const ISSUES = { "WOR-1": { id: "cur", assigneeAgentId: "me" }, "WOR-2": { id: "mine", assigneeAgentId: "me" }, "WOR-3": { id: "other", assigneeAgentId: "someone" } };
 const AGENTS = [
-  { id: "me", name: "Review Chaser", metadata: { setupKey: "aidenhq:review-chaser", persona: { name: "Review Chaser" } } },
-  { id: "other", name: "Other Agent", metadata: { setupKey: "aidenhq:other", persona: { name: "Other Agent" } } },
+  { id: "me", name: "Review Chaser", metadata: { setupKey: "aidenhq:review-chaser" } },
+  { id: "other", name: "Other Agent", metadata: { setupKey: "aidenhq:other" } },
 ];
 
 /** Calls one tool once, as an agent whose grants row is `grant` (an object, or `trial` for the shortcut). */
@@ -21,7 +21,7 @@ async function call(grant, tool, args) {
     req.on("end", () => {
       const url = req.url ?? "";
       const send = (x) => (res.setHeader("content-type", "application/json"), res.end(JSON.stringify(x)));
-      if (url === "/api/agents/me") return send({ id: "me", companyId: "C1", name: "Review Chaser", metadata: { persona: { name: "Review Chaser" } } });
+      if (url === "/api/agents/me") return send({ id: "me", companyId: "C1", name: "Review Chaser" });
       if (url === "/api/companies/C1/agents") return send(AGENTS);
       if (url === "/api/companies/C1") return send({ defaultResponsibleUserId: "owner" });
       if (url.startsWith("/api/companies/C1/issues")) {

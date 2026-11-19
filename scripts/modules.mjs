@@ -19,6 +19,7 @@ import { compilePoints } from "./compiler/points.ts";
 import { gateMode } from "../kernel/src/gates.ts";
 import { KINDS as CHECK_KINDS } from "../kernel/src/checkjobs.ts";
 import { KERNEL_KINDS, KERNEL_ROLES } from "../kernel/src/kinds.ts";
+import { teamProblems, weightsOf } from "../kernel/src/team-routing.ts";
 
 const PROFILES = ["trusted", "untrusted", "code-exec"];
 // image: the agent's computer (scripts/computers.mjs); the instance turns it on or off per agent.
@@ -155,15 +156,20 @@ export function chatBlock(key, c, tools) {
 }
 
 export function grantEntry(key, a, routines = {}) {
-  const ids = [a.model, ...(a.models ?? []), ...Object.values(routines).filter((r) => r.agent === key).map((r) => r.model)];
+  // A team member runs its team record's routines (their tasks are routed to it), with their own models.
+  const runs = (r) => r.agent === key || (a.member_of !== undefined && r.agent === a.member_of);
+  const ids = [a.model, ...(a.models ?? []), ...Object.values(routines).filter(runs).map((r) => r.model)];
   const models = [...new Set(ids.filter((m) => typeof m === "string" && m.trim()).map((m) => m.replace(/^openrouter\//, "")))];
   // What the kernel freezes into each job at admission (kernel/src/admission.ts): the profile, its engine, model and effort, how
   // many of its jobs run at once, and each of its routines' model.
-  const own = Object.entries(routines).filter(([, r]) => r.agent === key && (r.model || r.reasoning_effort));
+  const own = Object.entries(routines).filter(([, r]) => runs(r) && (r.model || r.reasoning_effort));
   return {
-    models, caps: { ...CAPS, ...(a.caps ?? {}) }, graded: a.graded === true, ...(a.jobcaps?.length ? { jobcaps: a.jobcaps } : {}), ...(a.feedback_for ? { feedback_for: a.feedback_for } : {}),
+    name: a.name, models, caps: { ...CAPS, ...(a.caps ?? {}) }, graded: a.graded === true, ...(a.jobcaps?.length ? { jobcaps: a.jobcaps } : {}), ...(a.feedback_for ? { feedback_for: a.feedback_for } : {}),
     profile: a.profile ?? "crew", ...(a.reports_to ? { reports_to: a.reports_to } : {}), ...(a.engine ? { engine: a.engine } : {}), ...(a.engines ? { engines: a.engines } : {}), ...(a.model ? { model: a.model.replace(/^openrouter\//, "") } : {}), ...(a.reasoning_effort ? { effort: a.reasoning_effort } : {}),
     max_parallel: a.max_parallel ?? 1, ...(a.private_reads === true ? { private_reads: true } : {}), ...(a.web_search ? { web_search: a.web_search } : {}), ...(own.length ? { routines: Object.fromEntries(own.map(([k, r]) => [k, { ...(r.model ? { model: r.model.replace(/^openrouter\//, "") } : {}), ...(r.reasoning_effort ? { effort: r.reasoning_effort } : {}) }])) } : {}),
+    // Teams (expandTeams): the team record's members and routing weights; a member's team record key and repo preferences.
+    ...(a.team ? { team: { name: a.team.name, members: a.team.members, weights: a.team.weights } } : {}),
+    ...(a.member_of !== undefined ? { member_of: a.member_of, repos: a.repos ?? [] } : {}),
   };
 }
 /** An agent's profile (kernel/src/admission.ts PROFILES): which tools, writes and computer its kernel jobs get. */
@@ -613,6 +619,8 @@ export function compile(productDir, instanceDir, { revision, bundleState, oldBun
   if (Array.isArray(settings.exposure)) fail("settings.exposure: one of public, tailscale, cloudflare or local, not a list");
   if (!(Number.isInteger(settings.computers_max) && settings.computers_max >= 1 && settings.computers_max <= 64)) fail("settings.computers_max: a whole number, 1 to 64");
   settings.exposure ??= "tailscale";
+  // instance_name: a DNS label (agents commit as <key>@<instance_name>.aidenhq.ai).
+  if (settings.instance_name != null && !/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(String(settings.instance_name))) fail("settings.instance_name: lowercase letters, digits and - (a DNS label)");
 
 
   // Derived (not settable): the orgs the src_github sync covers, github_orgs plus the agents org.
@@ -786,6 +794,7 @@ export function compile(productDir, instanceDir, { revision, bundleState, oldBun
   checkPorts([base, compose], [[GATE_PORT, "gate"], [AUTH_PORT, "the kernel's sign-in listener"], ...[...instanceAppDefs, ...apps].filter((a) => Number.isInteger(a.port)).map((a) => [a.port, `app ${a.name}`])]);
 
   instanceAgents(instanceDir, settings, paperclip, routineTitles);
+  expandTeams(instance, paperclip);
 
   // Departments: where the board's Agents page lists each agent. One registry, the kernel's (kernel/defaults.json) then the instance's
   // own (instance.yaml `departments:`); an agent's `department:` must name one, and without one it is `general`. Setup
@@ -1097,7 +1106,7 @@ export function compile(productDir, instanceDir, { revision, bundleState, oldBun
   // (apps-mcp mounts github_token), and they are recreated with it.
   const mounted = composeSecretFiles(base, compose);
   const mounts = Object.fromEntries(setup.map((f) => [f.secret, [...(mounted[f.secret] ?? [])].sort()]));
-  const kernelModules = { owner: { name: String(settings.owner_name ?? ""), email: String(settings.owner_email).trim().toLowerCase(), timezone: String(settings.timezone ?? "UTC") }, modules: kernelModuleTable(enabledDefs, settings), services, ...(reviewer ? { reviewer } : {}), ...(Object.keys(checkJobTable).length ? { check_jobs: checkJobTable } : {}), ...(setup.length ? { setup, mounts } : {}) };
+  const kernelModules = { owner: { name: String(settings.owner_name ?? ""), email: String(settings.owner_email).trim().toLowerCase(), timezone: String(settings.timezone ?? "UTC") }, commit_domain: settings.instance_name ? `${settings.instance_name}.aidenhq.ai` : "aidenhq.ai", modules: kernelModuleTable(enabledDefs, settings), services, ...(reviewer ? { reviewer } : {}), ...(Object.keys(checkJobTable).length ? { check_jobs: checkJobTable } : {}), ...(setup.length ? { setup, mounts } : {}) };
   // Every agent (any module's or the instance's) is the job dispatcher's: the one enabled module with kernel.jobs. The kernel
   // starts a job only for an agent its requester dispatches (kernel/src/jobs.ts).
   const dispatchers = Object.entries(kernelModules.modules).filter(([, m]) => (m.roles ?? []).includes("kernel.jobs")).map(([n]) => n);
@@ -1362,6 +1371,38 @@ function instanceAgents(instanceDir, settings, paperclip, routineTitles) {
       routineTitles.add(r.title);
       put(paperclip.routines, `${key}-${rk}`, { ...r, agent: key }, "routine");
     }
+  }
+}
+
+/**
+ * Teams (instance.yaml `teams.<name>`, schema in kernel/src/team-routing.ts): the template agent (`<module>.<agent>`, any
+ * enabled module agent) becomes the team record, which keeps its key, roles, routines and description (one address for
+ * delegation, routines and role filing) and never runs; each member becomes a real agent with a permanent key, a copy of the
+ * template with the team's `defaults` and then its own fields over it, and no roles of its own (a member's job gets the team
+ * record's at admission). The team's `caps.day_usd` is the record's day cap, counted over every member's spend.
+ */
+export function expandTeams(instance, paperclip) {
+  const names = new Set(Object.values(paperclip.agents).map((a) => a.name));
+  for (const [team, t] of Object.entries(instance.teams ?? {})) {
+    const problems = teamProblems(team, t);
+    if (problems.length) fail(problems.join("; "));
+    const [module, key] = t.template.split(".");
+    const tpl = paperclip.agents[key];
+    if (!tpl || tpl.module !== module) fail(`teams.${team}.template: ${t.template} isn't an enabled module agent`);
+    if (tpl.team) fail(`teams.${team}.template: ${key} is already team ${tpl.team.name}'s record`);
+    if (instance.overrides?.agents?.[key]) fail(`overrides.agents.${key}: ${key} is team ${team}'s record; set its members' fields under teams.${team}`);
+    for (const [k, m] of Object.entries(t.members)) {
+      if (paperclip.agents[k]) fail(`teams.${team}.members.${k}: the key is already an agent's`);
+      if (names.has(m.name)) fail(`teams.${team}.members.${k}: another agent is already called ${m.name}`);
+      names.add(m.name);
+      if (instance.overrides?.agents?.[k]?.caps) fail(`overrides.agents.${k}.caps: a member has no cap of its own; set teams.${team}.caps`);
+      const { handbook, ...own } = { ...(t.defaults ?? {}), ...m };
+      // The record keeps the template's fast chat lane (chat:) and heartbeat routine (its runs are routed like any team task).
+      const { team: _, avatar: __, chat: ___, heartbeat: ____, ...base } = structuredClone(tpl);
+      paperclip.agents[k] = { ...base, ...own, ...(handbook ? { handbook_line: handbook } : {}), member_of: key };
+    }
+    tpl.team = { name: team, members: Object.keys(t.members), weights: weightsOf(t.routing) };
+    if (t.caps) tpl.caps = { ...(tpl.caps ?? {}), day_usd: t.caps.day_usd };
   }
 }
 
