@@ -1361,7 +1361,9 @@ export function reviewerSlot(defs, binding = {}) {
 /**
  * A module's checks (spec §3.5, P5): `[{id, at: write.filed | task.finish, kinds?, agents?, post?, auth?, label?, mode?}]`. The kernel
  * calls the task.finish ones (config/kernel/checks.json, keyed `<module>.<id>`) at `post` with `auth`, one of the module's own
- * secrets; `rubric` is where the kernel files a rubric for a task a module filed with one (modtasks.ts); `label` is the control-plane label a hold adds. A write.filed check without `post` runs in-process for now (3d).
+ * secrets; `rubric` is where the kernel files a rubric for a task a module filed with one (modtasks.ts); `label` is the control-plane label a hold adds.
+ * A write.filed check (`kinds`, the write kinds it runs on) is compiled as { module, at, kinds }: the kernel runs its code in
+ * process on every filing of those kinds (kernel/src/writes.ts filedRaises) and refuses the filing when it has none.
  * `mode: observe` (kernel/src/gates.ts) records what a task.finish check would block without blocking; write.filed checks gate
  * writes and always enforce.
  */
@@ -1375,7 +1377,12 @@ export function checkEntries(name, def) {
     for (const k of ["kinds", "agents"]) if (c[k] != null && !(Array.isArray(c[k]) && c[k].every((x) => typeof x === "string"))) fail(`${at}: ${k} is a list`);
     let mode;
     try { mode = gateMode(`${name}.${c.id}`, c.mode); } catch (e) { fail(`${at}: ${e.message}`); }
-    if (c.at !== "task.finish") { if (mode === "observe") fail(`${at}: a write.filed check gates writes: it always enforces`); continue; }
+    if (c.at !== "task.finish") {
+      if (mode === "observe") fail(`${at}: a write.filed check gates writes: it always enforces`);
+      if (!c.kinds?.length) fail(`${at}: a write.filed check names the write kinds it runs on (kinds)`);
+      out[`${name}.${c.id}`] = { module: name, at: c.at, kinds: c.kinds };
+      continue;
+    }
     if (!/^https?:\/\/[\w.-]+:\d+\/[\w/.-]*$/.test(c.post ?? "")) fail(`${at}: post must be http://<service>:<port>/<path>`);
     if (!ownSecrets(def).includes(c.auth)) fail(`${at}: auth must name one of its own secrets`);
     if (c.label != null && !/^[a-z][a-z0-9-]{0,40}$/.test(String(c.label))) fail(`${at}: label is a label name (a-z, 0-9, -)`);

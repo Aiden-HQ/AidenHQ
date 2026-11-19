@@ -16,8 +16,11 @@ import { localMergePass } from "../src/localmerge.ts";
 import { createChecks } from "../src/checkjobs.ts";
 import { openRecords } from "../src/records.ts";
 import { createWrites } from "../src/writes.ts";
+import { pathInventory } from "../../scripts/paths.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "../../modules/codehost-local");
+// As main.ts tiers them: by the product repo and the path inventory (push, pr and merge read their paths).
+const tiering = { repos: () => ({ product: "acme/aidenhq" }), paths: () => pathInventory(join(root, "../..")) };
 const git = (cwd, ...a) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", ...a], { cwd, encoding: "utf8" }).trim();
 
 test("local-only: create a repo, publish a change request, merge it at its head once its checks pass", async (t) => {
@@ -45,7 +48,7 @@ test("local-only: create a repo, publish a change request, merge it at its head 
   });
   const records = openRecords(join(dir, "kernel.db"));
   const writes = createWrites({
-    records, registry: () => LOCAL_KINDS, connections: () => ({}), secret: () => "", resolver: {}, replay: async () => ({}),
+    records, registry: () => LOCAL_KINDS, connections: () => ({}), secret: () => "", resolver: {}, replay: async () => ({}), ...tiering,
     executors: () => ({ "codehost-local": host.executor }), onTask: { open: async () => true, notify: async () => {} },
   });
   // An Engineer job (identity.ts): its frozen writes are the code host's kinds; its records name its own workspace.
@@ -160,7 +163,7 @@ test("a green change asks for its merge itself, as the task's agent: Tier 1 loca
   });
   const records = openRecords(join(dir, "kernel.db"));
   const writes = createWrites({
-    records, registry: () => LOCAL_KINDS, connections: () => ({}), secret: () => "", resolver: {}, replay: async () => ({}),
+    records, registry: () => LOCAL_KINDS, connections: () => ({}), secret: () => "", resolver: {}, replay: async () => ({}), ...tiering,
     executors: () => ({ "codehost-local": host.executor }), onTask: { open: async () => true, notify: async () => {} },
   });
   const job = { kind: "run", agent: "agent-1", key: "engineer", name: "engineer", roles: [], tools: {}, writes: Object.keys(LOCAL_KINDS), task: "TASK-1", workspace: "TASK-1", credential: "" };
@@ -219,7 +222,7 @@ test("a local merge's refusals, through the real host: a moved head, a check mis
   await host.executor.execute({ kind: "codehost-local.create_repo", args: { repo: "local/app" } });
   const records = openRecords(join(dir, "kernel.db"));
   const writes = createWrites({
-    records, registry: () => LOCAL_KINDS, connections: () => ({}), secret: () => "", resolver: {}, replay: async () => ({}),
+    records, registry: () => LOCAL_KINDS, connections: () => ({}), secret: () => "", resolver: {}, replay: async () => ({}), ...tiering,
     executors: () => ({ "codehost-local": host.executor }), onTask: { open: async () => true, notify: async () => {} },
   });
   const job = { kind: "run", agent: "agent-1", key: "engineer", name: "engineer", roles: [], tools: {}, writes: Object.keys(LOCAL_KINDS), task: "TASK-1", workspace: "TASK-1", credential: "" };
