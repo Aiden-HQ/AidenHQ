@@ -285,6 +285,7 @@ export function DotPlot({ dots, lines = [], cats, label, height = 260, fmtY, leg
   return (
     <div className="fl-chart">
       {legend && <Legend items={legend} />}
+      {cats && w > 0 && (w - 56) / cats.length < 72 && <Legend items={cats} />}
       <div ref={ref} className="fl-plot">{w > 0 && (
         <svg width={w} height={H} role="img" aria-label={label}>
           {sy.ticks.map((t) => (
@@ -296,8 +297,8 @@ export function DotPlot({ dots, lines = [], cats, label, height = 260, fmtY, leg
           {cats?.map((c, i) => (
             <g key={c.label}>
               {i > 0 && <line x1={left + band * i} x2={left + band * i} y1={top} y2={top + plotH} className="fl-grid" />}
-              <rect x={left + band * i + 6} y={H - bottom + 11} width={7} height={7} rx={2} style={{ fill: c.color }} />
-              <text x={left + band * i + 18} y={H - bottom + 18} className="fl-tick fl-cat" textAnchor="start">{band > 70 ? c.label : c.label.slice(0, Math.max(3, Math.floor(band / 8)))}</text>
+              <rect x={band >= 72 ? left + band * i + 6 : left + band * i + band / 2 - 3.5} y={H - bottom + 11} width={7} height={7} rx={2} style={{ fill: c.color }} />
+              {band >= 72 && <text x={left + band * i + 18} y={H - bottom + 18} className="fl-tick" textAnchor="start">{c.label}</text>}
             </g>
           ))}
           {xticks.map((t, i) => <text key={i} x={sx(t)} y={H - 6} textAnchor={i === 0 ? "start" : i === 4 ? "end" : "middle"} className="fl-tick">{day(new Date(t).toISOString())}</text>)}

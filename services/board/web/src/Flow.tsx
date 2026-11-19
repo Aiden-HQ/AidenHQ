@@ -49,6 +49,8 @@ function phaseColors(phases: { name: string }[]) {
 }
 
 /* ----------------------------------------------------------------------------- the page */
+let mounted = 0;
+
 export function FlowView({ onSignIn }: { onSignIn: () => void }) {
   const [tab, setTab] = useState<Tab>(tabOf);
   const [days, setDays] = useState<(typeof PERIODS)[number][0]>("7");
@@ -66,7 +68,13 @@ export function FlowView({ onSignIn }: { onSignIn: () => void }) {
   useEffect(() => {
     const on = () => location.hash.startsWith("#/flow") && setTab(tabOf());
     window.addEventListener("hashchange", on);
-    return () => window.removeEventListener("hashchange", on);
+    mounted++;
+    return () => {
+      window.removeEventListener("hashchange", on);
+      mounted--;
+      // The top tabs switch without touching the hash (as Costs): leaving Flow drops its link. Deferred for StrictMode's remount.
+      setTimeout(() => !mounted && location.hash.startsWith("#/flow") && history.replaceState(null, "", "#/"));
+    };
   }, []);
 
   const fail = useCallback((e: unknown) => {
@@ -86,6 +94,7 @@ export function FlowView({ onSignIn }: { onSignIn: () => void }) {
   }, [fail]);
   useEffect(() => {
     let live = true;
+    if (!authors.length) return setList(null);
     setList(undefined);
     api.flowJourney(journey, Number(days), authors, sort).then(
       (l) => {
@@ -120,7 +129,7 @@ export function FlowView({ onSignIn }: { onSignIn: () => void }) {
       />
       <Tabs label="Flow views" tabs={TABS} value={tab} href={(t) => `#/flow/${t}`} />
       {error && <Banner tone="danger">Couldn't load Flow: {error}</Banner>}
-      <TipLayer>
+      <TipLayer key={tab}>
         {!data ? (
           !error && <div className="flow-loading" aria-busy="true" />
         ) : tab === "prs" ? (
@@ -186,6 +195,11 @@ function PrsTab(p: {
   };
   const items = p.list?.items ?? [];
   useEffect(() => setShown(PAGE), [p.list]);
+  useEffect(() => {
+    const on = () => setViewState(viewOf());
+    window.addEventListener("hashchange", on);
+    return () => window.removeEventListener("hashchange", on);
+  }, []);
   const toggle = (a: AuthorKind) => p.setAuthors(p.authors.includes(a) ? p.authors.filter((x) => x !== a) : AUTHORS.map(([k]) => k).filter((k) => k === a || p.authors.includes(k)));
   const label = p.journeys.find((j) => j.name === p.journey)?.label ?? p.list?.label ?? "Pull requests";
   return (
@@ -251,8 +265,9 @@ type Col = { key: string; label: string; num: boolean; get: (x: JourneyItem) => 
  * The PRs as a table: one column per phase of the journey (its duration, ↻n for rounds, tinted by a heat scale per column so
  * slow cells stand out), every header sorts. Sorting is over the loaded rows; the kernel's sort picks which rows load.
  */
-function PrTable({ items, phases, color, onTask, label, truncated }: { items: JourneyItem[]; phases: { name: string; label: string }[]; color: (p: string) => string; onTask: (t: string) => void; label: string; truncated: boolean }) {
+export function PrTable({ items, phases, color, onTask, label, truncated }: { items: JourneyItem[]; phases: { name: string; label: string }[]; color: (p: string) => string; onTask: (t: string) => void; label: string; truncated: boolean }) {
   const [sort, setSort] = useState<{ key: string; dir: 1 | -1 } | null>(null);
+  const [shown, setShown] = useState(PAGE);
   const secs = (x: JourneyItem, ph: string) => {
     const b = x.blocks.find((y) => y.phase === ph);
     return b ? (Date.parse(b.end) - Date.parse(b.start)) / 1000 : null;
@@ -302,7 +317,7 @@ function PrTable({ items, phases, color, onTask, label, truncated }: { items: Jo
           </tr>
         </thead>
         <tbody>
-          {rows.map((x) => (
+          {rows.slice(0, shown).map((x) => (
             <tr key={x.subject} className={`${x.task ? "has-task" : ""} fl-${x.state}`} onClick={() => x.task && onTask(x.task)}>
               <th scope="row">
                 {x.url ? (
@@ -332,7 +347,16 @@ function PrTable({ items, phases, color, onTask, label, truncated }: { items: Jo
           ))}
         </tbody>
       </table>
-      {truncated && <p className="fl-more flow-dim">The newest {items.length} are listed; pick a shorter period to see the rest.</p>}
+      {(rows.length > shown || truncated) && (
+        <div className="fl-more">
+          {rows.length > shown && (
+            <button type="button" className="btn sm" onClick={() => setShown(shown + PAGE)}>
+              Show {Math.min(PAGE, rows.length - shown)} more
+            </button>
+          )}
+          {truncated && <span className="flow-dim">The newest {items.length} are listed; pick a shorter period to see the rest.</span>}
+        </div>
+      )}
     </div>
   );
 }
@@ -361,16 +385,16 @@ function PrRow({ x, phases, color, onTask }: { x: JourneyItem; phases: { name: s
   const open = () => x.task && onTask(x.task);
   const summary = `#${x.number}${x.title ? ` ${x.title}` : ""}${by}: ${x.blocks.map((b) => `${label(b.phase)} ${dur((Date.parse(b.end) - Date.parse(b.start)) / 1000)}${b.rounds > 1 ? `, ${b.rounds} rounds` : ""}`).join("; ")}; total ${dur(x.total_s)}`;
   return (
-    <li className={`fl-row${x.task ? " has-task" : ""} fl-${x.state}`}>
+    <li className={`fl-row${x.task ? " has-task" : ""} fl-${x.state}`} onClick={open}>
       <span className="fl-num">
         {x.url ? (
-          <a href={x.url} target="_blank" rel="noopener noreferrer" title={`${x.title ?? x.subject}${by}`}>#{x.number}</a>
+          <a href={x.url} target="_blank" rel="noopener noreferrer" title={`${x.title ?? x.subject}${by}`} onClick={(e) => e.stopPropagation()}>#{x.number}</a>
         ) : (
           <span title={`${x.title ?? x.subject}${by}`}>#{x.number}</span>
         )}
       </span>
       <span className="fl-title" title={x.title ?? undefined}>{x.title ?? <span className="flow-dim">{x.repo}</span>}</span>
-      <span className="fl-track" ref={ref} role="img" aria-label={summary} onClick={open}>
+      <span className="fl-track" ref={ref} role="img" aria-label={summary}>
         {w > 0 &&
           px.map(({ b, s, l, wd, share }, i) => {
             const idleShare = s ? Math.min(1, b.idle_s / s) : 0;
