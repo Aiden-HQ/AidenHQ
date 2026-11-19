@@ -171,13 +171,33 @@ test("the run check flags three same-category failures on one task in half an ho
 });
 
 test("an orphaned item over 2h trips the stuck rule; a slower stage only logs in observe mode", async () => {
-  const idle = [{ task: "a", identifier: "WOR-A", since: minsAgo(180), reason: "orphaned" }, { task: "b", identifier: "WOR-B", since: minsAgo(30), reason: "orphaned" }, { task: "c", identifier: "BAK-3", since: minsAgo(300), reason: "orphaned" }, { task: "d", identifier: "WOR-D", since: minsAgo(300), reason: "owner" }];
+  const idle = [
+    { task: "a", identifier: "WOR-A", since: minsAgo(180), reason: "orphaned" }, // assigned todo: flagged
+    { task: "b", identifier: "WOR-B", since: minsAgo(30), reason: "orphaned" }, // not idle long enough
+    { task: "c", identifier: "BAK-3", since: minsAgo(300), reason: "orphaned" }, // bake-off
+    { task: "d", identifier: "WOR-D", since: minsAgo(300), reason: "owner" }, // waiting on the owner
+    { task: "e", identifier: "WOR-E", since: minsAgo(9000), reason: "orphaned" }, // backlog inbox: parked
+    { task: "f", identifier: "WOR-F", since: minsAgo(9000), reason: "orphaned" }, // unassigned todo log
+    { task: "g", identifier: "WOR-G", since: minsAgo(300), reason: "orphaned" }, // its read fails: stays flagged
+  ];
+  const tasks = {
+    a: { id: "a", identifier: "WOR-A", status: "todo", assigneeAgentId: "ag1", updatedAt: minsAgo(180) },
+    e: { id: "e", identifier: "WOR-E", status: "backlog", updatedAt: minsAgo(9000) },
+    f: { id: "f", identifier: "WOR-F", status: "todo", updatedAt: minsAgo(9000) },
+  };
   const stage = (p) => ({ name: "review", n: 12, work_p75: p, wait_p75: 0, work_p50: p / 2, waits: {} });
   const logged = [];
   const lastWeek = encodeURIComponent(new Date(NOW - 7 * 86_400_000).toISOString());
-  const kernel = { read: async () => [], call: async (_m, p) => (p.startsWith("/v1/flow?idle=1") ? { items: idle } : { stages: [stage(p.endsWith(`to=${lastWeek}`) ? 100 : 200)] }) };
+  const kernel = {
+    read: async (p) => {
+      const id = decodeURIComponent(p.split("/")[3]);
+      if (!tasks[id]) throw new Error("control plane down");
+      return tasks[id];
+    },
+    call: async (_m, p) => (p.startsWith("/v1/flow?idle=1") ? { items: idle } : { stages: [stage(p.endsWith(`to=${lastWeek}`) ? 100 : 200)] }),
+  };
   const c = checks({ kernel, apps: async () => [], alerts: async () => [], openKeys: () => [], now: () => NOW, log: (m, f) => logged.push([m, f]) });
-  assert.deepEqual((await c.stuck()).map((i) => i.key), ["a"]);
+  assert.deepEqual((await c.stuck()).map((i) => i.key), ["a", "g"]);
   assert.deepEqual(await c.flow(), [], "observe mode files nothing");
   assert.deepEqual(logged, [["flow.would_file", { stage: "review" }]]);
 });
