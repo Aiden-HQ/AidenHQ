@@ -505,6 +505,11 @@ function AgentPane({ task, member, focus, board, reload, onChanged, toast, moved
           <div className="working-tail">
             <div className={`working-line${part.working.queued ? " queued" : ""}`}>
               {part.working.queued ? `Queued: ${name} starts when a slot frees up.` : `${name} is working on this${part.working.since ? ` · ${elapsed(part.working.since)}` : ""}.`}
+              {!part.working.queued && (
+                <button className="btn" disabled={busy} onClick={() => void act(() => api.stop(selected), "Stopped")}>
+                  Stop
+                </button>
+              )}
             </div>
             {!part.working.queued && (part.working.said || part.working.plan) && (
               <div className="progress">

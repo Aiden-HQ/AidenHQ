@@ -31,6 +31,8 @@ export interface Work {
   task(id: string): Promise<KernelJob[]>;
   /** What runs now, what waits and who is failing, per agent id (GET /v1/work). */
   activity(): Promise<KernelActivity>;
+  /** The owner's Stop (POST /v1/stop, `account` the signed-in admin): the running jobs of a task or an agent end cancelled; their ids. */
+  stop(what: { task: string } | { agent: string }, account: string): Promise<string[]>;
 }
 
 /** An agent's kernel job as the board's lists show it: `running` ones now, `recent` ones that ended (with the first line of how a failure ended). */
@@ -107,6 +109,11 @@ export function kernelWork(k: { url: string; token: string }): Work {
     job: (id) => get(`job=${encodeURIComponent(id)}`),
     task: async (id) => ((await get(`task=${encodeURIComponent(id)}`)) as { jobs: KernelJob[] }).jobs,
     activity: () => get(""),
+    async stop(what, account) {
+      const res = await fetch(`${k.url}/v1/stop`, { method: "POST", headers: { authorization: `Bearer ${k.token}`, "content-type": "application/json", "x-aidenhq-account": account }, body: JSON.stringify(what), signal: AbortSignal.timeout(15_000) });
+      if (!res.ok) throw new Error(`the kernel answered ${res.status}`);
+      return ((await res.json()) as { stopped: string[] }).stopped;
+    },
   };
 }
 

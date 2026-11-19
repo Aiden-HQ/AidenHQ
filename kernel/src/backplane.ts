@@ -93,6 +93,8 @@ type Handler = (req: IncomingMessage, res: ServerResponse, ...a: string[]) => Pr
 /** Directory fields a module may read; everything else in the grants table (tools, models, caps, images) stays here. */
 const DIRECTORY = ["key", "roles", "profile", "trial", "description", "delegate_to", "memory_inbox", "review_log", "graded", "feedback_for"];
 
+/** What a task shows when the owner stops its run: the kernel's own words, the dispatcher posts nothing else for it. */
+const STOPPED_NOTE = "**Stopped by the owner.** Say **continue** to pick up where it stopped.";
 /** What the listener serves: the router dispatches from this table and scripts/lean/contract-lock.mjs reads it, so the lock can't miss a route. */
 export const ROUTES = [
   { method: "GET", path: "/healthz", auth: "none" },
@@ -149,6 +151,7 @@ export const ROUTES = [
   { method: "GET", path: "/v1/advisories", auth: "board" },
   { method: "GET", path: "/v1/connections/health", auth: "board" },
   { method: "POST", path: "/v1/settings/change", auth: "board" },
+  { method: "POST", path: "/v1/stop", auth: "board" },
   { method: "POST", path: "/v1/auth/:op", auth: "board" },
   { method: "POST", path: "/v1/accounts/:op", auth: "board+session" },
   { method: "POST", path: "/v1/apps/:op", auth: "module" },
@@ -337,6 +340,21 @@ export function createBackplane({ whoami, asserter, proxy, cp, boardCp, grantsFi
         }
         case "GET /v1/connections/health": if (!isBoard(req)) throw fail(401, "unauthorized", "the board's key is required"); return send(res, 200, { probes: connectionHealth ? await connectionHealth() : {} });
         case "GET /v1/advisories": if (!isBoard(req)) throw fail(401, "unauthorized", "the board's key is required"); return send(res, 200, { advisories: advisories() });
+        case "POST /v1/stop": {
+          // The owner's Stop, from the board's signed-in admin: the running jobs of a task or an agent end `cancelled`, the task stays open with one fixed note.
+          if (!isBoard(req)) throw fail(401, "unauthorized", "the board's key is required");
+          if (!jobs || !outcomes) throw fail(503, "unavailable", "jobs are off");
+          const b = await json(req);
+          const by = String(req.headers["x-aidenhq-account"] ?? "");
+          if (!/^[A-Za-z0-9_-]{1,100}$/.test(by)) throw fail(400, "bad_request", "X-AidenHQ-Account names the admin who stops it");
+          if ((typeof b.task === "string") === (typeof b.agent === "string")) throw fail(400, "bad_request", "send {task} or {agent}");
+          const stopped = jobs.stopRunning(typeof b.task === "string" ? { task: b.task } : { agent: b.agent }, by);
+          for (const j of stopped) {
+            log("job stopped by the owner", { job: j.id, task: j.task, agent: j.agent, by });
+            await outcomes.post(j, { kind: "notice", body: STOPPED_NOTE }).catch((e: Error) => log("stop note failed", { job: j.id, err: e.message }));
+          }
+          return send(res, 200, { stopped: stopped.map((j) => j.id) });
+        }
         case "POST /v1/settings/change": {
           if (!isBoard(req)) throw fail(401, "unauthorized", "the board's key is required");
           if (!settingsChange) throw fail(503, "unavailable", "settings changes are off");

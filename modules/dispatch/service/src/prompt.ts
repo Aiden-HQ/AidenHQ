@@ -103,8 +103,9 @@ ${REPLY(user)}
 `;
 }
 
-/** What a finished job posts: its reply, nothing (NO_REPLY), or a notice of how it stopped. */
-export function outcome(v: { exit?: number | null; timedOut?: boolean; stopped?: string; final?: string }): { kind: "reply" | "notice"; body: string } | undefined {
+/** What a finished job posts: its reply, nothing (NO_REPLY; a run the owner stopped, whose note the kernel wrote), or a notice of how it stopped. */
+export function outcome(v: { exit?: number | null; timedOut?: boolean; cancelled?: boolean; stopped?: string; final?: string }): { kind: "reply" | "notice"; body: string } | undefined {
+  if (v.cancelled && !v.stopped) return undefined;
   const reply = String(v.final ?? "").trim();
   if (!v.exit && !v.timedOut && !v.stopped && reply) return reply === NO_REPLY ? undefined : { kind: "reply", body: reply };
   const again = "Say **continue** to pick up where it stopped.";

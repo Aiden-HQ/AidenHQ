@@ -442,6 +442,15 @@ function Conversation({ refId, row, mobile, crew, prefix, go, onSignIn, toast, p
   const load = query.reload;
   // Cards shown from an earlier load can't be decided until the fresh copy lands (as on Approvals).
   const hold = query.stale;
+  const stop = async () => {
+    try {
+      await api.stop(refId);
+      toast("Stopped");
+      await Promise.all([load(), reloadList()]);
+    } catch (e) {
+      toast(`Couldn't stop: ${(e as Error).message}`);
+    }
+  };
   // Opened while a hover's prefetch (which leaves it unread) is still on its way: read it properly once that lands.
   useEffect(() => void (peekingChat(refId) && load()), [refId, load]);
   const pending = useOutbox(refId);
@@ -731,7 +740,7 @@ function Conversation({ refId, row, mobile, crew, prefix, go, onSignIn, toast, p
             ↓
           </button>
         )}
-        <LiveRow chat={chat} retry={() => void send("Please try again.", [], true)} />
+        <LiveRow chat={chat} retry={() => void send("Please try again.", [], true)} stop={stop} />
         <Composer
           placeholder={`Message ${chat.agent.name}${chat.open ? "" : " (this reopens the chat)"}`}
           draftKey={`draft:${chat.id}`}
@@ -929,7 +938,7 @@ function Steps({ steps, said }: { steps: NonNullable<Working["steps"]>; said?: s
 }
 
 /** One live row pinned above the composer: what the run is doing now, or why it stopped. The plan lives in the panel. */
-function LiveRow({ chat, retry }: { chat: ChatDetail; retry: () => void }) {
+function LiveRow({ chat, retry, stop }: { chat: ChatDetail; retry: () => void; stop: () => void }) {
   const [, tick] = useState(0);
   const ticking = chat.state === "working";
   useEffect(() => {
@@ -949,12 +958,25 @@ function LiveRow({ chat, retry }: { chat: ChatDetail; retry: () => void }) {
           <span className="pulse" /> <b>{w.agent || name}</b> <span className="shimmer">is working</span>
           {w.since && <span className="live-clock">{elapsed(w.since)}</span>}
           {quiet > QUIET_MS && <span className="muted"> · nothing new for {Math.floor(quiet / 60_000)} min</span>}
+          <button className="btn" onClick={stop}>
+            Stop
+          </button>
         </div>
         {w.steps?.length ? <Steps steps={w.steps} said={w.said} /> : w.said && <div className="live-said">{w.said}</div>}
       </div>
     );
   }
-  if (chat.state === "working") return <div className="live-row working"><div className="live-line"><span className="pulse" /> <b>{name}</b> <span className="shimmer">is working</span></div></div>;
+  if (chat.state === "working")
+    return (
+      <div className="live-row working">
+        <div className="live-line">
+          <span className="pulse" /> <b>{name}</b> <span className="shimmer">is working</span>
+          <button className="btn" onClick={stop}>
+            Stop
+          </button>
+        </div>
+      </div>
+    );
   if (chat.state === "queued") return <div className="live-row">Queued: {name} starts when free.</div>;
   if (chat.state === "waiting for approval") return <div className="live-row you">Waiting for your approval (above).</div>;
   if (chat.state === "waiting for you") return <div className="live-row you">Needs your input.</div>;
