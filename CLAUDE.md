@@ -107,11 +107,13 @@ bump of `product:` to a different reviewer needs a receipt for that reviewer too
   (secrets, outbound sends, unapproved merges and pushes, credential scoping; `HARD_GATES`) enforce from day one.
   Writes are kernel records tiered in code: the code host's `plan.mjs` and the kernel's apply planner (`apply-tier.ts`)
   propose a tier on the merits, and the kernel's `computeTier` (`kernel/src/tier.ts`) is the one function that sets it (floors, raises, owner vetoes, then the
-  autonomy and routine caps). Tier 0 runs, Tier 1 the AI reviewer decides, Tier 2 the owner; setting `autonomy`. Every
+  autonomy and routine caps). Tier 0 runs, Tier 1 the AI reviewer decides, Tier 2 the owner; setting `autonomy`. Under
+  full autonomy the owner approves only: loosening autonomy, raising spend, new authority from a non-official module, a
+  supply-chain source exception (`paths.yaml` sensitivity 2), and anything he vetoed; every other Tier 2 goes to the AI panel. Every
   reviewer false reject becomes a planted case in `modules/ai-reviewer/test/reviewer-cases/`.
   **Auto-update installs without the owner.** With `auto_update` on, the updater installs each verified release (its
   own filing, tag on the distro's main, newer than the current one, tested stamp) with no owner approval; turning
-  auto-update on is the owner's decision to accept that risk. Any other release move stays the owner's.
+  auto-update on is the owner's decision to accept that risk. Any other release move is the owner's below full autonomy.
 - **Cross-agent behaviour goes in a module, not in each handbook.** A skill (`modules/<m>/skills/<name>/SKILL.md`) is the
   on-demand mechanism: its one-line description is in the handbook's index and the agent reads the text when it needs it. A
   module `prompts:` entry (`modules/<module>/prompts/<id>.md`) is for always-on text (replying in chief-of-staff,

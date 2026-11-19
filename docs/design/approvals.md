@@ -69,7 +69,7 @@ agent, never to the owner.
   title or description, which the agent can make): the agent changes it or reports back (owner, 2026-11-18: refile only
   after a fix). Every rejection, answered or not, counts toward the 3-per-target bound, on whatever branch the same
   content is filed.
-- **Tier 2: owner.** A board card plus a message on the owner channel: a panel split, a reviewer's
+- **Tier 2: owner** (under full autonomy only the owner's own authority, see Autonomy). A board card plus a message on the owner channel: a panel split, a reviewer's
   "escalate" (a destructive migration), the owner's own veto, a routine's or the instance's autonomy cap, a spend-cap
   raise, or nothing recognised. The AI reviewer reads every one first (owner, 2026-11-16: every write is reviewed before it
   reaches the owner), and its verdict is on the owner's card:
@@ -180,7 +180,15 @@ for every write it tiers, so it is also the pause switch.
   reviewed regardless). Tier 0 is a card for the owner; Tier 1 goes to the reviewer first: its reject is final, its
   approve goes on to the owner's card with its verdict (`tier.ts` `computeTier`). Tier 2 is reviewed first too, then the owner decides.
 - `tier0`: Tier 0 runs. On Tier 1, the reviewer comments with what it would do and the owner decides (shadow mode).
-- `full`: the reviewer decides Tier 1.
+- `full`: the reviewer decides Tier 1, and the owner approves only: loosening autonomy, raising spend, new authority from
+  a non-official module, an owner path (`paths.yaml` sensitivity 2: a supply-chain source exception, a security
+  trade-off), and anything he vetoed (owner, 2026-11-19: "full autonomy mode should not bug me for approval almost
+  ever"). Every other Tier 2 raise (an official module's new authority in a product move, other settings, release and pin
+  moves, unknown files or repos, a module's own Tier 2 raise) is Tier 1 for the panel. The rules
+  mark the owner's own with `ownerOnly` (`apply-tier.ts`, the authority diff's `ownerOnly` lines) and `computeTier` alone
+  applies it; a kind's own floor (`kernel.raise_cap`, a spend raise) stays the owner's. An official module is one read
+  from the product's own `modules/` at the pinned commit (`sources.ts` `officialSides`); a third-party marketplace, a
+  fork or a per-module pin is not. Under `off` and `tier0` nothing changes.
 
 ## Reviewer cases and the exit test
 

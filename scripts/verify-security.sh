@@ -780,7 +780,8 @@ grep -qE 'async function bump\(' "$rgate" \
   && pass "codehost: a product pin move to a changed AI reviewer lands only on a passing eval receipt for it; no marketplace pin moves ($rgate)" \
   || fail "codehost: a pin move can bring a changed AI reviewer with no eval receipt ($rgate)"
 # Who decides a write (owner, 2026-11-14): the owner only for their own veto, a split panel, a routine's or the instance's
-# autonomy cap (autonomy off: after the AI review, #110), an owner-recorded source exception (#101), a spend-cap raise or nothing recognised (the only Tier 2 rules left in tiers.mjs).
+# autonomy cap (autonomy off: after the AI review, #110), an owner-recorded source exception (#101), a spend-cap raise or nothing recognised (the only Tier 2 rules left in tiers.mjs);
+# under full autonomy only loosening autonomy, raising spend, a non-official module's new authority and their veto (tier.ts computeTier, 2026-11-19).
 # Every one of them is AI-reviewed before it reaches the owner (owner, 2026-11-16): classify() makes a Tier 2-by-merit
 # request review-first (meritOwner: the reviewer's approve and reject both reach the owner) and a routine's cap on Tier 1
 # review-first (tier.ts computeTier, for every write: its reject is final), and the board takes no reviewer approve on a review-first card and no
@@ -806,7 +807,8 @@ rreview="modules/ai-reviewer/service/src/review.mjs"
   && grep -qF '  /^modules\/ai-reviewer\//,' "$rcheck" && grep -qF '  /^modules\/codehost-github\//,' "$rcheck" && grep -qF '  /^modules\/platform\//,' "$rcheck" \
   && grep -qF '.some((g) => g.test(f))) parts.push(PANEL("gate-core"' "$rcheck" \
   && grep -qF 'const PANEL = (rule, reason) => ({ tier: 1, rule, reason, panel: true });' "$rcheck" \
-  && grep -qF 'const rank = (p: Part) => p.tier * 2 + (p.panel ? 1 : 0);' kernel/src/tier.ts \
+  && grep -qF 'const rank = (p: Part) => p.tier * 4 + (p.ownerOnly ? 2 : 0) + (p.panel ? 1 : 0);' kernel/src/tier.ts \
+  && grep -qF 'const full = autonomy === "full" && (!routine || routine.cap === "full");' kernel/src/tier.ts && grep -qF '...raises.map((r) => (full && r.tier === 2 && !r.ownerOnly ? 1 : r.tier)), priorVeto ? 2 : 0)' kernel/src/tier.ts \
   && grep -qF '  const second = v.second_review !== false;' "$rreview" \
   && grep -qF '  if (v1.decision !== "approve" || !(panel || flagged)) return v1;' "$rreview" \
   && grep -qF '  if (v2.decision === "approve") return { decision: "approve"' "$rreview" \
@@ -816,9 +818,9 @@ rreview="modules/ai-reviewer/service/src/review.mjs"
   && grep -qF 'if (v.decision === "approve" && (r.review_first || r.tier === 2' kernel/src/records.ts \
   && grep -qF 'if (v.decision === "reject" && r.review_first === "owner" && !FINAL_CODES.includes(v.code ?? "")) return' kernel/src/records.ts \
   && grep -qF 'const migration = touchesMigrations(com.diff);' modules/apps-platform/apps-mcp/src/executor.ts && grep -qF 'raise: { tier: 1, panel: migration, rule:' modules/apps-platform/apps-mcp/src/executor.ts \
-  && grep -qF 'const out = { panel: panel || raise?.panel === true' kernel/src/tier.ts && grep -qF 'if (r.panel && v.decision === "approve" && !v.by.includes("+")) return' kernel/src/records.ts \
+  && grep -qF 'const out = { panel: panel || relaxed || raises.some((r) => r.panel === true) };' kernel/src/tier.ts && grep -qF 'if (r.panel && v.decision === "approve" && !v.by.includes("+")) return' kernel/src/records.ts \
   && grep -qF 'if (workflow && !(inAgents && b.ciTemplate === true)) parts.push(T(1, "github-dir"' "$rplan" \
-  && pass "kernel, codehost and board: the owner decides only vetoes, panel splits, autonomy caps and spend caps, each after the AI reviewer; the gate's core goes to two reviewers of different families, checked by the path inventory and the kernel; a CI template copy is Tier 0 only by tree identity with the deployed product (paths.yaml, $rreview)" \
+  && pass "kernel, codehost and board: the owner decides only vetoes, panel splits, autonomy caps and spend caps, each after the AI reviewer (under full autonomy only loosening autonomy, raising spend, a non-official module's new authority and vetoes); the gate's core goes to two reviewers of different families, checked by the path inventory and the kernel; a CI template copy is Tier 0 only by tree identity with the deployed product (paths.yaml, $rreview)" \
   || fail "kernel, codehost or board: who decides a write changed (the Tier 2 rules, the path inventory, the panel, or the kernel's panel check)"
 # Jobs reach connections only through the kernel: a job holds no connection URL or token (its grants and its non-private
 # jobcaps through the kernel's proxy with its job token), private reads go only to Engineers whose definition opts in

@@ -123,7 +123,7 @@ test("a replace renames only the ids A declares, and refuses an ambiguous one", 
 
 test("H6: a provided secret named like a model key is still only owner:true (the reviewer rejects it)", () => {
   const d = authorityDiff("acme-crm", base, with_({ secrets: { provided: [{ name: "openai_api_key" }] } }), false);
-  assert.deepEqual(d.changes, [{ what: "adds secret openai_api_key", owner: true }]);
+  assert.deepEqual(d.changes, [{ what: "adds secret openai_api_key", owner: true, ownerOnly: true }]);
 });
 
 test("a removed module is the reviewer's, unless it carried enforcement", () => {
@@ -180,6 +180,11 @@ test("5b: the tree id at the new sha equals the recorded one → empty diff; the
   // The move itself: to the official repository, no line; anywhere else, the owner's.
   assert.deepEqual(marketplaceChanges(base, { ...base, marketplaces: [{ name: "aidenhq", source: { source: "url", url: OFFICIAL_URL }, sha: mods.sha }] }), []);
   assert.deepEqual(marketplaceChanges(base, at(mods.sha))[0].changes.map((c) => c.owner), [true]);
+  // Official is the product's own modules/ at its commit; read from a marketplace, none is.
+  assert.deepEqual(officialSides(base, at(mods.sha), product.sha, product.sha, product.d, f).official, { base: ["acme-crm"], head: [] });
+  const own = repo({ ...Object.fromEntries(Object.entries(mod).map(([p, t]) => [`modules/acme-crm/${p}`, t])), "modules/marketplace.json": "{}\n" });
+  const mine = { product: own.sha, modules: ["acme-crm"] };
+  assert.deepEqual(officialSides(mine, mine, own.sha, own.sha, own.d, f).official, { base: ["acme-crm"], head: ["acme-crm"] });
 });
 
 test("a per-module pin is official only on the official repository's main; one off it is the owner's, as a fork", async () => {

@@ -9,13 +9,17 @@
 export type Tier = 0 | 1 | 2;
 export type Autonomy = "off" | "tier0" | "full";
 export type ReviewFirst = "final" | "owner";
-export type Raise = { tier: 1 | 2; panel?: boolean; reason?: string; rule?: string };
+/**
+ * `ownerOnly`: the owner's own authority, Tier 2 under every autonomy: loosening autonomy, raising spend, new authority from a
+ * module that isn't official. Every other Tier 2 raise is the panel's under full autonomy (computeTier).
+ */
+export type Raise = { tier: 1 | 2; panel?: boolean; reason?: string; rule?: string; ownerOnly?: boolean };
 /** The cap a write was tiered under, kept on its record: the instance's autonomy off, or a routine's (`routine`: its id; absent when the trace couldn't be read). */
 export type Cap = { by: "autonomy" | "routine"; value: Autonomy; routine?: string };
 /** A task's routine cap, as the kernel traces it (taskRoutineCap). */
 export type RoutineCap = { cap: Autonomy; routine?: string };
 /** One part of a request's tier, as the requesters' rules build it. */
-export type Part = { tier: number; rule?: string; reason?: string; panel?: boolean; reject?: boolean; reviewFirst?: boolean; byMerit?: boolean; cap?: Cap | null; [k: string]: unknown };
+export type Part = { tier: number; rule?: string; reason?: string; panel?: boolean; reject?: boolean; reviewFirst?: boolean; byMerit?: boolean; ownerOnly?: boolean; cap?: Cap | null; [k: string]: unknown };
 /** A model's verdict, or code's in its place. */
 export type Verdict = { decision: "approve" | "reject" | "escalate"; reason: string; model: string; second?: string; code?: string };
 
@@ -24,7 +28,10 @@ export const capText = (c: Cap) => (c.by === "autonomy" ? `autonomy is ${c.value
 
 /**
  * The one tier function every write goes through (writes.ts: module kinds, conn.tool, the runner's kinds). The merit tier
- * is the highest of the floors, raises and the owner's veto. A Tier 2 merit is reviewed first and the owner's
+ * is the highest of the floors, raises and the owner's veto. Under full autonomy (and no routine cap) the owner approves
+ * only their own authority: a raise marked `ownerOnly` (loosening autonomy, raising spend, new authority from a module that
+ * isn't official, an owner path: a supply-chain source exception), a kind's own floor (kernel.raise_cap) and their veto; any other Tier 2 raise is Tier 1 for the panel
+ * (owner, 2026-11-19: "full autonomy mode should not bug me for approval almost ever"). A Tier 2 merit is reviewed first and the owner's
  * (`reviewFirst`, "owner" unless the requester says how: "final" for new module authority, null for the owner's tap alone).
  * Then the caps: the instance's autonomy off, or a routine's tier0 or off (`routine`; an unreadable trace is off). off lifts
  * Tier 0 to the owner's tap (rule autonomy-off or routine-autonomy) and makes Tier 1 review-first (the reviewer's reject is
@@ -36,12 +43,15 @@ export function computeTier({ floor, instanceFloor = 0, raise, checkRaises = [],
   /** The release updater's own filing (records.ts isUpdater): it acts on an owner setting's standing authority (auto_update), so the caps don't hold it. Every other requester is capped. */
   uncapped?: boolean;
 }): { tier: Tier; merit: Tier; panel: boolean; reviewFirst: ReviewFirst | null; cap?: Cap; rule?: string; state: "claimed" | "review" | "owner" } {
+  const full = autonomy === "full" && (!routine || routine.cap === "full");
   if (uncapped) { autonomy = undefined; routine = undefined; }
-  const merit = Math.max(floor, instanceFloor, raise?.tier ?? 0, ...checkRaises.map((r) => r.tier), priorVeto ? 2 : 0) as Tier;
+  const raises = [...(raise ? [raise] : []), ...checkRaises];
+  const relaxed = full && raises.some((r) => r.tier === 2 && !r.ownerOnly);
+  const merit = Math.max(floor, instanceFloor, ...raises.map((r) => (full && r.tier === 2 && !r.ownerOnly ? 1 : r.tier)), priorVeto ? 2 : 0) as Tier;
   // The caps that hold, the routine's first (its label names it when both do).
   const caps = [routine && routine.cap !== "full" ? { by: "routine", value: routine.cap, ...(routine.routine ? { routine: routine.routine } : {}) } : undefined, autonomy === "off" ? { by: "autonomy", value: "off" } : undefined].filter(Boolean) as Cap[];
   const off = caps.find((c) => c.value === "off");
-  const out = { panel: panel || raise?.panel === true || checkRaises.some((r) => r.panel === true) };
+  const out = { panel: panel || relaxed || raises.some((r) => r.panel === true) };
   if (merit === 2) return { ...out, tier: 2, merit, reviewFirst: priorVeto ? "owner" : reviewFirst, state: priorVeto || reviewFirst ? "review" : "owner" };
   if (merit === 1 && caps[0]) return { ...out, tier: 2, merit, reviewFirst: "final", cap: caps[0], state: "review" };
   if (merit === 0 && off) return { ...out, tier: 2, merit, reviewFirst: null, cap: off, rule: off.by === "autonomy" ? "autonomy-off" : "routine-autonomy", state: "owner" };
@@ -52,8 +62,11 @@ export const T = (tier: number, rule: string, reason: string): Part => ({ tier, 
 export const REJECT = (rule: string, reason: string): Part => ({ tier: 2, rule, reason, reject: true });
 const same = (a: unknown, b: unknown) => String(a ?? "").toLowerCase() === String(b ?? "").toLowerCase();
 
-const rank = (p: Part) => p.tier * 2 + (p.panel ? 1 : 0);
-/** The highest part (a reject beats everything; Tier 1 with the panel beats plain Tier 1); no parts is Tier 2. */
+const rank = (p: Part) => p.tier * 4 + (p.ownerOnly ? 2 : 0) + (p.panel ? 1 : 0);
+/**
+ * The highest part (a reject beats everything; at Tier 2 the owner's own authority (`ownerOnly`) beats the rest, so a mixed
+ * request keeps it; Tier 1 with the panel beats plain Tier 1); no parts is Tier 2.
+ */
 export function highest(parts: Part[]): Part {
   if (!parts.length) return T(2, "unrecognised", "nothing recognised in the request");
   const top = parts.find((p) => p.reject) ?? parts.reduce((a, b) => (rank(b) > rank(a) ? b : a));
