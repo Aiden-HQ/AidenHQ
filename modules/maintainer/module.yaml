@@ -5,9 +5,14 @@ requires:
   - github
 roles:
   # product-issues (the chief of staff's): the Fleet Steward's product-bug reports, filed upstream as the GitHub App.
-  requests: [ product-issues, kernel.tasks ] # kernel.tasks: the issue watcher files a task per labelled or new issue
+  requests: [ product-issues, kernel.tasks, kernel.facts ] # kernel.tasks: the issue watcher files a task per labelled or new issue; kernel.facts: its issue.triaged fact
   declares:
     - { id: maintainer, description: "Issues as the GitHub App, on the repos in settings.maintainer_repos only (github-mcp github_app_* tools)." }
+# Flow (docs/design/flow.md): an issue is triaged when its fix label lands; the stage runs from the issue's creation.
+facts:
+  issue.triaged: { subject: issue }
+stages:
+  - { name: triage, label: Triage, from: issue.triaged, to: issue.triaged, start: issue_created_at }
 settings:
   # Whether unlabelled issues on the maintained repos are triaged: each new one within a watcher poll of its filing (a
   # task per issue), and the backlog by the daily run (the budget caps it).

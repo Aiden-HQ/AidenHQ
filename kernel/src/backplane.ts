@@ -45,6 +45,8 @@
 //                              of the kernel's work: a task's, one job, an agent's, the records and billed cost since a time, or what
 //                              runs and ended lately; Prometheus text (work.ts)
 //   GET  /v1/work[?task=|?job=|?agent=|?since=]  (the board) the same reads; never the metrics or a token
+//   GET  /v1/flow?task=|?item=|?idle=1|?since=[&to=&by=&scope=]  (the board, or a module with role kernel.flow-read) Flow's
+//                              views over the fact log (flow.ts): a task's or item's waterfall, idle now, the summary
 //   POST /v1/work/grader-token  (the one module with role kernel.grader) {task} -> a gateway
 //                              token billed to the task's assignee under its caps, for a task its finish check holds; one live token per task
 //   POST /v1/jobs/:job/post    (that job's module) {kind: reply|status|notice, body, status?, blocked_by?}: posted on the job's
@@ -68,6 +70,7 @@ import { pipeline } from "node:stream/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { timingSafeEqual } from "node:crypto";
 import type { Asserter } from "./assert.ts";
+import type { Facts } from "./facts.ts";
 import type { Brake } from "./brake.ts";
 import type { Checks } from "./checks.ts";
 import type { Lane } from "./lane.ts";
@@ -84,6 +87,7 @@ import { hostOf } from "./codehost.ts";
 import { fail } from "./proxy.ts";
 import type { Records, State } from "./records.ts";
 import type { Work } from "./work.ts";
+import { BY, type By, type Flow } from "./flow.ts";
 import type { Reviews } from "./reviews.ts";
 import { wakeNotice, type Wakes } from "./wakes.ts";
 import type { ModuleTasks } from "./modtasks.ts";
@@ -122,6 +126,7 @@ export const ROUTES = [
   { method: "POST", path: "/v1/notify", auth: "board" },
   { method: "GET", path: "/v1/notify/take", auth: "module" },
   { method: "POST", path: "/v1/notify/send", auth: "module" },
+  { method: "POST", path: "/v1/facts", auth: "module" },
   { method: "POST", path: "/v1/wakes/events", auth: "events-key" },
   { method: "POST", path: "/v1/wakes", auth: "module" },
   { method: "POST", path: "/v1/wakes/claim", auth: "module" },
@@ -142,6 +147,7 @@ export const ROUTES = [
   { method: "POST", path: "/v1/jobs/:job/ack", auth: "module" },
   { method: "GET", path: "/v1/work", auth: "module|board" },
   { method: "GET", path: "/v1/work/metrics", auth: "module" },
+  { method: "GET", path: "/v1/flow", auth: "module|board" },
   { method: "POST", path: "/v1/work/grader-token", auth: "module" },
   { method: "POST", path: "/v1/jobs/:job/post", auth: "module" },
   { method: "POST", path: "/v1/checks", auth: "module" },
@@ -187,7 +193,24 @@ function workRead(work: Work, p: URLSearchParams) {
   return task ? work.task(task.slice(0, 100)) : work.activity();
 }
 
-export function createBackplane({ whoami, asserter, proxy, cp, boardCp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, reviewerKey = () => "", jobs, codehost, admission, outcomes, wakes, tasks, eventsKey = () => "", work, repos = () => ({}), graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, checkJobs, jobTools, localBundle, ownerRaw, lane, healthProbe, healthKey = () => "", connectionHealth, settingsChange, routing, log = () => {} }: {
+const FACT_AT = /^\d{4}-\d\d-\d\dT[\d:.]+(Z|[+-]\d\d:\d\d)$/;
+const text = (v: unknown, max: number) => typeof v === "string" && v.length > 0 && v.length <= max;
+
+/** GET /v1/flow's reads, by query: ?task=, ?item=, ?idle=1, else the summary over ?since= (default 7 days) [&to=&by=&scope=]. */
+function flowRead(flow: Flow, p: URLSearchParams) {
+  const [task, item] = [p.get("task"), p.get("item")];
+  if (task) return flow.task(task.slice(0, 100));
+  if (item) return flow.item(item.slice(0, 100));
+  if (p.get("idle")) return flow.idleNow();
+  const since = p.get("since") ?? new Date(Date.now() - 7 * 864e5).toISOString(), to = p.get("to") ?? undefined, by = p.get("by") ?? "stage";
+  if (Number.isNaN(Date.parse(since)) || (to && Number.isNaN(Date.parse(to)))) throw fail(400, "bad_request", "since and to are ISO timestamps");
+  if (!(BY as string[]).includes(by)) throw fail(400, "bad_request", `by is one of ${BY.join(", ")}`);
+  return flow.summary({ since, to, by: by as By, scope: p.get("scope")?.slice(0, 100) || undefined });
+}
+
+export function createBackplane({ facts, whoami, asserter, proxy, cp, boardCp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, reviewerKey = () => "", jobs, codehost, admission, outcomes, wakes, tasks, eventsKey = () => "", work, flow, repos = () => ({}), graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, checkJobs, jobTools, localBundle, ownerRaw, lane, healthProbe, healthKey = () => "", connectionHealth, settingsChange, routing, log = () => {} }: {
+  /** Flow's fact log (facts.ts): POST /v1/facts. */
+  facts?: Facts;
   whoami: Whoami; asserter: Asserter; proxy: Handler; cp: Handler; boardCp?: Handler; grantsFile: () => { agents?: Record<string, Grant> } & Record<string, unknown>;
   writes?: Writes; records?: Records; boardKey?: () => string; log?: (msg: string, f?: Record<string, unknown>) => void;
   /** The reviewer slot, and the key a direct review request asks with (reviewer_key, which the board holds). */
@@ -214,6 +237,8 @@ export function createBackplane({ whoami, asserter, proxy, cp, boardCp, grantsFi
   tasks?: ModuleTasks;
   /** Reads of the work the kernel owns (work.ts). */
   work?: Work;
+  /** Flow's views over the fact log (flow.ts). */
+  flow?: Flow;
   /** The repos the instance reaches (codehostRepos in main.ts): GET /v1/agents hands them to modules. */
   repos?: () => Record<string, unknown>;
   /** A grader-kind gateway token for a task (the kernel is the only minter). */
@@ -265,6 +290,52 @@ export function createBackplane({ whoami, asserter, proxy, cp, boardCp, grantsFi
       switch (hit && `${hit.method} ${hit.path}`) {
         case "GET /healthz": return void res.writeHead(200, { "content-type": "text/plain" }).end("ok");
         case "GET /v1/jwks": return send(res, 200, asserter.jwks);
+        case "POST /v1/facts": {
+          const w = await moduleOf(req);
+          if (!w.roles.includes("kernel.facts")) throw fail(403, "forbidden", `${w.module} may not record facts (role kernel.facts)`);
+          if (!facts || !records) throw fail(503, "unavailable", "the fact log is off");
+          const b = await json(req, 5_000_000);
+          if (!Array.isArray(b.facts) || b.facts.length > 500) throw fail(400, "bad_request", "send {facts: [...]} of at most 500");
+          const declared = modules().modules?.[w.module!]?.facts ?? {};
+          // All are checked before any is recorded: a bad fact refuses the batch, and the rest are recorded in one transaction.
+          const t = Date.now();
+          for (const f of b.facts) {
+            if (!f || !text(f.type, 80) || !text(f.subject, 300) || !text(f.version, 300) || typeof f.at !== "string" || !FACT_AT.test(f.at) || Number.isNaN(Date.parse(f.at))) throw fail(400, "bad_request", "each fact is {type, subject, version, at (ISO), task?, data?}");
+            if (!Object.hasOwn(declared, f.type)) throw fail(403, "forbidden", `${w.module} did not declare fact ${f.type} (module.yaml facts:)`);
+            if (Date.parse(f.at) > t + 864e5) throw fail(400, "bad_request", `fact ${f.type} is dated more than a day ahead`);
+            if (f.data !== undefined && (!f.data || typeof f.data !== "object" || Array.isArray(f.data) || Buffer.byteLength(JSON.stringify(f.data)) > 4096)) throw fail(400, "bad_request", `fact ${f.type}: data is an object of at most 4096 bytes`);
+            const d = declared[f.type] ?? {};
+            if (d.subject && !f.subject.startsWith(`${d.subject}:`)) throw fail(400, "bad_request", `fact ${f.type}'s subject is a ${d.subject}: (module.yaml facts:)`);
+            if (f.data?.reason !== undefined && !(d.reasons ?? []).includes(String(f.data.reason))) throw fail(400, "bad_request", `fact ${f.type}: reason ${String(f.data.reason).slice(0, 40)} isn't declared (module.yaml facts:)`);
+          }
+          // The actor is the kernel's call, never the body's: the agent whose job (data.job) or PR (its code host record's requester) it
+          // is, only when that job or record is the calling module's own; else the module itself.
+          const agentOf = (id: unknown) => { try { const a = (records.db.prepare("SELECT agent FROM jobs WHERE id = ? AND module = ?").get(String(id), w.module!) as { agent: string } | undefined)?.agent; const key = a && (grantsFile().agents ?? {})[a]?.key; return key ? `agent:${key}` : undefined; } catch { return undefined; } };
+          const prAgent = (subject: string, task: unknown) => {
+            const repo = /^pr:([^#]+)#/.exec(subject)?.[1];
+            if (!repo || typeof task !== "string") return undefined;
+            const r = records.list(["approved", "claimed", "done", "failed"], 50, { task }).find((x) => x.module === w.module && /^codehost-[a-z0-9-]+\.pr$/.test(x.kind) && ((x.args as { only?: { repo?: string }[] } | null)?.only ?? []).some((o) => o.repo === repo));
+            return r?.requester.key ? `agent:${r.requester.key}` : undefined;
+          };
+          let recorded = 0;
+          // Facts older than the log keeps (facts.ts prune, 400 days) would be pruned at once: skipped, not refused (a history backfill).
+          const kept = t - 400 * 864e5;
+          records.db.exec("BEGIN IMMEDIATE");
+          try {
+            for (const f of b.facts) {
+              if (Date.parse(f.at) < kept) continue;
+              const data = f.data ?? {};
+              const actor = (data.job != null ? agentOf(data.job) : undefined) ?? (f.subject.startsWith("pr:") ? prAgent(f.subject, f.task) : undefined) ?? `module:${w.module}`;
+              // The module's name is part of the version (so of the id): two modules declaring one type can never pre-empt each other's facts.
+              if (facts.record({ type: f.type, subject: f.subject, version: `${w.module}/${f.version}`, at: f.at, actor, ...(typeof f.task === "string" && f.task ? { task: f.task.slice(0, 100) } : {}), source: f.source === "backfill" ? "backfill" : "live", data })) recorded++;
+            }
+            records.db.exec("COMMIT");
+          } catch (e) {
+            records.db.exec("ROLLBACK");
+            throw e;
+          }
+          return send(res, 200, { recorded });
+        }
         case "GET /v1/whoami": {
           const w = await whoami(bearer(req)).catch((e: Error) => { throw fail(401, "unauthorized", e.message); });
           return send(res, 200, { kind: w.kind, ...(w.agent ? { agent: w.agent } : {}), roles: w.roles, ...(w.task ? { task: w.task } : {}), ...(w.run ? { run: w.run } : {}), ...(w.module ? { module: w.module } : {}), tools: w.tools });
@@ -489,6 +560,11 @@ export function createBackplane({ whoami, asserter, proxy, cp, boardCp, grantsFi
       if (hit && /^\/v1\/(auth|accounts|apps|operator)\/:op$/.test(hit.path)) {
         if (!accounts) throw fail(503, "unavailable", "accounts are off");
         return await accounts(req, res, hit.path.split("/")[2]!, m[0]!);
+      }
+      if (hit?.path === "/v1/flow") {
+        if (!isBoard(req)) { const w = await moduleOf(req); if (!w.roles.includes("kernel.flow-read")) throw fail(403, "forbidden", `${w.module} may not read flow (role kernel.flow-read)`); }
+        if (!flow) throw fail(503, "unavailable", "flow reads are off");
+        return send(res, 200, flowRead(flow, new URLSearchParams(q ?? "")));
       }
       if (hit?.path === "/v1/work" && isBoard(req)) {
         if (!work) throw fail(503, "unavailable", "work reads are off");

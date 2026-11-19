@@ -1,5 +1,5 @@
 // Quality per approval tier, read-only: how many agent changes each approver let through over 7 and 30 days, and how many were
-// reverted or tied to an incident (services/board/src/quality.ts has the matching rules; the board's fleet_status carries the
+// reverted or tied to an incident (kernel/sdk/src/quality.ts has the matching rules; the board's fleet_status carries the
 // same line for Fleet Ops' weekly review).
 //   node scripts/quality.mjs [--db <kernel.db>] [--github <file.json>] [--json]
 // Records come from kernel.db (opened read-only). Reverts and incidents from GitHub come from `gh` (the repos the changes
@@ -10,7 +10,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
-import { changesFrom, oneLine, render, report } from "../services/board/src/quality.ts";
+import { changesFrom, oneLine, render, report } from "../kernel/sdk/src/quality.ts";
 
 const flag = (n) => { const i = process.argv.indexOf(`--${n}`); return i < 0 ? undefined : process.argv[i + 1] ?? ""; };
 const repoDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");

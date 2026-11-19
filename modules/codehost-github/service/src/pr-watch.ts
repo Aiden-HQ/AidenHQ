@@ -9,6 +9,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { namedChecks } from "./aidenhq-sdk/checks.ts";
+import type { Flow } from "./flow.ts";
 
 type Json = any;
 type Gh = (method: string, path: string, token: string, body?: unknown) => Promise<{ status: number; body: any }>;
@@ -17,6 +18,8 @@ export type PrWatchOptions = {
   repo: string; kernelUrl: string; /** The module's own token (kernel.tasks, kernel.wake). */ key: string; cacheDir: string;
   app: { token(org: string, o: { repositories?: string[]; permissions?: Record<string, string> }): Promise<string> };
   gh: Gh; log?: (msg: string, f?: Record<string, unknown>) => void;
+  /** Flow facts: CI done on the head of an agent's PR. */
+  flow?: Flow;
 };
 
 const WATCH = { contents: "read", pull_requests: "read", checks: "read", statuses: "read", metadata: "read" };
@@ -106,6 +109,14 @@ export function startPrWatch(o: PrWatchOptions) {
     for (const pr of open) {
       const url = pr.url.toLowerCase();
       const opener = opened[url];
+      // Flow: CI on an agent's PR head is over once its named checks have all finished (seen here, once per head).
+      state.checked ??= {};
+      const named = namedChecks(rollupOf(pr));
+      if (o.flow && opener?.branch === pr.headRefName && named.length && !named.some((c) => c.pending) && state.checked[url] !== pr.headRefOid) {
+        state.checked[url] = pr.headRefOid;
+        o.flow.checksCompleted(o.repo, pr.number, pr.headRefOid, named.filter((c) => !c.ok).map((c) => c.name).slice(0, 20), undefined, opener.task);
+        save();
+      }
       // Only an agent's own PR, by the task that opened it: a reused PR number (a recreated repository) belongs to nobody here.
       if (isDependabot(pr) || pr.isCrossRepository !== false || !opener || opener.branch !== pr.headRefName) continue;
       const why = rebaseReason(pr, main.rollup);

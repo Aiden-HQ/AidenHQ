@@ -23,7 +23,7 @@ test("a kernel job's graded task is graded, reopened with the unmet criterion, t
   t.after(() => gateway.close());
 
   const issue = { id: "t1", identifier: "WOR-1", title: "report", description: "Report on Legacy.", status: "in_review", companyId: "co", assigneeAgentId: "eng", createdByAgentId: "cos", parentId: null };
-  const calls = { resolve: [], wake: [] };
+  const calls = { resolve: [], wake: [] }, facts = [];
   const kernel = async (method, path, body) => {
     if (path === "/v1/cp/read/api/issues/t1") return issue;
     if (path === "/v1/cp/read/api/issues/t1/comments") return [{ id: "c1", authorType: "agent", authorAgentId: "eng", body: "Legacy is used in acme/app and acme/lib; next step: port app.", createdAt: "2026-11-18T09:00:00Z" }];
@@ -39,7 +39,7 @@ test("a kernel job's graded task is graded, reopened with the unmet criterion, t
   const db = new DatabaseSync(":memory:");
   const { runner, grades } = createGrading({ db, kernel: { issue: async () => issue, settings: async () => ({}), release: async () => {} }, keys: { check: "c", runner: "r", board: "b" } });
   grades.file("t1", ["says where Legacy is used", "links each source", "names the next step"], { kind: "report", ref: "" });
-  const loop = createKernelGradeLoop({ db, runner, due: () => ({ grades: grades.due(), resubmitted: [] }), kernel, kernelBytes: async () => { throw new Error("no attachment bytes"); }, apps: async () => { throw new Error("no apps"); }, gatewayUrl: `http://127.0.0.1:${gateway.address().port}`, log: () => {} });
+  const loop = createKernelGradeLoop({ db, runner, due: () => ({ grades: grades.due(), resubmitted: [] }), kernel, kernelBytes: async () => { throw new Error("no attachment bytes"); }, apps: async () => { throw new Error("no apps"); }, gatewayUrl: `http://127.0.0.1:${gateway.address().port}`, log: () => {}, emit: (f) => facts.push(f) });
 
   completionGate(grades, "t1", "finish_turn"); // the agent finished: the gate holds the task and the row waits for the grader
   // A just-filed row waits 5 s for a bridge close's comment; the clock moves past it.
@@ -59,6 +59,12 @@ test("a kernel job's graded task is graded, reopened with the unmet criterion, t
   await loop.runGrades();
   assert.deepEqual(calls.resolve.map((c) => c.verdict), ["reopen", "ok"]);
   assert.equal(grades.get("t1").state, "satisfied");
+  // Flow: each attempt is a requested/verdict pair on its own subject, and the reopen is a grade_retry wait that the next attempt ends.
+  assert.deepEqual(facts.map((f) => [f.type, f.subject, f.version, f.data.pass ?? f.data.reason]), [
+    ["grade.requested", "grade:t1:1", "1", undefined], ["grade.verdict", "grade:t1:1", "1", false], ["work.waiting", "task:t1", "1", "grade_retry"],
+    ["work.resumed", "task:t1", "1", "grade_retry"], ["grade.requested", "grade:t1:2", "2", undefined], ["grade.verdict", "grade:t1:2", "2", true],
+  ]);
+  assert.ok(facts.every((f) => f.task === "t1"));
 });
 
 test("a graded PR task's PR is read through the broker's token and graded; a PR GitHub cannot be read holds the row", async (t) => {

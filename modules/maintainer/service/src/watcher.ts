@@ -18,6 +18,7 @@
  * issue is left to the daily triage run.
  */
 import { readFileSync } from "node:fs";
+import type { FactIn } from "./aidenhq-sdk/kernel-client.ts";
 
 const MIN = 60_000;
 const STATE_KEY = "maintainer_issues";
@@ -30,6 +31,9 @@ export interface MaintainerIssue {
   trusted: boolean;
   labeled_at?: string;
   actor?: string;
+  /** The issue's own creation time and label names, for Flow's triage fact (absent from an older github-mcp). */
+  created_at?: string;
+  labels?: string[];
 }
 /** One repo's answer: its issues since its cursor and the new cursor, or why it couldn't be read; and, when asked, its new
  * unlabelled issues (oldest first) and their cursor, or why those couldn't be read. */
@@ -49,7 +53,8 @@ export interface MaintainerBatch {
 /** The watcher's one state value (main.ts keeps it in a file). */
 type Kv = { meta(key: string): string | undefined; setMeta(key: string, value: string): void };
 type Issues = (cursors: Record<string, string>, triage?: Record<string, string>) => Promise<MaintainerBatch>;
-type Fire = (repo: string, issue: MaintainerIssue) => Promise<boolean>;
+/** True or the filed task ({ id }) when the task is filed (or already was); false when refused. */
+type Fire = (repo: string, issue: MaintainerIssue) => Promise<boolean | { id: string }>;
 type Triage = (repo: string, number: number) => Promise<boolean>;
 type Log = { info(o: object, m: string): void; warn(o: object, m: string): void };
 
@@ -91,7 +96,7 @@ export interface TriageLimits {
 }
 const DAY = 24 * 60 * MIN;
 
-export async function maintainerTick(d: { issues: Issues; fire: Fire; triage?: Triage; limits?: TriageLimits; store: Kv; log: Log }): Promise<number> {
+export async function maintainerTick(d: { issues: Issues; fire: Fire; triage?: Triage; limits?: TriageLimits; store: Kv; log: Log; /** Flow facts (FactEmitter.emit). */ emit?: (f: FactIn) => void }): Promise<number> {
   const state = readState(d.store);
   const repos: Record<string, RepoState> = { ...(state.repos ?? {}) };
   const save = (error?: string) => d.store.setMeta(STATE_KEY, JSON.stringify({ repos, ...(error ? { error } : {}) }));
@@ -130,6 +135,11 @@ export async function maintainerTick(d: { issues: Issues; fire: Fire; triage?: T
       }
       if (fired.has(issue.number)) continue;
       const ok = await d.fire(b.repo, issue).catch(() => false);
+      if (ok) {
+        // Flow: the issue is triaged when its fix label lands (the time github-mcp read from its label events); the filed task is its item's root.
+        d.emit?.({ type: "issue.triaged", subject: `issue:${b.repo}#${issue.number}`, version: "1", at: issue.labeled_at ?? new Date().toISOString(), task: typeof ok === "object" ? ok.id : undefined,
+          data: { issue_url: `https://github.com/${b.repo}/issues/${issue.number}`, issue_created_at: issue.created_at, labels: issue.labels ?? [], trusted: issue.trusted } });
+      }
       if (!ok) {
         d.log.warn({ repo: b.repo, issue: issue.number }, "maintainer task not filed; the next tick retries it");
         // No cursor move: the next tick asks for the same window and retries only what was not delivered.
@@ -204,13 +214,13 @@ export function maintainerIssues(env: NodeJS.ProcessEnv = process.env): Issues |
  * Undefined until the module's token file has its content: the watcher is then off, rather than failing every tick.
  * `graded`: the task's deliverable and rubric, which the kernel files with the grader: its finish waits for them.
  */
-function fileTask(env: NodeJS.ProcessEnv, title: string, description: string, source: string, graded?: { deliverable: unknown; rubric: string[] }): Promise<boolean> {
+function fileTask(env: NodeJS.ProcessEnv, title: string, description: string, source: string, graded?: { deliverable: unknown; rubric: string[] }): Promise<false | { id: string }> {
   const url = `${(env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130").replace(/\/+$/, "")}/v1/tasks`;
   return fetch(url, {
     method: "POST", signal: AbortSignal.timeout(15_000),
     headers: { authorization: `Bearer ${token(env)}`, "content-type": "application/json" },
     body: JSON.stringify({ title, description, role: "maintainer", source, ...graded }),
-  }).then((r) => r.ok);
+  }).then(async (r) => (r.ok ? { id: String(((await r.json().catch(() => ({}))) as { id?: string }).id ?? "") } : false));
 }
 const token = (env: NodeJS.ProcessEnv) => {
   try { return env.MAINTAINER_TOKEN_FILE ? readFileSync(env.MAINTAINER_TOKEN_FILE, "utf8").trim() : ""; } catch { return ""; }
@@ -244,7 +254,7 @@ export function triageLimits(env: NodeJS.ProcessEnv = process.env): TriageLimits
   return { perAuthor: n(env.MAINTAINER_TRIAGE_PER_AUTHOR_DAY, 3), perRepo: n(env.MAINTAINER_TRIAGE_PER_REPO_DAY, 30) };
 }
 
-type Wiring = { issues: Issues; fire: Fire; triage?: Triage; limits?: TriageLimits };
+type Wiring = { issues: Issues; fire: Fire; triage?: Triage; limits?: TriageLimits; emit?: (f: FactIn) => void };
 
 /**
  * Starts the watcher (main.ts). `wiring` is asked on every tick, so a token the kernel writes after this service started is

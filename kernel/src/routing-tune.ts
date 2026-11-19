@@ -21,6 +21,7 @@ import { routingDiff, type Leaf } from "./apply-tier.ts";
 import { canonical, type Rec, type Records, type Requester } from "./records.ts";
 import { yamlText } from "./settings-change.ts";
 import { DEFAULT_WEIGHTS, pickMember, type Candidate, type Weights } from "./team-routing.ts";
+import { openFacts } from "./facts.ts";
 import type { RouteSnapshot } from "./wakes.ts";
 
 export class Refused extends Error { status = 422; }
@@ -104,7 +105,7 @@ export function createRouting(d: RoutingDeps) {
   const { db } = d;
   const now = d.now ?? Date.now;
   db.exec(DDL);
-  db.exec("CREATE TABLE IF NOT EXISTS events (id TEXT PRIMARY KEY, type TEXT NOT NULL, at TEXT NOT NULL, data TEXT NOT NULL)");
+  openFacts(db); // the finish verdicts it counts
   const q = (sql: string) => db.prepare(sql);
   const keyOf = (id: string | null) => (id ? (d.grants()[id]?.key ?? id) : null);
   /** The team's name in instance.yaml and its record's key (team_routes.team) both ways. */
@@ -124,7 +125,7 @@ export function createRouting(d: RoutingDeps) {
         status: t.status === 200 ? String(t.json?.status ?? "unknown") : "missing",
         cycle_hours: done ? Math.round(((Date.parse(t.json.completedAt) - r.at) / 3_600_000) * 100) / 100 : null,
         reopens: (q("SELECT COUNT(*) AS n FROM wakes WHERE task = ? AND cause = 'reopen'").get(r.task) as { n: number }).n,
-        gate_reopens: (q("SELECT COUNT(*) AS n FROM events WHERE type = 'finish.verdict' AND json_extract(data, '$.task') = ? AND json_extract(data, '$.verdict') = 'reopen'").get(r.task) as { n: number }).n,
+        gate_reopens: (q("SELECT COUNT(*) AS n FROM facts WHERE type = 'finish.verdict' AND actor = 'kernel' AND task = ? AND json_extract(data, '$.verdict') = 'reopen'").get(r.task) as { n: number }).n,
       });
     }
     return out;

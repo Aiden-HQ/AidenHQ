@@ -138,7 +138,9 @@ interface WorkRecord { task: string | null; identifier: string | null; judged?: 
 const HOUR_MS = 60 * MIN;
 const REJECT_LOOP = { n: 3, windowMs: 6 * HOUR_MS }; // n = the kernel's MAX_REJECTS (tier.ts): the point where a branch is parked
 const REPEAT_FAILS = { n: 3, spanMs: 30 * MIN, freshMs: HOUR_MS }; // same category on one task within spanMs, the newest within freshMs
-const UNCLOSED_MS = 6 * HOUR_MS; // in review with nothing left running, filed, or open
+const IDLE_MS = 120 * MIN; // an orphaned item (nothing running, filed or waiting on it) idle this long is stuck
+const FLOW_RISE = 1.5; // a stage's p75 or wait share this much over last week's (observe mode)
+const FLOW_MIN_N = 10;
 const STALE_FOLLOWUP_MS = 3 * DAY_MS;
 const SILENT_MS = 15 * MIN; // an owner message on a chat task with no reply
 const SILENT_LOOKBACK_MS = 6 * HOUR_MS; // older than this, the owner has long since seen the silence
@@ -201,13 +203,6 @@ export function rejectLoops(records: WorkRecord[], t: number): { task: string; i
   return [...by.values()].filter((x) => x.n >= REJECT_LOOP.n);
 }
 
-/** Open PRs and issue references a task's records name (repo#number), for "has an open PR". */
-const prRefs = (records: { args?: any; outcome_text?: string | null }[]): string[] =>
-  records.flatMap((r) => [
-    ...((r.args?.prs ?? []) as { repo?: string; number?: number }[]).filter((p) => p?.repo && p?.number !== undefined).map((p) => `${p.repo}#${p.number}`.toLowerCase()),
-    ...[...String(r.outcome_text ?? "").matchAll(/github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d+)/g)].map((m) => `${m[1]}#${m[2]}`.toLowerCase()),
-  ]);
-
 /** The owner's own typed words on a chat task (not a relayed notice, the kernel's, or deleted). */
 const ownerWords = (c: CommentRow) => c.authorType === "user" && !c.deletedAt && !/<!-- aidenhq-/.test(String(c.body));
 
@@ -224,8 +219,21 @@ export function rankFollowups(issues: IssueRow[], t: number, top = 10, snoozed: 
     .map((i) => ({ task: i.identifier ?? i.id, title: String(i.title ?? "").slice(0, 120), priority: i.priority ?? "medium", idle_days: Math.floor(age(i.updatedAt, t) / DAY_MS), options: ["snooze 7d", "close", "delegate"] }));
 }
 
+
+type FlowStage = { name: string; n: number; work_p75?: number; wait_p75?: number; work_p50?: number; wait_p50?: number; waits?: Record<string, number> };
+const p75 = (s: FlowStage) => (s.work_p75 ?? 0) + (s.wait_p75 ?? 0);
+const waitShare = (s: FlowStage) => { const w = Object.values(s.waits ?? {}).reduce((a, b) => a + b, 0); const work = (s.work_p50 ?? 0) * s.n; return w + work > 0 ? w / (w + work) : 0; };
+/** Stages whose p75 or wait share rose more than 50% over the week before, with n >= 10 in both weeks: what the `flow` group would file (observe mode: logged, never filed). */
+export function slowerStages(now: FlowStage[], before: FlowStage[]): string[] {
+  const prev = new Map(before.map((s) => [s.name, s]));
+  return now.filter((s) => {
+    const b = prev.get(s.name);
+    return b && s.n >= FLOW_MIN_N && b.n >= FLOW_MIN_N && ((p75(b) > 0 && p75(s) > FLOW_RISE * p75(b)) || (waitShare(b) > 0 && waitShare(s) > FLOW_RISE * waitShare(b)));
+  }).map((s) => s.name);
+}
+
 /** The owner's alert list, as checks. `apps` reads apps-mcp (a module holding apps.read); `alerts` is Alertmanager's list. */
-export function checks(d: { kernel: KernelClient; apps: <T>(path: string) => Promise<T>; alerts: () => Promise<Incident[]>; openKeys: () => string[]; notify?: (text: string, key: string) => Promise<void>; gradeFailures: () => Promise<{ task: string; at: string; reason: string }[]>; now?: () => number }): Record<string, Check> {
+export function checks(d: { kernel: KernelClient; apps: <T>(path: string) => Promise<T>; alerts: () => Promise<Incident[]>; openKeys: () => string[]; notify?: (text: string, key: string) => Promise<void>; gradeFailures: () => Promise<{ task: string; at: string; reason: string }[]>; now?: () => number; log?: (msg: string, f?: Record<string, unknown>) => void }): Record<string, Check> {
   const now = d.now ?? (() => Date.now());
   let appsOkAt = now(); // apps-mcp's last answer: a restart (an apply) is not an outage
   const companies = async () => (await d.kernel.read("/api/companies")) as Company[];
@@ -320,18 +328,23 @@ export function checks(d: { kernel: KernelClient; apps: <T>(path: string) => Pro
         const held = (await d.kernel.read(`/api/companies/${c.id}/issues?labelId=${label.id}&status=in_review&limit=100&excludeRoutineExecutions=true`)) as IssueRow[];
         for (const i of held.filter((x) => age(x.updatedAt, t) > DAY_MS && !suppressed(x.id, `grade:${x.id}`))) out.push({ key: i.id, reason: `task ${i.identifier ?? i.id} held for grading for ${mins(age(i.updatedAt, t))}` });
       }
-      // Finished but not closed: in review 6 hours, and nothing left that could move it (no job, no open card, no open PR).
-      const prs = new Set(((await d.apps<{ prs?: PrRow[] }>("/internal/open-prs").catch(() => ({}) as { prs?: PrRow[] })).prs ?? []).map((p) => `${p.repo}#${p.number}`.toLowerCase()));
-      const parked: IssueRow[] = [];
-      for (const c of await companies()) parked.push(...((await d.kernel.read(`/api/companies/${c.id}/issues?status=in_review&limit=100&excludeRoutineExecutions=true`)) as IssueRow[]));
-      const candidates = parked.filter((i) => age(i.updatedAt, t) >= UNCLOSED_MS && !exempt(i) && !(i.labels ?? []).some((l) => l?.name === "grading")).sort((a, b) => Date.parse(a.updatedAt) - Date.parse(b.updatedAt)).slice(0, 40);
-      for (const i of candidates) {
-        const w = await d.kernel.call("GET", `/v1/work?task=${encodeURIComponent(i.id)}`).catch(() => undefined) as { busy?: boolean; records?: { state: string; args?: unknown; outcome_text?: string | null }[] } | undefined;
-        if (!w || w.busy) continue;
-        const open = (w.records ?? []).some((r) => ["review", "owner", "approved", "claimed"].includes(r.state));
-        if (!open && !prRefs(w.records ?? []).some((r) => prs.has(r)) && !suppressed(i.id, `grade:${i.id}:unclosed`)) out.push({ key: `${i.id}:unclosed`, reason: `task ${i.identifier ?? i.id} in review for ${mins(age(i.updatedAt, t))} with no running job, open card or open PR` });
-      }
       return out;
+    },
+    // Orphaned work: Flow's idle list (nothing running, filed or waiting on the item), over 2 hours. The one stuck-work rule.
+    async stuck() {
+      const t = now();
+      const out: Incident[] = [];
+      const items = ((await d.kernel.call("GET", "/v1/flow?idle=1")).items ?? []) as { task: string; identifier: string | null; since: string; reason: string }[];
+      for (const i of items.filter((x) => x.reason === "orphaned" && age(x.since, t) > IDLE_MS && !exempt({ identifier: x.identifier, originKind: null }) && !suppressed(x.task, `stuck:${x.task}`))) out.push({ key: i.task, reason: `task ${i.identifier ?? i.task} idle for ${mins(age(i.since, t))} with nothing running, filed or waiting on it (${slug(i.reason)})` });
+      return out;
+    },
+    // Observe mode (docs/design/flow.md): a stage that got slower week over week is logged as what it would file; nothing is filed until promoted.
+    async flow() {
+      const t = now();
+      const q = (a: number, b: number) => `/v1/flow?since=${encodeURIComponent(new Date(t - a * DAY_MS).toISOString())}&to=${encodeURIComponent(new Date(t - b * DAY_MS).toISOString())}`;
+      const [cur, prev] = (await Promise.all([d.kernel.call("GET", q(7, 0)), d.kernel.call("GET", q(14, 7))])).map((r) => (r.stages ?? []) as FlowStage[]);
+      for (const name of slowerStages(cur!, prev!)) d.log?.("flow.would_file", { stage: name });
+      return [];
     },
     // The AI reviewer rejecting the same branch again and again (the kernel parks it at 3; nobody hears of the park).
     async loop() {

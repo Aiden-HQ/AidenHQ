@@ -9,6 +9,8 @@
 // timeout) stays pending, and the retry asks the plugin to look for the tagged write first, so it never posts twice.
 import type { DatabaseSync } from "node:sqlite";
 import type { Finish } from "./checks.ts";
+import { factWriter, iso } from "./factlog.ts";
+import type { Facts } from "./facts.ts";
 import { createOnce } from "./once.ts";
 import type { Provenance } from "./provenance.ts";
 import { signature } from "../../services/paperclip-events/sign.js";
@@ -74,8 +76,10 @@ export function createPluginPost({ controlUrl, agentKey, postKey, timeoutMs = 30
 }
 export type PluginPost = ReturnType<typeof createPluginPost>;
 
-export function createOutcomes({ db, plugin, delegates, finish, provenance, relay, log = () => {} }: {
+export function createOutcomes({ db, plugin, delegates, finish, provenance, relay, facts, agentKey = (id) => id, log = () => {} }: {
   db: DatabaseSync; plugin: PluginPost;
+  /** Flow's fact log (facts.ts): task.commented for each comment an agent's outcome posts, and an agent's key for its actor. */
+  facts?: Facts; agentKey?: (agent: string) => string;
   /** The ids of the agents an agent may hand a child task to (grants `delegate_to`). */
   delegates: (agent: string) => Promise<string[]>;
   /** The finish gate (checks.ts): a `done` that doesn't pass is posted without its status. */
@@ -87,6 +91,7 @@ export function createOutcomes({ db, plugin, delegates, finish, provenance, rela
   log?: (msg: string, f?: Record<string, unknown>) => void;
 }) {
   const once = createOnce(db);
+  const fact = factWriter(facts, log);
   // Outcomes posted before the one table (job, kind) carry over.
   if (db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'posted'").get()) db.exec(`INSERT OR IGNORE INTO pc_writes (key, result, at) SELECT '<!-- aidenhq:job=' || job || ' kind=' || kind || ' -->', CASE WHEN comment IS NULL THEN NULL ELSE json_object('comment', comment, 'status', status) END, at FROM posted; DROP TABLE posted`);
 
@@ -112,6 +117,7 @@ export function createOutcomes({ db, plugin, delegates, finish, provenance, rela
       if (r.status >= 300 || !data || data.refused) throw new OutcomeError(r.status >= 300 ? 502 : 422, "refused", data?.refused ?? `the post action answered ${r.status}`);
       if (req.child && data.child) provenance.record(data.child, origin);
       log("outcome posted", { job: job.id, kind: req.kind, task: job.task, status: data.status ?? null, ...(gate && !gate.pass ? { finish: "held" in gate ? "held" : "reopened" } : {}) });
+      if (data.comment) fact({ type: "task.commented", subject: `task:${job.task}`, version: String(data.comment), at: iso(Date.now()), actor: `agent:${agentKey(job.agent)}`, task: job.task, data: { kind: req.kind, job: job.id } });
       // Once, with the post: a reply also goes to the channel the owner wrote from.
       if (req.kind === "reply" && relay) await relay(job, req.body).catch((e: Error) => log("reply relay failed", { job: job.id, task: job.task, err: e.message }));
       return { comment: data.comment, status: data.status ?? null, ...(gate ? { finish: gate } : {}) };

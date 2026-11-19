@@ -85,10 +85,10 @@ test("a labelled issue files one task for the maintainer role, keyed by its sour
   const dir = mkdtempSync(join(tmpdir(), "maintainer-"));
   writeFileSync(join(dir, "token"), "t".repeat(32));
   const sent = [];
-  mock.method(globalThis, "fetch", async (u, init) => (sent.push({ u, init }), new Response("{}", { status: 201 })));
+  mock.method(globalThis, "fetch", async (u, init) => (sent.push({ u, init }), new Response(JSON.stringify({ id: "task-12" }), { status: 201 })));
   try {
     const env = { MAINTAINER_TOKEN_FILE: join(dir, "token"), AIDENHQ_KERNEL_URL: "http://kernel:3130/" };
-    assert.equal(await maintainerWake(env)(R, issue(12)), true);
+    assert.deepEqual(await maintainerWake(env)(R, issue(12)), { id: "task-12" });
     assert.equal(sent[0].u, "http://kernel:3130/v1/tasks");
     assert.equal(sent[0].init.headers.authorization, `Bearer ${"t".repeat(32)}`);
     const body = JSON.parse(sent[0].init.body);
@@ -96,7 +96,7 @@ test("a labelled issue files one task for the maintainer role, keyed by its sour
     assert.match(body.description, new RegExp(`^${R}#12\n`));
     assert.doesNotMatch(JSON.stringify(body), /Issue 12/, "the issue's own title never reaches the task");
     assert.deepEqual([body.deliverable, body.rubric.length], [{ kind: "issue", ref: `${R}#12` }, 3], "the labelled-issue task is graded on its issue");
-    assert.equal(await maintainerTriageWake(env)(R, 9), true);
+    assert.deepEqual(await maintainerTriageWake(env)(R, 9), { id: "task-12" });
     assert.equal(JSON.parse(sent[1].init.body).source, `maintainer-triage:${R}#9`);
     assert.equal(JSON.parse(sent[1].init.body).rubric, undefined, "a triage task has its verdict line, not an issue to resolve");
   } finally {
@@ -166,4 +166,14 @@ test("external triage off gives no triage wake", () => {
   const dir = mkdtempSync(join(tmpdir(), "maintainer-"));
   writeFileSync(join(dir, "token"), "t".repeat(32));
   assert.equal(maintainerTriageWake({ MAINTAINER_TOKEN_FILE: join(dir, "token"), MAINTAINER_EXTERNAL_TRIAGE: "false" }), undefined);
+});
+
+test("a filed labelled issue emits issue.triaged at its label time, on the filed task", async () => {
+  const facts = [], store = kv();
+  const labelled = { ...issue(7), labeled_at: "2026-01-02T03:04:05Z", created_at: "2026-01-01T00:00:00Z", labels: ["fix"] };
+  const run = () => maintainerTick({ issues: one([{ issues: [labelled, issue(8, false)], cursor: "c1" }]), fire: async () => ({ id: "task-7" }), store, log: logs(), emit: (f) => facts.push(f) });
+  await run();
+  await run();
+  assert.deepEqual(facts, [{ type: "issue.triaged", subject: `issue:${R}#7`, version: "1", at: "2026-01-02T03:04:05Z", task: "task-7",
+    data: { issue_url: `https://github.com/${R}/issues/7`, issue_created_at: "2026-01-01T00:00:00Z", labels: ["fix"], trusted: true } }]);
 });

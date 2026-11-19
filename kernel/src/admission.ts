@@ -7,6 +7,8 @@ import { randomBytes } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { CODEHOSTS } from "./codehost.ts";
 import { heldRoles, rolesOf } from "./identity.ts";
+import { factWriter, iso } from "./factlog.ts";
+import type { Facts } from "./facts.ts";
 import { JobError } from "./jobs.ts";
 import type { JobTools } from "./jobtools.ts";
 import type { RoutineCap } from "./tier.ts";
@@ -38,7 +40,7 @@ export type Authority = {
   web: boolean;
 };
 /** A wake in the inbox (wakes.ts): the task and agent it is for and why (`routine:<key>` names the routine whose run it is). */
-export type Wake = { task: string; agent: string; cause: string };
+export type Wake = { task: string; agent: string; cause: string; at?: number };
 export type Wakes = {
   /** The wake, if this module claimed it and no job is bound to it yet. Synchronous: it runs inside the admission transaction. */
   claimed(module: string, key: string): Wake | undefined;
@@ -50,7 +52,7 @@ export type Wakes = {
 
 /** The kernel's wake inbox (wakes.ts's table) as admission uses it. */
 export const wakeInbox = (db: DatabaseSync): Wakes => ({
-  claimed: (module, key) => db.prepare("SELECT task, agent, cause FROM wakes WHERE key = ? AND state = 'claimed' AND claimed_by = ? AND job IS NULL").get(key, module) as Wake | undefined,
+  claimed: (module, key) => db.prepare("SELECT task, agent, cause, at FROM wakes WHERE key = ? AND state = 'claimed' AND claimed_by = ? AND job IS NULL").get(key, module) as Wake | undefined,
   bind: (key, job) => { db.prepare("UPDATE wakes SET job = ? WHERE key = ?").run(job, key); },
   unclaim: (key) => { db.prepare("UPDATE wakes SET job = NULL, until = 0 WHERE key = ?").run(key); },
 });
@@ -60,7 +62,9 @@ export type Admitted = { id: string; module: string; agent: string; task: string
 const LIVE = "state IN ('admitted', 'running')";
 const ID = /^[\w.:-]{1,200}$/;
 
-export function createAdmission({ db, grants, kinds, capacity, spend, mayDispatch, cp, wakes, provenance, routineCap, nextTurn, launch, log }: {
+export function createAdmission({ db, grants, kinds, capacity, spend, mayDispatch, cp, wakes, provenance, routineCap, nextTurn, launch, facts, log }: {
+  /** Flow's fact log (facts.ts): job.queued and wake.bound at admission, job.held when it is refused or deferred. */
+  facts?: Facts;
   /** What the task's last job asked of this turn (jobtools.ts): read in the transaction, spent once the job has started. */
   nextTurn: Pick<JobTools, "pending" | "taken" | "refusal">;
   /** Kernel provenance (provenance.ts): a task the kernel's plugin made runs only with its provenance row. */
@@ -84,6 +88,11 @@ export function createAdmission({ db, grants, kinds, capacity, spend, mayDispatc
   launch: (job: Admitted) => Promise<void>;
   log: (msg: string, fields?: Record<string, unknown>) => void;
 }) {
+  const fact = factWriter(facts, log);
+  const keyOf = (agent: string) => grants()[agent]?.key ?? agent;
+  /** Why an admission waits (flow's idle reasons), once per wake and reason. */
+  const held = (wake: string, task: string, agent: string, reason: string) =>
+    fact({ type: "job.held", subject: `wake:${wake}`, version: `${wake}:${reason}`, at: iso(Date.now()), actor: `agent:${keyOf(agent)}`, task, data: { reason } });
 
   /** Platform authority belongs to the task: a job holds the platform-engineer role only on a task no agent filed, or one the Architect or the Fleet Steward filed. */
   function platformTask(t: Parameters<typeof provenance.filedBy>[0]): boolean {
@@ -160,10 +169,15 @@ export function createAdmission({ db, grants, kinds, capacity, spend, mayDispatc
       db.prepare("INSERT INTO jobs (id, module, agent, task, engine, pid, log, dir, at, jobcaps, observing, live_input, state, profile, wake, authority, routine, routine_cap, identifier) VALUES (?, ?, ?, ?, ?, 0, '', '', ?, ?, 0, 0, 'admitted', ?, ?, ?, ?, ?, ?)")
         .run(id, module, agent, task, authority.engine, Date.now(), JSON.stringify(authority.jobcaps), authority.profile, b.wake, JSON.stringify(authority), cap?.routine ?? null, cap?.cap ?? null, identifier);
       wakes.bind(b.wake, id);
+      const at = Date.now();
+      fact({ type: "job.queued", subject: `job:${id}`, version: "queued", at: iso(at), actor: `agent:${keyOf(agent)}`, task, data: { wake: b.wake, wake_at: iso(w.at ?? at), agent: keyOf(agent) } });
+      fact({ type: "wake.bound", subject: `wake:${b.wake}`, version: `bound:${id}`, at: iso(at), actor: "kernel", task, data: { job: id } });
       db.exec("COMMIT");
       job = { id, module, agent, task, identifier, profile: authority.profile, authority, prompt: b.prompt, ...(b.full_prompt ? { fullPrompt: b.full_prompt } : {}), fresh, wake: b.wake };
     } catch (e) {
       if (db.isTransaction) db.exec("ROLLBACK");
+      const reason = ({ busy: "capacity", "over-cap": "spend_cap" } as Record<string, string>)[(e as JobError).code];
+      if (reason) held(b.wake, task, agent, reason);
       throw e;
     }
     log("job admitted", { job: id, module, agent, task, profile: job.authority.profile });
@@ -171,11 +185,14 @@ export function createAdmission({ db, grants, kinds, capacity, spend, mayDispatc
       await launch(job);
     } catch (e) {
       if ((e as { status?: number }).status !== 503) {
-        db.prepare("UPDATE jobs SET state = 'failed', final = ?, ended = ? WHERE id = ? AND state = 'admitted'").run(`couldn't start: ${(e as Error).message}`.slice(0, 500), Date.now(), id);
+        const why = `couldn't start: ${(e as Error).message}`.slice(0, 500);
+        if (db.prepare("UPDATE jobs SET state = 'failed', final = ?, ended = ? WHERE id = ? AND state = 'admitted'").run(why, Date.now(), id).changes)
+          fact({ type: "job.ended", subject: `job:${id}`, version: "ended", at: iso(Date.now()), actor: `agent:${keyOf(agent)}`, task, data: { state: "failed", exit: null, why, model: "", cost_usd: 0, input: 0, cached: 0, output: 0, acted: false } });
         throw e;
       }
       const v = view(id);
       defer(id, b.wake);
+      held(b.wake, task, agent, "no_computer");
       log("job deferred: no free computer", { job: id, task });
       return { ...v, state: "deferred" };
     }

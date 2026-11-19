@@ -175,7 +175,7 @@ test("observe mode (gates.ts): a check's deny becomes a would-block entry and th
   let s = await setup(t, deny, { checks: judge(url, "observe") });
   assert.equal((await s.finish({ status: "done" })).status, 200);
   assert.deepEqual(s.writes, [{ as: "ada-key", body: { status: "done", gated: true } }], "Ada's own close, never the owner's");
-  const rows = s.k.records.db.prepare("SELECT data FROM events WHERE type = 'gate.would_block'").all().map((r) => JSON.parse(r.data));
+  const rows = s.k.records.db.prepare("SELECT data FROM facts WHERE type = 'gate.would_block' AND subject = 'task:WOR-1'").all().map((r) => JSON.parse(r.data));
   assert.deepEqual(rows, [{ gate: "judge.finish", task: "WOR-1", verdict: "deny", reason: "no rubric attached", via: "task_finish" }]);
   // Enforcing: the same deny refuses.
   s = await setup(t, deny, { checks: judge(url) });

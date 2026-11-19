@@ -23,6 +23,8 @@ import { createHash } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Asserter } from "./assert.ts";
 import type { Checks } from "./checks.ts";
+import { factWriter, iso } from "./factlog.ts";
+import type { Facts } from "./facts.ts";
 import type { Connection, Grant, Whoami } from "./identity.ts";
 import type { Once } from "./once.ts";
 import { delegateIds, OutcomeError, type PluginPost } from "./outcomes.ts";
@@ -50,7 +52,9 @@ const PATCH = ["title", "description", "priority", "assigneeAgentId", "assigneeU
 const CREATE = ["title", "description", "priority", "status", "assigneeAgentId", "assigneeUserId", "labelIds", "parentId", "idempotencyKey", "allowDuplicate"];
 type Issue = { id: string; identifier?: string; assigneeAgentId?: string | null; createdByAgentId?: string | null; parentId?: string | null; status?: string };
 
-export function createCp({ whoami, asserter, plugin, once, agentKey, grants, fleetIssues = () => "", controlUrl, checks, provenance, appOwners, log = () => {} }: {
+export function createCp({ whoami, asserter, plugin, once, agentKey, grants, fleetIssues = () => "", controlUrl, checks, provenance, appOwners, facts, log = () => {} }: {
+  /** Flow's fact log (facts.ts): task.commented for each comment a job writes through here. */
+  facts?: Facts;
   whoami: Whoami; asserter: Asserter; plugin: PluginPost;
   /** The one durable once-only write (once.ts): each write is keyed by its call, and a retry returns the first run's result. */
   once: Once;
@@ -64,6 +68,7 @@ export function createCp({ whoami, asserter, plugin, once, agentKey, grants, fle
   appOwners?: () => Promise<string[]>;
   controlUrl: string; checks?: Checks; provenance: Pick<Provenance, "carried" | "intend" | "record">; log?: (msg: string, f?: Record<string, unknown>) => void;
 }) {
+  const fact = factWriter(facts, log);
   /** `who`: the module and the agent the call is for, as soon as they are known (a refusal's log line names them). */
   async function handle(req: IncomingMessage, res: ServerResponse, path: string, query: string, who: { module?: string; agent?: string }): Promise<void> {
     const mod = await whoami(String(req.headers.authorization ?? "").replace(/^Bearer\s+/i, "").trim()).catch(() => undefined);
@@ -227,6 +232,7 @@ export function createCp({ whoami, asserter, plugin, once, agentKey, grants, fle
       ...(Object.keys(rest).length || (!blocked && blockedByIssueIds !== undefined) ? { patch: { ...rest, ...(!blocked && blockedByIssueIds !== undefined ? { blockedByIssueIds } : {}) } } : {}),
     });
     if (!d) return;
+    if (d.comment) fact({ type: "task.commented", subject: `task:${t.id}`, version: String(d.comment), at: iso(Date.now()), actor: `agent:${c.key}`, task: t.id, data: { kind: "cp", job: c.run } });
     if (method === "POST") return answer(201, Buffer.from(JSON.stringify({ id: d.comment, issueId: t.id })));
     return issueAnswer(t.id, 200);
   }

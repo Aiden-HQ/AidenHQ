@@ -4,14 +4,16 @@ import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { createGrading, type Kernel } from "./server.ts";
 import { createKernelGradeLoop } from "./kernel-loop.ts";
-import { kernelClient } from "./aidenhq-sdk/kernel-client.ts";
+import { factEmitter, kernelClient } from "./aidenhq-sdk/kernel-client.ts";
 
 const log = (msg: string, f: Record<string, unknown> = {}) => console.log(new Date().toISOString(), msg, JSON.stringify(f));
 const file = (name: string) => readFileSync(process.env[name] ?? "", "utf8").trim();
 const kernelUrl = (process.env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130").replace(/\/$/, "");
 const token = file("GRADING_TOKEN_FILE");
 
-const { call: kernelCall, bytes: kernelBytes } = kernelClient(kernelUrl, token, { timeoutMs: 60_000 });
+const client = kernelClient(kernelUrl, token, { timeoutMs: 60_000 });
+const { call: kernelCall, bytes: kernelBytes } = client;
+const facts = factEmitter(client, log); // Flow's grade and retry facts (role kernel.facts)
 // apps-mcp's grader reads (an app deliverable's evidence), with this module's own token: role apps.read. A view renders for up to 45 s.
 const appsUrl = (process.env.APPS_URL ?? "http://apps-mcp:8090").replace(/\/$/, "");
 async function appsCall(method: string, path: string, body?: unknown) {
@@ -35,6 +37,6 @@ setInterval(() => void tick(), 5 * 60_000).unref();
 setTimeout(() => void tick(), 30_000).unref();
 
 // The grade loop on the kernel's jobs (kernel-loop.ts), once a minute: roles kernel.cp-read, kernel.work-read, kernel.grader, kernel.wake and apps.read.
-const loop = createKernelGradeLoop({ db, runner, due: () => ({ grades: grades.due(), resubmitted: grades.resubmitted() }), kernel: kernelCall, kernelBytes, apps: appsCall, gatewayUrl: process.env.AIDENHQ_GATEWAY_URL ?? "http://10.231.0.1:8201", log });
+const loop = createKernelGradeLoop({ db, runner, due: () => ({ grades: grades.due(), resubmitted: grades.resubmitted() }), kernel: kernelCall, kernelBytes, apps: appsCall, gatewayUrl: process.env.AIDENHQ_GATEWAY_URL ?? "http://10.231.0.1:8201", log, emit: facts.emit });
 let grading = false;
 setInterval(() => { if (!grading) { grading = true; loop.runGrades().catch((e) => log("grade loop failed", { err: String(e.message ?? e) })).finally(() => (grading = false)); } }, 60_000).unref();

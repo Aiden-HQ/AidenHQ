@@ -51,16 +51,17 @@ const gradeFailures = async () => {
 };
 const notify = async (text: string, key = createHash("sha256").update(text).digest("hex").slice(0, 16)) => void (await kernel.call("POST", "/v1/notify", { kind: "alert", text, dedupe_key: `steward:${key}` }));
 
-/** The check task: fixed text, never an incident's own words (the Steward reads those with fleet_detector, fenced). */
+/** The check task: fixed text, never an incident's own words (the Steward reads those with fleet_detector, fenced). Its source
+ * says whether something new tripped (fleet-incident:, Flow's DORA incidents) or only recovered (fleet-check:). */
 async function fileCheck(body: { incidents: { key: string; critical?: boolean }[]; recovered: { key: string }[] }, at = new Date()): Promise<boolean> {
   const critical = body.incidents.filter((i) => i.critical).length;
   const description = `The fleet detector tripped or recovered: ${body.incidents.length} new incident${body.incidents.length === 1 ? "" : "s"}${critical ? ` (${critical} critical)` : ""} and ${body.recovered.length} recovered. Follow your fleet-check skill: \`fleet_detector\` lists what is open and what recovered. Close this task with one line.`;
-  await kernel.call("POST", "/v1/tasks", { title: "Fleet Ops: check", description, role: "fleet-audit", source: `fleet-check:${at.toISOString()}` });
+  await kernel.call("POST", "/v1/tasks", { title: "Fleet Ops: check", description, role: "fleet-audit", source: `${body.incidents.length ? "fleet-incident" : "fleet-check"}:${at.toISOString()}` });
   return true;
 }
 
 const coach = coachReads({ kernel, kv, apps });
-const all = checks({ kernel, apps, alerts: () => alertIncidents(kv, notify), openKeys: () => Object.keys(detectorState(kv).open), notify, gradeFailures });
+const all = checks({ kernel, apps, alerts: () => alertIncidents(kv, notify), openKeys: () => Object.keys(detectorState(kv).open), notify, gradeFailures, log });
 let busy = false;
 const run = async () => {
   if (busy) return;
@@ -90,6 +91,10 @@ const mcp = createMcp(fleetTools({
   evidence: (caller, key) => coach.evidence(caller, key),
   generations: () => kernel.call("GET", "/v1/work?generations=1"),
   followups: () => staleFollowups({ kernel, kv }),
+  flow: ({ since, by, task }) => {
+    const q = new URLSearchParams(task ? { task } : { ...(since ? { since } : {}), ...(by ? { by } : {}) });
+    return kernel.call("GET", `/v1/flow?${q}`);
+  },
   snooze: (task, days) => snoozeFollowup(kv, task, days),
   // The kernel's answer whole: a refusal says why (the Steward reads it and changes the request).
   routing: async (op, args, assertion) => { const r = await kernel.raw("POST", `/v1/routing/${op}`, args, { "x-aidenhq-caller": assertion }); if (r.status >= 300) throw new Error(`Refused: ${String(r.json?.error?.message ?? r.status)}`); return r.json; },

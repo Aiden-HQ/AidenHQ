@@ -11,6 +11,7 @@
 //   kernel/sdk/src/judge.ts          the judges' models, cross-family choice and model call, in the reviewer and grading services
 //   services/shared/review-files.mjs  the changed files as the reviewer reads them, in the reviewer module's service
 //   kernel/sdk/src/source-store.ts   the shared-sources writer side, in every source writer
+//   kernel/sdk/src/quality.ts        the revert and incident linker, in the board (the kernel's flow DORA imports it)
 //   kernel/sdk/src/agent-paused.ts   the one paused rule (lifecycle holds), in the board, the Telegram channel and the Fleet Steward
 //   services/shared/reason-codes.ts  reason codes on approvals and refusals, in the board
 //   services/shared/url-setting.ts   the URL setting check, in the board (the compiler imports the original)
@@ -66,11 +67,13 @@ export function sharedCopies(root = repo) {
   // The eval's pass rule: the kernel's check job and the reviewer's own eval script apply this one copy.
   "kernel/sdk/src/pass-rule.ts": ["modules/ai-reviewer/service/src/aidenhq-sdk/pass-rule.ts"],
   // The one kernel client (design: one Paperclip/kernel client): every module that calls the kernel with its own token.
-  "kernel/sdk/src/kernel-client.ts": ["modules/dispatch/service/src/aidenhq-sdk/kernel-client.ts", "modules/grading/service/src/aidenhq-sdk/kernel-client.ts", "modules/fleet-steward/service/src/aidenhq-sdk/kernel-client.ts", "modules/chat-lane/connections/lane/src/aidenhq-sdk/kernel-client.ts", "modules/channel-telegram/connections/telegram/src/aidenhq-sdk/kernel-client.ts", "modules/owner-channel/connections/notify/src/aidenhq-sdk/kernel-client.ts"],
+  "kernel/sdk/src/kernel-client.ts": ["modules/dispatch/service/src/aidenhq-sdk/kernel-client.ts", "modules/codehost-github/service/src/aidenhq-sdk/kernel-client.ts", "modules/grading/service/src/aidenhq-sdk/kernel-client.ts", "modules/maintainer/service/src/aidenhq-sdk/kernel-client.ts", "modules/fleet-steward/service/src/aidenhq-sdk/kernel-client.ts", "modules/chat-lane/connections/lane/src/aidenhq-sdk/kernel-client.ts", "modules/channel-telegram/connections/telegram/src/aidenhq-sdk/kernel-client.ts", "modules/owner-channel/connections/notify/src/aidenhq-sdk/kernel-client.ts"],
   // The judges' shared library (design §4.4): the reviewer and the grader keep their own contracts and credentials.
   "kernel/sdk/src/judge.ts": ["modules/ai-reviewer/service/src/aidenhq-sdk/judge.ts", "modules/grading/service/src/aidenhq-sdk/judge.ts"],
   // How GitHub check results are read: the merge gate, the PR watcher and the grader.
   "kernel/sdk/src/checks.ts": ["modules/codehost-github/service/src/aidenhq-sdk/checks.ts", "modules/grading/service/src/aidenhq-sdk/checks.ts"],
+  // Code churn: the code host's churn pass and backfill (codehost-local calls the original from the kernel).
+  "kernel/sdk/src/churn.ts": ["modules/codehost-github/service/src/aidenhq-sdk/churn.ts"],
   // Who moves the product pin: the kernel's updater and the code host's release train ask this one function.
   "kernel/sdk/src/pin-owner.ts": ["modules/codehost-github/service/src/aidenhq-sdk/pin-owner.ts"],
   // The changed files' shaping (the eval and the reviewer's verdicts use this copy).
@@ -90,6 +93,8 @@ export function sharedCopies(root = repo) {
   "kernel/sdk/src/for-others.ts": ["modules/dispatch/service/src/aidenhq-sdk/for-others.ts", "modules/grading/service/src/aidenhq-sdk/for-others.ts", "modules/tasks/connections/tasks-mcp/src/aidenhq-sdk/for-others.ts", "services/board/src/aidenhq-sdk/for-others.ts"],
   // Whether an agent is paused (Paperclip's lifecycle holds, never its status): the board, the Telegram channel and the Fleet Steward.
   "kernel/sdk/src/agent-paused.ts": ["services/board/src/aidenhq-sdk/agent-paused.ts", "modules/channel-telegram/connections/telegram/src/aidenhq-sdk/agent-paused.ts", "modules/fleet-steward/service/src/aidenhq-sdk/agent-paused.ts"],
+  // The revert and incident linker: the board's quality report and the kernel's flow DORA (flow.ts imports the original).
+  "kernel/sdk/src/quality.ts": ["services/board/src/aidenhq-sdk/quality.ts"],
   "services/shared/reason-codes.ts": ["services/board/src/reason-codes.ts"],
   "services/shared/url-setting.ts": ["services/board/src/url-setting.ts"],
   // The supply-chain checks, version picker and image scan, for app repos (the app CI template is copied into each as it is).

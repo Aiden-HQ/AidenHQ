@@ -219,6 +219,12 @@ test("a GitHub App grant (codehost:) is the owner's to give or widen; dropping i
   assert.deepEqual(lines(with_({ codehost: grant }), base), ["acme-crm: drops its GitHub App grant (review)"]);
 });
 
+test("a newly declared fact type is the reviewer's to see; stages are plain", () => {
+  const head = with_({ facts: { "pr.merged": { subject: "pr" } }, stages: [{ name: "deploy", from: "pr.merged", to: "pr.deployed" }] });
+  assert.deepEqual(authorityLines([authorityDiff("acme-crm", base, head, false)]), ["acme-crm: declares fact pr.merged (review)", "acme-crm: changes stages (review)"]);
+  assert.equal(tier(head).tier, 1);
+});
+
 test("a code host's service mounts, a channel's transport and credentials, and kernel roles each say what they grant", () => {
   const svc = { ...base.services.run["crm-mcp"], github_app: "/github-app", workspaces: "/tasks", points: "/config/points.json" };
   const head = with_({ services: { run: { "crm-mcp": svc } }, roles: { requests: ["kernel.apply"] } });

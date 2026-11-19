@@ -2,7 +2,7 @@
 // kernel's. A reopened task wakes its agent through the kernel (a reopen wake), so the loop no longer dispatches an Engineer itself;
 // a verdict's task move (done, todo + note) is the finish check's own resolve (POST /v1/checks/:task). Its per-task memory
 // (evidence-woken, escalation-told) is rows in the grades database (kernel-loop.ts). Unstarted until the switch.
-export function createGradeLoop({ api, pc, log, state, gather, grade, escalationFor, gradeNote, template, gradeDeps, tellParent, recordsOn, graderAsk, stripHidden, graderSpeaks, isUserInstruction }) {
+export function createGradeLoop({ api, pc, log, state, gather, grade, escalationFor, gradeNote, template, gradeDeps, tellParent, recordsOn, graderAsk, stripHidden, graderSpeaks, isUserInstruction, emit = () => {} }) {
   const grading = new Set();
   const GRADE_WAIT_MS = 24 * 60 * 60_000; // evidence still missing a day after the close: it escalates to the delegator
   const MISSING_WAIT_MS = 10 * 60_000; // finished with no deliverable at all and nothing moving: the delegator decides now
@@ -10,6 +10,8 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
   const MAX_WAKES = 2; // evidence wakes per task, whatever their reasons: the next stall escalates
   // A wait reason's stable code: its words without the numbers and hashes that change between looks.
   const reasonCode = (why) => String(why).toLowerCase().replace(/\b[0-9a-f]{7,40}\b|\d+/g, "#").replace(/\s+/g, " ").trim().slice(0, 200);
+  // Flow facts (docs/design/flow.md): a grade attempt is one subject, its retry wait is on the task.
+  const fact = (type, subject, version, task, data = {}) => emit({ type, subject, version: String(version), at: new Date().toISOString(), task, data });
   const gradeLooked = new Map(); // issueId → when its evidence was last looked at while waiting
   /** The board's waiting rows: grade each (one at a time per task), and check escalated tasks finished again for a new version. */
   async function runGrades() {
@@ -82,6 +84,7 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
     const text = `Grading waits for: ${why}. Do what's missing to finish.`;
     await pc.setStatus(issue.id, "todo", `${text}\n\n<!-- aidenhq:grader -->`);
     const codes = JSON.parse(state.get(`evidence-woken:${issue.id}`) || "null")?.codes ?? [];
+    fact("work.waiting", `task:${issue.id}`, `wake:${codes.length + 1}`, issue.id, { reason: "grade_retry" });
     state.set(`evidence-woken:${issue.id}`, JSON.stringify({ codes: [...codes, reasonCode(why)], at: new Date(Date.now()).toISOString() }));
     log("grading waits: task woken", { issue: issue.identifier, why });
   }
@@ -97,7 +100,8 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
     const verdictPath = `/internal/grades/${encodeURIComponent(g.issueId)}/verdict`;
     const agent = (await pc.agents()).find((a) => a.id === issue.assigneeAgentId);
     const last = g.verdicts?.at(-1);
-    let v;
+    const attempt = (g.attempts ?? 0) + 1; // the pass this grade is on (a revision is the next attempt)
+    let asked = false, v;
     if (ev.awaiting) {
       // Evidence that never comes (a PR nobody merges, a deploy that never lands) escalates to the delegator after a day, saying why;
       // a deliverable that doesn't exist at all (finished with no PR, no apply, nothing posted) after MISSING_WAIT_MS, since
@@ -137,9 +141,16 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
       const authorModel = `${state.lastJob(issue.id)?.engine ?? ""} ${agent?.metadata?.model ?? ""}`;
       // Through the model gateway with the runner's grader token (kind grader: billed to the task, never capped). AIDENHQ_GRADER_URL: tests' fake.
       const ask = graderAsk(issue);
+      // The grader's pass starts: a task reopened for a revision or a wake resumes here (its retry wait ends).
+      const woken = JSON.parse(state.get(`evidence-woken:${issue.id}`) || "null")?.codes?.length ?? 0;
+      if (attempt > 1) fact("work.resumed", `task:${issue.id}`, attempt - 1, issue.id, { reason: "grade_retry" });
+      else if (woken) fact("work.resumed", `task:${issue.id}`, `wake:${woken}`, issue.id, { reason: "grade_retry" });
+      fact("grade.requested", `grade:${issue.id}:${attempt}`, attempt, issue.id);
+      asked = true;
       v = await grade({ rubric, deliverable: g.deliverable, facts: ev.facts, data: ev.data, request: `${issue.title}\n\n${stripHidden(issue.description ?? "")}`, images: ev.images, authorModel, ask });
     }
     const row = await api.post(verdictPath, { version: ev.version, outcome: v.outcome, model: v.model, criteria: v.criteria, reason: v.outcome === "grading_failed" ? String(v.reason ?? "") : undefined });
+    if (asked) fact("grade.verdict", `grade:${issue.id}:${attempt}`, attempt, issue.id, { pass: v.outcome === "satisfied", attempt, reason_code: String(v.outcome) });
     // A failed pass says why (the grader's call error, or the rule its answer broke): nothing else records it.
     log("graded", { issue: issue.identifier, outcome: v.outcome, state: row.state, attempts: row.attempts, failures: row.failures, model: v.model, version: ev.version.slice(0, 40), ...(v.reason ? { reason: String(v.reason).slice(0, 300) } : {}) });
     const note = gradeNote(v, rubric, row.state, { version: ev.version, reason: row.state === "escalated" && v.outcome === "error" ? v.reason : undefined });
@@ -154,6 +165,7 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
       await tellParent(issue, "done", `${issue.identifier} (${agent?.name ?? "its agent"}) is done, graded against its rubric: ${issue.title}. Its result is on ${issue.identifier}.`);
     } else if (row.state === "needs_revision") {
       await pc.setStatus(issue.id, "todo", note);
+      fact("work.waiting", `task:${issue.id}`, attempt, issue.id, { reason: "grade_retry" });
       // The reopen wakes the task's agent through the kernel: nothing to dispatch here.
     } else if (row.state === "escalated" && v.outcome === "grading_failed") {
       // The grader itself kept failing (MAX_GRADER_FAILURES in a row, never a rubric verdict): the task ends blocked with the
