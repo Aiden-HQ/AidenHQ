@@ -72,6 +72,10 @@ export function history(ws, out, spec) {
     return g(["rev-parse", "HEAD"]);
   };
   g(["init", "-q", "."]);
+  // The repo's own .gitattributes are the PR's to write: they could mark code binary (hidden from the diff), set filters or
+  // rewrite line ends. The box's info/attributes, which outranks them, puts every path back on git's defaults: binary only
+  // by content (a NUL in the first 8000 bytes), no filter, no conversion.
+  writeFileSync(join(ws, ".git", "info", "attributes"), "* !binary !diff !text !eol !filter !merge !working-tree-encoding\n");
   const base = existsSync(join(out, "base")) ? commit(join(out, "base"), "base") : undefined;
   const from = existsSync(join(out, "incremental_from")) ? commit(join(out, "incremental_from"), "last reviewed head") : undefined;
   // A fresh index for the head: what the earlier commits staged from other trees must not linger.
@@ -97,12 +101,14 @@ export function changed(git, from) {
  * under a generated or vendored path), so the review is incomplete and never reads as a clean pass. The repo's own ignore globs
  * (its config) and binary files are no gap. `added`: the paths this change adds.
  */
-export function scope(files, ignore = [], added = new Set()) {
+export function scope(files, ignore = [], prChanged = new Set()) {
   const mine = [...ignore].map(String).map(globRe), gen = GENERATED.map(globRe), locks = LOCKS.map(globRe);
   const reviewed = [], excluded = [];
   for (const f of files) {
-    const why = f.binary ? "binary" : mine.some((re) => re.test(f.path)) ? "ignored" : locks.some((re) => re.test(f.path)) ? "lockfile" : gen.some((re) => re.test(f.path)) ? (added.has(f.path) ? "generated, added by this change" : "generated") : f.added + f.removed > HUGE ? "huge" : reviewed.length >= MAX_FILES ? "over the file limit" : undefined;
-    (why ? excluded : reviewed).push(why ? { path: f.path, why, gap: ["huge", "over the file limit", "generated, added by this change"].includes(why) } : f.path);
+    // A change to how git reads files is always reviewed, whatever the globs say.
+    const attrs = posix.basename(f.path) === ".gitattributes";
+    const why = attrs ? undefined : f.binary ? "binary" : mine.some((re) => re.test(f.path)) ? "ignored" : locks.some((re) => re.test(f.path)) ? "lockfile" : gen.some((re) => re.test(f.path)) ? (prChanged.has(f.path) ? "generated, changed by this PR" : "generated") : f.added + f.removed > HUGE ? "huge" : reviewed.length >= MAX_FILES ? "over the file limit" : undefined;
+    (why ? excluded : reviewed).push(why ? { path: f.path, why, gap: ["huge", "over the file limit", "generated, changed by this PR"].includes(why) } : f.path);
   }
   return { reviewed, excluded };
 }
@@ -267,8 +273,9 @@ export async function review({ spec, ws, out, run = runEngine }) {
   if (problem) throw new Error(`reviewer ${String(profile.name ?? "?").slice(0, 40)}: ${problem}`);
   const h = history(ws, out, spec);
   const full = spec.incremental_from === spec.base;
-  const added = new Set(h.git(["-c", "core.quotePath=false", "diff", "--no-renames", "--diff-filter=A", "--name-only", "-z", h.from, "HEAD"]).split("\0").filter(Boolean));
-  const { reviewed, excluded } = scope(changed(h.git, h.from), profile.ignore ?? [], added);
+  // What the PR changes against its merge base (not just since the last reviewed head): generated paths it touches are gaps.
+  const prChanged = new Set(h.git(["-c", "core.quotePath=false", "diff", "--no-renames", "--name-only", "-z", h.base, "HEAD"]).split("\0").filter(Boolean));
+  const { reviewed, excluded } = scope(changed(h.git, h.from), profile.ignore ?? [], prChanged);
   const diff = reviewed.length ? h.git(["diff", "--no-ext-diff", "--no-textconv", "--no-color", h.from, "HEAD", "--", ...reviewed.map((p) => `:(literal)${p}`)]) : "";
   const baseTree = existsSync(join(out, "base")) ? join(out, "base") : undefined;
   const guides = guidance(baseTree, reviewed, profile.context ?? []);
