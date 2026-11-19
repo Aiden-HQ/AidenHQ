@@ -336,9 +336,11 @@ providers:
     auth: codehost_github_token
 # Each card is plan.mjs's facts, read from git by the service: what it acts on, one sentence, and the diff the reviewer reads.
 writes:
-  push: { args: schemas/push.json, floor: 0, card: &card { target: "{{target}}", sentence: "{{sentence}}", details: "{{diff}}" } }
-  pr: { args: schemas/pr.json, floor: 0, card: *card }
-  merge: { args: schemas/merge.json, floor: 0, card: *card }
+  # push, pr and merge are repository writes (paths: true): plan.mjs returns the files each changes, read from git, and the
+  # kernel raises their tier by the path inventory (paths.yaml) and runs the platform check on them (writes.ts).
+  push: { args: schemas/push.json, floor: 0, paths: true, card: &card { target: "{{target}}", sentence: "{{sentence}}", details: "{{diff}}" } }
+  pr: { args: schemas/pr.json, floor: 0, paths: true, card: *card }
+  merge: { args: schemas/merge.json, floor: 0, paths: true, card: *card }
   close: { args: schemas/close.json, floor: 0, card: *card }
   create_repo: { args: schemas/create_repo.json, floor: 0, card: *card }
 # github_service_key: the kernel's bearer for github-mcp (both connections). github_auth_token: the board's, for its sign-in.

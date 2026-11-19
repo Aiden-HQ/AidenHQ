@@ -2,12 +2,12 @@
 // (the requester the runner looked up, the repos, branches, files, heads and checks git and GitHub report). Pure: no I/O.
 // Code refuses (`reject`) what nobody may do and the agent can fix (the instance repo, a default branch outside the agents
 // org, a head that moved, red checks); Tier 0 runs at once, Tier 1 goes to the AI reviewer, `panel` adds a second reviewer.
-// What a change to the product repo's own files needs (its gate's core, role handbooks, compose files, Dependabot pin bumps,
-// the owner-approval records) is the platform check's (modules/platform/src/check.mjs), never decided here.
+// What a change to particular files needs (the gate's core, compose files, the owner-approval records) is never decided here:
+// `plan` returns the files each push, PR and merge changes (`paths`), and the kernel raises the tier by the path inventory
+// (paths.yaml, kernel/src/paths.ts) and runs the platform check (modules/platform/src/check.mjs) on them (writes.ts).
 //
-// The runner combines these parts with that check and the shared rules (tiers.mjs classify). `plan` is the same rules in
-// executor@1's shape (kernel/sdk/src/executor.ts) for the codehost-github kinds, with the targets the kernel revalidates.
-// codehost-local (the org `local`, repos on this server) tiers through these same rules: it only adds `local-merge`.
+// `plan` is these rules in executor@1's shape (kernel/sdk/src/executor.ts) for the github kinds, with the targets the kernel
+// revalidates. codehost-local (the org `local`, repos on this server) tiers through these same rules: it only adds `local-merge`.
 
 const T = (tier, rule, reason) => ({ tier, rule, reason });
 /** Authority-expanding: the reviewer and a second reviewer on another model family must both approve. */
@@ -171,7 +171,7 @@ function productMergePart(p, ref, s) {
   }
   const friction = mergeFriction(p, ref);
   if (friction) return friction;
-  const gates = `On its head: ${checkCounts(p.checks)}. Code merges it only at that head, once every named check has passed (skipped counts as passed) and main is green`;
+  const gates = `On its head: ${checkCounts(p.checks)}. Code merges it only at that head, once every named check has passed (skipped counts as passed)`;
   // Who pushed the head (recorded at the push): only a head the platform line pushed is its own.
   if (p.ownHead && p.platformHead) return T(1, "product-merge", `${ref}: a product PR from the Platform Engineer's line. ${gates}`);
   if (p.ownHead) return T(1, "product-merge-engineer-head", `${ref}: its head was pushed by an Engineer job that is NOT the Platform Engineer's line (a PR, a proposal). ${gates}`);
@@ -180,12 +180,14 @@ function productMergePart(p, ref, s) {
 
 const rank = (p) => p.tier * 2 + (p.panel ? 1 : 0);
 /**
- * executor@1's plan for codehost-github.{push,pr,merge,close,create_repo}: `state` is the verified state the code host read
+ * executor@1's plan for github.{push,pr,merge,close,create_repo} (and codehost-local's): `state` is the verified state the code host read
  * for this request (as `s` above). A refusal throws (the kernel answers it as refused); otherwise the tier above 0 comes back
  * as `raise`, and `targets` bind the record to what it acts on: each branch's commit and base, each PR's head. When any of
  * them moves after approval, the revalidating plan's targets differ and the kernel closes the record as stale. `facts` are the
  * card's (target, sentence, diff), read by the code host from git: a reviewer reads the whole diff or nothing, so one too
  * large for a reviewed change (Tier 1 or 2) is refused, never cut. Tier 0 runs unread (a lockfile, a new repo's first push).
+ * A push, PR or merge also returns `paths`, one { repo, files: [{ path }] } per branch or PR (a rename is listed at both
+ * paths): the kernel raises its tier by them and runs the platform check on them; without them it is the owner's.
  */
 export const MAX_DIFF = 80_000;
 export function plan({ kind, args }, state, facts) {
@@ -200,5 +202,7 @@ export function plan({ kind, args }, state, facts) {
     : action === "create_repo" ? { [String(state.repo)]: { repo: state.repo } }
     : Object.fromEntries((state.branches ?? []).map((b) => [`${b.repo} ${b.branch}`, { repo: b.repo, ref: b.branch, commit: b.sha ?? null, base_sha: b.base ?? null }]));
   if (top.tier > 0 && facts.diff.length > MAX_DIFF) throw Object.assign(new Error(`the diff is over ${MAX_DIFF} characters, too large for a reviewer to read whole: split it into smaller changes`), { rule: "diff-too-large", status: 413 });
-  return { args, targets, facts, ...(top.tier > 0 ? { raise: { tier: top.tier, ...(top.panel ? { panel: true } : {}), reason: top.reason, rule: top.rule } } : {}) };
+  const items = action === "push" || action === "pr" ? state.branches : action === "merge" ? state.prs : undefined;
+  const paths = items?.map((x) => ({ repo: x.repo, ...(Array.isArray(x.files) ? { files: x.files.map((path) => ({ path })) } : {}) }));
+  return { args, targets, facts, ...(paths ? { paths } : {}), ...(top.tier > 0 ? { raise: { tier: top.tier, ...(top.panel ? { panel: true } : {}), reason: top.reason, rule: top.rule } } : {}) };
 }

@@ -32,13 +32,19 @@ paths:
       - scripts/paths.mjs
       - .github/
       - "**/.github/"
-  # The official modules' half of the gate's core (the platform check's list, which only the runner applied): the engines a
-  # job runs, the channels, the AI reviewer, the code hosts (the App's tokens, the merge gate, the git rules, the eval gate),
-  # the platform check, graded done, and the apps platform's and Primer's write kinds and executors.
+      # Compose files: what runs on the host, with which mounts, privileges, networks and env. Any change, an image bump
+      # included, is the panel's.
+      - "{,docker-}compose*.{yaml,yml}"
+      - "**/{,docker-}compose*.{yaml,yml}"
+  # The official modules' half of the gate's core: the engines a job runs, the channels, the AI reviewer, the code hosts (the
+  # App's tokens, the merge gate, the git rules, the eval gate), the platform check, graded done, dispatch (which runs every
+  # agent's job), and the apps platform's and Primer's write kinds and executors. kernel/test/paths.test.mjs holds every file
+  # in these folders to a panel entry.
   - sensitivity: panel
     owner_role: platform-engineer
     patterns:
       - modules/engine-*/
+      - modules/dispatch/
       - modules/channel-*/
       # Slack's channel part (was channel-slack): its manifest and its listener.
       - modules/slack/module.yaml
