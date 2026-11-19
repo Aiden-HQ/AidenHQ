@@ -17,7 +17,7 @@ import { DESIGN_REVIEW, EVAL_WAIT_MINUTES, PR_QUERY, WAIT_MINUTES, awaitsDesignR
 type Gh = (method: string, path: string, token: string, body?: unknown) => Promise<{ status: number; body: any }>;
 type Outcome = { ok: boolean; text: string };
 export type EvalGate = (repo: string, pr: any) => Promise<undefined | { wait: string } | { stop: string }>;
-type Pr = { repo: string; number: number; head: string; url: string; status: string; note?: string; sha?: string; wait?: { key: string; since: string }; reviewAsked?: string; reviewAskedAgain?: string; checked?: string; fw?: { reason: string; since: string } };
+type Pr = { repo: string; number: number; head: string; url: string; status: string; note?: string; sha?: string; wait?: { key: string; since: string }; reviewAsked?: string; reviewAskedAgain?: string; checked?: string; unanswered?: boolean; fw?: { reason: string; since: string } };
 type Queue = { state: string; prs: Pr[]; said: string[]; startedAt: string; finishedAt?: string; outcome?: Outcome; reported?: boolean };
 
 const same = (a?: string, b?: string) => Boolean(a && b) && a!.toLowerCase() === b!.toLowerCase();
@@ -64,7 +64,7 @@ export function createMerges(d: {
   }
   async function mergePut(repo: string, number: number, sha: string, method: string): Promise<string> {
     const r = await d.gh("PUT", `/repos/${repo}/pulls/${number}/merge`, await d.token(repo, mergePermissions(repo, platform)), { merge_method: method, sha });
-    if (r.status >= 300) throw new Error(`HTTP ${r.status}: ${String(r.body?.message ?? "").slice(0, 300)}`);
+    if (r.status >= 300) throw Object.assign(new Error(`HTTP ${r.status}: ${String(r.body?.message ?? "").slice(0, 300)}`), { status: r.status });
     return r.body?.sha;
   }
 
@@ -111,10 +111,14 @@ export function createMerges(d: {
       // The design reviewer is asked as soon as a UI head waits without a verdict: its review runs beside the checks.
       if (v.do === "wait" && uiReview && p.reviewAsked !== p.head && awaitsDesignReview(data.repository.pullRequest)) await askReview(false);
       if (v.do === "done") {
-        Object.assign(p, { status: "skipped", note: v.why });
+        // Merged after a merge call that got no answer: that call merged it.
+        const ours = p.unanswered && pull?.mergeCommit?.oid;
+        if (ours) Object.assign(p, { status: "merged", sha: pull.mergeCommit.oid, mergedAt: pull.mergedAt ?? now().toISOString() });
+        else Object.assign(p, { status: "skipped", note: v.why });
         if (pull?.mergeCommit?.oid) d.flow?.merged(p.repo, p.number, p.head, pull.mergeCommit.oid, pull.mergedAt ?? undefined, String(pull.title ?? ""), String(pull.body ?? ""));
         delete p.wait;
-        return void q.said.push(`${p.url} was ${v.why}.`);
+        if (ours) merged.add(p.repo.toLowerCase());
+        return void q.said.push(ours ? `Merged ${p.url}.` : `${p.url} was ${v.why}.`);
       }
       if (v.do === "fail") return fail(v.why);
       if (v.do === "wait") {
@@ -135,7 +139,12 @@ export function createMerges(d: {
       } catch (e) {
         // Another merge to the same base a moment ago: GitHub asks to try again, which the next poll does.
         if (/try the merge again|base branch was modified/i.test(says(e))) return wait("retry", "GitHub asked to try the merge again", WAIT_MINUTES);
-        return fail(`GitHub refused the merge: ${says(e)}`);
+        // Only a 4xx is GitHub's answer. A timeout or a 5xx may have merged: the next poll reads the PR and sees which.
+        const status = (e as { status?: number }).status ?? 0;
+        if (status >= 400 && status < 500) return fail(`GitHub refused the merge: ${says(e)}`);
+        log("merge call unanswered", { pr: p.url, err: says(e) });
+        p.unanswered = true;
+        return wait("put", `GitHub didn't answer the merge call: ${says(e)}`, ERROR_MINUTES);
       }
       const mergedAt = now().toISOString();
       Object.assign(p, { status: "merged", mergedAt });
@@ -164,12 +173,16 @@ export function createMerges(d: {
     log("merges finished", { record: id, ok });
     deliver(id, q);
   }
+  /**
+   * The outcome to the kernel, durably: the executor's waiter (if this process ran execute) is told, and the outcome is also
+   * posted here, marked reported only once the kernel took it (a repeat answers 409, which counts). Until then every poll
+   * delivers it again, across restarts.
+   */
   function deliver(id: string, q: Queue) {
     const w = waiters.get(id);
     if (w) {
       waiters.delete(id);
-      q.reported = true;
-      return w(q.outcome!);
+      w(q.outcome!);
     }
     delivering.add(id);
     void d.report(id, q.outcome!).then(() => { q.reported = true; save(); }, (e) => log("merge outcome not delivered", { record: id, err: says(e) })).finally(() => delivering.delete(id));
