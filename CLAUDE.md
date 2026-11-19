@@ -78,7 +78,7 @@ bump of `product:` to a different reviewer needs a receipt for that reviewer too
 - **One authority per concern.** A new caller uses the owner below; it never adds a second:
   - The kernel: identity, credentials, policy, write records and their tier (`computeTier` in `kernel/src/tier.ts` is the
     only tier function).
-  - codehost-github: the only holder of the GitHub App key. Others get narrow tokens through the kernel.
+  - github (its code host part, service/): the only holder of the GitHub App key. Others get narrow tokens through the kernel.
   - `notify`: the only path to the owner.
   - The wake inbox and dispatch: the only way an agent job starts.
   - Paperclip: tasks and schedules only.
@@ -198,7 +198,7 @@ updated, so that rule would re-review every open PR on every merge.
 
 Restarts never interrupt agents: the kernel runs jobs detached (`KillMode=process`, `kernel/src/jobs.ts`) and the next
 kernel adopts them from its job rows in `kernel.db` (pid, events offset); `ops/apply-config.sh` restarts the kernel when its
-code changed. Dispatch, codehost-github and the other modules are containers apply recreates when their image changes. See
+code changed. Dispatch, the github code host and the other modules are containers apply recreates when their image changes. See
 [docs/operations.md](docs/operations.md).
 
 Operating an instance: improve the system, don't babysit the agents. When an agent's work goes wrong, fix the source
@@ -211,7 +211,7 @@ the board key (it writes as the owner). Agents never claim something is done unt
 ## GitHub App and data apps
 
 - The instance's GitHub App (key in the vault at `github-app/{app_id,key.pem}`, made from the board's GitHub setup page, the kernel's `/setup/github-app`)
-  gives repo-narrowed tokens. Among services and modules only codehost-github holds the App key; any other caller (apps-mcp
+  gives repo-narrowed tokens. Among services and modules only the github module's code host holds the App key; any other caller (apps-mcp
   reading private agents-org app repos and pushing the registry, the kernel cloning an Engineer's repos, checks) gets a
   token, snapshot or clone through the kernel's `POST /v1/codehost/:op`, under a literal `codehost:` grant in its
   `module.yaml`. The host's apply may mint a read-only instance-repo token: the instance checkout pulls with

@@ -30,7 +30,7 @@ GET /v1/tasks?source=release:instance:
 
 **Accepts** a module token and only the `release:instance:` family: `release:instance:<40-hex sha>` (the release
 train's stamp) and the runner-era `release:instance:<ms stamp>`. Only open tasks are returned, and only to
-`codehost-github`, the module that owns the release train. The answer is `{ tasks: [{ id, identifier, status, createdAt, source }] }`.
+`github`, the module that owns the release train (its code host part). The answer is `{ tasks: [{ id, identifier, status, createdAt, source }] }`.
 
 **Refuses** with 400 any other `source:` family and any other caller. A row whose description carries a marker of
 another family, or merely mentions the family in prose, is never returned: the kernel matches the marker again on
@@ -49,10 +49,10 @@ The default rule: the task's description carries `<!-- aidenhq-module:<module> -
 `createdByAgentId`. Every other task is refused with 403, whatever its source.
 
 **Release bumps are the one widening.** A task carrying `<!-- source:release:instance:… -->` (either stamp) may be
-closed by `codehost-github` with no module marker, only when:
+closed by `github` with no module marker, only when:
 
 - it has at least one `kernel.apply` record on it — a task with no record never qualifies;
-- **every** record on it was filed by `module === "codehost-github"` (a record is matched by its module name, never
+- **every** record on it was filed by `module === "github"` (a record is matched by its module name, never
   by a bare id, and one foreign or mixed record refuses the close). The kernel reads all of them, never a capped
   page, so an older foreign record can't be hidden behind newer ones;
 - the release marker is its **only** source marker: a task that also carries another family's `<!-- source:… -->` is never

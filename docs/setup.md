@@ -316,33 +316,36 @@ Slack has two parts, both served by one Slack app.
 
 ### Others (optional)
 
-Glean, Jira, Grafana, ClickHouse and Primer: press Connect on the board (Settings, Connections). GitHub reads: open its setup
-(`#/setup/github`). Primer: see
+Glean, Jira, Grafana, ClickHouse and Primer: press Connect on the board (Settings, Connections). GitHub: open its setup
+(`#/setup/github`) and press Connect GitHub (step 8). Primer: see
 [the reference below](#connecting-accounts) and [docs/USAGE.md](USAGE.md#connect-jira). Each one is a
 module you add to `modules:`, plus a sign-in.
 
-## 8. GitHub App (lets agents build and ship code)
+## 8. GitHub (reads, then optionally the code host)
 
-Optional, but required for agents to create repositories and apps. `ops/setup.sh` doesn't do this step. Agents
-act on GitHub as an App owned by an **agents org**, never as you.
+GitHub is one module with two parts, both on its setup page (`#/setup/github`).
+
+**Basic: sign in (about a minute).** Press **Connect GitHub**: the board shows a short code; open
+[github.com/login/device](https://github.com/login/device), sign in and type it [human]. Agents then read your issues, pull
+requests, reviews, checks and code as you (GitHub's own MCP server and AidenHQ's GitHub tools); anything they post as you is
+reviewed first, and they never push or merge with your account. The sign-in uses AidenHQ's OAuth App (the
+`github_oauth_client_id` setting; set your own only to use your own OAuth App). An organization may ask an owner to approve it.
+An instance that had a GitHub token in the vault (`github_token`) is already signed in with it.
+
+**Advanced: your own GitHub App (lets agents build and ship code).** Optional, but required for agents to push, open pull
+requests, merge and create repositories on GitHub. Agents act on GitHub as an App owned by an **agents org**, never as you.
 
 1. [org admin: GitHub] Create a GitHub organization for agent-built repos, for example `acme-agents`. You must be an
    owner of it.
-2. Name it: if `GITHUB_AGENTS_ORG=acme-agents` was in `person.env`, setup already wrote it. Otherwise add
-   `github_agents_org: acme-agents` to `instance.yaml` under `settings:`, commit, push and apply (step 7), or pass the org
-   to the script below. The setting only tells the script which org to make the App for.
-3. Create the App. The script serves a one-time plain-http page on port 8765, so give it an address your browser
-   can reach, such as the server's tailnet IP:
-   ```sh
-   cd ~/aidenhq && AIDENHQ_SETUP_HOST=$(tailscale ip -4) node ops/github-app-setup.mjs
-   ```
-   Open the printed URL, press **Create on GitHub** and approve [human]. The App id and private key are saved in the
-   vault under `github-app/` and never printed.
-4. Install the App on `acme-agents` with **All repositories**, using the link the script prints [human].
-5. Connect it: `ops/apply-config.sh && systemctl --user restart aidenhq-kernel`. The script recorded the org in `.env`
-   (`AIDENHQ_GITHUB_AGENTS_ORG`), which is what "GitHub is connected" means: until then the `codehost-github` module runs
-   no container and agents keep every repository on this server (`local/<name>`). From now on new repositories go to
-   `acme-agents`; the ones already on this server stay there and keep working.
+2. On the GitHub setup page's advanced part, press **Create the GitHub App** (the kernel's `/setup/github-app`, signed in as
+   an admin), name the org (pre-filled from `github_agents_org` or `aidenhq-<instance_name>`), press **Create on GitHub** and
+   approve [human]. You come back to AidenHQ; the App id and private key go straight into the vault under `github-app/` and
+   are never shown.
+3. Install the App on `acme-agents` with **All repositories**, using the link on that page [human].
+4. Apply (step 7). Creating the App recorded the org in `.env` (`AIDENHQ_GITHUB_AGENTS_ORG`), which is what "GitHub is
+   connected" means: until then the github module's code host runs no container and agents keep every repository on this
+   server (`local/<name>`). From now on new repositories go to `acme-agents`; the ones already on this server stay there and
+   keep working.
 
 To let it open PRs on repos in another org (say your company's), an owner there installs the same App on selected
 repositories; then add that org to `github_orgs` in `instance.yaml`. Agents may then create repositories there too (no approval); an org without the App fails loudly, and a stranger's install of the public App changes nothing.
@@ -470,7 +473,7 @@ an `ops/setup.sh` host.
 |---|---|
 | Google (Calendar, Drive, Gmail) | On an `ops/setup.sh` host: Connect Google on the board. By hand: `scripts/google-auth.sh <client.json>` with a Desktop-app OAuth client, once per account (`--email`, `--primary`). |
 | Slack (read) | Open its setup on the board (`#/setup/slack`): paste the Slack app's Client ID and press Connect. |
-| GitHub (read) | Open its setup on the board (`#/setup/github`) and paste a read-only token. |
+| GitHub | Open its setup on the board (`#/setup/github`), press Connect GitHub and type the code at github.com/login/device. The GitHub App (pushes, PRs, merges) is the same page's advanced part (step 8). |
 | Glean, Jira, Grafana, ClickHouse, Primer | Press Connect on the board (Settings, Connections, or the module's page). Glean, Grafana and Primer ask for their own address in the same dialog; Jira and ClickHouse ask for nothing. Jira's site URL stays the `jira_url` setting. Grafana with `grafana_source: local` needs no sign-in. |
 
 Sign-ins started on the board (Glean, Jira, Grafana Cloud, ClickHouse, Primer, HubSpot) return to a loopback address,
@@ -500,9 +503,9 @@ once the key is there, in `tailscale` exposure).
 
 ## GitHub App for the code host
 
-See step 8. The code host module updates repositories in the agents organization (and `aidenhq create-repo` creates repositories there, and in any `github_orgs` org the App is installed on, at Tier 0) (`github_agents_org`, or
-`aidenhq-<instance_name>`) as a GitHub App, not as a person. `ops/github-app-setup.mjs` needs `AIDENHQ_SETUP_HOST`
-(the address your browser opens; it serves a one-time page on port 8765). Other organizations install the same App
+See step 8. The github module's code host updates repositories in the agents organization (and `aidenhq create-repo` creates repositories there, and in any `github_orgs` org the App is installed on, at Tier 0) (`github_agents_org`, or
+`aidenhq-<instance_name>`) as a GitHub App, not as a person. The App is created from the kernel's admin pages
+(`/setup/github-app`, linked from the GitHub setup page); only a signed-in admin starts it. Other organizations install the same App
 on selected repositories; list them in `github_orgs` in
 `instance.yaml`. The App asks for **Workflows: write** as well as Contents and Pull requests: the code host mints each token
 narrowed to the permissions that one push or merge needs, and GitHub refuses a push that touches `.github/workflows/`

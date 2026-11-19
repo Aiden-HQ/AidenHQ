@@ -12,7 +12,7 @@ and the computer launcher are systemd user units on the host itself.
                                │                       │               shared connections (Google, Slack, Glean,
                                │                       │               Jira, GitHub, Primer, tasks, apps)
                                │                       ▼
-                               │               codehost-github ── push/merge gates
+                               │               github (code host) ── push/merge gates
                                └────────────── apps-mcp ── sandboxed apps (warehouse, ...)
 ```
 
