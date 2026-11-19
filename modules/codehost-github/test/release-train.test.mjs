@@ -234,12 +234,13 @@ test("a stranded bump whose apply failed is swept and settled, with no flight st
 
 test("a stranded bump with no apply card at all is settled once it is past the batch window, not before", async () => {
   const f = idle(fakes());
-  const clock = { t: new Date("2026-11-18T10:00:00Z") };
-  stranded(f, { source: "release:instance:1795025189923", state: null, createdAt: "2026-11-18T09:50:00Z" });
+  // The runner's stamp is 18:06:29.923Z; the control plane's createdAt a moment after it, as its Date.now()-then-POST produces.
+  const clock = { t: new Date("2026-11-18T18:10:00Z") };
+  stranded(f, { source: "release:instance:1795025189923", state: null, createdAt: "2026-11-18T18:06:30.500Z" });
   const t = train(mkdtempSync(join(tmpdir(), "train-")), f, clock);
   await t.step();
   assert.deepEqual(f.k.closed, [], "inside the window a filing may still be on its way");
-  clock.t = new Date("2026-11-18T10:20:00Z");
+  clock.t = new Date("2026-11-18T18:30:00Z");
   await t.step();
   assert.deepEqual(f.k.closed.map((c) => [c.task, c.status]), [["t-release:instance:1795025189923", "done"]]);
   assert.match(f.k.closed[0].body, /\*\*Not landed:\*\* no apply card was ever filed\. The next merge to the product files the next bump\.$/);

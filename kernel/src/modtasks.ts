@@ -20,7 +20,13 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export const RELEASE_SOURCE = "release:instance:";
 const RELEASE_MARK = /<!--\s*source:(release:instance:(?:[0-9a-f]{40}|\d+))\s*-->/;
 /** The runner-era stamp alone (a millisecond count, never the train's 40-hex sha): the only card-less bump a close may settle. */
-const RUNNER_MARK = /<!--\s*source:release:instance:\d+\s*-->/;
+const RUNNER_MARK = /<!--\s*source:release:instance:(\d+)\s*-->/;
+/** The runner stopped filing pin bumps when the big switch landed (#646, 03ecfcda at 2026-11-18T22:23:32+04:00). A task the
+ * control plane says was created after it cannot be a runner-era bump, whatever its description claims: that boundary is what
+ * keeps this card-less path to the legacy family instead of trusting a marker anyone can type. */
+const RUNNER_RETIRED = Date.parse("2026-11-18T18:23:32Z");
+/** A runner bump's marker is `Date.now()` taken just before its POST: the control plane's own createdAt lands a moment after it. */
+const RUNNER_WINDOW_MS = 60_000;
 /** The code host files these; the family is never opened up to another module. */
 const RELEASE_MODULE = "codehost-github";
 
@@ -30,7 +36,7 @@ export class TaskError extends Error {
   constructor(status: number, message: string) { super(message); this.status = status; }
 }
 
-export function createModuleTasks({ db, owner, agents, rubric, applies = () => [], log = () => {} }: {
+export function createModuleTasks({ db, owner, agents, rubric, applies = () => [], ownerUser = async () => undefined, log = () => {} }: {
   /** The kernel's database: which tasks were filed graded, by which module (the finish check holds one with no grade row). */
   db: DatabaseSync;
   owner: Api;
@@ -38,6 +44,8 @@ export function createModuleTasks({ db, owner, agents, rubric, applies = () => [
   agents: () => Record<string, { roles?: string[] } | undefined>;
   /** The kernel.apply records filed on a task (newest first), with the module that filed each. */
   applies?: (task: string) => { module: string }[];
+  /** The owner's own control-plane user (`/api/cli-auth/me`): the only creator a card-less runner bump may have. */
+  ownerUser?: () => Promise<string | undefined>;
   /** Files the grading rubric of a task the module filed (checks.ts rubric), as that module. */
   rubric?: (task: { id: string; identifier?: string }, module: string, b: { rubric: string[]; deliverable: unknown }) => Promise<void>;
   log?: (msg: string, f?: Record<string, unknown>) => void;
@@ -55,7 +63,7 @@ export function createModuleTasks({ db, owner, agents, rubric, applies = () => [
     // `uncarded` is its own, narrower path for the one card-less task the sweep settles (the runner's ms stamp); the ownership
     // guard itself never admits a task with no kernel.apply, so a record-less bump can never pass it by vacuous truth.
     const own = String(r.json.description ?? "").includes(MODULE_TASK(module));
-    const ok = !r.json.createdByAgentId && (own || releaseBump(module, r.json) || (b.uncarded === true && runnerBumpUncarded(module, r.json)));
+    const ok = !r.json.createdByAgentId && (own || releaseBump(module, r.json) || (b.uncarded === true && (await runnerBumpUncarded(module, r.json))));
     if (!ok) throw new TaskError(403, `${r.json.identifier ?? id} isn't a task ${module} filed`);
     if (["done", "cancelled"].includes(r.json.status)) return { status: String(r.json.status), already: true };
     const u = await owner("PATCH", `/api/issues/${encodeURIComponent(id)}`, { status: b.status, comment: `${body}\n\n<!-- aidenhq:job=${module.replace(/[^\w-]/g, "")} kind=status -->` });
@@ -78,14 +86,26 @@ export function createModuleTasks({ db, owner, agents, rubric, applies = () => [
 
   /**
    * The one bump that legitimately has no card: the runner filed it straight through the control plane with its millisecond
-   * stamp (`release:instance:<ms>`) and never carded it. The candidate sweep settles exactly that task, once it is past the
-   * batch window, with "no apply card was ever filed". A separate predicate, never an empty `every()`: a 40-hex bump with no
-   * card is the current train's (it carries the module marker, closed above) and a 40-hex task without that marker is refused.
+   * stamp (`release:instance:<ms>`) and never carded it. The sweep settles exactly that task, once it is past the batch window,
+   * with "no apply card was ever filed".
+   *
+   * The marker alone proves nothing (anyone can type it), so this rests on the control plane's own record of the task: it was
+   * filed by the owner's own control-plane user (read from `/api/cli-auth/me`, never the task's text) and by no agent, created
+   * before the runner retired, and its createdAt follows its marker's stamp by under a minute — the order the runner's own
+   * `Date.now()` then POST produces, which a description edited after the fact cannot hold. A task created since the switch, or
+   * one an agent or another user created, is never the runner's, and a 40-hex (train-era) task is closed by the rule above.
+   * Never an empty `every()`.
    */
-  function runnerBumpUncarded(module: string, task: { id: string; description?: unknown }) {
+  async function runnerBumpUncarded(module: string, task: { id: string; description?: unknown; createdAt?: unknown; createdByUserId?: unknown; createdByAgentId?: unknown }) {
     const description = String(task.description ?? "");
     if (module !== RELEASE_MODULE || !RUNNER_MARK.test(description) || /<!--\s*aidenhq-module:/.test(description)) return false;
-    return applies(task.id).length === 0;
+    if (applies(task.id).length > 0) return false;
+    const me = await ownerUser();
+    if (!me || task.createdByUserId !== me || task.createdByAgentId) return false;
+    const stamp = Number(RUNNER_MARK.exec(description)![1]);
+    const created = Date.parse(String(task.createdAt ?? ""));
+    if (!Number.isFinite(stamp) || !Number.isFinite(created)) return false;
+    return created < RUNNER_RETIRED && created >= stamp && created - stamp <= RUNNER_WINDOW_MS;
   }
 
   /**
