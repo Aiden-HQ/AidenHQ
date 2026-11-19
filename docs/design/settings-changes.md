@@ -79,7 +79,8 @@ the Steward job's caller assertion; the kernel reads the job from its own token,
 - **Scope**: members' `repos` and `teams.<t>.routing.weights` on existing teams and members, within the one team schema
   (weights 0 to 10, load at least 1). One gate, `routingDiff` in `apply-tier.ts`, proves a diff is only that: the writer
   refuses anything else, and the apply planner proposes Tier 1 `routing-only` for a commit this loop wrote (and refuses one
-  that moves more). Any other `teams` change keeps its own rules (the panel's; a day cap the owner's).
+  that moves more), only while its experiment is live and only as filed by the experiment's agent on its own task: anyone
+  else filing the same commit gets the normal `teams` rules. Any other `teams` change keeps its own rules (the panel's; a day cap the owner's).
 - **Filing** (`routing_tune`): `{ base_sha, team, weights?, repos?, decisions, hypothesis, revert }`. The kernel writes the
   commit with the code host and files one `kernel.apply` with the Steward as its requester (no owner identity, no updater
   exemption). `computeTier` alone sets the tier: under autonomy `full` the AI reviewer approves it; with autonomy off or
@@ -87,11 +88,13 @@ the Steward job's caller assertion; the kernel reads the job from its own token,
   `autonomy: full`, so it is the instance's autonomy that decides. The card leads with the
   kernel's notes: the leaves, the replay, the revert criterion and the Steward's hypothesis, fenced as data.
 - **Limits** (kernel.db `routing_experiments`, held by unique indexes): one open experiment per instance, one proposal per
-  UTC day. No minimum sample or wait before the next change (owner, 2026-11-19: active discovery). A change the review or the
-  owner turned down can't be filed again unchanged.
+  UTC day. No minimum sample or wait before the next change (owner, 2026-11-19: active discovery). After the review or the
+  owner turns a team's proposal down, that team gets no other for 3 days, whatever its values (no review shopping), and the
+  same change can't be filed again unchanged.
 - **Revert** (`routing_judge`): the criterion is a finite schema (`metric`: `reopen_rate`, `cycle_hours` or `blocked_rate`;
   `min_sample`; `threshold`; `deadline_days`). Past the threshold, the kernel files a rollback of only the experiment's own
-  leaves still at the values it applied, through the same reviewed apply, so a later owner change stays. At the deadline it
+  leaves still at the values it applied, through the same reviewed apply, so a later owner change stays. A rollback that
+  can't be filed any more (the team gone, or main no longer a plain routing diff) closes the experiment as superseded. At the deadline it
   is kept, or closed as inconclusive with too small a sample.
 
 ## Open points (from the architecture cross-check)

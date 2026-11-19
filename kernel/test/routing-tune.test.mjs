@@ -57,6 +57,7 @@ function world({ autonomy = "full", reviewer = "approve" } = {}) {
   const checkout = join(dir, "checkout");
   git(dir, "clone", "-q", bare, checkout);
   const host = localApply({ bare, instanceRepo: REPO });
+  const g = structuredClone(grants);
   const records = openRecords(join(dir, "kernel.db"));
   const db = records.db;
   const issues = {};
@@ -71,7 +72,7 @@ function world({ autonomy = "full", reviewer = "approve" } = {}) {
     instanceRepo: () => REPO, read: (s) => host.read(s),
     product: { onMain: async () => true, isAncestor: async () => true, log: async () => "" },
     modules: () => ({}), roles: () => ({}), connections: () => ({}), moduleApps: () => [], verifyRelease: async () => null,
-    notes: (sha) => routing.notes(sha),
+    notes: (sha, requester, task) => routing.notes(sha, requester, task),
   });
   const units = {};
   const applies = createApply({
@@ -88,7 +89,7 @@ function world({ autonomy = "full", reviewer = "approve" } = {}) {
     onTask: { open: async () => true, notify: async () => {} }, replay: async () => ({ ok: false, text: "" }),
     native: { "kernel.apply": applies.execute }, planners: { "kernel.apply": planner }, resume: ["kernel.apply"], autonomy: () => autonomy,
   });
-  routing = createRouting({ db, records, instanceRepo: () => REPO, main: checkoutMain(checkout), write: (w) => host.write(w), owner, grants: () => grants, file: (args, task, requester) => writes.fileKernel("kernel.apply", { args, task, requester }) });
+  routing = createRouting({ db, records, instanceRepo: () => REPO, main: checkoutMain(checkout), write: (w) => host.write(w), owner, grants: () => g, file: (args, task, requester) => writes.fileKernel("kernel.apply", { args, task, requester }) });
   // A decision the router recorded (wakes.ts): the task named acme/api; kai (no repos) won over mina (acme/web) on the key.
   let n = 0;
   const decide = ({ at = Date.parse(`${new Date().toISOString().slice(0, 10)}T00:00:00Z`) - 3_600_000, blocked = false, status = "done" } = {}) => {
@@ -100,7 +101,17 @@ function world({ autonomy = "full", reviewer = "approve" } = {}) {
   };
   const yamlAt = (ref) => YAML.parse(git(bare, "show", `${ref}:instance.yaml`));
   const land = async (id) => { for (let i = 0; i < 200 && records.get(id).state !== "done"; i++) await settle(); return records.get(id); };
-  return { bare, db, records, writes, routing, decide, yamlAt, land, reviewed, issues };
+  // The owner edits instance.yaml straight on main.
+  const ownerEdit = (f) => {
+    const o = mkdtempSync(join(dir, "owner-"));
+    git(o, "clone", "-q", bare, ".");
+    writeFileSync(join(o, "instance.yaml"), f(execFileSync("cat", [join(o, "instance.yaml")], { encoding: "utf8" })));
+    git(o, "commit", "-qam", "owner edit");
+    git(o, "push", "-q", "origin", "main");
+  };
+  // A task routed since the change applied, done after a grader's reopen: enough for a reopen_rate revert.
+  const reopened = () => { const t = decide({ at: Date.now() }); db.prepare("INSERT INTO events (id, type, at, data) VALUES (?, 'finish.verdict', ?, ?)").run(`e-${t}`, new Date().toISOString(), JSON.stringify({ task: t, check: "grading.grade", verdict: "reopen" })); };
+  return { bare, db, records, writes, routing, decide, yamlAt, land, reviewed, issues, grants: g, ownerEdit, reopened };
 }
 const REVERT = { metric: "blocked_rate", min_sample: 1, threshold: 0.5, deadline_days: 3 };
 
@@ -121,6 +132,13 @@ test("the Steward's change is written by the kernel and filed as one Tier 1 rout
   const [before, after] = [w.yamlAt(base), w.yamlAt(r.sha)];
   assert.deepEqual(after, { ...before, teams: { engineering: { ...before.teams.engineering, members: { kai: { name: "Kai" }, mina: { name: "Mina", repos: ["acme/*"] } }, routing: { weights: { repo: 4 } } } } });
   assert.match(git(w.bare, "show", `${r.sha}:instance.yaml`), /^# the acme instance$/m, "comments stay");
+  // Its routing-only treatment isn't borrowable: another agent, or the Steward on another task, filing the same commit gets
+  // the normal teams rules (the panel's) and no kernel notes.
+  for (const [who, task] of [[{ ...STEWARD, agent: "id-eng", key: "engineer" }, "t-steward"], [STEWARD, "t-other"]]) {
+    const b = await w.writes.fileKernel("kernel.apply", { args: { repo: REPO, branch: `settings/routing-${r.experiment}`, sha: r.sha }, task, requester: who });
+    assert.deepEqual([b.rule, b.panel], ["teams", true]);
+    assert.doesNotMatch(b.card.details, /Routing experiment/);
+  }
   await w.writes.review(r.record, { input: { tier: 1, rule: "routing-only", reason: "routing" }, request: {} });
   assert.equal((await w.land(r.record)).state, "done");
   assert.equal(git(w.bare, "rev-parse", "main"), r.sha);
@@ -136,12 +154,14 @@ test("autonomy off: the reviewer's yes goes on to the owner; the owner's no clos
   const r = await w.routing.tune(STEWARD, "t-steward", { base_sha, team: "engineering", weights: { continuity: 2 }, decisions: [t], hypothesis: "continuity matters", revert: REVERT });
   const { record } = await w.writes.review(r.record, { input: { tier: 1, rule: "routing-only", reason: "routing" }, request: {} });
   assert.equal(record.state, "owner");
-  // The owner's no closes the experiment; one proposal a day still holds, and the same change is never filed again unchanged.
+  // The owner's no closes the experiment, and the team gets no other proposal for 3 days, whatever its values (no review
+  // shopping); after that, the same change is still never filed again unchanged.
   w.writes.decide(r.record, { digest: record.digest, decision: "reject", by: "owner:telegram", via: "telegram" });
-  const again = { base_sha, team: "engineering", weights: { continuity: 2 }, decisions: [t], hypothesis: "again", revert: REVERT };
-  await assert.rejects(w.routing.tune(STEWARD, "t-steward", again), /already proposed today/);
-  w.db.prepare("UPDATE routing_experiments SET day = '2000-01-01'").run();
-  await assert.rejects(w.routing.tune(STEWARD, "t-steward", again), /was not approved as experiment/);
+  const next = { base_sha, team: "engineering", weights: { continuity: 3 }, decisions: [t], hypothesis: "a little more", revert: REVERT };
+  w.db.prepare("UPDATE routing_experiments SET day = '2000-01-01'").run(); // the next day
+  await assert.rejects(w.routing.tune(STEWARD, "t-steward", next), /was turned down: no routing change for that team until/);
+  w.db.prepare("UPDATE routing_experiments SET rejected_at = rejected_at - 4 * 86400000").run();
+  await assert.rejects(w.routing.tune(STEWARD, "t-steward", { ...next, weights: { continuity: 2 } }), /was not approved as experiment/);
 });
 
 test("refused before anything is written: a stale base, an unknown member, out-of-bounds weights, other fields, uncited evidence; two at once file one", async () => {
@@ -242,4 +262,28 @@ test("POST /v1/routing/<op>: only a kernel.routing module, serving a routing-tun
   const bare = await fetch(`${k.url}/v1/routing/judge`, { method: "POST", headers: { authorization: "Bearer fleet-key" }, body: "{}" });
   assert.equal(bare.status, 401, "no call in flight");
   assert.equal(seen.length, 1);
+});
+
+test("a rollback that can't be filed any more closes the experiment, so the loop goes on: the team gone, or main no longer a plain routing diff", async () => {
+  for (const breakIt of [(w) => delete w.grants["id-team"], (w) => w.ownerEdit((text) => `%YAML 1.1\n---\n${text}`)]) {
+    const w = world();
+    const t = w.decide();
+    const { base_sha } = await w.routing.evidence({});
+    const r = await w.routing.tune(STEWARD, "t-steward", { base_sha, team: "engineering", weights: { repo: 4 }, decisions: [t], hypothesis: "h", revert: { metric: "reopen_rate", min_sample: 1, threshold: 0.5, deadline_days: 3 } });
+    await w.writes.review(r.record, { input: { tier: 1, rule: "routing-only", reason: "routing" }, request: {} });
+    await w.land(r.record);
+    await w.routing.judge(STEWARD, "t-steward");
+    w.reopened();
+    breakIt(w);
+    const j = await w.routing.judge(STEWARD, "t-steward");
+    assert.equal(j.closed?.state, "superseded", JSON.stringify(j));
+    assert.deepEqual(await w.routing.judge(STEWARD, "t-steward"), { open: null });
+  }
+});
+
+test("the routing gate refuses a %YAML directive and a YAML 1.1 merge key", () => {
+  const moved = INSTANCE.replace("kai: { name: Kai }", "kai: { name: Kai, repos: [acme/api] }");
+  assert.ok("leaves" in routingDiff(INSTANCE, moved));
+  assert.ok("problem" in routingDiff(INSTANCE, `%YAML 1.1\n---\n${moved}`));
+  assert.ok("problem" in routingDiff(INSTANCE, moved.replace("kai: { name: Kai, repos: [acme/api] }", "kai: { <<: { name: Kai }, repos: [acme/api] }")));
 });

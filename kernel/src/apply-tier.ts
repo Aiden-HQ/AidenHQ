@@ -272,7 +272,7 @@ function fixedPart(t: Record<string, any>): Record<string, any> {
 /** Whether a YAML node holds an alias or a merge key: a value shared with another place, which a leaf-wise check can't see. */
 function shares(node: unknown): boolean {
   let found = false;
-  if (node) YAML.visit(node as YAML.Node, { Alias: () => ((found = true), YAML.visit.BREAK), Pair: (_k, p) => { if (YAML.isScalar(p.key) && p.key.value === "<<") return ((found = true), YAML.visit.BREAK); } });
+  if (node) YAML.visit(node as YAML.Node, { Alias: () => ((found = true), YAML.visit.BREAK), Pair: (_k, p) => { if (YAML.isScalar(p.key) && (p.key.value === "<<" || typeof p.key.value === "symbol")) return ((found = true), YAML.visit.BREAK); } });
   return found;
 }
 
@@ -285,6 +285,7 @@ function shares(node: unknown): boolean {
 export function routingDiff(baseText: string | undefined, headText: string | undefined): { leaves: Leaf[] } | { problem: string } {
   const docs = [baseText, headText].map((t) => YAML.parseDocument(String(t ?? "")));
   if (docs.some((d) => d.errors.length)) return { problem: "instance.yaml doesn't parse (or repeats a key)" };
+  if ([baseText, headText].some((t) => /^%YAML/m.test(String(t ?? "")))) return { problem: "instance.yaml carries a %YAML directive" };
   if (docs.some((d) => shares(d.get("teams", true)))) return { problem: "teams: uses an alias or a merge key" };
   const [b, h] = docs.map((d) => (d.toJS() ?? {}).teams);
   if (!isDict(b) || !isDict(h)) return { problem: "teams: must be a map on both sides" };
@@ -456,7 +457,7 @@ export function createApplyPlanner(h: {
    */
   verifyRelease(baseText: string, name: string, sha: string): Promise<string | null>;
   /** What the kernel itself says of this commit, shown and reviewed with its diff: a routing experiment's code-made evidence (routing-tune.ts). */
-  notes?(sha: string): string | undefined;
+  notes?(sha: string, requester: Requester | undefined, task: string | undefined): string | undefined;
 }) {
   /** Whether this is the updater's own release move, to exactly the instance.yaml its verification of that release writes. */
   async function updaterMove(requester: Requester | undefined, baseText: string | undefined, headText: string | undefined): Promise<boolean> {
@@ -465,7 +466,7 @@ export function createApplyPlanner(h: {
     if (typeof r?.name !== "string" || typeof r?.sha !== "string") return false;
     return (await h.verifyRelease(baseText, r.name, r.sha).catch(() => null)) === headText;
   }
-  return async function plan({ args, requester, workspace }: { args: unknown; requester?: Requester; workspace?: string }): Promise<ApplyPlan> {
+  return async function plan({ args, requester, task, workspace }: { args: unknown; requester?: Requester; task?: string; workspace?: string }): Promise<ApplyPlan> {
     const a = (args ?? {}) as { repo?: unknown; branch?: unknown; sha?: unknown };
     if (typeof a.repo !== "string" || typeof a.branch !== "string" || typeof a.sha !== "string") throw new Refused("name the commit to apply: {repo, branch, sha}");
     // The configured instance repo, never the requester's spelling of it: what is read, tiered by path and landed.
@@ -485,7 +486,7 @@ export function createApplyPlanner(h: {
     const bump = await productBump(productPin(baseI), productPin(headI), h.product);
     if (bump && "error" in bump) throw new Refused(bump.error);
     const st = { ...(c.files.includes("instance.yaml") ? h.modules(baseI, headI) : {}) } as ReturnType<typeof moduleTierState> & { remote?: string };
-    const notes = h.notes?.(a.sha);
+    const notes = h.notes?.(a.sha, requester, task);
     // The routing learning loop's commit: only instance.yaml's teams may move (the rules refuse anything else).
     if (notes && (c.files.length !== 1 || c.files[0] !== "instance.yaml" || changedKeys(parse(baseI), parse(headI)).some((k) => k !== "teams"))) throw new Refused("a routing change moves only instance.yaml's teams");
     // The kind's floor is 1 (every apply is read by the reviewer), so the rules' Tier 0 trial exceptions (ownerStarted,
@@ -525,7 +526,7 @@ export function hostPlanner({ repo, instanceRepo, configDir, read, grants, conne
   verifyRelease: (baseText: string, name: string, sha: string) => Promise<string | null>;
   grants: () => Record<string, { key?: string; roles?: string[] } | undefined>;
   connections: () => Record<string, { tools: { read: string[]; write: string[]; destructive: string[] } }>;
-  notes?: (sha: string) => string | undefined;
+  notes?: (sha: string, requester: Requester | undefined, task: string | undefined) => string | undefined;
 }): ApplyPlanner {
   return createApplyPlanner({
     instanceRepo, read, notes, product: hostProduct(repo), modules: (b, h) => moduleTierState(b, h, repo), connections, verifyRelease,

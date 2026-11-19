@@ -134,7 +134,7 @@ const applyHost = hostApply({ repo, stateDir: env("AIDENHQ_STATE_DIR", path.join
   local: () => (localHost() && repos().instance?.toLowerCase().startsWith(`${LOCAL_ORG}/`) ? { bare: localCode.bare(repos().instance!), repo: repos().instance!, ingest: (s) => ingest(tasksDir, localScratch, localCode.bare(s.repo), s.workspace, s) } : undefined) });
 const applies = createApply({ db: records.db, log, ...applyHost });
 // Its planner (apply-tier.ts): the same code host read, the product checkout, and the compiled grants, connections and apps.
-const applyPlanner = hostPlanner({ repo, instanceRepo: () => repos().instance, configDir, read: applyHost.codehost.read, grants: () => grantsTable().agents ?? {}, connections, verifyRelease: runVerify(repo), notes: (sha) => routing.notes(sha) });
+const applyPlanner = hostPlanner({ repo, instanceRepo: () => repos().instance, configDir, read: applyHost.codehost.read, grants: () => grantsTable().agents ?? {}, connections, verifyRelease: runVerify(repo), notes: (sha, requester, task) => routing.notes(sha, requester, task) });
 const writes = createWrites({
   records, registry, connections, secret, resolver, reviews, onTask, log, replay: (r) => replay(r as never), repos, paths: pathInventory,
   autonomy: () => (["off", "tier0", "full"].includes(grantsTable().autonomy as string) ? grantsTable().autonomy : "off") as never,

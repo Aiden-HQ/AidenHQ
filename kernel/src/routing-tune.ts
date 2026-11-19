@@ -70,17 +70,19 @@ export function replay(rows: { task: string; repos: string[]; snapshot: RouteSna
 
 const DDL = `CREATE TABLE IF NOT EXISTS routing_experiments (id TEXT PRIMARY KEY, team TEXT NOT NULL, requester TEXT NOT NULL, task TEXT NOT NULL,
   base TEXT NOT NULL, sha TEXT, leaves TEXT NOT NULL, content TEXT NOT NULL, criterion TEXT NOT NULL, notes TEXT NOT NULL, record TEXT,
-  state TEXT NOT NULL, day TEXT NOT NULL, at INTEGER NOT NULL, applied_at INTEGER, rollback TEXT, rollback_sha TEXT, rollback_notes TEXT, verdict TEXT);
+  state TEXT NOT NULL, day TEXT NOT NULL, at INTEGER NOT NULL, applied_at INTEGER, rollback TEXT, rollback_sha TEXT, rollback_task TEXT, rollback_notes TEXT, verdict TEXT, rejected_at INTEGER);
 CREATE UNIQUE INDEX IF NOT EXISTS routing_one_open ON routing_experiments ((1)) WHERE state IN ('filing', 'filed', 'applied', 'reverting');
 CREATE UNIQUE INDEX IF NOT EXISTS routing_one_a_day ON routing_experiments (day) WHERE state != 'abandoned';`;
 const OPEN = ["filing", "filed", "applied", "reverting"];
 const CLOSED_RECORD = ["rejected", "stale", "cancelled", "failed", "unknown"];
-type Row = { id: string; team: string; requester: string; task: string; base: string; sha: string | null; leaves: string; content: string; criterion: string; notes: string; record: string | null; state: string; day: string; at: number; applied_at: number | null; rollback: string | null; rollback_sha: string | null; rollback_notes: string | null; verdict: string | null };
+type Row = { id: string; team: string; requester: string; task: string; base: string; sha: string | null; leaves: string; content: string; criterion: string; notes: string; record: string | null; state: string; day: string; at: number; applied_at: number | null; rollback: string | null; rollback_sha: string | null; rollback_task: string | null; rollback_notes: string | null; verdict: string | null; rejected_at: number | null };
 
 const KEY = /^[a-z][a-z0-9-]{0,39}$/;
 const SHA = /^[0-9a-f]{40}$/;
 const TASK = /^[0-9a-f-]{36}$/;
 const DAY_MS = 86_400_000;
+/** After a team's proposal is rejected (the reviewer's no or the owner's), no proposal for that team for this long, whatever its values. */
+const REJECT_COOLDOWN_MS = 3 * DAY_MS;
 const fence = (t: string) => { const f = "`".repeat(Math.max(3, ...[...t.matchAll(/`+/g)].map((m) => m[0].length + 1))); return `${f}\n${t}\n${f}`; };
 const show = (v: unknown) => (v === undefined ? "(unset)" : JSON.stringify(v));
 
@@ -143,7 +145,7 @@ export function createRouting(d: RoutingDeps) {
       const rec = d.records.get(String(r.state === "filed" ? r.record : r.rollback));
       if (!rec) continue;
       if (r.state === "filed" && rec.state === "done") q("UPDATE routing_experiments SET state = 'applied', applied_at = ? WHERE id = ?").run(Date.parse(rec.updated_at) || now(), r.id);
-      else if (r.state === "filed" && CLOSED_RECORD.includes(rec.state)) q("UPDATE routing_experiments SET state = 'rejected', verdict = ? WHERE id = ?").run(`its apply ${rec.id} ended ${rec.state}`, r.id);
+      else if (r.state === "filed" && CLOSED_RECORD.includes(rec.state)) q("UPDATE routing_experiments SET state = 'rejected', verdict = ?, rejected_at = ? WHERE id = ?").run(`its apply ${rec.id} ended ${rec.state}`, rec.state === "rejected" ? Date.parse(rec.updated_at) || now() : null, r.id);
       else if (r.state === "reverting" && rec.state === "done") q("UPDATE routing_experiments SET state = 'reverted' WHERE id = ?").run(r.id);
       else if (r.state === "reverting" && CLOSED_RECORD.includes(rec.state)) q("UPDATE routing_experiments SET state = 'kept', verdict = ? WHERE id = ?").run(`${r.verdict ?? ""}; its rollback ${rec.id} ended ${rec.state}, so the change stays`.slice(0, 1000), r.id);
     }
@@ -246,6 +248,9 @@ export function createRouting(d: RoutingDeps) {
         if (!Array.isArray(b.decisions) || !b.decisions.length || b.decisions.length > 50 || b.decisions.some((t: unknown) => typeof t !== "string" || !TASK.test(t))) refuse("decisions: 1 to 50 task ids from routing_evidence");
         const unknown = (b.decisions as string[]).filter((t) => !q("SELECT 1 FROM team_routes WHERE task = ? AND team = ?").get(t, key));
         if (unknown.length) refuse(`decisions: ${unknown.slice(0, 3).join(", ")} isn't a recorded decision of team ${team}`);
+        // No review shopping: a team whose proposal was turned down gets no other for a while, whatever its values.
+        const no = q("SELECT id, rejected_at FROM routing_experiments WHERE team = ? AND rejected_at > ? ORDER BY rejected_at DESC").get(team, now() - REJECT_COOLDOWN_MS) as { id: string; rejected_at: number } | undefined;
+        if (no) refuse(`experiment ${no.id} for team ${team} was turned down: no routing change for that team until ${new Date(no.rejected_at + REJECT_COOLDOWN_MS).toISOString()}`);
         const o = open();
         if (o) refuse(`experiment ${o.id} (team ${o.team}) is still ${o.state}: one experiment at a time (routing_judge settles it)`);
         if ((q("SELECT COUNT(*) AS n FROM routing_experiments WHERE day = ? AND state != 'abandoned'").get(day(now())) as { n: number }).n) refuse("a routing change was already proposed today (UTC): one a day");
@@ -301,13 +306,14 @@ export function createRouting(d: RoutingDeps) {
         if (!x) return { open: null };
         if (x.state !== "applied") return { open: view(x), note: x.state === "filed" ? "its apply is still waiting for review or to land" : "its rollback is still waiting for review or to land" };
         const c = JSON.parse(x.criterion) as Criterion;
-        const rows = await outcomes(recordKey(x.team), x.applied_at!, now() + 1);
-        const m = measure(c.metric, rows);
-        const close = (state: string, verdict: string) => { q("UPDATE routing_experiments SET state = ?, verdict = ? WHERE id = ?").run(state, verdict, x.id); return { open: null, closed: { id: x.id, state, verdict }, measured: m }; };
+        const close = (state: string, verdict: string, m?: unknown) => { q("UPDATE routing_experiments SET state = ?, verdict = ? WHERE id = ?").run(state, verdict, x.id); return { open: null, closed: { id: x.id, state, verdict }, ...(m ? { measured: m } : {}) }; };
+        const key = teams().find((t) => t.name === x.team)?.key;
+        if (!key) return close("superseded", `team ${x.team} is gone: nothing to judge or revert`);
+        const m = measure(c.metric, await outcomes(key, x.applied_at!, now() + 1));
         const over = m.sample >= c.min_sample && m.value !== null && m.value > c.threshold;
         const due = now() >= x.applied_at! + c.deadline_days * DAY_MS;
         if (!over && !due) return { open: view(x), measured: m, note: `measuring until ${new Date(x.applied_at! + c.deadline_days * DAY_MS).toISOString()}` };
-        if (!over) return m.sample >= c.min_sample ? close("kept", `${c.metric} ${m.value} at or under ${c.threshold} over ${m.sample} tasks`) : close("inconclusive", `only ${m.sample} of the ${c.min_sample} tasks needed by the deadline`);
+        if (!over) return m.sample >= c.min_sample ? close("kept", `${c.metric} ${m.value} at or under ${c.threshold} over ${m.sample} tasks`, m) : close("inconclusive", `only ${m.sample} of the ${c.min_sample} tasks needed by the deadline`, m);
         const verdict = `${c.metric} ${Math.round(m.value! * 1000) / 1000} above ${c.threshold} over ${m.sample} tasks`;
         // Only its own leaves, and only those still at the values it applied: a later change (the owner's) stays.
         const { base, texts } = await d.main(["instance.yaml"]);
@@ -315,11 +321,15 @@ export function createRouting(d: RoutingDeps) {
         const doc = YAML.parse(was) ?? {};
         const at = (p: string[]) => p.reduce<any>((o, k) => (isMap(o) ? o[k] : undefined), doc);
         const back = (JSON.parse(x.leaves) as Leaf[]).filter((l) => same(at(l.path), l.after));
-        if (!back.length) return close("superseded", `${verdict}, but every value it set has changed since: nothing to revert`);
-        const head = edited(was, back.map((l) => ({ path: l.path, value: l.before })));
-        checked(was, head);
+        if (!back.length) return close("superseded", `${verdict}, but every value it set has changed since: nothing to revert`, m);
+        // A rollback the team as it is now can't take (a member since removed): closed, so the loop goes on.
+        let head: string;
+        try { head = edited(was, back.map((l) => ({ path: l.path, value: l.before }))); checked(was, head); } catch (e) {
+          if (!(e instanceof Refused)) throw e;
+          return close("superseded", `${verdict}, but its rollback no longer fits the team (${e.message.slice(0, 300)})`, m);
+        }
         const notes = [`Rollback of routing experiment ${x.id} (team ${x.team}), decided by the kernel: ${verdict}, which its revert criterion (${c.metric} above ${c.threshold} over at least ${c.min_sample} tasks) calls a revert.`, `It restores only the experiment's own values still as it set them: ${back.map((l) => `${l.path.slice(1).join(".")} ${show(l.after)} → ${show(l.before)}`).join("; ")}`].join("\n");
-        q("UPDATE routing_experiments SET rollback_notes = ?, verdict = ? WHERE id = ?").run(notes, verdict, x.id);
+        q("UPDATE routing_experiments SET rollback_notes = ?, rollback_task = ?, verdict = ? WHERE id = ?").run(notes, task, verdict, x.id);
         const { repo, sha } = await commit(`settings/routing-${x.id}-revert`, base, head, `routing.tune: revert ${x.id} (team ${x.team})\n\nWritten by the kernel: ${verdict}.`);
         q("UPDATE routing_experiments SET rollback_sha = ? WHERE id = ?").run(sha, x.id);
         const rec = await d.file({ repo, branch: `settings/routing-${x.id}-revert`, sha }, task, requester);
@@ -329,10 +339,15 @@ export function createRouting(d: RoutingDeps) {
       });
     },
 
-    /** What the kernel says of a routing commit on its apply card (apply-tier's planner): the experiment's or rollback's notes. */
-    notes(sha: string): string | undefined {
-      const r = q("SELECT notes, rollback_notes, sha FROM routing_experiments WHERE sha = ? OR rollback_sha = ?").get(sha, sha) as { notes: string; rollback_notes: string | null; sha: string } | undefined;
-      return r ? (r.sha === sha ? r.notes : (r.rollback_notes ?? undefined)) : undefined;
+    /**
+     * What the kernel says of a routing commit on its apply card (apply-tier's planner), and so whether the planner treats it as
+     * the loop's own: only for the live experiment's commit (or rollback) filed by the experiment's agent on its own task.
+     * Anyone else filing the same commit, or a closed experiment's, gets nothing: the normal `teams` rules.
+     */
+    notes(sha: string, requester: Requester | undefined, task: string | undefined): string | undefined {
+      const r = q("SELECT * FROM routing_experiments WHERE (sha = ? AND state IN ('filing', 'filed')) OR (rollback_sha = ? AND state IN ('applied', 'reverting'))").get(sha, sha) as Row | undefined;
+      if (!r || !requester?.agent || requester.agent !== (JSON.parse(r.requester) as Requester).agent) return undefined;
+      return r.sha === sha ? (task === r.task ? r.notes : undefined) : (task === r.rollback_task ? (r.rollback_notes ?? undefined) : undefined);
     },
   };
 }
