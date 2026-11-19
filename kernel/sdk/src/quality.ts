@@ -1,6 +1,6 @@
 // Quality per approval tier: how often an agent change that landed was later reverted or tied to an incident, by who approved
 // it (ran at once, the AI reviewer alone, the reviewer panel, the owner). Pure: records and GitHub text in, a report out, so the
-// board's fleet summary and the report CLI (scripts/quality.mjs) share it.
+// board's fleet summary, the report CLI (scripts/quality.mjs) and the kernel's flow DORA (flow.ts) share it.
 // A revert or incident is linked to its original only by a PR number or a commit sha it names: exactly one agent change named
 // links it; several, a bare number that names no repository, or no reference at all is `unknown`, never a guess.
 
