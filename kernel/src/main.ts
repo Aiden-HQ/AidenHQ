@@ -75,7 +75,7 @@ import { ingest } from "../../modules/codehost-local/src/git.ts";
 import { localMergePass } from "./localmerge.ts";
 import { createJobTools } from "./jobtools.ts";
 import { createWakes, wakeNotice } from "./wakes.ts";
-import { createWorkspaceSweep } from "./workspaces.ts";
+import { createWorkspaceSweep, pruneSkillRuntimes } from "./workspaces.ts";
 import { createModuleTasks } from "./modtasks.ts";
 import { createWork } from "./work.ts";
 import { readEngines } from "./sandbox.ts";
@@ -345,8 +345,9 @@ const wakes = createWakes({
 setInterval(() => void wakes.poll(), (Number(env("AIDENHQ_WAKE_POLL_SECONDS", "")) || 60) * 1000).unref();
 // A closed task's workspace goes after CLOSED_DAYS (workspaces.ts): hourly, and once soon after start.
 const sweepWorkspaces = createWorkspaceSweep({ db: records.db, owner: ownerApi, workDir: sandbox.workDir, log });
-every(() => void sweepWorkspaces().catch((e: Error) => log("workspace sweep failed", { err: e.message })), 3_600_000);
-once(() => void sweepWorkspaces().catch((e: Error) => log("workspace sweep failed", { err: e.message })), 5 * 60_000);
+const sweepDisk = () => { void sweepWorkspaces().catch((e: Error) => log("workspace sweep failed", { err: e.message })); try { pruneSkillRuntimes({ companiesDir: path.join(dataDir, "paperclip/instances/default/companies"), log }); } catch (e) { log("skill runtime prune failed", { err: (e as Error).message }); } };
+every(sweepDisk, 3_600_000);
+once(sweepDisk, 60_000);
 // A stop: the jobs go on for the next kernel (KillMode=process); this one stops following them, offsets saved. A restart
 // (SIGUSR2) drains once the listeners are up (drain, below); before that it stops at once, as a stop does.
 const stop = (signal: string) => { log("stopping: jobs left running for the next kernel", { signal, jobs: jobs.running() }); jobs.detach(); process.exit(0); };
