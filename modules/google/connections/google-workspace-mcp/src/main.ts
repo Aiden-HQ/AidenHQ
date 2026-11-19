@@ -221,13 +221,14 @@ async function readJson(req: IncomingMessage): Promise<unknown> {
 }
 
 const StartSchema = z.object({ account: z.string().email().max(320).optional(), redirect_uri: z.string().url().max(200) }).strict();
-const FinishSchema = z.object({ state: z.string().min(16).max(100), code: z.string().min(4).max(2000) }).strict();
+// `error`: Google's own error from the redirect (the person refused, the project doesn't allow them), instead of a code.
+const FinishSchema = z.object({ state: z.string().min(16).max(100), code: z.string().min(4).max(2000).optional(), error: z.string().max(100).optional() }).strict();
 
 /** /auth/status, /auth/start and /auth/finish for the board. */
 async function handleAuth(req: IncomingMessage, path: string): Promise<[number, unknown]> {
   if (path === "/auth/status" && req.method === "GET") {
     if (fixturesDir) return [200, { accounts: [] }];
-    return [200, { accounts: multi?.authStatus() ?? [], ...(authError ? { error: authMessage() } : {}) }];
+    return [200, { accounts: multi?.authStatus() ?? [], client_type: reconnect.clientType(), ...(authError ? { error: authMessage() } : {}) }];
   }
   if (req.method !== "POST") return [405, { error: "method not allowed" }];
   try {
@@ -237,7 +238,8 @@ async function handleAuth(req: IncomingMessage, path: string): Promise<[number, 
     }
     if (path === "/auth/finish") {
       const a = FinishSchema.parse(await readJson(req));
-      const { email } = await reconnect.finish(a.state, a.code);
+      if (!a.code && !a.error) throw new ReconnectError("Google sent no code");
+      const { email } = await reconnect.finish(a.state, a.code ?? "", a.error);
       loadWorkspace();
       await checkAuth();
       log.info({ account: email }, "Google account connected from the board");
