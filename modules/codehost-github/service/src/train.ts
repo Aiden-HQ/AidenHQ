@@ -12,6 +12,7 @@
 // when the bump files (no description updates as merges land), and its assignment wakes the Platform Engineer once.
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { pinOwner } from "./aidenhq-sdk/pin-owner.ts";
 import { bumpInstance, trainDescription, trainStep } from "./release.mjs";
 
 type Gate = undefined | { wait: string } | { stop: string };
@@ -104,6 +105,8 @@ export function createReleaseTrain(o: TrainOptions) {
     try {
       if (s.flight) await follow(s);
       const instance = await o.github.text(o.instanceRepo, "instance.yaml");
+      // An instance that installs releases (a `release:` key) is the kernel's updater's: the train stays idle.
+      if (pinOwner(instance ?? "") !== "train") return;
       const pinned = /^product:[ \t]*["']?([0-9a-f]{40})["']?[ \t]*(?:#.*)?$/m.exec(instance ?? "")?.[1];
       const { tip, green } = await o.github.tip(o.productRepo);
       const d = trainStep({ tip, green, pinned, lastTried: s.lastTried, open: s.open, flight: s.flight, now: now().toISOString(), windowMinutes: o.windowMinutes });
