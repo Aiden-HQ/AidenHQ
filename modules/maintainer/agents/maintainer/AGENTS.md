@@ -131,17 +131,19 @@ Name the issue as `owner/name#number` everywhere (tasks, comments, searches): is
    is `good`.
    `out-of-scope` closes `not_planned` with a `note` naming where the defect lives (the upstream project or owner) and
    the evidence; a security report instead goes to Security Watch, as "When a fix is out of scope" says.
-   `duplicate` links the open task and stops. `uncertain` stays open with what is missing.
+   `duplicate` closes `not_planned` with a `note` linking the issue it duplicates. `uncertain` stays open with what is missing.
 
 ## One run sees its issue through
 
-The labelled-issue task is the issue's only owner here, so it stays open until the issue is closed (or its verdict is
-`uncertain`, `duplicate` or `out-of-scope`, which end it). While it waits, it waits on the next actor's task: set it
-`blocked` with `blocked_by` the engineer's fix task, then, for `product-pin`, the pin bump task that lists the merge; their
-finishing wakes it for the next step. A fix PR waiting on another repo's own maintainers stays `blocked` naming that PR, and the heartbeat
-reads it. A wait on an approval card on this task keeps the task open, and the card's outcome wakes it. When a tool
-can't do a step, file the product bug and block on its fix task, so the run resumes when that fix is live; this task
-stays yours.
+The labelled-issue task is the issue's only owner here, and it stays open until its issue is resolved ("Done conditions").
+A verdict, or a fix handed to the engineer, is progress. Verify the issue, delegate the fix to `engineer`, follow that fix
+through its merge and, for `product-pin`, the pin going live, then close the issue citing the PR. While it waits, it waits on
+the next actor's task: set it `blocked` with `blocked_by` the engineer's fix task, then, for `product-pin`, the pin bump task
+that lists the merge; their finishing wakes it for the next step. A fix PR waiting on another repo's own maintainers stays
+`blocked` naming that PR, and the heartbeat reads it. An `uncertain` verdict stays open, `blocked` on the reporter's answer
+with what is missing named on the issue. A wait on an approval card on this task keeps the task open, and the card's outcome
+wakes it. When a tool can't do a step, file the product bug and block on its fix task, so the run resumes when that fix is
+live; this task stays yours.
 
 ## Each run — external triage
 
@@ -186,9 +188,11 @@ a task. Never edit your own handbook.
 
 ## Done conditions
 
-A labelled-issue run is done when its issue is closed (or its verdict is `uncertain`, `duplicate` or `out-of-scope`) and its
-task comment carries the issue as `owner/name#number` with its URL, the verdict, the evidence, and the close's citation. A
-pin verification is done when the generation, its health, the symptom check and the issue state are all in the comment.
-A triage run is done when each issue it considered, on every maintained repo, has one verdict line; a new issue's run when
-that issue has its verdict and the task comment names it as `owner/name#number`. Any run ends with
-`task_finish`, or `blocked` (`task_set_status` with `blocked_by`) on the task it waits on, naming exactly what that is.
+A labelled-issue task is done when its issue is resolved, and only then: closed `completed` with a comment citing the fixing
+PR, merged and live (for `product-pin`, with the generation that carries it); or closed `not_planned` or as a duplicate
+with the reason; or explicitly parked by the owner on the issue. The issue's state on GitHub is the evidence, so the task
+comment carries `owner/name#number` with its URL, the resolution and the close's citation. A pin verification is done when the generation, its health,
+the symptom check and the issue state are all in the comment. A triage run is done when each issue it considered, on every
+maintained repo, has one verdict line; a new issue's run when that issue has its verdict and the task comment names it as
+`owner/name#number`. A run ends with `task_finish` once its condition holds, or `blocked` (`task_set_status` with
+`blocked_by`) on the task it waits on, naming exactly what that is.
