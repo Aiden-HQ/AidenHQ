@@ -10,7 +10,7 @@ requires:
   - github # PR reads (github-mcp) and the poster
 roles:
   # kernel.tasks: one task per reviewed PR for the Reviewer Manager (role reviewer-manager), where its posts' approvals land.
-  requests: [ kernel.checks, kernel.facts, kernel.tasks ]
+  requests: [ kernel.checks, kernel.facts, kernel.tasks, kernel.settings ]
   declares:
     - { id: reviewer-manager, description: "Holds each reviewed PR's task (fixed text: repo and number), where code review's posts are approved; the Reviewer Manager agent." }
 # A review run's snapshot of repo@head (and its base), read under this grant: any repo the GitHub App covers.
@@ -44,6 +44,8 @@ settings:
   # reviewer or "off"), drafts: false, forks: manual|auto, month_usd: 50, ignore: [globs], max_nits: 5, per_author_day: 10,
   # per_repo_day: 60 }]. month_usd: the instance-wide cap across repos. Read by the service (service/src/config.ts).
   code_review:
+    type: object
+    writers: [ reviewer-manager ]
     default:
       reviewers:
         quick: { engine: codex, model: "~deepseek/deepseek-flash-latest", effort: low, finders: 1, verify: false }
@@ -59,6 +61,7 @@ settings:
 # Tier 1 (the AI reviewer reads the whole rendered review first); a notice is Tier 0 (fixed words: phase and reason only). Plan
 # refuses a record this service didn't file for one of its runs.
 providers:
+  board: { url: "http://code-review:8098", auth: code_review_api_token }
   executor:
     url: http://code-review:8098/aidenhq/v1/executor
     auth: code_review_service_key
@@ -73,10 +76,6 @@ writes:
     floor: 0
     tools: []
     card: { target: "{{target}}", sentence: "{{sentence}}", changes: "{{changes}}", details: "{{details}}" }
-# The board's Reviews page reads the service's API with its own key, until the board is a module.
-board_env:
-  CODE_REVIEW_URL: http://code-review:8098
-  CODE_REVIEW_API_TOKEN_FILE: ${secrets.code_review_api_token}
 services:
   data: true
   run:
