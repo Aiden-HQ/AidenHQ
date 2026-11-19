@@ -115,3 +115,18 @@ were not among the services running in the default 10-service stack.
    make voice (whisper) an opt-in module.
 2. Install without a model key must be made to work first (items 1, 2 and 5), or the first-run flow cannot be reached.
 3. Use the OpenRouter headless paste flow as primary.
+
+## Release candidate run (2026-11-17)
+
+Release candidate 2026.11.1 (kernel `15046368`, modules `6bbbb9b6`, 29 prebuilt images), on the same kind of
+throwaway VM, local mode, following the new `prompt.md` (with the candidate's own baked `install.sh`).
+
+| | Spike (2026.11, built images) | Candidate |
+|---|---|---|
+| Install to the setup link | 26 min 54 s to first failure | **8 min 52 s** (apply 395 s: pulls 279 s, agent computers 54 s, health 113 s) |
+| Setup link to Aiden's tour | not reached | 43 s of browser steps (account, authenticator, model key, recovery key, wizard skipped), then the tour **23 s** after Meet Aiden |
+| `scripts/verify-security.sh` | not run | all checks passed |
+
+Two earlier candidate runs took 9 min 46 s and 7 min 58 s to the link. The first found two browser-only bugs on the
+kernel's first-run forms (`Origin: null` under `no-referrer`, and `form-action 'self'` blocking the redirect to the
+board), fixed in #347 before the final run.
