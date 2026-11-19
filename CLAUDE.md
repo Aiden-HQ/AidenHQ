@@ -92,6 +92,10 @@ bump of `product:` to a different reviewer needs a receipt for that reviewer too
   eval gates the files listed above.
 - **Generic core.** The core knows nothing about specific workflows. New behaviour is an agent definition, handbook
   text or a tool, never a special-case branch. Code finds an agent by its role (grants table `roles`), never by its key.
+- **Every owner, every new install.** Design each feature for any owner, not only the instance you test on. State
+  what a fresh install sees first: empty states, the default bundle alone, optional modules missing (GitHub, monitoring)
+  and quiet start. Say how another owner's own modules plug in. A design note has a "New installs" section that covers
+  this.
 - **One shared tools repository.** Every tool is usable by any agent it is granted; grants and roles decide access.
 - **A connection connects in one click.** One Connect wherever it is listed (a `board.signins` entry), and the vendor's
   sign-in does the rest. It returns to loopback (`http://localhost:3121/<callback>`, RFC 8252: no company domain allowlist
