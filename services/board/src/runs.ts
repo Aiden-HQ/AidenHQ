@@ -33,10 +33,67 @@ export interface Work {
   activity(): Promise<KernelActivity>;
 }
 
+/** An agent's kernel job as the board's lists show it: `running` ones now, `recent` ones that ended (with the first line of how a failure ended). */
+export interface ActivityJob {
+  id: string;
+  agent: string;
+  task: string;
+  state: string;
+  started_at: string | null;
+  ended_at: string | null;
+  error?: string | null;
+}
+
 export interface KernelActivity {
-  running: { agent: string; started_at: string | null }[];
+  running: ActivityJob[];
+  recent: ActivityJob[];
   queued: { agent: string; n: number }[];
   failing: { agent: string; error: string }[];
+}
+
+/** An agent job running now. */
+export interface LiveRun {
+  id: string;
+  status: string;
+  agentId: string;
+  issueId: string | null;
+  startedAt: string | null;
+}
+
+/** An ended agent job; `status` is the kernel's state (done, failed, timeout, cancelled, lost). */
+export interface PastRun {
+  id: string;
+  status: string;
+  agentId: string;
+  issueId: string | null;
+  startedAt: string | null;
+  finishedAt: string | null;
+  error: string | null;
+}
+
+export const liveRunsOf = (a: KernelActivity): LiveRun[] => a.running.map((j) => ({ id: j.id, status: j.state, agentId: j.agent, issueId: j.task, startedAt: j.started_at }));
+export const pastRunsOf = (a: KernelActivity): PastRun[] => a.recent.map((j) => ({ id: j.id, status: j.state, agentId: j.agent, issueId: j.task, startedAt: j.started_at, finishedAt: j.ended_at, error: j.error ?? null }));
+/** Each agent's newest job (start time and state), running or ended. */
+export function lastRunsOf(a: KernelActivity): Map<string, { at: string; status: string }> {
+  const last = new Map<string, { at: string; status: string }>();
+  for (const j of [...a.running, ...a.recent]) if (j.started_at && j.started_at > (last.get(j.agent)?.at ?? "")) last.set(j.agent, { at: j.started_at, status: j.state });
+  return last;
+}
+
+/** The kernel's activity, read at most every 3 seconds: every list the board shows of what runs and what just ended comes from this one read. */
+export function cachedActivity(work: Pick<Work, "activity">): () => Promise<KernelActivity> {
+  let at = 0;
+  let read: Promise<KernelActivity> | undefined;
+  return () => {
+    if (!read || Date.now() - at > 3_000) {
+      at = Date.now();
+      read = work.activity().catch((err) => {
+        read = undefined;
+        throw err;
+      });
+    }
+    return read;
+  };
 }
 
 export function kernelWork(k: { url: string; token: string }): Work {

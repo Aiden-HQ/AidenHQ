@@ -64,6 +64,7 @@ test("activity: what waits, and the agents whose last 3 ended jobs all failed or
   const a = work.activity();
   assert.deepEqual(a.queued, [{ agent: "a2", n: 1 }]);
   assert.deepEqual(a.failing, [{ agent: "bad", error: "The job failed: boom 2" }]);
+  assert.deepEqual(a.recent.filter((r) => r.agent === "bad").map((r) => [r.id, r.error]), [["f2", "The job failed: boom 2"], ["f1", "lost"], ["f0", "The job failed: boom 0"]]);
 });
 
 test("the host's apply generations: the pin skips a refused apply, and a missing file is an error", async () => {

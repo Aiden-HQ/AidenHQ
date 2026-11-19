@@ -26,10 +26,6 @@ a.agp-ctx:hover { color: var(--text); text-decoration: underline; }
   .agp-main .ui-section-aside { margin-left: 0; width: 100%; }
 }
 
-.agp-dialog p { margin: 0 0 16px; color: var(--muted); }
-.agp-dialog-actions { display: flex; gap: 8px; flex-wrap: wrap; }
-.agp-dialog-actions .spacer { flex: 1; }
-
 /* The Handbook and Settings tabs keep their own markup: spacing and headings match the page. */
 .agp :where(section:not(.ui-section)) { display: grid; gap: 8px; align-content: start; }
 .agp h4 { margin: 0; font-size: var(--text-lg); font-weight: 600; text-transform: none; letter-spacing: 0; color: var(--text); }

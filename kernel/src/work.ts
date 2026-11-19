@@ -60,7 +60,8 @@ export function createWork({ db, records, generationsFile = "" }: { db: Database
     },
     activity() {
       const running = rows("SELECT * FROM jobs WHERE state = 'running' ORDER BY at DESC LIMIT 50").map(job);
-      const recent = rows("SELECT * FROM jobs WHERE state != 'running' ORDER BY ended DESC LIMIT 100").slice(0, 15).map(job);
+      // The board reads its last-run column, finished sessions and failure counts from these: each carries the first line of how it failed.
+      const recent = rows("SELECT * FROM jobs WHERE state NOT IN ('admitted', 'running') ORDER BY ended DESC LIMIT 200").map((r) => ({ ...job(r), error: r.state === "failed" || r.state === "lost" || r.state === "timeout" ? String(r.final || r.state).split("\n")[0]!.slice(0, 200) : null }));
       const latest = new Map<string, string>();
       for (const r of rows("SELECT * FROM jobs ORDER BY at DESC LIMIT 1000")) if (!latest.has(r.task)) latest.set(r.task, r.state);
       // Per agent, for the board's Agents page: waiting work (an open wake or an admitted job), and the agents whose last 3 ended jobs

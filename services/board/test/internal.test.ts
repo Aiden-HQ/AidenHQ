@@ -78,7 +78,6 @@ describe("internal listener", () => {
     (pc as any).request = async (m: string, path: string) => (path.includes("/issues?") ? Array.from({ length: 500 }, (_, k) => row(k)) : []);
     // The summary's own reads (a failed one is allowed to be null, but it must not outlive the stub above).
     (pc as any).closedSince = async () => [];
-    (pc as any).recentRuns = async () => [];
     try {
       // The body as it goes over the wire, not the object a caller happened to build.
       const res = await post("/internal/fleet/status", {});
@@ -90,7 +89,6 @@ describe("internal listener", () => {
     } finally {
       delete (pc as any).request;
       delete (pc as any).closedSince;
-      delete (pc as any).recentRuns;
     }
   });
 

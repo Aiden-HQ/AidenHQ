@@ -346,16 +346,6 @@ async function boardApi(path, body, timeoutMs = 20_000) {
 }
 
 /**
- * The loop brake (board brake.ts): a comment just posted is reported to the board, which cancels the wake it caused once
- * this agent's daily wakes on that task are used up (the comment stays). Returns whether it woke the task's agent.
- * No answer: nothing happens.
- */
-async function wakeCheck(issue, commentId) {
-  if (!commentId) return undefined;
-  return boardApi("/internal/wake-check", { issue: String(issue), comment: String(commentId) }).catch(() => undefined);
-}
-
-/**
  * The calling agent, as the kernel asserted it (its roles and trial from the grants table setup writes on the host, never
  * Paperclip metadata, which agents can edit), plus its memory inbox from the directory.
  */
@@ -1159,9 +1149,7 @@ const TOOLS = {
       await refuseMemoryInbox(issue, { librarian: true });
       const last = await postLeadingParts(issue, `${feedbackMark()}${body}`);
       const c = await api("POST", `/api/issues/${issueRef(issue)}/comments`, { body: last });
-      const w = await wakeCheck(issue, c.id);
-      const quiet = w?.cancelled ? { note: "Posted, but it didn't wake the task's agent: you've used today's wake-ups on this task. It reads this on its next run; batch further updates." } : {};
-      return { comment_id: c.id, parts: commentParts(body).length, ...quiet };
+      return { comment_id: c.id, parts: commentParts(body).length };
     },
   },
   task_finish: {

@@ -151,7 +151,6 @@ describe("/internal/relay", () => {
   it("fleet_status survives a failed summary (summary: null)", async () => {
     (pc as any).request = async () => [];
     (pc as any).closedSince = async () => Promise.reject(new Error("paperclip down"));
-    (pc as any).recentRuns = async () => [];
     try {
       const r = await relay({}, COS, "/internal/fleet/status");
       expect(r.status).toBe(200);
@@ -160,7 +159,6 @@ describe("/internal/relay", () => {
     } finally {
       delete (pc as any).request;
       delete (pc as any).closedSince;
-      delete (pc as any).recentRuns;
     }
   });
 

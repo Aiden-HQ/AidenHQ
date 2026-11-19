@@ -2,7 +2,8 @@
 // person sees on each chat, and which agent a new message goes to.
 import { forOthers } from "./aidenhq-sdk/for-others.js";
 import { NOTICE_MARKER, relayed, displayText as strip, hasMarker as has } from "./board.js";
-import type { Agent, Comment, Issue, LiveRun, PastRun } from "./paperclip.js";
+import type { Agent, Comment, Issue } from "./paperclip.js";
+import type { LiveRun, PastRun } from "./runs.js";
 
 /** A label that reads like an approval ("approve WOR-184"): agents may not offer one; only a card or the owner's own words decide. */
 const readsAsApproval = (text: string) => /^\s*(apply|approve|reject)\b/i.test(text);
@@ -19,16 +20,14 @@ const AIDEN = "aidenhq:chief-of-staff";
 export function chatState(issue: Issue, live: LiveRun[], lastRun: PastRun | undefined, me: string, awaiting: Set<string> = new Set()): { state: ChatState; reason?: string } {
   const runs = live.filter((r) => r.issueId === issue.id);
   if (runs.some((r) => r.status === "running")) return { state: "working" };
-  if (runs.some((r) => r.status === "queued")) return { state: "queued" };
   // A pending approval record on the task (`awaiting`: task ids).
   if (awaiting.has(issue.id)) return { state: "waiting for approval" };
   if (issue.status === "done" || issue.status === "cancelled") return { state: "done" };
-  if (lastRun && (lastRun.status === "failed" || lastRun.status === "timed_out"))
+  if (lastRun && (lastRun.status === "failed" || lastRun.status === "timeout" || lastRun.status === "lost"))
     return { state: "failed", reason: (lastRun.error ?? "").split("\n")[0]!.trim().slice(0, 120) || "ended without a reply" };
-  // Stopped (the owner pressed Stop, or the run was cancelled): idle, not waiting on the owner, whatever status the task was
-  // left in. shownState still says "waiting for you" when the agent's last reply asked them something. A run cancelled
-  // because the task changed hands (an agent handing it back) is not a stop.
-  if (lastRun?.status === "cancelled" && lastRun.errorCode !== "issue_reassigned" && !/reassign/i.test(lastRun.error ?? "")) return { state: "idle" };
+  // Stopped (the run was cancelled): idle, not waiting on the owner, whatever status the task was
+  // left in. shownState still says "waiting for you" when the agent's last reply asked them something.
+  if (lastRun?.status === "cancelled") return { state: "idle" };
   if (!issue.assigneeAgentId && issue.assigneeUserId === me) return { state: "waiting for you" };
   // In review on an agent's task: the grader, the AI reviewer, CI or the merge queue has it, never the owner. It asks him
   // only through a pending approval, a question (shownState, needsYou's `asking`) or being handed to him.
@@ -244,7 +243,7 @@ export function lastWord(messages: Message[]): { text: string; at: string; from:
  */
 export function silentEnd(messages: Message[], lastRun: Pick<PastRun, "status" | "startedAt" | "finishedAt"> | undefined): boolean {
   const last = lastSaid(messages);
-  return Boolean(last?.kind === "owner" && lastRun?.status === "succeeded" && lastRun.finishedAt && lastRun.startedAt && lastRun.startedAt > last.at);
+  return Boolean(last?.kind === "owner" && lastRun?.status === "done" && lastRun.finishedAt && lastRun.startedAt && lastRun.startedAt > last.at);
 }
 
 /** The state shown for a chat everywhere (list, conversation, needs-you): chatState, plus what its messages say. */

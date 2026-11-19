@@ -68,24 +68,6 @@ export interface PaperclipApproval {
   payload?: { [k: string]: unknown } | null;
 }
 
-/** An agent run in progress (Paperclip's live-runs). */
-export interface LiveRun {
-  id: string;
-  status: string;
-  agentId: string;
-  agentName?: string;
-  issueId: string | null;
-  startedAt: string | null;
-  createdAt: string;
-  /** Where its output stream is: it moves as the agent says more. */
-  lastOutputSeq?: number | null;
-  lastOutputAt?: string | null;
-  currentStatusMessage?: string | null;
-  currentToolName?: string | null;
-  lastAssistantSnippet?: string | null;
-  outputSilence?: { level?: string } | null;
-}
-
 export interface Routine {
   id: string;
   title: string;
@@ -93,19 +75,6 @@ export interface Routine {
   assigneeAgentId?: string | null;
   lastTriggeredAt?: string | null;
   triggers?: { kind?: string; enabled?: boolean; label?: string | null; nextRunAt?: string | null; lastFiredAt?: string | null }[];
-}
-
-/** A finished (or failed) agent run, from heartbeat-runs. */
-export interface PastRun {
-  id: string;
-  status: string;
-  agentId: string;
-  issueId: string | null;
-  startedAt: string | null;
-  finishedAt: string | null;
-  error: string | null;
-  /** Why it ended, when Paperclip says (e.g. issue_reassigned: cancelled because the task changed hands). */
-  errorCode?: string | null;
 }
 
 export interface Comment {
@@ -250,13 +219,6 @@ export class Paperclip {
     return this.request<Label>("POST", `/api/companies/${this.companyId}/labels`, { name, color });
   }
 
-  /** Stops a run (live or queued). */
-  /** One agent's newest runs, uncached, with the comment that woke each (the loop brake, brake.ts). */
-  async agentRuns(agentId: string, limit = 20): Promise<{ id: string; status: string; wakeCommentId: string | null }[]> {
-    const raw = await this.request<{ id: string; status: string; contextSnapshot?: { wakeCommentId?: string; commentId?: string } | null }[]>("GET", `/api/companies/${this.companyId}/heartbeat-runs?agentId=${encodeURIComponent(agentId)}&limit=${limit}`);
-    return raw.map((r) => ({ id: r.id, status: r.status, wakeCommentId: r.contextSnapshot?.wakeCommentId ?? r.contextSnapshot?.commentId ?? null }));
-  }
-
   pauseAgent(id: string): Promise<unknown> {
     this.cache.clear();
     return this.request("POST", `/api/agents/${encodeURIComponent(id)}/pause`, {});
@@ -296,11 +258,6 @@ export class Paperclip {
     await this.request("POST", `/api/approvals/${encodeURIComponent(id)}/reject`, { decisionNote: reason });
   }
 
-  cancelRun(runId: string): Promise<unknown> {
-    this.cache.delete("live-runs");
-    return this.request("POST", `/api/heartbeat-runs/${encodeURIComponent(runId)}/cancel`, {});
-  }
-
   closedSince(since: string, limit = "100"): Promise<Issue[]> {
     return this.list("done,cancelled", since, limit);
   }
@@ -318,54 +275,9 @@ export class Paperclip {
     return this.request<Issue[]>("GET", `/api/companies/${this.companyId}/issues?${q}`);
   }
 
-  /** Agent runs in progress. Polled often, so cached briefly. */
-  liveRuns(): Promise<LiveRun[]> {
-    return this.cached("live-runs", 3_000, () => this.request<LiveRun[]>("GET", `/api/companies/${this.companyId}/live-runs`));
-  }
-
   /** The company's routines (schedules), for the Agents page. */
   routines(): Promise<Routine[]> {
     return this.cached("routines", 60_000, () => this.request<Routine[]>("GET", `/api/companies/${this.companyId}/routines`));
-  }
-
-  /** Each agent's newest run (start time and status), from a long summary list. */
-  lastRuns(): Promise<Map<string, { at: string; status: string }>> {
-    return this.cached("last-runs", 30_000, async () => {
-      const runs = await this.request<{ agentId: string; status: string; startedAt?: string | null; createdAt: string }[]>("GET", `/api/companies/${this.companyId}/heartbeat-runs?summary=true&limit=500`);
-      const last = new Map<string, { at: string; status: string }>();
-      for (const r of runs) {
-        const at = r.startedAt ?? r.createdAt;
-        if (at > (last.get(r.agentId)?.at ?? "")) last.set(r.agentId, { at, status: r.status });
-      }
-      return last;
-    });
-  }
-
-  /** The newest agent runs, finished or not. */
-  recentRuns(limit = 30): Promise<PastRun[]> {
-    return this.cached(`runs:${limit}`, 10_000, async () => {
-      const raw = await this.request<(PastRun & { contextSnapshot?: { issueId?: string } | null })[]>("GET", `/api/companies/${this.companyId}/heartbeat-runs?limit=${limit}`);
-      return raw.map((r) => ({ id: r.id, status: r.status, agentId: r.agentId, issueId: r.contextSnapshot?.issueId ?? null, startedAt: r.startedAt, finishedAt: r.finishedAt, error: r.error ? String(r.error).slice(0, 200) : null, errorCode: r.errorCode ?? null }));
-    });
-  }
-
-  /** One heartbeat run in full (companyId, session ids, usageJson); a 404 means Paperclip pruned it. */
-  heartbeatRun(id: string): Promise<Record<string, any>> {
-    return this.request("GET", `/api/heartbeat-runs/${encodeURIComponent(id)}`);
-  }
-
-  /** A run's stored log: ndjson {ts, stream, chunk} lines, up to `cap` bytes from the start, in a few pages. */
-  async runLog(id: string, cap = 2_000_000): Promise<{ text: string; truncated: boolean }> {
-    let offset = 0;
-    const parts: string[] = [];
-    while (offset < cap) {
-      const r = await this.request<{ content?: string; nextOffset?: number }>("GET", `/api/heartbeat-runs/${encodeURIComponent(id)}/log?offset=${offset}&limitBytes=500000`);
-      if (!r.content) return { text: parts.join(""), truncated: false };
-      parts.push(r.content);
-      if (typeof r.nextOffset !== "number" || r.nextOffset <= offset) return { text: parts.join(""), truncated: false };
-      offset = r.nextOffset;
-    }
-    return { text: parts.join(""), truncated: true };
   }
 
   /** An issue's title and origin, which rarely change: cached for a minute. */

@@ -21,8 +21,7 @@
     "n": 3,
     "workflow": "Agent asks the owner (notify), brake at 5",
     "today": [
-      "kernel/test/channels.test.mjs",
-      "services/board/test/brake.test.ts"
+      "kernel/test/channels.test.mjs"
     ],
     "next": "channel-telegram + /v1/brake/notify test"
   },

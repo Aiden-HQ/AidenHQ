@@ -3,7 +3,8 @@ import type { AddressInfo } from "node:net";
 import pino from "pino";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
-import type { Issue, LiveRun, Paperclip } from "../src/paperclip.js";
+import type { Issue, Paperclip } from "../src/paperclip.js";
+import type { LiveRun } from "../src/runs.js";
 import { Store } from "../src/store.js";
 import { startWatch } from "../src/watch.js";
 import { card, fakeRecords } from "./fake-records.js";
@@ -15,11 +16,11 @@ const chat: Issue = { ...base, id: "11111111-1111-1111-1111-111111111111", ident
 const kid: Issue = { ...base, id: "22222222-2222-2222-2222-222222222222", identifier: "WOR-11", title: "Handed out", status: "todo", assigneeAgentId: "fe", parentId: chat.id, updatedAt: at(-600) };
 const other: Issue = { ...base, id: "44444444-4444-4444-4444-444444444444", identifier: "WOR-12", title: "Not a chat", status: "todo", assigneeAgentId: "fe", updatedAt: at(-600) };
 let live: LiveRun[] = [];
+let saidAt = at(0);
 let issues = [chat, kid, other];
 const pc = {
   openIssues: async () => issues,
   labels: async () => [label],
-  liveRuns: async () => live,
   changedSince: async (since: string) => issues.filter((i) => i.updatedAt > since),
 } as unknown as Paperclip;
 
@@ -27,7 +28,7 @@ const store = new Store(":memory:");
 const log = pino({ level: "silent" });
 const app = createApp({ paperclip: pc, store, log, allowedHosts: ["localhost:3120"], staticDir: "/nonexistent", timezone: "UTC", session: () => ({ accountId: "owner", role: "admin" as const }) });
 const records = fakeRecords();
-const stop = startWatch({ pc, events: store.events, records, log, everyMs: 20 });
+const stop = startWatch({ pc, liveRuns: async () => live, session: async () => ({ saidAt, steps: [] }) as never, events: store.events, records, log, everyMs: 20 });
 let port = 0;
 beforeAll(async () => {
   await new Promise<void>((r) => app.listen(0, "127.0.0.1", r));
@@ -51,9 +52,9 @@ it("tells open boards what agents change: each task by its id, and the chat it b
   issues = [{ ...chat, updatedAt: at(1) }, kid, issues[2]!];
   await until(`event: chat\ndata: {"issue":"${chat.id}"}`);
   // The agent on the handed-out task starts, then says more: that task and its chat hear both.
-  live = [{ id: "r1", status: "running", agentId: "fe", issueId: kid.id, startedAt: at(0), createdAt: at(0), lastOutputSeq: 1 }];
+  live = [{ id: "r1", status: "running", agentId: "fe", issueId: kid.id, startedAt: at(0) }];
   await until(`event: tasks\ndata: {"issue":"${kid.id}"}`);
-  live = [{ ...live[0]!, lastOutputSeq: 2 }];
+  saidAt = at(5);
   await until(`event: progress\ndata: {"issue":"${chat.id}"}`);
   // A card the kernel files is announced as `approvals`.
   records.cards.push(card({ id: "A9" }));

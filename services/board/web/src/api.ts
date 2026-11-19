@@ -165,7 +165,6 @@ export const api = {
   lane: () => call<{ agents: LaneAgent[] }>("GET", "/api/lane"),
   laneMessages: (key: string, after: string) => call<{ messages: LaneMessage[]; busy: boolean }>("GET", `/api/lane/${encodeURIComponent(key)}/messages${after ? `?after=${encodeURIComponent(after)}` : ""}`),
   laneSend: (key: string, text: string) => call<{ ok: boolean }>("POST", `/api/lane/${encodeURIComponent(key)}/messages`, { text }),
-  stopChat: (ref: string) => call<{ stopped: number }>("POST", `/api/chats/${encodeURIComponent(ref)}/stop`, {}),
   notRight: (ref: string, text: string) => call<IssueView>("POST", `/api/issues/${encodeURIComponent(ref)}/not-right`, { text }),
   needsYou: () => call<NeedsYou>("GET", "/api/needs-you"),
   approvals: () => call<{ approvals: Approval[] }>("GET", "/api/approvals"),
@@ -174,7 +173,7 @@ export const api = {
   roster: () => call<{ roster: RosterAgent[] }>("GET", "/api/agents/roster"),
   agentProfile: (key: string) => call<{ profile: AgentProfile }>("GET", `/api/agents/by-key/${encodeURIComponent(key)}`),
   /** Lane B: pause or resume an agent now; `stop` also cancels its live runs. */
-  pauseAgent: (key: string, body: { paused: boolean; stop?: boolean }) => call<{ status: string; stopped: number }>("POST", `/api/agents/by-key/${encodeURIComponent(key)}/pause`, body),
+  pauseAgent: (key: string, body: { paused: boolean }) => call<{ status: string }>("POST", `/api/agents/by-key/${encodeURIComponent(key)}/pause`, body),
   agentOpenTasks: (key: string) => call<{ needs: TaskRow[]; ongoing: TaskRow[] }>("GET", `/api/agents/by-key/${encodeURIComponent(key)}/tasks?view=open`),
   agentHistory: (key: string, opts: { q?: string; status?: "done" | "cancelled"; offset?: number } = {}) => {
     const p = new URLSearchParams({ view: "history", ...(opts.q ? { q: opts.q } : {}), ...(opts.status ? { status: opts.status } : {}), ...(opts.offset ? { offset: String(opts.offset) } : {}) });
