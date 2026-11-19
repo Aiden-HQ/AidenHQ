@@ -348,14 +348,15 @@ export function createWakes({ db, owner, post, dispatches, routineKey = () => un
     /**
      * Rows for the module to run, claimed at once (one transaction) and leased for LEASE_MS. Per task: with a live job, its
      * comments newer than the job (to deliver as input, `live_job`) and nothing else; without one, one row that starts the
-     * next job. Rows a job already covered (older than its start) are dropped, or done for comments.
+     * next job. Rows a job already covered (older than its start) are dropped, or done for comments. Open rows come before
+     * re-leased ones, so wakes that keep failing can never fill every slot and starve a new one.
      */
     claim(module: string, limit = 20): (Wake & { live_job?: string })[] {
       const t = now();
       db.exec("BEGIN IMMEDIATE");
       try {
         q("INSERT OR IGNORE INTO wake_dispatchers (module, since) VALUES (?, ?)").run(module, t);
-        const rows = (q("SELECT * FROM wakes WHERE ((state = 'open' AND (until IS NULL OR until <= ?)) OR (state = 'claimed' AND job IS NULL AND claimed_by = ? AND until <= ?)) ORDER BY at, key").all(t, module, t) as unknown as Wake[]).filter((w) => dispatches.may(module, w.agent));
+        const rows = (q("SELECT * FROM wakes WHERE ((state = 'open' AND (until IS NULL OR until <= ?)) OR (state = 'claimed' AND job IS NULL AND claimed_by = ? AND until <= ?)) ORDER BY state = 'claimed', at, key").all(t, module, t) as unknown as Wake[]).filter((w) => dispatches.may(module, w.agent));
         const set = (w: Wake, state: string, why: string) => { q("UPDATE wakes SET state = ?, until = NULL WHERE key = ?").run(state, w.key); log(`wake ${state}`, { key: w.key, why }); if (state === "dropped") dropped(w, why); };
         const take = q("UPDATE wakes SET state = 'claimed', claimed_by = ?, until = ? WHERE key = ?");
         const out: (Wake & { live_job?: string })[] = [];

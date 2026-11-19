@@ -356,3 +356,25 @@ test("a run that ended on a refused write blocks its task on the parent and wake
   assert.deepEqual(k.posts.filter((p) => p.kind === "status"), [{ job: "j1", kind: "status", body: "**Blocked:** publish: the repo local/hello does not exist", status: "blocked", blocked_by: ["p1"] }]);
   assert.match(k.wakes[0].text, /WOR-3 is blocked\.\*\* Its reason[^]*<<<AGENT\npublish: the repo local\/hello does not exist/);
 });
+
+test("a wake the kernel refuses is dropped; a transient failure keeps it; a job whose outcome can't be posted is given up", async () => {
+  const k = fake({ task: { id: "t1", identifier: "WOR-1", title: "Fix", description: "Do it", status: "todo", assigneeAgentId: "eng", createdByUserId: "u1" } });
+  const tasks = k.kernel.task;
+  k.kernel.task = async () => { throw new KernelError(403, "kernel GET /v1/cp/read → 403"); };
+  k.inbox.push(wake("routine-run:t1", "routine:digest"));
+  await k.dispatch.tick();
+  assert.deepEqual(k.dropped.map((d) => d.key), ["routine-run:t1"], "a 4xx is final");
+  k.kernel.task = async () => { throw new KernelError(502, "bad gateway"); };
+  k.inbox.push(wake("issue:t1:2", "assigned"));
+  await k.dispatch.tick();
+  assert.equal(k.dropped.length, 1, "a 5xx leaves the wake to its lease");
+  k.kernel.task = tasks;
+  k.inbox.push(wake("issue:t1:3", "assigned"));
+  await k.dispatch.tick();
+  k.end("j1", "Done.");
+  const acked = [];
+  k.kernel.post = async () => { throw new KernelError(503, "kernel POST → 503: no-agent-key"); };
+  k.kernel.ack = async (job) => void acked.push(job);
+  await k.dispatch.tick();
+  assert.deepEqual(acked, ["j1"], "the unpostable outcome is acknowledged once");
+});

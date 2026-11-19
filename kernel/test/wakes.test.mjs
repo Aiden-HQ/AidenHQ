@@ -213,3 +213,14 @@ test("a wake's facts: opened with its author, and dropped with why", async () =>
   const facts = w.facts.forTask("t1").filter((f) => f.type.startsWith("wake."));
   assert.deepEqual(facts.map((f) => [f.type, f.subject, f.data]), [["wake.opened", "wake:comment:c1", { cause: "comment", author: "account:u-1" }], ["wake.dropped", "wake:comment:c1", { why: "nothing to do" }]]);
 });
+
+test("a new wake is claimed ahead of re-leased ones that keep failing", async () => {
+  const w = world();
+  for (let i = 0; i < 3; i++) w.issue(`f${i}`);
+  await w.wakes.poll();
+  assert.equal(w.wakes.claim("dispatch", 3).length, 3);
+  w.tick(61_000); // all three leases ran out: their handling failed
+  w.issue("fresh");
+  await w.wakes.poll();
+  assert.equal(w.wakes.claim("dispatch", 1)[0].task, "fresh", "never-claimed rows first");
+});
