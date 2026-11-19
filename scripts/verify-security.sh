@@ -812,7 +812,7 @@ rreview="modules/ai-reviewer/service/src/review.mjs"
   && grep -qF '  if (v2.decision === "approve") return { decision: "approve"' "$rreview" \
   && grep -qF 'if (merit === 1 && caps[0]) return' kernel/src/tier.ts && grep -qF 'if (merit === 0 && off) return' kernel/src/tier.ts \
   && grep -qF '!(await revalidate(pre)) || !records.claim(id)' kernel/src/writes.ts \
-  && grep -qF 'let v = codeVerdict(input, model) ?? afterReview(input, await ask(r, b.request ?? {}, model));' kernel/src/writes.ts && grep -qF 'const post = shadowed(v, r.requester.kind === "kernel" ? "full" : autonomy());' kernel/src/writes.ts \
+  && grep -qF 'let v = codeVerdict(input, model) ?? afterReview(input, await ask(r, b.request ?? {}, model));' kernel/src/writes.ts && grep -qF 'const post = shadowed(v, isUpdater(r.requester) ? "full" : autonomy());' kernel/src/writes.ts \
   && grep -qF 'if (v.decision === "approve" && (r.review_first || r.tier === 2' kernel/src/records.ts \
   && grep -qF 'if (v.decision === "reject" && r.review_first === "owner" && !FINAL_CODES.includes(v.code ?? "")) return' kernel/src/records.ts \
   && grep -qF 'const migration = touchesMigrations(com.diff);' modules/apps-platform/apps-mcp/src/executor.ts && grep -qF 'raise: { tier: 1, panel: migration, rule:' modules/apps-platform/apps-mcp/src/executor.ts \
