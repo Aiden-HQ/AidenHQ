@@ -63,3 +63,14 @@ test("Primer's Connect follows primer_mode: the hosted address in connect, the s
   assert.equal(token.secret, "primer_service_token");
   assert.match(token.help, /Open https:\/\/primer\.example\.com, sign in/);
 });
+
+test("Primer's setup flow asks the mode first", () => {
+  const product = join(dirname(fileURLToPath(import.meta.url)), "../..");
+  const dir = mkdtempSync(join(tmpdir(), "inst-"));
+  writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules: [...BUNDLE, "primer"], settings: { timezone: "Europe/London", owner_name: "Sam", owner_email: "o@x", product_repo: "acme/aidenhq" } }));
+  mkdirSync(join(dir, "agents"));
+  const flow = compile(product, dir).points.board.setup_flows.find((f) => f.module === "primer");
+  assert.equal(flow.choose.setting, "primer_mode");
+  assert.deepEqual(flow.choose.options.map((o) => o.value), ["connect", "self-host"]);
+  assert.deepEqual(flow.choose.options[1].inputs.map((i) => i.setting), ["primer_host", "primer_host_aud"]);
+});

@@ -28,7 +28,26 @@ export interface SetupFlowPoint {
   console_url?: string;
   pair_url?: string;
   pair_token?: string;
+  /** A module with modes: the owner picks one first (a module setting), then Connect (modules/board/schemas/setup_flows.json). */
+  choose?: ChooseSpec;
 }
+
+export interface ChooseSpec {
+  setting: string;
+  options: {
+    value: string;
+    label: string;
+    detail: string;
+    requires?: { setting: string; otherwise: string };
+    inputs?: { setting: string; label: string; help?: string; pattern: string; when?: Record<string, string | string[]> }[];
+  }[];
+}
+
+/** What the board reads of the compiled config for a choice: a setting's effective value, and whether the instance sets it. */
+export type SettingsView = Record<string, { value: unknown; set: boolean }> | undefined;
+
+/** The one change type a choice files (the board's typed settings change). */
+export type SettingChangeInput = { kind: "setting"; key: string; value: string };
 
 /** Whether a host has a name: not an IP literal, loopback excepted (OAuth providers accept http://127.0.0.1 redirects). */
 export function namedHost(host: string): boolean {
@@ -61,6 +80,10 @@ export interface SetupFlowDeps {
   boardUrl: (host: string) => string;
   /** The exact redirect the sign-in `signin` sends for a request to `host` (the flows' {redirect_url}). */
   redirectUrl: (signin: string, host: string) => string | undefined;
+  /** The compiled config's settings (what is live now). */
+  settings: () => SettingsView;
+  /** Files settings changes as the owner's own task (the board's settings change path); resolves to its task. */
+  file: (changes: SettingChangeInput[]) => Promise<{ identifier: string }>;
   fetchImpl?: typeof fetch;
 }
 
@@ -93,6 +116,23 @@ export function setupFlowRoutes(d: SetupFlowDeps): SetupRoute[] {
     if (!res.ok) throw new AccountError(502, String(data.error ?? `${f.module} answered ${res.status}`));
     return data;
   };
+  const chosenOf = (module: string): string | null => d.store.meta(`setup_choice:${module}`) ?? null;
+  const holds = (when: Record<string, string | string[]> | undefined, settings: SettingsView) =>
+    Object.entries(when ?? {}).every(([k, v]) => [v].flat().map(String).includes(String(settings?.[k]?.value)));
+  /** The flow's choice as the page shows it: what is live, what the owner picked, each option's availability and inputs. */
+  const chooseView = (c: ChooseSpec, module: string) => {
+    const settings = d.settings();
+    return {
+      setting: c.setting,
+      value: settings?.[c.setting]?.value ?? null,
+      chosen: chosenOf(module),
+      options: c.options.map(({ requires, inputs, ...o }) => ({
+        ...o,
+        ...(requires && !settings?.[requires.setting]?.set ? { unavailable: requires.otherwise } : {}),
+        ...(inputs ? { inputs: inputs.filter((i) => holds(i.when, settings)).map(({ when: _w, ...i }) => ({ ...i, value: String(settings?.[i.setting]?.value ?? "") })) } : {}),
+      })),
+    };
+  };
   const pairedOf = async (f: SetupFlowPoint & { token?: string }) => (f.pair_url ? Boolean((await pairCall(f, "GET").catch(() => ({ paired: false }))).paired) : true);
 
   const routes: SetupRoute[] = [
@@ -114,7 +154,8 @@ export function setupFlowRoutes(d: SetupFlowDeps): SetupRoute[] {
             // only a flow with no sign-in, connect path or pairing is done by its secrets.
             const done = f.signin || connect_url || f.pair_url ? signedIn && paired : (f.secrets ?? []).every((s) => present[s]);
             const redirect_url = f.signin ? d.redirectUrl(f.signin, host) : undefined;
-            return { ...f, ...(connected !== undefined ? { connect_url } : {}), ...(redirect_url ? { redirect_url } : {}), present, signedIn, scopes, paired, done, dismissed: gone.has(f.module) };
+            const choose = full.choose ? { choose: chooseView(full.choose, f.module) } : {};
+            return { ...f, ...choose, ...(connected !== undefined ? { connect_url } : {}), ...(redirect_url ? { redirect_url } : {}), present, signedIn, scopes, paired, done, dismissed: gone.has(f.module) };
           }),
         );
         const boardUrl = d.boardUrl(host);
@@ -131,6 +172,34 @@ export function setupFlowRoutes(d: SetupFlowDeps): SetupRoute[] {
         const { secret, value } = parsed.data;
         if (!f.secrets?.includes(secret)) throw new AccountError(400, "not one of this flow's secrets");
         return d.accounts.call("save_secret", who, { module: f.module, secret, value });
+      },
+    },
+    {
+      // The owner's pick (a module with modes): sets the mode and what that mode needs as a settings change, filed only when
+      // something differs from what is live; the page follows it and opens Connect once the setting holds the pick.
+      method: "POST",
+      path: /^\/api\/setup-flows\/([a-z0-9-]{1,63})\/choose$/,
+      handle: async (m, body) => {
+        const f = flow(m[1]!);
+        if (!f.choose) throw new AccountError(404, "this module has no choice");
+        const parsed = z.object({ value: z.string().max(60), inputs: z.record(z.string().max(60), z.string().max(300)).default({}) }).strict().safeParse(body);
+        if (!parsed.success) throw new AccountError(400, "a value is required");
+        const { value, inputs } = parsed.data;
+        const option = f.choose.options.find((o) => o.value === value);
+        if (!option) throw new AccountError(400, "not one of this flow's options");
+        const settings = d.settings();
+        if (option.requires && !settings?.[option.requires.setting]?.set) throw new AccountError(409, option.requires.otherwise);
+        const wanted: [string, string][] = [[f.choose.setting, value]];
+        for (const i of option.inputs ?? []) {
+          if (!holds(i.when, settings)) continue;
+          const v = (inputs[i.setting] ?? "").trim();
+          if (!new RegExp(i.pattern).test(v)) throw new AccountError(400, `${i.label}: that doesn't look right.${i.help ? ` ${i.help}` : ""}`);
+          wanted.push([i.setting, v]);
+        }
+        const changes = wanted.filter(([k, v]) => String(settings?.[k]?.value ?? "") !== v).map(([key, v]): SettingChangeInput => ({ kind: "setting", key, value: v }));
+        const filed = changes.length ? await d.file(changes) : undefined;
+        d.store.setMeta(`setup_choice:${f.module}`, value);
+        return { ok: true, ...(filed ? { identifier: filed.identifier } : {}) };
       },
     },
     {

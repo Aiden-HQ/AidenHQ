@@ -487,6 +487,19 @@ export function setupFlows(defs, compiled, settings = {}) {
     if (flows.filter((x) => x.module === f.module).length > 1) fail(`${where}: one flow per module`);
     f.fields = fieldsOf(f.module, f.secrets, where);
     if (f.signin != null && !(compiled.board.signins ?? []).some((x) => x.module === f.module && x.id === f.signin)) fail(`${where}: signin ${f.signin} is not one of its board.signins`);
+    if (f.choose) {
+      const declared = defs[f.module].settings ?? {};
+      const mode = declared[f.choose.setting];
+      if (!mode?.values) fail(`${where}: choose.setting ${f.choose.setting} is not one of its settings with values`);
+      for (const o of f.choose.options) {
+        if (!mode.values.includes(o.value)) fail(`${where}: choose option ${o.value} is not a value of ${f.choose.setting}`);
+        for (const i of o.inputs ?? []) {
+          if (!(i.setting in declared)) fail(`${where}: choose input ${i.setting} is not one of its settings`);
+          try { new RegExp(i.pattern); } catch { fail(`${where}: choose input ${i.setting} has a pattern that is not a regular expression`); }
+        }
+      }
+      if (new Set(f.choose.options.map((o) => o.value)).size !== f.choose.options.length) fail(`${where}: each choose option once`);
+    }
     if (f.pair_url == null) continue;
     const token = `${f.module.replace(/-/g, "_")}_pair_token`;
     const def = defs[f.module];
