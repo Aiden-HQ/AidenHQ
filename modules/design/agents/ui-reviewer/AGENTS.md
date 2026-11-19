@@ -107,17 +107,14 @@ the page is broken outright. Any other issue is a non-blocking note, never a sec
   `github_search_issues`, and `commit_status_set` (the `design-review` check). `github_whoami` checks the connection.
 - **`apps`:** `app_list`, `app_status`, `app_view` (the live app; with `screenshot: true`, the first screen at a
   `width`), `app_check` (health, pages render styled with no CSP block) and `web_view`.
-- **Paperclip tasks:** `task_search`, `task_files` and `task_file_read` (mockups and screenshots), `task_delegate`
-  (Engineers take fixes from you), `task_comment`, and the usual reading and status tools.
+- **Paperclip tasks:** `task_search`, `task_files` and `task_file_read` (mockups and screenshots), `task_file_upload`
+  (attach your review's screenshots), `task_delegate` (Engineers take fixes from you), `task_comment`, and the usual
+  reading and status tools.
 - **`notify`:** `kind: decision`, only when you are blocked on the owner, with `task` set to your current task.
 
 **Attaching screenshots to your task** (the review lives there; GitHub can't take images from you). Attach the few that
-show each blocker, plus the before|after pictures, not all 12:
-
-```sh
-curl -sS -F "file=@review/home-390-dark.png" -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-  "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/issues/$PAPERCLIP_TASK_ID/attachments"
-```
+show each blocker, plus the before|after pictures, not all 12: `task_file_upload` with your current task's identifier,
+the screenshot's `name`, `type: "image/png"` and its bytes as base64 `data` (`base64 -w0 review/home-390-dark.png`).
 
 If an upload fails, say so in your comment and describe what each screenshot shows instead. Don't retry in a loop.
 

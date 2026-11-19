@@ -518,7 +518,7 @@ async function heldClose(issue, f, comment) {
 }
 const DELIVERABLE_INPUT = {
   type: "object",
-  description: "what the task ships, graded before it may close: pr (ref: the repo or PR link), app (ref: the app name), apply, file. report (a diagnosis, research or another read-only answer) and none (a question) are not graded: you read the answer yourself. Required for an assignee whose work is graded (Engineers, the DevOps, Platform and UI/UX Engineers)",
+  description: "what the task ships, graded before it may close: pr (ref: the repo or PR link), app (ref: the app name), apply, file (the assignee attaches it with task_file_upload). report (a diagnosis, research or another read-only answer) and none (a question) are not graded: you read the answer yourself. Required for an assignee whose work is graded (Engineers, the DevOps, Platform and UI/UX Engineers)",
   properties: { kind: { type: "string", enum: DELIVERABLES }, ref: { type: "string" } },
   required: ["kind"],
   additionalProperties: false,
@@ -1098,6 +1098,33 @@ const TOOLS = {
           },
         ],
       };
+    },
+  },
+  task_file_upload: {
+    description:
+      "Attach a file to the task assigned to you (your `file` deliverable, a report or screenshots): the board stores it and `task_files` lists it, with a text version for a PDF. Send the bytes as base64 in `data` (`base64 -w0 <file>`, or Node's `readFileSync(file).toString('base64')`), or with `text` for a UTF-8 text file's contents instead. `type` is the MIME type (default: from the file's extension). At most 10 MB. Only your own task can take a file.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        issue: { type: "string", description: "the task it goes on: your current task or one assigned to you" },
+        name: { type: "string", description: "the file name, with its extension" },
+        type: { type: "string", description: "the MIME type, e.g. text/markdown or image/png; default from the name" },
+        data: { type: "string", description: "the file's bytes as base64" },
+        text: { type: "string", description: "a UTF-8 text file's contents, instead of data" },
+      },
+      required: ["issue", "name"],
+      additionalProperties: false,
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    run: async ({ issue, name, type, data, text }) => {
+      if ((data === undefined) === (text === undefined)) throw new Error("send the file either as `data` (base64) or as `text`, not both");
+      // The board checks this too (it is the authority); refusing here says it plainly and never sends bytes to another task.
+      const target = await api("GET", `/api/issues/${issueRef(issue)}`);
+      if (target.assigneeAgentId !== grant().id) throw new Error("Refused: a file can be attached only to the task assigned to you");
+      const base64 = data === undefined ? Buffer.from(String(text), "utf8").toString("base64") : String(data).replace(/\s+/g, "");
+      const body = { name: String(name), type: String(type ?? ""), data: base64 };
+      const { file } = await boardApi(`/internal/issues/${issueRef(issue)}/files`, body, 60_000);
+      return { file };
     },
   },
   task_pass_on: {

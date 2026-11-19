@@ -12,7 +12,7 @@ import { Store } from "../src/store.js";
 
 // The grants table setup writes: the Researcher may change the board; the Scout holds the tool but not the role.
 const grantsFile = join(mkdtempSync(join(tmpdir(), "grants-")), "grants.json");
-writeFileSync(grantsFile, JSON.stringify({ agents: { ra: { key: "assistant", roles: ["board-writer", "fleet-read"], tools: { paperclip_tasks: ["task_schedule"] } }, scout: { key: "scout", roles: [], tools: { paperclip_tasks: ["task_schedule"] } } } }));
+writeFileSync(grantsFile, JSON.stringify({ agents: { ra: { key: "assistant", roles: ["board-writer", "fleet-read"], tools: { paperclip_tasks: ["task_schedule", "task_file_upload"] } }, scout: { key: "scout", roles: [], tools: { paperclip_tasks: ["task_schedule", "task_file_upload"] } }, beta: { key: "beta", roles: [], tools: { paperclip_tasks: ["task_file_upload"] } } } }));
 process.env.AIDENHQ_GRANTS_FILE = grantsFile;
 
 describe("internal listener", () => {
@@ -21,7 +21,7 @@ describe("internal listener", () => {
   const issue = { id: "11111111-1111-1111-1111-111111111111", identifier: "PEN-1", title: "T", description: "", status: "todo", priority: "medium", assigneeUserId: "me-1", assigneeAgentId: null, assigneeAdapterOverrides: null, createdAt: "", updatedAt: "" };
   const pc = {
     me: async () => "me-1",
-    agents: async () => ["ra", "scout"].map((id) => ({ id, name: id })),
+    agents: async () => ["ra", "scout", "beta"].map((id) => ({ id, name: id })),
     labels: async () => [],
     company: async () => ({ issuePrefix: "PEN" }),
     issue: async () => issue,
@@ -89,6 +89,34 @@ describe("internal listener", () => {
     } finally {
       delete (pc as any).request;
       delete (pc as any).closedSince;
+    }
+  });
+
+  it("attaches a file to the caller's own task only, and lists it back", async () => {
+    const mine = { ...issue, id: "33333333-3333-3333-3333-333333333333", identifier: "PEN-3", assigneeUserId: null, assigneeAgentId: "ra" };
+    (pc as any).issue = async (ref: string) => (ref === mine.identifier || ref === mine.id ? mine : issue);
+    const files: any[] = [];
+    (pc as any).attachments = async (id: string) => files.filter((f) => f.issueId === id);
+    (pc as any).addAttachment = async (issueId: string, name: string, type: string, data: Buffer) => {
+      const a = { id: "aaaaaaaa-aaaa-aaaa-aaaa-000000000001", issueId, originalFilename: name, contentType: type, byteSize: data.length, createdAt: "2026-11-19T00:00:00Z" };
+      files.push(a);
+      return a;
+    };
+    try {
+      const body = { name: "../report.md", type: "text/markdown", data: Buffer.from("# Report\n").toString("base64") };
+      const ok = await post("/internal/issues/PEN-3/files", body, asAgent("ra"));
+      expect(ok.status).toBe(200);
+      expect(await ok.json()).toMatchObject({ file: { name: "report.md", type: "text/markdown", size: 9, by: "agent", textOf: null } });
+      expect(files.map((f) => f.originalFilename)).toEqual(["report.md"]);
+      // Another agent's task, and one with no agent on it: refused, and no bytes are stored.
+      expect((await post("/internal/issues/PEN-3/files", body, asAgent("beta"))).status).toBe(403);
+      expect((await post("/internal/issues/PEN-1/files", body, asAgent("beta"))).status).toBe(403);
+      expect((await post("/internal/issues/PEN-3/files", { ...body, name: "big.bin", data: Buffer.alloc(10 * 1024 * 1024 + 1, 1).toString("base64") }, asAgent("ra"))).status).toBe(400);
+      expect(files).toHaveLength(1);
+    } finally {
+      (pc as any).issue = async () => issue;
+      delete (pc as any).attachments;
+      delete (pc as any).addAttachment;
     }
   });
 
