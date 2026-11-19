@@ -4,6 +4,7 @@
 // body names. Each request is recorded on the job. `cleanup` happens when the asking job's box is released (boxes.ts); the
 // next turn's admission (admission.ts) applies `reset` and `engine`, checking the engine and model against the agent's grants
 // then, and the requests go once that turn has started (taken), so a deferred or failed start keeps them for the next try.
+// It also counts a job's prechecks (`aidenhq review`, backplane.ts and main.ts): a reviewer call each, PRECHECKS a job.
 import type { DatabaseSync } from "node:sqlite";
 import { verifyToken } from "./gateway/token.ts";
 

@@ -178,6 +178,19 @@ test("the reviewer reads the changed files, the PR's Evidence section and the ba
   assert.deepEqual([mod.seen[0].request.files, mod.seen[0].request.evidence, mod.seen[0].request.sources], [files, "npm test: 12 pass", sources]);
 });
 
+test("a burst over 200 records in review: the oldest are reviewed first, never starved by newer ones", async (t) => {
+  const module = await reviewer(t);
+  const k = await side(t, join(mkdtempSync(join(tmpdir(), "rl-burst-")), "kernel.db"), module);
+  for (let i = 0; i < 250; i++) {
+    const r = fileRecord(k.records, { args: { note: `n${i}` } });
+    k.records.db.prepare("UPDATE records SET task = ?, card = json_set(card, '$.details', ?), created_at = ? WHERE id = ?").run(`TASK-${i}`, `note: n${i}`, new Date(Date.now() - 3600_000 + i * 1000).toISOString(), r.id);
+  }
+  void k.loop.tick();
+  await until(() => module.seen.length === 200);
+  const asked = new Set(module.seen.map((x) => x.request.diff));
+  assert.ok(Array.from({ length: 200 }, (_, i) => `note: n${i}`).every((d) => asked.has(d)));
+});
+
 test("a job's precheck gets the reviewer's verdict on the write it would file, and files nothing", async (t) => {
   const mod = await reviewer(t);
   const k = await side(t, db(), mod);
@@ -191,17 +204,4 @@ test("a job's precheck gets the reviewer's verdict on the write it would file, a
   assert.deepEqual([(await verdict).decision, (await verdict).reason, asked], ["reject", "say which release", 1]);
   assert.equal(k.records.list(["review", "owner", "approved", "claimed", "done", "rejected"], 100).length, 0, "nothing was filed");
   await assert.rejects(k.writes.preview({ ...who, job: undefined, kind: "module" }, { kind: KIND, args: { note: "x" } }), /kernel job's own/);
-});
-
-test("a burst over 200 records in review: the oldest are reviewed first, never starved by newer ones", async (t) => {
-  const module = await reviewer(t);
-  const k = await side(t, join(mkdtempSync(join(tmpdir(), "rl-burst-")), "kernel.db"), module);
-  for (let i = 0; i < 250; i++) {
-    const r = fileRecord(k.records, { args: { note: `n${i}` } });
-    k.records.db.prepare("UPDATE records SET task = ?, card = json_set(card, '$.details', ?), created_at = ? WHERE id = ?").run(`TASK-${i}`, `note: n${i}`, new Date(Date.now() - 3600_000 + i * 1000).toISOString(), r.id);
-  }
-  void k.loop.tick();
-  await until(() => module.seen.length === 200);
-  const asked = new Set(module.seen.map((x) => x.request.diff));
-  assert.ok(Array.from({ length: 200 }, (_, i) => `note: n${i}`).every((d) => asked.has(d)));
 });
