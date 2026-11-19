@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { SignInRequired, api } from "./api";
 import type { FlowStage, FlowSummary, IdleItem, Waterfall } from "../../src/flow";
 import { QUERIES, useQuery } from "./queries";
-import { Banner, Button, Dialog, EmptyState, Page, PageHeader, Section, Segmented, Select, StatBlock } from "./ui";
+import { Banner, Dialog, EmptyState, Page, PageHeader, Section, Segmented, Select, StatBlock } from "./ui";
 import { agoLabel } from "./util";
 import "./flow.css";
 
@@ -39,10 +39,9 @@ const PERIODS = [["7", "7d"], ["30", "30d"], ["90", "90d"]] as const;
 export function FlowView({ onSignIn }: { onSignIn: () => void }) {
   const [days, setDays] = useState<(typeof PERIODS)[number][0]>("7");
   const [scope, setScope] = useState("all");
-  const [data, setData] = useState<{ summary: FlowSummary | null; idle: IdleItem[]; backfill: boolean } | null>(null);
+  const [data, setData] = useState<{ summary: FlowSummary | null; idle: IdleItem[] } | null>(null);
   const [error, setError] = useState("");
   const [item, setItem] = useState<string | null>(null);
-  const [importing, setImporting] = useState<"" | "running" | "queued">("");
   const modules = useQuery(QUERIES.modules, onSignIn).data?.modules;
 
   const load = useCallback(async () => {
@@ -57,17 +56,6 @@ export function FlowView({ onSignIn }: { onSignIn: () => void }) {
   useEffect(() => {
     void load();
   }, [load]);
-
-  const importHistory = async () => {
-    setImporting("running");
-    try {
-      await api.flowBackfill();
-      setImporting("queued");
-    } catch (e) {
-      setImporting("");
-      setError((e as Error).message);
-    }
-  };
 
   const scopes: [string, string][] = [["all", "All"], ...(modules ?? []).filter((m) => m.state === "on" || m.state === "dependency").map((m): [string, string] => [m.name, m.name])];
   const s = data?.summary;
@@ -89,7 +77,7 @@ export function FlowView({ onSignIn }: { onSignIn: () => void }) {
       {!data ? (
         !error && <div className="flow-loading" aria-busy="true" />
       ) : empty ? (
-        <FlowEmpty canBackfill={data.backfill} importing={importing} onImport={() => void importHistory()} />
+        <FlowEmpty />
       ) : (
         <>
           <Section title="Where the time went" hint="Median per item; the line marks the p75">
@@ -106,24 +94,9 @@ export function FlowView({ onSignIn }: { onSignIn: () => void }) {
   );
 }
 
-/** Nothing recorded yet: Flow fills in as work happens, and a code host can import its history once. */
-export function FlowEmpty({ canBackfill, importing = "", onImport }: { canBackfill: boolean; importing?: "" | "running" | "queued"; onImport: () => void }) {
-  return (
-    <EmptyState
-      action={
-        canBackfill &&
-        (importing === "queued" ? (
-          <span className="flow-note">Importing. History shows here as it arrives.</span>
-        ) : (
-          <Button variant="primary" onClick={onImport} disabled={importing === "running"}>
-            {importing === "running" ? "Starting…" : "Import history"}
-          </Button>
-        ))
-      }
-    >
-      Flow fills in as work happens.
-    </EmptyState>
-  );
+/** Nothing recorded yet: Flow fills in as work happens. */
+export function FlowEmpty() {
+  return <EmptyState>Flow fills in as work happens.</EmptyState>;
 }
 
 /* ----------------------------------------------------------------------------- stages */

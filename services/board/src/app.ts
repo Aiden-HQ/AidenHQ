@@ -1381,9 +1381,9 @@ export function createApp(opts: AppOptions): Server {
         if (!/^[a-z0-9-]{1,63}$/.test(scope)) throw new HttpError(400, "bad scope");
         const now = Date.now();
         const flow = opts.flow;
-        if (!flow) return { summary: null, idle: [], backfill: false };
+        if (!flow) return { summary: null, idle: [] };
         const [summary, idle] = await Promise.all([flow.summary({ since: new Date(now - days * 864e5).toISOString(), to: new Date(now).toISOString(), scope }), flow.idle()]);
-        return { summary, idle, backfill: !!flow.backfill };
+        return { summary, idle };
       },
     },
     {
@@ -1395,15 +1395,6 @@ export function createApp(opts: AppOptions): Server {
         const item = await opts.flow?.item(id);
         if (!item) throw new HttpError(404, "Flow has no such item");
         return item;
-      },
-    },
-    {
-      method: "POST",
-      path: /^\/api\/flow\/backfill$/,
-      handle: async () => {
-        if (!opts.flow?.backfill) throw new HttpError(409, "no code host is enabled");
-        await opts.flow.backfill();
-        return { ok: true };
       },
     },
     // The Costs tab's ledger views (cost-ledger.ts): aggregates over ?from&to&bucket, and one agent's or model's top runs and tasks.

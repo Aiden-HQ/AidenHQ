@@ -5,11 +5,10 @@ import { createElement } from "react";
 import { FlowEmpty, dominantWait } from "../../web/src/Flow";
 
 describe("the empty page", () => {
-  it("says Flow fills in as work happens, and offers the history import only with a code host", () => {
-    const without = renderToStaticMarkup(createElement(FlowEmpty, { canBackfill: false, onImport: () => {} }));
-    expect(without).toContain("Flow fills in as work happens.");
-    expect(without).not.toContain("Import history");
-    expect(renderToStaticMarkup(createElement(FlowEmpty, { canBackfill: true, onImport: () => {} }))).toContain("Import history");
+  it("says Flow fills in as work happens, with no history import button", () => {
+    const empty = renderToStaticMarkup(createElement(FlowEmpty));
+    expect(empty).toContain("Flow fills in as work happens.");
+    expect(empty).not.toContain("Import history");
     expect(dominantWait({ grader_retry: 62, checks: 38 })).toEqual({ reason: "grader_retry", share: 0.62 });
   });
 });

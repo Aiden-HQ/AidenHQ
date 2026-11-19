@@ -56,11 +56,9 @@ export interface Flow {
   summary(q: FlowQuery): Promise<FlowSummary>;
   idle(): Promise<IdleItem[]>;
   item(id: string): Promise<Waterfall | null>;
-  /** The code host's history import (the page's button); absent when no code host is enabled. */
-  backfill?: () => Promise<void>;
 }
 
-export function kernelFlow(k: { url: string; token: string }, backfill?: Flow["backfill"]): Flow {
+export function kernelFlow(k: { url: string; token: string }): Flow {
   const get = async (q: URLSearchParams) => {
     const res = await fetch(`${k.url}/v1/flow?${q}`, { headers: { authorization: `Bearer ${k.token}` }, signal: AbortSignal.timeout(15_000) });
     if (res.status === 404) return null;
@@ -71,14 +69,5 @@ export function kernelFlow(k: { url: string; token: string }, backfill?: Flow["b
     summary: async ({ since, to, scope }) => (await get(new URLSearchParams({ since, to, by: "stage", ...(scope && scope !== "all" ? { scope } : {}) }))) as FlowSummary,
     idle: async () => ((await get(new URLSearchParams({ idle: "1" }))) as { items: IdleItem[] }).items,
     item: async (id) => (await get(new URLSearchParams({ item: id }))) as Waterfall | null,
-    backfill,
-  };
-}
-
-/** The code host's backfill endpoint with its module token (the owner's button; the host answers once the import is queued). */
-export function codehostBackfill(c: { url: string; token: string }): NonNullable<Flow["backfill"]> {
-  return async () => {
-    const res = await fetch(`${c.url}/aidenhq/v1/backfill`, { method: "POST", headers: { authorization: `Bearer ${c.token}` }, signal: AbortSignal.timeout(30_000) });
-    if (!res.ok) throw new Error(`the code host answered ${res.status}`);
   };
 }

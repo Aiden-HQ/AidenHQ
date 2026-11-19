@@ -1,5 +1,4 @@
 import pino from "pino";
-import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createKernelAuth } from "./kernel-auth.js";
 import { createApp } from "./app.js";
@@ -13,7 +12,7 @@ import { McpAuth } from "./mcpauth.js";
 import { GoogleAuth } from "./google.js";
 import { Paperclip } from "./paperclip.js";
 import { kernelRecords } from "./records.js";
-import { codehostBackfill, kernelFlow } from "./flow.js";
+import { kernelFlow } from "./flow.js";
 import { cachedActivity, kernelWork, liveRunsOf } from "./runs.js";
 import { weekdayOf } from "./recurrence.js";
 import { Store, localDate } from "./store.js";
@@ -34,9 +33,8 @@ const paperclip = new Paperclip(kernelUrl, cfg.companyId, cfg.gateway.token);
 const records = kernelRecords({ url: kernelUrl, token: cfg.gateway.token }, log);
 // The kernel's jobs (every agent run is one): the run pages and run links.
 const work = kernelWork({ url: kernelUrl, token: cfg.gateway.token });
-// The Flow page's reads; its history import button exists when a code host's service is reachable (BOARD_CODEHOST_URL, its module token mounted).
-const codehostToken = process.env.BOARD_CODEHOST_TOKEN_FILE && existsSync(process.env.BOARD_CODEHOST_TOKEN_FILE) ? readFileSync(process.env.BOARD_CODEHOST_TOKEN_FILE, "utf8").trim() : "";
-const flow = kernelFlow({ url: kernelUrl, token: cfg.gateway.token }, process.env.BOARD_CODEHOST_URL && codehostToken ? codehostBackfill({ url: process.env.BOARD_CODEHOST_URL, token: codehostToken }) : undefined);
+// The Flow page's reads (the kernel's /v1/flow).
+const flow = kernelFlow({ url: kernelUrl, token: cfg.gateway.token });
 
 /** Every minute: Tomorrow → Today at the start of a workday, then any scheduled moves that are due, on top. */
 function rollover() {
