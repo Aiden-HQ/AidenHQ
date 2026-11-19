@@ -1095,7 +1095,7 @@ export function createApp(opts: AppOptions): Server {
     {
       method: "GET",
       path: /^\/api\/sign-ins\/([a-z0-9-]{1,63})$/,
-      handle: async (m) => {
+      handle: async (m, _b, _u, req) => {
         const id = m[1]!;
         const s = (opts.signIns ?? []).find((x) => x.id === id);
         if (!s) throw new HttpError(404, "no such sign-in");
@@ -1114,7 +1114,12 @@ export function createApp(opts: AppOptions): Server {
           state: status?.state ?? "unknown",
           mode: s.mode ?? "redirect",
           // What stops this sign-in before it starts, in words (checked here, so the vendor's page never shows a bare refusal).
-          preflight: s.mode !== "device" && s.httpsOnly && !httpsBoard ? `${s.label} sends you back only to an https address, and this board has none yet. Give the board its https address (docs/setup.md, Tailscale), then connect from there.` : null,
+          // The same rule the Connect path applies (vendorOrigin): from here, can the vendor send the browser back?
+          preflight: s.mode !== "device" && s.httpsOnly && !vendorOrigin(String(req.headers.host ?? ""))
+            ? httpsBoard
+              ? `${s.label} sends you back only to ${httpsBoard.origin}. Open the board there to connect it.`
+              : `${s.label} sends you back only to an https address, and this board has none yet. Give the board its https address (docs/setup.md, Tailscale), then connect from there.`
+            : null,
           // The address the default sign-in ends on (pasted back below), and the domain one click returns to instead.
           redirect: s.httpsOnly || s.mode === "device" ? null : `${SIGNIN_LOOPBACK}${s.callback}`,
           oneClick: s.httpsOnly ? null : (httpsBoard?.hostname ?? null),
@@ -1200,7 +1205,7 @@ export function createApp(opts: AppOptions): Server {
         // When Tomorrow next rolls into Today: the next calendar day, except before days off.
         const today = localDate(opts.timezone);
         const rollsOn = nextWorkday(today, opts.workdays ?? WORKWEEK);
-        return { ...board, assignees: ctx.assignees, labels: ctx.labels, prefix: ctx.prefix, timezone: opts.timezone, slackTeams: opts.slackTeams ?? {}, rollsOn, rollsTomorrow: rollsOn === addDays(today, 1), buckets: board.buckets, agentsActive: busy.active, spend, google: google ?? null, signIns: signIns.map(({ id, label, missing, stopped, status, offer }) => ({ id, label, missing, stopped, status: status ?? null, offer })) };
+        return { ...board, assignees: ctx.assignees, labels: ctx.labels, prefix: ctx.prefix, timezone: opts.timezone, slackTeams: opts.slackTeams ?? {}, rollsOn, rollsTomorrow: rollsOn === addDays(today, 1), buckets: board.buckets, agentsActive: busy.active, spend, google: google ?? null, signIns: signIns.map(({ id, label, missing, stopped, status, offer, mode }) => ({ id, label, missing, stopped, status: status ?? null, offer, ...(mode === "device" ? { mode } : {}) })) };
       },
     },
     { method: "GET", path: /^\/api\/issues\/([^/]+)$/, handle: async (m) => issueView(decodeURIComponent(m[1]!)) },
@@ -1873,6 +1878,7 @@ export function createApp(opts: AppOptions): Server {
           // "none": the connection needs no sign-in (Grafana with grafana_source: local), so its flow is done.
           signedIn: async (id) => ["ok", "none"].includes((await signInStates()).find((x) => x.id === id)?.status?.state ?? ""),
           scopeChoice: async (id) => Boolean(await (opts.signIns ?? []).find((x) => x.id === id)?.auth.offers()),
+          signInMode: (id) => (opts.signIns ?? []).find((x) => x.id === id)?.mode ?? "redirect",
           connected: connectionSignedIn,
           boardUrl: signInOrigin,
           redirectUrl: (signin, host) => {
@@ -1905,9 +1911,7 @@ export function createApp(opts: AppOptions): Server {
     const who = await accounts.sessionOf(req);
     if (path === "/api/session" && req.method === "GET") {
       const account = who ? { id: who.account.id, email: who.account.email, name: who.account.name, role: who.account.role, owner: who.account.owner } : null;
-      // Google connects from any address with a Desktop client (pasted back), else only on the https board or loopback.
-      const googleConnect = googleViaBoard || (who && opts.google ? (await opts.google.status())?.client_type === "desktop" : false);
-      send(res, 200, JSON.stringify({ mode, account, googleConnect, signInConnect: true, adminUrl: opts.adminUrl ?? null }), "application/json");
+      send(res, 200, JSON.stringify({ mode, account, googleConnect: googleViaBoard, signInConnect: true, adminUrl: opts.adminUrl ?? null }), "application/json");
       return true;
     }
     if (!who) throw new HttpError(401, "sign in");

@@ -203,7 +203,7 @@ export function oauth(o: OAuthOptions): Auth {
     const secret = t.client_secret ?? o.client?.()?.secret;
     if (secret) body.set("client_secret", secret);
     if (t.resource) body.set("resource", t.resource);
-    const res = await fetchImpl(endpoint, { method: "POST", body, signal: AbortSignal.timeout(15_000) });
+    const res = await fetchImpl(endpoint, { method: "POST", body, headers: { accept: "application/json" }, signal: AbortSignal.timeout(15_000) });
     const answer = (await res.json().catch(() => ({}))) as Record<string, unknown>;
     let next;
     try {
@@ -385,7 +385,7 @@ export function oauth(o: OAuthOptions): Auth {
           try {
             if (err || !p.ok) throw new AuthError(vendorWords(p.body) || `${o.name} answered ${p.status}`);
             const parsed = parse(p.body);
-            if (run !== me) return;
+            if (run !== me || me.state.state !== "pending") return; // cancelled while the answer was on its way: nothing saved
             save({ ...parsed, client_id: d.client_id, token_endpoint: tokenUrl });
             mark("ok");
             end({ state: "ok" });

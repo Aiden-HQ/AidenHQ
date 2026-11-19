@@ -117,11 +117,11 @@ function FlowBody({ flow, board, reload, onDone, onSignIn }: { flow: SetupFlowVi
               {flow.signedIn ? (
                 <div className="setup-actions setup-paired">
                   <p className="setup-ok-line">Connected.</p>
-                  {flow.signin && <ConnectButton c={{ id: flow.signin, label: flow.title, signIn: { state: "ok", offer: flow.scopes } }} />}
+                  {flow.signin && <ConnectButton c={{ id: flow.signin, label: flow.title, signIn: { state: "ok", offer: flow.scopes, mode: flow.signin_mode } }} />}
                 </div>
               ) : secretsDone ? (
                 flow.signin ? (
-                  <ConnectButton c={{ id: flow.signin, label: flow.title, signIn: { state: "missing", offer: flow.scopes } }} variant="primary" />
+                  <ConnectButton c={{ id: flow.signin, label: flow.title, signIn: { state: "missing", offer: flow.scopes, mode: flow.signin_mode } }} variant="primary" />
                 ) : (
                   <a className="btn primary" href={connect}>Connect {flow.title}</a>
                 )

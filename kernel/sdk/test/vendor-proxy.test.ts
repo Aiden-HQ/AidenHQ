@@ -234,4 +234,20 @@ describe("device sign-in", () => {
     await expect(off.device!.start()).rejects.toThrow(/isn't configured yet/);
     expect(off.status().detail).toMatch(/no client ID/);
   });
+
+  it("serves start, state and cancel on the proxy's /auth/device, with the board's key only", async () => {
+    const dir = tmp();
+    const fetchImpl = (async (url: string) => (url === device.endpoint ? Response.json({ device_code: "dc-secret", user_code: "ABCD-1234", verification_uri: "https://auth.example.com/device", expires_in: 900, interval: 5 }) : Response.json({ error: "authorization_pending" }))) as unknown as typeof fetch;
+    const auth = oauth({ name: "Acme", mcpUrl: "https://mcp.example.com/mcp", stateDir: dir, endpoints, device, fetchImpl, wait: () => new Promise(() => {}) });
+    const p = createVendorProxy({ name: "Acme", upstream: new URL("https://mcp.example.com/mcp"), auth, log, serviceKey: "svc", authKey: "board", caller: async () => {}, instructions: "", stateDir: dir });
+    const url = await listen(p);
+    const call = (method: string, path: string, key = "board") => fetch(`${url}${path}`, { method, headers: { authorization: `Bearer ${key}` } }).then(async (r) => ({ status: r.status, body: (await r.json()) as any }));
+    expect((await call("POST", "/auth/device", "svc")).status).toBe(401);
+    const started = await call("POST", "/auth/device");
+    expect(started.body).toEqual({ user_code: "ABCD-1234", verification_uri: "https://auth.example.com/device", expires_in: 900, interval: 5 });
+    expect((await call("GET", "/auth/device")).body).toEqual({ state: "pending" });
+    expect((await call("POST", "/auth/device/cancel")).body).toEqual({ ok: true });
+    expect((await call("GET", "/auth/device")).body).toEqual({ state: "cancelled" });
+    p.close();
+  });
 });

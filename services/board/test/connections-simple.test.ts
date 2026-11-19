@@ -34,8 +34,11 @@ describe("simple connections", () => {
     const accounts = createKernelAuth({ kernel: { url: kernel.url, token: BOARD_KEY }, adminUrl: "http://localhost:3120" });
     const paperclip = new Paperclip("http://paperclip", "00000000-0000-4000-8000-000000000001", "k", (async () => new Response("[]")) as unknown as typeof fetch);
     const pair = (async () => Response.json({ paired: false })) as unknown as typeof fetch;
-    app = createApp({ paperclip, store, records: fakeRecords(), log: pino({ level: "silent" }), staticDir: "/nonexistent", timezone: "UTC", accounts, allowedHosts: ["localhost:3121"], mode: "lan", lan: { url: "https://aiden.example.com", googleConnect: false },
-      signIns: [{ id: "chat", label: "Chat", connect: "/chat/connect", callback: "/chat/callback", mode: "device", missing: "m", stopped: "s", fields: [], auth: chat as never }],
+    app = createApp({ paperclip, store, records: fakeRecords(), log: pino({ level: "silent" }), staticDir: "/nonexistent", timezone: "UTC", accounts, allowedHosts: ["localhost:3121", "lan.example.com:3121"], mode: "lan", lan: { url: "https://aiden.example.com", googleConnect: false },
+      signIns: [
+        { id: "chat", label: "Chat", connect: "/chat/connect", callback: "/chat/callback", mode: "device", missing: "m", stopped: "s", fields: [], auth: chat as never },
+        { id: "team", label: "Team", connect: "/team/connect", callback: "/team/callback", httpsOnly: true, missing: "m", stopped: "s", fields: [], auth: { ...chat, status: async () => ({ state: "missing", configured: true }) } as never },
+      ],
       setupFlows: { flows: flows.map((f) => ({ ...f, token: "pair-secret" })), fetchImpl: pair }, organisations });
     await new Promise<void>((r) => app.listen(0, "127.0.0.1", r));
     port = (app.address() as AddressInfo).port;
@@ -45,12 +48,12 @@ describe("simple connections", () => {
     kernel.close();
   });
 
-  function as(account: FakeAccount) {
+  function as(account: FakeAccount, host = "localhost:3121") {
     let cookie = "";
     return (method: string, path: string, body?: unknown) =>
       new Promise<{ status: number; json: any; location?: string }>((resolve, reject) => {
         cookie ||= `aidenhq-board=${kernel.session(account)}`;
-        const headers: Record<string, string> = { host: "localhost:3121", cookie, ...(method !== "GET" ? { "content-type": "application/json", "x-aidenhq-board": "1", origin: "http://localhost:3121" } : {}) };
+        const headers: Record<string, string> = { host, cookie, ...(method !== "GET" ? { "content-type": "application/json", "x-aidenhq-board": "1", origin: "http://localhost:3121" } : {}) };
         const req = request({ host: "127.0.0.1", port, method, path, headers }, (res) => {
           let text = "";
           res.on("data", (c) => (text += c));
@@ -99,5 +102,11 @@ describe("simple connections", () => {
     expect(f).toMatchObject({ done: true, advanced: { capabilities: ["a bot people can DM"], done: false } });
     expect(JSON.stringify(f)).not.toMatch(/pair-secret|pair_token/);
     expect((await owner("POST", "/api/setup-flows/chat/secret", { secret: "chat_bot_token", value: "123:abc" })).json).toMatchObject({ ok: true });
+  });
+
+  it("preflight says, before Connect, when the vendor can't send this address back", async () => {
+    expect((await owner("GET", "/api/sign-ins/team")).json.preflight).toBeNull();
+    const elsewhere = as({ id: "u-1", email: "sam@acme.example.com", name: "Sam", role: "admin", owner: true }, "lan.example.com:3121");
+    expect((await elsewhere("GET", "/api/sign-ins/team")).json.preflight).toMatch(/only to https:\/\/aiden\.example\.com/);
   });
 });

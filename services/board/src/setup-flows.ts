@@ -94,6 +94,8 @@ export interface SetupFlowDeps {
   signedIn: (id: string) => Promise<boolean>;
   /** Whether the sign-in `id` offers a choice of scopes: its Connect opens the picker, and its Reconnect reads "Change access". */
   scopeChoice: (id: string) => Promise<boolean>;
+  /** How the sign-in `id` signs in: its Connect opens a device code dialog rather than the vendor's page. */
+  signInMode?: (id: string) => "redirect" | "device";
   /** A connect path's connection: true when signed in, undefined when the board serves no such path. */
   connected: (path: string) => Promise<boolean | undefined>;
   /** The board's own address, where its sign-ins return (the flows' {board_url}). */
@@ -180,7 +182,8 @@ export function setupFlowRoutes(d: SetupFlowDeps): SetupRoute[] {
             const adv = advanced && (({ pair_token: _a, ...a }) => ({ ...a, done: (a.secrets ?? []).every((s) => present[s]) && (a.pair_url ? paired : true) }))(advanced);
             const redirect_url = f.signin ? d.redirectUrl(f.signin, host) : undefined;
             const choose = full.choose ? { choose: chooseView(full.choose, f.module) } : {};
-            return { ...f, ...choose, ...(adv ? { advanced: adv } : {}), ...(connected !== undefined ? { connect_url } : {}), ...(redirect_url ? { redirect_url } : {}), present, signedIn, scopes, paired, done, dismissed: gone.has(f.module) };
+            const signinMode = f.signin && d.signInMode?.(f.signin) === "device" ? { signin_mode: "device" as const } : {};
+            return { ...f, ...choose, ...signinMode, ...(adv ? { advanced: adv } : {}), ...(connected !== undefined ? { connect_url } : {}), ...(redirect_url ? { redirect_url } : {}), present, signedIn, scopes, paired, done, dismissed: gone.has(f.module) };
           }),
         );
         const boardUrl = d.boardUrl(host);

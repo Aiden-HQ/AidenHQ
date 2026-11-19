@@ -125,7 +125,7 @@ function ConnectionTile({ r, v, can, connect: asked, onAsked }: { r: ConnectionR
           {v.hint && <p className="st-hint">{v.hint}</p>}
           {!connect && r.setup && v.status === "not_configured" && <p className="st-hint">{r.setup}</p>}
           <Facts r={r} />
-          {r.google && <GoogleAccounts g={r.google} can={can.google} />}
+          {r.google && <GoogleAccounts g={r.google} can={can.google || r.google.client_type === "desktop"} />}
         </div>
       </Dialog>
     </>

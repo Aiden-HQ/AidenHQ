@@ -121,6 +121,8 @@ export interface SetupFlowView {
   choose?: SetupChoice;
   /** Who else may need to approve. */
   admin?: string;
+  /** Its sign-in is a device code (Connect opens the code dialog). */
+  signin_mode?: "device";
   advanced?: AdvancedFlowView;
 }
 

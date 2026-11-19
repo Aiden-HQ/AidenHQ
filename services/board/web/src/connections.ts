@@ -89,6 +89,8 @@ export function connectionStatus(row: ConnectionRow, canConnect: { signIn: boole
   // Google: each account's own sign-in comes first; the service's health after.
   if (row.google) {
     const g = row.google;
+    // A Desktop client signs in from any address (pasted back); a Web client only on the board's https address or loopback.
+    canConnect = { ...canConnect, google: canConnect.google || g.client_type === "desktop" };
     if (!g.accounts.length) return { status: "signed_out", reason: g.error ? `No Google account connected (${g.error}).` : "No Google account connected.", ...connect("Connect Google", "/google/connect", canConnect.google) };
     const expired = g.accounts.filter((a) => a.state === "expired" || a.state === "error");
     if (expired.length) return { status: "signed_out", reason: `${expired.map((a) => a.email).join(", ")} stopped working (since ${day(expired[0]!.since)}).`, ...connect("Reconnect", `/google/connect?account=${encodeURIComponent(expired[0]!.email)}`, canConnect.google) };

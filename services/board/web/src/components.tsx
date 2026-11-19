@@ -485,7 +485,7 @@ export function GoogleBanner({ google, canReconnect }: { google: Board["google"]
 /**
  * A banner when a service behind an MCP proxy (a module's board.signins) stopped accepting the sign-in, with Reconnect where it works (the board's https address, or loopback).
  */
-function SignInBanner({ name, path, status, offer, canConnect, stopped }: { name: string; path: string; status: SignInStatus | null; offer?: boolean; canConnect: boolean; stopped: string }) {
+function SignInBanner({ name, path, status, offer, mode, canConnect, stopped }: { name: string; path: string; status: SignInStatus | null; offer?: boolean; mode?: "device"; canConnect: boolean; stopped: string }) {
   // Only a sign-in that worked and stopped alarms; one never connected is calm, in Settings > Connections.
   if (!status?.configured || status.state !== "expired") return null;
   const since = new Date(status.since);
@@ -497,7 +497,7 @@ function SignInBanner({ name, path, status, offer, canConnect, stopped }: { name
           {since.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hour12: false })}. {stopped}
         </span>
         {canConnect ? (
-          <ConnectButton c={{ id: path, label: name, signIn: { state: status.state, offer } }} />
+          <ConnectButton c={{ id: path, label: name, signIn: { state: status.state, offer, mode } }} />
         ) : (
           <span className="alert-hint">{SIGN_IN_HINT}</span>
         )}
@@ -510,7 +510,7 @@ export function SignInBanners({ board, canConnect }: { board: Board; canConnect:
   return (
     <>
       {(board.signIns ?? []).map((s) => (
-        <SignInBanner key={s.id} name={s.label} path={s.id} status={s.status} offer={s.offer} canConnect={canConnect} stopped={s.stopped} />
+        <SignInBanner key={s.id} name={s.label} path={s.id} status={s.status} offer={s.offer} mode={s.mode} canConnect={canConnect} stopped={s.stopped} />
       ))}
     </>
   );
