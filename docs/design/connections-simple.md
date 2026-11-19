@@ -40,10 +40,14 @@ uses the person's own app.
    page ("Create your own app to unlock: a bot people can DM, live events, …"); its services idle until its credentials
    exist. Setup flows gain conditional steps and completion rules (basic Slack doesn't need pairing).
 2. **One client path per connection.** Each OAuth connection reads its client from its own fields (`client_id`, optional
-   secret), as `vendor/oauth.ts` `client()` already does. Three ways fill them, one code path:
+   public secret), as `vendor/oauth.ts` `client()` already does. Three ways fill them, one code path:
    - nothing (vendors that self-register);
-   - an **organisation setup code**: the org's admin hands out a short code or link that writes the org's client IDs
-     (never secrets, never bot tokens) through the kernel's admin secret write; Connect then signs in;
+   - **picking your organisation** in setup: the product's catalog (`modules/marketplace.json` `organisations`) lists
+     orgs that run internal apps, with their email domains and per-connection client IDs; setup pre-selects the org
+     matching the admin's email domain, and choosing it writes those client IDs into the fields (admin secret write).
+     Orgs join by PR. Safe to publish (owner, 2026-11-19): a client ID is public, no secret is listed (Slack PKCE;
+     Google's Desktop secret is non-confidential by Google's definition), and the vendor refuses anyone outside the org
+     (internal Slack app, Internal Google client). Never bot credentials;
    - the guided own-app flow, which ends by writing the same fields.
    "Use my own app" replaces the client explicitly; a failed sign-in never switches clients silently.
 3. **Headless sign-in.** Connect opens the vendor in the laptop browser; the redirect lands on the board's own https
@@ -77,19 +81,19 @@ uses the person's own app.
   scopes and the unused user scopes, add `channels:history` and `groups:history` (channel binding needs them).
 - **Google:** an Internal Desktop client in Polygon's project; the existing web client stays the owner's until migrated.
 - **GitHub:** nothing org-specific; the AidenHQ OAuth client serves everyone.
-- The setup code lives in the instance repo / Polygon's channels, never in the product.
+- Listed in the catalog (owner, 2026-11-19: yes, publicly): name, `polygon.technology`, Slack team ID, client IDs.
 
 ## Cut
 
-Organisation profile modules, signed config links, a hosted relay (later, with the hosted product), Gmail by IMAP/App
+Organisation profile modules, setup codes, signed config links, a hosted relay (later, with the hosted product), Gmail by IMAP/App
 Password, WhatsApp, Google's hosted MCPs until GA.
 
 ## New installs
 
 A fresh install shows each vendor with its honest path: "Sign in" where possible, else "Create a small app (about 2
-minutes)" with the manifest link, or "Have a setup code from your organisation?". Nothing is required to reach Aiden.
+minutes)" with the manifest link, with "Your organisation" pre-selected from the email domain when listed. Nothing is required to reach Aiden.
 
 ## Left to the builder
 
-The setup-code format (a base64 JSON of `{connection: client_id}` is enough), the exact manifest scopes per tool, the
+The exact manifest scopes per tool, the
 grant and state migration for the merged modules.
