@@ -109,3 +109,57 @@ function migrateEvents(db: DatabaseSync) {
   }
 }
 
+/**
+ * Facts from what the kernel kept before Flow (Task 15): records (tier ≥ 1), jobs (started and ended; queue time was never
+ * kept), wakes (opened and bound). Each is recorded only where no fact of that
+ * type and subject exists yet, so a re-run, or history the live writers or the migration already covered, records nothing.
+ * Times nothing kept (a claim, a drop) are left out, never guessed. Returns how many facts it recorded.
+ */
+export function backfillLocal(db: DatabaseSync, facts: Facts, { agentKey = () => undefined }: { agentKey?: (id: string) => string | undefined } = {}): number {
+  const have = tables(db);
+  const exists = db.prepare("SELECT 1 FROM facts WHERE type = ? AND subject = ? LIMIT 1");
+  let n = 0;
+  const fill = (f: Omit<Fact, "source">) => {
+    if (!exists.get(f.type, f.subject) && facts.record({ ...f, source: "backfill" })) n++;
+  };
+  const iso = (ms: number) => new Date(ms).toISOString();
+  const agent = (id: string | null) => {
+    const key = id ? agentKey(id) : undefined;
+    return key ? `agent:${key}` : "unknown";
+  };
+  if (have.has("records")) {
+    for (const r of db.prepare("SELECT id, kind, task, tier, panel, requester, state, decided_by, decided_at, outcome, created_at, updated_at FROM records WHERE tier > 0").all() as any[]) {
+      const subject = `record:${r.id}`;
+      const q = JSON.parse(r.requester ?? "{}");
+      fill({ type: "record.filed", subject, version: "filed", task: r.task, at: r.created_at, actor: q.key ? `agent:${q.key}` : q.module ? `module:${q.module}` : "kernel", data: { kind: r.kind, tier: r.tier, panel: r.panel === 1, requester: q.key || q.module || "" } });
+      if (r.decided_at && r.decided_by) {
+        const who = decider(r.decided_by);
+        const decision = ["rejected", "stale"].includes(r.state) ? r.state : "approved";
+        fill({ type: "record.decided", subject, version: `${who.decider}:${decision}`, task: r.task, at: r.decided_at, actor: who.actor, data: { decision, decider: who.decider, via: null } });
+      } else if (r.state === "owner") fill({ type: "record.decided", subject, version: "reviewer:owner", task: r.task, at: r.updated_at, actor: "module:ai-reviewer", data: { decision: "owner", decider: "reviewer", via: "review" } });
+      if (r.state === "done" || r.state === "failed") {
+        const text = String(JSON.parse(r.outcome ?? "null")?.text ?? "").slice(0, 500);
+        fill({ type: r.state === "done" ? "record.landed" : "record.failed", subject, version: r.state, task: r.task, at: r.updated_at, actor: "kernel", data: r.state === "done" ? { kind: r.kind } : { kind: r.kind, text } });
+      }
+    }
+  }
+  if (have.has("jobs")) {
+    for (const j of db.prepare("SELECT id, agent, task, state, exit, why, at, ended FROM jobs WHERE state != 'admitted'").all() as any[]) {
+      const subject = `job:${j.id}`;
+      fill({ type: "job.started", subject, version: "started", task: j.task, at: iso(j.at), actor: agent(j.agent) });
+      let why: unknown = null;
+      try { why = JSON.parse(j.why ?? "null"); } catch { why = j.why; }
+      if (j.ended) fill({ type: "job.ended", subject, version: j.state, task: j.task, at: iso(j.ended), actor: agent(j.agent), data: { state: j.state, exit: j.exit, why } });
+    }
+  }
+  if (have.has("wakes")) {
+    const jobAt = have.has("jobs") ? db.prepare("SELECT at FROM jobs WHERE id = ?") : undefined;
+    for (const w of db.prepare("SELECT key, task, cause, at, job FROM wakes").all() as any[]) {
+      const subject = `wake:${w.key}`;
+      fill({ type: "wake.opened", subject, version: "opened", task: w.task, at: iso(w.at), actor: "unknown", data: { cause: w.cause, author: null } });
+      const bound = w.job ? (jobAt?.get(w.job) as { at: number } | undefined) : undefined;
+      if (bound) fill({ type: "wake.bound", subject, version: w.job, task: w.task, at: iso(bound.at), actor: "kernel", data: { job: w.job } });
+    }
+  }
+  return n;
+}

@@ -44,7 +44,7 @@ import { CODEHOST, covers, createCodehost, type OpsGrant } from "./codehost.ts";
 import { createConnectionHealth, createHealthProbe } from "./health.ts";
 import { createProxy } from "./proxy.ts";
 import { SETTINGS, UPDATER, openRecords } from "./records.ts";
-import { openFacts } from "./facts.ts";
+import { backfillLocal, openFacts } from "./facts.ts";
 import { recordDeploys } from "./generations.ts";
 import { createReviews, type ReviewerSlot } from "./reviews.ts";
 import { createReviewLoop } from "./review-loop.ts";
@@ -314,7 +314,8 @@ for (const sig of ["SIGTERM", "SIGINT"] as const) process.on(sig, () => stop(sig
 process.on("SIGUSR2", () => drain());
 // The finish gate (checks.ts): modules' task.finish checks (compile), holds placed as the owner.
 const work = createWork({ db: records.db, records, generationsFile: path.join(env("AIDENHQ_STATE_DIR", path.join(process.env.HOME ?? "", ".local/state/aidenhq")), "generations.jsonl") });
-// Flow: the host's deploys as they settle (generations.ts).
+// Flow: what the kernel kept before the fact log, once (idempotent), and the host's deploys as they settle (generations.ts).
+log("flow backfill", { recorded: backfillLocal(records.db, facts, { agentKey: (id) => grantsTable().agents?.[id]?.key }) });
 const syncDeploys = () => { try { recordDeploys({ db: records.db, file: path.join(env("AIDENHQ_STATE_DIR", path.join(process.env.HOME ?? "", ".local/state/aidenhq")), "generations.jsonl"), repo }); } catch (e) { log("WARNING: deploy facts failed", { err: String((e as Error).message) }); } };
 syncDeploys();
 every(syncDeploys, 60_000);
