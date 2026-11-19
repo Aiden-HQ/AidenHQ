@@ -301,6 +301,16 @@ test("a DeepSeek requester is reviewed by Luna only, an OpenAI requester by Deep
   assert.deepEqual(glm.asked, [DEEPSEEK], "an OpenAI requester is reviewed by DeepSeek only");
 });
 
+test("a GitHub write carrying the instance's hosts, addresses or paths is refused by code; the clean comment reaches the model", async () => {
+  const read = (f) => JSON.parse(readFileSync(join(import.meta.dirname, "reviewer-cases", f), "utf8"));
+  const leak = read("triage-routine-comment-leaks-instance-details.json");
+  const out = await review({ card: leak.card, diff: leak.diff, policy: "p", ask: async () => assert.fail("not asked") });
+  assert.deepEqual([out.decision, out.code], ["reject", "secret_exfiltration"]);
+  assert.match(out.reason, /agents\.acme-internal\.ts\.net.*\/home\/sam\/.*203\.0\.113\.41/);
+  const clean = read("clean-triage-routine-comments-verified-fixed.json");
+  assert.equal((await review({ card: clean.card, diff: clean.diff, policy: "p", ask: async () => ok })).decision, "approve");
+});
+
 test("too large or missing: back to the agent; a failed call: reviewer_failed (the runner retries it)", async () => {
   const never = async () => assert.fail("not asked");
   const big = await review({ card, diff: "x".repeat(MAX_DIFF + 1), policy: "p", ask: never });
