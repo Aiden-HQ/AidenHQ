@@ -30,6 +30,25 @@ export interface SetupFlowPoint {
   pair_token?: string;
   /** A module with modes: the owner picks one first (a module setting), then Connect (modules/board/schemas/setup_flows.json). */
   choose?: ChooseSpec;
+  /** Who else may need to approve (an honest label beside the effort). */
+  admin?: string;
+  /** Its `mode: advanced` flow: the person's own app, for what basic can't do; done once its secrets exist (and it is paired). */
+  advanced?: AdvancedFlow;
+}
+
+/** A module's advanced flow (compile nests it in the basic one): what it unlocks, its steps, secrets and pairing. */
+export interface AdvancedFlow {
+  title: string;
+  why: string;
+  effort: string;
+  admin?: string;
+  steps: string;
+  capabilities: string[];
+  secrets?: string[];
+  fields?: SetupFlowPoint["fields"];
+  console_url?: string;
+  pair_url?: string;
+  pair_token?: string;
 }
 
 export interface ChooseSpec {
@@ -60,7 +79,8 @@ export function setupFlowPoints(file: string, secrets: string): (SetupFlowPoint 
   const list: SetupFlowPoint[] = existsSync(file) ? (JSON.parse(readFileSync(file, "utf8")).setup_flows ?? []) : [];
   return list
     .map((f) => {
-      const path = f.pair_token ? `${secrets}/${f.pair_token}` : "";
+      const pairToken = f.pair_token ?? f.advanced?.pair_token;
+      const path = pairToken ? `${secrets}/${pairToken}` : "";
       return { ...f, ...(path && existsSync(path) ? { token: readFileSync(path, "utf8").trim() } : {}) };
     })
     .sort((a, b) => a.order - b.order);
@@ -110,8 +130,10 @@ export function setupFlowRoutes(d: SetupFlowDeps): SetupRoute[] {
     if (!who.ready || who.account.role !== "admin") throw new AccountError(403, "totp");
   };
   const pairCall = async (f: SetupFlowPoint & { token?: string }, method: "GET" | "POST") => {
-    if (!f.pair_url || !f.token) throw new AccountError(404, "this module has no pairing");
-    const res = await doFetch(f.pair_url, { method, headers: { authorization: `Bearer ${f.token}` }, signal: AbortSignal.timeout(15_000) });
+    // A module pairs once: on its basic flow, or on its advanced one.
+    const url = f.pair_url ?? f.advanced?.pair_url;
+    if (!url || !f.token) throw new AccountError(404, "this module has no pairing");
+    const res = await doFetch(url, { method, headers: { authorization: `Bearer ${f.token}` }, signal: AbortSignal.timeout(15_000) });
     const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
     if (!res.ok) throw new AccountError(502, String(data.error ?? `${f.module} answered ${res.status}`));
     return data;
@@ -133,7 +155,7 @@ export function setupFlowRoutes(d: SetupFlowDeps): SetupRoute[] {
       })),
     };
   };
-  const pairedOf = async (f: SetupFlowPoint & { token?: string }) => (f.pair_url ? Boolean((await pairCall(f, "GET").catch(() => ({ paired: false }))).paired) : true);
+  const pairedOf = async (f: SetupFlowPoint & { token?: string }) => (f.pair_url ?? f.advanced?.pair_url ? Boolean((await pairCall(f, "GET").catch(() => ({ paired: false }))).paired) : true);
 
   const routes: SetupRoute[] = [
     {
@@ -142,20 +164,23 @@ export function setupFlowRoutes(d: SetupFlowDeps): SetupRoute[] {
       handle: async (_m, _b, who, host) => {
         const gone = new Set(dismissed());
         const flows = await Promise.all(
-          d.flows.map(async ({ token: _t, pair_token: _p, connect_url, ...f }) => {
+          d.flows.map(async ({ token: _t, pair_token: _p, connect_url, advanced, ...f }) => {
             const full = d.flows.find((x) => x.module === f.module)!;
-            const present = f.secrets?.length ? (await d.accounts.call<{ secrets: Record<string, boolean> }>("setup_status", who, { module: f.module })).secrets : {};
+            const present = f.secrets?.length || advanced?.secrets?.length ? (await d.accounts.call<{ secrets: Record<string, boolean> }>("setup_status", who, { module: f.module })).secrets : {};
             // A connect path counts only if the board serves it; then its connection's state is the sign-in's.
             const connected = connect_url ? await d.connected(connect_url) : undefined;
             const signedIn = f.signin ? await d.signedIn(f.signin) : connect_url ? connected === true : true;
             const paired = await pairedOf(full);
+            // Basic is done once it is connected (and paired, when the basic flow pairs); advanced once its secrets exist (and paired).
+            const basicPaired = f.pair_url ? paired : true;
             const scopes = f.signin ? await d.scopeChoice(f.signin) : false;
             // A connection's real state decides when it has one (an upgraded instance keeps values outside the vault and works);
             // only a flow with no sign-in, connect path or pairing is done by its secrets.
-            const done = f.signin || connect_url || f.pair_url ? signedIn && paired : (f.secrets ?? []).every((s) => present[s]);
+            const done = f.signin || connect_url || f.pair_url ? signedIn && basicPaired : (f.secrets ?? []).every((s) => present[s]);
+            const adv = advanced && (({ pair_token: _a, ...a }) => ({ ...a, done: (a.secrets ?? []).every((s) => present[s]) && (a.pair_url ? paired : true) }))(advanced);
             const redirect_url = f.signin ? d.redirectUrl(f.signin, host) : undefined;
             const choose = full.choose ? { choose: chooseView(full.choose, f.module) } : {};
-            return { ...f, ...choose, ...(connected !== undefined ? { connect_url } : {}), ...(redirect_url ? { redirect_url } : {}), present, signedIn, scopes, paired, done, dismissed: gone.has(f.module) };
+            return { ...f, ...choose, ...(adv ? { advanced: adv } : {}), ...(connected !== undefined ? { connect_url } : {}), ...(redirect_url ? { redirect_url } : {}), present, signedIn, scopes, paired, done, dismissed: gone.has(f.module) };
           }),
         );
         const boardUrl = d.boardUrl(host);
@@ -170,7 +195,7 @@ export function setupFlowRoutes(d: SetupFlowDeps): SetupRoute[] {
         const parsed = z.object({ secret: z.string().max(64), value: z.string().min(1).max(4000) }).strict().safeParse(body);
         if (!parsed.success) throw new AccountError(400, "secret and value are required");
         const { secret, value } = parsed.data;
-        if (!f.secrets?.includes(secret)) throw new AccountError(400, "not one of this flow's secrets");
+        if (!f.secrets?.includes(secret) && !f.advanced?.secrets?.includes(secret)) throw new AccountError(400, "not one of this flow's secrets");
         return d.accounts.call("save_secret", who, { module: f.module, secret, value });
       },
     },

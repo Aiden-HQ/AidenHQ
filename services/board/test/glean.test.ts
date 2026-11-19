@@ -84,7 +84,7 @@ describe("Glean sign-in routes", () => {
     expect(bad).toMatchObject({ status: 302, location: expect.stringMatching(/^\/#\/settings\/connections\?connect=glean&error=/) });
     expect(decodeURIComponent(bad.location!)).toContain("invalid_grant");
     const denied = await get(`${localBase}/callback?state=s&error=access_denied`, "127.0.0.1:3121");
-    expect(denied).toMatchObject({ status: 302, location: expect.stringContaining("access_denied") });
+    expect(denied).toMatchObject({ status: 302, location: expect.stringContaining("declined") });
   });
 });
 
@@ -145,7 +145,7 @@ describe("board.signins from the compiled point", () => {
   it("takes a mounted one with its proxy's base URL, and leaves one without a token off", () => {
     writeFileSync(join(dir, "glean_auth_token"), "tok\n");
     const jira = { ...glean, id: "jira", module: "jira", label: "Jira", status_url: "http://jira-mcp:8091/auth/status", connect_url: "/jira/connect", callback: "/jira/callback" };
-    expect(signInPoints(point([glean, jira]), dir)).toEqual([{ id: "glean", label: "Glean", connect: "/glean/connect", callback: "/callback", httpsOnly: false, missing: "m", stopped: "s", fields: [], url: "http://glean-mcp:8085", token: "tok" }]);
+    expect(signInPoints(point([glean, jira]), dir)).toEqual([{ id: "glean", label: "Glean", connect: "/glean/connect", callback: "/callback", mode: "redirect", httpsOnly: false, missing: "m", stopped: "s", fields: [], url: "http://glean-mcp:8085", token: "tok" }]);
   });
   it("refuses another module's paths, Google's, or a second bare /callback", () => {
     expect(() => signInPoints(point([{ ...glean, callback: "/google/callback" }]), dir)).toThrow(/its paths/);

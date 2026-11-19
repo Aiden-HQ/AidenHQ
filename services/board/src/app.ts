@@ -35,7 +35,9 @@ import { UsageSchema, keyUsage, prices, spendSummary } from "./costs.js";
 import { ledgerRange, ledgerSummary, ledgerTop } from "./cost-ledger.js";
 import { descendants, featureCost, recentFeatures } from "./feature-cost.js";
 import { MergeSchema, mergedDescription } from "./merge.js";
-import { McpAuthFailed, SIGNIN_LOOPBACK, asksValues, pastedCallback, type McpAuth } from "./mcpauth.js";
+import { deviceRoutes } from "./device-signin.js";
+import { McpAuthFailed, SIGNIN_LOOPBACK, asksValues, pastedCallback, vendorWords, type McpAuth } from "./mcpauth.js";
+import { organisationRoutes, type OrganisationPoint } from "./organisations.js";
 import { setupFlowRoutes, type SetupFlowPoint } from "./setup-flows.js";
 import type { SetupField } from "./config.js";
 import { welcomeRoutes } from "./welcome.js";
@@ -49,7 +51,7 @@ import { BUCKETS, isBucket, localDate, type Store } from "./store.js";
 import { AsideSchema, askGateway, asideMessages, holdsActive, lineageStatus, lineageTotal, modelOf, settleable, stillSettled, type LineageRow } from "./lineage.js";
 
 /** One module sign-in (board.signins), with its proxy client. */
-export interface SignIn { id: string; label: string; connect: string; callback: string; httpsOnly?: boolean; missing: string; stopped: string; fields: SetupField[]; auth: McpAuth }
+export interface SignIn { id: string; label: string; connect: string; callback: string; mode?: "redirect" | "device"; httpsOnly?: boolean; missing: string; stopped: string; fields: SetupField[]; auth: McpAuth }
 
 export interface AppOptions {
   /** Paperclip through the kernel, as the owner: every read and every write (all admins write as the owner, 2026-11-12). */
@@ -88,6 +90,8 @@ export interface AppOptions {
   google?: GoogleAuth;
   /** The modules' sign-ins through their MCP proxies (board.signins, config.ts): a banner and a Connect each. */
   signIns?: SignIn[];
+  /** Organisations that run internal apps (organisations.ts): choosing one writes its public client values. */
+  organisations?: OrganisationPoint[];
   /** The modules' setup flows (board.setup_flows, setup-flows.ts), with each pair token read from the vault; fetchImpl stands in for fetch to the module's pairing endpoint. */
   setupFlows?: { flows: (SetupFlowPoint & { token?: string })[]; fetchImpl?: typeof fetch };
   /** The first-run wizard's finished marker (data/board/welcome-sent): present means the welcome was sent. */
@@ -1075,7 +1079,7 @@ export function createApp(opts: AppOptions): Server {
       ),
     ]);
     // Its Connect: the picker first where the proxy offers a choice of scopes, and the per-install values first while it has none.
-    const signIns = Object.fromEntries(states.map((s) => [s.id, s.status && { ...s.status, offer: s.offer, ...(asksValues(s.status) && s.fields.length ? { fields: s.fields } : {}) }] as const));
+    const signIns = Object.fromEntries(states.map((s) => [s.id, s.status && { ...s.status, offer: s.offer, ...(s.mode === "device" ? { mode: "device" as const } : {}), ...(asksValues(s.status) && s.fields.length ? { fields: s.fields } : {}) }] as const));
     return connectionsView({ compiled, catalog, probes: probed.probes, signIns, google, sources });
   }
 
@@ -1108,10 +1112,32 @@ export function createApp(opts: AppOptions): Server {
           fields: s.fields,
           scopes: offer && offer.supported.length > 1 ? { ...offer, ...(granted.length ? { granted } : {}) } : null,
           state: status?.state ?? "unknown",
+          mode: s.mode ?? "redirect",
+          // What stops this sign-in before it starts, in words (checked here, so the vendor's page never shows a bare refusal).
+          preflight: s.mode !== "device" && s.httpsOnly && !httpsBoard ? `${s.label} sends you back only to an https address, and this board has none yet. Give the board its https address (docs/setup.md, Tailscale), then connect from there.` : null,
           // The address the default sign-in ends on (pasted back below), and the domain one click returns to instead.
-          redirect: s.httpsOnly ? null : `${SIGNIN_LOOPBACK}${s.callback}`,
+          redirect: s.httpsOnly || s.mode === "device" ? null : `${SIGNIN_LOOPBACK}${s.callback}`,
           oneClick: s.httpsOnly ? null : (httpsBoard?.hostname ?? null),
         };
+      },
+    },
+    // Finishing a Google sign-in with a Desktop client: the loopback address its tab ended on, pasted on its Connect dialog.
+    {
+      method: "POST",
+      path: /^\/api\/google\/finish$/,
+      handle: async (_m, body) => {
+        if (!opts.google) throw new HttpError(404, "Google sign-in isn't set up on the board");
+        const { url: pasted } = parse(z.object({ url: z.string().max(8000) }).strict(), body);
+        try {
+          const back = pastedCallback(pasted, `${SIGNIN_LOOPBACK}/google/callback`);
+          const { email } = await opts.google.finish(back.state, back.code, back.code ? undefined : back.error);
+          log.info({ account: email }, "Google account connected");
+        } catch (err) {
+          log.warn({ err: String((err as Error).message ?? err).slice(0, 500) }, "Google sign-in failed");
+          throw err instanceof McpAuthFailed || err instanceof GoogleAuthFailed ? new HttpError(400, `Couldn't connect Google: ${err.message}`) : new HttpError(502, "Couldn't connect Google: google-workspace-mcp isn't answering");
+        }
+        store.events.emit("connections");
+        return { ok: true };
       },
     },
     // Finishing a loopback sign-in: the address its tab ended on, pasted on Connect. Checked to be exactly that redirect; the
@@ -1125,7 +1151,7 @@ export function createApp(opts: AppOptions): Server {
         const { url: pasted } = parse(z.object({ url: z.string().max(8000) }).strict(), body);
         try {
           const back = pastedCallback(pasted, `${SIGNIN_LOOPBACK}${s.callback}`);
-          if (!back.code) throw new McpAuthFailed(`${s.label} didn't grant access (${back.error})`);
+          if (!back.code) throw new McpAuthFailed(`${s.label} didn't grant access: ${vendorWords(back.error ?? "", back.description)}`);
           await s.auth.finish(back.state, back.code);
         } catch (err) {
           log.warn({ err: String((err as Error).message ?? err).slice(0, 500) }, `${s.label} sign-in failed`);
@@ -1834,6 +1860,8 @@ export function createApp(opts: AppOptions): Server {
         return opts.accounts!.call("save_secret", who, { module: s.id, secret, value });
       },
     },
+    ...(opts.accounts && opts.organisations?.length ? organisationRoutes({ orgs: opts.organisations, accounts: opts.accounts, store, onApplied: () => store.events.emit("connections") }) : []),
+    ...((opts.signIns ?? []).some((s) => s.mode === "device") ? deviceRoutes({ signIns: opts.signIns!, onSignedIn: () => store.events.emit("connections") }) : []),
     // App admins (docs/design/access.md, Per-app roles): every shared app, its admins and default; name or remove one.
     ...(opts.setupFlows?.flows.length && opts.accounts
       ? setupFlowRoutes({
@@ -1877,7 +1905,9 @@ export function createApp(opts: AppOptions): Server {
     const who = await accounts.sessionOf(req);
     if (path === "/api/session" && req.method === "GET") {
       const account = who ? { id: who.account.id, email: who.account.email, name: who.account.name, role: who.account.role, owner: who.account.owner } : null;
-      send(res, 200, JSON.stringify({ mode, account, googleConnect: googleViaBoard, signInConnect: true, adminUrl: opts.adminUrl ?? null }), "application/json");
+      // Google connects from any address with a Desktop client (pasted back), else only on the https board or loopback.
+      const googleConnect = googleViaBoard || (who && opts.google ? (await opts.google.status())?.client_type === "desktop" : false);
+      send(res, 200, JSON.stringify({ mode, account, googleConnect, signInConnect: true, adminUrl: opts.adminUrl ?? null }), "application/json");
       return true;
     }
     if (!who) throw new HttpError(401, "sign in");
@@ -1945,11 +1975,19 @@ export function createApp(opts: AppOptions): Server {
    */
   async function handleGoogle(req: IncomingMessage, res: ServerResponse, url: URL) {
     if (!opts.google) throw new HttpError(404, "Google sign-in isn't set up on the board (no google_auth_token)");
-    if (!googleViaBoard && !loopbackPort(req.headers.host)) throw new HttpError(403, `connect Google from ${TUNNEL}`);
-    const callback = `${signInOrigin(String(req.headers.host).toLowerCase())}/google/callback`;
+    // A Desktop client returns only to loopback: the sign-in ends on the board's loopback address, pasted back on its Connect
+    // dialog unless a tunnel brings it here. A Web client returns to the board's https address (or the loopback board).
+    const desktop = (await opts.google.status())?.client_type === "desktop";
+    if (!desktop && !googleViaBoard && !loopbackPort(req.headers.host)) throw new HttpError(403, `connect Google from ${TUNNEL}`);
+    const callback = desktop ? `${SIGNIN_LOOPBACK}/google/callback` : `${signInOrigin(String(req.headers.host).toLowerCase())}/google/callback`;
     try {
       if (url.pathname === "/google/connect") {
         const account = url.searchParams.get("account") || undefined;
+        // From a link (a banner, an old page): the Connect dialog, which opens this again (`go`) and takes the pasted address.
+        if (desktop && !url.searchParams.has("go") && !loopbackPort(req.headers.host)) {
+          res.writeHead(302, { ...SECURITY_HEADERS, location: `/#/settings/connections?connect=google_workspace${account ? `&account=${encodeURIComponent(account)}` : ""}`, "cache-control": "no-store" }).end();
+          return;
+        }
         const { url: consent } = await opts.google.start(account, callback);
         log.info({ account: account ?? "(new)" }, "Google sign-in started");
         res.writeHead(302, { ...SECURITY_HEADERS, location: consent, "cache-control": "no-store" }).end();
@@ -1957,9 +1995,9 @@ export function createApp(opts: AppOptions): Server {
       }
       if (url.pathname === "/google/callback") {
         const state = url.searchParams.get("state") ?? "";
-        const code = url.searchParams.get("code");
-        if (!code) throw new GoogleAuthFailed(`Google didn't grant access (${url.searchParams.get("error") ?? "no code"})`);
-        const { email } = await opts.google.finish(state, code);
+        const code = url.searchParams.get("code") ?? undefined;
+        // Google's own error goes to the service, which explains it in words (the person refused, the project doesn't allow them).
+        const { email } = await opts.google.finish(state, code, code ? undefined : (url.searchParams.get("error") ?? "no_code").slice(0, 100));
         log.info({ account: email }, "Google account connected");
         store.events.emit("connections");
         res.writeHead(302, { ...SECURITY_HEADERS, location: "/", "cache-control": "no-store" }).end();
@@ -2007,6 +2045,11 @@ export function createApp(opts: AppOptions): Server {
     const origin = url.pathname === connect ? redirectOrigin(s, host, url.searchParams.has("oneclick")) : vendorOrigin(host);
     if (!origin) return signInFailed(res, s.id, `Couldn't connect ${name}: ${httpsBoard ? `sign in from ${httpsBoard.origin}` : `sign in from ${TUNNEL}`}`);
     try {
+      // A device sign-in has no redirect: its Connect dialog shows the code.
+      if (url.pathname === connect && s.mode === "device") {
+        res.writeHead(302, { ...SECURITY_HEADERS, location: dialogOf(s.id), "cache-control": "no-store" }).end();
+        return;
+      }
       if (url.pathname === connect && (await needsSetup(req, s))) {
         res.writeHead(302, { ...SECURITY_HEADERS, location: `/#/setup/${flowOf(s)!.module}`, "cache-control": "no-store" }).end();
         return;
@@ -2027,7 +2070,7 @@ export function createApp(opts: AppOptions): Server {
       if (url.pathname === callback) {
         const state = url.searchParams.get("state") ?? "";
         const code = url.searchParams.get("code");
-        if (!code) throw new McpAuthFailed(`${name} didn't grant access (${url.searchParams.get("error") ?? "no code"})`);
+        if (!code) throw new McpAuthFailed(`${name} didn't grant access: ${vendorWords(url.searchParams.get("error") ?? "no_code", url.searchParams.get("error_description"))}`);
         await auth.finish(state, code);
         log.info(`${name} connected`);
         // The tab that pressed Connect turns Connected now (events.ts); this one, opened for the sign-in, closes itself or shows it.
