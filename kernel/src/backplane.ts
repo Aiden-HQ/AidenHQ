@@ -64,6 +64,7 @@
 //   POST /v1/health/probe      (the host's health_probe_key, x-health-key) {probe}: one of health.ts's fixed read probes, called as the
 //                              agent granted it -> {ok, ms, error?}, never the tool's answer; scripts/healthcheck.sh's reads
 import { createReadStream } from "node:fs";
+import { pipeline } from "node:stream/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { timingSafeEqual } from "node:crypto";
 import type { Asserter } from "./assert.ts";
@@ -315,8 +316,8 @@ export function createBackplane({ whoami, asserter, proxy, cp, boardCp, grantsFi
             }
             const out = await localBundle(repo).catch((e: { status?: number; message: string }) => { throw fail(e.status ?? 500, "no-repo", e.message); });
             res.writeHead(200, { "content-type": "application/octet-stream" });
-            await new Promise<void>((ok) => createReadStream(out.file).on("error", () => res.destroy()).on("close", ok).pipe(res));
-            return void out.done();
+            // An aborted client ends the pipeline too: the request never hangs and the temp bundle always goes.
+            return void (await pipeline(createReadStream(out.file), res).catch(() => {}).finally(out.done));
           }
           try { return send(res, 200, { text: jobTools.run(bearer(req), m[0]!, b) }); } catch (e) {
             const j = e as { name?: string; status?: number; code?: string; message: string };

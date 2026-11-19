@@ -19,7 +19,7 @@ export class JobToolError extends Error {
 const KIND = /^[a-z][a-z0-9-]{0,40}$/;
 const MODEL = /^~?[\w.-]{1,60}\/[\w.:-]{1,100}$/;
 
-export function createJobTools({ db, secret, engines, orgs = () => [], now = Date.now }: {
+export function createJobTools({ db, secret, engines, orgs = () => [], mayClone = () => false, now = Date.now }: {
   db: DatabaseSync;
   /** The kernel's gateway_job_secret, read fresh. */
   secret: () => string;
@@ -27,6 +27,8 @@ export function createJobTools({ db, secret, engines, orgs = () => [], now = Dat
   engines: () => string[];
   /** The agents orgs (one per enabled code host): the only orgs a job's `repo-checkout` may name. */
   orgs?: () => string[];
+  /** Whether the job's dispatcher's codehost clone grant covers the repo (as for the clones at admission, boxes.ts). */
+  mayClone?: (module: string, repo: string) => boolean;
   now?: () => number;
 }) {
   db.exec("CREATE TABLE IF NOT EXISTS jobtools (job TEXT PRIMARY KEY, fresh INTEGER NOT NULL DEFAULT 0, engine TEXT, cleanup INTEGER NOT NULL DEFAULT 0, at INTEGER NOT NULL)");
@@ -89,11 +91,13 @@ export function createJobTools({ db, secret, engines, orgs = () => [], now = Dat
      * the bundle the kernel serves. GitHub's repos come into the workspace at admission instead (boxes.ts).
      */
     clone(token: string, b: { repo?: unknown }): { repo: string } {
-      const r = db.prepare("SELECT authority FROM jobs WHERE id = ?").get(jobOf(token)) as { authority: string | null } | undefined;
+      const r = db.prepare("SELECT module, authority FROM jobs WHERE id = ?").get(jobOf(token)) as { module: string; authority: string | null } | undefined;
       if ((r?.authority ? JSON.parse(r.authority).profile : undefined) !== "engineer") throw new JobToolError(403, "no-role", "aidenhq clone is an Engineer's");
       const m = /^local\/([\w.-]+)$/i.exec(String(b?.repo ?? "").trim());
       if (!m || /^\.+$/.test(m[1]!) || m[1]!.endsWith(".git")) throw new JobToolError(400, "bad-repo", "give a repository on this server as local/<name>");
-      return { repo: `local/${m[1]}` };
+      const repo = `local/${m[1]}`;
+      if (!mayClone(r!.module, repo)) throw new JobToolError(403, "not-allowed", `${repo} isn't a repository this job's dispatcher may clone`);
+      return { repo };
     },
     /** What the task's last ended job asked of its next turn, if anything (read in the admission transaction). */
     pending(task: string): NextTurn | undefined {

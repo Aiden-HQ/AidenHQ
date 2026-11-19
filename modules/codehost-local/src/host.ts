@@ -10,9 +10,9 @@
 //   refs/changes/<n>/meta    { title, body, branch, base (the branch it merges into), task, opened_at, draft }
 // Its URL is codehost:local/<name>/change/<n>. A job's commits come in as a bundle its box wrote (git.ts ingest). A merge needs the change's checks green on its exact head: the `change` check
 // job (check_jobs in module.yaml, run in a credential-free box from a snapshot) with a receipt the kernel signed.
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { plan as planRules } from "../../codehost-github/service/src/plan.mjs";
+import { planParts, plan as planRules } from "../../codehost-github/service/src/plan.mjs";
 import { IDENTITY, bareOf, fail, git, ingest } from "./git.ts";
 
 export const LOCAL_ORG = "local";
@@ -65,8 +65,8 @@ export function localHost({ root, sources = {}, tasksDir, scratchDir, instanceRe
   const numbers = async (repo: string) => [...new Set((await g(repo, ["for-each-ref", "--format=%(refname)", "refs/changes/"])).split("\n").map((r) => Number(/^refs\/changes\/(\d+)\//.exec(r)?.[1])).filter((n) => n > 0))].sort((a, b) => a - b);
   const meta = async (repo: string, n: number) => JSON.parse((await g(repo, ["cat-file", "blob", `refs/changes/${n}/meta`]).catch(() => "")) || "{}");
   const refs = (repo: string, lines: string[]) => g(repo, ["update-ref", "--stdin"], { input: `start\n${lines.join("\n")}\nprepare\ncommit\n` });
-  const diffText = async (repo: string, from: string, to: string) => {
-    const d = await git(["--git-dir", bare(repo), "-c", "core.attributesFile=/dev/null", "diff", "--no-ext-diff", "--no-textconv", "--text", "--no-renames", from, to], { raw: true });
+  const diffText = async (repo: string, from: string, to: string, dir = bare(repo)) => {
+    const d = await git(["--git-dir", dir, "-c", "core.attributesFile=/dev/null", "diff", "--no-ext-diff", "--no-textconv", "--text", "--no-renames", from, to], { raw: true });
     return d;
   };
 
@@ -149,12 +149,26 @@ export function localHost({ root, sources = {}, tasksDir, scratchDir, instanceRe
     let diff = "";
     for (const b of a.only ?? []) {
       if (!exists(b.repo)) throw fail(404, `${b.repo} isn't on this server: create it first (aidenhq create-repo)`);
-      const ref = await ingest(tasksDir, scratchDir, bare(b.repo), a.workspace, b);
       const def = await defaultBranch(b.repo), main = await rev(b.repo, `refs/heads/${def}`);
-      const mb = main ? await g(b.repo, ["merge-base", main, ref]).catch(() => "") : "";
-      const files = (await g(b.repo, ["diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--name-only", "-z", mb || "4b825dc642cb6eb9a060e54bf8d69288fbee4904", b.sha])).split("\0").filter(Boolean);
-      diff += await diffText(b.repo, mb || "4b825dc642cb6eb9a060e54bf8d69288fbee4904", b.sha);
-      branches.push({ repo: b.repo, branch: b.branch, sha: b.sha, base: mb || undefined, files, defaultBranch: def, empty: !main });
+      // What the rules refuse on the repo and branch alone (the instance or product repo, a branch namespace) is refused before
+      // anything is read in: a refused push writes no objects and no refs.
+      const early = planParts(action, { ...base(requester), workspace: a.workspace, branches: [{ repo: b.repo, branch: b.branch, sha: b.sha, files: [], defaultBranch: def, empty: !main }] }).flat().find((x: { reject?: boolean }) => x.reject);
+      if (early) throw Object.assign(fail(422, early.reason), { rule: early.rule });
+      // Planning reads the job's commits into a throwaway repo (the real one's objects as its alternates): only an approved,
+      // executed push writes the repo itself.
+      const tmp = mkdtempSync(join(scratchDir, "plan-")), dir = join(tmp, "plan.git");
+      try {
+        await git(["init", "--quiet", "--bare", dir]);
+        writeFileSync(join(dir, "objects", "info", "alternates"), `${join(bare(b.repo), "objects")}\n`);
+        const ref = await ingest(tasksDir, scratchDir, dir, a.workspace, b);
+        const p = (args: string[]) => git(["--git-dir", dir, ...args]);
+        const mb = main ? await p(["merge-base", main, ref]).catch(() => "") : "";
+        const files = (await p(["diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--name-only", "-z", mb || "4b825dc642cb6eb9a060e54bf8d69288fbee4904", b.sha])).split("\0").filter(Boolean);
+        diff += await diffText(b.repo, mb || "4b825dc642cb6eb9a060e54bf8d69288fbee4904", b.sha, dir);
+        branches.push({ repo: b.repo, branch: b.branch, sha: b.sha, base: mb || undefined, files, defaultBranch: def, empty: !main });
+      } finally {
+        rmSync(tmp, { recursive: true, force: true });
+      }
     }
     const names = branches.map((b) => `${b.repo} \`${b.branch}\``).join(", ");
     return { state: { ...base(requester), workspace: a.workspace, branches }, target: names, sentence: `${action === "pr" ? "Publish and open a change request for" : "Push"} ${names}.`, diff };

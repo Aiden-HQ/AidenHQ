@@ -32,7 +32,7 @@ test("local-only: create a repo, publish a change request, merge it at its head 
   });
   const localChecks = new Map();
   const host = localHost({
-    root: join(dir, "codehost"), tasksDir: tasks, scratchDir: join(dir, "scratch"), waitMs: 10_000,
+    root: join(dir, "codehost"), tasksDir: tasks, scratchDir: join(dir, "scratch"), waitMs: 10_000, instanceRepo: "local/aidenhq-instance",
     // As main.ts: a new request may run a check again; a waiting merge reads the one it asked for.
     checks: async (repo, head, base, retry) => {
       const key = `${repo} ${head} ${base}`, had = localChecks.get(key);
@@ -108,6 +108,19 @@ test("local-only: create a repo, publish a change request, merge it at its head 
   renameSync(join(other, `${two}.bundle`), join(other, "bundles", `${two}.bundle`));
   symlinkSync(other, join(tasks, "TASK-1", ".aidenhq"));
   await assert.rejects(publishTwo(), /isn't a regular file inside task/);
+
+  // A push the rules refuse on its repo alone (the instance repo changes only through apply) reads nothing in: the bare repo's
+  // refs and objects are as they were.
+  const inst = join(dir, "codehost", "local", "aidenhq-instance.git");
+  git(dir, "init", "--quiet", "--bare", "-b", "main", inst);
+  git(dir, "--git-dir", inst, "fetch", "--quiet", bare, "main:main");
+  const before = [git(dir, "--git-dir", inst, "for-each-ref"), git(dir, "--git-dir", inst, "count-objects", "-v")];
+  renameSync(join(dir, "moved"), join(tasks, "TASK-1", ".aidenhq-real"));
+  rmSync(join(tasks, "TASK-1", ".aidenhq"));
+  renameSync(join(tasks, "TASK-1", ".aidenhq-real"), join(tasks, "TASK-1", ".aidenhq"));
+  bundle(two, "greet");
+  await assert.rejects(writes.request(job, { kind: "codehost.push", args: { only: [{ repo: "local/aidenhq-instance", branch: "greet", sha: two }] } }), /instance repo/);
+  assert.deepEqual([git(dir, "--git-dir", inst, "for-each-ref"), git(dir, "--git-dir", inst, "count-objects", "-v")], before);
 
   // Repos on two code hosts in one write are refused before anything is filed.
   await assert.rejects(writes.request(job, { kind: "codehost.close", args: { prs: [{ repo: "local/hello", number: 1 }, { repo: "acme/app", number: 2 }] } }), /more than one code host/);
