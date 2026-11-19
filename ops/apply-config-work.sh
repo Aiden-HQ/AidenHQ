@@ -248,8 +248,10 @@ revertTo() {
 #   the instance did not move past the last known good's  that instance, as it is;
 #   the product moved                                     generation n's instance with the last known good's pins
 #                                                         (product:, product_fork:, release:) put back;
-#   else                                                  generation n's instance commit (the one its apply landed) reverted.
-# A new commit is local and detached, anchored by refs/aidenhq/revert-of-<n>: apply never pushes the instance (its main is
+#   else                                                  generation n's instance commit (the one its apply landed) reverted,
+#                                                         then what the last known good's own local revert commits undid
+#                                                         (a failed commit still on main) undone again, theirs winning.
+# Any step that fails leaves the checkout clean at generation n's instance, and nothing is reverted. A new commit is local and detached, anchored by refs/aidenhq/revert-of-<n>: apply never pushes the instance (its main is
 # fast-forward only), so the instance's main stays as it is and the alert says what was undone.
 revertInstance() {
   local n="$1" lkg="$2" i="$AIDENHQ_INSTANCE_DIR" head good m=() id=(-c user.name=aidenhq-apply -c user.email=apply@aidenhq.invalid)
@@ -260,18 +262,23 @@ revertInstance() {
     # Top-level blocks of instance.yaml (a key line with the indented, blank and comment lines after it): the pin blocks are
     # swapped for the last known good's, where the first one stood.
     # shellcheck disable=SC2016 # the program is JavaScript, in single quotes on purpose
-    git -C "$i" show "$good:instance.yaml" | node -e '
+    { git -C "$i" show "$good:instance.yaml" | node -e '
 const fs = require("node:fs");
 const blocks = (t) => t.replace(/\n$/, "").split("\n").reduce((b, l) => ((/^[^\s#]/.test(l) || !b.length ? b.push([l]) : b.at(-1).push(l)), b), []);
 const pin = (b) => /^(product|product_fork|release):/.test(b[0]);
 const cur = blocks(fs.readFileSync(process.argv[1], "utf8")), rest = cur.filter((b) => !pin(b));
 rest.splice(Math.max(0, cur.findIndex(pin)), 0, ...blocks(fs.readFileSync(0, "utf8")).filter(pin));
-fs.writeFileSync(process.argv[1], rest.flat().join("\n") + "\n");' "$i/instance.yaml" || return 1
-    git -C "$i" "${id[@]}" commit --quiet -m "Revert generation $n's product move: generation $lkg's pins (local to this host)" -- instance.yaml || return 1
+fs.writeFileSync(process.argv[1], rest.flat().join("\n") + "\n");' "$i/instance.yaml" \
+      && git -C "$i" "${id[@]}" commit --quiet -m "Revert generation $n's product move: generation $lkg's pins (local to this host)" -- instance.yaml; } \
+      || { git -C "$i" reset --quiet --hard "$head"; return 1; }
     echo "$(git -C "$i" rev-parse HEAD) the product is back to generation $lkg's and the rest of the instance is kept at ${head:0:12}"
   else
     git -C "$i" rev-parse -q --verify "$head^2" >/dev/null && m=(-m 1)
-    git -C "$i" "${id[@]}" revert --no-edit "${m[@]}" "$head" >&2 || { git -C "$i" revert --abort >&2 || true; return 1; }
+    # shellcheck disable=SC2046 # commit shas, one word each
+    { git -C "$i" "${id[@]}" revert --no-edit "${m[@]}" "$head" >&2 \
+      && { [ -z "$(git -C "$i" rev-list --no-merges "$head..$good")" ] \
+        || git -C "$i" "${id[@]}" cherry-pick -X theirs --keep-redundant-commits $(git -C "$i" rev-list --reverse --no-merges "$head..$good") >&2; }; } \
+      || { git -C "$i" revert --abort >/dev/null 2>&1; git -C "$i" cherry-pick --abort >/dev/null 2>&1; git -C "$i" reset --quiet --hard "$head"; return 1; }
     echo "$(git -C "$i" rev-parse HEAD) instance commit ${head:0:12} is reverted and the rest of the instance is kept"
   fi
   git -C "$i" update-ref "refs/aidenhq/revert-of-$n" HEAD
