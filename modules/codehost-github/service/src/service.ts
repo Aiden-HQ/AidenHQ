@@ -220,10 +220,12 @@ export function createService(o: Options) {
         const s = slugOf(p.repo);
         const token = await tokenFor(s, MERGE);
         const pr = await api("GET", `/repos/${s.slug}/pulls/${Number(p.number)}`, token);
-        const files = (await api("GET", `/repos/${s.slug}/pulls/${Number(p.number)}/files?per_page=100`, token)).map((f: any) => f.filename);
+        // A rename counts at both paths: a file moved out of `.github/` still changes `.github/`.
+        const listed = await api("GET", `/repos/${s.slug}/pulls/${Number(p.number)}/files?per_page=100`, token);
+        const files = listed.flatMap((f: any) => [f.filename, f.previous_filename].filter(Boolean));
         prs.push({
           repo: s.slug, number: Number(p.number), head: pr.head?.sha, base: pr.base?.sha, headMatches: !p.head || p.head === pr.head?.sha,
-          files: pr.changed_files > files.length ? undefined : files, checks: await checksAt(s, pr.head?.sha, token),
+          files: pr.changed_files > listed.length ? undefined : files, checks: await checksAt(s, pr.head?.sha, token),
           ownHead: pushedHeads().includes(pr.head?.sha), pushedBy: pushedBy()[pr.head?.sha]?.task, platformHead: pushedBy()[pr.head?.sha]?.platform === true, dependabot: pr.user?.login === "dependabot[bot]",
         });
       }
