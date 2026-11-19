@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { serveExecutor } from "../sdk/src/executor.ts";
 import { mintToken } from "../src/gateway/token.ts";
 import { verifyCaller } from "../sdk/src/caller.ts";
-import { reviewInput } from "../src/review-loop.ts";
+import { reviewInput, requestChain } from "../src/review-loop.ts";
 import { CONN_TOOL_ARGS_MAX } from "../src/writes.ts";
 import { kernel, moduleServer, readBody, serve } from "./helpers.mjs";
 import { mkdtempSync } from "node:fs";
@@ -27,7 +27,7 @@ const secrets = { twin_service_key: "twin-key", other_service_key: "other-key" }
 const until = async (fn) => { for (let i = 0; i < 200 && !fn(); i++) await new Promise((r) => setTimeout(r, 10)); assert.ok(fn()); };
 const text = async (r) => (await r.json()).result.content[0].text;
 
-async function twin(t, { satisfied, settings, onControl } = {}) {
+async function twin(t, { satisfied, settings, onControl, issues, agents: who = agents } = {}) {
   const fx = { plans: [], executes: [], target: "c1", satisfied: false, ...(satisfied ? { satisfied } : {}) };
   let handler = () => false;
   const ex = await serve(async (req, res) => { if (!(await handler(req, res))) res.writeHead(404).end(); });
@@ -36,7 +36,7 @@ async function twin(t, { satisfied, settings, onControl } = {}) {
   const executor = { url: `${ex.url}/aidenhq/v1/executor`, auth_secret: "twin_service_key" };
   const verdicts = [];
   const k = await kernel(t, {
-    agents, grants, secrets, settings, onControl, reviewer: () => verdicts.shift(),
+    agents: who, grants, secrets, settings, onControl, issues, reviewer: () => verdicts.shift(),
     // A kernel job of ag-bo on TASK-7 whose frozen authority names the write kinds after its id's "jw:" (a comma list).
     job: (id) => (id.startsWith("jw:") ? { agent: "ag-bo", task: "TASK-7", state: "running", identifier: "TASK-7", authority: { tools: {}, jobcaps: [], writes: id.slice(3).split(",").filter(Boolean), roles: [] } } : undefined), repos: { product: "acme/aidenhq", instance: "acme/aidenhq-instance", agentsOrg: "acme" },
     connections: {
@@ -58,7 +58,7 @@ async function twin(t, { satisfied, settings, onControl } = {}) {
     },
     execute: async (rec) => (fx.executes.push(rec), { ok: true, text: `posted ${rec.args.note ?? "ping"}` }),
   }, { key: "twin-key", kernelUrl: k.url });
-  const tool = (name, args = {}, token = ADA) => k.call("twin", token, { method: "tools/call", params: { name, arguments: args } });
+  const tool = (name, args = {}, token = ADA, meta) => k.call("twin", token, { method: "tools/call", params: { name, arguments: args, ...(meta ? { _meta: meta } : {}) } });
   const pending = async (r) => JSON.parse((await text(r)).split("\n")[0]);
   /** A record's review as the review loop asks for it: its tier input, and the reviewer module answers `v`. */
   const review = async (id, v, input = { tier: 1 }) => {
@@ -465,4 +465,50 @@ test("records and checks open one db and file", async () => {
   const r = records.file(filing());
   assert.equal(facts.forTask("t1")[0].subject, `record:${r.id}`);
   assert.equal(records.db.prepare("SELECT name FROM sqlite_master WHERE name = 'events'").get(), undefined);
+});
+
+// A heartbeat-shaped run task whose chain is the heartbeat's generic text, and the triage task the job actually works.
+const HEARTBEAT = { "HB-1": { id: "HB-1", identifier: "HB-1", status: "in_progress", title: "Heartbeat", description: "Follow the heartbeat instructions." } };
+const TRIAGE = { "TASK-9": { id: "TASK-9", identifier: "WOR-8637", status: "open", assigneeAgentId: "ag-ada", title: "Label AidenHQ#788 agent-fix", description: "Apply the agent-fix label to AidenHQ#788." } };
+const ON_HEARTBEAT = { hb: { id: "ag-ada", name: "Ada", task: "HB-1", identifier: "HB-1" } };
+
+test("a conn.tool call naming an open task of its own agent is filed on that task, with its identifier and its chain", async (t) => {
+  const { k, mod, pending, review } = await twin(t, { agents: ON_HEARTBEAT, issues: { ...HEARTBEAT, ...TRIAGE } });
+  const p = await pending(await k.call("twin", k.token("hb"), { method: "tools/call", params: { name: "note_drop", arguments: { id: 7 }, _meta: { task: "TASK-9" } } }));
+  const rec = k.records.get(p.approval);
+  // The record (and so the reviewer's chain) is the named task; the requester stays the job's own run task, so replay
+  // still acts as that job and can't finish the named task as its own.
+  assert.deepEqual([rec.task, rec.identifier, rec.requester.task], ["TASK-9", "WOR-8637", "HB-1"]);
+
+  // The reviewer reads the record's own task: the triage request, never the heartbeat's generic text.
+  const chain = await requestChain(TRIAGE["TASK-9"], async (id) => ({ ...HEARTBEAT, ...TRIAGE })[id]);
+  assert.match(chain, /Label AidenHQ#788 agent-fix/);
+  assert.doesNotMatch(chain, /heartbeat/i);
+
+  // Approved, it replays as the job it was: its caller assertion names the job's own run task, never the named one.
+  await review(p.approval, { decision: "approve", reason: "ok", model: "~acme/model-a" });
+  await until(() => k.records.get(p.approval).state === "done");
+  const s = mod.seen.at(-1);
+  const caller = await verifyCaller({ headers: { "x-aidenhq-caller": s.caller } }, k.jwks, "twin");
+  assert.deepEqual([caller.task, caller.tool], ["HB-1", "twin.note_drop"]);
+});
+
+test("a conn.tool call naming a task assigned to another agent is refused, and no record is filed", async (t) => {
+  const { k, token } = await twin(t, { agents: ON_HEARTBEAT, issues: { ...HEARTBEAT, ...TRIAGE, "TASK-10": { id: "TASK-10", identifier: "WOR-9000", status: "open", assigneeAgentId: "ag-bo" } } });
+  const r = await k.call("twin", k.token("hb"), { method: "tools/call", params: { name: "note_drop", arguments: { id: 7 }, _meta: { task: "TASK-10" } } });
+  const body = await r.json();
+  assert.equal(body.result.isError, true);
+  assert.match(body.result.content[0].text, /WOR-9000 isn't yours to write on/);
+  assert.equal(k.records.list(["review", "owner", "claimed", "done"]).length, 0);
+  // A `task` that isn't a task id is refused too, never quietly dropped.
+  const bad = await (await k.call("twin", k.token("hb"), { method: "tools/call", params: { name: "note_drop", arguments: { id: 7 }, _meta: { task: "../etc" } } })).json();
+  assert.match(bad.error.message, /_meta\.task must be a task id/);
+  assert.equal(k.records.list(["review", "owner", "claimed", "done"]).length, 0);
+});
+
+test("a conn.tool call naming no task stays on the job's own task", async (t) => {
+  const { k, pending } = await twin(t, { agents: ON_HEARTBEAT, issues: { ...HEARTBEAT, ...TRIAGE } });
+  const p = await pending(await k.call("twin", k.token("hb"), { method: "tools/call", params: { name: "note_drop", arguments: { id: 7 } } }));
+  const rec = k.records.get(p.approval);
+  assert.deepEqual([rec.task, rec.identifier, rec.requester.task], ["HB-1", "HB-1", "HB-1"]);
 });

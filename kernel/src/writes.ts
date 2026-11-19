@@ -93,7 +93,11 @@ export function createWrites({ records, registry, connections, secret, resolver,
   /** The path inventory (config/kernel/paths.json, paths.ts): a `paths: true` kind's files raise its tier; missing is the owner's. */
   paths?: () => Inventory | undefined;
   /** The task a record is on: still open (and its parent), and a notice on it (fixed text; the module's words only fenced). */
-  onTask: { open(task: string): Promise<boolean>; notify(task: string, text: string): Promise<void>; parent?(task: string): Promise<string | undefined>; routineCap?(task: string): Promise<RoutineCap | undefined> };
+  onTask: {
+    open(task: string): Promise<boolean>; notify(task: string, text: string): Promise<void>; parent?(task: string): Promise<string | undefined>; routineCap?(task: string): Promise<RoutineCap | undefined>;
+    /** A task a conn.tool call names, and why its agent may write there (cp.ts scopeOf); undefined when there is no such task. */
+    scope?(task: string, agent: string): Promise<{ id: string; identifier?: string | null; scope?: "own" | "created" | "child" } | undefined>;
+  };
   /** Executes an approved conn.tool record: the stored call, through the proxy, as its requester. */
   replay: (r: Rec) => Promise<{ ok: boolean; text: string }>;
   /** The kernel's own executors, by kind (kernel.raise_cap). */
@@ -369,18 +373,34 @@ export function createWrites({ records, registry, connections, secret, resolver,
       const t = computeTier({ floor: k.floor, reviewFirst: null });
       return records.file({ ...base, tier: t.tier, merit: t.merit, panel: false, review_first: t.reviewFirst, rule: b.rule, identifier: b.identifier ?? null, target: b.card.target ?? null, state: t.state });
     },
-    /** The proxy's record for a conn.tool call. Tier 0 comes back claimed: the proxy forwards it and reports with `outcome`. */
-    async fileTool(who: Identity, connection: string, tool: string, args: unknown, task: string): Promise<Rec> {
+    /**
+     * The proxy's record for a conn.tool call. Tier 0 comes back claimed: the proxy forwards it and reports with `outcome`.
+     * `task` is the job's run task; `named` the task the call says it is for (MCP `params._meta.task`). A named task must be
+     * one the job may write on already (cp.ts scopeOf, task-scope.ts): its record, and so the chain its reviewer reads, is
+     * that task's. A task it may not write on is refused, never quietly filed on the run task.
+     */
+    async fileTool(who: Identity, connection: string, tool: string, args: unknown, task: string, named?: string): Promise<Rec> {
       const c = conn(connection)!;
+      let record = task, identifier = who.workspace || undefined;
+      if (named && named !== task) {
+        if (who.kind !== "run") throw fail(403, "forbidden", `only a kernel job names the task a ${connection}.${tool} call is for`);
+        if (!onTask.scope) throw fail(403, "forbidden", `naming the task a ${connection}.${tool} call is for isn't available here`);
+        const t = await onTask.scope(named, who.agent ?? "");
+        if (!t) throw fail(404, "not_found", `no task ${named}`);
+        if (!t.scope) throw fail(403, "forbidden", `${t.identifier || t.id} isn't yours to write on: a ${connection}.${tool} call goes on a task assigned to you, one you created, or a child of one assigned to you`);
+        record = t.id, identifier = t.identifier || undefined;
+      }
       const floor: Tier = c.tools.destructive.includes(tool) ? 1 : 0;
       // The owner's no on a destructive tool holds for that tool on the task, never for the task's other writes.
-      const t = computeTier({ floor, priorVeto: floor > 0 && task ? records.vetoed(task, CONN_TOOL, { tool: `${connection}.${tool}` }) : false, autonomy: autonomy(), routine: await routineOf(task) });
-      if (t.tier > 0 && !task) throw fail(400, "no_task", `${connection}.${tool} needs approval: pass your current task`);
+      const t = computeTier({ floor, priorVeto: floor > 0 && record ? records.vetoed(record, CONN_TOOL, { tool: `${connection}.${tool}` }) : false, autonomy: autonomy(), routine: await routineOf(record) });
+      if (t.tier > 0 && !record) throw fail(400, "no_task", `${connection}.${tool} needs approval: pass your current task`);
       const shown = JSON.stringify(args ?? {});
       if (t.tier > 0 && shown.length > CONN_TOOL_ARGS_MAX) throw fail(400, "args_too_large", `${connection}.${tool}: the arguments are ${shown.length.toLocaleString("en-US")} characters, over the ${CONN_TOOL_ARGS_MAX.toLocaleString("en-US")}-character limit for a call that needs a card; shorten the arguments`);
       const target = requestTargets(CONN_TOOL, { connection, tool, arguments: args ?? {} })?.label;
       const details = `tool: ${connection}.${tool}\narguments (written by the requesting agent): ${t.tier > 0 ? shown : shown.slice(0, 4000)}`;
       const card = { sentence: `Call ${connection}.${tool}.`, changes: `Whatever ${connection}.${tool} changes, with these arguments.`, reads: "Nothing new.", cost: "No model cost.", details, ...(target ? { target } : {}) };
+      // The requester keeps the job's own task (the run's): it is the job's credential's reach, and replay signs the caller
+      // assertion with it, so a card on another task still can't finish that task as its own (cp.ts cross-task finish gate).
       const requester = requesterOf(who, task);
       const call = { kind: CONN_TOOL, module: c.module, args: { connection, tool, arguments: args ?? {} }, targets: {}, executor: { module: c.module }, policy: "" };
       // A repeat of one carded call (same task, arguments and requester), while it waits, runs, or ran in the last 10 minutes, is
@@ -388,10 +408,10 @@ export function createWrites({ records, registry, connections, secret, resolver,
       if (t.tier > 0) {
         const digest = digestOf(call);
         const by = (q: Requester) => `${q.kind}|${q.agent}|${q.key}|${q.module ?? ""}`;
-        const prior = [...records.open(task, CONN_TOOL, digest), ...records.ran(task, CONN_TOOL, digest, new Date(Date.now() - 10 * 60_000).toISOString())].find((r) => r.tier >= t.tier && by(r.requester) === by(requester));
+        const prior = [...records.open(record, CONN_TOOL, digest), ...records.ran(record, CONN_TOOL, digest, new Date(Date.now() - 10 * 60_000).toISOString())].find((r) => r.tier >= t.tier && by(r.requester) === by(requester));
         if (prior) return prior;
       }
-      return records.file({ ...call, card: t.rule ? { ...card, reason: capText(t.cap!) } : card, requester, task, tier: t.tier, merit: t.merit, panel: false, review_first: t.reviewFirst, rule: t.rule ?? null, cap: t.cap ?? null, state: t.state });
+      return records.file({ ...call, card: t.rule ? { ...card, reason: capText(t.cap!) } : card, requester, task: record, ...(identifier ? { identifier } : {}), tier: t.tier, merit: t.merit, panel: false, review_first: t.reviewFirst, rule: t.rule ?? null, cap: t.cap ?? null, state: t.state });
     },
     outcome: outcomeOf,
     /** Resolves once the record has an outcome, or with it as it is after `ms`. */

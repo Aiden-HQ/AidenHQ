@@ -130,7 +130,8 @@ export function createProxy({ whoami, connections, asserter, resolver, secret, w
   }
   const replay = (r: Rec) => {
     const a = r.args as { connection: string; tool: string; arguments: unknown };
-    return callAs(r.requester, a.connection, a.tool, a.arguments, r.task);
+    // The job's own task (the requester's), never the record's: a card filed on another task must not act as that task.
+    return callAs(r.requester, a.connection, a.tool, a.arguments, r.requester.task);
   };
 
   const proxy = async function proxy(req: IncomingMessage, res: ServerResponse, connection: string): Promise<void> {
@@ -191,7 +192,12 @@ export function createProxy({ whoami, connections, asserter, resolver, secret, w
               if (r.tier === 0) return reply(r.outcome ? own(r.outcome.text) : `${pendingText(r)}\n(still running past the tool timeout)`, r.outcome ? !r.outcome.ok : false);
               return reply(pendingText(r));
             }
-            rec = await writes!.fileTool(who, connection, tool, params?.arguments ?? {}, who.task ?? "");
+            // The task the call says it is for, if any (MCP `_meta.task`): writes.ts binds the record to it only when this job
+            // may write there anyway, and refuses it otherwise. Absent, the record is on the job's own task, as before. A
+            // `task` that is not a task id is refused, never ignored: the caller meant its record to say something else.
+            const named = params?._meta && typeof params._meta === "object" && !Array.isArray(params._meta) ? (params._meta as { task?: unknown }).task : undefined;
+            if (named !== undefined && !(typeof named === "string" && /^[A-Za-z0-9_.:-]{1,100}$/.test(named))) return refuse(-32602, "_meta.task must be a task id");
+            rec = await writes!.fileTool(who, connection, tool, params?.arguments ?? {}, who.task ?? "", named as string | undefined);
             // A carded record (a repeat of an earlier call) is never forwarded here: the kernel replays it once, approved.
             if (rec.outcome) return reply(own(rec.outcome.text), !rec.outcome.ok);
             if (rec.state !== "claimed" || rec.tier > 0) return reply(pendingText(rec));

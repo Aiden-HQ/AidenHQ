@@ -30,6 +30,7 @@ import type { Once } from "./once.ts";
 import { delegateIds, OutcomeError, type PluginPost } from "./outcomes.ts";
 import type { Provenance } from "./provenance.ts";
 import { fail } from "./proxy.ts";
+import { scopeOf as taskScopeOf } from "./task-scope.ts";
 
 // One path segment: never a dot segment, which URL resolution would turn into another route.
 const ID = "(?!\\.+(?:/|$))[A-Za-z0-9_.:-]{1,100}";
@@ -112,12 +113,7 @@ export function createCp({ whoami, asserter, plugin, once, agentKey, grants, fle
     const roles = c.roles ?? [];
     const keyOf = (id?: string | null) => (id ? String(table[id]?.key ?? "another agent") : "");
     /** Why this job may write on task `t` (post.js scopes), or undefined. */
-    const scopeOf = async (t: Issue) => {
-      if (t.assigneeAgentId === agent) return "own";
-      if (t.createdByAgentId === agent) return "created";
-      if (t.parentId && (await issue(t.parentId)).assigneeAgentId === agent) return "child";
-      return undefined;
-    };
+    const scopeOf = (t: Issue) => taskScopeOf(t, agent, issue);
     /** A comment-only write's scope where the job has no other: the grants table's tasks for it, the Fleet issues log, a librarian's inboxes, the chief of staff anywhere. */
     const commentScope = (t: Issue) => {
       const own = table[agent] ?? {};

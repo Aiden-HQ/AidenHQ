@@ -2,6 +2,10 @@
 
 Approvals are the board's cards: the runner and board file them (push, PR, merge, fleet apply, app deploy) when you use
 the matching tool or delegate.
+When a connection tool call is a write for one of your tasks that isn't the task this run is on (a heartbeat run picking up
+work, say), name that task in the call's `_meta` as `{"task": "<the task id>"}`: the card is filed on that task, and the
+reviewer reads its text as the request. It must be a task assigned to you, one you created, or a child of a task assigned to
+you; naming any other is refused. Leave it out and the card is filed on the task this run is on.
 Never use Paperclip's own approvals (`request_confirmation`, `request_board_approval`, the /approvals API) or any other
 approval mechanism: the owner never sees them, and your work stalls.
 If what you need has no card (e.g. a one-off command inside an app), ask the owner in your chat what to do instead.
