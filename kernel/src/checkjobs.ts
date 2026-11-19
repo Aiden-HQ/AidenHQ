@@ -371,6 +371,18 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, g
       void execute(id, recipe);
       return view(row(id)!);
     },
+    /** The check already asked for with this spec (running or done), or undefined: a read, never a run (a sweep asks `start`). */
+    find(module: string, b: { repo?: unknown; head?: unknown; run?: unknown; spec?: unknown }): CheckView | undefined {
+      const repo = String(b?.repo ?? ""), head = String(b?.head ?? ""), run = String(b?.run ?? "") as Run;
+      const recipe = recipes()[run];
+      if (!KINDS.slug.test(repo) || !KINDS.sha.test(head) || !recipe) return undefined;
+      // A spec that doesn't fit the recipe (a change with no base, say) is no check at all: this is a read, so it answers
+      // "none" rather than throwing at a sweep that only wanted to know what is green.
+      let hash: string;
+      try { hash = specHash(checkSpec(run, recipe, b.spec), recipe); } catch { return undefined; }
+      const had = db.prepare("SELECT * FROM checks WHERE module = ? AND repo = ? AND head = ? AND run = ? AND hash = ?").get(module, repo.toLowerCase(), head, run, hash) as Record<string, any> | undefined;
+      return had && ["running", "done", "error", "lost"].includes(had.state) ? view(had) : undefined;
+    },
     /** Its state and receipt; with `after` (a version), waits up to `waitMs` for a change first. */
     async get(module: string, id: string, { after, waitMs = 0 }: { after?: number; waitMs?: number } = {}): Promise<CheckView> {
       own(module, id);

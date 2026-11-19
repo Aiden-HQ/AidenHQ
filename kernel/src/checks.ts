@@ -42,7 +42,7 @@ export function checksFile(file: string): () => Record<string, Check> {
   };
 }
 
-export function createChecks({ db, registry, owner, secret, resolver, agentKey = () => undefined, graded = () => false, pending = () => [], log = () => {} }: {
+export function createChecks({ db, registry, owner, secret, resolver, agentKey = () => undefined, graded = () => false, pending = () => [], localChanges = async () => [], log = () => {} }: {
   db: DatabaseSync; registry: () => Record<string, Check>; owner: Api; secret: (n: string) => string; resolver: Resolver;
   /** An agent id's key (the grants table), for a check scoped to `agents`. */
   agentKey?: (id: string) => string | undefined;
@@ -50,6 +50,8 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
   graded?: (id: string) => boolean;
   /** The task's records still undecided (records.list over review, owner and approved): none may when it closes. */
   pending?: (task: string) => { id: string; kind: string }[];
+  /** A task's own change requests on this server that are still open (codehost-local's host), with their checks: none may when it closes. */
+  localChanges?: (task: { id: string; identifier?: string }) => Promise<{ url: string; checks: { ok: boolean; pending: boolean }[] }[]>;
   log?: (msg: string, f?: Record<string, unknown>) => void;
 }) {
   db.exec("CREATE TABLE IF NOT EXISTS check_holds (task TEXT NOT NULL, check_id TEXT NOT NULL, at TEXT NOT NULL, PRIMARY KEY (task, check_id))");
@@ -130,6 +132,9 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
       const named = undecided.slice(0, 10).map((r) => `${r.id} (${r.kind})`).join(", ");
       throw fail(409, "refused", `${undecided.length} approval${undecided.length === 1 ? " is" : "s are"} on ${i.identifier ?? i.id} still undecided: ${named}${undecided.length > 10 ? `, and ${undecided.length - 10} more` : ""}. They run when approved, so the task can't be done until they are decided: decide or reject them, or finish again once they have run.`);
     }
+    // A task whose own change request on this server is still open does not close: a green-but-unmerged change is not shipped,
+    // and a card approved on the closed task would be dropped (`the task is closed`). A store the gate can't read fails closed.
+    await noOpenChange(i, "ask for the merge (a green change merges on its own once the reviewer approves it), then finish again");
     const key = i.assigneeAgentId ? agentKey(i.assigneeAgentId) : undefined;
     const scoped = all.filter(([, c]) => !c.agents?.length || (key !== undefined && c.agents.includes(key)));
     const mine = scoped.filter(([, c]) => c.mode !== "observe");
@@ -195,6 +200,9 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
     const i = await issue(ref);
     const held = db.prepare("SELECT 1 FROM check_holds WHERE task = ? AND check_id = ?").get(i.id, id);
     if (b.verdict !== "release" && !held) throw fail(409, "conflict", `${id} holds no finish on ${i.identifier ?? i.id}`);
+    // A module's ok moves the task to done as the owner: the same hold as an agent's finish, so a change still open on this
+    // server stops it too, before the hold is released.
+    if (b.verdict === "ok") await noOpenChange(i, "the grader or the module that held it can move it on once the merge lands");
     await unlabel(i, c);
     db.prepare("DELETE FROM check_holds WHERE task = ? AND check_id = ?").run(i.id, id);
     const comment = typeof b.comment === "string" && b.comment ? { comment: b.comment.slice(0, 60_000) } : {};
@@ -203,6 +211,25 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
     log("finish check resolved", { task: i.identifier, check: id, verdict: b.verdict });
     return { ok: true };
   }
+  /**
+   * A task's own change request on this server still open: refused, with what is true of it now. An open change on another
+   * task holds nothing, and neither does one the task closed (closing writes its `closed` ref, so it is no longer open).
+   */
+  async function noOpenChange(i: { id: string; identifier?: string }, then: string) {
+    let changes: Awaited<ReturnType<typeof localChanges>>;
+    try {
+      changes = await localChanges({ id: i.id, ...(i.identifier ? { identifier: i.identifier } : {}) });
+    } catch (e) {
+      log("local changes unread", { task: i.identifier ?? i.id, err: String((e as Error).message ?? e).slice(0, 200) });
+      throw fail(503, "check_failed", `the finish gate couldn't read ${i.identifier ?? i.id}'s change requests on this server (${String((e as Error).message ?? e).slice(0, 200)}): the task stays as it is`);
+    }
+    if (!changes.length) return;
+    const one = changes[0]!;
+    const green = one.checks.length > 0 && one.checks.every((c) => c.ok);
+    const settling = green ? "every named check is green, but the merge hasn't landed" : one.checks.some((c) => c.pending) ? "its checks are still running" : "its checks aren't all green";
+    throw fail(409, "refused", `${i.identifier ?? i.id}'s change request ${one.url} is still open (${settling}). A task closes after its change merges: ${then}.`);
+  }
+
   /** Whether one of this module's finish checks holds the task now (its label is on it): the module's work is that task. */
   const held = (module: string, task: string) => finishing().some(([id, c]) => c.module === module && db.prepare("SELECT 1 FROM check_holds WHERE task = ? AND check_id = ?").get(task, id) !== undefined);
   /**

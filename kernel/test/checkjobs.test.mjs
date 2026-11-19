@@ -80,6 +80,21 @@ test("checks: whether a fast check is due is the base's to say, and a check that
   assert.throws(() => checks.start("codehost-github", { repo: "acme/app", head: A, run: "fast", spec: {} }), /names base/);
 });
 
+test("checks: find reads the check already asked for and never starts one, and a spec that doesn't fit is no check", async () => {
+  const pkg = JSON.stringify({ scripts: { "aidenhq:fast-check": "eslint ." } });
+  const { checks, runs, done } = setup({ [A]: { "package.json": pkg } });
+  // Nothing asked yet: "none", and no run was started by looking.
+  assert.equal(checks.find("codehost-github", { repo: "acme/app", head: A, run: "fast", spec: { base: B } }), undefined);
+  assert.equal(runs.length, 0);
+  // Asked for: the same check, in its state, and still no second run.
+  const v = await done(checks.start("codehost-github", { repo: "acme/app", head: A, run: "fast", spec: { base: B } }));
+  assert.equal(checks.find("codehost-github", { repo: "acme/app", head: A, run: "fast", spec: { base: B } })?.id, v.id);
+  assert.equal(runs.length, 1);
+  // A spec the recipe can't take (a change with no base) is no check at all, never a throw at a reader.
+  assert.equal(checks.find("codehost-github", { repo: "acme/app", head: A, run: "fast", spec: { base: "" } }), undefined);
+  assert.equal(checks.find("codehost-github", { repo: "acme/app", head: A, run: "deploy", spec: {} }), undefined);
+});
+
 test("checks: a recipe is the installed module's: unknown runs and bad specs are refused, the module's contract kit runs in its own folder", async () => {
   const { checks, runs, done } = setup({ [A]: { "mod/module.yaml": "name: mod" } });
   assert.throws(() => checks.start("codehost-github", { repo: "acme/mod", head: A, run: "deploy", spec: {} }), /run: .*contract/);

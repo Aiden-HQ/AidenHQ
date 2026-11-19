@@ -69,6 +69,7 @@ import type { Recipes } from "./checkjobs.ts";
 import { localSnapshot } from "../../modules/codehost-local/src/snapshot.ts";
 import { LOCAL_KINDS, localHost as codehostLocal } from "../../modules/codehost-local/src/host.ts";
 import { ingest } from "../../modules/codehost-local/src/git.ts";
+import { localMergePass } from "./localmerge.ts";
 import { createJobTools } from "./jobtools.ts";
 import { createWakes, wakeNotice } from "./wakes.ts";
 import { createWorkspaceSweep } from "./workspaces.ts";
@@ -264,19 +265,35 @@ const sandbox = sandboxConfig(env);
 const tasksDir = path.join(sandbox.workDir, "tasks"), localScratch = path.join(sandbox.workDir, "codehost-scratch");
 mkdirSync(localScratch, { recursive: true });
 const instanceRemote = env("AIDENHQ_INSTANCE_REMOTE", "");
-const localChecks = new Map<string, string>();
 const localCode = codehostLocal({
   fact: localFacts(facts),
   root: path.join(dataDir, "codehost"), tasksDir, scratchDir: localScratch, instanceRepo: baseRepos.instance, productRepo: baseRepos.product,
   sources: baseRepos.instance && instanceRemote.startsWith("/") ? { [baseRepos.instance]: instanceRemote } : {},
-  // A check that couldn't run (no box) starts again only for a new request; a merge waiting on it reads it as it stands.
+  // `retry` asks for a run (idempotent: the one already running or done); otherwise this only reads the one already asked for,
+  // so a sweep over open changes never starts work by looking. A check that couldn't run (no box) starts again on a request; a
+  // merge waiting on one reads it as it stands.
   checks: async (repo, head, base, retry) => {
-    const key = `${repo} ${head} ${base}`, had = localChecks.get(key);
-    const v = had && !retry ? await checkJobs.get("codehost-local", had) : checkJobs.start("codehost-local", { repo, head, run: "change", spec: { base } });
-    localChecks.set(key, v.id);
-    return [{ ok: v.state === "done" && checkJobs.verify(v.receipt, { repo, head, run: "change" }).ok, pending: v.state === "running", summary: v.receipt?.summary ?? v.error ?? v.state }];
+    const ask = { repo, head, run: "change", spec: { base } } as const;
+    const v = retry ? checkJobs.start("codehost-local", ask) : checkJobs.find("codehost-local", ask);
+    if (!v) return [{ ok: false, pending: false, missing: true, summary: "not started" }];
+    // An error is no verdict at all (no box, no snapshot): missing, so a sweep may ask for it again. A red receipt stays red.
+    return [{ ok: v.state === "done" && checkJobs.verify(v.receipt, { repo, head, run: "change" }).ok, pending: v.state === "running", missing: ["error", "lost"].includes(v.state), summary: v.receipt?.summary ?? v.error ?? v.state }];
   },
 });
+// A green local change asks for its merge itself, once per head and base, as the task's own agent (localmerge.ts: the local
+// equivalent of the agents-org auto-merge), so no Engineer runs `aidenhq merge`. Still the Tier 1 `local-merge` record the AI
+// reviewer reads; a done or cancelled task, and a change whose checks are red or running, is never asked for.
+const localMerge = () => localMergePass({
+  open: () => localCode.open(),
+  task: async (id) => { const r = await cpJson(`/api/issues/${encodeURIComponent(id)}`); return r as { status?: string; assigneeAgentId?: string | null }; },
+  grant: (agent) => grantsTable().agents?.[agent],
+  prior: (task) => records.list(["review", "owner", "approved", "claimed", "done", "failed", "stale", "rejected"], 500, { task, kinds: ["codehost-local.merge"] }),
+  file: (b) => writes.fileLocalMerge(b),
+  restart: (c) => localCode.checks(c.repo, c.head, c.base, true),
+  log,
+});
+every(() => void (localHost() ? localMerge() : Promise.resolve({ filed: [], restarted: [], skipped: [] })).catch((e: Error) => log("local auto-merge pass failed", { err: String(e.message ?? e).slice(0, 300) })), 60_000);
+once(() => void (localHost() ? localMerge() : Promise.resolve({ filed: [], restarted: [], skipped: [] })).catch(() => {}), 90_000);
 // A kernel-admitted job's computer (boxes.ts): made below, once the gateway it needs is up; a job that ends releases it.
 let boxes: Boxes | undefined;
 const agentKey = (id: string) => String(grantsTable().agents?.[id]?.key ?? id);
@@ -343,7 +360,9 @@ const graderToken = (task: string, agent: string) => {
   graderTokens.set(task, { token, exp: Date.now() + ttlMs });
   return token;
 };
-const checks = createChecks({ db: records.db, registry: checksFile(path.join(configDir, "kernel", "checks.json")), owner: ownerApi, secret, resolver, log, agentKey: (id) => grantsTable().agents?.[id]?.key, graded: (id) => grantsTable().agents?.[id]?.graded === true, pending: (task) => records.list(["review", "owner", "approved"], 100, { task }) });
+const checks = createChecks({ db: records.db, registry: checksFile(path.join(configDir, "kernel", "checks.json")), owner: ownerApi, secret, resolver, log, agentKey: (id) => grantsTable().agents?.[id]?.key, graded: (id) => grantsTable().agents?.[id]?.graded === true, pending: (task) => records.list(["review", "owner", "approved"], 100, { task }),
+  // A task's own change requests on this server: none may be open when it closes (a green-but-unmerged change is not shipped).
+  localChanges: async ({ id, identifier }) => localHost() ? (await localCode.open()).filter((c) => (c.task && (c.task === id || c.task === identifier))).map((c) => ({ url: c.url, checks: c.checks.map(({ ok, pending }) => ({ ok, pending })) })) : [] });
 // First-run setup (/setup): the keys the modules ask for go into the vault view (AIDENHQ_SECRETS_DIR) as new 0600 files renamed into place; the
 // vault's recovery key waits there (ops/setup.sh --unattended moves it out of root's home) until the owner has seen it.
 const secretsDir = env("AIDENHQ_SECRETS_DIR", "");

@@ -10,7 +10,7 @@
 //   refs/changes/<n>/meta    { title, body, branch, base (the branch it merges into), task, opened_at, draft }
 // Its URL is codehost:local/<name>/change/<n>. A job's commits come in as a bundle its box wrote (git.ts ingest). A merge needs the change's checks green on its exact head: the `change` check
 // job (check_jobs in module.yaml, run in a credential-free box from a snapshot) with a receipt the kernel signed.
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { planParts, plan as planRules } from "../../codehost-github/service/src/plan.mjs";
 import { DEFAULT_CHURN_EXCLUDE, churnFromGit } from "../../../kernel/sdk/src/churn.ts";
@@ -41,7 +41,7 @@ export const LOCAL_KINDS = Object.fromEntries(Object.entries({
 
 /** Each change's checks, as plan.mjs reads them ({ ok, pending }); the kernel's `change` check job on (repo, head, base). */
 /** `retry`: run again a check that couldn't run (a new request); otherwise the one asked for before, as it stands. `summary`: its receipt's. */
-export type ChangeChecks = (repo: string, head: string, base: string, retry?: boolean) => Promise<{ ok: boolean; pending: boolean; summary?: string }[]>;
+export type ChangeChecks = (repo: string, head: string, base: string, retry?: boolean) => Promise<{ ok: boolean; pending: boolean; missing?: boolean; summary?: string }[]>;
 
 export function localHost({ root, sources = {}, tasksDir, scratchDir, instanceRepo, productRepo, checks, fact = () => {}, waitMs = 30 * 60_000 }: {
   /** <data dir>/codehost: the org folders. */ root: string;
@@ -122,7 +122,12 @@ export function localHost({ root, sources = {}, tasksDir, scratchDir, instanceRe
       if (!tree) throw fail(409, `${changeUrl(repo, n)} conflicts with ${def} as it is now: rebase it and publish again`);
       const message = `${String(c.meta.title ?? "").replace(/[\p{Cc}\p{Cf}]/gu, " ").slice(0, 300) || c.meta.branch} (change ${n})\n\n${await g(repo, ["log", "-1", "--format=%B", head])}`;
       const sha = await g(repo, ["commit-tree", tree.split("\n")[0]!, "-p", c.main, "-m", message], { env: IDENTITY });
-      await g(repo, ["update-ref", `refs/heads/${def}`, sha, c.main]);
+      // Compare-and-swap on the base ref: a base that moved under the merge is refused, never overwritten (its checks were run
+      // against the base read above, and nobody reviewed a merge onto another).
+      await g(repo, ["update-ref", `refs/heads/${def}`, sha, c.main]).catch(async (e: { code?: number }) => {
+        if ((await rev(repo, `refs/heads/${def}`)) !== c.main) throw fail(409, `${changeUrl(repo, n)}: ${def} moved while it merged (conflict): ask again, and its checks run against the new base`);
+        throw e;
+      });
       await refs(repo, [`create refs/changes/${n}/merged ${sha}`]);
       await g(repo, ["update-ref", "-d", `refs/heads/${c.meta.branch}`, head]).catch(() => {});
       return sha;
@@ -195,7 +200,7 @@ export function localHost({ root, sources = {}, tasksDir, scratchDir, instanceRe
   /** Waits until the change's checks are all green (""), or one is red or they don't finish in time (why, with its summary). */
   async function green(repo: string, head: string, baseSha: string) {
     for (const until = Date.now() + waitMs; ;) {
-      const cs = await checks(repo, head, baseSha);
+      const cs = await checks(repo, head, baseSha, true);
       if (cs.length && cs.every((c) => c.ok)) return "";
       const red = cs.find((c) => !c.ok && !c.pending);
       if (!cs.length || red || Date.now() > until) return red ? `failed: ${red.summary ?? "no summary"}` : "didn't finish in time";
@@ -235,7 +240,7 @@ export function localHost({ root, sources = {}, tasksDir, scratchDir, instanceRe
             fact({ type: "pr.checks_started", subject: `${subject(b.repo, n)}@${b.sha}`, version: `${b.sha}:1`, at, task: a.workspace, data: { head: b.sha } });
             // Its checks start now, so the merge rarely waits.
             const main = await rev(b.repo, `refs/heads/${await defaultBranch(b.repo)}`);
-            if (main) void checks(b.repo, b.sha, await g(b.repo, ["merge-base", main, b.sha])).catch(() => {});
+            if (main) void checks(b.repo, b.sha, await g(b.repo, ["merge-base", main, b.sha]), true).catch(() => {});
           } else done.push(`${b.repo} ${b.branch} at ${b.sha.slice(0, 12)}`);
         }
         return { ok: true, text: `${action === "pr" ? "Change requests" : "Pushed"}: ${done.join(", ")}` };
@@ -274,10 +279,36 @@ export function localHost({ root, sources = {}, tasksDir, scratchDir, instanceRe
     },
   };
 
+  /** The org `local`'s repos: the bare repos under the root, setup's instance repo included where sources names it. */
+  async function repos() {
+    const out: string[] = [];
+    if (existsSync(root)) for (const org of readdirSync(root, { withFileTypes: true })) {
+      if (!org.isDirectory() || org.name.toLowerCase() !== LOCAL_ORG) continue;
+      for (const e of readdirSync(join(root, org.name), { withFileTypes: true })) {
+        const name = e.name.endsWith(".git") ? e.name.slice(0, -4) : "";
+        if (e.isDirectory() && name && existsSync(join(root, org.name, e.name, "HEAD"))) out.push(`${org.name}/${name}`);
+      }
+    }
+    for (const repo of Object.keys(sources)) if (!out.includes(repo) && existsSync(join(bare(repo), "HEAD"))) out.push(repo);
+    return out;
+  }
+  /** The changes still open (a head ref, no merged and no closed ref), each with its head, base and checks as they stand now. */
+  async function open() {
+    const out: { repo: string; number: number; url: string; head: string; base: string; task?: string; title?: string; checks: { ok: boolean; pending: boolean; missing?: boolean; summary?: string }[] }[] = [];
+    for (const repo of await repos()) for (const n of (await numbers(repo)).reverse()) {
+      const c = await readChange(repo, n);
+      if (c.state !== "open") continue;
+      out.push({ repo, number: c.n, url: changeUrl(repo, c.n), head: c.head, base: c.base, ...(typeof c.meta.task === "string" ? { task: c.meta.task } : {}), ...(typeof c.meta.title === "string" ? { title: c.meta.title } : {}), checks: await checks(repo, c.head, c.base) });
+    }
+    return out;
+  }
+
   return {
     executor,
     bare,
     parse,
+    open,
+    checks,
     /**
      * `repo`'s branches as a git bundle in the kernel's scratch, for a job's box to clone itself (`aidenhq clone`): the kernel
      * only serves the bytes, and never writes a workspace. Call `done` once it is sent.
