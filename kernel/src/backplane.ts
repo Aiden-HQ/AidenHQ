@@ -304,7 +304,7 @@ export function createBackplane({ facts, whoami, asserter, proxy, cp, boardCp, g
             if (!Object.hasOwn(declared, f.type)) throw fail(403, "forbidden", `${w.module} did not declare fact ${f.type} (module.yaml facts:)`);
             if (Date.parse(f.at) > t + 864e5) throw fail(400, "bad_request", `fact ${f.type} is dated more than a day ahead`);
             if (f.data !== undefined && (!f.data || typeof f.data !== "object" || Array.isArray(f.data) || Buffer.byteLength(JSON.stringify(f.data)) > 4096)) throw fail(400, "bad_request", `fact ${f.type}: data is an object of at most 4096 bytes`);
-            const d = declared[f.type]!;
+            const d = declared[f.type] ?? {};
             if (d.subject && !f.subject.startsWith(`${d.subject}:`)) throw fail(400, "bad_request", `fact ${f.type}'s subject is a ${d.subject}: (module.yaml facts:)`);
             if (f.data?.reason !== undefined && !(d.reasons ?? []).includes(String(f.data.reason))) throw fail(400, "bad_request", `fact ${f.type}: reason ${String(f.data.reason).slice(0, 40)} isn't declared (module.yaml facts:)`);
           }
