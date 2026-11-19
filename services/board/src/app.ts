@@ -13,7 +13,7 @@ import { handbook, history } from "./agent-handbook.js";
 import { PauseSchema, setAgentPaused } from "./agent-pause.js";
 import { HISTORY_PAGE, agentByKey, agentProfile, historyPage, splitTasks } from "./agent-page.js";
 import { liveActivity, type SessionSources } from "./live-activity.js";
-import { makeRuns, type Work } from "./runs.js";
+import { cachedActivity, lastRunsOf, liveRunsOf, makeRuns, pastRunsOf, type LiveRun, type Work } from "./runs.js";
 import { agentsView, roster, runTasks, workingOn, type RunContext, type TaskRef, type Working } from "./activity.js";
 import { RecurringSchema, ScheduleSchema, changeRecurring, recurringView, scheduleMove } from "./automation.js";
 import { AddAgentSchema, BadRequest, CreateSchema, HandOverSchema, PassSchema, hasMarker, UpdateSchema, assignees, buildBoard, commentView, displayText, executorOf, openrouterEngine, paperclipUpdate, replyTarget, toCard, type Assignee } from "./board.js";
@@ -23,7 +23,6 @@ import { INLINE_TYPES, MAX_UPLOAD_BODY, UploadSchema, decode, fileType, fileView
 import { ControlSchema, CostsSchema, RelaySchema, Refused, holdsRole, appsApi, assertMeantTask, boundedFleetStatus, fleetControl, fleetCosts, fleetStatus, relayableWords, requireAgent, requireFleetRole } from "./fleet.js";
 import { metricsText } from "./monitoring.js";
 import { kernelRecords, type Approval, type Records } from "./records.js";
-import { wakeCheck } from "./brake.js";
 import { gatherFacts, scorecard, statusSummary } from "./fleet-stats.js";
 import { moduleAuthority, moduleStates } from "./modules.js";
 import { CommitUnreadable, agentGrants, browseModules, createResolver, marketplacesOf } from "./marketplace.js";
@@ -39,7 +38,7 @@ import { setupFlowRoutes, type SetupFlowPoint } from "./setup-flows.js";
 import type { SetupField } from "./config.js";
 import { welcomeRoutes } from "./welcome.js";
 import { GoogleAuthFailed, loopbackPort, type GoogleAuth } from "./google.js";
-import { OPEN, Paperclip, PaperclipError, actingAccount, type Agent, type Comment, type Issue, type Label, type LiveRun } from "./paperclip.js";
+import { OPEN, Paperclip, PaperclipError, actingAccount, type Agent, type Comment, type Issue, type Label } from "./paperclip.js";
 import { accountSession, type BoardSession, type SessionOf } from "./session.js";
 import { laneAgents, laneMessages, laneSend, type LaneOptions } from "./lane.js";
 import { NOTICE_MARKER, asksOwner, chatAgent, chatAgentMarker, chatState, conversation, lastWord, needsYou, openAsk, pickAgent, shownState, type Message } from "./chats.js";
@@ -243,7 +242,10 @@ export function createApp(opts: AppOptions): Server {
   const cardsOf = async (state: Parameters<Records["list"]>[0], opt?: Parameters<Records["list"]>[1]) => Promise.all((await records.list(state, opt)).map(named));
 
   const sessionOf = liveActivity(opts.sessions);
-  const work = opts.work ?? { job: async () => null, task: async () => [], activity: async () => ({ running: [], queued: [], failing: [] }) };
+  const work = opts.work ?? { job: async () => null, task: async () => [], activity: async () => ({ running: [], recent: [], queued: [], failing: [] }) };
+  const kernelActivity = cachedActivity(work);
+  const liveRuns = async () => liveRunsOf(await kernelActivity());
+  const recentRuns = async () => pastRunsOf(await kernelActivity());
   const runOf = makeRuns({ work, store, grantsFile: process.env.AIDENHQ_GRANTS_FILE });
   /** The newest runs (kernel jobs) on a task, for the links to their run pages. */
   const runLinks = async (issueId: string, agents: Agent[]) =>
@@ -258,7 +260,7 @@ export function createApp(opts: AppOptions): Server {
   /** A Paperclip-run Codex agent's live words, plan and steps from its session log, on top of what Paperclip says. */
   async function withSession(w: Working | null | undefined, live: LiveRun[], issueId: string, full: boolean): Promise<Working | null> {
     const run = w && !w.queued && !w.plan ? live.find((r) => r.issueId === issueId && r.status === "running") : undefined;
-    const a = run && (await sessionOf(run.agentId, run.startedAt ?? run.createdAt));
+    const a = run && (await sessionOf(run.agentId, run.startedAt));
     if (!w || !a) return w ?? null;
     return { ...w, ...(a.said ? { said: a.said, saidAt: a.saidAt } : {}), ...(full ? { ...(a.plan ? { plan: a.plan } : {}), ...(a.steps.length ? { steps: a.steps } : {}) } : {}) };
   }
@@ -374,13 +376,13 @@ export function createApp(opts: AppOptions): Server {
 
   async function activity(ctx: { agents: Awaited<ReturnType<typeof pc.agents>>; prefix: string }, withPast: boolean) {
     // The roster never fails the page: without routines or run history, cards just show less. Started alongside the runs.
-    const rosterParts = withPast ? Promise.all([pc.routines().catch(() => []), pc.lastRuns().catch(() => new Map())]) : undefined;
-    const [live, past] = await Promise.all([pc.liveRuns(), withPast ? pc.recentRuns(30) : Promise.resolve([])]);
+    const rosterParts = withPast ? pc.routines().catch(() => []) : undefined;
+    const [live, past] = await Promise.all([liveRuns(), withPast ? recentRuns() : Promise.resolve([])]);
     const view = await agentsView({ live, past, agents: ctx.agents, resolve: (id) => runContext(id, ctx.prefix) });
     if (!rosterParts) return view;
     await titled([...view.sessions, ...view.finished].flatMap((x) => x.tasks));
-    const [routines, last] = await rosterParts;
-    return { ...view, roster: roster(ctx.agents, routines, last, await work.activity()) };
+    const act = await kernelActivity();
+    return { ...view, roster: roster(ctx.agents, await rosterParts, lastRunsOf(act), act) };
   }
 
   /** Who is working on which task. Never fails the board: without it, cards just show no activity. */
@@ -548,7 +550,7 @@ export function createApp(opts: AppOptions): Server {
    * comments (chats: the conversation the chat list shows; tasks: openAsk), cached per task until it changes, a few at a time.
    */
   async function waiting(ctx: Awaited<ReturnType<typeof context>>) {
-    const [open, live, runs, awaiting] = await Promise.all([pc.openIssues(), pc.liveRuns(), pc.recentRuns(100), records.awaiting().catch(() => new Set<string>())]);
+    const [open, live, runs, awaiting] = await Promise.all([pc.openIssues(), liveRuns(), recentRuns(), records.awaiting().catch(() => new Set<string>())]);
     const candidates = open.filter((i) => i.status !== "backlog" && chatAgent(i));
     const asking = new Set<string>();
     for (let n = 0; n < candidates.length; n += 4)
@@ -585,8 +587,8 @@ export function createApp(opts: AppOptions): Server {
       pc.comments(issue.id),
       pc.attachments(issue.id).catch(() => []),
       working(ctx),
-      pc.liveRuns(),
-      pc.recentRuns(100),
+      liveRuns(),
+      recentRuns(),
       pc.children(issue.id).catch(() => [] as Issue[]),
       issue.parentId ? pc.issueSummary(issue.parentId).catch(() => undefined) : undefined,
       bylines(),
@@ -667,7 +669,7 @@ export function createApp(opts: AppOptions): Server {
     const grand: Issue[][] = [];
     for (let i = 0; i < kids.length; i += 4) grand.push(...(await Promise.all(kids.slice(i, i + 4).map((k) => pc.children(k.id).then((l) => l.filter((g) => g.status !== "cancelled")).catch(() => [] as Issue[])))));
     const all = [...kids, ...grand.flat()];
-    const [live, runs, busy, names] = await Promise.all([pc.liveRuns(), pc.recentRuns(100), working(ctx), bylines()]);
+    const [live, runs, busy, names] = await Promise.all([liveRuns(), recentRuns(), working(ctx), bylines()]);
     const awaiting = await records.awaiting();
     const usage = store.usageByIssue(all.flatMap((i) => [i.id, i.identifier]));
     const pending = await cardsOf("pending");
@@ -704,7 +706,7 @@ export function createApp(opts: AppOptions): Server {
       store.unsettle(issue.id);
       return { settled: false };
     }
-    const [live, runs, kids] = await Promise.all([pc.liveRuns(), pc.recentRuns(100), pc.children(issue.id).catch(() => [] as Issue[])]);
+    const [live, runs, kids] = await Promise.all([liveRuns(), recentRuns(), pc.children(issue.id).catch(() => [] as Issue[])]);
     const chat = isChat(issue, ctx);
     const awaiting = await records.awaiting();
     const stateOf = (i: Issue) => chatState(i, live, runs.find((r) => r.issueId === i.id && r.finishedAt), ctx.me, awaiting).state;
@@ -846,8 +848,8 @@ export function createApp(opts: AppOptions): Server {
       // The summary is extra: a failed read there never fails fleet_status (summary: null). After the status reads, not beside
       // them (Paperclip limits concurrent list requests per client).
       const window = (body as { window?: string } | null)?.window === "7d" ? "7d" : "24h";
-      const status = await fleetStatus(pc, records);
-      const summary = await statusSummary(pc, store, records, grading, window).catch((err) => (log.warn({ err: String(err) }, "fleet summary failed"), null));
+      const status = await fleetStatus(pc, records, kernelActivity);
+      const summary = await statusSummary(pc, recentRuns, store, records, grading, window).catch((err) => (log.warn({ err: String(err) }, "fleet summary failed"), null));
       // A bounded reply: the lists are what get long, and a cut-off payload is unreadable.
       return boundedFleetStatus({ ...status, summary });
     }, ["fleet-admin", "fleet-read"]) },
@@ -985,20 +987,6 @@ export function createApp(opts: AppOptions): Server {
         const part = await deliver(ctx, task, agent, displayText(c.body).replace(/\n\n_(Written in|Passed on by) [^\n]*_$/, ""), { ...origin, note: `Passed on by ${sender?.name ?? "an agent"} from ${issue.identifier}.` });
         store.setMeta(key, new Date().toISOString());
         return { passed: true, to: agent.name, part: part.identifier };
-      },
-    },
-    {
-      // The loop brake (brake.ts): an agent reports a comment it posted; past its daily limit the wake is cancelled.
-      method: "POST",
-      path: /^\/internal\/wake-check$/,
-      handle: async (_m, body, _u, req) => {
-        const b = parse(z.object({ issue: z.string().min(1).max(100), comment: z.string().min(1).max(100) }), body);
-        const me = await requireAgent(pc, req, () => true, "only an agent reports its comments here").catch((err) => {
-          throw err instanceof Refused ? new HttpError(403, err.message) : err;
-        });
-        return wakeCheck(pc, store, b.issue, b.comment, me.id, opts.log).catch((err: Error) => {
-          throw /not your comment/.test(err.message) ? new HttpError(403, err.message) : err;
-        });
       },
     },
   ];
@@ -1165,7 +1153,7 @@ export function createApp(opts: AppOptions): Server {
     // The Agents page's first paint: who is in the fleet, where each sits and its schedules (no run history; /api/agents
     // brings that, with each agent's last run, after).
     { method: "GET", path: /^\/api\/agents\/roster$/, handle: async () => {
-        const [agents, routines, act] = await Promise.all([pc.agents(), pc.routines().catch(() => []), work.activity()]);
+        const [agents, routines, act] = await Promise.all([pc.agents(), pc.routines().catch(() => []), kernelActivity()]);
         return { roster: roster(agents, routines, new Map(), act) };
       },
     },
@@ -1174,7 +1162,7 @@ export function createApp(opts: AppOptions): Server {
       method: "GET",
       path: /^\/api\/agents\/by-key\/([a-z0-9-]+)$/,
       handle: async (m) => {
-        const [agents, routines, activity] = await Promise.all([pc.agents(), pc.routines().catch(() => []), work.activity()]);
+        const [agents, routines, activity] = await Promise.all([pc.agents(), pc.routines().catch(() => []), kernelActivity()]);
         const agent = agentByKey(agents, m[1]!);
         if (!agent) throw new HttpError(404, "no such agent");
         const { compiled, catalog } = readSources(settingsFiles());
@@ -1210,7 +1198,7 @@ export function createApp(opts: AppOptions): Server {
         if (!agent) throw new HttpError(404, "no such agent");
         const ask = parse(PauseSchema, body);
         const done = await setAgentPaused(pc, agent, ask);
-        log.info({ agent: m[1], paused: ask.paused, stop: Boolean(ask.stop), stopped: done.stopped }, ask.paused ? "agent paused" : "agent resumed");
+        log.info({ agent: m[1], paused: ask.paused }, ask.paused ? "agent paused" : "agent resumed");
         store.events.emit("fleet");
         return done;
       },
@@ -1228,14 +1216,14 @@ export function createApp(opts: AppOptions): Server {
           const status = url.searchParams.get("status");
           return historyPage(await pc.closedFor(agent.id, { q: url.searchParams.get("q") ?? "", ...(status === "done" || status === "cancelled" ? { status } : {}), offset, limit: HISTORY_PAGE }), offset, chat?.id, ctx.agents);
         }
-        const [live, runs] = await Promise.all([pc.liveRuns(), pc.recentRuns(100)]);
+        const [live, runs] = await Promise.all([liveRuns(), recentRuns()]);
         const lastRun = (i: Issue) => runs.find((r) => r.issueId === i.id && r.finishedAt);
         const [open, awaiting, needs] = await Promise.all([pc.openIssues(), records.awaiting().catch(() => new Set<string>()), waiting(ctx)]);
         const owed = new Map(needs.map((i) => [i.id, i.state]));
         return splitTasks(open, agent.id, chat?.id, (i) => owed.get(i.id) ?? chatState(i, live, lastRun(i), ctx.me, awaiting).state, ctx.agents, new Set(owed.keys()));
       },
     },
-    { method: "GET", path: /^\/api\/agents\/([0-9a-f-]{36})\/scorecard$/, handle: async (m) => scorecard(await gatherFacts(pc, store, records, grading), m[1]!) },
+    { method: "GET", path: /^\/api\/agents\/([0-9a-f-]{36})\/scorecard$/, handle: async (m) => scorecard(await gatherFacts(pc, recentRuns, store, records, grading), m[1]!) },
     {
       // Chats: open ones first, then the 20 newest finished ones; each with its agent and state.
       method: "GET",
@@ -1244,7 +1232,7 @@ export function createApp(opts: AppOptions): Server {
         const ctx = await context();
         const label = await labelNamed(ctx, "chat", "#0ea5e9");
         // Every open task too (for the work handed out from open chats), in the same round trip rather than after.
-        const [open, closed, live, runs, openTasks] = await Promise.all([pc.labelled(label.id, OPEN), pc.labelled(label.id, "done,cancelled", "20"), pc.liveRuns(), pc.recentRuns(100), pc.openIssues()]);
+        const [open, closed, live, runs, openTasks] = await Promise.all([pc.labelled(label.id, OPEN), pc.labelled(label.id, "done,cancelled", "20"), liveRuns(), recentRuns(), pc.openIssues()]);
         const newest = (a: Issue, b: Issue) => (b.lastActivityAt ?? b.updatedAt).localeCompare(a.lastActivityAt ?? a.updatedAt);
         const all = [...open.sort(newest), ...closed.sort(newest)];
         const awaiting = await records.awaiting();
@@ -1360,18 +1348,6 @@ export function createApp(opts: AppOptions): Server {
       },
     },
     {
-      // Stop: ends the chat's run and clears its queue.
-      method: "POST",
-      path: /^\/api\/chats\/([^/]+)\/stop$/,
-      handle: async (m) => {
-        const { issue } = await editableIssue(decodeURIComponent(m[1]!), "this chat isn't yours");
-        const runs = (await pc.liveRuns()).filter((r) => r.issueId === issue.id);
-        for (const r of runs) await pc.cancelRun(r.id);
-        log.info({ issue: issue.identifier, stopped: runs.length }, "chat stopped");
-        return { stopped: runs.length };
-      },
-    },
-    {
       // Not right: one line from the person, recorded as a correction; the chat reopens.
       method: "POST",
       path: /^\/api\/issues\/([^/]+)\/not-right$/,
@@ -1434,7 +1410,7 @@ export function createApp(opts: AppOptions): Server {
         const module = moduleStates(text).find((r) => r.name === m[1]);
         if (!module) throw new HttpError(404, "no such module");
         const ctx = await context();
-        const [routines, open, live, runs, awaiting, activity] = await Promise.all([pc.routines().catch(() => []), pc.openIssues(), pc.liveRuns(), pc.recentRuns(100), records.awaiting().catch(() => new Set<string>()), work.activity()]);
+        const [routines, open, live, runs, awaiting, activity] = await Promise.all([pc.routines().catch(() => []), pc.openIssues(), liveRuns(), recentRuns(), records.awaiting().catch(() => new Set<string>()), kernelActivity()]);
         const { compiled, catalog } = readSources(settingsFiles());
         const chat = ctx.labels.find((l) => l.name === "chat");
         const lastRun = (i: Issue) => runs.find((r) => r.issueId === i.id && r.finishedAt);

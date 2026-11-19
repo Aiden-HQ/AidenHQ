@@ -930,14 +930,9 @@ function Composer({ issue, reload, toast, to, crew = [], moved }: { issue: Issue
     if (big.length) toast(`${big.map((f) => f.name).join(", ")} ${big.length > 1 ? "are" : "is"} over 10 MB`);
     setFiles((now) => [...now, ...picked.filter((f) => f.size <= MAX_FILE && f.size > 0)]);
   }
-  // Stop and Not right act on this conversation.
+  // Not right acts on this conversation.
   const [fixing, setFixing] = useState(false);
   const [fix, setFix] = useState("");
-  async function stop() {
-    const r = await api.stopChat(issue.identifier).catch((e: Error) => (toast(`Couldn't stop: ${e.message}`), undefined));
-    if (r) toast(r.stopped ? "Stopped." : "Nothing was running here.");
-    await reload();
-  }
   async function sendFix() {
     if (!fix.trim()) return;
     setSending(true);
@@ -1050,9 +1045,6 @@ function Composer({ issue, reload, toast, to, crew = [], moved }: { issue: Issue
             e.target.value = "";
           }}
         />
-        <button className="btn" disabled={sending} title="End the run in progress and clear its queue" onClick={() => void stop()}>
-          Stop
-        </button>
         <button className="btn" disabled={sending} title="Tell the agent its last reply was wrong (recorded as a correction)" onClick={() => setFixing(!fixing)}>
           Not right
         </button>

@@ -6,6 +6,7 @@ import { kernelJwks, verifyCaller } from "./aidenhq-sdk/caller.js";
 import { grantsTable, type Grant } from "./grants.js";
 import { OPEN, type Agent, type Issue, type Paperclip, type Routine } from "./paperclip.js";
 import type { Records } from "./records.js";
+import { lastRunsOf, liveRunsOf, type KernelActivity } from "./runs.js";
 import type { Store } from "./store.js";
 
 export class Refused extends Error {}
@@ -153,28 +154,24 @@ interface CostRow {
 }
 
 /** fleet_status, plus what is running now (with age) and the open approval cards (tier, state, age). */
-export async function fleetStatus(pc: Paperclip, records: Pick<Records, "list">) {
+export async function fleetStatus(pc: Paperclip, records: Pick<Records, "list">, activity: () => Promise<KernelActivity>) {
   const co = `/api/companies/${pc.companyId}`;
-  const [agents, runs, open, routines] = await Promise.all([
+  const [agents, act, open, routines] = await Promise.all([
     pc.request<Agent[]>("GET", `${co}/agents`),
-    pc.request<{ agentId: string; status: string; startedAt?: string | null; createdAt: string }[]>("GET", `${co}/heartbeat-runs?summary=true&limit=500`),
+    activity(),
     pc.request<Issue[]>("GET", `${co}/issues?status=${OPEN}&limit=500`),
     pc.request<Routine[]>("GET", `${co}/routines`),
   ]);
-  const last = new Map<string, { t: string; s: string }>();
-  for (const r of runs) {
-    const t = r.startedAt ?? r.createdAt;
-    if (t > (last.get(r.agentId)?.t ?? "")) last.set(r.agentId, { t, s: r.status });
-  }
+  const last = lastRunsOf(act);
   const who = new Map(agents.map((a) => [a.id, a.name]));
   const newest = (xs: (string | null | undefined)[]) => xs.filter((x): x is string => Boolean(x)).sort().at(-1) ?? null;
   const minutesSince = (t: string) => Math.round((Date.now() - Date.parse(t)) / 60_000);
   // Pending cards, and approved ones not yet applied (an applier that hasn't claimed or finished them).
   const cards = (await records.list("recent", { limit: 100 })).filter((a) => a.state === "pending" || (["approved", "used"].includes(a.state) && !a.outcome));
   return {
-    runs: runs.filter((r) => ["running", "queued"].includes(r.status)).map((r) => ({ agent: who.get(r.agentId) ?? r.agentId, status: r.status, startedAt: r.startedAt ?? r.createdAt, ageMinutes: minutesSince(r.startedAt ?? r.createdAt) })),
+    runs: liveRunsOf(act).map((r) => ({ agent: who.get(r.agentId) ?? r.agentId, status: r.status, startedAt: r.startedAt, ageMinutes: r.startedAt ? minutesSince(r.startedAt) : null })),
     approvals: cards.map((a) => ({ id: a.id, task: a.identifier, action: a.action, target: a.target, tier: a.tier, state: a.state, requestedBy: a.requestedBy, ageMinutes: minutesSince(a.createdAt) })),
-    agents: agents.filter((a) => a.status !== "terminated").map((a) => ({ name: a.name, paused: a.status === "paused", lastRunAt: last.get(a.id)?.t ?? null, lastRunStatus: last.get(a.id)?.s ?? null, openTasks: open.filter((i) => i.assigneeAgentId === a.id).length })),
+    agents: agents.filter((a) => a.status !== "terminated").map((a) => ({ name: a.name, paused: a.status === "paused", lastRunAt: last.get(a.id)?.at ?? null, lastRunStatus: last.get(a.id)?.status ?? null, openTasks: open.filter((i) => i.assigneeAgentId === a.id).length })),
     routines: routines.filter((r) => r.status !== "archived").map((r) => ({ title: r.title, status: r.status, nextRunAt: (r.triggers ?? []).filter((t) => t.enabled).map((t) => t.nextRunAt).filter(Boolean).sort()[0] ?? null, lastRunAt: newest([r.lastTriggeredAt, ...(r.triggers ?? []).map((t) => t.lastFiredAt)]) })),
     stuck: open.filter((i) => ["in_progress", "blocked"].includes(i.status) && i.assigneeAgentId && Date.now() - Date.parse(i.updatedAt) > DAY).map((i) => ({ identifier: i.identifier, title: i.title, status: i.status, assignee: who.get(i.assigneeAgentId!) ?? "an agent", updatedAt: i.updatedAt })),
   };

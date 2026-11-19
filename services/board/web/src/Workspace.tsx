@@ -530,12 +530,6 @@ function Conversation({ refId, row, mobile, crew, prefix, go, onSignIn, toast, p
     await reloadList();
   }
 
-  async function stop() {
-    const r = await api.stopChat(refId).catch((e: Error) => (toast(`Couldn't stop: ${e.message}`), undefined));
-    if (r) toast(r.stopped ? "Stopped." : "Nothing was running.");
-    await load();
-  }
-
   const notRight = useCallback(
     async (text: string) => {
       await api.notRight(refId, text);
@@ -656,11 +650,6 @@ function Conversation({ refId, row, mobile, crew, prefix, go, onSignIn, toast, p
             </span>
           </span>
           {showsChip(chat.state) && <StateChip state={chat.state} reason={chat.reason} />}
-          {live && (
-            <button className="btn" onClick={() => void stop()} title="End the run in progress and clear its queue">
-              Stop
-            </button>
-          )}
           {row?.settled ? (
             <button className="btn settle-btn on" onClick={() => void settle(false)} title="Settled: bring it back to the active list">
               ◆ Settled · Reopen

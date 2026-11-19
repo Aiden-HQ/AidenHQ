@@ -5,7 +5,8 @@
 import type { Logger } from "pino";
 import type { SessionActivity } from "./codex-activity.js";
 import type { Events } from "./events.js";
-import type { Issue, LiveRun, Paperclip } from "./paperclip.js";
+import type { Issue, Paperclip } from "./paperclip.js";
+import type { LiveRun } from "./runs.js";
 import type { Records } from "./records.js";
 
 const TICK_MS = 2_000;
@@ -39,6 +40,8 @@ const isChat = (i: Issue, labelId?: string) => Boolean(i.labels?.some((l) => l.n
  */
 export function startWatch(o: {
   pc: Paperclip;
+  /** The kernel's jobs running now. */
+  liveRuns: () => Promise<LiveRun[]>;
   events: Events;
   /** The kernel's records: a card filed, decided or finished announces `approvals`. */
   records?: Pick<Records, "list">;
@@ -63,14 +66,14 @@ export function startWatch(o: {
     if (isChat(i, s.label)) s.chats.add(i.id);
   }
 
-  /** Each task's run as `state|output`: Paperclip's live runs (with live words on chats). */
+  /** Each task's run as `state|output`: the kernel's running jobs (with live words on chats). */
   async function runs(s: Watched, live: LiveRun[]): Promise<Map<string, string>> {
     const out = new Map<string, string>();
     await Promise.all(
       live.map(async (r) => {
         if (!r.issueId) return;
-        const words = r.status === "running" && o.session && chatOf(s, r.issueId) ? await o.session(r.agentId, r.startedAt ?? r.createdAt).catch(() => null) : null;
-        out.set(r.issueId, `${r.status}|${r.lastOutputSeq ?? ""}|${words?.saidAt ?? ""}|${words?.steps.at(-1)?.at ?? ""}|${words?.steps.length ?? ""}`);
+        const words = r.status === "running" && o.session && chatOf(s, r.issueId) ? await o.session(r.agentId, r.startedAt).catch(() => null) : null;
+        out.set(r.issueId, `${r.status}|${words?.saidAt ?? ""}|${words?.steps.at(-1)?.at ?? ""}|${words?.steps.length ?? ""}`);
       }),
     );
     return out;
@@ -80,7 +83,7 @@ export function startWatch(o: {
     const [open, labels] = await Promise.all([o.pc.openIssues(), o.pc.labels()]);
     const s: Watched = { label: labels.find((l) => l.name === "chat")?.id, chats: new Set(), parents: new Map(), cursor: new Date(Date.now() - OVERLAP_MS).toISOString(), last: new Map(), runs: new Map(), progress: new Set(), progressAt: new Map() };
     for (const i of open) learn(s, i);
-    s.runs = await runs(s, await o.pc.liveRuns());
+    s.runs = await runs(s, await o.liveRuns());
     return s;
   }
 
@@ -92,7 +95,7 @@ export function startWatch(o: {
     try {
       const s = (state ??= await start());
       const since = new Date(Date.parse(s.cursor) - OVERLAP_MS).toISOString();
-      const [changed, live] = await Promise.all([o.pc.changedSince(since), o.pc.liveRuns()]);
+      const [changed, live] = await Promise.all([o.pc.changedSince(since), o.liveRuns()]);
       const touched = new Set<string>();
       const seen = new Map<string, string>();
       for (const i of changed) {

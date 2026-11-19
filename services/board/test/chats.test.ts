@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { REPLY_MARKER, chatAgent, chatAgentMarker, chatState, needsYou, openAsk, pickAgent, shownState, type Message } from "../src/chats.js";
-import type { Agent, Issue, PastRun } from "../src/paperclip.js";
+import type { Agent, Issue } from "../src/paperclip.js";
+import type { PastRun } from "../src/runs.js";
 
 const issue = (o: Partial<Issue> = {}): Issue => ({ id: "i1", identifier: "WOR-1", title: "t", description: null, status: "todo", priority: "medium", assigneeUserId: null, assigneeAgentId: "a1", assigneeAdapterOverrides: null, createdAt: "", updatedAt: "", ...o });
 const past = (status: string, error: string | null = null): PastRun => ({ id: "r0", status, agentId: "a1", issueId: "i1", startedAt: null, finishedAt: "x", error });
@@ -14,8 +15,6 @@ describe("chatState", () => {
     expect(shownState(base, [], stopped).state).toBe("idle");
     const asked = [{ kind: "reply", text: "Which repo?", at: "2026-11-10T10:00:00Z", questions: [{ question: "Which repo?" }] }] as unknown as Message[];
     expect(shownState(base, asked, stopped).state).toBe("waiting for you");
-    // Cancelled because the agent handed the chat back: still waiting for the owner.
-    expect(chatState(issue({ assigneeAgentId: null, assigneeUserId: "me" }), [], { ...past("cancelled", "Cancelled before issue reassignment"), errorCode: "issue_reassigned" }, "me").state).toBe("waiting for you");
   });
 });
 
@@ -59,7 +58,7 @@ describe("needsYou", () => {
       t("todo", { assigneeAgentId: null, assigneeUserId: "me" }), // his own plain to-do
       t("parked", { status: "backlog" }), // an old question on a parked chat
     ];
-    const runs = [{ ...past("timed_out", "Timed out after 1200s"), issueId: "timedout" }];
+    const runs = [{ ...past("timeout", "Timed out after 1200s"), issueId: "timedout" }];
     const got = needsYou(open, [], runs, "me", new Set(["card"]), new Set(["asks", "parked"]));
     expect(got.map((x) => [x.id, x.state])).toEqual([["card", "waiting for approval"], ["asks", "waiting for you"], ["handed", "waiting for you"]]);
   });

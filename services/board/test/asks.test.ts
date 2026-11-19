@@ -51,8 +51,6 @@ const pc = {
   companyId: "co",
   labelled: async () => [chat],
   openIssues: async () => [chat, child],
-  liveRuns: async () => [],
-  recentRuns: async () => [],
   issue: async (ref: string) => [chat, child].find((i) => i.id === ref || i.identifier === ref) ?? Promise.reject(new Error("404")),
   issueSummary: async (id: string) => [chat, child].find((i) => i.id === id),
   comments: async (id: string) => [...(comments[id] ?? [])],

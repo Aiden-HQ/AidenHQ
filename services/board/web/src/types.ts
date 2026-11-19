@@ -81,12 +81,9 @@ export interface Session {
   agentId: string | null;
   state: "working" | "queued";
   startedAt: string | null;
-  doing?: string;
-  tool?: string;
   said?: string;
   saidAt?: string;
   plan?: PlanItem[];
-  quiet?: boolean;
   run: TaskRef | null;
   tasks: TaskRef[];
 }

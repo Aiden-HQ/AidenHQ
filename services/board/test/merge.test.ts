@@ -49,8 +49,6 @@ describe("merging a task into another", () => {
       files.push(f);
       return f;
     },
-    liveRuns: async () => [],
-    recentRuns: async () => [],
     addComment: async (id: string, body: string) => {
       const c = { id: uuid(), body, authorType: "user", authorUserId: ME, createdAt: "" } as Comment;
       comments.set(id, [...(comments.get(id) ?? []), c]);

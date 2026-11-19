@@ -33,7 +33,6 @@ export function AgentPage({ agentKey, tab, go, onSignIn }: { agentKey: string; t
   const profileQ = useQuery(agentProfileQuery(agentKey), onSignIn);
   const open = useQuery(agentOpenQuery(agentKey), onSignIn);
   const lastDone = useQuery(lastDoneQuery(agentKey), onSignIn).data;
-  const [pausing, setPausing] = useState(false);
   const [note, setNote] = useState("");
   const profile = profileQ.data;
   if (!profile) {
@@ -65,16 +64,14 @@ export function AgentPage({ agentKey, tab, go, onSignIn }: { agentKey: string; t
   );
   const chat = `#/c/?to=${encodeURIComponent(profile.id)}`;
   const task = <a className="btn primary" href={chat}>Give it a task</a>;
-  const pause = async (body: { paused: boolean; stop?: boolean }) => {
+  const pause = async (body: { paused: boolean }) => {
     try {
-      const r = await api.pauseAgent(agentKey, body);
-      setNote(body.stop ? (r.stopped ? `Stopped ${r.stopped} running task${r.stopped === 1 ? "" : "s"}.` : "Nothing was running in Paperclip; an Engineer job already under way finishes.") : "");
-      setPausing(false);
+      await api.pauseAgent(agentKey, body);
+      setNote("");
       const p = agentProfileQuery(agentKey);
       void load(p.key, p.fetch, p.persist, true).catch(() => {});
       void load(QUERIES.roster.key, QUERIES.roster.fetch, QUERIES.roster.persist, true).catch(() => {});
     } catch (e) {
-      setPausing(false);
       if (e instanceof SignInRequired) onSignIn();
       else setNote(`Couldn't ${body.paused ? "pause" : "resume"} ${profile.name}: ${(e as Error).message}`);
     }
@@ -91,12 +88,11 @@ export function AgentPage({ agentKey, tab, go, onSignIn }: { agentKey: string; t
           <>
             <a className="btn" href={chat}>Chat</a>
             {task}
-            <Menu label={`More for ${profile.name}`} items={[paused ? { label: `Resume ${profile.name}`, onSelect: () => void pause({ paused: false }) } : { label: `Pause ${profile.name}…`, onSelect: () => setPausing(true) }]} />
+            <Menu label={`More for ${profile.name}`} items={[paused ? { label: `Resume ${profile.name}`, onSelect: () => void pause({ paused: false }) } : { label: `Pause ${profile.name}`, onSelect: () => void pause({ paused: true }) }]} />
           </>
         }
       />
       {note && <p className="agp-note" role="status">{note}</p>}
-      {pausing && <PauseDialog name={profile.name} onCancel={() => setPausing(false)} onPause={pause} />}
       <Tabs label={`${profile.name} sections`} tabs={TABS} value={tab} href={(t) => `#/agents/${agentKey}${t === "overview" ? "" : `/${t}`}`} />
       {tab === "overview" && (
         <div className="agp-grid">
@@ -230,33 +226,5 @@ function ChatsTab({ profile, onSignIn }: { profile: AgentProfile; onSignIn: () =
         </ListRows>
       )}
     </Section>
-  );
-}
-
-/** Pausing asks what to do with a running task: let it finish, or stop it now. */
-function PauseDialog({ name, onCancel, onPause }: { name: string; onCancel: () => void; onPause: (body: { paused: boolean; stop?: boolean }) => Promise<void> }) {
-  const [busy, setBusy] = useState(false);
-  const send = (stop: boolean) => {
-    setBusy(true);
-    void onPause({ paused: true, ...(stop ? { stop } : {}) }).finally(() => setBusy(false));
-  };
-  useEffect(() => {
-    const esc = (e: KeyboardEvent) => e.key === "Escape" && onCancel();
-    document.addEventListener("keydown", esc);
-    return () => document.removeEventListener("keydown", esc);
-  }, [onCancel]);
-  return (
-    <div className="drawer-backdrop center" onPointerDown={(e) => e.target === e.currentTarget && onCancel()}>
-      <div className="help agp-dialog" role="dialog" aria-modal="true" aria-label={`Pause ${name}`}>
-        <h2>Pause {name}?</h2>
-        <p>It takes no new work while paused. What about the task it is on now?</p>
-        <div className="agp-dialog-actions">
-          <button className="btn" disabled={busy} onClick={onCancel}>Cancel</button>
-          <span className="spacer" />
-          <button className="btn" disabled={busy} onClick={() => send(true)}>Stop it now</button>
-          <button className="btn primary" autoFocus disabled={busy} onClick={() => send(false)}>Let it finish</button>
-        </div>
-      </div>
-    </div>
   );
 }

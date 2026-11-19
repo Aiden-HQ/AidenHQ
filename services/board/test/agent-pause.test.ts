@@ -9,10 +9,8 @@ import { Store } from "../src/store.js";
 const calls: string[] = [];
 const pc = {
   agents: async () => [{ id: "keeper", name: "Roadmap Keeper", status: "idle", metadata: { engine: "codex", setupKey: "aidenhq:roadmap-keeper", module: "instance" } }],
-  liveRuns: async () => [{ id: "run1", status: "running", agentId: "keeper", issueId: "i1" }, { id: "run2", status: "running", agentId: "other", issueId: "i2" }],
   pauseAgent: async (id: string) => void calls.push(`pause ${id}`),
   resumeAgent: async (id: string) => void calls.push(`resume ${id}`),
-  cancelRun: async (id: string) => void calls.push(`cancel ${id}`),
 } as unknown as Paperclip;
 
 describe("POST /api/agents/by-key/:key/pause", () => {
@@ -35,12 +33,11 @@ describe("POST /api/agents/by-key/:key/pause", () => {
       req.end(JSON.stringify(body));
     });
 
-  it("pauses, stops only that agent's live runs on request, and resumes", async () => {
+  it("pauses and resumes", async () => {
     calls.length = 0;
-    expect((await post("/api/agents/by-key/roadmap-keeper/pause", { paused: true })).body).toEqual({ status: "paused", stopped: 0 });
-    expect((await post("/api/agents/by-key/roadmap-keeper/pause", { paused: true, stop: true })).body).toEqual({ status: "paused", stopped: 1 });
+    expect((await post("/api/agents/by-key/roadmap-keeper/pause", { paused: true })).body).toEqual({ status: "paused" });
     expect((await post("/api/agents/by-key/roadmap-keeper/pause", { paused: false })).body.status).toBe("idle");
-    expect(calls).toEqual(["pause keeper", "pause keeper", "cancel run1", "resume keeper"]);
+    expect(calls).toEqual(["pause keeper", "resume keeper"]);
     expect((await post("/api/agents/by-key/nobody/pause", { paused: true })).status).toBe(404);
   });
 

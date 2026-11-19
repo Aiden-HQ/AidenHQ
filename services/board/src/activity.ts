@@ -1,8 +1,8 @@
-// What the agents are doing: Paperclip's agent runs.
+// What the agents are doing: the kernel's jobs.
 import { z } from "zod";
 import type { Step } from "./codex-activity.js";
-import type { KernelActivity } from "./runs.js";
-import { type Agent, type Issue, type LiveRun, type PastRun, type Routine } from "./paperclip.js";
+import type { KernelActivity, LiveRun, PastRun } from "./runs.js";
+import { type Agent, type Issue, type Routine } from "./paperclip.js";
 
 const UUID = /^[0-9a-f-]{36}$/;
 const IDENT = /^[A-Z][A-Z0-9]{1,9}-\d{1,7}$/;
@@ -20,22 +20,17 @@ export interface TaskRef {
 export interface Session {
   id: string;
   agent: string;
-  /** The Paperclip agent behind the run. */
+  /** The agent behind the run. */
   agentId: string | null;
   state: "working" | "queued";
   startedAt: string | null;
-  /** Paperclip's status line for the run ("Receiving agent output"). */
-  doing?: string;
-  tool?: string;
-  /** The agent's latest message, when Paperclip has one. */
+  /** The agent's latest message, when its session log has one. */
   said?: string;
   saidAt?: string;
   /** The agent's own task list (Codex's plan). */
   plan?: PlanItem[];
   /** Its tool calls so far. */
   steps?: Step[];
-  /** No output for a long while (Paperclip's silence warning). */
-  quiet?: boolean;
   /** The task the run belongs to: the user's task, or a routine's run task ("Process task replies"). */
   run: TaskRef | null;
   /** The user's tasks it works on: the task itself, or those a routine run names. */
@@ -200,8 +195,6 @@ export interface RunContext {
   tasks: TaskRef[];
 }
 
-const isLive = (status: string) => status === "running" || status === "queued";
-
 /** Assemble the view from runs already resolved to their tasks (`resolve`). */
 export async function agentsView(input: {
   live: LiveRun[];
@@ -212,27 +205,23 @@ export async function agentsView(input: {
 }): Promise<AgentsView> {
   const now = input.now ?? Date.now();
   const name = (id: string, fallback?: string) => input.agents.find((a) => a.id === id)?.name ?? fallback ?? "Agent";
-  // Every run's task is looked up at once (each is a Paperclip round trip), then read back in order.
+  // Every run's task is looked up at once (each is a task read), then read back in order.
   const looked = new Map<string | null, Promise<RunContext>>();
   const resolve = (id: string | null) => {
     if (!looked.has(id)) looked.set(id, input.resolve(id));
     return looked.get(id)!;
   };
-  const shown = (r: PastRun) => !isLive(r.status) && !!r.finishedAt && now - Date.parse(r.finishedAt) <= FINISHED_WINDOW_MS;
+  const shown = (r: PastRun) => !!r.finishedAt && now - Date.parse(r.finishedAt) <= FINISHED_WINDOW_MS;
   for (const id of [...input.live.map((r) => r.issueId), ...input.past.filter(shown).map((r) => r.issueId)]) void resolve(id);
   const sessions: Session[] = [];
   for (const r of input.live) {
     const { run, tasks } = await resolve(r.issueId);
     sessions.push({
       id: r.id,
-      agent: name(r.agentId, r.agentName),
+      agent: name(r.agentId),
       agentId: r.agentId,
-      state: r.status === "queued" ? "queued" : "working",
-      startedAt: r.startedAt ?? r.createdAt,
-      doing: r.currentStatusMessage ?? undefined,
-      tool: r.currentToolName ?? undefined,
-      said: r.lastAssistantSnippet ? r.lastAssistantSnippet.slice(0, 400) : undefined,
-      quiet: r.outputSilence?.level !== undefined && r.outputSilence.level !== "ok",
+      state: "working",
+      startedAt: r.startedAt,
       run,
       tasks,
     });

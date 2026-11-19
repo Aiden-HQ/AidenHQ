@@ -350,7 +350,6 @@ function AgentRow({ a, depth, team, ownModel, assignee, sessions, finished, runs
           ) : (
             <span className="fleet-line faint">Nothing running</span>
           )}
-          {on[0]?.doing && <span className="fleet-sub">{on[0].doing}</span>}
         </div>
         <div className={`fleet-next${next ? "" : " is-empty"}`} role="cell">
           <span className="fleet-label">Next</span>
@@ -437,8 +436,6 @@ function AgentRow({ a, depth, team, ownModel, assignee, sessions, finished, runs
                 {on.map((s) => (
                   <div key={s.id} className="crew-job">
                     <Tasks tasks={s.tasks} fallback={s.run} />
-                    {(s.doing || s.tool) && <div className="session-doing">{[s.doing, s.tool && `tool: ${s.tool}`].filter(Boolean).join(", ")}</div>}
-                    {s.quiet && <div className="session-doing warn">No output for a while.</div>}
                     {s.said && <div className="session-said">{s.said}</div>}
                     {s.plan && <Plan items={s.plan} />}
                   </div>
@@ -555,17 +552,11 @@ function SessionRow({ s, now }: { s: Session; now: number }) {
         )}
       </div>
       <Tasks tasks={s.tasks} fallback={s.run} />
-      {(s.doing || s.tool || routine) && (
+      {routine && s.tasks.length > 0 && (
         <div className="session-doing">
-          {[s.doing, s.tool && `tool: ${s.tool}`].filter(Boolean).join(" · ")}
-          {routine && s.tasks.length > 0 && (
-            <>
-              {s.doing || s.tool ? " · " : ""}via <a href={`#/t/${s.run!.identifier}`}>{s.run!.title ?? s.run!.identifier}</a>
-            </>
-          )}
+          via <a href={`#/t/${s.run!.identifier}`}>{s.run!.title ?? s.run!.identifier}</a>
         </div>
       )}
-      {s.quiet && <div className="session-doing warn">No output for a while.</div>}
       {s.said && <div className="session-said">{s.said}</div>}
     </div>
   );
