@@ -347,6 +347,24 @@ export function unpinnedPorts(diff) {
   return [...new Set(published)].filter((p) => !pinned.some((l) => new RegExp(`(^|\\D)${p}(\\D|$)`).test(l)));
 }
 
+/**
+ * Instance details in a GitHub write (a conn.tool card on the github connection: a comment, an issue, a review): a tailnet
+ * host (*.ts.net), a home-directory path, or an IPv4 address other than loopback. A GitHub thread is outside the instance and
+ * often public, and no issue or review needs these, so code refuses it itself: a model once approved a triage comment that
+ * pasted the host, its address and a runner log path as "in scope". (github-mcp's scrub redacts owner data from the App's
+ * comments when they are sent; this is the refusal before that, for every GitHub write.)
+ */
+export function instanceDetails(card, diff) {
+  const text = String(diff ?? "");
+  if (card?.action !== "conn.tool" || !/^tool: github\./.test(text)) return [];
+  const found = [
+    ...text.matchAll(/\b[\w-]+(?:\.[\w-]+)*\.ts\.net\b/gi),
+    ...text.matchAll(/(?<![\w.~])\/(?:home|Users)\/[\w.-]+\/\S*/g),
+    ...[...text.matchAll(/(?<![\w.])\d{1,3}(?:\.\d{1,3}){3}(?!\w|\.\d)/g)].filter((m) => !/^(127\.|0\.0\.0\.0$)/.test(m[0])),
+  ].map((m) => m[0].replace(/[`'"),.\\]+$/, ""));
+  return [...new Set(found)];
+}
+
 /** Whether a model's answer is a usable verdict; anything else (a refusal, nothing, prose, a bad schema) counts as refused. */
 function verdictOf(raw, shown = "", checks = []) {
   if (!raw || raw.refusal || !String(raw.content ?? "").trim()) return undefined;
@@ -453,6 +471,8 @@ async function judge({ card, diff, files = { text: "", leftOut: [], oversized: [
   const checks = productScoped(matchChecklist(checklist, original), card, original);
   const unpinned = checks.some((c) => c.id === "exposure-pins") ? unpinnedPorts(original) : [];
   if (unpinned.length) return byCode("reject", `exposure-pins fails: the change publishes host port ${unpinned.join(", ")} in a compose file, and its scripts/verify-security.sh names no pin for it. Add the port to verify-security's pins in this same change and file it again.`, "policy_other");
+  const leaked = instanceDetails(card, original);
+  if (leaked.length) return byCode("reject", `instance details in a GitHub write: ${leaked.slice(0, 8).join(", ")}. A GitHub thread is outside the instance; leave out its hosts, addresses and paths and file the call again.`, "secret_exfiltration");
   const prompt = reviewPrompt({ policy, card, diff, files: files.text ?? "", chain, panel, previous, siblings, sources, checks, evidence, decisions });
   // A verdict on a change whose plain text did not all fit the budget says so: those files were judged on the diff.
   const fromDiff = files.oversized?.length ? ` Judged from the DIFF, not in full: ${files.oversized.join(", ")} did not fit the ${MAX_FILES}-character budget for changed files.` : "";
