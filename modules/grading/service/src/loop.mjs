@@ -155,6 +155,13 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
     } else if (row.state === "needs_revision") {
       await pc.setStatus(issue.id, "todo", note);
       // The reopen wakes the task's agent through the kernel: nothing to dispatch here.
+    } else if (row.state === "escalated" && v.outcome === "grading_failed") {
+      // The grader itself kept failing (MAX_GRADER_FAILURES in a row, never a rubric verdict): the task ends blocked with the
+      // error rather than looping in review, and its delegator hears it. Nothing is posted on the task after the block: a
+      // comment there would reopen it.
+      await pc.block(issue.id, note);
+      await tellParent(issue, "blocked", `**${issue.identifier} is blocked: its grader failed ${row.failures} times in a row** (${String(v.reason ?? "").slice(0, 300)}): ${issue.title}. Unblock it once the grader works, or close it if you're satisfied.`).catch(() => false);
+      log("grading failed: task blocked", { issue: issue.identifier, failures: row.failures, reason: String(v.reason ?? "").slice(0, 300) });
     } else if (row.state === "escalated") {
       // One question to the delegator, with the grader's note in it; on the task itself only when no open parent hears it (a
       // note there would wake its assignee, who has nothing left to do).

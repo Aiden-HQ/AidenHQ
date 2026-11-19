@@ -17,6 +17,7 @@ test("a kernel job's graded task is graded, reopened with the unmet criterion, t
   const gateway = http.createServer(async (req, res) => {
     models.push({ auth: req.headers.authorization, path: req.url });
     for await (const _ of req);
+    if (req.url !== "/api/v1/chat/completions") return void res.writeHead(404).end(JSON.stringify({ error: { code: 404, type: "not_found", message: "no such route" } }));
     res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify(answers.shift()) } }] }));
   }).listen(0);
   t.after(() => gateway.close());
@@ -113,4 +114,88 @@ test("a merge counts only as its executor wrote it on a record that ended ok, ne
   assert.deepEqual(verifiedMerges({ state: "failed", ok: false, args, outcome_text: `${line}\n\nStopped.` }), [], "a failed merge never counts");
   assert.deepEqual(verifiedMerges({ state: "done", ok: true, args, outcome_text: "Merged #9." }), [], "args naming a PR are no evidence");
   assert.deepEqual(verifiedMerges({ state: "done", ok: true, args, outcome_text: `merged-prs: []\n\n${line}` }), [], "only the first line counts");
+});
+
+// The kernel's finish-check hold as checks.ts keeps it: the grader token and a resolve (ok, reopen, block) need it; release drops it.
+function heldKernel(issue, calls) {
+  let held = true;
+  const kernel = async (method, path, body) => {
+    if (path === `/v1/cp/read/api/issues/${issue.id}`) return issue;
+    if (path.endsWith("/comments")) return [{ id: "c1", authorType: "agent", authorAgentId: "eng", body: "It is said.", createdAt: "2026-11-18T09:00:00Z" }];
+    if (path.endsWith("/attachments")) return [];
+    if (path === "/v1/cp/read/api/companies/co/agents") return [{ id: "eng", name: "Dana" }];
+    if (path.startsWith("/v1/cp/read/api/companies/co/issues")) return [];
+    if (path === `/v1/work?task=${issue.id}`) return { busy: false, jobs: [], records: [] };
+    if (path === "/v1/work/grader-token") { if (!held) throw new Error("kernel POST /v1/work/grader-token → 403"); return { token: "tok" }; }
+    if (path === `/v1/checks/${issue.id}`) {
+      calls.resolve.push(body.verdict);
+      if (body.verdict !== "release" && !held) throw new Error("kernel POST /v1/checks → 409: holds no finish");
+      held = false;
+      if (body.verdict !== "release") issue.status = { ok: "done", reopen: "todo", block: "blocked" }[body.verdict];
+      return {};
+    }
+    if (path === "/v1/wakes") return calls.wake.push(body), { posted: true };
+    throw new Error(`unexpected ${method} ${path}`);
+  };
+  return { kernel, release: async () => void (await kernel("POST", `/v1/checks/${issue.id}`, { verdict: "release" })) };
+}
+
+test("a model with no route grades with the next one, and the hold lasts until the verdict's resolve", async (t) => {
+  const asked = [];
+  const gateway = http.createServer(async (req, res) => {
+    let body = "";
+    for await (const c of req) body += c;
+    const { model } = JSON.parse(body);
+    asked.push(model);
+    // OpenRouter's answer for a model with no ZDR endpoint.
+    if (model === "~openai/gpt-luna-latest") return void res.writeHead(404).end(JSON.stringify({ error: { code: 404, message: "No endpoints found matching your data policy" } }));
+    res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify(answer(["yes"])) } }] }));
+  }).listen(0);
+  t.after(() => gateway.close());
+  const issue = { id: "t3", identifier: "WOR-3", title: "report", description: "", status: "in_review", companyId: "co", assigneeAgentId: "eng", createdByAgentId: "cos", parentId: "p1" };
+  const calls = { resolve: [], wake: [] };
+  const { kernel, release } = heldKernel(issue, calls);
+  const db = new DatabaseSync(":memory:");
+  const { runner, grades } = createGrading({ db, kernel: { issue: async () => issue, settings: async () => ({}), release }, keys: { check: "c", board: "b" } });
+  grades.file("t3", ["says it"], { kind: "report", ref: "" });
+  completionGate(grades, "t3", "finish_turn");
+  const loop = createKernelGradeLoop({ db, runner, due: () => ({ grades: grades.due(), resubmitted: [] }), kernel, kernelBytes: async () => Buffer.alloc(0), apps: async () => ({}), gatewayUrl: `http://127.0.0.1:${gateway.address().port}`, log: () => {} });
+  const realNow = Date.now;
+  Date.now = () => realNow() + 10_000;
+  t.after(() => { Date.now = realNow; });
+  await loop.runGrades();
+  assert.deepEqual(asked, ["~openai/gpt-luna-latest", "~z-ai/glm-flash-latest"]);
+  assert.deepEqual(calls.resolve, ["ok"]);
+  assert.equal(grades.get("t3").verdicts.at(-1).model, "~z-ai/glm-flash-latest");
+});
+
+test("a grader that keeps failing keeps its hold, then blocks the task with the error and tells its delegator", async (t) => {
+  let n = 0;
+  const gateway = http.createServer(async (req, res) => {
+    for await (const _ of req);
+    n++;
+    res.writeHead(502).end("upstream down");
+  }).listen(0);
+  t.after(() => gateway.close());
+  const issue = { id: "t4", identifier: "WOR-4", title: "report", description: "", status: "in_review", companyId: "co", assigneeAgentId: "eng", createdByAgentId: "cos", parentId: "p1" };
+  const calls = { resolve: [], wake: [] };
+  const { kernel, release } = heldKernel(issue, calls);
+  const db = new DatabaseSync(":memory:");
+  const { runner, grades } = createGrading({ db, kernel: { issue: async () => issue, settings: async () => ({}), release }, keys: { check: "c", board: "b" } });
+  grades.file("t4", ["says it"], { kind: "report", ref: "" });
+  completionGate(grades, "t4", "finish_turn");
+  const loop = createKernelGradeLoop({ db, runner, due: () => ({ grades: grades.due(), resubmitted: [] }), kernel, kernelBytes: async () => Buffer.alloc(0), apps: async () => ({}), gatewayUrl: `http://127.0.0.1:${gateway.address().port}`, log: () => {} });
+  const realNow = Date.now;
+  let skew = 10_000;
+  Date.now = () => realNow() + skew;
+  t.after(() => { Date.now = realNow; });
+  for (let i = 0; i < 5; i++) { await loop.runGrades(); skew += 2 * 60 * 60_000; }
+  assert.equal(n, 5, "a 5xx is never retried on the next model, and every pass got its token");
+  assert.deepEqual(calls.resolve, ["block"]);
+  assert.equal(issue.status, "blocked");
+  assert.equal(calls.wake.length, 1);
+  assert.equal(calls.wake[0].task, "p1");
+  assert.match(calls.wake[0].text, /WOR-4 is blocked: its grader failed 5 times/);
+  await loop.runGrades();
+  assert.equal(n, 5, "a blocked task is not graded again");
 });

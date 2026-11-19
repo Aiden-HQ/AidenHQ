@@ -225,7 +225,8 @@ export class Grades {
     this.db.prepare("DELETE FROM grade_resubmits WHERE issue_id = ?").run(issueId);
     const g = this.get(issueId);
     if (!g || g.state !== "escalated") return g;
-    if (version && version !== g.verdicts.at(-1)?.version) this.pend(issueId);
+    // A new round: the grader's failures count afresh (they are consecutive failures).
+    if (version && version !== g.verdicts.at(-1)?.version) this.set(issueId, "pending", g.attempts, g.verdicts, 0, null);
     return this.get(issueId);
   }
 
@@ -280,7 +281,8 @@ export class Grades {
    * One grading pass's outcome. A rejected version counts once (loops are distinct versions). A version rejected before and
    * handed in again unchanged, the MAX_LOOPS-th rejected version, a verdict with criteria unverified but none unmet,
    * cannot_judge, a grader refusal and evidence that never came (error) escalate to the delegator. A grader that failed or returned no usable criteria (grading_failed) is retried on the
-   * 1-5-15-60 minute ladder and only escalates after MAX_GRADER_FAILURES passes; any real verdict clears that count.
+   * 1-5-15-60 minute ladder and escalates after MAX_GRADER_FAILURES passes in a row (the grade loop then blocks the task); any
+   * real verdict, or a new round, clears that count.
    */
   record(issueId: string, v: VerdictInput, now = Date.now(), delegators?: string[]): Grade {
     const set = (state: GradeState, attempts: number, verdicts: Verdict[], failures: number, failedAt: string | null, at: number) => this.set(issueId, state, attempts, verdicts, failures, failedAt, at, delegators);

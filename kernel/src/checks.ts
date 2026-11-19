@@ -168,21 +168,22 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
 
   /**
    * A check's module on a task: `release` takes its label off (the hold is over; the module's own flow moves the task on);
-   * `ok` and `reopen` resolve a hold this check placed, moving the task to done or todo as the owner. Only the check's
-   * own module, and ok/reopen only on a task it holds.
+   * `ok`, `reopen` and `block` resolve a hold this check placed, moving the task to done, todo or blocked as the owner. Only
+   * the check's own module, and ok/reopen/block only on a task it holds.
    */
   async function resolve(module: string, ref: string, b: { check?: unknown; verdict?: unknown; comment?: unknown }) {
     const mine = finishing().filter(([id, c]) => c.module === module && (b.check === undefined || id === `${module}.${String(b.check)}`));
     if (mine.length !== 1) throw fail(403, "forbidden", `${module} has ${mine.length ? "several finish checks: name one (check)" : "no finish check"}`);
     const [id, c] = mine[0]!;
-    if (!["release", "ok", "reopen"].includes(String(b.verdict))) throw fail(400, "bad_request", "verdict is release, ok or reopen");
+    const to = ({ ok: "done", reopen: "todo", block: "blocked" } as Record<string, string>)[String(b.verdict)];
+    if (!to && b.verdict !== "release") throw fail(400, "bad_request", "verdict is release, ok, reopen or block");
     const i = await issue(ref);
     const held = db.prepare("SELECT 1 FROM check_holds WHERE task = ? AND check_id = ?").get(i.id, id);
     if (b.verdict !== "release" && !held) throw fail(409, "conflict", `${id} holds no finish on ${i.identifier ?? i.id}`);
     await unlabel(i, c);
     db.prepare("DELETE FROM check_holds WHERE task = ? AND check_id = ?").run(i.id, id);
     const comment = typeof b.comment === "string" && b.comment ? { comment: b.comment.slice(0, 60_000) } : {};
-    if (b.verdict !== "release") await patch(await issue(i.id), { status: b.verdict === "ok" ? "done" : "todo", ...comment });
+    if (to) await patch(await issue(i.id), { status: to, ...comment });
     log("finish check resolved", { task: i.identifier, check: id, verdict: b.verdict });
     return { ok: true };
   }
