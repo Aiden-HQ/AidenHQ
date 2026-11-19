@@ -138,3 +138,25 @@ test("a review: text addressed to a reviewer in a left-out file still flags it; 
   const big = bound({ coverage: { reviewed: [], excluded: [], incomplete: null }, withheld: { important: 0, nit: 0, pre_existing: 0 }, findings: Array.from({ length: 100 }, () => F({ severity: "nit", evidence: "x".repeat(4000) })) });
   assert.ok(Buffer.byteLength(JSON.stringify(big)) <= 200_000 && big.withheld.nit > 0 && big.findings.length + big.withheld.nit === 100);
 });
+
+test("a review: earlier findings are fixed only when confirmed gone, never merely missing or found again", async () => {
+  const base = { "a.js": "1\n", "old.js": "x\n" }, head = { "a.js": "1\n2\n" };
+  const prev = (id, path) => ({ id, path, line: 1, title: `t${id}` });
+  const previous = JSON.stringify({ findings: [prev("1".repeat(16), "old.js"), prev("2".repeat(16), "a.js"), prev("3".repeat(16), "a.js"), prev("4".repeat(16), "a.js")] });
+  let asked;
+  const run = async (engine, o) => {
+    if (o.prompt.startsWith("These findings")) {
+      asked = o.prompt;
+      return { read: true, calls: [{ tool: "read_file", path: `${o.root}/a.js` }], message: JSON.stringify({ fixed: ["2".repeat(16), "9".repeat(16)], still: ["3".repeat(16)] }) };
+    }
+    return { read: true, calls: [{ tool: "diff" }], message: JSON.stringify({ findings: [] }) };
+  };
+  const one = profile({ verify: false, finders: 1 });
+  const r = await review({ spec: spec({ previous, profile: one }), ...box({ head, base }), run });
+  // old.js deleted: fixed by code; 2 confirmed gone after reading a.js; 3 still there; 4 not answered; 9 was never asked.
+  assert.deepEqual(r.fixed.sort(), ["1".repeat(16), "2".repeat(16)]);
+  assert.ok(asked.includes("2".repeat(16)) && !asked.includes("1".repeat(16)));
+  // A recheck that never read the file marks nothing fixed.
+  const blind = await review({ spec: spec({ previous, profile: one }), ...box({ head, base }), run: async (e, o) => (o.prompt.startsWith("These") ? { read: true, calls: [], message: JSON.stringify({ fixed: ["2".repeat(16)] }) } : run(e, o)) });
+  assert.deepEqual(blind.fixed, ["1".repeat(16)]);
+});

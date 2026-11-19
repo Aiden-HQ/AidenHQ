@@ -183,7 +183,7 @@ test("checks: a model recipe gets its own capped token, its spec and commits as 
   // The commits as trees, the spec as a file (never argv or env); the result stamped with the ledger's spend, not the box's.
   assert.deepEqual([runs[0].seen.base, runs[0].seen.from, runs[0].seen.spec.focus, runs[0].seen.spec.head], ["base", "mid", spec.focus, A]);
   assert.ok(!JSON.stringify(runs[0].argv).includes("Ignore") && !JSON.stringify(runs[0].env).includes("Ignore"));
-  assert.deepEqual([v.result.cost_usd, v.cost_usd], [0.0123, 0.0123]);
+  assert.deepEqual([v.result.cost_usd, v.billed_usd], [0.0123, 0.0123]);
   // Its token: a check token for this check alone, capped at the lower of the budget and the recipe's max, lapsing with the recipe.
   const t = verifyToken("job-secret", runs[0].env.OPENROUTER_API_KEY);
   assert.deepEqual([t.k, t.c, t.u], ["check", `code-review:${v.id}`, 2]);
