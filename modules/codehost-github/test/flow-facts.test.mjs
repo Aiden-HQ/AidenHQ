@@ -11,13 +11,13 @@ import { createFlow } from "../service/src/flow.ts";
 const run = (name, at, end, conclusion = "success") => ({ name, started_at: at, completed_at: end, conclusion });
 const FIXTURE = {
   "/repos/Acme/App/issues": [
-    { number: 1, created_at: "2026-11-10T08:00:00Z", user: { login: "Mudit-Owner" }, labels: [{ name: "agent-fix" }], state: "closed" },
+    { number: 1, created_at: "2026-11-10T08:00:00Z", user: { login: "Mudit-Owner" }, author_association: "OWNER", labels: [{ name: "agent-fix" }], state: "closed" },
     { number: 2, pull_request: {}, created_at: "2026-11-10T09:00:00Z", user: { login: "acme-agents[bot]" } },
   ],
   "/repos/Acme/App/issues/events": [{ id: 77, event: "labeled", created_at: "2026-11-10T08:05:00Z", label: { name: "agent-fix" }, actor: { login: "Mudit-Owner" }, issue: { number: 1 } }],
   "/repos/Acme/App/pulls": [
     { number: 2, title: "Fix the thing", state: "closed", merged_at: "2026-11-10T12:00:00Z", merge_commit_sha: "m".repeat(40), created_at: "2026-11-10T09:00:00Z", updated_at: "2026-11-10T12:00:00Z", user: { login: "acme-agents[bot]" }, head: { sha: "c3", ref: "fix" }, body: "" },
-    { number: 3, title: "Stranger's PR", state: "closed", merged_at: null, closed_at: "2026-11-11T10:00:00Z", created_at: "2026-11-11T09:00:00Z", updated_at: "2026-11-11T10:00:00Z", user: { login: "someone" }, head: { sha: "d1", ref: "x" }, body: "" },
+    { number: 3, title: "Stranger's PR", state: "closed", merged_at: null, closed_at: "2026-11-11T10:00:00Z", created_at: "2026-11-11T09:00:00Z", updated_at: "2026-11-11T10:00:00Z", user: { login: "someone" }, author_association: "FIRST_TIME_CONTRIBUTOR", head: { sha: "d1", ref: "x" }, body: "" },
   ],
   "/repos/Acme/App/issues/2/timeline": [
     { event: "committed", sha: "c1", committer: { date: "2026-11-10T08:50:00Z" }, author: { name: "acme-agents[bot]" } },
@@ -50,7 +50,7 @@ async function harness(t, cacheDir) {
   const flow = createFlow({
     kernelUrl: `http://127.0.0.1:${kernel.address().port}`, key: "k", cacheDir, log: () => {},
     repos: async () => ["Acme/App"], token: async () => "tok", gh,
-    appLogin: async () => "acme-agents[bot]", owners: ["mudit-owner"],
+    appLogin: async () => "acme-agents[bot]", now: () => new Date("2026-11-10T08:30:00Z"),
   });
   return { facts, flow };
 }
@@ -85,4 +85,9 @@ test("the backfill records authors, pushes, CI per head and a close without a me
   const again = await harness(t, cacheDir);
   await again.flow.backfill();
   assert.equal(again.facts.length, 0, "recorded as done for this version: it doesn't run again");
+
+  // Live: the issue pass records what changed since its cursor, with the same ids as the backfill.
+  await again.flow.issuesRepo("Acme/App");
+  await again.flow.flush();
+  assert.deepEqual(again.facts.map((f) => [f.type, f.version, f.data.author_kind ?? f.data.by]), [["issue.opened", "2", "owner"], ["issue.labeled", "2:77", "Mudit-Owner"]]);
 });

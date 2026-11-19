@@ -29,7 +29,7 @@ const OPEN_PRS_QUERY = `query($owner: String!, $repo: String!) {
   repository(owner: $owner, name: $repo) {
     defaultBranchRef { name target { oid ... on Commit { ${ROLLUP} } } }
     pullRequests(states: OPEN, first: 50, orderBy: { field: CREATED_AT, direction: DESC }) {
-      nodes { number url title createdAt isDraft mergeable isCrossRepository headRefName headRefOid author { __typename login } commits(last: 1) { nodes { commit { ${ROLLUP} } } } }
+      nodes { number url title createdAt isDraft mergeable isCrossRepository headRefName headRefOid authorAssociation author { __typename login } commits(last: 1) { nodes { commit { ${ROLLUP} } } } }
     }
   }
 }`;
@@ -111,7 +111,7 @@ export function startPrWatch(o: PrWatchOptions) {
       state.open ??= {}; // PR url -> { n, head }
       for (const pr of open) {
         const url = pr.url.toLowerCase(), seen = state.open[url];
-        if (!seen) flow.opened(o.repo, pr.number, pr.headRefOid, pr.headRefName, new Date(pr.createdAt).toISOString(), undefined, undefined, { title: String(pr.title ?? ""), ...(await flow.authored(pr.author?.login)) });
+        if (!seen) flow.opened(o.repo, pr.number, pr.headRefOid, pr.headRefName, new Date(pr.createdAt).toISOString(), undefined, undefined, { title: String(pr.title ?? ""), ...(await flow.authored(pr.author?.login, pr.authorAssociation)) });
         else if (seen.head !== pr.headRefOid) {
           const c = await o.gh("GET", `/repos/${o.repo}/compare/${seen.head}...${pr.headRefOid}`, token).catch(() => undefined);
           flow.pushed(o.repo, pr.number, pr.headRefOid, seen.head, c ? !["ahead", "identical"].includes(String(c.body?.status)) : false, String(pr.author?.login ?? "ghost"));

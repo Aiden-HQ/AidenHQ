@@ -25,9 +25,6 @@ settings:
   # creates repos there at Tier 0 (the App must be installed on the org, else it fails loudly; a stranger's install of the public App changes nothing).
   github_orgs:
     default: []
-  # The owner's own GitHub logins: Flow marks their PRs and issues author_kind "owner" (the App's bot is "agent", anyone else "outside").
-  owner_github_logins:
-    default: []
 # The owner's GitHub bot account (spec §6.9, decision 25): a fine-grained token that forks our repos and files issues and pull
 # requests upstream from that fork, nothing more. Asked for on the first-run page (/setup); empty = nothing goes upstream.
 secrets:
@@ -49,7 +46,7 @@ secrets:
 roles:
   requests: [ kernel.tasks, kernel.wake, kernel.checks, kernel.apply, kernel.work-read, kernel.facts ]
 # Flow (docs/design/flow.md): the facts this module emits through the kernel (service/src/flow.ts), each carrying the task that opened
-# the PR (pr-tasks.json). pr.opened and issue.opened carry the author (author_kind: agent, owner or outside); pr.pushed is a head
+# the PR (pr-tasks.json). pr.opened and issue.opened carry the author (author_kind: agent, owner or outside, from GitHub's author_association); pr.pushed is a head
 # change after opening (version = the head); pr.closed is a close without a merge. CI is one interval per head (subject pr:<repo>#<n>@<head>); a merge-queue wait and its end are
 # work.waiting and work.resumed with the reason. `code.*` come from the churn pass and the owner's backfill (service/src/churn.ts).
 facts:
@@ -131,7 +128,6 @@ services:
         INSTANCE_REPO: "${AIDENHQ_INSTANCE_REPO:-}"
         OWNER_NAME: "${settings.owner_name}"
         CHURN_EXCLUDE: "${settings.churn_exclude}" # comma-separated globs
-        OWNER_GITHUB_LOGINS: "${settings.owner_github_logins}" # comma-separated logins
 # The kernel calls the kinds' plan, execute and status here with the module's own token (executor@1); plan is service/src/plan.mjs's
 # rules on the state the service reads itself (the workspace, its cache clone, GitHub), never the args.
 providers:

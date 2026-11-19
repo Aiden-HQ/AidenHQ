@@ -55,8 +55,6 @@ export type Options = {
   now?: () => Date; mergeEveryMs?: number;
   /** The churn pass ignores these globs (the churn_exclude setting). */
   churnExclude?: string[];
-  /** The owner's GitHub logins (the owner_github_logins setting): their PRs and issues are the owner's in Flow. */
-  ownerLogins?: string[];
 };
 
 const READ = { contents: "read", metadata: "read" };
@@ -304,7 +302,7 @@ export function createService(o: Options) {
             if (pr.number) {
               // Flow: the PR opened when this write created it, a head it moves is a push, and CI starts on every head it publishes.
               const n = Number(pr.number);
-              if (!open[0]) flow.opened(s.slug, n, b.sha, b.branch, pr.created_at, a.workspace, undefined, { title: String(pr.title ?? text?.title ?? ""), ...(await flow.authored(pr.user?.login ?? await botName())) });
+              if (!open[0]) flow.opened(s.slug, n, b.sha, b.branch, pr.created_at, a.workspace, undefined, { title: String(pr.title ?? text?.title ?? ""), ...(await flow.authored(pr.user?.login ?? await botName(), pr.author_association)) });
               else if (open[0].head?.sha && open[0].head.sha !== b.sha) {
                 // Forced: the old head is no ancestor of the new one.
                 const cmp = await api("GET", `/repos/${s.slug}/compare/${open[0].head.sha}...${b.sha}`, token).catch(() => undefined);
@@ -374,7 +372,6 @@ export function createService(o: Options) {
     token: (repo, perms) => tokenFor(slugOf(repo), perms),
     gh: o.gh,
     appLogin: o.app ? async () => (await o.app!.identity()).name : undefined,
-    owners: o.ownerLogins,
     fetchDefault: async (repo) => {
       const s = slugOf(repo);
       const def = String((await api("GET", `/repos/${s.slug}`, await tokenFor(s, READ))).default_branch ?? "main");
