@@ -91,7 +91,7 @@ export function localHost({ root, sources = {}, tasksDir, scratchDir, instanceRe
     await g(repo, ["update-ref", `refs/heads/${branch}`, sha, old || ZERO]);
   }
 
-  /** The change request of `branch` (the open one moves to its new head), else a new one. Its URL. */
+  /** The change request of `branch` (the open one moves to its new head), else a new one: its URL, its title, and the head an open one had (`before`). */
   function openChange(repo: string, branch: string, head: string, text: { title?: string; body?: string } | undefined, task: string) {
     return locked(repo, async () => {
       const into = await defaultBranch(repo), tip = await rev(repo, `refs/heads/${into}`);
@@ -101,12 +101,12 @@ export function localHost({ root, sources = {}, tasksDir, scratchDir, instanceRe
         const lines = [`update refs/changes/${n}/head ${head}`, `update refs/changes/${n}/base ${tip}`];
         if (text) lines.push(`update refs/changes/${n}/meta ${await g(repo, ["hash-object", "-w", "--stdin"], { input: JSON.stringify({ ...c.meta, ...text }) })}`);
         await refs(repo, lines);
-        return changeUrl(repo, n);
+        return { url: changeUrl(repo, n), title: String(text?.title ?? c.meta.title ?? branch), before: c.head };
       }
       const n = ((await numbers(repo)).at(-1) ?? 0) + 1;
       const m = await g(repo, ["hash-object", "-w", "--stdin"], { input: JSON.stringify({ title: text?.title ?? branch, body: text?.body ?? "", branch, base: into, task, opened_at: new Date().toISOString(), draft: false }) });
       await refs(repo, [`create refs/changes/${n}/head ${head}`, `create refs/changes/${n}/base ${tip}`, `create refs/changes/${n}/meta ${m}`]);
-      return changeUrl(repo, n);
+      return { url: changeUrl(repo, n), title: String(text?.title ?? branch), before: undefined as string | undefined };
     });
   }
 
@@ -233,10 +233,13 @@ export function localHost({ root, sources = {}, tasksDir, scratchDir, instanceRe
           await ingest(tasksDir, scratchDir, bare(b.repo), a.workspace, b);
           await moveBranch(b.repo, b.branch, b.sha);
           if (action === "pr") {
-            const url = await openChange(b.repo, b.branch, b.sha, a.text, a.workspace);
+            const { url, title, before } = await openChange(b.repo, b.branch, b.sha, a.text, a.workspace);
             done.push(url);
             const n = Number(url.slice(url.lastIndexOf("/") + 1)), at = new Date().toISOString();
-            fact({ type: "pr.opened", subject: subject(b.repo, n), version: "1", at, task: a.workspace, data: { repo: b.repo, number: n, head: b.sha, branch: b.branch } });
+            // Every change here is an agent's write (author_kind agent); the author is the head commit's.
+            const author = (await g(b.repo, ["log", "-1", "--format=%an", b.sha]).catch(() => "")) || IDENTITY.GIT_AUTHOR_NAME;
+            if (!before) fact({ type: "pr.opened", subject: subject(b.repo, n), version: "2", at, task: a.workspace, data: { repo: b.repo.toLowerCase(), number: n, head: b.sha, branch: b.branch, title, author, author_kind: "agent" } });
+            else if (before !== b.sha) fact({ type: "pr.pushed", subject: subject(b.repo, n), version: b.sha, at, task: a.workspace, data: { head: b.sha, before, forced: !(await g(b.repo, ["merge-base", "--is-ancestor", before, b.sha]).then(() => true, () => false)), author } });
             fact({ type: "pr.checks_started", subject: `${subject(b.repo, n)}@${b.sha}`, version: `${b.sha}:1`, at, task: a.workspace, data: { head: b.sha } });
             // Its checks start now, so the merge rarely waits.
             const main = await rev(b.repo, `refs/heads/${await defaultBranch(b.repo)}`);
@@ -269,7 +272,10 @@ export function localHost({ root, sources = {}, tasksDir, scratchDir, instanceRe
         for (const p of a.prs) {
           await locked(p.repo, async () => {
             const c = await readChange(p.repo, Number(p.number));
-            if (c.state === "open") await refs(p.repo, [`create refs/changes/${c.n}/closed ${c.head}`]);
+            if (c.state === "open") {
+              await refs(p.repo, [`create refs/changes/${c.n}/closed ${c.head}`]);
+              fact({ type: "pr.closed", subject: subject(p.repo, c.n), version: c.head, at: new Date().toISOString(), task: (c.meta.task as string | undefined) ?? null, data: { merged: false } });
+            }
           });
           done.push(changeUrl(p.repo, Number(p.number)));
         }
