@@ -1,5 +1,5 @@
 {
-  "title": "board.setup_flows: a module's guided setup, rendered by the board at #/setup/<module> (one flow per module). Compile adds `module`, `fields` (each secret's label, pattern and help, from its `setup:`) and, with a pair_url, `pair_token` (the name of the generated secret <module>_pair_token the board sends as bearer) and a network between the board and that service.",
+  "title": "board.setup_flows: a module's guided setup, rendered by the board at #/setup/<module> (one flow per module, plus an optional `mode: advanced` one), only where the owner must make something elsewhere first (an OAuth client, an app, a token, a bot) pair a channel, or choose a mode. A plain sign-in is a board.signins entry: one Connect, its per-install values inline. Compile adds `module`, `fields` (each secret's label, pattern and help, from its `setup:`) and, with a pair_url, `pair_token` (the name of the generated secret <module>_pair_token the board sends as bearer) and a network between the board and that service.",
   "type": "object",
   "additionalProperties": false,
   "required": ["order", "title", "why", "effort", "steps"],
@@ -9,11 +9,47 @@
     "why": { "type": "string", "minLength": 1, "maxLength": 160, "description": "one sentence: what the person gets" },
     "effort": { "type": "string", "minLength": 1, "maxLength": 80, "description": "e.g. about 2 minutes, needs the Telegram app" },
     "wizard": { "type": "boolean", "description": "shown in the first-run wizard" },
-    "steps": { "type": "string", "minLength": 1, "maxLength": 4000, "description": "markdown; {board_url} becomes the board's own address (where its sign-ins return), and inline code gets a copy button" },
+    "mode": { "enum": ["basic", "advanced"], "description": "basic (the default): the module's own setup, usually a sign-in; done once it is connected (and paired, if it pairs). advanced: the optional second flow, 'your own app' for more, shown under the basic one; done once its secrets exist (and it is paired, if it pairs); its services start once their secrets exist" },
+    "capabilities": { "type": "array", "minItems": 1, "maxItems": 8, "items": { "type": "string", "minLength": 1, "maxLength": 160 }, "description": "advanced only: what the person's own app unlocks, one short phrase each (a bot people can DM, live events)" },
+    "admin": { "type": "string", "minLength": 1, "maxLength": 120, "description": "who else may need to approve, plainly (your Slack admin may need to approve the app)" },
+    "steps": { "type": "string", "minLength": 1, "maxLength": 4000, "description": "markdown; {board_url} becomes the board's own address (where its sign-ins return), {redirect_url} the exact redirect the flow's sign-in sends (what a hand-made client must list), and inline code gets a copy button" },
     "secrets": { "type": "array", "maxItems": 8, "items": { "type": "string", "pattern": "^[a-z][a-z0-9_]{1,63}$" }, "description": "names of this module's secrets with `setup:`, shown as paste fields in this order" },
+    "choose": {
+      "type": "object", "additionalProperties": false, "required": ["setting", "options"],
+      "description": "a module with modes: the owner picks one first, which sets this module setting (a settings change, applied like any: the owner's Approvals) and, for an option, the extra settings it names; the flow's Connect opens once the setting holds the pick. Nothing is filed when the pick is what the setting already is",
+      "properties": {
+        "setting": { "type": "string", "pattern": "^[a-z][a-z0-9_]{1,60}$", "description": "one of this module's settings with `values`" },
+        "options": {
+          "type": "array", "minItems": 2, "maxItems": 4,
+          "items": {
+            "type": "object", "additionalProperties": false, "required": ["value", "label", "detail"],
+            "properties": {
+              "value": { "type": "string", "minLength": 1, "maxLength": 60, "description": "one of the setting's values" },
+              "label": { "type": "string", "minLength": 1, "maxLength": 80 },
+              "detail": { "type": "string", "minLength": 1, "maxLength": 300, "description": "what it means and what it needs, plainly" },
+              "requires": { "type": "object", "additionalProperties": false, "required": ["setting", "otherwise"], "properties": { "setting": { "type": "string", "pattern": "^[a-z][a-z0-9_]{1,60}$" }, "otherwise": { "type": "string", "minLength": 1, "maxLength": 300, "description": "shown, and the option unavailable, while the instance does not set it" } }, "description": "an instance setting the option needs" },
+              "inputs": {
+                "type": "array", "maxItems": 4,
+                "items": {
+                  "type": "object", "additionalProperties": false, "required": ["setting", "label", "pattern"],
+                  "properties": {
+                    "setting": { "type": "string", "pattern": "^[a-z][a-z0-9_]{1,60}$", "description": "one of this module's settings" },
+                    "label": { "type": "string", "minLength": 1, "maxLength": 80 },
+                    "help": { "type": "string", "maxLength": 300 },
+                    "pattern": { "type": "string", "minLength": 1, "maxLength": 200, "description": "the value's shape; the board checks it and the setting's own rules apply after" },
+                    "when": { "type": "object", "minProperties": 1, "description": "setting: value or [values]; asked only while the instance's settings hold" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "signin": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,30}$", "description": "an id from this module's board.signins: its connect button" },
     "pair_url": { "type": "string", "pattern": "^http://[a-z][a-z0-9-]{0,62}:[0-9]{2,5}/pair$", "description": "the pairing endpoint of one of this module's services" },
     "connect_url": { "type": "string", "pattern": "^/[a-z][a-z0-9-]{0,30}/connect$", "description": "a connect path the board already serves for a connection that is not a board.signins entry: its Connect button; done once that connection is signed in" },
+    "console_url": { "type": "string", "pattern": "^https://[^\\s]{1,300}$", "description": "the vendor's page where the owner makes the client this flow's secrets ask for: a button beside the steps" },
     "needs_name": { "type": "string", "minLength": 1, "maxLength": 400, "description": "why this setup needs a named address: shown instead of the steps and fields when the board's address is a bare IP (loopback excepted)" }
   }
 }

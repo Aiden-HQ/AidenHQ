@@ -17,12 +17,16 @@ export interface SignIn {
   detail?: string;
   /** Connect offers a choice of scopes: the picker comes first, and a Reconnect reads "Change access". */
   offer?: boolean;
+  /** A device sign-in (a code typed on the vendor's page): Connect opens its dialog, never a tab. */
+  mode?: "device";
   /** Not set up yet: the per-install values Connect asks for first. */
   fields?: { secret: string; label: string; pattern: string; help?: string }[];
 }
 export interface GoogleState {
   accounts: { email: string; primary: boolean; state: string; since: string; detail?: string }[];
   error?: string;
+  /** A Desktop client returns only to loopback: its Connect is pasted back (GoogleConnect in Connect.tsx). */
+  client_type?: "desktop" | "web";
 }
 export interface ConnectionRow {
   name: string;
@@ -85,6 +89,8 @@ export function connectionStatus(row: ConnectionRow, canConnect: { signIn: boole
   // Google: each account's own sign-in comes first; the service's health after.
   if (row.google) {
     const g = row.google;
+    // A Desktop client signs in from any address (pasted back); a Web client only on the board's https address or loopback.
+    canConnect = { ...canConnect, google: canConnect.google || g.client_type === "desktop" };
     if (!g.accounts.length) return { status: "signed_out", reason: g.error ? `No Google account connected (${g.error}).` : "No Google account connected.", ...connect("Connect Google", "/google/connect", canConnect.google) };
     const expired = g.accounts.filter((a) => a.state === "expired" || a.state === "error");
     if (expired.length) return { status: "signed_out", reason: `${expired.map((a) => a.email).join(", ")} stopped working (since ${day(expired[0]!.since)}).`, ...connect("Reconnect", `/google/connect?account=${encodeURIComponent(expired[0]!.email)}`, canConnect.google) };

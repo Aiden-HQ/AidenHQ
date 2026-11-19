@@ -1,0 +1,97 @@
+// Your organisation (modules/marketplace.json `organisations`): members of an organisation that runs internal apps sign in with
+// its apps, so they never make their own. Choosing one fills those connections' client IDs; each then connects as usual. Shown
+// on Settings > Connections and as the wizard's first step; nothing when the catalog lists none.
+import { useEffect, useState } from "react";
+import { SignInRequired, api, type Organisations } from "./api";
+import { displayName } from "./connections";
+import { Banner, Button } from "./ui";
+import "./setup-flow.css";
+
+const list = (xs: string[]) => (xs.length < 2 ? xs.join("") : `${xs.slice(0, -1).join(", ")} and ${xs.at(-1)}`);
+
+export function OrganisationPicker({ onApplied, compact }: { onApplied?: () => void; compact?: boolean }) {
+  const [data, setData] = useState<Organisations | null>(null);
+  const [pick, setPick] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState("");
+  const [editing, setEditing] = useState(false);
+  useEffect(() => {
+    api.organisations().then((d) => (setData(d), setPick(d.chosen ?? d.suggested)), () => setData(null));
+  }, []);
+  if (!data?.organisations.length) return null;
+  const chosen = data.organisations.find((o) => o.id === data.chosen);
+  const apply = async () => {
+    if (!pick) return;
+    setBusy(true);
+    setProblem("");
+    try {
+      const r = await api.organisationApply(pick);
+      const failed = r.results.filter((x) => !x.ok);
+      if (failed.length) setProblem(`${list(failed.map((f) => displayName(f.module)))} didn't take it: ${failed[0]!.error}`);
+      else {
+        setData({ ...data, chosen: pick });
+        setEditing(false);
+        onApplied?.();
+      }
+    } catch (e) {
+      setProblem(e instanceof SignInRequired ? "Your session ended. Sign in again to continue." : /only the owner/.test((e as Error).message) ? "Only the owner can choose the organisation." : (e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (chosen && !editing) {
+    return (
+      <section className={`setup-card org${compact ? " org-compact" : ""}`} aria-label="Your organisation">
+        <div className="org-chosen">
+          <span className="org-mark" aria-hidden>{chosen.name.slice(0, 1)}</span>
+          <div>
+            <strong>Signing in with {chosen.name}'s apps</strong>
+            <small>{list(chosen.connections.map(displayName))} use {chosen.name}'s own sign-in. Connect each one when you want it.</small>
+          </div>
+          <Button size="sm" onClick={() => setEditing(true)}>Change</Button>
+        </div>
+      </section>
+    );
+  }
+  return (
+    <section className={`setup-card org${compact ? " org-compact" : ""}`} aria-label="Your organisation">
+      <header className="org-head">
+        <h2>Your organisation</h2>
+        <p>If your organisation runs its own apps for these, you sign in with them and make nothing yourself.</p>
+      </header>
+      {problem && <Banner tone="danger">{problem}</Banner>}
+      <div className="setup-options" role="radiogroup" aria-label="Organisation">
+        {data.organisations.map((o) => (
+          <label key={o.id} className={`setup-option${pick === o.id ? " on" : ""}`}>
+            <input type="radio" name="organisation" checked={pick === o.id} onChange={() => setPick(o.id)} />
+            <span>
+              <strong>
+                {o.name}
+                {o.id === data.suggested && <em className="org-match">Matches your email</em>}
+              </strong>
+              <small>
+                {o.domains.join(", ")}. Fills in {list(o.connections.map(displayName))}.
+              </small>
+            </span>
+          </label>
+        ))}
+        <label className={`setup-option${pick === null ? " on" : ""}`}>
+          <input type="radio" name="organisation" checked={pick === null} onChange={() => setPick(null)} />
+          <span>
+            <strong>None of these</strong>
+            <small>Each connection guides you through making your own app where it needs one.</small>
+          </span>
+        </label>
+      </div>
+      <div className="setup-actions">
+        {pick && (
+          <Button variant="primary" disabled={busy || pick === data.chosen} onClick={() => void apply()}>
+            {busy ? "Saving…" : `Use ${data.organisations.find((o) => o.id === pick)!.name}`}
+          </Button>
+        )}
+        {editing && <Button onClick={() => setEditing(false)}>Cancel</Button>}
+      </div>
+    </section>
+  );
+}

@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
+import { organisationPoints, type OrganisationPoint } from "./organisations.js";
 import { setupFlowPoints, type SetupFlowPoint } from "./setup-flows.js";
 import { WEEKDAYS, type Weekday } from "./recurrence.js";
 
@@ -42,6 +43,8 @@ export interface Config {
   /** The modules' board.signins (config/points/board.json): each one whose `<id>_auth_token` is mounted. */
   signIns: SignInPoint[];
   setupFlows: { flows: (SetupFlowPoint & { token?: string })[] };
+  /** Organisations that run internal apps (modules/marketplace.json, compiled with each client's module secret). */
+  organisations: OrganisationPoint[];
   /** Where Paperclip keeps its Codex session logs (read-only mount), and the computer launcher for agents in their own computers. */
   sessions?: { dir?: string; launcher?: { url: string; token: string } };
   /** The kernel's admin listener at its front door (AIDENHQ_ADMIN_URL): sign-in, the handoff to the board, admin links. */
@@ -69,6 +72,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     internal: internalConfig(env),
     google: signIn(env.GOOGLE_AUTH_TOKEN_FILE ?? "/run/secrets/google_auth_token", env.GOOGLE_WORKSPACE_URL ?? "http://google-workspace-mcp:8081"),
     signIns: signInPoints(env.BOARD_POINTS_FILE ?? "/config/points/board.json", env.BOARD_SECRETS_DIR ?? "/run/secrets"),
+    organisations: organisationPoints(env.BOARD_POINTS_FILE ?? "/config/points/board.json"),
     setupFlows: { flows: setupFlowPoints(env.BOARD_POINTS_FILE ?? "/config/points/board.json", env.BOARD_SECRETS_DIR ?? "/run/secrets") },
     sessions: sessionsConfig(env),
     gateway: env.AIDENHQ_GATEWAY_URL && keyFile(env.GATEWAY_BOARD_KEY_FILE ?? "/run/secrets/gateway_board_key") ? { url: env.AIDENHQ_GATEWAY_URL.replace(/\/+$/, ""), token: keyFile(env.GATEWAY_BOARD_KEY_FILE ?? "/run/secrets/gateway_board_key")! } : undefined,
@@ -99,17 +103,17 @@ export interface SetupField { secret: string; label: string; pattern: string; he
  * A board.signins contribution (modules/board/schemas/signins.json), with the proxy's base URL and its auth token. `fields`: the
  * per-install values its Connect asks for first.
  */
-export interface SignInPoint { id: string; label: string; connect: string; callback: string; httpsOnly: boolean; missing: string; stopped: string; fields: SetupField[]; url: string; token: string }
+export interface SignInPoint { id: string; label: string; connect: string; callback: string; mode: "redirect" | "device"; httpsOnly: boolean; missing: string; stopped: string; fields: SetupField[]; url: string; token: string }
 
 /** The compiled board.signins: each needs its module's `<id>_auth_token` mounted on the board, or it is off. */
 export function signInPoints(file: string, secrets: string): SignInPoint[] {
-  const list: { id: string; module: string; label: string; status_url: string; connect_url: string; callback: string; https_only?: boolean; missing: string; stopped: string; fields?: SetupField[] }[] = existsSync(file) ? (JSON.parse(readFileSync(file, "utf8")).signins ?? []) : [];
+  const list: { id: string; module: string; label: string; status_url: string; connect_url: string; callback: string; mode?: "redirect" | "device"; https_only?: boolean; missing: string; stopped: string; fields?: SetupField[] }[] = existsSync(file) ? (JSON.parse(readFileSync(file, "utf8")).signins ?? []) : [];
   return list.flatMap((s) => {
     // Only its own token (<id>_auth_token goes to status_url) and paths: /<id>/connect, /<id>/callback or one bare /callback.
     if (s.id !== s.module) throw new Error(`board.signins ${s.id}: contributed by ${s.module}; a module's sign-in id is its own name`);
     if (s.id === "google" || s.connect_url !== `/${s.id}/connect` || ![`/${s.id}/callback`, "/callback"].includes(s.callback) || list.filter((x) => x.callback === s.callback).length > 1) throw new Error(`board.signins ${s.id}: its paths must be /${s.id}/connect and /${s.id}/callback (or one module's /callback)`);
     const auth = signIn(`${secrets}/${s.id}_auth_token`, s.status_url.slice(0, -"/status".length).replace(/\/auth$/, ""));
-    return auth ? [{ id: s.id, label: s.label, connect: s.connect_url, callback: s.callback, httpsOnly: Boolean(s.https_only), missing: s.missing, stopped: s.stopped, fields: s.fields ?? [], ...auth }] : [];
+    return auth ? [{ id: s.id, label: s.label, connect: s.connect_url, callback: s.callback, mode: s.mode ?? "redirect", httpsOnly: Boolean(s.https_only), missing: s.missing, stopped: s.stopped, fields: s.fields ?? [], ...auth }] : [];
   });
 }
 

@@ -15,7 +15,7 @@ describe("reconnect routes", () => {
     const body = init?.body ? JSON.parse(String(init.body)) : undefined;
     seen.push({ path, body });
     if (path === "/auth/start") return json({ url: "https://accounts.google.com/o/oauth2/v2/auth?state=s" });
-    if (path === "/auth/finish") return body.code === "good" ? json({ email: "me@work.com" }) : json({ error: "you signed in as <b>x@y.z</b>, not me@work.com; nothing changed" }, 400);
+    if (path === "/auth/finish") return body.error ? json({ error: `Google: ${body.error}` }, 400) : body.code === "good" ? json({ email: "me@work.com" }) : json({ error: "you signed in as <b>x@y.z</b>, not me@work.com; nothing changed" }, 400);
     return json({}, 404);
   }) as typeof fetch);
   const store = new Store(":memory:");

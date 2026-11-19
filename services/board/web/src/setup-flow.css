@@ -83,3 +83,49 @@
 .connect-steps { margin: 0 0 12px; padding-left: 20px; display: grid; gap: 6px; line-height: 1.45; }
 .connect-alt { margin: 4px 0 0; font-size: var(--text-sm); color: var(--muted); display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
 .ui-field-help { overflow-wrap: anywhere; }
+
+/* Honest labels beside a flow's title: how long it takes, and who else may need to approve. */
+.setup-labels { display: inline-flex; flex-wrap: wrap; gap: 6px; }
+.setup-admin { font-size: var(--text-xs); font-weight: 600; color: var(--warn-text); background: color-mix(in srgb, var(--warn) 14%, var(--surface)); padding: 3px 8px; border-radius: var(--radius-sm); }
+
+/* A module's advanced flow (SetupFlow.tsx Advanced): what your own app unlocks, its steps folded below. */
+.setup-adv { display: grid; gap: var(--stack); margin-top: var(--stack); }
+.setup-adv-head { display: grid; gap: 14px 28px; padding: 18px 20px; border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border)); border-left: 3px solid var(--accent); border-radius: var(--radius); background: color-mix(in srgb, var(--accent) 5%, var(--surface)); }
+@media (width >= 1000px) {
+  .setup-adv-head { grid-template-columns: minmax(240px, 1.1fr) minmax(0, 1.4fr) auto; align-items: center; }
+}
+.setup-adv-intro { display: grid; gap: 6px; justify-items: start; }
+.setup-adv-intro h2 { margin: 0; font-size: var(--text-lg); font-weight: 650; letter-spacing: -0.01em; }
+.setup-adv-intro p { margin: 0; font-size: var(--text-base); color: var(--muted); line-height: 1.5; }
+.setup-caps { margin: 0; padding: 0; list-style: none; display: grid; gap: 6px 18px; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
+.setup-caps li { display: flex; gap: 8px; align-items: baseline; font-size: var(--text-base); line-height: 1.4; }
+.setup-caps svg { flex: none; color: var(--accent); transform: translateY(2px); }
+.setup-adv-act { display: grid; gap: 6px; justify-items: start; }
+@media (width >= 1000px) { .setup-adv-act { justify-items: end; } }
+
+/* A pairing link as a QR code beside its Open button. */
+.setup-pair-link { display: flex; gap: 14px; align-items: center; }
+.setup-pair-link > div { display: grid; gap: 8px; justify-items: start; }
+.setup-qr { flex: none; width: 132px; height: 132px; border-radius: var(--radius-md); border: 1px solid var(--border); }
+
+/* A device sign-in (Connect.tsx DeviceSignIn): the code, large and spaced to read off, and that the board is waiting. */
+.devsign { display: grid; gap: 14px; }
+.devsign-lead { margin: 0; line-height: 1.5; }
+.devsign-code { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 16px 18px; border-radius: var(--radius-md); background: var(--surface-2); border: 1px solid var(--border-strong); }
+.devsign-code output { font: 650 var(--text-3xl)/1 var(--mono); letter-spacing: 0.16em; white-space: nowrap; color: var(--text); user-select: all; font-variant-numeric: tabular-nums; }
+.devsign-wait { margin: 0; display: flex; align-items: center; gap: 8px; font-size: var(--text-sm); color: var(--muted); }
+.devsign-pulse { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); animation: devsign-pulse 1.6s ease-in-out infinite; }
+@keyframes devsign-pulse { 50% { opacity: 0.3; transform: scale(0.8); } }
+@media (prefers-reduced-motion: reduce) { .devsign-pulse { animation: none; } }
+
+/* Your organisation (Organisation.tsx), on Settings > Connections and in the wizard. */
+
+.org-head { display: grid; gap: 4px; }
+.org-head h2 { margin: 0; font-size: var(--text-lg); font-weight: 600; letter-spacing: -0.01em; }
+.org-head p { margin: 0; font-size: var(--text-base); color: var(--muted); }
+.org .setup-options { grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
+.org-match { margin-left: 8px; font-style: normal; font-size: var(--text-xs); font-weight: 600; color: var(--accent); background: var(--accent-soft); padding: 2px 6px; border-radius: var(--radius-sm); }
+.org-chosen { display: flex; align-items: center; gap: 12px; }
+.org-chosen > div { display: grid; gap: 2px; flex: 1; min-width: 0; }
+.org-chosen small { font-size: var(--text-sm); color: var(--muted); }
+.org-mark { flex: none; display: grid; place-items: center; width: 32px; height: 32px; border-radius: var(--radius-md); font-weight: 700; color: var(--accent-text); background: var(--accent); }

@@ -92,7 +92,7 @@ it("sends a failed sign-in back to its Connect dialog, the reason in the address
   const denied = await get("/acme/callback?state=s&error=access_denied");
   expect(denied.status).toBe(302);
   expect(denied.location).toMatch(/^\/#\/settings\/connections\?connect=acme&error=/);
-  expect(new URLSearchParams(denied.location!.split("?")[1]).get("error")).toBe("Couldn't connect Acme: Acme didn't grant access (access_denied)");
+  expect(new URLSearchParams(denied.location!.split("?")[1]).get("error")).toBe("Couldn't connect Acme: Acme didn't grant access: access was declined on the sign-in page; press Connect and choose Allow");
 });
 
 it("offers the scopes a signed-in connection already grants, so the picker opens on them", async () => {
@@ -121,7 +121,7 @@ it("finishes a loopback sign-in from the pasted address, refusing any other addr
     expect(r.body).not.toContain("code=c");
   }
   expect(seen.some((x) => x.path === "/auth/finish")).toBe(false);
-  expect(JSON.parse((await post("/api/sign-ins/plain/finish", { url: "http://localhost:3121/plain/callback?state=s&error=access_denied" })).body).error).toBe("Couldn't connect Acme: Acme didn't grant access (access_denied)");
+  expect(JSON.parse((await post("/api/sign-ins/plain/finish", { url: "http://localhost:3121/plain/callback?state=s&error=access_denied" })).body).error).toBe("Couldn't connect Acme: Acme didn't grant access: access was declined on the sign-in page; press Connect and choose Allow");
   expect(await post("/api/sign-ins/plain/finish", { url: " http://127.0.0.1:3121/plain/callback?code=c0de&state=s " })).toEqual({ status: 200, body: '{"ok":true}' });
   expect(seen.at(-1)).toEqual({ path: "/auth/finish", body: { state: "s", code: "c0de" } });
   expect(JSON.parse((await get("/api/sign-ins/plain", "board.example.ts.net")).body).state).toBe("ok");

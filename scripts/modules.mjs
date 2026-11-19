@@ -487,9 +487,16 @@ export function setupFlows(defs, compiled, settings = {}) {
   // A sign-in's per-install values, asked for inline on its Connect.
   for (const x of compiled.board?.signins ?? []) if (x.secrets) x.fields = fieldsOf(x.module, x.secrets, `module ${x.module}: signins ${x.id}`);
   const flows = compiled.board?.setup_flows ?? [];
+  // A module's flow is its basic setup (a sign-in, usually); `mode: advanced` is its optional second flow, "your own app" for
+  // more (a bot, live events), listing what it unlocks (`capabilities`). The board shows it under the basic one.
   for (const f of flows) {
     const where = `module ${f.module}: setup_flows`;
-    if (flows.filter((x) => x.module === f.module).length > 1) fail(`${where}: one flow per module`);
+    const advanced = f.mode === "advanced";
+    if (flows.filter((x) => x.module === f.module && (x.mode === "advanced") === advanced).length > 1) fail(`${where}: one ${advanced ? "advanced" : "basic"} flow per module`);
+    if (advanced && !f.capabilities?.length) fail(`${where}: an advanced flow lists the capabilities it unlocks`);
+    if (!advanced && f.capabilities) fail(`${where}: capabilities belong on the advanced flow`);
+    if (advanced && !flows.some((x) => x.module === f.module && x.mode !== "advanced")) fail(`${where}: an advanced flow needs the module's basic flow`);
+    if (f.pair_url != null && flows.some((x) => x !== f && x.module === f.module && x.pair_url != null)) fail(`${where}: one pairing per module`);
     f.fields = fieldsOf(f.module, f.secrets, where);
     if (f.signin != null && !(compiled.board.signins ?? []).some((x) => x.module === f.module && x.id === f.signin)) fail(`${where}: signin ${f.signin} is not one of its board.signins`);
     if (f.choose) {
@@ -512,6 +519,46 @@ export function setupFlows(defs, compiled, settings = {}) {
     def.board_env = { ...def.board_env, [`${token.toUpperCase()}_FILE`]: `\${secrets.${token}}` };
     f.pair_token = token;
   }
+  // The advanced flow rides on its basic one: the board reads one flow per module.
+  for (const a of flows.filter((x) => x.mode === "advanced")) {
+    const { module: _m, order: _o, wizard: _w, mode: _d, ...rest } = a;
+    flows.find((x) => x.module === a.module && x.mode !== "advanced").advanced = rest;
+  }
+  if (compiled.board?.setup_flows) compiled.board.setup_flows = flows.filter((x) => x.mode !== "advanced");
+}
+
+/**
+ * modules/marketplace.json `organisations`: organisations that run internal apps, each with the public client values (a client
+ * ID; Google's Desktop client secret, non-confidential by Google's definition) its members sign in with. Each `clients` key is
+ * a module secret whose `setup:` says `public_client: true`, and its value fits that secret's pattern; never a bot token or a
+ * confidential secret (an optional `note` says why its values are safe to publish). The board (points board.organisations) gets each with its clients resolved to the enabled modules':
+ * choosing one writes them through the admin secret write, and the connections sign in as usual.
+ */
+export function organisations(list, allDefs, enabledDefs) {
+  if (list == null) return [];
+  if (!Array.isArray(list)) fail("modules/marketplace.json: organisations is a list");
+  const publicClients = Object.fromEntries(Object.entries(allDefs).flatMap(([module, def]) => [def.secrets?.provided ?? []].flat().filter((p) => p?.setup?.public_client === true).map((p) => [p.name, { module, pattern: p.setup.pattern }])));
+  const ids = new Set();
+  return list.map((o) => {
+    const where = `modules/marketplace.json: organisations ${o?.id ?? "?"}`;
+    if (!/^[a-z][a-z0-9-]{1,40}$/.test(String(o?.id))) fail(`${where}: id is lowercase letters, digits and -`);
+    if (ids.has(o.id)) fail(`${where}: listed twice`);
+    ids.add(o.id);
+    if (typeof o.name !== "string" || !o.name.trim() || o.name.length > 60) fail(`${where}: name is a short text`);
+    // `note`: why its values are safe to publish (JSON has no comments); never shown.
+    const extra = Object.keys(o).filter((k) => !["id", "name", "domains", "clients", "note"].includes(k));
+    if (extra.length) fail(`${where}: unknown ${extra.join(", ")}`);
+    if (o.note != null && (typeof o.note !== "string" || o.note.length > 500)) fail(`${where}: note is a text of 500 characters at most`);
+    if (!Array.isArray(o.domains) || !o.domains.length || o.domains.some((d) => typeof d !== "string" || !/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(d))) fail(`${where}: domains are lowercase email domains`);
+    if (!o.clients || typeof o.clients !== "object" || Array.isArray(o.clients) || !Object.keys(o.clients).length) fail(`${where}: clients maps a connection's client secret to its public value`);
+    const clients = Object.entries(o.clients).map(([secret, value]) => {
+      const c = publicClients[secret];
+      if (!c) fail(`${where}: ${secret} is not a module secret marked public_client (only public client values belong in the catalog)`);
+      if (typeof value !== "string" || !new RegExp(c.pattern).test(value)) fail(`${where}: ${secret} doesn't fit its pattern`);
+      return { module: c.module, secret, value };
+    });
+    return { id: o.id, name: o.name, domains: o.domains, clients: clients.filter((c) => c.module in enabledDefs) };
+  }).filter((o) => o.clients.length);
 }
 
 /**
@@ -520,7 +567,7 @@ export function setupFlows(defs, compiled, settings = {}) {
  * The host must be one of the declaring module's own services (its compose name or alias).
  */
 export function linkPairServices(flows, compose, serviceModule, networkModule) {
-  for (const f of flows) {
+  for (const f of flows.flatMap((x) => (x.advanced ? [x, { module: x.module, ...x.advanced }] : [x]))) {
     if (f.pair_url == null) continue;
     const host = new URL(f.pair_url).hostname;
     const key = Object.keys(serviceModule).find((k) => serviceModule[k].module === f.module && (k === host || serviceModule[k].alias === host));
@@ -597,6 +644,8 @@ export function compile(productDir, instanceDir, { revision, bundleState, oldBun
   for (const [, defs] of declaredSettings) for (const [k, d] of Object.entries(defs)) if (d && "default" in d) settings[k] = d.default;
   Object.assign(settings, instance.settings ?? {});
   setupFlows(enabledDefs, compiled, settings);
+  const orgs = organisations(readMarketplace(productDir).organisations, known, enabledDefs);
+  if (compiled.board && orgs.length) compiled.board.organisations = orgs;
   for (const [name, defs] of declaredSettings) {
     for (const [k, d] of Object.entries(defs)) {
       if (d?.required && settings[k] == null) fail(`setting ${k} is required by ${name}`);

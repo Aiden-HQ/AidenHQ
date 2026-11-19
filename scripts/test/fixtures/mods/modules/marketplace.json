@@ -4,6 +4,9 @@
     "name": "Fixture"
   },
   "description": "Test fixture modules",
+  "organisations": [
+    { "id": "acme", "name": "Acme", "domains": ["acme.example.com"], "clients": { "flowok_client_id": "1234.5678" } }
+  ],
   "plugins": [
     {
       "name": "a",
@@ -72,6 +75,10 @@
     {
       "name": "flowbad",
       "source": "./flowbad"
+    },
+    {
+      "name": "flowadv",
+      "source": "./flowadv"
     },
     {
       "name": "flowok",
