@@ -1,5 +1,6 @@
 // K1 whoami: who a bearer is, from the credential alone. A kernel job's token (`ahqj_`, gateway_job_secret, kind job: its row's
-// frozen authority) or a module's token (its connection's service key, or its own `<module>_token`). Nothing else is a caller.
+// frozen authority) or a module's token (its connection's service key, or its own `<module>_token`, which alone carries the
+// module's roles when it has one). Nothing else is a caller.
 // What an agent may do comes from the kernel's records and the grants table setup writes (config/grants/grants.json), never
 // from control-plane metadata, which agents can edit.
 import { timingSafeEqual } from "node:crypto";
@@ -27,6 +28,11 @@ export type Identity = {
   model?: string;
   /** The control-plane credential the kernel acts with at /v1/cp/agent/* for this caller; never forwarded to a module. */
   credential: string;
+  /**
+   * A module known by a connection's service key while it has a token of its own: that connection's service host. It holds
+   * none of the module's roles, and reports the outcome only of a write its own service executes.
+   */
+  connection?: string;
 };
 export class Unknown extends Error { code = "denied_unknown_caller"; }
 export class NoGrants extends Error { code = "denied_no_grants"; }
@@ -55,7 +61,9 @@ export function createIdentity({ grants, connections, jobcaps, modules = () => (
   return async function whoami(token: string): Promise<Identity> {
     if (!token) throw new Unknown("no credential");
     const mod = (m: string): Identity => ({ kind: "module", module: m, roles: modules()[m]?.roles ?? [], tools: {}, credential: "" });
-    for (const [, c] of Object.entries(connections())) if (same(token, secret(c.auth_secret))) return mod(c.module);
+    // A module with a token of its own holds its roles by that token alone: its connections' service key (a server that reads
+    // untrusted text, github-mcp beside the github module's code host) is the module with no role.
+    for (const [, c] of Object.entries(connections())) if (same(token, secret(c.auth_secret))) return modules()[c.module]?.token ? { ...mod(c.module), roles: [], connection: new URL(c.url).hostname } : mod(c.module);
     for (const [m, d] of Object.entries(modules())) if (d.token && same(token, secret(d.token))) return mod(m);
     if (token.startsWith("ahqj_")) {
       const p = verifyToken(secret("gateway_job_secret"), token, now());
