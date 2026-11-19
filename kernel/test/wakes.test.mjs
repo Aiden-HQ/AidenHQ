@@ -174,6 +174,12 @@ test("task facts: one change seen by the event and the poll is one fact; an unas
   const of = (task, type) => w.facts.forTask(task).filter((f) => f.type === type);
   assert.deepEqual(of("t1", "task.status_changed").map((f) => [f.data.from, f.data.to, f.actor, f.source]), [[null, "todo", `agent:${AGENT}`, "live"], ["todo", "in_progress", `agent:${AGENT}`, "live"]]);
   assert.equal(of("t1", "task.created").length, 1);
+  // A module's task carries its module and source; an agent's copy of the markers carries nothing.
+  w.issue("m1", { description: "Check.\n\n<!-- source:fleet-check:2026-11-19T10:00:00.000Z -->\n<!-- aidenhq-module:fleet-steward -->", identifier: "WOR-9" });
+  w.issue("m2", { description: "<!-- source:fleet-check:x -->\n<!-- aidenhq-module:fleet-steward -->", createdByAgentId: AGENT });
+  await w.wakes.poll();
+  assert.deepEqual(["m1", "m2"].map((t) => of(t, "task.created").map((f) => [f.data.identifier, f.data.origin, f.data.source_marker])[0]),
+    [["WOR-9", "module:fleet-steward", "fleet-check:2026-11-19T10:00:00.000Z"], [null, null, null]]);
   // An unassigned task is seen by its events only, and still recorded.
   w.issue("t2", { assigneeAgentId: null, status: "backlog" });
   await w.wakes.event({ issueId: "t2" });

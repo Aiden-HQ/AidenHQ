@@ -110,7 +110,8 @@ setInterval(() => { try { facts.prune(); } catch (e) { log("facts prune failed",
 // Flow's stages: the kernel's plus every module's declared ones (module.yaml `stages:`), read from the watched modules file.
 const stages = (): Stage[] => [...KERNEL_STAGES, ...Object.entries(modulesFile().modules ?? {}).flatMap(([module, m]) => (m.stages ?? []).map((s) => ({ ...s, module })))];
 // Flow's views (GET /v1/flow) read the log on their own read-only connection: a long read never blocks the approval path.
-const flow = createFlow({ file: path.join(dataDir, "kernel", "kernel.db"), stages });
+// DORA's incidents: the Fleet Steward detector's check tasks (fleet-steward main.ts fileCheck, source fleet-check:<at>).
+const flow = createFlow({ file: path.join(dataDir, "kernel", "kernel.db"), stages, incident: (f) => f.data.origin === "module:fleet-steward" && String(f.data.source_marker ?? "").startsWith("fleet-check:") });
 // Tasks kernel jobs create (provenance.ts): the routine trace reads them first.
 const provenance = createProvenance({ db: records.db, cap: (task) => taskRoutineCap(cpTrace, task, grantsTable().routines as Record<string, string> | undefined) });
 const cpTrace = { issue: (id: string) => cpJson(`/api/issues/${encodeURIComponent(id)}`), provenance: provenance.trace };
