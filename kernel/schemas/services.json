@@ -39,7 +39,9 @@
           "egress": { "type": "boolean", "description": "outbound Internet, on the module's own egress network" },
           "links": { "type": "array", "items": { "type": "string" }, "description": "root services or networks the module's closed legacy list allows" },
           "join": { "type": "array", "items": { "type": "string" }, "description": "networks of modules it requires" },
-          "on_demand": { "type": "boolean", "description": "started only by `docker compose run` (profile <module>, no restart)" }
+          "on_demand": { "type": "boolean", "description": "started only by `docker compose run` (profile <module>, no restart)" },
+          "when": { "type": "object", "minProperties": 1, "additionalProperties": { "type": "string" }, "description": "runs only while each named setting has this value" },
+          "share": { "type": "object", "additionalProperties": false, "properties": { "host": { "type": "string" }, "aud": { "type": "string" }, "default_role": { "type": "string" } }, "description": "people reach it through the gate at https://<host> as app <module> (host from an instance setting; empty: not shared); needs ui_port; mounts the gate's public keys at /run/secrets/AIDENHQ_IDENTITY_KEYS" }
         }
       }
     }

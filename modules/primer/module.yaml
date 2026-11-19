@@ -9,6 +9,19 @@ contributes:
         missing: "The agents can't read or publish documents until it is.", stopped: "The agents can't read or publish documents.",
         secrets: [primer_mcp_url] }
 settings:
+  # connect: a hosted Primer (its MCP address from Connect), signed in as the owner. self-host: this module runs Primer
+  # (primer-server, built from source at the commit its Dockerfile pins, and its own Postgres, primer-db) behind the gate at
+  # https://<primer_host>, where people sign in as app users; the connector signs in with primer_service_token. Either way
+  # a comment on a document an agent published wakes that agent (connections/primer-mcp/src/subscriber.ts).
+  primer_mode:
+    default: connect
+    values: [connect, self-host]
+  # self-host: the gate's host for Primer (instance-only, like an app's share.host; needs settings.edge) and, with app_login
+  # access or header-jwt, its audience. Empty: not shared.
+  primer_host:
+    default: ""
+  primer_host_aud:
+    default: ""
   # Superseded by the primer_mcp_url secret Connect asks for; a value here is read only while that secret is empty.
   primer_mcp_url:
     default: ""
@@ -41,10 +54,49 @@ secrets:
         label: Primer MCP address
         pattern: '^https://[a-z0-9.-]+(:[0-9]{2,5})?/[A-Za-z0-9._/-]*$'
         help: "From your Primer admin or Primer's settings, for example https://primer.example.com/mcp"
+    # self-host: a service token the owner mints in Primer (Settings, Tokens; scopes documents:read (also the event stream),
+    # documents:write, comments:write, events:write (the working status)) after first signing in.
+    - name: primer_service_token
+      setup:
+        label: Primer service token
+        pattern: '^primer_pat_[A-Za-z0-9_-]{16,}$'
+        help: "Self-hosted Primer only: sign in to Primer, open Settings, Tokens, and make a token with documents, comments and events access."
 optional_secrets:
   - primer_mcp_url
+  - primer_service_token
+# The comment wake loop: a notice on the publishing task (kernel.wake), or one Revisions task when it is closed (kernel.tasks).
+roles:
+  requests: [ kernel.wake, kernel.tasks ]
 services:
+  data: true
   run:
+    # self-host only. Its documents live in the module's data dir (blobs), its rows in primer-db.
+    primer-server:
+      when: { primer_mode: self-host }
+      build: ./server
+      tmp: 64m
+      port: 3000
+      ui_port: 3141 # loopback only: the gate's host for it (share)
+      egress: true # Docker publishes no port from an internal network; also Primer's own outbound (email, if set)
+      # People other than AidenHQ admins get a role from the app's admins on its Access page (no default: blocked).
+      share: { host: "${settings.primer_host}", aud: "${settings.primer_host_aud}" }
+      data: ["blobs:/data/blobs"]
+      env:
+        AUTH_BASE_URL: "https://${settings.primer_host}"
+        ADMIN_EMAILS: "${settings.owner_email}" # the owner mints the connector's service token
+        PRIMER_DB_PASSWORD_FILE: ${secrets.primer_db_password}
+    primer-db:
+      when: { primer_mode: self-host }
+      image: postgres:17.12@sha256:dbb9623d5121b5d2c2c9e2fba56e40193cbb3510d4af7f035b1ab1823aff3205
+      read_only: false # the image's entrypoint writes its run dir; as the owner's uid (nss_wrapper), no capabilities
+      tmp: 64m
+      data: ["db:/var/lib/postgresql/data"]
+      env:
+        POSTGRES_USER: primer
+        POSTGRES_DB: primer
+        POSTGRES_PASSWORD_FILE: ${secrets.primer_db_password}
+        PGDATA: /var/lib/postgresql/data/pgdata
+      healthcheck: { test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U primer -d primer"], interval: 10s, timeout: 5s, retries: 10 }
     primer-mcp:
       build: ./connections/primer-mcp
       tmp: 16m
@@ -55,6 +107,10 @@ services:
       env:
         PRIMER_MCP_URL_FILE: ${secrets.primer_mcp_url}
         PRIMER_MCP_URL: "${settings.primer_mcp_url}"
+        PRIMER_MODE: "${settings.primer_mode}"
+        PRIMER_LOCAL_URL: http://primer-server:3000
+        PRIMER_SERVICE_TOKEN_FILE: ${secrets.primer_service_token}
+        PRIMER_KERNEL_KEY_FILE: ${secrets.primer_token} # the module's own token: kernel.wake, kernel.tasks
         PRIMER_STATE_DIR: /state
         # The board's https address: Connect's one-click link returns there (the default is loopback).
         BOARD_URL: "${BOARD_LAN_URL:-}"
@@ -101,3 +157,5 @@ board_env:
 generated_secrets:
   - primer_service_key
   - primer_auth_token
+  - primer_token
+  - primer_db_password

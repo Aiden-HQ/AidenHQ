@@ -8,7 +8,9 @@ import { existsSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 
 type Dict = Record<string, unknown>;
-export type Generated = { services: Record<string, Dict>; networks: Record<string, Dict>; secrets: Record<string, Dict>; roots: Record<string, Dict>; dataDirs: string[]; stateDirs: string[] };
+/** A service people reach through the gate (`share`): the gate's host for the module's app name, to its ui_port. */
+export type Share = { name: string; port: number; share: { host: string; aud?: string; default_role?: string } };
+export type Generated = { services: Record<string, Dict>; networks: Record<string, Dict>; secrets: Record<string, Dict>; roots: Record<string, Dict>; dataDirs: string[]; stateDirs: string[]; shares: Share[] };
 
 /**
  * What the caller (the compiler) still lets this module reach of the root stack before its kernel routes exist, from its
@@ -21,7 +23,9 @@ export type Legacy = { links?: string[]; secrets?: string[]; hostEnv?: string[];
 /** The closed privileged list (spec §5.6) plus host-metrics: read-only host /, /sys and /proc for collectors (ruling c). */
 export const PRIVILEGED = ["docker", "host-unit", "sandbox-provider", "paperclip-plugin", "speaks-as-owner", "git-credential", "reviewer", "host-metrics"];
 
-export const SERVICE_FIELDS = ["image", "build", "command", "entrypoint", "env", "secrets", "port", "ui_port", "healthcheck", "cpus", "memory", "pids", "user", "read_only", "tmp", "data", "state", "points", "github_app", "workspaces", "host_mounts", "egress", "links", "join", "on_demand"];
+export const SERVICE_FIELDS = ["image", "build", "command", "entrypoint", "env", "secrets", "port", "ui_port", "healthcheck", "cpus", "memory", "pids", "user", "read_only", "tmp", "data", "state", "points", "github_app", "workspaces", "host_mounts", "egress", "links", "join", "on_demand", "when", "share"];
+/** The gate's public keys (scripts/identity.mjs), which a shared service verifies people's identity with, as apps do. */
+export const IDENTITY_KEYS_SECRET = "aidenhq_identity_keys";
 /**
  * The code host's (privileged: [git-credential]): the GitHub App's vault dir read-only, the job workspaces (the kernel's
  * work_dir/tasks) read-write, and the host variables that name the product and instance repositories.
@@ -81,8 +85,8 @@ export function ownSecrets(def: Dict): string[] {
  * ctx.local: the module comes from a local-path marketplace source (only those may build). ctx.rootServices, rootNetworks,
  * rootSecrets: the root compose's, which a module reaches only through ctx.legacy.
  */
-export function generateCompose(name: string, def: Dict, ctx: { root: string; local: boolean; rootServices?: string[]; rootNetworks?: string[]; rootSecrets?: string[]; legacy?: Legacy; workDir?: string }): Generated {
-  const out: Generated = { services: {}, networks: {}, secrets: {}, roots: {}, dataDirs: [], stateDirs: [] };
+export function generateCompose(name: string, def: Dict, ctx: { root: string; local: boolean; rootServices?: string[]; rootNetworks?: string[]; rootSecrets?: string[]; legacy?: Legacy; workDir?: string; settings?: Dict }): Generated {
+  const out: Generated = { services: {}, networks: {}, secrets: {}, roots: {}, dataDirs: [], stateDirs: [], shares: [] };
   const svcs = def.services;
   const where = (f: string) => `${name}: ${f}`;
   const privileged = def.privileged == null ? [] : strings(def.privileged, where("privileged"));
@@ -141,6 +145,11 @@ export function generateCompose(name: string, def: Dict, ctx: { root: string; lo
     if (!isMap(raw)) fail(at("") + " must be a map");
     const s = raw as Dict;
     for (const f of Object.keys(s)) if (!SERVICE_FIELDS.includes(f)) fail(`${at(f)} is not allowed`);
+    // `when: { <setting>: <value> }`: the service runs only while every named setting has that value (primer_mode: self-host).
+    if (s.when != null) {
+      if (!isMap(s.when) || !Object.keys(s.when).length || Object.values(s.when).some((v) => typeof v !== "string")) fail(`${at("when")} maps settings to the values the service runs with`);
+      if (!Object.entries(s.when as Dict).every(([k, v]) => String(ctx.settings?.[k] ?? "") === v)) continue;
+    }
     const key = svc.startsWith(`${name}-`) ? svc : `${name}-${svc}`;
     const o: Dict = {};
     // Image: by digest, or built from a folder inside the module (local sources only).
@@ -208,6 +217,19 @@ export function generateCompose(name: string, def: Dict, ctx: { root: string; lo
     if (s.ui_port != null) {
       if (!(Number.isInteger(s.ui_port) && (s.ui_port as number) >= 1024 && (s.ui_port as number) < 65536) || s.port == null) fail(`${at("ui_port")} is a host port (1024-65535) for its port`);
       o.ports = [`127.0.0.1:${s.ui_port}:${s.port}`];
+    }
+    // `share: { host, aud?, default_role? }`: people reach the service through the gate at https://<host> as app `<module>`,
+    // like a shared app (scripts/edge.mjs); host comes from a setting only the instance sets, empty: not shared. The service
+    // gets the gate's public keys at /run/secrets/AIDENHQ_IDENTITY_KEYS and AIDENHQ_APP, to verify X-AidenHQ-Identity.
+    if (s.share != null) {
+      const sh = isMap(s.share) ? s.share : fail(`${at("share")} must be a map`);
+      for (const f of Object.keys(sh)) if (!["host", "aud", "default_role"].includes(f)) fail(`${at(`share.${f}`)} is not allowed`);
+      if (s.ui_port == null) fail(`${at("share")}: needs a ui_port (the gate proxies to 127.0.0.1:<ui_port>)`);
+      if (out.shares.length) fail(`${at("share")}: a module shares one service (its app name is the module's)`);
+      out.secrets[IDENTITY_KEYS_SECRET] = { file: "${AIDENHQ_SECRETS_DIR}/identity/keys.json" };
+      o.secrets = [...((o.secrets as unknown[]) ?? []), { source: IDENTITY_KEYS_SECRET, target: "AIDENHQ_IDENTITY_KEYS" }];
+      o.environment = { ...((o.environment as Dict) ?? {}), AIDENHQ_APP: name };
+      if (String(sh.host ?? "")) out.shares.push({ name, port: s.ui_port as number, share: { host: String(sh.host), ...(sh.aud ? { aud: String(sh.aud) } : {}), ...(sh.default_role ? { default_role: String(sh.default_role) } : {}) } });
     }
     if (s.healthcheck != null) {
       const h = isMap(s.healthcheck) ? s.healthcheck : fail(`${at("healthcheck")} must be a map`);

@@ -81,3 +81,13 @@ test("generated services carry the hardened settings, their own network and the 
   assert.equal(g.networks["mod-a"].internal, true);
   assert.equal(g.networks["mod-a-egress"].internal, undefined);
 });
+
+test("a service runs only while its `when` settings hold; a shared one is the gate's host and verifies the gate's identity", () => {
+  const def = svc({ when: { acme_mode: "self-host" }, port: 3000, ui_port: 3141, share: { host: "docs.example.com", aud: "" } });
+  assert.deepEqual(gen("a", def, { settings: { acme_mode: "connect" } }).services, {});
+  const g = gen("a", def, { settings: { acme_mode: "self-host" } });
+  assert.deepEqual(g.shares, [{ name: "a", port: 3141, share: { host: "docs.example.com" } }]);
+  assert.deepEqual([g.services["a-srv"].secrets, g.services["a-srv"].environment.AIDENHQ_APP, g.secrets.aidenhq_identity_keys.file], [[{ source: "aidenhq_identity_keys", target: "AIDENHQ_IDENTITY_KEYS" }], "a", "${AIDENHQ_SECRETS_DIR}/identity/keys.json"]);
+  assert.deepEqual(gen("a", svc({ port: 3000, ui_port: 3141, share: { host: "" } })).shares, [], "no host: not shared");
+  assert.throws(() => gen("a", svc({ port: 3000, share: { host: "docs.example.com" } })), /needs a ui_port/);
+});

@@ -613,6 +613,7 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
   const writes = {};
   const checks = {};
   const checkJobTable = {};
+  const serviceShares = []; // module services people reach through the gate (services.run.<svc>.share)
 
   for (const name of enabled) {
     const { root } = all.get(name);
@@ -683,7 +684,8 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
     }
     // Its compose services, generated from `services:` (no module compose); settings substituted as compose text (no $).
     const raw = all.get(name).def;
-    const gen = generateCompose(name, { ...def, services: substitute(raw.services, settings, true), board_env: substitute(raw.board_env, settings, true) }, { root, local: true, rootServices: Object.keys(base.services ?? {}), rootNetworks: Object.keys(base.networks ?? {}), rootSecrets: Object.keys(base.secrets ?? {}), legacy: legacyOf(name), workDir });
+    const gen = generateCompose(name, { ...def, services: substitute(raw.services, settings, true), board_env: substitute(raw.board_env, settings, true) }, { root, local: true, rootServices: Object.keys(base.services ?? {}), rootNetworks: Object.keys(base.networks ?? {}), rootSecrets: Object.keys(base.secrets ?? {}), legacy: legacyOf(name), workDir, settings });
+    serviceShares.push(...gen.shares);
     for (const [k, s] of Object.entries(gen.services)) {
       if (k in (base.services ?? {})) fail(`module ${name}: its service ${k} has a root service's name`);
       put(compose.services, k, s, "compose service");
@@ -712,6 +714,8 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
   for (const [k, v] of Object.entries(serviceModule)) {
     for (const j of String(compose.services[k].labels?.["aidenhq.join"] ?? "").split(",").filter(Boolean)) {
       if (networkModule[`mod-${j}`] !== j) fail(`module ${v.module}: ${k} joins ${j}, which defines no network of its own`);
+      // A shared service is reached only through the gate, as a shared app is (no other app may join a shared app's network).
+      if (serviceShares.some((sh) => sh.name === j)) fail(`module ${v.module}: ${k} joins ${j}, whose service is shared through the gate: shared services are reached only through the gate`);
     }
   }
   linkPairServices(points.board?.setup_flows ?? [], compose, serviceModule, networkModule);
@@ -725,7 +729,9 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
 
   // Shared access: the gate and cloudflared when the instance sets `edge`, else the gate's door (scripts/edge.mjs).
   // Without `edge`, a door on exposure local or public (docs/design/app-doors.md): `door` is the host's public IP and admin URL.
-  const edge = edgeConfig(settings, instanceAppDefs, apps, door);
+  // A shared module service is a shared app to the gate (its host, the module's name, its ui_port).
+  for (const sh of serviceShares) if ([...instanceApps, ...apps.map((a) => a.name)].includes(sh.name)) fail(`module ${sh.name} shares a service, but an app is already named ${sh.name}`);
+  const edge = edgeConfig(settings, [...instanceAppDefs, ...serviceShares], apps, door);
   if (edge) {
     for (const [k, svc] of Object.entries(edge.compose.services)) mergeService(compose.services, k, svc);
     Object.assign(compose.secrets, edge.compose.secrets);
