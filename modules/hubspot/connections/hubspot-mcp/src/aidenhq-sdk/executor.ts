@@ -18,7 +18,7 @@ export interface PlanResult {
   /** What the AI reviewer reads beside the card (reviewer@1): the changed files at the reviewed head (review-files.mjs fileContext), a PR's Evidence section. */
   review?: ReviewContext;
 }
-export type ReviewContext = { files?: { text: string; leftOut: string[]; oversized: string[] }; evidence?: string };
+export type ReviewContext = { files?: { text: string; leftOut: string[]; oversized: string[] }; evidence?: string; sources?: { where: string; records: Record<string, unknown>[] } };
 export interface ExecuteRequest { id: string; kind: string; args: any; digest: string; idempotency_key: string }
 export interface Executor {
   plan(req: PlanRequest): Promise<PlanResult>;

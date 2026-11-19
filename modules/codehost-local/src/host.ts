@@ -15,6 +15,7 @@ import { join } from "node:path";
 import { planParts, plan as planRules } from "../../github/service/src/plan.mjs";
 import { fileContext } from "../../github/service/src/review-files.mjs";
 import { evidenceOf } from "../../github/service/src/evidence.mjs";
+import { SOURCE_EXCEPTIONS_FILE, readCardSourceExceptions } from "../../github/service/src/sources.mjs";
 import { DEFAULT_CHURN_EXCLUDE, churnFromGit } from "../../../kernel/sdk/src/churn.ts";
 import type { FactIn } from "../../../kernel/sdk/src/kernel-client.ts";
 import { IDENTITY, bareOf, fail, git, ingest } from "./git.ts";
@@ -158,9 +159,11 @@ export function localHost({ root, sources = {}, tasksDir, scratchDir, instanceRe
   const base = (requester?: { roles?: string[] }) => ({ agentsOrgs: [LOCAL_ORG], allowedOrgs: [LOCAL_ORG], instanceRepo, productRepo, requester: { platform: (requester?.roles ?? []).includes("platform-engineer") } });
 
   /** The verified state plan.mjs tiers a request on, and the card's diff: read from the bare repos and the workspace, never the args. */
-  async function stateFor(action: string, a: any, requester?: { roles?: string[] }): Promise<{ state: any; target: string; sentence: string; diff: string; reads?: { name: string; read: () => Promise<string> }[]; evidence?: string }> {
+  async function stateFor(action: string, a: any, requester?: { roles?: string[] }): Promise<{ state: any; target: string; sentence: string; diff: string; reads?: { name: string; read: () => Promise<string> }[]; evidence?: string; bases?: { repo: string; base: string; read: (path: string) => Promise<string> }[] }> {
     // What the reviewer reads beside the diff: each changed file at the reviewed head, and the change's Evidence section.
     const reads: { name: string; read: () => Promise<string> }[] = [];
+    // The bases the change targets (the repo's default branch here), each with a way to read a file there.
+    const bases: { repo: string; base: string; read: (path: string) => Promise<string> }[] = [];
     if (action === "create_repo") return { state: { ...base(requester), repo: String(a.repo) }, target: String(a.repo), sentence: `Create the repository ${a.repo} on this server.`, diff: "" };
     if (action === "merge" || action === "close") {
       const prs = [];
@@ -174,11 +177,12 @@ export function localHost({ root, sources = {}, tasksDir, scratchDir, instanceRe
           diff += await diffText(p.repo, c.base || "4b825dc642cb6eb9a060e54bf8d69288fbee4904", c.head);
           for (const f of c.files) reads.push({ name: `${p.repo} ${f}`, read: () => git(["--git-dir", bare(p.repo), "show", `${c.head}:${f}`], { raw: true }) });
           evidence.push(`### ${changeUrl(p.repo, c.n)}\n${evidenceOf(c.meta?.body)}`);
+          bases.push({ repo: p.repo, base: c.main ? await defaultBranch(p.repo) : "", read: (path) => g(p.repo, ["show", `${c.main}:${path}`]) });
         }
         prs.push({ repo: p.repo, number: c.n, head: c.head, base: c.base, headMatches: !p.head || p.head === c.head, files: c.files, ownHead: true, dependabot: false, checks: action === "merge" ? (await checks(p.repo, c.head, c.base, true)).map(({ ok, pending }) => ({ ok, pending })) : [] });
       }
       const urls = prs.map((p) => changeUrl(p.repo, p.number)).join(", ");
-      return { state: { ...base(requester), prs }, target: urls, sentence: `${action === "merge" ? "Merge" : "Close"} ${urls}${action === "merge" ? " at its approved head, once its checks are green" : ""}.`, diff, reads, ...(action === "merge" ? { evidence: evidence.join("\n\n") } : {}) };
+      return { state: { ...base(requester), prs }, target: urls, sentence: `${action === "merge" ? "Merge" : "Close"} ${urls}${action === "merge" ? " at its approved head, once its checks are green" : ""}.`, diff, reads, bases, ...(action === "merge" ? { evidence: evidence.join("\n\n") } : {}) };
     }
     const branches = [];
     let diff = "";
@@ -200,6 +204,7 @@ export function localHost({ root, sources = {}, tasksDir, scratchDir, instanceRe
         const mb = main ? await p(["merge-base", main, ref]).catch(() => "") : "";
         const files = (await p(["diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--name-only", "-z", mb || "4b825dc642cb6eb9a060e54bf8d69288fbee4904", b.sha])).split("\0").filter(Boolean);
         diff += await diffText(b.repo, mb || "4b825dc642cb6eb9a060e54bf8d69288fbee4904", b.sha, dir);
+        bases.push({ repo: b.repo, base: main ? def : "", read: (path) => g(b.repo, ["show", `${main}:${path}`]) });
         // Read now: the throwaway repo goes below. A file past 300 is never read (fileContext names it).
         for (const f of files) {
           const text = reads.length < 300 ? await p(["show", `${b.sha}:${f}`]).catch(() => undefined) : undefined;
@@ -211,7 +216,7 @@ export function localHost({ root, sources = {}, tasksDir, scratchDir, instanceRe
       }
     }
     const names = branches.map((b) => `${b.repo} \`${b.branch}\``).join(", ");
-    return { state: { ...base(requester), workspace: a.workspace, branches }, target: names, sentence: `${action === "pr" ? "Publish and open a change request for" : "Push"} ${names}.`, diff, reads, ...(action === "pr" && a.text ? { evidence: evidenceOf(a.text.body) } : {}) };
+    return { state: { ...base(requester), workspace: a.workspace, branches }, target: names, sentence: `${action === "pr" ? "Publish and open a change request for" : "Push"} ${names}.`, diff, reads, bases, ...(action === "pr" && a.text ? { evidence: evidenceOf(a.text.body) } : {}) };
   }
 
   /** Waits until the change's checks are all green (""), or one is red or they don't finish in time (why, with its summary). */
@@ -232,10 +237,12 @@ export function localHost({ root, sources = {}, tasksDir, scratchDir, instanceRe
       // plan.mjs's rules, as codehost-github's: the bare action, so it reads the same parts.
       const planned = planRules({ kind: action, args: req.args }, s.state, { target: s.target, sentence: s.sentence, diff: s.diff });
       // The reviewer's context goes with the filing only, as codehost-github's (the runner's readFiles: past 300 files not read).
-      if (req.revalidate || (!s.reads?.length && s.evidence === undefined)) return planned;
+      if (req.revalidate) return planned;
+      const sources = await readCardSourceExceptions(s.bases ?? [], (repo: string, base: string) => s.bases!.find((b) => b.repo === repo && b.base === base)!.read(SOURCE_EXCEPTIONS_FILE));
+      if (!s.reads?.length && s.evidence === undefined && !sources) return planned;
       const files = [];
       for (const [i, f] of (s.reads ?? []).entries()) files.push({ name: f.name, text: i < 300 ? await f.read().catch(() => undefined) : null });
-      return { ...planned, review: { ...(files.length ? { files: fileContext(files) } : {}), ...(s.evidence !== undefined ? { evidence: s.evidence } : {}) } };
+      return { ...planned, review: { ...(files.length ? { files: fileContext(files) } : {}), ...(s.evidence !== undefined ? { evidence: s.evidence } : {}), ...(sources ? { sources } : {}) } };
     },
     async execute(rec: { kind: string; args: any }) {
       const a = rec.args ?? {}, action = rec.kind.replace(/^codehost-local\./, "");

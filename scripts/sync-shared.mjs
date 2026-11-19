@@ -103,7 +103,7 @@ export function sharedCopies(root = repo) {
   "services/shared/reason-codes.ts": ["services/board/src/reason-codes.ts"],
   "services/shared/url-setting.ts": ["services/board/src/url-setting.ts"],
   // The supply-chain checks, version picker and image scan, for app repos (the app CI template is copied into each as it is).
-  "scripts/supply-chain/best-version.mjs": ["modules/ci/template/.github/supply-chain/best-version.mjs", "modules/engineering/skills/supply-chain/best-version.mjs"],
+  "scripts/supply-chain/best-version.mjs": ["modules/ci/template/.github/supply-chain/best-version.mjs", "modules/engineering/skills/supply-chain/best-version.mjs", "modules/github/service/src/best-version.mjs"],
   "scripts/supply-chain/pins.mjs": ["modules/ci/template/.github/supply-chain/pins.mjs"],
   "scripts/supply-chain/npm-age.mjs": ["modules/ci/template/.github/supply-chain/npm-age.mjs"],
   "scripts/supply-chain/image-scan.mjs": ["modules/ci/template/.github/supply-chain/image-scan.mjs"],
