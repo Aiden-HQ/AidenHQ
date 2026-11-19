@@ -167,11 +167,13 @@ test("a running container of a service the config dropped is stopped and removed
     containers: {
       board1: { name: "/aidenhq-board-1", running: "true", labels: "False board" },
       gh1: { name: "/aidenhq-github-mcp-1", running: "true", labels: "False github-mcp" },
+      // Stopped earlier in the apply (a replaced module's data move): still removed, never left Exited.
+      slack1: { name: "/aidenhq-channel-slack-slack-1", running: "false", labels: "False channel-slack-slack" },
       [ciRunnerId]: { name: `/${ciRunner}`, running: "true", labels: "True ci-runner" },
     },
   }));
   assert.equal(r.status, 0, r.out);
-  assert.deepEqual(removals(r), ["docker rm -f gh1"]);
+  assert.deepEqual(removals(r), ["docker rm -f gh1", "docker rm -f slack1"]);
   assert.match(r.out, /compose: github-mcp removed \(no longer in the config\)/);
 });
 
