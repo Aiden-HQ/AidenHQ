@@ -18,7 +18,6 @@ two critical ones also tell the owner.
 | Board `/internal/metrics` | board's internal listener | `board:3122`, monitoring token only |
 | Fleet Steward service `/alerts`, `/metrics` | `aidenhq-mod-fleet-steward`, shared only with Alertmanager and Prometheus | `fleet-steward:8097`, the monitoring token only (the service asks the kernel's `/v1/whoami`: module `monitoring`) |
 | Gateway metrics | `data/modules/monitoring/textfile/gateway.prom`, every 30 s | node-exporter's textfile collector |
-| Runner metrics | `data/modules/monitoring/textfile/runner.prom`, every 30 s | the same |
 | Unit and container states | `ops/host-metrics.sh` (user timer `aidenhq-host-metrics`, every 30 s) | the same |
 
 Networks (generated from `services:` in `modules/monitoring/module.yaml`): `aidenhq-mod-monitoring` (the module's services),
