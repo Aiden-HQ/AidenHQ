@@ -170,21 +170,16 @@ test("the run check flags three same-category failures on one task in half an ho
   assert.ok(found.includes("a1:repeat:wor-t1") && !found.some((k) => k.includes("t2")), found.join());
 });
 
-test("a task in review with no job, card or open PR for 6h is unclosed; an open PR or card, a live job, grading and bake-off tasks are not", async () => {
-  const review = (id, h, o = {}) => task(id, { status: "in_review", updatedAt: ago(h), ...o });
-  const w = world({
-    tasks: { a: review("a", 8), b: review("b", 8), c: review("c", 8), d: review("d", 8), e: review("e", 2), f: review("f", 8, { identifier: "BAK-8" }), g: review("g", 8, { labels: [{ name: "grading" }] }) },
-    inReview: ["a", "b", "c", "d", "e", "f", "g"],
-    work: {
-      b: { busy: false, records: [{ state: "review", args: null }] },
-      c: { busy: false, records: [{ state: "done", args: { prs: [{ repo: "acme/app", number: 7 }] } }] },
-      d: { busy: true, records: [] },
-      a: { busy: false, records: [{ state: "done", outcome_text: "merged https://github.com/acme/app/pull/3" }] },
-    },
-    prs: [{ repo: "acme/app", number: 7, opened_at: ago(9), draft: false }],
-  });
-  const found = (await detect(w).grade()).map((i) => i.key);
-  assert.deepEqual(found, ["a:unclosed"]);
+test("an orphaned item over 2h trips the stuck rule; a slower stage only logs in observe mode", async () => {
+  const idle = [{ task: "a", identifier: "WOR-A", since: minsAgo(180), reason: "no_job" }, { task: "b", identifier: "WOR-B", since: minsAgo(30), reason: "no_job" }, { task: "c", identifier: "BAK-3", since: minsAgo(300), reason: "no_job" }];
+  const stage = (p) => ({ name: "review", n: 12, work_p75: p, wait_p75: 0, work_p50: p / 2, waits: {} });
+  const logged = [];
+  const lastWeek = encodeURIComponent(new Date(NOW - 7 * 86_400_000).toISOString());
+  const kernel = { read: async () => [], call: async (_m, p) => (p.startsWith("/v1/flow?idle=1") ? { items: idle } : { stages: [stage(p.endsWith(`to=${lastWeek}`) ? 100 : 200)] }) };
+  const c = checks({ kernel, apps: async () => [], alerts: async () => [], openKeys: () => [], now: () => NOW, log: (m, f) => logged.push([m, f]) });
+  assert.deepEqual((await c.stuck()).map((i) => i.key), ["a"]);
+  assert.deepEqual(await c.flow(), [], "observe mode files nothing");
+  assert.deepEqual(logged, [["flow.would_file", { stage: "review" }]]);
 });
 
 test("the same failure on 3 tasks in 30 minutes is one component incident and one owner notice, and the per-task incidents it explains are not raised; other errors stay separate; it recovers", async () => {
@@ -281,7 +276,7 @@ test("an alert's label text is fenced in its incident, its closing marker neutra
 });
 
 test("the connection's tools check the caller's signed roles", async () => {
-  const mcp = createMcp(fleetTools({ detector: () => ({ open: [] }), due: async () => ({ due: [] }), evidence: async () => ({}), generations: async () => ({ pin: "abc" }), followups: async () => ({ followups: [] }), snooze: (t, d) => ({ task: t, days: d }), routing: async (op, _a, assertion) => ({ op, assertion }) }));
+  const mcp = createMcp(fleetTools({ flow: async () => ({}), detector: () => ({ open: [] }), due: async () => ({ due: [] }), evidence: async () => ({}), generations: async () => ({ pin: "abc" }), followups: async () => ({ followups: [] }), snooze: (t, d) => ({ task: t, days: d }), routing: async (op, _a, assertion) => ({ op, assertion }) }));
   const call = (name, roles) => mcp({ id: 1, method: "tools/call", params: { name, arguments: {} } }, async () => ({ agent: "a", key: "k", name: "k", roles, tool: name, call: "c", kind: "run", assertion: "jwt" }));
   assert.match((await call("coach_due", ["fleet-read"])).result.content[0].text, /Refused: coach_due is for an agent with the fleet-audit role/);
   assert.deepEqual(JSON.parse((await call("coach_due", ["fleet-audit"])).result.content[0].text), { due: [] });

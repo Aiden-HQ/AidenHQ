@@ -60,7 +60,7 @@ async function fileCheck(body: { incidents: { key: string; critical?: boolean }[
 }
 
 const coach = coachReads({ kernel, kv, apps });
-const all = checks({ kernel, apps, alerts: () => alertIncidents(kv, notify), openKeys: () => Object.keys(detectorState(kv).open), notify, gradeFailures });
+const all = checks({ kernel, apps, alerts: () => alertIncidents(kv, notify), openKeys: () => Object.keys(detectorState(kv).open), notify, gradeFailures, log });
 let busy = false;
 const run = async () => {
   if (busy) return;
@@ -90,6 +90,10 @@ const mcp = createMcp(fleetTools({
   evidence: (caller, key) => coach.evidence(caller, key),
   generations: () => kernel.call("GET", "/v1/work?generations=1"),
   followups: () => staleFollowups({ kernel, kv }),
+  flow: ({ since, by, task }) => {
+    const q = new URLSearchParams(task ? { task } : { ...(since ? { since } : {}), ...(by ? { by } : {}) });
+    return kernel.call("GET", `/v1/flow?${q}`);
+  },
   snooze: (task, days) => snoozeFollowup(kv, task, days),
   // The kernel's answer whole: a refusal says why (the Steward reads it and changes the request).
   routing: async (op, args, assertion) => { const r = await kernel.raw("POST", `/v1/routing/${op}`, args, { "x-aidenhq-caller": assertion }); if (r.status >= 300) throw new Error(`Refused: ${String(r.json?.error?.message ?? r.status)}`); return r.json; },
