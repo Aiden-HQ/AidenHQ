@@ -57,7 +57,7 @@ async function setup(t, { routes = () => undefined } = {}) {
   const handle = createService({
     key: "ch-key", kernelUrl: kernel.url, cacheDir: join(root, "cache"), tasksDir: join(root, "tasks"), app, gh,
     remoteUrl: (slug) => join(root, "github", `${slug}.git`), agentsOrg: "acme-agents", instanceRepo: "acme-agents/aidenhq-instance",
-    productRepo: "acme/aidenhq",
+    productRepo: "acme/aidenhq", allowedOrgs: ["acme-agents", "partner"],
   });
   const svc = await listen((req, res) => void handle(req, res));
   t.after(() => { kernel.s.close(); svc.s.close(); });
@@ -68,6 +68,17 @@ async function setup(t, { routes = () => undefined } = {}) {
   const raw = (path, body, key = "ch-key") => fetch(`${svc.url}${path}`, { method: "POST", headers: { authorization: `Bearer ${key}` }, body: JSON.stringify(body) });
   return { root, ws, marker, origin, sha, outcomes, minted, ghCalls, call, raw };
 }
+
+test("create_repo is Tier 0 in an allowed org besides the agents org; a core repo's name, and an org nobody allowed, are refused", async (t) => {
+  const { call } = await setup(t);
+  const plan = (repo) => call("/aidenhq/v1/executor/plan", { kind: "codehost-github.create_repo", args: { repo }, requester: { kind: "job", roles: [] }, task: "t1" });
+  const ok = await plan("partner/new-app");
+  assert.equal(ok.status, 200, JSON.stringify(ok.json));
+  assert.equal(ok.json.raise, undefined);
+  const own = await plan("acme-agents/aidenhq-instance");
+  assert.match(own.json.error, /product or instance repo/);
+  assert.match((await plan("stranger/new-app")).json.error, /outside the orgs/);
+});
 
 test("a job's branch lands from its workspace; no hook, filter or fsmonitor of the workspace runs", async (t) => {
   const { root, marker, origin, sha, outcomes, minted, call } = await setup(t);

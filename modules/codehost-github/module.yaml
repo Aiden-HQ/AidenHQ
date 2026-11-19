@@ -3,7 +3,7 @@ description: "GitHub as the code host: task workspaces and the cache clones, rep
 license: MIT
 # The only holder of the GitHub App key (vault github-app/) and the owner of all git state. Its write kinds
 # codehost-github.{push,pr,merge,create_repo,deploy_key} go through the kernel's /v1/writes, with service/src/plan.mjs as their
-# executor@1 plan. Outside the agents org it is PR-only (no merge, no creation, no workflows), except product-repo merges the
+# executor@1 plan. Outside the agents org it is PR-only (no merge, no workflows; create_repo is Tier 0 in any github_orgs org it is installed on), except product-repo merges the
 # reviewer or the owner approved.
 privileged: [ git-credential ]
 # The merge queue, its gate rules and the reviewer-eval gate are the gate's own core: read by the reviewer and a second one on
@@ -15,9 +15,10 @@ paths:
 # The code host role (docs/design/codehost-local.md §2): it hosts every org codehost-local doesn't own.
 provides: [ codehost ]
 settings:
-  # The agents org (where create_repo creates repos by default; any org the App is installed on and the runner's allowed_orgs lists works too): aidenhq-<instance_name> unless this names another.
+  # The agents org (where create_repo creates repos by default; any org in github_orgs that the App is installed on works too): aidenhq-<instance_name> unless this names another.
   github_agents_org:
-  # GitHub orgs/users (besides the agents org) whose repos the apps platform may build trusted apps from.
+  # GitHub orgs/users (besides the agents org) the owner allows: the apps platform builds trusted apps from their repos, and create_repo
+  # creates repos there at Tier 0 (the App must be installed on the org, else it fails loudly; a stranger's install of the public App changes nothing).
   github_orgs:
     default: []
 # The owner's GitHub bot account (spec §6.9, decision 25): a fine-grained token that forks our repos and files issues and pull
@@ -75,6 +76,7 @@ services:
         CODEHOST_KEY_FILE: ${secrets.codehost_github_token}
         CACHE_DIR: /cache
         AGENTS_ORG: "${settings.agents_org}" # github_agents_org, else aidenhq-<instance_name> (compile derives it)
+        ALLOWED_ORGS: "${settings.github_sync_orgs}" # the orgs create_repo may create in: github_orgs plus the agents org (compile derives it)
         GITHUB_APP_DIR: /github-app
         TASKS_DIR: /tasks
         PRODUCT_REPO: "${AIDENHQ_PRODUCT_REPO:-}"

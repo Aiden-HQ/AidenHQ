@@ -207,7 +207,7 @@ the board key (it writes as the owner). Agents never claim something is done unt
   token, snapshot or clone through the kernel's `POST /v1/codehost/:op`, under a literal `codehost:` grant in its
   `module.yaml`. The host's apply may mint a read-only instance-repo token: the instance checkout pulls with
   `ops/git-credential-app.mjs` as its credential helper (`credential.useHttpPath true`), which answers for
-  `AIDENHQ_INSTANCE_REPO` alone with exactly `contents: read`. Instance pushes are codehost writes. Outside the agents org the App is PR-only, except that it merges product-repo and official-modules-repo PRs the reviewer or the owner approved.
+  `AIDENHQ_INSTANCE_REPO` alone with exactly `contents: read`. Instance pushes are codehost writes. Outside the agents org the App is PR-only (it creates repositories, Tier 0, in any `github_orgs` org it is installed on), except that it merges product-repo and official-modules-repo PRs the reviewer or the owner approved.
 - `REGISTRY_PUSH_URL` defaults to `https://github.com/<agents org>/aidenhq-instance.git` when the App is configured,
   else the instance checkout's `origin` (deploy key).
 - An app with `database: warehouse` gets its own warehouse role and schema `app_<name>`; apps-mcp writes its

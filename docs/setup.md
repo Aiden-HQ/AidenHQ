@@ -342,7 +342,7 @@ act on GitHub as an App owned by an **agents org**, never as you.
 5. `docker compose restart codehost-github`.
 
 To let it open PRs on repos in another org (say your company's), an owner there installs the same App on selected
-repositories; then add that org to `github_orgs` in `instance.yaml`.
+repositories; then add that org to `github_orgs` in `instance.yaml`. Agents may then create repositories there too (no approval); an org without the App fails loudly, and a stranger's install of the public App changes nothing.
 
 **Check:** `ls ~/.config/aidenhq/github-app/` prints `app_id  key.pem`, and the org's Settings, GitHub Apps page lists
 the App as installed.
@@ -497,7 +497,7 @@ once the key is there, in `tailscale` exposure).
 
 ## GitHub App for the code host
 
-See step 8. The code host module updates repositories in the agents organization (and creates one only on an approved `aidenhq create-repo` card) (`github_agents_org`, or
+See step 8. The code host module updates repositories in the agents organization (and `aidenhq create-repo` creates repositories there, and in any `github_orgs` org the App is installed on, at Tier 0) (`github_agents_org`, or
 `aidenhq-<instance_name>`) as a GitHub App, not as a person. `ops/github-app-setup.mjs` needs `AIDENHQ_SETUP_HOST`
 (the address your browser opens; it serves a one-time page on port 8765). Other organizations install the same App
 on selected repositories; list them in `github_orgs` in
