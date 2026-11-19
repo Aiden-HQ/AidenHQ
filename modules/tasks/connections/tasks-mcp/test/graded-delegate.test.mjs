@@ -201,3 +201,41 @@ test("a brief with no fallback branch keeps its pr deliverable and rubric", asyn
     assert.match(ok.created[0].description, /Graded before done \(pr: Aiden-HQ\/AidenHQ\): the standard pr criteria\./);
   }
 });
+
+test("a graded task starts only once its rubric is filed; a failed filing leaves it parked and the retried delegation starts it", async () => {
+  const issues = [], filed = [], patches = [];
+  let gradingUp = false;
+  const handler = (req, res) => {
+    let body = "";
+    req.on("data", (d) => (body += d));
+    req.on("end", () => {
+      const url = req.url ?? "";
+      const send = (x, code = 200) => ((res.statusCode = code), res.setHeader("content-type", "application/json"), res.end(JSON.stringify(x)));
+      const json = body ? JSON.parse(body) : {};
+      if (url === "/grades") return gradingUp ? (filed.push(json.issue), send({ created: true, state: "open" })) : send({ error: "grading is restarting" }, 503);
+      if (url === "/api/agents/me") return send({ id: "cos", name: "Aiden" });
+      if (url.endsWith("/agents")) return send([{ id: "eng", name: "Kai", metadata: { setupKey: "aidenhq:engineer-openrouter", runnerEngine: true }, status: "idle" }]);
+      if (req.method === "POST" && url.endsWith("/issues")) { const i = { ...json, id: "new", identifier: "WOR-9", createdByAgentId: "cos" }; issues.push(i); return send(i); }
+      if (req.method === "GET" && /\/companies\/[^/]+\/issues\?/.test(url)) return send(issues);
+      if (req.method === "PATCH" && url === "/api/issues/new") { patches.push(json); Object.assign(issues[0], json); return send(issues[0]); }
+      if (url.startsWith("/api/issues/")) return send({ id: "cur", identifier: "WOR-5", title: "t", status: "in_progress", assigneeAgentId: "cos", parentId: null });
+      send([]);
+    });
+  };
+  const agents = { cos: { key: "chief-of-staff", roles: [] }, eng: { key: "engineer-openrouter", roles: [], graded: true } };
+  const b = bridge({ handler, board: handler, agents, agent: "cos", task: "cur" });
+  const args = { ...ask, marker: "vat", deliverable: { kind: "pr", ref: "acme/app" }, rubric };
+
+  const down = await b.call("task_delegate", args);
+  assert.equal(down.result?.isError, true);
+  assert.match(down.result.content[0].text, /WOR-9 is filed but not started: its rubric couldn't be filed/);
+  assert.equal(issues[0].status, "backlog", "parked: nothing dispatches it ungraded");
+  assert.deepEqual(patches, []);
+
+  gradingUp = true;
+  const again = await b.call("task_delegate", args);
+  assert.equal(again.result?.isError, undefined, again.result?.content?.[0]?.text);
+  assert.deepEqual(filed, ["new"]);
+  assert.deepEqual(patches, [{ status: "todo" }], "started once its rubric is on file");
+  assert.equal(issues.length, 1, "the same task, not a second one");
+});
