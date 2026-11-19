@@ -19,7 +19,7 @@ in [aidenhq-modules](https://github.com/Aiden-HQ/aidenhq-modules), which takes n
 | `ai-reviewer`, `grading`, `platform` | AI review of writes, graded "done", and the product's own change gate. |
 | `engine-codex` | The coding-job engine: Codex on OpenRouter models, in an agent computer. |
 | `codehost-github`, `github`, `ci` | GitHub as code host, issue and PR tools, self-hosted CI runners. |
-| `channel-slack`, `channel-telegram`, `channel-operator`, `chat-lane` | Owner channels and the fast chat lane. |
+| `channel-telegram`, `channel-operator`, `chat-lane` | Owner channels and the fast chat lane (`slack` is an owner channel too, in its advanced part). |
 | `models-openrouter`, `model-tools` | Allowed OpenRouter models and prices; advisor and fan-out tools. |
 | `google`, `slack`, `glean`, `jira`, `primer`, `meetings`, `memory`, `open-loops` | Source connections and the agents built on them. |
 | `clickhouse`, `grafana`, `monitoring`, `warehouse` | Data and observability. |

@@ -3,7 +3,7 @@
 
 /** User token scopes the owner may grant on Connect. The reads are pre-selected; the writes let agents act as the owner. */
 export const READ_SCOPES = [
-  "search:read.public", "search:read.private", "search:read.im", "search:read.mpim", "search:read.users", "search:read.files", "search:read",
+  "search:read.public", "search:read.private", "search:read.im", "search:read.mpim", "search:read.users", "search:read.files",
   "channels:history", "channels:read", "groups:history", "groups:read", "im:history", "im:read", "mpim:history", "mpim:read",
   "users:read", "users:read.email", "users.profile:read", "usergroups:read", "emoji:read", "files:read", "canvases:read", "lists:read", "reactions:read",
 ];

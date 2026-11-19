@@ -65,7 +65,7 @@ test("a credential goes only to the private owner chat, never to the router; kep
   const { createResolver } = await import("../src/net.ts");
   const modules = { modules: {
     "channel-telegram": { privileged: ["speaks-as-owner"], channel: { transport: `${tg.url}/transport/send`, credentials: true }, token: "tg" },
-    "channel-slack": { privileged: ["speaks-as-owner"], channel: { transport: `${slack.url}/transport/send` }, token: "sl" },
+    "slack": { privileged: ["speaks-as-owner"], channel: { transport: `${slack.url}/transport/send` }, token: "sl" },
   } };
   const n = createNotify({ db: new DatabaseSync(":memory:"), secret: () => "key", resolver: createResolver(), modules: () => modules, testHosts: true });
   n.secret("Board account reset for sam@example.com: https://example.com/r/abc");

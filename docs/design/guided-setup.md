@@ -215,7 +215,7 @@ elsewhere first (Google's OAuth client, the Slack app, HubSpot's MCP connector, 
 
 **Every module that needs one gets a flow in this work** (since narrowed by the rule above). The candidates, from the modules repo's credentials and
 `connections.<x>.setup` texts:
-- **Channels:** `channel-telegram`, `channel-slack`.
+- **Channels:** `channel-telegram`, `slack` (its advanced part; was `channel-slack`).
 - **Connections:** `google` (the guided own-client flow), `slack` (read, signed in as the owner), `github`, `glean`,
   `jira` (Atlassian sign-in), `primer`, `meetings`, `grafana`, `clickhouse`.
 - **Code and engines:** `codehost-github` (the GitHub App and the bot token: "connect GitHub"), `engine-claude` (a
@@ -258,7 +258,7 @@ The flow is done when paired.
      on your phone".
    - New work: the bot gets a `/start <code>` pairing handler. The paired chat id is the Telegram service's own state
      (its data dir), not `.env`, the vault or a setting, so pairing needs no apply.
-3. **Aiden in Slack** (`channel-slack`, `secret` then `pair`): talk to Aiden and get approvals in Slack.
+3. **Aiden in Slack** (`slack`, advanced part, was `channel-slack`; `secret` then `pair`): talk to Aiden and get approvals in Slack.
    - A "Create the Slack app" link pre-fills the manifest (Slack's `?new_app=1&manifest_json=` URL).
    - One line says "a workspace admin may need to approve it".
    - Paste two tokens (app-level `xapp-` and bot `xoxb-`), then Save.
@@ -272,7 +272,7 @@ Every step has **Later** (skip). The last screen says what is connected and has 
 wizard counts as skipping the rest.
 
 **Modules the steps need.**
-- `channel-slack` joins the default bundle. It is idle until its tokens are saved, as `channel-telegram` already is;
+- `slack` (with the former `channel-slack` as its advanced part) is in the default bundle. It is idle until its tokens are saved, as `channel-telegram` already is;
   checked: with no tokens it starts and only reports Slack as not set up.
 - `google` joins the bundle too, idle until the guided setup runs.
 - So no wizard step needs a module-change card first.
@@ -470,7 +470,7 @@ form.
 - Wizard steps are module setup flows (instructions, the existing `setup:` fields, optional Connect or pairing), with
   completion read from real connection status. "Meet Aiden now" is always one click away.
 - The on-server code host builds on the existing local bare repos and `repo_sources`, not a new forge.
-- `channel-slack` and `google` join the default bundle, idle until connected.
+- `slack` (advanced part) and `google` join the default bundle, idle until connected.
 - A secret save recreates only that module's containers, directly from the kernel; no settings-change path.
 - The recovery key is shown on a kernel page, never through the board.
 - Telegram and Slack both pair with a one-time code that only a signed-in admin can mint.

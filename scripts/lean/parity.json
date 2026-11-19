@@ -249,9 +249,9 @@
     "n": 29,
     "workflow": "Slack post to allowed channels",
     "today": [
-      "modules/channel-slack/connections/slack/test/post.test.ts"
+      "modules/slack/connections/slack-live/test/post.test.ts"
     ],
-    "next": "channel-slack.post"
+    "next": "slack.post"
   },
   {
     "n": 30,

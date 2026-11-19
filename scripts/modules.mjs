@@ -79,10 +79,6 @@ const fail = (msg) => { throw new Error(msg); };
  * egress, which can't route to it from an internal network; sources: the warehouse).
  */
 export const LEGACY_LINKS = {
-  // 2f split owner-channel: its root secrets are gone (the kernel posts the owner's words and holds the board key); what is
-  // left sits on the one module that needs it: the src_slack writer's warehouse network and the HMAC-signed triage webhook
-  // into Paperclip (no key), and the board's calls to the fast lane.
-  "channel-slack": { until: "3g", to: ["sources", "paperclip"] },
   "chat-lane": { until: "3a", to: ["board"] },
   // 3h: the board reads grade rows from the grading module (its own key) until the board is a module; apps-mcp's grader reads
   // (role apps.read) until 4c moves apps-mcp into apps-platform (owner-approved via the coordinator, 2026-11-18).
@@ -101,7 +97,9 @@ export const LEGACY_LINKS = {
   clickhouse: { until: "3g", to: ["board"] },
   github: { until: "3g", to: ["board", "sources"] },
   primer: { until: "3g", to: ["board"] },
-  slack: { until: "3g", to: ["board"] },
+  // Slack's advanced part (what channel-slack was): the src_slack writer's warehouse network and the HMAC-signed triage webhook
+  // into Paperclip (no key), beside the sign-in's board link.
+  slack: { until: "3g", to: ["board", "sources", "paperclip"] },
   security: { until: "4c", to: ["paperclip", "sources"] },
 };
 /** Root secrets (the root compose's) a module's services may mount, until the same units. Closed; may only shrink. */
@@ -117,13 +115,12 @@ export const LEGACY_SECRETS = {
 /** Host variables (the host's .env, never instance.yaml: they decide whose words count and where links point). Closed. */
 export const LEGACY_HOST_ENV = {
   "channel-telegram": ["TELEGRAM_OWNER_CHAT_ID", "TELEGRAM_TASK_URL"],
-  "channel-slack": ["OWNER_SLACK_USER_ID", "SLACK_LIVE_IGNORE_CHANNELS", "OWNER_COMMAND_CHANNEL"],
   "chat-lane": ["AIDENHQ_GATEWAY_URL", "TELEGRAM_OWNER_CHAT_ID"],
   google: ["BOARD_LAN_URL", "GOOGLE_CALENDAR_ID", "AIDENHQ_GATEWAY_URL"],
   jira: ["AIDENHQ_GATEWAY_URL"],
   tasks: ["AIDENHQ_GATEWAY_URL"],
   github: ["GITHUB_COMMENT_ORGS"],
-  slack: ["SLACK_CLIENT_ID"],
+  slack: ["SLACK_CLIENT_ID", "OWNER_SLACK_USER_ID", "SLACK_LIVE_IGNORE_CHANNELS", "OWNER_COMMAND_CHANNEL"],
 };
 /** Networks the ops shell makes (fixed bridge, subnet and host rule: ops/units/aidenhq-ci-net.service). */
 export const OPS_NETWORKS = { ci: "aidenhq-ci" };

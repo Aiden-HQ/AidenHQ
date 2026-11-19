@@ -1,8 +1,8 @@
-// channel-slack: the instance's Slack app. The ONE Socket Mode consumer for its app token (two consumers split the events):
+// slack-live: the instance's Slack app. The ONE Socket Mode consumer for its app token (two consumers split the events):
 // live events buffered for triage (slack_pending_events) with a debounced webhook poke, every event teed to src_slack with a
 // gap sync, and the owner's own messages in their command channel sent to the kernel as owner chat. It is a transport of the
 // owner's router (owner-channel): the kernel sends it one owner message at a time as a Slack DM (POST /transport/send,
-// send.ts). slack_post is the write kind channel-slack.post (post.ts, the executor). No control-plane key.
+// send.ts). slack_post is the write kind slack.post (post.ts, the executor). No control-plane key.
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { createServer, type IncomingMessage } from "node:http";
@@ -21,7 +21,7 @@ import { serveExecutor } from "./aidenhq-sdk/executor.js";
 import { SourceStore } from "./source-store.js";
 import { slackTee, startGapSync } from "./sources.js";
 
-const log = pino({ level: process.env.LOG_LEVEL ?? "info", base: { svc: "channel-slack" }, redact: ["authorization", "*.authorization", "token", "*.token"] });
+const log = pino({ level: process.env.LOG_LEVEL ?? "info", base: { svc: "slack-live" }, redact: ["authorization", "*.authorization", "token", "*.token"] });
 const jwks = kernelJwks();
 const kernelUrl = (process.env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130").replace(/\/$/, "");
 // Secrets come from NAME_FILE (a compose secret) or NAME.
@@ -53,9 +53,9 @@ const cfg: SlackConfig = { botToken: env("SLACK_BOT_TOKEN"), ownerId: pairing.ow
 // The kernel's bearer on /transport/send: this module's own token.
 const channelToken = env("CHANNEL_TOKEN");
 const ignored = new Set((process.env.IGNORE_CHANNELS ?? "").split(",").map((s) => s.trim()).filter(Boolean));
-// channel-slack.post's executor (executor@1): the kernel calls it with the service key; execute only for an approved record.
+// slack.post's executor (executor@1): the kernel calls it with the service key; execute only for an approved record.
 const post = poster(store, { botToken: cfg.botToken, allowed: new Set((process.env.SLACK_POST_CHANNELS ?? "").split(",").map((s) => s.trim()).filter(Boolean)) });
-// channel-slack.bind (bind.ts) shares the executor: the kind says which one.
+// slack.bind (bind.ts) shares the executor: the kind says which one.
 const bind = binder(store, { get ownerId() { return cfg.ownerId; }, agents: async () => (await kernelGet("/v1/agents")).agents ?? {} });
 const memory = memoryWriter(store);
 const by = (kind: string) => (kind.endsWith(".bind") ? bind : kind.endsWith(".memory") ? memory : post);
@@ -143,7 +143,7 @@ const http = createServer(async (req, res) => {
     let caller: Awaited<ReturnType<typeof verifyCaller>> | undefined;
     if (msgs.some((m) => m?.method === "tools/call")) {
       try {
-        caller = await verifyCaller(req, jwks, process.env.AIDENHQ_MODULE ?? "channel-slack");
+        caller = await verifyCaller(req, jwks, process.env.AIDENHQ_MODULE ?? "slack");
       } catch (err) {
         const reason = (err as Error).message;
         log.warn({ reason }, "tool call refused");
@@ -165,7 +165,7 @@ const http = createServer(async (req, res) => {
   }
 });
 
-http.listen(port, "0.0.0.0", () => log.info({ port }, "channel-slack listening"));
+http.listen(port, "0.0.0.0", () => log.info({ port }, "slack-live listening"));
 for (const sig of ["SIGTERM", "SIGINT"] as const) process.on(sig, () => http.close(() => process.exit(0)));
 
 // The owner's own messages in their command channel: chat with Aiden, posted by the kernel as the owner, stamped [slack].
@@ -186,7 +186,7 @@ const slackApi = (method: string, body: unknown) => fetch(`https://slack.com/api
 const binding = cfg.botToken ? {
   command: (b: any) => slashCommand(b, { store, ownerId: cfg.ownerId, // read at the call: pairing sets it after start
     file: async (args) => {
-    const res = await fetch(`${kernelUrl}/v1/writes`, { method: "POST", headers: { authorization: `Bearer ${inboundToken}`, "content-type": "application/json" }, body: JSON.stringify({ kind: "channel-slack.bind", args }), signal: AbortSignal.timeout(20_000) });
+    const res = await fetch(`${kernelUrl}/v1/writes`, { method: "POST", headers: { authorization: `Bearer ${inboundToken}`, "content-type": "application/json" }, body: JSON.stringify({ kind: "slack.bind", args }), signal: AbortSignal.timeout(20_000) });
     const r = (await res.json().catch(() => ({}))) as { state?: string; error?: { message?: string } | string };
     if (!res.ok) throw new Error(String(typeof r.error === "object" ? r.error?.message : r.error ?? res.status));
     return { state: String(r.state) };

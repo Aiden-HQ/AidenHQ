@@ -61,8 +61,8 @@ export function buildServer(store: Store, cfg: SlackConfig, caller?: { key: stri
       }),
       annotations: { readOnlyHint: false, openWorldHint: false },
     },
-    // Filed by the kernel as channel-slack.memory and run through the executor (memory.ts) once approved.
-    async () => ({ isError: true, content: [{ type: "text" as const, text: "channel_memory runs only as the kernel's channel-slack.memory record" }] }),
+    // Filed by the kernel as slack.memory and run through the executor (memory.ts) once approved.
+    async () => ({ isError: true, content: [{ type: "text" as const, text: "channel_memory runs only as the kernel's slack.memory record" }] }),
   );
   server.registerTool(
     "slack_post",
@@ -76,9 +76,9 @@ export function buildServer(store: Store, cfg: SlackConfig, caller?: { key: stri
       }),
       annotations: { readOnlyHint: false, openWorldHint: true },
     },
-    // The kernel files every call as channel-slack.post and runs it through the executor (post.ts) once approved: a call
+    // The kernel files every call as slack.post and runs it through the executor (post.ts) once approved: a call
     // that reaches this server directly never posts.
-    async () => ({ isError: true, content: [{ type: "text" as const, text: "slack_post runs only as the kernel's channel-slack.post record" }] }),
+    async () => ({ isError: true, content: [{ type: "text" as const, text: "slack_post runs only as the kernel's slack.post record" }] }),
   );
   return server;
 }

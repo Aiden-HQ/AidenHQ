@@ -1,4 +1,4 @@
-// channel-slack.post: an agent's post is a kernel record; outside the allowed channels it is the owner's; it goes out as the
+// slack.post: an agent's post is a kernel record; outside the allowed channels it is the owner's; it goes out as the
 // labelled AI bot (never as the owner).
 import { afterEach, describe, expect, it } from "vitest";
 import { openStore } from "../src/store.js";
@@ -28,11 +28,11 @@ describe("slack_post", () => {
     fakeSlack();
     const ex = poster(openStore(":memory:"), cfg);
     const requester = { agent: "a1", key: "rk", name: "Roadmap Keeper", roles: [], kind: "run" };
-    const ok = await ex.plan({ kind: "channel-slack.post", args: { channel: "C0123ABC", text: "hi", agent: "Someone Else" }, requester, task: "t" });
+    const ok = await ex.plan({ kind: "slack.post", args: { channel: "C0123ABC", text: "hi", agent: "Someone Else" }, requester, task: "t" });
     expect(ok).toMatchObject({ args: { channel: "C0123ABC", text: "hi", agent: "Roadmap Keeper" } });
     expect(ok.raise).toBeUndefined();
-    expect((await ex.plan({ kind: "channel-slack.post", args: { channel: "C0999XYZ", text: "hi" }, requester, task: "t" })).raise).toMatchObject({ tier: 2 });
-    expect(await ex.execute({ id: "k-0000000000000001", kind: "channel-slack.post", args: ok.args, digest: "d", idempotency_key: "k" })).toMatchObject({ ok: true });
+    expect((await ex.plan({ kind: "slack.post", args: { channel: "C0999XYZ", text: "hi" }, requester, task: "t" })).raise).toMatchObject({ tier: 2 });
+    expect(await ex.execute({ id: "k-0000000000000001", kind: "slack.post", args: ok.args, digest: "d", idempotency_key: "k" })).toMatchObject({ ok: true });
     expect(sent[0]!.body.text).toBe("*Roadmap Keeper* (AI agent)\nhi");
   });
   it("refuses a caller it can't name", async () => {

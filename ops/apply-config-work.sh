@@ -521,6 +521,12 @@ switchOver() {
     stopBoard
     echo "grades: $(node ops/grades-move.mjs "$data") (data/board/board.sqlite -> data/modules/grading/grades/)"
   fi
+  # channel-slack merged into slack (connections build): its listener's data moves once, the old container stopped first so its
+  # SQLite isn't open while the folder moves; compose then starts the listener as slack-live on the moved data.
+  if [ -f ops/slack-live-move.mjs ] && [ -d "$data/modules/channel-slack/slack-live" ]; then
+    docker ps -q --filter label=aidenhq.module=channel-slack | xargs -r docker stop >/dev/null
+    echo "slack-live: $(node ops/slack-live-move.mjs "$data") (data/modules/channel-slack/ -> data/modules/slack/)"
+  fi
   if ! cmp -s ops/units/aidenhq-kernel.service "$kn"; then
     cp ops/units/aidenhq-kernel.service "$kn" && systemctl --user daemon-reload && systemctl --user enable --quiet aidenhq-kernel \
       && systemctl --user restart aidenhq-kernel && echo "kernel unit installed/updated"

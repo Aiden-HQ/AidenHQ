@@ -256,7 +256,7 @@ want(hop.status === 303 && hop.location === "/" && jar.has("aidenhq-board"), "th
 const wizard = JSON.parse(readFileSync(boardPoints, "utf8")).setup_flows.filter((f) => f.wizard).sort((a, b) => a.order - b.order);
 const first = await board("GET", "/api/welcome");
 want(first.status === 200 && first.json.finished === false && first.json.modelReady === true && first.json.recoveryKeyWaiting === false, `the board's welcome is unfinished, the model ready and the recovery key saved (${first.text})`);
-want(["channel-telegram", "channel-slack"].every((m) => first.json.wizard.includes(m)) && first.json.wizard.join() === wizard.map((f) => f.module).join(), `its wizard is the modules' flows, Telegram and Slack among them (${first.json.wizard})`);
+want(["channel-telegram", "slack"].every((m) => first.json.wizard.includes(m)) && first.json.wizard.join() === wizard.map((f) => f.module).join(), `its wizard is the modules' flows, Telegram and Slack among them (${first.json.wizard})`);
 const flows = (await board("GET", "/api/setup-flows")).json.flows.filter((f) => first.json.wizard.includes(f.module));
 want(flows.length === wizard.length && flows.every((f) => !f.done), "none of them is set up");
 const skipped = flows.map((f) => f.module);

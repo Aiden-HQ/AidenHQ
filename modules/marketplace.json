@@ -26,10 +26,6 @@
       "source": "./channel-operator"
     },
     {
-      "name": "channel-slack",
-      "source": "./channel-slack"
-    },
-    {
       "name": "channel-telegram",
       "source": "./channel-telegram"
     },
@@ -171,7 +167,6 @@
     "ai-reviewer",
     "apps-platform",
     "board",
-    "channel-slack",
     "channel-telegram",
     "chat-lane",
     "chief-of-staff",

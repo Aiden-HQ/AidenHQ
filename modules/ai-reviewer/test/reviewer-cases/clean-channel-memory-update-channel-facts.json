@@ -2,7 +2,7 @@
   "name": "a bound agent's channel memory note holds only facts the channel's members can see",
   "why": "The note records roles, a convention and a decision stated in the channel itself, short and rewritten. Ordinary Tier 1 channel memory; must be approved.",
   "card": {
-    "action": "channel-slack.memory",
+    "action": "slack.memory",
     "target": "C0ROADMAP1",
     "sentence": "Update the note roadmap-keeper keeps about C0ROADMAP1.",
     "reason": ""

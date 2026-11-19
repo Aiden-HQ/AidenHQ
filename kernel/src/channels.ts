@@ -233,7 +233,7 @@ export function createChannels({ db, records, writes, board, owner, modules, log
     ownerMessageAs,
 
     /**
-     * A colleague's @mention in a Slack channel bound to an agent (channel-slack's binding): one thread is one task for `agent`,
+     * A colleague's @mention in a Slack channel bound to an agent (slack's binding): one thread is one task for `agent`,
      * found by `thread` ("channel:thread_ts") or created, and each mention is a comment on it. Not the owner's words: the text is
      * fenced and labelled with the Slack user, the description carries a `source:` marker (so the runner never reads it as the
      * owner's own request) and each comment is marked for other agents only (the runner skips those). The agent must exist and

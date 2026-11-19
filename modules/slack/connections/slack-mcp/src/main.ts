@@ -15,6 +15,8 @@ const stateDir = process.env.SLACK_STATE_DIR ?? "/state";
 const mcpUrl = process.env.SLACK_MCP_URL ?? "https://mcp.slack.com/mcp";
 // The Slack app's client id the setup flow saved, else the old SLACK_CLIENT_ID (.env): an upgraded instance keeps working.
 const clientId = readToken(process.env.SLACK_CLIENT_ID_FILE) ?? process.env.SLACK_CLIENT_ID ?? "";
+// Optional: the sign-in is PKCE, so the app's client secret is sent only when one was saved (an app Slack refuses without it).
+const clientSecret = readToken(process.env.SLACK_CLIENT_SECRET_FILE);
 const jwks = kernelJwks();
 
 const http = createVendorProxy({
@@ -24,7 +26,7 @@ const http = createVendorProxy({
     name: "Slack",
     mcpUrl,
     stateDir,
-    client: () => (clientId ? { id: clientId } : undefined),
+    client: () => (clientId ? { id: clientId, ...(clientSecret ? { secret: clientSecret } : {}) } : undefined),
     endpoints: { authorize: "https://slack.com/oauth/v2_user/authorize", token: "https://slack.com/api/oauth.v2.user.access" },
     scopes: { supported: [...READ_SCOPES, ...WRITE_SCOPES], recommended: READ_SCOPES, separator: "," },
     resource: false,

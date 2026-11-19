@@ -1,4 +1,4 @@
-// channel-slack.post (module.yaml writes.post), the executor side: an agent's slack_post call is a kernel record. plan names
+// slack.post (module.yaml writes.post), the executor side: an agent's slack_post call is a kernel record. plan names
 // the agent (from the kernel's requester, never the args) and raises a channel outside the slack_post_channels setting to the
 // owner (Tier 2); the AI reviewer reads every post first (floor 1). execute posts it from the instance's bot, headed with the
 // agent's name as an AI agent. Never as the owner: only the bot token is used.

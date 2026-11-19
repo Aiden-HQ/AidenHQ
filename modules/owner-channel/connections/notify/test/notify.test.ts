@@ -7,12 +7,12 @@ import { notify, retry, type Deps, type Message } from "../src/notify.js";
 import { openStore } from "../src/store.js";
 
 const agent = (id: string) => ({ id, name: id, key: id, assertion: "jwt", roles: [] as string[] });
-function world(up: Record<string, "up" | "down" | "off"> = { "channel-slack": "up", "channel-telegram": "up" }) {
+function world(up: Record<string, "up" | "down" | "off"> = { "slack": "up", "channel-telegram": "up" }) {
   const sent: { to: string; m: Message }[] = [];
   const posted: string[] = [];
   const d: Deps = {
     store: openStore(":memory:"),
-    transports: ["channel-slack", "channel-telegram"],
+    transports: ["slack", "channel-telegram"],
     send: async (to, m) => {
       if (up[to] === "down") throw new Error("unreachable");
       if (up[to] !== "up") return { sent: false, off: true };
@@ -38,7 +38,7 @@ describe("notify", () => {
     const { d, sent } = world();
     expect(await notify(d, { kind: "alert", text: "prod is down", dedupe_key: "slack:C1:1.0" }, agent("triage"))).toEqual({ sent: true });
     expect(await notify(d, { kind: "alert", text: "Prod down!", dedupe_key: "slack:C1:1.0" }, agent("scout"))).toEqual({ sent: true, reason: "duplicate" });
-    expect(sent).toEqual([{ to: "channel-slack", m: { kind: "alert", text: "prod is down" } }]);
+    expect(sent).toEqual([{ to: "slack", m: { kind: "alert", text: "prod is down" } }]);
   });
 
   it("a muted fyi reaches no channel; a result still does", async () => {
@@ -51,7 +51,7 @@ describe("notify", () => {
   });
 
   it("every channel down: queued, retried, sent once; a channel that isn't set up is skipped", async () => {
-    const { d, sent, up } = world({ "channel-slack": "off", "channel-telegram": "down" });
+    const { d, sent, up } = world({ "slack": "off", "channel-telegram": "down" });
     expect(await notify(d, { kind: "decision", text: "WOR-2 needs you" })).toEqual({ sent: false, queued: true, note: expect.any(String) });
     expect(await notify(d, { kind: "decision", text: "WOR-2 needs you" })).toMatchObject({ reason: "duplicate" });
     expect(await retry(d)).toBe(0);
@@ -62,7 +62,7 @@ describe("notify", () => {
   });
 
   it("a kernel message waits for a channel to be set up; an agent's, with nowhere to land, says so", async () => {
-    const { d, sent, up } = world({ "channel-slack": "off", "channel-telegram": "off" });
+    const { d, sent, up } = world({ "slack": "off", "channel-telegram": "off" });
     // Installed but not connected (Slack set up, never signed in): never reported as sent.
     expect(await notify(d, { kind: "done", text: "Board account reset for sam@example.com" })).toEqual({ sent: false, queued: true, note: expect.any(String) });
     expect(await notify(d, { kind: "done", text: "x" }, agent("crew"))).toMatchObject({ sent: false, reason: "error" });

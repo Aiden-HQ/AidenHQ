@@ -62,7 +62,7 @@ export const GATE_CORE = [
   // The engines that run inside a job (engine@1: their argv, env and what they pass on) and the contract and kit they share.
   /^modules\/engine-[^/]+\//,
   // The channels (privileged speaks-as-owner, lean-core 2f): they hold decision tokens and post the owner's words, so their
-  // whole process is in the trusted base (channel-slack's executor posts as the bot).
+  // whole process is in the trusted base (slack's executor posts as the bot).
   /^modules\/channel-[^/]+\//,
   // The AI reviewer (privileged reviewer, lean-core 3c): its service, its policy, its planted cases and its eval.
   /^modules\/ai-reviewer\//,

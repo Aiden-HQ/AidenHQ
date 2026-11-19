@@ -1,5 +1,5 @@
 // Channel memory: a short note per bound channel, written by the agent the channel is bound to and stored beside the binding
-// (`mem:<channel>`). One write replaces the whole note (channel-slack.memory, Tier 1: the AI reviewer reads it for private or
+// (`mem:<channel>`). One write replaces the whole note (slack.memory, Tier 1: the AI reviewer reads it for private or
 // secret content); a stale base_revision is refused. The code check is where the write may come from: a task that is a thread
 // of that same channel (the mapping noteTask keeps when a mention files the thread), by the agent the channel is bound to.
 // The note is cleared when the channel is unbound or handed to another agent (bind.ts).

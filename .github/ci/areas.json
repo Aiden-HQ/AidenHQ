@@ -2,7 +2,7 @@
   "everything": [".github", "services/shared"],
   "markdown": ["SETUP.md", "docs/setup.md", ".claude", "fixtures", "scripts/test/fixtures", "services/computer/images", "modules"],
   "suites": [
-    {"name": "scripts", "run": "npm test", "paths": ["*", "modules"]},
+    {"name": "scripts", "run": "npm test", "paths": ["*", "modules", "ops/slack-live-move.mjs"]},
     {"name": "kernel/sdk", "run": "(cd .. && npm ci) && npm ci && npm test && npm run typecheck", "paths": ["kernel/sdk", "fixtures/engine-echo"]},
     {"name": "fixtures/twin", "main": true, "run": "d=$(mktemp -d) && y=$(cd ../../scripts/node_modules && pwd) && cp -R . \"$d\" && (cd ../../kernel/sdk && npm ci --silent && npm pack --silent --pack-destination \"$d\") && cd \"$d\" && npm install --no-audit --no-fund && NODE_PATH=\"$y\" npm test", "paths": ["fixtures/twin", "kernel/sdk", "scripts/sdk-pack.mjs"]},
     {"name": "services/computer", "run": "node --test test/*.test.mjs", "paths": ["services/computer", "modules/apps-platform", "modules/codehost-github", "modules/codehost-local", "modules/design"]},
@@ -19,7 +19,7 @@
     {"name": "modules/hubspot/connections/hubspot-mcp", "job": "modules", "run": "npm ci && npm test && npm run typecheck", "paths": ["modules/hubspot/connections/hubspot-mcp"]},
     {"name": "modules/jira/connections/jira-mcp", "job": "modules", "run": "npm ci && npm test && npm run typecheck", "paths": ["modules/jira/connections/jira-mcp"]},
     {"name": "modules/meetings/connections/ops-mcp", "job": "modules", "run": "npm ci && npm test && npm run typecheck", "paths": ["modules/meetings/connections/ops-mcp"]},
-    {"name": "modules/channel-slack/connections/slack", "job": "modules", "run": "npm ci --ignore-scripts && npm test && npm run typecheck", "paths": ["modules/channel-slack/connections/slack"]},
+    {"name": "modules/slack/connections/slack-live", "job": "modules", "run": "npm ci --ignore-scripts && npm test && npm run typecheck", "paths": ["modules/slack/connections/slack-live"]},
     {"name": "modules/channel-telegram/connections/telegram", "job": "modules", "run": "npm ci --ignore-scripts && npm test && npm run typecheck", "paths": ["modules/channel-telegram/connections/telegram"]},
     {"name": "modules/owner-channel/connections/notify", "job": "modules", "run": "npm ci --ignore-scripts && npm test && npm run typecheck", "paths": ["modules/owner-channel/connections/notify"]},
     {"name": "modules/chat-lane/connections/lane", "job": "modules", "run": "npm ci --ignore-scripts && npm test && npm run typecheck", "paths": ["modules/chat-lane/connections/lane"]},
