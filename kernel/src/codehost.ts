@@ -40,8 +40,9 @@ export function routeKind(kind: string, args: unknown): string {
 /** A code host's answer to an op: a status, headers and a body stream (an http response, or codehost-local's tarball). */
 export type Answer = Readable & { statusCode?: number; headers: http.IncomingHttpHeaders };
 // A module's grant (its `codehost:`, taken literally): repos are owner/name, owner/*, */* (anything the App covers), or
-// @instance, @product, @agents/<name|*> (in each agents org), which resolve from the kernel's own configuration (its repos),
-// never from settings.
+// @instance, @product, @agents/<name|*> (in each agents org), @orgs (every repo of each owner the instance allows, github_orgs)
+// and @maintained (the repos it maintains, maintainer_repos), which resolve from the kernel's own configuration (its repos),
+// never from a module's settings.
 export type OpsGrant = { module: string; token?: { repos: string[]; perms: Record<string, string> }; snapshot?: { repos: string[] }; clone?: { repos: string[] } };
 
 const LEVEL = new Map([["read", 1], ["write", 2]]);
@@ -60,11 +61,13 @@ const PLAIN = /^[\w.-]+\/[\w.-]+$/, ORG = /^[\w.-]+$/;
 export function resolveRepo(p: string, r: KernelRepos): string[] {
   if (p === "@instance") return r.instance && PLAIN.test(r.instance) ? [r.instance] : [];
   if (p === "@product") return r.product && PLAIN.test(r.product) ? [r.product] : [];
+  if (p === "@orgs") return (r.orgs ?? []).filter((o) => ORG.test(o)).map((o) => `${o}/*`);
+  if (p === "@maintained") return (r.maintained ?? []).filter((x) => PLAIN.test(x));
   if (p.startsWith("@agents/")) return (r.agentsOrgs ?? []).filter((o) => ORG.test(o)).map((o) => `${o}/${p.slice("@agents/".length)}`);
   return [p];
 }
 /** The kernel's repos; `agentsOrgs`: one per enabled code host (the GitHub agents org, `local` with codehost-local). */
-export type KernelRepos = { instance?: string; product?: string; agentsOrgs?: string[] };
+export type KernelRepos = { instance?: string; product?: string; agentsOrgs?: string[]; orgs?: string[]; maintained?: string[] };
 
 /** Whether a grant's repos cover `slug` (owner/name, or owner/* for an org-wide token). */
 export function covers(slug: string, repos: string[] = [], r: KernelRepos = {}): boolean {
