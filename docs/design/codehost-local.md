@@ -80,7 +80,7 @@ Line numbers are at product `26a5bd5e` and modules `b2b31f1` (`modules/` is the 
 | `kernel/src/sandbox-config.ts:34-38` | `hidden` includes the data dir. Bare repos under it are invisible to every job. |
 | `services/board/src/fleet-ops.ts:31,314` | "Open PRs" come from apps-mcp `/internal/open-prs`. |
 | `services/board/src/wake.ts:15,76,280` | PR wake-ups use `github.com/.../pull/n` or `org/repo#n`, read through `/internal/pr-states`. |
-| `services/board/src/quality.ts:26,41` | Links records to `github.com` PR URLs. |
+| `kernel/sdk/src/quality.ts:26,41` | Links records to `github.com` PR URLs. |
 | `services/board/web/src/Drawer.tsx:1213,1279` | Researcher repos are labelled "GitHub". |
 | `ops/setup.sh:329,386` | Already local: setup makes `$HOME/aidenhq-instance.git` (`git init --bare -b main`) and writes `repo_sources: { local/aidenhq-instance: … }` with `allowed_orgs: [local]`. |
 
