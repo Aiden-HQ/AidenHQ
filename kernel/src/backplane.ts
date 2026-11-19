@@ -45,6 +45,8 @@
 //                              of the kernel's work: a task's, one job, an agent's, the records and billed cost since a time, or what
 //                              runs and ended lately; Prometheus text (work.ts)
 //   GET  /v1/work[?task=|?job=|?agent=|?since=]  (the board) the same reads; never the metrics or a token
+//   GET  /v1/flow?task=|?item=|?idle=1|?since=[&to=&by=&scope=]  (the board, or a module with role kernel.flow-read) Flow's
+//                              views over the fact log (flow.ts): a task's or item's waterfall, idle now, the summary
 //   POST /v1/work/grader-token  (the one module with role kernel.grader) {task} -> a gateway
 //                              token billed to the task's assignee under its caps, for a task its finish check holds; one live token per task
 //   POST /v1/jobs/:job/post    (that job's module) {kind: reply|status|notice, body, status?, blocked_by?}: posted on the job's
@@ -84,6 +86,7 @@ import { hostOf } from "./codehost.ts";
 import { fail } from "./proxy.ts";
 import type { Records, State } from "./records.ts";
 import type { Work } from "./work.ts";
+import { BY, type By, type Flow } from "./flow.ts";
 import type { Reviews } from "./reviews.ts";
 import { wakeNotice, type Wakes } from "./wakes.ts";
 import type { ModuleTasks } from "./modtasks.ts";
@@ -142,6 +145,7 @@ export const ROUTES = [
   { method: "POST", path: "/v1/jobs/:job/ack", auth: "module" },
   { method: "GET", path: "/v1/work", auth: "module|board" },
   { method: "GET", path: "/v1/work/metrics", auth: "module" },
+  { method: "GET", path: "/v1/flow", auth: "module|board" },
   { method: "POST", path: "/v1/work/grader-token", auth: "module" },
   { method: "POST", path: "/v1/jobs/:job/post", auth: "module" },
   { method: "POST", path: "/v1/checks", auth: "module" },
@@ -187,7 +191,19 @@ function workRead(work: Work, p: URLSearchParams) {
   return task ? work.task(task.slice(0, 100)) : work.activity();
 }
 
-export function createBackplane({ whoami, asserter, proxy, cp, boardCp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, reviewerKey = () => "", jobs, codehost, admission, outcomes, wakes, tasks, eventsKey = () => "", work, repos = () => ({}), graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, checkJobs, jobTools, localBundle, ownerRaw, lane, healthProbe, healthKey = () => "", connectionHealth, settingsChange, routing, log = () => {} }: {
+/** GET /v1/flow's reads, by query: ?task=, ?item=, ?idle=1, else the summary over ?since= (default 7 days) [&to=&by=&scope=]. */
+function flowRead(flow: Flow, p: URLSearchParams) {
+  const [task, item] = [p.get("task"), p.get("item")];
+  if (task) return flow.task(task.slice(0, 100));
+  if (item) return flow.item(item.slice(0, 100));
+  if (p.get("idle")) return flow.idleNow();
+  const since = p.get("since") ?? new Date(Date.now() - 7 * 864e5).toISOString(), to = p.get("to") ?? undefined, by = p.get("by") ?? "stage";
+  if (Number.isNaN(Date.parse(since)) || (to && Number.isNaN(Date.parse(to)))) throw fail(400, "bad_request", "since and to are ISO timestamps");
+  if (!(BY as string[]).includes(by)) throw fail(400, "bad_request", `by is one of ${BY.join(", ")}`);
+  return flow.summary({ since, to, by: by as By, scope: p.get("scope")?.slice(0, 100) || undefined });
+}
+
+export function createBackplane({ whoami, asserter, proxy, cp, boardCp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, reviewerKey = () => "", jobs, codehost, admission, outcomes, wakes, tasks, eventsKey = () => "", work, flow, repos = () => ({}), graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, checkJobs, jobTools, localBundle, ownerRaw, lane, healthProbe, healthKey = () => "", connectionHealth, settingsChange, routing, log = () => {} }: {
   whoami: Whoami; asserter: Asserter; proxy: Handler; cp: Handler; boardCp?: Handler; grantsFile: () => { agents?: Record<string, Grant> } & Record<string, unknown>;
   writes?: Writes; records?: Records; boardKey?: () => string; log?: (msg: string, f?: Record<string, unknown>) => void;
   /** The reviewer slot, and the key a direct review request asks with (reviewer_key, which the board holds). */
@@ -214,6 +230,8 @@ export function createBackplane({ whoami, asserter, proxy, cp, boardCp, grantsFi
   tasks?: ModuleTasks;
   /** Reads of the work the kernel owns (work.ts). */
   work?: Work;
+  /** Flow's views over the fact log (flow.ts). */
+  flow?: Flow;
   /** The repos the instance reaches (codehostRepos in main.ts): GET /v1/agents hands them to modules. */
   repos?: () => Record<string, unknown>;
   /** A grader-kind gateway token for a task (the kernel is the only minter). */
@@ -489,6 +507,11 @@ export function createBackplane({ whoami, asserter, proxy, cp, boardCp, grantsFi
       if (hit && /^\/v1\/(auth|accounts|apps|operator)\/:op$/.test(hit.path)) {
         if (!accounts) throw fail(503, "unavailable", "accounts are off");
         return await accounts(req, res, hit.path.split("/")[2]!, m[0]!);
+      }
+      if (hit?.path === "/v1/flow") {
+        if (!isBoard(req)) { const w = await moduleOf(req); if (!w.roles.includes("kernel.flow-read")) throw fail(403, "forbidden", `${w.module} may not read flow (role kernel.flow-read)`); }
+        if (!flow) throw fail(503, "unavailable", "flow reads are off");
+        return send(res, 200, flowRead(flow, new URLSearchParams(q ?? "")));
       }
       if (hit?.path === "/v1/work" && isBoard(req)) {
         if (!work) throw fail(503, "unavailable", "work reads are off");
