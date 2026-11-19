@@ -41,6 +41,18 @@ export function readCredentials(path: string, forWrite = false): CredentialsFile
   return { ...raw, client_id: id, client_secret: fileText(process.env.GOOGLE_CLIENT_SECRET_FILE) || undefined };
 }
 
+/** No account connected yet: Google isn't set up, which differs from a credentials file that won't load. */
+export class NoGoogleAccounts extends GoogleAuthError {}
+
+/**
+ * The /healthz answer. Without an account, `state: "missing"` (not set up yet), which the apply's live agent check notes
+ * rather than fails; any other load error is a plain failure.
+ */
+export function healthBody(ready: boolean, err?: unknown): { ok: boolean; state?: "missing"; detail?: string } {
+  if (ready) return { ok: true };
+  return { ok: false, ...(err instanceof NoGoogleAccounts ? { state: "missing" as const } : {}), detail: err instanceof Error ? err.message : undefined };
+}
+
 export function loadAccounts(path: string): { primary: string; accounts: Map<string, StoredCredentials> } {
   const raw = readCredentials(path);
   const accounts = new Map<string, StoredCredentials>();
@@ -52,7 +64,7 @@ export function loadAccounts(path: string): { primary: string; accounts: Map<str
   if (!accounts.size && raw.client_id && raw.refresh_token) {
     accounts.set("default", { client_id: raw.client_id, client_secret: raw.client_secret, refresh_token: raw.refresh_token });
   }
-  if (!accounts.size) throw new GoogleAuthError(`no Google accounts in ${path} (run scripts/google-auth.sh)`);
+  if (!accounts.size) throw new NoGoogleAccounts(`no Google accounts in ${path} (run scripts/google-auth.sh)`);
   const primary = raw.primary && accounts.has(raw.primary) ? raw.primary : [...accounts.keys()][0]!;
   return { primary, accounts };
 }
