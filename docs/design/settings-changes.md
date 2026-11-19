@@ -64,6 +64,34 @@ A model adds nothing to a typed edit and could drift from it; the kernel writes 
 board handed it, and the card shows the exact diff before anything lands. The board's check is the owner's feedback; the
 kernel's is the gate, and the compiler's the last.
 
+## Routing tuning (the learning loop, kernel/src/routing-tune.ts)
+
+The same writer has one agent-filed variant, `routing.tune`, for the Fleet Steward (role `routing-tuner`; the fleet-steward
+module requests the kernel role `kernel.routing`). Its daily routine (`routing-review`, 00:15 UTC) runs its
+`routing-review` skill through four tools on its own connection, which the module forwards to `POST /v1/routing/<op>` with
+the Steward job's caller assertion; the kernel reads the job from its own token, never from the request.
+
+- **Evidence** (`routing_evidence`): the previous UTC day's decisions from `team_routes`, each with outcomes the kernel
+  recorded: task status and completion time, reopen wakes, and finish-gate reopens such as the grader's (`finish.reopened`
+  events). Never task text.
+- **Replay** (`routing_replay`): code re-runs each recorded decision's candidate snapshot (`team_routes.snapshot`) with the
+  proposed weights or repos.
+- **Scope**: members' `repos` and `teams.<t>.routing.weights` on existing teams and members, within the one team schema
+  (weights 0 to 10, load at least 1). One gate, `routingDiff`, proves a diff is only that: the writer refuses anything else,
+  and the apply planner (`apply-tier.ts`) proposes Tier 1 `routing-only` for a diff it proves, whoever filed it.
+- **Filing** (`routing_tune`): `{ base_sha, team, weights?, repos?, decisions, hypothesis, revert }`. The kernel writes the
+  commit with the code host and files one `kernel.apply` with the Steward as its requester (no owner identity, no updater
+  exemption). `computeTier` alone sets the tier: under autonomy `full` the AI reviewer approves it; with autonomy off or
+  `tier0`, a restrictive routine cap, or an owner veto, the owner decides as for any Tier 1 write. The card leads with the
+  kernel's notes: the leaves, the replay, the revert criterion and the Steward's hypothesis, fenced as data.
+- **Limits** (kernel.db `routing_experiments`, held by unique indexes): one open experiment per instance, one proposal per
+  UTC day. No minimum sample or wait before the next change (owner, 2026-11-19: active discovery). A change the review or the
+  owner turned down can't be filed again unchanged.
+- **Revert** (`routing_judge`): the criterion is a finite schema (`metric`: `reopen_rate`, `cycle_hours` or `blocked_rate`;
+  `min_sample`; `threshold`; `deadline_days`). Past the threshold, the kernel files a rollback of only the experiment's own
+  leaves still at the values it applied, through the same reviewed apply, so a later owner change stays. At the deadline it
+  is kept, or closed as inconclusive with too small a sample.
+
 ## Open points (from the architecture cross-check)
 
 - **A changed URL keeps the old sign-in.** The proxies keep one token per connection; pointed at a new server they would

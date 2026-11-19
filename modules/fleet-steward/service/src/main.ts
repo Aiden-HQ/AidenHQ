@@ -91,6 +91,8 @@ const mcp = createMcp(fleetTools({
   generations: () => kernel.call("GET", "/v1/work?generations=1"),
   followups: () => staleFollowups({ kernel, kv }),
   snooze: (task, days) => snoozeFollowup(kv, task, days),
+  // The kernel's answer whole: a refusal says why (the Steward reads it and changes the request).
+  routing: async (op, args, assertion) => { const r = await kernel.raw("POST", `/v1/routing/${op}`, args, { "x-aidenhq-caller": assertion }); if (r.status >= 300) throw new Error(`Refused: ${String(r.json?.error?.message ?? r.status)}`); return r.json; },
 }));
 const jwks = kernelJwks(`${kernelUrl}/v1/jwks`);
 
@@ -103,5 +105,5 @@ createStewardServer({
     return g("aidenhq_steward_incidents_open", "Fleet detector incidents open.", Object.keys(detectorState(kv).open).length) + g("aidenhq_steward_alerts_firing", "Monitoring alerts firing, as this service last heard from Alertmanager.", Object.keys(firing(kv)).length);
   },
   mcp,
-  caller: (req) => verifyCaller(req, jwks, "fleet-steward"),
+  caller: async (req) => ({ ...(await verifyCaller(req, jwks, "fleet-steward")), assertion: String(req.headers["x-aidenhq-caller"] ?? "") }),
 }).listen(Number(env.PORT ?? 8097), () => log("listening", { port: env.PORT ?? 8097 }));

@@ -20,6 +20,7 @@ import { effective } from "../../scripts/compiler/release.ts";
 import { hostFetch, officialSides, remoteCodeText, withRemote } from "../../scripts/compiler/sources.ts";
 import { REJECT, T, highest, meritOwner, type Part, type ReviewFirst } from "./tier.ts";
 import { UPDATER, type Requester } from "./records.ts";
+import { routingDiff } from "./routing-tune.ts";
 
 /** Authority-expanding: the reviewer and a second reviewer on another model family must both approve. */
 export const PANEL = (rule: string, reason: string): Part => ({ tier: 1, rule, reason, panel: true });
@@ -244,8 +245,11 @@ function instanceParts(s: any) {
         }
       }
     } else if (k === "teams") {
-      // A team's day cap is a spend cap: the owner's authority. Members, repos, weights and the rest: the panel's.
-      for (const t of changedKeys(base.teams, head.teams)) parts.push(!eq(base.teams?.[t]?.caps, head.teams?.[t]?.caps) ? OWNER_ONLY("team-caps", `teams ${t}: its day cap is the owner's authority`) : PANEL("teams", `changes team ${t}`));
+      // Only members' repos and routing weights, proven by the one routing gate (routing-tune.ts routingDiff): routing data,
+      // the reviewer's. A team's day cap is a spend cap: the owner's authority. Members and the rest: the panel's.
+      const routing = routingDiff(s.base?.["instance.yaml"], s.head?.["instance.yaml"]);
+      if ("leaves" in routing) parts.push(T(1, "routing-only", `team routing only: ${routing.leaves.map((l) => l.path.slice(1).join(".")).join(", ")}`.slice(0, 300)));
+      else for (const t of changedKeys(base.teams, head.teams)) parts.push(!eq(base.teams?.[t]?.caps, head.teams?.[t]?.caps) ? OWNER_ONLY("team-caps", `teams ${t}: its day cap is the owner's authority`) : PANEL("teams", `changes team ${t}`));
     } else parts.push(PANEL("instance-key", `changes ${k} in instance.yaml`));
   }
   return parts;
@@ -400,6 +404,8 @@ export function createApplyPlanner(h: {
    * check it makes (updates.ts verify); null when the release fails one or can't be checked.
    */
   verifyRelease(baseText: string, name: string, sha: string): Promise<string | null>;
+  /** What the kernel itself says of this commit, shown and reviewed with its diff: a routing experiment's code-made evidence (routing-tune.ts). */
+  notes?(sha: string): string | undefined;
 }) {
   /** Whether this is the updater's own release move, to exactly the instance.yaml its verification of that release writes. */
   async function updaterMove(requester: Requester | undefined, baseText: string | undefined, headText: string | undefined): Promise<boolean> {
@@ -433,7 +439,7 @@ export function createApplyPlanner(h: {
     const releaseVerified = !eq(parse(baseI)?.release, parse(headI)?.release) && (await updaterMove(requester, baseI, headI));
     const t = meritOwner(highest(applyParts({ files: c.files, base: c.texts.base, head: c.texts.head, pin: bump ? { forward: bump.forward, back: bump.back } : null, roles: h.roles(), connections: h.connections(), moduleApps: h.moduleApps(), ownerStarted: false, trialNoTap: false, releaseVerified, ...st })));
     if (t.reject) throw new Refused(String(t.reason));
-    const details = [c.diff, bump && `${bump.title.replaceAll("`", "")}:\n${bump.log}`, st.remote, c.trial].filter(Boolean).join("\n\n");
+    const details = [h.notes?.(a.sha), c.diff, bump && `${bump.title.replaceAll("`", "")}:\n${bump.log}`, st.remote, c.trial].filter(Boolean).join("\n\n");
     if (details.length > DETAILS_MAX) throw new Refused(`the change is too large to review (${details.length} characters with the commits and code it brings): split it into smaller ones`);
     const full = { repo, branch: a.branch, sha: a.sha, files: c.files, ...authorityArgs(st) };
     const card = applyCard(full, details);
@@ -460,14 +466,15 @@ export const hostProduct = (repo: string): ProductGit => ({
 });
 
 /** The planner on this host: the code host's read, the product checkout, and the compiled grants, connections and apps. */
-export function hostPlanner({ repo, instanceRepo, configDir, read, grants, connections, verifyRelease }: {
+export function hostPlanner({ repo, instanceRepo, configDir, read, grants, connections, verifyRelease, notes }: {
   repo: string; instanceRepo: () => string | undefined; configDir: string; read: (s: Source) => Promise<Read>;
   verifyRelease: (baseText: string, name: string, sha: string) => Promise<string | null>;
   grants: () => Record<string, { key?: string; roles?: string[] } | undefined>;
   connections: () => Record<string, { tools: { read: string[]; write: string[]; destructive: string[] } }>;
+  notes?: (sha: string) => string | undefined;
 }): ApplyPlanner {
   return createApplyPlanner({
-    instanceRepo, read, product: hostProduct(repo), modules: (b, h) => moduleTierState(b, h, repo), connections, verifyRelease,
+    instanceRepo, read, notes, product: hostProduct(repo), modules: (b, h) => moduleTierState(b, h, repo), connections, verifyRelease,
     roles: () => Object.fromEntries(Object.entries(grants()).flatMap(([id, a]) => (a?.key ? [[a.key, heldRoles(grants() as never, id)]] : []))),
     moduleApps: () => { try { return ((YAML.parse(readFileSync(join(configDir, "apps.modules.yaml"), "utf8")) ?? {}).apps ?? []).filter(Boolean); } catch { return []; } },
   });

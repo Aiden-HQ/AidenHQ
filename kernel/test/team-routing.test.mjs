@@ -67,7 +67,7 @@ function world({ paused = [], dayUsedUp = false } = {}) {
   };
   const told = [];
   const wakes = createWakes({
-    db, owner, post: async () => ({}), now: () => clock, grants: () => grants,
+    db, owner, post: async () => ({}), now: () => clock, grants: () => grants, knownRepo: (r) => ["acme/api", "acme/web"].includes(r),
     teamDayUsedUp: () => dayUsedUp, tellBlocked: async (task, text) => { told.push({ task: task.id, text }); },
     dispatches: { may: () => true, agents: (mod) => (mod === "dispatch" ? [TEAM, KAI, MINA] : []) },
   });
@@ -144,4 +144,11 @@ test("continuity counts a member's done tasks in the same repo; a wake already f
   assert.equal(w.issues.t1.assigneeAgentId, MINA); // two done in acme/api beat kai's tie on the key
   w.wakes.claim("dispatch");
   assert.equal(w.db.prepare("SELECT state FROM wakes WHERE key = 'issue:x:1'").get().state, "dropped");
+});
+
+test("a task's repos are only those the code hosts have: a branch, a path or a library named like owner/name is none", async () => {
+  const w = world();
+  w.issue("t1", { title: "Fix fix/monitoring-stack-bumps", description: "In ACME/api, see modules/monitoring and modules/marketplace.json; bump x/net and klauspost/compress." });
+  await w.wakes.event({ issueId: "t1" });
+  assert.deepEqual(JSON.parse(w.db.prepare("SELECT repos FROM team_routes WHERE task = 't1'").get().repos), ["acme/api"]);
 });

@@ -79,6 +79,7 @@ import type { Admission } from "./admission.ts";
 import { JOB_KINDS, type Outcomes } from "./outcomes.ts";
 import { notice, type Notify } from "./notify.ts";
 import type { JobTools } from "./jobtools.ts";
+import { ROUTING_OPS, type Routing } from "./routing-tune.ts";
 import { hostOf } from "./codehost.ts";
 import { fail } from "./proxy.ts";
 import type { Records, State } from "./records.ts";
@@ -152,6 +153,7 @@ export const ROUTES = [
   { method: "GET", path: "/v1/connections/health", auth: "board" },
   { method: "POST", path: "/v1/settings/change", auth: "board" },
   { method: "POST", path: "/v1/stop", auth: "board" },
+  { method: "POST", path: "/v1/routing/:op", auth: "module+assertion" },
   { method: "POST", path: "/v1/auth/:op", auth: "board" },
   { method: "POST", path: "/v1/accounts/:op", auth: "board+session" },
   { method: "POST", path: "/v1/apps/:op", auth: "module" },
@@ -185,7 +187,7 @@ function workRead(work: Work, p: URLSearchParams) {
   return task ? work.task(task.slice(0, 100)) : work.activity();
 }
 
-export function createBackplane({ whoami, asserter, proxy, cp, boardCp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, reviewerKey = () => "", jobs, codehost, admission, outcomes, wakes, tasks, eventsKey = () => "", work, repos = () => ({}), graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, checkJobs, jobTools, localBundle, ownerRaw, lane, healthProbe, healthKey = () => "", connectionHealth, settingsChange, log = () => {} }: {
+export function createBackplane({ whoami, asserter, proxy, cp, boardCp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, reviewerKey = () => "", jobs, codehost, admission, outcomes, wakes, tasks, eventsKey = () => "", work, repos = () => ({}), graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, checkJobs, jobTools, localBundle, ownerRaw, lane, healthProbe, healthKey = () => "", connectionHealth, settingsChange, routing, log = () => {} }: {
   whoami: Whoami; asserter: Asserter; proxy: Handler; cp: Handler; boardCp?: Handler; grantsFile: () => { agents?: Record<string, Grant> } & Record<string, unknown>;
   writes?: Writes; records?: Records; boardKey?: () => string; log?: (msg: string, f?: Record<string, unknown>) => void;
   /** The reviewer slot, and the key a direct review request asks with (reviewer_key, which the board holds). */
@@ -237,6 +239,8 @@ export function createBackplane({ whoami, asserter, proxy, cp, boardCp, grantsFi
   connectionHealth?: () => Promise<Record<string, unknown>>;
   /** The owner's typed settings change on their settings task (settings-change.ts). */
   settingsChange?: (task: unknown, changes: unknown) => Promise<unknown>;
+  /** The routing learning loop (routing-tune.ts). */
+  routing?: Routing;
 }) {
   /** The calling module (its own token), or 401. */
   const moduleOf = async (req: IncomingMessage) => {
@@ -364,6 +368,24 @@ export function createBackplane({ whoami, asserter, proxy, cp, boardCp, grantsFi
           // The owner reads why: a refusal of the change itself, or the code host's or the planner's answer.
           try { return send(res, 200, await settingsChange(b.task, b.changes)); } catch (e) { throw fail((e as { status?: number }).status ?? 502, "refused", String((e as Error).message).slice(0, 1000)); }
         }
+      }
+      if (hit?.path === "/v1/routing/:op") {
+        // A module holding kernel.routing (the fleet-steward), serving a kernel job's tool call in flight: the job is read from
+        // its own token, which the kernel keeps for that call, and must hold the routing-tuner role. Never the body's say-so.
+        const w = await moduleOf(req);
+        if (!w.roles.includes("kernel.routing")) throw fail(403, "forbidden", `${w.module} may not tune routing (role kernel.routing)`);
+        if (!routing) throw fail(503, "unavailable", "routing tuning is off");
+        const live = await asserter.inFlight(String(req.headers["x-aidenhq-caller"] ?? ""), w.module!);
+        const job = live?.flight.bearer ? await whoami(live.flight.bearer).catch(() => undefined) : undefined;
+        if (!live || job?.kind !== "run" || !job.task || !job.job || job.agent !== live.caller.agent) throw fail(401, "unauthorized", "only a kernel job's tool call in flight tunes routing");
+        if (!job.roles.includes("routing-tuner")) throw fail(403, "forbidden", "routing changes are for an agent with the routing-tuner role");
+        const op = m[0]!;
+        if (!(ROUTING_OPS as readonly string[]).includes(op)) throw fail(404, "not_found", `no routing op ${op}`);
+        const requester = { agent: job.agent ?? "", key: job.key ?? "", name: job.name ?? "", roles: job.roles, kind: job.kind, task: job.task, ...(job.run ? { run: job.run } : {}), ...(job.model ? { model: job.model } : {}) };
+        const b = await json(req);
+        try {
+          return send(res, 200, op === "evidence" ? await routing.evidence(b) : op === "replay" ? routing.replay(b) : op === "tune" ? await routing.tune(requester, job.task, b) : await routing.judge(requester, job.task));
+        } catch (e) { throw fail((e as { status?: number }).status ?? 502, "refused", String((e as Error).message).slice(0, 1000)); }
       }
       if (hit?.path.startsWith("/v1/tasks")) {
         const w = await moduleOf(req);

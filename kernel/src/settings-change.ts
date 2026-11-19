@@ -153,6 +153,16 @@ export function checkTyped(ch: unknown, { compiled, catalog }: Sources): void {
 /** A git blob id of a text (what `git hash-object` gives): the module handbook a fork was copied from. */
 export const blobSha = (t: string) => createHash("sha1").update(`blob ${Buffer.byteLength(t)}\0`).update(t).digest("hex");
 
+/**
+ * An edited instance.yaml as text: no re-folding of long lines, and a line that differs from one in the file only by its flow
+ * spacing ({ a } or {a}) is written as the file had it, so the diff is only the lines the change makes.
+ */
+export function yamlText(doc: YAML.Document, docText: string): string {
+  const flat = (l: string) => l.replace(/([[{]) +/g, "$1").replace(/ +([\]}])/g, "$1");
+  const had = new Map(docText.split("\n").map((l) => [flat(l), l]));
+  return doc.toString({ lineWidth: 0 }).split("\n").map((l) => had.get(flat(l)) ?? l).join("\n");
+}
+
 type IsInstance = (key: string) => boolean;
 /** An agent on a team: the team's name and whether it is the record (else a member). */
 type TeamOf = (key: string) => { team: string; record: boolean } | undefined;
@@ -297,11 +307,7 @@ export function planFiles(changes: Change[], { read, isInstance, teamOf, moduleH
   if (yamlTouched) {
     const o = doc.get("overrides", true);
     if (YAML.isMap(o) && !o.items.length) doc.delete("overrides");
-    // No re-folding of long lines; a line that differs from one in the file only by its flow spacing ({ a } or {a}) is
-    // written as the file had it, so the diff is only the lines the change makes.
-    const flat = (l: string) => l.replace(/([[{]) +/g, "$1").replace(/ +([\]}])/g, "$1");
-    const had = new Map(docText.split("\n").map((l) => [flat(l), l]));
-    out.set("instance.yaml", doc.toString({ lineWidth: 0 }).split("\n").map((l) => had.get(flat(l)) ?? l).join("\n"));
+    out.set("instance.yaml", yamlText(doc, docText));
   }
   // Only real changes: a file written as it already is, or deleted when absent, is no change.
   for (const [p, t] of out) if (t === (read(p) ?? null)) out.delete(p);

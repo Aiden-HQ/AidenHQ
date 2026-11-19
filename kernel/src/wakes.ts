@@ -32,7 +32,9 @@ CREATE TABLE IF NOT EXISTS wake_tasks (task TEXT PRIMARY KEY, agent TEXT, status
 CREATE TABLE IF NOT EXISTS wake_dispatchers (module TEXT PRIMARY KEY, since INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS dispatch_since (agent TEXT PRIMARY KEY, at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS team_routes (task TEXT PRIMARY KEY, team TEXT NOT NULL, member TEXT, repos TEXT NOT NULL, at INTEGER NOT NULL,
-  state TEXT NOT NULL, done INTEGER NOT NULL DEFAULT 0, record TEXT NOT NULL DEFAULT '');`;
+  state TEXT NOT NULL, done INTEGER NOT NULL DEFAULT 0, record TEXT NOT NULL DEFAULT '', snapshot TEXT);`;
+/** What a decision was made from (team_routes.snapshot): the learning loop replays it with other weights or repos (routing-tune.ts). */
+export type RouteSnapshot = { weights: Weights; overBudget: boolean; candidates: Candidate[] };
 /** A grants-table entry as the router reads it (compile's grantEntry): a team record lists its members; a member names its record. */
 type TeamGrant = { key?: string; max_parallel?: number; team?: { name: string; members: string[]; weights?: Partial<Weights> }; member_of?: string; repos?: string[] };
 
@@ -55,7 +57,7 @@ type Comment = { id: string; body?: string; authorAgentId?: string | null; creat
 type Log = (msg: string, f?: Record<string, unknown>) => void;
 const ms = (t?: string) => (t ? Date.parse(t) || 0 : 0);
 
-export function createWakes({ db, owner, post, dispatches, routineKey = () => undefined, grants = () => ({}), teamDayUsedUp = () => false, tellBlocked = async () => {}, log = () => {}, now = Date.now }: {
+export function createWakes({ db, owner, post, dispatches, routineKey = () => undefined, grants = () => ({}), knownRepo = () => false, teamDayUsedUp = () => false, tellBlocked = async () => {}, log = () => {}, now = Date.now }: {
   db: DatabaseSync;
   /** The control plane as the owner (only reads). */
   owner: Api;
@@ -67,6 +69,8 @@ export function createWakes({ db, owner, post, dispatches, routineKey = () => un
   routineKey?: (routine: string) => string | undefined;
   /** The grants table's agents by id: teams and members (team routing). */
   grants?: () => Record<string, TeamGrant | undefined>;
+  /** Whether a repo (owner/name, lower case) is one the instance's code hosts have: a task's text names only those for routing. */
+  knownRepo?: (repo: string) => boolean;
   /** Whether the team of this member has used up its day cap (the gateway's own day scope, gateway/lib.ts dayHolder). */
   teamDayUsedUp?: (member: string, task: string) => boolean;
   /** A team task no member can take, blocked: whoever delegated it hears why (its open parent's wake notice, else the owner). */
@@ -74,6 +78,7 @@ export function createWakes({ db, owner, post, dispatches, routineKey = () => un
   log?: Log; now?: () => number;
 }) {
   db.exec(DDL);
+  if (!(db.prepare("PRAGMA table_info(team_routes)").all() as { name: string }[]).some((c) => c.name === "snapshot")) db.exec("ALTER TABLE team_routes ADD COLUMN snapshot TEXT");
   const q = (sql: string) => db.prepare(sql);
   const insert = (key: string, task: string, agent: string, cause: string, at: number, until: number | null = null) => {
     const r = q("INSERT OR IGNORE INTO wakes (key, task, agent, cause, at, until) VALUES (?, ?, ?, ?, ?, ?)").run(key, task, agent, cause, at, until);
@@ -157,7 +162,8 @@ export function createWakes({ db, owner, post, dispatches, routineKey = () => un
   // same pick, never re-scores), `placed`, `named` (assigned straight to a member: its delegator's structured choice), or
   // `blocked`. Selection is serialized in this process (`lock`), and a pending placement counts as its member's load.
   const OPEN_SET = new Set(OPEN.split(","));
-  const repoText = (i: Issue) => mentionedRepos(`${i.title ?? ""}\n${i.description ?? ""}`).map((r) => r.toLowerCase());
+  // Only repos a code host has: a branch (fix/x), a path (modules/x) or a library (x/net) shaped like owner/name is no repo.
+  const repoText = (i: Issue) => mentionedRepos(`${i.title ?? ""}\n${i.description ?? ""}`).map((r) => r.toLowerCase()).filter((r) => knownRepo(r));
   const keyId = (key: string) => Object.entries(grants()).find(([, g]) => g?.key === key)?.[0];
   /** A task given straight to a member: recorded, so its load and continuity count; a placement it confirms is placed. */
   function named(issue: Issue, member: string) {
@@ -220,7 +226,8 @@ export function createWakes({ db, owner, post, dispatches, routineKey = () => un
         });
         const decision = pickMember({ repos, candidates, weights, overBudget: over });
         const record = decisionText({ team: team.team!.name, revision, repos, weights, decision });
-        q("INSERT INTO team_routes (task, team, member, repos, at, state, record) VALUES (?, ?, ?, ?, ?, ?, ?)").run(issue.id, String(team.key), decision.pick?.id ?? null, JSON.stringify(repos), now(), decision.pick ? "placing" : "blocked", record);
+        const snapshot: RouteSnapshot = { weights, overBudget: over, candidates };
+        q("INSERT INTO team_routes (task, team, member, repos, at, state, record, snapshot) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(issue.id, String(team.key), decision.pick?.id ?? null, JSON.stringify(repos), now(), decision.pick ? "placing" : "blocked", record, JSON.stringify(snapshot));
         db.exec("COMMIT");
         log("team routed", { task: issue.id, team: team.team!.name, pick: decision.pick?.key ?? null });
         if (!decision.pick) {

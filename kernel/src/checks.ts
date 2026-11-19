@@ -156,6 +156,8 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
       const reason = String(reopen.v.reason ?? "").slice(0, 2000);
       for (const x of verdicts) await unlabel(i, x.c);
       await patch(i, { status: "todo", ...(reason ? { comment: `[${reopen.id}] ${reason}` } : {}) });
+      // A trusted outcome the routing learning loop counts (routing-tune.ts): the check's verdict, never its words.
+      db.prepare("INSERT INTO events (id, type, at, data) VALUES (?, ?, ?, ?)").run(`e-${randomBytes(8).toString("hex")}`, "finish.reopened", new Date().toISOString(), JSON.stringify({ task: i.id, check: reopen.id }));
       log("finish reopened", { task: i.identifier, check: reopen.id });
       return { pass: false, reopened: true, reason };
     }

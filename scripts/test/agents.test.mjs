@@ -176,11 +176,12 @@ test("the Fleet Steward's grants: reads, plus exactly its predecessors' writes; 
   const r = compile(product, dir);
   const a = r.paperclip.agents["fleet-steward"];
   const writes = Object.entries(a.enabled_tools).flatMap(([c, list]) => list.filter((t) => writeTools(r.paperclip.mcp_servers[c]).includes(t)).map((t) => `${c}.${t}`)).sort();
-  assert.deepEqual(writes, ["apps.person_identity_decide", "ops_mcp.meeting_note_correct", "owner_channel.notify", "paperclip_tasks.coach_record", "paperclip_tasks.task_comment", "paperclip_tasks.task_create", "paperclip_tasks.task_delegate", "paperclip_tasks.task_finish", "paperclip_tasks.task_handoff", "paperclip_tasks.task_propose_rule", "paperclip_tasks.task_set_status"]);
+  // routing_tune and routing_judge: the routing learning loop, each a reviewed kernel.apply of the instance's own routing.
+  assert.deepEqual(writes, ["apps.person_identity_decide", "fleet_steward.routing_judge", "fleet_steward.routing_tune", "ops_mcp.meeting_note_correct", "owner_channel.notify", "paperclip_tasks.coach_record", "paperclip_tasks.task_comment", "paperclip_tasks.task_create", "paperclip_tasks.task_delegate", "paperclip_tasks.task_finish", "paperclip_tasks.task_handoff", "paperclip_tasks.task_propose_rule", "paperclip_tasks.task_set_status"]);
   assert.deepEqual(a.enabled_tools.github, ["github_app_issue_status"]);
   assert.equal(a.web_search, "disabled");
   assert.ok(!a.enabled_tools.apps.includes("web_view"));
-  assert.deepEqual(a.roles, ["fleet-read", "fleet-audit", "librarian"]);
+  assert.deepEqual(a.roles, ["fleet-read", "fleet-audit", "librarian", "routing-tuner"]);
   assert.deepEqual(a.delegate_to, ["engineer", "app-maintainer", "app-owners", "architect", "maintainer"]);
   assert.ok(r.paperclip.agents.maintainer.enabled_tools.github.includes("github_app_issue"), "the Maintainer files product bugs");
 });

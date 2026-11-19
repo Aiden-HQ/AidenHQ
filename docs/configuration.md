@@ -177,6 +177,10 @@ member with open tasks can't be removed: drain or hand them off first. Every age
 The board's Agents page draws the team as a parent row (running of its members' parallel slots) over its members, and its
 Settings tab edits the team in place: the record's model, effort and `max_parallel` write `teams.<name>.defaults`, a member's
 write `teams.<name>.members.<key>`, and the day cap `teams.<name>.caps` (the owner's authority).
+A task's repos are only those the code hosts have (the agents org's, the product, the instance, `github_orgs`, and `local/…`
+repos that exist): a branch, a path or a library named like `owner/name` is none. Weights are each 0 to 10, load at least 1;
+a member lists at most 20 repo patterns. The Fleet Steward tunes members' `repos` and the `weights` daily, as reviewed
+experiments ([design/settings-changes.md](design/settings-changes.md), Routing tuning).
 
 ## Compile and apply
 
@@ -193,7 +197,7 @@ write `teams.<name>.members.<key>`, and the day cap `teams.<name>.caps` (the own
 Every tool call to a connection is checked against `config/grants/grants.json`, keyed by the caller's Paperclip agent
 id: the tools it may use per connection and its roles. Roles gate a few capabilities and may be granted only by the
 modules the registry allows: `fleet-admin` (the board's fleet tools), `board-writer`,
-`app-incidents`, `security-verdict` (security-watch records finding verdicts), `ops-key`, `architect`, `fleet-read` (fleet-steward and core: the board's fleet status only) and `fleet-audit` (fleet-steward: any agent's evidence packet and its own review log, `coach_due`, `coach_evidence`, `coach_record`). Instance agents get none. A module agent may set `delegate_to: [<agent key>, <key>?, app-owners]`: the kernel then
+`app-incidents`, `security-verdict` (security-watch records finding verdicts), `ops-key`, `architect`, `fleet-read` (fleet-steward and core: the board's fleet status only) and `fleet-audit` (fleet-steward: any agent's evidence packet and its own review log, `coach_due`, `coach_evidence`, `coach_record`) and `routing-tuner` (fleet-steward: the routing learning loop's `routing_*` tools). Instance agents get none. A module agent may set `delegate_to: [<agent key>, <key>?, app-owners]`: the kernel then
 refuses its `task_create` and `task_delegate` to anyone else (`key?` only when that agent is on; `app-owners`: any agent that
 owns an app); the Fleet Steward has one. Without one an agent delegates to its direct reports (`reports_to`) and the Engineers,
 and the chief of staff (role `fleet-admin`) to anyone in its company (`delegateIds`, kernel/src/outcomes.ts). After editing `kernel/src/proxy.ts`,

@@ -9,7 +9,7 @@ export interface Tool {
   inputSchema: object;
   /** Roles of which the caller must hold one; none: any caller the kernel's grants let through. */
   roles?: string[];
-  run: (args: Record<string, unknown>, caller: Caller) => Promise<unknown>;
+  run: (args: Record<string, unknown>, caller: Caller & { assertion?: string }) => Promise<unknown>;
 }
 
 const NO_ARGS = { type: "object", properties: {}, additionalProperties: false };
@@ -17,14 +17,14 @@ const text = (v: unknown, isError = false) => ({ content: [{ type: "text", text:
 
 export function createMcp(tools: Tool[]) {
   const byName = new Map(tools.map((t) => [t.name, t]));
-  return async function handle(msg: { id?: unknown; method?: string; params?: { name?: string; arguments?: Record<string, unknown> } }, caller: () => Promise<Caller>): Promise<object | undefined> {
+  return async function handle(msg: { id?: unknown; method?: string; params?: { name?: string; arguments?: Record<string, unknown> } }, caller: () => Promise<Caller & { assertion?: string }>): Promise<object | undefined> {
     const reply = (result: unknown) => ({ jsonrpc: "2.0", id: msg.id ?? null, result });
     if (msg.method === "initialize") return reply({ protocolVersion: "2025-03-26", capabilities: { tools: {} }, serverInfo: { name: "fleet-steward", version: "0.1.0" } });
     if (msg.method === "tools/list") return reply({ tools: tools.map(({ name, description, inputSchema }) => ({ name, description, inputSchema, annotations: { readOnlyHint: true, openWorldHint: false } })) });
     if (msg.method === "tools/call") {
       const tool = byName.get(String(msg.params?.name));
       if (!tool) return reply(text(`no tool ${String(msg.params?.name)}`, true));
-      let who: Caller;
+      let who: Caller & { assertion?: string };
       try {
         who = await caller();
       } catch (e) {
@@ -48,6 +48,8 @@ export const fleetTools = (d: {
   generations: () => Promise<unknown>;
   followups: () => Promise<unknown>;
   snooze: (task: string, days: number) => unknown;
+  /** The kernel's routing learning loop (POST /v1/routing/<op>), as the calling job: its assertion goes along, never its words about itself. */
+  routing: (op: string, args: Record<string, unknown>, assertion: string) => Promise<unknown>;
 }): Tool[] => [
   {
     name: "fleet_detector",
@@ -88,5 +90,33 @@ export const fleetTools = (d: {
     description: "Read-only: this instance's apply generations, newest first: the current product `pin` (the newest generation that got past validation) and the last 20, each with `n`, `at`, `product`, `health` (good, failed, refused, pending), `reason`, `log` and `revert_of`. Use it to check whether a product pin bump applied and stayed healthy, or rolled back.",
     inputSchema: NO_ARGS,
     run: async () => d.generations(),
+  },
+  {
+    name: "routing_evidence",
+    roles: ["routing-tuner"],
+    description: "routing-tuner role: the kernel's team routing decisions of the previous UTC day (`days`: 1 to 7 back), each with outcomes the kernel recorded (status, cycle_hours, reopens, gate_reopens: never task text), every team's current members' repos and weights, `base_sha` (the instance repo's main), the open experiment and whether you may propose today.",
+    inputSchema: { type: "object", properties: { days: { type: "number" } }, additionalProperties: false },
+    run: async (a, caller) => d.routing("evidence", a, caller.assertion ?? ""),
+  },
+  {
+    name: "routing_replay",
+    roles: ["routing-tuner"],
+    description: "routing-tuner role: the kernel re-runs a team's recorded decisions of the last `days` days (default 7) with other `weights` ({repo, continuity, load}) or members' `repos` ({member: [owner/name patterns]}) and says which picks would change.",
+    inputSchema: { type: "object", properties: { team: { type: "string" }, weights: { type: "object" }, repos: { type: "object" }, days: { type: "number" } }, required: ["team"], additionalProperties: false },
+    run: async (a, caller) => d.routing("replay", a, caller.assertion ?? ""),
+  },
+  {
+    name: "routing_tune",
+    roles: ["routing-tuner"],
+    description: "routing-tuner role: propose one routing change as an experiment: { base_sha, team, weights?, repos?, decisions (the task ids it rests on), hypothesis (one or two sentences), revert: { metric: reopen_rate | cycle_hours | blocked_rate, min_sample, threshold, deadline_days } }. The kernel writes it and files it as a reviewed apply on your task. One open experiment at a time, one proposal a UTC day.",
+    inputSchema: { type: "object", properties: { base_sha: { type: "string" }, team: { type: "string" }, weights: { type: "object" }, repos: { type: "object" }, decisions: { type: "array", items: { type: "string" } }, hypothesis: { type: "string" }, revert: { type: "object" } }, required: ["base_sha", "team", "decisions", "hypothesis", "revert"], additionalProperties: false },
+    run: async (a, caller) => d.routing("tune", a, caller.assertion ?? ""),
+  },
+  {
+    name: "routing_judge",
+    roles: ["routing-tuner"],
+    description: "routing-tuner role: the kernel settles the open experiment against its revert criterion: still measuring, kept, inconclusive, or a rollback of only its own values, filed as a reviewed apply on your task.",
+    inputSchema: NO_ARGS,
+    run: async (_a, caller) => d.routing("judge", {}, caller.assertion ?? ""),
   },
 ];
