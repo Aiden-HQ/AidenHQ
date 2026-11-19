@@ -159,3 +159,14 @@ test("a dispatcher cancels only an open or blocked routine run of an agent it di
   await w.wakes.cancelRoutineRun("dispatch", { task: "r1", why: "coalesced", body });
   assert.deepEqual(w.posts.map((p) => [p.agent, p.task, p.kind, p.status]), [[AGENT, "r1", "coalesced", "cancelled"]]);
 });
+
+test("a new wake is claimed ahead of re-leased ones that keep failing", async () => {
+  const w = world();
+  for (let i = 0; i < 3; i++) w.issue(`f${i}`);
+  await w.wakes.poll();
+  assert.equal(w.wakes.claim("dispatch", 3).length, 3);
+  w.tick(61_000); // all three leases ran out: their handling failed
+  w.issue("fresh");
+  await w.wakes.poll();
+  assert.equal(w.wakes.claim("dispatch", 1)[0].task, "fresh", "never-claimed rows first");
+});

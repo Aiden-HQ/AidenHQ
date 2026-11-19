@@ -28,6 +28,9 @@ const CLOSED = new Set(["done", "cancelled"]);
 
 type Log = (msg: string, f?: Record<string, unknown>) => void;
 
+/** A kernel answer that retrying never changes: a refusal (4xx, except 429's "busy") or an agent the kernel holds no key for. */
+const permanent = (e: unknown): e is KernelError => e instanceof KernelError && ((e.status >= 400 && e.status < 500 && e.status !== 429) || /no-agent-key/.test(e.message));
+
 export function createDispatch({ kernel, db, owner, log = () => {} }: { kernel: Kernel; db: DatabaseSync; owner: string; log?: Log }) {
   db.exec(DDL);
   const q = (sql: string) => db.prepare(sql);
@@ -89,7 +92,9 @@ export function createDispatch({ kernel, db, owner, log = () => {} }: { kernel: 
         await kernel.ack(v.id);
         log("job ended", { job: v.id, task: v.task, state: v.state, posted: o?.kind ?? null });
       } catch (e) {
-        log("job follow failed", { job: v.id, err: (e as Error).message });
+        // A job whose outcome the kernel will never take (task or agent gone) is acknowledged, or it is retried every tick forever.
+        if (permanent(e)) { await kernel.ack(v.id).catch(() => {}); log("job given up: its outcome can't be posted", { job: v.id, err: e.message }); }
+        else log("job follow failed", { job: v.id, err: (e as Error).message });
       }
     }
   }
@@ -154,17 +159,10 @@ export function createDispatch({ kernel, db, owner, log = () => {} }: { kernel: 
     const assignee = agents.get(w.agent);
     const entries = threadEntries(comments, task, { owner, agents, skip: new Set(fresh.map((f) => f.id)) });
     const build = (resumed: boolean) => buildPrompt({ user: owner, task, parent, profile: dir[w.agent]?.profile ?? "crew", agentName: assignee?.name, thread: threadSection(owner, entries, { resumed }), words, resumed });
-    try {
-      const r = await kernel.start({ wake: w.key, prompt: build(ran), ...(ran ? { full_prompt: build(false) } : {}) });
-      if ("busy" in r) return log("busy: the wake comes back", { task: task.identifier, wake: w.key });
-      q("INSERT INTO seen (task, comment) VALUES (?, ?) ON CONFLICT DO UPDATE SET comment = excluded.comment").run(w.task, comments.at(-1)?.id ?? "");
-      log("job started", { job: r.job.id, task: task.identifier, wake: w.key, cause: w.cause });
-    } catch (e) {
-      // The kernel refused this wake for good (not its agent, task closed or reassigned). Anything else (a lost answer
-      // included) leaves the wake claimed: its lease brings it back if no job came of it, and a job that did is in the open list.
-      if (e instanceof KernelError && e.status >= 400 && e.status < 500) return kernel.drop(w.key, e.message);
-      throw e;
-    }
+    const r = await kernel.start({ wake: w.key, prompt: build(ran), ...(ran ? { full_prompt: build(false) } : {}) });
+    if ("busy" in r) return log("busy: the wake comes back", { task: task.identifier, wake: w.key });
+    q("INSERT INTO seen (task, comment) VALUES (?, ?) ON CONFLICT DO UPDATE SET comment = excluded.comment").run(w.task, comments.at(-1)?.id ?? "");
+    log("job started", { job: r.job.id, task: task.identifier, wake: w.key, cause: w.cause });
   }
 
   return {
@@ -172,7 +170,13 @@ export function createDispatch({ kernel, db, owner, log = () => {} }: { kernel: 
       await follow();
       await routines.sweep(async () => Object.keys(await kernel.directory()));
       const tick = { agents: new Map<string, Agent>(), redirected: new Set<string>() };
-      for (const w of await kernel.claim(20)) await handle(w, tick).catch((e: Error) => log("wake failed", { wake: w.key, err: e.message }));
+      for (const w of await kernel.claim(20)) {
+        // A kernel refusal (not its agent, task closed or gone, no right to read it) never changes: the wake is dropped. Anything
+        // else (a lost answer included) leaves it claimed: its lease brings it back if no job came of it, and a job that did is in the open list.
+        await handle(w, tick).catch((e: Error) => permanent(e)
+          ? kernel.drop(w.key, e.message).then(() => log("wake dropped: the kernel refused it", { wake: w.key, err: e.message }), () => {})
+          : log("wake failed", { wake: w.key, err: e.message }));
+      }
     },
   };
 }
