@@ -15,6 +15,8 @@ export type Identity = {
   kind: "run" | "module";
   agent?: string; key?: string; name?: string; roles: string[];
   task?: string; run?: string; module?: string;
+  /** A kernel job's own id (a refused write is recorded on it). */
+  job?: string;
   /** Granted tools by connection: a kernel job's frozen tools and jobcaps; a module's none. */
   tools: Record<string, string[]>;
   /** The write kinds a kernel job's authority names: what it may request at POST /v1/writes, for its agent on its task. */
@@ -59,7 +61,7 @@ export function createIdentity({ grants, connections, jobcaps, modules = () => (
         // A private jobcap only for a job that reads private data (web search off): private data never meets the web.
         for (const id of j.authority.jobcaps) { const c = jobcaps()[id]; if (c && (!c.private || j.authority.reads === true)) tools[c.connection] = [...new Set([...(tools[c.connection] ?? []), ...c.tools])]; }
         const g = grants()[j.agent];
-        return { kind: "run", agent: j.agent, key: String(g?.key ?? ""), name: String(g?.key ?? ""), roles: [...j.authority.roles], tools, writes: [...j.authority.writes], task: j.task, workspace: j.identifier, ...(j.authority.model ? { model: j.authority.model } : {}), credential: "" };
+        return { kind: "run", agent: j.agent, key: String(g?.key ?? ""), name: String(g?.key ?? ""), roles: [...j.authority.roles], tools, writes: [...j.authority.writes], task: j.task, job: String(p.id), workspace: j.identifier, ...(j.authority.model ? { model: j.authority.model } : {}), credential: "" };
       }
       throw new Unknown("a job's token is invalid or expired");
     }

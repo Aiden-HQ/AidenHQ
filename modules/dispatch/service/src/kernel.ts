@@ -7,7 +7,7 @@ import type { Agent, Comment, Directory, Issue } from "./thread.ts";
 /** An inbox row the module claimed (kernel wakes.ts); `live_job`: a comment for that running job. */
 export interface Wake { key: string; task: string; agent: string; cause: string; at: number; live_job?: string }
 /** A job as the kernel shows it (jobs.ts JobView, the fields dispatch reads). */
-export interface JobView { id: string; task: string; agent: string; state: string; exit: number | null; final: string; session: string | null; timedOut: boolean; at: number; ended: number | null; acked: boolean; progress?: { steps?: Step[] } }
+export interface JobView { id: string; task: string; agent: string; state: string; exit: number | null; final: string; session: string | null; timedOut: boolean; at: number; ended: number | null; acked: boolean; refused?: string; progress?: { steps?: Step[] } }
 
 export interface Kernel {
   claim(limit: number): Promise<Wake[]>;
@@ -27,7 +27,7 @@ export interface Kernel {
   /** A comment into a running job; the wake is delivered only when `sent`. */
   input(job: string, b: { text: string; from: string; wake: string }): Promise<{ sent: boolean }>;
   /** A job's outcome on its task, posted by the kernel as the agent, once per (job, kind) (F5). */
-  post(job: string, b: { kind: "reply" | "notice"; body: string }): Promise<void>;
+  post(job: string, b: { kind: "reply" | "notice" | "status"; body: string; status?: string; blocked_by?: string[] }): Promise<void>;
   /** Stop a running job (its task was closed under it). */
   stop(job: string): Promise<void>;
   /** A company's tasks by control-plane query (the open ones of a routine, say). */

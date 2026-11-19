@@ -24,6 +24,8 @@ export interface JobView {
   progress: Progress; version: number;
   /** When the run ended (ms), and whether its dispatcher acknowledged the end (outcome posted, whoever asked told). */
   ended: number | null; acked: boolean;
+  /** Why the run's last write was refused at plan time, when nothing later went through. */
+  refused?: string;
 }
 
 export class JobError extends Error {
@@ -140,7 +142,7 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
   db.exec("CREATE INDEX IF NOT EXISTS jobs_task ON jobs (task, state)");
   // A kernel-admitted job's columns (admission.ts, boxes.ts), added where they are missing.
   const cols = new Set((db.prepare("PRAGMA table_info(jobs)").all() as { name: string }[]).map((c) => c.name));
-  for (const [c, t] of [["profile", "TEXT"], ["wake", "TEXT"], ["authority", "TEXT"], ["renewed", "INTEGER"], ["released", "INTEGER"], ["identifier", "TEXT"]]) if (!cols.has(c!)) db.exec(`ALTER TABLE jobs ADD COLUMN ${c} ${t}`);
+  for (const [c, t] of [["profile", "TEXT"], ["wake", "TEXT"], ["authority", "TEXT"], ["renewed", "INTEGER"], ["released", "INTEGER"], ["identifier", "TEXT"], ["refusal", "TEXT"]]) if (!cols.has(c!)) db.exec(`ALTER TABLE jobs ADD COLUMN ${c} ${t}`);
   // `acked`: the dispatcher's completion acknowledgement. Runs that ended before the column existed were dealt with by the old ledger.
   if (!cols.has("acked")) db.exec("ALTER TABLE jobs ADD COLUMN acked INTEGER; UPDATE jobs SET acked = COALESCE(ended, at) WHERE state NOT IN ('admitted', 'running')");
   const watchers = new Map<string, { stop: () => void; send?: (text: string, from: string) => boolean; cancel: () => void }>();
@@ -158,7 +160,7 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
       id: r.id, module: r.module, agent: r.agent, task: r.task, state: r.state, pid: r.pid, log: r.log, dir: r.dir, at: r.at,
       jobcaps: JSON.parse(r.jobcaps), observing: r.observing === 1, live_input: r.live_input === 1, exit: r.exit ?? null, final: r.final,
       session: r.session ?? null, timedOut: why.timedOut === true,
-      cancelled: why.cancelled === true, usage: r.usage ? JSON.parse(r.usage) : null, progress: JSON.parse(r.progress || "{}"), version: versions.get(r.id) ?? 0, ended: r.ended ?? null, acked: r.acked != null,
+      cancelled: why.cancelled === true, usage: r.usage ? JSON.parse(r.usage) : null, progress: JSON.parse(r.progress || "{}"), version: versions.get(r.id) ?? 0, ended: r.ended ?? null, acked: r.acked != null, ...(r.refusal ? { refused: r.refusal } : {}),
     };
   };
 
