@@ -37,6 +37,18 @@ test("the routes need a module holding kernel.work-read", async (t) => {
   assert.equal((await get("/v1/work/metrics", "reader")).headers.get("content-type").startsWith("text/plain"), true);
 });
 
+test("a task's read carries its status as the wake scan last saw it, null when it has not seen it", () => {
+  const { work, records } = setup();
+  assert.equal(work.task("t1").status, null);
+  records.db.exec("CREATE TABLE wake_tasks (task TEXT PRIMARY KEY, agent TEXT, status TEXT, comment TEXT)");
+  records.db.prepare("INSERT INTO wake_tasks (task, status) VALUES ('t1', 'cancelled')").run();
+  assert.equal(work.task("t1").status, "cancelled");
+  assert.equal(work.task("t2").status, null);
+  records.db.prepare("UPDATE jobs SET identifier = 'ACME-1' WHERE task = 't1'").run();
+  assert.equal(work.task("ACME-1").status, "cancelled", "by identifier too");
+  assert.deepEqual(work.task("ACME-1").jobs.map((j) => j.id), ["j-2", "j-1"]);
+});
+
 test("the board reads GET /v1/work with its key, one job included, and nothing else under /v1/work", async (t) => {
   const { work, records } = setup();
   records.db.prepare("UPDATE jobs SET usage = ?, progress = ?, final = ?, why = ?, exit = 1 WHERE id = 'j-1'").run(JSON.stringify({ input: 10, cached: 4, output: 2 }), JSON.stringify({ said: "building", plan: ["a"], steps: [] }), "done it", JSON.stringify({ timedOut: true }));

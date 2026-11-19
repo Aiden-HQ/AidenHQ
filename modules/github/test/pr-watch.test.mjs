@@ -3,7 +3,7 @@
 // gone; an agent's PR (one this service opened) that conflicts with main wakes its task once, with fixed text only.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -94,4 +94,79 @@ test("an agent's green mergeable PR wakes its task to merge once per head", asyn
   assert.equal(wakes.length, 1, "once per head");
   assert.equal(wakes[0].task, "ACME-5");
   assert.match(wakes[0].text, /aidenhq merge https:\/\/github.com\/acme\/app\/pull\/5 h5/);
+});
+
+// The behaviours ported from the runner, against one fake GitHub and kernel: each case is one agent PR (acme/app#N, task ACME-N).
+const redChecks = (extra = {}) => ({ state: "FAILURE", contexts: { pageInfo: { hasNextPage: false }, nodes: [{ __typename: "CheckRun", databaseId: 77, name: "test", status: "COMPLETED", conclusion: "FAILURE", checkSuite: { workflowRun: { databaseId: 500 } }, ...extra }] } });
+async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name: "Build" }], update = 202 } = {}) {
+  const woke = [], gh = [];
+  const kernel = await listen(async (req, res) => {
+    let body = "";
+    for await (const c of req) body += c;
+    if (req.url === "/v1/wakes") woke.push(JSON.parse(body));
+    res.writeHead(200).end(JSON.stringify(req.url.startsWith("/v1/work") ? { status: taskStatus } : {}));
+  });
+  t.after(() => kernel.s.close());
+  let open = [];
+  const api = async (method, path, token, body) => {
+    gh.push(`${method} ${path}${body?.update_method ? ` ${body.update_method}` : ""}`);
+    if (path === "/graphql") return { status: 200, body: { data: { repository: { defaultBranchRef: { name: "main", target: { oid: "m1", statusCheckRollup: checks("SUCCESS") } }, pullRequests: { nodes: open } } } } };
+    if (path.startsWith("/repos/acme/app/compare/")) return { status: 200, body: { behind_by: behind } };
+    if (path.startsWith("/repos/acme/app/actions/jobs/")) return { status: 200, body: { steps } };
+    if (path.endsWith("/update-branch")) return { status: update, body: {} };
+    return { status: 200, body: {} };
+  };
+  const cacheDir = mkdtempSync(join(tmpdir(), "pr-watch-"));
+  const watch = startPrWatch({ repo: "acme/app", kernelUrl: kernel.url, key: "k", cacheDir, app: { token: async () => "tok" }, gh: api });
+  t.after(() => watch.stop());
+  const agentPr = (n, o = {}) => { notePrTask(cacheDir, `https://github.com/acme/app/pull/${n}`, { task: `ACME-${n}`, branch: `b${n}` }); return pr(n, { author: { __typename: "Bot", login: "aidenhq" }, ...o }); };
+  return { woke, gh, watch, cacheDir, agentPr, set: (v) => { open = v; } };
+}
+const redPr = (n, o = {}) => ({ commits: { nodes: [{ commit: { statusCheckRollup: redChecks() } }] }, ...o });
+
+test("a cancelled task's PR is closed with its branch once; a done task's is left alone", async (t) => {
+  const c = await rig(t, { taskStatus: "cancelled" });
+  c.set([c.agentPr(1)]);
+  await c.watch.tick(); await c.watch.tick();
+  assert.equal(c.gh.filter((g) => g === "PATCH /repos/acme/app/pulls/1").length, 1);
+  assert.ok(c.gh.includes("DELETE /repos/acme/app/git/refs/heads/b1"));
+  const d = await rig(t, { taskStatus: "done" });
+  d.set([d.agentPr(2)]);
+  await d.watch.tick();
+  assert.ok(!d.gh.some((g) => g.startsWith("PATCH")));
+});
+
+test("an agent PR red on its own head wakes its task once per head, and no PR gets more than 3 wakes at one head", async (t) => {
+  const c = await rig(t);
+  c.set([c.agentPr(3, redPr(3))]);
+  await c.watch.tick(); await c.watch.tick();
+  assert.equal(c.woke.length, 1);
+  assert.match(c.woke[0].text, /pull\/3's checks failed at `h3`: `gh pr checks https:\/\/github.com\/acme\/app\/pull\/3` lists the failures/);
+  const capped = await rig(t);
+  capped.set([capped.agentPr(8, redPr(8))]);
+  writeFileSync(join(capped.cacheDir, "pr-watch.json"), JSON.stringify({ wakes: { "https://github.com/acme/app/pull/8": { head: "h8", n: 3 } } }));
+  await capped.watch.tick();
+  assert.equal(capped.woke.length, 0, "three wakes at this head: no more");
+});
+
+test("red checks whose job never started are re-run once at the head, with no wake", async (t) => {
+  const c = await rig(t, { steps: [] });
+  c.set([c.agentPr(4, redPr(4))]);
+  await c.watch.tick(); await c.watch.tick();
+  assert.equal(c.gh.filter((g) => g === "POST /repos/acme/app/actions/runs/500/rerun-failed-jobs").length, 1);
+  assert.equal(c.woke.length, 0);
+});
+
+test("a behind, non-conflicting red PR is updated by GitHub, not woken; a refused update falls back to the wake", async (t) => {
+  const c = await rig(t, { behind: 2 });
+  c.set([c.agentPr(5, redPr(5))]);
+  await c.watch.tick(); await c.watch.tick();
+  assert.equal(c.gh.filter((g) => g === "PUT /repos/acme/app/pulls/5/update-branch rebase").length, 1);
+  assert.equal(c.woke.length, 0);
+  const d = await rig(t, { behind: 2, update: 422 });
+  d.set([d.agentPr(6, redPr(6))]);
+  await d.watch.tick();
+  assert.ok(d.gh.includes("PUT /repos/acme/app/pulls/6/update-branch merge"));
+  assert.equal(d.woke.length, 1);
+  assert.match(d.woke[0].text, /Rebase the PR's branch onto `origin\/main`/);
 });

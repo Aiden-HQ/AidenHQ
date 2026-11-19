@@ -3,13 +3,17 @@
 // again once the PR is merged or closed; an agent's own PR (one this service opened: notePrTask) that conflicts with the default
 // branch, or is red while behind a green one, wakes the task that opened it (POST /v1/wakes with text, role kernel.wake), at most once per
 // head of main and half hour; an agent's own PR whose named checks are all green on a mergeable head wakes that task once per head, to merge
-// it (engineers end a job on running checks, "I'll merge once green", and nothing else would bring them back). Task text is fixed here: a PR's title, body, commits and check output never reach a task.
+// it (engineers end a job on running checks, "I'll merge once green", and nothing else would bring them back); one whose named checks have
+// finished red on its own mergeable head (not only behind main) wakes it once per head to fix it. A check whose job never started (GitHub
+// refused it: billing, no runner; the runner's environmentFailure) is re-run once at that head, never rebased and never woken for. The PR of
+// a cancelled task is closed with its branch, once (the runner's abandoned PR). A PR behind main with no conflict is updated by GitHub
+// (update-branch, the runner's rebaseInCode) instead of waking its task, once per head and head of main. No PR gets more than MAX_WAKES wakes at one head (RED_WAKES).
+// Task text is fixed here: a PR's title, body, commits and check output never reach a task.
 //
-// Started by main.ts. Not ported from the runner: the environment path (red checks that never started are re-run once at the same head and
-// reported, never a rebase), closing the PR of a cancelled task, rebaseInCode, and the parked-branch refusal (MAX_REJECTS).
+// Started by main.ts. Not ported from the runner: the environment receipt comment on the task, rebaseInCode's replay of approved commits and approval move (GitHub updates the branch instead), and the parked-branch refusal (MAX_REJECTS).
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { namedChecks } from "./aidenhq-sdk/checks.ts";
+import { DESIGN_REVIEW_CHECK, GATE_CHECK, namedChecks } from "./aidenhq-sdk/checks.ts";
 import type { Flow } from "./flow.ts";
 
 type Json = any;
@@ -23,9 +27,13 @@ export type PrWatchOptions = {
   flow?: Flow;
 };
 
-const WATCH = { contents: "read", pull_requests: "read", checks: "read", statuses: "read", metadata: "read" };
+const WATCH = { contents: "read", pull_requests: "read", checks: "read", statuses: "read", actions: "read", metadata: "read" };
+const CLOSE = { contents: "write", pull_requests: "write", metadata: "read" };
+const RERUN = { actions: "write", metadata: "read" };
+/** Wakes per PR per head, whatever their cause (the runner's RED_WAKES). */
+const MAX_WAKES = 3;
 const HALF_HOUR = 30 * 60_000;
-const ROLLUP = "statusCheckRollup { state contexts(first: 100) { pageInfo { hasNextPage } nodes { __typename ... on CheckRun { name status conclusion } ... on StatusContext { context state } } } }";
+const ROLLUP = "statusCheckRollup { state contexts(first: 100) { pageInfo { hasNextPage } nodes { __typename ... on CheckRun { databaseId name status conclusion checkSuite { workflowRun { databaseId } } } ... on StatusContext { context state } } } }";
 const OPEN_PRS_QUERY = `query($owner: String!, $repo: String!) {
   repository(owner: $owner, name: $repo) {
     defaultBranchRef { name target { oid ... on Commit { ${ROLLUP} } } }
@@ -71,7 +79,8 @@ export function startPrWatch(o: PrWatchOptions) {
   }
 
   async function tick() {
-    const token = await o.app.token(owner!, { repositories: [name!], permissions: WATCH });
+    const watchToken = () => o.app.token(owner!, { repositories: [name!], permissions: WATCH });
+    const token = await watchToken();
     const g = await o.gh("POST", "/graphql", token, { query: OPEN_PRS_QUERY, variables: { owner, repo: name } });
     const r = g.body?.data?.repository;
     if (g.status >= 300 || !r?.pullRequests) throw new Error(`GitHub /graphql: ${g.status} ${g.body?.errors?.[0]?.message ?? "no pull requests"}`);
@@ -82,7 +91,74 @@ export function startPrWatch(o: PrWatchOptions) {
     state.asked ??= {};      // PR url -> when its task was last woken
     state.greened ??= {};    // PR url -> the head whose green checks woke its task
     state.pinged ??= {};     // `<pr url>:<main oid>` -> when
+    state.reded ??= {};      // PR url -> the head whose red checks woke its task
+    state.reran ??= {};      // `<pr url>:<head>` -> when its never-started checks were re-run
+    state.abandoned ??= {};  // PR url -> when it was closed for its cancelled task
+    state.updated ??= {};    // `<pr url>:<head>:<main oid>` -> "ok" or "refused": GitHub was asked to update the branch
+    state.wakes ??= {};      // PR url -> { head, n }: wakes sent at this head
     const save = () => writeFileSync(stateFile, JSON.stringify(state));
+    /** Wake a task about its PR: at most MAX_WAKES per head, counted here for every cause (with no text, only counted: a branch GitHub updated instead). */
+    async function wake(pr: Json, task: string, text?: string) {
+      const w = state.wakes[pr.url.toLowerCase()]?.head === pr.headRefOid ? state.wakes[pr.url.toLowerCase()] : (state.wakes[pr.url.toLowerCase()] = { head: pr.headRefOid, n: 0 });
+      if (w.n >= MAX_WAKES) { log("wake cap reached", { pr: pr.url, head: pr.headRefOid }); return false; }
+      w.n++;
+      save();
+      if (text) await kernel("POST", "/v1/wakes", { task, text });
+      return true;
+    }
+    /** Re-run the failed jobs of red checks whose jobs never started, once per head. True when the red checks are all of that kind. */
+    async function neverStarted(pr: Json): Promise<boolean> {
+      const rollup = rollupOf(pr);
+      const red = (rollup?.contexts?.nodes ?? []).filter((n: Json) => n.__typename === "CheckRun" ? n.status === "COMPLETED" && n.conclusion === "FAILURE" && n.name !== DESIGN_REVIEW_CHECK : ["FAILURE", "ERROR"].includes(n.state));
+      if (!red.length || rollup?.contexts?.pageInfo?.hasNextPage) return false;
+      const own = red.filter((n: Json) => n.name !== GATE_CHECK); // the aggregate only rolls the others up
+      const unstarted: Json[] = [];
+      for (const n of own.length ? own : red) {
+        if (n.__typename !== "CheckRun" || !n.databaseId) return false;
+        const job = await o.gh("GET", `/repos/${o.repo}/actions/jobs/${n.databaseId}`, await watchToken());
+        if (job.status >= 300 || !Array.isArray(job.body?.steps) || job.body.steps.length) return false; // a step ran: it judged the commit
+        unstarted.push(n);
+      }
+      const key = `${pr.url.toLowerCase()}:${pr.headRefOid}`;
+      if (state.reran[key]) return true;
+      state.reran[key] = new Date().toISOString();
+      save();
+      const runs = new Set(unstarted.map((n) => n.checkSuite?.workflowRun?.databaseId).filter(Boolean));
+      for (const run of runs) {
+        const r = await o.gh("POST", `/repos/${o.repo}/actions/runs/${run}/rerun-failed-jobs`, await o.app.token(owner!, { repositories: [name!], permissions: RERUN }), {});
+        log(r.status < 300 ? "checks re-run" : "check re-run refused", { pr: pr.url, head: pr.headRefOid, run, status: r.status });
+      }
+      return true;
+    }
+    /** Have GitHub update a behind, non-conflicting branch (rebase if the repo allows, else merge), at most once per head and head of main. True when it did. */
+    async function updateBranch(pr: Json, base: string) {
+      const key = `${pr.url.toLowerCase()}:${pr.headRefOid}:${base}`;
+      if (state.updated[key]) return state.updated[key] === "ok"; // an update GitHub has not shown yet is waited for, not asked about
+      state.updated[key] = "refused";
+      save();
+      const t = await o.app.token(owner!, { repositories: [name!], permissions: CLOSE });
+      for (const update_method of ["rebase", "merge"]) {
+        const r = await o.gh("PUT", `/repos/${o.repo}/pulls/${pr.number}/update-branch`, t, { expected_head_sha: pr.headRefOid, update_method });
+        if (r.status < 300) {
+          state.updated[key] = "ok";
+          await wake(pr, "");
+          log("branch updated in code", { pr: pr.url, head: pr.headRefOid, base, update_method });
+          return true;
+        }
+        log("branch update refused", { pr: pr.url, update_method, status: r.status });
+      }
+      return false;
+    }
+    /** Close a cancelled task's PR and delete its branch, once. */
+    async function abandon(pr: Json, task: string) {
+      state.abandoned[pr.url.toLowerCase()] = new Date().toISOString();
+      save();
+      const t = await o.app.token(owner!, { repositories: [name!], permissions: CLOSE });
+      await o.gh("POST", `/repos/${o.repo}/issues/${pr.number}/comments`, t, { body: `Closed by the code host: ${task}, the task this PR was for, is cancelled.` });
+      await o.gh("PATCH", `/repos/${o.repo}/pulls/${pr.number}`, t, { state: "closed" });
+      await o.gh("DELETE", `/repos/${o.repo}/git/refs/heads/${pr.headRefName}`, t);
+      log("abandoned PR closed", { pr: pr.url, task });
+    }
 
     for (const pr of open.filter(dependabotDue)) {
       const url = pr.url.toLowerCase();
@@ -146,29 +222,44 @@ export function startPrWatch(o: PrWatchOptions) {
       }
       // Only an agent's own PR, by the task that opened it: a reused PR number (a recreated repository) belongs to nobody here.
       if (isDependabot(pr) || pr.isCrossRepository !== false || !opener || opener.branch !== pr.headRefName) continue;
+      // A cancelled task's PR is closed with its branch, once; a done task's is left alone (it may be merging).
+      if (!state.abandoned[url]) {
+        const status = await kernel("GET", `/v1/work?task=${encodeURIComponent(opener.task)}`).then((t) => t?.status, (e) => (log("task read failed", { pr: pr.url, err: String(e.message).slice(0, 200) }), undefined));
+        if (!status) log("task status unknown: the cancelled-task rule cannot run", { pr: pr.url, task: opener.task });
+        if (status === "cancelled") { await abandon(pr, opener.task); continue; }
+      }
       if (pr.mergeable === "MERGEABLE" && !pr.isDraft && named.length && named.every((c) => c.ok) && state.greened[url] !== pr.headRefOid) {
         state.greened[url] = pr.headRefOid;
         save();
-        await kernel("POST", "/v1/wakes", { task: opener.task, text: `${pr.url}'s checks are green at \`${pr.headRefOid}\`. If this PR is your task's change, merge it with \`aidenhq merge ${pr.url} ${pr.headRefOid}\`; if it is superseded, close it with \`aidenhq close ${pr.url}\`. Nothing else.` });
-        log("merge requested", { pr: pr.url, task: opener.task, head: pr.headRefOid });
+        if (await wake(pr, opener.task, `${pr.url}'s checks are green at \`${pr.headRefOid}\`. If this PR is your task's change, merge it with \`aidenhq merge ${pr.url} ${pr.headRefOid}\`; if it is superseded, close it with \`aidenhq close ${pr.url}\`. Nothing else.`)) log("merge requested", { pr: pr.url, task: opener.task, head: pr.headRefOid });
         continue;
       }
+      // Red checks whose jobs never started are the environment's: re-run once at this head, never a rebase or a wake.
+      if (pr.mergeable === "MERGEABLE" && await neverStarted(pr)) continue;
       const why = rebaseReason(pr, main.rollup);
-      if (!why) continue;
-      const key = `${url}:${main.oid}`;
-      // One ask per PR per half hour and per head of main: main moves every few minutes, and each ask is a run.
-      if (state.pinged[key] || Date.now() - Date.parse(state.asked[url] ?? "") < HALF_HOUR) continue;
-      if (why === "red") {
-        const c = await o.gh("GET", `/repos/${o.repo}/compare/${main.oid}...${pr.headRefOid}`, token);
-        if (!(Number(c.body?.behind_by) > 0)) { state.pinged[key] = new Date().toISOString(); save(); continue; } // red on its own: the merge queue reports that
+      if (why === "conflict" || why === "red") {
+        const key = `${url}:${main.oid}`;
+        const behind = why === "conflict" || Number((await o.gh("GET", `/repos/${o.repo}/compare/${main.oid}...${pr.headRefOid}`, token)).body?.behind_by) > 0;
+        if (behind) {
+          // Behind with no conflict: GitHub updates the branch (the runner's rebaseInCode), once per head and head of main, and no task is woken.
+          if (why === "red" && await updateBranch(pr, main.oid)) continue;
+          // One ask per PR per half hour and per head of main: main moves every few minutes, and each ask is a run.
+          if (state.pinged[key] || Date.now() - Date.parse(state.asked[url] ?? "") < HALF_HOUR) continue;
+          state.pinged[key] = state.asked[url] = new Date().toISOString();
+          save();
+          const what = why === "conflict"
+            ? `${pr.url} now conflicts with \`${main.name}\` (at \`${main.oid.slice(0, 12)}\`).`
+            : `${pr.url}'s checks failed (\`gh pr checks ${pr.url}\` names them) while it is behind \`${main.name}\` (at \`${main.oid.slice(0, 12)}\`, green): perhaps only because \`${main.name}\` moved.`;
+          if (await wake(pr, opener.task, `${what} Rebase the PR's branch onto \`origin/${main.name}\`, resolve any conflict, rerun the tests and publish once with \`aidenhq pr\`, without \`--title\` or \`--body-file\` (the PR keeps its own, and a rebase that leaves the change exactly as approved needs no new approval). If a check still fails for another reason, fix that on the same branch first. Nothing else.`)) log("rebase requested", { pr: pr.url, task: opener.task, why, main: main.oid });
+          continue;
+        }
       }
-      state.pinged[key] = state.asked[url] = new Date().toISOString();
-      save();
-      const what = why === "conflict"
-        ? `${pr.url} now conflicts with \`${main.name}\` (at \`${main.oid.slice(0, 12)}\`).`
-        : `${pr.url}'s checks failed (\`gh pr checks ${pr.url}\` names them) while it is behind \`${main.name}\` (at \`${main.oid.slice(0, 12)}\`, green): perhaps only because \`${main.name}\` moved.`;
-      await kernel("POST", "/v1/wakes", { task: opener.task, text: `${what} Rebase the PR's branch onto \`origin/${main.name}\`, resolve any conflict, rerun the tests and publish once with \`aidenhq pr\`, without \`--title\` or \`--body-file\` (the PR keeps its own, and a rebase that leaves the change exactly as approved needs no new approval). If a check still fails for another reason, fix that on the same branch first. Nothing else.` });
-      log("rebase requested", { pr: pr.url, task: opener.task, why, main: main.oid });
+      // Red on its own head: its named checks have all finished and some failed, and the PR is not only behind main.
+      if (pr.mergeable === "MERGEABLE" && !pr.isDraft && named.length && !named.some((c) => c.pending) && named.some((c) => !c.ok) && state.reded[url] !== pr.headRefOid) {
+        state.reded[url] = pr.headRefOid;
+        save();
+        if (await wake(pr, opener.task, `${pr.url}'s checks failed at \`${pr.headRefOid}\`: \`gh pr checks ${pr.url}\` lists the failures. Fix the cause on the PR's branch, rerun the tests and publish once with \`aidenhq pr\`, without \`--title\` or \`--body-file\`. Nothing else.`)) log("red head wake", { pr: pr.url, task: opener.task, head: pr.headRefOid });
+      }
     }
   }
 
