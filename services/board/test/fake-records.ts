@@ -12,5 +12,5 @@ export function fakeRecords(cards: Approval[] = []): Records & { cards: Approval
     cards
       .filter((a) => (!task || a.issueId === task || a.identifier === task) && (state === "owner" ? a.state === "pending" && a.tier === 2 : state === "pending" ? a.state === "pending" : state === "finished" ? a.outcome : true))
       .slice(0, limit);
-  return { cards, list, awaiting: async () => new Set((await list("owner")).map((a) => a.issueId)), advisories: async () => [] };
+  return { cards, list, awaiting: async () => new Set((await list("owner")).map((a) => a.issueId)), advisories: async () => [], connectionHealth: async () => ({}) };
 }

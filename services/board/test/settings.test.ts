@@ -9,6 +9,7 @@ import { stringify } from "yaml";
 import { createApp } from "../src/app.js";
 import type { Paperclip } from "../src/paperclip.js";
 import { Store } from "../src/store.js";
+import { fakeRecords } from "./fake-records.js";
 
 // The compiled config as scripts/modules.mjs writes it (paperclip.yaml, modules.json) and the grants table setup writes.
 const dir = mkdtempSync(join(tmpdir(), "settings-"));
@@ -42,8 +43,13 @@ writeFileSync(files.grants, JSON.stringify({ autonomy: "full", agents: { "id-1":
 writeFileSync(join(dir, "revs.jsonl"), JSON.stringify({ at: "2026-11-13T06:00:00Z", agent: "devops", product_sha: "a".repeat(40), instance_sha: "b".repeat(40) }) + "\n");
 
 const pc = { me: async () => "me-1", agents: async () => [], labels: async () => [], company: async () => ({ issuePrefix: "WOR" }) } as unknown as Paperclip;
+const kernelProbes = {
+  apps: { ok: true, status: 200, checkedAt: "2026-11-19T00:00:00Z" },
+  glean: { ok: false, status: 503, state: "missing", detail: "GLEAN_MCP_URL not set", checkedAt: "2026-11-19T00:00:00Z" },
+};
 const app = createApp({
   paperclip: pc,
+  records: { ...fakeRecords(), connectionHealth: async () => kernelProbes },
   store: new Store(":memory:"),
   log: pino({ level: "silent" }),
   allowedHosts: ["localhost:3120"],
@@ -93,11 +99,9 @@ describe("settings routes", () => {
     expect(d.instance).toMatchObject({ product: "a".repeat(40), instance: "b".repeat(40), lastChangeAt: "2026-11-13T06:00:00Z", boardTimezone: "Europe/London" });
   });
 
-  it("list every connection with who is granted it (read or write), its health and setup, the runner's services and the sources; no secrets", async () => {
+  it("list every connection with who is granted it (read or write), its health (the kernel's answer, never probed by the board) and setup, the runner's services and the sources; no secrets", async () => {
     vi.stubGlobal("fetch", async (url: URL | string) => {
       const u = String(url);
-      if (u.startsWith("http://glean-mcp")) return new Response(JSON.stringify({ ok: false, state: "missing", detail: "GLEAN_MCP_URL not set" }), { status: 503 });
-      if (u.startsWith("http://apps-mcp:8090/healthz")) return new Response('{"ok":true}');
       if (u.includes("/internal/sources")) return new Response(JSON.stringify({ sources: [{ source: "slack", last_ok: new Date().toISOString(), failing: false }] }));
       throw new Error(`unexpected ${u}`);
     });
