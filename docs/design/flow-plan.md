@@ -101,7 +101,7 @@ derived in SQL by `kernel/src/flow.ts`, served by `GET /v1/flow`. The board, Fle
 - Test: `kernel/test/admission.test.mjs`, `kernel/test/jobs.test.mjs` (extend)
 
 **Interfaces:**
-- Produces: `job.queued {wake, wake_at, agent}` (at admission insert; `wake_at` = the bound wake's `at`), `job.held {reason: "capacity"|"spend_cap"|"paused"|"no_computer"}` (once per reason change for a wake: version = wake key + reason), `job.started`, `job.ended {state, exit, why, model, cost_usd, input, cached, output, acted}` (`acted`: the job filed a record, posted a comment or changed its task's status); subject `job:<id>`, task = the job's task, actor `agent:<key>`.
+- Produces: `job.queued {wake, wake_at, agent}` (at admission insert; `wake_at` = the bound wake's `at`), `job.held {reason: "capacity"|"spend_cap"|"paused"|"no_computer"|"launcher_unavailable"}` (once per reason change for a wake: version = wake key + reason), `job.started`, `job.ended {state, exit, why, model, cost_usd, input, cached, output, acted}` (`acted`: the job filed a record, posted a comment or changed its task's status); subject `job:<id>`, task = the job's task, actor `agent:<key>`.
 - Cost: sum `calls.cost_usd` and tokens for the job. First check whether gateway `calls.run_id` equals the job id; if not, add the job id to the gateway run identity (`kernel/src/gateway/lib.ts` `RunIdentity`) and record it.
 
 - [ ] **Step 1: Failing tests**: `admitted then started yields queued and started facts with distinct times`; `a lost job ends with job.ended state lost`; `a held admission records job.held once per reason change`.

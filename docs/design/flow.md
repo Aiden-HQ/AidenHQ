@@ -122,7 +122,7 @@ Kernel (owns most of the pipeline already):
   issue fields (`statusVersion`, `updatedAt`, status, assignee, `blockedBy`), so both build the same id
   (`task.status_changed:<task>:<statusVersion>`, `task.assignee_changed:<task>:<updatedAt>`) and one change is counted
   once. A change the poll never saw between two reads is lost; that gap shows as `unknown`.
-- `admission.ts` / `jobs.ts`: `job.queued` (with `wake`), `job.held` (`reason`: capacity, spend_cap, paused, no_computer;
+- `admission.ts` / `jobs.ts`: `job.queued` (with `wake`), `job.held` (`reason`: capacity, spend_cap, paused, no_computer, launcher_unavailable;
   admission friction), `job.started`, `job.ended` (state, exit, `why`, cost and tokens summed from the gateway's `calls`
   for that job, so cost survives the gateway's 40-day pruning; the builder checks that `calls.run_id` is the job id, and
   if not, adds the job id to the gateway's run identity).

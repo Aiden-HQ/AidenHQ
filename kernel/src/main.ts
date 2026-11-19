@@ -202,6 +202,25 @@ const advisories = createAdvisories({ db: records.db, repo, catalog: path.join(c
 const timers: NodeJS.Timeout[] = [];
 const every = (fn: () => void, ms: number) => timers.push(setInterval(fn, ms).unref());
 const once = (fn: () => void, ms: number) => timers.push(setTimeout(fn, ms).unref());
+// Who owns a row across a restart. A restart drains the old kernel beside this one for at most DRAIN_MS (below): the old one
+// starts no job and no write after its drain begins, but finishes the launches and executions it had in flight. So a row this
+// process didn't make (a job still `admitted`, a write still `claimed`) is the previous kernel's until that process has exited
+// (its pid, recorded in kernel.db, is gone) or DRAIN_MS has passed; only then does this kernel recover it (afterPrevious).
+// A running job is followed by one process only: the old one detaches its watchers before this one adopts them.
+const DRAIN_MS = 5 * 60_000;
+let draining = false;
+const started = Date.now();
+records.db.exec("CREATE TABLE IF NOT EXISTS kernel_pid (one INTEGER PRIMARY KEY CHECK (one = 1), pid INTEGER NOT NULL)");
+const previousPid = (records.db.prepare("SELECT pid FROM kernel_pid").get() as { pid: number } | undefined)?.pid;
+records.db.prepare("INSERT INTO kernel_pid (one, pid) VALUES (1, ?) ON CONFLICT DO UPDATE SET pid = excluded.pid").run(process.pid);
+const pidAlive = (pid: number) => { try { process.kill(pid, 0); return true; } catch (e) { return (e as NodeJS.ErrnoException).code === "EPERM"; } };
+const previousGone = () => !previousPid || previousPid === process.pid || !pidAlive(previousPid) || Date.now() - started > DRAIN_MS + 30_000;
+/** Runs `fn` once the previous kernel has exited (checked every 5 s); at once when there is none. */
+const afterPrevious = (fn: () => void) => {
+  if (previousGone()) return fn();
+  const t = setInterval(() => { if (previousGone()) { clearInterval(t); fn(); } }, 5_000).unref();
+  timers.push(t);
+};
 every(() => void advisories.tick(), 10 * 60_000);
 once(() => void advisories.tick(), 30_000);
 // The public front door's certificate (exposure public, compiled into config/exposure; the IP is the host's .env): hourly.
@@ -351,7 +370,13 @@ const wakes = createWakes({
     notify.queue({ kind: "alert", text });
   },
 });
-setInterval(() => void wakes.poll(), (Number(env("AIDENHQ_WAKE_POLL_SECONDS", "")) || 60) * 1000).unref();
+// One poll at a time, stopped by a drain like every timer; a failed one is logged and the next tries again.
+let polling = false;
+every(() => {
+  if (polling) return;
+  polling = true;
+  void wakes.poll().catch((e: Error) => log("wake poll failed", { err: String(e.message ?? e).slice(0, 300) })).finally(() => { polling = false; });
+}, (Number(env("AIDENHQ_WAKE_POLL_SECONDS", "")) || 60) * 1000);
 // No idle agent-held task (idle.ts): agents' own waits (POST /v1/wait), and the idle sweep every 5 minutes.
 const idle = createIdle({ facts, flow, wakes, owner: ownerApi, team: (id) => Boolean(grantsTable().agents?.[id]?.team), log });
 setInterval(() => void idle.sweep().catch((e: Error) => log("idle sweep failed", { err: e.message })), 5 * 60_000).unref();
@@ -421,7 +446,7 @@ const jobTools = createJobTools({ db: records.db, secret: () => secret("gateway_
 const codehostGrants = (): OpsGrant[] => Object.entries(modulesFile().modules ?? {}).flatMap(([module, d]) => ((d as { codehost?: OpsGrant }).codehost ? [{ ...(d as { codehost: OpsGrant }).codehost, module }] : []));
 const codehostRepos = () => ({ instance: baseRepos.instance, product: baseRepos.product, agentsOrgs: repos().agentsOrgs, ...modulesFile().repos });
 boxes = createBoxes({
-  db: records.db, cfg: sandbox, jobs, call: launcherClient(launcherUrl, () => secret("launcher_kernel_key")), secret, whoami,
+  db: records.db, cfg: sandbox, jobs, stopping: () => draining, call: launcherClient(launcherUrl, () => secret("launcher_kernel_key")), secret, whoami,
   connections: () => computers().connections ?? {}, handbook: handbookFrom(configDir), cleanup: jobTools.cleanup, log, once: outcomes.once,
   attachments: {
     list: async (task) => (await cpJson(`/api/issues/${encodeURIComponent(task)}/attachments`)) as { originalFilename?: string; byteSize?: number }[],
@@ -457,8 +482,8 @@ const admission = createAdmission({
   provenance, routineCap: (task) => taskRoutineCap(cpTrace, task, grantsTable().routines as Record<string, string> | undefined),
   cp: { task: async (id) => { const r = await cpApi(`/api/issues/${encodeURIComponent(id)}`); return r.ok ? ((await r.json()) as never) : undefined; } },
 });
-admission.recover();
-boxes.start();
+afterPrevious(() => admission.recover());
+const stopTending = boxes.start();
 // The GitHub code host's operations, brokered for modules under their own codehost grants (codehost.ts).
 const codehost = createCodehost({ repos: codehostRepos, grants: codehostGrants, kind: () => Object.values(moduleKinds()).find((k) => k.module === CODEHOST && k.executor), secret, resolver, workspace: (module, task) => jobs.workspace(module, task),
   // codehost-local's snapshot for `local/…` repos, when that module is enabled.
@@ -594,7 +619,6 @@ raiseCap = async (r) => {
 // host:port pairs. Each binds on its own: the backplane address exists only once compose is up, so a failed bind is retried
 // (backoff up to a minute) while the others keep serving (a draining kernel's ports included). One process owns a port at a
 // time: never SO_REUSEPORT, which would let any process of this user take a share of the model calls and their credentials.
-let draining = false;
 const servers: http.Server[] = [];
 function listen(addr: string, ci = false, handler: http.RequestListener = (req, res) => gw.handle(req, res, { ci })) {
   const i = addr.lastIndexOf(":");
@@ -649,22 +673,23 @@ every(() => {
 
 // A restart (kernel/run.sh): the next kernel is starting. This one stops its jobs' watchers (offsets saved: the next one adopts
 // them), its timers and its listeners, so the next one can bind them; then it serves only the calls it holds (idle connections
-// closed, so callers reconnect to the next one) and exits when its model calls have finished, or at DRAIN_MS (the next kernel
-// settles what is left: lib.ts sweep and true-up).
-const DRAIN_MS = 5 * 60_000;
+// closed, so callers reconnect to the next one) and exits when its model calls and the job launches it had in flight have
+// finished (a launch that gets its box now gives it back: boxes.ts `stopping`), or at DRAIN_MS (the next kernel settles what
+// is left: lib.ts sweep and true-up, afterPrevious above).
 drain = () => {
   if (draining) return;
   draining = true;
   const t0 = Date.now();
   log("draining: the next kernel takes new calls; model calls in flight finish here", { inflight: gw.inflight(), jobs: jobs.running() });
   jobs.detach();
+  stopTending();
   for (const t of timers) clearTimeout(t);
   for (const s of servers) if (s.listening) s.close();
   const done = () => {
     for (const s of servers) s.closeIdleConnections();
     const t = Date.now() - t0;
-    if (gw.inflight() > 0 && t < DRAIN_MS) return;
-    log("drained: exiting", { inflight: gw.inflight(), ms: t });
+    if ((gw.inflight() > 0 || admission.inflight() > 0) && t < DRAIN_MS) return;
+    log("drained: exiting", { inflight: gw.inflight(), launches: admission.inflight(), ms: t });
     process.exit(0);
   };
   done();

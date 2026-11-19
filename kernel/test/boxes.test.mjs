@@ -37,6 +37,7 @@ async function host(t) {
   const cfg = { workDir: join(dir, "work"), stateDir: join(dir, "state"), logsDir: join(dir, "state/logs"), secretsDir: join(dir, "secrets"), enginesFile: join(dir, "engines.json"), boxGatewayUrl: "http://10.231.2.1:8200", boxDir: join(dir, "boxes"), timeout_minutes: 2 };
   writeFileSync(join(dir, "config/handbooks/agent-1.md"), "# Acme crew handbook\n");
   const calls = [];
+  const launcher = { fail: 0 }; // a status the next /job answers with (0: a box)
   let n = 0;
   const server = http.createServer((req, res) => {
     let b = "";
@@ -45,6 +46,7 @@ async function host(t) {
       const body = JSON.parse(b);
       calls.push({ route: req.url, auth: req.headers.authorization, body });
       if (req.url !== "/job") return res.writeHead(200).end(JSON.stringify({ state: "missing" }));
+      if (launcher.fail) { const status = launcher.fail; launcher.fail = 0; return res.writeHead(status).end(JSON.stringify({ error: "launcher trouble" })); }
       const container = `aidenhq-computer-k${++n}`, outDir = join(cfg.boxDir, container), envFile = join(cfg.boxDir, `${container}.env`);
       mkdirSync(outDir);
       writeFileSync(envFile, `AIDENHQ_RUN_TOKEN=${body.token}\n`);
@@ -77,7 +79,8 @@ async function host(t) {
   const attached = [];
   const attachments = { list: async () => attached.map((a) => ({ originalFilename: a.name, byteSize: a.data.length })), add: async (task, name, type, data) => void attached.push({ task, name, type, data }) };
   const once = createOnce(db);
-  const make = (now) => createBoxes({ db, cfg, jobs, attachments, once, cleanup: jobTools.cleanup, clones, call: launcherClient(url, () => secret("launcher_kernel_key")), secret, whoami, connections: () => ({ slack: {}, tasks: {} }), identity: (a) => ({ name: "Kai", email: `${grants[a].key}@acme.aidenhq.ai` }), handbook: (a) => (existsSync(join(dir, "config/handbooks", `${a}.md`)) ? readFileSync(join(dir, "config/handbooks", `${a}.md`), "utf8") : undefined), log: () => {}, ...(now ? { now } : {}) });
+  const draining = { on: false };
+  const make = (now) => createBoxes({ stopping: () => draining.on, db, cfg, jobs, attachments, once, cleanup: jobTools.cleanup, clones, call: launcherClient(url, () => secret("launcher_kernel_key")), secret, whoami, connections: () => ({ slack: {}, tasks: {} }), identity: (a) => ({ name: "Kai", email: `${grants[a].key}@acme.aidenhq.ai` }), handbook: (a) => (existsSync(join(dir, "config/handbooks", `${a}.md`)) ? readFileSync(join(dir, "config/handbooks", `${a}.md`), "utf8") : undefined), log: () => {}, ...(now ? { now } : {}) });
   boxes = make();
   const wakes = new Map();
   const admission = createAdmission({
@@ -89,7 +92,7 @@ async function host(t) {
   });
   const admit = (task) => { wakes.set(task, { task, agent: "agent-1" }); return admission.admit("acme-dispatch", { wake: task, prompt: "hello" }); };
   const release = () => writeFileSync(join(cfg.logsDir, "release"), "");
-  return { attached, dir, cfg, db, grants, calls, whoami, admit, release, make, jobTools, cloned };
+  return { attached, dir, cfg, db, grants, calls, whoami, admit, release, make, jobTools, cloned, launcher, draining };
 }
 
 test("admit → box → run: the kernel's key, the job token as the box's credential, the frozen tools in its config, the handbook home", async (t) => {
@@ -236,4 +239,18 @@ test("a link where .aidenhq/out should be is never followed", async (t) => {
   h.release();
   await until("the box released", () => h.db.prepare("SELECT released FROM jobs WHERE id = ?").get(job.id).released > 0);
   assert.deepEqual(h.attached, []);
+});
+
+test("a launcher that can't answer now, or a kernel draining for its successor, defers the job: never a failed job, the box given back", async (t) => {
+  const h = await host(t);
+  h.launcher.fail = 500;
+  assert.equal((await h.admit("task-1")).state, "deferred");
+  assert.equal(h.db.prepare("SELECT COUNT(*) AS n FROM jobs").get().n, 0); // no failed row: the wake goes back to its dispatcher
+  h.draining.on = true;
+  assert.equal((await h.admit("task-1")).state, "deferred");
+  assert.equal(h.calls.filter((c) => c.route === "/job/release").length, 1); // the box it got went back
+  h.draining.on = false;
+  assert.equal((await h.admit("task-1")).state, "running");
+  h.release();
+  await until("released", () => h.db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE released > 0").get().n === 1);
 });

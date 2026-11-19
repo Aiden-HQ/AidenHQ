@@ -95,6 +95,8 @@ export function createAdmission({ db, grants, kinds, capacity, spend, mayDispatc
   log: (msg: string, fields?: Record<string, unknown>) => void;
 }) {
   const fact = factWriter(facts, log);
+  /** The jobs this process admitted and is launching now: its drain waits for them, and recover() never takes them. */
+  const launching = new Set<string>();
   const keyOf = (agent: string) => grants()[agent]?.key ?? agent;
   /** Why an admission waits (flow's idle reasons), once per wake and reason. */
   const held = (wake: string, task: string, agent: string, reason: string) =>
@@ -140,7 +142,8 @@ export function createAdmission({ db, grants, kinds, capacity, spend, mayDispatc
     if (!/^[\w.-]{1,100}$/.test(identifier)) throw new JobError(400, "bad-task", `task ${task} has no identifier`);
 
     // The routine cap is traced now and frozen on the row: never recomputed from mutable parents later, never the dispatcher's.
-    const cap = await routineCap(task);
+    // A trace the control plane couldn't answer (a 5xx, a timeout) is no cap to freeze: the wake waits for its lease and comes back.
+    const cap = await routineCap(task).catch((e: Error) => { throw new JobError(503, "trace-unavailable", `task ${task}'s routine trace couldn't be read now (${String(e.message).slice(0, 200)}); try again shortly`); });
     // From here to COMMIT nothing awaits: two admits never interleave.
     const id = `j-${randomBytes(8).toString("hex")}`;
     let job: Admitted;
@@ -188,9 +191,11 @@ export function createAdmission({ db, grants, kinds, capacity, spend, mayDispatc
       throw e;
     }
     log("job admitted", { job: id, module, agent, task, profile: job.authority.profile });
+    launching.add(id);
     try {
       await launch(job);
     } catch (e) {
+      launching.delete(id);
       if ((e as { status?: number }).status !== 503) {
         const why = `couldn't start: ${(e as Error).message}`.slice(0, 500);
         if (db.prepare("UPDATE jobs SET state = 'failed', final = ?, ended = ? WHERE id = ? AND state = 'admitted'").run(why, Date.now(), id).changes)
@@ -199,10 +204,12 @@ export function createAdmission({ db, grants, kinds, capacity, spend, mayDispatc
       }
       const v = view(id);
       defer(id, b.wake);
-      held(b.wake, task, agent, "no_computer");
-      log("job deferred: no free computer", { job: id, task });
+      const reason = (e as JobError).code === "launcher-unavailable" ? "launcher_unavailable" : "no_computer";
+      held(b.wake, task, agent, reason);
+      log("job deferred", { job: id, task, reason, err: (e as Error).message.slice(0, 300) });
       return { ...v, state: "deferred" };
     }
+    launching.delete(id);
     nextTurn.taken(task);
     return view(id);
   }
@@ -229,10 +236,15 @@ export function createAdmission({ db, grants, kinds, capacity, spend, mayDispatc
       const r = db.prepare("SELECT authority FROM jobs WHERE id = ?").get(id) as { authority: string | null } | undefined;
       return r?.authority ? (JSON.parse(r.authority) as Authority) : undefined;
     },
-    /** At kernel start: a job admitted but not started when the last kernel stopped never ran; its wake is given back. */
+    /**
+     * Once the previous kernel has exited (main.ts afterPrevious: a draining kernel may still be launching what it admitted): a
+     * job admitted but never started by it never runs; its wake is given back. This process's own launches are never touched.
+     */
     recover() {
-      for (const r of db.prepare("SELECT id, wake FROM jobs WHERE state = 'admitted'").all() as { id: string; wake: string }[]) defer(r.id, r.wake);
+      for (const r of db.prepare("SELECT id, wake FROM jobs WHERE state = 'admitted'").all() as { id: string; wake: string }[]) if (!launching.has(r.id)) defer(r.id, r.wake);
     },
+    /** Launches in flight in this process (a drain waits for them). */
+    inflight: () => launching.size,
   };
 }
 export type Admission = ReturnType<typeof createAdmission>;
