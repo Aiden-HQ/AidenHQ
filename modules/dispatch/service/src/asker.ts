@@ -10,27 +10,30 @@ import { agentMade, type Directory, type Issue } from "./thread.ts";
 const CLOSED = new Set(["done", "cancelled"]);
 const h16 = (s: string) => createHash("sha256").update(s).digest("hex").slice(0, 16);
 
-/** Who heard it: the open parent, the asking agent's own task, the owner, or nobody (an owner's task: its note stays on it). */
-export type Told = "parent" | "asker" | "owner" | false;
+/**
+ * Who heard it: the open parent, the asking agent's own task (with the card it is filed as or already had), the owner, or nobody
+ * (an owner's task: its note stays on it).
+ */
+export type Told = { heard: "parent"; } | { heard: "asker"; card: string } | { heard: "owner" } | { heard: false };
 
 export function createAsker(kernel: Kernel) {
   /** `needs`: what the owner's line says the task needs ("was stopped"); without it only an open parent hears. */
   async function tell(task: Issue, text: string, needs?: string, key = text): Promise<Told> {
     const parent = task.parentId ? await kernel.task(task.parentId).catch(() => undefined) : undefined;
-    if (parent && !CLOSED.has(String(parent.status))) return (await kernel.wake(parent.id, text), "parent");
-    if (!needs || !agentMade(task)) return false;
+    if (parent && !CLOSED.has(String(parent.status))) return (await kernel.wake(parent.id, text), { heard: "parent" });
+    if (!needs || !agentMade(task)) return { heard: false };
     try {
-      await kernel.fileTask({
+      const card = await kernel.fileTask({
         agent: task.createdByAgentId!, title: `Decision needed: ${task.identifier}`, source: `escalation:${task.id}:${h16(key)}`,
         description: `${text}\n\nDecide on ${task.identifier} itself (it is not this task), as the note above says: your comment there is read as your next word on it. Then close this task.`,
       });
-      return "asker";
+      return { heard: "asker", card: card?.id ?? "" };
     } catch (e) {
       if (!(e instanceof KernelError && e.status === 409)) throw e; // 409: the asker is paused or gone
     }
     await kernel.notify({ kind: "decision", task: String(task.identifier), dedupe_key: `owner-told:${task.id}:${h16(key)}`,
       text: `🔧 **${task.identifier} ${needs}**, and the agent that asked for it is paused or gone. What it needs is on ${task.identifier}: reply there to carry on, or cancel it.` });
-    return "owner";
+    return { heard: "owner" };
   }
 
   /**

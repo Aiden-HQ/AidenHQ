@@ -137,6 +137,7 @@
     "route POST /v1/stop": {"state":"experimental","fp":"auth=board"},
     "route POST /v1/tasks": {"state":"experimental","fp":"auth=module"},
     "route POST /v1/tasks/:task/close": {"state":"experimental","fp":"auth=module"},
+    "route POST /v1/tasks/:task/comment": {"state":"experimental","fp":"auth=module"},
     "route POST /v1/wait": {"state":"experimental","fp":"auth=module+assertion"},
     "route POST /v1/wakes": {"state":"experimental","fp":"auth=module"},
     "route POST /v1/wakes/:key/drop": {"state":"experimental","fp":"auth=module"},

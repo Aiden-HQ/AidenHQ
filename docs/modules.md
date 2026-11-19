@@ -54,3 +54,22 @@ A task with a second module's marker is refused even when it also carries this m
 as its own, so a task that more than one module has touched is settled by a person. There is no release-specific
 widening — a task without a module marker is refused, and a task with no `kernel.apply` record is admitted only by the
 marker rule above.
+
+## `POST /v1/tasks/:task/comment` — add a line to a task the module filed
+
+Grant: `kernel.tasks`.
+
+```json
+{ "body": "**ACME-1 is still blocked.** Its latest reason: ..." }
+```
+
+The same ownership rule as closing it: the description carries this module's `<!-- aidenhq-module:<module> -->` marker and no
+other module's, and no agent made the task. Every other task is refused with 403, an unknown one with 404, an empty `body` with 400.
+
+The line is posted as the card's own agent through the kernel's post path, so it carries the kernel's own tag
+(`<!-- aidenhq:job=<task> kind=comment -->`): it wakes nobody and is never read as the owner's words, and the control plane's
+reopen never runs, so a card its delegator has closed stays closed. A closed or cancelled task takes no comment and answers
+`{ "comment": "", "already": true }`; one with no agent assignee is refused with 409.
+
+Use it to keep a card the module already opened current — a module that dedupes its escalations by episode posts the newest
+reason here instead of filing a second card.

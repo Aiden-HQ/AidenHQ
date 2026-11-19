@@ -11,6 +11,7 @@
 import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { neutral, type Api } from "./channels.ts";
+import type { PluginPost } from "./outcomes.ts";
 import { agentPaused } from "../sdk/src/agent-paused.ts";
 
 /** The marker of a task a module filed (dispatch thread.ts reads it). */
@@ -52,12 +53,14 @@ export class TaskError extends Error {
   constructor(status: number, message: string) { super(message); this.status = status; }
 }
 
-export function createModuleTasks({ db, owner, agents, rubric, log = () => {} }: {
+export function createModuleTasks({ db, owner, agents, plugin, rubric, log = () => {} }: {
   /** The kernel's database: which tasks were filed graded, by which module (the finish check holds one with no grade row). */
   db: DatabaseSync;
   owner: Api;
   /** The grants table's agents, by Paperclip id. */
   agents: () => Record<string, { roles?: string[] } | undefined>;
+  /** The kernel's post action, as a card's agent (outcomes.ts): skips the control plane's reopen, so a closed card stays closed. */
+  plugin: () => PluginPost;
   /** Files the grading rubric of a task the module filed (checks.ts rubric), as that module. */
   rubric?: (task: { id: string; identifier?: string }, module: string, b: { rubric: string[]; deliverable: unknown }) => Promise<void>;
   log?: (msg: string, f?: Record<string, unknown>) => void;
@@ -78,6 +81,27 @@ export function createModuleTasks({ db, owner, agents, rubric, log = () => {} }:
     if (u.status >= 300) throw new TaskError(502, `the control plane answered ${u.status}`);
     log("module task closed", { module, task: r.json.identifier, status: b.status });
     return { status: String(b.status), already: false };
+  }
+
+  /**
+   * A comment on a task this module filed (its marker, and no agent made it), as the card's own agent through the kernel's post
+   * path: it carries the kernel's tag (SELF_TAG: it wakes nobody) and skips the control plane's reopen, so a card its delegator
+   * closed stays closed. A card keeps its first words and takes each later reason here while it is open, so one card stays the
+   * record of one escalation.
+   */
+  async function comment(module: string, id: string, b: { body?: unknown }) {
+    const body = typeof b.body === "string" ? neutral(b.body).trim().slice(0, 2000) : "";
+    if (!UUID.test(id) || !body) throw new TaskError(400, "send {body}");
+    const r = await owner("GET", `/api/issues/${encodeURIComponent(id)}`);
+    if (r.status !== 200) throw new TaskError(404, `no task ${id}`);
+    if (r.json.createdByAgentId || !ownTask(module, String(r.json.description ?? ""))) throw new TaskError(403, `${r.json.identifier ?? id} isn't a task ${module} filed`);
+    if (["done", "cancelled"].includes(String(r.json.status))) return { comment: "", already: true };
+    const agent = String(r.json.assigneeAgentId ?? "");
+    if (!UUID.test(agent)) throw new TaskError(409, `${r.json.identifier ?? id} isn't assigned to an agent`);
+    const posted = await plugin().post(agent, { issueId: id, body, scope: "own", tag: `<!-- aidenhq:job=${id} kind=comment -->` });
+    if (posted.status >= 300 || posted.data?.refused || !posted.data?.comment) throw new TaskError(502, `the control plane refused the comment: ${posted.data?.refused ?? posted.status}`);
+    log("module task commented", { module, task: r.json.identifier });
+    return { comment: String(posted.data.comment) };
   }
 
   /**
@@ -141,6 +165,6 @@ export function createModuleTasks({ db, owner, agents, rubric, log = () => {} }:
     log("module task filed", { module, task: r.json.identifier, agent, source: b.source, deduplicated: Boolean(r.json.deduplicated) });
     return { id: String(r.json.id), identifier: String(r.json.identifier ?? ""), agent, deduplicated: Boolean(r.json.deduplicated) };
   }
-  return { file, close, list };
+  return { file, close, comment, list };
 }
 export type ModuleTasks = ReturnType<typeof createModuleTasks>;

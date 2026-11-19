@@ -44,7 +44,12 @@ export interface Kernel {
   /** A scheduled wake for the task's assignee at `at` (role kernel.wake; once per `id`): a job that couldn't start is tried again. */
   schedule(b: { task: string; at: number; cause: string; id: string }): Promise<void>;
   /** A task of this module's fixed text for an agent (role kernel.tasks), once per source; 409 when it is paused or gone. */
-  fileTask(b: { agent: string; title: string; description: string; source: string }): Promise<void>;
+  fileTask(b: { agent: string; title: string; description: string; source: string }): Promise<{ id: string } | void>;
+  /**
+   * A comment on a task this module filed, as its agent: a card keeps its first words and takes later reasons here. False when the
+   * task is closed (it takes no comment and is not reopened), so the caller can say it where the reader already is.
+   */
+  commentTask(task: string, body: string): Promise<boolean>;
   /** A message for the owner through the one notify (role kernel.owner-notice). */
   notify(b: { kind: "decision"; text: string; task: string; dedupe_key: string }): Promise<void>;
   /** A note on a task with no job behind it (a redirect, a missing request), posted as the agent, once per wake. */
@@ -78,7 +83,8 @@ export function createKernel(url: string, token: string, fetcher: typeof fetch =
     children: (parent, company) => call("GET", `/v1/cp/read/api/companies/${e(company)}/issues?parentId=${e(parent)}&status=todo,in_progress,in_review,blocked,done,cancelled&limit=200`).then((l: Issue[]) => l.filter((i) => i.parentId === parent)),
     wake: async (task, text) => void (await call("POST", "/v1/wakes", { task, text })),
     schedule: async (b) => void (await call("POST", "/v1/wakes", b)),
-    fileTask: async (b) => void (await call("POST", "/v1/tasks", b)),
+    fileTask: async (b) => await call("POST", "/v1/tasks", b),
+    commentTask: async (task, body) => Boolean((await call("POST", `/v1/tasks/${e(task)}/comment`, { body }))?.comment),
     notify: async (b) => void (await call("POST", "/v1/notify", b)),
     note: async (wake, body) => void (await call("POST", `/v1/wakes/${e(wake)}/note`, { body })),
   };
