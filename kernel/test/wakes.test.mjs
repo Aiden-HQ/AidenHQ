@@ -13,7 +13,7 @@ const iso = (ms) => new Date(ms).toISOString();
 /** A fake control plane: issues and their comments, read with the owner's key. */
 function world() {
   let clock = Date.parse("2026-11-18T10:00:00Z");
-  const issues = {}, comments = {};
+  const issues = {}, comments = {}, fail = { moves: 0 };
   const db = new DatabaseSync(":memory:");
   db.exec("CREATE TABLE jobs (id TEXT PRIMARY KEY, task TEXT, agent TEXT, state TEXT, at INTEGER)");
   const owner = async (method, path, body) => {
@@ -31,6 +31,7 @@ function world() {
     if ((m = /^\/api\/routines\/([^/]+)$/.exec(u.pathname))) return { status: 200, json: { id: m[1], concurrencyPolicy: "coalesce_if_active" } };
     if (method === "PATCH" && (m = /^\/api\/issues\/([^/]+)$/.exec(u.pathname))) {
       const i = issues[m[1]];
+      if (body.status && fail.moves > 0) return (fail.moves--, { status: 500, json: {} }); // a status write that times out
       if (body.status && i.blockedBy?.some((x) => x.status !== "done")) return { status: 409, json: {} }; // a cancelled blocker still refuses
       if (body.blockedByIssueIds) i.blockedBy = i.blockedBy.filter((x) => body.blockedByIssueIds.includes(x.id));
       if (body.status) Object.assign(i, { status: body.status, updatedAt: iso(clock) });
@@ -46,7 +47,7 @@ function world() {
   const facts = openFacts(db);
   const wakes = createWakes({ db, facts, owner, post, now: () => clock, routineKey: (id) => ({ rt: "digest" })[id], dispatches: { may: (mod, a) => mod === "dispatch" && a === AGENT, agents: (mod) => (mod === "dispatch" ? [AGENT] : []) } });
   const w = {
-    db, wakes, issues, posts, facts,
+    db, wakes, issues, posts, facts, fail,
     tick: (ms = 1000) => (clock += ms),
     issue: (id, f = {}) => (issues[id] = { id, status: "todo", assigneeAgentId: AGENT, updatedAt: iso(clock), statusVersion: 1, ...issues[id], ...f }),
     comment: (task, id, f = {}) => { (comments[task] ??= []).push({ id, body: "hi", authorAgentId: null, createdAt: iso(clock), ...f }); issues[task].updatedAt = iso(clock); },
@@ -267,4 +268,56 @@ test("a task the owner held, worked on before, is handed to an agent: one assign
   await w.wakes.event({ issueId: "t9" });
   assert.equal(w.rows("t9").length, 1);
   assert.match(w.rows("t9")[0], /^issue:t9:\S+ open$/);
+});
+
+test("a wake is consumed only by a job whose prompt had its cause: a comment after the claim, a wake due mid-run, and wakes behind a starter that never ran", async () => {
+  const w = world();
+  w.issue("t20");
+  await w.wakes.poll();
+  const [start] = w.wakes.claim("dispatch");
+  w.tick();
+  w.comment("t20", "c20"); // after the dispatcher read the thread, before the job spawned (a box start takes minutes)
+  w.db.prepare("UPDATE wakes SET job = 'j-20' WHERE key = ?").run(start.key);
+  w.db.prepare("INSERT INTO jobs VALUES ('j-20', 't20', ?, 'running', ?)").run(AGENT, w.tick(300_000));
+  await w.wakes.event({ issueId: "t20" });
+  await w.wakes.schedule("dispatch", { task: "t20", at: w.tick(), id: "check-ci" });
+  const live = w.wakes.claim("dispatch");
+  assert.deepEqual(live.map((x) => [x.key, x.live_job]), [["comment:c20", "j-20"]], "the comment goes into the run; the due follow-up waits for the next job");
+  w.db.prepare("UPDATE jobs SET state = 'done' WHERE id = 'j-20'").run();
+  w.tick(61_000);
+  assert.deepEqual(w.wakes.claim("dispatch").map((x) => x.key), ["wake_at:dispatch.check-ci"]);
+  // Two wakes on one task: one starts; the dispatcher drops it without a job, and the other comes back.
+  w.issue("t21");
+  await w.wakes.poll();
+  w.tick();
+  w.comment("t21", "c21");
+  await w.wakes.event({ issueId: "t21" });
+  const [first] = w.wakes.claim("dispatch").filter((x) => x.task === "t21");
+  w.wakes.drop("dispatch", first.key, "another agent's comment");
+  assert.deepEqual(w.wakes.claim("dispatch").filter((x) => x.task === "t21").map((x) => x.key), ["comment:c21"]);
+});
+
+test("a task handed to the agent while another job runs on it starts once that job ends", async () => {
+  const w = world();
+  w.issue("t22", { assigneeAgentId: OTHER });
+  await w.wakes.event({ issueId: "t22" });
+  w.db.prepare("INSERT INTO jobs VALUES ('j-22', 't22', ?, 'running', ?)").run(OTHER, w.tick());
+  w.tick();
+  w.issue("t22", { assigneeAgentId: AGENT, updatedAt: new Date(w.tick()).toISOString() });
+  await w.wakes.event({ issueId: "t22" });
+  assert.deepEqual(w.rows("t22"), [], "not while the job runs");
+  w.db.prepare("UPDATE jobs SET state = 'done' WHERE id = 'j-22'").run();
+  await w.wakes.poll();
+  assert.equal(w.wakes.claim("dispatch").filter((x) => x.task === "t22").length, 1);
+});
+
+test("an unblock whose move to todo fails after its relations were cleared is finished on the next poll", async () => {
+  const w = world();
+  w.issue("t23", { status: "blocked", blockedBy: [{ id: "b9", identifier: "WOR-b9", status: "cancelled" }] });
+  w.fail.moves = 1;
+  await w.wakes.poll();
+  assert.deepEqual([w.issues.t23.status, w.issues.t23.blockedBy.length], ["blocked", 0], "cleared, then the status write failed");
+  await w.wakes.poll();
+  assert.equal(w.issues.t23.status, "todo");
+  assert.match(w.rows("t23").join("\n"), /^unblocked:t23:b9:cancelled open$/m);
 });
