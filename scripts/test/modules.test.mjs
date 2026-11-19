@@ -325,6 +325,9 @@ test("checks: a task.finish check may observe; a hard gate or a write.filed chec
   assert.throws(() => checkEntries("judge", def({ mode: "warn" })), /mode is observe or enforce/);
   assert.throws(() => checkEntries("platform", { checks: [{ id: "product-gate", at: "write.filed", mode: "observe" }] }), /hard gate: it always enforces/);
   assert.throws(() => checkEntries("judge", { checks: [{ id: "lint", at: "write.filed", mode: "observe" }] }), /write\.filed check gates writes/);
+  // A write.filed check reaches the kernel with its kinds (it runs in process there), and names at least one.
+  assert.deepEqual(checkEntries("platform", { checks: [{ id: "product-gate", at: "write.filed", kinds: ["github.push"] }] }), { "platform.product-gate": { module: "platform", at: "write.filed", kinds: ["github.push"] } });
+  assert.throws(() => checkEntries("platform", { checks: [{ id: "product-gate", at: "write.filed" }] }), /names the write kinds/);
 });
 test("a module's token holds the kernel roles and the enabled modules' declared roles it requests (whoami's roles)", () => {
   const t = kernelModuleTable({ apps: { roles: { declares: [{ id: "apps.read", description: "d" }] } }, grading: { roles: { requests: ["kernel.wake", "apps.read", "nobody.declares"] } } });

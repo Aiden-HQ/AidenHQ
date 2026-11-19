@@ -1,5 +1,5 @@
 // The path inventory (kernel/src/paths.ts, scripts/paths.mjs, paths.yaml): it gates exactly the files the product's gate
-// lists gate today, every privileged module's folder at least for the reviewer, renames on both sides, and a repository write
+// lists gate, every privileged module's folder at least for the reviewer, renames on both sides, and a repository write
 // tiered through the kernel by the files its plan read; it fails closed and is itself protected.
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -10,8 +10,7 @@ import { join, relative } from "node:path";
 import YAML from "yaml";
 import { pathInventory } from "../../scripts/paths.mjs";
 import { authorityDiff } from "../../scripts/compiler/authority.ts";
-import { pathRaise, sensitivityOf } from "../src/paths.ts";
-import { GATE_CORE } from "../../modules/platform/src/check.mjs";
+import { globRe, pathRaise, sensitivityOf } from "../src/paths.ts";
 import { serveExecutor } from "../sdk/src/executor.ts";
 import { kernel, serve } from "./helpers.mjs";
 
@@ -79,7 +78,7 @@ test("a repository write where the product repo isn't known is the panel's under
   assert.deepEqual([r.tier, r.panel, r.rule], [1, true, "unknown-repos"]);
 });
 
-test("the platform check's module gate list and the inventory's panel paths under modules/ name the same files", () => {
-  const drift = modules.filter((f) => GATE_CORE.some((g) => g.test(f)) !== (sensitivityOf(inv, "product", f).sensitivity === "panel"));
-  assert.deepEqual(drift, []);
+test("every product entry of the inventory names a file, so a moved gate file shows up as a dead entry", () => {
+  const dead = inv.entries.filter((e) => e.repo !== "modules" && !product.some((f) => globRe(e.pattern).test(f))).map((e) => `${e.source}: ${e.pattern}`);
+  assert.deepEqual(dead, []);
 });

@@ -33,11 +33,14 @@ const BRANCHES = obj({
 }, ["workspace", "only"]);
 const CHANGES = (head: boolean) => obj({ prs: { type: "array", minItems: 1, maxItems: 30, items: obj({ repo: REPO, number: { type: "integer", minimum: 1 }, ...(head ? { head: { type: "string", pattern: "^[0-9a-f]{40}$" } } : {}) }, head ? ["repo", "number", "head"] : ["repo", "number"]) } }, ["prs"]);
 const CARD = { target: "{{target}}", sentence: "{{sentence}}", details: "{{diff}}" };
-/** The write kinds this code host executes: the same actions, args and floors as codehost-github's; the kernel registers them when the module is enabled. */
+/**
+ * The write kinds this code host executes: the same actions, args, floors and repository writes (`paths: true`: push, pr and
+ * merge, tiered by the files plan.mjs returns) as codehost-github's; the kernel registers them when the module is enabled.
+ */
 export const LOCAL_KINDS = Object.fromEntries(Object.entries({
   push: BRANCHES, pr: BRANCHES, merge: CHANGES(true), close: CHANGES(false),
   create_repo: obj({ repo: { type: "string", pattern: "^local/[a-z][a-z0-9-]{0,62}$" } }, ["repo"]),
-}).map(([action, args]) => [`codehost-local.${action}`, { module: "codehost-local", floor: 0 as const, tools: [] as string[], args, card: CARD }]));
+}).map(([action, args]) => [`codehost-local.${action}`, { module: "codehost-local", floor: 0 as const, ...(["push", "pr", "merge"].includes(action) ? { paths: true } : {}), tools: [] as string[], args, card: CARD }]));
 
 /** Each change's checks, as plan.mjs reads them ({ ok, pending }); the kernel's `change` check job on (repo, head, base). */
 /** `retry`: run again a check that couldn't run (a new request); otherwise the one asked for before, as it stands. `summary`: its receipt's. */

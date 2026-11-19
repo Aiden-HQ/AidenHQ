@@ -40,7 +40,8 @@ Then decide it on its merits, like any change:
   verdict loosened, an attack case deleted, a rule removed) is a weakening: reject it unless the chain asks for exactly
   that change.
 
-Dependabot pin bumps (rule `product-dependabot-merge`, see below): a pin moving inside a gate file (a CI workflow's `uses:`
+Dependabot pin bumps (a Dependabot PR's merge card, under `gate-core` with the panel when it touches a gate file; see
+below): a pin moving inside a gate file (a CI workflow's `uses:`
 SHA, a Dockerfile `FROM` under `services/computer/` or `ops/`, a `package.json` or lockfile under `services/gateway/`) is
 the expected change, not authority-expanding.
 

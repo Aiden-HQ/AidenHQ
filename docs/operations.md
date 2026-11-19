@@ -254,8 +254,8 @@ without the owner reaches Telegram once a day from 21:00.
   check, an unresolvable conflict or a refused merge is reported once on the task and left; the others keep merging. A
   queue that finishes during the run sets the task's status only after the run ends. A fork's or anyone else's head
   goes to the AI reviewer; `.github/` changes, sensitive apps and missing checks are cards and red checks a comment, as
-  before, once the run is over. Card-approved merges, and everything in the product and instance repos, still use the
-  one-at-a-time queue with the base branch green before and after each merge. The `design-review` status is advisory
+  before, once the run is over. Card-approved merges, and everything in the product and instance repos, merge one at a time per
+  repository (merges.ts), each only at the head its record bound, once every named check has passed there. The `design-review` status is advisory
   except on a Tier 0 merge of a UI PR: there it must be `success`, and with no verdict 2 hours after the other checks went
   green the reviewer is asked once more, and then the merge is parked with a note on the task. In either queue a red check whose Actions job never judged the commit
   (cancelled, timed out, failed to start, or `code-review`'s own "failed"/"incomplete" comment on that head) is re-run

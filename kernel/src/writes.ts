@@ -7,7 +7,8 @@
 // executed at once; Tier 1 and 2 go to the reviewer: the kernel's review loop gathers what it reads, sends it to the bound
 // reviewer module, holds the verdict to the record's review-first, and moves the record (the owner decides next, by
 // channel token or the kernel's page). Approved: claimed once → revalidated (a module kind: the same executor and policy,
-// and plan again: the same digest, else stale and refiled) → executed. A conn.tool record is executed by the proxy itself;
+// and plan again: the same digest, else stale and refiled) → executed. Before the tier, the modules' write.filed checks on the
+// kind run (config/kernel/checks.json, in process: filedRaises): each raises or refuses the write, never lowers it. A conn.tool record is executed by the proxy itself;
 // kernel.raise_cap and kernel.apply by the kernel.
 import http from "node:http";
 import { createHash } from "node:crypto";
@@ -21,6 +22,7 @@ import { REFUSALS_DDL } from "./jobs.ts";
 import { routeKind } from "./codehost.ts";
 import type { Executor } from "../sdk/src/executor.ts";
 import { writeRaise, type Inventory } from "./paths.ts";
+import { gateMode } from "./gates.ts";
 import { REVIEW_TRIES, afterReview, capText, codeVerdict, computeTier, failedVerdict, heldInput, requestTargets, shadowed, type Autonomy, type Raise, type ReviewFirst, type ReviewInput, type Cap, type RoutineCap, type Tier, type Verdict } from "./tier.ts";
 
 export type Schema = { type?: string; properties?: { [k: string]: Schema }; required?: string[]; additionalProperties?: boolean; enum?: unknown[]; pattern?: string; minLength?: number; maxLength?: number; items?: Schema; minItems?: number; maxItems?: number; minimum?: number; maximum?: number; exclusiveMinimum?: number };
@@ -31,6 +33,10 @@ export type Kind = { module: string; floor: Tier; panel?: boolean; paths?: boole
  * stands ("final": its reject is final, its approve goes on to the owner; "owner", the default: both go on to the owner).
  */
 type Plan = { args: unknown; targets?: { [k: string]: unknown }; facts?: { [k: string]: unknown }; raise?: Raise; review_first?: ReviewFirst; paths?: unknown; card?: { [k: string]: string }; satisfied?: { evidence: string } };
+/** A write.filed check as config/kernel/checks.json holds it (`<module>.<id>`): the kinds it runs on. */
+export type FiledCheck = { module: string; at: string; kinds?: string[]; mode?: unknown };
+/** A write.filed check's code, run in process on a filing: its verdict (`ok`, `raise` tier 1 or 2 with `panel`, or `deny`) raises or refuses, never lowers. */
+export type FiledCheckFn = (input: { kind: string; args: unknown; paths: unknown; facts: { productRepo?: string } }) => { verdict: string; tier?: number; panel?: boolean; rule?: string; reason?: string };
 /** The kernel's own planner for one of its kinds (kernel.apply: apply-tier.ts), in place of an executor's plan. */
 export type Planner = (b: { kind: string; args: unknown; requester: Requester; task: string; workspace?: string }) => Promise<Plan>;
 export const CONN_TOOL = "conn.tool";
@@ -83,7 +89,7 @@ const hash = (s: string) => createHash("sha256").update(s).digest("hex");
 const UNSURE = "reviewer_unsure";
 const MODEL = /^~?[\w.-]+\/[\w.:-]+$/;
 
-export function createWrites({ records, registry, connections, secret, resolver, reviews, autonomy = () => "full", repos = () => ({}), paths = () => undefined, onTask, replay, native = {}, planners = {}, executors = () => ({}), resume = [], log = () => {} }: {
+export function createWrites({ records, registry, connections, secret, resolver, reviews, autonomy = () => "full", repos = () => ({}), paths = () => undefined, checks = () => ({}), filedChecks = {}, onTask, replay, native = {}, planners = {}, executors = () => ({}), resume = [], log = () => {} }: {
   records: Records; registry: () => { [kind: string]: Kind }; connections: () => { [c: string]: Connection }; secret: (n: string) => string; resolver: Resolver;
   /** The bound reviewer module (reviews.ts): every record's review goes there. */
   reviews?: Reviews;
@@ -92,6 +98,10 @@ export function createWrites({ records, registry, connections, secret, resolver,
   repos?: () => Repos;
   /** The path inventory (config/kernel/paths.json, paths.ts): a `paths: true` kind's files raise its tier; missing is the owner's. */
   paths?: () => Inventory | undefined;
+  /** The checks registry (config/kernel/checks.json, the finish gate's too): its write.filed entries run on every filing of their kinds; one that won't load throws. */
+  checks?: () => Record<string, FiledCheck>;
+  /** The write.filed checks' code, by `<module>.<id>` (the platform check): run in process. */
+  filedChecks?: Record<string, FiledCheckFn>;
   /** The task a record is on: still open (and its parent), and a notice on it (fixed text; the module's words only fenced). */
   onTask: {
     open(task: string): Promise<boolean>; notify(task: string, text: string): Promise<void>; parent?(task: string): Promise<string | undefined>; routineCap?(task: string): Promise<RoutineCap | undefined>;
@@ -177,6 +187,34 @@ export function createWrites({ records, registry, connections, secret, resolver,
     return false;
   }
 
+  /**
+   * The write.filed checks on `kind`, each run on the plan (its args and the files it changes): their raises, for the tier.
+   * Fail closed: a registry that won't load, a check with no code here, or one that throws or answers malformed refuses the
+   * filing (503); a check's deny refuses it (422, the job's refusal). They always enforce (gates.ts: never observe).
+   */
+  function filedRaises(kind: string, plan: Plan): Raise[] {
+    const unavailable = (why: string) => fail(503, "check_failed", `the write checks are unavailable (${why}): nothing was filed; try again`);
+    let mine: [string, FiledCheck][];
+    try {
+      mine = Object.entries(checks()).filter(([, c]) => c?.at === "write.filed" && Array.isArray(c.kinds) && c.kinds.includes(kind));
+      for (const [id, c] of mine) { if (gateMode(id, c.mode) !== "enforce") throw new Error(`${id} would observe: a write.filed check always enforces`); }
+    } catch (e) {
+      throw unavailable(`checks.json: ${String((e as Error).message).slice(0, 200)}`);
+    }
+    const out: Raise[] = [];
+    for (const [id, c] of mine) {
+      const run = Object.hasOwn(filedChecks, id) ? filedChecks[id] : undefined;
+      if (!run) throw unavailable(`${id} has no code in this kernel`);
+      let v: ReturnType<FiledCheckFn>;
+      try { v = run({ kind, args: plan.args, paths: plan.paths, facts: { ...(repos().product ? { productRepo: repos().product } : {}) } }); } catch (e) { throw unavailable(`${id} failed: ${String((e as Error).message).slice(0, 200)}`); }
+      const reason = String(v?.reason ?? "").slice(0, 500);
+      if (v?.verdict === "deny") throw fail(422, "refused", `refused by ${c.module}'s ${id.slice(c.module.length + 1)} check (${v.rule ?? "deny"}): ${reason}`);
+      if (v?.verdict === "raise" && (v.tier === 1 || v.tier === 2)) out.push({ tier: v.tier, ...(v.panel ? { panel: true } : {}), rule: String(v.rule ?? id), reason });
+      else if (v?.verdict !== "ok") throw unavailable(`${id} answered no verdict`);
+    }
+    return out;
+  }
+
   /** Plan, tier, card and file. Tier 0 comes back claimed (the caller executes it); `satisfied` comes back done. */
   async function file(kind: string, k: Kind, requester: Requester, args: unknown, task: string, evidence?: unknown, workspace?: string): Promise<Rec> {
     const executor = { module: k.module, url: k.executor?.url, ...(k.executor?.rev ? { rev: k.executor.rev } : {}) };
@@ -195,8 +233,9 @@ export function createWrites({ records, registry, connections, secret, resolver,
     }
     const raise = plan.raise && (plan.raise.tier === 1 || plan.raise.tier === 2) ? plan.raise : undefined;
     const byPaths = k.paths ? writeRaise(paths(), plan.paths, repoKindOf) : undefined;
+    const checkRaises = [...(byPaths ? [byPaths] : []), ...filedRaises(kind, plan)];
     const reviewFirst: ReviewFirst = plan.review_first === "final" ? "final" : "owner";
-    const t = computeTier({ floor: k.floor, raise, reviewFirst, ...(byPaths ? { checkRaises: [byPaths] } : {}), priorVeto: task ? records.vetoed(task, kind, { digest: digestOf(base) }) : false, autonomy: autonomy(), routine: await routineOf(task), panel: k.panel === true, uncapped: isUpdater(requester) });
+    const t = computeTier({ floor: k.floor, raise, reviewFirst, checkRaises, priorVeto: task ? records.vetoed(task, kind, { digest: digestOf(base) }) : false, autonomy: autonomy(), routine: await routineOf(task), panel: k.panel === true, uncapped: isUpdater(requester) });
     if (t.tier > 0 && !task) throw fail(400, "no_task", `${kind} needs approval: pass your current task`);
     // The same requester's same request still open on the task is that record, never a second card that would run twice,
     // while it is at least as strict (tier and panel). A stricter one replaces it only while it waits for the reviewer; a
@@ -205,7 +244,9 @@ export function createWrites({ records, registry, connections, secret, resolver,
     const same = t.tier > 0 ? records.open(task, kind, digestOf(base)).find((r) => who(r.requester) === who(requester)) : undefined;
     if (same && same.tier >= t.tier && (same.panel || !t.panel)) return same;
     if (same?.state === "review") records.close(same.id, "cancelled", "replaced by the same request at a stricter tier");
-    const top = byPaths && byPaths.tier * 2 + (byPaths.panel ? 1 : 0) > (raise ? raise.tier * 2 + (raise.panel ? 1 : 0) : 0) ? byPaths : raise;
+    // The reason and rule shown: the strictest raise, the plan's on a tie.
+    const weight = (r: Raise | undefined) => (r ? r.tier * 4 + (r.ownerOnly ? 2 : 0) + (r.panel ? 1 : 0) : 0);
+    const top = checkRaises.reduce<Raise | undefined>((a, b) => (weight(b) > weight(a) ? b : a), raise);
     return records.file({ ...base, card: { ...card, reason: (t.rule ? capText(t.cap!) : top?.reason)?.slice(0, 300) ?? "" }, tier: t.tier, merit: t.merit, panel: t.panel, review_first: t.reviewFirst, rule: t.rule ?? top?.rule ?? null, cap: t.cap ?? null, state: t.state });
   }
 
