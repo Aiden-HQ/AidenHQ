@@ -45,7 +45,7 @@ export async function directory() {
     const res = await fetch(`${KERNEL}/v1/agents`, { headers: { authorization: `Bearer ${SERVICE_KEY}` }, signal: AbortSignal.timeout(10_000) });
     if (!res.ok) throw new Error(String(res.status));
     const j = await res.json();
-    dirCache = { agents: j.agents ?? {} };
+    dirCache = { agents: j.agents ?? {}, log_tasks: j.log_tasks ?? [] };
     dirAt = Date.now();
   } catch (err) {
     if (!dirCache) throw new Error(`Refused: the agent directory is unavailable (${String(err.message ?? err).slice(0, 100)}).`);
@@ -291,8 +291,8 @@ async function ownerUserId() {
   return (await memo("owner", async () => (await api("GET", `/api/companies/${encodeURIComponent(COMPANY())}`)).defaultResponsibleUserId ?? null)) ?? undefined;
 }
 
-/** One of setup's log tasks (scripts/modules.mjs ensureLogTasks, ensureFleetIssues): an agent holds it, but it is a log, not work. */
-const isLogTask = (i) => !i.createdByAgentId && (/<!-- source:(memory-inbox|review-log|chat-task):[\w-]+ -->/.test(i.description ?? "") || i.title === "Fleet issues");
+/** One of setup's log tasks (the kernel's directory, from the grants table): an agent holds it, but it is a log, not work. */
+const isLogTask = (i) => (cx().dir.log_tasks ?? []).some((x) => x === i.id || x === i.identifier);
 
 /** One of the user's own tasks: assigned to them, or theirs to answer for. */
 async function isUsersTask(id) {

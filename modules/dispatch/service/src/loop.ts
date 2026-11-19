@@ -141,7 +141,7 @@ export function createDispatch({ kernel, db, owner, log = () => {} }: { kernel: 
     else if (first && agentMade(task) && stripHidden(task.description).trim()) words.task = "agent";
     else if (first && moduleMade(task)) words.task = "module";
     else if (scheduled && !fresh.length) words.task = "scheduled";
-    // Handed to this agent after earlier work on it (the owner reassigning one of their tasks): it picks the task up.
+    // Handed to this agent after earlier work on it (whoever moved it): it picks the task up, its text as context only.
     else if (!first && w.cause === "assigned" && !fresh.length) words.task = "assigned";
 
     if (!words.task && !fresh.length) {

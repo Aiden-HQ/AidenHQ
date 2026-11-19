@@ -135,8 +135,6 @@ const approvalView = (approval: Approval) => {
 
 const REF = /^(?:[0-9a-f-]{36}|[A-Z][A-Z0-9]{1,9}-\d{1,7})$/;
 const RECENT_MS = 48 * 3_600_000;
-/** The marker of setup's log tasks an agent holds (scripts/modules.mjs ensureLogTasks): logs, never board work. */
-const LOG_TASK = /<!-- source:(memory-inbox|review-log|chat-task):[\w-]+ -->/;
 const WORKWEEK: Weekday[] = ["monday", "tuesday", "wednesday", "thursday", "friday"];
 
 // The page and its assets only. Remote images are blocked too (tracking pixels in email/Slack text).
@@ -287,9 +285,19 @@ export function createApp(opts: AppOptions): Server {
     return { me, agents, labels, assignees: assignees(agents), prefix: company.issuePrefix ?? "" };
   }
 
-  /** The tasks the board shows: assigned to the user, the Researcher or an Engineer; never setup's log tasks an agent holds (scripts/modules.mjs ensureLogTasks). */
+  /**
+   * Setup's log tasks an agent holds, from the grants table only (the kernel's task-scope.ts logTasks reads the same fields):
+   * logs, never board work.
+   */
+  const logTasks = (): Set<string> => {
+    try {
+      const g = JSON.parse(readFileSync(process.env.AIDENHQ_GRANTS_FILE ?? "", "utf8")) as { agents?: Record<string, { memory_inbox?: string; review_log?: string; chat_task?: string }>; fleet_issues?: string };
+      return new Set([...Object.values(g.agents ?? {}).flatMap((a) => [a.memory_inbox, a.review_log, a.chat_task]), g.fleet_issues].filter((x): x is string => typeof x === "string" && x !== ""));
+    } catch { return new Set(); }
+  };
+  /** The tasks the board shows: assigned to the user, the Researcher or an Engineer; never setup's log tasks an agent holds. */
   const mine = (issues: Issue[], ctx: { me: string; assignees: Assignee[] }) =>
-    issues.filter((i) => (i.assigneeAgentId ? ctx.assignees.some((a) => a.key === i.assigneeAgentId) && !LOG_TASK.test(i.description ?? "") : i.assigneeUserId === ctx.me));
+    issues.filter((i) => (i.assigneeAgentId ? ctx.assignees.some((a) => a.key === i.assigneeAgentId) && !logTasks().has(i.id) && !logTasks().has(i.identifier) : i.assigneeUserId === ctx.me));
 
   /** A task the board may change: assigned to the user, the Researcher or an Engineer. */
   async function ownIssue(ref: string) {

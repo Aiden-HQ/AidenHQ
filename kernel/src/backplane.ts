@@ -87,6 +87,7 @@ import type { JobTools } from "./jobtools.ts";
 import type { Routing } from "./routing-tune.ts";
 import { CODEHOSTS, hostOf } from "./codehost.ts";
 import { fail } from "./proxy.ts";
+import { logTasks } from "./task-scope.ts";
 import type { Records, Requester, State } from "./records.ts";
 import type { BoardApi } from "./board-api.ts";
 import type { Work } from "./work.ts";
@@ -370,7 +371,8 @@ export function createBackplane({ facts, whoami, asserter, proxy, cp, boardCp, g
           const t = grantsFile();
           const agents = Object.fromEntries(Object.entries(t.agents ?? {}).map(([id, g]) => [id, Object.fromEntries(DIRECTORY.filter((k) => g[k] !== undefined).map((k) => [k, g[k]]))]));
           // The repos the instance reaches (the agents orgs, product, github_orgs, maintainer_repos): what a deliverable may name.
-          return send(res, 200, { agents, repos: repos() });
+          // Setup's log tasks (task-scope.ts logTasks): the tasks bridge keeps them out of an agent's own work.
+          return send(res, 200, { agents, repos: repos(), log_tasks: [...logTasks(t as never)] });
         }
         case "POST /c/:connection/mcp": case "DELETE /c/:connection/mcp": return await proxy(req, res, m[0]!);
         case "ANY /v1/board-api/:module/*": {

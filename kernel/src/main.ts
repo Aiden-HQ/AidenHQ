@@ -62,7 +62,7 @@ import { createBoardApi } from "./board-api.ts";
 import { hostPlanner } from "./apply-tier.ts";
 import { inventoryOf } from "./paths.ts";
 import { taskRoutineCap } from "./tier.ts";
-import { scopeOf } from "./task-scope.ts";
+import { logTasks, scopeOf } from "./task-scope.ts";
 import { createProvenance } from "./provenance.ts";
 import { KERNEL_KINDS, LOCAL_ORG, raiseCapCard } from "./kinds.ts";
 import { admittedJob, createJobs, dispatchesFrom } from "./jobs.ts";
@@ -131,7 +131,7 @@ const onTask = {
   scope: async (task: string, agent: string) => {
     const i = await issueOf(task);
     if (!i) return undefined;
-    return { id: i.id, identifier: i.identifier, scope: await scopeOf(i, agent, issueOf) };
+    return { id: i.id, identifier: i.identifier, scope: await scopeOf(i, agent, issueOf, logTasks(grantsTable() as never)) };
   },
   notify: async (task: string, body: string) => { const r = await cpApi(`/api/issues/${encodeURIComponent(task)}/comments`, { method: "POST", body: JSON.stringify({ body }) }); if (!r.ok) log("notice failed", { task, status: r.status }); },
   // The cap of a routine whose run started the task's chain, traced as the runner traces it; a read that fails is "off".
@@ -330,10 +330,7 @@ const localRepoExists = (repo: string) => { try { return existsSync(path.join(lo
 const wakes = createWakes({
   db: records.db, facts, owner: ownerApi, post: outcomes.post, log,
   // Setup's log tasks (memory inboxes, review logs, chat tasks, Fleet issues): held by an agent, they wake nobody.
-  containers: () => {
-    const g = grantsTable() as { agents?: Record<string, { memory_inbox?: string; review_log?: string; chat_task?: string }>; fleet_issues?: string };
-    return new Set([...Object.values(g.agents ?? {}).flatMap((a) => [a.memory_inbox, a.review_log, a.chat_task]), g.fleet_issues].filter((x): x is string => typeof x === "string" && x !== ""));
-  },
+  containers: () => logTasks(grantsTable() as never),
   routineKey: (id) => (grantsTable().routine_keys as Record<string, string> | undefined)?.[id],
   dispatches: { may: mayDispatch, agents: (module) => Object.keys(grantsTable().agents ?? {}).filter((id) => mayDispatch(module, id)) },
   // Teams (team-routing.ts): a task on a team record goes to a member; the team's day cap is the gateway's own day scope.

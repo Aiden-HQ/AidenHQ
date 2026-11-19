@@ -32,7 +32,7 @@ import type { Once } from "./once.ts";
 import { delegateIds, OutcomeError, type PluginPost } from "./outcomes.ts";
 import type { Provenance } from "./provenance.ts";
 import { fail } from "./proxy.ts";
-import { scopeOf as taskScopeOf } from "./task-scope.ts";
+import { isLogTask, logTasks, scopeOf as taskScopeOf } from "./task-scope.ts";
 
 // One path segment: never a dot segment, which URL resolution would turn into another route.
 const ID = "(?!\\.+(?:/|$))[A-Za-z0-9_.:-]{1,100}";
@@ -125,7 +125,9 @@ export function createCp({ whoami, asserter, plugin, once, agentKey, grants, fle
     const roles = c.roles ?? [];
     const keyOf = (id?: string | null) => (id ? String(table[id]?.key ?? "another agent") : "");
     /** Why this job may write on task `t` (post.js scopes), or undefined. */
-    const scopeOf = (t: Issue) => taskScopeOf(t, agent, issue);
+    // Setup's log tasks (grants): held by an agent, they take comments only, and never a child (task-scope.ts).
+    const logs = logTasks({ agents: table as never, fleet_issues: fleetIssues() });
+    const scopeOf = (t: Issue) => taskScopeOf(t, agent, issue, logs);
     /** A comment-only write's scope where the job has no other: the grants table's tasks for it, the Fleet issues log, a librarian's inboxes, the chief of staff anywhere. */
     const commentScope = (t: Issue) => {
       const own = table[agent] ?? {};
@@ -192,6 +194,7 @@ export function createCp({ whoami, asserter, plugin, once, agentKey, grants, fle
       await ownerOnly(b.assigneeUserId);
       if (leavesNoHolder(undefined, b)) throw fail(400, "bad_request", NO_HOLDER);
       const parent = typeof b.parentId === "string" && b.parentId ? await issue(b.parentId) : undefined;
+      if (parent && isLogTask(parent, logs)) throw fail(403, "forbidden", `${parent.identifier ?? parent.id} is a log task: it takes comments only`);
       const scope = parent ? (await scopeOf(parent)) ?? (b.assigneeAgentId === agent ? "part" : refuse(parent)) : "own";
       const child = Object.fromEntries(CREATE.slice(0, 7).filter((k) => b[k] !== undefined).map((k) => [k, b[k]]));
       const tag = tagOf("created", op);
@@ -215,8 +218,8 @@ export function createCp({ whoami, asserter, plugin, once, agentKey, grants, fle
     if (patch.assigneeAgentId !== undefined && patch.assigneeAgentId !== null) throw fail(403, "forbidden", "a task is handed to another agent by its delegator, not reassigned here (assigneeAgentId: null hands it back)");
     await ownerOnly(patch.assigneeUserId);
     if (leavesNoHolder(t, { ...patch, ...(status !== undefined ? { status } : {}) })) throw fail(400, "bad_request", `${NO_HOLDER}: handing a task back names the owner (assigneeUserId)`);
-    // Setup's log tasks (the ones commentScope lists) take comments only, even from the agent that holds them.
-    if ((status !== undefined || Object.keys(patch).length) && commentScope(t) === "listed") throw fail(403, "forbidden", `${t.identifier ?? t.id} is a log task: it takes comments only`);
+    // Setup's log tasks take comments only, even from the agent that holds them.
+    if ((status !== undefined || Object.keys(patch).length) && isLogTask(t, logs)) throw fail(403, "forbidden", `${t.identifier ?? t.id} is a log task: it takes comments only`);
     const scope = (await scopeOf(t)) ?? (status === undefined && !Object.keys(patch).length ? commentScope(t) : undefined) ?? refuse(t);
     let gated = false;
     if (status === "done") {
