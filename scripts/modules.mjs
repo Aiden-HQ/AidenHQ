@@ -119,7 +119,6 @@ export const LEGACY_HOST_ENV = {
   google: ["BOARD_LAN_URL", "GOOGLE_CALENDAR_ID", "AIDENHQ_GATEWAY_URL"],
   jira: ["AIDENHQ_GATEWAY_URL"],
   tasks: ["AIDENHQ_GATEWAY_URL"],
-  github: ["GITHUB_COMMENT_ORGS"],
   slack: ["SLACK_CLIENT_ID"],
 };
 /** Networks the ops shell makes (fixed bridge, subnet and host rule: ops/units/aidenhq-ci-net.service). */
@@ -249,12 +248,19 @@ export function frontmatter(text) {
   return m ? { meta: YAML.parse(m[1]) ?? {}, body: text.slice(m[0].length) } : { meta: {}, body: text };
 }
 
+/** settings.<key>.owner: what an agent's change to the setting may not do without the owner (kernel/src/apply-tier.ts ownerRaises). */
+function ownerRules(file, key, rules) {
+  const ok = (r) => r && typeof r === "object" && /^[\w*-]+(\.[\w*-]+)*$/.test(String(r.path)) && Object.keys(r).every((f) => ["path", "raise", "change", "to", "new", "before", "default"].includes(f)) && ["raise", "change", "to", "new"].filter((f) => f in r).length === 1 && (r.raise ?? r.change ?? r.new ?? true) === true;
+  if (!Array.isArray(rules) || !rules.every(ok)) fail(`${file}: settings.${key}.owner is a list of { path, one of raise: true, change: true, to: <value>, new: true (before: <text>), and the field's default where unset }`);
+  return rules;
+}
+
 /** A module's settings for the board: default, allowed values, required, and the comment above each key as its `doc`. */
 function settingDefs(file, def) {
   const map = YAML.parseDocument(readFileSync(file, "utf8")).get("settings", true);
   // The first key's comment is attached to the map itself.
   const docs = Object.fromEntries((map?.items ?? []).map((p, i) => [String(p.key?.value ?? p.key), (p.key?.commentBefore ?? (i === 0 ? map.commentBefore : "") ?? "").replace(/^ ?/gm, "").replace(/\s*\n\s*/g, " ").trim()]));
-  return Object.fromEntries(Object.entries(def.settings ?? {}).filter(([k]) => !/token|secret|password/i.test(k)).map(([k, d]) => [k, { ...(d && "default" in d ? { default: d.default } : {}), ...(d?.values ? { values: d.values } : {}), ...(d?.required ? { required: true } : {}), ...(d?.type ? { type: d.type } : {}), ...(d?.host ? { host: d.host } : {}), ...(docs[k] ? { doc: docs[k] } : {}) }]));
+  return Object.fromEntries(Object.entries(def.settings ?? {}).filter(([k]) => !/token|secret|password/i.test(k)).map(([k, d]) => [k, { ...(d && "default" in d ? { default: d.default } : {}), ...(d?.values ? { values: d.values } : {}), ...(d?.required ? { required: true } : {}), ...(d?.type ? { type: d.type } : {}), ...(d?.host ? { host: d.host } : {}), ...(d?.writers ? { writers: [d.writers].flat().map(String) } : {}), ...(d?.owner ? { owner: ownerRules(file, k, d.owner) } : {}), ...(docs[k] ? { doc: docs[k] } : {}) }]));
 }
 
 /**
@@ -1302,6 +1308,14 @@ export function kernelModuleTable(defs, settings = {}) {
       if (JSON.stringify(codehost).includes("${")) fail(`module ${name}: codehost: names no settings (use @instance, @product or @agents/…)`);
       try { validate(CODEHOST_SCHEMA, codehost, "codehost"); } catch (err) { fail(`module ${name}: ${err.message}`); }
     }
+    // providers.board: { url: http://<service>:<port>, auth: one of its own secrets }: the module's HTTP API the board reads
+    // through the kernel (GET|POST /v1/board-api/<module>/<path>, kernel/src/board-api.ts), instead of a network to the board.
+    const bd = def.providers?.board;
+    if (bd != null) {
+      if (typeof bd !== "object" || Array.isArray(bd) || Object.keys(bd).some((k) => !["url", "auth"].includes(k))) fail(`module ${name}: providers.board is { url, auth }`);
+      if (!/^http:\/\/[a-z][a-z0-9-]*:\d+$/.test(String(bd.url)) || /^http:\/\/localhost:/.test(String(bd.url))) fail(`module ${name}: providers.board.url must be http://<service>:<port>, a compose service`);
+      if (!ownSecrets(def).includes(bd.auth)) fail(`module ${name}: providers.board.auth must name one of its own secrets`);
+    }
     const { facts, stages, journeys } = flowDecls(name, def, declared);
     // Two modules may declare one journey (github and codehost-local both draw `pr`): only the same declaration.
     for (const j of journeys ?? []) {
@@ -1312,6 +1326,7 @@ export function kernelModuleTable(defs, settings = {}) {
       ...(roles.length ? { roles } : {}), ...(facts ? { facts } : {}), ...(stages ? { stages } : {}), ...(journeys ? { journeys } : {}), ...(privileged.length ? { privileged } : {}), ...(codehost != null ? { codehost } : {}),
       // A module that generates its own `<module>_token` is known to the kernel by it (whoami): its roles are the kernel.* ones it requests, none otherwise.
       ...((def.generated_secrets ?? []).includes(token) ? { token } : {}),
+      ...(bd != null ? { board: { url: String(bd.url), auth_secret: String(bd.auth) } } : {}),
       ...(ch != null ? { channel: { ...(ch.stamp ? { stamp: String(ch.stamp) } : {}), ...(ch.stale === true ? { stale: true } : {}), ...(ch.transport ? { transport: String(ch.transport) } : {}), ...(ch.credentials === true ? { credentials: true } : {}) }, settings: Object.fromEntries(Object.keys(def.settings ?? {}).map((k) => [k, settings[k]])) } : {}),
     };
     if (Object.keys(e).length) out[name] = e;
@@ -1368,7 +1383,9 @@ export function checkEntries(name, def) {
  * `check_jobs`, by run name): the command (argv, run in the workspace or in the spec's `cwd_from` folder), its time limit, how a
  * result is titled, the spec's fields (each a kind of CHECK_KINDS), the files of its `dir` (laid in the box at
  * /aidenhq-out/recipe, small text files) and, by field, what the kernel enforces: `declares` (a package.json script the base
- * keeps) and `judged` (the reviewer eval's layout of judge files and cases, whose spec is exactly the judging commits').
+ * keeps), `judged` (the reviewer eval's layout of judge files and cases, whose spec is exactly the judging commits'), `model`
+ * ({ max_usd }: a model token of the check's own, capped at its spec's `budget_usd` up to max_usd) and `result` (true: the
+ * recipe writes a JSON result the receipt binds).
  */
 const JUDGED_SPEC = ["repo", "judge_commit", "subject_commit", "cases_from", "policy_hash"];
 export function checkJobs(name, def, root) {
@@ -1376,7 +1393,7 @@ export function checkJobs(name, def, root) {
   for (const [run, r] of Object.entries(def.check_jobs ?? {})) {
     const where = `module ${name}: check_jobs.${run}`;
     if (!/^[a-z][a-z0-9_-]{0,30}$/.test(run)) fail(`${where}: the name is lowercase letters, digits, - and _`);
-    const extra = Object.keys(r ?? {}).filter((f) => !["dir", "argv", "timeout_min", "title", "spec", "declares", "cwd_from", "judged"].includes(f));
+    const extra = Object.keys(r ?? {}).filter((f) => !["dir", "argv", "timeout_min", "title", "spec", "declares", "cwd_from", "judged", "model", "result"].includes(f));
     if (extra.length) fail(`${where}: unknown field ${extra.join(", ")}`);
     if (!Array.isArray(r.argv) || !r.argv.length || r.argv.some((a) => typeof a !== "string" || !a)) fail(`${where}: argv is the command, a list of strings`);
     if (!Number.isInteger(r.timeout_min) || r.timeout_min < 1 || r.timeout_min > 120) fail(`${where}: timeout_min is whole minutes, 1 to 120`);
@@ -1385,6 +1402,9 @@ export function checkJobs(name, def, root) {
     if (!spec || typeof spec !== "object" || Object.entries(spec).some(([k, v]) => !/^[a-z_]{1,30}$/.test(k) || !(v in CHECK_KINDS))) fail(`${where}: spec maps field names to ${Object.keys(CHECK_KINDS).join(", ")}`);
     if (r.declares != null && (typeof r.declares !== "string" || spec.base !== "sha")) fail(`${where}: declares names a package.json script and needs spec.base (sha)`);
     if (r.cwd_from != null && spec[r.cwd_from] !== "dir") fail(`${where}: cwd_from names a spec field of kind dir`);
+    if (r.model != null && (typeof r.model !== "object" || Object.keys(r.model).join() !== "max_usd" || !(r.model.max_usd > 0 && r.model.max_usd <= 100) || spec.budget_usd !== "usd")) fail(`${where}: model is { max_usd: 0-100 } and needs spec.budget_usd (usd)`);
+    if (r.result != null && r.result !== true) fail(`${where}: result is true or absent`);
+    if ((r.model != null || r.result != null) && r.judged != null) fail(`${where}: a judged run takes neither model nor result`);
     let judged;
     if (r.judged != null) {
       const j = r.judged;
@@ -1403,7 +1423,7 @@ export function checkJobs(name, def, root) {
         files[f.name] = readFileSync(join(dir, f.name), "utf8");
       }
     }
-    out[run] = { module: name, argv: r.argv, timeout_min: r.timeout_min, title: r.title, spec, files, ...(r.declares ? { declares: r.declares } : {}), ...(r.cwd_from ? { cwd_from: r.cwd_from } : {}), ...(judged ? { judged } : {}) };
+    out[run] = { module: name, argv: r.argv, timeout_min: r.timeout_min, title: r.title, spec, files, ...(r.declares ? { declares: r.declares } : {}), ...(r.cwd_from ? { cwd_from: r.cwd_from } : {}), ...(judged ? { judged } : {}), ...(r.model ? { model: { max_usd: r.model.max_usd } } : {}), ...(r.result ? { result: true } : {}) };
   }
   return out;
 }

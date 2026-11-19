@@ -3,7 +3,7 @@
 // with the owner's client, assigned to the agent holding the role the module names (grants `roles`: never an agent's key) or
 // to an agent by id (the asker of a task, which the module read from the task),
 // marked as the module's (`<!-- aidenhq-module:<module> -->`, which the dispatch module reads as a module's request, not the
-// owner's) and keyed by the module's `source` (`<!-- source:<source> -->`, Paperclip idempotency key pw-<sha256>): filing the
+// owner's; `quiet`: filed in the backlog, a holder for records that wakes nobody) and keyed by the module's `source` (`<!-- source:<source> -->`, Paperclip idempotency key pw-<sha256>): filing the
 // same source twice is one task. Its assignment wakes the agent (wakes.ts): no comment is needed to start it. The module
 // closes its own tasks (POST /v1/tasks/:task/close) when their work is moot, and lists them by source (GET /v1/tasks?source=)
 // so a sweep with no id in hand finds the ones it filed. Both read the module marker generically: a task is this module's
@@ -105,11 +105,12 @@ export function createModuleTasks({ db, owner, agents, rubric, log = () => {} }:
     return { tasks: tasks.filter((t) => t.id) };
   }
 
-  async function file(module: string, b: { title?: unknown; description?: unknown; role?: unknown; agent?: unknown; source?: unknown; parent?: unknown; deliverable?: unknown; rubric?: unknown }) {
+  async function file(module: string, b: { title?: unknown; description?: unknown; role?: unknown; agent?: unknown; source?: unknown; parent?: unknown; deliverable?: unknown; rubric?: unknown; quiet?: unknown }) {
     const title = typeof b.title === "string" ? neutral(b.title).trim().slice(0, 200) : "";
     const description = typeof b.description === "string" ? neutral(b.description).trim().slice(0, 20_000) : "";
     const by = typeof b.role === "string" ? "role" : typeof b.agent === "string" ? "agent" : "";
-    if (!title || !description || !by || (b.role !== undefined && b.agent !== undefined) || typeof b.source !== "string" || !SOURCE.test(b.source)) throw new TaskError(400, "send {title, description, role | agent, source, parent?, deliverable?, rubric?}");
+    if (!title || !description || !by || (b.role !== undefined && b.agent !== undefined) || typeof b.source !== "string" || !SOURCE.test(b.source)) throw new TaskError(400, "send {title, description, role | agent, source, parent?, deliverable?, rubric?, quiet?}");
+    if (b.quiet !== undefined && typeof b.quiet !== "boolean") throw new TaskError(400, "quiet is true or false");
     // A rubric is graded against its deliverable: both or neither (grading checks their contents).
     const graded = b.deliverable !== undefined || b.rubric !== undefined;
     if (graded && !(b.deliverable && typeof b.deliverable === "object" && Array.isArray(b.rubric) && b.rubric.every((c) => typeof c === "string"))) throw new TaskError(400, "deliverable {kind, ref} and rubric [criteria] go together");
@@ -123,7 +124,7 @@ export function createModuleTasks({ db, owner, agents, rubric, log = () => {} }:
     if (a.status !== 200 || !a.json?.companyId) throw new TaskError(502, `the control plane answered ${a.status} for the agent`);
     if (agentPaused(a.json)) throw new TaskError(409, `${role || "the"} agent ${agent} is paused`);
     const r = await owner("POST", `/api/companies/${encodeURIComponent(String(a.json.companyId))}/issues`, {
-      title, description: `${description}\n\n<!-- source:${b.source} -->\n${MODULE_TASK(module)}`, status: "todo", priority: "medium",
+      title, description: `${description}\n\n<!-- source:${b.source} -->\n${MODULE_TASK(module)}`, status: b.quiet ? "backlog" : "todo", priority: "medium",
       assigneeAgentId: agent, assigneeUserId: null, allowDuplicate: true, ...(b.parent ? { parentId: b.parent } : {}),
       // A graded task's key names its module, so another module's source can never hit it (and its rubric is never attached to it).
       idempotencyKey: `pw-${createHash("sha256").update(graded ? `${module}\0${b.source}` : b.source).digest("hex").slice(0, 32)}`,

@@ -224,6 +224,30 @@ export function why(events, stderr) {
   return ["none", line(/error|timed out|failed/) ?? "no review came out"];
 }
 
+/**
+ * One `codex exec` run with its shell off, from the empty directory `cwd` with `home` as its CODEX_HOME (config.toml written
+ * there first): only PATH, the homes and the model key in its environment, never anything else of the caller's. Its exit, its
+ * JSON events, its final message, its stderr's tail and whether it ran out of time. The code review module's recipe runs its
+ * finders and verifier through this too (modules/code-review/recipe, a synced copy of this file).
+ */
+export async function runCodex({ prompt, home, cwd, out, key, minutes = 40 }) {
+  const child = spawn("codex", ["exec", "--skip-git-repo-check", "-s", "read-only", "-o", out, "--json", prompt], {
+    cwd, stdio: ["ignore", "pipe", "pipe"],
+    env: { PATH: process.env.PATH, HOME: home, CODEX_HOME: home, CI_REVIEW_KEY: key ?? "" },
+  });
+  let stdout = "", stderr = "";
+  child.stdout.on("data", (d) => (stdout += d));
+  child.stderr.on("data", (d) => { stderr += d; if (stderr.length > 1e6) stderr = stderr.slice(-5e5); });
+  let timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, Number(minutes) * 60_000);
+  const code = await new Promise((ok) => child.on("close", ok));
+  clearTimeout(timer);
+  const events = stdout.split("\n").map((l) => { try { return JSON.parse(l); } catch { return undefined; } }).filter(Boolean);
+  let message = "";
+  try { message = readFileSync(out, "utf8"); } catch {}
+  return { code, events, message, stderr, timedOut };
+}
+
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href && process.argv[2] === "--lockfiles") {
   const git = (...a) => execFileSync("git", ["-c", "core.quotePath=false", ...a], { encoding: "utf8", maxBuffer: 256 << 20 });
   const { text, critical } = lockSummary(lockfiles(git, process.argv[3], process.argv[4]));
@@ -263,23 +287,9 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href && process.arg
   writeFileSync(join(home, "config.toml"), config({ model, effort, url, root, base: git("rev-parse", base).trim(), instructions, lsp: process.env.REVIEW_LSP }));
   if (addressed) console.error("code-review: the diff has text addressed to a reviewer: reviewed at the higher effort");
   console.error(`code-review: codex reviews ${base.slice(0, 7)}...${head.slice(0, 7)}, ${model} at ${effort}`);
-  const out = join(tmp, "answer.txt");
   const t = Date.now();
   // Only what codex needs in its environment: never the job's GitHub tokens.
-  const child = spawn("codex", ["exec", "--skip-git-repo-check", "-s", "read-only", "-o", out, "--json", PROMPT], {
-    cwd, stdio: ["ignore", "pipe", "pipe"],
-    env: { PATH: process.env.PATH, HOME: home, CODEX_HOME: home, CI_REVIEW_KEY: process.env.CI_REVIEW_KEY ?? "" },
-  });
-  let stdout = "", stderr = "";
-  child.stdout.on("data", (d) => (stdout += d));
-  child.stderr.on("data", (d) => { stderr += d; if (stderr.length > 1e6) stderr = stderr.slice(-5e5); });
-  let timedOut = false;
-  const timer = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, Number(process.env.REVIEW_MINUTES || 40) * 60_000);
-  const code = await new Promise((ok) => child.on("close", ok));
-  clearTimeout(timer);
-  const events = stdout.split("\n").map((l) => { try { return JSON.parse(l); } catch { return undefined; } }).filter(Boolean);
-  let message = "";
-  try { message = readFileSync(out, "utf8"); } catch {}
+  const { code, events, message, stderr, timedOut } = await runCodex({ prompt: PROMPT, home, cwd, out: join(tmp, "answer.txt"), key: process.env.CI_REVIEW_KEY, minutes: process.env.REVIEW_MINUTES || 40 });
   const review = code === 0 ? parse(message, events, root) : undefined;
   const used = {};
   for (const e of events) if (e.type === "item.completed" && e.item?.type === "mcp_tool_call") used[e.item.tool] = (used[e.item.tool] ?? 0) + 1;

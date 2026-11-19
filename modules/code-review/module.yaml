@@ -1,0 +1,144 @@
+name: code-review
+description: "Code Review: reviews pull requests on the repos you list, or one PR on request. Named reviewers (engine, model, effort, finders, verification, context) run in a credential-free box; findings are posted as one GitHub review per head, each post a write the AI reviewer approves. Idle until a repo is added: nothing runs or spends by itself."
+license: MIT
+# Design: docs/design/code-review.md. The state service (service/) watches the listed repos' PRs and comments through github-mcp's
+# internal read (as this module, never /mcp), decides which head gets which reviewer (triggers, `@aiden review …` from someone with
+# write access now, debounce, supersede, daily caps, month caps reserved before a run starts), runs each review as the kernel's
+# check job `code-review` (kernel.checks: no credentials in the box, a model token capped at the run's reservation), hands the
+# finished review to the github module's poster (a kernel write record) and records each run as flow facts on its PR.
+requires:
+  - github # PR reads (github-mcp) and the poster
+roles:
+  # kernel.tasks: one task per reviewed PR for the Reviewer Manager (role reviewer-manager), where its posts' approvals land.
+  requests: [ kernel.checks, kernel.facts, kernel.tasks, kernel.settings ]
+  declares:
+    - { id: reviewer-manager, description: "Holds each reviewed PR's task (fixed text: repo and number), where code review's posts are approved; the Reviewer Manager agent." }
+# A review run's snapshot of repo@head (and its base), read under this grant: any repo the GitHub App covers.
+codehost:
+  snapshot: { repos: [ "*/*" ] }
+# The review run: a credential-free check job per PR head (kernel/src/checkjobs.ts), the recipe in recipe/. The state service asks
+# POST /v1/checks {repo, head, run: code-review, spec} (service/src/adapters.ts checkSpec): base is the merge base (a full review's
+# incremental_from is that base too), the reviewer's name, ignore globs and max_nits ride in profile, budget_usd is the run's
+# reservation (its model token's cap), previous the last posted review's findings to recheck. It reads back GET /v1/checks/:id with
+# `result` (the Review JSON, bound into the receipt) and `billed_usd` (the gateway's billing of the run's model token).
+check_jobs:
+  code-review:
+    dir: recipe
+    argv: [ node, /aidenhq-out/recipe/review.mjs ]
+    timeout_min: 45
+    title: the code review
+    spec: { base: sha, incremental_from: sha, pr: int, profile: json, focus: text, budget_usd: usd, previous: json }
+    model: { max_usd: 20 }
+    result: true
+# Flow (docs/design/flow.md): one started and one ended fact per review run (version: the run id) on its PR.
+facts:
+  review.started: { subject: pr }
+  review.ended: { subject: pr }
+stages:
+  - { name: review, label: Code review, from: review.started, to: review.ended }
+settings:
+  # Reviewers are named profiles (any number): engine (codex; claude-code and codegenie when their recipes land), model, effort
+  # (low|medium|high|xhigh|max), finders (1-8), verify, and optionally verifier (a model), context (repo paths), focus, label, and
+  # run_usd (what one run may spend: its reservation and its model token's cap; default $0.50 a finder + $0.50 to verify). A
+  # default set to null is switched off. repos: [{ repo: owner/name, on_open: standard, on_push: quick, on_risk: deep (each a
+  # reviewer or "off"), drafts: false, forks: manual|auto, month_usd: 50, ignore: [globs], max_nits: 5, per_author_day: 10,
+  # per_repo_day: 60 }]. month_usd: the instance-wide cap across repos. Read by the service (service/src/config.ts).
+  code_review:
+    type: object
+    writers: [ reviewer-manager ]
+    # What the Reviewer Manager's change may not do without the owner (Tier 2; it reads strangers' review threads): more spend,
+    # outside PRs or drafts reviewed by themselves, a repo in an org not watched before, a reviewer's model, size or run cost.
+    owner:
+      - { path: month_usd, raise: true }
+      - { path: "repos.*.month_usd", raise: true, default: 50 }
+      - { path: "repos.*.forks", to: auto, default: manual }
+      - { path: "repos.*.drafts", to: true, default: false }
+      - { path: "repos.*.repo", new: true, before: "/" }
+      - { path: "reviewers.*.model", change: true }
+      - { path: "reviewers.*.verifier", change: true }
+      - { path: "reviewers.*.finders", change: true }
+      - { path: "reviewers.*.run_usd", change: true }
+    default:
+      reviewers:
+        quick: { engine: codex, model: "~deepseek/deepseek-flash-latest", effort: low, finders: 1, verify: false, run_usd: 0.5 }
+        standard: { engine: codex, model: "~deepseek/deepseek-flash-latest", effort: high, finders: 2, verify: true, run_usd: 1.5 }
+        deep: { engine: codex, model: "~openai/gpt-sol-latest", effort: high, finders: 4, verify: true, verifier: "~anthropic/claude-latest", run_usd: 2.5 }
+        triage: { engine: codex, model: "~deepseek/deepseek-flash-latest", effort: low, finders: 1, verify: false, focus: triage, run_usd: 0.5 }
+      repos: []
+      month_usd: 200
+  # Seconds between the service's looks at the watched repos.
+  code_review_poll_seconds: { default: 60 }
+# The Reviewer Manager (agents/reviewer-manager/AGENTS.md): conversation only. It reads strangers' review threads, so it holds no
+# code tools and no delegation, and what its settings changes may do alone is bounded by settings.code_review.owner above. Aiden
+# (the chief of staff) delegates code review asks to it; no heartbeat, no schedule: it runs only when a task asks.
+agents:
+  reviewer-manager:
+    department: engineering
+    model: ~deepseek/deepseek-flash-latest
+    reasoning_effort: high
+    timeout_sec: 900
+    caps: { run_usd: 1, task_usd: 3, day_usd: 10 }
+    # Strangers' text in (review threads), so no web out.
+    web_search: disabled
+    connections:
+      apps: [ app_view ]
+      code_review: [ code_review_config, code_review_runs, code_review_run, code_review_configure ]
+      # A PR's review threads (replies to its findings) and one comment answering an `@aiden` question, as the posting identity's
+      # write: a kernel record the AI reviewer decides.
+      github: [ github_pr_threads, github_issue_comment ]
+      paperclip_tasks: [ task_current, task_get, task_comments, task_comment, task_set_status, task_finish ]
+    roles: [ reviewer-manager ]
+# Its tools (service/src/config-tool.ts), served by the state service; each call's assertion gates it to the reviewer-manager role.
+connections:
+  code_review:
+    setup: "Built in (code-review). If it is down, run `docker compose up -d code-review`, then read `docker compose logs code-review`."
+    url: http://code-review:8098/mcp
+    auth: code_review_service_key
+    returns: untrusted
+    tools:
+      read: [ code_review_config, code_review_runs ]
+      write: [ code_review_run, code_review_configure ]
+# Posting: this service files a record per post and per acknowledgement and executes it (executor@1) through github-mcp's
+# /internal/review routes (the github module's poster: App where installed with PR write, else the owner's sign-in). A post is
+# Tier 1 (the AI reviewer reads the whole rendered review first); a notice is Tier 0 (fixed words: phase and reason only). Plan
+# refuses a record this service didn't file for one of its runs.
+providers:
+  board: { url: "http://code-review:8098", auth: code_review_api_token }
+  executor:
+    url: http://code-review:8098/aidenhq/v1/executor
+    auth: code_review_service_key
+writes:
+  post:
+    args: schemas/post.json
+    floor: 1
+    tools: []
+    card: { target: "{{target}}", sentence: "{{sentence}}", changes: "{{changes}}", details: "{{details}}" }
+  notice:
+    args: schemas/notice.json
+    floor: 0
+    tools: []
+    card: { target: "{{target}}", sentence: "{{sentence}}", changes: "{{changes}}", details: "{{details}}" }
+services:
+  data: true
+  run:
+    code-review:
+      build: ./service
+      tmp: 16m
+      port: 8098
+      egress: true # the kernel's listener is a host address
+      join: [github] # github-mcp's internal PR read
+      data: ["reviews:/data"]
+      env:
+        CODE_REVIEW_DB: /data/code-review.sqlite
+        CODE_REVIEW_SETTINGS: "${settings.code_review}"
+        CODE_REVIEW_COMMENT_ORGS: "${settings.github_comment_orgs}"
+        CODE_REVIEW_POLL_SECONDS: "${settings.code_review_poll_seconds}"
+        CODE_REVIEW_TOKEN_FILE: ${secrets.code_review_token}
+        CODE_REVIEW_API_TOKEN_FILE: ${secrets.code_review_api_token}
+        CODE_REVIEW_SERVICE_KEY_FILE: ${secrets.code_review_service_key}
+        AIDENHQ_KERNEL_URL: http://10.231.0.1:3130
+generated_secrets:
+  - code_review_token
+  - code_review_api_token
+  - code_review_service_key
+data_version: 0 # its data dir's format: bumped by each forward-only migration (docs/configuration.md)

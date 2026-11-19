@@ -32,9 +32,9 @@ export const id = (v: unknown) => String(v).replace(/[^\w.:@/~-]/g, "_").slice(0
 const added = (b: unknown, h: unknown) => list(h).map((x) => (isMap(x) ? x.name ?? x.id : x)).filter((x) => !list(b).map((y) => (isMap(y) ? y.name ?? y.id : y)).includes(x));
 
 /** Top-level keys that never hand out authority by themselves (their contents are checked where they can). */
-const PLAIN = new Set(["stages", "journeys", "name", "version", "description", "license", "publisher", "homepage", "kernel", "requires", "provides", "conflicts", "replaces", "data_version", "labels", "company", "departments", "setup", "settings", "apps", "events", "checks", "points", "contributes", "prompts", "skills", "models", "jobcaps"]);
+const PLAIN = new Set(["stages", "journeys", "name", "version", "description", "license", "publisher", "homepage", "kernel", "requires", "provides", "conflicts", "replaces", "data_version", "labels", "company", "departments", "setup", "apps", "events", "checks", "points", "contributes", "prompts", "skills", "models", "jobcaps"]);
 /** Checked below, field by field. */
-const CHECKED = new Set(["facts", "writes", "privileged", "secrets", "generated_secrets", "optional_secrets", "roles", "default_grants", "connections", "services", "agents", "providers", "isolation", "routines", "board_env", "workspaces", "paths", "codehost", "check_jobs"]);
+const CHECKED = new Set(["facts", "writes", "privileged", "secrets", "generated_secrets", "optional_secrets", "roles", "default_grants", "connections", "services", "agents", "providers", "isolation", "routines", "board_env", "workspaces", "paths", "codehost", "check_jobs", "settings"]);
 /** Every top-level module.yaml key the kernel knows: any other is a compile error (module.yaml is strict, spec §3.1). */
 export const MANIFEST_KEYS = new Set([...PLAIN, ...CHECKED]);
 /** Agent fields that hand out nothing (model and engine choice, scheduling, presentation, the module text it reads: skills, like
@@ -55,11 +55,15 @@ const KERNEL_ROLE_GRANTS: Record<string, string> = {
   "kernel.notify": "takes and sends the owner's messages",
   "kernel.owner-notice": "messages the owner",
   "kernel.routing": "files team routing changes (members' repos, routing weights) as reviewed applies, for its routing-tuner agents",
+  "kernel.settings": "files its agents' changes to the settings its module names them writers of, as reviewed applies",
   "kernel.tasks": "files and closes tasks",
   "kernel.wake": "schedules wakes",
   "kernel.work-read": "reads the kernel's jobs and records",
 };
 const ISOLATION_RANK: Record<string, number> = { untrusted: 0, "code-exec": 1, trusted: 2 };
+
+/** Each setting a module lets roles write (settings.<key>.writers), as [key, roles]. */
+const settingWriters = (def: Dict) => Object.entries(map(def.settings)).flatMap(([k, d]) => (isMap(d) && d.writers != null ? [[k, list(d.writers).map(String)] as [string, string[]]] : []));
 
 /** A module's `paths:` as `repo|pattern` → its sensitivity's rank (an unknown sensitivity ranks lowest: fails closed). */
 const pathRanks = (v: unknown) => new Map(list(v).flatMap((g) => list(map(g).patterns).map((p) => [`${map(g).repo ?? "product"}|${String(p)}`, SENSITIVITIES.indexOf(map(g).sensitivity as never)] as const)));
@@ -199,7 +203,16 @@ export function authorityDiff(name: string, base: ModuleDef | undefined, head: M
 
   const [br, hr] = [map(b.roles), map(head.roles)];
   for (const r of added(br.declares, hr.declares)) owner(`declares role ${id(r)}`);
-  for (const r of added(br.requests, hr.requests)) owner(`requests role ${id(r)}${KERNEL_ROLE_GRANTS[String(r)] ? ` (${KERNEL_ROLE_GRANTS[String(r)]})` : ""}`);
+  for (const r of added(br.requests, hr.requests)) owner(`requests role ${id(r)}${KERNEL_ROLE_GRANTS[String(r)] ? ` (${KERNEL_ROLE_GRANTS[String(r)]}${r === "kernel.settings" ? `: ${settingWriters(head).map(([k, w]) => `${id(k)} by ${w.map(id).join(", ")}`).join("; ") || "none yet"}` : ""})` : ""}`);
+  // A setting's writers (settings.<key>.writers: roles whose agents may file changes to it, kernel.settings): a role added is
+  // the owner's; the rest of a setting (its default, doc, values) hands out nothing.
+  const was = new Map(settingWriters(b));
+  for (const [k, w] of settingWriters(head)) {
+    const more = w.filter((r) => !(was.get(k) ?? []).includes(r));
+    if (more.length) owner(`lets roles ${more.map(id).join(", ")} write setting ${id(k)}`);
+    // Its owner rules (settings.<key>.owner) are what an agent's change may not do alone: any change to them is the owner's.
+    if (!eq(map(map(b.settings)[k]).owner, map(map(head.settings)[k]).owner)) owner(`changes what agents may change in setting ${id(k)} without the owner`);
+  }
   // Each fact type it may record (POST /v1/facts) is a claim on the shared log Flow's views and deploy checks read: the reviewer's.
   const [bf, hf] = [map(b.facts), map(head.facts)];
   for (const t of keys(hf).filter((t) => !(t in bf))) review(`declares fact ${id(t)}`);

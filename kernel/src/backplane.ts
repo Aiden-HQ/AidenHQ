@@ -87,7 +87,8 @@ import type { JobTools } from "./jobtools.ts";
 import type { Routing } from "./routing-tune.ts";
 import { CODEHOSTS, hostOf } from "./codehost.ts";
 import { fail } from "./proxy.ts";
-import type { Records, State } from "./records.ts";
+import type { Records, Requester, State } from "./records.ts";
+import type { BoardApi } from "./board-api.ts";
 import type { Work } from "./work.ts";
 import { BY, type By, type Flow } from "./flow.ts";
 import { AUTHOR_KINDS, SORTS, type AuthorKind, type Sort } from "./journeys.ts";
@@ -164,6 +165,8 @@ export const ROUTES = [
   { method: "POST", path: "/v1/settings/change", auth: "board" },
   { method: "POST", path: "/v1/stop", auth: "board" },
   { method: "POST", path: "/v1/routing/:op", auth: "module+assertion" },
+  { method: "POST", path: "/v1/settings/agent", auth: "module+assertion" },
+  { method: "ANY", path: "/v1/board-api/:module/*", auth: "board" },
   { method: "POST", path: "/v1/auth/:op", auth: "board" },
   { method: "POST", path: "/v1/accounts/:op", auth: "board+session" },
   { method: "POST", path: "/v1/apps/:op", auth: "module" },
@@ -171,7 +174,7 @@ export const ROUTES = [
   { method: "POST", path: "/v1/health/probe", auth: "health-key" },
 ] as const;
 // `:id` matches a record id, any other `:name` [a-z0-9_]+, a trailing `/*` the rest of the path, slash included.
-const compiled = ROUTES.map((r) => ({ ...r, re: new RegExp(`^${r.path.replace(/:id\b/g, "(k-[0-9a-f]{16})").replace(/:review\b/g, "(r-[0-9a-f]{16})").replace(/:job\b/g, "(j-[0-9a-f]{16})").replace(/:check\b/g, "(c-[0-9a-f]{16})").replace(/:task\b/g, "([0-9a-f-]{36})").replace(/:key\b/g, "([^/]{1,200})").replace(/:\w+/g, "([a-z0-9_]+)").replace(/\/\*$/, "(/.*)")}$`) }));
+const compiled = ROUTES.map((r) => ({ ...r, re: new RegExp(`^${r.path.replace(/:id\b/g, "(k-[0-9a-f]{16})").replace(/:review\b/g, "(r-[0-9a-f]{16})").replace(/:job\b/g, "(j-[0-9a-f]{16})").replace(/:check\b/g, "(c-[0-9a-f]{16})").replace(/:task\b/g, "([0-9a-f-]{36})").replace(/:key\b/g, "([^/]{1,200})").replace(/:module\b/g, "([a-z0-9][a-z0-9-]{0,62})").replace(/:\w+/g, "([a-z0-9_]+)").replace(/\/\*$/, "(/.*)")}$`) }));
 /** The record lists the board and the runner read (`?state=`). */
 const ALL: State[] = ["review", "owner", "approved", "claimed", "done", "failed", "rejected", "stale", "cancelled", "unknown"];
 const LISTS: { [k: string]: State[] } = { review: ["review"], owner: ["owner"], pending: ["review", "owner"], approved: ["approved"], recent: ALL, finished: ["done", "failed", "unknown"] };
@@ -227,7 +230,7 @@ function flowRead(flow: Flow, p: URLSearchParams) {
   return flow.summary({ since, to, by: by as By, scope: p.get("scope")?.slice(0, 100) || undefined });
 }
 
-export function createBackplane({ facts, whoami, asserter, proxy, cp, boardCp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, reviewerKey = () => "", jobs, codehost, admission, outcomes, wakes, tasks, eventsKey = () => "", work, flow, repos = () => ({}), graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, checkJobs, jobTools, localBundle, ownerRaw, lane, healthProbe, healthKey = () => "", connectionHealth, settingsChange, routing, log = () => {} }: {
+export function createBackplane({ facts, whoami, asserter, proxy, cp, boardCp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, reviewerKey = () => "", jobs, codehost, admission, outcomes, wakes, tasks, eventsKey = () => "", work, flow, repos = () => ({}), graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, checkJobs, jobTools, localBundle, ownerRaw, lane, healthProbe, healthKey = () => "", connectionHealth, settingsChange, routing, boardApi: moduleBoardApi, log = () => {} }: {
   /** Flow's fact log (facts.ts): POST /v1/facts. */
   facts?: Facts;
   whoami: Whoami; asserter: Asserter; proxy: Handler; cp: Handler; boardCp?: Handler; grantsFile: () => { agents?: Record<string, Grant> } & Record<string, unknown>;
@@ -282,9 +285,11 @@ export function createBackplane({ facts, whoami, asserter, proxy, cp, boardCp, g
   /** Every connection's /healthz (health.ts createConnectionHealth). */
   connectionHealth?: () => Promise<Record<string, unknown>>;
   /** The owner's typed settings change on their settings task (settings-change.ts). */
-  settingsChange?: (task: unknown, changes: unknown) => Promise<unknown>;
+  settingsChange?: ((task: unknown, changes: unknown) => Promise<unknown>) & { asAgent?: (requester: Requester, task: string, changes: unknown, module: string) => Promise<unknown> };
   /** The routing learning loop (routing-tune.ts). */
   routing?: Routing;
+  /** A module's board API (board-api.ts): the board's reads of a module service, through the kernel. */
+  boardApi?: BoardApi;
 }) {
   /** The calling module (its own token), or 401. */
   const moduleOf = async (req: IncomingMessage) => {
@@ -368,6 +373,14 @@ export function createBackplane({ facts, whoami, asserter, proxy, cp, boardCp, g
           return send(res, 200, { agents, repos: repos() });
         }
         case "POST /c/:connection/mcp": case "DELETE /c/:connection/mcp": return await proxy(req, res, m[0]!);
+        case "ANY /v1/board-api/:module/*": {
+          if (!isBoard(req)) throw fail(401, "unauthorized", "the board's key is required");
+          if (!moduleBoardApi) throw fail(503, "unavailable", "module board APIs are off");
+          if (!["GET", "POST"].includes(String(req.method))) throw fail(405, "method_not_allowed", "GET or POST");
+          const b = req.method === "POST" ? JSON.stringify(await json(req, 400_000)) : undefined;
+          const r = await moduleBoardApi(m[0]!, String(req.method), m[1] ?? "/", query, b);
+          return void res.writeHead(r.status, { "content-type": "application/json" }).end(r.body);
+        }
         case "ANY /v1/cp/agent/*": return await cp(req, res, m[0]!, query);
         case "POST /v1/checks/:task": {
           const w = await moduleOf(req);
@@ -458,6 +471,19 @@ export function createBackplane({ facts, whoami, asserter, proxy, cp, boardCp, g
           // The owner reads why: a refusal of the change itself, or the code host's or the planner's answer.
           try { return send(res, 200, await settingsChange(b.task, b.changes)); } catch (e) { throw fail((e as { status?: number }).status ?? 502, "refused", String((e as Error).message).slice(0, 1000)); }
         }
+      }
+      if (hit?.path === "/v1/settings/agent") {
+        // A module holding kernel.settings, serving a kernel job's tool call in flight: the agent's typed setting change on its
+        // own task, for a setting whose module names one of the job's roles as a writer (settings-change.ts asAgent).
+        const w = await moduleOf(req);
+        if (!w.roles.includes("kernel.settings")) throw fail(403, "forbidden", `${w.module} may not file settings changes (role kernel.settings)`);
+        if (!settingsChange?.asAgent) throw fail(503, "unavailable", "settings changes are off");
+        const live = await asserter.inFlight(String(req.headers["x-aidenhq-caller"] ?? ""), w.module!);
+        const job = live?.flight.bearer ? await whoami(live.flight.bearer).catch(() => undefined) : undefined;
+        if (!live || job?.kind !== "run" || !job.task || !job.job || job.agent !== live.caller.agent) throw fail(401, "unauthorized", "only a kernel job's tool call in flight changes settings");
+        const requester = { agent: job.agent ?? "", key: job.key ?? "", name: job.name ?? "", roles: job.roles, kind: job.kind, task: job.task, ...(job.run ? { run: job.run } : {}), ...(job.model ? { model: job.model } : {}) };
+        const b = await json(req, 400_000);
+        try { return send(res, 200, await settingsChange.asAgent(requester, job.task, b.changes, w.module!)); } catch (e) { throw fail((e as { status?: number }).status ?? 502, "refused", String((e as Error).message).slice(0, 1000)); }
       }
       if (hit?.path === "/v1/routing/:op") {
         // A module holding kernel.routing (the fleet-steward), serving a kernel job's tool call in flight: the job is read from

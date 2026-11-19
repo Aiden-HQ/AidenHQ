@@ -21,6 +21,12 @@ export const ROUTES: { method: Method; path: RegExp }[] = [
   { method: "GET", path: new RegExp(`^/repos/${NAME}/${NAME}/issues/${NUM}$`) },
   { method: "GET", path: new RegExp(`^/repos/${NAME}/${NAME}/issues/${NUM}/comments$`) },
   { method: "GET", path: new RegExp(`^/repos/${NAME}/${NAME}/pulls/${NUM}$`) },
+  // Code review's watcher reads (code-review-read.ts): the open PRs, the PR conversation comments since a time, a login's permission.
+  { method: "GET", path: new RegExp(`^/repos/${NAME}/${NAME}/pulls$`) },
+  { method: "GET", path: new RegExp(`^/repos/${NAME}/${NAME}/issues/comments$`) },
+  { method: "GET", path: new RegExp(`^/repos/${NAME}/${NAME}/collaborators/${NAME}/permission$`) },
+  { method: "GET", path: new RegExp(`^/repos/${NAME}/${NAME}/compare/[0-9a-f]{40}\\.\\.\\.[0-9a-f]{40}$`) },
+  { method: "GET", path: /^\/user\/repos$/ },
   { method: "GET", path: new RegExp(`^/repos/${NAME}/${NAME}/pulls/${NUM}/reviews$`) },
   { method: "GET", path: new RegExp(`^/repos/${NAME}/${NAME}/pulls/${NUM}/files$`) },
   { method: "GET", path: new RegExp(`^/repos/${NAME}/${NAME}/commits/[0-9a-f]{40}/status$`) },
@@ -43,6 +49,10 @@ export const ROUTES: { method: Method; path: RegExp }[] = [
   { method: "POST", path: new RegExp(`^/repos/${NAME}/${NAME}/issues/${NUM}/assignees$`) },
   { method: "DELETE", path: new RegExp(`^/repos/${NAME}/${NAME}/issues/${NUM}/assignees$`) },
   { method: "POST", path: new RegExp(`^/repos/${NAME}/${NAME}/pulls/${NUM}/reviews$`) },
+  // Code review's posting (review-post.ts): the
+  // acknowledgement comment edited in place, and the advisory commit status (`guard` allows only its one context).
+  { method: "PATCH", path: new RegExp(`^/repos/${NAME}/${NAME}/issues/comments/${NUM}$`) },
+  { method: "POST", path: new RegExp(`^/repos/${NAME}/${NAME}/statuses/[0-9a-f]{40}$`) },
   { method: "POST", path: new RegExp(`^/repos/${NAME}/${NAME}/actions/runs/${RUN}/rerun-failed-jobs$`) },
 ];
 
@@ -51,14 +61,23 @@ type Method = "GET" | "POST" | "PATCH" | "DELETE";
 /** Body fields each write may carry: an issue edit can only change its state, a review only its verdict and text. */
 const BODY_FIELDS: { path: RegExp; method: Method; fields: string[] }[] = [
   { method: "PATCH", path: /\/issues\/[0-9]+$/, fields: ["state", "state_reason"] },
-  { method: "POST", path: /\/pulls\/[0-9]+\/reviews$/, fields: ["event", "body", "commit_id"] },
+  { method: "POST", path: /\/pulls\/[0-9]+\/reviews$/, fields: ["event", "body", "commit_id", "comments"] },
+  { method: "PATCH", path: /\/issues\/comments\/[0-9]+$/, fields: ["body"] },
+  { method: "POST", path: /\/statuses\/[0-9a-f]{40}$/, fields: ["state", "context", "description", "target_url"] },
 ];
+/** The one commit status context code review writes (review-post.ts); the design-review check goes through projects.commitStatus. */
+export const REVIEW_CONTEXT = "aidenhq/review";
+const COMMENT_FIELDS = ["path", "line", "side", "start_line", "start_side", "body"];
 
 /** The only GraphQL the token may send: read an organization project, add an issue to it, set its status. */
 export const GRAPHQL = {
   project: `query($org: String!, $number: Int!) { organization(login: $org) { projectV2(number: $number) { id title url closed field(name: "Status") { ... on ProjectV2SingleSelectField { id options { id name } } } items(last: 50) { nodes { content { ... on Issue { repository { nameWithOwner } } } } } } } }`,
   addItem: `mutation($project: ID!, $content: ID!) { addProjectV2ItemById(input: { projectId: $project, contentId: $content }) { item { id } } }`,
   setStatus: `mutation($project: ID!, $item: ID!, $field: ID!, $option: String!) { updateProjectV2ItemFieldValue(input: { projectId: $project, itemId: $item, fieldId: $field, value: { singleSelectOptionId: $option } }) { projectV2Item { id } } }`,
+  // Review threads of a pull request (their first comment's author and body, and the replies) and resolving one by id
+  // (review-post.ts resolves only the threads it posted itself).
+  reviewThreads: `query($owner: String!, $name: String!, $number: Int!, $after: String) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { reviewThreads(first: 100, after: $after) { pageInfo { hasNextPage endCursor } nodes { id isResolved isOutdated path line comments(first: 20) { nodes { databaseId url body author { login } } } } } } } }`,
+  resolveThread: `mutation($thread: ID!) { resolveReviewThread(input: { threadId: $thread }) { thread { id isResolved } } }`,
 } as const;
 const GRAPHQL_DOCS = new Set<string>(Object.values(GRAPHQL));
 
@@ -71,6 +90,12 @@ export function guard(method: string, path: string, body?: unknown): void {
   const limit = BODY_FIELDS.find((b) => b.method === method && b.path.test(path));
   if (limit && Object.keys((body as object | undefined) ?? {}).some((k) => !limit.fields.includes(k))) throw new GitHubRefused(`refused a GitHub request with fields that aren't allowed: ${method} ${path}`);
   if (method === "POST" && /\/reviews$/.test(path) && !["APPROVE", "REQUEST_CHANGES", "COMMENT"].includes(String((body as { event?: unknown } | undefined)?.event))) throw new GitHubRefused("refused a review without a verdict");
+  // Inline comments are advice: only on a plain comment review, each with only the fields of a line comment.
+  const comments = (body as { comments?: unknown } | undefined)?.comments;
+  if (method === "POST" && /\/reviews$/.test(path) && comments !== undefined) {
+    if (!Array.isArray(comments) || (body as { event?: unknown }).event !== "COMMENT" || comments.some((c) => !c || Object.keys(c).some((k) => !COMMENT_FIELDS.includes(k)))) throw new GitHubRefused("refused review comments that aren't line comments on a COMMENT review");
+  }
+  if (method === "POST" && /\/statuses\//.test(path) && (body as { context?: unknown } | undefined)?.context !== REVIEW_CONTEXT) throw new GitHubRefused(`refused a commit status that isn't ${REVIEW_CONTEXT}`);
 }
 
 export interface Ref {
@@ -197,7 +222,8 @@ export class GitHub {
     return this.owner.signedIn();
   }
 
-  async request<T>(method: Method, path: string, opts: { query?: Record<string, string | number>; body?: unknown; text?: boolean } = {}): Promise<T> {
+  /** `auth` is a bearer to use instead of the owner's or the App's read token (review-post.ts posts as the App or the owner). */
+  async request<T>(method: Method, path: string, opts: { query?: Record<string, string | number>; body?: unknown; text?: boolean; auth?: string } = {}): Promise<T> {
     guard(method, path, opts.body);
     const url = new URL(path, API);
     // ".." passes the name pattern but URL resolution would move the path.
@@ -207,13 +233,13 @@ export class GitHub {
     // ever logged.
     const repo = method === "GET" ? repoOf(path) : undefined;
     const scope = method === "GET" && path === "/search/issues" ? searchScope(String(opts.query?.q ?? "")) : undefined;
-    const appToken = repo ? await this.app?.repoToken(repo.owner, repo.repo) : scope ? await this.app?.orgToken?.(scope) : undefined;
+    const appToken = opts.auth ? undefined : repo ? await this.app?.repoToken(repo.owner, repo.repo) : scope ? await this.app?.orgToken?.(scope) : undefined;
     for (const [k, v] of Object.entries(opts.query ?? {})) url.searchParams.set(k, String(v));
     const res = await this.fetchImpl(url, {
       method,
       redirect: opts.text ? "manual" : "error",
       headers: {
-        authorization: `Bearer ${appToken ?? (await this.token())}`,
+        authorization: `Bearer ${opts.auth ?? appToken ?? (await this.token())}`,
         accept: "application/vnd.github+json",
         "x-github-api-version": "2022-11-28",
         "user-agent": "aidenhq-github-mcp",
@@ -410,15 +436,21 @@ export class GitHub {
     return { url: after.html_url, state: after.state, labels: labelNames(after), assignees: after.assignees?.map((a) => a.login), done: done.length ? done : ["nothing to change"] };
   }
 
-  /** Submits a review on a pull request as the user: approve, request changes, or comment. */
-  async review(ref: Ref, event: "APPROVE" | "REQUEST_CHANGES" | "COMMENT", body: string): Promise<{ url: string; id: number; state: string }> {
+  /**
+   * Submits a review on a pull request: approve, request changes, or comment, with optional line comments (a comment review
+   * only). As the user, or with `auth` as the identity the caller chose (review-post.ts: the App never approves).
+   */
+  async review(ref: Ref, event: "APPROVE" | "REQUEST_CHANGES" | "COMMENT", body: string, opts: { comments?: { path: string; line: number; end_line?: number; body: string }[]; auth?: string } = {}): Promise<{ url: string; id: number; state: string }> {
     this.writable(ref.owner, `${ref.owner}/${ref.repo}`, "reviewing");
     const base = `/repos/${ref.owner}/${ref.repo}/pulls/${ref.number}`;
-    const pr = await this.request<GhPull & { state: string; user?: GhUser; head: { sha: string } }>("GET", base);
+    const auth = opts.auth ? { auth: opts.auth } : {};
+    if (opts.comments?.length && event !== "COMMENT") throw new GitHubRefused("line comments go only on a review that comments");
+    const pr = await this.request<GhPull & { state: string; user?: GhUser; head: { sha: string } }>("GET", base, auth);
     if (pr.state !== "open") throw new GitHubRefused(`${ref.owner}/${ref.repo}#${ref.number} isn't open`);
     if (event !== "APPROVE" && !body.trim()) throw new GitHubRefused("a review that requests changes or comments needs text");
+    const comments = opts.comments?.map((c) => ({ path: c.path, line: c.end_line && c.end_line > c.line ? c.end_line : c.line, side: "RIGHT", ...(c.end_line && c.end_line > c.line ? { start_line: c.line, start_side: "RIGHT" } : {}), body: c.body }));
     // Reviewed at the head we looked at: if someone pushes meanwhile, GitHub refuses rather than approving unseen commits.
-    const r = await this.request<{ id: number; html_url: string; state: string }>("POST", `${base}/reviews`, { body: { event, commit_id: pr.head.sha, ...(body.trim() ? { body } : {}) } });
+    const r = await this.request<{ id: number; html_url: string; state: string }>("POST", `${base}/reviews`, { ...auth, body: { event, commit_id: pr.head.sha, ...(body.trim() ? { body } : {}), ...(comments?.length ? { comments } : {}) } });
     return { url: r.html_url, id: r.id, state: r.state };
   }
 
@@ -453,8 +485,8 @@ export class GitHub {
     return { repo: `${owner}/${repo}`, rerun, not_failed: runs.filter((r) => !failed(r)).map((r) => ({ name: r.name, status: r.status, conclusion: r.conclusion })) };
   }
 
-  private async graphql<T>(doc: keyof typeof GRAPHQL, variables: Record<string, unknown>): Promise<T> {
-    const res = await this.request<{ data?: T; errors?: { message: string }[] }>("POST", "/graphql", { body: { query: GRAPHQL[doc], variables } });
+  async graphql<T>(doc: keyof typeof GRAPHQL, variables: Record<string, unknown>, auth?: string): Promise<T> {
+    const res = await this.request<{ data?: T; errors?: { message: string }[] }>("POST", "/graphql", { body: { query: GRAPHQL[doc], variables }, ...(auth ? { auth } : {}) });
     if (res.errors?.length || !res.data) throw new Error(`GitHub GraphQL: ${res.errors?.map((e) => e.message).join("; ").slice(0, 300) ?? "no data"}`);
     return res.data;
   }

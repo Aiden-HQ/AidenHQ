@@ -28,6 +28,7 @@
     {"name": "modules/tasks/connections/tasks-mcp", "job": "modules", "run": "npm ci && npm test", "paths": ["modules/tasks/connections/tasks-mcp", "modules/tasks/skills"]},
     {"name": "modules/channel-operator", "job": "modules", "run": "node --test test/*.test.mjs", "paths": ["modules/channel-operator"]},
     {"name": "modules/fleet-steward", "job": "modules", "run": "npm test", "paths": ["modules/fleet-steward", "kernel/sdk"]},
+    {"name": "modules/code-review", "job": "modules", "run": "npm test", "paths": ["modules/code-review"]},
     {"name": "modules/maintainer", "job": "modules", "run": "node --test test/*.test.mjs", "paths": ["modules/maintainer"]},
     {"name": "modules/security/scanner", "job": "modules", "run": "npm ci && npm test && npm run typecheck", "paths": ["modules/security/scanner"]},
     {"name": "modules/security", "job": "modules", "run": "node --test test/*.test.mjs", "paths": ["modules/security"]},
@@ -37,6 +38,7 @@
     {"name": "modules/codehost-local", "job": "modules", "run": "npm test", "paths": ["modules/codehost-local", "kernel/src", "kernel/sdk/src", "modules/github"]},
     {"name": "modules/platform", "job": "modules", "run": "npm test", "paths": ["modules/platform", "modules"]},
     {"name": "modules/grading", "job": "modules", "run": "npm test", "paths": ["modules/grading", "kernel/src", "ops/grades-move.mjs"]},
-    {"name": "modules/dispatch", "job": "modules", "run": "npm test", "paths": ["modules/dispatch"]}
+    {"name": "modules/dispatch", "job": "modules", "run": "npm test", "paths": ["modules/dispatch"]},
+    {"name": "modules/code-review", "job": "modules", "run": "node --test test/*.test.mjs", "paths": ["modules/code-review", "modules/ci/template/.github"]}
   ]
 }

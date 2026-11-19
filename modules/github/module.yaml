@@ -107,6 +107,9 @@ settings:
   # creates repos there at Tier 0 (the App must be installed on the org, else it fails loudly; a stranger's install of the public App changes nothing).
   github_orgs:
     default: []
+  # The GitHub orgs owner-identity writes (comments, reviews) may reach; github-mcp refuses a write anywhere else.
+  github_comment_orgs:
+    default: []
 connections:
   github:
     setup: "Open its setup on the board (#/setup/github) and press Connect GitHub. The App's reads and writes need the GitHub App (the same page's advanced part)."
@@ -116,7 +119,7 @@ connections:
     tools:
       # github_app_issue_status: a status lookup of product-bug issues (number, state, fixing commit; no issue text), so a
       # read: tagged destructive it filed a Tier 2 owner card on every check.
-      read: [ github_whoami, github_project_read, github_issue_read, github_search_issues, github_job_log, github_pr_files, github_app_issue_status, github_app_issue_list, github_app_label_events, github_app_repo_tree, github_app_repo_file ]
+      read: [ github_whoami, github_project_read, github_issue_read, github_search_issues, github_job_log, github_pr_files, github_pr_threads, github_app_issue_status, github_app_issue_list, github_app_label_events, github_app_repo_tree, github_app_repo_file ]
       # commit_status_set: the design-review check on agents-org PRs, as the GitHub App; it also needs the design-review role.
       write: [ commit_status_set ]
       # github_app_issue: product bugs on settings.product_repo only, as the GitHub App, and only for the product-issues role
@@ -127,11 +130,12 @@ connections:
       # reason: no shorthand grants them, and the Maintainer names them when it graduates.
       # The Maintainer's App reads (github_app_issue_list, github_app_label_events, github_app_repo_tree,
       # github_app_repo_file) are reads tagged `named`: `read` would hand them to every agent with `github: read`, so only a
-      # grant that names one reaches it. The Maintainer's module names them when it graduates.
-      named: [ github_app_issue_list, github_app_label_events, github_app_repo_tree, github_app_repo_file ]
+      # grant that names one reaches it. The Maintainer's module names them when it graduates. github_pr_threads (a pull request's review
+      # threads, replies included: code review's reads) is named the same way, and its resolving twin github_pr_thread_resolve is destructive.
+      named: [ github_app_issue_list, github_app_label_events, github_app_repo_tree, github_app_repo_file, github_pr_threads ]
       # The writes with the owner's token (a comment, an issue, its state, a review, a failed job's re-run) post as the owner:
       # destructive, so only a grant naming one reaches it and every call is a record the AI reviewer decides first (floor 1).
-      destructive: [ github_issue_comment, github_issue_create, github_issue_update, github_pr_review, github_rerun_failed, github_app_issue, github_app_issue_comment, github_app_issue_label, github_app_issue_state ]
+      destructive: [ github_issue_comment, github_issue_create, github_issue_update, github_pr_review, github_pr_thread_resolve, github_rerun_failed, github_app_issue, github_app_issue_comment, github_app_issue_label, github_app_issue_state ]
     # Granted only while the upstream setting allows issues.
     upstream: [ github_app_issue, github_app_issue_status ]
   # GitHub's own MCP server (its default toolsets), passed through whole as the signed-in owner (src/vendor/proxy.ts). Reads are
@@ -152,14 +156,16 @@ connections:
                      add_reply_to_pull_request_comment, request_copilot_review ]
 # The App tokens github-mcp asks the kernel for (POST /v1/codehost/token, owner authority): read-only on any repo or org the
 # App covers (issues, pull requests, checks, Actions, contents for the Maintainer's file reads, org Projects boards and search),
-# plus the two writes it makes as the App: issues (product bugs on settings.product_repo, the Maintainer's comments, labels and
-# states on settings.maintainer_repos) and commit statuses (the design-review check, in the agents org only). github-mcp
+# plus the writes it makes as the App: issues (product bugs on settings.product_repo, the Maintainer's comments, labels and
+# states on settings.maintainer_repos), commit statuses (the design-review check, in the agents org only) and code review's posting
+# (src/review-post.ts: a comment review with line comments, its `aidenhq/review` status, the acknowledgement comment and Aiden's own
+# threads resolved, on any repo the App covers; never an approval or a merge: pull_requests: write is asked for only there). github-mcp
 # checks those targets itself; a grant can't name settings, so it covers whatever the App does. The code host's own checks (the
 # merge queue's reviewer eval: kernel.checks) read the repos it lands, through the kernel's snapshot.
 codehost:
   token:
     repos: ["*/*"]
-    perms: { contents: read, metadata: read, issues: write, pull_requests: read, checks: read, statuses: write, actions: read, organization_projects: read }
+    perms: { contents: read, metadata: read, issues: write, pull_requests: write, checks: read, statuses: write, actions: read, organization_projects: read }
   snapshot: { repos: [ "*/*" ] }
 # The PR watch (service/src/pr-watch.ts, W5) files the Platform Engineer's Dependabot tasks and closes them
 # (kernel.tasks), and wakes the task that opened a PR now conflicting with main (kernel.wake). It holds only its module token.
@@ -272,7 +278,7 @@ services:
         GITHUB_MCP_URL: "${settings.github_mcp_url}"
         # The board's sign-in endpoints: state, and starting a device sign-in.
         GITHUB_AUTH_TOKEN_FILE: ${secrets.github_auth_token}
-        GITHUB_COMMENT_ORGS: "${GITHUB_COMMENT_ORGS:-}"
+        GITHUB_COMMENT_ORGS: "${settings.github_comment_orgs}" # comma-separated
         # commit_status_set (the design-review check) writes only here, as the GitHub App.
         GITHUB_AGENTS_ORG: "${settings.agents_org}"
         # Product bugs (github_app_issue) go only to this repo.

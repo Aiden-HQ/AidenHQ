@@ -57,6 +57,9 @@ test("a module's task goes to the agent holding the role, once per source, marke
   const issue = [...made.values()][0];
   assert.equal(issue.assigneeAgentId, PE);
   assert.equal(issue.status, "todo");
+  // Quiet: a holder for records, in the backlog, so its assignment wakes nobody.
+  assert.equal((await file("codehost", { ...req, source: "quiet:x", quiet: true })).status, 200);
+  assert.equal([...made.values()].at(-1).status, "backlog");
   assert.match(issue.description, /<!-- source:dependabot:acme\/app\/7 -->\n<!-- aidenhq-module:github -->$/);
   assert.doesNotMatch(issue.description, /<!-- source:forged -->/, "the module's text can't add a marker");
   // A rubric asks the kernel to file it with grading, as the module holding kernel.tasks; a module without the role gets nothing filed.
