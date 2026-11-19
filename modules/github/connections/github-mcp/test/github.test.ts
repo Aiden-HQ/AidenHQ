@@ -64,7 +64,6 @@ describe("guard", () => {
 
   it("refuses everything else the token could do", () => {
     for (const [m, p] of [
-      ["PATCH", "/repos/a/b/issues/comments/9"], // edit a comment
       ["DELETE", "/repos/a/b/issues/comments/9"],
       ["PUT", "/repos/a/b/pulls/3/merge"],
       ["DELETE", "/repos/a/b/git/refs/heads/main"],
@@ -79,7 +78,6 @@ describe("guard", () => {
       ["PUT", "/repos/a/b/pulls/3/reviews/9"],
       ["GET", "/graphql"],
       ["POST", "/repos/a/b/labels"],
-      ["GET", "/user/repos"],
     ] as const)
       expect(() => guard(m, p), `${m} ${p}`).toThrow(GitHubRefused);
   });

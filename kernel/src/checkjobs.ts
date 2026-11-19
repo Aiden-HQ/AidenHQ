@@ -11,9 +11,9 @@
 //
 // A check job has no task, no Paperclip identity, no tools and no GitHub credential. Its workspace is a snapshot of
 // `repo@head` (the code host's `snapshot` op: no .git, no credentials, asked as the module that asked for the check); its box
-// is the `engineer` image, a fresh one per run. Its env is exactly checkEnv's: only a judged run (the reviewer eval) gets a model
-// credential, a `check` token the gateway caps by the eval day cap (eval_day_usd) and that the tool proxy and the writes route
-// refuse. The recipe's files are laid in the out folder (`/aidenhq-out/recipe`) and its argv runs in the workspace.
+// is the `engineer` image, a fresh one per run. Its env is exactly checkEnv's: only a judged run (the reviewer eval) or a model
+// recipe (below) gets a model credential, a `check` token the gateway caps (the eval day cap, eval_day_usd, or the recipe's own
+// per-check cap) and that the tool proxy and the writes route refuse. The recipe's files are laid in the out folder (`/aidenhq-out/recipe`) and its argv runs in the workspace.
 //
 // A recipe with a `base` in its spec runs on the change itself: the box makes its own two-commit history from the base and head
 // snapshots (the recipe's script does it from /aidenhq-out/base), so `git diff $AIDENHQ_BASE HEAD` is exactly the change. A
@@ -35,6 +35,16 @@
 // Missing evidence never counts as passing: whether a recipe's declared check is due is read from the base commit, and a receipt
 // says whether a check ran (`ran`); verify refuses one that didn't unless the caller's policy accepts "none" (product and
 // modules repos never do).
+//
+// Every recipe's box gets its spec, with the repo and head, at /aidenhq-out/spec.json (data, never argv or env), and each spec
+// field of kind sha (not a value an earlier field already named) as that commit's tree at
+// /aidenhq-out/<field>: the recipe makes its own history from them (`base` as before; a review's `incremental_from`).
+// A recipe with `model: { max_usd }` (a code review) gets a model credential of its own: a `check` token for this check alone
+// (component `<run>:<check id>`), capped at the spec's `budget_usd` (never above the recipe's max_usd) on its own run key, that
+// lapses with the recipe's time limit. A recipe with `result: true` writes one JSON object to /aidenhq-out/result.json (at most
+// RESULT_MAX bytes): it passes only when that came out, the kernel stamps a model recipe's with `cost_usd` (its token's spend,
+// from the gateway's ledger, never the box's say) and the receipt signs the exact bytes' sha256 (`result`). The result is the
+// recipe's output, made from the repo's text: data for its reader, never instructions.
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -45,27 +55,46 @@ import { noteFact, openFacts } from "./facts.ts";
 /** A recipe's name (`fast`, `tests`, `eval`, `contract`, …): whatever the installed modules declare. */
 export type Run = string;
 /** How a spec field is written: a commit, a GitHub repo, a policy hash or a folder inside the workspace (no `..`). */
+const isObject = (v: string) => { try { const j = JSON.parse(v); return Boolean(j) && typeof j === "object" && !Array.isArray(j); } catch { return false; } };
 export const KINDS = {
   sha: /^[0-9a-f]{40}$/,
   slug: /^[\w.-]{1,100}\/[\w.-]{1,100}$/,
   policy: /^[0-9a-f]{7,64}$/,
   dir: /^(\.|(?!.*(^|\/)\.\.(\/|$))[\w.-]+(\/[\w.-]+)*)$/,
-} as const;
+  /** A whole number (a PR's). */
+  int: /^[1-9][0-9]{0,9}$/,
+  /** Dollars, up to 4 decimals. */
+  usd: /^[0-9]{1,4}(\.[0-9]{1,4})?$/,
+  /** Short text with no control characters but newline and tab (data for the recipe, never a command). */
+  text: /^[^\x00-\x08\x0b-\x1f\x7f]{0,2000}$/,
+  /** A JSON object of at most 16 KB (a reviewer profile). */
+  json: { test: (v: string) => v.length <= 16_384 && isObject(v) },
+} satisfies Record<string, { test(v: string): boolean }>;
+/** The most a result artifact may be: larger, the recipe produced no result. */
+export const RESULT_MAX = 256 * 1024;
 /** A module's recipe (modules.ts checkJobs compiles it from `check_jobs:`). `files`: its folder, laid in the box; `declares`: a
  * package.json script the base must keep; `cwd_from`: the spec field naming the folder it runs in; `judged`: the eval's layout. */
 export type Recipe = {
   module: string; argv: string[]; timeout_min: number; title: string; spec: Record<string, keyof typeof KINDS>; files: Record<string, string>;
   cwd_from?: string; declares?: string;
   judged?: { cwd: string; cases: string; files: string[]; expect: string[] };
+  /** A model credential for this check alone, capped at spec.budget_usd and never above max_usd. */
+  model?: { max_usd: number };
+  /** The recipe writes one JSON object to /aidenhq-out/result.json; the receipt binds its sha256. */
+  result?: boolean;
 };
 export type Recipes = Record<string, Recipe>;
 /** The eval's spec (the code host builds it): the product repo and its commits under test, judging and supplying the change's cases. */
 export type EvalSpec = { repo: string; judge_commit: string; subject_commit: string; cases_from: string; policy_hash: string };
-export type Receipt = { v: 1; check: string; repo: string; head: string; run: Run; judge: string | null; policy: string | null; hash: string; verdict: "pass" | "fail"; ran: boolean; summary: string; at: string; sig: string };
+/** `hash` binds the spec (every field: base, profile, …) and the recipe itself (its files too); `result`, when the recipe writes one,
+ * the sha256 of the result's exact bytes. */
+export type Receipt = { v: 1; check: string; repo: string; head: string; run: Run; judge: string | null; policy: string | null; hash: string; verdict: "pass" | "fail"; ran: boolean; summary: string; at: string; result?: string; sig: string };
 /** What a receipt must be bound to for the caller: the eval's judge and policy too. `none`: the caller's policy accepts a fast
  * check's "nothing to run" (the repo's base declares no check); without it, a receipt of a check that didn't run is refused. */
-export type Binding = { repo: string; head: string; run: Run; judge?: string; policy?: string; none?: boolean };
-export type CheckView = { id: string; repo: string; head: string; run: Run; state: string; receipt: Receipt | null; error: string | null; version: number };
+export type Binding = { repo: string; head: string; run: Run; judge?: string; policy?: string; none?: boolean; result?: string };
+/** `result`: the recipe's result object (data: made from the repo's text); `billed_usd`: its model token's spend by the gateway's
+ * ledger (a failed run's too); both null for other recipes. */
+export type CheckView = { id: string; repo: string; head: string; run: Run; state: string; receipt: Receipt | null; error: string | null; version: number; result: Record<string, unknown> | null; billed_usd: number | null };
 
 /** Where a check's folders are in its box: the snapshot (read-write, thrown away after) and the kernel's out folder. */
 export const BOX_WORKSPACE = "/workspace";
@@ -86,10 +115,13 @@ export class CheckError extends Error {
 }
 
 const TAIL = 4000;
-/** The whole env a check's box gets: nothing of the kernel's own, no GitHub or tool credential; a model token for a judged run only. */
-export function checkEnv(judged: boolean, { modelToken, gatewayUrl }: { modelToken?: string; gatewayUrl?: string } = {}): Record<string, string> {
+/** The whole env a check's box gets: nothing of the kernel's own, no GitHub or tool credential; a model token only for a judged
+ * run (the eval) or a model recipe, each its own `check` token (OPENROUTER_API_KEY: the name the launcher registers it by). */
+export function checkEnv(kind: "plain" | "judged" | "model", { modelToken, gatewayUrl }: { modelToken?: string; gatewayUrl?: string } = {}): Record<string, string> {
   const env: Record<string, string> = { CI: "1", HOME: `${BOX_OUT}/home`, npm_config_audit: "false", npm_config_fund: "false", npm_config_update_notifier: "false" };
-  if (judged) Object.assign(env, { OPENROUTER_API_KEY: String(modelToken ?? ""), OPENROUTER_BASE_URL: String(gatewayUrl ?? ""), EVAL_RESULT: `${BOX_OUT}/result.json` });
+  if (kind !== "plain") Object.assign(env, { OPENROUTER_API_KEY: String(modelToken ?? ""), OPENROUTER_BASE_URL: String(gatewayUrl ?? "") });
+  if (kind === "judged") env.EVAL_RESULT = `${BOX_OUT}/result.json`;
+  if (kind === "model") Object.assign(env, { AIDENHQ_SPEC: `${BOX_OUT}/spec.json`, AIDENHQ_RESULT: `${BOX_OUT}/result.json` });
   return env;
 }
 
@@ -106,7 +138,9 @@ function checkSpec(run: Run, recipe: Recipe, spec: unknown): Record<string, stri
 const specHash = (spec: Record<string, string>, recipe: Recipe) => createHash("sha256").update(JSON.stringify([Object.keys(spec).sort().map((k) => [k, spec[k]]), recipe])).digest("hex");
 
 const FIELDS = ["v", "check", "repo", "head", "run", "judge", "policy", "hash", "verdict", "ran", "summary", "at"] as const;
-const mac = (secret: string, r: Omit<Receipt, "sig">) => createHmac("sha256", secret).update(JSON.stringify(FIELDS.map((k) => r[k]))).digest("hex");
+// `result` is signed after the fixed fields only when present, so receipts without one (every recipe before result artifacts)
+// keep their signatures; dropping it from a receipt that had one breaks the signature.
+const mac = (secret: string, r: Omit<Receipt, "sig">) => createHmac("sha256", secret).update(JSON.stringify([...FIELDS.map((k) => r[k]), ...(r.result === undefined ? [] : [r.result])])).digest("hex");
 
 /** Signs a receipt with the kernel's receipt_secret (kernel-only). */
 export function signReceipt(secret: string, r: Omit<Receipt, "sig" | "v">): Receipt {
@@ -129,6 +163,7 @@ export function verifyReceipt(secret: string, r: unknown, want: Binding): { ok: 
   if (x.verdict !== "pass") return { ok: false, why: "it didn't pass" };
   // Missing evidence never counts as passing: a check that didn't run passes only where the caller's policy says none is needed.
   if (x.ran !== true && want.none !== true) return { ok: false, why: "no check ran" };
+  if (want.result !== undefined && x.result !== want.result) return { ok: false, why: "its result isn't this one" };
   return { ok: true };
 }
 
@@ -201,9 +236,11 @@ const fence = (s: string) => s.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "").replace(/``
 
 const DDL = `CREATE TABLE IF NOT EXISTS checks (
   id TEXT PRIMARY KEY, module TEXT NOT NULL, repo TEXT NOT NULL, head TEXT NOT NULL, run TEXT NOT NULL, hash TEXT NOT NULL, spec TEXT NOT NULL,
-  state TEXT NOT NULL, receipt TEXT, error TEXT, at INTEGER NOT NULL, ended INTEGER, UNIQUE (module, repo, head, run, hash))`;
+  state TEXT NOT NULL, receipt TEXT, error TEXT, at INTEGER NOT NULL, ended INTEGER, result TEXT, cost_usd REAL, tries INTEGER NOT NULL DEFAULT 1, retry INTEGER NOT NULL DEFAULT 0, UNIQUE (module, repo, head, run, hash))`;
+/** The result's sha256 as the receipt carries it. */
+export const resultHash = (text: string) => createHash("sha256").update(text).digest("hex");
 
-export function createChecks({ db, secret, recipes, box, snapshot, modelToken, gatewayUrl, workDir, log, now = Date.now }: {
+export function createChecks({ db, secret, recipes, box, snapshot, modelToken, spent = () => 0, gatewayUrl, workDir, log, now = Date.now }: {
   db: DatabaseSync;
   /** The installed modules' recipes (compiled `check_jobs:`), read fresh. */
   recipes: () => Recipes;
@@ -212,8 +249,11 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, g
   box: CheckBox;
   /** The snapshot op, asked as this module (the one that asked for the check: its own grant decides what it may read). */
   snapshot: (module: string) => Snapshot;
-  /** A `check` model token for the eval of `head` (gateway_job_secret, component `eval:<head>`). */
-  modelToken: (head: string) => string;
+  /** A `check` model token (gateway_job_secret): the eval's (component `eval:<head>`, the eval day cap) or a model recipe's
+   * (component `<run>:<attempt>`, its own run cap `capUsd`), lapsing after `ttlMs`. */
+  modelToken: (component: string, o: { ttlMs: number; capUsd?: number }) => string;
+  /** What a model token has spent so far (the gateway's ledger, by the token's run key), in USD. */
+  spent?: (token: string) => number;
   /** The model gateway as a box reaches it. */
   gatewayUrl: string;
   /** Where the checks' snapshots go (one folder per run attempt, `checks/<attempt>`, removed when it ends). */
@@ -221,15 +261,21 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, g
   log: (msg: string, f?: Record<string, unknown>) => void; now?: () => number;
 }) {
   db.exec(DDL);
+  // A database from before result artifacts: the columns they need.
+  const cols = new Set((db.prepare("PRAGMA table_info(checks)").all() as { name: string }[]).map((c) => c.name));
+  if (!cols.has("result")) db.exec("ALTER TABLE checks ADD COLUMN result TEXT");
+  if (!cols.has("cost_usd")) db.exec("ALTER TABLE checks ADD COLUMN cost_usd REAL");
+  if (!cols.has("tries")) db.exec("ALTER TABLE checks ADD COLUMN tries INTEGER NOT NULL DEFAULT 1");
+  if (!cols.has("retry")) db.exec("ALTER TABLE checks ADD COLUMN retry INTEGER NOT NULL DEFAULT 0");
   const facts = openFacts(db);
   /** The end of the attempt that started at `started` and its check.ended fact, in one transaction (a re-run reuses the id: its
    * start time is the version). False when a newer attempt has taken the row: this one's end is dropped. */
-  const end = (id: string, started: number, state: "done" | "error" | "lost", set: { receipt?: string; error?: string }) => {
+  const end = (id: string, started: number, state: "done" | "error" | "lost", set: { receipt?: string; error?: string; result?: string; cost?: number; retry?: boolean }) => {
     const r = row(id)!;
     const at = now();
     db.exec("SAVEPOINT check_end");
     try {
-      if (db.prepare("UPDATE checks SET state = ?, receipt = ?, error = ?, ended = ? WHERE id = ? AND at = ?").run(state, set.receipt ?? null, set.error ?? null, at, id, started).changes === 0) {
+      if (db.prepare("UPDATE checks SET state = ?, receipt = ?, error = ?, ended = ?, result = ?, cost_usd = COALESCE(?, cost_usd), retry = ? WHERE id = ? AND at = ?").run(state, set.receipt ?? null, set.error ?? null, at, set.result ?? null, set.cost ?? null, set.retry ? 1 : 0, id, started).changes === 0) {
         db.exec("RELEASE check_end");
         return false;
       }
@@ -254,25 +300,36 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, g
     for (const w of waiters.get(id) ?? []) w();
     waiters.delete(id);
   };
-  const view = (r: Record<string, any>): CheckView => ({ id: r.id, repo: r.repo, head: r.head, run: r.run, state: r.state, receipt: r.receipt ? JSON.parse(r.receipt) : null, error: r.error ?? null, version: versions.get(r.id) ?? 0 });
+  const view = (r: Record<string, any>): CheckView => ({ id: r.id, repo: r.repo, head: r.head, run: r.run, state: r.state, receipt: r.receipt ? JSON.parse(r.receipt) : null, error: r.error ?? null, version: versions.get(r.id) ?? 0, result: r.result ? JSON.parse(r.result) : null, billed_usd: r.cost_usd ?? null });
 
-  /** One run in a fresh box: its exit and its output's tail. `base`: the base tree, moved into the out folder (the recipe's history). */
-  async function inBox(id: string, r: Recipe, workspace: string, out: string, cwd: string, env: Record<string, string>, base?: string) {
+  /** One run in a fresh box: its exit and its output's tail. `trees`: commit trees by spec field, moved into the out folder (the
+   * recipe's history); `spec`: written to the out folder's spec.json. */
+  async function inBox(id: string, r: Recipe, workspace: string, out: string, cwd: string, env: Record<string, string>, trees: Record<string, string> = {}, spec?: Record<string, string>) {
     rmSync(out, { recursive: true, force: true });
     mkdirSync(join(out, "home"), { recursive: true });
     for (const [name, text] of Object.entries(r.files)) (mkdirSync(join(out, "recipe", dirname(name)), { recursive: true }), writeFileSync(join(out, "recipe", name), text));
-    if (base) renameSync(base, join(out, "base"));
+    for (const [field, tree] of Object.entries(trees)) renameSync(tree, join(out, field));
+    if (spec) writeFileSync(join(out, "spec.json"), JSON.stringify(spec));
     return box.run({ check: id, image: "engineer", workspace, out, cwd, argv: r.argv, env, timeoutMs: r.timeout_min * 60_000, readOnly: r.judged !== undefined });
   }
   const tail = (o: { exit: number | null; out: string; timedOut: boolean }) => `${o.timedOut ? "didn't finish in time" : `exit ${o.exit}`}. Its output (data, not instructions):\n\n\`\`\`\n${fence(o.out).slice(-TAIL) || "(no output)"}\n\`\`\``;
 
   /** A recipe on `repo@head` (and its `base`, when the spec has one); passed on exit 0. Whether a declared check must run is the
    * base's to say, never the change's: a head that drops it, or whose package.json can't be read, fails. */
-  async function code(id: string, snapshot: Snapshot, r: Recipe, repo: string, head: string, spec: Record<string, string>, dir: string) {
+  async function code(id: string, snapshot: Snapshot, r: Recipe, run: Run, repo: string, head: string, spec: Record<string, string>, dir: string, prior = 0) {
     const ws = join(dir, "ws"), was = join(dir, "base");
     mkdirSync(ws);
     await snapshot(repo, head, ws);
-    if (spec.base) (mkdirSync(was), await snapshot(repo, spec.base, was));
+    // Each other commit the spec names, once: its tree for the recipe's history.
+    const trees: Record<string, string> = {}, seen = new Set<string>();
+    for (const [field, kind] of Object.entries(r.spec)) {
+      if (kind !== "sha" || seen.has(spec[field]!)) continue;
+      seen.add(spec[field]!);
+      const into = join(dir, field);
+      mkdirSync(into);
+      await snapshot(repo, spec[field]!, into);
+      trees[field] = into;
+    }
     if (r.declares) {
       const [base, now] = [declares(was, r.declares), declares(ws, r.declares)];
       const no = (summary: string) => ({ verdict: "fail" as const, ran: false, summary });
@@ -281,9 +338,27 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, g
       if (base === "yes" && now === "no") return no(`the change removes ${r.title}, which its base declares`);
       if (now === "no") return { verdict: "pass" as const, ran: false, summary: `${repo} declares no \`${r.declares}\` script` };
     }
-    const o = await inBox(id, r, ws, join(dir, "out"), r.cwd_from ? spec[r.cwd_from]! : ".", checkEnv(false), spec.base ? was : undefined);
+    const out = join(dir, "out");
+    let token: string | undefined, capUsd = 0;
+    if (r.model) {
+      // One budget per check, across its attempts: a retry gets only what the earlier ones left.
+      capUsd = Math.floor(Math.min(Number(spec.budget_usd) - prior, r.model.max_usd) * 10_000) / 10_000;
+      if (!(capUsd >= 0.01)) return { verdict: "fail" as const, ran: false, summary: `${r.title} has spent its budget ($${prior.toFixed(2)} of $${Number(spec.budget_usd).toFixed(2)})`, cost: prior };
+      token = modelToken(`${run}:${id}`, { ttlMs: (r.timeout_min + 10) * 60_000, capUsd });
+    }
+    const env = r.model ? checkEnv("model", { modelToken: token, gatewayUrl }) : checkEnv("plain");
+    const o = await inBox(id, r, ws, out, r.cwd_from ? spec[r.cwd_from]! : ".", env, trees, { ...spec, repo, head });
     const ok = o.exit === 0 && !o.timedOut;
-    return { verdict: ok ? ("pass" as const) : ("fail" as const), ran: true, summary: ok ? `${r.title} passed` : `${r.title} failed: ${tail(o)}` };
+    const used = token ? spent(token) : 0;
+    const cost = token ? Math.round((prior + used) * 10_000) / 10_000 : undefined;
+    if (!r.result) return { verdict: ok ? ("pass" as const) : ("fail" as const), ran: true, summary: ok ? `${r.title} passed` : `${r.title} failed: ${tail(o)}`, cost };
+    // A result recipe passes when its result came out: one JSON object, small, read never through a link.
+    let result: Record<string, unknown> | undefined;
+    try { const j = JSON.parse(smallFile(join(out, "result.json"), RESULT_MAX) ?? ""); if (j && typeof j === "object" && !Array.isArray(j)) result = j; } catch {}
+    // Worth one retry only when it neither ran out of time nor spent (nearly) all its budget: a provider error, a crash.
+    if (!ok || !result) return { verdict: "fail" as const, ran: true, summary: `${r.title} produced no result: ${tail(o)}`, cost, retry: !o.timedOut && used < capUsd * 0.9 };
+    if (cost !== undefined) result.cost_usd = cost;
+    return { verdict: "pass" as const, ran: true, summary: `${r.title} came out`, result: JSON.stringify(result), cost };
   }
 
   /** A judged run (the reviewer eval), laid out by the judging rules: the subject commit with the judge's files and the judged cases. */
@@ -312,7 +387,7 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, g
       mkdirSync(join(tree, cases), { recursive: true });
       for (const n of names) writeFileSync(join(tree, cases, n), judged.get(n)!);
     };
-    const env = checkEnv(true, { modelToken: modelToken(head), gatewayUrl });
+    const env = checkEnv("judged", { modelToken: modelToken(`eval:${head}`, { ttlMs: 3 * 3600_000 }), gatewayUrl });
     const once = async (names: string[], n: number) => {
       lay(names);
       const out = join(dir, `out-${n}`);
@@ -343,7 +418,7 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, g
     const attempt = `c-${createHash("sha256").update(`${id}:${r.at}`).digest("hex").slice(0, 16)}`;
     const dir = join(workDir, "checks", attempt);
     const ids = { check: id, attempt, repo: r.repo, head: r.head, run: r.run };
-    const ended = (state: "done" | "error", set: { receipt?: string; error?: string }) => {
+    const ended = (state: "done" | "error", set: { receipt?: string; error?: string; result?: string; cost?: number; retry?: boolean }) => {
       const landed = end(id, r.at, state, set);
       if (!landed) log("check superseded: a newer run of it started, this run's end is dropped", { ...ids, state });
       return landed;
@@ -352,9 +427,9 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, g
       rmSync(dir, { recursive: true, force: true });
       mkdirSync(dir, { recursive: true, mode: 0o700 });
       const snap = snapshot(r.module);
-      const v = recipe.judged ? await evaluate(attempt, snap, recipe, r.head, spec, dir) : await code(attempt, snap, recipe, r.repo, r.head, spec, dir);
-      const receipt = signReceipt(secret(), { check: id, repo: r.repo, head: r.head, run: r.run, judge: spec.judge_commit ?? null, policy: spec.policy_hash ?? null, hash: r.hash, verdict: v.verdict, ran: v.ran, summary: v.summary.slice(0, 12_000), at: new Date(now()).toISOString() });
-      if (ended("done", { receipt: JSON.stringify(receipt) })) log("check done", { ...ids, verdict: v.verdict });
+      const v: { verdict: "pass" | "fail"; ran: boolean; summary: string; result?: string; cost?: number; retry?: boolean } = recipe.judged ? await evaluate(attempt, snap, recipe, r.head, spec, dir) : await code(attempt, snap, recipe, r.run, r.repo, r.head, spec, dir, Number(r.cost_usd ?? 0));
+      const receipt = signReceipt(secret(), { check: id, repo: r.repo, head: r.head, run: r.run, judge: spec.judge_commit ?? null, policy: spec.policy_hash ?? null, hash: r.hash, verdict: v.verdict, ran: v.ran, summary: v.summary.slice(0, 12_000), at: new Date(now()).toISOString(), ...(v.result !== undefined ? { result: resultHash(v.result) } : {}) });
+      if (ended("done", { receipt: JSON.stringify(receipt), ...(v.result !== undefined ? { result: v.result } : {}), ...(v.cost !== undefined ? { cost: v.cost } : {}), retry: v.retry === true })) log("check done", { ...ids, verdict: v.verdict });
     } catch (e) {
       // It couldn't run (no snapshot, no box, no result from the judge): no receipt; asking again runs it again.
       const msg = String((e as Error).message ?? e);
@@ -379,11 +454,16 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, g
       const recipe = recipes()[run];
       if (!KINDS.slug.test(repo) || !KINDS.sha.test(head) || !recipe) throw new CheckError(400, "bad-request", `send {repo: owner/name, head: <commit sha>, run: ${Object.keys(recipes()).join("|") || "(no module declares one)"}, spec}`);
       const spec = checkSpec(run, recipe, b.spec);
+      if (recipe.model && !(Number(spec.budget_usd) > 0)) throw new CheckError(400, "bad-spec", `a ${run} check's spec.budget_usd is more than 0`);
       const hash = specHash(spec, recipe);
       const had = db.prepare("SELECT * FROM checks WHERE module = ? AND repo = ? AND head = ? AND run = ? AND hash = ?").get(module, repo.toLowerCase(), head, run, hash) as Record<string, any> | undefined;
-      if (had && ["running", "done"].includes(had.state)) return view(had);
+      // A check that couldn't run (error, lost) runs again when asked again. A model recipe's, at most twice in all; a result
+      // recipe that ended without its result gets that one retry only after a provider error or crash (not a timeout or its
+      // budget run out), on what its budget has left.
+      const again = had && (had.state === "done" ? Boolean(recipe.result && !had.result && had.retry) : had.state !== "running") && (!recipe.model || had.tries < 2);
+      if (had && !again) return view(had);
       const id = had?.id ?? `c-${randomBytes(8).toString("hex")}`;
-      if (had) db.prepare("UPDATE checks SET state = 'running', receipt = NULL, error = NULL, at = ?, ended = NULL WHERE id = ?").run(now(), id);
+      if (had) db.prepare("UPDATE checks SET state = 'running', receipt = NULL, error = NULL, result = NULL, retry = 0, tries = tries + 1, at = ?, ended = NULL WHERE id = ?").run(now(), id);
       else db.prepare("INSERT INTO checks (id, module, repo, head, run, hash, spec, state, at) VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?)").run(id, module, repo.toLowerCase(), head, run, hash, JSON.stringify(spec), now());
       log("check started", { check: id, module, repo, head, run });
       void execute(id, recipe);

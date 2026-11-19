@@ -1,13 +1,14 @@
 // Model credentials the kernel mints for the gateway: `ahqj_<payload>.<hmac>`, signed with the secret gateway_job_secret
 // (held by the kernel only). Stateless, so a restart never strands a running job.
-// payload: { k: kind (job | reviewer | grader | check), a: agent id | null, i: task id | null, c: component, x: expiry ms, id?: the job }.
+// payload: { k: kind (job | reviewer | grader | check), a: agent id | null, i: task id | null, c: component, x: expiry ms, id?: the job,
+// u?: a check token's own spend cap in USD (a model recipe's: the gateway caps the token's run key at it) }.
 // Kind job: a kernel-admitted job's only credential (boxes.ts), id: the job; what it may do is its job row's frozen authority.
 // A fast chat lane signs its own turn tokens in this format, kind agent, with gateway_lane_secret (chat-lane model.ts).
 import { createHmac, timingSafeEqual } from "node:crypto";
 
 type Brand<T, B extends string> = T & { readonly __brand: B };
 /** A token's payload (kind, agent, task, component, expiry). */
-export interface TokenPayload { k: string; a: string | null; i: string | null; c: string | null; x: number; id?: string }
+export interface TokenPayload { k: string; a: string | null; i: string | null; c: string | null; x: number; id?: string; u?: number }
 /** The payload of a genuine, unexpired token: only verifyToken() makes one, after the HMAC and expiry checks. */
 export type VerifiedToken = Brand<TokenPayload, "VerifiedToken">;
 
@@ -18,11 +19,12 @@ const KINDS = new Set([...MINTED, "agent"]);
 const sign = (secret: string, body: string) => createHmac("sha256", secret).update(body).digest("base64url");
 
 /** A token for one job or one system call; `ttlMs` past now. */
-export function mintToken(secret: string, { kind, agentId = null, issueId = null, component, ttlMs = 2 * 3600_000, job }: { kind: string; agentId?: string | null; issueId?: string | null; component?: string | null; ttlMs?: number; job?: string }, now = Date.now()) {
+export function mintToken(secret: string, { kind, agentId = null, issueId = null, component, ttlMs = 2 * 3600_000, job, capUsd }: { kind: string; agentId?: string | null; issueId?: string | null; component?: string | null; ttlMs?: number; job?: string; capUsd?: number }, now = Date.now()) {
   if (!secret) throw new Error("the model gateway isn't set up on this host (no gateway_job_secret)");
   if (!MINTED.has(kind)) throw new Error(`not a token kind: ${kind}`);
   if ((kind === "job") !== Boolean(job)) throw new Error("a job token names its job, and only a job token does");
-  const body = Buffer.from(JSON.stringify({ k: kind, a: agentId, i: issueId, c: component ?? null, x: now + ttlMs, ...(job ? { id: job } : {}) })).toString("base64url");
+  if (capUsd !== undefined && (kind !== "check" || !(capUsd > 0))) throw new Error("only a check token carries a spend cap, more than 0");
+  const body = Buffer.from(JSON.stringify({ k: kind, a: agentId, i: issueId, c: component ?? null, x: now + ttlMs, ...(job ? { id: job } : {}), ...(capUsd !== undefined ? { u: capUsd } : {}) })).toString("base64url");
   return `${JOB_TOKEN_PREFIX}${body}.${sign(secret, body)}`;
 }
 

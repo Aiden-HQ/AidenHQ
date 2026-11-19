@@ -45,6 +45,7 @@ const ModulesView = lazy(() => VIEW_CHUNKS.modules().then((m) => ({ default: m.M
 const AgentPage = lazy(() => VIEW_CHUNKS.agentPage().then((m) => ({ default: m.AgentPage })));
 const ModulePage = lazy(() => VIEW_CHUNKS.modulePage().then((m) => ({ default: m.ModulePage })));
 const RunPage = lazy(() => VIEW_CHUNKS.run().then((m) => ({ default: m.RunPage })));
+const ReviewsView = lazy(() => VIEW_CHUNKS.reviews().then((m) => ({ default: m.ReviewsView })));
 const DesignView = lazy(() => VIEW_CHUNKS.design().then((m) => ({ default: m.DesignView })));
 /** A page's place while its code arrives (rarely seen: it is warmed early). No spinner: the page paints in a moment. */
 const PageLoading = () => <main className="page wide" aria-busy="true" />;
@@ -127,6 +128,8 @@ function parseRoute(): Route {
   // #/approvals, #/costs, ...: deep links to a tab.
   // A tab link may carry the tab's own state after "?" (#/costs?range=7d).
   if ((VIEWS as string[]).includes(h.split("?")[0]!)) return { kind: "view", view: h.split("?")[0] as View };
+  // #/reviews[/<tab>|/r/<run>] opens the Reviews page (Reviews.tsx reads the rest itself).
+  if (/^reviews(\/[\w/-]*)?$/.test(h)) return { kind: "view", view: "reviews" };
   // #/flow/<tab> opens a Flow tab (Flow.tsx reads the tab itself).
   if (/^flow\/[a-z]+(\?.*)?$/.test(h)) return { kind: "view", view: "flow" };
   const setup = /^setup\/([a-z0-9-]{1,63})$/.exec(h);
@@ -155,10 +158,10 @@ function useMedia(query: string) {
 }
 
 // "design" (#/design, the design system's catalogue) has no tab of its own.
-type View = "chat" | "agents" | "modules" | "approvals" | "board" | "apps" | "costs" | "flow" | "settings" | "design";
-const VIEWS: View[] = ["chat", "agents", "modules", "approvals", "board", "apps", "costs", "flow", "settings"];
+type View = "chat" | "agents" | "modules" | "approvals" | "board" | "apps" | "reviews" | "costs" | "flow" | "settings" | "design";
+const VIEWS: View[] = ["chat", "agents", "modules", "approvals", "board", "apps", "reviews", "costs", "flow", "settings"];
 // Daily work in the bar; configuration (connections, accounts, instance settings) is behind the Settings gear.
-const TABS: [View, string][] = [["chat", "Chat"], ["approvals", "Approvals"], ["agents", "Agents"], ["modules", "Modules"], ["apps", "Apps"], ["board", "Tasks"], ["costs", "Costs"], ["flow", "Flow"]];
+const TABS: [View, string][] = [["chat", "Chat"], ["approvals", "Approvals"], ["agents", "Agents"], ["modules", "Modules"], ["apps", "Apps"], ["board", "Tasks"], ["reviews", "Reviews"], ["costs", "Costs"], ["flow", "Flow"]];
 const VIEW_KEY = "aidenhq.view";
 const savedView = (): View => {
   try {
@@ -726,6 +729,7 @@ export function App() {
       {view === "modules" && route.kind === "module" && <Suspense fallback={<PageLoading />}><ModulePage key={route.name} name={route.name} tab={route.tab} go={go} onSignIn={signInNeeded} can={{ signIn: signInConnect, google: googleConnect }} /></Suspense>}
       {view === "apps" && <Suspense fallback={<PageLoading />}><AppsView key={route.kind === "app" ? route.name : ""} app={route.kind === "app" ? route.name : undefined} onSignIn={signInNeeded} /></Suspense>}
       {view === "design" && <Suspense fallback={<PageLoading />}><DesignView /></Suspense>}
+      {view === "reviews" && <Suspense fallback={<PageLoading />}><ReviewsView onSignIn={signInNeeded} /></Suspense>}
       {view === "flow" && <Suspense fallback={<PageLoading />}><FlowView onSignIn={signInNeeded} /></Suspense>}
       {view === "costs" && <Suspense fallback={<PageLoading />}><CostsView onSignIn={signInNeeded} /></Suspense>}
       {view === "agents" && route.kind === "agent" && <Suspense fallback={<PageLoading />}><AgentPage key={route.key} agentKey={route.key} tab={route.tab} go={go} onSignIn={signInNeeded} /></Suspense>}

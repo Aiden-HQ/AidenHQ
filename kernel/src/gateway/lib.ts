@@ -33,8 +33,9 @@
 // (reviewer, grader, source) are never capped. CI caps (config/gateway.json `ci`: per repo per UTC day, all CI per day) are
 // never filed for raising. The install cap (config/gateway.json `install_day_usd`, settings.spend_day_usd; absent, none)
 // counts every call of the UTC day, every kind and CI included; its raise_cap is filed as agent INSTALL_CAP, scope day.
-// A check job's token (kind check, ../checkjobs.ts: the reviewer eval) is capped by the eval day cap (config/gateway.json
-// `eval_day_usd`, settings.eval_day_usd; absent, 0: refused), attributed to `eval:<head>`, never filed for raising.
+// A check job's token (kind check, ../checkjobs.ts) is the reviewer eval's, capped by the eval day cap (config/gateway.json
+// `eval_day_usd`, settings.eval_day_usd; absent, 0: refused) and attributed to `eval:<head>`, or a model recipe's (a code
+// review), which carries its own cap (`u`): that token's run key alone, attributed to `<run>:<check>`. Neither is filed for raising.
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { dirname } from "node:path";
@@ -52,7 +53,7 @@ export type RunKey = Brand<string, "RunKey">;
  */
 export type Caller = Brand<{
   runKey: RunKey; agentId: string | null; runId: string | null; issueId: string | null; perpetual: boolean; rev: string | null;
-  kind: string; component: string; capped: boolean; ci?: { repo: string; subject: string }; check?: { subject: string };
+  kind: string; component: string; capped: boolean; ci?: { repo: string; subject: string }; check?: { subject: string; cap?: number };
 }, "Caller">;
 type GatewayError = Error & { status?: number; type?: string; extra?: Record<string, unknown> };
 type Caps = { run_usd: number; task_usd: number; day_usd: number };
@@ -300,7 +301,7 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
     // A CI call's task_subject is `<owner>/<repo>#<pr>`.
     ciSpentRepo: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE kind = 'ci-code-review' AND day = ? AND substr(task_subject, 1, length(?)) = ?"),
     ciSpent: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE kind = 'ci-code-review' AND day = ?"),
-    checkSpent: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE kind = 'check' AND day = ?"),
+    checkSpent: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE kind = 'check' AND day = ? AND task_subject LIKE 'eval:%'"),
   };
   const prune = () => {
     const cut = new Date(now() - 40 * DAY_MS).toISOString();
@@ -394,7 +395,7 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
         const row = (q.run.get(runKey) as RunRow | undefined) ?? settle(runKey, { agentId: p.a, runId: String(p.id), ...(await taskOf(p.i)) });
         return as(row, routeKind, "agent", true);
       }
-      if (p.k === "check") return { ...as(null, "check", "Check jobs", true), check: { subject: String(p.c ?? "").slice(0, 80) } } as Caller;
+      if (p.k === "check") return { ...as(null, "check", "Check jobs", true), check: { subject: String(p.c ?? "").slice(0, 80), ...(Number(p.u) > 0 ? { cap: Number(p.u) } : {}) } } as Caller;
       // An agent's model calls come only with a kernel job's token or a lane's: an agent-kind token under the job secret is no one's.
       if (!SYSTEM[p.k]) throw fail(401, "unauthorized", "this run's model credential is invalid or expired");
       const row = (q.run.get(runKey) as RunRow | undefined) ?? settle(runKey, { agentId: p.a, issueId: p.i });
@@ -442,6 +443,7 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
         ...installScope(today),
       ];
     }
+    if (who.check?.cap) return [{ scope: "check-run", subject: who.check.subject, cap: who.check.cap, spent: (q.spentRun.get(who.runKey) as Sum).s }, ...installScope(today)];
     if (who.check) return [{ scope: "eval-day", subject: today, cap: evalDay(), spent: (q.checkSpent.get(today) as Sum).s }, ...installScope(today)];
     if (!who.capped) return installScope(today);
     const subject = taskSubject(who, t);
@@ -751,5 +753,7 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
   /** The caps a new job of this agent on this task would start over (admission.ts): its task, its day and the install's. */
   const exhausted = (agentId: string, task: string) =>
     capScopes({ runKey: "admission", agentId, issueId: task, perpetual: false, capped: true } as unknown as Caller, now()).filter((o) => o.scope !== "run" && o.cap > 0 && o.spent >= o.cap);
-  return { handle, db, metricsText, setCap, exhausted, trueUp, inflight: () => live, ciEnabled: () => Boolean(ciConf()), close: () => { clearInterval(pruner); clearInterval(trueUps); db.close(); } };
+  /** What a credential has spent so far (settled and in flight), by its run key: a check token's whole run. */
+  const spentBy = (cred: string) => (q.spentRun.get(sha256(cred)) as Sum).s;
+  return { handle, db, metricsText, setCap, exhausted, trueUp, spentBy, inflight: () => live, ciEnabled: () => Boolean(ciConf()), close: () => { clearInterval(pruner); clearInterval(trueUps); db.close(); } };
 }

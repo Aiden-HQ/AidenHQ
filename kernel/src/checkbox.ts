@@ -2,7 +2,7 @@
 //
 // A check box comes from the computer launcher's /check route (launcher_kernel_key): a fresh gVisor box per run with only the
 // check's snapshot (read-only for the eval), its out folder and the product's supply-chain checks mounted, and no credential
-// of any kind but the eval's `check` model token, which the launcher's gateway knows by its hash. The kernel runs the command
+// of any kind but a `check` model token (the eval's, or a model recipe's own capped one), which the launcher's gateway knows by its hash. The kernel runs the command
 // there itself (`docker exec`, the env through a 0600 file, never argv) and always ends the box (/job/release).
 //
 // A snapshot comes through the kernel's codehost broker (codehost.ts: codehost-github's /ops/snapshot, `git archive`, no .git
@@ -98,7 +98,7 @@ export function snapshots(ask: Ask): (module: string) => Snapshot {
 type Ask = (module: string, op: string, body: Record<string, unknown>) => Promise<Answer>;
 
 /** The kernel's check jobs (checkjobs.ts) on these: the launcher's check boxes, the snapshot provider, `check` model tokens. */
-export function checkJobsFrom({ db, secret, recipes, ask, call, workDir, gatewayUrl, log, docker }: {
+export function checkJobsFrom({ db, secret, recipes, ask, call, workDir, gatewayUrl, spent, log, docker }: {
   db: DatabaseSync; secret: (name: string) => string;
   /** The installed modules' check recipes (config/kernel/modules.json `check_jobs`). */
   recipes: () => Recipes;
@@ -106,6 +106,8 @@ export function checkJobsFrom({ db, secret, recipes, ask, call, workDir, gateway
   ask: Ask; call: Call; workDir: string;
   /** The model gateway's API base as a box reaches it (the launcher's gateway, `…/api/v1`). */
   gatewayUrl: string;
+  /** A model token's spend so far (the gateway's ledger). */
+  spent?: (token: string) => number;
   log: (msg: string, f?: Record<string, unknown>) => void;
   /** Tests: how a command runs in a box. */
   docker?: typeof dockerRun;
@@ -114,6 +116,7 @@ export function checkJobsFrom({ db, secret, recipes, ask, call, workDir, gateway
     db, log, workDir, gatewayUrl, recipes, box: checkBoxes({ call, ...(docker ? { docker } : {}) }),
     secret: () => secret("receipt_secret"),
     snapshot: snapshots(ask),
-    modelToken: (head) => mintToken(secret("gateway_job_secret"), { kind: "check", component: `eval:${head}`, ttlMs: 3 * 3600_000 }),
+    modelToken: (component, { ttlMs, capUsd }) => mintToken(secret("gateway_job_secret"), { kind: "check", component, ttlMs, ...(capUsd !== undefined ? { capUsd } : {}) }),
+    ...(spent ? { spent } : {}),
   });
 }

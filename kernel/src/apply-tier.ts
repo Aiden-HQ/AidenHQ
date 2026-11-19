@@ -185,6 +185,69 @@ function moduleAuthorityParts(s: any, base: any, head: any) {
   return [...extra, c.reviewFirst ? OWNER_AFTER_REVIEW(c.rule, c.reason, c.panel, c.ownerOnly) : c.panel ? PANEL(c.rule, c.reason) : T(1, c.rule, c.reason)];
 }
 
+/**
+ * A module setting's owner rules (module.yaml settings.<key>.owner): what an agent's change may not do without the owner.
+ * `default`: the value the module uses where the field is unset (a new entry's, an unset or removed field's).
+ */
+export type OwnerRule = { path: string; raise?: true; change?: true; to?: unknown; new?: true; before?: string; default?: unknown };
+/** A setting as its module's service reads it: the instance's value over the module's default, maps merged (lists replace). */
+const merged = (dflt: unknown, v: unknown): unknown => (isDict(dflt) && isDict(v) ? Object.fromEntries([...new Set([...Object.keys(dflt), ...Object.keys(v)])].map((k) => [k, k in v ? merged(dflt[k], v[k]) : dflt[k]])) : v === undefined ? dflt : v);
+/**
+ * The values a path pattern reaches (`*`: any map key or list item; a list of maps is keyed by its items' repo, id, name or
+ * key), and whether a list along the way holds one key twice (then which entry a rule compares is ambiguous).
+ */
+function reach(v: unknown, path: string[], at = "", dup = { found: false }): { values: Map<string, unknown>; dup: boolean } {
+  const out = new Map<string, unknown>();
+  const walk = (x: unknown, rest: string[], here: string) => {
+    if (!rest.length) return void out.set(here, x);
+    const [seg, ...more] = rest;
+    const kids: [string, unknown][] = Array.isArray(x) ? x.map((y, i) => [String(isDict(y) ? y.repo ?? y.id ?? y.name ?? y.key ?? i : i).toLowerCase(), y]) : isDict(x) ? Object.entries(x) : [];
+    if (new Set(kids.map(([k]) => k)).size !== kids.length) dup.found = true;
+    for (const [k, y] of kids) if (seg === "*" || k === seg) walk(y, more, `${here}.${k}`);
+  };
+  walk(v, path, at);
+  return { values: out, dup: dup.found };
+}
+/**
+ * What an agent's change to a setting does that its module makes the owner's (OwnerRule), each value read as the module runs
+ * it (unset or removed: the rule's default; the setting's default under both sides): `raise`, a number above what it was (a
+ * new entry: above the default); `change`, any different value; `to`, the value newly set to that; `new`, a value (its part
+ * before `before`) none had before. A list holding one key twice is the owner's too.
+ */
+export function ownerRaises(key: string, rules: OwnerRule[], dflt: unknown, base: unknown, head: unknown): string[] {
+  // A value of another shape than its default (a string where a list is meant) is one the rules can't read: the owner's.
+  const shape = (v: unknown) => (Array.isArray(v) ? "list" : isDict(v) ? "map" : typeof v);
+  if (head != null && dflt != null && shape(head) !== shape(dflt)) return [`${key}: a ${shape(head)} where its default is a ${shape(dflt)}`];
+  const [b, h] = [merged(dflt, base), merged(dflt, head)];
+  const out: string[] = [];
+  for (const r of rules) {
+    const path = String(r.path).split(".").filter(Boolean);
+    if (r.new) {
+      const [bv, hv] = [reach(b, path), reach(h, path)];
+      if (hv.dup) out.push(`${key}: an entry listed twice`);
+      const norm = (x: unknown) => (typeof x === "string" ? (r.before ? x.split(r.before)[0]! : x).toLowerCase() : JSON.stringify(x));
+      const had = new Set([...bv.values.values()].map(norm));
+      for (const [at, now] of hv.values) if (!had.has(norm(now))) out.push(`${key}${at}: new ${JSON.stringify(norm(now)).slice(0, 60)}`);
+      continue;
+    }
+    // The entries holding the field (the setting itself for a top-level field), and the field's value in each, or its default.
+    const leaf = path.at(-1)!;
+    const [bv, hv] = [reach(b, path.slice(0, -1)), reach(h, path.slice(0, -1))];
+    if (hv.dup) out.push(`${key}: an entry listed twice`);
+    const val = (e: unknown) => (isDict(e) && e[leaf] !== undefined ? e[leaf] : r.default);
+    for (const [at, entry] of hv.values) {
+      if (entry === null) continue; // switched off (a default reviewer set to null): it runs nothing
+      const now = val(entry);
+      const was = bv.values.has(at) ? val(bv.values.get(at)) : r.default;
+      const hit = r.raise ? typeof now === "number" && now > (typeof was === "number" ? was : 0)
+        : r.change ? !eq(was, now)
+        : "to" in r ? eq(now, r.to) && !eq(was, r.to) : false;
+      if (hit) out.push(`${key}${at}.${leaf}: ${r.raise ? "raised" : r.change ? "changed" : "set"} to ${JSON.stringify(now).slice(0, 60)}`);
+    }
+  }
+  return [...new Set(out)];
+}
+
 function instanceParts(s: any) {
   const base = parse(s.base?.["instance.yaml"]);
   const head = parse(s.head?.["instance.yaml"]);
@@ -213,7 +276,14 @@ function instanceParts(s: any) {
     else if (k === "settings") {
       // Every setting is the panel's. (Slack channels agents post to are no special case since 2f: a post to a channel off
       // slack_post_channels is itself a Tier 2 slack.post record.)
-      for (const sk of changedKeys(base.settings, head.settings)) parts.push(PANEL("settings", `changes the setting ${sk}`));
+      for (const sk of changedKeys(base.settings, head.settings)) {
+        parts.push(PANEL("settings", `changes the setting ${sk}`));
+        // An agent's change (never the owner's own, nor the kernel's) that does what the setting's module makes the owner's:
+        // more spend, a wider reach (settings.<key>.owner, compiled into the catalog).
+        const def = s.settingDefs?.[sk];
+        const raised = s.byAgent && Array.isArray(def?.owner) ? ownerRaises(sk, def.owner, def.default, base.settings?.[sk], head.settings?.[sk]) : [];
+        if (raised.length) parts.push(OWNER_ONLY("setting-owner", `an agent's change the owner decides: ${raised.join("; ")}`.slice(0, 600)));
+      }
       // Spend is the owner's authority under every autonomy: raising or removing the install cap. Only a finite positive number
       // at or under the old cap tightens it; unset was no cap at all (the gateway's default). Ending quiet start and turning
       // auto-updates back on are the owner's below full autonomy, the panel's at full (computeTier).
@@ -451,6 +521,8 @@ export function createApplyPlanner(h: {
   connections(): Record<string, { tools: { read: string[]; write: string[]; destructive: string[] } }>;
   /** The module apps (config/apps.modules.yaml), for restricted-app lookups. */
   moduleApps(): unknown[];
+  /** The enabled modules' setting declarations by key (config/modules.json): each one's default and owner rules. */
+  settingDefs?(): Record<string, { default?: unknown; owner?: OwnerRule[] }>;
   /**
    * The instance.yaml the release updater would write for release `name` at distro commit `sha` on this base, after every
    * check it makes (updates.ts verify); null when the release fails one or can't be checked.
@@ -491,8 +563,10 @@ export function createApplyPlanner(h: {
     if (notes && (c.files.length !== 1 || c.files[0] !== "instance.yaml" || changedKeys(parse(baseI), parse(headI)).some((k) => k !== "teams"))) throw new Refused("a routing change moves only instance.yaml's teams");
     // The kind's floor is 1 (every apply is read by the reviewer), so the rules' Tier 0 trial exceptions (ownerStarted,
     // trialNoTap) never lower anything here.
+    // An agent's settings change meets its module's owner rules: only the owner's settings change and the kernel's own (kind
+    // kernel) are exempt; no requester counts as an agent (fail closed).
     const releaseVerified = !eq(parse(baseI)?.release, parse(headI)?.release) && (await updaterMove(requester, baseI, headI));
-    const t = meritOwner(highest(applyParts({ files: c.files, base: c.texts.base, head: c.texts.head, pin: bump ? { forward: bump.forward, back: bump.back } : null, routingTune: Boolean(notes), roles: h.roles(), connections: h.connections(), moduleApps: h.moduleApps(), ownerStarted: false, trialNoTap: false, releaseVerified, ...st })));
+    const t = meritOwner(highest(applyParts({ files: c.files, base: c.texts.base, head: c.texts.head, pin: bump ? { forward: bump.forward, back: bump.back } : null, routingTune: Boolean(notes), roles: h.roles(), connections: h.connections(), moduleApps: h.moduleApps(), settingDefs: h.settingDefs?.() ?? {}, byAgent: requester?.kind !== "kernel", ownerStarted: false, trialNoTap: false, releaseVerified, ...st })));
     if (t.reject) throw new Refused(String(t.reason));
     const details = [notes, c.diff, bump && `${bump.title.replaceAll("`", "")}:\n${bump.log}`, st.remote, c.trial].filter(Boolean).join("\n\n");
     if (details.length > DETAILS_MAX) throw new Refused(`the change is too large to review (${details.length} characters with the commits and code it brings): split it into smaller ones`);
@@ -532,5 +606,6 @@ export function hostPlanner({ repo, instanceRepo, configDir, read, grants, conne
     instanceRepo, read, notes, product: hostProduct(repo), modules: (b, h) => moduleTierState(b, h, repo), connections, verifyRelease,
     roles: () => Object.fromEntries(Object.entries(grants()).flatMap(([id, a]) => (a?.key ? [[a.key, heldRoles(grants() as never, id)]] : []))),
     moduleApps: () => { try { return ((YAML.parse(readFileSync(join(configDir, "apps.modules.yaml"), "utf8")) ?? {}).apps ?? []).filter(Boolean); } catch { return []; } },
+    settingDefs: () => Object.assign({}, ...(JSON.parse(readFileSync(join(configDir, "modules.json"), "utf8")) as { enabled?: boolean; settings?: Record<string, unknown> }[]).filter((m) => m.enabled).map((m) => m.settings ?? {})),
   });
 }
