@@ -1,8 +1,8 @@
 // The changed files as the AI reviewer reads them (reviewer@1's `files`): the requester shapes them to the reviewer's
 // budget before sending, so a request stays small whatever the files weigh, and the reviewer names its limit in its verdicts.
 //
-// Canonical copy: services/shared/review-files.mjs. The reviewer module holds a byte-identical copy at
-// modules/ai-reviewer/service/src/review-files.mjs (scripts/sync-shared.mjs); the runner imports this one.
+// Canonical copy: services/shared/review-files.mjs. Byte-identical copies (scripts/sync-shared.mjs): the reviewer module's
+// (modules/ai-reviewer/service/src/review-files.mjs) and the code host's, whose plan shapes the files (codehost-local's too).
 /** The changed files' full text the reviewer gets for context; files past the budget are named, not sent. */
 export const MAX_FILES = 200_000;
 

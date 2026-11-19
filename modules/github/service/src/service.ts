@@ -30,6 +30,8 @@ import { createMerges } from "./merges.ts";
 import { createFlow } from "./flow.ts";
 import { createReleaseTrain } from "./train.ts";
 import { LOCAL_ORG, plan as planRules } from "./plan.mjs";
+import { fileContext } from "./review-files.mjs";
+import { evidenceOf } from "./evidence.mjs";
 import { notePrTask } from "./pr-watch.ts";
 import { createDesignReviews, startDesignReviewSweep } from "./design-review.ts";
 import { noteKept } from "./tidy.ts";
@@ -234,9 +236,12 @@ export function createService(o: Options) {
       const repo = slugOf(a.repo).slug;
       return { state: { ...base, repo }, facts: { target: repo, sentence: `Create the repository ${repo} on GitHub${inOrg(o.agentsOrg, repo) ? ", with the app starter on main" : ""}.`, diff: "" } };
     }
+    // What the reviewer reads beside the diff (review): each changed file at the reviewed head, and the PR's Evidence section.
+    const reads: { name: string; read: () => Promise<string> }[] = [];
     if (kind.endsWith(".merge") || kind.endsWith(".close")) {
       const merge = kind.endsWith(".merge");
       const prs = [];
+      const evidence: string[] = [];
       let diff = "";
       for (const p of a.prs ?? []) {
         const s = slugOf(p.repo);
@@ -251,6 +256,8 @@ export function createService(o: Options) {
           const into = await fetchRemote(s, String(pr.base?.sha));
           const mb = await git(head.dir, ["merge-base", into.sha, head.sha]).catch(() => "");
           diff += `${await diffOf(head.dir, mb || EMPTY_TREE, head.sha)}\n`;
+          if (pr.changed_files <= listed.length) for (const f of listed.map((x: any) => String(x.filename))) reads.push({ name: `${s.slug} ${f}`, read: () => git(head.dir, ["show", `${head.sha}:${f}`]) });
+          evidence.push(`### https://github.com/${s.slug}/pull/${Number(p.number)}\n${evidenceOf(pr.body)}`);
         }
         prs.push({
           repo: s.slug, number: Number(p.number), head: pr.head?.sha, base: pr.base?.sha, headMatches: !p.head || p.head === pr.head?.sha,
@@ -259,7 +266,7 @@ export function createService(o: Options) {
         });
       }
       const urls = prs.map((p) => `https://github.com/${p.repo}/pull/${p.number}`).join(", ");
-      return { state: { ...base, prs }, facts: { target: urls, sentence: `${merge ? "Merge" : "Close"} ${urls}${merge ? " at its approved head, once its checks are green" : ""}.`, diff: diff.trim() } };
+      return { state: { ...base, prs }, facts: { target: urls, sentence: `${merge ? "Merge" : "Close"} ${urls}${merge ? " at its approved head, once its checks are green" : ""}.`, diff: diff.trim() }, reads, ...(merge ? { evidence: evidence.join("\n\n") } : {}) };
     }
     const branches = [];
     let diff = "";
@@ -280,16 +287,29 @@ export function createService(o: Options) {
         const msg = messages.find((m) => leakIn(m));
         if (msg) throw fail(422, `Not done: a commit message on ${b.branch} mentions "${leakIn(msg)}" ("${msg.trim().split("\n")[0]!.slice(0, 80)}"). ${s.slug}'s reviewers mustn't see internal names; reword the commit and ask again.`);
       }
+      for (const f of files) reads.push({ name: `${s.slug} ${f}`, read: () => git(dir, ["show", `${b.sha}:${f}`]) });
       branches.push({ repo: s.slug, branch: b.branch, sha: b.sha, base: mb || undefined, files, defaultBranch: def, empty });
     }
     const names = branches.map((b) => `${b.repo} \`${b.branch}\``).join(", ");
-    return { state: { ...base, branches }, facts: { target: names, sentence: `${kind.endsWith(".pr") ? "Push and open a PR for" : "Push"} ${names}.`, diff: diff.trim() } };
+    return { state: { ...base, branches }, facts: { target: names, sentence: `${kind.endsWith(".pr") ? "Push and open a PR for" : "Push"} ${names}.`, diff: diff.trim() }, reads, ...(kind.endsWith(".pr") && a.text ? { evidence: evidenceOf(a.text.body) } : {}) };
+  }
+
+  /**
+   * The changed files' text for the reviewer (fileContext, as the runner read them): in order, a file that can't be read at the
+   * head (deleted) skipped, past 300 not read.
+   */
+  async function readFiles(list: { name: string; read: () => Promise<string> }[]) {
+    const files: { name: string; text: string | null | undefined }[] = [];
+    for (const [i, f] of list.entries()) files.push({ name: f.name, text: i < 300 ? await f.read().catch(() => undefined) : null });
+    return fileContext(files);
   }
 
   const executor: Executor = {
     async plan(req: PlanRequest) {
-      const { state, facts } = await stateFor(req.kind, req.args ?? {}, req.requester, req.task);
-      const out = planRules({ kind: req.kind, args: req.args }, state, facts);
+      const { state, facts, reads, evidence } = (await stateFor(req.kind, req.args ?? {}, req.requester, req.task)) as Awaited<ReturnType<typeof stateFor>> & { reads?: { name: string; read: () => Promise<string> }[]; evidence?: string };
+      const planned = planRules({ kind: req.kind, args: req.args }, state, facts);
+      // The reviewer's context goes with the filing only (a revalidation compares targets): never part of the record's digest.
+      const out = req.revalidate || (!reads?.length && evidence === undefined) ? planned : { ...planned, review: { ...(reads?.length ? { files: await readFiles(reads) } : {}), ...(evidence !== undefined ? { evidence } : {}) } };
       // Its commits were read from this task's workspace (stateFor), so the task is who asked to publish them.
       if (/\.(push|pr)$/.test(req.kind) && req.task) notePushedBy((req.args?.only ?? []).map((b: any) => String(b.sha)), { task: req.task, platform: isPlatform(req.requester) });
       return out;
