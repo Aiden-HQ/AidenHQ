@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.28@sha256:bb22d9815c728170f72750f4e5b0d672e06176142e1d602c7e66c050100b7e5b
-FROM node:24.22.2-bookworm-slim@sha256:01d566e8d94d8c619591d78652babfccd3c6992a3dffa9ed5ab39e11cf6c70e9 AS build
+FROM node:24.22.3-bookworm-slim@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54 AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
 # better-sqlite3 has no prebuilt binary for every Node release; build tools let it compile.
@@ -11,16 +11,28 @@ RUN npm run build && npm prune --omit=dev
 
 FROM docker:29.9.2-cli@sha256:5e6baf67325a79f64ed3bed6863954d5e05d0f3d4e57cbdb14809346814bbfdb AS docker
 
-FROM node:24.22.2-bookworm-slim@sha256:01d566e8d94d8c619591d78652babfccd3c6992a3dffa9ed5ab39e11cf6c70e9
+# The compose plugin docker:29.9.2-cli ships is compose v5.6.1, whose x/net v0.58.0 and klauspost/compress v1.20.0 carry
+# GO-2026-6612/6603/6611/6617 and GO-2026-6865; every published compose tag through v5.8.0 still pins those. It is built
+# here from compose v5.7.1 instead, with two pins above its own (go.mod, go.sum next to this file), so the binary carries
+# x/net v0.62.0 and compress v1.20.2.
+FROM golang:1.27.4-bookworm@sha256:4fa7c968ba93f1635670522dbb01a2c78150443e1385746924566079f36570ea AS compose
+WORKDIR /src
+COPY compose-plugin/go.mod compose-plugin/go.sum ./
+RUN CGO_ENABLED=0 go mod download
+RUN CGO_ENABLED=0 go build -trimpath -tags e2e \
+      -ldflags "-w -X github.com/docker/compose/v5/internal.Version=v5.7.1" \
+      -o /usr/local/bin/docker-compose github.com/docker/compose/v5/cmd
+
+FROM node:24.22.3-bookworm-slim@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54
 ENV NODE_ENV=production HOME=/tmp
-# Node 24.22.2 ships npm 11.19.1, whose bundled undici 6.28.0 and brace-expansion 5.0.9 carry published
+# Node 24.22.3 ships npm 11.19.1, whose bundled undici 6.28.0 and brace-expansion 5.0.9 carry published
 # advisories; npm 11.21.2 bundles undici 6.29.1 and brace-expansion 5.0.12 at the paths the scanner reads.
 RUN npm install -g npm@11.21.2 && npm cache clean --force
 RUN apt-get update && apt-get install -y --no-install-recommends git openssh-client ca-certificates && rm -rf /var/lib/apt/lists/*
 # Static Go binaries: the docker CLI with its compose plugin. No tailscale CLI: apps are served by their own tailnet node
 # (the apps-edge sidecar), from a config file this service writes.
 COPY --from=docker /usr/local/bin/docker /usr/local/bin/docker
-COPY --from=docker /usr/local/libexec/docker/cli-plugins/docker-compose /usr/local/lib/docker/cli-plugins/docker-compose
+COPY --from=compose /usr/local/bin/docker-compose /usr/local/lib/docker/cli-plugins/docker-compose
 WORKDIR /app
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
