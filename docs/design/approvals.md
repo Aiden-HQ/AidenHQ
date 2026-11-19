@@ -97,8 +97,8 @@ instance PR.
 
 **The Platform Engineer's line** (`requester.platform`): a job holding the platform-engineer role, which admission
 (`kernel/src/admission.ts`) freezes onto an Engineer job only on a task no agent filed (the owner, a kernel filer) or one an
-agent holding `architect`, `fleet-audit` or `maintainer` filed. Only this line writes to the product repo. An Engineer on a
-task any other agent delegated is outside it, and the code host refuses its product writes.
+agent holding `architect` or `fleet-audit` filed. A product PR is a proposal: any Engineer job opens one (Tier 1). Bare
+branch pushes, PRs that change `.github/` and merges on the product repo are this line's only.
 
 Typical assignments in `tiers.mjs` (read the file for the full rules):
 

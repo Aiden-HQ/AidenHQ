@@ -32,3 +32,15 @@ describe("plan: local change requests", () => {
     assert.equal(planParts("merge", { ...s, prs: [pr("local/aidenhq-instance")] })[0][0].rule, "core-repo-merge");
   });
 });
+
+describe("plan: the product repo", () => {
+  it("a product PR is a proposal: an Engineer job without the platform role opens one; its bare push, a .github change and its merge stay the platform line's", () => {
+    const engineer = { ...s, requester: { platform: false } };
+    const branch = (files) => ({ repo: s.productRepo, branch: "fix/x", defaultBranch: "main", files });
+    assert.deepEqual(planParts("pr", { ...engineer, branches: [branch(["kernel/src/a.ts"])] })[0].map((p) => [p.tier, p.rule]), [[1, "product-pr"]]);
+    assert.equal(planParts("pr", { ...engineer, branches: [branch([".github/workflows/ci.yml"])] })[0][0].reject, true);
+    assert.equal(planParts("push", { ...engineer, branches: [branch(["kernel/src/a.ts"])] })[0][0].reject, true);
+    const merge = planParts("merge", { ...engineer, prs: [{ repo: s.productRepo, number: 7, head: "a".repeat(40), headMatches: true, files: ["kernel/src/a.ts"], checks: [] }] })[0];
+    assert.equal(merge.find((p) => p.reject)?.rule, "product-merge-requester");
+  });
+});

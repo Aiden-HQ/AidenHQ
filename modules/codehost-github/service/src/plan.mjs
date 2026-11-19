@@ -13,8 +13,6 @@ const T = (tier, rule, reason) => ({ tier, rule, reason });
 /** Authority-expanding: the reviewer and a second reviewer on another model family must both approve. */
 const PANEL = (rule, reason) => ({ tier: 1, rule, reason, panel: true });
 const REJECT = (rule, reason) => ({ tier: 2, rule, reason, reject: true });
-/** Who may write to the product repo (requester.platform): the one rule, frozen by the kernel at admission (kernel/src/admission.ts). */
-const PLATFORM_LINE = "a job holding the platform-engineer role (an Engineer on a task the owner, the Agent Architect, the Fleet Steward or the Maintainer filed)";
 const same = (a, b) => String(a ?? "").toLowerCase() === String(b ?? "").toLowerCase();
 const orgOf = (repo) => String(repo).split("/")[0];
 const GITHUB = /(^|\/)\.github\//;
@@ -42,10 +40,12 @@ function publishParts(action, b, s) {
   if (same(b.repo, s.instanceRepo)) return [REJECT("instance-repo", "the instance repo changes only through apply")];
   if (!Array.isArray(b.files)) return [REJECT("unknown-files", `couldn't tell which files ${b.repo} \`${b.branch}\` changes; try again`)];
   if (same(b.repo, s.productRepo)) {
-    if (action === "pr" && !s.requester?.platform) return [REJECT("product-pr-requester", `only ${PLATFORM_LINE} may open PRs on the product repo`)];
     if (b.empty || b.branch === b.defaultBranch) return [REJECT("product-default-branch", `\`${b.branch}\` is the product repo's default branch: publish a branch and open a PR`)];
-    if (!s.requester?.platform) return [REJECT("product-push", `only ${PLATFORM_LINE} pushes to the product repo`)];
-    return [T(1, action === "pr" ? "product-pr" : "product-push-branch", `${action === "pr" ? "a PR" : "a branch push"} to the product repo from the Platform Engineer's line`)];
+    // A PR is a proposal: any job that may file one (an Engineer's) opens it, on any task; merging it stays the platform
+    // line's and the gates'. A bare branch push, or a PR that changes `.github/`, stays the platform line's.
+    const workflow = b.files.find((f) => GITHUB.test(f));
+    if (!s.requester?.platform && (action !== "pr" || workflow)) return [REJECT(action === "pr" ? "product-pr-workflow" : "product-push", `only a job holding the platform-engineer role (a task the owner, the Agent Architect or the Fleet Steward filed) ${action === "pr" ? `opens a product PR that changes ${workflow}` : "pushes a branch to the product repo without a PR"}`)];
+    return [T(1, action === "pr" ? "product-pr" : "product-push-branch", `${action === "pr" ? "a PR" : "a branch push"} to the product repo${s.requester?.platform ? " from the Platform Engineer's line" : ""}`)];
   }
   const workflow = b.files.find((f) => GITHUB.test(f));
   const parts = [];
@@ -73,7 +73,7 @@ function publishParts(action, b, s) {
 function closePart(p, s) {
   if (same(p.repo, s.productRepo)) {
     if (p.dependabot !== true) return REJECT("core-repo-close", `${p.repo} is the product repo: only its Dependabot PRs may be closed`);
-    if (!s.requester?.platform) return REJECT("product-close-requester", `only ${PLATFORM_LINE} may close the product repo's Dependabot PRs`);
+    if (!s.requester?.platform) return REJECT("product-close-requester", "only the Platform Engineer's line may close the product repo's Dependabot PRs");
     return T(0, "product-dependabot-close", "closing a Dependabot PR of the product repo is reversible (reopen) and changes no code");
   }
   if (!inAgentsOrg(p.repo, s)) return REJECT("outside-close", `${p.repo} is outside the agents org`);
@@ -155,7 +155,7 @@ function mergeParts(p, s) {
  * head. Never Tier 0: the product reaches every instance through the pin. Its files are the platform check's.
  */
 function productMergePart(p, ref, s) {
-  if (!s.requester?.platform) return REJECT("product-merge-requester", `${ref}: only ${PLATFORM_LINE} merges product PRs`);
+  if (!s.requester?.platform) return REJECT("product-merge-requester", `${ref}: only the Platform Engineer's line merges product PRs`);
   if (!Array.isArray(p.files)) return REJECT("unknown-files", `couldn't list every file ${ref} changes; try again`);
   const friction = mergeFriction(p, ref);
   if (friction) return friction;

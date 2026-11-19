@@ -18,7 +18,6 @@ function setup({ capacity = 12, spend = () => [], launch = async () => {}, grant
     "agent-3": { key: "acme-other", tools: {} },
     "agent-4": { key: "engineer", profile: "engineer", roles: ["platform-engineer"], tools: {}, max_parallel: 5 },
     "agent-5": { key: "architect", tools: {}, roles: ["architect"] },
-    "agent-6": { key: "acme-issues", tools: {}, roles: ["maintainer"] },
   };
   // The wake inbox (wakes.ts): a row the dispatcher claimed; admission binds a job to it, or gives it back for another try.
   const inbox = createWakes({ db, owner: async () => ({}), dispatches: { may: () => true, agents: () => [] } });
@@ -28,7 +27,7 @@ function setup({ capacity = 12, spend = () => [], launch = async () => {}, grant
     return key;
   };
   const wakes = { get: (key) => db.prepare("SELECT * FROM wakes WHERE key = ?").get(key) };
-  const tasks = { "task-1": "agent-1", "task-2": "agent-1", "task-3": "agent-2", "task-4": "agent-2", "task-5": "agent-2", "task-6": "agent-3", "task-7": "agent-4", "task-8": "agent-4", "task-9": "agent-4", "task-10": "agent-5", "task-11": "agent-6", "task-12": "agent-4" };
+  const tasks = { "task-1": "agent-1", "task-2": "agent-1", "task-3": "agent-2", "task-4": "agent-2", "task-5": "agent-2", "task-6": "agent-3", "task-7": "agent-4", "task-8": "agent-4", "task-9": "agent-4", "task-10": "agent-5" };
   const launched = [];
   // Kernel provenance over the same db; a task's origin (`origins`: what the plugin gave it) and traced routine cap, per task.
   const provenance = createProvenance({ db, cap: async () => undefined });
@@ -142,12 +141,11 @@ test("a job woken by the chief of staff's comment has the target agent's authori
   assert.deepEqual({ ...db.prepare("SELECT routine, routine_cap FROM jobs WHERE id = ?").get(job.id) }, { routine: "routine-1", routine_cap: "off" });
 });
 
-test("platform authority belongs to the task: the platform-engineer role is on a job only for a task no agent filed, or a filer role (Architect, Steward, Maintainer) did", async () => {
+test("platform authority belongs to the task: the platform-engineer role is on a job only for a task no agent filed, or the Architect or Steward did", async () => {
   const { adm, wake, origins, provenance } = setup();
   const byEngineer = await adm.admit("acme-dispatch", req(wake("w1", "task-3", "agent-2")));
   const byArchitect = await adm.admit("acme-dispatch", req(wake("w2", "task-10", "agent-5")));
-  const byMaintainer = await adm.admit("acme-dispatch", req(wake("w6", "task-11", "agent-6")));
-  for (const [task, job] of [["task-7", byEngineer], ["task-8", byArchitect], ["task-12", byMaintainer]]) {
+  for (const [task, job] of [["task-7", byEngineer], ["task-8", byArchitect]]) {
     provenance.intend(`origin-${task}`, { job: job.id, cap: { cap: "full" } });
     origins[task] = { originKind: ORIGIN, originId: `origin-${task}` };
   }
@@ -155,5 +153,4 @@ test("platform authority belongs to the task: the platform-engineer role is on a
   assert.deepEqual(await roles("w3", "task-7"), []); // an Engineer filed it
   assert.deepEqual(await roles("w4", "task-8"), ["platform-engineer"]); // the Architect filed it
   assert.deepEqual(await roles("w5", "task-9"), ["platform-engineer"]); // no agent did (the owner, a kernel filer)
-  assert.deepEqual(await roles("w7", "task-12"), ["platform-engineer"]); // the Maintainer role filed it (matched by role, not key)
 });
