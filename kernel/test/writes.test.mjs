@@ -7,6 +7,7 @@ import { mintToken } from "../src/gateway/token.ts";
 import { verifyCaller } from "../sdk/src/caller.ts";
 import { reviewInput, requestChain } from "../src/review-loop.ts";
 import { CONN_TOOL_ARGS_MAX } from "../src/writes.ts";
+import { carryTarget } from "../src/successor.ts";
 import { kernel, moduleServer, readBody, serve } from "./helpers.mjs";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -330,11 +331,19 @@ test("a replace with a claimed record reconciles it before A stops: its executor
 test("a claimed record of a replaced module is carried to its successor's kind, and the successor's outcome settles it", async (t) => {
   const k = await kernel(t, { secrets, connections: {}, writes: {} });
   const r = k.records.file({ kind: "old.post", module: "old", args: {}, targets: {}, executor: { module: "old", url: "http://old/x" }, policy: "", card: { sentence: "", changes: "", reads: "", cost: "", details: "" }, requester: { agent: "", key: "", name: "", roles: [], kind: "run" }, task: "TASK-1", tier: 1, panel: false, state: "claimed" });
-  assert.equal(k.records.carry(r.id, "new.post", "new"), true);
+  assert.equal(k.records.carry(r.id, "new.post", "new", { module: "new" }), true);
   const c = k.records.get(r.id);
   assert.deepEqual([c.kind, c.module, c.executor.module, c.state], ["new.post", "new", "new", "claimed"]);
   k.writes.outcome(r.id, true, "merged");
   assert.equal(k.records.get(r.id).state, "done");
+});
+
+test("a record is carried only to the one staged module that replaces its module and defines the kind", () => {
+  const reg = { "new.post": { module: "new", floor: 1, tools: [], executor: { url: "http://new/x", auth_secret: "s" } } };
+  const entry = (name, replaces) => ({ name, enabled: true, replaces });
+  assert.deepEqual(carryTarget([entry("new", ["old"])], reg, "old", "old.post"), { kind: "new.post", module: "new", executor: { module: "new", url: "http://new/x" } });
+  assert.equal(carryTarget([entry("new", ["old"]), entry("other", ["old"])], reg, "old", "old.post"), undefined, "two claimants");
+  assert.equal(carryTarget([entry("new", ["old"])], reg, "old", "old.merge"), undefined, "the successor lacks the kind");
 });
 
 test("another requester's identical request is its own record, and a stricter refile never cancels an approved one", async (t) => {
