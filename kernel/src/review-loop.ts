@@ -7,15 +7,16 @@
 // the next sweep asks once more.
 //
 // What the reviewer reads is the record's own: its card (the change whole, kernelCardDiff), the request chain (the task and
-// a delegating parent's own words), earlier decisions on the task (tier.ts priorDecisions: the owner's veto, the same content
-// rejected, retries parked) with the owner's reply after a rejection, and the instance's decisions digest from the instance
-// repo's main. Code decides first where it can (tier.ts codeVerdict): those reads no model.
+// a delegating parent's own words), the task's merged sibling PRs (siblings.ts), earlier decisions on the task (tier.ts
+// priorDecisions: the owner's veto, the same content rejected, retries parked) with the owner's reply after a rejection, and
+// the instance's decisions digest from the instance repo's main. Code decides first where it can (tier.ts codeVerdict): those reads no model.
 import { createHash } from "node:crypto";
 import type { Rec, Records, State } from "./records.ts";
 import { CODE_REJECTS, MAX_REJECTS, afterReview, codeVerdict, heldInput, meritOwner, priorDecisions, priorPart, requestKey, requestTargets, type Prior, type ReviewInput, type Verdict } from "./tier.ts";
 import { MARKER, fenced, type Writes } from "./writes.ts";
 import { UNSURE } from "../sdk/src/reviewer.ts";
 import { dataBlock as fence } from "../sdk/src/fence.ts";
+import { siblingBlock } from "./siblings.ts";
 
 /** A Paperclip task and comment, as far as the review reads them. */
 export type Issue = { id: string; title?: string; description?: string | null; parentId?: string | null; createdByAgentId?: string | null; createdByUserId?: string | null; status?: string };
@@ -99,7 +100,8 @@ export async function reviewInput(r: Rec, { records, task, decisions, product }:
     // The owner-approved source exceptions at each base the change targets, as the code host read them at filing.
     ...(r.context?.sources ? { sources: r.context.sources } : {}),
     chain,
-    siblings: "",
+    // The task's other PRs already merged into the change's base, as the code host read them at filing.
+    siblings: siblingBlock(r.context?.siblings ?? []),
     decisions,
     // The job's model (a module's own write has none): the reviewer module never picks a reviewer of its family.
     requesterModel: r.requester.model ?? "",

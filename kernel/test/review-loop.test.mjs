@@ -178,6 +178,17 @@ test("the reviewer reads the changed files, the PR's Evidence section and the ba
   assert.deepEqual([mod.seen[0].request.files, mod.seen[0].request.evidence, mod.seen[0].request.sources], [files, "npm test: 12 pass", sources]);
 });
 
+test("the reviewer reads the task's PRs already merged into the base, every PR-chosen name encoded", async (t) => {
+  const mod = await reviewer(t);
+  const k = await side(t, db(), mod);
+  const r = fileRecord(k.records);
+  const siblings = [{ repo: "acme/app", number: 7, base: "main", mergeCommit: "a".repeat(40), files: ["api/posts.ts", "ui/<x>.tsx"], changed: ["ui/<x>.tsx"] }];
+  k.records.db.prepare("UPDATE records SET context = ? WHERE id = ?").run(JSON.stringify({ siblings }), r.id);
+  void k.loop.tick();
+  await until(() => mod.seen.length === 1);
+  assert.equal(mod.seen[0].request.siblings, "- acme/app#7 at aaaaaaaaaaaa into main\n  changed again on main since: ui/%3Cx%3E.tsx");
+});
+
 test("a burst over 200 records in review: the oldest are reviewed first, never starved by newer ones", async (t) => {
   const module = await reviewer(t);
   const k = await side(t, join(mkdtempSync(join(tmpdir(), "rl-burst-")), "kernel.db"), module);

@@ -8,12 +8,13 @@
 //   post.js), the only writer: Paperclip refuses an agent key's writes without a run. The kernel decides who writes where and
 //   signs a `scope`; the plugin re-checks what it can see. A job writes on its own task (assigned to it), a task it created,
 //   a child of a task assigned to it, and creates tasks as itself (under such a task, a part of its own under any task, or
-//   top-level). The chief of staff (role fleet-admin) comments on any task of its company; an agent comments on the tasks the
+//   top-level). A fleet overseer (the chief of staff, role fleet-admin, or the Fleet Steward, role fleet-audit) comments on any
+//   task of its company; an agent comments on the tasks the
 //   grants table names for it (memory inbox, review log, chat), on the shared "Fleet issues" log task (grants `fleet_issues`),
 //   and a librarian on every memory inbox. Anything else is
-//   refused, naming whom to ask. Each write carries a tag (the plugin's once-only key): on the job's own task and the chief of
-//   staff's anywhere-comments the job tag (wakes.ts SELF_TAG: it wakes nobody), elsewhere `aidenhq:op=`, which wakes the
-//   task's assignee as any agent's comment does.
+//   refused, naming whom to ask. Each write carries a tag (the plugin's once-only key): on the job's own task and the tasks its
+//   grants list the job tag (wakes.ts SELF_TAG: it wakes nobody), elsewhere `aidenhq:op=`, which wakes the task's assignee as any
+//   agent's comment does.
 // - A status change to `done` is for the job's own task, or a delegated task whose escalated grade its delegator accepts, and
 //   passes the finish gate first (checks.ts): held or reopened, nothing is written and the answer says so (202).
 // - A task a job creates gets the kernel's provenance row (provenance.ts) from the plugin's answer.
@@ -128,14 +129,14 @@ export function createCp({ whoami, asserter, plugin, once, agentKey, grants, fle
     // Setup's log tasks (grants): held by an agent, they take comments only, and never a child (task-scope.ts).
     const logs = logTasks({ agents: table as never, fleet_issues: fleetIssues() });
     const scopeOf = (t: Issue) => taskScopeOf(t, agent, issue, logs);
-    /** A comment-only write's scope where the job has no other: the grants table's tasks for it, the Fleet issues log, a librarian's inboxes, the chief of staff anywhere. */
+    /** A comment-only write's scope where the job has no other: the grants table's tasks for it, the Fleet issues log, a librarian's inboxes, a fleet overseer (the chief of staff, fleet-admin, or the Fleet Steward, fleet-audit) anywhere. */
     const commentScope = (t: Issue) => {
       const own = table[agent] ?? {};
       if ([own.memory_inbox, own.review_log, own.chat_task].includes(t.id)) return "listed";
       const fleet = fleetIssues();
       if (fleet && t.identifier === fleet) return "listed";
       if (roles.includes("librarian") && Object.values(table).some((g) => g.memory_inbox === t.id)) return "listed";
-      return roles.includes("fleet-admin") ? "admin" : undefined;
+      return roles.includes("fleet-admin") || roles.includes("fleet-audit") ? "admin" : undefined;
     };
     const refuse = (t: Issue): never => {
       const who = t.assigneeAgentId ? `its assignee (${keyOf(t.assigneeAgentId)})` : "the owner";
@@ -181,7 +182,7 @@ export function createCp({ whoami, asserter, plugin, once, agentKey, grants, fle
       answer(r.status === 200 ? status : r.status, r.status === 200 ? Buffer.from(JSON.stringify({ ...JSON.parse(r.out.toString("utf8")), ...extra })) : r.out);
     };
     // The kernel's self tag (wakes.ts SELF_TAG: wakes nobody) on the agent's own task and the tasks its grants list; anywhere
-    // else (a child, a part, the chief of staff's comment on another agent's task) the op tag, so the task's own agent hears it
+    // else (a child, a part, a fleet overseer's comment on another agent's task) the op tag, so the task's own agent hears it
     // by the dispatch rules (who started work there), never the writer itself.
     const tagOf = (scope: string, op: string) => (scope === "own" || scope === "listed" ? `<!-- aidenhq:job=${op} kind=cp -->` : `<!-- aidenhq:op=${op} -->`);
 
