@@ -49,7 +49,7 @@ test("a delegator who is also the task's assignee settles an escalated grade, an
   assert.deepEqual(h.grades.escalated().map((g) => g.issueId), ["t1"]);
 
   // The delegator records done: its own close accepts the work in place of a verdict.
-  assert.deepEqual(await h.finish("WOR-1", { agent: "cos", via: "task_set_status" }), { verdict: "ok", unlabel: true });
+  assert.deepEqual(await h.finish("WOR-1", { agent: "cos", via: "task_set_status" }), { verdict: "ok", unlabel: true, accepts: true });
   assert.equal(h.grades.get("t1").state, "satisfied");
   assert.deepEqual(h.grades.get("t1").verdicts.at(-1).verdict, "accepted");
   assert.deepEqual(h.grades.get("t1").delegators, null);
@@ -163,6 +163,6 @@ test("an assignee cannot settle its own escalated grade by waiting: after a day 
   assert.deepEqual(h.grades.due().map((g) => g.issueId), ["t9"]);
   // Only the delegator accepts.
   h.grades.record("t9", { version: "sha1", outcome: "cannot_judge", model: "glm", criteria: [] }, Date.now(), ["watch"]);
-  assert.deepEqual(await h.finish("WOR-9", { agent: "watch", via: "task_set_status" }), { verdict: "ok", unlabel: true });
+  assert.deepEqual(await h.finish("WOR-9", { agent: "watch", via: "task_set_status" }), { verdict: "ok", unlabel: true, accepts: true });
   assert.equal(h.grades.get("t9").verdicts.at(-1).by, "watch");
 });
