@@ -11,7 +11,7 @@ test("watching a repo files the whole setting, and its org, as one change", asyn
   const out = await configure.run({ watch: [{ repo: "othercorp/api", on_open: "deep" }] }, { agent: "a", roles: ["reviewer-manager"], assertion: "sig" });
   assert.deepEqual(filed, [{ assertion: "sig", changes: [
     { kind: "setting", key: "code_review", value: { reviewers: {}, repos: [{ repo: "othercorp/api", on_open: "deep" }], month_usd: 200 } },
-    { kind: "setting", key: "github_orgs", value: ["acme", "othercorp"] },
+    { kind: "setting", key: "github_comment_orgs", value: ["acme", "othercorp"] },
   ] }]);
   assert.match(out.changes.join("; "), /watch othercorp\/api.*post as the owner in othercorp/);
 });

@@ -148,10 +148,11 @@ export const REPO_DEFAULTS = { on_open: "standard", on_push: "quick", on_risk: "
 export const reviewersOf = (c: CodeReview): Record<string, Profile> =>
   Object.fromEntries(Object.entries({ ...DEFAULT_REVIEWERS, ...c.reviewers }).filter((e): e is [string, Profile] => e[1] !== null));
 /**
- * The setting the github module's owner-identity writes are allowed in (github-mcp GITHUB_COMMENT_ORGS): a repo watched or
- * reviewed as the owner must have its owner here, so watching one adds it in the same change.
+ * The github module's setting listing the orgs its owner-identity writes may reach (github-mcp GITHUB_COMMENT_ORGS; only that,
+ * unlike github_orgs, which also opens app builds and repo creation): a repo watched or reviewed as the owner must have its owner
+ * here, so watching one adds it in the same change.
  */
-export const COMMENT_ORGS = "github_orgs";
+export const COMMENT_ORGS = "github_comment_orgs";
 
 /** The problems with a code_review value, in the owner's words (empty: fine). */
 export function configProblems(value: unknown): string[] {

@@ -254,7 +254,7 @@ function settingDefs(file, def) {
   const map = YAML.parseDocument(readFileSync(file, "utf8")).get("settings", true);
   // The first key's comment is attached to the map itself.
   const docs = Object.fromEntries((map?.items ?? []).map((p, i) => [String(p.key?.value ?? p.key), (p.key?.commentBefore ?? (i === 0 ? map.commentBefore : "") ?? "").replace(/^ ?/gm, "").replace(/\s*\n\s*/g, " ").trim()]));
-  return Object.fromEntries(Object.entries(def.settings ?? {}).filter(([k]) => !/token|secret|password/i.test(k)).map(([k, d]) => [k, { ...(d && "default" in d ? { default: d.default } : {}), ...(d?.values ? { values: d.values } : {}), ...(d?.required ? { required: true } : {}), ...(d?.type ? { type: d.type } : {}), ...(d?.host ? { host: d.host } : {}), ...(docs[k] ? { doc: docs[k] } : {}) }]));
+  return Object.fromEntries(Object.entries(def.settings ?? {}).filter(([k]) => !/token|secret|password/i.test(k)).map(([k, d]) => [k, { ...(d && "default" in d ? { default: d.default } : {}), ...(d?.values ? { values: d.values } : {}), ...(d?.required ? { required: true } : {}), ...(d?.type ? { type: d.type } : {}), ...(d?.host ? { host: d.host } : {}), ...(d?.writers ? { writers: [d.writers].flat().map(String) } : {}), ...(docs[k] ? { doc: docs[k] } : {}) }]));
 }
 
 /**

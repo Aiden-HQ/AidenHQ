@@ -179,6 +179,7 @@ export function ReviewsView({ onSignIn }: { onSignIn: () => void }) {
           Saved: {saved.what}. It takes effect once the change is reviewed and applied, usually within a few minutes.
         </Banner>
       )}
+      {repos?.errors?.length ? <Banner tone="warn">Code review skips part of its setting: {repos.errors.slice(0, 3).join("; ")}. Fix it from Repos or Reviewers.</Banner> : null}
       {setup?.problems.length ? <Banner tone="warn">settings.code_review in instance.yaml has a problem: {setup.problems.join("; ")}. Saving here replaces it with a valid value.</Banner> : null}
       {!setup ? (
         !error && <div className="rv-loading" aria-busy="true" />
@@ -542,7 +543,7 @@ function OneOffDialog({ reviewers, orgs, url: url0 = "", reviewer: r0, onClose }
         <>
           <Button variant="quiet" onClick={onClose}>Cancel</Button>
           {outside && added?.org !== org ? (
-            <Button variant="primary" disabled={busy} onClick={() => void addOrg()}>{busy ? "Adding…" : `Add ${org}`}</Button>
+            <Button variant="primary" disabled={busy} onClick={() => void addOrg()}>{busy ? "Allowing…" : `Allow ${org}`}</Button>
           ) : (
             <Button variant="primary" disabled={!valid || busy || outside} onClick={() => void run()}>{busy ? "Starting…" : "Run review"}</Button>
           )}
@@ -551,9 +552,9 @@ function OneOffDialog({ reviewers, orgs, url: url0 = "", reviewer: r0, onClose }
     >
       <p>Any PR your GitHub sign-in can read. The review posts to the PR like a watched repo's would.</p>
       {outside && (added?.org === org ? (
-        <Banner action={<a className="btn sm" href={`#/t/${added.identifier}`}>Open {added.identifier}</a>}>Adding {org}: run the review once the change is applied, usually within a few minutes.</Banner>
+        <Banner action={<a className="btn sm" href={`#/t/${added.identifier}`}>Open {added.identifier}</a>}>Allowing {org}: run the review once the change is applied, usually within a few minutes.</Banner>
       ) : (
-        <Banner tone="warn">{org} isn't one of your GitHub orgs yet, so a review can't post there as you. Add it, then run the review.</Banner>
+        <Banner tone="warn">Reviews don't comment as you in {org} yet. Allow it, then run the review.</Banner>
       ))}
       <Field label="Pull request" error={url && !valid ? "A PR link, like https://github.com/acme/payments/pull/42" : err || null}>
         {(id, d) => <Input id={id} aria-describedby={d} autoFocus placeholder="https://github.com/acme/payments/pull/42" value={url} onChange={(e) => setUrl(e.target.value)} inputMode="url" />}
@@ -688,7 +689,7 @@ function RepoDialog({ config, orgs, edit, onClose, onSave }: { config: CodeRevie
             {found === null ? (
               <span className="rv-muted rv-picker-note">Loading your repos…</span>
             ) : !found.length && !typed ? (
-              <span className="rv-muted rv-picker-note">{q ? "No repo matches." : "No repos found for your sign-in."}</span>
+              <span className="rv-muted rv-picker-note">{q ? "No listed repo matches: type its full name, like acme/payments." : "Type a repo's full name, like acme/payments."}</span>
             ) : (
               found.slice(0, 40).map((x) => {
                 const on = watched.has(x.repo.toLowerCase());
@@ -703,7 +704,7 @@ function RepoDialog({ config, orgs, edit, onClose, onSave }: { config: CodeRevie
           </div>
         </div>
       )}
-      {newOrg && <Banner>Reviews will post as you in {newOrg}: saving also adds {newOrg} to your GitHub orgs (Settings).</Banner>}
+      {newOrg && <Banner>Reviews will post as you in {newOrg}: saving also lets reviews comment as you in {newOrg}.</Banner>}
       <div className="rv-grid3">
         <Field label="When a PR opens">{(id) => <Select id={id} value={f.on_open} options={opts} onChange={(v) => setF({ ...f, on_open: v })} />}</Field>
         <Field label="On each push" help="Only the new changes">{(id, d) => <Select id={id} aria-describedby={d} value={f.on_push} options={opts} onChange={(v) => setF({ ...f, on_push: v })} />}</Field>

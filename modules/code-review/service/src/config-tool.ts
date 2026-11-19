@@ -15,8 +15,8 @@ export interface Tool {
   run: (args: Dict, caller: { agent: string; roles: string[]; assertion?: string }) => Promise<unknown>;
 }
 
-/** The github module's setting listing the orgs reviews may post in as the owner (github-mcp's GITHUB_COMMENT_ORGS). */
-export const COMMENT_ORGS = "github_orgs";
+/** The github module's setting listing the orgs owner-identity writes may reach (github-mcp's GITHUB_COMMENT_ORGS). */
+export const COMMENT_ORGS = "github_comment_orgs";
 const REPO = /^[\w.-]{1,100}\/[\w.-]{1,100}$/;
 const ORG = /^[A-Za-z0-9][\w.-]{0,38}$/;
 
@@ -33,7 +33,7 @@ export interface Change {
 
 /**
  * The setting after a change, from the setting as it is (the raw value in instance.yaml, defaults not merged in), plus the
- * orgs a newly watched repo needs added to settings.github_orgs. Throws with the owner-readable reason when the result
+ * orgs a newly watched repo needs added to settings.github_comment_orgs. Throws with the owner-readable reason when the result
  * wouldn't validate.
  */
 export function applyChange(raw: Dict, ch: Change, orgs: string[]): { value: Dict; addOrgs: string[]; summary: string[] } {
@@ -81,7 +81,7 @@ export function applyChange(raw: Dict, ch: Change, orgs: string[]): { value: Dic
   if (checked.errors.length) throw new Error(`that setting wouldn't work: ${checked.errors.join("; ")}`);
   // A repo whose trigger names a reviewer that is gone isn't silently dropped: readConfig lists it above.
   for (const o of addOrgs) if (!ORG.test(o)) throw new Error(`${o} isn't a GitHub org name`);
-  if (addOrgs.length) summary.push(`reviews post as the owner in ${addOrgs.join(", ")} (added to GitHub orgs)`);
+  if (addOrgs.length) summary.push(`reviews post as the owner in ${addOrgs.join(", ")} (allowed)`);
   return { value, addOrgs, summary };
 }
 
@@ -108,7 +108,7 @@ const REPO_ENTRY = {
 export function configTools(d: {
   /** settings.code_review as instance.yaml holds it (the module's defaults not merged in). */
   raw: () => Dict;
-  /** settings.github_orgs, lowercased. */
+  /** settings.github_comment_orgs, lowercased. */
   orgs: () => string[];
   /** The service's views: watched repos with month spend, reviewers with their average cost per run. */
   repos: () => unknown;

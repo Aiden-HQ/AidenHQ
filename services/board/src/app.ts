@@ -348,7 +348,7 @@ export function createApp(opts: AppOptions): Server {
     return ctx.labels.find((l) => l.name === name) ?? (await pc.createLabel(name, color));
   }
 
-  /** The GitHub orgs owner-identity writes may reach (settings.github_orgs), lowercased. */
+  /** The GitHub orgs owner-identity writes may reach (settings.github_comment_orgs), lowercased. */
   const commentOrgs = () => {
     const { compiled } = readSources(settingsFiles());
     const v = compiled?.settings?.[COMMENT_ORGS]?.value;

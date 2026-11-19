@@ -21,8 +21,8 @@ const CONFIG = {
   month_usd: 200,
 };
 const dir = mkdtempSync(join(tmpdir(), "reviews-"));
-writeFileSync(join(dir, "paperclip.yaml"), stringify({ settings: { code_review: { value: CONFIG, set: false }, github_orgs: { value: [], set: false } }, agents: {} }));
-writeFileSync(join(dir, "modules.json"), JSON.stringify([{ name: "code-review", enabled: true, settings: { code_review: { default: CONFIG, type: "object" } } }, { name: "github", enabled: true, settings: { github_orgs: { default: [] } } }]));
+writeFileSync(join(dir, "paperclip.yaml"), stringify({ settings: { code_review: { value: CONFIG, set: false }, github_comment_orgs: { value: [], set: false } }, agents: {} }));
+writeFileSync(join(dir, "modules.json"), JSON.stringify([{ name: "code-review", enabled: true, settings: { code_review: { default: CONFIG, type: "object" } } }, { name: "github", enabled: true, settings: { github_comment_orgs: { default: [] } } }]));
 process.env.BOARD_PAPERCLIP_CONFIG = join(dir, "paperclip.yaml");
 process.env.BOARD_MODULES_FILE = join(dir, "modules.json");
 
@@ -73,8 +73,8 @@ describe("the Reviews page's routes", () => {
     expect((await call("POST", "/api/reviews/config", { value: { ...value, repos: [{ repo: "acme/payments", on_open: "nope" }] } })).body.error).toContain("no reviewer nope");
     // A repo outside the GitHub orgs reviews may post in as the owner adds its org in the same change.
     expect(await call("POST", "/api/reviews/config", { value, org: "Acme" })).toMatchObject({ status: 200, body: { identifier: "WOR-9" } });
-    expect(records.settings).toEqual([{ task: "i1", changes: [{ kind: "setting", key: "code_review", value }, { kind: "setting", key: "github_orgs", value: ["acme"] }] }]);
-    expect(created[0]!.title).toBe("Settings: code_review updated; github_orgs → acme");
+    expect(records.settings).toEqual([{ task: "i1", changes: [{ kind: "setting", key: "code_review", value }, { kind: "setting", key: "github_comment_orgs", value: ["acme"] }] }]);
+    expect(created[0]!.title).toBe("Settings: code_review updated; github_comment_orgs → acme");
   });
 
   it("counts the period's reviews, spend and auto-resolved findings", () => {

@@ -34,7 +34,7 @@ export interface ReviewsSetup {
   github: { configured: boolean; connected: boolean; state: string | null };
   config: CodeReview | null;
   problems: string[];
-  /** The GitHub orgs reviews may post in as the owner (settings.github_orgs, lowercased). */
+  /** The GitHub orgs reviews may post in as the owner (settings.github_comment_orgs, lowercased). */
   comment_orgs: string[];
 }
 
