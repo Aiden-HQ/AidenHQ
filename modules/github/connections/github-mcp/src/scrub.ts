@@ -7,7 +7,7 @@ import { createHmac } from "node:crypto";
 // is rewritten with those matches replaced (scrubText); anything the rewrite can't reach — data hidden behind entities,
 // tags or look-alikes — still refuses the whole write, so nothing leaks.
 
-const SECRETS: [string, RegExp][] = [
+export const SECRETS: [string, RegExp][] = [
   ["a GitHub token", /\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{22,})/g],
   ["an API key", /\bsk-[A-Za-z0-9_-]{20,}/g],
   ["a Slack token", /\bxox[abposr]-[A-Za-z0-9-]{10,}/g],
