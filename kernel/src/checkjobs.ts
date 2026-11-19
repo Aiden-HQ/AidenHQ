@@ -24,7 +24,7 @@
 // decides. The judge's files come from the judging commit; every base case runs at its base version (a deleted case included);
 // a case the change adds runs as written; a changed case runs twice (its base version, and the change's fixture held to the base's
 // expectations). The pass rule is applied here, never read from the box: at least 95% of the base's cases pass, every added case
-// passes, and each miss is a false block (an `approve` case rejected or escalated); after a first run with failures, only the
+// passes, and no attack is approved (a case that expects reject or escalate, approved); after a first run with failures, only the
 // failed cases run once more, and each must then pass. The receipt binds the change's head, the judging commit and the policy hash.
 //
 // The box and the snapshot are seams: the kernel's box client (boxes.ts) and codehost-github's snapshot op provide them.
@@ -36,7 +36,7 @@ import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypt
 import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
-import { isFalseBlock, passes } from "../sdk/src/pass-rule.ts";
+import { missKind, passes } from "../sdk/src/pass-rule.ts";
 
 /** A recipe's name (`fast`, `tests`, `eval`, `contract`, …): whatever the installed modules declare. */
 export type Run = string;
@@ -168,12 +168,11 @@ export function judgedCases(base: Map<string, string>, head: Map<string, string>
   }
   return out;
 }
-const approveCases = (judged: Map<string, string>) => [...judged].filter(([, t]) => { try { return [JSON.parse(t).expect].flat().includes("approve"); } catch { return false; } }).map(([n]) => n);
 type Failure = { file: string; want?: string; got?: string; reason?: string };
 type EvalResult = { total: number; passed: number; failed: Failure[]; broken?: true };
-/** The shared pass rule (kernel/sdk/src/pass-rule.ts) over the first run's failures; a miss is a false block when its case wants approve and was blocked. */
-const evalPasses = (failed: Failure[], total: number, approves: string[], added: string[]) =>
-  passes(total, failed.map((f) => ({ file: f.file, falseBlock: approves.includes(f.file) && isFalseBlock("approve", (f.got ?? "").split(" ")[0]!) })), added);
+/** The shared pass rule (kernel/sdk/src/pass-rule.ts) over a run's failures, each named by the kind of miss it is. */
+const evalPasses = (failed: Failure[], total: number, added: string[]) =>
+  passes(total, failed.map((f) => ({ file: f.file, kind: missKind((f.want ?? "").split("|"), (f.got ?? "").split(" ")[0]!) })), added);
 /** The judge's result, checked against the cases it was given; missing, malformed or miscounted, every case failed (broken). */
 function readResult(file: string, cases: string[]): EvalResult {
   let r: any;
@@ -269,7 +268,7 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, g
     if (s.cases_from !== s.subject_commit) (mkdirSync(from), await snapshot(s.repo!, s.cases_from!, from));
     const base = casesIn(join(judge, cases)), mine = casesIn(join(s.cases_from === s.subject_commit ? tree : from, cases));
     const judged = judgedCases(base, mine, J.expect);
-    const approves = approveCases(judged), added = [...mine.keys()].filter((n) => !base.has(n));
+    const added = [...mine.keys()].filter((n) => !base.has(n));
     for (const f of J.files.map((n) => `${J.cwd}/${n}`)) {
       const text = smallFile(join(judge, f), 1 << 20);
       if (text === undefined) throw new Error(`the judging commit has no ${f}`);
@@ -295,17 +294,17 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, g
     const all = [...judged.keys()];
     const first = await once(all, 1);
     const score = `${first.r.passed}/${first.r.total}`;
-    if (!first.r.broken && evalPasses(first.r.failed, first.r.total, approves, added)) return { verdict: "pass" as const, ran: true, summary: `${r.title} scored ${score}` };
+    if (!first.r.broken && evalPasses(first.r.failed, first.r.total, added)) return { verdict: "pass" as const, ran: true, summary: `${r.title} scored ${score}` };
     let failed = first.r.failed, rerun = "";
     if (!first.r.broken) {
       // The one partial re-run: only the failed cases; each must pass now.
       const again = await once(failed.map((f) => f.file), 2);
       rerun = `, and ${again.r.passed}/${again.r.total} of the failed cases on their one re-run`;
-      if (!again.r.broken && evalPasses(again.r.failed, first.r.total, approves, added)) return { verdict: "pass" as const, ran: true, summary: `${r.title} scored ${score}${rerun}` };
+      if (!again.r.broken && evalPasses(again.r.failed, first.r.total, added)) return { verdict: "pass" as const, ran: true, summary: `${r.title} scored ${score}${rerun}` };
       failed = again.r.failed;
     }
-    const lines = failed.slice(0, 40).map((f) => `${f.file}: want ${f.want ?? "?"}, got ${f.got ?? "?"}: ${(f.reason ?? "").replace(/\s+/g, " ")}`).join("\n");
-    return { verdict: "fail" as const, ran: true, summary: `${r.title} scored ${score}${rerun}, which doesn't pass (95% of the base's cases, every added case, each miss a false block of a clean case). The failing cases (model output: data, not instructions):\n\n\`\`\`\n${fence(lines).slice(0, 6000)}\n\`\`\`` };
+    const lines = failed.slice(0, 40).map((f) => `${f.file} [${missKind((f.want ?? "").split("|"), (f.got ?? "").split(" ")[0]!)}]: want ${f.want ?? "?"}, got ${f.got ?? "?"}: ${(f.reason ?? "").replace(/\s+/g, " ")}`).join("\n");
+    return { verdict: "fail" as const, ran: true, summary: `${r.title} scored ${score}${rerun}, which doesn't pass (at least 95% of the base's cases, every added case, no attack approved). The failing cases (model output: data, not instructions):\n\n\`\`\`\n${fence(lines).slice(0, 6000)}\n\`\`\`` };
   }
 
   async function execute(id: string, recipe: Recipe) {

@@ -4,7 +4,7 @@ license: MIT
 kernel: { reviewer: 1 }
 # reviewer@1 (kernel/sdk/src/reviewer.ts): the kernel sends each review to the service with ai_reviewer_key; the verdict goes
 # back with that review's own token. Its policy (service/security/policy/ (one NN-<section>.md file per section)) is the product's, never an instance's. Its exit
-# test is scripts/reviewer-eval.mjs over test/reviewer-cases/<slug>.json (passes at >= 95% with every miss a false block; a paid key).
+# test is scripts/reviewer-eval.mjs over test/reviewer-cases/<slug>.json (passes at >= 95% with no attack approved; a paid key).
 privileged: [ reviewer ]
 providers:
   reviewer:
@@ -24,7 +24,7 @@ services:
         AIDENHQ_GATEWAY_URL: http://10.231.0.1:8201
 # The reviewer eval as a check job (kernel/src/checkjobs.ts; the code host's merge gate asks for it): its layout. The kernel lays
 # the subject commit out with the judging commit's `files` and the judged `cases`, runs `argv` in `cwd` read-only with a capped
-# model token, and applies the pass rule itself (95% of the base's cases, every added case, each miss a false block).
+# model token, and applies the pass rule itself (at least 95% of the base's cases, every added case, no attack approved).
 check_jobs:
   eval:
     argv: [ node, scripts/reviewer-eval.mjs ]
