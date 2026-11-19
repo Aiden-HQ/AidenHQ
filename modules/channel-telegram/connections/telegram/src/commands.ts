@@ -1,3 +1,4 @@
+import { agentPaused } from "./aidenhq-sdk/agent-paused.js";
 // Telegram quick commands, answered straight from Paperclip (no model, no wake): /waiting, /status, /brief, /help.
 // Anything else is an ordinary message for Aiden.
 export type Api = (method: string, path: string) => Promise<any>;
@@ -32,7 +33,7 @@ export async function quickCommand(text: string, api: Api, company: string): Pro
     }
     case "status": {
       const agents: any[] = (await api("GET", `/api/companies/${company}/agents`)).filter((a: any) => a.status !== "terminated");
-      const count = (s: string) => agents.filter((a) => a.status === s).length;
+      const count = (s: string) => agents.filter((a) => (s === "paused" ? agentPaused(a) : !agentPaused(a) && a.status === s)).length;
       const broken = agents.filter((a) => a.status === "error").map((a) => a.name);
       const open: any[] = await issues({ status: OPEN });
       const by = (s: string) => open.filter((i) => i.status === s).length;

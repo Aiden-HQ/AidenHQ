@@ -5,11 +5,12 @@
 //   - evidence: one bounded packet per agent: its jobs and traces (the kernel's ledger), scorecard (tasks, records, billed cost),
 //     corrections, flags and earlier fixes.
 // Everything an agent wrote (run output, comments, app samples) is data, clipped here.
+import { agentPaused } from "./aidenhq-sdk/agent-paused.ts";
 import type { KernelClient } from "./aidenhq-sdk/kernel-client.ts";
 import { detectorState, type Kv } from "./detector.ts";
 import { scorecard, type Closed } from "./scorecard.ts";
 
-type Agent = { id: string; name: string; status: string; createdAt?: string; metadata?: { setupKey?: string; model?: unknown; engine?: unknown } };
+type Agent = { id: string; name: string; status: string; lifecycleHolds?: string[]; createdAt?: string; metadata?: { setupKey?: string; model?: unknown; engine?: unknown } };
 type Issue = { id: string; identifier: string; title: string; description?: string | null; descriptionTruncated?: boolean; status: string; updatedAt: string; assigneeAgentId?: string | null; completedAt?: string | null };
 type Comment = { id: string; body: string; authorAgentId?: string | null; createdAt: string; deletedAt?: string | null };
 
@@ -152,7 +153,7 @@ export function coachReads(d: { kernel: KernelClient; kv: Pick<Kv, "get">; apps:
     return parseReviews(all, coachId);
   }
 
-  const live = (agents: Agent[]) => agents.filter((a) => !["terminated", "paused"].includes(a.status));
+  const live = (agents: Agent[]) => agents.filter((a) => !agentPaused(a));
 
   return {
     /** coach_due: the agents to review this run. `caller`: the calling agent's id. */

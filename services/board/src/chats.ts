@@ -1,5 +1,6 @@
 // Chats: a chat is a Paperclip task labelled `chat`; a message is a comment. Pure helpers: the state a
 // person sees on each chat, and which agent a new message goes to.
+import { agentPaused } from "./aidenhq-sdk/agent-paused.js";
 import { forOthers } from "./aidenhq-sdk/for-others.js";
 import { NOTICE_MARKER, relayed, displayText as strip, hasMarker as has } from "./board.js";
 import type { Agent, Comment, Issue } from "./paperclip.js";
@@ -49,7 +50,7 @@ export function pickAgent(text: string, agents: Agent[]): { agent: Agent; note?:
   const names = (a: Agent) => [norm(a.name), norm(String(a.metadata?.setupKey ?? "").replace(/^aidenhq:/, ""))];
   // Longest name that the words after @ start with ("@inbox agent please…" → "inbox agent").
   const hit = agents
-    .filter((a) => a.status !== "paused" && a.status !== "terminated")
+    .filter((a) => !agentPaused(a))
     .flatMap((a) => names(a).filter(Boolean).map((n) => ({ a, n })))
     .filter(({ n }) => said === n || said.startsWith(`${n} `))
     .sort((x, y) => y.n.length - x.n.length)[0];

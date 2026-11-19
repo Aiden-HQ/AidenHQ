@@ -11,6 +11,7 @@
 //   kernel/sdk/src/judge.ts          the judges' models, cross-family choice and model call, in the reviewer and grading services
 //   services/shared/review-files.mjs  the changed files as the reviewer reads them, in the reviewer module's service
 //   kernel/sdk/src/source-store.ts   the shared-sources writer side, in every source writer
+//   kernel/sdk/src/agent-paused.ts   the one paused rule (lifecycle holds), in the board, the Telegram channel and the Fleet Steward
 //   services/shared/reason-codes.ts  reason codes on approvals and refusals, in the board
 //   services/shared/url-setting.ts   the URL setting check, in the board (the compiler imports the original)
 //   modules/apps-platform/design-system/      the design system, in the app starter and the agent computers
@@ -87,6 +88,8 @@ export function sharedCopies(root = repo) {
   ],
   // Who said it: a comment posted for someone else is never the owner's words (dispatch, the grader, task_comments, the board).
   "kernel/sdk/src/for-others.ts": ["modules/dispatch/service/src/aidenhq-sdk/for-others.ts", "modules/grading/service/src/aidenhq-sdk/for-others.ts", "modules/tasks/connections/tasks-mcp/src/aidenhq-sdk/for-others.ts", "services/board/src/aidenhq-sdk/for-others.ts"],
+  // Whether an agent is paused (Paperclip's lifecycle holds, never its status): the board, the Telegram channel and the Fleet Steward.
+  "kernel/sdk/src/agent-paused.ts": ["services/board/src/aidenhq-sdk/agent-paused.ts", "modules/channel-telegram/connections/telegram/src/aidenhq-sdk/agent-paused.ts", "modules/fleet-steward/service/src/aidenhq-sdk/agent-paused.ts"],
   "services/shared/reason-codes.ts": ["services/board/src/reason-codes.ts"],
   "services/shared/url-setting.ts": ["services/board/src/url-setting.ts"],
   // The supply-chain checks, version picker and image scan, for app repos (the app CI template is copied into each as it is).

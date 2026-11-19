@@ -31,6 +31,18 @@ test("coach_due trusts only review records the coach itself authored", () => {
   assert.deepEqual(parseReviews([{ body: body("a"), authorAgentId: "coach", createdAt: ago(1) }, { body: body("b"), authorAgentId: "other", createdAt: ago(1) }], "coach"), [reviewed("a", 1)]);
 });
 
+test("coach_due skips an agent the owner holds paused, not one whose Paperclip status merely reads paused", async () => {
+  const kernel = {
+    read: async (p) => (p === "/api/companies" ? [{ id: "co" }] : p.endsWith("/agents") ? [
+      { id: "held", name: "held", status: "idle", lifecycleHolds: ["manual"], createdAt: ago(1000) },
+      { id: "stuck", name: "stuck", status: "paused", lifecycleHolds: [], createdAt: ago(1000) },
+    ] : []),
+    call: async () => ({ agents: { coach: { review_log: "log" } } }),
+  };
+  const r = await coachReads({ kernel, kv: kvOf(), apps: async () => [] }).due("coach", NOW);
+  assert.deepEqual(r.due.map((d) => d.agent_key), ["stuck"]);
+});
+
 test("coach_evidence reads the kernel's ledger and lists the open coach fixes, reading a cut row in full", async () => {
   const marker = "<!-- source:coach:open-loops:chase-handoff -->";
   const fix = { id: "i1", identifier: "WOR-4412", title: "Fix chase-handoff", status: "in_review", updatedAt: ago(3), description: `${"Evidence. ".repeat(800)}\n\n${marker}` };

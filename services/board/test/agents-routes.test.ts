@@ -8,8 +8,8 @@ import { Store } from "../src/store.js";
 
 const agents = [
   { id: "cos", name: "Aiden", status: "error", metadata: { engine: "codex", setupKey: "aidenhq:chief-of-staff", module: "core", department: { id: "leadership", name: "Leadership", order: 0 } } },
-  { id: "keeper", name: "Roadmap Keeper", status: "idle", metadata: { engine: "codex", setupKey: "aidenhq:roadmap-keeper", module: "instance" } },
-  { id: "napper", name: "Napper", status: "paused", metadata: { engine: "codex", setupKey: "aidenhq:napper", module: "instance" } },
+  { id: "keeper", name: "Roadmap Keeper", status: "paused", metadata: { engine: "codex", setupKey: "aidenhq:roadmap-keeper", module: "instance" } },
+  { id: "napper", name: "Napper", status: "idle", lifecycleHolds: ["manual"], metadata: { engine: "codex", setupKey: "aidenhq:napper", module: "instance" } },
   { id: "gone", name: "Slack Scout", status: "terminated", metadata: { engine: "codex", setupKey: "aidenhq:slack-scout", module: "core" } },
 ];
 const pc = {

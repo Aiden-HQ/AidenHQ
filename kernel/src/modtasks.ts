@@ -8,15 +8,12 @@
 // closes its own tasks (POST /v1/tasks/:task/close) when their work is moot.
 import { createHash } from "node:crypto";
 import { neutral, type Api } from "./channels.ts";
+import { agentPaused } from "../sdk/src/agent-paused.ts";
 
 /** The marker of a task a module filed (dispatch thread.ts reads it). */
 export const MODULE_TASK = (module: string) => `<!-- aidenhq-module:${module} -->`;
 const SOURCE = /^[\w.:/@#-]{1,200}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-/** Whether the owner holds the agent paused (or it is gone): Paperclip's lifecycle holds (manual, setup, budget, company
- * archived), never its runtime `status`, which stays "paused" while a pause or resume waits on Paperclip's stop proof. */
-export const agentPaused = (a: { status: string; lifecycleHolds: string[] }) => a.status === "terminated" || a.lifecycleHolds.length > 0;
 
 export class TaskError extends Error {
   name = "TaskError";
