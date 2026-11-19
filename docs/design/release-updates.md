@@ -5,8 +5,8 @@ Status: built (2026-11-18), first shipped in release 2026.11.3; through `kernel.
 ## Intent
 
 An install from the public installer (get.aidenhq.ai) runs a release: `instance.yaml` pins `release: { name, source, sha }`
-from the distro repo (Aiden-HQ/aidenhq-distro), `product:` is that release's kernel and the `aidenhq` marketplace is its
-modules sha; apply pulls the release's prebuilt images by digest. Until now nothing moved it on: "upgrade to the latest
+from the distro repo (Aiden-HQ/aidenhq-distro), `product:` is that release's kernel (the official modules are its `modules/`; the default set is its
+`modules/marketplace.json` bundle, so a release has no module list); apply pulls the release's prebuilt images by digest. Until now nothing moved it on: "upgrade to the latest
 main" pins a commit that is not a release (apply refuses it), nobody was told a release was out, and re-running the
 installer did not move the pin. Owners of these installs should get each release safely, without doing anything, and stay in
 charge: auto-updates on by default, off in Settings, and "Update now" for the impatient.
@@ -70,9 +70,8 @@ Hard gates, from day one (no observe mode):
   official modules are the kernel's `modules/`). The release file can't redirect them: a `kernel_repo` other than the
   official one (a `marketplace` in it is not read), or an image outside
   `ghcr.io/aiden-hq/`, is refused.
-- **Verified before anything runs.** The tag's commit is on the distro's `main`; every module sha is on the marketplace's
-  history at the release's sha (as `install.sh` checks); the release file resolves against the instance it would pin (`release.ts`: 40-char shas, image digests, `product:` = kernel, marketplace agreeing); the kernel
-  and marketplace commits are on their repositories' `main` (GitHub serves fork and PR commits through the upstream URL,
+- **Verified before anything runs.** The tag's commit is on the distro's `main`; the release file resolves against the instance it would pin (`release.ts`: 40-char shas, image digests, `product:` = kernel); the kernel
+  commit is on the repository's `main` (GitHub serves fork and PR commits through the upstream URL,
   so a sha alone proves nothing). The apply then reads the file again at the pinned distro sha, and checks out exactly
   those shas; images are pulled by digest.
 - **No downgrade.** The release name must be newer than the one followed, and the kernel and marketplace commits must
