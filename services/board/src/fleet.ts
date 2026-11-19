@@ -174,7 +174,7 @@ export async function fleetStatus(pc: Paperclip, records: Pick<Records, "list">)
   return {
     runs: runs.filter((r) => ["running", "queued"].includes(r.status)).map((r) => ({ agent: who.get(r.agentId) ?? r.agentId, status: r.status, startedAt: r.startedAt ?? r.createdAt, ageMinutes: minutesSince(r.startedAt ?? r.createdAt) })),
     approvals: cards.map((a) => ({ id: a.id, task: a.identifier, action: a.action, target: a.target, tier: a.tier, state: a.state, requestedBy: a.requestedBy, ageMinutes: minutesSince(a.createdAt) })),
-    agents: agents.filter((a) => a.status !== "terminated").map((a) => ({ name: a.name, status: a.status, lastRunAt: last.get(a.id)?.t ?? null, lastRunStatus: last.get(a.id)?.s ?? null, openTasks: open.filter((i) => i.assigneeAgentId === a.id).length })),
+    agents: agents.filter((a) => a.status !== "terminated").map((a) => ({ name: a.name, paused: a.status === "paused", lastRunAt: last.get(a.id)?.t ?? null, lastRunStatus: last.get(a.id)?.s ?? null, openTasks: open.filter((i) => i.assigneeAgentId === a.id).length })),
     routines: routines.filter((r) => r.status !== "archived").map((r) => ({ title: r.title, status: r.status, nextRunAt: (r.triggers ?? []).filter((t) => t.enabled).map((t) => t.nextRunAt).filter(Boolean).sort()[0] ?? null, lastRunAt: newest([r.lastTriggeredAt, ...(r.triggers ?? []).map((t) => t.lastFiredAt)]) })),
     stuck: open.filter((i) => ["in_progress", "blocked"].includes(i.status) && i.assigneeAgentId && Date.now() - Date.parse(i.updatedAt) > DAY).map((i) => ({ identifier: i.identifier, title: i.title, status: i.status, assignee: who.get(i.assigneeAgentId!) ?? "an agent", updatedAt: i.updatedAt })),
   };

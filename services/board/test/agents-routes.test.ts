@@ -7,8 +7,9 @@ import type { Paperclip } from "../src/paperclip.js";
 import { Store } from "../src/store.js";
 
 const agents = [
-  { id: "cos", name: "Aiden", status: "idle", metadata: { engine: "codex", setupKey: "aidenhq:chief-of-staff", module: "core", department: { id: "leadership", name: "Leadership", order: 0 } } },
+  { id: "cos", name: "Aiden", status: "error", metadata: { engine: "codex", setupKey: "aidenhq:chief-of-staff", module: "core", department: { id: "leadership", name: "Leadership", order: 0 } } },
   { id: "keeper", name: "Roadmap Keeper", status: "idle", metadata: { engine: "codex", setupKey: "aidenhq:roadmap-keeper", module: "instance" } },
+  { id: "napper", name: "Napper", status: "paused", metadata: { engine: "codex", setupKey: "aidenhq:napper", module: "instance" } },
   { id: "gone", name: "Slack Scout", status: "terminated", metadata: { engine: "codex", setupKey: "aidenhq:slack-scout", module: "core" } },
 ];
 const pc = {
@@ -21,7 +22,9 @@ const pc = {
 
 describe("GET /api/agents/roster", () => {
   let signedIn = true;
-  const app = createApp({ paperclip: pc, store: new Store(":memory:"), log: pino({ level: "silent" }), allowedHosts: ["localhost:3120"], staticDir: "/nonexistent", timezone: "UTC", session: () => (signedIn ? { accountId: "owner", role: "admin" as const } : null) });
+  // Paperclip never runs agents: its status is a leftover. The kernel's jobs say Aiden is working, Roadmap Keeper failed its last 3 and Napper is paused.
+  const work = { job: async () => null, task: async () => [], activity: async () => ({ running: [{ agent: "cos", started_at: "2026-11-14T04:00:00Z" }], queued: [], failing: [{ agent: "keeper", error: "The job failed: boom" }] }) };
+  const app = createApp({ paperclip: pc, work, store: new Store(":memory:"), log: pino({ level: "silent" }), allowedHosts: ["localhost:3120"], staticDir: "/nonexistent", timezone: "UTC", session: () => (signedIn ? { accountId: "owner", role: "admin" as const } : null) });
   let port = 0;
   beforeAll(async () => {
     await new Promise<void>((r) => app.listen(0, "127.0.0.1", r));
@@ -46,7 +49,9 @@ describe("GET /api/agents/roster", () => {
     expect(body.roster.map((a: any) => [a.name, a.system, a.department.id, a.key])).toEqual([
       ["Aiden", true, "leadership", "chief-of-staff"],
       ["Roadmap Keeper", false, "general", "roadmap-keeper"],
+      ["Napper", false, "general", "napper"],
     ]);
+    expect(body.roster.map((a: any) => [a.state, a.stateNote])).toEqual([["working", undefined], ["failing", "The job failed: boom"], ["paused", undefined]]);
     expect(body.roster[0].schedules).toEqual([{ title: "Prepare daily brief", paused: false, nextRunAt: "2026-11-14T04:45:00Z" }]);
     expect(body.roster[0].lastRunAt).toBeNull();
   });

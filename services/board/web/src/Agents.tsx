@@ -160,8 +160,8 @@ export function CrewView({ crew, onSignIn }: { crew: Assignee[]; onSignIn: () =>
   const listed = (x: { agentId: string | null }) => roster.some((a) => a.id === x.agentId);
   const other = sessions.filter((s) => !listed(s));
   const otherDone = finishedRuns.filter((f) => !listed(f));
-  const working = roster.filter((a) => sessions.some((s) => s.agentId === a.id && s.state === "working")).length;
-  const attention = roster.filter((a) => a.status === "paused" || a.status === "error").length;
+  const working = roster.filter((a) => a.state === "working" && !a.team).length;
+  const attention = roster.filter((a) => a.state === "paused" || a.state === "failing").length;
   const toggle = (id: string) =>
     setOpen((o) => {
       const n = new Set(o);
@@ -181,7 +181,7 @@ export function CrewView({ crew, onSignIn }: { crew: Assignee[]; onSignIn: () =>
     const mine = sessions.filter((s) => s.agentId && ids.has(s.agentId));
     const parentTeam = a.memberOf ? roster.find((r) => r.key === a.memberOf) : undefined;
     const team: TeamLoad | undefined = a.team
-      ? { running: mine.filter((s) => s.state === "working").length, queued: mine.filter((s) => s.state === "queued").length, capacity: ms.reduce((n, m) => n + (m.maxParallel ?? 1), 0), size: ms.length, model: teamModel(ms) }
+      ? { running: a.running, queued: a.queued, capacity: ms.reduce((n, m) => n + (m.maxParallel ?? 1), 0), size: ms.length, model: teamModel(ms) }
       : undefined;
     const pm = parentTeam ? teamModel(roster.filter((m) => m.memberOf === parentTeam.key)) : null;
     return (
@@ -270,14 +270,16 @@ export function CrewView({ crew, onSignIn }: { crew: Assignee[]; onSignIn: () =>
   );
 }
 
-/** Where the agent stands, in a status dot and a word: working, needs you (paused, error), queued or idle. */
-function standing(a: RosterAgent, on: Session[], queued: Session[], now: number, team?: TeamLoad): { text: string; tone: StatusTone } {
-  if (team) return { text: `${team.running}/${team.capacity} running`, tone: team.running ? "working" : "idle" };
-  if (on.length) return { text: on[0]!.startedAt ? `Working ${elapsed(on[0]!.startedAt, now)}` : "Working", tone: "working" };
-  if (a.status === "paused") return { text: "Paused", tone: "needs" };
-  if (a.status === "error") return { text: "Error", tone: "failed" };
-  if (queued.length) return { text: "Queued", tone: "idle" };
-  return { text: "Idle", tone: "idle" };
+/** Where the agent stands, from the kernel's jobs (a.state): working, queued, idle, failing (its last 3 jobs failed) or paused by the owner. */
+function standing(a: RosterAgent, now: number, team?: TeamLoad): { text: string; tone: StatusTone } {
+  if (team && (a.state === "working" || a.state === "idle" || a.state === "queued")) return { text: `${team.running}/${team.capacity} running`, tone: team.running ? "working" : "idle" };
+  switch (a.state) {
+    case "working": return { text: a.workingSince ? `Working ${elapsed(a.workingSince, now)}` : "Working", tone: "working" };
+    case "paused": return { text: "Paused", tone: "needs" };
+    case "failing": return { text: "Failing", tone: "failed" };
+    case "queued": return { text: "Queued", tone: "idle" };
+    default: return { text: "Idle", tone: "idle" };
+  }
 }
 
 const when = (iso: string) => {
@@ -297,7 +299,7 @@ const fromRow = (e: MouseEvent, f: () => void) => {
 function AgentRow({ a, depth, team, ownModel, assignee, sessions, finished, runsLoaded, now, open, toggle }: { a: RosterAgent; depth: number; team?: TeamLoad; ownModel: string | null; assignee: Assignee; sessions: Session[]; finished: Finished[]; runsLoaded: boolean; now: number; open: boolean; toggle: () => void }) {
   const on = sessions.filter((s) => s.state === "working");
   const queued = sessions.filter((s) => s.state === "queued");
-  const st = standing(a, on, queued, now, team);
+  const st = standing(a, now, team);
   const recent = fold(finished);
   const next = nextRun(a);
   const last = recent[0];
@@ -307,7 +309,7 @@ function AgentRow({ a, depth, team, ownModel, assignee, sessions, finished, runs
   const detail = `agent-detail-${a.id}`;
   const flag = st.tone === "needs" || st.tone === "failed" ? " flag" : lastSt?.tone === "bad" ? " flag-bad" : "";
   return (
-    <div role="row" aria-level={depth + 1} style={depth ? ({ "--depth": depth } as CSSProperties) : undefined} className={`fleet-row${on.length ? " busy" : ""}${open ? " open" : ""}${flag}${team ? " team" : ""}${depth ? " nested" : ""}`}>
+    <div role="row" aria-level={depth + 1} style={depth ? ({ "--depth": depth } as CSSProperties) : undefined} className={`fleet-row${a.running ? " busy" : ""}${open ? " open" : ""}${flag}${team ? " team" : ""}${depth ? " nested" : ""}`}>
       <div className="fleet-main" onClick={(e) => fromRow(e, toggle)}>
         <div className="fleet-who" role="cell">
           <span className="crew-portrait">
@@ -331,7 +333,7 @@ function AgentRow({ a, depth, team, ownModel, assignee, sessions, finished, runs
           </div>
         </div>
         <div className="fleet-status" role="cell">
-          {runsLoaded || st.tone ? <StatusDot tone={st.tone}>{st.text}</StatusDot> : <Bone className="tag-sk" />}
+          {runsLoaded || st.tone ? <StatusDot tone={st.tone} title={a.stateNote}>{st.text}</StatusDot> : <Bone className="tag-sk" />}
         </div>
         <div className={`fleet-now${on.length || queued.length || !runsLoaded ? "" : " is-empty"}`} role="cell">
           <span className="fleet-label">Now</span>
@@ -405,7 +407,7 @@ function AgentRow({ a, depth, team, ownModel, assignee, sessions, finished, runs
                 </a>
               )}
               {/* A paused agent takes no chats (the chat list leaves it out). */}
-              {a.status !== "paused" && (
+              {a.state !== "paused" && (
                 <a className="btn" href={`#/c/?to=${encodeURIComponent(a.id)}`}>
                   Chat with {a.name}
                 </a>

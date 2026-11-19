@@ -1,7 +1,7 @@
 // Reads of the kernel's jobs (phase 2 W7, W12): what the grading module and the monitoring side see, from the jobs table and the
 // records. Read-only; the loops that use them are started at the big switch, where the runner's copies are deleted.
 //   GET /v1/work?task=<id>   a task's jobs (newest first) and the write records filed on it (with their args and outcome text, which the grading module reads PRs from): { owned, busy, jobs, records }
-//   GET /v1/work             what runs now and what ended lately, the shape the board's Agents view reads
+//   GET /v1/work             what runs now, what waits (queued) and what ended lately, and the agents failing (their last 3 jobs all failed or were lost): the board's Agents view
 //   GET /v1/work?job=<id>    one job for its run page (the board): state, times, why it ended, its engine's token count, its
 //                            progress (said, plan, steps) and final words (both the agent's: untrusted)
 //   GET /v1/work?agent=<id>  an agent's last 50 jobs (newest first), each with how it ended: { jobs }
@@ -63,7 +63,13 @@ export function createWork({ db, records, generationsFile = "" }: { db: Database
       const recent = rows("SELECT * FROM jobs WHERE state != 'running' ORDER BY ended DESC LIMIT 100").slice(0, 15).map(job);
       const latest = new Map<string, string>();
       for (const r of rows("SELECT * FROM jobs ORDER BY at DESC LIMIT 1000")) if (!latest.has(r.task)) latest.set(r.task, r.state);
-      return { running, recent, latest: [...latest].slice(0, 200).map(([task, state]) => ({ task, state })) };
+      // Per agent, for the board's Agents page: waiting work (an open wake or an admitted job), and the agents whose last 3 ended jobs
+      // all failed or were lost, with the latest one's first error line.
+      const queued = rows("SELECT agent, COUNT(*) AS n FROM (SELECT agent FROM wakes WHERE state = 'open' UNION ALL SELECT agent FROM jobs WHERE state = 'admitted') GROUP BY agent").map((r) => ({ agent: r.agent, n: r.n }));
+      const ends = new Map<string, Record<string, any>[]>();
+      for (const r of rows("SELECT agent, state, final FROM jobs WHERE state NOT IN ('admitted', 'running') ORDER BY ended DESC LIMIT 2000")) ends.set(r.agent, [...(ends.get(r.agent) ?? []), r].slice(0, 3));
+      const failing = [...ends].filter(([, l]) => l.length === 3 && l.every((r) => r.state === "failed" || r.state === "lost")).map(([agent, l]) => ({ agent, error: String(l[0]!.final || l[0]!.state).split("\n")[0]!.slice(0, 200) }));
+      return { running, recent, latest: [...latest].slice(0, 200).map(([task, state]) => ({ task, state })), queued, failing };
     },
     metrics(now = Date.now()) {
       const all = rows("SELECT * FROM jobs");

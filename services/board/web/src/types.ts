@@ -120,13 +120,17 @@ export interface Scorecard {
 }
 
 /** GET /api/agents/by-key/:key (agent-page.ts). */
+/** From the kernel's jobs; paused is the owner's setting (activity.ts agentState). */
+export type AgentState = "working" | "queued" | "idle" | "failing" | "paused";
+
 export interface AgentProfile {
   id: string;
   key: string;
   name: string;
   avatar?: string;
   title: string | null;
-  status: string;
+  state: AgentState;
+  stateNote?: string;
   trial: boolean;
   model: string | null;
   effort: string | null;
@@ -157,7 +161,11 @@ export interface RosterAgent {
   team?: { name: string; members: { key: string; name: string }[] };
   memberOf?: string;
   maxParallel?: number;
-  status: string;
+  state: AgentState;
+  stateNote?: string;
+  running: number;
+  queued: number;
+  workingSince: string | null;
   trial: boolean;
   schedules: { title: string; paused: boolean; nextRunAt: string | null }[];
   lastRunAt: string | null;

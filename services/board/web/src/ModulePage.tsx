@@ -168,7 +168,7 @@ function Agents({ d }: { d: ModuleDetail }) {
   return (
     <div className="mod-rows">
       {d.agents.map((a) => (
-        <ModRow key={a.key} href={`#/agents/${a.key}`} lead={<AgentAvatar name={a.name} portrait={a.avatar} size={24} />} title={a.name} meta={<>{a.title && <span>{a.title}</span>}{a.status && <span>{sentence(a.status)}</span>}</>} />
+        <ModRow key={a.key} href={`#/agents/${a.key}`} lead={<AgentAvatar name={a.name} portrait={a.avatar} size={24} />} title={a.name} meta={<>{a.title && <span>{a.title}</span>}<span>{sentence(a.state)}</span></>} />
       ))}
     </div>
   );

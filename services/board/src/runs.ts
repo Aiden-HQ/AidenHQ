@@ -29,6 +29,14 @@ export interface KernelJob {
 export interface Work {
   job(id: string): Promise<KernelJob | null>;
   task(id: string): Promise<KernelJob[]>;
+  /** What runs now, what waits and who is failing, per agent id (GET /v1/work). */
+  activity(): Promise<KernelActivity>;
+}
+
+export interface KernelActivity {
+  running: { agent: string; started_at: string | null }[];
+  queued: { agent: string; n: number }[];
+  failing: { agent: string; error: string }[];
 }
 
 export function kernelWork(k: { url: string; token: string }): Work {
@@ -41,6 +49,7 @@ export function kernelWork(k: { url: string; token: string }): Work {
   return {
     job: (id) => get(`job=${encodeURIComponent(id)}`),
     task: async (id) => ((await get(`task=${encodeURIComponent(id)}`)) as { jobs: KernelJob[] }).jobs,
+    activity: () => get(""),
   };
 }
 
