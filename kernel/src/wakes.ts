@@ -15,6 +15,7 @@ import type { DatabaseSync } from "node:sqlite";
 import type { Api } from "./channels.ts";
 import type { Outcomes } from "./outcomes.ts";
 import { mentionedRepos } from "./boxes.ts";
+import { agentPaused } from "./modtasks.ts";
 import { CONTINUITY_MS, decisionText, pickMember, weightsOf, type Candidate, type Weights } from "./team-routing.ts";
 
 /** A comment the kernel posted for a job (outcomes.ts): it never wakes anyone. */
@@ -188,7 +189,7 @@ export function createWakes({ db, owner, post, dispatches, routineKey = () => un
         }
         done++;
       }
-      out.push({ id, key, g: grants()[id] ?? {}, paused: ["paused", "terminated"].includes(String(a.json.status)), open: new Set((l.json as Issue[]).map((i) => i.id)), done });
+      out.push({ id, key, g: grants()[id] ?? {}, paused: agentPaused(a.json), open: new Set((l.json as Issue[]).map((i) => i.id)), done });
     }
     return out;
   }

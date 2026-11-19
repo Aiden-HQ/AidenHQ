@@ -18,7 +18,7 @@ function world() {
   const owner = async (method, path, body) => {
     const u = new URL(path, "http://cp");
     let m;
-    if ((m = /^\/api\/agents\/([^/]+)$/.exec(u.pathname))) return { status: 200, json: { id: m[1], companyId: "c-1" } };
+    if ((m = /^\/api\/agents\/([^/]+)$/.exec(u.pathname))) return { status: 200, json: { id: m[1], companyId: "c-1", status: "idle", lifecycleHolds: [] } };
     if (u.pathname === "/api/companies/c-1/issues") return { status: 200, json: Object.values(issues).filter((i) => (u.searchParams.get("status") ?? "todo,in_progress,in_review").split(",").includes(i.status) && i.assigneeAgentId === u.searchParams.get("assigneeAgentId")) };
     if ((m = /^\/api\/issues\/([^/]+)\/comments$/.exec(u.pathname))) {
       let list = [...(comments[m[1]] ?? [])];

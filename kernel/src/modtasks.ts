@@ -14,6 +14,10 @@ export const MODULE_TASK = (module: string) => `<!-- aidenhq-module:${module} --
 const SOURCE = /^[\w.:/@#-]{1,200}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+/** Whether the owner holds the agent paused (or it is gone): Paperclip's lifecycle holds (manual, setup, budget, company
+ * archived), never its runtime `status`, which stays "paused" while a pause or resume waits on Paperclip's stop proof. */
+export const agentPaused = (a: { status: string; lifecycleHolds: string[] }) => a.status === "terminated" || a.lifecycleHolds.length > 0;
+
 export class TaskError extends Error {
   name = "TaskError";
   status: number;
@@ -56,7 +60,7 @@ export function createModuleTasks({ owner, agents, log = () => {} }: {
     if (!agent) throw new TaskError(409, by === "role" ? `no agent holds the role ${role}` : `no agent ${String(b.agent).slice(0, 60)}`);
     const a = await owner("GET", `/api/agents/${encodeURIComponent(agent)}`);
     if (a.status !== 200 || !a.json?.companyId) throw new TaskError(502, `the control plane answered ${a.status} for the agent`);
-    if (a.json.status === "paused") throw new TaskError(409, `${role || "the"} agent ${agent} is paused`);
+    if (agentPaused(a.json)) throw new TaskError(409, `${role || "the"} agent ${agent} is paused`);
     const r = await owner("POST", `/api/companies/${encodeURIComponent(String(a.json.companyId))}/issues`, {
       title, description: `${description}\n\n<!-- source:${b.source} -->\n${MODULE_TASK(module)}`, status: "todo", priority: "medium",
       assigneeAgentId: agent, assigneeUserId: null, allowDuplicate: true, ...(b.parent ? { parentId: b.parent } : {}),

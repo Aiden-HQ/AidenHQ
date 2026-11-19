@@ -46,7 +46,7 @@ function world({ paused = [], dayUsedUp = false } = {}) {
   const owner = async (method, path, body) => {
     const u = new URL(path, "http://cp");
     let m;
-    if ((m = /^\/api\/agents\/([^/]+)$/.exec(u.pathname))) return { status: 200, json: { id: m[1], companyId: "c-1", status: paused.includes(m[1]) ? "paused" : "idle" } };
+    if ((m = /^\/api\/agents\/([^/]+)$/.exec(u.pathname))) return { status: 200, json: { id: m[1], companyId: "c-1", status: paused.includes(m[1]) ? "paused" : "idle", lifecycleHolds: paused.includes(m[1]) ? ["manual"] : [] } };
     if (u.pathname === "/api/companies/c-1/issues") return { status: 200, json: Object.values(issues).filter((i) => (u.searchParams.get("status") ?? "").split(",").includes(i.status) && i.assigneeAgentId === u.searchParams.get("assigneeAgentId")) };
     if ((m = /^\/api\/issues\/([^/]+)\/comments$/.exec(u.pathname))) {
       if (method === "POST") { (comments[m[1]] ??= []).push({ id: `c-${clock}`, body: body.body, createdAt: new Date(clock).toISOString() }); return { status: 201, json: {} }; }
