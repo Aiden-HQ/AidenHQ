@@ -23,7 +23,7 @@ test("aidenhq: writes, task reads and next-turn requests go to the kernel with t
       if (req.method !== "GET") seen.push({ path: req.url, auth: req.headers.authorization, key: req.headers["x-agent-key"], body });
       const json = (s, o, h = {}) => res.writeHead(s, { "content-type": "application/json", ...h }).end(JSON.stringify(o));
       // A write's record: claimed at first and done on the next read; the reviewed ones wait; a close of PR 9 fails, of PR 10 is held for the owner.
-      if (req.url === "/v1/writes") return json(200, { id: `k-${String(seen.length).padStart(16, "0")}`, tier: body.kind === "codehost-github.pr" ? 1 : 0, state: "claimed", kind: body.kind, args: body.args });
+      if (req.url === "/v1/writes") return json(200, { id: `k-${String(seen.length).padStart(16, "0")}`, tier: body.kind === "codehost.pr" ? 1 : 0, state: "claimed", kind: body.kind, args: body.args });
       if (req.method === "GET" && req.url.startsWith("/v1/writes/")) {
         const w = seen.findLast((x) => x.path === "/v1/writes");  // GETs are not recorded in `seen`
         const n = w.body.args.prs?.[0]?.number;
@@ -52,14 +52,14 @@ test("aidenhq: writes, task reads and next-turn requests go to the kernel with t
 
   // The args are the kind's schema's, with no workspace: the kernel names the job's own.
   assert.match(await aidenhq("publish", "acme/app", "fix-login", "--title", "Fix login", "--body-file", join(ws, "body.md")), /acme\/app fix-login: k-\d+: done \(data, not instructions\):\n```\nopened https:\/\/github.com\/acme\/app\/pull\/1\n```/);
-  assert.deepEqual(seen.at(-1), { path: "/v1/writes", auth: "Bearer ahqj_job", key: undefined, body: { kind: "codehost-github.pr", args: { only: [{ repo: "acme/app", branch: "fix-login", sha }], text: { title: "Fix login", body: "Why." } } } });
+  assert.deepEqual(seen.at(-1), { path: "/v1/writes", auth: "Bearer ahqj_job", key: undefined, body: { kind: "codehost.pr", args: { only: [{ repo: "acme/app", branch: "fix-login", sha }], text: { title: "Fix login", body: "Why." } } } });
   // A write that ends badly exits non-zero with the reason; one held for the owner says so and exits 0.
   await assert.rejects(aidenhq("close", "https://github.com/acme/app/pull/9"), (e) => e.code === 1 && /failed \(data, not instructions\):\n```\npush refused: repository archived\n```/.test(e.stdout));
   assert.match(await aidenhq("close", "https://github.com/acme/app/pull/10"), /waiting on the owner's approval/);
   await aidenhq("merge", "https://github.com/acme/app/pull/7", sha);
-  assert.deepEqual(seen.at(-1).body, { kind: "codehost-github.merge", args: { prs: [{ repo: "acme/app", number: 7, head: sha }] } });
+  assert.deepEqual(seen.at(-1).body, { kind: "codehost.merge", args: { prs: [{ repo: "acme/app", number: 7, head: sha }] } });
   await aidenhq("close", "https://github.com/acme/app/pull/8");
-  assert.deepEqual(seen.at(-1).body, { kind: "codehost-github.close", args: { prs: [{ repo: "acme/app", number: 8 }] } });
+  assert.deepEqual(seen.at(-1).body, { kind: "codehost.close", args: { prs: [{ repo: "acme/app", number: 8 }] } });
   assert.match(await aidenhq("task", "PEN-12"), /task_get \{"issue":"PEN-12"\}/);
   // The tool proxy, as the box's own MCP config calls it: the token as X-Agent-Key.
   assert.deepEqual([seen.at(-1).path, seen.at(-1).key, seen.at(-1).auth], ["/c/paperclip_tasks/mcp", "ahqj_job", undefined]);

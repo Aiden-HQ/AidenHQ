@@ -38,7 +38,7 @@
 //                              a job on a wake it claimed, admitted (admission.ts: the only way a job starts), its status
 //                              (?after=<version>&wait=<ms> waits for a change), stop it, a comment into it (jobs.ts; `wake`: the claimed comment wake it delivers);
 //                              GET /v1/jobs?open=1 | ?task=<id>: its own jobs not yet acknowledged, or a task's; POST /v1/jobs/:job/ack: an ended job is dealt with
-//   POST /v1/codehost/:op      (a module's own token) token | snapshot | clone on the GitHub code host, under the module's
+//   POST /v1/codehost/:op      (a module's own token) token | snapshot | clone on the code host that owns the repo, under the module's
 //                              codehost grant (codehost.ts)
 //   POST /v1/jobs/workspace    (a module with role kernel.jobs) {task}: the workspace folder it may write into (a task of an agent it dispatches)
 //   GET  /v1/work[?task=|?job=|?agent=|?since=], GET /v1/work/metrics  (a module with role kernel.work-read) the jobs and records
@@ -56,12 +56,15 @@
 //                              repo-checkout role, an agents-org repo only: GitHub's, or local/… from codehost-local (jobtools.ts checkout)
 //   POST /v1/jobtools/:cmd     (a kernel job's own token) reset | engine {engine, model?} | cleanup: what the running job asks of its
 //                              task's next turn (jobtools.ts)
+//                              | clone {repo}: a repository on this server as a git bundle, which the box clones itself
 //   GET  /v1/advisories        (the board's key) the marketplace advisories open against installed modules (advisories.ts)
 //   GET  /v1/connections/health (the board's key) every connection's /healthz as the kernel reaches it -> {probes: {name: {ok, status?, state?, detail?, channels?, checkedAt}}} (health.ts)
 //   POST /v1/auth/:op, /v1/accounts/:op, /v1/apps/:op, /v1/operator/:op  the accounts' routes (auth-api.ts): module UI
 //                              sessions and account admin (the board), in-app requests (apps-platform), setup links (operator)
 //   POST /v1/health/probe      (the host's health_probe_key, x-health-key) {probe}: one of health.ts's fixed read probes, called as the
 //                              agent granted it -> {ok, ms, error?}, never the tool's answer; scripts/healthcheck.sh's reads
+import { createReadStream } from "node:fs";
+import { pipeline } from "node:stream/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { timingSafeEqual } from "node:crypto";
 import type { Asserter } from "./assert.ts";
@@ -76,7 +79,7 @@ import type { Admission } from "./admission.ts";
 import { JOB_KINDS, type Outcomes } from "./outcomes.ts";
 import { notice, type Notify } from "./notify.ts";
 import type { JobTools } from "./jobtools.ts";
-import { CODEHOST } from "./codehost.ts";
+import { hostOf } from "./codehost.ts";
 import { fail } from "./proxy.ts";
 import type { Records, State } from "./records.ts";
 import type { Work } from "./work.ts";
@@ -178,7 +181,7 @@ function workRead(work: Work, p: URLSearchParams) {
   return task ? work.task(task.slice(0, 100)) : work.activity();
 }
 
-export function createBackplane({ whoami, asserter, proxy, cp, boardCp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, reviewerKey = () => "", jobs, codehost, admission, outcomes, wakes, tasks, eventsKey = () => "", work, graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, checkJobs, jobTools, ownerRaw, lane, healthProbe, healthKey = () => "", connectionHealth, log = () => {} }: {
+export function createBackplane({ whoami, asserter, proxy, cp, boardCp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, reviewerKey = () => "", jobs, codehost, admission, outcomes, wakes, tasks, eventsKey = () => "", work, graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, checkJobs, jobTools, localBundle, ownerRaw, lane, healthProbe, healthKey = () => "", connectionHealth, log = () => {} }: {
   whoami: Whoami; asserter: Asserter; proxy: Handler; cp: Handler; boardCp?: Handler; grantsFile: () => { agents?: Record<string, Grant> } & Record<string, unknown>;
   writes?: Writes; records?: Records; boardKey?: () => string; log?: (msg: string, f?: Record<string, unknown>) => void;
   /** The reviewer slot, and the key a direct review request asks with (reviewer_key, which the board holds). */
@@ -219,6 +222,8 @@ export function createBackplane({ whoami, asserter, proxy, cp, boardCp, grantsFi
   checkJobs?: CheckJobs;
   /** A running job's requests for its task's next turn (jobtools.ts). */
   jobTools?: JobTools;
+  /** codehost-local's bundle of a repo on this server, while it is enabled (`aidenhq clone`): the file, and `done` once sent. */
+  localBundle?: (repo: string) => Promise<{ file: string; done: () => void }>;
   /** The host's health probes (health.ts), and the key the host's healthcheck asks with (health_probe_key, held by no container). */
   healthProbe?: (b: Record<string, unknown>) => Promise<{ ok: boolean; ms: number; error?: string }>;
   healthKey?: () => string;
@@ -295,11 +300,25 @@ export function createBackplane({ whoami, asserter, proxy, cp, boardCp, grantsFi
             if (j.name === "JobToolError") throw fail(j.status!, j.code!, j.message);
             throw e;
           }
-          return await codehost(CODEHOST, "snapshot", snap, res);
+          return await codehost(hostOf(snap.repo), "snapshot", snap, res);
         }
         case "POST /v1/jobtools/:cmd": {
           if (!jobTools) throw fail(503, "unavailable", "job tools are off");
           const b = await json(req);
+          if (m[0] === "clone") {
+            // The repo's branches as a git bundle; the box clones from it itself.
+            if (!localBundle) throw fail(404, "unavailable", "there are no repositories on this server (codehost-local isn't enabled)");
+            let repo: string;
+            try { ({ repo } = jobTools.clone(bearer(req), b)); } catch (e) {
+              const j = e as { name?: string; status?: number; code?: string; message: string };
+              if (j.name === "JobToolError") throw fail(j.status!, j.code!, j.message);
+              throw e;
+            }
+            const out = await localBundle(repo).catch((e: { status?: number; message: string }) => { throw fail(e.status ?? 500, "no-repo", e.message); });
+            res.writeHead(200, { "content-type": "application/octet-stream" });
+            // An aborted client ends the pipeline too: the request never hangs and the temp bundle always goes.
+            return void (await pipeline(createReadStream(out.file), res).catch(() => {}).finally(out.done));
+          }
           try { return send(res, 200, { text: jobTools.run(bearer(req), m[0]!, b) }); } catch (e) {
             const j = e as { name?: string; status?: number; code?: string; message: string };
             if (j.name === "JobToolError") throw fail(j.status!, j.code!, j.message);

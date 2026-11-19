@@ -1,7 +1,9 @@
 // K6, the write lifecycle (spec §5.3) for every write kind: the modules' (manifest `writes:`, compiled to
 // config/kernel/writes.json), the kernel's own (kinds.ts), and the implicit kind conn.tool (a write or destructive tool
 // mapped to no kind). Filing: grant check → plan → args schema → tier (K5) → card → record. A module kind is planned by its
-// executor (executor@1, sdk/src/executor.ts); kernel.apply by the kernel's planner. Tier 0 is claimed at filing and
+// executor (executor@1, sdk/src/executor.ts: a module's service, or one the kernel runs in process, codehost-local's);
+// kernel.apply by the kernel's planner. A code host action (`codehost.<action>`) is filed as the kind of the host that owns its
+// repos (codehost.ts routeKind). Tier 0 is claimed at filing and
 // executed at once; Tier 1 and 2 go to the reviewer: the kernel's review loop gathers what it reads, sends it to the bound
 // reviewer module, holds the verdict to the record's review-first, and moves the record (the owner decides next, by
 // channel token or the kernel's page). Approved: claimed once → revalidated (a module kind: the same executor and policy,
@@ -14,8 +16,10 @@ import type { Connection, Identity } from "./identity.ts";
 import type { Resolver } from "./net.ts";
 import { UPDATER, canonical, digestOf, type Card, type Rec, type Records, type Requester } from "./records.ts";
 import type { Reviews } from "./reviews.ts";
-import { repoKey, type Repos } from "./kinds.ts";
+import { LOCAL_ORG, repoKey, type Repos } from "./kinds.ts";
 import { REFUSALS_DDL } from "./jobs.ts";
+import { routeKind } from "./codehost.ts";
+import type { Executor } from "../sdk/src/executor.ts";
 import { writeRaise, type Inventory } from "./paths.ts";
 import { REVIEW_TRIES, afterReview, capText, codeVerdict, computeTier, failedVerdict, heldInput, shadowed, type Autonomy, type Raise, type ReviewFirst, type ReviewInput, type Cap, type RoutineCap, type Tier, type Verdict } from "./tier.ts";
 
@@ -73,7 +77,7 @@ const hash = (s: string) => createHash("sha256").update(s).digest("hex");
 const UNSURE = "reviewer_unsure";
 const MODEL = /^~?[\w.-]+\/[\w.:-]+$/;
 
-export function createWrites({ records, registry, connections, secret, resolver, reviews, autonomy = () => "full", repos = () => ({}), paths = () => undefined, onTask, replay, native = {}, planners = {}, resume = [], log = () => {} }: {
+export function createWrites({ records, registry, connections, secret, resolver, reviews, autonomy = () => "full", repos = () => ({}), paths = () => undefined, onTask, replay, native = {}, planners = {}, executors = () => ({}), resume = [], log = () => {} }: {
   records: Records; registry: () => { [kind: string]: Kind }; connections: () => { [c: string]: Connection }; secret: (n: string) => string; resolver: Resolver;
   /** The bound reviewer module (reviews.ts): every record's review goes there. */
   reviews?: Reviews;
@@ -90,6 +94,8 @@ export function createWrites({ records, registry, connections, secret, resolver,
   native?: { [kind: string]: (r: Rec) => Promise<{ ok: boolean; text: string }> };
   /** The kernel's planners for its own kinds (kernel.apply): filed through request() like a module kind, planned here. */
   planners?: { [kind: string]: Planner };
+  /** Executors the kernel runs in process, by module (codehost-local's, while it is enabled): in place of a service's. */
+  executors?: () => { [module: string]: Executor };
   /** Native kinds whose executor carries on from where it was: a claimed record of one is run again after a restart (kernel.apply). */
   resume?: string[];
   log?: (msg: string, f?: { [k: string]: unknown }) => void;
@@ -100,7 +106,11 @@ export function createWrites({ records, registry, connections, secret, resolver,
   const policy = (k: Kind) => createHash("sha256").update(canonical({ ...k, executor: undefined })).digest("hex").slice(0, 32);
   const kindOf_ = (kind: string) => (Object.hasOwn(registry(), kind) ? registry()[kind] : undefined);
 
+  const inProcess = (k: Kind | undefined) => (k && Object.hasOwn(executors(), k.module) ? executors()[k.module] : undefined);
   async function call(k: Kind, op: "plan" | "execute" | "status", body: unknown): Promise<any> {
+    const own = inProcess(k);
+    if (own && op === "plan") return own.plan(body as never).catch((e: Error & { status?: number }) => { throw e.status && e.status >= 500 ? e : fail(422, "refused", String(e.message).slice(0, 1000)); });
+    if (own) throw fail(500, "no_executor", `${k.module} runs in process: no ${op} call`);
     if (!k.executor) throw fail(500, "no_executor", `${k.module} declares no executor`);
     const key = secret(k.executor.auth_secret);
     if (!key) throw fail(503, "no_service_key", `${k.module}'s executor key is missing`);
@@ -198,6 +208,11 @@ export function createWrites({ records, registry, connections, secret, resolver,
       const o = await native[r.kind]!(r).catch((e: Error) => ({ ok: false, text: e.message }));
       return void outcomeOf(r.id, o.ok, o.text);
     }
+    const own = inProcess(k);
+    if (own) {
+      const o = await own.execute({ id: r.id, kind: r.kind, args: r.args, digest: r.digest, idempotency_key: r.id }).catch((e: Error) => ({ ok: false, text: e.message }));
+      return void outcomeOf(r.id, o.ok, o.text);
+    }
     await call(k!, "execute", { id: r.id, kind: r.kind, args: r.args, digest: r.digest, idempotency_key: r.id }).catch((e: Error) => outcomeOf(r.id, false, `not executed: ${e.message}`));
   }
 
@@ -277,9 +292,15 @@ export function createWrites({ records, registry, connections, secret, resolver,
   return {
     kindOf,
     /** POST /v1/writes, and the proxy for a tool mapped to a kind. */
-    async request(who: Identity, { kind, args, task, evidence }: { kind: string; args: unknown; task?: string; evidence?: unknown }): Promise<Rec> {
+    async request(who: Identity, { kind: asked, args, task, evidence }: { kind: string; args: unknown; task?: string; evidence?: unknown }): Promise<Rec> {
+      // A new repo named without its org goes to the instance's default agents org: GitHub's once it is connected
+      // (AIDENHQ_GITHUB_AGENTS_ORG), else this server's. An existing repo keeps its host: routing reads only the repo.
+      const newRepo = (args as { repo?: unknown } | null)?.repo;
+      if (asked === "codehost.create_repo" && typeof newRepo === "string" && !newRepo.includes("/")) args = { ...(args as object), repo: `${repos().agentsOrg ?? LOCAL_ORG}/${newRepo}` };
+      let kind: string;
+      try { kind = routeKind(asked, args); } catch (e) { throw fail(400, "bad_args", (e as Error).message); }
       const k = kindOf_(kind);
-      if (!k || !(k.executor || Object.hasOwn(planners, kind))) throw fail(404, "unknown_kind", `no write kind ${kind}`);
+      if (!k || !(k.executor || Object.hasOwn(planners, kind) || inProcess(k))) throw fail(404, "unknown_kind", `no write kind ${kind}`);
       // A job only by the kinds its token names (its minter names them), on the token's task; its tier is the kind's, as any
       // requester's (floor, the executor's plan, caps and the routine cap: computeTier). A module files its own kinds; a kernel
       // kind the kernel plans itself (kernel.apply) only by holding the kernel role of that name, which compile allows only as
@@ -426,7 +447,7 @@ export function createWrites({ records, registry, connections, secret, resolver,
       for (const r of claimed) {
         if (!modules && resume.includes(r.kind) && native[r.kind]) { void execute(r, undefined); continue; }
         const k = registry()[r.kind];
-        const s = r.kind === CONN_TOOL || !k?.executor ? undefined : await call(k, "status", { id: r.id, idempotency_key: r.id }).catch(() => undefined);
+        const s = r.kind === CONN_TOOL || !k?.executor || inProcess(k) ? undefined : await call(k, "status", { id: r.id, idempotency_key: r.id }).catch(() => undefined);
         if (s?.state === "done" || s?.state === "failed") outcomeOf(r.id, s.state === "done", String(s.text ?? s.state));
         else if (s?.state === "running" && !modules) continue;
         else if (records.close(r.id, "unknown", "unknown: it was claimed and its outcome never came back; it is not run again")) unresolved.push(`${r.id} ${r.kind} unknown`);

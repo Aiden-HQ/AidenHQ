@@ -59,9 +59,9 @@ test("repo-checkout: a role holder's job gets the code host's snapshot; no role,
   git(work, "push", "--quiet", bare, "main");
   const head = git(work, "rev-parse", "HEAD");
   const codehost = createCodehost({
-    grants: () => [{ module: "codehost-github", snapshot: { repos: ["*/*"] } }], repos: () => ({ agentsOrg: "acme-agents" }),
+    grants: () => [{ module: "codehost-github", snapshot: { repos: ["*/*"] } }, { module: "codehost-local", snapshot: { repos: ["local/*"] } }], repos: () => ({ agentsOrgs: ["acme-agents", "local"] }),
     kind: () => ({ module: "codehost-github", floor: 0, tools: [], executor: { url: `${host.url}/aidenhq/v1/executor`, auth_secret: "k" } }),
-    localSnapshot: () => localSnapshot({ root }),
+    local: () => ({ snapshot: localSnapshot({ bare: (r) => join(root, "local", `${r.split("/")[1]}.git`) }), clone: async () => { throw new Error("unused"); } }),
     secret: () => "ch-key", resolver: { resolve: async (u) => ({ host: "127.0.0.1", port: Number(new URL(u).port), path: new URL(u).pathname }), forget: () => {} }, workspace: async () => { throw new Error("unused"); },
   });
   const db = new DatabaseSync(":memory:");
@@ -91,4 +91,16 @@ test("repo-checkout: a role holder's job gets the code host's snapshot; no role,
   assert.equal((await post("ag1", "j-a", { repo: "local/app" })).headers.get("x-aidenhq-commit"), head, "no sha: the default branch");
   assert.equal((await post("ag1", "j-a", { repo: "local/app", sha: "b".repeat(40) })).status, 404, "a commit it doesn't have");
   assert.equal(asked.length, 1);
+});
+
+// `aidenhq clone`: an engineer job's own token, a repo on this server, and only one its dispatcher's clone grant covers.
+test("aidenhq clone: only a local repo the job's dispatcher may clone", () => {
+  const db = new DatabaseSync(":memory:");
+  db.exec("CREATE TABLE jobs (id TEXT PRIMARY KEY, module TEXT, agent TEXT, task TEXT, state TEXT, authority TEXT)");
+  db.prepare("INSERT INTO jobs VALUES ('j-a', 'dispatch', 'ag1', 't', 'running', ?)").run(JSON.stringify({ profile: "engineer", roles: [] }));
+  const jobTools = createJobTools({ db, secret: () => "s", engines: () => [], mayClone: (module, repo) => module === "dispatch" && repo === "local/app" });
+  const token = mintToken("s", { kind: "job", job: "j-a", agentId: "ag1", issueId: "t" });
+  assert.deepEqual(jobTools.clone(token, { repo: "local/app" }), { repo: "local/app" });
+  assert.throws(() => jobTools.clone(token, { repo: "local/other" }), (e) => e.status === 403, "outside the grant");
+  assert.throws(() => jobTools.clone(token, { repo: "acme/app" }), (e) => e.status === 400, "not on this server");
 });

@@ -241,14 +241,14 @@ const run = (cmd: string, args: string[], opts: { cwd?: string } = {}) =>
  */
 export function hostApply({ repo, stateDir, resolver, codehost, local }: {
   repo: string; stateDir: string; resolver: Resolver; codehost: () => { url: string; key: string } | undefined;
-  /** codehost-local, when enabled: the instance repo's bare git dir on this host and its slug. */
-  local: () => { bare: string; repo: string } | undefined;
+  /** codehost-local, when enabled: the instance repo's bare git dir on this host, its slug, and a job's branch fetched in from its workspace. */
+  local: () => { bare: string; repo: string; ingest: (s: Source & { workspace: string }) => Promise<unknown> } | undefined;
 }): ApplyHost {
   const provider = (s: Source): ApplyHost["codehost"] => {
     if (String(s.repo).split("/")[0]!.toLowerCase() !== LOCAL_ORG) return { read: (x) => call<Read>("read", x), land: (x) => call<{ landed: string }>("land", x as Source) };
     const l = local();
     if (!l) throw new Error(`${s.repo} is on this server, but codehost-local isn't enabled here`);
-    return localApply({ bare: l.bare, instanceRepo: l.repo });
+    return localApply({ bare: l.bare, instanceRepo: l.repo, ingest: l.ingest });
   };
   async function call<T>(op: "read" | "land", body: Source): Promise<T> {
     const c = codehost();
