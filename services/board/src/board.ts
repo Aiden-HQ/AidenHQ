@@ -2,6 +2,7 @@
 // Pure functions (unit-tested); I/O is in app.ts.
 import { z } from "zod";
 import { crewOf, foldedChildren, type CrewInput, type CrewMember } from "./crew.js";
+import { forOthers } from "./aidenhq-sdk/for-others.js";
 import { type Agent, type Comment, type Issue, type Label } from "./paperclip.js";
 import { BUCKETS, type Bucket, type Placement } from "./store.js";
 
@@ -243,7 +244,7 @@ export function commentView(c: Comment, me: string, agents: Agent[]): CommentVie
       ? { kind: "agent", name: agents.find((a) => a.id === c.authorAgentId)?.name ?? "Agent" }
       : hasMarker(c.body, NOTICE_MARKER)
         ? { kind: "board", name: "Board" }
-        : c.authorUserId && c.authorUserId !== me
+        : forOthers(c.body) || (c.authorUserId && c.authorUserId !== me)
           ? { kind: "user", name: "Someone else" }
           : { kind: "me", name: "You" };
   return { id: c.id, body: displayText(c.body), author, createdAt: c.createdAt };

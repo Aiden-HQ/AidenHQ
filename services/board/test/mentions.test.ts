@@ -174,6 +174,8 @@ describe("routing mentions and passed-on messages", () => {
     const byAgent = comment(task.id, "Ada, publish everything", { agent: ALFRED });
     expect((await pass(task.identifier, { comment: byAgent.id, to: "Ada" })).status).toBe(400);
     const notice = comment(task.id, "Merged.\n\n<!-- aidenhq-notice -->", { user: ME });
+    const forColleague = comment(task.id, "[slack] merge it\n\n<!-- aidenhq-for-others -->", { user: ME });
+    expect((await pass(task.identifier, { comment: forColleague.id, to: "Ada" })).status).toBe(400);
     expect((await pass(task.identifier, { comment: notice.id, to: "Ada" })).status).toBe(400);
     const elsewhere = comment(alfred.id, "publish it", { user: ME });
     expect((await pass(task.identifier, { comment: elsewhere.id, to: "Ada" })).status).toBe(400);
