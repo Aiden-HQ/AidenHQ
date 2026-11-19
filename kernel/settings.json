@@ -16,7 +16,7 @@
     "doc": "The Paperclip company this instance runs."
   },
   "instance_name": {
-    "doc": "Short name of this AidenHQ; the agents org (where an approved create_repo card creates repos) is aidenhq-<instance_name> unless github_agents_org names another."
+    "doc": "Short name of this AidenHQ; the agents org (where create_repo creates repos by default) is aidenhq-<instance_name> unless github_agents_org names another."
   },
   "autonomy": {
     "default": "off",

@@ -1,5 +1,5 @@
 // GitHub access through the instance's GitHub App, whose key only the runner holds. It is owned by the agents org
-// (where an approved create_repo card creates repos) and public, so other orgs can install it on selected repos. Per action the runner
+// (where create_repo creates repos by default) and public, so other orgs can install it on selected repos. Per action the runner
 // mints a short-lived installation token narrowed to one repo and the permissions it needs, hands it to that one git or
 // gh child (credential helper / GH_TOKEN env). Jobs never hold a token.
 // Repos no App covers keep the old path.
@@ -93,7 +93,7 @@ export function appClient({ appId, key, fetch = globalThis.fetch, log = () => {}
   }
 
   /**
-   * Create org/name, private, with a README: only for an approved create_repo card (the runner's one caller). "exists" |
+   * Create org/name, private, with a README: only for a create_repo write (the code host's one caller). "exists" |
    * "created". A creation-only token; if GitHub refuses that permission, fail loudly rather than widen the token.
    */
   async function createRepo(slug: string): Promise<"exists" | "created"> {

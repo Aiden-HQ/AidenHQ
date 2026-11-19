@@ -3,7 +3,7 @@
 A create_repo card asks to create one new private app repository, created from the product's app starter: every new app
 repository starts as the starter's files on its default branch, the platform's own baseline, not extra work; its diff is
 the description of that one repository. Since 2026-11-18 code creates it at Tier 0 in any org the App is installed on and
-the runner's `allowed_orgs` lists, so the card reaches a reviewer only as a recorded case: judge the request chain, which
+the owner's `github_orgs` (or the agents org) lists, so the card reaches a reviewer only as a recorded case: judge the request chain, which
 is what decides whether the repository was asked for. Code refused the product and instance repos' own names and any name
 that isn't a plain lowercase one, and checked that the repository doesn't exist yet.
 

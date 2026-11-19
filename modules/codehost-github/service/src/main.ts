@@ -34,7 +34,7 @@ const gh = async (method: string, path: string, token: string, body?: unknown) =
 
 const handle = createService({
   key, kernelUrl: env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130", cacheDir: env.CACHE_DIR ?? "/cache", tasksDir: env.TASKS_DIR || undefined,
-  app, gh, agentsOrg, instanceRepo: env.INSTANCE_REPO || undefined,
+  app, gh, agentsOrg, allowedOrgs: (env.ALLOWED_ORGS ?? "").split(",").filter(Boolean), instanceRepo: env.INSTANCE_REPO || undefined,
   productRepo: env.PRODUCT_REPO || undefined, selfName: env.OWNER_NAME || undefined,
   log,
 });

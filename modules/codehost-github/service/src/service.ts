@@ -43,7 +43,7 @@ export type Options = {
   key: string; kernelUrl: string; cacheDir: string; tasksDir?: string;
   /** The App (github-app.ts appClient); undefined without the key: every GitHub action fails, saying so. */
   app?: App; gh: Gh; remoteUrl?: (slug: string) => string;
-  agentsOrg: string; instanceRepo?: string; productRepo?: string;
+  agentsOrg: string; allowedOrgs?: string[]; instanceRepo?: string; productRepo?: string;
   log?: (msg: string, f?: Record<string, unknown>) => void;
   /** The release train's batch window, minutes (the instance's release_window_minutes). */
   releaseWindowMinutes?: number;
@@ -199,7 +199,7 @@ export function createService(o: Options) {
   /** The verified state plan.mjs tiers a request on (its `s`): read from the workspace, the cache and GitHub, never the args. */
   async function stateFor(kind: string, a: any, requester?: { roles?: string[] }) {
     // The Platform Engineer's line: a requester holding the platform-engineer role (the kernel's record of who asked, never the args).
-    const base = { agentsOrg: o.agentsOrg, instanceRepo: o.instanceRepo, productRepo: o.productRepo, requester: { platform: (requester?.roles ?? []).includes("platform-engineer") }, also: [] as string[] };
+    const base = { agentsOrg: o.agentsOrg, allowedOrgs: o.allowedOrgs, instanceRepo: o.instanceRepo, productRepo: o.productRepo, requester: { platform: (requester?.roles ?? []).includes("platform-engineer") }, also: [] as string[] };
     if (kind.endsWith(".create_repo")) return { ...base, repo: slugOf(a.repo).slug };
     if (kind.endsWith(".merge") || kind.endsWith(".close")) {
       const prs = [];
