@@ -335,6 +335,14 @@ test("a channel's transport is a compose service (the kernel sends the channel's
   assert.throws(() => kernelModuleTable(ch({ credentials: true })), /credentials is true, on a channel with a transport/);
 });
 
+test("journeys: phases name declared facts; two modules may declare one journey only alike", () => {
+  const pr = { name: "pr", label: "Pull requests", subject: "pr", phases: [{ name: "open", label: "Open", from: ["pr.opened"] }, { name: "review", label: "Review", from: ["record.filed"], where: { kind: ["acme.merge"] } }], end: ["pr.deployed"] };
+  const host = (journeys) => ({ roles: { requests: ["kernel.facts"] }, facts: { "pr.opened": { subject: "pr" } }, journeys });
+  assert.deepEqual(kernelModuleTable({ a: host([pr]), b: host([pr]) }).b.journeys, [pr]);
+  assert.throws(() => kernelModuleTable({ a: host([{ ...pr, end: ["pr.landed"] }]) }), /journey pr: end names undeclared fact pr.landed/);
+  assert.throws(() => kernelModuleTable({ a: host([{ ...pr, phases: [{ name: "open", label: "Open", from: ["pr.opened"], where: { kind: "x" } }] }]) }), /where maps data fields to lists/);
+  assert.throws(() => kernelModuleTable({ a: host([pr]), b: host([{ ...pr, label: "PRs" }]) }), /journey pr differs from module a's/);
+});
 test("a codehost grant is taken literally: settings are refused, the kernel's @ names pass", async () => {
   const { kernelModuleTable } = await import("../modules.mjs");
   assert.throws(() => kernelModuleTable({ m: { codehost: { token: { repos: ["${settings.agents_org}/*"], perms: { contents: "read" } } } } }), /names no settings/);

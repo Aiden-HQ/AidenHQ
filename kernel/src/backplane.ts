@@ -45,8 +45,9 @@
 //                              of the kernel's work: a task's, one job, an agent's, the records and billed cost since a time, or what
 //                              runs and ended lately; Prometheus text (work.ts)
 //   GET  /v1/work[?task=|?job=|?agent=|?since=]  (the board) the same reads; never the metrics or a token
-//   GET  /v1/flow?task=|?item=|?idle=1|?since=[&to=&by=&scope=]  (the board, or a module with role kernel.flow-read) Flow's
-//                              views over the fact log (flow.ts): a task's or item's waterfall, idle now, the summary
+//   GET  /v1/flow?task=|?item=|?idle=1|?journeys=1|?journey=|?since=[&to=&by=&scope=]  (the board, or a module with role
+//                              kernel.flow-read) Flow's views over the fact log (flow.ts): a task's or item's waterfall, idle
+//                              now, the declared journeys, a journey's items (journeys.ts), the summary with its insights
 //   POST /v1/work/grader-token  (the one module with role kernel.grader) {task} -> a gateway
 //                              token billed to the task's assignee under its caps, for a task its finish check holds; one live token per task
 //   POST /v1/jobs/:job/post    (that job's module) {kind: reply|status|notice, body, status?, blocked_by?}: posted on the job's
@@ -88,6 +89,7 @@ import { fail } from "./proxy.ts";
 import type { Records, State } from "./records.ts";
 import type { Work } from "./work.ts";
 import { BY, type By, type Flow } from "./flow.ts";
+import { AUTHOR_KINDS, SORTS, type AuthorKind, type Sort } from "./journeys.ts";
 import type { Reviews } from "./reviews.ts";
 import { wakeNotice, type Wakes } from "./wakes.ts";
 import type { ModuleTasks } from "./modtasks.ts";
@@ -196,14 +198,29 @@ function workRead(work: Work, p: URLSearchParams) {
 const FACT_AT = /^\d{4}-\d\d-\d\dT[\d:.]+(Z|[+-]\d\d:\d\d)$/;
 const text = (v: unknown, max: number) => typeof v === "string" && v.length > 0 && v.length <= max;
 
-/** GET /v1/flow's reads, by query: ?task=, ?item=, ?idle=1, else the summary over ?since= (default 7 days) [&to=&by=&scope=]. */
+/**
+ * GET /v1/flow's reads, by query: ?task=, ?item=, ?idle=1, ?journeys=1 (the declared journeys), ?journey=<name> (its items over
+ * ?since= [&to=&author=agent,owner,outside&sort=recent|slowest|rounds&limit=200]), else the summary over ?since= (default 7 days)
+ * [&to=&by=&scope=] with its insights.
+ */
 function flowRead(flow: Flow, p: URLSearchParams) {
   const [task, item] = [p.get("task"), p.get("item")];
   if (task) return flow.task(task.slice(0, 100));
   if (item) return flow.item(item.slice(0, 100));
   if (p.get("idle")) return flow.idleNow();
+  if (p.get("journeys")) return flow.journeys();
   const since = p.get("since") ?? new Date(Date.now() - 7 * 864e5).toISOString(), to = p.get("to") ?? undefined, by = p.get("by") ?? "stage";
   if (Number.isNaN(Date.parse(since)) || (to && Number.isNaN(Date.parse(to)))) throw fail(400, "bad_request", "since and to are ISO timestamps");
+  const journey = p.get("journey");
+  if (journey) {
+    const authors = p.get("author")?.split(",").filter(Boolean), sort = p.get("sort") ?? "recent", limit = Number(p.get("limit") ?? 200);
+    if (authors?.some((a) => !(AUTHOR_KINDS as string[]).includes(a))) throw fail(400, "bad_request", `author is a list of ${AUTHOR_KINDS.join(", ")}`);
+    if (!(SORTS as string[]).includes(sort)) throw fail(400, "bad_request", `sort is one of ${SORTS.join(", ")}`);
+    if (!Number.isInteger(limit) || limit < 1 || limit > 1000) throw fail(400, "bad_request", "limit is 1 to 1000");
+    const list = flow.journey({ name: journey.slice(0, 100), since, to, authors: authors as AuthorKind[] | undefined, sort: sort as Sort, limit });
+    if (!list) throw fail(404, "not_found", `no module declares journey ${journey.slice(0, 40)}`);
+    return list;
+  }
   if (!(BY as string[]).includes(by)) throw fail(400, "bad_request", `by is one of ${BY.join(", ")}`);
   return flow.summary({ since, to, by: by as By, scope: p.get("scope")?.slice(0, 100) || undefined });
 }

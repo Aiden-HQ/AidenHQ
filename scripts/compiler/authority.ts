@@ -32,7 +32,7 @@ export const id = (v: unknown) => String(v).replace(/[^\w.:@/~-]/g, "_").slice(0
 const added = (b: unknown, h: unknown) => list(h).map((x) => (isMap(x) ? x.name ?? x.id : x)).filter((x) => !list(b).map((y) => (isMap(y) ? y.name ?? y.id : y)).includes(x));
 
 /** Top-level keys that never hand out authority by themselves (their contents are checked where they can). */
-const PLAIN = new Set(["stages", "name", "version", "description", "license", "publisher", "homepage", "kernel", "requires", "provides", "conflicts", "replaces", "data_version", "labels", "company", "departments", "setup", "settings", "apps", "events", "checks", "points", "contributes", "prompts", "skills", "models", "jobcaps"]);
+const PLAIN = new Set(["stages", "journeys", "name", "version", "description", "license", "publisher", "homepage", "kernel", "requires", "provides", "conflicts", "replaces", "data_version", "labels", "company", "departments", "setup", "settings", "apps", "events", "checks", "points", "contributes", "prompts", "skills", "models", "jobcaps"]);
 /** Checked below, field by field. */
 const CHECKED = new Set(["facts", "writes", "privileged", "secrets", "generated_secrets", "optional_secrets", "roles", "default_grants", "connections", "services", "agents", "providers", "isolation", "routines", "board_env", "workspaces", "paths", "codehost", "check_jobs"]);
 /** Every top-level module.yaml key the kernel knows: any other is a compile error (module.yaml is strict, spec §3.1). */

@@ -33,6 +33,7 @@ import { createBrake } from "./brake.ts";
 import { createNotify } from "./notify.ts";
 import { createReplyRelay } from "./relay.ts";
 import { KERNEL_STAGES, type Stage } from "./flow-stages.ts";
+import { journeysOf } from "./journeys.ts";
 import { createChannels, type Api, type ModulesFile } from "./channels.ts";
 import { createLane } from "./lane.ts";
 import { checksFile, createChecks } from "./checks.ts";
@@ -110,9 +111,10 @@ const facts = openFacts(records.db);
 setInterval(() => { try { facts.prune(); } catch (e) { log("facts prune failed", { error: String((e as Error).message) }); } }, 864e5).unref();
 // Flow's stages: the kernel's plus every module's declared ones (module.yaml `stages:`), read from the watched modules file.
 const stages = (): Stage[] => [...KERNEL_STAGES, ...Object.entries(modulesFile().modules ?? {}).flatMap(([module, m]) => (m.stages ?? []).map((s) => ({ ...s, module })))];
+const journeys = () => journeysOf(modulesFile().modules ?? {});
 // Flow's views (GET /v1/flow) read the log on their own read-only connection: a long read never blocks the approval path.
 // DORA's incidents: the Fleet Steward detector's tasks for something newly tripped (fleet-steward main.ts fileCheck, fleet-incident:<at>).
-const flow = createFlow({ file: path.join(dataDir, "kernel", "kernel.db"), stages, incident: (f) => f.data.origin === "module:fleet-steward" && String(f.data.source_marker ?? "").startsWith("fleet-incident:") });
+const flow = createFlow({ file: path.join(dataDir, "kernel", "kernel.db"), stages, journeys, incident: (f) => f.data.origin === "module:fleet-steward" && String(f.data.source_marker ?? "").startsWith("fleet-incident:") });
 // Tasks kernel jobs create (provenance.ts): the routine trace reads them first.
 const provenance = createProvenance({ db: records.db, cap: (task) => taskRoutineCap(cpTrace, task, grantsTable().routines as Record<string, string> | undefined) });
 const cpTrace = { issue: (id: string) => cpJson(`/api/issues/${encodeURIComponent(id)}`), provenance: provenance.trace };

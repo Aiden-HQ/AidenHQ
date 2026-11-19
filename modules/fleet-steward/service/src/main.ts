@@ -91,10 +91,7 @@ const mcp = createMcp(fleetTools({
   evidence: (caller, key) => coach.evidence(caller, key),
   generations: () => kernel.call("GET", "/v1/work?generations=1"),
   followups: () => staleFollowups({ kernel, kv }),
-  flow: ({ since, by, task }) => {
-    const q = new URLSearchParams(task ? { task } : { ...(since ? { since } : {}), ...(by ? { by } : {}) });
-    return kernel.call("GET", `/v1/flow?${q}`);
-  },
+  flow: (q) => kernel.call("GET", `/v1/flow?${new URLSearchParams(q)}`),
   snooze: (task, days) => snoozeFollowup(kv, task, days),
   // The kernel's answer whole: a refusal says why (the Steward reads it and changes the request).
   routing: async (op, args, assertion) => { const r = await kernel.raw("POST", `/v1/routing/${op}`, args, { "x-aidenhq-caller": assertion }); if (r.status >= 300) throw new Error(`Refused: ${String(r.json?.error?.message ?? r.status)}`); return r.json; },
