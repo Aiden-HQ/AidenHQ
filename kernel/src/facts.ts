@@ -78,6 +78,11 @@ export function decider(by: string): { decider: "reviewer" | "owner" | "code"; a
  * lowercased id already exists the earliest fact stays. A log already in that shape costs one query that finds nothing.
  */
 function normaliseFacts(db: DatabaseSync) {
+  // A reviewer's decision recorded before it carried its reason code gets it once from its record.
+  if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'records'").get())
+    db.exec(`UPDATE facts SET data = json_set(data, '$.code', (SELECT review_code FROM records WHERE 'record:' || records.id = facts.subject))
+      WHERE type = 'record.decided' AND json_extract(data, '$.decider') = 'reviewer' AND json_extract(data, '$.code') IS NULL
+        AND (SELECT review_code FROM records WHERE 'record:' || records.id = facts.subject) IS NOT NULL`);
   const low = (f: string) => `(json_extract(data, '${f}') IS NOT NULL AND typeof(json_extract(data, '${f}')) = 'text' AND json_extract(data, '${f}') != lower(json_extract(data, '${f}')))`;
   const rows = db.prepare(`SELECT seq, type, subject, version, at, data FROM facts WHERE at NOT LIKE '%Z' OR ((subject GLOB 'pr:*' OR subject GLOB 'issue:*') AND subject != lower(subject)) OR ${low("$.pr")} OR ${low("$.repo")} ORDER BY seq`).all() as
     { seq: number; type: string; subject: string; version: string; at: string; data: string }[];
