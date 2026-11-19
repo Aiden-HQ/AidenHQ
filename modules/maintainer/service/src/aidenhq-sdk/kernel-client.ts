@@ -37,7 +37,8 @@ export type KernelClient = ReturnType<typeof kernelClient>;
 export type FactIn = { type: string; subject: string; version: string; at: string; task?: string | null; source?: "live" | "backfill"; data?: Record<string, unknown> };
 
 /**
- * A module's fact emitter: `emit` queues and returns at once; the queue is sent every `everyMs` (≤ 500 per call) and kept on a
+ * A module's fact emitter: `emit` queues and returns at once; the queue is sent every `everyMs` (≤ 500 per call); a batch the
+ * kernel refuses (4xx) is dropped and logged, and one it couldn't take (5xx, network) is kept on a
  * failure for the next flush, so emitting never fails or slows the module's own work. Deterministic ids make resends harmless.
  * `flush` sends now (tests, shutdown); `stop` clears the timer.
  */
@@ -50,7 +51,14 @@ export function factEmitter(client: KernelClient, log: (msg: string, f?: Record<
     try {
       while (queue.length) {
         const batch = queue.slice(0, 500);
-        await client.call("POST", "/v1/facts", { facts: batch });
+        try {
+          await client.call("POST", "/v1/facts", { facts: batch });
+        } catch (e) {
+          // The kernel refused the batch (a fact it won't take): resending can't help, so it is dropped, once, loudly.
+          const status = (e as KernelError).status;
+          if (!(status >= 400 && status < 500)) throw e;
+          log("facts: the kernel refused a batch, dropped", { status, dropped: batch.length, error: String((e as Error).message).slice(0, 200) });
+        }
         queue = queue.slice(batch.length);
       }
     } catch (e) {

@@ -32,3 +32,38 @@ test("a module records its declared facts: undeclared is 403, the actor comes fr
   assert.equal(facts.forTask("t1")[2].actor, "module:host");
   assert.equal(facts.forTask("t1")[0].id, "pr.opened:pr:acme/app#1:host/abc");
 });
+
+test("a batch is checked whole before any fact is recorded: size, date, subject kind and declared reasons", async (t) => {
+  const records = openRecords(":memory:");
+  const facts = openFacts(records.db);
+  const modules = () => ({ modules: { host: { facts: { "work.waiting": { subject: "pr", reasons: ["checks"] } } } } });
+  const bp = createBackplane({ facts, records, modules, whoami: async () => ({ kind: "module", module: "host", roles: ["kernel.facts"] }), asserter: { jwks: {} }, proxy: async () => {}, cp: async () => {}, grantsFile: () => ({}) });
+  const { s, url } = await serve(bp);
+  t.after(() => s.close());
+  const post = (list) => fetch(`${url}/v1/facts`, { method: "POST", headers: { authorization: "Bearer host" }, body: JSON.stringify({ facts: list }) });
+  const now = Date.now();
+  const f = (over = {}) => ({ type: "work.waiting", subject: "pr:acme/app#1", version: String(Math.random()), at: new Date(now).toISOString(), task: "t1", data: { reason: "checks" }, ...over });
+  for (const bad of [f({ data: { reason: "nap" } }), f({ subject: "task:t1" }), f({ data: { reason: "checks", x: "y".repeat(5000) } }), f({ at: new Date(now + 2 * 864e5).toISOString() })]) {
+    assert.equal((await post([f(), bad])).status, 400, JSON.stringify(bad).slice(0, 80));
+  }
+  assert.equal(facts.forTask("t1").length, 0, "a refused batch records nothing");
+  assert.deepEqual(await (await post([f(), f({ at: new Date(now - 401 * 864e5).toISOString() })])).json(), { recorded: 1 }, "older than the log keeps is skipped");
+});
+
+test("a fact emitter drops a batch the kernel refuses and keeps one it couldn't take", async () => {
+  const { factEmitter, KernelError } = await import("../sdk/src/kernel-client.ts");
+  let status = 503;
+  const sent = [], logged = [];
+  const client = { call: async (_m, _p, body) => { if (status !== 200) throw new KernelError(status, String(status)); sent.push(...body.facts); } };
+  const e = factEmitter(client, (msg) => logged.push(msg), { everyMs: 60_000 });
+  e.stop();
+  e.emit({ type: "a", subject: "s", version: "1", at: "2026-11-19T10:00:00.000Z" });
+  await e.flush();
+  status = 400;
+  await e.flush();
+  status = 200;
+  e.emit({ type: "a", subject: "s", version: "2", at: "2026-11-19T10:00:00.000Z" });
+  await e.flush();
+  assert.deepEqual(sent.map((f) => f.version), ["2"]);
+  assert.equal(logged.filter((m) => /refused/.test(m)).length, 1);
+});
