@@ -1,3 +1,4 @@
+import type { FlowSummary, IdleItem, Waterfall } from "../../src/flow";
 import type { AgentProfile, TaskRow, FeatureCost, Features, Advisory, Agents, AsideMessage, Lineage, SettledItem, AppRow, Approval, Board, Bucket, Cadence, ChatAgent, ChatDetail, LaneAgent, LaneMessage, ChatRow, CostLedger, CostTop, IssueView, Models, ModuleDetail, ModuleRow, NeedsYou, RecurringView, RosterAgent, RunTrace, Scorecard, SettingChange, FiledChange, SettingsData, Update } from "./types";
 import type { ConnectionsData } from "./connections";
 import type { BrowseModule, GrantConnection, MarketplaceRow } from "./types";
@@ -203,6 +204,9 @@ export const api = {
   costLedger: (q: URLSearchParams) => call<CostLedger>("GET", `/api/costs/ledger?${q}`),
   featureCost: (ref: string) => call<{ cost: FeatureCost | null }>("GET", `/api/issues/${encodeURIComponent(ref)}/feature-cost`),
   features: () => call<Features>("GET", "/api/costs/features"),
+  flow: (days: number, scope: string) => call<{ summary: FlowSummary | null; idle: IdleItem[]; backfill: boolean }>("GET", `/api/flow?days=${days}&scope=${encodeURIComponent(scope)}`),
+  flowItem: (id: string) => call<Waterfall>("GET", `/api/flow/item?id=${encodeURIComponent(id)}`),
+  flowBackfill: () => call<{ ok: true }>("POST", "/api/flow/backfill", {}),
   costTop: (q: URLSearchParams) => call<CostTop>("GET", `/api/costs/top?${q}`),
   run: (id: string) => call<RunTrace>("GET", `/api/runs/${encodeURIComponent(id)}`),
   issue: (ref: string) => call<IssueView>("GET", `/api/issues/${encodeURIComponent(ref)}`),
