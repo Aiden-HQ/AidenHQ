@@ -266,6 +266,23 @@ test("a routine run's task starts as a scheduled run, whichever routine it names
   assert.match(k.started[0].prompt, /## A scheduled run \(not Dana's words\)/);
 });
 
+test("on a task that already ran, the idle sweep's wake and a due wait each start a job with their own words", async () => {
+  const k = fake({ task: { id: "t1", identifier: "WOR-9", title: "Fix it", description: "Fix the bug.", status: "todo", assigneeAgentId: "eng", createdByAgentId: "cos" } });
+  k.inbox.push(wake("issue:t1:1", "assigned"));
+  await k.dispatch.tick();
+  k.end("j1", "Merged.");
+  await k.dispatch.tick();
+  k.inbox.push(wake("idle:t1:x", "idle"));
+  await k.dispatch.tick();
+  assert.match(k.started[1].prompt, /## This task is idle \(not Dana's words\)/);
+  k.end("j2", "Finished.");
+  await k.dispatch.tick();
+  k.inbox.push(wake("wait:t1:1", "wait: PR #12 merges"));
+  await k.dispatch.tick();
+  assert.match(k.started[2].prompt, /## Your wait is over[\s\S]*PR #12 merges/);
+  assert.deepEqual(k.dropped, []);
+});
+
 test("a start whose answer was lost (a crash after admission) is followed from the kernel's open list: one job, one reply", async () => {
   const k = fake({ task: { id: "t1", identifier: "WOR-1", title: "Fix the login", description: "It 500s.", status: "todo", assigneeAgentId: "eng", createdByUserId: "u1" } });
   const start = k.kernel.start;

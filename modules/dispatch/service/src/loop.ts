@@ -141,6 +141,9 @@ export function createDispatch({ kernel, db, owner, log = () => {} }: { kernel: 
     else if (first && agentMade(task) && stripHidden(task.description).trim()) words.task = "agent";
     else if (first && moduleMade(task)) words.task = "module";
     else if (scheduled && !fresh.length) words.task = "scheduled";
+    // The kernel's idle sweep, or the agent's own wait coming due (kernel idle.ts): a run with its fixed words.
+    else if (w.cause === "idle" && !fresh.length) words.task = "idle";
+    else if (/^wait(:|$)/.test(w.cause) && !fresh.length) Object.assign(words, { task: "wait", waited: w.cause.replace(/^wait:\s*/, "") });
 
     if (!words.task && !fresh.length) {
       if (!first) return kernel.drop(w.key, "nothing new to act on");

@@ -5,7 +5,8 @@
 // Keys (never Paperclip's eventId): comment:<commentId>, issue:<issueId>:<updatedAt> (assigned or moved to todo),
 // routine-run:<issueId> (a routine run's new task, cause routine:<key>: the routine's compiled key, so admission applies its own
 // model; dispatch folds a run into an earlier open one of its routine, and cancels overtaken blocked ones), reopen:<issueId>:<statusVersion> (a comment reopened a finished task),
-// wake_at:<module>.<id> (a module's scheduled wake, due at `until`), unblocked:<issueId>:<closure> (a blocked task whose first-class
+// wake_at:<module>.<id> (a module's scheduled wake, due at `until`), wait:<issueId>:<until> (an agent's own wait, idle.ts),
+// idle:<issueId>:<since> (the idle sweep's nudge, idle.ts), unblocked:<issueId>:<closure> (a blocked task whose first-class
 // blockers (blockedBy) are all done or cancelled: the poll moves it to todo with one tagged notice, then files this wake).
 // Polled agents: those the modules that claim wakes dispatch (compile's `dispatches`); a module joins on its first claim.
 // So nothing is polled until a dispatcher claims, and an agent's first scan only wakes for comments after its dispatcher
@@ -365,6 +366,18 @@ export function createWakes({ db, owner, post, dispatches, routineKey = () => un
       return { key };
     },
     /**
+     * A wake the kernel itself opens for a task's agent (idle.ts: an agent's own wait, an idle nudge), due at `at`; once per
+     * key. Open rows of the task under `replaces` (a key prefix) are dropped first: a new wait replaces the earlier one.
+     */
+    open(b: { key: string; task: string; agent: string; cause: string; at?: number; replaces?: string; author?: string }) {
+      const t = now(), at = b.at ?? t;
+      if (b.replaces) for (const w of q("SELECT key, task FROM wakes WHERE task = ? AND state = 'open' AND key LIKE ? AND key != ?").all(b.task, `${b.replaces}%`, b.key) as { key: string; task: string }[]) {
+        q("UPDATE wakes SET state = 'dropped', until = NULL WHERE key = ?").run(w.key);
+        dropped(w, "replaced by a newer wait");
+      }
+      insert(b.key, b.task, b.agent, b.cause, at, at > t ? at : null, b.author ?? "kernel");
+    },
+    /**
      * Rows for the module to run, claimed at once (one transaction) and leased for LEASE_MS. Per task: with a live job, its
      * comments newer than the job (to deliver as input, `live_job`) and nothing else; without one, one row that starts the
      * next job. Rows a job already covered (older than its start) are dropped, or done for comments. Open rows come before
@@ -445,6 +458,8 @@ export function createWakes({ db, owner, post, dispatches, routineKey = () => un
       return q("UPDATE wakes SET state = 'delivered', until = NULL WHERE key = ? AND state = 'claimed' AND claimed_by = ?").run(key, module).changes > 0;
     },
     get: (key: string) => q("SELECT * FROM wakes WHERE key = ?").get(key) as unknown as Wake | undefined,
+    /** Whether a dispatcher that has joined runs this agent's wakes. */
+    polls: (agent: string) => polled().has(agent),
   };
 }
 export type Wakes = ReturnType<typeof createWakes>;
