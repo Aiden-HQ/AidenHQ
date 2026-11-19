@@ -1,5 +1,6 @@
 // Chats: a chat is a Paperclip task labelled `chat`; a message is a comment. Pure helpers: the state a
 // person sees on each chat, and which agent a new message goes to.
+import { forOthers } from "./aidenhq-sdk/for-others.js";
 import { NOTICE_MARKER, displayText as strip, hasMarker as has } from "./board.js";
 import type { Agent, Comment, Issue, LiveRun, PastRun } from "./paperclip.js";
 
@@ -165,7 +166,7 @@ export function openAsk(comments: ChatComment[], agentId: string | null | undefi
   for (let i = comments.length - 1; i >= 0; i--) {
     const c = comments[i]!;
     const system = c.authorType !== "agent" && (!c.authorUserId || c.authorUserId === me);
-    if (system && !has(c.body, NOTICE_MARKER) && !has(c.body, APPROVAL_MARKER)) return undefined;
+    if (system && !has(c.body, NOTICE_MARKER) && !has(c.body, APPROVAL_MARKER) && !forOthers(c.body)) return undefined;
     if (c.authorType !== "agent" || c.authorAgentId !== agentId || !c.body.includes(REPLY_MARKER)) continue;
     const questions = replyQuestions(c.body);
     if (questions) return { id: c.id, at: c.createdAt, text: strip(c.body), questions };
@@ -207,6 +208,7 @@ export function conversation(issue: { id: string; description: string | null; cr
     // The board (through the kernel) and runner post as the owner or as no user; another user's comment is never a system message.
     const system = c.authorType !== "agent" && (!c.authorUserId || c.authorUserId === me);
     if (system && (has(c.body, APPROVAL_MARKER) || has(c.body, NOTICE_MARKER))) out.push({ kind: "notice", id: c.id, text: strip(c.body), at: c.createdAt });
+    else if (system && forOthers(c.body)) note(c, "Someone else");
     else if (c.authorType === "agent") {
       const name = agentName(c.authorAgentId);
       if (tagged && !isReply(c.body)) note(c, name);
