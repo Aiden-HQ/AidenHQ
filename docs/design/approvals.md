@@ -95,10 +95,10 @@ the same content (commits or heads, whatever the branch is called) the reviewer 
 on the task; and a close outside the agents org or of a product or
 instance PR.
 
-**The Platform Engineer's line** (`requester.platform`, looked up by the runner): the Platform Engineer itself, a task
-the Agent Architect made, or the owner's own task. Only this line writes to the product repo below Tier 2. An Engineer
-that another agent delegated to (e.g. WOR-3514, a Software Engineer on a DevOps Engineer's task) is outside it: its
-product push stays Tier 2. Product code changes go to the Platform Engineer, never to another Engineer.
+**The Platform Engineer's line** (`requester.platform`): a job holding the platform-engineer role, which admission
+(`kernel/src/admission.ts`) freezes onto an Engineer job only on a task no agent filed (the owner, a kernel filer) or one an
+agent holding `architect` or `fleet-audit` filed. A product PR is a proposal: any Engineer job opens one (Tier 1). Bare
+branch pushes, PRs that change `.github/` and merges on the product repo are this line's only.
 
 Typical assignments in `tiers.mjs` (read the file for the full rules):
 

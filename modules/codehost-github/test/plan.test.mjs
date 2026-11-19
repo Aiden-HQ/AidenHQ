@@ -32,3 +32,32 @@ describe("plan: local change requests", () => {
     assert.equal(planParts("merge", { ...s, prs: [pr("local/aidenhq-instance")] })[0][0].rule, "core-repo-merge");
   });
 });
+
+describe("plan: the product repo", () => {
+  const engineer = { ...s, workspace: "ACME-7", requester: { platform: false } };
+  const branch = (files, name = "agent/ACME-7/fix", repo = s.productRepo) => ({ repo, branch: name, defaultBranch: "main", files });
+  const rules = (action, st, b) => planParts(action, { ...st, branches: [b] })[0].map((p) => [p.tier, p.rule]);
+
+  it("a product PR is a proposal: an Engineer job without the platform role opens one; its bare push and a .github change stay the platform line's", () => {
+    assert.deepEqual(rules("pr", engineer, branch(["kernel/src/a.ts"])), [[1, "product-pr"]]);
+    assert.equal(planParts("pr", { ...engineer, branches: [branch([".github/workflows/ci.yml"])] })[0][0].reject, true);
+    assert.equal(planParts("push", { ...engineer, branches: [branch(["kernel/src/a.ts"])] })[0][0].reject, true);
+  });
+
+  it("a job without the platform role pushes only its own task's branches, on the product repo and outside the agents org", () => {
+    assert.deepEqual(rules("pr", engineer, branch(["kernel/src/a.ts"], "fix/x")), [[2, "branch-namespace"]]);
+    assert.deepEqual(rules("pr", engineer, branch(["kernel/src/a.ts"], "agent/ACME-8/fix")), [[2, "branch-namespace"]]);
+    assert.deepEqual(rules("pr", engineer, branch(["src/a.ts"], "fix/x", "other/lib")), [[2, "branch-namespace"]]);
+    assert.deepEqual(rules("pr", engineer, branch(["src/a.ts"], "agent/ACME-7/fix", "other/lib")), [[1, "outside-pr"]]);
+    assert.deepEqual(rules("pr", { ...s, requester: { platform: true } }, branch(["kernel/src/a.ts"], "fix/x")), [[1, "product-pr"]]);
+  });
+
+  it("a merge: only the platform line asks; a head an Engineer job pushed is never the platform line's own", () => {
+    const merge = (requester, extra) => planParts("merge", { ...s, requester, prs: [{ repo: s.productRepo, number: 7, head: "a".repeat(40), headMatches: true, files: ["kernel/src/a.ts"], checks: [{ name: "tests", ok: true }], ...extra }] })[0][0];
+    assert.equal(merge({ platform: false }, { ownHead: true, platformHead: true }).rule, "product-merge-requester");
+    assert.equal(merge({ platform: true }, { ownHead: true, platformHead: true }).rule, "product-merge");
+    const engineerHead = merge({ platform: true }, { ownHead: true, platformHead: false });
+    assert.deepEqual([engineerHead.tier, engineerHead.rule], [1, "product-merge-engineer-head"]);
+    assert.match(engineerHead.reason, /NOT the Platform Engineer's line/);
+  });
+});

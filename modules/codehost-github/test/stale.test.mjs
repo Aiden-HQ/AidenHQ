@@ -38,15 +38,15 @@ async function codehost(t, state) {
 }
 
 // A branch push outside the agents org: Tier 1 (outside-push), bound to its commit and base.
-const outsidePush = (over = {}) => ({ ...repos, requester: { platform: false }, branches: [{ repo: "other/lib", branch: "fix/a", sha: sha("a"), base: sha("b"), defaultBranch: "main", empty: false, files: ["src/a.ts"], ...over }] });
-const pushArgs = { only: [{ repo: "other/lib", branch: "fix/a", sha: sha("a") }] };
+const outsidePush = (over = {}) => ({ ...repos, workspace: "ACME-1", requester: { platform: false }, branches: [{ repo: "other/lib", branch: "agent/ACME-1/a", sha: sha("a"), base: sha("b"), defaultBranch: "main", empty: false, files: ["src/a.ts"], ...over }] });
+const pushArgs = { only: [{ repo: "other/lib", branch: "agent/ACME-1/a", sha: sha("a") }] };
 
 test("an approved push that nothing moved runs once", async (t) => {
   const state = { now: outsidePush() };
   const { k, fx, file, approve } = await codehost(t, state);
   const r = await file("codehost-github.push", pushArgs);
   assert.deepEqual({ tier: r.tier, state: r.state }, { tier: 1, state: "review" });
-  assert.deepEqual(k.records.get(r.id).targets, { "other/lib fix/a": { repo: "other/lib", ref: "fix/a", commit: sha("a"), base_sha: sha("b") } });
+  assert.deepEqual(k.records.get(r.id).targets, { "other/lib agent/ACME-1/a": { repo: "other/lib", ref: "agent/ACME-1/a", commit: sha("a"), base_sha: sha("b") } });
   await approve(r.id);
   await until(() => k.records.get(r.id).state === "done");
   assert.equal(fx.executes.length, 1);

@@ -39,11 +39,18 @@ function publishParts(action, b, s) {
   const inAgents = inAgentsOrg(b.repo, s);
   if (same(b.repo, s.instanceRepo)) return [REJECT("instance-repo", "the instance repo changes only through apply")];
   if (!Array.isArray(b.files)) return [REJECT("unknown-files", `couldn't tell which files ${b.repo} \`${b.branch}\` changes; try again`)];
+  // A job without the platform role pushes only its own task's branches (agent/<task>/…): never a branch another
+  // requester's PR stands on, a protected or deploy branch, or the default branch.
+  const foreign = !s.requester?.platform && !b.branch.startsWith(`agent/${s.workspace}/`);
+  const namespace = () => REJECT("branch-namespace", `\`${b.branch}\` isn't this task's branch: name it \`agent/${s.workspace}/<topic>\` and publish again`);
   if (same(b.repo, s.productRepo)) {
-    if (action === "pr" && !s.requester?.platform) return [REJECT("product-pr-requester", "only the Platform Engineer (or a task the owner or the Agent Architect made) may open PRs on the product repo")];
     if (b.empty || b.branch === b.defaultBranch) return [REJECT("product-default-branch", `\`${b.branch}\` is the product repo's default branch: publish a branch and open a PR`)];
-    if (!s.requester?.platform) return [REJECT("product-push", "only the Platform Engineer's line pushes to the product repo: hand product changes to the Platform Engineer")];
-    return [T(1, action === "pr" ? "product-pr" : "product-push-branch", `${action === "pr" ? "a PR" : "a branch push"} to the product repo from the Platform Engineer's line`)];
+    // A PR is a proposal: any job that may file one (an Engineer's) opens it, on any task; merging it stays the platform
+    // line's and the gates'. A bare branch push, or a PR that changes `.github/`, stays the platform line's.
+    const workflow = b.files.find((f) => GITHUB.test(f));
+    if (!s.requester?.platform && (action !== "pr" || workflow)) return [REJECT(action === "pr" ? "product-pr-workflow" : "product-push", `only a job holding the platform-engineer role (a task the owner, the Agent Architect or the Fleet Steward filed) ${action === "pr" ? `opens a product PR that changes ${workflow}` : "pushes a branch to the product repo without a PR"}`)];
+    if (foreign) return [namespace()];
+    return [T(1, action === "pr" ? "product-pr" : "product-push-branch", `${action === "pr" ? "a PR" : "a branch push"} to the product repo${s.requester?.platform ? " from the Platform Engineer's line" : ", not from the Platform Engineer's line"}`)];
   }
   const workflow = b.files.find((f) => GITHUB.test(f));
   const parts = [];
@@ -58,6 +65,7 @@ function publishParts(action, b, s) {
     return parts;
   }
   if (b.empty || b.branch === b.defaultBranch) return [REJECT("outside-default-branch", `\`${b.branch}\` is ${b.repo}'s default branch, outside the agents org: publish a branch and open a PR`)];
+  if (foreign) return [namespace()];
   parts.push(action === "pr" ? T(1, "outside-pr", `a draft PR to ${b.repo}, outside the agents org`) : T(1, "outside-push", `a branch push to ${b.repo}, outside the agents org`));
   return parts;
 }
@@ -157,9 +165,11 @@ function productMergePart(p, ref, s) {
   if (!Array.isArray(p.files)) return REJECT("unknown-files", `couldn't list every file ${ref} changes; try again`);
   const friction = mergeFriction(p, ref);
   if (friction) return friction;
-  return p.ownHead
-    ? T(1, "product-merge", `${ref}: a product PR from the Platform Engineer's line. On its head: ${checkCounts(p.checks)}. Code merges it only at that head, once every named check has passed (skipped counts as passed) and main is green`)
-    : T(1, "product-merge-foreign-head", `${ref}: its head isn't a commit the runner pushed to a branch of the product repo (the reviewer reads that exact head)`);
+  const gates = `On its head: ${checkCounts(p.checks)}. Code merges it only at that head, once every named check has passed (skipped counts as passed) and main is green`;
+  // Who pushed the head (recorded at the push): only a head the platform line pushed is its own.
+  if (p.ownHead && p.platformHead) return T(1, "product-merge", `${ref}: a product PR from the Platform Engineer's line. ${gates}`);
+  if (p.ownHead) return T(1, "product-merge-engineer-head", `${ref}: its head was pushed by an Engineer job that is NOT the Platform Engineer's line (a PR, a proposal). ${gates}`);
+  return T(1, "product-merge-foreign-head", `${ref}: its head isn't a commit the runner pushed to a branch of the product repo (the reviewer reads that exact head)`);
 }
 
 const rank = (p) => p.tier * 2 + (p.panel ? 1 : 0);
