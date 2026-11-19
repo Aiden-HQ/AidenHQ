@@ -121,6 +121,17 @@ export class Projects {
     return { repo: `${org}/${repo}`, number, sha, context: r.body.context, state: r.body.state };
   }
 
+  /**
+   * A token to post as the App on one repo (a review, its comments and the advisory status: `pull_requests: write`,
+   * `statuses: write`), with the App's login, or undefined where the App isn't installed with those permissions (the caller
+   * then posts as the owner, or refuses when the App was asked for by name).
+   */
+  async reviewToken(owner: string, repo: string): Promise<{ token: string; login: string } | undefined> {
+    if (!NAME.test(owner) || !NAME.test(repo)) throw new Error("the repo isn't owner/repo");
+    const token = await this.token(`${owner}/${repo}`, { pull_requests: "write", statuses: "write" });
+    return token ? { token, login: `${this.slug}[bot]` } : undefined;
+  }
+
   /** The App's slug (codehost-github names it with every token), for telling its events from anyone else's. */
   async appSlug(owner: string, repo: string): Promise<string> {
     await this.token(`${owner}/${repo}`, { metadata: "read" }, `the GitHub App doesn't cover ${owner}/${repo}`);

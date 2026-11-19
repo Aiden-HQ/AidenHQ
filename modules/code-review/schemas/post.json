@@ -1,0 +1,237 @@
+{
+ "type": "object",
+ "additionalProperties": false,
+ "required": [
+  "review",
+  "run"
+ ],
+ "properties": {
+  "review": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "version",
+    "repo",
+    "pr",
+    "base",
+    "head",
+    "reviewer",
+    "incremental_from",
+    "full",
+    "coverage",
+    "findings",
+    "withheld",
+    "cost_usd",
+    "stale_guidance"
+   ],
+   "properties": {
+    "version": {
+     "enum": [
+      1
+     ]
+    },
+    "repo": {
+     "type": "string",
+     "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$"
+    },
+    "pr": {
+     "type": "integer",
+     "minimum": 1
+    },
+    "base": {
+     "type": "string",
+     "pattern": "^[0-9a-f]{40}$"
+    },
+    "head": {
+     "type": "string",
+     "pattern": "^[0-9a-f]{40}$"
+    },
+    "reviewer": {
+     "type": "string",
+     "pattern": "^[A-Za-z0-9_.-]{1,40}$"
+    },
+    "incremental_from": {
+     "pattern": "^[0-9a-f]{40}$"
+    },
+    "full": {
+     "type": "boolean"
+    },
+    "coverage": {
+     "type": "object",
+     "additionalProperties": false,
+     "required": [
+      "reviewed",
+      "excluded",
+      "incomplete"
+     ],
+     "properties": {
+      "reviewed": {
+       "type": "array",
+       "maxItems": 5000,
+       "items": {
+        "type": "string",
+        "maxLength": 500,
+        "pattern": "^[^\\r\\n]*$"
+       }
+      },
+      "excluded": {
+       "type": "array",
+       "maxItems": 5000,
+       "items": {
+        "type": "string",
+        "maxLength": 500,
+        "pattern": "^[^\\r\\n]*$"
+       }
+      },
+      "incomplete": {
+       "maxLength": 500
+      }
+     }
+    },
+    "findings": {
+     "type": "array",
+     "maxItems": 200,
+     "items": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+       "id",
+       "severity",
+       "path",
+       "line",
+       "title",
+       "why",
+       "evidence",
+       "fix_brief"
+      ],
+      "properties": {
+       "id": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{6,64}$"
+       },
+       "severity": {
+        "enum": [
+         "important",
+         "nit",
+         "pre_existing"
+        ]
+       },
+       "path": {
+        "type": "string",
+        "maxLength": 500,
+        "pattern": "^[^\\r\\n]*$",
+        "minLength": 1
+       },
+       "line": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 10000000
+       },
+       "end_line": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 10000000
+       },
+       "title": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200
+       },
+       "why": {
+        "type": "string",
+        "maxLength": 3000
+       },
+       "evidence": {
+        "type": "string",
+        "maxLength": 4000
+       },
+       "fix_brief": {
+        "type": "string",
+        "maxLength": 2000
+       }
+      }
+     }
+    },
+    "withheld": {
+     "type": "object",
+     "additionalProperties": false,
+     "required": [
+      "important",
+      "nit",
+      "pre_existing"
+     ],
+     "properties": {
+      "important": {
+       "type": "integer",
+       "minimum": 0,
+       "maximum": 1000000000
+      },
+      "nit": {
+       "type": "integer",
+       "minimum": 0,
+       "maximum": 1000000000
+      },
+      "pre_existing": {
+       "type": "integer",
+       "minimum": 0,
+       "maximum": 1000000000
+      }
+     }
+    },
+    "triage": {
+     "type": "object",
+     "additionalProperties": false,
+     "required": [
+      "summary",
+      "risk"
+     ],
+     "properties": {
+      "summary": {
+       "type": "string",
+       "maxLength": 1000
+      },
+      "risk": {
+       "enum": [
+        "trivial",
+        "normal",
+        "high"
+       ]
+      }
+     }
+    },
+    "cost_usd": {
+     "type": "number",
+     "minimum": 0,
+     "maximum": 100000
+    },
+    "stale_guidance": {
+     "type": "array",
+     "maxItems": 10,
+     "items": {
+      "type": "string",
+      "maxLength": 300
+     }
+    }
+   }
+  },
+  "identity": {
+   "enum": [
+    "auto",
+    "app",
+    "owner"
+   ]
+  },
+  "run": {
+   "type": "string",
+   "pattern": "^[A-Za-z0-9_.-]{1,64}$"
+  },
+  "resolve": {
+   "type": "array",
+   "maxItems": 200,
+   "items": {
+    "type": "string",
+    "pattern": "^[A-Za-z0-9_-]{6,64}$"
+   }
+  }
+ }
+}
