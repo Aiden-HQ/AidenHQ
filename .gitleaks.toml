@@ -30,8 +30,8 @@ regexes = [
 # real secret: Google documents a Desktop client's secret as not confidential
 # (https://developers.google.com/identity/protocols/oauth2/native-app); the client is Internal to Polygon Labs'
 # Workspace (only polygon.technology accounts can sign in) and redirects only to loopback. The owner approved publishing
-# it (2026-11-19). The last character is a wildcard so this file itself doesn't match the rule it allowlists.
+# it (2026-11-19). The [2] keeps this line from looking like the secret to gitleaks and verify-security; it matches only the exact value.
 description = "Polygon Labs' public Google Desktop client secret (organisation catalog)"
 regexes = [
-  '''^GOCSPX-tSg9RUL_Os2PQKpnhBf-5m1YCCA.$''',
+  '''^GOCSPX-tSg9RUL_Os[2]PQKpnhBf-5m1YCCAK$''',
 ]
