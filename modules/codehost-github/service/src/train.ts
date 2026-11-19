@@ -57,8 +57,8 @@ export function createReleaseTrain(o: TrainOptions) {
   const load = (): State => (existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {});
   const save = (s: State) => { writeFileSync(`${file}.tmp`, JSON.stringify(s)); renameSync(`${file}.tmp`, file); };
   /** A close the kernel refuses answers false, never throws: the bump stays on record and the next poll retries it. */
-  const close = async (task: string, status: "done" | "cancelled", body: string, uncarded = false) => {
-    try { await o.kernel("POST", `/v1/tasks/${task}/close`, { status, body, ...(uncarded ? { uncarded: true } : {}) }); return true; }
+  const close = async (task: string, status: "done" | "cancelled", body: string) => {
+    try { await o.kernel("POST", `/v1/tasks/${task}/close`, { status, body }); return true; }
     catch (e) { log("release task not closed", { task, err: (e as Error).message }); return false; }
   };
 
@@ -89,12 +89,10 @@ export function createReleaseTrain(o: TrainOptions) {
   }
 
   /**
-   * A settled bump's note: the one follow() has always written. `retry` (a land refused on a moved base or a running eval) says
-   * the same commits are filed again; no card ever filed has its own line.
+   * A settled bump's note: `retry` (a land refused on a moved base or a running eval) says the same commits are filed again.
    */
-  function settleBody(state: string, text: string, retry = false, carded = true) {
+  function settleBody(state: string, text: string, retry = false) {
     if (state === "done") return "Applied: this instance runs the bump.";
-    if (!carded) return "**Not landed:** no apply card was ever filed. The next merge to the product files the next bump.";
     const why = state === "rejected" ? "the card was rejected" : state === "failed" || state === "unknown" ? `it was approved but failed: ${text}` : `the card was ${state}`;
     return `**Not landed:** ${why}. ${retry ? "The same commits are filed again as the next bump." : "The next merge to the product files the next bump."}`;
   }
@@ -107,24 +105,17 @@ export function createReleaseTrain(o: TrainOptions) {
    */
   async function sweep(skip?: string) {
     const open = await o.kernel("GET", "/v1/tasks?source=release:instance:");
-    for (const task of ((open?.tasks ?? []) as { id: string; identifier?: string; createdAt?: string; status?: string }[])) {
+    for (const task of ((open?.tasks ?? []) as { id: string; identifier?: string; status?: string }[])) {
       if (!task.id || task.id === skip) continue;
       // One task's refused read is logged and retried next poll; it never stops the train's own follow and filing.
       try {
+        // No card at all: a task filed before its card (the gap between filing the task and filing the apply) or one whose
+        // process died in it. Nothing is known about its bump, so it is left open rather than closed as never carded.
         const r = await cardOn(task.id);
-        let body: string;
-        if (!r) {
-          // Nothing filed for it: only a task past the batch window is settled, so a filing in progress is never cut off. This is
-          // the separate `uncarded` close path (only the runner's ms-stamp family, no card, no module marker): the sweep never
-          // relies on the kernel's ownership guard admitting a record-less task.
-          if (!(Date.parse(String(task.createdAt ?? "")) < now().getTime() - o.windowMinutes * 60_000)) continue;
-          body = settleBody("", "", false, false);
-        } else {
-          if (MOVING.includes(r.state) || !["done", "failed", "unknown", "rejected"].includes(r.state)) continue;
-          body = settleBody(r.state, r.text);
-        }
+        if (!r || MOVING.includes(r.state) || !["done", "failed", "unknown", "rejected"].includes(r.state)) continue;
+        const body = settleBody(r.state, r.text);
         // A close the kernel refuses is logged by close() and retried on the next poll: it never throws the sweep.
-        if (await close(task.id, "done", body, !r)) log("release bump swept", { task: task.identifier ?? task.id, state: r?.state ?? "no card" });
+        if (await close(task.id, "done", body)) log("release bump swept", { task: task.identifier ?? task.id, state: r.state });
       } catch (e) {
         log("release bump sweep read failed", { task: task.identifier ?? task.id, err: (e as Error).message.slice(0, 300) });
       }
