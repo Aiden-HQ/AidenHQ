@@ -37,7 +37,7 @@ function world(settings = {}) {
   const review = (s, o = {}) => ({ version: 1, repo: REPO, pr: s.number, base: s.base, head: s.head, reviewer: s.reviewer, incremental_from: s.incremental_from, full: s.full,
     coverage: { reviewed: ["a.ts"], excluded: [], incomplete: null }, findings: [{ id: "f1", severity: "important", path: "a.ts", line: 3, title: "t", why: "w", evidence: "e", fix_brief: "b" }],
     withheld: { important: 0, nit: 0, pre_existing: 0 }, cost_usd: 0.3, stale_guidance: [], ...o });
-  const finish = (i, o) => results.set(`c-${i + 1}`, { state: "done", review: review(started[i], o) });
+  const finish = (i, o, billed) => results.set(`c-${i + 1}`, { state: "done", review: review(started[i], o), ...(billed !== undefined ? { billed_usd: billed } : {}) });
   const pr = (n, head, o = {}) => prs.set(n, { repo: REPO, number: n, head, base: sha("b"), base_ref: "main", draft: false, fork: false, author: "bob", open: true, url: `https://github.com/${REPO}/pull/${n}`, ...o });
   const say = (n, author, body) => comments.push({ id: String(comments.length + 1), number: n, author, body, created_at: new Date(t).toISOString() });
   return { engine, prs, pr, say, started, posted, acks, facts, finish, results, later: (ms) => (t += ms), tick: () => engine.tick() };
@@ -136,4 +136,29 @@ test("a high-risk PR is escalated once to on_risk; drafts and forks are skipped 
   await w.tick();
   assert.equal(w.posted.length, 1);
   assert.equal(w.engine.runs({}).filter((r) => r.kind === "escalation").length, 1);
+});
+
+test("a run is charged what the kernel billed (never what the box says), and a result for another head is refused", async () => {
+  const w = world();
+  w.pr(1, sha("1"));
+  await w.tick();
+  w.later(1000);
+  w.say(1, "alice", "@aiden review standard");
+  w.say(1, "alice", "@aiden review deep");
+  w.say(1, "alice", "@aiden review quick");
+  await w.tick();
+  assert.deepEqual(w.started.map((s) => s.reviewer), ["standard", "deep", "quick"]);
+  w.finish(0, { cost_usd: 0.001 }, 0.7);     // billed $0.70: charged that, whatever the box claims
+  w.finish(1, { cost_usd: 0 });              // no billing known: the whole $2.50 reservation
+  w.finish(2, { head: sha("9"), repo: "acme/other", cost_usd: 0 }, 99); // a result for another head: refused, charged at most its $0.50
+  await w.tick();
+  const by = Object.fromEntries(w.engine.runs({ repo: REPO }).map((r) => [r.reviewer, r]));
+  assert.deepEqual([by.standard.cost_usd, by.deep.cost_usd, by.quick.cost_usd], [0.7, 2.5, 0.5]);
+  assert.equal(by.quick.status, "failed");
+  assert.equal(w.posted.length, 2);
+  for (const p of w.posted) {
+    assert.deepEqual(p.target, { repo: REPO, number: 1, head: sha("1") });
+    assert.equal(p.review.head, sha("1"));
+  }
+  assert.equal(w.posted.find((p) => p.review.reviewer === "standard").review.cost_usd, 0.7);
 });

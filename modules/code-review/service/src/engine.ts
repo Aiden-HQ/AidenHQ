@@ -29,6 +29,8 @@ export type RunRow = {
   cost_usd: number; important: number; nit: number; pre_existing: number; started: string | null; ended: string | null; check_job: string | null;
   profile: string; focus: string | null; full: number; incremental_from: string | null; reserved_usd: number; due: number; created: number;
   post: number; posted: string | null; author: string; attempts: number; then_reviewer: string | null;
+  /** What earlier attempts of this run were billed (the kernel's figure): the retry gets only what's left. */
+  billed_prior: number;
 };
 
 const DDL = `
@@ -41,7 +43,7 @@ CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, repo TEXT NOT NULL, number
   nit INTEGER NOT NULL DEFAULT 0, pre_existing INTEGER NOT NULL DEFAULT 0, started TEXT, ended TEXT, check_job TEXT,
   base TEXT NOT NULL, profile TEXT NOT NULL, focus TEXT, full INTEGER NOT NULL DEFAULT 0, incremental_from TEXT,
   reserved_usd REAL NOT NULL DEFAULT 0, due INTEGER NOT NULL, created INTEGER NOT NULL, post INTEGER NOT NULL DEFAULT 1, posted TEXT,
-  author TEXT NOT NULL DEFAULT '', attempts INTEGER NOT NULL DEFAULT 0, then_reviewer TEXT);
+  author TEXT NOT NULL DEFAULT '', attempts INTEGER NOT NULL DEFAULT 0, then_reviewer TEXT, billed_prior REAL NOT NULL DEFAULT 0);
 CREATE INDEX IF NOT EXISTS runs_pr ON runs (repo, number, created);
 CREATE INDEX IF NOT EXISTS runs_status ON runs (status, due);
 CREATE TABLE IF NOT EXISTS reviews (run TEXT PRIMARY KEY, json TEXT NOT NULL);
@@ -63,7 +65,7 @@ export function createEngine(d: EngineDeps) {
   const log: Log = d.log ?? (() => {});
   db.exec(DDL);
   // A start a restart cut off (reserved, no check job yet) is queued again: its reservation is given back and taken anew.
-  db.prepare("UPDATE runs SET status = 'queued', reserved_usd = 0, started = NULL, attempts = 0 WHERE status = 'running' AND check_job IS NULL").run();
+  db.prepare("UPDATE runs SET status = 'queued', reserved_usd = 0, started = NULL, attempts = 0, billed_prior = 0 WHERE status = 'running' AND check_job IS NULL").run();
   const iso = () => new Date(now()).toISOString();
   const one = <T>(sql: string, ...a: unknown[]) => db.prepare(sql).get(...(a as never[])) as T | undefined;
   const all = <T>(sql: string, ...a: unknown[]) => db.prepare(sql).all(...(a as never[])) as T[];
@@ -174,10 +176,11 @@ export function createEngine(d: EngineDeps) {
     }
     try {
       const { check } = await d.runner.start({ repo: r.repo, number: r.number, base: r.base, head: r.head, reviewer: r.reviewer, profile: JSON.parse(r.profile), focus: r.focus,
-        incremental_from, full: incremental_from === null, budget_usd: r.reserved_usd, ignore: cfg?.ignore ?? [], max_nits: cfg?.max_nits ?? 5 });
+        incremental_from, full: incremental_from === null, budget_usd: Math.max(0, r.reserved_usd - r.billed_prior), ignore: cfg?.ignore ?? [], max_nits: cfg?.max_nits ?? 5 });
       run("UPDATE runs SET check_job = ? WHERE id = ?", check, r.id);
     } catch (e) {
-      await finish(runRow(r.id)!, { state: "failed", why: `couldn't start: ${String((e as Error).message).slice(0, 200)}`, cost_usd: 0 });
+      // Nothing ran (no check job), so nothing was billed.
+      await finish(runRow(r.id)!, { state: "failed", why: `couldn't start: ${String((e as Error).message).slice(0, 200)}`, billed_usd: 0 });
     }
   }
 
@@ -187,23 +190,37 @@ export function createEngine(d: EngineDeps) {
       data: { status: r.status, ...(r.why ? { why: r.why.slice(0, 300) } : {}), important: r.important, nit: r.nit, pre_existing: r.pre_existing, cost_usd: r.cost_usd, reviewer: r.reviewer, kind: r.kind, run: r.id } });
   }
 
-  async function finish(r: RunRow, res: { state: "failed"; why: string; cost_usd?: number } | { state: "done"; review: Review }) {
+  /** What a run is charged: the kernel's billing of its check job, within its reservation; unknown or invalid is the whole of it. */
+  const charge = (r: RunRow, billed: unknown) => (typeof billed === "number" && Number.isFinite(billed) && billed >= 0 ? Math.min(r.billed_prior + billed, r.reserved_usd) : r.reserved_usd);
+
+  async function finish(r: RunRow, res: { state: "failed"; why: string; billed_usd?: number } | { state: "done"; review: Review; billed_usd?: number }) {
+    // A result is bound to its run: one for another repo, PR, head or base (what a box could claim) is refused, never posted.
+    if (res.state === "done") {
+      const v = res.review as Partial<Review>;
+      if (String(v.repo ?? "").toLowerCase() !== r.repo || v.pr !== r.number || v.head !== r.head || v.base !== r.base || !Array.isArray(v.findings))
+        res = { state: "failed", why: "the review's result isn't for this run (repo, PR, head or base differ)", billed_usd: res.billed_usd };
+    }
     if (res.state === "failed") {
-      if (r.attempts < ATTEMPTS && !res.why.startsWith("couldn't start")) {
+      // Once more on what is left of the same reservation, when the kernel says what the failed attempt cost (else it may have
+      // spent it all) and the result wasn't a wrong one.
+      const left = r.reserved_usd - r.billed_prior - (res.billed_usd ?? Infinity);
+      if (r.attempts < ATTEMPTS && left >= 0.05 && !res.why.startsWith("couldn't start") && !res.why.startsWith("the review's result")) {
         log("review run failed, trying once more on its reservation", { run: r.id, why: res.why.slice(0, 200) });
-        return startRun(r);
+        run("UPDATE runs SET billed_prior = billed_prior + ? WHERE id = ?", res.billed_usd!, r.id);
+        return startRun(runRow(r.id)!);
       }
-      // Its cost is what it reported, else all it was allowed (a run that can't say what it spent is charged in full).
-      run("UPDATE runs SET status = 'failed', why = ?, cost_usd = ?, reserved_usd = 0, ended = ? WHERE id = ?", res.why.slice(0, 500), res.cost_usd ?? r.reserved_usd, iso(), r.id);
+      run("UPDATE runs SET status = 'failed', why = ?, cost_usd = ?, reserved_usd = 0, ended = ? WHERE id = ?", res.why.slice(0, 500), charge(r, res.billed_usd), iso(), r.id);
       end(runRow(r.id)!);
       if (r.kind !== "auto") void ack({ repo: r.repo, number: r.number, head: r.head, state: "failed", run: r.id, reviewer: r.reviewer, why: res.why.slice(0, 300) });
       return;
     }
-    const review = res.review;
+    const cost = charge(r, res.billed_usd);
+    // The run's own facts over whatever the box wrote for them.
+    const review: Review = { ...res.review, repo: r.repo, pr: r.number, head: r.head, base: r.base, reviewer: r.reviewer, cost_usd: cost };
     const count = (s: string) => review.findings.filter((f) => f.severity === s).length;
     run("INSERT OR REPLACE INTO reviews (run, json) VALUES (?, ?)", r.id, JSON.stringify(review));
     run("UPDATE runs SET cost_usd = ?, reserved_usd = 0, important = ?, nit = ?, pre_existing = ?, incremental_from = ? WHERE id = ?",
-      Number(review.cost_usd) || 0, count("important"), count("nit"), count("pre_existing"), review.incremental_from, r.id);
+      cost, count("important"), count("nit"), count("pre_existing"), review.incremental_from, r.id);
     const pr = prRow(r.repo, r.number);
     const done = (status: Status, why: string | null, posted?: string) => {
       run("UPDATE runs SET status = ?, why = ?, posted = ?, ended = ? WHERE id = ?", status, why, posted ?? null, iso(), r.id);
@@ -229,7 +246,7 @@ export function createEngine(d: EngineDeps) {
     const triage = pr?.triage ? (JSON.parse(pr.triage) as Review["triage"]) : undefined;
     let posted: { state: string; why?: string };
     try {
-      posted = await d.poster.post({ run: r.id, review: { ...review, ...(triage && !review.triage ? { triage } : {}) }, previous: previous ? JSON.parse(previous.json) : null });
+      posted = await d.poster.post({ run: r.id, target: { repo: r.repo, number: r.number, head: r.head }, review: { ...review, ...(triage && !review.triage ? { triage } : {}) }, previous: previous ? JSON.parse(previous.json) : null });
     } catch (e) {
       posted = { state: "refused", why: String((e as Error).message).slice(0, 200) };
     }

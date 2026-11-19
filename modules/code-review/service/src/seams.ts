@@ -46,10 +46,12 @@ export type ReviewSpec = {
   /** The most the run may spend (its reservation): the cap on its box's model token. */
   budget_usd: number; ignore: string[]; max_nits: number;
 };
+/** `billed_usd`: what the kernel billed the run's check job (its gateway calls), never anything the box wrote. Absent: unknown, and
+ * the run is charged its whole reservation. */
 export type RunResult =
   | { state: "running" }
-  | { state: "done"; review: Review }
-  | { state: "failed"; why: string; cost_usd?: number };
+  | { state: "done"; review: Review; billed_usd?: number }
+  | { state: "failed"; why: string; billed_usd?: number };
 export interface ReviewRunner {
   /** Starts the run; returns its check job's id. */
   start(spec: ReviewSpec): Promise<{ check: string }>;
@@ -69,7 +71,8 @@ export type Ack = {
 export type Posted = { state: "posted" | "pending" | "refused"; why?: string; url?: string };
 export interface Poster {
   /** One GitHub review for the run's head: inline findings, the summary with the severity line and commands, the commit status;
-   * `previous`: the last review posted on this PR (its threads are the ones Aiden may resolve). */
-  post(p: { run: string; review: Review; previous: Review | null }): Promise<Posted>;
+   * `target`: where it goes, from the run itself (the poster never takes its target from the review body); `previous`: the last
+   * review posted on this PR (its threads are the ones Aiden may resolve). */
+  post(p: { run: string; target: { repo: string; number: number; head: string }; review: Review; previous: Review | null }): Promise<Posted>;
   ack(a: Ack): Promise<void>;
 }
