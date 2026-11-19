@@ -329,8 +329,8 @@ act on GitHub as an App owned by an **agents org**, never as you.
 1. [org admin: GitHub] Create a GitHub organization for agent-built repos, for example `acme-agents`. You must be an
    owner of it.
 2. Name it: if `GITHUB_AGENTS_ORG=acme-agents` was in `person.env`, setup already wrote it. Otherwise add
-   `github_agents_org: acme-agents` to `instance.yaml` under `settings:`, commit, push and apply (step 7). The code host module
-   and the setup script both read the org from this setting.
+   `github_agents_org: acme-agents` to `instance.yaml` under `settings:`, commit, push and apply (step 7), or pass the org
+   to the script below. The setting only tells the script which org to make the App for.
 3. Create the App. The script serves a one-time plain-http page on port 8765, so give it an address your browser
    can reach, such as the server's tailnet IP:
    ```sh
@@ -339,7 +339,10 @@ act on GitHub as an App owned by an **agents org**, never as you.
    Open the printed URL, press **Create on GitHub** and approve [human]. The App id and private key are saved in the
    vault under `github-app/` and never printed.
 4. Install the App on `acme-agents` with **All repositories**, using the link the script prints [human].
-5. `docker compose restart codehost-github`.
+5. Connect it: `ops/apply-config.sh && systemctl --user restart aidenhq-kernel`. The script recorded the org in `.env`
+   (`AIDENHQ_GITHUB_AGENTS_ORG`), which is what "GitHub is connected" means: until then the `codehost-github` module runs
+   no container and agents keep every repository on this server (`local/<name>`). From now on new repositories go to
+   `acme-agents`; the ones already on this server stay there and keep working.
 
 To let it open PRs on repos in another org (say your company's), an owner there installs the same App on selected
 repositories; then add that org to `github_orgs` in `instance.yaml`. Agents may then create repositories there too (no approval); an org without the App fails loudly, and a stranger's install of the public App changes nothing.

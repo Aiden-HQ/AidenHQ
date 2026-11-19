@@ -2,10 +2,11 @@
 // passed back as it came; no code host → 404.
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
+import { Readable } from "node:stream";
 import { test } from "node:test";
 import { createCodehost } from "../src/codehost.ts";
 
-async function setup(t, { enabled = true } = {}) {
+async function setup(t, { enabled = true, localSnapshot } = {}) {
   const seen = [];
   const host = createServer((req, res) => {
     let body = "";
@@ -17,11 +18,12 @@ async function setup(t, { enabled = true } = {}) {
   await new Promise((ok) => host.listen(0, "127.0.0.1", ok));
   const url = `http://127.0.0.1:${host.address().port}`;
   const op = createCodehost({
-    grants: () => [{ module: "github", token: { repos: ["*/*"], perms: { issues: "write", contents: "read" } } }, { module: "apps-platform", token: { repos: ["acme-agents/x"], perms: { contents: "read" } }, clone: { repos: ["acme-agents/*"] } }, { module: "registry", token: { repos: ["@instance", "@product"], perms: { contents: "write" } }, snapshot: { repos: ["@agents/*"] } }],
+    grants: () => [{ module: "github", token: { repos: ["*/*"], perms: { issues: "write", contents: "read" } } }, { module: "apps-platform", token: { repos: ["acme-agents/x"], perms: { contents: "read" } }, clone: { repos: ["acme-agents/*"] } }, { module: "registry", token: { repos: ["@instance", "@product"], perms: { contents: "write" } }, snapshot: { repos: ["@agents/*"] } }, { module: "reviewer", snapshot: { repos: ["local/*", "acme-agents/*"] } }],
     repos: () => ({ instance: "acme-agents/aidenhq-instance", agentsOrg: "acme-agents" }),
     kind: () => (enabled ? { module: "codehost-github", floor: 0, tools: [], executor: { url: `${url}/aidenhq/v1/executor`, auth_secret: "codehost_github_token" } } : undefined),
     secret: (n) => (n === "codehost_github_token" ? "ch-key" : ""),
     resolver: { resolve: async (u) => ({ host: "127.0.0.1", port: Number(new URL(u).port), path: new URL(u).pathname }), forget: () => {} },
+    ...(localSnapshot ? { localSnapshot: () => localSnapshot } : {}),
     workspace: async (module, task) => { if (module !== "apps-platform" || task !== "t-1") throw Object.assign(new Error("not yours"), { status: 403 }); return { workspace: "TASK-1" }; },
   });
   t.after(() => host.close());
@@ -98,4 +100,15 @@ test("no grant can ask for Administration: the schema doesn't list it", async ()
   const { readFileSync } = await import("node:fs");
   const schema = JSON.parse(readFileSync(new URL("../schemas/codehost.json", import.meta.url), "utf8"));
   assert.equal("administration" in schema.properties.token.properties.perms.properties, false);
+});
+
+test("with both code hosts, each repo goes to its own: local/… to this server's, the agents org's to GitHub", async (t) => {
+  const local = [];
+  const { call, seen } = await setup(t, { localSnapshot: async (repo, ref) => (local.push({ repo, ref }), Object.assign(Readable.from([Buffer.from('{"local":true}')]), { statusCode: 200, headers: { "content-type": "application/json" } })) });
+  assert.equal((await call("reviewer", "snapshot", { repo: "local/old-app", ref: "main" })).status, 200);
+  assert.deepEqual(local, [{ repo: "local/old-app", ref: "main" }]);
+  assert.equal(seen.length, 0, "a local repo never reaches GitHub's code host");
+  assert.equal((await call("reviewer", "snapshot", { repo: "acme-agents/new-app", ref: "main" })).status, 200);
+  assert.equal(seen.at(-1).path, "/ops/snapshot");
+  assert.equal(local.length, 1);
 });

@@ -342,8 +342,9 @@ server.
   `codehost-local` both provide it.
 - `engineering` requires `codehost` (any provider), not `codehost-github`. The `github` read module leaves
   `engineering`'s hard requirements.
-- The default bundle carries `codehost-local`. `codehost-github` and `github` leave the bundle and are added through
-  Aiden ("connect GitHub").
+- The default bundle carries `codehost-local`, `codehost-github` and `github` (owner, 2026-11-19). The GitHub ones stay
+  idle until GitHub is connected (the App, setup step 8); then new repositories go to GitHub and local ones stay local
+  (`docs/design/codehost-local.md` §2).
 
 **Build on what exists.** Setup already creates a local bare repo as the instance repo's remote. The runner already
 clones from `repo_sources` (a slug to a local URL, `services/runner/src/main.mjs:1363`), and the git sandbox already

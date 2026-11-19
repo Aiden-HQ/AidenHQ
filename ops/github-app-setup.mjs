@@ -2,8 +2,8 @@
 // One-off: create this instance's GitHub App ("AidenHQ <instance_name>", owned by the agents org, public so other
 // orgs can install it on selected repos) through GitHub's manifest flow, and save its id and private key into the vault
 // (<secrets>/github-app/{app_id,key.pem}, 0600). Run on the VM, open the printed URL on your LAN, approve on GitHub, then
-// install the App on the agents org (link shown at the end) and restart the code host (docker compose restart
-// codehost-github). The key is never printed.
+// install the App on the agents org (link shown at the end), then apply and restart the kernel: that connects GitHub (the
+// org recorded in .env as AIDENHQ_GITHUB_AGENTS_ORG), the code host starts and new repositories go there. The key is never printed.
 //   node ops/github-app-setup.mjs [owner-org]     (default: the agents org, aidenhq-<instance_name> or github_agents_org)
 import { randomBytes } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -77,8 +77,8 @@ const server = createServer(async (req, res) => {
     // setting a later change could move (kernel/src/codehost.ts).
     if (!dotenv.AIDENHQ_GITHUB_AGENTS_ORG) appendFileSync(join(root, ".env"), `AIDENHQ_GITHUB_AGENTS_ORG=${org}\n`);
     const install = `https://github.com/apps/${app.slug}/installations/new`;
-    console.log(`Saved App ${app.id} (${app.slug}) to ${out}. Now install it: ${install}`);
-    send(200, `<h2>Saved</h2><p>App <code>${esc(app.slug)}</code> (id ${app.id}) is in the vault. Last step: <a href="${esc(install)}">install it on ${esc(org)}</a> (All repositories), then restart the code host (<code>docker compose restart codehost-github</code>). Other orgs (e.g. your company's): an owner there opens the same link and picks the repositories the fleet may change.</p>`);
+    console.log(`Saved App ${app.id} (${app.slug}) to ${out}. Now install it: ${install}, then run: ops/apply-config.sh && systemctl --user restart aidenhq-kernel`);
+    send(200, `<h2>Saved</h2><p>App <code>${esc(app.slug)}</code> (id ${app.id}) is in the vault. Last step: <a href="${esc(install)}">install it on ${esc(org)}</a> (All repositories), then connect it: <code>ops/apply-config.sh && systemctl --user restart aidenhq-kernel</code> (the code host starts, and new repositories go to ${esc(org)}; the ones on this server stay there). Other orgs (e.g. your company's): an owner there opens the same link and picks the repositories the fleet may change.</p>`);
     setTimeout(() => process.exit(0), 2000);
   } catch (err) {
     send(500, `Failed: ${esc(String(err.message))}`);

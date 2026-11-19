@@ -27,7 +27,7 @@ import { CREDENTIAL_ARGS } from "./github-app.ts";
 import { createEvalGate } from "./evalgate.ts";
 import { createMerges } from "./merges.ts";
 import { createReleaseTrain } from "./train.ts";
-import { plan as planRules } from "./plan.mjs";
+import { LOCAL_ORG, plan as planRules } from "./plan.mjs";
 import { notePrTask } from "./pr-watch.ts";
 import { createDesignReviews, startDesignReviewSweep } from "./design-review.ts";
 import { noteKept } from "./tidy.ts";
@@ -534,7 +534,8 @@ export function createService(o: Options) {
       rmSync(join(index, ".."), { recursive: true, force: true });
     }
   }
-  const train = o.productRepo && o.instanceRepo ? createReleaseTrain({
+  // The train lands the bump through GitHub: an instance repo on this server (local/…, codehost-local's) is not its to move.
+  const train = o.productRepo && o.instanceRepo && slugOf(o.instanceRepo).org.toLowerCase() !== LOCAL_ORG ? createReleaseTrain({
     dir: join(o.cacheDir, "release"), productRepo: o.productRepo, instanceRepo: o.instanceRepo, windowMinutes: o.releaseWindowMinutes ?? 15, kernel, log, now: o.now,
     commit: trainCommit,
     evalBump: (from, to) => evalGate.bump(from, to),

@@ -68,7 +68,7 @@ const bundleFile = join(repo, "data", "bundle-state.json");
 let bundleState; try { bundleState = JSON.parse(readFileSync(bundleFile, "utf8")); } catch {}
 let oldBundle; try { oldBundle = JSON.parse(env("AIDENHQ_OLD_BUNDLE") || "null") ?? undefined; } catch {}
 let out, computers;
-try { out = compile(repo, instanceDir, { revision, bundleState, oldBundle, door: { publicIp: env("AIDENHQ_PUBLIC_IP"), adminUrl: env("AIDENHQ_ADMIN_URL"), boardUrl: env("BOARD_LAN_URL") } }); computers = computersConfig(out.paperclip, repo, out.computersMax); } catch (e) { die(e.message); }
+try { out = compile(repo, instanceDir, { revision, bundleState, oldBundle, door: { publicIp: env("AIDENHQ_PUBLIC_IP"), adminUrl: env("AIDENHQ_ADMIN_URL"), boardUrl: env("BOARD_LAN_URL") }, githubOrg: env("AIDENHQ_GITHUB_AGENTS_ORG") ?? "" }); computers = computersConfig(out.paperclip, repo, out.computersMax); } catch (e) { die(e.message); }
 if (!stage) { mkdirSync(dirname(bundleFile), { recursive: true }); writeFileSync(bundleFile, JSON.stringify(out.bundleState)); }
 if (process.argv.includes("--sizes")) {
   try { console.log(sizesReport(out.paperclip, { repo, instanceDir, engines: out.engines })); } catch (e) { die(e.message); }

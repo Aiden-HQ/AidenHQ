@@ -51,7 +51,8 @@ async function setup(t, { routes = () => undefined } = {}) {
     res.writeHead(404).end("{}");
   });
   const minted = [];
-  const app = { token: async (org, o) => (minted.push({ org, ...o }), "tok"), createRepo: async () => "created", identity: async () => ({ name: "acme-app[bot]", email: "1+acme-app[bot]@users.noreply.github.com" }) };
+  const created = [];
+  const app = { token: async (org, o) => (minted.push({ org, ...o }), "tok"), createRepo: async (slug) => (created.push(slug), "created"), identity: async () => ({ name: "acme-app[bot]", email: "1+acme-app[bot]@users.noreply.github.com" }) };
   const ghCalls = [];
   const gh = async (method, path, token, body) => (ghCalls.push({ method, path, body }), routes(method, path) ?? (method === "GET" && path === "/repos/acme-agents/widget" ? { status: 200, body: { default_branch: "main" } } : { status: 404, body: { message: "fake GitHub: no route" } }));
   const handle = createService({
@@ -66,7 +67,7 @@ async function setup(t, { routes = () => undefined } = {}) {
     return { status: r.status, json: await r.json() };
   };
   const raw = (path, body, key = "ch-key") => fetch(`${svc.url}${path}`, { method: "POST", headers: { authorization: `Bearer ${key}` }, body: JSON.stringify(body) });
-  return { root, ws, marker, origin, sha, outcomes, minted, ghCalls, call, raw };
+  return { root, ws, marker, origin, sha, outcomes, minted, created, ghCalls, call, raw };
 }
 
 test("create_repo is Tier 0 in an allowed org besides the agents org; a core repo's name, and an org nobody allowed, are refused", async (t) => {
@@ -78,6 +79,43 @@ test("create_repo is Tier 0 in an allowed org besides the agents org; a core rep
   const own = await plan("acme-agents/aidenhq-instance");
   assert.match(own.json.error, /product or instance repo/);
   assert.match((await plan("stranger/new-app")).json.error, /outside the orgs/);
+});
+
+// Once GitHub is connected, the agents org is where new repositories go (scripts/test/codehost-switch.test.mjs): the App creates it,
+// and the Engineer's first branch of the new app lands there.
+test("connected: a new app's repository is created through the App in the agents org, and its first branch lands there", async (t) => {
+  const { root, outcomes, created, call } = await setup(t, { routes: (m, p) => (m === "GET" && p === "/repos/acme-agents/new-app" ? { status: 200, body: { default_branch: "main" } } : undefined) });
+  const create = { kind: "codehost-github.create_repo", args: { repo: "acme-agents/new-app" } };
+  const plan = await call("/aidenhq/v1/executor/plan", { ...create, requester: { kind: "job", roles: [] }, task: "t1" });
+  assert.equal(plan.status, 200, JSON.stringify(plan.json));
+  assert.equal((await call("/aidenhq/v1/executor/execute", { id: "k-00000000000000c1", ...create, digest: "d", idempotency_key: "c" })).json.accepted, true);
+  for (let i = 0; i < 300 && !outcomes.length; i++) await new Promise((r) => setTimeout(r, 10));
+  assert.deepEqual(created, ["acme-agents/new-app"]);
+  assert.equal(outcomes[0]?.ok, true, JSON.stringify(outcomes));
+  // "GitHub" made it with the starter on main; the Engineer's branch of it lands.
+  const origin = join(root, "github", "acme-agents", "new-app.git");
+  mkdirSync(origin, { recursive: true });
+  sh(origin, "init", "--quiet", "--bare", "-b", "main");
+  const seed = join(root, "seed-new");
+  sh(root, "init", "--quiet", "-b", "main", seed);
+  writeFileSync(join(seed, "README.md"), "new-app\n");
+  sh(seed, "add", "README.md");
+  sh(seed, "commit", "--quiet", "-m", "init");
+  sh(seed, "push", "--quiet", origin, "main");
+  const ws = join(root, "tasks", "TASK-2", "new-app");
+  sh(root, "clone", "--quiet", origin, ws);
+  sh(ws, "checkout", "--quiet", "-b", "first");
+  writeFileSync(join(ws, "app.js"), "export const y = 2;\n");
+  sh(ws, "add", "app.js");
+  sh(ws, "commit", "--quiet", "-m", "first");
+  const sha = sh(ws, "rev-parse", "HEAD");
+  const push = { kind: "codehost-github.push", args: { workspace: "TASK-2", only: [{ repo: "acme-agents/new-app", branch: "first", sha }] } };
+  const p2 = await call("/aidenhq/v1/executor/plan", { ...push, requester: { kind: "job", roles: [] }, task: "t2" });
+  assert.equal(p2.json.raise, undefined, JSON.stringify(p2.json)); // an ordinary branch of an agents-org repo: Tier 0
+  assert.equal((await call("/aidenhq/v1/executor/execute", { id: "k-00000000000000c2", ...push, digest: "d", idempotency_key: "p" })).json.accepted, true);
+  for (let i = 0; i < 300 && outcomes.length < 2; i++) await new Promise((r) => setTimeout(r, 10));
+  assert.equal(outcomes[1]?.ok, true, JSON.stringify(outcomes));
+  assert.equal(sh(origin, "rev-parse", "refs/heads/first"), sha);
 });
 
 test("a job's branch lands from its workspace; no hook, filter or fsmonitor of the workspace runs", async (t) => {

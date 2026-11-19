@@ -105,10 +105,13 @@ jail through `hiding`. `codehost-local` generalises these three pieces.
   `?`; `design`'s `github` grants (`design/module.yaml:27,48`) become `github?` too, so the UI Reviewer works on either
   host (§5, design review). The builder confirms that
   platform's `product-gate` check, bound to `codehost-github.*` kinds, compiles with `codehost-github` off.
-- **The bundle** (`modules/marketplace.json`):
-  - `codehost-local` joins.
-  - `codehost-github` and `github` leave only when this build lands.
-  - A virtual name never enables a module, so the bundle names `codehost-local` itself.
+- **The bundle** (`modules/marketplace.json`) carries `codehost-local`, `codehost-github` and `github` (owner, 2026-11-19).
+  A virtual name never enables a module, so the bundle names each provider itself.
+- **GitHub connected** is one host fact: `AIDENHQ_GITHUB_AGENTS_ORG` in `.env`, which `ops/github-app-setup.mjs` writes beside
+  the App's key. The kernel and compile both read it, and nothing else connects GitHub (the `github_agents_org` setting only
+  tells the script which org to make the App for). Until it is set, `codehost-github`'s service runs no container
+  (`when: { agents_org: true }`, the org compile derives from it) and the handbooks name only `local`. Once set, the GitHub
+  org is listed first and the handbooks' org line says new repositories go there; existing `local/*` repos keep their host.
 - **Both providers may be on.** Each repo has exactly one host, decided by its org:
   - `codehost-local` owns the org `local`, the one setup already uses for `local/aidenhq-instance`;
   - `codehost-github` owns every other org.
@@ -290,11 +293,9 @@ Then:
 
 ## 7. GitHub later
 
-- **"Connect GitHub" (via Aiden):**
-  - enables `codehost-github` and `github`;
-  - collects `github_bot_token`;
-  - runs the App setup.
-  - Local repos keep their host. New repos go where `create_repo` names them.
+- **Connect GitHub:** both modules are already on (the bundle); setup step 8 (`ops/github-app-setup.mjs`, then apply and a
+  kernel restart) records the org and starts the code host. Local repos keep their host; new repos go to the GitHub org.
+  Moving an existing repo to GitHub is not offered (the mirror below is the later path).
 - **Mirror** (later, its own small build): a repo may get a push-only GitHub mirror.
   - Filed as a new kind `runner.mirror` (`{ repo, to }`), with the panel at Tier 1: it publishes code outside the
     server.

@@ -340,12 +340,11 @@ function resolveEnabled(all, wanted) {
 }
 
 /**
- * Where agent-built repos live, one org per enabled code host (the handbooks name them): `local` while codehost-local is on
- * (this server's repos), the GitHub agents org while codehost-github is.
+ * Where agent-built repos live, one org per enabled code host (the handbooks name them), the org for new repositories first:
+ * the GitHub agents org once GitHub is connected (the host's AIDENHQ_GITHUB_AGENTS_ORG, written by ops/github-app-setup.mjs
+ * beside the App's key), and `local` (this server's repos) while codehost-local is on.
  */
-const codehostOrgs = (enabled, settings) => [...(enabled.includes("codehost-github") && agentsOrg(settings) ? [{ org: agentsOrg(settings), host: "github" }] : []), ...(enabled.includes("codehost-local") ? [{ org: "local", host: "local" }] : [])];
-/** The agents org: github_agents_org, else aidenhq-<instance_name>. */
-const agentsOrg = (settings) => settings.github_agents_org || (settings.instance_name ? `aidenhq-${settings.instance_name}` : "");
+const codehostOrgs = (enabled, settings) => [...(enabled.includes("codehost-github") && settings.agents_org ? [{ org: settings.agents_org, host: "github" }] : []), ...(enabled.includes("codehost-local") ? [{ org: "local", host: "local" }] : [])];
 
 /**
  * config/gateway.json `models`, by id: every enabled module's `models:` entries (spec §5.12). USD per million tokens, each the
@@ -377,7 +376,7 @@ function ciReview(settings) {
   };
   const want = String(settings.ci_review_model ?? "~deepseek/deepseek-flash-latest:high").trim(), bare = (m) => String(m).trim().replace(/^openrouter\//, "").replace(/:(minimal|low|medium|high|xhigh|max)$/, "");
   const review = { model: bare(want), effort: /:(minimal|low|medium|high|xhigh)$/.exec(want)?.[1] ?? "high" }, models = [...new Set([...[settings.ci_review_models ?? []].flat().map(bare), review.model])].filter(Boolean);
-  return { orgs: [agentsOrg(settings)].filter(Boolean), models, review, repo_day_usd: usd("ci_review_repo_day_usd"), day_usd: usd("ci_review_day_usd") };
+  return { orgs: [settings.agents_org].filter(Boolean), models, review, repo_day_usd: usd("ci_review_repo_day_usd"), day_usd: usd("ci_review_day_usd") };
 }
 
 /**
@@ -552,7 +551,7 @@ export function hostDirs(productDir, env = process.env) {
   return { work_dir: expand(String(y.work_dir ?? "~/aidenhq-work")), state_dir: expand(String(y.state_dir ?? "~/.local/state/aidenhq-runner")) };
 }
 
-export function compile(productDir, instanceDir, { revision, bundleState, oldBundle, fetch = hostFetch(productDir), door, workDir = hostDirs(productDir).work_dir } = {}) {
+export function compile(productDir, instanceDir, { revision, bundleState, oldBundle, fetch = hostFetch(productDir), door, workDir = hostDirs(productDir).work_dir, githubOrg = "" } = {}) {
   const instFile = join(instanceDir, "instance.yaml");
   if (!existsSync(instFile)) fail(`no instance.yaml in ${instanceDir}: set AIDENHQ_INSTANCE_DIR to your instance checkout (see docs/USAGE.md)`);
   const instance = readYaml(instFile);
@@ -617,8 +616,11 @@ export function compile(productDir, instanceDir, { revision, bundleState, oldBun
 
 
   // Derived (not settable): the orgs the src_github sync covers, github_orgs plus the agents org.
-  settings.agents_org = agentsOrg(settings); // the only org github-mcp's commit_status_set may write to
-  settings.github_sync_orgs = [...new Set([...[settings.github_orgs ?? []].flat(), agentsOrg(settings)].filter(Boolean))].join(",");
+  // GitHub is connected once the host records its agents org (AIDENHQ_GITHUB_AGENTS_ORG, written by ops/github-app-setup.mjs
+  // beside the App's key; the kernel reads the same variable): the one fact every GitHub part follows. Unset, codehost-github's
+  // service doesn't run (`when: { agents_org: true }`) and the handbooks name only `local`.
+  settings.agents_org = githubOrg; // the only org github-mcp's commit_status_set may write to
+  settings.github_sync_orgs = [...new Set([...[settings.github_orgs ?? []].flat(), settings.agents_org].filter(Boolean))].join(",");
 
   // What the board's Settings shows (services/board/src/settings.ts): every setting an enabled module declares or the instance
   // sets, with whether instance.yaml sets it. Snapshotted before the derived keys below; never a secret-looking key.
@@ -628,7 +630,7 @@ export function compile(productDir, instanceDir, { revision, bundleState, oldBun
   // Derived for upstream contributions (spec §6.9): the owner-data scrub's literals (ownerTerms).
   settings.owner_terms = ownerTerms(instance.settings ?? {}, settings, declaredSettings.map(([, defs]) => defs));
 
-  const paperclip = { company: { name: String(settings.company_name), description: KERNEL_DEFAULTS.company_description }, ...(settings.owner_name ? { owner_name: String(settings.owner_name) } : {}), ...(agentsOrg(settings) ? { github_agents_org: agentsOrg(settings) } : {}), agents_orgs: codehostOrgs(enabled, settings), autonomy: String(settings.autonomy ?? "off"), settings: shownSettings, labels: [], mcp_servers: {}, agents: {}, routines: {} };
+  const paperclip = { company: { name: String(settings.company_name), description: KERNEL_DEFAULTS.company_description }, ...(settings.owner_name ? { owner_name: String(settings.owner_name) } : {}), ...(settings.agents_org ? { github_agents_org: settings.agents_org } : {}), agents_orgs: codehostOrgs(enabled, settings), autonomy: String(settings.autonomy ?? "off"), settings: shownSettings, labels: [], mcp_servers: {}, agents: {}, routines: {} };
   const apps = [];
   const instanceAppDefs = existsSync(join(instanceDir, "apps.yaml")) ? (readYaml(join(instanceDir, "apps.yaml")).apps ?? []) : [];
   const instanceApps = instanceAppDefs.map((a) => a.name);

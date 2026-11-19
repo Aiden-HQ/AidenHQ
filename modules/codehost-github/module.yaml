@@ -15,7 +15,8 @@ paths:
 # The code host role (docs/design/codehost-local.md §2): it hosts every org codehost-local doesn't own.
 provides: [ codehost ]
 settings:
-  # The agents org (where create_repo creates repos by default; any org in github_orgs that the App is installed on works too): aidenhq-<instance_name> unless this names another.
+  # The org ops/github-app-setup.mjs makes the App for (aidenhq-<instance_name> unless this names another). Connecting records it
+  # on the host (AIDENHQ_GITHUB_AGENTS_ORG): from then on it is the agents org, where new repositories go.
   github_agents_org:
   # GitHub orgs/users (besides the agents org) the owner allows: the apps platform builds trusted apps from their repos, and create_repo
   # creates repos there at Tier 0 (the App must be installed on the org, else it fails loudly; a stranger's install of the public App changes nothing).
@@ -64,6 +65,8 @@ services:
   data: true
   run:
     codehost-github:
+      # Idle until GitHub is connected (the App set up; compile derives agents_org from it): no image, no container.
+      when: { agents_org: true }
       build: ./service
       tmp: 64m
       port: 8100
@@ -75,7 +78,7 @@ services:
         AIDENHQ_KERNEL_URL: http://10.231.0.1:3130
         CODEHOST_KEY_FILE: ${secrets.codehost_github_token}
         CACHE_DIR: /cache
-        AGENTS_ORG: "${settings.agents_org}" # github_agents_org, else aidenhq-<instance_name> (compile derives it)
+        AGENTS_ORG: "${settings.agents_org}" # the host's AIDENHQ_GITHUB_AGENTS_ORG (compile derives it)
         ALLOWED_ORGS: "${settings.github_sync_orgs}" # the orgs create_repo may create in: github_orgs plus the agents org (compile derives it)
         GITHUB_APP_DIR: /github-app
         TASKS_DIR: /tasks

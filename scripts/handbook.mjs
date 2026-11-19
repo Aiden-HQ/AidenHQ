@@ -36,11 +36,14 @@ export function readInstructions(cfg, a, { repo, instanceDir = "" }) {
   return `${own}\n\n## Instance rules\n\n${extra}\n`;
 }
 
-/** The handbook's line naming the agents org(s): on GitHub, and `local` for repositories on this server. */
+/**
+ * The handbook's line naming the agents org(s): on GitHub, and `local` for repositories on this server. The first is where new
+ * repositories go (compile lists GitHub first once it is connected); an existing repository stays on its host.
+ */
 function orgLine(orgs) {
   const named = orgs.map((o) => (o.host === "local" ? "`local` on this server (its repositories are `local/<name>`)" : `\`${o.org}\` on GitHub`));
   if (!named.length) return "";
-  return `This AidenHQ's agents org${named.length > 1 ? "s are" : " is"} ${named.join(" and ")}${named.length > 1 ? "; a new app's repository goes in the one its task names" : ""}.\n\n`;
+  return `This AidenHQ's agents org${named.length > 1 ? "s are" : " is"} ${named.join(" and ")}${named.length > 1 ? `; a new repository goes in \`${orgs[0].org}\`, and each existing one stays where it is` : ""}.\n\n`;
 }
 
 /** The crew member's board identity, stored in the agent's metadata for the board and the runner. */
