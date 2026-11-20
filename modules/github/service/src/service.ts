@@ -475,7 +475,7 @@ export function createService(o: Options) {
       for (const r of Object.values(readHeld()).filter((x) => x.state === "held" || x.state === "running")) {
         writeHeld({ ...readHeld(), [r.id]: { ...r, state: "running" } });
         let out: { ok: boolean; text: string };
-        try { out = await run1(r); } catch (e) {
+        try { out = (await stillApproved(r)) ? await run1(r) : { ok: false, text: "Not done: it changed while GitHub was disconnected; ask again." }; } catch (e) {
           if (disconnected(e)) { writeHeld({ ...readHeld(), [r.id]: { ...r, state: "held" } }); return; }
           out = { ok: false, text: String((e as Error).message ?? e) };
         }
@@ -486,6 +486,25 @@ export function createService(o: Options) {
         else await report(r.id, out).catch((e: Error) => log("held outcome not delivered", { record: r.id, err: String(e.message).slice(0, 200) }));
       }
     } finally { heldBusy = false; }
+  }
+  /**
+   * A held record runs only if what it was approved for still holds: its plan, read again now (revalidate), still passes the git
+   * rules and binds the same commits its args named (each branch at its sha, each PR at its head). Who asked isn't in the
+   * execute call, so the rules run with the platform line's reach: only the targets decide here, as the kernel's own
+   * revalidation did at approval.
+   */
+  async function stillApproved(r: Held): Promise<boolean> {
+    const planned = await executor.plan({ kind: r.kind, args: r.args, requester: { agent: "", key: "", name: "", roles: ["platform-engineer"], kind: "job" }, task: String(r.args?.workspace ?? ""), revalidate: true }).catch((e) => {
+      if (disconnected(e)) throw e;
+      return undefined;
+    });
+    if (!planned) return false;
+    const targets = (planned.targets ?? {}) as Record<string, { commit?: string | null }>;
+    const want = [
+      ...((r.args?.only ?? []) as { repo: string; branch: string; sha: string }[]).map((b) => [`${slugOf(b.repo).slug} ${b.branch}`, b.sha] as const),
+      ...((r.args?.prs ?? []) as { repo: string; number: number; head?: string }[]).filter((p) => p.head).map((p) => [`${slugOf(p.repo).slug}#${Number(p.number)}`, p.head!] as const),
+    ];
+    return want.every(([k, sha]) => targets[k]?.commit === sha);
   }
   const heldStatus = (id: string) => { const r = readHeld()[id]; return r ? (r.state === "done" || r.state === "failed" ? { state: r.state, text: r.text } : { state: "running" }) : undefined; };
 
