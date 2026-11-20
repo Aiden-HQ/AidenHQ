@@ -764,14 +764,21 @@ export function createService(o: Options) {
       const st = lstatSync(ws, { throwIfNoEntry: false });
       if (!st || st.isSymbolicLink() || !st.isDirectory() || realpathSync(ws) !== ws || !ws.startsWith(root + sep)) throw fail(400, `${into} isn't a task's workspace folder`);
       const target = join(ws, s.name);
-      try { mkdirSync(target); } catch (e) { throw fail((e as { code?: string }).code === "EEXIST" ? 409 : 400, `${into}/${s.name} can't be made (${(e as Error).message})`); }
-      if (realpathSync(target) !== target) throw fail(400, `${into}/${s.name} resolves elsewhere`);
-      // A credential-free clone with history: origin is the plain GitHub URL, the head checked out by the cache's own git.
-      const t = (...args: string[]) => run("git", [...SAFE_GIT_ARGS, "-C", target, ...args], { env: ENV });
-      await run("git", [...SAFE_GIT_ARGS, "init", "--quiet", target], { env: ENV });
-      await t("remote", "add", "origin", `https://github.com/${s.slug}.git`);
-      await t("fetch", "--quiet", "--no-tags", dir, `+${ref}:refs/remotes/origin/${/^[0-9a-f]{40}$/.test(name) ? "fetched" : name}`);
-      await t("checkout", "--quiet", "--detach", sha);
+      if (lstatSync(target, { throwIfNoEntry: false })) throw fail(409, `${into}/${s.name} can't be made (it exists)`);
+      // A credential-free clone with history, built in a scratch folder only this service can write (host git never runs in a
+      // folder a box can write): origin is the plain GitHub URL, the head checked out by the cache's own git; then copied into the
+      // new workspace folder, which is made here, exclusively.
+      const scratch = mkdtempSync(join(o.cacheDir, "clone-"));
+      try {
+        const t = (...args: string[]) => run("git", [...SAFE_GIT_ARGS, "-C", scratch, ...args], { env: ENV });
+        await run("git", [...SAFE_GIT_ARGS, "init", "--quiet", scratch], { env: ENV });
+        await t("remote", "add", "origin", `https://github.com/${s.slug}.git`);
+        await t("fetch", "--quiet", "--no-tags", dir, `+${ref}:refs/remotes/origin/${/^[0-9a-f]{40}$/.test(name) ? "fetched" : name}`);
+        await t("checkout", "--quiet", "--detach", sha);
+        try { mkdirSync(target); } catch (e) { throw fail((e as { code?: string }).code === "EEXIST" ? 409 : 400, `${into}/${s.name} can't be made (${(e as Error).message})`); }
+        if (realpathSync(target) !== target) throw fail(400, `${into}/${s.name} resolves elsewhere`);
+        cpSync(scratch, target, { recursive: true, verbatimSymlinks: true });
+      } finally { rmSync(scratch, { recursive: true, force: true }); }
       return send(res, 200, { path: `${into}/${s.name}`, commit: sha });
     }
   }

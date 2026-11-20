@@ -384,6 +384,7 @@ test("clone writes only a new folder in the task workspace the kernel resolved, 
   assert.equal(readFileSync(join(dir, "README.md"), "utf8"), "widget\n");
   assert.equal(sh(dir, "remote", "get-url", "origin"), "https://github.com/acme-agents/widget.git");
   assert.doesNotMatch(readFileSync(join(dir, ".git", "config"), "utf8"), /tok|credential|extraheader/i);
+  assert.deepEqual(readdirSync(join(root, "cache")).filter((n) => n.startsWith("clone-")), [], "the scratch clone is gone");
 });
 
 test("the apply read refuses what it can't read whole, and names no committer-written path on the card", async (t) => {
