@@ -388,7 +388,7 @@ export class GitHub {
       done.push(input.state === "closed" ? `closed as ${(input.reason ?? "completed").replace("_", " ")}` : "reopened");
     }
     const after = await this.request<GhIssue>("GET", base);
-    return { url: after.html_url, state: after.state, labels: labelNames(after), assignees: after.assignees?.map((a) => a.login), done: done.length ? done : ["nothing to change"], objects: [objectRef(ref), ...add.map((l) => `${objectRef(ref)}/label/${l}`)] };
+    return { url: after.html_url, state: after.state, labels: labelNames(after), assignees: after.assignees?.map((a) => a.login), done: done.length ? done : ["nothing to change"], objects: [objectRef(ref)] };
   }
 
   /**
@@ -487,7 +487,7 @@ export class GitHub {
     const labels = input.labels?.length ? await this.matchLabels(owner, name, input.labels) : [];
 
     const issue = await this.request<GhIssue & { node_id: string }>("POST", `/repos/${owner}/${name}/issues`, { body: { title: input.title, body: withFooter(input.body, agent), ...(labels.length ? { labels } : {}) } });
-    const out: IssueCreated = { repo: `${owner}/${name}`, number: issue.number, url: issue.html_url, labels: labelNames(issue), objects: [objectRef({ owner, repo: name, number: issue.number }), ...labelNames(issue).map((l) => `${objectRef({ owner, repo: name, number: issue.number })}/label/${l}`)] };
+    const out: IssueCreated = { repo: `${owner}/${name}`, number: issue.number, url: issue.html_url, labels: labelNames(issue), objects: [objectRef({ owner, repo: name, number: issue.number })] };
     if (!project) return out;
     out.project = { title: project.title, url: project.url };
     try {

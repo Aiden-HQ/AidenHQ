@@ -24,7 +24,7 @@ export type ReviewContext = { files?: { text: string; leftOut: string[]; oversiz
 export interface ExecuteRequest { id: string; kind: string; args: any; digest: string; idempotency_key: string }
 export interface Executor {
   plan(req: PlanRequest): Promise<PlanResult>;
-  /** Runs the write; its result is the outcome the kernel records and tells the task. Throwing is a failed outcome. `objects`: the GitHub object refs it made (`github:o/r#12`, `github:o/r@<sha40>`, `…#12/comment/<id>`, `…#12/label/<name>`), which the kernel keeps. */
+  /** Runs the write; its result is the outcome the kernel records and tells the task. Throwing is a failed outcome. `objects`: the GitHub object refs it made (`github:o/r#12`, `github:o/r@<sha40>`, `…#12/comment/<id>`), which the kernel keeps. */
   execute(rec: ExecuteRequest): Promise<{ ok: boolean; text: string; objects?: string[] }>;
 }
 

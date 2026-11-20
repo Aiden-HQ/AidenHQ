@@ -33,13 +33,14 @@ async function runGit(cmd: Cmd | Promise<Cmd>, label: string[], cwd?: string): P
 
 const inOrgs = (env: GitEnv, repo: string) => (env.orgs ?? []).some((o) => o.toLowerCase() === repo.split("/")[0]!.toLowerCase());
 
-/** git, with no credentials: GitHub repos of the fleet org and the registry come through the code host's ops instead. */
+/** git, with no credentials: GitHub repos of the fleet org, github_orgs and the registry come through the code host's ops instead. */
 function git(args: string[], cwd?: string, extra: NodeJS.ProcessEnv = {}): Promise<string> {
   return runGit(plain(args, extra), args, cwd);
 }
 
 /** Whether `app`'s code comes through the code host's ops (a fleet-org GitHub repo, never a `local/*` one). */
-const viaOps = (env: GitEnv, app: App): CodeHostOps | undefined => (env.ops && inAgentsOrg(env, app.repo) && !isLocal(env.localRoot, app.repo) ? env.ops : undefined);
+// GitHub repos in the fleet org or the owner's listed orgs (github_orgs; private ones too) are read through the code host's ops.
+const viaOps = (env: GitEnv, app: App): CodeHostOps | undefined => (env.ops && (inAgentsOrg(env, app.repo) || inOrgs(env, app.repo)) && !isLocal(env.localRoot, app.repo) ? env.ops : undefined);
 
 export function checkOrg(env: GitEnv, app: App): void {
   if (!app.untrusted && !inOrgs(env, app.repo) && !inAgentsOrg(env, app.repo) && !isLocal(env.localRoot, app.repo)) throw new Error(`repo ${app.repo} is outside the allowed orgs; only untrusted apps may use it`);

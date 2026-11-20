@@ -100,7 +100,7 @@ function fake(opts: {
 }
 
 /** AidenHQ's records, faked: every label write the owner's login made is the fleet's own, and the issues and PRs `ours` names. */
-const records = (ours: number[] = []) => async (ref: string) => ref.includes("/label/") || ours.some((n) => ref.endsWith(`#${n}`));
+const records = (ours: number[] = []) => async (ref: string) => ours.some((n) => ref.endsWith(`#${n}`));
 function maintainer(f: ReturnType<typeof fake>, terms: string[] = [], repos: unknown[] = [{ repo: PRODUCT }], ours: number[] = []) {
   return new Maintainer(accessFor(f.fetchFn), parseRepos(JSON.stringify(repos)), terms, records(ours));
 }
@@ -674,6 +674,6 @@ it("comment merges scrub on maintained repos: the product repo is scrubbed too, 
 it("label and state writes return the objects the kernel records", async () => {
   const f = fake({ issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z", labels: ["agent-fix"] }], timelines: { 1: [labeled("owner1", "2026-01-01T00:00:00Z")] } });
   const m = maintainer(f);
-  expect(await m.label(PRODUCT, 1, "remove")).toMatchObject({ changed: true, objects: [`github:${PRODUCT}#1/label/agent-fix`] });
+  expect(await m.label(PRODUCT, 1, "remove")).toMatchObject({ changed: true, objects: [`github:${PRODUCT}#1`] });
   expect(await m.state(PRODUCT, 1, "closed", "completed", "fixed by acme/product#7")).toMatchObject({ objects: [`github:${PRODUCT}#1`] });
 });

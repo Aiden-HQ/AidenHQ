@@ -264,7 +264,7 @@ describe("GitHub", () => {
         { "GET /repos/example-org/issue-tracker/labels": [{ name: "bug" }, { name: "waas" }], "POST /repos/example-org/issue-tracker/issues": created },
       );
       const out = await owner(impl).createIssue({ title: "T", body: "B", labels: ["WaaS"], project: "https://github.com/orgs/Example-Org/projects/16/views/17", status: "triage" }, "Aiden");
-      expect(out).toEqual({ repo: "example-org/issue-tracker", number: 9, url: created.html_url, labels: ["waas"], objects: ["github:example-org/issue-tracker#9", "github:example-org/issue-tracker#9/label/waas"], project: { title: "Acme Wallet", url: project.data.organization.projectV2.url, added: true, status: "🔍  Triage" } });
+      expect(out).toEqual({ repo: "example-org/issue-tracker", number: 9, url: created.html_url, labels: ["waas"], objects: ["github:example-org/issue-tracker#9"], project: { title: "Acme Wallet", url: project.data.organization.projectV2.url, added: true, status: "🔍  Triage" } });
       expect(calls.find((c) => c.url.pathname.endsWith("/issues"))?.body).toEqual({ title: "T", body: `B\n\n${FOOTER("Aiden")}`, labels: ["waas"] });
       expect(calls.at(-1)?.body).toEqual({ doc: "setStatus", project: "P1", item: "IT1", field: "F1", option: "o2" });
     });

@@ -4,11 +4,10 @@
 //   github:<owner>/<repo>#<n>                  an issue or PR
 //   github:<owner>/<repo>@<sha40>              a commit
 //   github:<owner>/<repo>#<n>/comment/<id>     a comment
-//   github:<owner>/<repo>#<n>/label/<name>     a label put on an issue or PR
 // Attribution only: nothing here is authority (the owner's authority reaches the fleet through AidenHQ, never through GitHub).
 import type { DatabaseSync } from "node:sqlite";
 
-const REF = /^github:[\w.-]+\/[\w.-]+(?:#\d{1,9}(?:\/comment\/\d{1,15}|\/label\/[^\s/]{1,100})?|@[0-9a-f]{40})$/;
+const REF = /^github:[\w.-]+\/[\w.-]+(?:#\d{1,9}(?:\/comment\/\d{1,15})?|@[0-9a-f]{40})$/;
 const MAX_REFS = 200;
 
 export function ensureObjects(db: DatabaseSync) {
@@ -22,6 +21,6 @@ export function addObjects(db: DatabaseSync, record: string, refs: unknown, at: 
   for (const ref of cleanRefs(refs)) insert.run(ref, record, at);
 }
 export const objectOf = (db: DatabaseSync, ref: string) => db.prepare("SELECT record, at FROM write_objects WHERE ref = ?").get(ref.toLowerCase()) as { record: string; at: string } | undefined;
-/** Issue and PR refs (`…#<n>`, no comment or label part) recorded since `since`, oldest first. */
+/** Issue and PR refs (`…#<n>`, no comment part) recorded since `since`, oldest first. */
 export const objectsSince = (db: DatabaseSync, since: string) =>
-  (db.prepare("SELECT ref FROM write_objects WHERE at >= ? AND ref NOT LIKE '%/comment/%' AND ref NOT LIKE '%/label/%' AND ref NOT LIKE '%@%' ORDER BY at LIMIT 5000").all(since) as { ref: string }[]).map((r) => r.ref);
+  (db.prepare("SELECT ref FROM write_objects WHERE at >= ? AND ref NOT LIKE '%/comment/%' AND ref NOT LIKE '%@%' ORDER BY at LIMIT 5000").all(since) as { ref: string }[]).map((r) => r.ref);

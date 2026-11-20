@@ -99,7 +99,7 @@ export class Maintainer {
     private readonly gh: Pick<GitHubAccess, "rest">,
     private readonly repos: MaintainedRepo[] | Error,
     private readonly terms: string[] = [],
-    /** Whether a GitHub object (`github:<repo>#<n>[/label/<name>]`) is in AidenHQ's records: the fleet acts as the owner's login. */
+    /** Whether a GitHub object (`github:<repo>#<n>`) is in AidenHQ's records: the fleet acts as the owner's login. */
     private readonly ours: (ref: string) => Promise<boolean> = async () => false,
   ) {}
 
@@ -435,7 +435,7 @@ export class Maintainer {
     if (!which) throw new GitHubRefused(`only the ${r.label} and ${FEATURE_LABEL} labels may be changed on ${r.repo}`);
     const cur = await this.assertTrusted(r, number);
     const present = cur.labels.some((l) => named(l, which));
-    const out = (changed: boolean) => ({ repo: r.repo, number, label: which, action, changed, ...(changed ? { objects: [`${this.ref(r, number)}/label/${which}`] } : {}) });
+    const out = (changed: boolean) => ({ repo: r.repo, number, label: which, action, changed, ...(changed ? { objects: [this.ref(r, number)] } : {}) });
     if (action === "add") {
       if (present) return out(false);
       const res = await this.gh.rest("POST", `/repos/${r.owner}/${r.name}/issues/${number}/labels`, { labels: [which] });

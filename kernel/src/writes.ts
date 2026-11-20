@@ -19,7 +19,7 @@ import { UPDATER, canonical, isUpdater, digestOf, type Card, type Rec, type Reco
 import type { Reviews } from "./reviews.ts";
 import { LOCAL_ORG, repoKey, type Repos } from "./kinds.ts";
 import { REFUSALS_DDL } from "./jobs.ts";
-import { routeKind } from "./codehost.ts";
+import { CODEHOSTS, routeKind } from "./codehost.ts";
 import type { Executor, ReviewContext } from "../sdk/src/executor.ts";
 import { writeRaise, type Inventory } from "./paths.ts";
 import { gateMode } from "./gates.ts";
@@ -300,12 +300,13 @@ export function createWrites({ records, registry, connections, secret, resolver,
 
   /**
    * The outcome, once: the record keeps a capped copy; a caller waiting inline gets the whole text. `objects`: the GitHub
-   * objects the write made (objects.ts), kept so "is this ours" is a lookup.
+   * objects the write made (objects.ts), kept so "is this ours" is a lookup; only a code host's writes (its executor or its
+   * connections' tools) name them, any other module's are dropped.
    */
   function outcomeOf(id: string, ok: boolean, text: string, objects?: unknown): boolean {
     if (!records.finish(id, ok, text)) return false;
-    if (objects !== undefined) records.addObjects(id, objects);
     const r = records.get(id)!;
+    if (objects !== undefined && CODEHOSTS.includes(r.module)) records.addObjects(id, objects);
     log("write outcome", { record: id, kind: r.kind, ok });
     settled({ ...r, outcome: { ok, text } });
     // A Tier 0 write answered its caller inline; a decided one tells its task.
