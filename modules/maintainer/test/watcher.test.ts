@@ -1,6 +1,6 @@
 import { test, mock } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { maintainerIssues, maintainerPrWake, maintainerTick, maintainerTriageWake, maintainerWake, prDue, prTick, startMaintainer } from "../service/src/watcher.ts";
@@ -264,4 +264,13 @@ test("a PR task names the repo, the number and the dates, never the PR's text", 
   assert.deepEqual(posted.map((p) => p.title), [`Maintainer: nudge ${R}#4`, `Maintainer: close quiet ${R}#4`]);
   assert.match(posted[0].description, /2026-03-27/);
   assert.notEqual(posted[0].source, posted[1].source);
+});
+
+test("a new install (external_triage at its module default) files no triage task", () => {
+  const manifest = readFileSync(new URL("../module.yaml", import.meta.url), "utf8");
+  assert.match(manifest, /external_triage: \{ default: false \}/);
+  const dir = mkdtempSync(join(tmpdir(), "maintainer-"));
+  writeFileSync(join(dir, "token"), "t".repeat(32));
+  assert.equal(maintainerTriageWake({ MAINTAINER_TOKEN_FILE: join(dir, "token"), MAINTAINER_EXTERNAL_TRIAGE: "false" }), undefined);
+  assert.equal(typeof maintainerTriageWake({ MAINTAINER_TOKEN_FILE: join(dir, "token"), MAINTAINER_EXTERNAL_TRIAGE: "true" }), "function");
 });

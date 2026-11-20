@@ -113,6 +113,16 @@ export function detectorState(kv: Pick<Kv, "get">): State {
   }
 }
 
+/** The Steward's daily digest routine: while it is paused under quiet start, the Steward is off and the detector files nothing. */
+const STEWARD_SWITCH = "Fleet Ops: daily digest";
+/** Whether the detector may file for the Steward: always, unless quiet start is on and the owner has not turned the Steward's digest routine on. */
+export async function stewardOn(kernel: KernelClient, quiet: string | undefined): Promise<boolean> {
+  if (quiet !== "on") return true;
+  const companies = (await kernel.read("/api/companies")) as Company[];
+  const rows = (await Promise.all(companies.map(async (c) => (await kernel.read(`/api/companies/${c.id}/routines`)) as RoutineRow[]))).flat();
+  return rows.some((r) => r.title === STEWARD_SWITCH && r.status === "active");
+}
+
 /** A check group: its incidents, or undefined when it couldn't be checked (its open incidents stay open). */
 type Check = () => Promise<Incident[] | undefined>;
 
@@ -124,7 +134,7 @@ export const QUIET_MS = 30 * MIN;
  * recovery notes together). Marked filed only when the kernel took it; otherwise the next tick tries again. Within `quietMs`
  * of the last filing only a new critical incident files; the rest wait (still unfiled) for a later tick.
  */
-export async function tick(kv: Kv, checks: Record<string, Check>, file: (body: { incidents: { key: string }[]; recovered: { key: string }[] }) => Promise<boolean>, notify: (text: string) => Promise<void>, now = new Date(), quietMs = 0): Promise<void> {
+export async function tick(kv: Kv, checks: Record<string, Check>, file: (body: { incidents: { key: string }[]; recovered: { key: string }[] }) => Promise<boolean>, notify: (text: string) => Promise<void>, now = new Date(), quietMs = 0, stewardOn = true): Promise<void> {
   const s = detectorState(kv);
   const at = now.toISOString();
   for (const [group, check] of Object.entries(checks)) {
@@ -141,7 +151,7 @@ export async function tick(kv: Kv, checks: Record<string, Check>, file: (body: {
   }
   // The owner hears only that the Steward itself can't be reached: a flag no task has carried for a day (one fixed line, never
   // a flag's own text), since that is the case where nobody else would act.
-  const unheard = Object.values(s.open).filter((o) => !o.fired && !o.told && Date.parse(at) - Date.parse(o.at) > DAY_MS);
+  const unheard = !stewardOn ? [] : Object.values(s.open).filter((o) => !o.fired && !o.told && Date.parse(at) - Date.parse(o.at) > DAY_MS);
   if (unheard.length) {
     // Marked told only once the notice went out (a kernel blip is retried on the next tick).
     if (await notify("The Fleet Steward is unreachable: its health flags have not reached it for a day. Ask Aiden to check the fleet-steward module.").then(() => true, () => false)) for (const o of unheard) o.told = true;
@@ -149,7 +159,7 @@ export async function tick(kv: Kv, checks: Record<string, Check>, file: (body: {
   const incidents = Object.entries(s.open).filter(([, o]) => !o.fired).map(([key, o]) => ({ key, ...(o.critical ? { critical: true } : {}) }));
   const recovered = s.recovered.filter((r) => !r.fired).map(({ key }) => ({ key }));
   const due = incidents.some((i) => i.critical) || !(Date.parse(at) - Date.parse(kv.get("last_filed") ?? "") < quietMs);
-  if ((incidents.length || recovered.length) && due && (await file({ incidents, recovered }).catch(() => false))) {
+  if (stewardOn && (incidents.length || recovered.length) && due && (await file({ incidents, recovered }).catch(() => false))) {
     for (const i of incidents) s.open[i.key]!.fired = true;
     for (const r of s.recovered) r.fired = true;
     kv.set("last_filed", at);
