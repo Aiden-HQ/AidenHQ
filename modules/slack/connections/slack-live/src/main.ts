@@ -48,7 +48,7 @@ const store = openStore(process.env.SLACK_LIVE_DB ?? "/data/slack-live.sqlite");
 // The paired owner (the board mints the code, the owner DMs it) is the owner, and that DM is the command channel.
 const pairing = createPairing(store.db);
 const pairToken = env("PAIR_TOKEN");
-const cfg: SlackConfig = { botToken: env("SLACK_BOT_TOKEN"), ownerId: pairing.owner()?.user ?? "" };
+const cfg: SlackConfig = { botToken: env("SLACK_BOT_TOKEN"), ownerId: pairing.owner()?.user ?? "", boardUrl: env("BOARD_LAN_URL") };
 // The kernel's bearer on /transport/send: this module's own token.
 const channelToken = env("CHANNEL_TOKEN");
 // slack.post's executor (executor@1): the kernel calls it with the service key; execute only for an approved record.

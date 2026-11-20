@@ -6,6 +6,7 @@ import { escape, toSlackMrkdwn } from "./mrkdwn.js";
 export interface SlackConfig {
   botToken: string;
   ownerId: string;
+  boardUrl?: string; // the board's https address (BOARD_LAN_URL): in-app `#/route` links resolve against it
 }
 /** What owner-channel sends (its Message): the text as the agent wrote it, and the chat it belongs to. */
 export type Message = { kind: string; text: string; head?: { agent: string; task: string; issue: string } };
@@ -45,6 +46,6 @@ export async function postMessage(cfg: SlackConfig, payload: Record<string, unkn
 export async function transportSend(cfg: SlackConfig, m: Message): Promise<{ sent: boolean; off?: true }> {
   if (!cfg.botToken || !cfg.ownerId) return { sent: false, off: true };
   const head = m.head ? `*${escapeMrkdwn(m.head.agent)}* · ${m.head.task}\n` : "";
-  const payload = m.kind === "alert" ? { text: escapeMrkdwn(m.text), blocks: alertBlocks(m.text) } : { text: head + toSlackMrkdwn(m.text) };
+  const payload = m.kind === "alert" ? { text: escapeMrkdwn(m.text), blocks: alertBlocks(m.text) } : { text: head + toSlackMrkdwn(m.text, cfg.boardUrl) };
   return { sent: await postMessage(cfg, payload).catch(() => false) };
 }

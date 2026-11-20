@@ -28,9 +28,11 @@ test("H4: a bind mount, a capability, host namespaces, devices, extra hosts, DNS
   // Compose interpolation of anything but its own secrets and allowed host variables.
   assert.throws(() => gen("a", svc({ env: { X: "${AIDENHQ_SECRETS_DIR}/b" } })), /is not allowed/);
   assert.throws(() => gen("a", svc({ command: ["sh", "-c", "cat $HOME/x"] })), /is not allowed/);
-  // The board's address, only to a module whose sign-in returns there.
+  // The board's address, only to a module whose sign-in returns there or whose setup flow links back to it.
   assert.throws(() => gen("a", svc({ env: { BOARD_URL: "${BOARD_LAN_URL:-}" } })), /is not allowed/);
   assert.equal(gen("a", svc({ env: { BOARD_URL: "${BOARD_LAN_URL:-}" } }, { contributes: { "board.signins": [{ id: "a" }] } })).services["a-srv"].environment.BOARD_URL, "${BOARD_LAN_URL:-}");
+  assert.equal(gen("a", svc({ env: { BOARD_URL: "${BOARD_LAN_URL:-}" } }, { contributes: { "board.setup_flows": [{ title: "a" }] } })).services["a-srv"].environment.BOARD_URL, "${BOARD_LAN_URL:-}");
+  assert.throws(() => gen("a", svc({ env: { BOARD_URL: "${BOARD_LAN_URL:-}" } }, { contributes: { "board.setup_flows": [] } })), /is not allowed/);
 });
 
 test("H4: another module's network only through requires; root services and networks only through the legacy list", () => {

@@ -196,6 +196,9 @@ services:
         SLACK_LIVE_DB: /data/slack-live.sqlite
         # Whose Slack words count and who gets paged is the paired owner (state in /data).
         SLACK_POST_CHANNELS: "${settings.slack_post_channels}"
+        # The board's https address (this module's setup flows send the owner here): in-app `#/route` links in a message
+        # resolve against it, since Slack cannot open a bare `#/` route.
+        BOARD_LAN_URL: "${BOARD_LAN_URL:-}"
         MCP_BEARER_TOKEN_FILE: ${secrets.slack_live_service_key}
         # The kernel's bearer on /transport/send: this module's own token.
         CHANNEL_TOKEN_FILE: ${secrets.slack_token}

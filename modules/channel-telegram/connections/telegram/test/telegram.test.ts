@@ -5,6 +5,7 @@ import { markOwnerMessage, transportSend } from "../src/send.js";
 
 afterEach(() => vi.unstubAllGlobals());
 const TASK_URL = "https://agents.example/WOR/issues/{id}";
+const BOARD_URL = "https://board.example/";
 
 describe("Telegram formatting", () => {
   it("escapes everything, then renders a small markdown subset", () => {
@@ -16,6 +17,22 @@ describe("Telegram formatting", () => {
     expect(toTelegramHtml("See WOR-184.", TASK_URL)).toBe('See <a href="https://agents.example/WOR/issues/WOR-184">WOR-184</a>.');
     expect(toTelegramHtml("See WOR-184.")).toBe("See WOR-184.");
     expect(toTelegramHtml("[click](https://evil.example)", TASK_URL)).toBe("[click](https://evil.example)");
+  });
+  it("an in-app route becomes a link to the board's own address; no board configured keeps it literal", () => {
+    expect(toTelegramHtml("Tap [Set up Telegram](#/setup/x).", TASK_URL, BOARD_URL)).toBe('Tap <a href="https://board.example/#/setup/x">Set up Telegram</a>.');
+    expect(toTelegramHtml("[Connect](*not a route*)", TASK_URL, BOARD_URL)).toBe("[Connect](*not a route*)");
+  });
+  it("an arbitrary host stays literal, so a label can never hide a different destination", () => {
+    expect(toTelegramHtml("[click](https://evil.example)", TASK_URL, BOARD_URL)).toBe("[click](https://evil.example)");
+    expect(toTelegramHtml("[click](#//evil.example)", TASK_URL, BOARD_URL)).toBe("[click](#//evil.example)");
+    expect(toTelegramHtml("[a](https://evil.example) [b](#/setup/x)", TASK_URL, BOARD_URL)).toBe('[a](https://evil.example) <a href="https://board.example/#/setup/x">b</a>');
+  });
+  it("with no board address, a route stays literal rather than a broken link", () => {
+    expect(toTelegramHtml("[Set up](/#/setup/x)", TASK_URL, "")).toBe("[Set up](/#/setup/x)");
+    expect(toTelegramHtml("[Set up](#/setup/x)", TASK_URL, "not a url")).toBe("[Set up](#/setup/x)");
+  });
+  it("a route written inside inline code stays literal", () => {
+    expect(toTelegramHtml("`[Set up](#/setup/x)`", TASK_URL, BOARD_URL)).toBe("<code>[Set up](#/setup/x)</code>");
   });
 });
 
