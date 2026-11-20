@@ -17,6 +17,7 @@ interface Finding { severity: string; path: string; anchor?: { line?: number }; 
 interface Review {
   findings?: Finding[]; summaryOnlyFindings?: Finding[];
   health?: { status?: string; diagnostics?: { reason?: string }[] };
+  cause?: string;
   coverage?: { unavailable?: unknown; partial?: unknown; reasons?: string[] };
   needsHumanAttention?: { question?: string; files?: string[] }[];
 }
@@ -31,8 +32,9 @@ const mask = (s: string) => s.replace(/\b(sk|pk|rk)-[A-Za-z0-9_-]{6,}/g, "$1-***
 const clip = (s: unknown, n: number) => { const t = mask(String(s ?? "").trim()); return t.length > n ? `${t.slice(0, n)}…` : t; };
 
 // What to do when no review came out, by the workflow's CODEGENIE_FAILURE. transient: a confirmed provider error (HTTP 429
-// or 5xx, a dropped connection), retried once by the workflow; a retry shows as "2 attempts". no-verdict: anything else
-// (a timeout, an answer that isn't a review); the PR's content can cause it, so it is never retried.
+// or 5xx, a provider quota 402, a dropped connection), retried once by the workflow; a retry shows as "2 attempts".
+// no-verdict: anything else (a timeout, an answer that isn't a review); the PR's content can cause it, so it is never
+// retried.
 const NEXT: Record<string, string> = {
   transient: "The model provider failed twice (rate limit, server error or a dropped connection). Re-run the check; if it fails the same way again, read the job log.",
   "no-verdict": "The reviewer gave no verdict (it timed out, or its answer wasn't a review). Something in the change may have caused it: read the job log.",
@@ -81,10 +83,13 @@ function judge(exitCode: number, stdout: string, sha: string, { failure, cause, 
     return { block: true, short: true, body: `${MARKER}\n**Code review: no verdict${at}**: too large to review in one pass (${counted.toLocaleString("en-US")} counted changed lines; review exit ${exitCode}${tries}). Split it into stacked PRs under ~${TARGET_LINES.toLocaleString("en-US")} counted changed lines each (package-lock.json doesn't count) and push those.` };
   }
   if ((exitCode !== 0 || !readable) && failure === "no-verdict") {
-    return { block: true, short: true, body: `${MARKER}\n**Code review: no verdict${at}** (review exit ${exitCode}${tries}${cause ? `: ${clip(cause, 300)}` : ""}). ${NEXT["no-verdict"]}` };
+    const why = review?.cause || cause;
+    return { block: true, short: true, body: `${MARKER}\n**Code review: no verdict${at}** (review exit ${exitCode}${tries}${why ? `: ${clip(why, 300)}` : ""}). ${NEXT["no-verdict"]}` };
   }
   if (exitCode !== 0 || !readable) {
-    const why = cause || review?.health?.diagnostics?.map((d) => d.reason).filter(Boolean).slice(0, 3).join("; ");
+    // The review's own cause is the specific one (a provider quota, our spend cap): the workflow's CODEGENIE_CAUSE is only a
+    // fixed fallback for a run that never produced a review.
+    const why = review?.cause || cause || review?.health?.diagnostics?.map((d) => d.reason).filter(Boolean).slice(0, 3).join("; ");
     return { block: true, body: `${MARKER}\n**Code review failed${at}** (review exit ${exitCode}${tries}${why ? `: ${clip(why, 300)}` : ""}). ${next}` };
   }
   const all = [...review!.findings!, ...(review!.summaryOnlyFindings ?? [])];
