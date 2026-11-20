@@ -638,14 +638,16 @@ it("triage skips issues already labelled feature-request or agent-build, and a f
       { number: 1, updated_at: "2026-02-01T00:00:00Z", created_at: "2026-02-01T00:00:00Z", labels: ["feature-request"] },
       { number: 2, updated_at: "2026-02-01T00:00:01Z", created_at: "2026-02-01T00:00:01Z", labels: [BUILD] },
       { number: 3, updated_at: "2026-02-01T00:00:02Z", created_at: "2026-02-01T00:00:02Z", labels: ["bug"] },
+      { number: 4, updated_at: "2026-02-01T00:00:03Z", created_at: "2026-02-01T00:00:03Z", labels: ["feature-request"] },
     ],
-    timelines: { 2: [labeledAs(BUILD, "admin-user", "2026-02-01T00:00:03Z")] },
+    timelines: { 1: [labeledAs("feature-request", "acme-bot[bot]", "2026-02-01T00:00:01Z", APP)], 2: [labeledAs(BUILD, "admin-user", "2026-02-01T00:00:03Z")], 4: [labeledAs("feature-request", "stranger", "2026-02-01T00:00:04Z")] },
     permissions: { "admin-user": "admin" },
   });
   const out = await maintainer(f, [], FEATURES).issuesSince({}, { [PRODUCT]: "2026-01-01T00:00:00Z" });
   const row = out.repos[0]! as any;
   expect(row.untriaged.map((i: any) => i.number)).toEqual([3]);
   expect(row.builds.map((i: any) => [i.number, i.trusted])).toEqual([[2, true]]);
+  expect(row.featured).toEqual([1]);
   // A repo without `features` reads no builds.
   expect(((await maintainer(f).issuesSince({})).repos[0]! as any).builds).toBeUndefined();
 });

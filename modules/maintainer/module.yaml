@@ -18,11 +18,10 @@ settings:
   # task per issue), and the backlog by the daily run (the budget caps it). Off by default (a model run per stranger's issue
   # is spend before the owner asks for it): the owner turns it on with `external_triage: true` in instance.yaml settings.
   external_triage: { default: false }
-  # The most new-issue triage runs a day the watcher starts for one issue author: past it (or triage_per_repo_day), an issue is
-  # left to the daily triage run, so a flood of reports can't buy a run each.
-  triage_per_author_day: { default: 3 }
-  # The most new-issue triage runs a day the watcher starts for one repo (see triage_per_author_day).
-  triage_per_repo_day: { default: 30 }
+  # The most invalid new-issue triage runs a day the watcher starts for one issue author: past it an
+  # issue is left to the daily triage run, so a flood of reports can't buy a run each. An issue that proves valid (the repo's
+  # fix label or feature-request) doesn't count, so a tester's real reports are all triaged.
+  triage_invalid_per_author_day: { default: 5 }
   # Minutes between the watcher's checks for a newly labelled issue on any maintained repo (MAINTAINER_POLL_MINUTES).
   maintainer_poll_minutes: { default: 5 }
 agents:
@@ -100,8 +99,7 @@ services:
         MAINTAINER_POLL_MINUTES: "${settings.maintainer_poll_minutes}"
         # Each new unlabelled issue's triage task (off with external_triage false).
         MAINTAINER_EXTERNAL_TRIAGE: "${settings.external_triage}"
-        MAINTAINER_TRIAGE_PER_AUTHOR_DAY: "${settings.triage_per_author_day}"
-        MAINTAINER_TRIAGE_PER_REPO_DAY: "${settings.triage_per_repo_day}"
+        MAINTAINER_TRIAGE_INVALID_PER_AUTHOR_DAY: "${settings.triage_invalid_per_author_day}"
 generated_secrets:
   - maintainer_token
 data_version: 0 # its data dir's format: bumped by each forward-only migration (docs/configuration.md)

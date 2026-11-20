@@ -477,7 +477,7 @@ export class Maintainer {
     if (this.repos instanceof Error) throw new GitHubRefused(`maintainer_repos is invalid: ${this.repos.message}`);
     type Triage = Partial<Awaited<ReturnType<Maintainer["untriaged"]>>> & { triage_error?: string };
     // A repo with `features` on also brings its issues labelled agent-build (`builds`, from its own cursor `build_cursor`).
-    type Build = { builds?: Awaited<ReturnType<Maintainer["repoSince"]>>["issues"]; build_cursor?: string | null; build_error?: string };
+    type Build = { builds?: Awaited<ReturnType<Maintainer["repoSince"]>>["issues"]; build_cursor?: string | null; build_error?: string; featured?: number[] };
     type Row = ({ repo: string; error: string } | ({ repo: string } & Awaited<ReturnType<Maintainer["repoSince"]>>)) & Triage & Build;
     const out: Row[] = [];
     const at = (m: Record<string, string>, repo: string) => Object.entries(m).find(([k]) => same(k, repo))?.[1];
@@ -495,6 +495,8 @@ export class Maintainer {
         } catch (err) {
           row.build_error = (err as Error).message.slice(0, 300);
         }
+        // Unread, the day's feature requests count as invalid until the next tick reads them.
+        row.featured = await this.recentFeatureRequests(r.repo).catch(() => undefined);
       }
       if (triage && (r.issues || r.features)) {
         try {
@@ -506,6 +508,24 @@ export class Maintainer {
       out.push(row);
     }
     return { repos: out };
+  }
+
+  /**
+   * The numbers of the issues labelled feature-request (by a trusted labeler) in the last day, open or closed: the watcher's valid reports that
+   * its per-author triage cap leaves uncounted. Counted only when the label's latest event passes the same trust check as the
+   * fix label (the App or a collaborator with a trusted role): a template or a stranger can't self-exempt.
+   */
+  async recentFeatureRequests(repo: string): Promise<number[]> {
+    const r = this.target(repo);
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const res = await this.app.appCall(r.owner, r.name, { issues: "read" }, "GET", `/repos/${r.owner}/${r.name}/issues?state=all&labels=${FEATURE_LABEL}&since=${since}&per_page=100`);
+    if (res.status !== 200) throw new Error(`couldn't list ${r.repo}'s feature requests (GitHub said ${res.status})`);
+    const trusted: number[] = [];
+    for (const i of ((Array.isArray(res.body) ? res.body : []) as GhIssue[]).filter((i) => !i.pull_request)) {
+      const { latest } = await this.latestOrError(r, i.number, FEATURE_LABEL);
+      if (latest?.trusted) trusted.push(i.number);
+    }
+    return trusted;
   }
 
   /**
