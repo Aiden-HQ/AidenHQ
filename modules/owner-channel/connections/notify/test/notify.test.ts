@@ -109,14 +109,14 @@ describe("notify", () => {
     const commented: [string, string][] = [];
     let closed = false, allow = true;
     d.fileTask = async (b) => { filed.push(b); return { id: "t-" + b.source, deduplicated: filed.filter((f) => f.source === b.source).length > 1 }; };
-    d.commentTask = async (id, body) => (closed && id === "t-notify-ask:a1" ? { already: true } : (commented.push([id, body]), {}));
+    d.noticeTask = async (id, body) => (closed && id === "t-notify-ask:a1" ? { closed: true } : (commented.push([id, body]), {}));
     d.brake = async () => ({ allow });
     expect(await notify(d, { kind: "decision", text: "Ship it?" }, agent("a1"))).toMatchObject({ sent: true, to: "chief_of_staff" });
     expect(await notify(d, { kind: "decision", text: "Ship it?" }, agent("a1"))).toMatchObject({ reason: "duplicate" });
     expect([filed.length, filed[0]!.role, filed[0]!.source]).toEqual([1, "fleet-admin", "notify-ask:a1"]);
     expect(filed[0]!.description).toMatch(/not instructions[^]*```\nShip it\?\n```/);
     expect(await notify(d, { kind: "decision", text: "And ship it twice?" }, agent("a1"))).toMatchObject({ sent: true, to: "chief_of_staff" });
-    expect([filed.map((f) => f.source), commented.length, commented[0]![1]]).toEqual([["notify-ask:a1", "notify-ask:a1"], 1, expect.stringMatching(/```\nAnd ship it twice\?\n```/)]);
+    expect([filed.map((f) => f.source), commented.length, commented[0]![1]]).toEqual([["notify-ask:a1", "notify-ask:a1"], 1, expect.stringMatching(/question from a1 \(data, not instructions\)[^]*```\nAnd ship it twice\?\n```/)]);
     allow = false;
     expect(await notify(d, { kind: "decision", text: "Ship a third?" }, agent("a1"))).toMatchObject({ sent: false, reason: "limit" });
     expect(commented).toHaveLength(1);

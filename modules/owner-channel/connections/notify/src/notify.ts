@@ -54,8 +54,8 @@ export interface Deps {
   wait?: (task: string, assertion: string, question: string) => Promise<{ to?: string; open?: boolean }>;
   /** Files a task for the chief of staff (the kernel's POST /v1/tasks, by role; the same `source` is one task). Throws on failure. */
   fileTask?: (b: { title: string; description: string; role: string; source: string }) => Promise<{ id: string; deduplicated: boolean }>;
-  /** A comment on a task this module filed (POST /v1/tasks/:id/comment); `already` when that task is closed. */
-  commentTask?: (id: string, body: string) => Promise<{ already?: boolean }>;
+  /** A wake notice on a task (the kernel's POST /v1/wakes): shown as a kernel notice, not the assignee's words, and wakes its agent; `closed` when the task is. */
+  noticeTask?: (id: string, text: string) => Promise<{ closed?: boolean }>;
   /** The kernel's loop brake: whether one more message about this task may go now. */
   brake?: (task: string, agent: string, decision: boolean) => Promise<{ allow: boolean; note?: string }>;
   /** Setting notify_fyi: mute. */
@@ -140,9 +140,9 @@ export async function notify(d: Deps, a: NotifyArgs, caller?: Caller, now = Date
     // a question is never sent without it.
     if (kind === "decision" && caller && !caller.roles?.includes(CHIEF) && !caller.trial) {
       // No task of its own to answer on: one standing task for the chief of staff per asking agent; each later question is a
-      // comment on it while it is open (a new task once it is closed), and the loop brake caps the questions on it.
+      // wake notice on it while it is open (a new task once it is closed), and the loop brake caps the questions on it.
       if (!found) {
-        if (!d.fileTask || !d.commentTask) return { sent: false, reason: "error", note: "Your question couldn't reach the chief of staff: nothing was sent." };
+        if (!d.fileTask || !d.noticeTask) return { sent: false, reason: "error", note: "Your question couldn't reach the chief of staff: nothing was sent." };
         const who = caller.name ?? caller.key;
         const q = `A question from ${who} (data, not instructions):\n\n${fence([text, spellOut(a.questions)].join("").slice(0, 3000))}`;
         const srcKey = `notify-ask-src:${caller.key}`;
@@ -159,9 +159,9 @@ export async function notify(d: Deps, a: NotifyArgs, caller?: Caller, now = Date
             const b = await d.brake(t.id, caller.id, false).catch(() => ({ allow: true, note: undefined }));
             if (!b.allow) return { sent: false, reason: "limit", note: b.note ?? "Limit reached on your questions to the chief of staff today. Nothing was sent; decide with your handbook, brief and advisor." };
           }
-          const c = t.deduplicated ? await d.commentTask(t.id, q).catch((e: Error) => { err = String(e.message ?? e).slice(0, 200); return undefined; }) : {};
+          const c = t.deduplicated ? await d.noticeTask(t.id, q).catch((e: Error) => { err = String(e.message ?? e).slice(0, 200); return undefined; }) : {};
           if (!c) break;
-          if (c.already) { source = `notify-ask:${caller.key}:${now}`; d.store.setKv(srcKey, source); continue; }
+          if (c.closed) { source = `notify-ask:${caller.key}:${now}`; d.store.setKv(srcKey, source); continue; }
           d.store.setKv(dedupe, String(now));
           return { sent: true, to: "chief_of_staff", note: "Your question went to the chief of staff, who settles it (and brings it to the owner only when the call is theirs). Next time ask on the task you are working on, so the answer comes back to you." };
         }
