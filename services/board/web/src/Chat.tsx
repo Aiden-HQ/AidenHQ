@@ -251,7 +251,7 @@ export function ApprovalsView({ open, onSignIn }: { open: (identifier: string) =
                 {others.map((i) => (
                   <li key={i.identifier}>
                     <button className="history-row" onClick={() => open(i.identifier)} title={`${i.identifier}: ${i.title}`}>
-                      <span className="history-state">
+                      <span className="history-state wide">
                         <TaskState state={i.state} />
                       </span>
                       <span className="history-who">{i.agent}</span>

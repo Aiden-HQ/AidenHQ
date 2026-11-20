@@ -997,6 +997,7 @@ button.live-toggle:focus-visible { outline: 2px solid var(--accent); border-radi
 .history-row:active { background: var(--pressed); }
 /* Fixed status and who columns so every row lines up; a chip never wraps, a long one ends in an ellipsis. */
 .history-state { flex: none; width: 124px; display: flex; min-width: 0; }
+.history-state.wide { width: min(46ch, 42%); }
 .history-state > * { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .history-state .run-status { display: block; line-height: 18px; }
 .history-who { flex: none; width: 140px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -1007,7 +1008,7 @@ button.live-toggle:focus-visible { outline: 2px solid var(--accent); border-radi
 .empty-state { margin: 0; padding: 32px 20px; text-align: center; color: var(--muted); border: 1px dashed var(--border-strong); border-radius: var(--radius); background: var(--surface-2); }
 .app.mobile .history-target, .app.mobile .history-who { display: none; }
 .app.mobile .history-row { gap: 10px; padding: 10px 12px; }
-@media (max-width: 480px) { .app.mobile .history-state { width: auto; } }
+@media (max-width: 480px) { .app.mobile .history-state, .app.mobile .history-state.wide { width: auto; } }
 /* Approvals fills the window: long sentences and targets get the room, columns stay aligned. */
 .approvals-page .history-target { max-width: 32%; }
 .approvals-page .pending-grid { grid-template-columns: repeat(auto-fill, minmax(min(100%, 640px), 1fr)); }
