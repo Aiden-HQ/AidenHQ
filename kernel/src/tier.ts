@@ -254,6 +254,8 @@ const recordTargets = (r: Prior): Target[] => requestTargets(r.action, r.args)?.
 
 /** Reviewer rejections one target's retries are bounded by: past this many (since the owner's last yes), it is parked. */
 export const MAX_REJECTS = 3;
+/** Panel splits (approve + reject) sent back to the agent on one target before the next goes to the owner (owner, 2026-11-20). */
+export const MAX_SPLITS = 3;
 /** Rejections code made without judging the change (it moved, couldn't be read, too large): they are never findings. */
 export const CODE_REJECTS = ["refused_by_code", "stale_head", "check_failed", "too_large", "files_not_shown", "no_diff", "reviewer_failed"];
 const byOwner = (r: Prior) => Boolean(r.decidedBy) && !/^(reviewer|auto|stale):/.test(r.decidedBy!);
@@ -275,8 +277,8 @@ const decided = (r: Prior) => ["approved", "used", "expired", "rejected"].includ
  *   code before any review (owner, 2026-11-18: refile only after a fix). Two reviewers' unsure lifts once, after the request
  *   chain changed (`chain`: the current chain's hash). A conn.tool call whose arguments can't change (a close, a label) is
  *   refused unchanged on this task once rejected: the agent reports back instead.
- * - splits: the most panel splits (approve + reject, panel_split) among those rejections on one target: the third goes to
- *   the owner instead of parking it (splitToOwner).
+ * - splits: the most panel splits (approve + reject, panel_split) on one target, counted apart from `rejects` (they never
+ *   park it): after MAX_SPLITS of them the next goes to the owner (splitToOwner).
  * - findings: every one of those notes, attached to the next review.
  */
 export function priorDecisions(records: Prior[], action: string, also: string[] = [], key?: string, patches?: string | null, chain?: string, targets?: { targets: Target[]; label: string }) {
@@ -300,12 +302,11 @@ export function priorDecisions(records: Prior[], action: string, also: string[] 
     // The same content as this whole request (its commits, or its patch keys) counts on every target it names, so renaming
     // the branch never resets the bound, even when a patch key couldn't be computed.
     const byContent = (key !== undefined && recordKey(r) === key) || (typeof patches === "string" && recordPatches(r) === patches) ? targets!.targets.map((t) => t.key) : [];
-    for (const k of new Set([...named, ...byPatch, ...byContent])) {
-      count.set(k, (count.get(k) ?? 0) + 1);
-      if (r.reviewCode === "panel_split") splitCount.set(k, (splitCount.get(k) ?? 0) + 1);
-    }
+    // A panel split (approve + reject) has its own bound (MAX_SPLITS), never the park bound's.
+    const bound = r.reviewCode === "panel_split" ? splitCount : count;
+    for (const k of new Set([...named, ...byPatch, ...byContent])) bound.set(k, (bound.get(k) ?? 0) + 1);
   }
-  const rejects = targets?.targets.length ? Math.max(0, ...count.values()) : judged.length;
+  const rejects = targets?.targets.length ? Math.max(0, ...count.values()) : judged.filter((r) => r.reviewCode !== "panel_split").length;
   const splits = targets?.targets.length ? Math.max(0, ...splitCount.values()) : judged.filter((r) => r.reviewCode === "panel_split").length;
   // Two reviewers unsure (reviewer_unsure) is about the request: the fix is often the brief or an authorisation, so the
   // same commits may come back once, after the request chain changed (`chain`, its hash now; `requestChain`, its hash
@@ -357,13 +358,13 @@ export const REVIEW_TRIES = 6;
 export const failedVerdict = (input: ReviewInput, v: Verdict, n: number): Verdict =>
   input.byMerit ? { ...v, decision: "escalate", code: "owner_tier", reason: `The AI reviewer couldn't read it (${v.reason}, ${n} times). It is Tier 2 on its merits, so the owner decides: ${input.reason}` } : { ...v, decision: "reject", reason: `${v.reason}, ${n} times: ask again later.` };
 /**
- * The panel's approve + reject (reject, panel_split) goes back to the agent with both notes; the third on its target
- * (MAX_REJECTS, the reject that would park it) goes to the owner instead (owner, 2026-11-20: back to the agent, then after
- * the third split the owner). Rejections of other kinds park the target as ever.
+ * The panel's approve + reject (reject, panel_split) goes back to the agent with both notes, up to MAX_SPLITS times on its
+ * target; the next one goes to the owner (owner, 2026-11-20: "go back for fix up to 3 times and only then escalate"). Splits
+ * never count toward the park bound (MAX_REJECTS).
  */
 export const splitToOwner = (input: ReviewInput, v: Verdict): Verdict =>
-  v.decision === "reject" && v.code === "panel_split" && (input.splits ?? 0) + 1 >= MAX_REJECTS
-    ? { ...v, decision: "escalate", reason: `The two AI reviewers split ${MAX_REJECTS} times on this target, so the owner decides. ${v.reason}`.slice(0, 1990) }
+  v.decision === "reject" && v.code === "panel_split" && (input.splits ?? 0) >= MAX_SPLITS
+    ? { ...v, decision: "escalate", reason: `The two AI reviewers split again after ${MAX_SPLITS} send-backs on this target, so the owner decides. ${v.reason}`.slice(0, 1990) }
     : v;
 /** autonomy tier0: the reviewer only comments, so its approve or reject goes to the owner as a note; off keeps a reject final. */
 export const shadowed = (v: Verdict, mode: Autonomy): Verdict =>

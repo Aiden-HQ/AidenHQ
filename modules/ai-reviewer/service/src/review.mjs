@@ -443,8 +443,8 @@ async function askFirst(models, prompt, ask, checks = []) {
  * the second: it goes back to the agent. The two votes decide:
  * - approve + approve, or approve + unsure: approved, both notes on it;
  * - unsure + unsure: back to the agent with both notes (reject, reviewer_unsure), never the owner;
- * - approve + reject: back to the agent with both notes (reject, panel_split); the kernel sends the third split on a target
- *   to the owner instead (tier.ts splitToOwner);
+ * - approve + reject: back to the agent with both notes (reject, panel_split), up to three times on a target; the kernel
+ *   sends the fourth to the owner (tier.ts splitToOwner);
  * - reject after an unsure: the reject decides; an escalate goes to the owner, as one reviewer's does.
  * An unsure counts toward an approval only when code verified the input whole (`whole`: the diff matches the code host's own
  * numstat of the change, recorded at filing, and there is a request chain); otherwise approve + unsure goes back to the agent

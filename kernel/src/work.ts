@@ -27,7 +27,7 @@ export function createWork({ db, records, generationsFile = "" }: { db: Database
   const rows = (sql: string, ...args: (string | number)[]) => db.prepare(sql).all(...args) as Record<string, any>[];
   const job = (r: Record<string, any>) => ({ id: r.id, agent: r.agent, task: r.task, engine: r.engine, state: r.state, started_at: iso(r.at), ended_at: iso(r.ended), session: r.session ?? null });
   /** A rejection the retry bound counts (tier.ts priorDecisions): the AI reviewer's judgment, not code's refusal (a moved head, too large). */
-  const judged = (r: { state: string; decided_by?: string | null; review_code?: string | null }) => r.state === "rejected" && /^reviewer:/.test(r.decided_by ?? "") && !CODE_REJECTS.includes(r.review_code ?? "");
+  const judged = (r: { state: string; decided_by?: string | null; review_code?: string | null }) => r.state === "rejected" && /^reviewer:/.test(r.decided_by ?? "") && !CODE_REJECTS.includes(r.review_code ?? "") && r.review_code !== "panel_split";
   /** Where a record was aimed; a record whose args can't be read names none (one malformed record never fails the read). */
   const targetsOf = (r: { kind: string; args?: unknown }): string[] => { try { return (requestTargets(actionOf(r.kind), r.args)?.targets ?? []).map((t) => t.key); } catch { return []; } };
   /** One row, or undefined when its table isn't there (a kernel without the wake inbox or the fact log). */

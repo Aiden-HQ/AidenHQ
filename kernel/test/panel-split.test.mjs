@@ -1,24 +1,29 @@
-// The panel's approve + reject (owner, 2026-11-20): back to the agent with both notes, and the third split on a branch goes to
-// the owner instead of parking it. An approve + unsure the reviewer approved still reaches the owner on a card that is theirs
+// The panel's approve + reject (owner, 2026-11-20): back to the agent with both notes up to three times on a branch, the fourth
+// to the owner; splits never park it. An approve + unsure the reviewer approved still reaches the owner on a card that is theirs
 // on its merits.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { afterReview, meritOwner, priorDecisions, requestKey, requestTargets, splitToOwner } from "../src/tier.ts";
+import { afterReview, meritOwner, priorDecisions, priorPart, requestKey, requestTargets, splitToOwner } from "../src/tier.ts";
 
 const REPO = "acme/aidenhq";
 const split = (sha, at) => ({ id: `k-${sha[0]}`, action: "pr", args: { only: [{ repo: REPO, branch: "b1", sha }] }, state: "rejected", decidedBy: "reviewer:~acme/model-b", decidedAt: at, reviewCode: "panel_split", review: "the two reviewers split", digest: `d-${sha[0]}` });
 const verdict = { decision: "reject", code: "panel_split", reason: "The two reviewers split: fix it.", model: "~acme/model-b" };
 
-test("the third panel split on a branch goes to the owner; earlier ones go back to the agent", () => {
-  const next = { only: [{ repo: REPO, branch: "b1", sha: "c".repeat(40) }] };
+test("panel splits go back to the agent three times on a branch, the fourth to the owner, and never park it", () => {
+  const next = { only: [{ repo: REPO, branch: "b1", sha: "f".repeat(40) }] };
   const priorOf = (records) => priorDecisions(records, "pr", [], requestKey("pr", next), undefined, "chain", requestTargets("pr", next));
-  const one = priorOf([split("a".repeat(40), "2026-11-20T01:00:00.000Z")]);
-  assert.equal(one.splits, 1);
-  assert.equal(splitToOwner({ tier: 1, splits: one.splits }, verdict).decision, "reject");
-  const two = priorOf([split("a".repeat(40), "2026-11-20T01:00:00.000Z"), split("b".repeat(40), "2026-11-20T02:00:00.000Z")]);
-  const third = splitToOwner({ tier: 1, splits: two.splits }, verdict);
-  assert.deepEqual([third.decision, third.code], ["escalate", "panel_split"]);
-  assert.match(third.reason, /split 3 times on this target, so the owner decides/);
+  const splits = ["a", "b", "c"].map((c, i) => split(c.repeat(40), `2026-11-20T0${i + 1}:00:00.000Z`));
+  for (const n of [1, 2]) {
+    const p = priorOf(splits.slice(0, n));
+    assert.deepEqual([p.splits, p.rejects], [n, 0]);
+    assert.equal(splitToOwner({ tier: 1, splits: p.splits }, verdict).decision, "reject", `split ${n + 1} goes back`);
+  }
+  // Three send-backs: not parked (splits aren't the park bound's), and the fourth split goes to the owner.
+  const three = priorOf(splits);
+  assert.deepEqual([three.splits, three.rejects, priorPart(three)], [3, 0, undefined]);
+  const fourth = splitToOwner({ tier: 1, splits: three.splits }, verdict);
+  assert.deepEqual([fourth.decision, fourth.code], ["escalate", "panel_split"]);
+  assert.match(fourth.reason, /split again after 3 send-backs on this target, so the owner decides/);
   // Any other reject is left as it is.
   assert.equal(splitToOwner({ tier: 1, splits: 5 }, { ...verdict, code: "gate_change" }).decision, "reject");
 });

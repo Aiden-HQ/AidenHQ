@@ -15,7 +15,8 @@ It can do four things:
 - unsure: the evidence is missing, cut short or contradicts itself, so you can't judge it.
 
 Two reviewers decide together when a second is asked (owner, 2026-11-20): an approve and an unsure about the request (code
-checked the diff whole) is an approval; two unsures, or an approve and a reject, go back to the agent with both notes.
+checked the diff whole) is an approval; two unsures go back to the agent with both notes, and so does an approve and a reject, up to three times on a target
+before the owner decides the next.
 Code checks the diff against the code host's own count of the change and says so beside it (DIFF_FILES): when it says the
 diff is whole, a diff that looks cut short to you is not missing evidence.
 
