@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { maintainerIssues, maintainerTick, maintainerTriageWake, maintainerWake, startMaintainer } from "../service/src/watcher.ts";
+import { maintainerIssues, maintainerPrWake, maintainerTick, maintainerTriageWake, maintainerWake, prDue, prTick, startMaintainer } from "../service/src/watcher.ts";
 
 const kv = () => {
   const m = new Map();
@@ -176,4 +176,92 @@ test("a filed labelled issue emits issue.triaged at its label time, on the filed
   await run();
   assert.deepEqual(facts, [{ type: "issue.triaged", subject: `issue:${R}#7`, version: "1", at: "2026-01-02T03:04:05Z", task: "task-7",
     data: { issue_url: `https://github.com/${R}/issues/7`, issue_created_at: "2026-01-01T00:00:00Z", labels: ["fix"], trusted: true } }]);
+});
+
+test("agent-build files one build task; an issue carrying both labels is one task; an untrusted build files none", async () => {
+  const fired = [], store = kv();
+  const issues = many([{ repos: [{ repo: R, issues: [issue(7)], cursor: "c1", builds: [issue(7), issue(8), issue(9, false)], build_cursor: "b1" }] }]);
+  const fire = async (_r, i, kind) => (fired.push(`${i.number}:${kind ?? "fix"}`), true);
+  assert.equal(await maintainerTick({ issues, fire, store, log: logs() }), 2);
+  assert.deepEqual(fired, ["7:fix", "8:build"]);
+  assert.equal(stored(store).repos[R].build_cursor, "b1");
+  // The build cursor comes back on the next look, so the same issues aren't read again.
+  const seen = [];
+  await maintainerTick({ issues: async (c, t, b) => (seen.push(b), { repos: [] }), fire, store, log: logs() });
+  assert.deepEqual(seen, [{ [R]: "b1" }]);
+});
+
+test("a build task is the issue's own source and tells the Maintainer to skip validation", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "maint-"));
+  writeFileSync(join(dir, "token"), "tok\n");
+  const env = { MAINTAINER_TOKEN_FILE: join(dir, "token"), AIDENHQ_KERNEL_URL: "http://kernel" };
+  const posted = [];
+  const f = mock.method(globalThis, "fetch", async (_u, init) => (posted.push(JSON.parse(init.body)), { ok: true, json: async () => ({ id: "t1" }) }));
+  try {
+    await maintainerWake(env)(R, issue(5), "build");
+    await maintainerWake(env)(R, issue(5));
+  } finally { f.mock.restore(); }
+  assert.equal(posted[0].source, posted[1].source);
+  assert.equal(posted[0].title, `Maintainer: build ${R}#5 (agent-build)`);
+  assert.doesNotMatch(posted[0].description, /Issue 5/);
+});
+
+const DAY = 86_400_000;
+const NOW = Date.parse("2026-03-20T00:00:00Z");
+const ago = (days) => new Date(NOW - days * DAY).toISOString();
+const pr = (o = {}) => ({ number: 1, author_kind: "human", draft: false, review_requested: false, waiting_on_author: "failing check lint", last_author_activity: ago(8), ...o });
+const nudge = (days, activity = 8) => ({ at: ago(days), author_activity_at: ago(activity) });
+
+test("prDue: a quiet human PR is nudged, a nudged and silent one closed, an answered nudge cancels the close", () => {
+  assert.equal(prDue(pr(), undefined, 7, NOW), "nudge");
+  assert.equal(prDue(pr({ last_author_activity: ago(3) }), undefined, 7, NOW), undefined);
+  assert.equal(prDue(pr(), nudge(8), 7, NOW), "close");
+  assert.equal(prDue(pr(), nudge(3), 7, NOW), undefined);
+  // The author replied after the nudge (no new commit): nothing is due, whatever the nudge's age.
+  assert.equal(prDue(pr({ last_author_activity: ago(2) }), nudge(8), 7, NOW), undefined);
+  assert.equal(prDue(pr(), { ...nudge(8), closed: true }, 7, NOW), undefined);
+});
+
+test("prDue: a draft waits twice as long; bot, fleet and review-waiting PRs are left alone", () => {
+  assert.equal(prDue(pr({ draft: true, last_author_activity: ago(10) }), undefined, 7, NOW), undefined);
+  assert.equal(prDue(pr({ draft: true, last_author_activity: ago(15) }), undefined, 7, NOW), "nudge");
+  assert.equal(prDue(pr({ author_kind: "bot" }), undefined, 7, NOW), undefined);
+  assert.equal(prDue(pr({ author_kind: "fleet" }), undefined, 7, NOW), undefined);
+  assert.equal(prDue(pr({ review_requested: true }), undefined, 7, NOW), undefined);
+  // Green with nothing asked of the author waits on a maintainer's review.
+  assert.equal(prDue(pr({ waiting_on_author: null }), undefined, 7, NOW), undefined);
+});
+
+test("a quiet PR is nudged, then closed after another quiet spell; an active author after the nudge is not closed", async () => {
+  const store = kv(), log = logs(), tasks = [];
+  let now = NOW, rows = [pr({ number: 1 }), pr({ number: 2 })];
+  const prs = async () => ({ repos: [{ repo: R, stale_days: 7, prs: rows }] });
+  const firePr = async (_r, t) => (tasks.push(`${t.kind}:${t.number}`), true);
+  const look = () => prTick({ prs, firePr, store, log, now });
+  assert.equal(await look(), 2);
+  // Within the hour nothing is read again.
+  assert.equal(await look(), 0);
+  // A week on: PR 1 stayed silent, PR 2's author replied (the head is unchanged).
+  now = NOW + 8 * DAY;
+  rows = [pr({ number: 1 }), pr({ number: 2, last_author_activity: new Date(NOW + 2 * DAY).toISOString() })];
+  assert.equal(await look(), 1);
+  assert.deepEqual(tasks, ["nudge:1", "nudge:2", "close:1"]);
+  // A close is filed once.
+  now += 2 * 3600_000;
+  assert.equal(await look(), 0);
+});
+
+test("a PR task names the repo, the number and the dates, never the PR's text", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "maint-"));
+  writeFileSync(join(dir, "token"), "tok\n");
+  const posted = [];
+  const f = mock.method(globalThis, "fetch", async (_u, init) => (posted.push(JSON.parse(init.body)), { ok: true, json: async () => ({ id: "t1" }) }));
+  try {
+    const wake = maintainerPrWake({ MAINTAINER_TOKEN_FILE: join(dir, "token"), AIDENHQ_KERNEL_URL: "http://kernel" });
+    assert.equal(await wake(R, { number: 4, kind: "nudge", waiting: "failing check lint", close_by: "2026-03-27", activity: "2026-03-12T00:00:00.000Z" }), true);
+    await wake(R, { number: 4, kind: "close", waiting: null, close_by: "2026-03-27", activity: "2026-03-12T00:00:00.000Z" });
+  } finally { f.mock.restore(); }
+  assert.deepEqual(posted.map((p) => p.title), [`Maintainer: nudge ${R}#4`, `Maintainer: close quiet ${R}#4`]);
+  assert.match(posted[0].description, /2026-03-27/);
+  assert.notEqual(posted[0].source, posted[1].source);
 });
