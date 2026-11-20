@@ -149,7 +149,7 @@ test("legacy lists stay closed: links, root secrets and host variables may only 
   const was = {
     links: { "owner-channel": ["board", "paperclip", "sources"], monitoring: ["board"], tasks: ["backplane"], meetings: ["backplane", "sources"], google: ["board", "sources"], jira: ["board", "sources"], hubspot: ["board", "sources"], glean: ["board"], grafana: ["board"], clickhouse: ["board"], github: ["board", "sources"], primer: ["board"], slack: ["board"], security: ["paperclip", "sources"] },
     secrets: { "owner-channel": ["paperclip_board_key", "board_internal_token", "owner_decide_key"], tasks: ["board_internal_token"], google: ["google_auth_token", "gateway_source_key"], jira: ["gateway_source_key"], glean: ["glean_auth_token"], grafana: ["grafana_auth_token"], clickhouse: ["clickhouse_auth_token"], github: ["github_token"] },
-    host: { "owner-channel": ["OWNER_SLACK_USER_ID", "SLACK_LIVE_IGNORE_CHANNELS", "TELEGRAM_OWNER_CHAT_ID", "TELEGRAM_TASK_URL", "OWNER_COMMAND_CHANNEL", "AIDENHQ_GATEWAY_URL"], google: ["BOARD_LAN_URL", "GOOGLE_CALENDAR_ID", "AIDENHQ_GATEWAY_URL"], jira: ["AIDENHQ_GATEWAY_URL"], tasks: ["AIDENHQ_GATEWAY_URL"], github: ["GITHUB_COMMENT_ORGS"], slack: ["SLACK_CLIENT_ID"] },
+    host: { "owner-channel": ["OWNER_SLACK_USER_ID", "SLACK_LIVE_IGNORE_CHANNELS", "TELEGRAM_OWNER_CHAT_ID", "TELEGRAM_TASK_URL", "OWNER_COMMAND_CHANNEL", "AIDENHQ_GATEWAY_URL"], google: ["BOARD_LAN_URL", "GOOGLE_CALENDAR_ID", "AIDENHQ_GATEWAY_URL"], jira: ["AIDENHQ_GATEWAY_URL"], tasks: ["AIDENHQ_GATEWAY_URL"], slack: ["SLACK_CLIENT_ID"] },
   };
   // 2f split owner-channel into channel-telegram, channel-slack and chat-lane: each may keep only a part of what it had.
   const split = { "channel-telegram": "owner-channel", "chat-lane": "owner-channel", grading: "board-grades" };
@@ -309,7 +309,7 @@ test("enumeration (spec §9): every shipped write or destructive tool maps to a 
   const kindOf = Object.fromEntries(writes.map(([ct, floor]) => [ct, routed[ct] ?? `conn.tool@${floor}`]));
   assert.deepEqual(["apps.app_deploy", "apps.app_run_request", "apps.app_restart", "apps.app_rollback", "apps.app_api", "apps.app_remove", "apps.app_create"].map((ct) => kindOf[ct]),
     ["apps-platform.deploy", "apps-platform.run", "apps-platform.restart", "apps-platform.rollback", "apps-platform.api_write", "conn.tool@1", "conn.tool@0"]);
-  assert.deepEqual(Object.fromEntries(Object.entries(kinds).map(([id, k]) => [id, k.floor])), { "apps-platform.deploy": 0, "apps-platform.run": 1, "apps-platform.restart": 0, "apps-platform.rollback": 0, "apps-platform.api_write": 0, "hubspot.crm_write": 1, "primer.publish": 1, "primer.reply": 1, "slack.post": 1, "slack.memory": 1, "slack.bind": 0, "github.push": 0, "github.pr": 0, "github.merge": 0, "github.close": 0, "github.create_repo": 0 });
+  assert.deepEqual(Object.fromEntries(Object.entries(kinds).map(([id, k]) => [id, k.floor])), { "apps-platform.deploy": 0, "apps-platform.run": 1, "apps-platform.restart": 0, "apps-platform.rollback": 0, "apps-platform.api_write": 0, "code-review.post": 1, "code-review.notice": 0, "hubspot.crm_write": 1, "primer.publish": 1, "primer.reply": 1, "slack.post": 1, "slack.memory": 1, "slack.bind": 0, "github.push": 0, "github.pr": 0, "github.merge": 0, "github.close": 0, "github.create_repo": 0 });
   assert.deepEqual(["primer.primer_create_document", "primer.primer_add_version", "primer.primer_reply_to_thread", "primer.primer_resolve_thread"].map((ct) => kindOf[ct]), ["primer.publish", "primer.publish", "primer.reply", "primer.reply"]);
   assert.equal(kindOf["slack_live.slack_post"], "slack.post");
   assert.equal(kindOf["slack_live.channel_memory"], "slack.memory");
@@ -325,6 +325,9 @@ test("checks: a task.finish check may observe; a hard gate or a write.filed chec
   assert.throws(() => checkEntries("judge", def({ mode: "warn" })), /mode is observe or enforce/);
   assert.throws(() => checkEntries("platform", { checks: [{ id: "product-gate", at: "write.filed", mode: "observe" }] }), /hard gate: it always enforces/);
   assert.throws(() => checkEntries("judge", { checks: [{ id: "lint", at: "write.filed", mode: "observe" }] }), /write\.filed check gates writes/);
+  // A write.filed check reaches the kernel with its kinds (it runs in process there), and names at least one.
+  assert.deepEqual(checkEntries("platform", { checks: [{ id: "product-gate", at: "write.filed", kinds: ["github.push"] }] }), { "platform.product-gate": { module: "platform", at: "write.filed", kinds: ["github.push"] } });
+  assert.throws(() => checkEntries("platform", { checks: [{ id: "product-gate", at: "write.filed" }] }), /names the write kinds/);
 });
 test("a module's token holds the kernel roles and the enabled modules' declared roles it requests (whoami's roles)", () => {
   const t = kernelModuleTable({ apps: { roles: { declares: [{ id: "apps.read", description: "d" }] } }, grading: { roles: { requests: ["kernel.wake", "apps.read", "nobody.declares"] } } });

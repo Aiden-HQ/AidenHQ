@@ -23,7 +23,7 @@
     {
       "id": "gate-file-moved",
       "trigger": { "paths": ["modules/github/**", "codehost-github/**", "modules/platform/**", "platform/**", "kernel/**", "services/board/src/**", "modules/ai-reviewer/service/**", "ai-reviewer/service/**", "modules/grading/**", "grading/**"], "lines": "^(deleted file mode|rename from|\\+\\+\\+ /dev/null)" },
-      "check": "A gate file the diff deletes or renames has its new path (or its removal) wherever the gate is pinned, in this diff or in the companion PR the request chain names: the path inventory (paths.yaml), GATE_CORE in modules/platform/src/check.mjs and the must-list in the product's scripts/verify-security.sh.",
+      "check": "A gate file the diff deletes or renames has its new path (or its removal) wherever the gate is pinned, in this diff or in the companion PR the request chain names: the path inventory (paths.yaml) and the must-list in the product's scripts/verify-security.sh.",
       "why": "#200: after the board's accounts.ts moved into the kernel, verify-security still required the old file and failed on the host (generation 35)."
     },
     {

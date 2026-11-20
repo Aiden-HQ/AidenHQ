@@ -238,13 +238,17 @@ export function lastWord(messages: Message[]): { text: string; at: string; from:
   return m && { text: oneLine(m.text), at: m.at, from: m.kind === "reply" ? "agent" : "you" };
 }
 
+/** How long after a run ends its reply may still arrive: the kernel posts a job's reply a few seconds after the job ends. */
+const REPLY_GRACE_MS = 60_000;
+
 /**
- * Nothing ends silently: a run that started after the owner's last message finished without a reply. (A message sent
- * mid-run is the next run's to answer, not a silent end.)
+ * Nothing ends silently: a run that started after the owner's last message finished, over a minute ago, without a reply.
+ * (A message sent mid-run is the next run's to answer, not a silent end.)
  */
-export function silentEnd(messages: Message[], lastRun: Pick<PastRun, "status" | "startedAt" | "finishedAt"> | undefined): boolean {
+export function silentEnd(messages: Message[], lastRun: Pick<PastRun, "status" | "startedAt" | "finishedAt"> | undefined, now = Date.now()): boolean {
   const last = lastSaid(messages);
-  return Boolean(last?.kind === "owner" && lastRun?.status === "done" && lastRun.finishedAt && lastRun.startedAt && lastRun.startedAt > last.at);
+  return Boolean(last?.kind === "owner" && lastRun?.status === "done" && lastRun.finishedAt && lastRun.startedAt && lastRun.startedAt > last.at
+    && Date.parse(lastRun.finishedAt) <= now - REPLY_GRACE_MS);
 }
 
 /** The state shown for a chat everywhere (list, conversation, needs-you): chatState, plus what its messages say. */

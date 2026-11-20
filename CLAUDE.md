@@ -31,8 +31,8 @@ never in this file.
 - `scripts/`: compiler (`compile.mjs`, `modules.mjs`), Paperclip setup (`paperclip-setup.mjs`), account auth,
   health, backup and restore.
 - `ops/`: apply, install (`setup.sh`), systemd units, vault, VM provisioning, GitHub App setup.
-- `config/`: generated files (gitignored) plus `*.example.yaml` templates. `docs/`: documentation; `docs/design/`:
-  current design notes.
+- `config/`: generated files (gitignored) plus `*.example.yaml` templates. `docs/`: documentation. `docs/design/`: notes for features being built; when one ships, its lasting rules move into
+  Conventions or a module's prompts and the note is cut to how it works now, or deleted.
 
 ## Build and test
 
@@ -155,6 +155,8 @@ bump of `product:` to a different reviewer needs a receipt for that reviewer too
   surface it gives the owner: its board sign-in and Connect, status, setup help and secrets. Each mode gets one end-to-end test
   of the owner's setup from a fresh install to connected.
 - **Minimal tests.** A few that prove the thing works end to end; no tests for obvious code.
+- **Board UI follows [docs/design/board-ui.md](docs/design/board-ui.md)**: chat first, the frame and kit in
+  `services/board/web/src`, tokens only, both themes, motion tokens. Modules contribute data the board draws, never board UI.
 - **Fluid UI, checked at real sizes.** Board and app pages are fluid at every common resolution: fluid widths with clamp()
   gutters, a clamp() type scale, grids that reflow, never a fixed narrow column floating on a large screen. Before
   calling a UI change done, set the browser viewport explicitly and screenshot it at 1512x982, 1920x1080, 2560x1440,

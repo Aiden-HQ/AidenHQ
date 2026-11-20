@@ -4,10 +4,16 @@
 // body names. Each request is recorded on the job. `cleanup` happens when the asking job's box is released (boxes.ts); the
 // next turn's admission (admission.ts) applies `reset` and `engine`, checking the engine and model against the agent's grants
 // then, and the requests go once that turn has started (taken), so a deferred or failed start keeps them for the next try.
+// It also counts a job's prechecks (`aidenhq review`, backplane.ts and main.ts): a reviewer call each, PRECHECKS a job.
 import type { DatabaseSync } from "node:sqlite";
 import { verifyToken } from "./gateway/token.ts";
 
 export const JOB_TOOLS = ["reset", "engine", "cleanup"] as const;
+/** A job's prechecks (`aidenhq review`): each is a reviewer call. */
+export const PRECHECKS = 3;
+/** A reviewer call's failures (reviews.ts) before any reviewer took the request: none installed, no key, its module refused or
+ * unreachable. A timeout or a failed review may have spent: never refunded. */
+const NOT_REVIEWED = ["no_reviewer", "no_service_key", "bad_reviewer"];
 export type NextTurn = { job: string; fresh: boolean; engine: { kind: string; model?: string } | null; cleanup: boolean };
 
 export class JobToolError extends Error {
@@ -32,6 +38,8 @@ export function createJobTools({ db, secret, engines, orgs = () => [], mayClone 
   now?: () => number;
 }) {
   db.exec("CREATE TABLE IF NOT EXISTS jobtools (job TEXT PRIMARY KEY, fresh INTEGER NOT NULL DEFAULT 0, engine TEXT, cleanup INTEGER NOT NULL DEFAULT 0, at INTEGER NOT NULL)");
+  db.exec("CREATE TABLE IF NOT EXISTS jobtool_reviews (job TEXT PRIMARY KEY, n INTEGER NOT NULL)");
+  if (!(db.prepare("PRAGMA table_info(jobtool_reviews)").all() as { name: string }[]).some((c) => c.name === "refunds")) db.exec("ALTER TABLE jobtool_reviews ADD COLUMN refunds INTEGER NOT NULL DEFAULT 0");
   const save = db.prepare(`INSERT INTO jobtools (job, fresh, engine, cleanup, at) VALUES (?, ?, ?, ?, ?)
     ON CONFLICT (job) DO UPDATE SET fresh = MAX(fresh, excluded.fresh), engine = COALESCE(excluded.engine, engine), cleanup = MAX(cleanup, excluded.cleanup), at = excluded.at`);
 
@@ -98,6 +106,18 @@ export function createJobTools({ db, secret, engines, orgs = () => [], mayClone 
       const repo = `local/${m[1]}`;
       if (!mayClone(r!.module, repo)) throw new JobToolError(403, "not-allowed", `${repo} isn't a repository this job's dispatcher may clone`);
       return { repo };
+    },
+    /**
+     * One of this live job's prechecks, counted before its reviewer call: at most PRECHECKS a job. Returns its refund, for a
+     * reviewer call that never reached a reviewer (none installed, or its module refused or couldn't be reached before it
+     * took the request): that precheck cost nothing. At most PRECHECKS refunds a job, so the reviewer is never asked unbounded.
+     */
+    review(token: string): (failure: unknown) => void {
+      const job = jobOf(token);
+      const got = db.prepare("INSERT INTO jobtool_reviews (job, n) VALUES (?, 1) ON CONFLICT (job) DO UPDATE SET n = n + 1 WHERE n < ? RETURNING n").get(job, PRECHECKS);
+      if (!got) throw new JobToolError(429, "precheck-limit", `this job has had its ${PRECHECKS} prechecks: publish, and the AI reviewer decides`);
+      let refunded = false;
+      return (failure) => { if (!refunded && NOT_REVIEWED.includes(String((failure as { type?: unknown })?.type))) (refunded = true, db.prepare("UPDATE jobtool_reviews SET n = n - 1, refunds = refunds + 1 WHERE job = ? AND n > 0 AND refunds < ?").run(job, PRECHECKS)); };
     },
     /** What the task's last ended job asked of its next turn, if anything (read in the admission transaction). */
     pending(task: string): NextTurn | undefined {

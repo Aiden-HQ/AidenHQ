@@ -1,4 +1,4 @@
-// src_meetings writer (shared sources, docs/design/sources.md, phase 2). ops-mcp files
+// src_meetings writer (shared sources, docs/design/sources.md). ops-mcp files
 // every published meeting as a canonical note in the vault; this copies each one into the warehouse in full (the owner's
 // policy: meeting notes are stored whole, other long docs only as summaries) so agents read them with warehouse_query and
 // source_new instead of the vault. Keyed by ops-mcp's meeting id, which survives a note's rename. Every 15 minutes; the

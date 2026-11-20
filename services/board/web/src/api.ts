@@ -1,6 +1,9 @@
 import type { AuthorKind, FlowSummary, IdleItem, JourneyInfo, JourneyList, JourneySort, Waterfall } from "../../src/flow";
 import type { AgentProfile, TaskRow, FeatureCost, Features, Advisory, Agents, AsideMessage, Lineage, SettledItem, AppRow, Approval, Board, Bucket, Cadence, ChatAgent, ChatDetail, LaneAgent, LaneMessage, ChatRow, CostLedger, CostTop, IssueView, Models, ModuleDetail, ModuleRow, NeedsYou, RecurringView, RosterAgent, RunTrace, Scorecard, SettingChange, FiledChange, SettingsData, Update } from "./types";
 import type { ConnectionsData } from "./connections";
+import type { TimelineEntry } from "../../src/timeline";
+import type { Explanation } from "../../src/explain";
+import type { CodeReview, Profile, ReposView, Review, ReviewInsights, ReviewerRow, Run } from "../../src/reviews";
 import type { BrowseModule, GrantConnection, MarketplaceRow } from "./types";
 
 async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
@@ -25,6 +28,16 @@ function base64(file: File): Promise<string> {
     reader.onerror = () => reject(new Error(`couldn't read ${file.name}`));
     reader.readAsDataURL(file);
   });
+}
+
+/** The Reviews page's first read: whether the module is on, GitHub signed in, and settings.code_review as compiled. */
+export interface ReviewsSetup {
+  module: boolean;
+  github: { configured: boolean; connected: boolean; state: string | null };
+  config: CodeReview | null;
+  problems: string[];
+  /** The GitHub orgs reviews may post in as the owner (settings.github_comment_orgs, lowercased). */
+  comment_orgs: string[];
 }
 
 /** Not signed in (or the session ended), or an admin without an authenticator yet. */
@@ -217,6 +230,8 @@ export const api = {
     const p = new URLSearchParams({ view: "history", ...(opts.q ? { q: opts.q } : {}), ...(opts.status ? { status: opts.status } : {}), ...(opts.offset ? { offset: String(opts.offset) } : {}) });
     return call<{ rows: TaskRow[]; next: number | null }>("GET", `/api/agents/by-key/${encodeURIComponent(key)}/tasks?${p}`);
   },
+  agentTimeline: (key: string) => call<{ entries: TimelineEntry[] }>("GET", `/api/agents/by-key/${encodeURIComponent(key)}/timeline`),
+  explain: (id: string) => call<{ explanation: Explanation }>("GET", `/api/approvals/${encodeURIComponent(id)}/explain`),
   scorecard: (id: string) => call<Scorecard>("GET", `/api/agents/${encodeURIComponent(id)}/scorecard`),
   signIn: (id: string) => call<SignInView>("GET", `/api/sign-ins/${encodeURIComponent(id)}`),
   signInFinish: (id: string, url: string) => call<{ ok: boolean }>("POST", `/api/sign-ins/${encodeURIComponent(id)}/finish`, { url }),
@@ -239,6 +254,19 @@ export const api = {
   module: (name: string) => call<ModuleDetail>("GET", `/api/modules/${encodeURIComponent(name)}`),
   /** Installed modules whose setup flow isn't done (docs/design/guided-setup.md); a 404 means no flows. */
   settings: () => call<SettingsData>("GET", "/api/settings"),
+  /** The Reviews page (Reviews.tsx): the code-review module's setup, runs, repos, reviewers and the owner's settings change. */
+  reviewsSetup: () => call<ReviewsSetup>("GET", "/api/reviews/setup"),
+  reviews: (q: { repo?: string; status?: string; limit?: number } = {}) => call<{ runs: Run[] }>("GET", `/api/reviews?${new URLSearchParams(Object.entries(q).flatMap(([k, v]) => (v === undefined || v === "" ? [] : [[k, String(v)]])))}`),
+  review: (id: string) => call<{ run: Run; review: Review | null }>("GET", `/api/reviews/run/${encodeURIComponent(id)}`),
+  reviewRepos: () => call<ReposView>("GET", "/api/reviews/repos"),
+  reviewers: () => call<{ reviewers: ReviewerRow[] }>("GET", "/api/reviews/reviewers"),
+  reviewAvailable: (q: string) => call<{ repos: { repo: string; private: boolean; pushed_at?: string }[] }>("GET", `/api/reviews/available?q=${encodeURIComponent(q)}`),
+  reviewRecent: () => call<{ prs: { url: string; repo: string; number: number; title: string }[] }>("GET", "/api/reviews/recent"),
+  reviewInsights: (days: number) => call<ReviewInsights>("GET", `/api/reviews/insights?days=${days}`),
+  reviewRun: (body: { pr_url: string; reviewer?: string; focus?: string; full?: boolean }) => call<{ run: Run }>("POST", "/api/reviews", body),
+  reviewTry: (body: { reviewer: Profile; pr_url: string }) => call<{ run: Run }>("POST", "/api/reviews/try", body),
+  /** settings.code_review, and/or a GitHub org reviews may post in as the owner, as one settings change. */
+  reviewConfig: (body: { value?: CodeReview; org?: string }) => call<{ identifier: string }>("POST", "/api/reviews/config", body),
   connections: (fresh = false) => call<ConnectionsData>("GET", `/api/settings/connections${fresh ? "?fresh" : ""}`),
   /** Files a settings change as the Engineer's task; its commit becomes an apply card. */
   changeSettings: (changes: SettingChange[]) => call<{ identifier: string }>("POST", "/api/settings/change", { changes }),

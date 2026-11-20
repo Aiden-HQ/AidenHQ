@@ -19,14 +19,17 @@ import type { Resolver } from "./net.ts";
 import { gateMode } from "./gates.ts";
 import { fail } from "./proxy.ts";
 import { noteFact, openFacts } from "./facts.ts";
+import { parseGraderNote, type GraderNote } from "./grader-note.ts";
 
-export type Check = { module: string; at: string; url: string; rubric?: string; auth_secret: string; agents?: string[]; label?: string; mode?: "observe" };
+export type Check = { module: string; at: string; url: string; rubric?: string; grade?: string; auth_secret: string; agents?: string[]; label?: string; mode?: "observe" };
 type Verdict = { verdict: "ok" | "hold" | "pending" | "reopen" | "deny"; reason?: string; until?: string; state?: string; status?: number; unlabel?: boolean; accepts?: boolean };
 export type Finish = { pass: true } | { pass: false; held: true; state: string; reason: string } | { pass: false; reopened: true; reason: string };
 type Issue = { id: string; identifier?: string; companyId?: string; status?: string; assigneeAgentId?: string | null; assigneeUserId?: string | null; createdByAgentId?: string | null; parentId?: string | null; labelIds?: string[]; labels?: { id: string }[]; executionPolicy?: Record<string, unknown> | null };
 /** A hold's resolving verdicts and the status each moves the task to. */
 const RESOLVES = new Map([["ok", "done"], ["reopen", "todo"], ["block", "blocked"]]);
 const VERDICTS = ["ok", "hold", "pending", "reopen", "deny"];
+/** The follow-up deadline for a holding check that named none: the task's review path is saved for an hour, never left unscheduled. */
+const DEFAULT_HOLD_CHECK_MS = 60 * 60_000;
 
 /** config/kernel/checks.json, reread when it changes. Missing, unreadable or not a map throws: a load error, never "no checks". */
 export function checksFile(file: string): () => Record<string, Check> {
@@ -172,11 +175,12 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
     const held = verdicts.filter((x) => x.v.verdict === "hold" || x.v.verdict === "pending");
     if (held.length) {
       // In review, with each holding check's label and the first scheduled check (the control plane's review path: without
-      // one it wakes the assignee to repair the review instead of leaving it to the check).
+      // one it wakes the assignee to repair the review instead of leaving it to the check). A holding check that named no
+      // `until` still saves one, at the default follow-up deadline.
       const ids = labelIds(i);
       const add = (await Promise.all(held.map((x) => (x.c.label ? label(i, x.c.label) : undefined)))).filter((l): l is { id: string } => Boolean(l) && !ids.includes(l!.id));
-      const timed = held.find((x) => x.v.until);
-      const monitor = timed && i.assigneeAgentId && !i.assigneeUserId ? { executionPolicy: { ...(i.executionPolicy ?? {}), monitor: { nextCheckAt: timed.v.until, notes: String(timed.v.reason ?? "").slice(0, 500) } } } : {};
+      const nextCheckAt = held.find((x) => x.v.until)?.v.until ?? new Date(Date.now() + DEFAULT_HOLD_CHECK_MS).toISOString();
+      const monitor = i.assigneeAgentId && !i.assigneeUserId ? { executionPolicy: { ...(i.executionPolicy ?? {}), monitor: { nextCheckAt, notes: String(held[0]!.v.reason ?? "").slice(0, 500) } } } : {};
       await patch(i, { ...(i.status !== "in_review" ? { status: "in_review" } : {}), ...(add.length ? { labelIds: [...ids, ...new Set(add.map((l) => l.id))] } : {}), ...monitor });
       for (const x of held) db.prepare("INSERT OR REPLACE INTO check_holds (task, check_id, at) VALUES (?, ?, ?)").run(i.id, x.id, new Date().toISOString());
       log("finish held", { task: i.identifier, via: caller.via, checks: held.map((x) => x.id) });
@@ -203,10 +207,15 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
     // A module's ok moves the task to done as the owner: the same hold as an agent's finish, so a change still open on this
     // server stops it too, before the hold is released.
     if (b.verdict === "ok") await noOpenChange(i, "the grader or the module that held it can move it on once the merge lands");
-    await unlabel(i, c);
-    db.prepare("DELETE FROM check_holds WHERE task = ? AND check_id = ?").run(i.id, id);
+    // The move first, in one PATCH with the label's removal: the hold goes only once the task has moved, so a failed call leaves
+    // it for the module's retry (and a retry never posts its comment twice).
     const comment = typeof b.comment === "string" && b.comment ? { comment: b.comment.slice(0, 60_000) } : {};
-    if (to) await patch(await issue(i.id), { status: to, ...comment });
+    if (to) {
+      const l = c.label ? await label(i, c.label) : undefined;
+      const ids = labelIds(i);
+      await patch(i, { status: to, ...(l && ids.includes(l.id) ? { labelIds: ids.filter((x) => x !== l.id) } : {}), ...comment });
+    } else await unlabel(i, c);
+    db.prepare("DELETE FROM check_holds WHERE task = ? AND check_id = ?").run(i.id, id);
     if (to) verdictEvent(i.id, id, String(b.verdict));
     log("finish check resolved", { task: i.identifier, check: id, verdict: b.verdict });
     return { ok: true };
@@ -242,6 +251,16 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
     if (!takers.length) throw fail(409, "conflict", "no check takes a rubric, so this task can't be graded");
     for (const [id, c] of takers) await ask(id, c, { task, module, ...b }, c.rubric);
   }
-  return { finish, resolve, held, rubric };
+  /**
+   * The latest verdict that sent a task's work back, for the AI reviewer (review-loop.ts): asked of the enforcing finish check
+   * that keeps one (`grade:`), with its own key, and checked here. None keeps one: undefined, and the reviewer reads no note.
+   */
+  async function grade(task: string): Promise<GraderNote | undefined> {
+    const keeper = finishing().find(([, c]) => c.grade && c.mode !== "observe");
+    if (!keeper) return undefined;
+    const v = (await ask(keeper[0], keeper[1], { task: { id: task } }, keeper[1].grade)) as Verdict & { grade?: unknown };
+    return parseGraderNote(v.grade);
+  }
+  return { finish, resolve, held, rubric, grade };
 }
 export type Checks = ReturnType<typeof createChecks>;

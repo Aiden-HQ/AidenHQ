@@ -17,6 +17,7 @@
     "./reviewer": "./dist/src/reviewer.js",
     "./judge": "./dist/src/judge.js",
     "./progress": "./dist/src/progress.js",
+    "./paperclip": "./dist/src/paperclip.js",
     "./source-store": "./dist/src/source-store.js",
     "./vendor/proxy": "./dist/src/vendor/proxy.js",
     "./vendor/oauth": "./dist/src/vendor/oauth.js"

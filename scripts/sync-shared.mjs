@@ -7,6 +7,7 @@
 //   kernel/sdk/src/reviewer.ts       the reviewer side of reviewer@1, in the reviewer module's service
 //   kernel/sdk/src/kernel-client.ts  the module-to-kernel client, in each module that calls the kernel
 //   kernel/sdk/src/checks.ts         how check results are read, in the merge gate (codehost-github) and the grader
+//   kernel/sdk/src/paperclip.ts      the one Paperclip HTTP client (lanes through the kernel, or direct), in the board, tasks-mcp and ops-mcp
 //   kernel/sdk/src/pin-owner.ts      who moves the product pin, in the code host's release train (the kernel's updater imports it)
 //   kernel/sdk/src/judge.ts          the judges' models, cross-family choice and model call, in the reviewer and grading services
 //   services/shared/review-files.mjs  the changed files as the reviewer reads them, in the reviewer module's service
@@ -19,6 +20,7 @@
 //   modules/apps-platform/starter/      the app starter, in the agent computers (a whole folder: SHARED_DIRS)
 //   kernel/sdk/src/{types,engine-io,progress}.ts  the SDK's engine side, in every module with an sdk/ folder
 //   modules/github/checks/{tests,history}.sh  a change's tests, in codehost-local's `change` check job
+//   modules/ci/template/.github/{code-review,review-tools,review-checklist}.mjs  the review core, in the code review recipe
 //   node scripts/sync-shared.mjs
 import { copyFileSync, existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -49,14 +51,15 @@ export function sharedCopies(root = repo) {
     "modules/primer/connections/primer-mcp/src",
     "modules/slack/connections/slack-mcp/src",
     "modules/tasks/connections/tasks-mcp/src",
-    // The fleet-steward service checks the caller's assertion on its connection.
+    // The fleet-steward and code-review services check the caller's assertion on their connections.
     "modules/fleet-steward/service/src",
+    "modules/code-review/service/src",
     // The grading service checks the tasks module's assertion when it files a rubric, and the owner's router on notify; the
     // grading service, the reviewer and dispatch fence their prompts' data blocks (dataBlock).
     ...(f === "caller.ts" ? ["modules/grading/service/src", "modules/owner-channel/connections/notify/src"] : ["modules/grading/service/src", "modules/ai-reviewer/service/src", "modules/dispatch/service/src"]),
   ].map((d) => `${d}/aidenhq-sdk/${f}`)])),
   // The executor side of write kinds (executor@1), in each module server that declares an executor.
-  "kernel/sdk/src/executor.ts": ["modules/apps-platform/apps-mcp/src/aidenhq-sdk/executor.ts", "modules/primer/connections/primer-mcp/src/aidenhq-sdk/executor.ts", "modules/slack/connections/slack-live/src/aidenhq-sdk/executor.ts", "modules/hubspot/connections/hubspot-mcp/src/aidenhq-sdk/executor.ts", "modules/github/service/src/aidenhq-sdk/executor.ts"],
+  "kernel/sdk/src/executor.ts": ["modules/apps-platform/apps-mcp/src/aidenhq-sdk/executor.ts", "modules/primer/connections/primer-mcp/src/aidenhq-sdk/executor.ts", "modules/slack/connections/slack-live/src/aidenhq-sdk/executor.ts", "modules/hubspot/connections/hubspot-mcp/src/aidenhq-sdk/executor.ts", "modules/github/service/src/aidenhq-sdk/executor.ts", "modules/code-review/service/src/aidenhq-sdk/executor.ts"],
   // A change's tests (the secret scan, supply chain, lint, tests and build), run the same for a change request on this server.
   ...Object.fromEntries(["tests.sh", "history.sh"].map((f) => [`modules/github/checks/${f}`, [`modules/codehost-local/checks/${f}`]])),
   // The vendor connections' shared pass-through (owner, 2026-11-18: every connection exposes its vendor's whole MCP server),
@@ -67,7 +70,7 @@ export function sharedCopies(root = repo) {
   // The eval's pass rule: the kernel's check job and the reviewer's own eval script apply this one copy.
   "kernel/sdk/src/pass-rule.ts": ["modules/ai-reviewer/service/src/aidenhq-sdk/pass-rule.ts"],
   // The one kernel client (design: one Paperclip/kernel client): every module that calls the kernel with its own token.
-  "kernel/sdk/src/kernel-client.ts": ["modules/dispatch/service/src/aidenhq-sdk/kernel-client.ts", "modules/github/service/src/aidenhq-sdk/kernel-client.ts", "modules/grading/service/src/aidenhq-sdk/kernel-client.ts", "modules/maintainer/service/src/aidenhq-sdk/kernel-client.ts", "modules/fleet-steward/service/src/aidenhq-sdk/kernel-client.ts", "modules/chat-lane/connections/lane/src/aidenhq-sdk/kernel-client.ts", "modules/channel-telegram/connections/telegram/src/aidenhq-sdk/kernel-client.ts", "modules/owner-channel/connections/notify/src/aidenhq-sdk/kernel-client.ts"],
+  "kernel/sdk/src/kernel-client.ts": ["modules/dispatch/service/src/aidenhq-sdk/kernel-client.ts", "modules/github/service/src/aidenhq-sdk/kernel-client.ts", "modules/grading/service/src/aidenhq-sdk/kernel-client.ts", "modules/maintainer/service/src/aidenhq-sdk/kernel-client.ts", "modules/code-review/service/src/aidenhq-sdk/kernel-client.ts", "modules/fleet-steward/service/src/aidenhq-sdk/kernel-client.ts", "modules/chat-lane/connections/lane/src/aidenhq-sdk/kernel-client.ts", "modules/channel-telegram/connections/telegram/src/aidenhq-sdk/kernel-client.ts", "modules/owner-channel/connections/notify/src/aidenhq-sdk/kernel-client.ts"],
   // The judges' shared library (design §4.4): the reviewer and the grader keep their own contracts and credentials.
   "kernel/sdk/src/judge.ts": ["modules/ai-reviewer/service/src/aidenhq-sdk/judge.ts", "modules/grading/service/src/aidenhq-sdk/judge.ts"],
   // How GitHub check results are read: the merge gate, the PR watcher and the grader.
@@ -76,10 +79,13 @@ export function sharedCopies(root = repo) {
   "kernel/sdk/src/churn.ts": ["modules/github/service/src/aidenhq-sdk/churn.ts"],
   // Who moves the product pin: the kernel's updater and the code host's release train ask this one function.
   "kernel/sdk/src/pin-owner.ts": ["modules/github/service/src/aidenhq-sdk/pin-owner.ts"],
-  // The changed files' shaping (the eval and the reviewer's verdicts use this copy).
-  "services/shared/review-files.mjs": ["modules/ai-reviewer/service/src/review-files.mjs"],
+  // The changed files' shaping: the code host's plan shapes them for the reviewer, which (and its eval) reads this copy.
+  "services/shared/review-files.mjs": ["modules/ai-reviewer/service/src/review-files.mjs", "modules/github/service/src/review-files.mjs"],
   // The reliability checklist's matcher: the CI template's (MIT), used by its code review and by the AI reviewer.
-  "modules/ci/template/.github/review-checklist.mjs": ["modules/ai-reviewer/service/src/review-checklist.mjs"],
+  "modules/ci/template/.github/review-checklist.mjs": ["modules/ai-reviewer/service/src/review-checklist.mjs", "modules/code-review/recipe/review-checklist.mjs"],
+  // The review core (the CI reviewer's codex runner, its brief and parse, and its read-only repo tools): CI's code-review job
+  // and the code review module's recipe run the same code (canonical in the CI template, MIT, copied as is into app repos).
+  ...Object.fromEntries(["code-review.mjs", "review-tools.mjs"].map((f) => [`modules/ci/template/.github/${f}`, [`modules/code-review/recipe/${f}`]])),
   "kernel/sdk/src/source-store.ts": [
     "modules/slack/connections/slack-live/src/source-store.ts",
     "modules/github/connections/github-mcp/src/source-store.ts",
@@ -92,13 +98,15 @@ export function sharedCopies(root = repo) {
   // Who said it: a comment posted for someone else is never the owner's words (dispatch, the grader, task_comments, the board).
   "kernel/sdk/src/for-others.ts": ["modules/dispatch/service/src/aidenhq-sdk/for-others.ts", "modules/grading/service/src/aidenhq-sdk/for-others.ts", "modules/tasks/connections/tasks-mcp/src/aidenhq-sdk/for-others.ts", "services/board/src/aidenhq-sdk/for-others.ts"],
   // Whether an agent is paused (Paperclip's lifecycle holds, never its status): the board, the Telegram channel and the Fleet Steward.
+  // The one Paperclip client: the board (owner lane), the task tools (agent lane) and ops-mcp (its own key).
+  "kernel/sdk/src/paperclip.ts": ["services/board/src/aidenhq-sdk/paperclip.ts", "modules/tasks/connections/tasks-mcp/src/aidenhq-sdk/paperclip.ts", "modules/meetings/connections/ops-mcp/src/aidenhq-sdk/paperclip.ts"],
   "kernel/sdk/src/agent-paused.ts": ["services/board/src/aidenhq-sdk/agent-paused.ts", "modules/channel-telegram/connections/telegram/src/aidenhq-sdk/agent-paused.ts", "modules/fleet-steward/service/src/aidenhq-sdk/agent-paused.ts"],
   // The revert and incident linker: the board's quality report and the kernel's flow DORA (flow.ts imports the original).
   "kernel/sdk/src/quality.ts": ["services/board/src/aidenhq-sdk/quality.ts"],
   "services/shared/reason-codes.ts": ["services/board/src/reason-codes.ts"],
   "services/shared/url-setting.ts": ["services/board/src/url-setting.ts"],
   // The supply-chain checks, version picker and image scan, for app repos (the app CI template is copied into each as it is).
-  "scripts/supply-chain/best-version.mjs": ["modules/ci/template/.github/supply-chain/best-version.mjs", "modules/engineering/skills/supply-chain/best-version.mjs"],
+  "scripts/supply-chain/best-version.mjs": ["modules/ci/template/.github/supply-chain/best-version.mjs", "modules/engineering/skills/supply-chain/best-version.mjs", "modules/github/service/src/best-version.mjs"],
   "scripts/supply-chain/pins.mjs": ["modules/ci/template/.github/supply-chain/pins.mjs"],
   "scripts/supply-chain/npm-age.mjs": ["modules/ci/template/.github/supply-chain/npm-age.mjs"],
   "scripts/supply-chain/image-scan.mjs": ["modules/ci/template/.github/supply-chain/image-scan.mjs"],

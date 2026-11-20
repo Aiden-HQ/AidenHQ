@@ -5,16 +5,18 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { generateKeyPairSync } from "node:crypto";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { appClient } from "../service/src/github-app.ts";
 import { createService } from "../service/src/service.ts";
 import { render } from "../../../kernel/src/writes.ts";
 
 const sh = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8", env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_AUTHOR_NAME: "a", GIT_AUTHOR_EMAIL: "a@example.com", GIT_COMMITTER_NAME: "a", GIT_COMMITTER_EMAIL: "a@example.com" } }).trim();
 const listen = (handler) => new Promise((ok) => { const s = createServer(handler); s.listen(0, "127.0.0.1", () => ok({ s, url: `http://127.0.0.1:${s.address().port}` })); });
 
-async function setup(t, { routes = () => undefined } = {}) {
+async function setup(t, { routes = () => undefined, app: appOverride } = {}) {
   const root = mkdtempSync(join(tmpdir(), "codehost-svc-"));
   const marker = join(root, "RAN");
   // "GitHub": a bare repo with main.
@@ -53,11 +55,11 @@ async function setup(t, { routes = () => undefined } = {}) {
   });
   const minted = [];
   const created = [];
-  const app = { token: async (org, o) => (minted.push({ org, ...o }), "tok"), createRepo: async (slug) => (created.push(slug), "created"), identity: async () => ({ name: "acme-app[bot]", email: "1+acme-app[bot]@users.noreply.github.com" }) };
+  const app = { token: async (org, o) => (minted.push({ org, ...o }), "tok"), createRepo: async (slug) => (created.push(slug), "created"), appInfo: async () => ({ id: 1, slug: "acme-app" }), identity: async () => ({ name: "acme-app[bot]", email: "1+acme-app[bot]@users.noreply.github.com" }) };
   const ghCalls = [];
   const gh = async (method, path, token, body) => (ghCalls.push({ method, path, body }), routes(method, path) ?? (method === "GET" && path === "/repos/acme-agents/widget" ? { status: 200, body: { default_branch: "main" } } : { status: 404, body: { message: "fake GitHub: no route" } }));
   const handle = createService({
-    key: "ch-key", kernelUrl: kernel.url, cacheDir: join(root, "cache"), tasksDir: join(root, "tasks"), app, gh,
+    key: "ch-key", kernelUrl: kernel.url, cacheDir: join(root, "cache"), tasksDir: join(root, "tasks"), app: appOverride ?? app, gh,
     remoteUrl: (slug) => join(root, "github", `${slug}.git`), agentsOrg: "acme-agents", instanceRepo: "acme-agents/aidenhq-instance",
     productRepo: "acme/aidenhq", allowedOrgs: ["acme-agents", "partner"],
   });
@@ -84,8 +86,24 @@ test("create_repo is Tier 0 in an allowed org besides the agents org; a core rep
 
 // Once GitHub is connected, the agents org is where new repositories go (scripts/test/codehost-switch.test.mjs): the App creates it,
 // and the Engineer's first branch of the new app lands there.
-test("connected: a new app's repository is created through the App in the agents org, and its first branch lands there", async (t) => {
-  const { root, outcomes, created, call } = await setup(t, { routes: (m, p) => (m === "GET" && p === "/repos/acme-agents/new-app" ? { status: 200, body: { default_branch: "main" } } : undefined) });
+test("connected: a new app's repository is created through the App in the agents org with the app starter on main, and its first branch lands there", async (t) => {
+  const { root, outcomes, created, call } = await setup(t, { routes: (m, p) => (m === "GET" && ["/repos/acme-agents/new-app", "/repos/acme/aidenhq"].includes(p) ? { status: 200, body: { default_branch: "main" } } : undefined) });
+  // "GitHub": the product, whose modules/apps-platform/starter is the app starter, and the new repo as the App creates it (a README).
+  const bare = (slug, files) => {
+    const origin = join(root, "github", `${slug}.git`);
+    mkdirSync(origin, { recursive: true });
+    sh(origin, "init", "--quiet", "--bare", "-b", "main");
+    const seed = join(root, `seed-${slug.replace("/", "-")}`);
+    sh(root, "init", "--quiet", "-b", "main", seed);
+    for (const [f, text] of Object.entries(files)) { mkdirSync(join(seed, f, ".."), { recursive: true }); writeFileSync(join(seed, f), text); }
+    sh(seed, "add", "-A");
+    sh(seed, "commit", "--quiet", "-m", "init");
+    sh(seed, "push", "--quiet", origin, "main");
+    return origin;
+  };
+  bare("acme/aidenhq", { "modules/apps-platform/starter/README.md": "the starter\n", "modules/apps-platform/starter/server.mjs": "// serve\n", "kernel/x.ts": "//\n" });
+  const origin = bare("acme-agents/new-app", { "README.md": "new-app\n" });
+  const readme = sh(origin, "rev-parse", "main");
   const create = { kind: "github.create_repo", args: { repo: "acme-agents/new-app" } };
   const plan = await call("/aidenhq/v1/executor/plan", { ...create, requester: { kind: "job", roles: [] }, task: "t1" });
   assert.equal(plan.status, 200, JSON.stringify(plan.json));
@@ -93,16 +111,13 @@ test("connected: a new app's repository is created through the App in the agents
   for (let i = 0; i < 300 && !outcomes.length; i++) await new Promise((r) => setTimeout(r, 10));
   assert.deepEqual(created, ["acme-agents/new-app"]);
   assert.equal(outcomes[0]?.ok, true, JSON.stringify(outcomes));
-  // "GitHub" made it with the starter on main; the Engineer's branch of it lands.
-  const origin = join(root, "github", "acme-agents", "new-app.git");
-  mkdirSync(origin, { recursive: true });
-  sh(origin, "init", "--quiet", "--bare", "-b", "main");
-  const seed = join(root, "seed-new");
-  sh(root, "init", "--quiet", "-b", "main", seed);
-  writeFileSync(join(seed, "README.md"), "new-app\n");
-  sh(seed, "add", "README.md");
-  sh(seed, "commit", "--quiet", "-m", "init");
-  sh(seed, "push", "--quiet", origin, "main");
+  assert.match(outcomes[0].text, /with the app starter on main/);
+  // main is GitHub's README commit plus one: the starter's files exactly, nothing else of the product.
+  assert.equal(sh(origin, "rev-parse", "main^"), readme);
+  assert.deepEqual(sh(origin, "ls-tree", "-r", "--name-only", "main").split("\n"), ["README.md", "server.mjs"]);
+  assert.equal(sh(origin, "show", "main:README.md"), "the starter");
+  assert.equal(sh(origin, "log", "-1", "--format=%an", "main"), "acme-app[bot]");
+  // The Engineer's branch of it lands.
   const ws = join(root, "tasks", "TASK-2", "new-app");
   sh(root, "clone", "--quiet", origin, ws);
   sh(ws, "checkout", "--quiet", "-b", "first");
@@ -117,6 +132,30 @@ test("connected: a new app's repository is created through the App in the agents
   for (let i = 0; i < 300 && outcomes.length < 2; i++) await new Promise((r) => setTimeout(r, 10));
   assert.equal(outcomes[1]?.ok, true, JSON.stringify(outcomes));
   assert.equal(sh(origin, "rev-parse", "refs/heads/first"), sha);
+});
+
+test("a PR to a repo outside ours is refused while its text or a commit message names our tooling", async (t) => {
+  const { root, call } = await setup(t, { routes: (m, p) => (m === "GET" && p === "/repos/partner/lib" ? { status: 200, body: { default_branch: "main" } } : undefined) });
+  const origin = join(root, "github", "partner", "lib.git");
+  mkdirSync(origin, { recursive: true });
+  sh(origin, "init", "--quiet", "--bare", "-b", "main");
+  const ws = join(root, "tasks", "TASK-3", "lib");
+  sh(root, "init", "--quiet", "-b", "main", ws);
+  writeFileSync(join(ws, "README.md"), "lib\n");
+  sh(ws, "add", "README.md");
+  sh(ws, "commit", "--quiet", "-m", "init");
+  sh(ws, "push", "--quiet", origin, "main");
+  sh(ws, "checkout", "--quiet", "-b", "agent/TASK-3/fix");
+  writeFileSync(join(ws, "lib.js"), "export const z = 3;\n");
+  sh(ws, "add", "lib.js");
+  sh(ws, "commit", "--quiet", "-m", "Fix the parser");
+  const pr = (sha, text) => call("/aidenhq/v1/executor/plan", { kind: "github.pr", args: { workspace: "TASK-3", only: [{ repo: "partner/lib", branch: "agent/TASK-3/fix", sha }], text }, requester: { kind: "job", roles: [] }, task: "t3" });
+  const clean = await pr(sh(ws, "rev-parse", "HEAD"), { title: "Fix the parser", body: "Handles empty input." });
+  assert.equal(clean.status, 200, JSON.stringify(clean.json));
+  assert.match((await pr(sh(ws, "rev-parse", "HEAD"), { title: "Fix the parser", body: "Found by the AidenHQ fleet." })).json.error, /mentions "AidenHQ"/);
+  writeFileSync(join(ws, "lib.js"), "export const z = 4;\n");
+  sh(ws, "commit", "--quiet", "-am", "Tweak, see /home/agent/notes");
+  assert.match((await pr(sh(ws, "rev-parse", "HEAD"), { title: "Fix the parser", body: "Handles empty input." })).json.error, /commit message on agent\/TASK-3\/fix mentions "\/home\/"/);
 });
 
 test("a PR's card carries the branch's diff for the reviewer (#744): every kind renders its plan's facts", async (t) => {
@@ -178,6 +217,46 @@ test("ops answer the kernel only (it checks each module's grant); a token is nar
   assert.deepEqual(minted.at(-1), { org: "acme", permissions: { organization_self_hosted_runners: "write" }, fresh: true });
   assert.equal(org.json.app.slug, "acme-app");
   assert.ok(Date.parse(org.json.expires_at) > Date.now() + 50 * 60_000);
+});
+
+test("a token is answered even when GitHub refuses the bot user, and when even GET /app fails: the minted token is never lost", async (t) => {
+  // The incident: the bot-user read answered 403 and /ops/token turned a token it had already minted into a 500.
+  const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048, privateKeyEncoding: { type: "pkcs8", format: "pem" }, publicKeyEncoding: { type: "spki", format: "pem" } });
+  const github = async (botStatus, { appDown = false } = {}) => {
+    const mints = [];
+    const reads = [];
+    const fetch = async (url, init) => {
+      const path = String(url).replace("https://api.github.com", "");
+      const body = init.body ? JSON.parse(init.body) : undefined;
+      reads.push(path);
+      const res = (status, json) => ({ status, json: async () => json });
+      if (path === "/app") return appDown ? res(502, { message: "bad gateway" }) : res(200, { id: 1, slug: "acme-app" });
+      if (path.startsWith("/app/installations?")) return res(200, [{ id: 42, account: { login: "acme-agents" } }]);
+      if (path === "/app/installations/42/access_tokens") return res(201, { token: `ghs_${mints.push(body)}`, expires_at: new Date(Date.now() + 3600_000).toISOString() });
+      if (path === "/user" || path.startsWith("/users/")) return res(botStatus, { message: "refused" });
+      return res(404, {});
+    };
+    return { app: appClient({ appId: 1, key: privateKey, fetch }), mints, reads };
+  };
+  for (const botStatus of [403, 500]) {
+    const { app, mints, reads } = await github(botStatus);
+    const { call } = await setup(t, { app });
+    const ok = await call("/ops/token", { module: "github", repo: "acme-agents/widget", perms: { metadata: "read" } });
+    assert.equal(ok.status, 200, JSON.stringify(ok.json));
+    assert.match(ok.json.token, /^ghs_/, "the minted token is the answer");
+    assert.equal(ok.json.app.slug, "acme-app");
+    assert.equal(mints.length, 1, "the token is minted once");
+    assert.equal(reads.filter((p) => p === "/user" || p.startsWith("/users/")).length, 0, "the slug comes from GET /app, not the bot user");
+  }
+  // Even GET /app failing doesn't fail a token already minted: its slug is optional to every caller.
+  const { app, mints, reads } = await github(403, { appDown: true });
+  const down = await setup(t, { app });
+  const still = await down.call("/ops/token", { module: "github", repo: "acme-agents/widget", perms: { metadata: "read" } });
+  assert.equal(still.status, 200, JSON.stringify(still.json));
+  assert.match(still.json.token, /^ghs_/);
+  assert.equal(still.json.app.slug, null);
+  assert.equal(mints.length, 1);
+  assert.ok(reads.includes("/app"));
 });
 
 const pushArgs = (sha) => ({ workspace: "TASK-1", only: [{ repo: "acme-agents/widget", branch: "feature", sha }] });

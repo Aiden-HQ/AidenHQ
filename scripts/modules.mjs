@@ -52,7 +52,7 @@ export const CHAT_DEFAULTS = { model: "~z-ai/glm-flash-latest", reasoning: "low"
 const INSTANCE_ROUTINE_FIELDS = ["title", "description", "concurrency", "schedules", "status", "agent", "model", "autonomy"];
 // paperclip-tasks-mcp limits these to the trial agent's own tasks (the grants table marks it in trial); source_ack moves only
 // the caller's own source cursor.
-export const TRIAL_WRITES = { paperclip_tasks: ["task_comment", "task_handoff", "task_finish", "task_set_status"], apps: ["source_ack"] };
+export const TRIAL_WRITES = { paperclip_tasks: ["task_comment", "task_handoff", "task_finish", "task_block", "task_cancel"], apps: ["source_ack"] };
 // The writes a trial agent may declare in `trial_writes:`: the channel and lane ones (creating its own background task, a
 // reminder, a reply in its own chat, asking the owner), as connection.tool. Everything else it may only read, or report on
 // its own tasks (TRIAL_WRITES).
@@ -119,7 +119,6 @@ export const LEGACY_HOST_ENV = {
   google: ["BOARD_LAN_URL", "GOOGLE_CALENDAR_ID", "AIDENHQ_GATEWAY_URL"],
   jira: ["AIDENHQ_GATEWAY_URL"],
   tasks: ["AIDENHQ_GATEWAY_URL"],
-  github: ["GITHUB_COMMENT_ORGS"],
   slack: ["SLACK_CLIENT_ID"],
 };
 /** Networks the ops shell makes (fixed bridge, subnet and host rule: ops/units/aidenhq-ci-net.service). */
@@ -249,12 +248,22 @@ export function frontmatter(text) {
   return m ? { meta: YAML.parse(m[1]) ?? {}, body: text.slice(m[0].length) } : { meta: {}, body: text };
 }
 
+/** A value's shape: list, map, or its JSON type. */
+const shapeOf = (v) => (Array.isArray(v) ? "list" : v && typeof v === "object" ? "map" : typeof v);
+
+/** settings.<key>.owner: what an agent's change to the setting may not do without the owner (kernel/src/apply-tier.ts ownerRaises). */
+function ownerRules(file, key, rules) {
+  const ok = (r) => r && typeof r === "object" && /^[\w*-]+(\.[\w*-]+)*$/.test(String(r.path)) && Object.keys(r).every((f) => ["path", "raise", "change", "to", "new", "before", "default"].includes(f)) && ["raise", "change", "to", "new"].filter((f) => f in r).length === 1 && (r.raise ?? r.change ?? r.new ?? true) === true;
+  if (!Array.isArray(rules) || !rules.every(ok)) fail(`${file}: settings.${key}.owner is a list of { path, one of raise: true, change: true, to: <value>, new: true (before: <text>), and the field's default where unset }`);
+  return rules;
+}
+
 /** A module's settings for the board: default, allowed values, required, and the comment above each key as its `doc`. */
 function settingDefs(file, def) {
   const map = YAML.parseDocument(readFileSync(file, "utf8")).get("settings", true);
   // The first key's comment is attached to the map itself.
   const docs = Object.fromEntries((map?.items ?? []).map((p, i) => [String(p.key?.value ?? p.key), (p.key?.commentBefore ?? (i === 0 ? map.commentBefore : "") ?? "").replace(/^ ?/gm, "").replace(/\s*\n\s*/g, " ").trim()]));
-  return Object.fromEntries(Object.entries(def.settings ?? {}).filter(([k]) => !/token|secret|password/i.test(k)).map(([k, d]) => [k, { ...(d && "default" in d ? { default: d.default } : {}), ...(d?.values ? { values: d.values } : {}), ...(d?.required ? { required: true } : {}), ...(d?.type ? { type: d.type } : {}), ...(d?.host ? { host: d.host } : {}), ...(docs[k] ? { doc: docs[k] } : {}) }]));
+  return Object.fromEntries(Object.entries(def.settings ?? {}).filter(([k]) => !/token|secret|password/i.test(k)).map(([k, d]) => [k, { ...(d && "default" in d ? { default: d.default } : {}), ...(d?.values ? { values: d.values } : {}), ...(d?.required ? { required: true } : {}), ...(d?.type ? { type: d.type } : {}), ...(d?.host ? { host: d.host } : {}), ...(d?.writers ? { writers: [d.writers].flat().map(String) } : {}), ...(d?.owner ? { owner: ownerRules(file, k, d.owner) } : {}), ...(docs[k] ? { doc: docs[k] } : {}) }]));
 }
 
 /**
@@ -646,6 +655,9 @@ export function compile(productDir, instanceDir, { revision, bundleState, oldBun
   for (const [name, defs] of declaredSettings) {
     for (const [k, d] of Object.entries(defs)) {
       if (d?.required && settings[k] == null) fail(`setting ${k} is required by ${name}`);
+      // A value is the shape of its default (a list stays a list, a map a map, a number a number): a consumer that splits a
+      // string where it expects a list, or a tiering rule that compares lists, can't be handed another shape.
+      if (d && "default" in d && d.default != null && settings[k] != null && shapeOf(settings[k]) !== shapeOf(d.default)) fail(`settings.${k}: a ${shapeOf(d.default)}, like its default (got a ${shapeOf(settings[k])})`);
       // `values`: the allowed values (a list setting must hold at least one, each allowed).
       if (d?.values && settings[k] != null) {
         const v = [settings[k]].flat();
@@ -1100,6 +1112,7 @@ export function compile(productDir, instanceDir, { revision, bundleState, oldBun
   const kernelEntry = { name: "kernel", description: "The kernel: the settings every instance has.", enabled: true, chosen: false, requires: [], agents: [], routines: [], connections: [], apps: [], ...(revision ? { revision } : {}), settings: Object.fromEntries(Object.entries(KERNEL_SETTINGS).map(([k, d]) => [k, { ...("default" in d ? { default: d.default } : {}), ...(d.values ? { values: d.values } : {}), ...(d.required ? { required: true } : {}), ...(d.doc ? { doc: d.doc } : {}) }])) };
   const catalog = [kernelEntry, ...[...all.values()].map(({ name, root, def, marketplace, tier, sha, source, pinned }) => ({
     name, description: def.description ?? "", enabled: enabled.includes(name), chosen: chosen.includes(name), requires: def.requires ?? [],
+    ...(def.replaces ? { replaces: [def.replaces].flat().map(String) } : {}),
     agents: Object.keys(def.agents ?? {}), routines: Object.keys(def.routines ?? {}), connections: Object.keys(def.connections ?? {}),
     apps: (def.apps ?? []).map((a) => a.name), ...(sha ? { revision: sha } : revision ? { revision } : {}),
     // Where it comes from and its computed tier (spec §6.5): Settings > Modules and the advisories read them.
@@ -1302,6 +1315,14 @@ export function kernelModuleTable(defs, settings = {}) {
       if (JSON.stringify(codehost).includes("${")) fail(`module ${name}: codehost: names no settings (use @instance, @product or @agents/…)`);
       try { validate(CODEHOST_SCHEMA, codehost, "codehost"); } catch (err) { fail(`module ${name}: ${err.message}`); }
     }
+    // providers.board: { url: http://<service>:<port>, auth: one of its own secrets }: the module's HTTP API the board reads
+    // through the kernel (GET|POST /v1/board-api/<module>/<path>, kernel/src/board-api.ts), instead of a network to the board.
+    const bd = def.providers?.board;
+    if (bd != null) {
+      if (typeof bd !== "object" || Array.isArray(bd) || Object.keys(bd).some((k) => !["url", "auth"].includes(k))) fail(`module ${name}: providers.board is { url, auth }`);
+      if (!/^http:\/\/[a-z][a-z0-9-]*:\d+$/.test(String(bd.url)) || /^http:\/\/localhost:/.test(String(bd.url))) fail(`module ${name}: providers.board.url must be http://<service>:<port>, a compose service`);
+      if (!ownSecrets(def).includes(bd.auth)) fail(`module ${name}: providers.board.auth must name one of its own secrets`);
+    }
     const { facts, stages, journeys } = flowDecls(name, def, declared);
     // Two modules may declare one journey (github and codehost-local both draw `pr`): only the same declaration.
     for (const j of journeys ?? []) {
@@ -1312,6 +1333,7 @@ export function kernelModuleTable(defs, settings = {}) {
       ...(roles.length ? { roles } : {}), ...(facts ? { facts } : {}), ...(stages ? { stages } : {}), ...(journeys ? { journeys } : {}), ...(privileged.length ? { privileged } : {}), ...(codehost != null ? { codehost } : {}),
       // A module that generates its own `<module>_token` is known to the kernel by it (whoami): its roles are the kernel.* ones it requests, none otherwise.
       ...((def.generated_secrets ?? []).includes(token) ? { token } : {}),
+      ...(bd != null ? { board: { url: String(bd.url), auth_secret: String(bd.auth) } } : {}),
       ...(ch != null ? { channel: { ...(ch.stamp ? { stamp: String(ch.stamp) } : {}), ...(ch.stale === true ? { stale: true } : {}), ...(ch.transport ? { transport: String(ch.transport) } : {}), ...(ch.credentials === true ? { credentials: true } : {}) }, settings: Object.fromEntries(Object.keys(def.settings ?? {}).map((k) => [k, settings[k]])) } : {}),
     };
     if (Object.keys(e).length) out[name] = e;
@@ -1339,7 +1361,10 @@ export function reviewerSlot(defs, binding = {}) {
 /**
  * A module's checks (spec §3.5, P5): `[{id, at: write.filed | task.finish, kinds?, agents?, post?, auth?, label?, mode?}]`. The kernel
  * calls the task.finish ones (config/kernel/checks.json, keyed `<module>.<id>`) at `post` with `auth`, one of the module's own
- * secrets; `rubric` is where the kernel files a rubric for a task a module filed with one (modtasks.ts); `label` is the control-plane label a hold adds. A write.filed check without `post` runs in-process for now (3d).
+ * secrets; `rubric` is where the kernel files a rubric for a task a module filed with one (modtasks.ts); `grade` is where it reads
+ * the task's latest sent-back verdict for the AI reviewer (review-loop.ts); `label` is the control-plane label a hold adds.
+ * A write.filed check (`kinds`, the write kinds it runs on) is compiled as { module, at, kinds }: the kernel runs its code in
+ * process on every filing of those kinds (kernel/src/writes.ts filedRaises) and refuses the filing when it has none.
  * `mode: observe` (kernel/src/gates.ts) records what a task.finish check would block without blocking; write.filed checks gate
  * writes and always enforce.
  */
@@ -1348,17 +1373,22 @@ export function checkEntries(name, def) {
   for (const c of def.checks == null ? [] : Array.isArray(def.checks) ? def.checks : fail(`module ${name}: checks must be a list`)) {
     const at = `module ${name}: check ${c?.id}`;
     if (!c || typeof c !== "object" || !/^[a-z][a-z0-9-]{0,40}$/.test(String(c.id))) fail(`module ${name}: each check has an id (a-z, 0-9, -)`);
-    for (const k of Object.keys(c)) if (!["id", "at", "kinds", "agents", "post", "rubric", "auth", "label", "mode"].includes(k)) fail(`${at}: ${k} is not allowed`);
+    for (const k of Object.keys(c)) if (!["id", "at", "kinds", "agents", "post", "rubric", "grade", "auth", "label", "mode"].includes(k)) fail(`${at}: ${k} is not allowed`);
     if (!["write.filed", "task.finish"].includes(c.at)) fail(`${at}: at is write.filed or task.finish`);
     for (const k of ["kinds", "agents"]) if (c[k] != null && !(Array.isArray(c[k]) && c[k].every((x) => typeof x === "string"))) fail(`${at}: ${k} is a list`);
     let mode;
     try { mode = gateMode(`${name}.${c.id}`, c.mode); } catch (e) { fail(`${at}: ${e.message}`); }
-    if (c.at !== "task.finish") { if (mode === "observe") fail(`${at}: a write.filed check gates writes: it always enforces`); continue; }
+    if (c.at !== "task.finish") {
+      if (mode === "observe") fail(`${at}: a write.filed check gates writes: it always enforces`);
+      if (!c.kinds?.length) fail(`${at}: a write.filed check names the write kinds it runs on (kinds)`);
+      out[`${name}.${c.id}`] = { module: name, at: c.at, kinds: c.kinds };
+      continue;
+    }
     if (!/^https?:\/\/[\w.-]+:\d+\/[\w/.-]*$/.test(c.post ?? "")) fail(`${at}: post must be http://<service>:<port>/<path>`);
     if (!ownSecrets(def).includes(c.auth)) fail(`${at}: auth must name one of its own secrets`);
     if (c.label != null && !/^[a-z][a-z0-9-]{0,40}$/.test(String(c.label))) fail(`${at}: label is a label name (a-z, 0-9, -)`);
-    if (c.rubric != null && !/^https?:\/\/[\w.-]+:\d+\/[\w/.-]*$/.test(c.rubric)) fail(`${at}: rubric must be http://<service>:<port>/<path>`);
-    out[`${name}.${c.id}`] = { module: name, at: c.at, url: c.post, auth_secret: c.auth, ...(c.rubric ? { rubric: c.rubric } : {}), ...(c.agents ? { agents: c.agents } : {}), ...(c.label ? { label: String(c.label) } : {}), ...(mode === "observe" ? { mode } : {}) };
+    for (const k of ["rubric", "grade"]) if (c[k] != null && !/^https?:\/\/[\w.-]+:\d+\/[\w/.-]*$/.test(c[k])) fail(`${at}: ${k} must be http://<service>:<port>/<path>`);
+    out[`${name}.${c.id}`] = { module: name, at: c.at, url: c.post, auth_secret: c.auth, ...(c.rubric ? { rubric: c.rubric } : {}), ...(c.grade ? { grade: c.grade } : {}), ...(c.agents ? { agents: c.agents } : {}), ...(c.label ? { label: String(c.label) } : {}), ...(mode === "observe" ? { mode } : {}) };
   }
   return out;
 }
@@ -1368,7 +1398,9 @@ export function checkEntries(name, def) {
  * `check_jobs`, by run name): the command (argv, run in the workspace or in the spec's `cwd_from` folder), its time limit, how a
  * result is titled, the spec's fields (each a kind of CHECK_KINDS), the files of its `dir` (laid in the box at
  * /aidenhq-out/recipe, small text files) and, by field, what the kernel enforces: `declares` (a package.json script the base
- * keeps) and `judged` (the reviewer eval's layout of judge files and cases, whose spec is exactly the judging commits').
+ * keeps), `judged` (the reviewer eval's layout of judge files and cases, whose spec is exactly the judging commits'), `model`
+ * ({ max_usd }: a model token of the check's own, capped at its spec's `budget_usd` up to max_usd) and `result` (true: the
+ * recipe writes a JSON result the receipt binds).
  */
 const JUDGED_SPEC = ["repo", "judge_commit", "subject_commit", "cases_from", "policy_hash"];
 export function checkJobs(name, def, root) {
@@ -1376,7 +1408,7 @@ export function checkJobs(name, def, root) {
   for (const [run, r] of Object.entries(def.check_jobs ?? {})) {
     const where = `module ${name}: check_jobs.${run}`;
     if (!/^[a-z][a-z0-9_-]{0,30}$/.test(run)) fail(`${where}: the name is lowercase letters, digits, - and _`);
-    const extra = Object.keys(r ?? {}).filter((f) => !["dir", "argv", "timeout_min", "title", "spec", "declares", "cwd_from", "judged"].includes(f));
+    const extra = Object.keys(r ?? {}).filter((f) => !["dir", "argv", "timeout_min", "title", "spec", "declares", "cwd_from", "judged", "model", "result"].includes(f));
     if (extra.length) fail(`${where}: unknown field ${extra.join(", ")}`);
     if (!Array.isArray(r.argv) || !r.argv.length || r.argv.some((a) => typeof a !== "string" || !a)) fail(`${where}: argv is the command, a list of strings`);
     if (!Number.isInteger(r.timeout_min) || r.timeout_min < 1 || r.timeout_min > 120) fail(`${where}: timeout_min is whole minutes, 1 to 120`);
@@ -1385,6 +1417,9 @@ export function checkJobs(name, def, root) {
     if (!spec || typeof spec !== "object" || Object.entries(spec).some(([k, v]) => !/^[a-z_]{1,30}$/.test(k) || !(v in CHECK_KINDS))) fail(`${where}: spec maps field names to ${Object.keys(CHECK_KINDS).join(", ")}`);
     if (r.declares != null && (typeof r.declares !== "string" || spec.base !== "sha")) fail(`${where}: declares names a package.json script and needs spec.base (sha)`);
     if (r.cwd_from != null && spec[r.cwd_from] !== "dir") fail(`${where}: cwd_from names a spec field of kind dir`);
+    if (r.model != null && (typeof r.model !== "object" || Object.keys(r.model).join() !== "max_usd" || !(r.model.max_usd > 0 && r.model.max_usd <= 100) || spec.budget_usd !== "usd")) fail(`${where}: model is { max_usd: 0-100 } and needs spec.budget_usd (usd)`);
+    if (r.result != null && r.result !== true) fail(`${where}: result is true or absent`);
+    if ((r.model != null || r.result != null) && r.judged != null) fail(`${where}: a judged run takes neither model nor result`);
     let judged;
     if (r.judged != null) {
       const j = r.judged;
@@ -1403,7 +1438,7 @@ export function checkJobs(name, def, root) {
         files[f.name] = readFileSync(join(dir, f.name), "utf8");
       }
     }
-    out[run] = { module: name, argv: r.argv, timeout_min: r.timeout_min, title: r.title, spec, files, ...(r.declares ? { declares: r.declares } : {}), ...(r.cwd_from ? { cwd_from: r.cwd_from } : {}), ...(judged ? { judged } : {}) };
+    out[run] = { module: name, argv: r.argv, timeout_min: r.timeout_min, title: r.title, spec, files, ...(r.declares ? { declares: r.declares } : {}), ...(r.cwd_from ? { cwd_from: r.cwd_from } : {}), ...(judged ? { judged } : {}), ...(r.model ? { model: { max_usd: r.model.max_usd } } : {}), ...(r.result ? { result: true } : {}) };
   }
   return out;
 }
@@ -1578,7 +1613,7 @@ function heartbeatRoutines(paperclip, settings, agentOverrides, routineTitles) {
  * App users' words drive the run, so it is tier0 and its agent is a narrow one: exactly the tools below (task_delegate hands
  * code fixes to an Engineer, through every gate), no other app's API, and apps-mcp keeps it to the apps that name it.
  */
-const FEEDBACK_TOOLS = { apps: ["app_api", "app_view"], paperclip_tasks: ["task_current", "task_get", "task_comments", "task_list", "task_comment", "task_finish", "task_set_status", "task_delegate", "memory_note"] };
+const FEEDBACK_TOOLS = { apps: ["app_api", "app_view"], paperclip_tasks: ["task_current", "task_get", "task_comments", "task_list", "task_comment", "task_finish", "task_block", "task_cancel", "task_delegate", "memory_note"] };
 function appFeedbackRoutines(paperclip, appDefs, routineTitles, defaulted) {
   for (const a of appDefs) {
     if (!a?.share?.host || !a.feedback_to) continue;
@@ -1696,83 +1731,66 @@ export async function mapLimit(items, limit, fn) {
 }
 
 /**
- * One unassigned "Memory inbox: <key>" task per agent that has `memory_note` (marker memory-inbox:<key>): the agent's notes
- * land there as comments, for the Librarian's daily pass. Unassigned, so a note wakes nobody. Idempotent; a missing task is
- * recreated, an existing one is never touched. Only a task this identity created and nobody holds counts (an agent can't
- * plant one: it would be created by the agent). Returns { key: issue id } for the grants table (memory_inbox), which is
- * where memory_note and the bridge's inbox guards read it; nothing searches for the marker at run time.
+ * One setup log task per key (found again by its marker): created by this identity (an agent can't plant one: it would be
+ * created by the agent), held by `holders[key]` (an agent id) in backlog, so every open task has a holder, and the kernel's
+ * wake scan never wakes on it (containers in kernel/src/main.ts). One found unheld, or held by nobody of its own, is handed
+ * to its holder; otherwise an existing one is never touched. Returns { key: issue id } for the grants table.
  */
-export async function ensureMemoryInboxes({ api, companyId, keys, step }) {
+async function ensureLogTasks({ api, companyId, keys, holders, step, marker, title, description, what }) {
   if (!keys.length) return {};
   const { json: me } = await api("GET", "/api/cli-auth/me");
   const ids = await mapLimit(keys, 4, async (key) => {
-    const marker = `memory-inbox:${key}`;
+    const mark = marker(key), holder = holders[key];
+    if (!holder) throw new Error(`no agent to hold the ${what(key)}`);
     const q = new URLSearchParams({ q: key, status: "backlog,todo,in_progress,in_review,blocked", limit: "50", excludeRoutineExecutions: "true" });
     const { json: open } = await api("GET", `/api/companies/${companyId}/issues?${q}`);
-    const ours = open.find((i) => String(i.description ?? "").includes(`<!-- source:${marker} -->`) && me.userId && i.createdByUserId === me.userId && !i.createdByAgentId && !i.assigneeAgentId && !i.assigneeUserId);
-    if (ours) return ours.id;
-    const { json: made } = await api("POST", `/api/companies/${companyId}/issues`, {
-      title: `Memory inbox: ${key}`, status: "backlog", priority: "low",
-      description: `Facts ${key} noted for its memory, one comment each (memory_note). The Librarian curates them daily into agents/${key}/memory.md; nobody else reads or edits this task.\n\n<!-- source:${marker} -->`,
-    });
-    step(`Created task ${made.identifier} (memory inbox of ${key})`);
+    const ours = open.find((i) => String(i.description ?? "").includes(`<!-- source:${mark} -->`) && me.userId && i.createdByUserId === me.userId && !i.createdByAgentId && !i.assigneeUserId && (!i.assigneeAgentId || i.assigneeAgentId === holder));
+    if (ours) {
+      if (ours.assigneeAgentId !== holder || ours.status !== "backlog") {
+        await api("PATCH", `/api/issues/${ours.id}`, { assigneeAgentId: holder, assigneeUserId: null, status: "backlog" });
+        step(`Handed ${ours.identifier ?? ours.id} (${what(key)}) to its agent`);
+      }
+      return ours.id;
+    }
+    const { json: made } = await api("POST", `/api/companies/${companyId}/issues`, { title: title(key), status: "backlog", priority: "low", assigneeAgentId: holder, description: `${description(key)}\n\n<!-- source:${mark} -->` });
+    step(`Created task ${made.identifier} (${what(key)})`);
     return made.id;
   });
   return Object.fromEntries(keys.map((key, i) => [key, ids[i]]));
 }
 
 /**
- * One unassigned backlog "Chat with <name>" task per agent with a `chat:` block (marker chat-task:<key>): the fast chat
- * lane's conversation, where the kernel writes each lane turn (kernel/src/lane.ts). Held by nobody and in backlog, so
- * nothing in Paperclip or the wake inbox runs on it; the lane answers the owner's words there. Returns { key: issue id }.
+ * One "Memory inbox: <key>" task per agent that has `memory_note` (marker memory-inbox:<key>), held by that agent: its notes
+ * land there as comments, for the Librarian's daily pass. memory_note and the bridge's inbox guards read its id from the
+ * grants table (memory_inbox); nothing searches for the marker at run time.
  */
-export async function ensureChatTasks({ api, companyId, agents, ownerName, step }) {
-  const keys = Object.keys(agents);
-  if (!keys.length) return {};
-  const { json: me } = await api("GET", "/api/cli-auth/me");
-  const ids = await mapLimit(keys, 4, async (key) => {
-    const marker = `chat-task:${key}`;
-    const q = new URLSearchParams({ q: key, status: "backlog,todo,in_progress,in_review,blocked", limit: "50", excludeRoutineExecutions: "true" });
-    const { json: open } = await api("GET", `/api/companies/${companyId}/issues?${q}`);
-    const ours = open.find((i) => String(i.description ?? "").includes(`<!-- source:${marker} -->`) && me.userId && i.createdByUserId === me.userId && !i.createdByAgentId && !i.assigneeAgentId && !i.assigneeUserId);
-    if (ours) return ours.id;
-    const { json: made } = await api("POST", `/api/companies/${companyId}/issues`, {
-      title: `Chat with ${agents[key]}`, status: "backlog", priority: "low",
-      description: `${ownerName || "The owner"}'s fast chat with ${agents[key]}: every message and reply, on every channel. Write here to talk to ${agents[key]}.\n\n<!-- source:${marker} -->`,
-    });
-    step(`Created task ${made.identifier} (chat with ${key})`);
-    return made.id;
-  });
-  return Object.fromEntries(keys.map((key, i) => [key, ids[i]]));
-}
+export const ensureMemoryInboxes = ({ api, companyId, keys, holders, step }) => ensureLogTasks({
+  api, companyId, keys, holders, step, marker: (key) => `memory-inbox:${key}`, title: (key) => `Memory inbox: ${key}`, what: (key) => `memory inbox of ${key}`,
+  description: (key) => `Facts ${key} noted for its memory, one comment each (memory_note). The Librarian curates them daily into agents/${key}/memory.md; nobody else reads or edits this task.`,
+});
 
 /**
- * One unassigned "Agent reviews: <key>" task per fleet-audit agent (marker review-log:<key>): the Agent Coach's review log, one
- * record per review (tasks bridge coach_record), which coach_due reads back (only records that agent authored). Created by
- * this identity, held by nobody, so a review wakes nobody; never touched once made. Returns { key: issue id } for the grants table.
+ * One "Chat with <name>" task per agent with a `chat:` block (marker chat-task:<key>), held by that agent: the fast chat
+ * lane's conversation, where the kernel writes each lane turn (kernel/src/lane.ts); the lane answers the owner's words there.
  */
-export async function ensureReviewLogs({ api, companyId, keys, step }) {
-  if (!keys.length) return {};
-  const { json: me } = await api("GET", "/api/cli-auth/me");
-  const ids = await mapLimit(keys, 4, async (key) => {
-    const marker = `review-log:${key}`;
-    const q = new URLSearchParams({ q: key, status: "backlog,todo,in_progress,in_review,blocked", limit: "50", excludeRoutineExecutions: "true" });
-    const { json: open } = await api("GET", `/api/companies/${companyId}/issues?${q}`);
-    const ours = open.find((i) => String(i.description ?? "").includes(`<!-- source:${marker} -->`) && me.userId && i.createdByUserId === me.userId && !i.createdByAgentId && !i.assigneeAgentId && !i.assigneeUserId);
-    if (ours) return ours.id;
-    const { json: made } = await api("POST", `/api/companies/${companyId}/issues`, {
-      title: `Agent reviews: ${key}`, status: "backlog", priority: "low",
-      description: `The review log of ${key}: one record per agent review (coach_record), which decides who is due next. Read it for the history; nobody else writes here.\n\n<!-- source:${marker} -->`,
-    });
-    step(`Created task ${made.identifier} (review log of ${key})`);
-    return made.id;
-  });
-  return Object.fromEntries(keys.map((key, i) => [key, ids[i]]));
-}
+export const ensureChatTasks = ({ api, companyId, agents, holders, ownerName, step }) => ensureLogTasks({
+  api, companyId, keys: Object.keys(agents), holders, step, marker: (key) => `chat-task:${key}`, title: (key) => `Chat with ${agents[key]}`, what: (key) => `chat with ${key}`,
+  description: (key) => `${ownerName || "The owner"}'s fast chat with ${agents[key]}: every message and reply, on every channel. Write here to talk to ${agents[key]}.`,
+});
 
 /**
- * The one unassigned "Fleet issues" task (label system-error) where heartbeat runs note missed wake-ups and stuck work for
- * the watcher to triage. Unassigned, so a note wakes nobody. Found by title and label; returns its identifier.
+ * One "Agent reviews: <key>" task per fleet-audit agent (marker review-log:<key>), held by that agent: the Agent Coach's review
+ * log, one record per review (tasks bridge coach_record), which coach_due reads back (only records that agent authored).
+ */
+export const ensureReviewLogs = ({ api, companyId, keys, holders, step }) => ensureLogTasks({
+  api, companyId, keys, holders, step, marker: (key) => `review-log:${key}`, title: (key) => `Agent reviews: ${key}`, what: (key) => `review log of ${key}`,
+  description: (key) => `The review log of ${key}: one record per agent review (coach_record), which decides who is due next. Read it for the history; nobody else writes here.`,
+});
+
+/**
+ * The one "Fleet issues" task (label system-error) where heartbeat runs note missed wake-ups and stuck work for the watcher to
+ * triage, in backlog. Found by title and label (never one an agent created); a new one is the owner's until holdFleetIssues
+ * hands it to its agent (it is made before the agents, whose handbooks name it). Returns its identifier.
  */
 export async function ensureFleetIssues({ api, companyId, step }) {
   const { json: labels } = await api("GET", `/api/companies/${companyId}/labels`);
@@ -1780,14 +1798,24 @@ export async function ensureFleetIssues({ api, companyId, step }) {
   if (!label) label = (await api("POST", `/api/companies/${companyId}/labels`, { name: "system-error", color: "#dc2626" })).json;
   const q = new URLSearchParams({ labelId: label.id, status: "backlog,todo,in_progress,in_review,blocked", limit: "200", excludeRoutineExecutions: "true" });
   const { json: open } = await api("GET", `/api/companies/${companyId}/issues?${q}`);
-  const found = open.find((i) => i.title === "Fleet issues" && !i.assigneeAgentId);
+  const found = open.find((i) => i.title === "Fleet issues" && !i.createdByAgentId);
   if (found) return found.identifier;
+  const { json: company } = await api("GET", `/api/companies/${companyId}`);
   const { json: made } = await api("POST", `/api/companies/${companyId}/issues`, {
-    title: "Fleet issues", status: "todo", priority: "low", labelIds: [label.id],
+    title: "Fleet issues", status: "backlog", priority: "low", labelIds: [label.id], assigneeUserId: company.defaultResponsibleUserId,
     description: "Missed wake-ups and stuck work that agents noticed on their heartbeat runs, one comment per issue keyed `key: <task> · <failure kind> · <id>`. Triaged by the person or Claude; fixes go to their own tasks.",
   });
   step(`Created task Fleet issues (${made.identifier})`);
   return made.identifier;
+}
+
+/** The Fleet issues task is held by `holder` (the fleet-audit agent; none: it stays as it is), in backlog: a log wakes nobody. */
+export async function holdFleetIssues({ api, identifier, holder, step }) {
+  if (!identifier || !holder) return;
+  const { json: i } = await api("GET", `/api/issues/${encodeURIComponent(identifier)}`);
+  if (i.assigneeAgentId === holder && i.status === "backlog") return;
+  await api("PATCH", `/api/issues/${i.id}`, { assigneeAgentId: holder, assigneeUserId: null, status: "backlog" });
+  step(`Handed Fleet issues (${identifier}) to its agent`);
 }
 
 /**

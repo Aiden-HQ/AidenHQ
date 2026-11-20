@@ -189,6 +189,14 @@ async function idsWithRecord(p: any, deps: any): Promise<RecordedIds> {
 }
 
 /**
+ * The registry's answer for an app ref, as the evidence paths word it. null: a successful read with no such row. undefined: a
+ * failed read (apps-evidence.ts `appsEvidence().app`). An absent app is not a pending deploy: the ref names no app this
+ * instance runs, so the deliverable can never be satisfied as filed. A failed read is unavailable evidence, never "not an app".
+ */
+const appNotRun = (name: string | undefined) => `${name || "(none)"} is not an app this instance runs (the apps registry has no such app), so this deliverable cannot be satisfied as filed`;
+const appUnknown = (name: string | undefined) => `the apps registry could not be read just now (unavailable evidence), so whether ${name || "(none)"} is an app this instance runs is unknown`;
+
+/**
  * What the task's own record says about its deliverable *now*, read fresh when an evidence wait is about to escalate: a PR
  * merged (the task's branch rows, or the runner's own merge records for it when those rows are gone) with its mergedAt, and for
  * a PR in an app's repo a healthy deploy of that merge commit; for an app, a healthy deploy record of its deployed sha; for an apply, a
@@ -236,8 +244,8 @@ export async function presentNow(deliverable: any, deps: any) {
     return { present: Boolean(merged), facts };
   }
   if (kind === "app") {
-    const app = await deps.app?.(deliverable.ref).catch(() => null);
-    if (!app) return { present: false, facts: [`no app named ${deliverable.ref || "(none)"} is deployed yet`] };
+    const app = await deps.app?.(deliverable.ref).catch(() => undefined);
+    if (app == null) return { present: false, facts: [app === undefined ? appUnknown(deliverable.ref) : appNotRun(deliverable.ref)] };
     const d = (await deploysOf(app, app.sha, deps)).rows.find((r: any) => r.status === "healthy");
     return { present: Boolean(d), facts: [d ? `app ${app.name}: ${String(app.sha).slice(0, 12)} deployed ${stamp(d.at)} (healthy)` : `app ${app.name}: deployed commit ${String(app.sha ?? "(none)").slice(0, 12)} has no healthy deploy`] };
   }
@@ -292,9 +300,23 @@ export async function prEvidence(prs: any[], ref: string, deps: any): Promise<an
   let left = PR_TEXT_TOTAL;
   let diff = "";
   let described = "";
-  for (const p of prs.slice(0, 5)) {
+  const candidates = prs.slice(0, 5);
+  const key = (p: any) => `${String(p.repo).toLowerCase()}#${p.number}`;
+  // Which of the task's PRs are the deliverable is decided before any is read as one: a PR closed without merging is never a
+  // `pr` task's deliverable, and when the task's own records name a merged PR in the same repo beside the superseded branch it
+  // replaced, the merged PR is what landed the work and the closed one is not read at all.
+  const states = new Map<string, any>();
+  for (const p of candidates) {
     const pr = (await deps.pr(p.repo, p.number))?.repository?.pullRequest;
     if (!pr) return { awaiting: `${p.url} can't be read yet` };
+    states.set(key(p), pr);
+  }
+  const landed = new Set(candidates.filter((p) => states.get(key(p)).state === "MERGED").map((p) => String(p.repo).toLowerCase()));
+  const graded = candidates.filter((p) => states.get(key(p)).state !== "CLOSED" || !landed.has(String(p.repo).toLowerCase()));
+  for (const p of graded) {
+    // Closed without merging is not a merge, not "still running", and not a branch a revision request can still reach: its head
+    // is fixed, so its checks and diff are not read as the task's deliverable. The row holds for evidence instead.
+    const pr = states.get(key(p));
     // The stored number is this task's change only while the record's own identifier says so (identityOf): a re-created
     // repository restarts numbering, and the number can then name an unrelated change. That change's diff and description are
     // not this task's, so nothing of it is read or graded; the wait says so, and names the merge commit the record holds.
@@ -305,6 +327,7 @@ export async function prEvidence(prs: any[], ref: string, deps: any): Promise<an
       if (who.state === "unknown") return { awaiting: unverifiable(p.url) };
       return { awaiting: `${staleFact(p.url, who.why, ids.merges)}, so this task's change cannot be read by its stored number` };
     }
+    if (pr.state === "CLOSED") return { awaiting: `${p.url} was closed without merging` };
     const checks = namedChecks(pr.commits?.nodes?.[0]?.commit?.statusCheckRollup);
     const gate = gateOn(pr, checks);
     // A read caught mid-run is never a verdict. A check still queued or running is one (GitHub also reports the rollup as
@@ -313,8 +336,8 @@ export async function prEvidence(prs: any[], ref: string, deps: any): Promise<an
     if (checks.some((c: any) => c.pending) || gate === "running") return { awaiting: `checks still running on ${p.url}` };
     // Outside the agents org and the product repo the runner can't merge and the owner doesn't: someone else merges it.
     if (pr.state === "OPEN" && deps.ownRepo && !deps.ownRepo(p.repo)) return { awaiting: `${p.url} is not merged yet` };
-    // The runner's record names the PR; GitHub says what became of it. Closed without merging is not a merge, not "still running".
-    if (byRecord && pr.state !== "MERGED") return { awaiting: `${p.url} ${pr.state === "OPEN" ? "is not merged yet" : "was closed without merging"}` };
+    // The runner's record names the PR; GitHub says what became of it, and a closed one was held above whatever named it.
+    if (byRecord && pr.state !== "MERGED") return { awaiting: `${p.url} is not merged yet` };
     const merged = pr.state === "MERGED";
     const sha = merged ? (pr.mergeCommit?.oid ?? pr.headRefOid) : pr.headRefOid;
     const head = `### ${p.url}\n`;
@@ -370,9 +393,14 @@ export const predatesDeploys = (app: any, mergedAt: unknown): boolean => {
   return at.length > 0 && Number.isFinite(merged) && merged < Math.min(...at);
 };
 
-/** A deployed app (apps-mcp status row, or null) as evidence: its commit, state, health, incident and recent deploys. */
+/**
+ * A deployed app (apps-mcp status row) as evidence: its commit, state, health, incident and recent deploys. `null` is a
+ * successful registry read with no such app: the ref is not an app this instance runs, and the deliverable is missing rather
+ * than a deploy still to come. `undefined` is a read that failed: unavailable evidence, and the row waits rather than judging.
+ */
 export function appEvidence(app: any, name: string | undefined): any {
-  if (!app) return { awaiting: `no app named ${name || "(none)"} is deployed yet` };
+  if (app === undefined) return { awaiting: appUnknown(name) };
+  if (app === null) return { awaiting: appNotRun(name), missing: true };
   if (!app.sha) return { awaiting: `${app.name} is not deployed yet` };
   const facts = [`app ${app.name}: deployed commit ${app.sha}${app.deployed_at ? ` at ${stamp(app.deployed_at)}` : ""}${app.deployed_by ? ` by ${app.deployed_by}` : ""}; state ${app.state}; ${app.healthy ? "healthy" : "not healthy"}; ${app.incident ? `open incident (${app.incident.kind})` : "no open incident"}`];
   // The history, newest first: which commits were deployed, by whom, and how each ended. `by: auto-deploy` is the
@@ -400,10 +428,17 @@ export async function issueEvidence(ref: string, deps: any): Promise<any> {
   // The App is a Bot actor (a user account is never one, whatever it is named) whose login is exactly its slug, which GraphQL
   // gives without the `[bot]` REST adds.
   const actor = i.closedEvents?.nodes?.[0]?.actor;
-  const trusted = Boolean(closer) && ((Boolean(read.appSlug) && actor?.__typename === "Bot" && [read.appSlug, `${read.appSlug}[bot]`].includes(closer)) || ["OWNER", "MEMBER", "COLLABORATOR"].includes(closing?.authorAssociation));
+  // GitHub's own close through a merged PR's closing keyword ("Fixes #N"): the close event's `closer` is that PR, structured, so
+  // it counts as closed and cited by it when it merged in this issue's repo, whoever merged it.
+  const by = i.closedEvents?.nodes?.[0]?.closer;
+  const keywordPr = i.state === "CLOSED" && by?.__typename === "PullRequest" && by.state === "MERGED" && String(by.repository?.nameWithOwner ?? "").toLowerCase() === repo.toLowerCase() ? by : undefined;
+  const trusted = Boolean(keywordPr) || Boolean(closer) && ((Boolean(read.appSlug) && actor?.__typename === "Bot" && [read.appSlug, `${read.appSlug}[bot]`].includes(closer)) || ["OWNER", "MEMBER", "COLLABORATOR"].includes(closing?.authorAssociation));
   const facts = [`${ref}: ${i.state === "CLOSED" ? `closed${i.stateReason ? ` as ${String(i.stateReason).toLowerCase()}` : ""} at ${i.closedAt}${closer ? ` by ${closer}` : ""}` : "open"}; labels: ${(i.labels?.nodes ?? []).map((l: any) => l.name).join(", ") || "none"}`];
   const merges: string[] = [];
-  if (i.state === "CLOSED" && !trusted) facts.push(`the close does not count: ${closer ?? "its closer"} is not the instance's App, and no comment shows them as an owner, member or collaborator, so the issue is treated as not resolved`);
+  if (keywordPr) {
+    merges.push(keywordPr.mergeCommit?.oid ?? "");
+    facts.push(`closed by GitHub through the closing keyword of ${keywordPr.url}, which cites it as the fix: ${keywordPr.url}: merged${keywordPr.mergedAt ? ` at ${keywordPr.mergedAt}` : ""}${keywordPr.mergeCommit?.oid ? ` (merge commit ${keywordPr.mergeCommit.oid})` : ""}`);
+  } else if (i.state === "CLOSED" && !trusted) facts.push(`the close does not count: ${closer ?? "its closer"} is not the instance's App, and no comment shows them as an owner, member or collaborator, so the issue is treated as not resolved`);
   else if (closing) {
     const prs = findPrs(closing.body).slice(0, 3);
     facts.push(prs.length ? `the closing comment (by ${closer}, ${closing.createdAt}) cites ${prs.map((p) => p.url).join(", ")}` : `the closing comment (by ${closer}, ${closing.createdAt}) cites no PR`);
@@ -415,7 +450,7 @@ export async function issueEvidence(ref: string, deps: any): Promise<any> {
     }
   } else if (i.state === "CLOSED") facts.push(`no comment by ${closer} just before the close: nothing is cited`);
   const text = comments.slice(-5).map((c) => `--- ${c.author?.login ?? "ghost"} (${c.authorAssociation}) ${c.createdAt} ---\n${String(c.body ?? "").slice(0, 2000)}`).join("\n\n");
-  const closed = i.state === "CLOSED" ? `${trusted ? "" : "untrusted:"}${i.stateReason}:${i.closedAt}:${merges.map((m) => m.slice(0, 12)).join(",")}+${hash(closing?.body ?? "")}` : "open";
+  const closed = i.state === "CLOSED" ? `${trusted ? "" : "untrusted:"}${keywordPr ? `kw${keywordPr.number}:` : ""}${i.stateReason}:${i.closedAt}:${merges.map((m) => m.slice(0, 12)).join(",")}+${hash(closing?.body ?? "")}` : "open";
   return { version: `${ref}@${closed}`.slice(0, 200), facts, data: { ISSUE_COMMENTS: text || "(none)" } };
 }
 

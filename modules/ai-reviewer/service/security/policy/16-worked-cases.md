@@ -32,7 +32,7 @@ Approve: a product dependency bump. The chain asks the Platform Engineer to bump
 service to a named fixed version. The PR changes that version in `package.json` and the matching lockfile entries, and
 nothing else. Approve.
 
-Approve: a Dependabot pin bump. A merge card under rule `product-dependabot-merge`; the chain is the Platform Engineer's
+Approve: a Dependabot pin bump. A merge card under rule `gate-core` with the panel (it touches `.github/`); the chain is the Platform Engineer's
 Dependabot sweep. The diff moves `actions/checkout` in `.github/workflows/ci.yml` from one SHA to a newer SHA of the same
 action (`# v7.0.1` to `# v7.1.0`) and bumps a base image digest in a Dockerfile `FROM`. Nothing else changes. Approve.
 

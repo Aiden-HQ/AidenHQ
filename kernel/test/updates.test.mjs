@@ -10,7 +10,7 @@ import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import YAML from "yaml";
-import { Refused, candidateMarked, check, compareRelease, createUpdates, pinText, pinTo, readState, verify } from "../src/updates.ts";
+import { Refused, candidateMarked, check, compareRelease, createUpdates, pinText, pinTo, readState, verify, writeState } from "../src/updates.ts";
 import { localApply } from "../../modules/codehost-local/src/apply.ts";
 
 // The owner's own git config (signing, hooks) never reaches the fixtures or the updater's commits.
@@ -300,7 +300,7 @@ test("a failed record: the owner is told why, the night doesn't file it again, U
   assert.deepEqual([st.current.name, st.flight, st.failed], ["2026.11.2", undefined, ["2026.11.3"]]);
   await u.tick();
   assert.equal(lines.filter((l) => /didn't install/.test(l)).length, 1);
-  assert.ok(lines.some((l) => /2026\.11\.3 didn't install: \*\*Landed, but the apply failed\*\* \(exit-code\)\. The night won't file it again/.test(l)));
+  assert.ok(lines.some((l) => /2026\.11\.3 didn't install: \*\*Landed, but the apply failed\*\* \(exit-code\)\. This server stays on 2026\.11\.2: a failed apply puts the host back on it and holds it there.*The night won't file it again/.test(l)));
   u.checkNow();
   await u.tick();
   assert.equal(filed.length, 1, "the night skips it");
@@ -308,6 +308,36 @@ test("a failed record: the owner is told why, the night doesn't file it again, U
   assert.match(u.requestNow("2026.11.3", "account:a1"), /Filing 2026\.11\.3 now/);
   await u.tick();
   assert.deepEqual([filed.length, filed[1].by], [2, "account:a1"], "Update now files it");
+});
+
+test("Update now always ends in a message: a land that lost to a moved main is filed again, a failed check is tried again and then said", async () => {
+  const w = world();
+  await check({ ...w.d, now: () => DAY });
+  const lines = [], filed = [];
+  const u = kernelSide(w, { lines, filed });
+  u.requestNow("2026.11.3", "account:a1");
+  await u.tick();
+  assert.equal(filed.length, 1);
+  // Another change reached main first: by day, with auto-updates' night far off, it is prepared and filed again at once.
+  w.records[filed[0].record] = { state: "failed", outcome: { text: "the instance's main moved on since this commit's base; it needs a rebase and a new approval" } };
+  await u.tick();
+  assert.deepEqual([filed.length, filed[1].by], [2, "account:a1"]);
+  assert.equal(lines.filter((l) => /didn't install|didn't start/.test(l)).length, 0);
+  // The check itself fails (the instance repo unreachable): tried again on later passes, then the owner is told once.
+  const dir = mkdtempSync(join(tmpdir(), "upd-"));
+  writeState({ dir }, { available: { name: "2026.11.3" } });
+  let clock = Date.now(), checks = 0;
+  const said = [];
+  const v = createUpdates({ db: new DatabaseSync(":memory:"), dir, ownerLine: (t) => said.push(t), now: () => clock,
+    check: async () => { checks++; throw new Error("git fetch: could not resolve host"); }, file: async () => ({ record: "", task: "" }), record: () => undefined, close: async () => {} });
+  v.requestNow("2026.11.3", "account:a1");
+  await v.tick();
+  await v.tick(); // its wait isn't over: no second check yet
+  assert.deepEqual([checks, said.length], [1, 0]);
+  for (let i = 0; i < 3; i++) { clock += 10 * 60_000; await v.tick(); }
+  assert.equal(checks, 3);
+  assert.deepEqual(said, ["Update now didn't start: git fetch: could not resolve host. Nothing changed; try again in a while."]);
+  assert.equal(readState(dir).asking, undefined);
 });
 
 test("an instance that pins product itself (no release:) is the release train's: the updater never acts, auto-updates on, at night", async () => {

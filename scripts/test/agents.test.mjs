@@ -41,7 +41,7 @@ test("the role template compiles as an instance agent in trial (tap 1): read-onl
   assert.match(a.title, /^Chases pull requests/);
   assert.match(a.instructions, /agents\/review-chaser\/AGENTS\.md$/);
   assert.deepEqual(a.roles, []);
-  assert.deepEqual(writesOf(r, a, "paperclip_tasks"), ["task_comment", "task_handoff", "task_finish", "task_set_status"]);
+  assert.deepEqual(writesOf(r, a, "paperclip_tasks"), ["task_comment", "task_handoff", "task_finish", "task_block", "task_cancel"]);
   assert.deepEqual(writesOf(r, a, "slack"), []);
   assert.equal(r.paperclip.routines["review-chaser-sweep"].agent, "review-chaser");
   assert.equal(r.paperclip.routines["review-chaser-sweep"].schedules[0].timezone, "Europe/London");
@@ -140,8 +140,8 @@ test("the web for every crew agent: web_view and app_view granted (an agent may 
     const writes = Object.entries(a.enabled_tools).flatMap(([c, list]) => list.filter((t) => c !== "paperclip_tasks" && t !== "notify" && writeTools(r.paperclip.mcp_servers[c]).includes(t)).map((t) => `${c}.${t}`));
     assert.deepEqual(writes, [], k);
   }
-  // An Engineer gets no tools added: it has exactly what it grants itself, which includes attaching its own task's file and finishing it.
-  assert.deepEqual(r.paperclip.agents.engineer.enabled_tools, { apps: ["app_list", "app_status", "app_view", "app_check", "web_view"], github: ["github_whoami", "github_project_read", "github_issue_read", "github_search_issues", "github_job_log", "github_pr_files", "github_app_issue_status"], paperclip_tasks: ["task_file_upload", "task_finish"] });
+  // An Engineer gets no tools added: it has exactly what it grants itself, which includes attaching its own task's file, finishing it and recording its wait.
+  assert.deepEqual(r.paperclip.agents.engineer.enabled_tools, { apps: ["app_list", "app_status", "app_view", "app_check", "web_view"], github: ["github_whoami", "github_project_read", "github_issue_read", "github_search_issues", "github_job_log", "github_pr_files", "github_app_issue_status"], paperclip_tasks: ["task_file_upload", "task_finish", "task_wait"] });
   assert.equal(r.paperclip.agents["review-chaser"].web_search, "disabled");
   assert.equal(r.paperclip.agents.assistant.web_search, undefined);
 });
@@ -158,7 +158,7 @@ test("trial_writes: all four names compile, including notify, which a trial agen
 test("trial_writes: an agent that names none keeps today's behaviour, and a granted write outside trial_writes is still refused", () => {
   const none = compile(product, withAgents({ "review-chaser": {} }, ["github", "slack"])).paperclip.agents["review-chaser"];
   assert.equal(none.trial_writes, undefined);
-  assert.deepEqual(writesOf(compile(product, withAgents({ "review-chaser": {} }, ["github", "slack"])), none, "paperclip_tasks"), ["task_comment", "task_handoff", "task_finish", "task_set_status"]);
+  assert.deepEqual(writesOf(compile(product, withAgents({ "review-chaser": {} }, ["github", "slack"])), none, "paperclip_tasks"), ["task_comment", "task_handoff", "task_finish", "task_block", "task_cancel"]);
   // A write it grants but doesn't name is withheld from trial, not a compile error: it isn't offered, and the handbook can
   // still describe it as "after trial". Without a list, granting it is still the old error.
   const partial = compile(product, withAgents({ x: { yaml: { connections: { slack: "read", chat_lane: ["chat_send", "wake_at"] }, trial_writes: ["chat_lane.chat_send"] } } }, ["slack"]));
@@ -177,7 +177,7 @@ test("the Fleet Steward's grants: reads, plus exactly its predecessors' writes; 
   const a = r.paperclip.agents["fleet-steward"];
   const writes = Object.entries(a.enabled_tools).flatMap(([c, list]) => list.filter((t) => writeTools(r.paperclip.mcp_servers[c]).includes(t)).map((t) => `${c}.${t}`)).sort();
   // routing_tune and routing_judge: the routing learning loop, each a reviewed kernel.apply of the instance's own routing.
-  assert.deepEqual(writes, ["apps.person_identity_decide", "fleet_steward.routing_judge", "fleet_steward.routing_tune", "ops_mcp.meeting_note_correct", "owner_channel.notify", "paperclip_tasks.coach_record", "paperclip_tasks.task_comment", "paperclip_tasks.task_create", "paperclip_tasks.task_delegate", "paperclip_tasks.task_finish", "paperclip_tasks.task_handoff", "paperclip_tasks.task_propose_rule", "paperclip_tasks.task_set_status"]);
+  assert.deepEqual(writes, ["apps.person_identity_decide", "fleet_steward.routing_judge", "fleet_steward.routing_tune", "ops_mcp.meeting_note_correct", "owner_channel.notify", "paperclip_tasks.coach_record", "paperclip_tasks.task_block", "paperclip_tasks.task_cancel", "paperclip_tasks.task_comment", "paperclip_tasks.task_create", "paperclip_tasks.task_delegate", "paperclip_tasks.task_finish", "paperclip_tasks.task_handoff", "paperclip_tasks.task_propose_rule", "paperclip_tasks.task_wait"]);
   assert.deepEqual(a.enabled_tools.github, ["github_app_issue_status"]);
   assert.equal(a.web_search, "disabled");
   assert.ok(!a.enabled_tools.apps.includes("web_view"));
@@ -209,4 +209,12 @@ test("the in-box `aidenhq task|tasks` reads are the tasks module's default grant
   assert.deepEqual(reads({ connections: { slack: "read" } }), [], "a trial agent");
   assert.deepEqual(reads({ ...graduated, profile: "check" }), [], "a check agent");
   assert.deepEqual(reads({ ...graduated, profile: "engineer" }), [], "an Engineer without private_reads");
+});
+
+test("a setting is the shape of its default: a string where a list is meant fails the compile", () => {
+  const dir = withAgents({}, ["github"]);
+  writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules: [...BUNDLE, "github"], settings: { ...owner, github_comment_orgs: "acme,evil" } }));
+  assert.throws(() => compile(product, dir), /settings\.github_comment_orgs: a list, like its default \(got a string\)/);
+  writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules: [...BUNDLE, "github"], settings: { ...owner, github_comment_orgs: ["acme"] } }));
+  assert.equal(compile(product, dir).paperclip ? "ok" : "", "ok");
 });

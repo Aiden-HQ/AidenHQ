@@ -8,7 +8,8 @@
 // leaves it open, and an occurrence still open at the end after such a `to` is dropped (the record went the other way).
 // A task is idle while a task fact shows it open, no job of its own is queued (from its wake) or running, and no stage of it
 // is open other than a wait the reasons below name (a stage starting at record.filed or work.waiting). The reason, in order: the
-// latest unexpired `work.waiting`, an open record (owner, else reviewer), a blocker not done, an open child task, a future
+// latest unexpired `work.waiting` (an agent's own wait, task_wait's `wait:<task>` subject, also ends when the task's next job
+// starts), an open record (owner, else reviewer), a blocker not done, an open child task, a future
 // scheduled wake; then, for the gap still open now with no wake pending, `orphaned`; otherwise `unknown`, never a guess.
 // A stage a module's fact opened counts as work for 24 hours at most; after that its task is idle as `stage_open:<name>`
 // (a module that never closes its stage can't hold an item busy). Reads are bounded: a waterfall at 5,000 facts, a summary or
@@ -21,7 +22,7 @@ import { link, type Change, type Text } from "../sdk/src/quality.ts";
 import { buildItems, insights, listItems, type AuthorKind, type Built, type Dora, type Journey, type Sort } from "./journeys.ts";
 
 export type Occurrence = { name: string; label: string; module: string; from: string; start: string; end: string | null; actor: string; task: string; subject: string; module_fact: boolean };
-export type Idle = { task: string; start: string; end: string | null; reason: string; blocked_on?: string; holder: string };
+export type Idle = { task: string; start: string; end: string | null; reason: string; blocked_on?: string; note?: string; holder: string };
 export type Waterfall = { task: string; root: string; facts: FactRow[]; stages: Occurrence[]; idle: Idle[]; truncated: boolean };
 export type By = "stage" | "agent" | "module" | "repo" | "model";
 export const BY: By[] = ["stage", "agent", "module", "repo", "model"];
@@ -94,6 +95,17 @@ function closedAt(x: Index, task: string, t: number) {
 }
 
 /**
+ * A wake not bound this long past its due time, and never held by admission (`job.held`: queued behind the agent's
+ * max_parallel, the computers, a spend cap), no longer counts as pending: nothing is taking it to a job.
+ */
+const PENDING_MAX = 2.5 * 3600_000;
+/** When a wake stops counting as pending by age (PENDING_MAX), or never when it closed or admission holds it. */
+const agesOut = (x: Index, fs: FactRow[], f: FactRow) =>
+  (x.bySubject.get(f.subject) ?? []).some((g) => g.type === "wake.bound" || g.type === "wake.dropped" || g.type === "job.held") || fs.some((g) => g.type === "job.queued" && ms(g.at) >= ms(f.at))
+    ? Infinity
+    : Math.max(ms(f.at), ms(f.seen_at)) + PENDING_MAX;
+
+/**
  * Why a task is idle, asked at times that never go back (`at(t, now)`; `now`: the gap is still open now, so `orphaned` may
  * apply): one sweep over the task's facts in time order carries the waits, records, blocker and wakes forward, so a gap split
  * at every fact costs one pass, not one per point. `stale`: the task's open stages a module opened.
@@ -104,19 +116,25 @@ function reasoner(x: Index, task: string, stale: Occurrence[]) {
   let i = 0;
   const lastWait = new Map<string, FactRow>(), records = new Map<string, { done: boolean; owner: boolean }>();
   let blocked: FactRow | undefined;
-  // wakes: pending from when the kernel knew of it (seen_at) until bound or dropped; scheduled while its time is still ahead
+  // wakes: pending from when the kernel knew of it (seen_at) until bound or dropped, or until a job on the task is queued after it
+  // (the kernel settles a comment that arrived before a job started as done, with no fact: that job reads it), or until it ages
+  // out (agesOut: one nothing takes to a job makes the task orphaned, so the idle sweep and the steward see it); scheduled while
+  // its time is still ahead
   const edges: [number, number, number][] = []; // [time, pending delta, future delta]
+  const queued = fs.filter((g) => g.type === "job.queued").map((g) => ms(g.at));
   for (const f of fs) if (f.type === "wake.opened") {
-    const close = Math.min(Infinity, ...(x.bySubject.get(f.subject) ?? []).filter((g) => g.type === "wake.bound" || g.type === "wake.dropped").map((g) => ms(g.at)));
-    const s = ms(f.seen_at), due = ms(f.at);
+    const due = ms(f.at);
+    const s = ms(f.seen_at);
+    const close = Math.min(agesOut(x, fs, f), ...(x.bySubject.get(f.subject) ?? []).filter((g) => g.type === "wake.bound" || g.type === "wake.dropped").map((g) => ms(g.at)), ...queued.filter((q) => q >= due));
     if (s < close) { edges.push([s, 1, 0], [close, -1, 0]); if (s < Math.min(due, close)) edges.push([s, 0, 1], [Math.min(due, close), 0, -1]); }
   }
   edges.sort((a, b) => a[0] - b[0]);
   let e = 0, pending = 0, future = 0;
-  return (t: number, now: boolean): { reason: string; blocked_on?: string } => {
+  return (t: number, now: boolean): { reason: string; blocked_on?: string; note?: string } => {
     for (; i < fs.length && at[i]! <= t; i++) {
       const f = fs[i]!;
       if (f.type === "work.waiting" || f.type === "work.resumed") lastWait.set(f.subject, f);
+      else if (f.type === "job.started") lastWait.delete(`wait:${task}`);
       else if (f.type === "task.blocked_changed" && f.subject === `task:${task}`) blocked = f;
       else if (f.type.startsWith("record.")) {
         const r = records.get(f.subject) ?? { done: false, owner: false };
@@ -133,7 +151,7 @@ function reasoner(x: Index, task: string, stale: Occurrence[]) {
     // 1. the latest unexpired work.waiting, not resumed since
     let waiting: FactRow | undefined;
     for (const w of lastWait.values()) if (w.type === "work.waiting" && !(str(w.data.until) && ms(w.data.until as string) <= t) && (!waiting || byTime(w, waiting) > 0)) waiting = w;
-    if (waiting) return { reason: String(waiting.data.reason ?? "unknown") };
+    if (waiting) return { reason: String(waiting.data.reason ?? "unknown"), ...(str(waiting.data.note) ? { note: waiting.data.note as string } : {}) };
     // 2. an open record: the owner's when filed for the owner first, held for them or escalated, else the reviewer's
     let record: string | undefined;
     for (const r of records.values()) if (!r.done) record = r.owner ? "owner" : record ?? "reviewer";
@@ -190,6 +208,7 @@ function idleOf(x: Index, task: string, now: number, occs: Occurrence[]): Idle[]
   for (const f of [...fs, ...(x.children.get(task) ?? []).flatMap((c) => x.bySubject.get(`task:${c}`) ?? [])]) {
     marks.push(ms(f.at), ms(f.seen_at));
     if (str(f.data.until)) marks.push(ms(f.data.until as string));
+    if (f.type === "wake.opened" && agesOut(x, fs, f) < Infinity) marks.push(agesOut(x, fs, f));
   }
   marks.sort((a, b) => a - b);
   const assigns = own.filter((f) => f.type === "task.assignee_changed");
@@ -206,8 +225,8 @@ function idleOf(x: Index, task: string, now: number, occs: Occurrence[]): Idle[]
       const end = points[i + 1] ?? e, last = i === points.length - 1, openNow = last && e >= now;
       const r = why(openNow ? now : p, openNow);
       const prev = out.at(-1);
-      if (prev && prev.end === iso(p) && prev.reason === r.reason && prev.blocked_on === r.blocked_on) prev.end = openNow ? null : iso(end);
-      else out.push({ task, start: iso(p), end: openNow ? null : iso(end), reason: r.reason, ...(r.blocked_on ? { blocked_on: r.blocked_on } : {}), holder: assignee(p) });
+      if (prev && prev.end === iso(p) && prev.reason === r.reason && prev.blocked_on === r.blocked_on && prev.note === r.note) prev.end = openNow ? null : iso(end);
+      else out.push({ task, start: iso(p), end: openNow ? null : iso(end), reason: r.reason, ...(r.blocked_on ? { blocked_on: r.blocked_on } : {}), ...(r.note ? { note: r.note } : {}), holder: assignee(p) });
     });
   }
   return out;
@@ -519,16 +538,20 @@ export function createFlow({ db, file, stages, journeys = () => [], now = () => 
       return { journey: j.name, label: j.label, phases: j.phases.map((p) => ({ name: p.name, label: p.label })), items: list.items, truncated: list.truncated || c.truncated };
     },
 
-    /** Tasks idle now (facts of the last 90 days), oldest first. */
+    /**
+     * Tasks idle now (facts of the last 90 days), oldest first: `since` the idle stretch began, `reason_since` its current
+     * reason did, and `idle_wakes` how many idle wakes (the kernel's idle sweep, idle.ts) its holder got in the last 24 hours.
+     */
     idleNow() {
       const t = now().getTime(), { rows, truncated } = window(t - 90 * DAY, t + 1), x = index(rows), occs = pair(rows, stages());
-      const items: { task: string; identifier: string | null; since: string; reason: string; holder: string }[] = [];
+      const items: { task: string; identifier: string | null; since: string; reason_since: string; reason: string; blocked_on?: string; note?: string; holder: string; idle_wakes: number }[] = [];
       for (const task of x.byTask.keys()) {
         const gaps = idleOf(x, task, t, occs), last = gaps.at(-1);
         if (!last || last.end !== null) continue;
         let since = last.start;
         for (let i = gaps.length - 2; i >= 0 && gaps[i]!.end === since; i--) since = gaps[i]!.start;
-        items.push({ task, identifier: x.ident.get(task) ?? null, since, reason: last.reason, holder: last.holder });
+        const idleWakes = (x.byTask.get(task) ?? []).filter((f) => f.type === "wake.opened" && f.data.cause === "idle" && ms(f.at) > t - DAY).length;
+        items.push({ task, identifier: x.ident.get(task) ?? null, since, reason_since: last.start, reason: last.reason, ...(last.blocked_on ? { blocked_on: last.blocked_on } : {}), ...(last.note ? { note: last.note } : {}), holder: last.holder, idle_wakes: idleWakes });
       }
       return { items: items.sort((a, b) => a.since.localeCompare(b.since)), truncated };
     },

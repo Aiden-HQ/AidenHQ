@@ -24,6 +24,10 @@ export interface NotifyArgs {
   dedupe_key?: string | undefined; // one message per key in the window, from any sender
   /** A job's reply the kernel relays (kernel relay.ts): already on its task, it goes only to the channel the owner wrote from. */
   relay?: { via: "telegram" | "slack"; agentName: string; issueId: string } | undefined;
+  /** The kernel's question from an agent waiting on `task` (kernel escalate.ts): headed by that agent so the owner's reply lands there. */
+  head?: { agentName: string; issueId: string } | undefined;
+  /** The agent whose question `head` carries: its mutes, caps and the task's loop brake apply as to its own notify. */
+  asker?: { id: string; key: string; roles: string[] } | undefined;
 }
 /** What a channel's transport gets: the text as written (each channel renders and escapes it), and who it is from. */
 export type Message = { kind: Kind; text: string; head?: { agent: string; task: string; issue: string }; actions?: string[]; asks?: true };
@@ -42,6 +46,8 @@ export interface Deps {
   resolveTask?: (identifier: string) => Promise<Found | undefined>;
   /** Posts the reply on its chat as the calling agent (the kernel's /v1/cp/agent, on this call's assertion). */
   postReply?: (issueId: string, body: string, assertion: string) => Promise<boolean>;
+  /** Records that the calling job's own task waits on the owner's answer (the kernel's POST /v1/wait, on this call's assertion). */
+  wait?: (task: string, assertion: string, question: string) => Promise<void>;
   /** The kernel's loop brake: whether one more message about this task may go now. */
   brake?: (task: string, agent: string, decision: boolean) => Promise<{ allow: boolean; note?: string }>;
   /** Setting notify_fyi: mute. */
@@ -101,17 +107,19 @@ export async function notify(d: Deps, a: NotifyArgs, caller?: Caller, now = Date
     const dedupe = `dedupe:${createHash("sha256").update(a.dedupe_key ? `key\n${a.dedupe_key}` : `${kind}\n${a.task ?? ""}\n${text}\n${JSON.stringify(a.questions ?? [])}`).digest("hex").slice(0, 32)}`;
     const last = Number(d.store.getKv(dedupe) ?? 0);
     if (last && now - last < (kind === "alert" ? WINDOW.alert : WINDOW.other)) return { sent: true, reason: "duplicate" };
+    // Whose message it is for attention and the brake: the calling agent, or the agent a kernel-relayed question is from.
+    const who = caller ?? (a.head ? a.asker : undefined);
     // The loop brake (the kernel's count) on an agent's messages about a task: fails open when the kernel doesn't answer.
-    if (a.task && caller && kind !== "alert" && d.brake) {
-      const b = await d.brake(a.task, caller.id, kind === "decision").catch(() => ({ allow: true, note: undefined }));
+    if (a.task && who && kind !== "alert" && d.brake) {
+      const b = await d.brake(a.task, who.id, kind === "decision").catch(() => ({ allow: true, note: undefined }));
       if (!b.allow) return { sent: false, reason: "limit", note: b.note ?? `Limit reached on ${a.task} since the owner last wrote there (or since UTC midnight). Nothing was sent; batch it into your next update.` };
     }
     // The chat is the calling agent's own, running on it now: only then its name heads the message, the reply lands there and
     // goes where the owner wrote. (The kernel's, the board's and the runner's messages carry the task in their text.)
     const resolved = a.task && caller && d.resolveTask ? await d.resolveTask(a.task).catch(() => undefined) : undefined;
-    const found: Found | undefined = a.relay ? { issueId: a.relay.issueId, agentId: "", agentName: a.relay.agentName, ownerVia: a.relay.via } : resolved?.agentId === caller?.id ? resolved : undefined;
+    const found: Found | undefined = a.relay ? { issueId: a.relay.issueId, agentId: "", agentName: a.relay.agentName, ownerVia: a.relay.via } : a.head && !caller ? { issueId: a.head.issueId, agentId: "", agentName: a.head.agentName } : resolved?.agentId === caller?.id ? resolved : undefined;
     // Attention: a blocked or over-cap agent sends nothing; a crew agent's routine done/fyi goes to the digest (and its chat).
-    const att = caller && d.attention && ["decision", "done", "fyi"].includes(kind) ? attend(d.store, d.attention, { id: caller.id, key: caller.key, roles: caller.roles ?? [] }, kind, { conversing: Boolean(found?.ownerVia), buttons: Boolean(a.actions?.length) }, now) : ({ do: "pass" } as const);
+    const att = who && d.attention && ["decision", "done", "fyi"].includes(kind) ? attend(d.store, d.attention, { id: who.id, key: who.key, roles: who.roles ?? [] }, kind, { conversing: Boolean(found?.ownerVia), buttons: Boolean(a.actions?.length) }, now) : ({ do: "pass" } as const);
     if (att.do === "block" || att.do === "limit") return { sent: false, reason: att.do === "block" ? "blocked" : "limit", note: att.note };
     const muted = kind === "fyi" && d.muteFyi === true && !a.actions?.length;
     const digested = att.do === "digest" && found?.ownerVia !== "board" && !muted;
@@ -133,10 +141,18 @@ export async function notify(d: Deps, a: NotifyArgs, caller?: Caller, now = Date
     }
     const ok = out === "sent" || out === "down" || onChat || digested;
     if (ok) d.store.setKv(dedupe, String(now));
+    // A question on the agent's own task files an owner wait carrying its text (the kernel refuses any other task; that is no failure).
+    // A wait that failed is returned: the task would read orphaned and be woken to ask again.
+    let waitError: string | undefined;
+    if (ok && kind === "decision" && found && caller && d.wait) {
+      const question = [text, ...(a.questions ?? []).map((q) => q.question)].join("\n");
+      await d.wait(found.issueId, caller.assertion, question).catch((e: Error) => { waitError = String(e.message ?? e).slice(0, 200); });
+    }
+    const failed = waitError ? { wait_error: `the question went out, but its wait wasn't recorded (${waitError}): call task_wait for: owner with the question so the task isn't woken as idle.` } : {};
     const chat = onChat ? { onChat: true as const } : {};
     // Sent only when a channel took it, its chat holds it or the digest will carry it; waiting for a channel is never "sent".
     if (out === "down" && !onChat && !digested) return { sent: false, queued: true, note: "No channel reaches the owner right now: it goes out once one is back." };
-    if (ok) return { sent: true, ...chat, ...(digested ? { note: "Routine update: it goes to the owner in the next digest." } : {}) };
+    if (ok) return { sent: true, ...chat, ...failed, ...(digested ? { note: "Routine update: it goes to the owner in the next digest." } : {}) };
     if (muted) return { sent: false, reason: "muted", note: "The owner muted fyi messages, so nothing was sent. That is expected: don't resend it; put it in your next result instead." };
     return { sent: false, reason: "error", note: "No channel is set up to reach the owner, and this message has no chat on the board to land on." };
   } catch {

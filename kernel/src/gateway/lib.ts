@@ -33,8 +33,9 @@
 // (reviewer, grader, source) are never capped. CI caps (config/gateway.json `ci`: per repo per UTC day, all CI per day) are
 // never filed for raising. The install cap (config/gateway.json `install_day_usd`, settings.spend_day_usd; absent, none)
 // counts every call of the UTC day, every kind and CI included; its raise_cap is filed as agent INSTALL_CAP, scope day.
-// A check job's token (kind check, ../checkjobs.ts: the reviewer eval) is capped by the eval day cap (config/gateway.json
-// `eval_day_usd`, settings.eval_day_usd; absent, 0: refused), attributed to `eval:<head>`, never filed for raising.
+// A check job's token (kind check, ../checkjobs.ts) is the reviewer eval's, capped by the eval day cap (config/gateway.json
+// `eval_day_usd`, settings.eval_day_usd; absent, 0: refused) and attributed to `eval:<head>`, or a model recipe's (a code
+// review), which carries its own cap (`u`): that token's run key alone, attributed to `<run>:<check>`. Neither is filed for raising.
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { dirname } from "node:path";
@@ -52,7 +53,7 @@ export type RunKey = Brand<string, "RunKey">;
  */
 export type Caller = Brand<{
   runKey: RunKey; agentId: string | null; runId: string | null; issueId: string | null; perpetual: boolean; rev: string | null;
-  kind: string; component: string; capped: boolean; ci?: { repo: string; subject: string }; check?: { subject: string };
+  kind: string; component: string; capped: boolean; ci?: { repo: string; subject: string }; check?: { subject: string; cap?: number };
 }, "Caller">;
 type GatewayError = Error & { status?: number; type?: string; extra?: Record<string, unknown> };
 type Caps = { run_usd: number; task_usd: number; day_usd: number };
@@ -240,7 +241,7 @@ const RETRY_DELAYS_MS = [1000, 3000, 9000, 20000];
  * The gateway: handle(req, res). `secret(name)` reads a secret file (fresh each time, so a rotation needs no restart);
  * `upstream` is OpenRouter's API base; Paperclip and the board's internal API as URLs.
  */
-export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, asCaller, secret, upstream = "https://openrouter.ai/api/v1", paperclipUrl, fileRaiseCap, githubJwksUrl, jobLive = () => false, log = () => {}, now = Date.now, retryDelaysMs = RETRY_DELAYS_MS }: {
+export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, asCaller, secret, upstream = "https://openrouter.ai/api/v1", paperclipUrl, fileRaiseCap, githubJwksUrl, jobLive = () => false, log = () => {}, now = Date.now, retryDelaysMs = RETRY_DELAYS_MS, streamIdleMs = 120_000, taskRetryMs = [500, 2_000] }: {
   /** Whether a kernel job (a job token's id) is still admitted or running: an ended job's token buys nothing. */
   jobLive?: (id: string) => boolean;
   dbFile: string; legacyDbFile?: string; grantsFile: string; settingsFile: string;
@@ -249,6 +250,10 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
   githubJwksUrl?: string; log?: Log; now?: () => number;
   /** Waits between attempts at a transient OpenRouter failure (tests pass zeros). */
   retryDelaysMs?: number[];
+  /** How long an answer's stream may go quiet before it is cut (OpenRouter sends keep-alives while a model thinks). */
+  streamIdleMs?: number;
+  /** Waits between tries of a job's task read when the control plane doesn't answer. */
+  taskRetryMs?: number[];
   /** Files a kernel.raise_cap record (writes.ts fileNative): the owner's, after the AI reviewer. No task: the install cap's. */
   fileRaiseCap?: (b: { task: string | null; scope: string; agentId: string; subject: string; cap: number; spent: number }) => Promise<void>;
 }) {
@@ -300,7 +305,7 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
     // A CI call's task_subject is `<owner>/<repo>#<pr>`.
     ciSpentRepo: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE kind = 'ci-code-review' AND day = ? AND substr(task_subject, 1, length(?)) = ?"),
     ciSpent: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE kind = 'ci-code-review' AND day = ?"),
-    checkSpent: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE kind = 'check' AND day = ?"),
+    checkSpent: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE kind = 'check' AND day = ? AND task_subject LIKE 'eval:%'"),
   };
   const prune = () => {
     const cut = new Date(now() - 40 * DAY_MS).toISOString();
@@ -310,7 +315,8 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
     db.prepare("DELETE FROM ci_tokens WHERE exp < ?").run(new Date(now() - 2 * DAY_MS).toISOString());
   };
   prune();
-  const pruner = setInterval(prune, 3600_000);
+  // A timer's throw would exit the kernel: a failed prune or true-up is logged, and the next one tries again.
+  const pruner = setInterval(() => { try { prune(); } catch (e) { log("ledger prune failed", { err: String((e as Error).message).slice(0, 200) }); } }, 3600_000);
   pruner.unref();
 
   /**
@@ -337,7 +343,7 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
       }
     }
   }
-  const trueUps = setInterval(() => void trueUp(), 60_000);
+  const trueUps = setInterval(() => void trueUp().catch((e: Error) => log("true-up failed", { err: String(e?.message ?? e).slice(0, 200) })), 60_000);
   trueUps.unref();
   let live = 0; // this process's model calls in flight (main.ts drains on them)
 
@@ -347,9 +353,24 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
     return res.json();
   }
 
-  /** A job's task and whether that task is perpetual (a chat task, or a routine's execution task). */
+  /**
+   * A job's task and whether that task is perpetual (a chat task, or a routine's execution task). It is settled once for the
+   * run, so a control plane that doesn't answer is never read as "not perpetual": tried again briefly, then the call is
+   * refused with a 503 (the engine retries it) and nothing is settled. A task it refuses (gone, say) is not perpetual.
+   */
   async function taskOf(issueId: string | null) {
-    const issue = (issueId ? await paperclip(`/api/issues/${encodeURIComponent(issueId)}`, secret("paperclip_board_key")).catch(() => undefined) : undefined) as { labels?: ({ name?: string } | null)[]; originKind?: string } | undefined;
+    let issue: { labels?: ({ name?: string } | null)[]; originKind?: string } | undefined;
+    for (let n = 0; issueId && paperclipUrl; n++) {
+      try {
+        issue = (await paperclip(`/api/issues/${encodeURIComponent(issueId)}`, secret("paperclip_board_key"))) as typeof issue;
+        break;
+      } catch (e) {
+        const st = (e as { status?: number }).status;
+        if (st !== undefined && st >= 400 && st < 500 && st !== 429) break;
+        if (n >= taskRetryMs.length) throw fail(503, "control_plane_unavailable", "the control plane didn't answer for this job's task; try again");
+        await new Promise((r) => setTimeout(r, taskRetryMs[n]));
+      }
+    }
     return { issueId, perpetual: Boolean(issue && ((issue.labels ?? []).some((l) => l?.name === "chat") || issue.originKind === "routine_execution")) };
   }
 
@@ -394,7 +415,7 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
         const row = (q.run.get(runKey) as RunRow | undefined) ?? settle(runKey, { agentId: p.a, runId: String(p.id), ...(await taskOf(p.i)) });
         return as(row, routeKind, "agent", true);
       }
-      if (p.k === "check") return { ...as(null, "check", "Check jobs", true), check: { subject: String(p.c ?? "").slice(0, 80) } } as Caller;
+      if (p.k === "check") return { ...as(null, "check", "Check jobs", true), check: { subject: String(p.c ?? "").slice(0, 80), ...(Number(p.u) > 0 ? { cap: Number(p.u) } : {}) } } as Caller;
       // An agent's model calls come only with a kernel job's token or a lane's: an agent-kind token under the job secret is no one's.
       if (!SYSTEM[p.k]) throw fail(401, "unauthorized", "this run's model credential is invalid or expired");
       const row = (q.run.get(runKey) as RunRow | undefined) ?? settle(runKey, { agentId: p.a, issueId: p.i });
@@ -442,6 +463,7 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
         ...installScope(today),
       ];
     }
+    if (who.check?.cap) return [{ scope: "check-run", subject: who.check.subject, cap: who.check.cap, spent: (q.spentRun.get(who.runKey) as Sum).s }, ...installScope(today)];
     if (who.check) return [{ scope: "eval-day", subject: today, cap: evalDay(), spent: (q.checkSpent.get(today) as Sum).s }, ...installScope(today)];
     if (!who.capped) return installScope(today);
     const subject = taskSubject(who, t);
@@ -617,7 +639,8 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
       try { q.settle.run(u?.key ?? id, ...row); } catch { q.settle.run(id, ...row); } // a generation id already used keeps the reservation's key
     };
     let up: Response;
-    const post = () => fetch(`${upstream}/${path}`, { method: "POST", headers: { "content-type": "application/json", accept: req.headers.accept ?? "*/*", authorization: `Bearer ${upKey}` }, body: JSON.stringify(body) });
+    let attempt = new AbortController();
+    const post = () => (attempt = new AbortController(), fetch(`${upstream}/${path}`, { method: "POST", headers: { "content-type": "application/json", accept: req.headers.accept ?? "*/*", authorization: `Bearer ${upKey}` }, body: JSON.stringify(body), signal: attempt.signal }));
     try {
       // A transient refusal (rate limit, "high demand" 502, a reset) is retried with backoff before any byte reaches the caller.
       for (let n = 0; ; n++) {
@@ -640,11 +663,16 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
     const sse = String(up.headers.get("content-type") ?? "").includes("event-stream");
     const tap = usageTap(sse);
     const text = new TextDecoder();
-    // Read to the end even if the caller hung up, so what OpenRouter billed still lands in the ledger.
+    // Read to the end even if the caller hung up, so what OpenRouter billed still lands in the ledger. A stream that goes quiet
+    // for streamIdleMs is cut: its reservation is settled (and trued up from OpenRouter's record) instead of held for minutes.
     let status = "upstream_aborted", gen = "";
+    let idle: NodeJS.Timeout | undefined;
+    const poke = () => { clearTimeout(idle); idle = setTimeout(() => attempt.abort(new Error("the answer's stream went quiet")), streamIdleMs); };
     try {
       res.writeHead(up.status, Object.fromEntries([...up.headers].filter(([k]) => !["content-encoding", "content-length", "transfer-encoding", "connection"].includes(k))));
+      if (sse) poke();
       if (up.body) for await (const c of up.body) {
+        if (sse) poke();
         if (!res.destroyed) res.write(c);
         const s = text.decode(c, { stream: true });
         tap.feed(s);
@@ -653,6 +681,7 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
       }
       status = up.ok ? "ok" : `upstream_${up.status}`;
     } finally {
+      clearTimeout(idle);
       settle(status, tap.done(), !up.ok && !sse && status !== "upstream_aborted"); // a definite error answer, no stream started
     }
     if (!res.destroyed) res.end();
@@ -751,5 +780,9 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
   /** The caps a new job of this agent on this task would start over (admission.ts): its task, its day and the install's. */
   const exhausted = (agentId: string, task: string) =>
     capScopes({ runKey: "admission", agentId, issueId: task, perpetual: false, capped: true } as unknown as Caller, now()).filter((o) => o.scope !== "run" && o.cap > 0 && o.spent >= o.cap);
-  return { handle, db, metricsText, setCap, exhausted, trueUp, inflight: () => live, ciEnabled: () => Boolean(ciConf()), close: () => { clearInterval(pruner); clearInterval(trueUps); db.close(); } };
+  /** What a credential has spent so far (settled and in flight), by its run key: a check token's whole run. */
+  /** What a run key (a credential's sha256) has spent; spentBy: the same, by the credential. */
+  const spentByKey = (runKey: string) => (q.spentRun.get(runKey) as Sum).s;
+  const spentBy = (cred: string) => spentByKey(sha256(cred));
+  return { handle, db, metricsText, setCap, exhausted, trueUp, spentBy, spentByKey, inflight: () => live, ciEnabled: () => Boolean(ciConf()), close: () => { clearInterval(pruner); clearInterval(trueUps); db.close(); } };
 }

@@ -5,7 +5,8 @@
 // Keys (never Paperclip's eventId): comment:<commentId>, issue:<issueId>:<updatedAt> (assigned or moved to todo),
 // routine-run:<issueId> (a routine run's new task, cause routine:<key>: the routine's compiled key, so admission applies its own
 // model; dispatch folds a run into an earlier open one of its routine, and cancels overtaken blocked ones), reopen:<issueId>:<statusVersion> (a comment reopened a finished task),
-// wake_at:<module>.<id> (a module's scheduled wake, due at `until`), unblocked:<issueId>:<closure> (a blocked task whose first-class
+// wake_at:<module>.<id> (a module's scheduled wake, due at `until`), wait:<issueId>:<until> (an agent's own wait, idle.ts),
+// idle:<issueId>:<since> (the idle sweep's nudge, idle.ts), unblocked:<issueId>:<closure> (a blocked task whose first-class
 // blockers (blockedBy) are all done or cancelled: the poll moves it to todo with one tagged notice, then files this wake).
 // Polled agents: those the modules that claim wakes dispatch (compile's `dispatches`); a module joins on its first claim.
 // So nothing is polled until a dispatcher claims, and an agent's first scan only wakes for comments after its dispatcher
@@ -54,12 +55,12 @@ export async function wakeNotice(owner: Api, task: string, text: string): Promis
 }
 
 export interface Wake { key: string; task: string; agent: string; cause: string; at: number; state: string; claimed_by: string | null; job: string | null; until: number | null }
-type Issue = { id: string; identifier?: string; title?: string; description?: string | null; parentId?: string | null; status?: string; assigneeAgentId?: string | null; updatedAt?: string; createdAt?: string; statusVersion?: number; blockedBy?: { id: string; identifier?: string | null; status: string }[]; originKind?: string | null; originId?: string | null; companyId?: string; createdByAgentId?: string | null };
+type Issue = { id: string; identifier?: string; title?: string; description?: string | null; parentId?: string | null; status?: string; assigneeAgentId?: string | null; assigneeUserId?: string | null; labels?: { name?: string }[]; updatedAt?: string; createdAt?: string; statusVersion?: number; blockedBy?: { id: string; identifier?: string | null; status: string }[]; originKind?: string | null; originId?: string | null; companyId?: string; createdByAgentId?: string | null };
 type Comment = { id: string; body?: string; authorAgentId?: string | null; authorUserId?: string | null; createdAt?: string; deletedAt?: string | null };
 type Log = (msg: string, f?: Record<string, unknown>) => void;
 const ms = (t?: string) => (t ? Date.parse(t) || 0 : 0);
 
-export function createWakes({ db, owner, post, dispatches, routineKey = () => undefined, grants = () => ({}), knownRepo = () => false, teamDayUsedUp = () => false, tellBlocked = async () => {}, facts, log = () => {}, now = Date.now }: {
+export function createWakes({ db, owner, post, dispatches, containers = () => new Set(), routineKey = () => undefined, grants = () => ({}), knownRepo = () => false, teamDayUsedUp = () => false, tellBlocked = async () => {}, facts, log = () => {}, now = Date.now }: {
   /** Flow's fact log (facts.ts): task changes the scan sees, and each wake's opening, binding and dropping. */
   facts?: Facts;
   db: DatabaseSync;
@@ -69,6 +70,11 @@ export function createWakes({ db, owner, post, dispatches, routineKey = () => un
   post: Outcomes["post"];
   /** Whether a module dispatches an agent (jobs.ts dispatchesFrom), and the agents it dispatches (ids). */
   dispatches: { may: (module: string, agent: string) => boolean; agents: (module: string) => string[] };
+  /**
+   * The log tasks setup makes and an agent holds (grants memory_inbox, review_log, chat_task, fleet_issues), by id or
+   * identifier: written to by many, they wake nobody (the chat lane answers a chat task's words itself).
+   */
+  containers?: () => Set<string>;
   /** A Paperclip routine's compiled key (grants `routine_keys`, setup): none for a routine setup didn't make. */
   routineKey?: (routine: string) => string | undefined;
   /** The grants table's agents by id: teams and members (team routing). */
@@ -82,12 +88,24 @@ export function createWakes({ db, owner, post, dispatches, routineKey = () => un
   log?: Log; now?: () => number;
 }) {
   db.exec(DDL);
+  // What the task facts last recorded of each task (task_facts_seen: its holder, status and blockers, and when): their own cursor,
+  // apart from wake_tasks, so a change the kernel observes at once (observe) records its facts and never swallows the wake the scan
+  // files from that same change. Born from wake_tasks when it first appears.
+  if (!db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'task_facts_seen'").get()) {
+    db.exec("CREATE TABLE task_facts_seen (task TEXT PRIMARY KEY, holder TEXT, status TEXT, blocked TEXT, at INTEGER NOT NULL DEFAULT 0)");
+    db.exec("INSERT INTO task_facts_seen (task, holder, status, blocked) SELECT task, CASE WHEN agent IS NULL THEN NULL ELSE 'agent:' || agent END, status, NULL FROM wake_tasks");
+  }
   if (!(db.prepare("PRAGMA table_info(team_routes)").all() as { name: string }[]).some((c) => c.name === "snapshot")) db.exec("ALTER TABLE team_routes ADD COLUMN snapshot TEXT");
   // What the scan last saw of a task (wake_tasks): `blocked` its blocker ids, and `polled` whether the wake logic has run on it
   // (a row made only to diff the task's facts, for a task nobody polls, is not a first sight's cursor).
   const have = new Set((db.prepare("PRAGMA table_info(wake_tasks)").all() as { name: string }[]).map((c) => c.name));
   if (!have.has("blocked")) db.exec("ALTER TABLE wake_tasks ADD COLUMN blocked TEXT");
   if (!have.has("polled")) db.exec("ALTER TABLE wake_tasks ADD COLUMN polled INTEGER NOT NULL DEFAULT 1");
+  // When a row was last claimed (`claimed_at`): the dispatcher reads the task's thread after it claims, so the job a wake starts
+  // covers what happened before its claim, not before its spawn (a box start or a clone can take minutes).
+  if (!(db.prepare("PRAGMA table_info(wakes)").all() as { name: string }[]).some((c) => c.name === "claimed_at")) db.exec("ALTER TABLE wakes ADD COLUMN claimed_at INTEGER");
+  // An unblock half done (unblock): its blocker relations cleared, its move to todo not yet written.
+  db.exec("CREATE TABLE IF NOT EXISTS unblocking (task TEXT PRIMARY KEY, closure TEXT NOT NULL, line TEXT NOT NULL)");
   const q = (sql: string) => db.prepare(sql);
   const fact = factWriter(facts, log);
   const keyOf = (agent: string | null | undefined) => (agent ? grants()[agent]?.key ?? agent : null);
@@ -116,9 +134,11 @@ export function createWakes({ db, owner, post, dispatches, routineKey = () => un
   /**
    * What changed on a task since the scan last saw it, as facts (spec: flow §1). Their versions come from Paperclip, so the event
    * path and the poll that see one change record it once. A task seen first is recorded as created, with the status and assignee
-   * it has (from nothing). `actor`: who Paperclip says did it, else unknown.
+   * it has (from nothing). `actor`: who Paperclip says did it, else unknown. The holder is the agent, `"owner"` (a user assignee:
+   * every admin is the owner) or none; what changed is read against task_facts_seen, which this ends by moving to the issue.
    */
-  function taskFacts(issue: Issue, prev: { agent: string | null; status: string | null; blocked: string | null } | undefined, source: "live" | "poll", actor: string) {
+  function taskFacts(issue: Issue, source: "live" | "poll", actor: string) {
+    const prev = q("SELECT holder, status, blocked FROM task_facts_seen WHERE task = ?").get(issue.id) as { holder: string | null; status: string | null; blocked: string | null } | undefined;
     const base = { subject: `task:${issue.id}`, task: issue.id, actor, source };
     const changed = ms(issue.updatedAt) || now();
     // A task a kernel job created without a Paperclip parent: the creating job's task (provenance.ts) is its parent.
@@ -126,13 +146,15 @@ export function createWakes({ db, owner, post, dispatches, routineKey = () => un
     // A task a module filed (modtasks.ts: its marker and source, no agent made it) has the module as origin and its source as marker.
     const module = issue.createdByAgentId ? undefined : /<!-- aidenhq-module:([\w-]+) -->/.exec(issue.description ?? "")?.[1];
     const marker = module ? /<!-- source:(\S{1,200}) -->/.exec(issue.description ?? "")?.[1] : undefined;
-    if (!prev) fact({ ...base, type: "task.created", version: "created", at: iso(ms(issue.createdAt) || changed), data: { parent: issue.parentId ?? parentByJob(issue.id), identifier: issue.identifier ?? null, origin: issue.originKind ?? (module ? `module:${module}` : null), source_marker: issue.originId ?? marker ?? null } });
+    if (!prev) fact({ ...base, type: "task.created", version: "created", at: iso(ms(issue.createdAt) || changed), data: { parent: issue.parentId ?? parentByJob(issue.id), identifier: issue.identifier ?? null, chat: Boolean(issue.labels?.some((l) => l.name === "chat")), origin: issue.originKind ?? (module ? `module:${module}` : null), source_marker: issue.originId ?? marker ?? null } });
     const status = String(issue.status ?? "");
     if (status && (prev?.status ?? null) !== status) fact({ ...base, type: "task.status_changed", version: String(issue.statusVersion ?? issue.updatedAt ?? changed), at: iso(changed), data: { from: prev?.status ?? null, to: status } });
-    const to = issue.assigneeAgentId ?? null;
-    if ((prev?.agent ?? null) !== to) fact({ ...base, type: "task.assignee_changed", version: String(issue.updatedAt ?? changed), at: iso(changed), data: { from: keyOf(prev?.agent), to: keyOf(to) } });
+    const holder = issue.assigneeAgentId ? `agent:${issue.assigneeAgentId}` : issue.assigneeUserId ? "owner" : null;
+    const name = (h: string | null | undefined) => (h ? (h === "owner" ? h : keyOf(h.slice(6))) : null);
+    if ((prev?.holder ?? null) !== holder) fact({ ...base, type: "task.assignee_changed", version: String(issue.updatedAt ?? changed), at: iso(changed), data: { from: name(prev?.holder), to: name(holder) } });
     const blocked = blockedKey(issue);
     if (blocked !== null && blocked !== (prev?.blocked ?? "")) fact({ ...base, type: "task.blocked_changed", version: `${blocked}@${issue.updatedAt ?? changed}`, at: iso(changed), data: { blocked_by: blocked ? blocked.split(",") : [] } });
+    q("INSERT INTO task_facts_seen (task, holder, status, blocked, at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(task) DO UPDATE SET holder = excluded.holder, status = excluded.status, blocked = COALESCE(excluded.blocked, blocked), at = excluded.at").run(issue.id, holder, status, blocked, now());
   }
   /** The polled agents, each with when its dispatcher joined. */
   const polled = () => {
@@ -145,17 +167,19 @@ export function createWakes({ db, owner, post, dispatches, routineKey = () => un
     q("INSERT OR IGNORE INTO dispatch_since (agent, at) VALUES (?, ?)").run(agent, joined);
     return (q("SELECT at FROM dispatch_since WHERE agent = ?").get(agent) as { at: number }).at;
   };
-  const liveJob = (task: string) => q(`SELECT id, at FROM jobs WHERE task = ? AND state IN ${LIVE} ORDER BY at DESC LIMIT 1`).get(task) as { id: string; at: number } | undefined;
-  const lastJob = (task: string) => q("SELECT id, at FROM jobs WHERE task = ? ORDER BY at DESC LIMIT 1").get(task) as { id: string; at: number } | undefined;
+  // A job with `at`: what it covers, the claim of the wake that started it (its spawn time for a job no claimed wake started).
+  const liveJob = (task: string) => q(`SELECT j.id, COALESCE(w.claimed_at, j.at) AS at FROM jobs j LEFT JOIN wakes w ON w.job = j.id WHERE j.task = ? AND j.state IN ${LIVE} ORDER BY j.at DESC LIMIT 1`).get(task) as { id: string; at: number } | undefined;
+  const lastJob = (task: string) => q("SELECT j.id, COALESCE(w.claimed_at, j.at) AS at FROM jobs j LEFT JOIN wakes w ON w.job = j.id WHERE j.task = ? ORDER BY j.at DESC LIMIT 1").get(task) as { id: string; at: number } | undefined;
 
   /** One task's wakes: new comments past its cursor, and a move to todo (or a first sight of an unstarted todo task). */
   async function scan(issue: Issue, { reopened = false, source = "live", actor = "unknown" }: { reopened?: boolean; source?: "live" | "poll"; actor?: string } = {}) {
     const seen = q("SELECT agent, status, comment, blocked, polled FROM wake_tasks WHERE task = ?").get(issue.id) as { agent: string | null; status: string | null; comment: string | null; blocked: string | null; polled: number } | undefined;
     // The task's facts first: a task nobody polls (unassigned, or an agent no dispatcher claims) is recorded too. A list row may
     // lack the description its first fact reads (a module's markers): read the task once then.
-    if (!seen && issue.description === undefined) { const r = await owner("GET", `/api/issues/${encodeURIComponent(issue.id)}`); if (r.status === 200) issue = r.json as Issue; }
-    taskFacts(issue, seen, source, actor);
-    const agent = issue.assigneeAgentId;
+    if (!q("SELECT 1 FROM task_facts_seen WHERE task = ?").get(issue.id) && issue.description === undefined) { const r = await owner("GET", `/api/issues/${encodeURIComponent(issue.id)}`); if (r.status === 200) issue = r.json as Issue; }
+    taskFacts(issue, source, actor);
+    const box = containers();
+    const agent = box.has(issue.id) || (issue.identifier && box.has(issue.identifier)) ? null : issue.assigneeAgentId;
     const joined = agent ? polled().get(agent) : undefined;
     if (!agent || joined === undefined || grants()[agent]?.team) {
       q("INSERT INTO wake_tasks (task, agent, status, blocked, polled) VALUES (?, ?, ?, ?, 0) ON CONFLICT(task) DO UPDATE SET agent = excluded.agent, status = excluded.status, blocked = COALESCE(excluded.blocked, blocked)").run(issue.id, agent ?? null, String(issue.status ?? ""), blockedKey(issue));
@@ -170,13 +194,25 @@ export function createWakes({ db, owner, post, dispatches, routineKey = () => un
     const all = (r.json as Comment[]).slice().sort((a, b) => ms(a.createdAt) - ms(b.createdAt));
     // First sight: only what came after the dispatcher joined or the agent's last word on the task.
     const boundary = prev ? 0 : Math.max(since(agent, joined), ...all.filter((c) => c.authorAgentId === agent || SELF_TAG.test(c.body ?? "")).map((c) => ms(c.createdAt)));
+    // Every untagged comment read is a fact (version = its id): the owner's say, an agent's. A comment the kernel wrote carries a
+    // tag and is recorded by its writer (cp.ts, outcomes.ts, the owner paths), whose fact names the job: scan never races it.
+    for (const c of all) {
+      if (c.deletedAt || /<!-- aidenhq:(job|op)=/.test(c.body ?? "")) continue;
+      fact({ type: "task.commented", subject: `task:${issue.id}`, version: String(c.id), at: iso(ms(c.createdAt) || now()), actor: c.authorAgentId ? `agent:${keyOf(c.authorAgentId)}` : c.authorUserId ? `account:${c.authorUserId}` : "unknown", task: issue.id, source, data: { kind: "comment" } });
+    }
     for (const c of all) {
       if (c.deletedAt || ms(c.createdAt) <= boundary || c.authorAgentId === agent || SELF_TAG.test(c.body ?? "")) continue;
       insert(`comment:${c.id}`, issue.id, agent, "comment", ms(c.createdAt) || now(), null, c.authorAgentId ? `agent:${keyOf(c.authorAgentId)}` : c.authorUserId ? `account:${c.authorUserId}` : "unknown");
     }
     const status = String(issue.status ?? "");
-    const moved = prev ? prev.status !== status || prev.agent !== agent : !lastJob(issue.id);
-    if (status === "todo" && (reopened || moved) && !liveJob(issue.id)) {
+    // Handed to this agent since the scan last saw the task (from the owner, say, while nobody polled it): a wake, even if an
+    // earlier job ran on it, and also on a task already in progress.
+    const handed = seen !== undefined && (seen.agent ?? null) !== agent;
+    const moved = prev ? prev.status !== status || prev.agent !== agent : handed || !lastJob(issue.id);
+    const fileable = (status === "todo" || (handed && status === "in_progress")) && (reopened || moved);
+    // A move made while a job runs is filed once that job ends: until then the cursor keeps what it last saw (`deferred`).
+    const deferred = fileable && Boolean(liveJob(issue.id));
+    if (fileable && !deferred) {
       const at = ms(issue.updatedAt) || now();
       if (reopened) insert(`reopen:${issue.id}:${issue.statusVersion ?? issue.updatedAt}`, issue.id, agent, "reopen", at, null, actor);
       else if (!prev && issue.originKind === "routine_execution") {
@@ -193,7 +229,8 @@ export function createWakes({ db, owner, post, dispatches, routineKey = () => un
       rearmRoutine(`routine-run:${issue.id}`, issue.id, agent, key ? `routine:${key}` : "routine", actor);
     }
     const newest = prev?.comment && !all.length ? prev.comment : all.at(-1)?.id ?? null;
-    q("INSERT INTO wake_tasks (task, agent, status, comment, blocked, polled) VALUES (?, ?, ?, ?, ?, 1) ON CONFLICT(task) DO UPDATE SET agent = excluded.agent, status = excluded.status, comment = excluded.comment, blocked = COALESCE(excluded.blocked, blocked), polled = 1").run(issue.id, agent, status, newest, blockedKey(issue));
+    q("INSERT INTO wake_tasks (task, agent, status, comment, blocked, polled) VALUES (?, ?, ?, ?, ?, 1) ON CONFLICT(task) DO UPDATE SET agent = excluded.agent, status = excluded.status, comment = excluded.comment, blocked = COALESCE(excluded.blocked, blocked), polled = 1")
+      .run(issue.id, deferred ? (prev?.agent ?? seen?.agent ?? null) : agent, deferred ? (prev?.status ?? seen?.status ?? null) : status, newest, blockedKey(issue));
   }
 
   /**
@@ -208,9 +245,13 @@ export function createWakes({ db, owner, post, dispatches, routineKey = () => un
     if (r.status !== 200) throw new Error(`control plane GET issue → ${r.status}`);
     const task = r.json as Issue;
     const blockers = task.blockedBy ?? [];
-    if (task.status !== "blocked" || !blockers.length || !blockers.every((b) => b.status === "done" || b.status === "cancelled")) return;
-    const closure = blockers.map((b) => `${b.id}:${b.status}`).sort().join(",");
-    const line = `${blockers.map((b) => b.identifier ?? b.id).join(", ")} closed (${blockers.map((b) => b.status).join(", ")}).`;
+    // An unblock whose relations were cleared but whose move failed is finished from what it recorded, never stranded.
+    const half = q("SELECT closure, line FROM unblocking WHERE task = ?").get(task.id) as { closure: string; line: string } | undefined;
+    if (task.status !== "blocked") { if (half) q("DELETE FROM unblocking WHERE task = ?").run(task.id); return; }
+    if (!half && (!blockers.length || !blockers.every((b) => b.status === "done" || b.status === "cancelled"))) return;
+    const closure = half?.closure ?? blockers.map((b) => `${b.id}:${b.status}`).sort().join(",");
+    const line = half?.line ?? `${blockers.map((b) => b.identifier ?? b.id).join(", ")} closed (${blockers.map((b) => b.status).join(", ")}).`;
+    if (!half) q("INSERT OR REPLACE INTO unblocking (task, closure, line) VALUES (?, ?, ?)").run(task.id, closure, line);
     const patch = (b: object) => owner("PATCH", `/api/issues/${encodeURIComponent(task.id)}`, b);
     const ok = (res: { status: number }) => { if (res.status >= 300) throw new Error(`control plane PATCH issue → ${res.status}`); return res; };
     const keep = blockers.filter((b) => b.status !== "cancelled").map((b) => b.id);
@@ -220,6 +261,7 @@ export function createWakes({ db, owner, post, dispatches, routineKey = () => un
     if (res.status === 409) { ok(await patch({ blockedByIssueIds: [] })); res = await patch(move); }
     ok(res);
     insert(`unblocked:${task.id}:${closure}`, task.id, agent, "unblocked", now(), null, "kernel");
+    q("DELETE FROM unblocking WHERE task = ?").run(task.id);
   }
 
   // ---- Team routing (team-routing.ts picks; this gathers, records and places) ----
@@ -316,11 +358,19 @@ export function createWakes({ db, owner, post, dispatches, routineKey = () => un
   }
 
   const companies = new Map<string, string>();
+  /** The most tasks a poll re-reads one by one (closures and hand-offs its lists can't show). */
+  const RECONCILE_MAX = 100;
   return {
     scan,
+    /**
+     * A change the kernel just made through the control plane (cp.ts, the owner proxy): the task's facts at once, from the issue the
+     * write returned. No wake: the event and the poll file those, from their own cursor.
+     */
+    async observe(issue: Issue, actor: string) { taskFacts(issue, "live", actor); },
     /** The reconcile poll: every open task of every polled agent, and its blocked tasks whose blockers closed; and wakes whose jobs ended are done. */
     async poll() {
-      q(`UPDATE wakes SET state = 'done' WHERE state = 'claimed' AND job IS NOT NULL AND job NOT IN (SELECT id FROM jobs WHERE state IN ${LIVE})`).run();
+      try { q(`UPDATE wakes SET state = 'done' WHERE state = 'claimed' AND job IS NOT NULL AND job NOT IN (SELECT id FROM jobs WHERE state IN ${LIVE})`).run(); } catch (e) { log("wake poll failed", { step: "close ended wakes", err: (e as Error).message }); }
+      const listed = new Set<string>();
       for (const agent of polled().keys()) {
         try {
           if (!companies.has(agent)) {
@@ -330,13 +380,29 @@ export function createWakes({ db, owner, post, dispatches, routineKey = () => un
           }
           const l = await owner("GET", `/api/companies/${encodeURIComponent(companies.get(agent)!)}/issues?status=${OPEN}&limit=500&assigneeAgentId=${encodeURIComponent(agent)}`);
           if (l.status !== 200 || !Array.isArray(l.json)) throw new Error(`control plane GET issues → ${l.status}`);
+          for (const issue of l.json as Issue[]) listed.add(issue.id);
           for (const issue of l.json as Issue[]) await scan(issue, { source: "poll" }).catch((e: Error) => log("wake scan failed", { task: issue.id, err: e.message }));
           const b = await owner("GET", `/api/companies/${encodeURIComponent(companies.get(agent)!)}/issues?status=blocked&limit=200&assigneeAgentId=${encodeURIComponent(agent)}`);
           if (b.status !== 200 || !Array.isArray(b.json)) throw new Error(`control plane GET blocked issues → ${b.status}`);
+          for (const issue of b.json as Issue[]) listed.add(issue.id);
           for (const issue of b.json as Issue[]) await unblock(issue, agent).catch((e: Error) => log("wake unblock failed", { task: issue.id, err: e.message }));
         } catch (e) {
           log("wake poll failed", { agent, err: (e as Error).message });
         }
+      }
+      // A task the lists above didn't return may have closed, or been handed to the owner, with its event lost (the lists show
+      // only a polled agent's open tasks): each is read once and its changes recorded, least recently seen first.
+      const gone = (q("SELECT w.task FROM wake_tasks w LEFT JOIN task_facts_seen s ON s.task = w.task WHERE COALESCE(w.status, '') NOT IN ('done', 'cancelled') ORDER BY COALESCE(s.at, 0), w.task").all() as { task: string }[])
+        .filter((r) => !listed.has(r.task)).slice(0, RECONCILE_MAX);
+      for (const { task } of gone) {
+        try {
+          const r = await owner("GET", `/api/issues/${encodeURIComponent(task)}`);
+          if (r.status !== 200) continue;
+          const issue = r.json as Issue;
+          taskFacts(issue, "poll", "unknown");
+          // A closed task leaves this pass for good (its row's status is what selects it); a reopening moves it back on the next scan.
+          if (issue.status === "done" || issue.status === "cancelled") q("UPDATE wake_tasks SET status = ? WHERE task = ?").run(issue.status, task);
+        } catch (e) { log("wake reconcile failed", { task, err: (e as Error).message }); }
       }
     },
     /** A Paperclip event (ids only, untrusted): scan the task it names, as the poll would. */
@@ -365,9 +431,22 @@ export function createWakes({ db, owner, post, dispatches, routineKey = () => un
       return { key };
     },
     /**
+     * A wake the kernel itself opens for a task's agent (idle.ts: an agent's own wait, an idle nudge), due at `at`; once per
+     * key. Open rows of the task under `replaces` (a key prefix) are dropped first: a new wait replaces the earlier one.
+     */
+    open(b: { key: string; task: string; agent: string; cause: string; at?: number; replaces?: string; author?: string }) {
+      const t = now(), at = b.at ?? t;
+      if (b.replaces) for (const w of q("SELECT key, task FROM wakes WHERE task = ? AND state = 'open' AND key LIKE ? AND key != ?").all(b.task, `${b.replaces}%`, b.key) as { key: string; task: string }[]) {
+        q("UPDATE wakes SET state = 'dropped', until = NULL WHERE key = ?").run(w.key);
+        dropped(w, "replaced by a newer wait");
+      }
+      insert(b.key, b.task, b.agent, b.cause, at, at > t ? at : null, b.author ?? "kernel");
+    },
+    /**
      * Rows for the module to run, claimed at once (one transaction) and leased for LEASE_MS. Per task: with a live job, its
-     * comments newer than the job (to deliver as input, `live_job`) and nothing else; without one, one row that starts the
-     * next job. Rows a job already covered (older than its start) are dropped, or done for comments. Open rows come before
+     * comments newer than the job (to deliver as input, `live_job`), the rest waiting for the next job; without one, one row that
+     * starts the next job, the others waiting for it. Rows a job already covered (older than the claim that started it) are
+     * dropped, or done for comments: a wake is consumed only by a job whose prompt had its cause. Open rows come before
      * re-leased ones, so wakes that keep failing can never fill every slot and starve a new one.
      */
     claim(module: string, limit = 20): (Wake & { live_job?: string })[] {
@@ -377,7 +456,7 @@ export function createWakes({ db, owner, post, dispatches, routineKey = () => un
         q("INSERT OR IGNORE INTO wake_dispatchers (module, since) VALUES (?, ?)").run(module, t);
         const rows = (q("SELECT * FROM wakes WHERE ((state = 'open' AND (until IS NULL OR until <= ?)) OR (state = 'claimed' AND job IS NULL AND claimed_by = ? AND until <= ?)) ORDER BY state = 'claimed', at, key").all(t, module, t) as unknown as Wake[]).filter((w) => dispatches.may(module, w.agent));
         const set = (w: Wake, state: string, why: string) => { q("UPDATE wakes SET state = ?, until = NULL WHERE key = ?").run(state, w.key); log(`wake ${state}`, { key: w.key, why }); if (state === "dropped") dropped(w, why); };
-        const take = q("UPDATE wakes SET state = 'claimed', claimed_by = ?, until = ? WHERE key = ?");
+        const take = { run: (module: string, until: number, key: string) => q("UPDATE wakes SET state = 'claimed', claimed_by = ?, until = ?, claimed_at = ? WHERE key = ?").run(module, until, t, key) };
         const out: (Wake & { live_job?: string })[] = [];
         const started = new Set<string>();
         for (const w of rows) {
@@ -386,16 +465,18 @@ export function createWakes({ db, owner, post, dispatches, routineKey = () => un
           const live = liveJob(w.task);
           const comment = w.cause === "comment";
           if (live) {
-            if (!comment) set(w, "dropped", `task has the live job ${live.id}`);
-            else if (w.at < live.at) set(w, "done", `before the live job ${live.id} started`);
+            // A wake is consumed only by a job whose prompt had its cause: any other waits for the next job (still open).
+            if (!comment) continue;
+            if (w.at < live.at) set(w, "done", `before the live job ${live.id} was claimed`);
             else { take.run(module, t + LEASE_MS, w.key); out.push({ ...w, state: "claimed", claimed_by: module, until: t + LEASE_MS, live_job: live.id }); }
             continue;
           }
           const last = lastJob(w.task);
-          if (last && w.at < last.at) { set(w, comment ? "done" : "dropped", `before the job ${last.id} started`); continue; }
+          if (last && w.at < last.at) { set(w, comment ? "done" : "dropped", `before the job ${last.id} was claimed`); continue; }
           // One starter per task: a pending one (claimed, no job yet, still leased) or the first here.
           const pending = q("SELECT key FROM wakes WHERE task = ? AND state = 'claimed' AND job IS NULL AND until > ? AND key != ?").get(w.task, t, w.key) as { key: string } | undefined;
-          if (started.has(w.task) || pending) { if (!comment) set(w, "dropped", "coalesced into the task's next job"); continue; }
+          // Others stay open: the job the starter brings consumes them (older than its claim); a starter dropped without a job doesn't.
+          if (started.has(w.task) || pending) continue;
           started.add(w.task);
           take.run(module, t + LEASE_MS, w.key);
           out.push({ ...w, state: "claimed", claimed_by: module, until: t + LEASE_MS });
@@ -445,6 +526,8 @@ export function createWakes({ db, owner, post, dispatches, routineKey = () => un
       return q("UPDATE wakes SET state = 'delivered', until = NULL WHERE key = ? AND state = 'claimed' AND claimed_by = ?").run(key, module).changes > 0;
     },
     get: (key: string) => q("SELECT * FROM wakes WHERE key = ?").get(key) as unknown as Wake | undefined,
+    /** Whether a dispatcher that has joined runs this agent's wakes. */
+    polls: (agent: string) => polled().has(agent),
   };
 }
 export type Wakes = ReturnType<typeof createWakes>;

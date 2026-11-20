@@ -44,8 +44,9 @@ export type Wake = { task: string; agent: string; cause: string; at?: number };
 export type Wakes = {
   /** The wake, if this module claimed it and no job is bound to it yet. Synchronous: it runs inside the admission transaction. */
   claimed(module: string, key: string): Wake | undefined;
-  /** The admitted job is this wake's (at most one job per wake). */
-  bind(key: string, job: string): void;
+  /** The admitted job is this wake's (at most one job per wake). A job starting on the task ends the agent's own wait
+   * (idle.ts): its open timed wakes are dropped, and their keys returned. */
+  bind(key: string, job: string): string[];
   /** No job came of it (deferred): no job bound, claimable again by the same module at once. */
   unclaim(key: string): void;
 };
@@ -53,7 +54,12 @@ export type Wakes = {
 /** The kernel's wake inbox (wakes.ts's table) as admission uses it. */
 export const wakeInbox = (db: DatabaseSync): Wakes => ({
   claimed: (module, key) => db.prepare("SELECT task, agent, cause, at FROM wakes WHERE key = ? AND state = 'claimed' AND claimed_by = ? AND job IS NULL").get(key, module) as Wake | undefined,
-  bind: (key, job) => { db.prepare("UPDATE wakes SET job = ? WHERE key = ?").run(job, key); },
+  bind: (key, job) => {
+    db.prepare("UPDATE wakes SET job = ? WHERE key = ?").run(job, key);
+    const waits = db.prepare("SELECT key FROM wakes WHERE task = (SELECT task FROM wakes WHERE key = ?) AND state = 'open' AND key LIKE 'wait:%' AND key != ?").all(key, key) as { key: string }[];
+    for (const w of waits) db.prepare("UPDATE wakes SET state = 'dropped', until = NULL WHERE key = ?").run(w.key);
+    return waits.map((w) => w.key);
+  },
   unclaim: (key) => { db.prepare("UPDATE wakes SET job = NULL, until = 0 WHERE key = ?").run(key); },
 });
 /** `fresh`: the last job asked for a fresh session (`aidenhq reset`): no session resumes, the dispatcher's included. */
@@ -89,6 +95,8 @@ export function createAdmission({ db, grants, kinds, capacity, spend, mayDispatc
   log: (msg: string, fields?: Record<string, unknown>) => void;
 }) {
   const fact = factWriter(facts, log);
+  /** The jobs this process admitted and is launching now: its drain waits for them, and recover() never takes them. */
+  const launching = new Set<string>();
   const keyOf = (agent: string) => grants()[agent]?.key ?? agent;
   /** Why an admission waits (flow's idle reasons), once per wake and reason. */
   const held = (wake: string, task: string, agent: string, reason: string) =>
@@ -134,7 +142,8 @@ export function createAdmission({ db, grants, kinds, capacity, spend, mayDispatc
     if (!/^[\w.-]{1,100}$/.test(identifier)) throw new JobError(400, "bad-task", `task ${task} has no identifier`);
 
     // The routine cap is traced now and frozen on the row: never recomputed from mutable parents later, never the dispatcher's.
-    const cap = await routineCap(task);
+    // A trace the control plane couldn't answer (a 5xx, a timeout) is no cap to freeze: the wake waits for its lease and comes back.
+    const cap = await routineCap(task).catch((e: Error) => { throw new JobError(503, "trace-unavailable", `task ${task}'s routine trace couldn't be read now (${String(e.message).slice(0, 200)}); try again shortly`); });
     // From here to COMMIT nothing awaits: two admits never interleave.
     const id = `j-${randomBytes(8).toString("hex")}`;
     let job: Admitted;
@@ -168,8 +177,9 @@ export function createAdmission({ db, grants, kinds, capacity, spend, mayDispatc
       const fresh = asked?.fresh === true;
       db.prepare("INSERT INTO jobs (id, module, agent, task, engine, pid, log, dir, at, jobcaps, observing, live_input, state, profile, wake, authority, routine, routine_cap, identifier) VALUES (?, ?, ?, ?, ?, 0, '', '', ?, ?, 0, 0, 'admitted', ?, ?, ?, ?, ?, ?)")
         .run(id, module, agent, task, authority.engine, Date.now(), JSON.stringify(authority.jobcaps), authority.profile, b.wake, JSON.stringify(authority), cap?.routine ?? null, cap?.cap ?? null, identifier);
-      wakes.bind(b.wake, id);
+      const ended = wakes.bind(b.wake, id);
       const at = Date.now();
+      for (const k of ended) fact({ type: "wake.dropped", subject: `wake:${k}`, version: "dropped", at: iso(at), actor: "kernel", task, data: { why: "the task's next job started" } });
       fact({ type: "job.queued", subject: `job:${id}`, version: "queued", at: iso(at), actor: `agent:${keyOf(agent)}`, task, data: { wake: b.wake, wake_at: iso(w.at ?? at), agent: keyOf(agent) } });
       fact({ type: "wake.bound", subject: `wake:${b.wake}`, version: `bound:${id}`, at: iso(at), actor: "kernel", task, data: { job: id } });
       db.exec("COMMIT");
@@ -181,9 +191,11 @@ export function createAdmission({ db, grants, kinds, capacity, spend, mayDispatc
       throw e;
     }
     log("job admitted", { job: id, module, agent, task, profile: job.authority.profile });
+    launching.add(id);
     try {
       await launch(job);
     } catch (e) {
+      launching.delete(id);
       if ((e as { status?: number }).status !== 503) {
         const why = `couldn't start: ${(e as Error).message}`.slice(0, 500);
         if (db.prepare("UPDATE jobs SET state = 'failed', final = ?, ended = ? WHERE id = ? AND state = 'admitted'").run(why, Date.now(), id).changes)
@@ -192,10 +204,12 @@ export function createAdmission({ db, grants, kinds, capacity, spend, mayDispatc
       }
       const v = view(id);
       defer(id, b.wake);
-      held(b.wake, task, agent, "no_computer");
-      log("job deferred: no free computer", { job: id, task });
+      const reason = (e as JobError).code === "launcher-unavailable" ? "launcher_unavailable" : "no_computer";
+      held(b.wake, task, agent, reason);
+      log("job deferred", { job: id, task, reason, err: (e as Error).message.slice(0, 300) });
       return { ...v, state: "deferred" };
     }
+    launching.delete(id);
     nextTurn.taken(task);
     return view(id);
   }
@@ -222,10 +236,15 @@ export function createAdmission({ db, grants, kinds, capacity, spend, mayDispatc
       const r = db.prepare("SELECT authority FROM jobs WHERE id = ?").get(id) as { authority: string | null } | undefined;
       return r?.authority ? (JSON.parse(r.authority) as Authority) : undefined;
     },
-    /** At kernel start: a job admitted but not started when the last kernel stopped never ran; its wake is given back. */
+    /**
+     * Once the previous kernel has exited (main.ts afterPrevious: a draining kernel may still be launching what it admitted): a
+     * job admitted but never started by it never runs; its wake is given back. This process's own launches are never touched.
+     */
     recover() {
-      for (const r of db.prepare("SELECT id, wake FROM jobs WHERE state = 'admitted'").all() as { id: string; wake: string }[]) defer(r.id, r.wake);
+      for (const r of db.prepare("SELECT id, wake FROM jobs WHERE state = 'admitted'").all() as { id: string; wake: string }[]) if (!launching.has(r.id)) defer(r.id, r.wake);
     },
+    /** Launches in flight in this process (a drain waits for them). */
+    inflight: () => launching.size,
   };
 }
 export type Admission = ReturnType<typeof createAdmission>;

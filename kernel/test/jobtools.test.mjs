@@ -25,6 +25,14 @@ test("jobtools: a job token reaches only its own live job", () => {
   tools.run(tokenA, "engine", { engine: "codex", model: "~openai/gpt-sol-latest" });
   assert.throws(() => tools.run(tokenA, "engine", { engine: "codex", model: "acme/other" }), /isn't one this agent may use/);
   assert.throws(() => tools.run(tokenA, "engine", { engine: "other" }), /isn't one this agent may run/); // in the registry, not in its engines
+  // A job's prechecks: three reviewer calls, then refused; never a next-turn request.
+  // A review that timed out or failed after its reviewer took it is spent.
+  tools.review(tokenA)({ status: 504, type: "timeout" });
+  tools.review(tokenA)({ status: 502, type: "review_failed" });
+  // One that never reached a reviewer is refunded, once each, and at most 3 times a job.
+  for (let i = 0; i < 4; i++) { const refund = tools.review(tokenA); refund({ status: 503, type: "no_reviewer" }); refund({ status: 503, type: "no_reviewer" }); }
+  // The fourth refund was refused: three prechecks are spent.
+  assert.throws(() => tools.review(tokenA), /had its 3 prechecks/);
   // Read by the task's next turn once the job has ended; spent once that turn has started.
   assert.equal(tools.pending("task-a"), undefined);
   db.prepare("UPDATE jobs SET state = 'done' WHERE id IN ('j-a', 'j-b')").run();

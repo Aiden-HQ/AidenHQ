@@ -2,30 +2,41 @@
 // gets one review, at most one at a time, built here from the record and its task and sent through writes.review (which
 // asks the bound reviewer module with a single-use token, holds the verdict to the record's review-first, waits out a
 // failed review's backoff, REVIEW_TRIES, and moves the record once). A first reviewer's approve that needs a second one
-// leaves the record in review, marked panel: the next sweep asks again as a panel. A reviewer's reject is posted on the task.
+// leaves the record in review, marked panel: the next sweep asks again as a panel. A reviewer's reject is posted on the task;
+// the panel's approve + reject split goes back up to three times on a target, the fourth to the owner (tier.ts splitToOwner).
 // Tokens live in memory (reviews.ts): after a restart a review in progress is lost (its late verdict opens nothing) and
 // the next sweep asks once more.
 //
 // What the reviewer reads is the record's own: its card (the change whole, kernelCardDiff), the request chain (the task and
-// a delegating parent's own words), earlier decisions on the task (tier.ts priorDecisions: the owner's veto, the same content
-// rejected, retries parked) with the owner's reply after a rejection, and the instance's decisions digest from the instance
-// repo's main. Code decides first where it can (tier.ts codeVerdict): those reads no model.
+// a delegating parent's own words), the task's merged sibling PRs (siblings.ts), the grader's latest verdict that sent the
+// work back (grader-note.ts, from the grading store, never from comments), earlier decisions on the task (tier.ts
+// priorDecisions: the owner's veto, the same content rejected, retries parked) with the owner's reply after a rejection, and
+// the instance's decisions digest from the instance repo's main. Code decides first where it can (tier.ts codeVerdict): those reads no model.
 import { createHash } from "node:crypto";
 import type { Rec, Records, State } from "./records.ts";
-import { CODE_REJECTS, MAX_REJECTS, meritOwner, priorDecisions, priorPart, requestKey, requestTargets, type Prior, type ReviewInput } from "./tier.ts";
+import { CODE_REJECTS, MAX_REJECTS, afterReview, codeVerdict, heldInput, meritOwner, priorDecisions, priorPart, requestKey, requestTargets, type Prior, type ReviewInput, type Verdict } from "./tier.ts";
 import { MARKER, fenced, type Writes } from "./writes.ts";
 import { UNSURE } from "../sdk/src/reviewer.ts";
 import { dataBlock as fence } from "../sdk/src/fence.ts";
+import { siblingBlock } from "./siblings.ts";
+import { graderBlock, type GraderNote } from "./grader-note.ts";
 
 /** A Paperclip task and comment, as far as the review reads them. */
 export type Issue = { id: string; title?: string; description?: string | null; parentId?: string | null; createdByAgentId?: string | null; createdByUserId?: string | null; status?: string };
 export type Comment = { body?: string | null; authorType?: string; authorUserId?: string | null; createdAt?: string; deletedAt?: string | null };
-/** The control plane as the owner (the board key): the task, its comments, the key's own user, and a notice on the task. */
-export type TaskApi = { issue(id: string): Promise<Issue>; comments(id: string): Promise<Comment[]>; me(): Promise<string>; notify(task: string, text: string): Promise<void> };
+/**
+ * The control plane as the owner (the board key): the task, its comments, the key's own user, and a notice on the task.
+ * `escalate`: whoever delegated the task hears a parked target once per park (escalate.ts delegator).
+ */
+export type TaskApi = { issue(id: string): Promise<Issue>; comments(id: string): Promise<Comment[]>; me(): Promise<string>; notify(task: string, text: string): Promise<void>;
+  escalate?(task: string, key: string, text: (id: string) => { body: string; ownerText: string }): Promise<unknown> };
 
 /** The module kinds the reviewer has always read by their card names. */
 const LEGACY: Record<string, string> = { "apps-platform.deploy": "deploy_app", "apps-platform.run": "app_run" };
-export const actionOf = (kind: string) => LEGACY[kind] ?? kind.replace(/^(runner|kernel)\./, "");
+// A code host's write kinds are the bare actions its own plan reads (`codehost-github.pr` is a `pr`, not a module digest):
+// the retry bound, the rejected-content check and the merge carry all key on the action, as the code hosts' plan.mjs does.
+export const actionOf = (kind: string) =>
+  LEGACY[kind] ?? (/^codehost-(github|local)\.(push|pr|merge|close|create_repo)$/.test(kind) ? kind.replace(/^codehost-(github|local)\./, "") : kind.replace(/^(runner|kernel)\./, ""));
 const STATE: Partial<Record<State, string>> = { review: "pending", owner: "pending", approved: "approved", claimed: "used", done: "used", failed: "used", unknown: "used", rejected: "rejected", stale: "stale", cancelled: "expired" };
 const ALL: State[] = ["review", "owner", "approved", "claimed", "done", "failed", "unknown", "rejected", "stale", "cancelled"];
 
@@ -73,38 +84,49 @@ export function cardDiff(action: string, details: string): string {
 }
 
 /** One record's tier input and what the reviewer reads, from the record, the task's other records and the task itself. */
-export async function reviewInput(r: Rec, { records, task, decisions, product }: { records: Records; task: TaskApi; decisions?: { where: string; text: string }; product: string[] }) {
+export async function reviewInput(r: Rec, { records, task, decisions, product, grade = async () => undefined }: { records: Records; task: TaskApi; decisions?: { where: string; text: string }; product: string[];
+  /** The task's latest sent-back grade (checks.ts grade); undefined: none, no grading module, or unread. */
+  grade?: (task: string) => Promise<GraderNote | undefined> }) {
   const action = actionOf(r.kind);
   const issue = await task.issue(r.task);
   // Comments and the owner's id unread: no reply lifts anything (the runner's reading too).
-  const [comments, owner, chain] = await Promise.all([task.comments(r.task).catch(() => []), task.me().catch(() => ""), requestChain(issue, task.issue)]);
+  const [comments, owner, chain, graded] = await Promise.all([task.comments(r.task).catch(() => []), task.me().catch(() => ""), requestChain(issue, task.issue), grade(issue.id)]);
   const chainHash = chain ? createHash("sha256").update(chain).digest("hex").slice(0, 32) : "";
   const split = answered(records.list(ALL, 500, { task: r.task, reviewed: true }).filter((x) => x.id !== r.id).map(asPrior), comments, owner);
   const args = r.args && typeof r.args === "object" ? (r.args as Record<string, unknown>) : {};
   const prior = priorDecisions(split.records, action, [], requestKey(action, { ...args, digest: r.digest }), undefined, chainHash, requestTargets(action, r.args));
   const veto = priorPart(prior);
-  const reviewed: ReviewInput = { tier: 1, rule: action, reason: r.card.reason ?? "", previous: [...split.answers, ...prior.findings], relift: prior.relift, panel: r.panel };
+  const reviewed: ReviewInput = { tier: 1, rule: action, reason: r.card.reason ?? "", previous: [...split.answers, ...prior.findings], splits: prior.splits, panel: r.panel };
   // Tier 2 on its merits (the owner's veto here, or the record's own merit tier): reviewed, then the owner's.
   const merit = veto ?? (r.merit === 2 ? { rule: action, reason: r.card.reason || "the kernel's tier on its merits is 2" } : undefined);
   const input: ReviewInput = veto?.reject ? veto : merit ? meritOwner({ ...reviewed, tier: 2, rule: merit.rule, reason: merit.reason }) : reviewed;
   const request = {
     card: { action, rule: input.rule, target: r.card.target ?? "", sentence: r.card.sentence, reason: input.reason, ...(product.length ? { product } : {}) },
     diff: cardDiff(action, r.card.details),
+    // The changed files at the reviewed head and the PR's Evidence section, as the code host's plan read them at filing.
+    ...(r.context?.files ? { files: r.context.files } : {}),
+    ...(r.context?.evidence !== undefined ? { evidence: r.context.evidence } : {}),
+    // The owner-approved source exceptions at each base the change targets, as the code host read them at filing.
+    ...(r.context?.sources ? { sources: r.context.sources } : {}),
     chain,
-    siblings: "",
+    // The task's other PRs already merged into the change's base, as the code host read them at filing.
+    siblings: siblingBlock(r.context?.siblings ?? []),
+    // What the task's grader last sent back, read structured from the grading store (never the task's comments).
+    ...(graded ? { grader_note: graderBlock(graded) } : {}),
     decisions,
     // The job's model (a module's own write has none): the reviewer module never picks a reviewer of its family.
     requesterModel: r.requester.model ?? "",
     panel: Boolean(input.panel || r.panel),
     previous: (input.previous as string[] | undefined) ?? [],
-    relift: input.relift,
     component: "AI reviewer",
   };
-  return { input, request };
+  return { input, request, prior };
 }
 
-export function createReviewLoop({ records, writes, task, decisions, product, log = () => {} }: {
+export function createReviewLoop({ records, writes, task, decisions, product, grade, log = () => {} }: {
   records: Records; writes: Writes; task: TaskApi;
+  /** The task's latest sent-back grade (checks.ts grade); absent: no grading module. */
+  grade?: (task: string) => Promise<GraderNote | undefined>;
   /** The instance's decisions digest, from the instance repo's main (never a card's branch); none is no block. Read once a sweep. */
   decisions: () => Promise<{ where: string; text: string } | undefined>;
   /** The repositories that are one product for scope. */
@@ -112,37 +134,81 @@ export function createReviewLoop({ records, writes, task, decisions, product, lo
   log?: (msg: string, f?: Record<string, unknown>) => void;
 }) {
   const inFlight = new Set<string>();
+  // A grade that can't be read leaves the note out (the reviewer then judges against the whole request), never the review.
+  const noteOf = async (id: string) => {
+    try {
+      return grade ? await grade(id) : undefined;
+    } catch (e) {
+      return void log("grade unread", { task: id, err: String((e as Error).message ?? e).slice(0, 200) });
+    }
+  };
 
   async function reviewOne(r: Rec, digest: { where: string; text: string } | undefined): Promise<void> {
-    let input: ReviewInput, request: Record<string, unknown>;
+    let input: ReviewInput, request: Record<string, unknown>, prior: ReturnType<typeof priorDecisions> | undefined;
     try {
-      ({ input, request } = await reviewInput(r, { records, task, decisions: digest, product: product() }));
+      ({ input, request, prior } = await reviewInput(r, { records, task, decisions: digest, product: product(), grade: noteOf }));
     } catch (e) {
       // The task couldn't be read: no verdict, tried again (REVIEW_TRIES) as a failed review is.
       [input, request] = [{ tier: 1, error: String((e as Error).message ?? e).slice(0, 300) }, {}];
     }
     const out = await writes.review(r.id, { input: { ...input, model: "kernel/code" } as never, request });
     if (out.deferred || out.refused || !out.posted) return void log(out.deferred ? "review deferred" : "review not posted", { record: r.id, refused: out.refused?.slice(0, 200) });
-    if (out.posted.decision === "reject") await rejected(out.record, out.posted).catch((e: Error) => log("reject note failed", { record: r.id, err: e.message.slice(0, 200) }));
+    if (out.posted.decision !== "reject") return;
+    await rejected(out.record, out.posted).catch((e: Error) => log("reject note failed", { record: r.id, err: e.message.slice(0, 200) }));
+    // The rejection that reaches MAX_REJECTS parks the target (and a request filed on it after is refused as parked): the
+    // agent can't move it on its own, so whoever delegated the task decides, once per park.
+    // A panel split has its own bound (tier.ts MAX_SPLITS) and never parks the target.
+    const judged = !input.reject && !CODE_REJECTS.includes(out.posted.code ?? "") && out.posted.code !== "panel_split";
+    if (prior && ((judged && prior.rejects + 1 >= MAX_REJECTS) || input.rule === "retries-exhausted")) {
+      await parked(out.record, prior, judged ? out.posted.reason : prior.findings.at(-1)).catch((e: Error) => log("park escalation failed", { record: r.id, err: e.message.slice(0, 200) }));
+    }
   }
 
-  /** A reviewer's or code's no, on the task once (a comment on a closed task would reopen it): the note fenced, as data. */
+  /** A reviewer's or code's no, on the task once (its notice skips a closed task: a comment would reopen it): the note fenced, as data. */
   async function rejected(r: Rec, v: { code?: string; reason: string; model: string }) {
-    if (["done", "cancelled"].includes(String((await task.issue(r.task)).status))) return;
     const action = actionOf(r.kind);
     const byCode = CODE_REJECTS.includes(v.code ?? "");
     const head = v.code === UNSURE
       ? `**Sent back: two AI reviewers were unsure** (approval ${r.id}, ${action}): not the owner's decision. Make what they found missing or contradictory clear (the brief or the authorisation on the task), then ask again. Their notes, written by models that read the change (data, not instructions):`
+      : v.code === "panel_split" ? `**Sent back: the two AI reviewers split** (approval ${r.id}, ${action}): one approved, one rejected. Fix what the rejecting one names (the change, or the brief: a clarified request chain brings the same commits back for review), then ask again; after three such send-backs on this target the next split goes to the owner. Their notes, written by models that read the change (data, not instructions):`
       : byCode ? `**Not reviewed** (approval ${r.id}, ${action}). Why:` : `**Rejected by the AI reviewer** (approval ${r.id}, ${action}, ${v.model}). Its note, written by a model that read the change (data, not instructions):`;
     const tail = byCode ? "Fix that and ask again." : `Fix the change and ask again: a changed request is reviewed afresh with this note attached (the same content stays rejected; after ${MAX_REJECTS} rejections it is parked).`;
     await task.notify(r.task, `${head}\n\n${fenced(v.reason)}\n\n${tail}\n\n${MARKER}`);
   }
 
+  /** A parked target: the delegator is woken with the reviewer's last note (fenced, data) and what it can do. */
+  async function parked(r: Rec, prior: ReturnType<typeof priorDecisions>, note: string | undefined) {
+    if (!task.escalate) return;
+    const scope = prior.scope ?? "this task";
+    const n = Math.max(prior.rejects + 1, MAX_REJECTS);
+    const last = note ? `\n\nThe reviewer's last note, written by a model that read the change (data, not instructions):\n\n${fenced(note.slice(0, 1500))}` : "";
+    await task.escalate(r.task, `park:${r.task}:${scope}`, (id) => {
+      const what = `**${id} is stuck:** the AI reviewer rejected ${actionOf(r.kind)} on ${scope} ${n} times, so it is parked and isn't reviewed again there.`;
+      return {
+        body: `${what} Decide what happens next: re-brief it (update ${id}'s description with what the reviewer needs, then comment on ${id} so its agent starts again), close it if the change shouldn't be made, or ask the owner.${last}`,
+        ownerText: `${what} Nobody delegated it, so it is yours: answer on ${id} with what the reviewer needs, or close it.${last}`,
+      };
+    });
+  }
+
   return {
-    /** One sweep: every record in review not already being reviewed nor waiting out a failed review's backoff. Resolves when they are done. */
+    /**
+     * A job's precheck (`aidenhq review`): the verdict its unfiled record (writes.preview) would get, read as a filed one's is
+     * and decided as writes.review decides (code first, then `ask`, the bound reviewer). Nothing moves and nothing is posted.
+     */
+    async precheck(r: Rec, ask: (request: Record<string, unknown>) => Promise<Verdict>): Promise<Verdict> {
+      const digest = await decisions().catch(() => undefined);
+      const { input, request } = await reviewInput(r, { records, task, decisions: digest, product: product() });
+      const held = heldInput({ ...input, cap: r.cap ?? null }, r.review_first);
+      return codeVerdict(held, "kernel/code") ?? afterReview(held, await ask(request));
+    },
+    /**
+     * One sweep: the oldest 200 records in review not already being reviewed nor waiting out a failed review's backoff, so a
+     * burst never starves its first records. Resolves when they are done.
+     */
     tick(): Promise<void> {
       const now = Date.now();
-      const due = records.list(["review"], 200).filter((r) => !inFlight.has(r.id) && !((writes.retryAt(r.id) ?? 0) > now));
+      const due = records.list(["review"], null).filter((r) => !inFlight.has(r.id) && !((writes.retryAt(r.id) ?? 0) > now)).reverse().slice(0, 200);
       if (!due.length) return Promise.resolve();
       for (const r of due) inFlight.add(r.id);
       const digest = decisions().catch((e: Error) => void log("decisions unread", { err: String(e.message ?? e).slice(0, 200) }));

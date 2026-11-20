@@ -75,6 +75,14 @@ test("a write whose answer was lost (502 after the plugin wrote) is found on ret
   assert.deepEqual(pc.issues[TASK].blockedBy, [BLOCKER]);
 });
 
+test("Paperclip refusing the blockers (a cycle) is a refusal, not an unknown outcome to retry forever", async (t) => {
+  const pc = await paperclip(t);
+  // As the host relays it: only the message crosses to the worker.
+  pc.ctx.issues.update = async () => { throw new Error("Blocking relations cannot contain cycles"); };
+  await assert.rejects(kernelOf(pc.url).post(JOB, { kind: "status", body: "Blocked.", status: "blocked", blockedBy: [BLOCKER] }), { status: 422, code: "refused", message: /cannot contain cycles/ });
+  assert.equal(pc.comments.length, 0);
+});
+
 test("the action writes only as the calling agent, on its own task, and only the writes it allows", async () => {
   const h = host();
   const agent = { actor: { type: "agent", agentId: AGENT, runId: null, companyId: "c-1" }, companyId: "c-1" };
@@ -245,7 +253,37 @@ test("one reply to the owner: posted once on the task; relayed once to Telegram 
   assert.equal(pc.comments.filter((c) => c.body.startsWith("The budget is approved.")).length, 2); // one per run, each once
 });
 
+test("a relay whose read fails is relayed on the retry, never posted twice; a refused post is final with its status", async (t) => {
+  const pc = await paperclip(t);
+  const queued = [];
+  let down = true;
+  const owner = async (_m, path) => path.includes("/comments")
+    ? (down ? { status: 502, json: {} } : { status: 200, json: [{ body: "[telegram] status?", authorUserId: "u-1" }] })
+    : path.startsWith("/api/agents/") ? { status: 200, json: { name: "Aiden" } } : { status: 200, json: { id: TASK, identifier: "WOR-1" } };
+  const o = kernelOf(pc.url, { relay: createReplyRelay({ owner, queue: (n) => queued.push(n) }) });
+  await assert.rejects(o.post(JOB, { kind: "reply", body: "All green." }), (e) => e.status === 502);
+  down = false;
+  assert.equal((await o.post(JOB, { kind: "reply", body: "All green." })).again, true);
+  assert.equal(pc.comments.length, 1);
+  assert.equal(queued.length, 1);
+  assert.equal((await o.post(JOB, { kind: "reply", body: "All green." })).again, true);
+  assert.equal(queued.length, 1);
+  // A post the control plane refuses (a key it no longer takes): the dispatcher reads its 4xx as final.
+  const refusing = await serve(async (req, res) => res.writeHead(req.url === "/api/agents/me" ? 200 : 403, { "content-type": "application/json" }).end(JSON.stringify(req.url === "/api/agents/me" ? { id: AGENT, companyId: "c-1" } : {})));
+  t.after(() => refusing.s.close());
+  await assert.rejects(kernelOf(refusing.url).post({ ...JOB, id: "j-00000000000000ff" }, { kind: "reply", body: "x" }), (e) => e.status === 403);
+});
+
 test("delegate_to naming a team's key covers its record and each member; a member alone is reached through its team", async () => {
   const agents = { cos: { key: "cos", delegate_to: ["engineer"] }, t: { key: "engineer", team: { name: "engineering", members: ["kai"] } }, k: { key: "kai", member_of: "engineer" }, o: { key: "other" } };
   assert.deepEqual(await delegateIds(agents, "cos"), ["t", "k"]);
+});
+
+test("the plugin's route answering 404 (it is being reinstalled) is a 502 the job's outcome retries, never a final 4xx", async (t) => {
+  const { s, url } = await serve((req, res) => {
+    const out = (status, json) => res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(json));
+    return req.url === "/api/agents/me" ? out(200, { id: AGENT, companyId: "c-1" }) : out(404, {});
+  });
+  t.after(() => s.close());
+  await assert.rejects(kernelOf(url).post(JOB, { kind: "reply", body: "Done." }), (e) => e.name === "OutcomeError" && e.status === 502);
 });

@@ -20,7 +20,7 @@ A meeting scan turns meeting artifacts (local transcripts and Google Meet docume
 - **ops-mcp:** `transcripts_scan`, `source_read`, `meeting_match`, `meeting_publish`, `meeting_resolve`, `source_mark_failed`, `source_register_drive_document`, `sync_cursor_get`, `sync_cursor_set`, `obsidian_search`, `obsidian_read`, `obsidian_read_document_map`.
 - **Calendar (read-only):** `calendar_list_events`.
 - **Drive (read-only):** `drive_list_meeting_documents` and `drive_read_file`.
-- **Paperclip tasks:** `task_current`, `task_get`, `task_comment`, `task_set_status`, `task_finish`.
+- **Paperclip tasks:** `task_current`, `task_get`, `task_comment`, `task_finish`.
 
 ops-mcp makes every decision that writes something: the matching verdict, the routing, Obsidian writes, and deduplication. Your only say in routing is the `project_note` guess on `meeting_publish`, which ops-mcp uses only when no rule or remembered route applies. There is no tool for arbitrary writes.
 
@@ -32,7 +32,7 @@ Add a comment explaining why and set your run task to `done`.
 ## Each run
 
 1. **Scan.** Call `transcripts_scan`. It also applies review decisions the user left on review tasks.
-   - For each entry in `tasks_to_close`, call `task_set_status` with that `issue_id`, status `done` and the given `comment`.
+   - For each entry in `tasks_to_close`, call `task_finish` with that `issue_id` as `issue` and the given `comment`.
    - For each entry in `review_problems`, call `task_comment` on that `issue_id` with the given `comment`.
    - Never resolve review tasks yourself and never post review commands (`pick`, `ignore`, …). Only the user's own replies count, and ops-mcp applies them.
    - If `work` is empty and there are no Drive documents (step 5), go to step 6.

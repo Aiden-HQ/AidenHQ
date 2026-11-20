@@ -19,7 +19,7 @@ import { show } from "./git.js";
 import { MANIFEST_FILE, parseManifest } from "./manifest.js";
 import { graderView } from "./view.js";
 import { githubApi, startPreviews } from "./previews.js";
-import { inAgentsOrg, syncRegistry } from "./git.js";
+import { bootRegistry, inAgentsOrg } from "./git.js";
 import { isLocal, localChanges, localRepos, localRoot, withLocal } from "./codehost.js";
 import { previewApp, previewName } from "./previews.js";
 import { appsReader, bearerIs } from "./readers.js";
@@ -77,7 +77,9 @@ const jwks = kernelJwks();
 // With the GitHub App, the registry is fetched and pushed over https with repo-narrowed App tokens (git.ts registryCmd);
 // without it, the instance checkout's origin URL over SSH with the deploy key.
 const repo = { dir: registryDir, pushUrl: process.env.REGISTRY_PUSH_URL || (appToken && agentsOrg ? `https://github.com/${agentsOrg}/aidenhq-instance.git` : execFileSync("git", ["-C", instanceDir, "config", "--get", "remote.origin.url"], { encoding: "utf8" }).trim()) };
-await syncRegistry(p.cfg.git, repo.dir, repo.pushUrl); // refuses to start without the registry
+// A fetch that fails after its retries serves the registry already on disk (/data/registry survives a recreate), and the
+// reconcile loop's beforeTick retries it in the background. Only a first boot with no registry yet fails closed.
+await bootRegistry(p.cfg.git, repo.dir, repo.pushUrl);
 
 // In-app requests and app roles (app_requests, app_role_set…) go to the kernel, which holds the accounts and app access
 // (lean 3g): POST /v1/apps/<op> on the backplane with this module's own token (its service key).

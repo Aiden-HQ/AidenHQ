@@ -1,8 +1,8 @@
 // The changed files as the AI reviewer reads them (reviewer@1's `files`): the requester shapes them to the reviewer's
 // budget before sending, so a request stays small whatever the files weigh, and the reviewer names its limit in its verdicts.
 //
-// Canonical copy: services/shared/review-files.mjs. The reviewer module holds a byte-identical copy at
-// modules/ai-reviewer/service/src/review-files.mjs (scripts/sync-shared.mjs); the runner imports this one.
+// Canonical copy: services/shared/review-files.mjs. Byte-identical copies (scripts/sync-shared.mjs): the reviewer module's
+// (modules/ai-reviewer/service/src/review-files.mjs) and the code host's, whose plan shapes the files (codehost-local's too).
 /** The changed files' full text the reviewer gets for context; files past the budget are named, not sent. */
 export const MAX_FILES = 200_000;
 
@@ -89,3 +89,45 @@ const shortName = (name) => {
   return `${repo} …/${String(rest.join(" ")).split("/").slice(-2).map(cut).join("/")}`;
 };
 
+
+/**
+ * The code host's own count of what a change touches (`git diff --numstat --text --no-renames`, run at filing beside the
+ * diff): [{ path, add, del }]. The reviewer checks the diff it was sent against it (sameChanges) before any model reads it.
+ */
+export function numstat(text) {
+  return String(text ?? "").split("\n").filter(Boolean).map((l) => {
+    const [add, del, ...path] = l.split("\t");
+    // A binary file is counted "-" "-": its path is checked, not its lines.
+    return { path: path.join("\t"), ...(add === "-" ? {} : { add: Number(add), del: Number(del) }) };
+  });
+}
+
+/** The files a diff changes, each with the lines it adds and removes, read from its own `diff --git` headers and hunks. */
+export function diffFiles(diff) {
+  const out = [];
+  let hunk = false;
+  for (const l of String(diff ?? "").split("\n")) {
+    // No renames, so both sides name the same path (which may hold spaces).
+    const m = /^diff --git a\/(.+) b\/\1$/.exec(l) ?? /^diff --git a\/\S+ b\/(\S+)/.exec(l);
+    if (m) {
+      out.push({ path: m[1], add: 0, del: 0 });
+      hunk = false;
+    } else if (l.startsWith("@@")) hunk = true;
+    else if (hunk && out.length && l.startsWith("+")) out.at(-1).add++;
+    else if (hunk && out.length && l.startsWith("-")) out.at(-1).del++;
+  }
+  return out;
+}
+
+/**
+ * Where a diff differs from the code host's count of the change (`changed`, numstat): one line per file missing, extra or
+ * with other line counts. Empty: the diff is the whole change.
+ */
+export function sameChanges(changed, diff) {
+  const key = (f) => (f.add === undefined ? f.path : `${f.path} (+${f.add} -${f.del})`);
+  const binary = new Set(changed.filter((f) => f.add === undefined).map((f) => f.path));
+  const want = changed.map(key).sort(), got = diffFiles(diff).map((f) => (binary.has(f.path) ? f.path : key(f))).sort();
+  const left = [...got];
+  const missing = want.filter((k) => { const i = left.indexOf(k); return i < 0 || (left.splice(i, 1), false); });
+  return [...missing.map((k) => `in the change, not the diff: ${k}`), ...left.map((k) => `in the diff, not the change: ${k}`)];
+}

@@ -51,6 +51,8 @@ export function tools(root, base) {
       run: ({ path, start = 1, end }) => {
         const rel = inside(path);
         if (statSync(resolve(root, rel)).isDirectory()) throw new Error(`${path} is a directory: use list_files`);
+        // A binary file isn't text to review (git diff shows it as "Binary files differ").
+        if (readFileSync(resolve(root, rel)).subarray(0, 8000).includes(0)) throw new Error(`${path} is a binary file`);
         const lines = readFileSync(resolve(root, rel), "utf8").replace(/\n$/, "").split("\n");
         const from = Math.max(1, Number(start) || 1), to = Math.min(lines.length, Number(end) || lines.length);
         return cut(lines.slice(from - 1, to).map((l, i) => `${String(from + i).padStart(6)}\t${l}`).join("\n"));

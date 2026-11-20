@@ -43,6 +43,9 @@ type QualityRow = { name: string; state: "none" | "ok" | "unknown"; checks?: { n
 /** An app-supplied name reduced to a short slug (a-z, 0-9, - and _). */
 const slug = (v: unknown) => String(v ?? "").toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "unnamed";
 
+/** A routine's title for a line the owner reads: its own words, minus anything but letters, digits and light punctuation, at most 60. */
+const plain = (v: unknown) => String(v ?? "").replace(/[^\w .:-]+/g, " ").trim().slice(0, 60);
+
 export function qualityFindings(apps: QualityRow[], openKeys: string[]): Incident[] {
   const out: Incident[] = [];
   for (const a of apps) {
@@ -62,6 +65,33 @@ export function qualityFindings(apps: QualityRow[], openKeys: string[]): Inciden
 const SILENT_RUNS = 3; // finished jobs with no steps and no final words, in a day
 const STUCK_DEFAULT_MS = 180 * MIN; // a run with no known timeout, running this long
 const FAILS = 3; // an agent's last finished runs, all failed
+
+const MISSED_GRACE_MS = 15 * MIN;
+const HARD_FAIL = new Set(["failed", "timeout"]);
+
+/** Active routines whose next fire (by Paperclip's cron) is overdue past the grace: the fire never happened. A coalesced or skipped fire still advances it. */
+export function missedFires(routines: RoutineRow[], t: number): Incident[] {
+  const out: Incident[] = [];
+  for (const r of routines.filter((x) => x.status === "active")) {
+    const late = (r.triggers ?? []).filter((x) => x.kind === "schedule" && x.enabled !== false && x.nextRunAt && age(x.nextRunAt, t) > MISSED_GRACE_MS);
+    for (const x of late) out.push({ key: `${r.id}:${slug(x.label ?? "schedule")}`, reason: `routine ${plain(r.title)} (${slug(x.label ?? "schedule")}): fire due ${mins(age(x.nextRunAt, t))} ago, no run started` });
+  }
+  return out;
+}
+
+/** The routines (by id) whose newest FAILS finished jobs all hard-failed; `since[id]` is when the detector last paused it, so a resume counts only newer jobs. */
+export function failingRoutines(jobs: JobRow[], since: Record<string, string> = {}): { routine: string; failures: number }[] {
+  const by = new Map<string, JobRow[]>();
+  for (const j of jobs) if (j.routine && j.ended_at && !["running", "admitted", "cancelled", "lost"].includes(j.state) && !(since[j.routine] && j.ended_at <= since[j.routine]!)) by.set(j.routine, [...(by.get(j.routine) ?? []), j]);
+  const out: { routine: string; failures: number }[] = [];
+  for (const [routine, list] of by) {
+    const mine = list.sort((a, b) => b.ended_at!.localeCompare(a.ended_at!));
+    let n = 0;
+    while (n < mine.length && HARD_FAIL.has(mine[n]!.state)) n++;
+    if (n >= FAILS) out.push({ routine, failures: n });
+  }
+  return out;
+}
 
 /** `critical`: an outage or a critical alert, which wakes Fleet Ops at once; the rest wait for the next quiet-gap fire. */
 export interface Incident { key: string; reason: string; critical?: boolean }
@@ -113,8 +143,8 @@ export async function tick(kv: Kv, checks: Record<string, Check>, file: (body: {
   // a flag's own text), since that is the case where nobody else would act.
   const unheard = Object.values(s.open).filter((o) => !o.fired && !o.told && Date.parse(at) - Date.parse(o.at) > DAY_MS);
   if (unheard.length) {
-    for (const o of unheard) o.told = true;
-    await notify("The Fleet Steward is unreachable: its health flags have not reached it for a day. Ask Aiden to check the fleet-steward module.").catch(() => {});
+    // Marked told only once the notice went out (a kernel blip is retried on the next tick).
+    if (await notify("The Fleet Steward is unreachable: its health flags have not reached it for a day. Ask Aiden to check the fleet-steward module.").then(() => true, () => false)) for (const o of unheard) o.told = true;
   }
   const incidents = Object.entries(s.open).filter(([, o]) => !o.fired).map(([key, o]) => ({ key, ...(o.critical ? { critical: true } : {}) }));
   const recovered = s.recovered.filter((r) => !r.fired).map(({ key }) => ({ key }));
@@ -124,26 +154,87 @@ export async function tick(kv: Kv, checks: Record<string, Check>, file: (body: {
     for (const r of s.recovered) r.fired = true;
     kv.set("last_filed", at);
   }
-  s.recovered = s.recovered.slice(-20);
+  // Only recoveries already filed are trimmed: an unfiled one is still owed to the Steward.
+  s.recovered = [...s.recovered.filter((r) => r.fired).slice(-20), ...s.recovered.filter((r) => !r.fired)];
   kv.set(STATE_KEY, JSON.stringify(s));
 }
 
 interface Company { id: string }
 interface AgentRow { id: string; name: string; status: string; adapterConfig?: { timeoutSec?: number } }
-interface JobRow { id: string; agent: string; task?: string; state: string; started_at: string | null; ended_at: string | null; exit?: number | null; timed_out?: boolean; steps?: number; has_final?: boolean }
-interface IssueRow { id: string; identifier?: string; title?: string; status: string; priority?: string; updatedAt: string; assigneeUserId?: string | null; assigneeAgentId?: string | null; originKind?: string | null; labels?: ({ name?: string } | null)[] }
-interface CommentRow { authorType?: string; body?: string; createdAt: string; deletedAt?: string | null }
-interface WorkRecord { task: string | null; identifier: string | null; judged?: boolean; targets?: string[]; decided_at: string | null }
+interface JobRow { id: string; agent: string; task?: string; routine?: string | null; state: string; started_at: string | null; ended_at: string | null; exit?: number | null; timed_out?: boolean; steps?: number; has_final?: boolean }
+interface RoutineRow { id: string; title: string; status: string; triggers?: { kind?: string; enabled?: boolean; label?: string | null; nextRunAt?: string | null }[] }
+interface IssueRow { id: string; identifier?: string; title?: string; status: string; createdAt?: string; parentId?: string | null; priority?: string; updatedAt: string; assigneeUserId?: string | null; assigneeAgentId?: string | null; originKind?: string | null; labels?: ({ name?: string } | null)[] }
+interface CommentRow { authorType?: string; authorAgentId?: string | null; body?: string; createdAt: string; deletedAt?: string | null }
+interface WorkRecord { task: string | null; identifier: string | null; state?: string; judged?: boolean; targets?: string[]; decided_at: string | null; created_at?: string }
 
 const HOUR_MS = 60 * MIN;
-const REJECT_LOOP = { n: 3, windowMs: 6 * HOUR_MS }; // n = the kernel's MAX_REJECTS (tier.ts): the point where a branch is parked
+// n = the kernel's MAX_REJECTS (tier.ts): the point where a branch is parked and the kernel wakes the task's delegator
+// (escalate.ts); a park nothing moved for quietMs (no new request on the task) is the Steward's.
+const REJECT_LOOP = { n: 3, windowMs: 7 * DAY_MS, quietMs: 6 * HOUR_MS };
+/** A record someone said yes to (the kernel's record states past approval). */
+const APPROVED = ["approved", "claimed", "done", "failed", "unknown"];
+// A task waiting on a judgement (task_wait `for`, kernel idle.ts) longer than this: the owner's answer, or its delegator's.
+const JUDGEMENT_WAIT_MS: Record<string, number> = { owner_wait: 24 * HOUR_MS, delegator_wait: 6 * HOUR_MS };
 const REPEAT_FAILS = { n: 3, spanMs: 30 * MIN, freshMs: HOUR_MS }; // same category on one task within spanMs, the newest within freshMs
-const IDLE_MS = 120 * MIN; // an orphaned item (nothing running, filed or waiting on it) idle this long is stuck
+const IDLE_MS = 120 * MIN;
+const IDLE_WAKE_CAP = 3; // the kernel's idle sweep stops waking a task's agent after this many a day (kernel/src/idle.ts IDLE_CAP) // an orphaned item (nothing running, filed or waiting on it) idle this long is stuck
 const FLOW_RISE = 1.5; // a stage's p75 or wait share this much over last week's (observe mode)
 const FLOW_MIN_N = 10;
 const STALE_FOLLOWUP_MS = 3 * DAY_MS;
 const SILENT_MS = 15 * MIN; // an owner message on a chat task with no reply
 const SILENT_LOOKBACK_MS = 6 * HOUR_MS; // older than this, the owner has long since seen the silence
+
+const UNSTARTED_MS = HOUR_MS; // a delegated task assigned to an agent, still todo with no job ever, this long after it was created
+const MERGE_WAIT_MS = 6 * HOUR_MS; // a task waiting on its merge queue or CI (flow reasons checks, retry, eval) this long
+const MERGE_WAITS = ["checks", "retry", "eval"];
+const PING_PONG = { n: 5, spanMs: 12 * HOUR_MS }; // runs of one task that alternate between two agents, all started within spanMs
+const CARD_WAIT_MS = DAY_MS; // a Tier 2 card waiting on the owner this long gets the Steward's one reminder a day
+const MAX_LOOKUPS = 20;
+type IdleItem = { task: string; identifier: string | null; since: string; reason: string; reason_since: string; blocked_on?: string };
+
+/** Tasks whose idle stretch is a merge or CI wait over MERGE_WAIT_MS (the queue or a red base holds them), and tasks blocked on each other in a cycle. */
+export function mergeDeadlocks(items: IdleItem[], t: number): { key: string; reason: string }[] {
+  const out: { key: string; reason: string }[] = [];
+  for (const i of items.filter((x) => MERGE_WAITS.includes(x.reason) && age(x.reason_since, t) > MERGE_WAIT_MS)) out.push({ key: i.task, reason: `task ${i.identifier ?? i.task} has waited ${mins(age(i.reason_since, t))} on its merge queue or CI (${i.reason}), so the queue or a red base is holding it` });
+  const by = new Map(items.filter((x) => x.identifier).map((x) => [x.identifier!, x]));
+  const seen = new Set<string>();
+  for (const i of items.filter((x) => x.reason === "blocked" && x.blocked_on)) {
+    const ring = [i.identifier ?? i.task];
+    for (let n = by.get(i.blocked_on!), k = 0; n && k < 10; n = n.blocked_on ? by.get(n.blocked_on) : undefined, k++) {
+      if (n.identifier === ring[0]) {
+        const key = [...ring].sort().join("+");
+        if (!seen.has(key)) { seen.add(key); out.push({ key: slug(key), reason: `tasks ${ring.join(", ")} are blocked on each other in a cycle` }); }
+        break;
+      }
+      if (n.reason !== "blocked" || ring.includes(n.identifier ?? n.task)) break;
+      ring.push(n.identifier ?? n.task);
+    }
+  }
+  return out;
+}
+
+/** Tasks whose last runs alternate between exactly two agents: PING_PONG.n runs, started within the span, at least n - 1 changes of agent. */
+export function pingPong(jobs: JobRow[], t: number): { task: string; agents: string[]; n: number }[] {
+  const by = new Map<string, JobRow[]>();
+  for (const j of jobs) if (j.task && j.started_at && age(j.started_at, t) < PING_PONG.spanMs) by.set(j.task, [...(by.get(j.task) ?? []), j]);
+  const out: { task: string; agents: string[]; n: number }[] = [];
+  for (const [task, list] of by) {
+    const runs = list.sort((a, b) => a.started_at!.localeCompare(b.started_at!));
+    const agents = [...new Set(runs.map((j) => j.agent))];
+    if (agents.length === 2 && runs.length >= PING_PONG.n && runs.every((j, i) => i === 0 || j.agent !== runs[i - 1]!.agent)) out.push({ task, agents, n: runs.length });
+  }
+  return out;
+}
+
+/** Open tasks of one agent and parent with the same title (case and punctuation aside): the same work filed twice. Each group once, by its identifiers. */
+export function duplicateTasks(issues: IssueRow[]): { key: string; ids: string[] }[] {
+  const by = new Map<string, IssueRow[]>();
+  for (const i of issues.filter((x) => !exempt(x) && x.assigneeAgentId)) {
+    const title = String(i.title ?? "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+    if (title.length >= 12) by.set(`${i.assigneeAgentId}\u0000${i.parentId ?? ""}\u0000${title}`, [...(by.get(`${i.assigneeAgentId}\u0000${i.parentId ?? ""}\u0000${title}`) ?? []), i]);
+  }
+  return [...by.entries()].filter(([, v]) => v.length > 1).map(([k, v]) => ({ key: createHash("sha256").update(k).digest("hex").slice(0, 8), ids: v.map((i) => i.identifier ?? i.id) }));
+}
 
 /** Tasks outside monitoring, by what no agent can set: the bake-off project's identifier prefix and a routine's own run. A title or label is agent-set text and never exempts. */
 export const exempt = (i: Pick<IssueRow, "identifier" | "originKind">): boolean => /^BAKA?-/i.test(i.identifier ?? "") || i.originKind === "routine_execution";
@@ -191,16 +282,20 @@ export function groupFailures(hits: { component: string; error: string; id: stri
 }
 
 /** Records the AI reviewer judged and rejected, grouped by (task, branch or PR): the ones at the kernel's retry bound within the window. */
-export function rejectLoops(records: WorkRecord[], t: number): { task: string; identifier: string | null; target: string; n: number }[] {
-  const by = new Map<string, { task: string; identifier: string | null; target: string; n: number }>();
+export function rejectLoops(records: WorkRecord[], t: number): { task: string; identifier: string | null; target: string; n: number; last: string }[] {
+  const by = new Map<string, { task: string; identifier: string | null; target: string; n: number; last: string }>();
   for (const r of records) {
-    if (!r.judged || !r.task || age(r.decided_at, t) > REJECT_LOOP.windowMs) continue;
+    if (!r.judged || !r.task || !r.decided_at || age(r.decided_at, t) > REJECT_LOOP.windowMs) continue;
     for (const target of r.targets?.length ? r.targets : [r.task]) {
       const k = `${r.task}\u0000${target}`;
-      by.set(k, { task: r.task, identifier: r.identifier, target, n: (by.get(k)?.n ?? 0) + 1 });
+      const was = by.get(k);
+      by.set(k, { task: r.task, identifier: r.identifier, target, n: (was?.n ?? 0) + 1, last: was && was.last > r.decided_at ? was.last : r.decided_at });
     }
   }
-  return [...by.values()].filter((x) => x.n >= REJECT_LOOP.n);
+  // Parked quietMs ago with no approved request on that target since. A request refused as parked, refused by code, still
+  // in review or aimed elsewhere is no progress (the task's comments are read by the check: a re-brief, the owner's word).
+  const approved = (x: { task: string; target: string; last: string }) => records.some((r) => r.task === x.task && (r.targets?.length ? r.targets : [r.task]).includes(x.target) && String(r.created_at ?? "") > x.last && APPROVED.includes(String(r.state)));
+  return [...by.values()].filter((x) => x.n >= REJECT_LOOP.n && age(x.last, t) > REJECT_LOOP.quietMs && !approved(x));
 }
 
 /** The owner's own typed words on a chat task (not a relayed notice, the kernel's, or deleted). */
@@ -232,8 +327,8 @@ export function slowerStages(now: FlowStage[], before: FlowStage[]): string[] {
   }).map((s) => s.name);
 }
 
-/** The owner's alert list, as checks. `apps` reads apps-mcp (a module holding apps.read); `alerts` is Alertmanager's list. */
-export function checks(d: { kernel: KernelClient; apps: <T>(path: string) => Promise<T>; alerts: () => Promise<Incident[]>; openKeys: () => string[]; notify?: (text: string, key: string) => Promise<void>; gradeFailures: () => Promise<{ task: string; at: string; reason: string }[]>; now?: () => number; log?: (msg: string, f?: Record<string, unknown>) => void }): Record<string, Check> {
+/** The owner's alert list, as checks. `pause` pauses a routine (kernel role kernel.routines). `apps` reads apps-mcp (a module holding apps.read); `alerts` is Alertmanager's list. */
+export function checks(d: { kernel: KernelClient; kv: Kv; pause: (routine: string) => Promise<void>; apps: <T>(path: string) => Promise<T>; alerts: () => Promise<Incident[]>; openKeys: () => string[]; notify?: (text: string, key: string) => Promise<void>; gradeFailures: () => Promise<{ task: string; at: string; reason: string }[]>; now?: () => number; log?: (msg: string, f?: Record<string, unknown>) => void }): Record<string, Check> {
   const now = d.now ?? (() => Date.now());
   let appsOkAt = now(); // apps-mcp's last answer: a restart (an apply) is not an outage
   const companies = async () => (await d.kernel.read("/api/companies")) as Company[];
@@ -255,6 +350,7 @@ export function checks(d: { kernel: KernelClient; apps: <T>(path: string) => Pro
       return i && exempt(i) ? undefined : i?.identifier ?? id;
     };
   };
+  const routines = async () => (await Promise.all((await companies()).map(async (c) => (await d.kernel.read(`/api/companies/${c.id}/routines`)) as RoutineRow[]))).flat();
   let jobCache = new Map<string, JobRow[]>(); // one check run's job reads, shared by `component` and `run`
   const jobsOf = async (agent: string) => {
     let jobs = jobCache.get(agent);
@@ -263,6 +359,22 @@ export function checks(d: { kernel: KernelClient; apps: <T>(path: string) => Pro
   };
   /** Tasks a component incident explains this run: their own incidents are not raised anew (one already open stays until it recovers). */
   let explained = new Set<string>();
+  // An owner notice per incident, recorded as told only once it went out: a failed send is tried again on the next check, and
+  // forgotten when the incident is gone, so its next occurrence is told again.
+  const told = (): string[] => JSON.parse(d.kv.get("owner_told") ?? "[]");
+  const announce = async (key: string, text: string) => {
+    if (told().includes(key)) return;
+    try {
+      await d.notify?.(text, key);
+    } catch {
+      return;
+    }
+    d.kv.set("owner_told", JSON.stringify([...told(), key]));
+  };
+  const forgetTold = (prefix: string, keep: string[]) => {
+    const now = told(), left = now.filter((k) => !k.startsWith(prefix) || keep.includes(k));
+    if (left.length !== now.length) d.kv.set("owner_told", JSON.stringify(left));
+  };
   const suppressed = (task: string, key: string) => explained.has(task) && !d.openKeys().includes(key);
   return {
     // The same failure on several tasks is one component down (the grader, the job runner), whatever the per-task checks below see.
@@ -298,8 +410,9 @@ export function checks(d: { kernel: KernelClient; apps: <T>(path: string) => Pro
         for (const id of g.tasks.keys()) explained.add(id);
         const names = [...g.tasks.values()].slice(0, 10).map(slug).join(", ");
         out.push({ key, critical: true, reason: `${g.component} is failing the same way on ${g.tasks.size} tasks within 30 minutes (${names}); the error as the component reported it:\n${fence(g.error, "component.error")}` });
-        if (!isOpen) await d.notify?.(`A component is down: the ${g.component} has failed the same way on ${SHARED_FAIL.n} or more tasks. The Fleet Steward is on it.`, `component:${key}`).catch(() => {});
+        await announce(`component:${key}`, `A component is down: the ${g.component} has failed the same way on ${SHARED_FAIL.n} or more tasks. The Fleet Steward is on it.`);
       }
+      forgetTold("component:", out.map((i) => `component:${i.key}`));
       return out;
     },
     // Stuck, failing and silent runs, from the kernel's job ledger.
@@ -326,13 +439,53 @@ export function checks(d: { kernel: KernelClient; apps: <T>(path: string) => Pro
       }
       return out;
     },
+    // A routine whose last 3 jobs all hard-failed is paused (the owner is told; Aiden resumes it once it's fixed). Not while the
+    // failures are fleet-wide: a credits (402) or key (401) refusal, or no agent finishing a job at all, is not the routine's fault.
+    async routine() {
+      const t = now();
+      const rows = await routines();
+      const jobs = (await Promise.all((await agents()).map((a) => jobsOf(a.id)))).flat();
+      const recent = jobs.filter((j) => !["running", "admitted", "cancelled"].includes(j.state) && age(j.ended_at, t) < 60 * MIN);
+      const failed = recent.filter((j) => HARD_FAIL.has(j.state));
+      let fleetWide = failed.length > 0 && !recent.some((j) => j.state === "done") && new Set(failed.map((j) => j.agent)).size >= 2;
+      for (const j of failed.sort((a, b) => b.ended_at!.localeCompare(a.ended_at!)).slice(0, 5)) {
+        if (fleetWide) break;
+        const final = ((await d.kernel.call("GET", `/v1/work?job=${encodeURIComponent(j.id)}`).catch(() => undefined)) as { final?: string | null } | undefined)?.final ?? "";
+        fleetWide = /\b(401|402)\b|insufficient credits|invalid api key/i.test(final);
+      }
+      const since: Record<string, string> = JSON.parse(d.kv.get("routine_paused_at") ?? "{}");
+      const out: Incident[] = [];
+      for (const { routine, failures } of failingRoutines(jobs, since)) {
+        const row = rows.find((r) => r.id === routine);
+        if (!row || row.status === "archived") continue;
+        // Paused by hand: its old failures must not re-pause it on resume.
+        if (row.status === "paused" && !since[routine]) { since[routine] = new Date(t).toISOString(); d.kv.set("routine_paused_at", JSON.stringify(since)); continue; }
+        if (row.status === "active" && !fleetWide) {
+          await d.pause(routine);
+          since[routine] = new Date(t).toISOString();
+          d.kv.set("routine_paused_at", JSON.stringify(since));
+          await d.notify?.(`Routine paused: ${plain(row.title)} failed ${failures} runs in a row. Ask Aiden to resume it once it's fixed.`, `routine-paused:${routine}`).catch(() => {});
+        }
+        out.push({ key: routine, reason: `routine ${plain(row.title)}: its last ${failures} runs failed${row.status === "paused" ? " (paused until the owner resumes it)" : ""}` });
+      }
+      // Paused by this detector and still paused: the flag stays open until the owner resumes it (a resume clears it).
+      for (const id of Object.keys(since)) {
+        const row = rows.find((r) => r.id === id);
+        if (row?.status === "paused" && !out.some((i) => i.key === id)) out.push({ key: id, reason: `routine ${plain(row.title)}: paused after repeated failures, until the owner resumes it` });
+      }
+      return out;
+    },
+    // An active routine whose next cron fire is overdue by 15 minutes and no run started: Paperclip's scheduler has stopped.
+    async missed() {
+      return missedFires(await routines(), now());
+    },
     // Queued wakes while no job starts: the owner hears at once, with no agent job needed to file or read anything.
     async dispatch() {
       const t = now();
       const w = (await d.kernel.call("GET", "/v1/work")) as { waiting?: { count: number; oldest_at: string | null; oldest_cause: string | null }; last_started_at?: string | null };
-      if (!w.waiting?.count || age(w.waiting.oldest_at, t) <= DOWN_MS || age(w.last_started_at, t) <= DOWN_MS) return [];
+      if (!w.waiting?.count || age(w.waiting.oldest_at, t) <= DOWN_MS || age(w.last_started_at, t) <= DOWN_MS) return (forgetTold("dispatch-stalled", []), []);
       const text = `No agent work has started for ${mins(Math.min(age(w.last_started_at, t), age(w.waiting.oldest_at, t)))} while ${w.waiting.count} wake${w.waiting.count === 1 ? "" : "s"} wait (oldest: ${slug(w.waiting.oldest_cause)}).`;
-      if (!d.openKeys().includes("dispatch:stalled")) await d.notify?.(text, "dispatch-stalled").catch(() => {});
+      await announce("dispatch-stalled", text);
       return [{ key: "stalled", critical: true, reason: text }];
     },
     // A task held for grading (label grading, in review) for over a day: the grader's verdict is overdue.
@@ -348,18 +501,22 @@ export function checks(d: { kernel: KernelClient; apps: <T>(path: string) => Pro
       return out;
     },
     // Orphaned work: Flow's idle list (nothing running, filed or waiting on the item), over 2 hours. The one stuck-work rule.
+    // A task whose holder the kernel's idle sweep already woke 3 times in a day (kernel idle.ts) is critical at once: waking
+    // it again won't move it, so Fleet Ops looks at it.
     async stuck() {
       const t = now();
       const out: Incident[] = [];
       const read = taskReads();
-      const items = ((await d.kernel.call("GET", "/v1/flow?idle=1")).items ?? []) as { task: string; identifier: string | null; since: string; reason: string }[];
-      for (const i of items.filter((x) => x.reason === "orphaned" && age(x.since, t) > IDLE_MS && !exempt({ identifier: x.identifier, originKind: null }) && !suppressed(x.task, `stuck:${x.task}`))) {
+      const items = ((await d.kernel.call("GET", "/v1/flow?idle=1")).items ?? []) as { task: string; identifier: string | null; since: string; reason: string; idle_wakes?: number }[];
+      const capped = (x: { idle_wakes?: number }) => (x.idle_wakes ?? 0) >= IDLE_WAKE_CAP;
+      for (const i of items.filter((x) => x.reason === "orphaned" && (capped(x) || age(x.since, t) > IDLE_MS) && !exempt({ identifier: x.identifier, originKind: null }) && !suppressed(x.task, `stuck:${x.task}`))) {
         const task = await read(i.task);
         // Parked in backlog, owned by nobody, or owned by the owner (a person, not an agent's work): not someone's stuck work
         // (the inbox, review-log and issues tasks are idle by design; owner-assigned todos are the stale follow-up check's).
         // A task that can't be read stays flagged: a failed lookup never hides an incident.
         if (task && (task.status === "backlog" || !task.assigneeAgentId)) continue;
-        out.push({ key: i.task, reason: `task ${i.identifier ?? i.task} idle for ${mins(age(i.since, t))} with nothing running, filed or waiting on it (${slug(i.reason)})` });
+        if (capped(i)) out.push({ key: `${i.task}:idle-capped`, critical: true, reason: `task ${i.identifier ?? i.task} is still idle after ${i.idle_wakes} idle wakes of its agent today (nothing running, filed or waiting on it, ${mins(age(i.since, t))}): waking it again won't move it` });
+        else out.push({ key: i.task, reason: `task ${i.identifier ?? i.task} idle for ${mins(age(i.since, t))} with nothing running, filed or waiting on it (${slug(i.reason)})` });
       }
       return out;
     },
@@ -371,17 +528,74 @@ export function checks(d: { kernel: KernelClient; apps: <T>(path: string) => Pro
       for (const name of slowerStages(cur!, prev!)) d.log?.("flow.would_file", { stage: name });
       return [];
     },
-    // The AI reviewer rejecting the same branch again and again (the kernel parks it at 3; nobody hears of the park).
+    // A parked branch (the kernel parks it at 3 rejections and wakes the delegator) that nothing moved for 6 hours.
     async loop() {
       const t = now();
       const r = (await d.kernel.call("GET", `/v1/work?since=${encodeURIComponent(new Date(t - REJECT_LOOP.windowMs).toISOString())}`)) as { records?: WorkRecord[] };
       const out: Incident[] = [];
-      const live = lookup();
+      const read = taskReads();
       for (const l of rejectLoops(r.records ?? [], t)) {
-        const task = await live(l.task);
-        if (task) out.push({ key: `${l.task}:${slug(l.target)}`, reason: `task ${task}: the AI reviewer rejected ${slug(l.target)} ${l.n} times in 6 hours (parked at ${REJECT_LOOP.n})` });
+        const task = await read(l.task);
+        if (task && (exempt(task) || ["done", "cancelled"].includes(task.status))) continue;
+        // Moved on by a person or its delegator: a comment after the park from the owner (their own words) or another agent
+        // (a re-brief ends with one). The task's own agent and the kernel's notices don't count. Unreadable: still raised.
+        const comments = ((await d.kernel.read(`/api/issues/${encodeURIComponent(l.task)}/comments?order=desc&limit=50`).catch(() => [])) as CommentRow[]) ?? [];
+        if (comments.some((c) => !c.deletedAt && c.createdAt > l.last && (ownerWords(c) || (c.authorType === "agent" && c.authorAgentId !== task?.assigneeAgentId)))) continue;
+        out.push({ key: `${l.task}:${slug(l.target)}`, reason: `task ${task?.identifier ?? l.task}: the AI reviewer rejected ${slug(l.target)} ${l.n} times (parked at ${REJECT_LOOP.n}) and nothing has moved for ${mins(age(l.last, t))}` });
       }
       return out;
+    },
+    // A task waiting on a judgement past its limit (a day on the owner, 6 hours on its delegator): the ask went unanswered.
+    async judgement() {
+      const t = now();
+      const items = ((await d.kernel.call("GET", "/v1/flow?idle=1")).items ?? []) as { task: string; identifier: string | null; reason: string; reason_since: string; note?: string }[];
+      return items
+        .filter((i) => JUDGEMENT_WAIT_MS[i.reason] !== undefined && age(i.reason_since, t) > JUDGEMENT_WAIT_MS[i.reason]! && !exempt({ identifier: i.identifier, originKind: null }))
+        .map((i) => ({ key: i.task, reason: `task ${i.identifier ?? i.task} has waited ${mins(age(i.reason_since, t))} on its ${i.reason === "owner_wait" ? "owner's" : "delegator's"} answer` }));
+    },
+    // A delegated task (a sub-task assigned to an agent) still todo an hour after it was made, with no job ever on it: the delegation never started.
+    async unstarted() {
+      const t = now();
+      const out: Incident[] = [];
+      let looked = 0;
+      for (const c of await companies()) {
+        const todo = (await d.kernel.read(`/api/companies/${c.id}/issues?status=todo&limit=200&excludeRoutineExecutions=true`)) as IssueRow[];
+        for (const i of todo.filter((x) => x.parentId && x.assigneeAgentId && !exempt(x) && age(x.createdAt, t) > UNSTARTED_MS && looked < MAX_LOOKUPS)) {
+          looked++;
+          const w = (await d.kernel.call("GET", `/v1/work?task=${encodeURIComponent(i.id)}`).catch(() => undefined)) as { busy?: boolean; jobs?: unknown[] } | undefined;
+          if (w && !w.busy && !w.jobs?.length) out.push({ key: i.id, reason: `delegated task ${i.identifier ?? i.id} has had no run ${mins(age(i.createdAt, t))} after it was assigned` });
+        }
+      }
+      return out;
+    },
+    // Merge waits over 6 hours, and tasks blocked on each other: the queue or a red base holds them.
+    async deadlock() {
+      const items = ((await d.kernel.call("GET", "/v1/flow?idle=1")).items ?? []) as IdleItem[];
+      return mergeDeadlocks(items.filter((i) => !exempt({ identifier: i.identifier, originKind: null })), now());
+    },
+    // One task whose runs alternate between two agents five times in 12 hours.
+    async pingpong() {
+      const t = now();
+      const out: Incident[] = [];
+      const live = lookup();
+      for (const a of await agents()) {
+        for (const p of pingPong(await jobsOf(a.id), t)) {
+          const task = await live(p.task);
+          if (task && !out.some((o) => o.key === slug(task))) out.push({ key: slug(task), reason: `task ${task}: ${p.n} runs in 12 hours alternated between two agents (${p.agents.map(slug).join(", ")})` });
+        }
+      }
+      return out;
+    },
+    // The same work filed twice: open tasks of one agent and parent with one title.
+    async duplicate() {
+      const open = (await Promise.all((await companies()).map(async (c) => (await d.kernel.read(`/api/companies/${c.id}/issues?status=todo,in_progress,in_review,blocked&limit=200&excludeRoutineExecutions=true`)) as IssueRow[]))).flat();
+      return duplicateTasks(open).map((g) => ({ key: g.key, reason: `tasks ${g.ids.map(slug).join(", ")} are open for the same agent with the same title` }));
+    },
+    // A Tier 2 card on the owner for over 24 hours: the Steward sends the owner one reminder per card per 24 hours (fleet-check).
+    async card() {
+      const t = now();
+      const r = (await d.kernel.call("GET", `/v1/work?since=${encodeURIComponent(new Date(t - 7 * DAY_MS).toISOString())}`)) as { records?: (WorkRecord & { id?: string; kind?: string; tier?: number })[] };
+      return (r.records ?? []).filter((x) => x.state === "owner" && x.tier === 2 && x.id && age(x.created_at, t) > CARD_WAIT_MS).map((x) => ({ key: slug(x.id), reason: `Tier 2 card ${slug(x.kind)} on task ${slug(x.identifier ?? x.task)} has waited ${mins(age(x.created_at, t))} on the owner` }));
     },
     // An owner message on a chat task with no reply: the front door is silent.
     async front() {

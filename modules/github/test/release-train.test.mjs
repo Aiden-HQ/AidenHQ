@@ -273,3 +273,26 @@ test("the bump in flight is follow()'s: the sweep skips it even when its card ha
   assert.deepEqual(f.k.closed.map((c) => c.task), [record.task], "closed once, by follow()");
   assert.match(f.k.closed[0].body, /\*\*Not landed:\*\* it was approved but failed: the apply host was replaced mid-run/);
 });
+
+test("an edit refused at the commit's head closes the bump's task it already filed, never strands it", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "train-"));
+  const f = fakes();
+  f.head = `${INSTANCE}product: ${OLD}\n`; // main moved under the read: two pins, which can't be bumped in place
+  const clock = { t: new Date("2026-11-18T10:00:00Z") };
+  await train(dir, f, clock).step();
+  clock.t = new Date("2026-11-18T10:20:00Z");
+  await train(dir, f, clock).step();
+  assert.equal(f.k.tasks.length, 1);
+  assert.deepEqual(f.k.closed.map((c) => c.task), [f.k.made[0].id]);
+  assert.match(f.k.closed[0].body, /\*\*Not filed:\*\* instance\.yaml can't be bumped in place/);
+});
+
+test("a stranded bump whose card was cancelled (expired, replaced) or went stale is swept and settled", async () => {
+  for (const state of ["cancelled", "stale"]) {
+    const f = idle(fakes());
+    const task = stranded(f, { state, text: "replaced" });
+    await train(mkdtempSync(join(tmpdir(), "train-")), f, { t: new Date("2026-11-25T10:20:00Z") }).step();
+    assert.deepEqual(f.k.closed.map((c) => c.task), [task], state);
+    assert.match(f.k.closed[0].body, new RegExp(`the card was ${state}`));
+  }
+});

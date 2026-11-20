@@ -61,7 +61,7 @@ async function fileCheck(body: { incidents: { key: string; critical?: boolean }[
 }
 
 const coach = coachReads({ kernel, kv, apps });
-const all = checks({ kernel, apps, alerts: () => alertIncidents(kv, notify), openKeys: () => Object.keys(detectorState(kv).open), notify, gradeFailures, log });
+const all = checks({ kernel, kv, pause: async (routine) => void (await kernel.call("POST", "/v1/routines/pause", { routine })), apps, alerts: () => alertIncidents(kv, notify), openKeys: () => Object.keys(detectorState(kv).open), notify, gradeFailures, log });
 let busy = false;
 const run = async () => {
   if (busy) return;
@@ -102,9 +102,11 @@ createStewardServer({
   serviceKey,
   isMonitoring: (authorization) => isModule(kernelUrl, authorization, "monitoring"),
   receiveAlerts: async (b) => { const r = await receiveAlerts(kv, parseAlerts(b), notify); void run(); return r; },
-  metrics: () => {
+  // Its own gauges plus the kernel's job metrics (aidenhq_kernel_jobs_*, role kernel.work-read): Prometheus scrapes only this service.
+  metrics: async () => {
+    const jobs = await fetch(`${kernelUrl}/v1/work/metrics`, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(10_000) }).then((r) => (r.ok ? r.text() : Promise.reject(new Error(`kernel metrics ${r.status}`))));
     const g = (name: string, help: string, v: number) => `# HELP ${name} ${help}\n# TYPE ${name} gauge\n${name} ${v}\n`;
-    return g("aidenhq_steward_incidents_open", "Fleet detector incidents open.", Object.keys(detectorState(kv).open).length) + g("aidenhq_steward_alerts_firing", "Monitoring alerts firing, as this service last heard from Alertmanager.", Object.keys(firing(kv)).length);
+    return g("aidenhq_steward_incidents_open", "Fleet detector incidents open.", Object.keys(detectorState(kv).open).length) + g("aidenhq_steward_alerts_firing", "Monitoring alerts firing, as this service last heard from Alertmanager.", Object.keys(firing(kv)).length) + jobs;
   },
   mcp,
   caller: async (req) => ({ ...(await verifyCaller(req, jwks, "fleet-steward")), assertion: String(req.headers["x-aidenhq-caller"] ?? "") }),

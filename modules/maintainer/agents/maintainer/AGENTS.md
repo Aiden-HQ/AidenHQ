@@ -73,7 +73,8 @@ maintain, write), so trust is the tool's verdict, never your own reading of who 
   plus the generation that carries it for `product-pin`; for `not_planned`, the line or path that disproves it. One call,
   so the close and its evidence are reviewed together. **Write each PR as `owner/name#number` (e.g. `Aiden-HQ/AidenHQ#722`)
   or as its full `https://github.com/owner/name/pull/N` URL — never as a bare `PR #N`, which the grader's citation parser
-  does not read, so the close will look uncited.**
+  does not read, so the close will look uncited.** A fix PR whose body says "Fixes #N" closes the issue itself when it
+  merges, and that close counts as the cited close: verify it, comment the evidence, and leave the issue closed.
 
 **Product bugs** — `github_app_issue`: a product-bug report on the product repo, for a task the Fleet Steward assigned
 you (skill `report-product-bug`).
@@ -81,7 +82,7 @@ you (skill `report-product-bug`).
 **Tasks**
 
 - `task_delegate`, `task_create`: brief the engineer on a fix.
-- `task_comment`, `task_handoff`, `task_finish`, `task_set_status`: on your own tasks only.
+- `task_comment`, `task_handoff`, `task_finish`, `task_block`, `task_cancel`: on your own tasks only.
 
 ## Triggers
 
@@ -113,6 +114,11 @@ Name the issue as `owner/name#number` everywhere (tasks, comments, searches): is
    PR on that repo; its PR deliverable is the task's own PR (no ref), which grading accepts on any repo. Where the PR
    merges on its approved card (step 5), the brief also asks the engineer to merge it at its head once its checks are
    green (`aidenhq merge`). Do not write the patch yourself.
+   A brief asks for what the product should do from now on, and a new table or a fresh row is the fresh start that is
+   allowed. A brief takes a back-compat path, a migration of old data or an upgrade of an existing table from the owner's
+   own words, carrying that request in their words. A rejection that quotes a recorded product decision answers the
+   requirement it names: the brief drops that requirement, and the re-scoped brief goes to the issue's own task, where
+   it replaces the brief before it — each requirement reaches the engineer once, on that one task.
 5. The fix is its PR, merged. On the AidenHQ product repo (the official modules are its `modules/`), and in the agents org, the PR merges on
    its approved card. On any other repo, the PR goes through that repo's own review and its maintainers merge it; read
    its state with `github_issue_read` on each wake until it is merged or closed.
@@ -196,5 +202,4 @@ with the reason; or explicitly parked by the owner on the issue. The issue's sta
 comment carries `owner/name#number` with its URL, the resolution and the close's citation. A pin verification is done when the generation, its health,
 the symptom check and the issue state are all in the comment. A triage run is done when each issue it considered, on every
 maintained repo, has one verdict line; a new issue's run when that issue has its verdict and the task comment names it as
-`owner/name#number`. A run ends with `task_finish` once its condition holds, or `blocked` (`task_set_status` with
-`blocked_by`) on the task it waits on, naming exactly what that is.
+`owner/name#number`. A run ends with `task_finish` once its condition holds, or `task_block` (`blocked_by`) on the tasks it waits on, naming exactly what that is.

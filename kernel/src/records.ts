@@ -13,6 +13,7 @@ import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { FINAL_CODES, type Cap, type ReviewFirst } from "./tier.ts";
 import { decider, openFacts, type Fact } from "./facts.ts";
+import type { ReviewContext } from "../sdk/src/executor.ts";
 
 export type State = "review" | "owner" | "approved" | "claimed" | "done" | "failed" | "rejected" | "stale" | "cancelled" | "unknown";
 /** `model`: a kernel job's model (its frozen authority), so the AI reviewer is never of the requester's family. */
@@ -49,8 +50,10 @@ export type Rec = {
   content?: string | null;
   /** The cap that raised its tier when it was filed (tier.ts computeTier): the instance's autonomy or a routine's. */
   cap?: Cap | null;
+  /** What the reviewer reads beside the card, from the plan at filing (executor.ts ReviewContext): never part of the digest. */
+  context?: ReviewContext | null;
 };
-const JSON_COLS = ["args", "targets", "executor", "card", "requester", "outcome", "cap"] as const;
+const JSON_COLS = ["args", "targets", "executor", "card", "requester", "outcome", "cap", "context"] as const;
 const OPEN: State[] = ["review", "owner", "approved"];
 /** Open records past this are expired: decided within a week or not at all. */
 export const TTL_MS = 7 * 86_400_000;
@@ -90,7 +93,7 @@ export function openRecords(file: string, now = () => new Date()) {
     CREATE INDEX IF NOT EXISTS records_task ON records (task, kind);`);
   // Columns added since 2d, each additive (older code ignores them, so a rollback keeps working).
   const have = new Set((db.prepare("PRAGMA table_info(records)").all() as { name: string }[]).map((c) => c.name));
-  for (const [c, t] of [["merit", "INTEGER"], ["review_first", "TEXT"], ["rule", "TEXT"], ["review_code", "TEXT"], ["decided_at", "TEXT"], ["owner_reason", "TEXT"], ["identifier", "TEXT"], ["replaced", "INTEGER NOT NULL DEFAULT 0"], ["chain", "TEXT"], ["target", "TEXT"], ["content", "TEXT"], ["cap", "TEXT"]] as const) if (!have.has(c)) db.exec(`ALTER TABLE records ADD COLUMN ${c} ${t}`);
+  for (const [c, t] of [["merit", "INTEGER"], ["review_first", "TEXT"], ["rule", "TEXT"], ["review_code", "TEXT"], ["decided_at", "TEXT"], ["owner_reason", "TEXT"], ["identifier", "TEXT"], ["replaced", "INTEGER NOT NULL DEFAULT 0"], ["chain", "TEXT"], ["target", "TEXT"], ["content", "TEXT"], ["cap", "TEXT"], ["context", "TEXT"]] as const) if (!have.has(c)) db.exec(`ALTER TABLE records ADD COLUMN ${c} ${t}`);
   const facts = openFacts(db, now);
   const iso = () => now().toISOString();
   const cutoff = () => new Date(now().getTime() - TTL_MS).toISOString();
@@ -144,9 +147,9 @@ export function openRecords(file: string, now = () => new Date()) {
       try {
         // A changed request on the same task, kind and target replaces the open one (the requester's own target key).
         const replaced = r.target ? db.prepare("UPDATE records SET state = 'cancelled', updated_at = ?, outcome = ? WHERE task = ? AND kind = ? AND target = ? AND digest != ? AND state IN ('review','owner','approved')").run(at, JSON.stringify({ ok: false, text: "replaced by a newer request" }), r.task, r.kind, r.target, digest).changes : 0;
-        db.prepare("INSERT INTO records (id, kind, module, args, targets, executor, policy, digest, tier, merit, panel, card, requester, task, state, created_at, updated_at, review_first, rule, identifier, replaced, target, content, chain, cap) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        db.prepare("INSERT INTO records (id, kind, module, args, targets, executor, policy, digest, tier, merit, panel, card, requester, task, state, created_at, updated_at, review_first, rule, identifier, replaced, target, content, chain, cap, context) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
           .run(id, r.kind, r.module, JSON.stringify(r.args ?? null), JSON.stringify(r.targets), JSON.stringify(r.executor), r.policy, digest, r.tier, r.merit ?? r.tier, r.panel ? 1 : 0, JSON.stringify(r.card), JSON.stringify(r.requester), r.task, r.state, at, at,
-            r.review_first ?? null, r.rule ?? null, r.identifier ?? null, replaced ? 1 : 0, r.target ?? null, r.content ?? null, r.chain ?? null, r.cap ? JSON.stringify(r.cap) : null);
+            r.review_first ?? null, r.rule ?? null, r.identifier ?? null, replaced ? 1 : 0, r.target ?? null, r.content ?? null, r.chain ?? null, r.cap ? JSON.stringify(r.cap) : null, r.context ? JSON.stringify(r.context) : null);
         const requester = r.requester.key || r.requester.module || "";
         fact(id, "record.filed", "filed", r.requester.key ? `agent:${r.requester.key}` : r.requester.module ? `module:${r.requester.module}` : "kernel", () => ({ kind: r.kind, tier: r.tier, panel: r.panel, requester, state: r.state, ...prOf(r.args) }));
         db.exec("COMMIT");
@@ -182,6 +185,10 @@ export function openRecords(file: string, now = () => new Date()) {
     /** The same request that is running or already ran (done or failed) since `since`: a repeat of it is not a new write. */
     ran: (task: string, kind: string, digest: string, since: string): Rec[] => rows(db.prepare("SELECT * FROM records WHERE task = ? AND kind = ? AND digest = ? AND state IN ('claimed','done','failed') AND created_at > ? ORDER BY created_at DESC").all(task, kind, digest, since)),
     open: (task: string, kind: string, digest: string): Rec[] => rows(db.prepare("SELECT * FROM records WHERE task = ? AND kind = ? AND digest = ? AND state IN ('review','owner','approved') AND created_at > ?").all(task, kind, digest, cutoff())),
+    /** A claimed record of a module its successor absorbed (`replaces`) moves to the successor's kind, so the successor reports its outcome. */
+    carry(id: string, kind: string, module: string, executor: Rec["executor"]): boolean {
+      return db.prepare("UPDATE records SET kind = ?, module = ?, executor = ? WHERE id = ? AND state = 'claimed'").run(kind, module, JSON.stringify(executor), id).changes === 1;
+    },
     /** Records of these modules' kinds in these states (a reconcile before the modules are removed). */
     ofModules(modules: string[], states: State[]): Rec[] {
       if (!modules.length) return [];
@@ -205,7 +212,7 @@ export function openRecords(file: string, now = () => new Date()) {
     },
     /**
      * The reviewer's verdict on a record in review, bound to its digest and held to its review-first: approve decides it
-     * (only a Tier 1 record without review-first, and with the panel only when a second reviewer approved too), reject closes
+     * (only a Tier 1 record without review-first, and with the panel only when a second reviewer approved too or was unsure), reject closes
      * it (stale for stale_head; never on the owner's-on-merits record, except code's own refusals), escalate hands it to the
      * owner with the note. A refusal is the reason as a string.
      */
@@ -214,7 +221,9 @@ export function openRecords(file: string, now = () => new Date()) {
       if (!r) return "no such record";
       if (shownState(r) !== "review") return `this record is ${shownState(r)}`;
       if (r.digest !== digest) return "the digest doesn't match this record";
-      if (r.panel && v.decision === "approve" && !v.by.includes("+")) return "an authority-expanding record needs a second reviewer's approval too";
+      // Two approvals (`+`), or one approval and the other reviewer unsure about the request, with the input code verified
+      // whole (`;unsure:`, the owner's rule of 2026-11-20).
+      if (r.panel && v.decision === "approve" && !v.by.includes("+") && !/;unsure:/.test(v.by)) return "an authority-expanding record needs a second reviewer's approval too";
       if (v.decision === "approve" && (r.review_first || r.tier === 2 || (r.args as { ownerRequired?: unknown } | null)?.ownerRequired === true)) return "after the reviewer, the owner decides this record (escalate it)";
       if (v.decision === "reject" && r.review_first === "owner" && !FINAL_CODES.includes(v.code ?? "")) return "this record is the owner's on its merits: escalate the reject to them";
       const note = v.note.slice(0, 2000);

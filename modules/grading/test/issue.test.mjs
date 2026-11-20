@@ -27,7 +27,7 @@ test("a module-filed task with a rubric is graded: an open issue reopens it, a c
     if (path === "/v1/cp/read/api/issues/t1") return issue;
     if (path === "/v1/cp/read/api/issues/t1/comments") return [{ id: "c1", authorType: "agent", authorAgentId: "mnt", body: "acme/app#7 verified; fix handed on.", createdAt: "2026-11-19T09:00:00Z" }];
     if (path === "/v1/cp/read/api/issues/t1/attachments") return [];
-    if (path === "/v1/cp/read/api/companies/co/agents") return [{ id: "mnt", name: "Maintainer" }];
+    if (path === "/v1/cp/read/api/agents/mnt") return { id: "mnt", name: "Maintainer" };
     if (path.startsWith("/v1/cp/read/api/companies/co/issues")) return [];
     if (path === "/v1/work?task=t1") return { busy: false, jobs: [], records: [] };
     if (path === "/v1/work/grader-token") return { token: "tok" };
@@ -50,7 +50,9 @@ test("a module-filed task with a rubric is graded: an open issue reopens it, a c
   assert.equal((await file(KEY, body)).status, 200);
   assert.equal(grades.get("t1").state, "open");
   assert.equal((await file(KEY, body)).status, 200, "the same filing again is a retry");
-  assert.equal((await file(KEY, { ...body, rubric: [...DONE].reverse() })).status, 409, "a row stays as its filer made it");
+  // A differing filing replaces it: this module filed the row, so the corrected rubric lands on the same task.
+  assert.equal((await file(KEY, { ...body, rubric: [...DONE].reverse() })).status, 200, "the recorded module may replace its own rubric");
+  assert.deepEqual(grades.get("t1").rubric, [...DONE].reverse());
   const finish = (graded, id = "t2") => fetch(`http://127.0.0.1:${server.address().port}/check/finish`, { method: "POST", headers: { authorization: `Bearer ${KEY}`, "content-type": "application/json" }, body: JSON.stringify({ task: { ...issue, id, ...(graded ? { graded } : {}) }, agent: "mnt", tool: "task_finish", via: "task_finish" }) }).then((r) => r.json());
   assert.equal((await finish(true)).verdict, "deny", "a task marked graded with no row never passes ungraded");
   assert.equal((await finish(false)).verdict, "ok");
@@ -96,4 +98,17 @@ test("issue evidence counts a close only by the App or an owner, member or colla
   const other = await ev("aidenhq-app", "NONE", "Fixed by evil/repo#1", true);
   assert.match(other.facts.join("\n"), /not in acme\/app/);
   assert.deepEqual(read, ["acme/app#9", "acme/app#9"]);
+});
+
+test("an issue GitHub closed through a merged PR's Fixes keyword counts as closed and cited by that PR", async () => {
+  const { issueEvidence } = await import("../service/src/grader/evidence.ts");
+  const closer = (state, repo = "acme/app") => ({ __typename: "PullRequest", number: 9, url: "https://github.com/acme/app/pull/9", state, mergedAt: "2026-11-19T10:00:00Z", mergeCommit: { oid: "b".repeat(40) }, repository: { nameWithOwner: repo } });
+  const issue = (c) => ({ repository: { issue: { state: "CLOSED", stateReason: "COMPLETED", closedAt: "2026-11-19T10:00:01Z", labels: { nodes: [] }, closedEvents: { nodes: [{ actor: { __typename: "User", login: "someone" }, closer: c }] },
+    comments: { nodes: [{ author: { login: "aidenhq-app" }, authorAssociation: "NONE", createdAt: "2026-11-19T11:00:00Z", body: "Verified, fixed by acme/app#9." }] } } }, appSlug: "aidenhq-app" });
+  const ev = (c) => issueEvidence("acme/app#7", { issue: async () => issue(c), pr: async () => { throw new Error("not read: GitHub's close event carries the PR"); } });
+  const ok = await ev(closer("MERGED"));
+  assert.match(ok.facts.join("\n"), /closed by GitHub through the closing keyword of https:\/\/github.com\/acme\/app\/pull\/9.*merged at 2026-11-19T10:00:00Z/);
+  assert.doesNotMatch(ok.facts.join("\n"), /does not count/);
+  assert.match((await ev(closer("OPEN"))).facts.join("\n"), /the close does not count/, "an unmerged closer is no citation");
+  assert.match((await ev(closer("MERGED", "evil/repo"))).facts.join("\n"), /the close does not count/, "a PR in another repo is no citation");
 });

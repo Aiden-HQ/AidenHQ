@@ -29,7 +29,7 @@ agents:
       # src_security (findings) through the warehouse tools; web reads (web search is on for every agent).
       apps: [ app_list, app_status, app_view, web_view, warehouse_query, source_new, source_ack, finding_verdict ]
       owner_channel: [ notify ]
-      paperclip_tasks: [ task_current, task_get, task_comments, task_search, task_list, task_create, task_comment, task_set_status, task_finish, fleet_catalog ]
+      paperclip_tasks: [ task_current, task_get, task_comments, task_search, task_list, task_create, task_comment, task_block, task_cancel, task_finish, fleet_catalog ]
     # Its fix tasks go to the Fleet Steward, which routes them to the owner's chosen engineer (`?`: only when it is installed).
     delegate_to: [ fleet-steward? ]
     roles: [ security-verdict ]
@@ -46,7 +46,7 @@ agents:
     connections:
       apps: [ app_list, app_status, app_view, app_api, web_view, warehouse_query ]
       owner_channel: [ notify ]
-      paperclip_tasks: [ task_current, task_get, task_comments, task_search, task_list, task_create, task_comment, task_set_status, task_finish, fleet_catalog ]
+      paperclip_tasks: [ task_current, task_get, task_comments, task_search, task_list, task_create, task_comment, task_block, task_cancel, task_finish, fleet_catalog ]
     # Its fix tasks go to the Fleet Steward, which routes them to the owner's chosen engineer (`?`: only when it is installed).
     delegate_to: [ fleet-steward? ]
 routines:

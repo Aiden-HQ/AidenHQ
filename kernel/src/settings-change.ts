@@ -12,6 +12,7 @@ import { join } from "node:path";
 import YAML from "yaml";
 import { urlSettingProblem } from "../../services/shared/url-setting.ts";
 import type { Write } from "./apply.ts";
+import type { Requester } from "./records.ts";
 
 export class Refused extends Error { status = 422; }
 /** The label the board files a settings task with (services/board/src/settings-change.ts SETTINGS_LABEL). */
@@ -37,6 +38,19 @@ const only = (ch: Dict, keys: string[]) => Object.keys(ch).every((k) => keys.inc
 /** Handbook texts: Markdown, no NUL or other control characters but tab and newlines. */
 const text = (t: unknown, max: number) => (typeof t === "string" && t.length <= max && !/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(t)) || refuse(`text must be at most ${max} characters, without control characters`);
 const HANDBOOK_MAX = 120_000;
+/** A structured setting's value: at most 6 levels and 2000 values, keys of letters, digits, _ . - / or *, plain strings (no $). */
+function boundedValue(key: string, v: unknown): void {
+  let n = 0;
+  const walk = (x: unknown, depth: number): void => {
+    if (++n > 2000 || depth > 6) refuse(`${key}: at most 6 levels and 2000 values`);
+    if (x === null || typeof x === "boolean" || (typeof x === "number" && Number.isFinite(x))) return;
+    if (typeof x === "string") return void ((x.length <= 500 && plain(x)) || refuse(`${key}: plain text of at most 500 characters, no control characters or $`));
+    if (Array.isArray(x)) return x.forEach((y) => walk(y, depth + 1));
+    if (!isMap(x)) refuse(`${key}: plain values only`);
+    for (const [k, y] of Object.entries(x as Dict)) (/^[\w.\/*-]{1,64}$/.test(k) || refuse(`${key}: ${k.slice(0, 40)} isn't a key`), walk(y, depth + 1));
+  };
+  walk(v, 0);
+}
 const RULES_MAX = 20_000;
 
 /**
@@ -59,6 +73,8 @@ export function checkTyped(ch: unknown, { compiled, catalog }: Sources): void {
       if (!KEY.test(String(c.key)) || /token|secret|password/i.test(c.key)) refuse(`${c.key} isn't a setting the board may change`);
       const def = catalog.find((m) => m.enabled && has(m.settings, c.key))?.settings?.[c.key];
       if (!def && !has(compiled?.settings, c.key)) refuse(`there is no setting ${c.key}`);
+      // A setting its module declares `type: object` (settings.code_review) takes a whole map, bounded here; its module checks the shape.
+      if (def?.type === "object") return void (isMap(c.value) || refuse(`${c.key} is a map`), boundedValue(c.key, c.value));
       const each = [c.value].flat();
       if ((Array.isArray(c.value) && c.value.length > 50) || each.some((v) => !["string", "number", "boolean"].includes(typeof v) || (typeof v === "string" && (v.length > 500 || !plain(v))))) refuse(`${c.key}: plain values only`);
       if (def?.values && each.some((v) => !def.values.includes(v))) refuse(`${c.key}: one of ${def.values.join(", ")}`);
@@ -327,16 +343,22 @@ export type SettingsDeps = {
   filed: (task: string) => boolean;
   /** The code host's write (apply.ts hostApply): the commit, on `branch`. */
   write: (w: Write) => Promise<{ sha: string }>;
-  /** Files the kernel.apply on the task (writes.fileKernel with SETTINGS). */
-  file: (args: { repo: string; branch: string; sha: string }, task: string) => Promise<{ id: string; tier: number; state: string }>;
+  /** Files the kernel.apply on the task (writes.fileKernel with SETTINGS, or the agent that asked). */
+  file: (args: { repo: string; branch: string; sha: string }, task: string, requester?: Requester) => Promise<{ id: string; tier: number; state: string }>;
   log?: (msg: string, f?: Record<string, unknown>) => void;
 };
 
-/** POST /v1/settings/change: the owner's typed change on their settings task, written and filed as one kernel.apply. */
+/**
+ * POST /v1/settings/change: the owner's typed change on their settings task, written and filed as one kernel.apply. `asAgent`
+ * (POST /v1/settings/agent): an agent's typed `setting` change on its own task, for a setting whose module lets one of the
+ * agent's roles write it (module.yaml settings.<key>.writers), filed with the agent as requester and tiered on its merits.
+ */
 export function createSettingsChanges(d: SettingsDeps) {
-  return async function apply(taskId: unknown, changes: unknown): Promise<{ record: string; tier: number; state: string; sha: string }> {
+  const sources = (): Sources => ({ compiled: YAML.parse(readFileSync(join(d.configDir, "paperclip.yaml"), "utf8")) ?? {}, catalog: JSON.parse(readFileSync(join(d.configDir, "modules.json"), "utf8")) });
+  const count = (changes: unknown) => ((Array.isArray(changes) && changes.length && changes.length <= 10) || refuse("changes: one to ten typed changes"));
+  async function apply(taskId: unknown, changes: unknown): Promise<{ record: string; tier: number; state: string; sha: string }> {
     if (typeof taskId !== "string" || !/^[0-9a-f-]{36}$/.test(taskId)) refuse("task is the settings task's id");
-    if (!Array.isArray(changes) || !changes.length || changes.length > 10) refuse("changes: one to ten typed changes");
+    count(changes);
     // The owner's own task, held by no agent: the board filed it a moment ago with the owner's key.
     const issue = (await d.task(taskId as string)) ?? refuse("no such task");
     const owner = await d.owner();
@@ -344,9 +366,25 @@ export function createSettingsChanges(d: SettingsDeps) {
     if (!(issue.labels ?? []).some((l: Dict) => l?.name === SETTINGS_LABEL)) refuse(`that task isn't a settings change (no ${SETTINGS_LABEL} label)`);
     if (["done", "cancelled"].includes(String(issue.status))) refuse("that task is closed");
     if (d.filed(taskId as string)) refuse("a settings change was already written on that task: file a new one");
+    return write(taskId as string, issue, changes as unknown[], sources());
+  }
+  async function asAgent(requester: Requester, taskId: string, changes: unknown, module: string): Promise<{ record: string; tier: number; state: string; sha: string }> {
+    count(changes);
+    const src = sources();
+    // The filing module speaks only for its own agents, and only of its own settings.
+    const agent = has(src.compiled.agents, requester.key) ? src.compiled.agents[requester.key] : undefined;
+    if (!module || agent?.module !== module) refuse(`${module} files settings changes only for its own agents, and ${requester.key || requester.name} isn't one`);
+    for (const ch of changes as Dict[]) {
+      if (!isMap(ch) || ch.kind !== "setting") refuse("an agent changes settings only: { kind: setting, key, value }");
+      const writers: unknown = src.catalog.find((m) => m.enabled && m.name === module && has(m.settings, ch.key))?.settings?.[ch.key]?.writers;
+      if (!Array.isArray(writers) || !writers.some((r) => requester.roles.includes(r))) refuse(`${requester.key || requester.name} may not change ${ch.key} (only a setting ${module} declares, whose settings.${ch.key}.writers names one of the agent's roles)`);
+    }
+    const issue = (await d.task(taskId)) ?? refuse("no such task");
+    return write(taskId, issue, changes as unknown[], src, requester);
+  }
+  async function write(taskId: string, issue: Dict, changes: unknown[], src: Sources, requester?: Requester) {
     const repo = d.instanceRepo() ?? refuse("this kernel has no instance repo (AIDENHQ_INSTANCE_REPO)");
-    const src: Sources = { compiled: YAML.parse(readFileSync(join(d.configDir, "paperclip.yaml"), "utf8")) ?? {}, catalog: JSON.parse(readFileSync(join(d.configDir, "modules.json"), "utf8")) };
-    for (const ch of changes as unknown[]) checkTyped(ch, src);
+    for (const ch of changes) checkTyped(ch, src);
     const typed = changes as Change[];
     const isInstance = (key: string) => has(src.compiled.agents, key) && src.compiled.agents[key].module === "instance";
     const allowed = allowedPaths(typed, isInstance);
@@ -365,12 +403,15 @@ export function createSettingsChanges(d: SettingsDeps) {
     if (stray.length) refuse(`it would change ${stray.join(", ")}, which these changes may not touch`);
     if (!files.size) refuse("it changes nothing: the instance is already like this");
     const ident = String(issue.identifier ?? taskId).toLowerCase();
-    const branch = `settings/${ident}`;
-    const { sha } = await d.write({ repo, base, branch, files: Object.fromEntries(files), message: `settings: ${typed.map((c) => c.kind).join(", ")} (${issue.identifier ?? taskId})\n\nWritten by the kernel from the owner's typed change on ${issue.identifier ?? taskId}; no agent wrote it.` });
-    const r = await d.file({ repo, branch, sha }, taskId as string);
-    d.log?.("settings change filed", { task: issue.identifier, kinds: typed.map((c) => c.kind), record: r.id, tier: r.tier });
+    // An agent may change settings more than once on its task: each change its own branch.
+    const branch = requester ? `settings/${ident}-${Date.now().toString(36)}` : `settings/${ident}`;
+    const by = requester ? `${requester.key || requester.name}'s` : "the owner's";
+    const { sha } = await d.write({ repo, base, branch, files: Object.fromEntries(files), message: `settings: ${typed.map((c) => c.kind).join(", ")} (${issue.identifier ?? taskId})\n\nWritten by the kernel from ${by} typed change on ${issue.identifier ?? taskId}; no agent wrote it.` });
+    const r = await d.file({ repo, branch, sha }, taskId, requester);
+    d.log?.("settings change filed", { task: issue.identifier, kinds: typed.map((c) => c.kind), record: r.id, tier: r.tier, ...(requester ? { agent: requester.key } : {}) });
     return { record: r.id, tier: r.tier, state: r.state, sha };
-  };
+  }
+  return Object.assign(apply, { asAgent });
 }
 
 /** The instance repo's main, read from the kernel's instance checkout (fetched first): its commit and the regular files asked for. */

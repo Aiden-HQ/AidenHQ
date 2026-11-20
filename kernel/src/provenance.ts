@@ -16,7 +16,7 @@ const strictest = (a: RoutineCap | undefined, b: RoutineCap | undefined) => (!a 
 
 export function createProvenance({ db, cap }: {
   db: DatabaseSync;
-  /** A task's routine cap as the kernel traces it now (tier.ts taskRoutineCap, through this provenance); never throws. */
+  /** A task's routine cap as the kernel traces it now (tier.ts taskRoutineCap, through this provenance); throws (503) when it can't be read now. */
   cap: (task: string) => Promise<RoutineCap | undefined>;
 }) {
   db.exec(`CREATE TABLE IF NOT EXISTS provenance (task TEXT PRIMARY KEY, created_by_job TEXT, routine TEXT, routine_cap TEXT NOT NULL, at INTEGER NOT NULL);

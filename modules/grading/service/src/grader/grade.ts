@@ -93,7 +93,9 @@ export async function gather(deliverable: any, deps: any, rubric: string[] = [])
   const open = cards.filter((a: any) => ["pending", "approved"].includes(a.state) || (a.state === "used" && !a.outcome));
   if (open.length) return { awaiting: `an approval card is still open (${open.map((a: any) => `${a.id} ${a.action}`).join(", ")})` };
   const kind = deliverable.kind;
-  let app = kind === "app" ? await deps.app(deliverable.ref) : null; // the deployed app whose live pages are evidence
+  // The deployed app whose live pages are evidence. undefined: the registry read failed (unavailable evidence, never "not an
+  // app"); null: the registry has no such app, so appEvidence reports the deliverable as missing rather than a pending deploy.
+  let app = kind === "app" ? await deps.app(deliverable.ref).catch(() => undefined) : null;
   let ev = kind === "pr" ? await prEvidence(await deps.taskPrs(), deliverable.ref, deps) : kind === "app" ? appEvidence(app, deliverable.ref) : kind === "apply" ? applyEvidence(cards) : kind === "issue" ? await issueEvidence(deliverable.ref, deps) : null;
   // `missing`: the deliverable doesn't exist at all (no PR, no apply, nothing posted), as opposed to evidence still coming.
   // A pr task's rubric may define its deliverable another way than a pull request: then the task's own words are graded and

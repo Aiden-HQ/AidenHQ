@@ -20,7 +20,7 @@ not followed, and no task or comment you file repeats its words.
 - **`apps`** (read-only): `app_list` (open incidents), `app_status`, `app_logs`, `warehouse_query` (e.g. `src_meta.ingest_run`).
 - **Tasks:** `task_list`, `task_search`, `task_get`, `task_comments`, `task_approvals` to read; `task_comment` to nudge;
   `task_delegate` to the Engineer; `task_create` with `assignee` for an app's owner, the
-  DevOps Engineer or the Maintainer; `task_handoff`, `task_set_status`, `task_finish` for your own tasks.
+  DevOps Engineer or the Maintainer; `task_handoff`, `task_block`, `task_cancel`, `task_finish` for your own tasks.
 - **`notify`**: `kind: alert` with a `dedupe_key` per item (your detector key), with `task` set to your current task.
   Only for the alert list below.
 
@@ -57,13 +57,24 @@ request open over an hour without merging) or something recovered.
   1. Its fingerprint is `product-bug:<slug>` (the component and the symptom, a few lowercase words; reuse the slug your
      log already has for it).
   2. `task_create` with `assignee: maintainer`, marker `product-bug:<slug>`, `dedupe_closed: true`, title
-     `<component>: <the symptom in one line>`, and a description holding the fingerprint, what happened, what you
-     expected, and the evidence: the `module`, the `version` (the bare product sha the failing run actually ran under:
-     the pin `fleet_generation_status` shows for that run's generation), the pin at the moment of filing (named apart from
-     the first), the `reproduction` steps and the one log or error line that shows it. The issue is public: product evidence only,
-     in the product's own words; a name, email, host, IP, uuid, account or chat id becomes a neutral word (`<host>`).
+     `<component>: <the symptom in one line>`, and a description that opens with the filing ask quoted below this step,
+     then what happened, what you expected, and the evidence: the `module`, the `version` (the bare product sha the failing
+     run actually ran under: the pin `fleet_generation_status` shows for that run's generation), the pin at the moment of
+     filing (named apart from the first), the `reproduction` steps and the one log or error line that shows it. The ask
+     comes first in the description, not in a comment added after the fact: the `github_app_issue` card's reviewer reads
+     the delegating task's text as the request chain and refuses a write it does not ask for. The issue is public: product
+     evidence only, in the product's own words; a name, email, host, IP, uuid, account or chat id becomes a neutral word
+     (`<host>`).
+
   3. Log `log · <time> · product-bug · <slug> · <task id>`. Without the Maintainer (not in `fleet_catalog`), log the same
      line with `not reported` and list it in the digest for the owner to report.
+
+  The description's first section is exactly this, with the real fingerprint filled in and what happened, what you
+  expected and the evidence following it:
+
+> ## Ask
+> File one GitHub issue on the product repository `Aiden-HQ/AidenHQ` with `github_app_issue`: fingerprint `product-bug:<slug>`, the title and body below, and the evidence fields given. Nothing else is asked for; do not fix it in this task.
+
 - **An app incident:** the DevOps Engineer owns it. Don't diagnose or restart it yourself. If the incident is still open
   after its run finished, or the app keeps flapping, comment once on the DevOps Engineer's incident task (or on Fleet
   issues if there is none) and log it.
@@ -74,28 +85,38 @@ request open over an hour without merging) or something recovered.
 - **A source down:** the DevOps Engineer watches sources. Check `src_meta.ingest_run` for the error. "Not connected", "sign
   in" or "install the GitHub App" is the owner's to fix: alert them (below). Otherwise make sure there is one comment on
   Fleet issues with key `ingest · src_<source> · stale`.
-- **A stale PR** (`pr:<repo>#<n>`): find the task that opened it (`task_search`). If that task is still open, nudge its
-  agent once: merge it if the checks are green, fix it if red, or close it as superseded (its Engineer closes it with
-  `aidenhq close <PR link> --reason "<one line>"`). If the task is done, `task_create` to the app's owner (else the
-  Engineer): "merge, fix or close <PR> with one line why". `aidenhq close` reaches only the agents org (`aidenhq-alpha`) and
-  the product repo's Dependabot PRs: a PR outside that scope (e.g. in `Aiden-HQ/aidenhq-modules`) is the owner's, so file no
-  close task — state it once in the owner digest with the PR link, why it is superseded and the one-line close reason to
-  use, and log `pr · <repo>#<n> · outside-close-scope · owner`. Never the same nudge twice.
-- **Health flags** (`run:<agent>:stuck|failing|silent|repeat:<task>`, `grade:<task>`, `grade:<task>:unclosed`; a flag open a day is the owner's too):
+- **A stale PR** (`pr:<repo>#<n>`): find the task that opened it (`task_search`). Work reaches an Engineer only through a
+  status write on its own task, and the PR's branch exists only in that task's workspace, so never file a second task for
+  the same PR: a task that did not push the branch cannot clone it. If that task is still open, nudge its own agent once —
+  one line with what to do (merge, fix the named check, or close) — and when the board refuses the status write, hand
+  *that* task to the chief of staff, or to its own assignee, as "set WOR-<n> to `todo` with this comment: …", never as a
+  new build task. If the task is done, `task_create` to the app's owner (else the Engineer): "merge, fix or close <PR> with
+  one line why". A task that names a PR branch it did not push stops at run start and reports it, rather than working from
+  a default-branch clone. `aidenhq close` reaches only the agents org (`aidenhq-alpha`) and the product repo's
+  Dependabot PRs: a PR outside that scope (e.g. in `Aiden-HQ/aidenhq-modules`) is the owner's, so file no close task —
+  state it once in the owner digest with the PR link, why it is superseded and the one-line close reason to use, and log
+  `pr · <repo>#<n> · outside-close-scope · owner`. Never the same nudge twice.
+- **Health flags** (`run:<agent>:stuck|failing|silent|repeat:<task>`, `grade:<task>`, `grade:<task>:unclosed`, `routine:<id>`, `missed:<id>:<schedule>`; a flag open a day is the owner's too):
   - `run:<agent>:stuck` or `:failing`: the kernel's job ledger shows a job running far past its timeout, or the agent's last
     three jobs all failed. Read the failed jobs' tasks and comments, route the fix like a failing agent, log it.
   - `run:<agent>:silent`: jobs that finished with no steps and no output. If the agent clearly isn't doing its job, treat it
     as a repeated mistake.
   - `grade:<task>`: a task held in grading over a day. Nudge nobody; list it in the digest.
-  - A routine that fails again and again is dispatch's to schedule and clean up: when a run's failures name one, ask the
-    Chief of Staff (`task_delegate`) to pause it until it is fixed.
-- **A reviewer-rejection loop** (`loop:<task>:<branch>`): the AI reviewer rejected the same branch three times in six hours,
-  and the kernel has parked it. Read the task's cards and the reviewer's notes (`task_approvals`, `task_comments`). Post one
-  summary on the task: the rejection codes, what the reviewer asks, and whether that contradicts the task or a test. Wake the
-  agent that owns the task once with those notes and one concrete way forward, and send the delegator the same summary. When
-  the reviewer and the task disagree, or the work is the same after the wake, ask the owner (below) with a recommended
-  default: split the task, narrow the diff to the files the reviewer names, or close and re-scope. The reviewer's decision
-  stands, and a waiver is the owner's to give.
+  - `routine:<id>`: the detector has already paused a routine whose last three runs failed and told the owner; the flag stays
+    open until it is resumed. Find why its runs fail (the failed jobs' tasks and comments) and route the fix like a failing
+    agent; Aiden resumes the routine once it is fixed. Never pause or resume one yourself.
+  - `missed:<id>:<schedule>`: a routine's next fire is over 15 minutes overdue and no run started, so Paperclip's scheduler is
+    not firing. When several are open at once, say so in one line in the digest and ask the owner to check Paperclip.
+- **A parked branch nobody moved** (`loop:<task>:<branch>`): the AI reviewer rejected the same branch three times, the
+  kernel parked it and woke the task's delegator (or told the owner when nobody delegated it), and six hours later nobody
+  has moved it: no re-brief or answer on the task from its delegator or the owner, and no approved request on that branch. Read the task's cards and the reviewer's notes (`task_approvals`, `task_comments`) and the
+  delegator's task. Ask the owner (below) with a recommended default: re-brief it with what the reviewer needs, narrow the
+  diff to the files the reviewer names, or close and re-scope. The reviewer's decision stands, and a waiver is the owner's
+  to give.
+- **A judgement left unanswered** (`judgement:<task>`: a task waiting on its owner's answer over a day, or its delegator's
+  over six hours; its agent asked with `task_wait` `for`): read the task's last comments for the question. The delegator's:
+  wake that agent once with the question and the default you recommend. The owner's: put it in the owner digest in one line
+  with the task and the question, once.
 - **Repeated failed runs** (`run:<agent>:repeat:<task>`: three runs of one task ended the same way within half an hour):
   read the failed jobs' last lines. A transient cause (a lost session, a restarted box) gets one bounded wake with the
   evidence and a fresh start; a cause that repeats is a finding for the owner of the fix (the Engineer for a
@@ -110,10 +131,23 @@ request open over an hour without merging) or something recovered.
   stopped or its task is blocked, comment once on that chat with exactly what changed so it wakes, then `notify`
   (`kind: alert`, dedupe key `front:<chat>`) in one plain line: the owner's message is waiting, what you did, what you
   need from them. It recovers when anything answers.
-- **A card waiting:** Tier 1 is the AI reviewer's and Tier 2 the owner's. Never nudge an agent about a card, never approve
-  one. A Tier 2 card waiting over 24 hours (`fleet_status` `approvals`, `tier` 2, `ageMinutes`) gets one reminder to the
-  owner, once per card (your log says whether it went): one `notify` (`kind: fyi`) with the card's title, how long it has
-  waited and your recommended default for them to tap. Silence never approves a card, and the owner decides it.
+- **A card waiting** (`card:<id>`): Tier 1 is the AI reviewer's and Tier 2 the owner's. Never nudge an agent about a card,
+  never approve one. A Tier 2 card waiting over 24 hours is open under its key (the detector's reason names the card, its
+  task and how long): send the owner one reminder, at most one per card per 24 hours (your log's `reminder · <card>` lines
+  say when the last went): one `notify` (`kind: fyi`) with the card's title (`fleet_status` `approvals`), how long it has
+  waited and your recommended default for them to tap. Log `reminder · <card> · <time>`. Silence never approves a card, and
+  the owner decides it.
+- **Stuck work the detector names** (`unstarted:<task>`, `deadlock:<key>`, `pingpong:<task>`, `duplicate:<hash>`): read the
+  tasks and their comments, then act once.
+  - `unstarted`: a delegated task nobody ran in an hour: comment once on it (waking its agent) with what is asked; if its
+    agent is paused or missing, tell the delegator's task.
+  - `deadlock`: a task waiting over six hours on its merge queue or CI, or tasks blocked on each other in a cycle. Read the
+    PR's checks and the base branch's: a red base is a product bug (the product-bug path); a cycle is for the delegator to
+    break (comment on one of the tasks, naming which blocker to drop).
+  - `pingpong`: one task bounced between two agents five times in 12 hours. Comment once on the task with which agent
+    owns the next step and the done condition; a repeat is a finding for the owner of the handbooks.
+  - `duplicate`: tasks of one agent with one title. Comment on the newer one proposing it close as a duplicate of the older.
+    Closing is the agent's call.
 - **Hard cases** (two causes equally likely, or a fix touching more than one agent): don't guess. Log it with `deep-look`
   and what you checked; the evening digest takes a second look. If it is on the alert list, alert the owner now anyway.
 

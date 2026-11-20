@@ -91,7 +91,7 @@ test("dropping enforcement is the owner's: a check removed, or the reviewer or e
   // A check moved to observe mode no longer enforces: dropped too.
   assert.deepEqual(lines(with_({ checks: [{ id: "lint" }, { id: "scan", mode: "observe" }], providers: strict.providers })), ["drops 1 check"]);
   // The same through a replace: B lacking A's check is the owner's.
-  const d = authorityDiff("crm-b", undefined, { name: "crm-b" }, false, { name: "acme-crm", def: strict });
+  const d = authorityDiff("crm-b", undefined, { name: "crm-b" }, false, [{ name: "acme-crm", def: strict }]);
   assert.ok(d.changes.some((c) => c.owner && c.what === "drops 2 checks"));
 });
 
@@ -134,17 +134,46 @@ test("a removed module is the reviewer's, unless it carried enforcement", () => 
 test("B replacing A with equal authority has an empty diff; B adding a secret is owner:true", () => {
   const a = { name: "chan-a", generated_secrets: ["chan_a_service_key"], connections: { "chan-a": { url: "http://a:1/mcp", auth: "chan_a_service_key", tools: { read: ["r"], write: ["post"] } } }, writes: { "chan-a.post": { floor: 1 } } };
   const b = { name: "chan-b", replaces: ["chan-a"], generated_secrets: ["chan_b_service_key"], connections: { "chan-b": { url: "http://b:1/mcp", auth: "chan_b_service_key", tools: { read: ["r"], write: ["post"] } } }, writes: { "chan-b.post": { floor: 1 } } };
-  const inputs = moduleInputs({ baseInstance: { modules: ["chan-a"] }, headInstance: { modules: ["chan-b"] }, baseDefs: { "chan-a": a, "chan-b": b }, headDefs: { "chan-a": a, "chan-b": b }, changed: [] });
+  const inputs = moduleInputs({ baseInstance: { modules: ["chan-a"] }, headInstance: { modules: ["chan-b"] }, baseDefs: { "chan-a": a, "chan-b": b }, headDefs: { "chan-a": a, "chan-b": b }, changed: [], official: { base: ["chan-a", "chan-b"], head: ["chan-a", "chan-b"] } });
   assert.deepEqual(Object.keys(inputs), ["chan-b"]);
   const same = diffAll(inputs);
   assert.equal(classifyModules(same).tier, 1);
   assert.deepEqual(same[0].changes.filter((c) => c.owner), []);
-  const more = authorityDiff("chan-b", undefined, { ...b, generated_secrets: [...b.generated_secrets, "chan_b_extra"] }, false, { name: "chan-a", def: a });
+  const more = authorityDiff("chan-b", undefined, { ...b, generated_secrets: [...b.generated_secrets, "chan_b_extra"] }, false, [{ name: "chan-a", def: a }]);
   assert.deepEqual(more.changes.filter((c) => c.owner).map((c) => c.what), ["adds secret chan_b_extra"]);
   // `replaces` counts only when this change removes A: with A staying, B is a plain install, diffed against nothing.
   const kept = moduleInputs({ baseInstance: { modules: ["chan-a"] }, headInstance: { modules: ["chan-a", "chan-b"] }, baseDefs: { "chan-a": a, "chan-b": b }, headDefs: { "chan-a": a, "chan-b": b }, changed: [] });
   assert.equal(kept["chan-b"].replacing, undefined);
   assert.equal(classifyModules(diffAll(kept)).tier, 2);
+});
+
+test("a module folded into one that already ran: moved authority is no line, only what is new (distro#70)", () => {
+  // The product drops chan-a; chan-b, already running, now carries chan-a's write kind, privileged entry, executor, secret and
+  // App grant in its own namespace. instance.yaml still lists chan-a (current() reads it as chan-b): no rewrite.
+  const a = { name: "chan-a", privileged: ["speaks-as-owner"], providers: { executor: { url: "http://a:1/x" } }, generated_secrets: ["chan_a_key"], writes: { "chan-a.post": { floor: 1 } }, codehost: { repos: "all" } };
+  const b0 = { name: "chan-b", connections: { "chan-b": { url: "http://b:1/mcp", tools: { read: ["r"] } } } };
+  const b1 = { ...b0, replaces: ["chan-a"], privileged: ["speaks-as-owner"], providers: { executor: { url: "http://a:1/x" } }, generated_secrets: ["chan_b_key"], writes: { "chan-b.post": { floor: 1 } }, codehost: { repos: "all" } };
+  const both = ["chan-a", "chan-b", "chan-c"];
+  const diff = (head, { official = { base: both, head: both }, headDefs = { "chan-b": head } } = {}) => diffAll(moduleInputs({ baseInstance: { modules: ["chan-a", "chan-b"] }, headInstance: { modules: ["chan-a", "chan-b", "chan-c"] }, baseDefs: { "chan-a": a, "chan-b": b0 }, headDefs, changed: [], official }));
+  const owners = (ds, m = "chan-b") => ds.find((d) => d.module === m).changes.filter((c) => c.owner).map((c) => c.what);
+  const moved = diff(b1);
+  assert.deepEqual(moved.map((d) => d.module), ["chan-b"]);
+  assert.deepEqual(owners(moved), []);
+  assert.ok(moved[0].changes.some((c) => c.what === "replaces chan-a"));
+  // Only the real delta: a new privileged entry and secret.
+  assert.deepEqual(owners(diff({ ...b1, generated_secrets: ["chan_b_key", "chan_b_extra"], privileged: ["speaks-as-owner", "git-credential"] })), ["adds privileged git-credential", "adds secret chan_b_extra"]);
+  // A's names are not carried as named: chan_a_key kept under its old name is new to chan-b.
+  assert.deepEqual(owners(diff({ ...b1, generated_secrets: ["chan_a_key"] })), ["adds secret chan_a_key"]);
+  // An entry both had is had only as one of them whole: a mix of the two is the owner's.
+  const a2 = { ...a, connections: { "chan-a": { url: "http://a:1/mcp", tools: { write: ["post"] } } } };
+  const conflict = diffAll(moduleInputs({ baseInstance: { modules: ["chan-a", "chan-b"] }, headInstance: { modules: ["chan-b"] }, baseDefs: { "chan-a": a2, "chan-b": b0 }, headDefs: { "chan-b": { ...b1, connections: { "chan-b": { url: "http://b:1/mcp", tools: { read: ["r"], write: ["post"] } } } } }, changed: [], official: { base: both, head: both } }));
+  assert.ok(owners(conflict).includes("connections chan-b: chan-b and chan-a both had it, and it is neither one now"));
+  // Not official on both sides, or two heirs: no successor. The claim is the owner's and chan-a is removed on its own.
+  for (const ds of [diff(b1, { official: { base: ["chan-a"], head: [] } }), diff(b1, { headDefs: { "chan-b": b1, "chan-c": { name: "chan-c", replaces: ["chan-a"] } } })]) {
+    assert.ok(owners(ds).includes("replaces chan-a, but is not its one official successor: nothing it had carries over"));
+    assert.ok(owners(ds).includes("adds privileged speaks-as-owner"));
+    assert.ok(owners(ds, "chan-a").some((w) => /removed/.test(w)));
+  }
 });
 
 test("5b: the tree id at the new sha equals the recorded one → empty diff; the official repository is no owner line", () => {
@@ -240,4 +269,16 @@ test("a code host's service mounts, a channel's transport and credentials, and k
     "acme-crm: channel: the kernel sends the owner's messages and its token to http://crm-mcp:8080/send (owner)",
     "acme-crm: channel: gets the owner's credentials (account reset links) (owner)",
   ]);
+});
+
+test("a setting's writers are authority: a role added is the owner's, and kernel.settings names the keys and roles", () => {
+  const s = (writers) => with_({ settings: { cr: { default: {}, ...(writers ? { writers } : {}) }, poll: { default: 60 } } });
+  assert.deepEqual(authorityDiff("acme-crm", s(), s(["closer"]), false, undefined, {}, {}, true).changes, [{ what: "lets roles closer write setting cr", owner: true }]);
+  assert.deepEqual(authorityDiff("acme-crm", s(["closer"]), s(["closer", "boss"]), false, undefined, {}, {}, true).changes.map((c) => c.what), ["lets roles boss write setting cr"]);
+  assert.deepEqual(authorityDiff("acme-crm", s(["closer"]), s([]), false).changes, [{ what: "text only", owner: false }]);
+  assert.deepEqual(authorityDiff("acme-crm", s(), with_({ settings: { cr: { default: { a: 1 } }, poll: { default: 30 } } }), false).changes, [{ what: "text only", owner: false }]);
+  const ruled = with_({ settings: { cr: { default: {}, writers: ["closer"], owner: [{ path: "month_usd", raise: true }] }, poll: { default: 60 } } });
+  assert.deepEqual(authorityDiff("acme-crm", ruled, s(["closer"]), false, undefined, {}, {}, true).changes.map((c) => c.what), ["changes what agents may change in setting cr without the owner"]);
+  const req = { ...s(["closer"]), roles: { requests: ["kernel.settings"] } };
+  assert.ok(authorityDiff("acme-crm", base, req, false).changes.some((c) => c.what === "requests role kernel.settings (files its agents' changes to the settings its module names them writers of, as reviewed applies: cr by closer)"));
 });

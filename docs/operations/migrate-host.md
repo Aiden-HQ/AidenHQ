@@ -38,7 +38,7 @@ Commands run as `<you>` on the host named in the step, unless a step says `sudo`
 | Gateway ledger, apps-mcp, ops-mcp, slack-live, apps-edge node state | `data/gateway/`, `data/apps-mcp/`, `data/ops-mcp/`, `data/slack-live/`, `data/apps-edge/` | Same rsync, cold |
 | App data (the warehouse and other stateful apps) | Docker volumes `app-<name>_<vol>` | Streamed with tar, cold, before the app's first deploy on the new host |
 | Secrets | The vault view `~/.config/aidenhq` | Plaintext over SSH into the new host's mounted view, which encrypts it under the new vault |
-| Runner state and Engineer work dirs | `~/.local/state/aidenhq-runner`, `~/.local/state/aidenhq-computers`, `~/aidenhq-work` | rsync, cold final pass |
+| Job state and Engineer work dirs | `~/.local/state/aidenhq-runner`, `~/.local/state/aidenhq-computers`, `~/aidenhq-work` | rsync, cold final pass |
 | Instance checkout | `~/aidenhq-instance` | rsync (its credential helper config comes with it) |
 | Host logins | `~/.ssh`, `~/.gitconfig`, `~/.config/gh`, `~/.codex`, `~/.local/state/gh` | rsync |
 | Notes vault and transcripts | `VAULT_DIR`, `TRANSCRIPTS_DIR` in `.env` | rsync |
@@ -66,7 +66,7 @@ Not moved:
   - `du -sh ~/aidenhq/data/* ~/aidenhq-work ~/.local/state/aidenhq-runner`
   - The paths in `.env` (`VAULT_DIR`, `TRANSCRIPTS_DIR`, `AIDENHQ_INSTANCE_DIR`) and in `config/runner.yaml`
     (`work_dir`, `state_dir`)
-- **Same user, same uid.** Absolute paths are baked into the runner state, Engineer worktrees, Codex homes, the
+- **Same user, same uid.** Absolute paths are baked into the job state, Engineer worktrees, Codex homes, the
   `${PWD}:${PWD}` mount in `compose.yaml` and the units' `%h`. Create `<you>` on the new host with the old uid
   (`id -u` on the old host).
 - **Measure the uplink.** The pre-seed (step 4) shows rsync's rate. Estimate the final pass from the size of what
@@ -291,7 +291,7 @@ This:
 - drains the `aidenhq-ci-runner@*` units: an idle one is stopped at once and one running a job is waited for, so the job
   is not cancelled under it (a job still running at the hour is stopped with the rest);
 - records both in `data/fleet-paused.json`, which the data rsync carries to the new host;
-- waits until three counts reach zero: Paperclip's live runs, the runner's running jobs and agent computers.
+- waits until three counts reach zero: Paperclip's live runs, the kernel's running jobs and agent computers.
 
 It exits 1 after an hour if work is still running; run it again to keep waiting (everything stays paused). An event
 wake (Slack, the board's wake-ups) can start a new run while it waits; let it finish. Don't skip the wait for runner
@@ -309,7 +309,7 @@ On the old host:
 1. Stop everything:
 
    ```sh
-   systemctl --user stop aidenhq-runner aidenhq-computers aidenhq-kernel prune-docker.timer \
+   systemctl --user stop aidenhq-computers aidenhq-kernel prune-docker.timer \
      aidenhq-security-sbom.timer aidenhq-backup.timer   # the backup timer, if the old host has one
    cd ~/aidenhq && docker compose down
    docker ps --format '{{.Names}}' | grep -E '^(app-|aidenhq-computer-)' | xargs -r docker stop
@@ -318,7 +318,7 @@ On the old host:
 2. Make sure nothing comes back after a reboot of the old host:
 
    ```sh
-   systemctl --user disable aidenhq-runner aidenhq-computers aidenhq-kernel prune-docker.timer \
+   systemctl --user disable aidenhq-computers aidenhq-kernel prune-docker.timer \
      aidenhq-security-sbom.timer aidenhq-backup.timer aidenhq-ci-runner@1 aidenhq-ci-runner@2   # every instance from step 0
    sudo systemctl disable docker.service docker.socket
    ```
@@ -426,9 +426,9 @@ Telegram task links and the app links people have.
 2. Install and enable the same user units the old host had:
 
    ```sh
-   cp ops/units/{aidenhq-runner,aidenhq-computers,prune-docker,aidenhq-security-sbom}.* ops/units/aidenhq-ci-runner@.service ~/.config/systemd/user/
+   cp ops/units/{aidenhq-kernel,aidenhq-computers,prune-docker,aidenhq-security-sbom}.* ops/units/aidenhq-ci-runner@.service ~/.config/systemd/user/
    systemctl --user daemon-reload
-   systemctl --user enable --now aidenhq-runner aidenhq-computers prune-docker.service prune-docker.timer aidenhq-security-sbom.timer
+   systemctl --user enable --now aidenhq-kernel aidenhq-computers prune-docker.service prune-docker.timer aidenhq-security-sbom.timer
    systemctl --user enable --now aidenhq-ci-runner@1 aidenhq-ci-runner@2   # the instances the old host had
    ```
 
@@ -452,7 +452,7 @@ Telegram task links and the app links people have.
    - On a throwaway task titled `TEST`, an agent run completes and a Telegram notice arrives.
    - `warehouse_query` returns rows; an app URL opens.
    - The org's runners page lists the CI runners as idle.
-   - `journalctl --user -u aidenhq-runner` is quiet.
+   - `journalctl --user -u aidenhq-kernel` is quiet.
    - Any task left with a recovery hold: resolve it (CLAUDE.md, "Paperclip quirks").
 5. Resume what step 5 paused, from the new host. `data/fleet-paused.json` came with the final pass:
 
@@ -505,7 +505,7 @@ every night with restic.
 **What it sends:**
 
 - `scripts/backup.sh --plain`. This covers the whole data dir, with every SQLite database copied online, Paperclip's
-  hourly dumps in place of its live `db/`, and the board's accounts and `auth.secret`. It also covers the runner's
+  hourly dumps in place of its live `db/`, and the board's accounts and `auth.secret`. It also covers the jobs'
   state, every `app-*` volume (the warehouse through its nightly dump volume, not its live `pgdata`), the YAML config and
   the instance repo bundle.
 - The vault's ciphertext, `~/.local/share/aidenhq/vault.enc`. It is safe off-host: without the TPM, the host key or

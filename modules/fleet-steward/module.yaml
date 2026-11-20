@@ -7,11 +7,11 @@ requires: [ grading ] # the detector reads the grader's failed passes
 replaces: [ fleet-ops, coach, librarian ] # the updater lists this module for an instance that ran any of them (kernel/src/updates.ts)
 roles:
   # kernel.cp-read, kernel.work-read: the control plane's tasks and agents and the kernel's jobs, records and cost, read for the detector and
-  # the Coach; kernel.tasks: the check task for the Steward; kernel.owner-notice: the owner's one line for a critical alert or a lost Steward;
+  # the Coach; kernel.routines: the detector pauses a routine failing three runs in a row; kernel.tasks: the check task for the Steward; kernel.owner-notice: the owner's one line for a critical alert or a lost Steward;
   # apps.read: apps-mcp's status, quality, sources and open PRs; kernel.routing: the routing learning loop's reads and its typed
   # routing changes, each a reviewed kernel.apply filed as the calling agent (routing-tuner role only); kernel.flow-read: Flow's idle work
   # for the detector's stuck rule and its week-over-week stage check, and the flow_report tool.
-  requests: [ kernel.cp-read, kernel.work-read, kernel.tasks, kernel.owner-notice, kernel.routing, kernel.flow-read, apps.read ]
+  requests: [ kernel.cp-read, kernel.work-read, kernel.tasks, kernel.owner-notice, kernel.routines, kernel.routing, kernel.flow-read, apps.read ]
   declares:
     - { id: fleet-read, description: "The board's fleet status and the detector's incidents only (never fleet_control or relaying the owner's words)." }
     - { id: fleet-audit, description: "Read any agent's evidence (the fleet_steward connection's coach_* reads) and keep a review log (tasks bridge coach_record)." }
@@ -44,7 +44,7 @@ agents:
       # fleet_status through fleet-read (no fleet_control, no relaying, no approvals decided); coach_record through fleet-audit;
       # handbook_list/handbook_read/task_propose_rule through librarian. task_create/task_delegate only to delegate_to below.
       paperclip_tasks: [ task_current, task_get, task_comments, task_search, task_list, task_approvals, task_team,
-                         task_create, task_comment, task_delegate, task_handoff, task_set_status, task_finish,
+                         task_create, task_comment, task_delegate, task_handoff, task_block, task_cancel, task_finish,
                          fleet_status, fleet_catalog, fanout_map,
                          coach_record, handbook_list, handbook_read, task_propose_rule ]
       # The detector's open and recovered incidents (fleet-read), the Coach's reads (fleet-audit) and the apply generations.

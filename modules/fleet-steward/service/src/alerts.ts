@@ -6,7 +6,7 @@ import { fence } from "./aidenhq-sdk/fence.ts";
 import type { Incident, Kv } from "./detector.ts";
 
 const KEY = "alerts";
-type Firing = Record<string, { name: string; severity: string; summary: string; since: string }>;
+type Firing = Record<string, { name: string; severity: string; summary: string; since: string; told?: boolean }>;
 export interface Alert { status: "firing" | "resolved"; fingerprint: string; labels: Record<string, string>; annotations: Record<string, string>; startsAt?: string }
 
 /** A label value as a short slug (a-z, 0-9, _ and -): alert names and severities are ours, but never trusted as text. */
@@ -52,10 +52,12 @@ export async function receiveAlerts(kv: Kv, alerts: Alert[], notify: (text: stri
     const severity = slug(a.labels.severity, 20) || "warning";
     // Free text (the rule's summary with label values in it): bounded here, fenced as data in the incident's reason.
     const summary = String(a.annotations.summary ?? a.annotations.description ?? "").slice(0, 300);
-    // The owner hears of a critical alert once, when it starts firing; the Steward works every alert.
-    if (!f[a.fingerprint] && severity === "critical") await notify(`Monitoring: ${name} (critical): ${OWNER_SENTENCE[name] ?? "a critical alert fired"}. The Fleet Steward is on it.`).catch(() => {});
+    // The owner hears of a critical alert once, when it starts firing; the Steward works every alert. Marked told only once the
+    // notice went out: a kernel that was down is tried again on the next webhook or tick.
+    let told = f[a.fingerprint]?.told;
+    if (!told && severity === "critical") told = await notify(`Monitoring: ${name} (critical): ${OWNER_SENTENCE[name] ?? "a critical alert fired"}. The Fleet Steward is on it.`).then(() => true, () => false);
     const since = f[a.fingerprint]?.since ?? (a.startsAt && /^\d{4}-\d\d-\d\dT[\d:.]+Z$/.test(a.startsAt) && !a.startsAt.startsWith("0001") ? a.startsAt : now.toISOString());
-    f[a.fingerprint] = { name, severity, summary, since };
+    f[a.fingerprint] = { name, severity, summary, since, ...(told ? { told } : {}) };
   }
   kv.set(KEY, JSON.stringify(f));
   return { firing: Object.keys(f).length };

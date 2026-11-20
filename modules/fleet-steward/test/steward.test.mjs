@@ -133,24 +133,48 @@ const task = (id, o = {}) => ({ id, identifier: `WOR-${id.toUpperCase()}`, title
 const detect = (w, now = NOW) => checks({ kernel: w, apps: async (p) => (p === "/internal/open-prs" ? { prs: w.prs } : []), alerts: async () => [], openKeys: () => [], now: () => now });
 const minsAgo = (m) => new Date(NOW - m * 60_000).toISOString();
 
-test("three judged rejections of one branch in 6h is a loop; code's refusals, other branches and the bake-off project are not; an agent-set title or label exempts nothing", async () => {
-  const rej = (task, target, at, judged = true) => ({ task, identifier: null, judged, targets: [target], decided_at: at });
+test("a branch parked by three judged rejections that nothing moved for 6h is a loop; refiles refused as parked or aimed elsewhere move nothing; an approval on it, a re-brief or the owner's word does", async () => {
+  const rej = (task, target, at, judged = true) => ({ task, identifier: null, state: "rejected", judged, targets: [target], decided_at: at, created_at: at });
+  const filed = (task, target, state) => ({ task, identifier: null, state, judged: false, targets: [target], decided_at: ago(2), created_at: ago(2) });
+  const parked = (task, target) => [7, 8, 9].map((h) => rej(task, target, ago(h)));
   const w = world({
-    tasks: { t1: task("t1"), t2: task("t2"), t3: task("t3", { identifier: "BAK-3" }), t4: task("t4", { title: "TEST: loop", labels: [{ name: "chat" }] }) },
+    tasks: { t1: task("t1", { assigneeAgentId: "eng" }), t2: task("t2"), t3: task("t3", { identifier: "BAK-3" }), t4: task("t4", { title: "TEST: loop", labels: [{ name: "chat" }] }), t5: task("t5", { assigneeAgentId: "eng" }), t6: task("t6", { status: "done" }), t7: task("t7"), t8: task("t8", { assigneeAgentId: "eng" }), t9: task("t9", { assigneeAgentId: "eng" }), ta: task("ta") },
     records: [
-      ...[1, 2, 3].map((h) => rej("t1", "acme/app|feat-a", ago(h))), // a loop
-      ...[1, 2].map((h) => rej("t2", "acme/app|feat-a", ago(h))), rej("t2", "acme/app|feat-b", ago(1)), rej("t2", "acme/app|feat-a", ago(1), false), // 2 + 1 + stale_head: none reaches 3
-      ...[1, 2, 3].map((h) => rej("t3", "acme/app|x", ago(h))), ...[1, 2, 3].map((h) => rej("t4", "acme/app|x", ago(h))),
-      ...[7, 8, 9].map((h) => rej("t2", "acme/app|old", ago(h))), // older than the window
+      ...parked("t1", "acme/app|feat-a"), // parked 7h ago, nothing since
+      ...[7, 8].map((h) => rej("t2", "acme/app|feat-a", ago(h))), rej("t2", "acme/app|feat-b", ago(7)), rej("t2", "acme/app|feat-a", ago(7), false), // 2 + 1 + stale_head: none reaches 3
+      ...parked("t3", "acme/app|x"), ...parked("t4", "acme/app|x"),
+      ...parked("t5", "acme/app|y"), filed("t5", "acme/app|y", "rejected"), filed("t5", "acme/app|z", "done"), // refused as parked; approved elsewhere
+      ...parked("t6", "acme/app|y"), // closed
+      ...[1, 2, 3].map((h) => rej("t7", "acme/app|y", ago(h))), // parked only an hour ago: its delegator has it
+      ...parked("t8", "acme/app|y"), // re-briefed by its delegator
+      ...parked("t9", "acme/app|y"), // its own agent's notes and the kernel's notices only
+      ...parked("ta", "acme/app|y"), filed("ta", "acme/app|y", "done"), // the owner approved it since
     ],
+    comments: {
+      t8: [{ authorType: "agent", authorAgentId: "maintainer", body: "Re-briefed: drop the shim.", createdAt: ago(2) }],
+      t9: [{ authorType: "agent", authorAgentId: "eng", body: "Stopped: parked.", createdAt: ago(2) }, { authorType: "user", body: "**Not reviewed** <!-- aidenhq-kernel-notice:x -->", createdAt: ago(2) }],
+    },
   });
   const found = await detect(w).loop();
-  assert.deepEqual(found.map((i) => i.key), ["t1:acme-app-feat-a", "t4:acme-app-x"]);
-  assert.match(found[0].reason, /WOR-T1: the AI reviewer rejected acme-app-feat-a 3 times/);
+  assert.deepEqual(found.map((i) => i.key), ["t1:acme-app-feat-a", "t4:acme-app-x", "t5:acme-app-y", "t9:acme-app-y"]);
+  assert.match(found[0].reason, /WOR-T1: the AI reviewer rejected acme-app-feat-a 3 times \(parked at 3\) and nothing has moved for 420 min/);
+});
+
+test("a task waiting on the owner's answer over a day, or its delegator's over 6 hours, is raised", async () => {
+  const items = [
+    { task: "a", identifier: "WOR-A", reason: "owner_wait", reason_since: minsAgo(25 * 60) },
+    { task: "b", identifier: "WOR-B", reason: "owner_wait", reason_since: minsAgo(20 * 60) },
+    { task: "c", identifier: "WOR-C", reason: "delegator_wait", reason_since: minsAgo(7 * 60) },
+    { task: "d", identifier: "WOR-D", reason: "agent_wait", reason_since: minsAgo(50 * 60) },
+  ];
+  const c = checks({ kernel: { read: async () => ({}), call: async () => ({ items }) }, apps: async () => [], alerts: async () => [], openKeys: () => [], now: () => NOW });
+  const found = await c.judgement();
+  assert.deepEqual(found.map((i) => i.key), ["a", "c"]);
+  assert.match(found[0].reason, /WOR-A has waited 1500 min on its owner's answer/);
 });
 
 test("a failed task lookup still raises the incident with the raw id, and is not remembered: the next run reads it again", async () => {
-  const records = [1, 2, 3].map((h) => ({ task: "t9", identifier: null, judged: true, targets: ["acme/app|b"], decided_at: ago(h) }));
+  const records = [7, 8, 9].map((h) => ({ task: "t9", identifier: null, judged: true, targets: ["acme/app|b"], decided_at: ago(h) }));
   let down = true;
   const w = { read: async () => { if (down) throw new Error("control plane down"); return task("t9", { identifier: "BAK-9" }); }, call: async () => ({ records }) };
   const c = detect(w);
@@ -180,12 +204,14 @@ test("an orphaned item over 2h trips the stuck rule; a slower stage only logs in
     { task: "f", identifier: "WOR-F", since: minsAgo(9000), reason: "orphaned" }, // unassigned todo log
     { task: "g", identifier: "WOR-G", since: minsAgo(300), reason: "orphaned" }, // its read fails: stays flagged
     { task: "h", identifier: "WOR-H", since: minsAgo(300), reason: "orphaned" }, // owner-assigned todo: not an agent's stuck work
+    { task: "i", identifier: "WOR-I", since: minsAgo(60), reason: "orphaned", idle_wakes: 3 }, // the idle sweep gave up: critical now
   ];
   const tasks = {
     a: { id: "a", identifier: "WOR-A", status: "todo", assigneeAgentId: "ag1", updatedAt: minsAgo(180) },
     e: { id: "e", identifier: "WOR-E", status: "backlog", updatedAt: minsAgo(9000) },
     f: { id: "f", identifier: "WOR-F", status: "todo", updatedAt: minsAgo(9000) },
     h: { id: "h", identifier: "WOR-H", status: "todo", assigneeUserId: "u1", assigneeAgentId: null, updatedAt: minsAgo(300) },
+    i: { id: "i", identifier: "WOR-I", status: "todo", assigneeAgentId: "ag1", updatedAt: minsAgo(60) },
   };
   const stage = (p) => ({ name: "review", n: 12, work_p75: p, wait_p75: 0, work_p50: p / 2, waits: {} });
   const logged = [];
@@ -199,7 +225,7 @@ test("an orphaned item over 2h trips the stuck rule; a slower stage only logs in
     call: async (_m, p) => (p.startsWith("/v1/flow?idle=1") ? { items: idle } : { stages: [stage(p.endsWith(`to=${lastWeek}`) ? 100 : 200)] }),
   };
   const c = checks({ kernel, apps: async () => [], alerts: async () => [], openKeys: () => [], now: () => NOW, log: (m, f) => logged.push([m, f]) });
-  assert.deepEqual((await c.stuck()).map((i) => i.key), ["a", "g"]);
+  assert.deepEqual((await c.stuck()).map((i) => [i.key, Boolean(i.critical)]), [["a", false], ["g", false], ["i:idle-capped", true]]);
   assert.deepEqual(await c.flow(), [], "observe mode files nothing");
   assert.deepEqual(logged, [["flow.would_file", { stage: "review" }]]);
 });
@@ -217,7 +243,7 @@ test("the same failure on 3 tasks in 30 minutes is one component incident and on
   w.read = ((read) => async (p) => (p === "/api/issues/z" ? task("z") : read(p)))(w.read);
   const sent = [];
   const kv = kvOf();
-  const all = checks({ kernel: w, apps: async () => [], alerts: async () => [], openKeys: () => Object.keys(detectorState(kv).open), notify: async (text, key) => void sent.push([text, key]), gradeFailures: async () => failures, now: () => NOW });
+  const all = checks({ kernel: w, kv, apps: async () => [], alerts: async () => [], openKeys: () => Object.keys(detectorState(kv).open), notify: async (text, key) => void sent.push([text, key]), gradeFailures: async () => failures, now: () => NOW });
   const filed = [];
   await tick(kv, { component: all.component, grade: all.grade, run: all.run }, async (b) => (filed.push(b.incidents), true), async () => {}, new Date(NOW), 0);
   const open = Object.keys(detectorState(kv).open);
@@ -229,7 +255,7 @@ test("the same failure on 3 tasks in 30 minutes is one component incident and on
   await tick(kv, { component: all.component }, async () => true, async () => {}, new Date(NOW), 0);
   assert.equal(sent.length, 1, "told once while it stays open");
   // The notes age out of the window: recovered.
-  const later = checks({ kernel: w, apps: async () => [], alerts: async () => [], openKeys: () => Object.keys(detectorState(kv).open), notify: async () => {}, gradeFailures: async () => failures, now: () => NOW + 40 * 60_000 });
+  const later = checks({ kernel: w, kv, apps: async () => [], alerts: async () => [], openKeys: () => Object.keys(detectorState(kv).open), notify: async () => {}, gradeFailures: async () => failures, now: () => NOW + 40 * 60_000 });
   await tick(kv, { component: later.component }, async () => true, async () => {}, new Date(NOW + 40 * 60_000), 0);
   assert.deepEqual(Object.keys(detectorState(kv).open).filter((k) => k.startsWith("component:")), []);
   assert.equal(detectorState(kv).recovered.length, 1);
@@ -353,11 +379,109 @@ test("dispatch stalled: queued wakes with no job started for 15 minutes tell the
   const run = async (oldest, started) => {
     const sent = [];
     const kernel = { call: async () => ({ waiting: { count: 3, oldest_at: minsAgo(oldest), oldest_cause: "routine:daily-brief" }, last_started_at: minsAgo(started) }) };
-    const c = checks({ kernel, apps: async () => [], alerts: async () => [], openKeys: () => [], notify: async (text) => void sent.push(text), gradeFailures: async () => [], now: () => NOW });
+    const c = checks({ kernel, kv: kvOf(), apps: async () => [], alerts: async () => [], openKeys: () => [], notify: async (text) => void sent.push(text), gradeFailures: async () => [], now: () => NOW });
     return { found: await c.dispatch(), sent };
   };
   const stalled = await run(20, 20);
   assert.deepEqual(stalled.found.map((i) => [i.key, i.critical]), [["stalled", true]]);
   assert.deepEqual(stalled.sent, ["No agent work has started for 20 min while 3 wakes wait (oldest: routine-daily-brief)."]);
   assert.deepEqual((await run(20, 2)).found, []);
+});
+
+test("a routine whose last 3 jobs failed is paused once and the owner told; it stays flagged while paused, a resume starts a fresh count, and fleet-wide failures pause nothing", async () => {
+  const job = (id, agent, state, m, routine = "r1", final = "") => ({ id, agent, task: id, routine, state, ended_at: minsAgo(m), final });
+  const world = (jobs, status) => {
+    const paused = [], sent = [], kv = kvOf();
+    const kernel = {
+      read: async (p) => (p === "/api/companies" ? [{ id: "co" }] : p.endsWith("/agents") ? [{ id: "a1", name: "a1" }, { id: "a2", name: "a2" }] : p.endsWith("/routines") ? [{ id: "r1", title: "Daily brief", status: status.v }] : []),
+      call: async (_m, p) => (p.startsWith("/v1/work?agent=a1") ? { jobs: jobs.a1 ?? [] } : p.startsWith("/v1/work?agent=a2") ? { jobs: jobs.a2 ?? [] } : { final: jobs.finals?.[decodeURIComponent(p.split("=")[1])] ?? "" }),
+    };
+    const c = checks({ kernel, kv, pause: async (r) => { paused.push(r); status.v = "paused"; }, apps: async () => [], alerts: async () => [], openKeys: () => [], notify: async (text, key) => void sent.push([text, key]), gradeFailures: async () => [], now: () => NOW });
+    return { c, paused, sent, kv };
+  };
+  const bad = [job("j1", "a1", "failed", 30), job("j2", "a1", "timeout", 20), job("j3", "a1", "failed", 10)];
+  const status = { v: "active" };
+  const w = world({ a1: [...bad, job("j0", "a1", "done", 50)], a2: [job("k1", "a2", "done", 5, null)] }, status);
+  assert.deepEqual((await w.c.routine()).map((i) => i.key), ["r1"]);
+  assert.deepEqual([w.paused, w.sent], [["r1"], [["Routine paused: Daily brief failed 3 runs in a row. Ask Aiden to resume it once it's fixed.", "routine-paused:r1"]]]);
+  assert.match((await w.c.routine())[0].reason, /paused after repeated failures/);
+  assert.equal(w.paused.length, 1, "paused once");
+  status.v = "active"; // resumed: only newer failures count
+  assert.deepEqual(await w.c.routine(), []);
+  // Fleet-wide: every agent failing, or a credits refusal, pauses nothing (the routine stays flagged).
+  const every = world({ a1: bad, a2: [job("k1", "a2", "failed", 5, null)] }, { v: "active" });
+  assert.equal((await every.c.routine()).length, 1);
+  const credits = world({ a1: bad, a2: [job("k2", "a2", "done", 5, null)], finals: { j3: "The job failed: OpenRouter 402 insufficient credits" } }, { v: "active" });
+  assert.equal((await credits.c.routine()).length, 1);
+  assert.deepEqual([every.paused, credits.paused], [[], []]);
+});
+
+test("missed fires: an active routine whose next schedule fire is over 15 minutes overdue is raised; a paused one, a future fire and a recent one are not", async () => {
+  const r = (id, status, nextRunAt) => ({ id, title: id, status, triggers: [{ kind: "schedule", enabled: true, label: "daily", nextRunAt }] });
+  const kernel = { read: async (p) => (p === "/api/companies" ? [{ id: "co" }] : [r("late", "active", minsAgo(20)), r("paused", "paused", minsAgo(60)), r("soon", "active", minsAgo(5)), r("future", "active", new Date(NOW + 3_600_000).toISOString())]) };
+  const c = checks({ kernel, kv: kvOf(), pause: async () => {}, apps: async () => [], alerts: async () => [], openKeys: () => [], now: () => NOW });
+  const found = await c.missed();
+  assert.deepEqual(found.map((i) => i.key), ["late:daily"]);
+  assert.match(found[0].reason, /fire due 20 min ago, no run started/);
+});
+
+test("owner notices are marked told only once sent: a failed critical alert, stall or unreachable notice is tried again; recoveries are trimmed only once filed", async () => {
+  // A critical alert whose notice failed is told by the next webhook.
+  const kv = kvOf(), told = [];
+  const alert = parseAlerts({ alerts: [{ status: "firing", fingerprint: "ab", labels: { alertname: "CoreServiceDown", severity: "critical" }, annotations: {} }] });
+  await receiveAlerts(kv, alert, async () => { throw new Error("kernel down"); });
+  await receiveAlerts(kv, alert, async (t) => void told.push(t));
+  await receiveAlerts(kv, alert, async (t) => void told.push(t));
+  assert.equal(told.length, 1);
+  // A dispatch stall whose notice failed is told on the next check, then once.
+  const k2 = kvOf(), sent = [];
+  let fail = true;
+  const kernel = { call: async () => ({ waiting: { count: 1, oldest_at: minsAgo(20), oldest_cause: "x" }, last_started_at: minsAgo(20) }) };
+  const c = checks({ kernel, kv: k2, apps: async () => [], alerts: async () => [], openKeys: () => ["dispatch:stalled"], notify: async (t) => { if (fail) throw new Error("503"); sent.push(t); }, gradeFailures: async () => [], now: () => NOW });
+  await c.dispatch();
+  fail = false;
+  await c.dispatch();
+  await c.dispatch();
+  assert.equal(sent.length, 1);
+  // The unreachable-Steward notice, and unfiled recoveries beyond 20 are kept.
+  const k3 = kvOf(), msgs = [];
+  const old = new Date(NOW - 2 * 86_400_000).toISOString();
+  k3.set("detector", JSON.stringify({ open: { "x:y": { reason: "r", at: old, fired: false } }, recovered: Array.from({ length: 25 }, (_, n) => ({ key: `r${n}`, reason: "", at: old, fired: false })) }));
+  const down = async () => { throw new Error("503"); };
+  await tick(k3, {}, async () => false, down, new Date(NOW));
+  assert.equal(detectorState(k3).open["x:y"].told, undefined);
+  assert.equal(detectorState(k3).recovered.length, 25);
+  await tick(k3, {}, async () => false, async (t) => void msgs.push(t), new Date(NOW));
+  await tick(k3, {}, async () => false, async (t) => void msgs.push(t), new Date(NOW));
+  assert.equal(msgs.length, 1);
+});
+
+test("the Later detectors: an unstarted delegation, a merge or blocker deadlock, ping-pong, duplicates and a Tier 2 card over 24h fire; healthy state is quiet", async () => {
+  const mk = (tasks, o = {}) => {
+    const w = world({ tasks, ...o });
+    const call = w.call;
+    w.call = async (m, p) => (p.startsWith("/v1/flow?idle=1") ? { items: o.idle ?? [] } : p.startsWith("/v1/work?since=") && o.cards ? { records: o.cards, usage: [] } : call(m, p));
+    return detect(w);
+  };
+  const delegated = (id, o = {}) => task(id, { parentId: "p", assigneeAgentId: "a1", createdAt: ago(3), ...o });
+  const stale = mk({ a: delegated("a"), b: delegated("b", { createdAt: minsAgo(10) }), c: delegated("c", { parentId: null }) }, { todo: ["a", "b", "c"], work: { b: { busy: false, jobs: [] } } });
+  assert.deepEqual((await stale.unstarted()).map((i) => i.key), ["a"]);
+  assert.deepEqual(await mk({ a: delegated("a") }, { todo: ["a"], work: { a: { busy: false, jobs: [{ id: "j" }] } } }).unstarted(), []);
+
+  const idle = (task, reason, h, o = {}) => ({ task, identifier: `WOR-${task.toUpperCase()}`, since: ago(h), reason_since: ago(h), reason, ...o });
+  const jammed = await mk({}, { idle: [idle("m", "checks", 7), idle("n", "checks", 1), idle("x", "blocked", 2, { blocked_on: "WOR-Y" }), idle("y", "blocked", 2, { blocked_on: "WOR-X" }), idle("z", "blocked", 2, { blocked_on: "WOR-M" })] }).deadlock();
+  assert.deepEqual(jammed.map((i) => i.key), ["m", "wor-x-wor-y"]);
+  assert.deepEqual(await mk({}, { idle: [idle("n", "checks", 1), idle("z", "blocked", 2, { blocked_on: "WOR-N" })] }).deadlock(), []);
+
+  const run = (id, agent, m) => ({ id, agent, task: "t", state: "done", started_at: minsAgo(m), ended_at: minsAgo(m - 1) });
+  const bounced = [["j1", "a1", 50], ["j2", "a2", 40], ["j3", "a1", 30], ["j4", "a2", 20], ["j5", "a1", 10]].map((r) => run(...r));
+  assert.deepEqual((await mk({ t: task("t") }, { jobs: { a1: bounced, a2: [] } }).pingpong()).map((i) => i.key), ["wor-t"]);
+  assert.deepEqual(await mk({ t: task("t") }, { jobs: { a1: [run("j1", "a1", 50), run("j2", "a1", 40), run("j3", "a1", 30), run("j4", "a1", 20), run("j5", "a1", 10)] } }).pingpong(), []);
+
+  const open = (id, title, o = {}) => task(id, { title, assigneeAgentId: "a1", ...o });
+  assert.equal((await mk({ a: open("a", "Fix the login redirect"), b: open("b", "fix the login redirect!"), c: open("c", "Fix the login redirect", { assigneeAgentId: "a2" }) }, { todo: ["a", "b", "c"] }).duplicate()).length, 1);
+  assert.deepEqual(await mk({ a: open("a", "Fix the login redirect"), b: open("b", "Fix the logout redirect") }, { todo: ["a", "b"] }).duplicate(), []);
+
+  const card = (id, state, h) => ({ id, kind: "github.merge", state, tier: 2, task: "t", identifier: "WOR-1", created_at: ago(h) });
+  assert.deepEqual((await mk({}, { cards: [card("c1", "owner", 30), card("c2", "owner", 2), card("c3", "approved", 30)] }).card()).map((i) => i.key), ["c1"]);
 });

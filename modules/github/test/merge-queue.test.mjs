@@ -10,6 +10,8 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createService } from "../service/src/service.ts";
+import { createMerges } from "../service/src/merges.ts";
+import { decide } from "../service/src/merge-gate.mjs";
 
 const listen = (handler) => new Promise((ok) => { const s = createServer(handler); s.listen(0, "127.0.0.1", () => ok({ s, url: `http://127.0.0.1:${s.address().port}` })); });
 const HEAD = "a".repeat(40);
@@ -51,11 +53,14 @@ function fakeGitHub(prs) {
 
 async function setup(t, { prs, cacheDir = mkdtempSync(join(tmpdir(), "codehost-merges-")), clock = { t: Date.now() }, checks, remoteUrl = (slug) => join(cacheDir, "no-such-remote", slug) }) {
   const outcomes = [];
+  const taken = new Set();
   const kernel = await listen(async (req, res) => {
     let body = "";
     for await (const c of req) body += c;
     const m = /^\/v1\/writes\/([^/]+)\/outcome$/.exec(req.url);
-    if (m) { outcomes.push({ id: m[1], ...JSON.parse(body) }); return res.writeHead(200).end("{}"); }
+    // The kernel takes a record's first outcome and answers 409 to a repeat (the executor and the queue both post it).
+    if (m && taken.has(m[1])) return res.writeHead(409).end("{}");
+    if (m) { taken.add(m[1]); outcomes.push({ id: m[1], ...JSON.parse(body) }); return res.writeHead(200).end("{}"); }
     const reply = checks?.(req.method, req.url, body ? JSON.parse(body) : undefined);
     if (reply) return res.writeHead(200).end(JSON.stringify(reply));
     res.writeHead(404).end("{}");
@@ -280,4 +285,51 @@ test("a merge-queue wait and its end become waiting and resumed facts with the r
   assert.deepEqual([resumed.version, resumed.data], [waiting.version, { reason: "checks" }], "the end pairs with its wait by version");
   assert.deepEqual(facts.filter((f) => f.type === "pr.merged").map((f) => [f.task, f.data.head]), [["WOR-9", HEAD]]);
   assert.deepEqual(facts.filter((f) => f.type === "pr.checks_completed").map((f) => [f.subject, f.data.conclusion]), [[`pr:acme-agents/widget#1@${HEAD}`, "success"]]);
+});
+
+test("a merge call that times out after GitHub merged is reported merged, and an outcome the kernel didn't take is delivered again", async () => {
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS" } };
+  const github = fakeGitHub(prs);
+  let timeouts = 1;
+  const gh = async (m, p, tok, b) => {
+    const r = await github.gh(m, p, tok, b);
+    const pull = r.body?.data?.repository?.pullRequest;
+    if (pull?.state === "MERGED") pull.mergeCommit = { oid: "c".repeat(40) };
+    if (m === "PUT" && timeouts-- > 0) throw new Error("The operation was aborted due to timeout");
+    return r;
+  };
+  const reports = [];
+  let refuse = 1;
+  const merges = createMerges({
+    dir: mkdtempSync(join(tmpdir(), "merges-")), token: async (repo, perms) => JSON.stringify(perms), gh, agentsOrg: "acme-agents",
+    evalGate: async () => undefined, report: async (id, o) => { reports.push({ id, ...o }); if (refuse-- > 0) throw new Error("the kernel answered 503"); },
+  });
+  void merges.enqueue("k-00000000000000e1", { prs: [{ repo: "acme-agents/widget", number: 1, head: HEAD }] });
+  await merges.step(); // the PUT times out, though GitHub merged
+  assert.equal(merges.status("k-00000000000000e1").state, "running", "an unanswered merge call is no refusal");
+  await merges.step(); // the re-poll sees it merged at its head
+  const tick = () => new Promise((r) => setTimeout(r, 20));
+  await tick();
+  assert.equal(merges.status("k-00000000000000e1").state, "done");
+  assert.match(reports[0].text, /^merged-prs: \[\{"repo":"acme-agents\/widget","number":1/, "listed as merged by this queue");
+  await merges.step(); // the kernel refused the first delivery: delivered again
+  await tick();
+  assert.equal(reports.length, 2);
+  await merges.step();
+  await tick();
+  assert.equal(reports.length, 2, "taken: not delivered a third time");
+});
+
+test("a red default branch takes no merge on top, except the PR that already holds its tip; running base CI is waited for", () => {
+  const data = (base, behindBy) => ({ repository: { defaultBranchRef: { name: "main" }, pullRequest: {
+    number: 1, state: "OPEN", isDraft: false, baseRefName: "main", headRefOid: HEAD, mergeStateStatus: "CLEAN", latestOpinionatedReviews: { nodes: [] },
+    files: { pageInfo: { hasNextPage: false }, nodes: [{ path: "lib/x.mjs" }] }, commits: { nodes: [{ commit: { statusCheckRollup: rollup("SUCCESS") } }] },
+    baseRef: { compare: { behindBy }, target: { oid: "b".repeat(40), statusCheckRollup: base } },
+  } } });
+  assert.deepEqual(decide(data(rollup("FAILURE"), 2), HEAD, { uiReview: false }), { do: "wait", why: "`main` is red at `bbbbbbbbbbbb`: merged once it is green again" });
+  assert.deepEqual(decide(data(rollup("FAILURE"), 0), HEAD, { uiReview: false }), { do: "merge" }, "the fix for a red base lands");
+  assert.equal(decide(data(rollup("PENDING"), 2), HEAD, { uiReview: false }).do, "wait");
+  assert.deepEqual(decide(data(rollup("CANCELLED", { names: ["build", "ci-required"] }), 2), HEAD, { uiReview: false }), { do: "merge" }, "a cancelled run never judged the base");
+  assert.deepEqual(decide(data(rollup("SUCCESS"), 2), HEAD, { uiReview: false }), { do: "merge" });
+  assert.deepEqual(decide(data(rollup("SUCCESS", { names: [] }), 2), HEAD, { uiReview: false }), { do: "merge" }, "a base whose CI runs on PRs only");
 });

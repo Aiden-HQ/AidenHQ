@@ -3,7 +3,7 @@
 // with the owner's client, assigned to the agent holding the role the module names (grants `roles`: never an agent's key) or
 // to an agent by id (the asker of a task, which the module read from the task),
 // marked as the module's (`<!-- aidenhq-module:<module> -->`, which the dispatch module reads as a module's request, not the
-// owner's) and keyed by the module's `source` (`<!-- source:<source> -->`, Paperclip idempotency key pw-<sha256>): filing the
+// owner's; `quiet`: filed in the backlog, a holder for records that wakes nobody) and keyed by the module's `source` (`<!-- source:<source> -->`, Paperclip idempotency key pw-<sha256>): filing the
 // same source twice is one task. Its assignment wakes the agent (wakes.ts): no comment is needed to start it. The module
 // closes its own tasks (POST /v1/tasks/:task/close) when their work is moot, and lists them by source (GET /v1/tasks?source=)
 // so a sweep with no id in hand finds the ones it filed. Both read the module marker generically: a task is this module's
@@ -11,15 +11,16 @@
 import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { neutral, type Api } from "./channels.ts";
+import type { PluginPost } from "./outcomes.ts";
 import { agentPaused } from "../sdk/src/agent-paused.ts";
 
 /** The marker of a task a module filed (dispatch thread.ts reads it). */
 export const MODULE_TASK = (module: string) => `<!-- aidenhq-module:${module} -->`;
 const SOURCE = /^[\w.:/@#-]{1,200}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-/** The only source family a module lists, and the one the release train's sweep owns (a runner-era bump too: an ms stamp). */
+/** The only source family a module lists, and the one the release train's sweep owns: a release's commit. */
 export const RELEASE_SOURCE = "release:instance:";
-const RELEASE_MARK = /<!--\s*source:(release:instance:(?:[0-9a-f]{40}|\d+))\s*-->/;
+const RELEASE_MARK = /<!--\s*source:(release:instance:[0-9a-f]{40})\s*-->/;
 /** Any source marker, whatever its family (modtasks.ts `file()` writes one; a task may carry text like anyone's). */
 const SOURCE_TAG = /<!--\s*source:(\S+)\s*-->/g;
 /** Every module marker on a description (`file()` writes one; a task's text may hold more, from anyone). */
@@ -52,12 +53,14 @@ export class TaskError extends Error {
   constructor(status: number, message: string) { super(message); this.status = status; }
 }
 
-export function createModuleTasks({ db, owner, agents, rubric, log = () => {} }: {
+export function createModuleTasks({ db, owner, agents, plugin, rubric, log = () => {} }: {
   /** The kernel's database: which tasks were filed graded, by which module (the finish check holds one with no grade row). */
   db: DatabaseSync;
   owner: Api;
   /** The grants table's agents, by Paperclip id. */
   agents: () => Record<string, { roles?: string[] } | undefined>;
+  /** The kernel's post action, as a card's agent (outcomes.ts): skips the control plane's reopen, so a closed card stays closed. */
+  plugin: () => PluginPost;
   /** Files the grading rubric of a task the module filed (checks.ts rubric), as that module. */
   rubric?: (task: { id: string; identifier?: string }, module: string, b: { rubric: string[]; deliverable: unknown }) => Promise<void>;
   log?: (msg: string, f?: Record<string, unknown>) => void;
@@ -78,6 +81,27 @@ export function createModuleTasks({ db, owner, agents, rubric, log = () => {} }:
     if (u.status >= 300) throw new TaskError(502, `the control plane answered ${u.status}`);
     log("module task closed", { module, task: r.json.identifier, status: b.status });
     return { status: String(b.status), already: false };
+  }
+
+  /**
+   * A comment on a task this module filed (its marker, and no agent made it), as the card's own agent through the kernel's post
+   * path: it carries the kernel's tag (SELF_TAG: it wakes nobody) and skips the control plane's reopen, so a card its delegator
+   * closed stays closed. A card keeps its first words and takes each later reason here while it is open, so one card stays the
+   * record of one escalation.
+   */
+  async function comment(module: string, id: string, b: { body?: unknown }) {
+    const body = typeof b.body === "string" ? neutral(b.body).trim().slice(0, 2000) : "";
+    if (!UUID.test(id) || !body) throw new TaskError(400, "send {body}");
+    const r = await owner("GET", `/api/issues/${encodeURIComponent(id)}`);
+    if (r.status !== 200) throw new TaskError(404, `no task ${id}`);
+    if (r.json.createdByAgentId || !ownTask(module, String(r.json.description ?? ""))) throw new TaskError(403, `${r.json.identifier ?? id} isn't a task ${module} filed`);
+    if (["done", "cancelled"].includes(String(r.json.status))) return { comment: "", already: true };
+    const agent = String(r.json.assigneeAgentId ?? "");
+    if (!UUID.test(agent)) throw new TaskError(409, `${r.json.identifier ?? id} isn't assigned to an agent`);
+    const posted = await plugin().post(agent, { issueId: id, body, scope: "own", tag: `<!-- aidenhq:job=${id} kind=comment -->` });
+    if (posted.status >= 300 || posted.data?.refused || !posted.data?.comment) throw new TaskError(502, `the control plane refused the comment: ${posted.data?.refused ?? posted.status}`);
+    log("module task commented", { module, task: r.json.identifier });
+    return { comment: String(posted.data.comment) };
   }
 
   /**
@@ -105,11 +129,12 @@ export function createModuleTasks({ db, owner, agents, rubric, log = () => {} }:
     return { tasks: tasks.filter((t) => t.id) };
   }
 
-  async function file(module: string, b: { title?: unknown; description?: unknown; role?: unknown; agent?: unknown; source?: unknown; parent?: unknown; deliverable?: unknown; rubric?: unknown }) {
+  async function file(module: string, b: { title?: unknown; description?: unknown; role?: unknown; agent?: unknown; source?: unknown; parent?: unknown; deliverable?: unknown; rubric?: unknown; quiet?: unknown }) {
     const title = typeof b.title === "string" ? neutral(b.title).trim().slice(0, 200) : "";
     const description = typeof b.description === "string" ? neutral(b.description).trim().slice(0, 20_000) : "";
     const by = typeof b.role === "string" ? "role" : typeof b.agent === "string" ? "agent" : "";
-    if (!title || !description || !by || (b.role !== undefined && b.agent !== undefined) || typeof b.source !== "string" || !SOURCE.test(b.source)) throw new TaskError(400, "send {title, description, role | agent, source, parent?, deliverable?, rubric?}");
+    if (!title || !description || !by || (b.role !== undefined && b.agent !== undefined) || typeof b.source !== "string" || !SOURCE.test(b.source)) throw new TaskError(400, "send {title, description, role | agent, source, parent?, deliverable?, rubric?, quiet?}");
+    if (b.quiet !== undefined && typeof b.quiet !== "boolean") throw new TaskError(400, "quiet is true or false");
     // A rubric is graded against its deliverable: both or neither (grading checks their contents).
     const graded = b.deliverable !== undefined || b.rubric !== undefined;
     if (graded && !(b.deliverable && typeof b.deliverable === "object" && Array.isArray(b.rubric) && b.rubric.every((c) => typeof c === "string"))) throw new TaskError(400, "deliverable {kind, ref} and rubric [criteria] go together");
@@ -123,7 +148,7 @@ export function createModuleTasks({ db, owner, agents, rubric, log = () => {} }:
     if (a.status !== 200 || !a.json?.companyId) throw new TaskError(502, `the control plane answered ${a.status} for the agent`);
     if (agentPaused(a.json)) throw new TaskError(409, `${role || "the"} agent ${agent} is paused`);
     const r = await owner("POST", `/api/companies/${encodeURIComponent(String(a.json.companyId))}/issues`, {
-      title, description: `${description}\n\n<!-- source:${b.source} -->\n${MODULE_TASK(module)}`, status: "todo", priority: "medium",
+      title, description: `${description}\n\n<!-- source:${b.source} -->\n${MODULE_TASK(module)}`, status: b.quiet ? "backlog" : "todo", priority: "medium",
       assigneeAgentId: agent, assigneeUserId: null, allowDuplicate: true, ...(b.parent ? { parentId: b.parent } : {}),
       // A graded task's key names its module, so another module's source can never hit it (and its rubric is never attached to it).
       idempotencyKey: `pw-${createHash("sha256").update(graded ? `${module}\0${b.source}` : b.source).digest("hex").slice(0, 32)}`,
@@ -140,6 +165,6 @@ export function createModuleTasks({ db, owner, agents, rubric, log = () => {} }:
     log("module task filed", { module, task: r.json.identifier, agent, source: b.source, deduplicated: Boolean(r.json.deduplicated) });
     return { id: String(r.json.id), identifier: String(r.json.identifier ?? ""), agent, deduplicated: Boolean(r.json.deduplicated) };
   }
-  return { file, close, list };
+  return { file, close, comment, list };
 }
 export type ModuleTasks = ReturnType<typeof createModuleTasks>;

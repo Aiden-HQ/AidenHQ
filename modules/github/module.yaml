@@ -1,8 +1,9 @@
 name: github
 description: "GitHub in two parts. Basic: sign in with a code at github.com, and agents read your issues, pull requests and code (GitHub's own MCP server and AidenHQ's GitHub tools). Advanced: your own GitHub App makes GitHub the code host: task workspaces and cache clones, repo-narrowed App tokens minted per write, push, PR, merge at the reviewed head once green, create_repo, land, and the git rules that tier those writes."
 license: MIT
-# It absorbed the codehost-github module (connections-simple §1): an instance listing codehost-github runs this one.
-replaces: [ codehost-github ]
+# It absorbed the codehost-github module (connections-simple §1): an instance listing codehost-github runs this one. `runner` is the
+# code host's name before modules existed: records filed as runner.<action> read as github.<action> (kernel/src/kind-rename.ts).
+replaces: [ codehost-github, runner ]
 requires:
   - warehouse # its source schema lives in the shared warehouse
   - board # its sign-in and setup flow
@@ -107,6 +108,11 @@ settings:
   # creates repos there at Tier 0 (the App must be installed on the org, else it fails loudly; a stranger's install of the public App changes nothing).
   github_orgs:
     default: []
+  # The GitHub orgs owner-identity writes (comments, reviews) may reach; github-mcp refuses a write anywhere else.
+  github_comment_orgs:
+    default: []
+    # An org added by an agent's change is the owner's to approve (it widens where writes as the owner may land).
+    owner: [ { path: "*", new: true } ]
 connections:
   github:
     setup: "Open its setup on the board (#/setup/github) and press Connect GitHub. The App's reads and writes need the GitHub App (the same page's advanced part)."
@@ -116,7 +122,7 @@ connections:
     tools:
       # github_app_issue_status: a status lookup of product-bug issues (number, state, fixing commit; no issue text), so a
       # read: tagged destructive it filed a Tier 2 owner card on every check.
-      read: [ github_whoami, github_project_read, github_issue_read, github_search_issues, github_job_log, github_pr_files, github_app_issue_status, github_app_issue_list, github_app_label_events, github_app_repo_tree, github_app_repo_file ]
+      read: [ github_whoami, github_project_read, github_issue_read, github_search_issues, github_job_log, github_pr_files, github_pr_threads, github_app_issue_status, github_app_issue_list, github_app_label_events, github_app_repo_tree, github_app_repo_file ]
       # commit_status_set: the design-review check on agents-org PRs, as the GitHub App; it also needs the design-review role.
       write: [ commit_status_set ]
       # github_app_issue: product bugs on settings.product_repo only, as the GitHub App, and only for the product-issues role
@@ -127,11 +133,12 @@ connections:
       # reason: no shorthand grants them, and the Maintainer names them when it graduates.
       # The Maintainer's App reads (github_app_issue_list, github_app_label_events, github_app_repo_tree,
       # github_app_repo_file) are reads tagged `named`: `read` would hand them to every agent with `github: read`, so only a
-      # grant that names one reaches it. The Maintainer's module names them when it graduates.
-      named: [ github_app_issue_list, github_app_label_events, github_app_repo_tree, github_app_repo_file ]
+      # grant that names one reaches it. The Maintainer's module names them when it graduates. github_pr_threads (a pull request's review
+      # threads, replies included: code review's reads) is named the same way, and its resolving twin github_pr_thread_resolve is destructive.
+      named: [ github_app_issue_list, github_app_label_events, github_app_repo_tree, github_app_repo_file, github_pr_threads ]
       # The writes with the owner's token (a comment, an issue, its state, a review, a failed job's re-run) post as the owner:
       # destructive, so only a grant naming one reaches it and every call is a record the AI reviewer decides first (floor 1).
-      destructive: [ github_issue_comment, github_issue_create, github_issue_update, github_pr_review, github_rerun_failed, github_app_issue, github_app_issue_comment, github_app_issue_label, github_app_issue_state ]
+      destructive: [ github_issue_comment, github_issue_create, github_issue_update, github_pr_review, github_pr_thread_resolve, github_rerun_failed, github_app_issue, github_app_issue_comment, github_app_issue_label, github_app_issue_state ]
     # Granted only while the upstream setting allows issues.
     upstream: [ github_app_issue, github_app_issue_status ]
   # GitHub's own MCP server (its default toolsets), passed through whole as the signed-in owner (src/vendor/proxy.ts). Reads are
@@ -152,17 +159,20 @@ connections:
                      add_reply_to_pull_request_comment, request_copilot_review ]
 # The App tokens github-mcp asks the kernel for (POST /v1/codehost/token, owner authority): read-only on any repo or org the
 # App covers (issues, pull requests, checks, Actions, contents for the Maintainer's file reads, org Projects boards and search),
-# plus the two writes it makes as the App: issues (product bugs on settings.product_repo, the Maintainer's comments, labels and
-# states on settings.maintainer_repos) and commit statuses (the design-review check, in the agents org only). github-mcp
+# plus the writes it makes as the App: issues (product bugs on settings.product_repo, the Maintainer's comments, labels and
+# states on settings.maintainer_repos), commit statuses (the design-review check, in the agents org only) and code review's posting
+# (src/review-post.ts: a comment review with line comments, its `aidenhq/review` status, the acknowledgement comment and Aiden's own
+# threads resolved, on any repo the App covers; never an approval or a merge: pull_requests: write is asked for only there). github-mcp
 # checks those targets itself; a grant can't name settings, so it covers whatever the App does. The code host's own checks (the
 # merge queue's reviewer eval: kernel.checks) read the repos it lands, through the kernel's snapshot.
 codehost:
   token:
     repos: ["*/*"]
-    perms: { contents: read, metadata: read, issues: write, pull_requests: read, checks: read, statuses: write, actions: read, organization_projects: read }
+    perms: { contents: read, metadata: read, issues: write, pull_requests: write, checks: read, statuses: write, actions: read, organization_projects: read }
   snapshot: { repos: [ "*/*" ] }
 # The PR watch (service/src/pr-watch.ts, W5) files the Platform Engineer's Dependabot tasks and closes them
-# (kernel.tasks), and wakes the task that opened a PR now conflicting with main (kernel.wake). It holds only its module token.
+# (kernel.tasks), wakes the task that opened a PR (kernel.wake) and reads that task's status from the kernel's work read (kernel.work-read) to close a cancelled
+# task's PR. It holds only its module token.
 # The design review's tasks (service/src/design-review.ts, W6) are filed for the UI Reviewer's role and cancelled when
 # superseded (kernel.tasks).
 # The merge queue's reviewer eval (service/src/evalgate.ts) is a kernel check job (kernel.checks) whose signed receipt it
@@ -198,8 +208,7 @@ stages:
   - { name: merge_queue, label: Merge queue, from: work.waiting, to: work.resumed }
 # The PR's journey (docs/design/flow-insights.md §2): from its issue to its deploy. Each phase starts at the first of its facts; every
 # further one is a round. The review phase is the AI reviewer's look at a pr or push filing, merge review at the merge filing (the
-# kinds are the record kinds `where` matches; the codehost-github.* and runner.* ones are the records filed before this module
-# absorbed codehost-github and before the kernel ran every agent).
+# kinds are the record kinds `where` matches; records filed under a replaced module's name are renamed at start, kind-rename.ts).
 # One declaration, identical in every code host (the compiler checks): a phase a host never records is simply absent.
 journeys:
   - name: pr
@@ -209,10 +218,10 @@ journeys:
       - { name: triage, label: Triage, from: [ issue.opened ] }
       - { name: pickup, label: Pickup, from: [ issue.labeled, task.created ] }
       - { name: coding, label: Coding, from: [ job.started ] }
-      - { name: review, label: AI review, from: [ record.filed ], where: { kind: [ github.pr, github.push, codehost-github.pr, codehost-github.push, codehost-local.pr, codehost-local.push, runner.pr, runner.push ] } }
+      - { name: review, label: AI review, from: [ record.filed ], where: { kind: [ github.pr, github.push, codehost-local.pr, codehost-local.push ] } }
       - { name: open, label: PR open, from: [ pr.opened ] }
       - { name: ci, label: CI, from: [ pr.checks_started, pr.pushed ] }
-      - { name: merge, label: Merge review, from: [ record.filed ], where: { kind: [ github.merge, codehost-github.merge, codehost-local.merge, runner.merge ] } }
+      - { name: merge, label: Merge review, from: [ record.filed ], where: { kind: [ github.merge, codehost-local.merge ] } }
       - { name: deploy, label: Deploy, from: [ pr.merged ] }
     end: [ pr.deployed, pr.closed ]
 # The code host's check job recipes (kernel/src/checkjobs.ts), whose signed receipts it verifies before it lands: a repo's fast
@@ -272,7 +281,7 @@ services:
         GITHUB_MCP_URL: "${settings.github_mcp_url}"
         # The board's sign-in endpoints: state, and starting a device sign-in.
         GITHUB_AUTH_TOKEN_FILE: ${secrets.github_auth_token}
-        GITHUB_COMMENT_ORGS: "${GITHUB_COMMENT_ORGS:-}"
+        GITHUB_COMMENT_ORGS: "${settings.github_comment_orgs}" # comma-separated
         # commit_status_set (the design-review check) writes only here, as the GitHub App.
         GITHUB_AGENTS_ORG: "${settings.agents_org}"
         # Product bugs (github_app_issue) go only to this repo.
@@ -327,9 +336,11 @@ providers:
     auth: codehost_github_token
 # Each card is plan.mjs's facts, read from git by the service: what it acts on, one sentence, and the diff the reviewer reads.
 writes:
-  push: { args: schemas/push.json, floor: 0, card: &card { target: "{{target}}", sentence: "{{sentence}}", details: "{{diff}}" } }
-  pr: { args: schemas/pr.json, floor: 0, card: *card }
-  merge: { args: schemas/merge.json, floor: 0, card: *card }
+  # push, pr and merge are repository writes (paths: true): plan.mjs returns the files each changes, read from git, and the
+  # kernel raises their tier by the path inventory (paths.yaml) and runs the platform check on them (writes.ts).
+  push: { args: schemas/push.json, floor: 0, paths: true, card: &card { target: "{{target}}", sentence: "{{sentence}}", details: "{{diff}}" } }
+  pr: { args: schemas/pr.json, floor: 0, paths: true, card: *card }
+  merge: { args: schemas/merge.json, floor: 0, paths: true, card: *card }
   close: { args: schemas/close.json, floor: 0, card: *card }
   create_repo: { args: schemas/create_repo.json, floor: 0, card: *card }
 # github_service_key: the kernel's bearer for github-mcp (both connections). github_auth_token: the board's, for its sign-in.

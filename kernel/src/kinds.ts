@@ -13,10 +13,12 @@ const obj = (properties: Record<string, Schema>, required: string[]): Schema => 
 
 // authority: the module changes the apply brings, one line each (scripts/compiler/authority.ts), shown on the card;
 // ownerRequired: one of them is the owner's under every autonomy (new authority from a module that isn't official, or new
-// spend), so after the reviewer only the owner approves it (in the digest, as args).
+// spend), so after the reviewer only the owner approves it (in the digest, as args); release: the release the owner's
+// auto-updates ask for, set only by the planner on the updater's verified move (apply-tier.ts standingRelease).
 const APPLY_ARGS = obj({
   repo: REPO, branch: REF, sha: SHA, files: { type: "array", minItems: 1, maxItems: 200, items: { type: "string", maxLength: 300 } },
   authority: { type: "array", minItems: 1, maxItems: 200, items: { type: "string", maxLength: 300, pattern: "^[^\\p{Cc}\\p{Cf}]+$" } }, ownerRequired: { type: "boolean" },
+  release: { type: "string", pattern: "^[0-9]{4}\\.[0-9]{1,2}(\\.[0-9]+){0,2}$" },
 }, ["repo", "branch", "sha", "files"]);
 
 const RAISE_ARGS = obj({
@@ -63,7 +65,7 @@ export function repoKey(v: unknown): string | undefined {
  * The kernel's roles a module may request (module.yaml roles.requests): each opens one backplane route or, for kernel.apply,
  * filing that kernel kind. No module declares a kernel.* role or a role named after a write kind (compile refuses both).
  */
-export const KERNEL_ROLES = ["kernel.apply", "kernel.checks", "kernel.cp-read", "kernel.facts", "kernel.flow-read", "kernel.grader", "kernel.jobs", "kernel.lane", "kernel.notify", "kernel.owner-notice", "kernel.routing", "kernel.tasks", "kernel.wake", "kernel.work-read"];
+export const KERNEL_ROLES = ["kernel.apply", "kernel.checks", "kernel.cp-read", "kernel.facts", "kernel.flow-read", "kernel.grader", "kernel.jobs", "kernel.lane", "kernel.notify", "kernel.owner-notice", "kernel.routines", "kernel.routing", "kernel.settings", "kernel.tasks", "kernel.wake", "kernel.work-read"];
 
 /** The kernel's kinds, beside the modules' compiled ones (config/kernel/writes.json). */
 export const KERNEL_KINDS: Record<string, Kind> = {

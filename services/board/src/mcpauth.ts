@@ -47,14 +47,16 @@ export class McpAuth {
     return data;
   }
 
-  /** Sign-in state, at most a minute old. Undefined when the proxy can't be asked. */
+  /**
+   * Sign-in state, at most a minute old. While the proxy can't be asked (an apply recreating it) its last answer stands, so a
+   * restart never reads as "signed out"; undefined only when it never answered.
+   */
   async status(maxAgeMs = 60_000): Promise<McpAuthStatus | undefined> {
     if (!this.cached || Date.now() - this.cached.at >= maxAgeMs) {
       try {
         this.cached = { at: Date.now(), status: await this.call<McpAuthStatus>("GET", "/auth/status") };
       } catch (err) {
         this.log?.warn({ err: String((err as Error).message).slice(0, 300) }, `${this.name} sign-in state unavailable`);
-        this.cached = undefined;
       }
     }
     return this.cached?.status;

@@ -14,6 +14,10 @@ export interface Issue {
   id: string; identifier?: string; title?: string; description?: string | null; status?: string; parentId?: string | null;
   assigneeAgentId?: string | null; createdByAgentId?: string | null; createdByUserId?: string | null; companyId?: string;
   originKind?: string | null; originId?: string | null; createdAt?: string;
+  /** The tasks this one blocks (Paperclip's relation summary). */
+  blocks?: { id: string }[];
+  /** The tasks it waits on, as the control plane returns them (`status` included: a closed blocker no longer blocks). */
+  blockedBy?: { id: string; status: string }[];
 }
 export interface Comment { id: string; body?: string | null; authorType?: string; authorAgentId?: string | null; createdAt?: string; deletedAt?: string | null }
 /** The grants table's directory (kernel GET /v1/agents), by agent id. */

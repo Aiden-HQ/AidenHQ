@@ -1,0 +1,27 @@
+/* Explain (Explain.tsx): why a write was decided, under a card or a write in an agent's Activity. */
+.xp { display: grid; gap: var(--sp-3); padding: var(--sp-3) var(--sp-4); border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: var(--radius-md); background: var(--surface-2); box-shadow: var(--lift); font-size: var(--text-base); animation: xp-open var(--medium) var(--ease-out); }
+.xp-note { margin: 0; color: var(--muted); }
+.xp-who { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); }
+.xp-k { color: var(--muted); font-size: var(--text-xs); font-weight: 600; }
+.xp-model { padding: 1px var(--sp-2); border-radius: var(--radius-sm); background: var(--surface); border: 1px solid var(--border); font: var(--text-xs) var(--mono); }
+.xp-words { color: var(--text); }
+.xp-path { margin: 0; padding: 0; list-style: none; display: grid; gap: var(--sp-1); counter-reset: xp; }
+.xp-path li { position: relative; padding-left: 26px; counter-increment: xp; line-height: 1.45; }
+.xp-path li::before { content: counter(xp); position: absolute; left: 0; top: 1px; width: 18px; height: 18px; border-radius: var(--radius-sm); background: var(--accent-soft); color: var(--accent); font-size: var(--text-2xs); font-weight: 650; text-align: center; line-height: 18px; }
+.xp-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: var(--sp-3); }
+.xp-block { display: grid; gap: var(--sp-2); align-content: start; min-width: 0; }
+.xp-block h5 { margin: 0; font-size: var(--text-xs); font-weight: 600; color: var(--muted); }
+.xp-block h5 .muted { font-weight: 400; }
+.xp-block p { margin: 0; line-height: 1.45; }
+.xp-code { padding: 0 5px; border-radius: var(--radius-sm); background: var(--tone-7-bg); color: var(--tone-7-fg); font: var(--text-xs) var(--mono); }
+.xp-fence { position: relative; margin: 0; padding: var(--sp-5) var(--sp-3) var(--sp-2); border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface); font: var(--text-sm) / 1.5 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.xp-fence::before { content: attr(data-label); position: absolute; top: var(--sp-1); left: var(--sp-3); color: var(--faint); font: var(--text-2xs) var(--font); }
+.xp-scroll { max-height: 260px; overflow: auto; }
+.xp-checks { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: var(--sp-2) var(--sp-4); }
+.xp-checks li { display: flex; align-items: center; gap: var(--sp-2); font-size: var(--text-sm); }
+.xp-diff summary { cursor: pointer; color: var(--accent); font-size: var(--text-sm); }
+.xp-diff summary { border-radius: var(--radius-sm); }
+.xp-diff summary:focus-visible { outline: none; box-shadow: var(--ring); }
+.xp-diff[open] summary { margin-bottom: var(--sp-2); }
+.xp-diff[open] > .xp-fence { animation: xp-open var(--medium) var(--ease-out); }
+@keyframes xp-open { from { opacity: 0; transform: translateY(-4px); } }

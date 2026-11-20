@@ -49,7 +49,7 @@ test("a delegator who is also the task's assignee settles an escalated grade, an
   assert.deepEqual(h.grades.escalated().map((g) => g.issueId), ["t1"]);
 
   // The delegator records done: its own close accepts the work in place of a verdict.
-  assert.deepEqual(await h.finish("WOR-1", { agent: "cos", via: "task_set_status" }), { verdict: "ok", unlabel: true, accepts: true });
+  assert.deepEqual(await h.finish("WOR-1", { agent: "cos", via: "task_finish" }), { verdict: "ok", unlabel: true, accepts: true });
   assert.equal(h.grades.get("t1").state, "satisfied");
   assert.deepEqual(h.grades.get("t1").verdicts.at(-1).verdict, "accepted");
   assert.deepEqual(h.grades.get("t1").delegators, null);
@@ -70,7 +70,7 @@ test("a delegator's cancelled settled the escalated row and leaves the runner no
   h.grades.markResubmitted("t2");
 
   // A late close of a cancelled task settles the row instead of accepting or regrading it (409 is the kernel's refusal).
-  assert.deepEqual(await h.finish("WOR-2", { agent: "cos", via: "task_set_status" }), { verdict: "deny", status: 409, reason: "the task is cancelled" });
+  assert.deepEqual(await h.finish("WOR-2", { agent: "cos", via: "task_finish" }), { verdict: "deny", status: 409, reason: "the task is cancelled" });
   assert.equal(h.grades.get("t2").state, "not_graded");
   assert.equal(h.grades.get("t2").closedReason, "the task was cancelled before the grader settled it");
   // Nothing reopens it: no row due, none escalated, no resubmission mark the runner could read (its loop is what asked).
@@ -101,7 +101,7 @@ test("an escalated task accepted and then reopened is graded again", async (t) =
   const h = await harness({ "WOR-4": task }, t);
   h.grades.file("t4", RUBRIC, { kind: "pr", ref: "" });
   escalated(h, "t4", "sha1", ["cos"]);
-  assert.equal((await h.finish("WOR-4", { agent: "cos", via: "task_set_status" })).verdict, "ok");
+  assert.equal((await h.finish("WOR-4", { agent: "cos", via: "task_finish" })).verdict, "ok");
   assert.equal(h.grades.get("t4").state, "satisfied");
 
   // Reopened and finished again: satisfied is not sticky, and the row is the runner's again.
@@ -116,7 +116,7 @@ test("an agent the escalation was not addressed to still cannot close another ag
   const h = await harness({ "WOR-5": task }, t);
   h.grades.file("t5", RUBRIC, { kind: "pr", ref: "" });
   escalated(h, "t5", "sha1", ["cos"]);
-  assert.deepEqual(await h.finish("WOR-5", { agent: "other", via: "task_set_status" }), {
+  assert.deepEqual(await h.finish("WOR-5", { agent: "other", via: "task_finish" }), {
     verdict: "deny", status: 403, reason: "this task is graded: the grader closes it once its rubric is met (only its assignee finishes it)",
   });
   assert.equal(h.grades.get("t5").state, "escalated");
@@ -130,7 +130,7 @@ test("a non-escalated grade stays its assignee's: the delegator's close is refus
   h.grades.file("t6", RUBRIC, { kind: "pr", ref: "" });
   assert.equal(h.grades.get("t6").state, "open");
 
-  assert.deepEqual(await h.finish("WOR-6", { agent: "cos", via: "task_set_status" }), {
+  assert.deepEqual(await h.finish("WOR-6", { agent: "cos", via: "task_finish" }), {
     verdict: "deny", status: 403, reason: "this task is graded: the grader closes it once its rubric is met (only its assignee finishes it)",
   });
   assert.equal(h.grades.get("t6").state, "open");
@@ -152,10 +152,10 @@ test("an assignee cannot settle its own escalated grade by waiting: after a day 
   h.grades.record("t9", rejected, Date.now() - day / 2, ["watch"]); // the same rejected version again: escalates
   assert.equal(h.grades.get("t9").state, "escalated");
   // Fresh: the assignee's close is held and marked, not accepted.
-  assert.equal((await h.finish("WOR-9", { agent: "ops", via: "task_set_status" })).state, "escalated");
+  assert.equal((await h.finish("WOR-9", { agent: "ops", via: "task_finish" })).state, "escalated");
   // A day on, nobody decided: its close goes back to the grader for a fresh verdict, never to satisfied.
   h.grades.record("t9", rejected, Date.now() - 2 * day, ["watch"]);
-  const r = await h.finish("WOR-9", { agent: "ops", via: "task_set_status" });
+  const r = await h.finish("WOR-9", { agent: "ops", via: "task_finish" });
   assert.deepEqual([r.verdict, r.state], ["pending", "pending"]);
   assert.equal(h.grades.get("t9").state, "pending");
   assert.equal(h.grades.get("t9").verdicts.some((v) => v.verdict === "accepted"), false);
@@ -163,6 +163,6 @@ test("an assignee cannot settle its own escalated grade by waiting: after a day 
   assert.deepEqual(h.grades.due().map((g) => g.issueId), ["t9"]);
   // Only the delegator accepts.
   h.grades.record("t9", { version: "sha1", outcome: "cannot_judge", model: "glm", criteria: [] }, Date.now(), ["watch"]);
-  assert.deepEqual(await h.finish("WOR-9", { agent: "watch", via: "task_set_status" }), { verdict: "ok", unlabel: true, accepts: true });
+  assert.deepEqual(await h.finish("WOR-9", { agent: "watch", via: "task_finish" }), { verdict: "ok", unlabel: true, accepts: true });
   assert.equal(h.grades.get("t9").verdicts.at(-1).by, "watch");
 });

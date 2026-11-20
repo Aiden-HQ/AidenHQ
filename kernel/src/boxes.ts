@@ -12,6 +12,8 @@ import type { Admitted } from "./admission.ts";
 import { mintToken } from "./gateway/token.ts";
 import type { Whoami } from "./identity.ts";
 import { JobError, insideNoLinks, type Jobs } from "./jobs.ts";
+import type { Once } from "./once.ts";
+import { outFiles } from "./outfiles.ts";
 import { engineState, type Box, type SandboxConfig } from "./sandbox.ts";
 
 const RENEW_MS = 5 * 60_000; // the launcher's lease is 15 minutes
@@ -54,8 +56,17 @@ export type Clones = {
 };
 const MAX_CLONES = 5;
 
-export function createBoxes({ db, cfg, jobs, call, secret, whoami, connections, handbook, cleanup, clones, identity, log, now = Date.now }: {
-  db: DatabaseSync; cfg: SandboxConfig; jobs: Pick<Jobs, "runAdmitted">; call: Call; secret: (name: string) => string; whoami: Whoami;
+/** The task's files in the control plane, and a way to attach one (as the owner: the control plane takes an agent key's writes only inside a run). */
+export type Attachments = {
+  list: (task: string) => Promise<{ originalFilename?: string; byteSize?: number }[]>;
+  add: (task: string, name: string, type: string, data: Buffer) => Promise<void>;
+};
+
+/** A launcher that can't answer now (a 5xx, a timeout, unreachable): the launch is deferred to the next tick, never failed. */
+const unavailable = (e: Error): never => { throw new JobError(503, "launcher-unavailable", `the computer launcher can't answer now (${String(e.message).slice(0, 200)})`); };
+
+export function createBoxes({ db, cfg, jobs, call, secret, whoami, connections, handbook, cleanup, clones, identity, attachments, once, log, now = Date.now, stopping = () => false }: {
+  db: DatabaseSync; attachments: Attachments; once: Once; cfg: SandboxConfig; jobs: Pick<Jobs, "runAdmitted">; call: Call; secret: (name: string) => string; whoami: Whoami;
   /** Who the agent's commits are authored as: its name and its own address (never the owner's). */
   identity: (agent: string) => { name: string; email: string };
   /** An engineer job's workspace: the repositories its task names, cloned before the box starts. */
@@ -68,6 +79,8 @@ export function createBoxes({ db, cfg, jobs, call, secret, whoami, connections, 
   handbook: (agent: string) => string | undefined;
   log: (msg: string, fields?: Record<string, unknown>) => void;
   now?: () => number;
+  /** The kernel is draining (main.ts): a launch that got its box gives it back instead of starting the run. */
+  stopping?: () => boolean;
 }) {
 
   /** admission.ts `launch`: the job's token, its engine home and workspace, its box, then the run. */
@@ -84,7 +97,7 @@ export function createBoxes({ db, cfg, jobs, call, secret, whoami, connections, 
     // The box's connections: exactly what this job's token resolves to (its frozen authority), never the grants table.
     const mcp = mcpBlock((await whoami(token)).tools, connections(), cfg.boxGatewayUrl);
     // The task's last box goes first (the launcher keeps one per task); while it is still going, the job waits a tick.
-    for (const r of db.prepare("SELECT id FROM jobs WHERE task = ? AND authority IS NOT NULL AND box IS NOT NULL AND released IS NULL AND state NOT IN ('admitted', 'running')").all(job.task) as { id: string }[]) await release(r.id);
+    for (const r of db.prepare("SELECT id FROM jobs WHERE task = ? AND authority IS NOT NULL AND box IS NOT NULL AND released IS NULL AND state NOT IN ('admitted', 'running')").all(job.task) as { id: string }[]) await release(r.id).catch(unavailable);
     // After that release: a cleanup it does removes the last job's workspace, never this one's.
     mkdirSync(workspace, { recursive: true });
     insideNoLinks(join(cfg.workDir, "tasks"), workspace, "workspace");
@@ -92,11 +105,19 @@ export function createBoxes({ db, cfg, jobs, call, secret, whoami, connections, 
     const session = job.fresh ? undefined : lastSession(job.agent, job.task, a.engine);
     const base = session ? job.prompt : job.fullPrompt ?? job.prompt;
     const prompt = notes.length ? `(Kernel note: ${notes.join(" ")})\n\n${base}` : base;
-    const box = (await call("/job", { agentId: job.agent, issueId: job.task, identifier: job.identifier, workspace, engine: a.engine, state, image: a.image, token, mcp, roles: a.roles, identity: identity(job.agent) }).catch((e: { status?: number }) => {
-      throw e.status === 409 ? Object.assign(e, { status: 503 }) : e;
+    // 409: the task's box is still going (the computers are full for it); a 5xx, a timeout or no answer: the launcher can't now.
+    const box = (await call("/job", { agentId: job.agent, issueId: job.task, identifier: job.identifier, workspace, engine: a.engine, state, image: a.image, token, mcp, roles: a.roles, identity: identity(job.agent) }).catch((e: Error & { status?: number }) => {
+      if (e.status === 409) throw Object.assign(e, { status: 503 });
+      if (e.status === undefined || e.status >= 500) unavailable(e);
+      throw e;
     })) as unknown as Box;
     // The row's box names its workspace too, for a cleanup at release.
     db.prepare("UPDATE jobs SET box = ?, renewed = ? WHERE id = ?").run(JSON.stringify({ ...box, workspace }), now(), job.id);
+    // A kernel draining for its successor starts nothing it wouldn't follow: the box goes back and the wake to its dispatcher.
+    if (stopping()) {
+      await release(job.id).catch(() => {});
+      throw new JobError(503, "draining", "the kernel is restarting; the job starts on the next one");
+    }
     try {
       jobs.runAdmitted(job.id, { box: { ...box, workspace } as Box, worktree: workspace, prompt, session, label: job.identifier });
     } catch (e) {
@@ -140,6 +161,27 @@ export function createBoxes({ db, cfg, jobs, call, secret, whoami, connections, 
   };
 
   /**
+   * What an engineer job made in <workspace>/.aidenhq/out/ is attached to its task, once per job (the once-key), before its
+   * workspace can go. A failure is logged and never holds the box.
+   */
+  async function shareOutFiles(id: string, task: string, workspace: string) {
+    try {
+      await once(`outfiles:${id}`, async () => {
+        if (!existsSync(workspace)) return [];
+        const have = new Set((await attachments.list(task)).map((a) => `${a.originalFilename}:${a.byteSize}`));
+        const sent: string[] = [];
+        for (const f of outFiles(workspace, have)) {
+          try { await attachments.add(task, f.name, f.type, f.data); sent.push(f.name); } catch (e) { log("couldn't attach an output file", { job: id, file: f.name, err: (e as Error).message.slice(0, 200) }); }
+        }
+        if (sent.length) log("output files attached to the task", { job: id, task, files: sent });
+        return sent;
+      });
+    } catch (e) {
+      log("couldn't attach a job's output files", { job: id, err: (e as Error).message.slice(0, 200) });
+    }
+  }
+
+  /**
    * The job's box goes, once: a release claims the row first (released = -1), so two at once (the job's end and tend) never
    * both run; a failed launcher call gives the claim back for the next tend. The workspace goes too when the job asked
    * (`aidenhq cleanup`), unless a later job on the task is already admitted or running in it.
@@ -148,6 +190,7 @@ export function createBoxes({ db, cfg, jobs, call, secret, whoami, connections, 
     const r = db.prepare("SELECT task, box FROM jobs WHERE id = ? AND authority IS NOT NULL AND released IS NULL").get(id) as { task: string; box: string | null } | undefined;
     if (!r?.box || db.prepare("UPDATE jobs SET released = -1 WHERE id = ? AND released IS NULL").run(id).changes !== 1) return;
     const { container, workspace } = JSON.parse(r.box) as Box & { workspace?: string };
+    if (workspace) await shareOutFiles(id, r.task, workspace);
     try {
       await call("/job/release", { container });
     } catch (e) {

@@ -1,8 +1,9 @@
 // The official modules (modules/) compile with the product's compiler on two fixture instances, the default bundle and
 // every module, with each required setting given a placeholder so only manifest errors remain; and a vendor connection's
-// read endpoint gets exactly its connection's `read` tags (kernel/sdk/src/vendor/proxy.ts serves only those).
+// read endpoint gets exactly its connection's `read` tags (kernel/sdk/src/vendor/proxy.ts serves only those); and no skill
+// names a tool its module's connection does not grant.
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
@@ -31,6 +32,28 @@ test("the default bundle and every official module compile", () => {
   }
 });
 
+test("every tool a skill names is one its module's connection grants", () => {
+  const groups = ["read", "named", "write", "destructive"];
+  for (const [n, def] of Object.entries(defs)) {
+    const conns = Object.keys(def.connections ?? {});
+    const skills = join(product, "modules", n, "skills");
+    if (!conns.length || !existsSync(skills)) continue;
+    for (const skill of readdirSync(skills)) {
+      const file = join(skills, skill, "SKILL.md");
+      if (!existsSync(file)) continue;
+      const lines = readFileSync(file, "utf8").split("\n");
+      for (const [i, line] of lines.entries()) {
+        for (const [, id] of line.matchAll(/`([a-z0-9_]+)`/g)) {
+          const conn = conns.find((c) => id.startsWith(`${c}_`));
+          if (!conn) continue;
+          const granted = groups.flatMap((g) => def.connections[conn].tools?.[g] ?? []);
+          assert.ok(granted.includes(id), `modules/${n}/skills/${skill}/SKILL.md:${i + 1}: ${id} is not a tool of connection ${conn}`);
+        }
+      }
+    }
+  }
+});
+
 test("a vendor connection's read endpoint gets exactly its connection's read tags", () => {
   for (const [n, def] of Object.entries(defs)) {
     for (const [svc, s] of Object.entries(def.services?.run ?? {})) {
@@ -51,6 +74,14 @@ test("a fresh install of the default bundle compiles with no optional connection
   for (const k of ["ui-designer", "ui-reviewer"]) assert.equal(paperclip.agents[k].heartbeat, false, `${k} has no heartbeat until the owner sets one`);
   assert.equal(compose.services["jira-mcp"], undefined, "jira-mcp waits for the owner's site");
   assert.ok(compose.services["glean-mcp"] && compose.services["primer-mcp"], "the idle connection servers are there");
+});
+
+test("the Primer digest waits for the owner under quiet start, and the Researcher can read it", () => {
+  const dir = join(tmp, "digest");
+  mkdirSync(join(dir, "agents"), { recursive: true });
+  writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules: market.bundle, settings: { timezone: "Europe/London", owner_name: "Sam", owner_email: "me@example.com", product_repo: "acme/aidenhq", quiet_start: "on" } }));
+  assert.equal(compile(product, dir).paperclip.routines["primer-digest"].status, "paused");
+  assert.ok(defs.primer.connections.primer.tools.read.includes("primer_get_digest") && defs["chief-of-staff"].agents.assistant.connections["primer?"].includes("primer_get_digest"), "tagged, and granted to the Researcher");
 });
 
 test("an install made before the bundle grew gets the new members once its host sees the old bundle, and keeps them; a removal sticks", () => {

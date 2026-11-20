@@ -67,7 +67,15 @@ test("an open owner record makes the gap's reason owner; idle now with nothing p
   w = flow.task("t1");
   assert.deepEqual(w.idle.slice(-2).map((i) => [i.start.slice(11, 19), i.end?.slice(11, 19) ?? null, i.reason]), [["10:37:27", "11:00:00", "owner"], ["11:00:00", null, "orphaned"]]);
   assert.deepEqual(w.stages.filter((s) => s.name === "owner").map((s) => [s.actor, secs(s)]), [["account:o1", 23 * 60]]);
-  assert.deepEqual(flow.idleNow().items, [{ task: "t1", identifier: "WOR-8567", since: `${D}10:37:27.000Z`, reason: "orphaned", holder: "engineer-b" }]);
+  assert.deepEqual(flow.idleNow().items, [{ task: "t1", identifier: "WOR-8567", since: `${D}10:37:27.000Z`, reason_since: `${D}11:00:00.000Z`, reason: "orphaned", holder: "engineer-b", idle_wakes: 0 }]);
+});
+
+test("a comment wake the kernel settled into a job that started after it isn't pending: idle afterwards is orphaned", () => {
+  const { add, flow } = setup();
+  wor8567(add);
+  // A comment at 10:34:30 while j2 was being admitted: j2 reads it, and the kernel settles the wake with no wake.bound.
+  add("wake.opened", "wake:w9", "10:34:30", { cause: "comment", author: "account:o1" });
+  assert.deepEqual(flow.idleNow().items, [{ task: "t1", identifier: "WOR-8567", since: `${D}10:37:27.000Z`, reason_since: `${D}10:37:27.000Z`, reason: "orphaned", holder: "engineer-b", idle_wakes: 0 }]);
 });
 
 test("an open stage is work, not idle: grading after the job leaves no gap and no wait", () => {

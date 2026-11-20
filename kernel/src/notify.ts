@@ -1,6 +1,8 @@
 // The one way a message reaches the owner (the owner-channel module's `notify`). The kernel only carries: it queues the
 // owner messages of the kernel, the board and the runner (POST /v1/notify, or queue() in process) for the module with role
-// kernel.notify, which takes them (GET /v1/notify/take) and routes them like an agent's notify call; and it hands that
+// kernel.notify, which takes them (GET /v1/notify/take) and routes them like an agent's notify call, then acknowledges each
+// (POST /v1/notify/ack): a taken message not acknowledged within TAKE_LEASE_MS (the router crashed, its answer was lost) is
+// taken again, and only an acknowledged one goes; and it hands that
 // module's sends to a channel's transport (POST /v1/notify/send → the channel's `providers.channel.transport`, with the
 // channel's own token). Routing, mutes, caps, dedupe and digests are the module's, never the kernel's.
 // A credential for the owner (an account reset link) never reaches the router: the kernel keeps it (owner_secrets) and sends
@@ -13,8 +15,13 @@ import type { Target } from "./net.ts";
 import { fail } from "./proxy.ts";
 
 export const KINDS = ["decision", "done", "fyi", "alert", "digest"] as const;
-/** `reply`: a job's reply relayed to the channel the owner wrote from (relay.ts), headed by its agent and task. */
-export type Notice = { kind: (typeof KINDS)[number]; text: string; task?: string; dedupe_key?: string; reply?: { via: "telegram" | "slack"; agent: string; issue: string } };
+/**
+ * `reply`: a job's reply relayed to the channel the owner wrote from (relay.ts), headed by its agent and task. `head`: the
+ * kernel's question for the owner from an agent waiting on `task` (escalate.ts), headed by that agent so their reply lands there.
+ */
+export type Notice = { kind: (typeof KINDS)[number]; text: string; task?: string; dedupe_key?: string; reply?: { via: "telegram" | "slack"; agent: string; issue: string }; head?: { agent: string; issue: string };
+  /** The agent whose question `head` carries: the owner channel applies its mutes and the task's loop brake. */
+  asker?: { id: string; key: string; roles: string[] } };
 type Resolver = { resolve: (url: string) => Promise<Target>; forget: (url: string) => void };
 
 /** A notice from a producer's body: kind, text, and optionally the task it is about and its dedupe key. */
@@ -30,16 +37,23 @@ export function notice(b: { kind?: unknown; text?: unknown; task?: unknown; dedu
 export const SERVICE_HOST = /^[a-z][a-z0-9-]*$/;
 const loopback = (ip: string) => /^127\./.test(ip) || ip === "::1" || ip === "0.0.0.0" || ip === "localhost";
 
-export function createNotify({ db, modules, secret, resolver, extra = () => [], log = () => {}, testHosts = false }: {
+const TAKE_LEASE_MS = 2 * 60_000;
+/** An owner message nobody acknowledged in a week (no router installed): dropped, and logged. */
+const KEEP_MS = 7 * 86_400_000;
+
+export function createNotify({ db, modules, secret, resolver, extra = () => [], log = () => {}, testHosts = false, now = Date.now }: {
   db: DatabaseSync; modules: () => ModulesFile; secret: (name: string) => string; resolver: Resolver;
-  /** What the kernel has for the owner at take time (the approvals digest), each handed over once. */
+  /** What the kernel has for the owner at take time (the approvals digest): queued then, so it is leased and acknowledged like any other. */
   extra?: () => Notice[];
   log?: (msg: string, f?: Record<string, unknown>) => void;
   /** Tests only: transports on 127.0.0.1. */
   testHosts?: boolean;
+  now?: () => number;
 }) {
   db.exec(`CREATE TABLE IF NOT EXISTS owner_notify (id INTEGER PRIMARY KEY, msg TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS owner_secrets (id INTEGER PRIMARY KEY, text TEXT NOT NULL, at TEXT NOT NULL);`);
+  const cols = new Set((db.prepare("PRAGMA table_info(owner_notify)").all() as { name: string }[]).map((c) => c.name));
+  for (const c of ["at", "taken"]) if (!cols.has(c)) db.exec(`ALTER TABLE owner_notify ADD COLUMN ${c} INTEGER`);
   async function post(to: string, message: unknown): Promise<{ sent: boolean; off?: true; reason?: string }> {
     const m = modules().modules?.[to];
     const url = m?.channel?.transport;
@@ -70,15 +84,27 @@ export function createNotify({ db, modules, secret, resolver, extra = () => [], 
     }
   }
   const router = (roles: string[]) => { if (!roles.includes("kernel.notify")) throw fail(403, "forbidden", "only the owner's router (role kernel.notify) takes and sends owner messages"); };
+  const queue = (n: Notice) => {
+    db.prepare("INSERT INTO owner_notify (msg, at) VALUES (?, ?)").run(JSON.stringify(n), now());
+    const old = db.prepare("DELETE FROM owner_notify WHERE at < ?").run(now() - KEEP_MS).changes;
+    if (old) log("owner messages nobody took in a week dropped", { n: old });
+  };
   return {
-    queue(n: Notice) {
-      db.prepare("INSERT INTO owner_notify (msg) VALUES (?)").run(JSON.stringify(n));
-      db.prepare("DELETE FROM owner_notify WHERE id NOT IN (SELECT id FROM owner_notify ORDER BY id DESC LIMIT 200)").run();
-    },
-    take(roles: string[]): { messages: Notice[] } {
+    queue,
+    /** Up to 50 messages, oldest first, each with its `id` to acknowledge; a taken one comes back after TAKE_LEASE_MS unacknowledged. */
+    take(roles: string[]): { messages: (Notice & { id: number })[] } {
       router(roles);
-      const rows = db.prepare("DELETE FROM owner_notify WHERE id IN (SELECT id FROM owner_notify ORDER BY id LIMIT 50) RETURNING id, msg").all() as { id: number; msg: string }[];
-      return { messages: [...extra(), ...rows.sort((x, y) => x.id - y.id).map((r) => JSON.parse(r.msg) as Notice)] };
+      for (const n of extra()) queue(n);
+      const rows = db.prepare("UPDATE owner_notify SET taken = ? WHERE id IN (SELECT id FROM owner_notify WHERE taken IS NULL OR taken < ? ORDER BY id LIMIT 50) RETURNING id, msg").all(now(), now() - TAKE_LEASE_MS) as { id: number; msg: string }[];
+      return { messages: rows.sort((x, y) => x.id - y.id).map((r) => ({ ...(JSON.parse(r.msg) as Notice), id: r.id })) };
+    },
+    /** The router has the messages it took (routed, or kept by it for its own retry): they go. */
+    ack(roles: string[], b: { ids?: unknown }) {
+      router(roles);
+      const ids = Array.isArray(b?.ids) ? b.ids.filter((x): x is number => Number.isInteger(x)) : [];
+      if (!ids.length) throw fail(400, "bad_request", "send {ids: [the taken messages' ids]}");
+      for (const id of ids) db.prepare("DELETE FROM owner_notify WHERE id = ?").run(id);
+      return { acked: ids.length };
     },
     /** One message to one channel's transport; `sent` is the transport's answer (false when it is down; `off` when not set up). */
     async send(roles: string[], b: { to?: unknown; message?: unknown }): Promise<{ sent: boolean; off?: true; reason?: string }> {

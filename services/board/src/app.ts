@@ -13,6 +13,7 @@ import { z } from "zod";
 import { handbook, history } from "./agent-handbook.js";
 import { PauseSchema, setAgentPaused } from "./agent-pause.js";
 import { HISTORY_PAGE, agentByKey, agentProfile, historyPage, splitTasks } from "./agent-page.js";
+import { timelineOf } from "./timeline.js";
 import { liveActivity, type SessionSources } from "./live-activity.js";
 import { cachedActivity, lastRunsOf, liveRunsOf, makeRuns, pastRunsOf, type LiveRun, type Work } from "./runs.js";
 import { agentsView, roster, runTasks, workingOn, type RunContext, type TaskRef, type Working } from "./activity.js";
@@ -31,6 +32,8 @@ import { CommitUnreadable, agentGrants, browseModules, createResolver, marketpla
 import { connectionsView, readSources, readUpdates, settingsView, type Probe } from "./settings.js";
 import { ChangeRefused, ChangesSchema, SETTINGS_LABEL, changesOf, checkChange, stageOf, taskFor, type Change } from "./settings-change.js";
 import { createGrading, gradePassed, type Grading } from "./grading.js";
+import { COMMENT_ORGS, CodeReviewSchema, ProfileSchema, configProblems, insightsOf } from "./reviews.js";
+import { ReviewsRefused, ReviewsUnavailable, type Reviews } from "./reviews-client.js";
 import { UsageSchema, keyUsage, prices, spendSummary } from "./costs.js";
 import { ledgerRange, ledgerSummary, ledgerTop } from "./cost-ledger.js";
 import { descendants, featureCost, recentFeatures } from "./feature-cost.js";
@@ -98,6 +101,8 @@ export interface AppOptions {
   welcomeMarker?: string;
   /** The grading module's client (grading.ts); default: built from GRADING_URL and GRADING_BOARD_KEY_FILE. */
   grading?: Grading;
+  /** The code-review module's state service, through the kernel (reviews-client.ts). Without it, the Reviews page says the module is off. */
+  reviews?: Reviews;
   /**
    * "internal" mode: the kernel's key (secret gateway_board_key, x-gateway-key; held only by the kernel and the board): the model
    * gateway files raise_cap, and channels reach the owner's cards, decisions and notices only through the kernel (lean-core 2f).
@@ -189,6 +194,7 @@ export function createApp(opts: AppOptions): Server {
   const mode = opts.mode ?? "lan";
   if (mode !== "internal" && !opts.accounts && !opts.session) throw new Error(`the ${mode} listener needs board accounts`);
   const grading = opts.grading ?? createGrading();
+  const reviews = opts.reviews ?? undefined;
   const resolveCommit = createResolver(opts.fetch ?? fetch);
   /** The grades of these tasks; the grading module unreachable: undefined, so the caller leaves its graded closes undone. */
   const gradesOf = (ids: string[]) => grading.grades(ids).catch((err) => (log.warn({ err: String(err) }, "grading module unreachable; not closing graded parts as done"), undefined));
@@ -252,7 +258,7 @@ export function createApp(opts: AppOptions): Server {
   const cardsOf = async (state: Parameters<Records["list"]>[0], opt?: Parameters<Records["list"]>[1]) => Promise.all((await records.list(state, opt)).map(named));
 
   const sessionOf = liveActivity(opts.sessions);
-  const work = opts.work ?? { job: async () => null, task: async () => [], activity: async () => ({ running: [], recent: [], queued: [], failing: [] }), stop: async () => [] };
+  const work = opts.work ?? { job: async () => null, task: async () => [], agent: async () => [], activity: async () => ({ running: [], recent: [], queued: [], failing: [] }), stop: async () => [] };
   const kernelActivity = cachedActivity(work);
   const liveRuns = async () => liveRunsOf(await kernelActivity());
   const recentRuns = async () => pastRunsOf(await kernelActivity());
@@ -280,9 +286,19 @@ export function createApp(opts: AppOptions): Server {
     return { me, agents, labels, assignees: assignees(agents), prefix: company.issuePrefix ?? "" };
   }
 
-  /** The tasks the board shows: assigned to the user, the Researcher or an Engineer. */
+  /**
+   * Setup's log tasks an agent holds, from the grants table only (the kernel's task-scope.ts logTasks reads the same fields):
+   * logs, never board work.
+   */
+  const logTasks = (): Set<string> => {
+    try {
+      const g = JSON.parse(readFileSync(process.env.AIDENHQ_GRANTS_FILE ?? "", "utf8")) as { agents?: Record<string, { memory_inbox?: string; review_log?: string; chat_task?: string }>; fleet_issues?: string };
+      return new Set([...Object.values(g.agents ?? {}).flatMap((a) => [a.memory_inbox, a.review_log, a.chat_task]), g.fleet_issues].filter((x): x is string => typeof x === "string" && x !== ""));
+    } catch { return new Set(); }
+  };
+  /** The tasks the board shows: assigned to the user, the Researcher or an Engineer; never setup's log tasks an agent holds. */
   const mine = (issues: Issue[], ctx: { me: string; assignees: Assignee[] }) =>
-    issues.filter((i) => (i.assigneeAgentId ? ctx.assignees.some((a) => a.key === i.assigneeAgentId) : i.assigneeUserId === ctx.me));
+    issues.filter((i) => (i.assigneeAgentId ? ctx.assignees.some((a) => a.key === i.assigneeAgentId) && !logTasks().has(i.id) && !logTasks().has(i.identifier) : i.assigneeUserId === ctx.me));
 
   /** A task the board may change: assigned to the user, the Researcher or an Engineer. */
   async function ownIssue(ref: string) {
@@ -343,6 +359,24 @@ export function createApp(opts: AppOptions): Server {
     return ctx.labels.find((l) => l.name === name) ?? (await pc.createLabel(name, color));
   }
 
+  /** The GitHub orgs owner-identity writes may reach (settings.github_comment_orgs), lowercased. */
+  const commentOrgs = () => {
+    const { compiled } = readSources(settingsFiles());
+    const v = compiled?.settings?.[COMMENT_ORGS]?.value;
+    return Array.isArray(v) ? v.map((x) => String(x).toLowerCase()) : [];
+  };
+  /** A call to the code-review service: off answers 404, its refusals 400 in its words, unreachable 502. */
+  async function reviewsCall<T>(f: (r: Reviews) => Promise<T>): Promise<T> {
+    if (!reviews) throw new HttpError(404, "the code-review module is off");
+    try {
+      return await f(reviews);
+    } catch (e) {
+      if (e instanceof ReviewsRefused) throw new HttpError(e.status === 404 ? 404 : 400, e.message);
+      if (e instanceof ReviewsUnavailable) throw new HttpError(502, e.message);
+      throw e;
+    }
+  }
+
   /** A typed settings change (docs/design/settings-changes.md): checked, filed as the owner's own task (kept here by task id for the page), and handed to the kernel. */
   async function fileSettingsChange(changes: Change[]) {
     const { compiled, catalog } = readSources(settingsFiles());
@@ -355,7 +389,7 @@ export function createApp(opts: AppOptions): Server {
     const ctx = await context();
     const label = await labelNamed(ctx, SETTINGS_LABEL, "#7048e8");
     const { title, description } = taskFor(changes, compiled);
-    const issue = await pc.createIssue({ title, description, status: "todo", priority: "medium", labelIds: [label.id] });
+    const issue = await pc.createIssue({ title, description, status: "todo", priority: "medium", assigneeUserId: ctx.me, labelIds: [label.id] });
     store.setMeta(`settings-change:${issue.id}`, JSON.stringify(changes));
     // The kernel checks it again, has the instance repo's code host write exactly its files and files the apply on the task.
     try {
@@ -1285,6 +1319,24 @@ export function createApp(opts: AppOptions): Server {
         return splitTasks(open, agent.id, chat?.id, (i) => owed.get(i.id) ?? chatState(i, live, lastRun(i), ctx.me, awaiting).state, ctx.agents, new Set(owed.keys()));
       },
     },
+    // The Activity tab (timeline.ts): the agent's last 50 jobs, one kernel read; task titles from what Paperclip already lists.
+    {
+      method: "GET",
+      path: /^\/api\/agents\/by-key\/([a-z0-9-]+)\/timeline$/,
+      handle: async (m) => {
+        const agents = await pc.agents();
+        const agent = agentByKey(agents, m[1]!);
+        if (!agent) throw new HttpError(404, "no such agent");
+        const [jobs, open, closed, routines] = await Promise.all([work.agent(agent.id), pc.openIssues().catch(() => []), pc.closedFor(agent.id, { limit: 100 }).catch(() => []), pc.routines().catch(() => [])]);
+        return { entries: timelineOf(jobs, { agents, issues: [...open, ...closed], routines }) };
+      },
+    },
+    // A card's "Explain" (explain.ts): who decided, why, what was asked and what it would change.
+    {
+      method: "GET",
+      path: /^\/api\/approvals\/(k-[0-9a-f]{16})\/explain$/,
+      handle: async (m) => records.explain(m[1]!).then((explanation) => ({ explanation }), (e: Error & { status?: number }) => { throw new HttpError(e.status === 404 ? 404 : 502, e.message); }),
+    },
     { method: "GET", path: /^\/api\/agents\/([0-9a-f-]{36})\/scorecard$/, handle: async (m) => scorecard(await gatherFacts(pc, recentRuns, store, records, grading), m[1]!) },
     {
       // Chats: open ones first, then the 20 newest finished ones; each with its agent and state.
@@ -1550,6 +1602,62 @@ export function createApp(opts: AppOptions): Server {
       handle: async (m) => {
         const { compiled, catalog } = readSources(settingsFiles());
         return agentGrants(compiled, catalog, m[1]!) ?? Promise.reject(new HttpError(404, "no such agent"));
+      },
+    },
+    // The Reviews page (web/src/Reviews.tsx, docs/design/code-review.md): the code-review module's runs, repos and reviewers,
+    // one-off and trial runs, and the owner's change to settings.code_review (filed like any settings change).
+    {
+      method: "GET",
+      path: /^\/api\/reviews\/setup$/,
+      handle: async () => {
+        const { compiled, catalog } = readSources(settingsFiles());
+        const mod = catalog.find((m) => m.name === "code-review");
+        const gh = (await signInStates()).find((s) => s.id === "github")?.status;
+        const current = compiled?.settings?.code_review?.value ?? mod?.settings?.code_review?.default ?? null;
+        const parsed = CodeReviewSchema.safeParse(current);
+        return {
+          module: Boolean(mod?.enabled && reviews),
+          github: { configured: Boolean(gh?.configured), connected: gh?.state === "ok", state: gh?.state ?? null },
+          config: parsed.success ? parsed.data : null,
+          problems: parsed.success ? [] : configProblems(current),
+          comment_orgs: commentOrgs(),
+        };
+      },
+    },
+    { method: "GET", path: /^\/api\/reviews$/, handle: async (_m, _b, url) => reviewsCall((r) => r.list({ repo: url.searchParams.get("repo") ?? undefined, status: url.searchParams.get("status") ?? undefined, limit: Math.min(500, Number(url.searchParams.get("limit") ?? 100) || 100) })) },
+    { method: "GET", path: /^\/api\/reviews\/run\/([\w-]{1,80})$/, handle: async (m) => reviewsCall((r) => r.get(m[1]!)) },
+    { method: "GET", path: /^\/api\/reviews\/repos$/, handle: async () => reviewsCall((r) => r.repos()) },
+    { method: "GET", path: /^\/api\/reviews\/reviewers$/, handle: async () => reviewsCall((r) => r.reviewers()) },
+    { method: "GET", path: /^\/api\/reviews\/available$/, handle: async (_m, _b, url) => reviewsCall((r) => r.available((url.searchParams.get("q") ?? "").slice(0, 100))) },
+    { method: "GET", path: /^\/api\/reviews\/recent$/, handle: async () => reviewsCall((r) => r.recent()) },
+    {
+      method: "GET",
+      path: /^\/api\/reviews\/insights$/,
+      handle: async (_m, _b, url) => {
+        const days = [7, 30, 90].includes(Number(url.searchParams.get("days"))) ? Number(url.searchParams.get("days")) : 30;
+        return reviewsCall(async (r) => insightsOf((await r.list({ limit: 500 })).runs, days));
+      },
+    },
+    { method: "POST", path: /^\/api\/reviews$/, handle: async (_m, body) => reviewsCall((r) => r.run(parse(OneOffSchema, body))) },
+    { method: "POST", path: /^\/api\/reviews\/try$/, handle: async (_m, body) => reviewsCall((r) => r.trial(parse(TrialSchema, body))) },
+    {
+      // The whole code_review value the page edited, checked here for the owner's feedback, then the normal settings change.
+      method: "POST",
+      path: /^\/api\/reviews\/config$/,
+      maxBody: 200_000,
+      handle: async (_m, body) => {
+        const { value, org } = parse(ReviewConfigSchema, body);
+        const changes: Change[] = [];
+        if (value !== undefined) {
+          const problems = configProblems(value);
+          if (problems.length) throw new HttpError(400, problems.slice(0, 3).join("; "));
+          changes.push({ kind: "setting", key: "code_review", value: value as never });
+        }
+        // A repo reviewed as the owner needs its owner among the orgs owner-identity writes may reach (github-mcp GITHUB_COMMENT_ORGS).
+        const orgs = commentOrgs();
+        if (org && !orgs.includes(org.toLowerCase())) changes.push({ kind: "setting", key: COMMENT_ORGS, value: [...orgs, org.toLowerCase()] });
+        if (!changes.length) throw new HttpError(400, "nothing to change");
+        return fileSettingsChange(changes);
       },
     },
     // Settings (web/src/Settings.tsx): the compiled config, read-only, with what the board can see live. Edits go through git.
@@ -2246,3 +2354,8 @@ async function sendCompressed(req: IncomingMessage, res: ServerResponse, status:
 /** Each built file's compressed copies, made on first request (a deploy restarts the board, so they never go stale). */
 const staticCompressed = new Map<string, Promise<Buffer>>();
 
+
+const PR_URL = z.string().max(300).regex(/^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d{1,9}\/?$/, "a pull request link, like https://github.com/acme/payments/pull/42");
+const OneOffSchema = z.object({ pr_url: PR_URL, reviewer: z.string().regex(/^[a-z][a-z0-9_-]{0,39}$/).optional(), focus: z.string().max(500).regex(/^[^\x00-\x1f\x7f]*$/).optional(), full: z.boolean().optional() }).strict();
+const TrialSchema = z.object({ reviewer: ProfileSchema, pr_url: PR_URL }).strict();
+const ReviewConfigSchema = z.object({ value: z.unknown().optional(), org: z.string().regex(/^[A-Za-z0-9][\w.-]{0,38}$/).optional() }).strict();

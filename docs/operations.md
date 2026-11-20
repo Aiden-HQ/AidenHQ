@@ -124,8 +124,13 @@ It is idempotent. The Engineer runs it for you after you approve a change.
   `data/modules/fleet-steward/state.json`; the Steward reads it with `fleet_detector` (the proxy fences the answer, an alert's
   label text carries a second fence) and logs on the "Fleet issues" task (`log ·` lines). The same service serves the Coach's
   `coach_due` and `coach_evidence` and `fleet_generation_status` (the kernel's `/v1/work?generations=1`), and `/metrics`
-  (`aidenhq_steward_incidents_open`, `aidenhq_steward_alerts_firing`). A routine that keeps failing is dispatch's to schedule;
-  the Steward asks the Chief of Staff to pause one.
+  (`aidenhq_steward_incidents_open`, `aidenhq_steward_alerts_firing`). A routine whose last three kernel jobs all
+  hard-failed (`failed` or `timeout`, counted from the jobs' `routine` in `GET /v1/work?agent=`) is paused by the detector itself
+  (`POST /v1/routines/pause`, role `kernel.routines`, pause only; setup keeps a paused routine paused across applies) and the
+  owner is told once (notify kind alert, dedupe key `routine-paused:<id>`; Aiden resumes it, and a resume starts a fresh
+  count). Nothing is paused while the failures are fleet-wide (no agent finishing a job, or a 401 or 402 in a recent failure);
+  the routine stays flagged. The `missed` group raises an active routine whose next schedule fire (`nextRunAt`, read with
+  kernel.cp-read) is over 15 minutes overdue: Paperclip's scheduler has stopped.
 
 - The Maintainer (the maintainer module's `maintainer-watcher` service, `modules/maintainer/service/src/watcher.ts`): every
   `maintainer_poll_minutes` (default 5; it reads `MAINTAINER_POLL_MINUTES`) the watcher asks
@@ -169,7 +174,7 @@ runs, its live database is left out and its hourly dumps carry it; for a complet
 first. A Postgres volume in use (the warehouse's `pgdata`) is skipped; its nightly dump volume is copied. The secret
 vault and the notes vault are not included. The backup holds `auth.secret`, so it is mode 0700. It refuses to start
 unless the output filesystem has 1.2 times the sources' size plus 20 GB free (a full root disk crashed Paperclip's
-Postgres on 2026-11-16). Each successful apply prunes unused images older than 48 hours and caps the build cache at 40 GB (least recently used
+Postgres on 2026-11-16). Each successful apply prunes unused images older than 48 hours and caps the build cache at 20 GB (least recently used
 first); `prune-docker.timer` does the same daily on a host that hasn't applied. Apply installs changed prune units.
 
 `scripts/restore.sh <backup>` refuses to run while containers or the kernel are up, and moves existing state aside
@@ -254,8 +259,8 @@ without the owner reaches Telegram once a day from 21:00.
   check, an unresolvable conflict or a refused merge is reported once on the task and left; the others keep merging. A
   queue that finishes during the run sets the task's status only after the run ends. A fork's or anyone else's head
   goes to the AI reviewer; `.github/` changes, sensitive apps and missing checks are cards and red checks a comment, as
-  before, once the run is over. Card-approved merges, and everything in the product and instance repos, still use the
-  one-at-a-time queue with the base branch green before and after each merge. The `design-review` status is advisory
+  before, once the run is over. Card-approved merges, and everything in the product and instance repos, merge one at a time per
+  repository (merges.ts), each only at the head its record bound, once every named check has passed there. The `design-review` status is advisory
   except on a Tier 0 merge of a UI PR: there it must be `success`, and with no verdict 2 hours after the other checks went
   green the reviewer is asked once more, and then the merge is parked with a note on the task. In either queue a red check whose Actions job never judged the commit
   (cancelled, timed out, failed to start, or `code-review`'s own "failed"/"incomplete" comment on that head) is re-run
@@ -313,8 +318,9 @@ exact email match only).
 `modules/security`: Security Watch (`security-watch`) and the Red Teamer (`red-teamer`), plus `security-scanner`, the
 `src_security` writer (grype, no LLM). The inventory is made on the host, because it needs the Docker socket and the root
 filesystem, which the scanner never gets: `ops/security-sbom.sh` (user timer `aidenhq-security-sbom.timer`, daily 03:30)
-runs pinned syft over the host packages, every running image (the image each container runs, by its own id when its
-configured tag has moved since it started), the product and instance checkouts and each app's deployed source, into
+runs pinned syft over the host packages, every running image (the image each container runs: by its configured tag
+while the tag's platform manifest is still the one the container records, else by its own id from a saved archive, and an
+id the daemon no longer holds is dropped), the product and instance checkouts and each app's deployed source, into
 `data/modules/security/sbom/current/`. The host target scans `/` without the homes (`./home/**`,
 `./root/**`), procfs, the container stores and this instance's own checkouts: a clone, task worktree or tool cache there
 belongs to another project's dependency tree, and no apt upgrade or `ops/vm/pins.json` clears it, so it would be permanent
@@ -350,7 +356,7 @@ locked, nothing that needs secrets starts. Recovery without the TPM: [ops/vault/
 
 ## User units
 
-`aidenhq-kernel` is a systemd user unit; the optional `config/runner.yaml` holds host tuning it reads. Units start only once the vault is
+`aidenhq-kernel` is a systemd user unit; the optional `config/runner.yaml` holds the job tuning it reads. Units start only once the vault is
 mounted and restart on failure. Other units: `aidenhq-computers` (the agent computer launcher, optional; a restart
 never ends a run: boxes stay up, an agent's turn runs detached in its box and the plugin collects its result from the new
 launcher; a new image applies from the next acquire) and

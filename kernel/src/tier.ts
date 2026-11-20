@@ -21,7 +21,8 @@ export type RoutineCap = { cap: Autonomy; routine?: string };
 /** One part of a request's tier, as the requesters' rules build it. */
 export type Part = { tier: number; rule?: string; reason?: string; panel?: boolean; reject?: boolean; reviewFirst?: boolean; byMerit?: boolean; ownerOnly?: boolean; cap?: Cap | null; [k: string]: unknown };
 /** A model's verdict, or code's in its place. */
-export type Verdict = { decision: "approve" | "reject" | "escalate"; reason: string; model: string; second?: string; code?: string };
+/** `second_unsure`: an approval whose other reviewer was unsure (owner, 2026-11-20): recorded apart from `second`, which only ever names a second approval. */
+export type Verdict = { decision: "approve" | "reject" | "escalate"; reason: string; model: string; second?: string; second_unsure?: string; whole?: boolean; code?: string };
 
 /** What a cap says, for a card's reason and the reviewer's label. */
 export const capText = (c: Cap) => (c.by === "autonomy" ? `autonomy is ${c.value}` : c.routine ? `a routine's run (${c.routine}) started this task and its autonomy is ${c.value}` : "the task's routine trace couldn't be read, so it counts as a routine set to off");
@@ -147,9 +148,16 @@ export async function origins(pc: Trace, full: any): Promise<{ issues: any[]; co
 }
 /** What the routine trace reads: the control plane's issues, and kernel provenance for an issue (provenance.ts trace: its row's cap, "off" for a plugin-made task with no row). */
 export type Trace = { issue(id: string): Promise<any>; provenance(issue: any): RoutineCap | undefined };
-/** A task's routine cap: kernel provenance first, then the control plane; a trace that fails (a read that throws) is incomplete: "off". Never throws. */
+/**
+ * A task's routine cap: kernel provenance first, then the control plane. An issue on the trace that is gone (a 404) leaves it
+ * incomplete: "off". A read that fails otherwise (a 5xx, a timeout, unreachable) throws (503): a blip is never a stricter cap
+ * frozen or tiered on, the caller tries again.
+ */
 export const taskRoutineCap = (pc: Trace, task: string, routines: Record<string, string> | null = {}): Promise<RoutineCap | undefined> =>
-  pc.issue(task).then((full) => (full?.id ? origins(pc, full) : { issues: [], complete: false, recorded: [] })).then(({ issues, complete, recorded }) => routineCap(issues, complete, routines, recorded), () => routineCap([], false, routines));
+  pc.issue(task).then((full) => (full?.id ? origins(pc, full) : { issues: [], complete: false, recorded: [] })).then(({ issues, complete, recorded }) => routineCap(issues, complete, routines, recorded), (e: { status?: number; message?: string }) => {
+    if (e?.status === 404) return routineCap([], false, routines);
+    throw Object.assign(new Error(`the routine trace couldn't be read now (${String(e?.message ?? e).slice(0, 200)})`), { status: 503, type: "trace_unavailable" });
+  });
 
 // ------------------------------------------------------------------ earlier decisions on a task
 
@@ -191,7 +199,7 @@ const keyOf = (list: unknown[]) => (list.length && list.every((x) => typeof x ==
  * doesn't make a rejected change new.
  */
 export function requestKey(action: string, s: any): string | undefined {
-  if (action === "push" || action === "pr") return keyOf((s.branches ?? []).map((b: any) => b.sha));
+  if (action === "push" || action === "pr") return keyOf((s.branches ?? s.only ?? []).map((b: any) => b.sha));
   if (action === "merge") return keyOf((s.prs ?? []).map((p: any) => p.head));
   if (action === "apply") return s.sha ? `apply:${s.sha}` : undefined;
   if (action === "create_repo") return s.repo ? `create_repo:${String(s.repo).toLowerCase()}` : undefined;
@@ -203,7 +211,7 @@ export function requestKey(action: string, s: any): string | undefined {
  * actions keyed otherwise.
  */
 export function requestPatches(action: string, s: any): string | null | undefined {
-  const list = action === "push" || action === "pr" ? s.branches : action === "merge" ? s.prs : undefined;
+  const list = action === "push" || action === "pr" ? (s.branches ?? s.only) : action === "merge" ? s.prs : undefined;
   if (!list) return undefined;
   return list.length && list.every((x: any) => typeof x.patch === "string") ? list.map((x: any) => x.patch).sort().join(",") : null;
 }
@@ -246,6 +254,8 @@ const recordTargets = (r: Prior): Target[] => requestTargets(r.action, r.args)?.
 
 /** Reviewer rejections one target's retries are bounded by: past this many (since the owner's last yes), it is parked. */
 export const MAX_REJECTS = 3;
+/** Panel splits (approve + reject) sent back to the agent on one target before the next goes to the owner (owner, 2026-11-20). */
+export const MAX_SPLITS = 3;
 /** Rejections code made without judging the change (it moved, couldn't be read, too large): they are never findings. */
 export const CODE_REJECTS = ["refused_by_code", "stale_head", "check_failed", "too_large", "files_not_shown", "no_diff", "reviewer_failed"];
 const byOwner = (r: Prior) => Boolean(r.decidedBy) && !/^(reviewer|auto|stale):/.test(r.decidedBy!);
@@ -265,9 +275,11 @@ const decided = (r: Prior) => ["approved", "used", "expired", "rejected"].includ
  * - same: one of those rejected exactly this content (requestKey, or the same patch keys: an amended, rebased or renamed
  *   resubmission of the same change; a conn.tool call's or module kind's digest): it stays rejected (its note), refused by
  *   code before any review (owner, 2026-11-18: refile only after a fix). Two reviewers' unsure lifts once, after the request
- *   chain changed (`chain`: the current chain's hash). A conn.tool call whose arguments can't change (a close, a label) is
+ *   chain changed (`chain`: the current chain's hash); a panel split lifts each time the chain changed since every split of
+ *   that content. A conn.tool call whose arguments can't change (a close, a label) is
  *   refused unchanged on this task once rejected: the agent reports back instead.
- * - relift: that lift's earlier note: the re-review's unsure goes to the owner, not back to the agent.
+ * - splits: the most panel splits (approve + reject, panel_split) on one target, counted apart from `rejects` (they never
+ *   park it): after MAX_SPLITS of them the next goes to the owner (splitToOwner).
  * - findings: every one of those notes, attached to the next review.
  */
 export function priorDecisions(records: Prior[], action: string, also: string[] = [], key?: string, patches?: string | null, chain?: string, targets?: { targets: Target[]; label: string }) {
@@ -282,6 +294,7 @@ export function priorDecisions(records: Prior[], action: string, also: string[] 
   // across three branches park none of them, and a multi-branch request is parked when any one of its branches is.
   const asked = new Map((targets?.targets ?? []).filter((t) => typeof t.patch === "string").map((t) => [t.key, t.patch!]));
   const count = new Map<string, number>();
+  const splitCount = new Map<string, number>();
   for (const r of targets?.targets.length ? judged : []) {
     // Each rejection counts once per target: the branch it names, and this request's target carrying its patch key. A record
     // matching both is still one rejection on that branch (the Set).
@@ -290,25 +303,33 @@ export function priorDecisions(records: Prior[], action: string, also: string[] 
     // The same content as this whole request (its commits, or its patch keys) counts on every target it names, so renaming
     // the branch never resets the bound, even when a patch key couldn't be computed.
     const byContent = (key !== undefined && recordKey(r) === key) || (typeof patches === "string" && recordPatches(r) === patches) ? targets!.targets.map((t) => t.key) : [];
-    for (const k of new Set([...named, ...byPatch, ...byContent])) count.set(k, (count.get(k) ?? 0) + 1);
+    // A panel split (approve + reject) has its own bound (MAX_SPLITS), never the park bound's.
+    const bound = r.reviewCode === "panel_split" ? splitCount : count;
+    for (const k of new Set([...named, ...byPatch, ...byContent])) bound.set(k, (bound.get(k) ?? 0) + 1);
   }
-  const rejects = targets?.targets.length ? Math.max(0, ...count.values()) : judged.length;
+  const rejects = targets?.targets.length ? Math.max(0, ...count.values()) : judged.filter((r) => r.reviewCode !== "panel_split").length;
+  const splits = targets?.targets.length ? Math.max(0, ...splitCount.values()) : judged.filter((r) => r.reviewCode === "panel_split").length;
   // Two reviewers unsure (reviewer_unsure) is about the request: the fix is often the brief or an authorisation, so the
   // same commits may come back once, after the request chain changed (`chain`, its hash now; `requestChain`, its hash
-  // when they were unsure). The chain is agent-editable, so that relift happens at most once per content: the re-review
-  // gets `relift` (the first round's note), and unsure again there goes to the owner (the reviewer module). Unchanged or unknown
-  // chain, or any other rejection of the content, and it stays rejected. It still counts toward MAX_REJECTS (on the branch
+  // when they were unsure). The chain is agent-editable, so that lift happens at most once per content: unsure again there
+  // is a second rejection of the same content, which stays rejected. Unchanged or unknown chain, or any other rejection of
+  // the content, and it stays rejected. It still counts toward MAX_REJECTS (on the branch
   // it was raised against). Content is judged task-wide: this is about what was written, not where it was aimed.
   const rejectedSame = key || typeof patches === "string" ? judged.filter((r) => !r.answered).filter((r) => (key !== undefined && recordKey(r) === key) || (typeof patches === "string" && recordPatches(r) === patches)) : [];
   const [only] = rejectedSame;
-  const lifted = rejectedSame.length === 1 && only!.reviewCode === "reviewer_unsure" && Boolean(only!.requestChain) && Boolean(chain) && only!.requestChain !== chain;
+  // A panel split (approve + reject) is often the brief's fault too (WOR-8812: the code was right, the brief contradicted
+  // itself): the same commits come back each time the chain changed since every split of them (each re-review that splits
+  // again is the next split, MAX_SPLITS). The same chain stays refused.
+  const unsureLift = rejectedSame.length === 1 && only!.reviewCode === "reviewer_unsure" && Boolean(only!.requestChain) && Boolean(chain) && only!.requestChain !== chain;
+  const splitLift = rejectedSame.length > 0 && Boolean(chain) && rejectedSame.every((r) => r.reviewCode === "panel_split" && Boolean(r.requestChain) && r.requestChain !== chain);
+  const lifted = unsureLift || splitLift;
   const sameOne = lifted ? undefined : rejectedSame[0];
   // The owner's no on this exact content holds until they approve that same content, whatever else they approved since.
   // Same content: the commits, or the patch keys (a rebased or renamed resubmission). Patch keys that couldn't be computed
   // (null) fail closed: any owner rejection of the action on the task makes it theirs.
   const sameContent = (r: Prior) => (key !== undefined && recordKey(r) === key) || (typeof patches === "string" && recordPatches(r) === patches);
   const ownerNo = mine.some((r) => byOwner(r) && r.state === "rejected" && (patches === null || (sameContent(r) && !mine.some((y) => byOwner(y) && y.state !== "rejected" && sameContent(y) && String(y.decidedAt) > String(r.decidedAt)))));
-  return { ownerVeto: lastOwner?.state === "rejected" || ownerNo, same: sameOne ? sameOne.review || "no note" : undefined, relift: lifted ? only!.review || "no note" : undefined, rejects, findings: judged.filter((r) => !r.answered).map((r) => r.review).filter(Boolean) as string[], ...(targets?.targets.length ? { scope: targets.label } : {}) };
+  return { ownerVeto: lastOwner?.state === "rejected" || ownerNo, same: sameOne ? sameOne.review || "no note" : undefined, rejects, splits, findings: judged.filter((r) => !r.answered).map((r) => r.review).filter(Boolean) as string[], ...(targets?.targets.length ? { scope: targets.label } : {}) };
 }
 
 /** What earlier decisions do to a request: the owner's veto (their card), a rejected change resent, a retry past the bound. */
@@ -323,7 +344,8 @@ export function priorPart(p: ReturnType<typeof priorDecisions> | undefined): Par
 // ------------------------------------------------------------------ the reviewer's verdict on a record
 
 /** The requester's tier input for a review (its classify() now, or code's refusal), with the record's review-first kept. */
-export type ReviewInput = Part & { error?: string; lasting?: boolean; stale?: boolean };
+/** `splits`: the panel splits (approve + reject) already on the record's busiest target (priorDecisions). */
+export type ReviewInput = Part & { error?: string; lasting?: boolean; stale?: boolean; splits?: number };
 /** A record filed review-first stays so, whatever the tier input says now (raise only). */
 export function heldInput(input: ReviewInput, reviewFirst: ReviewFirst | null | undefined): ReviewInput {
   if (reviewFirst && !input.error && !input.reject && (input.tier < 2 || input.reviewFirst)) return { ...input, reviewFirst: true, ...(reviewFirst === "owner" ? { byMerit: true } : {}) };
@@ -341,6 +363,15 @@ export const REVIEW_TRIES = 6;
 /** The last failed try: the owner's card on its merits still reaches them, with the failure on it; anything else goes back. */
 export const failedVerdict = (input: ReviewInput, v: Verdict, n: number): Verdict =>
   input.byMerit ? { ...v, decision: "escalate", code: "owner_tier", reason: `The AI reviewer couldn't read it (${v.reason}, ${n} times). It is Tier 2 on its merits, so the owner decides: ${input.reason}` } : { ...v, decision: "reject", reason: `${v.reason}, ${n} times: ask again later.` };
+/**
+ * The panel's approve + reject (reject, panel_split) goes back to the agent with both notes, up to MAX_SPLITS times on its
+ * target; the next one goes to the owner (owner, 2026-11-20: "go back for fix up to 3 times and only then escalate"). Splits
+ * never count toward the park bound (MAX_REJECTS).
+ */
+export const splitToOwner = (input: ReviewInput, v: Verdict): Verdict =>
+  v.decision === "reject" && v.code === "panel_split" && (input.splits ?? 0) >= MAX_SPLITS
+    ? { ...v, decision: "escalate", reason: `The two AI reviewers split again after ${MAX_SPLITS} send-backs on this target, so the owner decides. ${v.reason}`.slice(0, 1990) }
+    : v;
 /** autonomy tier0: the reviewer only comments, so its approve or reject goes to the owner as a note; off keeps a reject final. */
 export const shadowed = (v: Verdict, mode: Autonomy): Verdict =>
   mode === "full" || v.decision === "escalate" || (mode === "off" && v.decision === "reject") ? v : { ...v, decision: "escalate", code: "shadow", reason: `Shadow (autonomy: tier0): the reviewer would ${v.decision} this. ${v.reason}` };

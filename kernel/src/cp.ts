@@ -8,16 +8,19 @@
 //   post.js), the only writer: Paperclip refuses an agent key's writes without a run. The kernel decides who writes where and
 //   signs a `scope`; the plugin re-checks what it can see. A job writes on its own task (assigned to it), a task it created,
 //   a child of a task assigned to it, and creates tasks as itself (under such a task, a part of its own under any task, or
-//   top-level). The chief of staff (role fleet-admin) comments on any task of its company; an agent comments on the tasks the
+//   top-level). A fleet overseer (the chief of staff, role fleet-admin, or the Fleet Steward, role fleet-audit) comments on any
+//   task of its company; an agent comments on the tasks the
 //   grants table names for it (memory inbox, review log, chat), on the shared "Fleet issues" log task (grants `fleet_issues`),
 //   and a librarian on every memory inbox. Anything else is
-//   refused, naming whom to ask. Each write carries a tag (the plugin's once-only key): on the job's own task and the chief of
-//   staff's anywhere-comments the job tag (wakes.ts SELF_TAG: it wakes nobody), elsewhere `aidenhq:op=`, which wakes the
-//   task's assignee as any agent's comment does.
+//   refused, naming whom to ask. Each write carries a tag (the plugin's once-only key): on the job's own task and the tasks its
+//   grants list the job tag (wakes.ts SELF_TAG: it wakes nobody), elsewhere `aidenhq:op=`, which wakes the task's assignee as any
+//   agent's comment does.
 // - A status change to `done` is for the job's own task, or a delegated task whose escalated grade its delegator accepts, and
 //   passes the finish gate first (checks.ts): held or reopened, nothing is written and the answer says so (202).
 // - A task a job creates gets the kernel's provenance row (provenance.ts) from the plugin's answer.
-// A user assignee is only ever the owner; a PATCH hands a task back (assigneeAgentId null), never to another agent.
+// A user assignee is only ever the owner; a PATCH hands a task back (assigneeAgentId null, to the owner), never to another agent.
+// Every open task has a holder, an agent or the owner (leavesNoHolder): a create or a change that would leave one with neither
+// is refused, here and on the board's owner writes.
 // Answers look like Paperclip's: the task as it is now (a PATCH 200, a create 201 with `deduplicated`), a comment's {id} (201).
 import { createHash } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -30,6 +33,7 @@ import type { Once } from "./once.ts";
 import { delegateIds, OutcomeError, type PluginPost } from "./outcomes.ts";
 import type { Provenance } from "./provenance.ts";
 import { fail } from "./proxy.ts";
+import { isLogTask, logTasks, scopeOf as taskScopeOf } from "./task-scope.ts";
 
 // One path segment: never a dot segment, which URL resolution would turn into another route.
 const ID = "(?!\\.+(?:/|$))[A-Za-z0-9_.:-]{1,100}";
@@ -50,9 +54,21 @@ const MAX = 32 * 1024 * 1024;
 /** What a PATCH may change besides its status and comment (post.js PATCH_KEYS), and what a create may carry. */
 const PATCH = ["title", "description", "priority", "assigneeAgentId", "assigneeUserId", "labelIds", "blockedByIssueIds"];
 const CREATE = ["title", "description", "priority", "status", "assigneeAgentId", "assigneeUserId", "labelIds", "parentId", "idempotencyKey", "allowDuplicate"];
-type Issue = { id: string; identifier?: string; assigneeAgentId?: string | null; createdByAgentId?: string | null; parentId?: string | null; status?: string };
+type Issue = { id: string; identifier?: string; assigneeAgentId?: string | null; assigneeUserId?: string | null; createdByAgentId?: string | null; parentId?: string | null; status?: string };
 
-export function createCp({ whoami, asserter, plugin, once, agentKey, grants, fleetIssues = () => "", controlUrl, checks, provenance, appOwners, facts, log = () => {} }: {
+/** Every open task has a holder: an agent, or the owner's user. Whether a create (`cur` undefined) or a change to who holds a task would leave it open with neither. */
+export function leavesNoHolder(cur: { status?: string | null; assigneeAgentId?: string | null; assigneeUserId?: string | null } | undefined, b: Record<string, unknown>): boolean {
+  if (cur && b.assigneeAgentId === undefined && b.assigneeUserId === undefined) return false;
+  if (["done", "cancelled"].includes(String(b.status ?? cur?.status ?? ""))) return false;
+  const agent = b.assigneeAgentId !== undefined ? b.assigneeAgentId : cur?.assigneeAgentId;
+  const user = b.assigneeUserId !== undefined ? b.assigneeUserId : cur?.assigneeUserId;
+  return !agent && !user;
+}
+export const NO_HOLDER = "every open task has a holder: an agent (assigneeAgentId, yourself included) or the owner (assigneeUserId)";
+
+export function createCp({ whoami, asserter, plugin, once, agentKey, grants, fleetIssues = () => "", controlUrl, checks, provenance, appOwners, facts, observe, log = () => {} }: {
+  /** The wake inbox's observe (wakes.ts): a task this route just changed has its facts recorded at once, from the issue the write returned. */
+  observe?: (issue: Issue, actor: string) => Promise<void>;
   /** Flow's fact log (facts.ts): task.commented for each comment a job writes through here. */
   facts?: Facts;
   whoami: Whoami; asserter: Asserter; plugin: PluginPost;
@@ -112,20 +128,17 @@ export function createCp({ whoami, asserter, plugin, once, agentKey, grants, fle
     const roles = c.roles ?? [];
     const keyOf = (id?: string | null) => (id ? String(table[id]?.key ?? "another agent") : "");
     /** Why this job may write on task `t` (post.js scopes), or undefined. */
-    const scopeOf = async (t: Issue) => {
-      if (t.assigneeAgentId === agent) return "own";
-      if (t.createdByAgentId === agent) return "created";
-      if (t.parentId && (await issue(t.parentId)).assigneeAgentId === agent) return "child";
-      return undefined;
-    };
-    /** A comment-only write's scope where the job has no other: the grants table's tasks for it, the Fleet issues log, a librarian's inboxes, the chief of staff anywhere. */
+    // Setup's log tasks (grants): held by an agent, they take comments only, and never a child (task-scope.ts).
+    const logs = logTasks({ agents: table as never, fleet_issues: fleetIssues() });
+    const scopeOf = (t: Issue) => taskScopeOf(t, agent, issue, logs);
+    /** A comment-only write's scope where the job has no other: the grants table's tasks for it, the Fleet issues log, a librarian's inboxes, a fleet overseer (the chief of staff, fleet-admin, or the Fleet Steward, fleet-audit) anywhere. */
     const commentScope = (t: Issue) => {
       const own = table[agent] ?? {};
       if ([own.memory_inbox, own.review_log, own.chat_task].includes(t.id)) return "listed";
       const fleet = fleetIssues();
       if (fleet && t.identifier === fleet) return "listed";
       if (roles.includes("librarian") && Object.values(table).some((g) => g.memory_inbox === t.id)) return "listed";
-      return roles.includes("fleet-admin") ? "admin" : undefined;
+      return roles.includes("fleet-admin") || roles.includes("fleet-audit") ? "admin" : undefined;
     };
     const refuse = (t: Issue): never => {
       const who = t.assigneeAgentId ? `its assignee (${keyOf(t.assigneeAgentId)})` : "the owner";
@@ -168,10 +181,12 @@ export function createCp({ whoami, asserter, plugin, once, agentKey, grants, fle
     };
     const issueAnswer = async (id: string, status: number, extra: Record<string, unknown> = {}) => {
       const r = await read(`/api/issues/${encodeURIComponent(id)}`);
+      // The write stands whether or not its facts are recorded now: the poll reconciles what observe missed.
+      if (r.status === 200) await observe?.(JSON.parse(r.out.toString("utf8")), `agent:${c.key}`).catch((e: Error) => log("observe failed", { task: id, err: e.message }));
       answer(r.status === 200 ? status : r.status, r.status === 200 ? Buffer.from(JSON.stringify({ ...JSON.parse(r.out.toString("utf8")), ...extra })) : r.out);
     };
     // The kernel's self tag (wakes.ts SELF_TAG: wakes nobody) on the agent's own task and the tasks its grants list; anywhere
-    // else (a child, a part, the chief of staff's comment on another agent's task) the op tag, so the task's own agent hears it
+    // else (a child, a part, a fleet overseer's comment on another agent's task) the op tag, so the task's own agent hears it
     // by the dispatch rules (who started work there), never the writer itself.
     const tagOf = (scope: string, op: string) => (scope === "own" || scope === "listed" ? `<!-- aidenhq:job=${op} kind=cp -->` : `<!-- aidenhq:op=${op} -->`);
 
@@ -182,7 +197,9 @@ export function createCp({ whoami, asserter, plugin, once, agentKey, grants, fle
       if (extra.length) throw fail(400, "bad_request", `a new task takes ${CREATE.join(", ")}; not ${extra.join(", ")}`);
       if (decodeURIComponent(company) !== (await viaPlugin(() => plugin.company(agent)))) throw fail(403, "forbidden", "a job creates tasks in its own company only");
       await ownerOnly(b.assigneeUserId);
+      if (leavesNoHolder(undefined, b)) throw fail(400, "bad_request", NO_HOLDER);
       const parent = typeof b.parentId === "string" && b.parentId ? await issue(b.parentId) : undefined;
+      if (parent && isLogTask(parent, logs)) throw fail(403, "forbidden", `${parent.identifier ?? parent.id} is a log task: it takes comments only`);
       const scope = parent ? (await scopeOf(parent)) ?? (b.assigneeAgentId === agent ? "part" : refuse(parent)) : "own";
       const child = Object.fromEntries(CREATE.slice(0, 7).filter((k) => b[k] !== undefined).map((k) => [k, b[k]]));
       const tag = tagOf("created", op);
@@ -205,6 +222,9 @@ export function createCp({ whoami, asserter, plugin, once, agentKey, grants, fle
     if (extra.length) throw fail(400, "bad_request", `a task's change takes status, comment, ${PATCH.join(", ")}; not ${extra.join(", ")}`);
     if (patch.assigneeAgentId !== undefined && patch.assigneeAgentId !== null) throw fail(403, "forbidden", "a task is handed to another agent by its delegator, not reassigned here (assigneeAgentId: null hands it back)");
     await ownerOnly(patch.assigneeUserId);
+    if (leavesNoHolder(t, { ...patch, ...(status !== undefined ? { status } : {}) })) throw fail(400, "bad_request", `${NO_HOLDER}: handing a task back names the owner (assigneeUserId)`);
+    // Setup's log tasks take comments only, even from the agent that holds them.
+    if ((status !== undefined || Object.keys(patch).length) && isLogTask(t, logs)) throw fail(403, "forbidden", `${t.identifier ?? t.id} is a log task: it takes comments only`);
     const scope = (await scopeOf(t)) ?? (status === undefined && !Object.keys(patch).length ? commentScope(t) : undefined) ?? refuse(t);
     let gated = false;
     if (status === "done") {
@@ -282,7 +302,7 @@ const BOARD_MAX_BODY = 16 * 1024 * 1024;
  * answers pass as they are (an attachment upload is multipart, its content bytes). `X-AidenHQ-Account` names the signed-in
  * admin a write is for (none: the board's own timers and notices); it is logged with the write.
  */
-export function createBoardCp({ controlUrl, key, fetch = globalThis.fetch, log = () => {} }: { controlUrl: string; key: () => string; fetch?: typeof globalThis.fetch; log?: (msg: string, f?: Record<string, unknown>) => void }) {
+export function createBoardCp({ controlUrl, key, fetch = globalThis.fetch, observe, facts, log = () => {} }: { /** The fact log: the owner's comments are recorded here, whichever agents are polled. */ facts?: Facts; controlUrl: string; key: () => string; fetch?: typeof globalThis.fetch; observe?: (issue: { id: string }, actor: string) => Promise<void>; log?: (msg: string, f?: Record<string, unknown>) => void }) {
   return async function boardCp(req: IncomingMessage, res: ServerResponse, lane: string, path: string, query: string): Promise<void> {
     const method = String(req.method);
     const allowed = lane === "read" ? method === "GET" && BOARD_READ_PATHS.some((re) => re.test(path)) : BOARD_WRITE_PATHS.some(([m, re]) => m === method && re.test(path));
@@ -294,6 +314,19 @@ export function createBoardCp({ controlUrl, key, fetch = globalThis.fetch, log =
     for await (const c of req) { n += c.length; if (n > BOARD_MAX_BODY) throw fail(413, "too_large", "too large"); chunks.push(c); }
     const body = method === "GET" ? undefined : Buffer.concat(chunks);
     const type = req.headers["content-type"];
+    // An owner write that would leave an open task with no holder (leavesNoHolder) is refused before it reaches the control plane.
+    const created = method === "POST" && /^\/api\/companies\/[^/]+\/issues$/.test(path), changed = method === "PATCH" && /^\/api\/issues\/[^/]+$/.test(path);
+    if (created || changed) {
+      let b: Record<string, unknown>;
+      try { b = JSON.parse(body!.toString("utf8") || "{}"); } catch { throw fail(400, "bad_request", "the body must be JSON"); }
+      let cur: { status?: string; assigneeAgentId?: string | null; assigneeUserId?: string | null } | undefined;
+      if (changed && (b.assigneeAgentId !== undefined || b.assigneeUserId !== undefined)) {
+        const r = await fetch(new URL(path, controlUrl), { signal: AbortSignal.timeout(60_000), headers: { authorization: `Bearer ${key()}`, accept: "application/json" } });
+        if (!r.ok) throw fail(r.status === 404 ? 404 : 502, "upstream", `the control plane answered ${r.status} for ${path}`);
+        cur = (await r.json()) as typeof cur;
+      }
+      if (leavesNoHolder(changed ? cur ?? {} : undefined, b)) throw fail(400, "bad_request", NO_HOLDER);
+    }
     const r = await fetch(new URL(`${path}${query}`, controlUrl), {
       method, signal: AbortSignal.timeout(60_000),
       headers: { authorization: `Bearer ${key()}`, accept: String(req.headers.accept ?? "application/json"), ...(body?.length && type ? { "content-type": String(type) } : {}) },
@@ -302,6 +335,21 @@ export function createBoardCp({ controlUrl, key, fetch = globalThis.fetch, log =
     const out = Buffer.from(await r.arrayBuffer());
     if (out.length > MAX) throw fail(502, "too_large", "the control plane's answer is too large");
     if (lane === "owner") log("cp owner", { method, path, status: r.status, ...(account ? { account } : {}) });
+    // The owner's comment is a fact at once (version = its id), whoever holds the task.
+    if (lane === "owner" && r.ok && method === "POST") {
+      const m = /^\/api\/issues\/([^/]+)\/comments$/.exec(path);
+      try {
+        const c = JSON.parse(out.toString("utf8")) as { id?: unknown; createdAt?: unknown };
+        if (m && typeof c.id === "string") factWriter(facts, log)({ type: "task.commented", subject: `task:${decodeURIComponent(m[1]!)}`, version: c.id, at: typeof c.createdAt === "string" ? c.createdAt : iso(Date.now()), actor: account ? `account:${account}` : "unknown", task: decodeURIComponent(m[1]!), data: { kind: "comment" } });
+      } catch { /* not JSON: nothing to record */ }
+    }
+    // A task the owner just changed or made has its facts recorded at once, from the issue the write returned; the write stands if that fails.
+    if (lane === "owner" && r.ok && (created || changed)) {
+      try {
+        const issue = JSON.parse(out.toString("utf8")) as { id?: unknown };
+        if (typeof issue.id === "string") await observe?.(issue as { id: string }, account ? `account:${account}` : "unknown");
+      } catch (e) { log("observe failed", { path, err: (e as Error).message }); }
+    }
     res.writeHead(r.status, { "content-type": r.headers.get("content-type") ?? "application/json", "content-length": out.length }).end(out);
   };
 }

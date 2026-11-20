@@ -1,6 +1,7 @@
 // An agent's page (#/agents/<key>/<tab>): who it is and what it is doing, what waits on you, its tasks (each opens its
-// thread), its week, its general chats and its settings. Reads: agent-page.ts; writes: the settings editor's (SettingsAgents AgentDetails).
+// thread), its week, what it did run by run (Activity), its general chats and its settings. Reads: agent-page.ts; writes: the settings editor's (SettingsAgents AgentDetails).
 import { useCallback, useEffect, useRef, useState } from "react";
+import { AgentActivity } from "./AgentActivity";
 import { AgentAvatar } from "./AgentAvatar";
 import { SignInRequired, api } from "./api";
 import { load } from "./cache";
@@ -23,8 +24,8 @@ import "./settings.css";
 import "./agent-page.css";
 import { Tabs } from "./ui";
 
-export type AgentTab = "overview" | "chats" | "handbook" | "settings";
-const TABS: [AgentTab, string][] = [["overview", "Overview"], ["chats", "Chats"], ["handbook", "Handbook"], ["settings", "Settings"]];
+export type AgentTab = "overview" | "activity" | "chats" | "handbook" | "settings";
+const TABS: [AgentTab, string][] = [["overview", "Overview"], ["activity", "Activity"], ["chats", "Chats"], ["handbook", "Handbook"], ["settings", "Settings"]];
 
 /** When the agent last finished a task (the newest done task), for the idle status line. */
 const lastDoneQuery = (key: string) => ({ key: `agents.${key}.last-done`, fetch: () => api.agentHistory(key, { status: "done" }).then((r) => r.rows.reduce<string | null>((a, x) => (!a || x.updatedAt > a ? x.updatedAt : a), null)), persist: false as const });
@@ -104,6 +105,7 @@ export function AgentPage({ agentKey, tab, go, onSignIn }: { agentKey: string; t
           <Week id={profile.id} />
         </div>
       )}
+      {tab === "activity" && <AgentActivity agentKey={agentKey} onSignIn={onSignIn} />}
       {tab === "chats" && <ChatsTab profile={profile} onSignIn={onSignIn} />}
       {tab === "handbook" && <AgentHandbook agentKey={agentKey} onSignIn={onSignIn} />}
       {tab === "settings" && <AgentSettings agentKey={agentKey} profile={profile} onSignIn={onSignIn} />}

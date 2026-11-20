@@ -32,8 +32,16 @@ test("a module's task goes to the agent holding the role, once per source, marke
     return { status: 404, json: {} };
   };
   const db = new DatabaseSync(":memory:");
-  const rubrics = [];
-  const tasks = createModuleTasks({ db, owner, agents: () => ({ "a-cos": { roles: ["fleet-admin"] }, [PE]: { roles: ["platform-engineer"] } }), rubric: async (task, module, b) => void rubrics.push({ id: task.identifier, module, ...b }) });
+  const rubrics = [], posted = [];
+  // The kernel's post action: what a module's comment on its own card goes through (it skips Paperclip's reopen).
+  const plugin = { company: async () => "c-1", post: async (agent, params) => {
+    const issue = [...made.values()].find((i) => i.id === params.issueId);
+    if (!issue) return { status: 404, data: { refused: "no such task" } };
+    posted.push({ agent, ...params });
+    (issue.comments ??= []).push(params.body);
+    return { status: 200, data: { comment: `comment-${issue.comments.length}` } };
+  } };
+  const tasks = createModuleTasks({ db, owner, agents: () => ({ "a-cos": { roles: ["fleet-admin"] }, [PE]: { roles: ["platform-engineer"] } }), plugin: () => plugin, rubric: async (task, module, b) => void rubrics.push({ id: task.identifier, module, ...b }) });
   const who = { codehost: { kind: "module", module: "github", roles: ["kernel.tasks"] }, other: { kind: "module", module: "other", roles: [] } };
   const bp = createBackplane({ whoami: async (k) => who[k] ?? Promise.reject(new Error("no")), asserter: { jwks: {} }, proxy: async () => {}, cp: async () => {}, grantsFile: () => ({}), tasks });
   const { s, url } = await serve(bp);
@@ -57,6 +65,9 @@ test("a module's task goes to the agent holding the role, once per source, marke
   const issue = [...made.values()][0];
   assert.equal(issue.assigneeAgentId, PE);
   assert.equal(issue.status, "todo");
+  // Quiet: a holder for records, in the backlog, so its assignment wakes nobody.
+  assert.equal((await file("codehost", { ...req, source: "quiet:x", quiet: true })).status, 200);
+  assert.equal([...made.values()].at(-1).status, "backlog");
   assert.match(issue.description, /<!-- source:dependabot:acme\/app\/7 -->\n<!-- aidenhq-module:github -->$/);
   assert.doesNotMatch(issue.description, /<!-- source:forged -->/, "the module's text can't add a marker");
   // A rubric asks the kernel to file it with grading, as the module holding kernel.tasks; a module without the role gets nothing filed.
@@ -72,20 +83,33 @@ test("a module's task goes to the agent holding the role, once per source, marke
   db.prepare("DELETE FROM graded_tasks WHERE task = ?").run(gradedTask.id);
   assert.equal((await file("codehost", graded)).status, 409, "a rubric is never attached to a task that wasn't filed graded");
   assert.equal(rubrics.length, 1);
-  // It closes its own task, tagged so the line wakes nobody; another module can't.
-  const close = (key, b) => fetch(`${url}/v1/tasks/${issue.id}/close`, { method: "POST", headers: { authorization: `Bearer ${key}` }, body: JSON.stringify(b) });
+  // It comments on its own open card as the card's agent, tagged so it wakes nobody; another module can't.
   const otherTasks = { ...who.other, roles: ["kernel.tasks"], module: "jira" };
   who.jira = otherTasks;
+  const comment = (key, id, body) => fetch(`${url}/v1/tasks/${id}/comment`, { method: "POST", headers: { authorization: `Bearer ${key}` }, body: JSON.stringify({ body }) });
+  assert.equal((await comment("jira", issue.id, "a newer reason")).status, 403);
+  assert.equal((await comment("codehost", issue.id, "  ")).status, 400);
+  assert.equal((await comment("codehost", issue.id, "**ACME-1 is still blocked.** A newer reason.")).status, 200);
+  assert.equal(issue.comments.length, 1);
+  assert.equal(posted[0].agent, PE, "posted as the card's own agent, never the owner");
+  assert.equal(posted[0].tag, `<!-- aidenhq:job=${issue.id} kind=comment -->`, "tagged so it wakes nobody");
+  assert.equal((await comment("codehost", "99999999-9999-4999-8999-999999999999", "x")).status, 404);
+  // It closes its own task, tagged so the line wakes nobody; another module can't.
+  const close = (key, b) => fetch(`${url}/v1/tasks/${issue.id}/close`, { method: "POST", headers: { authorization: `Bearer ${key}` }, body: JSON.stringify(b) });
   assert.equal((await close("jira", { status: "done", body: "merged" })).status, 403);
   assert.equal((await close("codehost", { status: "done", body: "acme/app#7 is merged or closed: nothing left to do." })).status, 200);
   assert.equal(issue.status, "done");
   assert.match(issue.closing, /<!-- aidenhq:job=github kind=status -->$/);
+  // A card its delegator closed stays closed: no comment is posted on it.
+  const closed = await comment("codehost", issue.id, "a later reason");
+  assert.deepEqual([closed.status, (await closed.json()).comment], [200, ""], "a closed card takes no comment");
+  assert.equal(issue.comments.length, 1);
 });
 
 /**
  * A module lists and closes only its own tasks: the release train's source family is listable to the code host, and a task
  * carrying this module's marker and no other module's is its to close. A second module's marker refuses both, even when this
- * module's marker is there too; a task with no module marker at all (the runner-era filings) is refused by the same guard.
+ * module's marker is there too; a task with no module marker at all is refused by the same guard.
  */
 test("the code host closes and lists only the tasks carrying its own marker and no other module's", async (t) => {
   const made = new Map();
@@ -106,7 +130,7 @@ test("the code host closes and lists only the tasks carrying its own marker and 
     }
     return { status: 404, json: {} };
   };
-  const tasks = createModuleTasks({ db: new DatabaseSync(":memory:"), owner, agents: () => ({ [PE]: { roles: ["platform-engineer"] } }) });
+  const tasks = createModuleTasks({ db: new DatabaseSync(":memory:"), owner, agents: () => ({ [PE]: { roles: ["platform-engineer"] } }), plugin: () => ({ company: async () => "c-1", post: async () => ({ status: 200, data: {} }) }) });
   const who = {
     codehost: { kind: "module", module: "github", roles: ["kernel.tasks"] },
     jira: { kind: "module", module: "jira", roles: ["kernel.tasks"] },
@@ -116,7 +140,7 @@ test("the code host closes and lists only the tasks carrying its own marker and 
   t.after(() => s.close());
   const close = (key, id) => fetch(`${url}/v1/tasks/${id}/close`, { method: "POST", headers: { authorization: `Bearer ${key}` }, body: JSON.stringify({ status: "done", body: "**Not landed:** the next merge to the product files the next bump." }) });
   const list = (key, source) => fetch(`${url}/v1/tasks?source=${encodeURIComponent(source)}`, { headers: { authorization: `Bearer ${key}` } });
-  /** A task as a module filed it: its source marker, then the module markers (none: a runner-era filing). */
+  /** A task as a module filed it: its source marker, then the module markers (none: no module's). */
   const seed = (source, n, ...modules) => {
     const id = `${String(n).padStart(8, "0")}-1111-4111-8111-111111111111`;
     const marks = modules.map((module) => `<!-- aidenhq-module:${module} -->`).join("\n");
@@ -131,29 +155,29 @@ test("the code host closes and lists only the tasks carrying its own marker and 
   assert.equal(own.status, "done");
   assert.match(own.closing, /<!-- aidenhq:job=github kind=status -->$/);
 
-  // The runner-era filing has no module marker: the generic guard refuses it, and it is not listed either.
-  const legacy = seed("release:instance:1795022489866", 2);
+  // A filing with no module marker: the generic guard refuses it, and it is not listed either.
+  const legacy = seed(`release:instance:${"1".repeat(40)}`, 2);
   assert.equal((await close("codehost", legacy.id)).status, 403, "no module marker: not this module's task");
   assert.equal(legacy.status, "in_review", "a refused close changes nothing");
 
   // Another module's marker alone: not the code host's.
-  const foreign = seed("release:instance:1795025189924", 3, "jira");
+  const foreign = seed(`release:instance:${"2".repeat(40)}`, 3, "jira");
   assert.equal((await close("codehost", foreign.id)).status, 403, "never a task another module marked");
 
   // The reviewer's point: the release source marker plus the code host's marker plus a second module's is neither listed nor
   // closed, by either module.
-  const shared = seed("release:instance:1795025189925", 4, "github", "jira");
+  const shared = seed(`release:instance:${"3".repeat(40)}`, 4, "github", "jira");
   assert.equal((await close("codehost", shared.id)).status, 403, "a second module's marker refuses the close, even with this module's");
   assert.equal((await close("jira", shared.id)).status, 403, "and it is never the other module's either");
   assert.equal(shared.status, "in_review", "a refused close changes nothing");
 
   // A second source family keeps the train's listing to its own family: it is not returned even with this module's marker.
-  const twoFamilies = seed("release:instance:1795022489926", 5, "github");
+  const twoFamilies = seed(`release:instance:${"4".repeat(40)}`, 5, "github");
   twoFamilies.description = `${twoFamilies.description}\n<!-- source:dependabot:acme/app/9 -->`;
   const prose = seed("dependabot:acme/app/8", 6, "github");
   prose.description = "mentions release:instance: in prose only";
   // And one plain open bump the train filed itself: the only row the listing returns.
-  const listed = seed("release:instance:1795022489927", 7, "github");
+  const listed = seed(`release:instance:${"5".repeat(40)}`, 7, "github");
 
   const found = await (await list("codehost", "release:instance:")).json();
   assert.deepEqual(found.tasks.map((i) => i.identifier), [listed.identifier], "only the open bump carrying this module's marker alone");

@@ -37,6 +37,18 @@ test("the routes need a module holding kernel.work-read", async (t) => {
   assert.equal((await get("/v1/work/metrics", "reader")).headers.get("content-type").startsWith("text/plain"), true);
 });
 
+test("a task's read carries its status as the wake scan last saw it, null when it has not seen it", () => {
+  const { work, records } = setup();
+  assert.equal(work.task("t1").status, null);
+  records.db.exec("CREATE TABLE wake_tasks (task TEXT PRIMARY KEY, agent TEXT, status TEXT, comment TEXT)");
+  records.db.prepare("INSERT INTO wake_tasks (task, status) VALUES ('t1', 'cancelled')").run();
+  assert.equal(work.task("t1").status, "cancelled");
+  assert.equal(work.task("t2").status, null);
+  records.db.prepare("UPDATE jobs SET identifier = 'ACME-1' WHERE task = 't1'").run();
+  assert.equal(work.task("ACME-1").status, "cancelled", "by identifier too");
+  assert.deepEqual(work.task("ACME-1").jobs.map((j) => j.id), ["j-2", "j-1"]);
+});
+
 test("the board reads GET /v1/work with its key, one job included, and nothing else under /v1/work", async (t) => {
   const { work, records } = setup();
   records.db.prepare("UPDATE jobs SET usage = ?, progress = ?, final = ?, why = ?, exit = 1 WHERE id = 'j-1'").run(JSON.stringify({ input: 10, cached: 4, output: 2 }), JSON.stringify({ said: "building", plan: ["a"], steps: [] }), "done it", JSON.stringify({ timedOut: true }));
@@ -116,4 +128,27 @@ test("activity: waiting counts the wakes a module could claim now (open and due,
   const a = work.activity();
   assert.deepEqual(a.waiting, { count: 2, oldest_at: new Date(now - 30 * 60_000).toISOString(), oldest_cause: "cause-lease-expired" });
   assert.equal(a.last_started_at, new Date(2_000_000).toISOString());
+});
+
+test("an agent's timeline: each job's wake and who caused it, why it ended, its billed cost and the records it filed; a task's request chain for the board", async (t) => {
+  const { work, records } = setup();
+  records.db.exec("CREATE TABLE wakes (key TEXT PRIMARY KEY, task TEXT, agent TEXT, cause TEXT, at INTEGER, state TEXT, claimed_by TEXT, job TEXT UNIQUE, until INTEGER)");
+  records.db.prepare("INSERT INTO wakes (key, task, agent, cause, at, state, job) VALUES ('comment:c1', 't1', 'a1', 'comment', 1, 'done', 'j-1')").run();
+  records.db.prepare("UPDATE jobs SET state = 'failed', final = 'boom\nmore', identifier = 'ACME-1' WHERE id = 'j-1'").run();
+  const fact = (subject, type, data) => records.db.prepare("INSERT INTO facts (id, type, subject, version, task, at, seen_at, actor, data) VALUES (?, ?, ?, 'v', 't1', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 'kernel', ?)").run(`${subject}|${type}`, type, subject, JSON.stringify(data));
+  fact("wake:comment:c1", "wake.opened", { cause: "comment", author: "account:owner-1" });
+  fact("job:j-1", "job.ended", { state: "failed", why: "the engine exited 1", cost_usd: 0.42 });
+  const rec = records.file({ kind: "runner.pr", module: "runner", args: {}, targets: {}, executor: { module: "runner" }, policy: "p", tier: 1, panel: false, card: { sentence: "s", changes: "", reads: "", cost: "", details: "" }, requester: { agent: "a1", key: "eng", name: "eng", roles: [], kind: "run" }, task: "t1", state: "review" });
+  const [running, failed] = work.agent("a1").jobs;
+  assert.deepEqual([failed.identifier, failed.cause, failed.caused_by, failed.cost_usd, failed.error, failed.writes], ["ACME-1", "comment", "account:owner-1", 0.42, "the engine exited 1", []]);
+  assert.deepEqual([running.cause, running.cost_usd, running.error, running.writes.map((w) => [w.id, w.kind, w.tier, w.state])], [null, null, null, [[rec.id, "runner.pr", 1, "review"]]], "a record filed while the job runs is its; no cost until it ends");
+
+  const issues = { t1: { id: "t1", title: "Fix the login", description: "It 500s.<!-- hidden -->" } };
+  const owner = async (_m, path) => { const i = issues[decodeURIComponent(path.split("/").pop())]; return i ? { status: 200, json: i } : { status: 404, json: {} }; };
+  const handle = createBackplane({ whoami: async () => Promise.reject(new Error("no")), asserter: { jwks: {} }, proxy: async () => {}, cp: async () => {}, grantsFile: () => ({}), work, records, writes: {}, owner, boardKey: () => "board-key" });
+  const server = http.createServer(handle).listen(0);
+  t.after(() => server.close());
+  const get = (path, token = "board-key") => fetch(`http://127.0.0.1:${server.address().port}${path}`, { headers: { authorization: `Bearer ${token}` } });
+  assert.deepEqual(await (await get(`/v1/writes/${rec.id}/chain`)).json(), { chain: "Fix the login\n\nIt 500s." });
+  assert.equal((await get(`/v1/writes/${rec.id}/chain`, "wrong")).status, 401);
 });

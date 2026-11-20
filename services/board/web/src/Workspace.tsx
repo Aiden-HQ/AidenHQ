@@ -20,6 +20,7 @@ import { foldCount, foldNoise, isNoise, shortTitle, type Folded } from "./conver
 import type { Approval, Assignee, ChatAgent, ChatDetail, LaneAgent, ChatMessage, ChatRow, ChatState, FileView, Question, SettledItem, Working } from "./types";
 import { MAX_FILE, ago, elapsed, fileSize, handleOf } from "./util";
 import { openQuestions } from "./questions";
+import { Icon } from "./ui/icons";
 
 interface Props {
   selected: string | null;
@@ -35,8 +36,8 @@ interface Props {
 
 const QUIET_MS = 2 * 60_000;
 const PANEL_KEY = "aidenhq.panel";
-/** From this width the details panel sits beside the conversation; below it, it opens over it (styles.css). */
-const PANEL_SIDE_BY_SIDE = 1180;
+/** From this width the details panel starts open; below it, it starts shut until the owner opens it (a stored choice wins). */
+const PANEL_OPEN_FROM = 1920;
 /** An agent's portrait (/crew/<avatar>.svg), by its key or name, when it has one. */
 export const portraitOf = (crew: Assignee[], keyOrName: string) => {
   const a = crew.find((c) => c.key === keyOrName) ?? crew.find((c) => c.name === keyOrName);
@@ -81,10 +82,10 @@ export function ChatWorkspace({ selected, composing, mobile, crew, prefix, go, o
   useEvents(["chat", "approvals"], load);
   const [panel, setPanel] = useState(() => {
     try {
-      // A narrow window starts with the panel shut: there it opens over the conversation.
-      return window.innerWidth >= PANEL_SIDE_BY_SIDE && localStorage.getItem(PANEL_KEY) !== "0";
+      const saved = localStorage.getItem(PANEL_KEY);
+      return saved ? saved === "1" : window.innerWidth >= PANEL_OPEN_FROM;
     } catch {
-      return false;
+      return window.innerWidth >= PANEL_OPEN_FROM;
     }
   });
   const togglePanel = () =>
@@ -365,7 +366,7 @@ function NewChat({ agents, crew, mobile, go, toast, reloadList }: { agents: Chat
       {mobile && (
         <header className="conv-head">
           <button className="icon-btn" aria-label="Back to chats" onClick={() => go("#/")}>
-            ‹
+            <Icon name="back" size={20} />
           </button>
           <span className="conv-name">New chat</span>
         </header>
@@ -602,7 +603,7 @@ function Conversation({ refId, row, mobile, crew, prefix, go, onSignIn, toast, p
           <header className="conv-head">
             {mobile && (
               <button className="icon-btn" aria-label="Back to chats" onClick={() => go("#/")}>
-                ‹
+                <Icon name="back" size={20} />
               </button>
             )}
             <Monogram name={row.agent.name} size={32} avatar={portraitOf(crew, row.agent.key)} />
@@ -646,7 +647,7 @@ function Conversation({ refId, row, mobile, crew, prefix, go, onSignIn, toast, p
         <header className="conv-head">
           {mobile && (
             <button className="icon-btn" aria-label="Back to chats" onClick={() => go("#/")}>
-              ‹
+              <Icon name="back" size={20} />
             </button>
           )}
           <Monogram name={chat.agent.name} size={32} avatar={portraitOf(crew, chat.agent.key)} />

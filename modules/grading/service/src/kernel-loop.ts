@@ -48,23 +48,25 @@ export function createKernelGradeLoop({ db, runner, due, kernel, kernelBytes, ap
   const state = {
     get: (k: string) => (db.prepare("SELECT v FROM loop_state WHERE k = ?").get(k) as { v?: string } | undefined)?.v ?? "",
     set: (k: string, v: string) => void db.prepare("INSERT INTO loop_state (k, v) VALUES (?, ?) ON CONFLICT (k) DO UPDATE SET v = excluded.v").run(k, v),
+    /** The rows under a prefix that hold something, as [key, value]. */
+    list: (prefix: string) => (db.prepare("SELECT k, v FROM loop_state WHERE k >= ? AND k < ? AND v != '' ORDER BY k").all(prefix, `${prefix}\uffff`) as { k: string; v: string }[]).map((r) => [r.k, r.v] as [string, string]),
     // The task's newest job: when it ended and with which engine (the author's model family, for the cross-family grader).
     lastJob: (task: string): Json => undefined,
   };
   const read = (path: string) => kernel("GET", `/v1/cp/read${path}`);
-  const work = (task: string) => kernel("GET", `/v1/work${q({ task })}`);
   const workCache = new Map<string, Promise<Json>>();
-  const tasks = new Map<string, Json>();
-  // A task's jobs, read once per pass: lastJob is synchronous in the loop, so the pass's reads are made first (prime).
+  const work = (task: string) => kernel("GET", `/v1/work${q({ task })}`);
+  // A task's jobs, read once per pass (cleared at each pass's start): lastJob is synchronous in the loop, so the pass's reads are made first (prime).
   const prime = async (task: string) => { const w = await work(task); workCache.set(task, w); return w; };
   state.lastJob = (task: string) => { const j = (workCache.get(task) as unknown as Json)?.jobs?.find((x: Json) => x.state !== "running"); return j && { finished_at: j.ended_at, engine: j.engine }; };
 
   const pc = {
     company: "",
-    issue: async (ref: string) => { const i = await kernel("GET", `/v1/cp/read/api/issues/${encodeURIComponent(ref)}`); tasks.set(i.id, i); await prime(i.id); return i; },
+    issue: async (ref: string) => { const i = await kernel("GET", `/v1/cp/read/api/issues/${encodeURIComponent(ref)}`); await prime(i.id); return i; },
     comments: (id: string) => read(`/api/issues/${encodeURIComponent(id)}/comments`),
     children: async (parentId: string) => (await read(`/api/companies/${(await kernel("GET", `/v1/cp/read/api/issues/${encodeURIComponent(parentId)}`)).companyId}/issues${q({ parentId, limit: "200" })}`)).filter((i: Json) => i.parentId === parentId),
-    agents: async () => read(`/api/companies/${[...tasks.values()][0]?.companyId}/agents`),
+    // The task's own agent, whatever its company (work or personal).
+    agent: (id: string) => read(`/api/agents/${encodeURIComponent(id)}`).catch((e: { status?: number }) => (e.status === 404 ? undefined : Promise.reject(e))),
     // A verdict's move is the finish check's own resolve: done accepts the work, todo reopens it with the note (which wakes the agent).
     setStatus: async (id: string, status: string, note: string) => void (await kernel("POST", `/v1/checks/${encodeURIComponent(id)}`, { verdict: status === "done" ? "ok" : "reopen", comment: note })),
     // A grader that keeps failing: the task ends blocked with the error (no wake), and its delegator is told.
@@ -130,5 +132,5 @@ export function createKernelGradeLoop({ db, runner, due, kernel, kernelBytes, ap
     stripHidden, graderSpeaks: (s?: string) => ["open", "pending", "awaiting_evidence", "needs_revision", "grading_failed"].includes(String(s)),
     isUserInstruction: (c: Json) => c.authorType === "user" && !forOthers(c.body),
   });
-  return loop;
+  return { ...loop, runGrades: async () => { workCache.clear(); return loop.runGrades(); } };
 }

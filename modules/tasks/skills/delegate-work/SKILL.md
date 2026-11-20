@@ -147,8 +147,8 @@ task settles it.
   priority low; `deliverable` pr with that repo when the assignee's work is graded). The PR merges without waiting for
   them.
 - **An escalated grade is yours to decide, in that turn**, from the grader's note and the work's evidence: close the task
-  (`task_set_status` done) when the work meets what was asked, even if a criterion was worded so it could not pass;
-  reopen it with the exact changes still needed; or cancel it and hand the work to someone better placed. The owner
+  (`task_finish` with its `issue`) when the work meets what was asked, even if a criterion was worded so it could not pass;
+  reopen it with the exact changes still needed (`task_comment` with `reopen: true`); or cancel it (`task_cancel`) and hand the work to someone better placed. The owner
   decides only what is theirs by authority (spend, a veto, a choice of taste), as one `decision` with concrete options.
 - A task blocked on one you might cancel: closing the dependent releases it once the blocker ends cancelled; an active
   blocker still holds it.

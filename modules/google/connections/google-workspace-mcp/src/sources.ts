@@ -1,4 +1,4 @@
-// src_docs writer (shared sources, docs/design/sources.md, phase 2). The owner's policy
+// src_docs writer (shared sources, docs/design/sources.md). The owner's policy
 // for long documents: metadata + a cheap summary + the link; agents read the full text live (drive_read_file, docs_read)
 // and Glean holds it for search. Runs inside google-workspace-mcp, on the primary account's sign-in.
 //

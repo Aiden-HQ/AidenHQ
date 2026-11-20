@@ -17,6 +17,7 @@ import {
 } from "@dnd-kit/core";
 import { SortableContext, arrayMove, sortableKeyboardCoordinates, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import { SignInRequired, api, type Session } from "./api";
 import { SignInScreen } from "./Accounts";
 import { SettingsView, isCategory, type Category } from "./Settings";
@@ -25,16 +26,18 @@ import { clearCache, load, peek, setAccount } from "./cache";
 import { subscribe } from "./events";
 import type { AgentTab } from "./AgentPage";
 import type { ModuleTab } from "./ModulePage";
-import { QUERIES, VIEW_CHUNKS, prefetchView, useQuery } from "./queries";
+import { QUERIES, VIEW_CHUNKS, useQuery } from "./queries";
 import { ChatWorkspace } from "./Workspace";
 import { askForNotifications, notificationsSupported, watchNeedsYou } from "./notify";
-import { CardView, GearIcon, GoogleBanner, PlusIcon, PoweredBy, SignInBanners, SortableCard, memberIssue } from "./components";
+import { CardView, GoogleBanner, PlusIcon, PoweredBy, SignInBanners, SortableCard, memberIssue } from "./components";
 import { CrewPicker, Drawer } from "./Drawer";
 import { SetupFlow } from "./SetupFlow";
 import { Markdown, setSlackTeams } from "./markdown";
 import { BUCKETS, BUCKET_NAMES, type Board, type Bucket, type Card } from "./types";
 import { dayDate, keepsSecureCookies, matches } from "./util";
 import { panelsOf } from "./sidebar";
+import { BottomBar, Palette, SubNav, TopNav, hrefOf, type NavView } from "./Shell";
+import "./shell.css";
 
 // Pages off the first screen load as their own chunks (warmed on hover and when the browser is idle: queries.ts).
 const AppsView = lazy(() => VIEW_CHUNKS.apps().then((m) => ({ default: m.AppsView })));
@@ -45,6 +48,7 @@ const ModulesView = lazy(() => VIEW_CHUNKS.modules().then((m) => ({ default: m.M
 const AgentPage = lazy(() => VIEW_CHUNKS.agentPage().then((m) => ({ default: m.AgentPage })));
 const ModulePage = lazy(() => VIEW_CHUNKS.modulePage().then((m) => ({ default: m.ModulePage })));
 const RunPage = lazy(() => VIEW_CHUNKS.run().then((m) => ({ default: m.RunPage })));
+const ReviewsView = lazy(() => VIEW_CHUNKS.reviews().then((m) => ({ default: m.ReviewsView })));
 const DesignView = lazy(() => VIEW_CHUNKS.design().then((m) => ({ default: m.DesignView })));
 /** A page's place while its code arrives (rarely seen: it is warmed early). No spinner: the page paints in a moment. */
 const PageLoading = () => <main className="page wide" aria-busy="true" />;
@@ -106,8 +110,8 @@ function parseRoute(): Route {
     const [ref = "", focus] = h.slice(2).split("/");
     return { kind: "task", ref, ...(focus ? { focus } : {}) };
   }
-  // #/agents/<key>[/overview|chats|settings] opens an agent's page. The old #/settings/agents lands on the Agents list.
-  const agent = /^agents\/([a-z0-9-]+)(?:\/(overview|chats|handbook|settings))?$/.exec(h);
+  // #/agents/<key>[/overview|activity|chats|handbook|settings] opens an agent's page. The old #/settings/agents lands on the Agents list.
+  const agent = /^agents\/([a-z0-9-]+)(?:\/(overview|activity|chats|handbook|settings))?$/.exec(h);
   if (agent) return { kind: "agent", key: agent[1]!, tab: (agent[2] as AgentTab | undefined) ?? "overview" };
   if (h === "settings/agents") return { kind: "view", view: "agents" };
   // #/r/<run id> opens a run's trace.
@@ -127,6 +131,8 @@ function parseRoute(): Route {
   // #/approvals, #/costs, ...: deep links to a tab.
   // A tab link may carry the tab's own state after "?" (#/costs?range=7d).
   if ((VIEWS as string[]).includes(h.split("?")[0]!)) return { kind: "view", view: h.split("?")[0] as View };
+  // #/reviews[/<tab>|/r/<run>] opens the Reviews page (Reviews.tsx reads the rest itself).
+  if (/^reviews(\/[\w/-]*)?$/.test(h)) return { kind: "view", view: "reviews" };
   // #/flow/<tab> opens a Flow tab (Flow.tsx reads the tab itself).
   if (/^flow\/[a-z]+(\?.*)?$/.test(h)) return { kind: "view", view: "flow" };
   const setup = /^setup\/([a-z0-9-]{1,63})$/.exec(h);
@@ -155,10 +161,8 @@ function useMedia(query: string) {
 }
 
 // "design" (#/design, the design system's catalogue) has no tab of its own.
-type View = "chat" | "agents" | "modules" | "approvals" | "board" | "apps" | "costs" | "flow" | "settings" | "design";
-const VIEWS: View[] = ["chat", "agents", "modules", "approvals", "board", "apps", "costs", "flow", "settings"];
-// Daily work in the bar; configuration (connections, accounts, instance settings) is behind the Settings gear.
-const TABS: [View, string][] = [["chat", "Chat"], ["approvals", "Approvals"], ["agents", "Agents"], ["modules", "Modules"], ["apps", "Apps"], ["board", "Tasks"], ["costs", "Costs"], ["flow", "Flow"]];
+type View = "chat" | "agents" | "modules" | "approvals" | "board" | "apps" | "reviews" | "costs" | "flow" | "settings" | "design";
+const VIEWS: View[] = ["chat", "agents", "modules", "approvals", "board", "apps", "reviews", "costs", "flow", "settings"];
 const VIEW_KEY = "aidenhq.view";
 const savedView = (): View => {
   try {
@@ -173,6 +177,8 @@ const savedView = (): View => {
 interface Toast {
   id: number;
   text: string;
+  /** Sliding out (shell.css .toast.leaving), removed a moment later. */
+  leaving?: boolean;
   action?: { label: string; run: () => void };
 }
 
@@ -216,8 +222,17 @@ export function App() {
   viewRef.current = view;
   /** When the board was last asked for (the timer below); opening Tasks asks again when that is over 10s ago. */
   const boardAt = useRef(Date.now());
-  const setView = useCallback((v: View) => {
-    setViewState(v);
+  /** Shows view `v` (and `next`, the route that led there, in the same commit, so no in-between page is drawn). */
+  const setView = useCallback((v: View, next?: Route) => {
+    const commit = () => {
+      if (next) setRoute(next);
+      setViewState(v);
+    };
+    // A new page cross-fades in (the View Transitions API, where the browser has it; never with reduced motion).
+    if (v !== viewRef.current && document.startViewTransition && !matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      viewRef.current = v;
+      document.startViewTransition(() => flushSync(commit));
+    } else commit();
     try {
       localStorage.setItem(VIEW_KEY, v);
     } catch {}
@@ -225,6 +240,20 @@ export function App() {
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [creating, setCreating] = useState(false);
   const mobile = useMedia("(max-width: 860px)");
+  const [palette, setPalette] = useState(false);
+  const closePalette = useCallback(() => setPalette(false), []);
+  const newTask = useCallback(() => setCreating(true), []);
+  // ⌘K / Ctrl K opens the palette from anywhere, typing included.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setPalette((o) => !o);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
   const holdUntil = useRef(0); // ignore polls briefly after a local change, so cards don't jump back
   const itemsRef = useRef<Items | null>(null);
   itemsRef.current = items;
@@ -235,7 +264,10 @@ export function App() {
   const toast = useCallback((text: string, action?: Toast["action"]) => {
     const id = Date.now() + Math.random();
     setToasts((t) => [...t.slice(-2), { id, text, action }]);
-    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), action ? 7000 : 3500);
+    setTimeout(() => {
+      setToasts((t) => t.map((x) => (x.id === id ? { ...x, leaving: true } : x)));
+      setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 160);
+    }, action ? 7000 : 3500);
   }, []);
 
   const seq = useRef(0); // only the latest board request counts (an old 401 must not undo a sign-in)
@@ -289,15 +321,10 @@ export function App() {
     document.addEventListener("visibilitychange", vis);
     const hash = () => {
       const r = parseRoute();
-      setRoute(r);
       // A chat link opens the Chat tab; a tab link opens that tab.
-      if (r.kind === "chat") setView("chat");
-      if (r.kind === "view") setView(r.view);
-      if (r.kind === "agent") setView("agents");
-      if (r.kind === "module") setView("modules");
-      if (r.kind === "settings") setView("settings");
-      if (r.kind === "design") setView("design");
-      if (r.kind === "app") setView("apps");
+      const v: View | null = r.kind === "chat" ? "chat" : r.kind === "view" ? r.view : r.kind === "agent" ? "agents" : r.kind === "module" ? "modules" : r.kind === "settings" ? "settings" : r.kind === "design" ? "design" : r.kind === "app" ? "apps" : null;
+      if (v) setView(v, r);
+      else setRoute(r);
     };
     hash();
     window.addEventListener("hashchange", hash);
@@ -505,6 +532,7 @@ export function App() {
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
+      if (palette) return;
       const el = e.target as HTMLElement;
       const typing = el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT" || el.isContentEditable;
       if (e.key === "Escape") {
@@ -539,7 +567,7 @@ export function App() {
       if (k === "?") return go("#/help");
       if (k === "d") return setShowDone((s) => !s);
       if (k === "r") return setShowRecurring((s) => !s);
-      if (k === "a") return setView(view === "agents" ? "board" : "agents");
+      if (k === "a") return go(view === "agents" ? "#/board" : "#/agents");
       if (view !== "board") return;
       if (k === "j" || k === "ArrowDown") {
         e.preventDefault();
@@ -599,13 +627,21 @@ export function App() {
   if (session && !session.account) return <SignInScreen />;
 
   if (!board || !items || !filtered)
-    return <div className="splash">{error ? <>Can't reach the board: {error}</> : <span className="spinner" />}</div>;
+    return error ? (
+      <div className="splash">Can't reach the board: {error}</div>
+    ) : (
+      <div className={`app boot${mobile ? " mobile" : ""}`} aria-busy="true" aria-label="Loading">
+        {!mobile && <div className="topnav" />}
+        <div className="app-main" />
+      </div>
+    );
 
   const active = activeId ? BUCKETS.flatMap((b) => items[b]).find((c) => c.id === activeId) : undefined;
   const counts = Object.fromEntries(BUCKETS.map((b) => [b, items[b].length])) as Record<Bucket, number>;
   const mergeTargets = BUCKETS.flatMap((b) => items[b]).filter((c) => c.assignee === "me" && !c.recurring);
   const openChat = (identifier: string) => go(`#/c/${identifier}`);
-  const tabs = TABS;
+  // Every section has its own address, so the hash and the page never disagree (a click on the page already shown is a no-op).
+  const nav = (v: NavView) => go(hrefOf(v));
   const panels = panelsOf(appsQ.data?.apps ?? [], keepsSecureCookies());
   const onBoard = view === "board";
   // A chat (or a settings category) open on a phone takes the whole screen (back arrow to the list).
@@ -621,97 +657,82 @@ export function App() {
 
   return (
     <div className={`app${mobile ? " mobile" : ""}${view === "chat" ? " on-chat" : ""}`}>
-      <header className="topbar" hidden={chatFull}>
-        <a className="brand" href="#/" onClick={() => setQuery("")}>
-          <img src="/icon.png" alt="" />
-          <span>AidenHQ</span>
-        </a>
-        {!mobile && (
-          <nav className="main-tabs" aria-label="Sections">
-            {tabs.map(([v, name]) => (
-              <button key={v} className={`btn${view === v ? " on" : ""}`} aria-current={view === v ? "page" : undefined} onClick={() => (v === "agents" || v === "modules" ? go(`#/${v}`) : setView(v))} onPointerEnter={() => prefetchView(v)} onFocus={() => prefetchView(v)}>
-                {v === "agents" && board.agentsActive > 0 && <span className="live-dot" title={`${board.agentsActive} working`} />}
-                {name}
-                {v === "approvals" && approvalsOpen > 0 && <span className="btn-count needs">{approvalsOpen}</span>}
+      {!mobile && (
+        <TopNav
+          view={view}
+          approvals={approvalsOpen}
+          agentsActive={board.agentsActive}
+          onNav={nav}
+          spend={board.spend}
+          settingsAlert={!connectionsOk}
+          notify={notifyAsk ? () => void askForNotifications().then(() => setNotifyAsk(false)) : undefined}
+          brief={!!board.brief}
+          onPalette={() => setPalette(true)}
+        />
+      )}
+      <div className="app-row">
+      {!mobile && <SubNav view={view} onNav={nav} panels={panels} />}
+      <div className="app-main">
+      {mobile && (
+        <header className="topbar" hidden={chatFull}>
+          <a className="brand" href="#/" onClick={() => setQuery("")}>
+            <img src="/icon.png" alt="" />
+          </a>
+          {onBoard && <span className="topbar-title">Tasks</span>}
+          <div className="topbar-tools">
+            {onBoard && (
+              <div className="search">
+                <input ref={searchRef} type="search" placeholder="Search" value={query} onChange={(e) => setQuery(e.target.value)} />
+              </div>
+            )}
+            {onBoard && (
+              <button className="btn primary" onClick={() => setCreating(true)} title="New task" aria-label="New task">
+                <PlusIcon />
               </button>
-            ))}
-            {panels.map((p) => (
-              <a key={p.name} className="btn panel-link" href={p.url} target="_blank" rel="noopener noreferrer" title={`${p.label} opens in a new tab`}>
-                {p.label}
-                <span aria-hidden> ↗</span>
+            )}
+            {board.spend && (
+              <a className={`spend-today${board.spend.spent >= board.spend.cap ? " over" : ""}`} href="#/costs" title="Today's model spend against the daily cap">
+                ${board.spend.spent.toFixed(2)}
               </a>
-            ))}
-          </nav>
-        )}
-        {/* The page's tools: one group on the right that drops to its own row when the bar runs out of room. */}
-        <div className="topbar-tools">
-        {onBoard && (
-          <div className="search">
-            <input ref={searchRef} type="search" placeholder="Search  /" value={query} onChange={(e) => setQuery(e.target.value)} />
+            )}
+            {board.brief && (
+              <a className="btn" href="#/brief">
+                Brief
+              </a>
+            )}
           </div>
-        )}
-        {onBoard && board.recurring.length > 0 && (
-          <button className={`btn${showRecurring ? " on" : ""}`} onClick={() => setShowRecurring(!showRecurring)} title="Recurring tasks (r)">
-            Recurring
-          </button>
-        )}
-        {onBoard && (
+        </header>
+      )}
+      {!mobile && onBoard && (
+        <header className="page-tools">
+          <h1>Tasks</h1>
+          <div className="search">
+            <input ref={searchRef} type="search" placeholder="Search tasks" value={query} onChange={(e) => setQuery(e.target.value)} />
+            <kbd>/</kbd>
+          </div>
+          <span className="spacer" />
+          {board.recurring.length > 0 && (
+            <button className={`btn${showRecurring ? " on" : ""}`} onClick={() => setShowRecurring(!showRecurring)} title="Recurring tasks (r)">
+              Recurring
+            </button>
+          )}
           <button className={`btn${showDone ? " on" : ""}`} onClick={() => setShowDone(!showDone)} title="Recently done (d)">
             Done
           </button>
-        )}
-        {onBoard && (
           <button className="btn primary" onClick={() => setCreating(true)} title="New task (c)">
-            {mobile ? <PlusIcon /> : "New task"}
+            <PlusIcon /> New task
           </button>
-        )}
-        {notifyAsk && (
-          <button className="btn" onClick={() => void askForNotifications().then(() => setNotifyAsk(false))} title="Get a browser notification when something needs you">
-            Notify me
-          </button>
-        )}
-        {board.spend && (
-          <a className={`spend-today${board.spend.spent >= board.spend.cap ? " over" : ""}`} href="#/costs" title="Today's model spend (UTC day) against the daily cap; change the cap in Settings">
-            ${board.spend.spent.toFixed(2)} / ${board.spend.cap % 1 ? board.spend.cap.toFixed(2) : board.spend.cap} today
-          </a>
-        )}
-        {board.brief && (
-          <a className="btn" href="#/brief" title="Today's brief (b)">
-            Brief
-          </a>
-        )}
-        <a className={`btn settings-btn${view === "settings" ? " on" : ""}`} href="#/settings" onClick={() => setView("settings")} aria-current={view === "settings" ? "page" : undefined} title="Settings: connections, agents, approvals, accounts and the instance">
-          <GearIcon />
-          {!mobile && "Settings"}
-          {!connectionsOk && <span className="needs-dot" title="A connection needs you" />}
-        </a>
-        {!mobile && (
-          <a className="icon-btn" href="#/help" title="Keyboard shortcuts (?)">
-            ?
-          </a>
-        )}
-        </div>
-      </header>
+        </header>
+      )}
 
       {error && <div className="offline">Offline: {error}. Retrying…</div>}
       <GoogleBanner google={board.google} canReconnect={googleConnect} />
       <SignInBanners board={board} canConnect={signInConnect} />
 
-      {mobile && !chatFull && (
-        <nav className="tabs">
-          {tabs.filter(([v]) => v !== "board").map(([v, name]) => (
-            <button key={v} className={view === v ? "on" : ""} onClick={() => (v === "agents" || v === "modules" ? go(`#/${v}`) : setView(v))} onPointerEnter={() => prefetchView(v)} onFocus={() => prefetchView(v)}>
-              {name}
-              {v === "approvals" && approvalsOpen > 0 && <span className="count">{approvalsOpen}</span>}
-            </button>
-          ))}
-          {panels.map((p) => (
-            <a key={p.name} className="panel-link" href={p.url} target="_blank" rel="noopener noreferrer">
-              {p.label} ↗
-            </a>
-          ))}
+      {mobile && onBoard && (
+        <nav className="bucket-tabs" aria-label="Buckets">
           {BUCKETS.map((b) => (
-            <button key={b} className={view === "board" && b === tab ? "on" : ""} onClick={() => (setTab(b), setView("board"))}>
+            <button key={b} aria-selected={b === tab} onClick={() => setTab(b)}>
               {BUCKET_NAMES[b]}
               {counts[b] > 0 && <span className="count">{counts[b]}</span>}
             </button>
@@ -726,6 +747,7 @@ export function App() {
       {view === "modules" && route.kind === "module" && <Suspense fallback={<PageLoading />}><ModulePage key={route.name} name={route.name} tab={route.tab} go={go} onSignIn={signInNeeded} can={{ signIn: signInConnect, google: googleConnect }} /></Suspense>}
       {view === "apps" && <Suspense fallback={<PageLoading />}><AppsView key={route.kind === "app" ? route.name : ""} app={route.kind === "app" ? route.name : undefined} onSignIn={signInNeeded} /></Suspense>}
       {view === "design" && <Suspense fallback={<PageLoading />}><DesignView /></Suspense>}
+      {view === "reviews" && <Suspense fallback={<PageLoading />}><ReviewsView onSignIn={signInNeeded} /></Suspense>}
       {view === "flow" && <Suspense fallback={<PageLoading />}><FlowView onSignIn={signInNeeded} /></Suspense>}
       {view === "costs" && <Suspense fallback={<PageLoading />}><CostsView onSignIn={signInNeeded} /></Suspense>}
       {view === "agents" && route.kind === "agent" && <Suspense fallback={<PageLoading />}><AgentPage key={route.key} agentKey={route.key} tab={route.tab} go={go} onSignIn={signInNeeded} /></Suspense>}
@@ -829,16 +851,20 @@ export function App() {
           onCreated={(identifier, agent) => {
             setCreating(false);
             toast(agent ? `Added ${identifier} · ${agent} is on it` : `Added ${identifier} to Triage`);
-            if (mobile) setTab("triage"), setView("board");
+            if (mobile) setTab("triage"), go("#/board");
             void refresh(true);
           }}
           toast={toast}
         />
       )}
 
+      {mobile && !chatFull && <BottomBar view={view} approvals={approvalsOpen} agentsActive={board.agentsActive} onNav={nav} panels={panels} notify={notifyAsk ? () => void askForNotifications().then(() => setNotifyAsk(false)) : undefined} />}
+      </div>
+      </div>
+      <Palette open={palette} onClose={closePalette} go={go} crew={board.assignees} apps={appsQ.data?.apps ?? []} onNewTask={newTask} />
       <div className="toasts" aria-live="polite">
         {toasts.map((t) => (
-          <div key={t.id} className="toast">
+          <div key={t.id} className={`toast${t.leaving ? " leaving" : ""}`} role="status">
             <span>{t.text}</span>
             {t.action && (
               <button
@@ -975,6 +1001,7 @@ function Column({ bucket, cards, total, board, selected, dragDisabled, onOpen, o
 
 function Help() {
   const rows: [string, string][] = [
+    ["⌘K", "Search and jump to any page, agent, chat or app"],
     ["j / k  ↓ ↑", "Select next / previous"],
     ["h / l  ← →", "Previous / next column"],
     ["Enter", "Open task"],

@@ -6,7 +6,7 @@ components wear, the rules, and the review checklist.
 
 | File | What it is |
 |---|---|
-| `tokens.css` | Every colour, size, space, radius and duration: four palettes (`neutral`, `warm`, `contrast`, `data`) from Radix Colors, each in light and dark, all AA (`scripts/test/design-system.test.mjs`). |
+| `tokens.css` | Every colour, size, space, radius and duration: four palettes (`neutral`, `warm`, `contrast`, `data`) from Radix Colors, each in light and dark, all AA. |
 | `presets/` | Theme presets, one file each (`crisp`, `polished`, `editorial`, `dense`, `ops`, `indigo`, `soft`, `slate`, `minimal`, `graphite`): palette in light and dark, accent, radius, fonts and density. An app imports one after `shadcn.css` and sets `<html data-palette="<name>">`. A starting point, not a rule; all AA. |
 | `shadcn.css` | Maps the tokens onto shadcn's variables (`--background`, `--primary`, `--muted-foreground`, `--sidebar`…) and Tailwind's colour names, plus status (`ok`, `warn`, `danger`, `info`), `link`, `page` and `chart-1…6`. Points Tailwind's `dark:` at `<html data-theme>`. |
 | `guidelines.md` | The floors every app meets (readable contrast in both themes, visible focus, details at a URL that opens them on load, empty, loading and error states) and the stack. The look is the UI/UX Designer's, per app. |

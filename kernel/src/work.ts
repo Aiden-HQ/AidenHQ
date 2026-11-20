@@ -1,11 +1,13 @@
 // Reads of the kernel's jobs (phase 2 W7, W12): what the grading module and the monitoring side see, from the jobs table and the
 // records. Read-only; the loops that use them are started at the big switch, where the runner's copies are deleted.
-//   GET /v1/work?task=<id>   a task's jobs (newest first) and the write records filed on it (with their args and outcome text, which the grading module reads PRs from): { owned, busy, jobs, records }
+//   GET /v1/work?task=<id>   a task's (by id or identifier) jobs (newest first) and the write records filed on it (with their args and outcome text, which the grading module reads PRs from): { status, busy, jobs, records }
 //   GET /v1/work             what runs now, what waits (queued) and what ended lately, and the agents failing (their last 3 jobs all failed or were lost): the board's Agents view;
 //                            `waiting` (claimable wakes: count, oldest_at, oldest_cause) and `last_started_at` say whether dispatch has stalled
 //   GET /v1/work?job=<id>    one job for its run page (the board): state, times, why it ended, its engine's token count, its
 //                            progress (said, plan, steps) and final words (both the agent's: untrusted)
-//   GET /v1/work?agent=<id>  an agent's last 50 jobs (newest first), each with how it ended: { jobs }
+//   GET /v1/work?agent=<id>  an agent's last 50 jobs (newest first), each with how it ended and the routine its task traces to,
+//                            and for the board's timeline the wake that started it, why it ended, its billed cost and the
+//                            records the agent filed while it ran: { jobs }
 //   GET /v1/work?since=<iso>[&to=<iso>]  the records filed or decided since then (tier 1 and 2) and the billed cost per agent and
 //                            UTC day from the gateway ledger: { records, usage } (the Fleet Steward's scorecards; each record says
 //                            whether it is a `judged` rejection and the branches or PRs it was aimed at, `targets`)
@@ -25,22 +27,54 @@ export function createWork({ db, records, generationsFile = "" }: { db: Database
   const rows = (sql: string, ...args: (string | number)[]) => db.prepare(sql).all(...args) as Record<string, any>[];
   const job = (r: Record<string, any>) => ({ id: r.id, agent: r.agent, task: r.task, engine: r.engine, state: r.state, started_at: iso(r.at), ended_at: iso(r.ended), session: r.session ?? null });
   /** A rejection the retry bound counts (tier.ts priorDecisions): the AI reviewer's judgment, not code's refusal (a moved head, too large). */
-  const judged = (r: { state: string; decided_by?: string | null; review_code?: string | null }) => r.state === "rejected" && /^reviewer:/.test(r.decided_by ?? "") && !CODE_REJECTS.includes(r.review_code ?? "");
+  const judged = (r: { state: string; decided_by?: string | null; review_code?: string | null }) => r.state === "rejected" && /^reviewer:/.test(r.decided_by ?? "") && !CODE_REJECTS.includes(r.review_code ?? "") && r.review_code !== "panel_split";
   /** Where a record was aimed; a record whose args can't be read names none (one malformed record never fails the read). */
   const targetsOf = (r: { kind: string; args?: unknown }): string[] => { try { return (requestTargets(actionOf(r.kind), r.args)?.targets ?? []).map((t) => t.key); } catch { return []; } };
+  /** One row, or undefined when its table isn't there (a kernel without the wake inbox or the fact log). */
+  const one = (sql: string, ...args: (string | number)[]) => { try { return db.prepare(sql).get(...args) as Record<string, any> | undefined; } catch { return undefined; } };
+  const factData = (subject: string, type: string) => { const f = one("SELECT data FROM facts WHERE subject = ? AND type = ? ORDER BY seq DESC LIMIT 1", subject, type); return f ? (JSON.parse(f.data) as Record<string, unknown>) : undefined; };
+  /**
+   * What the agent page's timeline adds to a job (the board's Activity tab): the task's identifier, the wake that started it
+   * (its cause and who caused it, from its wake.opened fact), why it ended and what the gateway billed (its job.ended fact;
+   * null while it runs or when the fact is gone), and the write records the agent filed on its task while it ran.
+   */
+  const timeline = (r: Record<string, any>) => {
+    const wake = r.wake ? one("SELECT key, cause FROM wakes WHERE key = ?", r.wake) : one("SELECT key, cause FROM wakes WHERE job = ?", r.id);
+    const ended = factData(`job:${r.id}`, "job.ended");
+    const failed = ["failed", "lost", "timeout", "cancelled"].includes(r.state);
+    const writes = (() => {
+      try {
+        return rows("SELECT id, kind, tier, state, decided_by, review_code, created_at FROM records WHERE task = ? AND json_extract(requester, '$.agent') = ? AND created_at >= ? AND created_at <= ? ORDER BY created_at LIMIT 30", r.task, r.agent, iso(r.at) ?? "", iso(r.ended) ?? "9999")
+          .map((w) => ({ id: w.id, kind: w.kind, tier: w.tier, state: w.state, decided_by: w.decided_by ?? null, review_code: w.review_code ?? null, created_at: w.created_at }));
+      } catch { return []; }
+    })();
+    return {
+      identifier: r.identifier ?? null,
+      cause: (wake?.cause as string | undefined) ?? null,
+      caused_by: wake ? (String(factData(`wake:${wake.key}`, "wake.opened")?.author ?? "") || null) : null,
+      cost_usd: typeof ended?.cost_usd === "number" ? ended.cost_usd : null,
+      error: failed ? (String(ended?.why || "") || String(r.final || r.state).split("\n")[0]!).slice(0, 300) : null,
+      writes,
+    };
+  };
   return {
-    task(task: string) {
+    task(ref: string) {
+      // The task by its id or its identifier (WOR-12, which a module's tables hold): a job row has both.
+      const task = (db.prepare("SELECT task FROM jobs WHERE identifier = ? LIMIT 1").get(ref) as { task: string } | undefined)?.task ?? ref;
       const jobs = rows("SELECT * FROM jobs WHERE task = ? ORDER BY at DESC LIMIT 20", task).map(job);
       const recs = records.list(["review", "owner", "approved", "claimed", "done", "failed", "rejected", "stale", "cancelled", "unknown"], 100, { task });
+      // The task's status as the wake scan last saw it (wake_tasks): the one thing of the task itself a module reads here.
+      let status: string | null = null;
+      try { status = (db.prepare("SELECT status FROM wake_tasks WHERE task = ?").get(task) as { status: string | null } | undefined)?.status ?? null; } catch { /* the wake inbox is off */ }
       return {
-        busy: jobs.some((j) => j.state === "running"), jobs,
+        status, busy: jobs.some((j) => j.state === "running"), jobs,
         records: recs.map((r) => ({ id: r.id, kind: r.kind, state: r.state, ok: r.outcome?.ok ?? null, args: r.args ?? null, outcome_text: r.outcome?.text ?? null, decided_at: r.decided_at ?? null, updated_at: r.updated_at, created_at: r.created_at })),
       };
     },
     agent(id: string) {
       return { jobs: rows("SELECT * FROM jobs WHERE agent = ? ORDER BY at DESC LIMIT 50", id).map((r) => {
         const why = JSON.parse(r.why || "{}"), progress = JSON.parse(r.progress || "{}");
-        return { ...job(r), exit: r.exit ?? null, timed_out: why.timedOut === true, steps: Array.isArray(progress.steps) ? progress.steps.length : 0, has_final: Boolean(r.final) };
+        return { ...job(r), exit: r.exit ?? null, timed_out: why.timedOut === true, steps: Array.isArray(progress.steps) ? progress.steps.length : 0, has_final: Boolean(r.final), routine: r.routine ?? null, ...timeline(r) };
       }) };
     },
     since(from: string, to = new Date().toISOString()) {

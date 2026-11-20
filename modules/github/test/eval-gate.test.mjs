@@ -130,6 +130,15 @@ describe("the reviewer-eval gate", { concurrency: 1 }, () => {
     assert.match((await gate("acme/aidenhq", pr(9, head)))?.stop ?? "", /couldn't run 3 times/);
   });
 
+  it("a check the kernel lost at a restart never counts as couldn't run", async () => {
+    const head = branch(prod, "fix/restarts", { "modules/ai-reviewer/service/src/review.mjs": "// v7b\n" });
+    assert.ok((await gate("acme/aidenhq", pr(12, head)))?.wait);
+    for (let i = 0; i < 5; i++) {
+      checks.at(-1).state = "lost";
+      assert.ok((await gate("acme/aidenhq", pr(12, head)))?.wait, `restart ${i + 1}`);
+    }
+  });
+
   it("a PR is judged by the base's tip; main moving without changing what judges keeps its eval, a judging change runs it again", async () => {
     const old = sh(prod, "rev-parse", "main");
     const head = branch(prod, "fix/old-base", { "modules/ai-reviewer/service/src/review.mjs": "// v9\n" }, old);
@@ -149,10 +158,12 @@ describe("the reviewer-eval gate", { concurrency: 1 }, () => {
     assert.equal(checks.at(-1).spec.judge_commit, cases);
   });
 
-  it("anything it can't read stops: the kernel unreachable never passes", async () => {
+  it("anything it can't read waits and asks again: the kernel unreachable never passes and never stops the merge", async () => {
     const broken = createEvalGate({ productRepo: "acme/aidenhq", dir: join(root, "data2"), kernel: async () => { throw new Error("the kernel's /v1/checks answered 503"); }, fetch: fetchInto, git: async (dir, args) => sh(dir, ...args), defaultBranch: async () => "main" });
     const head = branch(prod, "fix/down", { "modules/ai-reviewer/service/src/review.mjs": "// v8\n" });
-    assert.match((await broken("acme/aidenhq", pr(10, head)))?.stop ?? "", /couldn't read it \(the kernel's \/v1\/checks answered 503\)/);
+    const g = await broken("acme/aidenhq", pr(10, head));
+    assert.equal(g?.stop, undefined);
+    assert.match(g?.wait ?? "", /couldn't read it yet, asking again \(the kernel's \/v1\/checks answered 503\)/);
   });
 });
 

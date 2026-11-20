@@ -106,20 +106,57 @@ export function appClient({ appId, key, fetch = globalThis.fetch, log = () => {}
     return "created";
   }
 
-  let bot: { name: string; email: string } | undefined;
-  /** The App's bot commit identity: `<slug>[bot]` <`<id>+<slug>[bot]@users.noreply.github.com`>, resolved once. */
-  async function identity() {
-    if (bot) return bot;
+  let info: { id: number; slug: string } | undefined;
+  /** The App from GET /app: its id and slug, cached once read; a failed read is not cached, so a later call reads again. */
+  async function appInfo() {
+    if (info) return info;
     const me = await api("GET", "/app", appJwt(appId, key, now()));
     if (me.status !== 200) throw new Error(`couldn't read the GitHub App (GitHub said ${me.status})`);
-    const name = `${me.body.slug}[bot]`;
-    const user = await fetch(`https://api.github.com/users/${encodeURIComponent(name)}`, { headers: { accept: "application/vnd.github+json" }, signal: AbortSignal.timeout(20_000) });
-    const id = user.status === 200 ? ((await user.json()) as any).id : undefined;
-    if (!id) throw new Error(`couldn't find the GitHub user ${name} (GitHub said ${user.status})`);
+    return (info = { id: Number(me.body.id) || Number(appId), slug: String(me.body.slug) });
+  }
+
+  /** One read, retried once on 403, 429 or 5xx: a few seconds of GitHub trouble doesn't lose an identity. */
+  async function readUser(url: string, headers: Record<string, string>) {
+    const once = async () => {
+      const r = await fetch(url, { headers: { ...headers, accept: "application/vnd.github+json" }, signal: AbortSignal.timeout(20_000) });
+      const b = r.status === 200 ? ((await r.json().catch(() => ({}))) as any) : {};
+      return { status: r.status, id: Number(b?.id) || undefined };
+    };
+    const first = await once();
+    if (first.id || (![403, 429].includes(first.status) && first.status < 500)) return first;
+    await new Promise((r) => setTimeout(r, 250));
+    return once();
+  }
+
+  /**
+   * The App's bot numeric user id: an installation token with `metadata: read` on one of its orgs reads GET /user (the
+   * bot user); the public /users/<slug>[bot] is the fallback. Undefined when neither answers.
+   */
+  async function botUserId(slug: string): Promise<number | undefined> {
+    const org = (await installations().catch(() => new Map())).keys().next().value;
+    const tok = org ? await token(org, { permissions: { metadata: "read" } }).catch(() => undefined) : undefined;
+    if (tok) {
+      const authed = await readUser("https://api.github.com/user", { authorization: `Bearer ${tok}`, "x-github-api-version": "2022-11-28" });
+      if (authed.id) return authed.id;
+    }
+    return (await readUser(`https://api.github.com/users/${encodeURIComponent(`${slug}[bot]`)}`, {})).id;
+  }
+
+  let bot: { name: string; email: string } | undefined;
+  /**
+   * The App's bot commit identity: `<slug>[bot]` <`<id>+<slug>[bot]@users.noreply.github.com`>, resolved once. A bot
+   * user GitHub won't name is not an error: the name with the no-reply fallback email is still a valid identity.
+   */
+  async function identity() {
+    if (bot) return bot;
+    const { slug } = await appInfo();
+    const name = `${slug}[bot]`;
+    const id = await botUserId(slug).catch(() => undefined);
+    if (!id) return { name, email: `${name}@users.noreply.github.com` }; // not cached: a later call reads again
     return (bot = { name, email: `${id}+${name}@users.noreply.github.com` });
   }
 
-  return { installations, token, covers, repoExists, createRepo, identity };
+  return { installations, token, covers, repoExists, createRepo, appInfo, identity };
 }
 
 export type AppClient = ReturnType<typeof appClient>;

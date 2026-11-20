@@ -11,6 +11,7 @@
 //                              record (own only; the board: any)
 //   POST /v1/writes/:id/outcome (the kind's executor module) the outcome of an execute
 //   GET  /v1/writes            (the board's key) records by state or task (`tier0=1`: Tier 0 runs too)
+//   GET  /v1/writes/:id/chain  (the board's key) what the record's task asks, as the AI reviewer reads it (review-loop.ts requestChain)
 //   GET  /v1/channel/cards, POST /v1/channel/{decide,owner-message,stop,thread}  (a speaks-as-owner channel's token) cards
 //                              with decision tokens, a token spent, the owner's words (channels.ts)
 //   GET  /v1/cp/read/<path>    (a channel, or a module with role kernel.cp-read) the control plane's read routes, as the owner;
@@ -20,14 +21,19 @@
 //   POST /v1/channel/exchange  (a module with role kernel.lane) a fast-lane turn written to its agent's chat task (lane.ts)
 //   POST /v1/notify            (the board's key, or a module with role kernel.owner-notice) a message for the owner,
 //                              queued for the owner's router (notify.ts)
-//   GET  /v1/notify/take, POST /v1/notify/send  (the module with role kernel.notify) the queued owner messages, each once; one
+//   GET  /v1/notify/take, POST /v1/notify/ack, POST /v1/notify/send  (the module with role kernel.notify) the queued owner messages, each until acknowledged; one
 //                              message to a channel's transport
 //   POST /v1/wakes/events      (the paperclip-events plugin's key) a Paperclip event's ids: its task is scanned (wakes.ts)
+//   POST /v1/wait              (a module with role kernel.wake, serving a job's task_wait, task_handoff or notify call in flight)
+//                              {reason, until?, on?, task?}: the calling job's own task waits
+//                              (idle.ts): a work.waiting fact and a wake at `until`
 //   POST /v1/wakes             (a module with role kernel.wake) a scheduled wake {task, agent?, at?, cause?, id?}; with
-//                              {task, text}: a labelled wake notice on the task now, which wakes its agent (no scheduled row)
+//                              {task, text}: a labelled wake notice on the task now, which wakes its agent (no scheduled row); with
+//                              to: "asker", on the task's open parent instead when it has one
 //   POST /v1/wakes/claim, POST /v1/wakes/:key/drop  (a module with role kernel.jobs) claim inbox rows; give one up
 //   POST /v1/routines/cancel   (a module with role kernel.jobs) {task, why: coalesced|stale, body}: an open or blocked routine run of an
 //                              agent it dispatches, cancelled as that agent (wakes.ts)
+//   POST /v1/routines/pause   (a module with role kernel.routines) {routine}: that routine paused, as the owner (never resumed here)
 //   POST /v1/wakes/:key/note   (the module that claimed it) {body}: a note on its task as its agent, once (no job answers it)
 //   POST /v1/tasks             (a module with role kernel.tasks) {title, description, role | agent, source, parent?}: a task of the module's
 //                              fixed text for the agent holding `role` (or `agent`, by id), once per source (modtasks.ts); GET /v1/tasks?source=
@@ -59,7 +65,8 @@
 //   POST /v1/checkout          (a kernel job's own token) {repo, sha?}: a code host snapshot (tar.gz) for a job holding the
 //                              repo-checkout role, an agents-org repo only: GitHub's, or local/… from codehost-local (jobtools.ts checkout)
 //   POST /v1/jobtools/:cmd     (a kernel job's own token) reset | engine {engine, model?} | cleanup: what the running job asks of its
-//                              task's next turn (jobtools.ts)
+//                              task's next turn (jobtools.ts); review {kind, args}: what the AI reviewer would say of that write,
+//                              filed by nothing (writes.preview, review-loop precheck), at most PRECHECKS reviewer calls a job
 //                              | clone {repo}: a repository on this server as a git bundle, which the box clones itself
 //   GET  /v1/advisories        (the board's key) the marketplace advisories open against installed modules (advisories.ts)
 //   GET  /v1/connections/health (the board's key) every connection's /healthz as the kernel reaches it -> {probes: {name: {ok, status?, state?, detail?, channels?, checkedAt}}} (health.ts)
@@ -73,12 +80,13 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { timingSafeEqual } from "node:crypto";
 import type { Asserter } from "./assert.ts";
 import type { Facts } from "./facts.ts";
+import type { Idle } from "./idle.ts";
 import type { Brake } from "./brake.ts";
 import type { Checks } from "./checks.ts";
 import type { Lane } from "./lane.ts";
 import type { Checks as CheckJobs } from "./checkjobs.ts";
 import { CP_READ_PATHS, isChannel, neutral, type Api, type Channels, type ModulesFile } from "./channels.ts";
-import type { Grant, Whoami } from "./identity.ts";
+import type { Grant, Identity, Whoami } from "./identity.ts";
 import type { Jobs } from "./jobs.ts";
 import type { Admission } from "./admission.ts";
 import { JOB_KINDS, type Outcomes } from "./outcomes.ts";
@@ -87,7 +95,9 @@ import type { JobTools } from "./jobtools.ts";
 import type { Routing } from "./routing-tune.ts";
 import { CODEHOSTS, hostOf } from "./codehost.ts";
 import { fail } from "./proxy.ts";
-import type { Records, State } from "./records.ts";
+import { logTasks } from "./task-scope.ts";
+import type { Records, Requester, State } from "./records.ts";
+import type { BoardApi } from "./board-api.ts";
 import type { Work } from "./work.ts";
 import { BY, type By, type Flow } from "./flow.ts";
 import { AUTHOR_KINDS, SORTS, type AuthorKind, type Sort } from "./journeys.ts";
@@ -95,12 +105,15 @@ import type { Reviews } from "./reviews.ts";
 import { wakeNotice, type Wakes } from "./wakes.ts";
 import type { ModuleTasks } from "./modtasks.ts";
 import { CONN_TOOL, type Writes } from "./writes.ts";
+import { requestChain } from "./review-loop.ts";
 
 const MAX_ATTACHMENT = 25 * 1024 * 1024;
 type Handler = (req: IncomingMessage, res: ServerResponse, ...a: string[]) => Promise<void>;
 /** Directory fields a module may read; everything else in the grants table (tools, models, caps, images) stays here. */
 const DIRECTORY = ["key", "roles", "profile", "trial", "description", "delegate_to", "memory_inbox", "review_log", "graded", "feedback_for"];
 
+/** The tool calls that record a wait on their job's task (POST /v1/wait, idle.ts). */
+const WAIT_TOOLS = ["task_wait", "task_handoff", "notify"];
 /** What a task shows when the owner stops its run: the kernel's own words, the dispatcher posts nothing else for it. */
 const STOPPED_NOTE = "**Stopped by the owner.** Say **continue** to pick up where it stopped.";
 /** What the listener serves: the router dispatches from this table and scripts/lean/contract-lock.mjs reads it, so the lock can't miss a route. */
@@ -116,6 +129,7 @@ export const ROUTES = [
   { method: "POST", path: "/v1/writes", auth: "bearer" },
   { method: "GET", path: "/v1/writes", auth: "board" },
   { method: "GET", path: "/v1/writes/:id", auth: "bearer" },
+  { method: "GET", path: "/v1/writes/:id/chain", auth: "board" },
   { method: "POST", path: "/v1/writes/:id/outcome", auth: "module" },
   { method: "GET", path: "/v1/channel/cards", auth: "module" },
   { method: "POST", path: "/v1/channel/decide", auth: "module" },
@@ -128,16 +142,20 @@ export const ROUTES = [
   { method: "POST", path: "/v1/brake/notify", auth: "module" },
   { method: "POST", path: "/v1/notify", auth: "board" },
   { method: "GET", path: "/v1/notify/take", auth: "module" },
+  { method: "POST", path: "/v1/notify/ack", auth: "module" },
   { method: "POST", path: "/v1/notify/send", auth: "module" },
   { method: "POST", path: "/v1/facts", auth: "module" },
+  { method: "POST", path: "/v1/wait", auth: "module+assertion" },
   { method: "POST", path: "/v1/wakes/events", auth: "events-key" },
   { method: "POST", path: "/v1/wakes", auth: "module" },
   { method: "POST", path: "/v1/wakes/claim", auth: "module" },
   { method: "POST", path: "/v1/wakes/:key/drop", auth: "module" },
   { method: "POST", path: "/v1/wakes/:key/note", auth: "module" },
   { method: "POST", path: "/v1/routines/cancel", auth: "module" },
+  { method: "POST", path: "/v1/routines/pause", auth: "module" },
   { method: "POST", path: "/v1/tasks", auth: "module" },
   { method: "POST", path: "/v1/tasks/:task/close", auth: "module" },
+  { method: "POST", path: "/v1/tasks/:task/comment", auth: "module" },
   { method: "GET", path: "/v1/tasks", auth: "module" },
   { method: "POST", path: "/v1/reviews", auth: "reviewer-key" },
   { method: "POST", path: "/v1/reviews/:review", auth: "review-token" },
@@ -164,6 +182,8 @@ export const ROUTES = [
   { method: "POST", path: "/v1/settings/change", auth: "board" },
   { method: "POST", path: "/v1/stop", auth: "board" },
   { method: "POST", path: "/v1/routing/:op", auth: "module+assertion" },
+  { method: "POST", path: "/v1/settings/agent", auth: "module+assertion" },
+  { method: "ANY", path: "/v1/board-api/:module/*", auth: "board" },
   { method: "POST", path: "/v1/auth/:op", auth: "board" },
   { method: "POST", path: "/v1/accounts/:op", auth: "board+session" },
   { method: "POST", path: "/v1/apps/:op", auth: "module" },
@@ -171,7 +191,7 @@ export const ROUTES = [
   { method: "POST", path: "/v1/health/probe", auth: "health-key" },
 ] as const;
 // `:id` matches a record id, any other `:name` [a-z0-9_]+, a trailing `/*` the rest of the path, slash included.
-const compiled = ROUTES.map((r) => ({ ...r, re: new RegExp(`^${r.path.replace(/:id\b/g, "(k-[0-9a-f]{16})").replace(/:review\b/g, "(r-[0-9a-f]{16})").replace(/:job\b/g, "(j-[0-9a-f]{16})").replace(/:check\b/g, "(c-[0-9a-f]{16})").replace(/:task\b/g, "([0-9a-f-]{36})").replace(/:key\b/g, "([^/]{1,200})").replace(/:\w+/g, "([a-z0-9_]+)").replace(/\/\*$/, "(/.*)")}$`) }));
+const compiled = ROUTES.map((r) => ({ ...r, re: new RegExp(`^${r.path.replace(/:id\b/g, "(k-[0-9a-f]{16})").replace(/:review\b/g, "(r-[0-9a-f]{16})").replace(/:job\b/g, "(j-[0-9a-f]{16})").replace(/:check\b/g, "(c-[0-9a-f]{16})").replace(/:task\b/g, "([0-9a-f-]{36})").replace(/:key\b/g, "([^/]{1,200})").replace(/:module\b/g, "([a-z0-9][a-z0-9-]{0,62})").replace(/:\w+/g, "([a-z0-9_]+)").replace(/\/\*$/, "(/.*)")}$`) }));
 /** The record lists the board and the runner read (`?state=`). */
 const ALL: State[] = ["review", "owner", "approved", "claimed", "done", "failed", "rejected", "stale", "cancelled", "unknown"];
 const LISTS: { [k: string]: State[] } = { review: ["review"], owner: ["owner"], pending: ["review", "owner"], approved: ["approved"], recent: ALL, finished: ["done", "failed", "unknown"] };
@@ -227,9 +247,11 @@ function flowRead(flow: Flow, p: URLSearchParams) {
   return flow.summary({ since, to, by: by as By, scope: p.get("scope")?.slice(0, 100) || undefined });
 }
 
-export function createBackplane({ facts, whoami, asserter, proxy, cp, boardCp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, reviewerKey = () => "", jobs, codehost, admission, outcomes, wakes, tasks, eventsKey = () => "", work, flow, repos = () => ({}), graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, checkJobs, jobTools, localBundle, ownerRaw, lane, healthProbe, healthKey = () => "", connectionHealth, settingsChange, routing, log = () => {} }: {
+export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boardCp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, reviewerKey = () => "", jobs, codehost, admission, outcomes, wakes, tasks, eventsKey = () => "", work, flow, repos = () => ({}), graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, checkJobs, jobTools, precheck, localBundle, ownerRaw, lane, healthProbe, healthKey = () => "", connectionHealth, settingsChange, routing, boardApi: moduleBoardApi, log = () => {} }: {
   /** Flow's fact log (facts.ts): POST /v1/facts. */
   facts?: Facts;
+  /** An agent's own wait on its job's task (idle.ts): POST /v1/wait. */
+  idle?: Idle;
   whoami: Whoami; asserter: Asserter; proxy: Handler; cp: Handler; boardCp?: Handler; grantsFile: () => { agents?: Record<string, Grant> } & Record<string, unknown>;
   writes?: Writes; records?: Records; boardKey?: () => string; log?: (msg: string, f?: Record<string, unknown>) => void;
   /** The reviewer slot, and the key a direct review request asks with (reviewer_key, which the board holds). */
@@ -274,6 +296,8 @@ export function createBackplane({ facts, whoami, asserter, proxy, cp, boardCp, g
   checkJobs?: CheckJobs;
   /** A running job's requests for its task's next turn (jobtools.ts). */
   jobTools?: JobTools;
+  /** A job's precheck (`aidenhq review`): what the AI reviewer would say of this write, filing nothing; `slot` counts the reviewer call. */
+  precheck?: (who: Identity, b: { kind: string; args: unknown }, slot: () => (failure: unknown) => void) => Promise<{ text: string; reason?: string; decision?: string }>;
   /** codehost-local's bundle of a repo on this server, while it is enabled (`aidenhq clone`): the file, and `done` once sent. */
   localBundle?: (repo: string) => Promise<{ file: string; done: () => void }>;
   /** The host's health probes (health.ts), and the key the host's healthcheck asks with (health_probe_key, held by no container). */
@@ -282,9 +306,11 @@ export function createBackplane({ facts, whoami, asserter, proxy, cp, boardCp, g
   /** Every connection's /healthz (health.ts createConnectionHealth). */
   connectionHealth?: () => Promise<Record<string, unknown>>;
   /** The owner's typed settings change on their settings task (settings-change.ts). */
-  settingsChange?: (task: unknown, changes: unknown) => Promise<unknown>;
+  settingsChange?: ((task: unknown, changes: unknown) => Promise<unknown>) & { asAgent?: (requester: Requester, task: string, changes: unknown, module: string) => Promise<unknown> };
   /** The routing learning loop (routing-tune.ts). */
   routing?: Routing;
+  /** A module's board API (board-api.ts): the board's reads of a module service, through the kernel. */
+  boardApi?: BoardApi;
 }) {
   /** The calling module (its own token), or 401. */
   const moduleOf = async (req: IncomingMessage) => {
@@ -309,6 +335,18 @@ export function createBackplane({ facts, whoami, asserter, proxy, cp, boardCp, g
       switch (hit && `${hit.method} ${hit.path}`) {
         case "GET /healthz": return void res.writeHead(200, { "content-type": "text/plain" }).end("ok");
         case "GET /v1/jwks": return send(res, 200, asserter.jwks);
+        case "POST /v1/wait": {
+          // A module with role kernel.wake serving a kernel job's task_wait, task_handoff or notify call in flight: the job is
+          // read from its own token (never the assertion's or the body's say-so), and the wait is on that job's own task.
+          const w = await moduleOf(req);
+          if (!w.roles.includes("kernel.wake")) throw fail(403, "forbidden", `${w.module} may not record waits (role kernel.wake)`);
+          if (!idle) throw fail(503, "unavailable", "waits are off");
+          const live = await asserter.inFlight(String(req.headers["x-aidenhq-caller"] ?? ""), w.module!);
+          const job = live?.flight.bearer ? await whoami(live.flight.bearer).catch(() => undefined) : undefined;
+          if (!live || job?.kind !== "run" || !job.task || !job.agent || job.agent !== live.caller.agent) throw fail(401, "unauthorized", "only a kernel job's tool call in flight records a wait on its task");
+          if (!WAIT_TOOLS.includes(String(live.caller.tool ?? "").split(".").pop()!)) throw fail(403, "forbidden", `a wait is recorded by ${WAIT_TOOLS.join(", ")} only`);
+          return send(res, 200, await idle.wait({ agent: job.agent, key: job.key ?? "", task: job.task }, await json(req)));
+        }
         case "POST /v1/facts": {
           const w = await moduleOf(req);
           if (!w.roles.includes("kernel.facts")) throw fail(403, "forbidden", `${w.module} may not record facts (role kernel.facts)`);
@@ -365,9 +403,18 @@ export function createBackplane({ facts, whoami, asserter, proxy, cp, boardCp, g
           const t = grantsFile();
           const agents = Object.fromEntries(Object.entries(t.agents ?? {}).map(([id, g]) => [id, Object.fromEntries(DIRECTORY.filter((k) => g[k] !== undefined).map((k) => [k, g[k]]))]));
           // The repos the instance reaches (the agents orgs, product, github_orgs, maintainer_repos): what a deliverable may name.
-          return send(res, 200, { agents, repos: repos() });
+          // Setup's log tasks (task-scope.ts logTasks): the tasks bridge keeps them out of an agent's own work.
+          return send(res, 200, { agents, repos: repos(), log_tasks: [...logTasks(t as never)] });
         }
         case "POST /c/:connection/mcp": case "DELETE /c/:connection/mcp": return await proxy(req, res, m[0]!);
+        case "ANY /v1/board-api/:module/*": {
+          if (!isBoard(req)) throw fail(401, "unauthorized", "the board's key is required");
+          if (!moduleBoardApi) throw fail(503, "unavailable", "module board APIs are off");
+          if (!["GET", "POST"].includes(String(req.method))) throw fail(405, "method_not_allowed", "GET or POST");
+          const b = req.method === "POST" ? JSON.stringify(await json(req, 400_000)) : undefined;
+          const r = await moduleBoardApi(m[0]!, String(req.method), m[1] ?? "/", query, b);
+          return void res.writeHead(r.status, { "content-type": "application/json" }).end(r.body);
+        }
         case "ANY /v1/cp/agent/*": return await cp(req, res, m[0]!, query);
         case "POST /v1/checks/:task": {
           const w = await moduleOf(req);
@@ -383,9 +430,10 @@ export function createBackplane({ facts, whoami, asserter, proxy, cp, boardCp, g
           notify.queue(notice(await json(req)));
           return send(res, 200, { queued: true });
         }
-        case "GET /v1/notify/take": case "POST /v1/notify/send": {
+        case "GET /v1/notify/take": case "POST /v1/notify/send": case "POST /v1/notify/ack": {
           const w = await moduleOf(req);
           if (!notify) throw fail(503, "unavailable", "notify is off");
+          if (hit!.path === "/v1/notify/ack") return send(res, 200, notify.ack(w.roles, await json(req)));
           return send(res, 200, hit!.method === "GET" ? notify.take(w.roles) : await notify.send(w.roles, await json(req)));
         }
         case "POST /v1/health/probe": {
@@ -407,6 +455,16 @@ export function createBackplane({ facts, whoami, asserter, proxy, cp, boardCp, g
         case "POST /v1/jobtools/:cmd": {
           if (!jobTools) throw fail(503, "unavailable", "job tools are off");
           const b = await json(req);
+          if (m[0] === "review") {
+            if (!precheck) throw fail(503, "unavailable", "the precheck is off");
+            const token = bearer(req);
+            const w = await whoami(token).catch((e: Error) => { throw fail(401, "unauthorized", e.message); });
+            const slot = () => { try { return jobTools.review(token); } catch (e) {
+              const j = e as { name?: string; status?: number; code?: string; message: string };
+              throw j.name === "JobToolError" ? fail(j.status!, j.code!, j.message) : e;
+            } };
+            return send(res, 200, await precheck(w, { kind: String(b.kind ?? ""), args: b.args }, slot));
+          }
           if (m[0] === "clone") {
             // The repo's branches as a git bundle; the box clones from it itself.
             if (!localBundle) throw fail(404, "unavailable", "there are no repositories on this server (codehost-local isn't enabled)");
@@ -459,6 +517,19 @@ export function createBackplane({ facts, whoami, asserter, proxy, cp, boardCp, g
           try { return send(res, 200, await settingsChange(b.task, b.changes)); } catch (e) { throw fail((e as { status?: number }).status ?? 502, "refused", String((e as Error).message).slice(0, 1000)); }
         }
       }
+      if (hit?.path === "/v1/settings/agent") {
+        // A module holding kernel.settings, serving a kernel job's tool call in flight: the agent's typed setting change on its
+        // own task, for a setting whose module names one of the job's roles as a writer (settings-change.ts asAgent).
+        const w = await moduleOf(req);
+        if (!w.roles.includes("kernel.settings")) throw fail(403, "forbidden", `${w.module} may not file settings changes (role kernel.settings)`);
+        if (!settingsChange?.asAgent) throw fail(503, "unavailable", "settings changes are off");
+        const live = await asserter.inFlight(String(req.headers["x-aidenhq-caller"] ?? ""), w.module!);
+        const job = live?.flight.bearer ? await whoami(live.flight.bearer).catch(() => undefined) : undefined;
+        if (!live || job?.kind !== "run" || !job.task || !job.job || job.agent !== live.caller.agent) throw fail(401, "unauthorized", "only a kernel job's tool call in flight changes settings");
+        const requester = { agent: job.agent ?? "", key: job.key ?? "", name: job.name ?? "", roles: job.roles, kind: job.kind, task: job.task, ...(job.run ? { run: job.run } : {}), ...(job.model ? { model: job.model } : {}) };
+        const b = await json(req, 400_000);
+        try { return send(res, 200, await settingsChange.asAgent(requester, job.task, b.changes, w.module!)); } catch (e) { throw fail((e as { status?: number }).status ?? 502, "refused", String((e as Error).message).slice(0, 1000)); }
+      }
       if (hit?.path === "/v1/routing/:op") {
         // A module holding kernel.routing (the fleet-steward), serving a kernel job's tool call in flight: the job is read from
         // its own token, which the kernel keeps for that call, and must hold the routing-tuner role. Never the body's say-so.
@@ -488,8 +559,19 @@ export function createBackplane({ facts, whoami, asserter, proxy, cp, boardCp, g
           return send(res, 200, r);
         }
         const b = await json(req);
-        const r = await (hit.path === "/v1/tasks" ? tasks.file(w.module!, b) : tasks.close(w.module!, decodeURIComponent(m[0]!), b)).catch((e: { name?: string; status?: number; message: string }) => { throw e.name === "TaskError" ? fail(e.status!, "bad_request", e.message) : e; });
+        const r = await (hit.path === "/v1/tasks" ? tasks.file(w.module!, b) : hit.path.endsWith("/comment") ? tasks.comment(w.module!, decodeURIComponent(m[0]!), b) : tasks.close(w.module!, decodeURIComponent(m[0]!), b)).catch((e: { name?: string; status?: number; message: string }) => { throw e.name === "TaskError" ? fail(e.status!, "bad_request", e.message) : e; });
         return send(res, 200, r);
+      }
+      if (hit?.path === "/v1/routines/pause") {
+        const w = await moduleOf(req);
+        if (!w.roles.includes("kernel.routines")) throw fail(403, "forbidden", `${w.module} may not pause routines (role kernel.routines)`);
+        if (!owner) throw fail(503, "unavailable", "the control plane is off");
+        const b = await json(req);
+        if (!/^[A-Za-z0-9_-]{1,100}$/.test(String(b.routine))) throw fail(400, "bad_request", "send {routine: the routine's id}");
+        const r = await owner("PATCH", `/api/routines/${b.routine}`, { status: "paused" });
+        if (r.status !== 200) throw fail(502, "upstream", `the control plane answered ${r.status}`);
+        log("routine paused", { module: w.module, routine: b.routine });
+        return send(res, 200, { paused: true });
       }
       if (hit && (hit.path.startsWith("/v1/wakes") || hit.path === "/v1/routines/cancel")) {
         if (hit.path === "/v1/wakes/events") {
@@ -506,6 +588,11 @@ export function createBackplane({ facts, whoami, asserter, proxy, cp, boardCp, g
             if (!owner) throw fail(503, "unavailable", "the control plane is off");
             const task = typeof b.task === "string" ? b.task.slice(0, 100) : "", text = neutral(b.text).trim().slice(0, 2000);
             if (!task || !text) throw fail(400, "bad_request", "send {task, text}");
+            // `to: "asker"`: whoever asked for the task hears it, its open parent (asker.tell's open-parent path), else the task itself.
+            if (b.to === "asker") {
+              const parent = await owner("GET", `/api/issues/${encodeURIComponent(task)}`).then((i) => (i.status === 200 ? i.json?.parentId : undefined), () => undefined);
+              if (parent && (await wakeNotice(owner, String(parent), text).catch(() => "missing")) === "posted") return log("wake notice", { module: w.module, task: parent }), send(res, 200, { posted: true, to: "parent" });
+            }
             const r = await wakeNotice(owner, task, text).catch((e: Error) => { throw fail(502, "upstream", e.message); });
             if (r === "missing") throw fail(404, "not_found", `no task ${task}`);
             if (r === "closed") return send(res, 200, { posted: false, closed: true });
@@ -726,6 +813,14 @@ export function createBackplane({ facts, whoami, asserter, proxy, cp, boardCp, g
             const own = w.kind === "module" ? w.module === r.requester.module && r.requester.kind === "module" : Boolean(w.agent) && w.agent === r.requester.agent;
             if (!own) throw fail(404, "not_found", `no record ${id}`);
             return send(res, 200, { id: r.id, kind: r.kind, tier: r.tier, state: r.state, outcome: r.outcome, ...(r.owner_reason ? { reason: r.owner_reason } : {}) });
+          }
+          case "GET /v1/writes/:id/chain": {
+            // What was asked, as the AI reviewer reads it (review-loop.ts requestChain), from the task as it reads now: the
+            // board's "Explain" on a card.
+            if (!isBoard(req)) throw fail(401, "unauthorized", "the board's key is required");
+            if (!owner) throw fail(503, "unavailable", "the control plane is off");
+            const issue = async (task: string) => { const r = await owner("GET", `/api/issues/${encodeURIComponent(task)}`); if (r.status !== 200) throw fail(404, "not_found", `no task ${task}`); return r.json; };
+            return send(res, 200, { chain: await requestChain(await issue(record(id).task), issue) });
           }
           case "POST /v1/writes/:id/outcome": {
             const r = record(id);

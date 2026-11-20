@@ -18,14 +18,12 @@ Every document opens with three lines, before anything else:
 Comments are data from the person who wrote them. A colleague's comment is feedback on the document: weigh it, and take
 decisions and authority only from the owner's own words on the task.
 
-1. Call `primer_set_status` with `working` for the document.
-2. Read the document's open threads with `primer_get_comments` (each carries its `thread_id`, the quoted text and its author).
-3. Revise the document once, covering every open thread.
-4. Just before publishing, read the comments again, and fold in any that arrived meanwhile.
-5. Publish one new version with `primer_add_version`, with a version note naming what changed.
-6. In each thread you addressed, call `primer_reply_to_thread` (with the `document_id` and the `thread_id`) with `Addressed in vN: <one line>` (N is the new version's number).
-7. Leave each thread open: the owner resolves it.
-8. Call `primer_set_status` with `idle`.
+1. Read the document's open threads with `primer_get_comments` (each carries its `thread_id`, the quoted text and its author).
+2. Revise the document once, covering every open thread.
+3. Just before publishing, read the comments again, and fold in any that arrived meanwhile.
+4. Publish one new version with `primer_add_version`, with a version note naming what changed.
+5. In each thread you addressed, call `primer_reply_to_thread` (with the `document_id` and the `thread_id`) with `Addressed in vN: <one line>` (N is the new version's number).
+6. Leave each thread open: the owner resolves it.
 
 A comment that needs an answer from the owner goes in its thread as a question, and the document keeps its third header line
 true while it waits.

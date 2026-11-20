@@ -24,12 +24,18 @@ import { join, sep } from "node:path";
 import { Readable } from "node:stream";
 import { promisify } from "node:util";
 import { serveExecutor, type Executor, type PlanRequest } from "./aidenhq-sdk/executor.ts";
-import { CREDENTIAL_ARGS } from "./github-app.ts";
+import { CREDENTIAL_ARGS, identityEnv, inOrg, ownRepo } from "./github-app.ts";
 import { createEvalGate } from "./evalgate.ts";
 import { createMerges } from "./merges.ts";
 import { createFlow } from "./flow.ts";
 import { createReleaseTrain } from "./train.ts";
 import { LOCAL_ORG, plan as planRules } from "./plan.mjs";
+import { fileContext, numstat } from "./review-files.mjs";
+/** One changed file as git counts it (review-files.mjs numstat; a binary file has no line counts). */
+type Changed = { path: string; add?: number; del?: number };
+import { evidenceOf } from "./evidence.mjs";
+import { SOURCE_EXCEPTIONS_FILE, readCardSourceExceptions } from "./sources.mjs";
+import { candidatesOf, readSiblings } from "./siblings.mjs";
 import { notePrTask } from "./pr-watch.ts";
 import { createDesignReviews, startDesignReviewSweep } from "./design-review.ts";
 import { noteKept } from "./tidy.ts";
@@ -40,7 +46,7 @@ const run = promisify(execFile);
 export const SAFE_GIT_ARGS = ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=", "-c", "protocol.ext.allow=never", "-c", "safe.bareRepository=explicit"];
 
 type Gh = (method: string, path: string, token: string, body?: unknown) => Promise<{ status: number; body: any; remaining?: number }>;
-type App = { token(org: string, o: { repositories?: string[]; permissions?: Record<string, string>; fresh?: boolean }): Promise<string>; createRepo(slug: string): Promise<"exists" | "created">; identity(): Promise<{ name: string }> };
+type App = { token(org: string, o: { repositories?: string[]; permissions?: Record<string, string>; fresh?: boolean }): Promise<string>; createRepo(slug: string): Promise<"exists" | "created">; appInfo(): Promise<{ id: number; slug: string }>; identity(): Promise<{ name: string }> };
 export type Options = {
   key: string; kernelUrl: string; cacheDir: string; tasksDir?: string;
   /** The App (github-app.ts appClient); undefined without the key: every GitHub action fails, saying so. */
@@ -58,6 +64,8 @@ export type Options = {
 };
 
 const READ = { contents: "read", metadata: "read" };
+/** A base a change targets: a file read there (source exceptions), and its cache clone at `tip` (siblings). */
+type Base = { repo: string; base: string; read: (path: string) => Promise<string>; dir?: string; tip?: string };
 // What an apply read collects for the kernel: per file, in all (texts and diff), and how many files.
 const MAX_TEXT = 1 << 20, MAX_TOTAL = 8 << 20, MAX_FILES = 200;
 const PUSH = { contents: "write", pull_requests: "write", metadata: "read" };
@@ -70,6 +78,10 @@ const IDENT = /^[A-Za-z][A-Za-z0-9]*-\d+$/;
 const BRANCH = /^(?!-)(?!.*\.\.)[\w./-]{1,200}$/;
 const same = (a?: string, b?: string) => Boolean(a && b) && a!.toLowerCase() === b!.toLowerCase();
 const fail = (status: number, message: string) => Object.assign(new Error(message), { status });
+/** Our tooling and local paths: what reviewers of a repo outside ours mustn't read in a PR or a commit. */
+const INTERNAL = /aidenhq|paperclip|\/home\/|~\/|\bworktree\b|\bopencode\b|\bopenrouter\b|claude code|\bcodex\b/i;
+/** The first internal name in text, for telling the agent what to reword. */
+export const leakIn = (text: unknown) => String(text ?? "").match(INTERNAL)?.[0];
 const slugOf = (repo: unknown) => {
   const m = SLUG.exec(String(repo ?? ""));
   if (!m || m[2]!.endsWith(".git") || m.slice(1).some((p) => /^\.+$/.test(p))) throw fail(400, `${String(repo)} is not owner/name`);
@@ -207,6 +219,8 @@ export function createService(o: Options) {
   // or PR has planned (execute carries no requester, and a plan comes before its push), and never reassigned: another task
   // re-publishing a head, noted or already pushed without a note, doesn't take it. A product merge's head is a requester's
   // own only when it noted it (plan.mjs productMergePart).
+  // Which task opened each PR this code host opened (pr-watch.ts notePrTask): the task's sibling PRs for the reviewer.
+  const prTasks = (): Record<string, { task?: string; branch?: string }> => { try { return JSON.parse(readFileSync(join(o.cacheDir, "pr-tasks.json"), "utf8")); } catch { return {}; } };
   const pushedByFile = join(o.cacheDir, "pushed-by.json");
   const pushedBy = (): Record<string, { task: string; platform: boolean }> => (existsSync(pushedByFile) ? JSON.parse(readFileSync(pushedByFile, "utf8")) : {});
   const notePushedBy = (shas: string[], who: { task: string; platform: boolean }) => {
@@ -219,6 +233,8 @@ export function createService(o: Options) {
 
   const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
   const diffOf = (dir: string, from: string, to: string) => git(dir, ["-c", "core.attributesFile=/dev/null", "diff", "--no-ext-diff", "--no-textconv", "--text", "--no-renames", from, to]);
+  /** The same change counted by git itself (numstat): the reviewer checks the diff it gets against it (review-files.mjs sameChanges). */
+  const numstatOf = async (dir: string, from: string, to: string) => numstat(await git(dir, ["-c", "core.attributesFile=/dev/null", "diff", "--no-ext-diff", "--no-textconv", "--text", "--no-renames", "--numstat", from, to]));
   /**
    * The verified state plan.mjs tiers a request on (its `s`) and the card's facts (target, sentence, the diff the reviewer
    * reads): read from the workspace, the cache and GitHub, never the args.
@@ -228,11 +244,21 @@ export function createService(o: Options) {
     const base = { agentsOrg: o.agentsOrg, allowedOrgs: o.allowedOrgs, instanceRepo: o.instanceRepo, productRepo: o.productRepo, requester: { platform: isPlatform(requester) }, task, workspace: String(a.workspace ?? ""), also: [] as string[] };
     if (kind.endsWith(".create_repo")) {
       const repo = slugOf(a.repo).slug;
-      return { state: { ...base, repo }, facts: { target: repo, sentence: `Create the repository ${repo} on GitHub.`, diff: "" } };
+      return { state: { ...base, repo }, facts: { target: repo, sentence: `Create the repository ${repo} on GitHub${inOrg(o.agentsOrg, repo) ? ", with the app starter on main" : ""}.`, diff: "" } };
     }
+    // What the reviewer reads beside the diff (review): each changed file at the reviewed head, and the PR's Evidence section.
+    const reads: { name: string; read: () => Promise<string> }[] = [];
+    // The bases the change targets, each with a way to read a file there (the owner's source exceptions: never the change's own).
+    // `dir` and `tip`: the cache clone holding the base at that commit, where the task's merged sibling PRs are read (siblings.mjs).
+    const bases: Base[] = [];
+    // A merge card's own PRs (`repo#n`), never its siblings. A push or PR card's own PR is open, so never counted as merged:
+    // an earlier merged PR on a reused branch name is a real sibling.
+    const own = new Set<string>();
     if (kind.endsWith(".merge") || kind.endsWith(".close")) {
       const merge = kind.endsWith(".merge");
       const prs = [];
+      const evidence: string[] = [];
+      const changed: Changed[] = [];
       let diff = "";
       for (const p of a.prs ?? []) {
         const s = slugOf(p.repo);
@@ -247,7 +273,12 @@ export function createService(o: Options) {
           const into = await fetchRemote(s, String(pr.base?.sha));
           const mb = await git(head.dir, ["merge-base", into.sha, head.sha]).catch(() => "");
           diff += `${await diffOf(head.dir, mb || EMPTY_TREE, head.sha)}\n`;
+          changed.push(...(await numstatOf(head.dir, mb || EMPTY_TREE, head.sha)));
+          if (pr.changed_files <= listed.length) for (const f of listed.map((x: any) => String(x.filename))) reads.push({ name: `${s.slug} ${f}`, read: () => git(head.dir, ["show", `${head.sha}:${f}`]) });
+          evidence.push(`### https://github.com/${s.slug}/pull/${Number(p.number)}\n${evidenceOf(pr.body)}`);
+          bases.push({ repo: s.slug, base: String(pr.base?.ref ?? ""), read: (path) => git(into.dir, ["show", `${into.sha}:${path}`]), dir: into.dir, tip: into.sha });
         }
+        own.add(`${s.slug.toLowerCase()}#${Number(p.number)}`);
         prs.push({
           repo: s.slug, number: Number(p.number), head: pr.head?.sha, base: pr.base?.sha, headMatches: !p.head || p.head === pr.head?.sha,
           files: pr.changed_files > listed.length ? undefined : files, checks: await checksAt(s, pr.head?.sha, token),
@@ -255,28 +286,60 @@ export function createService(o: Options) {
         });
       }
       const urls = prs.map((p) => `https://github.com/${p.repo}/pull/${p.number}`).join(", ");
-      return { state: { ...base, prs }, facts: { target: urls, sentence: `${merge ? "Merge" : "Close"} ${urls}${merge ? " at its approved head, once its checks are green" : ""}.`, diff: diff.trim() } };
+      // The task a merge is for: the one that opened its PRs (pr-tasks.json), as the flow facts name it.
+      const task = prs.map((p) => prTasks()[`https://github.com/${p.repo}/pull/${p.number}`.toLowerCase()]?.task).find(Boolean);
+      return { state: { ...base, prs }, facts: { target: urls, sentence: `${merge ? "Merge" : "Close"} ${urls}${merge ? " at its approved head, once its checks are green" : ""}.`, diff: diff.trim() }, reads, changed, bases, own, task, ...(merge ? { evidence: evidence.join("\n\n") } : {}) };
     }
     const branches = [];
+    const changed: Changed[] = [];
     let diff = "";
     for (const b of a.only ?? []) {
       const { s, dir } = await fromWorkspace(a.workspace, b);
       const info = await api("GET", `/repos/${s.slug}`, await tokenFor(s, READ));
       const def = String(info.default_branch ?? "main");
-      const empty = !(await fetchRemote(s, def, "ws").then(() => true, () => false));
+      const tip = await fetchRemote(s, def, "ws").then((r) => r.sha, () => "");
+      const empty = !tip;
       const mb = empty ? "" : await git(dir, ["merge-base", b.sha, `refs/remote/${def}`]).catch(() => "");
-      const files = (await git(dir, ["diff", "--no-ext-diff", "--no-textconv", "--name-only", "-z", mb || EMPTY_TREE, b.sha])).split("\0").filter(Boolean);
+      // No renames: a file moved counts at both paths (one moved out of kernel/ still changes kernel/).
+      const files = (await git(dir, ["diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--name-only", "-z", mb || EMPTY_TREE, b.sha])).split("\0").filter(Boolean);
       diff += `${await diffOf(dir, mb || EMPTY_TREE, b.sha)}\n`;
+      changed.push(...(await numstatOf(dir, mb || EMPTY_TREE, b.sha)));
+      // Outside our own repos (the agents org, the product) the PR's text and the branch's commit messages name none of our tooling.
+      if (!ownRepo(s.slug, o.agentsOrg, o.productRepo)) {
+        const messages = (await git(dir, ["log", "--format=%B%x1e", mb ? `${mb}..${b.sha}` : b.sha])).split("\x1e");
+        const leak = kind.endsWith(".pr") ? leakIn(`${a.text?.title ?? ""}\n${a.text?.body ?? ""}`) : undefined;
+        if (leak) throw fail(422, `Not done: the PR title or description mentions "${leak}". ${s.slug}'s reviewers mustn't see internal names, tools or local paths; reword it and ask again.`);
+        const msg = messages.find((m) => leakIn(m));
+        if (msg) throw fail(422, `Not done: a commit message on ${b.branch} mentions "${leakIn(msg)}" ("${msg.trim().split("\n")[0]!.slice(0, 80)}"). ${s.slug}'s reviewers mustn't see internal names; reword the commit and ask again.`);
+      }
+      for (const f of files) reads.push({ name: `${s.slug} ${f}`, read: () => git(dir, ["show", `${b.sha}:${f}`]) });
+      // A branch's PR targets the default branch (execute opens it there); a repo with none yet has no base to read.
+      bases.push({ repo: s.slug, base: empty ? "" : def, read: (path) => git(dir, ["show", `refs/remote/${def}:${path}`]), dir, tip });
       branches.push({ repo: s.slug, branch: b.branch, sha: b.sha, base: mb || undefined, files, defaultBranch: def, empty });
     }
     const names = branches.map((b) => `${b.repo} \`${b.branch}\``).join(", ");
-    return { state: { ...base, branches }, facts: { target: names, sentence: `${kind.endsWith(".pr") ? "Push and open a PR for" : "Push"} ${names}.`, diff: diff.trim() } };
+    return { state: { ...base, branches }, facts: { target: names, sentence: `${kind.endsWith(".pr") ? "Push and open a PR for" : "Push"} ${names}.`, diff: diff.trim() }, reads, changed, bases, own, task: String(a.workspace ?? ""), ...(kind.endsWith(".pr") && a.text ? { evidence: evidenceOf(a.text.body) } : {}) };
+  }
+
+  /**
+   * The changed files' text for the reviewer (fileContext, as the runner read them): in order, a file that can't be read at the
+   * head (deleted) skipped, past 300 not read.
+   */
+  async function readFiles(list: { name: string; read: () => Promise<string> }[]) {
+    const files: { name: string; text: string | null | undefined }[] = [];
+    for (const [i, f] of list.entries()) files.push({ name: f.name, text: i < 300 ? await f.read().catch(() => undefined) : null });
+    return fileContext(files);
   }
 
   const executor: Executor = {
     async plan(req: PlanRequest) {
-      const { state, facts } = await stateFor(req.kind, req.args ?? {}, req.requester, req.task);
-      const out = planRules({ kind: req.kind, args: req.args }, state, facts);
+      const { state, facts, reads, changed, evidence, bases, own, task } = (await stateFor(req.kind, req.args ?? {}, req.requester, req.task)) as Awaited<ReturnType<typeof stateFor>> & { reads?: { name: string; read: () => Promise<string> }[]; changed?: Changed[]; evidence?: string; bases?: Base[]; own?: Set<string>; task?: string };
+      const planned = planRules({ kind: req.kind, args: req.args }, state, facts);
+      // The reviewer's context goes with the filing only (a revalidation compares targets): never part of the record's digest.
+      const sources = req.revalidate ? undefined : await readCardSourceExceptions(bases ?? [], (repo: string, base: string) => bases!.find((b) => b.repo === repo && b.base === base)!.read(SOURCE_EXCEPTIONS_FILE));
+      // The task's other PRs already merged into these bases; a read that fails leaves them out, never the plan.
+      const siblings = req.revalidate || !bases?.length ? [] : await readSiblings({ candidates: candidatesOf(prTasks(), task, own), bases, pr: async (repo: string, n: number) => api("GET", `/repos/${repo}/pulls/${n}`, await tokenFor(slugOf(repo), READ)), git }).catch((e: Error) => (log("siblings unread", { err: String(e.message ?? e).slice(0, 200) }), []));
+      const out = req.revalidate || (!reads?.length && !changed?.length && evidence === undefined && !sources && !siblings.length) ? planned : { ...planned, review: { ...(reads?.length || changed?.length ? { files: { ...(reads?.length ? await readFiles(reads) : { text: "", leftOut: [], oversized: [] }), ...(changed?.length ? { changed } : {}) } } : {}), ...(evidence !== undefined ? { evidence } : {}), ...(sources ? { sources } : {}), ...(siblings.length ? { siblings } : {}) } };
       // Its commits were read from this task's workspace (stateFor), so the task is who asked to publish them.
       if (/\.(push|pr)$/.test(req.kind) && req.task) notePushedBy((req.args?.only ?? []).map((b: any) => String(b.sha)), { task: req.task, platform: isPlatform(req.requester) });
       return out;
@@ -327,7 +390,17 @@ export function createService(o: Options) {
         }
         return { ok: true, text: `Closed: ${done.join(", ")}` };
       }
-      if (action === "create_repo") return { ok: true, text: `${slugOf(a.repo).slug}: ${await app().createRepo(slugOf(a.repo).slug)}` };
+      if (action === "create_repo") {
+        const s = slugOf(a.repo);
+        if ((await app().createRepo(s.slug)) !== "created") return { ok: true, text: `${s.slug}: exists (nothing was created).` };
+        // A new app repository in the agents org starts with the app starter on main; a failed seed is said, never hidden.
+        if (!inOrg(o.agentsOrg, s.slug)) return { ok: true, text: `${s.slug}: created (private, with a README).` };
+        const failed = await seedStarter(s).then(() => "", (e: Error) => String(e.message ?? e).slice(0, 300));
+        if (failed) log("app starter not seeded", { repo: s.slug, err: failed });
+        return { ok: true, text: failed
+          ? `${s.slug}: created (private, with a README only: adding the app starter failed: ${failed}). Copy the app starter in (\`cp -r /opt/aidenhq/app-starter/. <repo>/\`) as its own first commit, before the app's own work.`
+          : `${s.slug}: created (private, with the app starter on main: build on it, so the first change holds only the app's own work).` };
+      }
       return { ok: false, text: `no such kind ${rec.kind}` };
     },
   };
@@ -526,7 +599,8 @@ export function createService(o: Options) {
       if (!Object.keys(perms).length || Object.values(perms).some((l) => !LEVEL[l])) throw fail(400, "name the permissions (read or write)");
       const token = await app().token(s.org, { ...(org ? {} : { repositories: [s.name] }), permissions: perms, fresh: true });
       // A fresh installation token lasts an hour; the App's slug tells its own events (performed_via_github_app) from others'.
-      const slug = (await app().identity()).name.replace(/\[bot\]$/, "");
+      // A read that fails doesn't fail the token we already hold: callers treat a missing slug as optional.
+      const slug = await app().appInfo().then((i) => i.slug, () => null);
       return send(res, 200, { token, repo: s.slug, perms, expires_at: new Date(Date.now() + 55 * 60_000).toISOString(), app: { slug } });
     }
     const s = slugOf(b.repo);
@@ -604,6 +678,33 @@ export function createService(o: Options) {
       return sha;
     } finally {
       rmSync(join(index, ".."), { recursive: true, force: true });
+    }
+  }
+  /**
+   * A new app repository's first commit after GitHub's README: the app starter's tracked files (the product repo's
+   * modules/apps-platform/starter at its default branch, `git archive`, so nothing untracked) as the bot, fast-forwarded onto
+   * the new repo's default branch. So an app's first PR holds only the app's own work, and the reviewer never reads the
+   * starter (its identity check, its pages, its lock file) as the agent's additions.
+   */
+  async function seedStarter(s: ReturnType<typeof slugOf>) {
+    if (!o.productRepo) throw new Error("no product repo is set, so there is no app starter to copy");
+    const p = slugOf(o.productRepo);
+    const source = await fetchRemote(p, String((await api("GET", `/repos/${p.slug}`, await tokenFor(p, READ))).default_branch ?? "main"));
+    const def = String((await api("GET", `/repos/${s.slug}`, await tokenFor(s, READ))).default_branch ?? "main");
+    const { dir, sha: parent } = await fetchRemote(s, def, "ws");
+    const tmp = mkdtempSync(join(o.cacheDir, "scratch-"));
+    try {
+      const files = join(tmp, "files");
+      mkdirSync(files);
+      await git(source.dir, ["archive", "--format=tar", "-o", join(tmp, "starter.tar"), `${source.sha}:modules/apps-platform/starter`]);
+      await run("tar", ["-xf", join(tmp, "starter.tar"), "-C", files], { env: ENV });
+      const env = { ...ENV, ...identityEnv(await app().identity()), GIT_INDEX_FILE: join(tmp, "index") };
+      const g = async (args: string[]) => (await run("git", [...SAFE_GIT_ARGS, "--git-dir", dir, "--work-tree", files, ...args], { env, maxBuffer: 64 * 1024 * 1024 })).stdout.trim();
+      await g(["add", "--all", "--force", "."]);
+      const sha = await g(["commit-tree", await g(["write-tree"]), "-p", parent, "-m", "chore: start from the app starter\n\nWritten by the code host when it created this repository; no agent wrote it."]);
+      await git(dir, ["push", "--quiet", "--no-verify", remote(s.slug), `${sha}:refs/heads/${def}`], await tokenFor(s, PUSH));
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
     }
   }
   /** The release train's pin bump: one file edited as it is at the head. */

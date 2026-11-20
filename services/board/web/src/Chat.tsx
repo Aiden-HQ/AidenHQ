@@ -4,6 +4,7 @@ import { useLive } from "./events";
 import { Markdown } from "./markdown";
 import { QUERIES, useQuery } from "./queries";
 import { deciderOf, foldsInChat, outcomeOf } from "./conversation";
+import { Explain } from "./Explain";
 import { CardListSkeleton, SkeletonLines, Updating } from "./Skeleton";
 import type { Approval, ChatState } from "./types";
 import { ago } from "./util";
@@ -52,6 +53,7 @@ export function ApprovalCard({ a, open, inline, prefix = "", unfold }: { a: Appr
   // In a conversation a decided card is one line; one decided while on screen stays open.
   const [seenPending] = useState(a.state === "pending");
   const [shown, setShown] = useState(false);
+  const [explained, setExplained] = useState(false);
   if (inline && !shown && foldsInChat(a, seenPending)) {
     const o = outcomeOf(a);
     const by = deciderOf(a);
@@ -148,6 +150,10 @@ export function ApprovalCard({ a, open, inline, prefix = "", unfold }: { a: Appr
           <pre className="approval-details">{a.details}</pre>
         </details>
       )}
+      <button className="link-btn small approval-explain" onClick={() => setExplained(!explained)} aria-expanded={explained}>
+        {explained ? "Hide the explanation" : a.state === "pending" ? "Explain: who decides this, and why" : "Explain this decision"}
+      </button>
+      {explained && <Explain id={a.id} />}
       {a.state === "pending" ? (
         !top && <div className="row-end">{buttons}</div>
       ) : (
@@ -163,7 +169,7 @@ export function ApprovalCard({ a, open, inline, prefix = "", unfold }: { a: Appr
 
 /**
  * A tool call that ran at once (Tier 0): a module's or connection's kind (conn.tool, apps-platform.api_write), mostly task
- * bookkeeping (task_finish, task_comment, task_set_status). Policy let it run, so it's audit, not something to decide; a
+ * bookkeeping (task_finish, task_comment, task_block). Policy let it run, so it's audit, not something to decide; a
  * failed one is its agent's to retry. Hidden from the history unless asked for; pushes, PRs, merges, applies and deploys stay.
  */
 const toolCall = (a: Approval) => a.state === "auto" && a.action.includes(".");
@@ -299,7 +305,7 @@ export function ApprovalsView({ open, onSignIn }: { open: (identifier: string) =
                   ))}
                 </ul>
               ) : (
-                <p className="empty-state">{f === "failed" ? "Nothing failed." : "Nothing here yet."}</p>
+                <p className="empty-state">{f === "failed" ? "Nothing failed." : waitingCount ? "Nothing here yet." : "All clear. When a write needs your say, its card lands here."}</p>
               )}
             </section>
           )}

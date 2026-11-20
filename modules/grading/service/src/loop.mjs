@@ -13,8 +13,51 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
   // Flow facts (docs/design/flow.md): a grade attempt is one subject, its retry wait is on the task.
   const fact = (type, subject, version, task, data = {}) => emit({ type, subject, version: String(version), at: new Date().toISOString(), task, data });
   const gradeLooked = new Map(); // issueId → when its evidence was last looked at while waiting
+  /**
+   * What a verdict still owes once its row is written: the task's move (done, reopen with the note, block) and its parent's notice. Each
+   * is a row (`owed:<task>`) until it lands, retried at the top of every pass: the row's state alone never brings the task back
+   * (due() skips needs_revision and escalated rows), so a kernel 5xx would leave the task held in review, or its parent unaware.
+   * A refusal (4xx: the task closed or moved on) drops that step.
+   */
+  async function owe(task, steps) {
+    state.set(`owed:${task}`, JSON.stringify(steps));
+    await settle(task, steps);
+  }
+  async function settle(task, steps) {
+    while (steps.length) {
+      const s = steps[0];
+      try {
+        if (s.do === "reopen") await pc.setStatus(task, "todo", s.note);
+        else if (s.do === "done") {
+          // Replayed later: still the task and evidence the grader saw? Else the verdict is stale: drop the close and the notice,
+          // and send the row back to waiting so the next pass grades what is there now.
+          const now = await pc.issue(task);
+          if (now.status !== "done" && (now.status !== s.status || (await gather(s.deliverable, gradeDeps(now), s.rubric)).version !== s.version)) {
+            log("a satisfied verdict is stale: not closed", { issue: task });
+            await api.post(`/internal/grades/${encodeURIComponent(task)}/verdict`, { version: "", outcome: "awaiting_evidence" });
+            steps.length = 1;
+          } else if (now.status !== "done") await pc.setStatus(task, "done", s.note);
+        }
+        else if (s.do === "block") await pc.block(task, s.note);
+        else if (!(await tellParent(s.issue, s.kind, s.text)) && s.fallback) await pc.comment(task, s.fallback);
+      } catch (err) {
+        const status = Number(err?.status);
+        if (!(status >= 400 && status < 500 && status !== 429)) {
+          log("a verdict's move failed: retried next pass", { issue: task, step: s.do, err: String(err.message ?? err).slice(0, 300) });
+          return;
+        }
+        log("a verdict's move was refused: dropped", { issue: task, step: s.do, err: String(err.message ?? err).slice(0, 300) });
+        // A refused close (the task is already done, or moved on): "is done" is told only when it is done.
+        if (s.do === "done" && (await pc.issue(task).then((i) => i.status, () => "")) !== "done") steps.length = 1;
+      }
+      steps.shift();
+      state.set(`owed:${task}`, steps.length ? JSON.stringify(steps) : "");
+    }
+  }
+
   /** The board's waiting rows: grade each (one at a time per task), and check escalated tasks finished again for a new version. */
   async function runGrades() {
+    for (const [k, v] of state.list("owed:")) await settle(k.slice("owed:".length), JSON.parse(v));
     const { grades = [], resubmitted = [] } = await api.get("/internal/grades");
     for (const g of resubmitted) {
       // The mark stays until a version is found: look again once a minute.
@@ -98,8 +141,7 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
     const deps = gradeDeps(issue);
     const ev = await gather(g.deliverable, deps, rubric);
     const verdictPath = `/internal/grades/${encodeURIComponent(g.issueId)}/verdict`;
-    const agent = (await pc.agents()).find((a) => a.id === issue.assigneeAgentId);
-    const last = g.verdicts?.at(-1);
+    const agent = issue.assigneeAgentId ? await pc.agent(issue.assigneeAgentId) : undefined;
     const attempt = (g.attempts ?? 0) + 1; // the pass this grade is on (a revision is the next attempt)
     let asked = false, v;
     if (ev.awaiting) {
@@ -133,9 +175,6 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
       }
       ev.version = "";
       v = { outcome: "error", model: "", criteria: [], reason: esc.reason };
-    } else if (g.state === "awaiting_evidence" && last?.verdict === "satisfied" && last.version === ev.version) {
-      // Graded satisfied before, but closing the task failed: the same version keeps its verdict, no second grader call.
-      v = { outcome: "satisfied", model: last.model, criteria: last.criteria };
     } else {
       // The author's model: its last job's engine and the agent's own model (setup's metadata); the grader is never of its family.
       const authorModel = `${state.lastJob(issue.id)?.engine ?? ""} ${agent?.metadata?.model ?? ""}`;
@@ -155,34 +194,29 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
     log("graded", { issue: issue.identifier, outcome: v.outcome, state: row.state, attempts: row.attempts, failures: row.failures, model: v.model, version: ev.version.slice(0, 40), ...(v.reason ? { reason: String(v.reason).slice(0, 300) } : {}) });
     const note = gradeNote(v, rubric, row.state, { version: ev.version, reason: row.state === "escalated" && v.outcome === "error" ? v.reason : undefined });
     if (row.state === "satisfied") {
-      try {
-        await pc.setStatus(issue.id, "done", note);
-      } catch (err) {
-        // Back to waiting, so the next poll closes it (the verdict above is reused, not asked again).
-        await api.post(verdictPath, { version: "", outcome: "awaiting_evidence" }).catch(() => {});
-        throw err;
-      }
-      await tellParent(issue, "done", `${issue.identifier} (${agent?.name ?? "its agent"}) is done, graded against its rubric: ${issue.title}. Its result is on ${issue.identifier}.`);
+      // The row is satisfied now, so the close and the notice are owed steps: retried until they land, even across a restart.
+      await owe(issue.id, [{ do: "done", note, version: ev.version, status: issue.status, deliverable: g.deliverable, rubric }, { do: "tell", issue: { id: issue.id, parentId: issue.parentId }, kind: "done", text: `${issue.identifier} (${agent?.name ?? "its agent"}) is done, graded against its rubric: ${issue.title}. Its result is on ${issue.identifier}.` }]);
     } else if (row.state === "needs_revision") {
-      await pc.setStatus(issue.id, "todo", note);
+      await owe(issue.id, [{ do: "reopen", note }]);
       fact("work.waiting", `task:${issue.id}`, attempt, issue.id, { reason: "grade_retry" });
       // The reopen wakes the task's agent through the kernel: nothing to dispatch here.
     } else if (row.state === "escalated" && v.outcome === "grading_failed") {
       // The grader itself kept failing (MAX_GRADER_FAILURES in a row, never a rubric verdict): the task ends blocked with the
       // error rather than looping in review, and its delegator hears it. Nothing is posted on the task after the block: a
       // comment there would reopen it.
-      await pc.block(issue.id, note);
-      await tellParent(issue, "blocked", `**${issue.identifier} is blocked: its grader failed ${row.failures} times in a row** (${String(v.reason ?? "").slice(0, 300)}): ${issue.title}. Unblock it once the grader works, or close it if you're satisfied.`).catch(() => false);
+      await owe(issue.id, [{ do: "block", note }, { do: "tell", issue: { id: issue.id, parentId: issue.parentId }, kind: "blocked", text: `**${issue.identifier} is blocked: its grader failed ${row.failures} times in a row** (${String(v.reason ?? "").slice(0, 300)}): ${issue.title}. Unblock it once the grader works, or close it if you're satisfied.` }]);
       log("grading failed: task blocked", { issue: issue.identifier, failures: row.failures, reason: String(v.reason ?? "").slice(0, 300) });
     } else if (row.state === "escalated") {
       // One question to the delegator, with the grader's note in it; on the task itself only when no open parent hears it (a
       // note there would wake its assignee, who has nothing left to do).
       const ask = `**${issue.identifier} needs your decision** (its grade escalated to you): ${issue.title}. Close it if you're satisfied (that accepts the work), or reopen it with what to change.`;
-      // The same escalation again in the same hour (same version, outcome and criteria verdicts) is no news: told once (marked
-      // only once posted). A new version or verdict, or the same one in a later hour, is told.
-      const said = JSON.stringify([ev.version, v.outcome, (v.criteria ?? []).map((c) => [c.id, c.met]), Math.floor(Date.now() / 3_600_000)]), told = state.get(`escalation-told:${issue.id}`) === said;
-      if (!told && (await tellParent(issue, "escalated", `${ask}\n\n${note}`).catch(() => false))) state.set(`escalation-told:${issue.id}`, said);
-      else if (!told) await pc.comment(issue.id, note);
+      // The same escalation again in the same hour (same version, outcome and criteria verdicts) is no news: told once. A new
+      // version or verdict, or the same one in a later hour, is told. The notice is an owed step, so a kernel blip retries it.
+      const said = JSON.stringify([ev.version, v.outcome, (v.criteria ?? []).map((c) => [c.id, c.met]), Math.floor(Date.now() / 3_600_000)]);
+      if (state.get(`escalation-told:${issue.id}`) !== said) {
+        state.set(`escalation-told:${issue.id}`, said);
+        await owe(issue.id, [{ do: "tell", issue: { id: issue.id, parentId: issue.parentId }, kind: "escalated", text: `${ask}\n\n${note}`, fallback: note }]);
+      }
     }
   }
 

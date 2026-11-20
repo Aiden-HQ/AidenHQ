@@ -345,9 +345,8 @@ server.
   idle until GitHub is connected (the App, setup step 8); then new repositories go to GitHub and local ones stay local
   (`docs/design/codehost-local.md` §2).
 
-**Build on what exists.** Setup already creates a local bare repo as the instance repo's remote. The runner already
-clones from `repo_sources` (a slug to a local URL, `services/runner/src/main.mjs:1363`), and the git sandbox already
-blocks direct pushes. `codehost-local` extends these:
+**Build on what exists.** Setup already creates a local bare repo as the instance repo's remote. The kernel's job workspaces
+already clone from local URLs, and the git sandbox already blocks direct pushes. `codehost-local` extends these:
 - it reuses `codehost-github/src/{git.mjs,plan.mjs}` for git handling and tiering;
 - it uses existing kernel write records for review;
 - it adds no PR database and no new UI.

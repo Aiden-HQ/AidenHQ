@@ -166,6 +166,19 @@ test("a release move is the reviewer's only as the updater's verified move under
   const tierOf = async (k, filer) => { const r = filer === "updater" ? await k.writes.fileKernel("kernel.apply", { args: BUMP, task: "TASK-1", requester: UPDATER }) : await k.writes.request(codehost, { kind: "kernel.apply", args: BUMP, task: "TASK-1" }); return [r.tier, r.rule]; };
   assert.deepEqual(await tierOf(kernel({ texts, verifyRelease: verified }), "updater"), [1, "release-pin"], "the updater's verified move");
   assert.deepEqual(asked.at(-1), ["2026.11.3", D3], "verified by the planner, at the head's release and sha");
+  // The record says so (args.release, on its card): the owner's request for that release, its official modules' authority
+  // included, as code found it; never for anyone else's move, an unverified one, or with auto-updates off.
+  const releaseOf = async (k, filer) => (filer === "updater" ? await k.writes.fileKernel("kernel.apply", { args: BUMP, task: "TASK-1", requester: UPDATER }) : await k.writes.request(codehost, { kind: "kernel.apply", args: BUMP, task: "TASK-1" })).args.release;
+  const withAuthority = { modules: { acme: { base: { name: "acme" }, head: { name: "acme", writes: { post: {} } }, codeChanged: false, official: true } }, marketplaces: [] };
+  const filed = await kernel({ texts, verifyRelease: verified, modules: withAuthority }).writes.fileKernel("kernel.apply", { args: BUMP, task: "TASK-1", requester: UPDATER });
+  assert.equal(filed.args.release, "2026.11.3");
+  // The reviewer reads both after the diff (its request's diff is the card's details), every authority line whole.
+  assert.match(filed.card.details, /Release update \(computed by code\): the kernel's updater moves this instance to release 2026\.11\.3[^\n]*auto-updates are on[\s\S]*Module changes \(the authority diff[^\n]*\nacme: adds write kind post \(owner\)/);
+  const other = await kernel({ texts, verifyRelease: verified, modules: withAuthority }).writes.request(codehost, { kind: "kernel.apply", args: BUMP, task: "TASK-1" });
+  assert.match(other.card.details, /Module changes[^\n]*\nacme: adds write kind post \(owner\)/);
+  assert.doesNotMatch(other.card.details, /Release update/);
+  assert.equal(await releaseOf(kernel({ texts, verifyRelease: verified }), "module"), undefined);
+  assert.equal(await releaseOf(kernel({ texts, verifyRelease: async () => null, autonomy: "tier0" }), "updater"), undefined);
   // Anyone else filing the same move (an agent's job, a module): the owner's, and never verified for them.
   asked.length = 0;
   assert.deepEqual(await tierOf(kernel({ texts, verifyRelease: verified, autonomy: "tier0" }), "module"), [2, "release-pin"]);
@@ -179,6 +192,7 @@ test("a release move is the reviewer's only as the updater's verified move under
   // Auto-updates off: every release move is the owner's.
   const off = { base: rel(OLD, "2026.11.2", D2, "off"), head: rel(NEW, "2026.11.3", D3, "off") };
   assert.deepEqual(await tierOf(kernel({ texts: off, verifyRelease: async () => off.head, autonomy: "tier0" }), "updater"), [2, "release-pin"]);
+  assert.equal(await releaseOf(kernel({ texts: off, verifyRelease: async () => off.head, autonomy: "tier0" }), "updater"), undefined);
   assert.equal(UPDATER.kind, "kernel", "a kind no token yields (identity.ts: run, job, module)");
   // The autonomy cap limits agents' writes: under `off` the updater's verified move stays the reviewer's (the owner's standing
   // authority, auto_update), while anyone else's same move is the owner's as before.

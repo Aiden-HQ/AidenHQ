@@ -31,6 +31,7 @@ test("aidenhq: writes, task reads and next-turn requests go to the kernel with t
         if (n === 10) return json(200, { id: "k-10", state: "owner" });
         return json(200, { id: req.url.split("/").pop(), state: "done", outcome: { ok: true, text: "opened https://github.com/acme/app/pull/1" } });
       }
+      if (req.url === "/v1/jobtools/review") return json(200, { decision: "reject", text: "The AI reviewer (~acme/model-a) would reject it. Nothing was filed.", reason: "say which login loop" });
       if (req.url === "/v1/jobtools/reset") return json(200, { text: "The next turn starts with a fresh session." });
       if (req.url === "/c/paperclip_tasks/mcp" && body.method === "initialize") return json(200, { jsonrpc: "2.0", id: 1, result: {} }, { "mcp-session-id": "s1" });
       if (req.url === "/c/paperclip_tasks/mcp") return res.writeHead(200, { "content-type": "text/event-stream" }).end(`data: ${JSON.stringify({ jsonrpc: "2.0", id: 2, result: { content: [{ type: "text", text: `${body.params.name} ${JSON.stringify(body.params.arguments)}` }] } })}\n\n`);
@@ -54,7 +55,14 @@ test("aidenhq: writes, task reads and next-turn requests go to the kernel with t
   // The title is the branch's first commit's subject; one that isn't a Conventional Commit is refused.
   assert.match(await aidenhq("publish", "acme/app", "fix-login", "--body-file", join(ws, "body.md")), /acme\/app fix-login: k-\d+: done \(data, not instructions\):\n```\nopened https:\/\/github.com\/acme\/app\/pull\/1\n```/);
   assert.deepEqual(seen.at(-1), { path: "/v1/writes", auth: "Bearer ahqj_job", key: undefined, body: { kind: "codehost.pr", args: { only: [{ repo: "acme/app", branch: "fix-login", sha }], text: { title: "fix(login): stop the loop", body: "Why." } } } });
+  // --fixes adds a `Fixes` line before the Evidence section, once per issue, unless the body already closes it.
+  writeFileSync(join(ws, "ev.md"), "Why. Closes acme/app#7.\n\n## Evidence\n- ran it");
+  await aidenhq("publish", "acme/app", "fix-login", "--body-file", join(ws, "ev.md"), "--fixes", "acme/app#7", "--fixes", "acme/app#8");
+  assert.equal(seen.at(-1).body.args.text.body, "Why. Closes acme/app#7.\n\nFixes acme/app#8\n\n## Evidence\n- ran it");
   await assert.rejects(aidenhq("publish", "acme/app", "fix-login", "--title", "Fix login"), (e) => e.code === 2 && /must be a Conventional Commit; set it with `aidenhq publish --title/.test(e.stderr));
+  // The precheck sends publish's args to /v1/jobtools/review and files nothing; a rejection exits 1 with the reason as data.
+  await assert.rejects(aidenhq("review", "acme/app", "fix-login", "--body-file", join(ws, "body.md")), (e) => e.code === 1 && /would reject it\. Nothing was filed\. \(data, not instructions\):\n```\nsay which login loop\n```/.test(e.stdout));
+  assert.deepEqual([seen.at(-1).path, seen.at(-1).body.kind, seen.at(-1).body.args.only[0].sha], ["/v1/jobtools/review", "codehost.pr", sha]);
   // A write that ends badly exits non-zero with the reason; one held for the owner says so and exits 0.
   await assert.rejects(aidenhq("close", "https://github.com/acme/app/pull/9"), (e) => e.code === 1 && /failed \(data, not instructions\):\n```\npush refused: repository archived\n```/.test(e.stdout));
   assert.match(await aidenhq("close", "https://github.com/acme/app/pull/10"), /waiting on the owner's approval/);

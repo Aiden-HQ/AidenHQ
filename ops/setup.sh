@@ -543,6 +543,8 @@ else
   as_user bash -c "cd '$REPO' && docker compose up -d --remove-orphans"
   # The board reads its Paperclip key and company at start: both exist only now.
   as_user bash -c "cd '$REPO' && docker compose up -d --no-deps --force-recreate board"
+  # Both were just recreated (Paperclip by its sign-up setting): healthy before the setup link, or its first page meets them starting.
+  as_user bash -c "cd '$REPO' && docker compose up -d --no-deps --wait --wait-timeout 300 paperclip board"
 fi
 [ -z "$BOARD_HOST" ] || { run tailscale serve --bg --https=443 http://127.0.0.1:3121; run tailscale serve --bg --https=8446 http://127.0.0.1:3120; }
 # Public: the machine step ran before this apply compiled the `caddy` service, so it kept 443 and 8446 closed; open them now.

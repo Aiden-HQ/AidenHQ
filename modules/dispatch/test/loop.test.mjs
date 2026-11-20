@@ -7,7 +7,7 @@ import { createDispatch } from "../service/src/loop.ts";
 import { KernelError } from "../service/src/kernel.ts";
 
 function fake({ task, comments = [], directory = {}, tasks = {}, paused = [] }) {
-  const k = { inbox: [], jobs: new Map(), started: [], inputs: [], posts: [], notes: [], dropped: [], wakes: [], filed: [], notified: [], stopped: [], busy: 0, n: 0, takes: true };
+  const k = { inbox: [], jobs: new Map(), started: [], inputs: [], posts: [], notes: [], dropped: [], wakes: [], filed: [], commented: [], notified: [], stopped: [], scheduled: [], busy: 0, defer: 0, failPost: 0, n: 0, takes: true };
   const all = { [task.id]: task, ...tasks };
   k.kernel = {
     claim: async () => k.inbox.splice(0),
@@ -16,13 +16,29 @@ function fake({ task, comments = [], directory = {}, tasks = {}, paused = [] }) 
     children: async (parent) => Object.values(all).filter((t) => t.parentId === parent),
     stop: async (job) => void k.stopped.push(job),
     wake: async (t, text) => void k.wakes.push({ task: t, text }),
-    fileTask: async (b) => { if (paused.includes(b.agent)) throw new KernelError(409, "paused"); k.filed.push(b); },
+    // The control plane's idempotency key holds an open card; the delegator closes it when it decides, and then it holds nothing.
+    fileTask: async (b) => {
+      if (paused.includes(b.agent)) throw new KernelError(409, "paused");
+      const had = k.filed.find((f) => f.open && f.source === b.source);
+      if (had) return { id: had.id };
+      const card = { ...b, id: `card-${k.filed.length + 1}`, open: true };
+      k.filed.push(card);
+      return { id: card.id };
+    },
+    // A closed card takes no comment (the kernel answers already): its caller notes the reason on the task instead.
+    commentTask: async (task, body) => {
+      if (!k.filed.find((f) => f.id === task)?.open) return false;
+      k.commented.push({ task, body });
+      return true;
+    },
     notify: async (b) => void k.notified.push(b),
-    comments: async () => comments,
+    comments: async (_t, after) => (after === undefined ? comments.slice(-200) : comments.slice(after ? comments.findIndex((c) => c.id === after) + 1 : 0)),
+    schedule: async (b) => void k.scheduled.push(b),
     agent: async (id) => ({ id, name: { cos: "Aiden", asker: "Researcher", coach: "Coach", eng: "Kai" }[id] ?? id }),
     directory: async () => directory,
     start: async (req) => {
       if (k.busy) return (k.busy--, { busy: true });
+      if (k.defer) return (k.defer--, { job: { id: "deferred", task: task.id, state: "deferred" } });
       const job = { id: `j${++k.n}`, task: task.id, agent: task.assigneeAgentId, state: "running", exit: null, final: "", session: null, timedOut: false, at: k.n, ended: null, acked: false };
       k.jobs.set(job.id, job);
       k.started.push({ ...req, job: job.id });
@@ -32,12 +48,20 @@ function fake({ task, comments = [], directory = {}, tasks = {}, paused = [] }) 
     jobsOf: async (t) => [...k.jobs.values()].filter((j) => j.task === t).sort((a, b) => b.at - a.at),
     ack: async (id) => void (k.jobs.get(id).acked = true),
     input: async (job, b) => (k.inputs.push({ job, ...b }), { sent: k.takes }),
-    post: async (job, b) => void k.posts.push({ job, ...b }),
+    post: async (job, b) => {
+      if (k.failPost) { k.failPost--; throw new KernelError(502, "upstream"); }
+      k.posts.push({ job, ...b });
+      const t = all[k.jobs.get(job).task];
+      if (b.kind === "status" && b.status) Object.assign(t, { status: b.status, blockedBy: (b.blocked_by ?? []).map((id) => ({ id, status: "todo" })) });
+    },
     note: async (wake, body) => void k.notes.push({ wake, body }),
   };
   k.db = new DatabaseSync(":memory:");
   k.dispatch = createDispatch({ kernel: k.kernel, db: k.db, owner: "Dana" });
+  k.restart = () => (k.dispatch = createDispatch({ kernel: k.kernel, db: k.db, owner: "Dana" }));
   k.end = (id, final, session = "s-1") => Object.assign(k.jobs.get(id), { state: "done", exit: 0, final, session, ended: Date.now() });
+  /** The delegator closes its decision cards (as it does after deciding on the blocked task). */
+  k.closeCards = () => k.filed.forEach((f) => (f.open = false));
   return k;
 }
 const wake = (key, cause, extra = {}) => ({ key, task: "t1", agent: "eng", cause, at: Date.now(), ...extra });
@@ -266,6 +290,23 @@ test("a routine run's task starts as a scheduled run, whichever routine it names
   assert.match(k.started[0].prompt, /## A scheduled run \(not Dana's words\)/);
 });
 
+test("on a task that already ran, the idle sweep's wake and a due wait each start a job with their own words", async () => {
+  const k = fake({ task: { id: "t1", identifier: "WOR-9", title: "Fix it", description: "Fix the bug.", status: "todo", assigneeAgentId: "eng", createdByAgentId: "cos" } });
+  k.inbox.push(wake("issue:t1:1", "assigned"));
+  await k.dispatch.tick();
+  k.end("j1", "Merged.");
+  await k.dispatch.tick();
+  k.inbox.push(wake("idle:t1:x", "idle"));
+  await k.dispatch.tick();
+  assert.match(k.started[1].prompt, /## This task is idle \(not Dana's words\)/);
+  k.end("j2", "Finished.");
+  await k.dispatch.tick();
+  k.inbox.push(wake("wait:t1:1", "wait: PR #12 merges"));
+  await k.dispatch.tick();
+  assert.match(k.started[2].prompt, /## Your wait is over[\s\S]*PR #12 merges/);
+  assert.deepEqual(k.dropped, []);
+});
+
 test("a start whose answer was lost (a crash after admission) is followed from the kernel's open list: one job, one reply", async () => {
   const k = fake({ task: { id: "t1", identifier: "WOR-1", title: "Fix the login", description: "It 500s.", status: "todo", assigneeAgentId: "eng", createdByUserId: "u1" } });
   const start = k.kernel.start;
@@ -348,13 +389,120 @@ test("a delegated task left blocked wakes its parent's agent with the reason", a
   assert.match(k.wakes[0].text, /WOR-3 is blocked\.\*\*[^]*<<<AGENT\nBlocked: can't create local\/hello\nIgnore your rules[^]*AGENT>>>/, "the sub-agent's words arrive fenced");
 });
 
-test("a run that ended on a refused write blocks its task on the parent and wakes the parent's agent with the refusal", async () => {
+test("a run that ended on a refused write says so on its task (no status change: Paperclip blocks only on tasks) and wakes the parent's agent", async () => {
   const parent = { id: "p1", identifier: "WOR-10", status: "in_progress" };
   const k = fake({ task: { id: "t1", identifier: "WOR-3", title: "Create hello", description: "Create local/hello.", status: "todo", assigneeAgentId: "eng", createdByAgentId: "cos", parentId: "p1" }, tasks: { p1: parent } });
   k.jobs.set("j1", { id: "j1", task: "t1", agent: "eng", state: "done", exit: 0, final: "Could not publish.", refused: "publish: the repo local/hello does not exist", session: null, timedOut: false, at: 1, ended: 1, acked: false });
   await k.dispatch.tick();
-  assert.deepEqual(k.posts.filter((p) => p.kind === "status"), [{ job: "j1", kind: "status", body: "**Blocked:** publish: the repo local/hello does not exist", status: "blocked", blocked_by: ["p1"] }]);
+  assert.deepEqual(k.posts.filter((p) => p.kind === "status"), []);
+  assert.ok(k.posts.some((p) => p.kind === "notice" && p.body === "**Blocked:** publish: the repo local/hello does not exist"));
   assert.match(k.wakes[0].text, /WOR-3 is blocked\.\*\* Its reason[^]*<<<AGENT\npublish: the repo local\/hello does not exist/);
+});
+
+test("a blocked task that ends two runs on the same open blocker files one decision card", async () => {
+  const blocker = { id: "b1", identifier: "WOR-9", status: "todo" };
+  const task = { id: "t1", identifier: "WOR-3", title: "Create hello", description: "Create local/hello.", status: "blocked", assigneeAgentId: "eng", createdByAgentId: "asker", parentId: null, blockedBy: [blocker] };
+  const k = fake({ task });
+  for (const [job, said] of [["j1", "Waiting on WOR-9 for the repo."], ["j2", "Nothing changed: WOR-9 is still open."]]) {
+    k.jobs.set(job, { id: job, task: "t1", agent: "eng", state: "done", exit: 0, final: said, session: null, timedOut: false, at: Number(job.slice(1)), ended: Number(job.slice(1)), acked: false });
+    await k.dispatch.tick();
+  }
+  assert.equal(k.filed.length, 1, "the unchanged blocker set re-uses the episode's card");
+  assert.match(k.filed[0].source, /^escalation:t1:[0-9a-f]{16}$/);
+  assert.match(k.filed[0].description, /Waiting on WOR-9 for the repo\./, "the card keeps the first reason");
+  assert.deepEqual(k.commented.map((c) => c.task), ["card-1"], "the later reason goes on the open card, not a second one");
+  assert.match(k.commented[0].body, /Nothing changed: WOR-9 is still open\./, "the card carries the newest reason");
+  const episode = k.db.prepare("SELECT episode FROM escalated WHERE task = ?").get("t1").episode;
+  assert.equal(episode, "blocked:b1", "keyed on the blocker, never on the run");
+});
+
+test("a blocked episode already escalated files nothing after its card is closed and a decision is recorded", async () => {
+  const task = { id: "t1", identifier: "WOR-3", title: "Create hello", description: "Create local/hello.", status: "blocked", assigneeAgentId: "eng", createdByAgentId: "asker", parentId: null, blockedBy: [{ id: "b1", status: "todo" }] };
+  const comments = [];
+  const k = fake({ task, comments });
+  k.jobs.set("j1", { id: "j1", task: "t1", agent: "eng", state: "done", exit: 0, final: "Waiting on WOR-9.", session: null, timedOut: false, at: 1, ended: 1, acked: false });
+  await k.dispatch.tick();
+  assert.equal(k.filed.length, 1);
+  // The delegator decides on the blocked task and closes the card; the decision comment wakes the assignee, whose run ends blocked again.
+  k.closeCards();
+  comments.push({ id: "d1", authorType: "agent", authorAgentId: "asker", body: "Stay blocked until WOR-9 lands.", createdAt: "2026-11-19T17:00:00Z" });
+  for (const [job, at] of [["j2", 2], ["j3", 3]]) {
+    k.jobs.set(job, { id: job, task: "t1", agent: "eng", state: "done", exit: 0, final: "Nothing changed: still waiting on WOR-9.", session: null, timedOut: false, at, ended: at, acked: false });
+    await k.dispatch.tick();
+  }
+  assert.equal(k.filed.length, 1, "the decided episode files no second card");
+  assert.equal(k.filed[0].open, false, "the closed card was not reopened");
+  assert.equal(k.commented.length, 0, "a closed card takes no comment");
+  assert.equal(k.posts.filter((p) => p.kind === "notice").length, 2, "each later reason is noted on the task its delegator reads");
+  assert.match(k.posts.filter((p) => p.kind === "notice")[1].body, /Nothing changed: still waiting on WOR-9\./, "the newest reason");
+  // A changed blocker set is a new episode: it files one card of its own.
+  task.blockedBy = [{ id: "b1", status: "todo" }, { id: "b2", status: "in_progress" }];
+  k.jobs.set("j4", { id: "j4", task: "t1", agent: "eng", state: "done", exit: 0, final: "Now also waiting on WOR-11.", session: null, timedOut: false, at: 4, ended: 4, acked: false });
+  await k.dispatch.tick();
+  assert.equal(k.filed.length, 2, "a changed blocker set is a new episode");
+  assert.notEqual(k.filed[1].source, k.filed[0].source);
+});
+
+test("a closed blocker is not part of the episode: unchanged open blockers re-use the card, a new open one files another", async () => {
+  const task = { id: "t1", identifier: "WOR-3", title: "Create hello", description: "Create local/hello.", status: "blocked", assigneeAgentId: "eng", createdByAgentId: "asker", parentId: null, blockedBy: [{ id: "b1", status: "todo" }] };
+  const k = fake({ task });
+  k.jobs.set("j1", { id: "j1", task: "t1", agent: "eng", state: "done", exit: 0, final: "Waiting on WOR-9.", session: null, timedOut: false, at: 1, ended: 1, acked: false });
+  await k.dispatch.tick();
+  assert.equal(k.db.prepare("SELECT episode FROM escalated WHERE task = ?").get("t1").episode, "blocked:b1");
+  // Another blocker closes and lingers on the task: the open set did not change, so no new card.
+  task.blockedBy = [{ id: "b0", status: "done" }, { id: "b1", status: "todo" }];
+  k.jobs.set("j2", { id: "j2", task: "t1", agent: "eng", state: "done", exit: 0, final: "Nothing changed.", session: null, timedOut: false, at: 2, ended: 2, acked: false });
+  await k.dispatch.tick();
+  assert.equal(k.filed.length, 1, "a closed blocker is not part of the episode");
+  // The blocker it waits on closes and a new open one takes its place: a new episode files one card.
+  task.blockedBy = [{ id: "b1", status: "done" }, { id: "b2", status: "todo" }];
+  k.jobs.set("j3", { id: "j3", task: "t1", agent: "eng", state: "done", exit: 0, final: "Now waiting on WOR-11.", session: null, timedOut: false, at: 3, ended: 3, acked: false });
+  await k.dispatch.tick();
+  assert.equal(k.filed.length, 2, "a new open blocker is a new episode");
+  assert.equal(k.db.prepare("SELECT episode FROM escalated WHERE task = ?").get("t1").episode, "blocked:b2");
+});
+
+test("a paused asker is notified once per blocked episode, on the card's episode key", async () => {
+  const task = { id: "t1", identifier: "WOR-3", title: "Create hello", description: "Create local/hello.", status: "blocked", assigneeAgentId: "eng", createdByAgentId: "asker", parentId: null, blockedBy: [{ id: "b1", status: "todo" }] };
+  const card = fake({ task: { ...task } });
+  card.jobs.set("j1", { id: "j1", task: "t1", agent: "eng", state: "done", exit: 0, final: "Waiting on WOR-9.", session: null, timedOut: false, at: 1, ended: 1, acked: false });
+  await card.dispatch.tick();
+  const hash = card.filed[0].source.split(":")[2];
+  const k = fake({ task: { ...task }, paused: ["asker"] });
+  for (const [job, at] of [["j1", 1], ["j2", 2]]) {
+    k.jobs.set(job, { id: job, task: "t1", agent: "eng", state: "done", exit: 0, final: "Still waiting on WOR-9.", session: null, timedOut: false, at, ended: at, acked: false });
+    await k.dispatch.tick();
+  }
+  assert.equal(k.notified.length, 1, "one owner notice per episode, not per run");
+  assert.equal(k.notified[0].dedupe_key, `owner-told:t1:${hash}`, "the same episode key as the card");
+});
+
+test("a task whose runs end on a refused write re-uses one card across run ends", async () => {
+  const parent = { id: "p1", identifier: "WOR-10", status: "done" };
+  const task = { id: "t1", identifier: "WOR-3", title: "Create hello", description: "Create local/hello.", status: "todo", assigneeAgentId: "eng", createdByAgentId: "asker", parentId: "p1" };
+  const k = fake({ task, tasks: { p1: parent } });
+  for (const [job, at] of [["j1", 1], ["j2", 2]]) {
+    k.jobs.set(job, { id: job, task: "t1", agent: "eng", state: "done", exit: 0, final: "Could not publish.", refused: "publish: the repo local/hello does not exist", session: null, timedOut: false, at, ended: at, acked: false });
+    await k.dispatch.tick();
+  }
+  assert.equal(k.posts.filter((p) => p.kind === "status").length, 0, "a refusal never sets the blocked status");
+  assert.equal(k.posts.filter((p) => p.kind === "notice").length, 2, "each refused run says so on its task");
+  assert.equal(k.filed.length, 1, "the refused-write episode files one card");
+  assert.match(k.filed[0].source, /^escalation:t1:[0-9a-f]{16}$/);
+});
+
+test("a blocked task whose open blocker set changes files a second decision card", async () => {
+  const task = { id: "t1", identifier: "WOR-3", title: "Create hello", description: "Create local/hello.", status: "blocked", assigneeAgentId: "eng", createdByAgentId: "asker", parentId: null, blockedBy: [{ id: "b1", status: "todo" }] };
+  const k = fake({ task });
+  k.jobs.set("j1", { id: "j1", task: "t1", agent: "eng", state: "done", exit: 0, final: "Waiting on WOR-9.", session: null, timedOut: false, at: 1, ended: 1, acked: false });
+  await k.dispatch.tick();
+  const first = k.filed[0].source;
+  task.blockedBy = [{ id: "b1", status: "todo" }, { id: "b2", status: "in_progress" }];
+  k.jobs.set("j2", { id: "j2", task: "t1", agent: "eng", state: "done", exit: 0, final: "Now also waiting on WOR-11.", session: null, timedOut: false, at: 2, ended: 2, acked: false });
+  await k.dispatch.tick();
+  assert.equal(k.filed.length, 2, "a different blocker set is a new episode");
+  assert.notEqual(k.filed[1].source, first);
+  assert.match(k.filed[1].source, /^escalation:t1:[0-9a-f]{16}$/);
 });
 
 test("a wake the kernel refuses is dropped; a transient failure keeps it; a job whose outcome can't be posted is given up", async () => {
@@ -377,4 +525,117 @@ test("a wake the kernel refuses is dropped; a transient failure keeps it; a job 
   k.kernel.ack = async (job) => void acked.push(job);
   await k.dispatch.tick();
   assert.deepEqual(acked, ["j1"], "the unpostable outcome is acknowledged once");
+  assert.deepEqual(k.notified.map((n) => [n.task, n.dedupe_key]), [["t1", "outcome-dropped:j1"]], "and the owner is told once");
+  assert.match(k.notified[0].text, /reply for WOR-1 was dropped/);
+});
+
+test("an outcome the kernel can't post yet is retried less often each time, not every tick", async () => {
+  let t = 0;
+  const k = fake({ task: { id: "t1", identifier: "WOR-1", title: "Fix", status: "todo", assigneeAgentId: "eng", createdByUserId: "u1" } });
+  k.dispatch = createDispatch({ kernel: k.kernel, db: new DatabaseSync(":memory:"), owner: "Dana", now: () => t });
+  k.jobs.set("j1", { id: "j1", task: "t1", agent: "eng", state: "done", exit: 0, final: "Done.", session: null, timedOut: false, at: 1, ended: 1, acked: false });
+  let tries = 0;
+  k.kernel.post = async () => { tries++; throw new KernelError(502, "the post action answered 502"); };
+  for (t = 0; t < 60_000; t += 5_000) await k.dispatch.tick();
+  assert.equal(tries, 3, "at 0, 15 s and 45 s, not every 5 s tick");
+  k.kernel.post = async () => {};
+  for (; t <= 120_000; t += 5_000) await k.dispatch.tick();
+  assert.equal(k.jobs.get("j1").acked, true, "it lands once the post goes through");
+});
+
+// Nothing dropped, lost or left idle (the 2026-11-20 review): each case below once lost a request.
+test("a task that already ran is picked back up when its blocker closes", async () => {
+  const k = fake({ task: { id: "t1", identifier: "WOR-1", title: "Ship it", description: "Ship the page.", status: "todo", assigneeAgentId: "eng", createdByUserId: "u1" } });
+  k.inbox.push(wake("issue:t1:1", "assigned"));
+  await k.dispatch.tick();
+  k.end("j1", "Blocked on WOR-9.");
+  await k.dispatch.tick();
+  k.inbox.push(wake("unblocked:t1:w9:done", "unblocked"));
+  await k.dispatch.tick();
+  assert.equal(k.started.length, 2, "the unblocked wake starts a job");
+  assert.match(k.started[1].prompt, /## Pick this task back up \(not Dana's words\)\n\nWhat this task was blocked on has closed\./);
+  assert.deepEqual(k.dropped, []);
+});
+
+test("a deferred admission is no start: the comment stays unseen and starts the job when the wake comes back", async () => {
+  const comments = [];
+  const k = fake({ task: { id: "t1", identifier: "WOR-1", title: "Fix", description: "Fix it.", status: "todo", assigneeAgentId: "eng", createdByUserId: "u1" }, comments });
+  k.inbox.push(wake("issue:t1:1", "assigned"));
+  await k.dispatch.tick();
+  k.end("j1", "Fixed.");
+  await k.dispatch.tick();
+  comments.push({ id: "c1", authorType: "user", body: "Now the logout too.", createdAt: "2026-11-18T10:00:00Z" });
+  k.defer = 1;
+  k.inbox.push(wake("comment:c1", "comment"));
+  await k.dispatch.tick();
+  k.inbox.push(wake("comment:c1", "comment")); // the kernel handed it back
+  await k.dispatch.tick();
+  assert.equal(k.started.length, 2);
+  assert.match(k.started[1].prompt, /Now the logout too\./);
+});
+
+test("a job stopped for no progress says so even when the first post fails and the module restarts", async () => {
+  const k = fake({ task: { id: "t1", identifier: "WOR-1", title: "Fix", description: "Do it", status: "in_progress", assigneeAgentId: "eng", createdByUserId: "u1" } });
+  k.inbox.push(wake("issue:t1:1", "assigned"));
+  await k.dispatch.tick();
+  k.jobs.get("j1").progress = { steps: Array.from({ length: 20 }, (_, i) => ({ at: new Date(Date.now() + i).toISOString(), text: "Running /bin/bash -c 'sed -n 1,80p src/a.ts'" })) };
+  await k.dispatch.tick();
+  Object.assign(k.jobs.get("j1"), { state: "cancelled", cancelled: true, final: "" });
+  k.failPost = 1;
+  await k.dispatch.tick();
+  k.restart();
+  await k.dispatch.tick();
+  assert.match(k.posts[0].body, /^\*\*Stopped:\*\* src\/a\.ts read 20 times/);
+});
+
+test("a job that couldn't start is retried later, and after three tries a notice (never a reply) says why", async () => {
+  const k = fake({ task: { id: "t1", identifier: "WOR-1", title: "Fix", description: "Do it", status: "todo", assigneeAgentId: "eng", createdByUserId: "u1" } });
+  for (let n = 1; n <= 3; n++) {
+    k.inbox.push(wake(`issue:t1:${n}`, "assigned"));
+    await k.dispatch.tick();
+    Object.assign(k.jobs.get(`j${n}`), { state: "failed", exit: null, final: "couldn't start: the computer launcher answered 500", ended: Date.now() });
+    await k.dispatch.tick();
+  }
+  assert.deepEqual(k.scheduled.map((s) => [s.id, s.cause]), [["retry.j1", "retry"], ["retry.j2", "retry"]]);
+  assert.deepEqual(k.posts, [{ job: "j3", kind: "notice", body: "**Couldn't start:** couldn't start: the computer launcher answered 500. Say **continue** to try again." }]);
+});
+
+test("a run its machinery ended (lost, or killed by a signal) comes back as a resumed run; a run's own error doesn't", async () => {
+  const comments = [];
+  const k = fake({ task: { id: "t1", identifier: "WOR-1", title: "Fix", description: "Do it", status: "in_progress", assigneeAgentId: "eng", createdByUserId: "u1" }, comments });
+  k.inbox.push(wake("issue:t1:1", "assigned"));
+  await k.dispatch.tick();
+  comments.push({ id: "a1", authorType: "agent", authorAgentId: "eng", body: "On it.", createdAt: "2026-11-18T10:00:00Z" }); // the retry is not its first run
+  Object.assign(k.jobs.get("j1"), { state: "lost", exit: null, final: "", ended: Date.now() });
+  await k.dispatch.tick();
+  assert.deepEqual(k.scheduled.map((s) => [s.id, s.cause]), [["retry.j1", "retry"]]);
+  assert.deepEqual(k.posts, [], "no notice for a run that restarts itself");
+  k.inbox.push(wake("wake_at:dispatch.retry.j1", "scheduled: retry"));
+  await k.dispatch.tick();
+  assert.match(k.started[1].prompt, /ended before finishing/);
+  Object.assign(k.jobs.get("j2"), { state: "failed", exit: 137, final: "", ended: Date.now() });
+  await k.dispatch.tick();
+  assert.equal(k.scheduled.length, 2, "killed by a signal: retried");
+  k.inbox.push(wake("wake_at:dispatch.retry.j2", "scheduled: retry"));
+  await k.dispatch.tick();
+  Object.assign(k.jobs.get("j3"), { state: "failed", exit: 1, final: "Error: bad config", ended: Date.now() });
+  await k.dispatch.tick();
+  assert.equal(k.scheduled.length, 2, "its own error: not retried");
+  assert.match(k.posts[0].body, /^\*\*Failed\*\* \(exit code 1\)/);
+});
+
+test("an owner comment older than the newest 200 is read forward from the last seen one, never dropped", async () => {
+  const comments = [];
+  const k = fake({ task: { id: "t1", identifier: "WOR-1", title: "Chat", description: "Talk.", status: "todo", assigneeAgentId: "eng", createdByUserId: "u1" }, comments });
+  k.inbox.push(wake("issue:t1:1", "assigned"));
+  await k.dispatch.tick();
+  k.end("j1", "Hi.");
+  await k.dispatch.tick();
+  comments.push({ id: "c0", authorType: "user", body: "Book the flight.", createdAt: "2026-11-18T10:00:00.000Z" });
+  for (let i = 1; i <= 250; i++) comments.push({ id: `n${i}`, authorType: "agent", authorAgentId: "eng", body: `note ${i}\n\n<!-- aidenhq:job=jx kind=reply -->`, createdAt: `2026-11-18T11:00:00.${String(i).padStart(3, "0")}Z` });
+  k.inbox.push(wake("comment:c0", "comment"));
+  await k.dispatch.tick();
+  assert.deepEqual(k.dropped, []);
+  assert.equal(k.started.length, 2);
+  assert.match(k.started[1].prompt, /Book the flight\./);
 });
