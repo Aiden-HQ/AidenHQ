@@ -8,6 +8,7 @@ export interface TgConfig {
   telegramToken?: string;
   telegramChatId?: string;
   taskUrl?: string; // e.g. https://host/WOR/issues/{id}: task IDs in Telegram messages link here
+  boardUrl?: string; // the board's https address (BOARD_LAN_URL): in-app `#/route` links resolve against it
 }
 /** What owner-channel sends (its Message): the text as the agent wrote it, and the chat it belongs to. */
 export type Message = { kind: string; text: string; head?: { agent: string; task: string; issue: string }; actions?: string[]; asks?: boolean };
@@ -37,7 +38,7 @@ export async function postTelegram(cfg: TgConfig, text: string, markup?: unknown
       body: JSON.stringify({ chat_id: cfg.telegramChatId, ...body }),
     }).catch(() => null);
   const send = (body: Record<string, unknown>) => call("sendMessage", { disable_web_page_preview: true, ...(markup ? { reply_markup: markup } : {}), ...body });
-  let res = await send({ text: head.html + toTelegramHtml(text.slice(0, 3500), cfg.taskUrl), parse_mode: "HTML" });
+  let res = await send({ text: head.html + toTelegramHtml(text.slice(0, 3500), cfg.taskUrl, cfg.boardUrl), parse_mode: "HTML" });
   if (!res?.ok) res = await send({ text: head.plain + text.slice(0, 4000) });
   if (!res?.ok) return false;
   if (replace) await call("deleteMessage", { message_id: prev!.id });
@@ -56,7 +57,7 @@ export async function editTelegram(cfg: TgConfig, messageId: number, text: strin
   const res = await fetch(`https://api.telegram.org/bot${cfg.telegramToken}/editMessageText`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ chat_id: cfg.telegramChatId, message_id: messageId, text: toTelegramHtml(text.slice(0, 3500), cfg.taskUrl), parse_mode: "HTML", reply_markup: { inline_keyboard: [] } }),
+    body: JSON.stringify({ chat_id: cfg.telegramChatId, message_id: messageId, text: toTelegramHtml(text.slice(0, 3500), cfg.taskUrl, cfg.boardUrl), parse_mode: "HTML", reply_markup: { inline_keyboard: [] } }),
   }).catch(() => null);
   return Boolean(res?.ok);
 }
