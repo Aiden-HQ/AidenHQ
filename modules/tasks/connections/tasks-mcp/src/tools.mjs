@@ -128,6 +128,18 @@ async function kernelWait(body) {
   return JSON.parse(text);
 }
 
+/** A call tried again after each pause in `delays` (a kernel or Paperclip blip); the last failure is thrown. */
+async function retried(fn, delays = [250, 750]) {
+  for (const ms of delays) {
+    try {
+      return await fn();
+    } catch {
+      await new Promise((ok) => setTimeout(ok, ms));
+    }
+  }
+  return fn();
+}
+
 async function apiBytes(path) {
   const res = await fetch(`${KERNEL}/v1/cp/agent${path}`, { headers: authHeaders(), signal: AbortSignal.timeout(60_000) });
   if (!res.ok) throw new Error(`Paperclip GET ${path} → ${res.status}`);
@@ -530,7 +542,13 @@ const parked = (i, me, grade) => Boolean(grade) && i.status === "backlog" && i.c
 async function startGraded(i, grade) {
   const graded = await fileGrade(i.id, grade);
   if (grade && !graded.graded) throw new Error(`${i.identifier} is filed but not started: its rubric couldn't be filed (${graded.grade_error}). Call the same delegation again in a minute to start it.`);
-  if (i.status === "backlog") await api("PATCH", `/api/issues/${issueRef(i.id)}`, { status: "todo" });
+  if (i.status === "backlog") {
+    try {
+      await retried(() => api("PATCH", `/api/issues/${issueRef(i.id)}`, { status: "todo" }));
+    } catch (err) {
+      throw new Error(`${i.identifier} is filed but not started: moving it to todo failed (${String(err.message ?? err).slice(0, 200)}). Call the same delegation again to start it; until then ${i.identifier} stays parked in backlog and nothing runs it.`);
+    }
+  }
   return graded;
 }
 /** A close the finish gate held or reopened (202): its last comment part goes on as a comment (it is evidence), the status is the check's. */
@@ -1198,7 +1216,14 @@ const TOOLS = {
       if (await isOwnPart(current)) {
         const i = await patchIssue(issue, { status: "todo", comment: body });
         // It waits on the user's reply (their comment wakes it): recorded, so it isn't idle work, with a check in a week.
-        if (current.id === CURRENT()) await kernelWait({ reason: "the user's reply to my handoff", on: "the user's reply", until: new Date(Date.now() + 7 * 864e5 - 60_000).toISOString() }).catch(() => {});
+        if (current.id === CURRENT()) {
+          try {
+            await retried(() => kernelWait({ reason: "the user's reply to my handoff", on: "the user's reply", until: new Date(Date.now() + 7 * 864e5 - 60_000).toISOString() }));
+          } catch (err) {
+            // The handoff itself landed: say the wait didn't, so the agent calls task_wait rather than idle-wake while waiting.
+            return { ...brief(i), wait_error: `handed off, but the wait wasn't recorded (${String(err.message ?? err).slice(0, 200)}): call task_wait (on: the user's reply) so you aren't woken as idle.` };
+          }
+        }
         return brief(i);
       }
       const i = await patchIssue(issue, { assigneeUserId: owner, assigneeAgentId: null, status: "todo", comment: body });
