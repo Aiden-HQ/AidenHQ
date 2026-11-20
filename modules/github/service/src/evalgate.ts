@@ -11,7 +11,9 @@
 // - a product PR that changes the reviewer's code: its head, judged by its base branch's tip (never a commit the PR picks, such
 //   as an old merge base), receipt for its head and that tip. When the base moves without changing what judges (REVIEWER_TREE's
 //   object ids, which hold everything the judged run takes from the judging commit: the base cases and the judge's files), the
-//   eval already asked for the head stands (its receipt verified for its own judge); a change to that content runs it again;
+//   eval already asked for the head stands (its receipt verified for its own judge); a change to that content runs it again.
+//   A new head (a rebase, a commit outside REVIEWER_TREE) whose reviewer content and judging content match an eval that passed
+//   is already covered: the same content runs the same eval. A failed eval is never reused (a new head asks again);
 // - the release train's bump of the instance's product pin (`bump`) whose reviewer content differs: the new commit, judged by
 //   the pinned one, receipt for the new commit. A passing receipt for the same reviewer content (REVIEWER_TREE's object ids),
 //   from any head, already covers it.
@@ -36,9 +38,10 @@ export const REVIEWER_CODE = [
   /^(paths\.yaml|scripts\/paths\.ts|kernel\/src\/paths\.ts)$/,
 ];
 export const touchesReviewer = (files: string[]) => files.some((f) => REVIEWER_CODE.some((r) => r.test(f)));
-/** The reviewer's content in a product commit, by git object id: the same ids are the same reviewer, whatever commit holds them.
+/** The reviewer's content in a product commit, by git object id (git ls-tree drops a missing path silently, so a test holds
+ *  every entry to an existing path): the same ids are the same reviewer, whatever commit holds them.
  *  It covers all a judging commit gives the eval (the recipe's `judged:` cases and files, all under modules/ai-reviewer). */
-const REVIEWER_TREE = ["modules/ai-reviewer", "modules/github/service/src/plan.ts", "modules/platform/src/check.ts", "modules/github/checks", "modules/platform/checks", "modules/github/module.yaml", "modules/platform/module.yaml"];
+export const REVIEWER_TREE = ["modules/ai-reviewer", "modules/github/service/src/plan.ts", "modules/platform/src/check.ts", "modules/github/checks", "modules/platform/checks", "modules/github/module.yaml", "modules/platform/module.yaml"];
 /** The policy whose hash a receipt binds: its git tree id at the commit under test. */
 const POLICY = "modules/ai-reviewer/service/security";
 
@@ -67,7 +70,8 @@ export function createEvalGate(d: {
   const log = d.log ?? (() => {});
   mkdirSync(d.dir, { recursive: true });
   const file = join(d.dir, "evals.json");
-  const s: { reviewers: Record<string, { head: string; at: string }>; checks: Record<string, { id: string; asks: number; judge: string }> } = (() => { try { return { reviewers: {}, checks: {}, ...JSON.parse(readFileSync(file, "utf8")) }; } catch { return { reviewers: {}, checks: {} }; } })();
+  // reviewers: reviewer contents a passing receipt covers (any judge: the bump); covered: the same by reviewer and judging content (a PR).
+  const s: { reviewers: Record<string, { head: string; at: string }>; covered: Record<string, { head: string; at: string }>; checks: Record<string, { id: string; asks: number; judge: string }> } = (() => { try { return { reviewers: {}, covered: {}, checks: {}, ...JSON.parse(readFileSync(file, "utf8")) }; } catch { return { reviewers: {}, covered: {}, checks: {} }; } })();
   const save = () => { writeFileSync(`${file}.tmp`, JSON.stringify(s)); renameSync(`${file}.tmp`, file); };
 
   const reviewerAt = async (dir: string, sha: string) => createHash("sha256").update(await d.git(dir, ["ls-tree", sha, "--", ...REVIEWER_TREE])).digest("hex").slice(0, 32);
@@ -83,6 +87,8 @@ export function createEvalGate(d: {
     const policy = (await d.git(dir, ["rev-parse", "--verify", `${head}:${POLICY}`])).slice(0, 12);
     const key = `${repo.toLowerCase()}:${head}:${await reviewerAt(dir, judge)}:${policy}`;
     const what = `the reviewer eval on \`${head.slice(0, 12)}\` (it brings the AI reviewer's own code: it lands only on a passing receipt)`;
+    const content = `${repo.toLowerCase()}:${await reviewerAt(dir, head)}:${await reviewerAt(dir, judge)}`;
+    if (s.covered[content]) return undefined;
     const had = s.checks[key];
     // A failed read throws (the merge waits); only a check the kernel no longer knows (404) is asked for again.
     let v = had ? await d.kernel("GET", `/v1/checks/${had.id}`).catch((e) => { if ((e as { status?: number })?.status === 404) return undefined; throw e; }) : undefined;
@@ -105,7 +111,7 @@ export function createEvalGate(d: {
     if (v.state !== "done" || !v.receipt) return { wait: `${what} is being asked for again` };
     const ok = await d.kernel("POST", "/v1/receipts/verify", { receipt: v.receipt, for: { repo, head, run: "eval", judge: s.checks[key]!.judge, policy } });
     if (ok?.ok === true) {
-      s.reviewers[await reviewerAt(dir, head)] = { head, at: new Date().toISOString() };
+      s.reviewers[await reviewerAt(dir, head)] = s.covered[content] = { head, at: new Date().toISOString() };
       save();
       return undefined;
     }

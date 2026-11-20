@@ -1,6 +1,7 @@
 # Job budgets (timeout-minutes): a floor set from only a few hosted runs on 2026-11-17. A failed job is never re-run, but a
 # failed suite re-runs its failed tests once in the same job (.github/ci/run-suite.sh; the board's vitest --retry=1).
-# Tests and typechecks for every package, on pull requests and pushes to main. Offline: no secrets are used.
+# Tests and typechecks for every package, on pull requests and pushes to main. Offline: no secrets are used, except the
+# reviewer eval's model key (the `reviewer-eval` job below, in its one step).
 # A pull request runs the fast suites its change touches; the slow end-to-end ones (areas.json `main: true`: the SDK
 # twin) run only on pushes to main, so a flake there never holds a PR (the merge queue counts every check).
 # Jobs run on GitHub-hosted runners (this repository is public, so it costs nothing, but the free plan runs ~20 jobs at
@@ -8,8 +9,8 @@
 # aidenhq) only when hosted capacity is saturated (checks' `runner` step), the repository variable CI_SELF_HOSTED is
 # 'true' (docs/operations.md) and the run is a push to main or a same-repo pull request. Fork PRs stay hosted, and the
 # runners' job-started hook refuses any job that is not a push or same-repo PR of a repo they serve.
-# The AI reviewer's exit test (modules/ai-reviewer/scripts/reviewer-eval.ts) needs a paid OpenRouter key, so the
-# maintainer runs it by hand for changes to the reviewer, its policy or its cases.
+# The AI reviewer's exit test (modules/ai-reviewer/scripts/reviewer-eval.ts) runs here, in the `reviewer-eval` job, on a
+# same-repo PR or a push to main that touches REVIEWER_CODE (modules/github/service/src/evalgate.ts); nobody runs it by hand.
 name: ci
 
 on:
@@ -212,6 +213,7 @@ jobs:
       packages: ${{ steps.tests.outputs.packages }}
       modules: ${{ steps.tests.outputs.modules }}
       runner: ${{ steps.runner.outputs.runner }}
+      eval: ${{ steps.eval.outputs.eval }}
     env:
       PR_BASE: ${{ github.event.pull_request.base.sha }}
       PUSH_BEFORE: ${{ github.event.before }}
@@ -282,6 +284,25 @@ jobs:
           echo "packages=$(jq -r .packages <<< "$out")" >> "$GITHUB_OUTPUT"
           echo "modules=$(jq -c '.modules // []' <<< "$out")" >> "$GITHUB_OUTPUT"
 
+      # Whether the change touches the AI reviewer's code (REVIEWER_CODE in evalgate.ts, the one list), read from the PR's
+      # base (main for a merge train) so a PR can't take itself off it; a push to main reads its own.
+      - id: eval
+        run: |
+          case "$GITHUB_REF" in refs/heads/merge-train/*) PUSH_BEFORE= ;; esac
+          base="${PR_BASE:-$PUSH_BEFORE}"
+          if [ -z "$base" ] || [ "$base" = 0000000000000000000000000000000000000000 ] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
+            base=$(git merge-base origin/main "$HEAD_SHA" 2>/dev/null || git rev-parse "$HEAD_SHA~1")
+          fi
+          src="$PR_BASE"
+          case "$GITHUB_REF" in refs/heads/merge-train/*) src=$(git rev-parse origin/main) ;; refs/heads/main) src="" ;; esac
+          gate="$RUNNER_TEMP/evalgate.ts"
+          if [ -z "$src" ] || ! git show "$src:modules/github/service/src/evalgate.ts" > "$gate" 2>/dev/null; then cp modules/github/service/src/evalgate.ts "$gate"; fi
+          git diff --name-only "$base" "$HEAD_SHA" | node --input-type=module -e '
+            const { touchesReviewer } = await import(process.argv[1]);
+            const files = (await new Response(process.stdin).text()).split("\n").filter(Boolean);
+            const hit = touchesReviewer(files);
+            console.log(`Touches the AI reviewer: ${hit}`);
+            await import("node:fs").then((fs) => fs.appendFileSync(process.env.GITHUB_OUTPUT, `eval=${hit}\n`));' "$gate"
       - id: find
         run: |
           set -f # DOCKERFILES is split on spaces below, never globbed
@@ -427,13 +448,72 @@ jobs:
             --local aidenhq/computer-agent-base=services/computer/images/agent-base/Dockerfile \
             --local aidenhq/computer-browser=services/computer/images/browser/Dockerfile -- $DOCKERFILES
 
+  # The AI reviewer's exit test, for a change to its code (checks' `eval` step). Only a push to main or a same-repo PR: a
+  # fork's run never gets the key. The key is in the eval step's env alone, in a job of its own on a fresh hosted runner,
+  # and the checkout keeps no credentials. It is judged as the kernel's check job judges it (module.yaml `judged:`): the
+  # harness (the eval script, its case padding and the pass rule: `judged.files`) and every existing case with its
+  # expectations come from the PR's base (main for a merge train), the reviewer's code, policy and added cases from the
+  # head, so a PR can't loosen its own test; a push to main runs its own tree. A passing run is cached by that laid-out
+  # content (every file under modules/ai-reviewer, all the eval reads): the script's receipt restored for the same content
+  # prints "already covered" and spends nothing. GitHub scopes a cache entry to the ref that wrote it (a PR's is read by
+  # that PR only, main's by every run), so a PR can skip only its own re-runs, never main's or another PR's.
+  reviewer-eval:
+    needs: checks
+    if: needs.checks.outputs.eval == 'true' && (github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      PR_BASE: ${{ github.event.pull_request.base.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.x
+      - name: The harness and existing cases from the base
+        run: |
+          src="$PR_BASE"
+          case "$GITHUB_REF" in refs/heads/merge-train/*) src=$(git rev-parse origin/main) ;; refs/heads/main) src="" ;; esac
+          [ -n "$src" ] || { echo "a push to main: its own harness"; exit 0; }
+          m=modules/ai-reviewer
+          files=$(git show "$src:$m/module.yaml" | node -e '
+            const y = require("fs").readFileSync(0, "utf8"), f = /\bjudged:[\s\S]*?\bfiles:\s*\[([^\]]*)\]/.exec(y);
+            if (!f) process.exit(1);
+            console.log(f[1].split(",").map((x) => x.trim()).filter(Boolean).join("\n"));') \
+            || { echo "::error::the base's modules/ai-reviewer/module.yaml names no judged files"; exit 1; }
+          while IFS= read -r f; do
+            case "$f" in ""|/*|*..*) echo "::error::bad judged file: $f"; exit 1 ;; esac
+            git show "$src:$m/$f" > "$m/$f" && echo "from the base: $m/$f"
+          done <<< "$files"
+          git ls-tree --name-only "$src" -- "$m/test/reviewer-cases/" | while IFS= read -r c; do git show "$src:$c" > "$c"; done
+          echo "existing cases from the base: $(git ls-tree --name-only "$src" -- "$m/test/reviewer-cases/" | wc -l)"
+      - id: receipt
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .eval-state
+          key: reviewer-eval-${{ hashFiles('modules/ai-reviewer/**') }}
+      - name: Reviewer eval
+        working-directory: modules/ai-reviewer
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.GRADUATE_OPENROUTER_KEY }}
+          XDG_STATE_HOME: ${{ github.workspace }}/.eval-state
+        run: node --disable-warning=ExperimentalWarning scripts/reviewer-eval.ts
+      # Only a script that records receipts leaves one (an older base's doesn't).
+      - if: steps.receipt.outputs.cache-hit != 'true' && hashFiles('.eval-state/**') != ''
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .eval-state
+          key: reviewer-eval-${{ hashFiles('modules/ai-reviewer/**') }}
+
   # The one result a merge waits for: every job above passed (packages, board and image-scan jobs may
   # be skipped: not a pull request, or the change doesn't touch them). Jobs that
   # need another appear only once it finishes, so without this a PR can look all green for a moment before its tests
   # exist; the code host treats this check as required once the base branch has it (modules/github/service/src/merge-gate.ts withGate).
   ci-required:
     if: always()
-    needs: [checks, policy, packages, modules, board, image-scan]
+    needs: [checks, policy, packages, modules, board, image-scan, reviewer-eval]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
@@ -441,4 +521,4 @@ jobs:
           RESULTS: ${{ toJSON(needs) }}
         run: |
           echo "$RESULTS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
-          echo "$RESULTS" | jq -e '(.checks.result == "success") and (.policy.result == "success") and ([.packages, .modules, .board, .["image-scan"]] | all(.result | IN("success", "skipped")))' >/dev/null
+          echo "$RESULTS" | jq -e '(.checks.result == "success") and (.policy.result == "success") and ([.packages, .modules, .board, .["image-scan"], .["reviewer-eval"]] | all(.result | IN("success", "skipped")))' >/dev/null
