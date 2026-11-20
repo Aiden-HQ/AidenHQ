@@ -7,7 +7,8 @@
 import type { Executor } from "./aidenhq-sdk/executor.js";
 import { fileOwners, type Owners } from "./owners.js";
 
-type Call = (tool: string, args: Record<string, unknown>) => Promise<{ text: string; isError?: boolean }>;
+/** A Primer write; `document` names the document a thread reply is on (the comment loop's batches), which Primer's tool doesn't take. */
+type Call = (tool: string, args: Record<string, unknown>, document?: string) => Promise<{ text: string; isError?: boolean }>;
 export type Reply = { document_id: string; thread_id: string; body?: string };
 
 const str = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : undefined);
@@ -49,7 +50,7 @@ export function replier(call: Call, owners: Owners = fileOwners()): Executor {
     },
     async execute(rec) {
       const a = normaliseReply(rec.args);
-      const r = await (a.body ? call("primer_reply_to_thread", { thread_id: a.thread_id, body: a.body }) : call("primer_resolve_thread", { thread_id: a.thread_id }))
+      const r = await (a.body ? call("primer_reply_to_thread", { thread_id: a.thread_id, body: a.body }, a.document_id) : call("primer_resolve_thread", { thread_id: a.thread_id }, a.document_id))
         .catch((e: Error) => ({ text: `outcome unknown (${e.message}): read the thread on Primer before replying again`, isError: true }));
       return r.isError ? { ok: false, text: r.text.slice(0, 2000) } : { ok: true, text: a.body ? `Replied on thread ${a.thread_id}.` : `Resolved thread ${a.thread_id}.` };
     },

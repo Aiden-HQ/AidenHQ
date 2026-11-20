@@ -131,7 +131,7 @@ test("an agent's jobs and the records and billed cost since a time are reads of 
   assert.deepEqual(rows.map((r) => [r.judged, r.targets]), [[true, ["acme/app|feat-a"]], [false, ["acme/app|feat-b"]]]);
 });
 
-test("activity: waiting counts the wakes a module could claim now (open and due, or lease-expired), and says when a job last started", () => {
+test("activity: waiting counts the wakes that could start now (open and due, or lease-expired) of agents with no live job, and says when a job last started", () => {
   const { work, records } = setup();
   records.db.exec("CREATE TABLE wakes (key TEXT PRIMARY KEY, task TEXT, agent TEXT, cause TEXT, at INTEGER, state TEXT, claimed_by TEXT, job TEXT, until INTEGER)");
   const now = Date.now();
@@ -141,6 +141,7 @@ test("activity: waiting counts the wakes a module could claim now (open and due,
   add("leased", now - 40 * 60_000, "claimed", now + 60_000); // a module holds it
   add("scheduled", now - 50 * 60_000, "open", now + 60_000); // not due yet
   add("done", now - 60 * 60_000, "done");
+  records.db.prepare("INSERT INTO wakes (key, task, agent, cause, at, state) VALUES ('busy-agent', 't', 'a1', 'cause-busy', ?, 'open')").run(now - 90 * 60_000); // a1 runs j-2: its queue is held, not stalled
   const a = work.activity();
   assert.deepEqual(a.waiting, { count: 2, oldest_at: new Date(now - 30 * 60_000).toISOString(), oldest_cause: "cause-lease-expired" });
   assert.equal(a.last_started_at, new Date(2_000_000).toISOString());

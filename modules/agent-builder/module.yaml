@@ -18,7 +18,8 @@ agents:
     timeout_sec: 3600
     # No fleet tools or other roles: it changes the fleet only by delegating to the Engineer, whose change waits for the
     # owner's tap (an approval record). It can't grant itself anything: its own grants live here, in the product.
-    # Research (read access to every source, and the web): reads only, so it still changes nothing itself.
+    # Research (read access to every source, and the web): reads only, so it still changes nothing itself. Its one write
+    # outside the chat is its design doc on Primer, which the AI reviewer checks before it publishes.
     connections:
       owner_channel: [ notify ]
       # Explicit lists (tool-budget slimming, 2026-11-13): the research reads, not the plumbing (source cursors, sprints, board config).
@@ -28,7 +29,9 @@ agents:
       slack?: [ slack_search_public_and_private, slack_search_channels, slack_search_users, slack_read_channel, slack_read_thread, slack_read_user_profile ]
       github?: read
       google_workspace?: [ calendar_list_events, calendar_search_events, calendar_get_event, drive_list_recent_files, drive_search_files, drive_read_file, gmail_search, gmail_read_thread, docs_read ]
-      primer?: [ primer_whoami, primer_resolve_url, primer_get_document, primer_get_version_content, primer_list_versions, primer_get_comments, primer_get_document_comments, primer_list_documents, primer_find_document, primer_get_all_comments, primer_get_events, primer_get_digest, primer_get_doc, primer_list_collaborators, primer_list_decisions, primer_list_runs, primer_list_suggestions, primer_list_tasks, primer_lookup_user, primer_read_records, primer_record_changes, primer_widget_get, primer_create_document, primer_add_version, primer_reply_to_thread, primer_resolve_thread, primer_send_events, primer_apply_ops, primer_create_thread, primer_reanchor_thread, primer_update_run, primer_withdraw_suggestion, primer_propose_pick, primer_fork_document, primer_promote_conversation, primer_widget_draft, primer_widget_publish, primer_write_records, primer_revert_record_change, primer_add_collaborator ]
+      # The design review on Primer (skills design-doc, primer.primer-docs): reads, publishing the doc and its versions, and
+      # thread replies. No live edits: people's edits and comments wake it, its own never do.
+      primer?: [ primer_whoami, primer_resolve_url, primer_get_document, primer_get_version_content, primer_list_versions, primer_get_comments, primer_get_document_comments, primer_list_documents, primer_find_document, primer_get_doc, primer_create_document, primer_add_version, primer_reply_to_thread ]
       ops_mcp?: [ obsidian_search, obsidian_read, obsidian_read_document_map, voice_note_read, knowledge_list, knowledge_index, knowledge_search, knowledge_read ]
       paperclip_tasks: [ task_current, task_get, task_comments, task_files, task_file_read, task_search, task_list, task_approvals, task_team, fleet_catalog, task_delegate, task_comment, task_handoff, task_block, task_cancel, task_finish ]
     heartbeat: true

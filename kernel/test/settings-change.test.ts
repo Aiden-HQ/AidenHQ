@@ -50,7 +50,7 @@ function setup() {
     filed: (task) => filed.some((f) => f.task === task),
     write: (w) => host.write(w),
     file: async (args, task, requester, owner) => (filed.push({ args, task, ...(requester ? { by: requester.key } : {}), ...(owner ? { owner } : {}) }), { id: "k-0000000000000001", tier: owner ? 2 : 1, state: owner ? "approved" : "review" }),
-    sessionAccount: async (token) => (token === "ahqu_owner" ? "acct-1" : undefined),
+    credentialAccount: async (c) => ("board" in c ? (c.board === "ahqu_owner" ? "acct-1" : undefined) : c.mcp.token === "mcp_owner" && c.mcp.resource === "https://board.example.com/mcp" ? "acct-1" : undefined),
   });
   const at = (sha) => YAML.parse(git(bare, "show", `${sha}:instance.yaml`));
   return { bare, host, apply, filed, at };
@@ -75,12 +75,17 @@ test("turning off a default module edits only modules: and modules_removed, comm
   assert.deepEqual(await host.land({ repo: "local/acme-instance", branch: "settings/wor-5", sha: r.sha, official: { from: null, to: null } }), { landed: r.sha });
 });
 
-test("saved in the owner's board session, the change is decided as his account; a session that doesn't check out is refused", async () => {
+test("saved in the owner's board session or through his MCP sign-in, the change is decided as his account; a credential that doesn't check out is refused", async () => {
   const { apply, filed } = setup();
-  await assert.rejects(apply(TASK, [{ kind: "setting", key: "timezone", value: "Asia/Dubai" }], "ahqu_ended"), /session has ended/);
-  assert.equal(filed.length, 0, "an unchecked session is refused, never put to the reviewer instead");
-  const r = await apply(TASK, [{ kind: "setting", key: "timezone", value: "Asia/Dubai" }], "ahqu_owner");
+  const change = [{ kind: "setting", key: "timezone", value: "Asia/Dubai" }];
+  const bad = [{ board: "ahqu_ended" }, { mcp: { token: "mcp_ended", resource: "https://board.example.com/mcp" } }, { mcp: { token: "mcp_owner", resource: "https://other.example.com/mcp" } }, "ahqu_owner", {}];
+  for (const c of bad) await assert.rejects(apply(TASK, change, c), /sign-in has ended/);
+  assert.equal(filed.length, 0, "an unchecked credential is refused, never put to the reviewer instead");
+  const r = await apply(TASK, change, { board: "ahqu_owner" });
   assert.deepEqual([filed.at(-1).owner, r.state], [{ account: "acct-1", via: "save" }, "approved"]);
+  const m = setup();
+  const viaMcp = await m.apply(TASK, change, { mcp: { token: "mcp_owner", resource: "https://board.example.com/mcp" } });
+  assert.deepEqual([m.filed.at(-1).owner, viaMcp.state], [{ account: "acct-1", via: "save" }, "approved"]);
 });
 
 test("a setting change sets exactly that key; an unknown kind or a stray field is refused before anything is written", async () => {

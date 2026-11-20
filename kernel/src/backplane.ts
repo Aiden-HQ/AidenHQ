@@ -553,9 +553,9 @@ export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boar
           if (!isBoard(req)) throw fail(401, "unauthorized", "the board's key is required");
           if (!settingsChange) throw fail(503, "unavailable", "settings changes are off");
           const b = await json(req, 2_000_000);
-          // The owner reads why: a refusal of the change itself, or the code host's or the planner's answer. `session`: the
-          // signed-in board session it was saved in (the kernel checks it; its account decides the record).
-          try { return send(res, 200, await settingsChange(b.task, b.changes, b.session)); } catch (e) { throw fail((e as { status?: number }).status ?? 502, "refused", String((e as Error).message).slice(0, 1000)); }
+          // The owner reads why: a refusal of the change itself, or the code host's or the planner's answer. `credential`: the
+          // owner's board session or MCP sign-in it was made in (the kernel checks it; its account decides the record).
+          try { return send(res, 200, await settingsChange(b.task, b.changes, b.credential)); } catch (e) { throw fail((e as { status?: number }).status ?? 502, "refused", String((e as Error).message).slice(0, 1000)); }
         }
       }
       if (hit?.path === "/v1/settings/agent") {
@@ -886,7 +886,7 @@ export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boar
             const r = record(id);
             const own = w.kind === "module" ? w.module === r.requester.module && r.requester.kind === "module" : Boolean(w.agent) && w.agent === r.requester.agent;
             // The kind's executor (as the outcome route checks it) reads only whether the record is still live.
-            const exec = w.kind === "module" && w.module === r.executor.module && r.kind !== CONN_TOOL && (w.connection === undefined || (Boolean(r.executor.url) && new URL(r.executor.url).hostname === w.connection));
+            const exec = w.kind === "module" && w.module === r.executor.module && r.kind !== CONN_TOOL && (w.connection === undefined || (r.executor.url !== undefined && new URL(r.executor.url).hostname === w.connection));
             if (!own && exec) return send(res, 200, { id: r.id, state: r.state });
             if (!own) throw fail(404, "not_found", `no record ${id}`);
             return send(res, 200, { id: r.id, kind: r.kind, tier: r.tier, state: r.state, outcome: r.outcome, ...(r.owner_reason ? { reason: r.owner_reason } : {}) });

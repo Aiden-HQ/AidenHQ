@@ -15,7 +15,7 @@ describe("primer.publish executor", () => {
     const calls: [string, Record<string, unknown>][] = [];
     const ex = publisher(async (name, args) => {
       calls.push([name, args]);
-      return { text: name === "primer_create_document" ? '{"url":"https://primer.example/d/01a1-doc0"}' : "ok" };
+      return { text: name === "primer_create_document" ? '{"url":"https://primer.example/d/01a1-doc0"}' : '{"versionId":"v-9","versionNumber":4,"url":"https://primer.example/d/01a1-doc0/v/4","reconciliation":{"applied":2,"suggested":1}}' };
     }, memory());
     // The runner's request (path is a label) and an agent's primer_create_document call plan the same way.
     const plan = await ex.plan({ kind: "primer.publish", args: { title: "Report", content: "# Report\n", format: "markdown", path: ".aidenhq/primer.md", junk: 1 }, requester, task: "T-1" });
@@ -29,8 +29,9 @@ describe("primer.publish executor", () => {
     expect(await ex.execute({ id: "k-0000000000000001", kind: "primer.publish", args: plan.args, digest: "d", idempotency_key: "k-0000000000000001" }))
       .toEqual({ ok: true, text: "Published on Primer: https://primer.example/d/01a1-doc0 (document 01a1-doc0)" });
     expect(calls).toEqual([["primer_create_document", { title: "Report", content: "# Report\n", format: "markdown" }]]);
-    // An agent's primer_add_version call: a version of that document.
-    const v = await ex.plan({ kind: "primer.publish", args: { documentId: "01a1-doc0", content: "<h1>v2</h1>", format: "html", versionNote: "v2" }, requester, task: "T-2" });
+    // An agent's primer_add_version call: a version of that document, merged onto the version the agent read.
+    const v = await ex.plan({ kind: "primer.publish", args: { documentId: "01a1-doc0", content: "<h1>v2</h1>", format: "html", versionNote: "v2", baseVersionNumber: 3 }, requester, task: "T-2" });
+    for (const k of Object.keys(v.args as object)) expect(Object.keys(schema.properties)).toContain(k);
     expect(v.targets).toMatchObject({ document: "01a1-doc0" });
     // A version of a document another task published is the owner's: an agent's own `own` never counts, the runner's (job) does.
     expect(v.raise).toMatchObject({ tier: 2, rule: "primer-version-not-own" });
@@ -38,8 +39,11 @@ describe("primer.publish executor", () => {
     expect((await ex.plan({ kind: "primer.publish", args: { documentId: "01a1-doc0", content: "x", own: true }, requester: agent, task: "T-2" })).raise?.tier).toBe(2);
     const vouched = await ex.plan({ kind: "primer.publish", args: { documentId: "01a1-doc0", content: "x", own: true }, requester, task: "T-1" });
     expect([vouched.raise, (vouched.args as any).own]).toEqual([undefined, true]);
-    await ex.execute({ id: "k-0000000000000002", kind: "primer.publish", args: v.args, digest: "d", idempotency_key: "k-0000000000000002" });
-    expect(calls.at(-1)).toEqual(["primer_add_version", { documentId: "01a1-doc0", content: "<h1>v2</h1>", format: "html", versionNote: "v2" }]);
+    // The agent learns the version Primer made and what became of each change.
+    expect(await ex.execute({ id: "k-0000000000000002", kind: "primer.publish", args: v.args, digest: "d", idempotency_key: "k-0000000000000002" })).toEqual({
+      ok: true, text: 'New version v4 on Primer (document 01a1-doc0, version v-9): https://primer.example/d/01a1-doc0/v/4\nReconciliation: {"applied":2,"suggested":1}',
+    });
+    expect(calls.at(-1)).toEqual(["primer_add_version", { documentId: "01a1-doc0", content: "<h1>v2</h1>", format: "html", versionNote: "v2", baseVersionNumber: 3 }]);
   });
 
   it("tiers a version by who published the document: the agent's own is the AI reviewer's, any other the owner's", async () => {

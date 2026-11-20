@@ -93,6 +93,9 @@ function settled(r: { id: string; state: string; outcome?: { ok: boolean; text: 
   return { state: "pending" };
 }
 
+/** The review's fields `code-review.post` accepts (schemas/post.json `review`). */
+const REVIEW_FIELDS = ["version", "repo", "pr", "base", "head", "reviewer", "incremental_from", "full", "coverage", "findings", "withheld", "triage", "cost_usd", "stale_guidance"] as const satisfies readonly (keyof Review)[];
+
 export function kernelPoster(kernel: KernelClient, log: (m: string, f?: Record<string, unknown>) => void = () => {}): Poster {
   const tasks = new Map<string, string>();
   // One task per PR on a watched repo (closed with the PR); a one-off elsewhere gets its own (`run`), closed once its post settles.
@@ -110,8 +113,11 @@ export function kernelPoster(kernel: KernelClient, log: (m: string, f?: Record<s
     async post(p) {
       const t = p.target;
       // Threads to resolve: earlier findings the recipe's recheck found fixed (github-mcp resolves only Aiden's own, still unreported).
-      const { fixed, ...review } = p.review;
-      const args = { repo: t.repo, pr: t.number, head: t.head, run: p.run, review: { ...review, repo: t.repo, pr: t.number, head: t.head }, resolve: (fixed ?? []).filter((id) => typeof id === "string").slice(0, 100) };
+      // The review is the post kind's fields only (schemas/post.json is strict): the recipe's result also carries its own notes
+      // (`addressed`, `guidance`) that no post renders, so what is sent is picked, never what is left after stripping.
+      const { fixed } = p.review;
+      const review = { ...Object.fromEntries(REVIEW_FIELDS.filter((k) => k in p.review).map((k) => [k, p.review[k]])), repo: t.repo, pr: t.number, head: t.head };
+      const args = { repo: t.repo, pr: t.number, head: t.head, run: p.run, review, resolve: (fixed ?? []).filter((id) => typeof id === "string").slice(0, 100) };
       const r = (await kernel.call("POST", "/v1/writes", { kind: POST_KIND, args, task: await taskOf(t.repo, t.number, t.once ? p.run : undefined) })) as { id: string; state: string };
       return { ...settled(r), write: r.id };
     },
