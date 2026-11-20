@@ -266,6 +266,25 @@ test("a dump that fails is not kept and prunes nothing, so the apply stops befor
   assert.equal(recreates(r).length, 0, "nothing is recreated without a dump");
 });
 
+test("a step that recreates nothing takes no dump", async () => {
+  const f = fixture({ containers, services, hashes: { board: "h-board", paperclip: "h-paperclip" } });
+  mkdirSync(join(f.dir, "secrets/apps/warehouse"), { recursive: true });
+  writeFileSync(join(f.dir, "secrets/apps/warehouse/POSTGRES_PASSWORD"), "pw");
+  writeFileSync(join(f.dir, "running-app-warehouse-postgres-1"), "true\n");
+  for (const [service, id] of [["board", "board1"], ["paperclip", "pc1"]]) {
+    writeFileSync(join(f.dir, `psid-${service}`), `${id}\n`);
+    writeFileSync(join(f.dir, `running-${id}`), "true\n");
+    writeFileSync(join(f.dir, `image-${service}`), `aidenhq/${service}:local\n`);
+    writeFileSync(join(f.dir, `imageid-aidenhq_${service}_local`), `sha256:${service}\n`);
+    writeFileSync(join(f.dir, `imageof-${id}`), `sha256:${service}\n`);
+    writeFileSync(join(f.dir, `hashof-${id}`), `h-${service}\n`);
+  }
+  const r = await apply(f);
+  assert.equal(r.status, 0, r.out);
+  assert.deepEqual([recreates(r).length, calls(r, "docker run").length], [0, 0], r.calls);
+  assert.ok(!existsSync(join(f.dir, "data/dumps")), "no dump");
+});
+
 test("a service whose mounted secret content changed since it started is recreated", async () => {
   const f = fixture({ containers, services, hashes: { board: "h-board", paperclip: "h-paperclip" } });
   writeFileSync(join(f.dir, "model.json"), `${JSON.stringify(model(f.dir))}\n`);

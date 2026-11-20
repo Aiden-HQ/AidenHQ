@@ -42,10 +42,13 @@ commit contains its commit, its own apply's or one queued before it.
 6. restarts the kernel when its code changed.
 
 `ops/compose-recreate.sh` is the compose step. The images are already built (by validation, or by the switch when nothing
-was validated, as in `--generation`). It stops before dumping or removing anything when the config lists no services; dumps the warehouse first, when this host runs one (a fresh file created exclusively under `umask 077`
-in a `0700` directory, so a taken name is skipped rather than truncated and the dump is `0600`; an older dump is never
-rewritten, only has its mode tightened, and only the newest two are kept, the rest removed);
-recreates only the services whose image, compose config or mounted secret content moved; removes compose's leftovers for
+was validated, as in `--generation`), and only when what they build from moved since this host last built them (each
+build's compose config and the tracked content of its context; `imageInputs`), or one is missing. It stops before dumping
+or removing anything when the config lists no services; recreates only the services whose image, compose config or
+mounted secret content moved, and when there are any, dumps the warehouse first, when this host runs one (a fresh file
+created exclusively under `umask 077` in a `0700` directory, so a taken name is skipped rather than truncated and the dump
+is `0600`; an older dump is never rewritten, only has its mode tightened, and only the newest two are kept, the rest
+removed); a step that recreates nothing dumps nothing. It removes compose's leftovers for
 services this config dropped, never a CI job's runner; and retries once for the daemon's two races (a removal already in
 progress, a container name still in use). A recreate that was killed leaves its half-made replacement behind (compose
 creates it as `<12hex>_<project>-<service>-1` and renames it only once the old one is gone); each pass removes those,
