@@ -125,11 +125,13 @@ describe("the comment wake loop", () => {
     await s.handle({ id: "3", type: "primer.comment.created", data: c("c3", "th3", "d1", "u_owner") });
     expect(woken(h)).toEqual(["c1", "c3"]);
     expect(h.wakes[1]!.text).toMatch(/^New comment by the owner on Primer document d1 \(thread th3, comment c3; 3 comments/);
-    // The agent answers c1: the burst ends, and c2, which arrived in it unwoken and is still unanswered, gets one wake.
+    // c4 lands in th1 inside the burst. The agent answers th1: the burst ends, and c2 and c4, which arrived unwoken (the agent
+    // may not have read them), stay pending and get one wake.
+    await s.handle({ id: "3b", type: "primer.comment.created", data: c("c4") });
     await s.guard("primer_reply_to_thread", { thread_id: "th1", body: "Done" }, async () => ({ text: "{}" }), "d1");
-    expect(s.state().docs.d1!.pending).toEqual(["c2", "c3"]);
+    expect(s.state().docs.d1!.pending).toEqual(["c2", "c3", "c4"]);
     expect(h.wakes).toHaveLength(3);
-    expect(h.wakes[2]!.text).toMatch(/^More happened on Primer document d1 since your last wake \(2 comments not yet addressed/);
+    expect(h.wakes[2]!.text).toMatch(/^More happened on Primer document d1 since your last wake \(3 comments not yet addressed/);
     // Checkpoints: the connector's own live edit and a non-automatic version (its own publish) wake nobody; a person's does.
     h.later();
     await s.handle({ id: "4", ...edit("v4", "u_agents") });
@@ -141,11 +143,15 @@ describe("the comment wake loop", () => {
     expect(h.wakes).toHaveLength(4);
   });
 
-  it("marks every author as someone else while Primer doesn't say who the connector is", async () => {
+  it("marks every author as someone else when the connector has no owner of its own to compare with", async () => {
     const h = harness(new Set(), new Set(), null);
     const s = h.make();
     await s.handle({ id: "1", type: "primer.comment.created", data: c("c1", "th1", "d1", "u_owner") });
     expect(h.wakes[0]!.text).toMatch(/^New comment by someone else/);
+    // Connect mode: the connector is the owner's own account, which every agent's Primer tools also write as.
+    const hosted = harness(new Set(), new Set(), { id: "u_owner", kind: "person", viaUserId: null });
+    await hosted.make().handle({ id: "1", type: "primer.comment.created", data: c("c1", "th1", "d1", "u_owner") });
+    expect(hosted.wakes[0]!.text).toMatch(/^New comment by someone else/);
   });
 
   it("files one Revisions task for a closed publishing task and reuses it", async () => {

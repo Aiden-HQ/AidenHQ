@@ -46,11 +46,10 @@ On each wake:
    - a proposal: what you would change, and "Shall I?";
    - a question: the answer.
 6. Leave each thread open: people resolve them.
-7. Keep the task open while the review runs: end the turn with `task_wait` (`until` up to 7 days ahead, the review as the
-   reason); each notice wakes you sooner. The conversation stays quiet: your final message is exactly NO_REPLY, unless
-   the owner's chat needs to hear something now (the review ended, or a question only they can answer).
-
-A notice that a reply or version went out, with nothing new on the document, needs nothing more.
+7. Keep the task open while the review runs: end every turn of it with `task_wait` (`until` up to 7 days ahead, the review
+   as the reason), including a turn woken only by a notice that your reply or version went out, since each new turn ends
+   the last wait. Each notice wakes you sooner. The conversation stays quiet: your final message is exactly NO_REPLY,
+   unless the owner's chat needs to hear something now (the review ended, or a question only they can answer).
 
 ## When the document's work has moved on
 

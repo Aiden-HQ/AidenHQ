@@ -5,8 +5,9 @@
 // owner (never a name or the body: the agent reads them through the fenced Primer tools). Dispatch delivers the notice into the
 // agent's live run, or starts the next.
 //
-// - Who: the connector's identity comes from Primer once (GET /api/me). The owner is the person it acts via (viaUserId; the
-//   identity itself when it is the owner, in connect mode). "by the owner" in a notice is set here in code, by author id.
+// - Who: the connector's identity comes from Primer once (GET /api/me). The owner is the person its agent identity acts via
+//   (viaUserId, self-host); "by the owner" in a notice is set here in code, by author id. In connect mode the connector signs
+//   in as the owner, so its tools' comments (any agent's) carry the owner's id: every author there is "someone else".
 // - Coalesced: after a wake, more comments and edits on that document within COALESCE_MS wake nobody (a burst is one wake);
 //   the agent's next version or reply on the document ends that, and whatever arrived meanwhile and is still unaddressed gets
 //   one wake then. An owner's comment always wakes: its notice is the only place that says it is the owner's.
@@ -32,8 +33,8 @@ export interface Kernel {
 }
 /** Per document. threads: a pending comment's thread; woken: when its last wake went (ms); quiet: what arrived after it unwoken. */
 interface DocState { pending: string[]; batches: { version?: string; comments: string[] }[]; revisions?: number; threads?: Record<string, string>; woken?: number; quiet?: string[] }
-/** The connector's Primer identity: its own user id, and the owner's (the person it acts via, or itself). */
-interface Identity { self: string; owner: string; agent: boolean }
+/** The connector's Primer identity: its own user id, and the owner's (the person its agent identity acts via; none in connect mode). */
+interface Identity { self: string; owner?: string; agent: boolean }
 interface State { cursor?: string; created: string[]; processed: string[]; docs: Record<string, DocState> }
 type Log = (msg: string, f?: Record<string, unknown>) => void;
 
@@ -105,7 +106,7 @@ export function createSubscriber(o: {
       const r = await f(`${o.primer}/api/me`, { headers: await o.headers(), signal: AbortSignal.timeout(10_000) });
       const j = r.ok ? ((await r.json()) as { id?: unknown; kind?: unknown; viaUserId?: unknown }) : undefined;
       const self = id(j?.id);
-      if (self) me = { self, owner: id(j?.viaUserId) ?? self, agent: j?.kind === "agent" };
+      if (self) me = { self, owner: id(j?.viaUserId), agent: j?.kind === "agent" };
     } catch { /* not now: the next event asks again */ }
     return me;
   }
@@ -133,7 +134,8 @@ export function createSubscriber(o: {
           const s = doc(d);
           const made = /"version_?[iI]d"\s*:\s*"([\w-]+)"/.exec(r.text)?.[1];
           // A version Primer didn't make (nothing applied) addresses nothing; a reply addresses its thread's comments.
-          const done = version ? (made ? covers : []) : s.pending.filter((c) => s.threads?.[c] === args.thread_id);
+          // One that arrived unwoken during the burst may postdate what the agent read: it stays pending and gets the follow-up.
+          const done = (version ? (made ? covers : []) : s.pending.filter((c) => s.threads?.[c] === args.thread_id)).filter((c) => !s.quiet?.includes(c));
           if (version && made) s.batches = [...s.batches, { version: made, comments: covers }].slice(-50);
           s.pending = s.pending.filter((c) => !done.includes(c));
           for (const c of done) delete s.threads?.[c];
@@ -202,7 +204,8 @@ export function createSubscriber(o: {
     await idle();
     if (st.created.includes(c) || st.processed.includes(c)) return;
     if (!o.owner(d)) return;
-    const owner = (await identity())?.owner === p.author_id;
+    const who = (await identity())?.owner;
+    const owner = who !== undefined && who === p.author_id;
     const s = doc(d);
     if (!s.pending.includes(c)) s.pending.push(c);
     if (thread) (s.threads ??= {})[c] = thread;
@@ -227,7 +230,7 @@ export function createSubscriber(o: {
     const s = doc(d);
     let target: string | undefined;
     if (coalescing(s)) (s.quiet ??= []).push(key);
-    else target = await wake(d, editNotice(d, v, me?.owner === p.author_id));
+    else target = await wake(d, editNotice(d, v, me?.owner !== undefined && me.owner === p.author_id));
     st.processed.push(key);
     save();
     o.log(target ? "edit wake" : "edit coalesced", { document: d, version: v, task: target });
