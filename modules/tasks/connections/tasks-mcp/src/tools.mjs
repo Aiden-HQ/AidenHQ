@@ -533,6 +533,29 @@ async function fileGrade(issueId, grade) {
     return { graded: false, grade_error: String(err.message ?? err).slice(0, 200) };
   }
 }
+/** A task's filed grade (the grading module's GET /grades/<task>), or undefined when it can't be read. */
+async function readGrade(issueId) {
+  try {
+    const res = await fetch(`${GRADING}/grades/${encodeURIComponent(issueId)}`, { headers: { "x-aidenhq-caller": cx().assertion }, signal: AbortSignal.timeout(20_000) });
+    if (!res.ok) return undefined;
+    return (await res.json()).grade;
+  } catch {
+    return undefined;
+  }
+}
+/** Whether a filed grade is exactly what this delegation would file. */
+const sameFiling = (g, grade) => Boolean(g && grade) && JSON.stringify(g.rubric) === JSON.stringify(grade.rubric) && JSON.stringify(g.deliverable) === JSON.stringify(grade.deliverable);
+/**
+ * A delegation repeated under the same parent and marker with a corrected deliverable: reads the task's filed grade and, when
+ * it differs, re-files it on the existing task so the correction keeps its comments, files and runs. A plain retry files
+ * nothing, and so does a grade that cannot be read just now (the next retry does it).
+ */
+async function refileGrade(existing, grade) {
+  const filed = await readGrade(existing.id);
+  if (!filed || sameFiling(filed, grade)) return {};
+  const r = await fileGrade(existing.id, grade);
+  return r.graded ? { refiled: true } : r;
+}
 /** A graded or waiting delegation of this caller's still parked (its rubric or its blockers failed to file): a retry of the delegation starts it. */
 const parked = (i, me, hold) => Boolean(hold) && i.status === "backlog" && i.createdByAgentId === me.id;
 /**
@@ -612,7 +635,13 @@ async function assignTask(me, target, { title, description, parent, marker, prio
     src = `delegate:${p?.identifier ?? "root"}:${key}`;
     const existing = await findByMarker(src, `${OPEN_STATUSES},done,cancelled`);
     if (existing && parked(existing, me, hold)) return { identifier: existing.identifier, created: false, ...(await startGraded(existing, grade, blockers)) };
-    if (existing) return { identifier: existing.identifier, created: false };
+    if (existing) {
+      // The same parent and marker with a corrected deliverable re-files it on the existing task; a task already closed, or a
+      // plain retry of the same delegation, is left untouched.
+      const own = existing.createdByAgentId === me.id;
+      const refiled = grade && own && OPEN_STATUSES.split(",").includes(existing.status) ? await refileGrade(existing, grade) : {};
+      return { identifier: existing.identifier, created: false, ...refiled };
+    }
   }
   const body = {
     title: String(title).slice(0, 200),
