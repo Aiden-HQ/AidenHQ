@@ -1,8 +1,8 @@
 # On-server code host (`codehost-local`)
 
 A fresh install with no GitHub builds, reviews, merges and deploys agent-made apps, with every repository kept on the
-server. Module: `modules/codehost-local` (README there). The kernel runs it in process: it has no service and no token.
-Setup's local instance repo (`local/aidenhq-instance`, a bare repo at `$HOME/aidenhq-instance.git`) is the same
+server. Module: `modules/codehost-local` (README there). The kernel runs it in process: it has no service, no token and no
+GitHub App. Setup's local instance repo (`local/aidenhq-instance`, a bare repo at `$HOME/aidenhq-instance.git`) is the same
 shape: a change is a `kernel.apply` record whose card carries the exact diff, landed as one new commit on `main`.
 
 ## 1. Pieces
@@ -25,11 +25,11 @@ shape: a change is a `kernel.apply` record whose card carries the exact diff, la
 - **One host per repo, decided by its org** (`hostOf` in `kernel/src/codehost.ts`): `codehost-local` owns the org `local`;
   `github` owns every other org. A write names an action (`codehost.push|pr|merge|close|create_repo`) and `routeKind` turns it
   into the owning host's kind; a write naming repos on two hosts is refused. A new repo named without its org goes to the
-  GitHub fleet org once `github_fleet_org` is set, else to `local`; an existing repo keeps its host.
-- **Where fleet repos go** is one setting: `github_fleet_org` (the github module's; compile writes it to the kernel's modules
-  file as `repos.fleet_org`, read per call). Unset, the handbooks name only `local`. Set while GitHub is disconnected, a
-  `create_repo` there refuses "GitHub isn't connected" rather than landing in `local`. The kernel treats `local` as an
-  agents org too while `codehost-local` is enabled (`kernel/src/main.ts`).
+  GitHub agents org once GitHub is connected, else to `local`; an existing repo keeps its host.
+- **GitHub connected** is one host fact: `AIDENHQ_GITHUB_AGENTS_ORG` in `.env`, written once when the GitHub App is created
+  (`kernel/src/github-app.ts`). Until it is set the `github` module's code host service runs no container
+  (`when: { agents_org: true }`) and the handbooks name only `local`. The kernel treats `local` as an agents org too while
+  `codehost-local` is enabled (`kernel/src/main.ts`).
 - Tiering is `modules/github/service/src/plan.ts`'s, shared: `codehost-local` adds no tiering of its own beyond the rule
   `local-merge` (Tier 1; `LOCAL_ORG` is `local` there). The product repo is always on GitHub.
 - Bound by the owner: a local agents-org merge goes to the AI reviewer at Tier 1 (`local-merge`); both providers run together;
@@ -113,11 +113,11 @@ check is the `change` job.
   posted (the preview's URL and status stay on its row), and `/internal/open-prs` returns each change's `preview_url`, which
   the board's Fleet Ops open-PR row shows. The derived app, its sandbox and its removal on merge or close run unchanged.
 - A job's `repo-checkout` and the check jobs read repos through the kernel's broker `snapshot` op, granted to a module by
-  `codehost: snapshot:` in its `module.yaml` (`local/*` for this module); `clone` and the GitHub-only ops (fetch, head, read, comment, commit, runner_token) do not exist for `local`.
+  `codehost: snapshot:` in its `module.yaml` (`local/*` for this module); `token` and `clone` ops do not exist for `local`.
 
 ## 7. GitHub later
 
-Connecting GitHub (one sign-in) and setting `github_fleet_org` (an owner change, applied) points new fleet repos at that
-org; the `github` code host runs from the start. Local repos keep their host; new repos go to the GitHub org. Moving an existing repo to GitHub is not offered. Product
+Connecting GitHub (setup's GitHub App step, then apply and a kernel restart) records the org and starts the `github` code
+host. Local repos keep their host; new repos go to the GitHub org. Moving an existing repo to GitHub is not offered. Product
 contributions (the Platform Engineer's product PRs, upstream issues) need GitHub and stay off until it is connected; instance
 changes keep working locally through `kernel.apply`.

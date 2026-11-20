@@ -14,7 +14,6 @@ import { DatabaseSync } from "node:sqlite";
 import { FINAL_CODES, type Cap, type ReviewFirst } from "./tier.ts";
 import { decider, openFacts, type Fact } from "./facts.ts";
 import { inTx } from "./factlog.ts";
-import { addObjects, objectOf, objectsSince } from "./objects.ts";
 import type { ReviewContext } from "../sdk/src/executor.ts";
 
 export type State = "review" | "owner" | "approved" | "claimed" | "done" | "failed" | "rejected" | "stale" | "cancelled" | "unknown";
@@ -277,10 +276,6 @@ export function openRecords(file: string, now = () => new Date()) {
     },
     /** approved → claimed, once, within its 7 days. */
     claim: (id: string) => moved(() => move(id, ["approved"], "claimed", {}, true), () => fact(id, "record.claimed", "claimed", "kernel", (r) => ({ kind: r.kind }))),
-    /** GitHub objects the outcome of record `id` made (objects.ts). */
-    addObjects: (id: string, refs: unknown) => addObjects(db, id, refs, iso()),
-    objectOf: (ref: string) => objectOf(db, ref),
-    objectsSince: (since: string) => objectsSince(db, since),
     finish(id: string, ok: boolean, text: string): boolean {
       return moved(() => move(id, ["claimed"], ok ? "done" : "failed", { outcome: { ok, text: text.slice(0, 4000) } }),
         () => fact(id, ok ? "record.landed" : "record.failed", ok ? "done" : "failed", "kernel", (r) => (ok ? { kind: r.kind } : { kind: r.kind, text: text.slice(0, 500) })));

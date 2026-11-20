@@ -3,7 +3,7 @@
 // secret, then the sign-in's Connect button or a pairing code, as numbered stages. Nothing here knows which module it is.
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import qrcode from "qrcode-generator";
-import { SignInRequired, api, type AdvancedFlowView, type SetupChoice, type SetupFlowView } from "./api";
+import { SignInRequired, admin, api, type AdvancedFlowView, type SetupChoice, type SetupFlowView } from "./api";
 import { ConnectButton } from "./Connect";
 import { useEvents } from "./events";
 import { Markdown } from "./markdown";
@@ -478,6 +478,11 @@ function Advanced({ flow, advanced: a, board, reload, fail }: { flow: SetupFlowV
             {a.console_url && (
               <a className="btn" href={a.console_url} target="_blank" rel="noreferrer">
                 Open {a.title} ↗
+              </a>
+            )}
+            {a.admin_page && (
+              <a className="btn primary" href={`${admin.url}${a.admin_page}`}>
+                Create the {a.title}
               </a>
             )}
           </Step>

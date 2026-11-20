@@ -4,10 +4,9 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
-import { createServer } from "node:http";
-import { codeHostOps, localChanges, readFleetOrg, readOrgs, withLocal } from "../src/codehost.js";
+import { localChanges, withLocal } from "../src/codehost.js";
 import { createEngine } from "../src/deploy.js";
-import { checkOrg, checkout, checkoutPr, commitPush, syncRegistry } from "../src/git.js";
+import { checkout, checkoutPr } from "../src/git.js";
 import { previewApp, previewTick, type PreviewDeps } from "../src/previews.js";
 import { parseApp } from "../src/registry.js";
 import { openStore } from "../src/store.js";
@@ -80,78 +79,5 @@ describe("local/* apps", () => {
     sh(s.t, "--git-dir", s.bare, "update-ref", "refs/changes/1/merged", s.head);
     await previewTick(d);
     expect(store.previews()).toEqual([]);
-  });
-});
-
-// GitHub repos: the kernel's typed code host operations, run here against a fake kernel.
-type Seen = { op: string; body: any };
-async function fakeKernel(answer: (op: string, body: any) => { status?: number; json?: unknown; bytes?: Buffer }) {
-  const seen: Seen[] = [];
-  const srv = createServer(async (req, res) => {
-    let raw = "";
-    for await (const c of req) raw += c;
-    const op = req.url!.replace("/v1/codehost/", ""), body = JSON.parse(raw || "{}");
-    seen.push({ op, body });
-    const a = answer(op, body);
-    if (a.bytes) res.writeHead(200, { "content-type": "application/octet-stream" }).end(a.bytes);
-    else res.writeHead(a.status ?? 200, { "content-type": "application/json" }).end(JSON.stringify(a.json ?? {}));
-  });
-  await new Promise<void>((ok) => srv.listen(0, "127.0.0.1", ok));
-  return { seen, url: `http://127.0.0.1:${(srv.address() as { port: number }).port}`, close: () => srv.close() };
-}
-
-describe("fleet org and allowed orgs", () => {
-  const inst = (yaml: string) => {
-    const d = mkdtempSync(`${tmpdir()}/inst-`);
-    writeFileSync(`${d}/instance.yaml`, yaml);
-    return d;
-  };
-  it("reads github_fleet_org with no default, and github_orgs", () => {
-    expect(readFleetOrg(inst("settings:\n  instance_name: demo\n  github_fleet_org: my-agents\n"))).toBe("my-agents");
-    expect(readFleetOrg(inst("settings:\n  instance_name: demo\n"))).toBeUndefined();
-    expect(readOrgs(inst("settings:\n  github_orgs: [Example-Org, acme]\n"))).toEqual(["Example-Org", "acme"]);
-  });
-  it("allows the fleet org alongside the configured list, and nothing else", () => {
-    const app = (repo: string) => ({ name: "x", repo, untrusted: false }) as never;
-    const env = (agentsOrg?: string) => ({ appsData: "/a", gitDir: "/g", orgs: ["example-org"], ...(agentsOrg ? { agentsOrg } : {}) });
-    expect(() => checkOrg(env("my-agents"), app("My-Agents/roadmap-keeper"))).not.toThrow();
-    expect(() => checkOrg(env("my-agents"), app("EXAMPLE-ORG/x"))).not.toThrow();
-    expect(() => checkOrg(env("my-agents"), app("someone/else"))).toThrow(/outside the allowed orgs/);
-    expect(() => checkOrg(env(), app("my-agents/roadmap-keeper"))).toThrow(/outside the allowed orgs/);
-  });
-});
-
-describe("code host ops", () => {
-  it("registry push is one commit op: on the synced head, with no git push", async () => {
-    const t = mkdtempSync(`${tmpdir()}/reg-`);
-    sh(t, "init", "-q", "-b", "main", "registry");
-    writeFileSync(`${t}/registry/apps.yaml`, "apps: []\n");
-    sh(`${t}/registry`, "add", "-A"), sh(`${t}/registry`, "commit", "-qm", "init");
-    const head = sh(`${t}/registry`, "rev-parse", "HEAD");
-    writeFileSync(`${t}/registry/apps.yaml`, "apps:\n  - name: demo\n");
-    const k = await fakeKernel(() => ({ json: { sha: "c".repeat(40) } }));
-    try {
-      await commitPush({ appsData: "/a", gitDir: "/g", ops: codeHostOps(k.url, "key") }, `${t}/registry`, "apps.yaml", "apps: add demo", "https://github.com/acme/aidenhq-instance.git");
-      expect(k.seen).toEqual([{ op: "commit", body: { repo: "acme/aidenhq-instance", branch: "main", path: "apps.yaml", content: "apps:\n  - name: demo\n", parent: head, message: "apps: add demo" } }]);
-      expect(sh(`${t}/registry`, "rev-parse", "HEAD")).toBe(head); // nothing committed locally
-    } finally { k.close(); }
-  });
-  it("fetch writes the bundle and fetches it into the app's bare repo; the registry sync resets onto it", async () => {
-    const t = mkdtempSync(`${tmpdir()}/bundle-`);
-    sh(t, "init", "-q", "-b", "main", "src");
-    writeFileSync(`${t}/src/apps.yaml`, "apps: []\n");
-    sh(`${t}/src`, "add", "-A"), sh(`${t}/src`, "commit", "-qm", "init");
-    const head = sh(`${t}/src`, "rev-parse", "HEAD");
-    sh(`${t}/src`, "bundle", "create", "-q", `${t}/main.bundle`, "main");
-    const k = await fakeKernel(() => ({ bytes: readFileSync(`${t}/main.bundle`) }));
-    try {
-      const ops = codeHostOps(k.url, "key");
-      sh(t, "init", "-q", "--bare", "app.git");
-      await ops.fetch("acme/app", "refs/heads/*", `${t}/app.git`);
-      expect(sh(t, "--git-dir", `${t}/app.git`, "rev-parse", "refs/remotes/origin/main")).toBe(head);
-      await syncRegistry({ appsData: "/a", gitDir: "/g", ops }, `${t}/registry`, "https://github.com/acme/aidenhq-instance.git");
-      expect(readFileSync(`${t}/registry/apps.yaml`, "utf8")).toBe("apps: []\n");
-      expect(k.seen.map((x) => [x.op, x.body.repo, x.body.ref])).toEqual([["fetch", "acme/app", "refs/heads/*"], ["fetch", "acme/aidenhq-instance", "refs/heads/main"]]);
-    } finally { k.close(); }
   });
 });

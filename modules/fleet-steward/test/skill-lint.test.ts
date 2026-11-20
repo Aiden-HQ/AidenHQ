@@ -6,7 +6,7 @@
 // and the Steward's status write on another agent's task is refused, so the nudge turned into a second task for the same
 // PR — whose branch exists only in the workspace of the task that pushed it. Two runs died on that (a default-branch
 // clone cannot fetch the branch). The second lint keeps the reachable path in the section that nudge lives in.
-// The Maintainer's `github_product_issue` card reads the delegating task's text as the request chain and refuses a write it
+// The Maintainer's `github_app_issue` card reads the delegating task's text as the request chain and refuses a write it
 // does not ask for: the product-bug step told the Steward to create the task with the evidence but never to ask for the
 // issue to be filed, so every report was refused and the bug went unfiled (or cost a second task whose own brief was
 // the report). The third lint keeps the explicit filing ask in that step.

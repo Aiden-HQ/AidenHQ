@@ -1,6 +1,6 @@
 // Code review's watcher reads (the code-review module's PrSource seam, modules/code-review/service/src/seams.ts): open PRs, one PR,
 // the PR conversation comments since a time, and a login's permission. Read-only, through the same GitHub client as every other read
-// (the owner's sign-in).
+// (the App's token where it covers the repo, else the owner's sign-in).
 import { GitHubRefused, type GitHub } from "./github.js";
 
 export type PullRequest = {
@@ -57,7 +57,7 @@ export class CodeReviewReader {
   /** `identity`: who a review on owner/repo would post as (review-post.ts identity, auto), or null when nobody may. */
   constructor(private readonly github: GitHub, private readonly identity: (owner: string, repo: string) => Promise<"app" | "owner" | null> = async () => null) {}
 
-  /** Whether a review may post on the repo, and as whom: the owner, once GitHub is connected (null until then). */
+  /** Whether a review may post on the repo, and as whom: the App where installed, else the owner's sign-in in the comment orgs. */
   async postable(repo: string): Promise<{ identity: "app" | "owner" | null; org: string }> {
     const [owner, name] = repo.toLowerCase().split("/");
     return { identity: await this.identity(owner!, name!), org: owner! };
@@ -104,7 +104,7 @@ export class CodeReviewReader {
     return { merge_base: r.merge_base_commit.sha, status: r.status as "ahead" };
   }
 
-  /** The repos the owner's sign-in can read whose name contains `q` (at most 30). */
+  /** The repos the owner's sign-in can read whose name contains `q` (at most 30). The App's installation repos are not listed. */
   async repos(q: string): Promise<{ repo: string; private: boolean; url: string }[]> {
     const out: { repo: string; private: boolean; url: string }[] = [];
     const needle = q.toLowerCase();

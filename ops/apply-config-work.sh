@@ -57,23 +57,6 @@ main() {
     [ -z "$(git -C "$d" status --porcelain --untracked-files=no)" ] || { echo "refusing: $d has local changes to tracked files" >&2; exit 1; }
   done
 
-  # The instance checkout fetches with the owner's GitHub sign-in: ops/git-credential-github.mjs reads the token file
-  # directly (no container needed) and answers for the instance repo alone. Set per checkout, written only when it differs;
-  # a failing step stops the apply (set -e), as the fetch below would without a credential.
-  local helper="!node $product_dir/ops/git-credential-github.mjs" have_helper have_http origin_url
-  # All values: an empty first entry clears helpers inherited from the global config (an older setup wrote one).
-  have_helper="$(git -C "$inst" config --local --get-all credential.helper || true)"
-  have_http="$(git -C "$inst" config --get credential.useHttpPath || true)"
-  origin_url="$(git -C "$inst" remote get-url origin)"
-  if [[ "$have_helper" == *git-credential-app.mjs* || "$origin_url" == https://github.com/* ]]; then
-    if [ "$have_helper" != $'\n'"$helper" ]; then
-      git -C "$inst" config --local --unset-all credential.helper || [ $? -eq 5 ]
-      git -C "$inst" config --add credential.helper ""
-      git -C "$inst" config --add credential.helper "$helper"
-    fi
-    [ "$have_http" = true ] || git -C "$inst" config credential.useHttpPath true
-  fi
-
   progress_line APPLY_PHASES instance
   git -C "$inst" fetch --quiet origin main
   git fetch --quiet origin main
@@ -236,10 +219,6 @@ retireUnits() {
     systemctl --user disable --quiet aidenhq-update.timer 2>/dev/null || true
     systemctl --user stop aidenhq-update.timer 2>/dev/null || true
     rm -f "$units/aidenhq-update.service" "$units/aidenhq-update.timer" && systemctl --user daemon-reload && echo "release update timer removed (the kernel files releases now)"
-  fi
-  # DELETE in the release after #1065: the GitHub App's key dir in the vault (the App is retired; verify-security fails while it exists).
-  if [ -n "${AIDENHQ_SECRETS_DIR:-}" ] && [ -d "$AIDENHQ_SECRETS_DIR/github-app" ]; then
-    rm -rf "$AIDENHQ_SECRETS_DIR/github-app" && echo "github-app secrets dir removed (the GitHub App is retired)"
   fi
   # Applies the kernel started before ops/aidenhq-apply stayed loaded when they ended (RemainAfterExit): only the ended
   # ones are stopped, so the unit running this apply never is.

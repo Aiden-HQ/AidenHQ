@@ -2,7 +2,7 @@
 # One AidenHQ for one person, on a fresh Ubuntu or Debian host (ops/vm/setup.sh lists the releases). Run from the product
 # checkout, wherever it is (the user units find it through ~/.config/aidenhq-checkout.env):
 #   sudo ops/setup.sh --config person.env              set up (or finish, or repair: every step is idempotent)
-#   sudo OWNER_EMAIL=<email> ops/setup.sh --unattended [--exposure public|tailscale|local] [--fleet-org <github org>] [--kernel-token-file <file>]
+#   sudo OWNER_EMAIL=<email> ops/setup.sh --unattended [--exposure public|tailscale|local] [--kernel-token-file <file>]
 #                                                      the same with no config file and no questions (the installer's
 #                                                      handover): defaults for everything, and a last line
 #                                                      AIDENHQ_SETUP_URL=<url> (exactly one): the kernel's first-run page
@@ -33,13 +33,12 @@
 # OPENROUTER_KEY, GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET (optional: an OAuth app you already have; otherwise the board's Google setup asks), TS_AUTHKEY (tailnet join key),
 # TS_APPS_AUTHKEY (the apps' own tailnet node: a reusable, tagged, pre-authorized key; docs/setup.md),
 # BOARD_HOST (default: this VM's tailnet name), PAPERCLIP_PASSWORD
-# (with --restore: the old VM's paperclip_owner_password; otherwise one is generated), TIMEOUT_MINUTES
+# (with --restore: the old VM's paperclip_owner_password; otherwise one is generated), GITHUB_AGENTS_ORG (the GitHub
+# org for agent-built repos, which must exist and be owned by you; docs/setup.md step 8), TIMEOUT_MINUTES
 # (minutes per job, into config/runner.yaml), CI_RUNNERS (CI runner units, started once
-# github_fleet_org is set and the ci module is on). An unquoted value ends at ' #'.
+# the GitHub App and the ci module are set up). An unquoted value ends at ' #'.
 # The settings that aren't secrets may come from the environment instead (the file wins): AIDENHQ_USER, OWNER_NAME,
-# OWNER_EMAIL, TIMEZONE, COMPANY_NAME, MODULES, BOARD_HOST, TIMEOUT_MINUTES, CI_RUNNERS.
-# --fleet-org <org>: the GitHub org for agent-built repos (setting github_fleet_org; an org you can create repositories in).
-# Without it the fleet's repos live in `local` until you choose one on the board.
+# OWNER_EMAIL, TIMEZONE, COMPANY_NAME, MODULES, BOARD_HOST, GITHUB_AGENTS_ORG, TIMEOUT_MINUTES, CI_RUNNERS.
 # What it makes: see docs/setup.md. It holds secrets: delete person.env when setup is done.
 # Run as root, it first copies the checkout's commit to root-owned /opt/aidenhq/kernel/<sha> and runs again from there
 # (--checkout names the user's checkout): root's own steps run only from that verified copy.
@@ -50,14 +49,13 @@ umask 022
 
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"   # the code this run executes: root's verified copy, or the checkout
 ARGS=("$@")
-DRY=0 CONFIG="" RESTORE="" LINK_ONLY=0 RESET="" UNATTENDED=0 NO_TS=0 KTOKEN="" CHECKOUT="" EXPOSURE_ARG="" FLEET_ORG=""
+DRY=0 CONFIG="" RESTORE="" LINK_ONLY=0 RESET="" UNATTENDED=0 NO_TS=0 KTOKEN="" CHECKOUT="" EXPOSURE_ARG=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) DRY=1; shift ;;
     --unattended) UNATTENDED=1; shift ;;
     --no-tailscale) NO_TS=1; shift ;;
     --exposure) EXPOSURE_ARG="${2:-}"; shift 2 ;;
-    --fleet-org) FLEET_ORG="${2:-}"; shift 2 ;;
     --config) CONFIG="$2"; shift 2 ;;
     --kernel-token-file) KTOKEN="$2"; shift 2 ;;
     --checkout) CHECKOUT="$2"; shift 2 ;;
@@ -92,7 +90,7 @@ elif [ "$UNATTENDED" = 0 ]; then die "--config <file> is required, or --unattend
   printf -v "CFG_$k" '%s' "$v"
 done < "$CONFIG"
 # A setting from the file, else (only the ones that aren't secrets) from the environment, else the default.
-ENV_KEYS=" AIDENHQ_USER OWNER_NAME OWNER_EMAIL TIMEZONE COMPANY_NAME MODULES BOARD_HOST TIMEOUT_MINUTES CI_RUNNERS "
+ENV_KEYS=" AIDENHQ_USER OWNER_NAME OWNER_EMAIL TIMEZONE COMPANY_NAME MODULES BOARD_HOST GITHUB_AGENTS_ORG TIMEOUT_MINUTES CI_RUNNERS "
 cfg() {
   local n="CFG_$1"
   if [ -n "${!n:-}" ]; then printf '%s' "${!n}"
@@ -125,7 +123,8 @@ TIMEOUT_MINUTES="$(cfg TIMEOUT_MINUTES)"; CI_RUNNERS="$(cfg CI_RUNNERS)"
 in_range() { [ -z "$2" ] || { [[ "$2" =~ ^(0|[1-9][0-9]{0,3})$ ]] && [ "$2" -ge "$3" ] && [ "$2" -le "$4" ]; } || die "$1 must be a whole number from $3 to $4"; }
 in_range TIMEOUT_MINUTES "$TIMEOUT_MINUTES" 5 1440
 in_range CI_RUNNERS "$CI_RUNNERS" 0 32
-[[ -z "$FLEET_ORG" || "$FLEET_ORG" =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,38}$ ]] || die "--fleet-org must be a GitHub organization name"
+AGENTS_ORG="$(cfg GITHUB_AGENTS_ORG)"
+[[ -z "$AGENTS_ORG" || "$AGENTS_ORG" =~ ^[A-Za-z0-9][A-Za-z0-9-]*$ ]] || die "GITHUB_AGENTS_ORG must be a GitHub organization name"
 COMPANY="$(cfg COMPANY_NAME work)"; MODULES="$(cfg MODULES google)"; LIMIT="$(cfg OPENROUTER_LIMIT_USD 100)"
 SECRETS="$H/.config/aidenhq"; INST="$H/aidenhq-instance"; REMOTE="$H/aidenhq-instance.git"; ENVF="$REPO/.env"
 
@@ -491,7 +490,7 @@ settings:
   # The AI reviewer decides writes; your taps are for authority (vetoes, autonomy, spend caps, following a release).
   autonomy: full
 $AUTO_UPDATE
-${FLEET_ORG:+  github_fleet_org: $FLEET_ORG}
+${AGENTS_ORG:+  github_agents_org: $AGENTS_ORG}
 $(p="$(sed -n 's/^AIDENHQ_PRODUCT_REPO=//p' "$ENVF" | head -1)"; [ -z "$p" ] || echo "  product_repo: $(json "$p")")
 EOF
   echo "apps: []" | write_user_file "$INST/apps.yaml" 644
@@ -609,17 +608,17 @@ as_user systemctl --user enable aidenhq-apply-recover
 [ "${KERNEL_RESTART:-0}" = 0 ] || as_user systemctl --user restart aidenhq-kernel
 # A release install's first update check now, so the kernel's /updates page has its state from the start (it checks hourly after).
 [ "$DRY" = 1 ] || [ -z "${AIDENHQ_RELEASE:-}" ] || as_user AIDENHQ_INSTANCE_DIR="$INST" node "$REPO/kernel/src/updates.ts" check || echo "  (the first update check failed; the kernel's hourly check retries it)"
-# CI runners (modules/ci): AIDENHQ_CI_RUNNERS units, once github_fleet_org is set and the instance has the ci module (each
-# unit gets its registration token from the kernel's runner_token op); until then a rerun of setup starts them.
+# CI runners (modules/ci): AIDENHQ_CI_RUNNERS units, once the GitHub App exists and the instance has the ci module (each
+# unit mints its token from the App); until then a rerun of setup starts them.
 ci_n="$(sed -n 's/^AIDENHQ_CI_RUNNERS=\([0-9]*\)$/\1/p' "$ENVF" 2>/dev/null | tail -1 || true)"; ci_n="${CI_RUNNERS:-${ci_n:-0}}"
 if [ "$ci_n" -gt 0 ]; then
-  if [ "$DRY" = 1 ]; then echo "  + CI runners: aidenhq-ci-runner@1..$ci_n, once github_fleet_org is set and the ci module is on"
-  elif grep -Eq '^[[:space:]]+github_fleet_org:[[:space:]]*["'"'"']?[A-Za-z0-9]' "$INST/instance.yaml" && grep -Eq '^modules:.*[[ ,]ci[],]' "$INST/instance.yaml"; then
+  if [ "$DRY" = 1 ]; then echo "  + CI runners: aidenhq-ci-runner@1..$ci_n, once the GitHub App and the ci module are set up"
+  elif [ -n "$(read_secret github-app/app_id)" ] && grep -Eq '^modules:.*[[ ,]ci[],]' "$INST/instance.yaml"; then
     say "CI runners: $ci_n"
     as_user cp "$REPO/ops/units/aidenhq-ci-runner@.service" "$H/.config/systemd/user/"
     as_user systemctl --user daemon-reload
     for i in $(seq "$ci_n"); do as_user systemctl --user enable --now "aidenhq-ci-runner@$i"; done
-  else say "CI runners: $ci_n once github_fleet_org is set and the ci module is on; then run setup again"; fi
+  else say "CI runners: $ci_n once the GitHub App (GitHub setup on the board, its advanced part) and the ci module are set up; then run setup again"; fi
 fi
 
 # Public: the certificate is the proof that 443 is reachable from the Internet (behind NAT, a cloud security group or a

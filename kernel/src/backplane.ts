@@ -52,7 +52,6 @@
 //   POST /v1/codehost/:op      (a module's own token) token | snapshot | clone on the code host that owns the repo, under the module's
 //                              codehost grant (codehost.ts)
 //   POST /v1/jobs/workspace    (a module with role kernel.jobs) {task}: the workspace folder it may write into (a task of an agent it dispatches)
-//   GET  /v1/objects?ref=<ref> | ?type=pr&since=<iso>  (role kernel.work-read) whether a GitHub object is ours (objects.ts)
 //   GET  /v1/work[?task=|?job=|?record=|?agent=|?since=], GET /v1/work/metrics  (a module with role kernel.work-read) the jobs and records
 //                              of the kernel's work: a task's, one job, an agent's, the records and billed cost since a time, or what
 //                              runs and ended lately; Prometheus text (work.ts)
@@ -181,7 +180,6 @@ export const ROUTES = [
   { method: "POST", path: "/v1/jobs/:job/ack", auth: "module" },
   { method: "GET", path: "/v1/work", auth: "module|board" },
   { method: "GET", path: "/v1/work/metrics", auth: "module" },
-  { method: "GET", path: "/v1/objects", auth: "module" },
   { method: "GET", path: "/v1/flow", auth: "module|board" },
   { method: "POST", path: "/v1/work/grader-token", auth: "module" },
   { method: "POST", path: "/v1/jobs/:job/post", auth: "module" },
@@ -758,17 +756,6 @@ export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boar
         if (hit.path === "/v1/work/metrics") return void res.writeHead(200, { "content-type": "text/plain; version=0.0.4" }).end(work.metrics());
         return send(res, 200, workRead(work, new URLSearchParams(q ?? "")));
       }
-      if (hit?.path === "/v1/objects") {
-        const w = await moduleOf(req);
-        if (!w.roles.includes("kernel.work-read")) throw fail(403, "forbidden", `${w.module} may not read kernel work (role kernel.work-read)`);
-        if (!records) throw fail(503, "unavailable", "records are off");
-        const p = new URLSearchParams(q ?? "");
-        const ref = p.get("ref");
-        if (ref) { const o = records.objectOf(ref); return send(res, 200, o ? { ours: true, record: o.record, at: o.at } : { ours: false }); }
-        const since = p.get("since") ?? "";
-        if (p.get("type") !== "pr" || Number.isNaN(Date.parse(since))) throw fail(400, "bad_request", "send ?ref=<ref>, or ?type=pr&since=<iso>");
-        return send(res, 200, { refs: records.objectsSince(new Date(since).toISOString()) });
-      }
       if (hit?.path === "/v1/codehost/:op") {
         const w = await moduleOf(req);
         if (!codehost) throw fail(404, "not_found", "no GitHub code host here");
@@ -885,9 +872,6 @@ export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boar
             const w = await whoami(bearer(req)).catch((e: Error) => { throw fail(401, "unauthorized", e.message); });
             const r = record(id);
             const own = w.kind === "module" ? w.module === r.requester.module && r.requester.kind === "module" : Boolean(w.agent) && w.agent === r.requester.agent;
-            // The kind's executor (as the outcome route checks it) reads only whether the record is still live.
-            const exec = w.kind === "module" && w.module === r.executor.module && r.kind !== CONN_TOOL && (w.connection === undefined || (r.executor.url !== undefined && new URL(r.executor.url).hostname === w.connection));
-            if (!own && exec) return send(res, 200, { id: r.id, state: r.state });
             if (!own) throw fail(404, "not_found", `no record ${id}`);
             return send(res, 200, { id: r.id, kind: r.kind, tier: r.tier, state: r.state, outcome: r.outcome, ...(r.owner_reason ? { reason: r.owner_reason } : {}) });
           }
@@ -903,7 +887,7 @@ export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boar
             const r = record(id);
             if (await whoami(bearer(req)).then((w) => w.kind !== "module" || r.kind === CONN_TOOL || w.module !== r.executor.module || (w.connection !== undefined && (!r.executor.url || new URL(r.executor.url).hostname !== w.connection)), () => true)) throw fail(403, "forbidden", "only the kind's executor reports its outcome");
             const b = await json(req);
-            if (!writes.outcome(id, b.ok === true, String(b.text ?? "").slice(0, 200_000), b.objects)) throw fail(409, "conflict", `this record is ${record(id).state}`);
+            if (!writes.outcome(id, b.ok === true, String(b.text ?? "").slice(0, 200_000))) throw fail(409, "conflict", `this record is ${record(id).state}`);
             return send(res, 200, { ok: true });
           }
         }

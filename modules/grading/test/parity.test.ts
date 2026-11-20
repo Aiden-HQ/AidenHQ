@@ -34,7 +34,7 @@ test("grading parity: the golden script through the kernel's finish gate and the
     if (method === "PATCH" && m) { const i = byRef(decodeURIComponent(m[1])); patches.push({ task: i.identifier, patch: body }); Object.assign(i, body); return { status: 200, json: i }; }
     return { status: 404, json: {} };
   };
-  let repos = { agentsOrgs: [script.grants.fleet_org], product: script.grants.product_repo };
+  let repos = { agentsOrgs: [script.grants.agents_org], product: script.grants.product_repo };
 
   // The module's service, its kernel being the gate below (its reads as the owner, its label released through resolve()).
   let checks;

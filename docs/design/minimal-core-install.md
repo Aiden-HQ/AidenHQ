@@ -93,6 +93,7 @@ Pushback, said plainly:
   back to `runc`.
 - **The public mode costs things.**
   - Google Connect on the board breaks: Google refuses raw-IP redirect URIs.
+  - The GitHub App setup helper needs a tunnel.
   - SSH and the sign-in page are scanned by the whole Internet.
   - The owner depends on Let's Encrypt renewing every few days.
 
@@ -249,6 +250,7 @@ Generated Caddyfile (compile writes it, from the detected public IP):
 | 3130 | 127.0.0.1 | gate | loopback, behind Caddy (domain only) | loopback | loopback (Lima: forwarded) |
 | 3100 | 127.0.0.1 | Paperclip UI | **never public**: tunnel `ssh -L 3100:127.0.0.1:3100` | `tailscale serve --https=8443` (as today) | tunnel or Lima forward |
 | 3131 | 127.0.0.1 | Grafana (monitoring module) | never public: tunnel | tailnet serve | tunnel |
+| 8765 | `0.0.0.0` today | `ops/github-app-setup.mjs` (one-off) | **bind 127.0.0.1**, use a tunnel | tailnet address | loopback |
 
 `ops/vm/public-fw.sh` changes from a fixed allowlist (22, UDP 41641) to one rendered from the mode:
 - `public`: tcp 22, 443;
@@ -374,8 +376,9 @@ touches `tier.ts`, so U5 needs the paid reviewer eval at 100%.
   reason to open a tunnel; the board says so.
 - **A mode switch changes the board's URL.** Registered OAuth redirects (Google's web client) and any saved links break.
   The switch card lists the redirect to add for the new URL.
-- **GitHub** is one device sign-in on the board (a code typed at github.com): it needs no inbound port or redirect, so it
-  works the same in every mode (#1065 deleted the old setup helper on port 8765).
+- **The GitHub App setup helper.** `ops/github-app-setup.mjs` listens on `0.0.0.0:8765` and needs `AIDENHQ_SETUP_HOST`
+  (LAN or tailnet). The firewall blocks 8765. Change: bind to 127.0.0.1 and print the tunnel command. GitHub's manifest
+  flow accepts an `http://localhost` redirect.
 - **Module UIs on their own port** (lean-core §2.3) can't be safe on one IP, because cookies ignore ports. They need a
   hostname (domain or tailnet). This adds a line to spec §2.3.
 - **Passkeys**, if added later: WebAuthn refuses IP origins.
@@ -525,7 +528,7 @@ Order: U1 → (U2, U3 in parallel) → U4 → U5, U6 → U7, U8. No public port 
 |---|---|---|---|---|
 | **U1** | `feat(board): trusted client address from the front door, address bans and sign-in notices` | `accounts.ts` changes: <br>- `X-AidenHQ-Client-IP` on 3121 only with `edge_board_secret` (a new generated secret in compile); <br>- a per-address ban (20 in 15 minutes → 1 hour); <br>- an account-wide alert (no lock); <br>- a new-session notice; <br>- setup-link TTL 24 hours in public mode; <br>- `--reset` prints on the terminal while the owner has never enrolled TOTP. | Two vitest cases: a forged address without the secret locks only the socket address, and 20 failures from one address across emails get banned. | Board sign-in is gate core: panel review and the paid reviewer eval apply. |
 | **U2** | `feat(ops): the exposure setting and a Caddy front door with an IP certificate` | `settings.exposure` in `modules.ts` and `compile.ts`; generated `caddy` service and Caddyfile; `BOARD_LAN_*` derived from the mode; `apps-edge` moved into generated compose for `tailscale` only. | `scripts/test` compile cases per mode. | Exit check: live staging issuance of an IPv4 certificate over TLS-ALPN-01 on a throwaway VM. |
-| **U3** | `feat(ops): mode-aware public firewall and host features from pins.json` | `public-fw.sh` renders its ports from the mode. `pins.json` gains `features`; `ops/vm/setup.sh` installs the compiled union. Tailscale is out of the base. Also: ufw detection and the root helper units. | A `pins.ts` CI check over `features`; `public-fw.sh --check` per mode. | Supply chain: `pins.ts` dates every feature pin. |
+| **U3** | `feat(ops): mode-aware public firewall and host features from pins.json` | `public-fw.sh` renders its ports from the mode. `pins.json` gains `features`; `ops/vm/setup.sh` installs the compiled union. Tailscale is out of the base. Also: ufw detection, the root helper units, and `github-app-setup.mjs` bound to loopback. | A `pins.ts` CI check over `features`; `public-fw.sh --check` per mode. | Supply chain: `pins.ts` dates every feature pin. |
 | **U4** | `feat(ops): install public by default, Tailscale and tunnel opt-in` | `ops/setup.sh` changes: <br>- default `public`, plus `--exposure tailscale\|local\|cloudflare`; `--no-tailscale` keeps its promise of no public port and means `--exposure local`; <br>- detects the public IPv4 and waits for the certificate; <br>- falls back to `local` loudly; <br>- prints `https://<ip>` and the link. <br>`distro/install.sh`: messages and flags; uninstall removes Caddy and the helper. | The installer's container test runs with `--exposure local`; a live VM test for public. | Lean-core 5d's exit check changes (section 10). |
 | **U5** | `feat(board): secure-your-server card with a two-phase switch to Tailscale or Cloudflare` | The board card; `exposure: *-pending`; `edge-tailscale` auth-URL readout; confirmation only from the new path; `settings.exposure` as Tier 2 in `tier.ts`. | A vitest case: a confirm carrying `X-AidenHQ-Edge`, or under any `Host` other than the tailnet name, is refused. | Settings changes ride the existing settings-change flow. A `tier.ts` change: the paid reviewer eval must stay at 100%. |
 | **U6** | `feat(apps): publish apps through the gate behind Caddy with a domain` | `edge.ts` `ingress: caddy`; `checkIngress` for the Caddyfile; gate client address from the edge secret; apps-mcp sets `AIDENHQ_ANONYMOUS` only for `apps-edge` apps; an Apps-tab notice when there's no domain. | `scripts/test` edge cases; the gate test for a forged client address. | Gate changes are gate core: panel review. |
@@ -601,6 +604,7 @@ Migration of existing instances:
 | `modules/apps-platform/gate/gate.ts:270` | `cf-connecting-ip` comes from cloudflared | Edge-secret-bound address (U6) |
 | `scripts/edge.ts` `header-jwt` `edge.front` | The front door reaches the gate over the tailnet | Kept (an opt-in mode) |
 | `scripts/host-serve.ts`, `ops/apply-config.sh` prune, `verify-security.sh` "Tailnet" section | Host `tailscale serve` | Run against `edge-tailscale` in `tailscale` mode; skipped otherwise (U8) |
+| `ops/github-app-setup.mjs:29-83` | A LAN or tailnet address on `0.0.0.0:8765` | Loopback plus a tunnel (U3) |
 | `distro/install.sh:13, 259, 482, 536-545, 570` | Tailscale default; "same tailnet"; `tailscale serve off` on uninstall | Mode-driven (U4) |
 | `docs/design/access.md` ("the host keeps zero inbound ports"; "An instance without the `edge` setting stays tailnet-only") | | Rewritten (U8) |
 | `SETUP.md:32-34, 57, 137, 183, 215` ("No inbound ports are needed") | | Rewritten (U8) |

@@ -23,6 +23,7 @@ import { createAdmin, type SetupField } from "./admin.ts";
 import { createAuthApi } from "./auth-api.ts";
 import { createModuleValidate } from "./module-validate.ts";
 import { MODEL_KEY, createModelStep } from "../../modules/models-openrouter/src/model-step.ts";
+import { convert as convertGithubApp, saveApp as saveGithubApp, seedAppId } from "./github-app.ts";
 import { composeRecreate, createModuleSecrets, secretFits, vaultWriter } from "./module-secrets.ts";
 import { doorSource, readGate } from "./accounts.ts";
 import { routineWake, webhookWake, type Manifest } from "../../modules/apps-platform/src/app-access.ts";
@@ -187,15 +188,15 @@ const registry = (): Record<string, Kind> => ({ ...moduleKinds(), ...(localHost(
 let replay: (r: never) => Promise<{ ok: boolean; text: string }> = async () => ({ ok: false, text: "the proxy isn't up" });
 // The product and instance repositories (owner/name), as setup recorded them in .env: which repository a `paths: true`
 // kind's files are in (writes.ts).
-// The fleet org (setting github_fleet_org, compiled into the modules file as repos.fleet_org), read on each call: the one
-// GitHub org @agents grants and a bare create_repo resolve to. Unset: none (@agents names only `local`, when it is on).
-const fleetOrg = () => modulesFile().repos?.fleet_org || undefined;
+// The agents org: AIDENHQ_GITHUB_AGENTS_ORG, written once when the GitHub App is created (github-app.ts), never a setting a later change could move.
+// Unset: no agents org (@agents codehost grants name nothing).
+const agentsOrg = env("AIDENHQ_GITHUB_AGENTS_ORG") || undefined;
 // With codehost-local enabled (the compiled catalog), its org `local` is an agents org too (docs/design/codehost-local.md §2).
 const localHost = () => catalog().some((m) => m.name === "codehost-local" && m.enabled === true);
 // A module that replaced another carries its finished records along: they move to its kinds (kind-rename.ts).
 renameKinds(records.db, catalog(), registry());
-const baseRepos = { product: env("AIDENHQ_PRODUCT_REPO") || undefined, instance: env("AIDENHQ_INSTANCE_REPO") || undefined };
-const repos = () => ({ ...baseRepos, agentsOrg: fleetOrg(), agentsOrgs: [fleetOrg(), ...(localHost() ? [LOCAL_ORG] : [])].filter((o): o is string => Boolean(o)) });
+const baseRepos = { product: env("AIDENHQ_PRODUCT_REPO") || undefined, instance: env("AIDENHQ_INSTANCE_REPO") || undefined, agentsOrg };
+const repos = () => ({ ...baseRepos, agentsOrgs: [agentsOrg, ...(localHost() ? [LOCAL_ORG] : [])].filter((o): o is string => Boolean(o)) });
 log(baseRepos.product && baseRepos.instance ? "repositories" : "AIDENHQ_PRODUCT_REPO or AIDENHQ_INSTANCE_REPO isn't set", repos());
 // The bound reviewer module (reviewer@1): its model calls go through this gateway on a reviewer token minted per review.
 const reviews = createReviews({ slot: () => modulesFile().reviewer, secret, resolver, log, modelToken: (component) => mintToken(secret("gateway_job_secret"), { kind: "reviewer", component, ttlMs: 3600_000 }) });
@@ -544,10 +545,10 @@ const computers = watched(path.join(configDir, "computers.json"), (j) => j as { 
 // A job's requests for its task's next turn (`aidenhq reset|engine|cleanup`): boxes does the cleanup, admission the rest; and
 // its prechecks (`aidenhq review`, the precheck below), counted here.
 const jobTools = createJobTools({ db: records.db, secret: () => secret("gateway_job_secret"), orgs: () => repos().agentsOrgs, engines: () => Object.entries(readEngines(sandbox)).filter(([, e]) => e.box === true).map(([k]) => k) });
-// Each module's code host grant (its module.yaml `codehost:`), and what its @ names resolve to: the code host broker's, and
+// Each module's GitHub App grant (its module.yaml `codehost:`), and what its @ names resolve to: the code host broker's, and
 // what an engineer job's dispatcher may clone into its task's workspace.
 const codehostGrants = (): OpsGrant[] => Object.entries(modulesFile().modules ?? {}).flatMap(([module, d]) => ((d as { codehost?: OpsGrant }).codehost ? [{ ...(d as { codehost: OpsGrant }).codehost, module }] : []));
-const codehostRepos = () => ({ instance: baseRepos.instance, product: baseRepos.product, agentsOrgs: repos().agentsOrgs, orgs: modulesFile().repos?.orgs, maintained: modulesFile().repos?.maintained });
+const codehostRepos = () => ({ instance: baseRepos.instance, product: baseRepos.product, agentsOrgs: repos().agentsOrgs, ...modulesFile().repos });
 boxes = createBoxes({
   db: records.db, cfg: sandbox, jobs, stopping: () => draining, call: launcherClient(launcherUrl, () => secret("launcher_kernel_key")), secret, whoami,
   connections: () => computers().connections ?? {}, handbook: handbookFrom(configDir), cleanup: jobTools.cleanup, log, once: outcomes.once,
@@ -562,9 +563,8 @@ boxes = createBoxes({
       if (!r.ok) throw new Error(`the control plane answered ${r.status} attaching ${name}`);
     },
   },
-  // A box commits as the owner (name and noreply email from the code host, with the AidenHQ trailer its commit-msg hook adds) while
-  // GitHub is connected; otherwise as the agent itself (<key>@<commit_domain>), which only a `local/…` repo takes.
-  identity: async (id) => { const g = (grantsTable().agents ?? {})[id] as { key?: string; name?: string } | undefined; const key = String(g?.key ?? id); const agent = String(g?.name ?? key); return { ...((await codehost.identity()) ?? { name: agent, email: `${key}@${modulesFile().commit_domain ?? "aidenhq.ai"}` }), agent }; },
+  // Every agent commits as itself: its name and <key>@<commit_domain> (compile's: <instance name>.aidenhq.ai), never the owner.
+  identity: (id) => { const g = (grantsTable().agents ?? {})[id] as { key?: string; name?: string } | undefined; const key = String(g?.key ?? id); return { name: String(g?.name ?? key), email: `${key}@${modulesFile().commit_domain ?? "aidenhq.ai"}` }; },
   clones: {
     text: async (task) => { const i = (await cpJson(`/api/issues/${encodeURIComponent(task)}`)) as { title?: string; description?: string | null }; return `${i.title ?? ""}\n${i.description ?? ""}`; },
     may: (module, repo) => covers(repo, codehostGrants().find((g) => g.module === module)?.clone?.repos, codehostRepos()),
@@ -597,7 +597,7 @@ const stopTending = boxes.start();
 // The GitHub code host's operations, brokered for modules under their own codehost grants (codehost.ts).
 const codehost = createCodehost({ repos: codehostRepos, grants: codehostGrants, kind: () => Object.values(moduleKinds()).find((k) => k.module === CODEHOST && k.executor), secret, resolver, workspace: (module, task) => jobs.workspace(module, task),
   // codehost-local's snapshot for `local/…` repos, when that module is enabled.
-  local: () => (localHost() ? { snapshot: localSnapshot({ bare: localCode.bare }), bundle: (repo) => localCode.bundle(repo) } : undefined) , noteObject: (ref, record) => records.addObjects(record, [ref]) });
+  local: () => (localHost() ? { snapshot: localSnapshot({ bare: localCode.bare }), bundle: (repo) => localCode.bundle(repo) } : undefined) });
 // Check jobs (checkjobs.ts): credential-free boxes of the launcher's, snapshots from the module that provides them.
 const checkJobs = checkJobsFrom({ db: records.db, secret, recipes: () => modulesFile().check_jobs ?? {}, ask: codehost.ask, call: launcherClient(launcherUrl, () => secret("launcher_kernel_key")), workDir: sandbox.workDir, gatewayUrl: `${sandbox.boxGatewayUrl}/api/v1`, spent: (runKey) => gw.spentByKey(runKey), log });
 // The previous kernel's check runs are its own until it has exited (it finishes them while it drains); then what is left is lost.
@@ -675,7 +675,18 @@ if (accounts) {
 }
 // The board's origins are the module UI origins a session may be handed to (/auth/handoff).
 const uiOrigins = () => Object.fromEntries(boardOrigins.map((o) => [o, "board"]));
-const admin = accounts && createAdmin({ accounts, firstRun, model, uiOrigins, updates, doorSource: () => doorSource(gateInfo()), boardUrl: () => boardOrigins[0], cards: channels, ownerMessage: (b) => channels.ownerMessageAs("web", b, () => chiefOfStaff(grantsTable().agents)), owner: ownerApi, hosts: () => adminHosts, origins: () => adminOrigins, frameOrigins: () => boardOrigins, log });
+// The github module's App (github-app.ts), made from the admin pages: its key goes into the vault, the agents org into .env.
+const instanceName = () => /^([a-z0-9-]+)\.aidenhq\.ai$/.exec(String(modulesFile().commit_domain ?? ""))?.[1];
+seedAppId(secretsDir);
+const githubApp = Object.hasOwn(modulesFile().modules ?? {}, "github") ? {
+  defaultOrg: () => agentsOrg ?? (instanceName() ? `aidenhq-${instanceName()}` : ""),
+  agentsOrg: () => agentsOrg,
+  name: () => `AidenHQ ${instanceName() ?? "fleet"}`,
+  ready: () => existsSync(path.join(secretsDir, "github-app", "key.pem")),
+  convert: (code: string, org: string) => convertGithubApp(code, org),
+  save: (app: Parameters<typeof saveGithubApp>[0]) => saveGithubApp(app, { secretsDir, envFile: path.join(repo, ".env") }),
+} : undefined;
+const admin = accounts && createAdmin({ accounts, firstRun, model, githubApp, uiOrigins, updates, doorSource: () => doorSource(gateInfo()), boardUrl: () => boardOrigins[0], cards: channels, ownerMessage: (b) => channels.ownerMessageAs("web", b, () => chiefOfStaff(grantsTable().agents)), owner: ownerApi, hosts: () => adminHosts, origins: () => adminOrigins, frameOrigins: () => boardOrigins, log });
 
 // Claimed records a restart left without an outcome: their executors say how they went (never replayed). Executors may
 // still be starting at boot, so once, a minute in.

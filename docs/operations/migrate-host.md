@@ -22,7 +22,7 @@ Placeholders:
 | `<tailnet>` | Your tailnet, as in `<tailnet>.ts.net`. |
 | `aidenhq` | The host node name the board and Paperclip are served under. |
 | `aidenhq-apps` | The apps node's name. |
-| `acme-agents` | The fleet org (`github_fleet_org`). |
+| `acme-agents` | The agents org. |
 | `203.0.113.10` | The new host's public address. |
 | `eth0` | Its public interface. |
 
@@ -270,7 +270,7 @@ Rules for the pre-seed:
   Do **not** run `docker compose up` or `ops/apply-config.sh` yet. Two live copies would share:
   - the Slack Socket Mode token;
   - the Telegram bot;
-  - the GitHub sign-in (its merge queue and PR watch);
+  - the GitHub App;
   - the apps node;
   - the CI runner registrations.
 

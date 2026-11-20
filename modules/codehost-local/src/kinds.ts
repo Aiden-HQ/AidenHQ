@@ -1,7 +1,7 @@
 // codehost-local's write kinds, as code rather than only as a comment: `codehost-local.{push,pr,merge,close,create_repo}`, the
 // same actions codehost-github declares, each with its args schema, its floor and its card. They belong to the module that holds
 // the `codehost` role for the org `local` (module.yaml `provides: [ codehost ]`), and the kernel registers exactly these when
-// that module is enabled: nothing here touches GitHub or a token, because the executor behind them is this
+// that module is enabled: nothing here resolves a GitHub App or an installation token, because the executor behind them is this
 // module's, running in the kernel's process (src/host.ts `executor`, wired in kernel/src/main.ts).
 //
 // The floors are codehost-github's (modules/github/module.yaml): every kind files at 0 and plan.ts raises what it must. A

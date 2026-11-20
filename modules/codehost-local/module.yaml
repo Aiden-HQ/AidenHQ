@@ -2,7 +2,7 @@ name: codehost-local
 description: "Repositories on this server as the code host: bare repos under the data dir, change requests as git refs, the checks receipt, and an atomic squash merge. No GitHub needed."
 license: MIT
 # The code host role (docs/design/codehost-local.md): it owns the org `local` (setup's local/aidenhq-instance included);
-# the github module owns every other org. The kernel runs it in process, with no service and no GitHub token: src/kinds.ts declares
+# codehost-github owns every other org. The kernel runs it in process, with no service and no GitHub App: src/kinds.ts declares
 # the `codehost-local.{push,pr,merge,close,create_repo}` write kinds (args, floor, card; their executor is this module's own, in
 # process, with no URL and no key), and src/host.ts executes them against the bare repos, plus clone and snapshot; src/refuse.ts
 # is a merge's three refusals (head-moved, checks-not-green, conflict); src/apply.ts is the instance land. A green change asks for its merge itself (kernel/src/localmerge.ts, as the

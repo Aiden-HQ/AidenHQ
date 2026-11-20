@@ -21,8 +21,8 @@ const rollup = (state, { names = ["build"], more = false } = {}) => ({ state, co
 /** GitHub with one open PR per repo (`prs[repo]`: { head, checks, names?, more?, baseNames?, files? }); merges and writes are recorded. */
 function fakeGitHub(prs) {
   const writes = [];
-  const gh = async (method, path, body) => {
-    if (method !== "GET" && path !== "/graphql") writes.push({ method, path, body });
+  const gh = async (method, path, token, body) => {
+    if (method !== "GET" && path !== "/graphql") writes.push({ method, path, body, perms: JSON.parse(token) });
     if (path === "/graphql") {
       const v = body.variables;
       const repo = `${v.owner}/${v.repo}`;
@@ -51,7 +51,7 @@ function fakeGitHub(prs) {
   return { gh, writes, merges: () => writes.filter((w) => w.method === "PUT" && w.path.endsWith("/merge")) };
 }
 
-async function setup(t, { prs, connected = { on: true }, cacheDir = mkdtempSync(join(tmpdir(), "codehost-merges-")), clock = { t: Date.now() }, checks, remoteUrl = (slug) => join(cacheDir, "no-such-remote", slug) }) {
+async function setup(t, { prs, cacheDir = mkdtempSync(join(tmpdir(), "codehost-merges-")), clock = { t: Date.now() }, checks, remoteUrl = (slug) => join(cacheDir, "no-such-remote", slug) }) {
   const outcomes = [];
   const taken = new Set();
   const kernel = await listen(async (req, res) => {
@@ -66,15 +66,10 @@ async function setup(t, { prs, connected = { on: true }, cacheDir = mkdtempSync(
     res.writeHead(404).end("{}");
   });
   const github = fakeGitHub(prs);
-  // GitHub as the owner (client.ts GitHubAccess), faked over the fake GitHub above.
-  const access = {
-    connected: () => connected.on, token: async () => "tok", scopes: () => [], status: () => ({ scopes: [], problems: [] }),
-    identity: async () => ({ login: "owner1", name: "Owner One", email: "1+owner1@users.noreply.github.com" }),
-    rest: async (m, p, b) => { if (!connected.on) throw Object.assign(new Error("GitHub isn't connected"), { need: { cause: "not_connected" } }); return { ...(await github.gh(m, p, b)), headers: new Headers() }; },
-    graphql: async () => ({}),
-  };
+  // The token names the permissions it was minted with, so each GitHub call shows them.
+  const app = { token: async (org, o) => JSON.stringify(o.permissions ?? {}), createRepo: async () => "created" };
   const handle = createService({
-    key: "ch-key", kernelUrl: kernel.url, cacheDir, access, fleetOrg: "acme-agents", remoteUrl,
+    key: "ch-key", kernelUrl: kernel.url, cacheDir, app, gh: github.gh, agentsOrg: "acme-agents", remoteUrl,
     productRepo: "acme/aidenhq", now: () => new Date(clock.t),
   });
   const svc = await listen((req, res) => void handle(req, res));
@@ -98,7 +93,8 @@ test("an approved agents-org merge waits for green, merges at its bound head, an
   prs["acme-agents/widget"].checks = "SUCCESS";
   await handle.stepMerges();
   await settle();
-  assert.deepEqual(github.merges().map((w) => w.body), [{ merge_method: "squash", sha: HEAD, commit_message: "Co-authored-by: AidenHQ merge queue <noreply@aidenhq.ai>" }]);
+  assert.deepEqual(github.merges().map((w) => w.body), [{ merge_method: "squash", sha: HEAD }]);
+  assert.deepEqual(github.merges()[0].perms, { contents: "write", pull_requests: "write", checks: "read", statuses: "read" }, "the merge's own permissions, nothing more");
   assert.equal(outcomes[0]?.ok, true, JSON.stringify(outcomes));
   assert.match(outcomes[0].text, /Merged https:\/\/github.com\/acme-agents\/widget\/pull\/1/);
   const [line] = outcomes[0].text.split("\n");
@@ -204,7 +200,7 @@ test("a product PR merges only on a verified eval receipt for its bound head; a 
   await merge("k-00000000000000b4", [{ repo: "acme/aidenhq", number: 5, head }]);
   await handle.stepMerges();
   await settle();
-  assert.deepEqual(github.merges().map((w) => w.body), [{ merge_method: "squash", sha: head, commit_message: "Co-authored-by: AidenHQ merge queue <noreply@aidenhq.ai>" }], "merged at the bound head");
+  assert.deepEqual(github.merges().map((w) => w.body), [{ merge_method: "squash", sha: head }], "merged at the bound head");
   assert.equal(outcomes[0]?.ok, true, JSON.stringify(outcomes));
 
   // A PR outside our repos: the App is PR-only there, whatever the record says.
@@ -214,7 +210,7 @@ test("a product PR merges only on a verified eval receipt for its bound head; a 
   await settle();
   assert.equal(github.merges().length, 1);
   assert.equal(outcomes[0]?.ok, false);
-  assert.match(outcomes[0].text, /outside the fleet org, the product repo and maintainer_repos/);
+  assert.match(outcomes[0].text, /outside the agents org, the product repo and maintainer_repos/);
 
   // The product PR moved after its record was approved: stopped at once, never merged.
   prs["acme/aidenhq"] = { head: "e".repeat(40), checks: "SUCCESS" };
@@ -272,8 +268,8 @@ test("a merge call that times out after GitHub merged is reported merged, and an
   const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS" } };
   const github = fakeGitHub(prs);
   let timeouts = 1;
-  const gh = async (m, p, b) => {
-    const r = await github.gh(m, p, b);
+  const gh = async (m, p, tok, b) => {
+    const r = await github.gh(m, p, tok, b);
     const pull = r.body?.data?.repository?.pullRequest;
     if (pull?.state === "MERGED") pull.mergeCommit = { oid: "c".repeat(40) };
     if (m === "PUT" && timeouts-- > 0) throw new Error("The operation was aborted due to timeout");
@@ -282,7 +278,7 @@ test("a merge call that times out after GitHub merged is reported merged, and an
   const reports = [];
   let refuse = 1;
   const merges = createMerges({
-    dir: mkdtempSync(join(tmpdir(), "merges-")), gh, fleetOrg: "acme-agents",
+    dir: mkdtempSync(join(tmpdir(), "merges-")), token: async (repo, perms) => JSON.stringify(perms), gh, agentsOrg: "acme-agents",
     evalGate: async () => undefined, report: async (id, o) => { reports.push({ id, ...o }); if (refuse-- > 0) throw new Error("the kernel answered 503"); },
   });
   void merges.enqueue("k-00000000000000e1", { prs: [{ repo: "acme-agents/widget", number: 1, head: HEAD }] });
@@ -315,13 +311,13 @@ test("a red default branch takes no merge on top, except the PR that already hol
   assert.deepEqual(decide(data(rollup("SUCCESS", { names: [] }), 2), HEAD, { uiReview: false }), { do: "merge" }, "a base whose CI runs on PRs only");
 });
 
-test("a maintained repo merges as the owner; once it leaves maintainer_repos its approved merge is refused at queue time", async () => {
+test("a maintained repo merges with the App's token; once it leaves maintainer_repos its approved merge is refused at queue time", async () => {
   const prs = { "globex/payments": { head: HEAD, checks: "SUCCESS" } };
   const github = fakeGitHub(prs);
   const dir = mkdtempSync(join(tmpdir(), "merges-"));
   const reports = [];
   const queue = (maintained) => createMerges({
-    dir, gh: github.gh, fleetOrg: "acme-agents", productRepo: "acme/aidenhq", maintained,
+    dir, token: async (repo, perms) => JSON.stringify(perms), gh: github.gh, agentsOrg: "acme-agents", productRepo: "acme/aidenhq", maintained,
     evalGate: async () => undefined, report: async (id, o) => void reports.push({ id, ...o }),
   });
   const tick = () => new Promise((r) => setTimeout(r, 20));
@@ -329,7 +325,7 @@ test("a maintained repo merges as the owner; once it leaves maintainer_repos its
   void listed.enqueue("k-00000000000000f1", { prs: [{ repo: "globex/payments", number: 1, head: HEAD }] });
   await listed.step();
   await tick();
-  assert.deepEqual(github.merges().map((w) => [w.path, w.body.sha]), [["/repos/globex/payments/pulls/1/merge", HEAD]]);
+  assert.deepEqual(github.merges().map((w) => [w.path, w.body.sha, w.perms.contents]), [["/repos/globex/payments/pulls/1/merge", HEAD, "write"]]);
   assert.equal(listed.status("k-00000000000000f1").state, "done");
 
   // Approved while listed, then the owner took the repo off the list (the service restarts with the new setting).
@@ -340,24 +336,5 @@ test("a maintained repo merges as the owner; once it leaves maintainer_repos its
   await tick();
   assert.equal(github.merges().length, 1, "not merged");
   assert.equal(unlisted.status("k-00000000000000f2").state, "failed");
-  assert.match(reports.find((r) => r.id === "k-00000000000000f2").text, /outside the fleet org, the product repo and maintainer_repos/);
-});
-
-test("merge queue waits while disconnected", async (t) => {
-  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS" } };
-  const facts = [];
-  const connected = { on: false };
-  const { handle, github, merge, settle, outcomes } = await setup(t, { prs, connected, checks: (m, u, b) => (u === "/v1/facts" ? (facts.push(...b.facts), { recorded: b.facts.length }) : undefined) });
-  await merge("k-00000000000000b9", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
-  await handle.stepMerges();
-  await handle.flushFacts();
-  assert.deepEqual(github.merges(), [], "nothing merges while GitHub is signed out");
-  assert.deepEqual(facts.filter((f) => f.type === "work.waiting").map((f) => [f.subject, f.data.reason]), [["pr:acme-agents/widget#1", "github"]]);
-  connected.on = true;
-  await handle.stepMerges();
-  assert.equal(github.merges().length, 1, "merged once connected again");
-  await settle();
-  await handle.flushFacts();
-  assert.equal(outcomes[0]?.ok, true, JSON.stringify(outcomes));
-  assert.deepEqual(facts.filter((f) => f.type === "work.resumed").map((f) => f.data.reason), ["github"]);
+  assert.match(reports.find((r) => r.id === "k-00000000000000f2").text, /outside the agents org, the product repo and maintainer_repos/);
 });

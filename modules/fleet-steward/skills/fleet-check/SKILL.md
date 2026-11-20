@@ -54,7 +54,7 @@ request open over an hour without merging) or something recovered.
 - **A product bug** (AidenHQ itself misbehaves: the runner, the grader and grades, apply, receipts, the kernel, the board,
   a connection, the CI template, Paperclip wiring; your own finding, or a `product-bug` line on Fleet issues): it is
   reported as one GitHub issue on the product repo, one per defect: by the Maintainer when the Maintainer is in `fleet_catalog`
-  and GitHub is connected, else as a prefilled link to the owner (step 3).
+  and the GitHub App is connected, else as a prefilled link to the owner (step 3).
   1. Its fingerprint is `product-bug:<slug>` (the component and the symptom, a few lowercase words; reuse the slug your
      log already has for it).
   2. `task_create` with `assignee: maintainer`, marker `product-bug:<slug>`, `dedupe_closed: true`, title
@@ -62,12 +62,12 @@ request open over an hour without merging) or something recovered.
      then what happened, what you expected, and the evidence: the `module`, the `version` (the bare product sha the failing
      run actually ran under: the pin `fleet_generation_status` shows for that run's generation), the pin at the moment of
      filing (named apart from the first), the `reproduction` steps and the one log or error line that shows it. The ask
-     comes first in the description, not in a comment added after the fact: the `github_product_issue` card's reviewer reads
+     comes first in the description, not in a comment added after the fact: the `github_app_issue` card's reviewer reads
      the delegating task's text as the request chain and refuses a write it does not ask for. The issue is public: product
      evidence only, in the product's own words; a name, email, host, IP, uuid, account or chat id becomes a neutral word
      (`<host>`).
 
-  3. Log `log · <time> · product-bug · <slug> · <task id>`. Without the Maintainer or GitHub, skip step 2: call
+  3. Log `log · <time> · product-bug · <slug> · <task id>`. Without the Maintainer or the GitHub App, skip step 2: call
      `github_issue_link` with the fingerprint, title, body and `evidence` (module, version, reproduction, log), send the
      owner the link as "Reporting a product bug" says, and log the same line with `link sent` in place of the task id. A
      slug whose log already says `link sent` is not sent again; list it in the digest as waiting on the owner.
@@ -76,7 +76,7 @@ request open over an hour without merging) or something recovered.
   expected and the evidence following it:
 
 > ## Ask
-> File one GitHub issue on the product repository `Aiden-HQ/AidenHQ` with `github_product_issue`: fingerprint `product-bug:<slug>`, the title and body below, and the evidence fields given. Nothing else is asked for; do not fix it in this task.
+> File one GitHub issue on the product repository `Aiden-HQ/AidenHQ` with `github_app_issue`: fingerprint `product-bug:<slug>`, the title and body below, and the evidence fields given. Nothing else is asked for; do not fix it in this task.
 
 - **An app incident:** the DevOps Engineer owns it. Don't diagnose or restart it yourself. If the incident is still open
   after its run finished, or the app keeps flapping, comment once on the DevOps Engineer's incident task (or on Fleet
@@ -86,7 +86,7 @@ request open over an hour without merging) or something recovered.
   Engineer when none) with `task_create`, marker `quality:<app>:<check>`: the check's name and count, "read the sample with
   `app_status`", and the done condition "the check passes". It recovers when the check passes.
 - **A source down:** the DevOps Engineer watches sources. Check `src_meta.ingest_run` for the error. "Not connected", "sign
-  in" or "GitHub needs you" is the owner's to fix: alert them (below). Otherwise make sure there is one comment on
+  in" or "install the GitHub App" is the owner's to fix: alert them (below). Otherwise make sure there is one comment on
   Fleet issues with key `ingest · src_<source> · stale`.
 - **A stale PR** (`pr:<repo>#<n>`): find the task that opened it (`task_search`). Work reaches an Engineer only through a
   status write on its own task, and the PR's branch exists only in that task's workspace, so never file a second task for

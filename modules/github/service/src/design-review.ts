@@ -8,7 +8,7 @@
 //
 // Task text is fixed here: the PR's title, body, file names and check output never reach a task.
 //
-// Filed by the service when a fleet-org PR opens and when the merge queue waits on a head's verdict; swept by main.ts.
+// Filed by the service when an agents-org PR opens and when the merge queue waits on a head's verdict; swept by main.ts.
 // Not ported: codehost-local's change requests (their verdicts are task comments, readLocalDesignVerdicts) stay with that module.
 // A task the runner filed before the switch carries no module marker, so the kernel won't let this module close it; the table
 // below holds only what this module filed, and a close the kernel refuses drops the row: a 403 at once, a 404 (which the kernel
@@ -18,18 +18,20 @@ import { join } from "node:path";
 import { DESIGN_REVIEW, PR_QUERY, prTouchesUi, supersededDesignReview } from "./merge-gate.ts";
 
 type Json = any;
-/** GitHub as the owner (git-auth.ts Gh). */
-type Gh = (method: string, path: string, body?: unknown, o?: { background?: boolean }) => Promise<{ status: number; body: any }>;
+type Gh = (method: string, path: string, token: string, body?: unknown) => Promise<{ status: number; body: any }>;
 export type DesignReviewOptions = {
   kernelUrl: string; /** The module's own token (kernel.tasks). */ key: string; cacheDir: string;
   /** The chief of staff's name, as the runner's cfg.selfName: the task says who approved a merge that doesn't wait. */
   selfName: string;
+  app: { token(org: string, o: { repositories?: string[]; permissions?: Record<string, string> }): Promise<string> };
   gh: Gh; log?: (msg: string, f?: Record<string, unknown>) => void;
 };
 /** One PR head to review; `again`: no verdict came within its time, so it is asked once more (its own task). */
 export type ReviewAsk = { repo: string; number: number; head: string; again?: boolean };
 
 const ROLE = "design-review";
+const READ = { contents: "read", pull_requests: "read", checks: "read", statuses: "read", metadata: "read" };
+const STATUS = { statuses: "write", metadata: "read" };
 /** Sweeps in a row a task's close may answer 404 before the row is dropped. */
 const MISSES = 5;
 const HOURS = DESIGN_REVIEW.minutes / 60;
@@ -61,7 +63,7 @@ export function createDesignReviews(o: DesignReviewOptions) {
   /** The PR as the merge gate's query returns it, or undefined when it can't be read (unknown is never a reason to close). */
   async function readPr(repo: string, number: number): Promise<Json> {
     const [owner, name] = repo.split("/") as [string, string];
-    const r = await o.gh("POST", "/graphql", { query: PR_QUERY, variables: { owner, repo: name, number, pullRef: `refs/pull/${number}/head` } });
+    const r = await o.gh("POST", "/graphql", await o.app.token(owner, { repositories: [name], permissions: READ }), { query: PR_QUERY, variables: { owner, repo: name, number, pullRef: `refs/pull/${number}/head` } });
     if (r.status !== 200 || r.body?.errors) throw new Error(`GitHub: couldn't read ${repo}#${number} (${r.status} ${r.body?.errors?.[0]?.message ?? ""})`.trim());
     return r.body?.data?.repository?.pullRequest;
   }
@@ -110,7 +112,8 @@ export function createDesignReviews(o: DesignReviewOptions) {
     const gone = current ? supersededDesignReview({ repo: ask.repo, number: ask.number, head: ask.head }, current) : undefined;
     if (gone || task.deduplicated) log("design review not started", { pr: url, head: ask.head, task: task.identifier, why: gone ?? null, deduplicated: Boolean(task.deduplicated) });
     else {
-      await o.gh("POST", `/repos/${ask.repo}/statuses/${ask.head}`, { state: "pending", context: DESIGN_REVIEW.name, description: "Waiting for the UI Reviewer" })
+      const [owner, name] = ask.repo.split("/") as [string, string];
+      await o.gh("POST", `/repos/${ask.repo}/statuses/${ask.head}`, await o.app.token(owner, { repositories: [name], permissions: STATUS }), { state: "pending", context: DESIGN_REVIEW.name, description: "Waiting for the UI Reviewer" })
         .then((r) => { if (r.status >= 300) throw new Error(`${r.status} ${r.body?.message ?? ""}`); })
         .catch((err) => log("design review status failed", { pr: url, head: ask.head, err: String(err.message ?? err).slice(0, 300) }));
     }

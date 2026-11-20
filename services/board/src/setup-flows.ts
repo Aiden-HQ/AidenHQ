@@ -46,6 +46,8 @@ export interface AdvancedFlow {
   capabilities: string[];
   secrets?: string[];
   fields?: SetupFlowPoint["fields"];
+  /** A page on the kernel's admin listener that does this part's setup there (the GitHub App: its key goes straight to the vault). */
+  admin_page?: string;
   console_url?: string;
   pair_url?: string;
   pair_token?: string;

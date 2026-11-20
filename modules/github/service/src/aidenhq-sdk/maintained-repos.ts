@@ -2,7 +2,7 @@
 // Maintainer's tools and watcher read), and for the code host's PR watch and merge rules. Each entry's duties are opt-in.
 export const AGENT_FIX = "agent-fix";
 // The labels of the feature flow, fixed names (not per-repo settings): a feature request awaiting the owner's word, and the
-// owner's word that it may be built. Trust is a collaborator's role (maintainer.ts); the owner's login is an admin.
+// owner's word that it may be built. The App never counts as trusted for BUILD_LABEL (maintainer.ts).
 export const FEATURE_LABEL = "feature-request";
 export const BUILD_LABEL = "agent-build";
 // The roles a repo may trust to vouch for a label: a fixed set in code, never wider than write. A repo's `trusted` picks

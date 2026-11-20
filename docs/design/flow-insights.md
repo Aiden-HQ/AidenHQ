@@ -10,8 +10,8 @@ figures are compared against the instance's own previous period, not tiers. Not 
 The charts are only as true as these facts:
 
 - Code host facts: `pr.pushed {head, before, forced, author}` on `pr:<repo>#<n>`, CI per head on `pr:<repo>#<n>@<head>`,
-  `pr.closed {merged: false}`, `pr.opened` and `issue.opened` with `author` and `author_kind` (`agent` = an object
-  in AidenHQ's records or marked by its footer or trailer, `owner`, `outside`), `pr.opened` with `title`, `issue.labeled` with `label` and `by`.
+  `pr.closed {merged: false}`, `pr.opened` and `issue.opened` with `author` and `author_kind` (`agent` = the instance's
+  GitHub App bot, `owner`, `outside`), `pr.opened` with `title`, `issue.labeled` with `label` and `by`.
 - `pr.deployed` is written by the kernel's deploy poller (`kernel/src/generations.ts`), which re-derives missed PRs from
   generations it has not marked.
 - One shape: `at` always UTC `Z` (the SDK emitter normalises; `facts.ts` normalises older rows at open), PR and issue

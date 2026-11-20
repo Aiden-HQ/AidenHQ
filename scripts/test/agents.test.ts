@@ -141,7 +141,7 @@ test("the web for every crew agent: web_view and app_view granted (an agent may 
     assert.deepEqual(writes, [], k);
   }
   // An Engineer gets no tools added: it has exactly what it grants itself, which includes attaching its own task's file, finishing it and recording its wait.
-  assert.deepEqual(r.paperclip.agents.engineer.enabled_tools, { apps: ["app_list", "app_status", "app_view", "app_check", "web_view"], github: ["github_whoami", "github_project_read", "github_issue_read", "github_search_issues", "github_job_log", "github_pr_files", "github_product_issue_status"], paperclip_tasks: ["task_file_upload", "task_finish", "task_wait"] });
+  assert.deepEqual(r.paperclip.agents.engineer.enabled_tools, { apps: ["app_list", "app_status", "app_view", "app_check", "web_view"], github: ["github_whoami", "github_project_read", "github_issue_read", "github_search_issues", "github_job_log", "github_pr_files", "github_app_issue_status"], paperclip_tasks: ["task_file_upload", "task_finish", "task_wait"] });
   assert.equal(r.paperclip.agents["review-chaser"].web_search, "disabled");
   assert.equal(r.paperclip.agents.assistant.web_search, undefined);
 });
@@ -178,13 +178,13 @@ test("the Fleet Steward's grants: reads, plus exactly its predecessors' writes; 
   const writes = Object.entries(a.enabled_tools).flatMap(([c, list]) => list.filter((t) => writeTools(r.paperclip.mcp_servers[c]).includes(t)).map((t) => `${c}.${t}`)).sort();
   // routing_tune and routing_judge: the routing learning loop, each a reviewed kernel.apply of the instance's own routing.
   assert.deepEqual(writes, ["apps.person_identity_decide", "fleet_steward.routing_judge", "fleet_steward.routing_tune", "ops_mcp.meeting_note_correct", "owner_channel.notify", "paperclip_tasks.coach_record", "paperclip_tasks.task_block", "paperclip_tasks.task_cancel", "paperclip_tasks.task_comment", "paperclip_tasks.task_create", "paperclip_tasks.task_delegate", "paperclip_tasks.task_finish", "paperclip_tasks.task_handoff", "paperclip_tasks.task_propose_rule", "paperclip_tasks.task_wait"]);
-  assert.deepEqual(a.enabled_tools.github, ["github_product_issue_status", "github_issue_link"]);
+  assert.deepEqual(a.enabled_tools.github, ["github_app_issue_status", "github_issue_link"]);
   assert.equal(a.web_search, "disabled");
   assert.ok(!a.enabled_tools.apps.includes("web_view"));
-  // product-issues: the digest's live-fix check reads the product-bug issues' status (github_product_issue_status); filing is the Maintainer's.
+  // product-issues: the digest's live-fix check reads the product-bug issues' status (github_app_issue_status); filing is the Maintainer's.
   assert.deepEqual(a.roles, ["fleet-read", "fleet-audit", "librarian", "routing-tuner", "product-issues"]);
   assert.deepEqual(a.delegate_to, ["engineer", "app-maintainer", "app-owners", "architect", "maintainer"]);
-  assert.ok(r.paperclip.agents.maintainer.enabled_tools.github.includes("github_product_issue"), "the Maintainer files product bugs");
+  assert.ok(r.paperclip.agents.maintainer.enabled_tools.github.includes("github_app_issue"), "the Maintainer files product bugs");
 });
 test("the security module's agents may hand a fix task to the Fleet Steward, and only to it", () => {
   // Security Watch and the Red Teamer file their fixes as tasks for the Fleet Steward, which routes them to the owner's
@@ -214,8 +214,8 @@ test("the in-box `aidenhq task|tasks` reads are the tasks module's default grant
 
 test("a setting is the shape of its default: a string where a list is meant fails the compile", () => {
   const dir = withAgents({}, ["github"]);
-  writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules: [...BUNDLE, "github"], settings: { ...owner, github_orgs: "acme,evil" } }));
-  assert.throws(() => compile(product, dir), /settings\.github_orgs: a list, like its default \(got a string\)/);
-  writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules: [...BUNDLE, "github"], settings: { ...owner, github_orgs: ["acme"] } }));
+  writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules: [...BUNDLE, "github"], settings: { ...owner, github_comment_orgs: "acme,evil" } }));
+  assert.throws(() => compile(product, dir), /settings\.github_comment_orgs: a list, like its default \(got a string\)/);
+  writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules: [...BUNDLE, "github"], settings: { ...owner, github_comment_orgs: ["acme"] } }));
   assert.equal(compile(product, dir).paperclip ? "ok" : "", "ok");
 });

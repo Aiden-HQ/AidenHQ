@@ -4,8 +4,6 @@
 // The id is `<type>:<subject>:<version>`: a duplicate delivery, a poll that sees the same change, or a re-run backfill
 // records once.
 import type { DatabaseSync, StatementSync } from "node:sqlite";
-import { CODEHOSTS } from "./codehost.ts";
-import { addObjects, ensureObjects } from "./objects.ts";
 
 export type Fact = {
   type: string;
@@ -31,7 +29,6 @@ export function openFacts(db: DatabaseSync, now = () => new Date()) {
     CREATE INDEX IF NOT EXISTS facts_task ON facts (task, at);
     CREATE INDEX IF NOT EXISTS facts_type ON facts (type, at);
     CREATE INDEX IF NOT EXISTS facts_subject ON facts (subject);`);
-  ensureObjects(db);
   migrateEvents(db);
   normaliseFacts(db);
   const insert = db.prepare("INSERT OR IGNORE INTO facts (id, type, subject, version, task, at, seen_at, actor, source, data) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
@@ -50,8 +47,6 @@ export function openFacts(db: DatabaseSync, now = () => new Date()) {
   return {
     /** Records one fact; true when it is new. Never call it outside the transaction of the change it describes, when there is one. */
     record(f: Fact): boolean {
-      // A code host's background write (the train, the merge queue) names the GitHub objects it made: ours, as a write record's are.
-      if (CODEHOSTS.some((m) => f.actor === `module:${m}`) && f.data?.objects !== undefined) addObjects(db, `fact:${f.type}`, f.data.objects, now().toISOString());
       return insert.run(`${f.type}:${f.subject}:${f.version}`, f.type, f.subject, f.version, f.task ? taskId(f.task) : null, f.at, now().toISOString(), f.actor, f.source ?? "live", JSON.stringify(f.data ?? {})).changes === 1;
     },
     /** Facts after `seq`, in ingestion order (incremental readers). */
