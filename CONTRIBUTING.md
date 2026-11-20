@@ -47,7 +47,7 @@ get its permission first. Pull requests without the box ticked fail the `communi
 ## Language
 
 New code is TypeScript (`.ts`/`.tsx`), run directly by Node 24 with `.ts` import specifiers. The few JavaScript files that stay
-are listed in `.github/ci/js-allowlist.txt`; CI fails a PR that adds one outside it.
+are files something loads by a fixed `.js`/`.mjs` name.
 
 ## Running the tests
 

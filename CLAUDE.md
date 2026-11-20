@@ -74,8 +74,8 @@ re-run it and any change to a listed file does. Cases run 8 at a time.
 ## Conventions
 
 - **TypeScript.** New code is TypeScript (`.ts`/`.tsx`), run directly by Node 24 with `.ts` import specifiers. The only JavaScript
-  left is the files something loads by a fixed `.js`/`.mjs` name, listed in `.github/ci/js-allowlist.txt`; CI's `policy` job
-  fails a PR that adds a JavaScript file outside it.
+  left is files something loads by a fixed `.js`/`.mjs` name (Paperclip's plugin entry points, a git credential helper, linter configs, the
+  app starter's runtime files).
 - **One way to do each thing.** Every concern has exactly one path:
   - No fallbacks, no compatibility shims, no "until X" second path.
   - A change that replaces a path deletes the old one in the same PR, or in the follow-up its body names. A half-finished
