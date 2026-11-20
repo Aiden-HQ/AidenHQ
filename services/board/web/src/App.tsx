@@ -110,8 +110,8 @@ function parseRoute(): Route {
     const [ref = "", focus] = h.slice(2).split("/");
     return { kind: "task", ref, ...(focus ? { focus } : {}) };
   }
-  // #/agents/<key>[/overview|chats|settings] opens an agent's page. The old #/settings/agents lands on the Agents list.
-  const agent = /^agents\/([a-z0-9-]+)(?:\/(overview|chats|handbook|settings))?$/.exec(h);
+  // #/agents/<key>[/overview|activity|chats|handbook|settings] opens an agent's page. The old #/settings/agents lands on the Agents list.
+  const agent = /^agents\/([a-z0-9-]+)(?:\/(overview|activity|chats|handbook|settings))?$/.exec(h);
   if (agent) return { kind: "agent", key: agent[1]!, tab: (agent[2] as AgentTab | undefined) ?? "overview" };
   if (h === "settings/agents") return { kind: "view", view: "agents" };
   // #/r/<run id> opens a run's trace.
