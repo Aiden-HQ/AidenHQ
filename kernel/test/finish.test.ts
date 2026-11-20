@@ -13,7 +13,7 @@ const agents = { "run-jwt-ada": { id: ADA, name: "Ada", task: TASK } };
 const grants = { [ADA]: { key: "ada", roles: [], tools: { todo: ["task_finish"] } } };
 
 /** A kernel with a task connection, one finish check answering `verdict(body)`, and a control plane holding one task. */
-async function setup(t, verdict, { agentsScope, checks, graded = false, keyless = false, localChanges } = {}) {
+async function setup(t, verdict, { agentsScope, checks, graded = false, keyless = false, localChanges, status = "in_progress", labelIds = ["lbl-x"] } = {}) {
   const asked = [];
   const check = await serve(async (req, res) => {
     const body = JSON.parse((await readBody(req)) || "{}");
@@ -23,7 +23,7 @@ async function setup(t, verdict, { agentsScope, checks, graded = false, keyless 
     res.writeHead(v.http ?? 200, { "content-type": "application/json" }).end(JSON.stringify(v.body ?? v));
   });
   t.after(() => check.s.close());
-  const issue = { id: TASK, identifier: "WOR-1", companyId: "co", status: "in_progress", assigneeAgentId: ADA, assigneeUserId: null, createdByAgentId: "ag-cos", parentId: null, labelIds: ["lbl-x"], executionPolicy: { mode: "normal" } };
+  const issue = { id: TASK, identifier: "WOR-1", companyId: "co", status, assigneeAgentId: ADA, assigneeUserId: null, createdByAgentId: "ag-cos", parentId: null, labelIds, executionPolicy: { mode: "normal" } };
   const delegated = { id: DELEGATED, identifier: "WOR-2", companyId: "co", status: "in_review", assigneeAgentId: "ag-bo", assigneeUserId: null, createdByAgentId: ADA, parentId: null, labelIds: [] };
   const writes = [];
   const ctl = { failPatch: 0 }; // PATCHes the control plane answers 502 to
@@ -33,15 +33,16 @@ async function setup(t, verdict, { agentsScope, checks, graded = false, keyless 
     return { content: [{ type: "text", text: JSON.stringify({ status: r.status, json: await r.json() }) }] };
   } });
   k = await kernel(t, {
-    agents, grants: { [ADA]: { ...grants[ADA], ...(graded ? { graded: true } : {}) } }, secrets: { todo_service_key: "todo-key", judge_check_key: "check-key", judge_token: "judge-tok", other_token: "other-tok", paperclip_post_key: "post-key", ...(keyless ? {} : { [`paperclip-agents/${ADA}`]: "ada-key" }) },
+    agents, grants: { [ADA]: { ...grants[ADA], ...(graded ? { graded: true } : {}) } }, secrets: { todo_service_key: "todo-key", judge_check_key: "check-key", judge_token: "judge-tok", other_token: "other-tok", grading_token: "grading-tok", paperclip_post_key: "post-key", ...(keyless ? {} : { [`paperclip-agents/${ADA}`]: "ada-key" }) },
     connections: { todo: conn(todo.url, "todo", { write: ["task_finish"] }) },
-    modules: { modules: { judge: { roles: ["kernel.cp-read"], token: "judge_token" }, other: { roles: ["kernel.cp-read"], token: "other_token" } } },
+    modules: { modules: { judge: { roles: ["kernel.cp-read"], token: "judge_token" }, other: { roles: ["kernel.cp-read"], token: "other_token" }, grading: { roles: ["kernel.grader"], token: "grading_token" } } },
+    graderToken: (task, agent) => `grader-${task}-${agent}`,
     checks: checks ?? ({ "judge.finish": { module: "judge", at: "task.finish", url: `${check.url}/check/finish`, auth_secret: "judge_check_key", label: "held", ...(agentsScope ? { agents: agentsScope } : {}) } }),
     ...(localChanges ? { localChanges } : {}),
     onControl: async (req, body, auth) => {
       if (req.method === "GET" && (req.url === `/api/issues/${TASK}` || req.url === "/api/issues/WOR-1")) return { body: issue };
       if (req.method === "GET" && (req.url === `/api/issues/${DELEGATED}`)) return { body: delegated };
-      if (req.method === "GET" && req.url === "/api/companies/co/labels") return { body: [{ id: "lbl-x", name: "x" }, { id: "lbl-held", name: "held" }] };
+      if (req.method === "GET" && req.url === "/api/companies/co/labels") return { body: [{ id: "lbl-x", name: "x" }, { id: "lbl-held", name: "held" }, { id: "lbl-grading", name: "grading" }] };
       if (req.method === "PATCH" && ctl.failPatch) { ctl.failPatch--; return { status: 502, body: {} }; }
       if (req.method === "PATCH") { const b = JSON.parse(body); writes.push({ as: auth, body: b }); Object.assign(issue, b); return { body: issue }; }
       if (req.url === "/api/agents/me" && auth === "ada-key") return { body: { id: ADA, companyId: "co" } };
@@ -124,6 +125,32 @@ test("no control-plane identity: refused before the finish gate runs", async (t)
   assert.match(r.json.error.message, /no control-plane identity/);
   assert.deepEqual([asked.length, writes.length], [0, 0]);
 });
+test("a grader token is minted for an in_review task under the finish check's label with no check_holds row", async (t) => {
+  // A task the gate held keeps its check_holds row; one the gate never recorded (left in review by an older kernel) is still
+  // held by the check's own label on a task in review.
+  const checks = { "grading.finish": { module: "grading", at: "task.finish", url: "http://127.0.0.1:1/check/finish", auth_secret: "judge_check_key", label: "grading" } };
+  const s = await setup(t, () => ({ verdict: "pending", state: "pending", reason: "r" }), { checks, status: "in_review", labelIds: ["lbl-x", "lbl-grading"] });
+  assert.equal(s.k.records.db.prepare("SELECT 1 FROM check_holds").get(), undefined, "no row was written");
+  const mint = (task = TASK, token = "grading-tok") => s.k.v1("POST", "/v1/work/grader-token", { task }, token);
+  const minted = await mint();
+  assert.equal(minted.status, 200);
+  assert.deepEqual(minted.json, { token: `grader-${TASK}-${ADA}` }, "billed to the task's assignee");
+  // The label holds only while the task waits in review, and only the check's own label: an unknown task is refused.
+  Object.assign(s.issue, { status: "todo" });
+  assert.equal((await mint()).status, 403);
+  Object.assign(s.issue, { status: "in_review", labelIds: ["lbl-x"] });
+  assert.equal((await mint()).status, 403, "another label is no hold");
+  assert.equal((await mint(DELEGATED)).status, 403, "a task no finish check of the module holds");
+  // The label makes the task gradable; it is not the gate's recorded hold, so it cannot be resolved by the module: only the row
+  // that `finish()` writes can (a module may not close a hold it never placed).
+  Object.assign(s.issue, { status: "in_review", labelIds: ["lbl-x", "lbl-grading"] });
+  assert.equal((await s.k.v1("POST", `/v1/checks/${TASK}`, { verdict: "ok" }, "grading-tok")).status, 409, "no recorded row to resolve");
+  // A recorded hold is authoritative: the row holds whatever the task's status or labels say (the gate took the label).
+  s.k.records.db.prepare("INSERT INTO check_holds (task, check_id, at) VALUES (?, 'grading.finish', ?)").run(TASK, new Date().toISOString());
+  Object.assign(s.issue, { status: "todo" });
+  assert.equal((await mint()).status, 200);
+});
+
 test("/v1/checks/:task: only the check's module; release drops its label; ok and reopen only resolve a hold it placed", async (t) => {
   const { k, writes, issue, finish } = await setup(t, () => ({ verdict: "pending", state: "pending", reason: "r", until: "2026-11-17T12:00:00.000Z" }));
   const resolve = (body, token = "judge-tok") => k.v1("POST", `/v1/checks/${TASK}`, body, token);

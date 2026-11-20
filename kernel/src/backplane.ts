@@ -711,11 +711,13 @@ export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boar
           if (!w.roles.includes("kernel.grader")) throw fail(403, "forbidden", `${w.module} may not ask for grader tokens (role kernel.grader)`);
           const b = await json(req);
           if (typeof b.task !== "string" || !b.task) throw fail(400, "bad_request", "send {task}");
-          // Only a task the module's own finish check holds (finished, waiting for its verdict), and only for as long as it does.
-          if (!checks?.held(w.module!, b.task.slice(0, 100))) throw fail(403, "forbidden", `no finish check of ${w.module} holds task ${b.task.slice(0, 100)}`);
           if (!owner) throw fail(503, "unavailable", "the control plane is off");
           const issue = await owner("GET", `/api/issues/${encodeURIComponent(b.task.slice(0, 100))}`);
-          if (issue.status !== 200 || typeof issue.json.assigneeAgentId !== "string") throw fail(404, "not_found", `no task ${b.task.slice(0, 100)} with an assignee`);
+          if (issue.status !== 200 && issue.status !== 404) throw fail(502, "upstream", `the control plane answered ${issue.status}`);
+          // Only a task the module's own finish check holds (finished, waiting for its verdict), and only for as long as it
+          // does: the recorded hold row, or the check's own label on a task still in review.
+          if (issue.status === 404 || !(await checks?.held(w.module!, issue.json))) throw fail(403, "forbidden", `no finish check of ${w.module} holds task ${b.task.slice(0, 100)}`);
+          if (typeof issue.json.assigneeAgentId !== "string") throw fail(404, "not_found", `no task ${b.task.slice(0, 100)} with an assignee`);
           return send(res, 200, { token: graderToken(b.task.slice(0, 100), issue.json.assigneeAgentId) });
         }
         if (hit.path === "/v1/work/metrics") return void res.writeHead(200, { "content-type": "text/plain; version=0.0.4" }).end(work.metrics());
