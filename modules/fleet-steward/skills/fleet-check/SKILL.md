@@ -158,6 +158,8 @@ request open over an hour without merging) or something recovered.
     is a product defect (routing or admission), not agent work: report it once through the product-bug path (slug
     `capacity-queue`) with that reason as the evidence, naming the agent and its team (`fleet_catalog`). The held agent's
     tasks wait on the product, so each stays as it is. A fleet with every computer busy raises nothing.
+    When every member of the agent's team (`fleet_catalog`) is running a job, the team is at its size, which is the owner's
+    capacity call: list it in the digest with the queue depth and the oldest wait, and report nothing.
   - `review-stall:<card>`: a card has been with the AI reviewer over 15 minutes with no decision (a review lost across an
     apply or a restart). Its reason names the card, its task and its age. This is a product defect (the reviewer path), not
     agent work: report it once through the product-bug path (slug `review-stall`) with the card id, its kind, its age and the
