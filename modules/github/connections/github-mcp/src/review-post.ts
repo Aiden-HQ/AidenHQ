@@ -224,6 +224,6 @@ export class ReviewPoster {
     await this.status(ref, who, r.head, reviewStatus(r), review.html_url);
     const c = counts(r.findings);
     const ack = await this.ack(ref, who, `${renderNotice({ repo: r.repo, pr: r.pr, head: r.head, phase: "done", reviewer: r.reviewer, ...c, cost_usd: r.cost_usd, run: a.run }).text}\n[The review](${review.html_url})`);
-    return { ok: true, text: JSON.stringify({ identity: "owner", login: who.login, review: review.html_url, inline: comments.length, listed: r.findings.filter((f) => !earlier.has(f.id) && !comments.some((c) => c.id === f.id)).length, earlier: earlier.size, resolved: done.resolved.length, skipped: done.skipped, ack: ack.url, status: STATUS_CONTEXT }), objects: [objectRef(ref), ...inlineIds, ack.object] };
+    return { ok: true, text: JSON.stringify({ identity: "owner", login: who.login, review: review.html_url, inline: comments.length, listed: r.findings.filter((f) => !earlier.has(f.id) && !comments.some((c) => c.id === f.id)).length, earlier: earlier.size, resolved: done.resolved.length, skipped: done.skipped, ack: ack.url, status: STATUS_CONTEXT }), objects: [...inlineIds, ack.object] };
   }
 }

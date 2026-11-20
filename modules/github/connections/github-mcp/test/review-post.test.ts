@@ -98,8 +98,8 @@ describe("posting", () => {
     const r = review([finding("f_on_line1", "src/pay.ts", 2), finding("f_off_line", "src/pay.ts", 90, { severity: "pre_existing" })]);
     const done = await p.execute("post", postArgs(r));
     expect(JSON.parse(done.text)).toMatchObject({ identity: "owner", login: "owner1", inline: 1, listed: 1 });
-    // Its GitHub objects go to AidenHQ's records: the PR, the review's inline comment and the acknowledgement.
-    expect(done.objects).toEqual(["github:acme/payments#12", "github:acme/payments#12/comment/501", ACK]);
+    // Its GitHub objects go to AidenHQ's records: the review's inline comment and the acknowledgement, never the PR (a person's).
+    expect(done.objects).toEqual(["github:acme/payments#12/comment/501", ACK]);
     const post = w.calls.find((c) => c.method === "POST" && c.path.endsWith("/pulls/12/reviews"))!;
     expect(post.auth).toBe("Bearer gho_owner");
     expect(post.body).toMatchObject({ event: "COMMENT", commit_id: HEAD });

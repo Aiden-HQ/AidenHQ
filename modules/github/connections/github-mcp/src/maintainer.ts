@@ -436,7 +436,7 @@ export class Maintainer {
     if (!which) throw new GitHubRefused(`only the ${r.label} and ${FEATURE_LABEL} labels may be changed on ${r.repo}`);
     const cur = await this.assertTrusted(r, number);
     const present = cur.labels.some((l) => named(l, which));
-    const out = (changed: boolean) => ({ repo: r.repo, number, label: which, action, changed, ...(changed ? { objects: [this.ref(r, number)] } : {}) });
+    const out = (changed: boolean) => ({ repo: r.repo, number, label: which, action, changed,  });
     if (action === "add") {
       if (present) return out(false);
       const res = await this.gh.rest("POST", `/repos/${r.owner}/${r.name}/issues/${number}/labels`, { labels: [which] });
@@ -467,7 +467,7 @@ export class Maintainer {
     const body = state === "closed" ? { state, state_reason: reason ?? "completed" } : { state };
     const res = await this.gh.rest("PATCH", `/repos/${r.owner}/${r.name}/issues/${number}`, body);
     if (res.status !== 200) throw new Error(`GitHub refused the state change (${res.status} ${res.body?.message ?? ""})`.trim());
-    return { repo: r.repo, number, state: res.body.state, state_reason: res.body.state_reason ?? null, objects: [this.ref(r, number), ...(posted?.objects ?? [])] };
+    return { repo: r.repo, number, state: res.body.state, state_reason: res.body.state_reason ?? null, ...(posted ? { objects: posted.objects } : {}) };
   }
 
   /**

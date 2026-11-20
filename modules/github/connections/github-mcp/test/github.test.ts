@@ -304,7 +304,7 @@ describe("GitHub", () => {
     it("pr review posts COMMENT only, at the head it read, signed by the agent", async () => {
       const { impl, calls } = fake({ "GET /repos/a/b/pulls/7": { state: "open", head: { sha: "abc" } }, "POST /repos/a/b/pulls/7/reviews": { id: 5, html_url: "h", state: "COMMENTED" } });
       const gh = owner(impl);
-      await expect(gh.review({ owner: "a", repo: "b", number: 7 }, "Looks fine.", "Aiden")).resolves.toEqual({ id: 5, url: "h", state: "COMMENTED", objects: ["github:a/b#7"] });
+      await expect(gh.review({ owner: "a", repo: "b", number: 7 }, "Looks fine.", "Aiden")).resolves.toEqual({ id: 5, url: "h", state: "COMMENTED" });
       expect(calls.at(-1)?.body).toEqual({ event: "COMMENT", commit_id: "abc", body: `Looks fine.\n\n${FOOTER("Aiden")}` });
       await expect(gh.review({ owner: "a", repo: "b", number: 7 }, " ", "Aiden")).rejects.toBeInstanceOf(GitHubRefused);
     });

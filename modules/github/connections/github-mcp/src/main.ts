@@ -274,7 +274,8 @@ function buildServer(caller?: Caller): McpServer {
       const out = await projects.reportIssue(owner, name, report, agent);
       log.info({ number: out.number, deduplicated: out.deduplicated }, "product issue written as the owner");
       const issue = `github:${owner.toLowerCase()}/${name.toLowerCase()}#${out.number}`;
-      return { ...out, objects: [issue, ...("comment" in out ? [`${issue}/comment/${out.comment}`] : [])] };
+      // Only what this filing made is ours: the new issue, or the comment on an existing one (maybe a person's).
+      return { ...out, objects: ["comment" in out ? `${issue}/comment/${out.comment}` : issue] };
     }),
   );
   server.registerTool(

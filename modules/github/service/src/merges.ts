@@ -16,7 +16,7 @@ import { DESIGN_REVIEW, EVAL_WAIT_MINUTES, PR_QUERY, WAIT_MINUTES, awaitsDesignR
 
 /** GitHub as the owner, background (git-auth.ts Gh with background set). */
 type Gh = (method: string, path: string, body?: unknown) => Promise<{ status: number; body: any }>;
-/** `objects`: what the queue merged, for the kernel's records (each PR and its merge commit). */
+/** `objects`: what the queue made, for the kernel's records (each merge commit; a merged PR stays whoever's it was). */
 type Outcome = { ok: boolean; text: string; objects?: string[] };
 export type EvalGate = (repo: string, pr: any) => Promise<undefined | { wait: string } | { stop: string }>;
 type Pr = { repo: string; number: number; head: string; url: string; status: string; note?: string; sha?: string; wait?: { key: string; since: string }; reviewAsked?: string; reviewAskedAgain?: string; checked?: string; unanswered?: boolean; fw?: { reason: string; since: string } };
@@ -177,7 +177,7 @@ export function createMerges(d: {
     const n = q.prs.filter((p) => p.status === "merged" || p.status === "skipped").length;
     const headline = ok ? `**Done:** ${n} merged.` : `**Merges finished:** ${n} merged, ${q.prs.length - n} not.`;
     const merged = q.prs.filter((p) => p.status === "merged" && typeof p.sha === "string").map((p) => ({ repo: p.repo, number: p.number, head: p.head, sha: p.sha }));
-    const objects = merged.flatMap((p) => [`github:${p.repo.toLowerCase()}#${p.number}`, `github:${p.repo.toLowerCase()}@${p.sha}`]);
+    const objects = merged.map((p) => `github:${p.repo.toLowerCase()}@${p.sha}`);
     q.outcome = { ok, text: `${MERGED_LINE}${JSON.stringify(merged)}\n\n${[...q.said, headline].join("\n\n").slice(-12_000)}`, ...(objects.length ? { objects } : {}) };
     Object.assign(q, { state: ok ? "done" : "stopped", finishedAt: now().toISOString() });
     log("merges finished", { record: id, ok });

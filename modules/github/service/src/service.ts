@@ -398,7 +398,7 @@ export function createService(o: Options) {
             const text = a.text ? { ...a.text, ...(typeof a.text.body === "string" ? { body: withFooter(a.text.body, asker?.requester.name || "AidenHQ") } : {}) } : a.text;
             const pr = open[0] ? await api("PATCH", `/repos/${s.slug}/pulls/${open[0].number}`, text) : await api("POST", `/repos/${s.slug}/pulls`, { ...text, head: b.branch, base: def });
             done.push(pr.html_url ?? `${s.slug}#${pr.number}`);
-            if (pr.number) objects.push(`${ref(s.slug)}#${Number(pr.number)}`);
+            if (pr.number && !open[0]) objects.push(`${ref(s.slug)}#${Number(pr.number)}`); // ours only when this write opened it
             if (pr.html_url) notePrTask(o.cacheDir, pr.html_url, { task: a.workspace, branch: b.branch }); // the PR watch wakes the task that opened it
             if (pr.number) {
               // Flow: the PR opened when this write created it, a head it moves is a push, and CI starts on every head it publishes.
@@ -426,7 +426,6 @@ export function createService(o: Options) {
           const closed = await api("PATCH", `/repos/${s.slug}/pulls/${Number(p.number)}`, { state: "closed" });
           if (closed?.head?.sha) flow.closed(s.slug, Number(p.number), String(closed.head.sha));
           done.push(`${s.slug}#${p.number}`);
-          objects.push(`${ref(s.slug)}#${Number(p.number)}`);
         }
         return { ok: true, text: `Closed: ${done.join(", ")}`, objects };
       }

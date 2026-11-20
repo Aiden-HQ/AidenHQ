@@ -388,14 +388,14 @@ export class GitHub {
       done.push(input.state === "closed" ? `closed as ${(input.reason ?? "completed").replace("_", " ")}` : "reopened");
     }
     const after = await this.request<GhIssue>("GET", base);
-    return { url: after.html_url, state: after.state, labels: labelNames(after), assignees: after.assignees?.map((a) => a.login), done: done.length ? done : ["nothing to change"], objects: [objectRef(ref)] };
+    return { url: after.html_url, state: after.state, labels: labelNames(after), assignees: after.assignees?.map((a) => a.login), done: done.length ? done : ["nothing to change"] };
   }
 
   /**
    * A comment review on a pull request as the owner, signed by `agent`, with optional line comments. Never an approval or a
    * change request: an agent's review mustn't satisfy branch protection as the owner's.
    */
-  async review(ref: Ref, body: string, agent: string, opts: { comments?: { path: string; line: number; end_line?: number; body: string }[] } = {}): Promise<{ url: string; id: number; state: string; objects: string[] }> {
+  async review(ref: Ref, body: string, agent: string, opts: { comments?: { path: string; line: number; end_line?: number; body: string }[] } = {}): Promise<{ url: string; id: number; state: string }> {
     const base = `/repos/${ref.owner}/${ref.repo}/pulls/${ref.number}`;
     const pr = await this.request<GhPull & { state: string; user?: GhUser; head: { sha: string } }>("GET", base);
     if (pr.state !== "open") throw new GitHubRefused(`${ref.owner}/${ref.repo}#${ref.number} isn't open`);
@@ -403,7 +403,7 @@ export class GitHub {
     const comments = opts.comments?.map((c) => ({ path: c.path, line: c.end_line && c.end_line > c.line ? c.end_line : c.line, side: "RIGHT", ...(c.end_line && c.end_line > c.line ? { start_line: c.line, start_side: "RIGHT" } : {}), body: c.body }));
     // Reviewed at the head we looked at: if someone pushes meanwhile, GitHub refuses rather than reviewing unseen commits.
     const r = await this.request<{ id: number; html_url: string; state: string }>("POST", `${base}/reviews`, { body: { event: "COMMENT", commit_id: pr.head.sha, body: withFooter(body, agent), ...(comments?.length ? { comments } : {}) } });
-    return { url: r.html_url, id: r.id, state: r.state, objects: [objectRef(ref)] };
+    return { url: r.html_url, id: r.id, state: r.state };
   }
 
   /**

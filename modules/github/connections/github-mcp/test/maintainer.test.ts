@@ -671,9 +671,13 @@ it("comment merges scrub on maintained repos: the product repo is scrubbed too, 
   expect(f.posted).toHaveLength(0);
 });
 
-it("label and state writes return the objects the kernel records", async () => {
+it("labelling or closing an issue never makes it ours: only the note comment the fleet posted is recorded", async () => {
   const f = fake({ issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z", labels: ["agent-fix"] }], timelines: { 1: [labeled("owner1", "2026-01-01T00:00:00Z")] } });
   const m = maintainer(f);
-  expect(await m.label(PRODUCT, 1, "remove")).toMatchObject({ changed: true, objects: [`github:${PRODUCT}#1`] });
-  expect(await m.state(PRODUCT, 1, "closed", "completed", "fixed by acme/product#7")).toMatchObject({ objects: [`github:${PRODUCT}#1`, expect.stringMatching(/#1\/comment\//)] });
+  const labelled = await m.label(PRODUCT, 1, "remove");
+  expect(labelled).toMatchObject({ changed: true });
+  expect(labelled).not.toHaveProperty("objects");
+  expect(await m.state(PRODUCT, 1, "closed", "completed")).not.toHaveProperty("objects");
+  const noted = (await m.state(PRODUCT, 1, "closed", "completed", "fixed by acme/product#7")) as { objects?: string[] };
+  expect(noted.objects).toEqual([expect.stringMatching(new RegExp(`^github:${PRODUCT}#1/comment/\\d+$`))]);
 });
