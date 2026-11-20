@@ -44,30 +44,32 @@ export const PREVIEWS_FILE = "/previews/previews.json"; // apps-mcp's running pr
 export const DOORS_FILE = "/previews/doors.json"; // apps-mcp's door apps and their loopback ports, beside the previews file
 const PREVIEWS_MOUNT = `\${AIDENHQ_DATA_DIR:-./data}/previews:${dirname(PREVIEWS_FILE)}:ro`;
 /** A public door's base name for the host's IPv4: 203.0.113.7 → 203-0-113-7.sslip.io. */
-export const sslipBase = (ip) => `${String(ip).replaceAll(".", "-")}.sslip.io`;
+export const sslipBase = (ip: unknown) => `${String(ip).replaceAll(".", "-")}.sslip.io`;
 export const PREVIEW_PORTS = [39100, 39399]; // modules/apps-platform/apps-mcp/src/registry.ts PREVIEW_PORTS
 // cloudflared 2026.10.7 (multi-arch index), pinned by digest.
 const CLOUDFLARED_IMAGE = "cloudflare/cloudflared:2026.10.7@sha256:4955524aeaa379e154023d5a027c250f7b35041a2e7e950cf13f144bc9b9c5ba";
 const HOST = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
-const fail = (m) => { throw new Error(m); };
-const emails = (l, where) => (Array.isArray(l ?? []) ? l ?? [] : fail(`${where} must be a list`)).map((e) => (typeof e === "string" && e.includes("@") ? e.trim().toLowerCase() : fail(`${where}: ${e} is not an email`)));
+/** Instance settings and apps.yaml entries: YAML the owner writes, checked field by field below. */
+type Obj = Record<string, any>;
+const fail = (m: string): never => { throw new Error(m); };
+const emails = (l: unknown[] | null | undefined, where: string): string[] => (Array.isArray(l ?? []) ? l ?? [] : fail(`${where} must be a list`)).map((e: unknown) => (typeof e === "string" && e.includes("@") ? e.trim().toLowerCase() : fail(`${where}: ${e} is not an email`)));
 
 /**
  * edgeConfig(settings, instanceApps, moduleApps, { publicIp, adminUrl, boardUrl }) → { gate, cloudflared, compose }, or a door's
  * { gate, cloudflared: null, compose } without `edge` on exposure local or public, or null.
  * `share` lives only in the instance apps.yaml; a module app may not declare it.
  */
-export function edgeConfig(settings, instanceApps, moduleApps, door = {}) {
+export function edgeConfig(settings: Obj, instanceApps: Obj[], moduleApps: Obj[], door: Door = {}) {
   for (const a of moduleApps) if (a.share) fail(`app ${a.name}: share is set only in the instance apps.yaml, never by a module`);
-  const shared = instanceApps.filter((a) => a.share?.host);
+  const shared = instanceApps.filter((a: Obj) => a.share?.host);
   // A shared app is reached only through the gate: no other app may join its network (apps-mcp refuses it too).
   for (const a of [...instanceApps, ...moduleApps]) {
-    const t = (a.connects ?? []).find((c) => shared.some((x) => x.name === c));
+    const t = (a.connects ?? []).find((c: string) => shared.some((x: Obj) => x.name === c));
     if (t) fail(`app ${a.name} connects to ${t}, a shared app: shared apps are reached only through the gate`);
   }
   const edge = settings.edge;
   if (!edge) {
-    if (shared.length) fail(`app ${shared[0].name} has share.host, but settings.edge isn't set (docs/setup.md, Shared access)`);
+    if (shared.length) fail(`app ${shared[0]!.name} has share.host, but settings.edge isn't set (docs/setup.md, Shared access)`);
     return doorConfig(settings.exposure, door);
   }
   const login = settings.app_login ?? "access";
@@ -76,7 +78,7 @@ export function edgeConfig(settings, instanceApps, moduleApps, door = {}) {
   if (!front && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(String(edge.tunnel_id ?? ""))) fail("settings.edge.tunnel_id must be the tunnel's UUID");
   for (const k of Object.keys(edge)) if (!["team_domain", "tunnel_id", "my_apps", "previews", "identity", "front"].includes(k)) fail(`settings.edge.${k} is not a setting`);
   // An Access application's audience tag: required on every host with app_login access, optional with password.
-  const audOf = (aud, where) => {
+  const audOf = (aud: unknown, where: string) => {
     if (aud == null && login === "password") return undefined;
     if (login === "header-jwt" && !aud) fail(`${where} needs ${where.startsWith("app") ? "share.aud" : "aud"} (the front door's audience for that host)`);
     if (!aud || typeof aud !== "string") fail(`${where} needs ${where.startsWith("app") ? "share.aud" : "aud"} (its Access application's audience tag)`);
@@ -84,11 +86,11 @@ export function edgeConfig(settings, instanceApps, moduleApps, door = {}) {
   };
   const owner = emails([settings.owner_email || fail("settings.owner_email is required with edge (the owner is an admin of every shared app)")], "settings.owner_email")[0];
 
-  const hosts = {};
+  const hosts: Record<string, Obj> = {};
   for (const a of shared) {
     const s = a.share;
     if (!HOST.test(s.host)) fail(`app ${a.name}: share.host ${s.host} is not a lowercase DNS name`);
-    if (hosts[s.host]) fail(`app ${a.name}: share.host ${s.host} is also ${hosts[s.host].app}'s`);
+    if (hosts[s.host]) fail(`app ${a.name}: share.host ${s.host} is also ${hosts[s.host]!.app}'s`);
     if (/^pr-\d+\./.test(s.host)) fail(`app ${a.name}: share.host ${s.host}: pr-<n>.<host> hosts are previews'`);
     if (!Number.isInteger(a.port)) fail(`app ${a.name}: share.host needs a port`);
     if (a.port === GATE_PORT) fail(`app ${a.name}: port ${GATE_PORT} is the gate's`);
@@ -100,12 +102,12 @@ export function edgeConfig(settings, instanceApps, moduleApps, door = {}) {
     hosts[s.host] = { app: a.name, port: a.port, ...(audOf(s.aud, `app ${a.name}: share.host`) ? { aud: s.aud } : {}), ...(def ? { default_role: def } : {}) };
   }
   // My apps: the gate's own page listing the shared apps the visitor may open (and, in password mode, where invites land).
-  let myApps;
+  let myApps: Obj | undefined;
   if (edge.my_apps) {
     const m = edge.my_apps;
     for (const k of Object.keys(m)) if (!["host", "aud"].includes(k)) fail(`settings.edge.my_apps.${k} is not a setting`);
     if (!HOST.test(String(m.host ?? ""))) fail(`settings.edge.my_apps.host ${m.host} is not a lowercase DNS name`);
-    if (hosts[m.host]) fail(`settings.edge.my_apps.host ${m.host} is also ${hosts[m.host].app}'s`);
+    if (hosts[m.host]) fail(`settings.edge.my_apps.host ${m.host} is also ${hosts[m.host]!.app}'s`);
     myApps = { host: m.host, ...(audOf(m.aud, "settings.edge.my_apps") ? { aud: m.aud } : {}) };
   }
   // my_apps: the catalog and each app's Access page (both modes); in password mode also the one sign-in host.
@@ -116,7 +118,7 @@ export function edgeConfig(settings, instanceApps, moduleApps, door = {}) {
     previews = { file: PREVIEWS_FILE, ports: PREVIEW_PORTS };
   }
   // header-jwt: the front door's token settings and the tailnet listener it reaches (docs/design/access.md).
-  let identity, frontDoor;
+  let identity: Obj | undefined, frontDoor: Obj | undefined;
   if (front) {
     const i = edge.identity ?? fail("settings.edge.identity is required with app_login header-jwt");
     for (const k of Object.keys(i)) if (!["header", "issuer", "jwks_url", "auth_method"].includes(k)) fail(`settings.edge.identity.${k} is not a setting`);
@@ -127,7 +129,7 @@ export function edgeConfig(settings, instanceApps, moduleApps, door = {}) {
     const f = edge.front ?? fail("settings.edge.front is required with app_login header-jwt: { address: <tailnet IP>, port }");
     for (const k of Object.keys(f)) if (!["address", "port"].includes(k)) fail(`settings.edge.front.${k} is not a setting`);
     const o = String(f.address ?? "").split(".").map(Number);
-    if (o.length !== 4 || !o.every((n, k) => Number.isInteger(n) && n >= 0 && n <= 255 && String(n) === String(f.address).split(".")[k]) || o[0] !== 100 || o[1] < 64 || o[1] > 127) fail("settings.edge.front.address must be a tailnet IPv4 address (100.64.0.0/10)");
+    if (o.length !== 4 || !o.every((n, k) => Number.isInteger(n) && n >= 0 && n <= 255 && String(n) === String(f.address).split(".")[k]) || o[0] !== 100 || o[1]! < 64 || o[1]! > 127) fail("settings.edge.front.address must be a tailnet IPv4 address (100.64.0.0/10)");
     if (!Number.isInteger(f.port) || f.port < 1024 || f.port > 65535 || f.port === AUTH_PORT || f.port === GATE_PORT) fail(`settings.edge.front.port must be 1024-65535, never ${AUTH_PORT} or ${GATE_PORT}`);
     frontDoor = { address: f.address, port: f.port };
   } else for (const k of ["identity", "front"]) if (edge[k] !== undefined) fail(`settings.edge.${k} is only for app_login header-jwt`);
@@ -137,7 +139,7 @@ export function edgeConfig(settings, instanceApps, moduleApps, door = {}) {
   if (front && edge.team_domain != null) fail("settings.edge.team_domain isn't used with app_login header-jwt");
   if (!front && !team && (login === "access" || anyAud || edge.team_domain != null)) fail("settings.edge.team_domain must be <team>.cloudflareaccess.com");
   const issuer = team && `https://${team}.cloudflareaccess.com`;
-  const gate = {
+  const gate: Obj = {
     port: GATE_PORT, login, ...(issuer ? { issuer, certs_url: `${issuer}/cdn-cgi/access/certs` } : {}),
     ...(identity ? { identity, front: frontDoor } : { socket: GATE_SOCKET }),
     auth_url: AUTH_URL, auth_secret_file: AUTH_SECRET_FILE, accounts_file: ACCOUNTS_FILE, identity_key_file: IDENTITY_KEY_FILE, owner_email: owner,
@@ -178,7 +180,7 @@ export function edgeConfig(settings, instanceApps, moduleApps, door = {}) {
 
 const HARDENING = { security_opt: ["no-new-privileges:true"], cap_drop: ["ALL"], restart: "unless-stopped", user: "${PUID:-1000}:${PGID:-100}", read_only: true };
 /** The gate's service. Host networking: it listens on 127.0.0.1:<GATE_PORT> and reaches the apps' loopback ports. */
-const gateService = (extra) => ({
+const gateService = (extra: string[]) => ({
   ...HARDENING, build: "./modules/apps-platform/gate", image: "aidenhq/gate:local", network_mode: "host", environment: { GATE_CONFIG: "/config/gate.json" },
   // No secrets, no sockets: its signing key (vault identity/gate.pem, read-only; compile creates it) and nothing else of the
   // identity dir; the kernel's account map is the one file of data/ it sees (never data/kernel: no sessions, hashes or TOTP).
@@ -195,8 +197,11 @@ const gateService = (extra) => ({
  * The door without `edge` (docs/design/app-doors.md), or null: `local` serves <app>.localhost:<GATE_PORT> over http, `public`
  * <app>.<ip-with-dashes>.sslip.io through Caddy. Sign-in is the admin listener's (`adminUrl`), never the gate's.
  */
-function doorConfig(exposure, { publicIp, adminUrl, boardUrl } = {}) {
-  let doors, origin;
+/** The host's own addresses, from .env (compile's `door`). */
+interface Door { publicIp?: string; adminUrl?: string; boardUrl?: string }
+
+function doorConfig(exposure: unknown, { publicIp, adminUrl, boardUrl }: Door = {}) {
+  let doors: Obj, origin: Obj | undefined;
   // A local door is the viewer's own loopback: only where the board is too (not a LAN VM's board on a LAN address).
   const loopback = !boardUrl || /^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?\/?$/.test(boardUrl);
   if (exposure === "local" && loopback) {
@@ -204,7 +209,7 @@ function doorConfig(exposure, { publicIp, adminUrl, boardUrl } = {}) {
     origin = { scheme: "http", port: GATE_PORT };
   } else if (exposure === "public" && publicIp) doors = { base: sslipBase(publicIp), file: DOORS_FILE, signin: adminUrl || `https://${publicIp}:8446` };
   else return null;
-  const gate = {
+  const gate: Obj = {
     port: GATE_PORT, login: "password", auth_url: AUTH_URL, auth_secret_file: AUTH_SECRET_FILE, accounts_file: ACCOUNTS_FILE, identity_key_file: IDENTITY_KEY_FILE,
     hosts: {}, ...(origin ? { origin } : {}), doors,
   };
@@ -215,8 +220,8 @@ function doorConfig(exposure, { publicIp, adminUrl, boardUrl } = {}) {
  * Refuses any ingress whose target isn't the gate: only hostname → GATE_SOCKET_URL rules, then exactly the 404 catch-all. Every
  * rule requires Access, except with app_login password (the gate signs people in), where a rule may carry no Access at all.
  */
-export function checkIngress(cfg, { login = "access" } = {}) {
-  const bad = (m) => fail(`cloudflared ingress refused: ${m}`);
+export function checkIngress(cfg: Obj | undefined, { login = "access" }: { login?: string } = {}) {
+  const bad = (m: string): never => fail(`cloudflared ingress refused: ${m}`);
   for (const k of Object.keys(cfg ?? {})) if (!["tunnel", "credentials-file", "ingress"].includes(k)) bad(`unexpected key ${k}`);
   const rules = cfg?.ingress;
   if (!Array.isArray(rules) || !rules.length) bad("no ingress");
@@ -243,7 +248,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url) && process.argv[2] === "c
   try {
     checkIngress(YAML.parse(readFileSync(file, "utf8")), { login });
   } catch (e) {
-    console.error(e.message);
+    console.error((e as Error).message);
     process.exit(1);
   }
 }
@@ -252,19 +257,19 @@ if (process.argv[1] === fileURLToPath(import.meta.url) && process.argv[2] === "c
  * Fails when two services claim one host port. `composes`: compose files ({ services }); `claims`: [port, who] the platform
  * holds outside compose (the host-networked gate, the kernel's sign-in listener, apps on loopback). The same `who` may repeat.
  */
-export function checkPorts(composes, claims = []) {
-  const owner = new Map();
-  const claim = (port, who) => {
+export function checkPorts(composes: Obj[], claims: [number | string, string][] = []) {
+  const owner = new Map<number, string>();
+  const claim = (port: number, who: string) => {
     if (owner.has(port) && owner.get(port) !== who) fail(`port ${port} is claimed by both ${owner.get(port)} and ${who}`);
     owner.set(port, who);
   };
   for (const [port, who] of claims) claim(Number(port), who);
-  for (const c of composes) for (const [name, svc] of Object.entries(c?.services ?? {})) {
+  for (const c of composes) for (const [name, svc] of Object.entries<Obj>(c?.services ?? {})) {
     for (const p of svc.ports ?? []) {
       // "ip:host:container", "host:container" or a long form; ${VAR:-default} resolves to its default.
       const parts = (typeof p === "object" ? String(p.published ?? "") : String(p).replace(/\$\{[A-Z0-9_]+:-([^}]*)\}/g, "$1")).split(":");
       const host = typeof p === "object" ? parts[0] : parts.length >= 2 ? parts.at(-2) : "";
-      if (/^\d+$/.test(host)) claim(Number(host), name);
+      if (/^\d+$/.test(host!)) claim(Number(host), name);
     }
   }
 }

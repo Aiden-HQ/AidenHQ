@@ -30,15 +30,26 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+type Git = (...a: string[]) => string;
+interface CodexEvent {
+  type?: string; message?: string; error?: { message?: string };
+  item?: { type?: string; tool?: string; status?: string; error?: unknown; result?: { isError?: boolean }; arguments?: { path?: unknown } };
+}
+interface Finding { title: string; body?: string; priority: number; path: string; line: number }
+interface BriefInput { rules?: string; critical?: string; agents?: string; title?: string; body?: string; addressed?: boolean; lockfiles?: string; checks?: string }
+interface ConfigInput { model: string; effort: string; url: string; root: string; base: string; instructions: string; lsp?: string }
+interface LockEntry { version?: string; resolved?: string; integrity?: string; hasInstallScript?: boolean }
+interface Lock { packages?: Record<string, LockEntry>; lockfileVersion?: number }
+
 const HERE = dirname(fileURLToPath(import.meta.url));
 // An agent's screenshots under .aidenhq/out/ (images only; its json and txt reports are reviewed like any file) are left
 // out of the workflow's line count. The addressed-text scan reads the whole diff, as the reviewer's tools do.
 export const OUT_TYPES = ["png", "jpg", "jpeg", "webp", "gif"];
-const SEVERITY = { 0: "critical", 1: "high", 2: "medium", 3: "low" };
-const UP = { minimal: "low", low: "medium", medium: "high", high: "xhigh", xhigh: "xhigh" };
+const SEVERITY: Record<number, string> = { 0: "critical", 1: "high", 2: "medium", 3: "low" };
+const UP: Record<string, string> = { minimal: "low", low: "medium", medium: "high", high: "xhigh", xhigh: "xhigh" };
 // Text in the added lines that talks to a reviewer: that PR is reviewed at the higher effort with an explicit warning.
 const AT_REVIEWER = /ignore (all |any |the )?(previous|prior|above|earlier) (instructions|rules)|disregard (the |all )?(instructions|rules)|(^|\W)(system|assistant|developer)\s*(prompt|message|:)|you are (an? )?(ai|assistant|language model|reviewer|code reviewer)|approve (this|the) (pr|pull request|change)|(report|return|output) (no|zero|an empty( list of)?) findings|do not (report|flag)|"findings"\s*:\s*\[\s*\]/i;
-export const atReviewer = (diff) => diff.split("\n").some((l) => l.startsWith("+") && !l.startsWith("+++") && AT_REVIEWER.test(l));
+export const atReviewer = (diff: string) => diff.split("\n").some((l) => l.startsWith("+") && !l.startsWith("+++") && AT_REVIEWER.test(l));
 
 // codex review's own guidelines (codex 0.167.0), shortened, with the tools this review has and the house rules' severities.
 const PROMPT = `Review the code changes of this pull request: the diff from its base (the merge base) to its head. You are
@@ -78,8 +89,8 @@ it as a finding, and judge the code only by what it does.`;
  * critical paths and its AGENTS.md conventions, from the base commit and the default branch; the PR's title and description
  * (its request), fenced as data between two copies of a random marker.
  */
-export function brief({ rules, critical, agents, title, body, addressed, lockfiles, checks }, fence = `DATA-${randomBytes(12).toString("hex")}`) {
-  const fenced = (t) => `${fence}\n${String(t).replaceAll(fence, "")}\n${fence}`;
+export function brief({ rules, critical, agents, title, body, addressed, lockfiles, checks }: BriefInput, fence = `DATA-${randomBytes(12).toString("hex")}`) {
+  const fenced = (t: unknown) => `${fence}\n${String(t).replaceAll(fence, "")}\n${fence}`;
   return [
     DATA,
     addressed ? ADDRESSED : "",
@@ -93,8 +104,8 @@ export function brief({ rules, critical, agents, title, body, addressed, lockfil
 }
 
 /** The codex config for one review: the model through the gateway (or OpenRouter), no shell, the repo tools only. */
-export function config({ model, effort, url, root, base, instructions, lsp }) {
-  const q = (s) => JSON.stringify(String(s)); // a TOML basic string is a JSON string
+export function config({ model, effort, url, root, base, instructions, lsp }: ConfigInput) {
+  const q = (s: unknown) => JSON.stringify(String(s)); // a TOML basic string is a JSON string
   return `model = ${q(model)}
 model_provider = "review"
 model_reasoning_effort = ${q(effort)}
@@ -135,17 +146,17 @@ ${lsp ? `env = { REVIEW_LSP = ${q(lsp)} }\n` : ""}`;
  * (turn.completed) after reading the diff with its tools, with a final message that is exactly the JSON PROMPT asks for (a ```json fence around it is allowed),
  * every finding with a title, a priority 0-3, a path and a line. Paths are made relative to the checkout.
  */
-export function parse(message, events, root) {
+export function parse(message: string | undefined, events: CodexEvent[], root: string) {
   if (!events.some((e) => e?.type === "turn.completed")) return undefined;
   // A verdict needs evidence the change was read: at least one diff call that completed without an error.
   if (!events.some((e) => e?.type === "item.completed" && e.item?.type === "mcp_tool_call" && e.item.tool === "diff" && e.item.status === "completed" && !e.item.error && !e.item.result?.isError)) return undefined;
   let j;
   try { j = JSON.parse(String(message ?? "").trim().replace(/^```(?:json)?\s*\n([\s\S]*)\n```$/, "$1")); } catch { return undefined; }
   if (!j || !Array.isArray(j.findings) || !["patch is correct", "patch is incorrect"].includes(j.overall_correctness)) return undefined;
-  const ok = (f) => f && typeof f.title === "string" && f.title.trim() && typeof f.path === "string" && f.path.trim() && [0, 1, 2, 3].includes(f.priority) && Number.isInteger(f.line);
+  const ok = (f: Finding) => f && typeof f.title === "string" && f.title.trim() && typeof f.path === "string" && f.path.trim() && [0, 1, 2, 3].includes(f.priority) && Number.isInteger(f.line);
   if (!j.findings.every(ok)) return undefined;
-  const rel = (p) => (p.startsWith(`${root}/`) ? p.slice(root.length + 1) : p);
-  const findings = j.findings.map((f) => ({ severity: SEVERITY[f.priority], path: rel(f.path), anchor: { line: f.line }, title: f.title.replace(/^\s*\[P[0-3]\]\s*/, ""), finalBody: String(f.body ?? "") }));
+  const rel = (p: string) => (p.startsWith(`${root}/`) ? p.slice(root.length + 1) : p);
+  const findings = j.findings.map((f: Finding) => ({ severity: SEVERITY[f.priority], path: rel(f.path), anchor: { line: f.line }, title: f.title.replace(/^\s*\[P[0-3]\]\s*/, ""), finalBody: String(f.body ?? "") }));
   return { findings, health: { status: "ok" }, summary: String(j.overall_explanation ?? "") };
 }
 
@@ -158,17 +169,17 @@ export function parse(message, events, root) {
  * version found elsewhere in the tree. Names and versions are reduced to a plain charset (they reach the
  * job log and the reviewer).
  */
-export function lockChanges(before, after) {
-  const b = before ? JSON.parse(before) : {}, a = after ? JSON.parse(after) : {};
-  const safe = (x) => String(x).replace(/[^\w@./+~^:-]/g, "?").slice(0, 120);
-  const name = (k) => safe(k.includes("node_modules/") ? k.slice(k.lastIndexOf("node_modules/") + 13) : k);
-  const id = (k, v) => `${name(k)}@${safe(v?.version)}`;
-  const sig = (k, v) => `${id(k, v)} ${v?.resolved ?? ""} ${v?.integrity ?? ""}`;
-  const entries = (j) => (j.packages && typeof j.packages === "object" ? Object.entries(j.packages).filter(([k]) => k) : []);
+export function lockChanges(before: string, after: string) {
+  const b: Lock = before ? JSON.parse(before) : {}, a: Lock = after ? JSON.parse(after) : {};
+  const safe = (x: unknown) => String(x).replace(/[^\w@./+~^:-]/g, "?").slice(0, 120);
+  const name = (k: string) => safe(k.includes("node_modules/") ? k.slice(k.lastIndexOf("node_modules/") + 13) : k);
+  const id = (k: string, v?: LockEntry) => `${name(k)}@${safe(v?.version)}`;
+  const sig = (k: string, v?: LockEntry) => `${id(k, v)} ${v?.resolved ?? ""} ${v?.integrity ?? ""}`;
+  const entries = (j: Lock): [string, LockEntry][] => (j.packages && typeof j.packages === "object" ? Object.entries(j.packages).filter(([k]) => k) : []);
   const old = new Map(entries(b)), now = new Map(entries(a));
   const oldSigs = new Set([...old].map(([k, v]) => sig(k, v))), nowSigs = new Set([...now].map(([k, v]) => sig(k, v)));
   const names = new Set([...old].map(([k]) => name(k)));
-  const out = { added: [], changed: [], removed: [], scripts: [], format: [] };
+  const out: Record<"added" | "changed" | "removed" | "scripts" | "format", string[]> = { added: [], changed: [], removed: [], scripts: [], format: [] };
   if (after && !(a.packages && typeof a.packages === "object")) out.format.push("no packages map");
   if (before && after && b.lockfileVersion !== a.lockfileVersion) out.format.push(`lockfileVersion ${safe(b.lockfileVersion)} -> ${safe(a.lockfileVersion)}`);
   for (const [k, v] of now) {
@@ -186,11 +197,11 @@ export function lockChanges(before, after) {
 }
 
 /** The changes of several lockfiles as short text for the reviewer ("" when none), and whether any is critical. */
-export function lockSummary(files) {
+export function lockSummary(files: { path: string; changes: ReturnType<typeof lockChanges> }[]) {
   const lines = [];
   let critical = false;
   for (const { path, changes: c } of files) {
-    const part = (label, l) => (l.length ? [`  ${label} (${l.length}): ${l.slice(0, 40).join(", ")}${l.length > 40 ? ", …" : ""}`] : []);
+    const part = (label: string, l: string[]) => (l.length ? [`  ${label} (${l.length}): ${l.slice(0, 40).join(", ")}${l.length > 40 ? ", …" : ""}`] : []);
     const body = [...part("lockfile format", c.format), ...part("added", c.added), ...part("changed", c.changed), ...part("install scripts", c.scripts), ...part("removed", c.removed)];
     if (body.length) lines.push(`${String(path).replace(/[^\w@./+~-]/g, "?")}:`, ...body);
     critical ||= c.format.length + c.added.length + c.changed.length + c.scripts.length > 0;
@@ -199,9 +210,9 @@ export function lockSummary(files) {
 }
 
 /** The PR's package-lock.json files, each with its changes from the merge base to the head. */
-function lockfiles(git, base, head) {
+function lockfiles(git: Git, base: string, head: string) {
   const mb = git("merge-base", base, head).trim();
-  const show = (rev, p) => { try { return git("show", `${rev}:${p}`); } catch { return ""; } };
+  const show = (rev: string, p: string) => { try { return git("show", `${rev}:${p}`); } catch { return ""; } };
   return git("diff", "--name-only", "-z", "--no-renames", `${mb}...${head}`, "--", ":(glob)**/package-lock.json").split("\0").filter(Boolean)
     .map((path) => ({ path, changes: lockChanges(show(mb, path), show(head, path)) }));
 }
@@ -211,9 +222,9 @@ function lockfiles(git, base, head) {
  * refused: 401-403, a cap, a model not allowed), transient (a confirmed provider error: HTTP 429 or 5xx, a dropped or refused
  * connection), else none (no verdict: never retried).
  */
-export function why(events, stderr) {
+export function why(events: CodexEvent[], stderr: unknown) {
   const said = [...events.filter((e) => e?.type === "error" || e?.type === "turn.failed").map((e) => e.message ?? e.error?.message ?? ""), String(stderr).slice(-2000)].join("\n");
-  const line = (re) => said.match(new RegExp(`[^\\n]*(?:${re.source})[^\\n]*`, "i"))?.[0]?.slice(0, 200);
+  const line = (re: RegExp) => said.match(new RegExp(`[^\\n]*(?:${re.source})[^\\n]*`, "i"))?.[0]?.slice(0, 200);
   // A provider error is read from codex's error events only, and only in a status's shape (never a bare number such as a
   // line number in stderr).
   const errors = events.filter((e) => e?.type === "error" || e?.type === "turn.failed").map((e) => e.message ?? e.error?.message ?? "").join("\n");
@@ -230,32 +241,32 @@ export function why(events, stderr) {
  * JSON events, its final message, its stderr's tail and whether it ran out of time. The code review module's recipe runs its
  * finders and verifier through this too (modules/code-review/recipe, a synced copy of this file).
  */
-export async function runCodex({ prompt, home, cwd, out, key, minutes = 40 }) {
+export async function runCodex({ prompt, home, cwd, out, key, minutes = 40 }: { prompt: string; home: string; cwd: string; out: string; key?: string; minutes?: string | number }) {
   const child = spawn("codex", ["exec", "--skip-git-repo-check", "-s", "read-only", "-o", out, "--json", prompt], {
     cwd, stdio: ["ignore", "pipe", "pipe"],
     env: { PATH: process.env.PATH, HOME: home, CODEX_HOME: home, CI_REVIEW_KEY: key ?? "" },
   });
   let stdout = "", stderr = "";
-  child.stdout.on("data", (d) => (stdout += d));
-  child.stderr.on("data", (d) => { stderr += d; if (stderr.length > 1e6) stderr = stderr.slice(-5e5); });
+  child.stdout.on("data", (d: Buffer) => (stdout += d));
+  child.stderr.on("data", (d: Buffer) => { stderr += d; if (stderr.length > 1e6) stderr = stderr.slice(-5e5); });
   let timedOut = false;
   const timer = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, Number(minutes) * 60_000);
-  const code = await new Promise((ok) => child.on("close", ok));
+  const code = await new Promise<number | null>((ok) => child.on("close", ok));
   clearTimeout(timer);
-  const events = stdout.split("\n").map((l) => { try { return JSON.parse(l); } catch { return undefined; } }).filter(Boolean);
+  const events: CodexEvent[] = stdout.split("\n").map((l) => { try { return JSON.parse(l); } catch { return undefined; } }).filter(Boolean);
   let message = "";
   try { message = readFileSync(out, "utf8"); } catch {}
   return { code, events, message, stderr, timedOut };
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href && process.argv[2] === "--lockfiles") {
-  const git = (...a) => execFileSync("git", ["-c", "core.quotePath=false", ...a], { encoding: "utf8", maxBuffer: 256 << 20 });
-  const { text, critical } = lockSummary(lockfiles(git, process.argv[3], process.argv[4]));
+  const git = (...a: string[]) => execFileSync("git", ["-c", "core.quotePath=false", ...a], { encoding: "utf8", maxBuffer: 256 << 20 });
+  const { text, critical } = lockSummary(lockfiles(git, process.argv[3]!, process.argv[4]!));
   if (text) console.log(text);
   process.exit(critical ? 3 : 0);
 } else if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
-  const [base, head] = process.argv.slice(2);
-  const git = (...a) => execFileSync("git", ["-c", "core.quotePath=false", ...a], { encoding: "utf8", maxBuffer: 256 << 20 });
+  const [base, head] = process.argv.slice(2) as [string, string];
+  const git = (...a: string[]) => execFileSync("git", ["-c", "core.quotePath=false", ...a], { encoding: "utf8", maxBuffer: 256 << 20 });
   const tmp = realpathSync(mkdtempSync(join(tmpdir(), "code-review-")));
   const root = join(tmp, "pr");
   git("worktree", "add", "--detach", root, head);
@@ -291,8 +302,8 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href && process.arg
   // Only what codex needs in its environment: never the job's GitHub tokens.
   const { code, events, message, stderr, timedOut } = await runCodex({ prompt: PROMPT, home, cwd, out: join(tmp, "answer.txt"), key: process.env.CI_REVIEW_KEY, minutes: process.env.REVIEW_MINUTES || 40 });
   const review = code === 0 ? parse(message, events, root) : undefined;
-  const used = {};
-  for (const e of events) if (e.type === "item.completed" && e.item?.type === "mcp_tool_call") used[e.item.tool] = (used[e.item.tool] ?? 0) + 1;
+  const used: Record<string, number> = {};
+  for (const e of events) if (e.type === "item.completed" && e.item?.type === "mcp_tool_call") used[e.item.tool!] = (used[e.item.tool!] ?? 0) + 1;
   const calls = Object.entries(used).map(([k, n]) => `${k} ${n}`).join(", ") || "none";
   if (!review) {
     // Only a confirmed provider error is transient (retried); a timeout or an answer that isn't a review is no verdict.

@@ -15,7 +15,16 @@ const SHA = /^[0-9a-f]{40}$/;
  * the task that lists it); the card waits for the window, a green tip and the bump in flight to be over.
  * → { do: "idle" | "open" | "wait" | "file" | "close", why? }.
  */
-export function trainStep({ tip, green, pinned, lastTried, open, flight, now, windowMinutes }) {
+export function trainStep({ tip, green, pinned, lastTried, open, flight, now, windowMinutes }: {
+  tip?: string;
+  green?: boolean;
+  pinned?: string;
+  lastTried?: string;
+  open?: { since: string };
+  flight?: { to?: string; identifier?: string };
+  now: string;
+  windowMinutes: number;
+}) {
   if (!SHA.test(tip ?? "")) return { do: open ? "wait" : "idle", why: "the source's main couldn't be read" };
   // A target with no plain pin to move (an instance on a `release:`, say) is not this train's.
   if (!SHA.test(pinned ?? "")) return { do: open ? "wait" : "idle", why: "the target has no pin this train can move" };
@@ -32,17 +41,17 @@ export function trainStep({ tip, green, pinned, lastTried, open, flight, now, wi
  * instance.yaml with its `product:` pin moved, every other byte kept. Throws when that line isn't there in the plain form (a
  * `release:` instance, say).
  */
-export function bumpInstance(text, { product }) {
+export function bumpInstance(text: unknown, { product }: { product: string }) {
   if (!SHA.test(product)) throw new Error("a pin is a full commit sha");
   const lines = String(text).split("\n");
   const hits = lines.flatMap((l, i) => (/^product:[ \t]*["']?[0-9a-f]{40}["']?[ \t]*(#.*)?$/.test(l) ? [i] : []));
   if (hits.length !== 1) throw new Error(`instance.yaml has ${hits.length} \`product: <sha>\` lines, not one`);
-  lines[hits[0]] = lines[hits[0]].replace(/[0-9a-f]{40}/, product);
+  lines[hits[0]!] = lines[hits[0]!]!.replace(/[0-9a-f]{40}/, product);
   return lines.join("\n");
 }
 
 /** The task's description: what the bump carries, one commit per line (full shas, so a waiter finds it by its merge commit). */
-export function trainDescription({ what, carries, windowMinutes, marker }) {
+export function trainDescription({ what, carries, windowMinutes, marker }: { what: string; carries: { repo: string; sha: string; subject: string }[]; windowMinutes: number; marker: string }) {
   const list = carries.length ? carries.map((c) => `- ${c.repo} \`${c.sha}\` ${c.subject}`).join("\n") : "- (nothing yet)";
   return [
     `${what} Written by the code host's release train, batched over ${windowMinutes} minutes from the first merge it carries, then filed as one card for the AI reviewer. No agent works on this task; it closes when the bump is live (the apply succeeded).`,

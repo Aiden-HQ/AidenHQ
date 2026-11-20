@@ -20,13 +20,13 @@ import { fileURLToPath } from "node:url";
 export const ADMIN_PORT = 8446;
 const GATE_PORT = 3130; // scripts/edge.ts GATE_PORT: the gate on the host's loopback // the admin listener's public port (tailscale serve uses the same one)
 export const EDGE_SECRET_FILE = "/run/secrets/edge_board_secret"; // compose secret edge_board_secret, read per request
-const fail = (m) => { throw new Error(m); };
+const fail = (m: string): never => { throw new Error(m); };
 
 /** Why `ip` can't be the front door's address (null when it can): a dotted-quad IPv4 that is publicly routable. */
-export function publicIPv4Problem(ip) {
+export function publicIPv4Problem(ip: unknown) {
   const o = String(ip ?? "").split(".");
   if (o.length !== 4 || o.some((x) => !/^(0|[1-9]\d{0,2})$/.test(x) || Number(x) > 255)) return `${ip} is not an IPv4 address`;
-  const [a, b] = o.map(Number);
+  const [a, b] = o.map(Number) as [number, number];
   if (a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168)) return `${ip} is a private address (RFC 1918): the host is behind NAT`;
   if (a === 100 && b >= 64 && b <= 127) return `${ip} is a carrier-grade NAT address (100.64.0.0/10)`;
   if (a === 127 || a === 0 || (a === 169 && b === 254) || a >= 224) return `${ip} is not a public unicast address`;
@@ -34,11 +34,11 @@ export function publicIPv4Problem(ip) {
 }
 
 /** The board's and the admin listener's public URLs for `ip` (ops/setup.sh writes them into .env, where the kernel reads them). */
-export const publicUrls = (ip) => ({ board: `https://${ip}`, admin: `https://${ip}:${ADMIN_PORT}` });
+export const publicUrls = (ip: string | undefined) => ({ board: `https://${ip}`, admin: `https://${ip}:${ADMIN_PORT}` });
 
 /** The default route's source IPv4 on this host (`ip route get`), checked public; throws saying why not. */
 export function detectPublicIPv4() {
-  let route;
+  let route!: string;
   try { route = execFileSync("ip", ["-4", "-j", "route", "get", "1.1.1.1"], { encoding: "utf8" }); } catch { fail("no IPv4 default route (ip route get 1.1.1.1 failed)"); }
   const ip = JSON.parse(route)[0]?.prefsrc;
   const problem = publicIPv4Problem(ip);
@@ -51,10 +51,10 @@ export function detectPublicIPv4() {
  * set and removes it. The deletes are for forwarding headers Caddy doesn't set, so the listeners only see Caddy's own.
  * `directory`: another ACME directory (Let's Encrypt staging, for the exit check); unset is Let's Encrypt production.
  */
-export function caddyfile(ip, directory, doorBase) {
+export function caddyfile(ip: string | undefined, directory?: string, doorBase?: string) {
   const problem = publicIPv4Problem(ip);
   if (problem) fail(problem);
-  const site = (port, upstream, edge) => `https://${ip}${port ? `:${port}` : ""} {
+  const site = (port: number, upstream: string, edge: boolean) => `https://${ip}${port ? `:${port}` : ""} {
 	import ip_cert
 	reverse_proxy ${upstream} {
 		import strip
@@ -136,9 +136,9 @@ ${directory ? `			dir ${directory}\n` : ""}			disable_http_challenge
 }
 
 /** Whether https://<ip> and https://<ip>:8446 both answer (any status) over a verified certificate within `seconds`. */
-export async function waitForCertificate(ip, seconds = 180) {
+export async function waitForCertificate(ip: string | undefined, seconds = 180) {
   const until = Date.now() + seconds * 1000;
-  const up = (url) => fetch(url, { redirect: "manual", signal: AbortSignal.timeout(10_000) }).then(() => true, () => false);
+  const up = (url: string) => fetch(url, { redirect: "manual", signal: AbortSignal.timeout(10_000) }).then(() => true, () => false);
   for (;;) {
     if ((await up(`https://${ip}/`)) && (await up(`https://${ip}:${ADMIN_PORT}/`))) return true;
     if (Date.now() > until) return false;
@@ -147,7 +147,7 @@ export async function waitForCertificate(ip, seconds = 180) {
 }
 
 /** The `caddy` compose service for a Caddyfile (compile writes the file to config/Caddyfile). */
-export function caddyService(file) {
+export function caddyService(file: string) {
   return {
     build: "./services/caddy", image: "aidenhq/caddy:local", network_mode: "host", restart: "unless-stopped",
     user: "${PUID:-1000}:${PGID:-100}", read_only: true, security_opt: ["no-new-privileges:true"], cap_drop: ["ALL"], cap_add: ["NET_BIND_SERVICE"],
@@ -170,7 +170,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       if (!(await waitForCertificate(ip, Number(dir) || 180))) fail(`https://${ip} has no publicly trusted certificate yet`);
     } else fail("usage: front-door.ts detect | wait <ip> [seconds] | caddyfile <ip> [<acme directory>]");
   } catch (e) {
-    console.error(`front-door: ${e.message}`);
+    console.error(`front-door: ${(e as Error).message}`);
     process.exit(1);
   }
 }

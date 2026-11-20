@@ -41,7 +41,7 @@ Before pushing, run `node scripts/ci-local.ts`: it runs what CI would run for yo
 On macOS the `flock` apply-lock tests (scripts) fail; that's expected, and CI judges them.
 
 ```sh
-cd scripts && npm test                       # compiler, setup, sync-shared drift
+cd scripts && npm test && npm run typecheck  # compiler, setup, sync-shared drift; types of the converted scripts and modules
 cd services/computer && node --test test/*.test.ts
 cd modules/apps-platform/gate && npm test && npm run typecheck
 cd services/board && npx vitest run && npx tsc -p tsconfig.build.json --noEmit && npm run typecheck && npm run lint && npm run build

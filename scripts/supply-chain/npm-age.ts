@@ -7,8 +7,16 @@
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { readExceptions } from "./best-version.ts";
+import type { Exception } from "./best-version.ts";
 
 export const MIN_AGE_MS = 7 * 24 * 3600 * 1000;
+
+interface LockEntry { name?: string; version?: string; resolved?: string; integrity?: string; link?: boolean; inBundle?: boolean; bundleDependencies?: string[]; bundledDependencies?: string[] }
+interface LockDep { resolved?: string; dependencies?: Record<string, LockDep> }
+interface Lock { lockfileVersion?: number; packages?: Record<string, LockEntry>; dependencies?: Record<string, LockDep> }
+interface Change { name: string; version: string; resolved?: string; integrity?: string; bad?: string }
+// Registry JSON is untyped, so the result is any.
+type GetJson = (url: string) => Promise<any>;
 
 // Entries of a lockfile's `packages` map that are new or different in `next`: [{name, version}], or with `bad` set for
 // an entry that cannot be age-checked. Fail closed: an added or changed entry must resolve to exactly
@@ -17,15 +25,15 @@ export const MIN_AGE_MS = 7 * 24 * 3600 * 1000;
 // Allowed without a registry lookup: `link: true` entries that point inside the repo (workspaces), and workspace
 // package entries (no node_modules/ in the key, no resolved). Anything else needs an exception in the file.
 const REGISTRY_URL = /^https:\/\/registry\.npmjs\.org\/((?:@[^/]+\/)?[^/]+)\/-\/([^/]+)\.tgz$/;
-export function changedEntries(prev, next) {
-  const out = [];
+export function changedEntries(prev: Lock | null | undefined, next: Lock | null | undefined): Change[] {
+  const out: Change[] = [];
   for (const [key, e] of Object.entries(next?.packages || {})) {
     if (!key) continue;
     const old = prev?.packages?.[key];
     if (old && JSON.stringify(old) === JSON.stringify(e)) continue;
     const keyName = key.includes("node_modules/") ? key.slice(key.lastIndexOf("node_modules/") + "node_modules/".length) : null;
     const name = e.name || keyName || key;
-    const bad = (why) => out.push({ name, version: e.version || "?", resolved: e.resolved, integrity: e.integrity, bad: `${key}: ${why}` });
+    const bad = (why: string) => out.push({ name, version: e.version || "?", resolved: e.resolved, integrity: e.integrity, bad: `${key}: ${why}` });
     if (e.link) {
       if (typeof e.resolved !== "string" || e.resolved.startsWith("/") || e.resolved.split("/").includes("..")) bad("link outside the repo");
       continue;
@@ -39,19 +47,19 @@ export function changedEntries(prev, next) {
     if (e.inBundle && keyName && cut > 0 && !e.resolved && !e.integrity) {
       const at = key.slice(0, cut);
       const parentName = at.slice(at.lastIndexOf("node_modules/") + "node_modules/".length);
-      const parent = next.packages[at], before = prev?.packages?.[at];
-      const list = (p) => p?.bundleDependencies ?? p?.bundledDependencies;
+      const parent = next!.packages![at], before = prev?.packages?.[at];
+      const list = (p: LockEntry | undefined) => p?.bundleDependencies ?? p?.bundledDependencies;
       const url = REGISTRY_URL.exec(String(parent?.resolved || ""));
       const registry = at.includes("node_modules/") && parent && !parent.inBundle && parent.integrity && url && url[1] === parentName
         && (!parent.name || parent.name === parentName);
       const changed = JSON.stringify(before) !== JSON.stringify(parent);
-      if (registry && Array.isArray(list(parent)) && list(parent).includes(keyName) && (changed || JSON.stringify(list(before)) === JSON.stringify(list(parent)))) continue;
+      if (registry && Array.isArray(list(parent)) && list(parent)!.includes(keyName) && (changed || JSON.stringify(list(before)) === JSON.stringify(list(parent)))) continue;
     }
     if (!keyName && !e.resolved) continue; // a workspace package's own entry
     const m = REGISTRY_URL.exec(String(e.resolved || ""));
     if (!m) { bad(`resolved is not a registry tarball URL (${String(e.resolved).slice(0, 80)})`); continue; }
     if (!e.version || !e.integrity) { bad("no version or integrity"); continue; }
-    const base = m[1].slice(m[1].lastIndexOf("/") + 1);
+    const base = m[1]!.slice(m[1]!.lastIndexOf("/") + 1);
     if (m[1] !== name || m[2] !== `${base}-${e.version}`) { bad(`resolved ${m[1]}/${m[2]} does not match ${name}@${e.version}`); continue; }
     out.push({ name, version: e.version, resolved: e.resolved, integrity: e.integrity });
   }
@@ -61,15 +69,15 @@ export function changedEntries(prev, next) {
 // Whether a changed lockfile can be fully checked, one problem per reason; fail closed. changedEntries reads only the
 // `packages` map, so a lockfile it can't read, a pre-v2 one (no `packages`), or a `dependencies` tree naming something
 // `packages` doesn't back would let entries through unchecked. `text` is the file at head, or undefined when git can't show it.
-export function lockProblems(file, text) {
-  let lock;
-  try { lock = JSON.parse(text); } catch { return [`${file}: cannot be parsed as JSON, so its entries can't be age-checked`]; }
+export function lockProblems(file: string, text: string | undefined): string[] {
+  let lock: Lock;
+  try { lock = JSON.parse(text!); } catch { return [`${file}: cannot be parsed as JSON, so its entries can't be age-checked`]; }
   const v = lock?.lockfileVersion;
-  if (!(Number.isInteger(v) && v >= 2)) return [`${file}: lockfileVersion ${JSON.stringify(v)} is below 2, so its entries can't be age-checked (regenerate it with a current npm)`];
+  if (!(Number.isInteger(v) && v! >= 2)) return [`${file}: lockfileVersion ${JSON.stringify(v)} is below 2, so its entries can't be age-checked (regenerate it with a current npm)`];
   const pk = lock.packages;
   if (!pk || typeof pk !== "object" || Array.isArray(pk) || !Object.keys(pk).length) return [`${file}: no \`packages\` map, so its entries can't be age-checked`];
-  const out = [];
-  const walk = (deps, prefix) => {
+  const out: string[] = [];
+  const walk = (deps: Record<string, LockDep> | undefined, prefix: string): void => {
     for (const [name, d] of Object.entries(deps || {})) {
       const key = `${prefix}node_modules/${name}`;
       const e = pk[key];
@@ -82,12 +90,12 @@ export function lockProblems(file, text) {
   return out.slice(0, 20);
 }
 
-const parse = (v) => {
-  const [core, pre] = String(v).split("+")[0].split(/-(.+)/);
-  return { n: core.split(".").map(Number), pre };
+const parse = (v: string) => {
+  const [core, pre] = String(v).split("+")[0]!.split(/-(.+)/);
+  return { n: core!.split(".").map(Number), pre };
 };
 // -1, 0, 1. A prerelease sorts before its release.
-export function cmp(a, b) {
+export function cmp(a: string, b: string): number {
   const x = parse(a), y = parse(b);
   for (let i = 0; i < 3; i++) if ((x.n[i] || 0) !== (y.n[i] || 0)) return (x.n[i] || 0) < (y.n[i] || 0) ? -1 : 1;
   if (x.pre === y.pre) return 0;
@@ -98,21 +106,21 @@ export function cmp(a, b) {
 
 // An owner-approved exception (`owner: approved`) needs no advisory: it holds for its exact package@version only while
 // now < expires, and expires is at most 14 days from now, so it cannot be left open-ended.
-const ownerHolds = (ex, now) => ex.owner === "approved" && now < Date.parse(ex.expires) && Date.parse(ex.expires) - now <= 14 * 86400000;
+const ownerHolds = (ex: Exception, now: number) => ex.owner === "approved" && now < Date.parse(ex.expires!) && Date.parse(ex.expires!) - now <= 14 * 86400000;
 
 // Does this exception hold up? The advisory must exist, name the package, and be patched at or below the version.
-async function exceptionHolds(ex, getJson) {
-  const adv = await getJson(`https://api.github.com/advisories/${encodeURIComponent(ex.advisory)}`);
+async function exceptionHolds(ex: Exception, getJson: GetJson) {
+  const adv: { vulnerabilities?: { package?: { ecosystem?: string; name?: string }; first_patched_version?: string }[] } = await getJson(`https://api.github.com/advisories/${encodeURIComponent(ex.advisory!)}`);
   const hit = (adv.vulnerabilities || []).find((v) => v.package?.ecosystem === "npm" && v.package?.name === ex.package
-    && v.first_patched_version && cmp(v.first_patched_version, ex.version) <= 0);
+    && v.first_patched_version && cmp(v.first_patched_version, ex.version!) <= 0);
   return Boolean(hit);
 }
 
 // changes: [{name, version}]. Returns the problems, one line each.
-export async function check({ changes, exceptions = [], getJson, now = Date.now() }) {
-  const problems = [];
-  const seen = new Set();
-  const packuments = new Map();
+export async function check({ changes, exceptions = [], getJson, now = Date.now() }: { changes: Change[]; exceptions?: Exception[]; getJson: GetJson; now?: number }): Promise<string[]> {
+  const problems: string[] = [];
+  const seen = new Set<string>();
+  const packuments = new Map<string, { time?: Record<string, string> }>();
   for (const { name, version, bad, resolved, integrity } of changes) {
     const id = `${name}@${version}`;
     const dedupe = JSON.stringify([name, version, bad, resolved, integrity]);
@@ -129,7 +137,7 @@ export async function check({ changes, exceptions = [], getJson, now = Date.now(
     if (name.startsWith("@aidenhq/")) continue;
     try {
       if (!packuments.has(name)) packuments.set(name, await getJson(`https://registry.npmjs.org/${name.replace("/", "%2f")}`));
-      const published = packuments.get(name).time?.[version];
+      const published = packuments.get(name)!.time?.[version];
       if (!published) throw new Error("no publish time in the registry");
       const age = now - Date.parse(published);
       if (age >= MIN_AGE_MS) continue;
@@ -141,16 +149,16 @@ export async function check({ changes, exceptions = [], getJson, now = Date.now(
       else if (ex.owner) problems.push(`${id}: the owner-approved exception is expired, or expires more than 14 days from now`);
       else if (!(await exceptionHolds(ex, getJson))) problems.push(`${id}: exception ${ex.advisory} does not name this package with a patched version at or below it`);
     } catch (e) {
-      problems.push(`${id}: lookup failed: ${e.message}`);
+      problems.push(`${id}: lookup failed: ${(e as Error).message}`);
     }
   }
   return problems;
 }
 
-async function getJsonWithRetry(url) {
-  const headers = { accept: "application/json" };
+async function getJsonWithRetry(url: string): Promise<any> {
+  const headers: Record<string, string> = { accept: "application/json" };
   if (url.startsWith("https://api.github.com/") && process.env.GITHUB_TOKEN) headers.authorization = `Bearer ${process.env.GITHUB_TOKEN}`;
-  let err;
+  let err: unknown;
   for (let i = 0; i < 4; i++) {
     try {
       const r = await fetch(url, { headers, signal: AbortSignal.timeout(30000) });
@@ -163,9 +171,9 @@ async function getJsonWithRetry(url) {
   throw err;
 }
 
-const git = (...a) => execFileSync("git", a, { encoding: "utf8", maxBuffer: 1 << 28 });
-const lockAt = (ref, path) => { try { return JSON.parse(git("show", `${ref}:${path}`)); } catch { return null; } };
-const textAt = (ref, path) => { try { return git("show", `${ref}:${path}`); } catch { return undefined; } };
+const git = (...a: string[]) => execFileSync("git", a, { encoding: "utf8", maxBuffer: 1 << 28 });
+const lockAt = (ref: string, path: string) => { try { return JSON.parse(git("show", `${ref}:${path}`)); } catch { return null; } };
+const textAt = (ref: string, path: string) => { try { return git("show", `${ref}:${path}`); } catch { return undefined; } };
 
 async function main() {
   const [base, head] = process.argv.slice(2);

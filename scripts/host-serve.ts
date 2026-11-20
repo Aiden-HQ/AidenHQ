@@ -11,20 +11,22 @@ import { fileURLToPath } from "node:url";
 const OK = new Set(["http://127.0.0.1:3100", "http://127.0.0.1:3120", "http://127.0.0.1:3121", "http://127.0.0.1:3131"]);
 
 /** Ports the host serves that aren't HTTPS to Paperclip or the board, each with why; plus funnel, which prune leaves (loud). */
-export function strays(s) {
-  const bad = new Map();
+interface Served { TCP?: Record<string, { HTTPS?: boolean; TCPForward?: string }>; Web?: Record<string, { Handlers?: Record<string, { Proxy?: string; Path?: string }> }>; AllowFunnel?: Record<string, boolean> }
+
+export function strays(s: Served) {
+  const bad = new Map<string, { tcp: boolean; why: string }>();
   for (const [port, t] of Object.entries(s.TCP ?? {})) if (!t.HTTPS) bad.set(port, { tcp: true, why: `tcp ${port}${t.TCPForward ? ` -> ${t.TCPForward}` : ""}` });
   for (const [hostPort, w] of Object.entries(s.Web ?? {}))
     for (const [path, h] of Object.entries(w.Handlers ?? {}))
-      if (!OK.has(String(h.Proxy ?? "").replace(/\/$/, ""))) bad.set(hostPort.split(":").pop(), { tcp: false, why: `${hostPort}${path} -> ${h.Proxy ?? h.Path ?? "text"}` });
+      if (!OK.has(String(h.Proxy ?? "").replace(/\/$/, ""))) bad.set(hostPort.split(":").pop()!, { tcp: false, why: `${hostPort}${path} -> ${h.Proxy ?? h.Path ?? "text"}` });
   const funnel = Object.entries(s.AllowFunnel ?? {}).filter(([, on]) => on).map(([hp]) => `funnel ${hp}`);
   return { ports: [...bad.entries()].map(([port, b]) => ({ port, ...b })), funnel };
 }
 
-const ts = (...args) => execFileSync("tailscale", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+const ts = (...args: string[]) => execFileSync("tailscale", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const cmd = process.argv[2];
+  const cmd = process.argv[2]!;
   if (!["check", "prune"].includes(cmd)) { console.error("usage: host-serve.ts check|prune"); process.exit(2); }
   let s;
   try { s = JSON.parse(ts("serve", "status", "--json") || "{}"); } catch {

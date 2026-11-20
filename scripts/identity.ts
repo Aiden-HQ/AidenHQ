@@ -4,19 +4,20 @@
 // (apps mount it as a single file, which pins the inode) from every gate*.pem and apps*.pem present, so a renamed old key
 // (gate.old.pem) stays trusted until it is deleted.
 import { createHash, createPrivateKey, createPublicKey, generateKeyPairSync } from "node:crypto";
+import type { KeyObject } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 export const ISSUERS = { gate: "aidenhq-gate", apps: "aidenhq-apps" };
 
 /** kid: the first 16 characters of the base64url SHA-256 of the raw public key. */
-export const kidOf = (publicKey) => createHash("sha256").update(Buffer.from(publicKey.export({ format: "jwk" }).x, "base64url")).digest("base64url").slice(0, 16);
+export const kidOf = (publicKey: KeyObject) => createHash("sha256").update(Buffer.from(publicKey.export({ format: "jwk" }).x!, "base64url")).digest("base64url").slice(0, 16);
 
 /** Ensures identity/{gate,apps}.pem and writes identity/keys.json; returns the names of the keys it created. */
-export function ensureIdentityKeys(secretsDir) {
+export function ensureIdentityKeys(secretsDir: string) {
   const dir = join(secretsDir, "identity");
   mkdirSync(dir, { recursive: true, mode: 0o700 });
-  const made = [];
+  const made: string[] = [];
   for (const name of Object.keys(ISSUERS)) {
     const f = join(dir, `${name}.pem`);
     if (existsSync(f)) continue;

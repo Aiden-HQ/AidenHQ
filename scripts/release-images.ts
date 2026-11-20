@@ -12,24 +12,28 @@ import YAML from "yaml";
 import { COMPUTER_IMAGES } from "./computers.ts";
 
 const LOCAL = /^aidenhq\/([a-z0-9][a-z0-9._-]*):local$/;
-const read = (f) => YAML.parse(readFileSync(f, "utf8")) ?? {};
+interface Service { build?: unknown; image?: string }
+interface Compose { services?: Record<string, Service>; [k: string]: unknown }
+interface Build { name: string; context: string; base?: string }
+
+const read = (f: string) => YAML.parse(readFileSync(f, "utf8")) ?? {};
 
 /** Every image this checkout builds, as chains in build order: `[{ name, context, base? }]` (base: the name it builds FROM). */
-export function buildable(kernelDir, modulesDir = join(kernelDir, "modules")) {
-  const one = (name, context) => [{ name, context }];
-  const chains = [];
-  for (const s of Object.values(read(join(kernelDir, "compose.yaml")).services ?? {})) {
+export function buildable(kernelDir: string, modulesDir = join(kernelDir, "modules")) {
+  const one = (name: string, context: string): Build[] => [{ name, context }];
+  const chains: Build[][] = [];
+  for (const s of Object.values<Service>(read(join(kernelDir, "compose.yaml")).services ?? {})) {
     const m = typeof s.build === "string" && LOCAL.exec(s.image ?? "");
-    if (m) chains.push(one(m[1], resolve(kernelDir, s.build)));
+    if (m) chains.push(one(m[1]!, resolve(kernelDir, s.build as string)));
   }
   for (const mod of existsSync(modulesDir) ? readdirSync(modulesDir).sort() : []) {
     const f = join(modulesDir, mod, "module.yaml");
     if (!existsSync(f)) continue;
-    for (const [svc, s] of Object.entries(read(f).services?.run ?? {})) {
-      if (typeof s?.build === "string") chains.push(one(svc.startsWith(`${mod}-`) ? svc : `${mod}-${svc}`, resolve(modulesDir, mod, s.build)));
+    for (const [svc, s] of Object.entries<Service | undefined>(read(f).services?.run ?? {})) {
+      if (typeof s?.build === "string") chains.push(one(svc.startsWith(`${mod}-`) ? svc : `${mod}-${svc}`, resolve(modulesDir, mod, s.build as string)));
     }
   }
-  const chain = (name) => ({ name: `computer-${name}`, context: join(kernelDir, "services/computer/images", name), ...(COMPUTER_IMAGES[name] ? { base: `computer-${COMPUTER_IMAGES[name]}` } : {}) });
+  const chain = (name: string): Build => ({ name: `computer-${name}`, context: join(kernelDir, "services/computer/images", name), ...(COMPUTER_IMAGES[name as keyof typeof COMPUTER_IMAGES] ? { base: `computer-${COMPUTER_IMAGES[name as keyof typeof COMPUTER_IMAGES]}` } : {}) });
   chains.push(Object.keys(COMPUTER_IMAGES).map(chain));
   return chains;
 }
@@ -40,8 +44,8 @@ const RESET = Object.assign(new YAML.Scalar(null), { tag: "!reset" });
  * compose.modules.yaml's services after the release's images: each built service (a module's in `generated`, a root one in
  * `root`, the parsed compose.yaml) whose image the release names gets `image: <digest>` and no build.
  */
-export function useReleaseImages(generated, root, images = {}) {
-  const ref = (image) => images[LOCAL.exec(image ?? "")?.[1]];
+export function useReleaseImages(generated: Compose, root: Compose, images: Record<string, string> = {}) {
+  const ref = (image?: string) => images[LOCAL.exec(image ?? "")?.[1]!];
   const services = { ...generated.services };
   for (const [name, s] of Object.entries(root.services ?? {})) {
     if (s.build != null && ref(s.image)) services[name] = { ...services[name], image: ref(s.image), build: RESET };
@@ -53,7 +57,7 @@ export function useReleaseImages(generated, root, images = {}) {
 }
 
 /** config/computers.json `pull`: computer image tag → the release's digest for it (those the release names). */
-export const computerPulls = (tags, images = {}) =>
+export const computerPulls = (tags: Record<string, string>, images: Record<string, string> = {}) =>
   Object.fromEntries(Object.entries(tags).filter(([n]) => images[`computer-${n}`]).map(([n, tag]) => [tag, images[`computer-${n}`]]));
 
 if (process.argv[1] === fileURLToPath(import.meta.url) && process.argv[2] === "list") {

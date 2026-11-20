@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 
 const dir = join(dirname(fileURLToPath(import.meta.url)), "prompts");
 
-export const unwrap = (text) => text.replace(/\n$/, "").split("\n\n").map((block) => block.split("\n").reduce((out, line) => (out === "" ? line : line.startsWith("- ") ? `${out}\n${line}` : `${out} ${line.trimStart()}`), "")).join("\n\n");
+export const unwrap = (text: string) => text.replace(/\n$/, "").split("\n\n").map((block) => block.split("\n").reduce((out: string, line: string) => (out === "" ? line : line.startsWith("- ") ? `${out}\n${line}` : `${out} ${line.trimStart()}`), "")).join("\n\n");
 
 /** "\n\n## Heading..." as setup appends it; `tail` is the text's own ending. */
-export const section = (name, tail = "\n") => `\n\n${unwrap(readFileSync(join(dir, `${name}.md`), "utf8"))}${tail}`;
+export const section = (name: string, tail = "\n") => `\n\n${unwrap(readFileSync(join(dir, `${name}.md`), "utf8"))}${tail}`;

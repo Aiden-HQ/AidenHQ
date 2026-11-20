@@ -12,15 +12,15 @@ if (!url || !tool) {
   process.exit(2);
 }
 let id = 0;
-async function rpc(method, params) {
-  const res = await fetch(url, {
+async function rpc(method: string, params: unknown) {
+  const res = await fetch(url!, {
     method: "POST",
     headers: { "content-type": "application/json", accept: "application/json, text/event-stream", ...(token ? { authorization: `Bearer ${token}` } : {}) },
     body: JSON.stringify({ jsonrpc: "2.0", id: ++id, method, params }),
   });
   const text = await res.text();
   if (!res.ok) throw new Error(`${res.status} ${text.slice(0, 300)}`);
-  const json = JSON.parse(text.startsWith("event:") ? text.split("\n").find((l) => l.startsWith("data:")).slice(5) : text);
+  const json = JSON.parse(text.startsWith("event:") ? text.split("\n").find((l) => l.startsWith("data:"))!.slice(5) : text);
   if (json.error) throw new Error(JSON.stringify(json.error));
   return json.result;
 }
@@ -30,7 +30,7 @@ if (tool === "--list") {
   for (const t of r.tools) console.log(`${t.name}\t${JSON.stringify(t.annotations ?? {})}`);
 } else {
   const r = await rpc("tools/call", { name: tool, arguments: JSON.parse(argsJson) });
-  const text = r.content?.map((c) => c.text).join("\n") ?? "";
+  const text = r.content?.map((c: { text: string }) => c.text).join("\n") ?? "";
   console.log(text);
   if (r.isError) process.exit(1);
 }

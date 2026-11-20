@@ -11,11 +11,15 @@
 // Canonical copy: ci/template/.github/review-checklist.ts (MIT, the CI template's). The AI reviewer module holds a
 // byte-identical copy (the product's scripts/sync-shared.ts).
 
+/** One checklist item (the base's .github/code-review-checklist.json). */
+export interface ChecklistItem { id: string; trigger?: { paths?: string[]; lines?: string }; check: string; why?: string }
+interface DiffFile { path: string; lines: string[] }
+
 /** A glob as an anchored regex. */
-export function globRe(glob) {
+export function globRe(glob: string) {
   let re = "";
   for (let i = 0; i < glob.length; i++) {
-    const c = glob[i];
+    const c = glob[i]!;
     if (c === "*" && glob[i + 1] === "*") {
       i++;
       if (glob[i + 1] === "/") (i++, (re += "(?:.*/)?"));
@@ -28,21 +32,21 @@ export function globRe(glob) {
 }
 
 /** A path as git prints it in a header: plain, or quoted with C escapes (octal bytes, \t, \", \\) and decoded as UTF-8. */
-export function gitPath(text) {
+export function gitPath(text: unknown) {
   const t = String(text).replace(/\t.*$/, "");
   if (!t.startsWith('"')) return t;
-  const bytes = [];
-  const esc = { a: 7, b: 8, t: 9, n: 10, v: 11, f: 12, r: 13 };
+  const bytes: number[] = [];
+  const esc: Record<string, number> = { a: 7, b: 8, t: 9, n: 10, v: 11, f: 12, r: 13 };
   for (let i = 1; i < t.length - 1; i++) {
-    if (t[i] !== "\\") bytes.push(...Buffer.from(t[i]));
-    else if (/[0-7]/.test(t[i + 1])) (bytes.push(parseInt(t.slice(i + 1, i + 4), 8)), (i += 3));
-    else bytes.push(esc[t[i + 1]] ?? t.charCodeAt(i + 1)), i++;
+    if (t[i] !== "\\") bytes.push(...Buffer.from(t[i]!));
+    else if (/[0-7]/.test(t[i + 1]!)) (bytes.push(parseInt(t.slice(i + 1, i + 4), 8)), (i += 3));
+    else bytes.push(esc[t[i + 1]!] ?? t.charCodeAt(i + 1)), i++;
   }
   return Buffer.from(bytes).toString("utf8");
 }
 
 /** The path a header line names after its prefix (`b/` or `a/`, quoted or not), or undefined. */
-const named = (rest, side) => {
+const named = (rest: string, side: string) => {
   const p = gitPath(rest);
   return p.startsWith(`${side}/`) ? p.slice(2) : undefined;
 };
@@ -55,17 +59,17 @@ const named = (rest, side) => {
  * `diff --git` and the runner's `### ` headings start at column 0, which no content line does (each starts with +, - or a
  * space). A diff with no `diff --git` line is one file, path "".
  */
-export function diffFiles(diff) {
-  const files = [];
-  let cur;
+export function diffFiles(diff: unknown) {
+  const files: DiffFile[] = [];
+  let cur: DiffFile | undefined;
   let header = false;
-  let minus;
+  let minus: string | undefined;
   for (const line of String(diff ?? "").split("\n")) {
     if (line.startsWith("diff --git ")) {
       const rest = line.slice(11);
       const same = /^a\/(.+) b\/\1$/.exec(rest);
       const quoted = /^("(?:[^"\\]|\\.)*"|\S+) ("(?:[^"\\]|\\.)*")$/.exec(rest);
-      const path = same ? same[1] : quoted ? named(quoted[2], "b") ?? "" : (/ b\/(.+)$/.exec(rest)?.[1] ?? "");
+      const path = same ? same[1]! : quoted ? named(quoted[2]!, "b") ?? "" : (/ b\/(.+)$/.exec(rest)?.[1] ?? "");
       files.push((cur = { path, lines: [] }));
       header = true;
       minus = undefined;
@@ -83,12 +87,12 @@ export function diffFiles(diff) {
     if (header) {
       // Git's own headers name the path; the others are kept as lines (a trigger can read `deleted file mode`, `rename
       // from`, `+++ /dev/null`).
-      if (line.startsWith("+++ ") && named(line.slice(4), "b") !== undefined) cur.path = named(line.slice(4), "b");
+      if (line.startsWith("+++ ") && named(line.slice(4), "b") !== undefined) cur!.path = named(line.slice(4), "b")!;
       else if (line.startsWith("--- ") && named(line.slice(4), "a") !== undefined) minus = named(line.slice(4), "a");
-      else if (line.startsWith("rename to ")) (cur.path = gitPath(line.slice(10))), cur.lines.push(line);
+      else if (line.startsWith("rename to ")) (cur!.path = gitPath(line.slice(10))), cur!.lines.push(line);
       else if (!line.startsWith("index ")) {
-        if (line.startsWith("+++ /dev/null") && minus !== undefined) cur.path = minus;
-        cur.lines.push(line);
+        if (line.startsWith("+++ /dev/null") && minus !== undefined) cur!.path = minus;
+        cur!.lines.push(line);
       }
       continue;
     }
@@ -100,7 +104,7 @@ export function diffFiles(diff) {
 }
 
 /** The checklist items a diff triggers, in the checklist's order. */
-export function matchChecklist(items, diff) {
+export function matchChecklist(items: ChecklistItem[] | undefined, diff: unknown) {
   const files = diffFiles(diff);
   return (items ?? []).filter((item) => {
     const paths = (item.trigger?.paths ?? []).map(globRe);
@@ -110,4 +114,4 @@ export function matchChecklist(items, diff) {
 }
 
 /** The matched items as the reviewer reads them, one per line ("" when none). */
-export const checklistText = (items) => items.map((i) => `- ${i.id}: ${i.check}${i.why ? ` (Why: ${i.why})` : ""}`).join("\n");
+export const checklistText = (items: ChecklistItem[]) => items.map((i) => `- ${i.id}: ${i.check}${i.why ? ` (Why: ${i.why})` : ""}`).join("\n");

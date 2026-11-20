@@ -29,6 +29,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } 
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
+import type { Obj } from "./modules.ts";
 import { compile, composeSecretFiles, ensureMountedSecrets, ensureOptionalSecrets, hostMounts, hostDirs } from "./modules.ts";
 import { computersConfig } from "./computers.ts";
 import { pathInventory } from "./paths.ts";
@@ -43,15 +44,15 @@ import { readRelease } from "./compiler/release.ts";
 import { computerPulls, useReleaseImages } from "./release-images.ts";
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const dotenv = {};
+const dotenv: Record<string, string> = {};
 if (existsSync(join(repo, ".env"))) {
   for (const line of readFileSync(join(repo, ".env"), "utf8").split("\n")) {
     const m = /^\s*([A-Z0-9_]+)=(.*)$/.exec(line);
-    if (m) dotenv[m[1]] = m[2].replace(/^["']|["']$/g, "");
+    if (m) dotenv[m[1]!] = m[2]!.replace(/^["']|["']$/g, "");
   }
 }
-const env = (k) => process.env[k] ?? dotenv[k];
-const die = (msg) => { console.error(`compile: ${msg}`); process.exit(1); };
+const env = (k: string) => process.env[k] ?? dotenv[k];
+const die: (msg: string) => never = (msg) => { console.error(`compile: ${msg}`); process.exit(1); };
 const stage = process.argv.includes("--stage") || process.env.AIDENHQ_COMPILE_STAGE === "1";
 const cfgOut = join(repo, stage ? "config.next" : "config");
 const composeOut = join(repo, stage ? "compose.modules.next.yaml" : "compose.modules.yaml");
@@ -59,19 +60,19 @@ if (stage) { rmSync(cfgOut, { recursive: true, force: true }); mkdirSync(cfgOut,
 
 const instanceDir = env("AIDENHQ_INSTANCE_DIR");
 if (!instanceDir || !existsSync(join(instanceDir, "instance.yaml"))) die("set AIDENHQ_INSTANCE_DIR to your instance checkout (see docs/USAGE.md)");
-let revision;
+let revision: string | undefined;
 try { revision = execFileSync("git", ["-C", repo, "rev-parse", "HEAD"], { encoding: "utf8" }).trim(); } catch {}
 
 // The bundle this host last compiled and what it added from it (modules.ts); the first compile after an upgrade learns the
 // previous product's bundle from the apply (AIDENHQ_OLD_BUNDLE, a JSON list) and records both on success.
 const bundleFile = join(repo, "data", "bundle-state.json");
-let bundleState; try { bundleState = JSON.parse(readFileSync(bundleFile, "utf8")); } catch {}
-let oldBundle; try { oldBundle = JSON.parse(env("AIDENHQ_OLD_BUNDLE") || "null") ?? undefined; } catch {}
-let out, computers;
-try { out = compile(repo, instanceDir, { revision, bundleState, oldBundle, door: { publicIp: env("AIDENHQ_PUBLIC_IP"), adminUrl: env("AIDENHQ_ADMIN_URL"), boardUrl: env("BOARD_LAN_URL") }, githubOrg: env("AIDENHQ_GITHUB_AGENTS_ORG") ?? "" }); computers = computersConfig(out.paperclip, repo, out.computersMax); } catch (e) { die(e.message); }
+let bundleState: Obj | undefined; try { bundleState = JSON.parse(readFileSync(bundleFile, "utf8")); } catch {}
+let oldBundle: Obj | undefined; try { oldBundle = JSON.parse(env("AIDENHQ_OLD_BUNDLE") || "null") ?? undefined; } catch {}
+let out!: ReturnType<typeof compile>, computers!: ReturnType<typeof computersConfig> & { pull?: ReturnType<typeof computerPulls> };
+try { out = compile(repo, instanceDir, { revision, bundleState, oldBundle, door: { publicIp: env("AIDENHQ_PUBLIC_IP"), adminUrl: env("AIDENHQ_ADMIN_URL"), boardUrl: env("BOARD_LAN_URL") }, githubOrg: env("AIDENHQ_GITHUB_AGENTS_ORG") ?? "" }); computers = computersConfig(out.paperclip, repo, out.computersMax); } catch (e) { die((e as Error).message); }
 if (!stage) { mkdirSync(dirname(bundleFile), { recursive: true }); writeFileSync(bundleFile, JSON.stringify(out.bundleState)); }
 if (process.argv.includes("--sizes")) {
-  try { console.log(sizesReport(out.paperclip, { repo, instanceDir, engines: out.engines })); } catch (e) { die(e.message); }
+  try { console.log(sizesReport(out.paperclip, { repo, instanceDir, engines: out.engines })); } catch (e) { die((e as Error).message); }
   process.exit(0);
 }
 // The pre-launch agent check (scripts/agent-check.ts): before anything is written, so a failing agent never launches.
@@ -82,7 +83,7 @@ if (report("agent-check", staticCheck(out.paperclip))) die("the agent check fail
 const ops = out.compose.services["meetings-ops-mcp"];
 if (ops) {
   const own = ["${AIDENHQ_CONFIG_DIR:-./config}/system.yaml:/config/system.yaml:ro", "${TRANSCRIPTS_DIR:?set TRANSCRIPTS_DIR in .env}:/sources/transcripts"];
-  try { ops.volumes = [...(ops.volumes ?? []), ...own, ...hostMounts({ VAULT_DIR: env("VAULT_DIR"), VAULT_FOLDERS: env("VAULT_FOLDERS"), KNOWLEDGE_BASES: env("KNOWLEDGE_BASES") })]; } catch (e) { die(e.message); }
+  try { ops.volumes = [...(ops.volumes ?? []), ...own, ...hostMounts({ VAULT_DIR: env("VAULT_DIR"), VAULT_FOLDERS: env("VAULT_FOLDERS"), KNOWLEDGE_BASES: env("KNOWLEDGE_BASES") })]; } catch (e) { die((e as Error).message); }
 }
 
 // Secrets of channels the owner may not use start as empty files, so compose can start (empty = not configured).
@@ -114,29 +115,29 @@ if (!stage) for (const d of ["apps-edge/state", "apps-edge/serve", "previews", "
 if (!stage) mkdirSync(join(hostDirs(repo).work_dir, "tasks"), { recursive: true });
 // Code never starts on data newer than it (spec §6.4.1): staged, only checked (the apply snapshots the data after this); for
 // real, each data module's marker is set to its data_version before compose starts it.
-try { for (const [m, d] of Object.entries(out.dataModules)) checkDataVersion(m, d.data_version, join(dataDir, "modules", m), !stage); } catch (e) { die(e.message); }
+try { for (const [m, d] of Object.entries(out.dataModules)) checkDataVersion(m, d.data_version, join(dataDir, "modules", m), !stage); } catch (e) { die((e as Error).message); }
 // The security scanner's copy of the app registry (its data dir, read-only there): no module mounts the instance checkout.
 if (!stage && out.compose.services["security-scanner"]) writeFileSync(join(dataDir, "modules/security/registry/apps.yaml"), existsSync(join(instanceDir, "apps.yaml")) ? readFileSync(join(instanceDir, "apps.yaml")) : "apps: []\n");
 
 // The public front door (exposure public): Caddy for the host's public IPv4, from .env (ops/setup.sh writes it with the board's
 // and the admin listener's URLs, which the kernel reads there too). Its service is named exactly `caddy`: ops/vm/setup.sh
 // opens 443 and 8446 only once compose.modules.yaml has it.
-let caddy;
+let caddy: string | undefined;
 if (out.exposure === "public") {
   const ip = env("AIDENHQ_PUBLIC_IP"), urls = publicUrls(ip);
-  try { caddy = caddyfile(ip, undefined, out.edge?.gate?.doors?.base); } catch (e) { die(`exposure public: AIDENHQ_PUBLIC_IP in .env: ${e.message} (sudo ops/setup.sh sets it)`); }
+  try { caddy = caddyfile(ip, undefined, out.edge?.gate?.doors?.base); } catch (e) { die(`exposure public: AIDENHQ_PUBLIC_IP in .env: ${(e as Error).message} (sudo ops/setup.sh sets it)`); }
   if (env("BOARD_LAN_URL") !== urls.board || env("AIDENHQ_ADMIN_URL") !== urls.admin) die(`exposure public: .env needs BOARD_LAN_URL=${urls.board} and AIDENHQ_ADMIN_URL=${urls.admin} (sudo ops/setup.sh sets them)`);
   out.compose.services.caddy = caddyService(caddy);
   if (!stage) mkdirSync(join(dataDir, "caddy"), { recursive: true, mode: 0o700 });
 }
 
 const header ="# Generated by scripts/compile.ts from modules/ and the instance. Do not edit; edit the module or instance.yaml.\n";
-const dump = (v) => header + YAML.stringify(v, { lineWidth: 0 });
+const dump = (v: unknown) => header + YAML.stringify(v, { lineWidth: 0 });
 writeFileSync(join(cfgOut, "paperclip.yaml"), dump(out.paperclip));
 writeFileSync(join(cfgOut, "apps.modules.yaml"), dump(out.apps));
 // A pinned release's prebuilt images (scripts/release-images.ts): its digests run instead of local builds.
 let images = {};
-try { images = readRelease(YAML.parse(readFileSync(join(instanceDir, "instance.yaml"), "utf8")) ?? {}, hostFetch(repo))?.images ?? {}; } catch (e) { die(e.message); }
+try { images = readRelease(YAML.parse(readFileSync(join(instanceDir, "instance.yaml"), "utf8")) ?? {}, hostFetch(repo))?.images ?? {}; } catch (e) { die((e as Error).message); }
 if (Object.keys(images).length) {
   out.compose = useReleaseImages(out.compose, YAML.parse(readFileSync(join(repo, "compose.yaml"), "utf8")), images);
   computers.pull = computerPulls(computers.images, images);
@@ -158,7 +159,7 @@ writeFileSync(join(cfgOut, "jobcaps.json"), JSON.stringify(out.jobcaps, null, 2)
 mkdirSync(join(cfgOut, "kernel"), { recursive: true });
 writeFileSync(join(cfgOut, "kernel/connections.json"), JSON.stringify(out.connections, null, 2) + "\n");
 writeFileSync(join(cfgOut, "kernel/writes.json"), JSON.stringify(out.writes, null, 2) + "\n");
-try { writeFileSync(join(cfgOut, "kernel/paths.json"), JSON.stringify(pathInventory(repo), null, 2) + "\n"); } catch (e) { die(e.message); }
+try { writeFileSync(join(cfgOut, "kernel/paths.json"), JSON.stringify(pathInventory(repo), null, 2) + "\n"); } catch (e) { die((e as Error).message); }
 // Always written ({} when no module checks): the kernel's finish gate refuses every close when it is missing.
 writeFileSync(join(cfgOut, "kernel/checks.json"), JSON.stringify(out.checks, null, 2) + "\n");
 writeFileSync(join(cfgOut, "kernel/modules.json"), JSON.stringify(out.kernelModules, null, 2) + "\n");
@@ -171,7 +172,7 @@ writeFileSync(join(cfgOut, "module-data.json"), JSON.stringify(out.dataModules, 
 mkdirSync(join(cfgOut, "points"), { recursive: true });
 for (const [m, p] of Object.entries(out.points)) writeFileSync(join(cfgOut, "points", `${m}.json`), JSON.stringify(p, null, 2) + "\n");
 if (out.edge) {
-  if (out.edge.cloudflared) try { checkIngress(out.edge.cloudflared, { login: out.edge.gate.login }); } catch (e) { die(e.message); }
+  if (out.edge.cloudflared) try { checkIngress(out.edge.cloudflared, { login: out.edge.gate.login }); } catch (e) { die((e as Error).message); }
   // The kernel's account map for the gate: the kernel rewrites it on every account change. It starts
   // empty so compose can bind it (a missing bind source becomes a directory); the gate refuses everyone it can't read.
   const accounts = join(resolve(repo, env("AIDENHQ_DATA_DIR") ?? "./data"), "gate", "accounts.json");

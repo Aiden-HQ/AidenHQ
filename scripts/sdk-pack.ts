@@ -13,6 +13,6 @@ const dist = join(sdk, "dist");
 rmSync(dist, { recursive: true, force: true });
 execFileSync(join(sdk, "node_modules/.bin/tsc"), ["-p", "tsconfig.json", "--noEmit", "false", "--declaration", "--rootDir", ".", "--outDir", "dist"], { cwd: sdk, stdio: "inherit" });
 // tsc renames `.ts` imports in the JavaScript only.
-for (const f of readdirSync(dist, { recursive: true }).filter((f) => f.endsWith(".d.ts")))
+for (const f of (readdirSync(dist, { recursive: true }) as string[]).filter((f) => f.endsWith(".d.ts")))
   writeFileSync(join(dist, f), readFileSync(join(dist, f), "utf8").replace(/(from\s+["']\.{1,2}\/[^"']+)\.ts(["'])/g, "$1.js$2"));
 for (const f of readdirSync(join(dist, "bin")).filter((f) => f.endsWith(".js"))) chmodSync(join(dist, "bin", f), 0o755);

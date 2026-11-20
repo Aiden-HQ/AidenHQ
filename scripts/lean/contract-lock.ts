@@ -16,15 +16,19 @@ const NOTICE_DAYS = 60;
 const HOW = "run `node scripts/lean/contract-lock.ts --write`, set the state of any new entry, and commit kernel/contract.lock.json";
 const DAY = 86400000;
 
+interface LockEntry { state: string; remove_after?: string | null; fp?: string }
+interface Lock { entries?: Record<string, LockEntry> }
+interface SchemaNode { [k: string]: unknown; properties?: Record<string, SchemaNode>; additionalProperties?: SchemaNode | boolean; items?: SchemaNode; required?: string[] }
+
 /** Every public contract in code: route -> auth kind, schema node -> its shape, manifest key, provider contract major. */
-export async function generate(repo) {
-  const out = {};
+export async function generate(repo: string) {
+  const out: Record<string, string> = {};
   const { ROUTES } = await import(pathToFileURL(join(repo, "kernel/src/backplane.ts")).href);
   for (const r of ROUTES) out[`route ${r.method} ${r.path}`] = `auth=${r.auth}`;
   const { ROUTES: ADMIN } = await import(pathToFileURL(join(repo, "kernel/src/admin.ts")).href);
   for (const r of ADMIN) out[`admin route ${r.method} ${r.path}`] = `auth=${r.auth}`;
 
-  const walk = (id, node, req) => {
+  const walk = (id: string, node: SchemaNode, req: boolean) => {
     const { description, title, $schema, $id, properties, additionalProperties, items, required, ...shape } = node;
     out[id] = JSON.stringify({ req, ...(additionalProperties === false ? { closed: true } : {}), ...shape });
     for (const [k, v] of Object.entries(properties ?? {})) walk(`${id}.${k}`, v, (required ?? []).includes(k));
@@ -48,12 +52,12 @@ export async function generate(repo) {
   return out;
 }
 
-const isDate = (d) => typeof d === "string" && /^\d{4}-\d{2}-\d{2}$/.test(d) && !Number.isNaN(Date.parse(d));
-const passed = (e, today) => isDate(e.remove_after) && e.remove_after <= today;
+const isDate = (d: unknown): d is string => typeof d === "string" && /^\d{4}-\d{2}-\d{2}$/.test(d) && !Number.isNaN(Date.parse(d));
+const passed = (e: LockEntry, today: string) => isDate(e.remove_after) && e.remove_after <= today;
 
 /** What the lock gets wrong: `head` is the lock in this change, `base` the lock it started from (or null), `generated` the code's. */
-export function contractLockProblems(base, head, generated, today) {
-  const p = [];
+export function contractLockProblems(base: Lock | null, head: Lock, generated: Record<string, string>, today: string) {
+  const p: string[] = [];
   const he = head.entries ?? {};
   for (const [id, e] of Object.entries(he)) {
     if (!STATES.includes(e.state)) p.push(`${id}: state must be one of ${STATES.join(", ")} (got ${e.state})`);
@@ -86,9 +90,9 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const repo = fileURLToPath(new URL("../..", import.meta.url));
   const args = process.argv.slice(2);
   const generated = await generate(repo);
-  const head = existsSync(join(repo, LOCK)) ? JSON.parse(readFileSync(join(repo, LOCK), "utf8")) : { entries: {} };
+  const head: { entries: Record<string, LockEntry> } = existsSync(join(repo, LOCK)) ? JSON.parse(readFileSync(join(repo, LOCK), "utf8")) : { entries: {} };
   if (args.includes("--write")) {
-    const entries = {};
+    const entries: Record<string, LockEntry> = {};
     for (const id of Object.keys(generated)) entries[id] = { ...(head.entries[id] ?? { state: "experimental" }), fp: generated[id] };
     for (const [id, e] of Object.entries(head.entries)) if (e.state === "removed") entries[id] = e;
     // One entry per line, sorted by id: two changes adding different entries merge without a conflict.
@@ -97,7 +101,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     console.log(`wrote ${LOCK}: ${lines.length} entries`);
   } else {
     const ref = args.includes("--base") ? args[args.indexOf("--base") + 1] : null;
-    let base = null;
+    let base: Lock | null = null;
     if (ref) try { base = JSON.parse(execFileSync("git", ["show", `${ref}:${LOCK}`], { cwd: repo, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] })); } catch { /* the base has no lock yet */ }
     const problems = contractLockProblems(base, head, generated, new Date().toISOString().slice(0, 10));
     for (const m of problems) console.error(`contract lock: ${m}`);

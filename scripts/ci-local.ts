@@ -8,30 +8,30 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSy
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { suitesFor } from "../.github/ci/select.ts";
+import { suitesFor, type AreaMap, type Suite } from "../.github/ci/select.ts";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2);
 const list = args.includes("--list");
-const base = args.includes("--base") ? args[args.indexOf("--base") + 1] : "origin/main";
+const base = args.includes("--base") ? args[args.indexOf("--base") + 1]! : "origin/main";
 
 // The tests that need flock(1), absent on macOS: scripts' apply-*.test.ts and the runner's apply.test.ts (paths from the repo root).
 const MAC_EXPECTED = /^(scripts\/test\/apply-[^/]+\.test\.ts)$/;
 
-const git = (...a) => execFileSync("git", a, { cwd: root, encoding: "utf8", maxBuffer: 64 << 20 }).trim();
-const lines = (s) => s.split("\n").filter(Boolean);
+const git = (...a: string[]) => execFileSync("git", a, { cwd: root, encoding: "utf8", maxBuffer: 64 << 20 }).trim();
+const lines = (s: string) => s.split("\n").filter(Boolean);
 
 /** The changed files, as CI's selector gets them, plus the working tree. */
-export function changedFiles(mergeBase) {
+export function changedFiles(mergeBase: string) {
   return [...new Set([...lines(git("diff", "--name-only", mergeBase)), ...lines(git("ls-files", "--others", "--exclude-standard"))])];
 }
 
 /** The suites to run for these files, from CI's selector and map. */
-export function select(files) {
-  const map = JSON.parse(readFileSync(join(root, ".github/ci/areas.json"), "utf8"));
+export function select(files: string[]) {
+  const map: AreaMap = JSON.parse(readFileSync(join(root, ".github/ci/areas.json"), "utf8"));
   const sel = suitesFor(map, files);
   // As on a pull request: the slow suites (`main: true`) run only on a push to main.
-  return { ...sel, suites: map.suites.filter((s) => sel.names.includes(s.name) && !s.main) };
+  return { ...sel, suites: map.suites.filter((s: Suite) => sel.names.includes(s.name) && !s.main) };
 }
 
 async function main() {
@@ -47,14 +47,14 @@ async function main() {
   // Shared code copied into the services (scripts/sync-shared.ts) is mechanical: synced here, so drift never reaches CI.
   const before = new Set(lines(git("diff", "--name-only")));
   execFileSync("node", ["scripts/sync-shared.ts"], { cwd: root, stdio: "ignore" });
-  const synced = lines(git("diff", "--name-only")).filter((f) => !before.has(f));
+  const synced = lines(git("diff", "--name-only")).filter((f: string) => !before.has(f));
   if (synced.length) console.log(`sync-shared updated ${synced.length} copied file(s): commit them\n  ${synced.join("\n  ")}`);
 
   // `npm ci` once per package (a suite's own `npm ci` is a no-op below): suites share kernel/.
   const installs = new Set(sel.suites.length ? ["scripts"] : []);
   for (const s of sel.suites) {
-    const dir = s.name.split("#")[0];
-    for (const [, cd] of (s.run ?? "").matchAll(/cd (\S+) && npm ci/g)) installs.add(join(dir, cd));
+    const dir = s.name.split("#")[0]!;
+    for (const [, cd] of (s.run ?? "").matchAll(/cd (\S+) && npm ci/g)) installs.add(join(dir, cd!));
     if (/^npm ci|\) && npm ci/.test(s.run ?? "")) installs.add(dir);
     if (s.job === "modules") installs.add("kernel"); // module suites read the kernel's code, as CI's modules job installs it
   }
@@ -77,12 +77,12 @@ async function main() {
     GIT_CONFIG_COUNT: "2", GIT_CONFIG_KEY_0: "user.name", GIT_CONFIG_VALUE_0: "ci", GIT_CONFIG_KEY_1: "user.email", GIT_CONFIG_VALUE_1: "ci@example.com",
   };
 
-  const jobs = sel.suites.map((s) => ({ name: s.name, cwd: join(root, s.name.split("#")[0]), cmd: s.run ?? "npm test" }));
+  const jobs = sel.suites.map((s: Suite) => ({ name: s.name, cwd: join(root, s.name.split("#")[0]!), cmd: s.run ?? "npm test" }));
   jobs.push({ name: "supply-chain", cwd: root, cmd: `s=0; node scripts/supply-chain/npm-age.ts ${mergeBase} HEAD || s=1; node scripts/supply-chain/pins.ts ${mergeBase} HEAD || s=1; exit $s` });
-  const run = (j) => new Promise((done) => {
+  const run = (j: { name: string; cwd: string; cmd: string }) => new Promise<boolean>((done) => {
     const log = join(tmp, `${j.name.replace(/\W/g, "_")}.log`);
     const t0 = Date.now();
-    const out = [];
+    const out: Buffer[] = [];
     const p = spawn("bash", ["-eo", "pipefail", "-c", j.cmd], { cwd: j.cwd, env });
     p.stdout.on("data", (d) => out.push(d));
     p.stderr.on("data", (d) => out.push(d));
@@ -90,7 +90,7 @@ async function main() {
       const text = Buffer.concat(out).toString();
       writeFileSync(log, text);
       // The flock apply tests can't pass on macOS: shown, never hidden, and judged by CI. Only failures in these files count.
-      const failedIn = [...text.matchAll(/^test at (\S+?):\d+:\d+$/gm)].map((m) => m[1]);
+      const failedIn = [...text.matchAll(/^test at (\S+?):\d+:\d+$/gm)].map((m) => m[1]!);
       const expected = code !== 0 && process.platform === "darwin" && failedIn.length > 0 && failedIn.every((f) => MAC_EXPECTED.test(relative(root, resolve(j.cwd, f))));
       const secs = ((Date.now() - t0) / 1000).toFixed(0);
       console.log(`${code === 0 ? "ok  " : expected ? "EXPECTED on macOS (flock apply tests, judged in CI)" : "FAIL"} ${j.name} (${secs}s)${code === 0 ? "" : ` log: ${log}`}`);

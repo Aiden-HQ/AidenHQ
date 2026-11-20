@@ -8,12 +8,15 @@ import { join } from "node:path";
 /** The images, and the image each builds FROM (services/computer/images/<name>/Dockerfile). `browser` is the one browser image
  * (agent-browser and its pinned Chrome): every computer builds on it and apps-mcp renders its views in it, so it is always built. */
 export const COMPUTER_IMAGES = { browser: null, "agent-base": "browser", engineer: "agent-base" };
+/** The fields of a compiled agent that this file reads. */
+export interface ComputerAgent { image?: string | null; profile?: string; enabled_tools?: Record<string, string[]>; private_reads?: boolean; trial?: unknown; roles?: string[] }
+
 /** The images an agent may name. */
 const AGENT_IMAGES = ["agent-base", "engineer"];
 
-function dirHash(dir) {
+function dirHash(dir: string) {
   const h = createHash("sha256");
-  const walk = (d) => {
+  const walk = (d: string) => {
     for (const n of readdirSync(d).sort()) {
       const p = join(d, n);
       if (statSync(p).isDirectory()) walk(p);
@@ -25,12 +28,12 @@ function dirHash(dir) {
 }
 
 /** name → docker tag, by content hash (an image's hash covers the one it builds FROM), for the named images and their bases. */
-export function imageTags(productDir, names) {
-  const tags = {};
-  const add = (name) => {
-    if (tags[name]) return tags[name];
+export function imageTags(productDir: string, names: string[]) {
+  const tags: Record<string, string> = {};
+  const add = (name: string): string => {
+    if (tags[name]) return tags[name]!;
     if (!(name in COMPUTER_IMAGES)) throw new Error(`unknown image ${name} (known: ${Object.keys(COMPUTER_IMAGES).join(", ")})`);
-    const base = COMPUTER_IMAGES[name] ? add(COMPUTER_IMAGES[name]) : "";
+    const base = COMPUTER_IMAGES[name as keyof typeof COMPUTER_IMAGES] ? add(COMPUTER_IMAGES[name as keyof typeof COMPUTER_IMAGES]!) : "";
     const hash = createHash("sha256").update(base).update(dirHash(join(productDir, "services/computer/images", name))).digest("hex").slice(0, 12);
     return (tags[name] = `aidenhq/computer-${name}:${hash}`);
   };
@@ -51,13 +54,13 @@ export function imageTags(productDir, names) {
 const PUBLIC_APPS = new Set(["app_list", "app_status", "app_view", "app_check", "web_view"]);
 /** The tasks bridge's tools that read no other task's text and write only on the job's own task: its file, its finish and its wait. */
 const PUBLIC_TASKS = new Set(["task_file_upload", "task_finish", "task_wait"]);
-export const privateGrants = (tools = {}) =>
+export const privateGrants = (tools: Record<string, string[]> = {}) =>
   Object.entries(tools).flatMap(([conn, list]) =>
     conn === "github" ? [] : conn === "apps" ? list.filter((t) => !PUBLIC_APPS.has(t)).map((t) => `apps.${t}`) : conn === "paperclip_tasks" ? list.filter((t) => !PUBLIC_TASKS.has(t)).map((t) => `${conn}.${t}`) : list.map((t) => `${conn}.${t}`),
   );
 
 /** Compile fails on an unknown image, or one given to an agent that can't run in a computer yet. */
-export function validateImages(agents) {
+export function validateImages(agents: Record<string, ComputerAgent>) {
   for (const [key, a] of Object.entries(agents)) {
     if (a.image == null) continue;
     if (!AGENT_IMAGES.includes(a.image)) throw new Error(`${key}: image must be one of ${AGENT_IMAGES.join(", ")} (got ${a.image})`);
@@ -78,12 +81,12 @@ export function validateImages(agents) {
 }
 
 /** `max`: settings.computers_max, the pool the launcher keeps and the kernel admits jobs into. */
-export function computersConfig(paperclip, productDir, max) {
+export function computersConfig(paperclip: Record<string, any>, productDir: string, max?: number) {
   validateImages(paperclip.agents);
-  const used = [...new Set(Object.values(paperclip.agents).map((a) => a.image).filter(Boolean))];
-  const connections = {};
+  const used = [...new Set(Object.values<ComputerAgent>(paperclip.agents).map((a) => a.image).filter(Boolean) as string[])];
+  const connections: Record<string, { tool_timeout_sec: number }> = {};
   // Every connection is reached through the kernel's proxy (the launcher forwards a box's calls there with its run token).
-  for (const [name, c] of Object.entries(paperclip.mcp_servers)) connections[name] = { tool_timeout_sec: c.tool_timeout_sec ?? 300 };
+  for (const [name, c] of Object.entries<{ tool_timeout_sec?: number }>(paperclip.mcp_servers)) connections[name] = { tool_timeout_sec: c.tool_timeout_sec ?? 300 };
   return { max, images: imageTags(productDir, ["browser", ...used]), connections };
 }
 
@@ -110,6 +113,6 @@ const CHECKOUT_LINE = `- Code: \`repo-checkout <org/name> [full commit sha]\` pu
 `;
 
 /** A crew agent with its own `image:` gets the computer section in its handbook (an Engineer's prompt comes with its job). */
-const crewComputer = (agent) => Boolean(agent.image) && agent.profile !== "engineer";
+const crewComputer = (agent: ComputerAgent) => Boolean(agent.image) && agent.profile !== "engineer";
 
-export const computerSection = (agent) => (crewComputer(agent) ? COMPUTER_SECTION + ((agent.roles ?? []).includes("repo-checkout") ? CHECKOUT_LINE : "") : "");
+export const computerSection = (agent: ComputerAgent) => (crewComputer(agent) ? COMPUTER_SECTION + ((agent.roles ?? []).includes("repo-checkout") ? CHECKOUT_LINE : "") : "");

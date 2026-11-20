@@ -13,15 +13,26 @@ import { createInterface } from "node:readline";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+type Git = (...args: string[]) => string;
+type Args = Record<string, any>; // the model's JSON arguments: each tool reads what it declares in its schema
+interface Tool { description: string; schema: Record<string, unknown>; required?: string[]; run: (a: Args) => string | Promise<string> }
+interface Pos { line: number }
+interface Range { start: Pos }
+interface Loc { uri?: string; targetUri?: string; range?: Range; targetRange?: Range }
+interface Diag { range: Range; message: string }
+interface Rpc { id?: number; method?: string; params?: { uri: string; diagnostics: Diag[] }; error?: { message: string }; result?: unknown }
+interface Lsp { request: (method: string, params: unknown) => Promise<Loc | Loc[] | null | undefined>; open: (rel: string) => Promise<string>; diags: Map<string, Diag[]> }
+interface Msg { id?: number; method?: string; params?: { protocolVersion?: string; name?: string; arguments?: Args } }
+
 const MAX = 100_000; // characters a tool answer may carry (about 25k tokens); the rest is cut with a note
-const cut = (s) => (s.length > MAX ? `${s.slice(0, MAX)}\n[cut at ${MAX} characters: ask for a narrower range]` : s);
+const cut = (s: string) => (s.length > MAX ? `${s.slice(0, MAX)}\n[cut at ${MAX} characters: ask for a narrower range]` : s);
 
 /** The tools, bound to one checkout and the PR's base commit. Each returns text; a bad argument throws. */
-export function tools(root, base) {
+export function tools(root: string, base: string): Record<string, Tool> {
   root = realpathSync(root);
   if (!/^[0-9a-f]{40}$/.test(base)) throw new Error("base must be a full commit sha");
   // A path inside the checkout, never under .git, symlinks resolved (a link out of the tree is refused).
-  const inside = (p = ".") => {
+  const inside = (p: unknown = ".") => {
     const abs = resolve(root, String(p));
     const real = realpathSync(abs);
     const rel = relative(root, real);
@@ -31,7 +42,7 @@ export function tools(root, base) {
   // No system or global git config (a home-directory .gitconfig could name a pager, fsmonitor or diff program): only the
   // checkout's own .git/config, which actions/checkout wrote and the PR can't change.
   const env = { PATH: process.env.PATH, HOME: "/nonexistent", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0" };
-  const git = (...args) => cut(execFileSync("git", ["--no-pager", ...args], { cwd: root, encoding: "utf8", maxBuffer: 1 << 30, env }));
+  const git: Git = (...args) => cut(execFileSync("git", ["--no-pager", ...args], { cwd: root, encoding: "utf8", maxBuffer: 1 << 30, env }));
   const str = { type: "string" };
   return {
     diff: {
@@ -84,7 +95,7 @@ export function tools(root, base) {
       required: ["pattern"],
       run: ({ pattern, path, ignore_case }) => {
         try { return git("grep", "-n", "-I", "-E", "--no-color", ...(ignore_case ? ["-i"] : []), "-e", String(pattern), "--", inside(path)); }
-        catch (e) { if (e.status === 1) return "no matches"; throw e; }
+        catch (e) { if ((e as { status?: number }).status === 1) return "no matches"; throw e; }
       },
     },
     ...(process.env.REVIEW_LSP ? lspTools(root, inside, git) : {}),
@@ -92,14 +103,14 @@ export function tools(root, base) {
 }
 
 /** definition, references, diagnostics for TypeScript and JavaScript, from typescript-language-server (REVIEW_LSP). */
-function lspTools(root, inside, git) {
-  let lsp;
+function lspTools(root: string, inside: (p?: unknown) => string, git: Git): Record<string, Tool> {
+  let lsp: Lsp | undefined;
   const start = () => {
     if (git("ls-files").split("\n").some((f) => f.split("/").includes("node_modules"))) throw new Error("the PR tracks a node_modules/ directory: no TypeScript navigation (a tsserver plugin could load from it)");
-    const child = spawn(process.env.REVIEW_LSP, ["--stdio"], { cwd: root, stdio: ["pipe", "pipe", "ignore"], env: { PATH: process.env.PATH, HOME: "/nonexistent" } });
+    const child = spawn(process.env.REVIEW_LSP!, ["--stdio"], { cwd: root, stdio: ["pipe", "pipe", "ignore"], env: { PATH: process.env.PATH, HOME: "/nonexistent" } });
     let buf = Buffer.alloc(0), id = 0;
-    const waiting = new Map(), diags = new Map();
-    child.stdout.on("data", (d) => {
+    const waiting = new Map<number, (m: Rpc) => void>(), diags = new Map<string, Diag[]>();
+    child.stdout.on("data", (d: Buffer) => {
       buf = Buffer.concat([buf, d]);
       for (;;) {
         const h = buf.indexOf("\r\n\r\n");
@@ -108,23 +119,23 @@ function lspTools(root, inside, git) {
         if (buf.length < h + 4 + n) return;
         const m = JSON.parse(buf.subarray(h + 4, h + 4 + n).toString());
         buf = buf.subarray(h + 4 + n);
-        if (m.id !== undefined && waiting.has(m.id)) { waiting.get(m.id)(m); waiting.delete(m.id); }
+        if (m.id !== undefined && waiting.has(m.id)) { waiting.get(m.id)!(m); waiting.delete(m.id); }
         else if (m.method === "textDocument/publishDiagnostics") diags.set(m.params.uri, m.params.diagnostics);
         else if (m.id !== undefined && m.method) send({ id: m.id, result: null }); // a server request (configuration, progress)
       }
     });
-    const send = (m) => { const b = JSON.stringify({ jsonrpc: "2.0", ...m }); child.stdin.write(`Content-Length: ${Buffer.byteLength(b)}\r\n\r\n${b}`); };
-    const request = (method, params) => new Promise((ok, fail) => {
+    const send = (m: Record<string, unknown>) => { const b = JSON.stringify({ jsonrpc: "2.0", ...m }); child.stdin.write(`Content-Length: ${Buffer.byteLength(b)}\r\n\r\n${b}`); };
+    const request = (method: string, params: unknown) => new Promise<Loc | Loc[] | null | undefined>((ok, fail) => {
       const i = ++id;
       const t = setTimeout(() => { waiting.delete(i); fail(new Error(`${method} timed out`)); }, 60_000);
-      waiting.set(i, (m) => { clearTimeout(t); m.error ? fail(new Error(m.error.message)) : ok(m.result); });
+      waiting.set(i, (m: Rpc) => { clearTimeout(t); m.error ? fail(new Error(m.error.message)) : ok(m.result as Loc | Loc[] | null | undefined); });
       send({ id: i, method, params });
     });
-    const tsserver = join(dirname(realpathSync(process.env.REVIEW_LSP)), "..", "..", "typescript", "lib", "tsserver.js");
+    const tsserver = join(dirname(realpathSync(process.env.REVIEW_LSP!)), "..", "..", "typescript", "lib", "tsserver.js");
     const ready = request("initialize", { processId: process.pid, rootUri: pathToFileURL(root).href, capabilities: { textDocument: { publishDiagnostics: {} } }, initializationOptions: { tsserver: { path: tsserver }, disableAutomaticTypingAcquisition: true, plugins: [] } })
       .then(() => send({ method: "initialized", params: {} }));
     const opened = new Set();
-    const open = async (rel) => {
+    const open = async (rel: string) => {
       await ready;
       const uri = pathToFileURL(resolve(root, rel)).href;
       if (!opened.has(uri)) {
@@ -139,7 +150,7 @@ function lspTools(root, inside, git) {
     lsp = { request, open, diags };
     return lsp;
   };
-  const at = async ({ path, line, symbol }) => {
+  const at = async ({ path, line, symbol }: Args) => {
     const rel = inside(path);
     const text = readFileSync(resolve(root, rel), "utf8").split("\n")[Number(line) - 1] ?? "";
     const character = text.search(new RegExp(`\\b${String(symbol).replace(/[^\w$]/g, "")}\\b`));
@@ -147,39 +158,39 @@ function lspTools(root, inside, git) {
     const l = lsp ?? start();
     return { textDocument: { uri: await l.open(rel) }, position: { line: Number(line) - 1, character } };
   };
-  const where = (locs) => [locs ?? []].flat().map((x) => `${relative(root, fileURLToPath(x.uri ?? x.targetUri))}:${(x.range ?? x.targetRange).start.line + 1}`).join("\n") || "none found";
+  const where = (locs: Loc | Loc[] | null | undefined) => [locs ?? []].flat().map((x) => `${relative(root, fileURLToPath((x.uri ?? x.targetUri)!))}:${(x.range ?? x.targetRange)!.start.line + 1}`).join("\n") || "none found";
   const pos = { path: { type: "string" }, line: { type: "integer" }, symbol: { type: "string" } };
   return {
-    definition: { description: "Where a TypeScript/JavaScript symbol on a line of the PR's head is defined (language server).", schema: pos, required: ["path", "line", "symbol"], run: async (a) => where(await (lsp ?? start()).request("textDocument/definition", await at(a))) },
-    references: { description: "Every reference to a TypeScript/JavaScript symbol on a line of the PR's head (language server).", schema: pos, required: ["path", "line", "symbol"], run: async (a) => cut(where(await (lsp ?? start()).request("textDocument/references", { ...(await at(a)), context: { includeDeclaration: false } }))) },
+    definition: { description: "Where a TypeScript/JavaScript symbol on a line of the PR's head is defined (language server).", schema: pos, required: ["path", "line", "symbol"], run: async (a: Args) => where(await (lsp ?? start()).request("textDocument/definition", await at(a))) },
+    references: { description: "Every reference to a TypeScript/JavaScript symbol on a line of the PR's head (language server).", schema: pos, required: ["path", "line", "symbol"], run: async (a: Args) => cut(where(await (lsp ?? start()).request("textDocument/references", { ...(await at(a)), context: { includeDeclaration: false } }))) },
     diagnostics: {
       description: "TypeScript's errors for one file of the PR's head (language server; the PR's dependencies aren't installed, so unresolved packages are expected).",
       schema: { path: { type: "string" } }, required: ["path"],
-      run: async ({ path }) => {
+      run: async ({ path }: Args) => {
         const l = lsp ?? start(), uri = await l.open(inside(path));
-        return (l.diags.get(uri) ?? []).map((d) => `${d.range.start.line + 1}: ${d.message}`).join("\n") || "no errors";
+        return (l.diags.get(uri) ?? []).map((d: Diag) => `${d.range.start.line + 1}: ${d.message}`).join("\n") || "no errors";
       },
     },
   };
 }
 
 /** Serves `tools` over MCP (newline-delimited JSON-RPC on stdin/stdout). */
-export function serve(t, input = process.stdin, output = process.stdout) {
-  const send = (msg) => output.write(`${JSON.stringify({ jsonrpc: "2.0", ...msg })}\n`);
+export function serve(t: Record<string, Tool>, input: NodeJS.ReadableStream = process.stdin, output: NodeJS.WritableStream = process.stdout) {
+  const send = (msg: Record<string, unknown>) => output.write(`${JSON.stringify({ jsonrpc: "2.0", ...msg })}\n`);
   createInterface({ input }).on("line", (line) => {
-    let m;
+    let m: Msg;
     try { m = JSON.parse(line); } catch { return; }
     if (m.id === undefined) return; // notifications
-    const ok = (result) => send({ id: m.id, result });
+    const ok = (result: unknown) => send({ id: m.id, result });
     if (m.method === "initialize") return ok({ protocolVersion: m.params?.protocolVersion ?? "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "repo", version: "1" } });
     if (m.method === "ping") return ok({});
     if (m.method === "tools/list") {
       return ok({ tools: Object.entries(t).map(([name, d]) => ({ name, description: d.description, inputSchema: { type: "object", properties: d.schema, ...(d.required ? { required: d.required } : {}) }, annotations: { readOnlyHint: true, openWorldHint: false } })) });
     }
     if (m.method === "tools/call") {
-      const d = t[m.params?.name];
+      const d = t[m.params?.name!];
       if (!d) return send({ id: m.id, error: { code: -32602, message: `no tool ${m.params?.name}` } });
-      return Promise.resolve().then(() => d.run(m.params.arguments ?? {})).then(
+      return Promise.resolve().then(() => d.run(m.params!.arguments ?? {})).then(
         (text) => ok({ content: [{ type: "text", text }], isError: false }),
         (e) => ok({ content: [{ type: "text", text: String(e.stderr || e.message).slice(0, 2000) }], isError: true }));
     }
@@ -187,4 +198,4 @@ export function serve(t, input = process.stdin, output = process.stdout) {
   });
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) serve(tools(process.argv[2], process.argv[3]));
+if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) serve(tools(process.argv[2]!, process.argv[3]!));

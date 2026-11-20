@@ -1,21 +1,28 @@
+import type { Api } from "./record-agent.ts";
+
+/** The parts of the compiled config these functions read, and a Paperclip row. */
+interface Cfg { agents?: Record<string, { department?: { id?: unknown } }>; routines?: Record<string, { title?: string }> }
+type Step = (msg: string) => void;
+type Row = Record<string, any>;
+
 /**
  * Setup-owned agents (setupKey aidenhq:<key>) that are no longer configured (pruned, or their module disabled) are
  * terminated, so they leave the board's agent list and its "needs you" count; the routines of a setup-owned agent that are
  * no longer configured are archived. ensureAgents ignores terminated agents and creates a fresh one if the key returns,
  * and ensureRoutines reactivates an archived routine by title.
  */
-export async function retireUnconfigured({ api, companyId, cfg, step }) {
+export async function retireUnconfigured({ api, companyId, cfg, step }: { api: Api; companyId: string; cfg: Cfg; step: Step }) {
   const keys = new Set(Object.keys(cfg.agents ?? {}).map((k) => `aidenhq:${k}`));
   const titles = new Set(Object.values(cfg.routines ?? {}).map((r) => r.title));
   const { json: all } = await api("GET", `/api/companies/${companyId}/agents`);
-  const owned = all.filter((x) => String(x.metadata?.setupKey ?? "").startsWith("aidenhq:") && x.status !== "terminated");
-  const ownedIds = new Set(owned.map((x) => x.id));
+  const owned = all.filter((x: Row) => String(x.metadata?.setupKey ?? "").startsWith("aidenhq:") && x.status !== "terminated");
+  const ownedIds = new Set(owned.map((x: Row) => x.id));
   const { json: routines } = await api("GET", `/api/companies/${companyId}/routines`);
-  for (const r of routines.filter((r) => ownedIds.has(r.assigneeAgentId) && !titles.has(r.title) && r.status !== "archived")) {
+  for (const r of routines.filter((r: Row) => ownedIds.has(r.assigneeAgentId) && !titles.has(r.title) && r.status !== "archived")) {
     await api("PATCH", `/api/routines/${r.id}`, { status: "archived" });
     step(`Archived routine ${r.title} (no longer configured)`);
   }
-  for (const x of owned.filter((x) => !keys.has(x.metadata.setupKey))) {
+  for (const x of owned.filter((x: Row) => !keys.has(x.metadata.setupKey))) {
     // Its open tasks are what termination makes unreachable: when they can't be listed, this agent stays live (and its
     // tasks reachable) and the other agents are still retired. The next setup run tries it again.
     if (!(await handOverIssues({ api, companyId, cfg, agent: x, agents: all, step }))) {
@@ -34,13 +41,13 @@ const OPEN = "backlog,todo,in_progress,in_review,blocked";
  * Team members (metadata.memberOf) no longer configured that still hold open tasks, each with their identifiers. A member is
  * retired only once drained or handed off: setup refuses to go on while any is listed (its peers are many, so no one successor).
  */
-export async function busyRemovedMembers({ api, companyId, cfg }) {
+export async function busyRemovedMembers({ api, companyId, cfg }: { api: Api; companyId: string; cfg: Cfg }) {
   const { json: all } = await api("GET", `/api/companies/${companyId}/agents`);
-  const gone = all.filter((x) => x.metadata?.memberOf && x.status !== "terminated" && !Object.hasOwn(cfg.agents ?? {}, String(x.metadata.setupKey ?? "").replace(/^aidenhq:/, "")));
-  const out = [];
+  const gone = all.filter((x: Row) => x.metadata?.memberOf && x.status !== "terminated" && !Object.hasOwn(cfg.agents ?? {}, String(x.metadata.setupKey ?? "").replace(/^aidenhq:/, "")));
+  const out: { name: string; tasks: string[] }[] = [];
   for (const x of gone) {
     const open = await listWithRetry(api, companyId, x.id);
-    if (open.length) out.push({ name: x.name, tasks: open.map((i) => i.identifier ?? i.id) });
+    if (open.length) out.push({ name: x.name, tasks: open.map((i: Row) => i.identifier ?? i.id) });
   }
   return out;
 }
@@ -59,15 +66,15 @@ export async function busyRemovedMembers({ api, companyId, cfg }) {
  * Returns whether the agent may be terminated: the list is retried, and false when it still can't be read, because
  * terminating then would strand every task on the dead key, which is the defect this exists to prevent.
  */
-async function handOverIssues({ api, companyId, agent, agents, cfg, step }) {
+async function handOverIssues({ api, companyId, agent, agents, cfg, step }: { api: Api; companyId: string; agent: Row; agents: Row[]; cfg: Cfg; step: Step }) {
   const department = typeof agent.metadata?.department?.id === "string" ? agent.metadata.department.id : null;
   const peers = department == null ? [] : Object.entries(cfg.agents ?? {}).filter(([, a]) => typeof a.department?.id === "string" && a.department.id === department);
-  const successor = peers.length === 1 ? agents.find((x) => x.metadata?.setupKey === `aidenhq:${peers[0][0]}` && x.status !== "terminated") ?? null : null;
-  let issues;
+  const successor = peers.length === 1 ? agents.find((x: Row) => x.metadata?.setupKey === `aidenhq:${peers[0]![0]}` && x.status !== "terminated") ?? null : null;
+  let issues: Row[];
   try {
     issues = await listWithRetry(api, companyId, agent.id);
   } catch (e) {
-    console.warn(`! couldn't list the open tasks of ${agent.name}: ${e.message}`);
+    console.warn(`! couldn't list the open tasks of ${agent.name}: ${(e as Error).message}`);
     return false;
   }
   if (!issues.length) return true;
@@ -78,15 +85,15 @@ async function handOverIssues({ api, companyId, agent, agents, cfg, step }) {
     try {
       ownerId = (await api("GET", "/api/cli-auth/me")).json?.userId ?? null;
     } catch (e) {
-      console.warn(`! couldn't read the owner's user id (${e.message}); the open tasks of ${agent.name} go unassigned`);
+      console.warn(`! couldn't read the owner's user id (${(e as Error).message}); the open tasks of ${agent.name} go unassigned`);
     }
   }
   const patch = successor ? { assigneeAgentId: successor.id, assigneeUserId: null } : { assigneeAgentId: null, assigneeUserId: ownerId, status: "todo" };
   const note = successor ? `${agent.name} was retired; this task was handed to ${successor.name}.`
     : ownerId ? `${agent.name} was retired; this task was unassigned and returned to the owner.`
     : `${agent.name} was retired; this task was left unassigned.`;
-  const moved = [];
-  const stranded = [];
+  const moved: string[] = [];
+  const stranded: string[] = [];
   for (const issue of issues) {
     const label = issue.identifier ?? issue.id;
     try {
@@ -94,13 +101,13 @@ async function handOverIssues({ api, companyId, agent, agents, cfg, step }) {
       moved.push(label);
     } catch (e) {
       stranded.push(label);
-      console.warn(`! couldn't move ${label} from ${agent.name}; leaving it on the dead key: ${e.message}`);
+      console.warn(`! couldn't move ${label} from ${agent.name}; leaving it on the dead key: ${(e as Error).message}`);
       continue;
     }
     try {
       await api("POST", `/api/issues/${issue.id}/comments`, { body: note });
     } catch (e) {
-      console.warn(`! moved ${issue.identifier ?? issue.id} but couldn't comment on it: ${e.message}`);
+      console.warn(`! moved ${issue.identifier ?? issue.id} but couldn't comment on it: ${(e as Error).message}`);
     }
   }
   const to = successor ? successor.name : ownerId ? "the owner" : "nobody (unassigned)";
@@ -114,7 +121,7 @@ async function handOverIssues({ api, companyId, agent, agents, cfg, step }) {
 }
 
 /** The list, retried: a transient failure on the first try must not leave an agent unterminated for good. */
-async function listWithRetry(api, companyId, agentId, tries = 3) {
+async function listWithRetry(api: Api, companyId: string, agentId: string, tries = 3): Promise<Row[]> {
   for (let n = 1; ; n++) {
     try {
       return await openIssues(api, companyId, agentId);
@@ -126,8 +133,8 @@ async function listWithRetry(api, companyId, agentId, tries = 3) {
 }
 
 /** The agent's open issues, paged: done and cancelled rows are never touched. */
-async function openIssues(api, companyId, agentId) {
-  const all = [];
+async function openIssues(api: Api, companyId: string, agentId: string) {
+  const all: Row[] = [];
   for (let offset = 0; ; offset += 500) {
     const q = new URLSearchParams({ status: OPEN, assigneeAgentId: agentId, limit: "500", offset: String(offset) });
     const page = (await api("GET", `/api/companies/${companyId}/issues?${q}`)).json;

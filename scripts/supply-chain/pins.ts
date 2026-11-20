@@ -22,6 +22,10 @@
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { DAY, ghcrRelease, parseImage, publishedAt, readExceptions } from "./best-version.ts";
+import type { Exception, FetchError } from "./best-version.ts";
+
+export interface Pin { kind: string; name: string; package: string; version?: string; digest?: string; sha?: string; at: string; sources?: string[]; releases?: string[]; release?: string; distro?: string }
+interface State { repoAdded: boolean; sources: string[]; releases: Set<string>; releaseCase?: boolean; arm?: string[] }
 
 const DOCKERFILE = /(^|\/)(Dockerfile|Containerfile)[^/]*$|\.dockerfile$/i;
 const COMPOSE = /(^|\/)(docker-)?compose[^/]*\.ya?ml$/;
@@ -34,19 +38,19 @@ const DIGEST = /@sha256:[0-9a-f]{64}$/;
 const DEFAULT_RELEASE = "noble"; // a host file that names no release: Ubuntu 24.04 (hosts are amd64)
 // A repository line as the host reads it on that release ($codename, $(. /etc/os-release …), $arch; pins.json's {distro}
 // and {codename}).
-const onRelease = (s, release, distro = "ubuntu") => s.replace(/\{(distro|codename)\}/g, (x, k) => (k === "distro" ? distro : release)).replace(/\$\{?(\w+)\}?/g, (x, k) => ({ codename: release, VERSION_CODENAME: release, arch: "amd64" })[k] ?? x).replace(/"?\$\(\.\s*\/etc\/os-release.*$/, release);
+const onRelease = (s: string, release: string, distro = "ubuntu") => s.replace(/\{(distro|codename)\}/g, (x: string, k: string) => (k === "distro" ? distro : release)).replace(/\$\{?(\w+)\}?/g, (x: string, k: string) => (({ codename: release, VERSION_CODENAME: release, arch: "amd64" }) as Record<string, string>)[k] ?? x).replace(/"?\$\(\.\s*\/etc\/os-release.*$/, release);
 // The release's own repositories, tried after any the file adds: where a pinned distro package (fail2ban=…) is dated.
 // Debian's point releases fold updates into the release suite; its -updates and -security indexes are xz only (unread
 // here), so a pin only they carry fails as unlisted.
-const distroSources = (r, distro = "ubuntu") => distro === "debian"
+const distroSources = (r: string, distro = "ubuntu") => distro === "debian"
   ? [`http://deb.debian.org/debian ${r} main`]
   : [`${r}-updates main`, `${r}-updates universe`, `${r}-security main`, `${r}-security universe`, `${r} main`, `${r} universe`].map((s) => `http://archive.ubuntu.com/ubuntu ${s}`);
 
-export const wanted = (path) => !SKIP.test(path) && (DOCKERFILE.test(path) || COMPOSE.test(path) || WORKFLOW.test(path) || SHELL.test(path) || CODE.test(path) || HOST_PINS.test(path));
+export const wanted = (path: string) => !SKIP.test(path) && (DOCKERFILE.test(path) || COMPOSE.test(path) || WORKFLOW.test(path) || SHELL.test(path) || CODE.test(path) || HOST_PINS.test(path));
 
 // Logical lines: backslash continuations joined, with the first line's number.
-function logical(text) {
-  const out = [];
+function logical(text: string) {
+  const out: { n: number; text: string }[] = [];
   let buf = "", start = 0;
   text.split("\n").forEach((l, i) => {
     if (!buf) start = i + 1;
@@ -56,43 +60,43 @@ function logical(text) {
   return out;
 }
 
-const imagePin = (ref, at) => {
+const imagePin = (ref: string, at: string): Pin => {
   const { tag, digest } = parseImage(ref);
-  return { kind: "docker", name: ref.split("@")[0], package: ref.split("@")[0].replace(/:[^:/]*$/, ""), version: tag, digest, at };
+  return { kind: "docker", name: ref.split("@")[0]!, package: ref.split("@")[0]!.replace(/:[^:/]*$/, ""), version: tag, digest, at };
 };
-const strip = (s) => s.replace(/^["']|["']$/g, "");
-const words = (s) => s.trim().split(/\s+/).map(strip).filter(Boolean);
+const strip = (s: string) => s.replace(/^["']|["']$/g, "");
+const words = (s: string) => s.trim().split(/\s+/).map(strip).filter(Boolean);
 
 // Install commands on one logical line: pins found, problems found.
-function commands(text, at, state, pins, problems) {
+function commands(text: string, at: string, state: State, pins: Pin[], problems: string[]): void {
   const cmd = text.replace(/(^|\s)#.*$/, "");
   if (/\b(curl|wget)\b[^|;&]*\|\s*(sudo\s+)?(\S*\/)?(ba|z|da)?sh\b/.test(cmd)) problems.push(`${at}: piping a download into a shell installs whatever is served: download a pinned version and check its sha256`);
   for (const m of cmd.matchAll(/\bnpm\s+(?:i|install|add)\s+([^;&|]*)/g)) {
-    const args = words(m[1]);
+    const args = words(m[1]!);
     if (!args.some((a) => a === "-g" || a === "--global")) continue;
     for (const a of args.filter((x) => !x.startsWith("-"))) {
       const p = /^(@?[^@\s]+)@(\d+\.\d+\.\d+\S*)$/.exec(a);
       if (!p) problems.push(`${at}: npm -g ${a} is not at an exact version (name@1.2.3)`);
-      else pins.push({ kind: "npm", name: p[1], package: p[1], version: p[2], at });
+      else pins.push({ kind: "npm", name: p[1]!, package: p[1]!, version: p[2], at });
     }
   }
   for (const m of cmd.matchAll(/\bnpx\s+([^;&|]*)/g)) {
-    const args = words(m[1]);
+    const args = words(m[1]!);
     if (!args.some((a) => a === "-y" || a === "--yes")) continue; // without --yes npx runs the project's own (lockfiled) bin
     const a = args.find((x) => !x.startsWith("-"));
     const p = /^(@?[^@\s]+)@(\d+\.\d+\.\d+\S*)$/.exec(a || "");
     if (!p) problems.push(`${at}: npx -y ${a} is not at an exact version (name@1.2.3)`);
-    else pins.push({ kind: "npm", name: p[1], package: p[1], version: p[2], at });
+    else pins.push({ kind: "npm", name: p[1]!, package: p[1]!, version: p[2], at });
   }
   for (const m of cmd.matchAll(/\bpip3?"?\s+install\s+([^;&|]*)/g)) {
-    const args = words(m[1]);
+    const args = words(m[1]!);
     for (let i = 0; i < args.length; i++) {
-      const a = args[i];
+      const a = args[i]!;
       if (a === "-r" || a === "-c" || a === "-e" || a === "--requirement" || a === "--constraint") { i++; continue; }
       if (a.startsWith("-") || a.startsWith(".") || a.startsWith("/") || a.startsWith("$")) continue;
       const p = /^([A-Za-z0-9_.\-[\]]+)==([^\s,;]+)$/.exec(a);
       if (!p) problems.push(`${at}: pip install ${a} is not at an exact version (name==1.2.3)`);
-      else pins.push({ kind: "pypi", name: p[1].replace(/\[.*\]$/, ""), package: p[1].replace(/\[.*\]$/, ""), version: p[2], at });
+      else pins.push({ kind: "pypi", name: p[1]!.replace(/\[.*\]$/, ""), package: p[1]!.replace(/\[.*\]$/, ""), version: p[2], at });
     }
   }
   if (/sources\.list\.d\//.test(cmd) && /(>|tee\b)/.test(cmd)) state.repoAdded = true;
@@ -101,16 +105,16 @@ function commands(text, at, state, pins, problems) {
   if (/^\s*case\s+"?\$\{?(codename|VERSION_CODENAME)\b/.test(cmd)) state.releaseCase = true;
   else if (/^\s*esac\b/.test(cmd)) state.releaseCase = false;
   const label = state.releaseCase && /^\s*([a-z][a-z0-9]*(?:\|[a-z][a-z0-9]*)*)\)/.exec(cmd);
-  if (label) { state.arm = label[1].split("|"); state.arm.forEach((r) => state.releases.add(r)); }
+  if (label) { state.arm = label[1]!.split("|"); state.arm.forEach((r) => state.releases.add(r)); }
   for (const m of cmd.matchAll(/\bapt(?:-get)?\s+(?:-\S+\s+)*install\s+([^;&|]*)/g)) {
-    for (const a of words(m[1]).filter((x) => !x.startsWith("-") && !x.startsWith("./") && !x.startsWith("/") && !x.startsWith("$"))) {
-      const [pkg, ver] = a.split("=");
+    for (const a of words(m[1]!).filter((x) => !x.startsWith("-") && !x.startsWith("./") && !x.startsWith("/") && !x.startsWith("$"))) {
+      const [pkg, ver] = a.split("=") as [string, string | undefined];
       if (ver) pins.push({ kind: "apt", name: pkg, package: pkg, version: ver, sources: state.sources, releases: state.arm, at });
       else if (state.repoAdded) problems.push(`${at}: apt install ${pkg} after an apt repository is added: pin it (${pkg}=<version>) or install it before the repository`);
     }
   }
   for (const m of cmd.matchAll(/https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/releases\/download\/([^/\s"'$]+)\//g)) {
-    pins.push({ kind: "github-release", name: m[1], package: m[1], version: m[2], at });
+    pins.push({ kind: "github-release", name: m[1]!, package: m[1]!, version: m[2], at });
   }
   if (/;;\s*$/.test(cmd)) state.arm = undefined;
 }
@@ -120,34 +124,34 @@ function commands(text, at, state, pins, problems) {
  * with no releases dates its top-level `apt` for DEFAULT_RELEASE (as scanFile does for a host script naming none); an `apt`
  * block no release can read (not an object of pins, or under a release that isn't an object) is a problem, never skipped.
  */
-function hostPins(path, text) {
+function hostPins(path: string, text: string): { pins: Pin[]; problems: string[] } {
   const j = JSON.parse(text);
   const at = `${path}:${text.split("\n").findIndex((l) => /"apt"\s*:/.test(l)) + 1}`;
-  const lineOf = (name, version) => text.split("\n").findIndex((l) => l.includes(`"${name}": "${version}"`)) + 1;
-  const obj = (x) => x !== null && typeof x === "object" && !Array.isArray(x);
-  const problems = [];
+  const lineOf = (name: string, version: string) => text.split("\n").findIndex((l) => l.includes(`"${name}": "${version}"`)) + 1;
+  const obj = (x: unknown) => x !== null && typeof x === "object" && !Array.isArray(x);
+  const problems: string[] = [];
   if (j.apt !== undefined && !obj(j.apt)) problems.push(`${at}: \`apt\` is not an object of package pins`);
   if (j.releases !== undefined && !obj(j.releases)) problems.push(`${path}: \`releases\` is not an object of releases: its apt pins can't be dated`);
-  const releases = obj(j.releases) && Object.keys(j.releases).length ? j.releases : { [DEFAULT_RELEASE]: { distro: "ubuntu" } };
+  const releases: Record<string, any> = obj(j.releases) && Object.keys(j.releases).length ? j.releases : { [DEFAULT_RELEASE]: { distro: "ubuntu" } };
   const pins = Object.entries(releases).flatMap(([release, r]) => {
     if (!obj(r) || (r.apt !== undefined && !obj(r.apt))) { problems.push(`${path}: release ${release} is not an object with an \`apt\` object: its pins can't be dated`); return []; }
-    const sources = Object.values(j.repos ?? {}).map((s) => onRelease(s, release, r.distro));
-    return Object.entries({ ...(obj(j.apt) ? j.apt : {}), ...(r.apt ?? {}) }).map(([name, version]) =>
+    const sources = Object.values((j.repos ?? {}) as Record<string, string>).map((s) => onRelease(s, release, r.distro));
+    return Object.entries({ ...(obj(j.apt) ? j.apt : {}), ...(r.apt ?? {}) } as Record<string, string>).map(([name, version]) =>
       ({ kind: "apt", name, package: name, version, sources, release, distro: r.distro, at: `${path}:${lineOf(name, version)}` }));
   });
   return { pins, problems };
 }
 
 /** One file's pins and its unpinned problems. */
-export function scanFile(path, text) {
+export function scanFile(path: string, text: string): { pins: Pin[]; problems: string[] } {
   if (HOST_PINS.test(path)) return hostPins(path, text);
-  const pins = [], problems = [];
-  const state = { repoAdded: false, sources: [], releases: new Set() };
-  const at = (n) => `${path}:${n}`;
+  const pins: Pin[] = [], problems: string[] = [];
+  const state: State = { repoAdded: false, sources: [], releases: new Set() };
+  const at = (n: number) => `${path}:${n}`;
   if (DOCKERFILE.test(path)) {
     const stages = new Set(["scratch"]);
     const syntax = /^#\s*syntax\s*=\s*(\S+)/m.exec(text);
-    if (syntax) DIGEST.test(syntax[1]) ? pins.push(imagePin(syntax[1], at(1))) : problems.push(`${at(1)}: # syntax=${syntax[1]} has no digest`);
+    if (syntax) DIGEST.test(syntax[1]!) ? pins.push(imagePin(syntax[1]!, at(1))) : problems.push(`${at(1)}: # syntax=${syntax[1]} has no digest`);
     for (const { n, text: l } of logical(text)) {
       const from = /^\s*FROM\s+(?:--\S+\s+)*(\S+)(?:\s+AS\s+(\S+))?/i.exec(l);
       const copy = /^\s*COPY\s+.*--from=(\S+)/i.exec(l);
@@ -161,20 +165,20 @@ export function scanFile(path, text) {
   } else if (COMPOSE.test(path) || WORKFLOW.test(path)) {
     const lines = text.split("\n");
     // A compose service is a 2-space-indented key; its block runs to the next one.
-    const blockOf = (i) => { let s = i; while (s > 0 && !/^ {2}[\w.-]+:\s*$/.test(lines[s])) s--; let e = i + 1; while (e < lines.length && !/^ {2}[\w.-]+:\s*$/.test(lines[e]) && !/^\S/.test(lines[e])) e++; return lines.slice(s, e); };
+    const blockOf = (i: number) => { let s = i; while (s > 0 && !/^ {2}[\w.-]+:\s*$/.test(lines[s]!)) s--; let e = i + 1; while (e < lines.length && !/^ {2}[\w.-]+:\s*$/.test(lines[e]!) && !/^\S/.test(lines[e]!)) e++; return lines.slice(s, e); };
     lines.forEach((l, i) => {
       const img = /^\s*-?\s*(?:image|container):\s*["']?([^\s"'#]+)/.exec(l);
-      if (img && !img[1].includes("$")) {
+      if (img && !img[1]!.includes("$")) {
         if (COMPOSE.test(path) && blockOf(i).some((b) => /^\s+build:/.test(b))) return;
-        DIGEST.test(img[1]) ? pins.push(imagePin(img[1], at(i + 1))) : problems.push(`${at(i + 1)}: image ${img[1]} has no digest (name:tag@sha256:…)`);
+        DIGEST.test(img[1]!) ? pins.push(imagePin(img[1]!, at(i + 1))) : problems.push(`${at(i + 1)}: image ${img[1]} has no digest (name:tag@sha256:…)`);
       }
       const uses = WORKFLOW.test(path) && /^\s*-?\s*uses:\s*["']?([^\s"'#]+)["']?\s*(?:#\s*(\S+))?/.exec(l);
-      if (uses && !uses[1].startsWith("./")) {
-        if (uses[1].startsWith("docker://")) {
-          const ref = uses[1].slice(9);
+      if (uses && !uses[1]!.startsWith("./")) {
+        if (uses[1]!.startsWith("docker://")) {
+          const ref = uses[1]!.slice(9);
           DIGEST.test(ref) ? pins.push(imagePin(ref, at(i + 1))) : problems.push(`${at(i + 1)}: ${uses[1]} has no digest`);
         } else {
-          const [action, ref] = uses[1].split("@");
+          const [action, ref] = uses[1]!.split("@") as [string, string | undefined];
           if (!/^[0-9a-f]{40}$/.test(ref || "")) problems.push(`${at(i + 1)}: ${uses[1]} is not pinned to a commit SHA`);
           else if (!uses[2]) problems.push(`${at(i + 1)}: ${uses[1]} has no version comment (# v1.2.3)`);
           else pins.push({ kind: "github-action", name: action.split("/").slice(0, 2).join("/"), package: action.split("/").slice(0, 2).join("/"), version: uses[2], sha: ref, at: at(i + 1) });
@@ -188,7 +192,7 @@ export function scanFile(path, text) {
   if (SHELL.test(path) || CODE.test(path)) {
     // Digest-pinned images named in scripts and code (e.g. a scanner or renderer image): dated when they change.
     text.split("\n").forEach((l, i) => {
-      for (const m of l.matchAll(/([a-z0-9][\w.\/-]*:[\w.-]+@sha256:[0-9a-f]{64})/g)) pins.push(imagePin(m[1], at(i + 1)));
+      for (const m of l.matchAll(/([a-z0-9][\w.\/-]*:[\w.-]+@sha256:[0-9a-f]{64})/g)) pins.push(imagePin(m[1]!, at(i + 1)));
     });
   }
   // An apt pin once per release it is installed on.
@@ -197,18 +201,18 @@ export function scanFile(path, text) {
 }
 
 // An apt pin's distro and sources are part of it: the same version from another repository or distro is dated again.
-const key = (p) => JSON.stringify([p.kind, p.name, p.version, p.digest, p.sha, p.release, p.distro, p.sources]);
-const exceptionFor = (p, exceptions) => exceptions.find((e) => e.ecosystem === p.kind && e.package === p.package && e.version === p.version && e.advisory);
+const key = (p: Pin) => JSON.stringify([p.kind, p.name, p.version, p.digest, p.sha, p.release, p.distro, p.sources]);
+const exceptionFor = (p: Pin, exceptions: Exception[]) => exceptions.find((e) => e.ecosystem === p.kind && e.package === p.package && e.version === p.version && e.advisory);
 // An owner-approved one (`owner: approved`, no advisory) covers a pin only while today < expires, at most 14 days out, and
 // only the exact pin: its digest or sha when the pin has one (as npm-age.ts's, for any ecosystem here).
-const ownerApproved = (p, exceptions, now) => exceptions.some((e) => e.ecosystem === p.kind && e.package === p.package && e.version === p.version && e.owner === "approved"
-  && now < Date.parse(e.expires) && Date.parse(e.expires) - now <= 14 * DAY && e.digest === p.digest && e.sha === p.sha);
+const ownerApproved = (p: Pin, exceptions: Exception[], now: number) => exceptions.some((e) => e.ecosystem === p.kind && e.package === p.package && e.version === p.version && e.owner === "approved"
+  && now < Date.parse(e.expires!) && Date.parse(e.expires!) - now <= 14 * DAY && e.digest === p.digest && e.sha === p.sha);
 
 /** Date each new or changed pin; the problems, one line each. `date(pin)` returns {published, via} or throws. */
-export async function checkAges({ pins, basePins = [], exceptions = [], date = datePin, releaseOf = baseRelease, now = Date.now() }) {
+export async function checkAges({ pins, basePins = [], exceptions = [], date = datePin, releaseOf = baseRelease, now = Date.now() }: { pins: Pin[]; basePins?: Pin[]; exceptions?: Exception[]; date?: (p: Pin) => Promise<{ published: string; via: string; byRelease?: boolean }>; releaseOf?: (b: Pin) => Promise<string | null>; now?: number }): Promise<string[]> {
   const old = new Set(basePins.map(key));
-  const seen = new Set();
-  const problems = [];
+  const seen = new Set<string>();
+  const problems: string[] = [];
   for (const p of pins) {
     if (old.has(key(p)) || seen.has(key(p))) continue;
     seen.add(key(p));
@@ -243,21 +247,21 @@ export async function checkAges({ pins, basePins = [], exceptions = [], date = d
       // A pin whose registry keeps no push record to date it by passes only on a security exception that names it exactly: its
       // version and its digest or sha (`digest: sha256:…`), so the exception, not the registry, vouches for what is pulled.
       // Every other failure (a lookup error) stands.
-      const ex = e.undated && exceptionFor(p, exceptions);
+      const ex = (e as FetchError).undated && exceptionFor(p, exceptions);
       if (ex && ex.digest === p.digest && ex.sha === p.sha) continue;
-      problems.push(`${label}: could not be dated: ${e.message}`);
+      problems.push(`${label}: could not be dated: ${(e as Error).message}`);
     }
   }
   return problems;
 }
 
 // The release date of a base pin's tag (null when it has none), to compare a release-dated move against.
-async function baseRelease(b) {
+async function baseRelease(b: Pin) {
   const { repo, tag } = parseImage(b.name);
   return tag ? (await ghcrRelease(repo, tag))?.published ?? null : null;
 }
 
-async function datePin(p) {
+async function datePin(p: Pin) {
   if (p.kind === "docker") return publishedAt("docker", p.name, { digest: p.digest });
   if (p.kind === "apt") return dateApt(p);
   return publishedAt(p.kind, p.name, { version: p.version, sha: p.sha });
@@ -268,17 +272,17 @@ async function datePin(p) {
  * passed over only when it was read and doesn't list the version; any other error (a repository that can't be read)
  * fails, so a lookup failure on the file's own repository never falls through to dating the package from somewhere else.
  */
-export async function dateApt(p, lookup = publishedAt) {
+export async function dateApt(p: Pin, lookup: typeof publishedAt = publishedAt) {
   const release = p.release ?? DEFAULT_RELEASE;
-  for (const source of [...p.sources.map((s) => onRelease(s, release, p.distro)), ...distroSources(release, p.distro)]) {
-    try { return await lookup("apt", p.name, { version: p.version, source }); } catch (e) { if (!e.notListed) throw e; }
+  for (const source of [...p.sources!.map((s) => onRelease(s, release, p.distro)), ...distroSources(release, p.distro)]) {
+    try { return await lookup("apt", p.name, { version: p.version, source }); } catch (e) { if (!(e as FetchError).notListed) throw e; }
   }
   throw new Error(`${p.name}=${p.version}: no apt repository in this file, nor ${release}'s own, lists it`);
 }
 
-const git = (...a) => execFileSync("git", a, { encoding: "utf8", maxBuffer: 1 << 28 });
-function scanRef(ref) {
-  const pins = [], problems = [];
+const git = (...a: string[]) => execFileSync("git", a, { encoding: "utf8", maxBuffer: 1 << 28 });
+function scanRef(ref: string) {
+  const pins: Pin[] = [], problems: string[] = [];
   for (const path of git("ls-tree", "-r", "--name-only", ref).split("\n").filter(wanted)) {
     const text = git("show", `${ref}:${path}`);
     if (CODE.test(path) && !text.includes("@sha256:")) continue;

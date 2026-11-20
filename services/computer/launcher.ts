@@ -27,27 +27,31 @@
 import http from "node:http";
 import { spawn } from "node:child_process";
 import { Readable } from "node:stream";
+import type { ReadableStream as WebReadableStream } from "node:stream/web";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { forwardModel, PROGRESS_SCRIPT, UNTAR_SCRIPT, boxOf, checkoutDest, Jobs, tokenHash, JOB_HOME, JOB_ROUTES, CHECK_ROUTES, checkMounts, admit, controlAllowed, jobEnvFile, jobFolder, jobMounts, reapLapsed, builtImage, dockerRunArgs, stale } from "./lib.ts";
+import type { Box } from "./lib.ts";
+
+type Failure = Error & { status?: number };
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
-const dotenv = {};
+const dotenv: Record<string, string> = {};
 if (existsSync(path.join(repo, ".env"))) {
   for (const line of readFileSync(path.join(repo, ".env"), "utf8").split("\n")) {
     const m = /^\s*([A-Z0-9_]+)=(.*)$/.exec(line);
-    if (m) dotenv[m[1]] = m[2].replace(/^["']|["']$/g, "");
+    if (m) dotenv[m[1]!] = m[2]!.replace(/^["']|["']$/g, "");
   }
 }
-const env = (k, d) => process.env[k] ?? dotenv[k] ?? d;
+const env = (k: string, d?: string | number) => (process.env[k] ?? dotenv[k] ?? d) as string; // undefined when unset and no default
 const configDir = path.resolve(repo, env("AIDENHQ_CONFIG_DIR", "config"));
 const secretsDir = env("AIDENHQ_SECRETS_DIR");
 if (!secretsDir) throw new Error("AIDENHQ_SECRETS_DIR is not set (.env)");
-const secret = (n) => { try { return readFileSync(path.join(secretsDir, n), "utf8").trim(); } catch { return ""; } };
+const secret = (n: string) => { try { return readFileSync(path.join(secretsDir, n), "utf8").trim(); } catch { return ""; } };
 
-const readJson = (f) => JSON.parse(readFileSync(f, "utf8"));
+const readJson = (f: string) => JSON.parse(readFileSync(f, "utf8"));
 // A fresh install enables this unit before the compile writes computers.json: wait for it quietly, no crash loop.
 const computersJson = path.join(configDir, "computers.json");
 if (!existsSync(computersJson)) {
@@ -82,7 +86,7 @@ const stateDir = path.join(os.homedir(), ".local/state/aidenhq-computers");
 mkdirSync(stateDir, { recursive: true });
 const resolvConf = path.join(stateDir, "resolv.conf");
 writeFileSync(resolvConf, "nameserver 1.1.1.1\nnameserver 8.8.8.8\n");
-const log = (...a) => console.log(new Date().toISOString(), ...a);
+const log = (...a: unknown[]) => console.log(new Date().toISOString(), ...a);
 const DEBUG = env("AIDENHQ_COMPUTERS_DEBUG") === "1"; // log every exec, with its env keys (never values)
 /** The pool's size: settings.computers_max (compile writes it to computers.json; the kernel admits jobs against the same number). */
 const maxBoxes = () => {
@@ -90,38 +94,38 @@ const maxBoxes = () => {
   if (!Number.isInteger(n) || n < 1) throw fail(500, "computers.json has no max (run scripts/compile.ts)");
   return n;
 };
-const boxes = new Map(); // container → { agentId, lastUsed, busy }
+const boxes = new Map<string, Box>(); // container → { agentId, lastUsed, busy }
 // Jobs' records (lease, task, token hash), saved as a 0600 file: a restart reloads them before it admits or reaps.
 const jobs = new Jobs();
 const jobsFile = path.join(stateDir, "jobs.json");
 try { jobs.load(readJson(jobsFile)); } catch {}
 // Written whole then renamed, so a crash never leaves a half file.
-const saveJobs = () => { try { writeFileSync(`${jobsFile}.tmp`, JSON.stringify(jobs.dump()), { mode: 0o600 }); renameSync(`${jobsFile}.tmp`, jobsFile); } catch (e) { log("couldn't save jobs:", e.message); } };
-const held = (name) => jobs.leased(name);
+const saveJobs = () => { try { writeFileSync(`${jobsFile}.tmp`, JSON.stringify(jobs.dump()), { mode: 0o600 }); renameSync(`${jobsFile}.tmp`, jobsFile); } catch (e) { log("couldn't save jobs:", (e as Error).message); } };
+const held = (name: string) => jobs.leased(name);
 const jobEnvDir = path.join(stateDir, "jobs");
 mkdirSync(jobEnvDir, { recursive: true, mode: 0o700 });
 
-function docker(args, opts = {}) {
-  return new Promise((resolve) => {
+function docker(args: string[], opts: { stdin?: string; timeoutMs?: number } = {}) {
+  return new Promise<{ exitCode: number | null; signal: NodeJS.Signals | null; timedOut: boolean; stdout: string; stderr: string }>((resolve) => {
     const c = spawn("docker", args, { stdio: [opts.stdin != null ? "pipe" : "ignore", "pipe", "pipe"] });
     let out = "", err = "", timedOut = false;
-    const t = opts.timeoutMs > 0 ? setTimeout(() => { timedOut = true; c.kill("SIGKILL"); }, opts.timeoutMs) : null;
-    c.stdout.on("data", (d) => (out += d));
-    c.stderr.on("data", (d) => (err += d));
+    const t = opts.timeoutMs! > 0 ? setTimeout(() => { timedOut = true; c.kill("SIGKILL"); }, opts.timeoutMs) : null;
+    c.stdout!.on("data", (d) => (out += d));
+    c.stderr!.on("data", (d) => (err += d));
     c.on("close", (code, signal) => { if (t) clearTimeout(t); resolve({ exitCode: timedOut ? null : code, signal, timedOut, stdout: out, stderr: err }); });
-    if (opts.stdin != null) c.stdin.end(opts.stdin);
+    if (opts.stdin != null) c.stdin!.end(opts.stdin);
   });
 }
 // "missing" only when Docker says so: a daemon that doesn't answer is not a box that is gone (a job's release waits on this).
-const jobState = async (name) => {
+const jobState = async (name: string) => {
   const r = await docker(["inspect", "-f", "{{.State.Status}}", name]);
   if (r.exitCode === 0) return r.stdout.trim();
   return /no such (object|container)/i.test(r.stderr) ? "missing" : "unknown";
 };
-const ours = (name) => typeof name === "string" && name.startsWith(CFG.prefix) && /^[a-z0-9-]+$/.test(name);
-const fail = (status, msg) => Object.assign(new Error(msg), { status });
+const ours = (name: unknown): name is string => typeof name === "string" && name.startsWith(CFG.prefix) && /^[a-z0-9-]+$/.test(name);
+const fail = (status: number, msg: string) => Object.assign(new Error(msg), { status });
 
-async function destroy(name, why) {
+async function destroy(name: string, why: string) {
   boxes.delete(name);
   if (jobs.delete(name)) saveJobs();
   rmSync(path.join(jobEnvDir, `${name}.env`), { force: true });
@@ -131,7 +135,7 @@ async function destroy(name, why) {
 }
 
 /** A kernel job's image, by the name its admission froze: one compile tagged (computers.json). */
-async function imageNamed(name) {
+async function imageNamed(name: unknown) {
   const tag = typeof name === "string" ? readJson(CFG.computersFile).images?.[name] : undefined;
   if (!tag) throw fail(400, `no computer image ${name} (computers.json)`);
   return builtImage(tag, docker, log);
@@ -150,7 +154,7 @@ async function makeRoom() {
 const newName = () => CFG.prefix + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 
 /** The board's live line for an agent in its own computer: the tail of its Codex session log. */
-async function progress({ agentId }) {
+async function progress({ agentId }: { agentId?: unknown }) {
   const box = typeof agentId === "string" ? boxOf(boxes, agentId) : undefined;
   if (!box) return { lines: [] };
   const r = await docker(["exec", box, "sh", "-c", PROGRESS_SCRIPT], { timeoutMs: 8000 });
@@ -158,12 +162,12 @@ async function progress({ agentId }) {
 }
 
 // A job's box: the launcher's uid (workspace files stay the host user's), a HOME outside every clone.
-const JOB_USER = `${process.getuid()}:${process.getgid()}`;
+const JOB_USER = `${process.getuid!()}:${process.getgid!()}`;
 const IDENTIFIER = /^[A-Z][A-Z0-9]*-\d+$/;
 
 /** The job and check routes (lib.ts controlAllowed). */
 const jobControl = {
-  async "/job"({ agentId, issueId, identifier, workspace, engine, state, identity, image: imageName, token, mcp, roles }, { kernel = false } = {}) {
+  async "/job"({ agentId, issueId, identifier, workspace, engine, state, identity, image: imageName, token, mcp, roles }: { agentId: string; issueId: string; identifier: string; workspace: string; engine: string; state: string; identity?: { name?: unknown; email?: unknown }; image: unknown; token: string; mcp: string; roles: string[] }, { kernel = false }: { kernel?: boolean } = {}) {
     if (!kernel) throw fail(403, "job boxes are the kernel's");
     if (typeof agentId !== "string" || !agentId || typeof issueId !== "string" || !issueId) throw fail(400, "agentId and issueId required");
     if (typeof identifier !== "string" || !IDENTIFIER.test(identifier)) throw fail(400, "identifier must be the task's, e.g. PEN-7");
@@ -201,10 +205,10 @@ const jobControl = {
       await destroy(name, "job box failed to start");
       throw e;
     }
-    boxes.get(name).busy = 0;
+    boxes.get(name)!.busy = 0;
     return { container: name, envFile, outDir };
   },
-  async "/job/renew"({ container, issueId }, { kernel = false } = {}) {
+  async "/job/renew"({ container, issueId }: { container: string; issueId?: string }, { kernel = false }: { kernel?: boolean } = {}) {
     if (!ours(container)) throw fail(400, "not a computer");
     if (!kernel) throw fail(403, `not your job's box: ${container}`);
     if ((await jobState(container)) === "missing") {
@@ -223,7 +227,7 @@ const jobControl = {
    * none). Its lease is its time limit: a kernel that dies mid-run leaves nothing behind. The kernel runs the command itself
    * (docker exec) and ends it with /job/release.
    */
-  async "/check"({ check, image: imageName, workspace, out, readOnly, token, timeoutMs }, { kernel = false } = {}) {
+  async "/check"({ check, image: imageName, workspace, out, readOnly, token, timeoutMs }: { check: string; image: unknown; workspace: string; out: string; readOnly?: boolean; token?: string | null; timeoutMs: unknown }, { kernel = false }: { kernel?: boolean } = {}) {
     if (!kernel) throw fail(403, "check boxes are the kernel's");
     if (typeof check !== "string" || !/^c-[0-9a-f]{16}$/.test(check)) throw fail(400, "check is the kernel's check id");
     if (token != null && (typeof token !== "string" || !token.startsWith("ahqj_") || /\s/.test(token))) throw fail(400, "a check's token is the kernel's (ahqj_)");
@@ -247,10 +251,10 @@ const jobControl = {
       await destroy(name, "check box failed to start");
       throw e;
     }
-    boxes.get(name).busy = 0;
+    boxes.get(name)!.busy = 0;
     return { container: name };
   },
-  async "/job/release"({ container }, { kernel = false } = {}) {
+  async "/job/release"({ container }: { container: string }, { kernel = false }: { kernel?: boolean } = {}) {
     if (!ours(container)) throw fail(400, "not a computer");
     if (!kernel) throw fail(403, `not your job's box: ${container}`);
     if (jobs.has(container) || (await jobState(container)) !== "missing") await destroy(container, "released");
@@ -262,7 +266,7 @@ const jobControl = {
  * `repo-checkout <org/name> [sha]` from a box: the kernel's code host snapshot (POST /v1/checkout with the box's own job token;
  * the kernel checks the repo-checkout role and the agents org), streamed into the calling box.
  */
-async function checkout(who, token, raw) {
+async function checkout(who: { container: string }, token: string, raw: string) {
   let p;
   try { p = JSON.parse(raw || "{}"); } catch { throw fail(400, "bad json"); }
   const dest = checkoutDest(p.repo);
@@ -276,7 +280,7 @@ async function checkout(who, token, raw) {
     const d = spawn("docker", ["exec", "-i", who.container, "sh", "-c", UNTAR_SCRIPT, "sh", dest], { stdio: ["pipe", "ignore", "pipe"] });
     // A box gone mid-stream (evicted, tar failed) is an EPIPE here: the exit code reports it; it must never crash the launcher.
     d.on("error", () => {}); d.stdin.on("error", () => {});
-    Readable.fromWeb(r.body).on("error", () => d.kill("SIGKILL")).pipe(d.stdin);
+    Readable.fromWeb(r.body! as WebReadableStream).on("error", () => d.kill("SIGKILL")).pipe(d.stdin);
     let err = "";
     d.stderr.on("data", (x) => (err += x));
     const t = setTimeout(() => d.kill("SIGKILL"), 120_000);
@@ -291,15 +295,15 @@ async function checkout(who, token, raw) {
 }
 
 
-const bearer = (req) => String(req.headers.authorization ?? "").replace(/^Bearer\s+/i, "");
-const send = (res, status, body) => res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
+const bearer = (req: http.IncomingMessage) => String(req.headers.authorization ?? "").replace(/^Bearer\s+/i, "");
+const send = (res: http.ServerResponse, status: number, body: unknown) => res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
 
 const controlServer = http.createServer((req, res) => {
   if (req.method === "GET" && req.url === "/health") {
-    try { return send(res, 200, { ok: true, computers: boxes.size, max: maxBoxes() }); } catch (e) { return send(res, 500, { ok: false, error: e.message }); }
+    try { return send(res, 200, { ok: true, computers: boxes.size, max: maxBoxes() }); } catch (e) { return send(res, 500, { ok: false, error: (e as Error).message }); }
   }
   // Only these routes exist; anything else is a 404 before any key is looked at.
-  const fn = req.method !== "POST" ? undefined : req.url === "/progress" ? progress : Object.hasOwn(jobControl, req.url) ? jobControl[req.url] : undefined;
+  const fn: ((p: any, o: { kernel: boolean }) => Promise<Record<string, unknown>>) | undefined = req.method !== "POST" ? undefined : req.url === "/progress" ? progress : Object.hasOwn(jobControl, req.url!) ? jobControl[req.url as keyof typeof jobControl] : undefined;
   if (!fn) return send(res, 404, { error: "no such route" });
   let body = "";
   req.on("data", (d) => (body += d));
@@ -314,8 +318,8 @@ const controlServer = http.createServer((req, res) => {
       if (req.url !== "/progress" || DEBUG) log(req.url, p.container ?? p.agentId ?? "", `${Date.now() - t0}ms`, out.state ?? out.container ?? "");
       send(res, 200, out);
     } catch (e) {
-      log(req.url, "ERROR", e.message);
-      send(res, e.status ?? 500, { error: e.message });
+      log(req.url, "ERROR", (e as Failure).message);
+      send(res, (e as Failure).status ?? 500, { error: (e as Failure).message });
     }
   });
 });
@@ -323,23 +327,23 @@ const controlServer = http.createServer((req, res) => {
 // ------------------------------------------------------------------ gateway (boxes only)
 
 /** The live box a box-side credential is: a kernel job's token for the box made for it. */
-const liveBox = (token) => jobs.byKernelToken(token);
+const liveBox = (token: string) => jobs.byKernelToken(token);
 
 const gatewayServer = http.createServer(async (req, res) => {
-  const deny = (status, msg) => { log("gateway", req.method, req.url, status, msg); res.writeHead(status, { "content-type": "text/plain" }).end(`gateway: ${msg}`); };
+  const deny = (status: number, msg: string) => { log("gateway", req.method, req.url, status, msg); res.writeHead(status, { "content-type": "text/plain" }).end(`gateway: ${msg}`); };
   try {
     if (req.method === "POST" && (req.url === "/api/v1/responses" || req.url === "/api/v1/chat/completions")) {
       // The model: the box's "API key" is its job token; the model gateway, not a box or the launcher, holds the real key.
       const token = bearer(req);
       const who = liveBox(token);
       if (!who) return deny(401, "not a live computer");
-      boxes.get(who.container) && (boxes.get(who.container).lastUsed = Date.now());
+      boxes.get(who.container) && (boxes.get(who.container)!.lastUsed = Date.now());
       return await forwardModel(req, res, `${MODEL_GATEWAY_URL}${req.url}`, token);
     }
     if (req.method === "POST" && req.url === "/repo") {
       const who = liveBox(String(req.headers["x-agent-key"] ?? ""));
       if (!who) return deny(401, "not a live computer");
-      const chunks = [];
+      const chunks: Buffer[] = [];
       for await (const c of req) chunks.push(c);
       return checkout(who, String(req.headers["x-agent-key"]), Buffer.concat(chunks).toString("utf8").slice(0, 4096)).then(
         (out) => res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(out)),
@@ -350,26 +354,26 @@ const gatewayServer = http.createServer(async (req, res) => {
       // A kernel job's `aidenhq` commands (images/engineer/bin/aidenhq): its writes and next-turn requests, to the kernel as itself.
       const token = bearer(req);
       if (!liveBox(token)) return deny(401, "not a live computer");
-      const k = new URL(req.url, KERNEL_URL);
+      const k = new URL(req.url!, KERNEL_URL);
       const headers = { authorization: `Bearer ${token}`, "content-type": "application/json", ...(req.headers["content-length"] ? { "content-length": req.headers["content-length"] } : {}) };
       const up = http.request({ host: k.hostname, port: Number(k.port || 80), path: k.pathname, method: req.method, headers }, (ur) => { res.writeHead(ur.statusCode ?? 502, { "content-type": ur.headers["content-type"] ?? "application/json" }); ur.pipe(res); });
       up.on("error", (e) => { if (!res.headersSent) deny(502, e.message); else res.destroy(); });
       return void req.pipe(up);
     }
-    const m = /^\/c\/([a-z0-9_]+)\/mcp$/.exec(req.url.split("?")[0]);
+    const m = /^\/c\/([a-z0-9_]+)\/mcp$/.exec(req.url!.split("?")[0]!);
     if (!m) return deny(403, "refused");
-    if (!readJson(CFG.computersFile).connections?.[m[1]]) return deny(404, `no connection ${m[1]}`);
+    if (!readJson(CFG.computersFile).connections?.[m[1]!]) return deny(404, `no connection ${m[1]}`);
     const token = String(req.headers["x-agent-key"] ?? "");
     if (!liveBox(token)) return deny(401, "not a live computer");
     // The kernel's proxy decides: the job token is the caller; only MCP transport headers go on.
     const k = new URL(`/c/${m[1]}/mcp`, KERNEL_URL);
-    const headers = { authorization: `Bearer ${token}` };
-    for (const h of ["accept", "content-type", "content-length", "mcp-session-id", "mcp-protocol-version"]) if (req.headers[h]) headers[h] = req.headers[h];
+    const headers: Record<string, string> = { authorization: `Bearer ${token}` };
+    for (const h of ["accept", "content-type", "content-length", "mcp-session-id", "mcp-protocol-version"]) if (req.headers[h]) headers[h] = req.headers[h] as string;
     const up = http.request({ host: k.hostname, port: Number(k.port || 80), path: k.pathname, method: req.method, headers }, (ur) => { res.writeHead(ur.statusCode ?? 502, ur.headers); ur.pipe(res); });
     up.on("error", (e) => { if (!res.headersSent) deny(502, e.message); else res.destroy(); });
     req.pipe(up);
   } catch (e) {
-    if (!res.headersSent) deny(502, e.message); else res.destroy();
+    if (!res.headersSent) deny(502, (e as Error).message); else res.destroy();
   }
 });
 
@@ -380,7 +384,7 @@ const orphans = [];
 for (const name of existing.stdout.trim().split("\n").filter(Boolean)) {
   if (!ours(name)) continue;
   // A box without its job record has lost its binding: nothing may run in it.
-  if (jobs.has(name)) boxes.set(name, { agentId: jobs.get(name).agentId, lastUsed: Date.now(), busy: 0 });
+  if (jobs.has(name)) boxes.set(name, { agentId: jobs.get(name)!.agentId, lastUsed: Date.now(), busy: 0 });
   else orphans.push(name);
 }
 // A job record whose box is gone never comes back; its lease goes with it.
@@ -390,13 +394,13 @@ for (const name of orphans) await destroy(name, "a box without its job record");
 if (boxes.size) log(`found ${boxes.size} job box(es) from before`);
 // Listen only now: a call answered before the boxes from before are known would miss them.
 // The bridge's address can come up after the launcher starts (a fresh install): wait for it quietly, no crash loop.
-const listen = async (server, { host, port }, what) => {
+const listen = async (server: http.Server, { host, port }: { host: string; port: number }, what: string) => {
   for (let waited = false; ; waited = true) {
     try {
-      await new Promise((ok, fail) => { server.once("error", fail); server.listen(port, host, () => { server.off("error", fail); ok(); }); });
+      await new Promise<void>((ok, fail) => { server.once("error", fail); server.listen(port, host, () => { server.off("error", fail); ok(); }); });
       return log(`${what} on ${host}:${port}`);
     } catch (e) {
-      if (e.code !== "EADDRNOTAVAIL") throw e;
+      if ((e as NodeJS.ErrnoException).code !== "EADDRNOTAVAIL") throw e;
       if (!waited) log(`${host} isn't up yet; waiting for it (${what})`);
       await new Promise((r) => setTimeout(r, 1000));
     }

@@ -4,11 +4,12 @@ import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { join, sep } from "node:path";
 import { section } from "./prompts.ts";
 import { frontmatter, sourcesSection } from "./modules.ts";
+import type { Obj } from "./modules.ts";
 import { computerSection } from "./computers.ts";
 import { defaultCache } from "./compiler/sources.ts";
 
 /** A file that must resolve (symlinks followed) inside dir; anything else throws. */
-export function readInside(dir, path, what) {
+export function readInside(dir: string, path: unknown, what: string) {
   const root = existsSync(dir) ? realpathSync(dir) : "";
   const real = root && typeof path === "string" && existsSync(path) ? realpathSync(path) : "";
   if (!real || !real.startsWith(root + sep)) throw new Error(`${what} must be a file inside ${dir} (got ${path})`);
@@ -20,7 +21,7 @@ export function readInside(dir, path, what) {
  * it) without the frontmatter,
  * plus the instance's agents/<key>.md under "## Instance rules" when there is one.
  */
-export function readInstructions(cfg, a, { repo, instanceDir = "" }) {
+export function readInstructions(cfg: Obj, a: Obj, { repo, instanceDir = "" }: { repo: string; instanceDir?: string }) {
   // An instance agent's handbook is its folder's AGENTS.md in the instance repo (agents/<key>/AGENTS.md).
   // A forked module agent's (handbook_fork) is the instance's agents/<key>/AGENTS.md too.
   // A module read from the sources cache (a per-module pin, a third-party module) has its handbook in the fetched tree.
@@ -40,10 +41,10 @@ export function readInstructions(cfg, a, { repo, instanceDir = "" }) {
  * The handbook's line naming the agents org(s): on GitHub, and `local` for repositories on this server. The first is where new
  * repositories go (compile lists GitHub first once it is connected); an existing repository stays on its host.
  */
-function orgLine(orgs) {
+function orgLine(orgs: Obj[]) {
   const named = orgs.map((o) => (o.host === "local" ? "`local` on this server (its repositories are `local/<name>`)" : `\`${o.org}\` on GitHub`));
   if (!named.length) return "";
-  return `This AidenHQ's agents org${named.length > 1 ? "s are" : " is"} ${named.join(" and ")}${named.length > 1 ? `; a new repository goes in \`${orgs[0].org}\`, and each existing one stays where it is` : ""}.\n\n`;
+  return `This AidenHQ's agents org${named.length > 1 ? "s are" : " is"} ${named.join(" and ")}${named.length > 1 ? `; a new repository goes in \`${orgs[0]!.org}\`, and each existing one stays where it is` : ""}.\n\n`;
 }
 
 // The sections setup itself writes into every crew agent's handbook, ahead of the modules' prompt contributions:
@@ -54,43 +55,43 @@ const UNTRUSTED_SECTION = section("untrusted");
 const GLOSSARY_SECTION = section("glossary");
 const HANDOFF_SECTION = section("handoff");
 /** The owner's standing outcomes (compile's `outcomes`, from instance.yaml), each with its owning agent. */
-function outcomesSection(cfg) {
+function outcomesSection(cfg: Obj) {
   const list = cfg.outcomes ?? [];
   if (!list.length) return "";
-  const who = (key) => cfg.agents?.[key]?.name ?? key;
-  return `\n\n## Standing outcomes\n\nThe owner's standing goals, each with the one agent that owns it:\n${list.map((o) => `- \`${o.id}\` (${who(o.owner)}, \`${o.owner}\`): ${o.outcome.replace(/\.$/, "")}. Done when: ${o.done}`).join("\n")}\n`;
+  const who = (key: string) => cfg.agents?.[key]?.name ?? key;
+  return `\n\n## Standing outcomes\n\nThe owner's standing goals, each with the one agent that owns it:\n${list.map((o: Obj) => `- \`${o.id}\` (${who(o.owner)}, \`${o.owner}\`): ${o.outcome.replace(/\.$/, "")}. Done when: ${o.done}`).join("\n")}\n`;
 }
 /** How the owner works (compile's `owner_profile`, from the instance's owner/profile.md), in every crew handbook and the lane. */
-const profileSection = (cfg) => (cfg.owner_profile ? `${section("profile")}\n${cfg.owner_profile}\n` : "");
+const profileSection = (cfg: Obj) => (cfg.owner_profile ? `${section("profile")}\n${cfg.owner_profile}\n` : "");
 // Every codex agent's web access (live search, web_view, app_view), and the one rule that goes with it.
 const WEB_SECTION = section("web");
 // Agents kept asking for approval through Paperclip's own mechanism, which the owner never sees (approval cards are the only one).
 const APPROVALS_SECTION = section("approvals");
 // The owning agent checks its app change live, an hour and a day after it deploys (owner, 2026-11-15): for agents that own
 // apps and can wake themselves later (app_logs and wake_at).
-const appFollowupSection = (a) => (a.enabled_tools?.apps?.includes("app_logs") && a.enabled_tools?.chat_lane?.includes("wake_at") ? section("app-followup", "") : "");
+const appFollowupSection = (a: Obj) => (a.enabled_tools?.apps?.includes("app_logs") && a.enabled_tools?.chat_lane?.includes("wake_at") ? section("app-followup", "") : "");
 
 /** A section's text as the agent reads it: past its frontmatter, `{{fleet_issues}}` and `{{memory}}` filled in. */
-function sectionText(cfg, a, id, { repo, fleetIssues }) {
+function sectionText(cfg: Obj, a: Obj, id: string, { repo, fleetIssues }: { repo: string; fleetIssues?: string }) {
   const { body } = frontmatter(readInside(join(repo, "modules"), cfg.prompts?.[id]?.file, `agent ${a.name}: section ${id}`));
   if (body.includes("{{fleet_issues}}") && !fleetIssues) throw new Error(`section ${id}: the Fleet issues task is missing`);
-  return body.replaceAll("{{fleet_issues}}", fleetIssues).replace("{{memory}}", () => a.memory ?? "");
+  return body.replaceAll("{{fleet_issues}}", fleetIssues!).replace("{{memory}}", () => a.memory ?? "");
 }
 /**
  * The module sections compile picked for this agent that load always (spec §3.1 `prompts`, after the kernel's sections), in
  * compile's order, as [id, text]. `lane`: only those marked for the fast chat lane.
  */
-export function promptParts(cfg, a, { repo, fleetIssues, lane = false }) {
-  return (a.prompts ?? []).filter((id) => !lane || cfg.prompts?.[id]?.lane).map((id) => [id, sectionText(cfg, a, id, { repo, fleetIssues })]);
+export function promptParts(cfg: Obj, a: Obj, { repo, fleetIssues, lane = false }: { repo: string; fleetIssues?: string; lane?: boolean }): [string, string][] {
+  return (a.prompts ?? []).filter((id: string) => !lane || cfg.prompts?.[id]?.lane).map((id: string): [string, string] => [id, sectionText(cfg, a, id, { repo, fleetIssues })]);
 }
 
 /** The skills compile resolved for an agent (its `skills:` ids), with each one's folder: what a job's engine home gets. */
-export const agentSkills = (cfg, key) => (cfg.agents?.[key]?.skills ?? []).map((id) => ({ id, dir: cfg.skills[id].dir }));
+export const agentSkills = (cfg: Obj, key: string) => (cfg.agents?.[key]?.skills ?? []).map((id: string) => ({ id, dir: cfg.skills[id].dir }));
 
 /** An agent's whole handbook as [id, text] parts, in the order setup writes them. */
-export function handbookParts(cfg, key, a, { repo, instanceDir, fleetIssues }) {
+export function handbookParts(cfg: Obj, key: string, a: Obj, { repo, instanceDir, fleetIssues }: { repo: string; instanceDir?: string; fleetIssues?: string }) {
   const codex = a.profile === "crew";
-  const parts = [
+  const parts: [string, string][] = [
     ["handbook", readInstructions(cfg, a, { repo, instanceDir })],
     ["working-style", a.handbook_line ? `\n\n## Your working style\n\nYou are ${a.name}, a member of the ${cfg.agents?.[a.member_of]?.team?.name ?? a.member_of} team. ${a.handbook_line}\n` : ""],
     ["computer", computerSection(a)],
@@ -109,13 +110,13 @@ export function handbookParts(cfg, key, a, { repo, instanceDir, fleetIssues }) {
 }
 
 /** The fast chat lane's prompt: the agent's own handbook, how the owner works, the untrusted-text rule and the lane's sections. */
-export function laneHandbook(cfg, a, opts) {
+export function laneHandbook(cfg: Obj, a: Obj, opts: { repo: string; instanceDir?: string; fleetIssues?: string }) {
   return readInstructions(cfg, a, opts) + profileSection(cfg) + UNTRUSTED_SECTION + promptParts(cfg, a, { ...opts, lane: true }).map(([, t]) => t).join("");
 }
 
 /** `compile --sizes`: bytes per handbook part per crew agent, largest handbook first. A local report. */
-export function sizesReport(cfg, opts) {
-  const rows = Object.entries(cfg.agents ?? {}).filter(([, a]) => a.profile === "crew").map(([key, a]) => {
+export function sizesReport(cfg: Obj, opts: { repo: string; instanceDir?: string; engines?: unknown }) {
+  const rows = Object.entries<Obj>(cfg.agents ?? {}).filter(([, a]) => a.profile === "crew").map(([key, a]) => {
     const parts = handbookParts(cfg, key, a, { ...opts, fleetIssues: "WOR-0" });
     return { key, total: parts.reduce((n, [, t]) => n + Buffer.byteLength(t), 0), parts };
   }).sort((x, y) => y.total - x.total);

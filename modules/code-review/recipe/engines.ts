@@ -11,10 +11,15 @@ import { join } from "node:path";
 import { config, runCodex } from "./code-review.ts";
 
 export const EFFORTS = ["minimal", "low", "medium", "high", "xhigh"];
-const BUILT = { codex: true, "claude-code": false, codegenie: false };
+const BUILT: Record<string, boolean> = { codex: true, "claude-code": false, codegenie: false };
+
+/** A reviewer profile (JSON from the spec): checked field by field by profileProblem. */
+export interface Profile { engine: string; model: string; verifier?: string | null; effort: string; finders: number }
+interface EngineInput { prompt: string; instructions: string; model: string; effort: string; root: string; base: string; minutes?: string | number; scratch: string }
+export interface EngineResult { message: string; read: boolean; calls?: { tool: string; path?: string }[]; cause?: string }
 
 /** Why a reviewer profile can't run, or undefined: engine, model and effort are checked together. */
-export function profileProblem(p) {
+export function profileProblem(p: Profile | null | undefined) {
   if (!p || typeof p !== "object") return "a reviewer is an object";
   if (!(p.engine in BUILT)) return `engine is one of ${Object.keys(BUILT).join(", ")}`;
   if (!BUILT[p.engine]) return `the ${p.engine} engine isn't built yet: use codex`;
@@ -30,7 +35,7 @@ export function profileProblem(p) {
  * start. Returns { message, read, cause }: the final message, whether it read the diff (a review that never looked is none),
  * and why there's no message.
  */
-export async function runEngine(engine, { prompt, instructions, model, effort, root, base, minutes, scratch }) {
+export async function runEngine(engine: string, { prompt, instructions, model, effort, root, base, minutes, scratch }: EngineInput): Promise<EngineResult> {
   if (engine !== "codex") throw new Error(`the ${engine} engine isn't built yet: use codex`);
   const tmp = mkdtempSync(join(scratch, "codex-"));
   const home = join(tmp, "home"), cwd = join(tmp, "cwd"); // cwd: empty, not a repository, so codex loads nothing of the repo
@@ -40,7 +45,7 @@ export async function runEngine(engine, { prompt, instructions, model, effort, r
   writeFileSync(join(home, "config.toml"), config({ model: String(model).replace(/^openrouter\//, ""), effort, url, root, base, instructions }));
   const r = await runCodex({ prompt, home, cwd, out: join(tmp, "answer.txt"), key: process.env.OPENROUTER_API_KEY, minutes });
   const calls = r.events.filter((e) => e?.type === "item.completed" && e.item?.type === "mcp_tool_call" && e.item.status === "completed" && !e.item.error && !e.item.result?.isError)
-    .map((e) => ({ tool: e.item.tool, path: typeof e.item.arguments?.path === "string" ? e.item.arguments.path : undefined }));
+    .map((e) => ({ tool: e.item!.tool!, path: typeof e.item!.arguments?.path === "string" ? e.item!.arguments.path : undefined }));
   const done = r.code === 0 && r.events.some((e) => e?.type === "turn.completed");
   const said = r.events.filter((e) => e?.type === "error" || e?.type === "turn.failed").map((e) => e.message ?? e.error?.message ?? "").join(" ");
   const cause = done ? undefined : r.timedOut ? "timed out" : /\b402\b|cap_reached/.test(said + r.stderr) ? "the run's budget ran out" : `the engine stopped (exit ${r.code})`;

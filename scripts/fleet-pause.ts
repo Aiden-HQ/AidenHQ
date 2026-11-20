@@ -20,32 +20,35 @@ import { fileURLToPath } from "node:url";
 import { paperclipClient } from "../kernel/sdk/src/paperclip.ts";
 
 /** `systemctl list-units --plain --no-legend` rows: the unit, its active state and its sub-state. */
-export function listedUnits(text) {
-  return text.split("\n").map((l) => l.trim().split(/\s+/)).filter(([u, , active]) => u && active).map(([unit, _load, active, sub]) => ({ unit, active, sub }));
+export function listedUnits(text: string) {
+  return text.split("\n").map((l) => l.trim().split(/\s+/)).filter(([u, , active]) => u && active).map(([unit, _load, active, sub]) => ({ unit: unit!, active: active!, sub }));
 }
 
 /** The runner container ops/ci-runner.sh names for a unit: aidenhq-ci-runner@<id>.service runs aidenhq-ci-runner-<id>. */
-export function runnerContainer(unit) {
+export function runnerContainer(unit: string) {
   return unit.replace(/^aidenhq-ci-runner@/, "aidenhq-ci-runner-").replace(/\.service$/, "");
 }
 
 /** Whether a runner container's `docker top` shows a job: the Actions runner starts Runner.Worker for a job only (an idle
  * runner, which is also "active", has just Runner.Listener waiting for one). */
-export function hasJob(dockerTop) {
+export function hasJob(dockerTop: string) {
   return /Runner\.Worker/.test(dockerTop);
 }
 
 /** Live CI runner units to stop now, and the ones running a job to wait for. A unit is "active" while it waits for a job
  * too (one fresh container per job), so `working(unit)` says whether a job is on it. */
-export function ciDrain(rows, working) {
+export function ciDrain(rows: { unit: string; active: string; sub?: string }[], working: (unit: string) => boolean) {
   const up = rows.filter((u) => ["active", "activating", "reloading"].includes(u.active));
   const busy = up.filter((u) => working(u.unit));
   return { stop: up.filter((u) => !busy.includes(u)).map((u) => u.unit), wait: busy.map((u) => u.unit) };
 }
 
+/** The pause record: when, each company's paused routine ids, and the stopped units. */
+interface Paused { pausedAt?: string; routines?: Record<string, string[]>; units?: string[] }
+
 /** The record after another pause: earlier entries are kept (they are paused now, so this pass didn't see them as active). */
-export function mergePaused(prev, next) {
-  const routines = { ...(prev?.routines ?? {}) };
+export function mergePaused(prev: Paused | undefined, next: Paused) {
+  const routines: Record<string, string[]> = { ...(prev?.routines ?? {}) };
   for (const [company, ids] of Object.entries(next.routines ?? {})) routines[company] = [...new Set([...(routines[company] ?? []), ...ids])];
   const units = [...new Set([...(prev?.units ?? []), ...(next.units ?? [])])];
   return { pausedAt: prev?.pausedAt ?? next.pausedAt, routines, units };
@@ -55,10 +58,10 @@ async function main() {
   const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
   const envPath = process.env.AIDENHQ_ENV_FILE ?? join(repo, ".env");
   const dotenv = existsSync(envPath)
-    ? Object.fromEntries(readFileSync(envPath, "utf8").split("\n").map((l) => /^\s*([A-Z0-9_]+)\s*=\s*(.*?)\s*$/.exec(l)).filter(Boolean).map((m) => [m[1], m[2].replace(/^["']|["']$/g, "")]))
+    ? Object.fromEntries(readFileSync(envPath, "utf8").split("\n").map((l) => /^\s*([A-Z0-9_]+)\s*=\s*(.*?)\s*$/.exec(l)).filter(Boolean).map((m) => [m![1]!, m![2]!.replace(/^["']|["']$/g, "")]))
     : {};
-  const env = (k, d) => process.env[k] ?? dotenv[k] ?? d;
-  const expand = (p) => (p.startsWith("~/") ? join(homedir(), p.slice(2)) : p);
+  const env = (k: string, d?: string) => (process.env[k] ?? dotenv[k] ?? d) as string;
+  const expand = (p: string) => (p.startsWith("~/") ? join(homedir(), p.slice(2)) : p);
   const dataDir = resolve(repo, expand(env("AIDENHQ_DATA_DIR", "data")));
   const recordPath = join(dataDir, "fleet-paused.json");
   const runnerYaml = join(resolve(repo, env("AIDENHQ_CONFIG_DIR", "config")), "runner.yaml");
@@ -67,9 +70,9 @@ async function main() {
   const key = readFileSync(join(expand(env("AIDENHQ_SECRETS_DIR", "~/.config/aidenhq")), "paperclip_board_key"), "utf8").trim();
 
   const paperclip = paperclipClient({ url: base, token: key, lane: "direct" });
-  const api = (method, path, body) => paperclip.request(method, path, body);
-  const sh = (cmd, args) => { try { return execFileSync(cmd, args, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }); } catch { return ""; } };
-  const companies = async () => (await api("GET", "/api/companies")).map((c) => c.id);
+  const api = (method: string, path: string, body?: unknown) => paperclip.request(method, path, body);
+  const sh = (cmd: string, args: string[]) => { try { return execFileSync(cmd, args, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }); } catch { return ""; } };
+  const companies = async () => (await api("GET", "/api/companies")).map((c: { id: string }) => c.id);
 
   async function counts() {
     let runs = 0;
@@ -79,7 +82,7 @@ async function main() {
     if (existsSync(db)) {
       const { DatabaseSync } = await import("node:sqlite");
       const d = new DatabaseSync(db, { readOnly: true });
-      try { jobs = d.prepare("SELECT count(*) AS n FROM jobs WHERE status = 'running'").get().n; } finally { d.close(); }
+      try { jobs = d.prepare("SELECT count(*) AS n FROM jobs WHERE status = 'running'").get()!.n as number; } finally { d.close(); }
     }
     const computers = sh("docker", ["ps", "-q", "--filter", "name=aidenhq-computer-"]).split("\n").filter(Boolean).length;
     return { runs, jobs, computers };
@@ -89,18 +92,18 @@ async function main() {
   if (cmd === "pause") {
     const i = process.argv.indexOf("--timeout-minutes");
     const timeoutMs = (i > 0 ? Number(process.argv[i + 1]) : 60) * 60_000;
-    const routines = {};
+    const routines: Record<string, string[]> = {};
     // The record is written after every change, so a pause killed mid-drain still leaves what it paused and stopped.
     const prev = existsSync(recordPath) ? JSON.parse(readFileSync(recordPath, "utf8")) : undefined;
     const pausedAt = new Date().toISOString();
-    const units = [];
+    const units: string[] = [];
     const save = () => writeFileSync(recordPath, JSON.stringify(mergePaused(prev, { pausedAt, routines, units }), null, 2) + "\n");
     for (const company of await companies()) {
-      const active = (await api("GET", `/api/companies/${company}/routines`)).filter((r) => r.status === "active");
+      const active = (await api("GET", `/api/companies/${company}/routines`)).filter((r: { status: string }) => r.status === "active");
       routines[company] = [];
       for (const r of active) {
         await api("PATCH", `/api/routines/${r.id}`, { status: "paused" });
-        routines[company].push(r.id);
+        routines[company]!.push(r.id);
         save();
       }
       console.log(`company ${company}: paused ${active.length} routines`);
@@ -108,7 +111,7 @@ async function main() {
     // Drain: stop each idle unit at once and let one running a job finish rather than cancel it. A job still running at
     // the timeout is stopped with the rest (the maintenance window comes first).
     const listed = () => listedUnits(sh("systemctl", ["--user", "list-units", "aidenhq-ci-runner@*", "--all", "--plain", "--no-legend"]));
-    const stop = (names) => {
+    const stop = (names: string[]) => {
       const fresh = names.filter((n) => !units.includes(n));
       if (!fresh.length) return;
       execFileSync("systemctl", ["--user", "stop", ...fresh], { stdio: "inherit" });
@@ -118,7 +121,7 @@ async function main() {
     };
     const until = Date.now() + timeoutMs;
     for (;;) {
-      const { stop: idle, wait } = ciDrain(listed(), (unit) => hasJob(sh("docker", ["top", runnerContainer(unit)])));
+      const { stop: idle, wait } = ciDrain(listed(), (unit: string) => hasJob(sh("docker", ["top", runnerContainer(unit)])));
       stop(idle);
       if (!wait.length) break;
       if (Date.now() > until) { console.warn(`timeout: stopping ${wait.join(", ")} with a job still running`); stop(wait); break; }
@@ -139,13 +142,13 @@ async function main() {
     }
   } else if (cmd === "resume") {
     if (!existsSync(recordPath)) { console.error(`nothing to resume: no ${recordPath}`); process.exit(1); }
-    const rec = JSON.parse(readFileSync(recordPath, "utf8"));
+    const rec: Paused = JSON.parse(readFileSync(recordPath, "utf8"));
     let failed = 0;
     for (const [company, ids] of Object.entries(rec.routines ?? {})) {
       for (const id of ids) {
         try { await api("PATCH", `/api/routines/${id}`, { status: "active" }); } catch (e) {
-          if (e.status === 404) { console.warn(`routine ${id} is gone, skipped`); continue; }
-          failed++; console.error(`routine ${id}: ${e.message}`);
+          if ((e as any).status === 404) { console.warn(`routine ${id} is gone, skipped`); continue; }
+          failed++; console.error(`routine ${id}: ${(e as Error).message}`);
         }
       }
       console.log(`company ${company}: resumed ${ids.length} routines`);
@@ -157,7 +160,7 @@ async function main() {
       sh("systemctl", ["--user", "reset-failed", ...rec.units]);
       try { execFileSync("systemctl", ["--user", "start", ...rec.units], { stdio: "inherit" }); } catch { /* each unit is checked below */ }
       // "activating" is a runner waiting for its next job (Restart=always), which is up; only failed/inactive is down.
-      const down = rec.units.filter((u) => !["active", "activating"].includes(sh("systemctl", ["--user", "is-active", u]).trim()));
+      const down = rec.units.filter((u: string) => !["active", "activating"].includes(sh("systemctl", ["--user", "is-active", u]).trim()));
       if (down.length) { failed += down.length; console.error(`not running after start: ${down.join(", ")}`); }
       else console.log(`started ${rec.units.join(", ")}`);
     }

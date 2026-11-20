@@ -14,8 +14,8 @@
 export const OWNER_APPROVAL_FILE = ".github/supply-chain-source-exceptions.yaml";
 
 /** `{ kind, args, paths, facts }` → `{ verdict: "ok" }` or `{ verdict: "deny", rule, reason }`. */
-export function check({ paths } = {}) {
-  const files = new Set((Array.isArray(paths) ? paths : []).flatMap((p) => (Array.isArray(p?.files) ? p.files : []).flatMap((f) => [f?.path, f?.from])).filter((f) => typeof f === "string"));
+export function check({ paths }: { paths?: unknown } = {}) {
+  const files = new Set((Array.isArray(paths) ? paths : []).flatMap((p) => (Array.isArray(p?.files) ? p.files : []).flatMap((f: { path?: unknown; from?: unknown } | null) => [f?.path, f?.from])).filter((f) => typeof f === "string"));
   if (files.has(OWNER_APPROVAL_FILE) && files.size > 1) return { verdict: "deny", rule: "owner-approval-alone", reason: `${OWNER_APPROVAL_FILE} changes with other files: file the source approval on its own` };
   return { verdict: "ok" };
 }

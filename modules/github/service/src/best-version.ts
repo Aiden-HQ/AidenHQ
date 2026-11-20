@@ -24,19 +24,30 @@ import { fileURLToPath } from "node:url";
 import { gunzipSync } from "node:zlib";
 
 export const DAY = 86400000;
+
+export interface VersionInfo { version: string; published: string; digest?: string; via?: string; source?: string; sha?: string }
+export interface Best extends VersionInfo { name: string; ageDays: number; note?: string }
+export interface Exception { owner?: string; package?: string; ecosystem?: string; version?: string; advisory?: string; [k: string]: string | undefined }
+interface PypiFile { yanked?: boolean; upload_time_iso_8601: string }
+interface GhcrVersion { name: string; created_at: string; metadata?: { container?: { tags?: string[] } } }
+interface OsvVuln { id: string; affected?: { package?: { name?: string }; ranges?: { events?: { fixed?: string }[] }[] }[] }
+type AptPackage = Record<string, string> & { url: string; Package: string; Version: string; Filename: string };
 // gVisor's repo keeps each weekly release in its own suite (dists/<yyyymmdd>); `release` holds only the newest.
 export const GVISOR_URL = "https://storage.googleapis.com/gvisor/releases";
-const gvisorSource = (version) => `${GVISOR_URL} ${String(version).split(".")[0]} main`;
+const gvisorSource = (version: string) => `${GVISOR_URL} ${String(version).split(".")[0]} main`;
 
-export async function getJson(url, headers = {}) {
+export interface FetchInit extends RequestInit { timeout?: number }
+export interface FetchError extends Error { status?: number; response?: Response; undated?: boolean; notListed?: boolean }
+// Registry JSON is untyped, so the result is any.
+export async function getJson(url: string, headers: Record<string, string> = {}): Promise<any> {
   return (await fetchRetry(url, { headers: { accept: "application/json", ...headers } })).json();
 }
 
 // Retries transient failures; a 404 (or another 4xx but 429) fails at once. Never returns a failed response.
-export async function fetchRetry(url, init = {}) {
-  const headers = { ...init.headers };
+export async function fetchRetry(url: string, init: FetchInit = {}): Promise<Response> {
+  const headers: Record<string, string> = { ...(init.headers as Record<string, string> | undefined) };
   if (url.startsWith("https://api.github.com/") && process.env.GITHUB_TOKEN) headers.authorization = `Bearer ${process.env.GITHUB_TOKEN}`;
-  let err;
+  let err: unknown;
   for (let i = 0; i < 4; i++) {
     try {
       const { timeout = 30000, ...rest } = init;
@@ -51,8 +62,8 @@ export async function fetchRetry(url, init = {}) {
 }
 
 // Semver-ish compare: -1, 0, 1. A leading "v" is ignored; a prerelease sorts before its release.
-export function cmpVersion(a, b) {
-  const parse = (v) => { const [core, pre] = String(v).replace(/^v/, "").split("+")[0].split(/-(.+)/); return { n: core.split(".").map((x) => parseInt(x, 10) || 0), pre }; };
+export function cmpVersion(a: string, b: string): number {
+  const parse = (v: string) => { const [core, pre] = String(v).replace(/^v/, "").split("+")[0]!.split(/-(.+)/); return { n: core!.split(".").map((x) => parseInt(x, 10) || 0), pre }; };
   const x = parse(a), y = parse(b);
   for (let i = 0; i < Math.max(x.n.length, y.n.length); i++) if ((x.n[i] || 0) !== (y.n[i] || 0)) return (x.n[i] || 0) < (y.n[i] || 0) ? -1 : 1;
   if (x.pre === y.pre) return 0;
@@ -62,13 +73,13 @@ export function cmpVersion(a, b) {
 }
 
 // dpkg's version order (epoch:upstream-revision; "~" sorts before everything, even the end).
-export function cmpDeb(a, b) {
-  const split = (v) => { const m = /^(?:(\d+):)?(.*?)(?:-([^-]*))?$/.exec(v); return [Number(m[1] || 0), m[2], m[3] || "0"]; };
-  const order = (c) => (c === undefined ? 0 : c === "~" ? -1 : /[A-Za-z]/.test(c) ? c.charCodeAt(0) : c.charCodeAt(0) + 256);
-  const part = (x, y) => {
+export function cmpDeb(a: string, b: string): number {
+  const split = (v: string) => { const m = /^(?:(\d+):)?(.*?)(?:-([^-]*))?$/.exec(v)!; return [Number(m[1] || 0), m[2]!, m[3] || "0"] as [number, string, string]; };
+  const order = (c: string | undefined) => (c === undefined ? 0 : c === "~" ? -1 : /[A-Za-z]/.test(c) ? c.charCodeAt(0) : c.charCodeAt(0) + 256);
+  const part = (x: string, y: string): number => {
     let i = 0, j = 0;
     while (i < x.length || j < y.length) {
-      while ((i < x.length && !/\d/.test(x[i])) || (j < y.length && !/\d/.test(y[j]))) {
+      while ((i < x.length && !/\d/.test(x[i]!)) || (j < y.length && !/\d/.test(y[j]!))) {
         const cx = /\d/.test(x[i] ?? "0") ? undefined : x[i], cy = /\d/.test(y[j] ?? "0") ? undefined : y[j];
         if (order(cx) !== order(cy)) return order(cx) < order(cy) ? -1 : 1;
         if (cx !== undefined) i++;
@@ -89,19 +100,19 @@ const RELEASE = /^v?\d+(\.\d+)*$/; // a plain release: no prerelease, rc, dev or
 
 // ---------------------------------------------------------------- registries: [{version, published, digest?, sha?}]
 
-async function npmVersions(name) {
+async function npmVersions(name: string): Promise<VersionInfo[]> {
   const p = await getJson(`https://registry.npmjs.org/${name.replace("/", "%2f")}`);
-  return Object.entries(p.time || {}).filter(([v]) => RELEASE.test(v)).map(([version, published]) => ({ version, published }));
+  return Object.entries((p.time || {}) as Record<string, string>).filter(([v]) => RELEASE.test(v)).map(([version, published]) => ({ version, published }));
 }
 
-async function pypiVersions(name) {
+async function pypiVersions(name: string): Promise<VersionInfo[]> {
   const p = await getJson(`https://pypi.org/pypi/${encodeURIComponent(name)}/json`);
-  return Object.entries(p.releases || {}).filter(([v, files]) => RELEASE.test(v) && files.length && !files.every((f) => f.yanked))
-    .map(([version, files]) => ({ version, published: files.map((f) => f.upload_time_iso_8601).sort()[0] }));
+  return Object.entries((p.releases || {}) as Record<string, PypiFile[]>).filter(([v, files]) => RELEASE.test(v) && files.length && !files.every((f) => f.yanked))
+    .map(([version, files]) => ({ version, published: files.map((f) => f.upload_time_iso_8601).sort()[0]! }));
 }
 
-async function githubReleases(repo) {
-  const out = [];
+async function githubReleases(repo: string): Promise<VersionInfo[]> {
+  const out: VersionInfo[] = [];
   for (let page = 1; page <= 3; page++) {
     const rs = await getJson(`https://api.github.com/repos/${repo}/releases?per_page=100&page=${page}`);
     for (const r of rs) if (!r.draft && !r.prerelease && r.published_at && RELEASE.test(r.tag_name)) out.push({ version: r.tag_name, published: r.published_at });
@@ -111,17 +122,17 @@ async function githubReleases(repo) {
 }
 
 // The commit a tag points at (annotated tags dereferenced by the commits endpoint).
-const tagSha = async (repo, tag) => (await getJson(`https://api.github.com/repos/${repo}/commits/${encodeURIComponent(tag)}`)).sha;
+const tagSha = async (repo: string, tag: string): Promise<string> => (await getJson(`https://api.github.com/repos/${repo}/commits/${encodeURIComponent(tag)}`)).sha;
 
 // ---------------------------------------------------------------- container images
 
-export function parseImage(ref) {
-  let [rest, digest] = String(ref).split("@");
-  let tag;
+export function parseImage(ref: string) {
+  let [rest, digest] = String(ref).split("@") as [string, string | undefined];
+  let tag: string | undefined;
   const slash = rest.lastIndexOf("/"), colon = rest.lastIndexOf(":");
   if (colon > slash) { tag = rest.slice(colon + 1); rest = rest.slice(0, colon); }
   let host = "docker.io", repo = rest;
-  const first = rest.split("/")[0];
+  const first = rest.split("/")[0]!;
   if (rest.includes("/") && (first.includes(".") || first.includes(":") || first === "localhost")) { host = first; repo = rest.slice(first.length + 1); }
   if (host === "docker.io" && !repo.includes("/")) repo = `library/${repo}`;
   return { host, repo, tag, digest };
@@ -132,14 +143,14 @@ export function parseImage(ref) {
 // Packages API's version created_at (needs GITHUB_TOKEN with read access to packages). Any other registry, or no
 // record: fail closed.
 /** The registry keeps no push record to date the pin by (nothing failed to resolve): a security exception may cover it. */
-const undated = (msg) => Object.assign(new Error(msg), { undated: true });
+const undated = (msg: string): FetchError => Object.assign(new Error(msg), { undated: true });
 const UNDATED = "can't establish its publish time from the registry; pin an image whose push time is known, or add a supply-chain exception";
-const glob = (pat) => new RegExp(`^${pat.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*")}$`);
+const glob = (pat: string) => new RegExp(`^${pat.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*")}$`);
 
 // Docker Hub tags [{version, published, digest}], optionally narrowed by a name substring; at most 1000.
-async function hubTags(repo, filter = "") {
-  const out = [];
-  let url = `https://hub.docker.com/v2/repositories/${repo}/tags?page_size=100${filter ? `&name=${encodeURIComponent(filter)}` : ""}`;
+async function hubTags(repo: string, filter = ""): Promise<VersionInfo[]> {
+  const out: VersionInfo[] = [];
+  let url: string | undefined = `https://hub.docker.com/v2/repositories/${repo}/tags?page_size=100${filter ? `&name=${encodeURIComponent(filter)}` : ""}`;
   for (let i = 0; url && i < 10; i++) {
     const page = await getJson(url);
     for (const t of page.results || []) if (t.digest && t.tag_last_pushed) out.push({ version: t.name, published: t.tag_last_pushed, digest: t.digest, via: "Docker Hub push time" });
@@ -149,45 +160,45 @@ async function hubTags(repo, filter = "") {
 }
 
 // ghcr.io package versions [{version (each tag), published, digest}] from the GitHub Packages API (org, then user).
-async function ghcrVersions(repo) {
+async function ghcrVersions(repo: string): Promise<VersionInfo[]> {
   const [owner, ...rest] = repo.split("/");
   const pkg = encodeURIComponent(rest.join("/"));
-  let vs;
+  let vs: GhcrVersion[] | undefined;
   for (const kind of ["orgs", "users"]) {
-    try { vs = await getJson(`https://api.github.com/${kind}/${owner}/packages/container/${pkg}/versions?per_page=100`); break; } catch (e) { if (e.status !== 404) throw Object.assign(undated(`ghcr.io/${repo}: ${UNDATED} (${e.message})`), { status: e.status }); }
+    try { vs = await getJson(`https://api.github.com/${kind}/${owner}/packages/container/${pkg}/versions?per_page=100`); break; } catch (e) { if ((e as FetchError).status !== 404) throw Object.assign(undated(`ghcr.io/${repo}: ${UNDATED} (${(e as Error).message})`), { status: (e as FetchError).status }); }
   }
   if (!vs) throw undated(`ghcr.io/${repo}: ${UNDATED}`);
   return vs.flatMap((v) => (v.metadata?.container?.tags || []).map((t) => ({ version: t, published: v.created_at, digest: v.name, via: "GitHub Packages publish time" })));
 }
 
 // The digest ghcr's registry serves for a tag now (anonymous pull token, then a manifest HEAD).
-async function ghcrDigest(repo, tag) {
+async function ghcrDigest(repo: string, tag: string) {
   const { token } = await getJson(`https://ghcr.io/token?scope=repository:${repo}:pull`);
   const accept = ["application/vnd.oci.image.index.v1+json", "application/vnd.docker.distribution.manifest.list.v2+json", "application/vnd.oci.image.manifest.v1+json", "application/vnd.docker.distribution.manifest.v2+json"].join(", ");
   return (await fetchRetry(`https://ghcr.io/v2/${repo}/manifests/${encodeURIComponent(tag)}`, { method: "HEAD", headers: { authorization: `Bearer ${token}`, accept } })).headers.get("docker-content-digest");
 }
 
 // The published GitHub release of an image tag (`v<tag>` or `<tag>`) in the same-named repo: {tag, published}, or null.
-export async function ghcrRelease(repo, tag, onError) {
+export async function ghcrRelease(repo: string, tag: string, onError?: unknown) {
   for (const t of [`v${tag}`, tag]) {
     try {
       const r = await getJson(`https://api.github.com/repos/${repo}/releases/tags/${encodeURIComponent(t)}`);
       if (r.published_at && !r.draft) return { tag: t, published: r.published_at };
-    } catch (re) { if (re.status !== 404) throw onError || re; }
+    } catch (re) { if ((re as FetchError).status !== 404) throw onError || re; }
   }
   return null;
 }
 
-async function imageVersions(host, repo, filter) {
+async function imageVersions(host: string, repo: string, filter: string): Promise<VersionInfo[]> {
   if (host === "docker.io") return hubTags(repo, filter);
   if (host === "ghcr.io") return ghcrVersions(repo);
   throw undated(`${host}/${repo}: ${UNDATED}`);
 }
 
-async function dockerVersions(name) {
+async function dockerVersions(name: string): Promise<VersionInfo[]> {
   const { host, repo, tag } = parseImage(name);
   const want = tag ? glob(tag) : RELEASE;
-  const filter = tag ? tag.split("*").sort((a, b) => b.length - a.length)[0] : "";
+  const filter = tag ? tag.split("*").sort((a, b) => b.length - a.length)[0]! : "";
   return (await imageVersions(host, repo, filter)).filter((t) => want.test(t.version));
 }
 
@@ -195,50 +206,50 @@ async function dockerVersions(name) {
 
 // One download per index per run: a Dockerfile's apt pins share their few indexes, and a large one (noble's main is tens of
 // megabytes uncompressed) fetched once per pin timed out. The compressed index first, with a longer timeout.
-const aptIndexes = new Map();
-export function aptIndex(source) {
+const aptIndexes = new Map<string, Promise<AptPackage[]>>();
+export function aptIndex(source: string): Promise<AptPackage[]> {
   if (!aptIndexes.has(source)) aptIndexes.set(source, readAptIndex(source).catch((e) => { aptIndexes.delete(source); throw e; }));
-  return aptIndexes.get(source);
+  return aptIndexes.get(source)!;
 }
-async function readAptIndex(source) {
-  const [url, dist, comp = "main"] = source.trim().split(/\s+/);
+async function readAptIndex(source: string): Promise<AptPackage[]> {
+  const [url, dist, comp = "main"] = source.trim().split(/\s+/) as [string, string, string?];
   const dir = `${url.replace(/\/$/, "")}/dists/${dist}/${comp}/binary-amd64/Packages`;
-  let text;
+  let text: string;
   // zlib, not DecompressionStream: Ubuntu 22.04's release-pocket indexes end in zero padding, which the stream rejects.
   try { text = gunzipSync(Buffer.from(await (await fetchRetry(`${dir}.gz`, { timeout: 120000 })).arrayBuffer())).toString("utf8"); } catch {
     text = await (await fetchRetry(dir, { timeout: 120000 })).text();
   }
   return text.split(/\n\n+/).map((s) => Object.fromEntries(s.split("\n").filter((l) => /^\S+: /.test(l)).map((l) => [l.slice(0, l.indexOf(":")), l.slice(l.indexOf(":") + 2)])))
-    .map((p) => ({ ...p, url }));
+    .map((p) => ({ ...p, url }) as AptPackage);
 }
 
-const debPublished = async (p) => {
+const debPublished = async (p: AptPackage): Promise<string> => {
   const lm = (await fetchRetry(`${p.url.replace(/\/$/, "")}/${p.Filename}`, { method: "HEAD" })).headers.get("last-modified");
   if (!lm) throw new Error(`${p.Package} ${p.Version}: the repository gives no Last-Modified`);
   return new Date(lm).toISOString();
 };
 
-async function aptVersions(name, source, { minDays, now }) {
+async function aptVersions(name: string, source: string, { minDays, now }: { minDays: number; now: number }): Promise<VersionInfo[]> {
   const pkgs = (await aptIndex(source)).filter((p) => p.Package === name).sort((a, b) => cmpDeb(b.Version, a.Version));
   // Newest first, dated one at a time (a HEAD each) until one is old enough.
-  const out = [];
+  const out: VersionInfo[] = [];
   for (const p of pkgs) {
     if (out.some((o) => o.version === p.Version)) continue;
     out.push({ version: p.Version, published: await debPublished(p), via: "the .deb's Last-Modified" });
-    if (now - Date.parse(out.at(-1).published) >= minDays * DAY) break;
+    if (now - Date.parse(out.at(-1)!.published) >= minDays * DAY) break;
   }
   return out;
 }
 
-async function gvisorVersions({ minDays, now }) {
+async function gvisorVersions({ minDays, now }: { minDays: number; now: number }): Promise<VersionInfo[]> {
   const ls = await getJson("https://storage.googleapis.com/storage/v1/b/gvisor/o?prefix=releases/dists/&delimiter=/");
-  const suites = (ls.prefixes || []).map((p) => /dists\/(\d{8})\/$/.exec(p)?.[1]).filter(Boolean).sort().reverse();
-  const out = [];
+  const suites = (ls.prefixes || []).map((p: string) => /dists\/(\d{8})\/$/.exec(p)?.[1]).filter(Boolean).sort().reverse() as string[];
+  const out: VersionInfo[] = [];
   for (const d of suites) {
     for (const p of (await aptIndex(gvisorSource(d))).filter((x) => x.Package === "runsc")) {
       out.push({ version: p.Version, published: await debPublished(p), source: gvisorSource(d), via: "the .deb's Last-Modified" });
     }
-    if (out.length && now - Date.parse(out.at(-1).published) >= minDays * DAY) break;
+    if (out.length && now - Date.parse(out.at(-1)!.published) >= minDays * DAY) break;
   }
   return out;
 }
@@ -246,7 +257,7 @@ async function gvisorVersions({ minDays, now }) {
 // ---------------------------------------------------------------- the API
 
 /** Every version the registry lists (plain releases only), with its publish time. */
-export async function versions(kind, name, { source, minDays = 7, now = Date.now() } = {}) {
+export async function versions(kind: string, name: string, { source, minDays = 7, now = Date.now() }: { source?: string; minDays?: number; now?: number } = {}): Promise<VersionInfo[]> {
   switch (kind) {
     case "npm": return npmVersions(name);
     case "pypi": return pypiVersions(name);
@@ -259,20 +270,20 @@ export async function versions(kind, name, { source, minDays = 7, now = Date.now
 }
 
 // OSV's name for each kind's ecosystem (images and third-party apt repos have none).
-const OSV = { npm: "npm", pypi: "PyPI", "github-action": "GitHub Actions", "github-release": "GitHub Actions" };
-const exceptionKind = (kind) => (kind === "apt-gvisor" ? "apt" : kind === "github-release" ? "github-action" : kind);
+const OSV: Record<string, string> = { npm: "npm", pypi: "PyPI", "github-action": "GitHub Actions", "github-release": "GitHub Actions" };
+const exceptionKind = (kind: string) => (kind === "apt-gvisor" ? "apt" : kind === "github-release" ? "github-action" : kind);
 
 // Known vulnerabilities in this version (OSV), and the lowest version that fixes them all: {ids, fixed} or null.
-export async function osvFix(kind, name, version) {
+export async function osvFix(kind: string, name: string, version: string): Promise<{ ids: string[]; fixed: string | null } | null> {
   if (!OSV[kind]) return null;
   const r = await fetchRetry("https://api.osv.dev/v1/query", { method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ package: { name, ecosystem: OSV[kind] }, version: version.replace(/^v/, "") }) });
-  const vulns = (await r.json()).vulns || [];
+  const vulns = ((await r.json()) as { vulns?: OsvVuln[] }).vulns || [];
   if (!vulns.length) return null;
-  let fixed = null;
+  let fixed: string | null = null;
   for (const v of vulns) {
     const fixes = (v.affected || []).filter((a) => a.package?.name === name).flatMap((a) => (a.ranges || []).flatMap((g) => g.events || []))
-      .map((e) => e.fixed).filter((f) => f && cmpVersion(f, version) > 0).sort(cmpVersion);
+      .map((e) => e.fixed).filter((f): f is string => !!f && cmpVersion(f, version) > 0).sort(cmpVersion);
     if (fixes[0] && (!fixed || cmpVersion(fixes[0], fixed) > 0)) fixed = fixes[0];
   }
   return { ids: vulns.map((v) => v.id), fixed };
@@ -284,36 +295,36 @@ export async function osvFix(kind, name, version) {
  * Security Watch, read from `exceptions`), and a known vulnerability (OSV) in that version fixed in a newer release,
  * which returns the lowest release that fixes it.
  */
-export async function bestVersion(kind, name, { minDays = 7, now = Date.now(), source, exceptions = [] } = {}) {
+export async function bestVersion(kind: string, name: string, { minDays = 7, now = Date.now(), source, exceptions = [] }: { minDays?: number; now?: number; source?: string; exceptions?: Exception[] } = {}): Promise<Best> {
   const all = await versions(kind, name, { source, minDays, now });
   const order = kind.startsWith("apt") ? cmpDeb : cmpVersion;
-  const age = (v) => Math.floor((now - Date.parse(v.published)) / DAY);
-  const finish = async (v, note) => {
-    const best = { name, ...v, ageDays: age(v), ...(note ? { note } : {}) };
+  const age = (v: VersionInfo) => Math.floor((now - Date.parse(v.published)) / DAY);
+  const finish = async (v: VersionInfo, note?: string): Promise<Best> => {
+    const best: Best = { name, ...v, ageDays: age(v), ...(note ? { note } : {}) };
     if (kind === "github-action") best.sha = await tagSha(name, best.version);
     return best;
   };
   const ok = all.filter((v) => now - Date.parse(v.published) >= minDays * DAY).sort((a, b) => order(b.version, a.version));
   // A listed security exception wins only while it is newer than what the 7-day rule allows.
   const pkg = kind === "docker" ? name.replace(/:[^:/]*$/, "") : name;
-  const listed = exceptions.find((e) => !e.owner && e.package === pkg && (e.ecosystem || "npm") === exceptionKind(kind) && (!ok.length || order(e.version, ok[0].version) > 0));
+  const listed = exceptions.find((e) => !e.owner && e.package === pkg && (e.ecosystem || "npm") === exceptionKind(kind) && (!ok.length || order(e.version!, ok[0]!.version) > 0));
   if (listed) {
-    const v = all.find((x) => x.version === listed.version) || { version: listed.version, published: new Date(now).toISOString() };
+    const v = all.find((x) => x.version === listed.version) || { version: listed.version!, published: new Date(now).toISOString() };
     return finish(v, `security exception ${listed.advisory} (listed in the exceptions file)`);
   }
   if (!ok.length) throw new Error(`${kind} ${name}: no version is ${minDays} days old`);
-  const vuln = await osvFix(kind, name, ok[0].version);
-  const ids = (l) => l.slice(0, 5).join(", ") + (l.length > 5 ? ` and ${l.length - 5} more` : "");
+  const vuln = await osvFix(kind, name, ok[0]!.version);
+  const ids = (l: string[]) => l.slice(0, 5).join(", ") + (l.length > 5 ? ` and ${l.length - 5} more` : "");
   if (vuln) {
-    const fix = vuln.fixed && all.filter((v) => order(v.version, vuln.fixed) >= 0).sort((a, b) => order(a.version, b.version))[0];
+    const fix = vuln.fixed && all.filter((v) => order(v.version, vuln.fixed!) >= 0).sort((a, b) => order(a.version, b.version))[0];
     if (fix) return finish(fix, `security fix: under ${minDays} days (${ids(vuln.ids)}); record it in .github/supply-chain-exceptions.yaml`);
-    return finish(ok[0], `known vulnerabilities with no released fix: ${ids(vuln.ids)}`);
+    return finish(ok[0]!, `known vulnerabilities with no released fix: ${ids(vuln.ids)}`);
   }
-  return finish(ok[0]);
+  return finish(ok[0]!);
 }
 
 // The exceptions file nearest the current directory (the repo's .github/supply-chain-exceptions.yaml), or none.
-export function localExceptions(dir = process.cwd()) {
+export function localExceptions(dir = process.cwd()): Exception[] {
   for (let d = resolve(dir); ; d = dirname(d)) {
     const f = join(d, ".github", "supply-chain-exceptions.yaml");
     if (existsSync(f)) return readExceptions(readFileSync(f, "utf8"));
@@ -326,19 +337,19 @@ export function localExceptions(dir = process.cwd()) {
  *   npm, pypi: name + version.  github-action: owner/repo + version (the tag in the pin's comment) + sha, which must be
  *   that tag's commit.  docker: name (repo:tag) + digest.  apt: name + version + source.
  */
-export async function publishedAt(kind, name, { version, digest, sha, source } = {}) {
+export async function publishedAt(kind: string, name: string, { version, digest, sha, source }: { version?: string; digest?: string; sha?: string; source?: string } = {}): Promise<{ published: string; via: string }> {
   if (kind === "npm") {
-    const t = (await getJson(`https://registry.npmjs.org/${name.replace("/", "%2f")}`)).time?.[version];
+    const t = (await getJson(`https://registry.npmjs.org/${name.replace("/", "%2f")}`)).time?.[version!];
     if (!t) throw new Error(`${name}@${version}: not in the npm registry`);
     return { published: t, via: "npm publish time" };
   }
   if (kind === "pypi") {
-    const files = (await getJson(`https://pypi.org/pypi/${encodeURIComponent(name)}/${encodeURIComponent(version)}/json`)).urls || [];
+    const files = (await getJson(`https://pypi.org/pypi/${encodeURIComponent(name)}/${encodeURIComponent(version!)}/json`)).urls || [];
     if (!files.length) throw new Error(`${name}==${version}: no files on PyPI`);
-    return { published: files.map((f) => f.upload_time_iso_8601).sort()[0], via: "PyPI upload time" };
+    return { published: files.map((f: PypiFile) => f.upload_time_iso_8601).sort()[0], via: "PyPI upload time" };
   }
   if (kind === "github-release") {
-    const r = await getJson(`https://api.github.com/repos/${name}/releases/tags/${encodeURIComponent(version)}`);
+    const r = await getJson(`https://api.github.com/repos/${name}/releases/tags/${encodeURIComponent(version!)}`);
     if (!r.published_at) throw new Error(`${name} ${version}: no published release`);
     return { published: r.published_at, via: "GitHub release" };
   }
@@ -357,7 +368,7 @@ export async function publishedAt(kind, name, { version, digest, sha, source } =
       try {
         const t = await getJson(`https://hub.docker.com/v2/repositories/${repo}/tags/${encodeURIComponent(tag)}`);
         if (t.digest === digest && t.tag_last_pushed) return { published: t.tag_last_pushed, via: "Docker Hub push time" };
-      } catch (e) { if (e.status !== 404) throw e; }
+      } catch (e) { if ((e as FetchError).status !== 404) throw e; }
     }
     // The tag has moved on: another tag (or for ghcr, the package version) that still holds this digest.
     let all;
@@ -378,7 +389,7 @@ export async function publishedAt(kind, name, { version, digest, sha, source } =
     return { published: hit.published, via: `${hit.via} (as ${hit.version})` };
   }
   if (kind === "apt" || kind === "apt-gvisor") {
-    const src = kind === "apt-gvisor" ? gvisorSource(version) : source;
+    const src = (kind === "apt-gvisor" ? gvisorSource(version!) : source)!;
     const p = (await aptIndex(src)).find((x) => x.Package === name && x.Version === version);
     if (!p) throw Object.assign(new Error(`${name}=${version}: not in ${src}`), { notListed: true }); // read fine, not there
     return { published: await debPublished(p), via: "the .deb's Last-Modified" };
@@ -389,13 +400,13 @@ export async function publishedAt(kind, name, { version, digest, sha, source } =
 // The exceptions file (.github/supply-chain-exceptions.yaml): one flow-style entry per line under `exceptions:`,
 // `- { ecosystem: docker, package: node, version: 24.22.2-bookworm-slim, advisory: CVE-…, reason: … }`. Other YAML
 // shapes are not read (fail closed: an unread entry clears nothing).
-export function readExceptions(text) {
-  const out = [];
+export function readExceptions(text: string): Exception[] {
+  const out: Exception[] = [];
   for (const line of String(text || "").split("\n")) {
     const m = /^\s*-\s*\{(.*)\}\s*$/.exec(line);
     if (!m) continue;
-    const e = {};
-    for (const kv of m[1].split(/,\s*(?=\w+:\s)/)) {
+    const e: Exception = {};
+    for (const kv of m[1]!.split(/,\s*(?=\w+:\s)/)) {
       const i = kv.indexOf(":");
       if (i > 0) e[kv.slice(0, i).trim()] = kv.slice(i + 1).trim().replace(/^(["'])(.*)\1$/, "$2");
     }
@@ -406,7 +417,7 @@ export function readExceptions(text) {
 
 async function main() {
   const args = process.argv.slice(2);
-  const opt = (k) => { const i = args.indexOf(k); return i < 0 ? undefined : args.splice(i, 2)[1]; };
+  const opt = (k: string) => { const i = args.indexOf(k); return i < 0 ? undefined : args.splice(i, 2)[1]; };
   const minDays = Number(opt("--min-days") ?? 7), source = opt("--source");
   const json = args.includes("--json");
   const [kind, name] = args.filter((a) => a !== "--json");

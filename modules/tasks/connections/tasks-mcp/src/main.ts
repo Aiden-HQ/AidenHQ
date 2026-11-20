@@ -1,8 +1,10 @@
 // The tasks module's MCP endpoint (paperclip_tasks): POST /mcp, stateless JSON-RPC over HTTP, behind this module's own key.
 // The kernel is the only client: it checks grants, then forwards each tools/call with a caller assertion (aud = tasks).
 import { createServer } from "node:http";
+import type { ServerResponse } from "node:http";
 import { timingSafeEqual } from "node:crypto";
 import { kernelJwks, verifyCaller } from "./aidenhq-sdk/caller.ts";
+import type { Caller } from "./aidenhq-sdk/caller.ts";
 import { SERVICE_KEY, TOOL_LIST, callTool } from "./tools.ts";
 
 const MODULE = process.env.AIDENHQ_MODULE || "tasks";
@@ -10,12 +12,12 @@ const jwks = kernelJwks();
 // A task_file_upload's body is a 10 MB file as base64 (~13.4 MB) plus its JSON: the board's own upload limit.
 const MAX_BODY = 14 * 1024 * 1024 + 64 * 1024;
 
-const sameKey = (got) => {
+const sameKey = (got: unknown) => {
   const a = Buffer.from(String(got)), b = Buffer.from(`Bearer ${SERVICE_KEY}`);
   return Boolean(SERVICE_KEY) && a.length === b.length && timingSafeEqual(a, b);
 };
-const send = (res, status, body) => res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
-const ok = (id, result) => ({ jsonrpc: "2.0", id, result });
+const send = (res: ServerResponse, status: number, body: unknown) => res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
+const ok = (id: unknown, result: unknown) => ({ jsonrpc: "2.0", id, result });
 
 export const server = createServer(async (req, res) => {
   const path = String(req.url ?? "").split("?")[0];
@@ -28,7 +30,7 @@ export const server = createServer(async (req, res) => {
     raw += c;
     if (raw.length > MAX_BODY) return send(res, 413, { error: "too large" });
   }
-  let msg;
+  let msg: { id?: unknown; method?: string; params?: Record<string, any> } | undefined;
   try {
     msg = JSON.parse(raw);
   } catch {
@@ -46,11 +48,11 @@ export const server = createServer(async (req, res) => {
   if (method === "ping") return send(res, 200, ok(id, {}));
   if (method === "tools/list") return send(res, 200, ok(id, { tools: TOOL_LIST }));
   if (method === "tools/call") {
-    let caller;
+    let caller: Caller;
     try {
       caller = await verifyCaller(req, jwks, MODULE);
     } catch (err) {
-      return send(res, 200, ok(id, { isError: true, content: [{ type: "text", text: `Refused: ${err.message}` }] }));
+      return send(res, 200, ok(id, { isError: true, content: [{ type: "text", text: `Refused: ${(err as Error).message}` }] }));
     }
     const result = await callTool(caller, String(req.headers["x-aidenhq-caller"]), String(params?.name ?? ""), params?.arguments);
     return send(res, 200, ok(id, result));

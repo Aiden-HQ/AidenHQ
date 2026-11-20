@@ -16,18 +16,21 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { paperclipClient } from "../kernel/sdk/src/paperclip.ts";
 
+interface Task { id: string; identifier?: string; title?: string; status: string; description?: string; assigneeAgentId?: string | null; assigneeUserId?: string | null; createdByAgentId?: string | null }
+interface Agent { id: string; key: string; roles?: string[]; owner?: boolean }
+
 const LOG_MARKER = /<!-- source:(memory-inbox|review-log|chat-task):([\w-]+) -->/;
 
 /**
  * The plan for a company's open tasks. `agents`: its live agents ({id, key, roles}); `owner`: its owner's user id. Returns
  * `moves` ({task, to: an agent, or {owner: true}}, why), `setup` (log tasks the next apply hands to their agents) and `undecided`.
  */
-export function holderPlan(tasks, agents, owner) {
-  const byId = new Map(agents.map((a) => [a.id, a]));
-  const byKey = new Map(agents.map((a) => [a.key, a]));
+export function holderPlan(tasks: Task[], agents: Agent[], owner: string) {
+  const byId = new Map(agents.map((a): [string, Agent] => [a.id, a]));
+  const byKey = new Map(agents.map((a): [string, Agent] => [a.key, a]));
   const auditor = agents.find((a) => a.roles?.includes("fleet-audit"));
-  const name = (t) => t.identifier ?? t.id;
-  const moves = [], setup = [], undecided = [];
+  const name = (t: Task) => t.identifier ?? t.id;
+  const moves: { task: Task; to: Agent; why: string }[] = [], setup: { task: Task; why: string }[] = [], undecided: { task: Task; why: string }[] = [];
   for (const t of tasks) {
     if (t.assigneeAgentId) continue;
     if (t.assigneeUserId) {
@@ -38,8 +41,8 @@ export function holderPlan(tasks, agents, owner) {
     }
     const log = LOG_MARKER.exec(t.description ?? "");
     if ((log && !t.createdByAgentId) || (t.title === "Fleet issues" && !t.createdByAgentId)) {
-      const holder = log ? byKey.get(log[2]) : auditor;
-      setup.push({ task: t, why: `${log ? log[1] : "Fleet issues"}: the next apply hands it to ${holder?.key ?? "its agent"}` });
+      const holder = log ? byKey.get(log[2]!) : auditor;
+      setup.push({ task: t, why: `${log ? log[1]! : "Fleet issues"}: the next apply hands it to ${holder?.key ?? "its agent"}` });
       continue;
     }
     const creator = byId.get(t.createdByAgentId ?? "");
@@ -55,19 +58,19 @@ async function main() {
   const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
   const envPath = process.env.AIDENHQ_ENV_FILE ?? join(repo, ".env");
   const dotenv = existsSync(envPath)
-    ? Object.fromEntries(readFileSync(envPath, "utf8").split("\n").map((l) => /^\s*([A-Z0-9_]+)\s*=\s*(.*?)\s*$/.exec(l)).filter(Boolean).map((m) => [m[1], m[2].replace(/^["']|["']$/g, "")]))
+    ? Object.fromEntries(readFileSync(envPath, "utf8").split("\n").map((l) => /^\s*([A-Z0-9_]+)\s*=\s*(.*?)\s*$/.exec(l)).filter(Boolean).map((m): [string, string] => [m![1]!, m![2]!.replace(/^["']|["']$/g, "")]))
     : {};
-  const env = (k, d) => process.env[k] ?? dotenv[k] ?? d;
-  const expand = (p) => (p.startsWith("~/") ? join(homedir(), p.slice(2)) : p);
+  const env = (k: string, d: string) => process.env[k] ?? dotenv[k] ?? d;
+  const expand = (p: string) => (p.startsWith("~/") ? join(homedir(), p.slice(2)) : p);
   const base = env("PAPERCLIP_URL", "http://127.0.0.1:3100");
   const key = readFileSync(join(expand(env("AIDENHQ_SECRETS_DIR", "~/.config/aidenhq")), "paperclip_board_key"), "utf8").trim();
   const grants = JSON.parse(readFileSync(join(resolve(repo, env("AIDENHQ_CONFIG_DIR", "config")), "grants", "grants.json"), "utf8")).agents ?? {};
   const paperclip = paperclipClient({ url: base, token: key, lane: "direct" });
-  const api = (method, path, body) => paperclip.request(method, path, body);
+  const api = (method: string, path: string, body?: unknown) => paperclip.request(method, path, body);
   let starts = 0;
   for (const company of await api("GET", "/api/companies")) {
-    const live = (await api("GET", `/api/companies/${company.id}/agents`)).filter((a) => a.status !== "terminated" && grants[a.id]);
-    const agents = live.map((a) => ({ id: a.id, key: grants[a.id].key, roles: grants[a.id].roles ?? [] }));
+    const live = (await api("GET", `/api/companies/${company.id}/agents`)).filter((a: { id: string; status: string }) => a.status !== "terminated" && grants[a.id]);
+    const agents = live.map((a: { id: string }) => ({ id: a.id, key: grants[a.id].key, roles: grants[a.id].roles ?? [] }));
     const tasks = await api("GET", `/api/companies/${company.id}/issues?status=backlog,todo,in_progress,in_review,blocked&limit=500`);
     if (tasks.length >= 500) console.warn(`  ! ${company.name ?? company.id} has 500 or more open tasks: run this again after --apply for the rest`);
     const { defaultResponsibleUserId: owner } = await api("GET", `/api/companies/${company.id}`);

@@ -11,25 +11,31 @@ import { OWNER_SQL } from "../kernel/src/records.ts";
 
 const DAY = 864e5;
 
-export async function baseline({ days, now = new Date() }, { kernelDb, gradesDb, paperclip }) {
+interface PaperclipAgent { id: string; name?: string; metadata?: { setupKey?: string } }
+interface Issue { id: string; status: string; assigneeAgentId?: string; completedAt?: string; updatedAt: string }
+interface Paperclip { agents(): Promise<PaperclipAgent[]>; closed(since: string): Promise<Issue[]> }
+interface Stats { runs: number; costUsd: number; tasksDone: number; tasksCancelled: number; costPerDone: number | null; records: { filed: number; rejected: number; failed: number; ownerDecided: number }; grades: { satisfied: number; escalated: number; failed: number }; reopened: number }
+interface Grade { issue_id: string; state: string; failures: number; attempts: number }
+
+export async function baseline({ days, now = new Date() }: { days: number; now?: Date }, { kernelDb, gradesDb, paperclip }: { kernelDb: DatabaseSync; gradesDb: DatabaseSync; paperclip: Paperclip }) {
   const from = new Date(Date.parse(now.toISOString().slice(0, 10)) - (days - 1) * DAY);
   const fromIso = from.toISOString();
   const fromDay = fromIso.slice(0, 10);
-  const names = new Map((await paperclip.agents()).map((a) => [a.id, a.metadata?.setupKey ?? a.name ?? a.id]));
-  const key = (id) => names.get(id) ?? id;
-  const agents = {};
-  const of = (id) => (agents[key(id)] ??= { runs: 0, costUsd: 0, tasksDone: 0, tasksCancelled: 0, costPerDone: null, records: { filed: 0, rejected: 0, failed: 0, ownerDecided: 0 }, grades: { satisfied: 0, escalated: 0, failed: 0 }, reopened: 0 });
+  const names = new Map((await paperclip.agents()).map((a): [string, string] => [a.id, a.metadata?.setupKey ?? a.name ?? a.id]));
+  const key = (id: string) => names.get(id) ?? id;
+  const agents: Record<string, Stats> = {};
+  const of = (id: string) => (agents[key(id)] ??= { runs: 0, costUsd: 0, tasksDone: 0, tasksCancelled: 0, costPerDone: null, records: { filed: 0, rejected: 0, failed: 0, ownerDecided: 0 }, grades: { satisfied: 0, escalated: 0, failed: 0 }, reopened: 0 });
 
-  for (const r of kernelDb.prepare("SELECT agent_id, COUNT(DISTINCT run_key) runs, SUM(cost_usd) cost FROM calls WHERE day >= ? AND agent_id IS NOT NULL GROUP BY agent_id").all(fromDay)) {
+  for (const r of kernelDb.prepare("SELECT agent_id, COUNT(DISTINCT run_key) runs, SUM(cost_usd) cost FROM calls WHERE day >= ? AND agent_id IS NOT NULL GROUP BY agent_id").all(fromDay) as unknown as { agent_id: string; runs: number; cost: number | null }[]) {
     const a = of(r.agent_id);
     a.runs = r.runs;
     a.costUsd = r.cost ?? 0;
   }
   for (const r of kernelDb.prepare(`SELECT json_extract(requester, '$.agent') agent, COUNT(*) filed, SUM(state = 'rejected') rejected, SUM(state = 'failed') failed, SUM(${OWNER_SQL}) owner
-      FROM records WHERE created_at >= ? AND json_extract(requester, '$.agent') IS NOT NULL GROUP BY 1`).all(fromIso)) {
+      FROM records WHERE created_at >= ? AND json_extract(requester, '$.agent') IS NOT NULL GROUP BY 1`).all(fromIso) as unknown as { agent: string; filed: number; rejected: number; failed: number; owner: number }[]) {
     of(r.agent).records = { filed: r.filed, rejected: r.rejected, failed: r.failed, ownerDecided: r.owner };
   }
-  const grade = new Map(gradesDb.prepare("SELECT issue_id, state, failures, attempts FROM grades").all().map((g) => [g.issue_id, g]));
+  const grade = new Map((gradesDb.prepare("SELECT issue_id, state, failures, attempts FROM grades").all() as unknown as Grade[]).map((g): [string, Grade] => [g.issue_id, g]));
   for (const i of await paperclip.closed(fromIso)) {
     if (!i.assigneeAgentId || (i.completedAt ?? i.updatedAt) < fromIso) continue;
     const a = of(i.assigneeAgentId);
@@ -48,13 +54,13 @@ export async function baseline({ days, now = new Date() }, { kernelDb, gradesDb,
 }
 
 /** Paperclip over GET only: the company's agents and its done/cancelled tasks since a time, paged. */
-export function paperclipReader(url, companyId, key, fetcher = fetch) {
+export function paperclipReader(url: string, companyId: string, key: string, fetcher: typeof fetch = fetch): Paperclip {
   const client = paperclipClient({ url, token: key, lane: "direct", timeoutMs: 30_000, fetcher });
-  const get = (path) => client.request("GET", path);
+  const get = (path: string) => client.request("GET", path);
   return {
     agents: () => get(`/api/companies/${companyId}/agents`),
-    async closed(since) {
-      const all = [];
+    async closed(since: string) {
+      const all: Issue[] = [];
       for (let offset = 0; ; offset += 500) {
         const q = new URLSearchParams({ status: "done,cancelled", limit: "500", offset: String(offset), excludeRoutineExecutions: "true", updatedSince: since });
         const page = await get(`/api/companies/${companyId}/issues?${q}`);
@@ -66,8 +72,8 @@ export function paperclipReader(url, companyId, key, fetcher = fetch) {
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const arg = (n, d) => (process.argv.includes(n) ? process.argv[process.argv.indexOf(n) + 1] : d);
-  const need = (n) => process.env[n] ?? (console.error(`${n} is required`), process.exit(2));
+  const arg = (n: string, d: string) => (process.argv.includes(n) ? process.argv[process.argv.indexOf(n) + 1] : d);
+  const need = (n: string): string => process.env[n] ?? (console.error(`${n} is required`), process.exit(2));
   const out = await baseline(
     { days: Number(arg("--days", "14")) },
     {

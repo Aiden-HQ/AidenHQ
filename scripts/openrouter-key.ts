@@ -11,38 +11,40 @@ import { join } from "node:path";
 
 const API = "https://openrouter.ai/api/v1/keys";
 
-async function call(fetchImpl, managementKey, method, url, body) {
+type Fetch = typeof fetch;
+
+async function call(fetchImpl: Fetch, managementKey: string, method: string, url: string, body?: unknown) {
   const res = await fetchImpl(url, {
     method,
     headers: { authorization: `Bearer ${managementKey}`, ...(body ? { "content-type": "application/json" } : {}) },
     body: body ? JSON.stringify(body) : undefined,
     signal: AbortSignal.timeout(20_000),
   });
-  const json = await res.json().catch(() => ({}));
+  const json = await res.json().catch(() => ({})) as any;
   if (!res.ok) throw new Error(`OpenRouter answered ${res.status}: ${json?.error?.message ?? "no detail"}`);
   return json;
 }
 
 /** A new key with a monthly limit in USD. */
-export async function createKey({ fetch: fetchImpl = fetch, managementKey, name, limitUsd }) {
+export async function createKey({ fetch: fetchImpl = fetch, managementKey, name, limitUsd }: { fetch?: Fetch; managementKey: string; name: string; limitUsd: number }) {
   const j = await call(fetchImpl, managementKey, "POST", API, { name, limit: limitUsd, limit_reset: "monthly" });
   if (!j.key || !j.data?.hash) throw new Error("OpenRouter's answer had no key");
   return { key: j.key, hash: j.data.hash };
 }
 
-export async function revokeKey({ fetch: fetchImpl = fetch, managementKey, hash }) {
+export async function revokeKey({ fetch: fetchImpl = fetch, managementKey, hash }: { fetch?: Fetch; managementKey: string; hash: string }) {
   await call(fetchImpl, managementKey, "DELETE", `${API}/${encodeURIComponent(hash)}`);
 }
 
 /** Asks OpenRouter about a key: ok (label, remaining limit), rejected (401/403, with its message) or unreachable. */
-export async function checkKey({ fetch: fetchImpl = fetch, key }) {
-  let res;
+export async function checkKey({ fetch: fetchImpl = fetch, key }: { fetch?: Fetch; key: string }) {
+  let res: Response;
   try {
     res = await fetchImpl("https://openrouter.ai/api/v1/key", { headers: { authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(15_000) });
   } catch (e) {
-    return { status: "unreachable", message: e.message };
+    return { status: "unreachable", message: (e as Error).message };
   }
-  const json = await res.json().catch(() => ({}));
+  const json = await res.json().catch(() => ({})) as any;
   const message = json?.error?.message ?? "no detail";
   if (res.status === 401 || res.status === 403) return { status: "rejected", message };
   if (!res.ok) return { status: "unreachable", message: `OpenRouter answered ${res.status}: ${message}` };
@@ -53,17 +55,17 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
   const [cmd, name, limit] = process.argv.slice(2);
   const dir = process.env.AIDENHQ_SECRETS_DIR;
   const managementKey = process.env.OPENROUTER_MANAGEMENT_KEY;
-  const die = (m) => { console.error(`openrouter-key: ${m}`); process.exit(1); };
+  const die = (m: string): never => { console.error(`openrouter-key: ${m}`); process.exit(1); };
   if (!dir) die("set AIDENHQ_SECRETS_DIR");
-  const file = (n) => join(dir, n);
-  const read = (n) => (existsSync(file(n)) ? readFileSync(file(n), "utf8").trim() : "");
+  const file = (n: string) => join(dir!, n);
+  const read = (n: string) => (existsSync(file(n)) ? readFileSync(file(n), "utf8").trim() : "");
   try {
     if (cmd === "create") {
       if (read("openrouter_key")) { console.log("OpenRouter key already set; nothing to do"); process.exit(0); }
       if (!managementKey) die("set OPENROUTER_MANAGEMENT_KEY (an OpenRouter management key)");
       const usd = Number(limit);
       if (!name || !(usd > 0)) die("usage: create <name> <limit USD>");
-      const { key, hash } = await createKey({ managementKey, name, limitUsd: usd });
+      const { key, hash } = await createKey({ managementKey: managementKey!, name: name!, limitUsd: usd });
       writeFileSync(file("openrouter_key"), key, { mode: 0o600 });
       writeFileSync(file("openrouter_key_hash"), hash, { mode: 0o600 });
       console.log(`OpenRouter key ${name} created (limit $${usd} a month)`);
@@ -71,7 +73,7 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
       const hash = read("openrouter_key_hash");
       if (!hash) die("no openrouter_key_hash on file");
       if (!managementKey) die("set OPENROUTER_MANAGEMENT_KEY");
-      await revokeKey({ managementKey, hash });
+      await revokeKey({ managementKey: managementKey!, hash });
       console.log("OpenRouter key revoked");
     } else if (cmd === "check") {
       const key = read("openrouter_key");
@@ -82,6 +84,6 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
       else console.log(`OpenRouter key ok${r.label ? ` (${r.label})` : ""}${r.remaining != null ? `, $${r.remaining} left` : ", no spend limit"}`);
     } else die("usage: create <name> <limit USD> | revoke | check");
   } catch (e) {
-    die(e.message);
+    die((e as Error).message);
   }
 }

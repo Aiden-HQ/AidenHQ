@@ -10,7 +10,7 @@ import { SENSITIVITIES, globRe } from "../kernel/src/paths.ts";
 const REPOS = ["product", "modules", "any"];
 
 /** One `paths:` list (paths.yaml's, or a module's) as entries; `at` prefixes each pattern per repo (a module's folder). */
-export function pathEntries(list, source, at = { product: "" }) {
+export function pathEntries(list: unknown, source: string, at: Record<string, string> = { product: "" }) {
   if (list == null) return [];
   if (!Array.isArray(list)) throw new Error(`${source}: paths must be a list`);
   return list.flatMap((g, i) => {
@@ -20,12 +20,12 @@ export function pathEntries(list, source, at = { product: "" }) {
     if (!SENSITIVITIES.includes(g.sensitivity)) throw new Error(`${where}: sensitivity is one of 0, 1, panel, 2`);
     if (g.owner_role != null && !/^[a-z0-9][a-z0-9-]*$/.test(String(g.owner_role))) throw new Error(`${where}: owner_role is a role id`);
     if (g.ui != null && typeof g.ui !== "boolean") throw new Error(`${where}: ui is true or false`);
-    if (!Array.isArray(g.patterns) || !g.patterns.length || !g.patterns.every((p) => typeof p === "string" && p && !p.startsWith("/") && !p.split("/").includes(".."))) throw new Error(`${where}: patterns is a list of repo-relative paths`);
+    if (!Array.isArray(g.patterns) || !g.patterns.length || !g.patterns.every((p: unknown) => typeof p === "string" && p && !p.startsWith("/") && !p.split("/").includes(".."))) throw new Error(`${where}: patterns is a list of repo-relative paths`);
     const repo = g.repo ?? "product";
     if (!REPOS.includes(repo)) throw new Error(`${where}: repo is product, modules or any`);
     // A module's pattern lives in its folder in both repositories; `any` stays as written (a file name in every repo).
-    const sides = repo === "any" ? [["any", ""]] : Object.entries(at);
-    return g.patterns.flatMap((p) => sides.map(([r, prefix]) => {
+    const sides: [string, string][] = repo === "any" ? [["any", ""]] : Object.entries(at);
+    return g.patterns.flatMap((p: string) => sides.map(([r, prefix]) => {
       globRe(prefix + p);
       return { repo: r, pattern: prefix + p, sensitivity: g.sensitivity, ...(g.owner_role ? { owner_role: g.owner_role } : {}), ...(g.ui ? { ui: true } : {}), source };
     }));
@@ -33,7 +33,7 @@ export function pathEntries(list, source, at = { product: "" }) {
 }
 
 /** The inventory: the product's paths.yaml, then every official module under `productDir`/modules (its folder there). */
-export function pathInventory(productDir) {
+export function pathInventory(productDir: string) {
   const entries = pathEntries(YAML.parse(readFileSync(join(productDir, "paths.yaml"), "utf8"))?.paths, "paths.yaml");
   const dir = join(productDir, "modules");
   for (const name of existsSync(dir) ? readdirSync(dir).sort() : []) {

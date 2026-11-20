@@ -9,6 +9,9 @@
 
 import { DESIGN_REVIEW_CHECK, GATE_CHECK, contextStatus, namedChecks, skippedImageScan } from "./aidenhq-sdk/checks.ts";
 
+// GitHub GraphQL payloads (PR_QUERY's answer), read by field.
+type Json = any;
+
 export const PR_QUERY = `query($owner: String!, $repo: String!, $number: Int!, $pullRef: String!) {
   repository(owner: $owner, name: $repo) {
     defaultBranchRef { name }
@@ -42,22 +45,22 @@ export const DESIGN_REVIEW = { name: DESIGN_REVIEW_CHECK, minutes: 120 };
 const UI_EXT = /\.(css|scss|sass|less|html?|tsx|jsx|vue|svelte|astro|hbs|handlebars|ejs|njk|pug|erb|liquid|mustache)$/i;
 const UI_DIR = /(^|\/)(web|public|templates|views|static|pages|components|layouts|design-system)\//i;
 const UI_PAGE_CODE = /(^|\/)([^/]*[-_.])?(render|styles?|layouts?|views?|pages?|templates?)\.(m?[jt]s|cjs)$/i;
-const isUiFile = (f) => UI_EXT.test(f) || UI_DIR.test(f) || UI_PAGE_CODE.test(f);
+const isUiFile = (f: string) => UI_EXT.test(f) || UI_DIR.test(f) || UI_PAGE_CODE.test(f);
 
 /** Whether the PR changes UI files. A file list cut off at the first page counts as UI; no list at all doesn't. */
-export function prTouchesUi(pr) {
+export function prTouchesUi(pr: Json) {
   const files = pr?.files?.nodes;
   if (!Array.isArray(files)) return false;
   if (pr.files.pageInfo?.hasNextPage) return true;
-  return files.some((f) => isUiFile(f.path ?? ""));
+  return files.some((f: Json) => isUiFile(f.path ?? ""));
 }
 
 /** The design-review check on a rollup: "success", "failure", "pending" or "missing". */
-function designReview(rollup) {
-  const n = (rollup?.contexts?.nodes ?? []).find((n) => (n.name ?? n.context) === DESIGN_REVIEW_CHECK);
+function designReview(rollup: Json) {
+  const n = (rollup?.contexts?.nodes ?? []).find((n: Json) => (n.name ?? n.context) === DESIGN_REVIEW_CHECK);
   if (!n) return "missing";
   const v = contextStatus(n);
-  return v === "SUCCESS" ? "success" : FAILING.has(v) ? "failure" : "pending";
+  return v === "SUCCESS" ? "success" : FAILING.has(v as string) ? "failure" : "pending";
 }
 
 /**
@@ -65,7 +68,7 @@ function designReview(rollup) {
  * head moved on, the PR merged or closed, or a verdict is on that exact head already. Undefined while it is still the one live
  * review (or the PR can't be read: unknown is never a reason to close).
  */
-export function supersededDesignReview(marker, pr) {
+export function supersededDesignReview(marker: Json, pr: Json) {
   if (!marker || !pr) return undefined;
   if (pr.state === "MERGED") return "its PR merged";
   if (pr.state === "CLOSED") return "its PR was closed";
@@ -75,14 +78,14 @@ export function supersededDesignReview(marker, pr) {
 }
 
 /** Whether a PR's head waits on the UI Reviewer: it changes UI files, isn't a draft, and has no design-review verdict yet. */
-export const awaitsDesignReview = (pr) => Boolean(pr) && !pr.isDraft && prTouchesUi(pr) && ["missing", "pending"].includes(designReview(pr.commits?.nodes?.[0]?.commit?.statusCheckRollup));
+export const awaitsDesignReview = (pr: Json) => Boolean(pr) && !pr.isDraft && prTouchesUi(pr) && ["missing", "pending"].includes(designReview(pr.commits?.nodes?.[0]?.commit?.statusCheckRollup));
 
 /**
  * The aggregate gate check a repository's CI may end with (the product's ci.yml `ci-required`): it appears only once the jobs it
  * covers finish, so a head can look all green before it. When the base branch's rollup has it, a head without it is pending.
  */
-const hasGate = (rollup) => (rollup?.contexts?.nodes ?? []).some((n) => (n.name ?? n.context) === GATE_CHECK);
-export function withGate(data) {
+const hasGate = (rollup: Json) => (rollup?.contexts?.nodes ?? []).some((n: Json) => (n.name ?? n.context) === GATE_CHECK);
+export function withGate(data: Json) {
   const pr = data?.repository?.pullRequest;
   if (pr?.state && pr.state !== "OPEN") return data;
   const head = pr?.commits?.nodes?.[0]?.commit?.statusCheckRollup;
@@ -95,7 +98,7 @@ export function withGate(data) {
  * The default branch's CI at its tip: "red", "pending" or "green" (no checks: green). A cancelled check never judged the commit
  * (a newer push superseded its run), and the aggregate gate check fails along with it, so neither makes the base red.
  */
-function baseCi(rollup) {
+function baseCi(rollup: Json) {
   const named = namedChecks(rollup);
   const cancelled = named.some((c) => c.status === "CANCELLED");
   if (named.some((c) => !c.ok && !c.pending && c.status !== "CANCELLED" && !(cancelled && c.name === GATE_CHECK))) return "red";
@@ -103,7 +106,7 @@ function baseCi(rollup) {
 }
 
 /** The merge method: squash, then merge commit, then rebase, as the repository allows. */
-export function mergeMethod(repo) {
+export function mergeMethod(repo: Json) {
   if (repo.squashMergeAllowed) return "squash";
   if (repo.mergeCommitAllowed) return "merge";
   if (repo.rebaseMergeAllowed) return "rebase";
@@ -115,7 +118,7 @@ export function mergeMethod(repo) {
  * { do: "merge" | "done" | "wait" | "fail", why, limit?, review? }. Before a "merge", merges.ts still asks the eval gate.
  * Only our own repos (agents org, product) reach it, so the record is the review. `uiReview`: a UI PR needs the design review's pass.
  */
-export function decide(data, head, { uiReview }) {
+export function decide(data: Json, head: string, { uiReview }: { uiReview?: boolean }) {
   const pr = data?.repository?.pullRequest;
   if (!pr) return { do: "fail", why: "not found on GitHub" };
   if (pr.state === "MERGED") return pr.headRefOid === head ? { do: "done", why: "already merged" } : { do: "fail", why: `merged by someone else at \`${String(pr.headRefOid).slice(0, 12)}\`, not the approved head` };
@@ -123,7 +126,7 @@ export function decide(data, head, { uiReview }) {
   const def = data.repository.defaultBranchRef?.name;
   if (!def || pr.baseRefName !== def) return { do: "fail", why: `based on \`${pr.baseRefName}\`, not the default branch \`${def}\`: retarget it and ask for its merge again` };
   if (pr.headRefOid !== head) return { do: "fail", why: `its head moved since the merge was approved (now \`${String(pr.headRefOid).slice(0, 12)}\`): ask for its merge again at the new head` };
-  const states = (pr.latestOpinionatedReviews?.nodes ?? []).map((r) => r.state);
+  const states = (pr.latestOpinionatedReviews?.nodes ?? []).map((r: Json) => r.state);
   if (pr.reviewDecision === "CHANGES_REQUESTED" || states.includes("CHANGES_REQUESTED")) return { do: "fail", why: "changes are requested on it" };
   if (pr.isDraft) return { do: "fail", why: "it is a draft" };
   const rollup = pr.commits?.nodes?.[0]?.commit?.statusCheckRollup;

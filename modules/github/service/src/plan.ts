@@ -9,25 +9,43 @@
 // `plan` is these rules in executor@1's shape (kernel/sdk/src/executor.ts) for the github kinds, with the targets the kernel
 // revalidates. codehost-local (the org `local`, repos on this server) tiers through these same rules: it only adds `local-merge`.
 
-const T = (tier, rule, reason) => ({ tier, rule, reason });
+interface Part { tier: 0 | 1 | 2; rule: string; reason: string; panel?: boolean; reject?: boolean }
+interface Check { ok?: boolean; pending?: boolean; skipped?: boolean }
+interface Branch { repo: string; branch: string; files?: string[]; empty?: boolean; defaultBranch?: string; deployBranch?: string; ciTemplate?: boolean; sha?: string; base?: string }
+interface Pr { repo: string; number?: number; files?: string[]; headMatches?: boolean; checks: Check[]; ciTemplate?: boolean; sensitive?: boolean; ownHead?: boolean; platformHead?: boolean; pushedBy?: string; dependabot?: boolean; head?: string; base?: string }
+interface State {
+  agentsOrgs?: string | string[];
+  agentsOrg?: string;
+  instanceRepo?: string;
+  productRepo?: string;
+  requester?: { platform?: boolean };
+  workspace?: string;
+  task?: string;
+  branches?: Branch[];
+  prs?: Pr[];
+  repo?: string;
+  allowedOrgs?: string | string[];
+}
+
+const T = (tier: 0 | 1 | 2, rule: string, reason: string): Part => ({ tier, rule, reason });
 /** Authority-expanding: the reviewer and a second reviewer on another model family must both approve. */
-const PANEL = (rule, reason) => ({ tier: 1, rule, reason, panel: true });
-const REJECT = (rule, reason) => ({ tier: 2, rule, reason, reject: true });
-const same = (a, b) => String(a ?? "").toLowerCase() === String(b ?? "").toLowerCase();
-const orgOf = (repo) => String(repo).split("/")[0];
+const PANEL = (rule: string, reason: string): Part => ({ tier: 1, rule, reason, panel: true });
+const REJECT = (rule: string, reason: string): Part => ({ tier: 2, rule, reason, reject: true });
+const same = (a: unknown, b: unknown) => String(a ?? "").toLowerCase() === String(b ?? "").toLowerCase();
+const orgOf = (repo: unknown) => String(repo).split("/")[0];
 const GITHUB = /(^|\/)\.github\//;
 /** The org codehost-local owns (docs/design/codehost-local.md §2): its repos are bare repos on this server. */
 export const LOCAL_ORG = "local";
-const isLocal = (repo) => same(orgOf(repo), LOCAL_ORG);
+const isLocal = (repo: unknown) => same(orgOf(repo), LOCAL_ORG);
 /** The agents orgs, one per enabled code host (`agentsOrgs`; `agentsOrg` alone is the GitHub-only state). */
-const agentsOrgs = (s) => [s.agentsOrgs ?? s.agentsOrg].flat().filter(Boolean);
-const inAgentsOrg = (repo, s) => agentsOrgs(s).some((o) => same(orgOf(repo), o));
+const agentsOrgs = (s: State) => [s.agentsOrgs ?? s.agentsOrg].flat().filter(Boolean);
+const inAgentsOrg = (repo: unknown, s: State) => agentsOrgs(s).some((o) => same(orgOf(repo), o));
 
 /**
  * Each item's parts (a branch of a push or PR, a PR of a merge or close; create_repo is one item), in the request's order.
  * `s` as tiers.mjs classify documents it. An item code refuses carries only that refusal.
  */
-export function planParts(action, s) {
+export function planParts(action: string, s: State) {
   if (action === "push" || action === "pr") return (s.branches ?? []).map((b) => publishParts(action, b, s));
   if (action === "merge") return (s.prs ?? []).map((p) => mergeParts(p, s));
   if (action === "close") return (s.prs ?? []).map((p) => [closePart(p, s)]);
@@ -35,7 +53,7 @@ export function planParts(action, s) {
   return [];
 }
 
-function publishParts(action, b, s) {
+function publishParts(action: string, b: Branch, s: State): Part[] {
   const inAgents = inAgentsOrg(b.repo, s);
   if (same(b.repo, s.instanceRepo)) return [REJECT("instance-repo", "the instance repo changes only through apply")];
   if (!Array.isArray(b.files)) return [REJECT("unknown-files", `couldn't tell which files ${b.repo} \`${b.branch}\` changes; try again`)];
@@ -53,7 +71,7 @@ function publishParts(action, b, s) {
     return [T(1, action === "pr" ? "product-pr" : "product-push-branch", `${action === "pr" ? "a PR" : "a branch push"} to the product repo${s.requester?.platform ? " from the Platform Engineer's line" : ", not from the Platform Engineer's line"}`)];
   }
   const workflow = b.files.find((f) => GITHUB.test(f));
-  const parts = [];
+  const parts: Part[] = [];
   // A byte-identical copy of the product's CI template (checked in the runner's own clone) is Tier 0; any other `.github/`
   // change is the reviewer's (who flags one that weakens a check for the second reviewer).
   if (workflow && !(inAgents && b.ciTemplate === true)) parts.push(T(1, "github-dir", `it changes ${workflow}`));
@@ -76,7 +94,7 @@ function publishParts(action, b, s) {
  * never from text) may be closed, by the Platform Engineer's line, at Tier 0 (owner, 2026-11-13): closing changes no code,
  * the reason is posted on the PR, and reopening it undoes it.
  */
-function closePart(p, s) {
+function closePart(p: Pr, s: State) {
   if (same(p.repo, s.productRepo)) {
     if (p.dependabot !== true) return REJECT("core-repo-close", `${p.repo} is the product repo: only its Dependabot PRs may be closed`);
     if (!s.requester?.platform) return REJECT("product-close-requester", "only the Platform Engineer's line may close the product repo's Dependabot PRs");
@@ -95,7 +113,7 @@ const NEW_REPO_NAME = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
  * decided here (the runner's allowed_orgs, passed in, and the App's installation bound it). Code still refuses the product or instance
  * repo's own name and a name that isn't a plain lowercase one.
  */
-function createRepoPart(s) {
+function createRepoPart(s: State) {
   const repo = String(s.repo ?? "");
   const name = repo.split("/")[1] ?? "";
   // The orgs the owner lists (the runner's allowed_orgs, passed in as `allowedOrgs`; the App is public, so an installation alone
@@ -111,7 +129,7 @@ function createRepoPart(s) {
  * Friction is the agent's, never the owner's (owner, 2026-11-14): a head that moved, no named checks, or a red one is
  * refused by code with the reason, so the agent fixes it and asks again. Still running is not red: those merges wait.
  */
-function mergeFriction(p, ref) {
+function mergeFriction(p: Pr, ref: string) {
   if (!p.headMatches) return REJECT("head-moved", `${ref} moved since it was asked for: ask again for its new head`);
   if (!(p.checks ?? []).length) return REJECT("no-checks", `${ref} has no named checks on its head: its repo needs CI (a copy of the product's CI template runs at once), or CI didn't start; fix that and ask again`);
   const red = p.checks.filter((c) => !c.ok && !c.pending);
@@ -121,13 +139,13 @@ function mergeFriction(p, ref) {
 }
 
 /** A merge's checks as counts the reviewer can match to any readout: "22 named checks, 21 passed, 1 skipped" (never names). */
-function checkCounts(checks) {
-  const n = (k) => checks.filter(k).length;
+function checkCounts(checks: Check[]) {
+  const n = (k: (c: Check) => unknown) => checks.filter(k).length;
   const parts = [[n((c) => c.ok && !c.skipped), "passed"], [n((c) => c.skipped), "skipped"], [n((c) => c.pending), "running"]].filter(([k]) => k).map(([k, w]) => `${k} ${w}`);
   return [`${checks.length} named check${checks.length === 1 ? "" : "s"}`, ...parts].join(", ");
 }
 
-function mergeParts(p, s) {
+function mergeParts(p: Pr, s: State): Part[] {
   const ref = `${p.repo}#${p.number ?? "?"}`;
   // The instance repo is refused before anything reads its files: it changes only through apply, whatever it touches.
   if (same(p.repo, s.instanceRepo)) return [REJECT("core-repo-merge", `${ref} is the instance repo: it changes only through apply`)];
@@ -137,7 +155,7 @@ function mergeParts(p, s) {
   if (!inAgentsOrg(p.repo, s)) return [REJECT("outside-merge", `${ref} is outside the agents org: the code host only opens PRs there`)];
   const friction = mergeFriction(p, ref);
   if (friction) return [friction];
-  const parts = [];
+  const parts: Part[] = [];
   const workflow = p.files.find((f) => GITHUB.test(f));
   if (workflow && p.ciTemplate !== true) parts.push(T(1, "github-dir", `${ref} changes ${workflow}`));
   // Existing sensitivity alone doesn't make every merge the owner's: the reviewer reads it (and flags new reach).
@@ -162,7 +180,7 @@ function mergeParts(p, s) {
  * merges only once every named check is green on that exact head. Never Tier 0: the product reaches every instance through
  * the pin. Its files are the platform check's.
  */
-function productMergePart(p, ref, s) {
+function productMergePart(p: Pr, ref: string, s: State) {
   if (!Array.isArray(p.files)) return REJECT("unknown-files", `couldn't list every file ${ref} changes; try again`);
   if (!s.requester?.platform) {
     const workflow = p.files.find((f) => GITHUB.test(f));
@@ -178,7 +196,7 @@ function productMergePart(p, ref, s) {
   return T(1, "product-merge-foreign-head", `${ref}: its head isn't a commit the runner pushed to a branch of the product repo (the reviewer reads that exact head)`);
 }
 
-const rank = (p) => p.tier * 2 + (p.panel ? 1 : 0);
+const rank = (p: Part) => p.tier * 2 + (p.panel ? 1 : 0);
 /**
  * executor@1's plan for github.{push,pr,merge,close,create_repo} (and codehost-local's): `state` is the verified state the code host read
  * for this request (as `s` above). A refusal throws (the kernel answers it as refused); otherwise the tier above 0 comes back
@@ -190,7 +208,7 @@ const rank = (p) => p.tier * 2 + (p.panel ? 1 : 0);
  * paths): the kernel raises its tier by them and runs the platform check on them; without them it is the owner's.
  */
 export const MAX_DIFF = 80_000;
-export function plan({ kind, args }, state, facts) {
+export function plan({ kind, args }: { kind: unknown; args?: unknown }, state: State, facts: { diff: string; [k: string]: unknown }) {
   const action = String(kind).replace(/^(codehost|github)\./, "");
   const parts = planParts(action, state).flat();
   if (!parts.length) throw Object.assign(new Error("nothing recognised in the request"), { rule: "unrecognised" });
@@ -204,5 +222,5 @@ export function plan({ kind, args }, state, facts) {
   if (top.tier > 0 && facts.diff.length > MAX_DIFF) throw Object.assign(new Error(`the diff is over ${MAX_DIFF} characters, too large for a reviewer to read whole: split it into smaller changes`), { rule: "diff-too-large", status: 413 });
   const items = action === "push" || action === "pr" ? state.branches : action === "merge" ? state.prs : undefined;
   const paths = items?.map((x) => ({ repo: x.repo, ...(Array.isArray(x.files) ? { files: x.files.map((path) => ({ path })) } : {}) }));
-  return { args, targets, facts, ...(paths ? { paths } : {}), ...(top.tier > 0 ? { raise: { tier: top.tier, ...(top.panel ? { panel: true } : {}), reason: top.reason, rule: top.rule } } : {}) };
+  return { args, targets, facts, ...(paths ? { paths } : {}), ...(top.tier > 0 ? { raise: { tier: top.tier as 1 | 2, ...(top.panel ? { panel: true } : {}), reason: top.reason, rule: top.rule } } : {}) };
 }

@@ -6,7 +6,7 @@
 import { existsSync, readdirSync, renameSync, rmSync, rmdirSync } from "node:fs";
 import { join } from "node:path";
 
-export function moveSlackLive(dataDir) {
+export function moveSlackLive(dataDir: string) {
   const from = join(dataDir, "modules", "channel-slack"), src = join(from, "slack-live");
   const dst = join(dataDir, "modules", "slack", "slack-live");
   if (!existsSync(src)) return existsSync(from) ? "done" : "fresh";

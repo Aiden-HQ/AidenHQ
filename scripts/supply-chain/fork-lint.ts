@@ -14,12 +14,15 @@ const HOSTED = /^(ubuntu|windows|macos)-(latest|\d[\w.-]*)$/;
 const FORK_IN_RUNS_ON = /head\.repo\.full_name != github\.repository && '(ubuntu|windows|macos)-/;
 const FORK_SKIPPED_BY_IF = /head\.repo\.full_name == github\.repository/;
 
-export function lint(text, file = "workflow") {
-  const wf = YAML.parse(text);
-  const triggers = Object.keys(wf.on ?? wf[true] ?? {});
+interface Job { "runs-on"?: unknown; runs_on?: unknown; if?: unknown; steps?: { with?: unknown }[] }
+interface Workflow { on?: Record<string, unknown>; true?: Record<string, unknown>; jobs?: Record<string, Job> }
+
+export function lint(text: string, file = "workflow"): string[] {
+  const wf = YAML.parse(text) as Workflow;
+  const triggers = Object.keys(wf.on ?? wf[true as unknown as "true"] ?? {}); // YAML 1.1 reads a bare `on` key as true
   const target = triggers.includes("pull_request_target");
   if (!target && !triggers.includes("pull_request")) return [];
-  const problems = [];
+  const problems: string[] = [];
   for (const [name, job] of Object.entries(wf.jobs ?? {})) {
     const runs = JSON.stringify(job["runs-on"] ?? job.runs_on ?? "");
     const hosted = HOSTED.test(String(job["runs-on"]));
@@ -33,7 +36,7 @@ export function lint(text, file = "workflow") {
   return problems;
 }
 
-export function lintDir(dir) {
+export function lintDir(dir: string): string[] {
   return readdirSync(dir).filter((n) => /\.ya?ml$/.test(n)).flatMap((f) => lint(readFileSync(join(dir, f), "utf8"), f));
 }
 

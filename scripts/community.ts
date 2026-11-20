@@ -9,23 +9,25 @@ const LABEL = "community";
 const TITLE = /^(feat|fix|docs|chore|test|refactor|perf|ci|build|style|revert)(\([a-z0-9][a-z0-9._/-]*\))?!?: \S/;
 const GATE = [/^services\/runner\/src\/(tiers|review)\./, /^kernel\//, /^modules\/apps-platform\/gate\//, /^ops\//, /^scripts\/paperclip-setup\.ts$/, /^\.github\//];
 
-const strip = (body) => (body ?? "").replace(/<!--[\s\S]*?-->/g, "");
+interface Pr { title: string; body?: string | null; user?: { type?: string }; head: { repo?: { full_name?: string } | null } }
+
+const strip = (body?: string | null) => (body ?? "").replace(/<!--[\s\S]*?-->/g, "");
 
 // The CLA box is the signature (CLA.md): ticked in the PR body.
-export const claTicked = (body) => /^\s*[-*]\s*\[[xX]\][^\n]*CLA\.md/m.test(strip(body));
+export const claTicked = (body?: string | null) => /^\s*[-*]\s*\[[xX]\][^\n]*CLA\.md/m.test(strip(body));
 
 // Maintainers (same-repo branches, write access) and bots sign nothing here.
-export const exempt = (pr, base) => pr.user?.type === "Bot" || pr.head.repo?.full_name === base;
+export const exempt = (pr: Pr, base: string) => pr.user?.type === "Bot" || pr.head.repo?.full_name === base;
 
 // What the PR body says under a `## <name>` heading, comments removed.
-export const section = (body, name) => {
+export const section = (body: string | null | undefined, name: string) => {
   const m = strip(body).match(new RegExp(`^##\\s+${name}\\s*\\n([\\s\\S]*?)(?=^##\\s|(?![\\s\\S]))`, "mi"));
   return (m?.[1] ?? "").trim();
 };
 
-export function triageComment({ pr, files }) {
+export function triageComment({ pr, files }: { pr: Pr; files: string[] }) {
   const body = pr.body ?? "";
-  const gate = files.filter((f) => GATE.some((re) => re.test(f)));
+  const gate = files.filter((f: string) => GATE.some((re) => re.test(f)));
   const rows = [
     [TITLE.test(pr.title), "Title is a Conventional Commit"],
     [claTicked(body), "CLA box ticked"],
@@ -42,16 +44,16 @@ ${rows.map(([ok, text]) => `- [${ok ? "x" : " "}] ${text}`).join("\n")}
 Fork PRs run CI on GitHub-hosted runners. The maintainer reviews this separately; unchecked boxes above are what to fix first.`;
 }
 
-async function gh(path, token, init = {}) {
+async function gh(path: string, token: string | undefined, init: RequestInit = {}) {
   const res = await fetch(`${API}${path}`, { ...init, headers: { authorization: `Bearer ${token}`, accept: "application/vnd.github+json", ...init.headers } });
   if (!res.ok && res.status !== 404) throw new Error(`${init.method ?? "GET"} ${path}: ${res.status}`);
   return res;
 }
-const json = (body) => ({ body: JSON.stringify(body), headers: { "content-type": "application/json" } });
+const json = (body: unknown) => ({ body: JSON.stringify(body), headers: { "content-type": "application/json" } });
 
-async function main(mode) {
+async function main(mode?: string) {
   const token = process.env.GITHUB_TOKEN;
-  const event = JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, "utf8"));
+  const event = JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH!, "utf8"));
   const pr = event.pull_request;
   const repo = event.repository.full_name;
   if (exempt(pr, repo)) return console.log("maintainer or bot PR: nothing to do");
@@ -62,10 +64,10 @@ async function main(mode) {
     process.exit(1);
   }
 
-  const files = [];
+  const files: string[] = [];
   for (let page = 1; ; page++) {
     const batch = await (await gh(`/repos/${repo}/pulls/${pr.number}/files?per_page=100&page=${page}`, token)).json();
-    files.push(...batch.map((f) => f.filename));
+    files.push(...batch.map((f: { filename: string }) => f.filename));
     if (batch.length < 100) break;
   }
   if ((await gh(`/repos/${repo}/labels/${LABEL}`, token)).status === 404) {
@@ -75,7 +77,7 @@ async function main(mode) {
 
   const text = triageComment({ pr, files });
   const comments = await (await gh(`/repos/${repo}/issues/${pr.number}/comments?per_page=100`, token)).json();
-  const mine = comments.find((c) => c.body?.startsWith(MARKER) && c.user?.type === "Bot");
+  const mine = comments.find((c: { body?: string; user?: { type?: string } }) => c.body?.startsWith(MARKER) && c.user?.type === "Bot");
   if (mine) await gh(`/repos/${repo}/issues/comments/${mine.id}`, token, { method: "PATCH", ...json({ body: text }) });
   else await gh(`/repos/${repo}/issues/${pr.number}/comments`, token, { method: "POST", ...json({ body: text }) });
   console.log(`labelled ${LABEL} and ${mine ? "updated" : "posted"} the triage comment`);

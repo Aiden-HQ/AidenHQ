@@ -12,14 +12,14 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 
 const argv = process.argv.slice(2);
-const opt = (n, d) => { const i = argv.indexOf(`--${n}`); return i < 0 ? d : argv[i + 1]; };
-const dirs = argv.filter((a, i) => !a.startsWith("--") && !(i > 0 && argv[i - 1].startsWith("--")));
+const opt = (n: string, d?: string | number) => { const i = argv.indexOf(`--${n}`); return i < 0 ? d : argv[i + 1]; };
+const dirs = argv.filter((a, i) => !a.startsWith("--") && !(i > 0 && argv[i - 1]!.startsWith("--")));
 const days = Number(opt("days", 14));
 const minInput = Number(opt("min-input", 4000));
-const names = opt("grants") ? Object.fromEntries(Object.entries(JSON.parse(readFileSync(opt("grants"), "utf8")).agents ?? {}).map(([id, g]) => [id, g.key ?? id])) : {};
+const names = opt("grants") ? Object.fromEntries(Object.entries<{ key?: string }>(JSON.parse(readFileSync(opt("grants") as string, "utf8")).agents ?? {}).map(([id, g]) => [id, g.key ?? id])) : {};
 const cutoff = Date.now() - days * 86400_000;
 
-function* rollouts(dir) {
+function* rollouts(dir: string): Generator<string> {
   for (const e of readdirSync(dir, { withFileTypes: true })) {
     const p = join(dir, e.name);
     if (e.isDirectory()) yield* rollouts(p);
@@ -27,12 +27,13 @@ function* rollouts(dir) {
   }
 }
 
-const rows = new Map(); // "agent\tmodel" -> counters
-const breakers = new Map(); // "model\tcause" -> { n, lost }
-const row = (k) => rows.get(k) ?? rows.set(k, { runs: 0, calls: 0, input: 0, cached: 0, in1: 0, c1: 0, inN: 0, cN: 0 }).get(k);
+interface Counters { runs: number; calls: number; input: number; cached: number; in1: number; c1: number; inN: number; cN: number }
+const rows = new Map<string, Counters>(); // "agent\tmodel" -> counters
+const breakers = new Map<string, { n: number; lost: number }>(); // "model\tcause" -> { n, lost }
+const row = (k: string) => rows.get(k) ?? rows.set(k, { runs: 0, calls: 0, input: 0, cached: 0, in1: 0, c1: 0, inN: 0, cN: 0 }).get(k)!;
 
 for (const dir of dirs) for (const file of rollouts(dir)) {
-  const agent = names[file.match(/(?:agents|skill-runtimes)\/([0-9a-f-]{36})\//)?.[1]] ?? file.match(/(?:agents|skill-runtimes)\/([0-9a-f-]{8})/)?.[1] ?? "(other)";
+  const agent = names[file.match(/(?:agents|skill-runtimes)\/([0-9a-f-]{36})\//)?.[1]!] ?? file.match(/(?:agents|skill-runtimes)\/([0-9a-f-]{8})/)?.[1] ?? "(other)";
   let model = "?", prev = null, lastTool = "", first = true, ran = false;
   for await (const line of createInterface({ input: createReadStream(file) })) {
     let e; try { e = JSON.parse(line); } catch { continue; }
@@ -49,7 +50,7 @@ for (const dir of dirs) for (const file of rollouts(dir)) {
         r.inN += input; r.cN += cached;
         if (prev && prev.input >= minInput && cached < prev.input / 2) {
           const cause = at - prev.at > 300_000 ? "gap over 5 min" : lastTool ? `after tool ${lastTool}` : "no tool (prefix changed)";
-          const b = breakers.get(`${model}\t${cause}`) ?? breakers.set(`${model}\t${cause}`, { n: 0, lost: 0 }).get(`${model}\t${cause}`);
+          const b = breakers.get(`${model}\t${cause}`) ?? breakers.set(`${model}\t${cause}`, { n: 0, lost: 0 }).get(`${model}\t${cause}`)!;
           b.n++; b.lost += prev.input - cached;
         }
       }
@@ -58,13 +59,13 @@ for (const dir of dirs) for (const file of rollouts(dir)) {
   }
 }
 
-const pct = (a, b) => (b ? `${Math.round((100 * a) / b)}%` : "-");
-const tot = new Map();
+const pct = (a: number, b: number) => (b ? `${Math.round((100 * a) / b)}%` : "-");
+const tot = new Map<string, Counters>();
 console.log("agent\tmodel\truns\tcalls\tinput\tcached\tcached_all\tcached_turn1\tcached_turns2+");
 for (const [k, r] of [...rows].sort((a, b) => b[1].input - a[1].input)) {
   console.log([k, r.runs, r.calls, r.input, r.cached, pct(r.cached, r.input), pct(r.c1, r.in1), pct(r.cN, r.inN)].join("\t"));
-  const m = k.split("\t")[1], t = tot.get(m) ?? tot.set(m, { runs: 0, calls: 0, input: 0, cached: 0, in1: 0, c1: 0, inN: 0, cN: 0 }).get(m);
-  for (const f of Object.keys(t)) t[f] += r[f];
+  const m = k.split("\t")[1]!, t = tot.get(m) ?? tot.set(m, { runs: 0, calls: 0, input: 0, cached: 0, in1: 0, c1: 0, inN: 0, cN: 0 }).get(m)!;
+  for (const f of Object.keys(t)) t[f as keyof Counters] += r[f as keyof Counters];
 }
 console.log("\nper model\truns\tcalls\tinput\tcached\tcached_all\tcached_turn1\tcached_turns2+");
 for (const [m, r] of [...tot].sort((a, b) => b[1].input - a[1].input)) console.log([m, r.runs, r.calls, r.input, r.cached, pct(r.cached, r.input), pct(r.c1, r.in1), pct(r.cN, r.inN)].join("\t"));

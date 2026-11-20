@@ -17,11 +17,11 @@ const CORE = ["services/board/src/", "services/computer/", "services/shared/", "
 const CORE_EXCEPT = ["services/computer/images/"];
 const LEGACY_TRUSTED = ["modules/apps-platform/apps-mcp/src/", "modules/apps-platform/gate/", "modules/chat-lane/"];
 
-const under = (f, paths) => paths.some((p) => (p.endsWith("/") ? f.startsWith(p) : f === p));
-const isSource = (f) => CODE.test(f) && !SKIP.test(f);
+const under = (f: string, paths: string[]) => paths.some((p) => (p.endsWith("/") ? f.startsWith(p) : f === p));
+const isSource = (f: string) => CODE.test(f) && !SKIP.test(f);
 
 /** Non-blank, non-comment lines. */
-function lines(text, file) {
+function lines(text: string, file: string) {
   let n = 0;
   for (const raw of text.split("\n")) {
     const t = raw.trim();
@@ -31,13 +31,13 @@ function lines(text, file) {
   return n;
 }
 
-const yamlOf = (repo, f) => YAML.parse(readFileSync(join(repo, f), "utf8")) ?? {};
-const escape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const yamlOf = (repo: string, f: string) => YAML.parse(readFileSync(join(repo, f), "utf8")) ?? {};
+const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-export function measure(repo) {
+export function measure(repo: string) {
   const tracked = execFileSync("git", ["ls-files", "-z"], { cwd: repo, maxBuffer: 64 << 20, encoding: "utf8" }).split("\0").filter(Boolean).filter((f) => existsSync(join(repo, f)));
-  const read = (f) => readFileSync(join(repo, f), "utf8");
-  const sum = (files) => files.reduce((n, f) => n + lines(read(f), f), 0);
+  const read = (f: string) => readFileSync(join(repo, f), "utf8");
+  const sum = (files: string[]) => files.reduce((n, f) => n + lines(read(f), f), 0);
   const src = tracked.filter(isSource);
 
   const manifests = tracked.filter((f) => /^modules\/[^/]+\/module\.yaml$/.test(f));
@@ -47,13 +47,13 @@ export function measure(repo) {
   const trusted = new Set([...src.filter((f) => under(f, ["kernel/src/", "kernel/ops/", "ops/", ...privileged, ...LEGACY_TRUSTED]) || /^scripts\/[^/]+\.sh$/.test(f)), ...core]);
 
   // Vendors match anywhere in a word (githubToken); module names only as whole words (`core`, `ci`).
-  const market = existsSync(join(repo, "modules/marketplace.json")) ? JSON.parse(read("modules/marketplace.json")).plugins.map((p) => p.name) : [];
+  const market = existsSync(join(repo, "modules/marketplace.json")) ? JSON.parse(read("modules/marketplace.json")).plugins.map((p: { name: string }) => p.name) : [];
   const vendors = VENDORS.map((v) => v.toLowerCase());
-  const names = market.filter((m) => !vendors.includes(m.toLowerCase()));
-  const byLength = (a, b) => b.length - a.length;
+  const names = market.filter((m: string) => !vendors.includes(m.toLowerCase()));
+  const byLength = (a: string, b: string) => b.length - a.length;
   const vendorRe = new RegExp(vendors.sort(byLength).map(escape).join("|"), "gi");
   const nameRe = names.length ? new RegExp(`(?<![a-z0-9])(${names.sort(byLength).map(escape).join("|")})(?![a-z0-9])`, "gi") : null;
-  const hits = (f) => {
+  const hits = (f: string) => {
     const text = read(f);
     const v = [...text.matchAll(vendorRe)].filter((m) => !(m[0].toLowerCase() === "paperclip" && f.startsWith(CONTROLPLANE))).length;
     return v + (nameRe ? [...text.matchAll(nameRe)].length : 0);
@@ -62,11 +62,11 @@ export function measure(repo) {
 
   const coreSettings = existsSync(join(repo, "modules/core/module.yaml")) ? Object.keys(yamlOf(repo, "modules/core/module.yaml").settings ?? {}).length : 0;
   const kernelSettings = existsSync(join(repo, "kernel/settings.json")) ? Object.keys(JSON.parse(read("kernel/settings.json"))).length : 0;
-  const onOff = (d) => {
+  const onOff = (d?: { values?: unknown[]; default?: unknown }) => {
     const v = Array.isArray(d?.values) ? d.values.map(String) : [];
     return (v.length === 2 && v.includes("on") && v.includes("off")) || d?.default === "on" || d?.default === "off";
   };
-  const killswitches = manifests.reduce((n, f) => n + Object.values(yamlOf(repo, f).settings ?? {}).filter(onOff).length, 0);
+  const killswitches = manifests.reduce((n, f) => n + Object.values<{ values?: unknown[]; default?: unknown } | undefined>(yamlOf(repo, f).settings ?? {}).filter(onOff).length, 0);
 
   return {
     kernel: sum(src.filter((f) => f.startsWith("kernel/src/"))),

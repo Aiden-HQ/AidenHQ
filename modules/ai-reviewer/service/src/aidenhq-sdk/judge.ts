@@ -51,7 +51,7 @@ async function fetchRetrying(fetchFn: typeof fetch, delays: number[], url: strin
     try { res = await fetchFn(url, { ...init, signal: AbortSignal.timeout(timeoutMs) }); } catch (e) { err = e; }
     if (!(err ? true : RETRY_STATUS.has(res!.status)) || n >= delays.length) { if (err) throw err; return res!; }
     const after = Number(res?.headers?.get("retry-after"));
-    const wait = Math.min(after > 0 ? after * 1000 : delays[n] * (0.75 + Math.random() / 2), 20_000);
+    const wait = Math.min(after > 0 ? after * 1000 : delays[n]! * (0.75 + Math.random() / 2), 20_000);
     console.error(`openrouter retry ${n + 1}/${delays.length} (${res?.status ?? String(err.message).slice(0, 80)}) in ${Math.round(wait)}ms`);
     await res?.body?.cancel().catch(() => {});
     await new Promise((r) => setTimeout(r, wait));

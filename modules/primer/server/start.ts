@@ -6,10 +6,10 @@ import { spawn, spawnSync } from "node:child_process";
 import { createPublicKey } from "node:crypto";
 import { readFileSync } from "node:fs";
 
-const keys = JSON.parse(readFileSync("/run/secrets/AIDENHQ_IDENTITY_KEYS", "utf8")).keys.filter((k) => k.iss === "aidenhq-gate");
+const keys = JSON.parse(readFileSync("/run/secrets/AIDENHQ_IDENTITY_KEYS", "utf8")).keys.filter((k: { iss: string }) => k.iss === "aidenhq-gate");
 if (keys.length !== 1) throw new Error(`expected the gate's one identity key, found ${keys.length}`);
 const { kty, crv, x } = keys[0];
-const password = readFileSync(process.env.PRIMER_DB_PASSWORD_FILE, "utf8").trim();
+const password = readFileSync(process.env.PRIMER_DB_PASSWORD_FILE!, "utf8").trim();
 const env = {
   ...process.env,
   AUTH_MODE: "proxy",
@@ -21,5 +21,5 @@ const env = {
 };
 if (spawnSync("node", ["dist/db/migrate.js"], { env, stdio: "inherit" }).status !== 0) process.exit(1);
 const server = spawn("node", ["dist/index.js"], { env, stdio: "inherit" });
-for (const sig of ["SIGTERM", "SIGINT"]) process.on(sig, () => server.kill(sig));
+for (const sig of ["SIGTERM", "SIGINT"] as const) process.on(sig, () => server.kill(sig));
 server.on("exit", (code) => process.exit(code ?? 1));

@@ -6,11 +6,11 @@ import { createServer } from "node:http";
 
 const port = Number(process.env.PORT ?? 3120);
 const now = Date.now();
-const ago = (min) => new Date(now - min * 60_000).toISOString();
-const ahead = (min) => new Date(now + min * 60_000).toISOString();
+const ago = (min: number) => new Date(now - min * 60_000).toISOString();
+const ahead = (min: number) => new Date(now + min * 60_000).toISOString();
 const mock = { welcome: false, empty: false, slow: 0 };
 
-const dept = (id, name, order) => ({ id, name, order });
+const dept = (id: string, name: string, order: number) => ({ id, name, order });
 const OPS = dept("ops", "Chief of staff", 0), ENG = dept("eng", "Engineering", 1), DESK = dept("desk", "Desk", 2);
 const roster = [
   { id: "a1", key: "aiden", name: "Aiden", title: "Chief of staff", system: false, department: OPS, avatar: "chief-of-staff", model: "deepseek-flash", reportsTo: null, state: "working", running: 1, queued: 0, workingSince: ago(3), trial: false, schedules: [{ title: "Morning brief", paused: false, nextRunAt: ahead(600) }], lastRunAt: ago(3), lastRunStatus: "succeeded" },
@@ -22,7 +22,7 @@ const roster = [
   { id: "a7", key: "meeting-librarian", name: "Meeting Librarian", title: "Notes from every meeting", system: false, department: DESK, avatar: "meeting-librarian", model: "deepseek-flash", reportsTo: "a1", state: "idle", running: 0, queued: 0, workingSince: null, trial: false, schedules: [{ title: "After meetings", paused: false, nextRunAt: ahead(95) }], lastRunAt: ago(130), lastRunStatus: "succeeded" },
 ];
 
-const card = (n, title, extra = {}) => ({ id: `id-${n}`, identifier: `WOR-${n}`, title, status: "todo", priority: "medium", labels: [], assignee: null, unread: false, createdAt: ago(n % 300), activityAt: ago(n % 90), ...extra });
+const card = (n: number, title: string, extra: Record<string, unknown> = {}) => ({ id: `id-${n}`, identifier: `WOR-${n}`, title, status: "todo", priority: "medium", labels: [], assignee: null, unread: false, createdAt: ago(n % 300), activityAt: ago(n % 90), ...extra });
 const board = () => ({
   buckets: mock.empty ? { triage: [], today: [], tomorrow: [], later: [], backlog: [] } : {
     triage: [card(812, "Reply to Acme's renewal question", { unread: true, assignee: "open-loops" }), card(815, "Weekly metrics digest looks off", { priority: "high" })],
@@ -46,7 +46,7 @@ const chatRows = () => mock.empty ? [] : [
   { identifier: "WOR-799", title: "Draft a reply to the hiring agency", open: true, agent: { key: "aiden", name: "Aiden" }, state: "idle", updatedAt: ago(1500), preview: { text: "Sent.", at: ago(1500), from: "you" }, unread: false },
 ];
 
-const approval = (id, over = {}) => ({ id, identifier: "WOR-818", action: "deploy", target: "invoices", digest: "sha256:9f2c", sentence: "Deploy the invoices app at 4e1a9c2", reads: "The warehouse schema app_invoices", changes: "Starts a new container; the app's door opens to admins", cost: "No spend", details: "Commit 4e1a9c2 on acme-agents/invoices: adds CSV export and a monthly total.", requestedBy: "Engineer", state: "pending", tier: 2, reason: "First deploy of a new app", review: "The diff is small and touches only the app's own repo. Sent to you because it is a first deploy.", decidedBy: null, outcome: null, outcomeText: null, createdAt: ago(9), replaced: false, ...over });
+const approval = (id: string, over = {}) => ({ id, identifier: "WOR-818", action: "deploy", target: "invoices", digest: "sha256:9f2c", sentence: "Deploy the invoices app at 4e1a9c2", reads: "The warehouse schema app_invoices", changes: "Starts a new container; the app's door opens to admins", cost: "No spend", details: "Commit 4e1a9c2 on acme-agents/invoices: adds CSV export and a monthly total.", requestedBy: "Engineer", state: "pending", tier: 2, reason: "First deploy of a new app", review: "The diff is small and touches only the app's own repo. Sent to you because it is a first deploy.", decidedBy: null, outcome: null, outcomeText: null, createdAt: ago(9), replaced: false, ...over });
 const approvals = () => mock.empty ? [] : [
   approval("ap1"),
   approval("ap2", { identifier: "WOR-806", action: "push", target: "acme-agents/aidenhq-instance", sentence: "Raise the Platform Engineer's run timeout to 45 minutes", changes: "One line in instance.yaml", tier: 2, reason: "Changes an agent's limits", review: null, createdAt: ago(50) }),
@@ -54,10 +54,10 @@ const approvals = () => mock.empty ? [] : [
   approval("ap4", { identifier: "WOR-777", action: "send", target: "slack:#general", sentence: "Post the weekly update in #general", tier: 1, state: "rejected", decidedBy: "reviewer:gpt-luna", review: "The draft names a customer that isn't public yet.", createdAt: ago(300) }),
 ];
 
-const chatDetail = (ref) => {
+const chatDetail = (ref: string) => {
   const row = chatRows().find((c) => c.identifier === ref) ?? chatRows()[0] ?? { identifier: ref, title: "New chat", open: true, agent: { key: "aiden", name: "Aiden" }, state: "idle" };
   return {
-    id: `id-${ref}`, identifier: row.identifier, title: row.title, open: true, agent: row.agent, state: row.state, reason: row.reason,
+    id: `id-${ref}`, identifier: row.identifier, title: row.title, open: true, agent: row.agent, state: row.state, reason: (row as { reason?: string }).reason,
     messages: [
       { kind: "owner", id: "m1", text: row.title, at: ago(15) },
       { kind: "reply", id: "m2", agent: row.agent.name, text: "On it. I'll check both calendars and propose **three slots** that avoid your focus blocks.\n\n- Tuesday 10:00\n- Wednesday 14:30\n- Thursday 09:00", at: ago(12) },
@@ -77,7 +77,7 @@ const apps = () => mock.empty ? [] : [
   { name: "hiring", healthy: false, state: "crashed", sha: "c09e1aa", deployed_at: now - 7_200_000, deployed_by: "Engineer", repo: "acme-agents/hiring", incident: { opened_at: ago(30), kind: "crash", detail: "Exited with code 1 three times in five minutes" } },
 ];
 
-const moduleRow = (name, description, state, over = {}) => ({ name, description, agents: [], requires: [], marketplace: "aidenhq", tier: "official", state, neededBy: [], connections: [], routines: [], apps: [], settings: {}, revision: "a1b2c3d", pinned: null, source: null, setup: null, ...over });
+const moduleRow = (name: string, description: string, state: string, over = {}) => ({ name, description, agents: [], requires: [], marketplace: "aidenhq", tier: "official", state, neededBy: [], connections: [], routines: [], apps: [], settings: {}, revision: "a1b2c3d", pinned: null, source: null, setup: null, ...over });
 const modules = () => [
   moduleRow("core", "The chief of staff and the pieces every install needs.", "core", { agents: ["aiden"] }),
   moduleRow("open-loops", "Tracks promises and follow-ups across Slack and email.", "on", { agents: ["open-loops"], connections: ["slack"] }),
@@ -112,8 +112,8 @@ const connections = () => ({
   sources: [{ name: "slack", lastOk: ago(3), failing: false, stale: false }, { name: "gmail", lastOk: ago(400), failing: false, stale: true }],
 });
 
-const profile = (key) => {
-  const a = roster.find((r) => r.key === key) ?? roster[0];
+const profile = (key: string) => {
+  const a = roster.find((r) => r.key === key) ?? roster[0]!;
   return { id: a.id, key: a.key, name: a.name, avatar: a.avatar, title: a.title, state: a.state, stateNote: a.stateNote, trial: a.trial, model: a.model, effort: "high", reportsTo: a.reportsTo, source: { module: "core", marketplace: "aidenhq", tier: "official", revision: "a1b2c3d" }, schedules: a.schedules };
 };
 const days = Array.from({ length: 7 }, (_, i) => new Date(now - (6 - i) * 86_400_000).toISOString().slice(0, 10));
@@ -127,7 +127,7 @@ const timeline = () => mock.empty ? [] : [
   { id: "r4", outcome: "stopped", state: "cancelled", startedAt: ago(1700), endedAt: ago(1698), task: { id: "t3", identifier: null, title: null }, trigger: "Schedule: Morning brief", steps: 1, costUsd: 0.004, error: "Stopped by you before it started.", writes: [] },
   { id: "r5", outcome: "failed", state: "timeout", startedAt: ago(1900), endedAt: ago(1780), task: { id: "t4", identifier: "WOR-700", title: "Set up the invoices repo" }, trigger: "Assigned by Aiden", steps: 80, costUsd: 1.9, error: null, writes: [] },
 ];
-const explanation = (id) => ({
+const explanation = (id: string) => ({
   id, sentence: "An AI reviewer approved this push.",
   decider: { kind: id === "w2" ? "pending-owner" : "reviewer", words: "The AI reviewer read it and approved.", models: ["openai/gpt-luna-latest"] },
   path: ["Engineer filed the push.", "The kernel put it at Tier 1.", "The AI reviewer approved it.", "The runner pushed the branch."],
@@ -150,10 +150,10 @@ const flows = () => ({
   ],
 });
 
-function route(method, url) {
+function route(method: string, url: URL): [number, unknown] {
   const p = url.pathname;
   if (method !== "GET") return [200, { ok: true, identifier: "WOR-900", id: "id-900" }];
-  const m = (re) => re.exec(p);
+  const m = (re: RegExp) => re.exec(p);
   switch (p) {
     case "/api/session": return [200, { mode: "lan", account: { id: "u1", email: "alex@example.com", name: "Alex", role: "admin", owner: true }, googleConnect: true, signInConnect: true, adminUrl: "http://127.0.0.1:3120" }];
     case "/api/board": return [200, board()];
@@ -179,35 +179,35 @@ function route(method, url) {
     case "/api/settled": return [200, { settled: [] }];
     case "/api/costs/features": return [200, { features: [], unattributed: { usd: 0, calls: 0 } }];
   }
-  let x;
-  if ((x = m(/^\/api\/chats\/([^/]+)$/))) return [200, chatDetail(decodeURIComponent(x[1]))];
+  let x: RegExpExecArray | null;
+  if ((x = m(/^\/api\/chats\/([^/]+)$/))) return [200, chatDetail(decodeURIComponent(x[1]!))];
   if ((x = m(/^\/api\/issues\/([^/]+)\/feature-cost$/))) return [200, { cost: null }];
-  if ((x = m(/^\/api\/issues\/([^/]+)\/lineage$/))) return [200, { identifier: x[1], children: [], total: { tasks: 0, running: 0, needs: 0, blocked: 0, tokens: 0, usd: 0, ms: 0 } }];
+  if ((x = m(/^\/api\/issues\/([^/]+)\/lineage$/))) return [200, { identifier: x[1]!, children: [], total: { tasks: 0, running: 0, needs: 0, blocked: 0, tokens: 0, usd: 0, ms: 0 } }];
   if ((x = m(/^\/api\/issues\/([^/]+)$/))) {
-    const c = Object.values(board().buckets).flat().find((k) => k.identifier === decodeURIComponent(x[1]) || k.id === x[1]) ?? card(790, "Ship the invoices app's export");
-    return [200, { ...c, working: c.working ?? null, description: "Add a **CSV export** to the invoices app and a monthly total row.\n\n- Export respects the current filter\n- Totals in the account currency", bucket: "today", editable: true, labelIds: [], replyTarget: "me", scheduled: null, recurring: null, comments: [{ id: "k1", body: "Started on the export; tests next.", author: { kind: "agent", name: "Engineer" }, createdAt: ago(20) }], files: [], parent: null, runs: [], crew: [] }];
+    const c = Object.values(board().buckets).flat().find((k) => k.identifier === decodeURIComponent(x![1]!) || k.id === x![1]) ?? card(790, "Ship the invoices app's export");
+    return [200, { ...c, working: (c as { working?: unknown }).working ?? null, description: "Add a **CSV export** to the invoices app and a monthly total row.\n\n- Export respects the current filter\n- Totals in the account currency", bucket: "today", editable: true, labelIds: [], replyTarget: "me", scheduled: null, recurring: null, comments: [{ id: "k1", body: "Started on the export; tests next.", author: { kind: "agent", name: "Engineer" }, createdAt: ago(20) }], files: [], parent: null, runs: [], crew: [] }];
   }
   if ((x = m(/^\/api\/models\/([^/]+)$/))) return [200, { default: "deepseek-flash", models: ["deepseek-flash", "gpt-luna"], efforts: ["medium", "high"] }];
   if ((x = m(/^\/api\/agents\/by-key\/([^/]+)\/timeline$/))) return [200, { entries: timeline() }];
-  if ((x = m(/^\/api\/approvals\/([^/]+)\/explain$/))) return [200, { explanation: explanation(decodeURIComponent(x[1])) }];
-  if ((x = m(/^\/api\/runs\/([^/]+)$/))) return [200, { id: x[1], agent: "Engineer", engine: "codex", status: "done", error: null, startedAt: ago(40), finishedAt: ago(31), durationMs: 540000, issue: null, rev: null, tokens: null, plan: [], ledger: { rows: [], usd: null, capUsd: null }, timeline: [{ at: ago(40), kind: "step", text: "Read the task and the invoices app.", ok: true }, { at: ago(38), kind: "step", text: "Ran the export tests.", ok: true }, { at: ago(33), kind: "error", text: "The linter failed on export.ts; fixed and re-ran.", ok: false }] }];
-  if ((x = m(/^\/api\/agents\/by-key\/([^/]+)$/))) return [200, { profile: profile(x[1]) }];
+  if ((x = m(/^\/api\/approvals\/([^/]+)\/explain$/))) return [200, { explanation: explanation(decodeURIComponent(x[1]!)) }];
+  if ((x = m(/^\/api\/runs\/([^/]+)$/))) return [200, { id: x[1]!, agent: "Engineer", engine: "codex", status: "done", error: null, startedAt: ago(40), finishedAt: ago(31), durationMs: 540000, issue: null, rev: null, tokens: null, plan: [], ledger: { rows: [], usd: null, capUsd: null }, timeline: [{ at: ago(40), kind: "step", text: "Read the task and the invoices app.", ok: true }, { at: ago(38), kind: "step", text: "Ran the export tests.", ok: true }, { at: ago(33), kind: "error", text: "The linter failed on export.ts; fixed and re-ran.", ok: false }] }];
+  if ((x = m(/^\/api\/agents\/by-key\/([^/]+)$/))) return [200, { profile: profile(x[1]!) }];
   if ((x = m(/^\/api\/agents\/by-key\/([^/]+)\/tasks$/))) {
     const rows = [{ identifier: "WOR-790", title: "Ship the invoices app's export", state: "working", updatedAt: ago(12), from: "WOR-818" }, { identifier: "WOR-806", title: "Why did the health check fail?", state: "failed", updatedAt: ago(52), from: null }];
     return url.searchParams.get("view") === "history" ? [200, { rows: [{ identifier: "WOR-700", title: "Set up the invoices repo", state: "done", updatedAt: ago(3000), from: null }], next: null }] : [200, { needs: [rows[1]], ongoing: [rows[0]] }];
   }
   if ((x = m(/^\/api\/agents\/([^/]+)\/scorecard$/))) return [200, { done: { count: 14, prior: 9, tasks: [] }, reopen: { graded: 12, reopened: 1, escalated: 0 }, approvals: { filed: 6, rejected: 1, priorRejected: 2 }, runsFailed: 1, cost: { usd: 4.18, prior: 5.02, perDone: 0.3, billed: true }, daily: days.map((day, i) => ({ day, done: [1, 3, 2, 0, 4, 2, 2][i], costUsd: [0.4, 0.9, 0.6, 0.1, 1.1, 0.5, 0.58][i] })) }];
   if ((x = m(/^\/api\/modules\/([^/]+)$/))) {
-    const mod = modules().find((r) => r.name === x[1]) ?? modules()[0];
+    const mod = modules().find((r) => r.name === x![1]) ?? modules()[0]!;
     return [200, { module: mod, agents: mod.agents.map(profile), ongoing: [], routines: [], authority: { connections: mod.connections, writes: [{ kind: "push", tier: 1 }], secrets: [], prompts: [], readme: `# ${mod.name}\n\n${mod.description}` }, neededBy: mod.neededBy, requires: mod.requires }];
   }
   return [404, { error: `mock: no fixture for ${p}` }];
 }
 
 createServer((req, res) => {
-  const url = new URL(req.url, "http://x");
+  const url = new URL(req.url!, "http://x");
   if (url.pathname === "/__mock") {
-    for (const k of ["welcome", "empty"]) if (url.searchParams.has(k)) mock[k] = url.searchParams.get(k) === "1";
+    for (const k of ["welcome", "empty"] as const) if (url.searchParams.has(k)) mock[k] = url.searchParams.get(k) === "1";
     if (url.searchParams.has("slow")) mock.slow = Number(url.searchParams.get("slow"));
     return res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(mock));
   }
@@ -218,6 +218,6 @@ createServer((req, res) => {
     return req.on("close", () => clearInterval(t));
   }
   req.resume();
-  const [status, body] = route(req.method, url);
+  const [status, body] = route(req.method!, url);
   setTimeout(() => res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body)), mock.slow);
 }).listen(port, "127.0.0.1", () => console.log(`board mock API on :${port}`));

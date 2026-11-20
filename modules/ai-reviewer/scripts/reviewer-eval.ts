@@ -49,7 +49,7 @@ let costUsd = 0;
 // kernel's check job (kernel/src/checkjobs.ts) sets it to its model gateway and the key to a `check` token; unset, OpenRouter.
 const base = process.env.OPENROUTER_BASE_URL?.trim().replace(/\/+$/, "");
 const asker = openRouterAsk(key, base ? { url: `${base}/chat/completions` } : {});
-const ask = async (model, prompt) => {
+const ask = async (model: string, prompt: { system: string; user: string }) => {
   const r = await asker(model, prompt);
   tokens.prompt += r.usage?.prompt_tokens ?? 0;
   tokens.completion += r.usage?.completion_tokens ?? 0;
@@ -64,7 +64,7 @@ for (const c of cases) {
   const started = Date.now();
   const v = await review({ card: c.card, diff: c.diff, files: c.files || c.changed ? { ...(c.files ? fileContext(c.files) : { text: "", leftOut: [], oversized: [] }), ...(c.changed ? { changed: c.changed } : {}) } : undefined, chain: c.chain, siblings: c.siblings ?? "", sources: c.sources, evidence: c.evidence, decisions: c.decisions, grader_note: c.grader_note, requesterModel: c.requesterModel, policy, ask, panel: c.card.panel === true, previous: c.previous ?? [] });
   // A refusal or a failed call escalates by design, but it isn't the reviewer judging the case: it fails, whatever was wanted.
-  const ok = want.includes(v.decision) && (!c.expect_code || [c.expect_code].flat().includes(v.code)) && (c.expect_second === undefined || Boolean(v.second || v.second_unsure) === c.expect_second) && (c.expect_flag === undefined || Boolean(v.flag) === c.expect_flag) && (c.expect_nit === undefined || /\bNit:/i.test(v.reason) === c.expect_nit) && (!c.expect_quoted || v.findings?.length > 0) && (!c.expect_reason || v.reason.toLowerCase().includes(c.expect_reason.toLowerCase())) && !["reviewer_refused", "reviewer_failed"].includes(v.code);
+  const ok = want.includes(v.decision) && (!c.expect_code || [c.expect_code].flat().includes(v.code)) && (c.expect_second === undefined || Boolean(v.second || v.second_unsure) === c.expect_second) && (c.expect_flag === undefined || Boolean(v.flag) === c.expect_flag) && (c.expect_nit === undefined || /\bNit:/i.test(v.reason) === c.expect_nit) && (!c.expect_quoted || (v.findings?.length as number) > 0) && (!c.expect_reason || v.reason.toLowerCase().includes(c.expect_reason.toLowerCase())) && !["reviewer_refused", "reviewer_failed"].includes(v.code!);
   results.push({ file: c.file, ok, kind: missKind(want, v.decision) });
   if (!ok) failed.push({ file: c.file, kind: missKind(want, v.decision), want: want.join("|"), got: `${v.decision} ${v.code ?? ""}`.trim(), reason: v.reason.replace(/\s+/g, " ").slice(0, 600) });
   console.log(`${ok ? "PASS" : `FAIL (${missKind(want, v.decision)})`}  ${c.file}  want ${want.join("|")}${c.expect_code ? ` ${[c.expect_code].flat().join("|")}` : ""}${c.expect_second === undefined ? "" : c.expect_second ? " (panel)" : " (one reviewer)"}, got ${v.decision} ${v.code ?? ""} (${v.model}${v.second ? ` + ${v.second}` : v.second_unsure ? `, ${v.second_unsure} unsure` : ""}${v.flag ? ", flagged authority-expanding" : ""}, ${((Date.now() - started) / 1000).toFixed(0)}s)\n      ${v.reason.replace(/\s+/g, " ").slice(0, 300)}`);

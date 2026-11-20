@@ -28,12 +28,20 @@ if (!conf.writes?.length) throw new Error("eval.json: writes lists the write too
 const model = conf.model ?? "~deepseek/deepseek-flash-latest";
 const cases = readdirSync(join(dir, "cases")).filter((f) => f.endsWith(".json") && f.includes(only)).sort().map((f) => ({ file: f, ...JSON.parse(readFileSync(join(dir, "cases", f), "utf8")) }));
 
-const body = (text) => text.replace(/^---\n[\s\S]*?\n---\n/, "");
+/** One side of a routine's comparison (eval.json): a handbook, read from a git ref or the working tree. */
+interface Side { ref?: string; handbook: string; extra?: string; skills?: string[] }
+/** A write call the model planned (the SCHEMA's fields; a model may leave any "" ). */
+interface Call { tool: string; marker: string; label: string; status: string; priority: string; title: string; text: string }
+/** One expectation or prohibition of a case: field substrings the call must match, with an optional count. */
+interface Match { count?: number; min?: number; title_re?: string; [field: string]: unknown }
+interface Case { file: string; input: string; routine: string; security?: boolean; expect?: Match[]; forbid?: Match[] }
+
+const body = (text: string) => text.replace(/^---\n[\s\S]*?\n---\n/, "");
 // `./`: the path is read relative to modules/ (root), as the new side reads it, not to the repository's top.
-const at = (ref, path) => execFileSync("git", ["-C", root, "show", `${ref}:./${path}`], { encoding: "utf8" });
+const at = (ref: string, path: string) => execFileSync("git", ["-C", root, "show", `${ref}:./${path}`], { encoding: "utf8" });
 // `skills` (new or old side) are read from the working tree: both sides see the same skill text, so a case measures the handbook.
-const skillsText = (side) => (side.skills ?? []).map((s) => `## Skill ${s.split("/").pop()} (you read it for this run)\n\n${body(readFileSync(join(root, s, "SKILL.md"), "utf8"))}`);
-const handbook = (side) => (side.ref
+const skillsText = (side: Side) => (side.skills ?? []).map((s) => `## Skill ${s.split("/").pop()} (you read it for this run)\n\n${body(readFileSync(join(root, s, "SKILL.md"), "utf8"))}`);
+const handbook = (side: Side) => (side.ref
   ? [body(at(side.ref, side.handbook)), ...(side.extra ? [`## Instance rules\n\n${side.extra}`] : [])]
   : [body(readFileSync(join(root, side.handbook), "utf8"))]).concat(skillsText(side)).join("\n\n");
 
@@ -54,9 +62,9 @@ For each call give
 tool, marker (the source marker, or ""), label (comma-separated labels, or ""), status (a confirm or reject decision, or ""), priority, title
 and text (the task description, comment, DM or finish line). Leave a field "" when it doesn't apply.`;
 
-const matches = (call, m) => Object.entries(m).every(([k, v]) => k === "count" || k === "min" || (k === "title_re" ? new RegExp(v).test(call.title) : String(call[k] ?? "").toLowerCase().includes(String(v).toLowerCase())));
-function check(c, calls) {
-  const why = [];
+const matches = (call: Call, m: Match) => Object.entries(m).every(([k, v]) => k === "count" || k === "min" || (k === "title_re" ? new RegExp(v as string).test(call.title) : String((call as unknown as Record<string, unknown>)[k] ?? "").toLowerCase().includes(String(v).toLowerCase())));
+function check(c: Case, calls: Call[]) {
+  const why: string[] = [];
   for (const m of c.expect ?? []) {
     const n = calls.filter((x) => matches(x, m)).length;
     if (m.min != null ? n < m.min : m.count == null ? n < 1 : n !== m.count) why.push(`expected ${m.count ?? `>=${m.min ?? 1}`} × ${JSON.stringify(m)}, got ${n}`);
@@ -71,7 +79,7 @@ let costUsd = 0;
 // A model's single answer varies run to run: each side answers `samples` times (eval.json, default 3). A case passes when
 // most answers pass it, a security case only when every answer does; `calls` and `why` are those of the first failing answer.
 const samples = conf.samples ?? 3;
-async function once(side, c) {
+async function once(side: Side, c: Case) {
   // A reply that isn't valid JSON is retried (twice): it says nothing about the handbook.
   let last = "";
   for (let attempt = 0; attempt < 3; attempt++) {
@@ -79,19 +87,19 @@ async function once(side, c) {
       const r = await ask(model, { system: `${FRAME}\n\n# Your handbook\n\n${handbook(side)}`, user: c.input });
       costUsd += typeof r.usage?.cost === "number" ? r.usage.cost : 0;
       // The schema asks for every field, so a model may pad its plan with calls that are empty throughout: those plan nothing.
-      const calls = JSON.parse(r.content).calls.filter((x) => [x.marker, x.label, x.status, x.priority, x.title, x.text].some(Boolean));
+      const calls = JSON.parse(r.content).calls.filter((x: Call) => [x.marker, x.label, x.status, x.priority, x.title, x.text].some(Boolean));
       return { calls, why: check(c, calls) };
     } catch (err) {
-      last = String(err.message ?? err).slice(0, 160);
+      last = String((err as Error).message ?? err).slice(0, 160);
     }
   }
   return { calls: [], why: [`call failed: ${last}`] };
 }
-async function run(side, c) {
+async function run(side: Side, c: Case) {
   const all = await Promise.all(Array.from({ length: samples }, () => once(side, c)));
   const failed = all.filter((r) => r.why.length);
   const fails = c.security ? failed.length > 0 : failed.length * 2 > samples;
-  return fails ? { ...failed[0], why: [...failed[0].why, ...(samples > 1 ? [`(${failed.length} of ${samples} answers failed)`] : [])] } : { calls: all[0].calls, why: [] };
+  return fails ? { ...failed[0]!, why: [...failed[0]!.why, ...(samples > 1 ? [`(${failed.length} of ${samples} answers failed)`] : [])] } : { calls: all[0]!.calls, why: [] };
 }
 
 const rows = await Promise.all(cases.map(async (c) => {
@@ -104,7 +112,7 @@ for (const { c, o, n } of rows) {
   const tag = `${o.why.length ? "old FAIL" : "old pass"} / ${n.why.length ? "new FAIL" : "new pass"}`;
   console.log(`${tag}  ${c.file}${c.security ? " [security]" : ""}`);
   for (const w of n.why) console.log(`    new: ${w}`);
-  if (n.why.length) console.log(`    new calls: ${JSON.stringify(n.calls.map((x) => [x.tool, x.status, x.text.slice(0, 100)]))}`);
+  if (n.why.length) console.log(`    new calls: ${JSON.stringify(n.calls.map((x: Call) => [x.tool, x.status, x.text.slice(0, 100)]))}`);
   for (const w of o.why) console.log(`    old: ${w}`);
   if (!o.why.length && n.why.length) regressions++;
   if (c.security && n.why.length) securityMisses++;

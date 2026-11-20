@@ -30,12 +30,21 @@ const ADVISOR_TIMEOUT = 240_000;
 const FANOUT_BUDGET = 240_000;
 const FANOUT_ITEM_TIMEOUT = 90_000;
 
+/** An error thrown above, with the gateway's status or the refusal flag. */
+type Err = Error & { status?: number; refused?: boolean };
+
 
 /**
  * The tools, for Object.assign(TOOLS, …). `gatewayUrl` is the gateway's base; `headers()` the credential headers for one call
  * (or `key`, a bearer credential); `used()` (or `used`) the run's count, which the caller keeps per run.
  */
-export function modelTools({ gatewayUrl, headers = undefined, key = undefined, fetchFn = fetch, used = { advisor: 0 } }) {
+export function modelTools({ gatewayUrl, headers = undefined, key = undefined, fetchFn = fetch, used = { advisor: 0 } }: {
+  gatewayUrl: string;
+  headers?: (() => Record<string, string>) | undefined;
+  key?: string | undefined;
+  fetchFn?: typeof fetch;
+  used?: { advisor: number } | (() => { advisor: number });
+}) {
   const base = String(gatewayUrl).replace(/\/+$/, "");
   const auth = headers ?? (() => {
     if (!key) throw Object.assign(new Error("no model credential for this run"), { refused: true });
@@ -43,7 +52,7 @@ export function modelTools({ gatewayUrl, headers = undefined, key = undefined, f
   });
   const count = typeof used === "function" ? used : () => used;
 
-  async function complete(route, body, timeoutMs) {
+  async function complete(route: string, body: { model: string; [k: string]: unknown }, timeoutMs: number) {
     const res = await fetchFn(`${base}/${route}/api/v1/chat/completions`, {
       method: "POST",
       headers: { ...auth(), "content-type": "application/json" },
@@ -51,7 +60,7 @@ export function modelTools({ gatewayUrl, headers = undefined, key = undefined, f
       signal: AbortSignal.timeout(timeoutMs),
     });
     const text = await res.text();
-    let json;
+    let json: any;
     try { json = JSON.parse(text); } catch {}
     if (!res.ok) throw Object.assign(new Error(`model gateway ${res.status}: ${json?.error?.message ?? text.slice(0, 300)}`), { status: res.status });
     const content = String(json?.choices?.[0]?.message?.content ?? "").trim();
@@ -73,7 +82,7 @@ export function modelTools({ gatewayUrl, headers = undefined, key = undefined, f
         additionalProperties: false,
       },
       annotations: { readOnlyHint: true, openWorldHint: true },
-      run: async ({ question, context = "" }) => {
+      run: async ({ question, context = "" }: { question?: unknown; context?: unknown }) => {
         const q = String(question ?? "").trim();
         const c = String(context ?? "");
         if (!q || [q, c.trim()].filter(Boolean).join(" ").length < BRIEF_MIN || [q, c].some((x) => /^\W*placeholder\W*$/i.test(x.trim())))
@@ -98,7 +107,7 @@ export function modelTools({ gatewayUrl, headers = undefined, key = undefined, f
         } catch (e) {
           // A refusal (before the call, or an error status from the gateway) gives its slot back; a timeout or an empty
           // answer may have been billed, so it keeps it.
-          if (e.refused || e.status) used.advisor--;
+          if ((e as Err).refused || (e as Err).status) used.advisor--;
           throw e;
         }
       },
@@ -116,7 +125,7 @@ export function modelTools({ gatewayUrl, headers = undefined, key = undefined, f
         additionalProperties: false,
       },
       annotations: { readOnlyHint: true, openWorldHint: true },
-      run: async ({ instruction, items }) => {
+      run: async ({ instruction, items }: { instruction?: unknown; items?: unknown[] }) => {
         const ins = String(instruction ?? "").trim();
         if (!ins) throw new Error("instruction is empty");
         if (ins.length > QUESTION_MAX) throw new Error(`instruction is ${ins.length} characters; at most ${QUESTION_MAX}`);
@@ -145,8 +154,8 @@ export function modelTools({ gatewayUrl, headers = undefined, key = undefined, f
               }, Math.min(FANOUT_ITEM_TIMEOUT, left));
               results[i] = { i, result: out.content.slice(0, RESULT_MAX) };
             } catch (e) {
-              if (e.status === 402) stop = String(e.message).slice(0, 300);
-              results[i] = { i, not_covered: String(e.message ?? e).slice(0, 300) };
+              if ((e as Err).status === 402) stop = String((e as Err).message).slice(0, 300);
+              results[i] = { i, not_covered: String((e as Err).message ?? e).slice(0, 300) };
             }
           }
         };

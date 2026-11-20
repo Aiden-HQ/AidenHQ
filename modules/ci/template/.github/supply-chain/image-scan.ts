@@ -35,8 +35,17 @@ const PATH = /^(?!\/)(?!.*(?:^|\/)\.\.?(?:\/|$))[A-Za-z0-9._/-]+$/; // repositor
 const PLAIN = "[A-Za-z0-9 ._@\/=:+,-]*"; // plain words and spaces: all a RUN step may hold to satisfy an exception
 const PLAIN_PART = new RegExp(`^${PLAIN}$`), PLAIN_RUN = new RegExp(`^${PLAIN}(?:&&${PLAIN})*$`);
 const NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const show = (s) => JSON.stringify(String(s).slice(0, 200)); // untrusted text in a message: one quoted line
-const nameOf = (ref) => ref.replace(/@.*$/, "").replace(/:[^:/]*$/, "");
+const show = (s: unknown) => JSON.stringify(String(s).slice(0, 200)); // untrusted text in a message: one quoted line
+const nameOf = (ref: string) => ref.replace(/@.*$/, "").replace(/:[^:/]*$/, "");
+
+// A stage's base, or what a COPY --from or mount names: an earlier stage, scratch, or an image (ref).
+interface Ref { image?: string; local?: string; final: boolean }
+interface Source { stage?: number; scratch?: boolean; ref?: Ref }
+interface Stage { base: Source; runs: string[]; copies: { src: Source; paths: string[] }[]; mounts: Source[] }
+export interface Use { final: boolean; finalRuns: string[]; copies: { paths: string[]; runs: string[] }[]; mounted: boolean }
+export interface Exception { image: string; vulnerability?: string; expires?: string; path?: string; when?: string }
+export interface Accepted { id: string; image: string; expires: string }
+type PlannedImage = { ref: string; uses: (Use & { df: string })[] };
 
 /**
  * What a Dockerfile's text names: `refs`, each { image } (a registry reference) or { local } (a --local name) with
@@ -46,17 +55,17 @@ const nameOf = (ref) => ref.replace(/@.*$/, "").replace(/:[^:/]*$/, "");
  * without a default or set after the first FROM, any other `$` form, a platform other than amd64, a reference without a
  * digest, or one outside the grammar.
  */
-export function bases(text, local = new Set()) {
+export function bases(text: string, local: Set<string> = new Set()): { refs: Ref[]; uses: Use[] } {
   const lines = text.replace(/^﻿/, "").replace(/\r/g, "").split("\n");
   // Directives, wherever they appear and in either comment style BuildKit reads (`#`, `//`, after a shebang): another
   // escape character would change how every line continues, and another frontend how the whole file is read.
   for (const l of lines) {
     const d = /^\s*(?:#|\/\/)\s*(escape|syntax)\s*=\s*(.*?)\s*$/i.exec(l);
-    if (d && (/^escape$/i.test(d[1]) || !SYNTAX.test(d[2]))) throw new Error(`directive ${show(l.trim())}: no escape directive, and only docker/dockerfile pinned by digest as syntax`);
+    if (d && (/^escape$/i.test(d[1]!) || !SYNTAX.test(d[2]!))) throw new Error(`directive ${show(l.trim())}: no escape directive, and only docker/dockerfile pinned by digest as syntax`);
   }
   // Logical lines: comment lines dropped (also inside a continuation, as Docker does), backslash continuations joined.
-  const logical = [];
-  let buf = null;
+  const logical: string[] = [];
+  let buf: string | null = null;
   for (const l of lines) {
     if (/^\s*#/.test(l) || (buf !== null && /^\s*$/.test(l))) continue; // BuildKit skips blank lines inside a continuation
     const cont = /\\\s*$/.test(l);
@@ -67,19 +76,19 @@ export function bases(text, local = new Set()) {
 
   // Stages: each FROM's base ({ ref }, { stage: index } or { scratch }), its RUN commands (split at &&), what it copies
   // and mounts from elsewhere.
-  const args = new Map(), names = new Map(), stages = [], refs = [];
-  const expand = (s) => {
-    const v = s.replace(/\$(?:\{([^}]*)\}|([A-Za-z_][A-Za-z0-9_]*))/g, (_, braced, bare) => {
-      const k = braced ?? bare;
+  const args = new Map<string, string>(), names = new Map<string, number>(), stages: Stage[] = [], refs: Ref[] = [];
+  const expand = (s: string) => {
+    const v = s.replace(/\$(?:\{([^}]*)\}|([A-Za-z_][A-Za-z0-9_]*))/g, (_: string, braced: string | undefined, bare: string | undefined) => {
+      const k = (braced ?? bare)!;
       if (!NAME.test(k)) throw new Error(`\${${show(k)}} is not a plain ARG reference`);
       if (!args.has(k)) throw new Error(`ARG ${k} has no default before the first FROM`);
-      return args.get(k);
+      return args.get(k)!;
     });
     if (v.includes("$")) throw new Error(`${show(s)} has a $ that isn't an ARG reference`);
     return v;
   };
   // A FROM, COPY --from or mount source: an earlier stage (by name; by index only outside FROM), scratch, or an image.
-  const source = (ref, what) => {
+  const source = (ref: string, what: string): Source => {
     if (names.has(ref.toLowerCase())) return { stage: names.get(ref.toLowerCase()) };
     if (what !== "FROM" && /^[0-9]+$/.test(ref)) {
       if (Number(ref) >= stages.length) throw new Error(`${what} ${show(ref)}: no such stage`);
@@ -87,13 +96,13 @@ export function bases(text, local = new Set()) {
     }
     if (ref.toLowerCase() === "scratch") return { scratch: true };
     if (!local.has(ref) && !IMAGE.test(ref)) throw new Error(`${what} ${show(ref)} is not an image reference pinned by digest (name:tag@sha256:…)`);
-    const r = local.has(ref) ? { local: ref, final: false } : { image: ref, final: false };
+    const r: Ref = local.has(ref) ? { local: ref, final: false } : { image: ref, final: false };
     refs.push(r);
     return { ref: r };
   };
-  const current = (word) => {
+  const current = (word: string): Stage => {
     if (!stages.length) throw new Error(`${word} before the first FROM`);
-    return stages[stages.length - 1];
+    return stages[stages.length - 1]!;
   };
   for (const l of logical) {
     const [ins = "", ...rest] = l.trim().split(/\s+/);
@@ -105,25 +114,25 @@ export function bases(text, local = new Set()) {
       for (const a of rest) {
         const m = /^([A-Za-z_][A-Za-z0-9_]*)(?:=([^\s"'$\\]*))?$/.exec(a);
         if (!m) throw new Error(`ARG ${show(a)} is not NAME or NAME=value (plain, unquoted)`);
-        if (m[2] === undefined) args.delete(m[1]);
-        else args.set(m[1], m[2]);
+        if (m[2] === undefined) args.delete(m[1]!);
+        else args.set(m[1]!, m[2]);
       }
     } else if (word === "FROM") {
       const words = rest.filter((w) => !PLATFORM.test(w));
       if (words.some((w) => w.startsWith("-"))) throw new Error(`FROM ${show(rest.join(" "))}: only --platform=linux/amd64 (or $BUILDPLATFORM, $TARGETPLATFORM) is supported`);
-      if (!(words.length === 1 || (words.length === 3 && /^as$/i.test(words[1]) && /^[A-Za-z][A-Za-z0-9_.-]*$/.test(words[2]))))
+      if (!(words.length === 1 || (words.length === 3 && /^as$/i.test(words[1]!) && /^[A-Za-z][A-Za-z0-9_.-]*$/.test(words[2]!))))
         throw new Error(`FROM ${show(rest.join(" "))} is not FROM <image> [AS <name>]`);
-      stages.push({ base: source(expand(words[0]), "FROM"), runs: [], copies: [], mounts: [] });
+      stages.push({ base: source(expand(words[0]!), "FROM"), runs: [], copies: [], mounts: [] });
       if (words[2]) names.set(words[2].toLowerCase(), stages.length - 1);
     } else if (word === "COPY") {
       const from = rest.map((w) => /^--from=(.*)$/i.exec(w)).find(Boolean);
       if (!from) continue;
-      if (from[1].includes("$")) throw new Error(`COPY --from=${show(from[1])}: a variable here is not supported`);
+      if (from[1]!.includes("$")) throw new Error(`COPY --from=${show(from[1])}: a variable here is not supported`);
       const operands = rest.filter((w) => !w.startsWith("--"));
-      current(word).copies.push({ src: source(from[1], "COPY --from"), paths: operands.slice(0, -1) });
+      current(word).copies.push({ src: source(from[1]!, "COPY --from"), paths: operands.slice(0, -1) });
     } else if (word === "RUN") {
-      const flags = [];
-      while (rest[0]?.startsWith("--")) flags.push(rest.shift());
+      const flags: string[] = [];
+      while (rest[0]?.startsWith("--")) flags.push(rest.shift()!);
       const stage = current(word);
       // Only plain words joined by && are split; anything else (quotes, $, >, ;, |, #, escapes) is kept whole and never matches.
       const cmd = rest.join(" ");
@@ -134,7 +143,7 @@ export function bases(text, local = new Set()) {
         if (/["'$]/.test(w)) throw new Error(`RUN ${show(w)}: a quoted or variable mount is not supported`);
         for (const kv of w.slice(8).split(",")) {
           const [k, v = ""] = kv.split("=");
-          if (k.trim().toLowerCase() === "from") stage.mounts.push(source(v.trim(), "RUN --mount from="));
+          if (k!.trim().toLowerCase() === "from") stage.mounts.push(source(v.trim(), "RUN --mount from="));
         }
       }
     }
@@ -142,14 +151,14 @@ export function bases(text, local = new Set()) {
   if (!stages.length) throw new Error("no FROM line");
 
   // A stage and the stages it is built on, nearest first.
-  const chain = (i) => { const out = []; for (let s = i; s !== undefined; s = stages[s].base.stage) out.push(s); return out; };
+  const chain = (i: number) => { const out: number[] = []; for (let s: number | undefined = i; s !== undefined; s = stages[s]!.base.stage) out.push(s); return out; };
   const finalChain = chain(stages.length - 1);
-  const uses = refs.map((r) => {
+  const uses: Use[] = refs.map((r) => {
     // The image's family: every stage built on it. Its files reach the final image through a family stage in the final
     // chain, or through a COPY --from (or a mount) of the image or a family stage.
-    const family = new Set(stages.map((_, i) => i).filter((i) => chain(i).some((s) => stages[s].base.ref === r)));
-    const runsOf = (ids) => ids.filter((s) => family.has(s)).flatMap((s) => stages[s].runs);
-    const fromIt = (x) => x.ref === r || family.has(x.stage);
+    const family = new Set(stages.map((_, i) => i).filter((i) => chain(i).some((s) => stages[s]!.base.ref === r)));
+    const runsOf = (ids: number[]) => ids.filter((s) => family.has(s)).flatMap((s) => stages[s]!.runs);
+    const fromIt = (x: Source) => x.ref === r || family.has(x.stage!);
     return {
       final: finalChain.some((s) => family.has(s)),
       finalRuns: runsOf(finalChain),
@@ -157,7 +166,7 @@ export function bases(text, local = new Set()) {
       mounted: stages.some((s) => s.mounts.some(fromIt)),
     };
   });
-  refs.forEach((r, i) => (r.final = uses[i].final));
+  refs.forEach((r, i) => (r.final = uses[i]!.final));
   return { refs, uses };
 }
 
@@ -166,22 +175,22 @@ export function bases(text, local = new Set()) {
  * `- { image: node, path: /usr/local/lib/node_modules/npm/**, when: "RUN npm install -g npm@", reason: "…" }`.
  * `when` is the condition that justifies it, checked for every Dockerfile using the image (`meets`).
  */
-export function readExceptions(text, now = Date.now()) {
-  const out = [];
+export function readExceptions(text: string, now = Date.now()): Exception[] {
+  const out: Exception[] = [];
   for (const l of text.split("\n")) {
     if (/^\s*(#.*)?$/.test(l) || /^exceptions:\s*$/.test(l)) continue;
     // An accepted finding with no fix to take yet: one advisory in one image, until a date at most 90 days ahead.
     const v = /^\s*-\s*\{\s*image:\s*([^,\s]+),\s*vulnerability:\s*(GHSA(?:-[a-z0-9]{4}){3}|CVE-\d{4}-\d{4,}|GO-\d{4}-\d{4,}),\s*expires:\s*(\d{4}-\d{2}-\d{2}),\s*reason:\s*"[^"]+"\s*\}\s*$/.exec(l);
     if (v) {
-      if (!NAMED.test(v[1]) || !(Date.parse(v[3]) - now <= 90 * 86_400_000)) throw new Error(`exception ${show(l.trim())}: an image name and an expiry at most 90 days ahead`);
-      out.push({ image: v[1], vulnerability: v[2], expires: v[3] });
+      if (!NAMED.test(v[1]!) || !(Date.parse(v[3]!) - now <= 90 * 86_400_000)) throw new Error(`exception ${show(l.trim())}: an image name and an expiry at most 90 days ahead`);
+      out.push({ image: v[1]!, vulnerability: v[2], expires: v[3] });
       continue;
     }
     const m = /^\s*-\s*\{\s*image:\s*([^,\s]+),\s*path:\s*([^,\s]+),\s*when:\s*(build-stage|"RUN [A-Za-z0-9 ._@\/=:-]+"),\s*reason:\s*"[^"]+"\s*\}\s*$/.exec(l);
     // A path names at least two directories before any wildcard: never a whole image or a whole top-level directory.
-    if (!m || !NAMED.test(m[1]) || !/^\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+(\/[A-Za-z0-9._*-]+)*$/.test(m[2]))
+    if (!m || !NAMED.test(m[1]!) || !/^\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+(\/[A-Za-z0-9._*-]+)*$/.test(m[2]!))
       throw new Error(`exception ${show(l.trim())} is not { image: <name>, path: /<dir>/<dir or file>[/…], when: build-stage | "RUN <text>", reason: "…" } nor { image: <name>, vulnerability: <id>, expires: <YYYY-MM-DD>, reason: "…" }`);
-    out.push({ image: m[1], path: m[2], when: m[3].replace(/^"|"$/g, "") });
+    out.push({ image: m[1]!, path: m[2], when: m[3]!.replace(/^"|"$/g, "") });
   }
   return out;
 }
@@ -195,28 +204,28 @@ const PINNED = new RegExp(`^${REPO}(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?@sha25
  * `- { id: GO-2026-6888, image: grafana/grafana:13.3.0, expires: 2026-11-30, reason: "…" }`. Returns the entries in
  * force and the expired ones (which fail the scan: an owner renews or drops them).
  */
-export function readAccepted(text, now = Date.now()) {
-  const entries = [], expired = [];
+export function readAccepted(text: string, now = Date.now()): { entries: Accepted[]; expired: Accepted[] } {
+  const entries: Accepted[] = [], expired: Accepted[] = [];
   for (const l of text.split("\n")) {
     if (/^\s*(#.*)?$/.test(l) || /^accepted:\s*$/.test(l)) continue;
     const m = /^\s*-\s*\{\s*id:\s*([^,\s]+),\s*image:\s*([^,\s]+),\s*expires:\s*(\d{4}-\d{2}-\d{2}),\s*reason:\s*"[^"]{12,}"\s*\}\s*$/.exec(l);
-    if (!m || !ADVISORY.test(m[1]) || !PINNED.test(m[2]) || Number.isNaN(Date.parse(m[3])))
+    if (!m || !ADVISORY.test(m[1]!) || !PINNED.test(m[2]!) || Number.isNaN(Date.parse(m[3]!)))
       throw new Error(`accepted risk ${show(l.trim())} is not { id: <GHSA-…, CVE-… or GO-…>, image: <name[:tag]@sha256:…>, expires: <YYYY-MM-DD>, reason: "…" }`);
-    if (Date.parse(m[3]) - now > 14 * 86_400_000) throw new Error(`accepted risk ${show(l.trim())}: expires at most 14 days ahead`);
-    (now < Date.parse(m[3]) + 86_400_000 ? entries : expired).push({ id: m[1], image: m[2], expires: m[3] });
+    if (Date.parse(m[3]!) - now > 14 * 86_400_000) throw new Error(`accepted risk ${show(l.trim())}: expires at most 14 days ahead`);
+    (now < Date.parse(m[3]!) + 86_400_000 ? entries : expired).push({ id: m[1]!, image: m[2]!, expires: m[3]! });
   }
   return { entries, expired };
 }
 
 /** The accepted ids for one scanned reference: entries for the same image name and the same digest (the tag is ignored). */
-export function acceptedFor(ref, entries) {
-  const digest = (r) => /@(sha256:[0-9a-f]{64})$/.exec(r)?.[1];
-  const same = (img) => nameOf(img) === nameOf(ref) && digest(img) !== undefined && digest(img) === digest(ref);
+export function acceptedFor(ref: string, entries: Accepted[]) {
+  const digest = (r: string) => /@(sha256:[0-9a-f]{64})$/.exec(r)?.[1];
+  const same = (img: string) => nameOf(img) === nameOf(ref) && digest(img) !== undefined && digest(img) === digest(ref);
   return [...new Set(entries.filter((e) => same(e.image)).map((e) => e.id))];
 }
 
 /** Whether COPY sources (paths in the source stage) may carry anything under an exception's path. */
-function covers(paths, glob) {
+function covers(paths: string[], glob: string) {
   const lit = glob.includes("*") ? glob.slice(0, glob.indexOf("*")).replace(/\/[^/]*$/, "") : glob; // its literal directory
   return paths.some((p) => {
     if (/[*?[\]"'$\\]|(^|\/)\.\.(\/|$)/.test(p)) return true; // a glob, JSON form, variable or parent: assume it does
@@ -235,27 +244,27 @@ function covers(paths, glob) {
  *                 `<leading words> <pkg>@<version>`, no other flag or argument (npm@ holds for `npm install -g npm@11.21.2`,
  *                 not for `npm install -g --registry=… npm@11.21.2` or `npm install -g npm@11.21.2 other`).
  */
-export function meets(e, use) {
+export function meets(e: Exception, use: Use): boolean {
   if (use.mounted) return false;
-  if (e.when === "build-stage") return !use.final && use.copies.every((c) => !covers(c.paths, e.path));
-  const words = e.when.slice(4).split(" "), lead = words.slice(0, -1), arg = words.at(-1);
-  const isArg = (w) => w === arg || (arg.endsWith("@") && w.startsWith(arg) && /^[0-9][A-Za-z0-9.+-]*$/.test(w.slice(arg.length)));
+  if (e.when === "build-stage") return !use.final && use.copies.every((c) => !covers(c.paths, e.path!));
+  const words = e.when!.slice(4).split(" "), lead = words.slice(0, -1), arg = words.at(-1)!;
+  const isArg = (w: string) => w === arg || (arg.endsWith("@") && w.startsWith(arg) && /^[0-9][A-Za-z0-9.+-]*$/.test(w.slice(arg.length)));
   // The && split ignores shell syntax: a RUN step with anything but plain words and && never satisfies a condition.
-  const replaced = (runs) => runs.some((s) => {
+  const replaced = (runs: string[]) => runs.some((s) => {
     if (!PLAIN_PART.test(s)) return false;
     const t = s.trim().split(/\s+/);
     if (/[;|&]/.test(s) || !lead.every((w, i) => t[i] === w)) return false;
-    return arg.endsWith("@") ? t.length === lead.length + 1 && isArg(t[lead.length]) : t.slice(lead.length).some(isArg);
+    return arg.endsWith("@") ? t.length === lead.length + 1 && isArg(t[lead.length]!) : t.slice(lead.length).some(isArg);
   });
-  return (!use.final || replaced(use.finalRuns)) && use.copies.every((c) => !covers(c.paths, e.path) || replaced(c.runs));
+  return (!use.final || replaced(use.finalRuns)) && use.copies.every((c) => !covers(c.paths, e.path!) || replaced(c.runs));
 }
 
 /** The scan targets for some Dockerfiles: directories, and images each with every use of it, each once, in order. */
-export function plan(dockerfiles, { root, local = new Map() }) {
+export function plan(dockerfiles: string[], { root, local = new Map() }: { root: string; local?: Map<string, string> }) {
   const realRoot = realpathSync(root);
-  const inside = (p) => p === realRoot || p.startsWith(realRoot + sep);
-  const dirs = [], images = new Map(), done = new Set(), notes = [];
-  const visit = (df, chain) => {
+  const inside = (p: string) => p === realRoot || p.startsWith(realRoot + sep);
+  const dirs: string[] = [], images = new Map<string, (Use & { df: string })[]>(), done = new Set<string>(), notes: string[] = [];
+  const visit = (df: string, chain: string[]): void => {
     if (!PATH.test(df)) throw new Error(`${show(df)} is not a plain repository path`);
     if (done.has(df)) return;
     if (chain.includes(df)) throw new Error(`${df}: its FROM chain loops`);
@@ -268,8 +277,8 @@ export function plan(dockerfiles, { root, local = new Map() }) {
     if (!dirs.includes(dir)) dirs.push(dir);
     const { refs, uses } = bases(readFileSync(abs, "utf8"), new Set(local.keys()));
     refs.forEach((r, i) => {
-      if (r.image) images.set(r.image, [...(images.get(r.image) ?? []), { df, ...uses[i] }]);
-      else { notes.push(`${df}: ${r.local} is this repository's ${local.get(r.local)}`); visit(local.get(r.local), [...chain, df]); }
+      if (r.image) images.set(r.image, [...(images.get(r.image) ?? []), { df, ...uses[i]! }]);
+      else { notes.push(`${df}: ${r.local} is this repository's ${local.get(r.local!)}`); visit(local.get(r.local!)!, [...chain, df]); }
     });
     done.add(df);
   };
@@ -281,42 +290,42 @@ export function plan(dockerfiles, { root, local = new Map() }) {
  * The paths to ignore in one image: a path whose exceptions (one or more, any of them may hold) cover every use of the
  * image, and why each other path isn't ignored.
  */
-export function ignored(image, exceptions, now = Date.now()) {
-  const ignore = [], vulnerabilities = [], skipped = [];
+export function ignored(image: PlannedImage, exceptions: Exception[], now = Date.now()) {
+  const ignore: string[] = [], vulnerabilities: string[] = [], skipped: string[] = [];
   const mine = exceptions.filter((x) => x.image === nameOf(image.ref));
   for (const e of mine.filter((x) => x.vulnerability)) {
-    if (now < Date.parse(e.expires) + 86_400_000) vulnerabilities.push(e.vulnerability);
+    if (now < Date.parse(e.expires!) + 86_400_000) vulnerabilities.push(e.vulnerability!);
     else skipped.push(`${e.vulnerability} not ignored: its exception expired on ${e.expires}`);
   }
   for (const path of new Set(mine.filter((x) => x.path).map((e) => e.path))) {
     const forPath = mine.filter((e) => e.path === path);
     const miss = image.uses.find((u) => !forPath.some((e) => meets(e, u)));
     if (miss) skipped.push(`${path} not ignored: ${miss.df} meets none of its conditions (${forPath.map((e) => e.when).join("; ")})`);
-    else ignore.push(path);
+    else ignore.push(path!);
   }
   return { ignore, vulnerabilities, skipped };
 }
 
-function main(argv) {
-  const local = new Map(), dockerfiles = [];
-  let exceptions = [], accepted = { entries: [], expired: [] };
+function main(argv: string[]): number {
+  const local = new Map<string, string>(), dockerfiles: string[] = [];
+  let exceptions: Exception[] = [], accepted: { entries: Accepted[]; expired: Accepted[] } = { entries: [], expired: [] };
   try {
     for (let i = 0; i < argv.length; i++) {
       if (argv[i] === "--") { dockerfiles.push(...argv.slice(i + 1)); break; }
       if (argv[i] === "--local") {
         const m = /^([^=]+)=(.+)$/.exec(argv[++i] ?? "");
-        if (!m || !NAMED.test(m[1]) || !PATH.test(m[2])) throw new Error(`--local ${show(argv[i])} is not <name>=<Dockerfile>`);
-        local.set(m[1], m[2]);
-      } else if (argv[i] === "--exceptions") exceptions = readExceptions(readFileSync(argv[++i], "utf8"));
-      else if (argv[i] === "--accepted") accepted = readAccepted(readFileSync(argv[++i], "utf8"));
+        if (!m || !NAMED.test(m[1]!) || !PATH.test(m[2]!)) throw new Error(`--local ${show(argv[i])} is not <name>=<Dockerfile>`);
+        local.set(m[1]!, m[2]!);
+      } else if (argv[i] === "--exceptions") exceptions = readExceptions(readFileSync(argv[++i]!, "utf8"));
+      else if (argv[i] === "--accepted") accepted = readAccepted(readFileSync(argv[++i]!, "utf8"));
       else throw new Error(`${show(argv[i])} is not an option; paths go after --`);
     }
-  } catch (e) { console.log(`::error::${e.message}`); return 1; }
+  } catch (e) { console.log(`::error::${(e as Error).message}`); return 1; }
   const root = process.cwd();
   console.log("image-scan scans each image's directory (lock files, manifests) and the base images its Dockerfile names, without building it.");
   console.log("::warning::Not covered: packages that RUN steps install (apt, pip, downloads) and ADD downloads. Only base-image and lock-file changes are proven here.");
-  let p;
-  try { p = plan(dockerfiles, { root, local }); } catch (e) { console.log(`::error::${e.message}`); return 1; }
+  let p: ReturnType<typeof plan>;
+  try { p = plan(dockerfiles, { root, local }); } catch (e) { console.log(`::error::${(e as Error).message}`); return 1; }
   for (const n of p.notes) console.log(n);
   // grype runs from an empty directory, as its HOME too, with its own config and no other environment: nothing in the
   // checkout or the job (a .grype.yaml, GRYPE_* variables) configures it.
@@ -328,7 +337,7 @@ function main(argv) {
   }
   let status = 0, n = 0;
   for (const e of accepted.expired) { console.log(`::error::accepted risk ${e.id} in ${e.image} expired on ${e.expires} (.github/image-scan-accepted.yaml): renew it with the owner or drop it`); status = 1; }
-  const scan = (label, target, { ignore = [], vulnerabilities = [], risks = [] }, ...extra) => {
+  const scan = (label: string, target: string, { ignore = [], vulnerabilities = [], risks = [] }: { ignore?: string[]; vulnerabilities?: string[]; risks?: string[] }, ...extra: string[]) => {
     const config = join(cwd, `grype-${++n}.yaml`);
     writeFileSync(config, JSON.stringify({ ignore: [...ignore.map((path) => ({ package: { location: path } })), ...[...vulnerabilities, ...risks].map((vulnerability) => ({ vulnerability }))] }) + "\n");
     for (const x of [...ignore, ...vulnerabilities]) console.log(`${label}: ignoring ${x} (.github/image-scan-exceptions.yaml)`);

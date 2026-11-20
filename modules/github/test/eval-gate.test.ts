@@ -176,6 +176,6 @@ it("check recipes, their manifests and wiring are reviewer code", () => {
 // The reviewer's checklist tells it a change to these paths is the eval's to judge: true only while each is REVIEWER_CODE.
 it("every path the eval-receipt checklist item names is reviewer code", () => {
   const item = checklist.items.find((i) => i.check.includes("100% receipt"));
-  const missing = item.trigger.paths.filter((p) => !touchesReviewer([p.replace("**", "x").replace("*", "mjs")]));
+  const missing = item.trigger.paths.filter((p) => !touchesReviewer([p.replace("**", "x").replace("*", "ts")]));
   assert.deepEqual(missing, []);
 });

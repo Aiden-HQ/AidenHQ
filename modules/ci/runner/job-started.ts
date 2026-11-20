@@ -5,8 +5,8 @@
 // to other branches (a merge train, main plus approved PRs that may come from forks). Each container takes one job (--ephemeral).
 import { readFileSync } from "node:fs";
 const { GITHUB_REPOSITORY: repo = "", GITHUB_EVENT_NAME: event = "", GITHUB_EVENT_PATH: path = "" } = process.env;
-const refuse = (why) => { console.error(`::error::aidenhq runner refused this job: ${why}`); process.exit(1); };
-const lc = (s) => String(s ?? "").toLowerCase();
+const refuse = (why: string) => { console.error(`::error::aidenhq runner refused this job: ${why}`); process.exit(1); };
+const lc = (s: unknown) => String(s ?? "").toLowerCase();
 const allowed = readFileSync("/opt/aidenhq/allowed", "utf8").split(/\s+/).map(lc).filter(Boolean);
 const r = lc(repo);
 if (!r || !allowed.some((a) => a === r || (a.endsWith("/*") && r.startsWith(a.slice(0, -1))))) refuse(`repository ${repo} is not served here`);

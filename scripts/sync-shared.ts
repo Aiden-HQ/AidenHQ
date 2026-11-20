@@ -151,7 +151,7 @@ export const { files: SHARED, dirs: SHARED_DIRS } = sharedCopies(repo);
 const SKIP = new Set(["node_modules", "dist"]);
 
 /** Files under a folder, relative and sorted, without node_modules and dist. */
-export function listFiles(dir, sub = "") {
+export function listFiles(dir: string, sub = ""): string[] {
   return readdirSync(join(dir, sub), { withFileTypes: true })
     .filter((e) => !SKIP.has(e.name))
     .flatMap((e) => (e.isDirectory() ? listFiles(dir, join(sub, e.name)) : [join(sub, e.name)]))

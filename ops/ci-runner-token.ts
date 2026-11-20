@@ -11,13 +11,13 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const dotenv = existsSync(join(root, ".env")) ? Object.fromEntries(readFileSync(join(root, ".env"), "utf8").split("\n").map((l) => /^\s*([A-Z0-9_]+)\s*=\s*(.*?)\s*$/.exec(l)).filter(Boolean).map((m) => [m[1], m[2].replace(/^["']|["']$/g, "")])) : {};
+const dotenv = existsSync(join(root, ".env")) ? Object.fromEntries(readFileSync(join(root, ".env"), "utf8").split("\n").map((l) => /^\s*([A-Z0-9_]+)\s*=\s*(.*?)\s*$/.exec(l)).filter(Boolean).map((m): [string, string] => [m![1]!, m![2]!.replace(/^["']|["']$/g, "")])) : {};
 const env = { ...dotenv, ...process.env };
-const expand = (p) => (p.startsWith("~/") ? join(homedir(), p.slice(2)) : p);
+const expand = (p: string) => (p.startsWith("~/") ? join(homedir(), p.slice(2)) : p);
 
 // The agents org, read the way the kernel reads it.
 const instYaml = env.AIDENHQ_INSTANCE_DIR && join(expand(env.AIDENHQ_INSTANCE_DIR), "instance.yaml");
-const setting = (k) => (instYaml && existsSync(instYaml) ? new RegExp(`^\\s+${k}:\\s*["']?([A-Za-z0-9_.-]+)`, "m").exec(readFileSync(instYaml, "utf8"))?.[1] : undefined);
+const setting = (k: string) => (instYaml && existsSync(instYaml) ? new RegExp(`^\\s+${k}:\\s*["']?([A-Za-z0-9_.-]+)`, "m").exec(readFileSync(instYaml, "utf8"))?.[1] : undefined);
 const name = setting("instance_name") ?? env.AIDENHQ_INSTANCE_NAME;
 const org = process.argv[2] || env.AIDENHQ_GITHUB_AGENTS_ORG || setting("github_agents_org") || (name ? `aidenhq-${name}` : "");
 if (!org) throw new Error("no agents org: set settings.instance_name (or github_agents_org) in instance.yaml");
