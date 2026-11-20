@@ -10,8 +10,19 @@ export interface Probe {
   checkedAt: string;
   lastOkAt?: string;
 }
+/** One row a module's sign-in reports about itself (GitHub: what works, what an org blocks, the rate limit); rendered as given. */
+export interface SignInLine {
+  label: string;
+  value: string;
+  state: "ok" | "warn" | "error";
+  /** The one fix: a link (GitHub's own page), or Reconnect (the sign-in's Connect). */
+  action?: { label: string; href?: string; reconnect?: true };
+}
 export interface SignIn {
   state: string;
+  /** The signed-in account, when the sign-in knows it. */
+  login?: string;
+  lines?: SignInLine[];
   configured: boolean;
   since: string;
   detail?: string;

@@ -7,6 +7,7 @@ import { OrganisationPicker } from "./Organisation";
 import { STATUS_LABEL, connectionStatus, displayName, sourceStatus, type ConnectionRow, type ConnectionsData, type Status, type Verdict } from "./connections";
 import { Group, Page, Row } from "./settings-ui";
 import { SetupButton } from "./SetupButton";
+import { SignInLines, linesNeeding } from "./SignInLines";
 import { Banner, Button, Dialog, LinkButton, Section, StatusDot, Tile, TileGrid, type StatusTone } from "./ui";
 
 type Can = { signIn: boolean; google: boolean };
@@ -110,6 +111,7 @@ function ConnectionTile({ r, v, can, connect: asked, onAsked }: { r: ConnectionR
         facts={
           <>
             {who && <span>{who}</span>}
+            {linesNeeding(r.signIn) > 0 && <span className="st-need">{linesNeeding(r.signIn)} to fix</span>}
             {r.kind === "connection" && v.status !== "builtin" && <span>{r.tools.read} read, {r.tools.write} write tools</span>}
           </>
         }
@@ -125,6 +127,7 @@ function ConnectionTile({ r, v, can, connect: asked, onAsked }: { r: ConnectionR
             {status} <span>{v.reason}</span>
           </p>
           {v.hint && <p className="st-hint">{v.hint}</p>}
+          <SignInLines c={c} can={can.signIn} />
           {r.signIn?.state === "ok" && <TestSignIn id={r.name} />}
           {r.google?.accounts.some((a) => a.state === "ok") && <TestSignIn id={r.name} google />}
           {!connect && r.setup && v.status === "not_configured" && <p className="st-hint">{r.setup}</p>}
