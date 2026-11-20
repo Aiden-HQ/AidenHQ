@@ -389,6 +389,11 @@ is read from the install: the `meetings` module (`config/modules.json`) enables 
 checks, the default engine being `codex` enables the ChatGPT login check, and a Claude engine token enables
 the `claude` job-tool check. A module or engine you did install still fails when it is broken.
 
+**Security checks:** every release runs `scripts/verify-security.sh` on a fresh, upgraded install during graduation,
+and a failure keeps the release from being published as latest, so your install starts from a release that passed it. After you
+change how the server is exposed (Tailscale serve, ports, shared access), run it yourself: `scripts/verify-security.sh`.
+The last line is `All security checks passed.`; otherwise each `FAIL` line names what is wrong.
+
 Day-to-day use: [docs/USAGE.md](USAGE.md). Operations, backups and logs:
 [docs/operations.md](operations.md).
 
@@ -674,7 +679,8 @@ server.on("upgrade", protect((req, socket, head) => { /* WebSocket, checked once
 - From a browser, `https://<app>.<domain>`: the identity provider's login, then the app. A `blocked` person gets 403.
 - Forged headers are ignored: `curl -H 'X-AidenHQ-Identity: x' https://<app>.<domain>` stops at Access; on the host,
   `curl -H 'Host: <app>.<domain>' -H 'X-AidenHQ-Identity: x' http://127.0.0.1:3130/` is a 403 (no Access token).
-- Going around the gate fails: on the host, `curl http://127.0.0.1:<app port>/` gets the app's 401 (no identity).
+- Going around the gate fails: on the host, `curl http://127.0.0.1:<app port>/` gets the app's 401 (no identity);
+  `scripts/verify-security.sh` checks this for every shared app.
 - A cross-site write (a form post from another host) is a 403; a streaming page (SSE) updates live; after the Access session expires the
   next request goes back to the login.
 
