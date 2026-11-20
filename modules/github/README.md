@@ -18,7 +18,7 @@ Two connections. Destructive tools are reviewed and need a grant naming them.
 
 - `github` (AidenHQ's own): reads such as `github_issue_read`, `github_search_issues`, `github_pr_files`,
   `github_pr_threads`, `github_job_log`, `github_project_read`; write `commit_status_set`; destructive issue and PR writes
-  (`github_issue_comment`, `github_pr_review`, `github_rerun_failed`, `github_app_issue*`).
+  (`github_issue_comment`, `github_pr_review`, `github_rerun_failed`, `github_product_issue*`).
 - `github_official` (GitHub's own MCP server, as you): reads such as `get_file_contents`, `get_commit`, `list_commits`,
   and destructive writes such as `create_pull_request` and `issue_write`.
 - Warehouse source `src_github` (issues, project items, changes).

@@ -8,7 +8,7 @@ roles:
     - { id: board-writer, description: "Board moves and recurring tasks." }
     # Declared here (every instance has the chief of staff) so the upstream tools have a holder even without the Maintainer;
     # the Maintainer requests it (it files the Fleet Steward's product-bug reports).
-    - { id: product-issues, description: "Product bugs as issues on the product repo, as the GitHub App (github-mcp github_app_issue)." }
+    - { id: product-issues, description: "Product bugs as issues on the product repo, as the owner (github-mcp github_product_issue)." }
   # ops-key (the meetings module's): the Researcher runs the meeting scan, so ops-mcp acts as it, while meetings is on.
   requests: [ ops-key? ]
 agents:
@@ -31,7 +31,7 @@ agents:
       owner_channel: [ notify ]
       # Product bugs as issues on the product repo, as the GitHub App (never the owner's account), with the github module:
       # report one (deduped by fingerprint) and read their state. No other GitHub reads, and no repo input.
-      github?: [ github_app_issue, github_app_issue_status, github_issue_link ]
+      github?: [ github_product_issue, github_product_issue_status, github_issue_link ]
       apps: [ app_list, app_status, app_view, web_view, warehouse_query, source_new, source_ack ]
       # The host's live series (disk, memory, containers), read at brief time rather than copied from a note: reads only.
       grafana?: read
@@ -41,7 +41,7 @@ agents:
     # Woken every heartbeat_hours to check the work it waits on (modules/chief-of-staff/heartbeat.md); events wake it sooner (board wake.ts).
     heartbeat: true
     # fleet-admin: the board's fleet tools and relaying the owner's words (services/board/src/fleet.ts).
-    # product-issues: product bugs upstream as the GitHub App (github-mcp).
+    # product-issues: product bugs upstream as the owner (github-mcp).
     roles: [ fleet-admin, product-issues ]
   assistant:
     department: leadership
