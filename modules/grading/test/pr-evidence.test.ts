@@ -9,9 +9,11 @@ const REPO = "acme-agents/app";
 const SHA = (c) => c.repeat(40);
 const url = (n) => `https://github.com/${REPO}/pull/${n}`;
 
-const merged = (n, head, merge, base = "0") => ({
+// A PR as github.ts's read answers it: `baseRefOid` is the base ref's oid, a moving tip; a merged PR's fixed base commit is its
+// merge commit's first parent, the commit it landed on.
+const merged = (n, head, merge, base = "0", tip = "f") => ({
   number: n, url: url(n), state: "MERGED", title: `Land ${head}`, body: `Lands ${head}.`, headRefOid: SHA(head), headRefName: `branch-${head}`, baseRefName: "main",
-  baseRefOid: SHA(base), mergedAt: "2026-11-19T22:45:53Z", mergeCommit: { oid: SHA(merge) },
+  baseRefOid: SHA(tip), mergedAt: "2026-11-19T22:45:53Z", mergeCommit: { oid: SHA(merge), parents: { nodes: [{ oid: SHA(base) }] } },
   commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: [{ __typename: "CheckRun", name: "ci-required", status: "COMPLETED", conclusion: "SUCCESS" }] } } } }] }, history: { nodes: [] },
 });
 
@@ -73,17 +75,37 @@ test("when every PR the task names is closed, the hold applies: no verdict eithe
   assert.equal(ev.version, undefined);
 });
 
-// WOR-4892's shape: the prerequisite merged immediately before this PR, which was cut from that merge. The base branch's name
-// alone can't show it (main has moved on), so the base commit id is what a criterion about the PR's base is judged from.
-test("a PR cut from the commit its prerequisite just merged names that base commit in its trusted facts", async () => {
-  const prerequisite = merged(102, "1", "2"); // merged as SHA("2")
-  const prs = [prerequisite, merged(103, "3", "4", "2")]; // 103's base is 102's merge commit
+// WOR-4892's shape: the prerequisite merged immediately before this PR, which landed on top of it. The base branch's name alone
+// can't show it (main has moved on, so the base ref oid is a later commit), so the base commit is what a criterion about the
+// PR's base is judged from. PR #103's merge commit had exactly one parent, #102's squash merge 46d15810.
+test("a PR landed on the commit its prerequisite just merged names that base commit in its trusted facts", async () => {
+  const prerequisite = merged(102, "1", "2"); // squash-merged as SHA("2")
+  // #103's base ref oid now reads SHA("f") (main moved past it); its merge commit's first parent is still SHA("2").
+  const landed = merged(103, "3", "4", "2", "f");
+  landed.mergeCommit.parents.nodes = [{ oid: SHA("2") }]; // squashed onto the prerequisite, so one parent
+  const prs = [prerequisite, landed];
   const ev = await prEvidence([{ repo: REPO, number: 103, url: url(103), heads: ["branch-3"] }], "", depsFor(prs));
   const fact = ev.facts.find((f) => f.startsWith(`${url(103)}: merged`));
   assert.ok(fact, "the PR's own fact line is present");
-  assert.match(fact, new RegExp(`base commit ${SHA("2")}`), "the fact gives the commit PR #103 was cut from");
-  assert.equal(SHA("2"), prerequisite.mergeCommit.oid, "and that commit is exactly the prerequisite's merge commit");
-  assert.match(fact, /into main/, "the base branch name stays, for context");
+  assert.match(fact, new RegExp(`base commit ${SHA("2")}`), "the fact gives the commit PR #103 landed on");
+  assert.doesNotMatch(fact, new RegExp(SHA("f")), "the moved base ref oid is never passed off as the base commit");
+  assert.equal(SHA("2"), prerequisite.mergeCommit.oid, "and that commit is exactly the prerequisite's squash merge");
+});
+
+test("an unmerged PR's base is labelled as the moving tip it is, never as a fixed base commit", async () => {
+  const open = { ...merged(300, "5", "", "2", "e"), state: "OPEN", mergedAt: null, mergeCommit: null };
+  const ev = await prEvidence([{ repo: REPO, number: 300, url: url(300), heads: ["branch-5"] }], "", depsFor([open]));
+  const fact = ev.facts.find((f) => f.startsWith(`${url(300)}: open`));
+  assert.match(fact, new RegExp(`base main tip ${SHA("e")}, which moves`), "the base ref oid is named as a tip");
+  assert.doesNotMatch(fact, /base commit/, "no fixed base commit is claimed for an unmerged PR");
+});
+
+test("a merge commit whose parent could not be read leaves the base commit out rather than guessing", async () => {
+  const { parents, ...noParents } = merged(400, "7", "8").mergeCommit;
+  const ev = await prEvidence([{ repo: REPO, number: 400, url: url(400), heads: ["branch-7"] }], "", depsFor([{ ...merged(400, "7", "8"), mergeCommit: noParents }]));
+  const fact = ev.facts.find((f) => f.startsWith(`${url(400)}: merged`));
+  assert.doesNotMatch(fact, /base commit [0-9a-f]/, "no commit is passed off as the base");
+  assert.doesNotMatch(fact, /base main tip/, "and the tip is not substituted for it on a merged PR");
 });
 
 test("a local change request carries its base commit in the same shape as GitHub's read", () => {
@@ -92,6 +114,7 @@ test("a local change request carries its base commit in the same shape as GitHub
     { number: 7, url: "codehost:local/app/change/7", state: "merged", head: SHA("3"), base: SHA("2"), into: "main", branch: "fix", title: "Fix", body: "Fixes it.", merged: SHA("4") },
     checks, ["ci-required"], "2026-11-19T22:45:53Z",
   ).repository.pullRequest;
-  assert.equal(pr.baseRefOid, SHA("2"), "the base commit the change was cut from");
+  assert.equal(pr.baseRefOid, SHA("2"), "the change's base tip, which its squash landed on");
+  assert.equal(pr.mergeCommit.parents.nodes[0].oid, SHA("2"), "and its merge commit says the same commit is the base");
   assert.equal(pr.baseRefName, "main");
 });
