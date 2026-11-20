@@ -354,18 +354,20 @@ export async function prEvidence(prs: any[], ref: string, deps: any): Promise<an
     const own = history.findLast((c: any) => c.parents?.totalCount === 1);
     const shows = { commits: [pr.headRefOid, merged ? pr.mergeCommit?.oid : "", own?.oid].filter(Boolean), trees: [history.find((c: any) => c.oid === pr.headRefOid)?.tree?.oid, own?.tree?.oid].filter(Boolean) };
     prs_.push({ repo: p.repo, number: p.number, merge: merged ? (pr.mergeCommit?.oid ?? "") : "", mergedAt: pr.mergedAt ?? "", shows });
-    // The base commit: the base branch's commit the PR's change was applied on top of, known only where this read can prove which
-    // merge method produced the PR. A merge commit has exactly two parents, base then head, and its first is the base. A one-parent
-    // merge is what GitHub gives for both a squash (the parent is the base tip) and a rebase (the parent is the last replayed PR
-    // commit), and nothing in this read tells those apart, so a one-parent merge establishes no base rather than guessing one. An
-    // unmerged PR has no base commit yet. A moving value -- the base ref's tip, or the git merge base, which advances when the
-    // branch is later rebased onto the base -- is never a substitute.
+    // The base commit: the base branch's tip at the moment the PR merged, known only where this read can prove the merge method.
+    // A merge commit has exactly two parents, the base tip and then the head, so the base commit is its first parent -- and for a
+    // prerequisite-then-pin case it is exactly the prerequisite's merge commit. A one-parent merge is what GitHub gives for both a
+    // squash (the parent is the base tip) and a rebase (the parent is the last replayed PR commit), and nothing in this read tells
+    // those apart, so a one-parent merge establishes no base rather than guessing one. An unmerged PR has no base commit yet. A
+    // moving value -- the base ref's tip read later, or the git merge base, which advances when the branch is later rebased onto the
+    // base -- is never a substitute. Nor is the first parent taken as the commit the branch was originally cut from: it is the tip at
+    // merge, and the fact says so.
     const parentCount = pr.mergeCommit?.parents?.totalCount;
     const first = pr.mergeCommit?.parents?.nodes?.[0]?.oid;
     const malformed = typeof first !== "string" || !SHA40.test(first);
     const isMergeCommit = parentCount === 2 && !malformed;
     const base = merged && isMergeCommit ? first : "";
-    facts.push(`${p.url}: ${pr.state.toLowerCase()}${merged ? ` into ${pr.baseRefName}` : ` (base ${pr.baseRefName})`}${base ? `, base commit ${base}` : ", base commit not established"}, head ${pr.headRefOid}${merged && pr.mergeCommit?.oid ? `, merge commit ${pr.mergeCommit.oid}` : ""}; checks: ${checks.length ? checks.map((c: any) => `${c.name} ${checkState(pr, c, gate)}`).join(", ") : "none"}${byRecord ? "; named by the runner's own record for this task, which is how its number was told from another change" : ""}`);
+    facts.push(`${p.url}: ${pr.state.toLowerCase()}${merged ? ` into ${pr.baseRefName}` : ` (base ${pr.baseRefName})`}${base ? `, base commit ${base} (the base branch's tip when it merged, its merge commit's first parent)` : ", base commit not established"}, head ${pr.headRefOid}${merged && pr.mergeCommit?.oid ? `, merge commit ${pr.mergeCommit.oid}` : ""}; checks: ${checks.length ? checks.map((c: any) => `${c.name} ${checkState(pr, c, gate)}`).join(", ") : "none"}${byRecord ? "; named by the runner's own record for this task, which is how its number was told from another change" : ""}`);
     // The author's own words: code labels them and says whether they were cut; the text itself goes fenced, as data.
     const kept = text.slice(0, Math.max(0, left - head.length)).trim();
     left -= head.length + kept.length + 2;

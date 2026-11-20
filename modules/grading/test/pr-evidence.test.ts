@@ -77,16 +77,17 @@ test("when every PR the task names is closed, the hold applies: no verdict eithe
   assert.equal(ev.version, undefined);
 });
 
-// WOR-4892's shape: a prerequisite merged immediately before this PR, which was cut on top of it. #103 was merge-committed, so
-// its merge commit's two parents are #102's squash commit (the base) and #103's own head.
+// WOR-4892's shape: a prerequisite merged immediately before this PR, which landed on top of it. #103 was merge-committed, so its
+// merge commit's two parents are #102's squash commit (the base branch's tip at the merge) and #103's own head.
 test("a PR landed on the commit its prerequisite just merged names that base commit in its trusted facts", async () => {
   const prerequisite = merged(102, "1", "2"); // squash-merged as SHA("2")
   const landed = merged(103, "3", "4", "2", "f", { parents: [{ oid: SHA("2") }, { oid: SHA("3") }] });
   const ev = await prEvidence([{ repo: REPO, number: 103, url: url(103), heads: ["branch-3"] }], "", depsFor([prerequisite, landed]));
   const fact = ev.facts.find((f) => f.startsWith(`${url(103)}: merged`));
   assert.ok(fact, "the PR's own fact line is present");
-  assert.equal(/base commit ([0-9a-f]{40})/.exec(fact)?.[1], SHA("2"), "the fact gives the commit PR #103 was cut from");
+  assert.equal(/base commit ([0-9a-f]{40})/.exec(fact)?.[1], SHA("2"), "the fact gives the commit PR #103 merged onto");
   assert.equal(SHA("2"), prerequisite.mergeCommit.oid, "and that commit is exactly the prerequisite's squash merge");
+  assert.match(fact, /base commit [0-9a-f]{40} \(the base branch's tip when it merged, its merge commit's first parent\)/, "and it says exactly what that id is, never implying the original cut point");
 });
 
 // A merged PR's base is claimed only where the read proves the merge method: a merge commit's two parents (base, then head). One
