@@ -75,7 +75,12 @@ main() {
   fi
 
   progress_line APPLY_PHASES instance
-  git -C "$inst" fetch --quiet origin main
+  # A refused fetch names its cause: GitHub answers git only "Repository not found" (an org's OAuth App access restrictions,
+  # its SSO, a stale sign-in), so the helper asks GitHub's API why, prints the one fix and alerts the owner.
+  if ! git -C "$inst" fetch --quiet origin main; then
+    [[ "$origin_url" != https://github.com/* ]] || node ops/git-credential-github.mjs check || true
+    exit 1
+  fi
   git fetch --quiet origin main
   # The pin is read with the kernel's own parser (kernel/src/apply.ts) before the checkout moves, so a fresh host installs
   # the kernel's deps for the checkout it has; the npm step below follows the product's lockfiles once it has moved.

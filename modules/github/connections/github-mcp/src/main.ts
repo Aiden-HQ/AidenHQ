@@ -55,10 +55,11 @@ async function authorize(req: IncomingMessage, body: unknown): Promise<{ ok: tru
 // kernel.owner-notice). The token stays in this process.
 const stateDir = process.env.GITHUB_STATE_DIR ?? "/state";
 const mcpUrl = process.env.GITHUB_MCP_URL || "https://api.githubcopilot.com/mcp/";
-const auth = signIn({ clientId: (process.env.GITHUB_OAUTH_CLIENT_ID ?? "").trim(), mcpUrl, stateDir, ci: process.env.GITHUB_CI === "1" });
+const clientId = (process.env.GITHUB_OAUTH_CLIENT_ID ?? "").trim();
+const auth = signIn({ clientId, mcpUrl, stateDir, ci: process.env.GITHUB_CI === "1" });
 const kernelUrl = process.env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130";
 const codehostKey = () => { const f = process.env.CODEHOST_KEY_FILE; return f && existsSync(f) ? readFileSync(f, "utf8").trim() : ""; };
-const access = createAccess({ auth, notify: kernelNotify(kernelUrl, codehostKey) });
+const access = createAccess({ auth, clientId, notify: kernelNotify(kernelUrl, codehostKey) });
 /** Whether a GitHub object (`github:<repo>#<n>[/comment/<id>]`) is in AidenHQ's records; a failed read is "no". */
 const ours = async (ref: string): Promise<boolean> => {
   const r = await fetch(`${kernelUrl}/v1/objects?ref=${encodeURIComponent(ref)}`, { headers: { authorization: `Bearer ${codehostKey()}` }, signal: AbortSignal.timeout(10_000) }).catch(() => undefined);
