@@ -70,8 +70,8 @@ for c in $containers; do
   # own socket mount). Matched by its compose service, never by name; any other container with it fails.
   if [ "$service" = "apps-mcp" ]; then
     pass "$c: Docker socket allowed (apps-mcp builds and runs the apps)"
-    # Its App tokens come from the kernel's /v1/codehost/token: codehost-github alone holds the App key.
-    echo "$mounts" | grep -q 'github-app' && fail "$c (apps-mcp) mounts the GitHub App key" || pass "$c: apps-mcp has no GitHub App key"
+    # It gets typed operations from the kernel's /v1/codehost/:op, never a token: the github service alone holds the owner's sign-in.
+    echo "$mounts" | grep -qE '/modules/github(/|\|)' && fail "$c (apps-mcp) mounts the GitHub sign-in" || pass "$c: apps-mcp has no GitHub token"
   else
     echo "$mounts" | grep -q 'docker.sock' && fail "$c mounts the Docker socket" || pass "$c: no Docker socket"
   fi
@@ -193,13 +193,13 @@ for c in $containers; do
       [ "$(curl -s -m 10 -o /dev/null -w '%{http_code}' http://127.0.0.1:3131/api/search)" = "401" ] \
         && pass "grafana: no anonymous access" || fail "grafana answers without sign-in"
       ;;
-    # The App key invariant: among services and modules only codehost-github holds it (Lane T; the runner, apps-mcp and
-    # github-mcp until they move); the host's apply mints only a read-only instance-repo token (ops/git-credential-app.mjs).
+    # The token invariant: among services and modules only the github service holds the owner's sign-in; the host's apply
+    # fetches the instance repo with it through ops/git-credential-github.mjs (below: the file's mode and its only mounter).
     *github-mcp*)
       [ "$(docker inspect "$c" --format '{{json .HostConfig.PortBindings}}')" = "{}" ] && pass "github-mcp: no published ports" || fail "github-mcp publishes ports"
-      # Only its own secrets, and never the GitHub App key (codehost-github alone holds it; github-mcp asks the kernel's route).
-      [ "$(echo "$mounts" | tr ';' '\n' | grep -c '|/state|')" = "1" ] && ! echo "$mounts" | tr ';' '\n' | grep -v '/run/secrets' | grep -v '|/state|' | grep -q . && ! echo "$mounts" | grep -q 'github-app\|github_app' \
-        && pass "github-mcp: only its own secrets and its own state directory mounted, never the GitHub App key" || fail "github-mcp has unexpected mounts: $mounts"
+      # Only its own secrets and its own state directory (the owner's token file).
+      [ "$(echo "$mounts" | tr ';' '\n' | grep -c '|/state|')" = "1" ] && ! echo "$mounts" | tr ';' '\n' | grep -v '/run/secrets' | grep -v '|/state|' | grep -q . \
+        && pass "github-mcp: only its own secrets and its own state directory mounted" || fail "github-mcp has unexpected mounts: $mounts"
       ;;
     *apps-edge*)
       # The apps' tailnet node: its own way out plus the exposed apps' own networks (apps-mcp joins it), nothing else.
@@ -450,7 +450,7 @@ vendor_tags="$(node --input-type=module -e '
     glean: ["employee_search", "meeting_lookup", "code_search", "chat", "user_activity", "memory_schema"],
     grafana: ["alerting_rules_read", "alerting_silences_read", "generate_deeplink", "render_grafana_app", "suggest_loki_alloy_label_config", "user_info", "validate_provisioning_file"],
     // the own tools of github-mcp (every route they use is listed in the GitHub check below) share its host with github_official.
-    github: ["github_project_read", "github_issue_read", "github_job_log", "github_pr_files", "github_pr_threads", "github_app_issue_status", "github_issue_link", "github_app_issue_list", "github_app_label_events", "github_app_pr_list", "github_app_repo_tree", "github_app_repo_file"],
+    github: ["github_project_read", "github_issue_read", "github_job_log", "github_pr_files", "github_pr_threads", "github_product_issue_status", "github_issue_link", "github_issue_list", "github_label_events", "github_pr_list", "github_repo_tree", "github_repo_file"],
     github_official: ["issue_read", "pull_request_read"],
     hubspot: ["tool_guidance"],
     primer: ["primer_record_changes", "primer_widget_get"],
@@ -658,10 +658,14 @@ code="$(curl -s -m 10 -o /dev/null -w '%{http_code}' -X POST -H "Authorization: 
 # Only the dispatch module starts jobs (kernel.jobs); the engineering module requests none (lands with the dispatch move).
 ! awk '/^roles:/{on=1} on && /requests:/' modules/engineering/module.yaml | grep 'kernel\.jobs' >/dev/null \
   && pass "engineering: requests no kernel.jobs" || fail "engineering: still requests kernel.jobs (modules/engineering/module.yaml)"
-# The GitHub App key (Lane T): among compose services and containers, only codehost-github mounts it.
-app_holders="$(docker ps -q | xargs -r docker inspect --format '{{.Name}} {{range .Mounts}}{{.Source}} {{end}}' | grep -E "$sd/github-app( |/)" | awk '{print $1}' | grep -v 'codehost-github' | tr '\n' ' ')"
-[ -z "$app_holders" ] && ! grep -qE 'github-app|github_app' compose.yaml \
-  && pass "github app: only codehost-github mounts the App key" || fail "github app: the App key is mounted beyond codehost-github: ${app_holders:-compose.yaml}"
+# The owner's GitHub sign-in: the token file is 0600, and among containers only the github service mounts its directory
+# (the host's git credential helper reads the file directly). No App key exists any more.
+gh_tok="$sd/modules/github/token.json"
+{ [ ! -e "$gh_tok" ] || [ "$(stat -c %a "$gh_tok" 2>/dev/null || stat -f %Lp "$gh_tok")" = 600 ]; } \
+  && pass "github: the token file is mode 0600 (or GitHub is not connected)" || fail "github: $gh_tok is not mode 0600"
+tok_holders="$(docker ps -q | xargs -r docker inspect --format '{{index .Config.Labels "com.docker.compose.service"}} {{.Name}} {{range .Mounts}}{{.Source}} {{end}}' | grep -E "$sd/modules/github( |/)" | awk '$1!="github"{print $2}' | tr '\n' ' ')"
+[ -z "$tok_holders" ] && [ ! -e "$sd/github-app" ] && ! grep -qE 'github-app|github_app|codehost/token' compose.yaml \
+  && pass "github: only the github service mounts the token directory; no App key, no token route" || fail "github: the token directory is mounted beyond the github service, or an App key remains: ${tok_holders:-$sd/github-app or compose.yaml}"
 pc="$(docker ps --filter "label=com.docker.compose.project=$project" --filter "label=com.docker.compose.service=paperclip" --format '{{.Names}}' | head -1)"
 if [ -n "$pc" ]; then
   # The server's own environment (what its entrypoint exported, which `docker exec env` doesn't show) and its secrets.
