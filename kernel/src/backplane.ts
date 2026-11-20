@@ -294,7 +294,7 @@ export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boar
   /** A running job's requests for its task's next turn (jobtools.ts). */
   jobTools?: JobTools;
   /** A job's precheck (`aidenhq review`): what the AI reviewer would say of this write, filing nothing; `slot` counts the reviewer call. */
-  precheck?: (who: Identity, b: { kind: string; args: unknown }, slot: () => () => void) => Promise<{ text: string; reason?: string; decision?: string }>;
+  precheck?: (who: Identity, b: { kind: string; args: unknown }, slot: () => (failure: unknown) => void) => Promise<{ text: string; reason?: string; decision?: string }>;
   /** codehost-local's bundle of a repo on this server, while it is enabled (`aidenhq clone`): the file, and `done` once sent. */
   localBundle?: (repo: string) => Promise<{ file: string; done: () => void }>;
   /** The host's health probes (health.ts), and the key the host's healthcheck asks with (health_probe_key, held by no container). */
