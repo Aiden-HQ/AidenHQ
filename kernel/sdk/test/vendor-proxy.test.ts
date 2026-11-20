@@ -8,7 +8,8 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import pino from "pino";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { oauth, redirectAllowed, staticAuth } from "../src/vendor/oauth.js";
+import { readNeed } from "../src/vendor/needs.js";
+import { AuthError, oauth, redirectAllowed, staticAuth, type Auth } from "../src/vendor/oauth.js";
 import { createVendorProxy, type VendorProxy } from "../src/vendor/proxy.js";
 
 const tmp = () => mkdtempSync(join(tmpdir(), "vendor-mcp-"));
@@ -30,6 +31,7 @@ const vendor = createServer(async (req, res) => {
     ],
   }));
   server.setRequestHandler(CallToolRequestSchema, async (r) => {
+    if (r.params.name === "search" && (r.params.arguments as { q?: string })?.q === "boom") throw new Error("the vendor broke");
     seen.push({ name: r.params.name, args: r.params.arguments });
     return { content: [{ type: "text", text: `ran ${r.params.name}` }] };
   });
@@ -106,7 +108,9 @@ describe("not signed in", () => {
     const url = await listen(p);
     const post = (body: unknown) => fetch(`${url}/mcp`, { method: "POST", headers: { authorization: "Bearer svc", "content-type": "application/json", accept: "application/json, text/event-stream" }, body: JSON.stringify(body) }).then((r) => r.json() as Promise<any>);
     expect((await post({ jsonrpc: "2.0", id: 1, method: "tools/list" })).result.tools[0]).toMatchObject({ name: "search", description: expect.stringMatching(/isn't connected/) });
-    expect((await post({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "search", arguments: {} } })).result).toMatchObject({ isError: true, content: [{ text: expect.stringMatching(/signs in from the board/) }] });
+    const called = (await post({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "search", arguments: {} } })).result;
+    expect(called).toMatchObject({ isError: true, content: [{ text: expect.stringMatching(/signs in from the board/) }] });
+    expect(readNeed(called)?.cause).toBe("not_connected");
     expect((await fetch(`${url}/healthz`)).status).toBe(503);
     p.close();
   });
@@ -276,5 +280,33 @@ describe("/auth/check", () => {
     expect(await (await check()).json()).toEqual({ ok: false, message: "Acme no longer accepts the sign-in.", fix: "Reconnect" });
     p.close();
     up.close();
+  });
+});
+
+describe("needs_owner", () => {
+  const post = (url: string, body: unknown) => fetch(`${url}/mcp`, { method: "POST", headers: { authorization: "Bearer svc", "content-type": "application/json", accept: "application/json, text/event-stream" }, body: JSON.stringify(body) }).then((r) => r.json() as Promise<any>);
+  const call = (url: string, args: Record<string, unknown> = {}) => post(url, { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "search", arguments: args } }).then((b) => b.result);
+
+  it("the vendor proxy answers needs_owner when not signed in (no upstream configured)", async () => {
+    const p = createVendorProxy({ name: "Acme", upstream: undefined, auth: staticAuth(), log, serviceKey: "svc", caller: async () => {}, instructions: "" });
+    const url = await listen(p);
+    expect(readNeed(await call(url))?.cause).toBe("not_connected");
+    p.close();
+  });
+
+  it("answers expired once the sign-in was refused", async () => {
+    const since = new Date().toISOString();
+    const auth: Auth = { headers: async () => { throw new AuthError("Acme token expired and can't be refreshed"); }, refresh: async () => {}, status: () => ({ state: "expired", since }), mark: () => {}, signedIn: () => true };
+    const p = createVendorProxy({ name: "Acme", upstream: new URL("https://mcp.example.com/mcp"), auth, log, serviceKey: "svc", caller: async () => {}, instructions: "" });
+    const url = await listen(p);
+    expect(readNeed(await call(url))).toMatchObject({ cause: "expired", detail: expect.stringMatching(/reconnects it/) });
+    p.close();
+  });
+
+  it("an upstream error that isn't about sign-in stays a plain error", async () => {
+    const r = await rpc("/mcp", "svc", "tools/call", { name: "search", arguments: { q: "boom" } }, "ok");
+    expect(r.body.result).toMatchObject({ isError: true });
+    expect(r.body.result.structuredContent).toBeUndefined();
+    expect(readNeed(r.body.result)).toBeUndefined();
   });
 });
