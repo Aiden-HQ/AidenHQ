@@ -54,3 +54,15 @@ it("owner-fixable need notifies once per key", async () => {
   expect(told).toEqual([{ cause: "expired" }]);
   expect(access.connected()).toBe(false);
 });
+
+it("status lines say what works and the one fix", () => {
+  const a = createAccess({ auth: auth(), env: { GITHUB_FLEET_ORG: "aidenhq-alpha", GITHUB_CI: "1" } });
+  const lines = a.status().lines;
+  expect(lines.map((l) => [l.label, l.value, l.action?.label])).toEqual([
+    ["Reads, issues, comments", "needs permission", "Reconnect"],
+    ["Pull requests and merges", "needs permission", "Reconnect"],
+    ["Fleet repos", "in aidenhq-alpha", undefined],
+    ["CI runners", "needs permission", "Reconnect"],
+    ["Projects boards", "needs permission", "Reconnect"],
+  ]);
+});

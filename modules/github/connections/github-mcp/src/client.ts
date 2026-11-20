@@ -50,11 +50,16 @@ export function needAnswer(e: GitHubNeed): { error: "github_needs_owner" | "gith
   return { error, need: e.need, detail: e.ownerFixable ? `${e.message}: the owner was told; wait for the reconnect` : e.message };
 }
 
+/** One row of the board's sign-in card (what works, or what is wrong and its one fix). The board renders these as given. */
+export type StatusLine = { label: string; value: string; state: "ok" | "warn" | "error"; action?: { label: string; href?: string; reconnect?: true } };
+
 export type GitHubStatus = {
   login?: string;
   scopes: string[];
   problems: { org: string; cause: "sso" | "restricted"; url: string }[];
   rate?: { remaining: number; limit: number; reset: string };
+  /** The card's rows; empty while not connected. */
+  lines: StatusLine[];
 };
 
 export interface GitHubAccess {
@@ -95,6 +100,8 @@ export function createAccess(o: {
   sleep?: Sleep;
   /** Background calls wait while `remaining` is below this share of `limit`. */
   reserve?: number;
+  /** GITHUB_FLEET_ORG and GITHUB_CI, for the status card. */
+  env?: Record<string, string | undefined>;
 }): GitHubAccess {
   const fetchImpl = o.fetchImpl ?? fetch;
   const now = o.now ?? Date.now;
@@ -223,14 +230,40 @@ export function createAccess(o: {
     },
     status() {
       const core = rates.get("core");
+      const have = scopes();
+      const rate = core ? { remaining: core.remaining, limit: core.limit, reset: new Date(core.reset).toISOString() } : undefined;
+      const list = [...problems.values()];
+      const env = o.env ?? process.env;
       return {
         ...(me ? { login: me.login } : {}),
-        scopes: scopes(),
-        problems: [...problems.values()],
-        ...(core ? { rate: { remaining: core.remaining, limit: core.limit, reset: new Date(core.reset).toISOString() } } : {}),
+        scopes: have,
+        problems: list,
+        ...(rate ? { rate } : {}),
+        lines: connected() ? statusLines(have, list, rate, (env.GITHUB_FLEET_ORG ?? "").trim(), env.GITHUB_CI === "1") : [],
       };
     },
   };
+}
+
+const RECONNECT = { label: "Reconnect", reconnect: true } as const;
+
+/** The board card's rows from the token's scopes, the orgs that refused it, the fleet org and the rate limit (spec §8). */
+function statusLines(have: string[], problems: GitHubStatus["problems"], rate: GitHubStatus["rate"], fleetOrg: string, ci: boolean): StatusLine[] {
+  const needs = (label: string, scope: string): StatusLine => (covers(have, scope) ? { label, value: "working", state: "ok" } : { label, value: "needs permission", state: "warn", action: RECONNECT });
+  const lines: StatusLine[] = [
+    needs("Reads, issues, comments", "repo"),
+    needs("Pull requests and merges", "repo"),
+    { label: "Fleet repos", value: fleetOrg ? `in ${fleetOrg}` : "on this server", state: "ok" },
+    ...(ci ? [needs("CI runners", "admin:org")] : []),
+    needs("Projects boards", "project"),
+    ...problems.map((p): StatusLine => (p.cause === "sso" ? { label: p.org, value: "GitHub needs you to authorize single sign-on", state: "warn", action: { label: "Authorize", href: p.url } } : { label: p.org, value: "the org restricts outside apps", state: "warn", action: { label: "Request access", href: p.url } })),
+  ];
+  if (rate) {
+    const at = new Date(rate.reset);
+    const hhmm = `${String(at.getUTCHours()).padStart(2, "0")}:${String(at.getUTCMinutes()).padStart(2, "0")} UTC`;
+    lines.push({ label: "Rate limit", value: `${rate.remaining.toLocaleString("en-US")} of ${rate.limit.toLocaleString("en-US")} left, resets ${hhmm}`, state: rate.remaining < rate.limit * 0.2 ? "warn" : "ok" });
+  }
+  return lines;
 }
 
 /** The kernel notice for an owner-fixable need (role kernel.owner-notice, the code host's token). */
