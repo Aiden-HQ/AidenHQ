@@ -201,6 +201,8 @@ const SILENT_LOOKBACK_MS = 6 * HOUR_MS; // older than this, the owner has long s
 const UNSTARTED_MS = HOUR_MS; // a delegated task assigned to an agent, still todo with no job ever, this long after it was created
 const PING_PONG = { n: 5, spanMs: 12 * HOUR_MS }; // runs of one task that alternate between two agents, all started within spanMs
 const CARD_WAIT_MS = DAY_MS; // a Tier 2 card waiting on the owner this long gets the Steward's one reminder a day
+const QUEUE_MS = HOUR_MS; // an agent's tasks held on capacity this long (the oldest hold), while computers sit idle
+const REVIEW_STALL_MS = 15 * MIN; // a card with the AI reviewer, undecided this long (a review normally takes seconds to a few minutes)
 const MAX_LOOKUPS = 20;
 /** A row of the kernel's task state (GET /v1/tasks/state, kernel/src/task-state-read.ts). */
 type StateRow = { task: string; identifier: string | null; since: string; reason: string; ref?: string; holder: string | null; attention: { who: string; why: string }[]; idle_wakes: number; wait_since?: string };
@@ -229,6 +231,30 @@ export function mergeDeadlocks(rows: StateRow[], t: number): { key: string; reas
     }
   }
   return out;
+}
+
+/**
+ * Agents with tasks held on capacity (`job_held`, ref `capacity`: the agent's max_parallel, or every computer taken) whose oldest hold is
+ * over QUEUE_MS, while computers sit idle (fewer running jobs than the kernel's `capacity`). A fleet at capacity raises nothing.
+ */
+export function capacityQueues(rows: StateRow[], running: number, capacity: number, t: number): { key: string; reason: string }[] {
+  const idle = capacity - running;
+  if (idle <= 0) return [];
+  const by = new Map<string, StateRow[]>();
+  for (const r of rows.filter((x) => x.reason === "job_held" && x.ref === "capacity" && x.holder)) by.set(r.holder!, [...(by.get(r.holder!) ?? []), r]);
+  const out: { key: string; reason: string }[] = [];
+  for (const [agent, held] of by) {
+    const oldest = Math.max(...held.map((r) => age(r.since, t)));
+    if (oldest > QUEUE_MS) out.push({ key: slug(agent), reason: `agent ${slug(agent)} has ${held.length} task${held.length === 1 ? "" : "s"} held on capacity, the oldest ${mins(oldest)}, while ${idle} of ${capacity} computers are idle (${running} jobs running)` });
+  }
+  return out;
+}
+
+/** Write records still with the AI reviewer (state `review`) past REVIEW_STALL_MS: a review that was lost or never ran. */
+export function reviewStalls(records: (WorkRecord & { id?: string; kind?: string })[], t: number): { key: string; reason: string }[] {
+  return records
+    .filter((x) => x.state === "review" && x.id && age(x.created_at, t) > REVIEW_STALL_MS)
+    .map((x) => ({ key: slug(x.id), reason: `card ${slug(x.id)} (${slug(x.kind)}) on task ${slug(x.identifier ?? x.task)} has been with the AI reviewer for ${mins(age(x.created_at, t))} with no decision` }));
 }
 
 /** Tasks whose last runs alternate between exactly two agents: PING_PONG.n runs, started within the span, at least n - 1 changes of agent. */
@@ -633,6 +659,18 @@ export function checks(d: { kernel: KernelClient; kv: Kv; pause: (routine: strin
       const t = now();
       const r = (await d.kernel.call("GET", `/v1/work?since=${encodeURIComponent(new Date(t - 7 * DAY_MS).toISOString())}`)) as { records?: (WorkRecord & { id?: string; kind?: string; tier?: number })[] };
       return (r.records ?? []).filter((x) => x.state === "owner" && x.tier === 2 && x.id && age(x.created_at, t) > CARD_WAIT_MS).map((x) => ({ key: slug(x.id), reason: `Tier 2 card ${slug(x.kind)} on task ${slug(x.identifier ?? x.task)} has waited ${mins(age(x.created_at, t))} on the owner` }));
+    },
+    // An agent whose tasks sit held on capacity over an hour while computers idle: the router or admission is misplacing work.
+    async queue() {
+      const w = (await d.kernel.call("GET", "/v1/work")) as { running?: unknown[]; capacity?: number };
+      if (!Array.isArray(w.running) || !(Number(w.capacity) > 0)) return undefined; // not readable: its open incidents stay open
+      return capacityQueues((await openStates()).filter((i) => !exempt({ identifier: i.identifier, originKind: null })), w.running.length, Number(w.capacity), now());
+    },
+    // A card with the AI reviewer over 15 minutes (Tier 1; a Tier 2 card on the owner is the `card` group's).
+    async "review-stall"() {
+      const t = now();
+      const r = (await d.kernel.call("GET", `/v1/work?since=${encodeURIComponent(new Date(t - 7 * DAY_MS).toISOString())}`)) as { records?: Parameters<typeof reviewStalls>[0] };
+      return reviewStalls(r.records ?? [], t);
     },
     // An owner message on a chat task with no reply: the front door is silent.
     async front() {

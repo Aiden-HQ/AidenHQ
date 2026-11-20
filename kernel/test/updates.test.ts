@@ -10,7 +10,7 @@ import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import YAML from "yaml";
-import { Refused, candidateMarked, check, compareRelease, createUpdates, pinText, pinTo, readState, verify, writeState } from "../src/updates.ts";
+import { Refused, candidateMarked, check, compareRelease, createUpdates, pinText, pinTo, readState, verify, verifyMain, writeState } from "../src/updates.ts";
 import { localApply } from "../../modules/codehost-local/src/apply.ts";
 
 // The owner's own git config (signing, hooks) never reaches the fixtures or the updater's commits.
@@ -110,6 +110,7 @@ function kernelSide(w, { lines = [], filed = [], now = DAY } = {}) {
   const u = createUpdates({
     db: new DatabaseSync(":memory:"), dir: w.d.dir, board: w.d.board, ownerLine: (t) => lines.push(t),
     check: async (asked) => void (await check({ ...w.d, now: () => now }, asked)),
+    main: async (to) => { const m = await verifyMain(w.d, git(w.d.inst, "show", "origin/main:instance.yaml"), to); return { sha: m.sha, compare: m.compare }; },
     file: async (r) => { const record = `rec-${++n}`; filed.push({ ...r, record }); w.records[record] = { state: "review" }; return { record, task: `task-${n}` }; },
     record: (id) => w.records[id], close: async () => {},
     // A pass checks only when an hour has gone by (or Update now): the test moves the clock on with checkNow().
@@ -377,4 +378,98 @@ test("before the first check, the page's view reads the followed release from th
   assert.equal(u.view().current, undefined);
   const withInst = createUpdates({ db: new DatabaseSync(":memory:"), dir: w.d.dir, inst: w.d.inst, ownerLine() {}, check: async () => {}, file: async () => ({ record: "", task: "" }), record: () => undefined, close: async () => {} });
   assert.equal(withInst.view().current.name, "2026.11.2");
+});
+
+/** A commit on the kernel's main after K2 (the fix that just merged), and product CI's ci-required runs by commit. */
+function onMainNow(w) {
+  const k = join(w.root, "gh", "src", "AidenHQ");
+  git(k, "checkout", "-q", "main");
+  writeFileSync(join(k, "a.txt"), "3");
+  git(k, "commit", "-qam", "the fix");
+  w.K3 = git(k, "rev-parse", "HEAD");
+  git(k, "push", "-q", join(w.root, "gh", "Aiden-HQ", "AidenHQ.git"), "main");
+  const run = (status, conclusion, started_at = "2026-11-20T10:00:00Z", slug = "github-actions") => ({ name: "ci-required", status, conclusion, started_at, app: { slug } });
+  w.ci = { [w.K3]: [run("completed", "failure", "2026-11-20T09:00:00Z"), run("completed", "success")] };
+  const dl = w.d.download;
+  w.d.download = async (u) => { const c = /commits\/([0-9a-f]{40})\/check-runs\?check_name=ci-required/.exec(u); return c ? { total_count: (w.ci[c[1]] ?? []).length, check_runs: w.ci[c[1]] ?? [] } : dl(u); };
+  return { run };
+}
+
+test("a main commit: verified (on main, after what runs, ci-required green on it), prepared with release: kept, filed and installed", async () => {
+  const w = world();
+  const { run } = onMainNow(w);
+  const text = git(w.d.inst, "show", "HEAD:instance.yaml");
+  const m = await verifyMain(w.d, text, "main");
+  assert.equal(m.sha, w.K3);
+  assert.deepEqual([YAML.parse(m.text).product, YAML.parse(m.text).release.name], [w.K3, "2026.11.2"]);
+  // Refusals, each with its reason: CI still running, failed, missing or not GitHub Actions'; off main; a downgrade; a hand-pinned instance.
+  const why = async (to, re, t = text) => assert.rejects(verifyMain(w.d, t, to), (e) => e instanceof Refused && re.test(e.message));
+  w.ci[w.K3] = [run("in_progress", null)];
+  await why(w.K3, /CI is still running/);
+  w.ci[w.K3] = [run("completed", "success", "2026-11-20T09:00:00Z"), run("completed", "failure")];
+  await why(w.K3, /CI failed on/);
+  w.ci[w.K3] = [run("completed", "success", undefined, "acme-bot")];
+  await why(w.K3, /no ci-required check/);
+  const k = join(w.root, "gh", "src", "AidenHQ");
+  git(k, "checkout", "-q", "-b", "pr", w.K3);
+  writeFileSync(join(k, "b.txt"), "x");
+  git(k, "add", "-A"); git(k, "commit", "-qm", "unmerged");
+  const pr = git(k, "rev-parse", "HEAD");
+  git(k, "push", "-q", join(w.root, "gh", "Aiden-HQ", "AidenHQ.git"), "pr");
+  w.ci[pr] = [run("completed", "success")];
+  await why(pr, /isn't on Aiden-HQ\/AidenHQ's main/);
+  await why(w.K1, /already runs/);
+  await why(w.K1, /doesn't descend from the running product/, text.replace(`product: ${w.K1}`, `product: ${w.K2}`));
+  await why("main", /pins its product by hand/, text.replace(/^release:.*$/m, ""));
+  await why("HEAD", /isn't main or a 40-character commit/);
+  // The owner's ask, through the kernel's side: verified first, then prepared, filed and followed as Update now is.
+  w.ci[w.K3] = [run("completed", "success")];
+  const lines = [], filed = [];
+  const u = kernelSide(w, { lines, filed });
+  assert.match(await u.requestMain("main", "account:a1"), new RegExp(`^Verified ${w.K3.slice(0, 12)}`));
+  await u.tick();
+  assert.equal(filed.length, 1);
+  const r = filed[0];
+  assert.deepEqual([r.release, r.kernel, r.branch, r.by], [w.K3, w.K3, `update/main-${w.K3.slice(0, 12)}`, "account:a1"]);
+  git(w.d.inst, "fetch", "-q", "origin", r.branch);
+  const head = YAML.parse(git(w.d.inst, "show", `${r.sha}:instance.yaml`));
+  assert.deepEqual([head.product, head.release.name, head.release.sha], [w.K3, "2026.11.2", w.D1]);
+  await assert.rejects(u.requestMain("main", "account:a1"), /main commit [0-9a-f]{12} is already being installed/);
+  w.records[r.record] = { state: "done" };
+  await u.tick();
+  const s = readState(w.d.dir);
+  assert.deepEqual([s.last.outcome, s.current], ["installed", { name: "2026.11.2", product: w.K3 }], "it still follows its release");
+  assert.equal(lines.filter((l) => l.startsWith(`AidenHQ is updated to main commit ${w.K3.slice(0, 12)} (from 2026.11.2)`)).length, 1);
+});
+
+test("after a main commit, a release behind it is skipped quietly and the next one after it rejoins", async () => {
+  const w = world();
+  onMainNow(w);
+  // The instance runs K3 now (the main move landed), still following 2026.11.2.
+  const iw = join(w.root, "iw");
+  git(iw, "pull", "-q", join(w.root, "inst.git"), "main");
+  writeFileSync(join(iw, "instance.yaml"), readFileSync(join(iw, "instance.yaml"), "utf8").replace(`product: ${w.K1}`, `product: ${w.K3}`));
+  git(iw, "commit", "-qam", "main move");
+  git(iw, "push", "-q", join(w.root, "inst.git"), "HEAD:main");
+  // 2026.11.3 (kernel K2, cut before the fix): behind what runs, so nothing is offered and nothing is said.
+  let s = await check({ ...w.d, now: () => NIGHT });
+  assert.deepEqual([s.available, s.ready, s.events ?? []], [null, undefined, []]);
+  await assert.rejects(verify(w.d, git(w.d.inst, "show", "origin/main:instance.yaml"), "2026.11.3", w.D2), (e) => e instanceof Refused && /doesn't descend from the running product/.test(e.message));
+  // 2026.11.4, cut from a later main (K4 after K3): accepted, and prepared at night as any release.
+  const k = join(w.root, "gh", "src", "AidenHQ");
+  writeFileSync(join(k, "a.txt"), "4");
+  git(k, "commit", "-qam", "later");
+  const K4 = git(k, "rev-parse", "HEAD");
+  git(k, "push", "-q", join(w.root, "gh", "Aiden-HQ", "AidenHQ.git"), "main");
+  w.files["2026.11.4"] = release("2026.11.4", K4);
+  writeFileSync(join(w.distro.src, "releases/2026.11.4.json"), JSON.stringify(w.files["2026.11.4"]));
+  git(w.distro.src, "add", "-A"); git(w.distro.src, "commit", "-qm", "2026.11.4");
+  const D4 = git(w.distro.src, "rev-parse", "HEAD");
+  git(w.distro.src, "tag", "2026.11.4", D4);
+  w.distro.push();
+  w.tags.push("2026.11.4");
+  w.published["2026.11.4"] = { ...w.files["2026.11.4"], tested: { ci_run: "https://github.com/Aiden-HQ/aidenhq-distro/actions/runs/44", suites: ["swap"] } };
+  w.runs[44] = { path: ".github/workflows/release.yml", head_sha: D4, head_branch: "2026.11.4", event: "push", status: "completed", conclusion: "success" };
+  s = await check({ ...w.d, now: () => NIGHT });
+  assert.deepEqual([s.available?.name, s.ready?.release, s.ready?.kernel], ["2026.11.4", "2026.11.4", K4]);
 });

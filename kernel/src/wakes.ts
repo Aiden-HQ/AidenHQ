@@ -204,7 +204,7 @@ export function createWakes({ db, owner, post, dispatches, containers = () => ne
   const lastJob = (task: string) => q("SELECT j.id, COALESCE(w.claimed_at, j.at) AS at FROM jobs j LEFT JOIN wakes w ON w.job = j.id WHERE j.task = ? ORDER BY j.at DESC LIMIT 1").get(task) as { id: string; at: number } | undefined;
 
   /** One task's wakes: new comments past its cursor, and a move to todo (or a first sight of an unstarted todo task). */
-  async function scan(issue: Issue, { reopened = false, source = "live", actor = "unknown" }: { reopened?: boolean; source?: "live" | "poll"; actor?: string } = {}) {
+  async function scan(issue: Issue, { reopened = false, source = "live", actor = "unknown", rehome = true }: { reopened?: boolean; source?: "live" | "poll"; actor?: string; rehome?: boolean } = {}) {
     const seen = q("SELECT agent, status, comment, blocked, polled FROM wake_tasks WHERE task = ?").get(issue.id) as { agent: string | null; status: string | null; comment: string | null; blocked: string | null; polled: number } | undefined;
     // The task's facts first: a task nobody polls (unassigned, or an agent no dispatcher claims) is recorded too.
     issue = await whole(issue);
@@ -214,10 +214,15 @@ export function createWakes({ db, owner, post, dispatches, containers = () => ne
     const joined = agent ? polled().get(agent) : undefined;
     if (!agent || joined === undefined || grants()[agent]?.team) {
       q("INSERT INTO wake_tasks (task, agent, status, blocked, polled) VALUES (?, ?, ?, ?, 0) ON CONFLICT(task) DO UPDATE SET agent = excluded.agent, status = excluded.status, blocked = COALESCE(excluded.blocked, blocked)").run(issue.id, agent ?? null, String(issue.status ?? ""), blockedKey(issue));
-      if (agent && joined !== undefined) return route(issue, agent);
+      if (agent && joined !== undefined) return serial(() => place(issue, agent));
       return;
     }
-    if (grants()[agent]?.member_of) named(issue, agent);
+    if (grants()[agent]?.member_of) {
+      // Re-placed (and scanned under its new member) when it never started on a busy member; the scan that follows a placement
+      // runs inside the lock, so it never asks (`rehome`).
+      if (rehome && mayMove(issue.id, agent) && await serial(() => move(issue, agent))) return;
+      named(issue, agent);
+    }
     const prev = seen?.polled ? { agent: seen.agent, status: seen.status, comment: seen.comment } : undefined;
     const path = `/api/issues/${encodeURIComponent(issue.id)}/comments?${prev?.comment ? `order=asc&limit=500&after=${encodeURIComponent(prev.comment)}` : "order=desc&limit=500"}`;
     const r = await owner("GET", path);
@@ -301,7 +306,12 @@ export function createWakes({ db, owner, post, dispatches, containers = () => ne
   // One decision row per task in team_routes: `placing` (picked, the reassignment not yet confirmed: a retry re-applies the
   // same pick, never re-scores), `placed`, `named` (assigned straight to a member: its delegator's structured choice), or
   // `blocked`. Selection is serialized in this process (`lock`), and a pending placement counts as its member's load.
+  // A `placed` task that never had a job, whose member is busy (its max_parallel of live jobs, admission's own test) while
+  // another member has a free slot, is scored again when its member's scan sees it (`move`): it goes to another member only if
+  // that one scores strictly higher, the task itself counted against nobody. A task that ran a job keeps its member (its
+  // session is there), and a `named` one is never moved.
   const OPEN_SET = new Set(OPEN.split(","));
+  const tag = `\n\n<!-- aidenhq:job=kernel kind=routed -->`;
   // Only repos a code host has: a branch (fix/x), a path (modules/x) or a library (x/net) shaped like owner/name is no repo.
   const repoText = (i: Issue) => mentionedRepos(`${i.title ?? ""}\n${i.description ?? ""}`).map((r) => r.toLowerCase()).filter((r) => knownRepo(r));
   const keyId = (key: string) => Object.entries(grants()).find(([, g]) => g?.key === key)?.[0];
@@ -312,8 +322,9 @@ export function createWakes({ db, owner, post, dispatches, containers = () => ne
     q("UPDATE team_routes SET state = 'placed' WHERE task = ? AND member = ? AND state = 'placing'").run(issue.id, member);
   }
   let lock: Promise<unknown> = Promise.resolve();
-  const route = (issue: Issue, team: string) => { const run = lock.then(() => place(issue, team)); lock = run.catch(() => {}); return run; };
-  /** The members' snapshot (paused, open tasks, done tasks in the repo), awaited before the decision, which awaits nothing. */
+  const serial = <T>(fn: () => Promise<T>) => { const run = lock.then(fn); lock = run.catch(() => {}); return run; };
+  const busy = (agent: string) => (q(`SELECT COUNT(*) AS n FROM jobs WHERE agent = ? AND state IN ${LIVE}`).get(agent) as { n: number }).n >= (grants()[agent]?.max_parallel ?? 1);
+  /** The members' snapshot (paused, open tasks, whether each finished a task in the repo), read before the decision. */
   async function snapshot(team: TeamGrant, task: string, repos: string[]) {
     const out: { id: string; key: string; g: TeamGrant; paused: boolean; open: Set<string>; done: number }[] = [];
     const since = now() - CONTINUITY_MS;
@@ -324,16 +335,17 @@ export function createWakes({ db, owner, post, dispatches, containers = () => ne
       if (a.status !== 200) throw new Error(`control plane GET agent → ${a.status}`);
       const l = await owner("GET", `/api/companies/${encodeURIComponent(String(a.json.companyId))}/issues?status=${OPEN}&limit=500&assigneeAgentId=${encodeURIComponent(id)}`);
       if (l.status !== 200 || !Array.isArray(l.json)) throw new Error(`control plane GET issues → ${l.status}`);
-      // Continuity: distinct tasks this member finished in one of the task's repos within the window (task status done).
+      // Continuity: whether this member finished a task in one of the task's repos within the window (task status done).
       let done = 0;
-      if (repos.length) for (const r of q("SELECT task, repos, done FROM team_routes WHERE member = ? AND at > ? AND task != ? AND state != 'blocked'").all(id, since, task) as { task: string; repos: string; done: number }[]) {
+      if (repos.length) for (const r of q("SELECT task, repos, done FROM team_routes WHERE member = ? AND at > ? AND task != ? AND state != 'blocked' ORDER BY done DESC").all(id, since, task) as { task: string; repos: string; done: number }[]) {
         if (!(JSON.parse(r.repos) as string[]).some((x) => repos.includes(x))) continue;
         if (!r.done) {
           const t = await owner("GET", `/api/issues/${encodeURIComponent(r.task)}`);
           if (t.status === 200 && t.json?.status === "done") q("UPDATE team_routes SET done = 1 WHERE task = ?").run(r.task);
           else continue;
         }
-        done++;
+        done = 1;
+        break;
       }
       out.push({ id, key, g: grants()[id] ?? {}, paused: agentPaused(a.json), open: new Set((l.json as Issue[]).map((i) => i.id)), done });
     }
@@ -349,24 +361,12 @@ export function createWakes({ db, owner, post, dispatches, containers = () => ne
     let row = q("SELECT member, state FROM team_routes WHERE task = ?").get(issue.id) as { member: string | null; state: string } | undefined;
     // Back on the team after a placement or a block (the delegator re-routed it): decided afresh.
     if (row && row.state !== "placing") { q("DELETE FROM team_routes WHERE task = ?").run(issue.id); row = undefined; }
-    const tag = `\n\n<!-- aidenhq:job=kernel kind=routed -->`;
     if (!row) {
       const repos = repoText(issue);
-      const snap = await snapshot(team, issue.id, repos);
-      const weights = weightsOf(team.team);
-      const over = snap.length > 0 && teamDayUsedUp(snap[0]!.id, issue.id);
-      const revision = createHash("sha256").update(JSON.stringify([team.team, snap.map((m) => [m.key, m.g.repos ?? [], m.g.max_parallel ?? 1])])).digest("hex").slice(0, 12);
+      const decide = await gather(team, issue.id, repos);
       db.exec("BEGIN IMMEDIATE");
       try {
-        const candidates: Candidate[] = snap.map((m) => {
-          const live = new Set((q(`SELECT task FROM jobs WHERE agent = ? AND state IN ${LIVE}`).all(m.id) as { task: string }[]).map((r) => r.task));
-          const waiting = new Set([...m.open, ...(q("SELECT task FROM team_routes WHERE member = ? AND state = 'placing'").all(m.id) as { task: string }[]).map((r) => r.task)]);
-          for (const t of live) waiting.delete(t);
-          return { id: m.id, key: m.key, repos: m.g.repos ?? [], maxParallel: m.g.max_parallel ?? 1, paused: m.paused, running: live.size, queued: waiting.size, done: m.done };
-        });
-        const decision = pickMember({ repos, candidates, weights, overBudget: over });
-        const record = decisionText({ team: team.team!.name, revision, repos, weights, decision });
-        const snapshot: RouteSnapshot = { weights, overBudget: over, candidates };
+        const { decision, record, snapshot } = decide();
         q("INSERT INTO team_routes (task, team, member, repos, at, state, record, snapshot) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(issue.id, String(team.key), decision.pick?.id ?? null, JSON.stringify(repos), now(), decision.pick ? "placing" : "blocked", record, JSON.stringify(snapshot));
         db.exec("COMMIT");
         log("team routed", { task: issue.id, team: team.team!.name, pick: decision.pick?.key ?? null });
@@ -387,7 +387,68 @@ export function createWakes({ db, owner, post, dispatches, containers = () => ne
     if (r.status >= 300) throw new Error(`control plane PATCH issue → ${r.status}`);
     q("UPDATE team_routes SET state = 'placed' WHERE task = ? AND state = 'placing'").run(issue.id);
     const now2 = await owner("GET", `/api/issues/${encodeURIComponent(issue.id)}`);
-    if (now2.status === 200 && now2.json?.assigneeAgentId === row.member) await scan(now2.json as Issue);
+    if (now2.status === 200 && now2.json?.assigneeAgentId === row.member) await scan(now2.json as Issue, { rehome: false });
+  }
+  /**
+   * The members' snapshot for a decision on `task`, awaited; the decision itself (synchronous, so it can sit in a transaction)
+   * is the returned function. The task counts as nobody's load: it is the one being placed.
+   */
+  async function gather(team: TeamGrant, task: string, repos: string[], from?: string) {
+    const snap = await snapshot(team, task, repos);
+    const weights = weightsOf(team.team);
+    const over = snap.length > 0 && teamDayUsedUp(snap[0]!.id, task);
+    const revision = createHash("sha256").update(JSON.stringify([team.team, snap.map((m) => [m.key, m.g.repos ?? [], m.g.max_parallel ?? 1])])).digest("hex").slice(0, 12);
+    return () => {
+      const candidates: Candidate[] = snap.map((m) => {
+        const live = new Set((q(`SELECT task FROM jobs WHERE agent = ? AND state IN ${LIVE}`).all(m.id) as { task: string }[]).map((r) => r.task));
+        const waiting = new Set([...m.open, ...(q("SELECT task FROM team_routes WHERE member = ? AND state = 'placing'").all(m.id) as { task: string }[]).map((r) => r.task)]);
+        for (const t of live) waiting.delete(t);
+        waiting.delete(task);
+        return { id: m.id, key: m.key, repos: m.g.repos ?? [], maxParallel: m.g.max_parallel ?? 1, paused: m.paused, running: live.size, queued: waiting.size, done: m.done };
+      });
+      const decision = pickMember({ repos, candidates, weights, overBudget: over });
+      const record = decisionText({ team: team.team!.name, revision, repos, weights, decision, from });
+      const snapshot: RouteSnapshot = { weights, overBudget: over, candidates };
+      return { decision, record, snapshot };
+    };
+  }
+  /** Whether a member's task is one `move` would score again: placed on it by the router, never run, its member busy, another member free. */
+  function mayMove(task: string, member: string) {
+    const row = q("SELECT member, state FROM team_routes WHERE task = ?").get(task) as { member: string | null; state: string } | undefined;
+    if (row?.state !== "placed" || row.member !== member || lastJob(task) || !busy(member)) return false;
+    const team = grants()[member]!.member_of!;
+    return Object.entries(grants()).some(([id, g]) => id !== member && g?.member_of === team && !busy(id));
+  }
+  /** A never-started task on a busy member, scored again (see the state comment above): true when it moved. */
+  async function move(seen: Issue, member: string) {
+    const fresh = await owner("GET", `/api/issues/${encodeURIComponent(seen.id)}`);
+    if (fresh.status !== 200) throw new Error(`control plane GET issue → ${fresh.status}`);
+    const issue = fresh.json as Issue;
+    if (issue.assigneeAgentId !== member || !OPEN_SET.has(String(issue.status)) || !mayMove(issue.id, member)) return false;
+    const teamId = keyId(grants()[member]!.member_of!);
+    const team = teamId ? grants()[teamId] : undefined;
+    if (!team?.team) return false;
+    const repos = repoText(issue);
+    const decide = await gather(team, issue.id, repos, String(grants()[member]!.key ?? member));
+    if (!mayMove(issue.id, member)) return false; // a job started, or a slot freed, while the snapshot was read
+    const { decision, record, snapshot } = decide();
+    const here = decision.scored.find((s) => s.id === member);
+    if (!decision.pick || !here || decision.pick.id === member || decision.pick.score <= here.score) return false;
+    const to = decision.pick.id;
+    const r = await owner("PATCH", `/api/issues/${encodeURIComponent(issue.id)}`, { assigneeAgentId: to, comment: record + tag });
+    if (r.status >= 300) throw new Error(`control plane PATCH issue → ${r.status}`);
+    inTx(db, "team_move", () => {
+      q("UPDATE team_routes SET member = ?, repos = ?, at = ?, record = ?, snapshot = ? WHERE task = ?").run(to, JSON.stringify(repos), now(), record, JSON.stringify(snapshot), issue.id);
+      // The old member's wakes for it would only be refused at admission (not its task any more).
+      for (const w of q("SELECT key, task FROM wakes WHERE task = ? AND agent = ? AND (state = 'open' OR (state = 'claimed' AND job IS NULL))").all(issue.id, member) as { key: string; task: string }[]) {
+        q("UPDATE wakes SET state = 'dropped', until = NULL WHERE key = ?").run(w.key);
+        dropped(w, "the task was re-routed to another member");
+      }
+    });
+    log("team re-routed", { task: issue.id, team: team.team.name, from: member, to });
+    const now2 = await owner("GET", `/api/issues/${encodeURIComponent(issue.id)}`);
+    if (now2.status === 200 && now2.json?.assigneeAgentId === to) await scan(now2.json as Issue, { rehome: false });
+    return true;
   }
 
   const companies = new Map<string, string>();
