@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { SignInRequired, api, type ReviewsSetup } from "./api";
+import { IN_FLIGHT } from "./settings-ui";
+import type { FiledChange } from "./types";
 import { reviewersOf, type CodeReview, type Finding, type Profile, type RepoConfig, type ReposView, type Review, type ReviewInsights, type ReviewerRow, type Run, type Severity } from "../../src/reviews";
 import { Banner, Button, Card, Dialog, EmptyState, Facts, Field, Input, LinkButton, Meter, Page, PageHeader, Section, Segmented, Select, StatBlock, StatusDot, Switch, Tabs, Tag, Tags, Tile, TileGrid, hueClass, type StatusTone } from "./ui";
 import { agoLabel, elapsed } from "./util";
@@ -7,8 +9,8 @@ import "./reviews.css";
 
 // The Reviews page (#/reviews/<tab>, #/reviews/r/<run>; docs/design/code-review.md, "Setting it up and using it"): the
 // code-review module's runs, watched repos, reviewers and insights. The module runs and posts every review; this page reads
-// its state, starts one-off and trial runs, and saves settings.code_review as a settings change (Tier 1, applied by the
-// kernel). PR titles and every finding's text are the PR author's or a model's words: shown as plain text, never as links.
+// its state, starts one-off and trial runs, and saves settings.code_review as a settings change (the owner's save is his
+// approval; the kernel writes and applies it, and the page follows it until it is live). PR titles and every finding's text are the PR author's or a model's words: shown as plain text, never as links.
 
 const TABS = [["reviews", "Reviews"], ["repos", "Repos"], ["reviewers", "Reviewers"], ["insights", "Insights"]] as const;
 type Tab = (typeof TABS)[number][0];
@@ -94,6 +96,9 @@ export function ReviewsView({ onSignIn }: { onSignIn: () => void }) {
   const [reviewers, setReviewers] = useState<ReviewerRow[] | null>(null);
   const [error, setError] = useState("");
   const [saved, setSaved] = useState<{ identifier: string; what: string } | null>(null);
+  /** The change saved here, else the newest one to settings.code_review (the board's settings changes): under way, live, or why not. */
+  const [filed, setFiled] = useState<FiledChange | null>(null);
+  const savedId = useRef("");
   const [orgs, setOrgs] = useState<string[]>([]);
   const [dialog, setDialog] = useState<null | { kind: "oneoff"; url?: string; reviewer?: string } | { kind: "repo"; repo?: RepoConfig } | { kind: "reviewer"; name?: string } | { kind: "cap" }>(null);
 
@@ -114,7 +119,19 @@ export function ReviewsView({ onSignIn }: { onSignIn: () => void }) {
   const loadRuns = useCallback(() => api.reviews({ limit: 200 }).then((r) => setRuns(r.runs), fail), [fail]);
   const loadRepos = useCallback(() => api.reviewRepos().then(setRepos, fail), [fail]);
   const loadReviewers = useCallback(() => api.reviewers().then((r) => setReviewers(r.reviewers), fail), [fail]);
+  const loadFiled = useCallback(() => api.settingsChanges().then((r) => setFiled(r.changes.find((c) => c.identifier === savedId.current) ?? r.changes.find((c) => c.items.some((i) => i.kind === "setting" && i.key === "code_review")) ?? null), () => {}), []);
   useEffect(() => void loadSetup(), [loadSetup]);
+  useEffect(() => void loadFiled(), [loadFiled]);
+  // A change under way: followed until it is live (then the setting is read again) or stops.
+  const applying = Boolean(filed && IN_FLIGHT.includes(filed.stage));
+  const wasApplying = useRef(applying);
+  useEffect(() => {
+    if (wasApplying.current && !applying) void loadSetup();
+    wasApplying.current = applying;
+    if (!applying) return;
+    const t = setInterval(() => void loadFiled(), 5_000);
+    return () => clearInterval(t);
+  }, [applying, loadFiled, loadSetup]);
   useEffect(() => setOrgs(setup?.comment_orgs ?? []), [setup]);
   const ready = Boolean(setup?.module && setup.github.connected);
   useEffect(() => {
@@ -139,10 +156,12 @@ export function ReviewsView({ onSignIn }: { onSignIn: () => void }) {
       const add = org && !orgs.includes(org.toLowerCase()) ? org.toLowerCase() : undefined;
       const r = await api.reviewConfig({ ...(value ? { value } : {}), ...(add ? { org: add } : {}) });
       if (add) setOrgs((o) => [...o, add]);
-      setSaved({ identifier: r.identifier, what: add ? `${what}; reviews post as you in ${add}` : what });
+      savedId.current = r.identifier;
+      setSaved({ identifier: r.identifier, what: add ? `${what}; where the GitHub App isn't installed in ${add}, reviews post there as you` : what });
       setDialog(null);
+      void loadFiled();
     },
-    [orgs],
+    [orgs, loadFiled],
   );
   const spent = repos?.month_spent_usd ?? 0;
   const tab = "tab" in route ? route.tab : "reviews";
@@ -174,9 +193,10 @@ export function ReviewsView({ onSignIn }: { onSignIn: () => void }) {
     <Page className="rv-page" label="Code review">
       {header}
       {error && <Banner tone="danger">Couldn't load reviews: {error}</Banner>}
-      {saved && (
-        <Banner action={<a className="btn sm" href={`#/t/${saved.identifier}`}>Open {saved.identifier}</a>}>
-          Saved: {saved.what}. It takes effect once the change is reviewed and applied, usually within a few minutes.
+      {(saved || (filed && (applying || filed.stage === "failed"))) && (
+        <Banner tone={filed?.stage === "failed" || filed?.stage === "rejected" ? "danger" : "info"}>
+          {saved ? `Saved: ${saved.what}. ` : ""}
+          {!filed || (saved && filed.identifier !== saved.identifier) || applying ? "Applying now, usually within a few minutes." : filed.stage === "applied" ? "Live." : filed.stage === "failed" ? `The change didn't apply, so nothing changed${filed.detail ? `: ${filed.detail}` : "."}` : "The change was not applied."}
         </Banner>
       )}
       {repos?.errors?.length ? <Banner tone="warn">Code review skips part of its setting: {repos.errors.slice(0, 3).join("; ")}. Fix it from Repos or Reviewers.</Banner> : null}
@@ -712,7 +732,7 @@ function RepoDialog({ config, orgs, edit, onClose, onSave }: { config: CodeRevie
           </div>
         </div>
       )}
-      {newOrg && <Banner>Reviews will post as you in {newOrg}: saving also lets reviews comment as you in {newOrg}.</Banner>}
+      {newOrg && <Banner>Reviews post as your GitHub App where it's installed in {newOrg}, otherwise as you: saving also lets reviews comment as you in {newOrg}.</Banner>}
       <div className="rv-grid3">
         <Field label="When a PR opens">{(id) => <Select id={id} value={f.on_open} options={opts} onChange={(v) => setF({ ...f, on_open: v })} />}</Field>
         <Field label="On each push" help="Only the new changes">{(id, d) => <Select id={id} aria-describedby={d} value={f.on_push} options={opts} onChange={(v) => setF({ ...f, on_push: v })} />}</Field>

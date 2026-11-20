@@ -62,7 +62,7 @@ export function useModuleToggle(m: Toggled) {
   ) : want !== null && want !== isOn ? (
     <Dialog label={`${want ? "Turn on" : "Turn off"} ${m.name}`} onClose={() => setWant(null)}>
       <h2>{want ? "Turn on" : "Turn off"} {m.name}</h2>
-      <ChangePreview items={[{ kind: "module", name: m.name, on: want }]} was={[isOn]} onCancel={() => setWant(null)} onDone={() => setWant(null)} note={want ? "You approve it on the card. A module that needs settings (a URL, a site) asks for them on its page once it is on." : "You approve it on the card. Its agents stop and its connections close."} />
+      <ChangePreview items={[{ kind: "module", name: m.name, on: want }]} was={[isOn]} onCancel={() => setWant(null)} onDone={() => setWant(null)} note={want ? "A module that needs settings (a URL, a site) asks for them on its page once it is on." : "Its agents stop and its connections close."} />
     </Dialog>
   ) : null;
   return { filed, want, setWant, isOn, fixed, busy, switchEl, dialog };

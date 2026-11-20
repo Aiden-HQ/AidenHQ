@@ -50,6 +50,7 @@ describe.each(["connect", "self-host"] as const)("Primer setup from a fresh inst
   let port = 0;
   let signedIn = false;
   const created: Record<string, any>[] = [];
+  const records = fakeRecords();
   const saved = () => kernel.calls.filter((c) => c.path === "/v1/accounts/save_secret").map((c) => c.body as { secret: string; value: string });
   const proxy = new McpAuth("Primer", "http://primer-mcp:8084", "t", undefined, (async (u: string | URL) => {
     const path = new URL(String(u)).pathname;
@@ -72,7 +73,7 @@ describe.each(["connect", "self-host"] as const)("Primer setup from a fresh inst
     kernel = await fakeKernel();
     const accounts = createKernelAuth({ kernel: { url: kernel.url, token: BOARD_KEY }, adminUrl: "http://localhost:3120" });
     app = createApp({
-      paperclip: pc, store: new Store(":memory:"), records: fakeRecords(), log: pino({ level: "silent" }), staticDir: "/nonexistent", timezone: "UTC", accounts, allowedHosts: ["localhost:3121"], mode: "lan", lan: { url: "https://aiden.example.com" },
+      paperclip: pc, store: new Store(":memory:"), records, log: pino({ level: "silent" }), staticDir: "/nonexistent", timezone: "UTC", accounts, allowedHosts: ["localhost:3121"], mode: "lan", lan: { url: "https://aiden.example.com" },
       signIns: [{ id: "primer", label: "Primer", connect: "/primer/connect", callback: "/primer/callback", missing: "m", stopped: "s", fields: secrets[mode], auth: proxy }],
       setupFlows: { flows: [flow] },
     });
@@ -115,6 +116,8 @@ describe.each(["connect", "self-host"] as const)("Primer setup from a fresh inst
       expect((await choice()).options[1].inputs.map((i: { setting: string }) => i.setting)).toEqual(["primer_host", "primer_host_aud"]);
       expect((await owner("POST", "/api/setup-flows/primer/choose", { value: "self-host", inputs: { primer_host: "primer.example.com", primer_host_aud: "service:primer" } })).json).toEqual({ ok: true, identifier: "WOR-9" });
       expect(changesOf(created.at(-1)!.description)).toEqual([{ kind: "setting", key: "primer_mode", value: "self-host" }, { kind: "setting", key: "primer_host", value: "primer.example.com" }, { kind: "setting", key: "primer_host_aud", value: "service:primer" }]);
+      // Saved in the owner's signed-in session: the board hands the kernel that session, whose account decides the apply.
+      expect(records.settings.at(-1)!.session).toMatch(/^ahqu_/);
       // Until the apply lands the page waits: the pick isn't live, so Connect keeps sending it back to the flow.
       expect(await choice()).toMatchObject({ value: "connect", chosen: "self-host" });
       expect(await owner("GET", "/primer/connect")).toMatchObject({ status: 302, location: "/#/setup/primer" });

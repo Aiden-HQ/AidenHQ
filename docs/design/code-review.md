@@ -56,7 +56,8 @@ out): only `codex` is built; `claude-code` and `codegenie` are declared names an
 context is the repo's own `REVIEW.md`, `AGENTS.md` and `CLAUDE.md` at the root and above each changed file, read from the
 **base** commit, never the PR; guidance grants no authority.
 
-Config is one authority: the board and Aiden write it through the normal settings change. Tier 2 (owner) changes, so the
+Config is one authority: the board and Aiden write it through the normal settings change. The owner's own save on the board
+is his approval (docs/design/settings-changes.md); the Reviewer Manager's change goes to the AI reviewer. Tier 2 (owner) changes, so the
 Reviewer Manager cannot do them alone (`owner:` rules in `module.yaml`): more spend, outside PRs or drafts reviewed
 automatically, a repo in a new org, and any change to a reviewer's model, verifier, finders, `run_usd`, focus or context or to
 a repo's ignore globs. Reviews post as the instance's identity only in orgs the App covers or `settings.github_comment_orgs`

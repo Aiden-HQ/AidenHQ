@@ -211,7 +211,8 @@ export function createApp(opts: AppOptions): Server {
    * never in the text. The kernel is told the account with each write it makes for a session (actingAccount), and logs it.
    * Outside a session (the internal listener, timers, the board's own notices) nothing is recorded.
    */
-  const perRequest = new AsyncLocalStorage<{ session: BoardSession | null; via?: "mcp" }>();
+  /** `req`: a signed-in browser request (routeApi), whose board session a settings change forwards to the kernel. */
+  const perRequest = new AsyncLocalStorage<{ session: BoardSession | null; via?: "mcp"; req?: IncomingMessage }>();
   const pc = new Proxy(boardPc, {
     get(client, prop) {
       const value = Reflect.get(client, prop, client);
@@ -400,8 +401,15 @@ export function createApp(opts: AppOptions): Server {
     }
   }
 
-  /** A typed settings change (docs/design/settings-changes.md): checked, filed as the owner's own task (kept here by task id for the page), and handed to the kernel. */
+  /**
+   * A typed settings change (docs/design/settings-changes.md): checked, filed as the owner's own task (kept here by task id for
+   * the page), and handed to the kernel with the signed-in board session it was saved in, so the kernel decides it as that
+   * account. The MCP's change_settings has no board session: its change is tiered and reviewed.
+   */
   async function fileSettingsChange(changes: Change[]) {
+    const req = perRequest.getStore()?.req;
+    const session = req && opts.accounts ? (await opts.accounts.sessionOf(req))?.token : undefined;
+    if (req && opts.accounts && !session) throw new HttpError(401, "sign in");
     const { compiled, catalog } = readSources(settingsFiles());
     try {
       for (const ch of changes) checkChange(ch, compiled, catalog);
@@ -424,7 +432,7 @@ export function createApp(opts: AppOptions): Server {
     // The kernel checks it again, has the instance repo's code host write exactly its files and files the apply on the task.
     let filed: { record: string; tier: number; state: string };
     try {
-      filed = await records.settingsChange(issue.id, changes);
+      filed = await records.settingsChange(issue.id, changes, session);
     } catch (e) {
       await pc.addComment(issue.id, `**Not written:** ${String((e as Error).message).slice(0, 500)}`).catch(() => {});
       await pc.updateIssue(issue.id, { status: "cancelled" }).catch(() => {});
@@ -2069,7 +2077,9 @@ export function createApp(opts: AppOptions): Server {
     const a = accountRoutes.find((r) => r.method === req.method && r.path.test(path));
     if (a) {
       const body = req.method === "GET" ? undefined : await readJson(req);
-      send(res, 200, JSON.stringify(await a.handle(path.match(a.path)!, body, who, String(req.headers.host ?? "").toLowerCase())), "application/json");
+      // Under the request's context, as routeApi's routes run: a setup flow's settings change carries this board session.
+      const out = await perRequest.run({ session: accountSession(who), req }, () => a.handle(path.match(a.path)!, body, who, String(req.headers.host ?? "").toLowerCase()));
+      send(res, 200, JSON.stringify(out), "application/json");
       return true;
     }
     // A ready admin: writes as the owner (through the kernel); `authored` records which account it was.
@@ -2093,7 +2103,7 @@ export function createApp(opts: AppOptions): Server {
   /** Every board route, once the listener's gate has let the request in: `session` is recorded on what it writes (see `pc`). */
   async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL, session: BoardSession | null) {
     const path = url.pathname;
-    return perRequest.run({ session }, async () => {
+    return perRequest.run({ session, req }, async () => {
       const file = req.method === "GET" ? /^\/api\/issues\/([^/]+)\/files\/([0-9a-f-]{36})$/.exec(path) : null;
       if (file) return download(res, decodeURIComponent(file[1]!), file[2]!);
       // Live updates (events.ts): an event stream, behind the same gate.

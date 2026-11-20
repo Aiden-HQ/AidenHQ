@@ -22,7 +22,7 @@ export type State = "review" | "owner" | "approved" | "claimed" | "done" | "fail
 export type Requester = { agent: string; key: string; name: string; roles: string[]; kind: string; task?: string; run?: string; module?: string; model?: string; filed_by?: string };
 /** The release updater's requester (writes.fileKernel): kind `kernel`, which no token yields (identity.ts: run, job, module). */
 export const UPDATER: Requester = { agent: "", key: "", name: "the release updater", roles: [], kind: "kernel" };
-/** The owner's typed settings change from the board (settings-change.ts), filed by the kernel: no exemption in any rule (the caps hold). */
+/** The owner's typed settings change from the board (settings-change.ts), filed by the kernel: saved in his signed-in board session it is decided as his account at filing (computeTier `ownerSave`); otherwise no exemption in any rule (the caps hold). */
 export const SETTINGS: Requester = { agent: "", key: "", name: "the owner's settings change", roles: [], kind: "kernel" };
 /** The release updater itself (by kind and name, as the planner's updaterMove): the only requester the autonomy caps don't hold. */
 export const isUpdater = (q: Requester | undefined) => q?.kind === UPDATER.kind && q.name === UPDATER.name;

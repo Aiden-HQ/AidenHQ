@@ -138,7 +138,8 @@ re-run it and any change to a listed file does. Cases run 8 at a time.
   serve; or an SSH tunnel; only `ops/setup.sh --exposure` changes it), but every host process shares that loopback, so every route on 3120 and 3121 needs a signed-in
   admin (beyond sign-in, only OpenRouter's PKCE callback and GitHub's App manifest return, each by a single-use state an admin's page made, and the MCP's OAuth routes on 3120: `/oauth2/*`, `/oauth/consent`, `/.well-known/oauth-authorization-server`, which sign an admin in themselves and answer only to a registered client) (accounts: Better Auth in the kernel, password + TOTP, `data/kernel/auth/auth.db`, which the board's 3129 listener
   also opens until 3g; no SSO, sign-in beyond that is Cloudflare Access). Cards are decided only on the kernel's pages, by
-  channel token, or by a signed-in admin's MCP token (the board's `/mcp`). Every admin is an owner: writes as the owner
+  channel token, or by a signed-in admin's MCP token (the board's `/mcp`); a settings change saved in a signed-in board session is
+  decided as that admin at filing, the kernel checking the session the board forwards. Every admin is an owner: writes as the owner
   (the board through the kernel's `/v1/cp/owner`; only the kernel holds the Paperclip key), taps and typed replies decide (`account:<id>`); the board labels what non-owner admins wrote ("by <name>",
   `authored`). `board_operator_key` (ops/setup.sh) only makes the owner's setup link, posts the welcome chat and resets
   an account. Users get apps only; each app's admins manage its access on the my-apps host's `/access` (never a

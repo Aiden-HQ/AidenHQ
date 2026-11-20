@@ -6,18 +6,19 @@
 // loop in this process (a call while it runs makes it go round once more; the drain waits for it, `inflight`), and a row is
 // leased before its send, so a draining kernel and its successor never both post it. A task's notices go in the order they were
 // queued: one not yet posted holds the later ones back. A task that is done or cancelled by then gets nothing (a comment would
-// reopen it); a notice for the task's parent (`parent`) goes to the parent the task has when it is sent.
+// reopen it); a notice for the task's parent (`parent`) goes to the parent the task has when it is sent. A notice with `close`
+// closes its task in the same write (status and comment in one PATCH), so the outcome and the close are one delivery.
 import { createHash, randomBytes } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { Api } from "./channels.ts";
 
-export type NoticeOpts = { parent?: boolean };
+export type NoticeOpts = { parent?: boolean; close?: "done" | "cancelled" };
 const LEASE_MS = 2 * 60_000;
 const MAX_MS = 30 * 60_000;
 const GIVE_UP_MS = 24 * 3600_000;
 const CLOSED = ["done", "cancelled"];
 
-type Row = { key: string; task: string; body: string; parent: number; at: number; tries: number; next: number; nonce: string | null };
+type Row = { key: string; task: string; body: string; parent: number; at: number; tries: number; next: number; nonce: string | null; close: string | null };
 
 export function createNotices({ db, api, alert, log = () => {}, now = Date.now }: {
   db: DatabaseSync;
@@ -29,7 +30,9 @@ export function createNotices({ db, api, alert, log = () => {}, now = Date.now }
   now?: () => number;
 }) {
   db.exec("CREATE TABLE IF NOT EXISTS task_notices (key TEXT PRIMARY KEY, task TEXT NOT NULL, body TEXT NOT NULL, parent INTEGER NOT NULL, at INTEGER NOT NULL, tries INTEGER NOT NULL DEFAULT 0, next INTEGER NOT NULL)");
-  if (!(db.prepare("PRAGMA table_info(task_notices)").all() as { name: string }[]).some((c) => c.name === "nonce")) db.exec("ALTER TABLE task_notices ADD COLUMN nonce TEXT");
+  const cols = (db.prepare("PRAGMA table_info(task_notices)").all() as { name: string }[]).map((c) => c.name);
+  if (!cols.includes("nonce")) db.exec("ALTER TABLE task_notices ADD COLUMN nonce TEXT");
+  if (!cols.includes("close")) db.exec("ALTER TABLE task_notices ADD COLUMN close TEXT");
   // A notice's tag: a random nonce, set before its first post, so nobody else can write a comment that passes for it.
   const tagOf = (nonce: string) => `<!-- aidenhq-kernel-notice:${nonce} -->`;
   const permanent = (status: number, what: string) => Object.assign(new Error(`${what}: the control plane answered ${status}`), { permanent: true });
@@ -60,7 +63,7 @@ export function createNotices({ db, api, alert, log = () => {}, now = Date.now }
     const nonce = r.nonce ?? randomBytes(16).toString("hex");
     db.prepare("UPDATE task_notices SET nonce = ? WHERE key = ?").run(nonce, r.key);
     const tag = tagOf(nonce);
-    const c = await api("POST", `/api/issues/${encodeURIComponent(task)}/comments`, { body: `${r.body}\n\n${tag}` });
+    const c = r.close ? await api("PATCH", `/api/issues/${encodeURIComponent(task)}`, { status: r.close, comment: `${r.body}\n\n${tag}` }) : await api("POST", `/api/issues/${encodeURIComponent(task)}/comments`, { body: `${r.body}\n\n${tag}` });
     if (c.status === 404) return;
     if (c.status >= 400 && c.status < 500 && c.status !== 429) throw permanent(c.status, `posting on ${task}`);
     if (c.status >= 300) throw new Error(`posting on ${task}: ${c.status}`);
@@ -95,7 +98,7 @@ export function createNotices({ db, api, alert, log = () => {}, now = Date.now }
     /** Queues a notice; the same text for the same task is one notice. */
     queue(task: string, body: string, o: NoticeOpts = {}) {
       const key = createHash("sha256").update(JSON.stringify([task, body, Boolean(o.parent)])).digest("hex").slice(0, 32);
-      db.prepare("INSERT OR IGNORE INTO task_notices (key, task, body, parent, at, next) VALUES (?, ?, ?, ?, ?, 0)").run(key, task, body, o.parent ? 1 : 0, now());
+      db.prepare("INSERT OR IGNORE INTO task_notices (key, task, body, parent, at, next, close) VALUES (?, ?, ?, ?, ?, 0, ?)").run(key, task, body, o.parent ? 1 : 0, now(), o.close ?? null);
     },
     /** Sends every notice that is due (main.ts, every few seconds, and once a notice is queued): one loop at a time. */
     send(): Promise<void> {

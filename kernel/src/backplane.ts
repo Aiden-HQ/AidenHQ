@@ -325,7 +325,7 @@ export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boar
   /** The owner's typed settings change on their settings task (settings-change.ts). */
   /** A module's own check of settings the board is about to file (module-validate.ts). */
   validate?: (module: string, input: { settings?: Record<string, unknown> }) => Promise<unknown>;
-  settingsChange?: ((task: unknown, changes: unknown) => Promise<unknown>) & { asAgent?: (requester: Requester, task: string, changes: unknown, module: string) => Promise<unknown> };
+  settingsChange?: ((task: unknown, changes: unknown, session?: unknown) => Promise<unknown>) & { asAgent?: (requester: Requester, task: string, changes: unknown, module: string) => Promise<unknown> };
   /** The routing learning loop (routing-tune.ts). */
   routing?: Routing;
   /** A module's board API (board-api.ts): the board's reads of a module service, through the kernel. */
@@ -551,8 +551,9 @@ export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boar
           if (!isBoard(req)) throw fail(401, "unauthorized", "the board's key is required");
           if (!settingsChange) throw fail(503, "unavailable", "settings changes are off");
           const b = await json(req, 2_000_000);
-          // The owner reads why: a refusal of the change itself, or the code host's or the planner's answer.
-          try { return send(res, 200, await settingsChange(b.task, b.changes)); } catch (e) { throw fail((e as { status?: number }).status ?? 502, "refused", String((e as Error).message).slice(0, 1000)); }
+          // The owner reads why: a refusal of the change itself, or the code host's or the planner's answer. `session`: the
+          // signed-in board session it was saved in (the kernel checks it; its account decides the record).
+          try { return send(res, 200, await settingsChange(b.task, b.changes, b.session)); } catch (e) { throw fail((e as { status?: number }).status ?? 502, "refused", String((e as Error).message).slice(0, 1000)); }
         }
       }
       if (hit?.path === "/v1/settings/agent") {

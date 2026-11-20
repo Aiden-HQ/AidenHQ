@@ -49,7 +49,8 @@ function setup() {
     owner: async () => "owner-user",
     filed: (task) => filed.some((f) => f.task === task),
     write: (w) => host.write(w),
-    file: async (args, task, requester) => (filed.push({ args, task, ...(requester ? { by: requester.key } : {}) }), { id: "k-0000000000000001", tier: 1, state: "review" }),
+    file: async (args, task, requester, owner) => (filed.push({ args, task, ...(requester ? { by: requester.key } : {}), ...(owner ? { owner } : {}) }), { id: "k-0000000000000001", tier: owner ? 2 : 1, state: owner ? "approved" : "review" }),
+    sessionAccount: async (token) => (token === "ahqu_owner" ? "acct-1" : undefined),
   });
   const at = (sha) => YAML.parse(git(bare, "show", `${sha}:instance.yaml`));
   return { bare, host, apply, filed, at };
@@ -72,6 +73,14 @@ test("turning off a default module edits only modules: and modules_removed, comm
   assert.match(git(bare, "show", `${r.sha}:instance.yaml`), /^# the acme instance$/m, "comments stay");
   // The apply's land then puts exactly that commit on main.
   assert.deepEqual(await host.land({ repo: "local/acme-instance", branch: "settings/wor-5", sha: r.sha, official: { from: null, to: null } }), { landed: r.sha });
+});
+
+test("saved in the owner's board session, the change is decided as his account; a session that doesn't check out is refused", async () => {
+  const { apply, filed } = setup();
+  await assert.rejects(apply(TASK, [{ kind: "setting", key: "timezone", value: "Asia/Dubai" }], "ahqu_ended"), /session has ended/);
+  assert.equal(filed.length, 0, "an unchecked session is refused, never put to the reviewer instead");
+  const r = await apply(TASK, [{ kind: "setting", key: "timezone", value: "Asia/Dubai" }], "ahqu_owner");
+  assert.deepEqual([filed.at(-1).owner, r.state], [{ account: "acct-1", via: "save" }, "approved"]);
 });
 
 test("a setting change sets exactly that key; an unknown kind or a stray field is refused before anything is written", async () => {
@@ -118,6 +127,6 @@ test("an agent writes a structured setting its module names its role a writer of
   await assert.rejects(apply.asAgent(manager, OTHER, [{ kind: "setting", key: "code_review", value: { repos: [{ repo: "${SECRET}" }] } }], "code-review"), /no control characters or \$/);
   const r = await apply.asAgent(manager, OTHER, [{ kind: "setting", key: "code_review", value }], "code-review");
   assert.deepEqual(at(r.sha).settings.code_review, value);
-  assert.equal(filed.at(-1).by, "reviewer-manager");
+  assert.deepEqual([filed.at(-1).by, filed.at(-1).owner], ["reviewer-manager", undefined], "an agent's change is tiered and reviewed, never the owner's");
   assert.match(filed.at(-1).args.branch, /^settings\/wor-6-/);
 });
