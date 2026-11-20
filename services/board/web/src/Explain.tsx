@@ -69,7 +69,7 @@ export function Explain({ id, onSignIn }: { id: string; onSignIn?: () => void })
                 <code className="xp-code">{x.review.code}</code> {x.review.codeWords ?? ""}
               </p>
             )}
-            {x.review.note && <pre className="xp-fence" data-label="the reviewer's words">{x.review.note}</pre>}
+            {x.review.note && <pre className="xp-fence" data-label="The reviewer's words">{x.review.note}</pre>}
             {x.checklist.length > 0 && (
               <ul className="xp-checks" aria-label="Reliability checklist">
                 {x.checklist.map((c) => (
@@ -82,21 +82,21 @@ export function Explain({ id, onSignIn }: { id: string; onSignIn?: () => void })
         {x.ownerReason && (
           <section className="xp-block">
             <h5>Your reason</h5>
-            <pre className="xp-fence" data-label="your words">{x.ownerReason}</pre>
+            <pre className="xp-fence" data-label="Your words">{x.ownerReason}</pre>
           </section>
         )}
       </div>
       <section className="xp-block">
         <h5>What was asked <span className="muted">(the task as it reads now, as the reviewer reads it)</span></h5>
-        {x.asked ? <pre className="xp-fence xp-scroll" data-label="the task's words">{x.asked}</pre> : <p className="muted">The task couldn't be read.</p>}
+        {x.asked ? <pre className="xp-fence xp-scroll" data-label="The task's words">{x.asked}</pre> : <p className="muted">The task couldn't be read.</p>}
       </section>
       <section className="xp-block">
         <h5>What it would change</h5>
-        {x.changes && <pre className="xp-fence" data-label="the card">{x.changes}</pre>}
+        {x.changes && <pre className="xp-fence" data-label="The card">{x.changes}</pre>}
         {x.details && (
           <details className="xp-diff">
             <summary>The whole change</summary>
-            <pre className="xp-fence xp-scroll" data-label="the change">{x.details}</pre>
+            <pre className="xp-fence xp-scroll" data-label="The change">{x.details}</pre>
           </details>
         )}
         {!x.changes && !x.details && <p className="muted">The card names no change.</p>}

@@ -118,6 +118,29 @@ const profile = (key) => {
 };
 const days = Array.from({ length: 7 }, (_, i) => new Date(now - (6 - i) * 86_400_000).toISOString().slice(0, 10));
 
+
+const timeline = () => mock.empty ? [] : [
+  { id: "r1", outcome: "running", state: "running", startedAt: ago(3), endedAt: null, task: { id: "t1", identifier: "WOR-790", title: "Ship the invoices app's export" }, trigger: "Assigned by Aiden", steps: 14, costUsd: null, error: null, writes: [] },
+  { id: "r2", outcome: "done", state: "done", startedAt: ago(40), endedAt: ago(31), task: { id: "t1", identifier: "WOR-790", title: "Ship the invoices app's export" }, trigger: "Your comment", steps: 31, costUsd: 0.42, error: null, writes: [
+    { id: "w1", action: "push", tier: 1, state: "ran", decidedBy: "AI reviewer" }, { id: "w2", action: "deploy_app", tier: 2, state: "pending", decidedBy: null }, { id: "w3", action: "send_message", tier: 0, state: "ran", decidedBy: null }] },
+  { id: "r3", outcome: "failed", state: "failed", startedAt: ago(200), endedAt: ago(196), task: { id: "t2", identifier: "WOR-806", title: "Why did the health check fail?" }, trigger: "Schedule: Health check", steps: 6, costUsd: 0.03, error: "Tool call failed: the runner refused the push because the branch is behind main.", writes: [{ id: "w4", action: "push", tier: 1, state: "rejected", decidedBy: "AI reviewer" }] },
+  { id: "r4", outcome: "stopped", state: "cancelled", startedAt: ago(1700), endedAt: ago(1698), task: { id: "t3", identifier: null, title: null }, trigger: "Schedule: Morning brief", steps: 1, costUsd: 0.004, error: "Stopped by you before it started.", writes: [] },
+  { id: "r5", outcome: "failed", state: "timeout", startedAt: ago(1900), endedAt: ago(1780), task: { id: "t4", identifier: "WOR-700", title: "Set up the invoices repo" }, trigger: "Assigned by Aiden", steps: 80, costUsd: 1.9, error: null, writes: [] },
+];
+const explanation = (id) => ({
+  id, sentence: "An AI reviewer approved this push.",
+  decider: { kind: id === "w2" ? "pending-owner" : "reviewer", words: "The AI reviewer read it and approved.", models: ["openai/gpt-luna-latest"] },
+  path: ["Engineer filed the push.", "The kernel put it at Tier 1.", "The AI reviewer approved it.", "The runner pushed the branch."],
+  tier: { tier: 1, merit: 2, rule: "reviewed-path", ruleWords: "It changes a path the AI reviewer reads first (paths.yaml).", reason: "Touches the export module.", cap: null, panel: false },
+  review: { note: "In scope: it adds the CSV export the task asked for. No secrets, no gate changes.", code: "in_scope", codeWords: "In scope: it does what the task asked.", },
+  checklist: [{ id: "tests-run", result: "holds" }, { id: "scope", result: "holds" }, { id: "rollback", result: "not reported" }],
+  ownerReason: null,
+  asked: "Add a CSV export to the invoices app and a monthly total row.\n\nExport respects the current filter.",
+  changes: "push fix/invoice-export -> main (3 files)",
+  details: "diff --git a/export.ts b/export.ts\n+export const csv = (rows) => rows.join('\\n');",
+  outcome: { ok: true, text: "Pushed." },
+});
+
 const welcome = () => ({ finished: !mock.welcome, modelReady: true, recoveryKeyWaiting: mock.welcome, wizard: ["google", "telegram"] });
 const flows = () => ({
   board_url: "https://board.example.com", named: true,
@@ -165,6 +188,9 @@ function route(method, url) {
     return [200, { ...c, working: c.working ?? null, description: "Add a **CSV export** to the invoices app and a monthly total row.\n\n- Export respects the current filter\n- Totals in the account currency", bucket: "today", editable: true, labelIds: [], replyTarget: "me", scheduled: null, recurring: null, comments: [{ id: "k1", body: "Started on the export; tests next.", author: { kind: "agent", name: "Engineer" }, createdAt: ago(20) }], files: [], parent: null, runs: [], crew: [] }];
   }
   if ((x = m(/^\/api\/models\/([^/]+)$/))) return [200, { default: "deepseek-flash", models: ["deepseek-flash", "gpt-luna"], efforts: ["medium", "high"] }];
+  if ((x = m(/^\/api\/agents\/by-key\/([^/]+)\/timeline$/))) return [200, { entries: timeline() }];
+  if ((x = m(/^\/api\/approvals\/([^/]+)\/explain$/))) return [200, { explanation: explanation(decodeURIComponent(x[1])) }];
+  if ((x = m(/^\/api\/runs\/([^/]+)$/))) return [200, { id: x[1], agent: "Engineer", engine: "codex", status: "done", error: null, startedAt: ago(40), finishedAt: ago(31), durationMs: 540000, issue: null, rev: null, tokens: null, plan: [], ledger: { rows: [], usd: null, capUsd: null }, timeline: [{ at: ago(40), kind: "step", text: "Read the task and the invoices app.", ok: true }, { at: ago(38), kind: "step", text: "Ran the export tests.", ok: true }, { at: ago(33), kind: "error", text: "The linter failed on export.ts; fixed and re-ran.", ok: false }] }];
   if ((x = m(/^\/api\/agents\/by-key\/([^/]+)$/))) return [200, { profile: profile(x[1]) }];
   if ((x = m(/^\/api\/agents\/by-key\/([^/]+)\/tasks$/))) {
     const rows = [{ identifier: "WOR-790", title: "Ship the invoices app's export", state: "working", updatedAt: ago(12), from: "WOR-818" }, { identifier: "WOR-806", title: "Why did the health check fail?", state: "failed", updatedAt: ago(52), from: null }];
