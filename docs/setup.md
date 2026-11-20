@@ -400,7 +400,8 @@ Day-to-day use: [docs/USAGE.md](USAGE.md). Operations, backups and logs:
 ## Manage AidenHQ from your Claude
 
 The board serves an MCP at `https://<board>/mcp`, so your own Claude (or Codex) can read the fleet, ask Aiden, change
-settings and decide approval cards as you. Add it once:
+settings and decide approval cards as you. The welcome wizard ends with these commands for your board, with copy buttons.
+Add it once:
 
 1. Add the server: `claude mcp add --transport http aidenhq https://<board>/mcp` (inside a session: `! claude mcp add ...`).
    Codex CLI: `codex mcp add aidenhq --url https://<board>/mcp`.
