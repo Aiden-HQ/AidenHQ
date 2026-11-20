@@ -130,12 +130,10 @@ test("holds an unidentified peer after wrong passwords (429), keeps open session
   assert.equal((await b("POST", "/api/auth/sign-in/email", { email: "ann@example.com", password: PASSWORD })).status, 429);
   // Failing on purpose signs nobody out.
   assert.equal((await sessionOf(open)).account.email, "ann@example.com");
-  // The operator's reset route: the link goes to the owner's channel, never back to the caller.
+  // The operator's reset route returns the one-time link.
   const reset = await api.post("/v1/operator/reset", { email: "ann@example.com" }, ops());
-  assert.deepEqual([reset.status, reset.json], [200, { ok: true }]);
-  assert.equal(reset.body.includes("token"), false);
-  const [link] = accounts.takeResetLinks();
-  assert.equal(link?.email, "ann@example.com");
+  assert.equal(reset.status, 200);
+  const link = { url: reset.json.url };
   assert.equal(await sessionOf(open), null); // a reset ends every session
   assert.equal((await b("POST", "/api/auth/reset-password", { token: tokenOf(link.url), newPassword: "another long password" })).status, 200);
   assert.equal((await b("POST", "/api/auth/sign-in/email", { email: "ann@example.com", password: "another long password" })).status, 200);

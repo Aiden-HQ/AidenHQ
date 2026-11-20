@@ -302,7 +302,6 @@ export async function openAccounts(o: AccountsOptions) {
   }
 
   /** Reset links waiting for the owner channel to send them to the owner's Telegram (never back to the caller). */
-  const outbox: { email: string; url: string; at: number }[] = [];
 
   const accounts = {
     db,
@@ -665,10 +664,10 @@ export async function openAccounts(o: AccountsOptions) {
     },
 
     /**
-     * Recovery (ops/setup.sh --reset, operator key): lifts a ban, clears an admin's TOTP, ends every session, and queues a
-     * fresh link for the owner's Telegram. The caller never sees the link.
+     * Recovery (ops/setup.sh --reset, operator key): lifts a ban, clears an admin's TOTP, ends every session, and returns a
+     * fresh one-time link (null for an `access`-mode user: Cloudflare Access signs him in). The operator prints it on the server.
      */
-    async reset(email: string): Promise<void> {
+    async reset(email: string): Promise<{ url: string | null }> {
       const found = await ctx.internalAdapter.findUserByEmail(email.trim().toLowerCase());
       if (!found) throw new AccountError(404, "no account with this email");
       const a = toAccount(found.user as unknown as Record<string, unknown>);
@@ -680,15 +679,8 @@ export async function openAccounts(o: AccountsOptions) {
       await exported();
       // A user in `access` mode signs in through Cloudflare Access: there's no password to set.
       const url = linkFor(a, await mintLink(a.id));
-      if (!url) return log.warn({ account: a.id }, "account reset (access mode: no link needed)");
-      outbox.push({ email: a.email, url, at: Date.now() });
-      log.warn({ account: a.id }, "account reset: link queued for the owner's Telegram");
-    },
-
-    /** The owner channel collects queued reset links once (fresh ones only); they're forgotten after. */
-    takeResetLinks(): { email: string; url: string }[] {
-      const fresh = Date.now() - 10 * 60_000;
-      return outbox.splice(0).filter((l) => l.at >= fresh).map(({ email, url }) => ({ email, url }));
+      log.warn({ account: a.id }, url ? "account reset: one-time link issued" : "account reset (access mode: no link needed)");
+      return { url };
     },
 
     close: () => db.close(),

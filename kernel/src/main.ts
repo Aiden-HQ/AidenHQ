@@ -223,8 +223,7 @@ const ownerApi = asApi(cpApi);
 const boardApi = asApi((p, init) => fetch(new URL(p, env("BOARD_INTERNAL_URL", "http://127.0.0.1:3122")), { ...init, headers: { authorization: `Bearer ${secret("board_internal_token")}`, "x-gateway-key": secret("gateway_board_key"), "content-type": "application/json" }, signal: AbortSignal.timeout(20_000) }));
 const channels = createChannels({ db: records.db, records, writes, board: boardApi, owner: ownerApi, ownerTyped: asApi((p, init) => cpApi(p, init, true)), modules: modulesFile, facts, log });
 // The owner's messages: the kernel's own (alerts, the approvals digest) and the board's and the runner's, queued for
-// owner-channel's notify (notify.ts). Account reset links are credentials: the kernel keeps them and sends them only to the
-// private owner chat (notify.secret, below).
+// owner-channel's notify (notify.ts).
 const notify = createNotify({ db: records.db, modules: modulesFile, secret, resolver, log, extra: () => [channels.digest()].filter((t): t is string => t !== null).map((text) => ({ kind: "digest" as const, text })) });
 // alert: something is wrong now (a page); done: a plain notice, never muted.
 const toOwner = (kind: "alert" | "done") => (text: string) => notify.queue({ kind, text });
@@ -286,11 +285,6 @@ const certWatch = createCertWatch({
   notify: toOwner("alert"),
 });
 every(() => void certWatch.tick(), 3_600_000);
-// Account reset links, sent by the kernel itself to the private owner chat until it takes them (notify.ts deliverSecrets).
-every(() => {
-  for (const l of accounts?.takeResetLinks() ?? []) notify.secret(`🔑 **Board account reset** for ${l.email}\n${l.url}\nOne use, 72 hours; it ends that account's sessions and, for an admin, asks for a new authenticator. If it isn't yours, pass it on to them yourself.`);
-  void notify.deliverSecrets().catch((e: Error) => log("credential delivery failed", { err: e.message }));
-}, 20_000);
 once(() => void certWatch.tick(), 10 * 60_000);
 // Release updates (updates.ts, docs/design/release-updates.md): the check (a child process) prepares a release; the kernel files
 // it as a kernel.apply on a task of its own (the platform engineer's, as the release train's), follows it and tells the owner.

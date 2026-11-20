@@ -254,7 +254,7 @@ test("a newly declared fact type is the reviewer's to see; stages are plain", ()
   assert.equal(tier(head).tier, 1);
 });
 
-test("a code host's service mounts, a channel's transport and credentials, and kernel roles each say what they grant", () => {
+test("a code host's service mounts, a channel's transport, and kernel roles each say what they grant", () => {
   const svc = { ...base.services.run["crm-mcp"], workspaces: "/tasks", points: "/config/points.json" };
   const head = with_({ services: { run: { "crm-mcp": svc } }, roles: { requests: ["kernel.apply"] } });
   assert.deepEqual(authorityLines([authorityDiff("acme-crm", base, head, false)]), [
@@ -263,10 +263,9 @@ test("a code host's service mounts, a channel's transport and credentials, and k
     "acme-crm: service crm-mcp: reads its points file (review)",
   ]);
   const ch = (channel) => with_({ providers: { channel } });
-  assert.deepEqual(authorityLines([authorityDiff("acme-crm", ch({}), ch({ transport: "http://crm-mcp:8080/send", credentials: true }), false)]), [
+  assert.deepEqual(authorityLines([authorityDiff("acme-crm", ch({}), ch({ transport: "http://crm-mcp:8080/send" }), false)]), [
     "acme-crm: changes provider channel (review)",
     "acme-crm: channel: the kernel sends the owner's messages and its token to http://crm-mcp:8080/send (owner)",
-    "acme-crm: channel: gets the owner's credentials (account reset links) (owner)",
   ]);
 });
 

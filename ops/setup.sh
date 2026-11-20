@@ -25,8 +25,8 @@
 #   sudo ops/setup.sh --config person.env --link       only the owner's one-time setup link, while no owner account exists
 #   sudo ops/setup.sh --config person.env --reset <email>
 #                                                      end that board account's sessions, lift a lockout, clear an
-#                                                      admin's authenticator; the new one-time link goes only to the
-#                                                      owner's Telegram (never printed here)
+#                                                      admin's authenticator; prints a new one-time link (here, on
+#                                                      the server only)
 #   ops/setup.sh --config person.env --dry-run         print what it would do; changes nothing
 # person.env (KEY=value, read here, never printed): OWNER_NAME, OWNER_EMAIL, TIMEZONE (required); AIDENHQ_USER (default
 # the sudo user), COMPANY_NAME (work), MODULES (google), OPENROUTER_MANAGEMENT_KEY + OPENROUTER_LIMIT_USD (100) or
@@ -226,7 +226,7 @@ owner_link() {
   code="${resp##*$'\n'}"; url="$(printf '%s' "${resp%$'\n'*}" | jq -r '.url // empty' 2>/dev/null || true)"
   if [ "$code" = 200 ] && [[ "$url" =~ ^https?://[^[:space:]]+$ ]]; then
     echo "$url"
-  elif [ "$code" = 409 ]; then echo "(the owner's account already exists; a new link goes to the owner's Telegram: sudo ops/setup.sh ${CONFIG:+--config $CONFIG }--reset $OWNER_EMAIL)"
+  elif [ "$code" = 409 ]; then echo "(the owner's account already exists; a new link: sudo ops/setup.sh ${CONFIG:+--config $CONFIG }--reset $OWNER_EMAIL)"
   else die "the kernel gave no setup link for $OWNER_EMAIL (HTTP ${code:-none}; is it up? systemctl --user status aidenhq-kernel)"; fi
 }
 
@@ -257,12 +257,14 @@ if [ "$LINK_ONLY" = 1 ]; then
   exit 0
 fi
 
-# Recovery: the kernel's accounts with the operator key; the link goes to the owner's Telegram
-# through the owner channel, never back here.
+# Recovery: the kernel's accounts with the operator key; the one-time link prints here, on the server, and nowhere else.
 if [ -n "$RESET" ]; then
-  if [ "$DRY" = 1 ]; then echo "  + kernel: reset $RESET (its link to the owner's Telegram)"; exit 0; fi
-  operator reset "{\"email\":$(json "$RESET")}" -f >/dev/null || die "the kernel refused the reset (is $RESET an account?)"
-  echo "Reset $RESET: its sessions ended. A new one-time link (72 hours) goes to the owner's Telegram within a minute."
+  if [ "$DRY" = 1 ]; then echo "  + kernel: reset $RESET (prints its one-time link)"; exit 0; fi
+  resp="$(operator reset "{\"email\":$(json "$RESET")}" -w '\n%{http_code}' 2>/dev/null || true)"
+  code="${resp##*$'\n'}"; url="$(printf '%s' "${resp%$'\n'*}" | jq -r '.url // empty' 2>/dev/null || true)"
+  [ "$code" = 200 ] || die "the kernel refused the reset (HTTP ${code:-none}; is $RESET an account?)"
+  if [[ "$url" =~ ^https?://[^[:space:]]+$ ]]; then echo "Reset $RESET: one-time link (72 hours): $url"
+  else echo "Reset $RESET: its sessions ended. This account signs in through Cloudflare Access, so there is no link."; fi
   exit 0
 fi
 
