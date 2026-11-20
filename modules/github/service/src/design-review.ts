@@ -11,8 +11,9 @@
 // Filed by the service when an agents-org PR opens and when the merge queue waits on a head's verdict; swept by main.ts.
 // Not ported: codehost-local's change requests (their verdicts are task comments, readLocalDesignVerdicts) stay with that module.
 // A task the runner filed before the switch carries no module marker, so the kernel won't let this module close it; the table
-// below holds only what this module filed, and a close the kernel refuses (403, 404) drops the row.
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+// below holds only what this module filed, and a close the kernel refuses drops the row: a 403 at once, a 404 (which the kernel
+// also answers for a control-plane blip) only after MISSES in a row.
+import { readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DESIGN_REVIEW, PR_QUERY, prTouchesUi, supersededDesignReview } from "./merge-gate.mjs";
 
@@ -31,6 +32,8 @@ export type ReviewAsk = { repo: string; number: number; head: string; again?: bo
 const ROLE = "design-review";
 const READ = { contents: "read", pull_requests: "read", checks: "read", statuses: "read", metadata: "read" };
 const STATUS = { statuses: "write", metadata: "read" };
+/** Sweeps in a row a task's close may answer 404 before the row is dropped. */
+const MISSES = 5;
 const HOURS = DESIGN_REVIEW.minutes / 60;
 const markerOf = (a: ReviewAsk) => `design-review:${a.repo.toLowerCase()}/${a.number}@${a.head}${a.again ? "#again" : ""}`;
 
@@ -38,10 +41,18 @@ export function createDesignReviews(o: DesignReviewOptions) {
   const log = o.log ?? (() => {});
   // What this module has asked and filed, in the cache dir: `asked` once per head (marker → when), `reviewed` the task identifiers
   // of a PR's earlier reviews (a re-review names them), `open` the tasks still to close (task id → what they asked about).
-  type Table = { asked: Record<string, string>; reviewed: Record<string, string>; open: Record<string, { repo: string; number: number; head: string }> };
+  type Table = { asked: Record<string, string>; reviewed: Record<string, string>; open: Record<string, { repo: string; number: number; head: string; misses?: number }> };
   const tableFile = join(o.cacheDir, "design-reviews.json");
-  const read = (): Table => ({ asked: {}, reviewed: {}, open: {}, ...(existsSync(tableFile) ? JSON.parse(readFileSync(tableFile, "utf8")) : {}) });
-  const change = (f: (t: Table) => void) => { const t = read(); f(t); writeFileSync(tableFile, JSON.stringify(t)); };
+  const read = (): Table => {
+    try { return { asked: {}, reviewed: {}, open: {}, ...JSON.parse(readFileSync(tableFile, "utf8")) }; } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === "ENOENT") return { asked: {}, reviewed: {}, open: {} };
+      // Unreadable: kept aside for the owner and started afresh, so one bad file never stops every later review.
+      try { renameSync(tableFile, `${tableFile}.corrupt`); } catch {}
+      log("design-reviews.json couldn't be read, set aside", { err: String((e as Error).message).slice(0, 200) });
+      return { asked: {}, reviewed: {}, open: {} };
+    }
+  };
+  const change = (f: (t: Table) => void) => { const t = read(); f(t); writeFileSync(`${tableFile}.tmp`, JSON.stringify(t)); renameSync(`${tableFile}.tmp`, tableFile); };
 
   async function kernel(method: string, path: string, body: unknown): Promise<Json> {
     const r = await fetch(`${o.kernelUrl}${path}`, { method, headers: { authorization: `Bearer ${o.key}`, "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(20_000) });
@@ -120,6 +131,7 @@ export function createDesignReviews(o: DesignReviewOptions) {
         await kernel("POST", `/v1/tasks/${encodeURIComponent(task)}/close`, { status: "cancelled", body: `Closed as superseded: ${why}. Nothing is waiting on this review.` });
       } catch (e) {
         const status = (e as { status?: number }).status;
+        if (status === 404 && (m.misses ?? 0) + 1 < MISSES) { change((t) => { const row = t.open[task]; if (row) row.misses = (row.misses ?? 0) + 1; }); log("superseded design review close answered 404, tried again next sweep", { task }); continue; }
         if (status !== 403 && status !== 404) { log("superseded design review close failed", { task, err: String((e as Error).message).slice(0, 200) }); continue; }
       }
       change((t) => { delete t.open[task]; });

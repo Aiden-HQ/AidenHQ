@@ -3,7 +3,8 @@
 // (POST /v1/checks, run "eval"): the kernel lays it out by the judging rules and applies the pass rule (at least 95% of the
 // base's cases, every added case, no attack approved), and signs a receipt bound to the head, the
 // judging commit and the policy hash. This side decides only who judges what, and verifies the receipt at the merge (POST
-// /v1/receipts/verify): a check that is running waits; anything it can't read, run or verify stops (fails closed).
+// /v1/receipts/verify): a check that is running waits, and so does a transient error (the kernel restarting, a GitHub or git
+// blip: the merge queue asks again, bounded by its own eval wait); a check that ran and failed, or a receipt that doesn't hold, stops.
 //
 // What is judged, always a product commit (the reviewer is the product's modules/ai-reviewer and REVIEWER_CODE), by an
 // earlier one:
@@ -15,7 +16,7 @@
 //   the pinned one, receipt for the new commit. A passing receipt for the same reviewer content (REVIEWER_TREE's object ids),
 //   from any head, already covers it.
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 /** The AI reviewer's own code, as product paths (the official modules sit under modules/ there). */
@@ -66,7 +67,7 @@ export function createEvalGate(d: {
   const log = d.log ?? (() => {});
   mkdirSync(d.dir, { recursive: true });
   const file = join(d.dir, "evals.json");
-  const s: { reviewers: Record<string, { head: string; at: string }>; checks: Record<string, { id: string; asks: number; judge: string }> } = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : { reviewers: {}, checks: {} };
+  const s: { reviewers: Record<string, { head: string; at: string }>; checks: Record<string, { id: string; asks: number; judge: string }> } = (() => { try { return { reviewers: {}, checks: {}, ...JSON.parse(readFileSync(file, "utf8")) }; } catch { return { reviewers: {}, checks: {} }; } })();
   const save = () => { writeFileSync(`${file}.tmp`, JSON.stringify(s)); renameSync(`${file}.tmp`, file); };
 
   const reviewerAt = async (dir: string, sha: string) => createHash("sha256").update(await d.git(dir, ["ls-tree", sha, "--", ...REVIEWER_TREE])).digest("hex").slice(0, 32);
@@ -83,17 +84,20 @@ export function createEvalGate(d: {
     const key = `${repo.toLowerCase()}:${head}:${await reviewerAt(dir, judge)}:${policy}`;
     const what = `the reviewer eval on \`${head.slice(0, 12)}\` (it brings the AI reviewer's own code: it lands only on a passing receipt)`;
     const had = s.checks[key];
-    let v = had ? await d.kernel("GET", `/v1/checks/${had.id}`).catch(() => undefined) : undefined;
+    // A failed read throws (the merge waits); only a check the kernel no longer knows (404) is asked for again.
+    let v = had ? await d.kernel("GET", `/v1/checks/${had.id}`).catch((e) => { if ((e as { status?: number })?.status === 404) return undefined; throw e; }) : undefined;
     if (!v || !["running", "done"].includes(v.state)) {
-      // Never asked, or it couldn't run (the kernel lost it, or no box): asked again, a few times at most.
-      if ((had?.asks ?? 0) >= ASKS) {
+      // Never asked, or it couldn't run (no box: counted, asked again a few times at most); one the kernel lost at a restart
+      // never ran to a verdict, so it is asked again without counting.
+      const lost = Boolean(had) && (!v || v.state === "lost");
+      if (!lost && (had?.asks ?? 0) >= ASKS) {
         delete s.checks[key]; // a new merge request asks again
         save();
         return { stop: `${what} couldn't run ${ASKS} times (${v?.error ?? v?.state ?? "unknown"})` };
       }
       const spec = { repo, judge_commit: judge, subject_commit: head, cases_from: head, policy_hash: policy };
       v = await d.kernel("POST", "/v1/checks", { repo, head, run: "eval", spec });
-      s.checks[key] = { id: String(v.id), asks: (had?.asks ?? 0) + 1, judge };
+      s.checks[key] = { id: String(v.id), asks: (had?.asks ?? 0) + (lost ? 0 : 1), judge };
       save();
       log("reviewer eval asked", { repo, head, judge });
     }
@@ -108,7 +112,7 @@ export function createEvalGate(d: {
     if (v.receipt.verdict === "fail") return { stop: `${String(v.receipt.summary ?? "the reviewer eval didn't pass").slice(0, 8000)}. Fix the reviewer change and push a new head (a new head gets a new eval). A change to an existing case's expectation can't pass here: the owner merges that by hand` };
     return { stop: `the reviewer eval's receipt for \`${head.slice(0, 12)}\` doesn't hold: ${String(ok?.why ?? "the kernel didn't verify it")}` };
   }
-  const failClosed = (err: unknown): Gate => ({ stop: `the reviewer-eval gate couldn't read it (${String((err as Error).message ?? err).split("\n")[0]!.slice(0, 200)})` });
+  const failClosed = (err: unknown): Gate => ({ wait: `the reviewer-eval gate couldn't read it yet, asking again (${String((err as Error).message ?? err).split("\n")[0]!.slice(0, 200)})` });
 
   /**
    * The product moving from `from` to `to` (the release train's bump): undefined when the reviewer's content is the same, or a

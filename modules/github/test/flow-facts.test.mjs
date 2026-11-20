@@ -2,7 +2,7 @@
 // CI per head and a close without a merge, and a re-run after the backfill's version changed records only what is new.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -90,4 +90,38 @@ test("the backfill records authors, pushes, CI per head and a close without a me
   await again.flow.issuesRepo("Acme/App");
   await again.flow.flush();
   assert.deepEqual(again.facts.map((f) => [f.type, f.version, f.data.author_kind ?? f.data.by]), [["issue.opened", "2", "owner"], ["issue.labeled", "2:77", "Mudit-Owner"]]);
+});
+
+test("a cursor moves only once the kernel took the facts, a refused fact is dropped alone, a failed App lookup is retried", async (t) => {
+  const cacheDir = mkdtempSync(join(tmpdir(), "flow-cursor-"));
+  const got = [];
+  let down = true;
+  const kernel = createServer(async (req, res) => {
+    let body = "";
+    for await (const c of req) body += c;
+    const facts = JSON.parse(body).facts;
+    if (down) return res.writeHead(503).end("{}");
+    if (facts.some((f) => f.type === "issue.labeled")) return res.writeHead(400).end("{}"); // the bad one
+    got.push(...facts);
+    res.writeHead(200).end("{}");
+  });
+  await new Promise((ok) => kernel.listen(0, "127.0.0.1", ok));
+  t.after(() => kernel.close());
+  const gh = async (_m, path) => {
+    const [p, q] = path.split("?");
+    const page = Number(/(?:^|&)page=(\d+)/.exec(q ?? "")?.[1] ?? 1);
+    return { status: FIXTURE[p] ? 200 : 404, body: page > 1 ? [] : FIXTURE[p] ?? {}, remaining: 4000 };
+  };
+  let lookups = 0;
+  const flow = createFlow({
+    kernelUrl: `http://127.0.0.1:${kernel.address().port}`, key: "k", cacheDir, log: () => {}, repos: async () => ["Acme/App"], token: async () => "tok", gh,
+    appLogin: async () => { if (!lookups++) throw new Error("503"); return "acme-agents[bot]"; }, now: () => new Date("2026-11-10T08:30:00Z"),
+  });
+  await assert.rejects(flow.issuesRepo("Acme/App"));
+  assert.equal(existsSync(join(cacheDir, "issues.json")), false, "the kernel was down: the cursor stays");
+  down = false;
+  await flow.issuesRepo("Acme/App");
+  assert.equal(existsSync(join(cacheDir, "issues.json")), true);
+  assert.deepEqual(got.map((f) => f.type), ["issue.opened"], "the refused label fact is dropped, the rest went");
+  assert.equal(await flow.kindOf("acme-agents[bot]"), "agent", "the failed first lookup wasn't remembered as no App");
 });

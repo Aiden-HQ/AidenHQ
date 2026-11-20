@@ -4,7 +4,7 @@
 // on, or whose PR merged, is cancelled. Fake GitHub (an in-process gh) and a fake kernel over HTTP.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,7 +13,7 @@ import { createDesignReviews } from "../service/src/design-review.ts";
 const A = "a".repeat(40);
 const B = "b".repeat(40);
 
-async function setup(t, { agent = true } = {}) {
+async function setup(t, { agent = true, closeStatus = 200 } = {}) {
   const calls = [];
   const made = new Map();
   const kernel = createServer(async (req, res) => {
@@ -31,7 +31,7 @@ async function setup(t, { agent = true } = {}) {
       made.set(body.source, task);
       return send(200, task);
     }
-    if (/^\/v1\/tasks\/[^/]+\/close$/.test(req.url)) return send(200, { status: body.status, already: false });
+    if (/^\/v1\/tasks\/[^/]+\/close$/.test(req.url)) return send(closeStatus, { status: body.status, already: false });
     send(404, {});
   });
   await new Promise((ok) => kernel.listen(0, "127.0.0.1", ok));
@@ -48,11 +48,12 @@ async function setup(t, { agent = true } = {}) {
     return { status: 404, body: {} };
   };
   const pr = (head, files, over = {}) => ({ state: "OPEN", headRefOid: head, files: { pageInfo: { hasNextPage: false }, nodes: files.map((path) => ({ path })) }, commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: [] } } } }] }, ...over });
+  const cacheDir = mkdtempSync(join(tmpdir(), "design-review-"));
   const reviews = createDesignReviews({
-    kernelUrl: `http://127.0.0.1:${kernel.address().port}`, key: "ch-key", cacheDir: mkdtempSync(join(tmpdir(), "design-review-")), selfName: "Aiden",
+    kernelUrl: `http://127.0.0.1:${kernel.address().port}`, key: "ch-key", cacheDir, selfName: "Aiden",
     app: { token: async () => "tok" }, gh,
   });
-  return { calls, prs, statuses, pr, reviews, tasks: () => calls.filter((c) => c.url === "/v1/tasks"), closes: () => calls.filter((c) => c.url.endsWith("/close")) };
+  return { cacheDir, calls, prs, statuses, pr, reviews, tasks: () => calls.filter((c) => c.url === "/v1/tasks"), closes: () => calls.filter((c) => c.url.endsWith("/close")) };
 }
 
 test("a UI head gets one task for the design-review role, waits on it, and a second sighting starts nothing", async (t) => {
@@ -132,4 +133,19 @@ test("no live agent holds the role: nothing is filed or recorded, so the next as
   const r = await reviews.fileDesignReview({ repo: "acme/app", number: 7, head: A });
   assert.deepEqual([r.filed, statuses.length], [false, 0]);
   assert.match(r.why, /no agent holds/);
+});
+
+test("a 404 on a close is tried again before the task is forgotten, and a corrupt table is set aside", async (t) => {
+  const { cacheDir, prs, pr, reviews, closes } = await setup(t, { closeStatus: 404 });
+  prs.set(7, pr(A, ["src/web/App.tsx"]));
+  await reviews.fileDesignReview({ repo: "Acme/App", number: 7, head: A });
+  prs.set(7, pr(B, ["src/web/App.tsx"]));
+  for (let i = 0; i < 4; i++) await reviews.sweep();
+  assert.equal(closes().length, 4);
+  assert.match(readFileSync(join(cacheDir, "design-reviews.json"), "utf8"), /"open":\{"/, "still held after four 404s");
+  await reviews.sweep();
+  assert.equal(JSON.parse(readFileSync(join(cacheDir, "design-reviews.json"), "utf8")).open && Object.keys(JSON.parse(readFileSync(join(cacheDir, "design-reviews.json"), "utf8")).open).length, 0, "dropped on the fifth");
+  writeFileSync(join(cacheDir, "design-reviews.json"), '{"asked":{"x"');
+  await reviews.sweep();
+  assert.equal(existsSync(join(cacheDir, "design-reviews.json.corrupt")), true);
 });
