@@ -125,7 +125,7 @@ export function officialMove(base: string | undefined, head: string | undefined)
  * rules read on both sides (each changed file, the agent.yaml of each agent it touches, and instance.yaml; absent where the
  * file isn't), the diff, and the graduation card's trial edits (handbook commits since an agent's trial began; "" if none).
  */
-export type Read = { files: string[]; texts: { base: Record<string, string>; head: Record<string, string> }; diff: string; trial?: string; base?: string };
+export type Read = { files: string[]; texts: { base: Record<string, string>; head: Record<string, string> }; diff: string; trial?: string; base?: string; main?: string };
 /**
  * What an apply's commit changes, as one digest: its files, the texts read on both sides and the diff. The plan binds it into
  * the record's targets; the land re-reads the commit and lands only when it is exactly the same.
@@ -226,21 +226,31 @@ export function createApply({ db, codehost, launch, unit, generations, busy, tai
     let row = get(r.id)!;
     if (!row.landed) {
       const src: Source = { repo: a.repo, branch: a.branch, sha: a.sha, ...(r.identifier ? { workspace: r.identifier } : {}) };
-      const c = await retried("read", r.id, () => codehost.read(src));
-      // Already on main (a land whose answer was lost, or a restart before it was recorded): the approved commit is there, so
-      // the land below is the code host's no-op that names main. Its diff against its own merge base is empty by then.
-      const onMain = c.base === a.sha;
-      // What lands is what the card showed: the same files, read again from git at the commit, never from the args alone.
-      if (!onMain && [...c.files].sort().join("\n") !== [...a.files].sort().join("\n")) return { ok: false, text: "Not applied: the commit no longer changes the files that were approved; it needs a new approval." };
-      // And exactly what was reviewed: every text and the diff, not only the file names.
-      if (!onMain && (r.targets as { content?: unknown })?.content !== readDigest(c)) return { ok: false, text: "Not applied: what the commit changes is no longer exactly what was approved; it needs a new approval." };
-      const stray = strayFiles(c.files);
-      if (stray.length) return { ok: false, text: `Not applied: it changes files outside the instance config (${stray.join(", ")}).` };
-      const untrialed = untrialedNewAgents(c.files, c.texts.base, c.texts.head);
-      if (untrialed.length) return { ok: false, text: `Not applied: a new agent must start in trial (${untrialed.join(", ")}).` };
-      const official = officialMove(c.texts.base["instance.yaml"], c.texts.head["instance.yaml"]);
-      if ("error" in official) return { ok: false, text: `Not applied: ${official.error}.` };
-      const { landed } = await retried("land", r.id, () => codehost.land({ ...src, official }));
+      const movedPast = (main: string | undefined): Outcome => ({ ok: false, text: `**Landed on the instance's main (\`${a.sha.slice(0, 9)}\`), but not applied here:** main is ${main ? `\`${main.slice(0, 9)}\`` : "unknown"} now, past the approved commit, so only that newer commit's own apply runs it.` });
+      // Read, checked and landed as one step, tried again after a transient failure: a land whose answer was lost is read again
+      // and found on main.
+      const step = await retried("land", r.id, async (): Promise<Outcome | { landed: string }> => {
+        const c = await codehost.read(src);
+        // Already on main (a land whose answer was lost, or a restart before it was recorded): its diff against its own merge
+        // base is empty by then, so the checks below can't be re-read; the approved commit itself is what landed. Only exactly
+        // that commit is ever applied: when main has moved past it, nothing is launched (the newer commit's own apply carries it).
+        const onMain = c.base === a.sha;
+        if (onMain) return c.main === a.sha ? { landed: a.sha } : movedPast(c.main);
+        // What lands is what the card showed: the same files, read again from git at the commit, never from the args alone.
+        if ([...c.files].sort().join("\n") !== [...a.files].sort().join("\n")) return { ok: false, text: "Not applied: the commit no longer changes the files that were approved; it needs a new approval." };
+        // And exactly what was reviewed: every text and the diff, not only the file names.
+        if ((r.targets as { content?: unknown })?.content !== readDigest(c)) return { ok: false, text: "Not applied: what the commit changes is no longer exactly what was approved; it needs a new approval." };
+        const stray = strayFiles(c.files);
+        if (stray.length) return { ok: false, text: `Not applied: it changes files outside the instance config (${stray.join(", ")}).` };
+        const untrialed = untrialedNewAgents(c.files, c.texts.base, c.texts.head);
+        if (untrialed.length) return { ok: false, text: `Not applied: a new agent must start in trial (${untrialed.join(", ")}).` };
+        const official = officialMove(c.texts.base["instance.yaml"], c.texts.head["instance.yaml"]);
+        if ("error" in official) return { ok: false, text: `Not applied: ${official.error}.` };
+        const { landed } = await codehost.land({ ...src, official });
+        return landed === a.sha ? { landed } : movedPast(landed);
+      });
+      if (!("landed" in step)) return step;
+      const { landed } = step;
       db.prepare("UPDATE applies SET landed = ? WHERE record = ?").run(landed, r.id);
       log("apply landed", { record: r.id, sha: landed });
       row = get(r.id)!;

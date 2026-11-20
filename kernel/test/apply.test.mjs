@@ -138,8 +138,8 @@ test("a land whose answer was lost lands on its retry, and a systemd that can't 
   // The land pushes, then its answer times out (no status): the retry finds the commit on main (merge base = the commit, an
   // empty diff) and takes the code host's no-op land, never "no longer changes the files that were approved".
   let pushed = false;
-  h.codehost.read = async () => (pushed ? { files: [], texts: { base: {}, head: {} }, diff: "", base: SHA } : h.read);
-  h.codehost.land = async (s) => { h.lands.push(s); if (!pushed) { pushed = true; throw new Error("the code host's land didn't answer in 3 minutes"); } return { landed: "f".repeat(40), already: true }; };
+  h.codehost.read = async () => (pushed ? { files: [], texts: { base: {}, head: {} }, diff: "", base: SHA, main: SHA } : h.read);
+  h.codehost.land = async (s) => { h.lands.push(s); pushed = true; throw new Error("the code host's land didn't answer in 3 minutes"); };
   // And systemctl show fails twice while the unit runs.
   let fails = 2;
   const unit = h.unit;
@@ -152,9 +152,18 @@ test("a land whose answer was lost lands on its retry, and a systemd that can't 
   h.units[h.launches[0]] = { loaded: true, active: "active", sub: "exited", result: "success" };
   const o = await done;
   assert.equal(o.ok, true, o.text);
-  assert.match(o.text, /Applied: the instance's main is `fffffffff`/);
-  assert.equal(h.lands.length, 2);
+  assert.match(o.text, /Applied: the instance's main is `ddddddddd`/);
+  assert.equal(h.lands.length, 1, "the retry read the commit on main and didn't land again");
   assert.equal(fails, -1, "systemd was read again after its failures");
+  // Main has moved past the approved commit since (a newer commit on top): only the approved commit is ever applied, so nothing
+  // is launched, never main's head.
+  const h2 = fakeHost();
+  h2.codehost.read = async () => ({ files: [], texts: { base: {}, head: {} }, diff: "", base: SHA, main: "f".repeat(40) });
+  const r2 = openRecords(dbFile());
+  const o2 = await createApply({ db: r2.db, ...h2, pollMs: 5, retryMs: [5] }).execute(claimed(r2));
+  assert.equal(o2.ok, false);
+  assert.match(o2.text, /Landed on the instance's main \(`ddddddddd`\), but not applied here:.*`fffffffff`/s);
+  assert.deepEqual([h2.lands.length, h2.launches.length], [0, 0]);
 });
 
 test("a failed apply marks the record failed, though the auto-revert left the host healthy", async () => {
