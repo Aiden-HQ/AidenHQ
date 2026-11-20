@@ -135,7 +135,7 @@ const monthOf = (now: Date, tz: string) => Number(new Intl.DateTimeFormat("en-CA
 /** What a run is told: the task, the rule and the repositories; the rest is in the Researcher's skill. */
 function brief(issue: Issue, c: Cadence, time: string, repos: string[], tz: string): string {
   return [
-    `Recurring task ${issue.identifier} (${issue.title}) is due: ${describeRule(c, time)} (${tz}). Run time: {{timestamp}}.`,
+    `Recurring task ${issue.identifier} is due: ${describeRule(c, time)} (${tz}). Run time: {{timestamp}}.`,
     `Its instructions are that task's description.${repos.length ? ` GitHub repositories: ${repos.join(", ")}.` : ""}`,
     `Follow skill recurring-reports. Then close this task with one line saying what you did.`,
   ].join("\n");
@@ -216,6 +216,25 @@ export async function changeRecurring(pc: Paperclip, store: Store, ctx: Ctx, iss
   }
   log.info({ issue: issue.identifier, action: input.action }, "recurring task changed");
   return recurringView(existing, await pc.routine(routineId));
+}
+
+// ------------------------------------------------------------------ lifecycle
+
+/**
+ * A repeating task that is closed, reassigned away from the owner or deleted stops repeating: its routine is archived and the board
+ * forgets it. The one place that enforces it (main.ts runs it on a timer), whichever way the task changed.
+ */
+export async function reapRecurring(pc: Paperclip, store: Store, log: Logger): Promise<void> {
+  const rows = [...store.allRecurring()];
+  if (!rows.length) return;
+  const me = await pc.me();
+  for (const [issueId, r] of rows) {
+    const issue = await pc.issue(issueId).catch((err: { status?: number }) => (err.status === 404 ? null : Promise.reject(err)));
+    if (issue && !CLOSED.has(issue.status) && issue.assigneeUserId === me && !issue.assigneeAgentId) continue;
+    await pc.request("PATCH", `/api/routines/${r.routineId}`, { status: "archived" });
+    store.stopRecurring(issueId);
+    log.info({ issue: issue?.identifier ?? issueId, status: issue?.status ?? "deleted" }, "recurring task ended with its task");
+  }
 }
 
 // ------------------------------------------------------------------ one-time conversion

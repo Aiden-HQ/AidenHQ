@@ -16,7 +16,7 @@ import { kernelRecords } from "./records.js";
 import { kernelFlow } from "./flow.js";
 import { cachedActivity, kernelWork, liveRunsOf } from "./runs.js";
 import { weekdayOf } from "./dates.js";
-import { convertLegacyRecurring } from "./recurring.js";
+import { convertLegacyRecurring, reapRecurring } from "./recurring.js";
 import { Store, localDate } from "./store.js";
 import { startWatch } from "./watch.js";
 import { liveActivity } from "./live-activity.js";
@@ -56,6 +56,8 @@ if (cfg.gateway) startNotify({ url: (process.env.AIDENHQ_KERNEL_URL ?? "http://1
 // The owner's app alerts (app-watch.ts), through the one notify. apps-mcp unreachable: skipped.
 const appWatch = () => void appWatchTick({ apps: () => appsApi<AppStatus[]>("/internal/status"), diskPct: async () => (await appsApi<{ disk_pct: number }>("/internal/host")).disk_pct, store, notify: ownerAlert }).catch((err) => log.warn({ err: String(err) }, "app alerts tick failed"));
 setInterval(appWatch, 2 * 60_000).unref();
+// A repeating task that is closed, reassigned or deleted stops repeating (recurring.ts).
+setInterval(() => void reapRecurring(paperclip, store, log).catch((err) => log.warn({ err: String(err).slice(0, 300) }, "recurring check failed")), 60_000).unref();
 // Schedules from before routines become routines once (recurring.ts); until it succeeds the old rows stay.
 void convertLegacyRecurring(paperclip, store, cfg.timezone, log).catch((err) => log.warn({ err: String(err).slice(0, 300) }, "recurring tasks not converted yet"));
 // The Costs tab: model calls with what OpenRouter billed for each, from the model gateway (kernel/src/gateway), agent

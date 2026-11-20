@@ -1041,7 +1041,7 @@ const TOOLS: Record<string, Tool> = {
   },
   task_schedule: {
     description:
-      "Researcher only, when the user asks in their own comment: on a date, move one of their tasks to a board column (default: the top of Today), e.g. \"bring this back on the 15th\". Resolve the user's words to a calendar date in their timezone first. A date of today moves it now; a later move by hand replaces the schedule. clear: true removes it.",
+      "Researcher only, when the user asks in their own comment (or a recurring task's own run, skill recurring-reports): on a date, move one of their tasks to a board column (default: the top of Today), e.g. \"bring this back on the 15th\". Resolve the user's words to a calendar date in their timezone first. A date of today moves it now; a later move by hand replaces the schedule. clear: true removes it.",
     inputSchema: {
       type: "object",
       properties: {

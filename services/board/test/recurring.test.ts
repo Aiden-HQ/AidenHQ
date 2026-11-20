@@ -1,7 +1,7 @@
 import pino from "pino";
 import { describe, expect, it, vi } from "vitest";
 import type { Issue, Label, Paperclip, Routine } from "../src/paperclip.js";
-import { changeRecurring, convertLegacyRecurring, cronOf } from "../src/recurring.js";
+import { changeRecurring, reapRecurring, convertLegacyRecurring, cronOf } from "../src/recurring.js";
 import { Store } from "../src/store.js";
 
 const TZ = "Asia/Dubai";
@@ -60,6 +60,24 @@ describe("recurring tasks are Paperclip routines", () => {
     expect(routines.size).toBe(1);
     expect(await changeRecurring(pc, s, ctx, def, { action: "stop" }, TZ, log)).toBeNull();
     expect(routines.get(id)!.status).toBe("archived");
+    expect(s.recurring(def.id)).toBeUndefined();
+  });
+
+  it("closing, reassigning or deleting the task archives its routine", async () => {
+    const s = new Store(":memory:");
+    const { pc, routines } = fakePaperclip();
+    Object.assign(pc, { me: async () => ME });
+    await changeRecurring(pc, s, ctx, def, monday, TZ, log);
+    Object.assign(pc, { issue: async () => def });
+    await reapRecurring(pc, s, log);
+    expect([...routines.values()][0]!.status).toBe("active");
+    Object.assign(pc, { issue: async () => ({ ...def, status: "done" }) });
+    await reapRecurring(pc, s, log);
+    expect([...routines.values()][0]!.status).toBe("archived");
+    expect(s.recurring(def.id)).toBeUndefined();
+    await changeRecurring(pc, s, ctx, def, monday, TZ, log);
+    Object.assign(pc, { issue: async () => Promise.reject(Object.assign(new Error("gone"), { status: 404 })) });
+    await reapRecurring(pc, s, log);
     expect(s.recurring(def.id)).toBeUndefined();
   });
 
