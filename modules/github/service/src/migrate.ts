@@ -1,5 +1,5 @@
 // DELETE in the release after #1065: the one-off that takes the retired GitHub App out of the repos' rules (spec
-// 2026-11-20-github-owner-identity §12). On the first sign-in with the new scopes (the owner's reconnect) it rewrites, with the
+// 2026-11-20-github-owner-identity §12). Once GitHub is connected it rewrites, with the
 // owner's token, each repo's rulesets and branch protection that name the App (by its id), then tells the owner once to delete
 // the App on GitHub. Entries naming any other app (GitHub Actions' pinned checks, other integrations) stay as they are. The merge
 // queue holds while it runs (main.ts). Runs once per repo: the repos done are in the cache dir.
@@ -112,8 +112,8 @@ export async function dropApp(access: Rest, repos: string[], notify: Notify, o: 
 }
 
 /**
- * Runs dropApp on the first pass whose sign-in has the `workflow` scope (the reconnect), every 30 s until it finishes.
- * `pending()` is true from that sign-in until then: the merge queue holds.
+ * Runs dropApp on the first pass once GitHub is connected (`repo` is enough to rewrite rulesets and branch protection; GitHub checks admin
+ * access), every 30 s until it finishes. `pending()` is true from that sign-in until then: the merge queue holds.
  */
 export function startAppMigration(d: { access: GitHubAccess; appId: number; cacheDir: string; fleetOrg?: string; productRepo?: string; maintained?: string[]; instanceRepo?: string; kernelUrl: string; key: string; log: (msg: string, f?: Record<string, unknown>) => void }) {
   const file = join(d.cacheDir, "migrated-from-app.json");
@@ -123,7 +123,7 @@ export function startAppMigration(d: { access: GitHubAccess; appId: number; cach
     if (!r.ok) throw new Error(`notify failed: ${r.status}`);
   };
   const org = d.fleetOrg || d.productRepo?.split("/")[0] || "";
-  const pending = () => !finished && d.access.connected() && d.access.scopes().includes("workflow");
+  const pending = () => !finished && d.access.connected();
   let running = false;
   const step = async () => {
     if (running || !pending()) return;

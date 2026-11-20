@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { dropApp } from "../service/src/migrate.ts";
+import { dropApp, startAppMigration } from "../service/src/migrate.ts";
 
 function fakeGitHub() {
   const writes = [];
@@ -62,4 +62,10 @@ test("on a repo outside the fleet org and product repo the App's bypass actor is
   await dropApp(gh, ["acme/api"], async () => {}, o);
   const put = gh.writes.find((w) => w.method === "PUT");
   assert.deepEqual(put.body.bypass_actors, [{ actor_type: "Integration", actor_id: 42, bypass_mode: "always" }, { actor_type: "Team", actor_id: 3, bypass_mode: "pull_request" }]);
+});
+
+test("the migration is pending as soon as GitHub is connected, with the repo scope alone", () => {
+  const access = { connected: () => true, scopes: () => ["repo", "read:org"], rest: async () => ({ status: 404, body: {}, headers: new Headers() }) };
+  const m = startAppMigration({ access, appId: 99, cacheDir: mkdtempSync(join(tmpdir(), "mig-")), kernelUrl: "http://127.0.0.1:1", key: "k", log: () => {} } as never);
+  assert.equal(m.pending(), true);
 });
