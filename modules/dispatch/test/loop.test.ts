@@ -631,6 +631,26 @@ test("a refused wake is not dropped until its refusal landed: the owner is told 
   k.kernel.notify = notify;
 });
 
+test("a wake whose drop failed comes back and finishes: one notice, no restarted retries, the drop then lands", async () => {
+  const k = fake({ task: { id: "t1", identifier: "WOR-1", title: "Fix", description: "Do it", status: "todo", assigneeAgentId: "eng", createdByUserId: "u1" } });
+  const start = k.kernel.start, drop = k.kernel.drop;
+  k.kernel.start = async () => { throw new KernelError(409, "kernel POST /v1/jobs → 409", { type: "task-closed", message: "task t1 is done" }); };
+  // The notice lands, but the drop doesn't: the row stays (the kernel's answer was lost), and its lease brings it back.
+  let failDrop = 1;
+  k.kernel.drop = async (key, why) => { if (failDrop-- > 0) throw new KernelError(502, "the drop action answered 502"); return drop(key, why); };
+  k.inbox.push(wake("issue:t1:1", "assigned"));
+  await k.dispatch.tick();
+  assert.deepEqual(k.dropped, [], "nothing dropped while the kernel wouldn't take it");
+  assert.equal(k.notes.length, 1, "its notice went out once");
+  // It comes back on its lease: the same refusal says nothing new, and the drop goes through this time.
+  k.inbox.push(wake("issue:t1:1", "assigned"));
+  await k.dispatch.tick();
+  assert.equal(k.notes.length, 1, "no second notice on the returned wake");
+  assert.deepEqual(k.dropped.map((d) => d.key), ["issue:t1:1"], "the drop lands once it is taken");
+  k.kernel.start = start;
+  k.kernel.drop = drop;
+});
+
 test("an outcome the kernel can't post yet is retried less often each time, not every tick", async () => {
   let t = 0;
   const k = fake({ task: { id: "t1", identifier: "WOR-1", title: "Fix", status: "todo", assigneeAgentId: "eng", createdByUserId: "u1" } });
