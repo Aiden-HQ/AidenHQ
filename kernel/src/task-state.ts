@@ -5,9 +5,9 @@
 //   2. an unresolved failure (the last job failed, timed out or was lost) stays until a retry (a job queued or started), a
 //      reassignment or closure; comments never clear it
 //   3. open obligations, each counted: a running job; a queued (or due, unbound) or held job; an open card; an owner,
-//      delegator or agent wait; a blocker not closed; a scheduled wake; the task handed to the owner by an agent (handback), or
-//      the owner's own task (owner_task: held by the owner, never handed from an agent), neither while in backlog; backlog; a
-//      chat's turn
+//      delegator or agent wait; a module's wait (a PR on its checks: `module_wait`, its reason as `ref`); a blocker not closed; a
+//      scheduled wake; the task handed to the owner by an agent (handback), or the owner's own task (owner_task: held by the
+//      owner, never handed from an agent), neither while in backlog; backlog; a chat's turn
 //   4. a stage hint (a module's stage open ≤ 24 h) only says what a running job or a wait is doing; it never changes kind,
 //      reason or attention
 //   5. kind: done > working (a running job) > waiting (any obligation) > idle (failed, else unknown when the last thing was a
@@ -26,9 +26,9 @@ export type Reason =
   | "closed" | "cancelled"
   | "job_running"
   | "job_queued" | "job_held" | "card_review" | "card_owner" | "owner_wait" | "delegator_wait" | "handback" | "owner_task"
-  | "blocked" | "agent_wait" | "scheduled" | "chat_turn" | "backlog"
+  | "blocked" | "agent_wait" | "module_wait" | "scheduled" | "chat_turn" | "backlog"
   | "failed" | "orphaned" | "unknown" | "history_expired";
-export type Attention = { who: "owner" | "agent" | "reviewer"; why: "card" | "owner_wait" | "delegator_wait" | "handback" | "failed" | "orphaned" | "unknown" | "history_expired"; ref: string };
+export type Attention = { who: "owner" | "agent" | "reviewer"; why: "card" | "owner_wait" | "delegator_wait" | "handback" | "failed" | "stalled_wait" | "orphaned" | "unknown" | "history_expired"; ref: string };
 export type TaskState = {
   kind: Kind; reason: Reason; ref?: string; since: string; holder: string | null; attention: Attention[];
   /** A module stage's label, only while working or waiting. */
@@ -37,16 +37,24 @@ export type TaskState = {
   grade?: "pass" | "fail";
   /** The open owner wait's question. */
   question?: string;
+  /** When the open owner or delegator wait began, whatever the representative reason (only the owner's has a `question`). */
+  wait_since?: string;
+  /** The open wait's own words (task_wait's reason). */
+  note?: string;
 };
 
+export /** How long after a job ends its reply may still arrive (the kernel posts it a few seconds later). */
+const REPLY_GRACE_MS = 60_000;
 export const ATTENTION_AFTER_MS = 15 * 60_000;
+/** A module's wait (CI checks, a merge queue) open this long needs an agent (attention `stalled_wait`). */
+export const MODULE_WAIT_STALLED_MS = 6 * 3600_000;
 export const STAGE_HINT_MS = 24 * 3600_000;
 /** A due wake nothing bound this long after it was due (or known) no longer counts as queued (flow.ts PENDING_MAX). */
 const PENDING_MAX = 2.5 * 3600_000;
 const CLOSED = new Set(["done", "cancelled"]);
 const FAILED = new Set(["failed", "timeout", "lost"]);
 /** Waiting reasons, highest first: the representative reason is the highest open one (the oldest of it on a tie). */
-const ORDER: Reason[] = ["job_queued", "job_held", "card_review", "card_owner", "owner_wait", "delegator_wait", "handback", "owner_task", "blocked", "agent_wait", "scheduled", "chat_turn", "backlog"];
+const ORDER: Reason[] = ["job_queued", "job_held", "card_review", "card_owner", "owner_wait", "delegator_wait", "handback", "owner_task", "blocked", "agent_wait", "module_wait", "scheduled", "chat_turn", "backlog"];
 
 const ms = (s: string) => Date.parse(s);
 const iso = (n: number) => new Date(n).toISOString();
@@ -88,10 +96,14 @@ export function taskState(task: string, facts: FactRow[], now: number, stages: S
   const after = (f: FactRow) => !reopen || (f.type === "wake.opened" ? ms(f.seen_at) >= ms(reopen.at) : byTime(f, reopen) > 0);
   const live = own.filter((f) => f.type !== "wake.opened" && ms(f.at) <= now);
 
+  const isChat = (mine.filter((f) => f.type === "task.labeled").at(-1)?.data.chat ?? created.data.chat) === true;
   const jobs = new Map<string, { queued?: FactRow; started?: FactRow; ended?: FactRow }>();
   const records = new Map<string, { since: number; owner: boolean; done: boolean }>();
   let failure: FactRow | undefined;
+  let silent: FactRow | undefined; // a chat's job that ended done: ended without a reply unless an agent comment came with it
+  const agentComments: FactRow[] = [];
   let wait: { f: FactRow; end?: number } | undefined;
+  const mwaits = new Map<string, FactRow>(); // a module's waits by subject (a PR), until its work.resumed or a job starts
   let handback: { f: FactRow; fromAgent: boolean } | undefined;
   let who: string | null = null; // the holder as each fact happened
   let quiet = Math.max(ms(created.at), reopen ? ms(reopen.at) : 0); // when the latest obligation ended or anything not a hint happened
@@ -103,17 +115,24 @@ export function taskState(task: string, facts: FactRow[], now: number, stages: S
       handback = who === "owner" ? { f, fromAgent: before !== null && before !== "owner" } : undefined;
     }
     if (!after(f)) continue;
+    if (f.type === "task.commented" && f.actor.startsWith("agent:")) agentComments.push(f);
     if (!moduleFact(f) && f.type !== "task.commented") quiet = Math.max(quiet, ms(f.at));
     const job = f.subject.startsWith("job:") ? jobs.get(f.subject) ?? (jobs.set(f.subject, {}), jobs.get(f.subject)!) : undefined;
     switch (f.type) {
-      case "job.queued": job!.queued = f; failure = undefined; queuedAt.push(ms(f.at)); break;
+      case "job.queued": job!.queued = f; failure = silent = undefined; queuedAt.push(ms(f.at)); break;
       case "job.started":
-        job!.started = f; failure = undefined;
+        job!.started = f; failure = silent = undefined;
         if (wait && !wait.end && wait.f.data.reason === "agent_wait") wait.end = ms(f.at);
+        mwaits.clear();
         break;
-      case "job.ended": job!.ended = f; if (FAILED.has(String(f.data.state))) failure = f; break;
-      case "task.assignee_changed": if (f.subject === self) failure = undefined; break;
-      case "work.waiting": if (f.subject === `wait:${task}`) wait = { f }; break;
+      case "job.ended":
+        job!.ended = f; silent = undefined;
+        if (FAILED.has(String(f.data.state))) failure = f;
+        else if (isChat && f.data.state === "done" && f.data.acted !== true) silent = f;
+        break;
+      case "task.assignee_changed": if (f.subject === self) failure = silent = undefined; break;
+      case "work.waiting": if (f.subject === `wait:${task}`) wait = { f }; else if (moduleFact(f)) mwaits.set(f.subject, f); break;
+      case "work.resumed": if (moduleFact(f)) mwaits.delete(f.subject); break;
       case "task.commented": {
         if (!wait || wait.end || ms(f.at) <= ms(wait.f.at)) break;
         const r = wait.f.data.reason;
@@ -164,6 +183,14 @@ export function taskState(task: string, facts: FactRow[], now: number, stages: S
     else if (until > now) open.push({ reason: "agent_wait", ref: wait.f.subject, since: ms(wait.f.at) });
     else quiet = Math.max(quiet, until);
   }
+  // The unresolved failure: a failed job, or a chat's job that ended with no agent comment between its start and a minute
+  // after its end (the reply is posted a few seconds after the job ends).
+  const noReply = silent && !failure && now - ms(silent.at) >= REPLY_GRACE_MS && !agentComments.some((c) => c.data.job === silent!.subject.slice(4) || (ms(c.at) >= ms(jobs.get(silent!.subject)?.started?.at ?? silent!.at) && ms(c.at) <= ms(silent!.at) + REPLY_GRACE_MS));
+  const fail = failure ? { ref: failure.subject, at: failure.at } : noReply ? { ref: "no_reply", at: silent!.at } : undefined;
+  for (const [subject, w] of fail ? [] : mwaits) {
+    const until = str(w.data.until) ? ms(w.data.until as string) : Infinity;
+    if (until > now) open.push({ reason: "module_wait", ref: str(w.data.reason) ?? subject, since: ms(w.at) });
+  }
   if (handback && status?.data.to !== "backlog") open.push({ reason: handback.fromAgent ? "handback" : "owner_task", ref: self, since: ms(handback.f.at) });
   const blockedBy = mine.filter((f) => f.type === "task.blocked_changed").at(-1);
   for (const b of Array.isArray(blockedBy?.data.blocked_by) ? (blockedBy!.data.blocked_by as unknown[]).map(String) : []) {
@@ -172,7 +199,7 @@ export function taskState(task: string, facts: FactRow[], now: number, stages: S
     else open.push({ reason: "blocked", ref: `task:${b}`, since: ms(blockedBy!.at) });
   }
   if (status?.data.to === "backlog") open.push({ reason: "backlog", since: ms(status.at) });
-  if ((mine.filter((f) => f.type === "task.labeled").at(-1)?.data.chat ?? created.data.chat) === true && !open.length && !failure) open.push({ reason: "chat_turn", since: quiet });
+  if (isChat && !open.length && !fail) open.push({ reason: "chat_turn", since: quiet });
 
   // Attention, across every obligation.
   const attention: Attention[] = [];
@@ -184,10 +211,13 @@ export function taskState(task: string, facts: FactRow[], now: number, stages: S
     if (o.reason === "delegator_wait") attention.push({ who: "agent", why: "delegator_wait", ref: o.ref! });
     if (o.reason === "handback") attention.push({ who: "owner", why: "handback", ref: o.ref! });
   }
-  if (failure) attention.push({ who: "agent", why: "failed", ref: failure.subject });
+  if (fail) attention.push({ who: "agent", why: "failed", ref: fail.ref });
+  for (const o of open) if (o.reason === "module_wait" && now - o.since > MODULE_WAIT_STALLED_MS) attention.push({ who: "agent", why: "stalled_wait", ref: o.ref! });
 
   const ownerWait = wait && !wait.end && wait.f.data.reason === "owner_wait" ? str(wait.f.data.question) : undefined;
-  const extra = { ...(ownerWait ? { question: ownerWait } : {}) };
+  const judging = wait && !wait.end && (wait.f.data.reason === "owner_wait" || wait.f.data.reason === "delegator_wait") ? wait.f.at : undefined;
+  const openNote = wait && open.some((o) => o.ref === wait!.f.subject) ? str(wait.f.data.note) : undefined;
+  const extra = { ...(ownerWait ? { question: ownerWait } : {}), ...(openNote ? { note: openNote } : {}), ...(judging ? { wait_since: judging } : {}) };
   const hint = () => {
     const occ = pair(own.filter((f) => after(f) && ms(f.at) <= now), stages)
       .filter((o) => o.module_fact && !o.end && ms(o.start) <= now && now - ms(o.start) <= STAGE_HINT_MS).at(-1);
@@ -201,7 +231,7 @@ export function taskState(task: string, facts: FactRow[], now: number, stages: S
     const top = pick(open);
     return { kind: "waiting", reason: top.reason, ...(top.ref ? { ref: top.ref } : {}), since: iso(top.since), holder, attention, ...extra, ...hint() };
   }
-  if (failure) return { kind: "idle", reason: "failed", ref: failure.subject, since: failure.at, holder, attention };
+  if (fail) return { kind: "idle", reason: "failed", ref: fail.ref, since: fail.at, holder, attention };
   // Nothing open: unknown when the last thing was a wake nothing took (someone holds the task), else orphaned.
   const unknown = Boolean(holder && agedOut && agedOut.due >= quiet);
   const since = unknown ? agedOut!.at : quiet;
