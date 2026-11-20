@@ -35,19 +35,25 @@ const SEARCH_TOOLS = new Set(["slack_search_public", "slack_search_public_and_pr
 // `has::emoji:` (anyone's reaction) or `hasmy::emoji:` (the user's own) in a search filter string.
 const REACTION_MODIFIER = /(?:^|\s)has(?:my)?::\S+:/;
 
+// Slack matches `has:reaction` on every message with any reaction, so it is the term clause a reaction-only search
+// needs; it makes the modifier apply without narrowing the set to a keyword.
+const ANY_REACTION_TERM = "has:reaction";
+
 /**
  * The search as one query: the caller's own `query`, then `keywords`, `filters` and `natural_language_query`.
  * Slack drops `has::`/`hasmy::` from `filters`, and a modifier only qualifies the term clause it sits in, so a
  * reaction modifier lifted on its own loses the `in:<#channel>` scope it shared the `filters` string with.
  * A filters-only search whose modifiers already work is left as sent: folding it alone would leave a query with
- * no term clause. The structured arguments stay exactly as the caller sent them.
+ * no term clause. One that carries a reaction modifier gets `has:reaction` as that term clause: a bare modifier
+ * filters nothing and comes back empty, and `has:reaction` matches any reaction, so every message carrying the
+ * reaction is still returned. The structured arguments stay exactly as the caller sent them.
  */
 function searchQuery(args: Record<string, unknown>): string | undefined {
   const own = typeof args.query === "string" ? args.query : undefined;
   const keywords = Array.isArray(args.keywords) ? args.keywords.filter((k): k is string => typeof k === "string" && Boolean(k.trim())).map((k) => k.trim()) : [];
   const filters = typeof args.filters === "string" ? args.filters.trim() : "";
   const natural = typeof args.natural_language_query === "string" ? args.natural_language_query.trim() : "";
-  if (!own?.trim() && !keywords.length && !natural && !REACTION_MODIFIER.test(filters)) return own;
+  if (!own?.trim() && !keywords.length && !natural) return REACTION_MODIFIER.test(filters) ? `${filters} ${ANY_REACTION_TERM}` : own;
   return [own?.trim(), ...keywords, filters, natural].filter(Boolean).join(" ");
 }
 
