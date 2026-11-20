@@ -64,7 +64,6 @@ placeholder paperclip_ops_key ""
 placeholder paperclip_board_key ""   # written by scripts/paperclip-setup.ts; held by the kernel alone (the board goes through it)
 mkdir -p "$AIDENHQ_SECRETS_DIR/modules/google" && chmod 0700 "$AIDENHQ_SECRETS_DIR/modules" "$AIDENHQ_SECRETS_DIR/modules/google"
 placeholder modules/google/google_oauth.json "{}"   # the google module's own vault dir (read-write at its /state)
-placeholder github_token ""      # the user's GitHub token: the github module's setup flow
 placeholder slack_live_app_token ""             # xapp- Socket Mode token
 placeholder slack_live_bot_token ""             # xoxb- bot token, posts DMs to the paired owner
 placeholder telegram_notify_bot_token ""       # BotFather token; the owner's Telegram chat with Aiden, and a channel for notify

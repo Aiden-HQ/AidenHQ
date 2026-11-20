@@ -1237,7 +1237,7 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   // `setup:` secrets from the board (kernel/src/module-secrets.ts); a module not listed here is off.
   const services = Object.fromEntries(enabled.map((m) => [m, Object.keys(serviceModule).filter((k) => serviceModule[k].module === m).sort()]));
   // Every service that mounts each setup secret (compose.yaml's and the modules'): other modules' services read a secret too
-  // (apps-mcp mounts github_token), and they are recreated with it.
+  // (a service outside the owning module can mount one), and they are recreated with it.
   const mounted = composeSecretFiles(base, compose);
   const mounts = Object.fromEntries(setup.map((f) => [f.secret, [...(mounted[f.secret] ?? [])].sort()]));
   const kernelModules = { owner: { name: String(settings.owner_name ?? ""), email: String(settings.owner_email).trim().toLowerCase(), timezone: String(settings.timezone ?? "UTC") }, commit_domain: settings.instance_name ? `${settings.instance_name}.aidenhq.ai` : "aidenhq.ai", repos: { ...(fleetOrg ? { fleet_org: fleetOrg } : {}), orgs: [settings.github_orgs ?? []].flat().map(String), maintained: [settings.maintainer_repos ?? []].flat().map((e) => String(e?.repo ?? e)) }, modules: kernelModuleTable(enabledDefs, settings), services, ...(reviewer ? { reviewer } : {}), ...(Object.keys(checkJobTable).length ? { check_jobs: checkJobTable } : {}), ...(setup.length ? { setup, mounts } : {}) };
