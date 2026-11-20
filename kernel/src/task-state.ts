@@ -1,0 +1,214 @@
+// A task's one state (docs: the task-state spec, §3), computed on read from its facts (facts.ts) by a pure function, so every
+// surface shows the same thing and no agent ever types it. Separate from flow.ts: flow explains history over windows, this
+// says where one task is now. Rules, in order:
+//   1. closed or cancelled → done; closure ends every obligation, and a reopen starts fresh (nothing before it counts again)
+//   2. an unresolved failure (the last job failed, timed out or was lost) stays until a retry (a job queued or started), a
+//      reassignment or closure; comments never clear it
+//   3. open obligations, each counted: a running job; a queued (or due, unbound) or held job; an open card; an owner,
+//      delegator or agent wait; a blocker not closed; a scheduled wake; the task handed to the owner; backlog; a chat's turn
+//   4. a stage hint (a module's stage open ≤ 24 h) only says what a running job or a wait is doing; it never changes kind,
+//      reason or attention
+//   5. kind: done > working (a running job) > waiting (any obligation) > idle (failed, else unknown when the last thing was a
+//      wake nothing took and someone holds it, else orphaned); with no task.created left (pruned), idle · history_expired
+//   6. attention, across every obligation whatever the kind: open cards, owner and delegator waits, a handback, a failure,
+//      and orphaned or unknown idle past 15 minutes
+// An owner wait ends only at the owner's comment newer than it (never a job starting, never an agent's comment); a
+// delegator wait at a newer comment by anyone but the holder and the kernel; an agent wait at its time, the next job start or
+// a newer wait. Children never make a task wait: only a named blocker does.
+import type { FactRow } from "./facts.ts";
+import { pair } from "./flow.ts";
+import type { Stage } from "./flow-stages.ts";
+
+export type Kind = "done" | "working" | "waiting" | "idle";
+export type Reason =
+  | "closed" | "cancelled"
+  | "job_running"
+  | "job_queued" | "job_held" | "card_review" | "card_owner" | "owner_wait" | "delegator_wait" | "handback"
+  | "blocked" | "agent_wait" | "scheduled" | "chat_turn" | "backlog"
+  | "failed" | "orphaned" | "unknown" | "history_expired";
+export type Attention = { who: "owner" | "agent" | "reviewer"; why: "card" | "owner_wait" | "delegator_wait" | "handback" | "failed" | "orphaned" | "unknown" | "history_expired"; ref: string };
+export type TaskState = {
+  kind: Kind; reason: Reason; ref?: string; since: string; holder: string | null; attention: Attention[];
+  /** A module stage's label, only while working or waiting. */
+  stage?: string;
+  /** The final attempt's grade, only when done. */
+  grade?: "pass" | "fail";
+  /** The open owner wait's question. */
+  question?: string;
+};
+
+export const ATTENTION_AFTER_MS = 15 * 60_000;
+export const STAGE_HINT_MS = 24 * 3600_000;
+/** A due wake nothing bound this long after it was due (or known) no longer counts as queued (flow.ts PENDING_MAX). */
+const PENDING_MAX = 2.5 * 3600_000;
+const CLOSED = new Set(["done", "cancelled"]);
+const FAILED = new Set(["failed", "timeout", "lost"]);
+/** Waiting reasons, highest first: the representative reason is the highest open one (the oldest of it on a tie). */
+const ORDER: Reason[] = ["job_queued", "job_held", "card_review", "card_owner", "owner_wait", "delegator_wait", "handback", "blocked", "agent_wait", "scheduled", "chat_turn", "backlog"];
+
+const ms = (s: string) => Date.parse(s);
+const iso = (n: number) => new Date(n).toISOString();
+const str = (v: unknown) => (typeof v === "string" && v ? v : undefined);
+const byTime = (a: FactRow, b: FactRow) => a.at.localeCompare(b.at) || a.seq - b.seq;
+/** A module's fact: its version carries the module (POST /v1/facts). Hints only; never ends or starts anything here. */
+const moduleFact = (f: FactRow) => /^[a-z][a-z0-9-]*\//.test(f.version);
+
+type Open = { reason: Reason; ref?: string; since: number };
+
+/**
+ * One task's state at `now` (ms). `facts`: the task's facts (task = it, or subject `task:<it>`) plus the `task.created` and
+ * `task.status_changed` facts of the tasks it is blocked by; any other task's facts are ignored.
+ */
+export function taskState(task: string, facts: FactRow[], now: number, stages: Stage[]): TaskState {
+  const self = `task:${task}`;
+  const sorted = [...facts].filter((f) => ms(f.at) <= now || f.type === "wake.opened").sort(byTime);
+  const own = sorted.filter((f) => f.task === task || f.subject === self);
+  const mine = own.filter((f) => f.subject === self);
+  const created = mine.find((f) => f.type === "task.created");
+  const statuses = mine.filter((f) => f.type === "task.status_changed");
+  const status = statuses.at(-1);
+  const assigns = mine.filter((f) => f.type === "task.assignee_changed");
+  const holder = assigns.length ? (str(assigns.at(-1)!.data.to) ?? null) : null;
+  const grade = gradeOf(own);
+
+  // 1. closed
+  if (status && CLOSED.has(String(status.data.to))) {
+    return { kind: "done", reason: status.data.to === "cancelled" ? "cancelled" : "closed", since: status.at, holder, attention: [], ...(grade ? { grade } : {}) };
+  }
+  if (!created) {
+    const first = own[0];
+    return { kind: "idle", reason: "history_expired", since: first?.at ?? iso(now), holder, attention: [{ who: "agent", why: "history_expired", ref: self }] };
+  }
+
+  // The current open stretch: everything after the latest reopen (a status leaving done or cancelled).
+  let reopen: FactRow | undefined;
+  for (let i = 1; i < statuses.length; i++) if (CLOSED.has(String(statuses[i - 1]!.data.to)) && !CLOSED.has(String(statuses[i]!.data.to))) reopen = statuses[i];
+  const after = (f: FactRow) => !reopen || (f.type === "wake.opened" ? ms(f.seen_at) >= ms(reopen.at) : byTime(f, reopen) > 0);
+  const live = own.filter((f) => f.type !== "wake.opened" && ms(f.at) <= now);
+
+  const jobs = new Map<string, { queued?: FactRow; started?: FactRow; ended?: FactRow }>();
+  const records = new Map<string, { since: number; owner: boolean; done: boolean }>();
+  let failure: FactRow | undefined;
+  let wait: { f: FactRow; end?: number } | undefined;
+  let handback: FactRow | undefined;
+  let who: string | null = null; // the holder as each fact happened
+  let quiet = Math.max(ms(created.at), reopen ? ms(reopen.at) : 0); // when the latest obligation ended or anything not a hint happened
+  const queuedAt: number[] = [];
+  for (const f of live) {
+    if (f.type === "task.assignee_changed" && f.subject === self) {
+      who = str(f.data.to) ?? null;
+      handback = who === "owner" ? f : undefined;
+    }
+    if (!after(f)) continue;
+    if (!moduleFact(f) && f.type !== "task.commented") quiet = Math.max(quiet, ms(f.at));
+    const job = f.subject.startsWith("job:") ? jobs.get(f.subject) ?? (jobs.set(f.subject, {}), jobs.get(f.subject)!) : undefined;
+    switch (f.type) {
+      case "job.queued": job!.queued = f; failure = undefined; queuedAt.push(ms(f.at)); break;
+      case "job.started":
+        job!.started = f; failure = undefined;
+        if (wait && !wait.end && wait.f.data.reason === "agent_wait") wait.end = ms(f.at);
+        break;
+      case "job.ended": job!.ended = f; if (FAILED.has(String(f.data.state))) failure = f; break;
+      case "task.assignee_changed": if (f.subject === self) failure = undefined; break;
+      case "work.waiting": if (f.subject === `wait:${task}`) wait = { f }; break;
+      case "task.commented": {
+        if (!wait || wait.end || ms(f.at) <= ms(wait.f.at)) break;
+        const r = wait.f.data.reason;
+        const answers = r === "owner_wait" ? f.actor.startsWith("account:") : r === "delegator_wait" ? f.actor !== "kernel" && f.actor !== `agent:${who}` : false;
+        if (answers) { wait.end = ms(f.at); quiet = Math.max(quiet, wait.end); }
+        break;
+      }
+      case "record.filed": records.set(f.subject, { since: ms(f.at), owner: f.data.state === "owner", done: false }); break;
+      case "record.decided": case "record.held": case "record.landed": case "record.failed": {
+        const r = records.get(f.subject);
+        if (!r) break;
+        const toOwner = f.type === "record.held" || (f.type === "record.decided" && /^(owner|escalate)$/.test(String(f.data.decision)));
+        if (toOwner) { if (!r.owner) r.since = ms(f.at); r.owner = true; } else r.done = true;
+        break;
+      }
+    }
+  }
+
+  const open: Open[] = [];
+  for (const [subject, j] of jobs) {
+    if (j.ended) continue;
+    if (j.started) open.push({ reason: "job_running", ref: subject, since: ms(j.started.at) });
+    else if (j.queued) open.push({ reason: "job_queued", ref: subject, since: ms(j.queued.at) });
+  }
+  // Wakes: pending from due until bound, dropped or a job queued at or after it (held: until bound or dropped); a due one
+  // nothing takes ages out; one still ahead is scheduled.
+  let agedOut: { due: number; at: number } | undefined;
+  const bySubject = new Map<string, FactRow[]>();
+  for (const f of own) if (f.subject.startsWith("wake:")) (bySubject.get(f.subject) ?? bySubject.set(f.subject, []).get(f.subject)!).push(f);
+  for (const opened of own.filter((f) => f.type === "wake.opened" && after(f))) {
+    const later = bySubject.get(opened.subject)!.filter((g) => g.seq > opened.seq);
+    if (later.some((g) => g.type === "wake.opened")) continue; // reopened: the newest counts
+    if (later.some((g) => (g.type === "wake.bound" || g.type === "wake.dropped") && ms(g.at) <= now)) continue;
+    const held = later.filter((g) => g.type === "job.held" && ms(g.at) <= now).at(-1);
+    const due = ms(opened.at);
+    if (held) { open.push({ reason: "job_held", ref: str(held.data.reason) ?? opened.subject, since: ms(held.at) }); continue; }
+    if (due > now) { open.push({ reason: "scheduled", ref: opened.subject, since: ms(opened.seen_at) }); continue; }
+    if (queuedAt.some((q) => q >= due)) continue;
+    const ages = Math.max(due, ms(opened.seen_at)) + PENDING_MAX;
+    if (now < ages) open.push({ reason: "job_queued", ref: opened.subject, since: due });
+    else if (!agedOut || ages > agedOut.at) agedOut = { due, at: ages };
+  }
+  for (const [subject, r] of records) if (!r.done) open.push({ reason: r.owner ? "card_owner" : "card_review", ref: subject, since: r.since });
+  if (wait && !wait.end) {
+    const r = String(wait.f.data.reason);
+    const until = str(wait.f.data.until) ? ms(wait.f.data.until as string) : Infinity;
+    if (r === "owner_wait" || r === "delegator_wait") open.push({ reason: r, ref: wait.f.subject, since: ms(wait.f.at) });
+    else if (until > now) open.push({ reason: "agent_wait", ref: wait.f.subject, since: ms(wait.f.at) });
+    else quiet = Math.max(quiet, until);
+  }
+  if (handback) open.push({ reason: "handback", ref: self, since: ms(handback.at) });
+  const blockedBy = mine.filter((f) => f.type === "task.blocked_changed").at(-1);
+  for (const b of Array.isArray(blockedBy?.data.blocked_by) ? (blockedBy!.data.blocked_by as unknown[]).map(String) : []) {
+    const st = sorted.filter((f) => f.subject === `task:${b}` && f.type === "task.status_changed").at(-1);
+    if (st && CLOSED.has(String(st.data.to))) quiet = Math.max(quiet, ms(st.at));
+    else open.push({ reason: "blocked", ref: `task:${b}`, since: ms(blockedBy!.at) });
+  }
+  if (status?.data.to === "backlog") open.push({ reason: "backlog", since: ms(status.at) });
+  if (created.data.chat === true && !open.length && !failure) open.push({ reason: "chat_turn", since: quiet });
+
+  // Attention, across every obligation.
+  const attention: Attention[] = [];
+  for (const o of open) {
+    if (o.reason === "card_owner" || o.reason === "card_review") attention.push({ who: o.reason === "card_owner" ? "owner" : "reviewer", why: "card", ref: o.ref! });
+  }
+  for (const o of open) {
+    if (o.reason === "owner_wait") attention.push({ who: "owner", why: "owner_wait", ref: o.ref! });
+    if (o.reason === "delegator_wait") attention.push({ who: "agent", why: "delegator_wait", ref: o.ref! });
+    if (o.reason === "handback") attention.push({ who: "owner", why: "handback", ref: o.ref! });
+  }
+  if (failure) attention.push({ who: "agent", why: "failed", ref: failure.subject });
+
+  const ownerWait = wait && !wait.end && wait.f.data.reason === "owner_wait" ? str(wait.f.data.question) : undefined;
+  const extra = { ...(ownerWait ? { question: ownerWait } : {}) };
+  const hint = () => {
+    const occ = pair(own.filter((f) => after(f) && ms(f.at) <= now), stages)
+      .filter((o) => o.module_fact && !o.end && ms(o.start) <= now && now - ms(o.start) <= STAGE_HINT_MS).at(-1);
+    return occ ? { stage: occ.label } : {};
+  };
+  const pick = (os: Open[]) => [...os].sort((a, b) => ORDER.indexOf(a.reason) - ORDER.indexOf(b.reason) || a.since - b.since)[0]!;
+
+  const running = open.filter((o) => o.reason === "job_running").sort((a, b) => a.since - b.since)[0];
+  if (running) return { kind: "working", reason: "job_running", ref: running.ref, since: iso(running.since), holder, attention, ...extra, ...hint() };
+  if (open.length) {
+    const top = pick(open);
+    return { kind: "waiting", reason: top.reason, ...(top.ref ? { ref: top.ref } : {}), since: iso(top.since), holder, attention, ...extra, ...hint() };
+  }
+  if (failure) return { kind: "idle", reason: "failed", ref: failure.subject, since: failure.at, holder, attention };
+  // Nothing open: unknown when the last thing was a wake nothing took (someone holds the task), else orphaned.
+  const unknown = Boolean(holder && agedOut && agedOut.due >= quiet);
+  const since = unknown ? agedOut!.at : quiet;
+  if (now - since >= ATTENTION_AFTER_MS) attention.push({ who: "agent", why: unknown ? "unknown" : "orphaned", ref: self });
+  return { kind: "idle", reason: unknown ? "unknown" : "orphaned", since: iso(since), holder, attention };
+}
+
+/** The final attempt's verdict (grading's `grade.verdict`, attempt in data). */
+function gradeOf(facts: FactRow[]): "pass" | "fail" | undefined {
+  let best: FactRow | undefined;
+  for (const f of facts) if (f.type === "grade.verdict" && (!best || Number(f.data.attempt ?? 0) >= Number(best.data.attempt ?? 0))) best = f;
+  return best ? (best.data.pass === true ? "pass" : "fail") : undefined;
+}
