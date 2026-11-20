@@ -230,7 +230,7 @@ Shared files have an owner per section, so parallel lanes don't collide:
     the trailer;
   - squash merges send `commit_message` ending with the trailer;
   - `GET /aidenhq/v1/identity` (executor key) answers `{name, email}`, or 503 `GitHub isn't connected`.
-- No trailer gate in plan.ts (owner decision 2026-11-20, "minimal code gates": the commit-msg hook sets the trailer; the
+- No trailer gate in plan.ts (owner rule "minimal code gates": the commit-msg hook sets the trailer; the
   code host doesn't re-enforce it).
 - Modify: `modules/github/service/src/merges.ts` and `pr-watch.ts`:
   - while `!access.connected()`, the queue posts `work.waiting` reason `github` and skips its step;
