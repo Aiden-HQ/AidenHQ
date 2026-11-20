@@ -19,7 +19,10 @@ and type, grids that add columns, never a narrow column in the middle of a big s
 ## The frame
 
 - **Top bar** (`TopNav`): Chat, Approvals, Tasks, Fleet, Insight; then ⌘K search, today's spend, shortcuts, Settings.
-  Live counts sit on the section (approvals waiting, agents working).
+  Live counts sit on the section (approvals waiting, agents working). The slim top bar is decided (owner, 2026-11-20):
+  no sidebar frame.
+- **Chat's details panel** starts shut below 1920px wide and open from 1920 up; one click on Details opens or hides it,
+  and the choice is remembered (localStorage `aidenhq.panel`, a stored choice beats the width). Chat gets the width first.
 - **A section of several pages lists them on its left** (`SubNav`): Fleet is Agents, Apps (with pinned app panels),
   Modules, Reviews; Insight is Costs, Flow. Settings uses the same list for its categories. A section of one page has
   no list; chat keeps the full width under the bar with its own conversation list.
@@ -62,8 +65,9 @@ and `.ui-split` for the work on the left and a rail of `Card`s with `Facts` on t
 
 ## Tokens
 
-- **Colour**: every colour is a token, `light-dark(light, dark)`. Light is a warm paper page with white surfaces and an
-  indigo accent. **Dark is OLED black**: the page is `#000`; cards and panels lift on dark-grey surfaces with hairline
+- **Colour**: every colour is a token, `light-dark(light, dark)`. Light is a cool, crisp near-white page (`#f6f7f9`, Linear/Stripe-like; owner, 2026-11-20, replacing the warm
+  paper) with white surfaces, blue-grey borders and ink, and an indigo accent; muted and faint text stay at 4.5:1 or
+  better on every surface (checked on `--bg`, `--col`, `--surface`, `--surface-2`). **Dark is OLED black**: the page is `#000`; cards and panels lift on dark-grey surfaces with hairline
   borders and a faint top highlight (`--lift`), since shadows can't show on black; text and status colours are bright
   and saturated enough to read on black. One hue per item (`hueClass`) colours its face, tab underline and charts.
 - **Type**: one family (Inter, else the system face). Fixed small steps for dense UI (`--text-3xs`…`--text-body`), fluid steps above
