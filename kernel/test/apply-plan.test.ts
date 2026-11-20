@@ -21,7 +21,7 @@ const NEW_AUTHORITY = { modules: { acme: { base: { name: "acme" }, head: { name:
 
 /** One kernel: records, the planner over a fake code host and product git, the executor over a fake host that counts. */
 function kernel({ modules = { modules: {}, marketplaces: [] }, inventory = { entries: [] }, reviewer = "approve", texts = { base: yaml(OLD), head: yaml(NEW) }, verifyRelease = async () => null, autonomy = "full" } = {}) {
-  const h = { reads: 0, lands: [], launches: [], units: {} };
+  const h = { reads: 0, lands: [], launches: [], gens: [] };
   // The commit as the code host reads it, at plan and again at the land.
   const commit = () => ({ files: ["instance.yaml"], texts: { base: { "instance.yaml": texts.base }, head: { "instance.yaml": texts.head } }, diff: `-product: ${OLD}\n+product: ${NEW}\n`, trial: "" });
   const planner = createApplyPlanner({
@@ -32,10 +32,11 @@ function kernel({ modules = { modules: {}, marketplaces: [] }, inventory = { ent
   });
   const records = openRecords(join(mkdtempSync(join(tmpdir(), "apply-plan-")), "kernel.db"));
   const applies = createApply({
-    db: records.db, pollMs: 5, generations: () => [], busy: async () => false, tail: async () => "",
+    // Each launch is an apply that ends at once in a good generation of the instance's main, which contains the commit.
+    db: records.db, pollMs: 5, generations: () => h.gens, contains: async () => true, tail: async () => "",
     codehost: { read: async () => commit(), land: async (s) => (h.lands.push(s), { landed: s.sha }) },
-    launch: async (u) => { h.launches.push(u); h.units[u] = { loaded: true, active: "active", sub: "exited", result: "success" }; },
-    unit: async (u) => h.units[u] ?? { loaded: false, active: "inactive", sub: "dead", result: "" },
+    launch: async (u) => { h.launches.push(u); h.gens.push({ n: h.gens.length + 1, instance: "e".repeat(40), health: "good" }); },
+    unit: async () => ({ loaded: false, active: "inactive", sub: "dead", result: "" }),
   });
   // kernel.apply is the kernel's own kind, planned and executed here.
   const writes = createWrites({

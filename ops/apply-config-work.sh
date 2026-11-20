@@ -208,6 +208,12 @@ retireUnits() {
     systemctl --user stop aidenhq-update.timer 2>/dev/null || true
     rm -f "$units/aidenhq-update.service" "$units/aidenhq-update.timer" && systemctl --user daemon-reload && echo "release update timer removed (the kernel files releases now)"
   fi
+  # Applies the kernel started before ops/aidenhq-apply stayed loaded when they ended (RemainAfterExit): only the ended
+  # ones are stopped, so the unit running this apply never is.
+  local ended
+  ended="$(systemctl --user list-units 'aidenhq-apply-*' --state=exited --plain --no-legend 2>/dev/null | awk '{print $1}' || true)"
+  # shellcheck disable=SC2086 # unit names, one word each
+  [ -z "$ended" ] || { systemctl --user stop $ended && echo "ended apply units removed: $(echo $ended | wc -w)"; } || true
 }
 
 # Generation n failed (marked so already): its whole snapshot put back, then the last known good's product re-applied by a

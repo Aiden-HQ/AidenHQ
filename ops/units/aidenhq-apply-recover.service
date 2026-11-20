@@ -8,8 +8,8 @@ Type=oneshot
 Environment=AIDENHQ_DIR=%h/aidenhq
 EnvironmentFile=-%h/.config/aidenhq-checkout.env
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
-# The revert recreates services: the vault and Docker must be up first. Restart= tries again until they are, and while
-# another apply holds the lock (that apply finishes the dead one itself).
+# The revert recreates services: the vault and Docker must be up first. Restart= tries again until they are. Another apply
+# holding the lock is waited for (and that apply has already finished the dead one, so this finds nothing left to do).
 ExecStartPre=/usr/bin/mountpoint -q %h/.config/aidenhq
 ExecStartPre=/usr/bin/env docker info --format '{{.ServerVersion}}'
 ExecStart=/usr/bin/env bash ${AIDENHQ_DIR}/ops/apply-config.sh --recover

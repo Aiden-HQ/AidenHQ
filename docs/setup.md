@@ -251,7 +251,7 @@ Change config in one of two ways. Prefer the first:
   instance repo and you approve the change with one tap.
 - **By hand.** Edit `~/aidenhq-instance/instance.yaml`, then
   `git -C ~/aidenhq-instance commit -am '<why>' && git -C ~/aidenhq-instance push origin main`, then
-  `cd ~/aidenhq && ops/apply-config.sh`. Apply refuses to run if either checkout has uncommitted changes to tracked
+  `aidenhq-apply --wait`. Apply refuses to run if either checkout has uncommitted changes to tracked
   files.
 
 Secrets go into the vault folder `~/.config/aidenhq/` as one value per file, mode 600. To write one without it
@@ -431,7 +431,7 @@ git -C ~/aidenhq fetch origin main
 sha=$(git -C ~/aidenhq rev-parse origin/main)
 cd ~/aidenhq-instance && sed -i "s/^product: .*/product: $sha/" instance.yaml
 git commit -m "product: $sha" -- instance.yaml && git push origin main
-cd ~/aidenhq && ops/apply-config.sh
+aidenhq-apply --wait
 ```
 
 The pin must be on the checkout's `origin/main` (step 2): on a fork, sync the fork first. Apply leaves `~/aidenhq` on a

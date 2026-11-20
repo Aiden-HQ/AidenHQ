@@ -1,5 +1,6 @@
-// kernel.apply (apply.ts): what may land, and the executor end to end through the write records: land, launch the transient
-// unit once, follow it, and carry on after the restart the apply itself causes without ever launching it again.
+// kernel.apply (apply.ts): what may land, and the executor end to end through the write records: land, queue the apply
+// once, follow it to the generation that applied the commit, and carry on after the restart the apply itself causes without
+// ever launching it again.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -40,17 +41,19 @@ test("trial is read as YAML, like compile", () => {
 
 const SHA = "d".repeat(40);
 const until = async (fn) => { for (let i = 0; i < 300 && !(await fn()); i++) await new Promise((r) => setTimeout(r, 10)); assert.ok(await fn()); };
-/** This host as the executor sees it: the code host, systemd and the generations file, all fakes that count. */
+/** This host as the executor sees it: the code host, systemd, the generations file and the instance's history, all fakes that count. */
 const READ = (files = ["instance.yaml"]) => ({ files, texts: { base: { "instance.yaml": "product: x\n" }, head: { "instance.yaml": "product: y\n" } }, diff: "" });
 function fakeHost({ files = ["instance.yaml"] } = {}) {
   const h = {
     launches: [], lands: [], units: {}, gens: [{ n: 1, instance: "e".repeat(40), health: "good" }], hang: false,
+    // commit → the commits it contains besides itself.
+    history: {},
     read: READ(files),
     codehost: { read: async () => h.read, land: async (s) => (h.lands.push(s), { landed: s.sha }) },
     launch: async (u) => { h.launches.push(u); h.units[u] = { loaded: true, active: "active", sub: "running", result: "success" }; },
     // A kernel that hangs here is one the apply has just restarted: it never sees the unit end.
     unit: (u) => (h.hang ? new Promise(() => {}) : Promise.resolve(h.units[u] ?? { loaded: false, active: "inactive", sub: "dead", result: "success" })),
-    generations: () => h.gens, busy: async () => false, tail: async () => "apply-config: the health check failed",
+    generations: () => h.gens, contains: async (sha, c) => c === sha || (h.history[c] ?? []).includes(sha), tail: async () => "apply-config: the health check failed",
   };
   return h;
 }
@@ -73,13 +76,14 @@ const claimed = (records, files = ["instance.yaml"]) => records.file({
 });
 const dbFile = () => join(mkdtempSync(join(tmpdir(), "apply-")), "kernel.db");
 
-test("an apply lands its commit from the task's workspace, launches its unit once and is done when the unit succeeds", async () => {
+test("an apply lands its commit from the task's workspace, queues its apply once and is done when a generation applies it", async () => {
   const h = fakeHost();
   const k = kernel(dbFile(), h);
   const r = claimed(k.records);
   const done = k.applies.execute(r);
   await until(() => h.launches.length === 1);
-  h.units[h.launches[0]] = { loaded: true, active: "active", sub: "exited", result: "success" };
+  h.gens.push({ n: 2, instance: SHA, health: "good" });
+  delete h.units[h.launches[0]];
   const o = await done;
   assert.equal(o.ok, true, o.text);
   assert.deepEqual(h.lands, [{ repo: "acme/aidenhq-instance", branch: "fleet/edit", sha: SHA, workspace: "ACME-1", official: { from: null, to: null } }]);
@@ -112,7 +116,8 @@ test("a crash between launching the unit and recording its outcome never starts 
   await b.writes.reconcile();
   await new Promise((ok) => setTimeout(ok, 30));
   assert.equal(b.records.get(r.id).state, "claimed", "still running: followed, not settled");
-  h.units[h.launches[0]] = { loaded: true, active: "active", sub: "exited", result: "success" };
+  h.gens.push({ n: 2, instance: SHA, health: "good" });
+  delete h.units[h.launches[0]];
   await until(() => b.records.get(r.id).state === "done");
   assert.equal(h.launches.length, 1);
   assert.equal(h.lands.length, 1);
@@ -129,7 +134,7 @@ test("a crash between launching the unit and recording its outcome never starts 
   const d = kernel(db2, h3);
   await d.writes.reconcile();
   await until(() => d.records.get(r2.id).state === "failed");
-  assert.match(d.records.get(r2.id).outcome.text, /whether its apply ran is unknown.*not started again/s);
+  assert.match(d.records.get(r2.id).outcome.text, /no apply applied it.*not started again/s);
   assert.equal(h3.launches.length, 0);
 });
 
@@ -149,21 +154,42 @@ test("a land whose answer was lost lands on its retry, and a systemd that can't 
   const r = claimed(records);
   const done = applies.execute(r);
   await until(() => h.launches.length === 1);
-  h.units[h.launches[0]] = { loaded: true, active: "active", sub: "exited", result: "success" };
+  await until(() => fails < 0);
+  h.gens.push({ n: 2, instance: SHA, health: "good" });
+  delete h.units[h.launches[0]];
   const o = await done;
   assert.equal(o.ok, true, o.text);
-  assert.match(o.text, /Applied: the instance's main is `ddddddddd`/);
+  assert.match(o.text, /Applied: generation 2 runs the instance's main at `ddddddddd`/);
   assert.equal(h.lands.length, 1, "the retry read the commit on main and didn't land again");
   assert.equal(fails, -1, "systemd was read again after its failures");
-  // Main has moved past the approved commit since (a newer commit on top): only the approved commit is ever applied, so nothing
-  // is launched, never main's head.
-  const h2 = fakeHost();
-  h2.codehost.read = async () => ({ files: [], texts: { base: {}, head: {} }, diff: "", base: SHA, main: "f".repeat(40) });
-  const r2 = openRecords(dbFile());
-  const o2 = await createApply({ db: r2.db, ...h2, pollMs: 5, retryMs: [5] }).execute(claimed(r2));
-  assert.equal(o2.ok, false);
-  assert.match(o2.text, /Landed on the instance's main \(`ddddddddd`\), but not applied here:.*`fffffffff`/s);
-  assert.deepEqual([h2.lands.length, h2.launches.length], [0, 0]);
+});
+
+test("an apply is done by the first good generation whose instance contains its commit, never by an auto-revert's", async () => {
+  // Main has moved past the approved commit since (a newer commit on top, F): the commit has landed, the apply is queued, and
+  // whichever apply runs main first applies it.
+  const F = "f".repeat(40), R = "a".repeat(40);
+  const h = fakeHost();
+  h.codehost.read = async () => ({ files: [], texts: { base: {}, head: {} }, diff: "", base: SHA, main: F });
+  h.history = { [F]: [SHA], [R]: [SHA] };
+  h.gens.push({ n: 2, instance: F, health: "good" }); // before the mark: an apply that ran before this record's
+  const records = openRecords(dbFile());
+  const done = createApply({ db: records.db, ...h, pollMs: 5 }).execute(claimed(records));
+  await until(() => h.launches.length === 1);
+  assert.equal(h.lands.length, 0, "already on main: nothing to land");
+  // An apply queued earlier runs F and fails; its auto-revert (built on F, so containing the commit too) is good. Neither
+  // is this record's outcome while its own apply is still queued.
+  h.gens.push({ n: 3, instance: F, health: "failed", reason: "the kernel is down" }, { n: 4, instance: R, health: "good", revert_of: 3 });
+  await new Promise((ok) => setTimeout(ok, 30));
+  let settled = false;
+  void done.then(() => (settled = true));
+  await new Promise((ok) => setTimeout(ok, 30));
+  assert.equal(settled, false, "a failed generation and a revert don't settle a record whose apply is still queued");
+  // Its own apply (or any later one) runs main and is good.
+  h.gens.push({ n: 5, instance: F, health: "good" });
+  const o = await done;
+  assert.equal(o.ok, true, o.text);
+  assert.match(o.text, /generation 5 runs the instance's main at `fffffffff`, which contains `ddddddddd`/);
+  assert.equal(h.launches.length, 1);
 });
 
 test("a failed apply marks the record failed, though the auto-revert left the host healthy", async () => {

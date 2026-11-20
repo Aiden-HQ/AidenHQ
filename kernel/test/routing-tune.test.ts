@@ -79,12 +79,13 @@ function world({ autonomy = "full", reviewer = "approve" } = {}) {
     modules: () => ({}), roles: () => ({}), connections: () => ({}), moduleApps: () => [], verifyRelease: async () => null,
     notes: (sha, requester, task) => routing.notes(sha, requester, task),
   });
-  const units = {};
+  // Each launch is an apply that ends at once in a good generation of the instance's main, which contains the commit.
+  const gens = [];
   const applies = createApply({
-    db, pollMs: 5, generations: () => [], busy: async () => false, tail: async () => "",
+    db, pollMs: 5, generations: () => gens, contains: async () => true, tail: async () => "",
     codehost: { read: (s) => host.read(s), land: (s) => host.land(s) },
-    launch: async (u) => { units[u] = { loaded: true, active: "active", sub: "exited", result: "success" }; },
-    unit: async (u) => units[u] ?? { loaded: false, active: "inactive", sub: "dead", result: "" },
+    launch: async () => { gens.push({ n: gens.length + 1, instance: "e".repeat(40), health: "good" }); },
+    unit: async () => ({ loaded: false, active: "inactive", sub: "dead", result: "" }),
   });
   const reviewed = [];
   const writes = createWrites({

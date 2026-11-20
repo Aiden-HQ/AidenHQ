@@ -182,7 +182,8 @@ log(baseRepos.product && baseRepos.instance ? "repositories" : "AIDENHQ_PRODUCT_
 const reviews = createReviews({ slot: () => modulesFile().reviewer, secret, resolver, log, modelToken: (component) => mintToken(secret("gateway_job_secret"), { kind: "reviewer", component, ttlMs: 3600_000 }) });
 let raiseCap: (r: { scope: string; agentId: string; subject: string; cap: number; spent: number; to: number }) => Promise<string> = async () => { throw new Error("the model gateway isn't up"); };
 // kernel.apply's executor (apply.ts): the code host lands the commit, a transient unit runs the apply; a restart resumes it.
-const applyHost = hostApply({ repo, stateDir: env("AIDENHQ_STATE_DIR", path.join(process.env.HOME ?? "", ".local/state/aidenhq")), resolver, codehost: () => { const e = moduleKinds()["github.push"]?.executor; return e && { url: e.url, key: secret(e.auth_secret) }; },
+const instanceDir = env("AIDENHQ_INSTANCE_DIR", path.join(process.env.HOME ?? "", "aidenhq-instance"));
+const applyHost = hostApply({ repo, instanceDir, stateDir: env("AIDENHQ_STATE_DIR", path.join(process.env.HOME ?? "", ".local/state/aidenhq")), resolver, codehost: () => { const e = moduleKinds()["github.push"]?.executor; return e && { url: e.url, key: secret(e.auth_secret) }; },
   // codehost-local's instance repo: the bare repo setup made on this host (AIDENHQ_INSTANCE_REMOTE).
   local: () => (localHost() && repos().instance?.toLowerCase().startsWith(`${LOCAL_ORG}/`) ? { bare: localCode.bare(repos().instance!), repo: repos().instance!, ingest: (s) => ingest(tasksDir, localScratch, localCode.bare(s.repo), s.workspace, s) } : undefined) });
 const applies = createApply({ db: records.db, log, ...applyHost });
@@ -298,7 +299,6 @@ every(updatesTick, 5 * 60_000);
 once(updatesTick, 60_000);
 // The kernel's review of every record waiting for the AI reviewer (review-loop.ts). The instance's decisions digest is read
 // from its checkout's origin/main (fetched first, as updates.ts reads instance.yaml), never a branch under review.
-const instanceDir = env("AIDENHQ_INSTANCE_DIR", path.join(process.env.HOME ?? "", "aidenhq-instance"));
 const gitIn = (dir: string, args: string[]) => new Promise<string>((ok, no) => execFile("git", ["-C", dir, ...args], { timeout: 60_000, maxBuffer: 4 * 1024 * 1024 }, (e, out) => (e ? no(e) : ok(String(out)))));
 let ownerUser: string | undefined;
 const reviewLoop = createReviewLoop({

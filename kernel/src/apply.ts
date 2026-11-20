@@ -1,15 +1,20 @@
 // kernel.apply (spec §4.4 "Land"): what an apply may land, and its executor. An apply lands one instance commit on the
-// instance repo's main (instance.yaml, apps.yaml, handbook additions only) through the code host, then runs
-// ops/apply-config.sh on this host as a transient user unit, which outlives the kernel restart the apply itself causes.
+// instance repo's main (instance.yaml, apps.yaml, handbook additions only) through the code host, then queues an apply on
+// this host through ops/aidenhq-apply (a transient user unit, which outlives the kernel restart the apply itself causes).
 // Product code and module handbooks change through Engineer PRs; the instance pins the product (`product: <sha>`), so
 // upgrading the product is itself an instance change that the owner sees with its commit log.
 //
+// An apply applies the instance's main as it is when it gets the host's apply lock, so a record is done by the first good
+// generation after its mark whose instance commit contains the record's commit (`git merge-base --is-ancestor`): its own
+// apply's, or one queued before it. What else that main carries reached it the same ways (another approved kernel.apply,
+// apps-mcp's registry edits as their own write records, the owner's pushes), which a manual apply deploys too.
+//
 // No apply is ever started twice. Each record moves through one row in kernel.db, written in this order:
 //   landed  the commit is on the instance's main (the code host's land is idempotent: an already landed commit is a no-op)
-//   unit    the launch intent: the unit's name and the newest generation before it, written BEFORE systemd-run
-// A record is launched only from "landed, no intent". From "intent" it is only followed: the unit while systemd still
-// has it (RemainAfterExit keeps a finished one loaded, and a loaded name can't be started again), else the first
-// generation after the mark that applied this commit (ops/lib/generations.sh); with neither, it failed and is not run again.
+//   unit    the launch intent: the unit's name and the newest generation before it, written BEFORE the launch
+// A record is launched only from "landed, no intent". From "intent" it is only followed: waited on while its unit is
+// loaded (queued or running), and once it is gone (collected when it ends) decided by the generations; with no good one
+// containing the commit it failed and is not run again.
 // A restart is the normal path (the apply restarts the kernel): writes.ts resumes a claimed kernel.apply here.
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -65,26 +70,6 @@ export function bumpTitle({ from, to, forward, back }: { from?: string; to: stri
   if (!from) return `Product pinned at ${s(to)}`;
   if (forward) return `Product upgrade ${s(from)} → ${s(to)}, adding these commits`;
   if (back) return `Product DOWNGRADE (rollback) ${s(from)} → ${s(to)}, removing these commits`;
-}
-
-// The host's apply lock. ops/apply-config.sh opens data/apply.lock, holds it for the whole apply and refuses a second one at
-// once with "another apply is running" (ops/lib/apply-lock.sh).
-export const APPLY_LOCK = "data/apply.lock";
-// flock's -E status for "somebody else holds it", so a probe's other failures stay failures.
-const FLOCK_BUSY = 75;
-
-/** Whether another process holds <repo>/data/apply.lock now: a probe that locks the file itself, so a free lock stays free. */
-export function applyIsBusy(repoPath: string): Promise<boolean> {
-  const lock = join(repoPath, APPLY_LOCK);
-  // The entry point creates it before it locks; no file is no apply running (and flock won't open one that isn't there).
-  if (!existsSync(lock)) return Promise.resolve(false);
-  return new Promise<boolean>((resolve, reject) => {
-    execFile("flock", ["-n", "-E", String(FLOCK_BUSY), lock, "true"], (err: (Error & { code?: unknown }) | null) => {
-      if (!err) return resolve(false);
-      if (err.code === FLOCK_BUSY) return resolve(true);
-      reject(new Error(`couldn't check whether ${lock} is held (${err.message})`));
-    });
-  });
 }
 
 /** Where the code host reads the commit: its own copy when it made it, else the task's workspace (the record's identifier). */
@@ -144,10 +129,12 @@ export type Write = { repo: string; base: string; branch: string; files: Record<
 export type ApplyHost = {
   /** land: `official`, the official modules' pin on both sides, for the code host's reviewer-eval gate. */
   codehost: { read(s: Source): Promise<Read>; land(s: Source & { official: { from: OfficialPin; to: OfficialPin } }): Promise<{ landed: string }>; write(w: Write): Promise<{ sha: string }> };
-  launch(unit: string, sha: string): Promise<void>;
+  /** Queues an apply as `unit` (ops/aidenhq-apply): it waits for any apply running, then applies the instance's main. */
+  launch(unit: string): Promise<void>;
   unit(unit: string): Promise<Unit>;
   generations(): Generation[];
-  busy(): Promise<boolean>;
+  /** Whether instance commit `commit` contains `sha` (false when either is unknown here). */
+  contains(sha: string, commit: string): Promise<boolean>;
   /** The unit's last lines (its journal), for the outcome. */
   tail(unit: string): Promise<string>;
 };
@@ -155,8 +142,8 @@ export type ApplyHost = {
 /** A failure worth trying again: no answer, a timeout, a 5xx or a 429 (a 4xx is the code host's answer). */
 const transient = (e: unknown) => { const st = (e as { status?: number }).status; return st === undefined || st >= 500 || st === 429; };
 
-export function createApply({ db, codehost, launch, unit, generations, busy, tail, log = () => {}, pollMs = 5_000, lockWaitMs = 15 * 60_000, retryMs = [5_000, 30_000, 120_000], unitWaitMs = 30 * 60_000 }: ApplyHost & {
-  db: DatabaseSync; log?: (msg: string, f?: Record<string, unknown>) => void; pollMs?: number; lockWaitMs?: number;
+export function createApply({ db, codehost, launch, unit, generations, contains, tail, log = () => {}, pollMs = 5_000, retryMs = [5_000, 30_000, 120_000], unitWaitMs = 30 * 60_000 }: ApplyHost & {
+  db: DatabaseSync; log?: (msg: string, f?: Record<string, unknown>) => void; pollMs?: number;
   /** The waits between tries of a code host call that failed transiently; `unitWaitMs`: how long systemd may stay unreadable. */
   retryMs?: number[]; unitWaitMs?: number;
 }) {
@@ -177,38 +164,55 @@ export function createApply({ db, codehost, launch, unit, generations, busy, tai
     }
   }
 
-  /** The apply's outcome: the unit while systemd has it, else the generation that applied this commit after the mark. */
+  /**
+   * The apply's outcome: the first good generation after the mark whose instance contains the commit. While the unit is
+   * loaded (queued behind another apply, or running) it is waited on; once it is gone with no such generation, it failed.
+   */
   async function follow(row: Row): Promise<Outcome> {
+    const sha = row.landed!, short = `\`${sha.slice(0, 9)}\``;
+    const known = new Map<string, boolean>();
+    const has = async (g: Generation) => {
+      if (!known.has(g.instance!)) known.set(g.instance!, await contains(sha, g.instance!));
+      return known.get(g.instance!)!;
+    };
+    const tailed = async () => `\n\n\`\`\`\n${(await tail(row.unit!).catch(() => "")).replace(/\x1b\[[0-9;]*m/g, "").trim().split("\n").slice(-40).join("\n")}\n\`\`\``;
+    // An auto-revert's generation is built on the failed instance and so contains the commit too: it never counts.
+    const since = () => generations().filter((g) => g.n > (row.mark ?? 0) && g.instance && !g.revert_of);
+    const applied = async (): Promise<Outcome | undefined> => {
+      for (const g of since()) {
+        if (g.health === "good" && (await has(g))) return { ok: true, text: `Applied: generation ${g.n} runs the instance's main at \`${g.instance!.slice(0, 9)}\`, which contains ${short}${g.log ? ` (log ${g.log})` : ""}.` };
+      }
+    };
     let unread = 0;
     for (;;) {
-      const g = generations().find((x) => x.n > (row.mark ?? 0) && x.instance === row.landed && !x.revert_of);
+      const done = await applied();
+      if (done) return done;
       let u: Unit;
       try {
         u = await unit(row.unit!);
         unread = 0;
       } catch (e) {
-        // systemd unreadable for a moment (a busy user manager, a timeout): never an outcome. A settled generation decides;
-        // else ask again, and only a systemd that stays unreadable for unitWaitMs fails the record.
-        if (g && g.health !== "pending") u = { loaded: false, active: "", sub: "", result: "" };
-        else {
-          unread ||= Date.now();
-          if (Date.now() - unread >= unitWaitMs) throw e;
-          log("apply: its unit couldn't be read, trying again", { unit: row.unit, err: String((e as Error).message).slice(0, 200) });
-          await sleep(pollMs);
-          continue;
-        }
+        // systemd unreadable for a moment (a busy user manager, a timeout): never an outcome. Only a systemd that stays
+        // unreadable for unitWaitMs fails the record.
+        unread ||= Date.now();
+        if (Date.now() - unread >= unitWaitMs) throw e;
+        log("apply: its unit couldn't be read, trying again", { unit: row.unit, err: String((e as Error).message).slice(0, 200) });
+        await sleep(pollMs);
+        continue;
       }
-      const gen = g ? ` (generation ${g.n}: ${g.health}${g.reason ? `, ${g.reason}` : ""}${g.log ? `; log ${g.log}` : ""})` : "";
-      const said = async (ok: boolean, head: string) => ({ ok, text: `${head}${gen}.${ok ? "" : `\n\n\`\`\`\n${(await tail(row.unit!).catch(() => "")).replace(/\x1b\[[0-9;]*m/g, "").trim().split("\n").slice(-40).join("\n")}\n\`\`\``}` });
-      if (u.loaded && (u.active === "failed" || (u.active === "active" && u.sub === "exited") || u.active === "inactive")) {
-        return said(u.result === "success", u.result === "success" ? `Applied: the instance's main is \`${row.landed!.slice(0, 9)}\`` : `**Landed on the instance's main (\`${row.landed!.slice(0, 9)}\`), but the apply failed** (${u.result})`);
+      // Loaded and not ended: queued behind another apply or running. (An apply launched before ops/aidenhq-apply ends
+      // loaded, active and exited.)
+      if (u.loaded && u.active !== "failed" && u.active !== "inactive" && !(u.active === "active" && u.sub === "exited")) {
+        await sleep(pollMs);
+        continue;
       }
-      if (!u.loaded) {
-        if (g?.health === "good") return said(true, `Applied: the instance's main is \`${row.landed!.slice(0, 9)}\``);
-        if (g) return said(false, `**Landed on the instance's main (\`${row.landed!.slice(0, 9)}\`), but the apply ${g.health === "pending" ? "died" : "failed"}**`);
-        return { ok: false, text: `**Landed on the instance's main (\`${row.landed!.slice(0, 9)}\`), but whether its apply ran is unknown** (the unit ${row.unit} is gone and no generation applied it): it is not started again. Run ops/apply-config.sh from the owner's shell if it is still needed.` };
-      }
-      await sleep(pollMs);
+      // Ended: its generation is in the file by now (read after the unit), the one that applied it or the one that failed.
+      const ended = await applied();
+      if (ended) return ended;
+      let last: Generation | undefined;
+      for (const g of since()) if (await has(g)) last = g;
+      if (last) return { ok: false, text: `**Landed on the instance's main (${short}), but the apply ${last.health === "pending" ? "died" : "failed"}** (generation ${last.n}: ${last.health}${last.reason ? `, ${last.reason}` : ""}${last.log ? `; log ${last.log}` : ""}).${await tailed()}` };
+      return { ok: false, text: `**Landed on the instance's main (${short}), but no apply applied it:** its unit ${row.unit} ended (or never started) and no generation since contains it; it is not started again. Run \`aidenhq-apply --wait\` on the host if it is still needed.${await tailed()}` };
     }
   }
 
@@ -226,16 +230,14 @@ export function createApply({ db, codehost, launch, unit, generations, busy, tai
     let row = get(r.id)!;
     if (!row.landed) {
       const src: Source = { repo: a.repo, branch: a.branch, sha: a.sha, ...(r.identifier ? { workspace: r.identifier } : {}) };
-      const movedPast = (main: string | undefined): Outcome => ({ ok: false, text: `**Landed on the instance's main (\`${a.sha.slice(0, 9)}\`), but not applied here:** main is ${main ? `\`${main.slice(0, 9)}\`` : "unknown"} now, past the approved commit, so only that newer commit's own apply runs it.` });
       // Read, checked and landed as one step, tried again after a transient failure: a land whose answer was lost is read again
       // and found on main.
       const step = await retried("land", r.id, async (): Promise<Outcome | { landed: string }> => {
         const c = await codehost.read(src);
         // Already on main (a land whose answer was lost, or a restart before it was recorded): its diff against its own merge
-        // base is empty by then, so the checks below can't be re-read; the approved commit itself is what landed. Only exactly
-        // that commit is ever applied: when main has moved past it, nothing is launched (the newer commit's own apply carries it).
-        const onMain = c.base === a.sha;
-        if (onMain) return c.main === a.sha ? { landed: a.sha } : movedPast(c.main);
+        // base is empty by then, so the checks below can't be re-read; the approved commit itself is what landed, and main
+        // (however far past it) is what the apply applies.
+        if (c.base === a.sha) return { landed: a.sha };
         // What lands is what the card showed: the same files, read again from git at the commit, never from the args alone.
         if ([...c.files].sort().join("\n") !== [...a.files].sort().join("\n")) return { ok: false, text: "Not applied: the commit no longer changes the files that were approved; it needs a new approval." };
         // And exactly what was reviewed: every text and the diff, not only the file names.
@@ -246,8 +248,8 @@ export function createApply({ db, codehost, launch, unit, generations, busy, tai
         if (untrialed.length) return { ok: false, text: `Not applied: a new agent must start in trial (${untrialed.join(", ")}).` };
         const official = officialMove(c.texts.base["instance.yaml"], c.texts.head["instance.yaml"]);
         if ("error" in official) return { ok: false, text: `Not applied: ${official.error}.` };
-        const { landed } = await codehost.land({ ...src, official });
-        return landed === a.sha ? { landed } : movedPast(landed);
+        await codehost.land({ ...src, official });
+        return { landed: a.sha };
       });
       if (!("landed" in step)) return step;
       const { landed } = step;
@@ -256,17 +258,12 @@ export function createApply({ db, codehost, launch, unit, generations, busy, tai
       row = get(r.id)!;
     }
     if (!row.unit) {
-      // One launch per record: another apply holding the lock (an operator's, say) is waited out first, bounded.
-      const until = Date.now() + lockWaitMs;
-      while (await busy()) {
-        if (Date.now() >= until) return { ok: false, text: `**Landed on the instance's main (\`${row.landed!.slice(0, 9)}\`), but not applied:** another apply held ${APPLY_LOCK} for ${Math.round(lockWaitMs / 60_000)} minutes. Its next apply runs it.` };
-        await sleep(Math.min(pollMs, 2_000));
-      }
+      // One launch per record. It queues behind any apply running (the lock waits), so the mark is taken now.
       const mark = generations().reduce((m, g) => Math.max(m, g.n), 0);
       const intent = db.prepare("UPDATE applies SET unit = ?, mark = ? WHERE record = ? AND unit IS NULL").run(`aidenhq-apply-${r.id}`, mark, r.id).changes === 1;
       row = get(r.id)!;
       if (intent) {
-        await launch(row.unit!, row.landed!);
+        await launch(row.unit!);
         log("apply launched", { record: r.id, unit: row.unit, sha: row.landed });
       }
     }
@@ -281,12 +278,13 @@ const run = (cmd: string, args: string[], opts: { cwd?: string } = {}) =>
   new Promise<string>((resolve, reject) => execFile(cmd, args, { ...opts, maxBuffer: 8 * 1024 * 1024, timeout: 60_000 }, (err, out, errOut) => (err ? reject(new Error(`${cmd} ${args[0]}: ${String(errOut || err.message).trim().slice(0, 500)}`)) : resolve(String(out)))));
 
 /**
- * This host's side of an apply: systemd for the unit, the generations file, the lock, and the code host that owns the instance
+ * This host's side of an apply: ops/aidenhq-apply and systemd for the unit, the generations file and the instance checkout, and the code host that owns the instance
  * repo's org for the commit: codehost-local's land for `local/…` (the bare repo on this host), else the codehost-github
  * service (its own key, the one the kernel calls its executor with). One interface; the provider is the only variation.
  */
-export function hostApply({ repo, stateDir, resolver, codehost, local }: {
-  repo: string; stateDir: string; resolver: Resolver; codehost: () => { url: string; key: string } | undefined;
+export function hostApply({ repo, stateDir, instanceDir, resolver, codehost, local }: {
+  /** `instanceDir`: the instance checkout the applies move (AIDENHQ_INSTANCE_DIR), where a generation's instance commit is. */
+  repo: string; stateDir: string; instanceDir: string; resolver: Resolver; codehost: () => { url: string; key: string } | undefined;
   /** codehost-local, when enabled: the instance repo's bare git dir on this host, its slug, and a job's branch fetched in from its workspace. */
   local: () => { bare: string; repo: string; ingest: (s: Source & { workspace: string }) => Promise<unknown> } | undefined;
 }): ApplyHost {
@@ -320,14 +318,15 @@ export function hostApply({ repo, stateDir, resolver, codehost, local }: {
   const genFile = join(stateDir, "generations.jsonl");
   return {
     codehost: { read: (s) => provider(s).read(s), land: (s) => provider(s).land(s), write: (w) => provider(w).write(w) },
-    // RemainAfterExit: the finished unit stays loaded, so its result can be read and its name can't start a second apply.
-    launch: async (u, sha) => void (await run("systemd-run", ["--user", `--unit=${u}`, "-p", "RemainAfterExit=yes", `--working-directory=${repo}`, `--setenv=PATH=${process.env.PATH ?? "/usr/bin:/bin"}`, `--setenv=HOME=${process.env.HOME ?? ""}`, "--", "bash", join(repo, "ops/apply-config.sh"), sha])),
+    // The same entry point as the owner's shell; the unit is collected when it ends, so none is left loaded.
+    launch: async (u) => void (await run("bash", [join(repo, "ops/aidenhq-apply"), "--unit", u])),
     async unit(u) {
       const p = Object.fromEntries((await run("systemctl", ["--user", "show", `${u}.service`, "-p", "LoadState,ActiveState,SubState,Result"])).trim().split("\n").map((l) => l.split("=", 2) as [string, string]));
       return { loaded: p.LoadState === "loaded", active: p.ActiveState ?? "", sub: p.SubState ?? "", result: p.Result ?? "" };
     },
     generations: () => (existsSync(genFile) ? readFileSync(genFile, "utf8").split("\n").filter(Boolean).flatMap((l) => { try { return [JSON.parse(l) as Generation]; } catch { return []; } }) : []),
-    busy: () => applyIsBusy(repo),
+    // Exit 0 is yes; 1 (not an ancestor) and every error (a commit this checkout doesn't have) are no: never a false yes.
+    contains: (sha, commit) => new Promise((resolve) => execFile("git", ["-C", instanceDir, "merge-base", "--is-ancestor", sha, commit], { timeout: 60_000 }, (err) => resolve(!err))),
     tail: (u) => run("journalctl", ["--user", "-u", `${u}.service`, "-n", "40", "-o", "cat", "--no-pager"]),
   };
 }
