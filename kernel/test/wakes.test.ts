@@ -182,6 +182,19 @@ test("a task's pending read: a wake still waiting to start a job reads true (a r
   assert.equal(w.wakes.pending("dispatch", "gone"), false);
   // Another module, which doesn't dispatch the task's agent, sees nothing of it.
   assert.equal(w.wakes.pending("other", "p1"), false);
+  // Rows are read one by one: another agent's pending wake on the task is not this dispatcher's to see, even behind a newer
+  // row of its own agent ...
+  const row = (key, task, agent, state, at) => w.db.prepare("INSERT INTO wakes (key, task, agent, cause, at, state) VALUES (?, ?, ?, 'comment', ?, ?)").run(key, task, agent, at, state);
+  w.issue("p3", { assigneeAgentId: OTHER });
+  row("comment:o1", "p3", OTHER, "open", w.tick());
+  assert.equal(w.wakes.pending("dispatch", "p3"), false, "another agent's pending wake");
+  row("comment:a1", "p3", AGENT, "done", w.tick());
+  assert.equal(w.wakes.pending("dispatch", "p3"), false, "a newer done row of its own doesn't expose the other agent's open one");
+  // ... and its own pending wake still counts when another agent's newer row is not pending.
+  w.issue("p4", { assigneeAgentId: AGENT });
+  row("comment:a2", "p4", AGENT, "open", w.tick());
+  row("comment:o2", "p4", OTHER, "done", w.tick());
+  assert.equal(w.wakes.pending("dispatch", "p4"), true, "its own pending wake under another agent's newer row");
 });
 
 test("a routine run whose dropped wake is re-armed on the next poll starts once, and not again once a job has started", async () => {
