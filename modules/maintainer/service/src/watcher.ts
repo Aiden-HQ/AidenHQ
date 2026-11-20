@@ -231,6 +231,14 @@ async function triageRepo(b: MaintainerRepoBatch, before: RepoState, fire: Triag
     }
   }
   const heldNow = new Set(held.map((h) => h.number));
+  // At most KEEP held, the oldest dropped to the daily triage run (it sweeps every open unlabelled issue).
+  const bounded = () => {
+    if (held.length > KEEP) {
+      log.warn({ repo: b.repo, dropped: held.length - KEEP }, "held triage issues over the limit: the oldest are left to the daily triage run");
+      held.splice(0, held.length - KEEP);
+    }
+    return held;
+  };
   // The issues come oldest first: the cursor follows the last one delivered, and reaches the read's own once all are.
   let cursor = before.triage_cursor;
   for (const i of b.untriaged) {
@@ -243,7 +251,7 @@ async function triageRepo(b: MaintainerRepoBatch, before: RepoState, fire: Triag
         heldNow.add(i.number);
       } else if (!(await fire(b.repo, i.number).catch(() => false))) {
         log.warn({ repo: b.repo, issue: i.number }, "maintainer triage task not filed; the next tick retries it");
-        return { triage_cursor: cursor, triaged: keep(triaged), recent, held, count };
+        return { triage_cursor: cursor, triaged: keep(triaged), recent, held: bounded(), count };
       } else {
         recent.push({ at: Date.now(), author, issue: i.number });
         triaged.add(i.number);
@@ -252,7 +260,7 @@ async function triageRepo(b: MaintainerRepoBatch, before: RepoState, fire: Triag
     }
     cursor = i.created_at;
   }
-  return { triage_cursor: b.triage_cursor, triaged: keep(triaged), recent, held, count };
+  return { triage_cursor: b.triage_cursor, triaged: keep(triaged), recent, held: bounded(), count };
 }
 
 /**
