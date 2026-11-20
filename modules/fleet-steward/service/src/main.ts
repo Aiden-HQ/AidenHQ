@@ -9,7 +9,7 @@ import { kernelClient } from "./aidenhq-sdk/kernel-client.ts";
 import { kernelJwks, verifyCaller } from "./aidenhq-sdk/caller.ts";
 import { alertIncidents, firing, parseAlerts, receiveAlerts } from "./alerts.ts";
 import { coachReads } from "./coach.ts";
-import { checks, detectorState, QUIET_MS, snoozeFollowup, staleFollowups, tick, type Kv } from "./detector.ts";
+import { checks, detectorState, QUIET_MS, snoozeFollowup, staleFollowups, stewardOn, tick, type Kv } from "./detector.ts";
 import { createMcp, fleetTools } from "./mcp.ts";
 import { isModule } from "./module-caller.ts";
 import { createStewardServer } from "./server.ts";
@@ -71,7 +71,7 @@ const run = async () => {
       const ok = await fileCheck(b).then(() => true, (e) => (log("check task not filed", { err: String(e.message ?? e) }), false));
       log("fleet check", { ok, incidents: b.incidents.map((i) => i.key), recovered: b.recovered.map((r) => r.key) });
       return ok;
-    }, notify, new Date(), QUIET_MS);
+    }, notify, new Date(), QUIET_MS, await stewardOn(kernel, env.FLEET_STEWARD_QUIET_START).catch(() => false));
   } catch (err) {
     log("detector failed", { err: String(err) });
   } finally {

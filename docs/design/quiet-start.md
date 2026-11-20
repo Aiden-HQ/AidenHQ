@@ -28,6 +28,10 @@ itself; so is turning `quiet_start` off, which starts every module schedule at o
 the AI panel instead (approvals.md, Autonomy). Raising or removing `spend_day_usd` is the owner's at every autonomy;
 tightening (a lower cap, pausing again) tiers as usual.
 
+**Services that spend on their own follow it too.** The Fleet Steward's detector keeps checking, but files its check task only
+once the owner turns the Steward on (`overrides.routines.fleet-ops-digest.status: active`; its `stewardOn`). The Maintainer's
+`external_triage` defaults to false: no task per stranger's issue until `external_triage: true`.
+
 **No catch-up burst on resume.** Paperclip catches a missed tick up (one run per tick, at most 25). Setup re-saves
 every schedule trigger on each apply, which moves its next run to the next tick from now, and for an existing routine
 it does that before changing the routine's status, so a routine turned on after weeks paused starts at its next tick.

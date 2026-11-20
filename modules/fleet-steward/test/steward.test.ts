@@ -4,7 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { alertIncidents, parseAlerts, receiveAlerts } from "../service/src/alerts.ts";
 import { coachReads, dueList, LIMITS, packEvidence, parseReviews } from "../service/src/coach.ts";
-import { checks, detectorState, qualityFindings, snoozeFollowup, staleFollowups, tick } from "../service/src/detector.ts";
+import { checks, detectorState, qualityFindings, snoozeFollowup, staleFollowups, stewardOn, tick } from "../service/src/detector.ts";
 import { createMcp, fleetTools } from "../service/src/mcp.ts";
 
 const NOW = Date.parse("2026-11-20T12:00:00Z");
@@ -489,4 +489,20 @@ test("the Later detectors: an unstarted delegation, a merge or blocker deadlock,
 
   const card = (id, state, h) => ({ id, kind: "github.merge", state, tier: 2, task: "t", identifier: "WOR-1", created_at: ago(h) });
   assert.deepEqual((await mk({}, { cards: [card("c1", "owner", 30), card("c2", "owner", 2), card("c3", "approved", 30)] }).card()).map((i) => i.key), ["c1"]);
+});
+
+test("quiet start: the detector still checks but files and notifies nothing until the Steward's digest routine is on", async () => {
+  const routine = (status) => ({ read: async (p) => (p === "/api/companies" ? [{ id: "co" }] : [{ title: "Fleet Ops: daily digest", status }]) });
+  assert.equal(await stewardOn(routine("paused"), "on"), false);
+  assert.equal(await stewardOn(routine("active"), "on"), true);
+  assert.equal(await stewardOn(routine("paused"), "off"), true);
+  const kv = kvOf(), filed = [], told = [];
+  const down = { app: async () => [{ key: "web", reason: "app web is down" }] };
+  const run = (on, at) => tick(kv, down, async (b) => (filed.push(b), true), async (t) => void told.push(t), new Date(at), 0, on);
+  await run(await stewardOn(routine("paused"), "on"), NOW);
+  await run(false, NOW + 2 * 86_400_000);
+  assert.deepEqual([filed.length, told.length], [0, 0]);
+  assert.ok(detectorState(kv).open["app:web"]);
+  await run(await stewardOn(routine("active"), "on"), NOW + 2 * 86_400_000);
+  assert.equal(filed.length, 1);
 });
