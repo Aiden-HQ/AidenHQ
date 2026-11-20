@@ -31,6 +31,8 @@ const CLOSED = new Set(["done", "cancelled"]);
 // is moved back to work (unblocked, reopened, set to todo, handed to another agent) is picked back up, never dropped as old news.
 const RESUME: Record<string, string> = {
   unblocked: "What this task was blocked on has closed",
+  // kernel connection-state.ts ok(): the owner finished the Connect this task waited on.
+  connected: "A connection this task was waiting on is now connected: retry what needed it",
   reopen: "This task was reopened",
   status: "This task was moved back to todo",
   assigned: "This task was handed to you",
@@ -258,7 +260,9 @@ export function createDispatch({ kernel, db, owner, log = () => {}, now = Date.n
     const parent = task.parentId ? await kernel.task(task.parentId).catch(() => undefined) : undefined;
     const assignee = agents.get(w.agent);
     const entries = threadEntries(comments, task, { owner, agents, skip: new Set(fresh.map((f) => f.id)) });
-    const build = (resumed: boolean) => buildPrompt({ user: owner, task, parent, profile: dir[w.agent]?.profile ?? "crew", agentName: assignee?.name, thread: threadSection(owner, entries, { resumed }), words, resumed });
+    // A hint, never a gate: a failed read lists nothing.
+    const down = await kernel.connectionsDown(w.agent).catch(() => []);
+    const build = (resumed: boolean) => buildPrompt({ user: owner, task, parent, down, profile: dir[w.agent]?.profile ?? "crew", agentName: assignee?.name, thread: threadSection(owner, entries, { resumed }), words, resumed });
     const r = await kernel.start({ wake: w.key, prompt: build(ran), ...(ran ? { full_prompt: build(false) } : {}) });
     // Busy (429), or admitted but deferred for want of a computer (the kernel handed the wake back): nothing ran, so nothing is seen.
     if ("busy" in r || r.job.state === "deferred") return log("busy: the wake comes back", { task: task.identifier, wake: w.key });
