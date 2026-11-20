@@ -13,9 +13,10 @@
 //   4. a stage hint (a module's stage open ≤ 24 h) only says what a running job or a wait is doing; it never changes kind,
 //      reason or attention
 //   5. kind: done > working (a running job) > waiting (any obligation) > idle (failed, else unknown when the last thing was a
-//      wake nothing took and someone holds it, else orphaned); with no task.created left (pruned), idle · history_expired
+//      wake nothing took and someone holds it, else unpolled when no enabled dispatcher runs the holder, else orphaned); with no
+//      task.created left (pruned), idle · history_expired
 //   6. attention, across every obligation whatever the kind: open cards, owner and delegator waits, a handback, a failure,
-//      and orphaned or unknown idle past 15 minutes
+//      and unpolled, orphaned or unknown idle past 15 minutes
 // An owner wait ends only at the owner's comment newer than it (never a job starting, never an agent's comment); a
 // delegator wait at a newer comment by anyone but the holder and the kernel; an agent wait at its time, the next job start or
 // a newer wait. Children never make a task wait: only a named blocker does.
@@ -29,8 +30,8 @@ export type Reason =
   | "job_running"
   | "job_queued" | "job_held" | "card_review" | "card_owner" | "owner_wait" | "delegator_wait" | "handback" | "owner_task"
   | "blocked" | "agent_wait" | "module_wait" | "scheduled" | "chat_turn" | "backlog"
-  | "failed" | "orphaned" | "unknown" | "history_expired";
-export type Attention = { who: "owner" | "agent" | "reviewer"; why: "card" | "owner_wait" | "delegator_wait" | "handback" | "failed" | "stalled_wait" | "orphaned" | "unknown" | "history_expired"; ref: string };
+  | "failed" | "unpolled" | "orphaned" | "unknown" | "history_expired";
+export type Attention = { who: "owner" | "agent" | "reviewer"; why: "card" | "owner_wait" | "delegator_wait" | "handback" | "failed" | "stalled_wait" | "unpolled" | "orphaned" | "unknown" | "history_expired"; ref: string };
 export type TaskState = {
   kind: Kind; reason: Reason; ref?: string; since: string; holder: string | null; attention: Attention[];
   /** A module stage's label, only while working or waiting. */
@@ -71,7 +72,7 @@ type Open = { reason: Reason; ref?: string; since: number };
  * One task's state at `now` (ms). `facts`: the task's facts (task = it, or subject `task:<it>`) plus the `task.created` and
  * `task.status_changed` facts of the tasks it is blocked by; any other task's facts are ignored.
  */
-export function taskState(task: string, facts: FactRow[], now: number, stages: Stage[]): TaskState {
+export function taskState(task: string, facts: FactRow[], now: number, stages: Stage[], polled?: (holder: string) => boolean): TaskState {
   const self = `task:${task}`;
   const sorted = [...facts].filter((f) => ms(f.at) <= now || f.type === "wake.opened").sort(byTime);
   const own = sorted.filter((f) => f.task === task || f.subject === self);
@@ -242,11 +243,15 @@ export function taskState(task: string, facts: FactRow[], now: number, stages: S
     return { kind: "waiting", reason: top.reason, ...(top.ref ? { ref: top.ref } : {}), since: iso(top.since), holder, attention, ...extra, ...hint() };
   }
   if (fail) return { kind: "idle", reason: "failed", ref: fail.ref, since: fail.at, holder, attention };
-  // Nothing open: unknown when the last thing was a wake nothing took (someone holds the task), else orphaned.
+  // Nothing open: unpolled when no enabled dispatcher runs the holder (nothing will ever take a wake for it, so `orphaned`
+  // would misname it, and so would `unknown`: the wake went nowhere because nobody reads them); unknown when the last thing was a
+  // wake nothing took (someone holds the task); else orphaned.
   const unknown = Boolean(holder && agedOut && agedOut.due >= quiet);
+  const unpolled = Boolean(holder && holder !== "owner" && polled && !polled(holder));
+  const reason: Reason = unpolled ? "unpolled" : unknown ? "unknown" : "orphaned";
   const since = unknown ? agedOut!.at : quiet;
-  if (now - since >= ATTENTION_AFTER_MS) attention.push({ who: "agent", why: unknown ? "unknown" : "orphaned", ref: self });
-  return { kind: "idle", reason: unknown ? "unknown" : "orphaned", since: iso(since), holder, attention };
+  if (now - since >= ATTENTION_AFTER_MS) attention.push({ who: "agent", why: reason, ref: self });
+  return { kind: "idle", reason, since: iso(since), holder, attention };
 }
 
 /** The final attempt's verdict (grading's `grade.verdict`, attempt in data). */

@@ -40,6 +40,7 @@ const REASON: Record<ShownState["reason"], (s: ShownState) => string> = {
   owner_task: () => "your task",
   backlog: () => "backlog",
   failed: (s) => (s.refLabel ? `failed: ${s.refLabel}` : "failed"),
+  unpolled: () => "no dispatcher runs its agent",
   orphaned: () => "nothing scheduled",
   unknown: () => "unknown",
   history_expired: () => "unknown, history expired",

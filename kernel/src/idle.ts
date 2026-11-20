@@ -9,7 +9,8 @@
 //   chief of staff or on a task the owner is talking to its agent on; otherwise the open delegator or the chief of staff
 //   (reason delegator_wait: an agent answers). The steward raises either left too long.
 // - sweep(): every few minutes, each open (todo, in_progress) task an agent holds that the task state reports `orphaned` (a
-//   chat is `chat_turn`, never orphaned) or `unknown` (its holder's wake aged out) for 15 minutes
+//   chat is `chat_turn`, never orphaned), `unknown` (its holder's wake aged out) or `unpolled` (no enabled dispatcher runs its
+//   holder: the sweep skips it too, since its wake would never be taken, but the state names why) for 15 minutes
 //   gets one wake for its holder, cause `idle` (dispatch words it), once each time it becomes idle (the key is when: a wake
 //   the dispatcher drops leaves it orphaned again from the drop, so it is tried again 15 minutes later), at most 3 a day per
 //   task. Past that cap nothing more wakes it: the Fleet Steward reads the count (`idle_wakes`) and raises the task as a critical
@@ -31,6 +32,8 @@ const MAX_WAIT = 7 * DAY;
 /** The shortest wait: a wait is never a way to wake again at once (an idle task is woken after 15 minutes anyway). */
 const MIN_WAIT = 15 * 60_000;
 const SWEPT = new Set(["todo", "in_progress"]);
+/** The idle reasons a wake could move a task out of; `unpolled` is one the sweep then skips (its wake would never be taken). */
+const IDLE_REASONS = new Set(["orphaned", "unknown", "unpolled"]);
 
 export function createIdle({ db, facts, state, wakes, owner, team = () => false, escalate, now = Date.now, log = () => {} }: {
   /** kernel.db: a wait's fact and its wake are one transaction. */
@@ -100,11 +103,11 @@ export function createIdle({ db, facts, state, wakes, owner, team = () => false,
       const t = now(), opened: string[] = [];
       for (const i of state.read({ open: true }).tasks) {
         // Idle with nothing pending (or a wake nothing took) and an agent holds it; an owner's or unassigned task is not read.
-        if ((i.reason !== "orphaned" && i.reason !== "unknown") || !i.holder || i.holder === "owner" || t - Date.parse(i.since) < IDLE_AFTER_MS || i.idle_wakes >= IDLE_CAP) continue;
+        if (!IDLE_REASONS.has(i.reason) || !i.holder || i.holder === "owner" || t - Date.parse(i.since) < IDLE_AFTER_MS || i.idle_wakes >= IDLE_CAP) continue;
         try {
           const r = await owner("GET", `/api/issues/${encodeURIComponent(i.task)}`);
           const task = r.json as { status?: string; assigneeAgentId?: string | null };
-          // An agent no dispatcher runs would never take the wake (the steward's stuck-work rule has it).
+          // An agent no dispatcher runs would never take the wake (the steward's stuck-work rule has it; the state says `unpolled`).
           if (r.status !== 200 || !SWEPT.has(String(task.status)) || !task.assigneeAgentId || team(task.assigneeAgentId) || !wakes.polls(task.assigneeAgentId)) continue;
           // Keyed by when it became idle: a wake the dispatcher drops makes it orphaned again from then, so it is woken again
           // 15 minutes later, up to the daily cap (then the steward raises it).

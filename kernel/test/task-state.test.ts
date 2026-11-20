@@ -40,6 +40,9 @@ function check(got, want) {
 }
 const not = (x) => (v) => v !== x;
 
+type Polled = (agent: string) => boolean;
+/** Whether an enabled dispatcher runs the agent: every case's does unless it names otherwise (a task nobody polls). */
+const POLLED: Polled = () => true, UNPOLLED: Polled = () => false;
 const cases = [
   ["closed beats an open card and a wait", [created(), wait("owner_wait", 1), card("k1", 2), status("done", 3)], NOW, { kind: "done", reason: "closed", since: iso(3), attention: [] }],
   ["cancelled is done", [created(), status("cancelled", 3)], NOW, { kind: "done", reason: "cancelled" }],
@@ -85,6 +88,8 @@ const cases = [
   ["children alone never mean waiting", [created(), f("task.created", 1, { parent: "t1" }, "kernel", { subject: "task:t2", task: "t2" })], NOW, { kind: "idle", reason: "orphaned" }],
   ["orphaned needs no attention before 15 min", [created(), assignee("kai", 0)], 10, { kind: "idle", reason: "orphaned", holder: "kai", attention: [] }],
   ["orphaned needs attention past 15 min", [created(), assignee("kai", 0)], 16, { reason: "orphaned", attention: [{ who: "agent", why: "orphaned" }] }],
+  ["a held task whose agent no enabled dispatcher polls is unpolled, not orphaned", [created(), assignee("kai", 0)], 16, { kind: "idle", reason: "unpolled", holder: "kai", attention: [{ who: "agent", why: "unpolled", ref: "task:t1" }] }, UNPOLLED],
+  ["a held task its agent's dispatcher polls stays orphaned", [created(), assignee("kai", 0)], 16, { reason: "orphaned" }, POLLED],
   ["a wake no job took is unknown", [created(), assignee("kai", 0), f("wake.opened", 1, { cause: "comment" }, "account:o1", { subject: "wake:w1" })], 4 * 60, { kind: "idle", reason: "unknown", attention: [{ why: "unknown" }] }],
   ["a due wake is a queued job until it is bound", [created(), f("wake.opened", 1, { cause: "comment" }, "account:o1", { subject: "wake:w1" })], 5, { kind: "waiting", reason: "job_queued", ref: "wake:w1" }],
   ["a held wake is held", [created(), f("wake.opened", 1, { cause: "comment" }, "account:o1", { subject: "wake:w1" }), f("job.held", 2, { reason: "max_parallel" }, "agent:kai", { subject: "wake:w1" })], 5 * 60,
@@ -110,4 +115,4 @@ const cases = [
   ["a hold ends when the task leaves review", [created(), assignee("kai", 0), status("in_review", 2), f("finish.held", 2, { check: "grading.finish" }), status("todo", 5, "in_review")], NOW,
     { kind: "idle", reason: "orphaned" }],
 ];
-for (const [name, rows, now, want] of cases) test(name, () => check(taskState("t1", rows, T0 + now * MIN, STAGES), want));
+for (const [name, rows, now, want, polled] of cases) test(name as string, () => check(taskState("t1", rows as never, T0 + (now as number) * MIN, STAGES, (polled as Polled | undefined) ?? POLLED), want));

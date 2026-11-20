@@ -14,7 +14,7 @@ const MIN = 60_000;
 const iso = (m) => new Date(T0 + m * MIN).toISOString();
 
 /** A kernel db file (WAL, as records.ts opens it) with its facts, and a reader at minute `now`. */
-function setup(t, now = 30, agent?) {
+function setup(t, now = 30, agent?, polled?) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "task-state-"));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const file = path.join(dir, "kernel.db");
@@ -24,7 +24,7 @@ function setup(t, now = 30, agent?) {
   let n = 0;
   const add = (type, task, m, data = {}, o = {}) => facts.record({ type, subject: `task:${task}`, version: String(++n), at: iso(m), actor: "kernel", task, data, ...o });
   const task = (id, ident, status = "todo") => { add("task.created", id, 0, { parent: null, identifier: ident }); add("task.status_changed", id, 0, { from: null, to: status }); };
-  return { db, facts, add, task, reader: createTaskStateRead({ file, stages: () => KERNEL_STAGES, agent, now: () => T0 + now * MIN }) };
+  return { db, facts, add, task, reader: createTaskStateRead({ file, stages: () => KERNEL_STAGES, agent, polled, now: () => T0 + now * MIN }) };
 }
 
 test("open lists every open task once, closed ones not", (t) => {
@@ -114,4 +114,17 @@ test("a holder Paperclip reports terminated is named and marked gone; a failed a
   bad.task("t1", "WOR-1");
   bad.add("task.assignee_changed", "t1", 1, { from: null, to: A1 });
   assert.equal((await bad.reader.named(bad.reader.read({ ids: ["t1"] }))).tasks[0].holder_name, undefined);
+});
+
+test("a held task nobody polls is unpolled in the read and its unexplained count, never orphaned", (t) => {
+  const w = setup(t, 16, undefined, (agent) => agent !== "app-maintainer");
+  for (const [id, holder] of [["t1", "app-maintainer"], ["t2", "kai"]] as const) {
+    w.task(id, id.toUpperCase());
+    w.add("task.assignee_changed", id, 1, { from: null, to: holder });
+  }
+  const r = w.reader.read({ open: true });
+  const by = (id) => r.tasks.find((x) => x.task === id)!;
+  assert.deepEqual([by("t1").kind, by("t1").reason, by("t1").attention.map((a) => a.why)], ["idle", "unpolled", ["unpolled"]]);
+  assert.deepEqual([by("t2").reason, by("t2").attention.map((a) => a.why)], ["orphaned", ["orphaned"]], "a polled agent's task is the one that was always named");
+  assert.equal(r.counts.unexplained_idle, 2, "unpolled counts as unexplained idle, so the board and the steward see it");
 });
