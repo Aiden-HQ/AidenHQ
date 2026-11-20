@@ -8,6 +8,8 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
+const NOT_LINUX = process.platform !== "linux" && "ops/security-sbom.sh needs bash 4 (declare -A); macOS ships bash 3.2";
+
 const here = dirname(fileURLToPath(import.meta.url));
 const script = join(here, "../../ops/security-sbom.sh");
 
@@ -116,7 +118,7 @@ function syft(calls, target) {
   return { line: found, excludes: [...found.matchAll(/--exclude (\S+)/g)].map((m) => m[1]) };
 }
 
-test("security-sbom: the host target scans / with /home and /root excluded, and /usr, /opt, /etc and dpkg still in it", async () => {
+test("security-sbom: the host target scans / with /home and /root excluded, and /usr, /opt, /etc and dpkg still in it", { skip: NOT_LINUX }, async () => {
   const { status, out, calls } = await run();
   assert.equal(status, 0, out);
   const host = syft(calls, "host");
@@ -133,7 +135,7 @@ test("security-sbom: the host target scans / with /home and /root excluded, and 
   }
 });
 
-test("security-sbom: the image, repo and app targets keep their own scope", async () => {
+test("security-sbom: the image, repo and app targets keep their own scope", { skip: NOT_LINUX }, async () => {
   const { status, out, calls } = await run();
   assert.equal(status, 0, out);
   assert.deepEqual(syft(calls, "image:aidenhq/board:local").excludes, []);
@@ -142,14 +144,14 @@ test("security-sbom: the image, repo and app targets keep their own scope", asyn
   assert.ok(!repo.excludes.includes("./home/**"), "the homes are a host scope, not a checkout's");
 });
 
-test("security-sbom: an instance checkout elsewhere on the host is excluded where the host scan would otherwise read it", async () => {
+test("security-sbom: an instance checkout elsewhere on the host is excluded where the host scan would otherwise read it", { skip: NOT_LINUX }, async () => {
   const { status, out, calls } = await run({ AIDENHQ_INSTANCE_DIR: "/home/mudit/aidenhq-instance" });
   assert.equal(status, 0, out);
   assert.ok(syft(calls, "host").excludes.includes("./home/mudit/aidenhq-instance/**"));
   assert.deepEqual(syft(calls, "repo:instance").excludes, ["./.git/**", "**/node_modules/**"]);
 });
 
-test("security-sbom: a rebuilt tag keeps its reference target while the container's platform manifest is what the tag names", async () => {
+test("security-sbom: a rebuilt tag keeps its reference target while the container's platform manifest is what the tag names", { skip: NOT_LINUX }, async () => {
   // The containerd image store: every build writes a new top-level image index (a fresh attestation) over unchanged
   // content, so the tag's id moved while the platform manifest the container records is still the one it resolves to.
   // Comparing the top-level id alone would drop the tag and name the running image by an id the store has collected.
@@ -165,7 +167,7 @@ test("security-sbom: a rebuilt tag keeps its reference target while the containe
   assert.ok(!calls.some((c) => c.startsWith("save ")), `nothing is saved:\n${calls.join("\n")}`);
 });
 
-test("security-sbom: a container whose platform manifest differs from its tag is scanned from its saved archive", async () => {
+test("security-sbom: a container whose platform manifest differs from its tag is scanned from its saved archive", { skip: NOT_LINUX }, async () => {
   // A real rebuild: the tag names another build, so neither the top-level id nor the platform manifest is the running
   // image's. The image that runs is what gets inventoried, under its own id.
   const { status, out, calls, targets } = await run({}, {
@@ -183,7 +185,7 @@ test("security-sbom: a container whose platform manifest differs from its tag is
   assert.ok(save && save.includes("-o ") && save.includes("sha256:4444"), `docker save of the running image:\n${calls.join("\n")}`);
 });
 
-test("security-sbom: an image id the daemon no longer holds is left out of the batch, with no docker save failure", async () => {
+test("security-sbom: an image id the daemon no longer holds is left out of the batch, with no docker save failure", { skip: NOT_LINUX }, async () => {
   // The store collected the image the container still names: there is nothing to scan, and a line for it would only be
   // an error the pass reports as a coverage gap it cannot close.
   const { status, out, calls, targets } = await run({}, {
@@ -200,7 +202,7 @@ test("security-sbom: an image id the daemon no longer holds is left out of the b
   assert.ok(!out.includes("docker save"), out);
 });
 
-test("security-sbom: an image the daemon cannot inspect is recorded, not dropped as if it were gone", async () => {
+test("security-sbom: an image the daemon cannot inspect is recorded, not dropped as if it were gone", { skip: NOT_LINUX }, async () => {
   // Only "No such image" is the store having collected it. A daemon that can't answer says nothing about coverage, so
   // the target keeps a line with the error rather than the pass claiming to have listed every running image.
   const { status, out, calls, targets } = await run({}, {
@@ -217,7 +219,7 @@ test("security-sbom: an image the daemon cannot inspect is recorded, not dropped
   assert.ok(!calls.some((c) => c.startsWith("save ")), calls.join("\n"));
 });
 
-test("security-sbom: an image the store collects between the inspect and the save records no line either", async () => {
+test("security-sbom: an image the store collects between the inspect and the save records no line either", { skip: NOT_LINUX }, async () => {
   // The daemon answered the inspect, so the id is not one it already calls gone; by the time `docker save` runs the store
   // has collected it. That is the same vanished image as the case above, not a target that went missing, so the batch
   // keeps no line for it instead of a `docker save` failure the pass could never close.
@@ -233,7 +235,7 @@ test("security-sbom: an image the store collects between the inspect and the sav
   assert.ok(!targets.some((t) => t[2]), `no target failed:\n${targets.join("\n")}`);
 });
 
-test("security-sbom: a save that fails for another reason keeps its line with the error", async () => {
+test("security-sbom: a save that fails for another reason keeps its line with the error", { skip: NOT_LINUX }, async () => {
   // Not every failed save is a collected image: a disk full or a broken daemon says the target was not inventoried, so it
   // keeps a line rather than the pass reading as if it had listed it.
   const { status, out, calls, targets } = await run({}, {
@@ -250,7 +252,7 @@ test("security-sbom: a save that fails for another reason keeps its line with th
   assert.ok(calls.some((c) => c.startsWith("save ")), calls.join("\n"));
 });
 
-test("security-sbom: a container whose configured reference no longer exists is scanned too, and the syft image is not", async () => {
+test("security-sbom: a container whose configured reference no longer exists is scanned too, and the syft image is not", { skip: NOT_LINUX }, async () => {
   const { status, out, calls } = await run({}, {
     containers: [
       { id: "c4", image: "sha256:4444", config: "aidenhq/whisper@sha256:0000" },
@@ -263,7 +265,7 @@ test("security-sbom: a container whose configured reference no longer exists is 
   assert.ok(!calls.some((c) => c.includes("sha256:5555") || c.includes("--source-name image:anchore/syft")), "the throwaway syft container is not a target");
 });
 
-test("security-sbom: a container configured with an image id is still scanned from the saved image, never as a docker: source", async () => {
+test("security-sbom: a container configured with an image id is still scanned from the saved image, never as a docker: source", { skip: NOT_LINUX }, async () => {
   // Docker reports `Config.Image` as the id when the container was started from one: it resolves to the running image, but
   // syft can't read a bare id as a source (it would try to pull it), so the archive path is the only one that works.
   const { status, out, calls } = await run({}, {

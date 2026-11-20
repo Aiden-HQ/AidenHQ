@@ -52,8 +52,7 @@ are files something loads by a fixed `.js`/`.mjs` name.
 ## Running the tests
 
 Before you push, run `node scripts/ci-local.ts`: it runs the suites CI would run for your diff, with CI's own selection
-and commands (`--list` shows the selection only, `--base <ref>` changes the base, default `origin/main`). On macOS the
-`flock` apply tests fail and are shown as expected; CI judges them.
+and commands (`--list` shows the selection only, `--base <ref>` changes the base, default `origin/main`).
 
 No live instance and no paid keys are needed. Use Node 24 and run `npm ci` once in each package.
 

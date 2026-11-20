@@ -9,6 +9,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+const NOT_LINUX = process.platform !== "linux" && "ops/compose-recreate.sh needs bash 4 (declare -A); macOS ships bash 3.2";
+
 const script = join(dirname(fileURLToPath(import.meta.url)), "../../ops/compose-recreate.sh");
 const ciRunner = "aidenhq-ci-runner-Aiden-HQ-8";
 const ciRunnerId = "382e6572c1a0";
@@ -169,7 +171,7 @@ const containers = {
   bare1: { name: "/aidenhq-some-dropped-service-1", running: "false" },
 };
 
-test("a running container of a service the config dropped is stopped and removed; a CI one-off and kept services never are", async () => {
+test("a running container of a service the config dropped is stopped and removed; a CI one-off and kept services never are", { skip: NOT_LINUX }, async () => {
   const r = await apply(fixture({
     services,
     containers: {
@@ -185,7 +187,7 @@ test("a running container of a service the config dropped is stopped and removed
   assert.match(r.out, /compose: github-mcp removed \(no longer in the config\)/);
 });
 
-test("a compose failure that is not a removal race still fails the apply, with no retry", async () => {
+test("a compose failure that is not a removal race still fails the apply, with no retry", { skip: NOT_LINUX }, async () => {
   // board's image moved, so this apply would recreate it; the daemon refuses for an unrelated reason.
   const f = fixture({ containers, services, hashes: { board: "old", paperclip: "same" }, up: [["Error response from daemon: pull access denied for aidenhq/board", 1]] });
   writeFileSync(join(f.dir, "psid-board"), "board1\n");
@@ -201,7 +203,7 @@ test("a compose failure that is not a removal race still fails the apply, with n
   assert.match(r.out, /pull access denied/);
 });
 
-test("only the services whose image or config moved are recreated, and every service gets a line", async () => {
+test("only the services whose image or config moved are recreated, and every service gets a line", { skip: NOT_LINUX }, async () => {
   const f = fixture({ containers, services, hashes: { board: "h-board", paperclip: "h-paperclip" } });
   // board: same image, same config hash → kept. paperclip: its config hash differs → recreated.
   writeFileSync(join(f.dir, "psid-board"), "board1\n");
@@ -226,7 +228,7 @@ test("only the services whose image or config moved are recreated, and every ser
   assert.match(r.out, /compose: paperclip recreated/);
 });
 
-test("an unset warehouse password fails before any docker call", async () => {
+test("an unset warehouse password fails before any docker call", { skip: NOT_LINUX }, async () => {
   const f = fixture({ containers, services });
   // A warehouse deployment with no password in the vault: the dump can't be taken, so the apply stops before Docker.
   mkdirSync(join(f.dir, "secrets/apps/warehouse"), { recursive: true });
@@ -236,7 +238,7 @@ test("an unset warehouse password fails before any docker call", async () => {
   assert.equal(r.calls.trim(), "", `docker was never called:\n${r.calls}`);
 });
 
-test("a dump is created exclusively and 0600 in a 0700 directory, and the dump before it is kept", async () => {
+test("a dump is created exclusively and 0600 in a 0700 directory, and the dump before it is kept", { skip: NOT_LINUX }, async () => {
   const f = fixture({ containers, services });
   mkdirSync(join(f.dir, "secrets/apps/warehouse"), { recursive: true });
   writeFileSync(join(f.dir, "secrets/apps/warehouse/POSTGRES_PASSWORD"), "pw");
@@ -260,7 +262,7 @@ test("a dump is created exclusively and 0600 in a 0700 directory, and the dump b
   assert.equal(statSync(join(dumps, "warehouse.dump")).mode & 0o777, 0o600, "the older dump is tightened to 0600");
 });
 
-test("a dump that fails is not kept and prunes nothing, so the apply stops before the recreate", async () => {
+test("a dump that fails is not kept and prunes nothing, so the apply stops before the recreate", { skip: NOT_LINUX }, async () => {
   const f = fixture({ containers, services, dump: 1 });
   mkdirSync(join(f.dir, "secrets/apps/warehouse"), { recursive: true });
   writeFileSync(join(f.dir, "secrets/apps/warehouse/POSTGRES_PASSWORD"), "pw");
@@ -275,7 +277,7 @@ test("a dump that fails is not kept and prunes nothing, so the apply stops befor
   assert.equal(recreates(r).length, 0, "nothing is recreated without a dump");
 });
 
-test("a step that recreates nothing takes no dump", async () => {
+test("a step that recreates nothing takes no dump", { skip: NOT_LINUX }, async () => {
   const f = fixture({ containers, services, hashes: { board: "h-board", paperclip: "h-paperclip" } });
   mkdirSync(join(f.dir, "secrets/apps/warehouse"), { recursive: true });
   writeFileSync(join(f.dir, "secrets/apps/warehouse/POSTGRES_PASSWORD"), "pw");
@@ -294,7 +296,7 @@ test("a step that recreates nothing takes no dump", async () => {
   assert.ok(!existsSync(join(f.dir, "data/dumps")), "no dump");
 });
 
-test("a service whose mounted secret content changed since it started is recreated", async () => {
+test("a service whose mounted secret content changed since it started is recreated", { skip: NOT_LINUX }, async () => {
   const f = fixture({ containers, services, hashes: { board: "h-board", paperclip: "h-paperclip" } });
   writeFileSync(join(f.dir, "model.json"), `${JSON.stringify(model(f.dir))}\n`);
   mkdirSync(join(f.dir, "secrets"), { recursive: true });
@@ -332,7 +334,7 @@ test("a service whose mounted secret content changed since it started is recreat
   assert.equal(recreates(fourth).length, 0, `the recreated container's record is written: ${fourth.calls}`);
 });
 
-test("a service stopped before the step (a data snapshot stopped it) is recreated once and recorded, then kept", async () => {
+test("a service stopped before the step (a data snapshot stopped it) is recreated once and recorded, then kept", { skip: NOT_LINUX }, async () => {
   const f = fixture({ containers, services, hashes: { board: "h-board", paperclip: "h-paperclip" } });
   writeFileSync(join(f.dir, "model.json"), `${JSON.stringify(model(f.dir))}\n`);
   mkdirSync(join(f.dir, "secrets"), { recursive: true });

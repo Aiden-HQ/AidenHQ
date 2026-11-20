@@ -173,7 +173,7 @@ describe("identity gate", () => {
     expect(() => id.identify(req(forgedIdentity("demo", sign)))).toThrow(expect.objectContaining({ status: 401, message: "bad identity" }));
   });
 
-  it("refuses an app that publishes nothing and has no health.url, but answers on a port without protect (hello2)", async () => {
+  it.runIf(process.platform === "linux")("refuses an app that publishes nothing and has no health.url, but answers on a port without protect (hello2)", async () => {
     expect(identityDoors(hello2, { services: { app: { expose: ["8080"] } } })).toEqual([]);
     const r = await scan(hello2, [portOf(await starter({}))]);
     expect(r.ok).toBe(false);
@@ -181,14 +181,14 @@ describe("identity gate", () => {
     expect(await scan(hello2, [portOf(await starter({ AIDENHQ_APP: "hello2" }))])).toMatchObject({ ok: true });
   });
 
-  it.runIf(!!eth0)("probes the container's own address, where an app bound only to eth0 answers", async () => {
+  it.runIf(!!eth0 && process.platform === "linux")("probes the container's own address, where an app bound only to eth0 answers", async () => {
     const port = portOf(await starter({}, undefined, eth0));
     const r = await scan(hello2, [port], { ips: [eth0!] });
     expect(r.ok).toBe(false);
     expect(r.findings[0]!.what).toContain(`on ${eth0}: ${NO_SIGN_IN}`);
   });
 
-  it("sends every probe: an app that hangs on a forged identity but serves token-less requests is refused", async () => {
+  it.runIf(process.platform === "linux")("sends every probe: an app that hangs on a forged identity but serves token-less requests is refused", async () => {
     const picky = await starter({}, `import { createServer } from "node:http";
       createServer((req, res) => { if (req.url === "/api/health" || !req.headers["${IDENTITY_HEADER}"]) res.end("ok"); }).listen(Number(process.env.PORT), "127.0.0.1");`);
     const r = await scan(hello2, [portOf(picky)]);
@@ -196,7 +196,7 @@ describe("identity gate", () => {
     expect(r.findings[0]!.what).toMatch(/with no identity answered 200/);
   }, 60_000);
 
-  it("skips only a port that clearly isn't HTTP or that nothing listens on; any other silence fails closed", async () => {
+  it.runIf(process.platform === "linux")("skips only a port that clearly isn't HTTP or that nothing listens on; any other silence fails closed", async () => {
     const banner = await tcp(`(s) => s.end("-ERR unknown command\\r\\n")`);
     expect(await scan(hello2, [banner])).toMatchObject({ ok: true, findings: [{ hard: false, what: expect.stringMatching(/other than HTTP/) }] });
     expect((await scan(hello2, [banner], { required: [{ service: "app", port: String(banner) }] })).ok).toBe(false); // the registry says HTTP

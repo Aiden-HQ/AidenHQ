@@ -11,6 +11,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+const NOT_LINUX = process.platform !== "linux" && "needs flock(1), absent on macOS";
+
 const here = dirname(fileURLToPath(import.meta.url));
 const entry = join(here, "../../ops/apply-config.sh");
 const work = join(here, "../../ops/apply-config-work.sh");
@@ -92,7 +94,7 @@ test("the entry point refuses a marker over an unrelated locked descriptor inste
   assert.equal(composeRan(r), false, `compose never ran:\n${r.docker}`);
 });
 
-test("with no marker the entry point takes data/apply.lock at its fixed path and proceeds", async () => {
+test("with no marker the entry point takes data/apply.lock at its fixed path and proceeds", { skip: NOT_LINUX }, async () => {
   const dir = checkout();
   // No marker: this is the process that takes the lock. It opens the fixed path onto fd 9 and proceeds, whatever fd 9
   // happened to be before.
@@ -109,7 +111,7 @@ test("a caller-set marker with no lock held exits naming the lock and runs no co
   assert.equal(composeRan(r), false, `compose never ran:\n${r.docker}`);
 });
 
-test("a second apply waits for the first, then runs: never refused for being second", async () => {
+test("a second apply waits for the first, then runs: never refused for being second", { skip: NOT_LINUX }, async () => {
   const dir = checkout();
   // The first apply gets a checkout to work on and a `git` that takes a moment, so it is still inside the apply (holding
   // the lock) when the second one starts. Both go through the real entry point.
@@ -145,7 +147,7 @@ test("every script the apply runs from ops/ is 100755 in git, so a checkout runs
   for (const f of scripts) assert.equal(modes[f], "100755", `${f} is ${modes[f]}`);
 });
 
-test("a hand-over keeps the lock: the entry point reuses a held fd 9 instead of dropping and retaking it", async () => {
+test("a hand-over keeps the lock: the entry point reuses a held fd 9 instead of dropping and retaking it", { skip: NOT_LINUX }, async () => {
   const dir = checkout();
   // As ops/apply-config-work.sh hands over when the product changed the scripts: fd 9 already holds the lock, and the
   // entry point is exec'd again. It must not release the lock (another apply could take it in the gap) or refuse itself.
