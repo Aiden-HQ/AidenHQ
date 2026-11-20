@@ -74,16 +74,22 @@ test("the successor is the agent with the gone agent's key, else one holding its
   assert.equal(filed(board).length, 1, "both land on one successor: one triage task");
 });
 
-test("a move that fails leaves that task for the next run and lists only what moved", async () => {
+test("a move that fails stays for the next run; a holder missing from the list but not terminated is left alone", async () => {
   const cos = agent("a-cos", "chief-of-staff");
   const gone = { ...agent("a-gone", "fleet-ops"), status: "terminated" };
-  const board = fakeBoard({ agents: [cos, gone], issues: [issue("i1", "todo", "a-gone"), issue("i2", "todo", "a-gone")], failPatch: new Set(["i1"]) });
+  const hidden = { ...agent("a-hidden", "kai"), status: "paused" };
+  const failPatch = new Set(["i1"]);
+  const board = fakeBoard({ agents: [cos, gone], issues: [issue("i1", "todo", "a-gone"), issue("i2", "todo", "a-gone"), issue("i3", "todo", "a-hidden")], failPatch });
+  const api = board.api;
+  board.api = async (method, path, body) => (path === "/api/agents/a-hidden" ? { json: hidden } : api(method, path, body));
   await run(board);
 
   assert.equal(board.rows.find((i) => i.id === "i1").assigneeAgentId, "a-gone");
-  const [triage] = filed(board);
-  assert.match(triage.body.description, /- I2:/);
-  assert.doesNotMatch(triage.body.description, /- I1:/);
+  assert.equal(board.rows.find((i) => i.id === "i2").assigneeAgentId, "a-cos");
+  assert.equal(board.rows.find((i) => i.id === "i3").assigneeAgentId, "a-hidden", "a live agent's task never moves");
+  failPatch.clear();
+  await run(board);
+  assert.equal(board.rows.find((i) => i.id === "i1").assigneeAgentId, "a-cos", "the next run moves it");
 });
 
 test("a team member removed while it holds open tasks is listed (setup refuses to go on); a drained one is not", async () => {

@@ -233,6 +233,9 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
     if (!to && b.verdict !== "release") throw fail(400, "bad_request", "verdict is release, ok, reopen or block");
     const i = await issue(ref);
     if (b.verdict !== "release" && !recorded(id, i)) throw fail(409, "conflict", `${id} holds no finish on ${i.identifier ?? i.id}`);
+    // A release hands the task to its delegator: only a task this check holds (its row, or in review under its label). On any
+    // other task it changes nothing and records nothing, so a module can't move a task it never held.
+    if (b.verdict === "release" && !(await holds(id, c, i))) return { ok: true, held: false };
     // A module's ok moves the task to done as the owner: the same hold as an agent's finish, so a change still open on this
     // server stops it too, before the hold is released.
     if (b.verdict === "ok") await noOpenChange(i, "the grader or the module that held it can move it on once the merge lands");

@@ -64,34 +64,39 @@ export async function rehomeStranded({ api, companyId, cfg, step }: { api: Api; 
   const leads = Object.entries(cfg.agents ?? {}).filter(([, a]) => !a.member_of);
   const chief = leads.find(([, a]) => a.roles?.includes("fleet-admin"));
   const successors = new Map<string, Row | undefined>();
+  /** The successor of a holder missing from the agent list, or undefined when it isn't gone (its record isn't terminated or 404). */
   const successor = async (id: string) => {
     if (successors.has(id)) return successors.get(id);
-    const gone: Row = (await api("GET", `/api/agents/${id}`).then((r) => r.json, () => null)) ?? {};
-    const key = String(gone.metadata?.setupKey ?? "").replace(/^aidenhq:/, "");
-    const roles: string[] = Array.isArray(gone.metadata?.roles) ? gone.metadata.roles : [];
+    const gone: Row | null = await api("GET", `/api/agents/${id}`).then((r) => r.json ?? null, (e: Error) => (/\b404\b/.test(e.message) ? null : Promise.reject(e)));
+    if (gone && gone.status !== "terminated") { successors.set(id, undefined); return undefined; }
+    const key = String(gone?.metadata?.setupKey ?? "").replace(/^aidenhq:/, "");
+    const roles: string[] = Array.isArray(gone?.metadata?.roles) ? gone!.metadata.roles : [];
     const heir = leads.find(([k, a]) => a.roles?.some((r) => roles.includes(r)) && byKey(k));
     const to = (key && byKey(key)) || (heir && byKey(heir[0])) || (chief && byKey(chief[0]));
-    successors.set(id, to ? { ...to, from: gone.name ?? id } : undefined);
+    if (!to) console.warn(`! the open tasks of ${gone?.name ?? id} stay on it: no live successor and no chief of staff`);
+    successors.set(id, to ? { ...to, from: gone?.name ?? id } : undefined);
     return successors.get(id);
   };
-  const moved = new Map<string, { to: Row; tasks: string[] }>();
+  const plan = new Map<string, { to: Row; tasks: Row[] }>();
   for (const i of stranded) {
-    const label = i.identifier ?? i.id;
     const to = await successor(i.assigneeAgentId);
-    if (!to) { step(`Left ${label} on its retired holder: no live successor and no chief of staff`); continue; }
-    try {
-      await api("PATCH", `/api/issues/${i.id}`, { status: "backlog", assigneeAgentId: to.id, assigneeUserId: null });
-    } catch (e) {
-      console.warn(`! couldn't move ${label} off its retired holder (the next setup tries again): ${(e as Error).message}`);
-      continue;
-    }
-    const m = moved.get(to.id) ?? (moved.set(to.id, { to, tasks: [] }), moved.get(to.id)!);
-    m.tasks.push(`- ${label}: ${i.title ?? ""} (was ${to.from}'s, ${i.status})`);
+    if (to) (plan.get(to.id) ?? plan.set(to.id, { to, tasks: [] }).get(to.id)!).tasks.push({ ...i, from: to.from });
   }
-  for (const { to, tasks } of moved.values()) {
-    const description = `These open tasks were held by agents that are no longer configured, so nothing would ever run them. Setup moved each to your backlog. For each one: close it if it is done or no longer wanted, or delegate it to the agent that does that work now.\n\n${tasks.join("\n")}`;
+  // The triage task first: a move that fails later is listed once more by the next run's, never lost from both.
+  for (const { to, tasks } of plan.values()) {
+    const lines = tasks.map((i) => `- ${i.identifier ?? i.id}: ${i.title ?? ""} (was ${i.from}'s, ${i.status})`);
+    const description = `These open tasks were held by agents that are no longer configured, so nothing would ever run them. Setup moved each to your backlog. For each one: close it if it is done or no longer wanted, or delegate it to the agent that does that work now.\n\n${lines.join("\n")}`;
     await api("POST", `/api/companies/${companyId}/issues`, { title: `Triage ${tasks.length} task${tasks.length === 1 ? "" : "s"} from retired agents`, description, status: "todo", assigneeAgentId: to.id });
-    step(`Moved ${tasks.length} open task${tasks.length === 1 ? "" : "s"} of retired agents to ${to.name}'s backlog, with one task to triage them`);
+    let n = 0;
+    for (const i of tasks) {
+      try {
+        await api("PATCH", `/api/issues/${i.id}`, { status: "backlog", assigneeAgentId: to.id, assigneeUserId: null });
+        n++;
+      } catch (e) {
+        console.warn(`! couldn't move ${i.identifier ?? i.id} off its retired holder (the next setup tries again): ${(e as Error).message}`);
+      }
+    }
+    step(`Moved ${n} of ${tasks.length} open task${tasks.length === 1 ? "" : "s"} of retired agents to ${to.name}'s backlog, with one task to triage them`);
   }
 }
 
