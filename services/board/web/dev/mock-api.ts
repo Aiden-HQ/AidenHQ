@@ -83,6 +83,7 @@ const approvals = () => mock.empty ? [] : [
   approval("ap2", { identifier: "WOR-806", action: "push", target: "acme-agents/aidenhq-instance", sentence: "Raise the Platform Engineer's run timeout to 45 minutes", changes: "One line in instance.yaml", tier: 2, reason: "Changes an agent's limits", review: null, createdAt: ago(50) }),
   approval("ap3", { identifier: "WOR-790", action: "merge", target: "acme-agents/invoices#14", sentence: "Merge “Add CSV export” into main", tier: 1, state: "approved", decidedBy: "reviewer:gpt-luna", review: "Tests pass, change is scoped to the export.", outcome: "applied", outcomeText: "Merged as 4e1a9c2", createdAt: ago(70) }),
   approval("ap4", { identifier: "WOR-777", action: "send", target: "slack:#general", sentence: "Post the weekly update in #general", tier: 1, state: "rejected", decidedBy: "reviewer:gpt-luna", review: "The draft names a customer that isn't public yet.", createdAt: ago(300) }),
+  approval("ap5", { identifier: "WOR-792", action: "push", target: "acme-agents/invoices", sentence: "Push the CSV export fix to a branch", tier: 1, reason: null, review: null, createdAt: ago(2) }),
 ];
 
 const chatDetail = (ref: string) => {
