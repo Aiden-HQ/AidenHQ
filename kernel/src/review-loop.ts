@@ -183,7 +183,7 @@ export function createReviewLoop({ records, writes, task, decisions, product, gr
     await task.escalate(r.task, `park:${r.task}:${scope}`, (id) => {
       const what = `**${id} is stuck:** the AI reviewer rejected ${actionOf(r.kind)} on ${scope} ${n} times, so it is parked and isn't reviewed again there.`;
       return {
-        body: `${what} Decide what happens next: re-brief it (update ${id}'s description with what the reviewer needs, then comment on ${id} so its agent starts again), close it if the change shouldn't be made, or ask the owner.${last}\n\n${MARKER}`,
+        body: `${what} Decide what happens next: re-brief it (update ${id}'s description with what the reviewer needs, then comment on ${id} so its agent starts again), close it if the change shouldn't be made, or ask the owner.${last}`,
         ownerText: `${what} Nobody delegated it, so it is yours: answer on ${id} with what the reviewer needs, or close it.${last}`,
       };
     });

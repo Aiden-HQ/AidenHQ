@@ -7,6 +7,7 @@ import { createFlow } from "../src/flow.ts";
 import { KERNEL_STAGES } from "../src/flow-stages.ts";
 import { createWakes } from "../src/wakes.ts";
 import { createIdle } from "../src/idle.ts";
+import { createEscalate } from "../src/escalate.ts";
 
 const AGENT = "a-1", MIN = 60_000;
 
@@ -17,7 +18,7 @@ function world() {
   const db = new DatabaseSync(":memory:");
   db.exec("CREATE TABLE jobs (id TEXT PRIMARY KEY, task TEXT, agent TEXT, state TEXT, at INTEGER)");
   const facts = openFacts(db, () => new Date(clock));
-  const issues = { t1: { id: "t1", status: "todo", assigneeAgentId: AGENT }, t2: { id: "t2", status: "todo", assigneeAgentId: null, assigneeUserId: "owner" } };
+  const issues = { t0: { id: "t0", identifier: "T0", status: "blocked" }, t1: { id: "t1", identifier: "T1", status: "todo", assigneeAgentId: AGENT, parentId: "t0" }, t2: { id: "t2", status: "todo", assigneeAgentId: null, assigneeUserId: "owner" } };
   const reads = [];
   let down = false;
   const owner = async (method, path) => {
@@ -38,11 +39,13 @@ function world() {
   const flow = createFlow({ db, stages: () => KERNEL_STAGES, now: () => new Date(clock), cacheMs: 0 });
   const wakes = createWakes({ db, facts, owner, post: async () => ({}), now: () => clock, dispatches: { may: (mod, a) => mod === "dispatch" && a === AGENT, agents: () => [AGENT] } });
   wakes.claim("dispatch"); // the dispatcher joins: its agent's tasks are swept
-  const idle = createIdle({ facts, flow, wakes, owner, now: () => clock });
+  const asked = { owner: [], notices: [], comments: { t1: [] } };
+  const escalate = createEscalate({ db, issue: async (id) => issues[id], comments: async (id) => asked.comments[id] ?? [], asker: async () => ({ name: "Kai", key: "kai", roles: [] }), notice: (task, body) => asked.notices.push({ task, body }), owner: (n) => asked.owner.push(n), now: () => clock });
+  const idle = createIdle({ facts, flow, wakes, owner, escalate, now: () => clock });
   const rows = () => db.prepare("SELECT key, cause, state FROM wakes ORDER BY at, key").all().map((r) => `${r.key.replace(/:[0-9TZ:.-]+$/, "")} ${r.cause} ${r.state}`);
   /** A job on t1 from its wake to its end. */
   const job = (id) => { add("job.queued", `job:${id}`, "t1"); add("job.started", `job:${id}`, "t1"); clock += MIN; add("job.ended", `job:${id}`, "t1", { state: "done" }); };
-  return { idle, wakes, flow, add, job, rows, reads, down: (v) => (down = v), tick: (ms) => (clock += ms), now: () => clock };
+  return { idle, wakes, flow, add, job, rows, reads, asked, down: (v) => (down = v), tick: (ms) => (clock += ms), now: () => clock };
 }
 
 test("an agent-held task orphaned 15 minutes gets an idle wake, again 15 minutes after one is dropped, at most 3 a day; the owner's task none and isn't read", async () => {
@@ -114,4 +117,30 @@ test("task_wait: the task waits (not orphaned) with its words, resumes at until,
   w.job("j2");
   w.tick(MIN);
   assert.equal(w.flow.idleNow().items.find((i) => i.task === "t1").reason, "orphaned");
+});
+
+test("task_wait for the owner asks them, headed by the task and naming its agent for the owner's mutes, and waits for the answer; one open ask per task; for the delegator, its task hears a wake notice", async () => {
+  const w = world();
+  const ask = { reason: "which API the brief means", for: "owner", question: "Keep the v1 endpoint, or drop it?" };
+  const r = await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, ask);
+  assert.equal(r.until, new Date(w.now() + 7 * 864e5).toISOString(), "it waits for the answer, not a day");
+  assert.equal(r.asked, true);
+  assert.deepEqual([w.asked.owner[0].kind, w.asked.owner[0].task, w.asked.owner[0].head, w.asked.owner[0].asker], ["decision", "T1", { agent: "Kai", issue: "t1" }, { id: AGENT, key: "kai", roles: [] }]);
+  assert.match(w.asked.owner[0].text, /T1 waits on your answer[^]*Keep the v1 endpoint, or drop it\?/);
+  // Unanswered (only its own agent and the kernel wrote since): another question, to anyone, isn't sent.
+  w.tick(MIN);
+  w.asked.comments.t1.push({ authorAgentId: AGENT, body: "still waiting", createdAt: new Date(w.now()).toISOString() }, { body: "**Rejected** <!-- aidenhq-kernel-notice:x -->", createdAt: new Date(w.now()).toISOString() });
+  const again = await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { ...ask, question: "Or rename it?" });
+  assert.deepEqual([again.asked, w.asked.owner.length], [false, 1]);
+  w.tick(MIN);
+  assert.equal((await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "x", for: "delegator", question: "Which files?" })).asked, false);
+  w.tick(30 * MIN);
+  assert.equal(w.flow.idleNow().items.find((i) => i.task === "t1").reason, "delegator_wait");
+  await assert.rejects(w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "x", for: "delegator" }), /question/);
+  // The owner answered: the next ask goes, here to the delegator, as a wake notice on its task.
+  w.asked.comments.t1.push({ authorUserId: "owner", body: "Keep it.", createdAt: new Date(w.now()).toISOString() });
+  w.tick(MIN);
+  await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "the brief's file list is stale", for: "delegator", question: "The modules were renamed: which files now?" });
+  assert.deepEqual(w.asked.notices.map((n) => n.task), ["t0"]);
+  assert.match(w.asked.notices[0].body, /^\*\*T1 asks you:\*\*[^]*```\nThe modules were renamed: which files now\?\n```[^]*<!-- aidenhq-wake -->$/);
 });

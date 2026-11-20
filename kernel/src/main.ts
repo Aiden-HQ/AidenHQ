@@ -218,7 +218,12 @@ const escalate = createEscalate({
     if (!r.ok) throw Object.assign(new Error(`control plane GET task ${id} → ${r.status}`), { status: r.status });
     return (await r.json()) as never;
   },
-  agentName: async (id) => String(((await cpJson(`/api/agents/${encodeURIComponent(id)}`)) as { name?: string }).name ?? ""),
+  comments: async (id) => (await cpJson(`/api/issues/${encodeURIComponent(id)}/comments?order=asc&limit=500`)) as never,
+  // The owner channel's attention reads the agent's key and roles (the grants table), as it does for the agent's own notify.
+  asker: async (id) => {
+    const g = grantsTable().agents?.[id] as { key?: string; roles?: string[] } | undefined;
+    return { name: String(((await cpJson(`/api/agents/${encodeURIComponent(id)}`)) as { name?: string }).name ?? ""), key: String(g?.key ?? id), roles: g?.roles ?? [] };
+  },
   notice: (task, body) => { notices.queue(task, body); setImmediate(sendNotices); },
   owner: (n) => notify.queue(n),
 });

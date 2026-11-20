@@ -70,11 +70,12 @@ export function createIdle({ facts, flow, wakes, owner, team = () => false, esca
       else if (on) until = t + DAY;
       else throw fail(400, "bad_request", "send until (an ISO time, at most 7 days ahead) or on (the event it waits for)");
       // Asked first: a question that can't be sent now fails the call (the agent tries again), never a silent wait.
-      if (who && question && escalate) await escalate.ask(caller.task, who, question);
+      // One open ask per task: a second question while the first is unanswered isn't sent, and the agent hears so.
+      const asked = who && question && escalate ? await escalate.ask(caller.task, who, question) : undefined;
       fact({ type: "work.waiting", subject: `wait:${caller.task}`, version: `wait@${t}`, at: iso(t), actor: `agent:${caller.key}`, task: caller.task, data: { reason: who ? `${who}_wait` : "agent_wait", note: reason, until: iso(until), ...(on ? { on } : {}), ...(question ? { question } : {}) } });
       wakes.open({ key: `wait:${caller.task}:${until}`, task: caller.task, agent: caller.agent, cause: `wait: ${reason}`.slice(0, 200), at: until, replaces: `wait:${caller.task}:`, author: `agent:${caller.key}` });
       log("task wait", { task: caller.task, agent: caller.key, until: iso(until) });
-      return { waiting: true, until: iso(until) };
+      return { waiting: true, until: iso(until), ...(asked === "open" ? { asked: false, note: "Your earlier question on this task is still unanswered, so this one wasn't sent: the task waits for that answer." } : asked === "asked" ? { asked: true } : {}) };
     },
 
     /** One sweep: the tasks whose holders it woke. */

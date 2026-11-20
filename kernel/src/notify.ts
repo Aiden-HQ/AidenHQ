@@ -19,7 +19,9 @@ export const KINDS = ["decision", "done", "fyi", "alert", "digest"] as const;
  * `reply`: a job's reply relayed to the channel the owner wrote from (relay.ts), headed by its agent and task. `head`: the
  * kernel's question for the owner from an agent waiting on `task` (escalate.ts), headed by that agent so their reply lands there.
  */
-export type Notice = { kind: (typeof KINDS)[number]; text: string; task?: string; dedupe_key?: string; reply?: { via: "telegram" | "slack"; agent: string; issue: string }; head?: { agent: string; issue: string } };
+export type Notice = { kind: (typeof KINDS)[number]; text: string; task?: string; dedupe_key?: string; reply?: { via: "telegram" | "slack"; agent: string; issue: string }; head?: { agent: string; issue: string };
+  /** The agent whose question `head` carries: the owner channel applies its mutes and the task's loop brake. */
+  asker?: { id: string; key: string; roles: string[] } };
 type Resolver = { resolve: (url: string) => Promise<Target>; forget: (url: string) => void };
 
 /** A notice from a producer's body: kind, text, and optionally the task it is about and its dedupe key. */

@@ -164,13 +164,15 @@ interface AgentRow { id: string; name: string; status: string; adapterConfig?: {
 interface JobRow { id: string; agent: string; task?: string; routine?: string | null; state: string; started_at: string | null; ended_at: string | null; exit?: number | null; timed_out?: boolean; steps?: number; has_final?: boolean }
 interface RoutineRow { id: string; title: string; status: string; triggers?: { kind?: string; enabled?: boolean; label?: string | null; nextRunAt?: string | null }[] }
 interface IssueRow { id: string; identifier?: string; title?: string; status: string; priority?: string; updatedAt: string; assigneeUserId?: string | null; assigneeAgentId?: string | null; originKind?: string | null; labels?: ({ name?: string } | null)[] }
-interface CommentRow { authorType?: string; body?: string; createdAt: string; deletedAt?: string | null }
-interface WorkRecord { task: string | null; identifier: string | null; judged?: boolean; targets?: string[]; decided_at: string | null; created_at?: string }
+interface CommentRow { authorType?: string; authorAgentId?: string | null; body?: string; createdAt: string; deletedAt?: string | null }
+interface WorkRecord { task: string | null; identifier: string | null; state?: string; judged?: boolean; targets?: string[]; decided_at: string | null; created_at?: string }
 
 const HOUR_MS = 60 * MIN;
 // n = the kernel's MAX_REJECTS (tier.ts): the point where a branch is parked and the kernel wakes the task's delegator
 // (escalate.ts); a park nothing moved for quietMs (no new request on the task) is the Steward's.
 const REJECT_LOOP = { n: 3, windowMs: 7 * DAY_MS, quietMs: 6 * HOUR_MS };
+/** A record someone said yes to (the kernel's record states past approval). */
+const APPROVED = ["approved", "claimed", "done", "failed", "unknown"];
 // A task waiting on a judgement (task_wait `for`, kernel idle.ts) longer than this: the owner's answer, or its delegator's.
 const JUDGEMENT_WAIT_MS: Record<string, number> = { owner_wait: 24 * HOUR_MS, delegator_wait: 6 * HOUR_MS };
 const REPEAT_FAILS = { n: 3, spanMs: 30 * MIN, freshMs: HOUR_MS }; // same category on one task within spanMs, the newest within freshMs
@@ -238,9 +240,10 @@ export function rejectLoops(records: WorkRecord[], t: number): { task: string; i
       by.set(k, { task: r.task, identifier: r.identifier, target, n: (was?.n ?? 0) + 1, last: was && was.last > r.decided_at ? was.last : r.decided_at });
     }
   }
-  // Parked, and nothing filed on the task since its last rejection for quietMs: nobody re-briefed it or closed it.
-  const moved = (x: { task: string; last: string }) => records.some((r) => r.task === x.task && String(r.created_at ?? "") > x.last);
-  return [...by.values()].filter((x) => x.n >= REJECT_LOOP.n && age(x.last, t) > REJECT_LOOP.quietMs && !moved(x));
+  // Parked quietMs ago with no approved request on that target since. A request refused as parked, refused by code, still
+  // in review or aimed elsewhere is no progress (the task's comments are read by the check: a re-brief, the owner's word).
+  const approved = (x: { task: string; target: string; last: string }) => records.some((r) => r.task === x.task && (r.targets?.length ? r.targets : [r.task]).includes(x.target) && String(r.created_at ?? "") > x.last && APPROVED.includes(String(r.state)));
+  return [...by.values()].filter((x) => x.n >= REJECT_LOOP.n && age(x.last, t) > REJECT_LOOP.quietMs && !approved(x));
 }
 
 /** The owner's own typed words on a chat task (not a relayed notice, the kernel's, or deleted). */
@@ -482,6 +485,10 @@ export function checks(d: { kernel: KernelClient; kv: Kv; pause: (routine: strin
       for (const l of rejectLoops(r.records ?? [], t)) {
         const task = await read(l.task);
         if (task && (exempt(task) || ["done", "cancelled"].includes(task.status))) continue;
+        // Moved on by a person or its delegator: a comment after the park from the owner (their own words) or another agent
+        // (a re-brief ends with one). The task's own agent and the kernel's notices don't count. Unreadable: still raised.
+        const comments = ((await d.kernel.read(`/api/issues/${encodeURIComponent(l.task)}/comments?order=desc&limit=50`).catch(() => [])) as CommentRow[]) ?? [];
+        if (comments.some((c) => !c.deletedAt && c.createdAt > l.last && (ownerWords(c) || (c.authorType === "agent" && c.authorAgentId !== task?.assigneeAgentId)))) continue;
         out.push({ key: `${l.task}:${slug(l.target)}`, reason: `task ${task?.identifier ?? l.task}: the AI reviewer rejected ${slug(l.target)} ${l.n} times (parked at ${REJECT_LOOP.n}) and nothing has moved for ${mins(age(l.last, t))}` });
       }
       return out;

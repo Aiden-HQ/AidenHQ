@@ -34,6 +34,20 @@ describe("notify", () => {
     expect(posted).toEqual([]);
   });
 
+  it("the kernel's question from a waiting agent goes to the owner's first channel headed by that agent and task, so the reply lands there; never posted on the task; that agent's mutes and brake apply", async () => {
+    const { d, sent, posted } = world();
+    expect(await notify(d, { kind: "decision", text: "WOR-1 waits on your answer: keep v1?", task: "WOR-1", head: { agentName: "Kai", issueId: "i-1" } })).toEqual({ sent: true });
+    expect(sent).toEqual([{ to: "slack", m: { kind: "decision", text: "WOR-1 waits on your answer: keep v1?", head: { agent: "Kai", task: "WOR-1", issue: "i-1" } } }]);
+    expect(posted).toEqual([]);
+    // Its asking agent's mutes and the task's loop brake hold as for the agent's own notify.
+    const braked: string[] = [];
+    d.attention = { mode: "enforce", blocked: ["kai"], dailyCap: 40, digestHours: [], timezone: "UTC" };
+    d.brake = async (task, agent) => (braked.push(`${task}:${agent}`), { allow: true });
+    const asker = { id: "ag-kai", key: "kai", roles: [] };
+    expect(await notify(d, { kind: "decision", text: "WOR-2 waits on your answer: drop v1?", task: "WOR-2", head: { agentName: "Kai", issueId: "i-2" }, asker })).toMatchObject({ sent: false, reason: "blocked" });
+    expect([sent.length, braked]).toEqual([1, ["WOR-2:ag-kai"]]);
+  });
+
   it("the same dedupe_key from two agents reaches the owner once", async () => {
     const { d, sent } = world();
     expect(await notify(d, { kind: "alert", text: "prod is down", dedupe_key: "slack:C1:1.0" }, agent("triage"))).toEqual({ sent: true });

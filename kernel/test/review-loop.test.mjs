@@ -87,7 +87,7 @@ test("the rejection that parks a task wakes its delegator once, with the reviewe
   const told = [], owner = [];
   const tasks = { "TASK-1": { id: "TASK-1", identifier: "WOR-1", status: "in_progress", parentId: "TASK-0" }, "TASK-0": { id: "TASK-0", identifier: "WOR-0", status: "blocked" } };
   const k = await side(t, db(), mod, { escalate: (records) => {
-    const e = createEscalate({ db: records.db, issue: async (id) => tasks[id], agentName: async () => "Kai", notice: (task, body) => told.push({ task, body }), owner: (n) => owner.push(n) });
+    const e = createEscalate({ db: records.db, issue: async (id) => tasks[id], comments: async () => [], asker: async () => ({ name: "Kai", key: "kai", roles: [] }), notice: (task, body) => told.push({ task, body }), owner: (n) => owner.push(n) });
     return (task, key, text) => e.delegator(task, key, text);
   } });
   for (const [n, note] of ["a", "b", "c"].entries()) {
@@ -99,7 +99,7 @@ test("the rejection that parks a task wakes its delegator once, with the reviewe
     assert.equal(told.length, n === 2 ? 1 : 0, `told only at the third rejection (after ${n + 1})`);
   }
   assert.equal(told[0].task, "TASK-0", "the delegator: the task's parent, blocked on it");
-  assert.match(told[0].body, /^\*\*WOR-1 is stuck:\*\* the AI reviewer rejected acme\.post on this task 3 times[^]*re-brief it[^]*close it[^]*ask the owner[^]*```\nkeep the shim out \(c\)\n```/);
+  assert.match(told[0].body, /^\*\*WOR-1 is stuck:\*\* the AI reviewer rejected acme\.post on this task 3 times[^]*re-brief it[^]*close it[^]*ask the owner[^]*```\nkeep the shim out \(c\)\n```[^]*<!-- aidenhq-wake -->$/, "a wake notice: never read as the owner's words");
   // Filed again: refused as parked by code (no model), and the delegator isn't told twice.
   const again = fileRecord(k.records, { args: { note: "d" } });
   await k.loop.tick();
