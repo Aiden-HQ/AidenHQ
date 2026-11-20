@@ -12,8 +12,11 @@ const TASK = "11111111-1111-1111-1111-111111111111", DELEGATED = "22222222-2222-
 const agents = { "run-jwt-ada": { id: ADA, name: "Ada", task: TASK } };
 const grants = { [ADA]: { key: "ada", roles: [], tools: { todo: ["task_finish"] } } };
 
-/** A kernel with a task connection, one finish check answering `verdict(body)`, and a control plane holding one task. */
-async function setup(t, verdict, { agentsScope, checks, graded = false, keyless = false, localChanges, status = "in_progress", labelIds = ["lbl-x"] } = {}) {
+/**
+ * A kernel with a task connection, one finish check answering `verdict(body)`, and a control plane holding TASK (Ada's) and
+ * DELEGATED (Bo's); `extra`: more tasks by id, and a second job of Ada's on one of them (`job`).
+ */
+async function setup(t, verdict, { agentsScope, checks, graded = false, keyless = false, localChanges, status = "in_progress", labelIds = ["lbl-x"], extra = {}, job = "run-jwt-ada" } = {}) {
   const asked = [];
   const check = await serve(async (req, res) => {
     const body = JSON.parse((await readBody(req)) || "{}");
@@ -25,6 +28,8 @@ async function setup(t, verdict, { agentsScope, checks, graded = false, keyless 
   t.after(() => check.s.close());
   const issue = { id: TASK, identifier: "WOR-1", companyId: "co", status, assigneeAgentId: ADA, assigneeUserId: null, createdByAgentId: "ag-cos", parentId: null, labelIds, executionPolicy: { mode: "normal" } };
   const delegated = { id: DELEGATED, identifier: "WOR-2", companyId: "co", status: "in_review", assigneeAgentId: "ag-bo", assigneeUserId: null, createdByAgentId: ADA, parentId: null, labelIds: [] };
+  const issues = { [TASK]: issue, [DELEGATED]: delegated, ...extra };
+  const byRef = (ref: string) => issues[ref] ?? Object.values(issues).find((i) => i.identifier === ref);
   const writes = [];
   const ctl = { failPatch: 0 }; // PATCHes the control plane answers 502 to
   let k;
@@ -33,25 +38,26 @@ async function setup(t, verdict, { agentsScope, checks, graded = false, keyless 
     return { content: [{ type: "text", text: JSON.stringify({ status: r.status, json: await r.json() }) }] };
   } });
   k = await kernel(t, {
-    agents, grants: { [ADA]: { ...grants[ADA], ...(graded ? { graded: true } : {}) } }, secrets: { todo_service_key: "todo-key", judge_check_key: "check-key", judge_token: "judge-tok", other_token: "other-tok", grading_token: "grading-tok", paperclip_post_key: "post-key", ...(keyless ? {} : { [`paperclip-agents/${ADA}`]: "ada-key" }) },
+    agents: job === "run-jwt-ada" ? agents : { ...agents, [job]: { id: ADA, name: "Ada", task: extra[Object.keys(extra)[0]!]!.id } },
+    grants: { [ADA]: { ...grants[ADA], ...(graded ? { graded: true } : {}) } }, secrets: { todo_service_key: "todo-key", judge_check_key: "check-key", judge_token: "judge-tok", other_token: "other-tok", grading_token: "grading-tok", paperclip_post_key: "post-key", ...(keyless ? {} : { [`paperclip-agents/${ADA}`]: "ada-key" }) },
     connections: { todo: conn(todo.url, "todo", { write: ["task_finish"] }) },
     modules: { modules: { judge: { roles: ["kernel.cp-read"], token: "judge_token" }, other: { roles: ["kernel.cp-read"], token: "other_token" }, grading: { roles: ["kernel.grader"], token: "grading_token" } } },
     graderToken: (task, agent) => `grader-${task}-${agent}`,
     checks: checks ?? ({ "judge.finish": { module: "judge", at: "task.finish", url: `${check.url}/check/finish`, auth_secret: "judge_check_key", label: "held", ...(agentsScope ? { agents: agentsScope } : {}) } }),
     ...(localChanges ? { localChanges } : {}),
     onControl: async (req, body, auth) => {
-      if (req.method === "GET" && (req.url === `/api/issues/${TASK}` || req.url === "/api/issues/WOR-1")) return { body: issue };
-      if (req.method === "GET" && (req.url === `/api/issues/${DELEGATED}`)) return { body: delegated };
+      const ref = /^\/api\/issues\/([^/?]+)$/.exec(req.url ?? "")?.[1];
+      if (req.method === "GET" && ref && byRef(decodeURIComponent(ref))) return { body: byRef(decodeURIComponent(ref)) };
       if (req.method === "GET" && req.url === "/api/companies/co/labels") return { body: [{ id: "lbl-x", name: "x" }, { id: "lbl-held", name: "held" }, { id: "lbl-grading", name: "grading" }] };
       if (req.method === "PATCH" && ctl.failPatch) { ctl.failPatch--; return { status: 502, body: {} }; }
-      if (req.method === "PATCH") { const b = JSON.parse(body); writes.push({ as: auth, body: b }); Object.assign(issue, b); return { body: issue }; }
+      if (req.method === "PATCH") { const b = JSON.parse(body); const i = byRef(decodeURIComponent(ref ?? "")) ?? issue; writes.push({ as: auth, body: b }); Object.assign(i, b); return { body: i }; }
       if (req.url === "/api/agents/me" && auth === "ada-key") return { body: { id: ADA, companyId: "co" } };
       // The agent's own close goes through the plugin's post action (cp.ts): recorded as Ada's write.
-      if (req.url === "/api/plugins/aidenhq.events/actions/post") { const p = JSON.parse(body).params; writes.push({ as: auth, body: { status: p.status, gated: p.gated } }); Object.assign(issue, { status: p.status }); return { body: { data: { comment: null, child: null, found: false, status: p.status } } }; }
+      if (req.url === "/api/plugins/aidenhq.events/actions/post") { const p = JSON.parse(body).params; const i = byRef(p.issueId ?? "") ?? issue; writes.push({ as: auth, body: { status: p.status, gated: p.gated } }); Object.assign(i, { status: p.status }); return { body: { data: { comment: null, child: null, found: false, status: p.status } } }; }
     },
   });
-  const finish = async (body, task = TASK) => JSON.parse((await (await k.call("todo", "run-jwt-ada", { method: "tools/call", params: { name: "task_finish", arguments: { task, body } } })).json()).result.content[0].text);
-  return { k, asked, writes, issue, finish, ctl };
+  const finish = async (body, task = TASK, as = job) => JSON.parse((await (await k.call("todo", as, { method: "tools/call", params: { name: "task_finish", arguments: { task, body } } })).json()).result.content[0].text);
+  return { k, asked, writes, issue, issues, finish, ctl };
 }
 
 test("a holding check: the move to done isn't forwarded; the owner holds the task in review with the check's label and a scheduled check", async (t) => {
@@ -266,6 +272,35 @@ test("a delegated task closes from its delegator only when a check accepts (an e
   assert.deepEqual(writes, [], "a refused cross-task close moves nothing");
   answer = { verdict: "ok", unlabel: true, accepts: true };
   assert.equal((await finish({ status: "done" }, DELEGATED)).status, 200);
+});
+
+test("a task the closing agent holds from an earlier run closes (an orphaned run's task); another agent's is still refused; a graded one is held by the check", async (t) => {
+  // Two jobs of Ada's on different tasks: an earlier run on ORPHAN ended without task_finish, and the new run (job run-jwt-new)
+  // closes it with `issue` (AidenHQ#1003). It is hers, so it is not a cross-task close: the check hears it as her own.
+  const ORPHAN = "33333333-3333-4333-8333-333333333333";
+  let answer = { verdict: "ok" };
+  const s = await setup(t, () => answer, {
+    extra: { [ORPHAN]: { id: ORPHAN, identifier: "WOR-9", companyId: "co", status: "in_progress", assigneeAgentId: ADA, assigneeUserId: null, createdByAgentId: "ag-cos", parentId: null, labelIds: [] } },
+    job: "run-jwt-new",
+  });
+  let r = await s.finish({ status: "done", comment: "The earlier run left this open; closing it." }, ORPHAN);
+  assert.equal(r.status, 200);
+  assert.deepEqual(s.writes, [{ as: "ada-key", body: { status: "done", gated: true } }], "closed as Ada, gated, on the orphan's own task");
+  assert.equal(s.issues[ORPHAN].status, "done");
+  assert.equal(s.asked.at(-1).body.task.id, ORPHAN, "the check heard the task it closes, never the job's own");
+  // A task assigned to another agent is nobody's here but its delegator's acceptance: still refused, before anything moves.
+  const before = s.writes.length;
+  for (const v of [{ verdict: "ok" }, { verdict: "pending", state: "pending", reason: "r" }]) {
+    answer = v;
+    assert.equal((await s.finish({ status: "done" }, DELEGATED)).status, 403, JSON.stringify(v));
+  }
+  assert.equal(s.writes.length, before, "a refused close of another agent's task moves nothing");
+  answer = { verdict: "ok", unlabel: true, accepts: true };
+  assert.equal((await s.finish({ status: "done" }, DELEGATED)).status, 200, "the delegated-grade path is unchanged");
+  // A graded task of Ada's own (from an earlier run too) is still held by the grader: the check's hold decides, no bypass.
+  answer = { verdict: "pending", state: "pending", reason: "the grader checks this task", until: "2026-11-17T12:00:00.000Z" };
+  assert.deepEqual((await s.finish({ status: "done" }, ORPHAN)).status, 202);
+  assert.equal(s.issues[ORPHAN].status, "in_review");
 });
 test("the reported ordering: a task whose own local change is open cannot reach done, green-but-unmerged most of all; a merged or closed change lets it", async (t) => {
   // The reported sequence (AidenHQ#709): the task was marked done at once, the merge was never asked for, and the merge card

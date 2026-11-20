@@ -33,6 +33,8 @@ export interface Kernel {
   stop(job: string): Promise<void>;
   /** A company's tasks by control-plane query (the open ones of a routine, say). */
   issues(company: string, query: string): Promise<Issue[]>;
+  /** Whether the kernel holds a wake for the task still waiting to start a job (routines.ts: a run in flight). */
+  wakePending(task: string): Promise<boolean>;
   /** A routine's definition (its concurrency policy). */
   routine(id: string): Promise<{ concurrencyPolicy?: string }>;
   /** Cancel a routine run's task as its agent: folded into an earlier run (`coalesced`), or overtaken by a later one (`stale`). */
@@ -78,6 +80,7 @@ export function createKernel(url: string, token: string, fetcher: typeof fetch =
     post: async (job, b) => void (await call("POST", `/v1/jobs/${e(job)}/post`, b)),
     stop: async (job) => void (await call("DELETE", `/v1/jobs/${e(job)}`)),
     issues: (company, query) => call("GET", `/v1/cp/read/api/companies/${e(company)}/issues?${query}`),
+    wakePending: async (task) => Boolean((await call("GET", `/v1/wakes/pending?task=${e(task)}`)).pending),
     routine: (id) => call("GET", `/v1/cp/read/api/routines/${e(id)}`),
     cancelRoutineRun: async (task, why, body) => void (await call("POST", "/v1/routines/cancel", { task, why, body })),
     children: (parent, company) => call("GET", `/v1/cp/read/api/companies/${e(company)}/issues?parentId=${e(parent)}&status=todo,in_progress,in_review,blocked,done,cancelled&limit=200`).then((l: Issue[]) => l.filter((i) => i.parentId === parent)),

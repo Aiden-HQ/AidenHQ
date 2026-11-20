@@ -30,6 +30,7 @@
 //   POST /v1/wakes             (a module with role kernel.wake) a scheduled wake {task, agent?, at?, cause?, id?}; with
 //                              {task, text}: a labelled wake notice on the task now, which wakes its agent (no scheduled row); with
 //                              to: "asker", on the task's open parent instead when it has one
+//   GET  /v1/wakes/pending?task=  (a module with role kernel.jobs) whether a wake for the task still waits to start a job
 //   POST /v1/wakes/claim, POST /v1/wakes/:key/drop  (a module with role kernel.jobs) claim inbox rows; give one up
 //   POST /v1/routines/cancel   (a module with role kernel.jobs) {task, why: coalesced|stale, body}: an open or blocked routine run of an
 //                              agent it dispatches, cancelled as that agent (wakes.ts)
@@ -153,6 +154,7 @@ export const ROUTES = [
   { method: "POST", path: "/v1/wait", auth: "module+assertion" },
   { method: "POST", path: "/v1/wakes/events", auth: "events-key" },
   { method: "POST", path: "/v1/wakes", auth: "module" },
+  { method: "GET", path: "/v1/wakes/pending", auth: "module" },
   { method: "POST", path: "/v1/wakes/claim", auth: "module" },
   { method: "POST", path: "/v1/wakes/:key/drop", auth: "module" },
   { method: "POST", path: "/v1/wakes/:key/note", auth: "module" },
@@ -646,6 +648,11 @@ export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boar
         }
         if (!wakes) throw fail(503, "unavailable", "the wake inbox is off");
         if (!w.roles.includes("kernel.jobs")) throw fail(403, "forbidden", `${w.module} may not claim wakes (role kernel.jobs)`);
+        if (hit.path === "/v1/wakes/pending") {
+          const task = new URLSearchParams(q ?? "").get("task") ?? "";
+          if (!/^[\w.:-]{1,100}$/.test(task)) throw fail(400, "bad_request", "send ?task=<id>");
+          return send(res, 200, { pending: wakes.pending(w.module!, task) });
+        }
         const b = await json(req);
         if (hit.path === "/v1/wakes/claim") return send(res, 200, { wakes: wakes.claim(w.module!, Math.min(Math.max(Number(b.limit) || 20, 1), 100)) });
         if (hit.path === "/v1/routines/cancel") {

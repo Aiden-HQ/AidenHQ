@@ -7,7 +7,7 @@ import { createDispatch } from "../service/src/loop.ts";
 import { KernelError } from "../service/src/kernel.ts";
 
 function fake({ task, comments = [], directory = {}, tasks = {}, paused = [] }) {
-  const k = { inbox: [], jobs: new Map(), started: [], inputs: [], posts: [], notes: [], dropped: [], wakes: [], filed: [], commented: [], notified: [], stopped: [], scheduled: [], busy: 0, defer: 0, failPost: 0, n: 0, takes: true };
+  const k = { inbox: [], jobs: new Map(), started: [], inputs: [], posts: [], notes: [], dropped: [], wakes: [], filed: [], commented: [], notified: [], stopped: [], scheduled: [], busy: 0, defer: 0, failPost: 0, n: 0, takes: true, pending: new Set() };
   const all = { [task.id]: task, ...tasks };
   k.kernel = {
     claim: async () => k.inbox.splice(0),
@@ -46,6 +46,8 @@ function fake({ task, comments = [], directory = {}, tasks = {}, paused = [] }) 
     },
     open: async () => [...k.jobs.values()].filter((j) => !j.acked),
     jobsOf: async (t) => [...k.jobs.values()].filter((j) => j.task === t).sort((a, b) => b.at - a.at),
+    // A wake the kernel holds for the task, still waiting to start its job (routines.ts: a run in flight).
+    wakePending: async (t) => k.pending.has(t),
     ack: async (id) => void (k.jobs.get(id).acked = true),
     input: async (job, b) => (k.inputs.push({ job, ...b }), { sent: k.takes }),
     post: async (job, b) => {
@@ -356,7 +358,7 @@ test("a failed run's notice says why it failed", async () => {
   assert.equal(k.posts[0].body, "**Failed** (exit code 1): The job failed: Error: no rollout found");
 });
 
-test("a routine run is folded into an earlier open run of its routine; a blocked run is closed once a later one is done; always_enqueue keeps every run", async () => {
+test("a routine run is folded into an earlier run of its routine in flight; a run whose job ended and left it idle is not folded into; a blocked run is closed once a later one is done; always_enqueue keeps every run", async () => {
   const run = (id, status, at, extra = {}) => ({ id, identifier: `WOR-${id}`, status, assigneeAgentId: "eng", companyId: "c1", originKind: "routine_execution", originId: "rt", createdAt: new Date(at).toISOString(), ...extra });
   const [first, second] = [run("t1", "todo", 1000), run("t2", "todo", 2000)];
   const k = fake({ task: second, tasks: { t1: first }, directory: { eng: { key: "eng" } } });
@@ -368,16 +370,38 @@ test("a routine run is folded into an earlier open run of its routine; a blocked
     cancelRoutineRun: async (task, why, body) => void cancels.push({ task, why, body }),
     agent: async (id) => ({ id, name: id, companyId: "c1" }),
   });
+  // The earlier run's job is live: the new tick is folded into it and starts nothing.
+  k.jobs.set("j-live", { id: "j-live", task: "t1", agent: "eng", state: "running", exit: null, final: "", session: null, timedOut: false, at: 1, ended: null, acked: false });
   k.inbox.push(wake("routine-run:t2", "routine:digest", { task: "t2" }));
   await k.dispatch.tick();
   assert.deepEqual(cancels.map((c) => [c.task, c.why]), [["t0", "stale"], ["t2", "coalesced"]]);
   assert.equal(k.started.length, 0, "the folded run starts nothing");
   assert.equal(k.dropped.length, 1);
+  // The earlier run's job is over and it was left open: the new tick starts its own job, and nothing is cancelled.
+  Object.assign(k.jobs.get("j-live"), { state: "done", exit: 0, ended: 2, final: "Left it open." });
+  cancels.length = 0;
+  k.inbox.push(wake("routine-run:t2c", "routine:digest", { task: "t2" }));
+  await k.dispatch.tick();
+  assert.deepEqual(cancels, [], "no fold into the idle earlier run (the stale sweep runs once a minute)");
+  assert.equal(k.started.length, 1, "the new run starts a job");
+  assert.equal(k.dropped.length, 1, "nothing was dropped as folded");
+  // A wake still pending for the earlier run (its job hasn't started, or a dispatcher holds it) is in flight: folded again.
+  k.jobs.delete("j-live");
+  k.pending.add("t1");
+  cancels.length = 0;
+  k.inbox.push(wake("routine-run:t2d", "routine:digest", { task: "t2" }));
+  await k.dispatch.tick();
+  assert.deepEqual(cancels.map((c) => [c.task, c.why]), [["t2", "coalesced"]]);
+  assert.equal(k.started.length, 1, "only the idle run's own tick started one");
+  // An always_enqueue routine's run is never folded, whatever the earlier run's state.
+  k.pending.clear();
+  k.jobs.set("j-live2", { id: "j-live2", task: "t1", agent: "eng", state: "running", exit: null, final: "", session: null, timedOut: false, at: 3, ended: null, acked: false });
   policy = "always_enqueue";
+  cancels.length = 0;
   k.inbox.push(wake("routine-run:t2b", "routine:digest", { task: "t2" }));
   await k.dispatch.tick();
-  assert.equal(cancels.length, 2, "an always_enqueue routine's run is not folded");
-  assert.equal(k.started.length, 1);
+  assert.deepEqual(cancels, [], "an always_enqueue routine's run is not folded");
+  assert.equal(k.started.length, 2);
 });
 
 test("a delegated task left blocked wakes its parent's agent with the reason", async () => {
