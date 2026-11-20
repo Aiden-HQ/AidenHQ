@@ -147,7 +147,7 @@ jobs:
           logs="$RUNNER_TEMP/modules"; mkdir -p "$logs"
           jq -r 'to_entries[] | [.key, .value.dir, .value.run] | @tsv' <<< "$ENTRIES" > "$logs/list"
           # One line per entry (a folder can hold two), run in its folder: output to <n>.log, exit code to <n>.rc.
-          one() { IFS=$'\t' read -r n dir run <<< "$1"; (cd "$dir" && bash "$GITHUB_WORKSPACE/.github/ci/run-suite.sh" "$run") > "$logs/$n.log" 2>&1; echo $? > "$logs/$n.rc"; }
+          one() { IFS=$'\t' read -r n dir run <<< "$1"; (cd "$dir" && timeout -k 5 150 bash "$GITHUB_WORKSPACE/.github/ci/run-suite.sh" "$run") > "$logs/$n.log" 2>&1; echo $? > "$logs/$n.rc"; }
           export -f one; export logs
           # The map is read from the base, so a PR that deletes a suite's folder still lists it: nothing is left to test.
           while IFS=$'\t' read -r n dir run; do [ -d "$dir" ] && printf '%s\n' "$n"$'\t'"$dir"$'\t'"$run" || echo "gone: $dir" >&2; done < "$logs/list" > "$logs/run"
