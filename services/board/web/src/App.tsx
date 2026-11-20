@@ -714,11 +714,11 @@ export function App() {
           </div>
           <span className="spacer" />
           {board.recurring.length > 0 && (
-            <button className={`btn${showRecurring ? " on" : ""}`} onClick={() => setShowRecurring(!showRecurring)} title="Recurring tasks (r)">
+            <button className={`btn${showRecurring ? " on" : ""}`} aria-pressed={showRecurring} onClick={() => setShowRecurring(!showRecurring)} title="Recurring tasks (r)">
               Recurring
             </button>
           )}
-          <button className={`btn${showDone ? " on" : ""}`} onClick={() => setShowDone(!showDone)} title="Recently done (d)">
+          <button className={`btn${showDone ? " on" : ""}`} aria-pressed={showDone} onClick={() => setShowDone(!showDone)} title="Recently done (d)">
             Done
           </button>
           <button className="btn primary" onClick={() => setCreating(true)} title="New task (c)">
@@ -756,7 +756,7 @@ export function App() {
       {view === "costs" && <Suspense fallback={<PageLoading />}><CostsView onSignIn={signInNeeded} /></Suspense>}
       {view === "agents" && route.kind === "agent" && <Suspense fallback={<PageLoading />}><AgentPage key={route.key} agentKey={route.key} tab={route.tab} go={go} onSignIn={signInNeeded} /></Suspense>}
       {view === "agents" && route.kind !== "agent" && <Suspense fallback={<PageLoading />}><CrewView crew={board.assignees} onSignIn={signInNeeded} /></Suspense>}
-      <main className="columns" hidden={view !== "board"}>
+      <main className={`columns${showDone || showRecurring ? " extra" : ""}`} hidden={view !== "board"}>
         <DndContext sensors={sensors} collisionDetection={collision} onDragStart={onDragStart} onDragOver={onDragOver} onDragEnd={onDragEnd} onDragCancel={() => (setActiveId(null), (dragFrom.current = null), void refresh(true))}>
           {visibleBuckets.map((b) => (
             <Column
