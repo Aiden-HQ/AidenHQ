@@ -3,7 +3,7 @@
 // module.yaml; a profile or repo that doesn't validate is dropped loudly (its error is listed), never half-used.
 
 export const ENGINES = ["codex", "claude-code", "codegenie"] as const;
-// The recipe's values (recipe/engines.mjs runs the review in its own box: no shared import across that image boundary).
+// The recipe's values (recipe/engines.ts runs the review in its own box: no shared import across that image boundary).
 export const EFFORTS = ["minimal", "low", "medium", "high", "xhigh"] as const;
 export type Engine = (typeof ENGINES)[number];
 
