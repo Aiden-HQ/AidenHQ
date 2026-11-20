@@ -9,7 +9,7 @@ import type { Issue, Label, Paperclip, Routine } from "./paperclip.js";
 import type { Recurring, Store } from "./store.js";
 
 export const RECURRING_LABEL = "recurring";
-/** Title prefix of a board-made routine: setup (scripts/retire-agents.mjs) leaves routines with it alone. */
+/** Title prefix of a board-made routine: setup (scripts/retire-agents.ts) leaves routines with it alone. */
 export const ROUTINE_PREFIX = "Repeats: ";
 const TRIGGER_LABEL = "repeats";
 const CLOSED = new Set(["done", "cancelled"]);
@@ -186,7 +186,7 @@ export async function changeRecurring(pc: Paperclip, store: Store, ctx: Ctx, iss
     store.unschedule(issue.id);
     const labelIds = withLabel(issue, label, true);
     if (labelIds) await pc.updateIssue(issue.id, { labelIds });
-    if (!label) log.warn("label \"recurring\" missing in Paperclip (run scripts/paperclip-setup.mjs)");
+    if (!label) log.warn("label \"recurring\" missing in Paperclip (run scripts/paperclip-setup.ts)");
     log.info({ issue: issue.identifier, rule: describeRule(input.cadence, input.time), cron, repos: repos.length }, "recurring task set");
     return recurringView(store.recurring(issue.id)!, await pc.routine(routineId));
   }
