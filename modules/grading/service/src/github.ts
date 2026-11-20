@@ -6,11 +6,13 @@ type KernelCall = (method: string, path: string, body?: unknown) => Promise<Json
 const PERMS = { pull_requests: "read", contents: "read", checks: "read", statuses: "read", issues: "read" };
 const SLUG = /^[\w.-]+\/[\w.-]+$/;
 
-// The PR as evidence.ts reads it (the code host's own PR query, trimmed to the fields the grader uses).
+// The PR as evidence.ts reads it (the code host's own PR query, trimmed to the fields the grader uses). `baseRefOid` is the
+// commit the PR was cut from, which stays put when the base branch moves on; `baseRef.target.oid` is the branch's current
+// tip (it moves with every merge, this PR's included), so it is never read as the PR's base commit.
 const PR_QUERY = `query($owner: String!, $repo: String!, $number: Int!) {
   repository(owner: $owner, name: $repo) {
     pullRequest(number: $number) {
-      number title body url state headRefOid headRefName baseRefName mergedAt mergeCommit { oid }
+      number title body url state headRefOid headRefName baseRefName baseRefOid mergedAt mergeCommit { oid }
       files(first: 100) { pageInfo { hasNextPage } nodes { path } }
       history: commits(last: 30) { nodes { commit { oid tree { oid } parents(first: 1) { totalCount } } } }
       commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes { __typename ... on CheckRun { name status conclusion } ... on StatusContext { context state } } } } } } }

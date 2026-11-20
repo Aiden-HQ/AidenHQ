@@ -3,15 +3,15 @@
 // merged PR in the same repo beside the superseded branch, the merged PR is the one graded.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { prEvidence } from "../service/src/grader/evidence.ts";
+import { localPullRequest, prEvidence } from "../service/src/grader/evidence.ts";
 
 const REPO = "acme-agents/app";
 const SHA = (c) => c.repeat(40);
 const url = (n) => `https://github.com/${REPO}/pull/${n}`;
 
-const merged = (n, head, merge) => ({
+const merged = (n, head, merge, base = "0") => ({
   number: n, url: url(n), state: "MERGED", title: `Land ${head}`, body: `Lands ${head}.`, headRefOid: SHA(head), headRefName: `branch-${head}`, baseRefName: "main",
-  mergedAt: "2026-11-19T22:45:53Z", mergeCommit: { oid: SHA(merge) },
+  baseRefOid: SHA(base), mergedAt: "2026-11-19T22:45:53Z", mergeCommit: { oid: SHA(merge) },
   commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: [{ __typename: "CheckRun", name: "ci-required", status: "COMPLETED", conclusion: "SUCCESS" }] } } } }] }, history: { nodes: [] },
 });
 
@@ -71,4 +71,27 @@ test("when every PR the task names is closed, the hold applies: no verdict eithe
   const ev = await prEvidence([{ repo: REPO, number: 223, url: url(223), heads: ["branch-a"] }], "", depsFor(prs, { taskMerged: [{ repo: REPO, number: 223, url: url(223), headRef: "branch-a" }] }));
   assert.equal(ev.awaiting, `${url(223)} was closed without merging`);
   assert.equal(ev.version, undefined);
+});
+
+// WOR-4892's shape: the prerequisite merged immediately before this PR, which was cut from that merge. The base branch's name
+// alone can't show it (main has moved on), so the base commit id is what a criterion about the PR's base is judged from.
+test("a PR cut from the commit its prerequisite just merged names that base commit in its trusted facts", async () => {
+  const prerequisite = merged(102, "1", "2"); // merged as SHA("2")
+  const prs = [prerequisite, merged(103, "3", "4", "2")]; // 103's base is 102's merge commit
+  const ev = await prEvidence([{ repo: REPO, number: 103, url: url(103), heads: ["branch-3"] }], "", depsFor(prs));
+  const fact = ev.facts.find((f) => f.startsWith(`${url(103)}: merged`));
+  assert.ok(fact, "the PR's own fact line is present");
+  assert.match(fact, new RegExp(`base commit ${SHA("2")}`), "the fact gives the commit PR #103 was cut from");
+  assert.equal(SHA("2"), prerequisite.mergeCommit.oid, "and that commit is exactly the prerequisite's merge commit");
+  assert.match(fact, /into main/, "the base branch name stays, for context");
+});
+
+test("a local change request carries its base commit in the same shape as GitHub's read", () => {
+  const checks = [{ name: "ci-required", ok: true, pending: false }];
+  const pr = localPullRequest(
+    { number: 7, url: "codehost:local/app/change/7", state: "merged", head: SHA("3"), base: SHA("2"), into: "main", branch: "fix", title: "Fix", body: "Fixes it.", merged: SHA("4") },
+    checks, ["ci-required"], "2026-11-19T22:45:53Z",
+  ).repository.pullRequest;
+  assert.equal(pr.baseRefOid, SHA("2"), "the base commit the change was cut from");
+  assert.equal(pr.baseRefName, "main");
 });
