@@ -1,12 +1,13 @@
 // Connect on first use (spec 2026-11-20 §2): a connection that answers needs_owner (sdk/src/vendor/needs.ts) is recorded as
-// down, by module (connection_state, keyed `<module>:<cause>[:<org>|:<scope>]`), and the kernel decides who hears about it:
+// down, by module (connection_state, keyed `<module>:<cause>[:<org>|:<scope>|:account:<a>]`), and decides who hears it:
 // - the owner asked for the work (the task chain's root, walked by parent links and the kernel's provenance, holds the owner's
 //   own words, escalate.ts ownerWroteAt): one decision message on that root task with the one link, once per need until it
 //   clears (`told`), and the calling task waits on the connection (idle.ts, as an agent's own wait: 7 days for a full cause,
 //   a day for a partial one, so it retries daily);
 // - anything else (a routine's run, its delegated work, a module's own call): one batched digest line a day, never a ping.
-// The agent always gets the kernel's fixed words, never the module's text. ok() clears a module (the board's Connect finished,
-// or a later successful call) and opens a `connected` wake for every task waiting on it; dispatch resumes them.
+// The agent always gets the kernel's fixed words, never the module's text. ok() clears a module (the board's Connect, or a
+// successful call with no account) and wakes every task waiting on it; a multi-account need names its account, and only that
+// account's rows and waits clear, so a healthy account's call never wakes work that failed on another one.
 // Partial causes (scope, sso, restricted) mean the connection works: a success never clears them and downFor() omits them.
 import type { DatabaseSync } from "node:sqlite";
 import type { Cause, Need } from "../sdk/src/vendor/needs.ts";
@@ -18,13 +19,15 @@ import type { Notice } from "./notify.ts";
 import { ownerVia } from "./relay.ts";
 import type { Wakes } from "./wakes.ts";
 
-export type Down = { connection: string; module: string; cause: Cause; since: string };
+export type Down = { connection: string; module: string; cause: Cause; account?: string; since: string };
 /** The wake cause ok() opens; dispatch's RESUME words it. */
 export const CONNECTED_CAUSE = "connected";
 
 type Issue = { id: string; identifier?: string; title?: string; parentId?: string | null; assigneeAgentId?: string | null; description?: unknown; createdAt?: unknown; createdByUserId?: unknown; createdByAgentId?: unknown };
 type Comment = Parameters<typeof ownerWroteAt>[1][number] & Parameters<typeof ownerVia>[1][number];
-type Row = { key: string; module: string; cause: Cause; detail: string; url: string | null; since: number; told: number; reported_day: string | null };
+type Row = { key: string; module: string; cause: Cause; account: string; detail: string; url: string | null; since: number; told: number; reported_day: string | null };
+/** What a success clears: `account` narrows it to that account's rows and waits; absent, the full rows of the module. */
+export type Clear = { account?: string; fullOnly?: boolean };
 
 const FULL = new Set<string>(["not_connected", "expired"]);
 const DAY = 864e5;
@@ -65,12 +68,34 @@ export function createConnectionState(o: {
   const { db } = o;
   const now = o.now ?? Date.now;
   const log = o.log ?? (() => {});
-  db.exec(`CREATE TABLE IF NOT EXISTS connection_state (key TEXT PRIMARY KEY, module TEXT NOT NULL, cause TEXT NOT NULL, detail TEXT NOT NULL, url TEXT, since INTEGER NOT NULL, told INTEGER NOT NULL DEFAULT 0, reported_day TEXT);
-    CREATE TABLE IF NOT EXISTS connection_waits (module TEXT NOT NULL, task TEXT NOT NULL, agent TEXT NOT NULL, at INTEGER NOT NULL, full INTEGER NOT NULL DEFAULT 1, PRIMARY KEY (module, task));`);
+  // One BEGIN IMMEDIATE for the whole schema, so two openers never both alter or fail; a busy lock retries.
+  for (let attempt = 1; ; attempt++) {
+    try {
+      db.exec("BEGIN IMMEDIATE");
+      db.exec(`CREATE TABLE IF NOT EXISTS connection_state (key TEXT PRIMARY KEY, module TEXT NOT NULL, cause TEXT NOT NULL, account TEXT NOT NULL DEFAULT '', detail TEXT NOT NULL, url TEXT, since INTEGER NOT NULL, told INTEGER NOT NULL DEFAULT 0, reported_day TEXT);
+        CREATE TABLE IF NOT EXISTS connection_waits (module TEXT NOT NULL, account TEXT NOT NULL DEFAULT '', task TEXT NOT NULL, agent TEXT NOT NULL, at INTEGER NOT NULL, full INTEGER NOT NULL DEFAULT 1, PRIMARY KEY (module, account, task));`);
+      const cols = (t: string) => (db.prepare(`PRAGMA table_info(${t})`).all() as { name: string }[]).map((c) => c.name);
+      // A table made before accounts keeps its shape under IF NOT EXISTS: add the column ('' = whole module), rebuild the key.
+      if (!cols("connection_state").includes("account")) db.exec("ALTER TABLE connection_state ADD COLUMN account TEXT NOT NULL DEFAULT ''");
+      if (!cols("connection_waits").includes("account")) {
+        db.exec("ALTER TABLE connection_waits RENAME TO connection_waits_before_accounts");
+        db.exec(`CREATE TABLE connection_waits (module TEXT NOT NULL, account TEXT NOT NULL DEFAULT '', task TEXT NOT NULL, agent TEXT NOT NULL, at INTEGER NOT NULL, full INTEGER NOT NULL DEFAULT 1, PRIMARY KEY (module, account, task))`);
+        db.exec("INSERT INTO connection_waits (module, account, task, agent, at, full) SELECT module, '', task, agent, at, full FROM connection_waits_before_accounts");
+        db.exec("DROP TABLE connection_waits_before_accounts");
+      }
+      db.exec("COMMIT");
+      break;
+    } catch (e) {
+      const busy = (e as { errcode?: number }).errcode === 5 || /locked/i.test(String((e as Error).message));
+      try { db.exec("ROLLBACK"); } catch {}
+      if (busy && attempt < 200) { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25); continue; }
+      throw e;
+    }
+  }
   const q = (sql: string) => db.prepare(sql);
 
-  /** Only what the kernel may pass on: detail on one line (≤ 200), names that look like names, an https url for sso/restricted. */
-  function normalise(n: Need): { cause: Cause; detail: string; scope?: string; org?: string; url?: string } {
+  /** Only what the kernel passes on: detail on one line (≤ 200), names that look like names, an https url for sso/restricted. */
+  function normalise(n: Need): { cause: Cause; detail: string; account?: string; scope?: string; org?: string; url?: string } {
     const name = (v: unknown) => (typeof v === "string" && NAME.test(v) ? v : undefined);
     let url: string | undefined;
     if ((n.cause === "sso" || n.cause === "restricted") && typeof n.url === "string" && n.url.length <= 500) {
@@ -78,8 +103,13 @@ export function createConnectionState(o: {
     }
     const scope = n.cause === "scope" ? name(n.scope) : undefined;
     const org = n.cause === "sso" || n.cause === "restricted" ? name(n.org) : undefined;
-    return { cause: n.cause, detail: String(n.detail ?? "").replace(/\s+/g, " ").trim().slice(0, 200), ...(scope ? { scope } : {}), ...(org ? { org } : {}), ...(url ? { url } : {}) };
+    // Only a full cause is per account: a partial one is about the connection's permissions, whoever served.
+    const account = FULL.has(n.cause) ? name(n.account) : undefined;
+    return { cause: n.cause, detail: String(n.detail ?? "").replace(/\s+/g, " ").trim().slice(0, 200), ...(account ? { account } : {}), ...(scope ? { scope } : {}), ...(org ? { org } : {}), ...(url ? { url } : {}) };
   }
+  /** The key: `<module>:<cause>` then the org, scope or account it is about. */
+  const stateKey = (module: string, n: { cause: Cause; account?: string; scope?: string; org?: string }) =>
+    `${module}:${n.cause}${n.cause === "sso" || n.cause === "restricted" ? `:${n.org ?? ""}` : n.cause === "scope" && n.scope ? `:${n.scope}` : n.account ? `:account:${n.account}` : ""}`;
   const link = (module: string, url: string | null | undefined) => url ?? `${o.boardUrl().replace(/\/+$/, "")}/connect/${module}`;
 
   /** The task, the root of its chain (parent, else the job that created it; ≤ 10 up) and the root's comments. */
@@ -101,9 +131,9 @@ export function createConnectionState(o: {
     /** A needs_owner answer for `who` on `module`: records, routes, and returns the agent's fixed text. Never throws. */
     async hit(who: Identity, module: string, need: Need): Promise<string> {
       const n = normalise(need);
-      const key = `${module}:${n.cause}${n.cause === "sso" || n.cause === "restricted" ? `:${n.org ?? ""}` : n.cause === "scope" && n.scope ? `:${n.scope}` : ""}`;
+      const key = stateKey(module, n);
       const t = now(), today = day(t), full = FULL.has(n.cause), label = o.label(module);
-      q("INSERT INTO connection_state (key, module, cause, detail, url, since) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(key) DO UPDATE SET detail = excluded.detail, url = excluded.url").run(key, module, n.cause, n.detail, n.url ?? null, t);
+      q("INSERT INTO connection_state (key, module, cause, account, detail, url, since) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(key) DO UPDATE SET detail = excluded.detail, url = excluded.url").run(key, module, n.cause, n.account ?? "", n.detail, n.url ?? null, t);
       const row = q("SELECT * FROM connection_state WHERE key = ?").get(key) as Row;
       const background = `${label} isn't connected (${agentWords[n.cause]}): it is in the owner's digest. Skip this source for now and carry on.`;
       let c: Awaited<ReturnType<typeof chain>>;
@@ -139,23 +169,26 @@ export function createConnectionState(o: {
       } catch (e) {
         log("connection need: the wait wasn't recorded", { module, task: who.task, err: (e as Error).message });
       }
-      q("INSERT INTO connection_waits (module, task, agent, at, full) VALUES (?, ?, ?, ?, ?) ON CONFLICT(module, task) DO UPDATE SET agent = excluded.agent, at = excluded.at, full = MAX(full, excluded.full)").run(module, who.task!, who.agent!, t, full ? 1 : 0);
+      q("INSERT INTO connection_waits (module, account, task, agent, at, full) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(module, account, task) DO UPDATE SET agent = excluded.agent, at = excluded.at, full = MAX(full, excluded.full)").run(module, n.account ?? "", who.task!, who.agent!, t, full ? 1 : 0);
       log("connection need", { module, cause: n.cause, to: "owner", task: root.identifier ?? root.id });
       return `${label} isn't connected (${agentWords[n.cause]}): the owner has the link. Don't retry; this task is woken when it is connected. End your turn.`;
     },
 
     /**
      * The module connected: drops its rows and opens a `connected` wake per waiting task; returns how many it woke. `fullOnly`
-     * (a successful call): only the full causes clear, since a partial one (scope, sso, restricted) still stands.
+     * (a successful call) clears only the full causes; `account` (a multi-account answer) only that account's rows and waits.
      */
-    ok(module: string, fullOnly = false): number {
+    ok(module: string, clear: boolean | Clear = false): number {
+      const { account, fullOnly } = typeof clear === "boolean" ? { account: undefined, fullOnly: clear } : clear;
       const t = now();
       return inTx(db, "connection_ok", () => {
-        const waiters = q(`SELECT task, agent FROM connection_waits WHERE module = ?${fullOnly ? " AND full = 1" : ""}`).all(module) as { task: string; agent: string }[];
-        q(`DELETE FROM connection_state WHERE module = ?${fullOnly ? " AND cause IN ('not_connected', 'expired')" : ""}`).run(module);
-        q(`DELETE FROM connection_waits WHERE module = ?${fullOnly ? " AND full = 1" : ""}`).run(module);
+        const waits = `module = ?${account ? " AND account = ?" : ""}${fullOnly ? " AND full = 1" : ""}`;
+        const args = account ? [module, account] : [module];
+        const waiters = q(`SELECT task, agent FROM connection_waits WHERE ${waits}`).all(...args) as { task: string; agent: string }[];
+        q(`DELETE FROM connection_state WHERE module = ?${account ? " AND account = ?" : ""}${fullOnly ? " AND cause IN ('not_connected', 'expired')" : ""}`).run(...args);
+        q(`DELETE FROM connection_waits WHERE ${waits}`).run(...args);
         for (const w of waiters) o.wakes.open({ key: `connect:${module}:${w.task}:${t}`, task: w.task, agent: w.agent, cause: CONNECTED_CAUSE, replaces: `wait:${w.task}:`, author: "kernel" });
-        if (waiters.length) log("connection ok", { module, woken: waiters.length });
+        if (waiters.length) log("connection ok", { module, ...(account ? { account } : {}), woken: waiters.length });
         return waiters.length;
       });
     },
@@ -165,9 +198,9 @@ export function createConnectionState(o: {
       return Object.values(o.connections()).some((c) => c?.module === module);
     },
 
-    /** Whether the module has a full-cause row (the proxy's cheap check before clearing on a success). */
-    down(module: string): boolean {
-      return Boolean(q("SELECT 1 FROM connection_state WHERE module = ? AND cause IN ('not_connected', 'expired') LIMIT 1").get(module));
+    /** Whether the module (or, with `account`, that account) has a full-cause row: the proxy's check before a clear. */
+    down(module: string, account?: string): boolean {
+      return Boolean(q(`SELECT 1 FROM connection_state WHERE module = ? AND cause IN ('not_connected', 'expired')${account ? " AND account = ?" : ""} LIMIT 1`).get(...(account ? [module, account] : [module])));
     },
 
     /** The agent's granted connections whose module has a full-cause row: names, causes and dates only. */
@@ -178,8 +211,8 @@ export function createConnectionState(o: {
       for (const connection of granted) {
         const module = conns[connection]?.module;
         if (!module) continue;
-        const r = q("SELECT cause, since FROM connection_state WHERE module = ? AND cause IN ('not_connected', 'expired') ORDER BY since LIMIT 1").get(module) as { cause: Cause; since: number } | undefined;
-        if (r) out.push({ connection, module, cause: r.cause, since: iso(r.since) });
+        const r = q("SELECT cause, account, since FROM connection_state WHERE module = ? AND cause IN ('not_connected', 'expired') ORDER BY since LIMIT 1").get(module) as { cause: Cause; account: string; since: number } | undefined;
+        if (r) out.push({ connection, module, cause: r.cause, ...(r.account ? { account: r.account } : {}), since: iso(r.since) });
       }
       return out;
     },
@@ -188,10 +221,10 @@ export function createConnectionState(o: {
     tick(): void {
       const t = now(), today = day(t);
       q("DELETE FROM connection_waits WHERE at < ?").run(t - 7 * DAY);
-      const rows = q("SELECT * FROM connection_state s WHERE (reported_day IS NULL OR reported_day != ?) AND EXISTS (SELECT 1 FROM connection_waits w WHERE w.module = s.module)").all(today) as Row[];
+      const rows = q("SELECT * FROM connection_state s WHERE (reported_day IS NULL OR reported_day != ?) AND EXISTS (SELECT 1 FROM connection_waits w WHERE w.module = s.module AND (w.account = '' OR w.account = s.account))").all(today) as Row[];
       for (const r of rows) {
         if (!q("UPDATE connection_state SET reported_day = ? WHERE key = ? AND (reported_day IS NULL OR reported_day != ?)").run(today, r.key, today).changes) continue;
-        const named = r.key.slice(`${r.module}:${r.cause}:`.length) || undefined;
+        const named = r.account || (r.key.slice(`${r.module}:${r.cause}:`.length) || undefined);
         const n = { cause: r.cause, ...(r.cause === "scope" ? { scope: named } : {}), ...(r.cause === "sso" || r.cause === "restricted" ? { org: named } : {}) };
         o.queue({ kind: "digest", batch: true, text: `${o.label(r.module)} isn't connected (${ownerWords(n)}), and work is waiting on it: ${link(r.module, r.url)}`, dedupe_key: `connect:${r.key}` });
       }

@@ -8,7 +8,7 @@
 export const OWNER_CAUSES = ["not_connected", "expired", "scope", "sso", "restricted"] as const;
 export type Cause = (typeof OWNER_CAUSES)[number];
 /** `detail`: one sentence for the owner. `scope`, `org`: what a partial cause is about. `url`: the vendor's own page (sso, restricted). */
-export type Need = { cause: Cause; detail: string; scope?: string; org?: string; url?: string };
+export type Need = { cause: Cause; detail: string; scope?: string; org?: string; url?: string; account?: string };
 
 /** The tool result a connection answers when only the owner can fix it. */
 export function needsOwner(need: Need): { isError: true; content: [{ type: "text"; text: string }]; structuredContent: { error: "needs_owner"; need: Need } } {
@@ -21,16 +21,17 @@ export function needsOwner(need: Need): { isError: true; content: [{ type: "text
  */
 export const SIGNED_IN = "aidenhq/signed_in";
 
-/** Marks a result as served by the connection's sign-in (SIGNED_IN). */
-export function signedIn<T extends object>(result: T): T {
+/** Marks a result as served by the connection's sign-in (SIGNED_IN); `account` names whose it was, for a multi-account one. */
+export function signedIn<T extends object>(result: T, account?: string): T {
   const meta = (result as { _meta?: Record<string, unknown> })._meta;
-  return { ...result, _meta: { ...(meta && typeof meta === "object" ? meta : {}), [SIGNED_IN]: true } };
+  return { ...result, _meta: { ...(meta && typeof meta === "object" ? meta : {}), [SIGNED_IN]: account || true } };
 }
 
 /** Whether a tools/call result is a success the connection's sign-in served. */
 export function servedSignedIn(result: unknown): boolean {
   const r = result as { isError?: unknown; _meta?: Record<string, unknown> } | null | undefined;
-  return Boolean(r && typeof r === "object" && r.isError !== true && r._meta && typeof r._meta === "object" && r._meta[SIGNED_IN] === true);
+  const v = r && typeof r === "object" && r.isError !== true && r._meta && typeof r._meta === "object" ? r._meta[SIGNED_IN] : undefined;
+  return v === true || (typeof v === "string" && !!v);
 }
 
 /** The need in a tools/call result, if it is one; an unknown cause reads as not_connected. Only known string fields are kept. */
@@ -42,6 +43,6 @@ export function readNeed(result: unknown): Need | undefined {
   const n = s.need;
   const cause = (OWNER_CAUSES as readonly unknown[]).includes(n.cause) ? (n.cause as Cause) : "not_connected";
   const out: Need = { cause, detail: typeof n.detail === "string" ? n.detail : "" };
-  for (const k of ["scope", "org", "url"] as const) if (typeof n[k] === "string") out[k] = n[k] as string;
+  for (const k of ["scope", "org", "url", "account"] as const) if (typeof n[k] === "string") out[k] = n[k] as string;
   return out;
 }

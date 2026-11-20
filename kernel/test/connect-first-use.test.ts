@@ -86,6 +86,26 @@ test("a trusted connection's answer passes unchanged, and its needs_owner is sti
   assert.equal((await w.take())[0].kind, "decision");
 });
 
+test("an account's served answer clears only that account's expired need, not another account's", async (t) => {
+  let mode: "need" | string = "need";
+  const w = await setup(t, {
+    answer: () => (mode === "need" ? needsOwner({ cause: "expired", detail: "refused", account: "a@example.com" }) : signedIn({ content: [{ type: "text", text: `ok on ${mode}` }] }, mode)),
+  });
+  await w.call();
+  const down = async () => (await w.k.v1("GET", `/v1/connections/down?agent=${AGENT}`, undefined, "dispatch-key")).json.down as { account?: string }[];
+  assert.deepEqual((await down()).map((d) => d.account), ["a@example.com"]);
+  // b@ serves the next call: a@'s need stays, and the task waiting on it isn't woken.
+  mode = "b@example.com";
+  assert.match((await w.call()).result.content[0].text, /ok on b@example\.com/);
+  assert.deepEqual((await down()).map((d) => d.account), ["a@example.com"]);
+  assert.ok(!w.wakeRows().some((x) => x.cause === "connected" && x.state === "open"));
+  // a@ serves one: its need clears and the waiting task wakes.
+  mode = "a@example.com";
+  assert.match((await w.call()).result.content[0].text, /ok on a@example\.com/);
+  assert.deepEqual(await down(), []);
+  assert.ok(w.wakeRows().some((x) => x.cause === "connected" && x.state === "open"), "the waiting task wakes");
+});
+
 test("a successful call clears a full-cause state only when the sign-in served it", async (t) => {
   let answer = "need";
   const w = await setup(t, { answer: () => (answer === "need" ? needsOwner({ cause: "not_connected", detail: "" }) : answer === "link" ? { content: [{ type: "text", text: "a prefilled link" }] } : signedIn({ content: [{ type: "text", text: "ok" }] })) });

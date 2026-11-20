@@ -64,11 +64,30 @@ export function healthBody(ready: boolean, err?: unknown): { ok: boolean; state?
  * needs_owner answer (needs.ts), which the kernel routes; anything else is a plain error. `loaded`: false when no accounts could be
  * loaded at all (`err` is why).
  */
-export function toolFailure(err: unknown, loaded = true): { isError: true; content: { type: "text"; text: string }[] } {
+export function toolFailure(err: unknown, loaded = true, account?: string): { isError: true; content: { type: "text"; text: string }[] } {
   const msg = err instanceof Error ? err.message.slice(0, 300) : "";
-  if (!loaded || err instanceof NoGoogleAccounts) return needsOwner({ cause: "not_connected", detail: `Google isn't connected${msg ? `: ${msg}` : ""}` });
-  if (err instanceof GoogleAuthError && err.expired) return needsOwner({ cause: "expired", detail: `Google's sign-in stopped working: ${msg}` });
+  const who = (err instanceof GoogleAuthError ? err.account : undefined) ?? account;
+  if (!loaded || err instanceof NoGoogleAccounts) return needsOwner({ cause: "not_connected", detail: `Google isn't connected${msg ? `: ${msg}` : ""}`, ...(who ? { account: who } : {}) });
+  if (err instanceof GoogleAuthError && err.expired) return needsOwner({ cause: "expired", detail: `Google's sign-in stopped working: ${msg}`, ...(who ? { account: who } : {}) });
   return { isError: true, content: [{ type: "text", text: JSON.stringify({ error: "google_api_error", detail: msg }) }] };
+}
+
+/**
+ * The account a successful answer names (needs.ts SIGNED_IN): the result's own (a read that found its data in another
+ * account), else the call's. A sweep: the `served` accounts on the rows (or on a wrapper's `messages`) decide —
+ * undefined when every account of several answered (the whole connection is proved), the one that did, null for a mix or
+ * none, so a failed account's sign-in never clears behind a working one's.
+ */
+export function servedBy(account: string | undefined, result: unknown, all?: number): string | null | undefined {
+  const r = (result && typeof result === "object" ? result : {}) as { account?: unknown; served?: unknown; messages?: { served?: unknown } };
+  if (all !== undefined) {
+    const s = r.served ?? r.messages?.served;
+    const served = Array.isArray(s) ? (s as string[]) : [];
+    return served.length === all && all > 1 ? undefined : served.length === 1 ? served[0] : null;
+  }
+  // A single read is tagged by firstThat, a list's rows (or the list) by the account that made it.
+  const own = Array.isArray(r) ? (r[0] as { account?: unknown } | undefined)?.account : r.account;
+  return typeof own === "string" && own ? own : account;
 }
 
 export type Check = { ok: true } | { ok: false; message: string; fix?: string };
@@ -154,6 +173,16 @@ export class MultiWorkspace {
     return [name, w];
   }
 
+  /** Runs one account's call, naming the account on a refused sign-in so the need knows whose it is. */
+  private async in(name: string, fn: (w: Workspace) => Promise<unknown>): Promise<unknown> {
+    try {
+      return await fn(this.ws.get(name)!);
+    } catch (err) {
+      if (err instanceof GoogleAuthError && err.account === undefined) err.account = name;
+      throw err;
+    }
+  }
+
   private order(account?: string): [string, Workspace][] {
     if (account) return [this.one(account)];
     return [this.one(), ...[...this.ws].filter(([n]) => n !== this.primary)];
@@ -163,7 +192,7 @@ export class MultiWorkspace {
     let last: unknown;
     for (const [name, w] of this.order(account)) {
       try {
-        return { ...(await fn(w)), account: name };
+        return { ...((await this.in(name, fn)) as T), account: name };
       } catch (err) {
         if (!notFound(err)) throw err;
         last = err;
@@ -174,7 +203,7 @@ export class MultiWorkspace {
 
   async listEvents(start: string, end: string, query?: string, max = 100, account?: string): Promise<(NormalizedEvent & { account: string })[]> {
     const [name, w] = this.one(account);
-    return (await w.listEvents(start, end, query, max)).map((e) => ({ ...e, account: name }));
+    return ((await this.in(name, (x) => x.listEvents(start, end, query, max))) as NormalizedEvent[]).map((e) => ({ ...e, account: name }));
   }
 
   async getEvent(id: string, account?: string) {
@@ -183,26 +212,28 @@ export class MultiWorkspace {
 
   async meetingDocuments(since: string, hints: string[], max = 50, account?: string) {
     const [name, w] = this.one(account);
-    return (await w.meetingDocuments(since, hints, max)).map((f) => ({ ...f, account: name }));
+    return ((await this.in(name, (x) => x.meetingDocuments(since, hints, max))) as DriveFile[]).map((f) => ({ ...f, account: name }));
   }
 
-  private async all<T>(account: string | undefined, fn: (w: Workspace) => Promise<T[]>): Promise<(T & { account: string })[]> {
-    const out: (T & { account: string })[] = [];
+  /** Each account's rows; `served` lists the accounts that answered (an empty answer still proves its sign-in). */
+  private async all<T>(account: string | undefined, fn: (w: Workspace) => Promise<T[]>): Promise<(T & { account: string })[] & { served: string[] }> {
+    const out: (T & { account: string })[] = [], served: string[] = [];
     for (const [name, w] of account ? [this.one(account)] : [...this.ws]) {
       try {
-        out.push(...(await fn(w)).map((x) => ({ ...x, account: name })));
+        out.push(...((await this.in(name, fn)) as T[]).map((x) => ({ ...x, account: name })));
+        served.push(name);
       } catch (err) {
         out.push({ account: name, error: String((err as Error).message).slice(0, 200) } as unknown as T & { account: string });
       }
     }
-    return out;
+    return Object.assign(out, { served });
   }
 
-  recentFiles(since: string, max = 50, account?: string): Promise<(DriveFile & { account: string })[]> {
+  recentFiles(since: string, max = 50, account?: string) {
     return this.all(account, (w) => w.recentFiles(since, max));
   }
 
-  searchFiles(query: string, max = 25, account?: string): Promise<(DriveFile & { account: string })[]> {
+  searchFiles(query: string, max = 25, account?: string) {
     return this.all(account, (w) => w.searchFiles(query, max));
   }
 
@@ -220,10 +251,9 @@ export class MultiWorkspace {
   }
 
   async gmailSearch(query: string, max = 20, account?: string) {
-    const results = (await this.all(account, (w) => w.gmailSearch(query, max))).map((m) =>
-      typeof m.thread_id === "string" ? { ...m, link: gmailLink(m.thread_id, m.account) } : m,
-    );
-    return results.sort((a, b) => String((b as Record<string, unknown>).date ?? "").localeCompare(String((a as Record<string, unknown>).date ?? "")));
+    const found = await this.all(account, (w) => w.gmailSearch(query, max));
+    const results = found.map((m) => (typeof m.thread_id === "string" ? { ...m, link: gmailLink(m.thread_id, m.account) } : m));
+    return Object.assign(results.sort((a, b) => String((b as Record<string, unknown>).date ?? "").localeCompare(String((a as Record<string, unknown>).date ?? ""))), { served: found.served });
   }
 
   async gmailThread(id: string, maxChars?: number, account?: string) {

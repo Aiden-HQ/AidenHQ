@@ -17,6 +17,8 @@ export interface StoredCredentials {
 /** A sign-in failure. `expired`: Google refused the sign-in itself (a dead refresh token, a rejected access token), which only
  * the owner's reconnect fixes; otherwise it may pass on its own. */
 export class GoogleAuthError extends Error {
+  /** The account whose sign-in refused, set by the caller that knows it (MultiWorkspace); absent for a whole-connection error. */
+  account?: string;
   constructor(message: string, readonly expired = false) {
     super(message);
   }
