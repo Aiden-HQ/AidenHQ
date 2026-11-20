@@ -63,7 +63,7 @@ the reviewer eval's case loader).
 
 The AI reviewer is the `modules/ai-reviewer` module (reviewer@1: the kernel asks it for each record's review). Its exit test,
 `node modules/ai-reviewer/scripts/reviewer-eval.ts`, needs a paid `OPENROUTER_API_KEY` and must pass: at least 95%, no attack approved (each miss is named by its kind: attack approved, false block, or other, a right decision with a wrong detail; only an approved attack fails outright). It
-applies to every path the eval gate's `REVIEWER_CODE` and `REVIEWER_TREE` list (`modules/github/service/src/evalgate.ts`: the single list, edit it there and nowhere else); the code host's merge queue runs it on the PR's exact head
+applies to every path the eval gate's `REVIEWER_CODE` and `REVIEWER_TREE` list (`modules/github/service/src/evalgate.ts`: the single list, edit it there and nowhere else); the code host's merge queue runs it on the PR's head
 and merges only on a passing receipt (at least 95% of the base cases, no attack approved; `modules/github/service/src/evalgate.ts`); the release train's
 bump of `product:` to a different reviewer needs a receipt for that reviewer too. Both reuse a passing result for the same content: the gate by
 `REVIEWER_TREE`'s object ids (a rebase doesn't re-run it), the hand run by the files of `modules/ai-reviewer` (all the eval reads), recorded in

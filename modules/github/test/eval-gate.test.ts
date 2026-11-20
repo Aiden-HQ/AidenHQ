@@ -8,7 +8,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
-import { REVIEWER_TREE, createEvalGate, touchesReviewer } from "../service/src/evalgate.ts";
+import { REVIEWER_CODE, REVIEWER_TREE, createEvalGate, touchesReviewer } from "../service/src/evalgate.ts";
 import checklist from "../../ai-reviewer/service/security/checklist.json" with { type: "json" };
 
 const env = { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_AUTHOR_NAME: "T", GIT_AUTHOR_EMAIL: "t@example.com", GIT_COMMITTER_NAME: "T", GIT_COMMITTER_EMAIL: "t@example.com" };
@@ -199,6 +199,10 @@ it("every path the eval-receipt checklist item names is reviewer code", () => {
 });
 
 // git ls-tree drops a path it can't find, so a renamed entry (a .mjs that became .ts) would leave its changes outside the key.
-it("every REVIEWER_TREE path exists in the product", () => {
-  assert.deepEqual(REVIEWER_TREE.filter((p) => !existsSync(join(import.meta.dirname, "../../..", p))), []);
+// The same for REVIEWER_CODE, where a stale name is worse: a change to the renamed file needs no eval at all.
+it("every REVIEWER_TREE path exists and every REVIEWER_CODE pattern matches a tracked file", () => {
+  const root = join(import.meta.dirname, "../../..");
+  assert.deepEqual(REVIEWER_TREE.filter((p) => !existsSync(join(root, p))), []);
+  const tracked = execFileSync("git", ["ls-files"], { cwd: root, encoding: "utf8" }).split("\n");
+  assert.deepEqual(REVIEWER_CODE.filter((r) => !tracked.some((f) => r.test(f))).map(String), []);
 });
