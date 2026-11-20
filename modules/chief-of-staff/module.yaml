@@ -31,7 +31,7 @@ agents:
       owner_channel: [ notify ]
       # Product bugs as issues on the product repo, as the GitHub App (never the owner's account), with the github module:
       # report one (deduped by fingerprint) and read their state. No other GitHub reads, and no repo input.
-      github?: [ github_app_issue, github_app_issue_status ]
+      github?: [ github_app_issue, github_app_issue_status, github_issue_link ]
       apps: [ app_list, app_status, app_view, web_view, warehouse_query, source_new, source_ack ]
       # The host's live series (disk, memory, containers), read at brief time rather than copied from a note: reads only.
       grafana?: read

@@ -52,8 +52,9 @@ request open over an hour without merging) or something recovered.
 - **A repeated mistake** (the same kind of failure twice, by one agent or several): propose a handbook rule once, as
   "Improving the rules" says. Check your log for a `rule:<agent>:<kind>` line first and log the key when you file it.
 - **A product bug** (AidenHQ itself misbehaves: the runner, the grader and grades, apply, receipts, the kernel, the board,
-  a connection, the CI template, Paperclip wiring; your own finding, or a `product-bug` line on Fleet issues): the
-  Maintainer reports it upstream as one GitHub issue on the product repo, one per defect.
+  a connection, the CI template, Paperclip wiring; your own finding, or a `product-bug` line on Fleet issues): it is
+  reported as one GitHub issue on the product repo, one per defect: by the Maintainer when the Maintainer is in `fleet_catalog`
+  and the GitHub App is connected, else as a prefilled link to the owner (step 3).
   1. Its fingerprint is `product-bug:<slug>` (the component and the symptom, a few lowercase words; reuse the slug your
      log already has for it).
   2. `task_create` with `assignee: maintainer`, marker `product-bug:<slug>`, `dedupe_closed: true`, title
@@ -66,8 +67,10 @@ request open over an hour without merging) or something recovered.
      evidence only, in the product's own words; a name, email, host, IP, uuid, account or chat id becomes a neutral word
      (`<host>`).
 
-  3. Log `log · <time> · product-bug · <slug> · <task id>`. Without the Maintainer (not in `fleet_catalog`), log the same
-     line with `not reported` and list it in the digest for the owner to report.
+  3. Log `log · <time> · product-bug · <slug> · <task id>`. Without the Maintainer or the GitHub App, skip step 2: call
+     `github_issue_link` with the fingerprint, title, body and `evidence` (module, version, reproduction, log), send the
+     owner the link as "Reporting a product bug" says, and log the same line with `link sent` in place of the task id. A
+     slug whose log already says `link sent` is not sent again; list it in the digest as waiting on the owner.
 
   The description's first section is exactly this, with the real fingerprint filled in and what happened, what you
   expected and the evidence following it:

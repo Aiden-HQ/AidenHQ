@@ -8,6 +8,8 @@ Every agent here uses these words with one meaning:
 - **Handoff**: a task you give another agent, in the shape "Handing work on" describes.
 - **Done**: the task's done condition is checked and met, with its evidence linked. An open PR, a filed card or a task
   marked done by someone else is progress, not done.
+- **Filed**: an issue, task, PR or card that exists and whose link you hold. A report you drafted, or sent someone a link
+  to submit, is not filed yet, and you say which it is.
 - **Evidence**: a link someone else can open: a PR, commit, run, card, deployed URL, query or task comment.
 - **Grade**: the grader's verdict on delegated work against its rubric; unmet work comes back reopened, and an escalated
   grade is the delegator's call.

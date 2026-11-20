@@ -4,7 +4,7 @@
 // an org token), the src_github sync, product issues and the Maintainer's App calls go through here; github.ts uses
 // `repoToken` for read-only access to repositories the App covers.
 import { AGENT_FIX } from "./aidenhq-sdk/maintained-repos.js";
-import { scrubProblems } from "./scrub.js";
+import { scrubProblems, scrubText } from "./scrub.js";
 
 const API = "https://api.github.com";
 const PERMISSIONS = { organization_projects: "read", issues: "read", pull_requests: "read" };
@@ -38,9 +38,49 @@ const errorOf = (b: any) => String(b?.error?.message ?? b?.error ?? "");
  */
 export function productTarget(roles: readonly string[] | undefined, configured: string): [string, string] {
   if (!roles?.includes("product-issues")) throw new Error("product issues need the product-issues role");
+  return parseProductRepo(configured);
+}
+
+/** The configured product repo (setting product_repo) as [owner, name]. */
+export function parseProductRepo(configured: string): [string, string] {
   const m = configured.trim().match(/^([A-Za-z0-9_.-]{1,100})\/([A-Za-z0-9_.-]{1,100})$/);
   if (!m) throw new Error("no product repo is configured (setting product_repo)");
   return [m[1]!, m[2]!];
+}
+
+type Report = { fingerprint: string; title: string; body: string; evidence: { module: string; version: string; reproduction: string; log: string } };
+
+/** A report's body with its evidence (what both the App's issue and the owner's prefilled link carry). */
+function reportBody(a: Report): string {
+  const e = a.evidence;
+  const fence = "`".repeat(Math.max(3, ...[...e.log.matchAll(/`+/g)].map((m) => m[0].length + 1)));
+  return `${a.body}\n\n**Module:** ${e.module}@${e.version}\n\n**Reproduction**\n\n${e.reproduction}\n\n**Evidence**\n\n${fence}text\n${e.log}\n${fence}`;
+}
+
+/** GitHub refuses a "new issue" URL much past 8 KB; this leaves headroom. */
+const MAX_LINK = 7000;
+const TRIM_NOTE = "\n\n[trimmed to fit a link]";
+
+/**
+ * A report for an install with no GitHub App: the owner's one-click "new issue" link on the product repo, title and body
+ * prefilled. Owner data is rewritten out of it (scrub.ts scrubText) and the result checked again, as upstreamReport does, and
+ * the body is cut (with a note) until the link fits GitHub's URL limit. Nothing is filed: the owner submits it.
+ */
+export function issueLink(repo: string, a: Report, terms: string[]): { url: string; trimmed: boolean } {
+  const title = scrubText(a.title, terms);
+  const full = scrubText(`${reportBody(a)}\n\nFingerprint: ${a.fingerprint}`, terms);
+  const hits = scrubProblems(`${title}\n${full}`, terms);
+  if (hits.length) throw new Error(`owner data can't go into a public issue; redact these and try again: ${hits.join("; ")}`);
+  const link = (body: string) => `https://github.com/${repo}/issues/new?title=${encodeURIComponent(title)}&body=${encodeURIComponent(body)}`;
+  if (link(full).length <= MAX_LINK) return { url: link(full), trimmed: false };
+  const cut = (n: number) => full.slice(0, n).replace(/[\ud800-\udbff]$/, "") + TRIM_NOTE;
+  let lo = 0;
+  for (let hi = full.length; lo < hi; ) {
+    const mid = Math.ceil((lo + hi) / 2);
+    if (link(cut(mid)).length <= MAX_LINK) lo = mid;
+    else hi = mid - 1;
+  }
+  return { url: link(cut(lo)), trimmed: true };
 }
 
 /**
@@ -48,14 +88,12 @@ export function productTarget(roles: readonly string[] | undefined, configured: 
  * scrub.ts originIds), the whole final text checked by the owner-data scrub. Throws with the matches; nothing is sent.
  */
 export function upstreamReport(
-  a: { fingerprint: string; title: string; body: string; evidence: { module: string; version: string; reproduction: string; log: string } },
+  a: Report,
   origin: { instance: string; agent: string },
   terms: string[],
 ): { fingerprint: string; title: string; body: string } {
-  const e = a.evidence;
-  const fence = "`".repeat(Math.max(3, ...[...e.log.matchAll(/`+/g)].map((m) => m[0].length + 1)));
   const hex = (s: string) => (/^[0-9a-f]{12}$/.test(s) ? s : "unknown");
-  const body = `${a.body}\n\n**Module:** ${e.module}@${e.version}\n\n**Reproduction**\n\n${e.reproduction}\n\n**Evidence**\n\n${fence}text\n${e.log}\n${fence}\n\nOrigin: instance=${hex(origin.instance)} agent=${hex(origin.agent)}`;
+  const body = `${reportBody(a)}\n\nOrigin: instance=${hex(origin.instance)} agent=${hex(origin.agent)}`;
   // The final text, exactly as it would be posted (fingerprint and title included), is what the scrub reads.
   const hits = scrubProblems([a.fingerprint, a.title, body].join("\n"), terms);
   if (hits.length) throw new Error(`owner data can't go into a public issue; redact these and file again: ${hits.join("; ")}`);

@@ -5,7 +5,7 @@
 // it to those requests. Reads of repos the instance's GitHub App covers use its read-only token instead.
 import { timingSafeEqual } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import { Projects, productTarget, upstreamReport } from "./projects.js";
+import { Projects, issueLink, parseProductRepo, productTarget, upstreamReport } from "./projects.js";
 import { originIds, ownerTerms } from "./scrub.js";
 import { SourceStore } from "./source-store.js";
 import { startSync } from "./sources.js";
@@ -224,21 +224,22 @@ function buildServer(caller?: Caller): McpServer {
     }
   };
   const FINGERPRINT = z.string().regex(/^product-bug:[a-z0-9][a-z0-9-]{2,79}$/).describe("product-bug:<slug>: the component and the symptom, a few lowercase words");
+  const UPSTREAM_REPORT = {
+    fingerprint: FINGERPRINT,
+    title: z.string().min(1).max(256),
+    body: z.string().min(1).max(20_000),
+    evidence: z.object({
+      module: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/).describe("the module the defect is in (kernel for the kernel)"),
+      version: z.string().regex(/^(?:[0-9a-f]{7,40}|v?\d+(?:\.\d+){1,3})$/).describe("the product sha (instance.yaml product:) or release it was seen at"),
+      reproduction: z.string().min(1).max(4000).describe("numbered steps, expected and actual"),
+      log: z.string().min(1).max(8000).describe("the failing check, error text or log lines, trimmed to what matters"),
+    }).strict(),
+  };
   server.registerTool(
     "github_app_issue",
     {
       description: `Report a product bug on the product repo (${PRODUCT_REPO || "none configured"}) as the instance's GitHub App (the fleet's own identity, never the user's). Deduped by \`fingerprint\`: the issue carrying it (an open one first, else the latest closed one) gets the report as a comment (deduplicated: true, with its state); only a new fingerprint opens an issue with \`title\`, labelled \`agent-fix\`. Dedupe is the only limiter: every new defect is filed. The report is \`body\` plus \`evidence\` (module, product version, reproduction, log lines), then the instance and agent it came from and the fingerprint. Public to the product repo's readers and can't be edited or deleted from here, so owner data is refused before anything is sent: names, emails, hosts, IPs, account and chat ids, uuids and credentials; redact and file again.`,
-      inputSchema: {
-        fingerprint: FINGERPRINT,
-        title: z.string().min(1).max(256),
-        body: z.string().min(1).max(20_000),
-        evidence: z.object({
-          module: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/).describe("the module the defect is in (kernel for the kernel)"),
-          version: z.string().regex(/^(?:[0-9a-f]{7,40}|v?\d+(?:\.\d+){1,3})$/).describe("the product sha (instance.yaml product:) or release it was seen at"),
-          reproduction: z.string().min(1).max(4000).describe("numbered steps, expected and actual"),
-          log: z.string().min(1).max(8000).describe("the failing check, error text or log lines, trimmed to what matters"),
-        }).strict(),
-      },
+      inputSchema: UPSTREAM_REPORT,
       annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
     },
     run("github_app_issue", async (a: Parameters<typeof upstreamReport>[0]) => {
@@ -252,6 +253,21 @@ function buildServer(caller?: Caller): McpServer {
       const out = await projects.reportIssue(owner, name, report);
       log.info({ number: out.number, deduplicated: out.deduplicated }, "product issue written as the App");
       return out;
+    }),
+  );
+  server.registerTool(
+    "github_issue_link",
+    {
+      description: `For an install with no GitHub App (nothing can be filed as the App): a report of a product bug as a one-click "new issue" link on the product repo (${PRODUCT_REPO || "none configured"}), title and body prefilled, for the owner to open and submit. Takes what github_app_issue takes. Owner data (names, emails, hosts, IPs, ids, credentials) is rewritten out of it here, and a body too long for a link is cut with a note. Nothing is filed: the issue exists only once the owner submits it, so send them the \`url\` (notify) and don't call it filed.`,
+      inputSchema: UPSTREAM_REPORT,
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    run("github_issue_link", async (a: Parameters<typeof issueLink>[1]) => {
+      try {
+        return issueLink(parseProductRepo(PRODUCT_REPO).join("/"), a, OWNER_TERMS);
+      } catch (err) {
+        throw new GitHubRefused((err as Error).message);
+      }
     }),
   );
   server.registerTool(
