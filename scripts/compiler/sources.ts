@@ -370,12 +370,12 @@ export function remoteModules(instance: Dict, f: Fetch & { parse: (s: string) =>
 }
 
 /**
- * How the host fetches: the default cache and the host's credential helper (ops/git-credential-app.mjs, the
- * code host module's App tokens; it answers nothing for a repo the App can't read, and git then fetches anonymously).
+ * How the host fetches: the default cache and the host's credential helper (ops/git-credential-github.mjs, the
+ * owner's GitHub sign-in; it answers for the instance repo alone, and git fetches anonymously for any other).
  */
 export function hostFetch(repo: string): Fetch {
   const cacheDir = defaultCache();
-  const helper = join(repo, "ops/git-credential-app.mjs");
+  const helper = join(repo, "ops/git-credential-github.mjs");
   return { cacheDir, ...(existsSync(helper) ? { credentialHelper: `!node ${helper}` } : {}) };
 }
 
