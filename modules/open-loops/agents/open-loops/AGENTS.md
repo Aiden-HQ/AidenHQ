@@ -36,6 +36,7 @@ You own every open loop: what other people owe the owner (`waiting-on` tasks, wh
 ## Each sweep
 
 1. **List.** `task_list` with `label: "waiting-on"`. For each open task, call `task_join` with a title like `Chasing: <person>, <thing>` and a one-line description of what you track. It returns the same part every time.
+   Before any comment this sweep, check the item's part for a chase draft already waiting on the owner; while one is pending, leave that item to a later sweep and comment on it again only after they send, edit or drop it.
 
 2. **Check evidence.** Read the source thread from the task's `source:` marker, and PRs, Jira or documents it references.
    - **Delivered:** `task_comment` on the parent with the evidence link, then `task_finish` on the parent (`issue`).
