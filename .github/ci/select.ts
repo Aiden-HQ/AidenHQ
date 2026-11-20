@@ -35,15 +35,16 @@ export function suitesFor(map: AreaMap, files: string[]): Selection {
 }
 
 /**
- * A test job's shards: as many as the suites' measured time needs (their total over the slowest suite, which no split can
- * beat; at most MAX_SHARDS), filled heaviest first into the lightest shard so they finish together.
+ * A test job's shards: as many as the suites' measured time needs (their total over what a shard runs in its slowest
+ * suite's time, PARALLEL suites side by side on its 4 CPUs (measured: a shard's wall time is about half its suites' sum);
+ * at most MAX_SHARDS), filled heaviest first into the lightest shard so they finish together.
  */
-const MAX_SHARDS = 4;
+const MAX_SHARDS = 4, PARALLEL = 2;
 export function shard(tests: { name: string; dir: string; run?: string; secs: number }[]) {
   const sorted = [...tests].sort((a, b) => b.secs - a.secs || a.name.localeCompare(b.name));
   if (!sorted.length) return [];
   const total = sorted.reduce((n, t) => n + t.secs, 0);
-  const k = Math.min(MAX_SHARDS, Math.ceil(total / Math.max(sorted[0]!.secs, 30)));
+  const k = Math.min(MAX_SHARDS, Math.ceil(total / (PARALLEL * Math.max(sorted[0]!.secs, 30))));
   const shards = Array.from({ length: k }, (_, i) => ({ shard: i + 1, load: 0, entries: [] as { name: string; dir: string; run?: string; secs: number }[] }));
   for (const t of sorted) {
     const s = shards.reduce((lo, x) => (x.load < lo.load ? x : lo));
