@@ -195,11 +195,11 @@ for c in $containers; do
       ;;
     # The token invariant: among services and modules only the github service holds the owner's sign-in; the host's apply
     # fetches the instance repo with it through ops/git-credential-github.mjs (below: the file's mode and its only mounter).
-    *github-mcp*)
-      [ "$(docker inspect "$c" --format '{{json .HostConfig.PortBindings}}')" = "{}" ] && pass "github-mcp: no published ports" || fail "github-mcp publishes ports"
-      # Only its own secrets and its own state directory (the owner's token file).
-      [ "$(echo "$mounts" | tr ';' '\n' | grep -c '|/state|')" = "1" ] && ! echo "$mounts" | tr ';' '\n' | grep -v '/run/secrets' | grep -v '|/state|' | grep -q . \
-        && pass "github-mcp: only its own secrets and its own state directory mounted" || fail "github-mcp has unexpected mounts: $mounts"
+    *github-github*)
+      [ "$(docker inspect "$c" --format '{{json .HostConfig.PortBindings}}')" = "{}" ] && pass "github: no published ports" || fail "github publishes ports"
+      # Only its own secrets, its own state directory (the owner's token file), its cache clones and the job workspaces.
+      [ "$(echo "$mounts" | tr ';' '\n' | grep -c '|/state|')" = "1" ] && ! echo "$mounts" | tr ';' '\n' | grep -v '/run/secrets' | grep -v '|/state|' | grep -v '|/cache|' | grep -v '|/tasks|' | grep -q . \
+        && pass "github: only its own secrets, state directory, cache and job workspaces mounted" || fail "github has unexpected mounts: $mounts"
       ;;
     *apps-edge*)
       # The apps' tailnet node: its own way out plus the exposed apps' own networks (apps-mcp joins it), nothing else.
