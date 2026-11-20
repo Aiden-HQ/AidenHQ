@@ -30,7 +30,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
 import type { Obj } from "./modules.ts";
-import { compile, composeSecretFiles, ensureMountedSecrets, ensureOptionalSecrets, hostMounts, hostDirs } from "./modules.ts";
+import { compile, composeSecretFiles, ensureMountedSecrets, ensureOptionalSecrets, hostMounts, hostDirs, migrateSettings } from "./modules.ts";
 import { computersConfig } from "./computers.ts";
 import { pathInventory } from "./paths.ts";
 import { checkIngress } from "./edge.ts";
@@ -88,6 +88,8 @@ if (ops) {
 
 // Secrets of channels the owner may not use start as empty files, so compose can start (empty = not configured).
 const secretsDir = env("AIDENHQ_SECRETS_DIR");
+// An upgrade moves a removed setting's value into its secret (before the empty files below) and names every dropped key.
+if (!stage) for (const l of migrateSettings(YAML.parse(readFileSync(join(instanceDir, "instance.yaml"), "utf8"))?.settings, secretsDir)) console.log(`  ${l}`);
 if (secretsDir && !stage) ensureOptionalSecrets(secretsDir, out.optionalSecrets, "paperclip_auth_secret");
 if (secretsDir && !stage) for (const n of ensureOptionalSecrets(secretsDir, out.generatedSecrets, "paperclip_auth_secret", true)) console.log(`  created secret ${n}`);
 // App identity keys (docs/design/app-identity.md): the gate's and apps-mcp's signing keys and the public keys.json every app

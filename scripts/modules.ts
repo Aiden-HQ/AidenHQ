@@ -687,6 +687,7 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   const settings: Obj = {};
   for (const [, defs] of declaredSettings) for (const [k, d] of Object.entries(defs)) if (d && "default" in d) settings[k] = d.default;
   Object.assign(settings, instance.settings ?? {});
+  if (settings.upstream === "prs") { settings.upstream = "issues"; warnings.push("setting upstream: prs was removed in this release: treated as issues"); }
   setupFlows(enabledDefs, compiled, settings);
   const orgs = organisations(readMarketplace(productDir).organisations, known, enabledDefs);
   if (compiled.board && orgs.length) compiled.board.organisations = orgs;
@@ -703,12 +704,14 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
         if (!v.length) fail(`settings.${k}: at least one`);
         if (v.some((x: unknown) => !d.values.includes(x))) fail(`settings.${k}: each must be ${words}`);
       }
-      // `pattern` (anchored): what a text value looks like, where its `when` mode holds.
+      // `pattern` (anchored): what a text value looks like, where its `when` mode holds. Observe mode: a value that fails it warns
+      // and the compile goes on, so an upgrade that worked before keeps working; the board and MCP check a new value strictly
+      // where it is set (the settings-change path).
       // A list's entries are each checked; an entry that is a map (maintainer_repos) by its `repo`.
       const applies = Object.entries(d?.when ?? {}).every(([w, v]) => String(settings[w]) === String(v));
       if (d?.pattern && settings[k] !== "" && settings[k] != null && applies) {
         const bad = [settings[k]].flat().find((x) => { const v = x && typeof x === "object" ? (x as Obj).repo : x; return typeof v === "object" || !new RegExp(d.pattern).test(String(v)); });
-        if (bad !== undefined) fail(`settings.${k}: ${JSON.stringify(bad)} doesn't match ${d.pattern}`);
+        if (bad !== undefined) warnings.push(`settings.${k}: ${JSON.stringify(bad)} doesn't match ${d.pattern}`);
       }
       // `type: url` (and `host:`): the board's check, again here, where it is the gate (services/shared/url-setting.ts).
       if (d?.type === "url" && applies) {
@@ -1957,6 +1960,36 @@ export function ensureOptionalSecrets(dir: string, names: string[], known: strin
   const made = names.filter((n: string) => !existsSync(join(dir, n)) || (generate && statSync(join(dir, n)).size === 0));
   for (const n of made) writeFileSync(join(dir, n), generate ? randomBytes(32).toString("hex") : "", { mode: 0o600 });
   return made;
+}
+
+/** Settings an earlier release took from instance.yaml and now reads from a vault secret of the same name (asked for on Connect). */
+const SETTING_SECRETS = ["jira_url", "glean_mcp_url", "primer_mcp_url", "grafana_url"];
+/** Settings an earlier release dropped with no successor, and why: named at every apply while an instance still sets them. */
+const DROPPED_SETTINGS: Record<string, string> = {
+  owner_slack_user_id: "the owner's Slack id is learned from the paired Slack channel",
+  owner_email: "nothing reads it any more",
+};
+
+/**
+ * An upgrade of an instance that still sets a removed setting: a value with a secret successor moves into that secret (in place,
+ * never over a secret that has a value), and every dropped key is named, so none goes quietly. instance.yaml is the owner's git
+ * repo and is not edited: the line says which keys can go. Returns the log lines. `dir` is the vault (none: lines only).
+ */
+export function migrateSettings(settings: Obj | undefined, dir?: string) {
+  const out: string[] = [];
+  const vault = dir && existsSync(join(dir, "paperclip_auth_secret")) ? dir : undefined;
+  for (const [k, v] of Object.entries(settings ?? {})) {
+    const value = String(v ?? "").trim();
+    if (!value) continue;
+    if (SETTING_SECRETS.includes(k)) {
+      if (!vault) continue;
+      const file = join(vault, k);
+      const have = existsSync(file) ? readFileSync(file, "utf8").trim() : "";
+      if (!have) { writeFileSync(file, `${value}\n`, { mode: 0o600 }); out.push(`migrated setting ${k} → secret ${k}; remove ${k} from instance.yaml`); }
+      else out.push(`setting ${k} was moved to the secret ${k}${have === value ? "" : " and differs from it: the secret wins"}; remove ${k} from instance.yaml`);
+    } else if (k in DROPPED_SETTINGS) out.push(`setting ${k} was removed in this release: ignored (${DROPPED_SETTINGS[k]})`);
+  }
+  return out;
 }
 
 /**
