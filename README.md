@@ -109,7 +109,7 @@ Your configuration lives in a separate private **instance repo**: `instance.yaml
 | [docs/architecture.md](docs/architecture.md) | Components, data flow and trust boundaries |
 | [docs/core-components.md](docs/core-components.md) | Our core components and what each adds over Paperclip |
 | [docs/operations.md](docs/operations.md) | Apply, upgrade, rollback, health, backups, pruning, debugging |
-| [docs/design/](docs/design/) | Design notes: approvals, access, sources, the Engineer conversations |
+| [docs/design/](docs/design/) | Notes for features being built, and short references for how shipped subsystems work (approvals, access, sources); a shipped note keeps no history |
 | [ops/vault/README.md](ops/vault/README.md) | The secret vault |
 | [CONTRIBUTING.md](CONTRIBUTING.md), [CLAUDE.md](CLAUDE.md) | How to contribute; the guide for coding agents |
 

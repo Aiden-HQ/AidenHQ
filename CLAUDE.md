@@ -31,8 +31,8 @@ never in this file.
 - `scripts/`: compiler (`compile.mjs`, `modules.mjs`), Paperclip setup (`paperclip-setup.mjs`), account auth,
   health, backup and restore.
 - `ops/`: apply, install (`setup.sh`), systemd units, vault, VM provisioning, GitHub App setup.
-- `config/`: generated files (gitignored) plus `*.example.yaml` templates. `docs/`: documentation; `docs/design/`:
-  current design notes.
+- `config/`: generated files (gitignored) plus `*.example.yaml` templates. `docs/`: documentation. `docs/design/`: notes for features being built; when one ships, its lasting rules move into
+  Conventions or a module's prompts and the note is cut to how it works now, or deleted.
 
 ## Build and test
 
