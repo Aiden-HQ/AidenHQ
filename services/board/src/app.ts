@@ -259,7 +259,7 @@ export function createApp(opts: AppOptions): Server {
   const cardsOf = async (state: Parameters<Records["list"]>[0], opt?: Parameters<Records["list"]>[1]) => Promise.all((await records.list(state, opt)).map(named));
 
   const sessionOf = liveActivity(opts.sessions);
-  const work = opts.work ?? { job: async () => null, task: async () => [], agent: async () => [], activity: async () => ({ running: [], recent: [], queued: [], failing: [] }), stop: async () => [] };
+  const work = opts.work ?? { job: async () => null, task: async () => [], agent: async () => [], activity: async () => ({ running: [], recent: [], queued: [], parked: [], failing: [] }), stop: async () => [] };
   const kernelActivity = cachedActivity(work);
   const liveRuns = async () => liveRunsOf(await kernelActivity());
   const recentRuns = async () => pastRunsOf(await kernelActivity());

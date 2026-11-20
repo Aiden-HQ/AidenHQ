@@ -81,8 +81,10 @@ export interface RosterAgent {
   maxParallel?: number;
   /** What the kernel's jobs say (agentState); paused is the owner's setting on the agent. A team record rolls up its members. */
   state: AgentState;
-  /** Failing: the latest failure's first error line. */
+  /** Failing: the latest failure's first error line. Waiting: why the earliest wait was parked. */
   stateNote?: string;
+  /** Waiting: when the earliest parked wait is due. */
+  waitUntil?: string;
   /** Running and waiting jobs now, and when the oldest running one started. */
   running: number;
   queued: number;
@@ -138,24 +140,26 @@ function teamOf(a: Pick<Agent, "metadata">): Pick<RosterAgent, "team" | "memberO
   };
 }
 
-export type AgentState = "working" | "queued" | "idle" | "failing" | "paused";
+export type AgentState = "working" | "queued" | "waiting" | "idle" | "failing" | "paused";
 
-/** Working: a running kernel job. Failing: the agent's last 3 jobs all failed or were lost. Queued: waiting work. Paused: the owner's setting. */
-function agentState(a: Agent, act: KernelActivity): Pick<RosterAgent, "state" | "stateNote" | "running" | "queued" | "workingSince"> {
+/** Working: a running kernel job. Failing: the agent's last 3 jobs all failed or were lost. Queued: work that can start now. Waiting: only waits it parked for later. Paused: the owner's setting. */
+function agentState(a: Agent, act: KernelActivity): Pick<RosterAgent, "state" | "stateNote" | "waitUntil" | "running" | "queued" | "workingSince"> {
   const running = act.running.filter((r) => r.agent === a.id);
   const queued = act.queued.find((q) => q.agent === a.id)?.n ?? 0;
   const failing = act.failing.find((f) => f.agent === a.id);
+  const parked = act.parked.find((p) => p.agent === a.id);
   const workingSince = running.map((r) => r.started_at).filter((t): t is string => Boolean(t)).sort()[0] ?? null;
-  const state = agentPaused(a) ? "paused" : running.length ? "working" : failing ? "failing" : queued ? "queued" : "idle";
-  return { state, ...(failing && state === "failing" ? { stateNote: failing.error } : {}), running: running.length, queued, workingSince };
+  const state = agentPaused(a) ? "paused" : running.length ? "working" : failing ? "failing" : queued ? "queued" : parked ? "waiting" : "idle";
+  return { state, ...(failing && state === "failing" ? { stateNote: failing.error } : {}), ...(parked && state === "waiting" ? { stateNote: parked.cause, waitUntil: parked.until } : {}), running: running.length, queued, workingSince };
 }
 
-/** A team record never runs: it is working if any member is, failing if every member is, queued if any is waiting. */
+/** A team record never runs: it is working if any member is, failing if every member is, queued if any is queued, waiting if any is. */
 function rolledUp(team: RosterAgent, members: RosterAgent[]): Partial<RosterAgent> {
   const any = (s: AgentState) => members.some((m) => m.state === s);
-  const state: AgentState = team.state === "paused" ? "paused" : any("working") ? "working" : members.length && members.every((m) => m.state === "failing") ? "failing" : members.some((m) => m.queued) ? "queued" : "idle";
+  const state: AgentState = team.state === "paused" ? "paused" : any("working") ? "working" : members.length && members.every((m) => m.state === "failing") ? "failing" : members.some((m) => m.queued) ? "queued" : any("waiting") ? "waiting" : "idle";
   const since = members.map((m) => m.workingSince).filter((t): t is string => Boolean(t)).sort()[0] ?? null;
-  return { state, ...(state === "failing" ? { stateNote: members[0]!.stateNote } : {}), running: members.reduce((n, m) => n + m.running, 0), queued: members.reduce((n, m) => n + m.queued, 0), workingSince: since };
+  const next = members.filter((m) => m.waitUntil).sort((x, y) => x.waitUntil!.localeCompare(y.waitUntil!))[0];
+  return { state, ...(state === "failing" ? { stateNote: members[0]!.stateNote } : {}), ...(state === "waiting" && next ? { stateNote: next.stateNote, waitUntil: next.waitUntil } : {}), running: members.reduce((n, m) => n + m.running, 0), queued: members.reduce((n, m) => n + m.queued, 0), workingSince: since };
 }
 
 /** The live agents (terminated ones never show) with their schedules, state and newest run. */

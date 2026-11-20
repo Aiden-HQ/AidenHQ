@@ -99,20 +99,27 @@ export function createWork({ db, records, generationsFile = "" }: { db: Database
       const recent = rows("SELECT * FROM jobs WHERE state NOT IN ('admitted', 'running') ORDER BY ended DESC LIMIT 200").map((r) => ({ ...job(r), error: r.state === "failed" || r.state === "lost" || r.state === "timeout" ? String(r.final || r.state).split("\n")[0]!.slice(0, 200) : null }));
       const latest = new Map<string, string>();
       for (const r of rows("SELECT * FROM jobs ORDER BY at DESC LIMIT 1000")) if (!latest.has(r.task)) latest.set(r.task, r.state);
-      // Per agent, for the board's Agents page: waiting work (an open wake or an admitted job), and the agents whose last 3 ended jobs
-      // all failed or were lost, with the latest one's first error line.
-      const queued = rows("SELECT agent, COUNT(*) AS n FROM (SELECT agent FROM wakes WHERE state = 'open' UNION ALL SELECT agent FROM jobs WHERE state = 'admitted') GROUP BY agent").map((r) => ({ agent: r.agent, n: r.n }));
+      // Per agent, for the board's Agents page: work that can start now (a due open wake or an admitted job), the agents whose last 3
+      // ended jobs all failed or were lost (with the latest one's first error line), and the waits an agent parked for later (an open
+      // wake not yet due: its count, earliest `until` and cause).
+      const now = Date.now();
+      const queued = rows("SELECT agent, COUNT(*) AS n FROM (SELECT agent FROM wakes WHERE state = 'open' AND (until IS NULL OR until <= ?) UNION ALL SELECT agent FROM jobs WHERE state = 'admitted') GROUP BY agent", now).map((r) => ({ agent: r.agent, n: r.n }));
+      const parkedRows = rows("SELECT agent, cause, until FROM wakes WHERE state = 'open' AND until > ? ORDER BY until", now);
+      const parked = [...new Set(parkedRows.map((r) => r.agent as string))].map((agent) => {
+        const mine = parkedRows.filter((r) => r.agent === agent);
+        return { agent, n: mine.length, until: iso(mine[0]!.until)!, cause: String(mine[0]!.cause ?? "").replace(/^wait:\s*/, "").slice(0, 160) };
+      });
       const ends = new Map<string, Record<string, any>[]>();
       for (const r of rows("SELECT agent, state, final FROM jobs WHERE state NOT IN ('admitted', 'running') ORDER BY ended DESC LIMIT 2000")) ends.set(r.agent, [...(ends.get(r.agent) ?? []), r].slice(0, 3));
       const failing = [...ends].filter(([, l]) => l.length === 3 && l.every((r) => r.state === "failed" || r.state === "lost")).map(([agent, l]) => ({ agent, error: String(l[0]!.final || l[0]!.state).split("\n")[0]!.slice(0, 200) }));
       // Dispatch health (the Fleet Steward's stall check): the wakes a module could claim now (open and due, or claimed with the lease
       // expired and no job), and when a job last started.
-      const t = Date.now();
+      const t = now;
       const w = rows("SELECT COUNT(*) AS n, MIN(at) AS oldest FROM wakes WHERE (state = 'open' AND (until IS NULL OR until <= ?)) OR (state = 'claimed' AND job IS NULL AND until <= ?)", t, t)[0]!;
       const oldest = w.n ? rows("SELECT cause FROM wakes WHERE ((state = 'open' AND (until IS NULL OR until <= ?)) OR (state = 'claimed' AND job IS NULL AND until <= ?)) AND at = ? LIMIT 1", t, t, w.oldest)[0] : undefined;
       const waiting = { count: w.n as number, oldest_at: w.n ? iso(w.oldest) : null, oldest_cause: (oldest?.cause as string | undefined) ?? null };
       const last_started_at = iso(rows("SELECT MAX(at) AS at FROM jobs WHERE state != 'admitted'")[0]?.at);
-      return { running, recent, latest: [...latest].slice(0, 200).map(([task, state]) => ({ task, state })), queued, failing, waiting, last_started_at };
+      return { running, recent, latest: [...latest].slice(0, 200).map(([task, state]) => ({ task, state })), queued, parked, failing, waiting, last_started_at };
     },
     metrics(now = Date.now()) {
       const all = rows("SELECT * FROM jobs");

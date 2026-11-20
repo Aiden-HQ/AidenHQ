@@ -15,7 +15,7 @@ const pc = {
 
 describe("POST /api/agents/by-key/:key/pause", () => {
   let role: "admin" | "member" | null = "admin";
-  const work = { job: async () => null, task: async () => [], agent: async () => [], activity: async () => ({ running: [], recent: [], queued: [], failing: [] }), stop: async (what: object, account: string) => (calls.push(`stop ${JSON.stringify(what)} by ${account}`), []) };
+  const work = { job: async () => null, task: async () => [], agent: async () => [], activity: async () => ({ running: [], recent: [], queued: [], parked: [], failing: [] }), stop: async (what: object, account: string) => (calls.push(`stop ${JSON.stringify(what)} by ${account}`), []) };
   const app = createApp({ work, paperclip: pc, store: new Store(":memory:"), log: pino({ level: "silent" }), allowedHosts: ["localhost:3120"], staticDir: "/nonexistent", timezone: "UTC", session: () => (role ? { accountId: "owner", role: role as "admin" } : null) });
   let port = 0;
   beforeAll(async () => {
