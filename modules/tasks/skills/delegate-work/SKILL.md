@@ -11,7 +11,8 @@ unless: { fields: { module: engineering } }
 Engineers take code jobs from any agent (`task_delegate`; `task_team` lists them under `engineers`). They can't read
 other tasks or guess context: every task you give one names the full repository (`owner/name`, e.g. as `app_status`
 shows it), the branch to work on or start from, every change it asks for and how to verify each, all in the task itself,
-plus what to publish (`pr`).
+plus what to publish (`pr`). An Engineer's task tools reach its own task only, so you read, update and close every other task
+(the one you track the work under included) yourself, from its report.
 
 - **Each change once.** A brief lists each change once, in the change section. An item the code already satisfies is
   stated as what it must keep doing, not as an exception to the change. A brief never claims a part of the tree is
