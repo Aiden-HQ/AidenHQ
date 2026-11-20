@@ -1,6 +1,6 @@
 # Maintainer: per-repo duties, PR upkeep and owner-gated features
 
-Status: design, 2026-11-20. Owner decisions are marked **(owner)**; everything else is the designer's call.
+Status: approved by the owner, 2026-11-20. Owner decisions are marked **(owner)**; everything else is the designer's call.
 
 ## Why
 
@@ -94,8 +94,12 @@ and `pr-watch` both read it. Code Review keeps its own list (reviewer profiles, 
 
 Two places refuse outside repos today, and both widen: `modules/github/service/src/plan.mjs` (closes and merges outside
 the agents org, the product repo's Dependabot PRs excepted for the Platform Engineer) and the merge queue
-`modules/github/service/src/merges.ts` (`ownRepo`). Widened to any repo on `maintainer_repos` (not any repo the App can
-reach: the App is public and anyone can install it, so an install must never be enough). Each merge or close is a
+`modules/github/service/src/merges.ts` (`ownRepo`). Widened to the agents org, the product repo and every repo on
+`maintainer_repos` **(owner: part of the Maintainer, one list)**. Listing a repo is what lets any agent's work there
+merge and close through its cards; every duty switch defaults off, so a repo listed with none on is "the fleet may merge
+here" and nothing more **(owner: merge usable without the Maintainer's duties)**. Adding a repo is the owner's change
+(`owner:` path `maintainer_repos.*.repo`, `new: true`). An App install alone never widens it (the App is public). Each
+merge or close is a
 reviewed card naming the exact repo, PR and head; the head, checks and instance-repo protections stay. Dependabot's
 "pins only" is the AI reviewer's judgment per policy 07 (the skill wrongly calls it a code check: fix the skill text).
 This changes the code host's git rules and the tier function, so the AI reviewer eval must pass on it (CLAUDE.md), with
