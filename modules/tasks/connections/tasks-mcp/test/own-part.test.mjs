@@ -71,3 +71,29 @@ test("a part the owner gave the agent still stays open for the owner's replies",
   assert.match(error, /your part of the user's task/);
   assert.deepEqual(patches, []);
 });
+
+test("a handoff whose wait the kernel refuses says so, so the agent can record the wait itself", async () => {
+  // The fake kernel has no /v1/wait: every try fails.
+  const patches = [];
+  const issue = { id: "cur", identifier: "WOR-2", title: "t", status: "in_progress", parentId: "par", assigneeAgentId: "me" };
+  const handler = (req, res) => {
+    let body = "";
+    req.on("data", (d) => (body += d));
+    req.on("end", () => {
+      const url = req.url ?? "";
+      const send = (x) => (res.setHeader("content-type", "application/json"), res.end(JSON.stringify(x)));
+      if (url === "/api/agents/me") return send({ id: "me", name: "Roadmap Keeper" });
+      if (url.startsWith("/api/companies/")) return send({ defaultResponsibleUserId: "owner" });
+      const m = /^\/api\/issues\/([^/?]+)(\/comments)?/.exec(url);
+      if (m?.[2]) return send(req.method === "GET" ? [] : { id: "c1" });
+      if (m && req.method === "PATCH") return (patches.push(JSON.parse(body)), send(Object.assign(issue, JSON.parse(body))));
+      if (m) return send(m[1] === "par" ? { id: "par", identifier: "WOR-1", status: "todo", assigneeUserId: "owner" } : issue);
+      res.statusCode = 404;
+      res.end("{}");
+    });
+  };
+  const r = await bridge({ handler, agents: { me: { key: "roadmap-keeper", roles: [] } }, task: "cur" }).call("task_handoff", { issue: "cur", comment: "Waiting." });
+  assert.equal(r.result?.isError, undefined);
+  assert.match(r.result.content[0].text, /wait_error.*call task_wait/);
+  assert.equal(patches.length, 1);
+});

@@ -277,3 +277,29 @@ test("task_create for a graded agent starts its task only once the rubric is fil
   assert.deepEqual(patches, [{ status: "todo" }], "started once its rubric is on file");
   assert.equal(issues.length, 1, "the same task, not a second one");
 });
+
+test("a start that fails once is retried; one that keeps failing tells the agent the task is parked", async () => {
+  for (const [failures, ok] of [[1, true], [9, false]]) {
+    let left = failures, tries = 0;
+    const handler = (req, res) => {
+      let body = "";
+      req.on("data", (d) => (body += d));
+      req.on("end", () => {
+        const url = req.url ?? "";
+        const send = (x, code = 200) => ((res.statusCode = code), res.setHeader("content-type", "application/json"), res.end(JSON.stringify(x)));
+        if (url === "/grades") return send({ created: true, state: "open" });
+        if (url === "/api/agents/me") return send({ id: "cos", name: "Aiden" });
+        if (url.endsWith("/agents")) return send([{ id: "eng", name: "Kai", status: "idle", metadata: { setupKey: "aidenhq:engineer-openrouter", runnerEngine: true } }]);
+        if (req.method === "POST" && url.endsWith("/issues")) return send({ id: "new", identifier: "WOR-9", status: "backlog", createdByAgentId: "cos" });
+        if (req.method === "PATCH" && url === "/api/issues/new") return (tries++, left-- > 0 ? send({ error: "bad gateway" }, 502) : send({ id: "new", status: "todo" }));
+        if (url.startsWith("/api/issues/")) return send({ id: "cur", identifier: "WOR-5", title: "t", status: "in_progress", assigneeAgentId: "cos", parentId: null });
+        send([]);
+      });
+    };
+    const agents = { cos: { key: "chief-of-staff", roles: [] }, eng: { key: "engineer-openrouter", roles: [], graded: true } };
+    const r = await bridge({ handler, board: handler, agents, agent: "cos", task: "cur" }).call("task_delegate", { ...ask, deliverable: { kind: "pr", ref: "acme/app" }, rubric });
+    if (ok) assert.equal(r.result?.isError, undefined, r.result?.content?.[0]?.text);
+    else assert.match(r.result.content[0].text, /WOR-9 is filed but not started: moving it to todo failed.*stays parked in backlog/);
+    assert.equal(tries, ok ? 2 : 3);
+  }
+});
