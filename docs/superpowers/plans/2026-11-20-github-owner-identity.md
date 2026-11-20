@@ -707,6 +707,8 @@ unchanged apart from Task 8's App-clause removal.
 - [ ] **Step 5b: Fix the queued review findings (2026-11-20):**
   - `kernel/src/writes.ts` `outcomeOf` and `kernel/src/proxy.ts`: accept `objects` / `_aidenhq.objects` only from a
     code-host module (the same CODEHOSTS check as `facts.ts`); drop the field from every other connection.
+  - apps-platform `codehost:` `fetch` grant: also cover the repos in `github_orgs` (Task 6 narrowed it to `@agents/*` and
+    `@instance`, which dropped deploying apps from private repos in the owner's listed orgs; keep that behaviour).
   - `kernel/src/objects.ts`: delete the `.../label/<name>` ref kind. Nothing reads it since labels work as today (Task 8),
     and a label ref can't prove ownership anyway.
 - [ ] **Step 6: Security review** (product `CLAUDE.md`: every new path gets one before it switches on):
