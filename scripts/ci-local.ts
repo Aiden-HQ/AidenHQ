@@ -6,7 +6,7 @@
 import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, relative, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { suitesFor, type AreaMap, type Suite } from "../.github/ci/select.ts";
 
@@ -14,9 +14,6 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2);
 const list = args.includes("--list");
 const base = args.includes("--base") ? args[args.indexOf("--base") + 1]! : "origin/main";
-
-// The tests that need flock(1), absent on macOS: scripts' apply-*.test.ts and the runner's apply.test.ts (paths from the repo root).
-const MAC_EXPECTED = /^(scripts\/test\/apply-[^/]+\.test\.ts)$/;
 
 const git = (...a: string[]) => execFileSync("git", a, { cwd: root, encoding: "utf8", maxBuffer: 64 << 20 }).trim();
 const lines = (s: string) => s.split("\n").filter(Boolean);
@@ -92,13 +89,10 @@ async function main() {
     p.on("close", (code) => {
       const text = Buffer.concat(out).toString();
       writeFileSync(log, text);
-      // The flock apply tests can't pass on macOS: shown, never hidden, and judged by CI. Only failures in these files count.
-      const failedIn = [...text.matchAll(/^test at (\S+?):\d+:\d+$/gm)].map((m) => m[1]!);
-      const expected = code !== 0 && process.platform === "darwin" && failedIn.length > 0 && failedIn.every((f) => MAC_EXPECTED.test(relative(root, resolve(j.cwd, f))));
       const secs = ((Date.now() - t0) / 1000).toFixed(0);
-      console.log(`${code === 0 ? "ok  " : expected ? "EXPECTED on macOS (flock apply tests, judged in CI)" : "FAIL"} ${j.name} (${secs}s)${code === 0 ? "" : ` log: ${log}`}`);
-      if (code !== 0 && !expected) console.log(text.split("\n").slice(-30).join("\n"));
-      done(code === 0 || expected);
+      console.log(`${code === 0 ? "ok  " : "FAIL"} ${j.name} (${secs}s)${code === 0 ? "" : ` log: ${log}`}`);
+      if (code !== 0) console.log(text.split("\n").slice(-30).join("\n"));
+      done(code === 0);
     });
   });
   // The end-to-end flows are timing-sensitive (CI gives them their own hosts): they run alone, after everything else.

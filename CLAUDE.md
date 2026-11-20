@@ -38,7 +38,6 @@ never in this file.
 
 Everything runs offline; no live instance or paid key is needed. Node 24. Install each package once with `npm ci`.
 Before pushing, run `node scripts/ci-local.ts`: it runs what CI would run for your diff.
-On macOS the `flock` apply-lock tests (scripts) fail; that's expected, and CI judges them.
 
 ```sh
 cd scripts && npm test && npm run typecheck  # compiler, setup, sync-shared drift; types of the converted scripts and modules

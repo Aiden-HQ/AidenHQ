@@ -15,6 +15,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
 
+const NOT_LINUX = process.platform !== "linux" && "needs flock(1), absent on macOS";
+
 const repo = join(dirname(fileURLToPath(import.meta.url)), "../..");
 const REAL = ["ops/apply-config.sh", "ops/apply-config-work.sh", "ops/host-metrics.sh", "ops/lib/apply-lock.sh", "ops/lib/generations.sh", "ops/lib/progress.sh", "ops/rollback.sh", "scripts/compiler/data-version.ts", "scripts/imports.ts"];
 
@@ -199,7 +201,7 @@ function world() {
 }
 
 // Each test builds its own world (temp repos, HOME, state dir, apply lock and env), so they run side by side.
-describe("the apply as one generation", { concurrency: true }, () => {
+describe("the apply as one generation", { concurrency: true, skip: NOT_LINUX }, () => {
 test("a first apply seeds the running pair as the last known good, validates, switches and marks itself good", async () => {
   const w = world();
   const r = await w.run();

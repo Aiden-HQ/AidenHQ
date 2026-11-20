@@ -10,6 +10,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+const NOT_LINUX = process.platform !== "linux" && "compares realpaths; macOS temp dirs sit behind the /var -> /private/var symlink";
+
 const here = dirname(fileURLToPath(import.meta.url));
 
 /**
@@ -56,7 +58,7 @@ function run(dir) {
 
 const execStart = (script, path = "/usr/bin/env") => `{ path=${path} ; argv[]=/usr/bin/env bash ${script} ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }`;
 
-test("the host-metrics check fails when the unit runs another checkout's script, naming both paths", async () => {
+test("the host-metrics check fails when the unit runs another checkout's script, naming both paths", { skip: NOT_LINUX }, async () => {
   const dir = checkout();
   const other = join(dir, "old-checkout/ops/host-metrics.sh");
   mkdirSync(dirname(other), { recursive: true });
