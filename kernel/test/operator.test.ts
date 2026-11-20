@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { openAccounts } from "../src/accounts.ts";
 import { authApiServer, silent } from "./auth-helpers.ts";
 
-test("operator setup prints the owner's first link once, only for owner_email; reset hands its link to the channel, never the caller", async (t) => {
+test("operator setup prints the owner's first link once, only for owner_email; reset returns the one-time link", async (t) => {
   const accounts = await openAccounts({ dataDir: ":memory:", hosts: ["localhost:3120"], adminUrl: "http://localhost:3120", ownerEmail: () => "owner@example.com", edgeSecret: () => "", notify: () => {}, log: silent });
   const api = await authApiServer(accounts);
   t.after(() => { api.close(); accounts.close(); });
@@ -27,16 +27,13 @@ test("operator setup prints the owner's first link once, only for owner_email; r
   assert.equal((await api.post("/v1/operator/setup", body, ops)).status, 409); // the second time
   assert.equal((await api.post("/v1/operator/setup", { email: "mallory@example.com", name: "M" }, ops)).status, 409);
 
-  // Reset: no link in the body; the link waits for the owner's channel and is handed over once.
+  // Reset: the one-time link comes back to the operator, a fresh one each time.
   assert.equal((await api.post("/v1/operator/reset", { email: "owner@example.com" })).status, 401);
   assert.equal((await api.post("/v1/operator/reset", { email: "nobody@example.com" }, ops)).status, 404);
   const reset = await api.post("/v1/operator/reset", { email: "owner@example.com" }, ops);
-  assert.deepEqual([reset.status, reset.json], [200, { ok: true }]);
-  assert.doesNotMatch(reset.body, /token|set-password/);
-  const links = accounts.takeResetLinks();
-  assert.equal(links.length, 1);
-  assert.equal(links[0].email, "owner@example.com");
-  assert.match(links[0].url, /^http:\/\/localhost:3120\/auth\/set-password\?token=/);
-  assert.notEqual(links[0].url, first.json.url); // a fresh link; the first no longer works
-  assert.deepEqual(accounts.takeResetLinks(), []);
+  assert.equal(reset.status, 200, reset.body);
+  assert.match(reset.json.url, /^http:\/\/localhost:3120\/auth\/set-password\?token=[\w-]+$/);
+  assert.notEqual(reset.json.url, first.json.url); // a fresh link; the first no longer works
+  const again = await api.post("/v1/operator/reset", { email: "owner@example.com" }, ops);
+  assert.notEqual(again.json.url, reset.json.url); // a second reset invalidates the first link
 });

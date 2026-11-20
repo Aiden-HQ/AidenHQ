@@ -1388,13 +1388,11 @@ export function kernelModuleTable(defs: Obj, settings: Obj = {}) {
     const token = tokens.find((t) => (def.generated_secrets ?? []).includes(t)) ?? tokens[0];
     const ch = def.providers?.channel;
     if (ch != null) {
-      if (typeof ch !== "object" || Array.isArray(ch)) fail(`module ${name}: providers.channel is a map ({} or {transport, credentials})`);
-      for (const k of Object.keys(ch)) if (!["transport", "credentials"].includes(k)) fail(`module ${name}: providers.channel.${k} is not allowed (transport, credentials)`);
+      if (typeof ch !== "object" || Array.isArray(ch)) fail(`module ${name}: providers.channel is a map ({} or {transport})`);
+      for (const k of Object.keys(ch)) if (k !== "transport") fail(`module ${name}: providers.channel.${k} is not allowed (transport)`);
       // transport: where the owner's router (role kernel.notify) has the kernel send this channel's owner messages, with its own token.
       // A compose service only (never an address or localhost): the kernel sends the channel's token there.
       if (ch.transport != null && (!/^http:\/\/[a-z][a-z0-9-]*:\d+\/[\w/.-]*$/.test(String(ch.transport)) || /^http:\/\/localhost:/.test(String(ch.transport)))) fail(`module ${name}: providers.channel.transport must be http://<service>:<port>/<path>, a compose service`);
-      // credentials: its owner chat is private (paired), so the kernel sends the owner's credentials (reset links) there only.
-      if (ch.credentials != null && (ch.credentials !== true || ch.transport == null)) fail(`module ${name}: providers.channel.credentials is true, on a channel with a transport`);
       if (ch.transport != null && !(def.generated_secrets ?? []).includes(token)) fail(`module ${name}: a channel transport needs the module's own token (generated_secrets: [${token}])`);
       if (!privileged.includes("speaks-as-owner")) fail(`module ${name}: a channel (providers.channel) needs privileged: [speaks-as-owner]`);
     }
@@ -1425,7 +1423,7 @@ export function kernelModuleTable(defs: Obj, settings: Obj = {}) {
       // A module that generates its own `<module>_token` is known to the kernel by it (whoami): its roles are the kernel.* ones it requests, none otherwise.
       ...((def.generated_secrets ?? []).includes(token) ? { token } : {}),
       ...(bd != null ? { board: { url: String(bd.url), auth_secret: String(bd.auth) } } : {}),
-      ...(ch != null ? { channel: { ...(ch.stamp ? { stamp: String(ch.stamp) } : {}), ...(ch.stale === true ? { stale: true } : {}), ...(ch.transport ? { transport: String(ch.transport) } : {}), ...(ch.credentials === true ? { credentials: true } : {}) }, settings: Object.fromEntries(Object.keys(def.settings ?? {}).map((k) => [k, settings[k]])) } : {}),
+      ...(ch != null ? { channel: { ...(ch.stamp ? { stamp: String(ch.stamp) } : {}), ...(ch.stale === true ? { stale: true } : {}), ...(ch.transport ? { transport: String(ch.transport) } : {}) }, settings: Object.fromEntries(Object.keys(def.settings ?? {}).map((k) => [k, settings[k]])) } : {}),
     };
     if (Object.keys(e).length) out[name] = e;
   }

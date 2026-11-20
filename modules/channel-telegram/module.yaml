@@ -30,8 +30,6 @@ contributes:
 providers:
   channel:
     transport: http://telegram:8089/transport/send
-    # The paired chat is the owner's alone: the kernel sends the owner's credentials (account reset links) only here.
-    credentials: true
 connections:
   # No tools (owner messages are owner-channel's notify): the board's Settings reads Telegram's and voice's state from its /healthz.
   telegram:

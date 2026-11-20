@@ -59,29 +59,6 @@ test("a transport is a compose service: an address, localhost or a name that res
   assert.deepEqual(await send("named"), { sent: false, reason: "unreachable (it resolves to loopback)" });
 });
 
-test("a credential goes only to the private owner chat, never to the router; kept until that chat takes it", async (t) => {
-  const seen = [];
-  let up = false;
-  const tg = await serve(async (req, res) => { seen.push(JSON.parse(await readBody(req)).text); res.writeHead(up ? 200 : 503, { "content-type": "application/json" }).end(up ? '{"sent":true}' : "{}"); });
-  const slack = await serve(async (req, res) => { seen.push(`slack: ${JSON.parse(await readBody(req)).text}`); res.writeHead(200).end('{"sent":true}'); });
-  t.after(() => { tg.s.close(); slack.s.close(); });
-  const { DatabaseSync } = await import("node:sqlite");
-  const { createNotify } = await import("../src/notify.ts");
-  const { createResolver } = await import("../src/net.ts");
-  const modules = { modules: {
-    "channel-telegram": { privileged: ["speaks-as-owner"], channel: { transport: `${tg.url}/transport/send`, credentials: true }, token: "tg" },
-    "slack": { privileged: ["speaks-as-owner"], channel: { transport: `${slack.url}/transport/send` }, token: "sl" },
-  } };
-  const n = createNotify({ db: new DatabaseSync(":memory:"), secret: () => "key", resolver: createResolver(), modules: () => modules, testHosts: true });
-  n.secret("Board account reset for sam@example.com: https://example.com/r/abc");
-  assert.deepEqual(n.take(["kernel.notify"]).messages, []); // the router never sees it
-  assert.equal(await n.deliverSecrets(), 0); // Telegram down: kept, not sent anywhere else
-  up = true;
-  assert.equal(await n.deliverSecrets(), 1);
-  assert.equal(await n.deliverSecrets(), 0);
-  assert.deepEqual(seen, ["Board account reset for sam@example.com: https://example.com/r/abc", "Board account reset for sam@example.com: https://example.com/r/abc"]);
-});
-
 test("a message the router took and never acknowledged (it crashed, its answer was lost) is handed over again after its lease", () => {
   let now = 1_000_000;
   const n = createNotify({ db: new DatabaseSync(":memory:"), modules: () => ({}), secret: () => "", resolver: {}, now: () => now });

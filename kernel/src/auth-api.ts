@@ -60,7 +60,7 @@ export function createAuthApi({ accounts, whoami, boardKey, operatorKey, recover
         if (!is(String(req.headers["x-operator-key"] ?? ""), operatorKey())) throw fail(401, "unauthorized", "the operator's key is required");
         const b = await json(req);
         if (op === "setup") return send(res, 200, await a.setup(need(b, "email", EMAIL), typeof b.name === "string" ? b.name.slice(0, 100) : ""));
-        if (op === "reset") { await a.reset(need(b, "email", EMAIL)); return send(res, 200, { ok: true }); }
+        if (op === "reset") { const { url } = await a.reset(need(b, "email", EMAIL)); return send(res, 200, { ok: true, url }); }
         if (op === "setup_token") return send(res, 200, a.mintSetup());
         throw fail(404, "not_found", "no such operator call");
       }
