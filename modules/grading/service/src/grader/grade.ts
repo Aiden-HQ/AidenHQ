@@ -152,9 +152,10 @@ export async function gather(deliverable: any, deps: any, rubric: string[] = [])
   }
   // The ids the report itself cites: a task of this company, an approval card or an Actions job, each resolved by code so a
   // criterion asking whether the report cites a real id is decided (an unknown id is a real "no such id", never a wait).
-  // At most MAX_CITED (citedIds), so the facts and the prompt stay bounded.
+  // Only the agent's own posted words: an attached file's contents are its attachment, not something the report says, and an
+  // id found only there is not a citation the report made. At most MAX_CITED (citedIds), so the facts and the prompt stay bounded.
   let cited: any = { facts: [], data: {}, version: "" };
-  const cited2 = citedIds([w.report, files.data?.FILES], deps.identifier);
+  const cited2 = citedIds([w.report], deps.identifier);
   if (cited2.length && deps.citedTask && deps.citedCard && deps.citedJob) {
     const repos = [...(kind === "pr" && ev ? ev.prs.map((p: any) => p.repo) : []), ...findPrs(w.report).map((p) => p.repo)];
     cited = await citedEvidence(cited2, deps, repos);

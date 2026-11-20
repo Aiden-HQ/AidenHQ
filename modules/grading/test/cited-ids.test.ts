@@ -69,6 +69,25 @@ test("a report that cites an existing task and a nonexistent one grades the firs
   assert.equal(ev.awaiting, undefined, "the report exists, so the row is graded rather than waiting");
 });
 
+test("an id that appears only in an attached file is not a citation the report made", async () => {
+  // The attachment's contents name WOR-101 and a card; the report's own comment names neither.
+  const ev = await gather({ kind: "report", ref: "" }, {
+    approvals: async () => [],
+    comments: async () => [{ id: "c1", authorType: "agent", authorAgentId: "eng", body: "Done; the notes are attached.", createdAt: "2026-11-20T09:00:00Z" }],
+    attachments: async () => [{ id: "f1", originalFilename: "notes.txt", contentType: "text/plain", byteSize: 40 }],
+    content: async () => Buffer.from("The mockups landed in WOR-101 via k-0123456789abcdef."),
+    assignee: "eng",
+    delegator: { agentId: "cos" },
+    identifier: "WOR-1",
+    ...citeDeps(),
+  }, ["the report cites the task the mockups landed in"]);
+  assert.ok(ev.facts.some((f: string) => f.includes("notes.txt") || f.includes("file_1")), "the attachment is still evidence");
+  assert.ok(!ev.facts.some((f: string) => f.startsWith("cited task WOR-101")), "an id only in an attachment is no citation");
+  assert.ok(!ev.facts.some((f: string) => f.includes("k-0123456789abcdef")), "nor is a card id found only there");
+  assert.equal(ev.data.CITED_IDS, undefined);
+  assert.doesNotMatch(ev.version ?? "", /cited:/, "and it does not enter the graded version");
+});
+
 test("a cited id is capped so the evidence stays bounded, and a task's own identifier is never a citation", () => {
   const many = Array.from({ length: 30 }, (_, i) => `WOR-${100 + i}`).join(" ");
   const ids = citedIds([`${many} WOR-1`], "WOR-1");
