@@ -13,9 +13,13 @@ import { heir } from "../../kernel/src/successor.ts";
 
 type Dict = Record<string, unknown>;
 export type ModuleDef = Dict;
-/** `ownerOnly`: the owner's under every autonomy (new authority from a module that isn't official, or new spend). */
-export type Change = { what: string; owner: boolean; ownerOnly?: true };
-export type ModuleDiff = { module: string; changes: Change[]; code: boolean };
+/**
+ * `ownerOnly`: the owner's under every autonomy (new authority from a module that isn't official, or new spend). `spend`: a
+ * spend or limit increase, which the card names as one.
+ */
+export type Change = { what: string; owner: boolean; ownerOnly?: true; spend?: true };
+/** `official`: the module is read from the product's own modules/ (ModuleInput.official); marketplace and fork lines never are. */
+export type ModuleDiff = { module: string; changes: Change[]; code: boolean; official?: true };
 /**
  * `origin`: where a third-party module comes from on each side (marketplace, sha, computed tier), for the card. `official`:
  * it is read from the product's own modules/ at the pinned commit (sources.ts officialSides), so CI, the AI reviewer and
@@ -175,7 +179,7 @@ function join(b: Dict, a: Dict, h: Dict, conflict: (where: string) => void, path
 export function authorityDiff(name: string, base: ModuleDef | undefined, head: ModuleDef | undefined, codeChanged: boolean, replacing: { name: string; def?: ModuleDef }[] = [], origin: { base?: string; head?: string } = {}, conns: Dict = {}, official = false): ModuleDiff {
   const changes: Change[] = [];
   const owner = (what: string) => changes.push({ what, owner: true, ...(official ? {} : { ownerOnly: true as const }) });
-  const spend = (what: string) => changes.push({ what, owner: true, ownerOnly: true });
+  const spend = (what: string) => changes.push({ what, owner: true, ownerOnly: true, spend: true });
   const review = (what: string) => changes.push({ what, owner: false });
   if (head) {
     for (const r of replacing) {
@@ -191,7 +195,7 @@ export function authorityDiff(name: string, base: ModuleDef | undefined, head: M
     const enforces = [list(base?.checks).length && "a check", map(map(base?.providers)).reviewer && "a reviewer", map(map(base?.providers)).executor && "an executor"].filter(Boolean);
     if (enforces.length) owner(`removed, and it declares ${enforces.join(", ")}`);
     else review("removed");
-    return { module: name, changes, code: false };
+    return { module: name, changes, code: false, ...(official ? { official: true as const } : {}) };
   }
   const b = base ?? {};
   // Code from off the official repository's main (sources.ts onOfficialMain: "unreviewed") is the owner's, as a fork is.
@@ -388,7 +392,7 @@ export function authorityDiff(name: string, base: ModuleDef | undefined, head: M
   if (base) for (const k of [...PLAIN].filter((k) => !eq(b[k], head[k]) && k !== "name")) review(`changes ${id(k)}`);
   if (codeChanged) review("code changes");
   if (!changes.length) review("text only");
-  return { module: name, changes, code: codeChanged };
+  return { module: name, changes, code: codeChanged, ...(official ? { official: true as const } : {}) };
 }
 
 export type Classified = { tier: 1 | 2; panel: boolean; rule: "module-authority" | "module-config"; reason: string; reviewFirst: boolean; ownerOnly?: true };
