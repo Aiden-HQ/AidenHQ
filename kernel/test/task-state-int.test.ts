@@ -51,7 +51,7 @@ function world(t: any) {
   wakes.claim("dispatch");
   const reader = createTaskStateRead({ file, stages: () => KERNEL_STAGES, now: () => clock });
   const w = {
-    db, facts, wakes, comments, tick: (ms = 1000) => (clock += ms), at: () => iso(clock),
+    db, facts, wakes, comments, issue, tick: (ms = 1000) => (clock += ms), at: () => iso(clock),
     state: () => reader.read({ ids: ["t1"] }).tasks[0]!,
     wakeRows: () => (db.prepare("SELECT key, state FROM wakes WHERE task = 't1'").all() as any[]).map((r) => `${r.key} ${r.state}`),
     /** The agent asks the owner a question (task_wait for: owner), now. */
@@ -89,3 +89,17 @@ for (const [via, name] of [["viaBoard", "the board's proxy"], ["viaChannel", "a 
     assert.deepEqual(w.wakeRows().filter((r) => r.startsWith("comment:")), ["comment:c1 open"]);
   });
 }
+
+test("a task blocked in Paperclip with no blocked fact reads waiting, blocked after one reconcile, and a second writes nothing", async (t) => {
+  const w = world(t);
+  await w.wakes.poll();
+  Object.assign(w.issue, { status: "blocked", statusVersion: 2, blockedBy: [{ id: "b1", identifier: "WOR-9", status: "in_progress" }] });
+  const count = () => (w.db.prepare("SELECT COUNT(*) AS n FROM facts WHERE type = 'task.blocked_changed'").get() as any).n;
+  w.tick();
+  await w.wakes.poll();
+  assert.deepEqual([w.state().kind, w.state().reason], ["waiting", "blocked"]);
+  assert.equal(count(), 1);
+  w.tick();
+  await w.wakes.poll();
+  assert.equal(count(), 1);
+});

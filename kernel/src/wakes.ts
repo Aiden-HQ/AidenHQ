@@ -141,11 +141,11 @@ export function createWakes({ db, owner, post, dispatches, containers = () => ne
    * path and the poll that see one change record it once. A task with no task.created fact gets one (also one seen before the
    * log had it), with the status and assignee it has (from what its facts last said). `actor`: who Paperclip says did it, else
    * unknown. The holder is the agent, `"owner"` (a user assignee: every admin is the owner) or none. Status, holder and the chat
-   * flag are read against the facts themselves, so a fact never written heals on the next look; blockers against task_facts_seen.
+   * flag are read against the facts themselves, so a fact never written heals on the next look.
    * A chat flag the created fact lacks or that changed later is a `task.labeled` fact, dated at the created one (a flag, never
    * activity). The facts and that cursor move in one transaction.
    */
-  const TASK_FACTS = ["task.created", "task.labeled", "task.status_changed", "task.assignee_changed"];
+  const TASK_FACTS = ["task.created", "task.labeled", "task.status_changed", "task.assignee_changed", "task.blocked_changed"];
   const lastFacts = (task: string) => facts?.latest(`task:${task}`, TASK_FACTS) ?? new Map<string, FactRow>();
   /** A task's chat flag: its newest task.labeled, else its created fact's (undefined for a created fact older than the flag). */
   const chatOf = (last: Map<string, FactRow>) => { const c = last.get("task.labeled")?.data.chat ?? last.get("task.created")?.data.chat; return typeof c === "boolean" ? c : undefined; };
@@ -163,7 +163,6 @@ export function createWakes({ db, owner, post, dispatches, containers = () => ne
   };
   const taskFacts = (issue: Issue, source: "live" | "poll", actor: string) => inTx(db, "task_facts", () => recordTaskFacts(issue, source, actor));
   function recordTaskFacts(issue: Issue, source: "live" | "poll", actor: string) {
-    const prev = q("SELECT blocked FROM task_facts_seen WHERE task = ?").get(issue.id) as { blocked: string | null } | undefined;
     const last = lastFacts(issue.id);
     const base = { subject: `task:${issue.id}`, task: issue.id, actor, source };
     const changed = ms(issue.updatedAt) || now();
@@ -184,7 +183,9 @@ export function createWakes({ db, owner, post, dispatches, containers = () => ne
     const from = str(last.get("task.assignee_changed")?.data.to);
     if (from !== to) fact({ ...base, type: "task.assignee_changed", version: String(issue.updatedAt ?? changed), at: iso(changed), data: { from, to } });
     const blocked = blockedKey(issue);
-    if (blocked !== null && blocked !== (prev?.blocked ?? "")) fact({ ...base, type: "task.blocked_changed", version: `${blocked}@${issue.updatedAt ?? changed}`, at: iso(changed), data: { blocked_by: blocked ? blocked.split(",") : [] } });
+    const lastBlocked = last.get("task.blocked_changed")?.data.blocked_by;
+    const wasBlocked = Array.isArray(lastBlocked) ? lastBlocked.map(String).sort().join(",") : "";
+    if (blocked !== null && blocked !== wasBlocked) fact({ ...base, type: "task.blocked_changed", version: `${blocked}@${issue.updatedAt ?? changed}`, at: iso(changed), data: { blocked_by: blocked ? blocked.split(",") : [] } });
     q("INSERT INTO task_facts_seen (task, holder, status, blocked, at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(task) DO UPDATE SET holder = excluded.holder, status = excluded.status, blocked = COALESCE(excluded.blocked, blocked), at = excluded.at").run(issue.id, holder, status, blocked, now());
   }
   /** The polled agents, each with when its dispatcher joined. */

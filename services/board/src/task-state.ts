@@ -21,7 +21,7 @@ export type TaskState = {
   /** When the open owner wait began (present whenever one is open, whatever the task shows first). */
   wait_since?: string;
 };
-export type StateRow = TaskState & { task: string; identifier: string | null; idle_wakes: number };
+export type StateRow = TaskState & { task: string; identifier: string | null; idle_wakes: number; holder_name?: string; holder_gone?: true };
 export type StateRead = { as_of: string; tasks: StateRow[]; counts: { needs_you: number; failed: number; unexplained_idle: number } };
 
 /** A row with what its `ref` names, read from where the board already has it (see `shown`): the web's one chip wording reads this. */

@@ -284,7 +284,7 @@ export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boar
   /** Flow's views over the fact log (flow.ts). */
   flow?: Flow;
   /** Each task's one state (task-state-read.ts). */
-  taskStates?: Pick<TaskStateRead, "read">;
+  taskStates?: Pick<TaskStateRead, "read" | "named">;
   /** The repos the instance reaches (codehostRepos in main.ts): GET /v1/agents hands them to modules. */
   repos?: () => Record<string, unknown>;
   /** A grader-kind gateway token for a task (the kernel is the only minter). */
@@ -563,9 +563,9 @@ export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boar
         if (!isBoard(req)) { const w = await moduleOf(req); if (!w.roles.includes("kernel.flow-read")) throw fail(403, "forbidden", `${w.module} may not read task state (role kernel.flow-read)`); }
         if (!taskStates) throw fail(503, "unavailable", "task state reads are off");
         const p = new URLSearchParams(q ?? ""), ids = p.get("ids")?.split(",").map((s) => s.trim()).filter(Boolean);
-        if (p.get("open") === "1") return send(res, 200, taskStates.read({ open: true }));
+        if (p.get("open") === "1") return send(res, 200, await taskStates.named(taskStates.read({ open: true })));
         if (!ids?.length || ids.length > 200 || ids.some((s) => s.length > 100)) throw fail(400, "bad_request", "send ?open=1 or ?ids= (1 to 200 task ids or identifiers, comma-separated)");
-        return send(res, 200, taskStates.read({ ids }));
+        return send(res, 200, await taskStates.named(taskStates.read({ ids })));
       }
       if (hit?.path.startsWith("/v1/tasks")) {
         const w = await moduleOf(req);

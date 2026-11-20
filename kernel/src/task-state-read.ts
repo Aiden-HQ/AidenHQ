@@ -5,7 +5,9 @@ import type { FactRow } from "./facts.ts";
 import type { Stage } from "./flow-stages.ts";
 import { taskState, type TaskState } from "./task-state.ts";
 
-export type StateRow = TaskState & { task: string; identifier: string | null; idle_wakes: number };
+export type Agents = Map<string, { name: string; terminated: boolean }>;
+/** `holder_name` and `holder_gone` name a holder Paperclip reports terminated (a holder no grant maps stays its raw id). */
+export type StateRow = TaskState & { task: string; identifier: string | null; idle_wakes: number; holder_name?: string; holder_gone?: true };
 export type StateRead = { as_of: string; tasks: StateRow[]; counts: { needs_you: number; failed: number; unexplained_idle: number } };
 
 const DAY = 864e5;
@@ -13,7 +15,9 @@ const CLOSED = new Set(["done", "cancelled"]);
 const UNEXPLAINED = new Set(["orphaned", "unknown", "history_expired"]);
 const taskOf = (f: FactRow) => f.task ?? (f.subject.startsWith("task:") ? f.subject.slice(5) : null);
 
-export function createTaskStateRead({ file, stages, now = () => Date.now() }: { file: string; stages: () => Stage[]; now?: () => number }) {
+const AGENTS_FRESH_MS = 5 * 60_000;
+
+export function createTaskStateRead({ file, stages, agents, now = () => Date.now() }: { file: string; stages: () => Stage[]; agents?: () => Promise<Agents>; now?: () => number }) {
   const db = new DatabaseSync(file, { readOnly: true });
   db.exec("PRAGMA busy_timeout = 5000");
   const row = (r: any): FactRow => ({ ...r, data: JSON.parse(r.data) });
@@ -57,7 +61,17 @@ export function createTaskStateRead({ file, stages, now = () => Date.now() }: { 
     return out;
   }
 
+  let known: { at: number; agents: Agents } | undefined;
   return {
+    /** A read with the removed agents' holders named: the agent list is read once per 5 minutes, and a bad read leaves the rows as they are. */
+    async named(r: StateRead): Promise<StateRead> {
+      if (!agents || !r.tasks.some((x) => x.holder)) return r;
+      try {
+        if (!known || now() - known.at > AGENTS_FRESH_MS) known = { at: now(), agents: await agents() };
+        const list = known.agents;
+        return { ...r, tasks: r.tasks.map((x) => { const a = x.holder ? list.get(x.holder) : undefined; return a?.terminated ? { ...x, holder_name: a.name, holder_gone: true as const } : x; }) };
+      } catch { return r; }
+    },
     /** `ids` (≤ 200, ids or identifiers; an id with no facts has no row) or `open`; rows needing attention first, then by `since`. */
     read(q: { ids?: string[]; open?: boolean }): StateRead {
       const t = now();
