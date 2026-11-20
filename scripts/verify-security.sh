@@ -754,7 +754,7 @@ rplan="modules/github/service/src/plan.ts"; rcheck="modules/platform/src/check.t
   && grep -qF 'p.sha = await mergePut(p.repo, p.number, p.head, method);' "$rq" \
   && grep -qF 'if (!mergeable(p.repo, d.agentsOrg, platform, d.maintained ?? [])) return fail(' "$rq" \
   && grep -qF '  ownRepo(slug, agentsOrg, productRepo) || maintained.some((m) => sameSlug(slug, m));' modules/github/service/src/github-app.ts \
-  && grep -qF 'const inMaintained = (repo, s) => !inAgentsOrg(repo, s) && (s.maintained ?? []).some((r) => same(r, repo));' "$rplan" \
+  && grep -qF 'const inMaintained = (repo: unknown, s: State) => !inAgentsOrg(repo, s) && (s.maintained ?? []).some((r) => same(r, repo));' "$rplan" \
   && [ "$(cat "$rm_" "$rq" | grep -c 'mutation')" = 0 ] \
   && grep -qF 'if (pr.headRefOid !== head) return { do: "fail"' "$rm_" \
   && grep -qF 'if (!def || pr.baseRefName !== def) return { do: "fail"' "$rm_" \

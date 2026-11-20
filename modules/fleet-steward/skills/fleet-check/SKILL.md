@@ -92,8 +92,8 @@ request open over an hour without merging) or something recovered.
   *that* task to the chief of staff, or to its own assignee, as "set WOR-<n> to `todo` with this comment: …", never as a
   new build task. If the task is done, `task_create` to the app's owner (else the Engineer): "merge, fix or close <PR> with
   one line why". A task that names a PR branch it did not push stops at run start and reports it, rather than working from
-  a default-branch clone. `aidenhq close` reaches only the agents org (`aidenhq-alpha`) and the product repo's
-  Dependabot PRs: a PR outside that scope (e.g. in `Aiden-HQ/aidenhq-modules`) is the owner's, so file no close task —
+  a default-branch clone. `aidenhq close` reaches only the agents org, the repos listed in `maintainer_repos`
+  and the product repo's Dependabot PRs: a PR outside that scope (a repo not on that list) is the owner's, so file no close task —
   state it once in the owner digest with the PR link, why it is superseded and the one-line close reason to use, and log
   `pr · <repo>#<n> · outside-close-scope · owner`. Never the same nudge twice.
 - **Health flags** (`run:<agent>:stuck|failing|silent|repeat:<task>`, `grade:<task>`, `grade:<task>:unclosed`, `routine:<id>`, `missed:<id>:<schedule>`; a flag open a day is the owner's too):
