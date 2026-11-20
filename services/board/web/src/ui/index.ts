@@ -17,4 +17,5 @@ export { BarChart, StatBlock, type Bar } from "./StatBlock";
 export { StatusDot, taskStatus, type StatusTone } from "./StatusDot";
 export { Tabs } from "./Tabs";
 export { Tag, Tags, type TagTone } from "./Tag";
+export { Ticker, useTicker } from "./Ticker";
 export { Monogram, Tile, TileGrid } from "./Tile";

@@ -17,6 +17,7 @@ import {
 } from "@dnd-kit/core";
 import { SortableContext, arrayMove, sortableKeyboardCoordinates, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import { SignInRequired, api, type Session } from "./api";
 import { SignInScreen } from "./Accounts";
 import { SettingsView, isCategory, type Category } from "./Settings";
@@ -176,6 +177,8 @@ const savedView = (): View => {
 interface Toast {
   id: number;
   text: string;
+  /** Sliding out (shell.css .toast.leaving), removed a moment later. */
+  leaving?: boolean;
   action?: { label: string; run: () => void };
 }
 
@@ -220,7 +223,11 @@ export function App() {
   /** When the board was last asked for (the timer below); opening Tasks asks again when that is over 10s ago. */
   const boardAt = useRef(Date.now());
   const setView = useCallback((v: View) => {
-    setViewState(v);
+    // A new page cross-fades in (the View Transitions API, where the browser has it; never with reduced motion).
+    if (v !== viewRef.current && document.startViewTransition && !matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      viewRef.current = v;
+      document.startViewTransition(() => flushSync(() => setViewState(v)));
+    } else setViewState(v);
     try {
       localStorage.setItem(VIEW_KEY, v);
     } catch {}
@@ -252,7 +259,10 @@ export function App() {
   const toast = useCallback((text: string, action?: Toast["action"]) => {
     const id = Date.now() + Math.random();
     setToasts((t) => [...t.slice(-2), { id, text, action }]);
-    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), action ? 7000 : 3500);
+    setTimeout(() => {
+      setToasts((t) => t.map((x) => (x.id === id ? { ...x, leaving: true } : x)));
+      setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 160);
+    }, action ? 7000 : 3500);
   }, []);
 
   const seq = useRef(0); // only the latest board request counts (an old 401 must not undo a sign-in)
@@ -853,7 +863,7 @@ export function App() {
       <Palette open={palette} onClose={closePalette} go={go} crew={board.assignees} apps={appsQ.data?.apps ?? []} onNewTask={newTask} />
       <div className="toasts" aria-live="polite">
         {toasts.map((t) => (
-          <div key={t.id} className="toast">
+          <div key={t.id} className={`toast${t.leaving ? " leaving" : ""}`} role="status">
             <span>{t.text}</span>
             {t.action && (
               <button
