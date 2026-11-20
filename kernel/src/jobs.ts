@@ -6,7 +6,7 @@
 // watcher follows events.jsonl (untrusted: regular files only, no links, capped lines), the exit file, the deadline and a
 // cancel. Judging a run's progress (no work for too long) is its dispatcher's: it stops the run (dispatch progress.ts).
 import { execFileSync, spawn } from "node:child_process";
-import { appendFileSync, closeSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { appendLine, lines, readFrom } from "../sdk/src/engine-io.ts";
@@ -44,6 +44,9 @@ const ID = /^[\w.-]{1,100}$/;
 // to record it. Stopping the client stops nothing in the box: the dispatcher releases the box (the launcher destroys it).
 const WRAP = 'trap : TERM INT HUP; "$@"; echo "$?" > "$0"';
 const POLL_MS = 250;
+// Setup's retry on a lock another opener holds, while it makes the same schema (below): about five seconds in all.
+const SETUP_TRIES = 200;
+const SETUP_RETRY_MS = 25;
 const exitStatus = (file: string) => { try { return readFileSync(file, "utf8").trim(); } catch { return ""; } };
 /**
  * A failed run's cause as its log tells it: the first line that is neither the kernel's header (`# ...`) nor the engine's JSON
@@ -55,6 +58,17 @@ export function firstError(logPath: string): string {
   try { head = readFrom(logPath, 0, 256 * 1024).toString("utf8"); } catch { return ""; }
   const line = head.split("\n").map((l) => l.trim()).find((l) => l && !l.startsWith("#") && !l.startsWith("{"));
   return line ? clip(redact(line), 300) : "";
+}
+/** Codex's refusal to resume a session its home has no record of (one made before the box, or by a home since rebuilt). */
+const STALE_SESSION = /no rollout found for thread id/;
+/** The last `bytes` of a job's log (its end carries the engine's own error), or "" when it can't be read. */
+export function logTail(logPath: string, bytes = 64 * 1024): string {
+  try {
+    const size = statSync(logPath).size;
+    return readFrom(logPath, Math.max(0, size - bytes), bytes).toString("utf8");
+  } catch {
+    return "";
+  }
 }
 const alive = (pid: number) => {
   try { process.kill(pid, 0); return true; } catch (e) { return (e as NodeJS.ErrnoException).code === "EPERM"; }
@@ -81,6 +95,7 @@ export function readEvents(jobDir: string, offset = 0) {
   return { events, offset: next, skipped: values.length - events.length };
 }
 
+const pause = (ms: number) => { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); };
 const clip = (s: unknown, n: number) => {
   const t = String(s ?? "").replace(/\s+/g, " ").trim();
   return t.length > n ? `${t.slice(0, n - 1)}…` : t;
@@ -127,7 +142,7 @@ const DDL = `CREATE TABLE IF NOT EXISTS jobs (
   id TEXT PRIMARY KEY, module TEXT NOT NULL, agent TEXT NOT NULL, task TEXT NOT NULL, engine TEXT NOT NULL, pid INTEGER NOT NULL,
   log TEXT NOT NULL, dir TEXT NOT NULL, at INTEGER NOT NULL, jobcaps TEXT NOT NULL, observing INTEGER NOT NULL, live_input INTEGER NOT NULL,
   box TEXT, session TEXT, offset INTEGER NOT NULL DEFAULT 0, state TEXT NOT NULL, exit INTEGER, final TEXT NOT NULL DEFAULT '',
-  why TEXT NOT NULL DEFAULT '{}', usage TEXT, progress TEXT NOT NULL DEFAULT '{}', ended INTEGER)`;
+  why TEXT NOT NULL DEFAULT '{}', usage TEXT, progress TEXT NOT NULL DEFAULT '{}', ended INTEGER, full_prompt TEXT, resumed INTEGER)`;
 
 export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () => {}, facts, agentKey = (id) => id }: {
   /** Flow's fact log (facts.ts): job.started and job.ended. */
@@ -143,16 +158,38 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
   /** The command a box job's engine runs under in its box (the computer launcher's scrub). */
   boxWrap: string;
 }) {
-  db.exec(DDL);
-  db.exec(REFUSALS_DDL);
+  /**
+   * The schema, as one step two openers can't both run: one BEGIN IMMEDIATE, every column read inside it, so the second opener
+   * sees the first's ALTERs and skips them. An opener that finds the database busy (another is setting it up right now) tries
+   * again just after it rather than failing, a bounded number of times so a lock that never frees is still an error.
+   */
+  const setup = () => {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        db.exec("BEGIN IMMEDIATE");
+        db.exec(DDL);
+        db.exec(REFUSALS_DDL);
+        // A kernel-admitted job's columns, added where they are missing: what admission records (the wake, the profile, the
+        // job that started it, its frozen authority and routine cap: provenance.ts reads it), and boxes.ts's lease and release.
+        const cols = new Set((db.prepare("PRAGMA table_info(jobs)").all() as { name: string }[]).map((c) => c.name));
+        for (const [c, t] of [["wake", "TEXT"], ["profile", "TEXT"], ["parent_job", "TEXT"], ["routine", "TEXT"], ["routine_cap", "TEXT"], ["authority", "TEXT"], ["renewed", "INTEGER"], ["released", "INTEGER"], ["identifier", "TEXT"], ["full_prompt", "TEXT"], ["resumed", "INTEGER"]] as const) if (!cols.has(c)) db.exec(`ALTER TABLE jobs ADD COLUMN ${c} ${t}`);
+        db.exec("CREATE INDEX IF NOT EXISTS jobs_task ON jobs (task, state)");
+        // `acked`: the dispatcher's completion acknowledgement. Runs that ended before the column existed were dealt with by the old ledger.
+        if (!cols.has("acked")) db.exec("ALTER TABLE jobs ADD COLUMN acked INTEGER; UPDATE jobs SET acked = COALESCE(ended, at) WHERE state NOT IN ('admitted', 'running')");
+        db.exec("COMMIT");
+        return;
+      } catch (e) {
+        // The other opener holds the lock (here or at any step inside it): wait for it and try again, bounded. The busy test is
+        // the code SQLite puts on the error (a "database is locked" message is the same thing).
+        const busy = (e as { errcode?: number }).errcode === 5 || (e as { errstr?: string }).errstr === "SQLITE_BUSY" || /database is locked/i.test(String((e as Error).message));
+        try { db.exec("ROLLBACK"); } catch {}
+        if (busy && attempt < SETUP_TRIES) { pause(SETUP_RETRY_MS); continue; }
+        throw e;
+      }
+    }
+  };
+  setup();
   const refusal = (id: string) => (db.prepare("SELECT why FROM job_refusals WHERE job = ?").get(id) as { why: string } | undefined)?.why;
-  // A kernel-admitted job's columns, added where they are missing: what admission records (the wake, the profile, the job that
-  // started it, its frozen authority and routine cap: provenance.ts reads it), and boxes.ts's lease and release.
-  const cols = new Set((db.prepare("PRAGMA table_info(jobs)").all() as { name: string }[]).map((c) => c.name));
-  for (const [c, t] of [["wake", "TEXT"], ["profile", "TEXT"], ["parent_job", "TEXT"], ["routine", "TEXT"], ["routine_cap", "TEXT"], ["authority", "TEXT"], ["renewed", "INTEGER"], ["released", "INTEGER"], ["identifier", "TEXT"]]) if (!cols.has(c!)) db.exec(`ALTER TABLE jobs ADD COLUMN ${c} ${t}`);
-  db.exec("CREATE INDEX IF NOT EXISTS jobs_task ON jobs (task, state)");
-  // `acked`: the dispatcher's completion acknowledgement. Runs that ended before the column existed were dealt with by the old ledger.
-  if (!cols.has("acked")) db.exec("ALTER TABLE jobs ADD COLUMN acked INTEGER; UPDATE jobs SET acked = COALESCE(ended, at) WHERE state NOT IN ('admitted', 'running')");
   const watchers = new Map<string, { stop: () => void; send?: (text: string, from: string) => boolean; cancel: (by?: string) => void }>();
   const versions = new Map<string, number>();
   const waiters = new Map<string, Set<() => void>>();
@@ -196,8 +233,11 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
     };
   };
 
-  /** Follow a run to its end from its offset: events, exit file, deadline, and a cancel. */
-  function watch(id: string) {
+  /**
+   * Follow a run to its end from its offset: events, exit file, deadline, and a cancel. `resumed`: this run started by resuming
+   * a stored session, so a "no rollout found" failure falls back to one fresh turn (below); `restart` starts that turn.
+   */
+  function watch(id: string, opts: { resumed: boolean; restart: () => void }) {
     const r = row(id)!;
     const { pid, log: logPath, dir: jobDir } = r;
     const exitFile = `${logPath}.exit`;
@@ -209,6 +249,7 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
     const deadline = r.at + cfg.timeout_minutes * 60_000;
     let timedOut = false, cancelled = false, killed = false, stoppedBy: string | undefined;
     let over = false;
+    let retried = false;
     const save = () => db.prepare("UPDATE jobs SET offset = ?, session = ?, final = ?, progress = ?, usage = ? WHERE id = ?").run(offset, session, final ?? "", JSON.stringify(progress), usage.seen ? JSON.stringify({ input: usage.input, cached: usage.cached, output: usage.output }) : null, id);
     const read = () => {
       let got;
@@ -250,6 +291,28 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
     const done = () => {
       read();
       over = true;
+      // A resumed session the engine can't find (one made before its own home, or by a home since rebuilt): the task's session
+      // is cleared and the turn runs again at once on a fresh one, with the full first-turn prompt. Not a failure, and nothing
+      // is reported. One shot per run: a run that started fresh never takes this path, so it can't loop.
+      if (!ending && !retried && opts.resumed) {
+        const status = exitStatus(exitFile);
+        const code = status === "" ? null : Number(status);
+        if (code !== null && code !== 0 && !timedOut && !cancelled && STALE_SESSION.test(logTail(logPath))) {
+          retried = true;
+          clearInterval(timer);
+          watchers.delete(id);
+          db.prepare("UPDATE jobs SET session = NULL WHERE agent = ? AND task = ? AND engine = ? AND authority IS NOT NULL").run(r.agent, r.task, r.engine);
+          log("session not found: the turn runs again on a fresh session", { job: id, task: r.task, session: r.session });
+          try {
+            opts.restart();
+            bump(id);
+            return;
+          } catch (e) {
+            log("couldn't run the turn again on a fresh session", { job: id, task: r.task, err: (e as Error).message.slice(0, 300) });
+            ending = end();
+          }
+        }
+      }
       ending ??= end();
       const { state, exit, lastMessage } = ending;
       // The end and its fact in one transaction: if the fact can't be written the run stays running and the next tick tries again.
@@ -320,7 +383,7 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
       const ended = status !== "" && Number(status) >= 0 && Number(status) <= 128;
       if (ended || (status === "" && runAlive(r.pid, r.log))) {
         log("adopted a running job", { job: r.id, task: r.task, pid: r.pid });
-        watch(r.id);
+        watch(r.id, adoptRestart(r));
         continue;
       }
       try {
@@ -337,23 +400,69 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
     }
   }
 
+  /** A fresh folder in the box's out folder for this run: a retry gets its own, so job.json is never written twice over. */
+  const newJobDir = (outDir: string) => {
+    for (let n = 1; n <= 50; n++) {
+      const dir = join(outDir, n === 1 ? "job" : `job-${n}`);
+      try {
+        mkdirSync(dir, { mode: 0o700 });
+        return dir;
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+      }
+    }
+    throw new Error(`no free job folder in ${outDir}`);
+  };
+
+  type Run = { box: Box; worktree: string; prompt: string; session?: string; fullPrompt?: string; label: string };
+
   /**
    * An admitted job (admission.ts) starts in the box the kernel got it (boxes.ts): its engine and authority are the row's,
-   * frozen at admission; the caller adds only the prompt and the session to resume.
+   * frozen at admission; the caller adds only the prompt and the session to resume (`fullPrompt`: the full first-turn prompt,
+   * used when no session resumes and when a stored one turns out stale).
    */
-  function runAdmitted(id: string, { box, worktree, prompt, session, label }: { box: Box; worktree: string; prompt: string; session?: string; label: string }) {
+  function runAdmitted(id: string, run: Run) {
     const r = row(id);
     if (!r || r.state !== "admitted" || !r.authority) throw new JobError(409, "not-admitted", `job ${id} isn't waiting to start`);
+    // The full first-turn prompt is kept on the row: a stale session's retry, and a retry after a kernel restart, both need it.
+    db.prepare("UPDATE jobs SET full_prompt = ? WHERE id = ?").run(run.fullPrompt ?? run.prompt, id);
+    start(id, run);
+    return view(row(id)!);
+  }
+
+  /** Where a run adopted after a kernel restart starts again when its session turns out stale: its box, its workspace, its full prompt. */
+  function adoptRestart(r: Record<string, any>): { resumed: boolean; restart: () => void } {
+    const box = r.box ? (JSON.parse(r.box) as Box & { workspace?: string }) : undefined;
+    return {
+      // What the run itself started with, never a session its own events later reported.
+      resumed: r.resumed === 1,
+      restart: () => {
+        if (!box?.workspace) throw new JobError(409, "no-box", `job ${r.id} has no box to run again in`);
+        // A row from before the full prompt was kept has nothing to run the turn again with: it ends as it would have.
+        if (!r.full_prompt) throw new JobError(409, "no-full-prompt", `job ${r.id} kept no full prompt`);
+        start(r.id, { box, worktree: box.workspace, prompt: r.full_prompt, label: r.identifier ?? r.id });
+      },
+    };
+  }
+
+  /** Start (or restart, after a stale session) one run of an admitted job in its box, and follow it. */
+  function start(id: string, { box, worktree, prompt, session, fullPrompt, label }: Run) {
+    const r = row(id)!;
     const a = JSON.parse(r.authority) as { engine: string; model: string; effort: string; web: boolean };
     const entry = readEngines(cfg)[a.engine];
     if (entry?.box !== true) throw new JobError(400, "not-a-box-engine", `the ${a.engine} engine doesn't run in an agent computer`);
     // An engine that "reads" runs without web search (sandbox.ts observes).
     const engine: Engine = { kind: a.engine, model: a.model, effort: a.effort, ...(a.web === false ? { reads: true } : {}) };
+    const resumed = Boolean(session && SESSION.test(session));
+    // The prompt a turn runs with when nothing resumes: the caller's full form, else what the row kept at admission, else its own.
+    const firstTurn = fullPrompt ?? r.full_prompt ?? prompt;
     const at = Date.now();
     mkdirSync(cfg.logsDir, { recursive: true });
-    const logPath = join(cfg.logsDir, `${String(label).replace(/[^\w.-]/g, "_").slice(0, 60)}-${at}.log`);
-    const jobDir = join(box.outDir, "job");
-    mkdirSync(jobDir, { mode: 0o700 });
+    // A retry is another run of the same job in the same box: its log (and its .exit beside it) must not be the last run's.
+    const stem = join(cfg.logsDir, `${String(label).replace(/[^\w.-]/g, "_").slice(0, 60)}-${at}`);
+    let logPath = `${stem}.log`;
+    for (let n = 2; existsSync(`${logPath}.exit`) || existsSync(logPath); n++) logPath = `${stem}-${n}.log`;
+    const jobDir = newJobDir(box.outDir);
     const built = buildJob({ cfg, engine, worktree, jobDir, sessionId: session, prompt, job: { agentId: r.agent, issueId: r.task, at }, box, boxWrap });
     const env = Object.fromEntries(BOX_ENV.filter((k) => process.env[k] !== undefined).map((k) => [k, process.env[k]!]));
     appendFileSync(logPath, `# ${new Date(at).toISOString()} ${engine.kind}${engine.model ? ` (${engine.model})` : ""} in box ${box.container} (${worktree})\n`);
@@ -366,8 +475,9 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
     // couldn't-start path ends the job).
     try {
       inTx(db, "job_start", () => {
-        db.prepare("UPDATE jobs SET pid = ?, log = ?, dir = ?, at = ?, box = ?, session = ?, observing = ?, live_input = ?, state = 'running' WHERE id = ?")
-          .run(child.pid ?? 0, logPath, jobDir, at, JSON.stringify(box), session && SESSION.test(session) ? session : null, observes(engine) ? 1 : 0, entry.live_input ? 1 : 0, id);
+        // `resumed`: this run started by resuming a stored session (a run restarted after a kernel reboot needs to know).
+        db.prepare("UPDATE jobs SET pid = ?, log = ?, dir = ?, at = ?, box = ?, session = ?, resumed = ?, offset = 0, final = '', progress = '{}', usage = NULL, observing = ?, live_input = ?, state = 'running' WHERE id = ?")
+          .run(child.pid ?? 0, logPath, jobDir, at, JSON.stringify(box), resumed ? session! : null, resumed ? 1 : 0, observes(engine) ? 1 : 0, entry.live_input ? 1 : 0, id);
         jobFact(r, "job.started");
       });
     } catch (e) {
@@ -375,7 +485,10 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
       throw e;
     }
     log("job started", { job: id, module: r.module, agent: r.agent, task: r.task, engine: engine.kind, pid: child.pid, box: box.container });
-    watch(id);
+    watch(id, {
+      resumed,
+      restart: () => start(id, { box, worktree, prompt: firstTurn, label }),
+    });
     return view(row(id)!);
   }
 
