@@ -3,6 +3,7 @@
 An install from the public installer (get.aidenhq.ai) runs a release: `instance.yaml` pins `release: { name, source, sha }`
 from the distro repo (`Aiden-HQ/aidenhq-distro`), `product:` is that release's kernel (the official modules are its
 `modules/`, the default set its `modules/marketplace.json` bundle), and apply pulls the release's prebuilt images by digest.
+The owner can also move the install to a verified commit on main now (below, "A main commit") and stay on releases.
 Owners of these installs get each graduated release without doing anything and stay in charge: auto-updates on by default, off
 in Settings, and "Update now" for the impatient. The kernel finds and files a release; `kernel.apply` does the rest. The code
 is `kernel/src/updates.ts`.
@@ -50,6 +51,20 @@ is `kernel/src/updates.ts`.
   state file; the kernel sends each once through the owner channels' line (kernel.db `update_notices`).
 - **Update now.** Settings > Instance links to the kernel's `/updates` page (admin listener, signed-in admin, CSRF); its button
   files the release now.
+- **A main commit** (the owner MCP's `update { to: "main" | <sha> }`, for an owner waiting on a fix that just merged). The
+  board posts it to the kernel's `/v1/owner/update` with the MCP bearer (beside `/v1/owner/decide`; who is the bearer's
+  account). The kernel checks it at once in a child (`node kernel/src/updates.ts main <to>`, `verifyMain`) and answers with
+  the reason when it refuses: `main` is the kernel repo's head (`git ls-remote`); the commit is on the kernel repo's main,
+  descends from the running `product:` and isn't it; its `ci-required` check run (GitHub Actions', the newest by start)
+  completed with success on exactly that commit, as the distro's release.yml requires of a release's kernel (still running,
+  failed and missing each say so); and the pinned instance resolves (release.ts). Then it is asked for as Update now asks for
+  a release: the check verifies it again on the instance's main, puts it on the product checkout's origin main, commits
+  `product: <sha>` with `release:` unchanged on `update/main-<sha12>`, and the kernel files, follows and reports it with the
+  same notices. The planner tiers it as any forward product move (`pin-forward`, Tier 1, plus the module authority diff):
+  `release:` doesn't move. With `product:` after the release's kernel, release.ts resolves the release with no images, so
+  apply builds every image from the checkout. The install still follows its release: a newer release whose kernel is behind
+  the running product is skipped without a notice, and the next one whose kernel descends from it installs as usual.
+  Leaving releases for good is the hand-pinned mode: [docs/operations/hand-pinned.md](../operations/hand-pinned.md).
 - **Upgrading by hand.** Run the installer again (`curl -fsSL https://get.aidenhq.ai | sh`). It verifies the new release, refuses
   an older one, and the new kernel's `ops/setup.sh` moves the pin (`node kernel/src/updates.ts pin`) before its apply. That is
   setup's bootstrap and the recovery when the updater is broken, not a runtime path.
@@ -61,7 +76,8 @@ Hard gates, from day one (no observe mode):
 - **Fixed source.** The distro and kernel repositories are constants (`Aiden-HQ/...` on github.com, https only). The release file
   can't redirect them: a `kernel_repo` other than the official one, or an image outside `ghcr.io/aiden-hq/`, is refused.
 - **Verified before anything runs.** The tag's commit is on the distro's `main`; the release file resolves against the instance
-  it would pin (`scripts/compiler/release.ts`: 40-char shas, image digests, `product:` = kernel); the kernel commit is on the
+  it would pin (`scripts/compiler/release.ts`: 40-char shas, image digests, `product:` = kernel, or after it on the official
+  kernel repository's main, then with no prebuilt images); the kernel commit is on the
   repository's `main` (GitHub serves fork and PR commits through the upstream URL, so a sha alone proves nothing). Apply reads
   the file again at the pinned distro sha and checks out exactly those shas; images are pulled by digest.
 - **Graduated.** Published and not a pre-release, in discovery and in `verify`, except the host's candidate.
@@ -71,6 +87,11 @@ Hard gates, from day one (no observe mode):
   `tested.ci_run` must be a successful `release.yml` run of exactly the tag's commit, on the tag itself (a push of the tag, or a
   `workflow_dispatch` on the tag ref), never a run on a branch. A run still in progress is checked again next time. A tag pushed
   without the release workflow passing, or a hand-edited asset, is refused and the owner told once.
+- **A main commit** has the same fixed repository, main ancestry and no-downgrade checks, and product CI's own `ci-required`
+  result on that commit in place of the release's tested stamp. It is an admin's request through the owner MCP, verified
+  before anything is prepared and again by the planner (forward along product main). release.ts accepts any `product:` after
+  the release's kernel on main, so another filer's forward pin on a release install resolves too, at the same `pin-forward`
+  tier as on a hand-pinned instance; the CI check is the updater's alone.
 - **Authority.** Auto-updates on is the owner's standing authority, so the updater's verified move is the AI reviewer's; any other
   release move, and every release with it off, is the owner's tap below full autonomy, the AI panel's at full
   (docs/design/approvals.md, Autonomy). Update now is an admin's tap on the kernel's page. No agent can file a release. New
@@ -89,7 +110,8 @@ every release that fails a check. Not done: signed releases, or rebuilding image
 
 ## Not covered
 
-- Channels other than graduated releases (betas), pinning to a release line, or delaying a release: no knob beyond on/off.
+- Channels other than graduated releases (betas), following main continuously, pinning to a release line, or delaying a
+  release: no knob beyond on/off. One main commit at a time is the `update` tool; following main is the hand-pinned mode.
 - Host-level setup a release might need (new packages, units outside apply): an update runs apply only. A release that needs
   `ops/setup.sh` again says so in its notes, and the owner reruns the installer.
 - Retrying a failed release on its own: it waits for Update now. A check that stops before anything was filed is retried at the

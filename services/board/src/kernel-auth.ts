@@ -64,8 +64,8 @@ export function createKernelAuth(o: KernelAuthOptions) {
   const now = o.now ?? Date.now;
   const checked = new Map<string, { at: number; who: AccountSession | null }>();
 
-  async function post<T>(path: string, body: unknown): Promise<T> {
-    const r = await fetch(`${o.kernel.url}${path}`, { method: "POST", headers: { authorization: `Bearer ${o.kernel.token}`, "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(15_000) });
+  async function post<T>(path: string, body: unknown, timeout = 15_000): Promise<T> {
+    const r = await fetch(`${o.kernel.url}${path}`, { method: "POST", headers: { authorization: `Bearer ${o.kernel.token}`, "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(timeout) });
     const j = (await r.json().catch(() => ({}))) as { error?: { message?: string } } & T;
     if (!r.ok) throw new AccountError(r.status, j.error?.message ?? `the kernel answered ${r.status}`);
     return j;
@@ -127,6 +127,8 @@ export function createKernelAuth(o: KernelAuthOptions) {
     /** Cards decided as the bearer's account (the kernel derives who from the grant; each card stands alone). */
     mcpDecide: (token: string, resource: string, cards: { id: string; digest: string; decision: "approve" | "reject"; reason?: string; stale?: boolean }[]) =>
       post<{ outcomes: { id: string; ok: boolean; state?: string; identifier?: string; error?: string }[] }>("/v1/owner/decide", { token, resource, cards }),
+    /** The release install moved to a main commit as the bearer's account: the updater verifies it first (git and GitHub's API, so up to two minutes) and answers with what it did, or why not. */
+    mcpUpdate: (token: string, resource: string, to: string) => post<{ said: string }>("/v1/owner/update", { token, resource, to }, 120_000),
     /** The MCP clients an admin has signed in, and ending one. */
     mcpGrants: (who: AccountSession) => post<{ grants: { id: string; client: string; lastUsed: string | null }[] }>("/v1/auth/mcp/grants", { token: who.token }),
     mcpRevoke: (who: AccountSession, grant: string) => post<{ ok: true }>("/v1/auth/mcp/revoke", { token: who.token, grant }),

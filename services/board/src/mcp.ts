@@ -1,4 +1,4 @@
-// The AidenHQ MCP for the owner's own Claude (docs/superpowers/specs/2026-11-20-owner-mcp-design.md): fourteen tools, each a thin
+// The AidenHQ MCP for the owner's own Claude (docs/superpowers/specs/2026-11-20-owner-mcp-design.md): fifteen tools, each a thin
 // adapter over the board's own route handlers, called in process (`call`, never HTTP) under the signed-in account's session with
 // `via: "mcp"`, so a tool does exactly what the board's tap does and the two never drift. Stateless Streamable HTTP, as every server
 // in the repo. Text an agent or a person wrote comes back fenced as data.
@@ -19,11 +19,12 @@ export interface McpDeps {
   /** Runs a board route in process as the request's session (app.ts callRoute). */
   callRoute: (method: string, path: string, body: unknown, req: IncomingMessage) => Promise<any>;
   decide: KernelAuth["mcpDecide"];
+  update: KernelAuth["mcpUpdate"];
   flows: () => SetupFlowPoint[];
 }
 
 /** The tools that change something: the HTTP layer asks the kernel afresh about the bearer before running one. */
-export const WRITE_TOOLS = new Set(["ask", "create_task", "update_task", "decide", "change_settings"]);
+export const WRITE_TOOLS = new Set(["ask", "create_task", "update_task", "decide", "change_settings", "update"]);
 
 const INSTRUCTIONS =
   "AidenHQ, the owner's own instance. Start with `status`: it lists what needs the owner now. Use `ask` for anything that needs " +
@@ -423,6 +424,18 @@ export function createMcp(d: McpDeps) {
       async (a) => {
         const r = await call("POST", "/api/settings/change", { changes: a.changes });
         return out(`Filed ${r.identifier}${r.tier !== undefined ? ` at tier ${r.tier}` : ""}: ${r.state ?? "filed"}.`, { task: r.identifier, record: r.record, tier: r.tier, state: r.state, ...(r.unchecked ? { unchecked: r.unchecked } : {}) });
+      },
+    );
+
+    tool(
+      "update",
+      "Move this release install (from get.aidenhq.ai) to a commit on AidenHQ's main now, instead of waiting for the next graduated release: `to` is `main` (its head now) or a 40-character commit. The kernel's updater checks it first (on main, CI green on that commit, after what runs now) and says why not when it refuses; otherwise it files one apply (tiered like any forward product move) and the owner channel says when it installed. The install keeps its release and rejoins at the next release after that commit. To leave releases and pin commits by hand instead, follow docs/operations/hand-pinned.md in the AidenHQ repository.",
+      { to: z.union([z.literal("main"), z.string().regex(/^[0-9a-f]{40}$/, "a 40-character commit")]) },
+      { said: z.string() },
+      "destructive",
+      async (a) => {
+        const { said } = await d.update(ctx.token, ctx.resource, a.to);
+        return out(said, { said });
       },
     );
 
