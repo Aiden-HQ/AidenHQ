@@ -16,7 +16,7 @@ import { fileURLToPath } from "node:url";
 import YAML from "yaml";
 
 const repo = join(dirname(fileURLToPath(import.meta.url)), "../..");
-const REAL = ["ops/apply-config.sh", "ops/apply-config-work.sh", "ops/host-metrics.sh", "ops/lib/apply-lock.sh", "ops/lib/generations.sh", "ops/lib/progress.sh", "ops/rollback.sh", "scripts/compiler/data-version.ts"];
+const REAL = ["ops/apply-config.sh", "ops/apply-config-work.sh", "ops/host-metrics.sh", "ops/lib/apply-lock.sh", "ops/lib/generations.sh", "ops/lib/progress.sh", "ops/rollback.sh", "scripts/compiler/data-version.ts", "scripts/imports.ts"];
 
 const exe = (file, text) => { mkdirSync(dirname(file), { recursive: true }); writeFileSync(file, text); chmodSync(file, 0o755); };
 const git = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8", env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@example.com", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@example.com" } }).trim();
@@ -88,7 +88,7 @@ echo "compose: recreated what moved"
   "ops/ci-runner-units.sh": "#!/usr/bin/env bash\n",
 };
 const BINS = {
-  docker: `#!/usr/bin/env bash\nprintf 'docker %s\\n' "$*" >> "$CALLS"\n[ "$1" = run ] && exec node "$(dirname "$0")/docker-run.mjs" "\${@:2}"\ncase "$*" in *"config -q"*) grep -q badcompose compose.modules.next.yaml && exit 1 ;; esac\nexit 0\n`,
+  docker: `#!/usr/bin/env bash\nprintf 'docker %s\\n' "$*" >> "$CALLS"\n[ "$1" = run ] && exec node "$(dirname "$0")/docker-run.mjs" "\${@:2}"\ncase "$*" in *"config -q"*) grep -q badcompose compose.modules.next.yaml && exit 1 ;; "compose build") [ -f "$CTRL/badbuild" ] && exit 1 ;; *"config --format json"*) printf '{"services":{"svc":{"image":"svc:local","build":{"context":"%s/svc","dockerfile":"Dockerfile"}}}}\\n' "$PWD" ;; esac\nexit 0\n`,
   // docker run [--rm] [-i] [--network x] [-v host:ctr[:ro]]... [-e K=V]... image cmd...: cmd on the host, container paths mapped.
   "docker-run.mjs": `import { spawnSync } from "node:child_process";
 const a = process.argv.slice(2), vols = [], env = {};
@@ -136,6 +136,9 @@ function world() {
     // The host-metrics unit is the product's own: the apply compares the installed copy with it.
     writeFileSync(d("pw", "ops/units", u), u.startsWith("aidenhq-host-metrics.") ? readFileSync(join(repo, "ops/units", u), "utf8") : `[Unit]\nDescription=${u}\n`);
   }
+  // The one service image the product builds, from svc/ (the fake compose config names it as the build context).
+  mkdirSync(d("pw", "svc"));
+  writeFileSync(d("pw", "svc/Dockerfile"), "FROM scratch\n");
   writeFileSync(d("pw", ".gitignore"), "config/\ndata/\nconfig.next/\ncompose.modules.yaml\ncompose.modules.next.yaml\nnode_modules/\n");
   const commitProduct = (version, extra = {}, remove = []) => {
     writeFileSync(d("pw", "VERSION"), `${version}\n`);
@@ -213,24 +216,38 @@ test("a first apply seeds the running pair as the last known good, validates, sw
   assert.match(board, /\/board:\/generations:ro$/, `the mirror's directory, not the file: ${board}`);
 });
 
-// Nothing changed = nothing rebuilt and no setup; a new product builds and sets up; an instance-only change sets up (its
-// handbooks and config) without a build; a missing image builds again.
+// Nothing changed = nothing rebuilt and no setup; an instance-only change sets up (its handbooks and config) without a build;
+// a product change builds only when it touches a build context and sets up only when it touches what setup reads; a missing
+// image builds again.
 test("an apply builds and sets up only what its inputs changed", async () => {
   const w = world();
   const ran = (what) => w.calls().split("\n").filter((l) => l === what).length;
   const apply = async (...args) => { writeFileSync(w.d("calls"), ""); const r = await w.run(...args); assert.equal(r.status, 0, r.out); return r; };
   await apply();
-  assert.equal(ran("setup"), 1, "a fresh host runs the setup");
-  assert.equal(ran("docker compose build"), 0, "the running product is the seeded last known good's, and its images are here");
+  assert.deepEqual([ran("setup"), ran("docker compose build")], [1, 1], "a fresh host sets up, and builds once: nothing records what its images were built from");
   await apply();
   assert.deepEqual([ran("setup"), ran("docker compose build")], [0, 0], "no change: neither");
   w.commitInstance(w.p1, "settings: {x: 1}\n");
   await apply();
   assert.deepEqual([ran("setup"), ran("docker compose build")], [1, 0], "an instance change sets up, and builds nothing");
-  const p2 = w.commitProduct("2");
-  w.commitInstance(p2);
+  w.commitInstance(w.commitProduct("2"));
   await apply();
-  assert.deepEqual([ran("setup"), ran("docker compose build")], [1, 1], "a new product builds and sets up");
+  assert.deepEqual([ran("setup"), ran("docker compose build")], [1, 0], "a product change to the compiled config sets up, and builds nothing");
+  w.commitInstance(w.commitProduct("2", { "kernel/x.ts": "export {};\n" }));
+  await apply();
+  assert.deepEqual([ran("setup"), ran("docker compose build")], [0, 0], "a kernel-only product change: neither");
+  w.commitInstance(w.commitProduct("2", { "svc/app.js": "1;\n" }));
+  await apply();
+  assert.deepEqual([ran("setup"), ran("docker compose build")], [0, 1], "a change inside a build context builds, and sets nothing up");
+  // A failed build refuses the generation and records nothing, so the next apply builds again.
+  writeFileSync(w.d("ctrl/badbuild"), "");
+  w.commitInstance(w.commitProduct("2", { "svc/app.js": "2;\n" }));
+  const bad = await w.run();
+  assert.match(bad.out, /an image failed to build/, bad.out);
+  assert.ok(!existsSync(w.d("state/steps/images")), "no record of a failed build");
+  rmSync(w.d("ctrl/badbuild"));
+  await apply();
+  assert.equal(ran("docker compose build"), 1, "built again");
   await apply();
   assert.deepEqual([ran("setup"), ran("docker compose build")], [0, 0], "and then nothing again");
   // A service image the compose files need but this host lacks: built again, though the product is the same.

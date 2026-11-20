@@ -463,10 +463,16 @@ stopBoard() {
   [ -z "$(docker compose ps -q --status running board 2>/dev/null)" ] || { echo "refusing: the board is still running, so its accounts can't move" >&2; return 1; }
 }
 
-# The compose files the apply validates: COMPOSE_FILE (or compose's default) with compose.modules.yaml swapped for the staged one.
-stagedComposeFiles() {
+# The compose files the apply runs: COMPOSE_FILE, or compose's default.
+composeFiles() {
   local files="${COMPOSE_FILE:-compose.yaml:compose.modules.yaml}" sep="${COMPOSE_PATH_SEPARATOR:-:}"
   [ -n "${COMPOSE_FILE:-}" ] || [ ! -f compose.override.yaml ] || files="$files${sep}compose.override.yaml"
+  printf '%s' "$files"
+}
+
+# The compose files the apply validates: composeFiles with compose.modules.yaml swapped for the staged one.
+stagedComposeFiles() {
+  local files; files="$(composeFiles)"
   printf '%s' "${files//compose.modules.yaml/compose.modules.next.yaml}"
 }
 
@@ -501,47 +507,59 @@ validate() {
   # A release's prebuilt images (compile swapped them in for the builds) are pulled, all at once, by digest; what is already
   # here is kept. Then the images still built locally build beside the running containers (a build never touches one).
   COMPOSE_FILE="$files" docker compose pull --policy missing --ignore-buildable --quiet || { why="a release image failed to pull"; return 1; }
-  # Builds only come from the product's own modules (a fork or a remote module can't build), so the product commit is the
-  # build input: unchanged since the last known good, with every image already here, there is nothing to build.
-  if buildNeeded "$files"; then
-    COMPOSE_FILE="$files" docker compose build || { why="an image failed to build"; return 1; }
-  else
-    echo "images: product ${product:0:12} is the last known good's and every image is here: not built"
-  fi
+  # Only when what the images build from moved since they were last built here (imageInputs), or one is missing.
+  build_files="$files"
+  stepRun images imageInputs env COMPOSE_FILE="$files" docker compose build || { why="an image failed to build"; return 1; }
   # The health baseline: only checks passing now count after the switch.
   scripts/healthcheck.sh > "$baseline" 2>&1 || true
   echo "health baseline: $(grep -c '^  ok    ' "$baseline" || true) ok, $(grep -c '^  FAIL  ' "$baseline" || true) failing (not counted)"
 }
 
-# Whether the images need a build: the product differs from the last known good's (none yet = a fresh host), or a service
-# image the staged compose files need is missing here.
-buildNeeded() {
-  local lkg img; lkg="$(genLkg)"
-  { [ -n "$lkg" ] && [ "$(genGet "$lkg" product)" = "$product" ]; } || return 0
-  for img in $(COMPOSE_FILE="$1" docker compose config --images); do
-    docker image inspect "$img" >/dev/null 2>&1 || return 0
+# What this host's images were built from, for the compose files in build_files: each service's build config, the tracked
+# content of every path a build reads (its context, a Dockerfile or extra context outside it) and each image missing here.
+# A path that is not a tracked directory or file of this checkout can't be compared, so it makes the build run. Every build
+# goes through stepRun with these inputs (validate, and the switch when nothing was validated), so the record always says
+# what the images on this host were built from, whichever product built them last.
+imageInputs() {
+  local model path rel img
+  model="$(COMPOSE_FILE="$build_files" docker compose config --format json)" || { echo "unreadable $(date +%s%N)"; return 0; }
+  jq -c '.services // {} | to_entries[] | select(.value.build) | [.key, .value.image, .value.build]' <<< "$model"
+  for path in $(jq -r '.services // {} | .[] | .build // empty | .context as $c | $c, (.dockerfile // empty | if startswith("/") then . else "\($c)/\(.)" end), (.additional_contexts // {} | .[])' <<< "$model"); do
+    rel="${path#"$PWD"/}"
+    if [ "$rel" != "$path" ] && git rev-parse -q --verify "HEAD:$rel" 2>/dev/null; then continue; fi
+    echo "untracked $path $(date +%s%N)"
   done
-  return 1
+  for img in $(COMPOSE_FILE="$build_files" docker compose config --images); do
+    docker image inspect "$img" >/dev/null 2>&1 || echo "missing $img"
+  done
 }
 
 # Runs a step unless the inputs it last succeeded on are unchanged. The hash of its inputs (the output of the function
 # <inputs>) is kept per step in the state dir: dropped before the step runs and written after it succeeds, so a failed or
 # killed step runs again. It is taken again after the step, which may itself write one of its inputs (setup's system.yaml).
+# A failed step returns its status, also where errexit is off (validate).
 # stepRun <name> <inputs function> <command...>
 stepRun() {
   local name="$1" inputs="$2" stamp="$GEN_DIR/steps/$1"; shift 2
   if [ "$(cat "$stamp" 2>/dev/null)" = "$($inputs | git hash-object --stdin)" ]; then echo "$name: inputs unchanged since it last succeeded: skipped"; return 0; fi
   rm -f "$stamp"
-  "$@"
+  "$@" || return
   mkdir -p "$GEN_DIR/steps" && $inputs | git hash-object --stdin > "$stamp"
 }
 
-# The Paperclip setup reads the compiled config, the host's .env, the product's scripts (the setup itself, the handbook
-# assembly), the modules' handbooks and prompts, the events plugin and the instance's agents.
+# What the Paperclip setup reads: its own code and every file it imports (scripts/imports.ts), their packages, the kernel's
+# settings and schemas, the shared prompt sections, the events plugin, the modules' module.yaml, handbooks, prompts and
+# skills, the instance's agents, the host's .env and the compiled config. The product's own sha is cut out of the config
+# (compile stamps it on each module and app), so a product change setup does not read skips it. An import closure that
+# can't be listed makes setup run.
 setupInputs() {
-  git ls-tree HEAD scripts modules services/paperclip-events
-  git -C "$inst" rev-parse HEAD
-  cat .env config/*.yaml config/*.json config/kernel/*.json 2>/dev/null || true
+  local code
+  code="$(node scripts/imports.ts scripts/paperclip-setup.ts)" || { echo "unlisted $(date +%s%N)"; code=""; }
+  # shellcheck disable=SC2086 # repo paths, one word each
+  git ls-tree HEAD -- $code scripts/prompts scripts/package-lock.json kernel/package-lock.json kernel/settings.json kernel/defaults.json kernel/schemas services/paperclip-events
+  git ls-tree -r HEAD -- modules | grep -E $'\tmodules/[^/]+/(module\\.yaml$|(agents|prompts|skills)/)' || true
+  git -C "$inst" ls-tree HEAD -- agents
+  cat .env config/*.yaml config/*.json 2>/dev/null | sed "s/$(git rev-parse HEAD)//g" || true
 }
 
 # The shared sources read the product's SQL and script, the writers' passwords, and live in the warehouse container: a
@@ -620,8 +638,8 @@ switchOver() {
   # The board mounts this mirror's directory read-only, so it must exist before compose starts (a first apply on a fresh host).
   mkdir -p "$(dirname "$AIDENHQ_GENERATIONS_MIRROR")"
   [ -e "$AIDENHQ_GENERATIONS_MIRROR" ] || : > "$AIDENHQ_GENERATIONS_MIRROR"
-  # validate built every image; a switch nothing validated (--generation, a product from before staging) builds them here.
-  [ "$staged" = 1 ] || docker compose build
+  # validate built the images; a switch nothing validated (--generation, a product from before staging) builds them here.
+  if [ "$staged" = 0 ]; then build_files="$(composeFiles)"; stepRun images imageInputs env COMPOSE_FILE="$build_files" docker compose build; fi
   ops/compose-recreate.sh # recreate only the services that moved, and stop and remove what this config dropped
   # The host's own tailnet name keeps Paperclip and the board only; apps are on their own node (compose.yaml apps-edge).
   node scripts/host-serve.ts prune

@@ -3,12 +3,12 @@
 # The images are built before this step (the apply's validate, or its switch when nothing was validated).
 #   1. an empty service list stops it, before it dumps or removes anything: an empty list would make every
 #      stopped container a leftover, and nothing here should guess at what the config runs;
-#   2. a fresh dump of the warehouse, when this host runs one, taken before anything is recreated (see dump);
-#   3. only the services whose image, compose config or mounted secret content moved are recreated; every other container
-#      keeps running;
-#   4. compose's leftovers for services this config dropped are removed, and never a CI job's runner;
-#   5. a service still left `created` (never started) is started;
-#   6. a container, running or already stopped, of a service this config dropped (a removed or replaced module's, or Caddy
+#   2. only the services whose image, compose config or mounted secret content moved are recreated; every other container
+#      keeps running. When there are any, a fresh dump of the warehouse (when this host runs one) is taken first (see
+#      dump); a step that recreates nothing dumps nothing;
+#   3. compose's leftovers for services this config dropped are removed, and never a CI job's runner;
+#   4. a service still left `created` (never started) is started;
+#   5. a container, running or already stopped, of a service this config dropped (a removed or replaced module's, or Caddy
 #      once exposure is no longer public) is removed: compose's own service container only (com.docker.compose.oneoff=False), so a CI
 #      job's runner (a one-off) is never one.
 #
@@ -101,12 +101,15 @@ dumpTo() {
   return 1
 }
 
-# A logical dump of the warehouse before anything is recreated. The file is created under umask 077 in a 0700 directory,
-# so it is 0600 from the first byte and no other user can read it. A dump an earlier run left is never rewritten, only
-# have its mode tightened; the newest two are kept and the rest removed, so a host applying often doesn't fill its disk
-# with full copies. A dump that can't be written fails the apply: it is the copy the recreate stands behind.
+# A logical dump of the warehouse before anything is recreated, once per run (a retry reuses it). The file is created
+# under umask 077 in a 0700 directory, so it is 0600 from the first byte and no other user can read it. A dump an earlier
+# run left is never rewritten, only has its mode tightened; the newest two are kept and the rest removed, so a host
+# applying often doesn't fill its disk with full copies. A dump that can't be written fails the apply: it is the copy the
+# recreate stands behind. Called where errexit is off (step), so every failure returns explicitly. The password was
+# checked before the first docker call.
 dump() {
-  requireDumpPassword
+  [ "$dumped" = 0 ] || return 0
+  dumped=1
   [ -d "$secrets/apps/warehouse" ] || { echo "compose: no warehouse on this host: nothing dumped"; return 0; }
   [ "$(docker inspect -f '{{.State.Running}}' "$warehouse_container" 2>/dev/null || true)" = "true" ] || {
     echo "compose: $warehouse_container is not running: nothing dumped"
@@ -114,7 +117,7 @@ dump() {
   }
   local was file status=0
   was="$(umask)"; umask 077
-  mkdir -p -m 0700 "$dump_dir"; chmod 0700 "$dump_dir"
+  { mkdir -p -m 0700 "$dump_dir" && chmod 0700 "$dump_dir"; } || { umask "$was"; return 1; }
   file="$(dumpTo "$dump_base")" || { umask "$was"; echo "refusing: no free dump name in $dump_dir" >&2; return 1; }
   # The warehouse publishes 127.0.0.1:5433 (apps/warehouse/compose.yaml), so the host's own pinned client reaches it.
   docker run --rm -i --network host -e PGPASSWORD="$(cat "$secrets/apps/warehouse/POSTGRES_PASSWORD")" "$dump_image" \
@@ -125,7 +128,7 @@ dump() {
     echo "refusing: the warehouse dump failed (exit $status); nothing was recreated" >&2
     return 1
   fi
-  chmod 0600 "$file"
+  chmod 0600 "$file" || return 1
   # Older dumps in the same place, without reading or rewriting them.
   find "$dump_dir" -maxdepth 1 -type f -name "$dump_base*.dump" ! -path "$file" -exec chmod 0600 {} + 2>/dev/null || true
   # Only the newest two dumps are kept: the one just taken and the one before it. A cleanup that fails is reported, never
@@ -214,6 +217,7 @@ step() {
   done <<< "$(leftovers "$desired" kept)"
   for service in $desired; do moved "$service" && recreate+=("$service"); done
   if [ "${#recreate[@]}" -gt 0 ]; then
+    dump || return 1
     docker compose up -d --no-deps --force-recreate "${recreate[@]}" 2>&1 | tee "$out" || status=$?
     RECREATED+=("${recreate[@]}")
   else
@@ -272,7 +276,7 @@ model="$(docker compose config --format json)"
 platform="$(docker version -f '{{.Server.Os}}/{{.Server.Arch}}')"
 
 RECREATED=()
-dump
+dumped=0
 
 out="$(mktemp)"; trap 'rm -f "$out"' EXIT
 status=0; step "$out" "$desired" || status=$?
