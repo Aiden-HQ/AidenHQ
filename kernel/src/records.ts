@@ -104,12 +104,10 @@ export function openRecords(file: string, now = () => new Date()) {
   };
   const rows = (rs: unknown[]) => rs.map((r) => row(r)!);
   const get = (id: string) => row(db.prepare("SELECT * FROM records WHERE id = ?").get(id));
-  /** The record's flow fact as it is now (inside the move's transaction), when its tier is 1 or 2. */
+  /** The record's flow fact as it is now, when its tier is 1 or 2: inside the move's transaction, which fails with it. */
   const fact = (id: string, type: string, version: string, actor: string, data: (r: Rec) => Record<string, unknown>) => {
-    try {
-      const r = get(id)!;
-      if (r.tier >= 1) facts.record({ type, subject: `record:${id}`, version, task: r.task, at: r.updated_at, actor, data: data(r) } satisfies Fact);
-    } catch (e) { console.error(new Date().toISOString(), "WARNING: a record's flow fact wasn't recorded", JSON.stringify({ id, type, err: String((e as Error).message) })); }
+    const r = get(id)!;
+    if (r.tier >= 1) facts.record({ type, subject: `record:${id}`, version, task: r.task, at: r.updated_at, actor, data: data(r) } satisfies Fact);
   };
   /** A move and its fact in one transaction: the fact only when the move won. */
   const moved = (won: () => boolean, then: () => void): boolean => {

@@ -414,7 +414,7 @@ every(() => {
   void wakes.poll().catch((e: Error) => log("wake poll failed", { err: String(e.message ?? e).slice(0, 300) })).finally(() => { polling = false; });
 }, (Number(env("AIDENHQ_WAKE_POLL_SECONDS", "")) || 60) * 1000);
 // No idle agent-held task (idle.ts): agents' own waits (POST /v1/wait), and the idle sweep every 5 minutes.
-const idle = createIdle({ facts, flow, wakes, owner: ownerApi, team: (id) => Boolean(grantsTable().agents?.[id]?.team), escalate, log });
+const idle = createIdle({ db: records.db, facts, flow, wakes, owner: ownerApi, team: (id) => Boolean(grantsTable().agents?.[id]?.team), escalate, log });
 let sweeping = false;
 every(() => {
   if (sweeping) return;

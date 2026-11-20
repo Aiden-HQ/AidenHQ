@@ -15,7 +15,8 @@
 //   incident. An owner-held task is never swept (the steward's stale follow-up check has it), and isn't read: flow's holder
 //   says no agent holds it.
 import type { Api } from "./channels.ts";
-import { factWriter, iso, type Log } from "./factlog.ts";
+import type { DatabaseSync } from "node:sqlite";
+import { inTx, iso, strictFact, type Log } from "./factlog.ts";
 import type { Facts } from "./facts.ts";
 import type { Flow } from "./flow.ts";
 import { fail } from "./proxy.ts";
@@ -30,7 +31,9 @@ const MAX_WAIT = 7 * DAY;
 const MIN_WAIT = 15 * 60_000;
 const SWEPT = new Set(["todo", "in_progress"]);
 
-export function createIdle({ facts, flow, wakes, owner, team = () => false, escalate, now = Date.now, log = () => {} }: {
+export function createIdle({ db, facts, flow, wakes, owner, team = () => false, escalate, now = Date.now, log = () => {} }: {
+  /** kernel.db: a wait's fact and its wake are one transaction. */
+  db: DatabaseSync;
   facts?: Facts; flow: Pick<Flow, "idleNow">; wakes: Pick<Wakes, "open" | "polls">; owner: Api;
   /** Where a wait's question goes (escalate.ts); none: the wait is recorded and nobody is asked. */
   escalate?: Pick<Escalate, "ask">;
@@ -38,7 +41,7 @@ export function createIdle({ facts, flow, wakes, owner, team = () => false, esca
   team?: (agent: string) => boolean;
   now?: () => number; log?: Log;
 }) {
-  const fact = factWriter(facts, log);
+  const fact = facts ? strictFact(facts) : () => {};
   /** Chat tasks seen (a label that stays): never read again. */
   const chats = new Set<string>();
   return {
@@ -75,8 +78,11 @@ export function createIdle({ facts, flow, wakes, owner, team = () => false, esca
       // Asked first: a question that can't be sent now fails the call (the agent tries again), never a silent wait.
       // One open ask per task: a second question while the first is unanswered isn't sent, and the agent hears so.
       const sent = who && question && escalate && !asked ? await escalate.ask(caller.task, who, question) : undefined;
-      fact({ type: "work.waiting", subject: `wait:${caller.task}`, version: `wait@${t}`, at: iso(t), actor: `agent:${caller.key}`, task: caller.task, data: { reason: who ? `${who}_wait` : "agent_wait", note: reason, until: iso(until), ...(on ? { on } : {}), ...(question ? { question } : {}), ...(b.handoff === true ? { handoff: true } : {}) } });
-      wakes.open({ key: `wait:${caller.task}:${until}`, task: caller.task, agent: caller.agent, cause: `wait: ${reason}`.slice(0, 200), at: until, replaces: `wait:${caller.task}:`, author: `agent:${caller.key}` });
+      // The wait's fact and its wake in one transaction: a wait that can't be recorded fails the call (the agent tries again).
+      inTx(db, "task_wait", () => {
+        fact({ type: "work.waiting", subject: `wait:${caller.task}`, version: `wait@${t}`, at: iso(t), actor: `agent:${caller.key}`, task: caller.task, data: { reason: who ? `${who}_wait` : "agent_wait", note: reason, until: iso(until), ...(on ? { on } : {}), ...(question ? { question } : {}), ...(b.handoff === true ? { handoff: true } : {}) } });
+        wakes.open({ key: `wait:${caller.task}:${until}`, task: caller.task, agent: caller.agent, cause: `wait: ${reason}`.slice(0, 200), at: until, replaces: `wait:${caller.task}:`, author: `agent:${caller.key}` });
+      });
       log("task wait", { task: caller.task, agent: caller.key, until: iso(until) });
       return { waiting: true, until: iso(until), ...(sent === "open" ? { asked: false, note: "Your earlier question on this task is still unanswered, so this one wasn't sent: the task waits for that answer." } : sent === "asked" ? { asked: true } : {}) };
     },

@@ -10,7 +10,7 @@ import { appendFileSync, closeSync, lstatSync, mkdirSync, openSync, readFileSync
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { appendLine, lines, readFrom } from "../sdk/src/engine-io.ts";
-import { factWriter, iso } from "./factlog.ts";
+import { inTx, iso, strictFact } from "./factlog.ts";
 import type { Facts } from "./facts.ts";
 import { SESSION, buildJob, observes, readEngines, type Box, type Engine, type SandboxConfig } from "./sandbox.ts";
 
@@ -161,10 +161,10 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
     for (const w of waiters.get(id) ?? []) w();
     waiters.delete(id);
   };
-  const fact = factWriter(facts, log);
   /**
    * job.started / job.ended. An ended job carries what the gateway billed for it (its calls' run id is the job id: gateway/lib.ts
    * identify) and whether it acted: it filed a record, commented (outcomes.ts, cp.ts record who) or changed its task's status.
+   * Strict: called inside the move it describes, which fails with it.
    */
   const jobFact = (r: Record<string, any>, type: "job.started" | "job.ended", data: Record<string, unknown> = {}) => {
     if (!facts) return;
@@ -183,7 +183,7 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
       })();
       extra = { ...sum, model, acted };
     }
-    fact({ type, subject: `job:${r.id}`, version: type === "job.started" ? "started" : "ended", at: iso(at), actor: `agent:${agentKey(r.agent)}`, task: r.task, data: { ...data, ...extra } });
+    strictFact(facts)({ type, subject: `job:${r.id}`, version: type === "job.started" ? "started" : "ended", at: iso(at), actor: `agent:${agentKey(r.agent)}`, task: r.task, data: { ...data, ...extra } });
   };
   const row = (id: string) => db.prepare("SELECT * FROM jobs WHERE id = ?").get(id) as Record<string, any> | undefined;
   const view = (r: Record<string, any>): JobView => {
@@ -246,11 +246,31 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
       } catch {}
     };
     let timer: NodeJS.Timeout;
+    let ending: { state: string; exit: number | null; lastMessage: string } | undefined;
     const done = () => {
-      clearInterval(timer);
-      watchers.delete(id);
       read();
       over = true;
+      ending ??= end();
+      const { state, exit, lastMessage } = ending;
+      // The end and its fact in one transaction: if the fact can't be written the run stays running and the next tick tries again.
+      try {
+        inTx(db, "job_end", () => {
+          db.prepare("UPDATE jobs SET state = ?, exit = ?, final = ?, why = ?, offset = ?, session = ?, ended = ? WHERE id = ?")
+            .run(state, exit, lastMessage, JSON.stringify({ timedOut, cancelled, ...(stoppedBy ? { by: stoppedBy } : {}) }), offset, session, Date.now(), id);
+          jobFact(r, "job.ended", { state, exit, why: state === "done" ? "" : state === "cancelled" ? `stopped${stoppedBy ? ` by ${stoppedBy}` : ""}` : state === "timeout" ? `ran past ${cfg.timeout_minutes} minutes` : clip(lastMessage, 200) });
+        });
+      } catch (e) {
+        log("job end not recorded; tried again next tick", { job: id, task: r.task, state, err: (e as Error).message });
+        return;
+      }
+      clearInterval(timer);
+      watchers.delete(id);
+      log("job finished", { job: id, task: r.task, state, exit });
+      bump(id);
+      onEnd(id);
+    };
+    /** How the run ended, worked out once (its log notes are written once). */
+    const end = () => {
       const status = exitStatus(exitFile);
       const code = status === "" ? null : Number(status);
       let lastMessage = String(final ?? "").trim();
@@ -267,12 +287,7 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
       // No status: the run died without its shell, by its own stop or timeout (killed), else by hand (a failure).
       const exit = code === null && !killed ? 1 : code;
       const state = cancelled ? "cancelled" : timedOut ? "timeout" : exit ? "failed" : "done";
-      db.prepare("UPDATE jobs SET state = ?, exit = ?, final = ?, why = ?, offset = ?, session = ?, ended = ? WHERE id = ?")
-        .run(state, exit, lastMessage, JSON.stringify({ timedOut, cancelled, ...(stoppedBy ? { by: stoppedBy } : {}) }), offset, session, Date.now(), id);
-      log("job finished", { job: id, task: r.task, state, exit });
-      jobFact(r, "job.ended", { state, exit, why: state === "done" ? "" : state === "cancelled" ? `stopped${stoppedBy ? ` by ${stoppedBy}` : ""}` : state === "timeout" ? `ran past ${cfg.timeout_minutes} minutes` : clip(lastMessage, 200) });
-      bump(id);
-      onEnd(id);
+      return { state, exit, lastMessage };
     };
     const tick = () => {
       read();
@@ -308,9 +323,16 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
         watch(r.id);
         continue;
       }
-      db.prepare("UPDATE jobs SET state = 'lost', exit = NULL, ended = ? WHERE id = ?").run(Date.now(), r.id);
+      try {
+        inTx(db, "job_lost", () => {
+          db.prepare("UPDATE jobs SET state = 'lost', exit = NULL, ended = ? WHERE id = ?").run(Date.now(), r.id);
+          jobFact(r, "job.ended", { state: "lost", exit: null, why: "no kernel followed it" });
+        });
+      } catch (e) {
+        log("lost job not recorded; the next kernel tries again", { job: r.id, task: r.task, err: (e as Error).message });
+        continue;
+      }
       log("job lost while no kernel followed it", { job: r.id, task: r.task });
-      jobFact(r, "job.ended", { state: "lost", exit: null, why: "no kernel followed it" });
       onEnd(r.id);
     }
   }
@@ -340,9 +362,18 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
     closeSync(out);
     child.on("error", (e: NodeJS.ErrnoException) => { try { writeFileSync(`${logPath}.exit`, "1\n"); appendFileSync(logPath, `# couldn't start /bin/sh: ${e.code ?? e.message}\n`); } catch {} });
     child.unref();
-    db.prepare("UPDATE jobs SET pid = ?, log = ?, dir = ?, at = ?, box = ?, session = ?, observing = ?, live_input = ?, state = 'running' WHERE id = ?")
-      .run(child.pid ?? 0, logPath, jobDir, at, JSON.stringify(box), session && SESSION.test(session) ? session : null, observes(engine) ? 1 : 0, entry.live_input ? 1 : 0, id);
-    jobFact(r, "job.started");
+    // Running and its fact in one transaction; if they can't be written the run is stopped and the start fails (admission's
+    // couldn't-start path ends the job).
+    try {
+      inTx(db, "job_start", () => {
+        db.prepare("UPDATE jobs SET pid = ?, log = ?, dir = ?, at = ?, box = ?, session = ?, observing = ?, live_input = ?, state = 'running' WHERE id = ?")
+          .run(child.pid ?? 0, logPath, jobDir, at, JSON.stringify(box), session && SESSION.test(session) ? session : null, observes(engine) ? 1 : 0, entry.live_input ? 1 : 0, id);
+        jobFact(r, "job.started");
+      });
+    } catch (e) {
+      try { if (child.pid) process.kill(-child.pid, "SIGKILL"); } catch {}
+      throw e;
+    }
     log("job started", { job: id, module: r.module, agent: r.agent, task: r.task, engine: engine.kind, pid: child.pid, box: box.container });
     watch(id);
     return view(row(id)!);
