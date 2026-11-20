@@ -49,20 +49,21 @@ const roster = [
   { id: "a5", key: "ui-designer", name: "UI Designer", title: "Designs app screens", system: false, department: ENG, avatar: "ui-designer", model: "deepseek-flash", reportsTo: "a3", state: "queued", running: 0, queued: 2, workingSince: null, trial: true, schedules: [], lastRunAt: ago(240), lastRunStatus: "succeeded" },
   { id: "a6", key: "email-triage", name: "Email Triage", title: "Sorts the inbox", system: false, department: DESK, avatar: "email-triage", model: "deepseek-flash", reportsTo: "a1", state: "paused", running: 0, queued: 0, workingSince: null, trial: false, schedules: [{ title: "Inbox pass", paused: true, nextRunAt: null }], lastRunAt: ago(1440), lastRunStatus: "succeeded" },
   { id: "a7", key: "meeting-librarian", name: "Meeting Librarian", title: "Notes from every meeting", system: false, department: DESK, avatar: "meeting-librarian", model: "deepseek-flash", reportsTo: "a1", state: "idle", running: 0, queued: 0, workingSince: null, trial: false, schedules: [{ title: "After meetings", paused: false, nextRunAt: ahead(95) }], lastRunAt: ago(130), lastRunStatus: "succeeded" },
+  { id: "a8", key: "researcher", name: "Researcher", title: "Research and drafts", system: true, department: OPS, avatar: "aiden", model: "deepseek-flash", reportsTo: null, state: "idle", running: 0, queued: 0, workingSince: null, trial: false, schedules: [{ title: "Process task replies", paused: true, nextRunAt: null }], lastRunAt: ago(60), lastRunStatus: "succeeded" },
 ];
 
 const CARD_STATES: Record<number, ReturnType<typeof st>> = { 812: STATES.orphaned, 815: ASK, 790: WORKING_CARD, 801: STATES.queued, 802: FAILED, 770: STATES.scheduled, 700: STATES.agentWait, 705: UNKNOWN, 600: STATES.backlog };
 const card = (n: number, title: string, extra: Record<string, unknown> = {}) => ({ id: `id-${n}`, identifier: `WOR-${n}`, title, status: "todo", priority: "medium", labels: [], assignee: null, unread: false, createdAt: ago(n % 300), activityAt: ago(n % 90), state: CARD_STATES[n] ? named(`WOR-${n}`, CARD_STATES[n]) : null, ...extra });
 const board = () => ({
   buckets: mock.empty ? { triage: [], today: [], tomorrow: [], later: [], backlog: [] } : {
-    triage: [card(812, "Reply to Acme's renewal question", { unread: true, assignee: "open-loops" }), card(815, "Weekly metrics digest looks off", { priority: "high" })],
-    today: [card(790, "Ship the invoices app's export", { assignee: "engineer", working: { agent: "Engineer", since: ago(12), queued: false, said: "Running the export tests" }, crew: [{ agent: "Engineer", state: "working", issues: [{ id: "id-791", identifier: "WOR-791", title: "Add CSV export", state: "working" }], since: ago(12) }] }), card(801, "Prep notes for the design review", { carried: 1 }), card(802, "Chase the vendor contract", { assignee: "open-loops", priority: "critical" })],
+    triage: [card(812, "Reply to Acme's renewal question", { unread: true, assignee: "open-loops" }), card(815, "Weekly metrics digest looks off", { priority: "high", assignee: "me" })],
+    today: [card(790, "Ship the invoices app's export", { assignee: "engineer", working: { agent: "Engineer", since: ago(12), queued: false, said: "Running the export tests" }, crew: [{ agent: "engineer", state: "working", issues: [{ id: "id-791", identifier: "WOR-791", title: "Add CSV export", state: "working" }], since: ago(12) }] }), card(801, "Prep notes for the design review", { carried: 1 }), card(802, "Chase the vendor contract", { assignee: "open-loops", priority: "critical" })],
     tomorrow: [card(770, "Plan the Q1 offsite agenda")],
     later: [card(700, "Try the new calendar agent"), card(705, "Tidy the warehouse schemas")],
     backlog: [card(600, "Someday: voice notes into tasks")],
   },
   brief: null, done: [], recurring: [],
-  assignees: [{ key: "me", kind: "me", name: "Me" }, ...roster.map((a) => ({ key: a.key, kind: a.key === "engineer" ? "engineer" : "agent", name: a.name, avatar: a.avatar }))],
+  assignees: [{ key: "me", kind: "me", name: "Me" }, ...roster.map((a) => ({ key: a.key, kind: a.key === "engineer" ? "engineer" : a.key === "researcher" ? "assistant" : "agent", name: a.name, avatar: a.avatar }))],
   labels: [], prefix: "WOR", timezone: "Asia/Dubai", slackTeams: {}, rollsOn: "Monday", rollsTomorrow: true, agentsActive: 4,
   spend: { spent: 3.42, cap: 10 }, google: null, signIns: [],
 });
@@ -229,8 +230,14 @@ function route(method: string, url: URL): [number, unknown] {
   if ((x = m(/^\/api\/issues\/([^/]+)\/feature-cost$/))) return [200, { cost: null }];
   if ((x = m(/^\/api\/issues\/([^/]+)\/lineage$/))) return [200, lineage(decodeURIComponent(x[1]!))];
   if ((x = m(/^\/api\/issues\/([^/]+)$/))) {
-    const c = Object.values(board().buckets).flat().find((k) => k.identifier === decodeURIComponent(x![1]!) || k.id === x![1]) ?? card(790, "Ship the invoices app's export");
-    return [200, { ...c, working: (c as { working?: unknown }).working ?? null, description: "Add a **CSV export** to the invoices app and a monthly total row.\n\n- Export respects the current filter\n- Totals in the account currency", bucket: "today", editable: true, labelIds: [], replyTarget: "me", scheduled: null, recurring: null, comments: [{ id: "k1", body: "Started on the export; tests next.", author: { kind: "agent", name: "Engineer" }, createdAt: ago(20) }], files: [], parent: null, runs: [], crew: [] }];
+    const ref = decodeURIComponent(x![1]!);
+    // A crew part of WOR-790: the Engineer's issue, opened from that task's agent tab.
+    if (ref === "WOR-791") return [200, { ...card(791, "Add CSV export"), parent: { identifier: "WOR-790", title: "Ship the invoices app's export" }, assignee: "engineer", editable: true, labelIds: [], replyTarget: "The Engineer reads replies here and continues the coding job.", scheduled: null, recurring: null, comments: [], files: [], runs: [], crew: [] }];
+    const c = Object.values(board().buckets).flat().find((k) => k.identifier === ref || k.id === ref) ?? card(790, "Ship the invoices app's export");
+    const crew = (c as { crew?: { agent: string }[] }).crew ?? [];
+    const onTask = board().assignees.find((a) => a.key === crew[0]?.agent);
+    const replyTarget = onTask ? (onTask.kind === "engineer" ? "The Engineer reads replies here and continues the coding job." : `${onTask.name} reads replies here.`) : "No agent is assigned; this message stays on the task. @name brings an agent in.";
+    return [200, { ...c, working: (c as { working?: unknown }).working ?? null, description: "Add a **CSV export** to the invoices app and a monthly total row.\n\n- Export respects the current filter\n- Totals in the account currency", bucket: "today", editable: true, labelIds: [], replyTarget, scheduled: null, recurring: null, comments: [{ id: "k1", body: "Started on the export; tests next.", author: { kind: "agent", name: "Engineer" }, createdAt: ago(20) }], files: [], parent: null, runs: [], crew }];
   }
   if ((x = m(/^\/api\/models\/([^/]+)$/))) return [200, { default: "deepseek-flash", models: ["deepseek-flash", "gpt-luna"], efforts: ["medium", "high"] }];
   if ((x = m(/^\/api\/agents\/by-key\/([^/]+)\/timeline$/))) return [200, { entries: timeline() }];

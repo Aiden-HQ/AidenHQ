@@ -114,8 +114,8 @@ interface BodyProps {
 type Member = IssueView["crew"][number];
 
 /**
- * The task: an Overview (description, files, the crew, and the team chat that goes to the
- * Researcher) and a tab per agent with a direct chat. Settings live behind Details.
+ * The task: an Overview (description, files, the crew, and the team chat that stays on the task) and a tab per
+ * agent with a direct chat. Settings live behind Details.
  */
 function IssueBody({ issue, focus, board, busy, update, setStatus, onClose, onMove, onSnooze, reload, onChanged, toast, setIssue }: BodyProps) {
   const closed = issue.status === "done" || issue.status === "cancelled";
@@ -341,7 +341,7 @@ function IssueBody({ issue, focus, board, busy, update, setStatus, onClose, onMo
   );
 }
 
-/** The task itself: what it's about, its files, who's on it, and the team chat (the Researcher reads it). */
+/** The task itself: what it's about, its files, who's on it, and the team chat (kept on the task until an agent is named). */
 function Overview({ issue, board, editable, update, reload, toast, pick, onAdd, moved }: { issue: IssueView; board: Board; editable: boolean; update: (u: Update) => Promise<void>; reload: () => Promise<void>; toast: Props["toast"]; pick: (t: string) => void; onAdd: () => void; moved: (identifier: string) => void }) {
   const mine = issue.assignee === "me";
   const closed = issue.status === "done" || issue.status === "cancelled";
@@ -385,9 +385,8 @@ function Overview({ issue, board, editable, update, reload, toast, pick, onAdd, 
         )}
         {(mine || !issue.crew.length) && <Thread issue={issue} board={board} prefix={board.prefix} title={mine && assistant ? "Team chat" : "Activity"} />}
       </div>
-      {editable && (mine || !issue.crew.length) && (
-        <Composer issue={issue} reload={reload} toast={toast} to={mine && assistant ? { assignee: assistant, label: `${shortName(assistant)} reads this; @name brings in someone else` } : undefined} crew={mine ? board.assignees : []} moved={moved} />
-      )}
+      {/* A plain message here is stored on the task; only the agents it @-mentions get it, so the box names no reader. */}
+      {editable && (mine || !issue.crew.length) && <Composer issue={issue} reload={reload} toast={toast} crew={mine ? board.assignees : []} moved={moved} />}
     </>
   );
 }

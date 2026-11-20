@@ -239,14 +239,19 @@ export function commentView(c: Comment, me: string, agents: Agent[]): CommentVie
   return { id: c.id, body: displayText(c.body), author, createdAt: c.createdAt };
 }
 
-/** Who reads a reply on this task (shown under the reply box). */
-export function replyTarget(issue: Issue, list: Assignee[]): string {
+/**
+ * Who reads a reply on this task (shown under the reply box). `agentsOnTask` says whether the owner's task has
+ * agents working in parts of it: with no assigned agent, a message either way stays on the task until one is named.
+ */
+export function replyTarget(issue: Issue, list: Assignee[], agentsOnTask = false): string {
   const labels = new Set((issue.labels ?? []).map((l) => l.name));
   const a = list.find((x) => x.key === issue.assigneeAgentId);
-  if (a?.kind === "engineer" || labels.has("engineer")) return "The Engineer reads replies here and continues the coding job.";
+  if (a?.kind === "engineer") return "The Engineer reads replies here and continues the coding job.";
   if (labels.has("needs-review")) return "AidenHQ applies review replies here (pick N, ignore).";
   if (a?.kind === "assistant") return "The Researcher is working on this and reads replies.";
-  return "The Researcher picks up replies here after about 90 seconds.";
+  if (a) return `${a.name} reads replies here.`;
+  if (agentsOnTask) return "This message stays on the task; @name sends it to an agent.";
+  return "No agent is assigned; this message stays on the task. @name brings an agent in.";
 }
 
 // ------------------------------------------------------------------ edits

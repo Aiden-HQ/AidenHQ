@@ -609,7 +609,7 @@ export function createApp(opts: AppOptions): Server {
       settled: store.settledAt().has(issue.id),
       labelIds: issue.labelIds ?? (issue.labels ?? []).map((l) => l.id),
       executor: executorOf(issue, ctx.assignees),
-      replyTarget: replyTarget(issue, ctx.assignees),
+      replyTarget: replyTarget(issue, ctx.assignees, crew.length > 0),
       scheduled: store.schedules().get(issue.id) ?? null,
       recurring: rec ? recurringView(rec, await pc.routine(rec.routineId).catch(() => undefined)) : null,
       working: busy.map.get(issue.identifier) ?? null,
