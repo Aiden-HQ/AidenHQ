@@ -275,7 +275,8 @@ const decided = (r: Prior) => ["approved", "used", "expired", "rejected"].includ
  * - same: one of those rejected exactly this content (requestKey, or the same patch keys: an amended, rebased or renamed
  *   resubmission of the same change; a conn.tool call's or module kind's digest): it stays rejected (its note), refused by
  *   code before any review (owner, 2026-11-18: refile only after a fix). Two reviewers' unsure lifts once, after the request
- *   chain changed (`chain`: the current chain's hash). A conn.tool call whose arguments can't change (a close, a label) is
+ *   chain changed (`chain`: the current chain's hash); a panel split lifts each time the chain changed since every split of
+ *   that content. A conn.tool call whose arguments can't change (a close, a label) is
  *   refused unchanged on this task once rejected: the agent reports back instead.
  * - splits: the most panel splits (approve + reject, panel_split) on one target, counted apart from `rejects` (they never
  *   park it): after MAX_SPLITS of them the next goes to the owner (splitToOwner).
@@ -316,7 +317,12 @@ export function priorDecisions(records: Prior[], action: string, also: string[] 
   // it was raised against). Content is judged task-wide: this is about what was written, not where it was aimed.
   const rejectedSame = key || typeof patches === "string" ? judged.filter((r) => !r.answered).filter((r) => (key !== undefined && recordKey(r) === key) || (typeof patches === "string" && recordPatches(r) === patches)) : [];
   const [only] = rejectedSame;
-  const lifted = rejectedSame.length === 1 && only!.reviewCode === "reviewer_unsure" && Boolean(only!.requestChain) && Boolean(chain) && only!.requestChain !== chain;
+  // A panel split (approve + reject) is often the brief's fault too (WOR-8812: the code was right, the brief contradicted
+  // itself): the same commits come back each time the chain changed since every split of them (each re-review that splits
+  // again is the next split, MAX_SPLITS). The same chain stays refused.
+  const unsureLift = rejectedSame.length === 1 && only!.reviewCode === "reviewer_unsure" && Boolean(only!.requestChain) && Boolean(chain) && only!.requestChain !== chain;
+  const splitLift = rejectedSame.length > 0 && Boolean(chain) && rejectedSame.every((r) => r.reviewCode === "panel_split" && Boolean(r.requestChain) && r.requestChain !== chain);
+  const lifted = unsureLift || splitLift;
   const sameOne = lifted ? undefined : rejectedSame[0];
   // The owner's no on this exact content holds until they approve that same content, whatever else they approved since.
   // Same content: the commits, or the patch keys (a rebased or renamed resubmission). Patch keys that couldn't be computed

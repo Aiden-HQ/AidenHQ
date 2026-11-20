@@ -79,7 +79,8 @@ agent, never to the owner.
   refuses a reviewer approval of a panel card that names neither a second approval nor a second reviewer that was unsure. A
   call error or timeout is retried with backoff and, after six tries, goes back to the agent; a diff too large, missing or
   with files the reviewer can't read goes back too, and a reviewed card's details over 80,000 characters are refused at
-  filing, never cut. The same commits come back for review once after an unsure send-back, when the request chain changed.
+  filing, never cut. The same commits come back for review once after an unsure send-back, and after each panel split,
+  when the request chain changed since (the same chain stays refused).
   Otherwise a request the reviewer rejected is refused by code before
   any review when it comes back unchanged on that task (the same commits or patch, the same call's digest), until the
   owner's own comment on that task, after the rejection, answers it (never a parent's comment, nor an edit of the task's

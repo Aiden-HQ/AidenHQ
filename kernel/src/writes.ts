@@ -601,7 +601,8 @@ export function createWrites({ records, registry, connections, secret, resolver,
         if (!MODEL.test(post.model) && post.model !== "kernel/code") return { record: r, refused: "the verdict names no model" };
         if (post.second !== undefined && (!MODEL.test(post.second) || post.second === post.model)) return { record: r, refused: "the second reviewer must be another model" };
         if (post.second_unsure !== undefined && (post.second !== undefined || post.whole !== true || !MODEL.test(post.second_unsure) || post.second_unsure === post.model)) return { record: r, refused: "an approval with an unsure second reviewer names another model and attests the input was verified whole" };
-        const chain = post.decision === "reject" && post.code === UNSURE && typeof b.request?.chain === "string" && b.request.chain ? hash(b.request.chain).slice(0, 32) : undefined;
+        // The request chain an unsure or a panel split was about: a changed chain lifts that rejection of the same content (tier.ts priorDecisions).
+        const chain = post.decision === "reject" && (post.code === UNSURE || post.code === "panel_split") && typeof b.request?.chain === "string" && b.request.chain ? hash(b.request.chain).slice(0, 32) : undefined;
         // `+`: two approvals (the panel); `;unsure:`: one approval and the other reviewer unsure (owner, 2026-11-20).
         const by = `reviewer:${post.model}${post.decision === "approve" && post.second ? `+${post.second}` : post.decision === "approve" && post.second_unsure ? `;unsure:${post.second_unsure}` : ""}`;
         const out = records.review(id, r.digest, { decision: post.decision, by, note: post.reason, code: post.code, chain });

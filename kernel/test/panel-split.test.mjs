@@ -28,6 +28,20 @@ test("panel splits go back to the agent three times on a branch, the fourth to t
   assert.equal(splitToOwner({ tier: 1, splits: 5 }, { ...verdict, code: "gate_change" }).decision, "reject");
 });
 
+test("after a panel split, the same commits come back for review once the request chain changed; the same chain stays refused", () => {
+  const HEAD = "a".repeat(40);
+  const same = { only: [{ repo: REPO, branch: "b1", sha: HEAD }] };
+  const priorOf = (records, chain) => priorDecisions(records, "pr", [], requestKey("pr", same), undefined, chain, requestTargets("pr", same));
+  const first = { ...split(HEAD, "2026-11-20T01:00:00.000Z"), requestChain: "chain-1" };
+  assert.equal(priorPart(priorOf([first], "chain-1"))?.rule, "rejected-content", "same commits, same chain: refused");
+  const lifted = priorOf([first], "chain-2");
+  assert.deepEqual([priorPart(lifted), lifted.splits], [undefined, 1], "a clarified brief: reviewed again, as the next split if it splits");
+  // It split again on chain-2: chain-2 is refused, a further clarification comes back.
+  const second = { ...split(HEAD, "2026-11-20T02:00:00.000Z"), id: "k-2", requestChain: "chain-2" };
+  assert.equal(priorPart(priorOf([first, second], "chain-2"))?.rule, "rejected-content");
+  assert.deepEqual([priorPart(priorOf([first, second], "chain-3")), priorOf([first, second], "chain-3").splits], [undefined, 2]);
+});
+
 test("a reviewer approval on a card that is the owner's on its merits still goes to the owner", () => {
   const input = meritOwner({ tier: 2, rule: "owner-veto", reason: "the owner rejected this action" });
   const v = afterReview(input, { decision: "approve", code: "in_scope", reason: "Approved: one reviewer approved and the other was unsure about the request.", model: "~acme/model-a", second: "~acme/model-b" });
