@@ -54,6 +54,16 @@ export interface PlatformConfig {
   tlsCheck?: TlsCheck; // a public door's certificate check (doors.ts); tests stub it
 }
 
+/**
+ * Whether an incident webhook reached the DevOps Engineer: only a routine run with a task (made, or coalesced into an open one).
+ * Paperclip answers 202 even when it made none (a failed run, e.g. "Agent is not invokable in its current state"; an ignored
+ * delivery) and 409 while the routine is paused; each is fired again on the next tick until a task carries it.
+ */
+export const fireReached = (status: number, run: unknown): boolean => {
+  const r = run as { status?: string; linkedIssueId?: string | null } | undefined;
+  return status === 202 && !!r?.linkedIssueId && r.status !== "failed";
+};
+
 export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: string) => void; info: (o: object, m: string) => void }) {
   const sign = agentSigner(cfg.identityKeyFile);
   const store = openStore(cfg.dbPath);
@@ -244,8 +254,10 @@ export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: 
     const body = JSON.stringify({ app, kind, detail: detail.slice(0, 200) });
     const sig = createHmac("sha256", secret).update(`${ts}.${body}`).digest("hex");
     const res = await fetch(webhook, { method: "POST", headers: { "content-type": "application/json", "x-paperclip-timestamp": ts, "x-paperclip-signature": `sha256=${sig}` }, body, signal: AbortSignal.timeout(15_000) }).catch((err) => log.warn({ err: String(err) }, "incident webhook failed"));
-    if (res && ![202, 409].includes(res.status)) log.warn({ status: res.status }, "incident webhook failed");
-    return !!res && [202, 409].includes(res.status);
+    const run = res?.status === 202 ? await res.json().catch(() => undefined) : undefined;
+    const ok = !!res && fireReached(res.status, run);
+    if (res && !ok) log.warn({ status: res.status, run: (run as { failureReason?: string } | undefined)?.failureReason }, "incident webhook failed");
+    return ok;
   }
 
   /** Re-fires the webhook of open incidents it hasn't reached yet (each tick, until it succeeds). */

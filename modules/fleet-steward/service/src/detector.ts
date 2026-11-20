@@ -67,6 +67,9 @@ const STUCK_DEFAULT_MS = 180 * MIN; // a run with no known timeout, running this
 const FAILS = 3; // an agent's last finished runs, all failed
 
 const MISSED_GRACE_MS = 15 * MIN;
+/** Paperclip's agent lifecycle transitions: each normally ends within seconds (its stop proof). */
+const TRANSITIONS = new Set(["preparing", "verifying", "pausing", "resuming", "terminating", "cleaning_up"]);
+const STUCK_TRANSITION_MS = 15 * MIN;
 const HARD_FAIL = new Set(["failed", "timeout"]);
 
 /** Active routines whose next fire (by Paperclip's cron) is overdue past the grace: the fire never happened. A coalesced or skipped fire still advances it. */
@@ -170,7 +173,7 @@ export async function tick(kv: Kv, checks: Record<string, Check>, file: (body: {
 }
 
 interface Company { id: string }
-interface AgentRow { id: string; name: string; status: string; adapterConfig?: { timeoutSec?: number } }
+interface AgentRow { id: string; name: string; status: string; lifecycleState?: string; adapterConfig?: { timeoutSec?: number } }
 interface JobRow { id: string; agent: string; task?: string; routine?: string | null; state: string; started_at: string | null; ended_at: string | null; exit?: number | null; timed_out?: boolean; steps?: number; has_final?: boolean }
 interface RoutineRow { id: string; title: string; status: string; triggers?: { kind?: string; enabled?: boolean; label?: string | null; nextRunAt?: string | null }[] }
 interface IssueRow { id: string; identifier?: string; title?: string; status: string; createdAt?: string; parentId?: string | null; priority?: string; updatedAt: string; assigneeUserId?: string | null; assigneeAgentId?: string | null; originKind?: string | null; labels?: ({ name?: string } | null)[] }
@@ -495,6 +498,22 @@ export function checks(d: { kernel: KernelClient; kv: Kv; pause: (routine: strin
     // An active routine whose next cron fire is overdue by 15 minutes and no run started: Paperclip's scheduler has stopped.
     async missed() {
       return missedFires(await routines(), now());
+    },
+    // An agent Paperclip holds in a lifecycle transition (pausing, resuming, ...) past 15 minutes: it refuses the agent's wakes,
+    // so its routine runs fail and tasks assigned to it are blocked, while its status may read idle.
+    async lifecycle() {
+      const t = now();
+      const seen: Record<string, { state: string; at: string }> = JSON.parse(d.kv.get("lifecycle_since") ?? "{}");
+      const next: typeof seen = {};
+      const out: Incident[] = [];
+      for (const a of await agents()) {
+        if (!a.lifecycleState || !TRANSITIONS.has(a.lifecycleState)) continue;
+        const at = seen[a.id]?.state === a.lifecycleState ? seen[a.id]!.at : new Date(t).toISOString();
+        next[a.id] = { state: a.lifecycleState, at };
+        if (age(at, t) > STUCK_TRANSITION_MS) out.push({ key: `${a.id}:${a.lifecycleState}`, reason: `${a.name}: Paperclip has held it in lifecycle state "${a.lifecycleState}" for ${mins(age(at, t))}, so it refuses the agent's wakes (routine runs fail, tasks assigned to it are blocked). Its stop proof isn't passing: a product bug (Paperclip wiring) for the Maintainer` });
+      }
+      d.kv.set("lifecycle_since", JSON.stringify(next));
+      return out;
     },
     // Queued wakes while no job starts: the owner hears at once, with no agent job needed to file or read anything.
     async dispatch() {

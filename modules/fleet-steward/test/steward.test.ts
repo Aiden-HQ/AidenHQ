@@ -430,6 +430,21 @@ test("missed fires: an active routine whose next schedule fire is over 15 minute
   assert.match(found[0].reason, /fire due 20 min ago, no run started/);
 });
 
+test("an agent Paperclip holds in a lifecycle transition over 15 minutes is raised; a fresh one, a held pause and a ready agent are not; it recovers", async () => {
+  const rows = { v: [{ id: "a1", name: "DevOps Engineer", status: "paused", lifecycleState: "pausing" }, { id: "a2", name: "Owner paused", status: "paused", lifecycleState: "paused" }, { id: "a3", name: "Ready", status: "idle", lifecycleState: "ready" }] };
+  const kernel = { read: async (p) => (p === "/api/companies" ? [{ id: "co" }] : rows.v) };
+  const kv = kvOf();
+  const at = (m) => checks({ kernel, kv, apps: async () => [], alerts: async () => [], openKeys: () => [], now: () => NOW + m * 60_000 }).lifecycle();
+  assert.deepEqual(await at(0), []);
+  assert.deepEqual(await at(10), []);
+  const found = await at(16);
+  assert.deepEqual(found.map((i) => i.key), ["a1:pausing"]);
+  assert.match(found[0].reason, /DevOps Engineer: Paperclip has held it in lifecycle state "pausing" for 16 min/);
+  assert.equal(found[0].critical, undefined); // the Steward's, never an owner page
+  rows.v = [{ ...rows.v[0], status: "idle", lifecycleState: "ready" }];
+  assert.deepEqual(await at(20), []);
+});
+
 test("owner notices are marked told only once sent: a failed critical alert, stall or unreachable notice is tried again; recoveries are trimmed only once filed", async () => {
   // A critical alert whose notice failed is told by the next webhook.
   const kv = kvOf(), told = [];

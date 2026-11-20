@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { NO_SIGN_IN, probeResult } from "../src/checks.js";
 import { createEngine, STOPPED_OPEN } from "../src/deploy.js";
 import { BUILD_ATTEMPTS, healthTick, reconcileTick, WATCH_MS } from "../src/loops.js";
-import type { Platform } from "../src/platform.js";
+import { fireReached, type Platform } from "../src/platform.js";
 import { parseApp, type App } from "../src/registry.js";
 import { openStore } from "../src/store.js";
 
@@ -241,5 +241,17 @@ describe("post-deploy watch", () => {
     st.broken.delete(FIX);
     await reconcileTick(p, quiet);
     expect(store.lastDeploy("demo")).toMatchObject({ sha: FIX, by: "auto-deploy", status: "healthy" });
+  });
+});
+
+describe("incident webhook", () => {
+  it("counts as delivered only when Paperclip made the routine run a task, so a refused one is fired again next tick", () => {
+    expect(fireReached(202, { status: "issue_created", linkedIssueId: "i1" })).toBe(true);
+    expect(fireReached(202, { status: "coalesced", linkedIssueId: "i0" })).toBe(true);
+    // Paperclip answers 202 with a failed run when the DevOps Engineer can't be invoked: no task was made.
+    expect(fireReached(202, { status: "failed", linkedIssueId: null, failureReason: "Agent is not invokable in its current state" })).toBe(false);
+    expect(fireReached(202, { status: "ignored", linkedIssueId: null })).toBe(false);
+    expect(fireReached(409, undefined)).toBe(false); // the routine is paused: fired again once it is resumed
+    expect(fireReached(500, undefined)).toBe(false);
   });
 });
