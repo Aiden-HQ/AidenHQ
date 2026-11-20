@@ -9,14 +9,13 @@ const REPO = "acme-agents/app";
 const SHA = (c) => c.repeat(40);
 const url = (n) => `https://github.com/${REPO}/pull/${n}`;
 
-// A PR as github.ts's read answers it. The merge commit's parents are the only source of a merged PR's base: GitHub's own
-// merge-method shape (two parents for a merge commit, one for a squash, and for a rebase the last replayed head commit, which is
-// also the PR's head). `baseRefOid` is the base ref's moving tip and is never read as the base.
-const merged = (n, head, merge, base = "0", tip = "f", { parents = [{ oid: SHA(base) }, { oid: SHA(head) }], own = [head] } = {}) => ({
+// A PR as github.ts's read answers it. The merge commit's parents are the only source of a merged PR's base, and only two of
+// them prove a merge commit: GitHub gives one parent for both a squash and a rebase, which this read cannot tell apart.
+// `baseRefOid` is the base ref's moving tip (no longer selected) and is never read as the base.
+const merged = (n, head, merge, base = "0", tip = "f", { parents = [{ oid: SHA(base) }, { oid: SHA(head) }] } = {}) => ({
   number: n, url: url(n), state: "MERGED", title: `Land ${head}`, body: `Lands ${head}.`, headRefOid: SHA(head), headRefName: `branch-${head}`, baseRefName: "main",
   baseRefOid: SHA(tip), mergedAt: "2026-11-19T22:45:53Z",
   mergeCommit: { oid: SHA(merge), parents: { totalCount: parents.length, nodes: parents } },
-  own: { pageInfo: { hasNextPage: false }, nodes: own.map((c) => ({ commit: { oid: SHA(c) } })) },
   commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: [{ __typename: "CheckRun", name: "ci-required", status: "COMPLETED", conclusion: "SUCCESS" }] } } } }] }, history: { nodes: [] },
 });
 
@@ -78,60 +77,43 @@ test("when every PR the task names is closed, the hold applies: no verdict eithe
   assert.equal(ev.version, undefined);
 });
 
-// WOR-4892's shape: the prerequisite merged immediately before this PR, which landed on top of it. #103 was squash-merged,
-// so its merge commit has one parent: #102's squash commit, which is not one of #103's own commits.
+// WOR-4892's shape: a prerequisite merged immediately before this PR, which was cut on top of it. #103 was merge-committed, so
+// its merge commit's two parents are #102's squash commit (the base) and #103's own head.
 test("a PR landed on the commit its prerequisite just merged names that base commit in its trusted facts", async () => {
   const prerequisite = merged(102, "1", "2"); // squash-merged as SHA("2")
-  const landed = merged(103, "3", "4", "2", "f", { parents: [{ oid: SHA("2") }], own: ["3"] });
+  const landed = merged(103, "3", "4", "2", "f", { parents: [{ oid: SHA("2") }, { oid: SHA("3") }] });
   const ev = await prEvidence([{ repo: REPO, number: 103, url: url(103), heads: ["branch-3"] }], "", depsFor([prerequisite, landed]));
   const fact = ev.facts.find((f) => f.startsWith(`${url(103)}: merged`));
   assert.ok(fact, "the PR's own fact line is present");
-  assert.equal(/base commit ([0-9a-f]{40})/.exec(fact)?.[1], SHA("2"), "the fact gives the commit PR #103 landed on");
+  assert.equal(/base commit ([0-9a-f]{40})/.exec(fact)?.[1], SHA("2"), "the fact gives the commit PR #103 was cut from");
   assert.equal(SHA("2"), prerequisite.mergeCommit.oid, "and that commit is exactly the prerequisite's squash merge");
 });
 
-// The three merge methods reproduce GitHub's own shapes (verified with git): a merge commit has two parents, base then head; a
-// squash has one, the base tip; a rebase of several commits leaves the last replayed head commit, whose parent is another PR
-// commit. Only the first two, and a one-commit rebase, establish the base.
-test("the base commit is derived per merge method, and a replayed-parent rebase establishes none", async () => {
-  // Shapes reproduced with git for each merge method: the base tip is SHA("2"), the head SHA("3").
-  const cases = [
-    ["merge commit", { oid: "4", parents: [{ oid: SHA("2") }, { oid: SHA("3") }], own: [{ commit: { oid: SHA("3") } }] }, SHA("2")],
-    ["squash", { oid: "4", parents: [{ oid: SHA("2") }], own: [{ commit: { oid: SHA("3") } }] }, SHA("2")],
-    ["rebase of one commit", { oid: "3", parents: [{ oid: SHA("2") }], own: [{ commit: { oid: SHA("3") } }] }, SHA("2")],
-    ["rebase of two commits", { oid: "3", parents: [{ oid: SHA("a") }], own: [{ commit: { oid: SHA("a") } }, { commit: { oid: SHA("3") } }] }, undefined],
-    ["one parent that is the head itself", { oid: "3", parents: [{ oid: SHA("3") }], own: [{ commit: { oid: SHA("3") } }] }, undefined],
-  ];
-  for (const [label, shape, want] of cases) {
-    const pr = { ...merged(500, "3", "4", "2", "f"), mergeCommit: { oid: SHA(shape.oid), parents: { totalCount: shape.parents.length, nodes: shape.parents } }, own: { pageInfo: { hasNextPage: false }, nodes: shape.own } };
+// A merged PR's base is claimed only where the read proves the merge method: a merge commit's two parents (base, then head). One
+// parent is what GitHub gives for both a squash and a rebase, and nothing here tells them apart, so neither establishes a base.
+test("a one-parent merge claims no base commit, whatever shape it has", async () => {
+  const squash = { oid: "4", parents: [{ oid: SHA("2") }] };
+  const rebaseOfOne = { oid: "3", parents: [{ oid: SHA("2") }] };
+  const rebaseOfMany = { oid: "3", parents: [{ oid: SHA("a") }] };
+  const selfParent = { oid: "3", parents: [{ oid: SHA("3") }] };
+  for (const [label, shape] of Object.entries({ squash, "rebase of one commit": rebaseOfOne, "rebase of several commits": rebaseOfMany, "a parent that is the head itself": selfParent })) {
+    const pr = { ...merged(500, "3", shape.oid, "2", "d"), mergeCommit: { oid: SHA(shape.oid), parents: { totalCount: shape.parents.length, nodes: shape.parents } } };
     const ev = await prEvidence([{ repo: REPO, number: 500, url: url(500), heads: ["branch-3"] }], "", depsFor([pr]));
     const fact = ev.facts.find((f) => f.startsWith(`${url(500)}: merged`));
-    const stated = /base commit ([0-9a-f]{40})/.exec(fact)?.[1];
-    if (want) assert.equal(stated, want, `${label}: the base is the commit it landed on`);
-    else {
-      assert.equal(stated, undefined, `${label}: no commit is claimed as the base`);
-      assert.match(fact, /base commit not established/, `${label}: and the fact says so`);
-    }
+    assert.equal(/base commit ([0-9a-f]{40})/.exec(fact)?.[1], undefined, `${label}: no commit is claimed as the base`);
+    assert.match(fact, /base commit not established/, `${label}: and the fact says so`);
+    assert.doesNotMatch(fact, new RegExp(SHA("d")), `${label}: the base ref's moving tip is never the base`);
   }
 });
 
-// GitHub's commits(last: 100) always holds the head and the commit beside it, so a cut-off list still rules a rebase out.
-test("a squash is still identified when the list of the PR's own commits was cut off", async () => {
-  const pr = merged(600, "3", "4", "2", "d", { parents: [{ oid: SHA("2") }], own: ["3"] });
-  pr.own = { pageInfo: { hasNextPage: true }, nodes: [{ commit: { oid: SHA("3") } }] };
-  const ev = await prEvidence([{ repo: REPO, number: 600, url: url(600), heads: ["branch-3"] }], "", depsFor([pr]));
-  const fact = ev.facts.find((f) => f.startsWith(`${url(600)}: merged`));
-  assert.equal(/base commit ([0-9a-f]{40})/.exec(fact)?.[1], SHA("2"), "the parent is not a PR commit, so the merge is a squash");
-  assert.doesNotMatch(fact, new RegExp(SHA("d")), "the base ref tip is never the base");
-});
-
-test("a one-parent merge with no list of the PR's own commits claims nothing", async () => {
-  const pr = merged(601, "3", "4", "2", "d", { parents: [{ oid: SHA("2") }], own: ["3"] });
-  delete pr.own;
-  const ev = await prEvidence([{ repo: REPO, number: 601, url: url(601), heads: ["branch-3"] }], "", depsFor([pr]));
-  const fact = ev.facts.find((f) => f.startsWith(`${url(601)}: merged`));
-  assert.match(fact, /base commit not established/, "proof that it is not a rebase is missing");
-  assert.doesNotMatch(fact, /base commit [0-9a-f]/, "so no commit is claimed");
+test("a merge commit whose parents are not both read still establishes no base", async () => {
+  for (const parents of [{ totalCount: 2 }, { totalCount: 2, nodes: [] }, { totalCount: 2, nodes: [{ oid: "not-a-commit" }, { oid: SHA("3") }] }]) {
+    const pr = { ...merged(501, "3", "4", "2", "d"), mergeCommit: { oid: SHA("4"), parents } };
+    const ev = await prEvidence([{ repo: REPO, number: 501, url: url(501), heads: ["branch-3"] }], "", depsFor([pr]));
+    const fact = ev.facts.find((f) => f.startsWith(`${url(501)}: merged`));
+    assert.match(fact, /base commit not established/, "an unread or malformed parent is not a base");
+    assert.doesNotMatch(fact, /base commit [0-9a-f]/, "no commit is claimed");
+  }
 });
 
 test("an unmerged PR has no base commit yet, and its moving base ref tip is not named as one", async () => {
@@ -142,13 +124,18 @@ test("an unmerged PR has no base commit yet, and its moving base ref tip is not 
   assert.doesNotMatch(fact, new RegExp(SHA("e")), "the base ref tip is not passed off as the base");
 });
 
-test("a merged local change request carries its base commit in the same field as GitHub's read", () => {
+test("a local change request carries no base commit, and its merge base is not passed off as one", async () => {
   const checks = [{ name: "ci-required", ok: true, pending: false }];
   const pr = localPullRequest(
     { number: 7, url: "codehost:local/app/change/7", state: "merged", head: SHA("3"), base: SHA("2"), into: "main", branch: "fix", title: "Fix", body: "Fixes it.", merged: SHA("4") },
     checks, ["ci-required"], "2026-11-19T22:45:53Z",
   ).repository.pullRequest;
-  assert.equal(pr.baseRefOid, SHA("2"), "the change's merge base is carried as the base ref's oid");
-  assert.equal(pr.baseCommitOid, undefined, "but it is never claimed as the base commit, which this read cannot show");
+  assert.equal(pr.baseRefOid, undefined, "the change's moving merge base is not carried as anything");
+  assert.equal(pr.baseCommitOid, undefined, "and it is never claimed as the base commit, which this read cannot show");
   assert.equal(pr.baseRefName, "main");
+  const ev = await prEvidence([{ repo: REPO, number: 7, url: "codehost:local/app/change/7", heads: ["fix"] }], "", depsFor([pr]));
+  const fact = ev.facts.find((f) => f.includes("change/7"));
+  assert.match(fact, /base commit not established/, "the local read never establishes a base commit either");
+  assert.doesNotMatch(fact, new RegExp(SHA("2")), "its merge base is not the base");
+  assert.doesNotMatch(fact, new RegExp(`base commit ${SHA("4")}`), "and its merge commit is not passed off as the base");
 });

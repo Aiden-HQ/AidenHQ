@@ -269,10 +269,10 @@ export function localPullRequest(c: any, checks: { name: string; ok: boolean; pe
     repository: {
       pullRequest: {
         number: c.number, url: c.url, state: c.state === "open" ? "OPEN" : c.state === "merged" ? "MERGED" : "CLOSED", title: c.title ?? "", body: c.body ?? "",
-        // A local change's `base` is readChange's `git merge-base` of the default branch and the change's head. It is carried as the
-        // base ref's oid, never as the base commit: the squash lands on the default branch's tip at merge time, which may be later
-        // than that merge base, so calling it the base commit would state as a fact something this read cannot show.
-        headRefOid: c.head, headRefName: c.branch, baseRefName: c.into, baseRefOid: c.base,
+        // A local change's `base` is readChange's `git merge-base` of the default branch and the change's head: it moves when the
+        // default branch does, so it is not carried at all. Its merge commit never says which commit the change was cut from, so a
+        // local change's base commit is "not established" here, the same as a one-parent GitHub merge.
+        headRefOid: c.head, headRefName: c.branch, baseRefName: c.into,
         mergeCommit: c.merged ? { oid: c.merged } : null, mergedAt: c.merged ? mergedAt : null,
         commits: { nodes: [{ commit: { oid: c.head, statusCheckRollup: { contexts: { nodes } } } }] }, history: { nodes: [] },
       },
@@ -354,21 +354,17 @@ export async function prEvidence(prs: any[], ref: string, deps: any): Promise<an
     const own = history.findLast((c: any) => c.parents?.totalCount === 1);
     const shows = { commits: [pr.headRefOid, merged ? pr.mergeCommit?.oid : "", own?.oid].filter(Boolean), trees: [history.find((c: any) => c.oid === pr.headRefOid)?.tree?.oid, own?.tree?.oid].filter(Boolean) };
     prs_.push({ repo: p.repo, number: p.number, merge: merged ? (pr.mergeCommit?.oid ?? "") : "", mergedAt: pr.mergedAt ?? "", shows });
-    // The base commit: the base branch's commit the PR's change was applied on top of, derived from the merge commit (a moving
-    // tip or the git merge base is never used, both move). A merge commit has two parents, base then head: its first is the base.
-    // A squash merge is one new commit whose single parent is the base tip. A rebase merge is the last replayed head commit, so
-    // its single parent is another PR commit (or the head itself): there the base is not established rather than guessed. An
-    // unmerged PR has no base commit yet.
+    // The base commit: the base branch's commit the PR's change was applied on top of, known only where this read can prove which
+    // merge method produced the PR. A merge commit has exactly two parents, base then head, and its first is the base. A one-parent
+    // merge is what GitHub gives for both a squash (the parent is the base tip) and a rebase (the parent is the last replayed PR
+    // commit), and nothing in this read tells those apart, so a one-parent merge establishes no base rather than guessing one. An
+    // unmerged PR has no base commit yet. A moving value -- the base ref's tip, or the git merge base, which advances when the
+    // branch is later rebased onto the base -- is never a substitute.
     const parentCount = pr.mergeCommit?.parents?.totalCount;
     const first = pr.mergeCommit?.parents?.nodes?.[0]?.oid;
     const malformed = typeof first !== "string" || !SHA40.test(first);
-    // The PR's own commits, from `own` (github.ts). A list that was cut off still holds the head and the commit beside it, which
-    // is what tells a rebase apart (its parent there is the adjacent replayed commit); an absent read proves nothing, so a lone
-    // parent is not claimed without one.
-    const ownCommits: string[] | undefined = Array.isArray(pr.own?.nodes) ? pr.own.nodes.map((n: any) => n?.commit?.oid).filter(Boolean) : undefined;
     const isMergeCommit = parentCount === 2 && !malformed;
-    const isSquashOrRebaseOfOne = parentCount === 1 && !malformed && ownCommits !== undefined && !ownCommits.includes(first) && first !== pr.headRefOid;
-    const base = merged && (isMergeCommit || isSquashOrRebaseOfOne) ? first : "";
+    const base = merged && isMergeCommit ? first : "";
     facts.push(`${p.url}: ${pr.state.toLowerCase()}${merged ? ` into ${pr.baseRefName}` : ` (base ${pr.baseRefName})`}${base ? `, base commit ${base}` : ", base commit not established"}, head ${pr.headRefOid}${merged && pr.mergeCommit?.oid ? `, merge commit ${pr.mergeCommit.oid}` : ""}; checks: ${checks.length ? checks.map((c: any) => `${c.name} ${checkState(pr, c, gate)}`).join(", ") : "none"}${byRecord ? "; named by the runner's own record for this task, which is how its number was told from another change" : ""}`);
     // The author's own words: code labels them and says whether they were cut; the text itself goes fenced, as data.
     const kept = text.slice(0, Math.max(0, left - head.length)).trim();
