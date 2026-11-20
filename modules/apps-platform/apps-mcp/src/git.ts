@@ -1,35 +1,26 @@
 import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync } from "node:fs";
 import { promisify } from "node:util";
-import { type RepoToken, withGitToken } from "./github-app.js";
 import type { App } from "./registry.js";
-import { isLocal, localRepo } from "./codehost.js";
+import { type CodeHostOps, isLocal, localRepo } from "./codehost.js";
 
 const run = promisify(execFile);
 
 export interface GitEnv {
   appsData: string;
   gitDir: string; // bare repos, outside appsData: an app can write anywhere it may mount, so it must never reach a .git
-  tokenFile?: string;
   sshCommand?: string;
-  orgs?: string[]; // GitHub orgs/users apps may be built from (setting github_orgs), besides the agents org
-  agentsOrg?: string; // the instance's agents org: always allowed; its repos are read with the GitHub App when appToken is set
-  appToken?: RepoToken;
+  orgs?: string[]; // GitHub orgs/users apps may be built from (setting github_orgs), besides the fleet org
+  agentsOrg?: string; // the instance's fleet org (setting github_fleet_org): always allowed; its repos are fetched through the code host's fetch op
+  ops?: CodeHostOps;
   productDir?: string; // the host's product checkout (REPO_DIR): module apps are fetched from it, never from GitHub
   localRoot?: string; // this server's repos (codehost-local), mounted read-only: `local/*` apps are fetched from there
-}
-
-// The read-only token travels as an HTTP header for this process only: it never lands in a URL, .git/config or error text.
-function auth(env: GitEnv): NodeJS.ProcessEnv {
-  const token = env.tokenFile ? readFileSync(env.tokenFile, "utf8").trim() : "";
-  const basic = Buffer.from(`x-access-token:${token}`).toString("base64");
-  return { ...process.env, GIT_TERMINAL_PROMPT: "0", ...(token ? { GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "http.https://github.com/.extraheader", GIT_CONFIG_VALUE_0: `Authorization: Basic ${basic}` } : {}) };
 }
 
 export const inAgentsOrg = (env: GitEnv, repo: string) => !!env.agentsOrg && repo.split("/")[0]!.toLowerCase() === env.agentsOrg.toLowerCase();
 
 type Cmd = { args: string[]; env: NodeJS.ProcessEnv };
-const plain = (env: GitEnv, args: string[], extra: NodeJS.ProcessEnv = {}): Cmd => ({ args: ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", ...args], env: { ...auth(env), ...extra } });
+const plain = (args: string[], extra: NodeJS.ProcessEnv = {}): Cmd => ({ args: ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", ...args], env: { ...process.env, GIT_TERMINAL_PROMPT: "0", ...extra } });
 
 async function runGit(cmd: Cmd | Promise<Cmd>, label: string[], cwd?: string): Promise<string> {
   try {
@@ -42,14 +33,13 @@ async function runGit(cmd: Cmd | Promise<Cmd>, label: string[], cwd?: string): P
 
 const inOrgs = (env: GitEnv, repo: string) => (env.orgs ?? []).some((o) => o.toLowerCase() === repo.split("/")[0]!.toLowerCase());
 
-/** git with the read-only token; for an agents-org `app` with the GitHub App on, a repo-narrowed App token instead. */
-function git(env: GitEnv, args: string[], cwd?: string, extra: NodeJS.ProcessEnv = {}, app?: App): Promise<string> {
-  const viaApp = app && env.appToken && inAgentsOrg(env, app.repo);
-  const cmd = viaApp
-    ? env.appToken!(app.repo).then((t) => withGitToken(args, { ...process.env, GIT_TERMINAL_PROMPT: "0", ...extra }, t)) // no PAT header: it would shadow the helper
-    : plain(env, args, extra);
-  return runGit(cmd, args, cwd);
+/** git, with no credentials: GitHub repos of the fleet org and the registry come through the code host's ops instead. */
+function git(args: string[], cwd?: string, extra: NodeJS.ProcessEnv = {}): Promise<string> {
+  return runGit(plain(args, extra), args, cwd);
 }
+
+/** Whether `app`'s code comes through the code host's ops (a fleet-org GitHub repo, never a `local/*` one). */
+const viaOps = (env: GitEnv, app: App): CodeHostOps | undefined => (env.ops && inAgentsOrg(env, app.repo) && !isLocal(env.localRoot, app.repo) ? env.ops : undefined);
 
 export function checkOrg(env: GitEnv, app: App): void {
   if (!app.untrusted && !inOrgs(env, app.repo) && !inAgentsOrg(env, app.repo) && !isLocal(env.localRoot, app.repo)) throw new Error(`repo ${app.repo} is outside the allowed orgs; only untrusted apps may use it`);
@@ -68,9 +58,9 @@ const source = (env: GitEnv, app: App): { url: string; pre: string[] } => {
 /** Latest commit of the app's branch on origin; a module app's head is its product pin. */
 export async function remoteHead(env: GitEnv, app: App): Promise<string> {
   if (app.pin) return app.pin;
+  const ops = viaOps(env, app);
   const s = source(env, app);
-  const out = await git(env, [...s.pre, "ls-remote", s.url, `refs/heads/${app.branch}`], undefined, {}, app);
-  const sha = out.split(/\s/)[0];
+  const sha = ops ? await ops.head(app.repo, app.branch) : (await git([...s.pre, "ls-remote", s.url, `refs/heads/${app.branch}`])).split(/\s/)[0];
   if (!sha) throw new Error(`branch ${app.branch} not found in ${app.repo}`);
   return sha;
 }
@@ -85,10 +75,11 @@ async function fetchAll(env: GitEnv, app: App): Promise<string> {
   const gd = `--git-dir=${env.gitDir}/${app.name}.git`;
   if (!existsSync(`${env.gitDir}/${app.name}.git`)) {
     mkdirSync(env.gitDir, { recursive: true });
-    await git(env, ["init", "--bare", "-q", `${env.gitDir}/${app.name}.git`]);
+    await git(["init", "--bare", "-q", `${env.gitDir}/${app.name}.git`]);
   }
-  if (app.module && env.productDir) await git(env, [gd, "fetch", "--prune", env.productDir, `+refs/remotes/origin/${app.branch}:refs/remotes/origin/${app.branch}`]);
-  else await git(env, [...source(env, app).pre, gd, "fetch", "--prune", source(env, app).url, "+refs/heads/*:refs/remotes/origin/*"], undefined, {}, app);
+  if (app.module && env.productDir) await git([gd, "fetch", "--prune", env.productDir, `+refs/remotes/origin/${app.branch}:refs/remotes/origin/${app.branch}`]);
+  else if (viaOps(env, app)) await env.ops!.fetch(app.repo, "refs/heads/*", `${env.gitDir}/${app.name}.git`);
+  else await git([...source(env, app).pre, gd, "fetch", "--prune", source(env, app).url, "+refs/heads/*:refs/remotes/origin/*"]);
   return gd;
 }
 
@@ -97,13 +88,15 @@ async function fetchAll(env: GitEnv, app: App): Promise<string> {
  * fetched since a merge, while GitHub has the commit. Only refs/heads/<branch> is copied, so it can add history but never
  * make a commit reachable that origin/<branch> doesn't have.
  */
-const fetchBranch = (env: GitEnv, app: App, gd: string): Promise<string> =>
-  git(env, [...source(env, app).pre, gd, "fetch", "--prune", source(env, app).url, `+refs/heads/${app.branch}:refs/remotes/origin/${app.branch}`], undefined, {}, app);
+const fetchBranch = async (env: GitEnv, app: App): Promise<void> => {
+  if (viaOps(env, app)) return env.ops!.fetch(app.repo, `refs/heads/${app.branch}`, `${env.gitDir}/${app.name}.git`);
+  await git([...source(env, app).pre, `--git-dir=${env.gitDir}/${app.name}.git`, "fetch", "--prune", source(env, app).url, `+refs/heads/${app.branch}:refs/remotes/origin/${app.branch}`]);
+};
 
 /** From what fetchAll brought; when that doesn't hold (a checkout that lags origin), origin/<branch> once from the app's own origin, then once again. */
 async function fromOrigin<T>(env: GitEnv, app: App, gd: string, find: () => Promise<T>): Promise<T> {
   // A fetch that can't run (no access, offline) leaves find()'s own error to be thrown.
-  return find().catch(async () => (await fetchBranch(env, app, gd).catch(() => ""), find()));
+  return find().catch(async () => (await fetchBranch(env, app).catch(() => {}), find()));
 }
 
 /** Checks the app out at sha (default: its pin, else head of origin/<branch>), refusing commits not reachable from origin/<branch>. */
@@ -112,9 +105,9 @@ export async function checkout(env: GitEnv, app: App, sha?: string): Promise<{ s
   if (sha && !/^[0-9a-f]{7,40}$/.test(sha)) throw new Error("sha must be 7-40 hex characters");
   const gd = await fetchAll(env, app);
   const full = await fromOrigin(env, app, gd, async () => {
-    const full = await git(env, [gd, "rev-parse", "--verify", `${sha ?? app.pin ?? `origin/${app.branch}`}^{commit}`]);
+    const full = await git([gd, "rev-parse", "--verify", `${sha ?? app.pin ?? `origin/${app.branch}`}^{commit}`]);
     try {
-      await git(env, [gd, "merge-base", "--is-ancestor", full, `origin/${app.branch}`]);
+      await git([gd, "merge-base", "--is-ancestor", full, `origin/${app.branch}`]);
     } catch {
       throw new Error(`commit ${full.slice(0, 8)} is not reachable from origin/${app.branch}`);
     }
@@ -130,7 +123,7 @@ async function workTree(env: GitEnv, app: App, gd: string, full: string): Promis
   rmSync(tmp, { recursive: true, force: true });
   rmSync(`${env.gitDir}/${app.name}.git/index`, { force: true }); // no index, so every file is written
   mkdirSync(tmp, { recursive: true });
-  await git(env, [gd, `--work-tree=${tmp}`, "checkout", "--force", "--detach", full]);
+  await git([gd, `--work-tree=${tmp}`, "checkout", "--force", "--detach", full]);
   rmSync(dir, { recursive: true, force: true });
   renameSync(tmp, dir);
   return dir;
@@ -148,13 +141,16 @@ export async function checkoutPr(env: GitEnv, app: App, sha: string): Promise<{ 
   const bare = `${env.gitDir}/${app.name}.git`;
   if (!existsSync(bare)) {
     mkdirSync(env.gitDir, { recursive: true });
-    await git(env, ["init", "--bare", "-q", bare]);
+    await git(["init", "--bare", "-q", bare]);
   }
   const gd = `--git-dir=${bare}`;
-  const s = source(env, app);
-  const ref = isLocal(env.localRoot, app.repo) ? `refs/changes/${app.preview.pr}/head` : `refs/pull/${app.preview.pr}/head`;
-  await git(env, [...s.pre, gd, "fetch", s.url, `+${ref}:refs/remotes/pr/head`], undefined, {}, app);
-  const head = await git(env, [gd, "rev-parse", "--verify", "refs/remotes/pr/head^{commit}"]);
+  if (viaOps(env, app)) await env.ops!.fetch(app.repo, `refs/pull/${app.preview.pr}/head`, bare);
+  else {
+    const s = source(env, app);
+    const ref = isLocal(env.localRoot, app.repo) ? `refs/changes/${app.preview.pr}/head` : `refs/pull/${app.preview.pr}/head`;
+    await git([...s.pre, gd, "fetch", s.url, `+${ref}:refs/remotes/pr/head`]);
+  }
+  const head = await git([gd, "rev-parse", "--verify", "refs/remotes/pr/head^{commit}"]);
   if (head !== sha) throw new Error(`PR #${app.preview.pr} moved to ${head.slice(0, 8)}`);
   return { sha, dir: await workTree(env, app, gd, sha) };
 }
@@ -162,7 +158,7 @@ export async function checkoutPr(env: GitEnv, app: App, sha: string): Promise<{ 
 /** A deployed commit's full message, from the app's bare repo (its deploy fetched it). Read by code only, never shown. */
 export async function commitMessage(env: GitEnv, app: App, sha: string): Promise<string> {
   if (!/^[0-9a-f]{40}$/.test(sha)) throw new Error("sha must be 40 hex characters");
-  return git(env, [`--git-dir=${env.gitDir}/${app.name}.git`, "log", "-1", "--format=%B", sha]);
+  return git([`--git-dir=${env.gitDir}/${app.name}.git`, "log", "-1", "--format=%B", sha]);
 }
 
 /** The full sha and subject of a commit on origin/<branch> (what an approval card names); throws if unknown or off-branch. */
@@ -171,12 +167,12 @@ export async function resolveCommit(env: GitEnv, app: App, sha: string): Promise
   if (!/^[0-9a-f]{7,40}$/.test(sha)) throw new Error("sha must be 7-40 hex characters");
   const gd = await fetchAll(env, app);
   const find = async (): Promise<{ sha: string; subject: string }> => {
-    const full = await git(env, [gd, "rev-parse", "--verify", "--quiet", `${sha}^{commit}`]).catch(() => "");
+    const full = await git([gd, "rev-parse", "--verify", "--quiet", `${sha}^{commit}`]).catch(() => "");
     if (!/^[0-9a-f]{40}$/.test(full)) throw new Error(`no single commit ${sha} in ${app.repo}`);
-    await git(env, [gd, "merge-base", "--is-ancestor", full, `origin/${app.branch}`]).catch(() => {
+    await git([gd, "merge-base", "--is-ancestor", full, `origin/${app.branch}`]).catch(() => {
       throw new Error(`commit ${full.slice(0, 12)} is not on origin/${app.branch}`);
     });
-    return { sha: full, subject: await git(env, [gd, "log", "-1", "--format=%s", full]) };
+    return { sha: full, subject: await git([gd, "log", "-1", "--format=%s", full]) };
   };
   return fromOrigin(env, app, gd, find);
 }
@@ -201,36 +197,34 @@ export async function diffForDeploy(env: GitEnv, app: App, from: string | undefi
 
 async function diffRange(env: GitEnv, app: App, from: string | undefined, sha: string, max: number, paths: string[] = []): Promise<{ diff: string; truncated: boolean }> {
   const base = from && /^[0-9a-f]{40}$/.test(from) ? from : "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
-  const diff = await git(env, [`--git-dir=${env.gitDir}/${app.name}.git`, "-c", "core.attributesFile=/dev/null", "diff", "--no-ext-diff", "--no-textconv", "--text", "--no-renames", base, sha, ...(paths.length ? ["--", ...paths] : [])]);
+  const diff = await git([`--git-dir=${env.gitDir}/${app.name}.git`, "-c", "core.attributesFile=/dev/null", "diff", "--no-ext-diff", "--no-textconv", "--text", "--no-renames", base, sha, ...(paths.length ? ["--", ...paths] : [])]);
   return { diff: diff.slice(0, max), truncated: diff.length > max };
 }
 
 /** A file of the app at a commit, read from the bare repo (never the work tree); undefined if absent. */
 export const show = (env: GitEnv, app: App, sha: string, path: string): Promise<string | undefined> =>
-  git(env, [`--git-dir=${env.gitDir}/${app.name}.git`, "show", `${sha}:${path}`]).then((s) => s, () => undefined);
+  git([`--git-dir=${env.gitDir}/${app.name}.git`, "show", `${sha}:${path}`]).then((s) => s, () => undefined);
 
 const registrySlug = (url: string) => /^https:\/\/github\.com\/([\w.-]+\/[\w.-]+?)(?:\.git)?$/.exec(url)?.[1];
 
 /**
- * The registry (instance repo) fetch or push, in apps-mcp's own clone (never the apply's checkout). An https github.com URL
- * with the GitHub App on: from/to that URL, with a token narrowed to that repo (contents read to fetch, write to push)
- * through the hardened helper. Otherwise the URL as it is, over SSH with the deploy key.
+ * The registry (instance repo) clone at origin/main, exactly (created on first use; local changes are discarded), in
+ * apps-mcp's own clone (never the apply's checkout). An https github.com URL comes through the code host's fetch op; any
+ * other URL as it is, over SSH with the deploy key.
  */
-export async function registryCmd(env: GitEnv, op: "fetch" | "push", url: string): Promise<Cmd> {
-  const slug = registrySlug(url);
-  const args = op === "fetch" ? ["fetch", url, "main"] : ["push", url, "HEAD:main"];
-  if (slug && env.appToken) return withGitToken(args, { ...process.env, GIT_TERMINAL_PROMPT: "0" }, await env.appToken(slug, op === "push" ? "write" : "read"));
-  return plain(env, args, env.sshCommand ? { GIT_SSH_COMMAND: env.sshCommand } : {});
-}
-
-/** The registry clone at the instance's origin/main, exactly (created on first use; local changes are discarded). */
 export async function syncRegistry(env: GitEnv, dir: string, url: string): Promise<void> {
   if (!existsSync(`${dir}/.git`)) {
     mkdirSync(dir, { recursive: true });
-    await git(env, ["init", "-q", dir]);
+    await git(["init", "-q", dir]);
   }
-  await runGit(registryCmd(env, "fetch", url), ["fetch"], dir);
-  await git(env, ["reset", "-q", "--hard", "FETCH_HEAD"], dir);
+  const slug = registrySlug(url);
+  if (slug && env.ops) {
+    await env.ops.fetch(slug, "refs/heads/main", `${dir}/.git`);
+    await git(["reset", "-q", "--hard", "refs/remotes/origin/main"], dir);
+    return;
+  }
+  await git(["fetch", url, "main"], dir, env.sshCommand ? { GIT_SSH_COMMAND: env.sshCommand } : {});
+  await git(["reset", "-q", "--hard", "FETCH_HEAD"], dir);
 }
 
 export interface BootRegistryOptions {
@@ -280,9 +274,18 @@ export async function bootRegistry(env: GitEnv, dir: string, url: string, opts: 
   throw last;
 }
 
-/** Commits one file of the registry clone and pushes it to main (registryCmd); the clone was synced just before the edit. */
+/**
+ * One file of the registry clone committed to main. An https github.com URL: one `commit` op on the synced HEAD (the code
+ * host refuses a main that moved); any other URL: a local commit pushed over SSH. The clone was synced just before the edit.
+ */
 export async function commitPush(env: GitEnv, repoDir: string, file: string, message: string, pushUrl: string): Promise<void> {
-  await git(env, ["add", file], repoDir);
-  await git(env, ["-c", "user.name=apps-mcp", "-c", "user.email=apps-mcp@agents.local", "commit", "-m", message, "--", file], repoDir);
-  await runGit(registryCmd(env, "push", pushUrl), ["push"], repoDir);
+  const slug = registrySlug(pushUrl);
+  if (slug && env.ops) {
+    const parent = await git(["rev-parse", "HEAD"], repoDir);
+    await env.ops.commit({ repo: slug, branch: "main", path: file, content: readFileSync(`${repoDir}/${file}`, "utf8"), parent, message });
+    return;
+  }
+  await git(["add", file], repoDir);
+  await git(["-c", "user.name=apps-mcp", "-c", "user.email=apps-mcp@agents.local", "commit", "-m", message, "--", file], repoDir);
+  await git(["push", pushUrl, "HEAD:main"], repoDir, env.sshCommand ? { GIT_SSH_COMMAND: env.sshCommand } : {});
 }

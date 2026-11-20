@@ -608,17 +608,17 @@ as_user systemctl --user enable aidenhq-apply-recover
 [ "${KERNEL_RESTART:-0}" = 0 ] || as_user systemctl --user restart aidenhq-kernel
 # A release install's first update check now, so the kernel's /updates page has its state from the start (it checks hourly after).
 [ "$DRY" = 1 ] || [ -z "${AIDENHQ_RELEASE:-}" ] || as_user AIDENHQ_INSTANCE_DIR="$INST" node "$REPO/kernel/src/updates.ts" check || echo "  (the first update check failed; the kernel's hourly check retries it)"
-# CI runners (modules/ci): AIDENHQ_CI_RUNNERS units, once the GitHub App exists and the instance has the ci module (each
-# unit mints its token from the App); until then a rerun of setup starts them.
+# CI runners (modules/ci): AIDENHQ_CI_RUNNERS units, once github_fleet_org is set and the instance has the ci module (each
+# unit gets its registration token from the kernel's runner_token op); until then a rerun of setup starts them.
 ci_n="$(sed -n 's/^AIDENHQ_CI_RUNNERS=\([0-9]*\)$/\1/p' "$ENVF" 2>/dev/null | tail -1 || true)"; ci_n="${CI_RUNNERS:-${ci_n:-0}}"
 if [ "$ci_n" -gt 0 ]; then
-  if [ "$DRY" = 1 ]; then echo "  + CI runners: aidenhq-ci-runner@1..$ci_n, once the GitHub App and the ci module are set up"
-  elif [ -n "$(read_secret github-app/app_id)" ] && grep -Eq '^modules:.*[[ ,]ci[],]' "$INST/instance.yaml"; then
+  if [ "$DRY" = 1 ]; then echo "  + CI runners: aidenhq-ci-runner@1..$ci_n, once github_fleet_org is set and the ci module is on"
+  elif grep -Eq '^[[:space:]]+github_fleet_org:[[:space:]]*["'"'"']?[A-Za-z0-9]' "$INST/instance.yaml" && grep -Eq '^modules:.*[[ ,]ci[],]' "$INST/instance.yaml"; then
     say "CI runners: $ci_n"
     as_user cp "$REPO/ops/units/aidenhq-ci-runner@.service" "$H/.config/systemd/user/"
     as_user systemctl --user daemon-reload
     for i in $(seq "$ci_n"); do as_user systemctl --user enable --now "aidenhq-ci-runner@$i"; done
-  else say "CI runners: $ci_n once the GitHub App (GitHub setup on the board, its advanced part) and the ci module are set up; then run setup again"; fi
+  else say "CI runners: $ci_n once github_fleet_org is set and the ci module is on; then run setup again"; fi
 fi
 
 # Public: the certificate is the proof that 443 is reachable from the Internet (behind NAT, a cloud security group or a
