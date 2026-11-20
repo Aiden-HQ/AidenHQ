@@ -44,6 +44,11 @@ which means you agree to [CLA.md](CLA.md): you keep your copyright, grant a pate
 license your contribution under other terms too, including commercial ones. If your employer has rights in your work,
 get its permission first. Pull requests without the box ticked fail the `community / cla` check and are not merged.
 
+## Language
+
+New code is TypeScript (`.ts`/`.tsx`), run directly by Node 24 with `.ts` import specifiers. The few JavaScript files that stay
+are files something loads by a fixed `.js`/`.mjs` name.
+
 ## Running the tests
 
 Before you push, run `node scripts/ci-local.ts`: it runs the suites CI would run for your diff, with CI's own selection
