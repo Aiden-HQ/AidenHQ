@@ -86,7 +86,12 @@ test("pins: a release-dated ghcr pin whose tag the base already pinned (a digest
   const base = [pin("1.2.0", "a")];
   const same = await checkAges({ pins: [pin("1.2.0", "b")], basePins: base, date, now });
   assert.match(same[0], /only the digest changed on an unchanged tag/);
-  assert.deepEqual(await checkAges({ pins: [pin("1.3.0", "b")], basePins: base, date, now }), []);
+  const rel = { "1.2.0": day(20), "1.3.0": day(10), "1.1.0": day(40) };
+  const releaseOf = async (b) => rel[b.name.split(":")[1]];
+  const dateBy = async (p) => ({ published: rel[p.name.split(":")[1]], via: "GitHub release", byRelease: true });
+  assert.deepEqual(await checkAges({ pins: [pin("1.3.0", "b")], basePins: base, date: dateBy, releaseOf, now }), []);
+  const back = await checkAges({ pins: [pin("1.1.0", "b")], basePins: base, date: dateBy, releaseOf, now }); // a downgrade
+  assert.match(back[0], /must move forward/);
 });
 
 test("pins: unpinned images, actions, installs and apt after a repo fail; new pins are dated, old ones are not", async () => {

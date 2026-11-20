@@ -167,6 +167,17 @@ async function ghcrDigest(repo, tag) {
   return (await fetchRetry(`https://ghcr.io/v2/${repo}/manifests/${encodeURIComponent(tag)}`, { method: "HEAD", headers: { authorization: `Bearer ${token}`, accept } })).headers.get("docker-content-digest");
 }
 
+// The published GitHub release of an image tag (`v<tag>` or `<tag>`) in the same-named repo: {tag, published}, or null.
+export async function ghcrRelease(repo, tag, onError) {
+  for (const t of [`v${tag}`, tag]) {
+    try {
+      const r = await getJson(`https://api.github.com/repos/${repo}/releases/tags/${encodeURIComponent(t)}`);
+      if (r.published_at && !r.draft) return { tag: t, published: r.published_at };
+    } catch (re) { if (re.status !== 404) throw onError || re; }
+  }
+  return null;
+}
+
 async function imageVersions(host, repo, filter) {
   if (host === "docker.io") return hubTags(repo, filter);
   if (host === "ghcr.io") return ghcrVersions(repo);
@@ -358,12 +369,8 @@ export async function publishedAt(kind, name, { version, digest, sha, source } =
       // marked `byRelease` so pins.mjs can refuse a digest-only change on an unchanged tag.
       if (host !== "ghcr.io" || ![401, 403].includes(e.status) || !tag) throw e;
       if ((await ghcrDigest(repo, tag)) !== digest) throw undated(`${name}@${digest}: tag ${tag} no longer resolves to the pinned digest`);
-      for (const t of [`v${tag}`, tag]) {
-        try {
-          const r = await getJson(`https://api.github.com/repos/${repo}/releases/tags/${encodeURIComponent(t)}`);
-          if (r.published_at && !r.draft) return { published: r.published_at, via: `GitHub release ${t} (the Packages API is unreadable)`, byRelease: true };
-        } catch (re) { if (re.status !== 404) throw e; }
-      }
+      const rel = await ghcrRelease(repo, tag, e);
+      if (rel) return { published: rel.published, via: `GitHub release ${rel.tag} (the Packages API is unreadable)`, byRelease: true };
       throw e;
     }
     const hit = all.filter((t) => t.digest === digest).sort((a, b) => Date.parse(a.published) - Date.parse(b.published)).at(-1);
