@@ -47,13 +47,15 @@ test("the shipped modules declare these rules: an agent's new fleet org or maint
   const { readFileSync } = await import("node:fs");
   const { checkTyped } = await import("../src/settings-change.ts");
   const decl = (m, k) => YAML.parse(readFileSync(new URL(`../../modules/${m}/module.yaml`, import.meta.url), "utf8")).settings[k];
-  const shipped = { code_review: decl("code-review", "code_review"), github_fleet_org: decl("github", "github_fleet_org"), maintainer_repos: decl("github", "maintainer_repos") };
+  const shipped = { code_review: decl("code-review", "code_review"), github_fleet_org: decl("github", "github_fleet_org"), maintainer_repos: decl("github", "maintainer_repos"), github_orgs: decl("github", "github_orgs") };
   const t = (k, b, h, byAgent = true) => highest(applyParts({ files: ["instance.yaml"], byAgent, settingDefs: shipped,
     base: { "instance.yaml": YAML.stringify({ settings: { [k]: b } }) }, head: { "instance.yaml": YAML.stringify({ settings: { [k]: h } }) } })).tier;
   assert.equal(t("github_fleet_org", "acme", "othercorp"), 2);
   assert.equal(t("github_fleet_org", "acme", "othercorp", false), 1);
   assert.equal(t("maintainer_repos", ["acme/api"], ["acme/api", "othercorp/lib"]), 2);
   assert.equal(t("maintainer_repos", ["acme/api"], ["acme/api", "othercorp/lib"], false), 1);
+  assert.equal(t("github_orgs", ["acme"], ["acme", "othercorp"]), 2);
+  assert.equal(t("github_orgs", ["acme"], ["acme", "othercorp"], false), 1);
   // Another shape than the default's (a string the consumer would split into repos) is the owner's.
   assert.equal(t("maintainer_repos", ["acme/api"], "acme/api,evil/x"), 2);
   // Weakening a review quietly: a reviewer's focus or context, a repo's ignore globs.

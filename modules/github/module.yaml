@@ -105,6 +105,8 @@ settings:
   github_orgs:
     default: []
     pattern: '^[A-Za-z0-9][A-Za-z0-9-]{0,38}$'
+    # Adding an org is the owner's: it trusts the org's repos for apps and lets create_repo write there.
+    owner: [ { path: "*", new: true } ]
 connections:
   github:
     setup: "Open its setup on the board (#/setup/github) and press Connect GitHub."
