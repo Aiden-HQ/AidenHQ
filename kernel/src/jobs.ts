@@ -154,16 +154,32 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
   /** The command a box job's engine runs under in its box (the computer launcher's scrub). */
   boxWrap: string;
 }) {
-  db.exec(DDL);
-  db.exec(REFUSALS_DDL);
+  /**
+   * The schema, as one step two openers can't both run: inside one BEGIN IMMEDIATE (the busy timeout waits for the other
+   * rather than failing on a locked database), and every column re-read there, so the second opener sees the first's ALTERs
+   * and skips them. Two processes setup, a test and the service say, never both add the same column.
+   */
+  const setup = () => {
+    db.exec("PRAGMA busy_timeout = 5000");
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      db.exec(DDL);
+      db.exec(REFUSALS_DDL);
+      // A kernel-admitted job's columns, added where they are missing: what admission records (the wake, the profile, the job
+      // that started it, its frozen authority and routine cap: provenance.ts reads it), and boxes.ts's lease and release.
+      const cols = new Set((db.prepare("PRAGMA table_info(jobs)").all() as { name: string }[]).map((c) => c.name));
+      for (const [c, t] of [["wake", "TEXT"], ["profile", "TEXT"], ["parent_job", "TEXT"], ["routine", "TEXT"], ["routine_cap", "TEXT"], ["authority", "TEXT"], ["renewed", "INTEGER"], ["released", "INTEGER"], ["identifier", "TEXT"], ["full_prompt", "TEXT"], ["resumed", "INTEGER"]] as const) if (!cols.has(c)) db.exec(`ALTER TABLE jobs ADD COLUMN ${c} ${t}`);
+      db.exec("CREATE INDEX IF NOT EXISTS jobs_task ON jobs (task, state)");
+      // `acked`: the dispatcher's completion acknowledgement. Runs that ended before the column existed were dealt with by the old ledger.
+      if (!cols.has("acked")) db.exec("ALTER TABLE jobs ADD COLUMN acked INTEGER; UPDATE jobs SET acked = COALESCE(ended, at) WHERE state NOT IN ('admitted', 'running')");
+      db.exec("COMMIT");
+    } catch (e) {
+      db.exec("ROLLBACK");
+      throw e;
+    }
+  };
+  setup();
   const refusal = (id: string) => (db.prepare("SELECT why FROM job_refusals WHERE job = ?").get(id) as { why: string } | undefined)?.why;
-  // A kernel-admitted job's columns, added where they are missing: what admission records (the wake, the profile, the job that
-  // started it, its frozen authority and routine cap: provenance.ts reads it), and boxes.ts's lease and release.
-  const cols = new Set((db.prepare("PRAGMA table_info(jobs)").all() as { name: string }[]).map((c) => c.name));
-  for (const [c, t] of [["wake", "TEXT"], ["profile", "TEXT"], ["parent_job", "TEXT"], ["routine", "TEXT"], ["routine_cap", "TEXT"], ["authority", "TEXT"], ["renewed", "INTEGER"], ["released", "INTEGER"], ["identifier", "TEXT"], ["full_prompt", "TEXT"], ["resumed", "INTEGER"]]) if (!cols.has(c!)) db.exec(`ALTER TABLE jobs ADD COLUMN ${c} ${t}`);
-  db.exec("CREATE INDEX IF NOT EXISTS jobs_task ON jobs (task, state)");
-  // `acked`: the dispatcher's completion acknowledgement. Runs that ended before the column existed were dealt with by the old ledger.
-  if (!cols.has("acked")) db.exec("ALTER TABLE jobs ADD COLUMN acked INTEGER; UPDATE jobs SET acked = COALESCE(ended, at) WHERE state NOT IN ('admitted', 'running')");
   const watchers = new Map<string, { stop: () => void; send?: (text: string, from: string) => boolean; cancel: (by?: string) => void }>();
   const versions = new Map<string, number>();
   const waiters = new Map<string, Set<() => void>>();
