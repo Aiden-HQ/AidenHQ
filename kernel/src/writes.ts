@@ -555,7 +555,9 @@ export function createWrites({ records, registry, connections, secret, resolver,
     run,
     /** The owner's decision (a channel's token or the kernel's page). `by` names who, never the reviewer or the code. */
     decide(id: string, b: { digest: string; decision: "approve" | "reject"; by: string; via: string; reason?: string }): Rec | string {
-      if (!/^(owner:[a-z]{1,16}|account:[\w-]{1,64}|watcher|stale:watcher)$/.test(b.by) || !/^[a-z]{1,16}$/.test(b.via)) return "by or via isn't a decider this route stamps";
+      if (!/^(owner:[a-z]{1,16}|account:[\w-]{1,64}|watcher|stale:(watcher|account:[\w-]{1,64}))$/.test(b.by) || !/^[a-z]{1,16}$/.test(b.via)) return "by or via isn't a decider this route stamps";
+      // A stale close (a dead or duplicate card) is a reject that is never a veto: never an approval.
+      if (b.by.startsWith("stale:") && b.decision !== "reject") return "a stale close is a reject";
       const r = records.decide(id, b.digest, b.decision, b.by, b.via, ownerReason(b.reason));
       if (typeof r === "string") return r;
       if (r.state === "approved") void run(id);

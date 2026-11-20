@@ -1,6 +1,11 @@
 // The accounts' backplane routes (lean 3g): what modules ask of the one opener of the accounts file.
 //   POST /v1/auth/{exchange,session,sign_out}  (the board's key) a module UI's one-time code → its session token; that
 //              token → its ready admin (or 401); that session ends. The board checks its session here on every request.
+//   POST /v1/auth/mcp, /v1/auth/mcp/{grants,revoke}  (the board's key) an MCP client's bearer for {resource} (the board's
+//              /mcp) → its ready admin, client and expiry (or 401); with {token} (a live board session's ready admin) that
+//              admin's own MCP clients, and revoking one of them.
+//   POST /v1/owner/decide    (the board's key + an MCP client's bearer) cards decided as the bearer's account, via "mcp",
+//              each against the digest that was read, each on its own.
 //   POST /v1/accounts/<op>   (the board's key + {token}: a live module UI session's admin acts) account admin: list, sessions,
 //              revoke_session, invite, role, disable, enable, link, app_admins, app_admin_set, recovery_key_waiting, model_ready (a model key is in the vault), save_secret
 //              (the owner's) and setup_status (a module's declared `setup:` secrets: module-secrets.ts); `names` and `owner_request` (the
@@ -24,7 +29,11 @@ const ROLE = (v: unknown) => v === "admin" || v === "user";
 const MODULE = (v: unknown) => typeof v === "string" && /^[a-z][a-z0-9-]{0,62}$/.test(v);
 const SECRET = (v: unknown) => typeof v === "string" && /^[a-z][a-z0-9_]{1,63}$/.test(v);
 
-export function createAuthApi({ accounts, whoami, boardKey, operatorKey, recoveryKeyWaiting = () => false, modelReady = () => true, secrets }: { accounts: () => Accounts | undefined; whoami: Whoami; boardKey: () => string; operatorKey: () => string; recoveryKeyWaiting?: () => boolean; modelReady?: () => boolean; secrets?: ModuleSecrets }) {
+/** One card an MCP client decides: approve or reject, against the digest it read; `stale` closes a dead or duplicate card (a reject, never a veto). */
+type McpCard = { id: string; digest: string; decision: "approve" | "reject"; reason?: string; stale?: boolean };
+type Decide = (id: string, digest: string, decision: "approve" | "reject", by: string, via: string, reason?: string) => Promise<{ identifier: string; state: string }>;
+
+export function createAuthApi({ accounts, whoami, boardKey, operatorKey, recoveryKeyWaiting = () => false, modelReady = () => true, secrets, decide }: { accounts: () => Accounts | undefined; whoami: Whoami; boardKey: () => string; operatorKey: () => string; recoveryKeyWaiting?: () => boolean; modelReady?: () => boolean; secrets?: ModuleSecrets; decide?: Decide }) {
   const bearer = (req: IncomingMessage) => String(req.headers.authorization ?? "").replace(/^Bearer\s+/i, "").trim();
   const is = (given: string, key: string) => { const a = Buffer.from(given), b = Buffer.from(key); return b.length > 0 && a.length === b.length && timingSafeEqual(a, b); };
   const send = (res: ServerResponse, status: number, body: unknown): void => void res.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" }).end(JSON.stringify(body));
@@ -67,6 +76,46 @@ export function createAuthApi({ accounts, whoami, boardKey, operatorKey, recover
       // The board's key from here on.
       if (!is(bearer(req), boardKey())) throw fail(401, "unauthorized", "the board's key is required");
       const b = await json(req);
+      // An MCP client's bearer, for the resource it must name (the board's /mcp): checked afresh on every call.
+      const grant = async () => {
+        const g = await a.mcpGrant(need(b, "token", (v) => typeof v === "string" && v.length >= 16 && v.length <= 200), need(b, "resource", (v) => typeof v === "string" && v.length <= 300));
+        if (!g) throw fail(401, "unauthorized", "this MCP sign-in has expired or was revoked: sign in again from your client");
+        return g;
+      };
+      if (group === "auth" && op.startsWith("mcp")) {
+        if (op === "mcp") {
+          const g = await grant();
+          const { id, email, name, role, owner } = g.account;
+          return send(res, 200, { account: { id, email, name, role, owner }, client: g.client, expires: g.expires });
+        }
+        const who = await a.uiSession("board", need(b, "token", (v) => typeof v === "string" && v.length <= 200));
+        if (!who?.ready) throw fail(401, "unauthorized", "sign in");
+        const account = who.account.id;
+        if (op === "mcp/grants") return send(res, 200, { grants: a.mcpGrants(account) });
+        if (op === "mcp/revoke") { a.revokeMcpGrant(account, need(b, "grant", ID)); return send(res, 200, { ok: true }); }
+        throw fail(404, "not_found", "no such auth call");
+      }
+      if (group === "owner" && op === "decide") {
+        if (!decide) throw fail(503, "unavailable", "deciding cards is off");
+        const g = await grant();
+        const cards = need(b, "cards", (v) => Array.isArray(v) && v.length >= 1 && v.length <= 20) as unknown[];
+        const outcomes = [];
+        // Each card on its own: one that changed since it was read fails alone.
+        for (const raw of cards) {
+          const c = (raw && typeof raw === "object" ? raw : {}) as Partial<McpCard>;
+          const id = typeof c.id === "string" ? c.id.slice(0, 40) : "";
+          const bad = !id ? "send each card's id" : typeof c.digest !== "string" || c.digest.length > 200 ? "send the digest you read (call approvals)" : c.decision !== "approve" && c.decision !== "reject" ? "decision is approve or reject"
+            : c.reason !== undefined && (typeof c.reason !== "string" || c.reason.length > 500) ? "reason is text, at most 500 characters" : c.stale !== undefined && typeof c.stale !== "boolean" ? "stale is true or false"
+            : c.stale && c.decision !== "reject" ? "stale closes a dead or duplicate card: only with decision reject" : "";
+          if (bad) { outcomes.push({ id, ok: false, error: bad }); continue; }
+          const by = `${c.stale ? "stale:" : ""}account:${g.account.id}`;
+          outcomes.push(await decide(id, c.digest!, c.decision!, by, "mcp", c.reason ?? "").then(
+            (r) => ({ id, ok: true, state: r.state, identifier: r.identifier }),
+            (e: Error) => ({ id, ok: false, error: /digest|changed meanwhile/.test(e.message) ? `card ${id} changed since you read it: call approvals again` : e.message }),
+          ));
+        }
+        return send(res, 200, { outcomes });
+      }
       if (group === "auth") {
         if (op === "exchange") return send(res, 200, await a.exchangeUi("board", need(b, "code", (v) => typeof v === "string" && v.length >= 16 && v.length <= 100), need(b, "origin", (v) => typeof v === "string" && v.length <= 300), need(b, "state", (v) => typeof v === "string" && v.length <= 256)));
         const token = need(b, "token", (v) => typeof v === "string" && v.length <= 200);

@@ -267,7 +267,7 @@ test("every kernel page refuses a frame (A7); unidentified guessing hits its cei
 test("wrong codes back off per account, whatever the peer: 100 from the tailnet reach the one-minute wait, and the owner's code works a minute after", async (t) => {
   // Every sign-in step keeps a rate limit (never `false`), the tailnet's included.
   const { authCore, openAuthDb } = await import("../src/auth-rules.ts");
-  const rules = authCore({ db: openAuthDb(":memory:"), secret: "s".repeat(43), hosts: [HOST], linkTtlMs: 1000, log: silent }).options.rateLimit;
+  const rules = authCore({ db: openAuthDb(":memory:"), secret: "s".repeat(43), hosts: [HOST], linkTtlMs: 1000, mcpResource: "http://localhost:3121/mcp", log: silent }).options.rateLimit;
   assert.equal(rules.enabled, true);
   for (const p of ["/sign-in/email", "/two-factor/verify-totp"]) assert.deepEqual(rules.customRules[p], { window: 60, max: 20 });
 

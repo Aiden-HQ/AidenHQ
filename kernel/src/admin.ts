@@ -2,6 +2,9 @@
 // pages, decide and batch decide, the owner's confirmation page and the owner message frame. Server-rendered, no script.
 // - Every request names an allowed Host (DNS rebinding); every route but /healthz, sign-in, OpenRouter's callback and GitHub's
 //   App manifest return (each by a single-use state an admin's page made) needs a ready admin's session (TOTP enrolled), stamped `account:<id>` from the session, never from the request.
+// - The OAuth authorization server for the owner's MCP clients (Better Auth's oauthProvider, auth-rules.ts): its metadata,
+//   token, register and revoke need no session (a client's own credentials; no Origin check, they aren't browser forms);
+//   authorize goes on only with a ready admin's session (else to sign-in and back), and /oauth/consent is an admin page.
 // - Every POST carries this listener's own Origin, exactly (cookies ignore ports, so the board's origin on the same host is
 //   refused here), and, signed in, a token bound to the session that only a page from this origin carries (A6).
 // - Every page sends frame-ancestors 'none', except /owner/message, which the board's origins may frame: it only sends what
@@ -30,6 +33,7 @@ type Deps = {
     mintUiCode: (who: AdminSession, module: string, origin: string, state: string) => string;
     mintDoorCode?: (who: AdminSession, origin: string, state: string) => string;
     setupOpen: (token: string) => boolean; claimSetup: (token: string, input: { email: string; name: string; password: string }) => Promise<{ id: string }>;
+    oauth: (req: IncomingMessage, res: ServerResponse, sub: string, search?: string) => Promise<void>; mcpClientName: (clientId: string) => string;
   };
   /** First-run setup's vault side: the owner email settings fix, the recovery key shown once, and secret writes. */
   firstRun?: { ownerEmail: () => string | undefined; recoveryKey: () => string; fields: () => SetupField[]; has: (secret: string) => boolean; save: (secret: string, value: string) => void; forgetRecoveryKey: () => void };
@@ -96,7 +100,16 @@ export const ROUTES = [
   { method: "POST", path: "/owner/confirm", auth: "admin+csrf" },
   { method: "GET", path: "/updates", auth: "admin" },
   { method: "POST", path: "/updates", auth: "admin+csrf" },
+  { method: "GET", path: "/.well-known/oauth-authorization-server", auth: "none" },
+  { method: "GET", path: "/oauth2/authorize", auth: "admin" },
+  { method: "POST", path: "/oauth2/token", auth: "oauth-client" },
+  { method: "POST", path: "/oauth2/register", auth: "none" },
+  { method: "POST", path: "/oauth2/revoke", auth: "oauth-client" },
+  { method: "GET", path: "/oauth/consent", auth: "admin" },
+  { method: "POST", path: "/oauth/consent", auth: "admin+csrf" },
 ] as const;
+/** OAuth's client endpoints: called by MCP clients, not posted from a page here. */
+const OAUTH_CLIENT = new Set(["/oauth2/token", "/oauth2/register", "/oauth2/revoke"]);
 const compiled = ROUTES.map((r) => ({ ...r, re: new RegExp(`^${r.path.replace(":id", "(k-[0-9a-f]{16})").replace(":state", "([\\w-]{22})")}$`) }));
 const STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 
@@ -165,7 +178,7 @@ export function createAdmin(d: Deps) {
   const redirect = (res: ServerResponse, to: string, cookies: string[] = []) =>
     void res.writeHead(303, { location: to, "cache-control": "no-store", ...(cookies.length ? { "set-cookie": cookies } : {}) }).end();
   const form = (action: string, inner: string, s?: AdminSession | null) => `<form method="post" action="${esc(action)}">${s ? `<input type="hidden" name="csrf" value="${csrf(s)}">` : ""}${inner}</form>`;
-  const safeNext = (n: string | null) => (n && (/^\/(approvals|owner|recovery-key|setup\/model)[\w/?=&.-]*$/.test(n) || /^\/auth\/handoff\?[\w=&.%:-]*$/.test(n)) ? n : welcome());
+  const safeNext = (n: string | null) => (n && (/^\/(approvals|owner|recovery-key|setup\/model)[\w/?=&.-]*$/.test(n) || /^\/(auth\/handoff|oauth2\/authorize)\?[\w=&.%:~+-]*$/.test(n)) ? n : welcome());
 
   async function body(req: IncomingMessage): Promise<URLSearchParams> {
     const chunks: Buffer[] = [];
@@ -257,9 +270,21 @@ export function createAdmin(d: Deps) {
       const hit = compiled.find((r) => r.method === req.method && r.re.test(url.pathname));
       if (!hit) throw new Refusal(404, "not found");
       const id = hit.re.exec(url.pathname)![1] ?? "";
+      if (OAUTH_CLIENT.has(hit.path) || hit.path === "/.well-known/oauth-authorization-server") return d.accounts.oauth(req, res, hit.path, url.search);
       if (req.method === "POST" && !d.origins().includes(String(req.headers.origin ?? ""))) throw new Refusal(403, "this form didn't come from this page's own address");
       const next = url.searchParams.get("next") ?? "";
       switch (`${hit.method} ${hit.path}`) {
+        case "GET /oauth2/authorize": {
+          const s = await d.accounts.sessionOf(req);
+          const here = url.pathname + url.search;
+          if (!s) {
+            // An MCP client opened this from another site, so the SameSite=Strict cookie wasn't sent: one same-site hop brings it.
+            if (req.headers["sec-fetch-site"] === "cross-site") return send(res, 200, doc("Connecting", `<p><a href="${esc(here)}">Continue</a></p>`, null, `<meta http-equiv="refresh" content="0;url=${esc(here)}">`));
+            return redirect(res, `/auth/sign-in?next=${encodeURIComponent(here)}`);
+          }
+          if (!s.ready) throw new Refusal(403, "only an admin with an authenticator connects an MCP client");
+          return d.accounts.oauth(req, res, "/oauth2/authorize", url.search);
+        }
         case "GET /setup": case "POST /setup": {
           const fr = d.firstRun;
           const f = req.method === "POST" ? await body(req) : url.searchParams;
@@ -488,6 +513,25 @@ export function createAdmin(d: Deps) {
           if (r.status >= 300) throw new Refusal(r.status === 404 ? 404 : 502, `the control plane answered ${r.status}`);
           log("owner status change", { task, to, by });
           return send(res, 200, doc("Done", `<p class="ok">${esc(task)} is ${esc(to)}.</p>`, s));
+        }
+        case "GET /oauth/consent": {
+          // Better Auth's signed authorize query: its own consent endpoint checks the signature, the client and the session.
+          const redirectUri = url.searchParams.get("redirect_uri") ?? "";
+          let to = "";
+          try { to = new URL(redirectUri).origin; } catch { throw new Refusal(400, "this sign-in link is incomplete: start again from your MCP client"); }
+          const query = url.search.slice(1);
+          const choose = (accept: boolean, label: string, cls: string) => form("/oauth/consent", `<input type="hidden" name="oauth_query" value="${esc(query)}"><input type="hidden" name="accept" value="${accept}"><button class="b ${cls}">${label}</button>`, s);
+          const name = d.accounts.mcpClientName(url.searchParams.get("client_id") ?? "");
+          return send(res, 200, doc("Connect", `<h1>Connect ${esc(name)}</h1><p><b>${esc(name)}</b> wants to manage AidenHQ as you: read everything you can, and act as you, approvals included.</p><p class="muted">It goes back to ${esc(to)}. Revoke it any time on the board's account page.</p><div style="display:flex;gap:8px">${choose(true, "Allow", "")}${choose(false, "Cancel", "r")}</div>`, s), undefined, {
+            // Allow and Cancel redirect to the client's own address: browsers hold the whole redirect chain to form-action.
+            "content-security-policy": `default-src 'none'; style-src 'unsafe-inline'; form-action 'self' ${to}; base-uri 'none'; frame-ancestors 'none'`,
+          });
+        }
+        case "POST /oauth/consent": {
+          const r = await step(req, "/oauth2/consent", { accept: f.get("accept") === "true", oauth_query: f.get("oauth_query") ?? "" });
+          if (!r.ok || typeof r.json.url !== "string") throw new Refusal(r.status >= 500 ? 502 : 400, `not connected: ${r.error || "start again from your MCP client"}`);
+          log("MCP client consent", { accept: f.get("accept") === "true", client: new URLSearchParams(f.get("oauth_query") ?? "").get("client_id"), by });
+          return redirect(res, r.json.url);
         }
         case "GET /updates": {
           if (!d.updates) throw new Refusal(404, "not found");
