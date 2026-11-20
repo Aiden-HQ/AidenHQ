@@ -6,13 +6,14 @@ type KernelCall = (method: string, path: string, body?: unknown) => Promise<Json
 const PERMS = { pull_requests: "read", contents: "read", checks: "read", statuses: "read", issues: "read" };
 const SLUG = /^[\w.-]+\/[\w.-]+$/;
 
-// The PR as evidence.ts reads it (the code host's own PR query, trimmed to the fields the grader uses). `baseRefOid` is the oid
-// of the base ref GitHub associates with the PR: a moving tip (a rebase or a base-branch update moves it), never a fixed base.
-// A merged PR's fixed base is its merge commit's first parent: the commit it landed on, which cannot change afterwards.
+// The PR as evidence.ts reads it (the code host's own PR query, trimmed to the fields the grader uses). No field here is the
+// commit the PR is based on: `baseRefOid` is the base ref's oid (a tip that a rebase or a base update moves), and a merge
+// commit's parents depend on the merge method (two for a merge commit, one for a squash, and for a rebase the "merge commit" is
+// the last replayed head commit, whose parent is another head commit). That commit is read separately, as the git merge base.
 const PR_QUERY = `query($owner: String!, $repo: String!, $number: Int!) {
   repository(owner: $owner, name: $repo) {
     pullRequest(number: $number) {
-      number title body url state headRefOid headRefName baseRefName baseRefOid mergedAt mergeCommit { oid parents(first: 2) { nodes { oid } } }
+      number title body url state headRefOid headRefName baseRefName baseRefOid mergedAt mergeCommit { oid }
       files(first: 100) { pageInfo { hasNextPage } nodes { path } }
       history: commits(last: 30) { nodes { commit { oid tree { oid } parents(first: 1) { totalCount } } } }
       commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes { __typename ... on CheckRun { name status conclusion } ... on StatusContext { context state } } } } } } }
@@ -54,6 +55,13 @@ export function createGithub({ kernel, fetchFn = fetch, api = "https://api.githu
       const [owner, name] = repo.split("/");
       const r = await (await call(repo, "/graphql", { method: "POST", body: JSON.stringify({ query: PR_QUERY, variables: { owner, repo: name, number } }) })).json();
       if (r.errors?.length || !r.data?.repository?.pullRequest) throw new Error(`GitHub has no readable ${repo}#${number}: ${JSON.stringify(r.errors ?? []).slice(0, 200)}`);
+      // The commit the PR is based on is the git merge base of its head and its base branch: the fork point, found the same way
+      // whatever merge method produced the PR's commit. REST's compare is the only read that gives it (GraphQL's Comparison has
+      // no merge-base field); a failed read leaves it unset, and evidence.ts then says it was not established, never guessing.
+      const pr = r.data.repository.pullRequest as Json;
+      const basehead = encodeURIComponent(`${pr.baseRefName}...${pr.headRefOid}`);
+      const mergeBase = await call(repo, `/repos/${repo}/compare/${basehead}`, {}).then((res) => res.json()).then((d) => d?.merge_base_commit?.sha).catch(() => undefined);
+      if (typeof mergeBase === "string" && /^[0-9a-f]{40}$/.test(mergeBase)) pr.baseCommitOid = mergeBase;
       return r.data;
     },
     /** The issue in the shape evidence.ts reads ({ repository: { issue } }); one GitHub has no answer for throws. */

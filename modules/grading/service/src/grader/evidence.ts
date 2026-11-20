@@ -269,9 +269,10 @@ export function localPullRequest(c: any, checks: { name: string; ok: boolean; pe
     repository: {
       pullRequest: {
         number: c.number, url: c.url, state: c.state === "open" ? "OPEN" : c.state === "merged" ? "MERGED" : "CLOSED", title: c.title ?? "", body: c.body ?? "",
-        // A local change's `base` is the default branch's tip it moved against, and `merged` is squashed onto that tip: a merged
-        // change's fixed base is therefore exactly that tip, which the merge commit's single parent states below.
-        headRefOid: c.head, headRefName: c.branch, baseRefName: c.into, baseRefOid: c.base, mergeCommit: c.merged ? { oid: c.merged, parents: { nodes: [{ oid: c.base }] } } : null, mergedAt: c.merged ? mergedAt : null,
+        // A local change's `base` is readChange's `git merge-base` of the default branch and the change's head: the same fork point
+        // GitHub's compare calls the merge base, so it is the base commit whether or not the change has merged.
+        headRefOid: c.head, headRefName: c.branch, baseRefName: c.into, baseRefOid: c.base, baseCommitOid: c.base,
+        mergeCommit: c.merged ? { oid: c.merged } : null, mergedAt: c.merged ? mergedAt : null,
         commits: { nodes: [{ commit: { oid: c.head, statusCheckRollup: { contexts: { nodes } } } }] }, history: { nodes: [] },
       },
     },
@@ -352,13 +353,12 @@ export async function prEvidence(prs: any[], ref: string, deps: any): Promise<an
     const own = history.findLast((c: any) => c.parents?.totalCount === 1);
     const shows = { commits: [pr.headRefOid, merged ? pr.mergeCommit?.oid : "", own?.oid].filter(Boolean), trees: [history.find((c: any) => c.oid === pr.headRefOid)?.tree?.oid, own?.tree?.oid].filter(Boolean) };
     prs_.push({ repo: p.repo, number: p.number, merge: merged ? (pr.mergeCommit?.oid ?? "") : "", mergedAt: pr.mergedAt ?? "", shows });
-    // The base commit, next to the head: a rubric may ask whether the change was already on the PR's base, which the branch name
-    // alone can't show once the branch has moved past it. A merged PR's is its merge commit's first parent (the commit it landed
-    // on), which never changes. An unmerged PR has none fixed yet: its base ref oid is a tip that moves, so it is labelled as one.
-    const landed = pr.mergeCommit?.parents?.nodes?.[0]?.oid;
-    const base = merged && typeof landed === "string" && SHA40.test(landed) ? landed : "";
-    const tip = !merged && typeof pr.baseRefOid === "string" && SHA40.test(pr.baseRefOid) ? ` (base ${pr.baseRefName} tip ${pr.baseRefOid}, which moves)` : "";
-    facts.push(`${p.url}: ${pr.state.toLowerCase()}${merged ? ` into ${pr.baseRefName}` : ` (base ${pr.baseRefName})`}${tip}${base ? `, base commit ${base}` : ""}, head ${pr.headRefOid}${merged && pr.mergeCommit?.oid ? `, merge commit ${pr.mergeCommit.oid}` : ""}; checks: ${checks.length ? checks.map((c: any) => `${c.name} ${checkState(pr, c, gate)}`).join(", ") : "none"}${byRecord ? "; named by the runner's own record for this task, which is how its number was told from another change" : ""}`);
+    // The base commit (the merge base of the head and the base branch: the commit the PR was cut from), next to the head: a
+    // rubric may ask whether the change was already on the PR's base, which the branch name alone can't show once the branch has
+    // moved past it. It does not depend on the merge method, so a squash, a merge commit and a rebase all get the same answer. A
+    // read that could not establish it says so instead of naming the base ref's moving tip.
+    const base = typeof pr.baseCommitOid === "string" && SHA40.test(pr.baseCommitOid) ? pr.baseCommitOid : "";
+    facts.push(`${p.url}: ${pr.state.toLowerCase()}${merged ? ` into ${pr.baseRefName}` : ` (base ${pr.baseRefName})`}${base ? `, base commit ${base}` : ", base commit not established"}, head ${pr.headRefOid}${merged && pr.mergeCommit?.oid ? `, merge commit ${pr.mergeCommit.oid}` : ""}; checks: ${checks.length ? checks.map((c: any) => `${c.name} ${checkState(pr, c, gate)}`).join(", ") : "none"}${byRecord ? "; named by the runner's own record for this task, which is how its number was told from another change" : ""}`);
     // The author's own words: code labels them and says whether they were cut; the text itself goes fenced, as data.
     const kept = text.slice(0, Math.max(0, left - head.length)).trim();
     left -= head.length + kept.length + 2;
