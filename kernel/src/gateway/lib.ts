@@ -754,6 +754,8 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
   const exhausted = (agentId: string, task: string) =>
     capScopes({ runKey: "admission", agentId, issueId: task, perpetual: false, capped: true } as unknown as Caller, now()).filter((o) => o.scope !== "run" && o.cap > 0 && o.spent >= o.cap);
   /** What a credential has spent so far (settled and in flight), by its run key: a check token's whole run. */
-  const spentBy = (cred: string) => (q.spentRun.get(sha256(cred)) as Sum).s;
-  return { handle, db, metricsText, setCap, exhausted, trueUp, spentBy, inflight: () => live, ciEnabled: () => Boolean(ciConf()), close: () => { clearInterval(pruner); clearInterval(trueUps); db.close(); } };
+  /** What a run key (a credential's sha256) has spent; spentBy: the same, by the credential. */
+  const spentByKey = (runKey: string) => (q.spentRun.get(runKey) as Sum).s;
+  const spentBy = (cred: string) => spentByKey(sha256(cred));
+  return { handle, db, metricsText, setCap, exhausted, trueUp, spentBy, spentByKey, inflight: () => live, ciEnabled: () => Boolean(ciConf()), close: () => { clearInterval(pruner); clearInterval(trueUps); db.close(); } };
 }
