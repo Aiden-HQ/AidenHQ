@@ -79,7 +79,9 @@ const LABEL: Record<Author["who"], string> = { owner: "the owner", delegator: "t
  */
 function authorOf(c: Comment, { owner, requester, delegator, agent }: { owner: string; requester: string; delegator?: string; agent: TaskApi["agent"] }): Author | undefined {
   const body = String(c.body ?? "");
-  if (c.deletedAt || !body.trim() || /<!--\s*aidenhq/.test(body)) return undefined;
+  if (c.deletedAt || !body.trim()) return undefined;
+  // An agent's visible reply (notify's reply, actions and questions marks) is its own text; any other mark is a relay.
+  if (/<!--\s*aidenhq/.test(c.authorAgentId ? body.replace(REPLY_MARKS, "") : body)) return undefined;
   if (c.authorAgentId) {
     const id = c.authorAgentId, key = agent?.(id)?.key || id;
     if (id === requester) return { who: "requester", key };
@@ -88,6 +90,25 @@ function authorOf(c: Comment, { owner, requester, delegator, agent }: { owner: s
   }
   const own = owner && c.authorType === "user" && c.authorUserId === owner && !/^\s*\[\w+ voice\]/i.test(body) && !/^ {0,3}`{3,}/m.test(body) && !/^\[\w+\] Forwarded from /m.test(body);
   return own ? { who: "owner" } : undefined;
+}
+
+/** An agent's visible-reply marks: a job's final reply (kernel outcomes.ts), and notify's reply mark, buttons and questions (owner-channel notify.ts replyBody). */
+const REPLY_MARKS = /<!-- aidenhq(?::job=[\w-]+ kind=reply|-reply|-actions:\[[^\n]*?\]|-questions:\[[^\n]*?\]) -->/g;
+
+/**
+ * The multiple-choice questions a reply's form asked, spelled out as the owner saw them (numbers and letters as notify's
+ * spellOut writes them), so an answer like "1A, 2B" reads against its options.
+ */
+export function spellQuestions(body: string): string {
+  const m = /<!-- aidenhq-questions:(\[[^\n]*?\]) -->/.exec(body);
+  if (!m) return body;
+  let qs: unknown;
+  try { qs = JSON.parse(m[1]!); } catch { return body; }
+  if (!Array.isArray(qs)) return body;
+  const text = qs.flatMap((q: { question?: unknown; options?: unknown }, n) => typeof q?.question === "string" && Array.isArray(q.options)
+    ? [[`${n + 1}. ${q.question}`, ...q.options.filter((o): o is string => typeof o === "string").map((o, i) => `${String.fromCharCode(65 + i)}) ${o}`)].join("\n")]
+    : []).join("\n\n");
+  return text ? `${body}\n\nThe form's questions (code spelled them out):\n${text}` : body;
 }
 
 /**
@@ -101,7 +122,7 @@ export function taskComments(list: { c: Comment; a: Author }[]): string {
   const out: string[] = [];
   let size = 0;
   for (const { c, a } of list.slice(-COMMENTS).reverse()) {
-    const one = `${LABEL[a.who]}${a.key ? ` (${a.key})` : ""}, ${String(c.createdAt ?? "").slice(0, 19)}:\n${lines(stripHidden(c.body))}`;
+    const one = `${LABEL[a.who]}${a.key ? ` (${a.key})` : ""}, ${String(c.createdAt ?? "").slice(0, 19)}:\n${lines(stripHidden(a.who === "owner" ? c.body : spellQuestions(String(c.body ?? ""))))}`;
     if ((size += one.length + 2) > COMMENTS_MAX) break;
     out.unshift(one);
   }
