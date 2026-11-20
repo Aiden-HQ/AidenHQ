@@ -128,7 +128,7 @@ export function createConnectionState(o: {
         const what = String(task.title ?? "").replace(/\s+/g, " ").trim().slice(0, 80) || `carry on with ${task.identifier ?? task.id}`;
         o.queue({
           kind: "decision",
-          text: `${label} needs you to ${verb(n)} so I can ${what}: ${link(module, row.url)}${row.detail ? `\n${row.detail}` : ""}`,
+          text: `${label} needs you to ${verb(n)} so I can ${what}: ${link(module, row.url)}`,
           task: root.identifier ?? root.id,
           dedupe_key: `connect:${key}`,
           ...(via ? { reply: { via, agent, issue: root.id } } : { head: { agent, issue: root.id } }),

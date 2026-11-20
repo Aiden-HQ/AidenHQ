@@ -300,9 +300,9 @@ export function createProxy({ whoami, connections, asserter, resolver, secret, w
               res.writeHead(200, { "content-type": "application/json", "content-length": Buffer.byteLength(out) }).end(out);
               return resolve();
             }
-            // A call that worked proves the module connected: a full need it had clears, and the tasks waiting on it wake.
-            if (success && state?.down(conn.module)) state.ok(conn.module, true);
             if (rec) done(okAnswer, text);
+            // A call that worked proves the module connected: a full need it had clears, and the tasks waiting on it wake.
+            try { if (success && state?.down(conn.module)) state.ok(conn.module, true); } catch (e) { log("connection state not cleared", { connection, err: (e as Error).message }); }
             if (asIs) res.writeHead(status, { ...hdrs, "content-length": String(raw.length) }).end(raw);
             else res.writeHead(status, { ...hdrs, "content-length": Buffer.byteLength(answer!) }).end(answer);
             resolve();
