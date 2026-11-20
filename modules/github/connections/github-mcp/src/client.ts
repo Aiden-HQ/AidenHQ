@@ -51,7 +51,9 @@ export function needAnswer(e: GitHubNeed): { error: "github_needs_owner" | "gith
 }
 
 /** One row of the board's sign-in card (what works, or what is wrong and its one fix). The board renders these as given. */
-export type StatusLine = { label: string; value: string; state: "ok" | "warn" | "error"; action?: { label: string; href?: string; reconnect?: true } };
+/** A card row; `time` is an ISO instant the board shows after `value` in the viewer's local time; an `href` is GitHub's page or a
+ * board path (`#/...`). */
+export type StatusLine = { label: string; value: string; time?: string; state: "ok" | "warn" | "error"; action?: { label: string; href?: string; reconnect?: true } };
 
 export type GitHubStatus = {
   login?: string;
@@ -253,15 +255,13 @@ function statusLines(have: string[], problems: GitHubStatus["problems"], rate: G
   const lines: StatusLine[] = [
     needs("Reads, issues, comments", "repo"),
     needs("Pull requests and merges", "repo"),
-    { label: "Fleet repos", value: fleetOrg ? `in ${fleetOrg}` : "on this server", state: "ok" },
+    { label: "Fleet repos", value: fleetOrg ? `in ${fleetOrg}` : "on this server", state: "ok", action: { label: "Change", href: "#/modules/github/settings" } },
     ...(ci ? [needs("CI runners", "admin:org")] : []),
     needs("Projects boards", "project"),
     ...problems.map((p): StatusLine => (p.cause === "sso" ? { label: p.org, value: "GitHub needs you to authorize single sign-on", state: "warn", action: { label: "Authorize", href: p.url } } : { label: p.org, value: "the org restricts outside apps", state: "warn", action: { label: "Request access", href: p.url } })),
   ];
   if (rate) {
-    const at = new Date(rate.reset);
-    const hhmm = `${String(at.getUTCHours()).padStart(2, "0")}:${String(at.getUTCMinutes()).padStart(2, "0")} UTC`;
-    lines.push({ label: "Rate limit", value: `${rate.remaining.toLocaleString("en-US")} of ${rate.limit.toLocaleString("en-US")} left, resets ${hhmm}`, state: rate.remaining < rate.limit * 0.2 ? "warn" : "ok" });
+    lines.push({ label: "Rate limit", value: `${rate.remaining.toLocaleString("en-US")} of ${rate.limit.toLocaleString("en-US")} left, resets`, time: new Date(rate.reset).toISOString(), state: rate.remaining < rate.limit * 0.2 ? "warn" : "ok" });
   }
   return lines;
 }

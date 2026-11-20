@@ -216,7 +216,9 @@ export interface Board {
 /** A sign-in through an MCP proxy (Glean, Grafana, ClickHouse, Jira). */
 export interface SignInStatus {
   login?: string;
-  lines?: { label: string; value: string; state: "ok" | "warn" | "error"; action?: { label: string; href?: string; reconnect?: true } }[];
+  /** `time`: an ISO instant shown after `value` in the viewer's local time. An action's `href` is the vendor's https page or a
+   * board path (`#/...`); anything else isn't rendered. */
+  lines?: { label: string; value: string; time?: string; state: "ok" | "warn" | "error"; action?: { label: string; href?: string; reconnect?: true } }[];
   /** "none": the connection signs in to nothing (e.g. Grafana with grafana_source: local). */
   state: "missing" | "ok" | "expired" | "unknown" | "none";
   /** Whether the service is set up (GLEAN_MCP_URL, GRAFANA_URL, CLICKHOUSE_MCP_URL): without it there's no banner. */

@@ -61,7 +61,7 @@ it("status lines say what works and the one fix", () => {
   expect(lines.map((l) => [l.label, l.value, l.action?.label])).toEqual([
     ["Reads, issues, comments", "needs permission", "Reconnect"],
     ["Pull requests and merges", "needs permission", "Reconnect"],
-    ["Fleet repos", "in aidenhq-alpha", undefined],
+    ["Fleet repos", "in aidenhq-alpha", "Change"],
     ["CI runners", "needs permission", "Reconnect"],
     ["Projects boards", "needs permission", "Reconnect"],
   ]);
