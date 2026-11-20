@@ -107,7 +107,7 @@ export function checkJobsFrom({ db, secret, recipes, ask, call, workDir, gateway
   /** The model gateway's API base as a box reaches it (the launcher's gateway, `…/api/v1`). */
   gatewayUrl: string;
   /** A model token's spend so far (the gateway's ledger). */
-  spent?: (token: string) => number;
+  spent?: (runKey: string) => number;
   log: (msg: string, f?: Record<string, unknown>) => void;
   /** Tests: how a command runs in a box. */
   docker?: typeof dockerRun;

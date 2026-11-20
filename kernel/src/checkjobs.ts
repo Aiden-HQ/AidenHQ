@@ -29,8 +29,10 @@
 //
 // The box and the snapshot are seams: the kernel's box client (boxes.ts) and codehost-github's snapshot op provide them.
 // A check the kernel lost (a restart mid-run) or couldn't run has no receipt; asking again runs it again. A restart drains: the
-// old kernel finishes its runs while the new one marks them lost, so each run attempt (the row's start time `at`) has its own
-// folder and lands its end only while the row is still that attempt's; a re-run asked meanwhile supersedes it.
+// old kernel finishes its runs (main.ts waits for them, up to its drain limit) and the new one marks what is still running lost
+// only once the old one has exited (recover), so a lost run is one no kernel follows any more, and it doesn't use up a try.
+// Each run attempt (the row's start time `at`) has its own folder and lands its end only while the row is still that attempt's;
+// a re-run asked meanwhile supersedes it.
 // A judge that writes no usable result is the harness's failure, never the change's: the check ends in error, with no receipt.
 // Missing evidence never counts as passing: whether a recipe's declared check is due is read from the base commit, and a receipt
 // says whether a check ran (`ran`); verify refuses one that didn't unless the caller's policy accepts "none" (product and
@@ -237,6 +239,10 @@ const fence = (s: string) => s.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "").replace(/``
 const DDL = `CREATE TABLE IF NOT EXISTS checks (
   id TEXT PRIMARY KEY, module TEXT NOT NULL, repo TEXT NOT NULL, head TEXT NOT NULL, run TEXT NOT NULL, hash TEXT NOT NULL, spec TEXT NOT NULL,
   state TEXT NOT NULL, receipt TEXT, error TEXT, at INTEGER NOT NULL, ended INTEGER, result TEXT, cost_usd REAL, tries INTEGER NOT NULL DEFAULT 1, retry INTEGER NOT NULL DEFAULT 0, UNIQUE (module, repo, head, run, hash))`;
+/** How many of a check's runs restarts may lose before it stays lost. */
+const MAX_LOST = 3;
+/** A token's run key in the gateway's ledger. */
+const runKey = (token: string) => createHash("sha256").update(token).digest("hex");
 /** The result's sha256 as the receipt carries it. */
 export const resultHash = (text: string) => createHash("sha256").update(text).digest("hex");
 
@@ -252,8 +258,8 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
   /** A `check` model token (gateway_job_secret): the eval's (component `eval:<head>`, the eval day cap) or a model recipe's
    * (component `<run>:<attempt>`, its own run cap `capUsd`), lapsing after `ttlMs`. */
   modelToken: (component: string, o: { ttlMs: number; capUsd?: number }) => string;
-  /** What a model token has spent so far (the gateway's ledger, by the token's run key), in USD. */
-  spent?: (token: string) => number;
+  /** What a model token has spent so far (the gateway's ledger, by the token's run key: its sha256), in USD. */
+  spent?: (runKey: string) => number;
   /** The model gateway as a box reaches it. */
   gatewayUrl: string;
   /** Where the checks' snapshots go (one folder per run attempt, `checks/<attempt>`, removed when it ends). */
@@ -267,6 +273,9 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
   if (!cols.has("cost_usd")) db.exec("ALTER TABLE checks ADD COLUMN cost_usd REAL");
   if (!cols.has("tries")) db.exec("ALTER TABLE checks ADD COLUMN tries INTEGER NOT NULL DEFAULT 1");
   if (!cols.has("retry")) db.exec("ALTER TABLE checks ADD COLUMN retry INTEGER NOT NULL DEFAULT 0");
+  // The running attempt's model token's run key (never the token), and how many of its runs restarts have lost.
+  if (!cols.has("run_key")) db.exec("ALTER TABLE checks ADD COLUMN run_key TEXT");
+  if (!cols.has("lost")) db.exec("ALTER TABLE checks ADD COLUMN lost INTEGER NOT NULL DEFAULT 0");
   const facts = openFacts(db);
   /** The end of the attempt that started at `started` and its check.ended fact, in one transaction (a re-run reuses the id: its
    * start time is the version). False when a newer attempt has taken the row: this one's end is dropped. */
@@ -275,7 +284,9 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
     const at = now();
     db.exec("SAVEPOINT check_end");
     try {
-      if (db.prepare("UPDATE checks SET state = ?, receipt = ?, error = ?, ended = ?, result = ?, cost_usd = COALESCE(?, cost_usd), retry = ? WHERE id = ? AND at = ?").run(state, set.receipt ?? null, set.error ?? null, at, set.result ?? null, set.cost ?? null, set.retry ? 1 : 0, id, started).changes === 0) {
+      // A lost run gives its try back (a restart isn't the check's failure) and is counted against MAX_LOST.
+      const lost = state === "lost" ? 1 : 0;
+      if (db.prepare("UPDATE checks SET state = ?, receipt = ?, error = ?, ended = ?, result = ?, cost_usd = COALESCE(?, cost_usd), retry = ?, tries = MAX(tries - ?, 0), lost = lost + ? WHERE id = ? AND at = ?").run(state, set.receipt ?? null, set.error ?? null, at, set.result ?? null, set.cost ?? null, set.retry ? 1 : 0, lost, lost, id, started).changes === 0) {
         db.exec("RELEASE check_end");
         return false;
       }
@@ -290,9 +301,8 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
     }
   };
   const row = (id: string) => db.prepare("SELECT * FROM checks WHERE id = ?").get(id) as Record<string, any> | undefined;
-  // Lost while no kernel followed it: no receipt (fail closed); asking again runs it again. A draining kernel still running it
-  // lands its end over "lost" unless a re-run has started since.
-  for (const r of db.prepare("SELECT id, at FROM checks WHERE state = 'running'").all() as { id: string; at: number }[]) end(r.id, r.at, "lost", {});
+  /** The checks this process is running (a drain waits for them). */
+  const mine = new Set<string>();
   const versions = new Map<string, number>();
   const waiters = new Map<string, Set<() => void>>();
   const bump = (id: string) => {
@@ -316,7 +326,7 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
 
   /** A recipe on `repo@head` (and its `base`, when the spec has one); passed on exit 0. Whether a declared check must run is the
    * base's to say, never the change's: a head that drops it, or whose package.json can't be read, fails. */
-  async function code(id: string, snapshot: Snapshot, r: Recipe, run: Run, repo: string, head: string, spec: Record<string, string>, dir: string, prior = 0) {
+  async function code(id: string, snapshot: Snapshot, r: Recipe, run: Run, repo: string, head: string, spec: Record<string, string>, dir: string, prior = 0, minted: (runKey: string) => void = () => {}) {
     const ws = join(dir, "ws"), was = join(dir, "base");
     mkdirSync(ws);
     await snapshot(repo, head, ws);
@@ -345,11 +355,13 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
       capUsd = Math.floor(Math.min(Number(spec.budget_usd) - prior, r.model.max_usd) * 10_000) / 10_000;
       if (!(capUsd >= 0.01)) return { verdict: "fail" as const, ran: false, summary: `${r.title} has spent its budget ($${prior.toFixed(2)} of $${Number(spec.budget_usd).toFixed(2)})`, cost: prior };
       token = modelToken(`${run}:${id}`, { ttlMs: (r.timeout_min + 10) * 60_000, capUsd });
+      // Its run key on the row before it runs: a run a restart loses still has its spend counted (recover).
+      minted(runKey(token));
     }
     const env = r.model ? checkEnv("model", { modelToken: token, gatewayUrl }) : checkEnv("plain");
     const o = await inBox(id, r, ws, out, r.cwd_from ? spec[r.cwd_from]! : ".", env, trees, { ...spec, repo, head });
     const ok = o.exit === 0 && !o.timedOut;
-    const used = token ? spent(token) : 0;
+    const used = token ? spent(runKey(token)) : 0;
     const cost = token ? Math.round((prior + used) * 10_000) / 10_000 : undefined;
     if (!r.result) return { verdict: ok ? ("pass" as const) : ("fail" as const), ran: true, summary: ok ? `${r.title} passed` : `${r.title} failed: ${tail(o)}`, cost };
     // A result recipe passes when its result came out: one JSON object, small, read never through a link.
@@ -418,24 +430,35 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
     const attempt = `c-${createHash("sha256").update(`${id}:${r.at}`).digest("hex").slice(0, 16)}`;
     const dir = join(workDir, "checks", attempt);
     const ids = { check: id, attempt, repo: r.repo, head: r.head, run: r.run };
-    const ended = (state: "done" | "error", set: { receipt?: string; error?: string; result?: string; cost?: number; retry?: boolean }) => {
-      const landed = end(id, r.at, state, set);
-      if (!landed) log("check superseded: a newer run of it started, this run's end is dropped", { ...ids, state });
-      return landed;
+    // Its end, tried again a few times (a busy database): a run that can't record its end stays `running` until a restart.
+    const ended = async (state: "done" | "error", set: { receipt?: string; error?: string; result?: string; cost?: number; retry?: boolean }) => {
+      for (let n = 0; ; n++) {
+        try {
+          const landed = end(id, r.at, state, set);
+          if (!landed) log("check superseded: a newer run of it started, this run's end is dropped", { ...ids, state });
+          return landed;
+        } catch (e) {
+          if (n >= 2) throw e;
+          log("check end not recorded, trying again", { ...ids, err: String((e as Error).message).slice(0, 200) });
+          await new Promise((ok) => setTimeout(ok, 1_000 * (n + 1)));
+        }
+      }
     };
+    mine.add(id);
     try {
       rmSync(dir, { recursive: true, force: true });
       mkdirSync(dir, { recursive: true, mode: 0o700 });
       const snap = snapshot(r.module);
-      const v: { verdict: "pass" | "fail"; ran: boolean; summary: string; result?: string; cost?: number; retry?: boolean } = recipe.judged ? await evaluate(attempt, snap, recipe, r.head, spec, dir) : await code(attempt, snap, recipe, r.run, r.repo, r.head, spec, dir, Number(r.cost_usd ?? 0));
+      const v: { verdict: "pass" | "fail"; ran: boolean; summary: string; result?: string; cost?: number; retry?: boolean } = recipe.judged ? await evaluate(attempt, snap, recipe, r.head, spec, dir) : await code(attempt, snap, recipe, r.run, r.repo, r.head, spec, dir, Number(r.cost_usd ?? 0), (key) => db.prepare("UPDATE checks SET run_key = ? WHERE id = ? AND at = ?").run(key, id, r.at));
       const receipt = signReceipt(secret(), { check: id, repo: r.repo, head: r.head, run: r.run, judge: spec.judge_commit ?? null, policy: spec.policy_hash ?? null, hash: r.hash, verdict: v.verdict, ran: v.ran, summary: v.summary.slice(0, 12_000), at: new Date(now()).toISOString(), ...(v.result !== undefined ? { result: resultHash(v.result) } : {}) });
-      if (ended("done", { receipt: JSON.stringify(receipt), ...(v.result !== undefined ? { result: v.result } : {}), ...(v.cost !== undefined ? { cost: v.cost } : {}), retry: v.retry === true })) log("check done", { ...ids, verdict: v.verdict });
+      if (await ended("done", { receipt: JSON.stringify(receipt), ...(v.result !== undefined ? { result: v.result } : {}), ...(v.cost !== undefined ? { cost: v.cost } : {}), retry: v.retry === true })) log("check done", { ...ids, verdict: v.verdict });
     } catch (e) {
       // It couldn't run (no snapshot, no box, no result from the judge): no receipt; asking again runs it again.
       const msg = String((e as Error).message ?? e);
       const why = msg.split("\n")[0]!.slice(0, 300);
-      if (ended("error", { error: why })) log("WARNING: check couldn't run", { ...ids, err: msg.slice(0, TAIL + 600) });
+      if (await ended("error", { error: why })) log("WARNING: check couldn't run", { ...ids, err: msg.slice(0, TAIL + 600) });
     } finally {
+      mine.delete(id);
       rmSync(dir, { recursive: true, force: true });
       bump(id);
     }
@@ -460,15 +483,30 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
       // A check that couldn't run (error, lost) runs again when asked again. A model recipe's, at most twice in all; a result
       // recipe that ended without its result gets that one retry only after a provider error or crash (not a timeout or its
       // budget run out), on what its budget has left.
-      const again = had && (had.state === "done" ? Boolean(recipe.result && !had.result && had.retry) : had.state !== "running") && (!recipe.model || had.tries < 2);
+      // A check restarts have lost MAX_LOST times runs no more (each lost run may have spent).
+      const again = had && (had.state === "done" ? Boolean(recipe.result && !had.result && had.retry) : had.state !== "running") && (!recipe.model || had.tries < 2) && had.lost < MAX_LOST;
       if (had && !again) return view(had);
       const id = had?.id ?? `c-${randomBytes(8).toString("hex")}`;
-      if (had) db.prepare("UPDATE checks SET state = 'running', receipt = NULL, error = NULL, result = NULL, retry = 0, tries = tries + 1, at = ?, ended = NULL WHERE id = ?").run(now(), id);
+      if (had) db.prepare("UPDATE checks SET state = 'running', receipt = NULL, error = NULL, result = NULL, retry = 0, tries = tries + 1, run_key = NULL, at = ?, ended = NULL WHERE id = ?").run(now(), id);
       else db.prepare("INSERT INTO checks (id, module, repo, head, run, hash, spec, state, at) VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?)").run(id, module, repo.toLowerCase(), head, run, hash, JSON.stringify(spec), now());
       log("check started", { check: id, module, repo, head, run });
-      void execute(id, recipe);
+      execute(id, recipe).catch((e: Error) => log("WARNING: check run failed outside its own handling", { check: id, err: String(e?.message ?? e).slice(0, 300) }));
       return view(row(id)!);
     },
+    /**
+     * After a restart, once the previous kernel has exited (main.ts afterPrevious): the runs no kernel follows any more are lost.
+     * No receipt (fail closed); asking again runs them again, and the lost run doesn't count as a try.
+     */
+    recover() {
+      for (const r of db.prepare("SELECT id, at, run_key, cost_usd FROM checks WHERE state = 'running'").all() as { id: string; at: number; run_key: string | null; cost_usd: number | null }[]) {
+        if (mine.has(r.id)) continue;
+        // What its model token spent counts against the check's budget, as a finished run's does.
+        const cost = r.run_key ? Math.round((Number(r.cost_usd ?? 0) + spent(r.run_key)) * 10_000) / 10_000 : undefined;
+        if (end(r.id, r.at, "lost", cost !== undefined ? { cost } : {})) bump(r.id);
+      }
+    },
+    /** The checks this process is running: a drain waits for them. */
+    inflight: () => mine.size,
     /** The check already asked for with this spec (running or done), or undefined: a read, never a run (a sweep asks `start`). */
     find(module: string, b: { repo?: unknown; head?: unknown; run?: unknown; spec?: unknown }): CheckView | undefined {
       const repo = String(b?.repo ?? ""), head = String(b?.head ?? ""), run = String(b?.run ?? "") as Run;

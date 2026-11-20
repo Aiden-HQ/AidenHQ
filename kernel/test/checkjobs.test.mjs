@@ -3,6 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -215,6 +216,8 @@ test("checks: a restart's re-run never shares the draining kernel's folder, and 
   const first = oldK.start("codehost-github", ask);
   while (seen.length === 0) await new Promise((r) => setTimeout(r, 5));
   const newK = kernel(async (o) => { seen.push(o.workspace); assert.ok(existsSync(seen[0]), "the old run's folder is untouched"); return { exit: 0, out: "", timedOut: false }; });
+  assert.equal(newK.find("codehost-github", ask).state, "running", "the old kernel's run is its own while it drains");
+  newK.recover(); // its drain limit passed with the box still running
   assert.equal(newK.find("codehost-github", ask).state, "lost");
   let v = newK.start("codehost-github", ask);
   assert.equal(v.id, first.id);
@@ -225,6 +228,37 @@ test("checks: a restart's re-run never shares the draining kernel's folder, and 
   assert.notEqual(seen[0], seen[1]);
   const after = await newK.get("codehost-github", v.id);
   assert.deepEqual([after.state, after.receipt.verdict, after.receipt.at], ["done", "pass", v.receipt.at]);
+});
+
+test("checks: a model recipe's run lost to a restart doesn't use up a try, but its spend counts and lost runs are capped", async () => {
+  const review = { module: "code-review", argv: ["node", "x"], timeout_min: 30, title: "the review", spec: { base: "sha", budget_usd: "usd" }, files: {}, model: { max_usd: 2 }, result: true };
+  const dir = mkdtempSync(join(tmpdir(), "checks-"));
+  const db = new DatabaseSync(join(dir, "kernel.db"));
+  const snapshot = async () => {};
+  let t = 1000, runs = 0, n = 0;
+  const caps = [];
+  // Each run's model token spends $0.10 by the ledger (keyed by the token's sha256, never the token).
+  const tokens = new Map();
+  const kernel = (run) => createChecks({ db, secret: () => "s", recipes: () => ({ "code-review": review }), box: { run }, snapshot: () => snapshot,
+    modelToken: (c, o) => { caps.push(o.capUsd); const tok = `tok-${++n}`; tokens.set(createHash("sha256").update(tok).digest("hex"), 0.1); return tok; },
+    spent: (key) => tokens.get(key) ?? 0, gatewayUrl: "http://gw", workDir: dir, log: () => {}, now: () => t++ });
+  const ask = { repo: "acme/app", head: A, run: "code-review", spec: { base: B, budget_usd: "1" } };
+  const lose = async () => {
+    const want = runs + 1;
+    const k = kernel(() => (runs++, new Promise(() => {})));
+    assert.equal(k.start("github", ask).state, "running");
+    while (runs < want) await new Promise((r) => setTimeout(r, 5));
+    kernel(() => {}).recover(); // the next kernel, once the old one has exited mid-run
+  };
+  // Two restarts mid-run: neither uses up one of its two tries, and what each spent counts.
+  await lose(); await lose();
+  assert.deepEqual(caps, [1, 0.9]);
+  // A third run still starts, on what the budget has left after both.
+  await lose();
+  assert.equal(caps[2], 0.8);
+  // Lost three times: it runs no more.
+  assert.equal(kernel(() => { throw new Error("not run"); }).start("github", ask).state, "lost");
+  assert.equal(runs, 3);
 });
 
 test("checks: a model recipe gets its own capped token, its spec and commits as files, and a receipt that binds its result", async () => {
