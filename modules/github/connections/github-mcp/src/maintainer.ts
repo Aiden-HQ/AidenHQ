@@ -511,15 +511,21 @@ export class Maintainer {
   }
 
   /**
-   * The numbers of the issues labelled feature-request in the last day, open or closed: the watcher's valid reports that
-   * its per-author triage cap leaves uncounted. Only the App's triage and the repo's trusted roles can add the label.
+   * The numbers of the issues labelled feature-request (by a trusted labeler) in the last day, open or closed: the watcher's valid reports that
+   * its per-author triage cap leaves uncounted. Counted only when the label's latest event passes the same trust check as the
+   * fix label (the App or a collaborator with a trusted role): a template or a stranger can't self-exempt.
    */
   async recentFeatureRequests(repo: string): Promise<number[]> {
     const r = this.target(repo);
     const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
     const res = await this.app.appCall(r.owner, r.name, { issues: "read" }, "GET", `/repos/${r.owner}/${r.name}/issues?state=all&labels=${FEATURE_LABEL}&since=${since}&per_page=100`);
     if (res.status !== 200) throw new Error(`couldn't list ${r.repo}'s feature requests (GitHub said ${res.status})`);
-    return ((Array.isArray(res.body) ? res.body : []) as GhIssue[]).filter((i) => !i.pull_request).map((i) => i.number);
+    const trusted: number[] = [];
+    for (const i of ((Array.isArray(res.body) ? res.body : []) as GhIssue[]).filter((i) => !i.pull_request)) {
+      const { latest } = await this.latestOrError(r, i.number, FEATURE_LABEL);
+      if (latest?.trusted) trusted.push(i.number);
+    }
+    return trusted;
   }
 
   /**

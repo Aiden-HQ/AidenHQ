@@ -125,15 +125,15 @@ test("each new unlabelled issue files one triage task, number only, and a refusa
   assert.deepEqual(stored(store).repos[R].triaged, [5, 6]);
 });
 
-test("triage runs are capped a day per author and per repo, the rest left to the daily run", async () => {
+test("triage runs are capped a day per author, the rest left to the daily run", async () => {
   const at = (h) => `2026-01-01T0${h}:00:00Z`;
   const fired = [], store = kv(), log = logs();
   const u = (number, author) => ({ number, created_at: at(number), author });
   const batch = { repos: [{ repo: R, issues: [], cursor: "c1", untriaged: [u(1, "spam"), u(2, "Spam"), u(3, "ada"), u(4, "bob")], triage_cursor: at(4) }] };
   store.setMeta("maintainer_issues", JSON.stringify({ repos: { [R]: { triage_cursor: at(0) } } }));
-  await maintainerTick({ issues: async () => batch, fire: async () => true, triage: async (_r, n) => (fired.push(n), true), limits: { perAuthor: 1, perRepo: 2 }, store, log });
-  assert.deepEqual(fired, [1, 3]);
-  assert.deepEqual(log.infoLines.filter((l) => /triage limit reached/.test(l.m)).map((l) => l.o.issue), [2, 4]);
+  await maintainerTick({ issues: async () => batch, fire: async () => true, triage: async (_r, n) => (fired.push(n), true), limits: { perAuthor: 1 }, store, log });
+  assert.deepEqual(fired, [1, 3, 4]);
+  assert.deepEqual(log.infoLines.filter((l) => /triage limit reached/.test(l.m)).map((l) => l.o.issue), [2]);
 });
 
 test("valid issues don't count against their author's cap; the invalid ones do", async () => {
@@ -141,7 +141,7 @@ test("valid issues don't count against their author's cap; the invalid ones do",
   const fired = [], store = kv(), log = logs();
   const u = (number) => ({ number, created_at: at(number), author: "donn" });
   store.setMeta("maintainer_issues", JSON.stringify({ repos: { [R]: { triage_cursor: at(0) } } }));
-  const run = (batch) => maintainerTick({ issues: async () => batch, fire: async () => true, triage: async (_r, n) => (fired.push(n), true), limits: { perAuthor: 5, perRepo: 30 }, store, log });
+  const run = (batch) => maintainerTick({ issues: async () => batch, fire: async () => true, triage: async (_r, n) => (fired.push(n), true), limits: { perAuthor: 5 }, store, log });
   // Seven issues in a burst: none has a verdict yet, so the sixth and seventh are left to the daily run.
   await run({ repos: [{ repo: R, issues: [], cursor: "c1", untriaged: [1, 2, 3, 4, 5, 6, 7].map(u), triage_cursor: at(7) }] });
   assert.deepEqual(fired, [1, 2, 3, 4, 5]);
@@ -150,6 +150,22 @@ test("valid issues don't count against their author's cap; the invalid ones do",
   await run({ repos: [{ repo: R, issues: [issue], cursor: "c2", featured: [2, 3], untriaged: [8, 9, 10, 11].map(u), triage_cursor: at(11) }] });
   assert.deepEqual(fired, [1, 2, 3, 4, 5, 8, 9, 10]);
   assert.deepEqual(log.infoLines.filter((l) => /triage limit reached/.test(l.m)).map((l) => l.o.issue), [6, 7, 11]);
+});
+
+test("an issue held by the author's cap files its triage the tick an earlier one proves valid", async () => {
+  const at = (m) => new Date(Date.now() - 3_600_000 + m * 60_000).toISOString(); // within the day a held issue is kept
+  const fired = [], store = kv(), log = logs();
+  const u = (number) => ({ number, created_at: at(number), author: "donn" });
+  store.setMeta("maintainer_issues", JSON.stringify({ repos: { [R]: { triage_cursor: at(0) } } }));
+  const run = (batch) => maintainerTick({ issues: async () => batch, fire: async () => true, triage: async (_r, n) => (fired.push(n), true), limits: { perAuthor: 5 }, store, log });
+  await run({ repos: [{ repo: R, issues: [], cursor: "c1", untriaged: [1, 2, 3, 4, 5, 6].map(u), triage_cursor: at(6) }] });
+  assert.deepEqual(fired, [1, 2, 3, 4, 5]);
+  assert.deepEqual(stored(store).repos[R].held.map((h) => h.number), [6]);
+  await run({ repos: [{ repo: R, issues: [], cursor: "c1", untriaged: [], triage_cursor: at(6) }] }); // still at the cap
+  assert.deepEqual(fired, [1, 2, 3, 4, 5]);
+  await run({ repos: [{ repo: R, issues: [], cursor: "c1", featured: [2], untriaged: [], triage_cursor: at(6) }] });
+  assert.deepEqual(fired, [1, 2, 3, 4, 5, 6]);
+  assert.deepEqual(stored(store).repos[R].held, []);
 });
 
 test("the watcher is off until the module's token is there, and picks it up without a restart", async () => {
