@@ -113,7 +113,8 @@ export function timelineOf(jobs: AgentJob[], { agents = [], issues = [], routine
       trigger: triggerWords(j.cause, j.caused_by, agents, routine?.title),
       steps: j.steps,
       costUsd: typeof j.cost_usd === "number" ? j.cost_usd : null,
-      error: j.error ? j.error.slice(0, 300) : null,
+      // The kernel's stop line names the account; the owner reads "Stopped by you".
+      error: j.error ? (/^stopped by (account|owner)/.test(j.error) ? "Stopped by you." : j.error.slice(0, 300)) : null,
       writes: (j.writes ?? []).map((w) => ({ id: w.id, action: KIND[w.kind] ?? w.kind.replace(/^(runner|kernel)\./, ""), tier: w.tier, state: WRITE_STATE[w.state] ?? "closed", decidedBy: deciderWords(w.decided_by) })),
     };
   });

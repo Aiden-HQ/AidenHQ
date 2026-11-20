@@ -39,7 +39,7 @@ export function Explain({ id, onSignIn }: { id: string; onSignIn?: () => void })
         <span className="xp-k">Decided by</span>
         <Tag tone={who.tone}>{who.label}</Tag>
         {x.decider.models.map((m) => <code key={m} className="xp-model" title={m}>{m.split("/").pop()}</code>)}
-        <span className="xp-words">{x.decider.words}</span>
+        {!["reviewer", "panel", "owner"].includes(x.decider.kind) && <span className="xp-words">{x.decider.words}</span>}
       </div>
       <ol className="xp-path" aria-label="What happened">
         {x.path.map((p, i) => <li key={i}>{p}</li>)}

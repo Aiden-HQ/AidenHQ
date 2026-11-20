@@ -54,7 +54,7 @@ a.agp-ctx:hover { color: var(--text); text-decoration: underline; }
 .tl-card:hover { border-color: var(--border-strong); box-shadow: var(--shadow-hover); }
 .tl-failed .tl-card { border-left: 3px solid var(--urgent); }
 .tl-head { display: flex; align-items: center; gap: 10px; min-width: 0; font-size: var(--text-row); }
-.tl-time { flex: none; width: 3.4em; color: var(--muted); font-size: var(--text-sm); font-variant-numeric: tabular-nums; }
+.tl-time { flex: none; min-width: 4.6em; white-space: nowrap; color: var(--muted); font-size: var(--text-sm); font-variant-numeric: tabular-nums; }
 .tl-trigger { flex: none; padding: 1px 7px; border-radius: var(--radius-sm); background: var(--accent-soft); color: var(--accent); font-size: var(--text-sm); font-weight: 550; white-space: nowrap; }
 .tl-arrow { flex: none; color: var(--faint); }
 .tl-task { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-weight: 550; text-decoration: none; }
@@ -70,6 +70,8 @@ a.tl-task:hover { text-decoration: underline; }
 .tl-write-by { color: var(--muted); }
 .tl-write-row .link-btn { margin-left: auto; }
 .tl-foot { display: flex; gap: 14px; }
+.tl-foot a.link-btn { text-decoration: none; }
+.tl-error.tl-stopped { background: var(--surface-2); color: var(--muted); font-family: var(--font); }
 .tl-steps ol { list-style: none; margin: 0; padding: 8px 0 0; display: grid; gap: 3px; border-top: 1px dashed var(--border); }
 .tl-steps li { display: grid; grid-template-columns: 6.5em minmax(0, 1fr); gap: 10px; font-size: var(--text-sm); }
 .tl-steps li.bad .tl-step { color: var(--bad-text); }

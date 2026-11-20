@@ -95,7 +95,7 @@ function Entry({ e, onSignIn }: { e: TimelineEntry; onSignIn: () => void }) {
             <span title={e.costUsd == null ? (e.outcome === "running" ? "Billed when it ends" : "Not known") : "What the model gateway billed for this run"} className="tl-cost">{usd(e.costUsd)}</span>
           </span>
         </div>
-        {e.error && <pre className="tl-error" aria-label="How it ended (the agent's words)">{e.error}</pre>}
+        {e.error && <pre className={`tl-error${e.outcome === "stopped" ? " tl-stopped" : ""}`} aria-label="How it ended (the agent's words)">{e.error}</pre>}
         {e.writes.length > 0 && (
           <ul className="tl-writes" aria-label="Writes it asked for">
             {e.writes.map((w) => <Write key={w.id} w={w} />)}
