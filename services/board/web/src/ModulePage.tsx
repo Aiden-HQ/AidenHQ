@@ -1,8 +1,9 @@
 // A module's page (#/modules/<name>/<tab>): what it is, its agents and work, what it may do, its contents, settings and changes.
-import { useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { AgentAvatar } from "./AgentAvatar";
 import { SignInRequired, api } from "./api";
 import { ConnectButton, useConnectNeeded, type Can, type Connectable } from "./Connect";
+import { useEvents } from "./events";
 import { STATUS_LABEL, connectionStatus, displayName, type ConnectionRow } from "./connections";
 import { LockIcon, ModuleFacts, ModuleStatus, TurnOnCard, lockedWhy, moduleState, publisher, useModuleToggle, useSetupNeeded } from "./ModuleParts";
 import { SettingItem } from "./Settings";
@@ -235,9 +236,10 @@ function Overview({ d }: { d: ModuleDetail }) {
 function Contents({ d, onSignIn, can }: { d: ModuleDetail; onSignIn: () => void; can: Can }) {
   const m = d.module;
   const [conns, setConns] = useState<ConnectionRow[] | null>(null);
-  useEffect(() => {
-    api.connections().then((r) => setConns(r.connections.filter((c) => c.module === m.name)), (e) => e instanceof SignInRequired && onSignIn());
-  }, [m.name, onSignIn]);
+  const loadConns = useCallback((fresh = false) => api.connections(fresh).then((r) => setConns(r.connections.filter((c) => c.module === m.name)), (e) => e instanceof SignInRequired && onSignIn()), [m.name, onSignIn]);
+  useEffect(() => void loadConns(), [loadConns]);
+  // A sign-in finished in the tab its Connect opened: ask again, fresh, so the row turns Connected here too.
+  useEvents(["connections"], () => loadConns(true));
   return (
     <div className="mod-body">
       <div className="mod-main">
