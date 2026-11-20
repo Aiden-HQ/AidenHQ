@@ -47,6 +47,8 @@ import type { SetupField } from "./config.js";
 import { welcomeRoutes } from "./welcome.js";
 import { GoogleAuthFailed, loopbackPort, type GoogleAuth } from "./google.js";
 import { OPEN, Paperclip, PaperclipError, actingAccount, type Agent, type Attachment, type Comment, type Issue, type Label, type Routine } from "./paperclip.js";
+import { createMcp, WRITE_TOOLS } from "./mcp.js";
+import { createMcpAuth } from "./mcp-auth.js";
 import { accountSession, type BoardSession, type SessionOf } from "./session.js";
 import { laneAgents, laneMessages, laneSend, type LaneOptions } from "./lane.js";
 import { NOTICE_MARKER, askedQuestions, chatAgent, chatAgentMarker, conversation, lastWord, pickAgent, type Message } from "./chats.js";
@@ -209,7 +211,7 @@ export function createApp(opts: AppOptions): Server {
    * never in the text. The kernel is told the account with each write it makes for a session (actingAccount), and logs it.
    * Outside a session (the internal listener, timers, the board's own notices) nothing is recorded.
    */
-  const perRequest = new AsyncLocalStorage<{ session: BoardSession | null }>();
+  const perRequest = new AsyncLocalStorage<{ session: BoardSession | null; via?: "mcp" }>();
   const pc = new Proxy(boardPc, {
     get(client, prop) {
       const value = Reflect.get(client, prop, client);
@@ -413,8 +415,9 @@ export function createApp(opts: AppOptions): Server {
     const issue = await pc.createIssue({ title, description, status: "todo", priority: "medium", assigneeUserId: ctx.me, labelIds: [label.id] });
     store.setMeta(`settings-change:${issue.id}`, JSON.stringify(changes));
     // The kernel checks it again, has the instance repo's code host write exactly its files and files the apply on the task.
+    let filed: { record: string; tier: number; state: string };
     try {
-      await records.settingsChange(issue.id, changes);
+      filed = await records.settingsChange(issue.id, changes);
     } catch (e) {
       await pc.addComment(issue.id, `**Not written:** ${String((e as Error).message).slice(0, 500)}`).catch(() => {});
       await pc.updateIssue(issue.id, { status: "cancelled" }).catch(() => {});
@@ -422,7 +425,7 @@ export function createApp(opts: AppOptions): Server {
       throw new HttpError(422, `not written: ${(e as Error).message}`);
     }
     log.info({ issue: issue.identifier, changes: changes.map((c) => c.kind) }, "settings change filed");
-    return { identifier: issue.identifier };
+    return { identifier: issue.identifier, ...filed };
   }
 
   // Agent activity (Paperclip runs).
@@ -1937,6 +1940,9 @@ export function createApp(opts: AppOptions): Server {
     // Your own signed-in browsers.
     { method: "GET", path: /^\/api\/accounts\/sessions$/, handle: async (_m, _b, who) => opts.accounts!.call("sessions", who) },
     { method: "POST", path: /^\/api\/accounts\/sessions\/([\w-]{1,64})\/revoke$/, handle: async (m, _b, who) => opts.accounts!.call("revoke_session", who, { id: m[1]! }) },
+    // The Claude apps (MCP clients) this admin has signed in, and ending one.
+    { method: "GET", path: /^\/api\/accounts\/mcp-clients$/, handle: async (_m, _b, who) => opts.accounts!.mcpGrants(who) },
+    { method: "POST", path: /^\/api\/accounts\/mcp-clients\/([\w-]{1,64})\/revoke$/, handle: async (m, _b, who) => opts.accounts!.mcpRevoke(who, m[1]!) },
     {
       method: "POST",
       path: /^\/api\/accounts$/,
@@ -2214,6 +2220,48 @@ export function createApp(opts: AppOptions): Server {
     await sendCompressed(req, res, 200, data, TYPES[extname(file)] ?? "application/octet-stream", immutable ? "public, max-age=31536000, immutable" : "no-cache", once);
   }
 
+  /**
+   * A board route run in process (the MCP's tools): the same table and the same request context `routeApi` installs, as the
+   * MCP's session, so a write carries the account's byline exactly as a tap does. Never HTTP to itself.
+   */
+  async function callRoute(method: string, path: string, body: unknown, session: BoardSession, req: IncomingMessage) {
+    const url = new URL(path, "http://board");
+    const route = routes.find((r) => r.method === method && r.path.test(url.pathname));
+    if (!route) throw new HttpError(404, `no such route ${method} ${url.pathname}`);
+    return perRequest.run({ session, via: "mcp" }, () => route.handle(url.pathname.match(route.path)!, body, url, req));
+  }
+  const mcpAuth = opts.accounts && opts.adminUrl ? createMcpAuth(opts.accounts, opts.adminUrl) : undefined;
+  /** The same dispatch with the bearer's own session (checked per request), for the tools' `callRoute`. */
+  const sessions = new WeakMap<IncomingMessage, BoardSession>();
+  const mcp = mcpAuth && createMcp({ callRoute: (m, p, b, req) => callRoute(m, p, b, sessions.get(req)!, req), decide: (t, r, c) => opts.accounts!.mcpDecide(t, r, c), flows: () => opts.setupFlows?.flows ?? [] });
+
+  /** /mcp and its discovery document: bearer only (never a cookie), before the board's own request checks. */
+  async function handleMcp(req: IncomingMessage, res: ServerResponse, url: URL) {
+    const auth = mcpAuth!;
+    const host = String(req.headers.host ?? "").toLowerCase();
+    if (!opts.allowedHosts.includes(host)) throw new HttpError(403, "unknown host");
+    if (url.pathname === "/.well-known/oauth-protected-resource") return send(res, 200, JSON.stringify(auth.metadata()), "application/json");
+    // A page in a browser (DNS rebinding, CSRF) carries an Origin that is not the board's own; a CLI carries none.
+    const origin = req.headers.origin;
+    if (origin && (origin === "null" || !URL.canParse(origin) || ![auth.board, new URL(auth.origin(req)).origin].includes(new URL(origin).origin))) throw new HttpError(403, "cross-origin");
+    const unauthorized = (error?: string) => {
+      res.writeHead(401, { ...SECURITY_HEADERS, "content-type": "application/json", "cache-control": "no-store", "www-authenticate": auth.challenge(error) }).end(JSON.stringify({ error: error ?? "sign in" }));
+    };
+    const token = auth.bearer(req);
+    if (!token) return unauthorized();
+    if (req.method !== "POST") {
+      res.writeHead(405, { ...SECURITY_HEADERS, allow: "POST" }).end();
+      return;
+    }
+    const body = await readJson(req, 1_000_000);
+    const calls = (Array.isArray(body) ? body : [body]) as { method?: string; params?: { name?: string } }[];
+    const writes = calls.some((m) => m?.method === "tools/call" && WRITE_TOOLS.has(String(m.params?.name)));
+    const who = await auth.check(token, writes);
+    if (!who) return unauthorized("invalid_token");
+    sessions.set(req, who.session);
+    await mcp!(req, res, body, { token, resource: auth.resource(), origin: auth.board });
+  }
+
   return createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", "http://board");
     if (url.pathname === "/healthz") return send(res, 200, "ok", "text/plain");
@@ -2235,6 +2283,17 @@ export function createApp(opts: AppOptions): Server {
       } catch (err) {
         const status = statusOf(err);
         if (status >= 500 || status === 401) log[status === 401 ? "warn" : "error"]({ err: String((err as Error).message ?? err).slice(0, 500), path: url.pathname }, "internal request failed");
+        if (!res.headersSent) send(res, status, JSON.stringify({ error: (err as Error).message ?? "error" }), "application/json");
+      }
+      return;
+    }
+    // The owner's MCP: its own checks (host, origin, bearer), before the board's cookie-based ones.
+    if (mcp && (url.pathname === "/mcp" || url.pathname === "/.well-known/oauth-protected-resource")) {
+      try {
+        await handleMcp(req, res, url);
+      } catch (err) {
+        const status = statusOf(err);
+        if (status >= 500) log.error({ err: String((err as Error).message ?? err).slice(0, 500), path: url.pathname }, "request failed");
         if (!res.headersSent) send(res, status, JSON.stringify({ error: (err as Error).message ?? "error" }), "application/json");
       }
       return;

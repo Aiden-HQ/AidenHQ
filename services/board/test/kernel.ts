@@ -15,6 +15,8 @@ export async function fakeKernel(): Promise<{
   session: (account: FakeAccount) => string;
   /** The kernel-side session ends (a sign-out, disable or reset there). */
   end: (token: string) => void;
+  /** The owner's-MCP side of the kernel: bearers it minted (for a resource), revoking one, and each card's current digest. */
+  mcp: { token: (account: FakeAccount, client?: string, resource?: string) => string; revoke: (token: string) => void; digests: Map<string, string> };
   calls: { path: string; body: any }[];
   /** Answers for other account ops by path (a status and a body); anything unlisted is a 404. */
   ops: Record<string, [number, unknown]>;
@@ -23,6 +25,8 @@ export async function fakeKernel(): Promise<{
   const codes = new Map<string, { account: FakeAccount; origin: string; state: string }>();
   const sessions = new Map<string, FakeAccount>();
   const accounts = new Map<string, FakeAccount>();
+  const grants = new Map<string, { account: FakeAccount; client: string; resource: string; revoked: boolean }>();
+  const digests = new Map<string, string>();
   const calls: { path: string; body: any }[] = [];
   const saved: Record<string, boolean> = {};
   const ops: Record<string, [number, unknown]> = {};
@@ -53,6 +57,27 @@ export async function fakeKernel(): Promise<{
         if (req.url!.endsWith("save_secret")) return body.value === "bad" ? send(400, { error: { message: "that doesn't look like a bot token" } }) : (saved[body.secret] = true, send(200, { ok: true, restarted: [body.module] }));
         return send(200, { secrets: { ...saved } });
       }
+      case "/v1/auth/mcp":
+      case "/v1/owner/decide": {
+        const g = grants.get(body.token);
+        if (!g || g.revoked || g.resource !== body.resource) return send(401, { error: { message: "no such grant" } });
+        if (req.url === "/v1/auth/mcp") return send(200, { account: g.account, client: g.client, expires: new Date(Date.now() + 3_600_000).toISOString() });
+        // Each card on its own; `by` comes from the grant, never the body.
+        return send(200, { outcomes: body.cards.map((c: { id: string; digest: string; decision: string }) => (digests.get(c.id) === c.digest ? { id: c.id, ok: true, state: c.decision === "approve" ? "approved" : "rejected", by: `account:${g.account.id}` } : { id: c.id, ok: false, error: `card ${c.id} changed since you read it: call approvals again` })) });
+      }
+      case "/v1/auth/mcp/grants": {
+        const me = sessions.get(body.token);
+        if (!me) return send(401, { error: { message: "no session" } });
+        return send(200, { grants: [...grants.entries()].filter(([, g]) => g.account.id === me.id && !g.revoked).map(([t, g]) => ({ id: t.slice(-8), client: g.client, lastUsed: null })) });
+      }
+      case "/v1/auth/mcp/revoke": {
+        const me = sessions.get(body.token);
+        if (!me) return send(401, { error: { message: "no session" } });
+        const hit = [...grants].find(([t, g]) => g.account.id === me.id && t.endsWith(body.grant));
+        if (!hit) return send(404, { error: { message: "no such grant" } }); // another account's grant is not found
+        hit[1].revoked = true;
+        return send(200, { ok: true });
+      }
       case "/v1/auth/sign_out":
         sessions.delete(body.token);
         return send(200, { ok: true });
@@ -82,6 +107,16 @@ export async function fakeKernel(): Promise<{
       return token;
     },
     end: (token) => void sessions.delete(token),
+    mcp: {
+      token: (account, client = "Claude Code", resource = "https://board.example.com/mcp") => {
+        accounts.set(account.id, account);
+        const t = `mcp_${randomBytes(16).toString("hex")}`;
+        grants.set(t, { account, client, resource, revoked: false });
+        return t;
+      },
+      revoke: (token) => void (grants.get(token)!.revoked = true),
+      digests,
+    },
     calls,
     ops,
     close: () => server.close(),

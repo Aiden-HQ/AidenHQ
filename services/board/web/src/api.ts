@@ -187,7 +187,16 @@ export interface AppAdmins {
   admins: string[];
 }
 
+export interface McpClient {
+  id: string;
+  client: string;
+  lastUsed: string | null;
+}
+
 export const accountsApi = {
+  /** The Claude apps (MCP clients) this admin has signed in, and ending one. */
+  mcpClients: () => call<{ grants: McpClient[] }>("GET", "/api/accounts/mcp-clients"),
+  revokeMcpClient: (id: string) => call("POST", `/api/accounts/mcp-clients/${id}/revoke`, {}),
   sessions: () => call<{ sessions: AuthSession[] }>("GET", "/api/accounts/sessions"),
   revokeSession: (id: string) => call("POST", `/api/accounts/sessions/${id}/revoke`, {}),
   list: () => call<{ accounts: Account[]; me: string }>("GET", "/api/accounts"),

@@ -1,6 +1,6 @@
 // Board accounts: the Accounts page (people and your own signed-in browsers), and the pointer to the kernel's sign-in pages.
 import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from "react";
-import { SignInRequired, accountsApi, api, type Account, type AppAdmins, type AuthSession, type Session } from "./api";
+import { SignInRequired, accountsApi, api, type Account, type AppAdmins, type AuthSession, type McpClient, type Session } from "./api";
 import { SkeletonLines } from "./Skeleton";
 import { agoLabel } from "./util";
 import { StatusDot, Tag, type StatusTone } from "./ui";
@@ -68,6 +68,7 @@ function statusOf(a: Account): { label: string; tone: StatusTone } {
 export function AccountsView({ session, onSignIn }: { session: Session; onSignIn: () => void }) {
   const [accounts, setAccounts] = useState<Account[] | null>(null);
   const [sessions, setSessions] = useState<AuthSession[]>([]);
+  const [claudeApps, setClaudeApps] = useState<McpClient[]>([]);
   const [error, setError] = useState("");
   const [link, setLink] = useState<{ email: string; url: string | null } | null>(null);
   const [email, setEmail] = useState("");
@@ -78,10 +79,11 @@ export function AccountsView({ session, onSignIn }: { session: Session; onSignIn
 
   const load = useCallback(async () => {
     try {
-      const [a, s, apps] = await Promise.all([accountsApi.list(), accountsApi.sessions(), accountsApi.appAdmins()]);
+      const [a, s, apps, claude] = await Promise.all([accountsApi.list(), accountsApi.sessions(), accountsApi.appAdmins(), accountsApi.mcpClients()]);
       setAccounts(a.accounts);
       setAppAdmins(apps.apps);
       setSessions(s.sessions);
+      setClaudeApps(claude.grants);
       setError("");
     } catch (e) {
       if (e instanceof SignInRequired) onSignIn();
@@ -249,6 +251,21 @@ export function AccountsView({ session, onSignIn }: { session: Session; onSignIn
                 Sign out
               </button>
             )}
+          </div>
+        ))}
+      </section>
+
+      <section className="accounts-section">
+        <h2>Connected Claude apps</h2>
+        {claudeApps.length === 0 && <p className="muted small">None yet. Add this board's /mcp address to your Claude and sign in.</p>}
+        {claudeApps.map((c) => (
+          <div key={c.id} className="device">
+            <span>{c.client}</span>
+            <span className="muted small">{c.lastUsed ? `used ${agoLabel(c.lastUsed)}` : "not used yet"}</span>
+            <span className="spacer" />
+            <button className="btn" onClick={act(() => accountsApi.revokeMcpClient(c.id))}>
+              Revoke
+            </button>
           </div>
         ))}
       </section>
