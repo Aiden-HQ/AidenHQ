@@ -20,6 +20,7 @@ import { Section } from "./ui/Section";
 import { Segmented } from "./ui/Segmented";
 import { StatBlock } from "./ui/StatBlock";
 import { StatusDot } from "./ui/StatusDot";
+import { TaskState } from "./ui/TaskState";
 import "./settings.css";
 import "./agent-page.css";
 import { Tabs } from "./ui";
@@ -47,7 +48,7 @@ export function AgentPage({ agentKey, tab, go, onSignIn }: { agentKey: string; t
   }
   const needs = open.data?.needs ?? [];
   const ongoing = open.data?.ongoing ?? [];
-  const working = ongoing.find((r) => r.state === "working");
+  const working = ongoing.find((r) => r.state?.kind === "working");
   const paused = profile.state === "paused";
   const status = paused ? (
     <StatusDot tone="idle">Paused</StatusDot>
@@ -115,7 +116,7 @@ export function AgentPage({ agentKey, tab, go, onSignIn }: { agentKey: string; t
 
 const Rows = ({ rows }: { rows: TaskRow[] }) => (
   <ListRows>
-    {rows.map((r) => <ListRow key={r.identifier} href={`#/t/${r.identifier}`} state={r.state} title={r.title} id={r.identifier} from={r.from} time={ago(r.updatedAt)} timeTitle={new Date(r.updatedAt).toLocaleString()} />)}
+    {rows.map((r) => <ListRow key={r.identifier} href={`#/t/${r.identifier}`} status={<TaskState state={r.state} />} title={r.title} id={r.identifier} from={r.from} time={ago(r.updatedAt)} timeTitle={new Date(r.updatedAt).toLocaleString()} />)}
   </ListRows>
 );
 
@@ -224,7 +225,7 @@ function ChatsTab({ profile, onSignIn }: { profile: AgentProfile; onSignIn: () =
         <EmptyState>No chats with {profile.name} yet.</EmptyState>
       ) : (
         <ListRows>
-          {mine.map((c) => <ListRow key={c.identifier} href={`#/c/${c.identifier}`} state={c.state} title={c.title} id={c.identifier} time={ago(c.updatedAt)} timeTitle={new Date(c.updatedAt).toLocaleString()} />)}
+          {mine.map((c) => <ListRow key={c.identifier} href={`#/c/${c.identifier}`} status={<TaskState state={c.state} />} title={c.title} id={c.identifier} time={ago(c.updatedAt)} timeTitle={new Date(c.updatedAt).toLocaleString()} />)}
         </ListRows>
       )}
     </Section>

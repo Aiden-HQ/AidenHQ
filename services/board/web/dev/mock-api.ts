@@ -10,6 +10,35 @@ const ago = (min: number) => new Date(now - min * 60_000).toISOString();
 const ahead = (min: number) => new Date(now + min * 60_000).toISOString();
 const mock = { welcome: false, empty: false, slow: 0 };
 
+// The kernel's task state (src/task-state.ts) as the board reads it: one row per task, every reason somewhere below.
+const A = (who: string, why: string, ref = "x") => ({ who, why, ref });
+const st = (kind: string, reason: string, o: Record<string, unknown> = {}) => ({ task: "t", identifier: null as string | null, kind, reason, since: ago(30), holder: null, attention: [], ...o });
+const ASK = st("waiting", "owner_wait", { since: ago(120), question: "Which week should I compare against?", attention: [A("owner", "owner_wait", "wait:t")] });
+const CARD = st("waiting", "card_owner", { since: ago(9), ref: "record:ap1", refLabel: "Deploy the invoices app at 4e1a9c2", attention: [A("owner", "card", "record:ap1")] });
+const WORKING_CARD = st("working", "job_running", { since: ago(12), stage: "CI running", ref: "job:j-2", attention: [A("owner", "card", "record:ap2")] });
+const FAILED = st("idle", "failed", { since: ago(8), ref: "job:j-1", refLabel: "timed out", attention: [A("agent", "failed", "job:j-1")] });
+const UNKNOWN = st("idle", "unknown", { since: ago(25), attention: [A("agent", "unknown", "task:t")] });
+const EXPIRED = st("idle", "history_expired", { since: ago(900), attention: [A("agent", "history_expired", "task:t")] });
+const STATES = {
+  running: st("working", "job_running", { since: ago(1), ref: "job:j-3" }),
+  queued: st("waiting", "job_queued", { since: ago(4) }),
+  held: st("waiting", "job_held", { since: ago(6), ref: "capacity" }),
+  review: st("waiting", "card_review", { since: ago(4), ref: "record:ap5", refLabel: "Merge “Add CSV export” into main" }),
+  delegator: st("waiting", "delegator_wait", { since: ago(33), attention: [A("agent", "delegator_wait", "wait:t")] }),
+  handback: st("waiting", "handback", { since: ago(70), attention: [A("owner", "handback", "task:t")] }),
+  blocked: st("waiting", "blocked", { since: ago(40), ref: "task:id-901", refLabel: "WOR-901" }),
+  agentWait: st("waiting", "agent_wait", { since: ago(20) }),
+  moduleWait: st("waiting", "module_wait", { since: ago(50), ref: "checks", note: "CI is running on the PR" }),
+  stalled: st("waiting", "module_wait", { since: ago(400), ref: "design_review", attention: [A("agent", "stalled_wait", "design_review")] }),
+  scheduled: st("waiting", "scheduled", { since: ago(60) }),
+  chatTurn: st("waiting", "chat_turn", { since: ago(700) }),
+  backlog: st("waiting", "backlog", { since: ago(2000) }),
+  orphaned: st("idle", "orphaned", { since: ago(80), attention: [A("agent", "orphaned", "task:t")] }),
+  done: st("done", "closed", { since: ago(180), grade: "pass" }),
+  stopped: st("done", "cancelled", { since: ago(300) }),
+};
+const named = <T extends object>(identifier: string, state: T) => ({ ...state, identifier });
+
 const dept = (id: string, name: string, order: number) => ({ id, name, order });
 const OPS = dept("ops", "Chief of staff", 0), ENG = dept("eng", "Engineering", 1), DESK = dept("desk", "Desk", 2);
 const roster = [
@@ -22,7 +51,8 @@ const roster = [
   { id: "a7", key: "meeting-librarian", name: "Meeting Librarian", title: "Notes from every meeting", system: false, department: DESK, avatar: "meeting-librarian", model: "deepseek-flash", reportsTo: "a1", state: "idle", running: 0, queued: 0, workingSince: null, trial: false, schedules: [{ title: "After meetings", paused: false, nextRunAt: ahead(95) }], lastRunAt: ago(130), lastRunStatus: "succeeded" },
 ];
 
-const card = (n: number, title: string, extra: Record<string, unknown> = {}) => ({ id: `id-${n}`, identifier: `WOR-${n}`, title, status: "todo", priority: "medium", labels: [], assignee: null, unread: false, createdAt: ago(n % 300), activityAt: ago(n % 90), ...extra });
+const CARD_STATES: Record<number, ReturnType<typeof st>> = { 812: STATES.orphaned, 815: ASK, 790: WORKING_CARD, 801: STATES.queued, 802: FAILED, 770: STATES.scheduled, 700: STATES.agentWait, 705: UNKNOWN, 600: STATES.backlog };
+const card = (n: number, title: string, extra: Record<string, unknown> = {}) => ({ id: `id-${n}`, identifier: `WOR-${n}`, title, status: "todo", priority: "medium", labels: [], assignee: null, unread: false, createdAt: ago(n % 300), activityAt: ago(n % 90), state: CARD_STATES[n] ? named(`WOR-${n}`, CARD_STATES[n]) : null, ...extra });
 const board = () => ({
   buckets: mock.empty ? { triage: [], today: [], tomorrow: [], later: [], backlog: [] } : {
     triage: [card(812, "Reply to Acme's renewal question", { unread: true, assignee: "open-loops" }), card(815, "Weekly metrics digest looks off", { priority: "high" })],
@@ -38,12 +68,12 @@ const board = () => ({
 });
 
 const chatRows = () => mock.empty ? [] : [
-  { identifier: "WOR-820", title: "Can you find a time with Sam next week?", open: true, agent: { key: "aiden", name: "Aiden" }, state: "working", updatedAt: ago(1), preview: { text: "Looking at both calendars now.", at: ago(1), from: "agent" }, unread: true },
-  { identifier: "WOR-818", title: "Build a small app that tracks invoices", open: true, agent: { key: "aiden", name: "Aiden" }, state: "waiting for approval", reason: "Deploy invoices", updatedAt: ago(9), preview: { text: "The app is ready; the deploy waits on your approval.", at: ago(9), from: "agent" }, unread: true },
-  { identifier: "WOR-815", title: "Weekly metrics digest looks off", open: true, agent: { key: "aiden", name: "Aiden" }, state: "waiting for you", updatedAt: ago(40), preview: { text: "Which week should I compare against?", at: ago(40), from: "agent" }, unread: false },
-  { identifier: "WOR-811", title: "Summarise yesterday's leadership sync", open: true, agent: { key: "meeting-librarian", name: "Meeting Librarian" }, state: "done", updatedAt: ago(180), preview: { text: "Summary posted with 4 action items.", at: ago(180), from: "agent" }, unread: false },
-  { identifier: "WOR-806", title: "Why did the health check fail?", open: true, agent: { key: "platform-engineer", name: "Platform Engineer" }, state: "failed", reason: "The run timed out", updatedAt: ago(52), preview: { text: "Timed out after 30 minutes.", at: ago(52), from: "agent" }, unread: false },
-  { identifier: "WOR-799", title: "Draft a reply to the hiring agency", open: true, agent: { key: "aiden", name: "Aiden" }, state: "idle", updatedAt: ago(1500), preview: { text: "Sent.", at: ago(1500), from: "you" }, unread: false },
+  { identifier: "WOR-820", title: "Can you find a time with Sam next week?", open: true, agent: { key: "aiden", name: "Aiden" }, state: named("WOR-820", STATES.running), updatedAt: ago(1), preview: { text: "Looking at both calendars now.", at: ago(1), from: "agent" }, unread: true },
+  { identifier: "WOR-818", title: "Build a small app that tracks invoices", open: true, agent: { key: "aiden", name: "Aiden" }, state: named("WOR-818", CARD), updatedAt: ago(9), preview: { text: "The app is ready; the deploy waits on your approval.", at: ago(9), from: "agent" }, unread: true },
+  { identifier: "WOR-815", title: "Weekly metrics digest looks off", open: true, agent: { key: "aiden", name: "Aiden" }, state: named("WOR-815", ASK), updatedAt: ago(40), preview: { text: "Which week should I compare against?", at: ago(40), from: "agent" }, unread: false },
+  { identifier: "WOR-811", title: "Summarise yesterday's leadership sync", open: true, agent: { key: "meeting-librarian", name: "Meeting Librarian" }, state: named("WOR-811", STATES.done), updatedAt: ago(180), preview: { text: "Summary posted with 4 action items.", at: ago(180), from: "agent" }, unread: false },
+  { identifier: "WOR-806", title: "Why did the health check fail?", open: true, agent: { key: "platform-engineer", name: "Platform Engineer" }, state: named("WOR-806", FAILED), updatedAt: ago(52), preview: { text: "Timed out after 30 minutes.", at: ago(52), from: "agent" }, unread: false },
+  { identifier: "WOR-799", title: "Draft a reply to the hiring agency", open: true, agent: { key: "aiden", name: "Aiden" }, state: named("WOR-799", STATES.chatTurn), updatedAt: ago(1500), preview: { text: "Sent.", at: ago(1500), from: "you" }, unread: false },
 ];
 
 const approval = (id: string, over = {}) => ({ id, identifier: "WOR-818", action: "deploy", target: "invoices", digest: "sha256:9f2c", sentence: "Deploy the invoices app at 4e1a9c2", reads: "The warehouse schema app_invoices", changes: "Starts a new container; the app's door opens to admins", cost: "No spend", details: "Commit 4e1a9c2 on acme-agents/invoices: adds CSV export and a monthly total.", requestedBy: "Engineer", state: "pending", tier: 2, reason: "First deploy of a new app", review: "The diff is small and touches only the app's own repo. Sent to you because it is a first deploy.", decidedBy: null, outcome: null, outcomeText: null, createdAt: ago(9), replaced: false, ...over });
@@ -55,9 +85,9 @@ const approvals = () => mock.empty ? [] : [
 ];
 
 const chatDetail = (ref: string) => {
-  const row = chatRows().find((c) => c.identifier === ref) ?? chatRows()[0] ?? { identifier: ref, title: "New chat", open: true, agent: { key: "aiden", name: "Aiden" }, state: "idle" };
+  const row = chatRows().find((c) => c.identifier === ref) ?? chatRows()[0] ?? { identifier: ref, title: "New chat", open: true, agent: { key: "aiden", name: "Aiden" }, state: null };
   return {
-    id: `id-${ref}`, identifier: row.identifier, title: row.title, open: true, agent: row.agent, state: row.state, reason: (row as { reason?: string }).reason,
+    id: `id-${ref}`, identifier: row.identifier, title: row.title, open: true, agent: row.agent, state: row.state,
     messages: [
       { kind: "owner", id: "m1", text: row.title, at: ago(15) },
       { kind: "reply", id: "m2", agent: row.agent.name, text: "On it. I'll check both calendars and propose **three slots** that avoid your focus blocks.\n\n- Tuesday 10:00\n- Wednesday 14:30\n- Thursday 09:00", at: ago(12) },
@@ -65,10 +95,17 @@ const chatDetail = (ref: string) => {
       { kind: "owner", id: "m4", text: "Wednesday works best, but keep it to 30 minutes.", at: ago(6) },
       { kind: "reply", id: "m5", agent: row.agent.name, text: "Got it: Wednesday 14:30 for 30 minutes. Which title should the invite carry?", at: ago(2), questions: [{ question: "Invite title", options: ["Sam / sync", "Q1 planning", "Catch-up"] }] },
     ],
-    working: row.state === "working" ? { agent: row.agent.name, since: ago(1), queued: false, said: "Checking Sam's calendar", plan: [{ text: "Read both calendars", state: "done" }, { text: "Pick slots", state: "doing" }, { text: "Send the invite", state: "todo" }] } : null,
-    files: [], approvals: ref === "WOR-818" ? [approval("ap1")] : [], handedOut: ref === "WOR-818" ? [{ identifier: "WOR-819", title: "Build the invoices app", agent: "Engineer", state: "working", updatedAt: ago(5), working: { agent: "Engineer", since: ago(5), queued: false } }] : [],
+    working: row.state?.kind === "working" ? { agent: row.agent.name, since: ago(1), queued: false, said: "Checking Sam's calendar", plan: [{ text: "Read both calendars", state: "done" }, { text: "Pick slots", state: "doing" }, { text: "Send the invite", state: "todo" }] } : null,
+    files: [], approvals: ref === "WOR-818" ? [approval("ap1")] : [], handedOut: ref === "WOR-818" ? [{ identifier: "WOR-819", title: "Build the invoices app", agent: "Engineer", state: named("WOR-819", WORKING_CARD), updatedAt: ago(5), working: { agent: "Engineer", since: ago(5), queued: false } }, { identifier: "WOR-821", title: "Design the invoice screens", agent: "UI Designer", state: named("WOR-821", ASK), updatedAt: ago(20), working: null }, { identifier: "WOR-822", title: "Write the export tests", agent: "Engineer", state: named("WOR-822", STATES.blocked), updatedAt: ago(40), working: null }, { identifier: "WOR-823", title: "Seed the demo data", agent: "Engineer", state: named("WOR-823", STATES.done), updatedAt: ago(100), working: null }] : [],
     parent: null, runs: [], asks: [],
   };
+};
+
+const kid = (n: number, title: string, agent: string, state: ReturnType<typeof st>, o: Record<string, unknown> = {}) => ({ identifier: `WOR-${n}`, title, agent, model: "deepseek-flash high", state: named(`WOR-${n}`, state), latest: { text: "Working through the export tests.", at: ago(4) }, tokens: 182_000, usd: 0.42, startedAt: ago(90), endedAt: state.kind === "done" ? ago(30) : null, children: [], approvals: [], ...o });
+const lineage = (identifier: string) => {
+  if (identifier !== "WOR-818" || mock.empty) return { identifier, children: [], total: { tasks: 0, running: 0, needs: 0, failed: 0, tokens: 0, usd: 0, ms: 0 } };
+  const children = [kid(819, "Build the invoices app", "Engineer", WORKING_CARD, { children: [kid(824, "Add CSV export", "Engineer", FAILED, { latest: { text: "The export test timed out.", at: ago(8) } })], approvals: [approval("ap1")] }), kid(821, "Design the invoice screens", "UI Designer", ASK), kid(822, "Write the export tests", "Engineer", STATES.blocked), kid(823, "Seed the demo data", "Engineer", STATES.done)];
+  return { identifier, children, total: { tasks: 5, running: 1, needs: 2, failed: 1, tokens: 910_000, usd: 2.1, ms: 5_400_000 } };
 };
 
 const apps = () => mock.empty ? [] : [
@@ -162,7 +199,15 @@ function route(method: string, url: URL): [number, unknown] {
     case "/api/setup-flows": return [200, flows()];
     case "/api/chats": return [200, { chats: chatRows(), agents: [{ key: "aiden", name: "Aiden", front: true }, ...roster.slice(1).map((a) => ({ key: a.key, name: a.name }))] }];
     case "/api/lane": return [200, { agents: [] }];
-    case "/api/needs-you": return [200, { count: mock.empty ? 0 : 2, approvals: mock.empty ? 0 : 2, items: mock.empty ? [] : [{ identifier: "WOR-815", title: "Weekly metrics digest looks off", agent: "Aiden", state: "waiting for you" }] }];
+    case "/api/needs-you": return [200, mock.empty ? { counts: { needs_you: 0, failed: 0, unexplained_idle: 0 }, approvals: 0, items: [] } : { counts: { needs_you: 4, failed: 1, unexplained_idle: 3 }, approvals: 2, items: [
+      { identifier: "WOR-801", title: "Brief decisions", agent: "Aiden", state: named("WOR-801", ASK) },
+      { identifier: "WOR-790", title: "Fix the sbom job", agent: "Engineer", state: named("WOR-790", { ...WORKING_CARD, refLabel: "approve the push to main" }) },
+      { identifier: "WOR-795", title: "A task handed back to you", agent: "Engineer", state: named("WOR-795", STATES.handback) },
+      { identifier: "WOR-802", title: "Slack ingest", agent: "Open Loops", state: named("WOR-802", FAILED) },
+      { identifier: "WOR-705", title: "Primer lint", agent: "Engineer", state: named("WOR-705", UNKNOWN) },
+      { identifier: "WOR-812", title: "Reply to Acme's renewal question", agent: "Open Loops", state: named("WOR-812", STATES.orphaned) },
+      { identifier: "WOR-650", title: "An old task whose history expired", agent: "Engineer", state: named("WOR-650", EXPIRED) },
+    ] }];
     case "/api/approvals": return [200, { approvals: approvals() }];
     case "/api/agents/roster": return [200, { roster: mock.empty ? roster.slice(0, 1) : roster }];
     case "/api/agents": return [200, { sessions: [{ id: "s1", agent: "Engineer", agentId: "a3", state: "working", startedAt: ago(12), said: "Running the export tests", run: { identifier: "WOR-790", title: "Ship the invoices app's export" }, tasks: [] }], finished: [], roster }];
@@ -182,7 +227,7 @@ function route(method: string, url: URL): [number, unknown] {
   let x: RegExpExecArray | null;
   if ((x = m(/^\/api\/chats\/([^/]+)$/))) return [200, chatDetail(decodeURIComponent(x[1]!))];
   if ((x = m(/^\/api\/issues\/([^/]+)\/feature-cost$/))) return [200, { cost: null }];
-  if ((x = m(/^\/api\/issues\/([^/]+)\/lineage$/))) return [200, { identifier: x[1]!, children: [], total: { tasks: 0, running: 0, needs: 0, blocked: 0, tokens: 0, usd: 0, ms: 0 } }];
+  if ((x = m(/^\/api\/issues\/([^/]+)\/lineage$/))) return [200, lineage(decodeURIComponent(x[1]!))];
   if ((x = m(/^\/api\/issues\/([^/]+)$/))) {
     const c = Object.values(board().buckets).flat().find((k) => k.identifier === decodeURIComponent(x![1]!) || k.id === x![1]) ?? card(790, "Ship the invoices app's export");
     return [200, { ...c, working: (c as { working?: unknown }).working ?? null, description: "Add a **CSV export** to the invoices app and a monthly total row.\n\n- Export respects the current filter\n- Totals in the account currency", bucket: "today", editable: true, labelIds: [], replyTarget: "me", scheduled: null, recurring: null, comments: [{ id: "k1", body: "Started on the export; tests next.", author: { kind: "agent", name: "Engineer" }, createdAt: ago(20) }], files: [], parent: null, runs: [], crew: [] }];
@@ -193,8 +238,8 @@ function route(method: string, url: URL): [number, unknown] {
   if ((x = m(/^\/api\/runs\/([^/]+)$/))) return [200, { id: x[1]!, agent: "Engineer", engine: "codex", status: "done", error: null, startedAt: ago(40), finishedAt: ago(31), durationMs: 540000, issue: null, rev: null, tokens: null, plan: [], ledger: { rows: [], usd: null, capUsd: null }, timeline: [{ at: ago(40), kind: "step", text: "Read the task and the invoices app.", ok: true }, { at: ago(38), kind: "step", text: "Ran the export tests.", ok: true }, { at: ago(33), kind: "error", text: "The linter failed on export.ts; fixed and re-ran.", ok: false }] }];
   if ((x = m(/^\/api\/agents\/by-key\/([^/]+)$/))) return [200, { profile: profile(x[1]!) }];
   if ((x = m(/^\/api\/agents\/by-key\/([^/]+)\/tasks$/))) {
-    const rows = [{ identifier: "WOR-790", title: "Ship the invoices app's export", state: "working", updatedAt: ago(12), from: "WOR-818" }, { identifier: "WOR-806", title: "Why did the health check fail?", state: "failed", updatedAt: ago(52), from: null }];
-    return url.searchParams.get("view") === "history" ? [200, { rows: [{ identifier: "WOR-700", title: "Set up the invoices repo", state: "done", updatedAt: ago(3000), from: null }], next: null }] : [200, { needs: [rows[1]], ongoing: [rows[0]] }];
+    const rows = [{ identifier: "WOR-790", title: "Ship the invoices app's export", state: named("WOR-790", STATES.running), updatedAt: ago(12), from: "WOR-818" }, { identifier: "WOR-806", title: "Why did the health check fail?", state: named("WOR-806", FAILED), updatedAt: ago(52), from: null }];
+    return url.searchParams.get("view") === "history" ? [200, { rows: [{ identifier: "WOR-700", title: "Set up the invoices repo", state: named("WOR-700", STATES.done), updatedAt: ago(3000), from: null }, { identifier: "WOR-698", title: "A task you stopped", state: named("WOR-698", STATES.stopped), updatedAt: ago(4000), from: null }], next: null }] : [200, { needs: [rows[1]], ongoing: [rows[0], { identifier: "WOR-831", title: "Re-run the nightly import", state: named("WOR-831", STATES.held), updatedAt: ago(6), from: null }, { identifier: "WOR-832", title: "Merge the export change", state: named("WOR-832", STATES.review), updatedAt: ago(4), from: "WOR-818" }, { identifier: "WOR-834", title: "Wait for CI on the export PR", state: named("WOR-834", STATES.moduleWait), updatedAt: ago(50), from: null }, { identifier: "WOR-835", title: "Wait for the design review", state: named("WOR-835", STATES.stalled), updatedAt: ago(400), from: null }, { identifier: "WOR-833", title: "Wait for the design answer", state: named("WOR-833", STATES.delegator), updatedAt: ago(33), from: "WOR-818" }] }];
   }
   if ((x = m(/^\/api\/agents\/([^/]+)\/scorecard$/))) return [200, { done: { count: 14, prior: 9, tasks: [] }, reopen: { graded: 12, reopened: 1, escalated: 0 }, approvals: { filed: 6, rejected: 1, priorRejected: 2 }, runsFailed: 1, cost: { usd: 4.18, prior: 5.02, perDone: 0.3, billed: true }, daily: days.map((day, i) => ({ day, done: [1, 3, 2, 0, 4, 2, 2][i], costUsd: [0.4, 0.9, 0.6, 0.1, 1.1, 0.5, 0.58][i] })) }];
   if ((x = m(/^\/api\/modules\/([^/]+)$/))) {

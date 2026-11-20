@@ -45,15 +45,6 @@ export function shortName(a: Assignee | undefined): string {
 /** What an agent is @-mentioned by: its name without spaces (the server matches it). */
 export const handleOf = (a: Assignee) => a.name.replace(/\s+/g, "");
 
-export const STATUS_BADGE: Record<string, { text: string; tone: string } | undefined> = {
-  // Only the status: whether an agent is running right now is the live badge (card.working).
-  in_progress: { text: "In progress", tone: "progress" },
-  in_review: { text: "Ready for review", tone: "review" },
-  blocked: { text: "Blocked", tone: "blocked" },
-  done: { text: "Done", tone: "done" },
-  cancelled: { text: "Cancelled", tone: "cancelled" },
-};
-
 /** Labels that say where a task came from; the rest are shown as plain tags. */
 export const SOURCE_NAMES: Record<string, string> = {
   "needs-response": "Reply",

@@ -6,6 +6,7 @@ import type { AddressInfo } from "node:net";
 import pino from "pino";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
+import { row } from "./fake-states.js";
 import { asAgent } from "./caller.js";
 import type { Agent, Comment, Issue, Paperclip } from "../src/paperclip.js";
 import { Store } from "../src/store.js";
@@ -53,7 +54,9 @@ describe("/internal/relay", () => {
 
   const store = new Store(":memory:");
   const TOKEN = "t".repeat(64);
-  const app = createApp({ paperclip: pc, store, log: pino({ level: "silent" }), staticDir: "/nonexistent", timezone: "UTC", allowedHosts: ["board:3122"], mode: "internal", internalToken: TOKEN });
+  // The kernel's state of each task, from what the test says of it: in_review is a card with the AI reviewer, else working.
+  const states = { read: async (q: { ids?: string[] }) => ({ as_of: "", counts: { needs_you: 0, failed: 0, unexplained_idle: 0 }, tasks: issues.filter((i) => q.ids?.includes(i.id)).map((i) => row(i.id, i.status === "in_review" ? { kind: "waiting", reason: "card_review" } : { kind: "working", reason: "job_running" })) }) };
+  const app = createApp({ taskStates: states, paperclip: pc, store, log: pino({ level: "silent" }), staticDir: "/nonexistent", timezone: "UTC", allowedHosts: ["board:3122"], mode: "internal", internalToken: TOKEN });
   let port = 0;
   beforeAll(async () => {
     await new Promise<void>((r) => app.listen(0, "127.0.0.1", r));

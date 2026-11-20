@@ -2,6 +2,8 @@ import DOMPurify from "dompurify";
 import { marked } from "marked";
 import { useEffect, useMemo, useRef } from "react";
 import { slackAppLink } from "./slack";
+import type { ShownState } from "./types";
+import { stateWords } from "./ui/TaskState";
 
 let slackTeams: Record<string, string> = {};
 /** Slack host → ID, from the board: links to those hosts open the Slack app, without a tab. */
@@ -48,9 +50,8 @@ export function renderMarkdown(md: string, prefix: string): string {
 
 // ------------------------------------------------------------ task references show their status
 
-type Ref = { status: string; title: string };
+type Ref = { state: ShownState | null; title: string };
 const refs = new Map<string, { at: number; ref: Ref | null }>();
-const STATUS_TEXT: Record<string, string> = { done: "Done", cancelled: "Cancelled", in_progress: "In progress", in_review: "Ready for review", blocked: "Blocked", todo: "To do", backlog: "Backlog" };
 
 /** Status and title for task identifiers, from a short client cache or one /api/refs call. */
 async function lookup(ids: string[]): Promise<void> {
@@ -69,8 +70,9 @@ function decorate(root: HTMLElement) {
   for (const a of root.querySelectorAll<HTMLAnchorElement>('a[href^="#/t/"]')) {
     const ref = refs.get(a.getAttribute("href")!.slice(4))?.ref;
     if (!ref) continue;
-    a.dataset.status = ref.status;
-    a.title = `${STATUS_TEXT[ref.status] ?? ref.status} · ${ref.title}`;
+    const w = ref.state && stateWords(ref.state);
+    if (ref.state) a.dataset.status = ref.state.reason === "cancelled" ? "cancelled" : ref.state.kind;
+    a.title = `${w ? `${[w.word, w.detail].filter(Boolean).join(" · ")} · ` : ""}${ref.title}`;
   }
 }
 

@@ -8,18 +8,18 @@ import { SignInRequired, api } from "./api";
 import { load as loadCached } from "./cache";
 import { QUERIES, chatQuery, peekingChat, prefetchChat, useQuery } from "./queries";
 import { ChatListSkeleton, SkeletonLines } from "./Skeleton";
-import { ApprovalCard, StateChip } from "./Chat";
+import { ApprovalCard } from "./Chat";
 import { LaneChat } from "./LaneChat";
 import { FeatureCostStrip } from "./FeatureCost";
 import { LineageStrip } from "./Lineage";
 import { live as streaming, useEvents } from "./events";
 import { CloseIcon, Plan, PlusIcon } from "./components";
 import { Markdown } from "./markdown";
-import { anyLive, groupChats, groupTasks, laneOf, settleableChat, showsChip, taskSummary, type AgentGroup } from "./sidebar";
+import { anyLive, groupChats, groupTasks, laneOf, settleableChat, taskSummary, type AgentGroup } from "./sidebar";
+import { TaskState, isActive, needsOwner, waitsForAnswer } from "./ui/TaskState";
 import { foldCount, foldNoise, isNoise, shortTitle, type Folded } from "./conversation";
-import type { Approval, Assignee, ChatAgent, ChatDetail, LaneAgent, ChatMessage, ChatRow, ChatState, FileView, Question, SettledItem, Working } from "./types";
+import type { Approval, Assignee, ChatAgent, ChatDetail, LaneAgent, ChatMessage, ChatRow, FileView, Question, SettledItem, Working } from "./types";
 import { MAX_FILE, ago, elapsed, fileSize, handleOf } from "./util";
-import { openQuestions } from "./questions";
 import { Icon } from "./ui/icons";
 
 interface Props {
@@ -325,7 +325,7 @@ function ChatLink({ c, selected, go, tasks }: { c: ChatRow; selected: string | n
       </span>
       <span className="side-chat-bottom">
         <span className="side-preview">{c.preview ? `${c.preview.from === "you" ? "You: " : ""}${c.preview.text}` : ""}</span>
-        {showsChip(c.state) && <StateChip state={c.state} reason={c.reason} />}
+        {isActive(c.state) && <TaskState state={c.state} bare />}
         {c.unread && <span className="unread-dot" title="New reply" />}
       </span>
       {t && (
@@ -564,8 +564,10 @@ function Conversation({ refId, row, mobile, crew, prefix, go, onSignIn, toast, p
   }, [chat?.messages, chat?.approvals, chat?.asks]);
   const messages = chat?.messages;
   const lastReply = useMemo(() => messages && [...messages].reverse().find((m) => m.kind === "reply" || m.kind === "owner"), [messages]);
-  // Questions stay answerable after the agent posts later updates, until the owner replies.
-  const asking = useMemo(() => messages && openQuestions(messages), [messages]);
+  // Questions stay answerable after the agent posts later updates, for as long as the kernel says the chat waits on the owner's
+  // answer: the newest reply that offered some.
+  const waits = waitsForAnswer(chat?.state);
+  const asking = useMemo(() => (waits ? messages?.findLast((m) => m.kind === "reply" && m.questions?.length) : undefined), [messages, waits]);
   // The conversation itself is rebuilt only when what it shows changes: typing, the live clock and polls that bring
   // nothing new leave it alone, and a new message re-renders only its own row (MessageView is memoised).
   const open = chat?.open ?? false;
@@ -659,7 +661,7 @@ function Conversation({ refId, row, mobile, crew, prefix, go, onSignIn, toast, p
               {chat.agent.name} · {chat.identifier}
             </span>
           </span>
-          {showsChip(chat.state) && <StateChip state={chat.state} reason={chat.reason} />}
+          <TaskState state={chat.state} />
           {row?.settled ? (
             <button className="btn settle-btn on" onClick={() => void settle(false)} title="Settled: bring it back to the active list">
               ◆ Settled · Reopen
@@ -941,7 +943,7 @@ function Steps({ steps, said }: { steps: NonNullable<Working["steps"]>; said?: s
 /** One live row pinned above the composer: what the run is doing now, or why it stopped. The plan lives in the panel. */
 function LiveRow({ chat, retry, stop }: { chat: ChatDetail; retry: () => void; stop: () => void }) {
   const [, tick] = useState(0);
-  const ticking = chat.state === "working";
+  const ticking = chat.state?.kind === "working";
   useEffect(() => {
     // Its clock ("1m 20s", "nothing new for 3 min"): only this row re-renders each second.
     if (!ticking) return;
@@ -950,7 +952,7 @@ function LiveRow({ chat, retry, stop }: { chat: ChatDetail; retry: () => void; s
   }, [ticking]);
   const w = chat.working;
   const name = chat.agent.name;
-  if (chat.state === "working" && w) {
+  if (chat.state?.kind === "working" && w) {
     const lastAt = w.saidAt ?? w.since;
     const quiet = lastAt ? Date.now() - Date.parse(lastAt) : 0;
     return (
@@ -967,7 +969,7 @@ function LiveRow({ chat, retry, stop }: { chat: ChatDetail; retry: () => void; s
       </div>
     );
   }
-  if (chat.state === "working")
+  if (chat.state?.kind === "working")
     return (
       <div className="live-row working">
         <div className="live-line">
@@ -978,13 +980,13 @@ function LiveRow({ chat, retry, stop }: { chat: ChatDetail; retry: () => void; s
         </div>
       </div>
     );
-  if (chat.state === "queued") return <div className="live-row">Queued: {name} starts when free.</div>;
-  if (chat.state === "waiting for approval") return <div className="live-row you">Waiting for your approval (above).</div>;
-  if (chat.state === "waiting for you") return <div className="live-row you">Needs your input.</div>;
-  if (chat.state === "failed")
+  if (chat.state?.reason === "job_queued") return <div className="live-row">Queued: {name} starts when free.</div>;
+  if (chat.state?.reason === "card_owner") return <div className="live-row you">Waiting for your approval (above).</div>;
+  if (waitsForAnswer(chat.state)) return <div className="live-row you">Needs your input.</div>;
+  if (chat.state?.reason === "failed")
     return (
       <div className="live-row failed">
-        {chat.reason === "ended without a reply" ? `${name} ended without a reply.` : `${name} stopped: ${chat.reason ?? "no reason given"}.`}{" "}
+        {`${name} stopped: ${chat.state.refLabel ?? "no reason given"}.`}{" "}
         <button className="btn" onClick={retry}>
           Try again
         </button>
@@ -997,7 +999,6 @@ function LiveRow({ chat, retry, stop }: { chat: ChatDetail; retry: () => void; s
 // ------------------------------------------------------------------ the right panel
 
 type Handed = ChatDetail["handedOut"][number];
-const HANDED_LABEL: Partial<Record<ChatState, string>> = { "waiting for you": "needs you", "waiting for approval": "approval", idle: "open" };
 
 /**
  * The one details panel: the chat's context in a line, then the work it handed out by what it needs (you first,
@@ -1009,16 +1010,17 @@ function DetailsPanel({ chat, go }: { chat: ChatDetail; go: (h: string) => void 
   const done = plan.filter((p) => p.state === "done").length;
   const waiting = chat.approvals.filter((a) => a.state === "pending");
   const g = groupTasks(chat.handedOut);
-  const onYou = waiting.length ? `${waiting.length} approval${waiting.length > 1 ? "s" : ""}` : chat.state === "waiting for you" ? "a reply" : "";
+  const onYou = waiting.length ? `${waiting.length} approval${waiting.length > 1 ? "s" : ""}` : waitsForAnswer(chat.state) ? "a reply" : "";
   const row = (h: Handed) => (
     <li key={h.identifier}>
-      <a className="handed-row" href={`#/c/${h.identifier}`} title={`${h.agent}: ${h.title}${h.reason ? ` (${h.reason})` : ""}`} onClick={(e) => (e.preventDefault(), go(`#/c/${h.identifier}`))}>
-        <span className={`handed-dot hs-${h.state.replace(/ /g, "-")}`} aria-hidden />
+      <a className="handed-row" href={`#/c/${h.identifier}`} title={`${h.agent}: ${h.title}`} onClick={(e) => (e.preventDefault(), go(`#/c/${h.identifier}`))}>
         <span className="handed-title">{h.title}</span>
         <span className="handed-agent">
           {h.agent} · {ago(h.updatedAt)}
         </span>
-        <span className={`handed-state hs-${h.state.replace(/ /g, "-")}`}>{HANDED_LABEL[h.state] ?? h.state}</span>
+        <span className="handed-state">
+          <TaskState state={h.state} bare />
+        </span>
       </a>
     </li>
   );
@@ -1031,13 +1033,13 @@ function DetailsPanel({ chat, go }: { chat: ChatDetail; go: (h: string) => void 
         <ul className="handed-list">{list.map(row)}</ul>
       </section>
     );
-  const quiet = !chat.handedOut.length && !plan.length && chat.state !== "working" && !files.length;
+  const quiet = !chat.handedOut.length && !plan.length && chat.state?.kind !== "working" && !files.length;
   return (
     <div className="panel">
       <dl className="panel-context" aria-label="Context">
         <div>
           <dt>State</dt>
-          <dd>{chat.state === "idle" ? (chat.open ? "open" : "finished") : chat.state}</dd>
+          <dd>{chat.state ? <TaskState state={chat.state} /> : chat.open ? "open" : "finished"}</dd>
         </div>
         <div>
           <dt>On you</dt>
@@ -1081,7 +1083,7 @@ function DetailsPanel({ chat, go }: { chat: ChatDetail; go: (h: string) => void 
           {!g.needs.length && !g.working.length && !g.waiting.length && !g.finished.length && <p className="muted small">Nothing open.</p>}
         </section>
       )}
-      {(plan.length > 0 || chat.state === "working") && (
+      {(plan.length > 0 || chat.state?.kind === "working") && (
         <section className="panel-card">
           <h3>
             Progress

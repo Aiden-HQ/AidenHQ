@@ -234,7 +234,7 @@ function IssueBody({ issue, focus, board, busy, update, setStatus, onClose, onMo
       <div className="task-top">
         <Title issue={issue} editable={editable} save={(title) => update({ title })} />
         <div className="head-chips">
-          <Chips card={{ ...issue, working: null, status: issue.crew.length ? "todo" : issue.status }} />
+          <Chips card={{ ...issue, working: null, state: issue.crew.length ? null : issue.state }} full />
           {issue.priority !== "medium" && (
             <button className={`chip prio-${issue.priority}`} onClick={() => setDetails(true)}>
               {PRIORITY_NAMES[issue.priority]}

@@ -15,7 +15,8 @@ import { ListRow, ListRows } from "./ui/ListRow";
 import { PageHeader } from "./ui/PageHeader";
 import { Section } from "./ui/Section";
 import { Tabs } from "./ui";
-import { StatusDot } from "./ui/StatusDot";
+import { StatusDot, type StatusTone } from "./ui/StatusDot";
+import { TaskState } from "./ui/TaskState";
 import { Monogram } from "./ui/Tile";
 import { hueClass } from "./ui/hue";
 import { ago } from "./util";
@@ -154,7 +155,7 @@ function Tasks({ rows }: { rows: TaskRow[] }) {
   return (
     <ListRows>
       {rows.map((r) => (
-        <ListRow key={r.identifier} href={`#/t/${r.identifier}`} state={r.state} title={r.title} id={r.identifier} from={r.from ?? null} time={ago(r.updatedAt)} />
+        <ListRow key={r.identifier} href={`#/t/${r.identifier}`} status={<TaskState state={r.state} />} title={r.title} id={r.identifier} from={r.from ?? null} time={ago(r.updatedAt)} />
       ))}
     </ListRows>
   );
@@ -291,8 +292,9 @@ function ModuleSettings({ m, onSignIn }: { m: ModuleRow; onSignIn: () => void })
   return <Group title="Settings" count={rows.length}>{rows.map((s) => <SettingItem key={s.key} s={s} />)}</Group>;
 }
 
-/** A change's stage in the words a task row uses (ui/StatusDot taskStatus). */
-const CHANGE_STATE: Record<string, string> = { working: "in review", waiting: "waiting for approval", applying: "working", applied: "done" };
+/** A change's stage (the board's settings changes, not a task) as a dot and a word. */
+const CHANGE_STATUS: Record<string, { tone: StatusTone; word: string }> = { working: { tone: "idle", word: "In review" }, waiting: { tone: "needs", word: "Approval" }, applying: { tone: "working", word: "Working" }, applied: { tone: "done", word: "Done" } };
+const changeStatus = (stage: string) => { const s = CHANGE_STATUS[stage] ?? { tone: "idle" as const, word: stage }; return <StatusDot tone={s.tone}>{s.word}</StatusDot>; };
 
 function ModuleChanges({ m }: { m: ModuleRow }) {
   const { changes } = useChanges();
@@ -302,7 +304,7 @@ function ModuleChanges({ m }: { m: ModuleRow }) {
   return (
     <ListRows>
       {mine.map((f) => (
-        <ListRow key={f.identifier} href={`#/c/${f.identifier}`} state={CHANGE_STATE[f.stage] ?? f.stage} title={f.title} id={f.identifier} time={ago(f.createdAt)} />
+        <ListRow key={f.identifier} href={`#/c/${f.identifier}`} status={changeStatus(f.stage)} title={f.title} id={f.identifier} time={ago(f.createdAt)} />
       ))}
     </ListRows>
   );

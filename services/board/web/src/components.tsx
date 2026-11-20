@@ -7,7 +7,8 @@ import { ConnectButton } from "./Connect";
 import { GOOGLE_WEB_HINT } from "./connections";
 import { api } from "./api";
 import { BUCKETS, BUCKET_NAMES, type Assignee, type Board, type Bucket, type Card, type CrewMember, type CrewState, type PlanItem, type SignInStatus, type Working } from "./types";
-import { SOURCE_NAMES, STATUS_BADGE, addDays, agentShort, ago, dayDate, elapsed, matches, shortDate, shortName, snoozeOptions, todayIn } from "./util";
+import { TaskState } from "./ui/TaskState";
+import { SOURCE_NAMES, addDays, agentShort, ago, dayDate, elapsed, matches, shortDate, shortName, snoozeOptions, todayIn } from "./util";
 
 /** A crew member's portrait (or its monogram, AgentAvatar), or a letter for you. */
 export function Avatar({ assignee, size }: { assignee: Assignee | undefined; size?: number }) {
@@ -99,12 +100,12 @@ export function WorkingBadge({ working }: { working: Working }) {
   );
 }
 
-export function Chips({ card }: { card: Pick<Card, "status" | "labels"> & { working?: Working | null } }) {
-  const badge = STATUS_BADGE[card.status];
+/** A card's chips: who is working on it now, the kernel's state (the dot and word; `full` adds what it waits for), and where it came from. */
+export function Chips({ card, full }: { card: Pick<Card, "state" | "labels"> & { working?: Working | null }; full?: boolean }) {
   return (
     <>
       {card.working && <WorkingBadge working={card.working} />}
-      {badge && !(card.working && card.status === "in_progress") && <span className={`badge badge-${badge.tone}`}>{badge.text}</span>}
+      {!(card.working && card.state?.kind === "working") && <TaskState state={card.state} bare={!full} />}
       {card.labels
         .filter((l) => l.name !== "daily-brief")
         .map((l) => (

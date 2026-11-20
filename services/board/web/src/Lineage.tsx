@@ -8,9 +8,8 @@ import { ApprovalCard } from "./Chat";
 import { CloseIcon } from "./components";
 import { useLive } from "./events";
 import { Markdown } from "./markdown";
-import type { AsideMessage, Assignee, Lineage, LineageRow, LineageStatus } from "./types";
-
-const STATUS_WORDS: Record<LineageStatus, string> = { running: "running", done: "done", blocked: "blocked", approval: "waiting on approval", needs: "needs you", waiting: "waiting" };
+import type { AsideMessage, Assignee, Lineage, LineageRow } from "./types";
+import { TaskState, stateWords } from "./ui/TaskState";
 
 const tokens = (n: number | null) => (n === null ? "—" : n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : String(n));
 const usd = (n: number | null) => (n === null ? "—" : `$${n.toFixed(2)}`);
@@ -24,10 +23,6 @@ const took = (r: LineageRow) => span((r.endedAt ? Date.parse(r.endedAt) : Date.n
 const withKids = (r: LineageRow) => [r, ...r.children];
 const costOf = (r: LineageRow) => (withKids(r).every((x) => x.usd === null) ? null : withKids(r).reduce((s, x) => s + (x.usd ?? 0), 0));
 const waitsOnApproval = (r: LineageRow) => withKids(r).some((x) => x.approvals.length > 0);
-
-export function StatusBadge({ status }: { status: LineageStatus }) {
-  return <span className={`lin-badge s-${status}`}>{STATUS_WORDS[status]}</span>;
-}
 
 interface Target {
   identifier: string;
@@ -95,18 +90,18 @@ export function LineageStrip({ refId, title, agent, crew, prefix, href, onSignIn
         </a>
       </td>
       <td className="lin-model">{r.model ?? "—"}</td>
-      <td>
-        <StatusBadge status={r.status} />
+      <td className="lin-state">
+        <TaskState state={r.state} />
       </td>
-      <td className={`lin-latest${r.status === "blocked" ? " bad" : ""}`} title={r.latest?.text}>
+      <td className={`lin-latest${r.state?.reason === "failed" ? " bad" : ""}`} title={r.latest?.text}>
         {r.latest?.text ?? ""}
       </td>
       <td className="r">{tokens(r.tokens)}</td>
       <td className="r">{usd(r.usd)}</td>
       <td className="r m">{took(r)}</td>
       <td className="lin-act">
-        <button className={`btn sm ghost lin-ask${r.status === "blocked" ? " shown" : ""}`} onClick={(e) => open(r, e.currentTarget)} title="Ask about this task: not posted, doesn't wake the agent">
-          ✦ {r.status === "blocked" ? "Why?" : "Ask"}
+        <button className={`btn sm ghost lin-ask${r.state?.reason === "failed" ? " shown" : ""}`} onClick={(e) => open(r, e.currentTarget)} title="Ask about this task: not posted, doesn't wake the agent">
+          ✦ {r.state?.reason === "failed" ? "Why?" : "Ask"}
         </button>
       </td>
     </tr>
@@ -133,9 +128,9 @@ export function LineageStrip({ refId, title, agent, crew, prefix, href, onSignIn
         <div className="lin-chips">
           {rows.map((r) => {
             const cost = costOf(r);
-            const appr = waitsOnApproval(r);
+            const tone = waitsOnApproval(r) ? "needs" : r.state ? stateWords(r.state).tone : "idle";
             return (
-              <button key={r.identifier} className={`lin-chip s-${appr ? "approval" : r.status}`} title={`${r.agent}: ${r.title} (${STATUS_WORDS[appr ? "approval" : r.status]})`} onClick={() => setTable(!shown)}>
+              <button key={r.identifier} className={`lin-chip s-${tone}`} title={`${r.agent}: ${r.title}${r.state ? ` (${stateWords(r.state).word}${stateWords(r.state).detail ? `: ${stateWords(r.state).detail}` : ""})` : ""}`} onClick={() => setTable(!shown)}>
                 <AgentAvatar name={r.agent} portrait={portrait(r.agent)} size={18} />
                 <span className="lin-chip-name">{r.agent}</span>
                 <span className="lin-c">
@@ -177,7 +172,7 @@ export function LineageStrip({ refId, title, agent, crew, prefix, href, onSignIn
                   {t.tasks} task{t.tasks === 1 ? "" : "s"}
                   {t.running > 0 && ` · ${t.running} running`}
                   {t.needs > 0 && ` · ${t.needs} need${t.needs === 1 ? "s" : ""} you`}
-                  {t.blocked > 0 && ` · ${t.blocked} blocked`}
+                  {t.failed > 0 && ` · ${t.failed} failed`}
                 </td>
                 <td className="lin-model" />
                 <td />

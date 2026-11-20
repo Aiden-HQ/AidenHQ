@@ -5,6 +5,7 @@ import { crewOf, foldedChildren, type CrewInput, type CrewMember } from "./crew.
 import { forOthers } from "./aidenhq-sdk/for-others.js";
 import { type Agent, type Comment, type Issue, type Label } from "./paperclip.js";
 import { BUCKETS, type Bucket, type Placement } from "./store.js";
+import type { ShownState } from "./task-state.js";
 
 /** A board-written comment (a merge, an unreadable file): the board speaks, never the owner. */
 export const NOTICE_MARKER = "<!-- aidenhq-notice -->";
@@ -107,6 +108,8 @@ export interface Card {
   working?: { agent: string; since: string | null; queued: boolean };
   /** The agents on the task: its own agent, and those working in its sub-tasks. */
   crew?: CrewMember[];
+  /** The kernel's state of the task (task-state.ts), set when the board is read; null when it has no facts. */
+  state?: ShownState | null;
 }
 
 export function toCard(issue: Issue, list: Assignee[], seenAt: string): Card {

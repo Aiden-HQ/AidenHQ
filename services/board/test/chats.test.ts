@@ -1,34 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { REPLY_MARKER, chatAgent, chatAgentMarker, chatState, needsYou, openAsk, pickAgent, shownState, type Message } from "../src/chats.js";
+import { REPLY_MARKER, askedQuestions, chatAgent, chatAgentMarker, pickAgent } from "../src/chats.js";
 import type { Agent, Issue } from "../src/paperclip.js";
-import type { PastRun } from "../src/runs.js";
 
 const issue = (o: Partial<Issue> = {}): Issue => ({ id: "i1", identifier: "WOR-1", title: "t", description: null, status: "todo", priority: "medium", assigneeUserId: null, assigneeAgentId: "a1", assigneeAdapterOverrides: null, createdAt: "", updatedAt: "", ...o });
-const past = (status: string, error: string | null = null): PastRun => ({ id: "r0", status, agentId: "a1", issueId: "i1", startedAt: null, finishedAt: "x", error });
-
-describe("chatState", () => {
-  it("a stopped run is idle, not waiting for you, unless the agent asked the owner something", () => {
-    const stopped = past("cancelled", "cancelled by user");
-    const base = chatState(issue({ status: "in_review" }), [], stopped, "me");
-    expect(base.state).toBe("idle");
-    expect(chatState(issue({ assigneeAgentId: null, assigneeUserId: "me" }), [], stopped, "me").state).toBe("idle");
-    expect(shownState(base, [], stopped).state).toBe("idle");
-    const asked = [{ kind: "reply", text: "Which repo?", at: "2026-11-10T10:00:00Z", questions: [{ question: "Which repo?" }] }] as unknown as Message[];
-    expect(shownState(base, asked, stopped).state).toBe("waiting for you");
-  });
-});
-
-describe("a task in review", () => {
-  it("is with its reviewer (grader, AI reviewer, CI, merge queue), never the owner, unless asked or handed to him", () => {
-    const kid = issue({ status: "in_review", parentId: "chat" });
-    const base = chatState(kid, [], undefined, "me");
-    expect(base.state).toBe("in review");
-    expect(chatState(issue({ status: "in_review" }), [], undefined, "me").state).toBe("in review");
-    const asked = [{ kind: "reply", text: "Ship it?", at: "2026-11-10T10:00:00Z", actions: ["Yes"] }] as unknown as Message[];
-    expect(shownState(base, asked, undefined).state).toBe("waiting for you");
-    expect(chatState(kid, [], undefined, "me", new Set(["i1"])).state).toBe("waiting for approval");
-  });
-});
 
 describe("pickAgent", () => {
   const ag = (id: string, name: string, key: string, status = "idle", lifecycleHolds: string[] = []): Agent => ({ id, name, status, lifecycleHolds, metadata: { engine: "codex", setupKey: `aidenhq:${key}` } });
@@ -47,31 +21,13 @@ describe("replyActions", () => {
   });
 });
 
-describe("needsYou", () => {
-  it("lists only what the owner must decide: a Tier 2 card, an open question, work handed to him", () => {
-    const t = (id: string, o: Partial<Issue> = {}) => issue({ id, identifier: id, ...o });
-    const open = [
-      t("card", { status: "in_review" }), // a pending Tier 2 record
-      t("asks", { status: "in_progress" }), // its agent's question, unanswered
-      t("handed", { assigneeAgentId: null, assigneeUserId: "me", description: `over to you\n\n${chatAgentMarker("a1")}` }), // a chat handed back
-      t("pr", { status: "in_review" }), // a PR with the AI reviewer / CI / merge queue
-      t("timedout"), // its run timed out: Fleet Ops' to repair
-      t("todo", { assigneeAgentId: null, assigneeUserId: "me" }), // his own plain to-do
-      t("parked", { status: "backlog" }), // an old question on a parked chat
-    ];
-    const runs = [{ ...past("timeout", "Timed out after 1200s"), issueId: "timedout" }];
-    const got = needsYou(open, [], runs, "me", new Set(["card"]), new Set(["asks", "parked"]));
-    expect(got.map((x) => [x.id, x.state])).toEqual([["card", "waiting for approval"], ["asks", "waiting for you"], ["handed", "waiting for you"]]);
-  });
-});
-
-describe("openAsk", () => {
-  it("a question stays open through the agent's later notes until the owner answers; the board's notices aren't answers", () => {
+describe("askedQuestions", () => {
+  it("finds the options of the task's own agent's newest reply that offered some; another agent's reply is never one", () => {
     const c = (id: string, o: Record<string, unknown>) => ({ id, body: "", authorType: "agent", authorAgentId: "a1", authorUserId: null, createdAt: id, ...o });
     const ask = c("1", { body: `Which exception? ${REPLY_MARKER} <!-- aidenhq-questions:[{"question":"Which?","options":["Source build","Wait upstream"]}] -->` });
-    const later = [ask, c("2", { body: `Still waiting on your call. ${REPLY_MARKER}` }), c("3", { authorType: "user", authorAgentId: null, authorUserId: "me", body: "Graded. <!-- aidenhq-notice -->" })];
-    expect(openAsk(later, "a1", "me")?.id).toBe("1");
-    expect(openAsk([...later, c("4", { authorType: "user", authorAgentId: null, authorUserId: "me", body: "Source build." })], "a1", "me")).toBeUndefined();
+    const note = c("2", { body: `Still waiting on your call. ${REPLY_MARKER}` });
+    expect(askedQuestions([ask, note], "a1")?.id).toBe("1");
+    expect(askedQuestions([ask, note], "a2")).toBeUndefined();
   });
 });
 
