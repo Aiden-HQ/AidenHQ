@@ -14,8 +14,10 @@
 //              owner's chat words Aiden relays as his in-app request) with the key alone.
 //   POST /v1/apps/<op>       (the apps-platform module's own token) in-app requests and roles for agents: requests, reply,
 //              roles, role_set (apps-mcp checked the calling agent may, and names it).
-//   POST /v1/operator/<op>   (x-operator-key: board_operator_key) ops/setup.sh's owner setup link, first-run
-//              /setup link (setup_token) and account resets.
+//   POST /v1/operator/<op>   (x-operator-key: kernel_operator_key) ops/setup.sh's owner setup link, first-run
+//              /setup link (setup_token) and account resets, each answering a one-time link. The key is read by the kernel and
+//              by root's ops/setup.sh on the host, and mounted into no container (compose.yaml), so no container, the board
+//              included, can mint a link: a board compromise isn't an account takeover.
 import { timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { AccountError, type Accounts, type Role } from "./accounts.ts";
@@ -24,6 +26,9 @@ import type { Whoami } from "./identity.ts";
 import type { ModuleSecrets } from "./module-secrets.ts";
 import type { ModuleValidate } from "./module-validate.ts";
 import { fail } from "./proxy.ts";
+
+/** The vault secret the operator routes check: the host's only (never in compose.yaml). */
+export const OPERATOR_KEY = "kernel_operator_key";
 
 const EMAIL = (v: unknown) => typeof v === "string" && v.length <= 200;
 const APP = (v: unknown) => typeof v === "string" && /^[a-z][a-z0-9-]{1,30}$/.test(v);

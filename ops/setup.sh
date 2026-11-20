@@ -161,8 +161,9 @@ set_env() { # KEY VALUE: sets KEY in .env (replacing a commented or old line, el
 }
 json() { local s="${1//\\/\\\\}"; printf '"%s"' "${s//\"/\\\"}"; }   # a JSON string, without node (a dry run has none)
 read_secret() { [ -s "$SECRETS/$1" ] && cat "$SECRETS/$1" || true; }
-operator() { # OP [JSON]: the kernel's accounts (its backplane, POST /v1/operator/<op>) with the operator's key: setup link, resets
-  printf 'x-operator-key: %s\n' "$(read_secret board_operator_key)" \
+operator() { # OP [JSON]: the kernel's accounts (its backplane, POST /v1/operator/<op>) with the operator's key: setup link, resets.
+  # kernel_operator_key is the host's only (root reads the vault here; no container mounts it), so only this host mints links.
+  printf 'x-operator-key: %s\n' "$(read_secret kernel_operator_key)" \
     | curl -sS -X POST "http://${AIDENHQ_KERNEL_BACKPLANE:-10.231.0.1:3130}/v1/operator/$1" -H 'content-type: application/json' -H @- ${2:+--data "$2"} "${@:3}"
 }
 
