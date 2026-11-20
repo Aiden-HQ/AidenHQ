@@ -9,6 +9,9 @@ export interface Wake { key: string; task: string; agent: string; cause: string;
 /** A job as the kernel shows it (jobs.ts JobView, the fields dispatch reads). */
 export interface JobView { id: string; task: string; agent: string; state: string; exit: number | null; final: string; session: string | null; timedOut: boolean; cancelled: boolean; at: number; ended: number | null; acked: boolean; refused?: string; progress?: { steps?: Step[] } }
 
+/** A connection the owner has to fix (kernel connection-state.ts): `connection` is the agent-facing key, `module` the one the owner connects. */
+export interface Down { connection: string; module: string; cause: string; since: string }
+
 export interface Kernel {
   claim(limit: number): Promise<Wake[]>;
   drop(key: string, why: string): Promise<void>;
@@ -54,6 +57,8 @@ export interface Kernel {
   commentTask(task: string, body: string): Promise<boolean>;
   /** A message for the owner through the one notify (role kernel.owner-notice). */
   notify(b: { kind: "decision"; text: string; task: string; dedupe_key: string }): Promise<void>;
+  /** The connections `agent` is granted that are down now (role kernel.jobs); the prompt lists them. */
+  connectionsDown(agent: string): Promise<Down[]>;
   /** A note on a task with no job behind it (a redirect, a missing request), posted as the agent, once per wake. */
   note(wake: string, body: string): Promise<void>;
 }
@@ -89,6 +94,7 @@ export function createKernel(url: string, token: string, fetcher: typeof fetch =
     fileTask: async (b) => await call("POST", "/v1/tasks", b),
     commentTask: async (task, body) => Boolean((await call("POST", `/v1/tasks/${e(task)}/comment`, { body }))?.comment),
     notify: async (b) => void (await call("POST", "/v1/notify", b)),
+    connectionsDown: async (agent) => (await call("GET", `/v1/connections/down?agent=${e(agent)}`)).down ?? [],
     note: async (wake, body) => void (await call("POST", `/v1/wakes/${e(wake)}/note`, { body })),
   };
 }

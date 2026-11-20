@@ -1,0 +1,18 @@
+{
+  "title": "board.signins: a sign-in the board shows and connects (spec §3.6). The board holds only the proxy's <id>_auth_token; the proxy keeps the vendor's token.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "label", "status_url", "connect_url", "callback", "missing", "stopped"],
+  "properties": {
+    "id": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,30}$", "description": "the connection (or runner-only module) it signs in, and its token <id>_auth_token" },
+    "label": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9 .-]{0,30}$" },
+    "status_url": { "type": "string", "pattern": "^http://[a-z][a-z0-9-]{0,62}:[0-9]{2,5}/auth/status$", "description": "the module service's sign-in state; start and finish are its siblings" },
+    "connect_url": { "type": "string", "pattern": "^/[a-z][a-z0-9_]{0,30}/connect$", "description": "the board path that starts the sign-in" },
+    "callback": { "type": "string", "pattern": "^/([a-z][a-z0-9_]{0,30}/)?callback$", "description": "the board path the vendor returns to (as registered with the vendor)" },
+    "mode": { "enum": ["redirect", "device"], "description": "redirect (the default): the vendor sends the browser back to `callback`. device: the proxy's device flow (POST /auth/device): the board shows a code to type on the vendor's page while the proxy waits for the token; `callback` is then never used" },
+    "https_only": { "type": "boolean", "description": "the vendor takes only https redirects (Slack): Connect returns to the board's https address, never the default loopback address the owner pastes back" },
+    "missing": { "type": "string", "minLength": 1, "maxLength": 200, "description": "the banner's second sentence before the first sign-in" },
+    "stopped": { "type": "string", "minLength": 1, "maxLength": 200, "description": "the banner's second sentence once the sign-in stopped working" },
+    "secrets": { "type": "array", "maxItems": 4, "items": { "oneOf": [{ "type": "string", "pattern": "^[a-z][a-z0-9_]{1,63}$" }, { "type": "object", "additionalProperties": false, "required": ["secret", "when"], "properties": { "secret": { "type": "string", "pattern": "^[a-z][a-z0-9_]{1,63}$" }, "when": { "type": "object", "minProperties": 1, "description": "setting: value; asked for only while the module's settings hold" } } }] }, "description": "per-install values Connect asks for first, inline (each a secret of this module with `setup:`; compile adds their `fields`): only what can't be a default, such as a company's own address. An entry may carry `when: { <setting>: <value> }`: asked for only in that mode" }
+  }
+}

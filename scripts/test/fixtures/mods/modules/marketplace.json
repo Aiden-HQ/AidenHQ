@@ -73,6 +73,10 @@
       "source": "./ext2"
     },
     {
+      "name": "signbad",
+      "source": "./signbad"
+    },
+    {
       "name": "flowbad",
       "source": "./flowbad"
     },
