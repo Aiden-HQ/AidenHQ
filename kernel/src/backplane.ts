@@ -35,6 +35,7 @@
 //                              agent it dispatches, cancelled as that agent (wakes.ts)
 //   POST /v1/routines/pause   (a module with role kernel.routines) {routine}: that routine paused, as the owner (never resumed here)
 //   POST /v1/wakes/:key/note   (the module that claimed it) {body}: a note on its task as its agent, once (no job answers it)
+//   POST /v1/board-tasks       (the board's key) {title, description, role | agent, source}: the same, as module "board" (app incidents for the chief of staff)
 //   POST /v1/tasks             (a module with role kernel.tasks) {title, description, role | agent, source, parent?}: a task of the module's
 //                              fixed text for the agent holding `role` (or `agent`, by id), once per source (modtasks.ts); GET /v1/tasks?source=
 //                              the open tasks of the module's own `release:instance:` family (the release train's sweep); POST /v1/tasks/:task/close
@@ -144,6 +145,7 @@ export const ROUTES = [
   { method: "ANY", path: "/v1/cp/owner/*", auth: "board" },
   { method: "POST", path: "/v1/brake/notify", auth: "module" },
   { method: "POST", path: "/v1/notify", auth: "board" },
+  { method: "POST", path: "/v1/board-tasks", auth: "board" },
   { method: "GET", path: "/v1/notify/take", auth: "module" },
   { method: "POST", path: "/v1/notify/ack", auth: "module" },
   { method: "POST", path: "/v1/notify/send", auth: "module" },
@@ -440,6 +442,12 @@ export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boar
           if (!notify) throw fail(503, "unavailable", "notify is off");
           notify.queue(notice(await json(req)));
           return send(res, 200, { queued: true });
+        }
+        case "POST /v1/board-tasks": {
+          // The board's own alerts for the chief of staff (an app incident): a task of fixed text, once per source (modtasks.ts, as module "board").
+          if (!isBoard(req)) throw fail(401, "unauthorized", "the board's key is required");
+          if (!tasks) throw fail(503, "unavailable", "module tasks are off");
+          return send(res, 200, await tasks.file("board", await json(req)).catch((e: { name?: string; status?: number; message: string }) => { throw e.name === "TaskError" ? fail(e.status!, "bad_request", e.message) : e; }));
         }
         case "GET /v1/notify/take": case "POST /v1/notify/send": case "POST /v1/notify/ack": {
           const w = await moduleOf(req);
