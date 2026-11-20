@@ -70,6 +70,11 @@ export function AppsView({ app, onSignIn }: { app?: string; onSignIn: () => void
       />
       {error && <Banner tone="danger">Couldn't load apps: {error}</Banner>}
       {data?.error && <Banner tone="warn">The apps platform didn't answer: {data.error}</Banner>}
+      {data?.node?.login_url && (
+        <Banner tone="warn">
+          Agent-built apps need one Tailscale sign-in. <a href={data.node.login_url} target="_blank" rel="noreferrer">Approve the apps node</a> as yourself; apps then open on your tailnet.
+        </Banner>
+      )}
       {!data ? (
         !error && <TileGrid>{[0, 1, 2].map((i) => <div key={i} className="apps-skeleton" aria-hidden />)}</TileGrid>
       ) : !apps.length ? (

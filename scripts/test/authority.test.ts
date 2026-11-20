@@ -259,7 +259,7 @@ test("a code host's service mounts, a channel's transport, and kernel roles each
   const head = with_({ services: { run: { "crm-mcp": svc } }, roles: { requests: ["kernel.apply"] } });
   assert.deepEqual(authorityLines([authorityDiff("acme-crm", base, head, false)]), [
     "acme-crm: requests role kernel.apply (files instance applies) (owner)",
-    "acme-crm: service crm-mcp: job workspaces read-write (owner)",
+    "acme-crm: service crm-mcp: job workspaces read-only (owner)",
     "acme-crm: service crm-mcp: reads its points file (review)",
   ]);
   const ch = (channel) => with_({ providers: { channel } });

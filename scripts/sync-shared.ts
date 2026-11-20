@@ -11,6 +11,7 @@
 //   kernel/sdk/src/paperclip.ts      the one Paperclip HTTP client (lanes through the kernel, or direct), in the board, tasks-mcp and ops-mcp
 //   kernel/sdk/src/maintained-repos.ts  maintainer_repos and its per-repo duties, in github-mcp and the code host (src/aidenhq-sdk/)
 //   kernel/sdk/src/attribution.ts    the AidenHQ commit trailer and text footer, in github-mcp and the code host (src/aidenhq-sdk/)
+//   kernel/sdk/src/box-bundle.ts     a job's branch from its box's bundle, never its .git, in the code host (src/aidenhq-sdk/)
 //   kernel/sdk/src/pin-owner.ts      who moves the product pin, in the code host's release train (the kernel's updater imports it)
 //   kernel/sdk/src/judge.ts          the judges' models, cross-family choice and model call, in the reviewer and grading services
 //   services/shared/review-files.ts  the changed files as the reviewer reads them, in the reviewer module's service
@@ -85,6 +86,8 @@ export function sharedCopies(root = repo) {
   "kernel/sdk/src/attribution.ts": ["modules/github/connections/github-mcp/src/aidenhq-sdk/attribution.ts", "modules/github/service/src/aidenhq-sdk/attribution.ts"],
   // Code churn: the code host's churn pass and backfill (codehost-local calls the original from the kernel).
   "kernel/sdk/src/churn.ts": ["modules/github/service/src/aidenhq-sdk/churn.ts"],
+  // A job's branch from its box's bundle, read the one no-follow way: the code host (codehost-local imports the original).
+  "kernel/sdk/src/box-bundle.ts": ["modules/github/service/src/aidenhq-sdk/box-bundle.ts"],
   // Who moves the product pin: the kernel's updater and the code host's release train ask this one function.
   "kernel/sdk/src/pin-owner.ts": ["modules/github/service/src/aidenhq-sdk/pin-owner.ts"],
   // The changed files' shaping: the code host's plan shapes them for the reviewer, which (and its eval) reads this copy.

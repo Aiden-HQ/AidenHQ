@@ -69,6 +69,10 @@ const p = createPlatform(
     appsNodeFile: `${repoDir}/config/apps-node`,
     previewsFile: process.env.APPS_PREVIEWS_FILE ?? "/previews/previews.json",
     doorsFile: process.env.APPS_DOORS_FILE ?? "/previews/doors.json",
+    notify: async (text, key) => {
+      const res = await fetch(`${kernelUrl}/v1/notify`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${serviceKey}` }, body: JSON.stringify({ kind: "decision", text, dedupe_key: key }), signal: AbortSignal.timeout(30_000) });
+      if (!res.ok) throw new Error(`kernel notify: ${res.status}`);
+    },
   },
   log,
 );
@@ -124,6 +128,8 @@ const http = createServer(async (req, res) => {
   try {
     if (url.pathname === "/healthz") return send(res, 200, { ok: true });
     if (url.pathname === "/internal/status" && req.method === "GET") return send(res, 200, p.apps().map((a) => p.cached(a)));
+    // The apps node's login link is a bearer secret: the board's internal token only.
+    if (url.pathname === "/internal/apps-node" && req.method === "GET") return internalAuthorized(req) ? send(res, 200, p.nodeState()) : send(res, 401, { error: "unauthorized" });
     if (url.pathname === "/internal/host" && req.method === "GET") {
       const f = statfsSync("/data"); // the host disk that holds the apps' data
       return send(res, 200, { disk_pct: Math.round((1 - Number(f.bavail) / Number(f.blocks)) * 100) });

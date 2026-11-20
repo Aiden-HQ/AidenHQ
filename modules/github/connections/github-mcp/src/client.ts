@@ -27,7 +27,7 @@ export function needText(n: Need): string {
     case "expired": return "GitHub's sign-in stopped working: reconnect GitHub on the board (Settings, Connections)";
     case "scope": return `GitHub needs the \`${n.scope}\` permission: reconnect GitHub on the board (Settings, Connections)`;
     case "sso": return `The ${n.org} organization needs you to authorize single sign-on for AidenHQ: ${n.url}`;
-    case "restricted": return `The ${n.org} organization restricts outside apps: request access for AidenHQ at ${n.url}`;
+    case "restricted": return `The ${n.org} organization restricts OAuth apps: open ${n.url} and press Grant next to ${n.org} (anyone but an owner of ${n.org} presses Request and an owner approves)`;
     case "unreachable": return `${n.repo} isn't reachable with your GitHub account`;
     case "rate_limited": return `GitHub's rate limit is used up until ${n.until}`;
   }
@@ -97,6 +97,8 @@ type Sleep = (ms: number) => Promise<void>;
 
 export function createAccess(o: {
   auth: Auth;
+  /** The OAuth App's client ID: an org's restriction is lifted on its page (Grant, or Request) in the owner's GitHub settings. */
+  clientId?: string;
   fetchImpl?: typeof fetch;
   now?: () => number;
   sleep?: Sleep;
@@ -167,7 +169,7 @@ export function createAccess(o: {
     const message = String(body?.message ?? "");
     if (res.status === 403 && /OAuth App access restrictions/i.test(message)) {
       const org = /the [`'"]?([A-Za-z0-9-]+)[`'"]? organization/i.exec(message)?.[1] ?? ownerOf(path) ?? "";
-      return { cause: "restricted", org, url: `https://github.com/orgs/${org}/policies/applications` };
+      return { cause: "restricted", org, url: `https://github.com/settings/connections/applications/${o.clientId ?? ""}` };
     }
     const retry = Number(res.headers.get("retry-after"));
     if (res.status === 429 || (res.status === 403 && (Number.isFinite(retry) && retry > 0 || res.headers.get("x-ratelimit-remaining") === "0"))) {
@@ -251,7 +253,7 @@ function statusLines(have: string[], problems: GitHubStatus["problems"], rate: G
     { label: "Fleet repos", value: fleetOrg ? `in ${fleetOrg}` : "on this server", state: "ok", action: { label: "Change", href: "#/modules/github/settings" } },
     ...(ci ? [needs("CI runners", "admin:org")] : []),
     needs("Projects boards", "project"),
-    ...problems.map((p): StatusLine => (p.cause === "sso" ? { label: p.org, value: "GitHub needs you to authorize single sign-on", state: "warn", action: { label: "Authorize", href: p.url } } : { label: p.org, value: "the org restricts outside apps", state: "warn", action: { label: "Request access", href: p.url } })),
+    ...problems.map((p): StatusLine => (p.cause === "sso" ? { label: p.org, value: "GitHub needs you to authorize single sign-on", state: "warn", action: { label: "Authorize", href: p.url } } : { label: p.org, value: "the org restricts OAuth apps", state: "warn", action: { label: "Grant access", href: p.url } })),
   ];
   if (rate) {
     lines.push({ label: "Rate limit", value: `${rate.remaining.toLocaleString("en-US")} of ${rate.limit.toLocaleString("en-US")} left, resets`, time: new Date(rate.reset).toISOString(), state: rate.remaining < rate.limit * 0.2 ? "warn" : "ok" });

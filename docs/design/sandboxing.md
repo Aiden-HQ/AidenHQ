@@ -11,7 +11,7 @@ public Internet is open by owner policy, so no tier alone stops exfiltration thr
 | Tier | What runs there | Box image |
 |---|---|---|
 | Crew job (profile `crew`) | every agent's job that isn't an Engineer: chief of staff, triage, designers, reviewers | `agent-base` (browser, `agent-browser`, app starter, design system), or the agent's own `image:` |
-| Engineer job (profile `engineer`) | an Engineer turn: the task's repositories cloned into its workspace, tests, installs | `engineer` |
+| Engineer job (profile `engineer`) | an Engineer turn: the task's repositories cloned by its box (`aidenhq clone`), tests, installs | `engineer` |
 | Check job (profile `check`) | a repo's checks, the reviewer eval, a module's contract kit, the CI code review | `engineer`, credential-free |
 | Apps | agent-built services, deployed through apps-mcp | Docker containers under apps-mcp's policy, not boxes |
 | Module services | a module's containers (`services:`) | compose, `isolation:` below |

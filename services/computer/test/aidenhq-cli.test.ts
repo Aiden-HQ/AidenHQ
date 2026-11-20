@@ -89,10 +89,12 @@ test("aidenhq clone: clones a repo from the kernel's bundle, then refreshes it w
   execFileSync("git", ["init", "-q", ws]);
   git(up, "commit", "-q", "--allow-empty", "-m", "one");
   const asked = [];
+  const answer = { status: 200 };
   const kernel = createServer((req, res) => {
     let b = "";
     req.on("data", (d) => (b += d)).on("end", () => {
       asked.push({ auth: req.headers.authorization, body: JSON.parse(b) });
+      if (answer.status !== 200) return res.writeHead(answer.status, { "content-type": "application/json" }).end(JSON.stringify({ error: { message: "the code host can't answer" } }));
       const file = join(dir, "served.bundle");
       git(up, "bundle", "create", "-q", file, "HEAD", "main");
       res.writeHead(200, { "content-type": "application/octet-stream" }).end(execFileSync("cat", [file]));
@@ -103,6 +105,11 @@ test("aidenhq clone: clones a repo from the kernel's bundle, then refreshes it w
   const env = { PATH: process.env.PATH, AIDENHQ_GATEWAY_URL: `http://127.0.0.1:${kernel.address().port}`, AIDENHQ_RUN_TOKEN: "ahqj_job", AIDENHQ_TASK_WORKTREE: ws };
   const aidenhq = async (...args) => (await run(process.execPath, [CLI, ...args], { env })).stdout;
 
+  // A kernel or code host that can't answer now exits 75 (the job's start tries again later); a refusal exits 1.
+  const exit = (status) => { answer.status = status; return run(process.execPath, [CLI, "clone", "acme-agents/aidenhq-instance"], { env }).then(() => 0, (e) => e.code); };
+  assert.equal(await exit(502), 75);
+  assert.equal(await exit(403), 1);
+  answer.status = 200;
   assert.match(await aidenhq("clone", "acme-agents/aidenhq-instance"), /acme-agents\/aidenhq-instance: cloned into .*aidenhq-instance/);
   assert.deepEqual(asked.at(-1), { auth: "Bearer ahqj_job", body: { repo: "acme-agents/aidenhq-instance" } });
   const clone = join(ws, "aidenhq-instance");

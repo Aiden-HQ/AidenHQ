@@ -61,7 +61,7 @@ test("the job workspaces only for git-credential; a module's own points file for
   const def = (s, extra = {}) => ({ services: { run: { srv: { image: IMG, ...s } } }, ...extra });
   const host = { workDir: "/home/acme/aidenhq-work" };
   const ch = gen("ch", def({ workspaces: "/tasks", points: "/points.json", env: { P: "${AIDENHQ_PRODUCT_REPO:-}" } }, { privileged: ["git-credential"], points: { ops: { schema: "x" } } }), host).services["ch-srv"];
-  assert.deepEqual(ch.volumes, ["${AIDENHQ_CONFIG_DIR:-./config}/points/ch.json:/points.json:ro", "/home/acme/aidenhq-work/tasks:/tasks"]);
+  assert.deepEqual(ch.volumes, ["${AIDENHQ_CONFIG_DIR:-./config}/points/ch.json:/points.json:ro", "/home/acme/aidenhq-work/tasks:/tasks:ro"]);
   assert.throws(() => gen("a", def({ workspaces: "/tasks" }), host), /workspaces: needs privileged: \[git-credential\]/);
   assert.throws(() => gen("a", def({ env: { P: "${AIDENHQ_PRODUCT_REPO:-}" } }), host), /is not allowed/);
   assert.throws(() => gen("a", def({ points: "/points.json" })), /defines no points/);

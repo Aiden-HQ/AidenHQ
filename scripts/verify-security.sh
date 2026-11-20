@@ -200,6 +200,8 @@ for c in $containers; do
       # Only its own secrets, its own state directory (the owner's token file), its cache clones and the job workspaces.
       [ "$(echo "$mounts" | tr ';' '\n' | grep -c '|/state|')" = "1" ] && ! echo "$mounts" | tr ';' '\n' | grep -v '/run/secrets' | grep -v '|/state|' | grep -v '|/cache|' | grep -v '|/tasks|' | grep -q . \
         && pass "github: only its own secrets, state directory, cache and job workspaces mounted" || fail "github has unexpected mounts: $mounts"
+      # The job workspaces are read-only: it reads a job's branch from the bundle its box wrote and never writes a workspace.
+      ! echo "$mounts" | tr ';' '\n' | grep '|/tasks|' | grep -q '|true$' && pass "github: the job workspaces mounted read-only" || fail "github mounts the job workspaces read-write"
       ;;
     *apps-edge*)
       # The apps' tailnet node: its own way out plus the exposed apps' own networks (apps-mcp joins it), nothing else.
