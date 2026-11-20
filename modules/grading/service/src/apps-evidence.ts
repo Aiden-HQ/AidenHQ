@@ -7,7 +7,12 @@ export type AppsCall = (method: string, path: string, body?: unknown) => Promise
 export function appsEvidence(apps: AppsCall) {
   const status = (): Promise<{ name: string; repo?: string }[]> => apps("GET", "/internal/status");
   return {
-    app: async (name: string) => (/^[a-z0-9-]{1,63}$/.test(name) ? (await status()).find((a) => a.name === name) ?? null : null),
+    // null: the registry was read and has no such app. undefined: the registry could not be read, so nothing is known. The
+    // two are never the same answer: a timeout or a 500 from apps-mcp is unavailable evidence, not "this ref is not an app".
+    app: async (name: string): Promise<{ name: string; repo?: string } | null | undefined> => {
+      const rows = await status().catch(() => undefined);
+      return rows ? (rows.find((a) => a.name === name) ?? null) : undefined;
+    },
     // Several apps in one repo: no single app vouches for the PR.
     appOfRepo: async (repo: string) => {
       const same = (await status()).filter((a) => a.repo?.toLowerCase() === repo.toLowerCase());

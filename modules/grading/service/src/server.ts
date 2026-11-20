@@ -4,6 +4,7 @@
 //   POST /check/rubric                     the kernel (grading_check_key): the rubric of a task a module filed (kernel.tasks)
 //   POST /check/grade                      the kernel (grading_check_key): the latest verdict that sent a task's work back, for the AI reviewer
 //   POST /grades                           the tasks module, as the delegating agent (its caller assertion, aud tasks): file a rubric
+//   GET  /grades/<task>                    the same caller: the task's filed grade, before re-filing a corrected one
 //   POST /board/grades, POST /board/grades/<task>/settle   the board (grading_board_key): its reads
 // It reads tasks and settings from the kernel with its own token (kernel.cp-read) and releases its label there
 // (POST /v1/checks/:task); it never writes to the control plane itself. Every five minutes it settles rows whose task closed.
@@ -11,7 +12,7 @@ import http from "node:http";
 import { timingSafeEqual } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { kernelJwks, verifyCaller, type JWKS } from "./aidenhq-sdk/caller.ts";
-import { ESCALATION_WAIT_MS, GRADE_CHECK_MS, Grades, Invalid, backfillEscalatedDelegators, completionGate, parseFiling, parseVerdict, prRefAllowed, graderNote, settleClosedGrades, type KnownRepos, type CompletionPath } from "./grades.ts";
+import { ESCALATION_WAIT_MS, GRADE_CHECK_MS, Conflict, Grades, Invalid, backfillEscalatedDelegators, completionGate, parseFiling, parseVerdict, prRefAllowed, graderNote, settleClosedGrades, type KnownRepos, type CompletionPath } from "./grades.ts";
 import { template } from "./grader/grade.ts";
 
 type Issue = { id: string; identifier?: string; status: string; assigneeAgentId?: string | null; createdByAgentId?: string | null; parentId?: string | null };
@@ -86,17 +87,34 @@ export function createGrading({ db, kernel, keys, kernelUrl = "", jwks = kernelJ
     if (d.kind === "pr" && !prRefAllowed(d.ref, await kernel.repos())) throw new HttpError(400, "deliverable.ref: a repo or PR the instance reaches (the agents org, github_orgs, maintainer_repos or the product repo) or a codehost:local repo or change, or empty for the task's own PRs");
   }
 
-  async function file(req: http.IncomingMessage, body: unknown) {
+  /** A task's own status says it is done or cancelled: its grade is settled work, never restarted by a later filing. */
+  const isClosed = (issue: { status?: string }) => issue.status === "done" || issue.status === "cancelled";
+
+  /** The caller of a filing route and the task it names, both checked: only the agent that created the task, filing through a delegating tool. */
+  async function filingCaller(req: http.IncomingMessage, ref: string) {
     const caller = await verifyCaller(req, jwks, "tasks").catch((e: Error) => { throw new HttpError(403, `refused: ${e.message}`); });
     const tool = String(caller.tool ?? "").split(".").pop()!;
     if (!FILERS.includes(tool)) throw new HttpError(403, `only an agent granted one of ${FILERS.join(", ")} may file a rubric`);
-    const b = parseFiling(body);
-    await refAllowed(b.deliverable);
-    const issue = await kernel.issue(b.issue);
+    const issue = await kernel.issue(ref);
     if (issue.createdByAgentId !== caller.agent) throw new HttpError(403, "only the agent that delegated a task files its rubric");
-    const r = grades.file(issue.id, b.rubric, b.deliverable);
+    return { caller, issue };
+  }
+
+  async function file(req: http.IncomingMessage, body: unknown) {
+    const b = parseFiling(body);
+    const { caller, issue } = await filingCaller(req, b.issue);
+    await refAllowed(b.deliverable);
+    // The row records its filer as the agent that delegated the task: a differing re-file is that agent's, and only its. A
+    // task already closed is left alone (its row may not have been swept to not_graded yet).
+    const r = grades.file(issue.id, b.rubric, b.deliverable, `agent:${caller.agent}`, { closed: isClosed(issue) });
     if (r.created) log("rubric filed", { task: issue.identifier, kind: b.deliverable.kind, criteria: b.rubric.length });
     return { created: r.created, state: r.grade.state };
+  }
+
+  /** A task's filed grade, read by the delegating agent before it re-files (GET /grades/<task>): the row, or null when none. */
+  async function readGrade(req: http.IncomingMessage, ref: string) {
+    const { issue } = await filingCaller(req, ref);
+    return { grade: grades.get(issue.id) ?? null };
   }
 
   /** A module-filed task's rubric: the kernel's own call (its key), after it checked the filing module holds kernel.tasks. */
@@ -104,9 +122,12 @@ export function createGrading({ db, kernel, keys, kernelUrl = "", jwks = kernelJ
     if (!b?.task?.id || typeof b.module !== "string") throw new HttpError(400, "send {task, module, rubric, deliverable}");
     const f = parseFiling({ issue: b.task.id, rubric: b.rubric, deliverable: b.deliverable });
     await refAllowed(f.deliverable);
-    const r = grades.file(b.task.id, f.rubric, f.deliverable);
-    // A row already there stays as its filer made it: the same filing again is a retry, any other is refused.
-    if (!r.created && (JSON.stringify(r.grade.rubric) !== JSON.stringify(f.rubric) || JSON.stringify(r.grade.deliverable) !== JSON.stringify(f.deliverable))) throw new HttpError(409, "this task already has another rubric");
+    // The row records its filer as the module the kernel vouched for: the same filing again is a retry, a differing one is
+    // that module's to replace while the grade is unsettled, and any other module's is refused (grades.file). The kernel's
+    // body carries only the task's id and identifier, so its status is read here: a closed task is left alone, as on the
+    // agent route (its row may not have been swept to not_graded yet).
+    const issue = await kernel.issue(b.task.id);
+    const r = grades.file(b.task.id, f.rubric, f.deliverable, `module:${b.module}`, { closed: isClosed(issue) });
     if (r.created) log("rubric filed for a module's task", { task: b.task.id, module: b.module, kind: f.deliverable.kind, criteria: f.rubric.length });
     return { verdict: "ok", created: r.created };
   }
@@ -187,6 +208,11 @@ export function createGrading({ db, kernel, keys, kernelUrl = "", jwks = kernelJ
         return send(200, { verdict: "ok", grade: graderNote(grades.get(id), template) });
       }
       if (method === "POST" && path === "/grades") return send(200, await file(req, body));
+      // The delegating agent reads a task's filed grade before re-filing it on the same task (a corrected deliverable).
+      {
+        const g = /^\/grades\/([^/]+)$/.exec(path);
+        if (method === "GET" && g) return send(200, await readGrade(req, decodeURIComponent(g[1]!)));
+      }
       // The Fleet Steward's read (its own module token, vouched for by the kernel): which grader passes failed lately, and why.
       if (method === "GET" && path === "/steward/grade-failures") {
         const who = await fetch(`${kernelUrl}/v1/whoami`, { headers: { authorization: String(req.headers.authorization ?? "") }, signal: AbortSignal.timeout(5_000) }).then((r) => (r.ok ? r.json() : {}), () => ({})) as { kind?: string; module?: string };
@@ -197,7 +223,7 @@ export function createGrading({ db, kernel, keys, kernelUrl = "", jwks = kernelJ
       send(404, { error: "no such route" });
     } catch (err) {
       const e = err as Error & { status?: number };
-      const status = e instanceof Invalid ? 400 : e instanceof HttpError ? e.status : 500;
+      const status = e instanceof Invalid ? 400 : e instanceof Conflict ? 409 : e instanceof HttpError ? e.status : 500;
       if (status >= 500) log("grading error", { path, err: String(e.message).slice(0, 300) });
       if (!res.headersSent) send(status, { error: e.message });
     }

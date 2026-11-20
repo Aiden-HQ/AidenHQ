@@ -189,6 +189,14 @@ async function idsWithRecord(p: any, deps: any): Promise<RecordedIds> {
 }
 
 /**
+ * The registry's answer for an app ref, as the evidence paths word it. null: a successful read with no such row. undefined: a
+ * failed read (apps-evidence.ts `appsEvidence().app`). An absent app is not a pending deploy: the ref names no app this
+ * instance runs, so the deliverable can never be satisfied as filed. A failed read is unavailable evidence, never "not an app".
+ */
+const appNotRun = (name: string | undefined) => `${name || "(none)"} is not an app this instance runs (the apps registry has no such app), so this deliverable cannot be satisfied as filed`;
+const appUnknown = (name: string | undefined) => `the apps registry could not be read just now (unavailable evidence), so whether ${name || "(none)"} is an app this instance runs is unknown`;
+
+/**
  * What the task's own record says about its deliverable *now*, read fresh when an evidence wait is about to escalate: a PR
  * merged (the task's branch rows, or the runner's own merge records for it when those rows are gone) with its mergedAt, and for
  * a PR in an app's repo a healthy deploy of that merge commit; for an app, a healthy deploy record of its deployed sha; for an apply, a
@@ -236,8 +244,8 @@ export async function presentNow(deliverable: any, deps: any) {
     return { present: Boolean(merged), facts };
   }
   if (kind === "app") {
-    const app = await deps.app?.(deliverable.ref).catch(() => null);
-    if (!app) return { present: false, facts: [`no app named ${deliverable.ref || "(none)"} is deployed yet`] };
+    const app = await deps.app?.(deliverable.ref).catch(() => undefined);
+    if (app == null) return { present: false, facts: [app === undefined ? appUnknown(deliverable.ref) : appNotRun(deliverable.ref)] };
     const d = (await deploysOf(app, app.sha, deps)).rows.find((r: any) => r.status === "healthy");
     return { present: Boolean(d), facts: [d ? `app ${app.name}: ${String(app.sha).slice(0, 12)} deployed ${stamp(d.at)} (healthy)` : `app ${app.name}: deployed commit ${String(app.sha ?? "(none)").slice(0, 12)} has no healthy deploy`] };
   }
@@ -385,9 +393,14 @@ export const predatesDeploys = (app: any, mergedAt: unknown): boolean => {
   return at.length > 0 && Number.isFinite(merged) && merged < Math.min(...at);
 };
 
-/** A deployed app (apps-mcp status row, or null) as evidence: its commit, state, health, incident and recent deploys. */
+/**
+ * A deployed app (apps-mcp status row) as evidence: its commit, state, health, incident and recent deploys. `null` is a
+ * successful registry read with no such app: the ref is not an app this instance runs, and the deliverable is missing rather
+ * than a deploy still to come. `undefined` is a read that failed: unavailable evidence, and the row waits rather than judging.
+ */
 export function appEvidence(app: any, name: string | undefined): any {
-  if (!app) return { awaiting: `no app named ${name || "(none)"} is deployed yet` };
+  if (app === undefined) return { awaiting: appUnknown(name) };
+  if (app === null) return { awaiting: appNotRun(name), missing: true };
   if (!app.sha) return { awaiting: `${app.name} is not deployed yet` };
   const facts = [`app ${app.name}: deployed commit ${app.sha}${app.deployed_at ? ` at ${stamp(app.deployed_at)}` : ""}${app.deployed_by ? ` by ${app.deployed_by}` : ""}; state ${app.state}; ${app.healthy ? "healthy" : "not healthy"}; ${app.incident ? `open incident (${app.incident.kind})` : "no open incident"}`];
   // The history, newest first: which commits were deployed, by whom, and how each ended. `by: auto-deploy` is the
