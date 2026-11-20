@@ -121,6 +121,15 @@ export function createKernelAuth(o: KernelAuthOptions) {
     call: <T = unknown>(op: string, who: AccountSession, body: Record<string, unknown> = {}) => post<T>(`/v1/accounts/${op}`, { ...body, token: who.token }),
     /** Every account's id, name, email and whether it is the owner's (labels; no session needed). */
     names: () => post<{ accounts: { id: string; name: string; email: string; owner: boolean }[] }>("/v1/accounts/names", {}).then((j) => j.accounts),
+    /** An MCP client's bearer, checked by the kernel for this resource: the account behind it, or null (expired, revoked, another audience, no longer a ready admin). */
+    mcpGrant: (token: string, resource: string) =>
+      post<{ account: AccountSession["account"]; client: string; expires: string }>("/v1/auth/mcp", { token, resource }).catch((e: AccountError) => (e.status === 401 ? null : Promise.reject(e))),
+    /** Cards decided as the bearer's account (the kernel derives who from the grant; each card stands alone). */
+    mcpDecide: (token: string, resource: string, cards: { id: string; digest: string; decision: "approve" | "reject"; reason?: string; stale?: boolean }[]) =>
+      post<{ outcomes: { id: string; ok: boolean; state?: string; identifier?: string; error?: string }[] }>("/v1/owner/decide", { token, resource, cards }),
+    /** The MCP clients an admin has signed in, and ending one. */
+    mcpGrants: (who: AccountSession) => post<{ grants: { id: string; client: string; lastUsed: string | null }[] }>("/v1/auth/mcp/grants", { account: who.account.id }),
+    mcpRevoke: (who: AccountSession, grant: string) => post<{ ok: true }>("/v1/auth/mcp/revoke", { account: who.account.id, grant }),
     /** The owner's own chat words, filed as his in-app request on an app (the kernel checks they name it). */
     ownerRequest: (app: string, words: string) => post<{ id: string; status: string }>("/v1/accounts/owner_request", { app, words }),
   };

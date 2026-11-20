@@ -16,6 +16,7 @@
     "lint": "eslint web/src --max-warnings 0 && stylelint \"web/src/**/*.css\""
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.2",
     "pino": "^10.4.0",
     "yaml": "^2.9.1",
     "zod": "^4.6.6"
