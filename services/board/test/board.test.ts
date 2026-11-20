@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { shortModel } from "../src/activity.js";
 import { checkRequest } from "../src/app.js";
-import { BadRequest, UpdateSchema, assignees, buildBoard, engineOf, paperclipUpdate } from "../src/board.js";
+import { BadRequest, UpdateSchema, assignees, buildBoard, engineOf, paperclipUpdate, replyTarget } from "../src/board.js";
 import type { Agent, Issue, Label } from "../src/paperclip.js";
 import { Store } from "../src/store.js";
 
@@ -135,6 +135,34 @@ describe("edits", () => {
     expect(UpdateSchema.safeParse({ assigneeAgentId: CODEX }).success).toBe(false);
     expect(UpdateSchema.safeParse({ model: "gpt; rm -rf" }).success).toBe(false);
     expect(UpdateSchema.safeParse({ status: "done", priority: "high" }).success).toBe(true);
+  });
+});
+
+
+describe("the hint under the reply box", () => {
+  it("says no agent is assigned on an owner task with none, and does not promise a reader", () => {
+    const text = replyTarget(issue({ assigneeAgentId: null }), list);
+    expect(text).toBe("No agent is assigned; this message stays on the task. @name brings an agent in.");
+    expect(text).not.toMatch(/Researcher/i);
+    expect(text).not.toMatch(/repl(y|ies)/i);
+  });
+
+  it("still names the reader on a task an agent holds", () => {
+    expect(replyTarget(issue({ assigneeAgentId: CODEX, assigneeUserId: null }), list)).toBe("The Engineer reads replies here and continues the coding job.");
+    expect(replyTarget(issue({ assigneeAgentId: "00000000-0000-0000-0000-00000000000a", assigneeUserId: null }), list)).toBe("The Researcher is working on this and reads replies.");
+    expect(replyTarget(issue({ assigneeAgentId: "00000000-0000-0000-0000-0000000000ee", assigneeUserId: null }), list)).toBe("Slack Scout reads replies here.");
+    expect(replyTarget(issue({ assigneeAgentId: null, labels: [{ id: "l", name: "needs-review", color: "#000" }] }), list)).toBe("AidenHQ applies review replies here (pick N, ignore).");
+  });
+
+  it("does not read a code label as an Engineer who is there", () => {
+    const text = replyTarget(issue({ assigneeAgentId: null, labels: [{ id: "l", name: "engineer", color: "#000" }] }), list);
+    expect(text).toBe("No agent is assigned; this message stays on the task. @name brings an agent in.");
+  });
+
+  it("says the message stays on the task when agents work in its parts but none is assigned to it", () => {
+    const text = replyTarget(issue({ assigneeAgentId: null }), list, true);
+    expect(text).toBe("This message stays on the task; @name sends it to an agent.");
+    expect(text).not.toMatch(/Researcher/i);
   });
 });
 
