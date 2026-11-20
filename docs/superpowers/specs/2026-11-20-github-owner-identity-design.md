@@ -63,7 +63,8 @@ AidenHQ" footer.
 ### 1. One GitHub process
 
 `github-mcp` and the code host (`modules/github/service`) run in **one container**, sharing `official.ts`'s sign-in and
-token store. The token never leaves that process. Kept as they are: the kernel-authenticated executor listener, typed
+token store. The token lives in one file on the host's state dir (0600, the host user's), bind-mounted into that container;
+the only other reader is the host's git credential helper (§2). No agent, job or computer box ever gets it. Kept as they are: the kernel-authenticated executor listener, typed
 write plans (`push` to agent branches, `pr`, `merge` after an approved record bound to the head, `close`, `create_repo`),
 the durable merge queue, PR watch. Only their credential changes: every call uses the owner's bearer.
 
@@ -81,7 +82,7 @@ instead, run with the owner's token inside the GitHub process:
 | `modules/apps-platform/apps-mcp/src/github-app.ts` (registry pushes, preview comments, fleet PRs outside the agents org) | code host ops for those exact writes/reads |
 | `modules/grading/service/src/github.ts` (evidence reads) | a read op (check runs, PR files at a sha) |
 | `ops/ci-runner-token.ts` (org runner registration) | an op returning only the runner registration token |
-| `ops/git-credential-app.mjs` (host checkouts of the instance repo) | the owner token through a credential helper on the host that reads the sign-in store; works before the container starts (apply needs it) |
+| `ops/git-credential-app.mjs` (host checkouts of the instance repo) | `ops/git-credential-github.mjs` reads the same token file directly; works before the container starts (apply fetches first) |
 | snapshot / clone / bundle (`kernel/src/codehost.ts`) | kept, using the owner token inside the code host |
 
 `kernel/src/github-app.ts`, the `/setup/github-app` admin routes (`kernel/src/admin.ts`), the App key mounts, the
@@ -89,8 +90,8 @@ instead, run with the owner's token inside the GitHub process:
 
 ### 3. Where fleet repos live
 
-Setting **`github_fleet_org`** (replaces `github_agents_org`): an org (or the owner's user account) chosen once from a
-list of accounts the owner can create repos in. Unset: fleet repos live in `local` (codehost-local) as today. Set: bare
+Setting **`github_fleet_org`** (replaces `github_agents_org`): an org chosen once from the orgs the owner can create repos
+in (orgs only, not the user account: runner registration and `@agents` grants are org-shaped; my call). Unset: fleet repos live in `local` (codehost-local) as today. Set: bare
 `create_repo` and `@agents` grants resolve to it. The setting survives a disconnect: while GitHub is disconnected a
 `create_repo` there **refuses** with "GitHub isn't connected", never switches to `local`. The owner's live instance sets
 it to `aidenhq-alpha`.
@@ -103,8 +104,10 @@ it to `aidenhq-alpha`.
 - Text posted to GitHub (issues, comments, PR bodies, review comments) ends with `— via AidenHQ (<agent name>)`.
 - `github_official` (GitHub's own MCP through the sign-in) becomes **read-only**: every mutating tool denied. Mutations go
   only through our typed tools, which add the footer and file the write record.
-- The owner-token review tool posts **comments only**, never APPROVE or REQUEST_CHANGES: an agent's review must not
-  satisfy branch protection as the owner's.
+- `github_pr_review` (owner token, `main.ts:432`, today accepts APPROVE) posts **COMMENT only**: an agent's review must
+  not satisfy branch protection as the owner's. (`review-post.ts` already posts COMMENT only.)
+- Writes to GitHub are commit **statuses** only (`review-post.ts:133`, `projects.ts:157`), which `repo` allows. Check runs
+  are only read (Actions'), which the owner token can do. Nothing creates a check run, so nothing needs an App.
 - `github_comment_orgs` is deleted. Which repos a write may touch is the AI reviewer's call on each write record, plus
   what the owner's account can reach.
 - `github_app_*` tools are renamed to plain `github_*` (the Maintainer's issue/label/state/comment/list/tree/file tools)
@@ -117,8 +120,10 @@ outcomes gain the GitHub identifiers (commit SHA, PR/issue number, comment id, l
 record (the train, the merge queue's own housekeeping) emit the same identifiers as Flow facts. Consumers:
 
 - The Maintainer tells fleet PRs and issues from human ones by recorded number/SHA.
-- `flow.ts` `author_kind`: `agent` when the object is in our records, `owner` when it's the owner's login and not ours,
-  else as today. The board filters by it.
+- `flow.ts` `author_kind`: `agent` when the object is in our records, or (records pruned, a crash, a restore) when the
+  PR body carries the AidenHQ footer or its head commit the AidenHQ trailer; `owner` when it's the owner's login and
+  neither; else as today. The marker fallback is forgeable, which is fine: attribution carries no authority. PRs the App
+  authored before the switch keep `agent` from their records.
 - apps-platform finds fleet PRs by recorded number.
 - review-post edits/resolves its own comments by recorded comment id.
 
@@ -128,11 +133,14 @@ nothing because nothing on GitHub carries authority. The footer still tells huma
 ### 6. Authority moves to AidenHQ
 
 - **`agent-build`:** the label dispatch in `modules/maintainer/service/src/watcher.ts` is deleted. The owner's word to
-  build a feature is an AidenHQ message or record ("build #1065" to Aiden, or a card), bound to the issue's content at
-  that moment; the Maintainer files the build task from it. A later edit to the issue makes it stale, as today.
-- **`agent-fix` and other trusted labels** (`maintainer.ts`): the signed-in owner's login is excluded before the
+  build a feature is the owner's own message in AidenHQ (board chat, Telegram, Slack DM), e.g. "build #1065". Aiden calls
+  a Maintainer tool `issue_build(repo, number, owner_message_id)`; **code** checks that the cited message is authored by
+  the owner's account (the board account / owner channel identity, as approvals are) and names that repo and issue, then
+  files the build task bound to the issue's content hash at that moment. No LLM decides it's the owner's word; a later edit
+  to the issue makes it stale, as today. One step for the owner, no extra card (my call).
+- **`agent-fix` and other trusted labels** (`modules/github/connections/github-mcp/src/maintainer.ts`): the signed-in owner's login is excluded before the
   collaborator-role test. Other admin/maintain collaborators (e.g. Taylan) still count.
-- **Product-bug filings** (`projects.ts` `reportIssue`): filed as the owner, scrubbed and fingerprint-deduped as today,
+- **Product-bug filings** (`modules/github/connections/github-mcp/src/projects.ts` `reportIssue`): filed as the owner, scrubbed and fingerprint-deduped as today,
   **without** adding `agent-fix` (it wouldn't be trusted, and an outside reporter may not be allowed to label). The
   Maintainer triages it like any issue. `github_app_issue` becomes `github_product_issue`; the chief-of-staff and Fleet
   Steward grants and `prompts/product-bugs.md` follow. `github_issue_link` stays, only for an install where GitHub isn't
@@ -187,7 +195,8 @@ problems and scopes. No App state exists any more.
 | Org restricts OAuth apps | Per-org line with the request-access link; works once an org admin approves |
 | Missing scope | The feature names the scope; Reconnect asks for the full current set |
 | Repo the owner can't reach (404) | Typed error naming the repo; no retry loop |
-| Primary or secondary rate limit | Back off to the reset time; idle scans (merge queue, PR watch) slow when nothing is open; the card shows it |
+| Primary or secondary rate limit | One limiter in the GitHub process (everything shares it now): background work (merge queue, PR watch, Flow ingest, warehouse sync, Maintainer scans) pauses when REST or GraphQL remaining drops below a reserve (20%), leaving room for interactive calls and the owner's own use; idle scans slow when nothing is open; back off to the reset on a 403/429; the card shows it |
+| Rulesets that list the App as a bypass actor (the product repo's `main protection` does) | Migration replaces it with the repository admin role |
 | Branch protection requires an approving review | The owner can't approve their own PR on GitHub: the PR waits for a human reviewer; the merge card says so. Fleet-created repos are created without that rule |
 | Existing protections or required checks pinned to the App | Migration rewrites them (see Migration) |
 | Owner leaves an org | Repos there become "not reachable"; nothing else breaks |
@@ -212,8 +221,10 @@ One product release, then one apply:
 
 1. The owner reconnects GitHub once (new scopes); the board asks for it after the deploy.
 2. `github_fleet_org: aidenhq-alpha` set by the compile from the old `AIDENHQ_GITHUB_AGENTS_ORG`.
-3. Branch protections / required status checks on `aidenhq-alpha` repos and the product repo that name the App are
-   rewritten to the plain status context (a one-off script in the release).
+3. Rulesets and branch protections on `aidenhq-alpha` repos and the product repo that name the App (bypass actor, or a
+   required check pinned to its integration id) are rewritten: bypass → repository admin role, checks → any source
+   (a one-off script in the release). Checked 2026-11-20: the product repo's `main protection` requires `ci-required`
+   from any source, no approving reviews, and bypasses for an Integration.
 4. Host checkouts switch credential helper (apply does it).
 5. Open fleet PRs authored by the App stay as they are; the merge queue merges them with the owner token (their records
    already bind the head).
