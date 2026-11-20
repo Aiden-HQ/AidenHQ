@@ -135,3 +135,25 @@ test("an expired card and a superseded card each leave a closing fact", (t) => {
   assert.throws(() => records.list(["cancelled"]), /facts unwritable/);
   assert.equal(records.get(later.id).state, "owner");
 });
+
+test("a card closed by the code (cancelled, stale, unknown) leaves its closing fact, or stays as it was", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "facts-strict-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const records = openRecords(join(dir, "kernel.db"));
+  const card = { sentence: "s", changes: "c", reads: "r", cost: "0", details: "d" };
+  const file = (n, state) => records.file({ kind: "kernel.apply", module: "kernel", args: { n }, targets: {}, executor: { module: "kernel" }, policy: "p", tier: 1, panel: false, card, requester: { agent: "", key: "k", name: "n", roles: [], kind: "kernel" }, task: `t-${n}`, state });
+  const closing = (id) => records.db.prepare("SELECT data FROM facts WHERE type = 'record.decided' AND subject = ?").all(`record:${id}`).map((f) => JSON.parse(f.data));
+  const open = file(1, "review"), claimed = file(2, "claimed"), lost = file(3, "claimed");
+  assert.equal(records.close(open.id, "cancelled", "module removed"), true);
+  assert.equal(records.close(claimed.id, "stale", "stale"), true);
+  assert.equal(records.close(lost.id, "unknown", "unknown"), true);
+  assert.deepEqual([open, claimed, lost].map((r) => closing(r.id)), [
+    [{ decision: "cancelled", decider: "code", via: "closed" }],
+    [{ decision: "stale", decider: "code", via: "closed" }],
+    [{ decision: "unknown", decider: "code", via: "closed" }],
+  ]);
+  const later = file(4, "review");
+  fault(records.db, "record.decided");
+  assert.throws(() => records.close(later.id, "cancelled", "module removed"), /facts unwritable/);
+  assert.equal(records.get(later.id).state, "review");
+});

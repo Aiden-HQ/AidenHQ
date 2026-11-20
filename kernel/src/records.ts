@@ -278,7 +278,8 @@ export function openRecords(file: string, now = () => new Date()) {
         () => fact(id, ok ? "record.landed" : "record.failed", ok ? "done" : "failed", "kernel", (r) => (ok ? { kind: r.kind } : { kind: r.kind, text: text.slice(0, 500) })));
     },
     /** cancelled from an open state; stale (revalidate) and unknown (no outcome came back) from claimed. */
-    close: (id: string, to: "stale" | "cancelled" | "unknown", text: string) => move(id, to === "cancelled" ? OPEN : ["claimed"], to, { outcome: { ok: false, text: text.slice(0, 4000) } }),
+    close: (id: string, to: "stale" | "cancelled" | "unknown", text: string) => moved(() => move(id, to === "cancelled" ? OPEN : ["claimed"], to, { outcome: { ok: false, text: text.slice(0, 4000) } }),
+      () => fact(id, "record.decided", `code:${to}`, "kernel", () => ({ decision: to, decider: "code", via: "closed" }))),
   };
 }
 export type Records = ReturnType<typeof openRecords>;
