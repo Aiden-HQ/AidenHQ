@@ -328,6 +328,8 @@ const reviewLoop = createReviewLoop({
     me: async () => (ownerUser ||= String(((await cpJson("/api/cli-auth/me")) as { userId?: string }).userId ?? "")),
     notify: onTask.notify,
     escalate: (task, key, text) => escalate.delegator(task, key, text),
+    delegator: (i) => escalate.delegatorAgent(i as never),
+    agent: (id) => grantsTable().agents?.[id] as { key?: string; roles?: string[] } | undefined,
   },
   decisions: async () => {
     await gitIn(instanceDir, ["fetch", "-q", "origin", "main"]);

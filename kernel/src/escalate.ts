@@ -114,6 +114,8 @@ export function createEscalate({ db, issue, state, asker, notice, owner, chief, 
       db.prepare("INSERT OR REPLACE INTO escalations (key, task, kind, at) VALUES (?, ?, ?, ?)").run(`ask:${task}`, task, who, now());
       db.prepare("INSERT OR IGNORE INTO escalations (key, task, kind, at) VALUES (?, ?, ?, ?)").run(`asked:${task}:${now()}`, task, who, now());
     },
+    /** The agent of the task's open delegator task (its parent, else the task of the job that created it), if any. */
+    delegatorAgent: async (t: Issue) => (await delegatorOf(t))?.assigneeAgentId ?? undefined,
     /**
      * Whoever delegated `task` hears `body` once per `key`: its open parent, else the open task of the job that created it,
      * else the chief of staff (the owner, `ownerText`, when the task is the chief of staff's own). Nothing is marked until it
