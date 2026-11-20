@@ -132,7 +132,7 @@ function Wizard({ state, onFinished }: { state: WelcomeState & { orgs: boolean }
         <div className="setup-overlay">
           <Page title="You're set" sub="Aiden will pick up from here.">
             <section className="setup-card">
-              {flows.length === 0 ? <p className="setup-hint">Everything else is set up from Settings, any time.</p> : (
+              {flows.length === 0 ? <p className="setup-hint">Everything else is set up from <a href="#/settings">Settings</a>, any time.</p> : (
                 <ul className="welcome-list">
                   {flows.map((f) => (
                     <li key={f.module} className={f.done ? "done" : ""}>
