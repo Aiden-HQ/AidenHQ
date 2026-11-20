@@ -59,7 +59,7 @@ async function kernel(t) {
   const { s, url } = await serve(createAdmin({ accounts, cards: channels, ownerMessage: async () => ({ task: { identifier: "WOR-1" } }), owner: async () => ({ status: 200, json: {} }), hosts: () => [FRONT, "admin.example.com", "localhost:3120"], origins: () => [ISSUER], frameOrigins: () => [] }));
   // The backplane's routes, as the board calls them.
   const boardKey = "b".repeat(40);
-  const bp = await serve(createBackplane({ accounts: createAuthApi({ accounts: () => accounts, whoami: async () => undefined, boardKey: () => boardKey, operatorKey: () => ""}), log: () => {} }));
+  const bp = await serve(createBackplane({ accounts: createAuthApi({ accounts: () => accounts, whoami: async () => undefined, boardKey: () => boardKey, operatorKey: () => "", decide: channels.decideCard }), log: () => {} }));
   const api = { boardKey, post: (path, body, headers = {}) => call(bp.url, "POST", path, { host: "kernel.example", body, headers, origin: "" }) };
   t.after(() => { s.close(); bp.s.close(); accounts.close(); });
   return { url, api, records, card };
@@ -179,4 +179,34 @@ test("mcp-oauth round trip: metadata, registration, sign-in and consent, a token
   const no = await ann("GET", authorizeUrl(client).path);
   assert.equal(no.status, 403);
   assert.equal(no.headers.location, undefined);
+});
+
+test("owner decide over MCP: each card against its digest, as the bearer's account; stale only closes; revoked decides nothing", async (t) => {
+  const k = await kernel(t);
+  const { tok } = await connect(k);
+  const key = { authorization: `Bearer ${k.api.boardKey}` };
+  const account = (await k.api.post("/v1/auth/mcp", { token: tok.json.access_token, resource: RESOURCE }, key)).json.account.id;
+  const decide = (cards, token = tok.json.access_token) => k.api.post("/v1/owner/decide", { token, resource: RESOURCE, cards }, key);
+  const [one, two, three] = [1, 2, 3].map(k.card);
+
+  // One read digest and one old one: the first is decided, the second fails alone and says what to do.
+  const r = await decide([{ id: one.id, digest: one.digest, decision: "reject", reason: "not now" }, { id: two.id, digest: "old", decision: "approve" }]);
+  assert.equal(r.status, 200, r.body);
+  assert.deepEqual(r.json.outcomes.map((o) => [o.id, o.ok, o.state]), [[one.id, true, "rejected"], [two.id, false, undefined]]);
+  assert.match(r.json.outcomes[1].error, /changed since you read it: call approvals again/);
+  assert.deepEqual([k.records.get(one.id).decided_by, k.records.get(one.id).via], [`account:${account}`, "mcp"]);
+
+  // Stale only closes (a reject); then it is stamped stale:account:<id> and counts as stale, never a veto.
+  const approveStale = await decide([{ id: two.id, digest: two.digest, decision: "approve", stale: true }]);
+  assert.equal(approveStale.json.outcomes[0].ok, false);
+  assert.equal(k.records.get(two.id).state, "owner");
+  const closed = await decide([{ id: two.id, digest: two.digest, decision: "reject", stale: true }]);
+  assert.deepEqual(closed.json.outcomes.map((o) => [o.ok, o.state]), [[true, "stale"]]);
+  assert.equal(k.records.get(two.id).decided_by, `stale:account:${account}`);
+
+  // A revoked grant gets 401 before any card is touched.
+  const grant = (await k.api.post("/v1/auth/mcp/grants", { account }, key)).json.grants[0].id;
+  await k.api.post("/v1/auth/mcp/revoke", { account, grant }, key);
+  assert.equal((await decide([{ id: three.id, digest: three.digest, decision: "approve" }])).status, 401);
+  assert.equal(k.records.get(three.id).state, "owner");
 });
