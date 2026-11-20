@@ -61,11 +61,19 @@ export function createChannels({ db, records, writes, board, owner, modules, log
     if (r.status >= 300) throw fail(r.status >= 500 ? 502 : r.status, "upstream", `${what}: ${String(r.json?.error?.message ?? r.json?.error ?? r.status).slice(0, 300)}`);
     return r.json;
   };
-  // A task by id: null only when the control plane says there is none (404). Any other failure throws (a 502 the channel
-  // retries), so a blip never sends the owner's words to another task or makes a second chat or thread task.
+  // A control-plane call on the owner's channel paths that failed now (a 5xx, a timeout) throws a 502 the channel retries, so a blip never sends the owner's
+  // words to another task, leaves them on a task nobody holds, or makes a second chat or thread task. A refusal (a 4xx) is the
+  // answer: retrying it would only hold up the channel's later messages.
+  const now5xx = async (p: Promise<{ status: number; json: any }>, what: string) => {
+    const r = await p.catch((e: Error) => { throw fail(502, "upstream", `${what}: ${e.message}`); });
+    if (r.status >= 500) throw fail(502, "upstream", `${what}: the control plane answered ${r.status}`);
+    if (r.status >= 300) log("owner message: the control plane refused", { what, status: r.status });
+    return r;
+  };
+  /** A task by id: null when there is none (a 4xx). */
   const readTask = async (id: string) => {
-    const r = await owner("GET", `/api/issues/${encodeURIComponent(id)}`).catch((e: Error) => { throw fail(502, "upstream", `reading task ${id}: ${e.message}`); });
-    return r.status === 404 ? null : ok(Promise.resolve(r), `reading task ${id}`);
+    const r = await now5xx(owner("GET", `/api/issues/${encodeURIComponent(id)}`), `reading task ${id}`);
+    return r.status === 200 ? r.json : null;
   };
   const channelOf = (module: string) => {
     const m = modules().modules?.[module];
@@ -121,7 +129,7 @@ export function createChannels({ db, records, writes, board, owner, modules, log
       const issue = await readTask(b.task);
       if (issue) {
         if (!issue.assigneeAgentId || issue.status === "done" || issue.status === "cancelled")
-          await ok(owner("PATCH", `/api/issues/${encodeURIComponent(issue.id)}`, { status: "todo", ...(!issue.assigneeAgentId && agent ? { assigneeAgentId: agent, assigneeUserId: null } : {}) }), "reopening the task");
+          await now5xx(owner("PATCH", `/api/issues/${encodeURIComponent(issue.id)}`, { status: "todo", ...(!issue.assigneeAgentId && agent ? { assigneeAgentId: agent, assigneeUserId: null } : {}) }), "reopening the task");
         return { task: await post(issue) };
       }
     }
@@ -141,7 +149,7 @@ export function createChannels({ db, records, writes, board, owner, modules, log
     const key = `chat_issue:${day}`;
     let issue = kv.get(key) ? await readTask(kv.get(key)!) : null;
     if (issue) {
-      if (issue.assigneeAgentId !== chief || issue.status !== "todo") await ok(owner("PATCH", `/api/issues/${encodeURIComponent(issue.id)}`, { status: "todo", assigneeAgentId: chief, assigneeUserId: null }), "reopening today's chat");
+      if (issue.assigneeAgentId !== chief || issue.status !== "todo") await now5xx(owner("PATCH", `/api/issues/${encodeURIComponent(issue.id)}`, { status: "todo", assigneeAgentId: chief, assigneeUserId: null }), "reopening today's chat");
     } else {
       issue = await ok(owner("POST", `/api/companies/${company}/issues`, { title: `Chat with ${o.name || "the owner"} — ${day}`, description: `Rolling chat thread for today. Each comment is a message from ${o.name || "the owner"}; reply with notify.`, status: "todo", assigneeAgentId: chief, labelIds: [chat.id], allowDuplicate: true }), "today's chat");
       kv.set(key, String(issue.id));
@@ -258,7 +266,7 @@ export function createChannels({ db, records, writes, board, owner, modules, log
       const known = kv.get(`slack_thread:${thread}`);
       const issue = known ? await readTask(known) : null;
       if (issue) {
-        if (issue.assigneeAgentId !== a.id || issue.status === "done" || issue.status === "cancelled") await ok(owner("PATCH", `/api/issues/${encodeURIComponent(issue.id)}`, { status: "todo", assigneeAgentId: a.id, assigneeUserId: null }), "reopening the thread's task");
+        if (issue.assigneeAgentId !== a.id || issue.status === "done" || issue.status === "cancelled") await now5xx(owner("PATCH", `/api/issues/${encodeURIComponent(issue.id)}`, { status: "todo", assigneeAgentId: a.id, assigneeUserId: null }), "reopening the thread's task");
         await ok(owner("POST", `/api/issues/${encodeURIComponent(issue.id)}/comments`, { body: `${body}\n\n${FOR_OTHERS}` }), "posting the mention");
         return { task: { id: String(issue.id), identifier: String(issue.identifier ?? "") }, created: false };
       }
