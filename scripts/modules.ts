@@ -1418,7 +1418,11 @@ export function kernelModuleTable(defs: Obj, settings: Obj = {}) {
       if (seen.has(j.name) && JSON.stringify(seen.get(j.name).j) !== JSON.stringify(j)) fail(`module ${name}: journey ${j.name} differs from module ${seen.get(j.name).name}'s (one journey, one declaration)`);
       seen.set(j.name, { name, j });
     }
+    // Its display name ("GitHub", "Google"), for the kernel's owner messages: its own sign-in's label, else its setup flow's title.
+    const signin = [def.contributes?.["board.signins"] ?? []].flat().find((x: Obj) => x?.id === name);
+    const label = [signin?.label, [def.contributes?.["board.setup_flows"] ?? []].flat()[0]?.title].find((v) => typeof v === "string" && v.trim());
     const e = {
+      ...(label ? { label: String(label).trim() } : {}),
       ...(roles.length ? { roles } : {}), ...(facts ? { facts } : {}), ...(stages ? { stages } : {}), ...(journeys ? { journeys } : {}), ...(privileged.length ? { privileged } : {}), ...(codehost != null ? { codehost } : {}),
       // A module that generates its own `<module>_token` is known to the kernel by it (whoami): its roles are the kernel.* ones it requests, none otherwise.
       ...((def.generated_secrets ?? []).includes(token) ? { token } : {}),
