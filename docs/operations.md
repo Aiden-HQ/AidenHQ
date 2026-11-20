@@ -318,8 +318,9 @@ exact email match only).
 `modules/security`: Security Watch (`security-watch`) and the Red Teamer (`red-teamer`), plus `security-scanner`, the
 `src_security` writer (grype, no LLM). The inventory is made on the host, because it needs the Docker socket and the root
 filesystem, which the scanner never gets: `ops/security-sbom.sh` (user timer `aidenhq-security-sbom.timer`, daily 03:30)
-runs pinned syft over the host packages, every running image (the image each container runs, by its own id when its
-configured tag has moved since it started), the product and instance checkouts and each app's deployed source, into
+runs pinned syft over the host packages, every running image (the image each container runs: by its configured tag
+while the tag's platform manifest is still the one the container records, else by its own id from a saved archive, and an
+id the daemon no longer holds is dropped), the product and instance checkouts and each app's deployed source, into
 `data/modules/security/sbom/current/`. The host target scans `/` without the homes (`./home/**`,
 `./root/**`), procfs, the container stores and this instance's own checkouts: a clone, task worktree or tool cache there
 belongs to another project's dependency tree, and no apt upgrade or `ops/vm/pins.json` clears it, so it would be permanent

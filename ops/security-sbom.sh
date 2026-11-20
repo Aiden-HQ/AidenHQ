@@ -4,9 +4,11 @@
 #   host            the VM's root filesystem, read-only: OS packages (kernel, Docker, Node...), not Docker's own storage,
 #                   the homes or this instance's own checkouts (see HOST_EXCLUDES)
 #   image:<ref>     every image a running container uses, by the reference it was created with while that still resolves to
-#                   its running image (the Docker socket, read-only mount)
+#                   its running image (the Docker socket, read-only mount): the tag's platform manifest, which compose
+#                   records on the container, or on a daemon whose image id is the content id the top-level id
 #   image:sha256:<id> an image whose container's tag has moved since creation: the running image itself, saved from Docker and
-#                   scanned offline, so the scan follows what runs rather than whatever the tag names today
+#                   scanned offline, so the scan follows what runs rather than whatever the tag names today. An id the daemon
+#                   no longer holds has nothing to scan and gets no line
 #   repo:product    this checkout (lockfiles; not data/, node_modules or .git)
 #   repo:instance   the instance checkout
 #   app:<name>      each app's deployed source (data/apps/.platform/<name>/src, what apps-mcp checked out)
@@ -29,6 +31,7 @@ mkdir -p "$next" "$work"
 : > "$next/targets.tsv"
 user="$(id -u):$(id -g)"
 sock_gid="$(stat -c %g /var/run/docker.sock)"
+platform="$(docker version -f '{{.Server.Os}}/{{.Server.Arch}}')"
 n=0
 
 # scan <target> <commit> [docker mount args...] -- <syft source> [syft args...]
@@ -70,31 +73,39 @@ for p in "${host_excludes[@]}"; do host_args+=(--exclude "$p"); done
 scan host "" -v /:/host:ro -- dir:/host "${host_args[@]}"
 # Each running container's own image, `.Image`: after a rebuild a container's configured tag (`.Config.Image`) names the new
 # build, and once the image is untagged names nothing at all, so a target keyed on it stops covering what runs and the
-# running image is never inventoried. An image a configured name still resolves to keeps its `image:<ref>` target; any other
-# is named by its own id, which is stable across passes, and syft reads it from a `docker save` archive. A name only counts
-# when it isn't an image id itself: syft can't resolve a bare id, it would try to pull it.
+# running image is never inventoried. A configured name keeps its `image:<ref>` target while it still names what the
+# container runs. On the containerd image store that is the tag's platform manifest, the id compose records on the
+# container as `com.docker.compose.image` (ops/compose-recreate.sh decides a recreate by the same comparison): the
+# top-level id is an image index and every build rewrites it, so comparing that would drop the target after any rebuild.
+# Containers without the label, and daemons where the top-level id is the content id, are compared by that id. Any other
+# container's image is named by its own id, which is stable across passes, and syft reads it from a `docker save` archive;
+# an id the daemon no longer holds is left out of the batch, since the store collected it and there is nothing to scan or
+# report. A name only counts when it isn't an image id itself: syft can't resolve a bare id, it would try to pull it.
 fail() { # <target> <error>: a target that never reached syft is a line with its error, like a failed scan
   n=$((n + 1))
   printf '%s\t-\t%s\t\n' "$1" "$(printf '%s' "$2" | tr '\t\n' '  ' | tail -c 300)" >> "$next/targets.tsv"
 }
 declare -A running=() tags=()
-while read -r cid image config; do
+while read -r cid image config label; do
   [ -n "$cid" ] || continue
   case "$config" in *anchore/syft*) continue ;; esac
   running[$image]=1
-  if [ "${config#sha256:}" = "$config" ] && [ "$(docker image inspect -f '{{.Id}}' "$config" 2>/dev/null)" = "$image" ] \
-    && { [ -z "${tags[$image]:-}" ] || [[ "$config" < "${tags[$image]}" ]]; }; then
-    tags[$image]="$config"
-  fi
-done <<< "$(docker ps -q | xargs -r docker inspect -f '{{.Id}} {{.Image}} {{.Config.Image}}' 2>/dev/null)"
+  [ "${config#sha256:}" = "$config" ] || continue
+  { [ -n "$label" ] && [ "$(docker image inspect --platform "$platform" -f '{{.Id}}' "$config" 2>/dev/null)" = "$label" ]; } \
+    || [ "$(docker image inspect -f '{{.Id}}' "$config" 2>/dev/null)" = "$image" ] || continue
+  { [ -z "${tags[$image]:-}" ] || [[ "$config" < "${tags[$image]}" ]]; } || continue
+  tags[$image]="$config"
+done <<< "$(docker ps -q | xargs -r docker inspect -f '{{.Id}} {{.Image}} {{.Config.Image}} {{with index .Config.Labels "com.docker.compose.image"}}{{.}}{{end}}' 2>/dev/null)"
 for image in $(printf '%s\n' "${!running[@]}" | sort); do
   if [ -n "${tags[$image]:-}" ]; then
     scan "image:${tags[$image]}" "" -v /var/run/docker.sock:/var/run/docker.sock:ro -- "docker:${tags[$image]}"
-  elif err="$(docker save -o "$work/image.tar" "$image" 2>&1)"; then
-    # $work is on disk and emptied after each syft run, so the archive is not held for the next target.
-    scan "image:$image" "" -- "docker-archive:/work/image.tar"
-  else
-    fail "image:$image" "docker save: ${err:-failed}"
+  elif docker image inspect "$image" >/dev/null 2>&1; then
+    if err="$(docker save -o "$work/image.tar" "$image" 2>&1)"; then
+      # $work is on disk and emptied after each syft run, so the archive is not held for the next target.
+      scan "image:$image" "" -- "docker-archive:/work/image.tar"
+    else
+      fail "image:$image" "docker save: ${err:-failed}"
+    fi
   fi
 done
 scan repo:product "$(git -C "$PWD" rev-parse HEAD 2>/dev/null || true)" -v "$PWD:/src:ro" -- dir:/src --exclude './data/**' --exclude './.git/**' --exclude '**/node_modules/**'
