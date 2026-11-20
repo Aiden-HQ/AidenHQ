@@ -390,6 +390,11 @@ jobs:
           status=0
           node scripts/supply-chain/npm-age.ts "$base" "$HEAD_SHA" || status=1
           node scripts/supply-chain/pins.ts "$base" "$HEAD_SHA" || status=1
+          # No new JavaScript files (CLAUDE.md "Conventions"): the check and its allowlist come from the base, so a PR can't
+          # loosen them; a base without them (the PR that adds them) takes the head's.
+          d="$RUNNER_TEMP/ts-only"; mkdir -p "$d"
+          for f in ts-only.ts js-allowlist.txt; do git show "$base:.github/ci/$f" > "$d/$f" 2>/dev/null || cp ".github/ci/$f" "$d/$f"; done
+          node "$d/ts-only.ts" "$base" "$HEAD_SHA" "$d/js-allowlist.txt" || status=1
           exit $status
       - name: Conventional Commit title
         if: ${{ !cancelled() && github.event_name == 'pull_request' }}

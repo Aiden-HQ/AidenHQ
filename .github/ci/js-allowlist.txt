@@ -1,0 +1,17 @@
+# The JavaScript files this product keeps (new code is TypeScript: CLAUDE.md "Conventions"). Read from the PR's base by
+# CI's `policy` job (.github/ci/ts-only.ts), so a PR can't add its own entry. One path per line; a path ending in `/` covers
+# every file under it. Each entry is a file something loads by a fixed .js/.mjs name.
+# Paperclip's plugin host loads these inside the Paperclip container, by the .js entry points in its package.json.
+services/paperclip-events/
+# A git credential helper invoked by path from host git config: renaming it breaks existing host checkouts.
+ops/git-credential-app.mjs
+# Tool config the linters load as JavaScript.
+services/board/eslint.config.mjs
+services/board/.stylelintrc.mjs
+# A browser script served as is, and its copy in the agent image.
+modules/apps-platform/design-system/kit.js
+services/computer/images/agent-base/design-system/kit.js
+# The app starter's runtime files: every app repo carries them under these names (skills, evals and the sign-in check name
+# them), and the copy baked into the agent image.
+modules/apps-platform/starter/
+services/computer/images/agent-base/app-starter/
