@@ -1,4 +1,4 @@
-// A module's setup flow entry point (docs/design/guided-setup.md): "Set up" while its flow isn't done, a quiet "Run setup again"
+// A module's setup flow entry point (docs/design/guided-setup.md): "Set up" while its flow isn't done, a quiet "Change setup"
 // once it is. GET /api/setup-flows (services/board/src/setup-flows.ts); a module without a flow renders nothing.
 import { useEffect, useState } from "react";
 import { api } from "./api";
@@ -33,8 +33,8 @@ export function SetupButton({ module, primary, size }: { module: string; primary
   }, [module]);
   if (!flow) return null;
   return (
-    <a className={`btn${primary && !flow.done ? " primary" : ""}${size ? ` ${size}` : ""}`} href={`#/setup/${module}`}>
-      {flow.done ? "Run setup again" : "Set up"}
+    <a className={`btn${primary && !flow.done ? " primary" : ""}${size ? ` ${size}` : ""}`} href={`#/setup/${module}${flow.done ? "?change=1" : ""}`}>
+      {flow.done ? "Change setup" : "Set up"}
     </a>
   );
 }

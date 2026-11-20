@@ -261,12 +261,42 @@ function ownerRules(file: string, key: string, rules: Obj) {
   return rules;
 }
 
-/** A module's settings for the board: default, allowed values, required, and the comment above each key as its `doc`. */
-function settingDefs(file: string, def: Obj) {
+/** The comment above each setting key in module.yaml, as one line: the help the board shows. */
+function settingDocs(file: string): Record<string, string> {
   const map = YAML.parseDocument(readFileSync(file, "utf8")).get("settings", true) as Obj | undefined;
   // The first key's comment is attached to the map itself.
-  const docs = Object.fromEntries((map?.items ?? []).map((p: Obj, i: number) => [String(p.key?.value ?? p.key), (p.key?.commentBefore ?? (i === 0 ? map!.commentBefore : "") ?? "").replace(/^ ?/gm, "").replace(/\s*\n\s*/g, " ").trim()]));
-  return Object.fromEntries(Object.entries(def.settings ?? {}).filter(([k]) => !/token|secret|password/i.test(k)).map(([k, d]: [string, any]) => [k, { ...(d && "default" in d ? { default: d.default } : {}), ...(d?.values ? { values: d.values } : {}), ...(d?.required ? { required: true } : {}), ...(d?.type ? { type: d.type } : {}), ...(d?.host ? { host: d.host } : {}), ...(d?.writers ? { writers: [d.writers].flat().map(String) } : {}), ...(d?.owner ? { owner: ownerRules(file, k, d.owner) } : {}), ...(docs[k] ? { doc: docs[k] } : {}) }]));
+  return Object.fromEntries((map?.items ?? []).map((p: Obj, i: number) => [String(p.key?.value ?? p.key), (p.key?.commentBefore ?? (i === 0 ? map!.commentBefore : "") ?? "").replace(/^ ?/gm, "").replace(/\s*\n\s*/g, " ").trim()]));
+}
+
+/** An official module explains every setting: the comment above it is the help on the board and in the owner's Claude. */
+function requireDocs(name: string, file: string, def: Obj) {
+  const docs = settingDocs(file);
+  const bare = Object.keys(def.settings ?? {}).filter((k) => !docs[k]);
+  if (bare.length) fail(`module ${name}: settings ${bare.join(", ")} need a comment above them in module.yaml (it is their help on the board)`);
+}
+
+/**
+ * A setting's `pattern` (an anchored regex its value must match) and `when` ({ <setting of this module>: <value> }: it applies
+ * only in that mode), checked as module.yaml is read.
+ */
+function settingRules(name: string, def: Obj) {
+  for (const [key, d] of Object.entries<Obj>(def.settings ?? {})) {
+    const where = `module ${name}: settings.${key}`;
+    if (d?.pattern != null) {
+      if (typeof d.pattern !== "string" || !/^\^.*\$$/.test(d.pattern)) fail(`${where}: pattern is an anchored regex (^…$)`);
+      try { new RegExp(d.pattern); } catch { fail(`${where}: pattern is not a regex`); }
+    }
+    if (d?.when != null) {
+      if (typeof d.when !== "object" || Array.isArray(d.when) || !Object.keys(d.when).length) fail(`${where}: when is { <setting>: <value> }`);
+      for (const k of Object.keys(d.when)) if (!(k in def.settings)) fail(`${where}: when names ${k}, which is not one of the module's settings`);
+    }
+  }
+}
+
+/** A module's settings for the board: default, allowed values, required, pattern, when, and the comment above each key as its `doc`. */
+function settingDefs(file: string, def: Obj) {
+  const docs = settingDocs(file);
+  return Object.fromEntries(Object.entries(def.settings ?? {}).filter(([k]) => !/token|secret|password/i.test(k)).map(([k, d]: [string, any]) => [k, { ...(d && "default" in d ? { default: d.default } : {}), ...(d?.values ? { values: d.values } : {}), ...(d?.required ? { required: true } : {}), ...(d?.type ? { type: d.type } : {}), ...(d?.host ? { host: d.host } : {}), ...(d?.pattern ? { pattern: d.pattern } : {}), ...(d?.when ? { when: d.when } : {}), ...(d?.writers ? { writers: [d.writers].flat().map(String) } : {}), ...(d?.owner ? { owner: ownerRules(file, k, d.owner) } : {}), ...(docs[k] ? { doc: docs[k] } : {}) }]));
 }
 
 /**
@@ -331,6 +361,8 @@ function discover(productDir: string, instance: Obj, fetch: Fetch) {
   for (const m of out.values()) {
     const unknown = Object.keys(m.def).filter((k) => !MANIFEST_KEYS.has(k) && k !== "compose");
     if (unknown.length) fail(`module ${m.name}: unknown module.yaml key${unknown.length === 1 ? "" : "s"} ${unknown.join(", ")}`);
+    settingRules(m.name, m.def);
+    if (m.tier === "official") requireDocs(m.name, join(m.root, "module.yaml"), m.def);
   }
   return out;
 }
@@ -669,6 +701,11 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
         if (!v.length) fail(`settings.${k}: at least one`);
         if (v.some((x: unknown) => !d.values.includes(x))) fail(`settings.${k}: each must be ${words}`);
       }
+      // `pattern` (anchored): what a text value looks like, where its `when` mode holds.
+      if (d?.pattern && settings[k] !== "" && settings[k] != null && Object.entries(d.when ?? {}).every(([w, v]) => String(settings[w]) === String(v))) {
+        const bad = [settings[k]].flat().find((x) => typeof x === "object" || !new RegExp(d.pattern).test(String(x)));
+        if (bad !== undefined) fail(`settings.${k}: ${JSON.stringify(bad)} doesn't match ${d.pattern}`);
+      }
       // `type: url` (and `host:`): the board's check, again here, where it is the gate (services/shared/url-setting.ts).
       if (d?.type === "url") {
         const problem = urlSettingProblem(settings[k], d.host);
@@ -755,6 +792,12 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
     Object.assign(writes, writeKinds(name, def, root, instance.writes ?? {}, writes));
     for (const [run, r] of Object.entries(checkJobs(name, def, root))) { if (checkJobTable[run]) fail(`two modules declare check job ${run}: ${checkJobTable[run].module} and ${name}`); checkJobTable[run] = r; }
     Object.assign(checks, checkEntries(name, def));
+    // Every sign-in's service answers GET /auth/check (the board's Test button): built on the SDK's vendor proxy, which does, or
+    // its source names the route. A service whose source isn't in the module can't be looked at here.
+    for (const x of def.contributes?.["board.signins"] ?? []) {
+      const src = join(root, "connections", /^http:\/\/([a-z][a-z0-9-]*):/.exec(String(x.status_url))?.[1] ?? "-", "src");
+      if (existsSync(src) && !existsSync(join(src, "vendor", "proxy.ts")) && !readdirSync(src, { recursive: true }).some((f) => /\.ts$/.test(String(f)) && readFileSync(join(src, String(f)), "utf8").includes("/auth/check"))) fail(`module ${name}: signin ${x.id}: its service must answer GET /auth/check (build it on the SDK vendor proxy, or implement the route)`);
+    }
     for (const [key, a] of Object.entries<Obj>(def.agents ?? {})) {
       const file = join(root, "agents", key, "AGENTS.md");
       if (!existsSync(file)) fail(`agent ${key}: missing ${relative(productDir, file)}`);
@@ -1371,6 +1414,8 @@ export function reviewerSlot(defs: Obj, binding: Obj = {}) {
  * process on every filing of those kinds (kernel/src/writes.ts filedRaises) and refuses the filing when it has none.
  * `mode: observe` (kernel/src/gates.ts) records what a task.finish check would block without blocking; write.filed checks gate
  * writes and always enforce.
+ * `validate: { post, auth, mode? }` is the module's own check of a settings change or a pasted secret, before the board files
+ * it (kernel/src/module-validate.ts): compiled beside the checks as `<module>.validate`, `at: validate`.
  */
 export function checkEntries(name: string, def: Obj) {
   const out: Obj = {};
@@ -1393,6 +1438,17 @@ export function checkEntries(name: string, def: Obj) {
     if (c.label != null && !/^[a-z][a-z0-9-]{0,40}$/.test(String(c.label))) fail(`${at}: label is a label name (a-z, 0-9, -)`);
     for (const k of ["rubric", "grade"]) if (c[k] != null && !/^https?:\/\/[\w.-]+:\d+\/[\w/.-]*$/.test(c[k])) fail(`${at}: ${k} must be http://<service>:<port>/<path>`);
     out[`${name}.${c.id}`] = { module: name, at: c.at, url: c.post, auth_secret: c.auth, ...(c.rubric ? { rubric: c.rubric } : {}), ...(c.grade ? { grade: c.grade } : {}), ...(c.agents ? { agents: c.agents } : {}), ...(c.label ? { label: String(c.label) } : {}), ...(mode === "observe" ? { mode } : {}) };
+  }
+  const v = def.validate;
+  if (v != null) {
+    const at = `module ${name}: validate`;
+    if (!v || typeof v !== "object") fail(`${at} is { post, auth, mode? }`);
+    for (const k of Object.keys(v)) if (!["post", "auth", "mode"].includes(k)) fail(`${at}: ${k} is not allowed`);
+    if (!/^https?:\/\/[\w.-]+:\d+\/[\w/.-]*$/.test(v.post ?? "")) fail(`${at}: post must be http://<service>:<port>/<path>`);
+    if (!ownSecrets(def).includes(v.auth)) fail(`${at}: auth must name one of its own secrets`);
+    let mode: string | undefined;
+    try { mode = gateMode(`${name}.validate`, v.mode); } catch (e) { fail(`${at}: ${(e as Error).message}`); }
+    out[`${name}.validate`] = { module: name, at: "validate", url: v.post, auth_secret: v.auth, ...(mode === "observe" ? { mode } : {}) };
   }
   return out;
 }

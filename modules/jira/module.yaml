@@ -31,9 +31,10 @@ settings:
     type: url
     host: mcp.atlassian.com
   # Quiet projects' history: the live sync starts 30 days back site-wide, so a project with little recent activity would be
-  # nearly empty. Each listed project is read once, back history_days (baseline rows), then left alone.
+  # nearly empty. Each listed project is read once (baseline rows), back history_days, then left alone.
   history_projects:
     default: []  # e.g. [ AGR, TRM ]: Jira project keys
+  # How many days back each history_projects project is read once.
   history_days:
     default: 365
 connections:

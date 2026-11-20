@@ -45,6 +45,7 @@ settings:
   # access or header-jwt, its audience. Empty: not shared.
   primer_host:
     default: ""
+  # self-host with app_login access or header-jwt: the sign-in audience of the access application that covers primer_host.
   primer_host_aud:
     default: ""
   # Superseded by the primer_mcp_url secret Connect asks for; a value here is read only while that secret is empty.

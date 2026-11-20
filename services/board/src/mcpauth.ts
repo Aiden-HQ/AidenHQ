@@ -90,6 +90,17 @@ export class McpAuth {
     this.cached = undefined;
   }
 
+  /** The sign-in tried live (the proxy's /auth/check: one read upstream): works, or what is wrong and the one thing to do. */
+  async check(): Promise<AuthCheck> {
+    try {
+      return await this.call<AuthCheck>("GET", "/auth/check");
+    } catch (err) {
+      return { ok: false, message: `${this.name.toLowerCase()}-mcp couldn't be asked: ${String((err as Error).message).slice(0, 150)}` };
+    } finally {
+      this.cached = undefined;
+    }
+  }
+
   /** A device sign-in (signins `mode: device`): the code to show; the proxy then waits for the token itself. */
   deviceStart() {
     return this.call<DeviceCode>("POST", "/auth/device");
@@ -106,6 +117,8 @@ export class McpAuth {
   }
 }
 
+/** What a sign-in's test says (`fix`: "Connect", "Reconnect", "Paste a new token"). */
+export type AuthCheck = { ok: true } | { ok: false; message: string; fix?: string };
 export interface DeviceCode { user_code: string; verification_uri: string; verification_uri_complete?: string; expires_in: number; interval: number }
 export interface DeviceState { state: "idle" | "pending" | "ok" | "expired" | "denied" | "cancelled" | "failed"; detail?: string }
 

@@ -23,6 +23,9 @@ export interface SettingDef {
   type?: string;
   host?: string;
   doc?: string;
+  /** An anchored regex a text value must match; `when`: it applies only while these settings hold. */
+  pattern?: string;
+  when?: Record<string, unknown>;
 }
 interface CatalogEntry {
   name: string;
@@ -174,6 +177,8 @@ export function settingsView(s: Sources) {
         ...(d?.def.doc ? { doc: d.def.doc } : {}),
         ...(d?.def.type ? { type: d.def.type } : {}),
         ...(d?.def.host ? { host: d.def.host } : {}),
+        ...(d?.def.pattern ? { pattern: d.def.pattern } : {}),
+        ...(d?.def.when ? { when: d.def.when } : {}),
         ...(live !== undefined ? { live } : {}),
         switch: JSON.stringify(d?.def.values) === JSON.stringify(["on", "off"]),
       };

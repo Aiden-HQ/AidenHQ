@@ -1,6 +1,7 @@
 // Settings > Connections: tiles, what needs you first (with Connect, Reconnect or Set up on the tile), then what is connected,
 // then what is built in; a tile opens its dialog (state, grants, health, Google accounts). Connect is one click (Connect.tsx).
 import { useEffect, useState } from "react";
+import { api } from "./api";
 import { ConnectButton, ConnectDialog, GoogleConnect } from "./Connect";
 import { OrganisationPicker } from "./Organisation";
 import { STATUS_LABEL, connectionStatus, displayName, sourceStatus, type ConnectionRow, type ConnectionsData, type Status, type Verdict } from "./connections";
@@ -124,12 +125,32 @@ function ConnectionTile({ r, v, can, connect: asked, onAsked }: { r: ConnectionR
             {status} <span>{v.reason}</span>
           </p>
           {v.hint && <p className="st-hint">{v.hint}</p>}
+          {r.signIn?.state === "ok" && <TestSignIn id={r.name} />}
           {!connect && r.setup && v.status === "not_configured" && <p className="st-hint">{r.setup}</p>}
           <Facts r={r} />
           {r.google && <GoogleAccounts g={r.google} can={can.google || r.google.client_type === "desktop"} />}
         </div>
       </Dialog>
     </>
+  );
+}
+
+/** Test connection: one live read through the sign-in; what is wrong comes back in words with the one thing to do. */
+function TestSignIn({ id }: { id: string }) {
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<Awaited<ReturnType<typeof api.testSignIn>> | null>(null);
+  const test = () => {
+    setBusy(true);
+    setResult(null);
+    api.testSignIn(id).then(setResult, (e: Error) => setResult({ ok: false, message: e.message })).finally(() => setBusy(false));
+  };
+  return (
+    <div className="st-test">
+      <Button size="sm" disabled={busy} onClick={test}>
+        {busy ? "Testing…" : "Test"}
+      </Button>
+      {result && (result.ok ? <Banner>It works: {displayName(id)} answered.</Banner> : <Banner tone="danger">{result.message}{result.fix ? ` ${result.fix}.` : ""}</Banner>)}
+    </div>
   );
 }
 

@@ -96,10 +96,11 @@ outside `tokens.css`, and no class the kit replaced (`web/legacy-classes.json`, 
 
 ## Modules
 
-Modules don't ship board UI. They contribute data the board draws with this kit: `board.signins` (a Connect on
-Settings, Connections), `board.setup_flows` (a setup sheet and wizard step, [guided-setup.md](guided-setup.md)) and
-`providers.board` (an API a board page reads, like Reviews). A module that needs a new kind of page asks for one in the
-board, built here, under a section of the top bar.
+Modules declare (`board.signins`, `board.setup_flows`, `providers.board`, settings) and both the board and the owner's MCP
+drive the declarations: a Connect on Settings, Connections, a setup sheet and wizard step
+([guided-setup.md](guided-setup.md)), an API a board page reads (like Reviews), a setting with its help. A page the
+declarations can't express is a module view (sandboxed, in the MCP Apps format), designed later. How a module is built:
+[modules/AGENTS.md](../../modules/AGENTS.md).
 
 ## Working on the UI without an instance
 

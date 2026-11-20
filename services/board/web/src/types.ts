@@ -686,6 +686,10 @@ export interface SettingRow {
   /** `url`: a URL input, checked like the compiler does (src/url-setting.ts), against `host` when set. */
   type?: string;
   host?: string;
+  /** An anchored regex a text value must match. */
+  pattern?: string;
+  /** Shown only while these settings hold (`{ <setting>: <value> }`). */
+  when?: Record<string, unknown>;
 }
 export interface AgentSettings {
   key: string;

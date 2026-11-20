@@ -7,7 +7,8 @@
 //   /mcp/read  the kernel's calls for runner jobs (the read key): only tools the module's manifest tags read (`reads`, the
 //              READ_TOOLS its module.yaml sets from those tags) that the upstream also marks read-only (or the connection's
 //              read rule says are reads), so the jobs' token never reaches a write;
-//   /auth/*    the board's sign-in (state, the scopes the owner may pick, start, finish, or a device code), with the board's own key;
+//   /auth/*    the board's sign-in (state, the scopes the owner may pick, start, finish, or a device code), with the board's own key,
+//              and /auth/check: one live read upstream (a tools list), answering { ok: true } or { ok: false, message, fix? };
 //   /healthz   whether it is connected.
 // A connection adds only its real logic as hooks (a pinned argument, a site id, a deny rule) and its own routes (a write
 // kind's executor). Not signed in: it still starts, lists the tools it saw last as stand-ins, and every call says how to
@@ -230,6 +231,18 @@ export function createVendorProxy(o: ProxyOptions): VendorProxy {
 
   const sendJson = (res: ServerResponse, status: number, body: unknown): void => void res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
 
+  /** One live, read-only call upstream (its tool list): works, or what is wrong and the one thing to do about it. */
+  async function checkConnection(): Promise<{ ok: true } | { ok: false; message: string; fix?: string }> {
+    if (!o.upstream || !auth.signedIn()) return { ok: false, message: notConnected(), fix: "Connect" };
+    try {
+      await withUpstream((u) => u.client.listTools());
+      return { ok: true };
+    } catch (err) {
+      const signIn = err instanceof AuthError || isAuthFailure(err) || auth.status().state === "expired";
+      return signIn ? { ok: false, message: `${o.name} no longer accepts the sign-in.`, fix: "Reconnect" } : { ok: false, message: `${o.name} didn't answer: ${String((err as Error).message).slice(0, 200)}` };
+    }
+  }
+
   /** The board's sign-in endpoints: state, the scopes on offer, and starting or finishing a sign-in (never a token). */
   async function handleAuth(req: IncomingMessage, res: ServerResponse, path: string): Promise<void> {
     if (!bearer(req, o.authKey)) return sendJson(res, 401, { error: "unauthorized" });
@@ -237,6 +250,7 @@ export function createVendorProxy(o: ProxyOptions): VendorProxy {
       await auth.check?.().catch(() => {});
       return sendJson(res, 200, { configured: Boolean(o.upstream), ...auth.status() });
     }
+    if (path === "/auth/check" && req.method === "GET") return sendJson(res, 200, await checkConnection());
     const flow = auth.signIn;
     if (!flow) return sendJson(res, 400, { error: `${o.name} needs no sign-in` });
     if (!o.upstream) return sendJson(res, 400, { error: notConnected() });

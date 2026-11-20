@@ -111,6 +111,7 @@ button.st-row-hit:hover { background: var(--hover); }
 .st-conn { display: grid; gap: 16px; }
 .st-conn-state { margin: 0; display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; font-size: var(--text-md); }
 .st-conn-state > span:last-child { color: var(--muted); }
+.st-test { display: grid; gap: 8px; justify-items: start; }
 .st-url-view { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; font-size: var(--text-base); }
 .st-url-label { color: var(--muted); }
 .st-url-value { overflow-wrap: anywhere; }

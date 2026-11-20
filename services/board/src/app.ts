@@ -31,7 +31,7 @@ import type { AuthorKind, Flow } from "./flow.js";
 import { moduleAuthority, moduleStates } from "./modules.js";
 import { CommitUnreadable, agentGrants, browseModules, createResolver, marketplacesOf } from "./marketplace.js";
 import { connectionsView, readSources, readUpdates, settingsView, type Probe } from "./settings.js";
-import { ChangeRefused, ChangesSchema, SETTINGS_LABEL, changesOf, checkChange, stageOf, taskFor, type Change } from "./settings-change.js";
+import { ChangeRefused, ChangesSchema, SETTINGS_LABEL, changesOf, checkChange, settingsByModule, stageOf, taskFor, type Change } from "./settings-change.js";
 import { createGrading, gradePassed, type Grading } from "./grading.js";
 import { COMMENT_ORGS, CodeReviewSchema, ProfileSchema, configProblems, insightsOf } from "./reviews.js";
 import { ReviewsRefused, ReviewsUnavailable, type Reviews } from "./reviews-client.js";
@@ -167,7 +167,7 @@ const TYPES: Record<string, string> = {
 };
 
 class HttpError extends Error {
-  constructor(readonly status: number, message: string) {
+  constructor(readonly status: number, message: string, readonly errors?: { field: string; message: string }[]) {
     super(message);
   }
 }
@@ -409,6 +409,13 @@ export function createApp(opts: AppOptions): Server {
       if (e instanceof ChangeRefused) throw new HttpError(400, e.message);
       throw e;
     }
+    // The module's own check of the values it is about to be given (module.yaml `validate:`): a refusal is the field's error.
+    const unchecked: string[] = [];
+    for (const [module, settings] of settingsByModule(changes, catalog)) {
+      const v = await records.validate(module, settings).catch((e: Error) => { throw new HttpError(502, `couldn't check ${module}'s settings: ${e.message}`); });
+      if (!v.ok) throw new HttpError(422, v.errors.map((e) => (e.field ? `${e.field}: ${e.message}` : e.message)).join(" "), v.errors);
+      if (v.unchecked) unchecked.push(v.unchecked);
+    }
     const ctx = await context();
     const label = await labelNamed(ctx, SETTINGS_LABEL, "#7048e8");
     const { title, description } = taskFor(changes, compiled);
@@ -425,7 +432,7 @@ export function createApp(opts: AppOptions): Server {
       throw new HttpError(422, `not written: ${(e as Error).message}`);
     }
     log.info({ issue: issue.identifier, changes: changes.map((c) => c.kind) }, "settings change filed");
-    return { identifier: issue.identifier, ...filed };
+    return { identifier: issue.identifier, ...filed, ...(unchecked.length ? { unchecked } : {}) };
   }
 
   // Agent activity (Paperclip runs).
@@ -1156,6 +1163,18 @@ export function createApp(opts: AppOptions): Server {
           redirect: s.httpsOnly || s.mode === "device" ? null : `${SIGNIN_LOOPBACK}${s.callback}`,
           oneClick: s.httpsOnly ? null : (httpsBoard?.hostname ?? null),
         };
+      },
+    },
+    // Test connection: one live read through the sign-in's proxy, answered in words (ok, or what is wrong and how to fix it).
+    {
+      method: "POST",
+      path: /^\/api\/sign-ins\/([a-z0-9-]{1,63})\/check$/,
+      handle: async (m) => {
+        const s = (opts.signIns ?? []).find((x) => x.id === m[1]);
+        if (!s) throw new HttpError(404, "no such sign-in");
+        const r = await s.auth.check();
+        store.events.emit("connections");
+        return r;
       },
     },
     // Finishing a Google sign-in with a Desktop client: the loopback address its tab ended on, pasted on its Connect dialog.
@@ -2323,7 +2342,7 @@ export function createApp(opts: AppOptions): Server {
     } catch (err) {
       const status = statusOf(err);
       if (status >= 500) log.error({ err: String((err as Error).message ?? err).slice(0, 500), path: url.pathname }, "request failed");
-      if (!res.headersSent) send(res, status, JSON.stringify({ error: (err as Error).message ?? "error" }), "application/json");
+      if (!res.headersSent) send(res, status, JSON.stringify({ error: (err as Error).message ?? "error", ...(err instanceof HttpError && err.errors ? { errors: err.errors } : {}) }), "application/json");
     }
   });
 }

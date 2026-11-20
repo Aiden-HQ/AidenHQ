@@ -13,5 +13,5 @@ export function fakeRecords(cards: Approval[] = []): Records & { cards: Approval
     cards
       .filter((a) => (!task || a.issueId === task || a.identifier === task) && (state === "owner" ? a.state === "pending" && a.tier === 2 : state === "pending" ? a.state === "pending" : state === "finished" ? a.outcome : true))
       .slice(0, limit);
-  return { cards, settings, list, advisories: async () => [], explain: async () => { throw new Error("no such record"); }, connectionHealth: async () => ({}), settingsChange: async (task, changes) => (settings.push({ task, changes }), { record: "k-0000000000000001", tier: 1, state: "review" }) };
+  return { cards, settings, list, advisories: async () => [], explain: async () => { throw new Error("no such record"); }, connectionHealth: async () => ({}), validate: async () => ({ ok: true }), settingsChange: async (task, changes) => (settings.push({ task, changes }), { record: "k-0000000000000001", tier: 1, state: "review" }) };
 }

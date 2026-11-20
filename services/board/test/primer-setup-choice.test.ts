@@ -138,4 +138,15 @@ describe.each(["connect", "self-host"] as const)("Primer setup from a fresh inst
     }
     expect((await owner("GET", "/api/sign-ins/primer")).json).toMatchObject({ asks: false, state: "ok" });
   });
+
+  it("reopens when finished with its current mode and its choices (secrets only as present, never their values), and a new pick files the same settings change", async () => {
+    live({ primer_mode: mode, primer_host: mode === "self-host" ? "primer.example.com" : "", primer_host_aud: "service:primer", app_login: "access", edge: { tunnel_id: "x" } });
+    const [f] = (await owner("GET", "/api/setup-flows")).json.flows;
+    expect(f).toMatchObject({ module: "primer", done: true, choose: { value: mode, chosen: mode }, paired: true });
+    expect(JSON.stringify(f)).not.toContain(GOOD);
+    created.length = 0;
+    const other = mode === "connect" ? { value: "self-host", inputs: { primer_host: "primer.example.com", primer_host_aud: "service:primer" } } : { value: "connect" };
+    expect((await owner("POST", "/api/setup-flows/primer/choose", other)).json).toMatchObject({ ok: true, identifier: "WOR-9" });
+    expect(changesOf(created.at(-1)!.description)![0]).toEqual({ kind: "setting", key: "primer_mode", value: other.value });
+  });
 });

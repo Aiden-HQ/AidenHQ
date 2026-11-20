@@ -17,9 +17,10 @@ settings:
   # Whether unlabelled issues on the maintained repos are triaged: each new one within a watcher poll of its filing (a
   # task per issue), and the backlog by the daily run (the budget caps it).
   external_triage: { default: true }
-  # The most new-issue triage runs a day the watcher starts for one issue author, and for one repo: past either, an issue is
+  # The most new-issue triage runs a day the watcher starts for one issue author: past it (or triage_per_repo_day), an issue is
   # left to the daily triage run, so a flood of reports can't buy a run each.
   triage_per_author_day: { default: 3 }
+  # The most new-issue triage runs a day the watcher starts for one repo (see triage_per_author_day).
   triage_per_repo_day: { default: 30 }
   # Minutes between the watcher's checks for a newly labelled issue on any maintained repo (MAINTAINER_POLL_MINUTES).
   maintainer_poll_minutes: { default: 5 }
