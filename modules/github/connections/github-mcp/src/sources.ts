@@ -1,5 +1,5 @@
-// src_github writer (shared sources, docs/design/sources.md), with the instance's GitHub
-// App token for each configured org (src/projects.ts). Every 15 minutes, per org:
+// src_github writer (shared sources, docs/design/sources.md), as the owner (background work through the one client,
+// src/projects.ts), for each configured org. Every 15 minutes, per org:
 //   - issues and pull requests updated since the org's cursor (search API, org-scoped, so cost doesn't grow with repos);
 //   - every Projects (v2) board, discovered, read in full: items with their field values (status, iteration, dates,
 //     assignees); items gone from a board are marked removed.
@@ -81,7 +81,7 @@ export function issueRow(i: any): Row {
 
 const BOARDS = `query($org:String!,$after:String){organization(login:$org){projectsV2(first:50,after:$after){pageInfo{hasNextPage endCursor} nodes{number title url closed updatedAt}}}}`;
 // No nested user-field connection (assignees come from the content): GraphQL cost multiplies through nested connections,
-// and the App's 5,000 points an hour are shared with github_project_read.
+// and the owner's 5,000 points an hour are shared with every other GitHub call.
 const ITEMS = `query($org:String!,$number:Int!,$after:String){organization(login:$org){projectV2(number:$number){items(first:100,after:$after){pageInfo{hasNextPage endCursor} nodes{
   id isArchived updatedAt
   content{__typename ... on Issue{title url state number repository{nameWithOwner} assignees(first:10){nodes{login}} labels(first:20){nodes{name}}}
@@ -153,7 +153,7 @@ export async function syncOrg(store: SourceStore, gh: Gh, org: string, now = Dat
   // board's first read is its baseline.
   // Without Projects: read (or on a user account) there are no boards to read; issues and PRs above still sync.
   if (!acct.projects) {
-    log?.info({ org }, "src_github boards skipped: the App can't read this account's Projects");
+    log?.info({ org }, "src_github boards skipped: a user account has no organization Projects");
     return written;
   }
   let after: string | null = null;
@@ -188,7 +188,7 @@ export async function syncOrg(store: SourceStore, gh: Gh, org: string, now = Dat
   return written;
 }
 
-/** Every 15 minutes, each org in turn, each pass recorded in src_meta.ingest_run (an org the App isn't on records its error). */
+/** Every 15 minutes, each org in turn, each pass recorded in src_meta.ingest_run (an org the owner can't read records its error). */
 export function startSync(store: SourceStore, gh: Gh, orgs: string[], log: Logger, everyMs = 15 * 60_000): void {
   const tick = async () => {
     for (const org of orgs) {

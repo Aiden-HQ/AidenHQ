@@ -44,6 +44,12 @@ export class GitHubNeed extends Error {
   }
 }
 
+/** A tool's error for a need: what is wrong and its fix; an owner-fixable one says the owner was told (notify, at most once). */
+export function needAnswer(e: GitHubNeed): { error: "github_needs_owner" | "github_unreachable" | "github_rate_limited"; need: Need; detail: string } {
+  const error = e.ownerFixable ? "github_needs_owner" : e.need.cause === "rate_limited" ? "github_rate_limited" : "github_unreachable";
+  return { error, need: e.need, detail: e.ownerFixable ? `${e.message}: the owner was told; wait for the reconnect` : e.message };
+}
+
 export type GitHubStatus = {
   login?: string;
   scopes: string[];

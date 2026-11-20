@@ -2,10 +2,8 @@ import { generateKeyPairSync } from "node:crypto";
 import { afterEach, expect, it, vi } from "vitest";
 import { Maintainer } from "../src/maintainer.js";
 import { inMaintained, parseRepos } from "../src/aidenhq-sdk/maintained-repos.js";
-import { Projects } from "../src/projects.js";
+import { accessFor } from "./fake-access.js";
 
-const APP = { id: 4242, slug: "acme-bot" };
-const CODEHOST = { url: "http://codehost", key: () => "gh-key" };
 const PRODUCT = "acme/product";
 const COMMIT = "c".repeat(40);
 
@@ -38,8 +36,8 @@ function fake(opts: {
     const body = init.body ? JSON.parse(String(init.body)) : undefined;
     calls.push({ method, url, body });
     const json = (status: number, b: unknown) => ({ status, json: async () => b });
-    // The kernel's /v1/codehost/token: the App's token and its slug.
-    if (url === "http://codehost/v1/codehost/token") return json(200, { token: "ghs_t", expires_at: new Date(Date.now() + 3300_000).toISOString(), app: { slug: APP.slug } });
+    // The signed-in owner: the fleet acts as this login.
+    if (url === "https://api.github.com/user") return json(200, { login: "owner1", id: 1 });
     if (url === "https://api.github.com/graphql") return json(200, { data: { repository: { issue: { lastEditedAt: opts.edited?.[body.variables.i] ?? null } } } });
     const perm = u.pathname.match(/^\/repos\/[^/]+\/[^/]+\/collaborators\/([^/]+)\/permission$/);
     if (perm && opts.failPermission) return json(opts.failPermission, { message: "Forbidden" });
@@ -100,8 +98,10 @@ function fake(opts: {
   return { fetchFn, calls, posted, permissions, opts };
 }
 
-function maintainer(f: ReturnType<typeof fake>, terms: string[] = [], repos: unknown[] = [{ repo: PRODUCT }]) {
-  return new Maintainer(new Projects(CODEHOST, f.fetchFn), parseRepos(JSON.stringify(repos)), terms);
+/** AidenHQ's records, faked: every label write the owner's login made is the fleet's own, and the issues and PRs `ours` names. */
+const records = (ours: number[] = []) => async (ref: string) => ref.includes("/label/") || ours.some((n) => ref.endsWith(`#${n}`));
+function maintainer(f: ReturnType<typeof fake>, terms: string[] = [], repos: unknown[] = [{ repo: PRODUCT }], ours: number[] = []) {
+  return new Maintainer(accessFor(f.fetchFn), parseRepos(JSON.stringify(repos)), terms, records(ours));
 }
 
 const labeled = (login: string, at: string, app?: { id: number; slug: string }) => ({
@@ -112,12 +112,12 @@ const labeled = (login: string, at: string, app?: { id: number; slug: string }) 
   created_at: at,
 });
 
-it("trusts a label from our App bot, an admin or a maintain collaborator, and nothing else", async () => {
+it("agent-fix: recorded label trusted, owner's own not; an admin or a maintain collaborator, and nothing else", async () => {
   const f = fake({
     issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z" }],
     timelines: {
       1: [
-        labeled("acme-bot[bot]", "2026-01-01T00:00:00Z", APP),
+        labeled("owner1", "2026-01-01T00:00:00Z"),
         labeled("admin-user", "2026-01-01T00:00:01Z"),
         labeled("maintainer-user", "2026-01-01T00:00:02Z"),
         labeled("writer-user", "2026-01-01T00:00:03Z"),
@@ -130,10 +130,11 @@ it("trusts a label from our App bot, an admin or a maintain collaborator, and no
   const m = maintainer(f);
   const { events } = await m.labelEvents(PRODUCT, 1);
   const trust = Object.fromEntries(events.map((e) => [e.actor, e.trusted]));
-  expect(trust).toEqual({ "acme-bot[bot]": true, "admin-user": true, "maintainer-user": true, "writer-user": false, "triage-user": false, "random-user": false });
-  // The App's own event is trusted by its slug (performed_via_github_app) even when the actor login is something else.
-  const f2 = fake({ issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z" }], timelines: { 1: [labeled("someone", "2026-01-01T00:00:00Z", APP)] } });
-  expect((await maintainer(f2).labelEvents(PRODUCT, 1)).events[0]!.trusted).toBe(true);
+  expect(trust).toEqual({ "owner1": true, "admin-user": true, "maintainer-user": true, "writer-user": false, "triage-user": false, "random-user": false });
+  // The same label by the owner's login, not in AidenHQ's records (the owner by hand on GitHub): untrusted, though an admin.
+  const own = new Maintainer(accessFor(f.fetchFn), parseRepos(JSON.stringify([{ repo: PRODUCT }])), [], async () => false);
+  f.permissions["owner1"] = "admin";
+  expect((await own.labelEvents(PRODUCT, 1)).events.find((e) => e.actor === "owner1")!.trusted).toBe(false);
 });
 
 it("a collaborator's permission is re-read, so a revoked admin stops being trusted", async () => {
@@ -159,16 +160,13 @@ it("a collaborator's permission is re-read, so a revoked admin stops being trust
   }
 });
 
-it("a collaborator's role is looked up with a metadata-read token, and read, a 404, a 403 or a 500 never trusts a label", async () => {
+it("a collaborator's role is looked up once, and read, a 404, a 403 or a 500 never trusts a label", async () => {
   const f = fake({
     issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z" }],
     timelines: { 1: [labeled("admin-user", "2026-01-01T00:00:00Z")] },
     permissions: { "admin-user": "admin" },
   });
   expect((await maintainer(f).labelEvents(PRODUCT, 1)).events[0]!.trusted).toBe(true);
-  const tokens = f.calls.filter((c) => c.url.endsWith("/v1/codehost/token")).map((c) => c.body.perms);
-  expect(tokens).toContainEqual({ metadata: "read" });
-  expect(tokens.every((p: Record<string, string>) => p.administration === undefined)).toBe(true);
   expect(f.calls.filter((c) => c.url.endsWith("/collaborators/admin-user/permission"))).toHaveLength(1);
   // A stranger's answer under the same token is their own role: read is untrusted, and a 404 means not a user.
   const stranger = fake({
@@ -206,7 +204,7 @@ it("an untrusted agent-fix label is skipped, never in issues, and every write re
       { number: 2, updated_at: "2026-01-01T00:00:01Z" },
     ],
     timelines: {
-      1: [labeled("acme-bot[bot]", "2026-01-01T00:00:00Z", APP)],
+      1: [labeled("owner1", "2026-01-01T00:00:00Z")],
       2: [labeled("random-user", "2026-01-01T00:00:01Z")],
     },
   });
@@ -227,7 +225,7 @@ it("a timeline longer than the page cap is refused, never read as if its tail we
       { number: 1, updated_at: "2026-01-01T00:00:00Z" },
       { number: 2, updated_at: "2026-01-01T00:00:01Z" },
     ],
-    timelines: { 1: [labeled("acme-bot[bot]", "2026-01-01T00:00:00Z", APP)] },
+    timelines: { 1: [labeled("owner1", "2026-01-01T00:00:00Z")] },
     longTimeline: 2,
   });
   const m = maintainer(f);
@@ -239,7 +237,7 @@ it("a timeline longer than the page cap is refused, never read as if its tail we
 });
 
 it("a comment has the owner's host and email removed before it is sent", async () => {
-  const f = fake({ issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z" }], timelines: { 1: [labeled("acme-bot[bot]", "2026-01-01T00:00:00Z", APP)] } });
+  const f = fake({ issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z" }], timelines: { 1: [labeled("owner1", "2026-01-01T00:00:00Z")] } });
   const m = maintainer(f, ["internal.example-host"]);
   expect(await m.comment(PRODUCT, 1, "see internal.example-host and dev@acme-corp.com")).toMatchObject({ number: 1 });
   const sent = f.posted[0]!.body.body as string;
@@ -251,7 +249,7 @@ it("a comment has the owner's host and email removed before it is sent", async (
 });
 
 it("a comment whose owner data is hidden behind entities or tags is refused, not sent half-redacted", async () => {
-  const f = fake({ issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z" }], timelines: { 1: [labeled("acme-bot[bot]", "2026-01-01T00:00:00Z", APP)] } });
+  const f = fake({ issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z" }], timelines: { 1: [labeled("owner1", "2026-01-01T00:00:00Z")] } });
   const m = maintainer(f, ["internal.example-host"]);
   for (const body of ["dev&#64;acme-corp.com", "dev<b>@</b>acme-corp.com", "internal.example&#45;host"]) {
     await expect(m.comment(PRODUCT, 1, body)).rejects.toThrow(/owner data/);
@@ -264,7 +262,7 @@ it("a comment whose owner data is hidden behind entities or tags is refused, not
 
 it("a comment carrying a private key has the whole block removed, not just its header", async () => {
   const key = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({ type: "pkcs8", format: "pem" }).toString();
-  const f = fake({ issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z" }], timelines: { 1: [labeled("acme-bot[bot]", "2026-01-01T00:00:00Z", APP)] } });
+  const f = fake({ issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z" }], timelines: { 1: [labeled("owner1", "2026-01-01T00:00:00Z")] } });
   const m = maintainer(f);
   expect(await m.comment(PRODUCT, 1, `here it is:\n${key}\nthanks`)).toMatchObject({ number: 1 });
   const sent = f.posted[0]!.body.body as string;
@@ -275,7 +273,7 @@ it("a comment carrying a private key has the whole block removed, not just its h
 
 it("a comment carrying an unterminated private key has everything from the header on removed", async () => {
   const key = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({ type: "pkcs8", format: "pem" }).toString();
-  const f = fake({ issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z" }], timelines: { 1: [labeled("acme-bot[bot]", "2026-01-01T00:00:00Z", APP)] } });
+  const f = fake({ issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z" }], timelines: { 1: [labeled("owner1", "2026-01-01T00:00:00Z")] } });
   const m = maintainer(f);
   const truncated = key.slice(0, key.indexOf("-----END"));
   expect(await m.comment(PRODUCT, 1, `before\n${truncated}`)).toMatchObject({ number: 1 });
@@ -286,7 +284,7 @@ it("a comment carrying an unterminated private key has everything from the heade
 });
 
 it("a close with a note posts the note as one comment first, then closes with the requested reason", async () => {
-  const f = fake({ issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z" }], timelines: { 1: [labeled("acme-bot[bot]", "2026-01-01T00:00:00Z", APP)] } });
+  const f = fake({ issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z" }], timelines: { 1: [labeled("owner1", "2026-01-01T00:00:00Z")] } });
   const note = "Fixed by acme/product#7, merge 0ba0db1, carried by generation 42.";
   expect(await maintainer(f).state(PRODUCT, 1, "closed", "not_planned", note)).toMatchObject({ number: 1, state: "closed", state_reason: "not_planned" });
   expect(f.posted.map((p) => p.path)).toEqual([`/repos/${PRODUCT}/issues/1/comments`, `/repos/${PRODUCT}/issues/1`]);
@@ -294,39 +292,8 @@ it("a close with a note posts the note as one comment first, then closes with th
   expect(f.posted[1]!.body).toEqual({ state: "closed", state_reason: "not_planned" });
 });
 
-it("a pull request's comment and close mint pull_requests: write, while an issue's ask for issues: write only", async () => {
-  const perms = (f: ReturnType<typeof fake>) => f.calls.filter((c) => c.url.endsWith("/v1/codehost/token")).map((c) => c.body.perms);
-  // A PR shares the issue number and is marked by `pull_request` on the issue read.
-  const pr = fake({ issues: [{ number: 5, updated_at: "2026-01-01T00:00:00Z", pr: true }], timelines: { 5: [labeled("acme-bot[bot]", "2026-01-01T00:00:00Z", APP)] } });
-  expect(await maintainer(pr).comment(PRODUCT, 5, "on the pull request")).toMatchObject({ number: 5 });
-  expect(perms(pr)).toContainEqual({ issues: "write", pull_requests: "write" });
-  expect(perms(pr)).not.toContainEqual({ issues: "write" });
-  const prClose = fake({ issues: [{ number: 5, updated_at: "2026-01-01T00:00:00Z", pr: true }], timelines: { 5: [labeled("acme-bot[bot]", "2026-01-01T00:00:00Z", APP)] } });
-  expect(await maintainer(prClose).state(PRODUCT, 5, "closed", "completed", "Fixed by acme/product#7.")).toMatchObject({ number: 5, state: "closed" });
-  expect(perms(prClose)).toContainEqual({ issues: "write", pull_requests: "write" });
-  expect(perms(prClose)).not.toContainEqual({ issues: "write" });
-  // An issue asks for issues: write only, so the token is never widened to pull requests.
-  const issue = fake({ issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z" }], timelines: { 1: [labeled("acme-bot[bot]", "2026-01-01T00:00:00Z", APP)] } });
-  expect(await maintainer(issue).comment(PRODUCT, 1, "on the issue")).toMatchObject({ number: 1 });
-  expect(await maintainer(issue).state(PRODUCT, 1, "closed", "completed", "Fixed by acme/product#7.")).toMatchObject({ number: 1, state: "closed" });
-  expect(perms(issue)).toContainEqual({ issues: "write" });
-  expect(perms(issue).every((p: Record<string, string>) => p.pull_requests === undefined)).toBe(true);
-});
-
-it("a pull request's label add and remove stay issues-only", async () => {
-  const added = fake({ issues: [{ number: 5, updated_at: "2026-01-01T00:00:00Z", pr: true, labels: [] }] });
-  expect(await maintainer(added).label(PRODUCT, 5, "add")).toMatchObject({ changed: true });
-  const removed = fake({ issues: [{ number: 5, updated_at: "2026-01-01T00:00:00Z", pr: true }], timelines: { 5: [labeled("acme-bot[bot]", "2026-01-01T00:00:00Z", APP)] } });
-  expect(await maintainer(removed).label(PRODUCT, 5, "remove")).toMatchObject({ changed: true });
-  for (const f of [added, removed]) {
-    const perms = f.calls.filter((c) => c.url.endsWith("/v1/codehost/token")).map((c) => c.body.perms);
-    expect(perms).toContainEqual({ issues: "write" });
-    expect(perms.every((p: Record<string, string>) => p.pull_requests === undefined)).toBe(true);
-  }
-});
-
 it("a close whose note carries owner data rejects at the comment step, before the state is changed", async () => {
-  const f = fake({ issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z" }], timelines: { 1: [labeled("acme-bot[bot]", "2026-01-01T00:00:00Z", APP)] } });
+  const f = fake({ issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z" }], timelines: { 1: [labeled("owner1", "2026-01-01T00:00:00Z")] } });
   // Hidden behind an entity, so the rewrite can't reach it and the whole note refuses rather than being sent half-redacted.
   await expect(maintainer(f, ["internal.example-host"]).state(PRODUCT, 1, "closed", "completed", "fixed on internal.example&#45;host")).rejects.toThrow(/owner data/);
   expect(f.posted).toHaveLength(0);
@@ -334,7 +301,7 @@ it("a close whose note carries owner data rejects at the comment step, before th
 });
 
 it("a close whose note cites a PR only as a bare PR #N is refused before anything is written", async () => {
-  const f = fake({ issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z" }], timelines: { 1: [labeled("acme-bot[bot]", "2026-01-01T00:00:00Z", APP)] } });
+  const f = fake({ issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z" }], timelines: { 1: [labeled("owner1", "2026-01-01T00:00:00Z")] } });
   const m = maintainer(f);
   // The exact shape WOR-8689 failed on: PRs merged and live, cited as "PR #722" and "PR #733".
   await expect(m.state(PRODUCT, 1, "closed", "completed", "Fixed by PR #722 (merge 0ba0db1) and PR #733 (merge 1cd2e3f).")).rejects.toThrow(
@@ -347,7 +314,7 @@ it("a close whose note cites a PR only as a bare PR #N is refused before anythin
 });
 
 it("a close's note citing a PR as owner/name#number or its /pull/ URL is accepted", async () => {
-  const f = fake({ issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z" }], timelines: { 1: [labeled("acme-bot[bot]", "2026-01-01T00:00:00Z", APP)] } });
+  const f = fake({ issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z" }], timelines: { 1: [labeled("owner1", "2026-01-01T00:00:00Z")] } });
   const m = maintainer(f);
   for (const note of [
     "Fixed by acme/product#722, merge 0ba0db1.",
@@ -367,7 +334,7 @@ it("a quiet PR (no fix label) closes as not_planned with the close note, through
 });
 
 it("a reopen carrying a note is refused, since a note is posted only when closing", async () => {
-  const f = fake({ issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z" }], timelines: { 1: [labeled("acme-bot[bot]", "2026-01-01T00:00:00Z", APP)] } });
+  const f = fake({ issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z" }], timelines: { 1: [labeled("owner1", "2026-01-01T00:00:00Z")] } });
   await expect(maintainer(f).state(PRODUCT, 1, "open", undefined, "reopened after the revert")).rejects.toThrow(/only when closing/);
   expect(f.posted).toHaveLength(0);
 });
@@ -379,8 +346,8 @@ it("since paging returns the same cursor twice without duplicating an issue", as
       { number: 2, updated_at: "2026-01-02T00:00:00Z" },
     ],
     timelines: {
-      1: [labeled("acme-bot[bot]", "2026-01-01T00:00:00Z", APP)],
-      2: [labeled("acme-bot[bot]", "2026-01-02T00:00:00Z", APP)],
+      1: [labeled("owner1", "2026-01-01T00:00:00Z")],
+      2: [labeled("owner1", "2026-01-02T00:00:00Z")],
     },
   });
   const m = maintainer(f);
@@ -403,8 +370,8 @@ it("a failed label-event read does not advance the cursor, so the next poll retr
       { number: 2, updated_at: "2026-01-02T00:00:00Z" },
     ],
     timelines: {
-      1: [labeled("acme-bot[bot]", "2026-01-01T00:00:00Z", APP)],
-      2: [labeled("acme-bot[bot]", "2026-01-02T00:00:00Z", APP)],
+      1: [labeled("owner1", "2026-01-01T00:00:00Z")],
+      2: [labeled("owner1", "2026-01-02T00:00:00Z")],
     },
     failTimeline: [2],
   });
@@ -423,7 +390,7 @@ it("a failed label-event read does not advance the cursor, so the next poll retr
 it("an issue past the first page is read and never skipped by the cursor", async () => {
   const issues = Array.from({ length: 101 }, (_, k) => ({ number: k + 1, updated_at: `2026-01-01T00:00:00.${String(k).padStart(3, "0")}Z` }));
   issues[100]!.updated_at = "2026-02-01T00:00:00Z";
-  const timelines = Object.fromEntries(issues.map((i) => [i.number, [labeled("acme-bot[bot]", i.updated_at, APP)]]));
+  const timelines = Object.fromEntries(issues.map((i) => [i.number, [labeled("owner1", i.updated_at)]]));
   const f = fake({ issues, timelines });
   const out = await maintainer(f).repoSince(PRODUCT);
   expect(out.issues).toHaveLength(101);
@@ -433,7 +400,7 @@ it("an issue past the first page is read and never skipped by the cursor", async
 });
 
 it("every tool and the endpoint refuse a repository the list doesn't name", async () => {
-  const f = fake({ issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z" }], timelines: { 1: [labeled("acme-bot[bot]", "2026-01-01T00:00:00Z", APP)] } });
+  const f = fake({ issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z" }], timelines: { 1: [labeled("owner1", "2026-01-01T00:00:00Z")] } });
   const m = maintainer(f);
   for (const call of [
     () => m.issueList("other/repo"),
@@ -463,7 +430,7 @@ it("reads the tree and one file, and errors rather than truncating an oversized 
 });
 
 it("the label tool changes only agent-fix", async () => {
-  const f = fake({ issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z" }], timelines: { 1: [labeled("acme-bot[bot]", "2026-01-01T00:00:00Z", APP)] } });
+  const f = fake({ issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z" }], timelines: { 1: [labeled("owner1", "2026-01-01T00:00:00Z")] } });
   const m = maintainer(f);
   await expect(m.label(PRODUCT, 1, "add", "bug")).rejects.toThrow(/only the agent-fix and feature-request labels may be changed/);
   expect(await m.label(PRODUCT, 1, "remove")).toMatchObject({ changed: true });
@@ -508,7 +475,7 @@ it("inMaintained matches a listed repo in any case", () => {
 
 it("a list that doesn't parse refuses every tool and the watcher's read, naming why", async () => {
   const f = fake({});
-  const m = new Maintainer(new Projects(CODEHOST, f.fetchFn), new Error("maintainer_repos[0]: trusted must be one or more of admin, maintain, write"));
+  const m = new Maintainer(accessFor(f.fetchFn), new Error("maintainer_repos[0]: trusted must be one or more of admin, maintain, write"));
   await expect(m.issueList(PRODUCT)).rejects.toThrow(/maintainer_repos is invalid: .*trusted/);
   await expect(m.issuesSince({})).rejects.toThrow(/maintainer_repos is invalid/);
   expect(f.calls).toHaveLength(0);
@@ -526,7 +493,7 @@ it("trust is per repo: a write collaborator vouches only where the repo trusts w
 
 it("a repo's own label is the one listed, trusted and the only one changed", async () => {
   const fixMe = (login: string, at: string, app?: { id: number; slug: string }) => ({ ...labeled(login, at, app), label: { name: "fix-me" } });
-  const f = fake({ issues: [{ number: 3, updated_at: "2026-01-01T00:00:00Z", labels: ["fix-me"] }], timelines: { 3: [fixMe("acme-bot[bot]", "2026-01-01T00:00:00Z", APP)] } });
+  const f = fake({ issues: [{ number: 3, updated_at: "2026-01-01T00:00:00Z", labels: ["fix-me"] }], timelines: { 3: [fixMe("owner1", "2026-01-01T00:00:00Z")] } });
   const m = maintainer(f, [], [{ repo: OTHER, label: "fix-me" }]);
   expect((await m.repoSince(OTHER)).issues.map((i) => i.number)).toEqual([3]);
   expect(f.calls.some((c) => c.url.includes(`/repos/${OTHER}/issues?state=open&labels=fix-me`))).toBe(true);
@@ -541,7 +508,7 @@ it("the watcher's read covers every listed repo from its own cursor, and one rep
       { number: 1, updated_at: "2026-01-01T00:00:00Z" },
       { number: 2, updated_at: "2026-01-02T00:00:00Z" },
     ],
-    timelines: { 1: [labeled("acme-bot[bot]", "2026-01-01T00:00:00Z", APP)], 2: [labeled("acme-bot[bot]", "2026-01-02T00:00:00Z", APP)] },
+    timelines: { 1: [labeled("owner1", "2026-01-01T00:00:00Z")], 2: [labeled("owner1", "2026-01-02T00:00:00Z")] },
   });
   const m = maintainer(f, [], [{ repo: PRODUCT }, { repo: OTHER }]);
   const out = await m.issuesSince({ [PRODUCT]: "2026-01-01T12:00:00Z" });
@@ -556,25 +523,25 @@ it("the watcher's read covers every listed repo from its own cursor, and one rep
 });
 
 it("a comment on a maintained repo keeps that repo's own org, while other owner terms are still redacted", async () => {
-  const f = fake({ issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z" }], timelines: { 1: [labeled("acme-bot[bot]", "2026-01-01T00:00:00Z", APP)] } });
+  const f = fake({ issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z" }], timelines: { 1: [labeled("owner1", "2026-01-01T00:00:00Z")] } });
   const m = maintainer(f, ["acme", "internal.example-host"], [{ repo: OTHER }]);
   expect(await m.comment(OTHER, 1, "fixed by https://github.com/acme/widgets/pull/7 on internal.example-host")).toMatchObject({ number: 1 });
   expect(f.posted[0]!.body.body).toBe("fixed by https://github.com/acme/widgets/pull/7 on [redacted]");
 });
 
-it("the triage read hands over new unlabelled reports once, never the App's own filings, PRs or labelled ones, nor the backlog", async () => {
+it("the triage read hands over new unlabelled reports once, never the fleet's own filings, PRs or labelled ones, nor the backlog", async () => {
   const at = (h: number) => `2026-01-01T${String(h).padStart(2, "0")}:00:00Z`;
   const f = fake({
     issues: [
       { number: 1, updated_at: at(1), created_at: at(1), labels: [] }, // before the cursor: the daily triage's
       { number: 2, updated_at: at(3), created_at: at(3), labels: ["bug"] },
-      { number: 3, updated_at: at(4), created_at: at(4), labels: [], user: "acme-bot[bot]" },
+      { number: 3, updated_at: at(4), created_at: at(4), labels: [], user: "owner1" },
       { number: 4, updated_at: at(5), created_at: at(5) }, // labelled: the labelled-issue path's
       { number: 5, updated_at: at(6), created_at: at(6), labels: [], pr: true },
       { number: 6, updated_at: at(7), created_at: at(7), labels: [] },
     ],
   });
-  const m = maintainer(f);
+  const m = maintainer(f, [], [{ repo: PRODUCT }], [3]); // #3 is the fleet's own filing (in AidenHQ's records)
   const first = await m.untriaged(PRODUCT);
   expect(first.untriaged).toEqual([]);
   expect(Date.parse(first.triage_cursor)).toBeGreaterThan(Date.now() - 60_000);
@@ -594,7 +561,7 @@ it("agent-build is trusted from an admin, never from the App or a write collabor
   const f = fake({
     issues: [1, 2, 3].map((n) => ({ number: n, updated_at: `2026-01-01T00:00:0${n}Z`, labels: [BUILD] })),
     timelines: {
-      1: [labeledAs(BUILD, "acme-bot[bot]", "2026-01-01T00:00:01Z", APP)],
+      1: [labeledAs(BUILD, "owner1", "2026-01-01T00:00:01Z")],
       2: [labeledAs(BUILD, "writer-user", "2026-01-01T00:00:02Z")],
       3: [labeledAs(BUILD, "admin-user", "2026-01-01T00:00:03Z")],
     },
@@ -604,7 +571,7 @@ it("agent-build is trusted from an admin, never from the App or a write collabor
   expect(out.issues.map((i) => i.number)).toEqual([3]);
   expect(out.skipped.map((s) => s.number)).toEqual([1, 2]);
   // The App counts for no label but its own fix label: a bot login with no performed_via event is no better.
-  const bot = fake({ issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z", labels: [BUILD] }], timelines: { 1: [labeledAs(BUILD, "acme-bot[bot]", "2026-01-01T00:00:00Z")] } });
+  const bot = fake({ issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z", labels: [BUILD] }], timelines: { 1: [labeledAs(BUILD, "owner1", "2026-01-01T00:00:00Z")] } });
   expect((await maintainer(bot, [], FEATURES).issueList(PRODUCT, BUILD)).issues[0]).toMatchObject({ trusted: false });
   // A repo trusting write lets a write collaborator vouch for it.
   const w = fake({ issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z", labels: [BUILD] }], timelines: { 1: [labeledAs(BUILD, "writer-user", "2026-01-01T00:00:00Z")] }, permissions: { "writer-user": "write" } });
@@ -640,7 +607,7 @@ it("triage skips issues already labelled feature-request or agent-build, and a f
       { number: 3, updated_at: "2026-02-01T00:00:02Z", created_at: "2026-02-01T00:00:02Z", labels: ["bug"] },
       { number: 4, updated_at: "2026-02-01T00:00:03Z", created_at: "2026-02-01T00:00:03Z", labels: ["feature-request"] },
     ],
-    timelines: { 1: [labeledAs("feature-request", "acme-bot[bot]", "2026-02-01T00:00:01Z", APP)], 2: [labeledAs(BUILD, "admin-user", "2026-02-01T00:00:03Z")], 4: [labeledAs("feature-request", "stranger", "2026-02-01T00:00:04Z")] },
+    timelines: { 1: [labeledAs("feature-request", "owner1", "2026-02-01T00:00:01Z")], 2: [labeledAs(BUILD, "admin-user", "2026-02-01T00:00:03Z")], 4: [labeledAs("feature-request", "stranger", "2026-02-01T00:00:04Z")] },
     permissions: { "admin-user": "admin" },
   });
   const out = await maintainer(f, [], FEATURES).issuesSince({}, { [PRODUCT]: "2026-01-01T00:00:00Z" });
@@ -656,7 +623,7 @@ it("pr_list tells bot, fleet and human PRs apart, and reads a human author's lat
   const f = fake({});
   const pr = (number: number, login: string, extra: object = {}) => ({ number, user: { login, type: login.endsWith("[bot]") ? "Bot" : "User" }, draft: false, labels: [{ name: "x" }], requested_reviewers: [], requested_teams: [], head: { sha: `s${number}` }, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-03-01T00:00:00Z", ...extra });
   const answers: Record<string, unknown> = {
-    [`/repos/${PRODUCT}/pulls`]: [pr(1, "dependabot[bot]"), pr(2, "acme-bot[bot]"), pr(3, "carol", { draft: true, requested_reviewers: [{ login: "dave" }] }), pr(4, "erin")],
+    [`/repos/${PRODUCT}/pulls`]: [pr(1, "dependabot[bot]"), pr(2, "owner1"), pr(3, "carol", { draft: true, requested_reviewers: [{ login: "dave" }] }), pr(4, "erin")],
     [`/repos/${PRODUCT}/pulls/3`]: { mergeable_state: "clean" },
     [`/repos/${PRODUCT}/pulls/4`]: { mergeable_state: "dirty" },
     [`/repos/${PRODUCT}/commits/s3`]: { commit: { committer: { date: "2026-01-05T00:00:00Z" } } },
@@ -675,7 +642,7 @@ it("pr_list tells bot, fleet and human PRs apart, and reads a human author's lat
     const hit = u.hostname === "api.github.com" ? answers[u.pathname] : undefined;
     return hit !== undefined ? { status: 200, json: async () => hit } : f.fetchFn(url, init);
   }) as unknown as typeof fetch;
-  const m = new Maintainer(new Projects(CODEHOST, fetchFn), parseRepos(JSON.stringify([{ repo: PRODUCT }])), []);
+  const m = new Maintainer(accessFor(fetchFn), parseRepos(JSON.stringify([{ repo: PRODUCT }])), [], records([2])); // #2 is the fleet's
   const { prs } = await m.prList(PRODUCT);
   expect(prs.map((p) => [p.number, p.author_kind])).toEqual([[1, "bot"], [2, "fleet"], [3, "human"], [4, "human"]]);
   // Dave's comment is not the author's: Carol's latest word is her own comment, and a review is asked of someone.

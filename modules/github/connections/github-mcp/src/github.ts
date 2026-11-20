@@ -1,12 +1,14 @@
-// GitHub REST client for the Researcher. It holds the user's own `gh` token, which can do
-// anything the user can (push, delete branches, change settings). The only thing standing between
-// that token and those requests is `guard`: every request goes through it, and it allows a fixed
-// list of read endpoints plus the writes the user asks for: a comment on an issue or pull request, a
-// new issue, and adding that issue to an organization project with a status, through the
-// GraphQL documents fixed in `GRAPHQL`; and closing or reopening an issue, its labels and
-// assignees, a review on a pull request, and re-running failed CI jobs. Never call fetch with the
-// token anywhere else, and never add a route or a GraphQL document without checking what it does.
-// Reads of repositories the instance's GitHub App covers use its repo-narrowed read-only token instead.
+// GitHub REST client for AidenHQ's GitHub tools, as the owner (the one sign-in, client.ts), which can do anything the owner
+// can (push, delete branches, change settings). The only thing standing between that sign-in and these requests is `guard`:
+// every request goes through it, and it allows a fixed list of read endpoints plus the writes an agent asks for: a comment on
+// an issue or pull request, a new issue, and adding that issue to an organization project with a status, through the GraphQL
+// documents fixed in `GRAPHQL`; and closing or reopening an issue, its labels and assignees, a comment review on a pull
+// request (never an approval: an agent's review mustn't count as the owner's), and re-running failed CI jobs. Text it posts
+// ends with the AidenHQ footer naming the agent. Which repos a write may touch is the AI reviewer's call on each record, plus
+// what the owner's account can reach. Never add a route or a GraphQL document without checking what it does.
+
+import { withFooter } from "./aidenhq-sdk/attribution.js";
+import { GitHubNeed, type GitHubAccess } from "./client.js";
 
 const API = "https://api.github.com";
 const NAME = "[A-Za-z0-9_.-]{1,100}";
@@ -28,6 +30,8 @@ export const ROUTES: { method: Method; path: RegExp }[] = [
   { method: "GET", path: new RegExp(`^/repos/${NAME}/${NAME}/compare/[0-9a-f]{40}\\.\\.\\.[0-9a-f]{40}$`) },
   { method: "GET", path: /^\/user\/repos$/ },
   { method: "GET", path: new RegExp(`^/repos/${NAME}/${NAME}/pulls/${NUM}/reviews$`) },
+  // A review's own line comments (review-post.ts records their ids).
+  { method: "GET", path: new RegExp(`^/repos/${NAME}/${NAME}/pulls/${NUM}/reviews/${RUN}/comments$`) },
   { method: "GET", path: new RegExp(`^/repos/${NAME}/${NAME}/pulls/${NUM}/files$`) },
   { method: "GET", path: new RegExp(`^/repos/${NAME}/${NAME}/commits/[0-9a-f]{40}/status$`) },
   { method: "GET", path: new RegExp(`^/repos/${NAME}/${NAME}/commits/[0-9a-f]{40}/check-runs$`) },
@@ -82,14 +86,14 @@ export const GRAPHQL = {
 const GRAPHQL_DOCS = new Set<string>(Object.values(GRAPHQL));
 
 export class GitHubRefused extends Error {}
-export class GitHubAuthError extends Error {}
 
 export function guard(method: string, path: string, body?: unknown): void {
   if (!ROUTES.some((r) => r.method === method && r.path.test(path))) throw new GitHubRefused(`refused a GitHub request that isn't allowed: ${method} ${path}`);
   if (path === "/graphql" && !GRAPHQL_DOCS.has(String((body as { query?: unknown } | undefined)?.query))) throw new GitHubRefused("refused a GraphQL request that isn't one of the fixed documents");
   const limit = BODY_FIELDS.find((b) => b.method === method && b.path.test(path));
   if (limit && Object.keys((body as object | undefined) ?? {}).some((k) => !limit.fields.includes(k))) throw new GitHubRefused(`refused a GitHub request with fields that aren't allowed: ${method} ${path}`);
-  if (method === "POST" && /\/reviews$/.test(path) && !["APPROVE", "REQUEST_CHANGES", "COMMENT"].includes(String((body as { event?: unknown } | undefined)?.event))) throw new GitHubRefused("refused a review without a verdict");
+  // A comment review only: an approval (or a change request) as the owner would count as the owner's own review.
+  if (method === "POST" && /\/reviews$/.test(path) && (body as { event?: unknown } | undefined)?.event !== "COMMENT") throw new GitHubRefused("refused a review that isn't a comment: agents post COMMENT reviews only");
   // Inline comments are advice: only on a plain comment review, each with only the fields of a line comment.
   const comments = (body as { comments?: unknown } | undefined)?.comments;
   if (method === "POST" && /\/reviews$/.test(path) && comments !== undefined) {
@@ -103,6 +107,9 @@ export interface Ref {
   repo: string;
   number: number;
 }
+
+/** An issue or PR as AidenHQ's records name it (`github:<owner>/<repo>#<n>`, lower case): what a write's outcome carries. */
+export const objectRef = (r: Ref) => `github:${r.owner.toLowerCase()}/${r.repo.toLowerCase()}#${r.number}`;
 
 /** Parses "owner/repo#12", an issue or pull request URL, or owner/repo plus a number. */
 export function parseRef(input: { url?: string; repo?: string; number?: number }): Ref {
@@ -178,93 +185,44 @@ function splitRepo(repo: string): { owner: string; name: string } {
 
 type Fetch = typeof fetch;
 
-/** A source of GitHub App installation tokens for a repository. */
-export interface AppTokenSource {
-  /** A read-only token for owner/repo, or undefined when the App isn't installed there. */
-  repoToken(owner: string, repo: string): Promise<string | undefined>;
-  /** A read-only token for an org or user account, or undefined when the App isn't installed there. */
-  orgToken?(org: string): Promise<string | undefined>;
-}
-
-/** The repository a REST path is about, when it is one of the repo endpoints. */
-function repoOf(path: string): { owner: string; repo: string } | undefined {
-  const m = path.match(new RegExp(`^/repos/(${NAME})/(${NAME})(?:/|$)`));
-  return m ? { owner: m[1]!, repo: m[2]! } : undefined;
-}
-
-/** The org or user a search query is scoped to (`org:acme`, `user:acme`), when it names one. */
-function searchScope(query: string): string | undefined {
-  return query.match(/(?:^|\s)(?:org|user):([A-Za-z0-9_.-]{1,100})(?=\s|$)/i)?.[1];
-}
-
-/** The owner's GitHub token: the board's sign-in (official.ts). */
-export interface OwnerToken {
-  /** The bearer; throws when there is no sign-in. */
-  get(): Promise<string>;
-  signedIn(): boolean;
-}
-
 export class GitHub {
   constructor(
-    private readonly owner: OwnerToken,
-    private readonly commentOrgs: Set<string>,
+    private readonly access: GitHubAccess,
     private readonly fetchImpl: Fetch = fetch,
-    private readonly app?: AppTokenSource,
   ) {}
 
-  private async token(): Promise<string> {
-    const t = await this.owner.get().catch(() => "");
-    if (!t) throw new GitHubAuthError("GitHub isn't connected (Connect GitHub on the board)");
-    return t;
-  }
-
   available(): boolean {
-    return this.owner.signedIn();
+    return this.access.connected();
   }
 
-  /** `auth` is a bearer to use instead of the owner's or the App's read token (review-post.ts posts as the App or the owner). */
-  async request<T>(method: Method, path: string, opts: { query?: Record<string, string | number>; body?: unknown; text?: boolean; auth?: string } = {}): Promise<T> {
+  async request<T>(method: Method, path: string, opts: { query?: Record<string, string | number>; body?: unknown; text?: boolean } = {}): Promise<T> {
     guard(method, path, opts.body);
     const url = new URL(path, API);
     // ".." passes the name pattern but URL resolution would move the path.
     if (url.origin !== API || url.pathname !== path) throw new GitHubRefused(`refused a GitHub request that isn't allowed: ${method} ${path}`);
-    // Reads use the App's read-only installation token when it covers the repo, or the org a search is scoped to (the
-    // user's token can't see the agents org); writes and repos it doesn't cover keep the user's token, and no token is
-    // ever logged.
-    const repo = method === "GET" ? repoOf(path) : undefined;
-    const scope = method === "GET" && path === "/search/issues" ? searchScope(String(opts.query?.q ?? "")) : undefined;
-    const appToken = opts.auth ? undefined : repo ? await this.app?.repoToken(repo.owner, repo.repo) : scope ? await this.app?.orgToken?.(scope) : undefined;
     for (const [k, v] of Object.entries(opts.query ?? {})) url.searchParams.set(k, String(v));
+    if (!opts.text) {
+      // Through the owner's client: its rate limiter, and a typed need (client.ts) for what the owner must fix.
+      const r = await this.access.rest(method, `${url.pathname}${url.search}`, opts.body);
+      // GitHub answers 404 for private repositories the account can't see.
+      if (r.status >= 300) throw new Error(`GitHub ${r.status} for ${method} ${url.pathname}${r.status === 404 ? " (not found, or the user has no access)" : ""}: ${JSON.stringify(r.body?.message ?? r.body ?? "").slice(0, 200)}`);
+      // DELETE …/labels answers with the remaining labels; some writes answer 201/204 with nothing.
+      return (r.body ?? {}) as T;
+    }
+    // A job's log answers with a redirect to a pre-signed download: asked for with the owner's token, followed once without it.
     const res = await this.fetchImpl(url, {
       method,
-      redirect: opts.text ? "manual" : "error",
-      headers: {
-        authorization: `Bearer ${opts.auth ?? appToken ?? (await this.token())}`,
-        accept: "application/vnd.github+json",
-        "x-github-api-version": "2022-11-28",
-        "user-agent": "aidenhq-github-mcp",
-        ...(opts.body ? { "content-type": "application/json" } : {}),
-      },
-      body: opts.body ? JSON.stringify(opts.body) : undefined,
+      redirect: "manual",
+      headers: { authorization: `Bearer ${await this.access.token()}`, accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28", "user-agent": "aidenhq-github-mcp" },
       signal: AbortSignal.timeout(30_000),
     });
-    if (res.status === 401) throw new GitHubAuthError("GitHub rejected the token (Reconnect GitHub on the board)");
-    // A job's log answers with a redirect to a pre-signed download: followed once, without the token.
-    if (opts.text) {
+    {
       const to = res.headers.get("location");
       if (res.status !== 302 || !to || !logHostAllowed(to)) throw new Error(`GitHub ${res.status} for ${method} ${url.pathname}: no log download`);
       const dl = await this.fetchImpl(to, { redirect: "error", signal: AbortSignal.timeout(30_000) });
       if (!dl.ok) throw new Error(`log download answered ${dl.status}`);
       return (await tailOf(dl)) as T;
     }
-    if (!res.ok) {
-      const detail = await res.text().catch(() => "");
-      // GitHub answers 404 for private repositories the token can't see.
-      throw new Error(`GitHub ${res.status} for ${method} ${url.pathname}${res.status === 404 ? " (not found, or the user has no access)" : ""}: ${detail.slice(0, 200)}`);
-    }
-    // DELETE …/labels answers with the remaining labels; some writes answer 201/204 with nothing.
-    const text = await res.text();
-    return (text ? JSON.parse(text) : {}) as T;
   }
 
   async whoami(): Promise<{ login: string }> {
@@ -379,15 +337,10 @@ export class GitHub {
     };
   }
 
-  async comment(ref: Ref, body: string): Promise<{ url: string; id: number }> {
-    this.writable(ref.owner, `${ref.owner}/${ref.repo}`, "commenting");
-    const c = await this.request<GhComment>("POST", `/repos/${ref.owner}/${ref.repo}/issues/${ref.number}/comments`, { body: { body } });
-    return { url: c.html_url, id: c.id };
-  }
-
-  /** Writes are limited to the configured organizations. */
-  private writable(owner: string, who: string, what: string): void {
-    if (!this.commentOrgs.has(owner.toLowerCase())) throw new GitHubRefused(`${what} is limited to ${[...this.commentOrgs].join(", ") || "no organizations"}; ${who} is read-only`);
+  /** A comment as the owner, signed by `agent` (the AidenHQ footer); `objects` names it for AidenHQ's records. */
+  async comment(ref: Ref, body: string, agent: string): Promise<{ url: string; id: number; objects: string[] }> {
+    const c = await this.request<GhComment>("POST", `/repos/${ref.owner}/${ref.repo}/issues/${ref.number}/comments`, { body: { body: withFooter(body, agent) } });
+    return { url: c.html_url, id: c.id, objects: [`${objectRef(ref)}/comment/${c.id}`] };
   }
 
   /** The repository's own labels, with their exact names, for what the user wrote; refuses one that doesn't exist (GitHub would create it). */
@@ -419,7 +372,6 @@ export class GitHub {
    * everything before the first write, and reports each change it made.
    */
   async updateIssue(ref: Ref, input: { state?: "open" | "closed"; reason?: "completed" | "not_planned"; addLabels?: string[]; removeLabels?: string[]; addAssignees?: string[]; removeAssignees?: string[] }): Promise<unknown> {
-    this.writable(ref.owner, `${ref.owner}/${ref.repo}`, "changing issues");
     const base = `/repos/${ref.owner}/${ref.repo}/issues/${ref.number}`;
     const issue = await this.request<GhIssue>("GET", base);
     if (input.state && issue.pull_request) throw new GitHubRefused("pull requests aren't closed or reopened from here");
@@ -436,25 +388,22 @@ export class GitHub {
       done.push(input.state === "closed" ? `closed as ${(input.reason ?? "completed").replace("_", " ")}` : "reopened");
     }
     const after = await this.request<GhIssue>("GET", base);
-    return { url: after.html_url, state: after.state, labels: labelNames(after), assignees: after.assignees?.map((a) => a.login), done: done.length ? done : ["nothing to change"] };
+    return { url: after.html_url, state: after.state, labels: labelNames(after), assignees: after.assignees?.map((a) => a.login), done: done.length ? done : ["nothing to change"], objects: [objectRef(ref), ...add.map((l) => `${objectRef(ref)}/label/${l}`)] };
   }
 
   /**
-   * Submits a review on a pull request: approve, request changes, or comment, with optional line comments (a comment review
-   * only). As the user, or with `auth` as the identity the caller chose (review-post.ts: the App never approves).
+   * A comment review on a pull request as the owner, signed by `agent`, with optional line comments. Never an approval or a
+   * change request: an agent's review mustn't satisfy branch protection as the owner's.
    */
-  async review(ref: Ref, event: "APPROVE" | "REQUEST_CHANGES" | "COMMENT", body: string, opts: { comments?: { path: string; line: number; end_line?: number; body: string }[]; auth?: string } = {}): Promise<{ url: string; id: number; state: string }> {
-    this.writable(ref.owner, `${ref.owner}/${ref.repo}`, "reviewing");
+  async review(ref: Ref, body: string, agent: string, opts: { comments?: { path: string; line: number; end_line?: number; body: string }[] } = {}): Promise<{ url: string; id: number; state: string; objects: string[] }> {
     const base = `/repos/${ref.owner}/${ref.repo}/pulls/${ref.number}`;
-    const auth = opts.auth ? { auth: opts.auth } : {};
-    if (opts.comments?.length && event !== "COMMENT") throw new GitHubRefused("line comments go only on a review that comments");
-    const pr = await this.request<GhPull & { state: string; user?: GhUser; head: { sha: string } }>("GET", base, auth);
+    const pr = await this.request<GhPull & { state: string; user?: GhUser; head: { sha: string } }>("GET", base);
     if (pr.state !== "open") throw new GitHubRefused(`${ref.owner}/${ref.repo}#${ref.number} isn't open`);
-    if (event !== "APPROVE" && !body.trim()) throw new GitHubRefused("a review that requests changes or comments needs text");
+    if (!body.trim()) throw new GitHubRefused("a review comment needs text");
     const comments = opts.comments?.map((c) => ({ path: c.path, line: c.end_line && c.end_line > c.line ? c.end_line : c.line, side: "RIGHT", ...(c.end_line && c.end_line > c.line ? { start_line: c.line, start_side: "RIGHT" } : {}), body: c.body }));
-    // Reviewed at the head we looked at: if someone pushes meanwhile, GitHub refuses rather than approving unseen commits.
-    const r = await this.request<{ id: number; html_url: string; state: string }>("POST", `${base}/reviews`, { ...auth, body: { event, commit_id: pr.head.sha, ...(body.trim() ? { body } : {}), ...(comments?.length ? { comments } : {}) } });
-    return { url: r.html_url, id: r.id, state: r.state };
+    // Reviewed at the head we looked at: if someone pushes meanwhile, GitHub refuses rather than reviewing unseen commits.
+    const r = await this.request<{ id: number; html_url: string; state: string }>("POST", `${base}/reviews`, { body: { event: "COMMENT", commit_id: pr.head.sha, body: withFooter(body, agent), ...(comments?.length ? { comments } : {}) } });
+    return { url: r.html_url, id: r.id, state: r.state, objects: [objectRef(ref)] };
   }
 
   /**
@@ -467,11 +416,9 @@ export class GitHub {
     let owner: string, repo: string, runs: Run[];
     if (input.run) {
       ({ owner, repo } = input.run);
-      this.writable(owner, `${owner}/${repo}`, "re-running CI");
       runs = [await this.request<Run>("GET", `/repos/${owner}/${repo}/actions/runs/${input.run.id}`)];
     } else if (input.pr) {
       ({ owner, repo } = input.pr);
-      this.writable(owner, `${owner}/${repo}`, "re-running CI");
       const pr = await this.request<GhPull & { head: { sha: string } }>("GET", `/repos/${owner}/${repo}/pulls/${input.pr.number}`);
       const all = (await this.request<{ workflow_runs: Run[] }>("GET", `/repos/${owner}/${repo}/actions/runs`, { query: { head_sha: pr.head.sha, per_page: 100 } })).workflow_runs;
       // The latest run of each workflow: an older failure that already passed on a re-run doesn't count.
@@ -488,8 +435,8 @@ export class GitHub {
     return { repo: `${owner}/${repo}`, rerun, not_failed: runs.filter((r) => !failed(r)).map((r) => ({ name: r.name, status: r.status, conclusion: r.conclusion })) };
   }
 
-  async graphql<T>(doc: keyof typeof GRAPHQL, variables: Record<string, unknown>, auth?: string): Promise<T> {
-    const res = await this.request<{ data?: T; errors?: { message: string }[] }>("POST", "/graphql", { body: { query: GRAPHQL[doc], variables }, ...(auth ? { auth } : {}) });
+  async graphql<T>(doc: keyof typeof GRAPHQL, variables: Record<string, unknown>): Promise<T> {
+    const res = await this.request<{ data?: T; errors?: { message: string }[] }>("POST", "/graphql", { body: { query: GRAPHQL[doc], variables } });
     if (res.errors?.length || !res.data) throw new Error(`GitHub GraphQL: ${res.errors?.map((e) => e.message).join("; ").slice(0, 300) ?? "no data"}`);
     return res.data;
   }
@@ -499,7 +446,7 @@ export class GitHub {
     try {
       return { value: await fn() };
     } catch (err) {
-      if (err instanceof GitHubAuthError || err instanceof GitHubRefused) throw err;
+      if (err instanceof GitHubNeed || err instanceof GitHubRefused) throw err;
       return { error: (err as Error).message.slice(0, 200) };
     }
   }
@@ -510,11 +457,10 @@ export class GitHub {
    * the issue exists. The issue can't be undone from here, so a failure after it is created is
    * returned with the issue rather than thrown: the caller must not try again.
    */
-  async createIssue(input: { repo?: string; title: string; body: string; labels?: string[]; project?: string; status?: string }): Promise<IssueCreated> {
+  async createIssue(input: { repo?: string; title: string; body: string; labels?: string[]; project?: string; status?: string }, agent: string): Promise<IssueCreated> {
     let project: { id: string; title: string; url: string; field?: { id: string; options: { id: string; name: string }[] }; option?: { id: string; name: string }; repos: string[] } | undefined;
     if (input.project) {
       const p = parseProject(input.project);
-      this.writable(p.org, p.org, "adding to projects");
       const data = await this.graphql<{ organization?: { projectV2?: GhProject | null } | null }>("project", { org: p.org, number: p.number });
       const proj = data.organization?.projectV2;
       if (!proj) throw new Error(`project ${p.number} not found in ${p.org} (or the token lacks the project scope: run gh auth refresh -s project, then scripts/github-auth.sh)`);
@@ -537,12 +483,11 @@ export class GitHub {
     const r = repo?.match(new RegExp(`^(${NAME})/(${NAME})$`));
     if (!r) throw new Error(project ? `name the repository (owner/repo): project "${project.title}" has no issues to take it from` : "name the repository (owner/repo)");
     const [owner, name] = [r[1]!, r[2]!];
-    this.writable(owner, `${owner}/${name}`, "opening issues");
 
     const labels = input.labels?.length ? await this.matchLabels(owner, name, input.labels) : [];
 
-    const issue = await this.request<GhIssue & { node_id: string }>("POST", `/repos/${owner}/${name}/issues`, { body: { title: input.title, body: input.body, ...(labels.length ? { labels } : {}) } });
-    const out: IssueCreated = { repo: `${owner}/${name}`, number: issue.number, url: issue.html_url, labels: labelNames(issue) };
+    const issue = await this.request<GhIssue & { node_id: string }>("POST", `/repos/${owner}/${name}/issues`, { body: { title: input.title, body: withFooter(input.body, agent), ...(labels.length ? { labels } : {}) } });
+    const out: IssueCreated = { repo: `${owner}/${name}`, number: issue.number, url: issue.html_url, labels: labelNames(issue), objects: [objectRef({ owner, repo: name, number: issue.number }), ...labelNames(issue).map((l) => `${objectRef({ owner, repo: name, number: issue.number })}/label/${l}`)] };
     if (!project) return out;
     out.project = { title: project.title, url: project.url };
     try {
@@ -560,6 +505,8 @@ export class GitHub {
 }
 
 export interface IssueCreated {
+  /** The issue (and its labels) for AidenHQ's records. */
+  objects: string[];
   repo: string;
   number: number;
   url: string;

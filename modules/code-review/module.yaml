@@ -135,7 +135,6 @@ services:
       env:
         CODE_REVIEW_DB: /data/code-review.sqlite
         CODE_REVIEW_SETTINGS: "${settings.code_review}"
-        CODE_REVIEW_COMMENT_ORGS: "${settings.github_comment_orgs}"
         CODE_REVIEW_POLL_SECONDS: "${settings.code_review_poll_seconds}"
         CODE_REVIEW_TOKEN_FILE: ${secrets.code_review_token}
         CODE_REVIEW_API_TOKEN_FILE: ${secrets.code_review_api_token}

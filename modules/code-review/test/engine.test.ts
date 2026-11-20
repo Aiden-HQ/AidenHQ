@@ -31,7 +31,7 @@ function world(settings = {}) {
       // The merge base is sha("m"); a head is "ahead" of an earlier one unless the test force-pushed past it.
       compare: async (_r, base, head) => ({ merge_base: sha("m"), status: rewritten.has(base) ? "diverged" : "ahead", head }),
       repos: async () => [],
-      postable: async (repo) => ({ identity: repo.startsWith("acme/") ? "owner" : null, org: repo.split("/")[0] }),
+      postable: async (repo) => ({ identity: repo.startsWith("acme/") ? "owner" : null, org: repo.split("/")[0] }), // null: GitHub not connected
     },
     runner: {
       start: async (s) => { started.push(s); return { check: `c-${started.length}` }; },
@@ -216,7 +216,7 @@ test("incremental runs recheck the last posted findings from the merge base; a f
 test("a one-off only where a review can post; a refused read passes the comment over, a transient one is asked again", async () => {
   const w = world();
   w.prs.set(9, { repo: "othercorp/api", number: 9, head: sha("9"), base: sha("b"), base_ref: "main", draft: false, fork: false, author: "bob", open: true, url: "" });
-  await assert.rejects(w.engine.oneoff({ pr_url: "https://github.com/othercorp/api/pull/9" }), (e) => e.extra.owner_must_allow_orgs[0] === "othercorp");
+  await assert.rejects(w.engine.oneoff({ pr_url: "https://github.com/othercorp/api/pull/9" }), /GitHub isn't connected/);
   w.pr(5, sha("5")); await w.tick(); w.later(1000);
   w.perms.refuse = true;
   w.say(5, "alice", "@aiden review");

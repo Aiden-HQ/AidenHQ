@@ -31,7 +31,7 @@ export function githubSource(base: string, token: () => string, fetcher: typeof 
     comments: async (repo, since) => (await get("comments", { repo, since })) as { comments: PrComment[]; cursor: string },
     permission: async (repo, login) => ((await get("permission", { repo, login })) as { permission: Permission }).permission,
     compare: async (repo, base, head) => (await get("compare", { repo, base, head })) as { merge_base: string; status: "ahead" },
-    postable: async (repo) => (await get("postable", { repo })) as { identity: "app" | "owner" | null; org: string },
+    postable: async (repo) => (await get("postable", { repo })) as { identity: "owner" | null; org: string },
     repos: async (q) => ((await get("repos", { q })) as { repos: { repo: string; private: boolean; url?: string }[] }).repos,
   };
 }

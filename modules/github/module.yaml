@@ -121,12 +121,6 @@ settings:
   github_orgs:
     default: []
     pattern: '^[A-Za-z0-9][A-Za-z0-9-]{0,38}$'
-  # The GitHub orgs owner-identity writes (comments, reviews) may reach; github-mcp refuses a write anywhere else.
-  github_comment_orgs:
-    default: []
-    pattern: '^[A-Za-z0-9][A-Za-z0-9-]{0,38}$'
-    # An org added by an agent's change is the owner's to approve (it widens where writes as the owner may land).
-    owner: [ { path: "*", new: true } ]
 connections:
   github:
     setup: "Open its setup on the board (#/setup/github) and press Connect GitHub. The App's reads and writes need the GitHub App (the same page's advanced part)."
@@ -160,10 +154,9 @@ connections:
     # The host's health probe (kernel/src/health.ts): the owner's sign-in answers a read.
     health_probes:
       github: { tool: github_whoami }
-  # GitHub's own MCP server (its default toolsets), passed through whole as the signed-in owner (src/vendor/proxy.ts). Reads are
-  # `read`. The owner-authored writes are `destructive`: only a grant naming one reaches it, and the AI reviewer decides each
-  # call first. Git writes (branches, files, pushes, merges, repositories, forks) are refused in github-mcp (official.ts DENY):
-  # code reaches GitHub only through the code host's reviewed push, PR and merge records.
+  # GitHub's own MCP server (its default toolsets), passed through as the signed-in owner (src/vendor/proxy.ts), read-only
+  # (spec §4): every tool not tagged `read` here is refused in github-mcp (official.ts denyExcept, from GITHUB_OFFICIAL_READ).
+  # Mutations go only through AidenHQ's typed tools, which sign them and file their write records.
   github_official:
     setup: "Open its setup on the board (#/setup/github) and press Connect GitHub."
     guide: "GitHub's own MCP server, as you: file contents, commits, branches, tags, releases, code, commit, issue, PR, repository and user search, issue and PR details. Use github for CI logs, Projects boards and the Maintainer's tools."
@@ -174,8 +167,7 @@ connections:
               list_repository_collaborators, list_issue_types, list_issue_fields, issue_read, list_issues, search_issues, pull_request_read, list_pull_requests, search_pull_requests, search_code,
               search_commits, search_repositories, search_users ]
       write: []
-      destructive: [ add_issue_comment, update_issue_comment, issue_write, sub_issue_write, create_pull_request, update_pull_request, pull_request_review_write, add_comment_to_pending_review,
-                     add_reply_to_pull_request_comment, request_copilot_review ]
+      destructive: []
 # The code host's own checks (the merge queue's reviewer eval: kernel.checks) read the repos it lands, through the kernel's
 # snapshot.
 codehost:
@@ -298,7 +290,6 @@ services:
         GITHUB_MCP_URL: "${settings.github_mcp_url}"
         # The board's sign-in endpoints: state, and starting a device sign-in.
         GITHUB_AUTH_TOKEN_FILE: ${secrets.github_auth_token}
-        GITHUB_COMMENT_ORGS: "${settings.github_comment_orgs}" # comma-separated
         # github_fleet_org: where the fleet's repos live on GitHub; commit_status_set writes only there.
         GITHUB_FLEET_ORG: "${settings.agents_org}"
         # Product bugs (github_app_issue) go only to this repo.

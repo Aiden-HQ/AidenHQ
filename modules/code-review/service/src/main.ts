@@ -48,12 +48,11 @@ setTimeout(tick, 5_000);
 const github = env.CODE_REVIEW_GITHUB_URL ?? "http://github:8086";
 const executor = reviewExecutor(githubReview(github, token), (id) => engine.binding(id));
 const api = handler(engine, () => file(env.CODE_REVIEW_API_TOKEN_FILE));
-// The Reviewer Manager's tools on the module's connection (code_review): its setting as instance.yaml holds it, the orgs owner
-// reviews may reach (settings.github_comment_orgs), and its changes filed as the calling job (its assertion goes along).
+// The Reviewer Manager's tools on the module's connection (code_review): its setting as instance.yaml holds it, and its changes
+// filed as the calling job (its assertion goes along).
 const raw = () => { try { const v = JSON.parse(env.CODE_REVIEW_SETTINGS || "{}"); return v && typeof v === "object" && !Array.isArray(v) ? v : {}; } catch { return {}; } };
-const orgs = () => String(env.CODE_REVIEW_COMMENT_ORGS ?? "").split(",").map((o) => o.trim().toLowerCase()).filter(Boolean);
 const mcp = serveMcp(createMcp(configTools({
-  raw, orgs, repos: () => engine.repos(), reviewers: () => engine.reviewers(), runs: (q) => engine.runs(q), oneoff: (b) => engine.oneoff(b),
+  raw, repos: () => engine.repos(), reviewers: () => engine.reviewers(), runs: (q) => engine.runs(q), oneoff: (b) => engine.oneoff(b),
   file: async (changes, assertion) => {
     const r = await kernel.raw("POST", "/v1/settings/agent", { changes }, { "x-aidenhq-caller": assertion });
     if (r.status >= 300) throw new Error(`Refused: ${String(r.json?.error?.message ?? r.json?.error ?? r.status).slice(0, 1000)}`);
