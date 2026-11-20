@@ -39,7 +39,7 @@ async function setup(t, { enabled = true, localSnapshot } = {}) {
     const j = await r.json();
     return r.status === 200 ? { status: 200, body: j } : { status: r.status, error: j.error };
   };
-  return { call, seen };
+  return { call, seen, op };
 }
 
 test("a module's ops go to the code host with its key, only within the module's grant", async (t) => {
@@ -56,6 +56,17 @@ test("a module's ops go to the code host with its key, only within the module's 
   assert.equal((await call("apps-platform", "clone", { repo: "acme-agents/x", ref: "main", into: "t-2" })).status, 403);
   assert.equal((await call("apps-platform", "clone", { repo: "acme-agents/x", ref: "main", into: "t-1" })).status, 200);
   assert.deepEqual(seen.at(-1).body, { module: "apps-platform", repo: "acme-agents/x", ref: "main", into: "TASK-1" });
+});
+
+// A running job's `aidenhq clone`: the kernel's own bundle op, under the dispatcher's clone grant; never a module's to call.
+test("bundle: the kernel asks it under the clone grant; a module's call is refused", async (t) => {
+  const { call, seen, op } = await setup(t);
+  assert.equal((await call("apps-platform", "bundle", { repo: "acme-agents/x", ref: "HEAD" })).status, 404);
+  await assert.rejects(op.ask("registry", "bundle", { repo: "acme-agents/x", ref: "HEAD" }), (e) => e.status === 403, "a snapshot grant isn't a clone grant");
+  const r = await op.ask("apps-platform", "bundle", { repo: "acme-agents/x", ref: "HEAD" });
+  for await (const _ of r);
+  assert.equal(r.statusCode, 200);
+  assert.deepEqual(seen.at(-1), { path: "/ops/bundle", auth: "Bearer ch-key", body: { module: "apps-platform", repo: "acme-agents/x", ref: "HEAD" } });
 });
 
 test("prototype names, dot-only repo segments and hostile refs never reach the code host", async (t) => {
@@ -127,7 +138,7 @@ test("with both code hosts, each repo goes to its own: local/… to this server'
 // broker's clone op only says how.
 test("the instance repo of a local install is cloned in the box from the kernel's bundle, from where setup made it", async (t) => {
   const { execFileSync } = await import("node:child_process");
-  const { mkdtempSync, mkdirSync, existsSync, rmSync } = await import("node:fs");
+  const { mkdtempSync, mkdirSync, readdirSync, rmSync, writeFileSync } = await import("node:fs");
   const { tmpdir } = await import("node:os");
   const { join } = await import("node:path");
   const { localHost } = await import("../../modules/codehost-local/src/host.ts");
@@ -140,17 +151,21 @@ test("the instance repo of a local install is cloned in the box from the kernel'
   git(dir, "init", "--quiet", "--bare", "-b", "main", remote);
   git(seed, "init", "--quiet", "-b", "main"); git(seed, "commit", "--quiet", "--allow-empty", "-m", "one"); git(seed, "commit", "--quiet", "--allow-empty", "-m", "two"); git(seed, "push", "--quiet", remote, "main");
   const host = localHost({ root: join(dir, "codehost"), sources: { "local/aidenhq-instance": remote }, tasksDir: join(dir, "tasks"), scratchDir: join(dir, "scratch"), checks: async () => [] });
-  const served = await host.bundle("local/aidenhq-instance");
-  git(box, "clone", "--quiet", served.file, "aidenhq-instance");
-  served.done();
-  assert.equal(existsSync(served.file), false, "the scratch bundle is gone once sent");
+  const op = createCodehost({
+    grants: () => [{ module: "dispatch", clone: { repos: ["@agents/*", "@instance"] } }], repos: () => ({ instance: "local/aidenhq-instance", agentsOrgs: ["local"] }),
+    kind: () => undefined, secret: () => "", resolver: {}, workspace: async () => ({ workspace: "TASK-1" }), local: () => ({ snapshot: localSnapshot({ bare: host.bare }), bundle: host.bundle }),
+  });
+  // The dispatcher's bundle, as the job's `aidenhq clone` gets it.
+  const served = await op.ask("dispatch", "bundle", { repo: "local/aidenhq-instance", ref: "HEAD" });
+  const chunks = [];
+  for await (const c of served) chunks.push(c);
+  writeFileSync(join(dir, "got.bundle"), Buffer.concat(chunks));
+  git(box, "clone", "--quiet", join(dir, "got.bundle"), "aidenhq-instance");
+  assert.deepEqual(readdirSync(join(dir, "scratch")), [], "the scratch bundle is gone once sent");
   const got = join(box, "aidenhq-instance");
   assert.equal(git(got, "rev-parse", "HEAD"), git(seed, "rev-parse", "HEAD"));
   assert.equal(git(got, "rev-list", "--count", "HEAD"), "2", "with its history, so a branch made on it lands back");
-  const op = createCodehost({
-    grants: () => [{ module: "dispatch", clone: { repos: ["@agents/*", "@instance"] } }], repos: () => ({ instance: "local/aidenhq-instance", agentsOrgs: ["local"] }),
-    kind: () => undefined, secret: () => "", resolver: {}, workspace: async () => ({ workspace: "TASK-1" }), local: () => ({ snapshot: localSnapshot({ bare: host.bare }) }),
-  });
+  await assert.rejects(op.ask("nobody", "bundle", { repo: "local/aidenhq-instance", ref: "HEAD" }), (e) => e.status === 403);
   await assert.rejects(op.ask("dispatch", "clone", { repo: "local/aidenhq-instance", ref: "HEAD", into: "t-1" }), (e) => e.status === 422 && /aidenhq clone local\/aidenhq-instance/.test(e.message));
   await assert.rejects(op.ask("nobody", "clone", { repo: "local/aidenhq-instance", ref: "HEAD", into: "t-1" }), (e) => e.status === 403);
 });

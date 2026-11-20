@@ -7,14 +7,18 @@
 //   token    {repo: owner/name | owner/*, perms} → {token, repo, perms, expires_at, app}; owner/* is an org-wide token
 //   snapshot {repo, ref} → a tar.gz with no .git and no credentials
 //   clone    {repo, ref, into: task} → a credential-free clone in the workspace of a task whose agent the caller dispatches
+//   bundle   {repo, ref} → the branch as a git bundle, under the clone grant; the kernel's own (a running job's `aidenhq clone`,
+//            which its box clones or fetches itself), never a module's: host git never runs in a workspace a box can write
 // A `local/…` repo (the org codehost-local owns) is served by codehost-local (in process: its snapshot) under the same grants
-// and the same answer. It has no token, and no clone (host git never writes a workspace: a box clones a local repo itself,
+// and the same answer (its bundle: every branch). It has no token, and no clone (host git never writes a workspace: a box clones a local repo itself,
 // `aidenhq clone`); every op without codehost-github for other orgs is 404.
 // The change-request ops are write kinds, not broker ops: `codehost-local.{push,pr,merge,close,create_repo}` (host.ts's
 // executor, its `change` check job, and the kernel's localmerge.ts auto-merge) run in the kernel, never here.
 //
 // Which host owns a repo is hostOf's, the one routing rule: codehost-local the org `local`, codehost-github every other. A
 // write names an action on repos (`codehost.<action>`) and routeKind turns it into that host's kind.
+import { once } from "node:events";
+import { createReadStream } from "node:fs";
 import http from "node:http";
 import type { Readable } from "node:stream";
 import type { ServerResponse } from "node:http";
@@ -79,7 +83,7 @@ export function covers(slug: string, repos: string[] = [], r: KernelRepos = {}):
 }
 
 /** codehost-local's ops, in process (modules/codehost-local/src). */
-export type LocalOps = { snapshot(repo: string, ref: string): Promise<Answer> };
+export type LocalOps = { snapshot(repo: string, ref: string): Promise<Answer>; bundle(repo: string): Promise<{ file: string; done: () => void }> };
 
 export function createCodehost({ grants, repos, kind, secret, resolver, workspace, local = () => undefined }: {
   grants: () => OpsGrant[];
@@ -95,7 +99,7 @@ export function createCodehost({ grants, repos, kind, secret, resolver, workspac
 }) {
   /** Checks `module`'s grant and asks the code host: its answer as it came (JSON, or a snapshot's tarball). */
   async function ask(module: string, op: string, b: Record<string, unknown>): Promise<Answer> {
-    if (!["token", "snapshot", "clone"].includes(op)) throw fail(404, `no codehost operation ${op}`);
+    if (!["token", "snapshot", "clone", "bundle"].includes(op)) throw fail(404, `no codehost operation ${op}`);
     const repo = String(b?.repo ?? "");
     const m = SLUG.exec(repo);
     const onLocal = m !== null && same(m[1]!, LOCAL_ORG);
@@ -103,7 +107,7 @@ export function createCodehost({ grants, repos, kind, secret, resolver, workspac
     if (!onLocal && !k?.executor) throw fail(404, "no GitHub code host here (the GitHub App isn't set up)");
     if (!m || DOTS.test(m[1]!) || DOTS.test(m[2]!) || (m[2] === "*" && op !== "token")) throw fail(400, `${repo} is not owner/name${op === "token" ? " or owner/*" : ""}`);
     const g = grants().find((x) => x.module === module);
-    const grant = g?.[op as "token" | "snapshot" | "clone"];
+    const grant = g?.[op === "bundle" ? "clone" : (op as "token" | "snapshot" | "clone")];
     if (!covers(repo, grant?.repos, repos())) throw fail(403, `${module} has no ${op} grant on ${repo}`);
     if (onLocal) {
       const ref = String(b.ref ?? "");
@@ -112,6 +116,15 @@ export function createCodehost({ grants, repos, kind, secret, resolver, workspac
       if (!REF.test(ref)) throw fail(400, `${ref.slice(0, 100)} is not a branch or a commit`);
       const l = local();
       if (!l) throw fail(404, "codehost-local isn't enabled here");
+      if (op === "bundle") {
+        // Sent from the open file, gone from the scratch at once: nothing is left behind however the send ends.
+        const out = await l.bundle(repo);
+        try {
+          const file = createReadStream(out.file);
+          await once(file, "open");
+          return Object.assign(file, { statusCode: 200, headers: { "content-type": "application/octet-stream" } });
+        } finally { out.done(); }
+      }
       return l.snapshot(repo, ref);
     }
     const k2 = k!;
@@ -150,6 +163,7 @@ export function createCodehost({ grants, repos, kind, secret, resolver, workspac
     ask,
     /** POST /v1/codehost/:op: the answer goes back as it came. */
     async op(module: string, op: string, b: Record<string, unknown>, res: ServerResponse): Promise<void> {
+      if (op === "bundle") throw fail(404, "no codehost operation bundle");
       const r = await ask(module, op, b);
       res.writeHead(r.statusCode ?? 502, { "content-type": String(r.headers["content-type"] ?? "application/json"), ...(r.headers["x-aidenhq-commit"] ? { "x-aidenhq-commit": String(r.headers["x-aidenhq-commit"]) } : {}) });
       await new Promise<void>((ok, reject) => { r.pipe(res); r.on("end", ok).on("error", reject); });

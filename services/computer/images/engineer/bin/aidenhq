@@ -19,8 +19,10 @@
 //
 // A PR link is a GitHub pull request's (https://github.com/<org>/<repo>/pull/<n>) or a change request's on this server
 // (codehost:local/<name>/change/<n>), as publish printed it.
-//   aidenhq clone local/<name>                       a repository on this server, cloned here from the bundle the kernel
-//                                                    serves (GitHub's come into the workspace when the job starts)
+//   aidenhq clone <org/name>                         a repository of this instance's (the instance repo, the product, an agents
+//                                                    org's), cloned here from the bundle the kernel serves; run again, it
+//                                                    fetches the code host's current branches into the clone's origin/*
+//                                                    (the working tree and local branches stay as they are)
 //   aidenhq apply <org/repo> <branch>                apply the instance repo's branch at its commit here: one kernel.apply write
 //   aidenhq task <PEN-N>                             read a task (tasks-mcp task_get, when the job's profile grants it)
 //   aidenhq tasks <words>                            search open tasks (tasks-mcp task_search)
@@ -41,7 +43,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const usage = `usage: aidenhq publish <org/repo> <branch>... [--title <title>] [--body-file <file>] [--fixes <owner/repo#n>]... | review <org/repo> <branch>... [--title <title>] [--body-file <file>] | merge <PR link> <head sha>... | close <PR link>... | create-repo [<org>/]<name> | clone local/<name> | apply <org/repo> <branch> | task <PEN-N> | tasks <words> | advise "<question>" [--file <brief>] | reset | engine <kind> [model] | cleanup`;
+const usage = `usage: aidenhq publish <org/repo> <branch>... [--title <title>] [--body-file <file>] [--fixes <owner/repo#n>]... | review <org/repo> <branch>... [--title <title>] [--body-file <file>] | merge <PR link> <head sha>... | close <PR link>... | create-repo [<org>/]<name> | clone <org/name> | apply <org/repo> <branch> | task <PEN-N> | tasks <words> | advise "<question>" [--file <brief>] | reset | engine <kind> [model] | cleanup`;
 const COMMANDS = ["publish", "review", "merge", "close", "create-repo", "clone", "apply", "task", "tasks", "advise", "reset", "engine", "cleanup"];
 const [command, ...rest] = process.argv.slice(2);
 const fail = (msg, code = 1) => {
@@ -206,21 +208,30 @@ if (command === "publish" || command === "review") {
   if (words.length !== 1) fail("usage: aidenhq create-repo [<org>/]<name>", 2);
   lines.push(`${words[0]}: ${(await write("codehost.create_repo", { repo: words[0] }))}`);
 } else if (command === "clone") {
-  if (words.length !== 1 || !/^local\/[\w.-]+$/.test(words[0])) fail("usage: aidenhq clone local/<name>", 2);
-  const name = words[0].split("/")[1], dest = join(workspace, name);
-  if (existsSync(dest)) fail(`${dest} is already there`, 2);
+  if (words.length !== 1 || !/^[\w.-]+\/[\w.-]+$/.test(words[0])) fail("usage: aidenhq clone <org/name>", 2);
+  const [org, name] = words[0].split("/");
+  // The clone already here (as the job's start made it, <name> or <org>--<name>) is refreshed; else a new one at <name>.
+  const have = [name, `${org}--${name}`].map((d) => join(workspace, d)).find((d) => existsSync(join(d, ".git")));
+  const dest = have ?? join(workspace, name);
+  if (!have && existsSync(dest)) fail(`${dest} is already there and isn't a clone`, 2);
   const res = await fetch(new URL("/v1/jobtools/clone", gateway), { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify({ repo: words[0] }), signal: AbortSignal.timeout(10 * 60_000) }).catch((e) => fail(`the gateway didn't answer (${e.message})`));
   if (!res.ok) { const t = await res.text(); let m = t; try { m = JSON.parse(t).error?.message ?? t; } catch {} fail(m); }
   const tmp = mkdtempSync(join(tmpdir(), "clone-")), file = join(tmp, "repo.bundle");
   try {
     writeFileSync(file, Buffer.from(await res.arrayBuffer()));
-    execFileSync("git", ["clone", "--quiet", file, dest], { stdio: ["ignore", "ignore", "inherit"] });
-    // origin names the repo with no transport: publishing goes through aidenhq.
-    execFileSync("git", ["-C", dest, "remote", "set-url", "origin", `aidenhq://${words[0]}`]);
+    if (have) {
+      execFileSync("git", ["-C", dest, "fetch", "--quiet", "--no-tags", file, "+refs/heads/*:refs/remotes/origin/*"], { stdio: ["ignore", "ignore", "inherit"] });
+      const tips = execFileSync("git", ["-C", dest, "bundle", "list-heads", file], { encoding: "utf8" }).split("\n").filter((l) => / refs\/heads\//.test(l));
+      lines.push(...tips.map((l) => { const [sha, ref] = l.split(" "); return `${words[0]}: origin/${ref.slice("refs/heads/".length)} is at ${sha.slice(0, 12)} in ${dest}`; }));
+    } else {
+      execFileSync("git", ["clone", "--quiet", file, dest], { stdio: ["ignore", "ignore", "inherit"] });
+      // origin names the repo with no transport: publishing goes through aidenhq, refreshing through aidenhq clone.
+      execFileSync("git", ["-C", dest, "remote", "set-url", "origin", `aidenhq://${words[0]}`]);
+      lines.push(`${words[0]}: cloned into ${dest}`);
+    }
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
-  lines.push(`${words[0]}: cloned into ${dest}`);
 } else if (command === "apply") {
   if (words.length !== 2) fail("usage: aidenhq apply <org/repo> <branch>", 2);
   lines.push(`${words[0]} ${words[1]}: ${(await write("kernel.apply", { repo: words[0], branch: words[1], sha: commitOf(words[0], words[1]) }))}`);

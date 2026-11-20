@@ -1,6 +1,6 @@
 // The code host as its own service: the executor of codehost-github.{push,pr,merge,close,create_repo} (executor@1; the
 // kernel tiers each record with plan.ts and calls execute only for an approved, claimed and revalidated one), and narrow
-// GitHub operations for other modules (/ops/token, /ops/snapshot, /ops/clone), which only the kernel calls: it checks each
+// GitHub operations for other modules (/ops/token, /ops/snapshot, /ops/clone, /ops/bundle), which only the kernel calls: it checks each
 // module's grant (its own module.yaml `codehost:`) at POST /v1/codehost/:op and calls here with this
 // service's key.
 //
@@ -17,8 +17,9 @@
 // typed settings change as a commit on main's head (kernel/src/settings-change.ts), which only a kernel.apply then lands.
 // The commit comes from this service's own copy when it made it, else from the task's workspace. The instance repo only.
 import { execFile, spawn } from "node:child_process";
+import { once } from "node:events";
 import { timingSafeEqual } from "node:crypto";
-import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, createReadStream, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { join, sep } from "node:path";
 import { Readable } from "node:stream";
@@ -609,7 +610,7 @@ export function createService(o: Options) {
       return send(res, 200, { token, repo: s.slug, perms, expires_at: new Date(Date.now() + 55 * 60_000).toISOString(), app: { slug } });
     }
     const s = slugOf(b.repo);
-    if (op !== "snapshot" && op !== "clone") throw fail(404, "no such operation");
+    if (op !== "snapshot" && op !== "clone" && op !== "bundle") throw fail(404, "no such operation");
     // HEAD: the repo's default branch, by its name (a clone then has origin/<that branch>). A repo GitHub doesn't show is a 404.
     const asked = String(b.ref ?? "").replace(/^refs\/heads\//, "");
     let name = asked;
@@ -626,6 +627,24 @@ export function createService(o: Options) {
       res.writeHead(200, { "content-type": "application/gzip", "x-aidenhq-commit": sha });
       const p = spawn("git", [...SAFE_GIT_ARGS, "--git-dir", dir, "archive", "--format=tar.gz", sha], { env: ENV, stdio: ["ignore", "pipe", "ignore"] });
       p.stdout.pipe(res);
+      return;
+    }
+    if (op === "bundle") {
+      // The branch alone as a git bundle (its HEAD and refs/heads/<branch>), for a running job's box to clone or fetch itself
+      // (`aidenhq clone`): host git never runs in a workspace a box can write. GitHub's objects only (the github cache).
+      const tmp = mkdtempSync(join(o.cacheDir, "bundle-")), file = join(tmp, "repo.bundle"), bare = join(tmp, "repo.git");
+      try {
+        await run("git", [...SAFE_GIT_ARGS, "init", "--quiet", "--bare", bare], { env: ENV });
+        writeFileSync(join(bare, "objects", "info", "alternates"), `${join(dir, "objects")}\n`);
+        await git(bare, ["update-ref", `refs/heads/${name}`, sha]);
+        await git(bare, ["symbolic-ref", "HEAD", `refs/heads/${name}`]);
+        await git(bare, ["bundle", "create", "--quiet", file, "HEAD", `refs/heads/${name}`]);
+        // Sent from the open file, gone from disk at once: nothing is left behind however the send ends.
+        const stream = createReadStream(file);
+        await once(stream, "open");
+        res.writeHead(200, { "content-type": "application/octet-stream", "x-aidenhq-commit": sha });
+        stream.pipe(res);
+      } finally { rmSync(tmp, { recursive: true, force: true }); }
       return;
     }
     {
@@ -779,7 +798,7 @@ export function createService(o: Options) {
         const b = await body(req, ap[1] === "write" ? 1_000_000 : 100_000);
         return send(res, 200, ap[1] === "read" ? await applyRead(b) : ap[1] === "land" ? await applyLand(b) : await applyWrite(b));
       }
-      const m = /^\/ops\/(token|snapshot|clone)$/.exec(String(req.url ?? ""));
+      const m = /^\/ops\/(token|snapshot|clone|bundle)$/.exec(String(req.url ?? ""));
       if (m && req.method === "POST") return await ops(m[1]!, req, res);
       send(res, 404, { error: "not found" });
     } catch (e) {

@@ -77,3 +77,43 @@ test("aidenhq: writes, task reads and next-turn requests go to the kernel with t
   // Outside a job's computer, nothing is sent.
   await assert.rejects(run(process.execPath, [CLI, "reset"], { env: { PATH: process.env.PATH } }), /only available inside a job's computer/);
 });
+
+// `aidenhq clone <org/name>`: the kernel's bundle of the repo, cloned by the box itself; run again, it refreshes origin/* from a
+// new bundle and leaves the working tree and the job's own branches as they are.
+test("aidenhq clone: clones a repo from the kernel's bundle, then refreshes it without touching the job's work", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "aidenhq-clone-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const git = (cwd, ...a) => execFileSync("git", ["-C", cwd, "-c", "user.name=t", "-c", "user.email=t@example.com", ...a], { encoding: "utf8" }).trim();
+  const up = join(dir, "upstream"), ws = join(dir, "ws");
+  execFileSync("git", ["init", "-q", "-b", "main", up]);
+  execFileSync("git", ["init", "-q", ws]);
+  git(up, "commit", "-q", "--allow-empty", "-m", "one");
+  const asked = [];
+  const kernel = createServer((req, res) => {
+    let b = "";
+    req.on("data", (d) => (b += d)).on("end", () => {
+      asked.push({ auth: req.headers.authorization, body: JSON.parse(b) });
+      const file = join(dir, "served.bundle");
+      git(up, "bundle", "create", "-q", file, "HEAD", "main");
+      res.writeHead(200, { "content-type": "application/octet-stream" }).end(execFileSync("cat", [file]));
+    });
+  });
+  await new Promise((r) => kernel.listen(0, "127.0.0.1", r));
+  t.after(() => kernel.close());
+  const env = { PATH: process.env.PATH, AIDENHQ_GATEWAY_URL: `http://127.0.0.1:${kernel.address().port}`, AIDENHQ_RUN_TOKEN: "ahqj_job", AIDENHQ_TASK_WORKTREE: ws };
+  const aidenhq = async (...args) => (await run(process.execPath, [CLI, ...args], { env })).stdout;
+
+  assert.match(await aidenhq("clone", "acme-agents/aidenhq-instance"), /acme-agents\/aidenhq-instance: cloned into .*aidenhq-instance/);
+  assert.deepEqual(asked.at(-1), { auth: "Bearer ahqj_job", body: { repo: "acme-agents/aidenhq-instance" } });
+  const clone = join(ws, "aidenhq-instance");
+  git(clone, "checkout", "-q", "-b", "agent/t-1/memory");
+  git(clone, "commit", "-q", "--allow-empty", "-m", "mine");
+  const mine = git(clone, "rev-parse", "HEAD");
+  // main moves on upstream (a PR merged); the job refreshes its clone.
+  git(up, "commit", "-q", "--allow-empty", "-m", "two");
+  const tip = git(up, "rev-parse", "HEAD");
+  assert.match(await aidenhq("clone", "acme-agents/aidenhq-instance"), new RegExp(`origin/main is at ${tip.slice(0, 12)}`));
+  assert.equal(git(clone, "rev-parse", "origin/main"), tip);
+  assert.equal(git(clone, "rev-parse", "HEAD"), mine, "the job's branch and checkout stay as they were");
+  assert.equal(git(clone, "rev-parse", "main"), git(up, "rev-parse", "HEAD~1"), "local main isn't moved");
+});

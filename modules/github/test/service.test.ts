@@ -4,7 +4,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { generateKeyPairSync } from "node:crypto";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
@@ -311,6 +311,17 @@ test("a job's commit never reaches what snapshot and clone serve as GitHub's", a
   const tgz = join(root, "snap.tgz");
   writeFileSync(tgz, Buffer.from(await snap.arrayBuffer()));
   assert.deepEqual(execFileSync("tar", ["-tzf", tgz], { encoding: "utf8" }).split("\n").filter(Boolean), ["README.md"]);
+  // bundle (a running job's `aidenhq clone`): the default branch alone, as HEAD and refs/heads/main, from GitHub's objects.
+  const bundled = await raw("/ops/bundle", { repo: "acme-agents/widget", ref: "HEAD" });
+  assert.equal(bundled.status, 200);
+  const file = join(root, "widget.bundle");
+  writeFileSync(file, Buffer.from(await bundled.arrayBuffer()));
+  const main = sh(root, "--git-dir", join(root, "github", "acme-agents", "widget.git"), "rev-parse", "main");
+  assert.deepEqual(sh(root, "bundle", "list-heads", file).split("\n").sort(), [`${main} HEAD`, `${main} refs/heads/main`]);
+  sh(root, "clone", "--quiet", file, join(root, "box-clone"));
+  assert.equal(readFileSync(join(root, "box-clone", "README.md"), "utf8"), "widget\n");
+  assert.throws(() => sh(join(root, "box-clone"), "cat-file", "-e", sha));
+  assert.deepEqual(readdirSync(join(root, "cache")).filter((d) => d.startsWith("bundle-")), [], "the scratch bundle is gone once sent");
 });
 
 test("clone writes only a new folder in the task workspace the kernel resolved, with no credentials", async (t) => {

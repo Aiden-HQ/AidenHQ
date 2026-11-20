@@ -101,14 +101,15 @@ test("repo-checkout: a role holder's job gets the code host's snapshot; no role,
   assert.equal(asked.length, 1);
 });
 
-// `aidenhq clone`: an engineer job's own token, a repo on this server, and only one its dispatcher's clone grant covers.
-test("aidenhq clone: only a local repo the job's dispatcher may clone", () => {
+// `aidenhq clone`: an engineer job's own token names the repo and its dispatcher, whose clone grant the code host broker checks.
+test("aidenhq clone: an engineer job's repo, with the job's dispatcher", () => {
   const db = new DatabaseSync(":memory:");
   db.exec("CREATE TABLE jobs (id TEXT PRIMARY KEY, module TEXT, agent TEXT, task TEXT, state TEXT, authority TEXT)");
-  db.prepare("INSERT INTO jobs VALUES ('j-a', 'dispatch', 'ag1', 't', 'running', ?)").run(JSON.stringify({ profile: "engineer", roles: [] }));
-  const jobTools = createJobTools({ db, secret: () => "s", engines: () => [], mayClone: (module, repo) => module === "dispatch" && repo === "local/app" });
+  db.prepare("INSERT INTO jobs VALUES ('j-a', 'dispatch', 'ag1', 't', 'running', ?), ('j-c', 'dispatch', 'ag2', 't2', 'running', ?)").run(JSON.stringify({ profile: "engineer", roles: [] }), JSON.stringify({ profile: "crew", roles: [] }));
+  const jobTools = createJobTools({ db, secret: () => "s", engines: () => [] });
   const token = mintToken("s", { kind: "job", job: "j-a", agentId: "ag1", issueId: "t" });
-  assert.deepEqual(jobTools.clone(token, { repo: "local/app" }), { repo: "local/app" });
-  assert.throws(() => jobTools.clone(token, { repo: "local/other" }), (e) => e.status === 403, "outside the grant");
-  assert.throws(() => jobTools.clone(token, { repo: "acme/app" }), (e) => e.status === 400, "not on this server");
+  assert.deepEqual(jobTools.clone(token, { repo: "local/app" }), { repo: "local/app", module: "dispatch" });
+  assert.deepEqual(jobTools.clone(token, { repo: "acme-agents/aidenhq-instance" }), { repo: "acme-agents/aidenhq-instance", module: "dispatch" });
+  for (const repo of ["acme", "../x", "acme/..", "acme/app.git", "acme/*"]) assert.throws(() => jobTools.clone(token, { repo }), (e) => e.status === 400, repo);
+  assert.throws(() => jobTools.clone(mintToken("s", { kind: "job", job: "j-c", agentId: "ag2", issueId: "t2" }), { repo: "acme/app" }), (e) => e.status === 403, "a crew job");
 });
