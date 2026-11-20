@@ -122,6 +122,10 @@ if (!stage && out.compose.services["security-scanner"]) writeFileSync(join(dataD
 // The public front door (exposure public): Caddy for the host's public IPv4, from .env (ops/setup.sh writes it with the board's
 // and the admin listener's URLs, which the kernel reads there too). Its service is named exactly `caddy`: ops/vm/setup.sh
 // opens 443 and 8446 only once compose.modules.yaml has it.
+// The mode is the host's: ops/setup.sh --exposure writes it into .env beside the URLs it derives, so an instance edit alone
+// (an agent's, through an apply) can't move the board's door. A host set up before the line was written has none: no check.
+const hostMode = env("AIDENHQ_EXPOSURE");
+if (hostMode && hostMode !== out.exposure) die(`settings.exposure is ${out.exposure}, but this host is set up for ${hostMode}: switch with sudo ops/setup.sh --unattended --exposure ${out.exposure}`);
 let caddy: string | undefined;
 if (out.exposure === "public") {
   const ip = env("AIDENHQ_PUBLIC_IP"), urls = publicUrls(ip);

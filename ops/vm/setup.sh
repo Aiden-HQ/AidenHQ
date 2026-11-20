@@ -200,14 +200,15 @@ systemctl restart aidenhq-computer-net aidenhq-ci-net
 # else IPv6), whatever its addresses. `AIDENHQ_PUBLIC_IF=none` is the explicit opt-out for a LAN-only VM whose
 # compose.override.yaml publishes on the LAN (a rerun then removes the rule). SSH stays open in every mode, so applying it
 # can't lock the owner out. Decided here, not at boot: the unit runs before the network is up.
-# The mode (settings.exposure): the compiled config/exposure, else AIDENHQ_EXPOSURE (ops/setup.sh's first run, before any
-# compile), else tailscale (local without Tailscale). A rerun after a mode change rewrites the rule. Public opens 443 and 8446 only
-# once a Caddy front door is compiled (a `caddy` service in compose.modules.yaml): until then nothing safe listens there.
+# The mode (settings.exposure): AIDENHQ_EXPOSURE (ops/setup.sh passes the mode it is setting up, so a switch away from
+# public closes 443 and 8446 before its apply removes Caddy), else the compiled config/exposure (this script run by hand),
+# else tailscale (local without Tailscale). Public opens 443 and 8446 only once a Caddy front door is compiled (a `caddy`
+# service in compose.modules.yaml): until then nothing safe listens there.
 # Generated files are read from the user's checkout (AIDENHQ_CHECKOUT, ops/setup.sh): this script itself may run from root's
 # verified copy of the kernel (/opt/aidenhq/kernel/<sha>), which has none of them. Data only: nothing there runs.
 checkout="${AIDENHQ_CHECKOUT:-$src/../..}"
-exposure="$(head -c 32 "$checkout/config/exposure" 2>/dev/null | tr -d '[:space:]' || true)"
-[ -n "$exposure" ] || exposure="${AIDENHQ_EXPOSURE:-}"
+exposure="${AIDENHQ_EXPOSURE:-}"
+[ -n "$exposure" ] || exposure="$(head -c 32 "$checkout/config/exposure" 2>/dev/null | tr -d '[:space:]' || true)"
 if [ -z "$exposure" ]; then if [ "$NO_TS" = 1 ]; then exposure=local; else exposure=tailscale; fi; fi
 case "$exposure" in public|tailscale|cloudflare|local) ;; *) die "exposure '$exposure' is not public, tailscale, cloudflare or local" ;; esac
 fw_mode="$exposure"

@@ -392,7 +392,18 @@ else
   [ "$(echo $open)" = "$want" ] && pass "public firewall: open ports are exactly $want (exposure $label)" \
     || fail "public firewall: open ports are '$(echo $open)', exposure $label wants $want (sudo bash ops/vm/setup.sh)"
 fi
-if [ "$fw" != public ]; then
+if [ "$fw" = public ]; then
+  # The front door itself, as a browser on the Internet meets it: a publicly trusted certificate on both sites, and the
+  # board answers nothing without a session (exactly 401: a 502 would mean Caddy runs with the board down).
+  pip="$(sed -n 's/^AIDENHQ_PUBLIC_IP=//p' .env 2>/dev/null | tail -1 || true)"
+  if [ -z "$pip" ]; then fail "public: no AIDENHQ_PUBLIC_IP in .env (sudo ops/setup.sh sets it)"
+  else
+    node scripts/front-door.ts wait "$pip" 10 >/dev/null 2>&1 && pass "public: https://$pip and :8446 serve a publicly trusted certificate" \
+      || fail "public: https://$pip or :8446 has no publicly trusted certificate (docker compose logs caddy)"
+    code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "https://$pip/api/board")"
+    [ "$code" = 401 ] && pass "public: https://$pip/api/board without a session gives 401" || fail "public: https://$pip/api/board without a session gives $code, not 401"
+  fi
+else
   wild="$(ss -Hltn 'sport = :443' 2>/dev/null | awk '{print $4}' | grep -E '^(0\.0\.0\.0|\*|\[::\]):443$' | tr '\n' ' ')"
   [ -z "$wild" ] && pass "nothing listens on a wildcard 443 (exposure $label)" || fail "a wildcard listener on 443 outside public mode: $wild"
 fi

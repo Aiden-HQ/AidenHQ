@@ -97,7 +97,7 @@ test("--unattended: no config file, settings from the environment, the SSH-tunne
     "AIDENHQ_SSH_TUNNEL=ssh -N -L 3121:127.0.0.1:3121 -L 3120:127.0.0.1:3120 -L 3130:127.0.0.1:3130 alice@",
     "kernel: the first-run page's one-time link, last: AIDENHQ_SETUP_URL=", // the full run: ops/test/unattended-install.sh
   ]) assert.ok(out.includes(want), `missing: ${want}\n${out}`);
-  for (const not of ["tailscale serve", "APPS_URL_BASE", "sk-SECRET"]) assert.ok(!out.includes(not), `unexpected: ${not}\n${out}`);
+  for (const not of ["tailscale serve", "APPS_URL_BASE=https", "sk-SECRET"]) assert.ok(!out.includes(not), `unexpected: ${not}\n${out}`);
   assert.throws(() => run({}), /--unattended needs OWNER_EMAIL/);
   assert.throws(() => run({ OWNER_EMAIL: "alice@example.com", TIMEOUT_MINUTES: "8; rm -rf /" }), /TIMEOUT_MINUTES must be a whole number/);
 });
@@ -107,4 +107,15 @@ test("--unattended, exposure public: the IP's https URLs and 24-hour links, no t
   for (const want of ["env AIDENHQ_EXPOSURE=public AIDENHQ_NO_TAILSCALE=1", ".env: BOARD_LAN_URL=https://203.0.113.7", ".env: AIDENHQ_ADMIN_URL=https://203.0.113.7:8446", ".env: AIDENHQ_PUBLIC_IP=203.0.113.7", ".env: AIDENHQ_LINK_TTL_HOURS=24"])
     assert.ok(out.includes(want), `missing: ${want}\n${out}`);
   for (const not of ["tailscale serve", "AIDENHQ_SSH_TUNNEL"]) assert.ok(!out.includes(not), `unexpected: ${not}\n${out}`);
+});
+
+test("--unattended, no mode and no tailnet: a new install is public; --exposure names a mode or is refused", () => {
+  const bin = mkdtempSync(join(tmpdir(), "setup-bin-"));
+  writeFileSync(join(bin, "tailscale"), "#!/bin/sh\nexit 1\n", { mode: 0o755 }); // installed, not logged in
+  const run = (...args) => execFileSync("bash", [setup, "--dry-run", "--unattended", ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], env: { PATH: `${bin}:${process.env.PATH}`, AIDENHQ_USER: "alice", OWNER_EMAIL: "alice@example.com" } });
+  const out = run();
+  for (const want of ["env AIDENHQ_EXPOSURE=public AIDENHQ_NO_TAILSCALE=1", ".env: AIDENHQ_LINK_TTL_HOURS=24", "AIDENHQ_EXPOSURE=public\n"])
+    assert.ok(out.includes(want), `missing: ${want}\n${out}`);
+  assert.ok(run("--exposure", "local").includes("env AIDENHQ_EXPOSURE=local AIDENHQ_NO_TAILSCALE=1"));
+  assert.throws(() => run("--exposure", "funnel"), /--exposure is public, tailscale or local/);
 });

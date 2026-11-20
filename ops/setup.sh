@@ -2,23 +2,24 @@
 # One AidenHQ for one person, on a fresh Ubuntu or Debian host (ops/vm/setup.sh lists the releases). Run from the product
 # checkout, wherever it is (the user units find it through ~/.config/aidenhq-checkout.env):
 #   sudo ops/setup.sh --config person.env              set up (or finish, or repair: every step is idempotent)
-#   sudo OWNER_EMAIL=<email> ops/setup.sh --unattended [--no-tailscale] [--kernel-token-file <file>]
+#   sudo OWNER_EMAIL=<email> ops/setup.sh --unattended [--exposure public|tailscale|local] [--kernel-token-file <file>]
 #                                                      the same with no config file and no questions (the installer's
 #                                                      handover): defaults for everything, and a last line
 #                                                      AIDENHQ_SETUP_URL=<url> (exactly one): the kernel's first-run page
 #                                                      /setup?token=… (single use), which takes the owner's password and
 #                                                      authenticator, the model key, channels and a GitHub bot token, and
-#                                                      shows the vault's recovery key once. Tailscale: a host already on
-#                                                      the tailnet or TS_AUTHKEY (--config); otherwise (or --no-tailscale)
-#                                                      the board stays on loopback, reached through the SSH tunnel it
-#                                                      prints (AIDENHQ_SSH_TUNNEL=...), never a public port.
+#                                                      shows the vault's recovery key once. A rerun reads OWNER_EMAIL from
+#                                                      the instance when it isn't given.
 #                                                      --kernel-token-file: a read token for a private kernel repo, used
 #                                                      only for setup's fetch of it, never written into the checkout.
-#                                                      AIDENHQ_EXPOSURE=public: the board on this host's public IPv4
-#                                                      over HTTPS (Caddy, scripts/front-door.ts; AIDENHQ_PUBLIC_IP, else
-#                                                      the default route's), no tailnet. A rerun keeps the compiled mode.
-#                                                      No certificate within 3 minutes (443 blocked upstream) or no
-#                                                      public IPv4: a loud fallback to local and the SSH tunnel.
+#   --exposure (or AIDENHQ_EXPOSURE; --no-tailscale = local): how the owner reaches the board (settings.exposure):
+#     public     the board on this host's public IPv4 over HTTPS (Caddy, a Let's Encrypt certificate for the IP,
+#                scripts/front-door.ts; AIDENHQ_PUBLIC_IP, else the default route's), password and authenticator. No
+#                certificate within 3 minutes (443 blocked upstream) or no public IPv4: a loud fallback to local.
+#     tailscale  the board on this host's tailnet name (the host on a tailnet already, or TS_AUTHKEY in --config).
+#     local      the board on loopback, reached through the SSH tunnel it prints (AIDENHQ_SSH_TUNNEL=...).
+#     Unset: a rerun keeps the mode it has; a new install takes tailscale when this host is on a tailnet (or TS_AUTHKEY
+#     is given), else public, else (no public IPv4) local. Given on a rerun, it switches the instance to that mode.
 #   sudo ops/setup.sh --config person.env --restore backups/aidenhq-….tar.gz
 #                                                      a new VM from a backup (scripts/backup.sh)
 #   sudo ops/setup.sh --config person.env --link       only the owner's one-time setup link, while no owner account exists
@@ -48,19 +49,20 @@ umask 022
 
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"   # the code this run executes: root's verified copy, or the checkout
 ARGS=("$@")
-DRY=0 CONFIG="" RESTORE="" LINK_ONLY=0 RESET="" UNATTENDED=0 NO_TS=0 KTOKEN="" CHECKOUT=""
+DRY=0 CONFIG="" RESTORE="" LINK_ONLY=0 RESET="" UNATTENDED=0 NO_TS=0 KTOKEN="" CHECKOUT="" EXPOSURE_ARG=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) DRY=1; shift ;;
     --unattended) UNATTENDED=1; shift ;;
     --no-tailscale) NO_TS=1; shift ;;
+    --exposure) EXPOSURE_ARG="${2:-}"; shift 2 ;;
     --config) CONFIG="$2"; shift 2 ;;
     --kernel-token-file) KTOKEN="$2"; shift 2 ;;
     --checkout) CHECKOUT="$2"; shift 2 ;;
     --restore) RESTORE="$2"; shift 2 ;;
     --link) LINK_ONLY=1; shift ;;
     --reset) RESET="${2:-}"; shift 2 ;;
-    *) echo "usage: ops/setup.sh (--config person.env | --unattended [--config person.env]) [--no-tailscale] [--kernel-token-file <file>] [--dry-run] [--restore <backup.tar.gz>] [--link] [--reset <email>]" >&2; exit 2 ;;
+    *) echo "usage: ops/setup.sh (--config person.env | --unattended [--config person.env]) [--exposure public|tailscale|local] [--kernel-token-file <file>] [--dry-run] [--restore <backup.tar.gz>] [--link] [--reset <email>]" >&2; exit 2 ;;
   esac
 done
 REPO="${CHECKOUT:-$SRC}"   # the user's checkout: its .env, config and data, and everything that runs as the user
@@ -108,6 +110,8 @@ if [ "$UNATTENDED" = 1 ]; then
   # Unattended: the owner's name defaults to the user's, the timezone to the host's. The owner's account is made for
   # their email, so it is still needed until the first-run page asks for it.
   OWNER_NAME="$(cfg OWNER_NAME "$U")"; TIMEZONE="$(cfg TIMEZONE "$(host_tz)")"
+  # A rerun (a repair, a change of exposure): the instance's owner.
+  [ -n "$OWNER_EMAIL" ] || OWNER_EMAIL="$(sed -n 's/^  owner_email: *"\{0,1\}\([^"]*\)"\{0,1\} *$/\1/p' "$H/aidenhq-instance/instance.yaml" 2>/dev/null | head -1 || true)"
   [ -n "$OWNER_EMAIL" ] || die "--unattended needs OWNER_EMAIL (in the environment): the owner's account is made for it"
 else
   OWNER_NAME="$(cfg OWNER_NAME)"; TIMEZONE="$(cfg TIMEZONE)"
@@ -186,20 +190,28 @@ elif [ "$DRY" = 0 ]; then
   [ "$(ugit -C "$REPO" rev-parse HEAD)" = "$(basename "$SRC")" ] || die "the checkout ($REPO) isn't at $(basename "$SRC"), the commit this copy is"
 fi
 
-# Public (settings.exposure: public, from AIDENHQ_EXPOSURE or this checkout's last compile): Caddy serves the board on this
-# host's public IPv4, so no tailnet.
+# The exposure mode (settings.exposure; see the header): how the owner reaches the board. Given (--exposure,
+# AIDENHQ_EXPOSURE, --no-tailscale), it is the owner's choice and a rerun switches the instance to it (step 5). Else a rerun
+# keeps the mode this checkout last compiled (else the instance's; an instance without the setting is tailscale), and a new
+# install takes the tailnet when this host is on one, else public HTTPS. Decided now: the machine step's firewall follows it.
+on_tailnet() { command -v tailscale >/dev/null && tailscale status >/dev/null 2>&1; }
+EXPLICIT="${EXPOSURE_ARG:-${AIDENHQ_EXPOSURE:-}}"; [ "$NO_TS" = 0 ] || EXPLICIT="${EXPLICIT:-local}"
+case "$EXPLICIT" in ""|public|tailscale|local) ;; *) die "--exposure is public, tailscale or local (not '$EXPLICIT')" ;; esac
+AUTO_PUBLIC=0   # public chosen by default, not asked for: no public IPv4 here means local, said plainly
+BOARD_HOST="$(cfg BOARD_HOST)"
+if [ -n "$EXPLICIT" ]; then EXPOSURE="$EXPLICIT"
+elif [ -s "$REPO/config/exposure" ]; then EXPOSURE="$(head -c 32 "$REPO/config/exposure" | tr -d '[:space:]')"
+elif [ -f "$INST/instance.yaml" ]; then
+  EXPOSURE="$(sed -n 's/^  exposure: *"\{0,1\}\([a-z]*\)"\{0,1\}.*/\1/p' "$INST/instance.yaml" | head -1)"; EXPOSURE="${EXPOSURE:-tailscale}"
+elif [ -n "$BOARD_HOST" ] || [ -n "$(cfg TS_AUTHKEY)" ] || on_tailnet; then EXPOSURE=tailscale
+elif [ -n "$RESTORE" ]; then die "this host isn't on a tailnet: name the restored instance's mode, --exposure public or --exposure local"
+else EXPOSURE=public AUTO_PUBLIC=1; fi
+unset AIDENHQ_EXPOSURE   # read: from here on the mode is $EXPOSURE, and .env holds it for compile (never this run's input)
 PUBLIC=0 PUBLIC_IP=""
-case "${AIDENHQ_EXPOSURE:-$(head -c 32 "$REPO/config/exposure" 2>/dev/null | tr -d '[:space:]')}" in public) PUBLIC=1; NO_TS=1 ;; esac
+case "$EXPOSURE" in public) PUBLIC=1; NO_TS=1; BOARD_HOST="" ;; local) NO_TS=1; BOARD_HOST="" ;; *) NO_TS=0 ;; esac
 # The board's address on the tailnet: the link, Google's redirect and the apps all hang off it.
-BOARD_HOST="$(cfg BOARD_HOST)"; [ "$PUBLIC" = 0 ] || BOARD_HOST=""
-if [ -z "$BOARD_HOST" ] && [ "$NO_TS" = 0 ] && command -v tailscale >/dev/null && tailscale status >/dev/null 2>&1; then
+if [ -z "$BOARD_HOST" ] && [ "$NO_TS" = 0 ] && on_tailnet; then
   BOARD_HOST="$(tailscale status --json | jq -r '.Self.DNSName' | sed 's/\.$//')"
-fi
-# Unattended, nothing waits on a terminal: the tailnet when this host is on it or TS_AUTHKEY joins it, else the board stays
-# on loopback, reached through an SSH tunnel (never a public port). Decided now: the machine step opens the firewall for it.
-if [ "$UNATTENDED" = 1 ] && [ "$NO_TS" = 0 ] && [ -z "$BOARD_HOST" ] && [ -z "$(cfg TS_AUTHKEY)" ]; then
-  say "Not on a tailnet and no TS_AUTHKEY: the board stays on this host's loopback (the SSH-tunnel route)"
-  NO_TS=1
 fi
 
 # The owner's way in: the one-time setup link for OWNER_EMAIL (it sets a password; the board then asks for an
@@ -255,11 +267,16 @@ fi
 
 # ---------------------------------------------------------------- 1. the machine (root)
 phase packages
-say "System packages, Docker, gVisor, Tailscale"
-# The exposure mode this setup builds (settings.exposure, written into a new instance.yaml): the tailnet, or without
-# Tailscale an SSH tunnel to loopback. The machine step opens the host firewall for it (ops/vm/public-fw.sh).
-EXPOSURE=tailscale; [ "$NO_TS" = 0 ] || EXPOSURE=local; [ "$PUBLIC" = 0 ] || EXPOSURE=public
-run env AIDENHQ_EXPOSURE="$EXPOSURE" AIDENHQ_NO_TAILSCALE="$NO_TS" AIDENHQ_USER="$U" AIDENHQ_CHECKOUT="$REPO" bash "$SRC/ops/vm/setup.sh"
+say "System packages, Docker, gVisor$( [ "$NO_TS" = 1 ] || echo ', Tailscale')"
+# The machine step renders the host firewall for the mode (ops/vm/public-fw.sh): leaving public closes 443 and 8446 here,
+# before the apply removes Caddy; entering it opens them only once Caddy is compiled (after the apply, step 7). Tailscale
+# asked for on a host that isn't on a tailnet and has no key to join one: it installs Tailscale but keeps the firewall at the
+# mode the host has, and setup stops below at the sign-in step, so a switch that can't finish moves nothing.
+FW_EXPOSURE="$EXPOSURE"
+if [ "$EXPOSURE" = tailscale ] && [ -z "$BOARD_HOST" ] && [ -z "$(cfg TS_AUTHKEY)" ]; then
+  FW_EXPOSURE="$(head -c 32 "$REPO/config/exposure" 2>/dev/null | tr -d '[:space:]' || true)"; FW_EXPOSURE="${FW_EXPOSURE:-local}"
+fi
+run env AIDENHQ_EXPOSURE="$FW_EXPOSURE" AIDENHQ_NO_TAILSCALE="$NO_TS" AIDENHQ_USER="$U" AIDENHQ_CHECKOUT="$REPO" bash "$SRC/ops/vm/setup.sh"
 # The machine step just added the user to the docker group, but their systemd user manager (kept alive by linger, so
 # logging out doesn't restart it) still has the old groups: the user units started below couldn't reach Docker.
 if [ "$DRY" = 0 ]; then
@@ -281,7 +298,15 @@ if [ -z "$BOARD_HOST" ] && [ "$NO_TS" = 0 ]; then
     tailscale up --auth-key="file:$keyfile" --hostname="aidenhq-$U"
     rm -f "$keyfile"
     BOARD_HOST="$(tailscale status --json | jq -r '.Self.DNSName' | sed 's/\.$//')"
-  else die "this VM isn't on the tailnet: set TS_AUTHKEY in ${CONFIG:-a --config file}, or run 'sudo tailscale up', then run setup again"; fi
+  else
+    say "Tailscale is installed, but this server isn't signed in to a tailnet. Run: sudo tailscale up (it prints a sign-in link), then run this again. Nothing else changed."
+    die "this VM isn't on the tailnet: run 'sudo tailscale up' (or set TS_AUTHKEY in ${CONFIG:-a --config file}), then run setup again"
+  fi
+fi
+# Leaving the tailnet mode on a host that stays on one: the board's two tailnet doors close (Paperclip's stays), so the
+# board has one way in, and Caddy's 443 and 8446 are free.
+if [ "$NO_TS" = 1 ] && [ "$DRY" = 0 ] && on_tailnet; then
+  tailscale serve --https=443 off >/dev/null 2>&1 || true; tailscale serve --https=8446 off >/dev/null 2>&1 || true
 fi
 # The board's URL for links: its tailnet name over https, or (no Tailscale) loopback, reached through an SSH tunnel.
 if [ -n "$BOARD_HOST" ]; then BOARD_URL="https://$BOARD_HOST"; else BOARD_URL="http://localhost:3121"; fi
@@ -295,22 +320,33 @@ say "Board address: $BOARD_URL (sign-in and approvals: $ADMIN_URL)"
 fall_back_local() { # WHY
   echo; echo "!!! PUBLIC MODE IS NOT WORKING: $1"
   echo "!!! The board stays on this host's loopback instead, reached through the SSH tunnel printed at the end."
-  echo "!!! To try public again once that is fixed: sudo AIDENHQ_EXPOSURE=public ops/setup.sh (with the same options)"; echo
+  echo "!!! To try public again once that is fixed: sudo ops/setup.sh --unattended --exposure public"; echo
   PUBLIC=0 PUBLIC_IP="" EXPOSURE=local
   BOARD_URL="http://localhost:3121"; ADMIN_URL="http://localhost:3120"
-  if [ "$DRY" = 0 ] && grep -qx '  exposure: public' "$INST/instance.yaml" 2>/dev/null; then
-    as_user sed -i 's/^  exposure: public$/  exposure: local/' "$INST/instance.yaml"
-    as_user git -C "$INST" -c user.name=setup -c user.email=setup@aidenhq.invalid commit --quiet -m "exposure: local (public mode got no certificate)" -- instance.yaml
-    as_user git -C "$INST" push --quiet origin main
-  fi
+  set_instance_exposure local "public mode got no certificate"
+}
+# settings.exposure in an existing instance (a new one is written with it, step 5): replaced, or added under `settings:`,
+# committed and pushed before the apply compiles it.
+set_instance_exposure() { # MODE WHY
+  [ "$DRY" = 0 ] && [ -f "$INST/instance.yaml" ] || return 0
+  grep -qx "  exposure: $1" "$INST/instance.yaml" && return 0
+  if grep -q '^  exposure:' "$INST/instance.yaml"; then as_user sed -i "s/^  exposure:.*/  exposure: $1/" "$INST/instance.yaml"
+  else as_user sed -i "0,/^settings:\$/s//settings:\n  exposure: $1/" "$INST/instance.yaml"; fi
+  grep -qx "  exposure: $1" "$INST/instance.yaml" || die "couldn't set exposure: $1 in $INST/instance.yaml (no settings: block?)"
+  as_user git -C "$INST" -c user.name=setup -c user.email=setup@aidenhq.invalid commit --quiet -m "exposure: $1 ($2)" -- instance.yaml
+  as_user git -C "$INST" push --quiet origin main
 }
 # Public: both on the host's public IPv4 through Caddy, the admin listener on its own port (compile checks .env agrees).
 if [ "$PUBLIC" = 1 ]; then
-  PUBLIC_IP="${AIDENHQ_PUBLIC_IP:-$(sed -n 's/^AIDENHQ_PUBLIC_IP=//p' "$ENVF" 2>/dev/null | tail -1)}"
+  PUBLIC_IP="${AIDENHQ_PUBLIC_IP:-$(sed -n 's/^AIDENHQ_PUBLIC_IP=//p' "$ENVF" 2>/dev/null | tail -1 || true)}"
   if [ -z "$PUBLIC_IP" ] && [ "$DRY" = 1 ]; then PUBLIC_IP="<this host's public IPv4>"
   elif [ -z "$PUBLIC_IP" ]; then PUBLIC_IP="$(node "$SRC/scripts/front-door.ts" detect)" || true; fi
 fi
-if [ "$PUBLIC" = 1 ] && [ -z "$PUBLIC_IP" ]; then
+if [ "$PUBLIC" = 1 ] && [ -z "$PUBLIC_IP" ] && [ "$AUTO_PUBLIC" = 1 ]; then
+  # Not asked for: a host behind NAT (a home VM, a laptop VM) is a local install, nothing to fix.
+  say "No public IPv4 here (behind NAT, or a private address only): the board stays on loopback, reached through the SSH tunnel printed at the end"
+  PUBLIC=0 EXPOSURE=local
+elif [ "$PUBLIC" = 1 ] && [ -z "$PUBLIC_IP" ]; then
   fall_back_local "this host has no public IPv4 of its own (above: behind NAT, or only a private address). Set AIDENHQ_PUBLIC_IP if the address that forwards 443 and 8446 here is known."
 elif [ "$PUBLIC" = 1 ]; then
   BOARD_URL="https://$PUBLIC_IP"; ADMIN_URL="https://$PUBLIC_IP:8446"
@@ -375,7 +411,9 @@ set_env AIDENHQ_LINK_TTL_HOURS "$( [ "$PUBLIC" = 0 ] || echo 24)"
 if [ -n "$BOARD_HOST" ]; then
   set_env APPS_TS_HOSTNAME "aidenhq-$U-apps"
   set_env APPS_URL_BASE "https://aidenhq-$U-apps.${BOARD_HOST#*.}"
-fi
+else set_env APPS_TS_HOSTNAME ""; set_env APPS_URL_BASE ""; fi
+# The mode, for compile: settings.exposure must match it, so an instance edit alone can't move the board's door.
+set_env AIDENHQ_EXPOSURE "$EXPOSURE"
 # Connect Google from the board (the company's Web-app client); Google refuses a bare IP as a redirect, so not in public.
 set_env BOARD_GOOGLE_CONNECT "$( [ "$PUBLIC" = 1 ] || echo 1)"
 grep -q '^WORK_COMPANY_ID=.' "$ENVF" 2>/dev/null || set_env WORK_COMPANY_ID pending   # known after Paperclip's setup
@@ -471,6 +509,8 @@ elif [ -n "$RELEASE_LINE" ] && [ "$DRY" = 0 ]; then
   say "$pinned"
   case "$pinned" in *"now pins"*) PIN_COMMIT="$(ugit -C "$REMOTE" rev-parse main)" ;; esac
 fi
+# A mode asked for on a rerun (or a restore) is the instance's from now on.
+[ -z "$EXPLICIT" ] || set_instance_exposure "$EXPOSURE" "ops/setup.sh --exposure"
 
 # ---------------------------------------------------------------- 6. logins AidenHQ holds for this person
 if [ -z "$(read_secret openrouter_key)" ]; then
@@ -547,7 +587,8 @@ else
   as_user bash -c "cd '$REPO' && docker compose up -d --no-deps --wait --wait-timeout 300 paperclip board"
 fi
 [ -z "$BOARD_HOST" ] || { run tailscale serve --bg --https=443 http://127.0.0.1:3121; run tailscale serve --bg --https=8446 http://127.0.0.1:3120; }
-# Public: the machine step ran before this apply compiled the `caddy` service, so it kept 443 and 8446 closed; open them now.
+# Public: the machine step ran before this apply compiled the `caddy` service, so it kept 443 and 8446 closed; open them now
+# (a host without the public firewall, AIDENHQ_PUBLIC_IF=none, has no file to say so: it runs again, harmlessly).
 if [ "$PUBLIC" = 1 ] && [ "$DRY" = 0 ] && ! grep -qx 'EXPOSURE=public' /etc/default/aidenhq-public-fw 2>/dev/null; then
   run env AIDENHQ_EXPOSURE=public AIDENHQ_NO_TAILSCALE=1 AIDENHQ_USER="$U" AIDENHQ_CHECKOUT="$REPO" bash "$SRC/ops/vm/setup.sh"
   # Caddy's first ACME attempt met the closed port and backs off for minutes: a fresh start tries again now.
@@ -584,6 +625,9 @@ if [ "$PUBLIC" = 1 ] && [ "$DRY" = 0 ]; then
   if ! node "$SRC/scripts/front-door.ts" wait "$PUBLIC_IP" 180; then
     as_user bash -c "cd '$REPO' && docker compose logs --tail 200 caddy 2>&1" | grep -iE '"level":"(error|warn)"' | tail -5 || true
     fall_back_local "Let's Encrypt couldn't reach https://$PUBLIC_IP within 3 minutes (above: Caddy's last errors). Usually tcp 443 is blocked before this host (a cloud security group or the provider's firewall), or the address isn't this host's."
+    # The firewall closes first, then the apply drops Caddy: no moment with 443 open and the mode already local.
+    run env AIDENHQ_EXPOSURE=local AIDENHQ_NO_TAILSCALE=1 AIDENHQ_USER="$U" AIDENHQ_CHECKOUT="$REPO" bash "$SRC/ops/vm/setup.sh"
+    set_env AIDENHQ_EXPOSURE local
     set_env BOARD_LAN_HOSTS "127.0.0.1:3121,localhost:3121"
     set_env BOARD_LAN_URL "$BOARD_URL"
     set_env AIDENHQ_ADMIN_URL "$ADMIN_URL"
@@ -591,7 +635,6 @@ if [ "$PUBLIC" = 1 ] && [ "$DRY" = 0 ]; then
     set_env BOARD_GOOGLE_CONNECT 1
     as_user PAPERCLIP_EMAIL="$OWNER_EMAIL" PAPERCLIP_PASSWORD="$PW" PAPERCLIP_NAME="$OWNER_NAME" bash "$REPO/ops/apply-config.sh" --retry
     as_user systemctl --user restart aidenhq-kernel
-    run env AIDENHQ_EXPOSURE=local AIDENHQ_NO_TAILSCALE=1 AIDENHQ_USER="$U" AIDENHQ_CHECKOUT="$REPO" bash "$SRC/ops/vm/setup.sh"
   else say "Public: $BOARD_URL answers with a trusted certificate"; fi
 fi
 
@@ -616,6 +659,11 @@ if [ -z "$BOARD_HOST" ] && [ "$PUBLIC" = 0 ]; then
   echo "  $tunnel"
   [ "$UNATTENDED" = 0 ] || echo "AIDENHQ_SSH_TUNNEL=$tunnel"
 fi
+if [ "$PUBLIC" = 1 ]; then
+  echo "The board is on the public Internet, behind your password and authenticator. To keep it off the Internet, move it to"
+  echo "your tailnet: sudo ops/setup.sh --unattended --exposure tailscale (in $REPO; it installs Tailscale and says how to sign in)"
+fi
+[ "$UNATTENDED" = 0 ] || echo "AIDENHQ_EXPOSURE=$EXPOSURE"   # the mode this run ended in (the installer's last message follows it)
 [ "$UNATTENDED" = 0 ] || echo "AIDENHQ_BOARD_URL=$BOARD_URL"   # an upgrade has no setup link: the installer names the board instead
 if [ "$UNATTENDED" = 1 ]; then phase link; setup_link   # last: its AIDENHQ_SETUP_URL line ends the output
 else

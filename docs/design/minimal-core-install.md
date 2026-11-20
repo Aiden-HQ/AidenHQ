@@ -1,10 +1,66 @@
 # A minimal-core install, with Tailscale optional
 
-Status: design (2026-11-16), not built. The owner decided the default exposure: **public HTTPS + mandatory TOTP**. The
-board is served on the server's public IP over real HTTPS, with password and TOTP from the first sign-in and rate
-limiting. Web setup then strongly recommends Tailscale or Cloudflare Access, and one click closes the public port.
-Tailscale and the SSH tunnel become opt-in modes. Windows is dropped for now. macOS runs AidenHQ inside a Lima VM, with
-localhost only (section 4.8).
+Status: built, simplified (2026-11-20). The owner's decision stands: a server off a tailnet gets **public HTTPS +
+mandatory TOTP** by default. The rest of this note is the original design (2026-11-16); where it and the section below
+disagree, the section below and the code win.
+
+## As built / simplified
+
+**The first install.** `curl -fsSL https://get.aidenhq.ai | sh` on a Linux server:
+- on a tailnet already (or with `TS_AUTHKEY`): `tailscale`, as before;
+- otherwise with a public IPv4: `public`. Caddy gets a Let's Encrypt certificate for the IP, the installer prints
+  `https://<ip>` and the one-time setup link (24 hours), and the owner sets a password and an authenticator there;
+- behind NAT (no public IPv4 on the default route): `local`, said in one plain line, and the SSH tunnel is printed;
+- asked-for public that gets no certificate within 3 minutes (443 blocked upstream): the loud fallback to `local`;
+- on a Mac: `local` inside the Lima VM (its ports forwarded to the Mac's localhost).
+
+`--exposure public|tailscale|local` (installer and `ops/setup.sh`; `--no-tailscale` stays as `local`) overrides the
+default. Without it a rerun keeps the instance's mode. Tailscale is installed only in `tailscale` mode.
+
+**Switching mode is a rerun.** The installer, or `sudo ops/setup.sh --unattended --exposure tailscale` in the
+checkout, run over SSH:
+- it writes `settings.exposure` into the instance and commits it, and the mode into `.env`;
+- it re-renders the firewall before the apply when leaving public, and after the apply (once Caddy is compiled) when
+  entering it;
+- it turns off the board's two `tailscale serve` doors when leaving `tailscale` on a host that stays on the tailnet;
+- asked for `tailscale` on a host that isn't signed in to one (a public install has no Tailscale yet), it installs
+  Tailscale, leaves the firewall and the mode as they are, and stops with the sign-in step (`sudo tailscale up`, then
+  the same command again);
+- it rewrites the `.env` URLs, and the apply removes Caddy when it is no longer compiled.
+
+SSH stays open in every mode, so a switch can't lock the owner out.
+
+**Cut, and why:**
+- **U5, the secure-your-server card and the two-phase switch.** It existed to stop one click on the board from locking
+  the owner out. A rerun over SSH can't, and it needs no board code, no `exposure: *-pending` state and no `tier.ts`
+  change. Agents can't move the door at all:
+  - the firewall is rendered only by root's `ops/vm/setup.sh`, which only an operator's setup run starts;
+  - setup writes the mode into the host's `.env` (`AIDENHQ_EXPOSURE`), and compile refuses an instance whose
+    `settings.exposure` differs. An agent's edit of the setting (a Tier 1 panel change, like every setting) therefore
+    fails its apply, in either direction. The approved design's owner-only tier for the setting isn't needed.
+  The installer and `ops/setup.sh` print the Tailscale recommendation and the switch command instead of the card.
+- **The containerised `edge-tailscale` node (D6 a).** Tailscale mode keeps the host package. It is installed only in
+  that mode, so a public or local install has none.
+- **U6, Caddy ingress for apps on the owner's domain.** App doors ([app-doors.md](app-doors.md)) already give admins
+  their apps in public mode (`https://<app>.<ip-with-dashes>.sslip.io`). Sharing with other people stays on
+  `settings.edge`. A domain front door waits for an owner who has a domain to use.
+- **The `cloudflare` exposure for the board, the boot-time IP-change recompile, and the migration to a containerised
+  node.** None is needed for a first install. A changed IP is fixed by rerunning setup.
+- **The rest of U7 (host features from `pins.json`; browser, gh and the engine CLIs per module; passt mandatory).** It
+  is unrelated to Tailscale. It stays a separate piece of work.
+
+**Kept:**
+- U1 (trusted client address, address bans, sign-in notices), U2 (Caddy, the IP certificate), U3 (the mode-aware
+  firewall) and voice;
+- the security floor: sign-in is password and TOTP; every route on 3120 and 3121 needs a signed-in admin; 3120, 3121
+  and 3130 stay on loopback, behind Caddy;
+- the public firewall opens tcp 22, 443 and 8446 only. 8446 is the kernel's admin listener (sign-in and approvals) on
+  its own origin, as U2 built it, the same layout as `tailscale serve`. Port 80 stays closed.
+
+`scripts/verify-security.sh` in public mode checks:
+- the firewall's open ports are exactly that set;
+- both sites serve a publicly trusted certificate;
+- `https://<ip>/api/board` without a session gives exactly 401.
 
 This fits the lean-core spec (instance repo, `docs/product-history/superpowers/specs/2026-11-16-lean-core-design.md`):
 optional host software follows the modules that need it. It **supersedes** the lean-core text that says first-run setup
