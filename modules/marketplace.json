@@ -22,10 +22,6 @@
       "source": "./board"
     },
     {
-      "name": "channel-operator",
-      "source": "./channel-operator"
-    },
-    {
       "name": "channel-telegram",
       "source": "./channel-telegram"
     },

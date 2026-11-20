@@ -7,7 +7,7 @@ import { kernel } from "./helpers.ts";
 
 const MODULES = { owner: { name: "Ada", timezone: "UTC" }, modules: {
   "channel-telegram": { privileged: ["speaks-as-owner"], channel: {}, token: "tg_token" },
-  "channel-operator": { privileged: ["speaks-as-owner"], channel: { stamp: "watcher", stale: true }, token: "op_token", settings: { operator_decide: "all" } },
+  "channel-slack": { privileged: ["speaks-as-owner"], channel: {}, token: "op_token", settings: { slack_decide: "all" } },
   "channel-quiet": { privileged: ["speaks-as-owner"], channel: {}, token: "quiet_token", settings: { quiet_decide: "none" } },
   "channel-std": { privileged: ["speaks-as-owner"], channel: {}, token: "std_token", settings: { std_decide: "standard" } },
   "chat-lane": { roles: ["kernel.cp-read", "kernel.wake"], token: "lane_token" },
@@ -63,13 +63,8 @@ test("A1: a token decides its own card once, on its digest, from its own channel
   const before = (await cards(OP, "?resync=1")).json.cards.find((c) => c.id === other.id).tokens;
   const after = (await cards(OP, "?resync=1")).json.cards.find((c) => c.id === other.id).tokens;
   assert.equal((await decide(OP, { token: before.reject })).status, 409);
-  // The operator's stale reject is stamped stale:watcher (never a veto); a stale approve, or a stale from Telegram, is refused.
-  assert.equal((await decide(OP, { token: after.approve, stale: true })).status, 400);
-  assert.equal((await decide(OP, { token: after.reject, stale: true })).status, 200);
-  assert.equal(k.records.get(other.id).decided_by, "stale:watcher");
-  assert.equal(k.records.get(other.id).state, "stale");
   // A card that ended without running is offered to the channel that sent it, so its message can be edited.
-  assert.deepEqual((await cards(TG)).json.ended.map((e) => [e.id, e.state]).sort(), [[push.id, "stale"], [rec.id, "rejected"], [other.id, "stale"]].sort());
+  assert.deepEqual((await cards(TG)).json.ended.map((e) => [e.id, e.state]).sort(), [[push.id, "stale"], [rec.id, "rejected"]].sort());
 });
 
 test("a channel's connection key never speaks as the owner: only its own token does (a module's other services hold connection keys)", async (t) => {
@@ -227,7 +222,7 @@ test("the kernel holds a channel to its own decide setting: none mints nothing; 
   const op = (await cards("op-key")).json.cards.find((c) => c.id === rec.id).tokens;
   const file = join(k.dir, "modules.json");
   const m = JSON.parse(readFileSync(file, "utf8"));
-  m.modules["channel-operator"].settings.operator_decide = "none";
+  m.modules["channel-slack"].settings.slack_decide = "none";
   writeFileSync(file, JSON.stringify(m));
   await new Promise((r) => setTimeout(r, 1100)); // the watched file is re-read on its next change check
   assert.equal((await decide("op-key", { token: op.approve })).status, 403);

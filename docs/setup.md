@@ -396,6 +396,27 @@ it again after every change to how the server is exposed (Tailscale serve, ports
 Day-to-day use: [docs/USAGE.md](USAGE.md). Operations, backups and logs:
 [docs/operations.md](operations.md).
 
+## Manage AidenHQ from your Claude
+
+The board serves an MCP at `https://<board>/mcp`, so your own Claude (or Codex) can read the fleet, ask Aiden, change
+settings and decide approval cards as you. Add it once:
+
+1. Add the server: `claude mcp add --transport http aidenhq https://<board>/mcp` (inside a session: `! claude mcp add ...`).
+   Codex CLI: `codex mcp add aidenhq --url https://<board>/mcp`.
+2. `/reload-plugins` (no restart needed: a server added mid-session is not listed until Claude Code reloads).
+3. `/mcp`, choose aidenhq, then Authenticate.
+4. In the browser, sign in with your password and authenticator, then Allow on the consent page.
+
+Every admin signs in as themselves. Revoke a client on the board's Accounts page (each signed-in MCP client, with Revoke);
+disabling or resetting an account revokes its clients too.
+
+| Exposure | Claude Code / Codex CLI | Claude Desktop, claude.ai connectors (called from Anthropic's cloud: need public HTTPS) |
+| --- | --- | --- |
+| `public` | yes | yes |
+| `tailscale` (default) | yes, from tailnet devices | no |
+| `local` | yes, while the SSH tunnel is up | no |
+| `cloudflare` | yes | only if Cloudflare Access lets `/mcp`, `/.well-known/*`, `/oauth2/*` and `/oauth/*` through (see [design/access.md](design/access.md#the-aidenhq-mcp)) |
+
 ## Upgrading the product
 
 The instance repo pins the product commit (`product: <sha>` in `instance.yaml`). Upgrading means moving that pin

@@ -43,12 +43,12 @@
   },
   {
     "n": 6,
-    "workflow": "Watcher decide and stale reject",
+    "workflow": "Channel decide and stale reject",
     "today": [
       "kernel/test/channels.test.ts",
-      "modules/channel-operator/test/decide.test.ts"
+      "kernel/test/mcp-oauth.test.ts"
     ],
-    "next": "channel-operator test"
+    "next": "channel tokens tests (unit 2f)"
   },
   {
     "n": 7,

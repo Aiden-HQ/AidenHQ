@@ -1188,7 +1188,7 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
  * config/kernel/modules.json's `modules`: what the kernel knows of a module beyond its connections (spec §2.4, §3.3.4, §5.6):
  * the kernel.* roles it requests, its privileged entries, a channel's or a job dispatcher's own token (a generated secret named
  * `<module>_token`, dashes as underscores) and, for a channel (`providers.channel`, which needs privileged speaks-as-owner),
- * the stamp its decisions carry, whether it may close stale cards, its transport (where owner messages are sent) and its own
+ * its transport (where owner messages are sent) and its own
  * settings (a host CLI channel reads them here).
  */
 /**
@@ -1299,8 +1299,8 @@ export function kernelModuleTable(defs: Obj, settings: Obj = {}) {
     const token = tokens.find((t) => (def.generated_secrets ?? []).includes(t)) ?? tokens[0];
     const ch = def.providers?.channel;
     if (ch != null) {
-      if (typeof ch !== "object" || Array.isArray(ch)) fail(`module ${name}: providers.channel is a map ({} or {stamp, stale, transport, credentials})`);
-      for (const k of Object.keys(ch)) if (!["stamp", "stale", "transport", "credentials"].includes(k)) fail(`module ${name}: providers.channel.${k} is not allowed (stamp, stale, transport, credentials)`);
+      if (typeof ch !== "object" || Array.isArray(ch)) fail(`module ${name}: providers.channel is a map ({} or {transport, credentials})`);
+      for (const k of Object.keys(ch)) if (!["transport", "credentials"].includes(k)) fail(`module ${name}: providers.channel.${k} is not allowed (transport, credentials)`);
       // transport: where the owner's router (role kernel.notify) has the kernel send this channel's owner messages, with its own token.
       // A compose service only (never an address or localhost): the kernel sends the channel's token there.
       if (ch.transport != null && (!/^http:\/\/[a-z][a-z0-9-]*:\d+\/[\w/.-]*$/.test(String(ch.transport)) || /^http:\/\/localhost:/.test(String(ch.transport)))) fail(`module ${name}: providers.channel.transport must be http://<service>:<port>/<path>, a compose service`);
@@ -1308,8 +1308,6 @@ export function kernelModuleTable(defs: Obj, settings: Obj = {}) {
       if (ch.credentials != null && (ch.credentials !== true || ch.transport == null)) fail(`module ${name}: providers.channel.credentials is true, on a channel with a transport`);
       if (ch.transport != null && !(def.generated_secrets ?? []).includes(token)) fail(`module ${name}: a channel transport needs the module's own token (generated_secrets: [${token}])`);
       if (!privileged.includes("speaks-as-owner")) fail(`module ${name}: a channel (providers.channel) needs privileged: [speaks-as-owner]`);
-      if (ch.stamp != null && !/^[a-z]{1,16}$/.test(String(ch.stamp))) fail(`module ${name}: providers.channel.stamp is one lowercase word`);
-      if (ch.stale != null && typeof ch.stale !== "boolean") fail(`module ${name}: providers.channel.stale is true or false`);
     }
     // Its GitHub App grant (codehost:): what it may ask the kernel's POST /v1/codehost/:op for (kernel/src/codehost.ts). It is
     // taken literally, as the authority diff showed it to the owner: no settings, so no setting can widen it. The kernel
