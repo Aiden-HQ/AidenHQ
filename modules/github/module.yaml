@@ -1,8 +1,9 @@
 name: github
 description: "GitHub in two parts. Basic: sign in with a code at github.com, and agents read your issues, pull requests and code (GitHub's own MCP server and AidenHQ's GitHub tools). Advanced: your own GitHub App makes GitHub the code host: task workspaces and cache clones, repo-narrowed App tokens minted per write, push, PR, merge at the reviewed head once green, create_repo, land, and the git rules that tier those writes."
 license: MIT
-# It absorbed the codehost-github module (connections-simple §1): an instance listing codehost-github runs this one.
-replaces: [ codehost-github ]
+# It absorbed the codehost-github module (connections-simple §1): an instance listing codehost-github runs this one. `runner` is the
+# code host's name before modules existed: records filed as runner.<action> read as github.<action> (kernel/src/kind-rename.ts).
+replaces: [ codehost-github, runner ]
 requires:
   - warehouse # its source schema lives in the shared warehouse
   - board # its sign-in and setup flow
@@ -207,8 +208,7 @@ stages:
   - { name: merge_queue, label: Merge queue, from: work.waiting, to: work.resumed }
 # The PR's journey (docs/design/flow-insights.md §2): from its issue to its deploy. Each phase starts at the first of its facts; every
 # further one is a round. The review phase is the AI reviewer's look at a pr or push filing, merge review at the merge filing (the
-# kinds are the record kinds `where` matches; the codehost-github.* and runner.* ones are the records filed before this module
-# absorbed codehost-github and before the kernel ran every agent).
+# kinds are the record kinds `where` matches; records filed under a replaced module's name are renamed at start, kind-rename.ts).
 # One declaration, identical in every code host (the compiler checks): a phase a host never records is simply absent.
 journeys:
   - name: pr
@@ -218,10 +218,10 @@ journeys:
       - { name: triage, label: Triage, from: [ issue.opened ] }
       - { name: pickup, label: Pickup, from: [ issue.labeled, task.created ] }
       - { name: coding, label: Coding, from: [ job.started ] }
-      - { name: review, label: AI review, from: [ record.filed ], where: { kind: [ github.pr, github.push, codehost-github.pr, codehost-github.push, codehost-local.pr, codehost-local.push, runner.pr, runner.push ] } }
+      - { name: review, label: AI review, from: [ record.filed ], where: { kind: [ github.pr, github.push, codehost-local.pr, codehost-local.push ] } }
       - { name: open, label: PR open, from: [ pr.opened ] }
       - { name: ci, label: CI, from: [ pr.checks_started, pr.pushed ] }
-      - { name: merge, label: Merge review, from: [ record.filed ], where: { kind: [ github.merge, codehost-github.merge, codehost-local.merge, runner.merge ] } }
+      - { name: merge, label: Merge review, from: [ record.filed ], where: { kind: [ github.merge, codehost-local.merge ] } }
       - { name: deploy, label: Deploy, from: [ pr.merged ] }
     end: [ pr.deployed, pr.closed ]
 # The code host's check job recipes (kernel/src/checkjobs.ts), whose signed receipts it verifies before it lands: a repo's fast

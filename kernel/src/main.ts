@@ -47,6 +47,7 @@ import { CODEHOST, covers, createCodehost, localFacts, type OpsGrant } from "./c
 import { createConnectionHealth, createHealthProbe } from "./health.ts";
 import { createProxy } from "./proxy.ts";
 import { SETTINGS, UPDATER, openRecords } from "./records.ts";
+import { renameKinds, type Catalog } from "./kind-rename.ts";
 import { backfillLocal, openFacts } from "./facts.ts";
 import { createDeploys } from "./generations.ts";
 import { createFlow } from "./flow.ts";
@@ -152,6 +153,8 @@ const onTask = {
   routineCap: (task: string) => taskRoutineCap(cpTrace, task, grantsTable().routines as Record<string, string> | undefined),
 };
 // The modules' kinds (compile) and the kernel's own and the runner's (kinds.ts).
+// The module catalog (compile): which modules are enabled, and which each replaces.
+const catalog = watched(path.join(configDir, "modules.json"), (j) => (Array.isArray(j) ? j : []) as Catalog, []);
 const moduleKinds = watched(path.join(configDir, "kernel", "writes.json"), (j) => j as Record<string, Kind>, {});
 const pathInventory = watched(path.join(configDir, "kernel", "paths.json"), inventoryOf, undefined);
 // codehost-local's kinds while it is enabled: it has no service, so the kernel runs its executor (localCode below).
@@ -163,7 +166,9 @@ let replay: (r: never) => Promise<{ ok: boolean; text: string }> = async () => (
 // Unset: no agents org (@agents codehost grants name nothing).
 const agentsOrg = env("AIDENHQ_GITHUB_AGENTS_ORG") || undefined;
 // With codehost-local enabled (the compiled catalog), its org `local` is an agents org too (docs/design/codehost-local.md §2).
-const localHost = watched(path.join(configDir, "modules.json"), (j) => Array.isArray(j) && j.some((m: { name?: string; enabled?: boolean }) => m?.name === "codehost-local" && m.enabled === true), false);
+const localHost = () => catalog().some((m) => m.name === "codehost-local" && m.enabled === true);
+// A module that replaced another carries its finished records along: they move to its kinds (kind-rename.ts).
+renameKinds(records.db, catalog(), registry());
 const baseRepos = { product: env("AIDENHQ_PRODUCT_REPO") || undefined, instance: env("AIDENHQ_INSTANCE_REPO") || undefined, agentsOrg };
 const repos = () => ({ ...baseRepos, agentsOrgs: [agentsOrg, ...(localHost() ? [LOCAL_ORG] : [])].filter((o): o is string => Boolean(o)) });
 log(baseRepos.product && baseRepos.instance ? "repositories" : "AIDENHQ_PRODUCT_REPO or AIDENHQ_INSTANCE_REPO isn't set", repos());
