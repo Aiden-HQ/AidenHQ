@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, it } from "vitest";
-import { TRUST_ROLES } from "../src/maintainer.js";
+import { TRUST_ROLES } from "../src/aidenhq-sdk/maintained-repos.js";
 
 const manifest = readFileSync(join(import.meta.dirname, "..", "..", "..", "module.yaml"), "utf8");
 const MAINTAINER_READS = ["github_app_issue_list", "github_app_label_events", "github_app_repo_tree", "github_app_repo_file"];

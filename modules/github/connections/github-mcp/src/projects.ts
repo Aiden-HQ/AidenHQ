@@ -3,7 +3,7 @@
 // GitHub Projects (v2) boards of an organization (the user's own token can't read org projects: one fixed GraphQL query with
 // an org token), the src_github sync, product issues and the Maintainer's App calls go through here; github.ts uses
 // `repoToken` for read-only access to repositories the App covers.
-import { AGENT_FIX } from "./maintainer.js";
+import { AGENT_FIX } from "./aidenhq-sdk/maintained-repos.js";
 import { scrubProblems } from "./scrub.js";
 
 const API = "https://api.github.com";

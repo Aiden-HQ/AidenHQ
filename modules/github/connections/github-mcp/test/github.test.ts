@@ -91,6 +91,16 @@ describe("guard", () => {
   });
 });
 
+describe("owner-token label writes", () => {
+  it("refuse agent-build in any case, on update and on create, before anything is written", async () => {
+    const { impl, calls } = fake({ "GET /repos/a/b/issues/7": { number: 7, labels: [], state: "open" } });
+    const gh = new GitHub(tokenFile(), new Set(["a"]), impl);
+    await expect(gh.createIssue({ repo: "a/b", title: "t", body: "b", labels: ["Agent-Build"] })).rejects.toThrow("agent-build is the owner's label");
+    await expect(gh.updateIssue({ owner: "a", repo: "b", number: 7 }, { addLabels: ["agent-build"] })).rejects.toThrow("agent-build is the owner's label");
+    expect(calls.filter((c) => c.method !== "GET")).toHaveLength(0);
+  });
+});
+
 describe("parseRef", () => {
   it("rejects anything else", () => {
     expect(() => parseRef({ url: "https://gitlab.com/a/b/issues/1" })).toThrow();

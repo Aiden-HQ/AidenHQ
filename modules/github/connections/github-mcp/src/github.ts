@@ -392,6 +392,9 @@ export class GitHub {
 
   /** The repository's own labels, with their exact names, for what the user wrote; refuses one that doesn't exist (GitHub would create it). */
   private async matchLabels(owner: string, name: string, wanted: string[]): Promise<string[]> {
+    // agent-build is the owner's own word that a feature may be built, and these writes post as the owner (an admin): so the
+    // owner adds it on GitHub itself, never through a tool an agent holds.
+    if (wanted.some((l) => l.trim().toLowerCase() === "agent-build")) throw new GitHubRefused("agent-build is the owner's label: add it on GitHub, not through this tool");
     const existing = await this.labels(owner, name);
     const hits = wanted.map((l) => existing.find((e) => e.toLowerCase() === l.trim().toLowerCase()));
     const missing = wanted.filter((_, i) => !hits[i]);

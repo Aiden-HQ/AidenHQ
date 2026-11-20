@@ -1,6 +1,7 @@
 import { generateKeyPairSync } from "node:crypto";
 import { afterEach, expect, it, vi } from "vitest";
-import { Maintainer, parseRepos } from "../src/maintainer.js";
+import { Maintainer } from "../src/maintainer.js";
+import { inMaintained, parseRepos } from "../src/aidenhq-sdk/maintained-repos.js";
 import { Projects } from "../src/projects.js";
 
 const APP = { id: 4242, slug: "acme-bot" };
@@ -25,6 +26,8 @@ function fake(opts: {
   failList?: string[];
   /** A status the commit lookup answers with instead of a commit (e.g. 404 for an unknown ref). */
   failCommit?: number;
+  /** Issues' lastEditedAt (GraphQL), by number; unset is never edited. */
+  edited?: Record<number, string>;
 }) {
   const calls: Call[] = [];
   const posted: { path: string; body: any }[] = [];
@@ -37,6 +40,7 @@ function fake(opts: {
     const json = (status: number, b: unknown) => ({ status, json: async () => b });
     // The kernel's /v1/codehost/token: the App's token and its slug.
     if (url === "http://codehost/v1/codehost/token") return json(200, { token: "ghs_t", expires_at: new Date(Date.now() + 3300_000).toISOString(), app: { slug: APP.slug } });
+    if (url === "https://api.github.com/graphql") return json(200, { data: { repository: { issue: { lastEditedAt: opts.edited?.[body.variables.i] ?? null } } } });
     const perm = u.pathname.match(/^\/repos\/[^/]+\/[^/]+\/collaborators\/([^/]+)\/permission$/);
     if (perm && opts.failPermission) return json(opts.failPermission, { message: "Forbidden" });
     if (perm) {
@@ -423,7 +427,7 @@ it("reads the tree and one file, and errors rather than truncating an oversized 
 it("the label tool changes only agent-fix", async () => {
   const f = fake({ issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z" }], timelines: { 1: [labeled("acme-bot[bot]", "2026-01-01T00:00:00Z", APP)] } });
   const m = maintainer(f);
-  await expect(m.label(PRODUCT, 1, "add", "bug")).rejects.toThrow(/only the agent-fix label may be changed/);
+  await expect(m.label(PRODUCT, 1, "add", "bug")).rejects.toThrow(/only the agent-fix and feature-request labels may be changed/);
   expect(await m.label(PRODUCT, 1, "remove")).toMatchObject({ changed: true });
   expect(f.posted[0]!.path).toBe(`/repos/${PRODUCT}/issues/1/labels/agent-fix`);
 });
@@ -440,7 +444,14 @@ it("maintainer_repos: defaults, bare repos, and a role outside admin, maintain o
     [PRODUCT, "agent-fix", ["admin", "maintain"], "product-pin"],
     [OTHER, "fix-me", ["write"], "done"],
   ]);
+  // Duties are opt-in (issues aside), and a quiet PR waits a week.
+  expect(parseRepos(PRODUCT)[0]).toMatchObject({ issues: true, features: false, dependabot: false, contributor_prs: false, stale_days: 7 });
+  expect(parseRepos(JSON.stringify([{ repo: PRODUCT, features: true, issues: false, stale_days: 14 }]))[0]).toMatchObject({ issues: false, features: true, stale_days: 14 });
+  expect(() => parseRepos(JSON.stringify([{ repo: PRODUCT, contributor_pr: true }]))).toThrow("maintainer_repos[0]: unknown key contributor_pr");
   for (const bad of [
+    [{ repo: PRODUCT, stale_days: 0 }],
+    [{ repo: PRODUCT, stale_days: "x" }],
+    [{ repo: PRODUCT, features: "yes" }],
     [{ repo: PRODUCT, trusted: ["triage"] }],
     [{ repo: PRODUCT, trusted: ["read"] }],
     [{ repo: PRODUCT, trusted: [] }],
@@ -449,6 +460,12 @@ it("maintainer_repos: defaults, bare repos, and a role outside admin, maintain o
     [{ repo: PRODUCT }, { repo: PRODUCT.toUpperCase() }],
     [{ repo: PRODUCT, extra: 1 }],
   ]) expect(() => parseRepos(JSON.stringify(bad))).toThrow(/maintainer_repos\[\d\]/);
+});
+
+it("inMaintained matches a listed repo in any case", () => {
+  const repos = parseRepos(PRODUCT);
+  expect(inMaintained(repos, PRODUCT.toUpperCase())).toBe(true);
+  expect(inMaintained(repos, OTHER)).toBe(false);
 });
 
 it("a list that doesn't parse refuses every tool and the watcher's read, naming why", async () => {
@@ -475,7 +492,7 @@ it("a repo's own label is the one listed, trusted and the only one changed", asy
   const m = maintainer(f, [], [{ repo: OTHER, label: "fix-me" }]);
   expect((await m.repoSince(OTHER)).issues.map((i) => i.number)).toEqual([3]);
   expect(f.calls.some((c) => c.url.includes(`/repos/${OTHER}/issues?state=open&labels=fix-me`))).toBe(true);
-  await expect(m.label(OTHER, 3, "add", "agent-fix")).rejects.toThrow(/only the fix-me label/);
+  await expect(m.label(OTHER, 3, "add", "agent-fix")).rejects.toThrow(/only the fix-me and feature-request labels/);
   expect(await m.label(OTHER, 3, "remove")).toMatchObject({ label: "fix-me", changed: true });
   expect(f.posted[0]!.path).toBe(`/repos/${OTHER}/issues/3/labels/fix-me`);
 });
@@ -529,4 +546,112 @@ it("the triage read hands over new unlabelled reports once, never the App's own 
   const both = await m.issuesSince({}, { [PRODUCT]: at(2) });
   expect(both.repos[0]).toMatchObject({ repo: PRODUCT, untriaged: [{ number: 2 }, { number: 6 }] });
   expect((await m.issuesSince({})).repos[0]).not.toHaveProperty("untriaged");
+});
+
+const labeledAs = (label: string, login: string, at: string, app?: { id: number; slug: string }) => ({ ...labeled(login, at, app), label: { name: label } });
+const BUILD = "agent-build";
+const FEATURES = [{ repo: PRODUCT, features: true }];
+
+it("agent-build is trusted from an admin, never from the App or a write collaborator under the default roles", async () => {
+  const f = fake({
+    issues: [1, 2, 3].map((n) => ({ number: n, updated_at: `2026-01-01T00:00:0${n}Z`, labels: [BUILD] })),
+    timelines: {
+      1: [labeledAs(BUILD, "acme-bot[bot]", "2026-01-01T00:00:01Z", APP)],
+      2: [labeledAs(BUILD, "writer-user", "2026-01-01T00:00:02Z")],
+      3: [labeledAs(BUILD, "admin-user", "2026-01-01T00:00:03Z")],
+    },
+    permissions: { "writer-user": "write", "admin-user": "admin" },
+  });
+  const out = await maintainer(f, [], FEATURES).repoSince(PRODUCT, undefined, BUILD);
+  expect(out.issues.map((i) => i.number)).toEqual([3]);
+  expect(out.skipped.map((s) => s.number)).toEqual([1, 2]);
+  // The App counts for no label but its own fix label: a bot login with no performed_via event is no better.
+  const bot = fake({ issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z", labels: [BUILD] }], timelines: { 1: [labeledAs(BUILD, "acme-bot[bot]", "2026-01-01T00:00:00Z")] } });
+  expect((await maintainer(bot, [], FEATURES).issueList(PRODUCT, BUILD)).issues[0]).toMatchObject({ trusted: false });
+  // A repo trusting write lets a write collaborator vouch for it.
+  const w = fake({ issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z", labels: [BUILD] }], timelines: { 1: [labeledAs(BUILD, "writer-user", "2026-01-01T00:00:00Z")] }, permissions: { "writer-user": "write" } });
+  expect((await maintainer(w, [], [{ repo: PRODUCT, features: true, trusted: ["write"] }]).issueList(PRODUCT, BUILD)).issues[0]).toMatchObject({ trusted: true });
+});
+
+it("trust is computed on the label asked for, and AGENT-BUILD is not agent-build", async () => {
+  const f = fake({
+    issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z", labels: ["agent-fix", BUILD] }],
+    timelines: { 1: [labeledAs("agent-fix", "admin-user", "2026-01-01T00:00:00Z"), labeledAs(BUILD, "random-user", "2026-01-01T00:00:01Z"), labeledAs("AGENT-BUILD", "admin-user", "2026-01-01T00:00:02Z")] },
+    permissions: { "admin-user": "admin" },
+  });
+  const m = maintainer(f, [], FEATURES);
+  expect((await m.issueList(PRODUCT)).issues[0]).toMatchObject({ trusted: true });
+  expect((await m.issueList(PRODUCT, BUILD)).issues[0]).toMatchObject({ trusted: false, actor: "random-user" });
+  expect((await m.labelEvents(PRODUCT, 1, BUILD)).events.map((e) => e.label)).toEqual([BUILD]);
+});
+
+it("the label tool adds and removes feature-request, and refuses agent-build", async () => {
+  const f = fake({ issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z", labels: [] }] });
+  const m = maintainer(f);
+  await expect(m.label(PRODUCT, 1, "add", BUILD)).rejects.toThrow("agent-build is the owner's label");
+  await expect(m.label(PRODUCT, 1, "remove", "AGENT-BUILD")).rejects.toThrow("agent-build is the owner's label");
+  expect(await m.label(PRODUCT, 1, "add", "feature-request")).toMatchObject({ label: "feature-request", changed: true });
+  expect(f.posted[0]).toMatchObject({ body: { labels: ["feature-request"] } });
+});
+
+it("triage skips issues already labelled feature-request or agent-build, and a features repo reads its builds", async () => {
+  const f = fake({
+    issues: [
+      { number: 1, updated_at: "2026-02-01T00:00:00Z", created_at: "2026-02-01T00:00:00Z", labels: ["feature-request"] },
+      { number: 2, updated_at: "2026-02-01T00:00:01Z", created_at: "2026-02-01T00:00:01Z", labels: [BUILD] },
+      { number: 3, updated_at: "2026-02-01T00:00:02Z", created_at: "2026-02-01T00:00:02Z", labels: ["bug"] },
+    ],
+    timelines: { 2: [labeledAs(BUILD, "admin-user", "2026-02-01T00:00:03Z")] },
+    permissions: { "admin-user": "admin" },
+  });
+  const out = await maintainer(f, [], FEATURES).issuesSince({}, { [PRODUCT]: "2026-01-01T00:00:00Z" });
+  const row = out.repos[0]! as any;
+  expect(row.untriaged.map((i: any) => i.number)).toEqual([3]);
+  expect(row.builds.map((i: any) => [i.number, i.trusted])).toEqual([[2, true]]);
+  // A repo without `features` reads no builds.
+  expect(((await maintainer(f).issuesSince({})).repos[0]! as any).builds).toBeUndefined();
+});
+
+it("pr_list tells bot, fleet and human PRs apart, and reads a human author's latest activity and what waits on them", async () => {
+  const f = fake({});
+  const pr = (number: number, login: string, extra: object = {}) => ({ number, user: { login, type: login.endsWith("[bot]") ? "Bot" : "User" }, draft: false, labels: [{ name: "x" }], requested_reviewers: [], requested_teams: [], head: { sha: `s${number}` }, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-03-01T00:00:00Z", ...extra });
+  const answers: Record<string, unknown> = {
+    [`/repos/${PRODUCT}/pulls`]: [pr(1, "dependabot[bot]"), pr(2, "acme-bot[bot]"), pr(3, "carol", { draft: true, requested_reviewers: [{ login: "dave" }] }), pr(4, "erin")],
+    [`/repos/${PRODUCT}/pulls/3`]: { mergeable_state: "clean" },
+    [`/repos/${PRODUCT}/pulls/4`]: { mergeable_state: "dirty" },
+    [`/repos/${PRODUCT}/commits/s3`]: { commit: { committer: { date: "2026-01-05T00:00:00Z" } } },
+    [`/repos/${PRODUCT}/commits/s4`]: { commit: { committer: { date: "2026-01-02T00:00:00Z" } } },
+    [`/repos/${PRODUCT}/commits/s3/check-runs`]: { check_runs: [{ name: "ci", conclusion: "success" }] },
+    [`/repos/${PRODUCT}/commits/s4/check-runs`]: { check_runs: [{ name: "lint", conclusion: "failure" }] },
+    [`/repos/${PRODUCT}/issues/3/comments`]: [{ user: { login: "carol" }, created_at: "2026-02-01T00:00:00Z" }, { user: { login: "dave" }, created_at: "2026-02-20T00:00:00Z" }],
+    [`/repos/${PRODUCT}/issues/4/comments`]: [],
+    [`/repos/${PRODUCT}/pulls/3/reviews`]: [],
+    [`/repos/${PRODUCT}/pulls/4/reviews`]: [{ user: { login: "dave" }, state: "CHANGES_REQUESTED", submitted_at: "2026-01-03T00:00:00Z" }],
+    [`/repos/${PRODUCT}/pulls/3/comments`]: [],
+    [`/repos/${PRODUCT}/pulls/4/comments`]: [{ user: { login: "erin" }, created_at: "2026-01-10T00:00:00Z" }],
+  };
+  const fetchFn = (async (url: string, init: RequestInit) => {
+    const u = new URL(url);
+    const hit = u.hostname === "api.github.com" ? answers[u.pathname] : undefined;
+    return hit !== undefined ? { status: 200, json: async () => hit } : f.fetchFn(url, init);
+  }) as unknown as typeof fetch;
+  const m = new Maintainer(new Projects(CODEHOST, fetchFn), parseRepos(JSON.stringify([{ repo: PRODUCT }])), []);
+  const { prs } = await m.prList(PRODUCT);
+  expect(prs.map((p) => [p.number, p.author_kind])).toEqual([[1, "bot"], [2, "fleet"], [3, "human"], [4, "human"]]);
+  // Dave's comment is not the author's: Carol's latest word is her own comment, and a review is asked of someone.
+  expect(prs[2]).toMatchObject({ draft: true, review_requested: true, last_author_activity: "2026-02-01T00:00:00Z", waiting_on_author: "still a draft" });
+  expect(prs[3]).toMatchObject({ review_requested: false, last_author_activity: "2026-01-10T00:00:00Z", waiting_on_author: "failing checks (1); requested changes; a merge conflict" });
+});
+
+it("an issue edited after its trusted agent-build label is untrusted until the owner relabels it", async () => {
+  const f = fake({
+    issues: [1, 2].map((n) => ({ number: n, updated_at: "2026-01-01T00:00:09Z", labels: [BUILD] })),
+    timelines: { 1: [labeledAs(BUILD, "admin-user", "2026-01-01T00:00:01Z")], 2: [labeledAs(BUILD, "admin-user", "2026-01-01T00:00:01Z")] },
+    permissions: { "admin-user": "admin" },
+    edited: { 1: "2026-01-01T00:00:05Z", 2: "2025-12-31T00:00:00Z" },
+  });
+  const out = await maintainer(f, [], FEATURES).repoSince(PRODUCT, undefined, BUILD);
+  expect(out.issues.map((i) => i.number)).toEqual([2]);
+  expect(out.skipped).toEqual([{ number: 1, reason: expect.stringMatching(/edited after agent-build was added/) }]);
+  expect((await maintainer(f, [], FEATURES).labelEvents(PRODUCT, 1, BUILD)).events[0]).toMatchObject({ trusted: false, stale: true });
 });
