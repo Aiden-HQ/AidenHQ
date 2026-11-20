@@ -102,22 +102,21 @@ genDataDir() { local d="${AIDENHQ_DATA_DIR:-$PWD/data}"; mkdir -p "$d/modules" &
 # A module's running containers (compose labels them with their module), on one line.
 genContainers() { docker ps -q --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME:-aidenhq}" --filter "label=aidenhq.module=$1" | tr '\n' ' '; }
 
-# before product: the data modules this apply touches, one per line: in the staged config (config.next/module-data.json)
-# with a data dir on disk, and new to it, or with other services (settings included) or data_version than the running
-# config, or with code changed under modules/<name>/ (not module.yaml, which the services digest covers, nor handbook text).
+# The data modules this apply snapshots, one per line: in the staged config (config.next/module-data.json) with a data dir
+# on disk, and new to the running config or with another data_version than it. A module that changes its data's format
+# bumps data_version; a code-only change is recoverable from git and the images, so it stops nothing and archives nothing.
 genTouched() {
   local data; data="$(genDataDir)"
   # shellcheck disable=SC2016 # JavaScript
   node -e '
 const fs = require("node:fs");
-const [old, next, data, changed] = process.argv.slice(1);
+const [old, next, data] = process.argv.slice(1);
 const read = (f) => { try { return JSON.parse(fs.readFileSync(f, "utf8")); } catch { return {}; } };
 const [a, b] = [read(old), read(next)];
 for (const [m, d] of Object.entries(b)) {
   if (!/^[a-z0-9][a-z0-9-]*$/.test(m) || !fs.existsSync(`${data}/modules/${m}`)) continue;
-  const code = (f) => f.startsWith(`modules/${m}/`) && f !== `modules/${m}/module.yaml` && !f.endsWith(".md");
-  if (JSON.stringify(a[m]) !== JSON.stringify(d) || changed.split("\n").some(code)) console.log(m);
-}' config/module-data.json config.next/module-data.json "$data" "$(git diff --name-only "$1" "$2" -- modules)"
+  if (!(m in a) || a[m].data_version !== d.data_version) console.log(m);
+}' config/module-data.json config.next/module-data.json "$data"
 }
 
 # n module...: stop the modules' containers and archive their data dirs as generation n's snapshot, then prune. Refuses

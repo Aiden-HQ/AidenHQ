@@ -1,5 +1,5 @@
-// ops/compose-recreate.sh, the apply's compose step. A fake `docker` serves the container list, the compose config and
-// the build, and records every call, so each test reads exactly what the step asked the daemon to do: which services it
+// ops/compose-recreate.sh, the apply's compose step. A fake `docker` serves the container list and the compose config,
+// and records every call, so each test reads exactly what the step asked the daemon to do: which services it
 // recreated, that the rest were left alone, and that a leftover is the only thing removed.
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -52,11 +52,10 @@ case "$1" in
         s=$(printf '%s' "\${@: -1}"); cat "$dir/psid-$s" 2>/dev/null ;;
       *"compose ps -a --format"*)
         s=$(printf '%s' "\${@: -1}"); cat "$dir/state-$s" 2>/dev/null ;;
-      *"build"*) cat "$dir/build.out" 2>/dev/null; exit "$(cat "$dir/build.code" 2>/dev/null || echo 0)" ;;
       *"up -d"*)
         n=$(( $(cat "$dir/upcount" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$dir/upcount"
         code=$(cat "$dir/up-$n.code" 2>/dev/null || echo 0)
-        # A real --force-recreate starts a new container with a new id, carrying the same image and config hash.
+        # A real --force-recreate starts a new, running container with a new id, carrying the same image and config hash.
         # A failed up starts nothing, as compose's own race does, unless starts-<n> says it got that far.
         if [ "$code" = 0 ] || [ -f "$dir/starts-$n" ]; then
           for s in "\${@:2}"; do
@@ -66,7 +65,7 @@ case "$1" in
             [ -f "$dir/rotate-$s" ] && cat "$dir/rotate-$s" > "$dir/secrets/grafana_mcp_token"
             old=$(cat "$dir/psid-$s"); g=$(( $(cat "$dir/recreated-$s" 2>/dev/null || echo 0) + 1 ))
             echo "$g" > "$dir/recreated-$s"; echo "\${s}recreated\${g}" > "$dir/psid-$s"
-            cp "$dir/running-$old" "$dir/running-\${s}recreated\${g}"
+            echo true > "$dir/running-\${s}recreated\${g}"
             cp "$dir/imageof-$old" "$dir/imageof-\${s}recreated\${g}"
             cp "$dir/hashof-$old" "$dir/hashof-\${s}recreated\${g}"
           done
@@ -303,4 +302,33 @@ test("a service whose mounted secret content changed since it started is recreat
   const fourth = await apply(f);
   assert.equal(fourth.status, 0, fourth.out);
   assert.equal(recreates(fourth).length, 0, `the recreated container's record is written: ${fourth.calls}`);
+});
+
+test("a service stopped before the step (a data snapshot stopped it) is recreated once and recorded, then kept", async () => {
+  const f = fixture({ containers, services, hashes: { board: "h-board", paperclip: "h-paperclip" } });
+  writeFileSync(join(f.dir, "model.json"), `${JSON.stringify(model(f.dir))}\n`);
+  mkdirSync(join(f.dir, "secrets"), { recursive: true });
+  writeFileSync(join(f.dir, "secrets/grafana_mcp_token"), "token\n");
+  for (const [service, id, running] of [["board", "board1", "true"], ["paperclip", "pc1", "false"]]) {
+    writeFileSync(join(f.dir, `psid-${service}`), `${id}\n`);
+    writeFileSync(join(f.dir, `image-${service}`), `aidenhq/${service}:local\n`);
+    writeFileSync(join(f.dir, `imageid-aidenhq_${service}_local`), `sha256:${service}\n`);
+    writeFileSync(join(f.dir, `state-${service}`), "running\n");
+    writeFileSync(join(f.dir, `recreate-${service}`), "1\n");
+    writeFileSync(join(f.dir, `running-${id}`), `${running}\n`);
+    writeFileSync(join(f.dir, `imageof-${id}`), `sha256:${service}\n`);
+    writeFileSync(join(f.dir, `hashof-${id}`), `h-${service}\n`);
+  }
+  // A record from before the stop names the old container, as the snapshot left it on the host.
+  mkdirSync(join(f.dir, "data/compose-secret-digests"), { recursive: true });
+  writeFileSync(join(f.dir, "data/compose-secret-digests/paperclip"), "pc1 stale\n");
+  const first = await apply(f);
+  assert.equal(first.status, 0, first.out);
+  assert.match(recreates(first).at(-1), /--force-recreate paperclip$/, first.calls);
+  const record = readFileSync(join(f.dir, "data/compose-secret-digests/paperclip"), "utf8");
+  assert.match(record, new RegExp(`^${"paperclip"}recreated1 [0-9a-f]{64}\n$`), `the new container is recorded: ${record}`);
+  const second = await apply(f);
+  assert.equal(second.status, 0, second.out);
+  assert.equal(recreates(second).length, 0, `the recreated container is kept: ${second.calls}`);
+  assert.match(second.out, /compose: paperclip kept/);
 });

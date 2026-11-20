@@ -40,7 +40,7 @@ fs.writeFileSync(out + "/modules.json", JSON.stringify({ modules: /^modules: (.*
 fs.writeFileSync(stage ? "compose.modules.next.yaml" : "compose.modules.yaml",
   (inst.includes("monitoring") ? "services:\\n  monitoring-node-exporter:\\n    image: x\\n" : "services: {}\\n") + "# " + v);
 const dv = fs.existsSync("DATA_VERSION") ? Number(fs.readFileSync("DATA_VERSION", "utf8")) : 0;
-fs.writeFileSync(out + "/module-data.json", JSON.stringify({ acme: { data_version: dv, services: "s" } }));
+fs.writeFileSync(out + "/module-data.json", JSON.stringify({ acme: { data_version: dv } }));
 const acme = "data/modules/acme";
 if (fs.existsSync(acme)) {
   try { checkDataVersion("acme", dv, acme, !stage); } catch (e) { console.error("compile: " + e.message); process.exit(1); }
@@ -454,6 +454,21 @@ test("a module whose data migrates (marker 0 -> 1) and fails health comes back a
   const refused = await w.sh("ops/rollback.sh", "2");
   assert.equal(refused.status, 1, refused.out);
   assert.match(refused.out, /refusing: acme: data newer than generation 2 declared, and no snapshot taken after it is kept/);
+});
+
+test("a module's data is snapshotted when it is new or its data_version moves, never for a code-only change", async () => {
+  const w = world();
+  mkdirSync(w.d("prod/data/modules/acme/state"), { recursive: true });
+  writeFileSync(w.d("prod/data/modules/acme/state/db.txt"), "v0 rows\n");
+  const first = await w.run();
+  assert.equal(first.status, 0, first.out);
+  assert.match(first.out, /generation 2 snapshot: acme/);
+  mkdirSync(w.d("pw/modules/acme"), { recursive: true });
+  w.commitInstance(w.commitProduct("2", { "modules/acme/server.ts": "export {};\n" }));
+  const code = await w.run();
+  assert.equal(code.status, 0, code.out);
+  assert.match(code.out, /generation 3 snapshot: no module data touched/);
+  assert.ok(!existsSync(w.d("home/checkpoints/gen-3")), "nothing archived");
 });
 
 const until = async (ok, ms = 20000) => { const end = Date.now() + ms; while (!ok()) { if (Date.now() > end) throw new Error("timed out"); await new Promise((r) => setTimeout(r, 50)); } };

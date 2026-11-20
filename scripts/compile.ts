@@ -17,7 +17,7 @@
 //   config/exposure           → ops/vm/setup.sh (root) and verify-security: settings.exposure, one word
 //   config/apps-node          → apps-mcp: `tailnet` when the apps' tailnet node is the instance's door, else `none`
 //   config/Caddyfile           → the `caddy` service, the public front door (only with exposure public, scripts/front-door.ts)
-//   config/module-data.json    → the apply (ops/lib/generations.sh): each data module's data_version and services digest
+//   config/module-data.json    → the apply (ops/lib/generations.sh): each data module's data_version
 //   config/points/<module>.json → that module's own services only: the contributions to its points (spec §3.6)
 //   config/gate.json, config/cloudflared.yml → the gate and the tunnel (shared access; only with settings.edge, scripts/edge.ts)
 // `--sizes`: compile, print each crew agent's handbook bytes per section (scripts/handbook.ts) and write nothing.

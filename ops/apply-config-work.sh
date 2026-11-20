@@ -167,7 +167,7 @@ main() {
   # what it stopped is started again.
   if [ "$staged" = 1 ]; then
     local touched
-    touched="$(genTouched "$before" "$product")" || { why="the modules this apply touches could not be worked out"; refuseGeneration; }
+    touched="$(genTouched)" || { why="the modules this apply touches could not be worked out"; refuseGeneration; }
     # shellcheck disable=SC2086 # module names, one word each
     genSnapshot "$n" $touched || { why="the module data snapshot was refused"; refuseGeneration; }
     lap snapshot
@@ -179,6 +179,8 @@ main() {
   ( set -e; switchOver )
   rc=$?
   set -e
+  # The switch's laps ran in its subshell: the next phase is timed from here, not from before the switch.
+  apply_lap="$(apply_now)"
   [ ! -f config/module-data.json ] || genJs versions "$n" config/module-data.json || echo "generation $n: its data versions were not recorded (a rollback to it reads them as 0)"
   # 4. Health.
   if [ "$rc" -ne 0 ]; then why="the switch failed (exit $rc)"
@@ -194,6 +196,7 @@ main() {
   # 5. Auto-revert, once.
   genMark "$n" failed "$why" "$log"
   echo "generation $n failed: $why"
+  echo "apply timing: total $(apply_secs "$apply_t0")s"
   revertTo "$n" "$why" "$log"
 }
 
@@ -373,10 +376,12 @@ applyGeneration() {
   ( set -e; switchOver )
   rc=$?
   set -e
+  apply_lap="$(apply_now)"
   [ ! -f config/module-data.json ] || genJs versions "$m" config/module-data.json || echo "generation $m: its data versions were not recorded (a rollback to it reads them as 0)"
   local ok=0
   if [ "$rc" -ne 0 ]; then HEALTH_WHY="the switch failed (exit $rc)"; elif health "${AIDENHQ_HEALTH_BASELINE:-}" "$prev_config"; then ok=1; fi
   rm -f "$prev_config"
+  echo "apply timing: total $(apply_secs "$apply_t0")s"
   if [ "$ok" = 1 ]; then genMark "$m" good; echo "generation $m is good"; return 0; fi
   genMark "$m" failed "$HEALTH_WHY" "$log"
   echo "generation $m failed: $HEALTH_WHY"
@@ -604,10 +609,12 @@ switchOver() {
   # The board mounts this mirror's directory read-only, so it must exist before compose starts (a first apply on a fresh host).
   mkdir -p "$(dirname "$AIDENHQ_GENERATIONS_MIRROR")"
   [ -e "$AIDENHQ_GENERATIONS_MIRROR" ] || : > "$AIDENHQ_GENERATIONS_MIRROR"
-  ops/compose-recreate.sh # build what moved, recreate only those services, and stop and remove what this config dropped
+  # validate built every image; a switch nothing validated (--generation, a product from before staging) builds them here.
+  [ "$staged" = 1 ] || docker compose build
+  ops/compose-recreate.sh # recreate only the services that moved, and stop and remove what this config dropped
   # The host's own tailnet name keeps Paperclip and the board only; apps are on their own node (compose.yaml apps-edge).
   node scripts/host-serve.ts prune
-  lap compose # the gateway check, then compose: builds (cached unless a context changed) and recreates what changed
+  lap compose # the kernel unit, data moves, then compose: recreates what changed
   stepRun setup setupInputs node scripts/paperclip-setup.ts
   lap setup
   stepRun warehouse warehouseInputs ops/warehouse-sources.sh # shared sources: roles, schemas, src_meta (skips while the warehouse isn't running)

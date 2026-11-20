@@ -810,10 +810,10 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
     }
     dataDirs.push(...gen.dataDirs);
     stateDirs.push(...gen.stateDirs);
-    // A module with a data dir: its data_version (spec §6.4.1; compile.ts keeps the marker) and a digest of its services, so
-    // the apply snapshots it when its services or code change (ops/lib/generations.sh).
+    // A module with a data dir: its data_version (spec §6.4.1; compile.ts keeps the marker); the apply snapshots its data when
+    // that changes (ops/lib/generations.sh).
     if (def.data_version != null && !(Number.isInteger(def.data_version) && def.data_version >= 0)) fail(`module ${name}: data_version is a whole number, 0 or more`);
-    if (raw.services?.data === true) dataModules[name] = { data_version: def.data_version ?? 0, services: createHash("sha256").update(JSON.stringify(gen.services)).digest("hex").slice(0, 16) };
+    if (raw.services?.data === true) dataModules[name] = { data_version: def.data_version ?? 0 };
   }
   // A join reaches only the joined module's own network, which that module defined (not a module named like another's
   // link network, and never a module with no services).
