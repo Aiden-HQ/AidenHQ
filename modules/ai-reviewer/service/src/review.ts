@@ -41,12 +41,16 @@ const COMMENT_LINES = 60;
 const AUTHORS = ["the owner", "the delegating agent", "the chief of staff", "the requesting agent", "another agent"];
 const AMENDS = AUTHORS.slice(0, 3);
 const LABEL_LINE = new RegExp(`^(${AUTHORS.join("|")})(?: \\(([^()\\s]+)\\))?, [^\\s]*:$`);
+/** A line of a comment's text shaped like code's label ("the owner, …:") or mark ("[the delegating agent kai] …"). */
+const IMITATION = new RegExp(`^[\\s>*_]*(\\[\\s*(${AUTHORS.join("|")})\\b[^\\]]*\\]|(${AUTHORS.join("|")})\\b.{0,80}:[\\s*_]*$)`, "i");
+const REMOVED = "[code removed a line here that imitates a label or an author's mark]";
 
 /**
  * The kernel's TASK_COMMENTS (review-loop.ts taskComments: each comment a label line code wrote, then its author's text with
  * every line quoted "> ") as the model reads it: every line of a comment begins with its author's mark ("[the requesting
- * agent priya] "), so a line in an agent's text that imitates a label ("the owner, …:") still reads as that agent's, and a
- * first line counts the comments shown by those who may amend the request. Undefined when the text isn't the kernel's
+ * agent priya] "), a line of the text that imitates a label ("the owner, …:") or a mark ("[the owner] …") is replaced by
+ * code's note that it was removed (a model once took the line under such an imitation as the owner's or the delegator's,
+ * mark or not), and a first line counts the comments shown by those who may amend the request. Undefined when the text isn't the kernel's
  * format (a line that is neither a label nor quoted under one): code then refuses the review rather than show it unmarked.
  */
 export function markComments(text: string): string | undefined {
@@ -54,7 +58,7 @@ export function markComments(text: string): string | undefined {
   for (const line of text.split("\n")) {
     const m = LABEL_LINE.exec(line);
     if (m) list.push({ label: line, author: m[1]!, mark: `[${m[1]}${m[2] ? ` ${m[2]}` : ""}]`, lines: [] });
-    else if (/^>( |$)/.test(line) && list.length) list.at(-1)!.lines.push(line.replace(/^> ?/, ""));
+    else if (/^>( |$)/.test(line) && list.length) list.at(-1)!.lines.push(IMITATION.test(line.replace(/^> ?/, "")) ? REMOVED : line.replace(/^> ?/, ""));
     else if (line !== "") return undefined;
   }
   const out: string[] = [];
