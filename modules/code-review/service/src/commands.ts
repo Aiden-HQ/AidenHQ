@@ -4,7 +4,7 @@
 // current permission on the repo).
 
 export type Command =
-  | { cmd: "review"; reviewer?: string; full: boolean }
+  | { cmd: "review"; full: boolean }
   | { cmd: "always" | "stop" | "status" | "help" }
   | { cmd: "focus"; text: string }
   | { cmd: "unknown"; word: string };
@@ -16,7 +16,7 @@ const LINE = /^\s*@aiden\s+review\b(.*)$/i;
 
 
 /** The comment's command, or undefined when it holds none. The first command line wins. */
-export function parseCommand(body: string, reviewers: string[]): Command | undefined {
+export function parseCommand(body: string): Command | undefined {
   if (OWN_MARKERS.some((m) => body.includes(m))) return undefined;
   let fenced = false;
   for (const line of body.split(/\r?\n/)) {
@@ -30,13 +30,8 @@ export function parseCommand(body: string, reviewers: string[]): Command | undef
     const words = rest.toLowerCase().split(/\s+/).filter(Boolean);
     if (!words.length) return { cmd: "review", full: false };
     if (words.length === 1 && ["always", "stop", "status", "help"].includes(words[0]!)) return { cmd: words[0] as "always" };
-    let reviewer: string | undefined, full = false;
-    for (const w of words) {
-      if (w === "full") full = true;
-      else if (!reviewer && reviewers.includes(w)) reviewer = w;
-      else return { cmd: "unknown", word: w.slice(0, 40) };
-    }
-    return { cmd: "review", full, ...(reviewer ? { reviewer } : {}) };
+    if (words.length === 1 && words[0] === "full") return { cmd: "review", full: true };
+    return { cmd: "unknown", word: words.find((w) => w !== "full")!.slice(0, 40) };
   }
   return undefined;
 }

@@ -8,7 +8,7 @@ const HEAD = "a".repeat(40);
 const BASE = "b".repeat(40);
 const finding = (id: string, path: string, line: number, over: Partial<Review["findings"][number]> = {}): Review["findings"][number] => ({ id, severity: "important", path, line, title: "Unchecked amount", why: "The amount is never validated.", evidence: "const x = amount", fix_brief: "Validate the amount.", ...over });
 const review = (findings: Review["findings"]): Review => ({
-  version: 1, repo: "acme/payments", pr: 12, base: BASE, head: HEAD, reviewer: "standard", incremental_from: null, full: true,
+  version: 1, repo: "acme/payments", pr: 12, base: BASE, head: HEAD, engine: "codex", model: "~deepseek/deepseek-flash-latest", effort: "medium", incremental_from: null, full: true,
   coverage: { reviewed: ["src/pay.ts"], excluded: [], incomplete: null }, findings, withheld: { important: 0, nit: 0, pre_existing: 0 }, cost_usd: 0.12, stale_guidance: [],
 });
 const PATCH = "@@ -1,3 +1,4 @@\n a\n+b\n c\n-d\n e";

@@ -1,18 +1,23 @@
 // The code-review state service's decisions: which PR head gets which review, when, and whether it may spend.
 //
-// Every tick: each watched repo's open PRs and new comments are read (PrSource); a new PR is triaged then reviewed with the repo's
-// on_open reviewer (on_risk when the triage reviewer calls it high-risk), a push gets on_push incrementally, and `@aiden review …`
-// from someone with write access now does what it says. Queued runs start when due, each reserving its reviewer's run_usd against
-// the repo's and the instance's month caps in one transaction; running ones are polled, and a finished one is posted (Poster)
-// unless its PR has moved on (superseded) or it is a try. Every run starts and ends with a flow fact on its PR.
+// Every tick: each watched repo's open PRs and new comments are read (PrSource); a new PR is reviewed with each of the repo's
+// on_open combos, a push with each on_push combo (incrementally), and `@aiden review …` from someone with write access now does
+// what it says. One trigger is a batch: one run per combo (engine, model, effort), each posting its own review; the batch counts
+// once against the daily limits, and only its first run rechecks the PR's still-open findings. Queued runs start when due, each
+// reserving its combo's run_usd against the repo's and the instance's month caps in one transaction; running ones are polled, and
+// a finished one is posted (Poster) unless its PR has moved on (superseded). Every run starts and ends with a flow fact on its PR.
+//
+// Each run keeps what an analysis of reviewers needs as plain columns: engine, model, effort, the kernel's billed cost and the
+// ledger's tokens, duration, and its findings (table findings) with their later outcome: fixed (a later recheck found it gone),
+// open_at_merge or open_at_close (still open when the PR closed).
 //
 // The first look at a repo only records its open PRs and the comment cursor: what was already open waits for a push or a command.
-// A push debounces (DEBOUNCE): another push in the window replaces the queued run's head, so a burst of pushes is one review.
+// A push debounces (DEBOUNCE): another push in the window replaces the queued batch, so a burst of pushes is one review each.
 // A skip is a run too (status skipped, why), acknowledged once per PR and reason (a budget skip once per head), never silent.
 import type { DatabaseSync } from "node:sqlite";
 import { randomBytes } from "node:crypto";
 import { parseCommand, type Command } from "./commands.ts";
-import { OFF, TRIAGE, type Config, type Profile, type Repo } from "./config.ts";
+import { combos as parseCombos, ENGINES, REPO_DEFAULTS, type Combo, type Config, type Repo } from "./config.ts";
 import type { Ack, Posted, Poster, PrSource, PullRequest, Review, ReviewRunner } from "./seams.ts";
 import type { FactIn } from "./aidenhq-sdk/kernel-client.ts";
 
@@ -22,13 +27,18 @@ const DAY = 24 * 3600_000;
 const ATTEMPTS = 2;
 const WRITERS = new Set(["admin", "maintain", "write"]);
 
-export type Kind = "auto" | "command" | "oneoff" | "escalation";
+export type Kind = "auto" | "command" | "oneoff";
 export type Status = "queued" | "running" | "done" | "skipped" | "failed";
 export type RunRow = {
-  id: string; repo: string; number: number; head: string; base: string; reviewer: string; kind: Kind; status: Status; why: string | null;
+  id: string; repo: string; number: number; head: string; base: string; engine: string; model: string; effort: string; run_usd: number;
+  kind: Kind; status: Status; why: string | null;
   cost_usd: number; important: number; nit: number; pre_existing: number; started: string | null; ended: string | null; check_job: string | null;
-  profile: string; focus: string | null; full: number; incremental_from: string | null; reserved_usd: number; due: number; created: number;
-  post: number; posted: string | null; author: string; attempts: number; then_reviewer: string | null;
+  focus: string | null; full: number; incremental_from: string | null; reserved_usd: number; due: number; created: number;
+  posted: string | null; author: string; attempts: number;
+  /** The trigger it ran for (its combos share it), and whether it rechecks the PR's still-open findings (the batch's first run). */
+  batch: string; recheck: number;
+  /** The ledger's tokens for its model token (the kernel's figure), and how long it ran. */
+  tokens_in: number | null; tokens_cached: number | null; tokens_out: number | null; duration_ms: number | null;
   /** What earlier attempts of this run were billed (the kernel's figure): the retry gets only what's left. */
   billed_prior: number;
   /** The kernel write record of its post, while its outcome is pending. */
@@ -43,19 +53,25 @@ const DDL = `
 CREATE TABLE IF NOT EXISTS prs (repo TEXT NOT NULL, number INTEGER NOT NULL, head TEXT NOT NULL, base TEXT NOT NULL, last_reviewed_head TEXT,
   mode TEXT NOT NULL DEFAULT 'auto', focus TEXT, updated TEXT NOT NULL,
   author TEXT NOT NULL DEFAULT '', draft INTEGER NOT NULL DEFAULT 0, fork INTEGER NOT NULL DEFAULT 0, open INTEGER NOT NULL DEFAULT 1,
-  last_reviewed_base TEXT, triage TEXT, escalated_head TEXT, title TEXT, PRIMARY KEY (repo, number));
-CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, repo TEXT NOT NULL, number INTEGER NOT NULL, head TEXT NOT NULL, reviewer TEXT NOT NULL,
-  kind TEXT NOT NULL, status TEXT NOT NULL, why TEXT, cost_usd REAL NOT NULL DEFAULT 0, important INTEGER NOT NULL DEFAULT 0,
-  nit INTEGER NOT NULL DEFAULT 0, pre_existing INTEGER NOT NULL DEFAULT 0, started TEXT, ended TEXT, check_job TEXT,
-  base TEXT NOT NULL, profile TEXT NOT NULL, focus TEXT, full INTEGER NOT NULL DEFAULT 0, incremental_from TEXT,
-  reserved_usd REAL NOT NULL DEFAULT 0, due INTEGER NOT NULL, created INTEGER NOT NULL, post INTEGER NOT NULL DEFAULT 1, posted TEXT,
-  author TEXT NOT NULL DEFAULT '', attempts INTEGER NOT NULL DEFAULT 0, then_reviewer TEXT, billed_prior REAL NOT NULL DEFAULT 0, write_id TEXT,
-  merge_base TEXT, review_url TEXT, resolved INTEGER, identity TEXT);
+  last_reviewed_base TEXT, title TEXT, PRIMARY KEY (repo, number));
+CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, repo TEXT NOT NULL, number INTEGER NOT NULL, head TEXT NOT NULL, base TEXT NOT NULL,
+  engine TEXT NOT NULL, model TEXT NOT NULL, effort TEXT NOT NULL, run_usd REAL NOT NULL DEFAULT 0, kind TEXT NOT NULL, status TEXT NOT NULL, why TEXT,
+  cost_usd REAL NOT NULL DEFAULT 0, tokens_in INTEGER, tokens_cached INTEGER, tokens_out INTEGER, duration_ms INTEGER,
+  important INTEGER NOT NULL DEFAULT 0, nit INTEGER NOT NULL DEFAULT 0, pre_existing INTEGER NOT NULL DEFAULT 0, started TEXT, ended TEXT, check_job TEXT,
+  focus TEXT, full INTEGER NOT NULL DEFAULT 0, incremental_from TEXT, reserved_usd REAL NOT NULL DEFAULT 0, due INTEGER NOT NULL, created INTEGER NOT NULL,
+  posted TEXT, author TEXT NOT NULL DEFAULT '', attempts INTEGER NOT NULL DEFAULT 0, billed_prior REAL NOT NULL DEFAULT 0, write_id TEXT,
+  merge_base TEXT, review_url TEXT, resolved INTEGER, identity TEXT, batch TEXT NOT NULL, recheck INTEGER NOT NULL DEFAULT 0);
 CREATE INDEX IF NOT EXISTS runs_pr ON runs (repo, number, created);
 CREATE INDEX IF NOT EXISTS runs_status ON runs (status, due);
 CREATE TABLE IF NOT EXISTS reviews (run TEXT PRIMARY KEY, json TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS findings (run TEXT NOT NULL, id TEXT NOT NULL, repo TEXT NOT NULL, number INTEGER NOT NULL, severity TEXT NOT NULL,
+  path TEXT NOT NULL, line INTEGER NOT NULL, title TEXT NOT NULL, outcome TEXT, outcome_at TEXT, PRIMARY KEY (run, id));
+CREATE INDEX IF NOT EXISTS findings_pr ON findings (repo, number, outcome);
 CREATE TABLE IF NOT EXISTS seen (repo TEXT NOT NULL, comment TEXT NOT NULL, PRIMARY KEY (repo, comment));
 CREATE TABLE IF NOT EXISTS cursors (repo TEXT PRIMARY KEY, comments TEXT NOT NULL);`;
+/** The data's format (module.yaml data_version). 1: combos and findings; a database from before starts fresh (its runs, its PRs and
+ * this month's spend counts are dropped: the first look at each repo then records what is open, as on a new install). */
+export const DATA_VERSION = 1;
 
 type Log = (msg: string, f?: Record<string, unknown>) => void;
 export type EngineDeps = {
@@ -76,6 +92,10 @@ export function createEngine(d: EngineDeps) {
   const { db } = d;
   const now = d.now ?? Date.now;
   const log: Log = d.log ?? (() => {});
+  if ((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version < DATA_VERSION) {
+    db.exec("DROP TABLE IF EXISTS prs; DROP TABLE IF EXISTS runs; DROP TABLE IF EXISTS reviews; DROP TABLE IF EXISTS findings; DROP TABLE IF EXISTS seen; DROP TABLE IF EXISTS cursors;");
+    db.exec(`PRAGMA user_version = ${DATA_VERSION}`);
+  }
   db.exec(DDL);
   // A start a restart cut off (reserved, no check job yet) is queued again: its reservation is given back and taken anew.
   db.prepare("UPDATE runs SET status = 'queued', reserved_usd = 0, started = NULL, attempts = 0, billed_prior = 0 WHERE status = 'running' AND check_job IS NULL").run();
@@ -88,7 +108,7 @@ export function createEngine(d: EngineDeps) {
     try { const v = f(); db.exec("COMMIT"); return v; } catch (e) { db.exec("ROLLBACK"); throw e; }
   };
   const repoCfg = (repo: string) => d.config().repos.find((r) => r.repo === repo.toLowerCase());
-  const prRow = (repo: string, n: number) => one<{ repo: string; number: number; head: string; base: string; last_reviewed_head: string | null; mode: string; focus: string | null; author: string; draft: number; fork: number; open: number; last_reviewed_base: string | null; triage: string | null; escalated_head: string | null; title: string | null }>("SELECT * FROM prs WHERE repo = ? AND number = ?", repo, n);
+  const prRow = (repo: string, n: number) => one<{ repo: string; number: number; head: string; base: string; last_reviewed_head: string | null; mode: string; focus: string | null; author: string; draft: number; fork: number; open: number; last_reviewed_base: string | null; title: string | null }>("SELECT * FROM prs WHERE repo = ? AND number = ?", repo, n);
   const runRow = (id: string) => one<RunRow>("SELECT * FROM runs WHERE id = ?", id);
   const subject = (repo: string, n: number) => `pr:${repo}#${n}`;
   const ack = (a: Ack) => d.poster.ack(a).catch((e) => log("ack not posted", { repo: a.repo, pr: a.number, state: a.state, err: String((e as Error).message).slice(0, 200) }));
@@ -101,40 +121,39 @@ export function createEngine(d: EngineDeps) {
 
   // ---- runs: queue, skip, start, finish ---------------------------------------------------------------------------------------
 
-  /** A queued run (an automatic one on this PR replaces the queued one's head: the push it was for is superseded). */
-  function queue(p: { repo: string; number: number; head: string; base: string; author: string }, reviewer: string, kind: Kind, o: { due?: number; full?: boolean; focus?: string | null; profile?: Profile; post?: boolean; then?: string | null } = {}) {
-    const profile = o.profile ?? d.config().reviewers[reviewer];
-    if (!profile) throw new RequestError(`no reviewer ${reviewer}`);
+  type Target = { repo: string; number: number; head: string; base: string; author: string };
+  /**
+   * One trigger's batch: a queued run per combo, the first rechecking the PR's still-open findings. An automatic batch replaces
+   * the PR's queued automatic runs (the push they were for is superseded); the same ask twice (two comments, a double click) is
+   * the batch already waiting or running on that head.
+   */
+  function queue(p: Target, list: Combo[], kind: Kind, o: { due?: number; full?: boolean; focus?: string | null } = {}): RunRow[] {
     const due = o.due ?? now();
-    // The same ask twice (two comments, a double click) is the one run already waiting or running on that head.
-    if (kind !== "auto") {
-      const same = one<{ id: string }>("SELECT id FROM runs WHERE repo = ? AND number = ? AND head = ? AND reviewer = ? AND kind = ? AND full = ? AND post = ? AND status IN ('queued', 'running')", p.repo, p.number, p.head, reviewer, kind, o.full ? 1 : 0, o.post === false ? 0 : 1);
-      if (same && reviewer !== "try") return runRow(same.id)!;
-    }
-    if (kind === "auto") {
-      const q = one<{ id: string }>("SELECT id FROM runs WHERE repo = ? AND number = ? AND kind = 'auto' AND status = 'queued'", p.repo, p.number);
-      if (q) {
-        run("UPDATE runs SET head = ?, base = ?, reviewer = ?, profile = ?, due = ?, then_reviewer = ? WHERE id = ?", p.head, p.base, reviewer, JSON.stringify(profile), due, o.then ?? null, q.id);
-        return runRow(q.id)!;
+    if (kind === "auto") run("DELETE FROM runs WHERE repo = ? AND number = ? AND kind = 'auto' AND status = 'queued'", p.repo, p.number);
+    const batch = `b-${randomBytes(6).toString("hex")}`;
+    return list.map((c, i) => {
+      if (kind !== "auto") {
+        const same = one<{ id: string }>("SELECT id FROM runs WHERE repo = ? AND number = ? AND head = ? AND engine = ? AND model = ? AND effort = ? AND kind = ? AND full = ? AND status IN ('queued', 'running')", p.repo, p.number, p.head, c.engine, c.model, c.effort, kind, o.full ? 1 : 0);
+        if (same) return runRow(same.id)!;
       }
-    }
-    const id = `cr-${randomBytes(6).toString("hex")}`;
-    run(`INSERT INTO runs (id, repo, number, head, base, reviewer, kind, status, profile, focus, full, due, created, post, author, then_reviewer)
-      VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?)`, id, p.repo, p.number, p.head, p.base, reviewer, kind, JSON.stringify(profile),
-      o.focus ?? null, o.full ? 1 : 0, due, now(), o.post === false ? 0 : 1, p.author.toLowerCase(), o.then ?? null);
-    return runRow(id)!;
+      const id = `cr-${randomBytes(6).toString("hex")}`;
+      run(`INSERT INTO runs (id, repo, number, head, base, engine, model, effort, run_usd, kind, status, focus, full, due, created, author, batch, recheck)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?)`, id, p.repo, p.number, p.head, p.base, c.engine, c.model, c.effort, c.run_usd, kind,
+        o.focus ?? null, o.full ? 1 : 0, due, now(), p.author.toLowerCase(), batch, i === 0 ? 1 : 0);
+      return runRow(id)!;
+    });
   }
 
   /** A skip, as a run with its reason, acknowledged on the PR once per reason (`perHead`: once per head). */
-  function skip(p: { repo: string; number: number; head: string; base: string; author: string }, reviewer: string, kind: Kind, why: string, perHead = false) {
+  function skip(p: Target, c: Combo, kind: Kind, why: string, perHead = false) {
     const key = why.split(":")[0];
     const had = one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND status = 'skipped' AND why LIKE ? || '%'" + (perHead ? " AND head = ?" : ""), p.repo, p.number, key, ...(perHead ? [p.head] : []));
     if (had) return;
     const id = `cr-${randomBytes(6).toString("hex")}`;
-    run(`INSERT INTO runs (id, repo, number, head, base, reviewer, kind, status, why, profile, due, created, ended, author) VALUES (?, ?, ?, ?, ?, ?, ?, 'skipped', ?, '{}', ?, ?, ?, ?)`,
-      id, p.repo, p.number, p.head, p.base, reviewer, kind, why, now(), now(), iso(), p.author.toLowerCase());
+    run(`INSERT INTO runs (id, repo, number, head, base, engine, model, effort, kind, status, why, due, created, ended, author, batch) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'skipped', ?, ?, ?, ?, ?, ?)`,
+      id, p.repo, p.number, p.head, p.base, c.engine, c.model, c.effort, kind, why, now(), now(), iso(), p.author.toLowerCase(), id);
     end(runRow(id)!);
-    void ack({ repo: p.repo, number: p.number, head: p.head, state: "skipped", run: id, reviewer, why });
+    void ack({ repo: p.repo, number: p.number, head: p.head, state: "skipped", run: id, combo: c, why });
   }
 
   /** Spent this month (ended runs' cost) plus what running ones hold, for one repo or the whole instance. */
@@ -152,14 +171,14 @@ export function createEngine(d: EngineDeps) {
    */
   function reserve(r: RunRow): RunRow | undefined {
     const c = d.config();
-    const want = (JSON.parse(r.profile) as Profile).run_usd;
+    const want = r.run_usd;
     const why = tx(() => {
       const cfg = repoCfg(r.repo);
       const inst = spent();
-      if (inst.total + want > c.month_usd) return `budget: the instance has $${Math.max(0, c.month_usd - inst.total).toFixed(2)} of its $${c.month_usd} left this month; this reviewer may spend $${want.toFixed(2)}`;
+      if (inst.total + want > c.month_usd) return `budget: the instance has $${Math.max(0, c.month_usd - inst.total).toFixed(2)} of its $${c.month_usd} left this month; this review may spend $${want.toFixed(2)}`;
       if (cfg) {
         const mine = spent(r.repo);
-        if (mine.total + want > cfg.month_usd) return `budget: ${r.repo} has $${Math.max(0, cfg.month_usd - mine.total).toFixed(2)} of its $${cfg.month_usd} left this month; this reviewer may spend $${want.toFixed(2)}`;
+        if (mine.total + want > cfg.month_usd) return `budget: ${r.repo} has $${Math.max(0, cfg.month_usd - mine.total).toFixed(2)} of its $${cfg.month_usd} left this month; this review may spend $${want.toFixed(2)}`;
       }
       run("UPDATE runs SET status = 'running', reserved_usd = ?, started = ? WHERE id = ? AND status = 'queued'", want, iso(), r.id);
       return undefined;
@@ -168,19 +187,23 @@ export function createEngine(d: EngineDeps) {
     run("UPDATE runs SET status = 'skipped', why = ?, ended = ? WHERE id = ?", why, iso(), r.id);
     end(runRow(r.id)!);
     const had = one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND head = ? AND status = 'skipped' AND why LIKE 'budget%' AND id != ?", r.repo, r.number, r.head, r.id);
-    if (!had) void ack({ repo: r.repo, number: r.number, head: r.head, state: "skipped", run: r.id, reviewer: r.reviewer, why });
+    if (!had) void ack({ repo: r.repo, number: r.number, head: r.head, state: "skipped", run: r.id, combo: comboOf(r), why });
     return undefined;
   }
 
   /** The baseline a run reviews from: the last reviewed head on the same base, unless it is full. A retarget resets it. */
   function baseline(r: RunRow): string | null {
-    if (r.full || r.kind === "oneoff" || r.kind === "escalation" || r.reviewer === TRIAGE) return null;
+    if (r.full || r.kind === "oneoff") return null;
     const p = prRow(r.repo, r.number);
     return p?.last_reviewed_head && p.last_reviewed_base === r.base && p.last_reviewed_head !== r.head ? p.last_reviewed_head : null;
   }
 
-  /** The last posted review on the PR: its findings are rechecked, its threads the ones a fix resolves. */
+  /** The last posted review on the PR (the poster's view of what Aiden posted before). */
   const lastPosted = (r: { repo: string; number: number; id: string }) => one<{ json: string }>("SELECT v.json FROM runs r JOIN reviews v ON v.run = r.id WHERE r.repo = ? AND r.number = ? AND r.posted = 'posted' AND r.id != ? ORDER BY r.ended DESC LIMIT 1", r.repo, r.number, r.id);
+  /** The PR's findings still open (no outcome yet), whichever combo found them: what a batch's first run rechecks. */
+  const stillOpen = (r: { repo: string; number: number }) => all<{ id: string; path: string; line: number; title: string }>(
+    "SELECT id, path, line, title FROM findings WHERE repo = ? AND number = ? AND outcome IS NULL GROUP BY id ORDER BY MAX(rowid) DESC LIMIT 50", r.repo, r.number);
+  const comboOf = (r: { engine: string; model: string; effort: string }) => ({ engine: r.engine, model: r.model, effort: r.effort });
 
   async function startRun(r: RunRow) {
     const cfg = repoCfg(r.repo);
@@ -188,8 +211,8 @@ export function createEngine(d: EngineDeps) {
     let incremental_from = r.attempts ? null : baseline(r);
     run("UPDATE runs SET attempts = attempts + 1 WHERE id = ?", r.id);
     if (!r.attempts) {
-      d.emit?.({ type: "review.started", subject: subject(r.repo, r.number), version: r.id, at: iso(), data: { reviewer: r.reviewer, kind: r.kind, head: r.head, run: r.id } });
-      if (r.kind === "command") void ack({ repo: r.repo, number: r.number, head: r.head, state: "running", run: r.id, reviewer: r.reviewer });
+      d.emit?.({ type: "review.started", subject: subject(r.repo, r.number), version: r.id, at: iso(), data: { ...comboOf(r), kind: r.kind, head: r.head, run: r.id } });
+      if (r.kind === "command") void ack({ repo: r.repo, number: r.number, head: r.head, state: "running", run: r.id, combo: comboOf(r) });
     }
     try {
       // The merge base is what a full review diffs against (GitHub's compare). The baseline counts only while it is still an
@@ -200,9 +223,8 @@ export function createEngine(d: EngineDeps) {
         if (a?.status !== "ahead") incremental_from = null;
       }
       run("UPDATE runs SET incremental_from = ?, merge_base = ? WHERE id = ?", incremental_from, merge_base, r.id);
-      const prev = incremental_from ? lastPosted(r) : undefined;
-      const previous = prev ? (JSON.parse(prev.json) as Review).findings.slice(0, 50).map((f) => ({ id: f.id, path: f.path.slice(0, 120), line: f.line, title: f.title.slice(0, 80) })) : []; // within the spec's 16 KB
-      const { check } = await d.runner.start({ repo: r.repo, number: r.number, base: r.base, head: r.head, merge_base, reviewer: r.reviewer, profile: JSON.parse(r.profile), focus: r.focus,
+      const previous = incremental_from && r.recheck ? stillOpen(r).map((f) => ({ id: f.id, path: f.path.slice(0, 120), line: f.line, title: f.title.slice(0, 80) })) : []; // within the spec's 16 KB
+      const { check } = await d.runner.start({ repo: r.repo, number: r.number, base: r.base, head: r.head, merge_base, combo: comboOf(r), focus: r.focus,
         incremental_from, full: incremental_from === null, previous, budget_usd: Math.max(0, r.reserved_usd - r.billed_prior), ignore: cfg?.ignore ?? [], max_nits: cfg?.max_nits ?? 5 });
       run("UPDATE runs SET check_job = ? WHERE id = ?", check, r.id);
     } catch (e) {
@@ -214,7 +236,7 @@ export function createEngine(d: EngineDeps) {
   /** The run's review.ended fact. */
   function end(r: RunRow) {
     d.emit?.({ type: "review.ended", subject: subject(r.repo, r.number), version: r.id, at: r.ended ?? iso(),
-      data: { status: r.status, ...(r.why ? { why: r.why.slice(0, 300) } : {}), important: r.important, nit: r.nit, pre_existing: r.pre_existing, cost_usd: r.cost_usd, reviewer: r.reviewer, kind: r.kind, run: r.id } });
+      data: { status: r.status, ...(r.why ? { why: r.why.slice(0, 300) } : {}), important: r.important, nit: r.nit, pre_existing: r.pre_existing, cost_usd: r.cost_usd, ...comboOf(r), kind: r.kind, run: r.id } });
   }
 
   /** What a run is charged: the kernel's billing of its check job, within its reservation; unknown or invalid is the whole of it. */
@@ -238,42 +260,35 @@ export function createEngine(d: EngineDeps) {
       }
       run("UPDATE runs SET status = 'failed', why = ?, cost_usd = ?, reserved_usd = 0, ended = ? WHERE id = ?", res.why.slice(0, 500), charge(r, res.billed_usd), iso(), r.id);
       end(runRow(r.id)!);
-      if (r.kind !== "auto") void ack({ repo: r.repo, number: r.number, head: r.head, state: "failed", run: r.id, reviewer: r.reviewer, why: res.why.slice(0, 300) });
+      if (r.kind !== "auto") void ack({ repo: r.repo, number: r.number, head: r.head, state: "failed", run: r.id, combo: comboOf(r), why: res.why.slice(0, 300) });
       return;
     }
     const cost = charge(r, res.billed_usd);
     // The run's own facts over whatever the box wrote for them.
-    const review: Review = { ...res.review, repo: r.repo, pr: r.number, head: r.head, base: r.merge_base!, reviewer: r.reviewer, cost_usd: cost };
+    const { tokens, ...rest } = res.review;
+    const review: Review = { ...rest, repo: r.repo, pr: r.number, head: r.head, base: r.merge_base!, ...comboOf(r), cost_usd: cost };
     const count = (s: string) => review.findings.filter((f) => f.severity === s).length;
-    run("INSERT OR REPLACE INTO reviews (run, json) VALUES (?, ?)", r.id, JSON.stringify(review));
-    run("UPDATE runs SET cost_usd = ?, reserved_usd = 0, important = ?, nit = ?, pre_existing = ?, incremental_from = ? WHERE id = ?",
-      cost, count("important"), count("nit"), count("pre_existing"), review.incremental_from, r.id);
+    const t = (k: "input" | "cached" | "output") => (Number.isInteger(tokens?.[k]) ? tokens![k] : null);
+    tx(() => {
+      run("INSERT OR REPLACE INTO reviews (run, json) VALUES (?, ?)", r.id, JSON.stringify(review));
+      run("UPDATE runs SET cost_usd = ?, reserved_usd = 0, important = ?, nit = ?, pre_existing = ?, incremental_from = ?, tokens_in = ?, tokens_cached = ?, tokens_out = ? WHERE id = ?",
+        cost, count("important"), count("nit"), count("pre_existing"), review.incremental_from, t("input"), t("cached"), t("output"), r.id);
+      for (const f of review.findings) run("INSERT OR IGNORE INTO findings (run, id, repo, number, severity, path, line, title) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", r.id, f.id, r.repo, r.number, f.severity, f.path, f.line, f.title);
+      // What the recheck found gone at this head: fixed, wherever it was found (and not found again by this run).
+      const again = new Set(review.findings.map((f) => f.id));
+      for (const id of (review.fixed ?? []).filter((x) => typeof x === "string" && !again.has(x))) run("UPDATE findings SET outcome = 'fixed', outcome_at = ? WHERE repo = ? AND number = ? AND id = ? AND outcome IS NULL", iso(), r.repo, r.number, id);
+    });
     const pr = prRow(r.repo, r.number);
     const done = (status: Status, why: string | null, posted?: string) => {
-      run("UPDATE runs SET status = ?, why = ?, posted = ?, ended = ? WHERE id = ?", status, why, posted ?? null, iso(), r.id);
+      run("UPDATE runs SET status = ?, why = ?, posted = ?, ended = ?, duration_ms = ? WHERE id = ?", status, why, posted ?? null, iso(), r.started ? now() - Date.parse(r.started) : null, r.id);
       end(runRow(r.id)!);
     };
-    // The triage step: its summary and risk ride on the PR's next review, and a high-risk PR is escalated, once per head.
-    if (r.reviewer === TRIAGE && r.kind === "auto") {
-      run("UPDATE prs SET triage = ? WHERE repo = ? AND number = ?", review.triage ? JSON.stringify(review.triage) : null, r.repo, r.number);
-      done("done", null);
-      const cfg = repoCfg(r.repo);
-      if (!pr?.open || pr.head !== r.head || pr.mode === "stop" || !cfg) return;
-      const p = { repo: r.repo, number: r.number, head: r.head, base: r.base, author: r.author };
-      if (review.triage?.risk === "high" && cfg.on_risk !== OFF && pr.escalated_head !== r.head) {
-        run("UPDATE prs SET escalated_head = ? WHERE repo = ? AND number = ?", r.head, r.repo, r.number);
-        queue(p, cfg.on_risk, "escalation", { focus: pr.focus });
-      } else if (r.then_reviewer && r.then_reviewer !== OFF) queue(p, r.then_reviewer, "auto", { focus: pr.focus });
-      return;
-    }
-    if (!r.post) return done("done", null);
     // A run whose PR moved on (a push, a close) while it ran is superseded: it never posts over the newer head.
     if (pr && (pr.head !== r.head || !pr.open)) return done("skipped", pr.open ? "superseded: a newer head is being reviewed" : "closed");
     const previous = lastPosted(r);
-    const triage = pr?.triage ? (JSON.parse(pr.triage) as Review["triage"]) : undefined;
     let posted: Posted;
     try {
-      posted = await d.poster.post({ run: r.id, target: { repo: r.repo, number: r.number, head: r.head, once: !repoCfg(r.repo) }, review: { ...review, ...(triage && !review.triage ? { triage } : {}) }, previous: previous ? JSON.parse(previous.json) : null });
+      posted = await d.poster.post({ run: r.id, target: { repo: r.repo, number: r.number, head: r.head, once: !repoCfg(r.repo) }, review, previous: previous ? JSON.parse(previous.json) : null });
     } catch (e) {
       posted = { state: "refused", why: String((e as Error).message).slice(0, 200) };
     }
@@ -305,26 +320,26 @@ export function createEngine(d: EngineDeps) {
 
   // ---- triggers and commands ------------------------------------------------------------------------------------------------
 
+  /** Automatic reviews in the last day, per repo (and author): one per batch, however many combos it ran. */
   const authoredToday = (repo: string, author?: string) =>
-    one<{ n: number }>(`SELECT COUNT(*) n FROM runs WHERE repo = ? AND kind IN ('auto', 'escalation') AND reviewer != '${TRIAGE}' AND status IN ('running', 'done', 'failed') AND created > ?${author ? " AND author = ?" : ""}`, repo, now() - DAY, ...(author ? [author] : []))!.n;
+    one<{ n: number }>(`SELECT COUNT(DISTINCT batch) n FROM runs WHERE repo = ? AND kind = 'auto' AND status IN ('running', 'done', 'failed') AND created > ?${author ? " AND author = ?" : ""}`, repo, now() - DAY, ...(author ? [author] : []))!.n;
 
-  /** The repo's trigger for a new PR (`open`) or a push (`push`). */
+  /** The repo's trigger for a new PR (`open`) or a push (`push`): a batch of its combos for that moment. */
   function trigger(cfg: Repo, p: PullRequest, which: "open" | "push") {
     const row = prRow(p.repo, p.number)!;
     if (row.mode === "stop") return;
-    let reviewer = which === "open" ? cfg.on_open : cfg.on_push;
-    if (row.mode === "always" && reviewer === OFF) reviewer = cfg.on_push !== OFF ? cfg.on_push : cfg.on_open !== OFF ? cfg.on_open : "quick";
-    if (reviewer === OFF || !d.config().reviewers[reviewer]) return;
-    if (p.draft && !cfg.drafts) return skip(p, reviewer, "auto", "draft: drafts are reviewed when marked ready, or when someone with write access asks");
-    if (p.fork && cfg.forks === "manual") return skip(p, reviewer, "auto", "fork: a PR from a fork is reviewed when someone with write access asks (`@aiden review`)");
-    if (authoredToday(p.repo, p.author.toLowerCase()) >= cfg.per_author_day) return skip(p, reviewer, "auto", `daily limit: ${p.author} has had ${cfg.per_author_day} automatic reviews today; ask with \`@aiden review\``, true);
-    if (authoredToday(p.repo) >= cfg.per_repo_day) return skip(p, reviewer, "auto", `daily limit: ${p.repo} has had ${cfg.per_repo_day} automatic reviews today; ask with \`@aiden review\``, true);
-    if (which === "open" && d.config().reviewers[TRIAGE] && cfg.on_risk !== OFF) return void queue(p, TRIAGE, "auto", { then: reviewer, focus: row.focus });
-    queue(p, reviewer, "auto", { due: which === "push" ? now() + DEBOUNCE : now(), focus: row.focus });
+    let list = which === "open" ? cfg.on_open : cfg.on_push;
+    if (row.mode === "always" && !list.length) list = cfg.on_push.length ? cfg.on_push : cfg.on_open.length ? cfg.on_open : REPO_DEFAULTS.on_push;
+    if (!list.length) return;
+    if (p.draft && !cfg.drafts) return skip(p, list[0]!, "auto", "draft: drafts are reviewed when marked ready, or when someone with write access asks");
+    if (p.fork && cfg.forks === "manual") return skip(p, list[0]!, "auto", "fork: a PR from a fork is reviewed when someone with write access asks (`@aiden review`)");
+    if (authoredToday(p.repo, p.author.toLowerCase()) >= cfg.per_author_day) return skip(p, list[0]!, "auto", `daily limit: ${p.author} has had ${cfg.per_author_day} automatic reviews today; ask with \`@aiden review\``, true);
+    if (authoredToday(p.repo) >= cfg.per_repo_day) return skip(p, list[0]!, "auto", `daily limit: ${p.repo} has had ${cfg.per_repo_day} automatic reviews today; ask with \`@aiden review\``, true);
+    queue(p, list, "auto", { due: which === "push" ? now() + DEBOUNCE : now(), focus: row.focus });
   }
 
   async function command(cfg: Repo, c: { id: string; number: number; author: string; body: string }) {
-    const cmd: Command | undefined = parseCommand(c.body, Object.keys(d.config().reviewers));
+    const cmd: Command | undefined = parseCommand(c.body);
     if (!cmd) return;
     // A failed read throws: the comment stays unhandled and is asked about again next tick.
     const perm = await d.source.permission(cfg.repo, c.author);
@@ -340,14 +355,13 @@ export function createEngine(d: EngineDeps) {
     const a = (state: Ack["state"], o: Partial<Ack> = {}) => ack({ repo: p.repo, number: p.number, head: p.head, state, ...o });
     switch (cmd.cmd) {
       case "review": {
-        const reviewer = cmd.reviewer ?? (cfg.on_open !== OFF ? cfg.on_open : "standard");
-        const r = queue(p, reviewer, "command", { full: cmd.full, focus: row.focus });
-        return void a("queued", { run: r.id, reviewer });
+        const runs = queue(p, cfg.on_open.length ? cfg.on_open : REPO_DEFAULTS.on_open, "command", { full: cmd.full, focus: row.focus });
+        return void a("queued", { run: runs[0]!.id, combo: comboOf(runs[0]!) });
       }
       case "always":
       case "stop":
         run("UPDATE prs SET mode = ? WHERE repo = ? AND number = ?", cmd.cmd, p.repo, p.number);
-        if (cmd.cmd === "stop") for (const q of all<RunRow>("SELECT * FROM runs WHERE repo = ? AND number = ? AND status = 'queued' AND kind IN ('auto', 'escalation')", p.repo, p.number)) {
+        if (cmd.cmd === "stop") for (const q of all<RunRow>("SELECT * FROM runs WHERE repo = ? AND number = ? AND status = 'queued' AND kind = 'auto'", p.repo, p.number)) {
           run("UPDATE runs SET status = 'skipped', why = 'stopped: @aiden review stop', ended = ? WHERE id = ?", iso(), q.id);
           end(runRow(q.id)!);
         }
@@ -360,7 +374,7 @@ export function createEngine(d: EngineDeps) {
         // The acknowledgement shows where the PR's last run is: its phase, reviewer, findings and cost.
         const last = one<RunRow>("SELECT * FROM runs WHERE repo = ? AND number = ? ORDER BY created DESC LIMIT 1", p.repo, p.number);
         if (!last) return void a("answered", { answer: "no_review" });
-        return void ack({ repo: last.repo, number: last.number, head: last.head, state: last.status, run: last.id, reviewer: last.reviewer, why: last.why ?? undefined,
+        return void ack({ repo: last.repo, number: last.number, head: last.head, state: last.status, run: last.id, combo: comboOf(last), why: last.why ?? undefined,
           counts: { important: last.important, nit: last.nit, pre_existing: last.pre_existing, cost_usd: round(last.cost_usd) } });
       }
       default:
@@ -384,6 +398,11 @@ export function createEngine(d: EngineDeps) {
     for (const gone of all<{ number: number }>("SELECT number FROM prs WHERE repo = ? AND open = 1", cfg.repo)) {
       if (seenNow.has(gone.number)) continue;
       run("UPDATE prs SET open = 0 WHERE repo = ? AND number = ?", cfg.repo, gone.number);
+      // Its findings still open are open at its merge or close (GitHub says which; unknown when it can't be read).
+      if (one("SELECT 1 FROM findings WHERE repo = ? AND number = ? AND outcome IS NULL", cfg.repo, gone.number)) {
+        const closed = await d.source.get(cfg.repo, gone.number).catch((e) => void log("closed PR not read; its findings' outcome stays unknown", { repo: cfg.repo, pr: gone.number, err: String((e as Error).message).slice(0, 200) }));
+        if (closed && !closed.open) run("UPDATE findings SET outcome = ?, outcome_at = ? WHERE repo = ? AND number = ? AND outcome IS NULL", closed.merged ? "open_at_merge" : "open_at_close", iso(), cfg.repo, gone.number);
+      }
       // Its review task held only its posts' approvals: done with the PR.
       if (one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND write_id IS NOT NULL", cfg.repo, gone.number))
         void d.poster.close(cfg.repo, gone.number, "The pull request is closed.").catch((e) => log("review task not closed", { repo: cfg.repo, pr: gone.number, err: String((e as Error).message).slice(0, 200) }));
@@ -454,21 +473,16 @@ export function createEngine(d: EngineDeps) {
     tick,
     /** A run's repo, PR and head: what a post of it must name (the executor's plan checks it). */
     binding(id: string) { const r = runRow(id); return r ? { repo: r.repo, number: r.number, head: r.head } : undefined; },
-    /** A one-off review of any PR the instance can read; posted like any other. */
-    async oneoff(b: { pr_url?: unknown; reviewer?: unknown; focus?: unknown; full?: unknown }) {
+    /** A one-off review of any PR the instance can read, by each combo asked for (default: the repo's on_open); posted like any other. */
+    async oneoff(b: { pr_url?: unknown; combos?: unknown; focus?: unknown; full?: unknown }) {
+      if (b.focus !== undefined && (typeof b.focus !== "string" || b.focus.length > 300)) throw new RequestError("focus is a short text");
+      const asked = b.combos === undefined ? undefined : parseCombos(b.combos, "combos");
+      if (asked && "error" in asked) throw new RequestError(asked.error);
+      if (asked && !asked.length) throw new RequestError("combos names at least one { engine, model, effort }");
       const p = await readPr(b.pr_url);
       const cfg = repoCfg(p.repo);
-      const reviewer = typeof b.reviewer === "string" && b.reviewer ? b.reviewer : cfg && cfg.on_open !== OFF ? cfg.on_open : "standard";
-      if (!d.config().reviewers[reviewer]) throw new RequestError(`no reviewer ${reviewer} (${Object.keys(d.config().reviewers).join(", ")})`);
-      if (b.focus !== undefined && (typeof b.focus !== "string" || b.focus.length > 300)) throw new RequestError("focus is a short text");
-      return queue(p, reviewer, "oneoff", { full: b.full !== false, focus: (b.focus as string) || null });
-    },
-    /** A profile tried on a PR before it is saved: reviewed like a one-off, never posted. */
-    async tryRun(b: { reviewer?: unknown; pr_url?: unknown }, validate: (p: unknown) => Profile | { error: string }) {
-      const prof = validate(b.reviewer);
-      if ("error" in prof) throw new RequestError(`reviewer: ${prof.error}`);
-      const p = await readPr(b.pr_url);
-      return queue(p, "try", "oneoff", { full: true, profile: prof, post: false });
+      const list = asked ?? (cfg?.on_open.length ? cfg.on_open : REPO_DEFAULTS.on_open);
+      return queue(p, list, "oneoff", { full: b.full !== false, focus: (b.focus as string) || null });
     },
     runs(q: { repo?: string; status?: string; limit?: number }) {
       const where: string[] = [], args: unknown[] = [];
@@ -480,7 +494,8 @@ export function createEngine(d: EngineDeps) {
       const r = runRow(id);
       if (!r) return undefined;
       const v = one<{ json: string }>("SELECT json FROM reviews WHERE run = ?", id);
-      return { run: view({ ...r, title: prRow(r.repo, r.number)?.title ?? null }), review: v ? (JSON.parse(v.json) as Review) : null };
+      const findings = all<{ id: string; severity: string; path: string; line: number; title: string; outcome: string | null }>("SELECT id, severity, path, line, title, outcome FROM findings WHERE run = ? ORDER BY rowid", id).map((f) => ({ ...f }));
+      return { run: view({ ...r, title: prRow(r.repo, r.number)?.title ?? null }), review: v ? (JSON.parse(v.json) as Review) : null, findings };
     },
     repos() {
       const c = d.config();
@@ -497,25 +512,19 @@ export function createEngine(d: EngineDeps) {
     async available(q: string) {
       try { return await d.source.repos(q.slice(0, 100)); } catch (e) { throw new RequestError(`GitHub can't list repos: ${String((e as Error).message).slice(0, 200)}`); }
     },
-    /** Open PRs the watcher has seen lately, newest first (the board's "Try on a recent PR"); a title is a stranger's words. */
-    recent() {
-      return all<{ repo: string; number: number; title: string | null }>("SELECT repo, number, title FROM prs WHERE open = 1 ORDER BY updated DESC LIMIT 30")
-        .map((p) => ({ url: `https://github.com/${p.repo}/pull/${p.number}`, repo: p.repo, number: p.number, title: p.title ?? "" }));
-    },
-    reviewers() {
-      const stats = new Map(all<{ reviewer: string; n: number; avg: number }>("SELECT reviewer, COUNT(*) n, AVG(cost_usd) avg FROM runs WHERE status = 'done' GROUP BY reviewer").map((s) => [s.reviewer, s]));
-      return Object.entries(d.config().reviewers).map(([name, p]) => ({ name, ...p, runs: stats.get(name)?.n ?? 0, avg_cost_usd: stats.has(name) ? round(stats.get(name)!.avg) : null }));
-    },
+    /** The engines a combo may name, with their efforts, offered models and default run cap. */
+    engines() { return ENGINES; },
   };
 }
 export type Engine = ReturnType<typeof createEngine>;
 
 const round = (n: number) => Math.round(n * 10_000) / 10_000;
-/** A run as the API shows it: the contract's fields, whether it posts (a try never does), the PR's title (a stranger's words:
+/** A run as the API shows it: the contract's fields (its engine, model and effort, billed cost, tokens, duration), the PR's title (a stranger's words:
  * plain text only) and, once posted, the review's link and the threads it resolved. */
 function view(r: RunRow & { title?: string | null }) {
-  return { id: r.id, repo: r.repo, number: r.number, head: r.head, reviewer: r.reviewer, kind: r.kind, status: r.status, why: r.why, cost_usd: round(r.cost_usd),
+  return { id: r.id, repo: r.repo, number: r.number, head: r.head, engine: r.engine, model: r.model, effort: r.effort, kind: r.kind, status: r.status, why: r.why, cost_usd: round(r.cost_usd),
+    tokens_in: r.tokens_in, tokens_cached: r.tokens_cached, tokens_out: r.tokens_out, duration_ms: r.duration_ms,
     important: r.important, nit: r.nit, pre_existing: r.pre_existing, started: r.started, ended: r.ended, check_job: r.check_job,
-    full: !!r.full, incremental_from: r.incremental_from, posted: r.posted, post: !!r.post, url: `https://github.com/${r.repo}/pull/${r.number}`,
+    full: !!r.full, incremental_from: r.incremental_from, posted: r.posted, url: `https://github.com/${r.repo}/pull/${r.number}`,
     ...(r.title ? { title: r.title } : {}), ...(r.review_url ? { review_url: r.review_url } : {}), ...(r.resolved != null ? { resolved: r.resolved } : {}) };
 }

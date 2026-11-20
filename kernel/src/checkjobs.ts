@@ -45,7 +45,7 @@
 // (component `<run>:<check id>`), capped at the spec's `budget_usd` (never above the recipe's max_usd) on its own run key, that
 // lapses with the recipe's time limit. A recipe with `result: true` writes one JSON object to /aidenhq-out/result.json (at most
 // RESULT_MAX bytes): it passes only when that came out, the kernel stamps a model recipe's with `cost_usd` (its token's spend,
-// from the gateway's ledger, never the box's say) and the receipt signs the exact bytes' sha256 (`result`). The result is the
+// from the gateway's ledger, never the box's say) and `tokens` (that attempt's input, cached and output tokens, the same ledger) and the receipt signs the exact bytes' sha256 (`result`). The result is the
 // recipe's output, made from the repo's text: data for its reader, never instructions.
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
@@ -246,7 +246,7 @@ const runKey = (token: string) => createHash("sha256").update(token).digest("hex
 /** The result's sha256 as the receipt carries it. */
 export const resultHash = (text: string) => createHash("sha256").update(text).digest("hex");
 
-export function createChecks({ db, secret, recipes, box, snapshot, modelToken, spent = () => 0, gatewayUrl, workDir, log, now = Date.now }: {
+export function createChecks({ db, secret, recipes, box, snapshot, modelToken, spent = () => 0, tokens, gatewayUrl, workDir, log, now = Date.now }: {
   db: DatabaseSync;
   /** The installed modules' recipes (compiled `check_jobs:`), read fresh. */
   recipes: () => Recipes;
@@ -260,6 +260,8 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
   modelToken: (component: string, o: { ttlMs: number; capUsd?: number }) => string;
   /** What a model token has spent so far (the gateway's ledger, by the token's run key: its sha256), in USD. */
   spent?: (runKey: string) => number;
+  /** A model token's tokens so far (the same ledger): stamped on a model recipe's result. */
+  tokens?: (runKey: string) => { input: number; cached: number; output: number };
   /** The model gateway as a box reaches it. */
   gatewayUrl: string;
   /** Where the checks' snapshots go (one folder per run attempt, `checks/<attempt>`, removed when it ends). */
@@ -372,6 +374,7 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
     // Worth one retry only when it neither ran out of time nor spent (nearly) all its budget: a provider error, a crash.
     if (!ok || !result) return { verdict: "fail" as const, ran: true, summary: `${r.title} produced no result: ${tail(o)}`, cost, retry: !o.timedOut && used < capUsd * 0.9 };
     if (cost !== undefined) result.cost_usd = cost;
+    if (token && tokens) result.tokens = tokens(runKey(token));
     return { verdict: "pass" as const, ran: true, summary: `${r.title} came out`, result: JSON.stringify(result), cost };
   }
 

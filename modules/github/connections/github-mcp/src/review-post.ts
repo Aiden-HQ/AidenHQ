@@ -8,7 +8,7 @@ import { withFooter } from "./aidenhq-sdk/attribution.js";
 import type { GitHubAccess } from "./client.js";
 import { GitHub, GitHubRefused, objectRef, type Ref } from "./github.js";
 import {
-  FINDING_MARK, ACK_MARK, NoticeArgsSchema, PostArgsSchema, RUN_MARK, STATUS_CONTEXT, counts, renderNotice, renderReview, reviewStatus, rightLines,
+  FINDING_MARK, ACK_MARK, comboText, NoticeArgsSchema, PostArgsSchema, RUN_MARK, STATUS_CONTEXT, counts, renderNotice, renderReview, reviewStatus, rightLines,
   type Finding, type NoticeArgs, type PostArgs,
 } from "./review-render.js";
 
@@ -161,14 +161,14 @@ export class ReviewPoster {
       `Review summary (event COMMENT, at commit ${r.head}):`, "", summary, "",
       ...comments.flatMap((m) => [`--- inline comment on ${m.path}:${m.line} ---`, "", m.body, ""]),
       `Commit status ${STATUS_CONTEXT}: ${reviewStatus(r).state}: ${reviewStatus(r).description}`, "",
-      `Acknowledgement comment: ${renderNotice({ repo: r.repo, pr: r.pr, head: r.head, phase: "done", reviewer: r.reviewer, ...c, cost_usd: r.cost_usd, run: a.run }).text}`,
+      `Acknowledgement comment: ${renderNotice({ repo: r.repo, pr: r.pr, head: r.head, phase: "done", engine: r.engine, model: r.model, effort: r.effort, ...c, cost_usd: r.cost_usd, run: a.run }).text}`,
       ...(a.resolve.length ? ["", `Resolves Aiden's own threads for findings: ${a.resolve.join(", ")} (only those it posted, and only if no longer reported).`] : []),
     ].join("\n");
     if (details.length > CARD_MAX) throw new GitHubRefused(`the review is ${details.length} characters, too large for the AI reviewer to read whole (${CARD_MAX}); the reviewer must report fewer findings`);
     return {
       facts: {
         target: `${r.repo}#${r.pr} @ ${r.head.slice(0, 7)}`,
-        sentence: `Post Aiden's review of ${r.repo}#${r.pr} (reviewer ${r.reviewer}: ${c.important} important, ${c.nit} nit, ${c.pre_existing} pre-existing).`,
+        sentence: `Post Aiden's review of ${r.repo}#${r.pr} (${comboText(r)}: ${c.important} important, ${c.nit} nit, ${c.pre_existing} pre-existing).`,
         changes: `A GitHub review with ${comments.length} inline comment${comments.length === 1 ? "" : "s"} (as many as land on changed lines; the rest are listed in its summary), the commit status ${STATUS_CONTEXT} and the pull request's acknowledgement comment, as the owner, signed by AidenHQ.${a.resolve.length ? ` It resolves ${a.resolve.length} of its own earlier thread(s).` : ""} Advice only: a comment review, never an approval or a block.`,
         details,
       },
@@ -223,7 +223,7 @@ export class ReviewPoster {
     const done = await this.resolve(ref, { finding_ids: a.resolve.filter((id) => !present.has(id)) });
     await this.status(ref, who, r.head, reviewStatus(r), review.html_url);
     const c = counts(r.findings);
-    const ack = await this.ack(ref, who, `${renderNotice({ repo: r.repo, pr: r.pr, head: r.head, phase: "done", reviewer: r.reviewer, ...c, cost_usd: r.cost_usd, run: a.run }).text}\n[The review](${review.html_url})`);
+    const ack = await this.ack(ref, who, `${renderNotice({ repo: r.repo, pr: r.pr, head: r.head, phase: "done", engine: r.engine, model: r.model, effort: r.effort, ...c, cost_usd: r.cost_usd, run: a.run }).text}\n[The review](${review.html_url})`);
     return { ok: true, text: JSON.stringify({ identity: "owner", login: who.login, review: review.html_url, inline: comments.length, listed: r.findings.filter((f) => !earlier.has(f.id) && !comments.some((c) => c.id === f.id)).length, earlier: earlier.size, resolved: done.resolved.length, skipped: done.skipped, ack: ack.url, status: STATUS_CONTEXT }), objects: [...inlineIds, ack.object] };
   }
 }

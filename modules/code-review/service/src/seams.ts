@@ -1,7 +1,8 @@
 // The code-review service's three seams, each a small interface the engine is written against: where PRs and their comments come
 // from (github-mcp's internal read, as this module), what runs a review (the kernel's credential-free check job, lane E's recipe)
 // and what posts it (the github module's poster, lane P's). main.ts wires the real ones; the tests use fakes.
-import type { Profile } from "./config.ts";
+/** A run's engine, model and effort. */
+export type ComboRef = { engine: string; model: string; effort: string };
 
 /** The review recipe's output and the poster's input (the shared contract, version 1). */
 export type Finding = {
@@ -9,13 +10,14 @@ export type Finding = {
   title: string; why: string; evidence: string; fix_brief: string;
 };
 export type Review = {
-  version: 1; repo: string; pr: number; base: string; head: string; reviewer: string;
+  version: 1; repo: string; pr: number; base: string; head: string; engine: string; model: string; effort: string;
   incremental_from: string | null; full: boolean;
   coverage: { reviewed: string[]; excluded: string[]; incomplete: string | null };
   findings: Finding[];
   withheld: { important: number; nit: number; pre_existing: number };
-  triage?: { summary: string; risk: "trivial" | "normal" | "high" };
   cost_usd: number; stale_guidance: string[];
+  /** The run's model token's tokens, stamped by the kernel from the gateway's ledger (the result as read back; never posted). */
+  tokens?: { input: number; cached: number; output: number };
   /** Earlier findings (the last posted review's, by id) a recheck found gone at this head: their threads are resolved. */
   fixed?: string[];
 };
@@ -25,6 +27,8 @@ export type PullRequest = {
   repo: string; number: number; head: string; base: string; base_ref: string; draft: boolean;
   /** Its head is in another repository (a fork). */
   fork: boolean; author: string; open: boolean; url: string;
+  /** A closed PR that was merged. */
+  merged?: boolean;
   /** A stranger's words: shown as plain text, never in a task title or a prompt. */
   title?: string;
 };
@@ -51,11 +55,11 @@ export interface PrSource {
 
 /** What one review run reviews: the check job's spec (lane E's recipe takes exactly these). */
 export type ReviewSpec = {
-  repo: string; number: number; base: string; head: string; reviewer: string; profile: Profile;
+  repo: string; number: number; base: string; head: string; combo: ComboRef;
   /** The merge base of the PR's base and head: what a full review diffs against. */
   merge_base: string;
   focus: string | null; incremental_from: string | null; full: boolean;
-  /** The last posted review's findings, rechecked at this head (an incremental review). */
+  /** The PR's still-open findings, rechecked at this head (an incremental review's batch's first run). */
   previous: { id: string; path: string; line: number; title: string }[];
   /** The most the run may spend (its reservation): the cap on its box's model token. */
   budget_usd: number; ignore: string[]; max_nits: number;
@@ -79,7 +83,7 @@ export type Ack = {
   state: "queued" | "running" | "done" | "skipped" | "failed" | "answered";
   /** An answered command's fixed words (review-render.ts ANSWERS). */
   answer?: "help" | "always" | "focus" | "focus_cleared" | "no_review";
-  run?: string; reviewer?: string; why?: string;
+  run?: string; combo?: ComboRef; why?: string;
   /** The run's findings and cost (a done run's notice, a status). */
   counts?: { important: number; nit: number; pre_existing: number; cost_usd: number };
 };

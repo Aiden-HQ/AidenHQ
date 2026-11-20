@@ -589,7 +589,7 @@ const codehost = createCodehost({ repos: codehostRepos, grants: codehostGrants, 
   // codehost-local's snapshot for `local/…` repos, when that module is enabled.
   local: () => (localHost() ? { snapshot: localSnapshot({ bare: localCode.bare }), bundle: (repo) => localCode.bundle(repo) } : undefined) , noteObject: (ref, record) => records.addObjects(record, [ref]) });
 // Check jobs (checkjobs.ts): credential-free boxes of the launcher's, snapshots from the module that provides them.
-const checkJobs = checkJobsFrom({ db: records.db, secret, recipes: () => modulesFile().check_jobs ?? {}, ask: codehost.ask, call: launcherClient(launcherUrl, () => secret("launcher_kernel_key")), workDir: sandbox.workDir, gatewayUrl: `${sandbox.boxGatewayUrl}/api/v1`, spent: (runKey) => gw.spentByKey(runKey), log });
+const checkJobs = checkJobsFrom({ db: records.db, secret, recipes: () => modulesFile().check_jobs ?? {}, ask: codehost.ask, call: launcherClient(launcherUrl, () => secret("launcher_kernel_key")), workDir: sandbox.workDir, gatewayUrl: `${sandbox.boxGatewayUrl}/api/v1`, spent: (runKey) => gw.spentByKey(runKey), tokens: (runKey) => gw.tokensByKey(runKey), log });
 // The previous kernel's check runs are its own until it has exited (it finishes them while it drains); then what is left is lost.
 afterPrevious(() => checkJobs.recover());
 const lane = createLane({ once: outcomes.once, owner: ownerApi, grantsFile: grantsTable, facts, log, postAsAgent: lanePoster(outcomes) });

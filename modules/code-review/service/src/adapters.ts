@@ -37,13 +37,13 @@ export function githubSource(base: string, token: () => string, fetcher: typeof 
 
 /**
  * The check job's spec (module.yaml check_jobs.code-review; every field a string of its kind): base is the merge base, and a full
- * review's incremental_from is that base too; the reviewer's name, the repo's ignore globs and max_nits ride in the profile; the
- * previous findings are those the recipe rechecks.
+ * review's incremental_from is that base too; the repo's ignore globs and max_nits ride in the combo; the previous findings are
+ * those the recipe rechecks.
  */
 export function checkSpec(s: ReviewSpec): Record<string, string> {
   return {
     base: s.merge_base, incremental_from: s.incremental_from ?? s.merge_base, pr: String(s.number),
-    profile: JSON.stringify({ ...s.profile, name: s.reviewer, ignore: s.ignore, max_nits: s.max_nits }), focus: s.focus ?? "",
+    combo: JSON.stringify({ ...s.combo, ignore: s.ignore, max_nits: s.max_nits }), focus: s.focus ?? "",
     budget_usd: Math.max(0.0001, s.budget_usd).toFixed(4), previous: JSON.stringify({ findings: s.full ? [] : s.previous }),
   };
 }
@@ -94,7 +94,7 @@ function settled(r: { id: string; state: string; outcome?: { ok: boolean; text: 
 }
 
 /** The review's fields `code-review.post` accepts (schemas/post.json `review`). */
-const REVIEW_FIELDS = ["version", "repo", "pr", "base", "head", "reviewer", "incremental_from", "full", "coverage", "findings", "withheld", "triage", "cost_usd", "stale_guidance"] as const satisfies readonly (keyof Review)[];
+const REVIEW_FIELDS = ["version", "repo", "pr", "base", "head", "engine", "model", "effort", "incremental_from", "full", "coverage", "findings", "withheld", "cost_usd", "stale_guidance"] as const satisfies readonly (keyof Review)[];
 
 export function kernelPoster(kernel: KernelClient, log: (m: string, f?: Record<string, unknown>) => void = () => {}): Poster {
   const tasks = new Map<string, string>();
@@ -128,7 +128,7 @@ export function kernelPoster(kernel: KernelClient, log: (m: string, f?: Record<s
       // The notice speaks only in its fixed words: a phase (with a reason), or a command's answer (help, always, focus).
       const reason = reasonOf(a.why);
       if (a.state === "skipped" && !reason) return;
-      await kernel.call("POST", "/v1/writes", { kind: ACK_KIND, args: { repo: a.repo, pr: a.number, head: a.head, phase: a.state, ...(a.state === "answered" ? { answer: a.answer ?? "help" } : {}), ...(reason ? { reason } : {}), ...(a.reviewer && a.reviewer !== "try" ? { reviewer: a.reviewer } : {}), ...(a.run ? { run: a.run } : {}), ...(a.counts ?? {}) } });
+      await kernel.call("POST", "/v1/writes", { kind: ACK_KIND, args: { repo: a.repo, pr: a.number, head: a.head, phase: a.state, ...(a.state === "answered" ? { answer: a.answer ?? "help" } : {}), ...(reason ? { reason } : {}), ...(a.combo ? { engine: a.combo.engine, model: a.combo.model, effort: a.combo.effort } : {}), ...(a.run ? { run: a.run } : {}), ...(a.counts ?? {}) } });
     },
     async close(repo, n, why, run) {
       // The engine closes only a PR that had a post, so its task exists: filing the same source again finds it after a restart.
