@@ -284,23 +284,27 @@ export function createWrites({ records, registry, connections, secret, resolver,
   async function executeOnce(r: Rec, k: Kind | undefined): Promise<void> {
     if (r.kind === CONN_TOOL) {
       const o = await replay(r).catch((e: Error) => ({ ok: false, text: e.message }));
-      return void outcomeOf(r.id, o.ok, o.text);
+      return void outcomeOf(r.id, o.ok, o.text, (o as { objects?: string[] }).objects);
     }
     if (native[r.kind]) {
       const o = await native[r.kind]!(r).catch((e: Error) => ({ ok: false, text: e.message }));
-      return void outcomeOf(r.id, o.ok, o.text);
+      return void outcomeOf(r.id, o.ok, o.text, (o as { objects?: string[] }).objects);
     }
     const own = inProcess(k);
     if (own) {
       const o = await own.execute({ id: r.id, kind: r.kind, args: r.args, digest: r.digest, idempotency_key: r.id }).catch((e: Error) => ({ ok: false, text: e.message }));
-      return void outcomeOf(r.id, o.ok, o.text);
+      return void outcomeOf(r.id, o.ok, o.text, (o as { objects?: string[] }).objects);
     }
     await call(k!, "execute", { id: r.id, kind: r.kind, args: r.args, digest: r.digest, idempotency_key: r.id }).catch((e: Error) => outcomeOf(r.id, false, `not executed: ${e.message}`));
   }
 
-  /** The outcome, once: the record keeps a capped copy; a caller waiting inline gets the whole text. */
-  function outcomeOf(id: string, ok: boolean, text: string): boolean {
+  /**
+   * The outcome, once: the record keeps a capped copy; a caller waiting inline gets the whole text. `objects`: the GitHub
+   * objects the write made (objects.ts), kept so "is this ours" is a lookup.
+   */
+  function outcomeOf(id: string, ok: boolean, text: string, objects?: unknown): boolean {
     if (!records.finish(id, ok, text)) return false;
+    if (objects !== undefined) records.addObjects(id, objects);
     const r = records.get(id)!;
     log("write outcome", { record: id, kind: r.kind, ok });
     settled({ ...r, outcome: { ok, text } });
@@ -632,7 +636,7 @@ export function createWrites({ records, registry, connections, secret, resolver,
         // an hour after this kernel started, then unknown.
         let unread = false;
         const s = r.kind === CONN_TOOL || !k?.executor || inProcess(k) ? undefined : await call(k, "status", { id: r.id, idempotency_key: r.id }).catch((e) => { unread = transient(e); return undefined; });
-        if (s?.state === "done" || s?.state === "failed") outcomeOf(r.id, s.state === "done", String(s.text ?? s.state));
+        if (s?.state === "done" || s?.state === "failed") outcomeOf(r.id, s.state === "done", String(s.text ?? s.state), s.objects);
         else if (s?.state === "running" && !modules) continue;
         else if (unread && before && Date.now() - Date.parse(before) < 3_600_000) continue;
         else if (records.close(r.id, "unknown", "unknown: it was claimed and its outcome never came back; it is not run again")) unresolved.push(`${r.id} ${r.kind} unknown`);
