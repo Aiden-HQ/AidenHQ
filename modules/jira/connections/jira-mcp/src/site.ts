@@ -1,5 +1,5 @@
 // The one thing Jira's connection adds to the pass-through (src/vendor/proxy.ts): every call is pinned to the configured site
-// (the jira_url setting). Atlassian's tools take the site as `cloudId`; it is dropped from the schemas agents see and set here
+// (the jira_url secret). Atlassian's tools take the site as `cloudId`; it is dropped from the schemas agents see and set here
 // on every call whose tool takes it, so an agent never passes or picks another site the owner's account can reach.
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
