@@ -54,6 +54,8 @@ export type Options = {
   key: string; kernelUrl: string; cacheDir: string; tasksDir?: string;
   /** GitHub as the owner (github-mcp client.ts): the one sign-in, limiter and typed needs. */
   access: GitHubAccess; remoteUrl?: (slug: string) => string;
+  /** True while the merge queue must hold (the App migration, migrate.ts): approved merges wait like a disconnect. */
+  holdMerges?: () => boolean;
   /** The typed ops other modules get through the kernel (ops.ts serveOps: fetch, head, read, comment, commit, runner_token), run
    * here with the owner's token and never answering it; unset: those ops answer 404. */
   ops?: (req: IncomingMessage, res: ServerResponse, ctx: OpsContext) => Promise<void>;
@@ -576,7 +578,7 @@ export function createService(o: Options) {
   const merges = createMerges({
     flow,
     designReview: async (ask) => designReviews?.fileDesignReview(ask),
-    dir: join(o.cacheDir, "merges"), gh: (method, path, body) => gh(method, path, body, { background: true }), connected: () => access.connected(),
+    dir: join(o.cacheDir, "merges"), gh: (method, path, body) => gh(method, path, body, { background: true }), connected: () => access.connected() && !o.holdMerges?.(),
     fleetOrg: o.fleetOrg, productRepo: o.productRepo, maintained: o.maintained,
     report, log, now: o.now, everyMs: o.mergeEveryMs,
     evalGate: (repo, pr) => evalGate(repo, pr),

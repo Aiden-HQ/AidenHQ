@@ -8,6 +8,7 @@
 //   INSTANCE_REPO, PRODUCT_REPO
 //   GITHUB_MAINTAINER_REPOS the maintained repos (setting maintainer_repos): the fleet merges and closes there; those with dependabot on get
 //                           the PR watch's Dependabot duty
+//   GITHUB_MIGRATE_FROM_APP  `1` for the one release that moves the repos' rules off the retired App (migrate.ts)
 //   OWNER_NAME              who the design reviewer's task says approved a merge that doesn't wait for it
 // Its loops start here: the merge queue, the held writes, the release train, the PR watch, the design reviews' sweep and the
 // reviewed refs' tidying.
@@ -19,6 +20,7 @@ import { startGithubMcp } from "../../connections/github-mcp/dist/src/main.js";
 import { parseRepos } from "./aidenhq-sdk/maintained-repos.ts";
 import { createService } from "./service.ts";
 import { serveOps } from "./ops.ts";
+import { startAppMigration } from "./migrate.ts";
 import { startPrWatch } from "./pr-watch.ts";
 import { startTidy } from "./tidy.ts";
 
@@ -30,10 +32,15 @@ if (!key) throw new Error("github: CODEHOST_KEY_FILE is empty");
 const access = await startGithubMcp();
 const fleetOrg = env.GITHUB_FLEET_ORG ?? "";
 
+// DELETE in the release after #1065: compile sets GITHUB_MIGRATE_FROM_APP=1 while the old App's host variable is still there; the
+// first sign-in with the new scopes rewrites the repos' rules that named the App (migrate.ts), and merges hold until then.
+const migration = env.GITHUB_MIGRATE_FROM_APP === "1"
+  ? startAppMigration({ access, cacheDir: env.CACHE_DIR ?? "/cache", fleetOrg, productRepo: env.PRODUCT_REPO || undefined, instanceRepo: env.INSTANCE_REPO || undefined, kernelUrl: env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130", key, log })
+  : undefined;
 const maintained = parseRepos(env.GITHUB_MAINTAINER_REPOS ?? "");
 const handle = createService({
   key, kernelUrl: env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130", cacheDir: env.CACHE_DIR ?? "/cache", tasksDir: env.TASKS_DIR || undefined,
-  access, ops: serveOps, fleetOrg, allowedOrgs: (env.ALLOWED_ORGS ?? "").split(",").filter(Boolean), instanceRepo: env.INSTANCE_REPO || undefined,
+  access, holdMerges: () => migration?.pending() ?? false, ops: serveOps, fleetOrg, allowedOrgs: (env.ALLOWED_ORGS ?? "").split(",").filter(Boolean), instanceRepo: env.INSTANCE_REPO || undefined,
   productRepo: env.PRODUCT_REPO || undefined, maintained: maintained.map((r) => r.repo), selfName: env.OWNER_NAME || undefined,
   churnExclude: (env.CHURN_EXCLUDE ?? "").split(",").map((g) => g.trim()).filter(Boolean),
   log,
