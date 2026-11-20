@@ -6,8 +6,8 @@ when: { fields: { name: Fleet Steward } }
 
 # Routing review
 
-Teams route each task to one member by a fixed score: `repo × repo match + continuity × done tasks in the repo − load ×
-busy share`. You tune two things only: each member's `repos` patterns and the team's `weights` (each 0 to 10, load at least
+Teams route each task to one member by a fixed score: `repo × repo match + continuity × (finished a task in the repo: 0
+or 1) − load × busy share`. You tune two things only: each member's `repos` patterns and the team's `weights` (each 0 to 10, load at least
 1). The kernel checks every change, writes it, files it as a reviewed apply on your task and judges it afterwards.
 
 ## Tools

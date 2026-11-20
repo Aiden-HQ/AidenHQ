@@ -16,7 +16,7 @@ const REPOS_MAX = 20;
 /** Weight bounds (the learning loop moves weights within them): each 0 to 10, and load at least 1, so load always counts. */
 export const WEIGHT_MAX = 10;
 export const LOAD_MIN = 1;
-/** Continuity counts a member's done tasks in the task's repo over this window. */
+/** Continuity: whether a member finished a task in the task's repo within this window. */
 export const CONTINUITY_MS = 7 * 86_400_000;
 
 const isMap = (v: unknown): v is Record<string, unknown> => Boolean(v) && typeof v === "object" && !Array.isArray(v);
@@ -68,7 +68,7 @@ export type Candidate = {
   id: string; key: string; repos: string[]; maxParallel: number; paused: boolean;
   /** Its live jobs, and its other tasks waiting to start (each task counted once). */
   running: number; queued: number;
-  /** Distinct tasks it finished in one of the task's repos within CONTINUITY_MS. */
+  /** Whether it finished a task in one of the task's repos within CONTINUITY_MS (1) or not (0); older snapshots hold a count, read as at most 1. */
   done: number;
 };
 export type Scored = { key: string; id: string; score: number; repo: number; continuity: number; load: number };
@@ -76,8 +76,10 @@ export type Decision = { pick?: Scored; scored: Scored[]; excluded: { key: strin
 
 /**
  * The member a team task goes to. Eligible: not paused, and the team's day cap not used up (`overBudget`). Score =
- * w.repo × repo match (0 or 1) + w.continuity × done − w.load × (running + queued) / max_parallel; ties go to the least load,
- * then the member key. A busy member still gets it: the task waits in its backlog. No eligible member: no pick.
+ * w.repo × repo match (0 or 1) + w.continuity × continuity (0 or 1: finished something in the repo within the window) −
+ * w.load × (running + queued) / max_parallel. Continuity is familiarity, not volume, so load decides between familiar members
+ * (a count let the busiest member win every task). Ties go to the least load, then the member key. A busy member still gets
+ * it: the task waits in its backlog (wakes.ts re-places it if it never starts). No eligible member: no pick.
  */
 export function pickMember({ repos, candidates, weights, overBudget = false }: { repos: string[]; candidates: Candidate[]; weights: Weights; overBudget?: boolean }): Decision {
   const excluded: Decision["excluded"] = [];
@@ -87,8 +89,9 @@ export function pickMember({ repos, candidates, weights, overBudget = false }: {
     if (c.paused) { excluded.push({ key: c.key, why: "paused" }); continue; }
     const repo = repos.some((r) => c.repos.some((p) => repoMatches(p, r))) ? 1 : 0;
     const load = (c.running + c.queued) / Math.max(1, c.maxParallel);
-    const score = weights.repo * repo + weights.continuity * c.done - weights.load * load;
-    scored.push({ key: c.key, id: c.id, score, repo, continuity: c.done, load });
+    const continuity = Math.min(1, c.done);
+    const score = weights.repo * repo + weights.continuity * continuity - weights.load * load;
+    scored.push({ key: c.key, id: c.id, score, repo, continuity, load });
   }
   scored.sort((a, b) => b.score - a.score || a.load - b.load || a.key.localeCompare(b.key));
   return { pick: scored[0], scored, excluded };
@@ -96,9 +99,11 @@ export function pickMember({ repos, candidates, weights, overBudget = false }: {
 
 const n = (x: number) => String(Math.round(x * 100) / 100);
 /** The decision record on a routed task: fixed format, so a reader (and the learning loop) can parse it. */
-export function decisionText({ team, revision, repos, weights, decision }: { team: string; revision: string; repos: string[]; weights: Weights; decision: Decision }) {
+export function decisionText({ team, revision, repos, weights, decision, from }: { team: string; revision: string; repos: string[]; weights: Weights; decision: Decision; from?: string }) {
   const lines = [
-    decision.pick ? `**Routed to ${decision.pick.key}** (team ${team}).` : `**Blocked:** no member of team ${team} can take this task.`,
+    !decision.pick ? `**Blocked:** no member of team ${team} can take this task.`
+      : from ? `**Re-routed to ${decision.pick.key}** (team ${team}): it never started and ${from} is busy.`
+      : `**Routed to ${decision.pick.key}** (team ${team}).`,
     "",
     `- config: ${revision}`,
     `- repos: ${repos.join(", ") || "none named"}`,
