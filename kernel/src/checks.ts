@@ -159,8 +159,10 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
   /**
    * The finish gate for one task: `agent` and `tool` for an agent's own close, `via` for the runner's. Throws on a deny.
    * `cross`: an agent closing a task that is neither its job's own nor one its agent holds (its delegator's acceptance of an
-   * escalated grade): refused before anything moves unless a check answers `accepts`, so no other cross-task close passes.
-   * A task the closing agent holds (an orphaned run's task, say) is its own and asks the checks like its job's own task.
+   * escalated grade): refused before anything moves unless a check answers `accepts`, so no other cross-task close passes. A
+   * task the closing agent holds (an orphaned run's task, say) is its own and asks the checks like its job's own task. A check
+   * that is unavailable hasn't answered, so the close parks in review for the check's re-check rather than being refused;
+   * only its `accepts` ever lets it pass.
    */
   /** A finish check's verdict on a task (a grader's reopen, say): an outcome the routing learning loop trusts (routing-tune.ts), never its words. */
   const verdictEvent = (task: string, check: string, verdict: string) => noteFact(facts, verdictFact(task, check, verdict));
@@ -203,17 +205,19 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
     // An enforcing check whose service is still unavailable (a container being replaced) holds the task in review instead of
     // refusing the close: the scheduled re-check asks again once it is back, and a real verdict is never invented here.
     const [verdicts] = await Promise.all([Promise.all(mine.map(async ([id, c]) => {
-      try { return { id, c, v: await ask(id, c, body) }; }
+      try { return { id, c, v: await ask(id, c, body), down: false }; }
       catch (e) {
-        // A cross-task close can only pass with the check's own `accepts`, so an unavailable service still fails it closed
-        // (503, as before) instead of parking the task as if a verdict had been given.
-        if (!isUnavailable(e) || caller.cross) throw e;
+        if (!isUnavailable(e)) throw e;
         const why = String((e as { cause?: unknown }).cause ?? (e as Error).message);
         log("finish check unavailable, holding", { task: i.identifier, check: id, err: why });
-        return { id, c, v: { verdict: "pending" as const, state: "pending", reason: `the finish check ${id} couldn't be reached (${why}): the task waits in review while its service comes back` } };
+        return { id, c, down: true, v: { verdict: "pending", state: "pending", reason: `the finish check ${id} couldn't be reached (${why}): the task waits in review while its service comes back` } as Verdict };
       }
     })), watched]);
-    if (caller.cross && !verdicts.some((x) => x.v.verdict === "ok" && x.v.accepts)) throw refuseCross();
+    // A cross-task close passes only on the check's own `accepts`. When a check couldn't be reached it has given no verdict, so
+    // the finish parks in review for its scheduled re-check rather than being refused and lost; a real deny or reopen still
+    // refuses it as before, and no unavailable check ever stands in for the `accepts`.
+    const settled = verdicts.some((x) => x.v.verdict === "deny" || x.v.verdict === "reopen");
+    if (caller.cross && !verdicts.some((x) => x.v.verdict === "ok" && x.v.accepts) && (!verdicts.some((x) => x.down) || settled)) throw refuseCross();
     const deny = verdicts.find((x) => x.v.verdict === "deny");
     if (deny) throw fail(deny.v.status === 409 ? 409 : 403, "refused", String(deny.v.reason ?? `refused by ${deny.id}`).slice(0, 500));
     const reopen = verdicts.find((x) => x.v.verdict === "reopen");

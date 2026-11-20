@@ -134,6 +134,20 @@ test("a check service still unavailable after its attempts holds the task in rev
   assert.ok(s.k.records.db.prepare("SELECT 1 FROM check_holds WHERE task = ? AND check_id = 'judge.finish'").get(TASK), "the hold is recorded");
 });
 
+test("a cross-task finish whose check service is unavailable parks in review, and no unavailable check stands in for accepts", async (t) => {
+  const resolver = flakyResolver(Infinity);
+  const s = await setup(t, () => ({ verdict: "ok", accepts: true }), { checkResolver: resolver });
+  const r = await s.finish({ status: "done" }, DELEGATED);
+  assert.equal(r.status, 202, "the delegator's acceptance isn't lost while the service restarts");
+  assert.equal(r.json.held.state, "pending");
+  assert.equal(s.writes.length, 1);
+  assert.equal(s.writes[0].as, "board-key");
+  assert.notEqual(s.writes[0].body.status, "done", "nothing moved the task to done");
+  assert.deepEqual(s.writes[0].body.labelIds, ["lbl-held"], "held under the check's label");
+  assert.ok(s.writes[0].body.executionPolicy.monitor.nextCheckAt, "the re-check is saved");
+  assert.ok(s.k.records.db.prepare("SELECT 1 FROM check_holds WHERE task = ? AND check_id = 'judge.finish'").get(DELEGATED), "the hold is recorded");
+});
+
 test("a check that answers deny or reopen is not retried: one ask, and the close still refuses or reopens", async (t) => {
   const resolver = flakyResolver(0);
   let answer = { verdict: "deny", status: 403, reason: "not yet" };
