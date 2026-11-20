@@ -14,6 +14,25 @@ export const GRADER_MARKER = "<!-- aidenhq:grader -->";
 /** The board's reason code for a change already satisfied on the target (services/board/src/approvals.ts ALREADY_APPLIED). */
 export const ALREADY_APPLIED = "already_applied";
 
+/**
+ * A card's action as the kernel names it: a kernel or runner write arrives as `kernel.apply`/`runner.push` (kernel/src/work.ts
+ * returns the record's kind), and the kernel's own short name drops that prefix (kernel/src/records.ts actionOf). Cards are
+ * read here, never by the kind (`github.pr` stays whole: the code host's rows go through taskPrs).
+ */
+export const cardAction = (a: any) => String(a?.action ?? "").replace(/^(runner|kernel)\./, "");
+
+/** A card's outcome, as text: the kernel's records carry `outcome_text`; a board card carries its own `outcomeText`. */
+const cardOutcome = (a: any) => String(a?.outcomeText || a?.outcome_text || "");
+
+/**
+ * The newest of a task's cards by when it was filed, whatever order the caller's list is in (/v1/work sends newest first, the
+ * board's cards oldest first): a task that re-filed its apply is graded on the card it filed last, not the first it ever filed.
+ */
+const latestCard = (cards: any[]) => cards.reduce((last: any, a: any) => {
+  const at = (c: any) => Date.parse(c?.createdAt ?? c?.created_at ?? "") || 0;
+  return !last || at(a) >= at(last) ? a : last;
+}, undefined);
+
 const hash = (s: string) => createHash("sha256").update(s).digest("hex").slice(0, 16);
 
 const nameOf = (f: any) => String(f.originalFilename ?? f.name ?? "");
@@ -250,8 +269,8 @@ export async function presentNow(deliverable: any, deps: any) {
     return { present: Boolean(d), facts: [d ? `app ${app.name}: ${String(app.sha).slice(0, 12)} deployed ${stamp(d.at)} (healthy)` : `app ${app.name}: deployed commit ${String(app.sha ?? "(none)").slice(0, 12)} has no healthy deploy`] };
   }
   if (kind === "apply") {
-    const applied = ((await deps.approvals?.()) ?? []).filter((a: any) => a.action === "apply" && a.state === "used" && a.outcome).at(-1);
-    return applied ? { present: true, facts: [`apply ${applied.id}: used, ${applied.outcome}`] } : { present: false, facts: ["no apply filed yet"] };
+    const applied = latestCard(((await deps.approvals?.()) ?? []).filter((a: any) => cardAction(a) === "apply" && a.state === "used" && a.outcome));
+    return applied ? { present: true, facts: [`apply ${applied.id}: used${cardOutcome(applied) ? `, ${cardOutcome(applied).split("\n")[0]}` : ""}`] } : { present: false, facts: ["no apply filed yet"] };
   }
   return { present: false, facts: [] };
 }
@@ -456,15 +475,15 @@ export async function issueEvidence(ref: string, deps: any): Promise<any> {
 
 /** The task's latest fleet apply (its approval records) as evidence: its state and outcome. */
 export function applyEvidence(cards: any[]): any {
-  const applied = cards.filter((a: any) => a.action === "apply").at(-1);
+  const applied = latestCard(cards.filter((a: any) => cardAction(a) === "apply"));
   if (!applied) return { awaiting: "no apply filed yet", missing: true };
-  const facts = [`apply ${applied.id}: ${applied.state}${applied.outcome ? `, ${applied.outcome}` : ""}`];
+  const facts = [`apply ${applied.id}: ${applied.state}${cardOutcome(applied) ? `, ${cardOutcome(applied).split("\n")[0]}` : ""}`];
   // What the apply carried, from the card's args (code-built): the instance repo, the commit and the files it changed. The
   // card's details (APPLY_CHANGE) are the committed diff itself; the outcome text (APPLY_OUTCOME) is the apply's own log tail.
   const a = applied.args ?? {};
   if (a.repo && a.sha) facts.push(`apply ${applied.id} landed ${String(a.sha).slice(0, 12)} on ${a.repo}${Array.isArray(a.files) && a.files.length ? `, files: ${a.files.slice(0, 20).join(", ")}` : ""}`);
-  facts.push(`apply ${applied.id}: the diff it carried is ${applied.details ? "in APPLY_CHANGE" : "not available"}; its log is ${applied.outcomeText ? "in APPLY_OUTCOME" : "not available"}`);
-  return { version: applied.id, facts, data: { APPLY_OUTCOME: applied.outcomeText ?? "", APPLY_CHANGE: applied.details ?? "" } };
+  facts.push(`apply ${applied.id}: the diff it carried is ${applied.details ? "in APPLY_CHANGE" : "not available"}; its log is ${cardOutcome(applied) ? "in APPLY_OUTCOME" : "not available"}`);
+  return { version: applied.id, facts, data: { APPLY_OUTCOME: cardOutcome(applied), APPLY_CHANGE: applied.details ?? "" } };
 }
 
 const NEWEST = 4; // the newest comments, anyone's, always go first (an owner's reopening word among them)
