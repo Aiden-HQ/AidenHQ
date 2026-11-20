@@ -259,7 +259,7 @@ export function requestTargets(action: string, s: any): { targets: Target[]; lab
 const recordTargets = (r: Prior): Target[] => requestTargets(r.action, r.args)?.targets ?? [];
 
 /** Reviewer rejections one target's retries are bounded by: past this many (since the owner's last yes), it is parked. */
-export const MAX_REJECTS = 3;
+export const MAX_REJECTS = 5;
 /**
  * The parks agents' answers lift on one target (the delegator's or the chief of staff's decision on the task): once
  * MAX_REJECTS * (AGENT_LIFTS + 1) rejections stand there, only the owner's own reply or yes moves it, so two agents never

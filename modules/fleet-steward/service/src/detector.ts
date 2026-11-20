@@ -180,7 +180,7 @@ interface WorkRecord { task: string | null; identifier: string | null; state?: s
 const HOUR_MS = 60 * MIN;
 // n = the kernel's MAX_REJECTS (tier.ts): the point where a branch is parked and the kernel wakes the task's delegator
 // (escalate.ts); a park nothing moved for quietMs (no new request on the task) is the Steward's.
-const REJECT_LOOP = { n: 3, windowMs: 7 * DAY_MS, quietMs: 6 * HOUR_MS };
+const REJECT_LOOP = { n: 5, windowMs: 7 * DAY_MS, quietMs: 6 * HOUR_MS };
 /** A record someone said yes to (the kernel's record states past approval). */
 const APPROVED = ["approved", "claimed", "done", "failed", "unknown"];
 // A task waiting on a judgement (task_wait `for`, kernel idle.ts) longer than this: the owner's answer, or its delegator's.
@@ -543,7 +543,7 @@ export function checks(d: { kernel: KernelClient; kv: Kv; pause: (routine: strin
       for (const name of slowerStages(cur!, prev!)) d.log?.("flow.would_file", { stage: name });
       return [];
     },
-    // A parked branch (the kernel parks it at 3 rejections and wakes the delegator) that nothing moved for 6 hours.
+    // A parked branch (the kernel parks it at MAX_REJECTS, 5 rejections, and wakes the delegator) that nothing moved for 6 hours.
     async loop() {
       const t = now();
       const r = (await d.kernel.call("GET", `/v1/work?since=${encodeURIComponent(new Date(t - REJECT_LOOP.windowMs).toISOString())}`)) as { records?: WorkRecord[] };

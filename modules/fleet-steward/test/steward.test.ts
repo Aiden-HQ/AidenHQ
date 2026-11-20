@@ -133,19 +133,19 @@ const task = (id, o = {}) => ({ id, identifier: `WOR-${id.toUpperCase()}`, title
 const detect = (w, now = NOW) => checks({ kernel: w, apps: async (p) => (p === "/internal/open-prs" ? { prs: w.prs } : []), alerts: async () => [], openKeys: () => [], now: () => now });
 const minsAgo = (m) => new Date(NOW - m * 60_000).toISOString();
 
-test("a branch parked by three judged rejections that nothing moved for 6h is a loop; refiles refused as parked or aimed elsewhere move nothing; an approval on it, a re-brief or the owner's word does", async () => {
+test("a branch parked by five judged rejections (MAX_REJECTS) that nothing moved for 6h is a loop; refiles refused as parked or aimed elsewhere move nothing; an approval on it, a re-brief or the owner's word does", async () => {
   const rej = (task, target, at, judged = true) => ({ task, identifier: null, state: "rejected", judged, targets: [target], decided_at: at, created_at: at });
   const filed = (task, target, state) => ({ task, identifier: null, state, judged: false, targets: [target], decided_at: ago(2), created_at: ago(2) });
-  const parked = (task, target) => [7, 8, 9].map((h) => rej(task, target, ago(h)));
+  const parked = (task, target) => [7, 8, 9, 10, 11].map((h) => rej(task, target, ago(h)));
   const w = world({
     tasks: { t1: task("t1", { assigneeAgentId: "eng" }), t2: task("t2"), t3: task("t3", { identifier: "BAK-3" }), t4: task("t4", { title: "TEST: loop", labels: [{ name: "chat" }] }), t5: task("t5", { assigneeAgentId: "eng" }), t6: task("t6", { status: "done" }), t7: task("t7"), t8: task("t8", { assigneeAgentId: "eng" }), t9: task("t9", { assigneeAgentId: "eng" }), ta: task("ta") },
     records: [
       ...parked("t1", "acme/app|feat-a"), // parked 7h ago, nothing since
-      ...[7, 8].map((h) => rej("t2", "acme/app|feat-a", ago(h))), rej("t2", "acme/app|feat-b", ago(7)), rej("t2", "acme/app|feat-a", ago(7), false), // 2 + 1 + stale_head: none reaches 3
+      ...[7, 8].map((h) => rej("t2", "acme/app|feat-a", ago(h))), rej("t2", "acme/app|feat-b", ago(7)), rej("t2", "acme/app|feat-a", ago(7), false), // 2 + 1 + stale_head: none reaches 5
       ...parked("t3", "acme/app|x"), ...parked("t4", "acme/app|x"),
       ...parked("t5", "acme/app|y"), filed("t5", "acme/app|y", "rejected"), filed("t5", "acme/app|z", "done"), // refused as parked; approved elsewhere
       ...parked("t6", "acme/app|y"), // closed
-      ...[1, 2, 3].map((h) => rej("t7", "acme/app|y", ago(h))), // parked only an hour ago: its delegator has it
+      ...[1, 2, 3, 4, 5].map((h) => rej("t7", "acme/app|y", ago(h))), // parked only an hour ago: its delegator has it
       ...parked("t8", "acme/app|y"), // re-briefed by its delegator
       ...parked("t9", "acme/app|y"), // its own agent's notes and the kernel's notices only
       ...parked("ta", "acme/app|y"), filed("ta", "acme/app|y", "done"), // the owner approved it since
@@ -157,7 +157,7 @@ test("a branch parked by three judged rejections that nothing moved for 6h is a 
   });
   const found = await detect(w).loop();
   assert.deepEqual(found.map((i) => i.key), ["t1:acme-app-feat-a", "t4:acme-app-x", "t5:acme-app-y", "t9:acme-app-y"]);
-  assert.match(found[0].reason, /WOR-T1: the AI reviewer rejected acme-app-feat-a 3 times \(parked at 3\) and nothing has moved for 420 min/);
+  assert.match(found[0].reason, /WOR-T1: the AI reviewer rejected acme-app-feat-a 5 times \(parked at 5\) and nothing has moved for 420 min/);
 });
 
 test("a task waiting on the owner's answer over a day, or its delegator's over 6 hours, is raised", async () => {
@@ -175,7 +175,7 @@ test("a task waiting on the owner's answer over a day, or its delegator's over 6
 });
 
 test("a failed task lookup still raises the incident with the raw id, and is not remembered: the next run reads it again", async () => {
-  const records = [7, 8, 9].map((h) => ({ task: "t9", identifier: null, judged: true, targets: ["acme/app|b"], decided_at: ago(h) }));
+  const records = [7, 8, 9, 10, 11].map((h) => ({ task: "t9", identifier: null, judged: true, targets: ["acme/app|b"], decided_at: ago(h) }));
   let down = true;
   const w = { read: async () => { if (down) throw new Error("control plane down"); return task("t9", { identifier: "BAK-9" }); }, call: async () => ({ records }) };
   const c = detect(w);
