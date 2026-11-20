@@ -7,7 +7,7 @@ import { randomBytes } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { CODEHOSTS } from "./codehost.ts";
 import { heldRoles, rolesOf } from "./identity.ts";
-import { factWriter, iso } from "./factlog.ts";
+import { inTx, iso, strictFact } from "./factlog.ts";
 import type { Facts } from "./facts.ts";
 import { JobError } from "./jobs.ts";
 import type { JobTools } from "./jobtools.ts";
@@ -94,13 +94,22 @@ export function createAdmission({ db, grants, kinds, capacity, spend, mayDispatc
   launch: (job: Admitted) => Promise<void>;
   log: (msg: string, fields?: Record<string, unknown>) => void;
 }) {
-  const fact = factWriter(facts, log);
+  // Strict: each fact is written in the admission's transaction, which fails with it.
+  const fact = facts ? strictFact(facts) : () => {};
   /** The jobs this process admitted and is launching now: its drain waits for them, and recover() never takes them. */
   const launching = new Set<string>();
   const keyOf = (agent: string) => grants()[agent]?.key ?? agent;
-  /** Why an admission waits (flow's idle reasons), once per wake and reason. */
-  const held = (wake: string, task: string, agent: string, reason: string) =>
-    fact({ type: "job.held", subject: `wake:${wake}`, version: `${wake}:${reason}`, at: iso(Date.now()), actor: `agent:${keyOf(agent)}`, task, data: { reason } });
+  /**
+   * Why an admission waits (flow's idle reasons), once per wake and reason. It follows a refusal or a deferral that already
+   * happened, so it moves nothing: one that can't be written is logged and the admission's own answer stands.
+   */
+  const held = (wake: string, task: string, agent: string, reason: string) => {
+    try {
+      fact({ type: "job.held", subject: `wake:${wake}`, version: `${wake}:${reason}`, at: iso(Date.now()), actor: `agent:${keyOf(agent)}`, task, data: { reason } });
+    } catch (e) {
+      log("job.held not recorded", { wake, task, reason, err: (e as Error).message });
+    }
+  };
 
   /** Platform authority belongs to the task: a job holds the platform-engineer role only on a task no agent filed, or one the Architect or the Fleet Steward filed. */
   function platformTask(t: Parameters<typeof provenance.filedBy>[0]): boolean {
@@ -198,8 +207,16 @@ export function createAdmission({ db, grants, kinds, capacity, spend, mayDispatc
       launching.delete(id);
       if ((e as { status?: number }).status !== 503) {
         const why = `couldn't start: ${(e as Error).message}`.slice(0, 500);
-        if (db.prepare("UPDATE jobs SET state = 'failed', final = ?, ended = ? WHERE id = ? AND state = 'admitted'").run(why, Date.now(), id).changes)
-          fact({ type: "job.ended", subject: `job:${id}`, version: "ended", at: iso(Date.now()), actor: `agent:${keyOf(agent)}`, task, data: { state: "failed", exit: null, why, model: "", cost_usd: 0, input: 0, cached: 0, output: 0, acted: false } });
+        // The end and its fact in one transaction. If they can't be written the row stays admitted (the task runs nothing more)
+        // until the next kernel's recover() gives its wake back.
+        try {
+          inTx(db, "job_unstarted", () => {
+            if (db.prepare("UPDATE jobs SET state = 'failed', final = ?, ended = ? WHERE id = ? AND state = 'admitted'").run(why, Date.now(), id).changes)
+              fact({ type: "job.ended", subject: `job:${id}`, version: "ended", at: iso(Date.now()), actor: `agent:${keyOf(agent)}`, task, data: { state: "failed", exit: null, why, model: "", cost_usd: 0, input: 0, cached: 0, output: 0, acted: false } });
+          });
+        } catch (fe) {
+          log("a job that couldn't start isn't recorded as ended", { job: id, task, err: (fe as Error).message });
+        }
         throw e;
       }
       const v = view(id);

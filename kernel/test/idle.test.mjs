@@ -41,7 +41,7 @@ function world() {
   wakes.claim("dispatch"); // the dispatcher joins: its agent's tasks are swept
   const asked = { owner: [], notices: [], comments: { t1: [] } };
   const escalate = createEscalate({ db, issue: async (id) => issues[id], comments: async (id) => asked.comments[id] ?? [], asker: async () => ({ name: "Kai", key: "kai", roles: [] }), notice: (task, body) => asked.notices.push({ task, body }), owner: (n) => asked.owner.push(n), now: () => clock });
-  const idle = createIdle({ facts, flow, wakes, owner, escalate, now: () => clock });
+  const idle = createIdle({ db, facts, flow, wakes, owner, escalate, now: () => clock });
   const rows = () => db.prepare("SELECT key, cause, state FROM wakes ORDER BY at, key").all().map((r) => `${r.key.replace(/:[0-9TZ:.-]+$/, "")} ${r.cause} ${r.state}`);
   /** A job on t1 from its wake to its end. */
   const job = (id) => { add("job.queued", `job:${id}`, "t1"); add("job.started", `job:${id}`, "t1"); clock += MIN; add("job.ended", `job:${id}`, "t1", { state: "done" }); };

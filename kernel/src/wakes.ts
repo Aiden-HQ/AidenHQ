@@ -14,7 +14,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { Api } from "./channels.ts";
-import { factWriter, iso } from "./factlog.ts";
+import { inTx, iso, strictFact } from "./factlog.ts";
 import type { Facts } from "./facts.ts";
 import type { Outcomes } from "./outcomes.ts";
 import { mentionedRepos } from "./boxes.ts";
@@ -107,14 +107,16 @@ export function createWakes({ db, owner, post, dispatches, containers = () => ne
   // An unblock half done (unblock): its blocker relations cleared, its move to todo not yet written.
   db.exec("CREATE TABLE IF NOT EXISTS unblocking (task TEXT PRIMARY KEY, closure TEXT NOT NULL, line TEXT NOT NULL)");
   const q = (sql: string) => db.prepare(sql);
-  const fact = factWriter(facts, log);
+  // Strict: every fact here is written in the move it describes, which fails with it.
+  const fact = facts ? strictFact(facts) : () => {};
   const keyOf = (agent: string | null | undefined) => (agent ? grants()[agent]?.key ?? agent : null);
   const insert = (key: string, task: string, agent: string, cause: string, at: number, until: number | null = null, author = "unknown") => {
-    const r = q("INSERT OR IGNORE INTO wakes (key, task, agent, cause, at, until) VALUES (?, ?, ?, ?, ?, ?)").run(key, task, agent, cause, at, until);
-    if (r.changes) {
-      log("wake", { key, task, cause });
-      fact({ type: "wake.opened", subject: `wake:${key}`, version: "opened", at: iso(at), actor: author, task, data: { cause, author } });
-    }
+    const opened = inTx(db, "wake_open", () => {
+      const r = q("INSERT OR IGNORE INTO wakes (key, task, agent, cause, at, until) VALUES (?, ?, ?, ?, ?, ?)").run(key, task, agent, cause, at, until);
+      if (r.changes) fact({ type: "wake.opened", subject: `wake:${key}`, version: "opened", at: iso(at), actor: author, task, data: { cause, author } });
+      return r.changes > 0;
+    });
+    if (opened) log("wake", { key, task, cause });
   };
   /**
    * A routine run's dropped wake comes back: dispatch drops a 4xx for good (the pre-#790 403 on the routine read), and without a
@@ -123,10 +125,12 @@ export function createWakes({ db, owner, post, dispatches, containers = () => ne
    */
   const rearmRoutine = (key: string, task: string, agent: string, cause: string, author: string) => {
     const t = now();
-    const r = q("UPDATE wakes SET state = 'open', agent = ?, cause = ?, claimed_by = NULL, job = NULL, until = NULL, at = ? WHERE key = ? AND task = ? AND state = 'dropped'").run(agent, cause, t, key, task);
-    if (!r.changes) return;
-    fact({ type: "wake.opened", subject: `wake:${key}`, version: `reopened@${t}`, at: iso(t), actor: author, task, data: { cause, author } });
-    log("wake reopened", { key, task });
+    const reopened = inTx(db, "wake_rearm", () => {
+      const r = q("UPDATE wakes SET state = 'open', agent = ?, cause = ?, claimed_by = NULL, job = NULL, until = NULL, at = ? WHERE key = ? AND task = ? AND state = 'dropped'").run(agent, cause, t, key, task);
+      if (r.changes) fact({ type: "wake.opened", subject: `wake:${key}`, version: `reopened@${t}`, at: iso(t), actor: author, task, data: { cause, author } });
+      return r.changes > 0;
+    });
+    if (reopened) log("wake reopened", { key, task });
   };
   const dropped = (w: { key: string; task: string }, why: string) => fact({ type: "wake.dropped", subject: `wake:${w.key}`, version: "dropped", at: iso(now()), actor: "kernel", task: w.task, data: { why: why.slice(0, 200) } });
   const blockedKey = (i: Issue) => (i.blockedBy ? i.blockedBy.map((b) => b.id).sort().join(",") : null);
@@ -136,8 +140,10 @@ export function createWakes({ db, owner, post, dispatches, containers = () => ne
    * path and the poll that see one change record it once. A task seen first is recorded as created, with the status and assignee
    * it has (from nothing). `actor`: who Paperclip says did it, else unknown. The holder is the agent, `"owner"` (a user assignee:
    * every admin is the owner) or none; what changed is read against task_facts_seen, which this ends by moving to the issue.
+   * The facts and that cursor move in one transaction: a fact that can't be written leaves the cursor, so the next look records it.
    */
-  function taskFacts(issue: Issue, source: "live" | "poll", actor: string) {
+  const taskFacts = (issue: Issue, source: "live" | "poll", actor: string) => inTx(db, "task_facts", () => recordTaskFacts(issue, source, actor));
+  function recordTaskFacts(issue: Issue, source: "live" | "poll", actor: string) {
     const prev = q("SELECT holder, status, blocked FROM task_facts_seen WHERE task = ?").get(issue.id) as { holder: string | null; status: string | null; blocked: string | null } | undefined;
     const base = { subject: `task:${issue.id}`, task: issue.id, actor, source };
     const changed = ms(issue.updatedAt) || now();
@@ -436,11 +442,13 @@ export function createWakes({ db, owner, post, dispatches, containers = () => ne
      */
     open(b: { key: string; task: string; agent: string; cause: string; at?: number; replaces?: string; author?: string }) {
       const t = now(), at = b.at ?? t;
-      if (b.replaces) for (const w of q("SELECT key, task FROM wakes WHERE task = ? AND state = 'open' AND key LIKE ? AND key != ?").all(b.task, `${b.replaces}%`, b.key) as { key: string; task: string }[]) {
-        q("UPDATE wakes SET state = 'dropped', until = NULL WHERE key = ?").run(w.key);
-        dropped(w, "replaced by a newer wait");
-      }
-      insert(b.key, b.task, b.agent, b.cause, at, at > t ? at : null, b.author ?? "kernel");
+      inTx(db, "wake_replace", () => {
+        if (b.replaces) for (const w of q("SELECT key, task FROM wakes WHERE task = ? AND state = 'open' AND key LIKE ? AND key != ?").all(b.task, `${b.replaces}%`, b.key) as { key: string; task: string }[]) {
+          q("UPDATE wakes SET state = 'dropped', until = NULL WHERE key = ?").run(w.key);
+          dropped(w, "replaced by a newer wait");
+        }
+        insert(b.key, b.task, b.agent, b.cause, at, at > t ? at : null, b.author ?? "kernel");
+      });
     },
     /**
      * Rows for the module to run, claimed at once (one transaction) and leased for LEASE_MS. Per task: with a live job, its
@@ -490,12 +498,13 @@ export function createWakes({ db, owner, post, dispatches, containers = () => ne
     },
     /** The claimer gives a row up for good. */
     drop(module: string, key: string, why: string) {
-      const r = q("UPDATE wakes SET state = 'dropped', until = NULL WHERE key = ? AND state = 'claimed' AND claimed_by = ? AND job IS NULL").run(key, module);
-      if (r.changes) {
-        log("wake dropped", { key, module, why: why.slice(0, 200) });
-        dropped({ key, task: (q("SELECT task FROM wakes WHERE key = ?").get(key) as { task: string }).task }, why);
-      }
-      return { dropped: r.changes > 0 };
+      const n = inTx(db, "wake_drop", () => {
+        const r = q("UPDATE wakes SET state = 'dropped', until = NULL WHERE key = ? AND state = 'claimed' AND claimed_by = ? AND job IS NULL").run(key, module);
+        if (r.changes) dropped({ key, task: (q("SELECT task FROM wakes WHERE key = ?").get(key) as { task: string }).task }, why);
+        return r.changes;
+      });
+      if (n) log("wake dropped", { key, module, why: why.slice(0, 200) });
+      return { dropped: n > 0 };
     },
     /**
      * A note on a claimed wake's task that no job will answer (a redirect, a task with no request), posted as the task's agent
