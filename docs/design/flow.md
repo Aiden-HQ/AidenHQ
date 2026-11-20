@@ -110,7 +110,6 @@ Served by `kernel/src/flow.ts` (stage pairing, idle reasoner) and `kernel/src/jo
 modules with a role (`kernel.flow-read`):
 
 - `?task=<id>` / `?item=<id>`: the waterfall (stage occurrences with actor, every fact, every idle period with its reason).
-- `?idle=1`: items idle now, oldest first.
 - `?since=&to=&by=stage|agent|module|repo|model&scope=all|<module>`: per stage count, median and p75 of work and wait, wait
   split by reason, DORA, churn, fleet metrics and the insights of flow-insights.md. A stage with fewer than 5 items carries
   raw samples, not percentiles.

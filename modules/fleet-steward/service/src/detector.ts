@@ -185,17 +185,20 @@ const SILENT_MS = 15 * MIN; // an owner message on a chat task with no reply
 const SILENT_LOOKBACK_MS = 6 * HOUR_MS; // older than this, the owner has long since seen the silence
 
 const UNSTARTED_MS = HOUR_MS; // a delegated task assigned to an agent, still todo with no job ever, this long after it was created
-const MERGE_WAIT_MS = 6 * HOUR_MS; // a task waiting on its merge queue or CI (flow reasons checks, retry, eval) this long
-const MERGE_WAITS = ["checks", "retry", "eval"];
 const PING_PONG = { n: 5, spanMs: 12 * HOUR_MS }; // runs of one task that alternate between two agents, all started within spanMs
 const CARD_WAIT_MS = DAY_MS; // a Tier 2 card waiting on the owner this long gets the Steward's one reminder a day
 const MAX_LOOKUPS = 20;
-type IdleItem = { task: string; identifier: string | null; since: string; reason: string; reason_since: string; blocked_on?: string };
+/** A row of the kernel's task state (GET /v1/tasks/state, kernel/src/task-state-read.ts). */
+type StateRow = { task: string; identifier: string | null; since: string; reason: string; ref?: string; holder: string | null; attention: { who: string; why: string }[]; idle_wakes: number };
+/** Idle with nothing recorded to wake it, a wake nothing took, or its history pruned: the state's unexplained idle. */
+const UNEXPLAINED = ["orphaned", "unknown", "history_expired"];
+type IdleItem = { task: string; identifier: string | null; reason: string; blocked_on?: string };
 
-/** Tasks whose idle stretch is a merge or CI wait over MERGE_WAIT_MS (the queue or a red base holds them), and tasks blocked on each other in a cycle. */
-export function mergeDeadlocks(items: IdleItem[], t: number): { key: string; reason: string }[] {
+/** Tasks blocked on each other in a cycle (a blocked row's `ref` is `task:<blocker id>`). */
+export function blockedCycles(rows: StateRow[]): { key: string; reason: string }[] {
+  const ident = new Map(rows.map((r) => [r.task, r.identifier ?? r.task]));
+  const items: IdleItem[] = rows.map((r) => ({ task: r.task, identifier: r.identifier, reason: r.reason, ...(r.reason === "blocked" && r.ref ? { blocked_on: ident.get(r.ref.slice(5)) ?? r.ref.slice(5) } : {}) }));
   const out: { key: string; reason: string }[] = [];
-  for (const i of items.filter((x) => MERGE_WAITS.includes(x.reason) && age(x.reason_since, t) > MERGE_WAIT_MS)) out.push({ key: i.task, reason: `task ${i.identifier ?? i.task} has waited ${mins(age(i.reason_since, t))} on its merge queue or CI (${i.reason}), so the queue or a red base is holding it` });
   const by = new Map(items.filter((x) => x.identifier).map((x) => [x.identifier!, x]));
   const seen = new Set<string>();
   for (const i of items.filter((x) => x.reason === "blocked" && x.blocked_on)) {
@@ -332,6 +335,8 @@ export function checks(d: { kernel: KernelClient; kv: Kv; pause: (routine: strin
   const now = d.now ?? (() => Date.now());
   let appsOkAt = now(); // apps-mcp's last answer: a restart (an apply) is not an outage
   const companies = async () => (await d.kernel.read("/api/companies")) as Company[];
+  /** Every open task's state, as the kernel computes it (one snapshot). */
+  const openStates = async () => ((await d.kernel.call("GET", "/v1/tasks/state?open=1")).tasks ?? []) as StateRow[];
   const agents = async () => (await Promise.all((await companies()).map(async (c) => (await d.kernel.read(`/api/companies/${c.id}/agents`)) as AgentRow[]))).flat().filter((a) => a.status !== "terminated");
   /** One check run's task reads, cached: a task's row, or undefined when it can't be read (a failed lookup never hides an incident). A failure is not kept. */
   const taskReads = () => {
@@ -500,16 +505,17 @@ export function checks(d: { kernel: KernelClient; kv: Kv; pause: (routine: strin
       }
       return out;
     },
-    // Orphaned work: Flow's idle list (nothing running, filed or waiting on the item), over 2 hours. The one stuck-work rule.
+    // Orphaned work: the kernel's task state (nothing running, filed or waiting on the task: orphaned, unknown or history
+    // expired), over 2 hours. The one stuck-work rule.
     // A task whose holder the kernel's idle sweep already woke 3 times in a day (kernel idle.ts) is critical at once: waking
     // it again won't move it, so Fleet Ops looks at it.
     async stuck() {
       const t = now();
       const out: Incident[] = [];
       const read = taskReads();
-      const items = ((await d.kernel.call("GET", "/v1/flow?idle=1")).items ?? []) as { task: string; identifier: string | null; since: string; reason: string; idle_wakes?: number }[];
+      const items = await openStates();
       const capped = (x: { idle_wakes?: number }) => (x.idle_wakes ?? 0) >= IDLE_WAKE_CAP;
-      for (const i of items.filter((x) => x.reason === "orphaned" && (capped(x) || age(x.since, t) > IDLE_MS) && !exempt({ identifier: x.identifier, originKind: null }) && !suppressed(x.task, `stuck:${x.task}`))) {
+      for (const i of items.filter((x) => UNEXPLAINED.includes(x.reason) && (capped(x) || age(x.since, t) > IDLE_MS) && !exempt({ identifier: x.identifier, originKind: null }) && !suppressed(x.task, `stuck:${x.task}`))) {
         const task = await read(i.task);
         // Parked in backlog, owned by nobody, or owned by the owner (a person, not an agent's work): not someone's stuck work
         // (the inbox, review-log and issues tasks are idle by design; owner-assigned todos are the stale follow-up check's).
@@ -548,10 +554,9 @@ export function checks(d: { kernel: KernelClient; kv: Kv; pause: (routine: strin
     // A task waiting on a judgement past its limit (a day on the owner, 6 hours on its delegator): the ask went unanswered.
     async judgement() {
       const t = now();
-      const items = ((await d.kernel.call("GET", "/v1/flow?idle=1")).items ?? []) as { task: string; identifier: string | null; reason: string; reason_since: string; note?: string }[];
-      return items
-        .filter((i) => JUDGEMENT_WAIT_MS[i.reason] !== undefined && age(i.reason_since, t) > JUDGEMENT_WAIT_MS[i.reason]! && !exempt({ identifier: i.identifier, originKind: null }))
-        .map((i) => ({ key: i.task, reason: `task ${i.identifier ?? i.task} has waited ${mins(age(i.reason_since, t))} on its ${i.reason === "owner_wait" ? "owner's" : "delegator's"} answer` }));
+      return (await openStates())
+        .filter((i) => JUDGEMENT_WAIT_MS[i.reason] !== undefined && age(i.since, t) > JUDGEMENT_WAIT_MS[i.reason]! && !exempt({ identifier: i.identifier, originKind: null }))
+        .map((i) => ({ key: i.task, reason: `task ${i.identifier ?? i.task} has waited ${mins(age(i.since, t))} on its ${i.reason === "owner_wait" ? "owner's" : "delegator's"} answer` }));
     },
     // A delegated task (a sub-task assigned to an agent) still todo an hour after it was made, with no job ever on it: the delegation never started.
     async unstarted() {
@@ -568,10 +573,9 @@ export function checks(d: { kernel: KernelClient; kv: Kv; pause: (routine: strin
       }
       return out;
     },
-    // Merge waits over 6 hours, and tasks blocked on each other: the queue or a red base holds them.
+    // Tasks blocked on each other in a cycle.
     async deadlock() {
-      const items = ((await d.kernel.call("GET", "/v1/flow?idle=1")).items ?? []) as IdleItem[];
-      return mergeDeadlocks(items.filter((i) => !exempt({ identifier: i.identifier, originKind: null })), now());
+      return blockedCycles((await openStates()).filter((i) => !exempt({ identifier: i.identifier, originKind: null })));
     },
     // One task whose runs alternate between two agents five times in 12 hours.
     async pingpong() {

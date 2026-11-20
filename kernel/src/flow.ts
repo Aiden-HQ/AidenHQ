@@ -2,7 +2,6 @@
 // change without re-instrumenting:
 //   task(id) / item(id)   the waterfall: every stage occurrence (start, end, actor), the facts, and every idle period with its reason
 //   summary({since, to, by, scope})  per stage work and wait (p50/p75, wait by reason), DORA, churn and the fleet metrics
-//   idleNow()             tasks idle now, oldest first
 //   journey({name, ...})  a declared journey's items (journeys.ts), each a bar of phase blocks; the summary adds its insights
 // A stage pairs a `to` fact with the latest open `from` fact of the same subject; a `to` that fails the stage's `where`
 // leaves it open, and an occurrence still open at the end after such a `to` is dropped (the record went the other way).
@@ -536,24 +535,6 @@ export function createFlow({ db, file, stages, journeys = () => [], now = () => 
       const t0 = ms(q.since), t1 = q.to ? ms(q.to) : now().getTime(), c = context(t0, t1);
       const list = listItems(c.built.get(j.name) ?? [], { t0, t1, authors: q.authors, sort: q.sort, limit: q.limit });
       return { journey: j.name, label: j.label, phases: j.phases.map((p) => ({ name: p.name, label: p.label })), items: list.items, truncated: list.truncated || c.truncated };
-    },
-
-    /**
-     * Tasks idle now (facts of the last 90 days), oldest first: `since` the idle stretch began, `reason_since` its current
-     * reason did, and `idle_wakes` how many idle wakes (the kernel's idle sweep, idle.ts) its holder got in the last 24 hours.
-     */
-    idleNow() {
-      const t = now().getTime(), { rows, truncated } = window(t - 90 * DAY, t + 1), x = index(rows), occs = pair(rows, stages());
-      const items: { task: string; identifier: string | null; since: string; reason_since: string; reason: string; blocked_on?: string; note?: string; holder: string; idle_wakes: number }[] = [];
-      for (const task of x.byTask.keys()) {
-        const gaps = idleOf(x, task, t, occs), last = gaps.at(-1);
-        if (!last || last.end !== null) continue;
-        let since = last.start;
-        for (let i = gaps.length - 2; i >= 0 && gaps[i]!.end === since; i--) since = gaps[i]!.start;
-        const idleWakes = (x.byTask.get(task) ?? []).filter((f) => f.type === "wake.opened" && f.data.cause === "idle" && ms(f.at) > t - DAY).length;
-        items.push({ task, identifier: x.ident.get(task) ?? null, since, reason_since: last.start, reason: last.reason, ...(last.blocked_on ? { blocked_on: last.blocked_on } : {}), ...(last.note ? { note: last.note } : {}), holder: last.holder, idle_wakes: idleWakes });
-      }
-      return { items: items.sort((a, b) => a.since.localeCompare(b.since)), truncated };
     },
   };
 }

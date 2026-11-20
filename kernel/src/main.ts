@@ -226,7 +226,7 @@ const escalate = createEscalate({
     if (!r.ok) throw Object.assign(new Error(`control plane GET task ${id} → ${r.status}`), { status: r.status });
     return (await r.json()) as never;
   },
-  comments: async (id) => (await cpJson(`/api/issues/${encodeURIComponent(id)}/comments?order=asc&limit=500`)) as never,
+  state: (id) => taskStates.read({ ids: [id] }).tasks[0],
   // The owner channel's attention reads the agent's key and roles (the grants table), as it does for the agent's own notify.
   asker: async (id) => {
     const g = grantsTable().agents?.[id] as { key?: string; roles?: string[] } | undefined;
@@ -417,7 +417,7 @@ every(() => {
   void wakes.poll().catch((e: Error) => log("wake poll failed", { err: String(e.message ?? e).slice(0, 300) })).finally(() => { polling = false; });
 }, (Number(env("AIDENHQ_WAKE_POLL_SECONDS", "")) || 60) * 1000);
 // No idle agent-held task (idle.ts): agents' own waits (POST /v1/wait), and the idle sweep every 5 minutes.
-const idle = createIdle({ db: records.db, facts, flow, wakes, owner: ownerApi, team: (id) => Boolean(grantsTable().agents?.[id]?.team), escalate, log });
+const idle = createIdle({ db: records.db, facts, state: taskStates, wakes, owner: ownerApi, team: (id) => Boolean(grantsTable().agents?.[id]?.team), escalate, log });
 let sweeping = false;
 every(() => {
   if (sweeping) return;

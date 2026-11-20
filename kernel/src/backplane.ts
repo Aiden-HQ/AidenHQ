@@ -52,9 +52,8 @@
 //                              of the kernel's work: a task's, one job, an agent's, the records and billed cost since a time, or what
 //                              runs and ended lately; Prometheus text (work.ts)
 //   GET  /v1/work[?task=|?job=|?agent=|?since=]  (the board) the same reads; never the metrics or a token
-//   GET  /v1/flow?task=|?item=|?idle=1|?journeys=1|?journey=|?since=[&to=&by=&scope=]  (the board, or a module with role
-//                              kernel.flow-read) Flow's views over the fact log (flow.ts): a task's or item's waterfall, idle
-//                              now, the declared journeys, a journey's items (journeys.ts), the summary with its insights
+//   GET  /v1/flow?task=|?item=|?journeys=1|?journey=|?since=[&to=&by=&scope=]  (the board, or a module with role
+//                              kernel.flow-read) Flow's views over the fact log (flow.ts): a task's or item's waterfall, the declared journeys, a journey's items (journeys.ts), the summary with its insights
 //   GET  /v1/tasks/state?ids=|?open=1  (the board, or a module with role kernel.flow-read) each task's one state, computed from
 //                              its facts (task-state.ts): `ids` (≤ 200, ids or identifiers, closures included) or every open task,
 //                              in one snapshot, with the needs-you, failed and unexplained-idle counts (task-state-read.ts)
@@ -226,7 +225,7 @@ const FACT_AT = /^\d{4}-\d\d-\d\dT[\d:.]+(Z|[+-]\d\d:\d\d)$/;
 const text = (v: unknown, max: number) => typeof v === "string" && v.length > 0 && v.length <= max;
 
 /**
- * GET /v1/flow's reads, by query: ?task=, ?item=, ?idle=1, ?journeys=1 (the declared journeys), ?journey=<name> (its items over
+ * GET /v1/flow's reads, by query: ?task=, ?item=, ?journeys=1 (the declared journeys), ?journey=<name> (its items over
  * ?since= [&to=&author=agent,owner,outside&sort=recent|slowest|rounds&limit=200]), else the summary over ?since= (default 7 days)
  * [&to=&by=&scope=] with its insights.
  */
@@ -234,7 +233,6 @@ function flowRead(flow: Flow, p: URLSearchParams) {
   const [task, item] = [p.get("task"), p.get("item")];
   if (task) return flow.task(task.slice(0, 100));
   if (item) return flow.item(item.slice(0, 100));
-  if (p.get("idle")) return flow.idleNow();
   if (p.get("journeys")) return flow.journeys();
   const since = p.get("since") ?? new Date(Date.now() - 7 * 864e5).toISOString(), to = p.get("to") ?? undefined, by = p.get("by") ?? "stage";
   if (Number.isNaN(Date.parse(since)) || (to && Number.isNaN(Date.parse(to)))) throw fail(400, "bad_request", "since and to are ISO timestamps");

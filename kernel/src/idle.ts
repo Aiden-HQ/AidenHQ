@@ -1,24 +1,24 @@
 // No idle agent-held task: every open task an agent holds is running, finished, blocked on something named, or waiting on
-// something recorded. Two halves, both on the wake inbox (wakes.ts) and flow's idle view (flow.ts):
+// something recorded. Two halves, both on the wake inbox (wakes.ts) and the kernel's task state (task-state.ts):
 // - wait(): an agent's own wait on its job's task (POST /v1/wait, the tasks connection's task_wait): a `work.waiting` fact
 //   (subject wait:<task>, reason agent_wait, its words as `note`), so flow names the wait instead of `orphaned`, and a wake
 //   at `until` (at most 7 days; 24 hours when it names only an event), so the task resumes by itself. The task's next job
-//   ends the wait (flow, and admission drops its timed wake); a new wait replaces the last. A wait `for` the owner or the
+//   ends the wait (the state, and admission drops its timed wake); a new wait replaces the last. A wait `for` the owner or the
 //   delegator is a judgement the task can't make itself: its reason is owner_wait or delegator_wait (the steward raises one
 //   left too long), it lasts until the answer wakes the task (7 days unless `until`), and its `question` goes to them once
 //   (escalate.ts): the owner as a decision message headed by the task, the delegator as a notice on its own task.
-// - sweep(): every few minutes, each open (todo, in_progress) task an agent holds (not a chat: it waits on the owner's next
-//   message, which reopens it) that flow reports `orphaned` for 15 minutes
-//   gets one wake for its holder, cause `idle` (dispatch words it), once each time it becomes orphaned (the key is when: a wake
+// - sweep(): every few minutes, each open (todo, in_progress) task an agent holds that the task state reports `orphaned` (a
+//   chat is `chat_turn`, never orphaned) or `unknown` (its holder's wake aged out) for 15 minutes
+//   gets one wake for its holder, cause `idle` (dispatch words it), once each time it becomes idle (the key is when: a wake
 //   the dispatcher drops leaves it orphaned again from the drop, so it is tried again 15 minutes later), at most 3 a day per
 //   task. Past that cap nothing more wakes it: the Fleet Steward reads the count (`idle_wakes`) and raises the task as a critical
-//   incident. An owner-held task is never swept (the steward's stale follow-up check has it), and isn't read: flow's holder
-//   says no agent holds it.
+//   incident. An owner-held task is never swept (the steward's stale follow-up check has it), and isn't read: the state's
+//   holder says no agent holds it.
 import type { Api } from "./channels.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { inTx, iso, strictFact, type Log } from "./factlog.ts";
 import type { Facts } from "./facts.ts";
-import type { Flow } from "./flow.ts";
+import type { TaskStateRead } from "./task-state-read.ts";
 import { fail } from "./proxy.ts";
 import type { Wakes } from "./wakes.ts";
 import type { Escalate } from "./escalate.ts";
@@ -31,10 +31,10 @@ const MAX_WAIT = 7 * DAY;
 const MIN_WAIT = 15 * 60_000;
 const SWEPT = new Set(["todo", "in_progress"]);
 
-export function createIdle({ db, facts, flow, wakes, owner, team = () => false, escalate, now = Date.now, log = () => {} }: {
+export function createIdle({ db, facts, state, wakes, owner, team = () => false, escalate, now = Date.now, log = () => {} }: {
   /** kernel.db: a wait's fact and its wake are one transaction. */
   db: DatabaseSync;
-  facts?: Facts; flow: Pick<Flow, "idleNow">; wakes: Pick<Wakes, "open" | "polls">; owner: Api;
+  facts?: Facts; state: Pick<TaskStateRead, "read">; wakes: Pick<Wakes, "open" | "polls">; owner: Api;
   /** Where a wait's question goes (escalate.ts); none: the wait is recorded and nobody is asked. */
   escalate?: Pick<Escalate, "ask">;
   /** Whether an agent id is a team record (its tasks go to a member; it never runs). */
@@ -42,8 +42,6 @@ export function createIdle({ db, facts, flow, wakes, owner, team = () => false, 
   now?: () => number; log?: Log;
 }) {
   const fact = facts ? strictFact(facts) : () => {};
-  /** Chat tasks seen (a label that stays): never read again. */
-  const chats = new Set<string>();
   return {
     /**
      * The job's own task waits: `reason` (its words), `until` (ISO) and/or `on` (the event it waits for); `for` owner or
@@ -90,20 +88,17 @@ export function createIdle({ db, facts, flow, wakes, owner, team = () => false, 
     /** One sweep: the tasks whose holders it woke. */
     async sweep() {
       const t = now(), opened: string[] = [];
-      for (const i of flow.idleNow().items) {
-        // No agent holds it by the facts (an owner's or unassigned task), or a chat: nothing to read (a new assignee fact, or a
-        // new idle stretch, brings it back).
-        if (i.reason !== "orphaned" || t - Date.parse(i.reason_since) < IDLE_AFTER_MS || i.idle_wakes >= IDLE_CAP || i.holder === "unknown" || chats.has(i.task)) continue;
+      for (const i of state.read({ open: true }).tasks) {
+        // Idle with nothing pending (or a wake nothing took) and an agent holds it; an owner's or unassigned task is not read.
+        if ((i.reason !== "orphaned" && i.reason !== "unknown") || !i.holder || i.holder === "owner" || t - Date.parse(i.since) < IDLE_AFTER_MS || i.idle_wakes >= IDLE_CAP) continue;
         try {
           const r = await owner("GET", `/api/issues/${encodeURIComponent(i.task)}`);
-          const task = r.json as { status?: string; assigneeAgentId?: string | null; labels?: { name?: string }[] };
-          // A chat waits on the owner's next message once answered (it reopens and wakes the chat); an agent no dispatcher
-          // runs would never take the wake (the steward's stuck-work rule has it).
-          if (r.status === 200 && task.labels?.some((l) => l.name === "chat")) { chats.add(i.task); continue; }
+          const task = r.json as { status?: string; assigneeAgentId?: string | null };
+          // An agent no dispatcher runs would never take the wake (the steward's stuck-work rule has it).
           if (r.status !== 200 || !SWEPT.has(String(task.status)) || !task.assigneeAgentId || team(task.assigneeAgentId) || !wakes.polls(task.assigneeAgentId)) continue;
-          // Keyed by when it became orphaned: a wake the dispatcher drops makes it orphaned again from then, so it is woken again
+          // Keyed by when it became idle: a wake the dispatcher drops makes it orphaned again from then, so it is woken again
           // 15 minutes later, up to the daily cap (then the steward raises it).
-          wakes.open({ key: `idle:${i.task}:${i.reason_since}`, task: i.task, agent: task.assigneeAgentId, cause: "idle" });
+          wakes.open({ key: `idle:${i.task}:${i.since}`, task: i.task, agent: task.assigneeAgentId, cause: "idle" });
           opened.push(i.task);
         } catch (e) {
           log("idle sweep: task skipped", { task: i.task, err: (e as Error).message });
