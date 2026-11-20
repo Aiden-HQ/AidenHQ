@@ -301,7 +301,7 @@ function copy(el: HTMLElement, text: string, button: HTMLButtonElement) {
 }
 
 /** The flow's steps, with a copy button after each inline code span (an address or value to paste elsewhere). */
-function Steps({ text }: { text: string }) {
+export function Steps({ text }: { text: string }) {
   const el = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const root = el.current;

@@ -1,10 +1,10 @@
-// The first-run wizard: a model gate, then the recovery key (when one is waiting), each module flow marked `wizard`, and a
+// The first-run wizard: a model gate, then the recovery key (when one is waiting), each module flow marked `wizard`, the MCP commands, and a
 // summary that ends in Aiden's welcome chat. It wraps the app (main.tsx), so every board route sits behind the model gate.
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { SignInRequired, admin, api, type SetupFlowView, type WelcomeState } from "./api";
 import { OrganisationPicker } from "./Organisation";
 import { Page } from "./settings-ui";
-import { SetupFlow } from "./SetupFlow";
+import { SetupFlow, Steps } from "./SetupFlow";
 import "./settings.css";
 import "./setup-flow.css";
 import "./welcome.css";
@@ -56,11 +56,18 @@ const STEP = "aidenhq.welcome.step";
 const read = () => { try { return sessionStorage.getItem(STEP); } catch { return null; } };
 const write = (v: string) => { try { sessionStorage.setItem(STEP, v); } catch { /* the wizard still works without it */ } };
 
-type Screen = { kind: "key" } | { kind: "org" } | { kind: "flow"; module: string } | { kind: "summary" };
+type Screen = { kind: "key" } | { kind: "org" } | { kind: "flow"; module: string } | { kind: "mcp" } | { kind: "summary" };
+
+// Claude Desktop and claude.ai call from Anthropic's cloud, so they need the board on public HTTPS; the board can't tell its exposure cheaply.
+const mcpSteps = (origin: string) => `**Claude Code:** \`claude mcp add --transport http aidenhq ${origin}/mcp\`, then \`/mcp\`, choose aidenhq, Authenticate, sign in and Allow.
+
+**Codex CLI:** \`codex mcp add aidenhq --url ${origin}/mcp\`
+
+Claude Code and Codex work from your own devices (tailnet devices on Tailscale, while the SSH tunnel is up on a local install). Claude Desktop and claude.ai connectors work only when the board is on public HTTPS.`;
 
 function Wizard({ state, onFinished }: { state: WelcomeState & { orgs: boolean }; onFinished: () => void }) {
   // Your organisation first, when the catalog lists any: choosing one fills the client IDs the flows after it would ask for.
-  const screens: Screen[] = [...(state.recoveryKeyWaiting ? [{ kind: "key" as const }] : []), ...(state.orgs ? [{ kind: "org" as const }] : []), ...state.wizard.map((module) => ({ kind: "flow" as const, module })), { kind: "summary" as const }];
+  const screens: Screen[] = [...(state.recoveryKeyWaiting ? [{ kind: "key" as const }] : []), ...(state.orgs ? [{ kind: "org" as const }] : []), ...state.wizard.map((module) => ({ kind: "flow" as const, module })), { kind: "mcp" as const }, { kind: "summary" as const }];
   // The screen survives a reload (and the round trip to the kernel's own pages): kept by identity, since the screens vary.
   const id = (sc: Screen) => (sc.kind === "flow" ? sc.module : sc.kind);
   const [at, setAt] = useState(() => Math.max(0, screens.findIndex((sc) => id(sc) === read())));
@@ -109,6 +116,18 @@ function Wizard({ state, onFinished }: { state: WelcomeState & { orgs: boolean }
         </div>
       )}
       {screen.kind === "flow" && <SetupFlow key={screen.module} module={screen.module} onDone={next} onSignIn={() => location.reload()} />}
+      {screen.kind === "mcp" && (
+        <div className="setup-overlay">
+          <Page title="Manage AidenHQ from your Claude" sub="Your own Claude can check status, talk to Aiden, change settings and decide approvals as you, and can help finish anything you skipped here.">
+            <section className="setup-card">
+              <Steps text={mcpSteps(location.origin)} />
+              <div className="setup-actions">
+                <button className="btn primary" onClick={next}>Continue</button>
+              </div>
+            </section>
+          </Page>
+        </div>
+      )}
       {screen.kind === "summary" && (
         <div className="setup-overlay">
           <Page title="You're set" sub="Aiden will pick up from here.">
