@@ -75,7 +75,8 @@ agent, never to the owner.
   `files_not_shown`), nothing was folded, every changed file's text fits the budget, and the request chain is not empty; the
   approval attests it (`whole: true`) and the kernel refuses a `second_unsure` approval without it, and drops `second_unsure`
   from a verdict that ends as anything but an approval (the owner's on its merits, a shadow). A model's own claim about its
-  input never decides it. The kernel
+  input never decides it. The reviewers are shown the file list and told the diff is whole only when it is; otherwise
+  their prompt says nothing about it (being told "not verified" made a single reviewer doubt clean diffs). The kernel
   refuses a reviewer approval of a panel card that names neither a second approval nor a second reviewer that was unsure. A
   call error or timeout is retried with backoff and, after six tries, goes back to the agent; a diff too large, missing or
   with files the reviewer can't read goes back too, and a reviewed card's details over 80,000 characters are refused at

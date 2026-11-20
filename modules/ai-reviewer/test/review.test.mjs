@@ -132,19 +132,16 @@ test("a diff that differs from the code host's own count of the change goes back
   assert.match(v.reason, /in the change, not the diff: src\/server\.ts \(\+40 -2\)/);
 });
 
-test("code lists the files the diff changes and says whether it checked them, and when it folded the diff", async () => {
+test("code lists the files the diff changes only when it checked them whole, and says nothing otherwise", async () => {
   const diff = "diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1,2 +1,2 @@\n-old\n+new\n+more\n--- a sql comment removed\ndiff --git a/b.md b/b.md\nnew file mode 100644\n--- /dev/null\n+++ b/b.md\n@@ -0,0 +1 @@\n+hi";
   let prompt;
   const ask = async (_m, p) => ((prompt = p), ok);
+  // Unverified input reads as it did before the count existed: no list, no word on wholeness (it made reviewers doubt clean diffs).
   await review({ card, diff, policy: "p", ask });
-  assert.match(prompt.user, /Code did not verify this input whole/);
-  assert.match(prompt.user, /<<<DIFF_FILES\nsrc\/a\.ts \(\+2 -2\)\nb\.md \(\+1 -0\)\nDIFF_FILES>>>/);
+  assert.doesNotMatch(prompt.system + prompt.user, /DIFF_FILES|whole/);
   await review({ card, diff, chain: "c", policy: "p", ask, files: { text: "", leftOut: [], oversized: [], changed: [{ path: "src/a.ts", add: 2, del: 2 }, { path: "b.md", add: 1, del: 0 }] } });
   assert.match(prompt.user, /Code checked the diff against the code host's own count of the change.*it is whole; the DIFF shown is \d+ characters/);
-  // A diff over the limit whose size is a lockfile is folded, and the prompt says so.
-  const lock = `diff --git a/package-lock.json b/package-lock.json\n--- a/package-lock.json\n+++ b/package-lock.json\n@@ -1 +1,${MAX_DIFF / 10} @@\n${"+    \"x\": \"1.0.0\",\n".repeat(MAX_DIFF / 10)}`;
-  await review({ card, diff: `${diff}\n${lock}`, policy: "p", ask });
-  assert.match(prompt.user, /folded lockfile hunks into a note/);
+  assert.match(prompt.user, /<<<DIFF_FILES\nsrc\/a\.ts \(\+2 -2\)\nb\.md \(\+1 -0\)\nDIFF_FILES>>>/);
 });
 
 test("the reviewer's codes are exactly the shared REVIEW_CODES (services/shared/reason-codes.ts)", () => {
