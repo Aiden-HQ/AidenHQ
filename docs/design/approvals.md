@@ -56,20 +56,34 @@ agent, never to the owner.
 - **Tier 0: runs at once.** The runner executes directly and writes an audit-only record (state `auto`, outcome filled in).
   There is no card and no ping.
 - **Tier 1: AI reviewer.** A card is filed and the reviewer decides. With `panel`, a second reviewer (another model
-  family than the first's and the requester's) answers the same question blind to the first's verdict: both approving runs
-  it, the first rejecting sends it back, anything else is a split for the owner. The kernel refuses a reviewer approval of
-  a panel card that names no second reviewer. A call error or timeout is retried with backoff and, after six tries, goes
-  back to the agent; a diff too large, missing or with files the reviewer can't read goes back too. A first reviewer's
-  "unsure" goes to a second reviewer (another family), given the first's note: its approve or reject decides (one approval
-  on a panel card is a split), and a second "unsure" sends the request back to the agent with both notes, not to the
-  owner. The same commits are reviewed again once, after the request chain changed; unsure twice again on that
-  re-review goes to the owner with both rounds' notes. Otherwise a request the reviewer rejected is refused by code before
+  family than the first's and the requester's) answers the same question blind to the first's verdict after a first
+  approve; the first rejecting sends it back without asking the second. A first reviewer's "unsure" goes to a second
+  reviewer (another family), given the first's note. Two votes decide (owner, 2026-11-20: under full autonomy no panel
+  outcome is the owner's but the one below):
+
+  | Votes | Outcome |
+  |---|---|
+  | approve + approve | approved (`reviewer:A+B`) |
+  | approve + unsure | approved, the unsure one recorded as `second_unsure` (`reviewer:A;unsure:B`), only when code verified the input whole; otherwise back to the agent (`reviewer_unsure`) |
+  | unsure + unsure | back to the agent with both notes (`reviewer_unsure`), never the owner |
+  | approve + reject | back to the agent with both notes (`panel_split`); the third such split on a target goes to the owner (Tier 2) instead of parking it |
+  | reject (first, or after an unsure) | rejected, back to the agent (the park rules below) |
+  | escalate (either) | the owner, as one reviewer's escalate |
+
+  "Verified whole": the code host records git's own numstat of the change at filing (`files.changed`), the reviewer checks
+  the diff against it before any model reads it (a file missing, extra or with other line counts goes back as
+  `files_not_shown`), and the request chain is not empty. A model's own claim about its input never decides it. The kernel
+  refuses a reviewer approval of a panel card that names neither a second approval nor a second reviewer that was unsure. A
+  call error or timeout is retried with backoff and, after six tries, goes back to the agent; a diff too large, missing or
+  with files the reviewer can't read goes back too, and a reviewed card's details over 80,000 characters are refused at
+  filing, never cut. The same commits come back for review once after an unsure send-back, when the request chain changed.
+  Otherwise a request the reviewer rejected is refused by code before
   any review when it comes back unchanged on that task (the same commits or patch, the same call's digest), until the
   owner's own comment on that task, after the rejection, answers it (never a parent's comment, nor an edit of the task's
   title or description, which the agent can make): the agent changes it or reports back (owner, 2026-11-18: refile only
   after a fix). Every rejection, answered or not, counts toward the 3-per-target bound, on whatever branch the same
   content is filed.
-- **Tier 2: owner** (under full autonomy only the owner's own authority, see Autonomy). A board card plus a message on the owner channel: a panel split, a reviewer's
+- **Tier 2: owner** (under full autonomy only the owner's own authority, see Autonomy). A board card plus a message on the owner channel: the third approve + reject panel split on a target, a reviewer's
   "escalate" (a destructive migration), the owner's own veto, a routine's or the instance's autonomy cap, a spend-cap
   raise, or nothing recognised. The AI reviewer reads every one first (owner, 2026-11-16: every write is reviewed before it
   reaches the owner), and its verdict is on the owner's card:

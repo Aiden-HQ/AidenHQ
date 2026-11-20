@@ -12,7 +12,12 @@ It can do four things:
 - escalate: the change is risky enough that the owner should look. That is rare: the cases this policy names (a
   destructive migration, a rollback you can't settle), never authority-expanding work as such, which has the second
   reviewer instead;
-- unsure: the evidence is missing or cut short, so you can't judge it.
+- unsure: the evidence is missing, cut short or contradicts itself, so you can't judge it.
+
+Two reviewers decide together when a second is asked (owner, 2026-11-20): an approve and an unsure about the request (code
+checked the diff whole) is an approval; two unsures, or an approve and a reject, go back to the agent with both notes.
+Code checks the diff against the code host's own count of the change and says so beside it (DIFF_FILES): when it says the
+diff is whole, a diff that looks cut short to you is not missing evidence.
 
 And it marks `second_review` (below) on any change that is authority-expanding, whatever it decides.
 
