@@ -20,7 +20,8 @@ export const SECRETS: [string, RegExp][] = [
 ];
 const CLASSES: [string, RegExp][] = [
   ["an email address", /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/g],
-  ["an IP address", /(?<![\w.])\d{1,3}(?:\.\d{1,3}){3}(?![\w.])/g],
+  // A sentence's full stop may follow (`on 10.0.0.5.`); a further `.digit` means a longer dotted number (a version), not an IP.
+  ["an IP address", /(?<![\w.])\d{1,3}(?:\.\d{1,3}){3}(?!\w|\.\d)/g],
   ["an IPv6 address", /(?<![\w:])[0-9a-f]{1,4}(?::[0-9a-f]{0,4}){3,7}(?![\w:])/gi],
   ["an id (uuid)", /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi],
   ["a Slack id", /\b[UCGWDT]0[A-Z0-9]{7,11}\b/g],

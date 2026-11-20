@@ -156,6 +156,7 @@ it("A18: owner data in an upstream report is refused with the matches; a clean o
     ["a company org", { title: "kernel: ACME-CO repos" }, /acme-co/],
     ["an email", { body: "mail bob@other.example" }, /an email address: bob@other\.example/],
     ["a public IP", { evidence: { ...evidence, log: "from 198.18.4.20" } }, /an IP address: 198\.18\.4\.20/],
+    ["an IP at the end of a sentence", { body: "the host on 10.0.0.5." }, /an IP address: 10\.0\.0\.5/],
     ["an IPv6 address", { body: "peer fd7a:115c:a1e0::1 timed out" }, /IPv6/],
     ["a uuid", { body: "agent 3f2b1c4d-1111-4a2b-9c3d-0123456789ab" }, /uuid/],
     ["a Slack id", { body: "channel C0ABCD1234" }, /Slack id/],
