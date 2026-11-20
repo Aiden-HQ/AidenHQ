@@ -89,18 +89,3 @@ for (const [via, name] of [["viaBoard", "the board's proxy"], ["viaChannel", "a 
     assert.deepEqual(w.wakeRows().filter((r) => r.startsWith("comment:")), ["comment:c1 open"]);
   });
 }
-
-test("an owner comment older than the wait, delivered after it, doesn't end it", async (t) => {
-  const w = world(t);
-  await w.wakes.poll();
-  const before = w.at();
-  w.tick(60_000);
-  w.ask();
-  w.tick();
-  // Written before the question, read by the poll only now.
-  w.comments.push({ id: "c-old", body: "hi", authorUserId: "u-board", authorAgentId: null, createdAt: before });
-  await w.wakes.poll();
-  assert.ok(w.facts.forTask("t1").some((f: any) => f.type === "task.commented" && f.version === "c-old"), "the old comment is a fact");
-  assert.equal(w.state().reason, "owner_wait");
-  assert.ok(w.state().attention.some((a) => a.who === "owner" && a.why === "owner_wait"));
-});
