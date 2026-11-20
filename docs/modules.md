@@ -7,6 +7,24 @@ service calls and the rules the kernel applies to each; the wider `module.yaml` 
 Every call carries the module's own token. A route that names a role is refused with 403 unless the module's
 `module.yaml` `roles.requests` lists it; the compiler writes that list into the grants table.
 
+### A refusal's shape
+
+A refused call answers a 4xx (or a 5xx for an upstream failure) with one error body, and the client
+the kernel is called through (`kernel/sdk/src/kernel-client.ts`, copied into every module that calls it) throws it
+as a `KernelError`:
+
+```json
+{ "error": { "code": 403, "type": "no-grants", "message": "agent <id> has no grants" } }
+```
+
+`status` is the HTTP status; `body.type` names the refusal (`no-grants`, `not-your-agent`, `bad-profile`,
+`task-not-assigned`, `provenance-unsettled`, `task-closed`, `job-running`, `wake-not-claimed`, …) and `body.message`
+is the kernel's own words, so a module can say on a task what it was refused and by which rule without re-parsing the
+message. `body` is absent when the answer carried none. Retry a refusal the kernel can clear on a recompile or a
+re-queue (`no-grants`, `not-your-agent`, `bad-profile`, `task-not-assigned`, `provenance-unsettled`) a bounded number
+of times; a refusal that never changes (`task-closed`) is final. Never retry a 429 as a refusal: that is "busy", and
+the work stays where it is until it comes back.
+
 ## `POST /v1/tasks` — file a task
 
 Grant: `kernel.tasks`.
