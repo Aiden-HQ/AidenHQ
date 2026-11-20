@@ -2240,12 +2240,12 @@ export function createApp(opts: AppOptions): Server {
     const auth = mcpAuth!;
     const host = String(req.headers.host ?? "").toLowerCase();
     if (!opts.allowedHosts.includes(host)) throw new HttpError(403, "unknown host");
-    if (url.pathname === "/.well-known/oauth-protected-resource") return send(res, 200, JSON.stringify(auth.metadata(req)), "application/json");
+    if (url.pathname === "/.well-known/oauth-protected-resource") return send(res, 200, JSON.stringify(auth.metadata()), "application/json");
     // A page in a browser (DNS rebinding, CSRF) carries an Origin that is not the board's own; a CLI carries none.
     const origin = req.headers.origin;
-    if (origin && (origin === "null" || !URL.canParse(origin) || new URL(origin).origin !== new URL(auth.origin(req)).origin)) throw new HttpError(403, "cross-origin");
+    if (origin && (origin === "null" || !URL.canParse(origin) || ![auth.board, new URL(auth.origin(req)).origin].includes(new URL(origin).origin))) throw new HttpError(403, "cross-origin");
     const unauthorized = (error?: string) => {
-      res.writeHead(401, { ...SECURITY_HEADERS, "content-type": "application/json", "cache-control": "no-store", "www-authenticate": auth.challenge(req, error) }).end(JSON.stringify({ error: error ?? "sign in" }));
+      res.writeHead(401, { ...SECURITY_HEADERS, "content-type": "application/json", "cache-control": "no-store", "www-authenticate": auth.challenge(error) }).end(JSON.stringify({ error: error ?? "sign in" }));
     };
     const token = auth.bearer(req);
     if (!token) return unauthorized();
@@ -2256,10 +2256,10 @@ export function createApp(opts: AppOptions): Server {
     const body = await readJson(req, 1_000_000);
     const calls = (Array.isArray(body) ? body : [body]) as { method?: string; params?: { name?: string } }[];
     const writes = calls.some((m) => m?.method === "tools/call" && WRITE_TOOLS.has(String(m.params?.name)));
-    const who = await auth.check(req, token, writes);
+    const who = await auth.check(token, writes);
     if (!who) return unauthorized("invalid_token");
     sessions.set(req, who.session);
-    await mcp!(req, res, body, { token, resource: auth.resource(req), origin: auth.origin(req) });
+    await mcp!(req, res, body, { token, resource: auth.resource(), origin: auth.board });
   }
 
   return createServer(async (req, res) => {

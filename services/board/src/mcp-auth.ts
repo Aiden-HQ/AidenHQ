@@ -8,21 +8,28 @@ import { accountSession, type BoardSession } from "./session.js";
 
 const CHECK_MS = 5_000;
 
-export function createMcpAuth(auth: Pick<KernelAuth, "mcpGrant">, adminUrl: string, now: () => number = Date.now) {
+/** The board's own origin as the kernel knows it: the first AIDENHQ_BOARD_ORIGINS entry, else BOARD_LAN_URL's, else the loopback board. */
+export const boardOrigin = (env: NodeJS.ProcessEnv = process.env) =>
+  new URL(env.AIDENHQ_BOARD_ORIGINS?.split(",")[0]?.trim() || env.BOARD_LAN_URL || "http://localhost:3121").origin;
+
+export function createMcpAuth(auth: Pick<KernelAuth, "mcpGrant">, adminUrl: string, board: string = boardOrigin(), now: () => number = Date.now) {
   const checked = new Map<string, { at: number; who: AccountSession; client: string }>();
+  /** The origin this request reached the board by (only to tell a foreign page's Origin apart). */
   const origin = (req: Pick<IncomingMessage, "headers">) => `${forwardedProto(req)}://${String(req.headers.host ?? "").toLowerCase()}`;
+  const issuer = new URL(adminUrl).origin;
   return {
     origin,
+    board,
     /** The audience of this board's tokens: its own /mcp. */
-    resource: (req: Pick<IncomingMessage, "headers">) => `${origin(req)}/mcp`,
+    resource: () => `${board}/mcp`,
     /** RFC 9728: where the client finds the authorization server (the kernel's admin origin is the issuer). */
-    metadata: (req: Pick<IncomingMessage, "headers">) => ({ resource: `${origin(req)}/mcp`, authorization_servers: [adminUrl], bearer_methods_supported: ["header"] }),
+    metadata: () => ({ resource: `${board}/mcp`, authorization_servers: [issuer], bearer_methods_supported: ["header"] }),
     /** The 401's `WWW-Authenticate`: points an unauthenticated client at the metadata. */
-    challenge: (req: Pick<IncomingMessage, "headers">, error?: string) => `Bearer resource_metadata="${origin(req)}/.well-known/oauth-protected-resource"${error ? `, error="${error}"` : ""}`,
+    challenge: (error?: string) => `Bearer resource_metadata="${board}/.well-known/oauth-protected-resource"${error ? `, error="${error}"` : ""}`,
     bearer: (req: Pick<IncomingMessage, "headers">) => /^Bearer (\S{1,2000})$/.exec(String(req.headers.authorization ?? ""))?.[1],
     /** The session behind a bearer for this board's /mcp, or null. `fresh` (every write) skips the few seconds' belief. */
-    async check(req: Pick<IncomingMessage, "headers">, token: string, fresh: boolean): Promise<{ session: BoardSession; client: string } | null> {
-      const resource = `${origin(req)}/mcp`;
+    async check(token: string, fresh: boolean): Promise<{ session: BoardSession; client: string } | null> {
+      const resource = `${board}/mcp`;
       const key = `${resource} ${token}`;
       const hit = checked.get(key);
       let who: { who: AccountSession | null; client: string };

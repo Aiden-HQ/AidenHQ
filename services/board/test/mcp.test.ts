@@ -15,6 +15,7 @@ import { Store } from "../src/store.js";
 import { card, fakeRecords } from "./fake-records.js";
 import { BOARD_KEY, fakeKernel } from "./kernel.js";
 
+process.env.AIDENHQ_BOARD_ORIGINS = "https://board.example.com/, http://localhost:3121";
 const dir = mkdtempSync(join(tmpdir(), "mcp-"));
 writeFileSync(join(dir, "paperclip.yaml"), stringify({ settings: { grading: { value: "on", set: false } }, agents: {}, mcp_servers: {}, routines: {} }));
 writeFileSync(join(dir, "modules.json"), JSON.stringify([{ name: "core", enabled: true, settings: { grading: { default: "on", values: ["on", "off"] } } }]));
@@ -170,6 +171,9 @@ describe("mcp end to end", () => {
     expect(get.json.grants.map((g: { client: string }) => g.client)).toContain("Claude Code");
     const grant = get.json.grants[0].id;
     expect((await http("POST", `/api/accounts/mcp-clients/${grant}/revoke`, {}, { cookie, "x-aidenhq-board": "1", origin: "https://board.example.com" })).json).toEqual({ ok: true });
+    // Another account's grant is not found.
+    const other = kernel.mcp.token({ id: "u-ann", email: "ann@example.com", name: "Ann", role: "admin", owner: false });
+    expect((await http("POST", `/api/accounts/mcp-clients/${other.slice(-8)}/revoke`, {}, { cookie, "x-aidenhq-board": "1", origin: "https://board.example.com" })).status).toBe(404);
     expect((await http("GET", "/api/accounts/mcp-clients", undefined, { cookie })).json.grants.map((g: { id: string }) => g.id)).not.toContain(grant);
   });
 });

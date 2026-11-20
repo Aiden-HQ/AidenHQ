@@ -63,12 +63,19 @@ export async function fakeKernel(): Promise<{
         if (!g || g.revoked || g.resource !== body.resource) return send(401, { error: { message: "no such grant" } });
         if (req.url === "/v1/auth/mcp") return send(200, { account: g.account, client: g.client, expires: new Date(Date.now() + 3_600_000).toISOString() });
         // Each card on its own; `by` comes from the grant, never the body.
-        return send(200, { outcomes: body.cards.map((c: { id: string; digest: string; decision: string }) => (digests.get(c.id) === c.digest ? { id: c.id, ok: true, state: c.decision === "approve" ? "approved" : "rejected", by: `account:${g.account.id}` } : { id: c.id, ok: false, error: `${c.id} changed since you read it` })) });
+        return send(200, { outcomes: body.cards.map((c: { id: string; digest: string; decision: string }) => (digests.get(c.id) === c.digest ? { id: c.id, ok: true, state: c.decision === "approve" ? "approved" : "rejected", by: `account:${g.account.id}` } : { id: c.id, ok: false, error: `card ${c.id} changed since you read it: call approvals again` })) });
       }
-      case "/v1/auth/mcp/grants":
-        return send(200, { grants: [...grants.entries()].filter(([, g]) => g.account.id === body.account && !g.revoked).map(([t, g]) => ({ id: t.slice(-8), client: g.client, lastUsed: null })) });
+      case "/v1/auth/mcp/grants": {
+        const me = sessions.get(body.token);
+        if (!me) return send(401, { error: { message: "no session" } });
+        return send(200, { grants: [...grants.entries()].filter(([, g]) => g.account.id === me.id && !g.revoked).map(([t, g]) => ({ id: t.slice(-8), client: g.client, lastUsed: null })) });
+      }
       case "/v1/auth/mcp/revoke": {
-        for (const [t, g] of grants) if (g.account.id === body.account && t.endsWith(body.grant)) g.revoked = true;
+        const me = sessions.get(body.token);
+        if (!me) return send(401, { error: { message: "no session" } });
+        const hit = [...grants].find(([t, g]) => g.account.id === me.id && t.endsWith(body.grant));
+        if (!hit) return send(404, { error: { message: "no such grant" } }); // another account's grant is not found
+        hit[1].revoked = true;
         return send(200, { ok: true });
       }
       case "/v1/auth/sign_out":

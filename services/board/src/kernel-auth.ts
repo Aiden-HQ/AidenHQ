@@ -128,8 +128,8 @@ export function createKernelAuth(o: KernelAuthOptions) {
     mcpDecide: (token: string, resource: string, cards: { id: string; digest: string; decision: "approve" | "reject"; reason?: string; stale?: boolean }[]) =>
       post<{ outcomes: { id: string; ok: boolean; state?: string; identifier?: string; error?: string }[] }>("/v1/owner/decide", { token, resource, cards }),
     /** The MCP clients an admin has signed in, and ending one. */
-    mcpGrants: (who: AccountSession) => post<{ grants: { id: string; client: string; lastUsed: string | null }[] }>("/v1/auth/mcp/grants", { account: who.account.id }),
-    mcpRevoke: (who: AccountSession, grant: string) => post<{ ok: true }>("/v1/auth/mcp/revoke", { account: who.account.id, grant }),
+    mcpGrants: (who: AccountSession) => post<{ grants: { id: string; client: string; lastUsed: string | null }[] }>("/v1/auth/mcp/grants", { token: who.token }),
+    mcpRevoke: (who: AccountSession, grant: string) => post<{ ok: true }>("/v1/auth/mcp/revoke", { token: who.token, grant }),
     /** The owner's own chat words, filed as his in-app request on an app (the kernel checks they name it). */
     ownerRequest: (app: string, words: string) => post<{ id: string; status: string }>("/v1/accounts/owner_request", { app, words }),
   };
