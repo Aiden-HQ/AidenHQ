@@ -519,15 +519,16 @@ const lane = createLane({ once: outcomes.once, owner: ownerApi, grantsFile: gran
 const moduleBoardApi = createBoardApi({ decl: (m) => (modulesFile().modules?.[m] as { board?: { url: string; auth_secret: string } } | undefined)?.board, secret, resolver });
 // A job's precheck (`aidenhq review`): the write it would file, planned and tiered but never filed, read as the review loop reads
 // a record and decided as writes.review decides; `slot` counts the reviewer call against the job's PRECHECKS (jobtools.ts).
-async function precheck(who: Parameters<typeof writes.preview>[0], b: { kind: string; args: unknown }, slot: () => void) {
+async function precheck(who: Parameters<typeof writes.preview>[0], b: { kind: string; args: unknown }, slot: () => (failure: unknown) => void) {
   const p = await writes.preview(who, b);
   if (p.satisfied !== undefined) return { text: "Nothing to do: the code host says it is already done.", reason: p.satisfied };
   if (p.rec!.tier === 0) return { text: "Tier 0: this write runs without a review." };
   // A first reviewer's approve that marks the write for a panel isn't a pass: a filed record would wait for a second reviewer.
   let panel = false;
   const v = await reviewLoop.precheck(p.rec!, async (request) => {
-    slot();
-    const got = (await reviews.request(request)) as Verdict & { panel_marked?: boolean };
+    const refund = slot();
+    // A call that never reached a reviewer cost nothing: the precheck is the job's again (jobtools.ts decides which failures).
+    const got = (await reviews.request(request).catch((e) => { refund(e); throw e; })) as Verdict & { panel_marked?: boolean };
     panel = got.panel_marked === true;
     return got;
   });

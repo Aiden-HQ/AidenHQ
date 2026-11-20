@@ -49,7 +49,7 @@ test("gateway: attribution, billed cost, caps, raise_cap once, daily reset, no o
     const auth = String(req.headers.authorization).slice(7);
     if (auth !== "pc-board") return json(res, 403, {});
     const m = /^\/api\/issues\/(\w+)$/.exec(req.url);
-    if (m) return json(res, 200, issues[m[1]]);
+    if (m && issues[m[1]]) return json(res, 200, issues[m[1]]);
     json(res, 404, {});
   });
   // kernel.raise_cap, as main.ts files it (writes.ts fileNative): each filing kept.
@@ -242,4 +242,36 @@ test("gateway: the install cap counts every call of the day, no-agent ones too, 
   // Unset, no install cap at all.
   writeFileSync(settingsFile, JSON.stringify({ models: { m: price } }));
   assert.equal((await spend()).install.cap, null);
+});
+
+test("gateway: a control plane blip never settles a chat run as capped for life, and a stalled stream is cut and settled", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "gw-"));
+  const secrets = { openrouter_key: "sk-real", gateway_job_secret: "job-secret", paperclip_board_key: "pc-board" };
+  const grantsFile = join(dir, "grants.json");
+  writeFileSync(grantsFile, JSON.stringify({ agents: { ag1: { key: "aiden" } } }));
+  const settingsFile = join(dir, "gateway.json");
+  writeFileSync(settingsFile, JSON.stringify(MODELS));
+  const upstream = await serve((req, res) => { req.resume(); req.on("end", () => {
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    res.write(`data: {"id":"gen-stall"}\n\n`); // then nothing: a stream that stalls
+  }); });
+  let down = true;
+  const paperclip = await serve((req, res) => (down ? json(res, 502, {}) : json(res, 200, { labels: [{ name: "chat" }] })));
+  const gw = createGateway({ dbFile: join(dir, "usage.db"), grantsFile, settingsFile, secret: (n) => secrets[n] ?? "", upstream: upstream.url, paperclipUrl: paperclip.url, jobLive: () => true, streamIdleMs: 50, taskRetryMs: [0] });
+  const front = await serve((req, res) => gw.handle(req, res));
+  t.after(() => { for (const x of [upstream, paperclip, front]) x.s.closeAllConnections?.(), x.s.close(); gw.close(); });
+  const token = mintToken("job-secret", { kind: "job", job: "c1", agentId: "ag1", issueId: "chat1" });
+  const call = () => fetch(`${front.url}/api/v1/chat/completions`, { method: "POST", headers: { authorization: `Bearer ${token}` }, body: JSON.stringify({ model: "m", stream: true, messages: [] }) });
+  // The control plane is down: the call is refused for now (the engine retries) and nothing about the run is settled.
+  assert.equal((await call()).status, 503);
+  assert.equal(gw.db.prepare("SELECT COUNT(*) AS n FROM runs").get().n, 0);
+  // Back: the run is a chat task's (capped by the day), and the stalled answer is cut within streamIdleMs, its reservation settled.
+  down = false;
+  const r = await call();
+  assert.equal(r.status, 200);
+  await r.text().catch(() => {});
+  assert.equal(gw.db.prepare("SELECT perpetual FROM runs").get().perpetual, 1);
+  for (let i = 0; i < 100 && gw.inflight() > 0; i++) await new Promise((ok) => setTimeout(ok, 10));
+  assert.equal(gw.inflight(), 0);
+  assert.equal(gw.db.prepare("SELECT status FROM calls").get().status, "upstream_aborted");
 });
