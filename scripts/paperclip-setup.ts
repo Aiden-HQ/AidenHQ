@@ -19,7 +19,7 @@ import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { ensureBackupRetention, ensureChatTasks, ensureFleetIssues, ensureMemoryInboxes, ensureReviewLogs, holdFleetIssues, grantEntry, mapLimit, routineAutonomyDefault } from "./modules.ts";
 import { busyRemovedMembers, retireUnconfigured } from "./retire-agents.ts";
-import { writeRecord } from "./record-agent.ts";
+import { routineDrift, syncAgents } from "./paperclip-diff.ts";
 import { ensureAgentKeys, ensureEventsPlugin } from "./paperclip-events.ts";
 import { agentSkills, handbookParts, laneHandbook, readInstructions as readHandbook } from "./handbook.ts";
 import { recoverStalePid } from "./paperclip-recover.ts";
@@ -283,23 +283,15 @@ async function ensureAgents(companyId: string, fleetIssues: string) {
     handbooks[key] = lane;
     return { key, a, agent, body, instructions };
   });
-  // A few side by side: each agent's record, its handbook (Paperclip's copy, which the Librarian and the board read) and the
-  // kernel's copy, then the read-back.
-  const updated = await mapLimit(plans, 4, async (p: (typeof plans)[number]) => {
-    const { a, body, instructions } = p;
-    const w = await writeRecord({ api, companyId, agent: p.agent, body, instructionsBundle: { entryFile: "AGENTS.md", files: { "AGENTS.md": instructions } } });
-    p.agent = w.agent;
-    if (w.created) step(`Created agent ${a.name}`);
-    // Instructions are revisioned (2026.1106): write against the current revision, and only when changed.
-    const cur = (await api("GET", `/api/agents/${p.agent.id}/instructions-bundle/file?path=AGENTS.md`, undefined, { allow: [404] })).json;
-    if (cur.content !== instructions) await api("PUT", `/api/agents/${p.agent.id}/instructions-bundle/file`, { path: "AGENTS.md", content: instructions, baseRevisionId: cur.revision?.id ?? null });
-    // The kernel's copy: a kernel job's engine home gets it as its instructions file (kernel/src/boxes.ts).
-    mkdirSync(join(configDir, "handbooks"), { recursive: true });
-    writeFileSync(join(configDir, "handbooks", `${p.agent.id}.md`), instructions);
-    step(`Updated agent ${a.name}`);
-    return (await api("GET", `/api/agents/${p.agent.id}`)).json;
-  });
-  return Object.fromEntries(plans.map((p, i) => [p.key, updated[i]]));
+  // Only the agents whose record or handbook differ from Paperclip's are written (scripts/paperclip-diff.ts).
+  const live = await syncAgents({ api, companyId, rows: agents, plans: plans.map((p) => ({ key: p.key, name: p.a.name, agent: p.agent, body: p.body, instructions: p.instructions })), step });
+  // The kernel's copy: a kernel job's engine home gets it as its instructions file (kernel/src/boxes.ts).
+  mkdirSync(join(configDir, "handbooks"), { recursive: true });
+  for (const p of plans) {
+    const file = join(configDir, "handbooks", `${live[p.key]!.id}.md`);
+    if (!existsSync(file) || readFileSync(file, "utf8") !== p.instructions) writeFileSync(file, p.instructions);
+  }
+  return live;
 }
 
 /** reports_to: <agent key> sets Paperclip's reportsTo once every agent exists. */
@@ -376,23 +368,25 @@ function updateSystemYaml(companyId: string) {
 }
 
 /**
- * Earlier setups registered these MCP servers as Paperclip Tool Connections. Codex now
- * gets them directly (see mcp_servers in config/paperclip.yaml), so remove gateway
- * installs to avoid duplicate tools that Codex would refuse to call.
+ * Each configured routine (matched by title), its schedules and its webhook, written only where Paperclip's differs: one list
+ * call (it carries the triggers) is the whole read. A routine that differs gets today's full write: schedules first, then
+ * its own fields (re-saving a schedule moves its next run to the next tick from now, so a routine resumed after a long pause
+ * starts there instead of Paperclip catching up every tick it missed, up to 25 runs).
  */
 async function ensureRoutines(companyId: string, agents: Record<string, Obj>) {
   const { json: routines } = await api("GET", `/api/companies/${companyId}/routines`);
-  // One routine's calls (update, read, triggers) are independent of the next one's: a few side by side.
-  await mapLimit(Object.entries<Obj>(cfg.routines ?? {}), 4, async ([key, r]: [string, Obj]) => {
+  const work: { key: string; r: Obj; body: Obj; routine?: Obj; webhook?: { prefix: string; label: string; existing?: Obj } }[] = [];
+  for (const [key, r] of Object.entries<Obj>(cfg.routines ?? {})) {
     const agent = agents[r.agent];
     if (!agent) fail(`routine ${key}: unknown agent ${r.agent}`);
+    const routine = routines.find((x: Obj) => x.title === r.title);
     const body = {
       title: r.title,
       description: r.description,
       assigneeAgentId: agent.id,
       priority: "medium",
       // A paused routine stays paused across applies (the detector's auto-pause, the owner's pause) unless the config sets a status; an archived one that returns comes back active.
-      status: r.status ?? (routines.find((x: Obj) => x.title === r.title)?.status === "paused" ? "paused" : "active"),
+      status: r.status ?? (routine?.status === "paused" ? "paused" : "active"),
       concurrencyPolicy: r.concurrency ?? "coalesce_if_active",
       // Placeholders like {{tasks}} are filled by whoever starts the run (API); give them a default.
       variables: [...new Set([...(r.description ?? "").matchAll(/\{\{\s*([A-Za-z][A-Za-z0-9_]*)\s*\}\}/g)].map((m) => m[1]))]
@@ -403,19 +397,39 @@ async function ensureRoutines(companyId: string, agents: Record<string, Obj>) {
       // A routine's model and reasoning_effort are the kernel's (grants.json `routines`); nothing rides in the routine's env.
       env: null,
     };
-    let routine = routines.find((x: Obj) => x.title === r.title);
+    const drift = routine ? routineDrift(body, routine, r.schedules ?? []) : ["new"];
+    let webhook;
+    if (r.webhook) {
+      // Webhooks come from modules only: an instance agent (writable through apply) could otherwise take another routine's secret.
+      if (cfg.agents?.[r.agent]?.module === "instance") fail(`routine ${key}: an instance agent's routine can't have a webhook`);
+      if (r.secrets_prefix != null && !/^[a-z0-9_]+$/.test(r.secrets_prefix)) fail(`routine ${key}: secrets_prefix must be lowercase letters, digits and _`);
+      // Secret files: <secrets_prefix>_url / _secret (default meeting_webhook, the transcript watcher).
+      const prefix = r.secrets_prefix ?? "meeting_webhook";
+      const label = r.secrets_prefix ? `${key} webhook` : "transcript watcher";
+      webhook = { prefix, label, existing: routine?.triggers?.find((t: Obj) => t.kind === "webhook" && t.label === label) };
+      if (routine && (!webhook.existing || !readSecret(`${prefix}_secret${companySuffix}`))) drift.push("webhook");
+    }
+    if (routine) {
+      // Its cap is in the grants table before any trigger can fire it (the runner treats an unknown routine as off).
+      routineAutonomy[routine.id] = r.autonomy ?? routineAutonomyDefault(r);
+      routineKeys[routine.id] = key;
+    }
+    if (drift.length) { work.push({ key, r, body, routine, webhook }); step(`Routine ${r.title}: ${drift.join(", ")}${routine ? " changed" : ""}`); }
+  }
+  step(`setup: ${work.length} routines changed, ${Object.keys(cfg.routines ?? {}).length - work.length} unchanged`);
+  // A routine's autonomy is the kernel's alone (never Paperclip's), so it lands here even when the routine itself is unchanged.
+  writeGrants(agents, memoryInboxes, reviewLogs, chatTasks);
+  // One routine's calls are independent of the next one's: a few side by side.
+  await mapLimit(work, 4, async ({ key, r, body, routine, webhook }: (typeof work)[number]) => {
     const existed = Boolean(routine);
     if (!routine) {
-      routine = (await api("POST", `/api/companies/${companyId}/routines`, body)).json;
+      routine = (await api("POST", `/api/companies/${companyId}/routines`, body)).json as Obj;
       step(`Created routine ${r.title}`);
+      routineAutonomy[routine.id] = r.autonomy ?? routineAutonomyDefault(r);
+      routineKeys[routine.id] = key;
+      writeGrants(agents, memoryInboxes, reviewLogs, chatTasks);
     }
-    // Its cap is in the grants table before any trigger can fire it (the runner treats an unknown routine as off).
-    routineAutonomy[routine.id] = r.autonomy ?? routineAutonomyDefault(r);
-    routineKeys[routine.id] = key;
-    writeGrants(agents, memoryInboxes, reviewLogs, chatTasks);
-    const { json: detail } = await api("GET", `/api/routines/${routine.id}`);
-    const triggers = detail.triggers ?? [];
-
+    const triggers: Obj[] = routine.triggers ?? [];
     for (const s of r.schedules ?? []) {
       const existing = triggers.find((t: Obj) => t.kind === "schedule" && t.label === s.label);
       if (existing) {
@@ -427,18 +441,11 @@ async function ensureRoutines(companyId: string, agents: Record<string, Obj>) {
     }
     // Schedules are matched by label, so a renamed or removed one would keep firing next to its replacement: it stops.
     for (const t of triggers.filter((t: Obj) => t.kind === "schedule" && t.enabled && !(r.schedules ?? []).some((s: Obj) => s.label === t.label))) await api("PATCH", `/api/routine-triggers/${t.id}`, { enabled: false }).then(() => step(`Disabled schedule "${t.label}" on ${r.title}: its config no longer names it`));
-    // An existing routine's own fields last: re-saving a schedule moves its next run to the next tick from now, so a routine
-    // resumed after a long pause starts there instead of Paperclip catching up every tick it missed (up to 25 runs).
+    // An existing routine's own fields last (see above).
     if (existed) await api("PATCH", `/api/routines/${routine.id}`, body);
 
-    if (r.webhook) {
-      // Webhooks come from modules only: an instance agent (writable through apply) could otherwise take another routine's secret.
-      if (cfg.agents?.[r.agent]?.module === "instance") fail(`routine ${key}: an instance agent's routine can't have a webhook`);
-      if (r.secrets_prefix != null && !/^[a-z0-9_]+$/.test(r.secrets_prefix)) fail(`routine ${key}: secrets_prefix must be lowercase letters, digits and _`);
-      // Secret files: <secrets_prefix>_url / _secret (default meeting_webhook, the transcript watcher).
-      const prefix = r.secrets_prefix ?? "meeting_webhook";
-      const label = r.secrets_prefix ? `${key} webhook` : "transcript watcher";
-      const existing = triggers.find((t: Obj) => t.kind === "webhook" && t.label === label);
+    if (webhook) {
+      const { prefix, label, existing } = webhook;
       let material: Obj | undefined;
       if (!existing) {
         material = (await api("POST", `/api/routines/${routine.id}/triggers`, { kind: "webhook", label, signingMode: "hmac_sha256", replayWindowSec: 300 })).json.secretMaterial;
@@ -592,7 +599,7 @@ lap("agents");
 // Setup's log tasks are held by their agents (every open task has a holder); Fleet issues by the fleet-audit agent.
 const holders = Object.fromEntries(Object.entries(agents).map(([k, a]) => [k, a.id]));
 const auditor = Object.keys(cfg.agents ?? {}).find((k) => !cfg.agents[k].member_of && cfg.agents[k].roles?.includes("fleet-audit") && agents[k]);
-await holdFleetIssues({ api, identifier: fleetIssues, holder: auditor ? agents[auditor].id : "", step });
+await holdFleetIssues({ api, identifier: fleetIssues, holder: auditor ? agents[auditor]!.id : "", step });
 const memoryInboxes = await ensureMemoryInboxes({ api, companyId: company.id, step, holders, keys: Object.entries<Obj>(cfg.agents ?? {}).filter(([k, x]) => x.enabled_tools?.paperclip_tasks?.includes("memory_note") && agents[k]).map(([k]) => k) });
 await dropOldSecrets(company.id);
 await ensureReportingLines(agents);

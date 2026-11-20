@@ -2,7 +2,7 @@
 // (the kernel runs every job). The built-in process adapter's check only needs the command to resolve and the cwd to exist, so a
 // record passes it; were it ever invoked, `true` does nothing.
 /** The Paperclip API caller of paperclip-setup.ts's `api`. */
-export type Api = (method: string, path: string, body?: unknown) => Promise<{ json: any }>;
+export type Api = (method: string, path: string, body?: unknown, opts?: { allow?: number[] }) => Promise<{ json: any }>;
 
 export const RECORD_ADAPTER = { adapterType: "process", adapterConfig: { command: "true", cwd: "/" } };
 

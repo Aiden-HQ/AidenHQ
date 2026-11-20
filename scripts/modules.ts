@@ -1735,19 +1735,26 @@ export async function mapLimit(items: any[], limit: number, fn: (item: any, i: n
 }
 
 /**
- * One setup log task per key (found again by its marker): created by this identity (an agent can't plant one: it would be
- * created by the agent), held by `holders[key]` (an agent id) in backlog, so every open task has a holder, and the kernel's
- * wake scan never wakes on it (containers in kernel/src/main.ts). One found unheld, or held by nobody of its own, is handed
- * to its holder; otherwise an existing one is never touched. Returns { key: issue id } for the grants table.
+ * One setup log task per key (found again by its marker, `<kind>:<key>`): created by this identity (an agent can't plant one:
+ * it would be created by the agent), held by `holders[key]` (an agent id) in backlog, so every open task has a holder, and the
+ * kernel's wake scan never wakes on it (containers in kernel/src/main.ts). One found unheld, or held by nobody of its own, is
+ * handed to its holder; otherwise an existing one is never touched. One paged search finds every key's (Paperclip's search
+ * matches the marker text), so the read does not grow with the fleet. Returns { key: issue id } for the grants table.
  */
-async function ensureLogTasks({ api, companyId, keys, holders, step, marker, title, description, what }: Obj) {
+async function ensureLogTasks({ api, companyId, keys, holders, step, kind, title, description, what }: Obj) {
   if (!keys.length) return {};
   const { json: me } = await api("GET", "/api/cli-auth/me");
+  const open: Obj[] = [];
+  // Paged to an empty page, so a server-side cap on `limit` never hides a key's task (it would get a duplicate).
+  for (;;) {
+    const q = new URLSearchParams({ q: `source:${kind}:`, status: "backlog,todo,in_progress,in_review,blocked", limit: "500", offset: String(open.length), excludeRoutineExecutions: "true" });
+    const page = (await api("GET", `/api/companies/${companyId}/issues?${q}`)).json;
+    if (!page.length) break;
+    open.push(...page);
+  }
   const ids = await mapLimit(keys, 4, async (key: string) => {
-    const mark = marker(key), holder = holders[key];
+    const mark = `${kind}:${key}`, holder = holders[key];
     if (!holder) throw new Error(`no agent to hold the ${what(key)}`);
-    const q = new URLSearchParams({ q: key, status: "backlog,todo,in_progress,in_review,blocked", limit: "50", excludeRoutineExecutions: "true" });
-    const { json: open } = await api("GET", `/api/companies/${companyId}/issues?${q}`);
     const ours = open.find((i: Obj) => String(i.description ?? "").includes(`<!-- source:${mark} -->`) && me.userId && i.createdByUserId === me.userId && !i.createdByAgentId && !i.assigneeUserId && (!i.assigneeAgentId || i.assigneeAgentId === holder));
     if (ours) {
       if (ours.assigneeAgentId !== holder || ours.status !== "backlog") {
@@ -1769,7 +1776,7 @@ async function ensureLogTasks({ api, companyId, keys, holders, step, marker, tit
  * grants table (memory_inbox); nothing searches for the marker at run time.
  */
 export const ensureMemoryInboxes = ({ api, companyId, keys, holders, step }: Obj) => ensureLogTasks({
-  api, companyId, keys, holders, step, marker: (key: string) => `memory-inbox:${key}`, title: (key: string) => `Memory inbox: ${key}`, what: (key: string) => `memory inbox of ${key}`,
+  api, companyId, keys, holders, step, kind: "memory-inbox", title: (key: string) => `Memory inbox: ${key}`, what: (key: string) => `memory inbox of ${key}`,
   description: (key: string) => `Facts ${key} noted for its memory, one comment each (memory_note). The Librarian curates them daily into agents/${key}/memory.md; nobody else reads or edits this task.`,
 });
 
@@ -1778,7 +1785,7 @@ export const ensureMemoryInboxes = ({ api, companyId, keys, holders, step }: Obj
  * lane's conversation, where the kernel writes each lane turn (kernel/src/lane.ts); the lane answers the owner's words there.
  */
 export const ensureChatTasks = ({ api, companyId, agents, holders, ownerName, step }: Obj) => ensureLogTasks({
-  api, companyId, keys: Object.keys(agents), holders, step, marker: (key: string) => `chat-task:${key}`, title: (key: string) => `Chat with ${agents[key]}`, what: (key: string) => `chat with ${key}`,
+  api, companyId, keys: Object.keys(agents), holders, step, kind: "chat-task", title: (key: string) => `Chat with ${agents[key]}`, what: (key: string) => `chat with ${key}`,
   description: (key: string) => `${ownerName || "The owner"}'s fast chat with ${agents[key]}: every message and reply, on every channel. Write here to talk to ${agents[key]}.`,
 });
 
@@ -1787,7 +1794,7 @@ export const ensureChatTasks = ({ api, companyId, agents, holders, ownerName, st
  * log, one record per review (tasks bridge coach_record), which coach_due reads back (only records that agent authored).
  */
 export const ensureReviewLogs = ({ api, companyId, keys, holders, step }: Obj) => ensureLogTasks({
-  api, companyId, keys, holders, step, marker: (key: string) => `review-log:${key}`, title: (key: string) => `Agent reviews: ${key}`, what: (key: string) => `review log of ${key}`,
+  api, companyId, keys, holders, step, kind: "review-log", title: (key: string) => `Agent reviews: ${key}`, what: (key: string) => `review log of ${key}`,
   description: (key: string) => `The review log of ${key}: one record per agent review (coach_record), which decides who is due next. Read it for the history; nobody else writes here.`,
 });
 
