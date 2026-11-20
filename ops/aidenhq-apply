@@ -8,7 +8,7 @@
 # unit (the kernel names one per record, so a restart can find it again). The unit is collected when it ends, failed or
 # not: what an apply did is in its generation and the journal, never in a unit left loaded.
 #
-# /usr/local/bin/aidenhq-apply links here (ops/setup.sh).
+# The instance user's ~/.local/bin/aidenhq-apply links here (ops/setup.sh); run it as that user, never root.
 set -euo pipefail
 
 main() {

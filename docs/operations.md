@@ -2,8 +2,9 @@
 
 ## Apply, upgrade, rollback
 
-Run `aidenhq-apply --wait` on the host (as the instance's user; `ops/aidenhq-apply` in the product checkout, linked onto
-the PATH by `ops/setup.sh`). It is the one way an apply starts, for people, sessions and the kernel's approved applies
+Run `aidenhq-apply --wait` on the host as the instance's user, never root (`ops/aidenhq-apply` in the product checkout;
+`ops/setup.sh` links it into that user's `~/.local/bin`, which a login shell has on its PATH; elsewhere run
+`~/aidenhq/ops/aidenhq-apply --wait`). It is the one way an apply starts, for people, sessions and the kernel's approved applies
 alike: it queues `ops/apply-config.sh` as a transient user unit, so an ssh disconnect or a kernel restart never kills it,
 and prints the unit to follow (`journalctl --user -fu <unit>`). Without `--wait` it returns once the apply is queued;
 with it, it follows the output until the apply ends and exits with its status. Once the apply holds the lock its output

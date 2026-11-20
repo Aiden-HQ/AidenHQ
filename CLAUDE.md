@@ -193,7 +193,8 @@ updated, so that rule would re-review every open PR on every merge.
 1. The product change is merged to `main`.
 2. In the instance repo, set `product: <sha>` in `instance.yaml` (the commit must be on the product checkout's
    `origin/main`), commit only that file (`git commit -- instance.yaml`) and push.
-3. On the host, run `aidenhq-apply --wait` (`ops/aidenhq-apply` in the product checkout). It queues the apply as its own
+3. On the host, as the instance's user, run `aidenhq-apply --wait` (`~/.local/bin`, linked to `ops/aidenhq-apply` in the
+   product checkout). It queues the apply as its own
    user unit (an ssh drop doesn't kill it), waits behind any apply already running and exits with the apply's status.
    Never `git pull` first: apply diffs the checkout's old product against the new one to decide restarts.
 4. Nothing else: apply rebuilds every image whose context changed and recreates the services whose image or compose
