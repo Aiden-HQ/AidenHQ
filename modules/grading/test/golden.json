@@ -40,12 +40,13 @@
    "failures": 0,
    "failedAt": null,
    "delegators": null,
-   "closedReason": null
+   "closedReason": null,
+   "filedBy": "agent:cos"
   },
   "patches": []
  },
  {
-  "step": "filing again keeps the first rubric",
+  "step": "a differing filing replaces the rubric while open",
   "body": {
    "created": false,
    "state": "open"
@@ -53,9 +54,9 @@
   "row": {
    "issueId": "11111111-1111-1111-1111-111111111111",
    "rubric": [
-    "merged into main",
-    "checks green on the head",
-    "the page shows the total"
+    "always pass",
+    "ok ok",
+    "yes yes"
    ],
    "deliverable": {
     "kind": "pr",
@@ -67,7 +68,8 @@
    "failures": 0,
    "failedAt": null,
    "delegators": null,
-   "closedReason": null
+   "closedReason": null,
+   "filedBy": "agent:cos"
   },
   "patches": []
  },
@@ -78,9 +80,9 @@
   "row": {
    "issueId": "11111111-1111-1111-1111-111111111111",
    "rubric": [
-    "merged into main",
-    "checks green on the head",
-    "the page shows the total"
+    "always pass",
+    "ok ok",
+    "yes yes"
    ],
    "deliverable": {
     "kind": "pr",
@@ -92,7 +94,8 @@
    "failures": 0,
    "failedAt": null,
    "delegators": null,
-   "closedReason": null
+   "closedReason": null,
+   "filedBy": "agent:cos"
   },
   "patches": []
  },
@@ -102,9 +105,9 @@
   "row": {
    "issueId": "11111111-1111-1111-1111-111111111111",
    "rubric": [
-    "merged into main",
-    "checks green on the head",
-    "the page shows the total"
+    "always pass",
+    "ok ok",
+    "yes yes"
    ],
    "deliverable": {
     "kind": "pr",
@@ -116,7 +119,8 @@
    "failures": 0,
    "failedAt": null,
    "delegators": null,
-   "closedReason": null
+   "closedReason": null,
+   "filedBy": "agent:cos"
   },
   "patches": [
    {
@@ -142,9 +146,9 @@
   "row": {
    "issueId": "11111111-1111-1111-1111-111111111111",
    "rubric": [
-    "merged into main",
-    "checks green on the head",
-    "the page shows the total"
+    "always pass",
+    "ok ok",
+    "yes yes"
    ],
    "deliverable": {
     "kind": "pr",
@@ -156,7 +160,8 @@
    "failures": 0,
    "failedAt": null,
    "delegators": null,
-   "closedReason": null
+   "closedReason": null,
+   "filedBy": "agent:cos"
   },
   "patches": [
    {
@@ -181,9 +186,9 @@
   "row": {
    "issueId": "11111111-1111-1111-1111-111111111111",
    "rubric": [
-    "merged into main",
-    "checks green on the head",
-    "the page shows the total"
+    "always pass",
+    "ok ok",
+    "yes yes"
    ],
    "deliverable": {
     "kind": "pr",
@@ -195,7 +200,8 @@
    "failures": 0,
    "failedAt": null,
    "delegators": null,
-   "closedReason": null
+   "closedReason": null,
+   "filedBy": "agent:cos"
   },
   "patches": []
  },
@@ -207,9 +213,9 @@
   "row": {
    "issueId": "11111111-1111-1111-1111-111111111111",
    "rubric": [
-    "merged into main",
-    "checks green on the head",
-    "the page shows the total"
+    "always pass",
+    "ok ok",
+    "yes yes"
    ],
    "deliverable": {
     "kind": "pr",
@@ -221,7 +227,8 @@
    "failures": 0,
    "failedAt": null,
    "delegators": null,
-   "closedReason": null
+   "closedReason": null,
+   "filedBy": "agent:cos"
   },
   "patches": []
  },
@@ -231,9 +238,9 @@
   "row": {
    "issueId": "11111111-1111-1111-1111-111111111111",
    "rubric": [
-    "merged into main",
-    "checks green on the head",
-    "the page shows the total"
+    "always pass",
+    "ok ok",
+    "yes yes"
    ],
    "deliverable": {
     "kind": "pr",
@@ -258,7 +265,8 @@
    "failures": 0,
    "failedAt": null,
    "delegators": null,
-   "closedReason": null
+   "closedReason": null,
+   "filedBy": "agent:cos"
   },
   "patches": []
  },
@@ -268,9 +276,9 @@
   "row": {
    "issueId": "11111111-1111-1111-1111-111111111111",
    "rubric": [
-    "merged into main",
-    "checks green on the head",
-    "the page shows the total"
+    "always pass",
+    "ok ok",
+    "yes yes"
    ],
    "deliverable": {
     "kind": "pr",
@@ -295,7 +303,8 @@
    "failures": 0,
    "failedAt": null,
    "delegators": null,
-   "closedReason": null
+   "closedReason": null,
+   "filedBy": "agent:cos"
   },
   "patches": [
    {
@@ -318,9 +327,9 @@
   "row": {
    "issueId": "11111111-1111-1111-1111-111111111111",
    "rubric": [
-    "merged into main",
-    "checks green on the head",
-    "the page shows the total"
+    "always pass",
+    "ok ok",
+    "yes yes"
    ],
    "deliverable": {
     "kind": "pr",
@@ -357,7 +366,8 @@
    "failures": 0,
    "failedAt": null,
    "delegators": null,
-   "closedReason": null
+   "closedReason": null,
+   "filedBy": "agent:cos"
   },
   "patches": []
  },
@@ -367,9 +377,9 @@
   "row": {
    "issueId": "11111111-1111-1111-1111-111111111111",
    "rubric": [
-    "merged into main",
-    "checks green on the head",
-    "the page shows the total"
+    "always pass",
+    "ok ok",
+    "yes yes"
    ],
    "deliverable": {
     "kind": "pr",
@@ -406,7 +416,8 @@
    "failures": 0,
    "failedAt": null,
    "delegators": null,
-   "closedReason": null
+   "closedReason": null,
+   "filedBy": "agent:cos"
   },
   "patches": []
  },
@@ -416,9 +427,9 @@
   "row": {
    "issueId": "11111111-1111-1111-1111-111111111111",
    "rubric": [
-    "merged into main",
-    "checks green on the head",
-    "the page shows the total"
+    "always pass",
+    "ok ok",
+    "yes yes"
    ],
    "deliverable": {
     "kind": "pr",
@@ -455,7 +466,8 @@
    "failures": 0,
    "failedAt": null,
    "delegators": null,
-   "closedReason": null
+   "closedReason": null,
+   "filedBy": "agent:cos"
   },
   "patches": []
  },
@@ -465,9 +477,9 @@
   "row": {
    "issueId": "11111111-1111-1111-1111-111111111111",
    "rubric": [
-    "merged into main",
-    "checks green on the head",
-    "the page shows the total"
+    "always pass",
+    "ok ok",
+    "yes yes"
    ],
    "deliverable": {
     "kind": "pr",
@@ -504,7 +516,8 @@
    "failures": 0,
    "failedAt": null,
    "delegators": null,
-   "closedReason": null
+   "closedReason": null,
+   "filedBy": "agent:cos"
   },
   "patches": [
    {
@@ -527,9 +540,9 @@
   "row": {
    "issueId": "11111111-1111-1111-1111-111111111111",
    "rubric": [
-    "merged into main",
-    "checks green on the head",
-    "the page shows the total"
+    "always pass",
+    "ok ok",
+    "yes yes"
    ],
    "deliverable": {
     "kind": "pr",
@@ -578,7 +591,8 @@
    "failures": 0,
    "failedAt": null,
    "delegators": null,
-   "closedReason": null
+   "closedReason": null,
+   "filedBy": "agent:cos"
   },
   "patches": []
  },
@@ -588,9 +602,9 @@
   "row": {
    "issueId": "11111111-1111-1111-1111-111111111111",
    "rubric": [
-    "merged into main",
-    "checks green on the head",
-    "the page shows the total"
+    "always pass",
+    "ok ok",
+    "yes yes"
    ],
    "deliverable": {
     "kind": "pr",
@@ -639,7 +653,8 @@
    "failures": 0,
    "failedAt": null,
    "delegators": null,
-   "closedReason": null
+   "closedReason": null,
+   "filedBy": "agent:cos"
   },
   "patches": [
    {
@@ -662,9 +677,9 @@
   "row": {
    "issueId": "11111111-1111-1111-1111-111111111111",
    "rubric": [
-    "merged into main",
-    "checks green on the head",
-    "the page shows the total"
+    "always pass",
+    "ok ok",
+    "yes yes"
    ],
    "deliverable": {
     "kind": "pr",
@@ -727,7 +742,8 @@
    "delegators": [
     "cos"
    ],
-   "closedReason": null
+   "closedReason": null,
+   "filedBy": "agent:cos"
   },
   "patches": [
    {
@@ -745,9 +761,9 @@
   "row": {
    "issueId": "11111111-1111-1111-1111-111111111111",
    "rubric": [
-    "merged into main",
-    "checks green on the head",
-    "the page shows the total"
+    "always pass",
+    "ok ok",
+    "yes yes"
    ],
    "deliverable": {
     "kind": "pr",
@@ -810,7 +826,8 @@
    "delegators": [
     "cos"
    ],
-   "closedReason": null
+   "closedReason": null,
+   "filedBy": "agent:cos"
   },
   "patches": []
  },
@@ -820,9 +837,9 @@
   "row": {
    "issueId": "11111111-1111-1111-1111-111111111111",
    "rubric": [
-    "merged into main",
-    "checks green on the head",
-    "the page shows the total"
+    "always pass",
+    "ok ok",
+    "yes yes"
    ],
    "deliverable": {
     "kind": "pr",
@@ -885,7 +902,8 @@
    "delegators": [
     "cos"
    ],
-   "closedReason": null
+   "closedReason": null,
+   "filedBy": "agent:cos"
   },
   "patches": [
    {
@@ -913,9 +931,9 @@
   "row": {
    "issueId": "11111111-1111-1111-1111-111111111111",
    "rubric": [
-    "merged into main",
-    "checks green on the head",
-    "the page shows the total"
+    "always pass",
+    "ok ok",
+    "yes yes"
    ],
    "deliverable": {
     "kind": "pr",
@@ -978,7 +996,8 @@
    "delegators": [
     "cos"
    ],
-   "closedReason": null
+   "closedReason": null,
+   "filedBy": "agent:cos"
   },
   "patches": []
  },
@@ -988,9 +1007,9 @@
   "row": {
    "issueId": "11111111-1111-1111-1111-111111111111",
    "rubric": [
-    "merged into main",
-    "checks green on the head",
-    "the page shows the total"
+    "always pass",
+    "ok ok",
+    "yes yes"
    ],
    "deliverable": {
     "kind": "pr",
@@ -1053,7 +1072,8 @@
    "delegators": [
     "cos"
    ],
-   "closedReason": null
+   "closedReason": null,
+   "filedBy": "agent:cos"
   },
   "patches": []
  },
@@ -1063,9 +1083,9 @@
   "row": {
    "issueId": "11111111-1111-1111-1111-111111111111",
    "rubric": [
-    "merged into main",
-    "checks green on the head",
-    "the page shows the total"
+    "always pass",
+    "ok ok",
+    "yes yes"
    ],
    "deliverable": {
     "kind": "pr",
@@ -1128,7 +1148,8 @@
    "delegators": [
     "cos"
    ],
-   "closedReason": null
+   "closedReason": null,
+   "filedBy": "agent:cos"
   },
   "patches": [
    {
@@ -1150,9 +1171,9 @@
   "row": {
    "issueId": "11111111-1111-1111-1111-111111111111",
    "rubric": [
-    "merged into main",
-    "checks green on the head",
-    "the page shows the total"
+    "always pass",
+    "ok ok",
+    "yes yes"
    ],
    "deliverable": {
     "kind": "pr",
@@ -1213,7 +1234,8 @@
    "failures": 0,
    "failedAt": null,
    "delegators": null,
-   "closedReason": null
+   "closedReason": null,
+   "filedBy": "agent:cos"
   },
   "patches": []
  },
@@ -1223,9 +1245,9 @@
   "row": {
    "issueId": "11111111-1111-1111-1111-111111111111",
    "rubric": [
-    "merged into main",
-    "checks green on the head",
-    "the page shows the total"
+    "always pass",
+    "ok ok",
+    "yes yes"
    ],
    "deliverable": {
     "kind": "pr",
@@ -1294,7 +1316,8 @@
    "delegators": [
     "cos"
    ],
-   "closedReason": null
+   "closedReason": null,
+   "filedBy": "agent:cos"
   },
   "patches": [
    {
@@ -1311,9 +1334,9 @@
   "row": {
    "issueId": "11111111-1111-1111-1111-111111111111",
    "rubric": [
-    "merged into main",
-    "checks green on the head",
-    "the page shows the total"
+    "always pass",
+    "ok ok",
+    "yes yes"
    ],
    "deliverable": {
     "kind": "pr",
@@ -1387,7 +1410,8 @@
    "failures": 0,
    "failedAt": null,
    "delegators": null,
-   "closedReason": null
+   "closedReason": null,
+   "filedBy": "agent:cos"
   },
   "patches": []
  },
@@ -1410,7 +1434,8 @@
    "failures": 0,
    "failedAt": null,
    "delegators": null,
-   "closedReason": null
+   "closedReason": null,
+   "filedBy": "agent:ra"
   },
   "patches": []
  },
@@ -1430,7 +1455,8 @@
    "failures": 0,
    "failedAt": null,
    "delegators": null,
-   "closedReason": null
+   "closedReason": null,
+   "filedBy": "agent:ra"
   },
   "patches": [
    {
@@ -1476,7 +1502,8 @@
     "ra",
     "cos"
    ],
-   "closedReason": null
+   "closedReason": null,
+   "filedBy": "agent:ra"
   },
   "patches": [
    {
@@ -1517,7 +1544,8 @@
    "failures": 0,
    "failedAt": null,
    "delegators": null,
-   "closedReason": null
+   "closedReason": null,
+   "filedBy": "agent:ra"
   },
   "patches": []
  },
@@ -1540,7 +1568,8 @@
    "failures": 0,
    "failedAt": null,
    "delegators": null,
-   "closedReason": null
+   "closedReason": null,
+   "filedBy": "agent:cos"
   },
   "patches": []
  },
@@ -1561,7 +1590,8 @@
    "failures": 0,
    "failedAt": null,
    "delegators": null,
-   "closedReason": "the task was cancelled before the grader settled it"
+   "closedReason": "the task was cancelled before the grader settled it",
+   "filedBy": "agent:cos"
   },
   "patches": []
  },
@@ -1584,7 +1614,8 @@
    "failures": 0,
    "failedAt": null,
    "delegators": null,
-   "closedReason": null
+   "closedReason": null,
+   "filedBy": "agent:cos"
   },
   "patches": []
  },
@@ -1604,7 +1635,8 @@
    "failures": 0,
    "failedAt": null,
    "delegators": null,
-   "closedReason": null
+   "closedReason": null,
+   "filedBy": "agent:cos"
   },
   "patches": [
    {

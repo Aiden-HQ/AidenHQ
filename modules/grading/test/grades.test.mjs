@@ -3,6 +3,11 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { Worker } from "node:worker_threads";
+import { pathToFileURL } from "node:url";
 import { GRADER_RETRY_MS, MAX_GRADER_FAILURES, Grades, completionGate, gradePassed, prRefAllowed, settleClosedGrades } from "../service/src/grades.ts";
 
 class Store { constructor() { this.grades = new Grades(new DatabaseSync(":memory:")); } }
@@ -15,7 +20,8 @@ describe("graded done", () => {
     const { grades } = new Store();
     expect(completionGate(grades, "plain", "task_finish")).toEqual({ pass: true });
     expect(grades.file("t", ["merged into main", "checks green", "tests cover it"], { kind: "pr", ref: "" }).created).toBe(true);
-    expect(grades.file("t", ["something else", "bbb", "ccc"], { kind: "pr", ref: "" }).created).toBe(false);
+    // A differing filing is a re-file (below); the same one again is the retry that keeps the row.
+    expect(grades.file("t", ["merged into main", "checks green", "tests cover it"], { kind: "pr", ref: "" }).created).toBe(false);
     expect(grades.get("t").rubric[0]).toBe("merged into main");
 
     const reject = (version) => grades.record("t", { version, outcome: "needs_revision", model: "glm", criteria: [{ id: "1", met: "no", evidence: "open" }] });
@@ -276,6 +282,55 @@ describe("graded done", () => {
 
 });
 
+describe("re-filing a grade", () => {
+  const FIRST = ["merged into main", "checks green on the head", "the page shows the total"];
+  const SECOND = ["the PR merges the fix", "the diff covers the retry", "checks green on the head"];
+
+  it("a differing filing replaces the deliverable and rubric on a pending row and restarts it open", () => {
+    const { grades } = new Store();
+    expect(grades.file("t", FIRST, { kind: "app", ref: "apps-mcp" }, "agent:cos").created).toBe(true);
+    completionGate(grades, "t", "task_finish");
+    grades.record("t", { version: "v1", outcome: "needs_revision", model: "glm", criteria: [{ id: "1", met: "no", evidence: "not deployed" }] });
+    completionGate(grades, "t", "task_finish");
+    expect(grades.get("t")).toMatchObject({ state: "pending", attempts: 1 });
+
+    const r = grades.file("t", SECOND, { kind: "pr", ref: "acme/app" }, "agent:cos");
+    expect(r.created).toBe(false);
+    expect(r.replaced).toBe(true);
+    expect(grades.get("t")).toMatchObject({ rubric: SECOND, deliverable: { kind: "pr", ref: "acme/app" }, state: "open", attempts: 0, verdicts: [], delegators: null, closedReason: null, failures: 0, failedAt: null, filedBy: "agent:cos" });
+    expect(grades.due()).toEqual([]);
+  });
+
+  it("a repeated, byte-identical filing is a retry: created false, the stored filing untouched", () => {
+    const { grades } = new Store();
+    const first = grades.file("t", FIRST, { kind: "pr", ref: "acme/app" }, "agent:cos");
+    expect(first.created).toBe(true);
+    completionGate(grades, "t", "task_finish");
+    grades.record("t", { version: "v1", outcome: "needs_revision", model: "glm", criteria: [{ id: "1", met: "no", evidence: "open" }] });
+    const before = grades.get("t");
+
+    // A retry from anyone is still the retry: the row is byte-identical, so nothing is rewritten.
+    const again = grades.file("t", FIRST, { kind: "pr", ref: "acme/app" }, "agent:other");
+    expect(again.created).toBe(false);
+    expect(again.replaced).toBe(false);
+    expect(again.grade).toEqual(before);
+    expect(grades.get("t")).toEqual(before);
+  });
+
+  it("a satisfied row refuses a differing filing and keeps its own", () => {
+    const { grades } = new Store();
+    grades.file("t", FIRST, { kind: "pr", ref: "acme/app" }, "agent:cos");
+    completionGate(grades, "t", "task_finish");
+    grades.record("t", { version: "v1", outcome: "satisfied", model: "glm", criteria: [] });
+    const before = grades.get("t");
+
+    const r = grades.file("t", SECOND, { kind: "app", ref: "maple" }, "agent:cos");
+    expect(r.refused).toBe(true);
+    expect(r.replaced).toBe(false);
+    expect(grades.get("t")).toEqual(before);
+  });
+});
+
 describe("prRefAllowed", () => {
   it("the product repo and the agents org are allowed; another org's repo is refused", () => {
     const t = { agentsOrgs: ["acme-agents"], product: "acme/aidenhq", orgs: ["partner"], maintained: ["other/tool"] };
@@ -310,5 +365,85 @@ describe("failed grader passes", () => {
     expect(grades.failuresSince("2026-11-20T11:00:00Z").map((x) => ({ ...x }))).toEqual([{ task: "t1", at: "2026-11-20T12:05:00Z", reason: "the grader failed (timeout)" }]);
     grades.clearFailure("t1");
     expect(grades.failuresSince("2026-11-20T11:00:00Z")).toEqual([]);
+  });
+});
+
+describe("who filed a grade", () => {
+  it("records the filer, and a differing re-file is only that filer's", () => {
+    const { grades } = new Store();
+    grades.file("t", ["a one", "b two", "c three"], { kind: "pr", ref: "" }, "module:maintainer");
+    expect(grades.get("t").filedBy).toBe("module:maintainer");
+
+    // Another module (or agent) is refused; the row stands.
+    const before = grades.get("t");
+    const other = grades.file("t", ["d four", "e five", "f six"], { kind: "pr", ref: "" }, "module:fleet-steward");
+    expect(other.refused).toBe(true);
+    expect(other.conflict).toBe("filer");
+    expect(grades.get("t")).toEqual(before);
+
+    // The recorded filer replaces it while the row is open.
+    const own = grades.file("t", ["d four", "e five", "f six"], { kind: "pr", ref: "" }, "module:maintainer");
+    expect(own.replaced).toBe(true);
+    expect(grades.get("t").filedBy).toBe("module:maintainer");
+  });
+
+  it("a row with no recorded filer is never taken over, unless its own delegating agent adopts it", () => {
+    const { grades } = new Store();
+    grades.file("t", ["a one", "b two", "c three"], { kind: "app", ref: "apps-mcp" }, "module:maintainer");
+    grades.db.prepare("UPDATE grades SET filed_by = NULL WHERE issue_id = ?").run("t");
+    const before = grades.get("t");
+
+    expect(grades.file("t", ["d four", "e five", "f six"], { kind: "app", ref: "maple" }, "module:maintainer")).toMatchObject({ refused: true, conflict: "filer" });
+    expect(grades.file("t", ["d four", "e five", "f six"], { kind: "app", ref: "maple" }, "module:fleet-steward")).toMatchObject({ refused: true, conflict: "filer" });
+    expect(grades.get("t")).toEqual(before);
+    // A byte-identical filing is still the retry, whatever is on the row.
+    expect(grades.file("t", ["a one", "b two", "c three"], { kind: "app", ref: "apps-mcp" }, "module:fleet-steward")).toMatchObject({ created: false, replaced: false, refused: false });
+
+    // The agent route is the one place a legacy row is adopted: the task's creator is its identity.
+    expect(grades.file("t", ["d four", "e five", "f six"], { kind: "app", ref: "maple" }, "agent:cos", { adoptUnfiled: true })).toMatchObject({ replaced: true, refused: false });
+    expect(grades.get("t").filedBy).toBe("agent:cos");
+  });
+});
+
+describe("the schema upgrade", () => {
+  it("adds the later columns to a database created before them, keeping its rows", () => {
+    const db = new DatabaseSync(":memory:");
+    // The table as an older service made it: no failures, failed_at, delegators, closed_reason or filed_by.
+    db.exec(`CREATE TABLE grades (issue_id TEXT PRIMARY KEY, rubric TEXT NOT NULL, deliverable TEXT NOT NULL,
+      attempts INTEGER NOT NULL DEFAULT 0, state TEXT NOT NULL, verdicts TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`);
+    db.prepare("INSERT INTO grades (issue_id, rubric, deliverable, state, created_at, updated_at) VALUES ('old', '[\"a\",\"b\",\"c\"]', '{\"kind\":\"pr\",\"ref\":\"\"}', 'open', 't0', 't0')").run();
+    const grades = new Grades(db);
+    const row = grades.get("old");
+    expect(row).toMatchObject({ issueId: "old", state: "open", failures: 0, failedAt: null, delegators: null, closedReason: null, filedBy: null });
+    // The upgrade survives a second opener: it finds every column already there.
+    assert.doesNotThrow(() => new Grades(db));
+    expect(grades.file("new", ["a", "b", "c"], { kind: "report", ref: "" })).toMatchObject({ created: true });
+  });
+});
+
+describe("concurrent openers", () => {
+  it("several services opening a legacy database at once all start, and each column is added once", async (t) => {
+    const dir = mkdtempSync(join(tmpdir(), "grades-"));
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const file = join(dir, "grades.sqlite");
+    const seed = new DatabaseSync(file);
+    // The table as an older service made it, with a row that has to survive.
+    seed.exec(`CREATE TABLE grades (issue_id TEXT PRIMARY KEY, rubric TEXT NOT NULL, deliverable TEXT NOT NULL,
+      attempts INTEGER NOT NULL DEFAULT 0, state TEXT NOT NULL, verdicts TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`);
+    seed.prepare("INSERT INTO grades (issue_id, rubric, deliverable, state, created_at, updated_at) VALUES ('old', '[\"a\",\"b\",\"c\"]', '{\"kind\":\"report\",\"ref\":\"\"}', 'open', 't', 't')").run();
+    seed.close();
+    // Each in its own thread, as two service processes would: the schema setup runs at the same moment in all of them.
+    const url = pathToFileURL(new URL("../service/src/grades.ts", import.meta.url).pathname).href;
+    const open = () => new Promise((resolve) => {
+      const w = new Worker(`import { DatabaseSync } from "node:sqlite"; const { Grades } = await import(${JSON.stringify(url)}); try { const g = new Grades(new DatabaseSync(process.env.F)); console.log(JSON.stringify(g.get("old"))); } catch (e) { console.log(JSON.stringify({ error: String(e.message) })); }`, { eval: true, type: "module", env: { ...process.env, F: file } });
+      let out = ""; w.stdout.on("data", (d) => (out += d)); w.stderr.on("data", (d) => (out += d)); w.on("exit", () => resolve(JSON.parse(out.trim())));
+    });
+    const rows = await Promise.all([open(), open(), open(), open()]);
+    for (const r of rows) assert.equal(r.error, undefined, r.error);
+    for (const r of rows) assert.deepEqual({ ...r }, { ...rows[0] });
+    assert.equal(rows[0].issueId, "old");
+    assert.equal(rows[0].filedBy, null);
+    const columns = new DatabaseSync(file).prepare("PRAGMA table_info(grades)").all().map((c) => c.name);
+    for (const c of ["failures", "failed_at", "delegators", "closed_reason", "filed_by"]) assert.ok(columns.includes(c), c);
   });
 });

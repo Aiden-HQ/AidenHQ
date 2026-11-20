@@ -7,7 +7,16 @@ export type AppsCall = (method: string, path: string, body?: unknown) => Promise
 export function appsEvidence(apps: AppsCall) {
   const status = (): Promise<{ name: string; repo?: string }[]> => apps("GET", "/internal/status");
   return {
-    app: async (name: string) => (/^[a-z0-9-]{1,63}$/.test(name) ? (await status()).find((a) => a.name === name) ?? null : null),
+    // null: a successful read with no such row (not an app this instance runs). undefined: the read itself failed, so
+    // whether the app exists is unknown - never the same fact, and never reported as the other one.
+    app: async (name: string) => {
+      if (!/^[a-z0-9-]{1,63}$/.test(name)) return null;
+      try {
+        return (await status()).find((a) => a.name === name) ?? null;
+      } catch (err) {
+        return undefined;
+      }
+    },
     // Several apps in one repo: no single app vouches for the PR.
     appOfRepo: async (repo: string) => {
       const same = (await status()).filter((a) => a.repo?.toLowerCase() === repo.toLowerCase());

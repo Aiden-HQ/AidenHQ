@@ -44,6 +44,8 @@ export interface Grade {
   delegators: string[] | null;
   /** Why the row ended not_graded (the task was cancelled or closed before the grader settled it); null otherwise. */
   closedReason: string | null;
+  /** Who filed the rubric: `agent:<id>` or `module:<name>` (null on a row filed before this was recorded). */
+  filedBy: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -59,6 +61,7 @@ interface Row {
   failed_at: string | null;
   delegators: string | null;
   closed_reason: string | null;
+  filed_by: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -123,7 +126,7 @@ export function prRefAllowed(ref: string, t: KnownRepos): boolean {
   return [...lower(t.agentsOrgs), ...lower(t.orgs)].includes(org) || [...lower(t.maintained), ...lower(t.product ? [t.product] : [])].includes(repo);
 }
 
-const fromRow =(r: Row): Grade => ({ issueId: r.issue_id, rubric: JSON.parse(r.rubric), deliverable: JSON.parse(r.deliverable), attempts: r.attempts, state: r.state as GradeState, verdicts: JSON.parse(r.verdicts), failures: r.failures ?? 0, failedAt: r.failed_at ?? null, delegators: r.delegators ? JSON.parse(r.delegators) : null, closedReason: r.closed_reason ?? null, createdAt: r.created_at, updatedAt: r.updated_at });
+const fromRow =(r: Row): Grade => ({ issueId: r.issue_id, rubric: JSON.parse(r.rubric), deliverable: JSON.parse(r.deliverable), attempts: r.attempts, state: r.state as GradeState, verdicts: JSON.parse(r.verdicts), failures: r.failures ?? 0, failedAt: r.failed_at ?? null, delegators: r.delegators ? JSON.parse(r.delegators) : null, closedReason: r.closed_reason ?? null, filedBy: r.filed_by ?? null, createdAt: r.created_at, updatedAt: r.updated_at });
 
 /** A verdict whose criteria are met or unknown, at least one unknown, none shown unmet: the grader couldn't verify, not "no". */
 export const unverifiedOnly = (criteria: { met: string }[]) => criteria.some((c) => c.met === "unknown") && !criteria.some((c) => c.met === "no");
@@ -133,19 +136,42 @@ export class Grades {
   private db: DatabaseSync;
   constructor(db: DatabaseSync) {
     this.db = db;
-    db.exec(`CREATE TABLE IF NOT EXISTS grades (
-      issue_id TEXT PRIMARY KEY, rubric TEXT NOT NULL, deliverable TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
-      state TEXT NOT NULL, verdicts TEXT NOT NULL DEFAULT '[]', failures INTEGER NOT NULL DEFAULT 0, failed_at TEXT,
-      closed_reason TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`);
-    const columns = (db.prepare("PRAGMA table_info(grades)").all() as { name: string }[]).map((c) => c.name);
-    if (!columns.includes("failures")) db.exec("ALTER TABLE grades ADD COLUMN failures INTEGER NOT NULL DEFAULT 0");
-    if (!columns.includes("failed_at")) db.exec("ALTER TABLE grades ADD COLUMN failed_at TEXT");
-    if (!columns.includes("delegators")) db.exec("ALTER TABLE grades ADD COLUMN delegators TEXT");
-    if (!columns.includes("closed_reason")) db.exec("ALTER TABLE grades ADD COLUMN closed_reason TEXT");
-    // An escalated task finished again: graded again only once the runner finds a new deliverable version (resubmit).
-    // Why the grader's latest pass on a task failed (the Fleet Steward reads it to tell one component down from many tasks failing).
-    db.exec("CREATE TABLE IF NOT EXISTS grade_failures (issue_id TEXT PRIMARY KEY, at TEXT NOT NULL, reason TEXT NOT NULL)");
-    db.exec("CREATE TABLE IF NOT EXISTS grade_resubmits (issue_id TEXT PRIMARY KEY, at TEXT NOT NULL)");
+    // Two openers can set the schema up at once: one write transaction (the second waits on busy_timeout and sees the first's
+    // columns), and each add idempotent besides. A database created before a column existed gets it here, once.
+    db.exec("PRAGMA busy_timeout = 5000");
+    let open = false;
+    const add = (name: string, type: string) => {
+      const has = () => (db.prepare("PRAGMA table_info(grades)").all() as { name: string }[]).some((c) => c.name === name);
+      if (has()) return;
+      try {
+        db.exec(`ALTER TABLE grades ADD COLUMN ${name} ${type}`);
+      } catch (err) {
+        // A peer added it between the check and the ALTER: the same column, same type.
+        if (!/duplicate column name/i.test(String((err as Error).message))) throw err;
+      }
+    };
+    db.exec("BEGIN IMMEDIATE");
+    open = true;
+    try {
+      db.exec(`CREATE TABLE IF NOT EXISTS grades (
+        issue_id TEXT PRIMARY KEY, rubric TEXT NOT NULL, deliverable TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+        state TEXT NOT NULL, verdicts TEXT NOT NULL DEFAULT '[]', failures INTEGER NOT NULL DEFAULT 0, failed_at TEXT,
+        closed_reason TEXT, filed_by TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`);
+      add("failures", "INTEGER NOT NULL DEFAULT 0");
+      add("failed_at", "TEXT");
+      add("delegators", "TEXT");
+      add("closed_reason", "TEXT");
+      add("filed_by", "TEXT");
+      // An escalated task finished again: graded again once the runner finds a new deliverable version (resubmit).
+      // Why the grader's latest pass on a task failed (the Fleet Steward reads it).
+      db.exec("CREATE TABLE IF NOT EXISTS grade_failures (issue_id TEXT PRIMARY KEY, at TEXT NOT NULL, reason TEXT NOT NULL)");
+      db.exec("CREATE TABLE IF NOT EXISTS grade_resubmits (issue_id TEXT PRIMARY KEY, at TEXT NOT NULL)");
+      db.exec("COMMIT");
+      open = false;
+    } catch (err) {
+      if (open) db.exec("ROLLBACK");
+      throw err;
+    }
   }
 
   /** A failed grader pass's reason, kept until a later pass on the task gets any other outcome. */
@@ -158,14 +184,41 @@ export class Grades {
     return r && fromRow(r);
   }
 
-  /** Files a delegation's rubric once: a second call (a retried delegation) returns the first row unchanged. */
-  file(issueId: string, rubric: string[], deliverable: Deliverable): { created: boolean; grade: Grade } {
+  /**
+   * Files a delegation's rubric: the first filing creates the row, recording who filed it (`agent:<id>` or `module:<name>`). A
+   * byte-identical filing is the retry: the stored row and `created: false`, whoever filed it. A differing filing is only the
+   * recorded filer's - anyone else, or anyone on a row with no recorded filer, is refused - and it replaces both and
+   * restarts the row open (attempts 0, no verdicts, delegators or close reason) unless the row is settled.
+   */
+  file(issueId: string, rubric: string[], deliverable: Deliverable, filer?: string, { adoptUnfiled = false }: { adoptUnfiled?: boolean } = {}): { created: boolean; grade: Grade; replaced: boolean; refused: boolean; conflict: "settled" | "filer" | null } {
+    let stored = this.get(issueId);
+    if (!stored) {
+      const now = new Date().toISOString();
+      // OR IGNORE: a peer filing the same new task at the same moment makes the row first, and this call reads it below.
+      const r = this.db
+        .prepare("INSERT OR IGNORE INTO grades (issue_id, rubric, deliverable, attempts, state, verdicts, filed_by, created_at, updated_at) VALUES (?, ?, ?, 0, 'open', '[]', ?, ?, ?)")
+        .run(issueId, JSON.stringify(rubric), JSON.stringify(deliverable), filer ?? null, now, now);
+      if (Number(r.changes) > 0) {
+        this.events?.emit("grades", issueId);
+        return { created: true, grade: this.get(issueId)!, replaced: false, refused: false, conflict: null };
+      }
+      stored = this.get(issueId)!;
+    }
+    const same = JSON.stringify(stored.rubric) === JSON.stringify(rubric) && JSON.stringify(stored.deliverable) === JSON.stringify(deliverable);
+    if (same) return { created: false, grade: stored, replaced: false, refused: false, conflict: null };
+    // A settled row keeps its filing, whoever asks.
+    if (stored.state === "satisfied" || stored.state === "not_graded") return { created: false, grade: stored, replaced: false, refused: true, conflict: "settled" };
+    // Only the recorded filer may differ it; the agent route opts into adopting an unfiled row (the task says its creator).
+    if (!filer || (stored.filedBy !== filer && !(adoptUnfiled && stored.filedBy === null))) return { created: false, grade: stored, replaced: false, refused: true, conflict: "filer" };
     const now = new Date().toISOString();
-    const r = this.db
-      .prepare("INSERT OR IGNORE INTO grades (issue_id, rubric, deliverable, attempts, state, verdicts, created_at, updated_at) VALUES (?, ?, ?, 0, 'open', '[]', ?, ?)")
-      .run(issueId, JSON.stringify(rubric), JSON.stringify(deliverable), now, now);
-    if (Number(r.changes) > 0) this.events?.emit("grades", issueId);
-    return { created: Number(r.changes) > 0, grade: this.get(issueId)! };
+    // A fresh open row keeping the task's comments, files and runs. A resubmission mark was about the old deliverable, so it
+    // goes; the failure log stays (the Fleet Steward reads it).
+    this.db.prepare("DELETE FROM grade_resubmits WHERE issue_id = ?").run(issueId);
+    this.db
+      .prepare("UPDATE grades SET rubric = ?, deliverable = ?, filed_by = ?, attempts = 0, state = 'open', verdicts = '[]', failures = 0, failed_at = NULL, delegators = NULL, closed_reason = NULL, updated_at = ? WHERE issue_id = ?")
+      .run(JSON.stringify(rubric), JSON.stringify(deliverable), filer, now, issueId);
+    this.events?.emit("grades", issueId);
+    return { created: false, grade: this.get(issueId)!, replaced: true, refused: false, conflict: null };
   }
 
   /** The rows the runner grades: a completion path hit the gate, the evidence was still coming, or the grader failed (no verdict yet) and its next retry is due. */

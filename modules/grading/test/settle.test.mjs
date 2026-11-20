@@ -4,7 +4,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
+import { generateKeyPairSync, sign } from "node:crypto";
 import { createGrading } from "../service/src/server.ts";
+import { completionGate } from "../service/src/grades.ts";
 
 const KEYS = { check: "c".repeat(32), board: "b".repeat(32) };
 const RUBRIC = ["merged into main", "checks green on the head", "the app serves the page"];
@@ -21,18 +23,33 @@ async function harness(tasks, t) {
     repos: async () => ({ agentsOrgs: ["acme"], product: "own/aidenhq" }),
     release: async () => {},
   };
-  const { server, grades, runner } = createGrading({ db: new DatabaseSync(":memory:"), kernel, keys: KEYS });
+  // The tasks module's own caller assertion (aud tasks) for POST /grades: the delegating agent's filing and read.
+  const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+  const jwks = { keys: [{ ...publicKey.export({ format: "jwk" }), kid: "k1" }] };
+  const db = new DatabaseSync(":memory:");
+  const { server, grades, runner } = createGrading({ db, kernel, keys: KEYS, jwks });
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
   t.after(() => server.close());
   const url = `http://127.0.0.1:${server.address().port}`;
-  const post = async (path, key, body) => {
-    const r = await fetch(`${url}${path}`, { method: "POST", headers: { authorization: `Bearer ${key}`, "content-type": "application/json" }, body: JSON.stringify(body) });
+  const post = async (path, key, body, method = "POST") => {
+    const r = await fetch(`${url}${path}`, { method, headers: { authorization: `Bearer ${key}`, "content-type": "application/json" }, ...(method === "POST" ? { body: JSON.stringify(body) } : {}) });
     return { status: r.status, json: await r.json() };
   };
+  // The kernel's signed caller assertion for a delegated task's delegating agent.
+  const assertion = (agent) => {
+    const body = `${Buffer.from(JSON.stringify({ alg: "EdDSA", typ: "JWT", kid: "k1" })).toString("base64url")}.${Buffer.from(JSON.stringify({ agent, key: agent, name: agent, roles: [], tool: "paperclip_tasks.task_delegate", kind: "run", aud: "tasks", jti: "j", exp: Math.floor(Date.now() / 1000) + 60 })).toString("base64url")}`;
+    return `${body}.${sign(null, Buffer.from(body), privateKey).toString("base64url")}`;
+  };
   return {
+    db,
     grades,
     // The kernel asking the finish check, as it does on every move to done (its body carries the task it read).
     finish: async (ref, body) => (await post("/check/finish", KEYS.check, { task: byRef(ref), ...body })).json,
+    // The kernel filing a module task's rubric (POST /check/rubric): {status, json}.
+    rubric: (ref, filing, module = "maintainer") => post("/check/rubric", KEYS.check, { task: { id: byRef(ref).id, identifier: byRef(ref).identifier }, module, ...filing }),
+    // The delegating agent's own filing and read (POST /grades, GET /grades/<task>), as the tasks module calls them.
+    file: (ref, filing, agent = byRef(ref).createdByAgentId) => fetch(`${url}/grades`, { method: "POST", headers: { "x-aidenhq-caller": assertion(agent), "content-type": "application/json" }, body: JSON.stringify({ issue: byRef(ref).id, ...filing }) }).then(async (r) => ({ status: r.status, json: await r.json() })),
+    stored: (ref, agent = byRef(ref).createdByAgentId) => fetch(`${url}/grades/${encodeURIComponent(byRef(ref).id)}`, { headers: { "x-aidenhq-caller": assertion(agent) } }).then(async (r) => ({ status: r.status, json: await r.json() })),
     verdict: async (ref, body) => runner("POST", `/internal/grades/${encodeURIComponent(byRef(ref).identifier)}/verdict`, body),
     resubmit: async (ref, version) => runner("POST", `/internal/grades/${encodeURIComponent(byRef(ref).identifier)}/resubmit`, { version }),
   };
@@ -78,6 +95,99 @@ test("a delegator's cancelled settled the escalated row and leaves the runner no
   assert.deepEqual(h.grades.escalated(), []);
   assert.deepEqual(h.grades.resubmitted(), []);
   assert.deepEqual(h.grades.unsettled(), []);
+});
+
+test("re-filing over HTTP: a differing one replaces the row, a byte-identical one is the retry", async (t) => {
+  const task = { id: "t10", identifier: "WOR-10", status: "in_review", assigneeAgentId: "eng", createdByAgentId: "cos", parentId: null };
+  const h = await harness({ "WOR-10": task }, t);
+  const first = { rubric: RUBRIC, deliverable: { kind: "app", ref: "apps-mcp" } };
+  const corrected = { rubric: [...RUBRIC].reverse(), deliverable: { kind: "app", ref: "roadmap-keeper" } };
+  // The agent's own route files and reads it back; nobody else may.
+  assert.deepEqual((await h.file("WOR-10", first)).json, { created: true, state: "open" });
+  assert.deepEqual((await h.stored("WOR-10")).json, { grade: h.grades.get("t10") });
+  assert.equal((await h.stored("WOR-10", "other")).status, 403);
+  assert.equal((await h.file("WOR-10", corrected, "other")).status, 403);
+  // Wait for the grader, then a differing filing replaces both and restarts the row open.
+  completionGate(h.grades, "t10", "task_finish");
+  h.grades.record("t10", { version: "v1", outcome: "needs_revision", model: "glm", criteria: [{ id: "1", met: "no", evidence: "not an app" }] });
+  completionGate(h.grades, "t10", "task_finish");
+  assert.deepEqual([h.grades.get("t10").state, h.grades.get("t10").attempts], ["pending", 1]);
+  assert.deepEqual((await h.file("WOR-10", corrected)).json, { created: false, state: "open" });
+  assert.deepEqual(h.grades.get("t10"), { ...h.grades.get("t10"), ...corrected, state: "open", attempts: 0, verdicts: [], delegators: null, closedReason: null, filedBy: "agent:cos" });
+  assert.deepEqual(h.grades.due(), []);
+  // The same filing again is the retry: created false, nothing rewritten.
+  const before = h.grades.get("t10");
+  assert.deepEqual((await h.file("WOR-10", corrected)).json, { created: false, state: "open" });
+  assert.deepEqual(h.grades.get("t10"), before);
+});
+
+test("a module's differing re-file is refused for another module, and for a row whose filer is unknown", async (t) => {
+  const task = { id: "t13", identifier: "WOR-13", status: "in_review", assigneeAgentId: "eng", createdByAgentId: null, parentId: null };
+  const h = await harness({ "WOR-13": task }, t);
+  const first = { rubric: RUBRIC, deliverable: { kind: "pr", ref: "" } };
+  const other = { ...first, rubric: [...RUBRIC].reverse() };
+  assert.equal((await h.rubric("WOR-13", first, "maintainer")).status, 200);
+  assert.equal(h.grades.get("t13").filedBy, "module:maintainer");
+  // The same filing by any module is still the retry.
+  assert.equal((await h.rubric("WOR-13", first, "fleet-steward")).status, 200);
+  assert.equal(h.grades.get("t13").filedBy, "module:maintainer");
+  // A differing one by another module is refused, and the row stands.
+  const before = h.grades.get("t13");
+  const refused = await h.rubric("WOR-13", other, "fleet-steward");
+  assert.equal(refused.status, 409);
+  assert.match(refused.json.error, /filed by someone else/);
+  assert.deepEqual(h.grades.get("t13"), before);
+  // The recorded module still replaces it while the row is unsettled.
+  assert.equal((await h.rubric("WOR-13", other, "maintainer")).status, 200);
+  assert.deepEqual(h.grades.get("t13").rubric, other.rubric);
+  // A row filed before the filer was recorded has none, and no module may take it over.
+  h.db.prepare("UPDATE grades SET filed_by = NULL WHERE issue_id = ?").run("t13");
+  const legacy = h.grades.get("t13");
+  assert.equal((await h.rubric("WOR-13", { ...first, rubric: ["another first", "another second", "another third"] }, "fleet-steward")).status, 409);
+  assert.deepEqual(h.grades.get("t13"), legacy);
+});
+
+test("the delegating agent adopts its own task's legacy row, because the task's creator is its identity", async (t) => {
+  const task = { id: "t14", identifier: "WOR-14", status: "in_review", assigneeAgentId: "eng", createdByAgentId: "cos", parentId: null };
+  const h = await harness({ "WOR-14": task }, t);
+  assert.equal((await h.rubric("WOR-14", { rubric: RUBRIC, deliverable: { kind: "app", ref: "apps-mcp" } }, "maintainer")).status, 200);
+  // The row predates the filer column, so who filed it is unknown.
+  h.db.prepare("UPDATE grades SET filed_by = NULL WHERE issue_id = ?").run("t14");
+  const r = await h.file("WOR-14", { rubric: [...RUBRIC].reverse(), deliverable: { kind: "app", ref: "maple" } });
+  assert.deepEqual([r.status, r.json], [200, { created: false, state: "open" }]);
+  assert.deepEqual([h.grades.get("t14").deliverable, h.grades.get("t14").filedBy], [{ kind: "app", ref: "maple" }, "agent:cos"]);
+});
+
+test("a settled row refuses a differing filing over HTTP and keeps its own", async (t) => {
+  const task = { id: "t11", identifier: "WOR-11", status: "done", assigneeAgentId: "eng", createdByAgentId: "cos", parentId: null };
+  const h = await harness({ "WOR-11": task }, t);
+  assert.equal((await h.rubric("WOR-11", { rubric: RUBRIC, deliverable: { kind: "pr", ref: "" } })).status, 200);
+  h.grades.record("t11", { version: "v1", outcome: "satisfied", model: "glm", criteria: [] });
+  const before = h.grades.get("t11");
+  const r = await h.rubric("WOR-11", { rubric: RUBRIC, deliverable: { kind: "app", ref: "maple" } });
+  assert.equal(r.status, 409);
+  assert.match(r.json.error, /already has another rubric/);
+  assert.deepEqual(h.grades.get("t11"), before);
+});
+
+test("an app deliverable with no apps-registry row reports the filing defect, not a deploy still to come", async () => {
+  const { gather } = await import("../service/src/grader/grade.ts");
+  const deps = {
+    approvals: async () => [],
+    app: async (name) => (name === "roadmap-keeper" ? { name, repo: "acme/roadmap-keeper", state: "unknown", healthy: false } : null),
+    comments: async () => [],
+    attachments: async () => [],
+    identifier: "WOR-12",
+  };
+  const missing = await gather({ kind: "app", ref: "apps-mcp" }, deps, RUBRIC);
+  // Nothing can arrive for a name with no registry row: it is a missing deliverable, not a deploy still to come.
+  assert.equal(missing.missing, true);
+  assert.match(missing.awaiting, /app apps-mcp is not an app this instance runs \(no apps registry entry\): this deliverable cannot be satisfied as filed/);
+  assert.doesNotMatch(missing.awaiting, /is deployed yet/);
+
+  // Registered but not deployed: today's deploy wait, not the filing defect.
+  const registered = await gather({ kind: "app", ref: "roadmap-keeper" }, deps, RUBRIC);
+  assert.equal(registered.awaiting, "roadmap-keeper is not deployed yet");
 });
 
 test("a task left unaccepted stays escalated, and a new version still goes back to the grader", async (t) => {

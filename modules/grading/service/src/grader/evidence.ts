@@ -236,8 +236,15 @@ export async function presentNow(deliverable: any, deps: any) {
     return { present: Boolean(merged), facts };
   }
   if (kind === "app") {
-    const app = await deps.app?.(deliverable.ref).catch(() => null);
-    if (!app) return { present: false, facts: [`no app named ${deliverable.ref || "(none)"} is deployed yet`] };
+    // A read that failed (undefined) is not a read that found nothing (null): only the latter says the ref is not an app.
+    let app;
+    try {
+      app = await deps.app?.(deliverable.ref);
+    } catch {
+      app = undefined;
+    }
+    if (app === undefined) return { present: false, facts: [registryUnread(deliverable.ref)] };
+    if (!app) return { present: false, facts: [notRegistered(deliverable.ref)] };
     const d = (await deploysOf(app, app.sha, deps)).rows.find((r: any) => r.status === "healthy");
     return { present: Boolean(d), facts: [d ? `app ${app.name}: ${String(app.sha).slice(0, 12)} deployed ${stamp(d.at)} (healthy)` : `app ${app.name}: deployed commit ${String(app.sha ?? "(none)").slice(0, 12)} has no healthy deploy`] };
   }
@@ -370,9 +377,25 @@ export const predatesDeploys = (app: any, mergedAt: unknown): boolean => {
   return at.length > 0 && Number.isFinite(merged) && merged < Math.min(...at);
 };
 
-/** A deployed app (apps-mcp status row, or null) as evidence: its commit, state, health, incident and recent deploys. */
+/** `deps.app` answered undefined (the registry read failed): unknown, so a wait for readable evidence, never "no such app". */
+export const registryUnread = (name: string | undefined) =>
+  `app ${name || "(none)"}: its app registry status could not be read just now, so whether it is an app this instance runs is unknown`;
+
+/**
+ * A `kind: app` ref with no apps-registry row: not an app this instance runs, so the filing is the defect rather than a deploy
+ * still to come. The status lists every registry row, deployed or not, so an undeployed app comes back as a row (deploy
+ * wording). Only a successful read with no row reaches this; a failed one is `registryUnread`.
+ */
+export const notRegistered = (name: string | undefined) => `app ${name || "(none)"} is not an app this instance runs (no apps registry entry): this deliverable cannot be satisfied as filed`;
+
+/**
+ * A deployed app (apps-mcp status row) as evidence: its commit, state, health, incident and recent deploys. `null`: a
+ * successful read with no row (not an app this instance runs); `undefined`: the read failed (unknown, so a wait).
+ */
 export function appEvidence(app: any, name: string | undefined): any {
-  if (!app) return { awaiting: `no app named ${name || "(none)"} is deployed yet` };
+  if (app === undefined) return { awaiting: registryUnread(name) };
+  // Missing, not waiting: no deploy can ever arrive for a name the registry has no row for.
+  if (!app) return { awaiting: notRegistered(name), missing: true };
   if (!app.sha) return { awaiting: `${app.name} is not deployed yet` };
   const facts = [`app ${app.name}: deployed commit ${app.sha}${app.deployed_at ? ` at ${stamp(app.deployed_at)}` : ""}${app.deployed_by ? ` by ${app.deployed_by}` : ""}; state ${app.state}; ${app.healthy ? "healthy" : "not healthy"}; ${app.incident ? `open incident (${app.incident.kind})` : "no open incident"}`];
   // The history, newest first: which commits were deployed, by whom, and how each ended. `by: auto-deploy` is the

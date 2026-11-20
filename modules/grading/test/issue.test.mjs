@@ -50,7 +50,10 @@ test("a module-filed task with a rubric is graded: an open issue reopens it, a c
   assert.equal((await file(KEY, body)).status, 200);
   assert.equal(grades.get("t1").state, "open");
   assert.equal((await file(KEY, body)).status, 200, "the same filing again is a retry");
-  assert.equal((await file(KEY, { ...body, rubric: [...DONE].reverse() })).status, 409, "a row stays as its filer made it");
+  // A differing filing on a row that is not settled replaces the rubric (the re-file), and a settled row still refuses one.
+  assert.equal((await file(KEY, { ...body, rubric: [...DONE].reverse() })).status, 200, "a differing filing replaces it while open");
+  assert.deepEqual(grades.get("t1").rubric, [...DONE].reverse());
+  assert.equal(grades.get("t1").state, "open");
   const finish = (graded, id = "t2") => fetch(`http://127.0.0.1:${server.address().port}/check/finish`, { method: "POST", headers: { authorization: `Bearer ${KEY}`, "content-type": "application/json" }, body: JSON.stringify({ task: { ...issue, id, ...(graded ? { graded } : {}) }, agent: "mnt", tool: "task_finish", via: "task_finish" }) }).then((r) => r.json());
   assert.equal((await finish(true)).verdict, "deny", "a task marked graded with no row never passes ungraded");
   assert.equal((await finish(false)).verdict, "ok");

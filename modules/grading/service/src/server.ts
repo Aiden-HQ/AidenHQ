@@ -3,7 +3,8 @@
 //   POST /check/finish                     the kernel (grading_check_key): the task.finish check (kernel/src/checks.ts)
 //   POST /check/rubric                     the kernel (grading_check_key): the rubric of a task a module filed (kernel.tasks)
 //   POST /check/grade                      the kernel (grading_check_key): the latest verdict that sent a task's work back, for the AI reviewer
-//   POST /grades                           the tasks module, as the delegating agent (its caller assertion, aud tasks): file a rubric
+//   POST /grades, GET /grades/<task>       the tasks module, as the delegating agent (its caller assertion, aud tasks): file or
+//                                          re-file a rubric, and read the one on file (a corrected delegation compares its ref)
 //   POST /board/grades, POST /board/grades/<task>/settle   the board (grading_board_key): its reads
 // It reads tasks and settings from the kernel with its own token (kernel.cp-read) and releases its label there
 // (POST /v1/checks/:task); it never writes to the control plane itself. Every five minutes it settles rows whose task closed.
@@ -25,6 +26,10 @@ class HttpError extends Error { status: number; constructor(status: number, mess
 /** Tools that hand a task to an agent and file its rubric: task_delegate, task_create with an assignee. */
 const FILERS = ["task_delegate", "task_propose_rule", "task_create"];
 const NOTE = "The grader checks this task against its rubric.";
+/** A differing filing of a settled row: its rubric and deliverable stand (the same refusal POST /check/rubric always gave). */
+const REFILED_SETTLED = "this task already has another rubric";
+/** A differing filing by anyone but the recorded filer (a row filed before the column existed has none). */
+const REFILED_OTHER = "this task's rubric was filed by someone else: only its filer may replace it";
 
 export function createGrading({ db, kernel, keys, kernelUrl = "", jwks = kernelJwks(), log = () => {} }: {
   db: DatabaseSync; kernel: Kernel; keys: { check: string; board: string }; kernelUrl?: string; jwks?: JWKS | (() => Promise<JWKS>);
@@ -94,9 +99,23 @@ export function createGrading({ db, kernel, keys, kernelUrl = "", jwks = kernelJ
     await refAllowed(b.deliverable);
     const issue = await kernel.issue(b.issue);
     if (issue.createdByAgentId !== caller.agent) throw new HttpError(403, "only the agent that delegated a task files its rubric");
-    const r = grades.file(issue.id, b.rubric, b.deliverable);
+    // The delegating agent is this task's filer (above) and may adopt its own legacy row: `createdByAgentId` establishes its
+    // identity. Deliberate, and not what the module route does.
+    const r = grades.file(issue.id, b.rubric, b.deliverable, `agent:${caller.agent}`, { adoptUnfiled: true });
+    if (r.refused) throw new HttpError(409, r.conflict === "filer" ? REFILED_OTHER : REFILED_SETTLED);
     if (r.created) log("rubric filed", { task: issue.identifier, kind: b.deliverable.kind, criteria: b.rubric.length });
+    else if (r.replaced) log("rubric re-filed: the deliverable and rubric replaced", { task: issue.identifier, kind: b.deliverable.kind, criteria: b.rubric.length });
     return { created: r.created, state: r.grade.state };
+  }
+
+  /** The delegating agent's read of its task's filed grade, so a corrected delegation can tell a re-file from a retry. */
+  async function readGrade(req: http.IncomingMessage, ref: string) {
+    const caller = await verifyCaller(req, jwks, "tasks").catch((e: Error) => { throw new HttpError(403, `refused: ${e.message}`); });
+    const tool = String(caller.tool ?? "").split(".").pop()!;
+    if (!FILERS.includes(tool)) throw new HttpError(403, `only an agent granted one of ${FILERS.join(", ")} may read a filed rubric`);
+    const issue = await kernel.issue(decodeURIComponent(ref));
+    if (issue.createdByAgentId !== caller.agent) throw new HttpError(403, "only the agent that delegated a task reads its rubric");
+    return { grade: grades.get(issue.id) ?? null };
   }
 
   /** A module-filed task's rubric: the kernel's own call (its key), after it checked the filing module holds kernel.tasks. */
@@ -104,10 +123,12 @@ export function createGrading({ db, kernel, keys, kernelUrl = "", jwks = kernelJ
     if (!b?.task?.id || typeof b.module !== "string") throw new HttpError(400, "send {task, module, rubric, deliverable}");
     const f = parseFiling({ issue: b.task.id, rubric: b.rubric, deliverable: b.deliverable });
     await refAllowed(f.deliverable);
-    const r = grades.file(b.task.id, f.rubric, f.deliverable);
-    // A row already there stays as its filer made it: the same filing again is a retry, any other is refused.
-    if (!r.created && (JSON.stringify(r.grade.rubric) !== JSON.stringify(f.rubric) || JSON.stringify(r.grade.deliverable) !== JSON.stringify(f.deliverable))) throw new HttpError(409, "this task already has another rubric");
+    // The module that filed the row is its filer: another module is refused, and so is one on a row with no filer recorded.
+    const r = grades.file(b.task.id, f.rubric, f.deliverable, `module:${b.module}`);
+    // The same filing again is a retry; a differing one replaces it only for the recorded filer, and only while unsettled.
+    if (r.refused) throw new HttpError(409, r.conflict === "filer" ? REFILED_OTHER : REFILED_SETTLED);
     if (r.created) log("rubric filed for a module's task", { task: b.task.id, module: b.module, kind: f.deliverable.kind, criteria: f.rubric.length });
+    else if (r.replaced) log("rubric re-filed for a module's task", { task: b.task.id, module: b.module, kind: f.deliverable.kind, criteria: f.rubric.length });
     return { verdict: "ok", created: r.created };
   }
 
@@ -187,6 +208,8 @@ export function createGrading({ db, kernel, keys, kernelUrl = "", jwks = kernelJ
         return send(200, { verdict: "ok", grade: graderNote(grades.get(id), template) });
       }
       if (method === "POST" && path === "/grades") return send(200, await file(req, body));
+      const read = /^\/grades\/([^/]+)$/.exec(path);
+      if (method === "GET" && read) return send(200, await readGrade(req, read[1]!));
       // The Fleet Steward's read (its own module token, vouched for by the kernel): which grader passes failed lately, and why.
       if (method === "GET" && path === "/steward/grade-failures") {
         const who = await fetch(`${kernelUrl}/v1/whoami`, { headers: { authorization: String(req.headers.authorization ?? "") }, signal: AbortSignal.timeout(5_000) }).then((r) => (r.ok ? r.json() : {}), () => ({})) as { kind?: string; module?: string };
