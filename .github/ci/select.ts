@@ -117,20 +117,10 @@ async function main() {
       const own = runs.find((r: { name: string }) => r.name === s.name) ?? s;
       return { name: s.name, dir: s.name.split("#")[0]!, run: own.run, secs: s.secs ?? 5, ...(own.job ? { job: own.job } : {}) };
     });
-  // The official modules' suites (job "modules"), heaviest first (`secs` in the map, 5 when unlisted) into the lightest of at
-  // most 3 shards.
-  const mods = tests.filter((t) => t.job === "modules").sort((x, y) => y.secs - x.secs || x.name.localeCompare(y.name));
-  const shards = [0, 1, 2].map((i) => ({ shard: i + 1, load: 0, entries: [] as { dir?: string; run?: string }[] }));
-  for (const m of mods) {
-    const s = shards.reduce((lo, x) => (x.load < lo.load ? x : lo));
-    s.load += m.secs;
-    s.entries.push({ dir: m.dir, run: m.run });
-  }
-  const modules = shards.filter((x) => x.entries.length).map(({ shard, entries }) => ({ shard, entries }));
-  // The shards ci.yml's test jobs take (the next step drops `packages` and `modules` above).
+  // The test jobs' shards; heavy: the jobs that may run on our own runners (ci.yml's `runner` step), the packages shards and board.
   const pk = shard(tests.filter((t) => t.job == null)), md = shard(tests.filter((t) => t.job === "modules"));
   const plan = { packages: pk, modules: md, heavy: pk.length + (tests.some((t) => t.job === "board") ? 1 : 0) };
-  process.stdout.write(`${JSON.stringify({ tests, packages: tests.some((t) => !t.job), modules, shards: plan })}\n`);
+  process.stdout.write(`${JSON.stringify({ tests, shards: plan })}\n`);
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) await main();

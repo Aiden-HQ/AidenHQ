@@ -1,5 +1,7 @@
-# Job budgets (timeout-minutes): a floor set from only a few hosted runs on 2026-11-17. A failed job is never re-run, but a
-# failed suite re-runs its failed tests once in the same job (.github/ci/run-suite.sh; the board's vitest --retry=1).
+# Built for the shortest wall-clock time from a push to ci-required green. The test jobs run their suites side by side, one
+# per CPU (.github/ci/run-suites.sh), each with its own timeout from its measured time (`secs` in .github/ci/areas.json),
+# in as many shards as those times need (.github/ci/shards.ts), heaviest first so the shards finish together. Nothing is
+# ever re-run: a flaky test is removed (owner, 2026-11-20).
 # Tests and typechecks for every package, on pull requests and pushes to main. Offline: no secrets are used, except the
 # reviewer eval's model key (the `reviewer-eval` job below, in its one step).
 # A pull request runs the fast suites its change touches; the slow end-to-end ones (areas.json `main: true`: the SDK
@@ -32,18 +34,17 @@ concurrency:
 
 jobs:
   # The suites this change needs tested that have no job of their own (checks' `tests` step; all of them on a push
-  # to main), skipped when there are none. They share two jobs, split by weight (below), four suites at a time in each: alone, each spent ~14 s of setup and about
-  # a minute of queue on 1-9 s of tests.
+  # to main), in the shards checks' `shards` step plans; skipped when there are none.
   packages:
-    name: packages (${{ matrix.shard }}/2)
+    name: packages (${{ matrix.shard }})
     needs: checks
-    if: needs.checks.outputs.packages == 'true'
+    if: needs.checks.outputs.packages != '[]'
     runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON(needs.checks.outputs.runner) }}
-    timeout-minutes: 4
+    timeout-minutes: 6
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2]
+        include: ${{ fromJSON(needs.checks.outputs.packages) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -58,6 +59,14 @@ jobs:
           path: ~/.npm
           key: npm-${{ runner.os }}-${{ github.job }}-${{ strategy.job-index }}-${{ hashFiles('**/package-lock.json') }}
           restore-keys: npm-${{ runner.os }}-${{ github.job }}-${{ strategy.job-index }}-
+      # The suite runner, which decides pass or fail, comes from the base (main for a merge train), like the suite map:
+      # only the code under test comes from the head.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.checks.outputs.ci_ref }}
+          path: .ci-base
+          sparse-checkout: .github/ci
+          persist-credentials: false
       - name: Git identity (the tests make commits)
         run: git config --global user.name ci && git config --global user.email ci@example.com
       # kernel/contract.lock.json against the PR's base lock (scripts/lean/contract-lock.ts): a stable entry is never
@@ -74,36 +83,18 @@ jobs:
           node --disable-warning=ExperimentalWarning scripts/lean/contract-lock.ts --check --base "$PR_BASE"
       - name: Test
         env:
-          TESTS: ${{ needs.checks.outputs.tests }}
-          SHARD: ${{ matrix.shard }}
+          ENTRIES: ${{ toJSON(matrix.entries) }}
         run: |
-          logs="$RUNNER_TEMP/packages"; mkdir -p "$logs"
-          node -e '
-            // The selected suites go heaviest first (`secs` in .github/ci/areas.json) into the lighter shard.
-            const shard = Number(process.env.SHARD) - 1, load = [0, 0], out = [[], []], w = (t) => t.secs ?? 5;
-            const suites = JSON.parse(process.env.TESTS).filter((t) => t.job == null).sort((a, b) => w(b) - w(a) || a.name.localeCompare(b.name));
-            for (const t of suites) { const i = load[0] <= load[1] ? 0 : 1; load[i] += w(t); out[i].push(`${t.dir}\t${t.run}`); }
-            console.log(out[shard].join("\n"));' > "$logs/list"
-          sed -i "/^\$/d" "$logs/list"
-          echo "Shard $SHARD: $(cut -f1 "$logs/list" | tr '\n' ' ')"
-          # One line per package, run in its directory: its output goes to <log>, its exit code to <log>.rc.
-          one() { dir="${1%%$'\t'*}"; cmd="${1#*$'\t'}"; log="$logs/$(tr / _ <<< "$dir")"; (cd "$dir" && "$retry" "$cmd") > "$log" 2>&1; echo $? > "$log.rc"; }
-          retry="$PWD/.github/ci/run-suite.sh"
-          export -f one; export logs retry
-          # scripts/node_modules is read by the scripts suite and the kernel's authority CLI: install it once, here, since two
-          # parallel `npm ci` in one directory delete each other's files (ENOTEMPTY, then "Cannot find module yaml").
-          grep -qE '^(scripts|kernel|fixtures/twin)[[:space:]]' "$logs/list" && (cd scripts && npm ci)
-          # The scripts suite imports kernel sources (the apply planner), which resolve their packages from kernel/: install
-          # them here when this shard runs scripts without the kernel suite (which installs them itself).
-          grep -qE '^scripts[[:space:]]' "$logs/list" && ! grep -qE '^kernel[[:space:]]' "$logs/list" && (cd kernel && npm ci)
-          tr '\n' '\0' < "$logs/list" | xargs -0 -r -P 4 -I{} bash -c 'one "$1"' _ {}
-          status=0
-          while IFS=$'\t' read -r dir cmd; do
-            log="$logs/$(tr / _ <<< "$dir")"; rc=$(cat "$log.rc")
-            echo "::group::$dir (exit $rc)"; cat "$log"; echo "::endgroup::"
-            [ "$rc" = 0 ] || { echo "::error::$dir failed"; status=1; }
-          done < "$logs/list"
-          exit $status
+          list="$RUNNER_TEMP/suites"
+          jq -r '.[] | [.name, .dir, .run, .secs] | @tsv' <<< "$ENTRIES" > "$list"
+          echo "Shard ${{ matrix.shard }}: $(cut -f1 "$list" | tr '\n' ' ')"
+          # scripts/node_modules is read by the scripts suite and the kernel's authority CLI, and the scripts suite imports
+          # kernel sources: install both once, here, side by side, since two `npm ci` in one directory delete each other's files.
+          pids=()
+          cut -f2 "$list" | grep -qxE 'scripts|kernel|fixtures/twin' && { (cd scripts && npm ci --silent) & pids+=($!); }
+          cut -f2 "$list" | grep -qx scripts && ! cut -f2 "$list" | grep -qx kernel && { (cd kernel && npm ci --silent) & pids+=($!); }
+          for p in "${pids[@]}"; do wait "$p" || exit 1; done
+          bash .ci-base/.github/ci/run-suites.sh "$list"
       - if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -111,9 +102,8 @@ jobs:
           key: npm-${{ runner.os }}-${{ github.job }}-${{ strategy.job-index }}-${{ hashFiles('**/package-lock.json') }}
 
   # The official modules' own suites (areas.json entries with job "modules": each module's packages, plus the module suites
-  # whose paths a change touches, e.g. the kernel for the modules that import it), up to three shards. Each shard installs the
-  # kernel's and the compiler's packages once (module tests import them), then runs its entries four at a time (alone, the
-  # slowest shard spent ~100 s running one after another).
+  # whose paths a change touches, e.g. the kernel for the modules that import it), in the shards checks' `shards` step plans.
+  # Each shard installs the kernel's and the compiler's packages once (module tests import them).
   modules:
     name: modules (${{ matrix.shard }})
     needs: checks
@@ -138,28 +128,27 @@ jobs:
           path: ~/.npm
           key: npm-${{ runner.os }}-${{ github.job }}-${{ strategy.job-index }}-${{ hashFiles('**/package-lock.json') }}
           restore-keys: npm-${{ runner.os }}-${{ github.job }}-${{ strategy.job-index }}-
+      # The suite runner, which decides pass or fail, comes from the base (main for a merge train), like the suite map:
+      # only the code under test comes from the head.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.checks.outputs.ci_ref }}
+          path: .ci-base
+          sparse-checkout: .github/ci
+          persist-credentials: false
       - name: Git identity (the tests make commits)
         run: git config --global user.name ci && git config --global user.email ci@example.com
       - name: Test
         env:
           ENTRIES: ${{ toJSON(matrix.entries) }}
         run: |
-          (cd kernel && npm ci --silent) && (cd scripts && npm ci --silent)
-          logs="$RUNNER_TEMP/modules"; mkdir -p "$logs"
-          jq -r 'to_entries[] | [.key, .value.dir, .value.run] | @tsv' <<< "$ENTRIES" > "$logs/list"
-          # One line per entry (a folder can hold two), run in its folder: output to <n>.log, exit code to <n>.rc.
-          one() { IFS=$'\t' read -r n dir run <<< "$1"; (cd "$dir" && timeout -k 5 150 bash "$GITHUB_WORKSPACE/.github/ci/run-suite.sh" "$run") > "$logs/$n.log" 2>&1; echo $? > "$logs/$n.rc"; }
-          export -f one; export logs
-          # The map is read from the base, so a PR that deletes a suite's folder still lists it: nothing is left to test.
-          while IFS=$'\t' read -r n dir run; do [ -d "$dir" ] && printf '%s\n' "$n"$'\t'"$dir"$'\t'"$run" || echo "gone: $dir" >&2; done < "$logs/list" > "$logs/run"
-          tr '\n' '\0' < "$logs/run" | xargs -0 -r -P 4 -I{} bash -c 'one "$1"' _ {}
-          status=0
-          while IFS=$'\t' read -r n dir run; do
-            rc=$(cat "$logs/$n.rc")
-            echo "::group::$dir (exit $rc)"; cat "$logs/$n.log"; echo "::endgroup::"
-            [ "$rc" = 0 ] || { echo "::error::$dir failed"; status=1; }
-          done < "$logs/run"
-          exit $status
+          (cd kernel && npm ci --silent) & k=$!
+          (cd scripts && npm ci --silent) & c=$!
+          wait $k && wait $c || exit 1
+          list="$RUNNER_TEMP/suites"
+          jq -r '.[] | [.name, .dir, .run, .secs] | @tsv' <<< "$ENTRIES" > "$list"
+          echo "Shard ${{ matrix.shard }}: $(cut -f1 "$list" | tr '\n' ' ')"
+          bash .ci-base/.github/ci/run-suites.sh "$list"
       - if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -212,6 +201,7 @@ jobs:
       tests: ${{ steps.tests.outputs.tests }}
       packages: ${{ steps.tests.outputs.packages }}
       modules: ${{ steps.tests.outputs.modules }}
+      ci_ref: ${{ steps.tests.outputs.ci_ref }}
       runner: ${{ steps.runner.outputs.runner }}
       eval: ${{ steps.eval.outputs.eval }}
       eval_key: ${{ steps.eval.outputs.eval_key }}
@@ -220,28 +210,6 @@ jobs:
       PUSH_BEFORE: ${{ github.event.before }}
       HEAD_SHA: ${{ github.sha }}
     steps:
-      # Where the heavy jobs run: GitHub-hosted, unless CI_SELF_HOSTED is 'true', the run is a push to main or a same-repo
-      # PR, and this repo's other runs already hold BUSY+ hosted jobs (queued or running). Any API error keeps them hosted.
-      # Fork PRs and merge trains (main plus PRs that may come from forks) never route there; the runners' job-started hook
-      # (modules/ci/runner) refuses them anyway.
-      - id: runner
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          RUN_ID: ${{ github.run_id }}
-          ENABLED: ${{ vars.CI_SELF_HOSTED == 'true' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event.pull_request.head.repo.full_name == github.repository) }}
-        run: |
-          BUSY=12 # of the free plan's ~20 concurrent hosted jobs, leaving room for this run's ~9
-          runner='"ubuntu-latest"'
-          if [ "$ENABLED" = true ] && busy=$(set -o pipefail; for status in queued in_progress; do
-              gh api "repos/$REPO/actions/runs?status=$status&per_page=100" --jq ".workflow_runs[] | select(.id != $RUN_ID) | .id" || exit 1
-            done | while read -r id; do
-              gh api "repos/$REPO/actions/runs/$id/jobs?per_page=100" --jq '[.jobs[] | select((.status == "queued" or .status == "in_progress") and ((.labels | index("self-hosted")) | not))] | length' || exit 1
-            done | awk '{n += $1} END {print n + 0}') && [ "$busy" -ge "$BUSY" ]; then
-            runner='["self-hosted","aidenhq"]'
-          fi
-          echo "hosted jobs busy in other runs: ${busy:-not counted}; heavy jobs run on $runner"
-          echo "runner=$runner" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
@@ -275,15 +243,49 @@ jobs:
           if [ "$GITHUB_EVENT_NAME" != pull_request ]; then export ALL="a push to main or a merge train"; fi
           # the slow suites (areas.json `main: true`) run only on a push to main
           if [ "$GITHUB_EVENT_NAME" = push ] && [ "$GITHUB_REF" = refs/heads/main ]; then export MAIN=1; fi
-          if [ -z "$src" ] || ! { git show "$src:.github/ci/select.ts" > "$d/select.ts" && git show "$src:.github/ci/areas.json" > "$d/areas.json"; } 2>/dev/null; then
-            export ALL="${ALL:-the base has no suite map}"; cp .github/ci/select.ts .github/ci/areas.json "$d/"
+          # A base without them takes main's, never the head's: the selector decides what is tested.
+          if [ -z "$src" ]; then cp .github/ci/select.ts .github/ci/areas.json "$d/"; src="$HEAD_SHA"
+          elif ! { git show "$src:.github/ci/select.ts" > "$d/select.ts" && git show "$src:.github/ci/areas.json" > "$d/areas.json"; } 2>/dev/null; then
+            src=$(git rev-parse origin/main); export ALL="${ALL:-the base has no suite map}"
+            git show "$src:.github/ci/select.ts" > "$d/select.ts" && git show "$src:.github/ci/areas.json" > "$d/areas.json" || exit 1
           fi
           out=$(node "$d/select.ts")
           tests=$(jq -c .tests <<< "$out")
           echo "Suites to test: $(jq -r 'map(.name) | join(" ")' <<< "$tests")"
           echo "tests=$tests" >> "$GITHUB_OUTPUT"
-          echo "packages=$(jq -r .packages <<< "$out")" >> "$GITHUB_OUTPUT"
-          echo "modules=$(jq -c '.modules // []' <<< "$out")" >> "$GITHUB_OUTPUT"
+          # The test jobs' shards, by the suites' measured times (select.ts shard), and the commit whose CI scripts they run.
+          echo "packages=$(jq -c .shards.packages <<< "$out")" >> "$GITHUB_OUTPUT"
+          echo "modules=$(jq -c .shards.modules <<< "$out")" >> "$GITHUB_OUTPUT"
+          echo "heavy=$(jq -r .shards.heavy <<< "$out")" >> "$GITHUB_OUTPUT"
+          echo "ci_ref=$src" >> "$GITHUB_OUTPUT"
+      # Where the heavy jobs (the packages shards and board) run: GitHub-hosted, unless CI_SELF_HOSTED is 'true', the run is
+      # a push to main or a same-repo PR, this repo's other runs already hold BUSY+ hosted jobs (queued or running), and our
+      # self-hosted runners (CI_SELF_HOSTED_RUNNERS, default 1) have a free one for each heavy job: a job queued behind a
+      # busy self-hosted runner waits longer than one in GitHub's queue (2026-11-20: 10+ minutes behind the only runner).
+      # Any API error keeps them hosted. Fork PRs and merge trains never route there; the runners' job-started hook
+      # (modules/ci/runner) refuses them anyway.
+      - id: runner
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          ENABLED: ${{ vars.CI_SELF_HOSTED == 'true' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event.pull_request.head.repo.full_name == github.repository) }}
+          RUNNERS: ${{ vars.CI_SELF_HOSTED_RUNNERS || '1' }}
+          HEAVY: ${{ steps.tests.outputs.heavy }}
+        run: |
+          BUSY=12 # of the free plan's ~20 concurrent hosted jobs, leaving room for this run's own
+          runner='"ubuntu-latest"'
+          if [ "$ENABLED" = true ] && [ "${HEAVY:-0}" -gt 0 ] && counts=$(set -o pipefail; for status in queued in_progress; do
+              gh api "repos/$REPO/actions/runs?status=$status&per_page=100" --jq ".workflow_runs[] | select(.id != $RUN_ID) | .id" || exit 1
+            done | while read -r id; do
+              gh api "repos/$REPO/actions/runs/$id/jobs?per_page=100" --jq '[.jobs[] | select(.status == "queued" or .status == "in_progress") | (.labels | index("self-hosted") != null)] | "\(map(select(. | not)) | length) \(map(select(.)) | length)"' || exit 1
+            done | awk '{h += $1; s += $2} END {print h + 0, s + 0}'); then
+            read -r hosted self <<< "$counts"
+            echo "other runs hold $hosted hosted and $self self-hosted jobs; this run has $HEAVY heavy jobs, $RUNNERS self-hosted runner(s)"
+            [ "$hosted" -ge "$BUSY" ] && [ $(( RUNNERS - self )) -ge "$HEAVY" ] && runner='["self-hosted","aidenhq"]'
+          fi
+          echo "heavy jobs run on $runner"
+          echo "runner=$runner" >> "$GITHUB_OUTPUT"
 
       # Whether the change touches the AI reviewer's code (REVIEWER_CODE in evalgate.ts, the one list), read from the PR's
       # base (main for a merge train) so a PR can't take itself off it; a push to main reads its own.
