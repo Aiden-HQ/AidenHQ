@@ -6,7 +6,7 @@ import { createServer } from "node:net";
 import { networkInterfaces, tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
-import { finishedJob, IDENTITY_SCRIPT, identityDoors, identityPorts, identityProbeArgs, identityProbes, judgeIdentity, NO_SIGN_IN, unprobedServices, type Door } from "../src/checks.js";
+import { finishedJob, IDENTITY_SCRIPT, identityDoors, identityPorts, identityProbeArgs, mainUid, identityProbes, judgeIdentity, NO_SIGN_IN, unprobedServices, type Door } from "../src/checks.js";
 import { agentSigner, forgedIdentity, IDENTITY_HEADER } from "../src/identity.js";
 import { parseApp } from "../src/registry.js";
 
@@ -205,6 +205,8 @@ describe("identity gate", () => {
     expect((await scan(hello2, [await freePort()])).findings[0]).toMatchObject({ hard: false, what: expect.stringMatching(/nothing listens/) });
     expect(identityPorts([], [])).toMatchObject({ ok: true, findings: [{ hard: false, what: expect.stringMatching(/nothing can reach it/) }] });
     expect(identityPorts([], [{ service: "app", port: "8080" }]).ok).toBe(false);
+    // A door hidden by a process the scan couldn't read says so, rather than "nothing listens".
+    expect(identityPorts([], [{ service: "app", port: "8080" }], ["app:1 (EACCES)"]).findings[0]!.what).toMatch(/couldn't read the sockets of process app:1 \(EACCES\)/);
   }, 120_000);
 
   it.runIf(process.platform === "linux")("probes a socket the app's own process holds, wherever a peer listener sits on the same network", async () => {
@@ -241,12 +243,19 @@ describe("identity gate", () => {
   it("runs the identity scan in the app container's pid namespace as well as its network namespace", () => {
     // The inode filter only sees the app's own processes with --pid; without it every peer's listener would count again.
     const id = "a".repeat(64);
-    const a = identityProbeArgs("aidenhq/apps-mcp-helper:abc", id);
+    const a = identityProbeArgs("aidenhq/apps-mcp-helper:abc", id, 1000);
     expect(a.slice(a.indexOf("--network"), a.indexOf("--network") + 4)).toEqual(["--network", `container:${id}`, "--pid", `container:${id}`]);
-    // Root, but only the two capabilities the fd read needs, and nothing looser: no privileged, mounts or shared host namespaces.
-    expect(a.slice(a.indexOf("--cap-drop"), a.indexOf("--cap-drop") + 6)).toEqual(["--cap-drop", "ALL", "--cap-add", "SYS_PTRACE", "--cap-add", "DAC_READ_SEARCH"]);
-    expect(a.indexOf("--cap-add")).toBeGreaterThan(a.indexOf("--cap-drop"));
+    // The app's own uid and no capabilities: its /proc/<pid>/fd is readable by that uid alone, nothing looser.
+    expect(a.slice(a.indexOf("--user"), a.indexOf("--user") + 2)).toEqual(["--user", "1000:1000"]);
+    expect(a.slice(a.indexOf("--cap-drop"), a.indexOf("--cap-drop") + 2)).toEqual(["--cap-drop", "ALL"]);
+    expect(a).not.toContain("--cap-add");
     expect(a.join(" ")).not.toMatch(/--privileged|-v |--volume|--mount|--pid host|--network host/);
+  });
+
+  it("scans as the uid of the container's main process", () => {
+    const top = "UID                 PID\n0                   4100\n1000                4122\n";
+    expect(mainUid(top, 4122)).toBe(1000);
+    expect(() => mainUid(top, 9)).toThrow(/isn't in docker top/);
   });
 
   it("fails closed on any service without a running container, unless it is a current, port-less one-shot job that finished", () => {

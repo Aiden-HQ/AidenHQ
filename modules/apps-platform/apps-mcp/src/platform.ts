@@ -6,7 +6,7 @@ import { promisify } from "node:util";
 import { dropPreviewDatabase, provisionDatabase, WAREHOUSE } from "./database.js";
 import { createEngine, type Engine, type ProbeOutcome } from "./deploy.js";
 import { apiTarget, SEND_SCRIPT, targetContainer, TIMEOUT_MS, type ApiRequest, type Resolve, type Send } from "./api.js";
-import { AGENT_TIMEOUT_MS, CHECK_SCRIPT, CHECK_TIMEOUT_MS, agentProbeScope, identityProbeArgs, identityDoors, identityPorts, identityProbes, unprobedServices, judgeAgent, judgePage, plan, probeResult, type Declared, type Kind, type PageFacts, type PortAnswers, type ProbeResult } from "./checks.js";
+import { AGENT_TIMEOUT_MS, CHECK_SCRIPT, CHECK_TIMEOUT_MS, agentProbeScope, identityProbeArgs, identityDoors, mainUid, identityPorts, identityProbes, unprobedServices, judgeAgent, judgePage, plan, probeResult, type Declared, type Kind, type PageFacts, type PortAnswers, type ProbeResult } from "./checks.js";
 import { MANIFEST_FILE, parseManifest } from "./manifest.js";
 import { lookup as dnsLookup } from "node:dns/promises";
 import { BROWSER_IMAGE, RENDER_TIMEOUT_MS, renderArgs, VIEW_SCRIPT, type Lookup, type Render, type ViewResult } from "./view.js";
@@ -395,18 +395,20 @@ export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: 
     const forged = forgedIdentity(app.name, sign);
     const health = app.health.url ? new URL(app.health.url).pathname : undefined;
     const probes = identityProbes(app, node(), health);
-    const ports: PortAnswers[] = [];
+    const ports: PortAnswers[] = [], denied: string[] = [];
     for (const c of containers) {
       if (!/^[0-9a-f]{64}$/.test(c?.Id ?? "")) throw new Error(`${app.name}: a container has no id`);
       const service = String(c.Config?.Labels?.["com.docker.compose.service"] ?? "");
       const exposed = Object.keys(c.Config?.ExposedPorts ?? {}).filter((k) => k.endsWith("/tcp")).map((k) => parseInt(k, 10));
       const ips = Object.values<any>(c.NetworkSettings?.Networks ?? {}).flatMap((n) => [n.IPAddress, n.GlobalIPv6Address]).filter(Boolean);
       const input = { ports: [...exposed, ...required.filter((d) => d.service === service).map((d) => Number(d.port))], ips, probes: probes.map((p) => ({ method: p.method, path: p.path, headers: p.forged ? { [IDENTITY_HEADER]: forged } : {} })) };
-      const out = await exec(identityProbeArgs(cfg.healthImage, c.Id), { input: JSON.stringify(input), timeout: 300_000 });
-      for (const k of (JSON.parse(out) as { sockets: { port: number; host: string; listening: boolean; raw?: PortAnswers["raw"]; statuses: number[] }[] }).sockets)
+      const uid = mainUid(await exec(["top", c.Id, "-eo", "uid,pid"]), c.State?.Pid);
+      const scan = JSON.parse(await exec(identityProbeArgs(cfg.healthImage, c.Id, uid), { input: JSON.stringify(input), timeout: 300_000 })) as { sockets: { port: number; host: string; listening: boolean; raw?: PortAnswers["raw"]; statuses: number[] }[]; denied?: string[] };
+      denied.push(...(scan.denied ?? []).map((p) => `${service}:${p}`));
+      for (const k of scan.sockets)
         ports.push({ service, port: k.port, host: k.host, listening: k.listening, ...(k.raw ? { raw: k.raw } : {}), answers: k.statuses.map((status, i) => ({ probe: probes[i]!, status })) });
     }
-    return identityPorts(ports, required);
+    return identityPorts(ports, required, denied);
   }
 
   /**
