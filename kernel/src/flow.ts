@@ -170,18 +170,26 @@ function reasoner(x: Index, task: string, stale: Occurrence[]) {
 /** Stages whose open interval is a wait the idle reasons name, not work going on. */
 const WAITS = new Set(["record.filed", "work.waiting"]);
 
-/** A task's idle periods up to `now`; `occs`: the stage occurrences (any task's). None when no task fact says it was open. */
-function idleOf(x: Index, task: string, now: number, occs: Occurrence[]): Idle[] {
+/** When a task was open, from its creation (else its first fact) through its status changes, up to `now`; none when no task fact says. */
+function openOf(x: Index, task: string, now: number): [number, number][] {
   const fs = x.byTask.get(task) ?? [];
   const own = fs.filter((f) => f.subject === `task:${task}`);
   if (!own.some((f) => f.type === "task.created" || f.type === "task.status_changed")) return [];
-  // open intervals, from creation (else its first fact) through status changes
   const open: [number, number][] = [];
   let from: number | null = ms((own.find((f) => f.type === "task.created") ?? fs[0]!).at);
   for (const f of own) if (f.type === "task.status_changed") {
     if (CLOSED.has(String(f.data.to ?? ""))) { if (from !== null) open.push([from, ms(f.at)]); from = null; } else if (from === null) from = ms(f.at);
   }
   if (from !== null) open.push([from, now]);
+  return open;
+}
+
+/** A task's idle periods up to `now`; `occs`: the stage occurrences (any task's). None when no task fact says it was open. */
+function idleOf(x: Index, task: string, now: number, occs: Occurrence[]): Idle[] {
+  const fs = x.byTask.get(task) ?? [];
+  const own = fs.filter((f) => f.subject === `task:${task}`);
+  const open = openOf(x, task, now);
+  if (!open.length) return [];
   // busy: each job from its wake (queued) to its end, or still running
   const jobs = new Map<string, [number, number]>();
   for (const f of fs) if (f.subject.startsWith("job:")) {
@@ -231,8 +239,9 @@ function idleOf(x: Index, task: string, now: number, occs: Occurrence[]): Idle[]
   return out;
 }
 
+type Seg = { s: number; e: number; reason: string };
 /** Union of labelled segments clipped to [s, e], earlier-listed segments winning: seconds per label. */
-function cover(segs: { s: number; e: number; reason: string }[], s: number, e: number): Record<string, number> {
+function cover(segs: Seg[], s: number, e: number): Record<string, number> {
   const cut = [...new Set([s, e, ...segs.flatMap((g) => [g.s, g.e]).filter((t) => t > s && t < e)])].sort((a, b) => a - b);
   const out: Record<string, number> = {};
   for (let i = 0; i + 1 < cut.length; i++) {
@@ -241,10 +250,31 @@ function cover(segs: { s: number; e: number; reason: string }[], s: number, e: n
   }
   return out;
 }
+/**
+ * An item's idle seconds per reason in [s, e]: where its subject waits (its own `work.waiting`), else where every one of its tasks
+ * open then is idle (a piece of work is busy while any task of its tree works). The slice's reason is the wait's, else the first
+ * task's that isn't `delegated` or `blocked` (a parent waiting on its own subtask says less than the subtask), else that one.
+ */
+function idleIn(waits: Seg[], tasks: { open: [number, number][]; idle: Seg[] }[], s: number, e: number): Record<string, number> {
+  const edges = [...waits.flatMap((g) => [g.s, g.e]), ...tasks.flatMap((t) => [...t.open.flat(), ...t.idle.flatMap((g) => [g.s, g.e])])];
+  const cut = [...new Set([s, e, ...edges.filter((t) => t > s && t < e)])].sort((a, b) => a - b);
+  const out: Record<string, number> = {};
+  for (let i = 0; i + 1 < cut.length; i++) {
+    const a = cut[i]!, b = cut[i + 1]!, hit = (g: Seg) => g.s <= a && g.e >= b;
+    let reason = waits.find(hit)?.reason;
+    if (!reason) {
+      const rs = tasks.filter((t) => t.open.some(([os, oe]) => os <= a && oe >= b)).map((t) => t.idle.find(hit)?.reason);
+      if (!rs.length || rs.includes(undefined)) continue;
+      reason = rs.find((r) => r !== "delegated" && r !== "blocked") ?? rs[0]!;
+    }
+    out[reason] = (out[reason] ?? 0) + (b - a);
+  }
+  return out;
+}
 
 /** Intervals a subject spends in `type` until the next fact of `type` or `ends` on it (or `until`, or `now`). */
 function spans(fs: FactRow[], type: string, ends: string[], now: number) {
-  const out: { s: number; e: number; reason: string }[] = [];
+  const out: Seg[] = [];
   fs.forEach((f, i) => {
     if (f.type !== type) return;
     let next: FactRow | undefined;
@@ -306,6 +336,14 @@ export function createFlow({ db, file, stages, journeys = () => [], now = () => 
     const truncated = rows.length > ROWS, kept = new Map(rows.slice(0, ROWS).map((r) => [r.seq, r]));
     const tasks = [...new Set([...kept.values()].map(taskOf).filter((t): t is string => Boolean(t)))];
     for (const r of chunked((m) => `SELECT * FROM facts WHERE subject IN (${m}) AND at < ?`, tasks.map((t) => `task:${t}`), iso(to))) kept.set(r.seq, r);
+    // and their ancestors' (a piece of work is its root's: journeys.ts), however long ago they were last touched
+    for (let depth = 0; depth < 10; depth++) {
+      const have = new Set([...kept.values()].filter((r) => r.type === "task.created").map((r) => r.subject.slice(5)));
+      const up = [...new Set([...kept.values()].filter((r) => r.type === "task.created").map((r) => str(r.data.parent)).filter((p): p is string => Boolean(p) && !have.has(p!)))];
+      if (!up.length) break;
+      for (const r of chunked((m) => `SELECT * FROM facts WHERE subject IN (${m}) AND at < ?`, up.map((t) => `task:${t}`), iso(to))) kept.set(r.seq, r);
+      if (!up.some((p) => [...kept.values()].some((r) => r.subject === `task:${p}` && r.type === "task.created"))) break;
+    }
     return { rows: [...kept.values()].sort(byTime), truncated };
   };
 
@@ -330,10 +368,11 @@ export function createFlow({ db, file, stages, journeys = () => [], now = () => 
     const lower = new Map<string, FactRow[]>();
     for (const [sub, fs] of x.bySubject) { const l = sub.toLowerCase(); lower.set(l, [...(lower.get(l) ?? []), ...fs]); }
     // a journey block's idle: the subject's own waits, then its tasks' idle periods
-    const segsOf = (tasks: string[], subject: string) => [...spans(lower.get(subject) ?? [], "work.waiting", ["work.resumed"], t1),
-      ...tasks.flatMap((t) => idleFor(t).map((i) => ({ s: ms(i.start), e: i.end ? ms(i.end) : t1, reason: i.reason })))];
+    const tasksOf = new Map<string, { open: [number, number][]; idle: Seg[] }>();
+    const taskIdle = (t: string) => tasksOf.get(t) ?? (tasksOf.set(t, { open: openOf(x, t, t1), idle: idleFor(t).map((i) => ({ s: ms(i.start), e: i.end ? ms(i.end) : t1, reason: i.reason })) }), tasksOf.get(t)!);
+    const itemIdle = (tasks: string[], subject: string, s: number, e: number) => idleIn(spans(lower.get(subject) ?? [], "work.waiting", ["work.resumed"], t1), tasks.map(taskIdle), s, e);
     const links = recordLinks(t0 - 90 * DAY);
-    const built = new Map(journeys().map((j) => [j.name, buildItems(j, { rows, bySubject: x.bySubject, byTask: x.byTask, ident: x.ident, now: t1, links, idle: (tasks, subject, s, e) => cover(segsOf(tasks, subject), s, e) })]));
+    const built = new Map(journeys().map((j) => [j.name, buildItems(j, { rows, bySubject: x.bySubject, byTask: x.byTask, ident: x.ident, now: t1, links, idle: itemIdle })]));
     return { rows, truncated, x, occs, idleFor, built, dora: doraOf(rows, x, [...built.values()].flat()) };
   }
 
@@ -406,7 +445,7 @@ export function createFlow({ db, file, stages, journeys = () => [], now = () => 
     };
   }
 
-  function summarize({ since, to, by = "stage", scope }: { since: string; to?: string; by?: By; scope?: string }) {
+  function summarize({ since, to, by = "stage", scope, journey }: { since: string; to?: string; by?: By; scope?: string; journey?: string }) {
     const t0 = ms(since), t1 = to ? ms(to) : now().getTime();
     const c = context(t0, t1), { rows, truncated, x, occs, idleFor } = c;
     const inWin = (f: { at: string } | FactRow) => ms(f.at) >= t0 && ms(f.at) < t1;
@@ -497,11 +536,11 @@ export function createFlow({ db, file, stages, journeys = () => [], now = () => 
       cost_per_outcome: ratio(cost(ended), done.size),
       wasted_cost: cost(ended.filter((f) => f.data.acted === false || (f.task && lastStatus(f.task) === "cancelled"))),
     };
-    // insights: the first declared journey with items (flow-insights.md §3)
-    const j = journeys().find((j) => c.built.get(j.name)?.length);
+    // insights: the asked journey's, else the first declared one with items (flow-insights.md §3)
+    const j = journey ? journeys().find((j) => j.name === journey) : journeys().find((j) => c.built.get(j.name)?.length);
     const idleNow = (b: Built) => b.tasks.map((t) => idleFor(t).at(-1)).find((i) => i && i.end === null)?.reason ?? null;
     const insight = j ? insights(j, c.built.get(j.name)!, { t0, t1, now: t1, previous: !truncated && t1 - t0 <= 90 * DAY, dora: c.dora, idleNow }) : null;
-    return { since: iso(t0), to: iso(t1), by, scope: scope ?? "all", truncated, stages: stageRows, dora, churn, fleet, insights: insight };
+    return { since: iso(t0), to: iso(t1), by, scope: scope ?? "all", truncated, stages: stageRows, dora, churn, fleet, journey: j?.name ?? null, insights: insight };
   }
   const cache = new Map<string, { at: number; value: ReturnType<typeof summarize> }>();
 
@@ -514,9 +553,9 @@ export function createFlow({ db, file, stages, journeys = () => [], now = () => 
       return { ...waterfall(root, tasks.slice(0, 500)), task: id };
     },
 
-    summary(q: { since: string; to?: string; by?: By; scope?: string }) {
+    summary(q: { since: string; to?: string; by?: By; scope?: string; journey?: string }) {
       const minute = (t: number) => Math.floor(t / 60_000);
-      const key = [minute(ms(q.since)), minute(q.to ? ms(q.to) : now().getTime()), q.by ?? "stage", q.scope ?? "all"].join("|");
+      const key = [minute(ms(q.since)), minute(q.to ? ms(q.to) : now().getTime()), q.by ?? "stage", q.scope ?? "all", q.journey ?? ""].join("|");
       const hit = cache.get(key);
       if (hit && Date.now() - hit.at < cacheMs) return hit.value;
       const value = summarize(q);

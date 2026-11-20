@@ -1297,17 +1297,21 @@ function flowDecls(name: string, def: Obj, declared: Obj) {
       return { name: s.name, label: s.label, from: s.from, to: s.to, ...(s.start ? { start: s.start } : {}), ...(s.where ? { where: s.where } : {}) };
     });
   }
-  // `journeys:` ([{name, label, subject, phases: [{name, label, from: [], where?}], end: []}]): an ordered path a subject's
-  // facts take (docs/design/flow-insights.md §2), drawn by the board's journey list and read by Flow's insights.
+  // `journeys:` ([{name, label, subject, phases: [{name, label, from: [], where?}], end: [], end_where?}]): an ordered path a
+  // subject's facts take (docs/design/flow-insights.md §2), drawn by the board's journey list and read by Flow's insights. A phase
+  // may name facts of a module that isn't enabled (that phase is then absent: a piece of work without a code host has no PR
+  // phases); the end is always a declared fact.
   let journeys: Obj[] | undefined;
   if (def.journeys != null) {
     const ident = (v: unknown) => /^[a-z][a-z0-9_]{0,40}$/.test(String(v));
-    const types = (w: string, v: any) => { if (!Array.isArray(v) || !v.length) fail(`${w} is a list of fact types`); for (const t of v) if (!declared.has(t)) fail(`${w} names undeclared fact ${t}`); return v; };
+    const types = (w: string, v: any, known = true) => { if (!Array.isArray(v) || !v.length) fail(`${w} is a list of fact types`); for (const t of v) if (known ? !declared.has(t) : !FACT_TYPE.test(String(t))) fail(`${w} names ${known ? "undeclared " : "no "}fact ${t}`); return v; };
+    const where = (w: string, v: any) => { if (v != null && (typeof v !== "object" || Array.isArray(v) || Object.values(v).some((x) => !Array.isArray(x) || !x.every((y) => typeof y === "string")))) fail(`${w} maps data fields to lists of text`); };
     if (!Array.isArray(def.journeys)) fail(`${at}: journeys must be a list`);
     journeys = def.journeys.map((j: Obj) => {
-      if (!j || typeof j !== "object" || !ident(j.name)) fail(`${at}: each journey has a name (a-z, 0-9, _)`);
+      if (!j || typeof j !== "object" || !/^[a-z][a-z0-9-]{0,40}$/.test(String(j.name))) fail(`${at}: each journey has a name (a-z, 0-9, -)`);
       const w = `${at}: journey ${j.name}`;
-      for (const k of Object.keys(j)) if (!["name", "label", "subject", "phases", "end"].includes(k)) fail(`${w}: ${k} is not allowed`);
+      for (const k of Object.keys(j)) if (!["name", "label", "subject", "phases", "end", "end_where"].includes(k)) fail(`${w}: ${k} is not allowed`);
+      where(`${w}: end_where`, j.end_where);
       if (typeof j.label !== "string" || !j.label) fail(`${w}: label is a short text`);
       if (!/^[a-z][a-z0-9_-]{0,40}$/.test(String(j.subject))) fail(`${w}: subject is a subject kind (e.g. pr)`);
       if (!Array.isArray(j.phases) || !j.phases.length) fail(`${w}: phases is a list`);
@@ -1317,10 +1321,10 @@ function flowDecls(name: string, def: Obj, declared: Obj) {
         names.add(p.name);
         for (const k of Object.keys(p)) if (!["name", "label", "from", "where"].includes(k)) fail(`${w}: phase ${p.name}: ${k} is not allowed`);
         if (typeof p.label !== "string" || !p.label) fail(`${w}: phase ${p.name}: label is a short text`);
-        if (p.where != null && (typeof p.where !== "object" || Array.isArray(p.where) || Object.values(p.where).some((v) => !Array.isArray(v) || !v.every((x) => typeof x === "string")))) fail(`${w}: phase ${p.name}: where maps data fields to lists of text`);
-        return { name: p.name, label: p.label, from: types(`${w}: phase ${p.name}: from`, p.from), ...(p.where ? { where: p.where } : {}) };
+        where(`${w}: phase ${p.name}: where`, p.where);
+        return { name: p.name, label: p.label, from: types(`${w}: phase ${p.name}: from`, p.from, false), ...(p.where ? { where: p.where } : {}) };
       });
-      return { name: j.name, label: j.label, subject: j.subject, phases, end: types(`${w}: end`, j.end) };
+      return { name: j.name, label: j.label, subject: j.subject, phases, end: types(`${w}: end`, j.end), ...(j.end_where ? { end_where: j.end_where } : {}) };
     });
   }
   return { facts, stages, journeys };

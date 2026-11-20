@@ -5,6 +5,26 @@ roles:
   # each task's one state (GET /v1/tasks/state)
   requests: [ kernel.wake, kernel.flow-read ]
 description: "Task tools for every agent: read, create, delegate, comment on and close Paperclip tasks, as the calling agent."
+# A piece of work's journey (docs/design/flow-insights.md §2): one row per root task (an issue's, an owner's request, a routine
+# run) with its subtasks and every PR they opened, from the issue to the deploy. It is done when the root is done or cancelled
+# and every merged PR of a repo that deploys is deployed. A phase whose facts no enabled module records (no code host, no
+# grading) is simply absent; the kinds are both code hosts' write kinds.
+journeys:
+  - name: work
+    label: Work
+    subject: task
+    phases:
+      - { name: triage, label: Triage, from: [ issue.opened ] }
+      - { name: queued, label: Queued, from: [ issue.labeled, task.created ] }
+      - { name: working, label: Working, from: [ job.started ] }
+      - { name: review, label: AI review, from: [ record.filed ], where: { kind: [ github.pr, github.push, codehost-local.pr, codehost-local.push ] } }
+      - { name: open, label: PR open, from: [ pr.opened ] }
+      - { name: ci, label: CI, from: [ pr.checks_started, pr.pushed ] }
+      - { name: merge, label: Merge review, from: [ record.filed ], where: { kind: [ github.merge, codehost-local.merge ] } }
+      - { name: deploy, label: Deploy, from: [ pr.merged ] }
+      - { name: finish, label: Finishing, from: [ pr.deployed, grade.requested ] }
+    end: [ task.status_changed ]
+    end_where: { to: [ done, cancelled ] }
 connections:
   paperclip_tasks:
     setup: "Built in (tasks-mcp). If it is down, run `docker compose up -d tasks-mcp` on the host, then read `docker compose logs tasks-mcp`."

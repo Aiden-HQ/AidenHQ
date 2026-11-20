@@ -1,6 +1,6 @@
 // The Flow page's reads (web/src/Flow.tsx): the kernel's GET /v1/flow (kernel/src/flow.ts, docs/design/flow.md §5), read the way
 // runs.ts reads /v1/work: summary (bottlenecks, DORA, churn, fleet, insights), idle items, one item's waterfall, and the journeys
-// (docs/design/flow-insights.md: the PR timeline). Seconds throughout.
+// (docs/design/flow-insights.md: the timeline, a piece of work's or a PR's). Seconds throughout.
 
 /** One stage's row of the summary. With fewer than five occurrences the percentiles are absent and `samples` has the raw durations. */
 export interface FlowStage {
@@ -28,6 +28,8 @@ export interface FlowSummary {
     cost_per_outcome?: number | null;
     [k: string]: unknown;
   };
+  /** The journey the insights are over (the asked one, else the first declared one with items). */
+  journey?: string | null;
   /** The journey analytics (docs/design/flow-insights.md §3); null when no journey has items. */
   insights?: Insights | null;
 }
@@ -43,17 +45,19 @@ export type AuthorKind = "agent" | "owner" | "outside";
 
 export interface Insights {
   phases: { name: string; label: string; n: number; p50: number | null; p85: number | null; p95: number | null; idle_s: number; rounds_mean: number; weekly: { week: string; p50: number | null; n: number }[] }[];
-  scatter: { subject: string; url: string | null; task: string | null; end: string; total_s: number; author_kind: string | null }[];
+  scatter: { subject: string; url: string | null; task: string | null; identifier: string | null; title: string | null; end: string; total_s: number; author_kind: string | null }[];
   /** Per phase: how many items took each number of rounds. */
   rounds: Record<string, Record<string, number>>;
   rejections: { reason: string; n: number }[];
   first_pass: { week: string; rate: number | null; n: number }[];
-  aging: { subject: string; url: string | null; task: string | null; author_kind: string | null; title: string | null; phase: string; age_s: number; idle_reason: string | null }[];
+  aging: { subject: string; url: string | null; task: string | null; identifier: string | null; author_kind: string | null; title: string | null; phase: string; age_s: number; idle_reason: string | null }[];
   cfd: { day: string; counts: Record<string, number> }[];
-  funnel: { step: string; n: number }[];
-  cost: { per_merged: { week: string; usd: number | null }[]; by_agent: { key: string; usd: number; merged: number }[]; by_model: { key: string; usd: number; merged: number }[]; unmerged_usd: number };
+  /** The items started in the period, how many had each phase, and how many ended delivered. */
+  funnel: { step: string; label: string; n: number }[];
+  /** Delivered: a PR merged, a piece of work done; undelivered: closed or cancelled. */
+  cost: { per_delivered: { week: string; usd: number | null }[]; by_agent: { key: string; usd: number; delivered: number }[]; by_model: { key: string; usd: number; delivered: number }[]; undelivered_usd: number };
   dora5: { deploys_per_day: Metric; lead_time_s: Metric; change_fail_rate: Metric; recovery_s: Metric; rework_rate: Metric };
-  throughput: { day: string; merged: number; opened: number }[];
+  throughput: { day: string; delivered: number; started: number }[];
   bottlenecks: { phase: string; kind: "idle" | "rounds" | "slow"; text: string }[];
 }
 
@@ -64,18 +68,21 @@ export interface JourneyInfo {
   phases: { name: string; label: string }[];
 }
 
-/** One item of a journey (a PR): its phases as blocks, loops folded into rounds. */
+/** One item of a journey (a piece of work, or a PR): its phases as blocks, loops folded into rounds. */
 export interface JourneyItem {
   subject: string;
-  repo: string;
-  number: number;
-  url: string | null;
   title: string | null;
-  author: string | null;
-  author_kind: AuthorKind | null;
   task: string | null;
   identifier: string | null;
-  state: "open" | "merged" | "closed" | "deployed";
+  url: string | null;
+  /** A PR's own. */
+  repo: string | null;
+  number: number | null;
+  author: string | null;
+  author_kind: AuthorKind | null;
+  /** The other PRs and issues it holds (a piece of work's PRs and issue; a PR's issue). */
+  links: { subject: string; url: string | null }[];
+  state: "open" | "merged" | "closed" | "deployed" | "done" | "cancelled";
   start: string;
   end: string | null;
   total_s: number;
@@ -120,6 +127,8 @@ export interface FlowQuery {
   since: string;
   to: string;
   scope?: string;
+  /** The journey the insights are over. */
+  journey?: string;
 }
 
 /** The kernel's flow reads, with the board's key. */
@@ -139,7 +148,7 @@ export function kernelFlow(k: { url: string; token: string }): Flow {
     return res.json();
   };
   return {
-    summary: async ({ since, to, scope }) => (await get(new URLSearchParams({ since, to, by: "stage", ...(scope && scope !== "all" ? { scope } : {}) }))) as FlowSummary,
+    summary: async ({ since, to, scope, journey }) => (await get(new URLSearchParams({ since, to, by: "stage", ...(scope && scope !== "all" ? { scope } : {}), ...(journey ? { insights: journey } : {}) }))) as FlowSummary,
     idle: async () => ((await get(new URLSearchParams({ idle: "1" }))) as { items: IdleItem[] }).items,
     item: async (id) => (await get(new URLSearchParams({ item: id }))) as Waterfall | null,
     journeys: async () => ((await get(new URLSearchParams({ journeys: "1" }))) as { journeys: JourneyInfo[] } | null)?.journeys ?? [],
