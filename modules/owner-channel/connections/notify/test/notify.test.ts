@@ -100,12 +100,22 @@ describe("notify", () => {
     to = "owner";
     expect(await notify(d, { ...ask, text: "Context 2." }, agent("a1"))).toEqual({ sent: true, onChat: true });
     expect([sent.length, waits.length]).toEqual([1, 2]);
-    // A wait that can't be recorded sends nothing; a question with no task of its own goes nowhere.
+    // A wait that can't be recorded sends nothing.
     d.wait = async () => { throw new Error("POST /v1/wait -> 503"); };
     expect(await notify(d, { ...ask, text: "Another?" }, agent("a1"))).toMatchObject({ sent: false, reason: "error" });
-    expect(await notify(d, { kind: "decision", text: "Ship it?" }, agent("a1"))).toMatchObject({ sent: false, reason: "error" });
-    // The chief of staff asks the owner wherever it is.
-    expect(await notify(d, { kind: "decision", text: "Raise the cap?" }, { ...agent("c1"), roles: ["fleet-admin"] })).toEqual({ sent: true });
+    // A question with no task of its own becomes the chief of staff's task, once; a filing that fails sends nothing.
+    const filed: { title: string; description: string; role: string; source: string }[] = [];
+    d.fileTask = async (b) => { filed.push(b); };
+    expect(await notify(d, { kind: "decision", text: "Ship it?" }, agent("a1"))).toMatchObject({ sent: true, to: "chief_of_staff" });
+    expect(await notify(d, { kind: "decision", text: "Ship it?" }, agent("a1"))).toMatchObject({ reason: "duplicate" });
+    expect([filed.length, filed[0]!.role, filed[0]!.title]).toEqual([1, "fleet-admin", "Decide for the owner: a question from a1"]);
+    expect(filed[0]!.description).toMatch(/```\nShip it\?\n```/);
+    d.fileTask = async () => { throw new Error("kernel POST /v1/tasks → 409"); };
+    expect(await notify(d, { kind: "decision", text: "Ship now?" }, agent("a1"))).toMatchObject({ sent: false, reason: "error" });
+    // The chief of staff asks the owner wherever it is, always in multiple choice.
+    const cos = { ...agent("c1"), roles: ["fleet-admin"] };
+    expect(await notify(d, { kind: "decision", text: "Raise the cap?" }, cos)).toMatchObject({ sent: false, reason: "error", note: expect.stringMatching(/questions/) });
+    expect(await notify(d, { kind: "decision", text: "The spend cap is hit.", questions: [{ question: "Raise it?", options: ["To $20 a day", "Keep $10"] }] }, cos)).toEqual({ sent: true });
     expect(sent).toHaveLength(2);
   });
 
