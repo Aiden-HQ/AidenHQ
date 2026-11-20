@@ -243,8 +243,8 @@ test("the owner's settings change is capped like anyone's, unless saved in his b
   // Saved in his signed-in board session (the account the kernel checked), it is his own approval: decided as his account at
   // filing, never with the reviewer, and it runs.
   const k = kernel({ texts, autonomy: "off" });
-  const saved = await k.writes.fileKernel("kernel.apply", { args: BUMP, task: "TASK-1", requester: SETTINGS, owner: { account: "acct-1", via: "board" } });
-  assert.deepEqual([saved.tier, saved.merit, saved.state, saved.decided_by, saved.via], [2, 2, "approved", "account:acct-1", "board"]);
+  const saved = await k.writes.fileKernel("kernel.apply", { args: BUMP, task: "TASK-1", requester: SETTINGS, owner: { account: "acct-1", via: "save" } });
+  assert.deepEqual([saved.tier, saved.merit, saved.state, saved.decided_by, saved.via], [2, 2, "approved", "account:acct-1", "save"]);
   await settle();
   assert.equal(k.h.lands.length, 1, "landed on his save");
 });

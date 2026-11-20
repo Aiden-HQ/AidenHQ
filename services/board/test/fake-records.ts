@@ -7,11 +7,11 @@ export const card = (o: Partial<Approval> & { id: string }): Approval => ({
   createdAt: "2026-11-10T10:00:00.000Z", replaced: false, panel: false, reviewFirst: null, ...o,
 });
 
-export function fakeRecords(cards: Approval[] = []): Records & { cards: Approval[]; settings: { task: string; changes: unknown[] }[] } {
-  const settings: { task: string; changes: unknown[] }[] = [];
+export function fakeRecords(cards: Approval[] = []): Records & { cards: Approval[]; settings: { task: string; changes: unknown[]; session?: string }[] } {
+  const settings: { task: string; changes: unknown[]; session?: string }[] = [];
   const list: Records["list"] = async (state, { task, limit = 100 } = {}) =>
     cards
       .filter((a) => (!task || a.issueId === task || a.identifier === task) && (state === "owner" ? a.state === "pending" && a.tier === 2 : state === "pending" ? a.state === "pending" : state === "finished" ? a.outcome : true))
       .slice(0, limit);
-  return { cards, settings, list, advisories: async () => [], explain: async () => { throw new Error("no such record"); }, connectionHealth: async () => ({}), validate: async () => ({ ok: true }), settingsChange: async (task, changes) => (settings.push({ task, changes }), { record: "k-0000000000000001", tier: 1, state: "review" }) };
+  return { cards, settings, list, advisories: async () => [], explain: async () => { throw new Error("no such record"); }, connectionHealth: async () => ({}), validate: async () => ({ ok: true }), settingsChange: async (task, changes, session) => (settings.push({ task, changes, ...(session ? { session } : {}) }), { record: "k-0000000000000001", tier: 1, state: "review" }) };
 }

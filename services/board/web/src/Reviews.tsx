@@ -96,8 +96,9 @@ export function ReviewsView({ onSignIn }: { onSignIn: () => void }) {
   const [reviewers, setReviewers] = useState<ReviewerRow[] | null>(null);
   const [error, setError] = useState("");
   const [saved, setSaved] = useState<{ identifier: string; what: string } | null>(null);
-  /** The newest settings change to settings.code_review, from the board's settings changes: under way, live, or why not. */
+  /** The change saved here, else the newest one to settings.code_review (the board's settings changes): under way, live, or why not. */
   const [filed, setFiled] = useState<FiledChange | null>(null);
+  const savedId = useRef("");
   const [orgs, setOrgs] = useState<string[]>([]);
   const [dialog, setDialog] = useState<null | { kind: "oneoff"; url?: string; reviewer?: string } | { kind: "repo"; repo?: RepoConfig } | { kind: "reviewer"; name?: string } | { kind: "cap" }>(null);
 
@@ -118,7 +119,7 @@ export function ReviewsView({ onSignIn }: { onSignIn: () => void }) {
   const loadRuns = useCallback(() => api.reviews({ limit: 200 }).then((r) => setRuns(r.runs), fail), [fail]);
   const loadRepos = useCallback(() => api.reviewRepos().then(setRepos, fail), [fail]);
   const loadReviewers = useCallback(() => api.reviewers().then((r) => setReviewers(r.reviewers), fail), [fail]);
-  const loadFiled = useCallback(() => api.settingsChanges().then((r) => setFiled(r.changes.find((c) => c.items.some((i) => i.kind === "setting" && i.key === "code_review")) ?? null), () => {}), []);
+  const loadFiled = useCallback(() => api.settingsChanges().then((r) => setFiled(r.changes.find((c) => c.identifier === savedId.current) ?? r.changes.find((c) => c.items.some((i) => i.kind === "setting" && i.key === "code_review")) ?? null), () => {}), []);
   useEffect(() => void loadSetup(), [loadSetup]);
   useEffect(() => void loadFiled(), [loadFiled]);
   // A change under way: followed until it is live (then the setting is read again) or stops.
@@ -155,6 +156,7 @@ export function ReviewsView({ onSignIn }: { onSignIn: () => void }) {
       const add = org && !orgs.includes(org.toLowerCase()) ? org.toLowerCase() : undefined;
       const r = await api.reviewConfig({ ...(value ? { value } : {}), ...(add ? { org: add } : {}) });
       if (add) setOrgs((o) => [...o, add]);
+      savedId.current = r.identifier;
       setSaved({ identifier: r.identifier, what: add ? `${what}; where the GitHub App isn't installed in ${add}, reviews post there as you` : what });
       setDialog(null);
       void loadFiled();
@@ -191,10 +193,10 @@ export function ReviewsView({ onSignIn }: { onSignIn: () => void }) {
     <Page className="rv-page" label="Code review">
       {header}
       {error && <Banner tone="danger">Couldn't load reviews: {error}</Banner>}
-      {filed && (applying || filed.identifier === saved?.identifier || filed.stage === "failed") && (
-        <Banner tone={filed.stage === "failed" || filed.stage === "rejected" ? "danger" : "info"}>
-          {filed.identifier === saved?.identifier ? `Saved: ${saved.what}. ` : ""}
-          {applying ? "Applying now, usually within a few minutes." : filed.stage === "applied" ? "Live." : filed.stage === "failed" ? `The last change didn't apply, so nothing changed${filed.detail ? `: ${filed.detail}` : "."}` : "The last change was not applied."}
+      {(saved || (filed && (applying || filed.stage === "failed"))) && (
+        <Banner tone={filed?.stage === "failed" || filed?.stage === "rejected" ? "danger" : "info"}>
+          {saved ? `Saved: ${saved.what}. ` : ""}
+          {!filed || (saved && filed.identifier !== saved.identifier) || applying ? "Applying now, usually within a few minutes." : filed.stage === "applied" ? "Live." : filed.stage === "failed" ? `The change didn't apply, so nothing changed${filed.detail ? `: ${filed.detail}` : "."}` : "The change was not applied."}
         </Banner>
       )}
       {repos?.errors?.length ? <Banner tone="warn">Code review skips part of its setting: {repos.errors.slice(0, 3).join("; ")}. Fix it from Repos or Reviewers.</Banner> : null}

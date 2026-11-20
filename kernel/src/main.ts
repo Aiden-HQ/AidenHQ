@@ -351,13 +351,6 @@ const settingsChange = createSettingsChanges({
   write: applyHost.codehost.write,
   file: (args, task, requester, owner) => writes.fileKernel("kernel.apply", { args, task, requester: requester ?? SETTINGS, ...(owner ? { owner } : {}) }),
   sessionAccount: async (token) => { const who = await accounts?.uiSession("board", token); return who?.ready && who.account.role === "admin" ? who.account.id : undefined; },
-  // The owner's task is only the record's home: it closes when the apply ends (the Settings pages and the record show how it went).
-  settle: (task, id) => void writes.wait(id, 3 * 3600_000).then(async (r) => {
-    if (["approved", "claimed"].includes(r.state)) return;
-    const comment = `${r.state === "done" ? "Applied." : `Not applied (${r.state}): ${String(r.outcome?.text ?? "").slice(-1500)}`}\n\n<!-- aidenhq:job=kernel kind=status -->`;
-    const u = await ownerApi("PATCH", `/api/issues/${encodeURIComponent(task)}`, { status: r.state === "done" ? "done" : "cancelled", comment });
-    if (u.status >= 300) log("settings task not closed", { task, status: u.status });
-  }).catch((e: Error) => log("settings task not closed", { task, err: e.message.slice(0, 300) })),
 });
 // The routing learning loop (routing-tune.ts): the Fleet Steward's typed routing changes, written by the same code host and
 // filed as kernel.apply records with the Steward as their requester.

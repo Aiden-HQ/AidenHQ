@@ -151,6 +151,7 @@ describe("mcp end to end", () => {
     expect(json.result.isError).toBeFalsy();
     expect(json.result.structuredContent).toMatchObject({ task: expect.stringMatching(/^WOR-/), record: "k-0000000000000001", tier: 1, state: "review" });
     expect(records.settings.at(-1)!.changes).toEqual([{ kind: "setting", key: "grading", value: "off" }]);
+    expect(records.settings.at(-1)!.session, "an MCP client's change has no board session: the reviewer reads it").toBeUndefined();
   });
 
   it("change_settings returns a module's refusal as the field's error", async () => {

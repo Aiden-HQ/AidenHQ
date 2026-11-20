@@ -5,7 +5,7 @@
 // API, so comments stay; handbook texts verbatim) by the instance repo's code host (apply.ts hostApply: codehost-local for a
 // `local/…` instance, codehost-github otherwise), and filed as a kernel.apply on the task. A change saved in the owner's
 // signed-in board session (the board forwards its session token; the kernel checks it here) is his own approval: the record
-// is decided as his account at filing and the task closes once the apply ends. Any other filing (the MCP's change_settings,
+// is decided as his account at filing (via "save") and its outcome notice closes the task (writes.ts outcomeOf). Any other filing (the MCP's change_settings,
 // an agent's asAgent) is tiered on its merits by the kernel's planner like any instance change. No model writes the commit.
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
@@ -349,8 +349,6 @@ export type SettingsDeps = {
   file: (args: { repo: string; branch: string; sha: string }, task: string, requester?: Requester, owner?: { account: string; via: string }) => Promise<{ id: string; tier: number; state: string }>;
   /** The board session token's ready admin account (every admin is an owner), or undefined: an ended, unknown or non-admin session. */
   sessionAccount: (token: string) => Promise<string | undefined>;
-  /** Closes the owner's settings task once its owner-decided apply has ended (main.ts: done when it landed, else cancelled with why). */
-  settle: (task: string, record: string) => void;
   log?: (msg: string, f?: Record<string, unknown>) => void;
 };
 
@@ -375,9 +373,7 @@ export function createSettingsChanges(d: SettingsDeps) {
     if (!(issue.labels ?? []).some((l: Dict) => l?.name === SETTINGS_LABEL)) refuse(`that task isn't a settings change (no ${SETTINGS_LABEL} label)`);
     if (["done", "cancelled"].includes(String(issue.status))) refuse("that task is closed");
     if (d.filed(taskId as string)) refuse("a settings change was already written on that task: file a new one");
-    const r = await write(taskId as string, issue, changes as unknown[], sources(), undefined, account ? { account, via: "board" } : undefined);
-    if (account) d.settle(taskId as string, r.record);
-    return r;
+    return write(taskId as string, issue, changes as unknown[], sources(), undefined, account ? { account, via: "save" } : undefined);
   }
   async function asAgent(requester: Requester, taskId: string, changes: unknown, module: string): Promise<{ record: string; tier: number; state: string; sha: string }> {
     count(changes);

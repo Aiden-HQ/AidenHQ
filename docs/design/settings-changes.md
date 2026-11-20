@@ -49,16 +49,17 @@ compiler's is the last gate.
    the kernel read.
 5. The kernel files that commit as a `kernel.apply` on the task (requester `SETTINGS`). With a `session` the kernel checks it
    (`uiSession("board", token)`: a ready admin; every admin is an owner; a session that doesn't check out is refused) and the
-   record is the owner's (computeTier `ownerSave`: Tier 2, no reviewer), decided at filing as `account:<id>` via `board`. The
+   record is the owner's (computeTier `ownerSave`: Tier 2, no reviewer), decided at filing as `account:<id>` via `save`. The
    planner still reads it (`kernel/src/apply-tier.ts`), so its refusals hold and its merit tier stays on the record. Without a
    session (the board MCP's `change_settings`, whose client is usually an AI) it is tiered on its merits like any instance
    change: a setting is the panel's; spend caps, quiet start and any loosening of `autonomy` are the owner's; an agent's
    `model` / `reasoning_effort` / `heartbeat` override is Tier 1; a module turned on or off or a grants override is judged by
    the module authority diff. On approval the code host lands exactly that commit and the apply runs `ops/apply-config.sh`.
-6. An owner-decided change's task closes when its apply ends (done when it landed; cancelled with the output when it failed),
-   so it never waits on the owner. The Settings and Code review pages show progress from the apply record (filed, applying,
-   applied or failed, with the output), then the connection's live status; for a sign-in connection, Connect becomes the next
-   step. A failed apply stays a failed record, shown where failed applies show.
+6. An owner-decided change's task closes with its apply's outcome notice (one delivery, `notices.ts` `close`: done when it
+   landed, cancelled with the output when it failed), so it never waits on the owner. The Settings and Code review pages show
+   progress from the apply record (filed, applying, applied or failed, with the output), then the connection's live status; for
+   a sign-in connection, Connect becomes the next step. A failed one stays a failed record (Approvals, Fleet) and is listed in
+   the evening approvals digest; a save that applied is not (it was the owner's own decision).
 
 Code writes the commit, not a model: a model adds nothing to a typed edit and could drift from it, and the card shows the exact
 diff before anything lands. The board's check is the owner's feedback; the kernel's is the gate; the compiler's the last.

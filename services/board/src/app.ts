@@ -407,6 +407,9 @@ export function createApp(opts: AppOptions): Server {
    * account. The MCP's change_settings has no board session: its change is tiered and reviewed.
    */
   async function fileSettingsChange(changes: Change[]) {
+    const req = perRequest.getStore()?.req;
+    const session = req && opts.accounts ? (await opts.accounts.sessionOf(req))?.token : undefined;
+    if (req && opts.accounts && !session) throw new HttpError(401, "sign in");
     const { compiled, catalog } = readSources(settingsFiles());
     try {
       for (const ch of changes) checkChange(ch, compiled, catalog);
@@ -428,8 +431,6 @@ export function createApp(opts: AppOptions): Server {
     store.setMeta(`settings-change:${issue.id}`, JSON.stringify(changes));
     // The kernel checks it again, has the instance repo's code host write exactly its files and files the apply on the task.
     let filed: { record: string; tier: number; state: string };
-    const req = perRequest.getStore()?.req;
-    const session = req && opts.accounts ? (await opts.accounts.sessionOf(req))?.token : undefined;
     try {
       filed = await records.settingsChange(issue.id, changes, session);
     } catch (e) {
@@ -2076,7 +2077,9 @@ export function createApp(opts: AppOptions): Server {
     const a = accountRoutes.find((r) => r.method === req.method && r.path.test(path));
     if (a) {
       const body = req.method === "GET" ? undefined : await readJson(req);
-      send(res, 200, JSON.stringify(await a.handle(path.match(a.path)!, body, who, String(req.headers.host ?? "").toLowerCase())), "application/json");
+      // Under the request's context, as routeApi's routes run: a setup flow's settings change carries this board session.
+      const out = await perRequest.run({ session: accountSession(who), req }, () => a.handle(path.match(a.path)!, body, who, String(req.headers.host ?? "").toLowerCase()));
+      send(res, 200, JSON.stringify(out), "application/json");
       return true;
     }
     // A ready admin: writes as the owner (through the kernel); `authored` records which account it was.

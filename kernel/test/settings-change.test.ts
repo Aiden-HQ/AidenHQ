@@ -43,7 +43,6 @@ function setup() {
   ]));
   const host = localApply({ bare, instanceRepo: "local/acme-instance" });
   const filed = [];
-  const settled = [];
   const apply = createSettingsChanges({
     product, configDir: config, instanceRepo: () => "local/acme-instance", main: checkoutMain(checkout),
     task: async (id) => (id === OTHER ? { identifier: "WOR-6", status: "todo", createdByUserId: "agent-user", labels: [{ name: "settings-change" }] } : { identifier: "WOR-5", status: "todo", createdByUserId: "owner-user", labels: [{ name: "settings-change" }] }),
@@ -52,10 +51,9 @@ function setup() {
     write: (w) => host.write(w),
     file: async (args, task, requester, owner) => (filed.push({ args, task, ...(requester ? { by: requester.key } : {}), ...(owner ? { owner } : {}) }), { id: "k-0000000000000001", tier: owner ? 2 : 1, state: owner ? "approved" : "review" }),
     sessionAccount: async (token) => (token === "ahqu_owner" ? "acct-1" : undefined),
-    settle: (task, record) => void settled.push([task, record]),
   });
   const at = (sha) => YAML.parse(git(bare, "show", `${sha}:instance.yaml`));
-  return { bare, host, apply, filed, settled, at };
+  return { bare, host, apply, filed, at };
 }
 const TASK = "00000000-0000-4000-8000-000000000005";
 const OTHER = "00000000-0000-4000-8000-000000000006";
@@ -77,12 +75,12 @@ test("turning off a default module edits only modules: and modules_removed, comm
   assert.deepEqual(await host.land({ repo: "local/acme-instance", branch: "settings/wor-5", sha: r.sha, official: { from: null, to: null } }), { landed: r.sha });
 });
 
-test("saved in the owner's board session, the change is decided as his account and its task closes when the apply ends", async () => {
-  const { apply, filed, settled } = setup();
+test("saved in the owner's board session, the change is decided as his account; a session that doesn't check out is refused", async () => {
+  const { apply, filed } = setup();
   await assert.rejects(apply(TASK, [{ kind: "setting", key: "timezone", value: "Asia/Dubai" }], "ahqu_ended"), /session has ended/);
   assert.equal(filed.length, 0, "an unchecked session is refused, never put to the reviewer instead");
   const r = await apply(TASK, [{ kind: "setting", key: "timezone", value: "Asia/Dubai" }], "ahqu_owner");
-  assert.deepEqual([filed.at(-1).owner, r.state, settled], [{ account: "acct-1", via: "board" }, "approved", [[TASK, r.record]]]);
+  assert.deepEqual([filed.at(-1).owner, r.state], [{ account: "acct-1", via: "save" }, "approved"]);
 });
 
 test("a setting change sets exactly that key; an unknown kind or a stray field is refused before anything is written", async () => {

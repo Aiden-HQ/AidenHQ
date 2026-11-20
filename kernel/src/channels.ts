@@ -166,7 +166,8 @@ export function createChannels({ db, records, writes, board, owner, ownerTyped =
 
   /**
    * The daily digest: once a day from 21:00 in the owner's timezone, what was the owner's to decide (Tier 2) in the last
-   * 24 hours and how each stands; null otherwise, or when there were none. Agent-named targets and the reviewer's note are
+   * 24 hours and how each stands (the owner's own settings saves, decided via "save", only when they failed); null otherwise,
+   * or when there were none. Agent-named targets and the reviewer's note are
    * untrusted: printable, links removed, markdown escaped, and labelled as reported.
    */
   const dailyDigest = (): string | null => {
@@ -182,7 +183,7 @@ export function createChannels({ db, records, writes, board, owner, ownerTyped =
       if (st === "approved" || st === "claimed") return "approved, running";
       return st === "done" ? "approved, applied" : st === "failed" ? "approved, failed" : st === "unknown" ? "approved, no outcome reported" : st === "cancelled" && r.decided_by ? "expired" : st;
     };
-    const yours = records.since(new Date(t.getTime() - 86_400_000).toISOString()).filter((r) => r.tier === 2 && r.state !== "review" && !r.decided_by?.startsWith("reviewer:")).map((r) => `• ${r.identifier ?? r.task} ${actionOf(r.kind)} · target (as reported): ${plain(r.card.target ?? r.card.sentence, 80)} · ${status(r)}${r.review ? ` · reviewer's note: ${plain(r.review, 200)}` : ""}`);
+    const yours = records.since(new Date(t.getTime() - 86_400_000).toISOString()).filter((r) => r.tier === 2 && r.state !== "review" && !r.decided_by?.startsWith("reviewer:") && (r.via !== "save" || r.state === "failed")).map((r) => `• ${r.identifier ?? r.task} ${actionOf(r.kind)} · target (as reported): ${plain(r.card.target ?? r.card.sentence, 80)} · ${status(r)}${r.review ? ` · reviewer's note: ${plain(r.review, 200)}` : ""}`);
     if (!yours.length) return null;
     return [`🧾 **Approvals digest** (last 24h): ${yours.length} ${yours.length === 1 ? "card was" : "cards were"} yours to decide`, ...yours.slice(0, 20)].join("\n");
   };

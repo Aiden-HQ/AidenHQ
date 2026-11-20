@@ -132,7 +132,8 @@ export function toCard(issue: Issue, list: Assignee[], seenAt: string): Card {
 }
 
 const isBrief = (i: Issue) => (i.labels ?? []).some((l) => l.name === BRIEF_LABEL);
-const isSettings = (i: Issue) => (i.labels ?? []).some((l) => l.name === SETTINGS_LABEL);
+/** The owner's settings task as the board files it (made by no agent, held by none): a label alone hides nothing. */
+const isSettings = (i: Issue) => !i.assigneeAgentId && !i.createdByAgentId && (i.labels ?? []).some((l) => l.name === SETTINGS_LABEL);
 
 export interface BoardInput {
   open: Issue[];
