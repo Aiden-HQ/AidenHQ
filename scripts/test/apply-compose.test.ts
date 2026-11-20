@@ -35,23 +35,15 @@ case "$1" in
   compose)
     case "$*" in
       *"config --services"*) cat "$dir/services" ;;
-      *"config --images"*)
-        s=$(printf '%s' "\${@: -1}"); cat "$dir/image-$s" 2>/dev/null ;;
-      *"config --hash"*)
-        s=$(printf '%s' "\${@: -1}")
-        if [ "$s" = "*" ]; then cat "$dir/hashes" 2>/dev/null; else awk -v s="$s" '$1 == s {print}' "$dir/hashes" 2>/dev/null; fi ;;
+      *"config --hash"*) cat "$dir/hashes" 2>/dev/null ;;
       *"config --format json"*)
         # The model, with each service's image from its image-<service> file.
-        m=$(cat "$dir/model.json" 2>/dev/null || echo '{}')
+        m=$(cat "$dir/model.json" 2>/dev/null || echo '{"services":{}}')
         for f in "$dir"/image-*; do
           [ -f "$f" ] || continue
           m=$(jq --arg s "\${f##*/image-}" --arg i "$(cat "$f")" '.services[$s].image = $i' <<< "$m")
         done
         printf '%s\n' "$m" ;;
-      *"compose ps -a -q"*)
-        s=$(printf '%s' "\${@: -1}"); cat "$dir/psid-$s" 2>/dev/null ;;
-      *"compose ps -a --format"*)
-        s=$(printf '%s' "\${@: -1}"); cat "$dir/state-$s" 2>/dev/null ;;
       *"up -d"*)
         n=$(( $(cat "$dir/upcount" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$dir/upcount"
         code=$(cat "$dir/up-$n.code" 2>/dev/null || echo 0)
@@ -73,20 +65,37 @@ case "$1" in
         cat "$dir/up-$n.out" 2>/dev/null
         exit "$code" ;;
     esac ;;
-  ps) cat "$dir/ids" ;;
+  # The project's containers: the listed ones, and the one each service runs in (psid-<service>).
+  ps) cat "$dir/ids" "$dir"/psid-* 2>/dev/null | awk 'NF && !seen[$0]++' ;;
   inspect)
-    id=$(printf '%s' "\${@: -1}")
-    case "$*" in
-      *'compose.oneoff'*) cat "$dir/labels-$id" 2>/dev/null ;;
-      *'{{.Name}}'*) cat "$dir/name-$id" 2>/dev/null ;;
-      *'{{.State.Running}}'*) cat "$dir/running-$id" 2>/dev/null ;;
-      *'com.docker.compose.image'*) cat "$dir/imageof-$id" 2>/dev/null ;;
-      *'config-hash'*) cat "$dir/hashof-$id" 2>/dev/null ;;
+    case "$3" in
+      '{{.State.Running}}') cat "$dir/running-\${@: -1}" 2>/dev/null ;;
+      *)
+        # One line per container: id|name|running|status|service|oneoff|image|config-hash. A container's service and
+        # oneoff come from labels-<id>, or from the psid-<service> that names it.
+        for id in "\${@:4}"; do
+          read -r oneoff service < "$dir/labels-$id" 2>/dev/null || { oneoff=; service=; }
+          if [ -z "$service" ]; then
+            f=$(grep -lx -- "$id" "$dir"/psid-* 2>/dev/null | head -1)
+            [ -z "$f" ] || { service="\${f##*/psid-}"; oneoff=False; }
+          fi
+          running=$(cat "$dir/running-$id" 2>/dev/null)
+          case "$running" in true) status=running ;; false) status=exited ;; *) status= ;; esac
+          printf '%s|%s|%s|%s|%s|%s|%s|%s\n' "$id" "$(cat "$dir/name-$id" 2>/dev/null)" "$running" "$status" "$service" "$oneoff" \
+            "$(cat "$dir/imageof-$id" 2>/dev/null)" "$(cat "$dir/hashof-$id" 2>/dev/null)"
+        done ;;
     esac ;;
   image)
+    # image inspect --platform <p> -f <fmt> <ref>...: one id per image it has, in order, and an error for each it doesn't.
     # --platform answers the platform manifest (platformid-*) when the test sets one apart from the index id.
-    id=$(printf '%s' "\${@: -1}" | tr '/:' '__')
-    if [ -f "$dir/platformid-$id" ]; then cat "$dir/platformid-$id"; else cat "$dir/imageid-$id" 2>/dev/null; fi ;;
+    code=0
+    for ref in "\${@:7}"; do
+      id=$(printf '%s' "$ref" | tr '/:' '__')
+      if [ -f "$dir/platformid-$id" ]; then cat "$dir/platformid-$id"
+      elif [ -f "$dir/imageid-$id" ]; then cat "$dir/imageid-$id"
+      else echo "Error response from daemon: No such image: $ref" >&2; code=1; fi
+    done
+    exit "$code" ;;
   version) echo linux/amd64 ;;
   rm)
     id=$(printf '%s' "\${@: -1}")

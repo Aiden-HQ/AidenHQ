@@ -42,6 +42,11 @@ secret_state="$data/compose-secret-digests"
 model=""
 declare -A WAS_IDS=()
 declare -A BEFORE_DIGESTS=()
+# The inputs every decision reads, each gathered in one call for all services rather than a few calls per service: the
+# project's containers (snapshot), each service's config hash (HASHES), each image's platform manifest (IMAGE_IDS) and
+# each service's mounted-secret digest (DIGESTS).
+CONTAINERS=""
+declare -A SERVICE_ID=() RUNNING=() STATUS=() IMAGE_OF=() HASH_OF=() HASHES=() SERVICE_IMAGE=() IMAGE_IDS=() DIGESTS=() DESIRED=()
 # The warehouse's own Postgres image, as scripts/backup.sh uses it: already pinned, so the dump needs nothing new.
 dump_image='postgres:17@sha256:ff87138949ad9a46f32ff23bd6852b52ce024a13dffe9b4087be98292cdd3b4f'
 warehouse_container=app-warehouse-postgres-1
@@ -64,17 +69,71 @@ requireDumpPassword() {
 # With `kept` (the services this config runs), the remains of a killed recreate instead: the same names, not running, of a
 # service still in the config.
 leftovers() {
-  local desired id name running service kept="${2:-}"
-  desired="$1"
-  for id in $(docker ps -aq --filter "label=com.docker.compose.project=$project"); do
-    name="$(docker inspect -f '{{.Name}}' "$id" 2>/dev/null)" || continue
+  local kept="${1:-}" id name running service
+  while IFS='|' read -r id name running _ _ _ _ _; do
     [[ "$name" =~ ^/[0-9a-f]{12}_${project}-(.+)-1$ ]] || continue
     service="${BASH_REMATCH[1]}"
-    if grep -qxF -- "$service" <<< "$desired"; then [ -n "$kept" ] || continue; else [ -z "$kept" ] || continue; fi
-    running="$(docker inspect -f '{{.State.Running}}' "$id" 2>/dev/null || true)"
+    if [ -n "${DESIRED[$service]-}" ]; then [ -n "$kept" ] || continue; else [ -z "$kept" ] || continue; fi
     [ "$running" = "false" ] || continue
     printf '%s %s\n' "$id" "$service"
+  done <<< "$CONTAINERS"
+}
+
+# Every container of this project, in one `docker ps` and one `docker inspect`: "id|name|running|status|service|oneoff|
+# image|config-hash" per line, and per service the container compose runs it in (never a one-off, never a recreate's
+# <12hex>_ half-made one). A container that went away between the two calls (a CI runner removing itself) is simply not
+# listed. Taken again after anything here starts or removes a container.
+snapshot() {
+  local ids id name running status service oneoff image hash
+  ids="$(docker ps -aq --filter "label=com.docker.compose.project=$project")"
+  CONTAINERS=""
+  # shellcheck disable=SC2086 # the ids are one word each
+  [ -z "$ids" ] || CONTAINERS="$(docker inspect -f '{{.Id}}|{{.Name}}|{{.State.Running}}|{{.State.Status}}|{{index .Config.Labels "com.docker.compose.service"}}|{{index .Config.Labels "com.docker.compose.oneoff"}}|{{index .Config.Labels "com.docker.compose.image"}}|{{index .Config.Labels "com.docker.compose.config-hash"}}' $ids 2>/dev/null)" || true
+  SERVICE_ID=(); RUNNING=(); STATUS=(); IMAGE_OF=(); HASH_OF=()
+  while IFS='|' read -r id name running status service oneoff image hash; do
+    [ -n "$id" ] || continue
+    RUNNING[$id]="$running"; STATUS[$id]="$status"; IMAGE_OF[$id]="$image"; HASH_OF[$id]="$hash"
+    [ "$oneoff" = False ] && [ -n "$service" ] && [ -z "${SERVICE_ID[$service]-}" ] || continue
+    [[ "$name" =~ ^/[0-9a-f]{12}_ ]] || SERVICE_ID[$service]="$id"
+  done <<< "$CONTAINERS"
+}
+
+# Each service's compose config hash, in one call.
+configHashes() {
+  local service hash hashes
+  hashes="$(docker compose config --hash '*')"
+  while read -r service hash; do
+    [ -z "$service" ] || HASHES[$service]="$hash"
+  done <<< "$hashes"
+}
+
+# Each service's own image (SERVICE_IMAGE: `config --images <service>` would list its dependencies' images too) and the
+# platform manifest of every one of them (IMAGE_IDS), in one `docker image inspect`. It prints one id per image it
+# has, in order, and a "No such image: <ref>" error for each it doesn't (an image the up will pull): those are left
+# unset, so their services are recreated. Any other error stops the step.
+imageIds() {
+  local -a refs ids
+  local ref err line service image pairs i=0 status=0
+  local -A missing=()
+  pairs="$(jq -r '.services | to_entries[] | select((.value.image // "") != "") | "\(.key)\t\(.value.image)"' <<< "$model")"
+  while IFS=$'\t' read -r service image; do
+    [ -z "$service" ] || SERVICE_IMAGE[$service]="$image"
+  done <<< "$pairs"
+  [ "${#SERVICE_IMAGE[@]}" -gt 0 ] || return 0
+  mapfile -t refs < <(printf '%s\n' "${SERVICE_IMAGE[@]}" | sort -u)
+  err="$(docker image inspect --platform "$platform" -f '{{.Id}}' "${refs[@]}" 2>&1 >"$tmp/image-ids")" || status=$?
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    if [[ "$line" =~ No\ such\ image:\ (.+)$ ]]; then missing["${BASH_REMATCH[1]}"]=1
+    else echo "refusing: docker image inspect failed (exit $status): $line" >&2; return 1; fi
+  done <<< "$err"
+  mapfile -t ids < "$tmp/image-ids"
+  for ref in "${refs[@]}"; do
+    [ -z "${missing[$ref]-}" ] || continue
+    IMAGE_IDS[$ref]="${ids[$i]-}"
+    i=$((i + 1))
   done
+  [ "$i" -eq "${#ids[@]}" ] || { echo "refusing: docker image inspect printed ${#ids[@]} ids for $i images" >&2; return 1; }
 }
 
 # One leftover. Failing because it is already going away is the same outcome: it is gone either way.
@@ -82,6 +141,7 @@ remove() {
   local id="$1" service="$2" what="${3:-leftover}" err status=0
   err="$(docker rm "$id" 2>&1)" || status=$?
   if [ "$status" -eq 0 ] || grep -qE "$race" <<< "$err"; then
+    stale=1
     echo "compose: $service $what cleaned"
     return 0
   fi
@@ -141,27 +201,42 @@ dump() {
 # One digest over the file names and contents of the secrets a service mounts: a service's secret entries name a
 # top-level secret, which names its file (external secrets have none). A missing file counts as missing. Empty when the
 # service mounts no file secret. Compose's config hash covers the path, not the content, so a rotation changes this only.
-secretDigest() {
-  local files file sum lines=""
-  files="$(jq -r --arg service "$1" '. as $model | $model.services[$service].secrets[]?.source as $source | $model.secrets[$source].file // empty' <<< "$model")" || return 1
-  while IFS= read -r file; do
+#
+# Every service's digest (DIGESTS) at once: one jq over the model and one sha256sum over every file that exists.
+secretDigests() {
+  local pairs service file sum digest
+  local -a files=()
+  local -A sums=() lines=()
+  DIGESTS=()
+  pairs="$(jq -r '. as $model | $model.services | to_entries[] | .key as $service | .value.secrets[]?.source as $source | ($model.secrets[$source].file // empty) | "\($service)\t\(.)"' <<< "$model")" || return 1
+  while IFS=$'\t' read -r service file; do
+    [ -n "$file" ] && [ -f "$file" ] && [ -z "${sums[$file]-}" ] || continue
+    sums[$file]=unread; files+=("$file")
+  done <<< "$pairs"
+  if [ "${#files[@]}" -gt 0 ]; then
+    while read -r sum file; do sums[$file]="$sum"; done <<< "$(sha256sum -- "${files[@]}" 2>/dev/null)"
+  fi
+  while IFS=$'\t' read -r service file; do
     [ -n "$file" ] || continue
-    sum=missing
-    [ ! -f "$file" ] || sum="$(sha256sum -- "$file" 2>/dev/null | awk '{print $1}')"
-    [ -n "$sum" ] || { echo "refusing: cannot read the secret file $file for $1" >&2; return 1; }
-    lines+="$file $sum"$'\n'
-  done <<< "$files"
-  [ -z "$lines" ] || printf '%s' "$lines" | sha256sum | awk '{print $1}'
+    sum="${sums[$file]-missing}"
+    [ "$sum" != unread ] || { echo "refusing: cannot read the secret file $file for $service" >&2; return 1; }
+    lines[$service]+="$file $sum"$'\n'
+  done <<< "$pairs"
+  for service in "${!lines[@]}"; do
+    digest="$(printf '%s' "${lines[$service]}" | sha256sum)"
+    DIGESTS[$service]="${digest%% *}"
+  done
 }
 
 # Record what a running container read from its mounted secrets when it started: the container, and the digest of the
 # files it mounted. Only a container other than the one the pass began with is recorded (the pass started this one).
-# A service with no mounted file secret has nothing to compare, so its old record is dropped.
+# A service with no mounted file secret has nothing to compare, so its old record is dropped. Reads the snapshot taken
+# after the up.
 recordSecretState() {
   local service="$1" digest="$2" was="${3-}" id
-  id="$(docker compose ps -a -q "$service" 2>/dev/null | head -1)"
+  id="${SERVICE_ID[$service]-}"
   [ -n "$id" ] && [ "$id" != "$was" ] || return 0
-  [ "$(docker inspect -f '{{.State.Running}}' "$id" 2>/dev/null || true)" = true ] || return 0
+  [ "${RUNNING[$id]-}" = true ] || return 0
   if [ -z "$digest" ]; then
     rm -f -- "$secret_state/$service"
     return 0
@@ -180,25 +255,23 @@ recordSecretState() {
 # writes a new index (a fresh provenance attestation), so comparing it recreated every built service on every apply. The
 # service's own image comes from the model: `config --images <service>` lists its dependencies' images too.
 moved() {
-  local service="$1" id digest
-  id="$(docker compose ps -a -q "$service" 2>/dev/null | head -1)"
+  local service="$1" id digest image want have now then
+  id="${SERVICE_ID[$service]-}"
   WAS_IDS[$service]="$id"
   # Read before any early return: a service recreated because it was missing or stopped (a snapshot stopped it) gets its
   # record after the up too, or the next apply finds the old container's record and recreates it once more.
-  digest="$(secretDigest "$service")" || exit 1
+  digest="${DIGESTS[$service]-}"
   BEFORE_DIGESTS[$service]="$digest"
   [ -n "$id" ] || return 0
-  [ "$(docker inspect -f '{{.State.Running}}' "$id" 2>/dev/null || true)" = "true" ] || return 0
-  local image want have
-  image="$(jq -r --arg service "$service" '.services[$service].image // empty' <<< "$model")"
+  [ "${RUNNING[$id]-}" = true ] || return 0
+  image="${SERVICE_IMAGE[$service]-}"
   if [ -n "$image" ]; then
-    want="$(docker image inspect --platform "$platform" -f '{{.Id}}' "$image" 2>/dev/null || true)"
-    have="$(docker inspect -f '{{index .Config.Labels "com.docker.compose.image"}}' "$id" 2>/dev/null || true)"
+    want="${IMAGE_IDS[$image]-}"
+    have="${IMAGE_OF[$id]-}"
     [ -n "$want" ] && [ "$want" = "$have" ] || return 0
   fi
-  local now then
-  now="$(docker compose config --hash "$service" 2>/dev/null | awk '{print $2}')"
-  then="$(docker inspect -f '{{index .Config.Labels "com.docker.compose.config-hash"}}' "$id" 2>/dev/null || true)"
+  now="${HASHES[$service]-}"
+  then="${HASH_OF[$id]-}"
   [ -n "$now" ] && [ "$now" = "$then" ] || return 0
   # This container, started with what is on disk now, is what its record says. Another container or another digest is a
   # rotation this one missed; no record at all means its start is unknown, so it is recreated once and recorded after
@@ -207,61 +280,80 @@ moved() {
   return 1
 }
 
+# The snapshot again, only when something here started or removed a container since it was taken.
+refresh() {
+  [ "$stale" = 1 ] || return 0
+  stale=0
+  snapshot
+}
+
 # One pass: recreate what moved, then clean up the leftovers. Output goes to $1, where the caller looks for a race.
 step() {
-  local out="$1" desired="$2" status=0 recorded=0 id service after
+  local out="$1" status=0 recorded=0 id service
   local -a recreate=()
+  stale=1; refresh
   while read -r id service; do
     [ -n "$id" ] || continue
     remove "$id" "$service" "half-made container"
-  done <<< "$(leftovers "$desired" kept)"
+  done <<< "$(leftovers kept)"
+  refresh
+  secretDigests || exit 1
   for service in $desired; do moved "$service" && recreate+=("$service"); done
   if [ "${#recreate[@]}" -gt 0 ]; then
     dump || return 1
+    stale=1
     docker compose up -d --no-deps --force-recreate "${recreate[@]}" 2>&1 | tee "$out" || status=$?
     RECREATED+=("${recreate[@]}")
+    # Record the digest the pass read before the up, against the container it started, whether or not the up went on to
+    # fail, so a retry keeps it instead of starting it twice. Only when the files are still that digest: a secret that
+    # changed while the container started may have been read either way, so what it holds is unknown, and its record is
+    # left alone to recreate it again on the next apply. A service the pass never started keeps its old record too.
+    refresh
+    if secretDigests; then
+      for service in "${recreate[@]}"; do
+        [ "${DIGESTS[$service]-}" = "${BEFORE_DIGESTS[$service]-}" ] || continue
+        recordSecretState "$service" "${DIGESTS[$service]-}" "${WAS_IDS[$service]-}" || recorded=$?
+      done
+    else
+      recorded=1
+    fi
   else
     : > "$out"
   fi
-  # Record the digest the pass read before the up, against the container it started, whether or not the up went on to
-  # fail, so a retry keeps it instead of starting it twice. Only when the files are still that digest: a secret that
-  # changed while the container started may have been read either way, so what it holds is unknown, and its record is
-  # left alone to recreate it again on the next apply. A service the pass never started keeps its old record too.
-  for service in "${recreate[@]}"; do
-    after="$(secretDigest "$service")" || recorded=$?
-    [ "$after" = "${BEFORE_DIGESTS[$service]-}" ] || continue
-    recordSecretState "$service" "$after" "${WAS_IDS[$service]-}" || recorded=$?
-  done
   [ "$status" -eq 0 ] || return "$status"
   [ "$recorded" -eq 0 ] || return 1
   while read -r id service; do
     [ -n "$id" ] || continue
     remove "$id" "$service"
-  done <<< "$(leftovers "$desired")"
+  done <<< "$(leftovers)"
 }
 
 # A service container (never a one-off) of this project, running or stopped, of a service this config no longer defines:
 # "<id> <service>". Stopped ones count: a module's data move stops the old container before this step, and a stopped
 # container is still one monitoring sees as a core service that is down.
 dropped() {
-  local desired="$1" id oneoff service
-  for id in $(docker ps -aq --filter "label=com.docker.compose.project=$project" --filter label=com.docker.compose.oneoff=False); do
-    read -r oneoff service <<< "$(docker inspect -f '{{index .Config.Labels "com.docker.compose.oneoff"}} {{index .Config.Labels "com.docker.compose.service"}}' "$id" 2>/dev/null)" || continue
-    [ "$oneoff" = False ] && [ -n "$service" ] || continue
-    grep -qxF -- "$service" <<< "$desired" && continue
+  local id service oneoff
+  while IFS='|' read -r id _ _ _ service oneoff _ _; do
+    [ "$oneoff" = False ] && [ -n "$service" ] && [ -z "${DESIRED[$service]-}" ] || continue
     printf '%s %s\n' "$id" "$service"
-  done
+  done <<< "$CONTAINERS"
+}
+
+# A service's container state as `docker compose ps` names it (running, exited, created...), from the snapshot.
+state() {
+  local id="${SERVICE_ID[$1]-}"
+  [ -z "$id" ] || printf '%s' "${STATUS[$id]-}"
 }
 
 # One line per service in this config: recreated, or kept (and when a kept one is not up, that too), so every apply's
 # log shows the stack it left. A cleaned leftover printed its own line as it was removed.
 summary() {
-  local desired="$1" service state
+  local service state
   for service in $desired; do
     case " ${RECREATED[*]:-} " in
       *" $service "*) echo "compose: $service recreated"; continue ;;
     esac
-    state="$(docker compose ps -a --format '{{.State}}' "$service" 2>/dev/null | head -1)"
+    state="$(state "$service")"
     if [ "$state" = running ]; then echo "compose: $service kept"
     else echo "compose: $service kept (not running: ${state:-unknown})"; fi
   done
@@ -272,14 +364,20 @@ requireDumpPassword
 desired="$(docker compose config --services | sort -u)"
 # Before anything is dumped or removed.
 [ -n "$desired" ] || { echo "compose: docker compose config lists no services: nothing dumped or removed" >&2; exit 1; }
+for service in $desired; do DESIRED[$service]=1; done
 model="$(docker compose config --format json)"
 platform="$(docker version -f '{{.Server.Os}}/{{.Server.Arch}}')"
+tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+out="$tmp/out"
+# The config and the images don't change during the step: read once, for every pass.
+configHashes
+imageIds
 
 RECREATED=()
 dumped=0
+stale=1
 
-out="$(mktemp)"; trap 'rm -f "$out"' EXIT
-status=0; step "$out" "$desired" || status=$?
+status=0; step "$out" || status=$?
 if [ "$status" -ne 0 ]; then
   # Each of the two known races is tolerated once; anything else, or a second failure, ends the apply as it is.
   if grep -qE "$race" "$out"; then
@@ -291,16 +389,21 @@ if [ "$status" -ne 0 ]; then
   fi
   # The retry re-derives what moved, so a service the first pass already recreated is reported as kept, not twice.
   RECREATED=()
-  step "$out" "$desired"
+  step "$out"
 fi
+refresh
 # A container compose created but never started (its up was cut short) is started, so the stack ends up running.
 for service in $desired; do
-  [ "$(docker compose ps -a --format '{{.State}}' "$service" 2>/dev/null | head -1)" = created ] || continue
+  [ "$(state "$service")" = created ] || continue
+  stale=1
   docker compose start "$service" && echo "compose: $service was left created: started"
 done
+refresh
 # What this config dropped stops running: a removed module's container would otherwise keep running (and serving) forever.
 while read -r id service; do
   [ -n "$id" ] || continue
+  stale=1
   docker rm -f "$id" >/dev/null && echo "compose: $service removed (no longer in the config)"
-done <<< "$(dropped "$desired")"
-summary "$desired"
+done <<< "$(dropped)"
+refresh
+summary
