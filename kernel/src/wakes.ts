@@ -201,9 +201,11 @@ export function createWakes({ db, owner, post, dispatches, containers = () => ne
     // First sight: only what came after the dispatcher joined or the agent's last word on the task.
     const boundary = prev ? 0 : Math.max(since(agent, joined), ...all.filter((c) => c.authorAgentId === agent || SELF_TAG.test(c.body ?? "")).map((c) => ms(c.createdAt)));
     // Every untagged comment read is a fact (version = its id): the owner's say, an agent's. A comment the kernel wrote carries a
-    // tag and is recorded by its writer (cp.ts, outcomes.ts, the owner paths), whose fact names the job: scan never races it.
+    // tag and is recorded by its writer (cp.ts, outcomes.ts, the owner paths), whose fact names the job: scan never races it. A
+    // kernel notice (notices.ts) is posted with the owner's key but is never the owner's word, so it is no task.commented at all
+    // (it would end an owner wait).
     for (const c of all) {
-      if (c.deletedAt || /<!-- aidenhq:(job|op)=/.test(c.body ?? "")) continue;
+      if (c.deletedAt || /<!-- aidenhq(:(job|op)=|-kernel-notice:)/.test(c.body ?? "")) continue;
       fact({ type: "task.commented", subject: `task:${issue.id}`, version: String(c.id), at: iso(ms(c.createdAt) || now()), actor: c.authorAgentId ? `agent:${keyOf(c.authorAgentId)}` : c.authorUserId ? `account:${c.authorUserId}` : "unknown", task: issue.id, source, data: { kind: "comment" } });
     }
     for (const c of all) {

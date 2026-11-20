@@ -5,6 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { createWakes } from "../src/wakes.ts";
 import { openFacts } from "../src/facts.ts";
 import { createBackplane } from "../src/backplane.ts";
+import { taskState } from "../src/task-state.ts";
 import { forward, wakeEvent } from "../../services/paperclip-events/forward.js";
 
 const AGENT = "a-1", OTHER = "a-2";
@@ -366,6 +367,23 @@ test("an owner comment is task.commented at its own time; a chat is marked at cr
   await w.wakes.poll();
   assert.deepEqual(of("t1", "task.commented").map((f) => [f.version, f.data.job]), [["c1", undefined], ["c2", "run-1"]]);
   assert.deepEqual([of("t1", "task.created")[0].data.chat, of("t2", "task.created")[0].data.chat], [true, false]);
+});
+
+test("a kernel notice posted under the owner's key leaves an open owner wait open", async () => {
+  const w = world();
+  w.issue("t1", { status: "in_progress" });
+  await w.wakes.poll();
+  w.tick();
+  const at = "2026-11-18T10:00:20.000Z";
+  w.facts.record({ type: "work.waiting", subject: "wait:t1", version: "wait@1", at, actor: `agent:${AGENT}`, task: "t1", data: { reason: "owner_wait", note: "n", until: "2026-11-25T10:00:00.000Z", question: "keep v1?" } });
+  w.comment("t1", "c1", { authorUserId: "u1", createdAt: "2026-11-18T10:00:30.000Z", body: "Your push landed.\n\n<!-- aidenhq-kernel-notice:n-1 -->" });
+  await w.wakes.poll();
+  const facts = w.facts.forTask("t1");
+  assert.equal(facts.filter((f) => f.type === "task.commented").length, 0);
+  const s = taskState("t1", facts, Date.parse("2026-11-18T10:05:00.000Z"), []);
+  // The notice still wakes the agent (its comment wake queues a job), but the owner wait stays open: still the owner's to answer.
+  assert.deepEqual([s.kind, s.reason, s.question], ["waiting", "job_queued", "keep v1?"]);
+  assert.ok(s.attention.some((a) => a.who === "owner" && a.why === "owner_wait"), JSON.stringify(s));
 });
 
 test("a closure the event path missed is recorded by the next poll", async () => {
