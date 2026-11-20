@@ -232,6 +232,7 @@ jobs:
           PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
         run: |
           # a merge train is a push of main plus the PRs: its base is main, never an earlier train commit
+          [ "$GITHUB_EVENT_NAME" = pull_request ] && PR_BASE=$(git rev-parse HEAD^1) # the payload's base.sha goes stale as main moves; the merge commit's first parent is main now
           case "$GITHUB_REF" in refs/heads/merge-train/*) PUSH_BEFORE= ;; esac
           base="${PR_BASE:-$PUSH_BEFORE}"
           if [ -z "$base" ] || [ "$base" = 0000000000000000000000000000000000000000 ] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
@@ -294,6 +295,7 @@ jobs:
       # base (main for a merge train) so a PR can't take itself off it; a push to main reads its own.
       - id: eval
         run: |
+          [ "$GITHUB_EVENT_NAME" = pull_request ] && PR_BASE=$(git rev-parse HEAD^1) # the payload's base.sha goes stale as main moves; the merge commit's first parent is main now
           case "$GITHUB_REF" in refs/heads/merge-train/*) PUSH_BEFORE= ;; esac
           base="${PR_BASE:-$PUSH_BEFORE}"
           if [ -z "$base" ] || [ "$base" = 0000000000000000000000000000000000000000 ] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
@@ -323,6 +325,7 @@ jobs:
         run: |
           set -f # DOCKERFILES is split on spaces below, never globbed
           # a merge train is a push of main plus the PRs: its base is main, never an earlier train commit
+          [ "$GITHUB_EVENT_NAME" = pull_request ] && PR_BASE=$(git rev-parse HEAD^1) # the payload's base.sha goes stale as main moves; the merge commit's first parent is main now
           case "$GITHUB_REF" in refs/heads/merge-train/*) PUSH_BEFORE= ;; esac
           base="${PR_BASE:-$PUSH_BEFORE}"
           if [ -z "$base" ] || [ "$base" = 0000000000000000000000000000000000000000 ] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
@@ -377,6 +380,7 @@ jobs:
           PACKAGES_READ_TOKEN: ${{ secrets.PACKAGES_READ_TOKEN }}
         run: |
           # a merge train is a push of main plus the PRs: its base is main, never an earlier train commit
+          [ "$GITHUB_EVENT_NAME" = pull_request ] && PR_BASE=$(git rev-parse HEAD^1) # the payload's base.sha goes stale as main moves; the merge commit's first parent is main now
           case "$GITHUB_REF" in refs/heads/merge-train/*) PUSH_BEFORE= ;; esac
           base="${PR_BASE:-$PUSH_BEFORE}"
           # a new branch or a force push has no usable before: compare with the default branch
@@ -443,6 +447,7 @@ jobs:
           # On a pull request the scanner and its exceptions come from the base commit, on a merge train from main (its tree holds
           # the PRs' own edits), so no PR can run its own code here or loosen its own scan; a base without the scanner fails
           # closed (image-scan.mjs: a base from before the scripts moved to TypeScript). A push to main runs main's own.
+          [ "$GITHUB_EVENT_NAME" = pull_request ] && PR_BASE=$(git rev-parse HEAD^1) # the payload's base.sha goes stale as main moves; the merge commit's first parent is main now
           src="$PR_BASE"
           case "$GITHUB_REF" in refs/heads/merge-train/*) src=$(git rev-parse origin/main) ;; refs/heads/main) src="" ;; esac
           if [ -n "$src" ]; then
@@ -493,6 +498,7 @@ jobs:
           node-version: 24.x
       - name: The harness and existing cases from the base
         run: |
+          [ "$GITHUB_EVENT_NAME" = pull_request ] && PR_BASE=$(git rev-parse HEAD^1) # the payload's base.sha goes stale as main moves; the merge commit's first parent is main now
           src="$PR_BASE"
           case "$GITHUB_REF" in refs/heads/merge-train/*) src=$(git rev-parse origin/main) ;; refs/heads/main) src="" ;; esac
           [ -n "$src" ] || { echo "a push to main: its own harness"; exit 0; }
