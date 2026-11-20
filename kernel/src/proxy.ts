@@ -3,9 +3,14 @@
 // message rebuilt from the checked fields only, with the module's service key and, on a tools/call, a signed caller
 // assertion that is in flight until the module's answer ends. tools/list comes back filtered to the granted, listed tools;
 // a result from a connection that returns untrusted text comes back fenced. The caller's own credential never leaves here.
+// Every tools/call answer is read before it goes back: a module's needs_owner answer (sdk/src/vendor/needs.ts) goes to the
+// connection state (connection-state.ts), which routes it, and the agent gets the kernel's own words instead; a trusted
+// connection's other answers go back byte for byte.
 import http from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { fence } from "../sdk/src/fence.ts";
+import { readNeed, type Need } from "../sdk/src/vendor/needs.ts";
+import type { ConnectionState } from "./connection-state.ts";
 import type { Asserter } from "./assert.ts";
 import { NoGrants, type Connection, type Identity, type Whoami } from "./identity.ts";
 import type { Resolver } from "./net.ts";
@@ -94,8 +99,10 @@ export function pendingText(r: Rec): string {
   return `${JSON.stringify({ approval: r.id, tier: r.tier, state: r.state })}\nFiled for approval (${r.kind}): ${r.tier === 1 ? "the AI reviewer decides" : "the AI reviewer, then the owner, decide"}. It runs once approved, and the outcome lands on your task. Don't say it is done until then.`;
 }
 
-export function createProxy({ whoami, connections, asserter, resolver, secret, writes, log = () => {} }: {
+export function createProxy({ whoami, connections, asserter, resolver, secret, writes, needs = () => undefined, log = () => {} }: {
   whoami: Whoami; connections: () => Record<string, Connection>; asserter: Asserter; resolver: Resolver; secret: (name: string) => string; writes?: Writes;
+  /** The connection state (late-bound: main.ts builds it after the proxy): needs_owner answers, and a success that clears one. */
+  needs?: () => Pick<ConnectionState, "hit" | "ok" | "down"> | undefined;
   log?: Log;
 }) {
   /**
@@ -246,7 +253,8 @@ export function createProxy({ whoami, connections, asserter, resolver, secret, w
               res.writeHead(200, { "content-type": "application/json", "content-length": Buffer.byteLength(err) }).end(err);
               return resolve();
             }
-            const rewrite = status < 300 && (method === "tools/list" || fenced || !!rec);
+            const call = method === "tools/call";
+            const rewrite = status < 300 && (method === "tools/list" || call || !!rec);
             if (!rewrite) {
               res.writeHead(status, { ...hdrs, ...(ur.headers["content-length"] ? { "content-length": ur.headers["content-length"] } : {}) });
               ur.pipe(res);
@@ -255,10 +263,16 @@ export function createProxy({ whoami, connections, asserter, resolver, secret, w
               return;
             }
             const sse = String(ur.headers["content-type"] ?? "").includes("text/event-stream");
-            const text = (await readAll(ur, MAX_ANSWER)).toString("utf8");
-            let answer: string;
+            const raw = await readAll(ur, MAX_ANSWER);
+            const text = raw.toString("utf8");
+            // A trusted connection's answer (no record) is only read here: it goes back as it came unless it is a need.
+            const asIs = call && !fenced && !rec;
+            let need: Need | undefined, success = false;
+            let answer: string | undefined;
             try {
               answer = mapMessages(text, sse, (m) => {
+              // Read before fencing strips structuredContent: the module's own answer, never upstream text inside it.
+              if (call && m.id === reqId && !("method" in m)) { need = readNeed(m.result); success = !need && !m.error && m.result?.isError !== true; }
               if (method === "tools/list" && Array.isArray(m.result?.tools)) m.result.tools = m.result.tools.filter((t: { name?: unknown }) => allowed.has(String(t?.name)));
               if (rec && m.id === reqId && !("method" in m)) { okAnswer = !m.error && m.result?.isError !== true; objects = m.result?.structuredContent?._aidenhq?.objects; }
               if (!fenced) return true;
@@ -266,14 +280,31 @@ export function createProxy({ whoami, connections, asserter, resolver, secret, w
               fenceAnswer(m, source(tool));
             });
             } catch (e) {
+              // A trusted answer was never parsed before: one the kernel can't read still goes back as it came.
+              if (asIs) {
+                res.writeHead(status, { ...hdrs, "content-length": String(raw.length) }).end(raw);
+                return resolve();
+              }
               // Fail closed: an answer the kernel can't read strictly reaches the caller as an error naming no upstream text.
               done(false, `${connection}'s answer isn't well-formed JSON-RPC`);
               const err = JSON.stringify({ jsonrpc: "2.0", id: reqId, error: { code: -32603, message: `${connection}: ${(e as Error).message}` } });
               res.writeHead(502, { "content-type": "application/json", "content-length": Buffer.byteLength(err) }).end(err);
               return resolve();
             }
+            const state = call ? needs() : undefined;
+            if (need && state) {
+              // Only the owner can fix it: the connection state routes it, and the agent reads the kernel's words, unfenced.
+              const said = await state.hit(who, conn.module, need).catch((e: Error) => { log("connection need not routed", { connection, err: e.message }); return `${connection} isn't connected: only the owner can fix it. Don't retry.`; });
+              done(false, said);
+              const out = JSON.stringify({ jsonrpc: "2.0", id: reqId, result: { content: [{ type: "text", text: said }], isError: true } });
+              res.writeHead(200, { "content-type": "application/json", "content-length": Buffer.byteLength(out) }).end(out);
+              return resolve();
+            }
+            // A call that worked proves the module connected: a full need it had clears, and the tasks waiting on it wake.
+            if (success && state?.down(conn.module)) state.ok(conn.module, true);
             if (rec) done(okAnswer, text);
-            res.writeHead(status, { ...hdrs, "content-length": Buffer.byteLength(answer) }).end(answer);
+            if (asIs) res.writeHead(status, { ...hdrs, "content-length": String(raw.length) }).end(raw);
+            else res.writeHead(status, { ...hdrs, "content-length": Buffer.byteLength(answer!) }).end(answer);
             resolve();
           } catch (e) { reject(e); }
         });

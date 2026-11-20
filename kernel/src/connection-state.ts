@@ -160,6 +160,11 @@ export function createConnectionState(o: {
       });
     },
 
+    /** Whether some installed connection belongs to the module (the board's /ok names a module, not a connection). */
+    has(module: string): boolean {
+      return Object.values(o.connections()).some((c) => c?.module === module);
+    },
+
     /** Whether the module has a full-cause row (the proxy's cheap check before clearing on a success). */
     down(module: string): boolean {
       return Boolean(q("SELECT 1 FROM connection_state WHERE module = ? AND cause IN ('not_connected', 'expired') LIMIT 1").get(module));
