@@ -57,6 +57,9 @@ async function main() {
     for (const [, cd] of (s.run ?? "").matchAll(/cd (\S+) && npm ci/g)) installs.add(join(dir, cd!));
     if (/^npm ci|\) && npm ci/.test(s.run ?? "")) installs.add(dir);
     if (s.job === "modules") installs.add("kernel"); // module suites read the kernel's code, as CI's modules job installs it
+    // the packages CI's packages job installs once for these suites (their runs don't)
+    if (["scripts", "kernel", "kernel/sdk"].includes(dir)) installs.add("kernel");
+    if (["kernel/sdk", "fixtures/twin"].includes(dir)) installs.add("kernel/sdk");
   }
   for (const d of installs) {
     const dir = resolve(root, d);

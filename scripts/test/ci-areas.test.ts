@@ -15,23 +15,23 @@ test("a docs-only change selects nothing", () => {
 test("a kernel change selects the kernel's suites, not the board's alone", () => {
   const { all, names } = suitesFor(map, ["kernel/src/writes.ts"]);
   assert.equal(all, false);
-  for (const n of ["kernel", "scripts"]) assert.ok(names.includes(n), n);
+  for (const n of ["kernel", "scripts#1"]) assert.ok(names.includes(n), n);
   assert.equal(names.includes("services/board"), false);
-  assert.deepEqual(suitesFor(map, ["services/board/web/App.tsx"]).names, ["scripts", "services/board"]);
+  assert.deepEqual(suitesFor(map, ["services/board/web/App.tsx"]).names, ["scripts#1", "scripts#2", "scripts#3", "services/board"]);
 });
 
 test("an unknown path, CI itself or the map selects everything", () => {
   for (const f of ["ops/apply-config.sh", "compose.yaml", ".github/ci/areas.json", ".github/workflows/ci.yml", "services/shared/reason-codes.ts"]) {
     assert.deepEqual(suitesFor(map, ["docs/x.md", f]).names, every, f);
   }
-  assert.deepEqual(suitesFor(map, ["SETUP.md", "docs/setup.md"]).names, ["scripts"], "Markdown the tests read counts");
+  assert.deepEqual(suitesFor(map, ["SETUP.md", "docs/setup.md"]).names, ["scripts#1", "scripts#2", "scripts#3"], "Markdown the tests read counts");
 });
 
 test("a rebased head re-runs only the suites main's new commits also touch", () => {
   const pr = ["services/board/web/App.tsx"];
   assert.deepEqual(reuse(map, pr, ["docs/x.md", "kernel/README.md"]), []);
-  assert.deepEqual(reuse(map, pr, ["kernel/src/writes.ts"]), ["scripts"]);
-  assert.deepEqual(reuse(map, pr, ["ops/x.sh"]), ["scripts", "services/board"], "an unknown gained path re-runs all of the PR's");
+  assert.deepEqual(reuse(map, pr, ["kernel/src/writes.ts"]), ["scripts#1", "scripts#2", "scripts#3"]);
+  assert.deepEqual(reuse(map, pr, ["ops/x.sh"]), ["scripts#1", "scripts#2", "scripts#3", "services/board"], "an unknown gained path re-runs all of the PR's");
 });
 
 test("ci-local reports the selection CI's selector returns for a diff", async () => {
@@ -49,8 +49,8 @@ const under = (f, p) => p === "*" || f === p || f.startsWith(`${p}/`);
 test("a change to one module runs that module's suites, not every module's or the product's flows", () => {
   const { all, names } = suitesFor(map, ["modules/jira/connections/jira-mcp/src/server.ts"]);
   assert.equal(all, false);
-  assert.deepEqual(names, ["scripts", "modules/jira/connections/jira-mcp", "modules/platform"]);
-  assert.deepEqual(suitesFor(map, ["modules/chief-of-staff/agents/aiden/AGENTS.md"]).names, ["scripts", "modules/platform"], "a handbook: the compiler and the gate coverage");
+  assert.deepEqual(names, ["scripts#1", "scripts#2", "scripts#3", "modules/jira/connections/jira-mcp", "modules/platform"]);
+  assert.deepEqual(suitesFor(map, ["modules/chief-of-staff/agents/aiden/AGENTS.md"]).names, ["scripts#1", "scripts#2", "scripts#3", "modules/platform"], "a handbook: the compiler and the gate coverage");
 });
 
 test("every official module package with tests is a suite, and every suite's folder exists", () => {

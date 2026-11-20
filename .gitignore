@@ -51,3 +51,7 @@ CLAUDE.local.md
 config.next/
 compose.modules.next.yaml
 
+
+# CI: the base commit's CI scripts (.github/workflows/ci.yml test jobs) and the reviewer eval's cached receipt
+/.ci-base/
+/.eval-state/
