@@ -1446,6 +1446,8 @@ export function checkEntries(name: string, def: Obj) {
     for (const k of Object.keys(v)) if (!["post", "auth", "mode"].includes(k)) fail(`${at}: ${k} is not allowed`);
     if (!/^https?:\/\/[\w.-]+:\d+\/[\w/.-]*$/.test(v.post ?? "")) fail(`${at}: post must be http://<service>:<port>/<path>`);
     if (!ownSecrets(def).includes(v.auth)) fail(`${at}: auth must name one of its own secrets`);
+    // It is sent pasted secret values: only to a service this module declares (never an IP, localhost or another module's service).
+    if (!Object.keys(def.services?.run ?? {}).includes(new URL(v.post).hostname)) fail(`${at}: post must be one of the module's own services (services.run)`);
     let mode: string | undefined;
     try { mode = gateMode(`${name}.validate`, v.mode); } catch (e) { fail(`${at}: ${(e as Error).message}`); }
     out[`${name}.validate`] = { module: name, at: "validate", url: v.post, auth_secret: v.auth, ...(mode === "observe" ? { mode } : {}) };

@@ -503,7 +503,7 @@ const moduleSecrets = createModuleSecrets({
   log,
 });
 // A module's own check of a setting or a pasted secret before it is saved (module.yaml `validate:`, module-validate.ts).
-const moduleValidate = createModuleValidate({ registry: checksRegistry, secret, resolver, facts, log });
+const moduleValidate = createModuleValidate({ registry: checksRegistry, services: (m) => { const s = modulesFile().services ?? {}; return Object.hasOwn(s, m) ? s[m] : undefined; }, secret, resolver, facts, log });
 // Admission (admission.ts) and the kernel's own computers for the jobs it admits (boxes.ts): capacity is settings.computers_max,
 // the number the launcher's pool reads too (config/computers.json `max`; missing, nothing is admitted).
 const computers = watched(path.join(configDir, "computers.json"), (j) => j as { max?: unknown; connections?: Record<string, { tool_timeout_sec?: number }> }, {});

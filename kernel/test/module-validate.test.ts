@@ -18,10 +18,11 @@ test("a module's validate hook refuses a value with its field's error; in observ
   });
   await new Promise<void>((r) => hook.listen(0, "127.0.0.1", r));
   t.after(() => hook.close());
-  const url = `http://127.0.0.1:${(hook.address() as { port: number }).port}/validate`;
+  const port = (hook.address() as { port: number }).port;
+  const url = `http://hook:${port}/validate`;
   const facts = openFacts(new DatabaseSync(":memory:"));
   let table: Record<string, any> = { "acme.validate": { module: "acme", at: "validate", url, auth_secret: "acme_key" } };
-  const validate = createModuleValidate({ registry: () => table, secret: () => "k", resolver: createResolver(), facts });
+  const validate = createModuleValidate({ registry: () => table, services: (m) => (m === "acme" ? ["acme-hook"] : []), secret: () => "k", resolver: createResolver({ inspect: async () => "127.0.0.1" }), facts });
 
   // Enforcing: the refusal comes back as the field's error; a secret's value reaches only its module, in its own field.
   assert.deepEqual(await validate("acme", { settings: { host: "nope" } }), { ok: false, errors: [{ field: "host", message: "that host isn't reachable" }] });
@@ -29,6 +30,13 @@ test("a module's validate hook refuses a value with its field's error; in observ
   await validate("acme", { secret: { name: "acme_token", value: "s3cret" } });
   assert.deepEqual(seen[1]!.body, { secret: { name: "acme_token" }, value: "s3cret" });
   assert.deepEqual(await validate("other", { settings: { host: "x" } }), { ok: true });
+
+  // A hook that isn't the module's own service is never sent anything (pasted secrets go only to their own module).
+  const before = seen.length;
+  table = { "acme.validate": { ...table["acme.validate"], url: `http://elsewhere:${port}/validate` } };
+  assert.match(((await validate("acme", { secret: { name: "acme_token", value: "s3cret" } })) as { unchecked?: string }).unchecked ?? "", /isn't one of its own services/);
+  assert.equal(seen.length, before);
+  table = { "acme.validate": { module: "acme", at: "validate", url, auth_secret: "acme_key" } };
 
   // Observing: the same refusal is only recorded, and the value goes ahead.
   table = { "acme.validate": { ...table["acme.validate"], mode: "observe" } };

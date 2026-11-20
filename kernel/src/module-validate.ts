@@ -17,7 +17,7 @@ export type FieldError = { field: string; message: string };
 export type Validation = { ok: true; unchecked?: string } | { ok: false; errors: FieldError[] };
 export type ValidateInput = { settings?: Record<string, unknown>; secret?: { name: string; value: string } };
 
-export function createModuleValidate({ registry, secret, resolver, facts, log = () => {} }: { registry: () => Record<string, Check>; secret: (n: string) => string; resolver: Resolver; facts: Facts; log?: (msg: string, f?: Record<string, unknown>) => void }) {
+export function createModuleValidate({ registry, services, secret, resolver, facts, log = () => {} }: { registry: () => Record<string, Check>; /** The module's compose services (config/kernel/modules.json): its hook must be one of them. */ services: (module: string) => string[] | undefined; secret: (n: string) => string; resolver: Resolver; facts: Facts; log?: (msg: string, f?: Record<string, unknown>) => void }) {
   function ask(c: Check, body: unknown): Promise<unknown> {
     const key = secret(c.auth_secret);
     if (!key) return Promise.reject(new Error("its key is missing"));
@@ -41,6 +41,12 @@ export function createModuleValidate({ registry, secret, resolver, facts, log = 
     const c = registry()[id];
     if (!c || c.at !== "validate") return { ok: true };
     const mode = gateMode(id, c.mode);
+    // Pasted secrets go only to the module's own service, whatever the file says (compile checks it too).
+    const host = new URL(c.url).hostname;
+    if (!(services(module) ?? []).some((k) => k === host || k === `${module}-${host}`)) {
+      log("a module's validate hook isn't its own service", { module, host });
+      return { ok: true, unchecked: `${module}'s check isn't one of its own services; it was saved without that check` };
+    }
     let answer: { ok?: unknown; errors?: unknown };
     try {
       answer = (await ask(c, { ...(input.settings ? { settings: input.settings } : {}), ...(input.secret ? { secret: { name: input.secret.name }, value: input.secret.value } : {}) })) as typeof answer;
