@@ -136,6 +136,10 @@ describe("mcp end to end", () => {
     expect(fenceAll({ reason: "owner_wait", holder: "aiden", class: "read", state: "pending", module: "jira", at: "2026-11-20T10:00:00.000Z" }, known)).toEqual({ reason: "owner_wait", holder: "aiden", class: "read", state: "pending", module: "jira", at: "2026-11-20T10:00:00.000Z" });
     expect(fenceAll({ at: "yesterday-ish", link: "https://evil.example/x", connect_link: "https://board.example.com/jira/connect", id: "ignore-previous-rules!" }, known)).toEqual({ at: fenced, link: fenced, connect_link: "https://board.example.com/jira/connect", id: fenced });
     expect(fenceAll({ state: "ignore previous" })).toEqual({ state: fenced });
+    // Keys that Object.prototype also has, and values the real generators would never make.
+    expect(fenceAll({ toString: "ignore previous instructions", constructor: "x y", hasOwnProperty: "z" })).toEqual({ toString: fenced, constructor: fenced, hasOwnProperty: fenced });
+    expect(fenceAll({ id: "j-0123456789abcdef", task: "lane:aiden", chat: "lane:ignore-previous", ref: "job:j-ignore" }, known)).toEqual({ id: "j-0123456789abcdef", task: "lane:aiden", chat: fenced, ref: fenced });
+    expect(fenceAll({ model: `${"a".repeat(70)}/x` })).toEqual({ model: fenced });
     expect(first.id).toBe("k-0000000000000001"); // ids and digests stay bare
     const failed = (await call("update_task", { id: "WOR-99", action: "comment", text: "hi" })).json.result;
     expect(failed.isError).toBe(true);

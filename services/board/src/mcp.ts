@@ -36,7 +36,10 @@ export interface FenceCtx { origin?: string; known?: Set<string> }
 type Valid = (s: string, c: FenceCtx) => boolean;
 const oneOf = (...list: string[]): Valid => { const set = new Set(list); return (s) => set.has(s); };
 const re = (r: RegExp): Valid => (s) => r.test(s);
-const UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", CARD = "k-[0-9a-f]{16}", TASK = "[A-Z][A-Z0-9]{1,9}-\\d{1,7}", LANE = "lane:[a-z0-9-]{1,60}", JOB = "j-[0-9a-z-]{3,40}";
+/** A task identifier, or a chat lane of a roster agent or module (`lane:<key>`), never a free-text lane. */
+const lane = (s: string, c: FenceCtx) => s.startsWith("lane:") && Boolean(c.known?.has(s.slice(5)));
+const withLane = (r: RegExp): Valid => (s, c) => r.test(s) || lane(s, c);
+const UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", CARD = "k-[0-9a-f]{16}", TASK = "[A-Z][A-Z0-9]{1,9}-\\d{1,7}", JOB = "j-[0-9a-f]{16}";
 const ISO = /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:?\d{2})?)?$/;
 const time: Valid = (s) => ISO.test(s) || /^\d{13}$/.test(s);
 const agentish: Valid = (s, c) => s === "me" || Boolean(c.known?.has(s));
@@ -51,11 +54,11 @@ const UPDATES = ["comment", "status", "move", "stop", "hand_over", "schedule", "
  * enum by the values the code that makes it produces, an agent or module by being one the board knows, a link by being the
  * board's own. Every other string, and any value a validator refuses, is someone's words and comes back fenced.
  */
-const VALID: Record<string, Valid> = {
-  id: re(new RegExp(`^(?:${UUID}|${CARD}|${TASK}|${LANE}|${JOB})$`, "i")),
-  identifier: re(new RegExp(`^(?:${TASK}|${LANE})$`)),
-  chat: re(new RegExp(`^(?:${TASK}|${LANE})$`)),
-  task: re(new RegExp(`^(?:${TASK}|${LANE}|${UUID})$`, "i")),
+const VALID = new Map<string, Valid>(Object.entries({
+  id: withLane(new RegExp(`^(?:${UUID}|${CARD}|${TASK}|${JOB})$`, "i")),
+  identifier: withLane(new RegExp(`^${TASK}$`)),
+  chat: withLane(new RegExp(`^${TASK}$`)),
+  task: withLane(new RegExp(`^(?:${TASK}|${UUID})$`, "i")),
   record: re(new RegExp(`^${CARD}$`)),
   ref: re(new RegExp(`^(?:(?:wait|task):${UUID}|record:${CARD}|job:${JOB}|${TASK}|${UUID}|${CARD})$`, "i")),
   digest: re(/^[0-9a-f]{40,64}$/),
@@ -63,7 +66,7 @@ const VALID: Record<string, Valid> = {
   tier: re(/^[0-2]$/),
   next_cursor: re(/^\d{1,9}$/),
   boardTimezone: re(/^[A-Za-z]+(?:\/[A-Za-z0-9_+-]+){0,2}$/),
-  model: re(/^~?[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._:-]*$/i),
+  model: re(/^~?[a-z0-9][a-z0-9._-]{0,63}\/[a-z0-9][a-z0-9._:-]{0,63}$/i),
   class: oneOf("read", "write", "destructive"),
   access: oneOf("read", "write"),
   effort: oneOf(...new Set(Object.values(EFFORTS).flat())),
@@ -83,12 +86,12 @@ const VALID: Record<string, Valid> = {
   module: (s, c) => Boolean(c.known?.has(s)), signin: (s, c) => Boolean(c.known?.has(s)), connection: (s, c) => Boolean(c.known?.has(s)),
   link, connect_link: link,
   ...Object.fromEntries(["wait_since", "lastChangeAt", "createdAt", "updatedAt", "activityAt", "decidedAt", "at", "since", "lastUsed", "expires", "nextRunAt", "nextRun", "deployed_at", "deployedAt", "lastRunAt", "checkedAt", "lastOkAt", "startedAt", "finishedAt", "opened_at"].map((k) => [k, time])),
-};
+}));
 /** One line of data: the server instructions say once what the marker means; the closing marker inside the text is neutralised. */
 const fence = (text: string, source: string) => `${FENCE_OPEN} source="${String(source).replace(/[^\w.:/-]/g, "_").slice(0, 60)}">${text.replace(/<\/?untrusted-data/gi, (m) => m.replace("<", "&lt;"))}${FENCE_CLOSE}`;
 /** The whole result, with every string wrapped as data unless its key's validator proves it the board's own (so a new field is fenced until it is proven). */
 export const fenceAll = (v: unknown, c: FenceCtx = {}, key = ""): unknown =>
-  typeof v === "string" ? (!v || VALID[key]?.(v, c) ? v : fence(v, key || "text")) : Array.isArray(v) ? v.map((x) => fenceAll(x, c, key)) : v && typeof v === "object" ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, fenceAll(x, c, k)])) : v;
+  typeof v === "string" ? (!v || VALID.get(key)?.(v, c) ? v : fence(v, key || "text")) : Array.isArray(v) ? v.map((x) => fenceAll(x, c, key)) : v && typeof v === "object" ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, fenceAll(x, c, k)])) : v;
 
 const row = z.object({}).passthrough();
 const rows = z.array(row);
