@@ -545,9 +545,8 @@ export function checks(d: { kernel: KernelClient; kv: Kv; pause: (routine: strin
       const out: Incident[] = [];
       const items = await openStates();
       const capped = (x: { idle_wakes?: number }) => (x.idle_wakes ?? 0) >= IDLE_WAKE_CAP;
-      // `unpolled`: no enabled dispatcher runs the holder, so the idle sweep skips it and no wake would ever be taken. It is raised
-      // as soon as it is seen, not after IDLE_MS, because nothing the kernel does moves it; not critical, since a dispatcher
-      // outage makes every idle task unpolled at once and one fleet-level fix covers them all.
+      // `unpolled`: no dispatcher runs the holder, so no wake is ever taken, and it is raised at once: not critical, since a
+      // dispatcher outage makes every idle task unpolled at once and one fix covers them all.
       const stuck = (x: { reason: string; idle_wakes?: number; since: string }) => capped(x) || x.reason === "unpolled" || age(x.since, t) > IDLE_MS;
       for (const i of items.filter((x) => UNEXPLAINED.includes(x.reason) && stuck(x) && !exempt({ identifier: x.identifier, originKind: null }) && !suppressed(x.task, `stuck:${x.task}`))) {
         // Owned by nobody, or by the owner (a person, not an agent's work): not someone's stuck work (the inbox, review-log and

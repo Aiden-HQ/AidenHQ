@@ -209,7 +209,7 @@ test("an orphaned item over 2h trips the stuck rule; an unpolled one at once; a 
     { task: "i", identifier: "WOR-I", since: minsAgo(60), reason: "orphaned", idle_wakes: 3 }, // the idle sweep gave up: critical now
     { task: "j", identifier: "WOR-J", since: minsAgo(300), reason: "unknown" }, // its holder's wake aged out: flagged
     { task: "k", identifier: "WOR-K", since: minsAgo(300), reason: "agent_wait" }, // waiting on something recorded
-    { task: "l", identifier: "WOR-L", since: minsAgo(5), reason: "unpolled" }, // no dispatcher runs its agent: critical at once
+    { task: "l", identifier: "WOR-L", since: minsAgo(5), reason: "unpolled" }, // no dispatcher runs its agent: raised at once
     { task: "m", identifier: "WOR-M", since: minsAgo(300), reason: "unpolled", holder: "owner" }, // the owner's: not an agent's
   ].map(row);
   const tasks = {

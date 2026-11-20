@@ -151,9 +151,8 @@ pass reads the last 500 commits).
 - **Agents.** Fleet Steward's read-only tool (`modules/fleet-steward/service/src/mcp.ts`) serves the same numbers to the agents
   granted it. The Fleet Steward detector reads Flow: Flow's idle list is its one stuck-work rule (an `orphaned` item idle over
   2 hours), and a stage whose p75 or wait share rose more than 50% over the week before (at least 10 items in both weeks) is
-  logged as what it would file, in observe mode; nothing is filed until promoted (`detector.ts`). The task state
-  (`kernel/src/task-state.ts`) names a held task `unpolled` when no enabled dispatcher runs its agent: the idle sweep skips
-  it (its wake would never be taken), the board shows it as such, and the detector raises it as a critical incident at once.
+  logged as what it would file, in observe mode; nothing is filed until promoted (`detector.ts`). A held task no enabled
+  dispatcher runs is `unpolled`, not `orphaned`: the idle sweep skips it and the detector raises it at once, not critical.
 - `/v1/work` keeps jobs and records for the run page; `/v1/work/metrics` (Prometheus) and the board's `fleet-stats` count
   tasks, records and cost and stay.
 
