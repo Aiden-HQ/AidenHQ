@@ -39,9 +39,9 @@ export function verifiedMerges(r: Json): { repo: string; number: number; head: s
     .map((p: Json) => ({ repo: p.repo, number: p.number, head: p.head, sha: p.sha }));
 }
 
-export function createKernelGradeLoop({ db, runner, due, kernel, kernelBytes, apps, gatewayUrl, github, log, emit }: {
+export function createKernelGradeLoop({ db, runner, due, kernel, kernelBytes, apps, gatewayUrl, github = createGithub({ kernel }), log, emit }: {
   db: DatabaseSync; runner: Runner; due: () => Json; kernel: KernelCall; /** apps-mcp's grader reads (apps-evidence.ts); a fake in tests. */ apps: AppsCall; /** A kernel GET's raw bytes (the attachment read). */ kernelBytes: (path: string) => Promise<Buffer>; gatewayUrl: string;
-  /** A PR's facts and diff (github.ts); a fake in tests. */ github: ReturnType<typeof createGithub>; log: (msg: string, f?: Record<string, unknown>) => void;
+  /** A PR's facts and diff (github.ts); a fake in tests. */ github?: ReturnType<typeof createGithub>; log: (msg: string, f?: Record<string, unknown>) => void;
   /** Flow facts (FactEmitter.emit); none in tests that don't read them. */ emit?: (f: FactIn) => void;
 }) {
   db.exec("CREATE TABLE IF NOT EXISTS loop_state (k TEXT PRIMARY KEY, v TEXT NOT NULL)");

@@ -1,7 +1,7 @@
 // The computer launcher's logic, kept free of Docker so it can be tested: kernel jobs' boxes, the Codex config a box gets,
 // the `docker run` line and the model call's hand-off to the gateway. launcher.ts wires it up.
 import { createHash } from "node:crypto";
-import { mkdirSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, realpathSync, statSync } from "node:fs";
 import http from "node:http";
 import path from "node:path";
 
@@ -162,17 +162,13 @@ export function jobFolder(given: unknown, root: string, name: string) {
   return real;
 }
 
-/** The commit-msg hook every box commit passes through: the AidenHQ trailer is on the message before any commit sha exists to bind. */
-export const COMMIT_MSG_HOOK = '#!/bin/sh\nexec git interpret-trailers --in-place --if-exists addIfDifferent --trailer "Co-authored-by: AidenHQ ${AIDENHQ_AGENT_NAME} <noreply@aidenhq.ai>" "$1"\n';
-
 /**
  * A job box's bind mounts. The guard hooks folder is made here, as the launcher's user: a missing bind source
- * is created by Docker as root, and a hook then can't be written into it (EACCES on every repo command).
+ * is created by Docker as root, and a pre-push hook then can't be written into it (EACCES on every repo command).
  */
 export function jobMounts({ resolvConf, workspace, outDir, codexHome, runnerWork, repo, engineDir, roles = [] }: { resolvConf: string; workspace: string; outDir: string; codexHome: string; runnerWork: string; repo: string; engineDir: string; roles?: string[] }) {
   const hooks = path.join(runnerWork, ".guard-hooks");
   mkdirSync(hooks, { recursive: true });
-  writeFileSync(path.join(hooks, "commit-msg"), COMMIT_MSG_HOOK, { mode: 0o755 });
   // `repo-checkout` is in the box only for a job frozen with its role: a command the box can't use is a dead end.
   const checkout = mayCheckout({ roles }) ? [`${path.join(repo, "services/computer/images/agent-base/repo-checkout")}:/usr/local/bin/repo-checkout:ro`] : [];
   return [...checkout, `${resolvConf}:/etc/resolv.conf:ro`, `${workspace}:/workspace`, `${outDir}:/aidenhq-out`, `${codexHome}:/codex-home`, `${hooks}:/opt/aidenhq/hooks:ro`, `${path.join(repo, engineDir)}:/opt/aidenhq/engine:ro`];
@@ -184,7 +180,7 @@ const JOB_PATH = "/opt/aidenhq/bin:/opt/rust/cargo/bin:/usr/local/sbin:/usr/loca
 
 /** Every name a job box's env file may hold: the job's revocable token and plain settings. */
 export const JOB_ENV_NAMES = [
-  "AIDENHQ_RUN_TOKEN", "AIDENHQ_AGENT_NAME", "AIDENHQ_GATEWAY_URL", "AIDENHQ_MCP_B64", "AIDENHQ_TASK_WORKTREE", "HOME", "CODEX_HOME", "PATH",
+  "AIDENHQ_RUN_TOKEN", "AIDENHQ_GATEWAY_URL", "AIDENHQ_MCP_B64", "AIDENHQ_TASK_WORKTREE", "HOME", "CODEX_HOME", "PATH",
   "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "GIT_TERMINAL_PROMPT",
   "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0", "GIT_CONFIG_KEY_1", "GIT_CONFIG_VALUE_1", "GIT_CONFIG_KEY_2", "GIT_CONFIG_VALUE_2",
 ];
@@ -194,11 +190,10 @@ export const JOB_ENV_NAMES = [
  * `aidenhq` commands' key, through the gateway), the job's granted connections as Codex config, and the commit identity.
  * Commits stay unsigned; the clones' hooks are the read-only guard hooks.
  */
-export function jobEnvFile({ token, mcp, gatewayUrl, identity = {} }: { token: string; mcp?: string | null; gatewayUrl: string; identity?: { name?: unknown; email?: unknown; agent?: unknown } }) {
+export function jobEnvFile({ token, mcp, gatewayUrl, identity = {} }: { token: string; mcp?: string | null; gatewayUrl: string; identity?: { name?: unknown; email?: unknown } }) {
   const clean = (v: unknown) => String(v ?? "").replace(/[\r\n]/g, " ").trim();
   const env: Record<string, string> = {
     AIDENHQ_RUN_TOKEN: token,
-    AIDENHQ_AGENT_NAME: clean(identity.agent), // the commit-msg hook's trailer names the agent
     AIDENHQ_GATEWAY_URL: gatewayUrl, // the `aidenhq` commands (images/engineer/bin/aidenhq) and repo-checkout
     AIDENHQ_MCP_B64: Buffer.from(mcp ?? "").toString("base64"),
     HOME: JOB_HOME, AIDENHQ_TASK_WORKTREE: "/workspace", // the task folder, as on the host (its .aidenhq/out/ is attached)

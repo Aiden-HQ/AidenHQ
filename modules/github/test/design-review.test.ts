@@ -39,7 +39,7 @@ async function setup(t, { agent = true, closeStatus = 200 } = {}) {
   // The PR as GitHub returns it, per number; `verdict` puts a design-review status on its head.
   const prs = new Map();
   const statuses = [];
-  const gh = async (method, path, body) => {
+  const gh = async (method, path, _token, body) => {
     if (method === "POST" && path === "/graphql") {
       const pr = prs.get(body.variables.number);
       return { status: 200, body: { data: { repository: { pullRequest: pr } } } };
@@ -51,7 +51,7 @@ async function setup(t, { agent = true, closeStatus = 200 } = {}) {
   const cacheDir = mkdtempSync(join(tmpdir(), "design-review-"));
   const reviews = createDesignReviews({
     kernelUrl: `http://127.0.0.1:${kernel.address().port}`, key: "ch-key", cacheDir, selfName: "Aiden",
-    gh,
+    app: { token: async () => "tok" }, gh,
   });
   return { cacheDir, calls, prs, statuses, pr, reviews, tasks: () => calls.filter((c) => c.url === "/v1/tasks"), closes: () => calls.filter((c) => c.url.endsWith("/close")) };
 }

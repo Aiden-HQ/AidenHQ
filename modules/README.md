@@ -18,7 +18,7 @@ in [aidenhq-modules](https://github.com/Aiden-HQ/aidenhq-modules), which takes n
 | `agent-builder`, `design`, `fleet-steward`, `maintainer`, `security`, `engineering` | Specialist agents: Agent Architect, Designer, Fleet Steward, Maintainer, Security Watch, Engineers. |
 | `ai-reviewer`, `grading`, `platform` | AI review of writes, graded "done", and the product's own change gate. |
 | `engine-codex` | The coding-job engine: Codex on OpenRouter models, in an agent computer. |
-| `github`, `ci` | GitHub: one sign-in; agents read and write as you, labelled as AidenHQ (GitHub's own MCP server, read-only, AidenHQ's tools and the code host); self-hosted CI runners. |
+| `github`, `ci` | GitHub: a sign-in for reads (GitHub's own MCP server and AidenHQ's tools), your own GitHub App as the code host; self-hosted CI runners. |
 | `channel-telegram`, `chat-lane` | Owner channels and the fast chat lane (`slack` is an owner channel too, in its advanced part). |
 | `models-openrouter`, `model-tools` | Allowed OpenRouter models and prices; advisor and fan-out tools. |
 | `google`, `slack`, `glean`, `jira`, `primer`, `meetings`, `memory`, `open-loops` | Source connections and the agents built on them. |

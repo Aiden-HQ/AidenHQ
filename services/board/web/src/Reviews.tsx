@@ -26,6 +26,8 @@ const routeOf = (): Route => {
 /** The defaults a newly watched repo starts from (the module's REPO_DEFAULTS). */
 const REPO_DEFAULTS: Required<Omit<RepoConfig, "repo">> = { on_open: "standard", on_push: "quick", on_risk: "deep", drafts: false, forks: "manual", month_usd: 50, max_nits: 5, per_author_day: 10, per_repo_day: 60, ignore: [] };
 const OFF = "off";
+/** A repo's owner (a GitHub org or user). */
+const ownerOf = (repo: string) => repo.split("/")[0]!.toLowerCase();
 const ENGINES = [["codex", "Codex"], ["claude-code", "Claude Code (not built yet)"], ["codegenie", "CodeGenie (not built yet)"]] as const;
 const EFFORTS = [["low", "Low"], ["medium", "Medium"], ["high", "High"], ["xhigh", "X-high"], ["max", "Max"]] as const;
 const MODELS = ["~deepseek/deepseek-flash-latest", "~openai/gpt-sol-latest", "~openai/gpt-luna-latest", "~anthropic/claude-latest"];
@@ -80,8 +82,8 @@ function Check() {
   );
 }
 
-/** Saves settings.code_review as one settings change. */
-type Save = (value: CodeReview, what: string) => Promise<void>;
+/** Saves settings.code_review (and a GitHub org reviews may post in as the owner) as one settings change. */
+type Save = (value: CodeReview | null, what: string, org?: string) => Promise<void>;
 
 /* ----------------------------------------------------------------------------- the page */
 let mounted = 0;
@@ -97,6 +99,7 @@ export function ReviewsView({ onSignIn }: { onSignIn: () => void }) {
   /** The change saved here, else the newest one to settings.code_review (the board's settings changes): under way, live, or why not. */
   const [filed, setFiled] = useState<FiledChange | null>(null);
   const savedId = useRef("");
+  const [orgs, setOrgs] = useState<string[]>([]);
   const [dialog, setDialog] = useState<null | { kind: "oneoff"; url?: string; reviewer?: string } | { kind: "repo"; repo?: RepoConfig } | { kind: "reviewer"; name?: string } | { kind: "cap" }>(null);
 
   useEffect(() => {
@@ -129,6 +132,7 @@ export function ReviewsView({ onSignIn }: { onSignIn: () => void }) {
     const t = setInterval(() => void loadFiled(), 5_000);
     return () => clearInterval(t);
   }, [applying, loadFiled, loadSetup]);
+  useEffect(() => setOrgs(setup?.comment_orgs ?? []), [setup]);
   const ready = Boolean(setup?.module && setup.github.connected);
   useEffect(() => {
     if (!ready) return;
@@ -147,20 +151,23 @@ export function ReviewsView({ onSignIn }: { onSignIn: () => void }) {
   const config = setup?.config ?? null;
   /** The owner's edit of settings.code_review, filed as a settings change; the page shows it until it applies. */
   const save: Save = useCallback(
-    async (value, what) => {
-      const r = await api.reviewConfig({ value });
+    async (value, what, org) => {
+      // A repo whose owner isn't one of the GitHub orgs reviews may post in as the owner: added in the same change.
+      const add = org && !orgs.includes(org.toLowerCase()) ? org.toLowerCase() : undefined;
+      const r = await api.reviewConfig({ ...(value ? { value } : {}), ...(add ? { org: add } : {}) });
+      if (add) setOrgs((o) => [...o, add]);
       savedId.current = r.identifier;
-      setSaved({ identifier: r.identifier, what });
+      setSaved({ identifier: r.identifier, what: add ? `${what}; where the GitHub App isn't installed in ${add}, reviews post there as you` : what });
       setDialog(null);
       void loadFiled();
     },
-    [loadFiled],
+    [orgs, loadFiled],
   );
   const spent = repos?.month_spent_usd ?? 0;
   const tab = "tab" in route ? route.tab : "reviews";
 
   const names = Object.keys(config ? reviewersOf(config) : { standard: 1 });
-  if ("run" in route) return <RunPage id={route.run} reviewers={names} onSignIn={onSignIn} />;
+  if ("run" in route) return <RunPage id={route.run} reviewers={names} orgs={orgs} onSignIn={onSignIn} />;
 
   const header = (
     <PageHeader
@@ -216,8 +223,8 @@ export function ReviewsView({ onSignIn }: { onSignIn: () => void }) {
         </>
       )}
 
-      {dialog?.kind === "oneoff" && <OneOffDialog reviewers={names} url={dialog.url} reviewer={dialog.reviewer} onClose={() => setDialog(null)} />}
-      {dialog?.kind === "repo" && config && <RepoDialog config={config} edit={dialog.repo} onClose={() => setDialog(null)} onSave={save} />}
+      {dialog?.kind === "oneoff" && <OneOffDialog reviewers={names} orgs={orgs} url={dialog.url} reviewer={dialog.reviewer} onClose={() => setDialog(null)} />}
+      {dialog?.kind === "repo" && config && <RepoDialog config={config} orgs={orgs} edit={dialog.repo} onClose={() => setDialog(null)} onSave={save} />}
       {dialog?.kind === "reviewer" && config && <ReviewerDialog config={config} name={dialog.name} onClose={() => setDialog(null)} onSave={save} />}
       {dialog?.kind === "cap" && config && <CapDialog config={config} spent={spent} onClose={() => setDialog(null)} onSave={save} />}
     </Page>
@@ -257,7 +264,7 @@ function Start({ setup, onWatch, onOneOff }: { setup: ReviewsSetup; onWatch: () 
           <span className="rv-step-mark">{connected ? <Check /> : "1"}</span>
           <div className="rv-step-body">
             <b>{connected ? "GitHub is connected" : "Connect GitHub"}</b>
-            <span>{connected ? "Reviews post as you, labelled as AidenHQ." : "Sign in with a code at github.com. Reviews read PRs and post comments through it."}</span>
+            <span>{connected ? "Reviews post as your GitHub App where it's installed, otherwise as you." : "Sign in with a code at github.com. Reviews read PRs and post comments through it."}</span>
           </div>
           {!connected && <LinkButton variant="primary" href="#/settings/connections?connect=github">Connect GitHub</LinkButton>}
         </li>
@@ -344,7 +351,7 @@ function RunRow({ r }: { r: Run }) {
 }
 
 /* ----------------------------------------------------------------------------- one review */
-function RunPage({ id, reviewers, onSignIn }: { id: string; reviewers: string[]; onSignIn: () => void }) {
+function RunPage({ id, reviewers, orgs, onSignIn }: { id: string; reviewers: string[]; orgs: string[]; onSignIn: () => void }) {
   const [data, setData] = useState<{ run: Run; review: Review | null } | null>(null);
   const [error, setError] = useState("");
   const [again, setAgain] = useState(false);
@@ -445,7 +452,7 @@ function RunPage({ id, reviewers, onSignIn }: { id: string; reviewers: string[];
           )}
         </div>
       </div>
-      {again && <OneOffDialog reviewers={reviewers.length ? reviewers : [run.reviewer]} url={prUrl(run.repo, run.number)} reviewer={run.reviewer} onClose={() => setAgain(false)} />}
+      {again && <OneOffDialog reviewers={reviewers.length ? reviewers : [run.reviewer]} orgs={orgs} url={prUrl(run.repo, run.number)} reviewer={run.reviewer} onClose={() => setAgain(false)} />}
     </Page>
   );
 }
@@ -513,7 +520,7 @@ function FindingCard({ f, review }: { f: Finding; review: Review }) {
 }
 
 /* ----------------------------------------------------------------------------- one-off */
-function OneOffDialog({ reviewers, url: url0 = "", reviewer: r0, onClose }: { reviewers: string[]; url?: string; reviewer?: string; onClose: () => void }) {
+function OneOffDialog({ reviewers, orgs, url: url0 = "", reviewer: r0, onClose }: { reviewers: string[]; orgs: string[]; url?: string; reviewer?: string; onClose: () => void }) {
   const [url, setUrl] = useState(url0);
   const [reviewer, setReviewer] = useState(r0 ?? (reviewers.includes("standard") ? "standard" : (reviewers[0] ?? "standard")));
   const [focus, setFocus] = useState("");
@@ -521,6 +528,28 @@ function OneOffDialog({ reviewers, url: url0 = "", reviewer: r0, onClose }: { re
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const valid = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+\/?$/.test(url.trim());
+  // Reviews post as the owner only in the orgs the owner allowed: one outside them is added first (a settings change).
+  const org = valid ? ownerOf(url.trim().split("/")[3]!) : "";
+  const [added, setAdded] = useState<{ org: string; identifier: string } | null>(null);
+  // The orgs as applied: once an added org's change applies, Run review opens without leaving the dialog.
+  const [allowed, setAllowed] = useState(orgs);
+  const outside = Boolean(org) && !allowed.includes(org);
+  const waiting = outside && added?.org === org;
+  useEffect(() => {
+    if (!waiting) return;
+    const t = setInterval(() => void api.reviewsSetup().then((s) => setAllowed(s.comment_orgs), () => {}), 5_000);
+    return () => clearInterval(t);
+  }, [waiting]);
+  const addOrg = async () => {
+    setBusy(true);
+    setErr("");
+    try {
+      setAdded({ org, identifier: (await api.reviewConfig({ org })).identifier });
+    } catch (e) {
+      setErr((e as Error).message);
+    }
+    setBusy(false);
+  };
   const run = async () => {
     setBusy(true);
     setErr("");
@@ -541,11 +570,20 @@ function OneOffDialog({ reviewers, url: url0 = "", reviewer: r0, onClose }: { re
       actions={
         <>
           <Button variant="quiet" onClick={onClose}>Cancel</Button>
-          <Button variant="primary" disabled={!valid || busy} onClick={() => void run()}>{busy ? "Starting…" : "Run review"}</Button>
+          {outside && added?.org !== org ? (
+            <Button variant="primary" disabled={busy} onClick={() => void addOrg()}>{busy ? "Allowing…" : `Allow ${org}`}</Button>
+          ) : (
+            <Button variant="primary" disabled={!valid || busy || outside} onClick={() => void run()}>{busy ? "Starting…" : "Run review"}</Button>
+          )}
         </>
       }
     >
-      <p>Any PR your GitHub sign-in can read. The review posts to the PR as you, signed by AidenHQ, like a watched repo's would.</p>
+      <p>Any PR your GitHub sign-in can read. The review posts to the PR like a watched repo's would.</p>
+      {outside && (waiting ? (
+        <Banner action={<a className="btn sm" href={`#/t/${added!.identifier}`}>Open {added!.identifier}</a>}>Allowing {org}: Run review opens here once the change is applied, usually within a few minutes.</Banner>
+      ) : (
+        <Banner tone="warn">Reviews don't comment as you in {org} yet. Allow it, then run the review.</Banner>
+      ))}
       <Field label="Pull request" error={url && !valid ? "A PR link, like https://github.com/acme/payments/pull/42" : err || null}>
         {(id, d) => <Input id={id} aria-describedby={d} autoFocus placeholder="https://github.com/acme/payments/pull/42" value={url} onChange={(e) => setUrl(e.target.value)} inputMode="url" />}
       </Field>
@@ -582,7 +620,7 @@ function ReposTab({ config, repos, onEdit, onWatch }: { config: CodeReview; repo
                 name={r.repo}
                 title={r.repo}
                 onOpen={() => onEdit(r)}
-                status={live?.error ? <StatusDot tone="failed" title={live.error}>Can't watch</StatusDot> : !id ? undefined : <StatusDot tone="info">Posts as you</StatusDot>}
+                status={live?.error ? <StatusDot tone="failed" title={live.error}>Can't watch</StatusDot> : !id ? undefined : id === "app" ? <StatusDot tone="ok">Posts as the App</StatusDot> : <StatusDot tone="info">Posts as you</StatusDot>}
                 facts={
                   <Tags>
                     <Tag title="When a PR opens">Open: {trigger(r.on_open, REPO_DEFAULTS.on_open)}</Tag>
@@ -610,7 +648,7 @@ function ReposTab({ config, repos, onEdit, onWatch }: { config: CodeReview; repo
 }
 
 /** Watch a repo (no `edit`), or edit or stop watching one. */
-function RepoDialog({ config, edit, onClose, onSave }: { config: CodeReview; edit?: RepoConfig; onClose: () => void; onSave: Save }) {
+function RepoDialog({ config, orgs, edit, onClose, onSave }: { config: CodeReview; orgs: string[]; edit?: RepoConfig; onClose: () => void; onSave: Save }) {
   const [repo, setRepo] = useState(edit?.repo ?? "");
   const [f, setF] = useState({ ...REPO_DEFAULTS, ...edit, ignore: edit?.ignore ?? [] });
   const [ignoreText, setIgnoreText] = useState((edit?.ignore ?? []).join("\n"));
@@ -634,11 +672,13 @@ function RepoDialog({ config, edit, onClose, onSave }: { config: CodeReview; edi
     const ignore = ignoreText.split("\n").map((s) => s.trim()).filter(Boolean);
     return { repo, on_open: f.on_open, on_push: f.on_push, on_risk: f.on_risk, drafts: f.drafts, forks: f.forks, month_usd: f.month_usd, max_nits: f.max_nits, ...(ignore.length ? { ignore } : {}), ...(edit?.per_author_day !== undefined ? { per_author_day: edit.per_author_day } : {}), ...(edit?.per_repo_day !== undefined ? { per_repo_day: edit.per_repo_day } : {}) };
   };
-  const submit = async (value: CodeReview, what: string) => {
+  // Watching a repo outside the orgs reviews may post in as the owner adds its owner in the same change.
+  const newOrg = !edit && validRepo && !orgs.includes(ownerOf(repo)) ? ownerOf(repo) : undefined;
+  const submit = async (value: CodeReview, what: string, org?: string) => {
     setBusy(true);
     setErr("");
     try {
-      await onSave(value, what);
+      await onSave(value, what, org);
     } catch (e) {
       setErr((e as Error).message);
       setBusy(false);
@@ -655,7 +695,7 @@ function RepoDialog({ config, edit, onClose, onSave }: { config: CodeReview; edi
         <>
           {edit && <Button variant="danger" className="rv-left" disabled={busy} onClick={() => void submit({ ...config, repos: others }, `stop watching ${edit.repo}`)}>Stop watching</Button>}
           <Button variant="quiet" onClick={onClose}>Cancel</Button>
-          <Button variant="primary" disabled={!validRepo || busy || !(f.month_usd > 0)} onClick={() => void submit({ ...config, repos: edit ? config.repos.map((r) => (r.repo === edit.repo ? entry() : r)) : [...config.repos, entry()] }, edit ? `${repo} updated` : `watch ${repo}`)}>
+          <Button variant="primary" disabled={!validRepo || busy || !(f.month_usd > 0)} onClick={() => void submit({ ...config, repos: edit ? config.repos.map((r) => (r.repo === edit.repo ? entry() : r)) : [...config.repos, entry()] }, edit ? `${repo} updated` : `watch ${repo}`, newOrg)}>
             {busy ? "Saving…" : edit ? "Save" : "Watch repo"}
           </Button>
         </>
@@ -692,6 +732,7 @@ function RepoDialog({ config, edit, onClose, onSave }: { config: CodeReview; edi
           </div>
         </div>
       )}
+      {newOrg && <Banner>Reviews post as your GitHub App where it's installed in {newOrg}, otherwise as you: saving also lets reviews comment as you in {newOrg}.</Banner>}
       <div className="rv-grid3">
         <Field label="When a PR opens">{(id) => <Select id={id} value={f.on_open} options={opts} onChange={(v) => setF({ ...f, on_open: v })} />}</Field>
         <Field label="On each push" help="Only the new changes">{(id, d) => <Select id={id} aria-describedby={d} value={f.on_push} options={opts} onChange={(v) => setF({ ...f, on_push: v })} />}</Field>

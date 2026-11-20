@@ -36,7 +36,7 @@ test("a module-filed task with a rubric is graded: an open issue reopens it, a c
   };
   let gh = { state: "OPEN", stateReason: null, closedAt: null, closedEvents: { nodes: [] }, comments: { nodes: [] }, labels: { nodes: [{ name: "fix" }] } };
   const pr = { number: 9, state: "MERGED", mergedAt: "2026-11-19T10:00:00Z", mergeCommit: { oid: "b".repeat(40) }, headRefOid: "a".repeat(40) };
-  const github = { issue: async () => ({ repository: { issue: gh } }), pr: async () => ({ repository: { pullRequest: pr } }), diff: async () => "" };
+  const github = { issue: async () => ({ repository: { issue: gh }, appSlug: "aidenhq-app" }), pr: async () => ({ repository: { pullRequest: pr } }), diff: async () => "" };
   const db = new DatabaseSync(":memory:");
   const { server, runner, grades } = createGrading({ db, kernel: { issue: async () => issue, settings: async () => ({}), release: async () => {} }, keys: { check: KEY, board: "b" } });
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
@@ -68,8 +68,8 @@ test("a module-filed task with a rubric is graded: an open issue reopens it, a c
   await loop.runGrades();
   assert.deepEqual(calls, ["reopen"], "an open issue sends the task back");
 
-  gh = { ...gh, state: "CLOSED", stateReason: "COMPLETED", closedAt: "2026-11-19T10:05:00Z", closedEvents: { nodes: [{ actor: { __typename: "User", login: "owner" } }] },
-    comments: { nodes: [{ author: { login: "owner" }, authorAssociation: "OWNER", createdAt: "2026-11-19T10:04:50Z", body: "Fixed by https://github.com/acme/app/pull/9 (merged)." }] } };
+  gh = { ...gh, state: "CLOSED", stateReason: "COMPLETED", closedAt: "2026-11-19T10:05:00Z", closedEvents: { nodes: [{ actor: { __typename: "Bot", login: "aidenhq-app" } }] },
+    comments: { nodes: [{ author: { login: "aidenhq-app" }, authorAssociation: "NONE", createdAt: "2026-11-19T10:04:50Z", body: "Fixed by https://github.com/acme/app/pull/9 (merged)." }] } };
   issue.status = "in_review";
   Date.now = realNow;
   completionGate(grades, "t1", "finish_turn"); // finished again, the issue now closed
@@ -77,32 +77,34 @@ test("a module-filed task with a rubric is graded: an open issue reopens it, a c
   answers.push(answer(["yes", "yes", "yes"]));
   await loop.runGrades();
   assert.deepEqual(calls, ["reopen", "ok"]);
-  assert.match(prompts.at(-1), /closed as completed at 2026-11-19T10:05:00Z by owner/);
+  assert.match(prompts.at(-1), /closed as completed at 2026-11-19T10:05:00Z by aidenhq-app/);
   assert.match(prompts.at(-1), /acme\/app\/pull\/9: merged at 2026-11-19T10:00:00Z/, "the cited PR's merge is read by code");
   assert.equal(grades.get("t1").state, "satisfied");
 });
 
-test("issue evidence counts a close only by an owner, member or collaborator, and a fix PR only in the issue's repo", async () => {
+test("issue evidence counts a close only by the App or an owner, member or collaborator, and a fix PR only in the issue's repo", async () => {
   const { issueEvidence } = await import("../service/src/grader/evidence.ts");
   const issue = (closer, association, body, bot = false) => ({ repository: { issue: { state: "CLOSED", stateReason: "COMPLETED", closedAt: "2026-11-19T10:05:00Z", labels: { nodes: [] }, closedEvents: { nodes: [{ actor: { __typename: bot ? "Bot" : "User", login: closer } }] },
-    comments: { nodes: [{ author: { login: closer }, authorAssociation: association, createdAt: "2026-11-19T10:04:50Z", body }] } } } });
+    comments: { nodes: [{ author: { login: closer }, authorAssociation: association, createdAt: "2026-11-19T10:04:50Z", body }] } } }, appSlug: "aidenhq-app" });
   const read = [];
   const pr = async (repo, n) => (read.push(`${repo}#${n}`), { repository: { pullRequest: { state: "MERGED", mergeCommit: { oid: "b".repeat(40) } } } });
   const ev = async (closer, assoc, body, bot) => issueEvidence("acme/app#7", { issue: async () => issue(closer, assoc, body, bot), pr });
   const fake = await ev("stranger", "NONE", "Fixed by acme/app#9");
   assert.match(fake.facts.join("\n"), /the close does not count/);
   assert.deepEqual(read, [], "an untrusted close's PR is never read");
+  assert.match((await ev("aidenhq-app", "NONE", "Fixed by acme/app#9")).facts.join("\n"), /the close does not count/, "a user named like the App's slug is not the App");
+  assert.match((await ev("aidenhq-app", "NONE", "Fixed by acme/app#9", true)).facts.join("\n"), /pull\/9: merged/);
   assert.match((await ev("maintainer", "MEMBER", "Fixed by acme/app#9")).facts.join("\n"), /pull\/9: merged/);
-  const other = await ev("maintainer", "OWNER", "Fixed by evil/repo#1");
+  const other = await ev("aidenhq-app", "NONE", "Fixed by evil/repo#1", true);
   assert.match(other.facts.join("\n"), /not in acme\/app/);
-  assert.deepEqual(read, ["acme/app#9"]);
+  assert.deepEqual(read, ["acme/app#9", "acme/app#9"]);
 });
 
 test("an issue GitHub closed through a merged PR's Fixes keyword counts as closed and cited by that PR", async () => {
   const { issueEvidence } = await import("../service/src/grader/evidence.ts");
   const closer = (state, repo = "acme/app") => ({ __typename: "PullRequest", number: 9, url: "https://github.com/acme/app/pull/9", state, mergedAt: "2026-11-19T10:00:00Z", mergeCommit: { oid: "b".repeat(40) }, repository: { nameWithOwner: repo } });
   const issue = (c) => ({ repository: { issue: { state: "CLOSED", stateReason: "COMPLETED", closedAt: "2026-11-19T10:00:01Z", labels: { nodes: [] }, closedEvents: { nodes: [{ actor: { __typename: "User", login: "someone" }, closer: c }] },
-    comments: { nodes: [{ author: { login: "aidenhq-app" }, authorAssociation: "NONE", createdAt: "2026-11-19T11:00:00Z", body: "Verified, fixed by acme/app#9." }] } } } });
+    comments: { nodes: [{ author: { login: "aidenhq-app" }, authorAssociation: "NONE", createdAt: "2026-11-19T11:00:00Z", body: "Verified, fixed by acme/app#9." }] } } }, appSlug: "aidenhq-app" });
   const ev = (c) => issueEvidence("acme/app#7", { issue: async () => issue(c), pr: async () => { throw new Error("not read: GitHub's close event carries the PR"); } });
   const ok = await ev(closer("MERGED"));
   assert.match(ok.facts.join("\n"), /closed by GitHub through the closing keyword of https:\/\/github.com\/acme\/app\/pull\/9.*merged at 2026-11-19T10:00:00Z/);

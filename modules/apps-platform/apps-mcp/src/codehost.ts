@@ -1,14 +1,9 @@
 // Repos on this server (codehost-local, product docs/design/codehost-local.md §6): the org `local`'s bare repos, mounted
 // read-only at /codehost. apps-mcp only reads them: an app's branch for its deploys, and its change requests (refs
 // refs/changes/<n>/{head,base,meta,merged,closed}, written by the kernel alone: codehost-local/src/host.ts) for previews and the board's PR reads.
-// GitHub repos go through the kernel's typed code host operations (`codeHostOps`), each run as the owner inside the github module:
-// no token ever reaches this service.
 import { execFile } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
 import { promisify } from "node:util";
-import { parse } from "yaml";
 import type { GitHub, OpenPr } from "./previews.js";
 
 const run = promisify(execFile);
@@ -88,64 +83,5 @@ export function withLocal(root: string | undefined, other: GitHub | undefined): 
       if (!other) throw new Error(`no code host reads ${repo}`);
       return other.comment(repo, pr, body, id);
     },
-  };
-}
-
-function readSettings(instanceDir: string): Record<string, unknown> | undefined {
-  const f = join(instanceDir, "instance.yaml");
-  return existsSync(f) ? (parse(readFileSync(f, "utf8")) as { settings?: Record<string, unknown> } | null)?.settings : undefined;
-}
-
-/** The fleet org: settings.github_fleet_org; unset means none. */
-export function readFleetOrg(instanceDir: string): string | undefined {
-  return (readSettings(instanceDir)?.github_fleet_org as string) || undefined;
-}
-
-/** settings.github_orgs: the GitHub orgs/users apps may be built from, besides the fleet org. */
-export function readOrgs(instanceDir: string): string[] {
-  const v = readSettings(instanceDir)?.github_orgs;
-  return Array.isArray(v) ? v.map(String) : [];
-}
-
-/** The kernel's typed GitHub operations under this module's `codehost:` grant (POST /v1/codehost/:op, owner authority). */
-export interface CodeHostOps {
-  /** The sha a branch points at. */
-  head: (repo: string, branch: string) => Promise<string>;
-  /** Fetches `ref` (refs/heads/*, refs/heads/<b> or refs/pull/<n>/head) into the bare/regular repo at `gitDir`: branches land in refs/remotes/origin/*, a pull head in refs/remotes/pr/head. */
-  fetch: (repo: string, ref: string, gitDir: string) => Promise<void>;
-  read: (repo: string, body: { kind: "prs" }) => Promise<{ number: number; sha: string; base: string; head_repo: string | null }[]>;
-  /** Posts a comment, or edits comment `id`; the comment's id. */
-  comment: (repo: string, number: number, body: string, id?: number) => Promise<number>;
-  /** One file committed to `branch` on top of `parent` (409 when the branch moved); the new commit's sha. */
-  commit: (a: { repo: string; branch: string; path: string; content: string; parent: string; message: string }) => Promise<string>;
-}
-
-export function codeHostOps(kernelUrl: string, key: string, fetchImpl: typeof fetch = fetch): CodeHostOps {
-  const call = async (op: string, body: object): Promise<Response> => {
-    const r = await fetchImpl(`${kernelUrl}/v1/codehost/${op}`, { method: "POST", headers: { authorization: `Bearer ${key}`, "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(10 * 60_000) });
-    if (!r.ok) {
-      const b = (await r.json().catch(() => ({}))) as any;
-      throw Object.assign(new Error(`the kernel said ${r.status} to ${op}: ${String(b?.error?.message ?? b?.error ?? "").slice(0, 300)}`.trim()), { status: r.status });
-    }
-    return r;
-  };
-  const json = async (op: string, body: object): Promise<any> => (await call(op, body)).json();
-  return {
-    head: async (repo, ref) => String((await json("head", { repo, ref })).sha),
-    fetch: async (repo, ref, gitDir) => {
-      const pull = ref.startsWith("refs/pull/");
-      const dest = pull ? "refs/remotes/pr/head" : ref === "refs/heads/*" ? "refs/remotes/origin/*" : `refs/remotes/origin/${ref.slice("refs/heads/".length)}`;
-      const dir = mkdtempSync(join(tmpdir(), "bundle-"));
-      try {
-        const file = join(dir, "repo.bundle");
-        writeFileSync(file, Buffer.from(await (await call("fetch", { repo, ref })).arrayBuffer()));
-        await run("git", ["-c", "core.hooksPath=/dev/null", `--git-dir=${gitDir}`, "fetch", ...(ref === "refs/heads/*" ? ["--prune"] : []), file, `+${ref}:${dest}`], { env: { PATH: process.env.PATH, GIT_CONFIG_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0" }, maxBuffer: 20e6, timeout: 300_000 });
-      } finally {
-        rmSync(dir, { recursive: true, force: true });
-      }
-    },
-    read: async (repo, b) => json("read", { repo, ...b }),
-    comment: async (repo, number, body, id) => Number((await json("comment", { repo, number, body, ...(id ? { id } : {}) })).id),
-    commit: async (a) => String((await json("commit", a)).sha),
   };
 }

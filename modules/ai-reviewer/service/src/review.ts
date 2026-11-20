@@ -430,7 +430,7 @@ export function unpinnedPorts(diff: string | undefined) {
  * Instance details in a GitHub write (a conn.tool card on the github connection: a comment, an issue, a review): a tailnet
  * host (*.ts.net), a home-directory path, or an IPv4 address other than loopback. A GitHub thread is outside the instance and
  * often public, and no issue or review needs these, so code refuses it itself: a model once approved a triage comment that
- * pasted the host, its address and a runner log path as "in scope". (github-mcp's scrub redacts owner data from the
+ * pasted the host, its address and a runner log path as "in scope". (github-mcp's scrub redacts owner data from the App's
  * comments when they are sent; this is the refusal before that, for every GitHub write.)
  */
 export function instanceDetails(card: ReviewCard | undefined, diff: string | undefined) {

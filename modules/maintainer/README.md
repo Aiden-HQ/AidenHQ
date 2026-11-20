@@ -9,7 +9,7 @@ contributor PRs.
 
 ## Connect
 
-Needs the `github` module with the owner signed in to GitHub, and the owner's account able to reach each listed repo. Add repos in the `maintainer_repos` setting.
+Needs the `github` module with the GitHub App installed on each listed repo. Add repos in the `maintainer_repos` setting.
 
 ## What agents get
 

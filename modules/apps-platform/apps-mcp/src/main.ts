@@ -6,6 +6,7 @@ import pino from "pino";
 import { kernelJwks, verifyCaller } from "./aidenhq-sdk/caller.js";
 import { startLoops } from "./loops.js";
 import { startPeople } from "./people.js";
+import { appTokens, githubHost, readAgentsOrg, readOrgs } from "./github-app.js";
 import { buildServer, refreshRegistry, type Board, type Caller } from "./mcp.js";
 import { appsExecutor } from "./executor.js";
 import { serveExecutor } from "./aidenhq-sdk/executor.js";
@@ -19,7 +20,7 @@ import { MANIFEST_FILE, parseManifest } from "./manifest.js";
 import { graderView } from "./view.js";
 import { githubApi, startPreviews } from "./previews.js";
 import { bootRegistry, inAgentsOrg } from "./git.js";
-import { codeHostOps, isLocal, localChanges, localRepos, localRoot, readFleetOrg, readOrgs, withLocal } from "./codehost.js";
+import { isLocal, localChanges, localRepos, localRoot, withLocal } from "./codehost.js";
 import { previewApp, previewName } from "./previews.js";
 import { appsReader, bearerIs } from "./readers.js";
 
@@ -29,7 +30,7 @@ const file = (n: string): string => (process.env[`${n}_FILE`] ? readFileSync(pro
 
 const repoDir = need("REPO_DIR");
 // The instance checkout (the apply's): read for instance.yaml only. apps.yaml (agent-created apps) is read and written in
-// apps-mcp's own clone of the instance (registryDir), committed to main through the code host's commit op (else pushed with the deploy key).
+// apps-mcp's own clone of the instance (registryDir), committed and pushed to main (GitHub App token, else the deploy key).
 const instanceDir = need("INSTANCE_DIR");
 const registryDir = "/data/registry";
 const appsData = need("APPS_DATA");
@@ -37,12 +38,12 @@ const internalToken = file("APPS_INTERNAL_TOKEN");
 if (!internalToken) throw new Error("APPS_INTERNAL_TOKEN(_FILE) is required");
 const serviceKey = file("APPS_SERVICE_KEY");
 if (!serviceKey) throw new Error("APPS_SERVICE_KEY(_FILE) is required");
-const kernelUrl = (process.env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130").replace(/\/$/, "");
-// The fleet org (github_fleet_org; unset means none) is always allowed; its repos are fetched and commented on through the
-// kernel's code host operations, as the owner, so no token reaches this service.
-const agentsOrg = readFleetOrg(instanceDir);
+const tokenFile = process.env.GITHUB_TOKEN_FILE;
+// The agents org is always allowed; its private repos are read with the instance's GitHub App when the GitHub App is set up.
+const agentsOrg = readAgentsOrg(instanceDir);
+let botWarned = false;
 const orgs = readOrgs(instanceDir);
-const ops = codeHostOps(kernelUrl, serviceKey);
+const appToken = githubHost() ? appTokens((process.env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130").replace(/\/$/, ""), serviceKey) : undefined;
 // This server's repos (codehost-local), read-only at /codehost when the instance enables it: `local/*` apps build from them.
 const codehost = localRoot(repoDir);
 
@@ -63,7 +64,7 @@ const p = createPlatform(
     urlBase: process.env.APPS_URL_BASE ?? "",
     edgeDir: process.env.APPS_EDGE_DIR ?? "/edge",
     healthImage: helperImage,
-    git: { appsData, gitDir: "/data/git", productDir: repoDir, orgs, ...(agentsOrg ? { agentsOrg } : {}), ops, ...(codehost ? { localRoot: codehost } : {}), sshCommand: "ssh -i /secrets/deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/tmp/known_hosts" },
+    git: { appsData, gitDir: "/data/git", productDir: repoDir, ...(tokenFile ? { tokenFile } : {}), orgs, ...(agentsOrg ? { agentsOrg } : {}), ...(appToken ? { appToken } : {}), ...(codehost ? { localRoot: codehost } : {}), sshCommand: "ssh -i /secrets/deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/tmp/known_hosts" },
     webhookDir: "/run/secrets",
     gateFile: `${repoDir}/config/gate.json`,
     appsNodeFile: `${repoDir}/config/apps-node`,
@@ -73,15 +74,16 @@ const p = createPlatform(
   log,
 );
 const jwks = kernelJwks();
-// An https github.com registry is fetched and committed through the code host's ops (git.ts); any other URL (the instance
-// checkout's origin) over SSH with the deploy key.
-const repo = { dir: registryDir, pushUrl: process.env.REGISTRY_PUSH_URL || (agentsOrg ? `https://github.com/${agentsOrg}/aidenhq-instance.git` : execFileSync("git", ["-C", instanceDir, "config", "--get", "remote.origin.url"], { encoding: "utf8" }).trim()) };
+// With the GitHub App, the registry is fetched and pushed over https with repo-narrowed App tokens (git.ts registryCmd);
+// without it, the instance checkout's origin URL over SSH with the deploy key.
+const repo = { dir: registryDir, pushUrl: process.env.REGISTRY_PUSH_URL || (appToken && agentsOrg ? `https://github.com/${agentsOrg}/aidenhq-instance.git` : execFileSync("git", ["-C", instanceDir, "config", "--get", "remote.origin.url"], { encoding: "utf8" }).trim()) };
 // A fetch that fails after its retries serves the registry already on disk (/data/registry survives a recreate), and the
 // reconcile loop's beforeTick retries it in the background. Only a first boot with no registry yet fails closed.
 await bootRegistry(p.cfg.git, repo.dir, repo.pushUrl);
 
 // In-app requests and app roles (app_requests, app_role_set…) go to the kernel, which holds the accounts and app access
 // (lean 3g): POST /v1/apps/<op> on the backplane with this module's own token (its service key).
+const kernelUrl = (process.env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130").replace(/\/$/, "");
 const board: Board = async (op, req) => {
   const res = await fetch(`${kernelUrl}/v1/apps/${op}`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${serviceKey}` }, body: JSON.stringify(req), signal: AbortSignal.timeout(30_000) }).catch((e: Error) => {
     throw new Error(`the kernel is unreachable (${e.message})`);
@@ -150,7 +152,7 @@ const http = createServer(async (req, res) => {
       if ((await reader(req)) !== 0) return send(res, 401, { error: "unauthorized" });
       return send(res, 200, { apps: p.qualityOf() });
     }
-    // Open pull requests in the fleet org's repos or any the kernel's records say the fleet opened (GET /v1/objects, in any repo), from
+    // Open pull requests in the agents org's repos or authored by this instance's GitHub App (the fleet's own, in any repo), from
     // the warehouse (src_github syncs every 15 minutes), and the open change requests of this server's repos (codehost-local), each with its preview's URL when one runs: the board's Fleet Ops
     // detector raises the ones nobody has merged. Empty when there is neither.
     if (url.pathname === "/internal/open-prs" && req.method === "GET") {
@@ -163,8 +165,9 @@ const http = createServer(async (req, res) => {
         return send(res, 200, codehost ? { prs: local } : {});
       }
       if (!agentsOrg) return send(res, 200, codehost ? { prs: local } : {});
-      const ours = await fleetPrs(kernelUrl, serviceKey).catch((e) => (log.warn({ err: String(e) }, "open-prs: the kernel's records of the fleet's PRs are unavailable, listing the fleet org only"), []));
-      const r = await d.pool.query("SELECT i.repo, i.number, i.created_at_src AS opened_at, i.draft FROM src_github.issues i WHERE i.kind = 'pr' AND i.state = 'open' AND (lower(i.repo) LIKE $1 OR EXISTS (SELECT 1 FROM unnest($2::text[], $3::int[]) AS o(repo, number) WHERE lower(i.repo) = o.repo AND i.number = o.number))", [`${agentsOrg.toLowerCase()}/%`, ours.map((o) => o.repo), ours.map((o) => o.number)]);
+      // The bot's login comes with the App's tokens; without it the agents org's rows still answer.
+      if (appToken && !appToken.botLogin) await appToken(`${agentsOrg}/aidenhq-instance`).catch((e) => botWarned || ((botWarned = true), log.warn({ err: String(e) }, "open-prs: the App's bot login is unknown, listing the agents org only")));
+      const r = await d.pool.query("SELECT repo, number, created_at_src AS opened_at, draft FROM src_github.issues WHERE kind = 'pr' AND state = 'open' AND (lower(repo) LIKE $1 OR lower(author) = $2)", [`${agentsOrg.toLowerCase()}/%`, appToken?.botLogin?.toLowerCase() ?? ""]);
       return send(res, 200, { prs: [...r.rows.map((x: { repo: string; number: number }) => ({ ...x, ...previewOf(x.repo, x.number) })), ...local] });
     }
     // Named pull requests' state from the warehouse (`?pr=owner/repo#12`, up to 100): the board's event wake-ups (wake.ts) wake
@@ -267,23 +270,11 @@ for (const sig of ["SIGTERM", "SIGINT"] as const)
   });
 reconcile = startLoops(p, log, () => refreshRegistry(p.cfg.git, repo.dir, repo.pushUrl));
 // Preview deploys of open PRs on agents-org app repos and of open change requests on this server's (previews.ts): their own
-// loop, with the code host's ops for GitHub repos and the read-only mount for local ones.
-if (agentsOrg || codehost)
-  startPreviews({ apps: p.apps, store: p.store, engine: p.engine, github: withLocal(codehost, agentsOrg ? githubApi(ops) : undefined), agentsRepo: (r) => inAgentsOrg(p.cfg.git, r) || isLocal(codehost, r), url: p.previewUrl, secretsDir: p.cfg.secretsDir, gitDir: p.cfg.git.gitDir, syncEdge: p.syncEdge, dropDb: p.dropPreviewDb, log });
+// loop, with the GitHub App for GitHub repos and the read-only mount for local ones.
+if ((appToken && agentsOrg) || codehost)
+  startPreviews({ apps: p.apps, store: p.store, engine: p.engine, github: withLocal(codehost, appToken && agentsOrg ? githubApi(appToken) : undefined), agentsRepo: (r) => inAgentsOrg(p.cfg.git, r) || isLocal(codehost, r), url: p.previewUrl, secretsDir: p.cfg.secretsDir, gitDir: p.cfg.git.gitDir, syncEdge: p.syncEdge, dropDb: p.dropPreviewDb, log });
 // People across sources: identity links proposed on exact email matches (src_meta.person_identity).
 startPeople(p.warehouse, log);
-
-/** The PRs the kernel's records say the fleet opened in the last 90 days (GET /v1/objects?type=pr), as lowercase repo and number. */
-async function fleetPrs(kernel: string, key: string): Promise<{ repo: string; number: number }[]> {
-  const since = new Date(Date.now() - 90 * 86_400_000).toISOString();
-  const r = await fetch(`${kernel}/v1/objects?type=pr&since=${encodeURIComponent(since)}`, { headers: { authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(30_000) });
-  if (!r.ok) throw new Error(`the kernel said ${r.status}`);
-  const refs = ((await r.json()) as { refs?: string[] }).refs ?? [];
-  return refs.flatMap((ref) => {
-    const m = /^github:([\w.-]+\/[\w.-]+)#(\d+)$/.exec(ref);
-    return m ? [{ repo: m[1]!.toLowerCase(), number: Number(m[2]) }] : [];
-  });
-}
 
 /** The URL of a running preview of `repo`'s change or PR `n`, as the board's open-PR rows show it. */
 function previewOf(repo: string, n: number): { preview_url?: string } {

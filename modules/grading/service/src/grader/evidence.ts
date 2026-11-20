@@ -443,12 +443,15 @@ export async function issueEvidence(ref: string, deps: any): Promise<any> {
   const comments: any[] = i.comments?.nodes ?? [];
   const closer = i.closedEvents?.nodes?.[0]?.actor?.login;
   const closing = i.state === "CLOSED" ? comments.findLast((c) => c.author?.login === closer && Date.parse(c.createdAt) <= Date.parse(i.closedAt) + 120_000) : undefined;
-  // Anyone with close rights can close an issue: a close counts only by an owner, member or collaborator (the fleet acts as the owner).
+  // Anyone with close rights can close an issue: a close counts only by the instance's App or by an owner, member or collaborator.
+  // The App is a Bot actor (a user account is never one, whatever it is named) whose login is exactly its slug, which GraphQL
+  // gives without the `[bot]` REST adds.
+  const actor = i.closedEvents?.nodes?.[0]?.actor;
   // GitHub's own close through a merged PR's closing keyword ("Fixes #N"): the close event's `closer` is that PR, structured, so
   // it counts as closed and cited by it when it merged in this issue's repo, whoever merged it.
   const by = i.closedEvents?.nodes?.[0]?.closer;
   const keywordPr = i.state === "CLOSED" && by?.__typename === "PullRequest" && by.state === "MERGED" && String(by.repository?.nameWithOwner ?? "").toLowerCase() === repo.toLowerCase() ? by : undefined;
-  const trusted = Boolean(keywordPr) || Boolean(closer) && ["OWNER", "MEMBER", "COLLABORATOR"].includes(closing?.authorAssociation);
+  const trusted = Boolean(keywordPr) || Boolean(closer) && ((Boolean(read.appSlug) && actor?.__typename === "Bot" && [read.appSlug, `${read.appSlug}[bot]`].includes(closer)) || ["OWNER", "MEMBER", "COLLABORATOR"].includes(closing?.authorAssociation));
   const facts = [`${ref}: ${i.state === "CLOSED" ? `closed${i.stateReason ? ` as ${String(i.stateReason).toLowerCase()}` : ""} at ${i.closedAt}${closer ? ` by ${closer}` : ""}` : "open"}; labels: ${(i.labels?.nodes ?? []).map((l: any) => l.name).join(", ") || "none"}`];
   const merges: string[] = [];
   if (keywordPr) {

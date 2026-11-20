@@ -30,7 +30,7 @@ export function readInstructions(cfg: Obj, a: Obj, { repo, instanceDir = "" }: {
   // Handbooks say "the owner"; one line names them.
   const owner = cfg.owner_name ? `This AidenHQ belongs to ${cfg.owner_name}: wherever this handbook says "the owner", it means ${cfg.owner_name}.\n\n` : "";
   // Where agent-built repos live: handbooks say "the agents org", one per enabled code host (compile's agents_orgs).
-  const org = orgLine(cfg.agents_orgs ?? []);
+  const org = orgLine(cfg.agents_orgs ?? (cfg.github_agents_org ? [{ org: cfg.github_agents_org, host: "github" }] : []));
   const own = owner + org + readInside(mod, a.instructions, `agent ${a.name}: instructions`).replace(/^---\n[\s\S]*?\n---\n?/, "").trim();
   if (!a.instructions_extra) return own + "\n";
   const extra = readInside(join(instanceDir, "agents"), a.instructions_extra, `agent ${a.name}: instance rules`).trim();

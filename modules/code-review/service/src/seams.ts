@@ -44,7 +44,7 @@ export interface PrSource {
   /** GitHub's compare of two commits: their merge base, and whether `head` is ahead of `base` (base is then its ancestor). */
   compare(repo: string, base: string, head: string): Promise<{ merge_base: string; status: "ahead" | "behind" | "identical" | "diverged" }>;
   /** Who a review on the repo would post as: the App where installed, else the owner's sign-in in the comment orgs; null: nobody. */
-  postable(repo: string): Promise<{ identity: "owner" | null; org: string }>;
+  postable(repo: string): Promise<{ identity: "app" | "owner" | null; org: string }>;
   /** Repos the instance's GitHub identity can read whose name holds `q` (the board's repo picker). */
   repos(q: string): Promise<{ repo: string; private: boolean; url?: string }[]>;
 }
@@ -87,7 +87,7 @@ export type Ack = {
 export type Posted = {
   state: "posted" | "pending" | "refused"; why?: string; /** its kernel write record */ write?: string;
   /** Once posted (the executor's outcome): the review's link, the threads it resolved, and who posted it. */
-  url?: string; resolved?: number; identity?: "owner";
+  url?: string; resolved?: number; identity?: "app" | "owner";
 };
 export interface Poster {
   /** One GitHub review for the run's head: inline findings, the summary with the severity line and commands, the commit status;

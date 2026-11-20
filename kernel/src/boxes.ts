@@ -68,7 +68,7 @@ const unavailable = (e: Error): never => { throw new JobError(503, "launcher-una
 export function createBoxes({ db, cfg, jobs, call, secret, whoami, connections, handbook, cleanup, clones, identity, attachments, once, log, now = Date.now, stopping = () => false }: {
   db: DatabaseSync; attachments: Attachments; once: Once; cfg: SandboxConfig; jobs: Pick<Jobs, "runAdmitted">; call: Call; secret: (name: string) => string; whoami: Whoami;
   /** Who the agent's commits are authored as: its name and its own address (never the owner's). */
-  identity: (agent: string) => Promise<{ name: string; email: string; agent?: string }>;
+  identity: (agent: string) => { name: string; email: string };
   /** An engineer job's workspace: the repositories its task names, cloned before the box starts. */
   clones: Clones;
   /** Whether a job asked for its workspace to go when it ends (jobtools.ts). */
@@ -106,7 +106,7 @@ export function createBoxes({ db, cfg, jobs, call, secret, whoami, connections, 
     const withNotes = (text: string) => (notes.length ? `(Kernel note: ${notes.join(" ")})\n\n${text}` : text);
     const prompt = withNotes(session ? job.prompt : job.fullPrompt ?? job.prompt);
     // 409: the task's box is still going (the computers are full for it); a 5xx, a timeout or no answer: the launcher can't now.
-    const box = (await call("/job", { agentId: job.agent, issueId: job.task, identifier: job.identifier, workspace, engine: a.engine, state, image: a.image, token, mcp, roles: a.roles, identity: await identity(job.agent) }).catch((e: Error & { status?: number }) => {
+    const box = (await call("/job", { agentId: job.agent, issueId: job.task, identifier: job.identifier, workspace, engine: a.engine, state, image: a.image, token, mcp, roles: a.roles, identity: identity(job.agent) }).catch((e: Error & { status?: number }) => {
       if (e.status === 409) throw Object.assign(e, { status: 503 });
       if (e.status === undefined || e.status >= 500) unavailable(e);
       throw e;

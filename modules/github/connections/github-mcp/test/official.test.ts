@@ -1,43 +1,46 @@
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it } from "vitest";
-import { createAccess } from "../src/client.js";
-import { denyExcept, officialProxy, signIn } from "../src/official.js";
+import { DENY, ownerToken, signIn } from "../src/official.js";
 
 const dir = () => mkdtempSync(join(tmpdir(), "github-official-"));
 
-it("a new instance has no sign-in until Connect: the client says GitHub isn't connected", async () => {
+it("an instance's old vault token becomes the sign-in once, and the tools use it as their bearer", async () => {
   const state = dir();
-  const access = createAccess({ auth: signIn({ clientId: "", mcpUrl: "https://api.githubcopilot.com/mcp/", stateDir: state }) });
-  expect(existsSync(join(state, "token.json"))).toBe(false);
-  expect(access.connected()).toBe(false);
-  await expect(access.token()).rejects.toThrow("GitHub isn't connected");
+  const old = join(dir(), "github_token");
+  writeFileSync(old, "gho_owner\n");
+  const auth = signIn({ clientId: "Ov23example", mcpUrl: "https://api.githubcopilot.com/mcp/", stateDir: state, oldTokenFile: old });
+  expect(statSync(join(state, "token.json")).mode & 0o777).toBe(0o600);
+  const owner = ownerToken(auth);
+  expect(owner.signedIn()).toBe(true);
+  expect(await owner.get()).toBe("gho_owner");
+  // Seeded once: a later sign-in (Reconnect) is never overwritten by the old token.
+  writeFileSync(join(state, "token.json"), JSON.stringify({ access_token: "gho_new" }));
+  signIn({ clientId: "Ov23example", mcpUrl: "https://api.githubcopilot.com/mcp/", stateDir: state, oldTokenFile: old });
+  expect(JSON.parse(readFileSync(join(state, "token.json"), "utf8")).access_token).toBe("gho_new");
 });
 
-/** The module's read tags for github_official, as compile hands them over (GITHUB_OFFICIAL_READ). */
-function manifestReads(): string[] {
+it("a new instance has no sign-in until Connect: the tools say so", async () => {
+  const state = dir();
+  const owner = ownerToken(signIn({ clientId: "", mcpUrl: "https://api.githubcopilot.com/mcp/", stateDir: state, oldTokenFile: join(state, "missing") }));
+  expect(existsSync(join(state, "token.json"))).toBe(false);
+  expect(owner.signedIn()).toBe(false);
+  await expect(owner.get()).rejects.toThrow(/isn't connected/);
+});
+
+it("the official server's git writes are refused and tagged nowhere; everything tagged is reachable", () => {
   const manifest = readFileSync(join(import.meta.dirname, "..", "..", "..", "module.yaml"), "utf8").split("\n").filter((l) => !l.trim().startsWith("#")).join("\n");
   const block = manifest.slice(manifest.indexOf("\n  github_official:"), manifest.indexOf("\ncodehost:"));
   const group = (key: string) => (new RegExp(`^\\s+${key}: \\[([^\\]]*)\\]`, "m").exec(block)?.[1] ?? "").split(",").map((t) => t.trim()).filter(Boolean);
-  expect([...group("write"), ...group("destructive")]).toEqual([]);
-  return group("read");
-}
-
-it("official denies every mutating tool", async () => {
-  const reads = manifestReads();
-  expect(reads).toContain("issue_read");
-  const deny = denyExcept(reads);
-  for (const t of ["add_issue_comment", "issue_write", "create_pull_request", "pull_request_review_write", "push_files", "merge_pull_request", "issue_read2"]) expect(deny.test(t), t).toBe(true);
-  for (const t of reads) expect(deny.test(t), t).toBe(false);
-  expect(denyExcept([]).test("issue_read"), "no list: nothing passes").toBe(true);
-
-  // Through the proxy: a refused tool never reaches the upstream; a read is passed on (here to an upstream that isn't there).
-  const state = dir();
-  writeFileSync(join(state, "token.json"), JSON.stringify({ access_token: "gho_owner" }));
-  const auth = signIn({ clientId: "Ov23example", mcpUrl: "http://127.0.0.1:9/mcp", stateDir: state });
-  const log = { info: () => {}, warn: () => {}, error: () => {} } as never;
-  const proxy = officialProxy({ auth, access: createAccess({ auth }), reads, mcpUrl: "http://127.0.0.1:9/mcp", log, stateDir: state, caller: async () => ({}) });
-  for (const t of ["add_issue_comment", "issue_write", "create_pull_request"]) await expect(proxy.call(t, {})).rejects.toThrow(/not available through AidenHQ/);
-  await expect(proxy.call("issue_read", {})).rejects.not.toThrow(/not available through AidenHQ/);
+  const tools = { read: group("read"), write: group("write"), destructive: group("destructive") };
+  expect(tools.read).toContain("get_file_contents");
+  const tagged: string[] = [...tools.read, ...tools.write, ...tools.destructive];
+  for (const t of ["push_files", "create_or_update_file", "merge_pull_request", "create_branch", "create_repository", "fork_repository", "delete_file", "update_pull_request_branch"]) {
+    expect(DENY.test(t)).toBe(true);
+    expect(tagged).not.toContain(t);
+  }
+  expect(tagged.filter((t) => DENY.test(t))).toEqual([]);
+  // Owner-authored writes are destructive: a grant names each, and the reviewer decides every call.
+  for (const t of ["add_issue_comment", "create_pull_request", "pull_request_review_write", "issue_write"]) expect(tools.destructive).toContain(t);
 });

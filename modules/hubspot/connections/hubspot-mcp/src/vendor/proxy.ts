@@ -48,8 +48,6 @@ export interface Hooks {
   isRead?(tool: Tool): boolean;
   /** A problem that makes the connection unusable though signed in (Jira: the site isn't reachable). */
   health?(): string | undefined;
-  /** More of the sign-in's state for the board (GitHub: scopes, per-org problems, the rate limit), merged into /auth/status. */
-  status?(): Record<string, unknown>;
 }
 
 export interface ProxyOptions {
@@ -250,7 +248,7 @@ export function createVendorProxy(o: ProxyOptions): VendorProxy {
     if (!bearer(req, o.authKey)) return sendJson(res, 401, { error: "unauthorized" });
     if (path === "/auth/status" && req.method === "GET") {
       await auth.check?.().catch(() => {});
-      return sendJson(res, 200, { configured: Boolean(o.upstream), ...auth.status(), ...(hooks.status?.() ?? {}) });
+      return sendJson(res, 200, { configured: Boolean(o.upstream), ...auth.status() });
     }
     if (path === "/auth/check" && req.method === "GET") return sendJson(res, 200, await checkConnection());
     const flow = auth.signIn;

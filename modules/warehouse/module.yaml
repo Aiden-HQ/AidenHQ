@@ -5,7 +5,7 @@ points:
   sources: { schema: schemas/sources.json }
 settings:
   # owner/repo of the AidenHQ product this instance runs: the warehouse app is built from it at the pinned product commit, and
-  # the github module files the Maintainer's product bugs there (github_product_issue; unset refuses). Its org must be in
+  # the github module files the Maintainer's product bugs there (github_app_issue; unset refuses). Its org must be in
   # github_orgs (or be the agents org).
   product_repo:
     required: true

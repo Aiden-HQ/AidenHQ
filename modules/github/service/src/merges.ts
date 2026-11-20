@@ -11,13 +11,11 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { join } from "node:path";
 import { namedChecks } from "./aidenhq-sdk/checks.ts";
 import { waitReason, type Flow } from "./flow.ts";
-import { mergeable, withTrailer } from "./git-auth.ts";
+import { READ, mergePermissions, mergeable } from "./github-app.ts";
 import { DESIGN_REVIEW, EVAL_WAIT_MINUTES, PR_QUERY, WAIT_MINUTES, awaitsDesignReview, decide, mergeMethod, withGate } from "./merge-gate.ts";
 
-/** GitHub as the owner, background (git-auth.ts Gh with background set). */
-type Gh = (method: string, path: string, body?: unknown) => Promise<{ status: number; body: any }>;
-/** `objects`: what the queue made, for the kernel's records (each merge commit; a merged PR stays whoever's it was). */
-type Outcome = { ok: boolean; text: string; objects?: string[] };
+type Gh = (method: string, path: string, token: string, body?: unknown) => Promise<{ status: number; body: any }>;
+type Outcome = { ok: boolean; text: string };
 export type EvalGate = (repo: string, pr: any) => Promise<undefined | { wait: string } | { stop: string }>;
 type Pr = { repo: string; number: number; head: string; url: string; status: string; note?: string; sha?: string; wait?: { key: string; since: string }; reviewAsked?: string; reviewAskedAgain?: string; checked?: string; unanswered?: boolean; fw?: { reason: string; since: string } };
 type Queue = { state: string; prs: Pr[]; said: string[]; startedAt: string; finishedAt?: string; outcome?: Outcome; reported?: boolean };
@@ -32,10 +30,10 @@ export const MERGED_LINE = "merged-prs: ";
 
 export function createMerges(d: {
   dir: string;
+  /** An installation token narrowed to `repo` and these permissions. */
+  token(repo: string, perms: Record<string, string>): Promise<string>;
   gh: Gh;
-  /** Whether GitHub is connected: while it isn't, every pending PR waits (work.waiting reason github) and nothing is called. */
-  connected?: () => boolean;
-  fleetOrg: string; productRepo?: string;
+  agentsOrg: string; productRepo?: string;
   /** maintainer_repos ("owner/name"): merged here as in the agents org, read when each PR is polled. */
   maintained?: string[];
   evalGate: EvalGate;
@@ -52,7 +50,7 @@ export function createMerges(d: {
   const log = d.log ?? (() => {});
   const now = d.now ?? (() => new Date());
   const platform = [d.productRepo].filter(Boolean) as string[];
-  const inFleetOrg = (repo: string) => same(repo.split("/")[0], d.fleetOrg) && !platform.some((p) => same(p, repo));
+  const inAgentsOrg = (repo: string) => same(repo.split("/")[0], d.agentsOrg) && !platform.some((p) => same(p, repo));
   mkdirSync(d.dir, { recursive: true });
   const file = join(d.dir, "merges.json");
   const s: { queues: Record<string, Queue> } = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : { queues: {} };
@@ -62,14 +60,12 @@ export function createMerges(d: {
 
   async function readPr(repo: string, number: number) {
     const [owner, name] = repo.split("/");
-    const r = await d.gh("POST", "/graphql", { query: PR_QUERY, variables: { owner, repo: name, number, pullRef: `refs/pull/${number}/head` } });
+    const r = await d.gh("POST", "/graphql", await d.token(repo, READ), { query: PR_QUERY, variables: { owner, repo: name, number, pullRef: `refs/pull/${number}/head` } });
     if (r.status >= 300 || r.body?.errors?.length) throw new Error(`GitHub GraphQL: ${r.body?.errors?.map((e: any) => e.message).join("; ") ?? `HTTP ${r.status}`}`);
     return withGate(r.body?.data);
   }
-  async function mergePut(repo: string, number: number, sha: string, method: string, body: string): Promise<string> {
-    // A squash or merge commit is the owner's, signed by the queue that made it (the rebase method keeps the PR's own commits).
-    const message = method === "rebase" ? {} : { commit_message: withTrailer(body.trim(), "merge queue") };
-    const r = await d.gh("PUT", `/repos/${repo}/pulls/${number}/merge`, { merge_method: method, sha, ...message });
+  async function mergePut(repo: string, number: number, sha: string, method: string): Promise<string> {
+    const r = await d.gh("PUT", `/repos/${repo}/pulls/${number}/merge`, await d.token(repo, mergePermissions(repo, platform)), { merge_method: method, sha });
     if (r.status >= 300) throw Object.assign(new Error(`HTTP ${r.status}: ${String(r.body?.message ?? "").slice(0, 300)}`), { status: r.status });
     return r.body?.sha;
   }
@@ -77,9 +73,7 @@ export function createMerges(d: {
   /** One poll of one PR, then its wait as facts: a wait and its end (a new reason, a merge, a failure) are work.waiting and work.resumed. */
   async function pollAndTime(q: Queue, p: Pr, merged: Set<string>) {
     await poll(q, p, merged);
-    timeWait(p, p.status === "pending" && p.wait ? waitReason(p.wait.key) : undefined);
-  }
-  function timeWait(p: Pr, reason: string | undefined) {
+    const reason = p.status === "pending" && p.wait ? waitReason(p.wait.key) : undefined;
     if (p.fw?.reason === reason) return;
     const at = now().toISOString();
     if (p.fw) d.flow?.resumed(p.repo, p.number, p.fw.reason, p.fw.since, at);
@@ -103,12 +97,12 @@ export function createMerges(d: {
       else p.reviewAsked = p.head;
       await d.designReview?.({ repo: p.repo, number: p.number, head: p.head, ...(again ? { again } : {}) }).catch((e: Error) => log("design review task failed", { pr: p.url, err: says(e) }));
     };
-    // Outside the fleet org, the product repo and maintainer_repos the code host is PR-only: it merges nothing there (a repo taken
+    // Outside the agents org, the product repo and maintainer_repos the App is PR-only: it merges nothing there (a repo taken
     // off the list after its record was approved included).
-    if (!mergeable(p.repo, d.fleetOrg, platform, d.maintained ?? [])) return fail(`\`${p.repo}\` is outside the fleet org, the product repo and maintainer_repos, where the code host only opens PRs: merge it there`);
+    if (!mergeable(p.repo, d.agentsOrg, platform, d.maintained ?? [])) return fail(`\`${p.repo}\` is outside the agents org, the product repo and maintainer_repos, where the code host only opens PRs: merge it there`);
     try {
       const data = await readPr(p.repo, p.number);
-      const uiReview = inFleetOrg(p.repo);
+      const uiReview = inAgentsOrg(p.repo);
       const v = decide(data, p.head, { uiReview });
       const pull = data.repository.pullRequest;
       // CI on this head is over once every named check has finished: seen here, at the first poll that finds it so.
@@ -144,7 +138,7 @@ export function createMerges(d: {
       const method = mergeMethod(data.repository);
       if (!method) return fail(`\`${p.repo}\` allows no merge method I can use`);
       try {
-        p.sha = await mergePut(p.repo, p.number, p.head, method, String(pull?.body ?? ""));
+        p.sha = await mergePut(p.repo, p.number, p.head, method);
       } catch (e) {
         // Another merge to the same base a moment ago: GitHub asks to try again, which the next poll does.
         if (/try the merge again|base branch was modified/i.test(says(e))) return wait("retry", "GitHub asked to try the merge again", WAIT_MINUTES);
@@ -177,8 +171,7 @@ export function createMerges(d: {
     const n = q.prs.filter((p) => p.status === "merged" || p.status === "skipped").length;
     const headline = ok ? `**Done:** ${n} merged.` : `**Merges finished:** ${n} merged, ${q.prs.length - n} not.`;
     const merged = q.prs.filter((p) => p.status === "merged" && typeof p.sha === "string").map((p) => ({ repo: p.repo, number: p.number, head: p.head, sha: p.sha }));
-    const objects = merged.map((p) => `github:${p.repo.toLowerCase()}@${p.sha}`);
-    q.outcome = { ok, text: `${MERGED_LINE}${JSON.stringify(merged)}\n\n${[...q.said, headline].join("\n\n").slice(-12_000)}`, ...(objects.length ? { objects } : {}) };
+    q.outcome = { ok, text: `${MERGED_LINE}${JSON.stringify(merged)}\n\n${[...q.said, headline].join("\n\n").slice(-12_000)}` };
     Object.assign(q, { state: ok ? "done" : "stopped", finishedAt: now().toISOString() });
     log("merges finished", { record: id, ok });
     deliver(id, q);
@@ -204,11 +197,6 @@ export function createMerges(d: {
     if (busy) return;
     busy = true;
     try {
-      // Signed out: every pending PR waits for the reconnect (reason github; its other wait starts over), and GitHub isn't called.
-      if (d.connected && !d.connected()) {
-        for (const q of Object.values(s.queues)) if (q.state === "running" && !q.outcome) for (const p of q.prs) if (p.status === "pending") { delete p.wait; timeWait(p, "github"); }
-        return;
-      }
       const merged = new Set<string>();
       for (const [id, q] of Object.entries(s.queues)) {
         if (q.state !== "running" || q.outcome) continue;
@@ -240,10 +228,10 @@ export function createMerges(d: {
       return new Promise((ok) => waiters.set(id, ok));
     },
     /** The record's state for the kernel (executor@1 status), or undefined when it isn't a queue here. */
-    status(id: string): { state: string; text?: string; objects?: string[] } | undefined {
+    status(id: string): { state: string; text?: string } | undefined {
       const q = s.queues[id];
       if (!q) return undefined;
-      return q.outcome ? { state: q.outcome.ok ? "done" : "failed", text: q.outcome.text, ...(q.outcome.objects ? { objects: q.outcome.objects } : {}) } : { state: "running" };
+      return q.outcome ? { state: q.outcome.ok ? "done" : "failed", text: q.outcome.text } : { state: "running" };
     },
     step,
     /** The loop: one poll now and every `everyMs` (30 s). */

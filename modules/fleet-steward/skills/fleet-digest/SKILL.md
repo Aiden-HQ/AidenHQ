@@ -8,7 +8,7 @@ when: { fields: { name: Fleet Steward } }
 
 1. Work every `deep-look` line in your log from today: read again, decide the cause, act as the `fleet-check` skill says,
    and log the outcome.
-2. **Product bugs live:** `github_product_issue_status` with the fingerprints in your log's `product-bug` lines. An issue
+2. **Product bugs live:** `github_app_issue_status` with the fingerprints in your log's `product-bug` lines. An issue
    closed as completed with `fixed_in` (the commit that closed it) is fixed in the product; the release train carries it
    live in its next pin bump (`task_search` on the full sha finds the "Pin bump: …" task). Once `fleet_generation_status`
    shows a `good` generation whose pin carries the commit, check each symptom on the case its issue names, then

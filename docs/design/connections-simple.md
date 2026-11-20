@@ -19,7 +19,7 @@ bot is never shared (a bot token is the app's one install in a workspace), so ad
 
 1. **One module per vendor, basic and advanced.** `slack` and `github` each carry a basic part (a sign-in) and an advanced
    part on the same module page ("Create your own app to unlock: a bot, live events, ..."), set up by the module's
-   `board.setup_flows` (steps with `mode: advanced`, `capabilities`, completion by a secret). The advanced
+   `board.setup_flows` (steps with `mode: advanced`, `capabilities`, completion by a secret or `admin_page`). The advanced
    services idle until their credentials exist. GitHub's code host (App-key holder and token broker) stays isolated inside
    the module.
 2. **One client path per connection.** Each OAuth connection reads its client from its own fields (`client_id`, optional
@@ -38,10 +38,11 @@ bot is never shared (a bot token is the app's one install in a workspace), so ad
    Advanced adds bot scopes, Socket Mode, DM and mention events and `/aiden`.
 5. **Google.** `google-workspace-mcp` with a Desktop client, loopback or paste-back, pasted on the board at
    `#/setup/google`. The guide shows Internal vs External and the 7-day testing expiry before starting. Multi-account.
-6. **GitHub.** One device sign-in (spec 2026-11-20-github-owner-identity). The token is the bearer to GitHub's official
-   MCP, read-only (every tool outside the module's read list is refused in
-   `modules/github/connections/github-mcp/src/official.ts`), and the code host's: code reaches GitHub only through its
-   reviewed push, PR and merge records, as the owner and labelled as AidenHQ (trailer and footer).
+6. **GitHub.** Basic: device sign-in; the token is the bearer to GitHub's official MCP, passed through whole except its git
+   writes (`DENY` in `modules/github/connections/github-mcp/src/official.ts`), so code reaches GitHub only through the code
+   host's reviewed push, PR and merge records as the App. Advanced: the GitHub App (pushes, PRs, merges, bot identity),
+   created from the module page on the kernel's admin page `/setup/github-app`, which writes the key into the vault and
+   `github_app_id`.
 
 A fresh install shows each vendor with its honest path: "Sign in" where possible, else "Create a small app" with the
 manifest link, with the organisation pre-selected from the email domain when listed. Nothing is required to reach Aiden.

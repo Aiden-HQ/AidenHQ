@@ -19,7 +19,7 @@ import { UPDATER, canonical, isUpdater, digestOf, type Card, type Rec, type Reco
 import type { Reviews } from "./reviews.ts";
 import { LOCAL_ORG, repoKey, type Repos } from "./kinds.ts";
 import { REFUSALS_DDL } from "./jobs.ts";
-import { CODEHOSTS, routeKind } from "./codehost.ts";
+import { routeKind } from "./codehost.ts";
 import type { Executor, ReviewContext } from "../sdk/src/executor.ts";
 import { writeRaise, type Inventory } from "./paths.ts";
 import { gateMode } from "./gates.ts";
@@ -284,29 +284,24 @@ export function createWrites({ records, registry, connections, secret, resolver,
   async function executeOnce(r: Rec, k: Kind | undefined): Promise<void> {
     if (r.kind === CONN_TOOL) {
       const o = await replay(r).catch((e: Error) => ({ ok: false, text: e.message }));
-      return void outcomeOf(r.id, o.ok, o.text, (o as { objects?: string[] }).objects);
+      return void outcomeOf(r.id, o.ok, o.text);
     }
     if (native[r.kind]) {
       const o = await native[r.kind]!(r).catch((e: Error) => ({ ok: false, text: e.message }));
-      return void outcomeOf(r.id, o.ok, o.text, (o as { objects?: string[] }).objects);
+      return void outcomeOf(r.id, o.ok, o.text);
     }
     const own = inProcess(k);
     if (own) {
       const o = await own.execute({ id: r.id, kind: r.kind, args: r.args, digest: r.digest, idempotency_key: r.id }).catch((e: Error) => ({ ok: false, text: e.message }));
-      return void outcomeOf(r.id, o.ok, o.text, (o as { objects?: string[] }).objects);
+      return void outcomeOf(r.id, o.ok, o.text);
     }
     await call(k!, "execute", { id: r.id, kind: r.kind, args: r.args, digest: r.digest, idempotency_key: r.id }).catch((e: Error) => outcomeOf(r.id, false, `not executed: ${e.message}`));
   }
 
-  /**
-   * The outcome, once: the record keeps a capped copy; a caller waiting inline gets the whole text. `objects`: the GitHub
-   * objects the write made (objects.ts), kept so "is this ours" is a lookup; only a code host's writes (its executor or its
-   * connections' tools) name them, any other module's are dropped.
-   */
-  function outcomeOf(id: string, ok: boolean, text: string, objects?: unknown): boolean {
+  /** The outcome, once: the record keeps a capped copy; a caller waiting inline gets the whole text. */
+  function outcomeOf(id: string, ok: boolean, text: string): boolean {
     if (!records.finish(id, ok, text)) return false;
     const r = records.get(id)!;
-    if (objects !== undefined && CODEHOSTS.includes(r.module)) records.addObjects(id, objects);
     log("write outcome", { record: id, kind: r.kind, ok });
     settled({ ...r, outcome: { ok, text } });
     // A Tier 0 write answered its caller inline; a decided one, or one filed for its agent (no caller waits), tells its task.
@@ -417,8 +412,8 @@ export function createWrites({ records, registry, connections, secret, resolver,
 
   /** Who may ask for `asked` and on which task: the routed kind, its definition, the record's task and the args a job's own workspace is forced into. */
   function admit(who: Identity, asked: string, args: unknown, task?: string) {
-    // A new repo named without its org goes to the instance's fleet org: github_fleet_org when set (refused while GitHub isn't
-    // connected), else this server's. An existing repo keeps its host: routing reads only the repo.
+    // A new repo named without its org goes to the instance's default agents org: GitHub's once it is connected
+    // (AIDENHQ_GITHUB_AGENTS_ORG), else this server's. An existing repo keeps its host: routing reads only the repo.
     const newRepo = (args as { repo?: unknown } | null)?.repo;
     if (asked === "codehost.create_repo" && typeof newRepo === "string" && !newRepo.includes("/")) args = { ...(args as object), repo: `${repos().agentsOrg ?? LOCAL_ORG}/${newRepo}` };
     let kind: string;
@@ -675,7 +670,7 @@ export function createWrites({ records, registry, connections, secret, resolver,
         // an hour after this kernel started, then unknown.
         let unread = false;
         const s = r.kind === CONN_TOOL || !k?.executor || inProcess(k) ? undefined : await call(k, "status", { id: r.id, idempotency_key: r.id }).catch((e) => { unread = transient(e); return undefined; });
-        if (s?.state === "done" || s?.state === "failed") outcomeOf(r.id, s.state === "done", String(s.text ?? s.state), s.objects);
+        if (s?.state === "done" || s?.state === "failed") outcomeOf(r.id, s.state === "done", String(s.text ?? s.state));
         else if (s?.state === "running" && !modules) continue;
         else if (unread && before && Date.now() - Date.parse(before) < 3_600_000) continue;
         else if (records.close(r.id, "unknown", "unknown: it was claimed and its outcome never came back; it is not run again")) unresolved.push(`${r.id} ${r.kind} unknown`);

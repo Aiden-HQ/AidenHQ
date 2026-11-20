@@ -5,28 +5,24 @@
 // Subjects: pr:<repo>#<n>, CI per head pr:<repo>#<n>@<head>, issue:<repo>#<n> (repos in lower case). `task` is the task that opened
 // the PR, from pr-tasks.json (pr-watch.ts notePrTask). Every `at` is UTC with a Z.
 //
-// Authors: `author_kind` is "agent" for an object in AidenHQ's records (the kernel's /v1/objects), or (records pruned, a crash,
-// a restore) one whose text carries the AidenHQ footer or whose head commit carries the AidenHQ trailer: the fleet acts as the
-// owner's login, so the login alone tells nothing. The markers are forgeable, which is fine: attribution carries no authority.
-// "owner" for the signed-in owner's login without them, GitHub's author_association OWNER, MEMBER or COLLABORATOR, or anyone with
-// write on the repo (GitHub shows a private org member as CONTRIBUTOR), "outside" for anyone else. A push (`pr.pushed`, version = the new head) is a head change after the PR opened.
+// Authors: `author_kind` is "agent" for the instance's GitHub App bot (appLogin), "owner" for GitHub's author_association OWNER, MEMBER or
+// COLLABORATOR or anyone with write on the repo (GitHub shows a private org member as CONTRIBUTOR), "outside" for anyone else. A push (`pr.pushed`, version = the new head) is a head change after the PR opened.
 //
 // The churn pass (every 15 minutes, a cursor per repo in the data dir) reads each repo's merged commits from its cache clone,
 // never the GitHub API. The first pass also runs the GitHub backfill once (no route, no button): the managed repos' history through
-// the API within the owner's rate budget. It stops when GitHub says little is left and the next pass goes on; done is recorded in the data dir.
+// the API within the App's rate budget. It stops when GitHub says little is left and the next pass goes on; done is recorded in the data dir.
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { churnFromGit, DEFAULT_CHURN_EXCLUDE } from "./aidenhq-sdk/churn.ts";
 import { factEmitter, kernelClient, type FactIn, type KernelError } from "./aidenhq-sdk/kernel-client.ts";
-import { hasFooter, hasTrailer } from "./aidenhq-sdk/attribution.ts";
 
 type Json = any;
-/** GitHub as the owner, background (git-auth.ts Gh). */
-type Gh = (method: string, path: string) => Promise<{ status: number; body: any; headers?: Headers }>;
+type Gh = (method: string, path: string, token: string, body?: unknown) => Promise<{ status: number; body: any; remaining?: number }>;
 const WINDOW_DAYS = 30;
 const DAY = 86_400_000;
-/** The backfill pauses below this share of the hourly budget, before the limiter's 20% reserve holds every background call. */
-const LOW_SHARE = 0.25;
+/** The backfill stops here: the App's hourly budget is 5,000 points and the rest of the service needs some. */
+const LOW_REMAINING = 400;
+const REPO_READ = { contents: "read", metadata: "read", pull_requests: "read", issues: "read", checks: "read" };
 /** issue.opened carries the author and title from this version on (the id is type, subject and version, so a re-run records them). */
 export const OPENED_VERSION = "2";
 /** pr.opened's: v3 classes a private org member with write as the owner. */
@@ -65,11 +61,11 @@ export type FlowDeps = {
   now?: () => Date;
   /** The repos the instance manages: the agents org's, the product repo and the instance repo. */
   repos?: () => Promise<string[]>;
+  /** A GitHub token narrowed to `repo` with these permissions. */
+  token?: (repo: string, perms: Record<string, string>) => Promise<string>;
   gh?: Gh;
-  /** The signed-in owner's login: without AidenHQ's record or marks, what it wrote is the owner's. */
-  self?: () => Promise<string | undefined>;
-  /** Whether a GitHub object (`github:<repo>#<n>`) is in AidenHQ's records. */
-  ours?: (ref: string) => Promise<boolean>;
+  /** The instance's GitHub App bot login (`<slug>[bot]`): its PRs and issues are an agent's. */
+  appLogin?: () => Promise<string | undefined>;
   /** The repo's default branch fetched into the cache clone: its git dir and branch tip. */
   fetchDefault?: (repo: string) => Promise<{ dir: string; sha: string }>;
   git?: (dir: string, args: string[]) => Promise<string>;
@@ -84,34 +80,28 @@ export function createFlow(d: FlowDeps) {
   const taskOf = (repo: string, n: number | string) => (prTasks()[`https://github.com/${repo}/pull/${n}`.toLowerCase()]?.task as string | undefined) ?? null;
   // The owner's backfill sends its facts straight to the kernel in batches (it stops and says so on a failure); every other fact queues.
   const emit = (x: FactIn) => { const y = { ...x, at: utc(x.at) }; return y.source === "backfill" ? backfillSend(y) : emitter.emit(y); };
-  let selfName: string | undefined;
+  let appName: string | undefined;
   const writers = new Map<string, boolean>();
   /** Whether `who` has write on `repo` (one read per repo and author; a failed read is asked again next time). */
   async function canWrite(repo: string, who: string): Promise<boolean> {
     const k = `${repo.toLowerCase()} ${who.toLowerCase()}`;
     if (!writers.has(k)) {
-      const r = await d.gh!("GET", `/repos/${repo}/collaborators/${encodeURIComponent(who)}/permission`).catch(() => undefined);
+      const r = await d.gh!("GET", `/repos/${repo}/collaborators/${encodeURIComponent(who)}/permission`, await d.token!(repo, REPO_READ)).catch(() => undefined);
       if (!r || r.status >= 300) return false;
       writers.set(k, WRITERS.has(String(r.body?.permission)));
     }
     return writers.get(k)!;
   }
-  /**
-   * Who an author is: AidenHQ's (agent) when the object is in our records or carries our marks (`seen`: its number, its text and
-   * its head commit's message, where known), else the owner (their login, an OWNER, MEMBER or COLLABORATOR association, or write
-   * on `repo`), else outside.
-   */
-  async function kindOf(who?: string | null, association?: string | null, repo?: string, seen: { number?: number; body?: string; message?: string } = {}): Promise<Kind> {
-    if (repo && seen.number && (await d.ours?.(`github:${repo.toLowerCase()}#${seen.number}`).catch(() => false))) return "agent";
-    if (hasFooter(String(seen.body ?? "")) || hasTrailer(String(seen.message ?? ""))) return "agent";
-    // A failed lookup is retried at the next author.
-    if (!selfName) selfName = login(await d.self?.().catch(() => undefined));
-    if (login(who) && login(who) === selfName) return "owner";
+  /** Who an author is: the App's bot (agent), someone with OWNER, MEMBER or COLLABORATOR association or write on `repo` (owner), anyone else (outside). */
+  async function kindOf(who?: string | null, association?: string | null, repo?: string): Promise<Kind> {
+    // A failed lookup is retried at the next author, never remembered as "no App".
+    if (!appName) appName = login(await d.appLogin?.().catch(() => undefined));
+    if (login(who) && login(who) === appName) return "agent";
     if (["OWNER", "MEMBER", "COLLABORATOR"].includes(String(association ?? "").toUpperCase())) return "owner";
-    return repo && who && d.gh && (await canWrite(repo, String(who))) ? "owner" : "outside";
+    return repo && who && d.gh && d.token && (await canWrite(repo, String(who))) ? "owner" : "outside";
   }
   /** `author` and `author_kind` for a fact's data; `association` is GitHub's author_association (REST) or authorAssociation (GraphQL). */
-  const authored = async (who?: string | null, association?: string | null, repo?: string, seen?: { number?: number; body?: string; message?: string }) => ({ author: who ? String(who) : "ghost", author_kind: await kindOf(who, association, repo, seen) });
+  const authored = async (who?: string | null, association?: string | null, repo?: string) => ({ author: who ? String(who) : "ghost", author_kind: await kindOf(who, association, repo) });
 
   const f = {
     emit, flush: emitter.flush, stop: emitter.stop, taskOf,
@@ -180,7 +170,7 @@ export function createFlow(d: FlowDeps) {
    * keeps its cursor, so the next pass goes on.
    */
   async function issuesRepo(repo: string) {
-    if (!d.gh) return;
+    if (!d.gh || !d.token) return;
     const key = repo.toLowerCase(), startedAt = now().toISOString();
     const since = String(readJson(issuesFile, {})[key] ?? utc(now().getTime() - DAY));
     lowBudget = "";
@@ -188,7 +178,7 @@ export function createFlow(d: FlowDeps) {
     const emit = (x: FactIn) => void facts.push({ ...x, at: utc(x.at) });
     for (let page = 1; ; page++) {
       const items: Json[] = (await gh(repo, `/repos/${repo}/issues?state=all&since=${since}&sort=updated&direction=asc&per_page=100&page=${page}`)).body ?? [];
-      for (const i of items) if (!i.pull_request && Date.parse(i.created_at) >= Date.parse(since)) emit({ type: "issue.opened", subject: issueSubject(repo, i.number), version: OPENED_VERSION, at: i.created_at, task: null, data: { repo: key, number: i.number, labels: (i.labels ?? []).map((l: Json) => String(l.name ?? l)), state: i.state, ...(await authored(i.user?.login, i.author_association, repo, { number: i.number, body: i.body })) } });
+      for (const i of items) if (!i.pull_request && Date.parse(i.created_at) >= Date.parse(since)) emit({ type: "issue.opened", subject: issueSubject(repo, i.number), version: OPENED_VERSION, at: i.created_at, task: null, data: { repo: key, number: i.number, labels: (i.labels ?? []).map((l: Json) => String(l.name ?? l)), state: i.state, ...(await authored(i.user?.login, i.author_association, repo)) } });
       if (lowBudget) return postFacts(facts);
       if (items.length < 100) break;
     }
@@ -248,10 +238,10 @@ export function createFlow(d: FlowDeps) {
   class Paused extends Error {}
   let lowBudget = "";
   async function gh(repo: string, path: string): Promise<Json> {
-    const r = await d.gh!("GET", path).catch((e: { need?: { cause?: string } }) => { throw e?.need?.cause === "rate_limited" ? new Paused("GitHub's rate limit") : e; });
+    const r = await d.gh!("GET", path, await d.token!(repo, REPO_READ));
+    if (r.status === 403 && /rate limit/i.test(String(r.body?.message))) throw new Paused("GitHub's rate limit");
     if (r.status >= 300) throw new Error(`GitHub GET ${path.split("?")[0]}: ${r.status} ${r.body?.message ?? ""}`.trim());
-    const remaining = Number(r.headers?.get("x-ratelimit-remaining")), limit = Number(r.headers?.get("x-ratelimit-limit"));
-    if (limit > 0 && remaining < limit * LOW_SHARE) lowBudget = `GitHub's rate limit is nearly used (${remaining} left)`;
+    if (r.remaining !== undefined && r.remaining < LOW_REMAINING) lowBudget = `GitHub's rate limit is nearly used (${r.remaining} left)`;
     return r;
   }
   /** Every page of a list (100 a page), `each` per item; stops with Paused when the budget is low. */
@@ -296,7 +286,7 @@ export function createFlow(d: FlowDeps) {
     status.repo = repo;
     await pages(repo, `/repos/${repo}/issues?state=all&sort=created&direction=asc`, async (i) => {
       if (i.pull_request) return;
-      emit({ type: "issue.opened", subject: issueSubject(repo, i.number), version: OPENED_VERSION, at: i.created_at, task: null, source: "backfill", data: { repo: repo.toLowerCase(), number: i.number, labels: (i.labels ?? []).map((l: Json) => String(l.name ?? l)), state: i.state, ...(await authored(i.user?.login, i.author_association, repo, { number: i.number, body: i.body })) } });
+      emit({ type: "issue.opened", subject: issueSubject(repo, i.number), version: OPENED_VERSION, at: i.created_at, task: null, source: "backfill", data: { repo: repo.toLowerCase(), number: i.number, labels: (i.labels ?? []).map((l: Json) => String(l.name ?? l)), state: i.state, ...(await authored(i.user?.login, i.author_association, repo)) } });
     });
     await pages(repo, `/repos/${repo}/issues/events`, (e) => {
       if (e.event !== "labeled" || !e.issue || e.issue.pull_request) return;
@@ -309,7 +299,7 @@ export function createFlow(d: FlowDeps) {
       const heads = await headsOf(repo, p.number, head, p.updated_at ?? p.created_at);
       // The head the PR opened at is the first of its heads; every later one is a push.
       const first = heads[0]?.sha ?? head;
-      f.opened(repo, p.number, first, String(p.head?.ref ?? ""), p.created_at, task, "backfill", { title: String(p.title ?? ""), ...(await authored(p.user?.login, p.author_association, repo, { number: p.number, body: p.body })) });
+      f.opened(repo, p.number, first, String(p.head?.ref ?? ""), p.created_at, task, "backfill", { title: String(p.title ?? ""), ...(await authored(p.user?.login, p.author_association, repo)) });
       for (const [i, h] of heads.entries()) {
         if (i) f.pushed(repo, p.number, h.sha, heads[i - 1]!.sha, h.forced, h.author, h.at, task, "backfill");
         if (!h.starts.length) continue;
@@ -327,7 +317,7 @@ export function createFlow(d: FlowDeps) {
   /** The GitHub backfill, once: on the first pass (nothing recorded as done in the data dir). Idempotent, resumable after a pause, one at a time. */
   function backfill(): Promise<void> {
     if (running) return running;
-    if (status.state === "done" || !d.repos || !d.gh) return Promise.resolve();
+    if (status.state === "done" || !d.repos || !d.token || !d.gh) return Promise.resolve();
     status = { state: "running", emitted: 0 };
     lowBudget = "";
     const progress = savedProgress().done ?? {};

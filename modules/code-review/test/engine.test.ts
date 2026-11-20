@@ -31,7 +31,7 @@ function world(settings = {}) {
       // The merge base is sha("m"); a head is "ahead" of an earlier one unless the test force-pushed past it.
       compare: async (_r, base, head) => ({ merge_base: sha("m"), status: rewritten.has(base) ? "diverged" : "ahead", head }),
       repos: async () => [],
-      postable: async (repo) => ({ identity: repo.startsWith("acme/") ? "owner" : null, org: repo.split("/")[0] }), // null: GitHub not connected
+      postable: async (repo) => ({ identity: repo.startsWith("acme/") ? "owner" : null, org: repo.split("/")[0] }),
     },
     runner: {
       start: async (s) => { started.push(s); return { check: `c-${started.length}` }; },
@@ -190,11 +190,11 @@ test("incremental runs recheck the last posted findings from the merge base; a f
   w.later(1000); w.pr(4, sha("2")); await w.tick();
   assert.equal(w.started[0].merge_base, sha("m"));
   w.finish(0); await w.tick();
-  w.outcomes.set("k-1", { state: "posted", url: "https://github.com/acme/payments/pull/4#pullrequestreview-1", resolved: 0, identity: "owner" });
+  w.outcomes.set("k-1", { state: "posted", url: "https://github.com/acme/payments/pull/4#pullrequestreview-1", resolved: 0, identity: "app" });
   await w.tick();
   const done = w.engine.runs({ repo: REPO })[0];
   assert.equal(done.review_url, "https://github.com/acme/payments/pull/4#pullrequestreview-1");
-  assert.equal(w.engine.repos().repos[0].identity, "owner");
+  assert.equal(w.engine.repos().repos[0].identity, "app");
   // A push: incremental from the posted head, with its findings to recheck; one the recheck found gone is resolved.
   w.pr(4, sha("3")); await w.tick(); w.later(DEBOUNCE); await w.tick();
   assert.equal(w.started[1].incremental_from, sha("2"));
@@ -216,7 +216,7 @@ test("incremental runs recheck the last posted findings from the merge base; a f
 test("a one-off only where a review can post; a refused read passes the comment over, a transient one is asked again", async () => {
   const w = world();
   w.prs.set(9, { repo: "othercorp/api", number: 9, head: sha("9"), base: sha("b"), base_ref: "main", draft: false, fork: false, author: "bob", open: true, url: "" });
-  await assert.rejects(w.engine.oneoff({ pr_url: "https://github.com/othercorp/api/pull/9" }), /GitHub isn't connected/);
+  await assert.rejects(w.engine.oneoff({ pr_url: "https://github.com/othercorp/api/pull/9" }), (e) => e.extra.owner_must_allow_orgs[0] === "othercorp");
   w.pr(5, sha("5")); await w.tick(); w.later(1000);
   w.perms.refuse = true;
   w.say(5, "alice", "@aiden review");

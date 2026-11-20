@@ -36,7 +36,7 @@ Aiden says hello, learns how you work and takes your first job.
 ## Prefer to do it by hand?
 
 [docs/setup.md](docs/setup.md) is the manual setup, step by step with a check after each one: your own VM, the
-secrets, accounts, GitHub, upgrading the product. It also has the reference for account recovery and shared
+secrets, accounts, the GitHub App, upgrading the product. It also has the reference for account recovery and shared
 access. In Claude Code, the `setup-aidenhq` skill walks it for you.
 
 Day-to-day use: [docs/USAGE.md](docs/USAGE.md). Operations, backups and logs: [docs/operations.md](docs/operations.md).

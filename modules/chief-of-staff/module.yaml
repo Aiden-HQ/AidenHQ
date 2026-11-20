@@ -8,7 +8,7 @@ roles:
     - { id: board-writer, description: "Board moves and recurring tasks." }
     # Declared here (every instance has the chief of staff) so the upstream tools have a holder even without the Maintainer;
     # the Maintainer requests it (it files the Fleet Steward's product-bug reports).
-    - { id: product-issues, description: "Product bugs as issues on the product repo, as the owner (github-mcp github_product_issue)." }
+    - { id: product-issues, description: "Product bugs as issues on the product repo, as the GitHub App (github-mcp github_app_issue)." }
   # ops-key (the meetings module's): the Researcher runs the meeting scan, so ops-mcp acts as it, while meetings is on.
   requests: [ ops-key? ]
 agents:
@@ -29,9 +29,9 @@ agents:
       # reviewer decides first, and the owner when it touches more than 5 records.
       hubspot?: [ get_user_details, get_organization_details, discover_hubspot_schema, search_crm_objects, get_crm_objects, query_crm_data, search_properties, get_properties, search_owners, tool_guidance, manage_crm_objects ]
       owner_channel: [ notify ]
-      # Product bugs as issues on the product repo, as the owner labelled as AidenHQ, with the github module:
+      # Product bugs as issues on the product repo, as the GitHub App (never the owner's account), with the github module:
       # report one (deduped by fingerprint) and read their state. No other GitHub reads, and no repo input.
-      github?: [ github_product_issue, github_product_issue_status, github_issue_link ]
+      github?: [ github_app_issue, github_app_issue_status, github_issue_link ]
       apps: [ app_list, app_status, app_view, web_view, warehouse_query, source_new, source_ack ]
       # The host's live series (disk, memory, containers), read at brief time rather than copied from a note: reads only.
       grafana?: read
@@ -41,7 +41,7 @@ agents:
     # Woken every heartbeat_hours to check the work it waits on (modules/chief-of-staff/heartbeat.md); events wake it sooner (board wake.ts).
     heartbeat: true
     # fleet-admin: the board's fleet tools and relaying the owner's words (services/board/src/fleet.ts).
-    # product-issues: product bugs upstream as the owner (github-mcp).
+    # product-issues: product bugs upstream as the GitHub App (github-mcp).
     roles: [ fleet-admin, product-issues ]
   assistant:
     department: leadership
@@ -65,7 +65,7 @@ agents:
       jira?: [ searchJiraIssuesUsingJql, getJiraIssue, listJiraIssueChangelogs, listJiraIssueComments, listJiraProjects, getJiraProjectVersions, listJiraBoards, listJiraBoardSprints, lookupJiraAccountId, searchConfluence, getConfluenceContent ]
       # Reads, plus slack_send_message_draft: a draft for the user to send, only when asked.
       slack?: write
-      # Writes only when the user asks; each is a write record the AI reviewer decides.
+      # Writes only when the user asks, in GITHUB_COMMENT_ORGS.
       # (Not commit_status_set: that is the CI gate's.)
       github?: [ github_whoami, github_project_read, github_issue_read, github_search_issues, github_issue_comment, github_issue_create, github_issue_update, github_pr_review, github_rerun_failed ]
       google_workspace?: [ docs_read, drive_search_files, drive_read_file, drive_list_recent_files, drive_list_meeting_documents, calendar_list_events, calendar_search_events, calendar_get_event, gmail_search, gmail_read_thread ]

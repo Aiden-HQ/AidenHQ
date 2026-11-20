@@ -1,8 +1,7 @@
 // Kernel jobs in a computer (docs/design/sandboxing.md, Tiers): the boundary scenarios of the launcher's side.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { JOB_ENV_NAMES, Jobs, LEASE_MS, mayCheckout, tokenHash, admit, controlAllowed, jobEnvFile, jobFolder, jobMounts, reapLapsed, stale } from "../lib.ts";
@@ -132,16 +131,4 @@ test("repo-checkout is in a job box only when the job holds the role", () => {
   assert.equal(mounts(["notes"]).some((m) => m.includes("repo-checkout")), false);
   assert.ok(mounts(["repo-checkout"]).includes("/repo/services/computer/images/agent-base/repo-checkout:/usr/local/bin/repo-checkout:ro"));
   rmSync(dir, { recursive: true });
-});
-
-test("box commits get the AidenHQ trailer from the commit-msg hook, once", () => {
-  const dir = mkdtempSync(join(tmpdir(), "hooks-"));
-  try {
-    jobMounts({ resolvConf: "/r", workspace: "/w", outDir: "/o", codexHome: "/c", runnerWork: dir, repo: "/repo", engineDir: "modules/e" });
-    const hook = join(dir, ".guard-hooks", "commit-msg"), msg = join(dir, "msg");
-    assert.equal(statSync(hook).mode & 0o111, 0o111);
-    writeFileSync(msg, "fix: a thing\n");
-    for (let i = 0; i < 2; i++) execFileSync(hook, [msg], { env: { ...process.env, AIDENHQ_AGENT_NAME: "Engineer" } });
-    assert.equal(readFileSync(msg, "utf8"), "fix: a thing\n\nCo-authored-by: AidenHQ Engineer <noreply@aidenhq.ai>\n");
-  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
