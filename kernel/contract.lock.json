@@ -140,6 +140,7 @@
     "route POST /v1/notify/send": {"state":"experimental","fp":"auth=module"},
     "route POST /v1/operator/:op": {"state":"experimental","fp":"auth=operator-key"},
     "route POST /v1/owner/decide": {"state":"experimental","fp":"auth=board+mcp"},
+    "route POST /v1/owner/update": {"state":"experimental","fp":"auth=board+mcp"},
     "route POST /v1/receipts/verify": {"state":"experimental","fp":"auth=module"},
     "route POST /v1/reviews": {"state":"experimental","fp":"auth=reviewer-key"},
     "route POST /v1/reviews/:review": {"state":"experimental","fp":"auth=review-token"},

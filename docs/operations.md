@@ -113,6 +113,9 @@ It is idempotent. The Engineer runs it for you after you approve a change.
   it. State: `data/updates/state.json`; the board reads `~/.local/state/aidenhq/board/updates.json`. By hand:
   `node kernel/src/updates.ts check`. The installer run again also moves the pin (`node kernel/src/updates.ts pin <release>
   <distro sha>`, from `ops/setup.sh`) and refuses an older release.
+- **A release install on a main commit:** the owner's Claude calls the owner MCP's `update` (`main` or a sha); the updater
+  verifies it (on main, after what runs, `ci-required` green on it) and files it like Update now. Leaving releases for
+  good: [operations/hand-pinned.md](operations/hand-pinned.md).
 - **Roll back:** revert the instance commit (or set `product:` to the earlier sha), push, apply again. That rolls back
   code, not module data. `ops/rollback.sh <n> [--plan]` goes back to apply generation `n`
   (`~/.local/state/aidenhq/generations.jsonl`) with the data it needs (above); `--plan` prints the shas and each module

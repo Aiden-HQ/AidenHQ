@@ -47,3 +47,51 @@ test("with a release, the instance drops its obsolete `aidenhq` marketplace entr
   assert.equal("marketplaces" in withRelease(inst({ marketplaces: [market()] }), resolveRelease(file(), inst())), false, "no empty list");
   assert.deepEqual(withRelease({ product: K }, null), { product: K });
 });
+
+test("a product after the release's kernel on the kernel repo's main resolves with no prebuilt images (apply builds); anything else is refused", () => {
+  const root = mkdtempSync(join(tmpdir(), "kernel-"));
+  const src = join(root, "src");
+  mkdirSync(src);
+  const g = (...a) => execFileSync("git", ["-C", src, "-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "init.defaultBranch=main", ...a], { encoding: "utf8" }).trim();
+  g("init", "-q");
+  const commit = (n) => { writeFileSync(join(src, "k.txt"), n); g("add", "."); g("commit", "-qm", n); return g("rev-parse", "HEAD"); };
+  const [k1, k2] = [commit("1"), commit("2")];
+  g("checkout", "-qb", "side", k1);
+  const off = commit("side");
+  g("checkout", "-q", "main");
+  const kernelUrl = join(root, "kernel.git");
+  execFileSync("git", ["clone", "-q", "--bare", src, kernelUrl]);
+  execFileSync("git", ["--git-dir", kernelUrl, "branch", "-q", "-D", "side"]);
+  execFileSync("git", ["--git-dir", kernelUrl, "fetch", "-q", src, "side"]); // the commit is there, but off main (a PR's)
+  // The distro: one release whose kernel is k1, with prebuilt images.
+  const dist = join(root, "distro");
+  mkdirSync(join(dist, "releases"), { recursive: true });
+  writeFileSync(join(dist, "releases/2026.11.json"), JSON.stringify({ release: "2026.11", kernel: k1, images: { board: `ghcr.io/aiden-hq/board@sha256:${"e".repeat(64)}` } }));
+  const d = (...a) => execFileSync("git", ["-C", dist, "-c", "user.name=t", "-c", "user.email=t@example.com", ...a], { encoding: "utf8" }).trim();
+  d("init", "-q"); d("add", "."); d("commit", "-qm", "r");
+  const distSha = d("rev-parse", "HEAD");
+  execFileSync("git", ["clone", "-q", "--bare", dist, `${dist}.git`]);
+  const pin = (product) => ({ product, release: { name: "2026.11", source: { source: "url", url: `${dist}.git` }, sha: distSha } });
+  const f = () => ({ cacheDir: mkdtempSync(join(tmpdir(), "sources-")) });
+  // GitHub's check runs, by commit: product CI's ci-required, GitHub Actions'.
+  const run = (conclusion) => ({ name: "ci-required", status: "completed", conclusion, started_at: "2026-11-20T10:00:00Z", app: { slug: "github-actions" } });
+  const ci = { [k2]: [run("success")], [off]: [run("success")] };
+  const runs = (sha) => ({ check_runs: ci[sha] ?? [] });
+  const read = (product) => readRelease(pin(product), f(), kernelUrl, runs);
+  // Green is remembered per sha: a cached green commit resolves without asking GitHub.
+  const warm = f();
+  readRelease(pin(k2), warm, kernelUrl, runs);
+  assert.deepEqual(readRelease(pin(k2), warm, kernelUrl, () => { throw new Error("GitHub asked again"); }).images, {});
+  assert.equal(Object.keys(read(k1).images).length, 1, "the release's own kernel: its images are pulled");
+  assert.deepEqual(read(k2), { name: "2026.11", kernel: k1, images: {} }, "a later main commit with CI green: built from source");
+  assert.throws(() => read(off), /isn't on the kernel repository's main/, "off main");
+  assert.throws(() => read(C), /isn't on the kernel repository's main/, "unknown commit");
+  // CI must be green on that exact commit: red, missing, still running or unreadable each refuse the apply.
+  ci[k2] = [run("failure")];
+  assert.throws(() => read(k2), /CI failed on/);
+  ci[k2] = [];
+  assert.throws(() => read(k2), /has no ci-required check/);
+  ci[k2] = [{ ...run(null), status: "in_progress" }];
+  assert.throws(() => read(k2), /CI is still running/);
+  assert.throws(() => readRelease(pin(k2), f(), kernelUrl, () => { throw new Error("api.github.com answered 503"); }), /CI status can't be read \(api\.github\.com answered 503\)/);
+});

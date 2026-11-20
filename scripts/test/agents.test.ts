@@ -181,7 +181,8 @@ test("the Fleet Steward's grants: reads, plus exactly its predecessors' writes; 
   assert.deepEqual(a.enabled_tools.github, ["github_app_issue_status", "github_issue_link"]);
   assert.equal(a.web_search, "disabled");
   assert.ok(!a.enabled_tools.apps.includes("web_view"));
-  assert.deepEqual(a.roles, ["fleet-read", "fleet-audit", "librarian", "routing-tuner"]);
+  // product-issues: the digest's live-fix check reads the product-bug issues' status (github_app_issue_status); filing is the Maintainer's.
+  assert.deepEqual(a.roles, ["fleet-read", "fleet-audit", "librarian", "routing-tuner", "product-issues"]);
   assert.deepEqual(a.delegate_to, ["engineer", "app-maintainer", "app-owners", "architect", "maintainer"]);
   assert.ok(r.paperclip.agents.maintainer.enabled_tools.github.includes("github_app_issue"), "the Maintainer files product bugs");
 });

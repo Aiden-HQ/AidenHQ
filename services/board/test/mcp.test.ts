@@ -107,12 +107,12 @@ describe("mcp end to end", () => {
     expect(meta.json).toMatchObject({ resource: "https://board.example.com/mcp", authorization_servers: ["https://admin.example.com"] });
   });
 
-  it("lists fourteen tools, nine of them read-only, each with an output schema", async () => {
+  it("lists fifteen tools, nine of them read-only, each with an output schema", async () => {
     const { json } = await rpc("tools/list", {});
     const tools = json.result.tools as { name: string; annotations: { readOnlyHint: boolean; destructiveHint?: boolean }; outputSchema: unknown }[];
-    expect(tools.map((t) => t.name).sort()).toEqual(["approvals", "apps", "ask", "change_settings", "connect", "costs", "create_task", "decide", "fleet", "get_task", "modules", "status", "tasks", "update_task"]);
+    expect(tools.map((t) => t.name).sort()).toEqual(["approvals", "apps", "ask", "change_settings", "connect", "costs", "create_task", "decide", "fleet", "get_task", "modules", "status", "tasks", "update", "update_task"]);
     expect(tools.filter((t) => t.annotations.readOnlyHint)).toHaveLength(9);
-    expect(tools.filter((t) => t.annotations.destructiveHint).map((t) => t.name).sort()).toEqual(["change_settings", "decide"]);
+    expect(tools.filter((t) => t.annotations.destructiveHint).map((t) => t.name).sort()).toEqual(["change_settings", "decide", "update"]);
     expect(tools.every((t) => t.outputSchema)).toBe(true);
   });
 
@@ -171,6 +171,14 @@ describe("mcp end to end", () => {
     expect(kernel.calls.filter((c) => c.path === "/v1/owner/decide").at(-1)!.body).not.toHaveProperty("by");
   });
 
+  it("update hands main to the kernel's updater as the bearer, and a refusal comes back as the error", async () => {
+    expect((await call("update", { to: "main" })).json.result.structuredContent).toEqual({ said: expect.stringContaining("Verified") });
+    expect(kernel.calls.filter((c) => c.path === "/v1/owner/update").at(-1)!.body).toMatchObject({ to: "main" });
+    const refused = (await call("update", { to: "c".repeat(40) })).json.result;
+    expect(refused.isError).toBe(true);
+    expect(refused.content[0].text).toContain("isn't on Aiden-HQ/AidenHQ's main");
+  });
+
   it("get_task returns the newest comments, cut short, repeated notes counted once, and the agent by key and name", async () => {
     const first = (await call("get_task", { id: "WOR-1" })).json.result;
     expect(first.isError).toBeFalsy();
@@ -221,7 +229,7 @@ describe("mcp end to end", () => {
       ["update_task", { id: "WOR-1", action: "comment", text: "ok" }], ["approvals", {}], ["approvals", { state: "recent", id: card1 }],
       ["decide", { cards: [{ id: card1, digest: "b".repeat(40), decision: "reject" }] }], ["fleet", {}], ["fleet", { agent: "chief-of-staff", include: ["handbook", "grants", "runs"] }],
       ["modules", {}], ["modules", { name: "core" }], ["modules", { browse: "" }], ["change_settings", { changes: [{ kind: "setting", key: "grading", value: "off" }] }],
-      ["connect", {}], ["apps", {}], ["costs", {}], ["costs", { view: "features" }],
+      ["connect", {}], ["apps", {}], ["costs", {}], ["costs", { view: "features" }], ["update", { to: "main" }],
     ];
     for (const [name, args] of calls) {
       const r = (await call(name, args)).json;
