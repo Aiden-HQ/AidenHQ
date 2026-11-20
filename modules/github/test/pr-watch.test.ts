@@ -131,13 +131,14 @@ test("an owner's PR records its CI per head and its merge once it leaves the ope
 
 // The behaviours ported from the runner, against one fake GitHub and kernel: each case is one agent PR (acme/app#N, task ACME-N).
 const redChecks = (extra = {}) => ({ state: "FAILURE", contexts: { pageInfo: { hasNextPage: false }, nodes: [{ __typename: "CheckRun", databaseId: 77, name: "test", status: "COMPLETED", conclusion: "FAILURE", checkSuite: { workflowRun: { databaseId: 500 } }, ...extra }] } });
-async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name: "Build" }], update = 202, wakeFails = 0, closeFails = 0, records = [] } = {}) {
-  const woke = [], gh = [];
+async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name: "Build" }], update = 202, wakeFails = 0, closeFails = 0, records = [], merge = () => [200, {}] } = {}) {
+  const woke = [], gh = [], merges = [];
   const kernel = await listen(async (req, res) => {
     let body = "";
     for await (const c of req) body += c;
     if (req.url === "/v1/wakes" && wakeFails-- > 0) return res.writeHead(503).end("{}");
     if (req.url === "/v1/wakes") woke.push(JSON.parse(body));
+    if (req.url === "/v1/merges") { merges.push(JSON.parse(body)); const [status, answer] = merge(); return res.writeHead(status).end(JSON.stringify(answer)); }
     res.writeHead(200).end(JSON.stringify(req.url.startsWith("/v1/work") ? { status: taskStatus, records } : {}));
   });
   t.after(() => kernel.s.close());
@@ -156,7 +157,7 @@ async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name:
   const watch = startPrWatch({ repos: [{ repo: "acme/app", duties: "all" }], kernelUrl: kernel.url, key: "k", cacheDir, app: { token: async () => "tok" }, gh: api });
   t.after(() => watch.stop());
   const agentPr = (n, o = {}) => { notePrTask(cacheDir, `https://github.com/acme/app/pull/${n}`, { task: `ACME-${n}`, branch: `b${n}` }); return pr(n, { author: { __typename: "Bot", login: "aidenhq" }, ...o }); };
-  return { woke, gh, watch, cacheDir, agentPr, set: (v) => { open = v; }, behind: (v) => { behind = v; update = 422; } };
+  return { woke, gh, merges, watch, cacheDir, agentPr, set: (v) => { open = v; }, behind: (v) => { behind = v; update = 422; } };
 }
 const redPr = (n, o = {}) => ({ commits: { nodes: [{ commit: { statusCheckRollup: redChecks() } }] }, ...o });
 
@@ -213,6 +214,34 @@ test("a behind, non-conflicting red PR is updated by GitHub, not woken; a refuse
   assert.ok(d.gh.includes("PUT /repos/acme/app/pulls/6/update-branch merge"));
   assert.equal(d.woke.length, 1);
   assert.match(d.woke[0].text, /Rebase the PR's branch onto `origin\/main`/);
+});
+
+test("a green agent PR has its merge filed by the kernel for its task, once per head; a head its task's PR didn't push wakes the task", async (t) => {
+  const c = await rig(t, { merge: () => [200, { filed: { id: "r1", tier: 0, state: "claimed" } }] });
+  c.set([c.agentPr(3)]);
+  await c.watch.tick(); await c.watch.tick();
+  assert.deepEqual(c.merges, [{ task: "ACME-3", repo: "acme/app", number: 3, head: "h3", branch: "b3" }], "asked once at this head");
+  assert.equal(c.woke.length, 0, "no agent turn between green and the merge");
+  const merging = await rig(t, { merge: () => [200, { skip: "merging" }] });
+  merging.set([merging.agentPr(4)]);
+  await merging.watch.tick(); await merging.watch.tick();
+  assert.deepEqual([merging.merges.length, merging.woke.length], [1, 0], "a merge already asked for: nothing more");
+  const unapproved = await rig(t, { merge: () => [200, { skip: "not-approved" }] });
+  unapproved.set([unapproved.agentPr(5)]);
+  await unapproved.watch.tick(); await unapproved.watch.tick();
+  assert.equal(unapproved.woke.length, 1, "not the head its task's approved PR pushed: the agent decides");
+  assert.match(unapproved.woke[0].text, /checks are green at `h5`.*aidenhq merge/);
+  const down = await rig(t, { merge: () => [503, {}] });
+  down.set([down.agentPr(6)]);
+  await down.watch.tick();
+  assert.deepEqual([down.merges.length, down.woke.length], [1, 0], "the kernel didn't answer: nothing settled");
+  await down.watch.tick();
+  assert.equal(down.merges.length, 2, "asked again next tick");
+  const two = await rig(t, { merge: () => [200, { filed: { id: "r2", tier: 0, state: "claimed" } }] });
+  notePrTask(two.cacheDir, "https://github.com/acme/app/pull/8", { task: "ACME-7", branch: "b8" });
+  two.set([two.agentPr(7), pr(8, { author: { __typename: "Bot", login: "aidenhq" }, checks: "PENDING" })]);
+  await two.watch.tick();
+  assert.deepEqual([two.merges.length, two.woke.length], [0, 1], "a task with two open PRs merges them in its own order: woken");
 });
 
 test("a wake the kernel doesn't take (a restart) is sent again on the next tick", async (t) => {
