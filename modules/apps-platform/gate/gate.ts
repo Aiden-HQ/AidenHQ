@@ -86,7 +86,7 @@ export interface AccountState { accounts: Map<string, Account>; apps: Record<str
 interface Signer { key: KeyObject; kid: string }
 export interface IdentityClaims { iss: string; aud: string; sub: string; kind: string; email: VerifiedEmail; name?: string; role: string; idp?: string; iat: number; exp: number }
 type KeyLookup = (kid: string) => Promise<KeyObject | undefined>;
-/** The board's answer for an app's Access page (kernel/src/app-access.ts). */
+/** The board's answer for an app's Access page (modules/apps-platform/src/app-access.ts, in the kernel). */
 export interface AccessPageData {
   app: string;
   host: string;

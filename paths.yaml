@@ -67,6 +67,7 @@ paths:
       - modules/primer/connections/primer-mcp/src/publish.ts
       # Module code the kernel runs in its own process, with the vault and the accounts DB: the kernel's floor.
       - modules/models-openrouter/src/
+      - modules/apps-platform/src/
   # The owner-approved source exceptions (review-request.mjs reads them): only the owner's own tap makes a record one, in
   # every repository, so no PR records its own approval.
   - sensitivity: 2

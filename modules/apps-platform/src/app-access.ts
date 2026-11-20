@@ -1,10 +1,12 @@
-// App access (docs/design/access.md): per-app roles by email, each app's default,
+// App access (docs/design/access.md), the apps platform's, run in the kernel's process (accounts.ts, signin.ts: the gate's
+// access listener on 127.0.0.1:3129 calls it): per-app roles by email, each app's default,
 // the change log, and in-app requests, in the accounts DB (data/kernel/auth/auth.db; lean 3g: the kernel is its one opener). Keyed by app name: an app that leaves
 // gate.json takes every row with it. The gate enforces only `blocked`; the app decides what other roles may do.
 import { createHmac, randomBytes } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
-import type { Log } from "./auth-rules.ts";
+/** The kernel's pino-style log (kernel/src/auth-rules.ts Log). */
+type Log = { info: (o: object, m: string) => void; warn: (o: object, m: string) => void; error: (o: object, m: string) => void };
 
 export const CORE_ROLES = ["blocked", "member", "admin"] as const;
 /** A custom role's name (the manifest's charset); core names are reserved. */

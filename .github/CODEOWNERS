@@ -3,6 +3,7 @@
 /modules/github/            @Aiden-HQ/maintainers
 /kernel/                           @Aiden-HQ/maintainers
 /modules/models-openrouter/src/    @Aiden-HQ/maintainers
+/modules/apps-platform/src/        @Aiden-HQ/maintainers
 /modules/apps-platform/gate/                    @Aiden-HQ/maintainers
 /ops/                              @Aiden-HQ/maintainers
 /scripts/paperclip-setup.ts       @Aiden-HQ/maintainers
