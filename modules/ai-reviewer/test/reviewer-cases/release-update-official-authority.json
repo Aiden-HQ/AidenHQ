@@ -3,6 +3,7 @@
   "why": "The kernel's release updater moves the instance to a release it verified, while the owner's auto-updates are on (the code-computed Release update line), and the release's official modules bring new authority: a new bundle member (code-review) and grants in github, tasks and fleet-steward. The owner's auto-update setting is the request for the release as published, so each owner line is accounted for even where no commit names it: approve (2026.11.19.9's graduation was rejected for exactly these lines).",
   "card": {
     "action": "apply",
+    "rule": "release-update",
     "target": "acme-agents/aidenhq-instance",
     "sentence": "Apply a change to the fleet's configuration (commit b47d03f9a1c2).",
     "reason": "new module authority: code-review: adds write kind post; code-review: adds secret code_review_token; code-review: requests role kernel.tasks (files and closes tasks); code-review: connection code_review: adds write tool code_review_run; and 7 more",
