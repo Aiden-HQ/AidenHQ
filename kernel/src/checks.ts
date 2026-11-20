@@ -19,6 +19,7 @@ import type { Resolver } from "./net.ts";
 import { gateMode } from "./gates.ts";
 import { fail } from "./proxy.ts";
 import { noteFact, openFacts } from "./facts.ts";
+import { inTx, strictFact } from "./factlog.ts";
 import { parseGraderNote, type GraderNote } from "./grader-note.ts";
 
 export type Check = { module: string; at: string; url: string; rubric?: string; grade?: string; auth_secret: string; agents?: string[]; label?: string; mode?: "observe" };
@@ -60,6 +61,10 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
   db.exec("CREATE TABLE IF NOT EXISTS check_holds (task TEXT NOT NULL, check_id TEXT NOT NULL, at TEXT NOT NULL, PRIMARY KEY (task, check_id))");
   db.exec("CREATE TABLE IF NOT EXISTS graded_tasks (task TEXT PRIMARY KEY, module TEXT NOT NULL)"); // written by modtasks.ts
   const facts = openFacts(db);
+  const strict = strictFact(facts);
+  // Every hold the gate placed has its fact (task state reads a held task as waiting on the check's module); a hold recorded
+  // before the fact was written gets it here, once (its id is the row's own).
+  for (const r of db.prepare("SELECT task, check_id, at FROM check_holds").all() as { task: string; check_id: string; at: string }[]) strict(heldFact(r.task, r.check_id, r.at));
   const finishing = () => {
     try {
       const all = Object.entries(registry()).filter(([, c]) => c.at === "task.finish" && c.url);
@@ -122,7 +127,7 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
    * before anything moves unless a check answers `accepts`, so no other cross-task close passes.
    */
   /** A finish check's verdict on a task (a grader's reopen, say): an outcome the routing learning loop trusts (routing-tune.ts), never its words. */
-  const verdictEvent = (task: string, check: string, verdict: string) => noteFact(facts, { type: "finish.verdict", subject: `task:${task}`, version: `e-${randomBytes(8).toString("hex")}`, task, at: new Date().toISOString(), actor: "kernel", data: { check, verdict } });
+  const verdictEvent = (task: string, check: string, verdict: string) => noteFact(facts, verdictFact(task, check, verdict));
 
   async function finish(ref: string, caller: { agent?: string; tool?: string; via: string; cross?: boolean }): Promise<Finish> {
     const refuseCross = () => fail(403, "forbidden", `only this job's own task is finished here; ${ref} is finished by its assignee, or accepted by its delegator once grading has escalated it`);
@@ -182,7 +187,13 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
       const nextCheckAt = held.find((x) => x.v.until)?.v.until ?? new Date(Date.now() + DEFAULT_HOLD_CHECK_MS).toISOString();
       const monitor = i.assigneeAgentId && !i.assigneeUserId ? { executionPolicy: { ...(i.executionPolicy ?? {}), monitor: { nextCheckAt, notes: String(held[0]!.v.reason ?? "").slice(0, 500) } } } : {};
       await patch(i, { ...(i.status !== "in_review" ? { status: "in_review" } : {}), ...(add.length ? { labelIds: [...ids, ...new Set(add.map((l) => l.id))] } : {}), ...monitor });
-      for (const x of held) db.prepare("INSERT OR REPLACE INTO check_holds (task, check_id, at) VALUES (?, ?, ?)").run(i.id, x.id, new Date().toISOString());
+      const at = new Date().toISOString();
+      inTx(db, "finish_held", () => {
+        for (const x of held) {
+          db.prepare("INSERT OR REPLACE INTO check_holds (task, check_id, at) VALUES (?, ?, ?)").run(i.id, x.id, at);
+          strict(heldFact(i.id, x.id, at));
+        }
+      });
       log("finish held", { task: i.identifier, via: caller.via, checks: held.map((x) => x.id) });
       return { pass: false, held: true, state: String(held[0]!.v.state ?? held[0]!.v.verdict), reason: String(held[0]!.v.reason ?? "") };
     }
@@ -233,8 +244,12 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
       const ids = labelIds(i);
       await patch(i, { status: to, ...(l && ids.includes(l.id) ? { labelIds: ids.filter((x) => x !== l.id) } : {}), ...comment });
     } else await unlabel(i, c);
-    db.prepare("DELETE FROM check_holds WHERE task = ? AND check_id = ?").run(i.id, id);
-    if (to) verdictEvent(i.id, id, String(b.verdict));
+    // The hold ends with its verdict's fact; `release` is one too: the check hands the decision to the task's delegator
+    // (grading's escalation), so task state reads the task, still in review, as waiting on its delegator.
+    inTx(db, "finish_resolved", () => {
+      db.prepare("DELETE FROM check_holds WHERE task = ? AND check_id = ?").run(i.id, id);
+      strict(verdictFact(i.id, id, String(b.verdict)));
+    });
     log("finish check resolved", { task: i.identifier, check: id, verdict: b.verdict });
     return { ok: true };
   }
@@ -285,3 +300,8 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
   return { finish, resolve, held, rubric, grade };
 }
 export type Checks = ReturnType<typeof createChecks>;
+
+/** The finish gate's hold of a task by one check (its `check_holds` row: the version is the row's own time). */
+const heldFact = (task: string, check: string, at: string) => ({ type: "finish.held", subject: `task:${task}`, version: `${check}@${at}`, at, actor: "kernel", task, data: { check } });
+/** A check's verdict on a task: ok, reopen or block resolve its hold, release hands the decision to the delegator. */
+const verdictFact = (task: string, check: string, verdict: string) => ({ type: "finish.verdict", subject: `task:${task}`, version: `e-${randomBytes(8).toString("hex")}`, task, at: new Date().toISOString(), actor: "kernel", data: { check, verdict } });

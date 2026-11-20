@@ -1,40 +1,25 @@
-// A retired agent's open tasks must not stay assigned to a key nothing resolves: setup hands them to the one remaining agent
-// in the same department, or back to the owner, before it terminates the agent.
+// No open task stays held by an agent that is gone: setup terminates an agent no longer configured, and every open task a
+// terminated agent holds (now or from an earlier retirement) moves to backlog under its successor, with one triage task each.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { busyRemovedMembers, retireUnconfigured } from "../retire-agents.ts";
 
 const companyId = "co-1";
-const ownerId = "user-owner";
 
-/** A fake board API over a company's agents and issues; every call is recorded in order. */
-function fakeBoard({ agents, issues = [], failPatch = new Set(), failMe = false, failList = {} }) {
+/** A fake board over a company's agents and issues (its agent list leaves out terminated ones, as Paperclip's does). */
+function fakeBoard({ agents, issues = [], failPatch = new Set() }) {
   const calls = [];
   const rows = issues.map((i) => ({ ...i }));
-  // How many listings fail, per agent id (Infinity: never succeeds).
-  const failures = new Map(Object.entries(failList));
   const api = async (method, path, body) => {
     calls.push({ method, path, body });
     const url = new URL(path, "http://board");
-    if (method === "GET" && url.pathname === `/api/companies/${companyId}/agents`) return { json: agents };
+    if (method === "GET" && url.pathname === `/api/companies/${companyId}/agents`) return { json: agents.filter((a) => a.status !== "terminated") };
     if (method === "GET" && url.pathname === `/api/companies/${companyId}/routines`) return { json: [] };
-    if (method === "GET" && url.pathname === "/api/cli-auth/me") {
-      if (failMe) throw new Error("GET /api/cli-auth/me → 503");
-      return { json: { userId: ownerId } };
-    }
+    if (method === "GET" && /^\/api\/agents\/[^/]+$/.test(url.pathname)) return { json: agents.find((a) => a.id === url.pathname.split("/").pop()) };
     if (method === "GET" && url.pathname === `/api/companies/${companyId}/issues`) {
-      const assigneeForFailure = url.searchParams.get("assigneeAgentId");
-      const left = failures.get(assigneeForFailure) ?? 0;
-      if (left > 0) {
-        failures.set(assigneeForFailure, left - 1);
-        throw new Error(`GET ${path} → 503`);
-      }
       const status = (url.searchParams.get("status") ?? "").split(",");
       const assignee = url.searchParams.get("assigneeAgentId");
-      const offset = Number(url.searchParams.get("offset") ?? 0);
-      const limit = Number(url.searchParams.get("limit") ?? 500);
-      const matched = rows.filter((i) => status.includes(i.status) && (!assignee || i.assigneeAgentId === assignee));
-      return { json: matched.slice(offset, offset + limit) };
+      return { json: rows.filter((i) => status.includes(i.status) && (!assignee || i.assigneeAgentId === assignee)) };
     }
     if (method === "PATCH" && /^\/api\/issues\/[^/]+$/.test(url.pathname)) {
       const id = url.pathname.split("/").pop();
@@ -42,129 +27,63 @@ function fakeBoard({ agents, issues = [], failPatch = new Set(), failMe = false,
       Object.assign(rows.find((i) => i.id === id), body);
       return { json: rows.find((i) => i.id === id) };
     }
-    if (method === "POST" && /^\/api\/issues\/[^/]+\/comments$/.test(url.pathname)) return { json: { id: "comment" } };
-    if (method === "POST" && /^\/api\/agents\/[^/]+\/terminate$/.test(url.pathname)) return { json: {} };
+    if (method === "POST" && url.pathname === `/api/companies/${companyId}/issues`) { rows.push({ id: `new-${rows.length}`, ...body }); return { json: {} }; }
+    if (method === "POST" && /^\/api\/agents\/[^/]+\/terminate$/.test(url.pathname)) { agents.find((a) => a.id === url.pathname.split("/")[3]).status = "terminated"; return { json: {} }; }
     throw new Error(`unexpected ${method} ${path}`);
   };
   return { api, calls, rows };
 }
 
-const retired = { id: "agent-old", name: "Engineer (OpenRouter)", status: "active", metadata: { setupKey: "aidenhq:engineer-openrouter", department: { id: "engineering", name: "Engineering", order: 1 } } };
-const engineer = { id: "agent-new", name: "Engineer", status: "active", metadata: { setupKey: "aidenhq:engineer", department: { id: "engineering", name: "Engineering", order: 1 } } };
-const reviewer = { id: "agent-reviewer", name: "Reviewer", status: "active", metadata: { setupKey: "aidenhq:reviewer", department: { id: "engineering", name: "Engineering", order: 1 } } };
-const issue = (id, status = "todo", assigneeAgentId = retired.id) => ({ id, identifier: id.toUpperCase(), status, assigneeAgentId, assigneeUserId: null });
+const agent = (id, key, extra = {}) => ({ id, name: key, status: "idle", metadata: { setupKey: `aidenhq:${key}`, ...extra } });
+const issue = (id, status, assigneeAgentId) => ({ id, identifier: id.toUpperCase(), title: `task ${id}`, status, assigneeAgentId, assigneeUserId: null });
+const cfg = { agents: { "chief-of-staff": { roles: ["fleet-admin"] }, "fleet-steward": { roles: ["fleet-audit"] } }, routines: {} };
+const run = (board) => retireUnconfigured({ api: board.api, companyId, cfg, step: () => {} });
+const filed = (board) => board.calls.filter((c) => c.method === "POST" && c.path === `/api/companies/${companyId}/issues`);
 
-const cfgFor = (agents) => ({ agents, routines: {} });
-const department = { id: "engineering", name: "Engineering", order: 1 };
-
-const run = (board, cfg = cfgFor({ engineer: { name: "Engineer", department } })) =>
-  retireUnconfigured({ api: board.api, companyId, cfg, step: () => {} });
-
-test("a retired agent's open tasks go to the one remaining agent in its department, each with a comment, before the terminate", async () => {
-  const board = fakeBoard({ agents: [retired, engineer], issues: [issue("issue-1"), issue("issue-2", "in_progress")] });
+test("a retired agent's open tasks go to the chief of staff's backlog in one move each, with one triage task; a second run does nothing", async () => {
+  const cos = agent("a-cos", "chief-of-staff"), steward = agent("a-steward", "fleet-steward");
+  const old = agent("a-old", "platform-engineer"); // no longer configured: retired by this run
+  const gone = { ...agent("a-gone", "fleet-ops"), status: "terminated" }; // retired by an earlier run that left its tasks
+  const board = fakeBoard({ agents: [cos, steward, old, gone], issues: [issue("i1", "in_review", "a-old"), issue("i2", "blocked", "a-old"), issue("i3", "todo", "a-gone"), issue("i4", "done", "a-old"), issue("i5", "todo", "a-steward")] });
   await run(board);
 
-  const patches = board.calls.filter((c) => c.method === "PATCH" && c.path.startsWith("/api/issues/"));
-  assert.deepEqual(patches.map((c) => c.path), ["/api/issues/issue-1", "/api/issues/issue-2"]);
-  for (const p of patches) assert.deepEqual(p.body, { assigneeAgentId: engineer.id, assigneeUserId: null });
-  const comments = board.calls.filter((c) => c.method === "POST" && c.path.endsWith("/comments"));
-  assert.deepEqual(comments.map((c) => c.path), ["/api/issues/issue-1/comments", "/api/issues/issue-2/comments"]);
-  for (const c of comments) assert.match(c.body.body, /Engineer \(OpenRouter\) was retired/);
+  assert.ok(board.calls.some((c) => c.path === "/api/agents/a-old/terminate"));
+  const patches = board.calls.filter((c) => c.method === "PATCH");
+  assert.deepEqual(patches.map((c) => c.path), ["/api/issues/i1", "/api/issues/i2", "/api/issues/i3"], "done tasks and live agents' tasks stay");
+  for (const p of patches) assert.deepEqual(p.body, { status: "backlog", assigneeAgentId: "a-cos", assigneeUserId: null });
+  assert.ok(!board.calls.some((c) => c.path.endsWith("/comments")), "no comment: on a blocked task it would wake the holder");
+  const [triage, ...more] = filed(board);
+  assert.equal(more.length, 0, "one triage task per successor");
+  assert.equal(triage.body.assigneeAgentId, "a-cos");
+  assert.equal(triage.body.status, "todo");
+  for (const id of ["I1", "I2", "I3"]) assert.match(triage.body.description, new RegExp(`- ${id}: task ${id.toLowerCase()}`));
 
-  const terminatedAt = board.calls.findIndex((c) => c.method === "POST" && c.path === `/api/agents/${retired.id}/terminate`);
-  assert.ok(terminatedAt > 0, "the agent is terminated");
-  assert.ok(terminatedAt > board.calls.findIndex((c) => c.path === "/api/issues/issue-1"), "terminate comes after the moves");
+  const before = board.calls.length;
+  await run(board);
+  assert.ok(!board.calls.slice(before).some((c) => c.method === "PATCH" || c.method === "POST"), "nothing moves or is filed again");
 });
 
-test("with no remaining agent in the department the tasks go back to the owner, unassigned and todo", async () => {
-  const board = fakeBoard({ agents: [retired], issues: [issue("issue-1")] });
-  await run(board, cfgFor({ reviewer: { name: "Reviewer", department: { id: "quality", name: "Quality", order: 2 } } }));
-
-  const patch = board.calls.find((c) => c.method === "PATCH" && c.path === "/api/issues/issue-1");
-  assert.deepEqual(patch.body, { assigneeAgentId: null, assigneeUserId: ownerId, status: "todo" });
-  assert.match(board.calls.find((c) => c.path === "/api/issues/issue-1/comments").body.body, /Engineer \(OpenRouter\) was retired/);
-  assert.ok(board.calls.some((c) => c.path === `/api/agents/${retired.id}/terminate`));
-});
-
-test("two remaining agents in the department are no successor: the tasks go back to the owner, not to a pick", async () => {
-  const board = fakeBoard({ agents: [retired, engineer, reviewer], issues: [issue("issue-1")] });
-  await run(board, cfgFor({ engineer: { name: "Engineer", department }, reviewer: { name: "Reviewer", department } }));
-
-  const patch = board.calls.find((c) => c.method === "PATCH" && c.path === "/api/issues/issue-1");
-  assert.deepEqual(patch.body, { assigneeAgentId: null, assigneeUserId: ownerId, status: "todo" });
-  assert.ok(board.calls.some((c) => c.path === `/api/agents/${retired.id}/terminate`));
-});
-
-test("done and cancelled tasks are never listed as open, so they are never patched", async () => {
-  const board = fakeBoard({ agents: [retired, engineer], issues: [issue("issue-1"), issue("issue-done", "done"), issue("issue-cancelled", "cancelled")] });
+test("the successor is the agent with the gone agent's key, else one holding its role, before the chief of staff", async () => {
+  const cos = agent("a-cos", "chief-of-staff"), steward = agent("a-steward", "fleet-steward");
+  const oldSteward = { ...agent("a-s0", "fleet-steward"), status: "terminated" }; // its key came back as a-steward
+  const auditor = { ...agent("a-audit", "fleet-ops", { roles: ["fleet-audit"] }), status: "terminated" };
+  const board = fakeBoard({ agents: [cos, steward, oldSteward, auditor], issues: [issue("i1", "todo", "a-s0"), issue("i2", "in_review", "a-audit")] });
   await run(board);
 
-  const listing = new URL(board.calls.find((c) => c.method === "GET" && c.path.includes("/issues?")).path, "http://board");
-  assert.equal(listing.searchParams.get("status"), "backlog,todo,in_progress,in_review,blocked");
-  assert.equal(listing.searchParams.get("assigneeAgentId"), retired.id);
-  assert.deepEqual(board.calls.filter((c) => c.method === "PATCH").map((c) => c.path), ["/api/issues/issue-1"]);
-  assert.ok(!board.calls.some((c) => c.path === "/api/issues/issue-done/comments" || c.path === "/api/issues/issue-cancelled/comments"));
+  assert.deepEqual(board.rows.filter((i) => i.id.startsWith("i")).map((i) => [i.id, i.assigneeAgentId, i.status]), [["i1", "a-steward", "backlog"], ["i2", "a-steward", "backlog"]]);
+  assert.equal(filed(board).length, 1, "both land on one successor: one triage task");
 });
 
-test("a retired agent without a department, or a department without an id, is handed back to the owner", async () => {
-  for (const [id, metadata] of [["agent-nodep", { setupKey: "aidenhq:engineer-openrouter" }], ["agent-noid", { setupKey: "aidenhq:engineer-openrouter", department: { name: "Engineering", order: 1 } }]]) {
-    const agent = { ...retired, id, metadata };
-    const board = fakeBoard({ agents: [agent, engineer], issues: [issue("issue-1", "todo", id)] });
-    await run(board);
-
-    const patch = board.calls.find((c) => c.method === "PATCH" && c.path === "/api/issues/issue-1");
-    assert.deepEqual(patch.body, { assigneeAgentId: null, assigneeUserId: ownerId, status: "todo" }, id);
-    assert.match(board.calls.find((c) => c.path === "/api/issues/issue-1/comments").body.body, /was retired/);
-    assert.ok(board.calls.some((c) => c.path === `/api/agents/${id}/terminate`), id);
-  }
-});
-
-test("a failing patch on one task still moves the others and terminates the agent, naming the task it left", async () => {
-  const board = fakeBoard({ agents: [retired, engineer], issues: [issue("issue-1"), issue("issue-2"), issue("issue-3")], failPatch: new Set(["issue-2"]) });
-  const steps = [];
-  await retireUnconfigured({ api: board.api, companyId, cfg: cfgFor({ engineer: { name: "Engineer", department } }), step: (m) => steps.push(m) });
-
-  const patched = board.calls.filter((c) => c.method === "PATCH").map((c) => c.path);
-  assert.deepEqual(patched, ["/api/issues/issue-1", "/api/issues/issue-2", "/api/issues/issue-3"]);
-  assert.equal(board.rows.find((i) => i.id === "issue-1").assigneeAgentId, engineer.id);
-  assert.equal(board.rows.find((i) => i.id === "issue-3").assigneeAgentId, engineer.id);
-  assert.equal(board.rows.find((i) => i.id === "issue-2").assigneeAgentId, retired.id);
-  assert.ok(!board.calls.some((c) => c.path === "/api/issues/issue-2/comments"), "no comment on a task that did not move");
-  assert.ok(board.calls.some((c) => c.path === `/api/agents/${retired.id}/terminate`));
-  assert.ok(steps.some((m) => /Left 1 open task of Engineer \(OpenRouter\) .*ISSUE-2/.test(m)), "the stranded task is named in the run's output");
-});
-
-test("an unreadable owner id still takes the tasks off the dead key, unassigned", async () => {
-  const board = fakeBoard({ agents: [retired], issues: [issue("issue-1")], failMe: true });
-  await run(board, cfgFor({}));
-
-  const patch = board.calls.find((c) => c.method === "PATCH" && c.path === "/api/issues/issue-1");
-  assert.deepEqual(patch.body, { assigneeAgentId: null, assigneeUserId: null, status: "todo" });
-  assert.ok(board.calls.some((c) => c.path === `/api/agents/${retired.id}/terminate`));
-});
-
-test("an agent whose open tasks can't be listed is left in place, while the agents whose tasks can be listed are still retired", async () => {
-  const other = { ...retired, id: "agent-other", name: "Engineer (App)", metadata: { setupKey: "aidenhq:app-engineer", department: { id: "engineering", name: "Engineering", order: 1 } } };
-  const board = fakeBoard({
-    agents: [retired, other, engineer],
-    issues: [issue("issue-1"), issue("issue-2", "todo", other.id)],
-    failList: { [retired.id]: Infinity },
-  });
+test("a move that fails leaves that task for the next run and lists only what moved", async () => {
+  const cos = agent("a-cos", "chief-of-staff");
+  const gone = { ...agent("a-gone", "fleet-ops"), status: "terminated" };
+  const board = fakeBoard({ agents: [cos, gone], issues: [issue("i1", "todo", "a-gone"), issue("i2", "todo", "a-gone")], failPatch: new Set(["i1"]) });
   await run(board);
 
-  const terminated = board.calls.filter((c) => c.method === "POST" && c.path.endsWith("/terminate")).map((c) => c.path);
-  assert.deepEqual(terminated, [`/api/agents/${other.id}/terminate`], "the stranded agent is not terminated; the other still is");
-  assert.deepEqual(board.calls.filter((c) => c.method === "PATCH" && c.path.startsWith("/api/issues/")).map((c) => c.path), ["/api/issues/issue-2"]);
-  assert.equal(board.calls.filter((c) => c.method === "GET" && c.path.includes(`assigneeAgentId=${retired.id}`)).length, 3, "the listing is retried");
-});
-
-test("a listing that fails once is retried, and the agent is retired normally", async () => {
-  const board = fakeBoard({ agents: [retired, engineer], issues: [issue("issue-1")], failList: { [retired.id]: 1 } });
-  await run(board);
-
-  assert.equal(board.calls.filter((c) => c.method === "GET" && c.path.includes("/issues?")).length, 2);
-  assert.deepEqual(board.calls.find((c) => c.method === "PATCH" && c.path === "/api/issues/issue-1").body, { assigneeAgentId: engineer.id, assigneeUserId: null });
-  assert.ok(board.calls.some((c) => c.path === `/api/agents/${retired.id}/terminate`));
+  assert.equal(board.rows.find((i) => i.id === "i1").assigneeAgentId, "a-gone");
+  const [triage] = filed(board);
+  assert.match(triage.body.description, /- I2:/);
+  assert.doesNotMatch(triage.body.description, /- I1:/);
 });
 
 test("a team member removed while it holds open tasks is listed (setup refuses to go on); a drained one is not", async () => {

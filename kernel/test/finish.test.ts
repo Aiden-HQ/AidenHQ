@@ -165,6 +165,9 @@ test("/v1/checks/:task: only the check's module; release drops its label; ok and
   // One move: the status, the label off and the comment together.
   assert.deepEqual(writes.at(-1), { as: "board-key", body: { status: "done", labelIds: ["lbl-x"], comment: "Graded: satisfied." } });
   assert.equal((await resolve({ verdict: "reopen" })).status, 409, "the hold was resolved once");
+  // Each hold and its end are facts task state reads: held (waiting on the module), then released (the delegator's) or resolved.
+  const facts = k.records.db.prepare("SELECT type, json_extract(data, '$.verdict') AS v FROM facts WHERE task = ? AND type LIKE 'finish.%' ORDER BY seq").all(TASK).map((r) => `${r.type}${r.v ? `:${r.v}` : ""}`);
+  assert.deepEqual(facts, ["finish.verdict:release", "finish.held", "finish.verdict:ok"]);
 });
 
 test("a resolve the control plane fails keeps the hold, so the module's retry moves the task", async (t) => {
