@@ -6,28 +6,9 @@ import { QUERIES, useQuery } from "./queries";
 import { deciderOf, foldsInChat, outcomeOf } from "./conversation";
 import { Explain } from "./Explain";
 import { CardListSkeleton, SkeletonLines, Updating } from "./Skeleton";
-import type { Approval, ChatState } from "./types";
+import type { Approval, ShownState } from "./types";
+import { TaskState } from "./ui/TaskState";
 import { ago } from "./util";
-
-const STATE_CLASS: Record<ChatState, string> = {
-  working: "st-working",
-  queued: "st-queued",
-  "waiting for you": "st-you",
-  "waiting for approval": "st-you",
-  "in review": "st-queued",
-  done: "st-done",
-  failed: "st-failed",
-  idle: "st-done",
-};
-
-export function StateChip({ state, reason }: { state: ChatState; reason?: string }) {
-  return (
-    <span className={`state-chip ${STATE_CLASS[state]}`} title={reason ?? state}>
-      {state}
-      {reason ? `: ${reason}` : ""}
-    </span>
-  );
-}
 
 const OUTCOME: Record<Approval["state"], string> = {
   pending: "",
@@ -172,6 +153,8 @@ export function ApprovalCard({ a, open, inline, prefix = "", unfold }: { a: Appr
  * bookkeeping (task_finish, task_comment, task_block). Policy let it run, so it's audit, not something to decide; a
  * failed one is its agent's to retry. Hidden from the history unless asked for; pushes, PRs, merges, applies and deploys stay.
  */
+/** A task that needs the owner for more than a card (a card is already listed above, whole). */
+export const onYouBeyondCards = (i: { state: ShownState }) => i.state.attention.some((a) => a.who === "owner" && a.why !== "card");
 const toolCall = (a: Approval) => a.state === "auto" && a.action.includes(".");
 
 type Filter = "pending" | "done" | "failed" | "all";
@@ -210,7 +193,7 @@ export function ApprovalsView({ open, onSignIn }: { open: (identifier: string) =
   const pending = all.filter(forOwner);
   // Everything else waiting on you (the server's needs-you: an agent's open question, work handed to you); a task with
   // a Tier 2 card is already one of the cards above.
-  const others = (data?.items ?? []).filter((i) => i.state !== "waiting for approval");
+  const others = (data?.items ?? []).filter(onYouBeyondCards);
   const waitingCount = pending.length + others.length;
   const f: Filter = filter ?? (waitingCount ? "pending" : "all");
   const calls = all.filter(toolCall).length;
@@ -269,7 +252,7 @@ export function ApprovalsView({ open, onSignIn }: { open: (identifier: string) =
                   <li key={i.identifier}>
                     <button className="history-row" onClick={() => open(i.identifier)} title={`${i.identifier}: ${i.title}`}>
                       <span className="history-state">
-                        <StateChip state={i.state} reason={i.reason} />
+                        <TaskState state={i.state} />
                       </span>
                       <span className="history-who">{i.agent}</span>
                       <span className="history-what">{i.title}</span>

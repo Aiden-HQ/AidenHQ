@@ -41,6 +41,8 @@ export interface Card {
   working?: Working;
   /** The agents on the task. */
   crew?: CrewMember[];
+  /** The kernel's state of the task. */
+  state?: ShownState | null;
 }
 
 export type CrewState = "needs" | "failed" | "working" | "queued" | "done";
@@ -140,7 +142,7 @@ export interface AgentProfile {
 export interface TaskRow {
   identifier: string;
   title: string;
-  state: string;
+  state: ShownState | null;
   updatedAt: string;
   from: string | null;
 }
@@ -467,15 +469,33 @@ export interface AppRow {
   stats?: { cpu_pct: number; mem_bytes: number; mem_limit_bytes: number };
 }
 
-/** "idle": open, nothing running and nothing asked of you (no chip). */
-export type ChatState = "working" | "queued" | "waiting for you" | "waiting for approval" | "in review" | "done" | "failed" | "idle";
+/** The kernel's state of a task (services/board/src/task-state.ts; copied): null when it has no facts for the task. */
+export type TaskKind = "done" | "working" | "waiting" | "idle";
+export type TaskReason =
+  | "closed" | "cancelled" | "job_running" | "job_queued" | "job_held" | "card_review" | "card_owner" | "owner_wait" | "delegator_wait" | "handback"
+  | "blocked" | "agent_wait" | "scheduled" | "chat_turn" | "backlog" | "failed" | "orphaned" | "unknown" | "history_expired";
+export type Attention = { who: "owner" | "agent" | "reviewer"; why: "card" | "owner_wait" | "delegator_wait" | "handback" | "failed" | "orphaned" | "unknown" | "history_expired"; ref: string };
+export interface ShownState {
+  task: string;
+  identifier: string | null;
+  kind: TaskKind;
+  reason: TaskReason;
+  ref?: string;
+  since: string;
+  holder: string | null;
+  attention: Attention[];
+  stage?: string;
+  grade?: "pass" | "fail";
+  question?: string;
+  /** What `ref` names, in a few words: a card's sentence, a blocker's identifier, how a job ended. */
+  refLabel?: string;
+}
 export interface ChatRow {
   identifier: string;
   title: string;
   open: boolean;
   agent: { key: string; name: string };
-  state: ChatState;
-  reason?: string;
+  state: ShownState | null;
   updatedAt: string;
   /** The last thing said: the agent's reply or your message. */
   preview?: { text: string; at: string; from: "agent" | "you" };
@@ -486,14 +506,13 @@ export interface ChatRow {
   settled?: boolean;
 }
 
-export type LineageStatus = "running" | "done" | "blocked" | "approval" | "needs" | "waiting";
 /** A delegated task in the lineage strip; `tokens` and `usd` are null when the ledger has no calls for it. */
 export interface LineageRow {
   identifier: string;
   title: string;
   agent: string;
   model: string | null;
-  status: LineageStatus;
+  state: ShownState | null;
   latest: { text: string; at: string } | null;
   tokens: number | null;
   usd: number | null;
@@ -505,7 +524,7 @@ export interface LineageRow {
 export interface Lineage {
   identifier: string;
   children: LineageRow[];
-  total: { tasks: number; running: number; needs: number; blocked: number; tokens: number; usd: number; ms: number };
+  total: { tasks: number; running: number; needs: number; failed: number; tokens: number; usd: number; ms: number };
 }
 /** What a feature (a task and everything delegated under it) cost and how long it took. */
 export interface FeatureCost {
@@ -570,13 +589,12 @@ export interface ChatDetail {
   title: string;
   open: boolean;
   agent: { key: string; name: string };
-  state: ChatState;
-  reason?: string;
+  state: ShownState | null;
   messages: ChatMessage[];
   working: Working | null;
   files: FileView[];
   approvals: Approval[];
-  handedOut: { identifier: string; title: string; agent: string; state: ChatState; reason?: string; updatedAt: string; working: Working | null }[];
+  handedOut: { identifier: string; title: string; agent: string; state: ShownState | null; updatedAt: string; working: Working | null }[];
   parent: TaskRef | null;
   runs: RunLink[];
   /** Questions an agent this chat handed work to is asking the owner; answered on that agent's task (`identifier`). */
@@ -607,10 +625,12 @@ export interface RunTrace {
   ledger: { rows: { at: string; kind: string | null; model: string; input: number; cached: number; output: number; costUsd: number | null; ms: number | null; status: string | null; runKey: string | null }[]; usd: number | null; capUsd: number | null };
 }
 export interface NeedsYou {
-  count: number;
+  /** The fleet's counts of tasks needing the owner, failed, and idle with nothing to wake them. */
+  counts: { needs_you: number; failed: number; unexplained_idle: number };
   /** Open Tier 2 approval cards: the Approvals badge. */
   approvals: number;
-  items: { identifier: string; title: string; agent: string; state: ChatState; reason?: string }[];
+  /** Every open task with someone to act on it, oldest first. */
+  items: { identifier: string; title: string; agent: string; state: ShownState }[];
 }
 
 /** A multiple-choice question an agent asks (recommended option first); the owner may answer in his own words. */

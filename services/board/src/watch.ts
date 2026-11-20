@@ -8,12 +8,15 @@ import type { Events } from "./events.js";
 import type { Issue, Paperclip } from "./paperclip.js";
 import type { LiveRun } from "./runs.js";
 import type { Records } from "./records.js";
+import { statesOf, type TaskStates } from "./task-state.js";
 
 const TICK_MS = 2_000;
 /** Each look reaches back this far past the newest change seen, so a write that commits late isn't missed. */
 const OVERLAP_MS = 5_000;
 /** A working agent's live words come from its session log, which the board reads at most every 5s (live-activity.ts). */
 const PROGRESS_MS = 5_000;
+/** Time alone changes a task's state (a task idle for 15 minutes needs someone, a wake falls due), and nothing in Paperclip says so: every 30th tick (a minute) the open tasks' states are read. */
+const OPEN_EVERY_TICKS = 30;
 
 interface Watched {
   label?: string;
@@ -28,7 +31,15 @@ interface Watched {
   /** Progress to announce per task, and when each was last announced (at most every PROGRESS_MS). */
   progress: Set<string>;
   progressAt: Map<string, number>;
+  /** Each task's state as last seen (`kind|reason|ref|attention`), and the tasks the last open read listed. */
+  states: Map<string, string>;
+  open: Set<string>;
+  ticks: number;
 }
+
+/** What a view shows of a state: when this changes, the task is announced. */
+const stateKey = (r: { kind: string; reason: string; ref?: string; attention: { who: string; why: string; ref: string }[] }) =>
+  `${r.kind}|${r.reason}|${r.ref ?? ""}|${r.attention.map((a) => `${a.who}:${a.why}:${a.ref}`).join(",")}`;
 
 const isChat = (i: Issue, labelId?: string) => Boolean(i.labels?.some((l) => l.name === "chat") || (labelId && i.labelIds?.includes(labelId)));
 
@@ -36,12 +47,15 @@ const isChat = (i: Issue, labelId?: string) => Boolean(i.labels?.some((l) => l.n
  * Announces, per change: `tasks` with the task's id (a conversation open on it refetches), `chat` with the chat's id when
  * the task is a chat or was handed out from one (the chat list, the needs-you badge and the chat refetch), and `progress`
  * with both ids when a run says more. `session`: a Paperclip-run agent's live words from its session log (Paperclip records output progress only
- * once a minute), read only for runs on chats and the work handed out from them.
+ * once a minute), read only for runs on chats and the work handed out from them. A change in the kernel's state of a task
+ * (closures included) announces it too, though nothing changed in Paperclip.
  */
 export function startWatch(o: {
   pc: Paperclip;
   /** The kernel's jobs running now. */
   liveRuns: () => Promise<LiveRun[]>;
+  /** The kernel's task states: re-read for each task seen to change, and for every open task each minute. */
+  states: TaskStates;
   events: Events;
   /** The kernel's records: a card filed, decided or finished announces `approvals`. */
   records?: Pick<Records, "list">;
@@ -81,9 +95,11 @@ export function startWatch(o: {
 
   async function start(): Promise<Watched> {
     const [open, labels] = await Promise.all([o.pc.openIssues(), o.pc.labels()]);
-    const s: Watched = { label: labels.find((l) => l.name === "chat")?.id, chats: new Set(), parents: new Map(), cursor: new Date(Date.now() - OVERLAP_MS).toISOString(), last: new Map(), runs: new Map(), progress: new Set(), progressAt: new Map() };
+    const s: Watched = { label: labels.find((l) => l.name === "chat")?.id, chats: new Set(), parents: new Map(), cursor: new Date(Date.now() - OVERLAP_MS).toISOString(), last: new Map(), runs: new Map(), progress: new Set(), progressAt: new Map(), states: new Map(), open: new Set(), ticks: 0 };
     for (const i of open) learn(s, i);
     s.runs = await runs(s, await o.liveRuns());
+    // What every open task shows now: the first look announces nothing.
+    for (const r of (await o.states.read({ open: true })).tasks) (s.states.set(r.task, stateKey(r)), s.open.add(r.task));
     return s;
   }
 
@@ -137,6 +153,31 @@ export function startWatch(o: {
         const now = (await o.records.list("recent", { limit: 100 })).map((a) => `${a.id}|${a.state}|${a.outcome ?? ""}`).join();
         if (cards !== undefined && now !== cards) o.events.emit("approvals");
         cards = now;
+      }
+      // The kernel's states: re-read for each task seen to change (so a change already announced isn't announced twice), and
+      // for every open task each minute. A task whose state differs from the last seen is announced.
+      const shifted = new Set<string>();
+      const learnStates = (rows: { task: string; kind: string; reason: string; ref?: string; attention: { who: string; why: string; ref: string }[] }[], ids: Iterable<string>, quiet: boolean) => {
+        const have = new Map(rows.map((r) => [r.task, stateKey(r)]));
+        for (const id of ids) {
+          const key = have.get(id) ?? "";
+          if (!quiet && s.states.has(id) && s.states.get(id) !== key) shifted.add(id);
+          s.states.set(id, key);
+        }
+      };
+      if (touched.size) learnStates([...(await statesOf(o.states, [...touched])).values()], touched, true);
+      if (++s.ticks % OPEN_EVERY_TICKS === 0) {
+        const rows = (await o.states.read({ open: true })).tasks;
+        const now = new Set(rows.map((r) => r.task));
+        // One that left the open list was closed: its own read says how.
+        const gone = [...s.open].filter((id) => !now.has(id));
+        learnStates([...rows, ...(gone.length ? (await statesOf(o.states, gone)).values() : [])], [...now, ...gone], false);
+        s.open = now;
+      }
+      for (const id of shifted) {
+        o.events.emit("tasks", id);
+        const chat = chatOf(s, id);
+        if (chat) o.events.emit("chat", chat);
       }
       if (failing) o.log.info("live watch back");
       failing = false;

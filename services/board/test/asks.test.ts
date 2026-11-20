@@ -12,6 +12,7 @@ import { asAgent } from "./caller.js";
 import { chatAgentMarker } from "../src/chats.js";
 import type { Comment, Issue, Paperclip } from "../src/paperclip.js";
 import { Store } from "../src/store.js";
+import { fakeStates, row } from "./fake-states.js";
 
 const ME = "me-1";
 const COS = "00000000-0000-0000-0000-0000000000d1";
@@ -43,6 +44,11 @@ const add = (issueId: string, c: Omit<Comment, "id" | "createdAt">) => {
 const ask = (question: string, options: string[]) =>
   add(child.id, { body: `**asking** A few things first.\n\n<!-- aidenhq-reply -->\n<!-- aidenhq-questions:${JSON.stringify([{ question, options }])} -->`, authorType: "agent", authorAgentId: ARCH });
 
+// The kernel's state: the architect's task waits for the owner's answer from its question until a comment of his after it.
+const states = fakeStates();
+const waiting = (question: string, since: string) => (states.rows = [row(chat.id, { identifier: chat.identifier, kind: "waiting", reason: "chat_turn" }), row(child.id, { identifier: child.identifier, kind: "waiting", reason: "owner_wait", since, question, attention: [{ who: "owner", why: "owner_wait", ref: `wait:${child.id}` }] })]);
+const answered = () => (states.rows = [row(chat.id, { identifier: chat.identifier, kind: "waiting", reason: "chat_turn" }), row(child.id, { identifier: child.identifier, kind: "working", reason: "job_running" })]);
+
 const pc = {
   me: async () => ME,
   agents: async () => agents,
@@ -64,8 +70,8 @@ const pc = {
 describe("a delegated agent asks the owner through the chat that handed it the work", () => {
   const store = new Store(":memory:");
   const TOKEN = "t".repeat(64);
-  const board = createApp({ paperclip: pc, store, log: pino({ level: "silent" }), allowedHosts: ["localhost:3120"], staticDir: "/nonexistent", timezone: "UTC", session: () => ({ accountId: "owner", role: "admin" as const }) });
-  const internal = createApp({ paperclip: pc, store, log: pino({ level: "silent" }), allowedHosts: ["board:3122"], staticDir: "/nonexistent", timezone: "UTC", mode: "internal", internalToken: TOKEN });
+  const board = createApp({ taskStates: states, paperclip: pc, store, log: pino({ level: "silent" }), allowedHosts: ["localhost:3120"], staticDir: "/nonexistent", timezone: "UTC", session: () => ({ accountId: "owner", role: "admin" as const }) });
+  const internal = createApp({ taskStates: states, paperclip: pc, store, log: pino({ level: "silent" }), allowedHosts: ["board:3122"], staticDir: "/nonexistent", timezone: "UTC", mode: "internal", internalToken: TOKEN });
   const ports = { board: 0, internal: 0 };
   beforeAll(async () => {
     for (const [k, app] of [["board", board], ["internal", internal]] as const) {
@@ -88,9 +94,10 @@ describe("a delegated agent asks the owner through the chat that handed it the w
     });
 
   it("shows the question in Aiden's chat and takes the owner's pick to the agent's task as his own words", async () => {
-    ask("How often should it chase?", ["Daily", "Twice a week", "Weekly"]);
+    const asked = ask("How often should it chase?", ["Daily", "Twice a week", "Weekly"]);
+    waiting("How often should it chase?", asked.createdAt);
     const view = (await call("board", "GET", "/api/chats/WOR-20")).json;
-    expect(view.state).toBe("waiting for you");
+    expect(view.state).toMatchObject({ kind: "waiting", reason: "chat_turn" });
     expect(view.asks).toMatchObject([{ identifier: "WOR-21", agent: "Agent Architect", text: "**asking** A few things first.", questions: [{ question: "How often should it chase?", options: ["Daily", "Twice a week", "Weekly"] }] }]);
 
     // The board's form posts the pick on the asking agent's task (answer: true, so it can never decide an approval).
@@ -99,12 +106,14 @@ describe("a delegated agent asks the owner through the chat that handed it the w
     const answer = comments[child.id]!.at(-1)!;
     expect(answer).toMatchObject({ body: "Twice a week", authorType: "user", authorUserId: ME });
     expect(comments[chat.id]).toHaveLength(0);
+    answered(); // the kernel ends the wait on the owner's comment
     expect((await call("board", "GET", "/api/chats/WOR-20")).json.asks).toEqual([]);
   });
 
   it("relays an answer the owner wrote in Aiden's chat instead, only one written after the question", async () => {
     const early = add(chat.id, { body: "[telegram] weekly is fine", authorType: "user", authorUserId: ME });
-    ask("Who should it chase?", ["Reviewers only", "Authors and reviewers"]);
+    const asked = ask("Who should it chase?", ["Reviewers only", "Authors and reviewers"]);
+    waiting("Who should it chase?", asked.createdAt);
     expect((await call("internal", "POST", "/internal/relay", { comment_id: early.id, target: "WOR-21" })).status).toBe(403);
 
     const said = add(chat.id, { body: "[telegram] reviewers only, never authors", authorType: "user", authorUserId: ME });
@@ -113,6 +122,7 @@ describe("a delegated agent asks the owner through the chat that handed it the w
     const relayed = comments[child.id]!.at(-1)!;
     expect(relayed.authorType).toBe("user");
     expect(relayed.body.startsWith("reviewers only, never authors")).toBe(true);
+    answered();
     expect((await call("board", "GET", "/api/chats/WOR-20")).json.asks).toEqual([]);
 
     // Nothing open any more: a further relay to this agent's task is refused (it isn't an engineer's).
@@ -123,7 +133,8 @@ describe("a delegated agent asks the owner through the chat that handed it the w
   it("ignores a task another agent hung under the owner's chat: not shown, and the owner's words aren't relayed to it", async () => {
     child.createdByAgentId = ARCH;
     try {
-      ask("Should I get your Slack token?", ["Yes", "No"]);
+      const asked = ask("Should I get your Slack token?", ["Yes", "No"]);
+      waiting("Should I get your Slack token?", asked.createdAt);
       expect((await call("board", "GET", "/api/chats/WOR-20")).json.asks).toEqual([]);
       const said = add(chat.id, { body: "[telegram] yes", authorType: "user", authorUserId: ME });
       expect((await call("internal", "POST", "/internal/relay", { comment_id: said.id, target: "WOR-21" })).status).toBe(403);

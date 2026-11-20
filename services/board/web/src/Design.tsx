@@ -1,7 +1,8 @@
 // #/design: every part of the board's design system (ui/), in the light and the dark theme side by side, for review.
 // A new part lands here when it lands in ui/. Fixture text only; nothing here reads or writes the instance.
 import { useState } from "react";
-import { Banner, Button, Card, Checks, Dialog, EmptyState, Facts, Field, FieldRow, Input, LinkButton, ListRow, ListRows, Menu, Meter, Monogram, Page, PageHeader, Section, Segmented, Select, StatBlock, StatusDot, Switch, Tabs, Tag, Tags, Tile, TileGrid, hueClass, type StatusTone } from "./ui";
+import { Banner, Button, Card, Checks, Dialog, EmptyState, Facts, Field, FieldRow, Input, LinkButton, ListRow, ListRows, Menu, Meter, Monogram, Page, PageHeader, Section, Segmented, Select, StatBlock, StatusDot, Switch, Tabs, Tag, Tags, TaskState, Tile, TileGrid, hueClass, type StatusTone } from "./ui";
+import type { ShownState } from "./types";
 import "./design.css";
 
 const day = (i: number) => "MTWTFSS"[i]!;
@@ -20,6 +21,21 @@ const TONES: [StatusTone, string, string][] = [
 const SURFACES = ["bg", "col", "surface", "surface-2", "border", "border-strong", "text", "muted", "faint", "accent", "accent-soft"];
 const STATUS = ["working", "warn", "urgent", "danger", "ok-text", "warn-text", "bad-text"];
 const SCALE: [string, string][] = [["3xl", "Stat value"], ["2xl", "Page title"], ["xl", "Dialog title"], ["lg", "Section title"], ["row", "List row"], ["body", "Body"], ["md", "Control"], ["base", "Secondary"], ["sm", "Help, facts"], ["xs", "Tag"], ["2xs", "Axis label"]];
+
+const at = (n: number) => new Date(Date.now() - n * 60_000).toISOString();
+const st = (o: Partial<ShownState> & Pick<ShownState, "kind" | "reason">): ShownState => ({ task: "t", identifier: null, since: at(10), holder: null, attention: [], ...o });
+const TASK_STATES: ShownState[] = [
+  st({ kind: "waiting", reason: "owner_wait", question: "keep v1?", attention: [{ who: "owner", why: "owner_wait", ref: "wait:t" }] }),
+  st({ kind: "working", reason: "job_running", stage: "CI running", attention: [{ who: "owner", why: "card", ref: "record:k" }] }),
+  st({ kind: "idle", reason: "failed", refLabel: "timed out", attention: [{ who: "agent", why: "failed", ref: "job:j" }] }),
+  st({ kind: "idle", reason: "unknown", attention: [{ who: "agent", why: "unknown", ref: "task:t" }] }),
+  st({ kind: "waiting", reason: "card_review", refLabel: "merge the sbom fix" }),
+  st({ kind: "waiting", reason: "blocked", refLabel: "WOR-5121" }),
+  st({ kind: "idle", reason: "orphaned" }),
+  st({ kind: "waiting", reason: "chat_turn" }),
+  st({ kind: "done", reason: "closed", grade: "pass" }),
+];
+const TASK_TITLES = ["Decide the brief's weekly scope", "Fix the sbom job", "Ingest the Slack channel list", "Lint the Primer docs", "Refile the weekly tasks", "Close the parent task", "Idle with nothing scheduled", "A chat waiting for your next message", "Hold the closed PR"];
 
 export function DesignView() {
   return (
@@ -157,11 +173,11 @@ function Catalogue() {
         <Banner tone="danger" action={<Button size="sm">Open the module</Button>}><b>AHQ-2026-007 (high)</b>: issue comments were read without fencing.</Banner>
       </Section>
 
-      <Section title="List rows" count={3}>
+      <Section title="Task state" hint="The kernel's one state for a task: a dot and a word, what it is doing or waiting for, ⚠ when an agent must act.">
         <ListRows>
-          <ListRow href="#/design" state="waiting for approval" title="Approve the reply to the vendor about the Q1 renewal terms" id="WOR-5120" from="You" time="12m" />
-          <ListRow href="#/design" state="working" title="Chase the security review sign-off" id="WOR-5131" from="Fleet Ops" time="3m" />
-          <ListRow href="#/design" state="done" title="Summarise yesterday's incident thread" id="WOR-5100" from="You" time="7h" />
+          {TASK_STATES.map((st, n) => (
+            <ListRow key={n} href="#/design" status={<TaskState state={st} />} title={TASK_TITLES[n]!} id={`WOR-${5120 + n}`} from={n % 2 ? "Fleet Ops" : "You"} time={["2h", "12m", "8m", "1h", "4m", "40m", "25m", "7h", "3m"][n]!} />
+          ))}
         </ListRows>
       </Section>
 

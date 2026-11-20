@@ -7,6 +7,7 @@ import { chatAgentMarker } from "../src/chats.js";
 import type { Comment, Issue, Paperclip } from "../src/paperclip.js";
 import { Store } from "../src/store.js";
 import { card, fakeRecords } from "./fake-records.js";
+import { fakeStates, row } from "./fake-states.js";
 
 const chatLabel = { id: "33333333-3333-3333-3333-333333333333", name: "chat", color: "#0ea5e9" };
 const base = { priority: "medium", assigneeUserId: null, assigneeAdapterOverrides: null, createdAt: "2026-11-10T10:00:00.000Z", updatedAt: "2026-11-10T10:05:00.000Z" };
@@ -41,7 +42,11 @@ describe("chat routes", () => {
   const store = new Store(":memory:");
   store.markSeen(chat.id, "2026-11-10T09:00:00.000Z"); // last opened before the reply
   const records = fakeRecords([card({ id: "A1", issueId: child.id, identifier: child.identifier, sentence: "Move the brief to 08:45 on weekdays.", requestedBy: "Fleet Engineer" })]);
-  const app = createApp({ paperclip: pc, store, records, log: pino({ level: "silent" }), allowedHosts: ["localhost:3120"], staticDir: "/nonexistent", timezone: "UTC", session: () => ({ accountId: "owner", role: "admin" as const }) });
+  const states = fakeStates([
+    row(chat.id, { identifier: "WOR-10", kind: "waiting", reason: "chat_turn" }),
+    row(child.id, { identifier: "WOR-11", kind: "waiting", reason: "card_owner", ref: "record:A1", attention: [{ who: "owner", why: "card", ref: "record:A1" }] }),
+  ]);
+  const app = createApp({ taskStates: states, paperclip: pc, store, records, log: pino({ level: "silent" }), allowedHosts: ["localhost:3120"], staticDir: "/nonexistent", timezone: "UTC", session: () => ({ accountId: "owner", role: "admin" as const }) });
   let port = 0;
   beforeAll(async () => {
     await new Promise<void>((r) => app.listen(0, "127.0.0.1", r));
@@ -62,7 +67,7 @@ describe("chat routes", () => {
   it("lists the chat with its last reply (unread) and the work handed out under it; Aiden is the front door", async () => {
     const r = await get("/api/chats");
     expect(r.chats).toMatchObject([
-      { identifier: "WOR-10", agent: { name: "Aiden" }, state: "idle", unread: true, preview: { text: "On it. Fleet Engineer has it.", from: "agent" } },
+      { identifier: "WOR-10", agent: { name: "Aiden" }, state: { kind: "waiting", reason: "chat_turn" }, unread: true, preview: { text: "On it. Fleet Engineer has it.", from: "agent" } },
       { identifier: "WOR-11", agent: { name: "Fleet Engineer" }, from: "WOR-10" },
     ]);
     expect(r.agents.find((a: { name: string }) => a.name === "Aiden").front).toBe(true);
@@ -77,7 +82,7 @@ describe("chat routes", () => {
     const c = await get("/api/chats/WOR-10");
     expect(c.messages.map((m: { kind: string }) => m.kind)).toEqual(["owner", "notes", "reply"]);
     expect(c.messages[0]).toMatchObject({ text: "move my brief to 08:45", via: "Telegram" });
-    expect(c.handedOut).toMatchObject([{ identifier: "WOR-11", agent: "Fleet Engineer", state: "waiting for approval" }]);
+    expect(c.handedOut).toMatchObject([{ identifier: "WOR-11", agent: "Fleet Engineer", state: { kind: "waiting", reason: "card_owner", refLabel: "Move the brief to 08:45 on weekdays." } }]);
     expect(c.approvals).toMatchObject([{ identifier: "WOR-11", state: "pending" }]);
     expect((await get("/api/chats")).chats[0].unread).toBe(false);
   });

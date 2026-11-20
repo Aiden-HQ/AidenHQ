@@ -1,7 +1,7 @@
 // The agent page's reads (web/src/AgentPage.tsx): one agent's profile and its tasks, open and past.
 import { roster, type AgentState, type RosterAgent } from "./activity.js";
 import type { KernelActivity } from "./runs.js";
-import type { ChatState } from "./chats.js";
+import { needsOwner, type ShownState } from "./task-state.js";
 import type { Agent, Issue, Routine } from "./paperclip.js";
 
 export interface AgentProfile {
@@ -24,8 +24,8 @@ export interface AgentProfile {
 export interface TaskRow {
   identifier: string;
   title: string;
-  /** "stopped": a cancelled task (history). */
-  state: ChatState | "stopped";
+  /** The kernel's state of the task (none when it has no facts). */
+  state: ShownState | null;
   updatedAt: string;
   /** The creator: an agent's name, "You" for the owner, null if unknown. */
   from: string | null;
@@ -45,18 +45,21 @@ export function taskRow(i: Issue, state: TaskRow["state"], agents: Agent[], upda
   return { identifier: i.identifier, title: i.title, state, updatedAt, from };
 }
 
-/** The agent's open tasks (chats are not tasks), split into what waits on the owner (`needs`: chats.ts needsYou's ids) and the rest, newest first. */
-export function splitTasks(issues: Issue[], agentId: string, chatLabelId: string | undefined, stateOf: (i: Issue) => ChatState, agents: Agent[] = [], needs: Set<string> = new Set()): { needs: TaskRow[]; ongoing: TaskRow[] } {
-  const mine = issues.filter((i) => i.assigneeAgentId === agentId && !(chatLabelId && (i.labelIds?.includes(chatLabelId) || i.labels?.some((l) => l.id === chatLabelId))));
-  const rows = (list: Issue[]) => list.map((i) => taskRow(i, stateOf(i), agents)).sort(newest);
-  return { needs: rows(mine.filter((i) => needs.has(i.id))), ongoing: rows(mine.filter((i) => !needs.has(i.id))) };
+/** The agent's open tasks (chats are not tasks). */
+export const tasksOf = (issues: Issue[], agentId: string, chatLabelId: string | undefined): Issue[] =>
+  issues.filter((i) => i.assigneeAgentId === agentId && !(chatLabelId && (i.labelIds?.includes(chatLabelId) || i.labels?.some((l) => l.id === chatLabelId))));
+
+/** Those tasks split into what waits on the owner (`needs`, by the kernel's attention) and the rest, newest first. */
+export function splitTasks(mine: Issue[], states: Map<string, ShownState>, agents: Agent[] = []): { needs: TaskRow[]; ongoing: TaskRow[] } {
+  const rows = (list: Issue[]) => list.map((i) => taskRow(i, states.get(i.id) ?? null, agents)).sort(newest);
+  return { needs: rows(mine.filter((i) => needsOwner(states.get(i.id)))), ongoing: rows(mine.filter((i) => !needsOwner(states.get(i.id)))) };
 }
 
 /** One page of finished tasks (Paperclip filtered and paged them), chats left out; `next` is the following offset when the raw page was full. */
-export function historyPage(closed: Issue[], offset: number, chatLabelId: string | undefined, agents: Agent[] = []): { rows: TaskRow[]; next: number | null } {
+export function historyPage(closed: Issue[], offset: number, chatLabelId: string | undefined, states: Map<string, ShownState>, agents: Agent[] = []): { rows: TaskRow[]; next: number | null } {
   const isChat = (i: Issue) => Boolean(chatLabelId && (i.labelIds?.includes(chatLabelId) || i.labels?.some((l) => l.id === chatLabelId)));
   return {
-    rows: closed.filter((i) => !isChat(i)).map((i) => taskRow(i, i.status === "cancelled" ? "stopped" : "done", agents, i.updatedAt)),
+    rows: closed.filter((i) => !isChat(i)).map((i) => taskRow(i, states.get(i.id) ?? null, agents, i.updatedAt)),
     next: closed.length === HISTORY_PAGE ? offset + HISTORY_PAGE : null,
   };
 }

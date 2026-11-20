@@ -21,7 +21,9 @@ import { flushSync } from "react-dom";
 import { SignInRequired, api, type Session } from "./api";
 import { SignInScreen } from "./Accounts";
 import { SettingsView, isCategory, type Category } from "./Settings";
-import { ApprovalsView } from "./Chat";
+import { AttentionStrip } from "./Attention";
+import { ApprovalsView, onYouBeyondCards } from "./Chat";
+import { needsOwner } from "./ui/TaskState";
 import { clearCache, load, peek, setAccount } from "./cache";
 import { subscribe } from "./events";
 import type { AgentTab } from "./AgentPage";
@@ -205,9 +207,9 @@ export function App() {
   useEffect(
     () =>
       watchNeedsYou(
-        () => api.needsYou().then((r) => (setApprovalsOpen(r.approvals + r.items.filter((i) => i.state !== "waiting for approval").length), r)),
+        () => api.needsYou().then((r) => (setApprovalsOpen(r.approvals + r.items.filter(onYouBeyondCards).length), { items: r.items.filter((i) => needsOwner(i.state)) })),
         (identifier) => go(`#/c/${identifier}`),
-        (tick) => subscribe(["approvals", "chat"], tick),
+        (tick) => subscribe(["approvals", "chat", "tasks"], tick),
       ),
     [],
   );
@@ -724,6 +726,8 @@ export function App() {
           </button>
         </header>
       )}
+
+      {onBoard && <AttentionStrip onSignIn={signInNeeded} />}
 
       {error && <div className="offline">Offline: {error}. Retrying…</div>}
       <GoogleBanner google={board.google} canReconnect={googleConnect} />

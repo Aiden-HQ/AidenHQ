@@ -12,7 +12,7 @@ import type { Logger } from "pino";
 import { z } from "zod";
 import { handbook, history } from "./agent-handbook.js";
 import { PauseSchema, setAgentPaused } from "./agent-pause.js";
-import { HISTORY_PAGE, agentByKey, agentProfile, historyPage, splitTasks } from "./agent-page.js";
+import { HISTORY_PAGE, agentByKey, agentProfile, historyPage, splitTasks, tasksOf } from "./agent-page.js";
 import { timelineOf } from "./timeline.js";
 import { liveActivity, type SessionSources } from "./live-activity.js";
 import { cachedActivity, lastRunsOf, liveRunsOf, makeRuns, pastRunsOf, type LiveRun, type Work } from "./runs.js";
@@ -49,10 +49,11 @@ import { GoogleAuthFailed, loopbackPort, type GoogleAuth } from "./google.js";
 import { OPEN, Paperclip, PaperclipError, actingAccount, type Agent, type Attachment, type Comment, type Issue, type Label, type Routine } from "./paperclip.js";
 import { accountSession, type BoardSession, type SessionOf } from "./session.js";
 import { laneAgents, laneMessages, laneSend, type LaneOptions } from "./lane.js";
-import { NOTICE_MARKER, asksOwner, chatAgent, chatAgentMarker, chatState, conversation, lastWord, needsYou, openAsk, pickAgent, shownState, type Message } from "./chats.js";
+import { NOTICE_MARKER, askedQuestions, chatAgent, chatAgentMarker, conversation, lastWord, pickAgent, type Message } from "./chats.js";
+import { isActive, needsOwner, noStates, shown, statesOf, waitsForAnswer, type ShownState, type StateRow, type TaskStates } from "./task-state.js";
 import { addDays, nextWorkday, type Weekday } from "./dates.js";
 import { BUCKETS, isBucket, localDate, type Store } from "./store.js";
-import { AsideSchema, askGateway, asideMessages, holdsActive, lineageStatus, lineageTotal, modelOf, settleable, stillSettled, type LineageRow } from "./lineage.js";
+import { AsideSchema, askGateway, asideMessages, lineageTotal, modelOf, stillSettled, type LineageRow } from "./lineage.js";
 
 /** One module sign-in (board.signins), with its proxy client. */
 export interface SignIn { id: string; label: string; connect: string; callback: string; mode?: "redirect" | "device"; httpsOnly?: boolean; missing: string; stopped: string; fields: SetupField[]; auth: McpAuth }
@@ -115,6 +116,8 @@ export interface AppOptions {
   records?: Records;
   /** The kernel's jobs (runs.ts kernelWork): the run pages and a task's run links. Without it, there are none. */
   work?: Work;
+  /** The kernel's task states (task-state.ts): the one state every view shows. Without it, no task has one. */
+  taskStates?: TaskStates;
   /** The kernel's flow reads (flow.ts): the Flow page. Without it, the page is empty. */
   flow?: Flow;
   /**
@@ -263,6 +266,23 @@ export function createApp(opts: AppOptions): Server {
   const kernelActivity = cachedActivity(work);
   const liveRuns = async () => liveRunsOf(await kernelActivity());
   const recentRuns = async () => pastRunsOf(await kernelActivity());
+  const taskStates = opts.taskStates ?? noStates;
+  /** Rows as views show them: what a row's ref names (a card's sentence, a blocker, how a job ended) is read from what the board already has. */
+  async function shownRows(rows: StateRow[]): Promise<ShownState[]> {
+    const blockers = [...new Set(rows.filter((r) => r.reason === "blocked" && r.ref).map((r) => r.ref!.replace(/^task:/, "")))];
+    const [named, cards, activity] = await Promise.all([
+      blockers.length ? statesOf(taskStates, blockers) : new Map<string, StateRow>(),
+      rows.some((r) => r.reason === "card_owner" || r.reason === "card_review") ? records.list("pending").catch(() => []) : [],
+      rows.some((r) => r.reason === "failed") ? kernelActivity() : undefined,
+    ]);
+    const jobs = new Map((activity?.recent ?? []).map((j) => [j.id, j]));
+    return rows.map((r) => shown(r, { identifier: (t) => named.get(t)?.identifier ?? undefined, card: (id) => cards.find((c) => c.id === id)?.sentence, job: (id) => jobs.get(id) }));
+  }
+  /** The state of each task (by id) the kernel has facts for; a task it has none for isn't in the map and shows none. */
+  async function stateRows(ids: string[]): Promise<Map<string, ShownState>> {
+    const read = await statesOf(taskStates, ids);
+    return new Map((await shownRows([...read.values()])).map((r) => [r.task, r]));
+  }
   const runOf = makeRuns({ work, store, grantsFile: process.env.AIDENHQ_GRANTS_FILE });
   /** The newest runs (kernel jobs) on a task, for the links to their run pages. */
   const runLinks = async (issueId: string, agents: Agent[]) =>
@@ -566,11 +586,13 @@ export function createApp(opts: AppOptions): Server {
       ),
     );
     store.markSeen(issue.id);
+    const state = (await stateRows([issue.id])).get(issue.id) ?? null;
     const placement = store.placements().get(issue.id);
     const rec = store.recurring(issue.id);
     return {
       ...toCard(issue, ctx.assignees, new Date().toISOString()),
       ...byOf(names, issue.id),
+      state,
       description: displayText(issue.description),
       bucket: placement?.bucket ?? null,
       editable: assigned,
@@ -588,24 +610,6 @@ export function createApp(opts: AppOptions): Server {
       crew: crew.map((m) => ({ ...m, said: said[m.agent] ?? null })),
       runs,
     };
-  }
-
-  /**
-   * Everything waiting on the owner now (chats.ts needsYou): an agent's open question is read from each open task's newest
-   * comments (chats: the conversation the chat list shows; tasks: openAsk), cached per task until it changes, a few at a time.
-   */
-  async function waiting(ctx: Awaited<ReturnType<typeof context>>) {
-    const [open, live, runs, awaiting] = await Promise.all([pc.openIssues(), liveRuns(), recentRuns(), records.awaiting().catch(() => new Set<string>())]);
-    const candidates = open.filter((i) => i.status !== "backlog" && chatAgent(i));
-    const asking = new Set<string>();
-    for (let n = 0; n < candidates.length; n += 4)
-      await Promise.all(
-        candidates.slice(n, n + 4).map(async (i) => {
-          const asks = isChat(i, ctx) ? asksOwner(await chatMessages(i, ctx).catch(() => [] as Message[])) : Boolean(await askOf(i, ctx.me));
-          if (asks) asking.add(i.id);
-        }),
-      );
-    return needsYou(open, live, runs, ctx.me, awaiting, asking);
   }
 
   // A chat's conversation, re-read only when the chat has changed (the list asks for every chat's last word).
@@ -628,23 +632,17 @@ export function createApp(opts: AppOptions): Server {
    */
   async function chatView(ref: string, peek = false) {
     const { ctx, issue } = await editableIssue(ref, "this chat isn't yours");
-    const [comments, files, busy, live, runs, kids, parent, names] = await Promise.all([
+    const [comments, files, busy, live, kids, parent, names] = await Promise.all([
       pc.comments(issue.id),
       pc.attachments(issue.id).catch(() => []),
       working(ctx),
       liveRuns(),
-      recentRuns(),
       pc.children(issue.id).catch(() => [] as Issue[]),
       issue.parentId ? pc.issueSummary(issue.parentId).catch(() => undefined) : undefined,
       bylines(),
     ]);
-    // Questions an agent this chat handed work to is asking the owner: shown here, answered on that agent's task.
-    const [messages, asks] = await Promise.all([chatMessages(issue, ctx, comments), askingKids(issue, kids, ctx.me)]);
-    const awaiting = await records.awaiting();
-    const lastRun = (id: string) => runs.find((r) => r.issueId === id && r.finishedAt);
+    const [messages, states] = await Promise.all([chatMessages(issue, ctx, comments), stateRows([issue.id, ...kids.map((k) => k.id)])]);
     const agentOf = (id: string | null | undefined) => ctx.agents.find((a) => a.id === id);
-    const base = shownState(chatState(issue, live, lastRun(issue.id), ctx.me, awaiting), messages, lastRun(issue.id));
-    const state = base.state === "idle" && asks.length ? { state: "waiting for you" as const } : base;
     const ids = new Set([issue.id, ...kids.map((k) => k.id)]);
     const agent = agentOf(chatAgent(issue));
     if (!peek) store.markSeen(issue.id);
@@ -654,7 +652,7 @@ export function createApp(opts: AppOptions): Server {
       title: issue.title,
       open: !["done", "cancelled"].includes(issue.status),
       agent: agent ? { key: agent.id, name: agent.name } : { key: "", name: "You" },
-      ...state,
+      state: states.get(issue.id) ?? null,
       // The owner's side of the chat: an admin other than the owner wrote it gets their name on it (the opening is the task's).
       messages: messages.map((m) => (m.kind === "owner" ? { ...m, ...byOf(names, m.id === `${issue.id}:opening` ? issue.id : m.id) } : m)),
       working: await withSession(busy.map.get(issue.identifier), live, issue.id, true),
@@ -664,43 +662,31 @@ export function createApp(opts: AppOptions): Server {
       handedOut: await Promise.all(
         kids
           .filter((k) => k.status !== "cancelled")
-          .map(async (k) => {
-            const st = chatState(k, live, lastRun(k.id), ctx.me, awaiting);
-            // An agent's question to the owner (askingKids) makes the task wait on him, whatever else it is doing.
-            const asking = (st.state === "idle" || st.state === "in review") && asks.some((a) => a.task.id === k.id);
-            return { identifier: k.identifier, title: k.title, agent: agentOf(k.assigneeAgentId)?.name ?? "You", ...(asking ? { state: "waiting for you" as const } : st), updatedAt: k.lastActivityAt ?? k.updatedAt, working: await withSession(busy.map.get(k.identifier), live, k.id, false) };
-          }),
+          .map(async (k) => ({ identifier: k.identifier, title: k.title, agent: agentOf(k.assigneeAgentId)?.name ?? "You", state: states.get(k.id) ?? null, updatedAt: k.lastActivityAt ?? k.updatedAt, working: await withSession(busy.map.get(k.identifier), live, k.id, false) })),
       ),
       parent: parent ? { identifier: parent.identifier, title: parent.title } : null,
       runs: await runLinks(issue.id, ctx.agents),
-      asks: asks.map(({ task, ask }) => ({ ...ask, identifier: task.identifier, agent: agentOf(task.assigneeAgentId)?.name ?? "Agent" })),
+      asks: await asksOf(issue, kids, states, ctx),
     };
   }
 
   /**
-   * The open tasks handed out from a chat whose agent is waiting on the owner's answer (openAsk). Only work the chat's own
-   * agent or the owner put under it counts: another agent can't hang a task under his chat to collect his words.
+   * The questions work handed out from a chat asks the owner: each task the kernel says waits for his answer (its question is
+   * the wait's), with the options of the agent's newest reply that offered some. Only work the chat's own agent or the owner put
+   * under it counts: another agent can't hang a task under his chat to collect his words.
    */
-  /** A sub-task of the chat that its own agent or the owner created. */
-  const asks = new Map<string, { stamp: string; ask: ReturnType<typeof openAsk> }>();
   const handedOutBy = (chat: Issue, k: Issue, me: string) =>
     k.parentId === chat.id && (k.createdByAgentId ? k.createdByAgentId === chatAgent(chat) : k.createdByUserId === me);
-
-  /** The question a task's agent is still waiting on the owner for; its comments are read again only when it has changed. */
-  async function askOf(task: Issue, me: string) {
-    const stamp = `${task.lastActivityAt ?? task.updatedAt}|${task.assigneeAgentId}`;
-    const hit = asks.get(task.id);
-    if (hit?.stamp === stamp) return hit.ask;
-    const comments = await pc.comments(task.id).catch(() => undefined);
-    const ask = openAsk(comments ?? [], task.assigneeAgentId, me);
-    if (comments) asks.set(task.id, { stamp, ask });
-    return ask;
-  }
-
-  async function askingKids(chat: Issue, kids: Issue[], me: string) {
-    const open = kids.filter((k) => k.assigneeAgentId && !["done", "cancelled"].includes(k.status) && handedOutBy(chat, k, me));
-    const found = await Promise.all(open.map(async (task) => ({ task, ask: await askOf(task, me) })));
-    return found.filter((x): x is { task: Issue; ask: NonNullable<typeof x.ask> } => Boolean(x.ask));
+  async function asksOf(chat: Issue, kids: Issue[], states: Map<string, ShownState>, ctx: Awaited<ReturnType<typeof context>>) {
+    const asking = kids.filter((k) => k.assigneeAgentId && handedOutBy(chat, k, ctx.me) && waitsForAnswer(states.get(k.id)));
+    return Promise.all(
+      asking.map(async (k) => {
+        const st = states.get(k.id)!;
+        const q = askedQuestions(await pc.comments(k.id).catch(() => [] as Comment[]), k.assigneeAgentId);
+        const question = st.question ?? "";
+        return { id: q?.id ?? `wait:${k.id}`, at: q?.at ?? st.since, text: q?.text ?? question, questions: q?.questions ?? [{ question, options: [] }], identifier: k.identifier, agent: ctx.agents.find((a) => a.id === k.assigneeAgentId)?.name ?? "Agent" };
+      }),
+    );
   }
 
   /**
@@ -714,13 +700,11 @@ export function createApp(opts: AppOptions): Server {
     const grand: Issue[][] = [];
     for (let i = 0; i < kids.length; i += 4) grand.push(...(await Promise.all(kids.slice(i, i + 4).map((k) => pc.children(k.id).then((l) => l.filter((g) => g.status !== "cancelled")).catch(() => [] as Issue[])))));
     const all = [...kids, ...grand.flat()];
-    const [live, runs, busy, names] = await Promise.all([liveRuns(), recentRuns(), working(ctx), bylines()]);
-    const awaiting = await records.awaiting();
+    const [states, busy, names] = await Promise.all([stateRows(all.map((i) => i.id)), working(ctx), bylines()]);
     const usage = store.usageByIssue(all.flatMap((i) => [i.id, i.identifier]));
     const pending = await cardsOf("pending");
     const agentOf = (id: string | null | undefined) => ctx.agents.find((a) => a.id === id);
     const row = async (k: Issue, children: LineageRow[]): Promise<LineageRow & { approvals: ReturnType<typeof shownApproval>[] }> => {
-      const st = chatState(k, live, runs.find((r) => r.issueId === k.id && r.finishedAt), ctx.me, awaiting);
       const w = busy.map.get(k.identifier);
       const c = w?.said ? undefined : await pc.latestComment(k.id).catch(() => undefined);
       const u = usage.get(k.id) ?? usage.get(k.identifier);
@@ -729,7 +713,7 @@ export function createApp(opts: AppOptions): Server {
         title: k.title,
         agent: agentOf(k.assigneeAgentId)?.name ?? "You",
         model: modelOf(k, agentOf(k.assigneeAgentId)),
-        status: lineageStatus(st.state, k),
+        state: states.get(k.id) ?? null,
         latest: w?.said ? { text: summaryOf(w.said, 160), at: w.saidAt ?? k.updatedAt } : c && c.authorType === "agent" ? { text: summaryOf(c.body, 160), at: c.createdAt } : null,
         tokens: u ? u.tokens : null,
         usd: u ? u.usd : null,
@@ -751,12 +735,12 @@ export function createApp(opts: AppOptions): Server {
       store.unsettle(issue.id);
       return { settled: false };
     }
-    const [live, runs, kids] = await Promise.all([liveRuns(), recentRuns(), pc.children(issue.id).catch(() => [] as Issue[])]);
+    const kids = await pc.children(issue.id).catch(() => [] as Issue[]);
     const chat = isChat(issue, ctx);
-    const awaiting = await records.awaiting();
-    const stateOf = (i: Issue) => chatState(i, live, runs.find((r) => r.issueId === i.id && r.finishedAt), ctx.me, awaiting).state;
-    if (!settleable(stateOf(issue), issue, chat)) throw new HttpError(409, chat ? "this chat isn't finished: its agent is working or waiting on you" : "only a finished task can be settled");
-    if (kids.some((k) => holdsActive(stateOf(k)))) throw new HttpError(409, "work handed out from here is still running or waiting on you");
+    const states = await stateRows([issue.id, ...kids.map((k) => k.id)]);
+    // A task needs to be finished; a chat only to be at rest (nothing running, nothing waiting on anyone).
+    if (chat ? isActive(states.get(issue.id)) : states.get(issue.id)?.kind !== "done") throw new HttpError(409, chat ? "this chat isn't finished: its agent is working or waiting on you" : "only a finished task can be settled");
+    if (kids.some((k) => isActive(states.get(k.id)))) throw new HttpError(409, "work handed out from here is still running or waiting on you");
     const agent = ctx.agents.find((a) => a.id === (chat ? chatAgent(issue) : issue.assigneeAgentId))?.name ?? "You";
     store.settle({ issueId: issue.id, identifier: issue.identifier, title: issue.title, agent, kind: chat ? "chat" : "task" });
     store.events.emit("chat", issue.id);
@@ -931,13 +915,16 @@ export function createApp(opts: AppOptions): Server {
           if (["done", "cancelled"].includes(dest.status)) throw new Refused("refused: that task is closed");
           // An answer to the questions an agent this chat handed work to is asking (never an engineer's: the runner reads
           // relayed words there as the owner's instructions): handed out by the chat's own agent or the owner, and written after it asked.
-          const asking = await askingKids(source.chat, await pc.children(source.chat.id), ctx.me);
-          const ask = agent.kind === "engineer" ? undefined : asking.find((x) => x.task.id === dest.id)?.ask;
-          if (ask && source.comment.createdAt <= ask.at) throw new Refused("refused: that message was written before the agent asked; ask the owner again");
+          const kids = await pc.children(source.chat.id);
+          const states = await stateRows(kids.map((k) => k.id));
+          const asking = kids.filter((k) => k.assigneeAgentId && !["done", "cancelled"].includes(k.status) && handedOutBy(source.chat, k, ctx.me) && waitsForAnswer(states.get(k.id)));
+          const ask = agent.kind === "engineer" ? undefined : asking.find((k) => k.id === dest.id);
+          const wait = ask && states.get(ask.id)!;
+          if (wait?.reason === "owner_wait" && source.comment.createdAt <= wait.since) throw new Refused("refused: that message was written before the agent asked; ask the owner again");
           if (!ask && !["engineer", "assistant"].includes(agent.kind)) throw new Refused("refused: target must be an engineer's task, or a task handed out from this chat whose agent is asking the owner");
           // One set of tasks that could take the owner's words: whenever more than one could, the words must name the target.
           const inReview = (await pc.openIssues()).filter((i) => i.status === "in_review" && ctx.assignees.some((a) => a.key === i.assigneeAgentId && a.kind === "engineer")).map((i) => i.identifier);
-          const waiting = [...new Set([...inReview, ...asking.filter((x) => ctx.assignees.find((a) => a.key === x.task.assigneeAgentId)?.kind !== "engineer").map((x) => x.task.identifier)])];
+          const waiting = [...new Set([...inReview, ...asking.filter((k) => ctx.assignees.find((a) => a.key === k.assigneeAgentId)?.kind !== "engineer").map((k) => k.identifier)])];
           assertMeantTask(words, dest.identifier, waiting, ctx.prefix);
           // Once per message, whatever the target: reserved before posting, released if the post fails.
           const key = `relayed:${comment_id}`;
@@ -1215,7 +1202,7 @@ export function createApp(opts: AppOptions): Server {
         // A settled task stays off the board until something happens on it.
         const unsettled = (i: Issue) => {
           if (!settledAt.has(i.id)) return true;
-          if (stillSettled(settledAt.get(i.id), i, "done")) return false;
+          if (stillSettled(settledAt.get(i.id), i, null)) return false;
           store.unsettle(i.id);
           return true;
         };
@@ -1230,9 +1217,12 @@ export function createApp(opts: AppOptions): Server {
         // The header's spend line: today against the install cap, when one is set.
         const spend = summary?.install.cap != null ? { spent: summary.install.spent, cap: summary.install.cap } : null;
         const board = buildBoard({ open, closed, placements: store.placements(), seen: store.allSeen(), schedules: store.schedules(), recurring, installedAt: store.meta("installed_at")!, assignees: ctx.assignees, crew: { working: busy.map } });
-        for (const card of [...Object.values(board.buckets).flat(), ...board.recurring]) {
+        const cards = [...Object.values(board.buckets).flat(), ...board.recurring];
+        const states = await stateRows(cards.map((c) => c.id));
+        for (const card of cards) {
           const w = busy.map.get(card.identifier);
           if (w) card.working = w;
+          card.state = states.get(card.id) ?? null;
           Object.assign(card, byOf(names, card.id));
         }
         // Lists truncate long descriptions; the brief is read in full.
@@ -1312,13 +1302,11 @@ export function createApp(opts: AppOptions): Server {
         if (url.searchParams.get("view") === "history") {
           const offset = Math.max(0, Number(url.searchParams.get("offset")) || 0);
           const status = url.searchParams.get("status");
-          return historyPage(await pc.closedFor(agent.id, { q: url.searchParams.get("q") ?? "", ...(status === "done" || status === "cancelled" ? { status } : {}), offset, limit: HISTORY_PAGE }), offset, chat?.id, ctx.agents);
+          const closed = await pc.closedFor(agent.id, { q: url.searchParams.get("q") ?? "", ...(status === "done" || status === "cancelled" ? { status } : {}), offset, limit: HISTORY_PAGE });
+          return historyPage(closed, offset, chat?.id, await stateRows(closed.map((i) => i.id)), ctx.agents);
         }
-        const [live, runs] = await Promise.all([liveRuns(), recentRuns()]);
-        const lastRun = (i: Issue) => runs.find((r) => r.issueId === i.id && r.finishedAt);
-        const [open, awaiting, needs] = await Promise.all([pc.openIssues(), records.awaiting().catch(() => new Set<string>()), waiting(ctx)]);
-        const owed = new Map(needs.map((i) => [i.id, i.state]));
-        return splitTasks(open, agent.id, chat?.id, (i) => owed.get(i.id) ?? chatState(i, live, lastRun(i), ctx.me, awaiting).state, ctx.agents, new Set(owed.keys()));
+        const mine = tasksOf(await pc.openIssues(), agent.id, chat?.id);
+        return splitTasks(mine, await stateRows(mine.map((i) => i.id)), ctx.agents);
       },
     },
     // The Activity tab (timeline.ts): the agent's last 50 jobs, one kernel read; task titles from what Paperclip already lists.
@@ -1348,18 +1336,20 @@ export function createApp(opts: AppOptions): Server {
         const ctx = await context();
         const label = await labelNamed(ctx, "chat", "#0ea5e9");
         // Every open task too (for the work handed out from open chats), in the same round trip rather than after.
-        const [open, closed, live, runs, openTasks] = await Promise.all([pc.labelled(label.id, OPEN), pc.labelled(label.id, "done,cancelled", "20"), liveRuns(), recentRuns(), pc.openIssues()]);
+        const [open, closed, openTasks] = await Promise.all([pc.labelled(label.id, OPEN), pc.labelled(label.id, "done,cancelled", "20"), pc.openIssues()]);
         const newest = (a: Issue, b: Issue) => (b.lastActivityAt ?? b.updatedAt).localeCompare(a.lastActivityAt ?? a.updatedAt);
         const all = [...open.sort(newest), ...closed.sort(newest)];
-        const awaiting = await records.awaiting();
-        const lastRun = (id: string) => runs.find((r) => r.issueId === id && r.finishedAt);
+        // Work an agent handed out from an open chat (a child task of it): listed under that chat's agent.
+        const chatIds = new Map(open.map((i) => [i.id, i.identifier]));
+        const kids = chatIds.size ? openTasks.filter((i) => i.parentId && chatIds.has(i.parentId) && !all.some((c) => c.id === i.id)) : [];
+        const states = await stateRows([...all, ...kids].map((i) => i.id));
         const agentOf = (id: string | null | undefined) => ctx.agents.find((a) => a.id === id);
         const row = (i: Issue, agent: ReturnType<typeof agentOf>) => ({
           identifier: i.identifier,
           title: i.title,
           open: !["done", "cancelled"].includes(i.status),
           agent: agent ? { key: agent.id, name: agent.name } : { key: "", name: "You" },
-          ...chatState(i, live, lastRun(i.id), ctx.me, awaiting),
+          state: states.get(i.id) ?? null,
           updatedAt: i.lastActivityAt ?? i.updatedAt,
         });
         const settledAt = store.settledAt();
@@ -1367,8 +1357,6 @@ export function createApp(opts: AppOptions): Server {
           all.map(async (i) => {
             const messages = await chatMessages(i, ctx).catch(() => [] as Message[]);
             const r = row(i, agentOf(chatAgent(i)));
-            const shown = shownState({ state: r.state, ...(r.reason ? { reason: r.reason } : {}) }, messages, lastRun(i.id));
-            Object.assign(r, shown);
             const said = lastWord(messages);
             // Settled: out of the active list until something happens on it (then it comes back on its own).
             const settled = stillSettled(settledAt.get(i.id), i, r.state);
@@ -1377,26 +1365,13 @@ export function createApp(opts: AppOptions): Server {
             return { ...r, ...(said ? { preview: said } : {}), unread: said?.from === "agent" && said.at > store.seenAt(i.id), ...(settled ? { settled } : {}) };
           }),
         );
-        // Work an agent handed out from an open chat (a child task of it): listed under that chat's agent.
-        const chatIds = new Map(open.map((i) => [i.id, i.identifier]));
-        const handedOut = chatIds.size
-          ? await Promise.all(
-              openTasks
-                .filter((i) => i.parentId && chatIds.has(i.parentId) && !all.some((c) => c.id === i.id))
-                .map(async (i) => {
-                  // Same state as its own chat: waiting for you only when it asks the owner something.
-                  const r = row(i, agentOf(i.assigneeAgentId));
-                  const messages = await chatMessages(i, ctx).catch(() => [] as Message[]);
-                  return { ...r, ...shownState({ state: r.state, ...(r.reason ? { reason: r.reason } : {}) }, messages, lastRun(i.id)), from: chatIds.get(i.parentId!)!, unread: false };
-                }),
-            )
-          : [];
+        const handedOut = kids.map((i) => ({ ...row(i, agentOf(i.assigneeAgentId)), from: chatIds.get(i.parentId!)!, unread: false }));
         const agents = ctx.agents
           .filter((a) => !agentPaused(a))
           .map((a) => ({ key: a.id, name: a.name, front: a.metadata?.setupKey === "aidenhq:chief-of-staff" }));
         // A settled chat whose handed-out work runs or waits on the owner is active again.
         for (const c of chats) {
-          if (!c.settled || !handedOut.some((h) => h.from === c.identifier && holdsActive(h.state))) continue;
+          if (!c.settled || !handedOut.some((h) => h.from === c.identifier && isActive(h.state))) continue;
           delete (c as { settled?: boolean }).settled;
           store.unsettle(all.find((i) => i.identifier === c.identifier)!.id);
         }
@@ -1404,15 +1379,21 @@ export function createApp(opts: AppOptions): Server {
       },
     },
     {
-      // What waits on the owner (chats.ts needsYou): his Tier 2 cards' tasks, agents' open questions, work handed to him.
+      // Everything that needs someone, from the kernel (task-state.ts): each open task with attention, oldest first, and the
+      // fleet's counts (needs you, failed, unexplained idle).
       method: "GET",
       path: /^\/api\/needs-you$/,
       handle: async () => {
         const ctx = await context();
-        const agentName = (i: Issue) => ctx.agents.find((a) => a.id === (i.assigneeAgentId ?? chatAgent(i)))?.name ?? "You";
-        const items = (await waiting(ctx)).map((i) => ({ identifier: i.identifier, title: i.title, agent: agentName(i), state: i.state }));
-        // approvals: the Tier 2 cards the owner decides in Approvals; items: every task waiting on him (those cards' tasks too).
-        return { count: items.length, items, approvals: (await records.list("owner")).length };
+        const [read, open] = await Promise.all([taskStates.read({ open: true }), pc.openIssues()]);
+        const byId = new Map(open.map((i) => [i.id, i]));
+        const rows = await shownRows(read.tasks.filter((r) => r.attention.length && byId.has(r.task)));
+        const items = rows.map((state) => {
+          const i = byId.get(state.task)!;
+          return { identifier: i.identifier, title: i.title, agent: ctx.agents.find((a) => a.id === (i.assigneeAgentId ?? chatAgent(i)))?.name ?? "You", state };
+        });
+        // approvals: the Tier 2 cards the owner decides in Approvals.
+        return { counts: read.counts, items, approvals: (await records.list("owner")).length };
       },
     },
     // Approvals: the cards, open ones first, then the newest decided ones with their outcome, and the newest Tier 0 runs (made
@@ -1573,12 +1554,13 @@ export function createApp(opts: AppOptions): Server {
         const module = moduleStates(text).find((r) => r.name === m[1]);
         if (!module) throw new HttpError(404, "no such module");
         const ctx = await context();
-        const [routines, open, live, runs, awaiting, activity] = await Promise.all([pc.routines().catch(() => []), pc.openIssues(), liveRuns(), recentRuns(), records.awaiting().catch(() => new Set<string>()), kernelActivity()]);
+        const [routines, open, activity] = await Promise.all([pc.routines().catch(() => []), pc.openIssues(), kernelActivity()]);
         const { compiled, catalog } = readSources(settingsFiles());
         const chat = ctx.labels.find((l) => l.name === "chat");
-        const lastRun = (i: Issue) => runs.find((r) => r.issueId === i.id && r.finishedAt);
         const mine = module.agents.flatMap((key) => { const a = agentByKey(ctx.agents, key); return a ? [{ key, a }] : []; });
-        const tasks = mine.map(({ a }) => splitTasks(open, a.id, chat?.id, (i) => chatState(i, live, lastRun(i), ctx.me, awaiting).state, ctx.agents));
+        const owned = mine.map(({ a }) => tasksOf(open, a.id, chat?.id));
+        const states = await stateRows(owned.flat().map((i) => i.id));
+        const tasks = owned.map((list) => splitTasks(list, states, ctx.agents));
         const ongoing = tasks.flatMap((t) => [...t.needs, ...t.ongoing]).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
         return {
           module,
@@ -1876,12 +1858,12 @@ export function createApp(opts: AppOptions): Server {
       },
     },
     {
-      // Status and title of tasks referenced in text ("PEN-12"), so links show whether they're done.
+      // State and title of tasks referenced in text ("PEN-12"), so links show whether they're done.
       method: "GET",
       path: /^\/api\/refs$/,
       handle: async (_m, _body, url) => {
         const ids = [...new Set((url.searchParams.get("ids") ?? "").split(",").map((s) => s.trim().toUpperCase()))].filter((s) => /^[A-Z][A-Z0-9]{1,9}-\d{1,7}$/.test(s)).slice(0, 100);
-        const out: Record<string, { status: string; title: string }> = {};
+        const out: Record<string, { state: ShownState | null; title: string }> = {};
         for (let i = 0; i < ids.length; i += 6) {
           await Promise.all(
             ids.slice(i, i + 6).map(async (id) => {
@@ -1907,12 +1889,12 @@ export function createApp(opts: AppOptions): Server {
   ];
 
   // Referenced tasks change rarely; a short cache keeps the brief cheap to render.
-  const refs = new Map<string, { at: number; value: { status: string; title: string } | null }>();
+  const refs = new Map<string, { at: number; value: { state: ShownState | null; title: string } | null }>();
   async function refCache(id: string) {
     const hit = refs.get(id);
     if (hit && Date.now() - hit.at < 30_000) return hit.value;
     const value = await pc.issue(id).then(
-      (i) => ({ status: i.status, title: i.title }),
+      async (i) => ({ state: (await stateRows([i.id])).get(i.id) ?? null, title: i.title }),
       (err) => (err instanceof PaperclipError && err.status === 404 ? null : Promise.reject(err)),
     );
     refs.set(id, { at: Date.now(), value });

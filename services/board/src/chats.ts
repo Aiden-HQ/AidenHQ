@@ -4,37 +4,11 @@ import { agentPaused } from "./aidenhq-sdk/agent-paused.js";
 import { forOthers } from "./aidenhq-sdk/for-others.js";
 import { NOTICE_MARKER, relayed, displayText as strip, hasMarker as has } from "./board.js";
 import type { Agent, Comment, Issue } from "./paperclip.js";
-import type { LiveRun, PastRun } from "./runs.js";
 
 /** A label that reads like an approval ("approve WOR-184"): agents may not offer one; only a card or the owner's own words decide. */
 const readsAsApproval = (text: string) => /^\s*(apply|approve|reject)\b/i.test(text);
 
-/**
- * "idle": open, nothing running and nothing asked of the owner (no chip on screen). "in review": work an agent handed to
- * another agent is awaiting review by an agent, not by the owner (neutral, never counted as needing him).
- */
-export type ChatState = "working" | "queued" | "waiting for you" | "waiting for approval" | "in review" | "done" | "failed" | "idle";
-
 const AIDEN = "aidenhq:chief-of-staff";
-
-/** One state per chat. Nothing ends silently: a failed last run shows why. */
-export function chatState(issue: Issue, live: LiveRun[], lastRun: PastRun | undefined, me: string, awaiting: Set<string> = new Set()): { state: ChatState; reason?: string } {
-  const runs = live.filter((r) => r.issueId === issue.id);
-  if (runs.some((r) => r.status === "running")) return { state: "working" };
-  // A pending approval record on the task (`awaiting`: task ids).
-  if (awaiting.has(issue.id)) return { state: "waiting for approval" };
-  if (issue.status === "done" || issue.status === "cancelled") return { state: "done" };
-  if (lastRun && (lastRun.status === "failed" || lastRun.status === "timeout" || lastRun.status === "lost"))
-    return { state: "failed", reason: (lastRun.error ?? "").split("\n")[0]!.trim().slice(0, 120) || "ended without a reply" };
-  // Stopped (the run was cancelled): idle, not waiting on the owner, whatever status the task was
-  // left in. shownState still says "waiting for you" when the agent's last reply asked them something.
-  if (lastRun?.status === "cancelled") return { state: "idle" };
-  if (!issue.assigneeAgentId && issue.assigneeUserId === me) return { state: "waiting for you" };
-  // In review on an agent's task: the grader, the AI reviewer, CI or the merge queue has it, never the owner. It asks him
-  // only through a pending approval, a question (shownState, needsYou's `asking`) or being handed to him.
-  if (issue.status === "in_review") return { state: "in review" };
-  return { state: "idle" };
-}
 
 const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 
@@ -57,26 +31,6 @@ export function pickAgent(text: string, agents: Agent[]): { agent: Agent; note?:
   if (hit) return { agent: hit.a };
   return { agent: aiden, note: `(No agent called @${m[1]!.split(/\s/)[0]}; sent to Aiden.)` };
 }
-
-/**
- * What waits on the owner (Approvals, its badge, notifications, an agent's page), and nothing else: a pending Tier 2 record
- * on the task; an agent's question he hasn't answered (`asking`: task ids, read from the newest comments); or a task an agent
- * handed to him (his chat handed back, or one moved to him in review or blocked). Never a failed run (Fleet Ops repairs
- * those), work the grader, AI reviewer, CI or merge queue has, his own plain to-dos, or anything parked in backlog.
- */
-export function needsYou(open: Issue[], live: LiveRun[], runs: PastRun[], me: string, awaiting: Set<string> = new Set(), asking: Set<string> = new Set()): (Issue & { state: ChatState; reason?: string })[] {
-  const handedToHim = (i: Issue) => !i.assigneeAgentId && i.assigneeUserId === me && (Boolean(chatAgent(i)) || i.status === "in_review" || i.status === "blocked");
-  return open
-    .filter((i) => i.status !== "backlog")
-    .map((i) => {
-      const s = chatState(i, live, runs.find((r) => r.issueId === i.id && r.finishedAt), me, awaiting);
-      return { ...i, ...(asking.has(i.id) && ["idle", "in review", "failed"].includes(s.state) ? { state: "waiting for you" as const } : s) };
-    })
-    .filter((i) => i.state === "waiting for approval" || (i.state === "waiting for you" && (asking.has(i.id) || handedToHim(i))));
-}
-
-/** The states that wait on the owner (needsYou decides which tasks are in them). */
-export const WAITS_ON_OWNER: ChatState[] = ["waiting for you", "waiting for approval"];
 
 /** Recorded in a chat's description when it is created: the agent the chat belongs to. */
 export const chatAgentMarker = (agentId: string) => `<!-- aidenhq-chat-agent:${agentId} -->`;
@@ -157,16 +111,14 @@ export function replyQuestions(body: string): Question[] | undefined {
 type ChatComment = Pick<Comment, "id" | "body" | "authorType" | "authorAgentId" | "authorUserId" | "createdAt">;
 
 /**
- * The questions a task's agent is still waiting on the owner for: its newest reply asking `questions`, with nothing
- * from the owner (typed, tapped or relayed) since. Only the task's own agent's reply counts: another agent commenting
- * on the task can't put a question in front of the owner as if it were this one's. Comments oldest first.
+ * The multiple-choice questions on a task's agent's newest reply that offered some (the kernel says whether they still wait on the
+ * owner: this only finds their options). Only the task's own agent's reply counts: another agent commenting on the task can't put
+ * a question in front of the owner as if it were this one's. Comments oldest first.
  */
-export function openAsk(comments: ChatComment[], agentId: string | null | undefined, me: string): { id: string; at: string; text: string; questions: Question[] } | undefined {
+export function askedQuestions(comments: ChatComment[], agentId: string | null | undefined): { id: string; at: string; text: string; questions: Question[] } | undefined {
   if (!agentId) return undefined;
   for (let i = comments.length - 1; i >= 0; i--) {
     const c = comments[i]!;
-    const system = c.authorType !== "agent" && (!c.authorUserId || c.authorUserId === me);
-    if (system && !has(c.body, NOTICE_MARKER) && !has(c.body, APPROVAL_MARKER) && !forOthers(c.body)) return undefined;
     if (c.authorType !== "agent" || c.authorAgentId !== agentId || !c.body.includes(REPLY_MARKER)) continue;
     const questions = replyQuestions(c.body);
     if (questions) return { id: c.id, at: c.createdAt, text: strip(c.body), questions };
@@ -236,32 +188,4 @@ const lastSaid = (messages: Message[]) => messages.findLast((m): m is Extract<Me
 export function lastWord(messages: Message[]): { text: string; at: string; from: "agent" | "you" } | undefined {
   const m = lastSaid(messages);
   return m && { text: oneLine(m.text), at: m.at, from: m.kind === "reply" ? "agent" : "you" };
-}
-
-/** How long after a run ends its reply may still arrive: the kernel posts a job's reply a few seconds after the job ends. */
-const REPLY_GRACE_MS = 60_000;
-
-/**
- * Nothing ends silently: a run that started after the owner's last message finished, over a minute ago, without a reply.
- * (A message sent mid-run is the next run's to answer, not a silent end.)
- */
-export function silentEnd(messages: Message[], lastRun: Pick<PastRun, "status" | "startedAt" | "finishedAt"> | undefined, now = Date.now()): boolean {
-  const last = lastSaid(messages);
-  return Boolean(last?.kind === "owner" && lastRun?.status === "done" && lastRun.finishedAt && lastRun.startedAt && lastRun.startedAt > last.at
-    && Date.parse(lastRun.finishedAt) <= now - REPLY_GRACE_MS);
-}
-
-/** The state shown for a chat everywhere (list, conversation, needs-you): chatState, plus what its messages say. */
-export function shownState(base: { state: ChatState; reason?: string }, messages: Message[], lastRun: PastRun | undefined): { state: ChatState; reason?: string } {
-  if (base.state !== "idle" && base.state !== "in review") return base;
-  if (asksOwner(messages)) return { state: "waiting for you" };
-  if (base.state === "in review") return base;
-  if (silentEnd(messages, lastRun)) return { state: "failed", reason: "ended without a reply" };
-  return base;
-}
-
-/** An open chat whose last word is the agent's reply offering answers is waiting for the owner. */
-export function asksOwner(messages: Message[]): boolean {
-  const last = lastSaid(messages);
-  return last?.kind === "reply" && Boolean(last.actions?.length || last.questions?.length);
 }

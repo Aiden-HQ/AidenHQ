@@ -1,14 +1,12 @@
-// One clickable row of a list: status, a one-line title (full text on hover), its id, where it came from, and when.
-import { StatusDot, taskStatus } from "./StatusDot";
-
-export function ListRow({ href, state, title, id, from, time, timeTitle }: { href: string; state: string; title: string; id: string; from?: string | null; time: string; timeTitle?: string }) {
-  const s = taskStatus(state);
+// One clickable row of a list: status, a one-line title (full text on hover), its id, where it came from (or a short note), and when.
+export function ListRow({ href, status, title, id, from, note, time, timeTitle }: { href: string; status: React.ReactNode; title: string; id: string; from?: string | null; note?: React.ReactNode; time: string; timeTitle?: string }) {
   return (
     <a className="ui-row" href={href}>
-      <StatusDot tone={s.tone}>{s.word}</StatusDot>
+      {status}
       <span className="ui-row-title" title={title}>{title}</span>
       <span className="ui-row-meta">
         <span className="ui-row-id">{id}</span>
+        {note !== undefined && <span className="ui-row-note">{note}</span>}
         {from !== undefined && <span className="ui-row-from" title={from ? `from ${from}` : undefined}>{from && `from ${from}`}</span>}
       </span>
       <time className="ui-row-time" title={timeTitle}>{time}</time>

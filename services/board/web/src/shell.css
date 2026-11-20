@@ -83,6 +83,11 @@
 
 /* ------------------------------------------------------------ a page's own tools under the bar (Tasks) */
 .page-tools { flex: none; display: flex; align-items: center; gap: 8px; padding: 12px clamp(16px, 1.4vw, 28px); border-bottom: 1px solid var(--border); background: var(--bg); }
+/* The fleet header on Tasks (Attention.tsx): three counts, then those tasks oldest first, scrolling within a third of the screen. */
+.attn { flex: none; display: grid; gap: 8px; padding: 10px clamp(16px, 1.4vw, 28px); border-bottom: 1px solid var(--border); background: var(--bg); }
+.attn-head { display: flex; align-items: center; gap: 12px; min-width: 0; flex-wrap: wrap; }
+.attn-order { margin-left: auto; font-size: var(--text-xs); color: var(--faint); }
+.attn-list { max-height: 32vh; overflow-y: auto; border-radius: var(--radius); }
 .page-tools h1 { margin: 0 8px 0 0; font-size: var(--text-xl); font-weight: 650; letter-spacing: -0.02em; }
 .page-tools .search { position: relative; display: flex; align-items: center; }
 .page-tools .search input { padding-right: 30px; }

@@ -78,8 +78,6 @@ export type Records = {
    * `tier0`: Tier 0 runs too (the history's audit rows), else only the records that went to the reviewer or the owner.
    */
   list(state: "owner" | "pending" | "recent" | "finished", opts?: { task?: string; limit?: number; tier0?: boolean }): Promise<Approval[]>;
-  /** The ids of the tasks with a record waiting on the owner. */
-  awaiting(): Promise<Set<string>>;
   /** Marketplace advisories open against installed modules (plan unit 4e): Settings > Modules shows them as a banner. [] when unreachable. */
   advisories(): Promise<Advisory[]>;
   /** Every connection's /healthz as the kernel reaches it (the one place connection health is probed). {} when the kernel can't be asked. */
@@ -133,5 +131,5 @@ export function kernelRecords(k: { url: string; token: string } | undefined, log
     const asked = chain?.ok ? String(((await chain.json()) as { chain?: unknown }).chain ?? "") : null;
     return explain((await rec.json()) as RecordWhole, asked);
   };
-  return { list, connectionHealth, explain: explainOf, awaiting: async () => new Set((await list("owner")).map((a) => a.issueId)), advisories, settingsChange };
+  return { list, connectionHealth, explain: explainOf, advisories, settingsChange };
 }

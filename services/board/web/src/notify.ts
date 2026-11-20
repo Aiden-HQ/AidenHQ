@@ -1,5 +1,8 @@
 // Browser notifications: while the board is open, one notification per new thing waiting for you, per
 // device. What this device has already shown is remembered locally (best effort: storage may be unavailable).
+import type { ShownState } from "./types";
+import { stateWords } from "./ui/TaskState";
+
 const SEEN_KEY = "aidenhq.notified";
 
 function seen(): Set<string> {
@@ -15,14 +18,14 @@ function remember(ids: Set<string>) {
   } catch {}
 }
 
-type Waiting = { identifier: string; title: string; agent: string; state: string };
+type Waiting = { identifier: string; title: string; agent: string; state: ShownState };
 
 /**
  * What to notify about now: items not shown before. Only items still waiting are remembered, so a chat that asks
  * again after being answered notifies again.
  */
 export function nextSeen(seen: Set<string>, items: Waiting[]): { seen: Set<string>; fresh: Waiting[] } {
-  const key = (i: Waiting) => `${i.identifier}:${i.state}`;
+  const key = (i: Waiting) => `${i.identifier}:${i.state.reason}`;
   return { seen: new Set(items.map(key)), fresh: items.filter((i) => !seen.has(key(i))) };
 }
 
@@ -43,7 +46,7 @@ export function watchNeedsYou(poll: () => Promise<{ items: Waiting[] }>, onOpen:
       if (!first && notificationsOn())
         for (const i of fresh) {
           try {
-            const n = new Notification(`${i.agent}: ${i.state}`, { body: i.title, tag: `${i.identifier}:${i.state}` });
+            const n = new Notification(`${i.agent}: needs you${stateWords(i.state).detail ? ` · ${stateWords(i.state).detail}` : ""}`, { body: i.title, tag: `${i.identifier}:${i.state.reason}` });
             n.onclick = () => (window.focus(), onOpen(i.identifier));
           } catch {
             usable = false;

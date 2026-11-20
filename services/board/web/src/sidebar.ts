@@ -1,7 +1,8 @@
 // The chat sidebar: Aiden pinned on top as the front door, then each agent with its chats. Pure, so
 // it can be tested without React.
 import { isTestChat } from "./conversation.js";
-import type { ChatAgent, ChatRow, ChatState } from "./types.js";
+import { isActive, needsOwner } from "./ui/TaskState";
+import type { ChatAgent, ChatRow, ShownState } from "./types.js";
 import { isLocalDoor } from "./util.js";
 
 export interface AgentGroup {
@@ -23,30 +24,30 @@ export interface AgentGroup {
 
 export const VISIBLE = 5;
 const newest = (a: ChatRow, b: ChatRow) => (b.preview?.at ?? b.updatedAt).localeCompare(a.preview?.at ?? a.updatedAt);
-/** What waits on the owner (the server's chats.ts WAITS_ON_OWNER): a failed run is Fleet Ops' to repair, not his. */
-export const NEEDS: ChatState[] = ["waiting for you", "waiting for approval"];
-
-/** Only states that ask for attention get a chip: an idle or finished chat shows none. */
-export const showsChip = (s: ChatState) => s !== "idle" && s !== "done";
-// A failed task waits on its agent (Fleet Ops repairs it), shown with its chip among the rest.
-const WAITING: ChatState[] = ["queued", "in review", "idle", "failed"];
+const newestFirst = (a: { updatedAt: string }, b: { updatedAt: string }) => b.updatedAt.localeCompare(a.updatedAt);
 
 /** What a chat's handed-out work comes to, for its sidebar line: "4 tasks · 1 needs you". */
-export function taskSummary(kids: { state: ChatState }[]): { total: number; needs: number; busy: boolean } {
-  return { total: kids.length, needs: kids.filter((k) => NEEDS.includes(k.state)).length, busy: kids.some((k) => k.state === "working") };
+export function taskSummary(kids: { state: ShownState | null }[]): { total: number; needs: number; busy: boolean } {
+  return { total: kids.length, needs: kids.filter((k) => needsOwner(k.state)).length, busy: kids.some((k) => k.state?.kind === "working") };
 }
 
 /** A chat's handed-out tasks for its Tasks panel: what needs the owner, what is running, what waits, and the recent finished ones. */
-export function groupTasks<T extends { state: ChatState; updatedAt: string }>(items: T[], now = Date.now()): { needs: T[]; working: T[]; waiting: T[]; finished: T[] } {
-  const by = (states: ChatState[]) => items.filter((t) => states.includes(t.state)).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+export function groupTasks<T extends { state: ShownState | null; updatedAt: string }>(items: T[], now = Date.now()): { needs: T[]; working: T[]; waiting: T[]; finished: T[] } {
   const cutoff = new Date(now - 7 * 86_400_000).toISOString();
-  return { needs: by(NEEDS), working: by(["working"]), waiting: by(WAITING), finished: by(["done"]).filter((t) => t.updatedAt >= cutoff).slice(0, 5) };
+  const done = items.filter((t) => t.state?.kind === "done");
+  const open = items.filter((t) => t.state?.kind !== "done");
+  return {
+    needs: open.filter((t) => needsOwner(t.state)).sort(newestFirst),
+    working: open.filter((t) => !needsOwner(t.state) && t.state?.kind === "working").sort(newestFirst),
+    waiting: open.filter((t) => !needsOwner(t.state) && t.state?.kind !== "working").sort(newestFirst),
+    finished: done.filter((t) => t.updatedAt >= cutoff).sort(newestFirst).slice(0, 5),
+  };
 }
-/** A chat that may be settled: its agent finished or went quiet, and it waits on no one (the board checks again). */
-export const settleableChat = (s: ChatState) => s === "done" || s === "idle";
+/** A chat that may be settled: nothing running and nothing waiting on anyone (the board checks again). */
+export const settleableChat = (s: ShownState | null) => !isActive(s);
 
 /** A run is live somewhere: poll faster. */
-export const anyLive = (rows: { state: ChatState }[]) => rows.some((r) => r.state === "working" || r.state === "queued");
+export const anyLive = (rows: { state: ShownState | null }[]) => rows.some((r) => r.state?.kind === "working" || r.state?.reason === "job_queued");
 
 export function groupChats(rows: ChatRow[], agents: ChatAgent[]): { front: AgentGroup | null; others: AgentGroup[] } {
   const own = rows.filter((r) => !r.from);
@@ -54,7 +55,7 @@ export function groupChats(rows: ChatRow[], agents: ChatAgent[]): { front: Agent
   const chatAgent = new Map(own.map((r) => [r.identifier, r.agent.key]));
   const group = (agent: ChatAgent): AgentGroup => {
     const mine = own.filter((r) => r.agent.key === agent.key);
-    const test = (r: ChatRow) => isTestChat(r.title) && !NEEDS.includes(r.state);
+    const test = (r: ChatRow) => isTestChat(r.title) && !needsOwner(r.state);
     const open = mine.filter((r) => r.open && !test(r)).sort(newest);
     const earlier = mine.filter((r) => !r.open && !test(r)).sort(newest);
     const tests = mine.filter(test).sort(newest);
@@ -69,7 +70,7 @@ export function groupChats(rows: ChatRow[], agents: ChatAgent[]): { front: Agent
       tests,
       handedOut,
       busy: anyLive(all),
-      needsYou: all.some((r) => NEEDS.includes(r.state)),
+      needsYou: all.some((r) => needsOwner(r.state)),
       unread: mine.some((r) => r.unread),
     };
   };
