@@ -67,6 +67,12 @@ export const DESTRUCTIVE_NAME = /delete|trash|remove|purge/i;
 export const writeTools = (c: Obj) => [...(c?.tools?.write ?? []), ...(c?.tools?.destructive ?? [])];
 /** A connection's tools a read shorthand reaches: its `read` tools, less the ones it also tags `named` (a grant must name those). */
 export const readTools = (c: Obj) => (c?.tools?.read ?? []).filter((t: string) => !(c?.tools?.named ?? []).includes(t));
+/**
+ * Whether a connection's `upstream` tool may be granted at all: the setting's `off` (or anything but `issues`) withholds every
+ * tool the connection tags `upstream` (spec §6.9a). One predicate for every grant path, so a shorthand list, an agent's list and
+ * a module's `default_grants:` can't drift apart and hand one back after another has stripped it.
+ */
+export const upstreamGranted = (c: Obj, tool: string, upstream: unknown) => String(upstream ?? "off") === "issues" || !(c.upstream ?? []).includes(tool);
 // Every connection is reached through the kernel's tool proxy, which holds the grants and the service keys.
 export const KERNEL_URL = "http://10.231.0.1:3130";
 
@@ -990,16 +996,16 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
       for (const t of list) if (!all.includes(t)) fail(`${key}: ${name} has no tool ${t}`);
       // A connection's `upstream` tools file to the product's upstream repos: granted only while the upstream setting
       // allows issues (spec §6.9a; off grants none of them).
-      const upstreamOff = String(settings.upstream ?? "off") !== "issues";
-      tools[name] = list.filter((t: string) => !(upstreamOff && (c.upstream ?? []).includes(t)));
+      tools[name] = list.filter((t: string) => upstreamGranted(c, t, settings.upstream));
       if (!tools[name].length) delete tools[name];
     }
     // Default grants (a module's `default_grants:`, on its own connections, by the same tests as prompts): e.g. owner_channel.notify
     // for every crew agent out of trial and untrusted modules, advisor_ask and memory_note while model-tools and memory are on.
-    // An agent without `profile:` is crew (as its grant entry says).
+    // An agent without `profile:` is crew (as its grant entry says). They honour `upstream` too: this loop runs after the one above,
+    // and a default grant naming an upstream tool would otherwise put back what `upstream: off` stripped.
     for (const g of defaultGrants) if (promptApplies(g, { ...a, profile: a.profile ?? "crew", enabled_tools: tools }, enabled)) for (const t of g.tools) {
       const [c, tool] = t.split(".");
-      if (!tools[c]?.includes(tool)) tools[c] = [...(tools[c] ?? []), tool];
+      if (!tools[c]?.includes(tool) && upstreamGranted(paperclip.mcp_servers[c], tool, settings.upstream)) tools[c] = [...(tools[c] ?? []), tool];
     }
     const memory = memoryOf(instanceDir, key, warnings);
     if (memory) a.memory = memory;

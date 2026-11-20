@@ -151,6 +151,10 @@
     {
       "name": "wiper",
       "source": "./wiper"
+    },
+    {
+      "name": "up",
+      "source": "./up"
     }
   ]
 }
