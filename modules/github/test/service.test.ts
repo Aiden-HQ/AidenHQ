@@ -1,18 +1,25 @@
 // codehost-github's service end to end against a fake GitHub (a bare repo and an in-process API) and a fake kernel: a job's
-// branch lands from a hostile workspace without any of its hooks, filters or fsmonitor running; an ops token outside the
-// caller's grant is refused.
+// branch lands from the bundle its box wrote in a hostile workspace without any of its hooks, filters or fsmonitor running,
+// and a symlinked bundle is refused; an ops token outside the caller's grant is refused.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { createService } from "../service/src/service.ts";
 import { serveOps } from "../service/src/ops.ts";
 import { render } from "../../../kernel/src/writes.ts";
 
 const sh = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8", env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_AUTHOR_NAME: "a", GIT_AUTHOR_EMAIL: "a@example.com", GIT_COMMITTER_NAME: "a", GIT_COMMITTER_EMAIL: "a@example.com" } }).trim();
+/** What the in-box `aidenhq publish` does: the branch's bundle at <task>/.aidenhq/bundles/<sha>.bundle. Returns the sha. */
+const boxBundle = (ws, branch) => {
+  const sha = sh(ws, "rev-parse", `refs/heads/${branch}`);
+  mkdirSync(join(dirname(ws), ".aidenhq", "bundles"), { recursive: true });
+  sh(ws, "bundle", "create", "--quiet", join(dirname(ws), ".aidenhq", "bundles", `${sha}.bundle`), `refs/heads/${branch}`);
+  return sha;
+};
 const listen = (handler) => new Promise((ok) => { const s = createServer(handler); s.listen(0, "127.0.0.1", () => ok({ s, url: `http://127.0.0.1:${s.address().port}` })); });
 
 async function setup(t, { routes = () => undefined, maintained, connected = () => true } = {}) {
@@ -36,7 +43,7 @@ async function setup(t, { routes = () => undefined, maintained, connected = () =
   writeFileSync(join(ws, ".gitattributes"), "* filter=evil\n");
   sh(ws, "add", "app.js", ".gitattributes");
   sh(ws, "commit", "--quiet", "-m", "feature");
-  const sha = sh(ws, "rev-parse", "HEAD");
+  const sha = boxBundle(ws, "feature");
   for (const h of ["post-checkout", "pre-push", "reference-transaction", "post-update", "pre-receive", "update", "push-to-checkout"]) {
     writeFileSync(join(ws, ".git", "hooks", h), `#!/bin/sh\ntouch ${marker}\n`);
     chmodSync(join(ws, ".git", "hooks", h), 0o755);
@@ -140,7 +147,7 @@ test("connected: a new app's repository is created in the fleet org with the app
   writeFileSync(join(ws, "app.js"), "export const y = 2;\n");
   sh(ws, "add", "app.js");
   sh(ws, "commit", "--quiet", "-m", "first");
-  const sha = sh(ws, "rev-parse", "HEAD");
+  const sha = boxBundle(ws, "first");
   const push = { kind: "github.push", args: { workspace: "TASK-2", only: [{ repo: "acme-agents/new-app", branch: "first", sha }] } };
   const p2 = await call("/aidenhq/v1/executor/plan", { ...push, requester: { kind: "job", roles: [] }, task: "t2" });
   assert.equal(p2.json.raise, undefined, JSON.stringify(p2.json)); // an ordinary branch of an agents-org repo: Tier 0
@@ -166,12 +173,12 @@ test("a PR to a repo outside ours is refused while its text or a commit message 
   sh(ws, "add", "lib.js");
   sh(ws, "commit", "--quiet", "-m", "Fix the parser\n\nCo-authored-by: AidenHQ Engineer <noreply@aidenhq.ai>"); // the attribution trailer is the one allowed name
   const pr = (sha, text) => call("/aidenhq/v1/executor/plan", { kind: "github.pr", args: { workspace: "TASK-3", only: [{ repo: "partner/lib", branch: "agent/TASK-3/fix", sha }], text }, requester: { kind: "job", roles: [] }, task: "t3" });
-  const clean = await pr(sh(ws, "rev-parse", "HEAD"), { title: "Fix the parser", body: "Handles empty input." });
+  const clean = await pr(boxBundle(ws, "agent/TASK-3/fix"), { title: "Fix the parser", body: "Handles empty input." });
   assert.equal(clean.status, 200, JSON.stringify(clean.json));
-  assert.match((await pr(sh(ws, "rev-parse", "HEAD"), { title: "Fix the parser", body: "Found by the AidenHQ fleet." })).json.error, /mentions "AidenHQ"/);
+  assert.match((await pr(boxBundle(ws, "agent/TASK-3/fix"), { title: "Fix the parser", body: "Found by the AidenHQ fleet." })).json.error, /mentions "AidenHQ"/);
   writeFileSync(join(ws, "lib.js"), "export const z = 4;\n");
   sh(ws, "commit", "--quiet", "-am", "Tweak, see /home/agent/notes");
-  assert.match((await pr(sh(ws, "rev-parse", "HEAD"), { title: "Fix the parser", body: "Handles empty input." })).json.error, /commit message on agent\/TASK-3\/fix mentions "\/home\/"/);
+  assert.match((await pr(boxBundle(ws, "agent/TASK-3/fix"), { title: "Fix the parser", body: "Handles empty input." })).json.error, /commit message on agent\/TASK-3\/fix mentions "\/home\/"/);
 });
 
 test("a PR's card carries the branch's diff for the reviewer (#744): every kind renders its plan's facts", async (t) => {
@@ -279,8 +286,8 @@ test("held write is re-checked on reconnect", async (t) => {
   assert.equal((await call("/aidenhq/v1/executor/plan", { kind: "github.push", args, requester: { kind: "job", roles: [] }, task: "t1" })).status, 200);
   await call("/aidenhq/v1/executor/execute", { id: "k-00000000000000d2", kind: "github.push", args, digest: "d", idempotency_key: "h2" });
   await new Promise((r) => setTimeout(r, 50));
-  // While GitHub was away the task's branch moved on: the approved head is no longer what the workspace holds.
-  sh(ws, "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=", "update-ref", "refs/heads/feature", "HEAD~1");
+  // While GitHub was away the task's workspace went: the approved head's bundle is no longer there to read.
+  rmSync(join(dirname(ws), ".aidenhq"), { recursive: true });
   const held = JSON.parse(readFileSync(join(root, "cache", "held.json"), "utf8"))["k-00000000000000d2"];
   assert.deepEqual([held.asker.requester, held.asker.task], [{ kind: "job", roles: [] }, "t1"], "held with the requester who asked");
   const notes = readFileSync(join(root, "cache", "pushed-by.json"), "utf8");
@@ -332,19 +339,25 @@ const pushArgs = (sha) => ({ workspace: "TASK-1", only: [{ repo: "acme-agents/wi
 const planPush = (call, sha) => call("/aidenhq/v1/executor/plan", { kind: "github.push", args: pushArgs(sha), requester: { kind: "job", roles: [] }, task: "t1" });
 const settle = async (outcomes) => { for (let i = 0; i < 300 && !outcomes.length; i++) await new Promise((r) => setTimeout(r, 10)); };
 
-test("a workspace .git with a symlink, alternates or a commondir is refused before git reads it", async (t) => {
-  const { ws, sha, call } = await setup(t);
-  symlinkSync("/etc", join(ws, ".git", "refs", "evil"));
-  assert.match((await planPush(call, sha)).json.error, /isn't a plain file/);
-  rmSync(join(ws, ".git", "refs", "evil"));
-  writeFileSync(join(ws, ".git", "objects", "info", "alternates"), "/elsewhere/objects\n");
-  assert.match((await planPush(call, sha)).json.error, /alternates/);
-  rmSync(join(ws, ".git", "objects", "info", "alternates"));
-  writeFileSync(join(ws, ".git", "commondir"), "/elsewhere\n");
-  assert.match((await planPush(call, sha)).json.error, /commondir/);
+test("a symlinked bundle, or a bundles folder that leads out of the task, is refused before git reads it; the clone's .git is never read", async (t) => {
+  const { root, ws, sha, call } = await setup(t);
+  const bundles = join(root, "tasks", "TASK-1", ".aidenhq", "bundles"), file = join(bundles, `${sha}.bundle`);
+  const outside = join(root, "elsewhere");
+  mkdirSync(outside);
+  execFileSync("cp", [file, join(outside, `${sha}.bundle`)]);
+  rmSync(file);
+  symlinkSync(join(outside, `${sha}.bundle`), file);
+  assert.match((await planPush(call, sha)).json.error, /symlink/);
+  rmSync(bundles, { recursive: true });
+  symlinkSync(outside, bundles);
+  assert.match((await planPush(call, sha)).json.error, /isn't a regular file inside task TASK-1/);
+  rmSync(bundles);
+  // No bundle: the branch isn't read from the clone's .git, however plain it is.
+  assert.match((await planPush(call, sha)).json.error, /has no bundle/);
+  assert.ok(existsSync(join(ws, ".git", "HEAD")));
 });
 
-test("a job's commit never reaches what snapshot and clone serve as GitHub's", async (t) => {
+test("a job's commit never reaches what snapshot and bundle serve as GitHub's", async (t) => {
   const { root, sha, call, raw } = await setup(t);
   assert.equal((await planPush(call, sha)).status, 200); // the job's commit is now in the service's ws cache
   assert.throws(() => sh(root, "--git-dir", join(root, "cache", "github", "acme-agents", "widget.git"), "cat-file", "-e", sha));
@@ -365,26 +378,6 @@ test("a job's commit never reaches what snapshot and clone serve as GitHub's", a
   assert.equal(readFileSync(join(root, "box-clone", "README.md"), "utf8"), "widget\n");
   assert.throws(() => sh(join(root, "box-clone"), "cat-file", "-e", sha));
   assert.deepEqual(readdirSync(join(root, "cache")).filter((d) => d.startsWith("bundle-")), [], "the scratch bundle is gone once sent");
-});
-
-test("clone writes only a new folder in the task workspace the kernel resolved, with no credentials", async (t) => {
-  const { root, call } = await setup(t);
-  const clone = (into) => call("/ops/clone", { module: "apps-platform", repo: "acme-agents/widget", ref: "main", into });
-  assert.equal((await clone("../TASK-1")).status, 400);
-  assert.equal((await clone("TASK-2")).status, 400); // no such workspace: never made here
-  symlinkSync(join(root, "tasks", "TASK-1"), join(root, "tasks", "TASK-3"));
-  assert.equal((await clone("TASK-3")).status, 400);
-  assert.equal((await clone("TASK-1")).status, 409); // TASK-1/widget is there already
-  mkdirSync(join(root, "tasks", "TASK-4"));
-  // HEAD: the default branch by its name (as the kernel asks for an Engineer's clones).
-  const ok = await call("/ops/clone", { module: "apps-platform", repo: "acme-agents/widget", ref: "HEAD", into: "TASK-4" });
-  assert.equal(ok.status, 200, JSON.stringify(ok.json));
-  const dir = join(root, "tasks", "TASK-4", "widget");
-  assert.match(sh(dir, "rev-parse", "--verify", "refs/remotes/origin/main"), /^[0-9a-f]{40}$/);
-  assert.equal(readFileSync(join(dir, "README.md"), "utf8"), "widget\n");
-  assert.equal(sh(dir, "remote", "get-url", "origin"), "https://github.com/acme-agents/widget.git");
-  assert.doesNotMatch(readFileSync(join(dir, ".git", "config"), "utf8"), /tok|credential|extraheader/i);
-  assert.deepEqual(readdirSync(join(root, "tasks", "TASK-4")), ["widget"], "the clone was renamed into place: no scratch folder is left");
 });
 
 test("the apply read refuses what it can't read whole, and names no committer-written path on the card", async (t) => {
@@ -410,7 +403,7 @@ test("the apply read refuses what it can't read whole, and names no committer-wr
     edit();
     sh(ws, "add", "-A");
     sh(ws, "commit", "--quiet", "-m", branch);
-    return { repo: "acme-agents/aidenhq-instance", branch, sha: sh(ws, "rev-parse", "HEAD"), workspace: "TASK-2" };
+    return { repo: "acme-agents/aidenhq-instance", branch, sha: boxBundle(ws, branch), workspace: "TASK-2" };
   };
   const grad = await call("/aidenhq/v1/apply/read", change("fleet/graduate", () => writeFileSync(join(ws, "agents", "chaser", "agent.yaml"), "trial: false\n")));
   assert.equal(grad.status, 200, JSON.stringify(grad.json));

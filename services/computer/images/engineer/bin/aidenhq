@@ -19,8 +19,8 @@
 //
 // A PR link is a GitHub pull request's (https://github.com/<org>/<repo>/pull/<n>) or a change request's on this server
 // (codehost:local/<name>/change/<n>), as publish printed it.
-//   aidenhq clone <org/name>                         a repository of this instance's (the instance repo, the product, an agents
-//                                                    org's), cloned here from the bundle the kernel serves; run again, it
+//   aidenhq clone <org/name>                         a repository its dispatcher's clone grant covers, cloned here from the bundle
+//                                                    the kernel serves (the job's start runs it for each repo its task names); run again, it
 //                                                    fetches the code host's current branches into the clone's origin/*
 //                                                    (the working tree and local branches stay as they are)
 //   aidenhq apply <org/repo> <branch>                apply the instance repo's branch at its commit here: one kernel.apply write
@@ -214,8 +214,9 @@ if (command === "publish" || command === "review") {
   const have = [name, `${org}--${name}`].map((d) => join(workspace, d)).find((d) => existsSync(join(d, ".git")));
   const dest = have ?? join(workspace, name);
   if (!have && existsSync(dest)) fail(`${dest} is already there and isn't a clone`, 2);
-  const res = await fetch(new URL("/v1/jobtools/clone", gateway), { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify({ repo: words[0] }), signal: AbortSignal.timeout(10 * 60_000) }).catch((e) => fail(`the gateway didn't answer (${e.message})`));
-  if (!res.ok) { const t = await res.text(); let m = t; try { m = JSON.parse(t).error?.message ?? t; } catch {} fail(m); }
+  // Exit 75 when the kernel or the code host can't answer now: the kernel's job start (boxes.ts) then tries again later.
+  const res = await fetch(new URL("/v1/jobtools/clone", gateway), { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify({ repo: words[0] }), signal: AbortSignal.timeout(10 * 60_000) }).catch((e) => fail(`the gateway didn't answer (${e.message})`, 75));
+  if (!res.ok) { const t = await res.text(); let m = t; try { m = JSON.parse(t).error?.message ?? t; } catch {} fail(m, res.status >= 500 ? 75 : 1); }
   const tmp = mkdtempSync(join(tmpdir(), "clone-")), file = join(tmp, "repo.bundle");
   try {
     writeFileSync(file, Buffer.from(await res.arrayBuffer()));

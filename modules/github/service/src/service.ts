@@ -1,13 +1,13 @@
 // The code host as its own service: the executor of codehost-github.{push,pr,merge,close,create_repo} (executor@1; the
 // kernel tiers each record with plan.ts and calls execute only for an approved, claimed and revalidated one), and typed
-// GitHub operations for other modules (/ops/snapshot, /ops/clone, /ops/bundle here; fetch, head, read, comment, commit and
+// GitHub operations for other modules (/ops/snapshot, /ops/bundle here; fetch, head, read, comment, commit and
 // runner_token in ops.ts), which only the kernel calls: it checks each module's grant (its own module.yaml `codehost:`) at
 // POST /v1/codehost/:op and calls here with this service's key. Every GitHub call is the owner's (spec
 // 2026-11-20-github-owner-identity): `access` holds the sign-in, and no answer ever carries its token.
 //
 // Repo code never runs here. Every git command carries SAFE_GIT_ARGS and no global or system config but the service's own
-// (no hooks, no filters, no fsmonitor); a job's commits come in by a fetch from its workspace's .git into this service's
-// bare cache clone, which is never checked out; the owner's token lives only in the env of the one git call that needs it.
+// (no hooks, no filters, no fsmonitor); a job's commits come in by a fetch from the bundle its box wrote (copied out, never followed) into this
+// service's bare cache clone, which is never checked out; the owner's token lives only in the env of the one git call that needs it.
 // Every commit it makes is the owner's with the AidenHQ trailer. An approved write that finds GitHub disconnected is held
 // (held.json) and runs once by id after the reconnect. An approved merge runs as a queue (merges.ts) whose outcome
 // comes once its PRs merged at their approved heads, or it stopped.
@@ -21,9 +21,9 @@
 import { execFile, spawn } from "node:child_process";
 import { once } from "node:events";
 import { createHash, timingSafeEqual } from "node:crypto";
-import { chmodSync, cpSync, createReadStream, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { join, sep } from "node:path";
+import { join } from "node:path";
 import { Readable } from "node:stream";
 import { promisify } from "node:util";
 import { serveExecutor, type Executor, type PlanRequest } from "./aidenhq-sdk/executor.ts";
@@ -43,6 +43,7 @@ import { candidatesOf, readSiblings } from "./siblings.ts";
 import { notePrTask } from "./pr-watch.ts";
 import { createDesignReviews, startDesignReviewSweep } from "./design-review.ts";
 import { packBundle, type OpsContext } from "./ops.ts";
+import { copyBoxBundle } from "./aidenhq-sdk/box-bundle.ts";
 import { noteKept } from "./tidy.ts";
 
 const run = promisify(execFile);
@@ -81,7 +82,6 @@ const MAX_TEXT = 1 << 20, MAX_TOTAL = 8 << 20, MAX_FILES = 200;
 const SLUG = /^([\w.-]+)\/([\w.-]+)$/;
 /** The instance config files a settings write may touch (kernel/src/apply.ts APPLY_PATHS). */
 const INSTANCE_PATH = /^(instance\.yaml|apps\.yaml|agents\/[\w-][\w.-]*\.md|agents\/[a-z0-9][a-z0-9-]*\/(agent\.yaml|AGENTS\.md|memory\.md)|owner\/profile\.md)$/;
-const IDENT = /^[A-Za-z][A-Za-z0-9]*-\d+$/;
 const BRANCH = /^(?!-)(?!.*\.\.)[\w./-]{1,200}$/;
 const same = (a?: string, b?: string) => Boolean(a && b) && a!.toLowerCase() === b!.toLowerCase();
 const fail = (status: number, message: string) => Object.assign(new Error(message), { status });
@@ -144,60 +144,30 @@ export function createService(o: Options) {
     return { dir, ref, sha: await git(dir, ["rev-parse", "--verify", `${ref}^{commit}`]) };
   }
 
-  /** The job workspace's clone of `name` (<task>/<name> or <task>/<org>--<name>): a real .git directory inside that task's folder. */
-  function workspaceGit(ident: string, s: { org: string; name: string }) {
-    if (!o.tasksDir) throw fail(503, "the job workspaces aren't mounted: codehost-github can't read a job's commits");
-    if (!IDENT.test(ident)) throw fail(400, `${ident} is not a task's workspace`);
-    const root = realpathSync(o.tasksDir);
-    for (const d of [s.name, `${s.org}--${s.name}`]) {
-      const at = join(root, ident, d, ".git");
-      if (!existsSync(at)) continue;
-      for (const p of [join(root, ident), join(root, ident, d), at]) if (lstatSync(p).isSymbolicLink() || !lstatSync(p).isDirectory()) throw fail(400, `${p.slice(root.length + 1)} isn't a plain directory`);
-      checkGitDir(at);
-      return at;
-    }
-    throw fail(404, `task ${ident} has no clone of ${s.org}/${s.name}`);
-  }
   /**
-   * A workspace .git the agent wrote: only plain files and directories (no symlink, fifo or device anywhere), the shape of a
-   * clone's own gitdir, and nothing that points git elsewhere (commondir, alternates, http-alternates).
-   */
-  function checkGitDir(at: string) {
-    for (const f of ["commondir", "objects/info/alternates", "objects/info/http-alternates"]) if (lstatSync(join(at, f), { throwIfNoEntry: false })) throw fail(400, `the workspace's .git has ${f}; refusing it`);
-    if (!lstatSync(join(at, "HEAD"), { throwIfNoEntry: false })?.isFile() || !lstatSync(join(at, "objects"), { throwIfNoEntry: false })?.isDirectory() || !lstatSync(join(at, "refs"), { throwIfNoEntry: false })?.isDirectory()) throw fail(400, "the workspace's .git isn't a clone's git directory");
-    const walk = (dir: string): void => {
-      for (const e of readdirSync(dir, { withFileTypes: true })) {
-        if (e.isDirectory()) walk(join(dir, e.name));
-        else if (!e.isFile()) throw fail(400, `the workspace's .git has ${join(dir, e.name).slice(at.length + 1)}, which isn't a plain file; refusing it`);
-      }
-    };
-    walk(at);
-  }
-  /**
-   * A job's branch head, fetched from its workspace into the ws cache. Git never reads the workspace's own config or hooks:
-   * its refs, objects and HEAD are copied to a scratch gitdir with an empty config, fetched from there, every object checked.
+   * A job's branch head, fetched into the ws cache from the bundle its box wrote (`aidenhq publish|review|apply`), copied out of
+   * the workspace the one no-follow way (aidenhq-sdk/box-bundle.ts): host git and fs writes never touch the workspace, and git
+   * reads only the copy, verifying every object.
    */
   async function fromWorkspace(ident: string, b: { repo: string; branch: string; sha: string }) {
     const s = slugOf(b.repo);
     if (!BRANCH.test(b.branch)) throw fail(400, `${b.branch} is not a branch name`);
+    if (!o.tasksDir) throw fail(503, "the job workspaces aren't mounted: codehost-github can't read a job's commits");
     const dir = await cache(s, "ws");
     const ref = `refs/ws/${ident}/${b.branch}`;
-    const from = workspaceGit(ident, s);
     const scratch = mkdtempSync(join(o.cacheDir, "scratch-"));
     try {
-      for (const f of ["HEAD", "packed-refs", "objects", "refs"]) if (existsSync(join(from, f))) cpSync(join(from, f), join(scratch, f), { recursive: true, verbatimSymlinks: true });
-      writeFileSync(join(scratch, "config"), "[core]\n\trepositoryformatversion = 0\n\tbare = true\n");
-      checkGitDir(scratch); // again on the copy: nothing changed between the check and the copy
-      await git(dir, ["-c", "fetch.fsckObjects=true", "fetch", "--quiet", "--no-tags", "--no-recurse-submodules", scratch, `+refs/heads/${b.branch}:${ref}`]);
+      const copy = copyBoxBundle(o.tasksDir, scratch, ident, b.sha, `${b.repo} \`${b.branch}\``);
+      await git(dir, ["bundle", "verify", "--quiet", copy]).catch(() => { throw fail(400, `the bundle of ${b.repo} \`${b.branch}\` isn't a valid git bundle for it`); });
+      await git(dir, ["-c", "fetch.fsckObjects=true", "-c", "transfer.fsckObjects=true", "fetch", "--quiet", "--no-tags", "--no-recurse-submodules", copy, `+refs/heads/${b.branch}:${ref}`]);
     } finally {
       rmSync(scratch, { recursive: true, force: true });
     }
     const got = await git(dir, ["rev-parse", "--verify", `${ref}^{commit}`]);
-    if (got !== b.sha) throw fail(409, `${b.repo} \`${b.branch}\` is at ${got.slice(0, 12)} in the workspace, not ${b.sha.slice(0, 12)}`);
+    if (got !== b.sha) throw fail(409, `${b.repo} \`${b.branch}\` is at ${got.slice(0, 12)} in the bundle, not ${b.sha.slice(0, 12)}`);
     noteKept(o.cacheDir, { repo: s.slug, ref });
     return { s, dir };
   }
-
 
   // GitHub's checks on a commit as plan.ts reads them: { ok, pending, skipped } each (names never leave this function).
   // Every page is read; if GitHub reports more than could be read, one check stays pending: missing evidence never passes.
@@ -715,7 +685,7 @@ export function createService(o: Options) {
   async function ops(op: string, req: IncomingMessage, res: ServerResponse) {
     // Only the kernel calls the ops, with this service's key: POST /v1/codehost/:op brokers them under each module's grant.
     if (!keyed(req)) throw fail(401, "the kernel only");
-    if (op !== "snapshot" && op !== "clone" && op !== "bundle") {
+    if (op !== "snapshot" && op !== "bundle") {
       if (!o.ops) throw fail(404, "no such operation");
       return o.ops(req, res, {
         access, cacheDir: o.cacheDir, cache: (s) => cache(s), git, fetchRemote: (s, name) => fetchRemote(slugOf(s.slug), name),
@@ -736,7 +706,7 @@ export function createService(o: Options) {
       name = String(r.body?.default_branch ?? "");
     }
     if (!BRANCH.test(name)) throw fail(400, "name a branch or a commit");
-    const { dir, ref, sha } = await fetchRemote(s, name);
+    const { dir, sha } = await fetchRemote(s, name);
     if (op === "snapshot") {
       // git archive: the tree only, no .git and no credentials; no filter runs (no config defines one).
       res.writeHead(200, { "content-type": "application/gzip", "x-aidenhq-commit": sha });
@@ -751,35 +721,6 @@ export function createService(o: Options) {
       res.writeHead(200, { "content-type": "application/octet-stream", "x-aidenhq-commit": sha });
       stream.pipe(res);
       return;
-    }
-    {
-      if (!o.tasksDir) throw fail(503, "the job workspaces aren't mounted");
-      // `into`: the workspace folder the kernel resolved for the caller's task (a dispatcher, for an open task of an agent it
-      // dispatches).
-      const into = String(b.into ?? "");
-      if (!IDENT.test(into)) throw fail(400, `${into} is not a task's workspace folder`);
-      // Only an existing, plain task folder under the tasks dir; the clone is a new directory made here, exclusively.
-      const root = realpathSync(o.tasksDir);
-      const ws = join(root, into);
-      const st = lstatSync(ws, { throwIfNoEntry: false });
-      if (!st || st.isSymbolicLink() || !st.isDirectory() || realpathSync(ws) !== ws || !ws.startsWith(root + sep)) throw fail(400, `${into} isn't a task's workspace folder`);
-      const target = join(ws, s.name);
-      if (lstatSync(target, { throwIfNoEntry: false })) throw fail(409, `${into}/${s.name} can't be made (it exists)`);
-      // A credential-free clone with history: origin is the plain GitHub URL, the head checked out by the cache's own git. Built
-      // in a private scratch folder beside the target (the same filesystem) and renamed into place in one step: no recursive copy
-      // into a folder a box can write, and an existing target is never replaced.
-      const scratch = mkdtempSync(join(ws, ".clone-"));
-      try {
-        const t = (...args: string[]) => run("git", [...SAFE_GIT_ARGS, "-C", scratch, ...args], { env: ENV });
-        await run("git", [...SAFE_GIT_ARGS, "init", "--quiet", scratch], { env: ENV });
-        await t("remote", "add", "origin", `https://github.com/${s.slug}.git`);
-        await t("fetch", "--quiet", "--no-tags", dir, `+${ref}:refs/remotes/origin/${/^[0-9a-f]{40}$/.test(name) ? "fetched" : name}`);
-        await t("checkout", "--quiet", "--detach", sha);
-        if (lstatSync(target, { throwIfNoEntry: false })) throw fail(409, `${into}/${s.name} can't be made (it exists)`);
-        chmodSync(scratch, 0o755); // mkdtemp makes it 0700; the box user reads the clone
-        try { renameSync(scratch, target); } catch (e) { throw fail(["EEXIST", "ENOTEMPTY"].includes((e as { code?: string }).code ?? "") ? 409 : 400, `${into}/${s.name} can't be made (${(e as Error).message})`); }
-      } finally { rmSync(scratch, { recursive: true, force: true }); }
-      return send(res, 200, { path: `${into}/${s.name}`, commit: sha });
     }
   }
 
@@ -918,7 +859,7 @@ export function createService(o: Options) {
         const b = await body(req, ap[1] === "write" ? 1_000_000 : 100_000);
         return send(res, 200, ap[1] === "read" ? await applyRead(b) : ap[1] === "land" ? await applyLand(b) : await applyWrite(b));
       }
-      const m = /^\/ops\/(snapshot|clone|bundle|fetch|head|read|comment|commit|runner_token)$/.exec(String(req.url ?? ""));
+      const m = /^\/ops\/(snapshot|bundle|fetch|head|read|comment|commit|runner_token)$/.exec(String(req.url ?? ""));
       if (m && req.method === "POST") return await ops(m[1]!, req, res);
       send(res, 404, { error: "not found" });
     } catch (e) {

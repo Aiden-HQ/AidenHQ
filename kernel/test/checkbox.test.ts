@@ -73,7 +73,6 @@ test("check jobs: a fixture's fast check runs in a credential-free box; its rece
     grants: () => Object.entries(modules.modules).map(([module, d]) => ({ ...d.codehost, module })), repos: () => ({}),
     kind: () => ({ module: "github", floor: 0, tools: [], executor: { url: `${codehost.url}/aidenhq/v1/executor`, auth_secret: "codehost_github_token" } }),
     secret: (n) => secrets[n] ?? "", resolver: { resolve: async (u) => { const x = new URL(u); return { host: x.hostname, port: Number(x.port), path: x.pathname }; }, forget: () => {} },
-    workspace: async () => { throw new Error("no clones here"); },
   });
   const call = async (route, body) => (await fetch(`${launcher.url}${route}`, { method: "POST", headers: { authorization: `Bearer ${secrets.launcher_kernel_key}`, "content-type": "application/json" }, body: JSON.stringify(body) })).json();
   const checkJobs = checkJobsFrom({

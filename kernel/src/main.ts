@@ -568,16 +568,6 @@ boxes = createBoxes({
   clones: {
     text: async (task) => { const i = (await cpJson(`/api/issues/${encodeURIComponent(task)}`)) as { title?: string; description?: string | null }; return `${i.title ?? ""}\n${i.description ?? ""}`; },
     may: (module, repo) => covers(repo, codehostGrants().find((g) => g.module === module)?.clone?.repos, codehostRepos()),
-    // The default branch (HEAD); the code host's answer, read whole: a non-2xx throws with its status.
-    clone: async (module, repo, task) => {
-      const r = await codehost.ask(module, "clone", { repo, ref: "HEAD", into: task });
-      let body = "";
-      for await (const c of r) body += c;
-      if ((r.statusCode ?? 502) < 300) return;
-      let said = body;
-      try { said = String((JSON.parse(body) as { error?: string }).error ?? body); } catch {}
-      throw Object.assign(new Error(said.slice(0, 300)), { status: r.statusCode ?? 502 });
-    },
   },
 });
 const admission = createAdmission({
@@ -595,7 +585,7 @@ const admission = createAdmission({
 afterPrevious(() => admission.recover());
 const stopTending = boxes.start();
 // The GitHub code host's operations, brokered for modules under their own codehost grants (codehost.ts).
-const codehost = createCodehost({ repos: codehostRepos, grants: codehostGrants, kind: () => Object.values(moduleKinds()).find((k) => k.module === CODEHOST && k.executor), secret, resolver, workspace: (module, task) => jobs.workspace(module, task),
+const codehost = createCodehost({ repos: codehostRepos, grants: codehostGrants, kind: () => Object.values(moduleKinds()).find((k) => k.module === CODEHOST && k.executor), secret, resolver,
   // codehost-local's snapshot for `local/…` repos, when that module is enabled.
   local: () => (localHost() ? { snapshot: localSnapshot({ bare: localCode.bare }), bundle: (repo) => localCode.bundle(repo) } : undefined) , noteObject: (ref, record) => records.addObjects(record, [ref]) });
 // Check jobs (checkjobs.ts): credential-free boxes of the launcher's, snapshots from the module that provides them.
