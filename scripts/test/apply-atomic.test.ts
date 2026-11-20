@@ -211,6 +211,32 @@ test("a first apply seeds the running pair as the last known good, validates, sw
   assert.match(board, /\/board:\/generations:ro$/, `the mirror's directory, not the file: ${board}`);
 });
 
+// Nothing changed = nothing rebuilt and no setup; a new product builds and sets up; an instance-only change sets up (its
+// handbooks and config) without a build; a missing image builds again.
+test("an apply builds and sets up only what its inputs changed", async () => {
+  const w = world();
+  const ran = (what) => w.calls().split("\n").filter((l) => l === what).length;
+  const apply = async (...args) => { writeFileSync(w.d("calls"), ""); const r = await w.run(...args); assert.equal(r.status, 0, r.out); return r; };
+  await apply();
+  assert.equal(ran("setup"), 1, "a fresh host runs the setup");
+  assert.equal(ran("docker compose build"), 0, "the running product is the seeded last known good's, and its images are here");
+  await apply();
+  assert.deepEqual([ran("setup"), ran("docker compose build")], [0, 0], "no change: neither");
+  w.commitInstance(w.p1, "settings: {x: 1}\n");
+  await apply();
+  assert.deepEqual([ran("setup"), ran("docker compose build")], [1, 0], "an instance change sets up, and builds nothing");
+  const p2 = w.commitProduct("2");
+  w.commitInstance(p2);
+  await apply();
+  assert.deepEqual([ran("setup"), ran("docker compose build")], [1, 1], "a new product builds and sets up");
+  await apply();
+  assert.deepEqual([ran("setup"), ran("docker compose build")], [0, 0], "and then nothing again");
+  // A service image the compose files need but this host lacks: built again, though the product is the same.
+  writeFileSync(w.d("bin/docker"), readFileSync(w.d("bin/docker"), "utf8").replace("case \"$*\" in", "case \"$*\" in *\"config --images\"*) echo missing/image ;; *\"image inspect\"*) exit 1 ;; "));
+  await apply();
+  assert.equal(ran("docker compose build"), 1, "a missing image is built");
+});
+
 // A fresh host has no kernel/node_modules: the pin is read with the kernel's own parser, so its deps are installed first.
 test("a fresh host with no kernel/node_modules installs the kernel's deps before it reads the pin", async () => {
   const w = world();

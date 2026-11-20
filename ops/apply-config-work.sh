@@ -479,10 +479,55 @@ validate() {
   # A release's prebuilt images (compile swapped them in for the builds) are pulled, all at once, by digest; what is already
   # here is kept. Then the images still built locally build beside the running containers (a build never touches one).
   COMPOSE_FILE="$files" docker compose pull --policy missing --ignore-buildable --quiet || { why="a release image failed to pull"; return 1; }
-  COMPOSE_FILE="$files" docker compose build || { why="an image failed to build"; return 1; }
+  # Builds only come from the product's own modules (a fork or a remote module can't build), so the product commit is the
+  # build input: unchanged since the last known good, with every image already here, there is nothing to build.
+  if buildNeeded "$files"; then
+    COMPOSE_FILE="$files" docker compose build || { why="an image failed to build"; return 1; }
+  else
+    echo "images: product ${product:0:12} is the last known good's and every image is here: not built"
+  fi
   # The health baseline: only checks passing now count after the switch.
   scripts/healthcheck.sh > "$baseline" 2>&1 || true
   echo "health baseline: $(grep -c '^  ok    ' "$baseline" || true) ok, $(grep -c '^  FAIL  ' "$baseline" || true) failing (not counted)"
+}
+
+# Whether the images need a build: the product differs from the last known good's (none yet = a fresh host), or a service
+# image the staged compose files need is missing here.
+buildNeeded() {
+  local lkg img; lkg="$(genLkg)"
+  { [ -n "$lkg" ] && [ "$(genGet "$lkg" product)" = "$product" ]; } || return 0
+  for img in $(COMPOSE_FILE="$1" docker compose config --images); do
+    docker image inspect "$img" >/dev/null 2>&1 || return 0
+  done
+  return 1
+}
+
+# Runs a step unless the inputs it last succeeded on are unchanged. The hash of its inputs (the output of the function
+# <inputs>) is kept per step in the state dir: dropped before the step runs and written after it succeeds, so a failed or
+# killed step runs again. It is taken again after the step, which may itself write one of its inputs (setup's system.yaml).
+# stepRun <name> <inputs function> <command...>
+stepRun() {
+  local name="$1" inputs="$2" stamp="$GEN_DIR/steps/$1"; shift 2
+  if [ "$(cat "$stamp" 2>/dev/null)" = "$($inputs | git hash-object --stdin)" ]; then echo "$name: inputs unchanged since it last succeeded: skipped"; return 0; fi
+  rm -f "$stamp"
+  "$@"
+  mkdir -p "$GEN_DIR/steps" && $inputs | git hash-object --stdin > "$stamp"
+}
+
+# The Paperclip setup reads the compiled config, the host's .env, the product's scripts (the setup itself, the handbook
+# assembly), the modules' handbooks and prompts, the events plugin and the instance's agents.
+setupInputs() {
+  git ls-tree HEAD scripts modules services/paperclip-events
+  git -C "$inst" rev-parse HEAD
+  cat .env config/*.yaml config/*.json config/kernel/*.json 2>/dev/null || true
+}
+
+# The shared sources read the product's SQL and script, the writers' passwords, and live in the warehouse container: a
+# recreated one (new id) or one that was not running is set up again.
+warehouseInputs() {
+  git ls-tree HEAD modules/warehouse ops/warehouse-sources.sh
+  cat "${AIDENHQ_SECRETS_DIR:-/nonexistent}"/warehouse_src_*_password 2>/dev/null || true
+  docker inspect -f '{{.Id}} {{.State.Running}}' app-warehouse-postgres-1 2>/dev/null || true
 }
 
 # The generated files: the staged copy must be exactly what the real compile wrote.
@@ -556,9 +601,9 @@ switchOver() {
   # The host's own tailnet name keeps Paperclip and the board only; apps are on their own node (compose.yaml apps-edge).
   node scripts/host-serve.ts prune
   lap compose # the gateway check, then compose: builds (cached unless a context changed) and recreates what changed
-  node scripts/paperclip-setup.ts
+  stepRun setup setupInputs node scripts/paperclip-setup.ts
   lap setup
-  ops/warehouse-sources.sh # shared sources: roles, schemas, src_meta (skips while the warehouse isn't running)
+  stepRun warehouse warehouseInputs ops/warehouse-sources.sh # shared sources: roles, schemas, src_meta (skips while the warehouse isn't running)
   lap warehouse
 
   # The daily Docker prune: setup installed it once, so a changed unit reaches the host here.
