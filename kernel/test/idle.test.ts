@@ -34,7 +34,7 @@ function world(t) {
     if (down) return { status: 502, json: {} };
     return m && issues[m[1]] ? { status: 200, json: issues[m[1]] } : { status: 404, json: {} };
   };
-  const add = (type, subject, task, data = {}, actor = "unknown") => facts.record({ type, subject, version: `${type}@${clock}`, at: iso(clock), actor, task, data });
+  const add = (type, subject, task, data = {}, actor = "unknown") => facts.record({ type, subject, version: actor.startsWith("module:") ? `${actor.slice(7)}/${clock}` : `${type}@${clock}`, at: iso(clock), actor, task, data });
   for (const t of ["t1", "t2"]) {
     add("task.created", `task:${t}`, t, { parent: null, identifier: t.toUpperCase() });
     add("task.status_changed", `task:${t}`, t, { from: null, to: "todo" });
@@ -199,4 +199,12 @@ test("an ask fails closed: an unreadable state sends nothing; an answered wait l
   w.tick(10 * MIN);
   assert.equal(await esc.ask("t1", "owner", "third?"), "asked");
   assert.equal(sent.length, 3);
+});
+
+test("a PR task waiting on its checks is waiting (module_wait), not orphaned, and is never swept", async (t) => {
+  const w = world(t);
+  w.add("work.waiting", "pr:acme/x#1", "t1", { reason: "checks" }, "module:github");
+  w.tick(30 * MIN);
+  assert.deepEqual([w.row("t1").kind, w.row("t1").reason, w.row("t1").ref], ["waiting", "module_wait", "checks"]);
+  assert.deepEqual(await w.idle.sweep(), []);
 });

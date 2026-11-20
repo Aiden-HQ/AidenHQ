@@ -460,7 +460,7 @@ test("owner notices are marked told only once sent: a failed critical alert, sta
   assert.equal(msgs.length, 1);
 });
 
-test("the Later detectors: an unstarted delegation, a blocker deadlock, ping-pong, duplicates and a Tier 2 card over 24h fire; healthy state is quiet", async () => {
+test("the Later detectors: an unstarted delegation, a merge or blocker deadlock, ping-pong, duplicates and a Tier 2 card over 24h fire; healthy state is quiet", async () => {
   const mk = (tasks, o = {}) => {
     const w = world({ tasks, ...o });
     const call = w.call;
@@ -473,8 +473,8 @@ test("the Later detectors: an unstarted delegation, a blocker deadlock, ping-pon
   assert.deepEqual(await mk({ a: delegated("a") }, { todo: ["a"], work: { a: { busy: false, jobs: [{ id: "j" }] } } }).unstarted(), []);
 
   const idle = (task, reason, h, o = {}) => ({ task, identifier: `WOR-${task.toUpperCase()}`, since: ago(h), reason, holder: "a1", attention: [], idle_wakes: 0, ...o });
-  const jammed = await mk({}, { idle: [idle("m", "job_queued", 7), idle("x", "blocked", 2, { ref: "task:y" }), idle("y", "blocked", 2, { ref: "task:x" }), idle("z", "blocked", 2, { ref: "task:m" })] }).deadlock();
-  assert.deepEqual(jammed.map((i) => i.key), ["wor-x-wor-y"]);
+  const jammed = await mk({}, { idle: [idle("m", "module_wait", 7, { ref: "checks" }), idle("w", "module_wait", 1, { ref: "checks" }), idle("x", "blocked", 2, { ref: "task:y" }), idle("y", "blocked", 2, { ref: "task:x" }), idle("z", "blocked", 2, { ref: "task:m" })] }).deadlock();
+  assert.deepEqual(jammed.map((i) => i.key), ["m", "wor-x-wor-y"]);
   assert.deepEqual(await mk({}, { idle: [idle("n", "job_queued", 1), idle("z", "blocked", 2, { ref: "task:n" })] }).deadlock(), []);
 
   const run = (id, agent, m) => ({ id, agent, task: "t", state: "done", started_at: minsAgo(m), ended_at: minsAgo(m - 1) });

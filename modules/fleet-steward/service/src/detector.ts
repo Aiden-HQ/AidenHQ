@@ -176,6 +176,7 @@ const APPROVED = ["approved", "claimed", "done", "failed", "unknown"];
 // A task waiting on a judgement (task_wait `for`, kernel idle.ts) longer than this: the owner's answer, or its delegator's.
 const JUDGEMENT_WAIT_MS: Record<string, number> = { owner_wait: 24 * HOUR_MS, delegator_wait: 6 * HOUR_MS };
 const REPEAT_FAILS = { n: 3, spanMs: 30 * MIN, freshMs: HOUR_MS }; // same category on one task within spanMs, the newest within freshMs
+const MERGE_WAIT_MS = 6 * HOUR_MS; // a task waiting on its merge queue or CI (a module_wait) this long
 const IDLE_MS = 120 * MIN;
 const IDLE_WAKE_CAP = 3; // the kernel's idle sweep stops waking a task's agent after this many a day (kernel/src/idle.ts IDLE_CAP) // an orphaned item (nothing running, filed or waiting on it) idle this long is stuck
 const FLOW_RISE = 1.5; // a stage's p75 or wait share this much over last week's (observe mode)
@@ -194,11 +195,12 @@ type StateRow = { task: string; identifier: string | null; since: string; reason
 const UNEXPLAINED = ["orphaned", "unknown", "history_expired"];
 type IdleItem = { task: string; identifier: string | null; reason: string; blocked_on?: string };
 
-/** Tasks blocked on each other in a cycle (a blocked row's `ref` is `task:<blocker id>`). */
-export function blockedCycles(rows: StateRow[]): { key: string; reason: string }[] {
+/** Tasks waiting on a module over MERGE_WAIT_MS (a PR's checks, eval or merge queue: the queue or a red base holds them), and tasks blocked on each other in a cycle (a blocked row's `ref` is `task:<blocker id>`). */
+export function mergeDeadlocks(rows: StateRow[], t: number): { key: string; reason: string }[] {
   const ident = new Map(rows.map((r) => [r.task, r.identifier ?? r.task]));
   const items: IdleItem[] = rows.map((r) => ({ task: r.task, identifier: r.identifier, reason: r.reason, ...(r.reason === "blocked" && r.ref ? { blocked_on: ident.get(r.ref.slice(5)) ?? r.ref.slice(5) } : {}) }));
   const out: { key: string; reason: string }[] = [];
+  for (const r of rows.filter((x) => x.reason === "module_wait" && age(x.since, t) > MERGE_WAIT_MS)) out.push({ key: r.task, reason: `task ${r.identifier ?? r.task} has waited ${mins(age(r.since, t))} on its merge queue or CI (${slug(r.ref ?? "")}), so the queue or a red base is holding it` });
   const by = new Map(items.filter((x) => x.identifier).map((x) => [x.identifier!, x]));
   const seen = new Set<string>();
   for (const i of items.filter((x) => x.reason === "blocked" && x.blocked_on)) {
@@ -573,9 +575,9 @@ export function checks(d: { kernel: KernelClient; kv: Kv; pause: (routine: strin
       }
       return out;
     },
-    // Tasks blocked on each other in a cycle.
+    // Merge waits over 6 hours, and tasks blocked on each other: the queue or a red base holds them.
     async deadlock() {
-      return blockedCycles((await openStates()).filter((i) => !exempt({ identifier: i.identifier, originKind: null })));
+      return mergeDeadlocks((await openStates()).filter((i) => !exempt({ identifier: i.identifier, originKind: null })), now());
     },
     // One task whose runs alternate between two agents five times in 12 hours.
     async pingpong() {

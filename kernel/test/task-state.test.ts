@@ -20,6 +20,8 @@ const status = (to, m, from = "in_progress") => f("task.status_changed", m, { fr
 const assignee = (to, m) => f("task.assignee_changed", m, { from: null, to });
 const job = (type, m, data = {}, id = "j1") => f(type, m, data, "agent:kai", { subject: `job:${id}` });
 const wait = (reason, m, data = {}) => f("work.waiting", m, { reason, note: "n", until: iso(m + 7 * 24 * 60), ...data }, "agent:kai", { subject: "wait:t1" });
+const prWait = (reason, m, o = {}) => f("work.waiting", m, { reason }, "module:github", { subject: "pr:acme/x#1", version: `github/w${m}`, ...o });
+const prResumed = (m) => f("work.resumed", m, { reason: "checks" }, "module:github", { subject: "pr:acme/x#1", version: `github/r${m}` });
 const card = (k, m, state = "owner") => f("record.filed", m, { kind: "push", tier: 2, state }, "agent:kai", { subject: `record:${k}` });
 const comment = (actor, m, o = {}) => f("task.commented", m, { kind: "comment" }, actor, o);
 const stageOpen = (m) => f("pr.checks_started", m, {}, "module:github", { subject: "pr:acme/x#1", version: `github/${m}` });
@@ -68,6 +70,11 @@ const cases = [
   ["a delegator wait ends at another's comment, not the holder's", [created(), assignee("kai", 0), wait("delegator_wait", 1, { question: "q" }), comment("agent:kai", 2)], NOW,
     { reason: "delegator_wait", attention: [{ who: "agent", why: "delegator_wait" }] }],
   ["a delegator's answer ends the delegator wait", [created(), assignee("kai", 0), wait("delegator_wait", 1, { question: "q" }), comment("agent:aiden", 2)], NOW, { reason: not("delegator_wait") }],
+  ["a PR on its checks is waiting, never orphaned", [created(), assignee("kai", 0), job("job.ended", 1, { state: "done" }), prWait("checks", 2)], NOW, { kind: "waiting", reason: "module_wait", ref: "checks", since: iso(2), attention: [] }],
+  ["a module wait resumed is over", [created(), assignee("kai", 0), prWait("checks", 2), prResumed(5)], NOW, { reason: not("module_wait") }],
+  ["a module wait ends when a job starts", [created(), assignee("kai", 0), prWait("checks", 2), job("job.started", 5)], 6, { kind: "working" }],
+  ["a module wait over 6 hours is stalled", [created(), assignee("kai", 0), prWait("eval", 2)], 2 + 7 * 60, { kind: "waiting", reason: "module_wait", ref: "eval", attention: [{ who: "agent", why: "stalled_wait", ref: "eval" }] }],
+  ["a task_wait's words are the row's note", [created(), wait("agent_wait", 1, { note: "PR #12 merges" })], 10, { reason: "agent_wait", note: "PR #12 merges" }],
   ["an agent wait ends at its time", [created(), wait("agent_wait", 1, { until: iso(20) })], 10, { kind: "waiting", reason: "agent_wait" }],
   ["an agent wait is over after its time", [created(), wait("agent_wait", 1, { until: iso(20) })], 21, { reason: not("agent_wait") }],
   ["handed to the owner by an agent", [created(), assignee("kai", 0), assignee("owner", 1)], NOW, { kind: "waiting", reason: "handback", holder: "owner", attention: [{ who: "owner", why: "handback" }] }],
