@@ -4,10 +4,12 @@ description: The shared Postgres warehouse (an app) every source ingests into, a
 points:
   sources: { schema: schemas/sources.json }
 settings:
-  # owner/repo of the AidenHQ product this instance runs; the warehouse app is built from it at the pinned product commit.
-  # Its org must be in github_orgs (or be the agents org).
+  # owner/repo of the AidenHQ product this instance runs: the warehouse app is built from it at the pinned product commit, and
+  # the github module files the Maintainer's product bugs there (github_app_issue; unset refuses). Its org must be in
+  # github_orgs (or be the agents org).
   product_repo:
     required: true
+    pattern: '^[\w.-]+/[\w.-]+$'
 apps:
   - name: warehouse
     description: Shared Postgres warehouse for all sources and apps

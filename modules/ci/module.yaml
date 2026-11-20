@@ -66,6 +66,7 @@ settings:
   # (ci_org_runner_group) must also serve them (docs/operations.md, "CI runners").
   ci_runner_repos:
     default: "Aiden-HQ/AidenHQ Aiden-HQ/aidenhq-modules Aiden-HQ/aidenhq-distro"
+    pattern: '^[\w.-]+/[\w.-]+( [\w.-]+/[\w.-]+)*$'
   # The runner group (by name) that runners serving another org join, e.g. the product repo's org: create it there limited
   # to the repos above. Required for those units (they refuse to register without it); unused for the agents org.
   ci_org_runner_group:
@@ -74,6 +75,7 @@ settings:
   # hands it to the job with its CI token. Critical paths and reviewer-addressed diffs run one effort higher (xhigh).
   ci_review_model:
     default: "~deepseek/deepseek-flash-latest:high"
+    pattern: '^(openrouter/)?[~\w./-]+(:(minimal|low|medium|high|xhigh|max))?$'
   # Models a CI token may call besides ci_review_model: repos still on the older template (codegenie).
   ci_review_models:
     default: ["~deepseek/deepseek-flash-latest"] # codegenie's (roadmap-keeper until its codex copy PR lands)

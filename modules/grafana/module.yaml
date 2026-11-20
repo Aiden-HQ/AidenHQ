@@ -7,19 +7,15 @@ contributes:
   board.signins:
     - { id: grafana, label: Grafana, status_url: "http://grafana-mcp:8087/auth/status", connect_url: /grafana/connect, callback: /grafana/callback,
         missing: "The Engineers can't read logs and metrics until it is.", stopped: "The Engineers can't read logs and metrics.",
-        secrets: [grafana_url] }
+        secrets: [ { secret: grafana_url, when: { grafana_source: cloud } } ] }
 settings:
-  # Superseded by the grafana_url secret Connect asks for; a value here is read only while that secret is empty.
-  grafana_url:
-    default: ""
-    type: url
-    host: "*.grafana.net"
-  # Grafana's hosted MCP server, which signs in and reads the stack above.
+  # Grafana's hosted MCP server, which signs in and reads your stack (the address Connect asks for).
   grafana_mcp_url:
     default: https://mcp.grafana.com/mcp
     type: url
     host: mcp.grafana.com
-  # "cloud": the Grafana Cloud stack above, signed in on the board. "local": the monitoring module's Grafana on this host
+    when: { grafana_source: cloud }
+  # "cloud": your Grafana Cloud stack, signed in on the board. "local": the monitoring module's Grafana on this host
   # (modules/monitoring; put a Viewer service account token in the vault's grafana_service_account_token), no sign-in.
   grafana_source:
     default: cloud
@@ -55,8 +51,8 @@ setup: "Press Connect on the board (Settings, Connections), give your Grafana Cl
 secrets:
   state: true # its own vault dir, read-write at /state: the registered client and the token pair, refreshed here
   provided:
-    # Your Grafana Cloud stack, e.g. https://acme.grafana.net, asked for on Connect; empty: Grafana Cloud is off. The pattern
-    # is the host rule the grafana_url setting had (*.grafana.net).
+    # Your Grafana Cloud stack, e.g. https://acme.grafana.net, asked for on Connect in cloud mode; empty: Grafana Cloud is off.
+    # The pattern is the host rule (*.grafana.net).
     - name: grafana_url
       setup:
         label: Grafana Cloud address
@@ -75,7 +71,6 @@ services:
       state: /state
       env:
         GRAFANA_URL_FILE: ${secrets.grafana_url}
-        GRAFANA_URL: "${settings.grafana_url}"
         GRAFANA_MCP_URL: "${settings.grafana_mcp_url}"
         GRAFANA_SOURCE: "${settings.grafana_source}" # local: the monitoring module's mcp-grafana, which joins this module's network
         GRAFANA_STATE_DIR: /state

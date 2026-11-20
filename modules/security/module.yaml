@@ -19,6 +19,7 @@ settings:
   # token is in the vault (app_auditor_cf_client_id / _secret); empty = off.
   app_auditor_url:
     default: ""
+    type: url
 agents:
   security-watch:
     department: security

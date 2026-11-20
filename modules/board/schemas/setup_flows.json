@@ -31,12 +31,11 @@
               "inputs": {
                 "type": "array", "maxItems": 4,
                 "items": {
-                  "type": "object", "additionalProperties": false, "required": ["setting", "label", "pattern"],
+                  "type": "object", "additionalProperties": false, "required": ["setting", "label"],
                   "properties": {
                     "setting": { "type": "string", "pattern": "^[a-z][a-z0-9_]{1,60}$", "description": "one of this module's settings" },
                     "label": { "type": "string", "minLength": 1, "maxLength": 80 },
                     "help": { "type": "string", "maxLength": 300 },
-                    "pattern": { "type": "string", "minLength": 1, "maxLength": 200, "description": "the value's shape; the board checks it and the setting's own rules apply after" },
                     "when": { "type": "object", "minProperties": 1, "description": "setting: value or [values]; asked only while the instance's settings hold" }
                   }
                 }

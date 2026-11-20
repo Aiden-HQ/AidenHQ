@@ -1,4 +1,4 @@
-// primer-mcp: Primer's MCP server (PRIMER_MCP_URL), the organization's document host, passed through whole as the owner
+// primer-mcp: Primer's MCP server (PRIMER_MCP_URL_FILE), the organization's document host, passed through whole as the owner
 // (src/vendor/proxy.ts; the kernel decides which tools each agent reaches, from module.yaml's tags and its grants).
 // Publishing is the kernel's write kind primer.publish: the kernel routes the publish tools there and calls the executor
 // (/aidenhq/v1/executor, publish.ts) only for an approved record. /mcp/read serves the runner's Engineer jobs Primer's reads.
@@ -20,10 +20,10 @@ const log = pino({ level: process.env.LOG_LEVEL ?? "info", base: { svc: "primer-
 const readToken = (file: string | undefined) => (file && existsSync(file) ? readFileSync(file, "utf8").trim() || undefined : undefined);
 const stateDir = process.env.PRIMER_STATE_DIR ?? "/state";
 // primer_mode: self-host signs in to the module's own Primer (PRIMER_LOCAL_URL) with the service token the owner saved;
-// connect (default) to the hosted Primer whose URL Connect saved (else the old primer_mcp_url setting's env value), as the owner.
+// connect (default) to the hosted Primer whose URL Connect saved, as the owner.
 const selfHost = process.env.PRIMER_MODE === "self-host";
 const local = process.env.PRIMER_LOCAL_URL ?? "http://primer-server:3000";
-const url = selfHost ? `${local}/mcp` : readToken(process.env.PRIMER_MCP_URL_FILE) || process.env.PRIMER_MCP_URL;
+const url = selfHost ? `${local}/mcp` : readToken(process.env.PRIMER_MCP_URL_FILE);
 const auth = selfHost ? tokenAuth(fileToken(process.env.PRIMER_SERVICE_TOKEN_FILE), local) : oauth({ name: "Primer", mcpUrl: url ?? "", stateDir });
 const serviceKey = readToken(process.env.MCP_TOKEN_FILE);
 const jwks = kernelJwks();

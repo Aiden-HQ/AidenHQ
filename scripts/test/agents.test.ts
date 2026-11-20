@@ -121,7 +121,7 @@ test("the Architect: max effort, only its own role, no fleet tools, reads every 
 
 test("the web for every crew agent: web_view and app_view granted (an agent may opt its search down); Engineers get only their own grants", () => {
   const dir = withAgents({ "review-chaser": { yaml: { web_search: "disabled" } } }, ["slack", "github", "open-loops", "meetings", "engineering", "primer"]);
-  writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules: [...BUNDLE, "slack", "github", "open-loops", "meetings", "engineering", "primer"], settings: { ...owner, owner_slack_user_id: "U1", owner_email: "e@x", product_repo: "acme/aidenhq" } }));
+  writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules: [...BUNDLE, "slack", "github", "open-loops", "meetings", "engineering", "primer"], settings: { ...owner, owner_email: "e@x", product_repo: "acme/aidenhq" } }));
   const r = compile(product, dir);
   const codex = Object.entries(r.paperclip.agents).filter(([, a]) => a.profile === "crew");
   assert.ok(codex.length >= 8);

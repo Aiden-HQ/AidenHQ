@@ -8,7 +8,8 @@ requires:
 contributes:
   board.signins:
     - { id: jira, label: Jira, status_url: "http://jira-mcp:8091/auth/status", connect_url: /jira/connect, callback: /jira/callback,
-        missing: "The agents can't read it until it is.", stopped: "The agents can't read it." }
+        missing: "The agents can't read it until it is.", stopped: "The agents can't read it.",
+        secrets: [jira_url] }
   warehouse.sources:
     - schema: src_jira
       about: "src_jira.issues / sprints / confluence_pages (Confluence page metadata + a cheap summary: a pointer, never evidence; read the page live) / changes / users"
@@ -19,12 +20,6 @@ contributes:
         - { name: confluence_pages, time: ingested_at, project: space, tsv: true }
         - { name: changes, time: observed_at, project: scope }
 settings:
-  # The Atlassian site every call is pinned to (its cloudId is looked up from the signed-in account's sites). Empty: jira-mcp
-  # isn't started (no container, no image) until the owner sets it.
-  jira_url:
-    default: ""  # e.g. https://your-company.atlassian.net
-    type: url
-    host: "*.atlassian.net"
   # Atlassian's remote MCP server; v2 with ?tools=all lists every tool flat, so per-tool grants hold (no discover/execute*).
   atlassian_mcp_url:
     default: https://mcp.atlassian.com/v2/mcp?tools=all
@@ -39,7 +34,7 @@ settings:
     default: 365
 connections:
   jira:
-    setup: "Set your Atlassian site's URL (the jira_url setting, on the module's Settings tab) and approve the change, then press Connect on the board."
+    setup: "Press Connect on the board (Settings, Connections), give your Atlassian site's address and allow access."
     guide: "Jira and Confluence directly: exact issue fields, change history (when a status or date changed), comments, versions and JQL queries. Use it for precise dates and history; use Glean to find the issue or page first."
     url: http://jira-mcp:8091/mcp
     auth: jira_service_key
@@ -56,17 +51,26 @@ connections:
       destructive: [ addOrEditJiraIssueComment, addOrEditJiraIssueWorklog, createJiraIssue, editJiraIssue, transitionJiraIssue, createJiraIssueLink, createJiraIssueRemoteIssueLink, uploadAttachmentToJiraIssue, watchJiraIssue, createConfluenceComment, updateConfluenceComment, updateConfluenceCommentResolution, createConfluenceContent, updateConfluenceContent, copyConfluenceContent, moveConfluenceContent, convertConfluenceContentMode, setConfluenceContentStatus, addConfluenceContentSuggestions, addLabelsToConfluenceContent, addConfluenceReaction, createConfluenceAttachment, completeConfluenceTask, reopenConfluenceTask, createConfluenceInfographicForPage, editConfluenceInfographicForPage, starConfluenceContent, unstarConfluenceContent, starConfluenceSpace, unstarConfluenceSpace, watchConfluenceContent, unwatchConfluenceContent, watchConfluenceLabel, unwatchConfluenceLabel, watchConfluenceSpace, unwatchConfluenceSpace, addConfluenceContentPermissions, removeConfluenceContentPermissions, replaceConfluenceContentPermissions, setConfluenceContentRestrictionState, enableConfluencePublicLink, disableConfluencePublicLink, archiveConfluenceContent, unarchiveConfluenceContent, restoreConfluenceContentVersion, createConfluenceSpace, setConfluenceSpaceInstructions, createConfluenceMauiApp, editConfluenceMauiApp, manageConfluenceApproval, createJiraBoard, manageJiraSprint, manageJiraProjectVersion, manageJiraProjectVersionRelatedWork, convertJiraIssueHierarchy, editJiraEntityProperty ]
 secrets:
   state: true # its own vault dir, read-write at /state: the registered client and the token pair, refreshed here
+  provided:
+    # The Atlassian site every call is pinned to (its cloudId is looked up from the signed-in account's sites), asked for on
+    # Connect; empty: Jira is off.
+    - name: jira_url
+      setup:
+        label: Atlassian site address
+        pattern: '^https://[a-z0-9-]+\.atlassian\.net/?$'
+        help: "Your Atlassian site, as in the browser, for example https://your-company.atlassian.net"
+optional_secrets:
+  - jira_url
 services:
   run:
     jira-mcp:
-      when: { jira_url: true }
       build: ./connections/jira-mcp
       tmp: 16m
       egress: true
       links: [board, sources] # the board's sign-in endpoints; the warehouse (shared sources)
       state: /state
       env:
-        JIRA_URL: "${settings.jira_url}"
+        JIRA_URL_FILE: ${secrets.jira_url}
         ATLASSIAN_MCP_URL: "${settings.atlassian_mcp_url}"
         JIRA_STATE_DIR: /state
         # The board's https address: Connect's one-click link returns there (the default is loopback).

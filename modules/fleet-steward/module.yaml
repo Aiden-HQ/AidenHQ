@@ -139,7 +139,7 @@ routines:
 # check task for the Steward (kernel.tasks). The connection's answers are fenced by the proxy; an alert's text carries its own fence.
 connections:
   fleet_steward:
-    setup: "Built in (fleet-steward). If it is down, run `docker compose up -d fleet-steward`, then read `docker compose logs fleet-steward`."
+    setup: "Built in: nothing to connect."
     url: http://fleet-steward:8097/mcp
     auth: fleet_steward_service_key
     returns: untrusted

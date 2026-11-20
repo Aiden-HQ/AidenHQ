@@ -39,7 +39,7 @@ test("the board shares a network with the service a flow pairs through, and only
 test("a sign-in is one Connect: ClickHouse asks nothing, Glean asks only its own address, and neither has a setup page", () => {
   const product = join(dirname(fileURLToPath(import.meta.url)), "../..");
   const dir = mkdtempSync(join(tmpdir(), "inst-"));
-  writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules: [...BUNDLE, "clickhouse", "glean", "jira"], settings: { timezone: "Europe/London", owner_name: "Sam", owner_email: "o@x", product_repo: "acme/aidenhq", jira_url: "https://acme.atlassian.net" } }));
+  writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules: [...BUNDLE, "clickhouse", "glean", "jira"], settings: { timezone: "Europe/London", owner_name: "Sam", owner_email: "o@x", product_repo: "acme/aidenhq" } }));
   mkdirSync(join(dir, "agents"));
   const { points, compose } = compile(product, dir);
   const flows = points.board.setup_flows.map((f) => f.module);
@@ -48,7 +48,30 @@ test("a sign-in is one Connect: ClickHouse asks nothing, Glean asks only its own
   assert.equal(signIn("clickhouse").fields, undefined);
   assert.equal(compose.services["clickhouse-mcp"].environment.CLICKHOUSE_MCP_URL, "https://mcp.clickhouse.cloud/mcp");
   assert.deepEqual(signIn("glean").fields.map((f) => f.secret), ["glean_mcp_url"]);
+  assert.deepEqual(signIn("jira").fields.map((f) => f.secret), ["jira_url"], "Jira's site is asked for on Connect, not set as a setting");
+  assert.ok(compose.services["jira-mcp"], "unconnected, jira-mcp starts and says how to connect");
 });
+
+// One test per mode of Grafana, from a fresh install to what the owner sees: the Connect, the settings that apply, the service.
+test("Grafana cloud: Connect asks for the stack's address, and the hosted MCP address applies", () => {
+  const { points, compose, catalog } = compile(join(dirname(fileURLToPath(import.meta.url)), "../.."), grafanaInstance({}));
+  assert.deepEqual(points.board.signins.find((s) => s.id === "grafana").fields.map((f) => f.secret), ["grafana_url"]);
+  assert.deepEqual(catalog.find((m) => m.name === "grafana").settings.grafana_mcp_url.when, { grafana_source: "cloud" });
+  assert.equal(compose.services["grafana-mcp"].environment.GRAFANA_SOURCE, "cloud");
+});
+
+test("Grafana local: Connect asks for nothing, and the service runs on the monitoring module's Grafana", () => {
+  const { points, compose } = compile(join(dirname(fileURLToPath(import.meta.url)), "../.."), grafanaInstance({ grafana_source: "local" }));
+  assert.deepEqual(points.board.signins.find((s) => s.id === "grafana").fields ?? [], [], "local mode never asks for the Grafana Cloud address");
+  assert.equal(compose.services["grafana-mcp"].environment.GRAFANA_SOURCE, "local");
+});
+
+function grafanaInstance(settings) {
+  const dir = mkdtempSync(join(tmpdir(), "inst-"));
+  writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules: [...BUNDLE, "grafana", "monitoring"], settings: { timezone: "Europe/London", owner_name: "Sam", owner_email: "o@x", product_repo: "acme/aidenhq", ...settings } }));
+  mkdirSync(join(dir, "agents"));
+  return dir;
+}
 
 test("Primer's Connect follows primer_mode: the hosted address in connect, the service token in self-host", () => {
   const product = join(dirname(fileURLToPath(import.meta.url)), "../..");

@@ -31,8 +31,8 @@ contributes:
               setting: edge
               otherwise: "Running your own Primer needs a public address for it, which comes with sharing apps through your own domain. Ask Aiden to set that up first, or connect your organization's Primer."
             inputs:
-              - { setting: primer_host, label: Public address for Primer, help: "A name on your own domain, for example primer.example.com", pattern: '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$' }
-              - { setting: primer_host_aud, label: Sign-in audience for that address, help: "From the access application that covers it.", pattern: '^[A-Za-z0-9:._-]{1,200}$', when: { app_login: [access, header-jwt] } }
+              - { setting: primer_host, label: Public address for Primer, help: "A name on your own domain, for example primer.example.com" }
+              - { setting: primer_host_aud, label: Sign-in audience for that address, help: "From the access application that covers it.", when: { app_login: [access, header-jwt] } }
 settings:
   # connect: a hosted Primer (its MCP address from Connect), signed in as the owner. self-host: this module runs Primer
   # (primer-server, built from source at the commit its Dockerfile pins, and its own Postgres, primer-db) behind the gate at
@@ -41,17 +41,16 @@ settings:
   primer_mode:
     default: connect
     values: [connect, self-host]
-  # self-host: the gate's host for Primer (instance-only, like an app's share.host; needs settings.edge) and, with app_login
-  # access or header-jwt, its audience. Empty: not shared.
+  # self-host: the gate's host for Primer (instance-only, like an app's share.host; needs settings.edge). Empty: not shared.
   primer_host:
     default: ""
+    pattern: '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$'
+    when: { primer_mode: self-host }
   # self-host with app_login access or header-jwt: the sign-in audience of the access application that covers primer_host.
   primer_host_aud:
     default: ""
-  # Superseded by the primer_mcp_url secret Connect asks for; a value here is read only while that secret is empty.
-  primer_mcp_url:
-    default: ""
-    type: url
+    pattern: '^[A-Za-z0-9:._-]{1,200}$'
+    when: { primer_mode: self-host }
 connections:
   primer:
     setup: "Press Connect on the board (Settings, Connections), give your Primer MCP address and allow access."
@@ -150,7 +149,6 @@ services:
       state: /state
       env:
         PRIMER_MCP_URL_FILE: ${secrets.primer_mcp_url}
-        PRIMER_MCP_URL: "${settings.primer_mcp_url}"
         PRIMER_MODE: "${settings.primer_mode}"
         PRIMER_LOCAL_URL: http://primer-server:3000
         PRIMER_SERVICE_TOKEN_FILE: ${secrets.primer_service_token}
