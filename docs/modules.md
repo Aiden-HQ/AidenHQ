@@ -25,6 +25,24 @@ re-queue (`no-grants`, `not-your-agent`, `bad-profile`, `task-not-assigned`, `pr
 of times; a refusal that never changes (`task-closed`) is final. Never retry a 429 as a refusal: that is "busy", and
 the work stays where it is until it comes back.
 
+## What a connection answers: a need, or a signed-in success
+
+A connection's MCP server answers a tool call it cannot serve, where only the owner can fix why, with `needsOwner(need)`
+(`kernel/sdk/src/vendor/needs.ts`, byte-identical in every connection). The proxy records the connection as down, tells the
+owner, and wakes the waiting task when it clears; the agent reads the kernel's own words, never the need's.
+
+```ts
+type Need = { cause: "not_connected" | "expired" | "scope" | "sso" | "restricted"; detail: string; scope?: string; org?: string; url?: string; account?: string };
+```
+
+`account`: the account of a multi-account connection a need is about (an `expired` sign-in, say). The down state is keyed
+by it, so a healthy account's success never clears another's need and only that account's tasks wake. Omit it and the
+need is about the whole connection, as github, jira and slack's are.
+
+A successful answer a connection's sign-in served is marked `signedIn(result, account?)`: it is the only answer that
+clears a full need (`not_connected`, `expired`), and with `account` it clears that account alone. Mark only the account
+that actually served the call: an answer from one account proves nothing about another whose sign-in failed.
+
 ## `POST /v1/tasks` — file a task
 
 Grant: `kernel.tasks`.

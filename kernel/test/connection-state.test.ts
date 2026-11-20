@@ -114,6 +114,49 @@ test("ok() opens a connected wake per waiting task and clears only that module's
   assert.equal(w.s.ok("google"), 0, "nothing waits any more");
 });
 
+test("an account's success keeps another account's expired need and its waiter", async () => {
+  const w = world(ownerChain(), { w1: [OWNER_COMMENT] });
+  await w.s.hit(w.who("w3"), "google", { cause: "expired", detail: "refused", account: "a@example.com" });
+  assert.equal(w.s.down("google", "a@example.com"), true);
+  assert.equal(w.s.down("google", "b@example.com"), false);
+  // b@ answers: a@'s row and w3's wait stay, and nobody is woken.
+  assert.equal(w.s.ok("google", { account: "b@example.com", fullOnly: true }), 0);
+  assert.equal(w.s.down("google", "a@example.com"), true);
+  assert.equal(w.db.prepare("SELECT COUNT(*) AS n FROM connection_waits").get()!.n, 1, "w3 still waits");
+  assert.equal(w.opened.length, 0, "no connected wake");
+  assert.deepEqual(w.s.downFor("a1"), [{ connection: "google_workspace", module: "google", cause: "expired", account: "a@example.com", since: new Date(w.now()).toISOString() }]);
+  // a@ answers: its row clears and only its waiter wakes.
+  assert.equal(w.s.ok("google", { account: "a@example.com", fullOnly: true }), 1);
+  assert.equal(w.s.down("google"), false);
+  assert.deepEqual(w.opened.map((o) => [o.task, o.cause]), [["w3", "connected"]]);
+  assert.equal(w.db.prepare("SELECT COUNT(*) AS n FROM connection_waits").get()!.n, 0);
+});
+
+test("a call with no account still clears the module's full needs, account rows included", async () => {
+  const w = world(ownerChain(), { w1: [OWNER_COMMENT] });
+  await w.s.hit(w.who("w3"), "google", { cause: "expired", detail: "", account: "a@example.com" });
+  await w.s.hit(w.who("w2"), "google", { cause: "not_connected", detail: "" });
+  assert.equal(w.s.ok("google", { fullOnly: true }), 2, "both waiters");
+  assert.equal(w.s.down("google"), false);
+  assert.deepEqual(w.opened.map((o) => o.task).sort(), ["w2", "w3"]);
+});
+
+test("the waits table upgrades in place: old rows read as whole-module, and a second opener skips the migration", async () => {
+  const db = new DatabaseSync(":memory:");
+  db.exec("CREATE TABLE connection_state (key TEXT PRIMARY KEY, module TEXT NOT NULL, cause TEXT NOT NULL, detail TEXT NOT NULL, url TEXT, since INTEGER NOT NULL, told INTEGER NOT NULL DEFAULT 0, reported_day TEXT);" +
+    "CREATE TABLE connection_waits (module TEXT NOT NULL, task TEXT NOT NULL, agent TEXT NOT NULL, at INTEGER NOT NULL, full INTEGER NOT NULL DEFAULT 1, PRIMARY KEY (module, task));" +
+    "INSERT INTO connection_state (key, module, cause, detail, since) VALUES ('google:expired', 'google', 'expired', 'old', 1);" +
+    "INSERT INTO connection_waits (module, task, agent, at, full) VALUES ('google', 'w3', 'a1', 1, 1)");
+  const open = () => createConnectionState({
+    db, idle: { wait: async () => ({}) as never }, wakes: { open: () => {} }, queue: () => {}, issue: async () => undefined,
+    comments: async () => [], agentName: async () => "Aiden", label: (m) => m, connections: () => ({}) as never, grants: () => ({}), boardUrl: () => "http://board.example", now: () => 2,
+  });
+  const s = open();
+  assert.doesNotThrow(open, "a second opener skips what the first did");
+  assert.equal(s.down("google"), true, "the old row still counts");
+  assert.equal(s.ok("google", { fullOnly: true }), 1, "and its wait clears module-wide");
+});
+
 test("a partial cause waits a day and is not listed down; a success clears only full causes", async () => {
   const w = world(ownerChain(), { w1: [OWNER_COMMENT] });
   await w.s.hit(w.who("w3"), "github", { cause: "scope", scope: "read:org", detail: "" });

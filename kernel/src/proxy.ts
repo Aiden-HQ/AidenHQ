@@ -9,7 +9,7 @@
 import http from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { fence } from "../sdk/src/fence.ts";
-import { readNeed, servedSignedIn, type Need } from "../sdk/src/vendor/needs.ts";
+import { readNeed, servedSignedIn, SIGNED_IN, type Need } from "../sdk/src/vendor/needs.ts";
 import type { ConnectionState } from "./connection-state.ts";
 import type { Asserter } from "./assert.ts";
 import { NoGrants, type Connection, type Identity, type Whoami } from "./identity.ts";
@@ -267,12 +267,17 @@ export function createProxy({ whoami, connections, asserter, resolver, secret, w
             const text = raw.toString("utf8");
             // A trusted connection's answer (no record) is only read here: it goes back as it came unless it is a need.
             const asIs = call && !fenced && !rec;
-            let need: Need | undefined, success = false;
+            let need: Need | undefined, success = false, account: string | undefined;
+            /** The account a served answer named (SIGNED_IN), if it named one. */
+            const servedAccount = (r: unknown) => {
+              const v = (r as { _meta?: Record<string, unknown> } | null)?._meta?.[SIGNED_IN];
+              return typeof v === "string" && v ? v : undefined;
+            };
             let answer: string | undefined;
             try {
               answer = mapMessages(text, sse, (m) => {
               // Read before fencing strips structuredContent: the module's own answer, never upstream text inside it.
-              if (call && m.id === reqId && !("method" in m)) { need = readNeed(m.result); success = !need && !m.error && servedSignedIn(m.result); }
+              if (call && m.id === reqId && !("method" in m)) { need = readNeed(m.result); success = !need && !m.error && servedSignedIn(m.result); account = success ? servedAccount(m.result) : undefined; }
               if (method === "tools/list" && Array.isArray(m.result?.tools)) m.result.tools = m.result.tools.filter((t: { name?: unknown }) => allowed.has(String(t?.name)));
               if (rec && m.id === reqId && !("method" in m)) { okAnswer = !m.error && m.result?.isError !== true; objects = m.result?.structuredContent?._aidenhq?.objects; }
               if (!fenced) return true;
@@ -303,7 +308,7 @@ export function createProxy({ whoami, connections, asserter, resolver, secret, w
             if (rec) done(okAnswer, text);
             // A call the connection's sign-in served (its answer says so: needs.ts SIGNED_IN) proves the module connected: a full
             // need it had clears, and the tasks waiting on it wake. A tool that works signed out proves nothing.
-            try { if (success && state?.down(conn.module)) state.ok(conn.module, true); } catch (e) { log("connection state not cleared", { connection, err: (e as Error).message }); }
+            try { if (success && state?.down(conn.module, account)) state.ok(conn.module, { account, fullOnly: true }); } catch (e) { log("connection state not cleared", { connection, err: (e as Error).message }); }
             if (asIs) res.writeHead(status, { ...hdrs, "content-length": String(raw.length) }).end(raw);
             else res.writeHead(status, { ...hdrs, "content-length": Buffer.byteLength(answer!) }).end(answer);
             resolve();
