@@ -55,7 +55,10 @@ key. A **virtual TPM** is strongly recommended: the secret vault (step 3) seals 
 the vault still works, but its password is sealed with a key stored on the same disk, which protects a copied vault
 folder but not a stolen disk.
 
-No inbound ports are needed: everything is reached over Tailscale.
+This guide reaches the board over Tailscale (no inbound ports). Without a tailnet, setup serves the board over HTTPS on
+the server's public IP instead (tcp 443 and 8446 open, password and authenticator), or on loopback through an SSH tunnel
+behind NAT: `--exposure public|tailscale|local` picks one, and running setup again with another switches
+([design/access.md](design/access.md#exposure-modes)).
 
 ### Option A: any hypervisor or cloud (recommended path)
 

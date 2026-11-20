@@ -37,8 +37,8 @@ turns what you ask for into work for the right agent, chases it, and brings you 
                             └──────────────── apps-mcp ── sandboxed apps (warehouse, ...)
 ```
 
-Everything runs in Docker Compose on one host, plus the kernel and the computer launcher as systemd user units. Inbound is LAN/Tailscale
-only. See [docs/architecture.md](docs/architecture.md).
+Everything runs in Docker Compose on one host, plus the kernel and the computer launcher as systemd user units. Inbound is one door, chosen at
+install: HTTPS on the server's public IP behind password and TOTP (the default off a tailnet), Tailscale, or an SSH tunnel. See [docs/architecture.md](docs/architecture.md).
 
 ## Get started
 
@@ -90,8 +90,9 @@ Your configuration lives in a separate private **instance repo**: `instance.yaml
 
 ## Security posture
 
-- **Inbound is private:** LAN or Tailscale only; board accounts with password and TOTP; shared apps behind Cloudflare
-  Access and the gate.
+- **Inbound is one door:** HTTPS on the server's public IP (the default off a tailnet), Tailscale or an SSH tunnel; board
+  accounts with password and TOTP either way; only 22 and that door's ports open; shared apps behind Cloudflare Access and
+  the gate.
 - **Outbound is open** by design: agents may call any service they are granted.
 - **Gates in code:** tool grants, git writes and approvals are enforced below the model, tiered by code.
 - **Untrusted text is data**, and anything sent as the owner is a reviewed write, granted to an agent only by name.

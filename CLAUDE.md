@@ -127,8 +127,9 @@ bump of `product:` to a different reviewer needs a receipt for that reviewer too
 - **Source writers:** one bad item never fails a pass (skip only permanent errors, rethrow transient ones); passes
   are time-bounded. Probe a vendor MCP's real tool shapes live before trusting guessed params
   (`docker compose exec jira-mcp node dist/src/probe.js [tool '<json>']`).
-- **Inbound:** the kernel's admin listener (3120: sign-in, approval pages) and the board (3121) are loopback-only but every
-  host process shares that loopback (Tailscale serve), so every route on 3120 and 3121 needs a signed-in
+- **Inbound:** the kernel's admin listener (3120: sign-in, approval pages) and the board (3121) are loopback-only, reached
+  through the exposure mode's front door (`settings.exposure`: Caddy on the public IP, the default off a tailnet; Tailscale
+  serve; or an SSH tunnel; only `ops/setup.sh --exposure` changes it), but every host process shares that loopback, so every route on 3120 and 3121 needs a signed-in
   admin (beyond sign-in, only OpenRouter's PKCE callback and GitHub's App manifest return, each by a single-use state an admin's page made) (accounts: Better Auth in the kernel, password + TOTP, `data/kernel/auth/auth.db`, which the board's 3129 listener
   also opens until 3g; no SSO, sign-in beyond that is Cloudflare Access). Cards are decided only on the kernel's pages or
   by channel token. Every admin is an owner: writes as the owner
