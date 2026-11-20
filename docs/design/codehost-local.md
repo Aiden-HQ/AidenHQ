@@ -42,8 +42,10 @@ shape: a change is a `kernel.apply` record whose card carries the exact diff, la
   as `sources`). The data dir is in the sandbox's `hidden` list, so no job can read or write a repo directly.
 - **Create repo** (`codehost-local.create_repo`, name `local/[a-z][a-z0-9-]{0,62}`): `git init --bare -b main`, then a first
   commit with a README on `main` (`update-ref` against the zero sha, so it fails if the repo exists).
-- **A job never lets host git touch its workspace.** An Engineer clones with `aidenhq clone local/<name>` from a git bundle the
-  kernel serves (`localBundle`; Engineer jobs only, only repos its dispatcher may clone). Its commits come back as a bundle
+- **A job never lets host git touch its workspace.** An Engineer clones with `aidenhq clone <org/name>` from a git bundle the
+  kernel serves (the broker's `bundle` op, `codehost.ts`: Engineer jobs only, only repos its dispatcher's clone grant covers;
+  every branch of a `local/…` repo, the default branch of a GitHub one), and the same command on a clone it has fetches a fresh
+  bundle into `origin/*`. Its commits come back as a bundle
   its box wrote (`aidenhq publish|apply`, at `.aidenhq/bundles/<sha>.bundle`); `ingest` reads that one regular file (never
   through a symlink, inside that task's folder), verifies it and fetches it with every object checked into
   `refs/ws/<task>/<branch>`, and the branch must be at the sha the request names.

@@ -25,7 +25,7 @@ export class JobToolError extends Error {
 const KIND = /^[a-z][a-z0-9-]{0,40}$/;
 const MODEL = /^~?[\w.-]{1,60}\/[\w.:-]{1,100}$/;
 
-export function createJobTools({ db, secret, engines, orgs = () => [], mayClone = () => false, now = Date.now }: {
+export function createJobTools({ db, secret, engines, orgs = () => [], now = Date.now }: {
   db: DatabaseSync;
   /** The kernel's gateway_job_secret, read fresh. */
   secret: () => string;
@@ -33,8 +33,6 @@ export function createJobTools({ db, secret, engines, orgs = () => [], mayClone 
   engines: () => string[];
   /** The agents orgs (one per enabled code host): the only orgs a job's `repo-checkout` may name. */
   orgs?: () => string[];
-  /** Whether the job's dispatcher's codehost clone grant covers the repo (as for the clones at admission, boxes.ts). */
-  mayClone?: (module: string, repo: string) => boolean;
   now?: () => number;
 }) {
   db.exec("CREATE TABLE IF NOT EXISTS jobtools (job TEXT PRIMARY KEY, fresh INTEGER NOT NULL DEFAULT 0, engine TEXT, cleanup INTEGER NOT NULL DEFAULT 0, at INTEGER NOT NULL)");
@@ -95,17 +93,16 @@ export function createJobTools({ db, secret, engines, orgs = () => [], mayClone 
       return { repo: `${m[1]}/${m[2]!.replace(/\.git$/, "")}`, ref: sha || "HEAD" };
     },
     /**
-     * A job's `aidenhq clone`: a repository on this server (the org `local`) for an engineer job to clone in its own box, from
-     * the bundle the kernel serves. GitHub's repos come into the workspace at admission instead (boxes.ts).
+     * A job's `aidenhq clone`: a repository for an engineer job's box to clone, or to fetch into the clone it has, from the
+     * bundle of its default branch (every branch, on this server) the kernel serves under the job's dispatcher's clone grant
+     * (codehost.ts bundle): the same repos its task's clones at admission come from (boxes.ts).
      */
-    clone(token: string, b: { repo?: unknown }): { repo: string } {
+    clone(token: string, b: { repo?: unknown }): { repo: string; module: string } {
       const r = db.prepare("SELECT module, authority FROM jobs WHERE id = ?").get(jobOf(token)) as { module: string; authority: string | null } | undefined;
       if ((r?.authority ? JSON.parse(r.authority).profile : undefined) !== "engineer") throw new JobToolError(403, "no-role", "aidenhq clone is an Engineer's");
-      const m = /^local\/([\w.-]+)$/i.exec(String(b?.repo ?? "").trim());
-      if (!m || /^\.+$/.test(m[1]!) || m[1]!.endsWith(".git")) throw new JobToolError(400, "bad-repo", "give a repository on this server as local/<name>");
-      const repo = `local/${m[1]}`;
-      if (!mayClone(r!.module, repo)) throw new JobToolError(403, "not-allowed", `${repo} isn't a repository this job's dispatcher may clone`);
-      return { repo };
+      const m = /^([\w.-]+)\/([\w.-]+)$/.exec(String(b?.repo ?? "").trim());
+      if (!m || /^\.+$/.test(m[1]!) || /^\.+$/.test(m[2]!) || m[2]!.endsWith(".git")) throw new JobToolError(400, "bad-repo", "give the repository as <org>/<name>");
+      return { repo: `${m[1]}/${m[2]}`, module: r!.module };
     },
     /**
      * One of this live job's prechecks, counted before its reviewer call: at most PRECHECKS a job. Returns its refund, for a

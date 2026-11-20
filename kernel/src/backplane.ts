@@ -70,14 +70,14 @@
 //   POST /v1/jobtools/:cmd     (a kernel job's own token) reset | engine {engine, model?} | cleanup: what the running job asks of its
 //                              task's next turn (jobtools.ts); review {kind, args}: what the AI reviewer would say of that write,
 //                              filed by nothing (writes.preview, review-loop precheck), at most PRECHECKS reviewer calls a job
-//                              | clone {repo}: a repository on this server as a git bundle, which the box clones itself
+//                              | clone {repo}: a repository its dispatcher's clone grant covers as a git bundle (its default
+//                              branch; every branch on this server), which the box clones, or fetches into its clone, itself
 //   GET  /v1/advisories        (the board's key) the marketplace advisories open against installed modules (advisories.ts)
 //   GET  /v1/connections/health (the board's key) every connection's /healthz as the kernel reaches it -> {probes: {name: {ok, status?, state?, detail?, channels?, checkedAt}}} (health.ts)
 //   POST /v1/auth/:op, /v1/accounts/:op, /v1/apps/:op, /v1/operator/:op  the accounts' routes (auth-api.ts): module UI
 //                              sessions and account admin (the board), in-app requests (apps-platform), setup links (operator)
 //   POST /v1/health/probe      (the host's health_probe_key, x-health-key) {probe}: one of health.ts's fixed read probes, called as the
 //                              agent granted it -> {ok, ms, error?}, never the tool's answer; scripts/healthcheck.sh's reads
-import { createReadStream } from "node:fs";
 import { pipeline } from "node:stream/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { timingSafeEqual } from "node:crypto";
@@ -96,7 +96,7 @@ import { JOB_KINDS, type Outcomes } from "./outcomes.ts";
 import { notice, type Notify } from "./notify.ts";
 import type { JobTools } from "./jobtools.ts";
 import type { Routing } from "./routing-tune.ts";
-import { CODEHOSTS, hostOf } from "./codehost.ts";
+import { CODEHOSTS, hostOf, type Answer } from "./codehost.ts";
 import { fail } from "./proxy.ts";
 import { logTasks } from "./task-scope.ts";
 import type { Records, Requester, State } from "./records.ts";
@@ -252,7 +252,7 @@ function flowRead(flow: Flow, p: URLSearchParams) {
   return flow.summary({ since, to, by: by as By, scope: p.get("scope")?.slice(0, 100) || undefined });
 }
 
-export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boardCp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, reviewerKey = () => "", jobs, codehost, admission, outcomes, wakes, tasks, eventsKey = () => "", work, flow, taskStates, repos = () => ({}), graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, checkJobs, jobTools, precheck, localBundle, ownerRaw, lane, healthProbe, healthKey = () => "", connectionHealth, settingsChange, routing, boardApi: moduleBoardApi, log = () => {} }: {
+export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boardCp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, reviewerKey = () => "", jobs, codehost, admission, outcomes, wakes, tasks, eventsKey = () => "", work, flow, taskStates, repos = () => ({}), graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, checkJobs, jobTools, precheck, repoBundle, ownerRaw, lane, healthProbe, healthKey = () => "", connectionHealth, settingsChange, routing, boardApi: moduleBoardApi, log = () => {} }: {
   /** Flow's fact log (facts.ts): POST /v1/facts. */
   facts?: Facts;
   /** An agent's own wait on its job's task (idle.ts): POST /v1/wait. */
@@ -305,8 +305,8 @@ export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boar
   jobTools?: JobTools;
   /** A job's precheck (`aidenhq review`): what the AI reviewer would say of this write, filing nothing; `slot` counts the reviewer call. */
   precheck?: (who: Identity, b: { kind: string; args: unknown }, slot: () => (failure: unknown) => void) => Promise<{ text: string; reason?: string; decision?: string }>;
-  /** codehost-local's bundle of a repo on this server, while it is enabled (`aidenhq clone`): the file, and `done` once sent. */
-  localBundle?: (repo: string) => Promise<{ file: string; done: () => void }>;
+  /** A repo's bundle for a job's `aidenhq clone`, under its dispatcher's clone grant (codehost.ts bundle): the code host's answer. */
+  repoBundle?: (module: string, repo: string) => Promise<Answer>;
   /** The host's health probes (health.ts), and the key the host's healthcheck asks with (health_probe_key, held by no container). */
   healthProbe?: (b: Record<string, unknown>) => Promise<{ ok: boolean; ms: number; error?: string }>;
   healthKey?: () => string;
@@ -473,18 +473,24 @@ export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boar
             return send(res, 200, await precheck(w, { kind: String(b.kind ?? ""), args: b.args }, slot));
           }
           if (m[0] === "clone") {
-            // The repo's branches as a git bundle; the box clones from it itself.
-            if (!localBundle) throw fail(404, "unavailable", "there are no repositories on this server (codehost-local isn't enabled)");
-            let repo: string;
-            try { ({ repo } = jobTools.clone(bearer(req), b)); } catch (e) {
+            // The repo as a git bundle; the box clones it, or fetches it into the clone it has, itself.
+            if (!repoBundle) throw fail(503, "unavailable", "aidenhq clone is off");
+            let c: { repo: string; module: string };
+            try { c = jobTools.clone(bearer(req), b); } catch (e) {
               const j = e as { name?: string; status?: number; code?: string; message: string };
               if (j.name === "JobToolError") throw fail(j.status!, j.code!, j.message);
               throw e;
             }
-            const out = await localBundle(repo).catch((e: { status?: number; message: string }) => { throw fail(e.status ?? 500, "no-repo", e.message); });
-            res.writeHead(200, { "content-type": "application/octet-stream" });
-            // An aborted client ends the pipeline too: the request never hangs and the temp bundle always goes.
-            return void (await pipeline(createReadStream(out.file), res).catch(() => {}).finally(out.done));
+            const out = await repoBundle(c.module, c.repo).catch((e: { status?: number; message: string }) => { throw fail(e.status ?? 500, "no-repo", e.message); });
+            if ((out.statusCode ?? 502) >= 300) {
+              let said = "";
+              for await (const x of out) said += x;
+              try { said = String((JSON.parse(said) as { error?: string }).error ?? said); } catch {}
+              throw fail(out.statusCode ?? 502, "no-repo", said.slice(0, 300) || `the code host answered ${out.statusCode}`);
+            }
+            res.writeHead(200, { "content-type": "application/octet-stream", "x-aidenhq-repo": c.repo });
+            // An aborted client ends the pipeline too: the request never hangs and the bundle's stream always closes.
+            return void (await pipeline(out, res).catch(() => {}));
           }
           try { return send(res, 200, { text: jobTools.run(bearer(req), m[0]!, b) }); } catch (e) {
             const j = e as { name?: string; status?: number; code?: string; message: string };
