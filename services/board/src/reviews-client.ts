@@ -1,5 +1,5 @@
 // The board's client of the code-review module's state service (types and the page's checks: reviews.ts).
-import type { Profile, ReposView, Review, ReviewerRow, Run } from "./reviews.js";
+import type { Combo, EngineCatalog, FindingRow, ReposView, Review, Run } from "./reviews.js";
 
 export class ReviewsUnavailable extends Error {}
 export class ReviewsRefused extends Error {
@@ -10,15 +10,13 @@ export class ReviewsRefused extends Error {
 
 export interface Reviews {
   list(q: { repo?: string; status?: string; limit?: number }): Promise<{ runs: Run[] }>;
-  get(id: string): Promise<{ run: Run; review: Review | null }>;
-  run(body: { pr_url: string; reviewer?: string; focus?: string; full?: boolean }): Promise<{ run: Run }>;
-  trial(body: { reviewer: Profile; pr_url: string }): Promise<{ run: Run }>;
+  get(id: string): Promise<{ run: Run; review: Review | null; findings: FindingRow[] }>;
+  /** One run per combo (the repo's on_open combos when none are given). */
+  run(body: { pr_url: string; combos?: Combo[]; focus?: string; full?: boolean }): Promise<{ runs: Run[] }>;
   repos(): Promise<ReposView>;
-  reviewers(): Promise<{ reviewers: ReviewerRow[] }>;
+  engines(): Promise<{ engines: EngineCatalog }>;
   /** Repos the GitHub sign-in can read, for the picker (`q` filters by name). */
   available(q: string): Promise<{ repos: { repo: string; private: boolean; pushed_at?: string }[] }>;
-  /** Recent open PRs the instance can read, for "Try on a recent PR". */
-  recent(): Promise<{ prs: { url: string; repo: string; number: number; title: string }[] }>;
 }
 
 /**
@@ -38,7 +36,7 @@ export function createReviews({ kernel, fetchFn = fetch }: { kernel?: { url: str
       throw new ReviewsUnavailable(`the code-review service didn't answer (${e.message})`);
     });
     const data = (await res.json().catch(() => ({}))) as { error?: string; detail?: string };
-    // The service's refusals (a PR it can't read, a reviewer whose engine isn't built) reach the owner in its words.
+    // The service's refusals (a PR it can't read, an engine that isn't built) reach the owner in its words.
     if (res.status >= 400 && res.status < 500) throw new ReviewsRefused(res.status, String(data.detail ?? data.error ?? `refused (${res.status})`).slice(0, 500));
     if (!res.ok) throw new ReviewsUnavailable(`the code-review service failed (${res.status})`);
     return data as T;
@@ -51,10 +49,8 @@ export function createReviews({ kernel, fetchFn = fetch }: { kernel?: { url: str
     list: (q) => call("GET", `/reviews${qs(q)}`),
     get: (id) => call("GET", `/reviews/${encodeURIComponent(id)}`),
     run: (body) => call("POST", "/reviews", body),
-    trial: (body) => call("POST", "/reviews/try", body),
     repos: () => call("GET", "/repos"),
-    reviewers: () => call("GET", "/reviewers"),
+    engines: () => call("GET", "/engines"),
     available: (q) => call("GET", `/github/repos${qs({ q })}`),
-    recent: () => call("GET", "/github/prs"),
   };
 }

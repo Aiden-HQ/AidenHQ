@@ -8,6 +8,12 @@ import { SECRETS } from "./scrub.js";
 const SHA = /^[0-9a-f]{40}$/;
 const NAME = "[A-Za-z0-9_.-]{1,100}";
 const oneLine = z.string().max(500).regex(/^[^\r\n]*$/);
+/** Which reviewer a run was: its engine, model and effort (code-review's combo). */
+const ENGINE = z.enum(["codex", "claude-code", "codegenie"]);
+const MODEL = z.string().regex(/^~?[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.:~-]{1,100}$/);
+const EFFORT = z.enum(["minimal", "low", "medium", "high", "xhigh", "max"]);
+/** A combo as the posts name it: `codex · ~deepseek/deepseek-flash-latest · medium effort`. */
+export const comboText = (c: { engine: string; model: string; effort: string }) => `${c.engine} · ${c.model} · ${c.effort} effort`;
 
 export const FindingSchema = z.object({
   id: z.string().regex(/^[A-Za-z0-9_-]{6,64}$/),
@@ -26,13 +32,12 @@ export const ReviewSchema = z.object({
   pr: z.number().int().min(1),
   base: z.string().regex(SHA),
   head: z.string().regex(SHA),
-  reviewer: z.string().regex(/^[A-Za-z0-9_.-]{1,40}$/),
+  engine: ENGINE, model: MODEL, effort: EFFORT,
   incremental_from: z.string().regex(SHA).nullable(),
   full: z.boolean(),
   coverage: z.object({ reviewed: z.array(oneLine).max(5000), excluded: z.array(oneLine).max(5000), incomplete: z.string().max(500).nullable() }),
   findings: z.array(FindingSchema).max(200),
   withheld: z.object({ important: z.number().int().min(0), nit: z.number().int().min(0), pre_existing: z.number().int().min(0) }),
-  triage: z.object({ summary: z.string().max(1000), risk: z.enum(["trivial", "normal", "high"]) }).optional(),
   cost_usd: z.number().min(0).max(100_000),
   stale_guidance: z.array(z.string().max(300)).max(10),
 });
@@ -69,7 +74,7 @@ export const SKIP_REASONS = {
 } as const;
 /** A command's answer, in fixed words (`@aiden review help|always|focus: …|status` with no review yet). */
 export const ANSWERS = {
-  help: "commands: `@aiden review` (once), `@aiden review <reviewer>` (e.g. `deep`), `@aiden review full` (the whole PR), `@aiden review always` (every push), `@aiden review stop`, `@aiden review focus: <text>`, `@aiden review status`",
+  help: "commands: `@aiden review` (once, with the repo's review-on-open combos), `@aiden review full` (the whole PR), `@aiden review always` (every push), `@aiden review stop`, `@aiden review focus: <text>`, `@aiden review status`",
   always: "every push to this pull request will be reviewed",
   focus: "the next reviews on this pull request look hardest at the focus given",
   focus_cleared: "the focus on this pull request is cleared",
@@ -80,7 +85,7 @@ export const NoticeArgsSchema = z.object({
   pr: z.number().int().min(1),
   head: z.string().regex(SHA),
   phase: z.enum(["queued", "running", "done", "skipped", "failed", "answered"]),
-  reviewer: z.string().regex(/^[A-Za-z0-9_.-]{1,40}$/).optional(),
+  engine: ENGINE.optional(), model: MODEL.optional(), effort: EFFORT.optional(),
   reason: z.enum(Object.keys(SKIP_REASONS) as [keyof typeof SKIP_REASONS, ...(keyof typeof SKIP_REASONS)[]]).optional(),
   answer: z.enum(Object.keys(ANSWERS) as [keyof typeof ANSWERS, ...(keyof typeof ANSWERS)[]]).optional(),
   important: z.number().int().min(0).max(9999).optional(),
@@ -153,8 +158,7 @@ type Counts = { important: number; nit: number; pre_existing: number };
 const countLine = (c: Counts) => `${ICON.important} ${c.important} important · ${ICON.nit} ${c.nit} ${c.nit === 1 ? "nit" : "nits"} · ${ICON.pre_existing} ${c.pre_existing} pre-existing`;
 
 export const COMMANDS = [
-  "`@aiden review`: review the new changes again (once)",
-  "`@aiden review <reviewer>`: review with a named reviewer, for example `deep`",
+  "`@aiden review`: review the new changes again (once, with the repo's review-on-open combos)",
   "`@aiden review full`: review the whole pull request, not only what changed since the last review",
   "`@aiden review always`: review every push; `@aiden review stop`: stop reviewing this pull request",
   "`@aiden review focus: <text>`: look at one thing",
@@ -195,13 +199,12 @@ export function renderReview(r: Review, run: string, opts: { inline?: ReadonlySe
   const lines = [
     `<!-- ${MARK.review}: ${JSON.stringify(c)} -->`,
     RUN_MARK(run),
-    `### Aiden review · ${code(r.reviewer)}`,
+    `### Aiden review · ${code(comboText(r))}`,
     "",
     `**${countLine(c)}**`,
     "",
-    `Reviewed ${r.coverage.reviewed.length} file${r.coverage.reviewed.length === 1 ? "" : "s"} at ${code(short(r.head))} (${r.full || !r.incremental_from ? "the whole pull request" : `new changes since ${code(short(r.incremental_from))}`})${r.coverage.excluded.length ? `, ${r.coverage.excluded.length} excluded` : ""}. Reviewer ${code(r.reviewer)}, $${r.cost_usd.toFixed(2)}.`,
+    `Reviewed ${r.coverage.reviewed.length} file${r.coverage.reviewed.length === 1 ? "" : "s"} at ${code(short(r.head))} (${r.full || !r.incremental_from ? "the whole pull request" : `new changes since ${code(short(r.incremental_from))}`})${r.coverage.excluded.length ? `, ${r.coverage.excluded.length} excluded` : ""}. Reviewer ${code(comboText(r))}, $${r.cost_usd.toFixed(2)}.`,
     ...(incomplete ? ["", `> **Incomplete:** ${plain(incomplete, 300)}. This is not a clean review.`] : []),
-    ...(r.triage ? ["", `Risk **${r.triage.risk}**: ${plain(r.triage.summary, 600)}`] : []),
     ...(r.withheld.important + r.withheld.nit + r.withheld.pre_existing ? ["", `Withheld to keep this short: ${countLine(r.withheld)}. \`@aiden review full\` shows more.`] : []),
   ];
   if (r.findings.length) {
@@ -218,7 +221,7 @@ export function renderReview(r: Review, run: string, opts: { inline?: ReadonlySe
 const usd = (n: number | undefined) => (n === undefined ? "" : ` ($${n.toFixed(2)})`);
 /** The acknowledgement comment's text and the commit status a notice sets (no status for `queued`), from fixed words only. */
 export function renderNotice(n: NoticeArgs): { text: string; status?: { state: "pending" | "success" | "error"; description: string } } {
-  const who = n.reviewer ? ` with ${code(n.reviewer)}` : "";
+  const who = n.engine && n.model && n.effort ? ` with ${code(comboText({ engine: n.engine, model: n.model, effort: n.effort }))}` : "";
   const sha = code(short(n.head));
   const c: Counts = { important: n.important ?? 0, nit: n.nit ?? 0, pre_existing: n.pre_existing ?? 0 };
   const head = `${ACK_MARK}\n**Aiden review**`;

@@ -1,8 +1,8 @@
 name: code-review
-description: "Code Review: reviews pull requests on the repos you list, or one PR on request. Named reviewers (engine, model, effort, finders, verification, context) run in a credential-free box; findings are posted as one GitHub review per head, each post a write the AI reviewer approves. Idle until a repo is added: nothing runs or spends by itself."
+description: "Code Review: reviews pull requests on the repos you list, or one PR on request. Each moment (a PR opens, each push) runs a list of combos (engine: Codex, Claude Code or Codegenie; model; effort) in a credential-free box; each combo posts its own GitHub review, a write the AI reviewer approves, and its cost and findings are kept for later analysis. Idle until a repo is added: nothing runs or spends by itself."
 license: MIT
 # Design: docs/design/code-review.md. The state service (service/) watches the listed repos' PRs and comments through github-mcp's
-# internal read (as this module, never /mcp), decides which head gets which reviewer (triggers, `@aiden review …` from someone with
+# internal read (as this module, never /mcp), decides which head gets which combos (triggers, `@aiden review …` from someone with
 # write access now, debounce, supersede, daily caps, month caps reserved before a run starts), runs each review as the kernel's
 # check job `code-review` (kernel.checks: no credentials in the box, a model token capped at the run's reservation), hands the
 # finished review to the github module's poster (a kernel write record) and records each run as flow facts on its PR.
@@ -18,16 +18,16 @@ codehost:
   snapshot: { repos: [ "*/*" ] }
 # The review run: a credential-free check job per PR head (kernel/src/checkjobs.ts), the recipe in recipe/. The state service asks
 # POST /v1/checks {repo, head, run: code-review, spec} (service/src/adapters.ts checkSpec): base is the merge base (a full review's
-# incremental_from is that base too), the reviewer's name, ignore globs and max_nits ride in profile, budget_usd is the run's
-# reservation (its model token's cap), previous the last posted review's findings to recheck. It reads back GET /v1/checks/:id with
-# `result` (the Review JSON, bound into the receipt) and `billed_usd` (the gateway's billing of the run's model token).
+# incremental_from is that base too), the combo (engine, model, effort) with the repo's ignore globs and max_nits in combo, budget_usd
+# is the run's reservation (its model token's cap), previous the PR's still-open findings to recheck. It reads back GET /v1/checks/:id
+# with `result` (the Review JSON, bound into the receipt, stamped with the ledger's cost_usd and tokens) and `billed_usd`.
 check_jobs:
   code-review:
     dir: recipe
     argv: [ node, /aidenhq-out/recipe/review.ts ]
     timeout_min: 45
     title: the code review
-    spec: { base: sha, incremental_from: sha, pr: int, profile: json, focus: text, budget_usd: usd, previous: json }
+    spec: { base: sha, incremental_from: sha, pr: int, combo: json, focus: text, budget_usd: usd, previous: json }
     model: { max_usd: 20 }
     result: true
 # Flow (docs/design/flow.md): one started and one ended fact per review run (version: the run id) on its PR.
@@ -37,37 +37,29 @@ facts:
 stages:
   - { name: review, label: Code review, from: review.started, to: review.ended }
 settings:
-  # Reviewers are named profiles (any number): engine (codex; claude-code and codegenie when their recipes land), model, effort
-  # (minimal|low|medium|high|xhigh), finders (1-4), verify, and optionally verifier (a model), context (repo paths), focus, label, and
-  # run_usd (what one run may spend: its reservation and its model token's cap; default $0.50 a finder + $0.50 to verify). A
-  # default set to null is switched off. repos: [{ repo: owner/name, on_open: standard, on_push: quick, on_risk: deep (each a
-  # reviewer or "off"), drafts: false, forks: manual|auto, month_usd: 50, ignore: [globs], max_nits: 5, per_author_day: 10,
-  # per_repo_day: 60 }]. month_usd: the instance-wide cap across repos. Read by the service (service/src/config.ts).
+  # repos: [{ repo: owner/name, on_open: [combo], on_push: [combo], drafts: false, forks: manual|auto, month_usd: 50, ignore: [globs],
+  # max_nits: 5, per_author_day: 10, per_repo_day: 60 }]. A combo is { engine: codex|claude-code|codegenie, model (an OpenRouter
+  # id), effort (the engine's: codex minimal-xhigh, the others low-max), run_usd (what one run may spend: its reservation and its
+  # model token's cap; default codex and codegenie $1, claude-code $2) }; each moment runs every combo it lists (at most 4, each its
+  # own review), [] none. on_push reviews only the new changes. month_usd: the instance-wide cap across repos. Read by the service
+  # (service/src/config.ts).
   code_review:
     type: object
     writers: [ reviewer-manager ]
     # What the Reviewer Manager's change may not do without the owner (Tier 2; it reads strangers' review threads): more spend,
-    # outside PRs or drafts reviewed by themselves, a repo in an org not watched before, a reviewer's model, size, run cost, focus or
-    # context, or a repo's ignore globs (what would quietly weaken reviews).
+    # outside PRs or drafts reviewed by themselves, a repo in an org not watched before, any change to a moment's combos (another
+    # engine or model, more run cap, one more combo: what changes what a review costs or how it judges), or a repo's ignore globs
+    # (what would quietly weaken reviews).
     owner:
       - { path: month_usd, raise: true }
       - { path: "repos.*.month_usd", raise: true, default: 50 }
       - { path: "repos.*.forks", to: auto, default: manual }
       - { path: "repos.*.drafts", to: true, default: false }
       - { path: "repos.*.repo", new: true, before: "/" }
-      - { path: "reviewers.*.model", change: true }
-      - { path: "reviewers.*.verifier", change: true }
-      - { path: "reviewers.*.finders", change: true }
-      - { path: "reviewers.*.run_usd", change: true }
-      - { path: "reviewers.*.focus", change: true }
-      - { path: "reviewers.*.context", change: true }
+      - { path: "repos.*.on_open", change: true, default: [ { engine: codex, model: "~deepseek/deepseek-flash-latest", effort: medium, run_usd: 1 } ] }
+      - { path: "repos.*.on_push", change: true, default: [ { engine: codex, model: "~deepseek/deepseek-flash-latest", effort: low, run_usd: 1 } ] }
       - { path: "repos.*.ignore", change: true, default: [] }
     default:
-      reviewers:
-        quick: { engine: codex, model: "~openai/gpt-luna-latest", effort: low, finders: 1, verify: false, run_usd: 0.5 }
-        standard: { engine: codex, model: "~openai/gpt-luna-latest", effort: high, finders: 2, verify: true, run_usd: 1.5 }
-        deep: { engine: codex, model: "~openai/gpt-luna-latest", effort: high, finders: 4, verify: true, verifier: "~openai/gpt-luna-latest", run_usd: 2.5 }
-        triage: { engine: codex, model: "~openai/gpt-luna-latest", effort: low, finders: 1, verify: false, focus: triage, run_usd: 0.5 }
       repos: []
       month_usd: 200
   # Seconds between the service's looks at the watched repos.
@@ -144,4 +136,4 @@ generated_secrets:
   - code_review_token
   - code_review_api_token
   - code_review_service_key
-data_version: 0 # its data dir's format: bumped by each forward-only migration (docs/configuration.md)
+data_version: 1 # its data dir's format: bumped by each forward-only migration (docs/configuration.md)

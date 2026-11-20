@@ -2,17 +2,17 @@
 // Aiden's one-offs go through the same routes):
 //   GET  /reviews?repo=&status=&limit=   → { runs }
 //   GET  /reviews/:id                    → { run, review: Review | null }
-//   POST /reviews { pr_url, reviewer?, focus?, full? } → { run }   a one-off review of any PR the instance can read (posted)
-//   POST /reviews/try { reviewer: <profile>, pr_url } → { run }    a profile tried before it is saved (never posted)
+//   GET  /reviews?repo=… runs carry engine, model, effort, cost_usd (billed), tokens_in/cached/out and duration_ms
+//   GET  /reviews/:id                    → { run, review, findings: [{ id, severity, path, line, title, outcome }] }
+//   POST /reviews { pr_url, combos?, focus?, full? } → { runs }   a one-off review of any PR the instance can read, one run per
+//                                        combo (default: the repo's on_open), each posted
 //   GET  /repos                          → { repos (with month spend), month_usd, month_spent_usd, … }
-//   GET  /reviewers                      → { reviewers (with runs and average cost per run) }
+//   GET  /engines                        → { engines }  each engine's efforts, offered models and default run cap
 //   GET  /github/repos?q=                → { repos }   repos the GitHub identity can read (the board's picker)
-//   GET  /github/prs                     → { prs }     open PRs the watcher saw lately (the board's "Try on a recent PR")
 // Errors are { error, detail }.
 //   GET  /healthz
 import { timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { profile } from "./config.ts";
 import { RequestError, type Engine } from "./engine.ts";
 
 const send = (res: ServerResponse, status: number, body: unknown) => void res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
@@ -53,12 +53,10 @@ export function handler(engine: Engine, token: () => string) {
         const r = engine.run(one[1]!);
         return r ? send(res, 200, r) : send(res, 404, { error: "not_found", detail: `no review ${one[1]}` });
       }
-      if (route === "POST /reviews") return send(res, 200, { run: await engine.oneoff(await body(req)) });
-      if (route === "POST /reviews/try") return send(res, 200, { run: await engine.tryRun(await body(req), profile) });
+      if (route === "POST /reviews") return send(res, 200, { runs: await engine.oneoff(await body(req)) });
       if (route === "GET /repos") return send(res, 200, engine.repos());
-      if (route === "GET /reviewers") return send(res, 200, { reviewers: engine.reviewers() });
+      if (route === "GET /engines") return send(res, 200, { engines: engine.engines() });
       if (route === "GET /github/repos") return send(res, 200, { repos: await engine.available(url.searchParams.get("q") ?? "") });
-      if (route === "GET /github/prs") return send(res, 200, { prs: engine.recent() });
       return send(res, 404, { error: "not_found", detail: route.slice(0, 100) });
     } catch (e) {
       if (e instanceof RequestError) return send(res, 400, { error: "bad_request", detail: e.message, ...e.extra });

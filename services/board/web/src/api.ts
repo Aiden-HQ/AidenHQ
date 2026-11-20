@@ -3,7 +3,7 @@ import type { AgentProfile, TaskRow, FeatureCost, Features, Advisory, Agents, As
 import type { ConnectionsData } from "./connections";
 import type { TimelineEntry } from "../../src/timeline";
 import type { Explanation } from "../../src/explain";
-import type { CodeReview, Profile, ReposView, Review, ReviewInsights, ReviewerRow, Run } from "../../src/reviews";
+import type { CodeReview, Combo, EngineCatalog, FindingRow, ReposView, Review, ReviewInsights, Run } from "../../src/reviews";
 import type { BrowseModule, GrantConnection, MarketplaceRow } from "./types";
 
 async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
@@ -258,17 +258,15 @@ export const api = {
   module: (name: string) => call<ModuleDetail>("GET", `/api/modules/${encodeURIComponent(name)}`),
   /** Installed modules whose setup flow isn't done (docs/design/guided-setup.md); a 404 means no flows. */
   settings: () => call<SettingsData>("GET", "/api/settings"),
-  /** The Reviews page (Reviews.tsx): the code-review module's setup, runs, repos, reviewers and the owner's settings change. */
+  /** The Reviews page (Reviews.tsx): the code-review module's setup, runs, repos and the owner's settings change. */
   reviewsSetup: () => call<ReviewsSetup>("GET", "/api/reviews/setup"),
   reviews: (q: { repo?: string; status?: string; limit?: number } = {}) => call<{ runs: Run[] }>("GET", `/api/reviews?${new URLSearchParams(Object.entries(q).flatMap(([k, v]) => (v === undefined || v === "" ? [] : [[k, String(v)]])))}`),
-  review: (id: string) => call<{ run: Run; review: Review | null }>("GET", `/api/reviews/run/${encodeURIComponent(id)}`),
+  review: (id: string) => call<{ run: Run; review: Review | null; findings: FindingRow[] }>("GET", `/api/reviews/run/${encodeURIComponent(id)}`),
   reviewRepos: () => call<ReposView>("GET", "/api/reviews/repos"),
-  reviewers: () => call<{ reviewers: ReviewerRow[] }>("GET", "/api/reviews/reviewers"),
+  reviewEngines: () => call<{ engines: EngineCatalog }>("GET", "/api/reviews/engines"),
   reviewAvailable: (q: string) => call<{ repos: { repo: string; private: boolean; pushed_at?: string }[] }>("GET", `/api/reviews/available?q=${encodeURIComponent(q)}`),
-  reviewRecent: () => call<{ prs: { url: string; repo: string; number: number; title: string }[] }>("GET", "/api/reviews/recent"),
   reviewInsights: (days: number) => call<ReviewInsights>("GET", `/api/reviews/insights?days=${days}`),
-  reviewRun: (body: { pr_url: string; reviewer?: string; focus?: string; full?: boolean }) => call<{ run: Run }>("POST", "/api/reviews", body),
-  reviewTry: (body: { reviewer: Profile; pr_url: string }) => call<{ run: Run }>("POST", "/api/reviews/try", body),
+  reviewRun: (body: { pr_url: string; combos?: Combo[]; focus?: string; full?: boolean }) => call<{ runs: Run[] }>("POST", "/api/reviews", body),
   /** settings.code_review, and/or a GitHub org reviews may post in as the owner, as one settings change. */
   reviewConfig: (body: { value: CodeReview }) => call<{ identifier: string }>("POST", "/api/reviews/config", body),
   connections: (fresh = false) => call<ConnectionsData>("GET", `/api/settings/connections${fresh ? "?fresh" : ""}`),

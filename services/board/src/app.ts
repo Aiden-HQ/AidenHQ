@@ -33,7 +33,7 @@ import { CommitUnreadable, agentGrants, browseModules, createResolver, marketpla
 import { connectionsView, readSources, readUpdates, settingsView, type Probe } from "./settings.js";
 import { ChangeRefused, ChangesSchema, SETTINGS_LABEL, changesOf, checkChange, settingsByModule, stageOf, taskFor, type Change } from "./settings-change.js";
 import { createGrading, gradePassed, type Grading } from "./grading.js";
-import { CodeReviewSchema, ProfileSchema, configProblems, insightsOf } from "./reviews.js";
+import { CodeReviewSchema, CombosSchema, configProblems, insightsOf, upgradeConfig } from "./reviews.js";
 import { ReviewsRefused, ReviewsUnavailable, type Reviews } from "./reviews-client.js";
 import { UsageSchema, keyUsage, prices, spendSummary } from "./costs.js";
 import { ledgerRange, ledgerSummary, ledgerTop } from "./cost-ledger.js";
@@ -1639,8 +1639,8 @@ export function createApp(opts: AppOptions): Server {
         return agentGrants(compiled, catalog, m[1]!) ?? Promise.reject(new HttpError(404, "no such agent"));
       },
     },
-    // The Reviews page (web/src/Reviews.tsx, docs/design/code-review.md): the code-review module's runs, repos and reviewers,
-    // one-off and trial runs, and the owner's change to settings.code_review (filed like any settings change).
+    // The Reviews page (web/src/Reviews.tsx, docs/design/code-review.md): the code-review module's runs and repos,
+    // one-off runs, and the owner's change to settings.code_review (filed like any settings change).
     {
       method: "GET",
       path: /^\/api\/reviews\/setup$/,
@@ -1653,7 +1653,7 @@ export function createApp(opts: AppOptions): Server {
         return {
           module: Boolean(mod?.enabled && reviews),
           github: { configured: Boolean(gh?.configured), connected: gh?.state === "ok", state: gh?.state ?? null },
-          config: parsed.success ? parsed.data : null,
+          config: parsed.success ? parsed.data : upgradeConfig(current),
           problems: parsed.success ? [] : configProblems(current),
         };
       },
@@ -1661,9 +1661,8 @@ export function createApp(opts: AppOptions): Server {
     { method: "GET", path: /^\/api\/reviews$/, handle: async (_m, _b, url) => reviewsCall((r) => r.list({ repo: url.searchParams.get("repo") ?? undefined, status: url.searchParams.get("status") ?? undefined, limit: Math.min(500, Number(url.searchParams.get("limit") ?? 100) || 100) })) },
     { method: "GET", path: /^\/api\/reviews\/run\/([\w-]{1,80})$/, handle: async (m) => reviewsCall((r) => r.get(m[1]!)) },
     { method: "GET", path: /^\/api\/reviews\/repos$/, handle: async () => reviewsCall((r) => r.repos()) },
-    { method: "GET", path: /^\/api\/reviews\/reviewers$/, handle: async () => reviewsCall((r) => r.reviewers()) },
+    { method: "GET", path: /^\/api\/reviews\/engines$/, handle: async () => reviewsCall((r) => r.engines()) },
     { method: "GET", path: /^\/api\/reviews\/available$/, handle: async (_m, _b, url) => reviewsCall((r) => r.available((url.searchParams.get("q") ?? "").slice(0, 100))) },
-    { method: "GET", path: /^\/api\/reviews\/recent$/, handle: async () => reviewsCall((r) => r.recent()) },
     {
       method: "GET",
       path: /^\/api\/reviews\/insights$/,
@@ -1673,7 +1672,6 @@ export function createApp(opts: AppOptions): Server {
       },
     },
     { method: "POST", path: /^\/api\/reviews$/, handle: async (_m, body) => reviewsCall((r) => r.run(parse(OneOffSchema, body))) },
-    { method: "POST", path: /^\/api\/reviews\/try$/, handle: async (_m, body) => reviewsCall((r) => r.trial(parse(TrialSchema, body))) },
     {
       // The whole code_review value the page edited, checked here for the owner's feedback, then the normal settings change.
       method: "POST",
@@ -2464,6 +2462,5 @@ const staticCompressed = new Map<string, Promise<Buffer>>();
 
 
 const PR_URL = z.string().max(300).regex(/^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d{1,9}\/?$/, "a pull request link, like https://github.com/acme/payments/pull/42");
-const OneOffSchema = z.object({ pr_url: PR_URL, reviewer: z.string().regex(/^[a-z][a-z0-9_-]{0,39}$/).optional(), focus: z.string().max(500).regex(/^[^\x00-\x1f\x7f]*$/).optional(), full: z.boolean().optional() }).strict();
-const TrialSchema = z.object({ reviewer: ProfileSchema, pr_url: PR_URL }).strict();
+const OneOffSchema = z.object({ pr_url: PR_URL, combos: CombosSchema.min(1).optional(), focus: z.string().max(500).regex(/^[^\x00-\x1f\x7f]*$/).optional(), full: z.boolean().optional() }).strict();
 const ReviewConfigSchema = z.object({ value: z.unknown() }).strict();

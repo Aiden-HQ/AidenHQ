@@ -3,6 +3,11 @@
 //
 // Routes (OpenRouter-compatible; the caller's "API key" is its own per-run credential, never the OpenRouter key):
 //   POST /api/v1/responses | /api/v1/chat/completions            kind agent (or the service kind its credential fixes)
+//   POST /api/v1/messages         Anthropic's format (OpenRouter's Anthropic-compatible endpoint: Claude Code with ANTHROPIC_BASE_URL
+//                                 at the gateway's /api), the same caps, reservation and ledger. Only what a reservation prices goes
+//                                 on: the body's MESSAGE_FIELDS (a field that buys more, such as speed, service_tier or mcp_servers,
+//                                 is dropped), custom tools only (a server tool, billed per use, is refused), anthropic-version and
+//                                 the ANTHROPIC_BETAS Claude Code sends. A cut-off call is trued up by OpenRouter's x-generation-id.
 //   POST /advisor/api/v1/... | /fanout/api/v1/...                kind advisor | fanout, counted against the caller's run
 //   POST /api/v1/chat/completions  (Bearer gateway_board_key) kind aside: the board's side chat, capped per UTC day
 //   POST /usage {since}           (Bearer gateway_board_key) the ledger since then → {records} (the board's Costs tab)
@@ -78,6 +83,8 @@ type Usage = { key: string; model: string; input: number; cached: number; output
 type UsageBlock = {
   input_tokens?: number; prompt_tokens?: number; output_tokens?: number; completion_tokens?: number; cost?: unknown;
   input_tokens_details?: { cached_tokens?: number }; prompt_tokens_details?: { cached_tokens?: number };
+  /** Anthropic's format: input_tokens leaves out cache reads and writes. */
+  cache_read_input_tokens?: number; cache_creation_input_tokens?: number;
 };
 type Answer = { id?: unknown; model?: unknown; usage?: UsageBlock };
 type Log = (msg: string, fields?: Record<string, unknown>) => void;
@@ -86,8 +93,12 @@ export const DEFAULT_CAPS: Caps = { run_usd: 2, task_usd: 10, day_usd: 30 };
 /** The install-wide cap's "agent" in the caps and filed tables and on its raise_cap card (never a Paperclip id). */
 export const INSTALL_CAP = "install";
 const SYSTEM: { source: string } & Record<string, string> = { reviewer: "AI reviewer", grader: "Grader", source: "Source writers" };
-const ROUTE = /^\/(?:(advisor|fanout)\/)?api\/v1\/(responses|chat\/completions)$/;
+const ROUTE = /^\/(?:(advisor|fanout)\/)?api\/v1\/(responses|chat\/completions|messages)$/;
 const MAX_BODY = 32 * 1024 * 1024;
+/** The Anthropic-format body fields a call may carry (what Claude Code sends); any other is dropped before it goes upstream. */
+const MESSAGE_FIELDS = new Set(["model", "messages", "system", "tools", "tool_choice", "metadata", "max_tokens", "thinking", "context_management", "output_config", "stream", "stop_sequences", "temperature", "top_p", "top_k", "provider"]);
+/** The anthropic-beta values passed upstream (Claude Code's; none changes the price); any other is dropped. */
+const ANTHROPIC_BETAS = new Set(["interleaved-thinking-2025-05-14", "context-management-2025-06-27", "claude-code-20250219", "mid-conversation-tool-changes-2026-07-01", "thinking-token-count-2026-05-13", "effort-2025-11-24", "thinking-display-updates-2026-08-18"]);
 const DAY_MS = 864e5;
 // The fewest output tokens a call may be cut to; below that it is refused at the cap instead.
 const MIN_OUTPUT = 1024;
@@ -192,8 +203,10 @@ export function usageTap(sse: boolean): { feed(text: string): void; done(): Usag
   const take = (text: string) => {
     if (!text.includes('"usage"')) return;
     try {
-      const j = JSON.parse(text) as (Answer & { type?: unknown; response?: Answer }) | null;
-      const r = j?.type === "response.completed" || j?.type === "response.incomplete" ? j.response : j; // an answer cut at its output limit is billed too
+      const j = JSON.parse(text) as (Answer & { type?: unknown; response?: Answer; message?: Answer }) | null;
+      // Anthropic's stream: the id and input in message_start, the final usage (and OpenRouter's cost) in message_delta.
+      if (j?.type === "message_delta" && j.usage && found) return void (found.usage = { ...found.usage, ...j.usage });
+      const r = j?.type === "response.completed" || j?.type === "response.incomplete" ? j.response : j?.type === "message_start" ? j.message : j; // an answer cut at its output limit is billed too
       if (r?.usage && typeof r.id === "string") found = r as Answer & { id: string; usage: UsageBlock };
     } catch {}
   };
@@ -208,8 +221,9 @@ export function usageTap(sse: boolean): { feed(text: string): void; done(): Usag
       if (sse) { if (tail.startsWith("data: ")) take(tail.slice(6)); } else take(body);
       if (!found) return undefined;
       const u = found.usage;
-      const cached = u.input_tokens_details?.cached_tokens ?? u.prompt_tokens_details?.cached_tokens ?? 0;
-      const input = u.input_tokens ?? u.prompt_tokens ?? 0;
+      const anthropic = u.cache_read_input_tokens !== undefined || u.cache_creation_input_tokens !== undefined;
+      const cached = (anthropic ? u.cache_read_input_tokens : u.input_tokens_details?.cached_tokens ?? u.prompt_tokens_details?.cached_tokens) ?? 0;
+      const input = (u.input_tokens ?? u.prompt_tokens ?? 0) + (anthropic ? cached + (u.cache_creation_input_tokens ?? 0) : 0);
       return {
         key: found.id.slice(0, 200),
         model: typeof found.model === "string" ? found.model.slice(0, 120) : "",
@@ -285,6 +299,7 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
     addRun: db.prepare("INSERT OR IGNORE INTO runs (run_key, agent_id, run_id, issue_id, rev, perpetual, at) VALUES (?, ?, ?, ?, ?, ?, ?)"),
     add: db.prepare("INSERT OR IGNORE INTO calls (key, at, day, run_key, run_id, agent_id, issue_id, task_subject, rev, kind, component, model, input, cached, output, cost_usd, ms, status, owner) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"),
     spentRun: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE run_key = ?"),
+    tokensRun: db.prepare("SELECT COALESCE(SUM(input), 0) AS input, COALESCE(SUM(cached), 0) AS cached, COALESCE(SUM(output), 0) AS output FROM calls WHERE run_key = ?"),
     spentTask: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE agent_id = ? AND task_subject = ?"),
     spentDay: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE agent_id = ? AND day = ?"),
     spentAll: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE day = ?"),
@@ -597,6 +612,11 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
       const problem = ciBodyProblem(body, Array.isArray(c.models) ? c.models : [], path);
       if (problem) throw fail(403, "not_allowed", problem);
     }
+    if (path === "messages") {
+      for (const k of Object.keys(body)) if (!MESSAGE_FIELDS.has(k)) delete body[k];
+      // A tool with a type is Anthropic's (a server tool is billed per use, outside any reservation): custom tools only.
+      if (Array.isArray(body.tools) && body.tools.some((t) => !t || typeof t !== "object" || ((t as { type?: unknown }).type ?? "custom") !== "custom")) throw fail(403, "not_allowed", "only custom tools may be sent: a server tool is billed outside the call's reservation");
+    }
     const price = priceOf(body);
     const upKey = secret("openrouter_key");
     if (!upKey) throw fail(503, "no_upstream_key", "the gateway has no OpenRouter key");
@@ -639,8 +659,11 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
       try { q.settle.run(u?.key ?? id, ...row); } catch { q.settle.run(id, ...row); } // a generation id already used keeps the reservation's key
     };
     let up: Response;
+    let gen = "";
     let attempt = new AbortController();
-    const post = () => (attempt = new AbortController(), fetch(`${upstream}/${path}`, { method: "POST", headers: { "content-type": "application/json", accept: req.headers.accept ?? "*/*", authorization: `Bearer ${upKey}` }, body: JSON.stringify(body), signal: attempt.signal }));
+    const betas = String(req.headers["anthropic-beta"] ?? "").split(",").map((b) => b.trim()).filter((b) => ANTHROPIC_BETAS.has(b));
+    const anthropic = path !== "messages" ? {} : { ...(typeof req.headers["anthropic-version"] === "string" ? { "anthropic-version": req.headers["anthropic-version"] } : {}), ...(betas.length ? { "anthropic-beta": betas.join(",") } : {}) };
+    const post = () => (attempt = new AbortController(), fetch(`${upstream}/${path}`, { method: "POST", headers: { "content-type": "application/json", accept: req.headers.accept ?? "*/*", authorization: `Bearer ${upKey}`, ...anthropic }, body: JSON.stringify(body), signal: attempt.signal }));
     try {
       // A transient refusal (rate limit, "high demand" 502, a reset) is retried with backoff before any byte reaches the caller.
       for (let n = 0; ; n++) {
@@ -660,12 +683,14 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
       settle("upstream_error", undefined, ["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN"].includes(String(((e as Error).cause as { code?: string } | undefined)?.code)));
       throw fail(502, "upstream_error", `OpenRouter unreachable (${(e as Error).message})`);
     }
+    // OpenRouter names the generation in a header too (an Anthropic-format answer's own id is a `msg_` one): a cut-off call's handle.
+    if (/^gen-[\w-]{1,190}$/.test(up.headers.get("x-generation-id") ?? "")) q.gen.run(gen = up.headers.get("x-generation-id")!, id);
     const sse = String(up.headers.get("content-type") ?? "").includes("event-stream");
     const tap = usageTap(sse);
     const text = new TextDecoder();
     // Read to the end even if the caller hung up, so what OpenRouter billed still lands in the ledger. A stream that goes quiet
     // for streamIdleMs is cut: its reservation is settled (and trued up from OpenRouter's record) instead of held for minutes.
-    let status = "upstream_aborted", gen = "";
+    let status = "upstream_aborted";
     let idle: NodeJS.Timeout | undefined;
     const poke = () => { clearTimeout(idle); idle = setTimeout(() => attempt.abort(new Error("the answer's stream went quiet")), streamIdleMs); };
     try {
@@ -784,5 +809,7 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
   /** What a run key (a credential's sha256) has spent; spentBy: the same, by the credential. */
   const spentByKey = (runKey: string) => (q.spentRun.get(runKey) as Sum).s;
   const spentBy = (cred: string) => spentByKey(sha256(cred));
-  return { handle, db, metricsText, setCap, exhausted, trueUp, spentBy, spentByKey, inflight: () => live, ciEnabled: () => Boolean(ciConf()), close: () => { clearInterval(pruner); clearInterval(trueUps); db.close(); } };
+  /** A run key's tokens (settled calls' input, cached input and output). */
+  const tokensByKey = (runKey: string) => ({ ...(q.tokensRun.get(runKey) as { input: number; cached: number; output: number }) });
+  return { handle, db, metricsText, setCap, exhausted, trueUp, spentBy, spentByKey, tokensByKey, inflight: () => live, ciEnabled: () => Boolean(ciConf()), close: () => { clearInterval(pruner); clearInterval(trueUps); db.close(); } };
 }

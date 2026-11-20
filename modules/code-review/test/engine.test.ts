@@ -18,13 +18,14 @@ function world(settings = {}) {
   const results = new Map();
   const outcomes = new Map();
   const rewritten = new Set(), closed = [];
-  const cfg = readConfig(JSON.stringify({ repos: [{ repo: REPO }], ...settings }));
+  const { db: _db, ...rest } = settings;
+  const cfg = readConfig(JSON.stringify({ repos: [{ repo: REPO }], ...rest }));
   const engine = createEngine({
-    db: new DatabaseSync(":memory:"),
+    db: settings.db ?? new DatabaseSync(":memory:"),
     config: () => cfg,
     now: () => t,
     source: {
-      open: async () => [...prs.values()],
+      open: async () => [...prs.values()].filter((p) => p.open),
       get: async (_r, n) => prs.get(n),
       comments: async (_r, since) => ({ comments: comments.filter((c) => c.created_at > since), cursor: new Date(t).toISOString() }),
       permission: async (_r, login) => { if (perms.down) { perms.down = false; throw new Error("GitHub 502"); } if (perms.refuse) { perms.refuse = false; throw Object.assign(new Error("github-mcp permission: 400"), { status: 400 }); } return perms[login] ?? "none"; },
@@ -40,7 +41,7 @@ function world(settings = {}) {
     poster: { post: async (p) => (posted.push(p), { state: "pending", write: `k-${posted.length}` }), ack: async (a) => void acks.push(a), outcome: async (id) => outcomes.get(id) ?? { state: "pending" }, close: async (...a) => void closed.push(a) },
     emit: (f) => facts.push(f),
   });
-  const review = (s, o = {}) => ({ version: 1, repo: REPO, pr: s.number, base: s.merge_base, head: s.head, reviewer: s.reviewer, incremental_from: s.incremental_from, full: s.full,
+  const review = (s, o = {}) => ({ version: 1, repo: REPO, pr: s.number, base: s.merge_base, head: s.head, ...s.combo, incremental_from: s.incremental_from, full: s.full,
     coverage: { reviewed: ["a.ts"], excluded: [], incomplete: null }, findings: [{ id: "f1", severity: "important", path: "a.ts", line: 3, title: "t", why: "w", evidence: "e", fix_brief: "b" }],
     withheld: { important: 0, nit: 0, pre_existing: 0 }, cost_usd: 0.3, stale_guidance: [], ...o });
   const finish = (i, o, billed) => results.set(`c-${i + 1}`, { state: "done", review: review(started[i], o), ...(billed !== undefined ? { billed_usd: billed } : {}) });
@@ -49,101 +50,101 @@ function world(settings = {}) {
   return { engine, rewritten, closed, outcomes, perms, prs, pr, say, started, posted, acks, facts, finish, results, later: (ms) => (t += ms), tick: () => engine.tick() };
 }
 
-test("a new PR is triaged, reviewed and posted; a push debounces into one incremental review; a stale run never posts", async () => {
-  const w = world();
+const CODEX = { engine: "codex", model: "~deepseek/deepseek-flash-latest", effort: "medium", run_usd: 1 };
+const CLAUDE = { engine: "claude-code", model: "anthropic/claude-sonnet-5.5", effort: "high", run_usd: 2 };
+const label = (s) => `${s.combo.engine}/${s.combo.effort}`;
+
+test("a new PR runs each on_open combo, each posted with its combo; a push debounces into one incremental batch whose first run rechecks; cost, tokens and findings are kept", async () => {
+  const w = world({ repos: [{ repo: REPO, on_open: [CODEX, CLAUDE] }] });
   w.pr(1, sha("1"));
   await w.tick(); // first look: what is already open waits
   assert.equal(w.started.length, 0);
   w.later(1000);
   w.pr(2, sha("2"));
   await w.tick();
-  assert.deepEqual(w.started.map((s) => s.reviewer), ["triage"]);
-  w.finish(0, { findings: [], triage: { summary: "small", risk: "normal" } });
-  await w.tick(); // triage done → the repo's on_open reviewer
-  assert.deepEqual(w.started.map((s) => s.reviewer), ["triage", "standard"]);
-  assert.equal(w.started[1].incremental_from, null);
-  assert.equal(w.started[1].budget_usd, 1.5);
-  w.finish(1);
+  assert.deepEqual(w.started.map(label), ["codex/medium", "claude-code/high"]);
+  assert.deepEqual(w.started.map((s) => [s.budget_usd, s.incremental_from]), [[1, null], [2, null]]);
+  w.finish(0, {}, 0.04);
+  w.finish(1, { findings: [{ id: "f2", severity: "nit", path: "b.ts", line: 1, title: "n", why: "", evidence: "", fix_brief: "" }], cost_usd: 9, tokens: { input: 1000, cached: 200, output: 50 } }, 0.31);
+  w.later(5000);
   await w.tick();
-  assert.equal(w.posted.length, 1);
-  assert.equal(w.posted[0].review.triage.risk, "normal");
-  assert.deepEqual(w.facts.filter((f) => f.type === "review.ended" && f.data.status === "done").map((f) => [f.subject, f.data.reviewer, f.data.important]), [["pr:acme/payments#2", "triage", 0], ["pr:acme/payments#2", "standard", 1]]);
+  assert.deepEqual(w.posted.map((p) => [p.review.engine, p.review.model, p.review.effort]), [["codex", CODEX.model, "medium"], ["claude-code", CLAUDE.model, "high"]]);
+  const runs = w.engine.runs({ repo: REPO });
+  const cc = runs.find((r) => r.engine === "claude-code");
+  assert.deepEqual([cc.cost_usd, cc.tokens_in, cc.tokens_cached, cc.tokens_out, cc.duration_ms], [0.31, 1000, 200, 50, 5000]);
+  assert.deepEqual(w.engine.run(cc.id).findings, [{ id: "f2", severity: "nit", path: "b.ts", line: 1, title: "n", outcome: null }]);
+  assert.deepEqual(w.facts.filter((f) => f.type === "review.ended").map((f) => f.data.engine).sort(), ["claude-code", "codex"]);
 
-  // The post is only filed: the baseline moves once it lands.
-  w.outcomes.set("k-1", { state: "posted" });
-  // Two pushes inside the debounce: one quick review of the last head, from the last reviewed (and posted) head.
+  // The posts land: the baseline moves. Two pushes inside the debounce: one batch (the on_push default), of the last head.
+  w.outcomes.set("k-1", { state: "posted" }); w.outcomes.set("k-2", { state: "posted" });
   w.pr(2, sha("3")); await w.tick();
   w.later(60_000); w.pr(2, sha("4")); await w.tick();
-  assert.equal(w.started.length, 2);
   w.later(DEBOUNCE); await w.tick();
   assert.equal(w.started.length, 3);
-  assert.deepEqual([w.started[2].reviewer, w.started[2].head, w.started[2].incremental_from], ["quick", sha("4"), sha("2")]);
-  // A push while it runs: its result is superseded and not posted.
-  w.pr(2, sha("5")); await w.tick();
-  w.finish(2); await w.tick();
-  assert.equal(w.posted.length, 1);
-  assert.equal(w.engine.runs({ repo: REPO }).find((r) => r.head === sha("4")).why.split(":")[0], "superseded");
+  assert.deepEqual([label(w.started[2]), w.started[2].head, w.started[2].incremental_from], ["codex/low", sha("4"), sha("2")]);
+  // It rechecks every still-open finding of the PR, whichever combo found it; one found gone is fixed.
+  assert.deepEqual(w.started[2].previous.map((f) => f.id).sort(), ["f1", "f2"]);
+  w.finish(2, { findings: [], fixed: ["f1"] }); await w.tick();
+  assert.deepEqual(w.engine.run(runs.find((r) => r.engine === "codex").id).findings.map((f) => f.outcome), ["fixed"]);
+  // The PR is merged: what is still open is open at merge, and its review task is closed.
+  w.prs.set(2, { ...w.prs.get(2), open: false, merged: true }); await w.tick();
+  assert.deepEqual(w.engine.run(cc.id).findings.map((f) => f.outcome), ["open_at_merge"]);
+  assert.deepEqual(w.closed.map((c) => c.slice(0, 2)), [[REPO, 2]]);
 });
 
-test("commands: only a writer's count, our own posts and quoted lines never do, repeats are one run", async () => {
+test("a force-push past the last reviewed head reviews in full", async () => {
+  const w = world({ repos: [{ repo: REPO, on_open: [CODEX] }] });
+  await w.tick();
+  w.pr(4, sha("2")); await w.tick();
+  w.finish(0); await w.tick();
+  w.outcomes.set("k-1", { state: "posted" }); await w.tick();
+  w.rewritten.add(sha("2"));
+  w.pr(4, sha("3")); await w.tick(); w.later(DEBOUNCE); await w.tick();
+  assert.deepEqual([w.started[1].incremental_from, w.started[1].full], [null, true]);
+});
+
+test("commands: only a writer's count, our own posts and quoted lines never do, repeats are one batch; stop stops", async () => {
   const w = world();
   w.pr(7, sha("7"));
   await w.tick();
   w.later(1000);
-  w.say(7, "mallory", "@aiden review deep");
-  w.say(7, "alice", "> @aiden review deep\nquoted, not asked");
-  w.say(7, "alice", "Summary <!-- aidenhq-review: {} -->\n@aiden review deep");
+  w.say(7, "mallory", "@aiden review");
+  w.say(7, "alice", "> @aiden review\nquoted, not asked");
+  w.say(7, "alice", "Summary <!-- aidenhq-review: {} -->\n@aiden review");
   await w.tick();
   assert.equal(w.started.length, 0);
   w.later(1000);
-  w.say(7, "alice", "please\n@aiden review deep full");
-  w.say(7, "alice", "@aiden review deep full");
+  w.say(7, "alice", "please\n@aiden review full");
+  w.say(7, "alice", "@aiden review full");
   await w.tick();
-  assert.deepEqual(w.started.map((s) => [s.reviewer, s.full, s.number]), [["deep", true, 7]]);
+  assert.deepEqual(w.started.map((s) => [label(s), s.full, s.number]), [["codex/medium", true, 7]]);
   assert.equal(w.acks.filter((a) => a.state === "queued").length, 2); // both asks answered, one run
   w.later(1000);
   w.say(7, "alice", "@aiden review stop");
   await w.tick();
   w.pr(7, sha("8")); w.later(DEBOUNCE + 1); await w.tick(); await w.tick();
   assert.equal(w.started.length, 1, "a stopped PR gets no automatic review");
-  assert.deepEqual(parseCommand("@aiden review focus: the retry path", ["deep"]), { cmd: "focus", text: "the retry path" });
-  assert.equal(parseCommand("```\n@aiden review\n```", []), undefined);
+  assert.deepEqual(parseCommand("@aiden review focus: the retry path"), { cmd: "focus", text: "the retry path" });
+  assert.deepEqual(parseCommand("@aiden review deep"), { cmd: "unknown", word: "deep" });
+  assert.equal(parseCommand("```\n@aiden review\n```"), undefined);
 });
 
-test("budgets are reserved atomically against the repo cap, and a skip says why", async () => {
-  const w = world({ repos: [{ repo: REPO, month_usd: 2 }] });
+test("budgets are reserved atomically against the repo cap; drafts, forks and the daily limit (one per batch) skip with a reason", async () => {
+  const w = world({ repos: [{ repo: REPO, month_usd: 2.5, on_open: [CODEX, CLAUDE], per_repo_day: 1 }] });
+  await w.tick();
   w.pr(1, sha("1"));
-  w.pr(2, sha("2"));
-  await w.tick();
-  w.later(1000);
-  // Two asks at once: standard ($1.50) fits, the second can't fit in what's left.
-  w.say(1, "alice", "@aiden review standard");
-  w.say(2, "alice", "@aiden review");
-  await w.tick();
-  const runs = w.engine.runs({ repo: REPO });
-  assert.equal(runs.filter((r) => r.status === "running").length, 1);
-  const skipped = runs.filter((r) => r.status === "skipped" && r.why.startsWith("budget"));
-  assert.ok(skipped.length >= 1);
-  assert.ok(w.acks.some((a) => a.state === "skipped" && a.why.startsWith("budget")));
-  assert.equal(w.engine.repos().repos[0].month_reserved_usd, 1.5);
-});
-
-test("a high-risk PR is escalated once to on_risk; drafts and forks are skipped with a reason", async () => {
-  const w = world();
-  await w.tick();
-  w.pr(3, sha("3"));
   w.pr(4, sha("4"), { draft: true });
   w.pr(5, sha("5"), { fork: true });
   await w.tick();
-  assert.deepEqual(w.started.map((s) => s.number), [3]);
-  assert.deepEqual(w.acks.filter((a) => a.state === "skipped").map((a) => [a.number, a.why.split(":")[0]]), [[4, "draft"], [5, "fork"]]);
-  w.finish(0, { findings: [], triage: { summary: "auth change", risk: "high" } });
-  await w.tick();
-  assert.deepEqual(w.started.map((s) => [s.reviewer, s.full]), [["triage", true], ["deep", true]]);
-  w.finish(1);
-  await w.tick();
-  assert.equal(w.posted.length, 1);
-  assert.equal(w.engine.runs({}).filter((r) => r.kind === "escalation").length, 1);
+  // One batch of two combos: codex ($1) fits, claude-code ($2) doesn't fit in what's left.
+  const runs = w.engine.runs({ repo: REPO });
+  assert.deepEqual(runs.filter((r) => r.status === "running").map((r) => r.engine), ["codex"]);
+  assert.ok(runs.some((r) => r.status === "skipped" && r.engine === "claude-code" && r.why.startsWith("budget")));
+  assert.deepEqual(w.acks.filter((a) => a.state === "skipped").map((a) => [a.number, a.why.split(":")[0]]).sort(), [[1, "budget"], [4, "draft"], [5, "fork"]]);
+  assert.equal(w.engine.repos().repos[0].month_reserved_usd, 1);
+  // The batch counted once against the daily limit of 1: the next PR waits.
+  w.later(1000); w.pr(6, sha("6")); await w.tick();
+  assert.ok(w.acks.some((a) => a.number === 6 && a.why.startsWith("daily limit")));
 });
 
 test("a run is charged what the kernel billed (never what the box says), and a result for another head is refused", async () => {
@@ -151,66 +152,21 @@ test("a run is charged what the kernel billed (never what the box says), and a r
   w.pr(1, sha("1"));
   await w.tick();
   w.later(1000);
-  w.say(1, "alice", "@aiden review standard");
-  w.say(1, "alice", "@aiden review deep");
-  w.say(1, "alice", "@aiden review quick");
+  w.prs.set(1, w.prs.get(1));
+  const runs = await w.engine.oneoff({ pr_url: `https://github.com/${REPO}/pull/1`, combos: [CODEX, CLAUDE, { ...CODEX, effort: "low" }] });
+  assert.equal(runs.length, 3);
   await w.tick();
-  assert.deepEqual(w.started.map((s) => s.reviewer), ["standard", "deep", "quick"]);
   w.finish(0, { cost_usd: 0.001 }, 0.7);     // billed $0.70: charged that, whatever the box claims
-  w.finish(1, { cost_usd: 0 });              // no billing known: the whole $2.50 reservation
-  w.finish(2, { head: sha("9"), repo: "acme/other", cost_usd: 0 }, 99); // a result for another head: refused, charged at most its $0.50
+  w.finish(1, { cost_usd: 0 });              // no billing known: the whole $2 reservation
+  w.finish(2, { head: sha("9"), repo: "acme/other", cost_usd: 0 }, 99); // a result for another head: refused, charged at most its $1
   await w.tick();
-  const by = Object.fromEntries(w.engine.runs({ repo: REPO }).map((r) => [r.reviewer, r]));
-  assert.deepEqual([by.standard.cost_usd, by.deep.cost_usd, by.quick.cost_usd], [0.7, 2.5, 0.5]);
-  assert.equal(by.quick.status, "failed");
+  const by = Object.fromEntries(w.engine.runs({ repo: REPO }).map((r) => [`${r.engine}/${r.effort}`, r]));
+  assert.deepEqual([by["codex/medium"].cost_usd, by["claude-code/high"].cost_usd, by["codex/low"].cost_usd], [0.7, 2, 1]);
+  assert.equal(by["codex/low"].status, "failed");
   assert.equal(w.posted.length, 2);
-  for (const p of w.posted) {
-    assert.deepEqual(p.target, { repo: REPO, number: 1, head: sha("1"), once: false });
-    assert.equal(p.review.head, sha("1"));
-  }
-  assert.equal(w.posted.find((p) => p.review.reviewer === "standard").review.cost_usd, 0.7);
-});
-
-test("a command whose permission read fails is asked about again, not lost", async () => {
-  const w = world();
-  w.pr(1, sha("1"));
-  await w.tick();
-  w.later(1000);
-  w.say(1, "alice", "@aiden review quick");
-  w.perms.down = true;
-  await w.tick();
-  assert.equal(w.started.length, 0);
-  await w.tick();
-  assert.deepEqual(w.started.map((s) => s.reviewer), ["quick"]);
-});
-
-test("incremental runs recheck the last posted findings from the merge base; a force-push reviews in full; a closed PR closes its task", async () => {
-  const w = world({ reviewers: { triage: null } });
-  w.pr(3, sha("1"), { title: "Fix the ledger" }); await w.tick();
-  w.later(1000); w.pr(4, sha("2")); await w.tick();
-  assert.equal(w.started[0].merge_base, sha("m"));
-  w.finish(0); await w.tick();
-  w.outcomes.set("k-1", { state: "posted", url: "https://github.com/acme/payments/pull/4#pullrequestreview-1", resolved: 0, identity: "owner" });
-  await w.tick();
-  const done = w.engine.runs({ repo: REPO })[0];
-  assert.equal(done.review_url, "https://github.com/acme/payments/pull/4#pullrequestreview-1");
-  assert.equal(w.engine.repos().repos[0].identity, "owner");
-  // A push: incremental from the posted head, with its findings to recheck; one the recheck found gone is resolved.
-  w.pr(4, sha("3")); await w.tick(); w.later(DEBOUNCE); await w.tick();
-  assert.equal(w.started[1].incremental_from, sha("2"));
-  assert.deepEqual(w.started[1].previous, [{ id: "f1", path: "a.ts", line: 3, title: "t" }]);
-  w.finish(1, { findings: [], fixed: ["f1"] }); await w.tick();
-  assert.deepEqual(w.posted[1].review.fixed, ["f1"]);
-  w.outcomes.set("k-2", { state: "posted" }); await w.tick();
-  // A force-push past the last reviewed head: full.
-  w.rewritten.add(sha("3"));
-  w.pr(4, sha("4")); await w.tick(); w.later(DEBOUNCE); await w.tick();
-  assert.equal(w.started[2].incremental_from, null);
-  assert.equal(w.started[2].full, true);
-  // The PR closes: its review task (it held the posts' approvals) is closed.
-  w.prs.delete(4); await w.tick();
-  assert.deepEqual(w.closed.map((c) => c.slice(0, 2)), [[REPO, 4]]);
-  assert.equal(w.engine.recent().find((p) => p.number === 3).title, "Fix the ledger");
+  for (const p of w.posted) assert.deepEqual(p.target, { repo: REPO, number: 1, head: sha("1"), once: false });
+  assert.equal(w.posted.find((p) => p.review.engine === "codex").review.cost_usd, 0.7);
+  await assert.rejects(w.engine.oneoff({ pr_url: `https://github.com/${REPO}/pull/1`, combos: [{ ...CLAUDE, effort: "minimal" }] }), /effort for claude-code/);
 });
 
 test("a one-off only where a review can post; a refused read passes the comment over, a transient one is asked again", async () => {
@@ -225,8 +181,17 @@ test("a one-off only where a review can post; a refused read passes the comment 
   w.later(1000); await w.tick();
   assert.equal(w.started.length, 0);
   w.later(1000); w.perms.down = true;
-  w.say(5, "alice", "@aiden review deep");
+  w.say(5, "alice", "@aiden review full");
   await w.tick(); // a 502: asked again next tick
   w.later(1000); await w.tick();
-  assert.deepEqual(w.started.map((s) => s.reviewer), ["deep"]);
+  assert.deepEqual(w.started.map((s) => s.full), [true]);
+});
+
+test("a database from before combos starts fresh (data version 1)", () => {
+  const db = new DatabaseSync(":memory:");
+  db.exec("CREATE TABLE runs (id TEXT PRIMARY KEY, reviewer TEXT NOT NULL); INSERT INTO runs VALUES ('cr-1', 'deep'); CREATE TABLE prs (repo TEXT, number INTEGER, triage TEXT)");
+  world({ db });
+  assert.ok((db.prepare("PRAGMA table_info(runs)").all()).some((c) => c.name === "engine"));
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM runs").get().n, 0);
+  assert.equal(db.prepare("PRAGMA user_version").get().user_version, 1);
 });

@@ -10,6 +10,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       git jq ripgrep ffmpeg python3 python3-venv procps less file binutils sqlite3 \
     && rm -rf /var/lib/apt/lists/*
 RUN npm i -g @openai/codex@0.166.0 && npm cache clean --force
+# Code review's other engines (modules/code-review/recipe/engines.ts): Claude Code 2.1.323 (published 2026-11-12) and codegenie
+# 0.7.0 (2026-09-25), each at least 7 days old, with every dependency resolved as of 2026-11-13 (--before), so none is newer
+# either. Claude Code's postinstall copies its native binary into place; it is run explicitly (npm may skip install scripts).
+RUN npm i -g --before=2026-11-13 @anthropic-ai/claude-code@2.1.323 @0xsequence/codegenie@0.7.0 && npm cache clean --force \
+    && (cd "$(npm root -g)/@anthropic-ai/claude-code" && node install.cjs) \
+    && claude --version | grep -q '^2\.1\.323 ' && codegenie --version | grep -q '^codegenie v0\.7\.0 '
 # apply_patch as a command: Codex takes `apply_patch <<EOF` as its patch tool only when it is the whole command, so an edit
 # chained with a build (`… EOF` then `&& npm test`) failed with "command not found". The pinned Codex binary runs the same
 # patch tool when called by that name (arg0), so this adds no dependency; the build checks it applies a patch.

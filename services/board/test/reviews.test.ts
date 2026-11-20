@@ -15,8 +15,8 @@ import { insightsOf, type Run } from "../src/reviews.js";
 import { Store } from "../src/store.js";
 import { fakeRecords } from "./fake-records.js";
 
+const COMBO = { engine: "codex", model: "~deepseek/deepseek-flash-latest", effort: "medium", run_usd: 1 };
 const CONFIG = {
-  reviewers: { quick: { engine: "codex", model: "~deepseek/deepseek-flash-latest", effort: "low", finders: 1, verify: false }, standard: { engine: "codex", model: "~deepseek/deepseek-flash-latest", effort: "high", finders: 2, verify: true } },
   repos: [] as unknown[],
   month_usd: 200,
 };
@@ -26,11 +26,11 @@ writeFileSync(join(dir, "modules.json"), JSON.stringify([{ name: "code-review", 
 process.env.BOARD_PAPERCLIP_CONFIG = join(dir, "paperclip.yaml");
 process.env.BOARD_MODULES_FILE = join(dir, "modules.json");
 
-const run: Run = { id: "r1", repo: "acme/payments", number: 42, head: "a".repeat(40), reviewer: "standard", kind: "auto", status: "done", why: null, cost_usd: 0.4, important: 1, nit: 2, pre_existing: 0, started: new Date().toISOString(), ended: new Date().toISOString(), check_job: "j1", resolved: 1 };
+const run: Run = { id: "r1", repo: "acme/payments", number: 42, head: "a".repeat(40), engine: "codex", model: "~deepseek/deepseek-flash-latest", effort: "medium", kind: "auto", status: "done", why: null, cost_usd: 0.4, tokens_in: 10, tokens_out: 5, duration_ms: 1000, full: false, incremental_from: null, posted: true, important: 1, nit: 2, pre_existing: 0, started: new Date().toISOString(), ended: new Date().toISOString(), resolved: 1 };
 const asked: unknown[] = [];
 const reviews = {
   list: async (q: unknown) => (asked.push(q), { runs: [run] }),
-  run: async (b: unknown) => (asked.push(b), { run }),
+  run: async (b: unknown) => (asked.push(b), { runs: [run] }),
 } as unknown as Reviews;
 const created: Record<string, any>[] = [];
 const pc = {
@@ -64,13 +64,15 @@ describe("the Reviews page's routes", () => {
   it("reads the runs and starts a one-off review of a PR link only", async () => {
     expect((await call("GET", "/api/reviews?repo=acme/payments")).body.runs).toHaveLength(1);
     expect((await call("POST", "/api/reviews", { pr_url: "https://evil.example.com/acme/x/pull/1" })).status).toBe(400);
-    expect((await call("POST", "/api/reviews", { pr_url: "https://github.com/acme/payments/pull/42", reviewer: "standard" })).status).toBe(200);
-    expect(asked).toEqual([{ repo: "acme/payments", status: undefined, limit: 100 }, { pr_url: "https://github.com/acme/payments/pull/42", reviewer: "standard" }]);
+    expect((await call("POST", "/api/reviews", { pr_url: "https://github.com/acme/payments/pull/42", combos: [COMBO] })).status).toBe(200);
+    expect(asked).toEqual([{ repo: "acme/payments", status: undefined, limit: 100 }, { pr_url: "https://github.com/acme/payments/pull/42", combos: [COMBO] }]);
   });
 
-  it("files a watched repo as one settings change, and refuses a repo naming an unknown reviewer", async () => {
-    const value = { ...CONFIG, repos: [{ repo: "acme/payments", on_open: "standard", on_push: "quick", month_usd: 50 }] };
-    expect((await call("POST", "/api/reviews/config", { value: { ...value, repos: [{ repo: "acme/payments", on_open: "nope" }] } })).body.error).toContain("no reviewer nope");
+  it("files a watched repo as one settings change, and refuses the old reviewers and string-trigger shape", async () => {
+    const value = { ...CONFIG, repos: [{ repo: "acme/payments", on_open: [COMBO], on_push: [{ ...COMBO, effort: "low" }], month_usd: 50 }] };
+    expect((await call("POST", "/api/reviews/config", { value: { ...value, repos: [{ repo: "acme/payments", on_open: "standard", on_push: [] }] } })).status).toBe(400);
+    expect((await call("POST", "/api/reviews/config", { value: { ...value, reviewers: {} } })).status).toBe(400);
+    expect((await call("POST", "/api/reviews/config", { value: { ...value, repos: [{ ...value.repos[0], on_open: [{ ...COMBO, effort: "max" }] }] } })).status).toBe(400);
     expect(await call("POST", "/api/reviews/config", { value })).toMatchObject({ status: 200, body: { identifier: "WOR-9" } });
     expect(records.settings).toEqual([{ task: "i1", changes: [{ kind: "setting", key: "code_review", value }] }]);
     expect(created[0]!.title).toBe("Settings: code_review updated");

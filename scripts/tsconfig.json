@@ -39,6 +39,7 @@
     "../modules/ci/template/.github/supply-chain/pins.ts",
     "../modules/code-review/recipe/code-review.ts",
     "../modules/code-review/recipe/engines.ts",
+    "../modules/code-review/recipe/gateway-fetch.ts",
     "../modules/code-review/recipe/review-checklist.ts",
     "../modules/code-review/recipe/review-tools.ts",
     "../modules/code-review/recipe/review.ts",

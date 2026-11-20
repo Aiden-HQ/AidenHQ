@@ -98,7 +98,7 @@ export function snapshots(ask: Ask): (module: string) => Snapshot {
 type Ask = (module: string, op: string, body: Record<string, unknown>) => Promise<Answer>;
 
 /** The kernel's check jobs (checkjobs.ts) on these: the launcher's check boxes, the snapshot provider, `check` model tokens. */
-export function checkJobsFrom({ db, secret, recipes, ask, call, workDir, gatewayUrl, spent, log, docker }: {
+export function checkJobsFrom({ db, secret, recipes, ask, call, workDir, gatewayUrl, spent, tokens, log, docker }: {
   db: DatabaseSync; secret: (name: string) => string;
   /** The installed modules' check recipes (config/kernel/modules.json `check_jobs`). */
   recipes: () => Recipes;
@@ -108,6 +108,8 @@ export function checkJobsFrom({ db, secret, recipes, ask, call, workDir, gateway
   gatewayUrl: string;
   /** A model token's spend so far (the gateway's ledger). */
   spent?: (runKey: string) => number;
+  /** A model token's tokens so far (the same ledger). */
+  tokens?: (runKey: string) => { input: number; cached: number; output: number };
   log: (msg: string, f?: Record<string, unknown>) => void;
   /** Tests: how a command runs in a box. */
   docker?: typeof dockerRun;
@@ -118,5 +120,6 @@ export function checkJobsFrom({ db, secret, recipes, ask, call, workDir, gateway
     snapshot: snapshots(ask),
     modelToken: (component, { ttlMs, capUsd }) => mintToken(secret("gateway_job_secret"), { kind: "check", component, ttlMs, ...(capUsd !== undefined ? { capUsd } : {}) }),
     ...(spent ? { spent } : {}),
+    ...(tokens ? { tokens } : {}),
   });
 }

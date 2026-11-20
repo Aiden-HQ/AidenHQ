@@ -20,6 +20,12 @@ models:
   - { id: "moonshotai/kimi-k3.1-pro", in: 0.2403, cached_in: 0.2, out: 8.4023, peak: 8, max_output: 131072 }
   - { id: "moonshotai/kimi-k3", in: 0.192, cached_in: 0.182, out: 16, peak: 4, max_output: 131072 }
   - { id: "qwen/qwen3-coder-next", in: 0.12, cached_in: 0.07, out: 0.8, peak: 4, max_output: 131072 }
+  # Claude, for code review's claude-code engine (Claude Code through the gateway's Anthropic-format route), pinned to exact ids
+  # (an alias could move to a dearer model): OpenRouter's list prices (its models API, 2026-11-20). peak 2: a cache write bills
+  # 1.25x input.
+  - { id: "anthropic/claude-opus-5.5", in: 4, cached_in: 0.2, out: 20, peak: 2, max_output: 128000 }
+  - { id: "anthropic/claude-sonnet-5.5", in: 2, cached_in: 0.1, out: 10, peak: 2, max_output: 128000 }
+  - { id: "anthropic/claude-haiku-5.5", in: 0.1, cached_in: 0.01, out: 0.5, peak: 2, max_output: 64000 }
 # The model key, asked for on the first-run page (/setup) while the vault has none; only the kernel's model gateway reads it.
 secrets:
   provided:

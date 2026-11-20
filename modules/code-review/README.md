@@ -2,9 +2,10 @@
 
 ## What it does
 
-Reviews pull requests on the repos you list, or one PR on request. Named reviewers (engine, model, effort, finders,
-verification, context) run in a credential-free box, and findings are posted as one GitHub review per head. Each post is
-a write the AI reviewer approves.
+Reviews pull requests on the repos you list, or one PR on request. Each moment (a PR opens, each push) runs a list of
+combos, each an engine (Codex, Claude Code or Codegenie), a model and an effort, in a credential-free box; each combo posts
+its own GitHub review, a write the AI reviewer approves. Every run keeps its engine, model, effort, billed cost, tokens,
+duration and findings (with their later outcome) in the module's SQLite, read through `GET /reviews` and `code_review_runs`.
 
 ## Connect
 

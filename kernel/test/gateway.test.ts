@@ -275,3 +275,36 @@ test("gateway: a control plane blip never settles a chat run as capped for life,
   assert.equal(gw.inflight(), 0);
   assert.equal(gw.db.prepare("SELECT status FROM calls").get().status, "upstream_aborted");
 });
+
+test("gateway: Anthropic format: a check token's call settles at the streamed usage; only allowed betas and fields go up; a server tool is refused", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "gw-"));
+  writeFileSync(join(dir, "grants.json"), "{}");
+  writeFileSync(join(dir, "gateway.json"), JSON.stringify({ models: { "anthropic/claude-haiku-5.5": price } }));
+  const seen = [];
+  // OpenRouter's /messages stream as captured 2026-11-20: id and input in message_start, final usage and cost in message_delta.
+  const upstream = await serve((req, res) => {
+    let b = ""; req.on("data", (d) => (b += d)); req.on("end", () => {
+      seen.push({ url: req.url, beta: req.headers["anthropic-beta"], version: req.headers["anthropic-version"], body: JSON.parse(b) });
+      res.writeHead(200, { "content-type": "text/event-stream", "x-generation-id": "gen-1795-abc" });
+      res.write(`event: message_start\ndata: ${JSON.stringify({ type: "message_start", message: { id: "msg_vrtx_1", model: "anthropic/claude-haiku-5.5", usage: { input_tokens: 12, output_tokens: 5, cache_creation_input_tokens: 100, cache_read_input_tokens: 1000 } } })}\n\n`);
+      res.end(`event: message_delta\ndata: ${JSON.stringify({ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { input_tokens: 12, output_tokens: 14, cache_creation_input_tokens: 100, cache_read_input_tokens: 1000, cost: 0.0021 } })}\n\nevent: message_stop\ndata: {"type":"message_stop"}\n\n`);
+    });
+  });
+  const gw = createGateway({ dbFile: join(dir, "usage.db"), grantsFile: join(dir, "grants.json"), settingsFile: join(dir, "gateway.json"), secret: (n) => ({ openrouter_key: "sk-real", gateway_job_secret: "job-secret" })[n] ?? "", upstream: upstream.url });
+  const front = await serve((req, res) => gw.handle(req, res));
+  t.after(() => { upstream.s.close(); front.s.close(); gw.close(); });
+  const token = mintToken("job-secret", { kind: "check", component: "code-review:c1", capUsd: 1 });
+  const call = (body) => fetch(`${front.url}/api/v1/messages?beta=true`, { method: "POST", headers: { authorization: `Bearer ${token}`, "anthropic-version": "2023-06-01", "anthropic-beta": "claude-code-20250219,effort-2025-11-24,some-pricier-beta-2026-01-01" }, body: JSON.stringify(body) });
+  const ok = await call({ model: "anthropic/claude-haiku-5.5", max_tokens: 1024, stream: true, speed: "fast", service_tier: "priority", mcp_servers: [{ url: "https://x" }], tools: [{ name: "mcp__repo__diff", input_schema: {} }], messages: [] });
+  assert.equal(ok.status, 200);
+  await ok.text();
+  assert.deepEqual([seen[0].url, seen[0].beta, seen[0].version], ["/messages", "claude-code-20250219,effort-2025-11-24", "2023-06-01"]);
+  assert.deepEqual(Object.keys(seen[0].body).sort(), ["max_tokens", "messages", "model", "provider", "stream", "tools"]);
+  assert.equal(seen[0].body.provider.zdr, true);
+  const row = gw.db.prepare("SELECT input, cached, output, cost_usd, status, gen FROM calls").get();
+  assert.deepEqual({ ...row }, { input: 112, cached: 1000, output: 14, cost_usd: 0.0021, status: "ok", gen: "gen-1795-abc" });
+  // A server tool (billed per use, outside the reservation) never goes up.
+  const refused = await call({ model: "anthropic/claude-haiku-5.5", max_tokens: 1024, tools: [{ type: "web_search_20250305", name: "web_search" }], messages: [] });
+  assert.equal(refused.status, 403);
+  assert.equal(seen.length, 1);
+});
