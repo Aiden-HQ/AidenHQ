@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { Projects, productTarget, upstreamReport } from "../src/projects.js";
+import { Projects, issueLink, productTarget, upstreamReport } from "../src/projects.js";
 import { originIds, ownerTerms } from "../src/scrub.js";
 
 const CODEHOST = { url: "http://codehost", key: () => "gh-key" };
@@ -296,4 +296,24 @@ it("a user account gets an org-wide token without Projects", async () => {
   expect(await p.account("sam")).toEqual({ user: true, projects: false });
   expect(await p.orgToken("sam")).toBe("ghs_y");
   expect(asked[0]).toEqual({ repo: "sam/*", perms: { issues: "read", pull_requests: "read" } });
+});
+
+it("no GitHub App: a product bug becomes a scrubbed, encoded one-click link that fits a URL, and nothing is filed", () => {
+  const terms = ownerTerms("Ada,acme.example", "upstream-org/product");
+  const evidence = { module: "board", version: "abc1234", reproduction: "1. open Settings & save", log: "TypeError at https://acme.example/x for ada@other.example" };
+  const report = { fingerprint: "product-bug:board-settings-crash", title: "board: Settings #1 crashes", body: "Ada hit it on 10.0.0.5 twice.", evidence };
+  const { url, trimmed } = issueLink("upstream-org/product", report, terms);
+  const u = new URL(url);
+  expect(u.origin + u.pathname).toBe("https://github.com/upstream-org/product/issues/new");
+  expect(u.searchParams.get("title")).toBe("board: Settings #1 crashes");
+  const body = u.searchParams.get("body")!;
+  expect(body).toContain("[redacted] hit it on [redacted] twice.");
+  expect(body).toContain("1. open Settings & save");
+  expect(body).toContain("Fingerprint: product-bug:board-settings-crash");
+  expect(body + url).not.toMatch(/Ada|ada@|acme\.example|10\.0\.0\.5/);
+  expect(trimmed).toBe(false);
+  const long = issueLink("upstream-org/product", { ...report, evidence: { ...evidence, log: "é😀 line\n".repeat(900) } }, terms);
+  expect(long.trimmed).toBe(true);
+  expect(long.url.length).toBeLessThanOrEqual(7000);
+  expect(new URL(long.url).searchParams.get("body")).toMatch(/\[trimmed to fit a link\]$/);
 });

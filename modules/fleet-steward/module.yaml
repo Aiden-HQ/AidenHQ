@@ -39,8 +39,9 @@ agents:
       owner_channel: [ notify ]
       # Metrics and dashboards (monitoring alerts' series), when the grafana module is on: reads only.
       grafana?: read
-      # Where the product-bug issues the Maintainer filed for it stand: a read. Filing is the Maintainer's.
-      github?: [ github_app_issue_status ]
+      # Where the product-bug issues the Maintainer filed for it stand: a read. Filing is the Maintainer's; github_issue_link is
+      # the report as the owner's prefilled link, for an install with no GitHub App (prompt product-bugs).
+      github?: [ github_app_issue_status, github_issue_link ]
       # fleet_status through fleet-read (no fleet_control, no relaying, no approvals decided); coach_record through fleet-audit;
       # handbook_list/handbook_read/task_propose_rule through librarian. task_create/task_delegate only to delegate_to below.
       paperclip_tasks: [ task_current, task_get, task_comments, task_search, task_list, task_approvals, task_team,
