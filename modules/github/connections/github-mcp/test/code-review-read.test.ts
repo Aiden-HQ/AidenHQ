@@ -1,6 +1,7 @@
 import { expect, it } from "vitest";
 import { CodeReviewReader, codeReviewRoute } from "../src/code-review-read.js";
 import { GitHub } from "../src/github.js";
+import { accessFor } from "./fake-access.js";
 import { isModule } from "../src/module-caller.js";
 
 const pr = (number: number, headRepo: string | null) => ({
@@ -18,7 +19,7 @@ const gh = (async (input: URL | string) => {
   if (u.pathname === "/user/repos") return Response.json([{ full_name: "Acme/App", private: true, html_url: "https://github.com/Acme/App" }, { full_name: "Acme/Other", html_url: "https://github.com/Acme/Other" }]);
   return new Response("{}", { status: 404 });
 }) as typeof fetch;
-const reader = new CodeReviewReader(new GitHub({ get: async () => "t", signedIn: () => true }, new Set(), gh));
+const reader = new CodeReviewReader(new GitHub(accessFor(gh, "t"), gh));
 
 it("only the code-review module may call; PRs, PR comments and permission come back in the seam's shape", async () => {
   const kernel = (module: string) => (async () => Response.json({ kind: "module", module })) as typeof fetch;
@@ -52,7 +53,7 @@ it("a comment flood returns what was read with a cursor that moves on", async ()
     if (i === 99) page++;
     return { id: n + 1, body: "x", created_at: new Date(Date.UTC(2026, 0, 1) + (n + 1) * 1000).toISOString(), html_url: "https://github.com/Acme/App/pull/1#c", issue_url: "https://api.github.com/repos/Acme/App/issues/1", user: { login: "dev" } };
   }))) as typeof fetch;
-  const r = await new CodeReviewReader(new GitHub({ get: async () => "t", signedIn: () => true }, new Set(), flood)).comments("Acme/App", "2026-01-01T00:00:00Z");
+  const r = await new CodeReviewReader(new GitHub(accessFor(flood, "t"), flood)).comments("Acme/App", "2026-01-01T00:00:00Z");
   expect(r.comments).toHaveLength(3000);
   expect(r.cursor).toBe(r.comments.at(-1)!.created_at);
 });

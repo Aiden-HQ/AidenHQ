@@ -1,20 +1,26 @@
-// codehost-github's service (module.yaml services): reads its files and settings, then serves service.ts.
+// The GitHub process (module.yaml services.github): github-mcp's two connections and sign-in (8086, 8087) and the code host
+// (8100) in one Node process, sharing the owner's one sign-in (spec 2026-11-20-github-owner-identity §1). Reads its files and
+// settings, then serves service.ts.
 //   CODEHOST_KEY_FILE       the module's own token: the kernel calls the executor with it, and it reports outcomes with it
-//   GITHUB_APP_DIR          the App's vault dir (app_id, key.pem); absent: every GitHub action fails, saying so
-//   TASKS_DIR               the job workspaces (work/tasks); absent: push, pr and clone fail, saying so
-//   CACHE_DIR               the bare cache clones (its data dir)
-//   AGENTS_ORG, INSTANCE_REPO, PRODUCT_REPO
+//   TASKS_DIR               the job workspaces (work/tasks, read-only: their boxes' bundles); absent: push and pr fail, saying so
+//   CACHE_DIR               the bare cache clones and the held writes (its data dir)
+//   GITHUB_FLEET_ORG        github_fleet_org: where the fleet's repos live on GitHub ("" while unset)
+//   INSTANCE_REPO, PRODUCT_REPO
 //   GITHUB_MAINTAINER_REPOS the maintained repos (setting maintainer_repos): the fleet merges and closes there; those with dependabot on get
 //                           the PR watch's Dependabot duty
+//   GITHUB_MIGRATE_FROM_APP  the retired App's id, for the one release that moves the repos' rules off it (migrate.ts)
 //   OWNER_NAME              who the design reviewer's task says approved a merge that doesn't wait for it
-// Its loops start here: the merge queue, the release train, the PR watch, the design reviews' sweep and the
+// Its loops start here: the merge queue, the held writes, the release train, the PR watch, the design reviews' sweep and the
 // reviewed refs' tidying.
 import { existsSync, readFileSync } from "node:fs";
 import { createServer } from "node:http";
-import { join } from "node:path";
-import { appClient, inOrg } from "./github-app.ts";
+import { inOrg } from "./git-auth.ts";
+// github-mcp's built entry (the image builds it beside this tree): it starts both connections and hands back the owner's access.
+import { startGithubMcp } from "../../connections/github-mcp/dist/src/main.js";
 import { parseRepos } from "./aidenhq-sdk/maintained-repos.ts";
 import { createService } from "./service.ts";
+import { serveOps } from "./ops.ts";
+import { startAppMigration } from "./migrate.ts";
 import { startPrWatch } from "./pr-watch.ts";
 import { startTidy } from "./tidy.ts";
 
@@ -22,42 +28,40 @@ const env = process.env;
 const read = (f?: string) => (f && existsSync(f) ? readFileSync(f, "utf8").trim() : "");
 const log = (msg: string, f: Record<string, unknown> = {}) => console.log(JSON.stringify({ svc: "github", msg, ...f }));
 const key = read(env.CODEHOST_KEY_FILE);
-if (!key) throw new Error("codehost-github: CODEHOST_KEY_FILE is empty");
-const appDir = env.GITHUB_APP_DIR ?? "";
-const app = appDir && read(join(appDir, "app_id")) && read(join(appDir, "key.pem")) ? appClient({ appId: read(join(appDir, "app_id")), key: read(join(appDir, "key.pem")), log }) : undefined;
-const agentsOrg = env.AGENTS_ORG ?? "";
-const gh = async (method: string, path: string, token: string, body?: unknown) => {
-  const r = await fetch(`https://api.github.com${path}`, {
-    method, signal: AbortSignal.timeout(20_000),
-    headers: { authorization: `Bearer ${token}`, accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28", ...(body ? { "content-type": "application/json" } : {}) },
-    ...(body ? { body: JSON.stringify(body) } : {}),
-  });
-  return { status: r.status, body: await r.json().catch(() => ({})), remaining: Number(r.headers.get("x-ratelimit-remaining") ?? NaN) };
-};
+if (!key) throw new Error("github: CODEHOST_KEY_FILE is empty");
+const access = await startGithubMcp();
+const fleetOrg = env.GITHUB_FLEET_ORG ?? "";
 
 const maintained = parseRepos(env.GITHUB_MAINTAINER_REPOS ?? "");
+// DELETE in the release after #1065: compile sets GITHUB_MIGRATE_FROM_APP to the retired App's id; the first sign-in with the
+// new scopes rewrites the repos' rules that name that App (migrate.ts), and merges hold until then.
+const retiredAppId = Number(env.GITHUB_MIGRATE_FROM_APP ?? "");
+const migration = retiredAppId > 0
+  ? startAppMigration({ access, appId: retiredAppId, cacheDir: env.CACHE_DIR ?? "/cache", fleetOrg, productRepo: env.PRODUCT_REPO || undefined, maintained: maintained.map((r) => r.repo), instanceRepo: env.INSTANCE_REPO || undefined, kernelUrl: env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130", key, log })
+  : undefined;
 const handle = createService({
   key, kernelUrl: env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130", cacheDir: env.CACHE_DIR ?? "/cache", tasksDir: env.TASKS_DIR || undefined,
-  app, gh, agentsOrg, allowedOrgs: (env.ALLOWED_ORGS ?? "").split(",").filter(Boolean), instanceRepo: env.INSTANCE_REPO || undefined,
+  access, holdMerges: () => migration?.pending() ?? false, ops: serveOps, fleetOrg, allowedOrgs: (env.ALLOWED_ORGS ?? "").split(",").filter(Boolean), instanceRepo: env.INSTANCE_REPO || undefined,
   productRepo: env.PRODUCT_REPO || undefined, maintained: maintained.map((r) => r.repo), selfName: env.OWNER_NAME || undefined,
   churnExclude: (env.CHURN_EXCLUDE ?? "").split(",").map((g) => g.trim()).filter(Boolean),
   log,
 });
-log("starting", { app: Boolean(app), tasks: Boolean(env.TASKS_DIR), agentsOrg });
+log("starting", { connected: access.connected(), tasks: Boolean(env.TASKS_DIR), fleetOrg });
 const cacheDir = env.CACHE_DIR ?? "/cache";
 handle.startMerges();
+handle.startHeld();
 handle.startReleases();
 handle.startDesignReviews();
 handle.startFlow();
 startTidy({ cacheDir, log });
 // The fleet's own PRs (the product repo; Dependabot's tasks, an agent's PR that conflicts) and the Dependabot PRs of every maintained
-// repo with dependabot on: only with the App and the product repo set. A maintained repo in the agents org is the fleet's own.
-if (app && env.PRODUCT_REPO) {
+// repo with dependabot on: whenever the product repo is set. A maintained repo in the fleet org is the fleet's own.
+if (env.PRODUCT_REPO) {
   const repos = new Map<string, "all" | "dependabot">([[env.PRODUCT_REPO, "all"]]);
   for (const m of maintained) {
-    if (m.dependabot && !repos.has(m.repo)) repos.set(m.repo, inOrg(agentsOrg, m.repo) ? "all" : "dependabot");
+    if (m.dependabot && !repos.has(m.repo)) repos.set(m.repo, inOrg(fleetOrg, m.repo) ? "all" : "dependabot");
   }
-  startPrWatch({ repos: [...repos].map(([repo, duties]) => ({ repo, duties })), kernelUrl: env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130", key, cacheDir, app, gh, log, flow: handle.flow });
+  startPrWatch({ repos: [...repos].map(([repo, duties]) => ({ repo, duties })), kernelUrl: env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130", key, cacheDir, gh: access.rest, connected: () => access.connected(), log, flow: handle.flow });
 }
 const server = createServer((req, res) => void handle(req, res));
 server.listen(Number(env.PORT ?? 8100), "0.0.0.0");

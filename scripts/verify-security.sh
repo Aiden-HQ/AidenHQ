@@ -70,8 +70,8 @@ for c in $containers; do
   # own socket mount). Matched by its compose service, never by name; any other container with it fails.
   if [ "$service" = "apps-mcp" ]; then
     pass "$c: Docker socket allowed (apps-mcp builds and runs the apps)"
-    # Its App tokens come from the kernel's /v1/codehost/token: codehost-github alone holds the App key.
-    echo "$mounts" | grep -q 'github-app' && fail "$c (apps-mcp) mounts the GitHub App key" || pass "$c: apps-mcp has no GitHub App key"
+    # It gets typed operations from the kernel's /v1/codehost/:op, never a token: the github service alone holds the owner's sign-in.
+    echo "$mounts" | grep -qE '/modules/github(/|\|)' && fail "$c (apps-mcp) mounts the GitHub sign-in" || pass "$c: apps-mcp has no GitHub token"
   else
     echo "$mounts" | grep -q 'docker.sock' && fail "$c mounts the Docker socket" || pass "$c: no Docker socket"
   fi
@@ -193,13 +193,15 @@ for c in $containers; do
       [ "$(curl -s -m 10 -o /dev/null -w '%{http_code}' http://127.0.0.1:3131/api/search)" = "401" ] \
         && pass "grafana: no anonymous access" || fail "grafana answers without sign-in"
       ;;
-    # The App key invariant: among services and modules only codehost-github holds it (Lane T; the runner, apps-mcp and
-    # github-mcp until they move); the host's apply mints only a read-only instance-repo token (ops/git-credential-app.mjs).
-    *github-mcp*)
-      [ "$(docker inspect "$c" --format '{{json .HostConfig.PortBindings}}')" = "{}" ] && pass "github-mcp: no published ports" || fail "github-mcp publishes ports"
-      # Only its own secrets, and never the GitHub App key (codehost-github alone holds it; github-mcp asks the kernel's route).
-      [ "$(echo "$mounts" | tr ';' '\n' | grep -c '|/state|')" = "1" ] && ! echo "$mounts" | tr ';' '\n' | grep -v '/run/secrets' | grep -v '|/state|' | grep -q . && ! echo "$mounts" | grep -q 'github-app\|github_app' \
-        && pass "github-mcp: only its own secrets and its own state directory mounted, never the GitHub App key" || fail "github-mcp has unexpected mounts: $mounts"
+    # The token invariant: among services and modules only the github service holds the owner's sign-in; the host's apply
+    # fetches the instance repo with it through ops/git-credential-github.mjs (below: the file's mode and its only mounter).
+    *github-github*)
+      [ "$(docker inspect "$c" --format '{{json .HostConfig.PortBindings}}')" = "{}" ] && pass "github: no published ports" || fail "github publishes ports"
+      # Only its own secrets, its own state directory (the owner's token file), its cache clones and the job workspaces.
+      [ "$(echo "$mounts" | tr ';' '\n' | grep -c '|/state|')" = "1" ] && ! echo "$mounts" | tr ';' '\n' | grep -v '/run/secrets' | grep -v '|/state|' | grep -v '|/cache|' | grep -v '|/tasks|' | grep -q . \
+        && pass "github: only its own secrets, state directory, cache and job workspaces mounted" || fail "github has unexpected mounts: $mounts"
+      # The job workspaces are read-only: it reads a job's branch from the bundle its box wrote and never writes a workspace.
+      ! echo "$mounts" | tr ';' '\n' | grep '|/tasks|' | grep -q '|true$' && pass "github: the job workspaces mounted read-only" || fail "github mounts the job workspaces read-write"
       ;;
     *apps-edge*)
       # The apps' tailnet node: its own way out plus the exposed apps' own networks (apps-mcp joins it), nothing else.
@@ -325,8 +327,6 @@ done
 # own secrets and its module's own vault dir; and none publishes beyond loopback. Every module container is checked.
 echo "Module isolation"
 mods=0
-# The one declared vault mount beyond a module's own: privileged git-credential's read-only github-app dir (the App key's holder).
-app_mods="$(node -e 'const m=JSON.parse(require("fs").readFileSync("config/kernel/modules.json","utf8")).modules??{};console.log(Object.keys(m).filter((k)=>(m[k].privileged??[]).includes("git-credential")).join(" "))' 2>/dev/null)"
 for c in $containers; do
   m="$(docker inspect "$c" --format '{{index .Config.Labels "aidenhq.module"}}')"
   [ -n "$m" ] || continue
@@ -338,9 +338,7 @@ for c in $containers; do
   nets="$(docker inspect "$c" --format '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}')"
   bad="$(echo "$nets" | tr ' ' '\n' | grep -v '^$' | grep -vE "$allowed" | tr '\n' ' ')"
   [ -z "$bad" ] && pass "$c ($m): on its own networks only ($nets)" || fail "$c ($m) is on another module's or a root network: $bad"
-  app_dir="/nonexistent"
-  case " $app_mods " in *" $m "*) app_dir="${AIDENHQ_SECRETS_DIR:-/nonexistent}/github-app" ;; esac
-  vault="$(docker inspect "$c" --format '{{range .Mounts}}{{.Source}}|{{.Destination}};{{end}}' | tr ';' '\n' | grep "^${AIDENHQ_SECRETS_DIR:-/nonexistent}" | grep -v '|/run/secrets/' | grep -v "^${AIDENHQ_SECRETS_DIR:-/nonexistent}/modules/$m|" | grep -vxF "$app_dir|/github-app" | tr '\n' ' ')"
+  vault="$(docker inspect "$c" --format '{{range .Mounts}}{{.Source}}|{{.Destination}};{{end}}' | tr ';' '\n' | grep "^${AIDENHQ_SECRETS_DIR:-/nonexistent}" | grep -v '|/run/secrets/' | grep -v "^${AIDENHQ_SECRETS_DIR:-/nonexistent}/modules/$m|" | tr '\n' ' ')"
   [ -z "$vault" ] && pass "$c ($m): no vault path but its secrets and its own vault dir" || fail "$c ($m) mounts another vault path: $vault"
   ! docker inspect "$c" --format '{{json .HostConfig.PortBindings}}' | grep -qE '"HostIp":"(0\.0\.0\.0)?"' && pass "$c ($m): published on loopback only, if at all" || fail "$c ($m) publishes beyond loopback"
 done
@@ -443,14 +441,15 @@ vendor_tags="$(node --input-type=module -e '
   const bad = [], seen = [];
   // A service runs the vendor proxy when any of its sources imports it (its synced copy or the SDK): every file is read.
   const PROXY = /"[^"]*vendor\/proxy(\.[jt]s)?"/;
-  const runsProxy = (dir) => existsSync(`${dir}/src`) && readdirSync(`${dir}/src`, { recursive: true }).some((f) => /\.(ts|mjs|js)$/.test(f) && f !== "vendor/proxy.ts" && PROXY.test(readFileSync(`${dir}/src/${f}`, "utf8")));
+  // Any src/ tree in the build folder of the service (the github module builds one image from its connection and its code host).
+  const runsProxy = (dir) => existsSync(dir) && readdirSync(dir, { recursive: true }).some((f) => /(^|\/)src\/.*\.(ts|mjs|js)$/.test(f) && !/node_modules|(^|\/)dist\//.test(f) && !f.endsWith("vendor/proxy.ts") && PROXY.test(readFileSync(`${dir}/${f}`, "utf8")));
   // Reviewed read tags whose first word is not a reading verb (read-only upstream, checked 2026-11-18). Add one only after reading the tool.
   const EXCEPTIONS = {
     clickhouse: ["run_select_query"],
     glean: ["employee_search", "meeting_lookup", "code_search", "chat", "user_activity", "memory_schema"],
     grafana: ["alerting_rules_read", "alerting_silences_read", "generate_deeplink", "render_grafana_app", "suggest_loki_alloy_label_config", "user_info", "validate_provisioning_file"],
     // the own tools of github-mcp (every route they use is listed in the GitHub check below) share its host with github_official.
-    github: ["github_project_read", "github_issue_read", "github_job_log", "github_pr_files", "github_pr_threads", "github_app_issue_status", "github_issue_link", "github_app_issue_list", "github_app_label_events", "github_app_pr_list", "github_app_repo_tree", "github_app_repo_file"],
+    github: ["github_project_read", "github_issue_read", "github_job_log", "github_pr_files", "github_pr_threads", "github_product_issue_status", "github_issue_link", "github_issue_list", "github_label_events", "github_pr_list", "github_repo_tree", "github_repo_file"],
     github_official: ["issue_read", "pull_request_read"],
     hubspot: ["tool_guidance"],
     primer: ["primer_record_changes", "primer_widget_get"],
@@ -658,10 +657,14 @@ code="$(curl -s -m 10 -o /dev/null -w '%{http_code}' -X POST -H "Authorization: 
 # Only the dispatch module starts jobs (kernel.jobs); the engineering module requests none (lands with the dispatch move).
 ! awk '/^roles:/{on=1} on && /requests:/' modules/engineering/module.yaml | grep 'kernel\.jobs' >/dev/null \
   && pass "engineering: requests no kernel.jobs" || fail "engineering: still requests kernel.jobs (modules/engineering/module.yaml)"
-# The GitHub App key (Lane T): among compose services and containers, only codehost-github mounts it.
-app_holders="$(docker ps -q | xargs -r docker inspect --format '{{.Name}} {{range .Mounts}}{{.Source}} {{end}}' | grep -E "$sd/github-app( |/)" | awk '{print $1}' | grep -v 'codehost-github' | tr '\n' ' ')"
-[ -z "$app_holders" ] && ! grep -qE 'github-app|github_app' compose.yaml \
-  && pass "github app: only codehost-github mounts the App key" || fail "github app: the App key is mounted beyond codehost-github: ${app_holders:-compose.yaml}"
+# The owner's GitHub sign-in: the token file is 0600, and among containers only the github service mounts its directory
+# (the host's git credential helper reads the file directly). No App key exists any more.
+gh_tok="$sd/modules/github/token.json"
+{ [ ! -e "$gh_tok" ] || [ "$(stat -c %a "$gh_tok" 2>/dev/null || stat -f %Lp "$gh_tok")" = 600 ]; } \
+  && pass "github: the token file is mode 0600 (or GitHub is not connected)" || fail "github: $gh_tok is not mode 0600"
+tok_holders="$(docker ps -q | xargs -r docker inspect --format '{{index .Config.Labels "com.docker.compose.service"}} {{.Name}} {{range .Mounts}}{{.Source}} {{end}}' | grep -E "$sd/modules/github( |/)" | awk '$1!="github-github"{print $2}' | tr '\n' ' ')"
+[ -z "$tok_holders" ] && [ ! -e "$sd/github-app" ] && ! grep -qE 'github-app|github_app|codehost/token' compose.yaml \
+  && pass "github: only the github service mounts the token directory; no App key, no token route" || fail "github: the token directory is mounted beyond the github service, or an App key remains: ${tok_holders:-$sd/github-app or compose.yaml}"
 pc="$(docker ps --filter "label=com.docker.compose.project=$project" --filter "label=com.docker.compose.service=paperclip" --format '{{.Names}}' | head -1)"
 if [ -n "$pc" ]; then
   # The server's own environment (what its entrypoint exported, which `docker exec env` doesn't show) and its secrets.
@@ -771,11 +774,11 @@ gh_mutations="$(sed -n '/^export const GRAPHQL/,/^} as const;/p' modules/github/
 # its host refuses a moved head and checks that aren't green itself.
 rm_="modules/github/service/src/merge-gate.ts"; rq="modules/github/service/src/merges.ts"
 rplan="modules/github/service/src/plan.ts"; rcheck="modules/platform/src/check.ts"; rdr="modules/github/service/src/design-review.ts"
-[ "$(grep -c 'd\.gh(' "$rq")" = 2 ] && grep -qF 'const r = await d.gh("POST", "/graphql", await d.token(repo, READ), { query: PR_QUERY,' "$rq" \
-  && grep -qF 'const r = await d.gh("PUT", `/repos/${repo}/pulls/${number}/merge`, await d.token(repo, mergePermissions(repo, platform)), { merge_method: method, sha });' "$rq" \
-  && grep -qF 'p.sha = await mergePut(p.repo, p.number, p.head, method);' "$rq" \
-  && grep -qF 'if (!mergeable(p.repo, d.agentsOrg, platform, d.maintained ?? [])) return fail(' "$rq" \
-  && grep -qF '  ownRepo(slug, agentsOrg, productRepo) || maintained.some((m) => sameSlug(slug, m));' modules/github/service/src/github-app.ts \
+[ "$(grep -c 'd\.gh(' "$rq")" = 2 ] && grep -qF 'const r = await d.gh("POST", "/graphql", { query: PR_QUERY,' "$rq" \
+  && grep -qF 'const r = await d.gh("PUT", `/repos/${repo}/pulls/${number}/merge`, { merge_method: method, sha, ...message });' "$rq" \
+  && grep -qF 'p.sha = await mergePut(p.repo, p.number, p.head, method, String(pull?.body ?? ""));' "$rq" \
+  && grep -qF 'if (!mergeable(p.repo, d.fleetOrg, platform, d.maintained ?? [])) return fail(' "$rq" \
+  && grep -qF '  ownRepo(slug, fleetOrg, productRepo) || maintained.some((m) => sameSlug(slug, m));' modules/github/service/src/git-auth.ts \
   && grep -qF 'const inMaintained = (repo: unknown, s: State) => !inAgentsOrg(repo, s) && (s.maintained ?? []).some((r) => same(r, repo));' "$rplan" \
   && [ "$(cat "$rm_" "$rq" | grep -c 'mutation')" = 0 ] \
   && grep -qF 'if (pr.headRefOid !== head) return { do: "fail"' "$rm_" \
@@ -784,15 +787,14 @@ rplan="modules/github/service/src/plan.ts"; rcheck="modules/platform/src/check.t
   && grep -qF 'if (!named.length) return { do: "wait"' "$rm_" \
   && [ "$(grep -c 'o\.gh("POST"' "$rdr")" = 2 ] && grep -qF 'o.gh("POST", `/repos/${ask.repo}/statuses/${ask.head}`' "$rdr" && grep -qF '{ state: "pending", context: DESIGN_REVIEW.name,' "$rdr" \
   && grep -qF 'if (!listed && !inAgentsOrg(p.repo, s)) return [REJECT("outside-merge"' "$rplan" \
-  && grep -qF 'export const mergePermissions = (slug: string | undefined, productRepo: ProductRepos) => (isProduct(slug, productRepo) ? { ...WRITE, workflows: "write" } : WRITE);' modules/github/service/src/github-app.ts \
-  && grep -qF 'export const ownRepo = (slug: string | undefined, agentsOrg: string | undefined, productRepo: ProductRepos) => inOrg(agentsOrg, slug) || isProduct(slug, productRepo);' modules/github/service/src/github-app.ts \
-  && grep -qF 'const isProduct = (slug: string | undefined, product: ProductRepos) => [product ?? []].flat().some((p) => sameSlug(slug, p));' modules/github/service/src/github-app.ts \
+  && grep -qF 'export const ownRepo = (slug: string | undefined, fleetOrg: string | undefined, productRepo: ProductRepos) => inOrg(fleetOrg, slug) || isProduct(slug, productRepo);' modules/github/service/src/git-auth.ts \
+  && grep -qF 'const isProduct = (slug: string | undefined, product: ProductRepos) => [product ?? []].flat().some((p) => sameSlug(slug, p));' modules/github/service/src/git-auth.ts \
   && grep -qF 'if (same(p.repo, s.productRepo)) return [productMergePart(p, ref, s)];' "$rplan" \
   && [ "$(awk '/^function productMergePart/,/^}/' "$rplan" | grep -oE 'T\([0-9]' | sort -u | tr '\n' ' ')" = "T(1 " ] \
   && grep -qF 'if (same(p.repo, s.instanceRepo)) return [REJECT("core-repo-merge"' "$rplan" \
   && grep -qF 'if (!inAgentsOrg(p.repo, s)) return REJECT("outside-close"' "$rplan" \
   && grep -qF 'const inAgentsOrg = (repo: unknown, s: State) => agentsOrgs(s).some((o) => same(orgOf(repo), o));' "$rplan" && grep -qF 'const agentsOrgs = (s: State) => [s.agentsOrgs ?? s.agentsOrg].flat().filter(Boolean);' "$rplan" \
-  && grep -qF 'agentsOrgs: [agentsOrg, ...(localHost() ? [LOCAL_ORG] : [])]' kernel/src/main.ts \
+  && grep -qF 'agentsOrgs: [fleetOrg(), ...(localHost() ? [LOCAL_ORG] : [])]' kernel/src/main.ts \
   && grep -qF 'if (same(p.repo, s.instanceRepo)) return REJECT("core-repo-close"' "$rplan" \
   && grep -qF 'if (p.dependabot !== true) return REJECT("core-repo-close"' "$rplan" \
   && grep -qF 'if (!s.requester?.platform) return REJECT("product-close-requester"' "$rplan" \

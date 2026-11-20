@@ -13,7 +13,7 @@ roles:
   requests: [ kernel.checks, kernel.facts, kernel.tasks, kernel.settings ]
   declares:
     - { id: reviewer-manager, description: "Holds each reviewed PR's task (fixed text: repo and number), where code review's posts are approved; the Reviewer Manager agent." }
-# A review run's snapshot of repo@head (and its base), read under this grant: any repo the GitHub App covers.
+# A review run's snapshot of repo@head (and its base), read under this grant: any repo the owner's GitHub sign-in reaches.
 codehost:
   snapshot: { repos: [ "*/*" ] }
 # The review run: a credential-free check job per PR head (kernel/src/checkjobs.ts), the recipe in recipe/. The state service asks
@@ -135,7 +135,6 @@ services:
       env:
         CODE_REVIEW_DB: /data/code-review.sqlite
         CODE_REVIEW_SETTINGS: "${settings.code_review}"
-        CODE_REVIEW_COMMENT_ORGS: "${settings.github_comment_orgs}"
         CODE_REVIEW_POLL_SECONDS: "${settings.code_review_poll_seconds}"
         CODE_REVIEW_TOKEN_FILE: ${secrets.code_review_token}
         CODE_REVIEW_API_TOKEN_FILE: ${secrets.code_review_api_token}

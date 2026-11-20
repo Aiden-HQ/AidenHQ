@@ -177,7 +177,7 @@ It is idempotent. The Engineer runs it for you after you approve a change.
   brings each repo's issues opened since its triage cursor with no fix label that our App didn't file (at most 10 per repo
   per tick, oldest first), and each files a triage task once (source `maintainer-triage:<repo>#<number>`), naming the repo and number only.
   The first look only sets the cursor to now; issues already open, and any a per-issue run missed, are the daily triage's.
-  Those runs read a stranger's text before the App's trusted label, so they are capped a day per issue author on invalid issues (`triage_invalid_per_author_day`, default 5; an issue carrying the fix label or `feature-request`, the latter labelled by a trusted labeler, is valid and
+  Those runs read a stranger's text before a trusted label, so they are capped a day per issue author on invalid issues (`triage_invalid_per_author_day`, default 5; an issue carrying the fix label or `feature-request`, the latter labelled by a trusted labeler, is valid and
   uncounted; per repo there is no cap); past it, the issue is held and triaged the tick a slot frees (the daily run has it after a day). A fix that a label leads to still passes the Engineer's gates, the AI reviewer and the merge checks.
 
 - Monitoring (module `monitoring`, [docs/design/monitoring.md](design/monitoring.md)): Prometheus, node-exporter, cAdvisor,
@@ -290,7 +290,7 @@ without the owner reaches Telegram once a day from 21:00.
   green the reviewer is asked once more, and then the merge is parked with a note on the task. In either queue a red check whose Actions job never judged the commit
   (cancelled, timed out, failed to start, or `code-review`'s own "failed"/"incomplete" comment on that head) is re-run
   once per check and head before the merge fails; a second failure, or any real failure beside it, is final. The re-run
-  needs the GitHub App's Actions: write permission (created from the board's GitHub setup); without it the failure stands as before.
+  runs as the owner's GitHub sign-in (`repo` covers it).
   A red check whose job ran **no step** and carries a failure annotation (GitHub refused to start it: billing, a spending
   limit, no runner) is the environment's, not the commit's: it is classified apart from a failed check, never sent to the
   Engineer to fix or rebase, and the head is never moved for it. It is re-run once at the same head; if it never starts
@@ -391,11 +391,12 @@ launcher; a new image applies from the next acquire) and
 
 App repos' CI (`modules/ci/template`: jobs `tests` and `code-review`; `code-review` skips the review and passes on a
 change under 20 added plus deleted lines with no sensitive path; `package-lock.json`, which the supply-chain job validates, is not counted, but a change that adds a package, changes a version or source, or adds an install script is sensitive, while other lockfiles are counted and always sensitive; an agent's screenshots under `.aidenhq/out/` are not counted, its json and txt reports are; a head whose patch is unchanged since a green review of the same branch and base ref, on a base that only moved forward, reuses that verdict) runs on our own GitHub Actions runners,
-`runs-on: [self-hosted, aidenhq]`, registered to the agents org. The product repo's CI (`.github/workflows/`) runs on
-the same kind of runner, registered to the product repo's org (below). Each `aidenhq-ci-runner@<n>` user unit (agents
-org) or `aidenhq-ci-runner@<org>-<n>` unit (another org the App is installed on) runs
-`ops/ci-runner.sh`: it mints a one-hour registration token on the host from the GitHub App
-(`ops/ci-runner-token.ts [org]`, installation token narrowed to `organization_self_hosted_runners`), then
+`runs-on: [self-hosted, aidenhq]`, registered to the fleet org (`github_fleet_org`). The product repo's CI
+(`.github/workflows/`) runs on the same kind of runner, registered to the product repo's org (below). Each
+`aidenhq-ci-runner@<n>` user unit (fleet org) or `aidenhq-ci-runner@<org>-<n>` unit (another org) runs
+`ops/ci-runner.sh`: it asks the kernel for a one-hour registration token (`ops/ci-runner-token.ts [org]`: `POST
+/v1/codehost/runner_token` with the ci module's `ci_token`; the code host mints it as the owner, whose sign-in needs
+`admin:org`, and answers only that token), then
 `docker compose run --rm ci-runner`: a new container that registers ephemerally, takes one job, exits and is removed;
 the unit then starts the next. Nothing carries between jobs. The container has no host mounts, no docker socket and none
 of the instance's secrets; it sits on `aidenhq-ci` (system unit `aidenhq-ci-net`: the public Internet and, on the host,
@@ -406,7 +407,7 @@ per runner: 4 CPUs, 8 GB.
 (`AIDENHQ_GATEWAY_URL`, set on the runner container) it asks GitHub for its OIDC token (`id-token: write`, that job only)
 and trades it at the gateway's `POST /ci/token` for an opaque CI token that lives 2 hours. The gateway
 (`kernel/src/gateway/ci.ts`) checks GitHub's signature and that the job is a `pull_request` run of the repo's own
-`.github/workflows/ci.yml` for that PR, on a self-hosted runner in the agents org; each run attempt trades its token
+`.github/workflows/ci.yml` for that PR, on a self-hosted runner in the fleet org; each run attempt trades its token
 once. The repo and PR come from that signed token, and the answer names the review model and effort
 (`settings.ci_review_model`). The CI token works only on the CI listener, only for `responses` (and `chat/completions`
 for repos on the older template) with `settings.ci_review_model` or `settings.ci_review_models`, no fallbacks, plugins,
@@ -440,10 +441,9 @@ boundary, not the job name. Instances without the gateway (no `AIDENHQ_GATEWAY_U
 read it).
 
 **Register (once).**
-1. GitHub App: add the organization permission *Self-hosted runners: Read and write* in the App's settings (GitHub →
-   the agents org → Settings → Developer settings → GitHub Apps → the App → Permissions), save, then accept the new
-   permission on each installation (every org that installed the App is asked). New Apps get it from the manifest.
-2. Agents org → Settings → Actions → Runner groups → Default: allow private repositories (and public if any). No model
+1. GitHub: with `ci` in `modules:` (step 3), the GitHub card on the board asks for `admin:org`: press **Reconnect** and
+   allow it. You must be an owner of each org the runners register in.
+2. Fleet org → Settings → Actions → Runner groups → Default: allow private repositories (and public if any). No model
    secret: code review spends through the gateway (above), whose `settings.ci_review_model` (default
    `~deepseek/deepseek-flash-latest:high`) picks the model and effort. Off the gateway: the variable `CI_REVIEW_MODEL`.
 3. Instance repo: add `ci` to `modules:` in `instance.yaml`; deploy (`aidenhq-apply --wait`).
@@ -466,8 +466,8 @@ or never copies out (node's bundled npm, the Alpine packages of a stage only par
 `.github/image-scan-exceptions.yaml`, read from the base commit. A PR from a fork is routed to `ubuntu-latest` instead of
 our runners (where image-scan fails: no grype). That routing lives in the workflow file the PR itself carries, so it is
 not the boundary: the org's runner group is. To serve the product org:
-1. The App's installation on that org accepts *Self-hosted runners: Read and write* (GitHub → the org → Settings →
-   GitHub Apps → the App → Configure; a pending permission request shows there).
+1. You are an owner of that org, and AidenHQ's sign-in is allowed there (an org that restricts OAuth apps shows it on the
+   GitHub card).
 2. The org → Settings → Actions → Runner groups: a group limited to the repos the runners serve (the `ci_runner_repos`
    setting), named in the instance's `settings.ci_org_runner_group`. Another org's units register only into that group
    and refuse to start without the setting, so they never land in the org's Default group (all repositories). Allow
@@ -483,27 +483,27 @@ a same-repo PR (never a merge train: it holds PRs that may come from forks); any
 lives in the workflow file the run carries, so it is no boundary. The boundaries are: *Require approval for all outside
 collaborators* (a fork's workflow runs only after a maintainer approves it), the org runner group (only these repos), and
 the runner's job-started hook (modules/ci/runner/job-started.*, baked into the image read-only, run under `env -i`): it
-fails any job, before checkout, whose repository is not in the agents org or the `ci_runner_repos` setting, or whose event
+fails any job, before checkout, whose repository is not in the fleet org or the `ci_runner_repos` setting, or whose event
 is not a push or workflow_dispatch on the default branch, a schedule, or a pull_request from the same repository (no fork
 PRs, merge trains, merge_group, pull_request_target, issue_comment, workflow_run, release or repository_dispatch). The
 runner starts the hook with an environment of its own (the github and runner contexts), never the job's `env:`, so a
-job-level `BASH_ENV` or `NODE_OPTIONS` does not reach it. To enable: the App on the Aiden-HQ org with *Self-hosted
-runners: Read and write*; a runner group there limited to the two repos with *Allow public repositories* on, named in
+job-level `BASH_ENV` or `NODE_OPTIONS` does not reach it. To enable: the owner's sign-in with `admin:org` on the
+Aiden-HQ org; a runner group there limited to the two repos with *Allow public repositories* on, named in
 `settings.ci_org_runner_group`; a product at or after the hook; on the VM `systemctl --user enable --now
-aidenhq-ci-runner@Aiden-HQ-1 aidenhq-ci-runner@Aiden-HQ-2` (up to 4, or move existing agents-org units); then the repo
+aidenhq-ci-runner@Aiden-HQ-1 aidenhq-ci-runner@Aiden-HQ-2` (up to 4, or move existing fleet-org units); then the repo
 variable (Settings -> Secrets and variables -> Actions -> Variables). Unset it to go back to hosted only.
 aidenhq-distro can adopt the same routing in its ci.yml later.
 
 A push runs about 21 jobs (the test matrix is 18), each in a fresh container that installs Node and its packages: roughly
 10 minutes on two runners. Jobs for one org never take another org's runners.
 
-**Rotate.** Nothing long-lived to rotate: each job's token is minted fresh from the App key (to rotate the App key, generate a new private key in the App's settings and replace
-`github-app/key.pem` in the vault). Upgrade the runner by bumping the base image in `modules/ci/runner/Dockerfile`; GitHub stops accepting
+**Rotate.** Nothing long-lived on the runner: each job's registration token is minted fresh by the code host (revoking
+the GitHub sign-in stops new ones; Reconnect restores them). Upgrade the runner by bumping the base image in `modules/ci/runner/Dockerfile`; GitHub stops accepting
 runners some weeks after a newer release, so bump when the org's runners page warns.
 
 **Scale.** One unit per concurrent job: `systemctl --user enable --now aidenhq-ci-runner@3`, or `disable --now` one to
 shrink. Every unit is up to 4 CPUs and 8 GB while it runs a job, whichever org it serves: keep the total at 2-4 on a VM of
-the size docs/setup.md suggests (e.g. 2 for the product org, 1-2 for the agents org). The enabled instances are what the config
+the size docs/setup.md suggests (e.g. 2 for the product org, 1-2 for the fleet org). The enabled instances are what the config
 declares runs, and an apply starts every declared one that systemd reports failed: `Restart=always` alone reaches systemd's
 start limit and leaves a unit failed with nothing to clear it, so `ops/ci-runner-units.sh` resets and starts those (and the
 ones a drain record names) after everything else. A drain (`node scripts/fleet-pause.ts pause`) stops them without

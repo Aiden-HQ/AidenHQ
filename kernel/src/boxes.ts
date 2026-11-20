@@ -1,9 +1,10 @@
 // The kernel owns an admitted job's computer (spec §4.2a): it gets the box from the computer launcher (its job routes, bearer
 // launcher_kernel_key), mints the job's only credential (an `ahqj_` job token naming the job, whose authority is its row's,
-// frozen at admission), clones an engineer job's named repositories into its workspace (the code host broker), builds the job's engine home (per agent and task: its skills, its compiled handbook, its granted
+// frozen at admission), has an engineer job's box clone its task's named repositories itself (`aidenhq clone`), builds the job's engine home (per agent and task: its skills, its compiled handbook, its granted
 // connections as Codex config), starts the run (jobs.ts runAdmitted), renews the box's lease while the job lives and releases
 // it when the job ends, removing the task's workspace then if the job asked (`aidenhq cleanup`, jobtools.ts). A kernel restart
 // changes nothing: the renewals and releases are driven from the job rows.
+import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
@@ -45,16 +46,25 @@ export function mentionedRepos(text: string): string[] {
   return [...found.values()];
 }
 
-/** An engineer job's clones (the kernel's code host broker, codehost.ts): what may be cloned for a dispatcher, and the clone. */
+/** An engineer job's clones: the repos its task names that its dispatcher's clone grant covers (codehost.ts bundle). */
 export type Clones = {
   /** The task's title and description (the control plane, as the owner). */
   text: (task: string) => Promise<string>;
   /** Whether `module`'s codehost grant lets it clone `repo` (checked here, so a token that names no repository never reaches GitHub). */
   may: (module: string, repo: string) => boolean;
-  /** `repo`'s default branch cloned into the task's workspace as <workspace>/<name>; throws with the code host's status. */
-  clone: (module: string, repo: string, task: string) => Promise<void>;
 };
 const MAX_CLONES = 5;
+/** The in-box `aidenhq`'s exit code when the kernel or the code host can't answer now (a 5xx, or unreachable). */
+export const CLONE_UNAVAILABLE = 75;
+
+/** A command in a job's box as the job (its env file: the job token), in /workspace: its exit code and its output. */
+export type BoxExec = (box: Box, argv: string[]) => Promise<{ code: number; out: string }>;
+export const dockerExec: BoxExec = (box, argv) => new Promise((ok) => {
+  execFile("docker", ["exec", "--env-file", box.envFile, "-w", "/workspace", box.container, ...argv], { timeout: 15 * 60_000, maxBuffer: 1 << 20 }, (e, stdout, stderr) => {
+    const code = e ? (typeof (e as { code?: unknown }).code === "number" ? (e as { code: number }).code : CLONE_UNAVAILABLE) : 0;
+    ok({ code, out: `${stdout}${stderr}`.trim() });
+  });
+});
 
 /** The task's files in the control plane, and a way to attach one (as the owner: the control plane takes an agent key's writes only inside a run). */
 export type Attachments = {
@@ -65,12 +75,14 @@ export type Attachments = {
 /** A launcher that can't answer now (a 5xx, a timeout, unreachable): the launch is deferred to the next tick, never failed. */
 const unavailable = (e: Error): never => { throw new JobError(503, "launcher-unavailable", `the computer launcher can't answer now (${String(e.message).slice(0, 200)})`); };
 
-export function createBoxes({ db, cfg, jobs, call, secret, whoami, connections, handbook, cleanup, clones, identity, attachments, once, log, now = Date.now, stopping = () => false }: {
+export function createBoxes({ db, cfg, jobs, call, secret, whoami, connections, handbook, cleanup, clones, identity, attachments, once, log, boxExec = dockerExec, now = Date.now, stopping = () => false }: {
   db: DatabaseSync; attachments: Attachments; once: Once; cfg: SandboxConfig; jobs: Pick<Jobs, "runAdmitted">; call: Call; secret: (name: string) => string; whoami: Whoami;
   /** Who the agent's commits are authored as: its name and its own address (never the owner's). */
-  identity: (agent: string) => { name: string; email: string };
-  /** An engineer job's workspace: the repositories its task names, cloned before the box starts. */
+  identity: (agent: string) => Promise<{ name: string; email: string; agent?: string }>;
+  /** An engineer job's workspace: the repositories its task names, cloned by its box before the run starts. */
   clones: Clones;
+  /** How a command runs in a job's box (docker exec; a test's fake). */
+  boxExec?: BoxExec;
   /** Whether a job asked for its workspace to go when it ends (jobtools.ts). */
   cleanup: (job: string) => boolean;
   /** config/computers.json `connections`: each connection's tool timeout, for the box's Codex config. */
@@ -101,12 +113,8 @@ export function createBoxes({ db, cfg, jobs, call, secret, whoami, connections, 
     // After that release: a cleanup it does removes the last job's workspace, never this one's.
     mkdirSync(workspace, { recursive: true });
     insideNoLinks(join(cfg.workDir, "tasks"), workspace, "workspace");
-    const notes = a.profile === "engineer" ? await cloneNamed(job) : [];
-    const session = job.fresh ? undefined : lastSession(job.agent, job.task, a.engine);
-    const withNotes = (text: string) => (notes.length ? `(Kernel note: ${notes.join(" ")})\n\n${text}` : text);
-    const prompt = withNotes(session ? job.prompt : job.fullPrompt ?? job.prompt);
     // 409: the task's box is still going (the computers are full for it); a 5xx, a timeout or no answer: the launcher can't now.
-    const box = (await call("/job", { agentId: job.agent, issueId: job.task, identifier: job.identifier, workspace, engine: a.engine, state, image: a.image, token, mcp, roles: a.roles, identity: identity(job.agent) }).catch((e: Error & { status?: number }) => {
+    const box = (await call("/job", { agentId: job.agent, issueId: job.task, identifier: job.identifier, workspace, engine: a.engine, state, image: a.image, token, mcp, roles: a.roles, identity: await identity(job.agent) }).catch((e: Error & { status?: number }) => {
       if (e.status === 409) throw Object.assign(e, { status: 503 });
       if (e.status === undefined || e.status >= 500) unavailable(e);
       throw e;
@@ -119,6 +127,10 @@ export function createBoxes({ db, cfg, jobs, call, secret, whoami, connections, 
       throw new JobError(503, "draining", "the kernel is restarting; the job starts on the next one");
     }
     try {
+      const notes = a.profile === "engineer" ? await cloneNamed(job, box) : [];
+      const session = job.fresh ? undefined : lastSession(job.agent, job.task, a.engine);
+      const withNotes = (text: string) => (notes.length ? `(Kernel note: ${notes.join(" ")})\n\n${text}` : text);
+      const prompt = withNotes(session ? job.prompt : job.fullPrompt ?? job.prompt);
       jobs.runAdmitted(job.id, { box: { ...box, workspace } as Box, worktree: workspace, prompt, session, fullPrompt: withNotes(job.fullPrompt ?? job.prompt), label: job.identifier });
     } catch (e) {
       await release(job.id).catch(() => {});
@@ -127,24 +139,23 @@ export function createBoxes({ db, cfg, jobs, call, secret, whoami, connections, 
   }
 
   /**
-   * An engineer job's repositories: each one its task names that its dispatcher may clone, cloned into the workspace as
-   * <name> (the box's /workspace/<name>) on its default branch; one already there (409) is kept as it is. A refusal is told to
-   * the job (its notes); a code host that can't answer (5xx, unreachable) makes the launch a 503, so admission tries again.
+   * An engineer job's repositories: each one its task names that its dispatcher may clone, cloned by its box itself from the
+   * code host's bundle (`aidenhq clone <org/name>` in the box, as the job) into /workspace/<name> on its default branch, before
+   * the run starts; one already there (<name> or <org>--<name>) is kept as it is. Host git and host fs writes never run in the
+   * workspace. A refusal is told to the job (its notes); a kernel or code host that can't answer now makes the launch a 503, so
+   * admission tries again.
    */
-  async function cloneNamed(job: Admitted): Promise<string[]> {
+  async function cloneNamed(job: Admitted, box: Box): Promise<string[]> {
     const named = mentionedRepos(await clones.text(job.task)).filter((r) => clones.may(job.module, r)).slice(0, MAX_CLONES);
     const notes: string[] = [];
     for (const repo of named) {
-      try {
-        await clones.clone(job.module, repo, job.task);
-        log("repository cloned into the job's workspace", { job: job.id, repo });
-      } catch (e) {
-        const status = (e as { status?: number }).status ?? 502;
-        if (status === 409) continue;
-        if (status >= 500) throw new JobError(503, "clone-failed", `${repo} couldn't be cloned now (${(e as Error).message.slice(0, 200)})`);
-        log("repository not cloned", { job: job.id, repo, status, err: (e as Error).message.slice(0, 200) });
-        notes.push(`\`${repo}\` is named in the task but couldn't be cloned into your workspace (${(e as Error).message.slice(0, 200)}).`);
-      }
+      const [org, name] = repo.split("/");
+      const r = await boxExec(box, ["sh", "-c", 'test -d "$1/.git" || test -d "$2/.git" || exec aidenhq clone "$3"', "sh", `/workspace/${name}`, `/workspace/${org}--${name}`, repo]);
+      const said = r.out.replace(/^aidenhq: /, "").slice(0, 200);
+      if (r.code === 0) { log("repository cloned into the job's workspace", { job: job.id, repo }); continue; }
+      if (r.code === CLONE_UNAVAILABLE) throw new JobError(503, "clone-failed", `${repo} couldn't be cloned now (${said})`);
+      log("repository not cloned", { job: job.id, repo, code: r.code, err: said });
+      notes.push(`\`${repo}\` is named in the task but couldn't be cloned into your workspace (${said}).`);
     }
     return notes;
   }

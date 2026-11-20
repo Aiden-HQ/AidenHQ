@@ -57,12 +57,11 @@ test("H5: a module mounts only its own secrets, data dir and vault dir", () => {
   assert.throws(() => gen("a", { services: { run: { srv: { image: IMG, data: ["db:/data"] } } } }), /declare services.data: true/);
 });
 
-test("the App key and the job workspaces only for git-credential; a module's own points file for any module with points", () => {
+test("the job workspaces only for git-credential; a module's own points file for any module with points", () => {
   const def = (s, extra = {}) => ({ services: { run: { srv: { image: IMG, ...s } } }, ...extra });
   const host = { workDir: "/home/acme/aidenhq-work" };
-  const ch = gen("ch", def({ github_app: "/github-app", workspaces: "/tasks", points: "/points.json", env: { P: "${AIDENHQ_PRODUCT_REPO:-}" } }, { privileged: ["git-credential"], points: { ops: { schema: "x" } } }), host).services["ch-srv"];
-  assert.deepEqual(ch.volumes, ["${AIDENHQ_CONFIG_DIR:-./config}/points/ch.json:/points.json:ro", "${AIDENHQ_SECRETS_DIR}/github-app:/github-app:ro", "/home/acme/aidenhq-work/tasks:/tasks"]);
-  assert.throws(() => gen("a", def({ github_app: "/github-app" }), host), /github_app: needs privileged: \[git-credential\]/);
+  const ch = gen("ch", def({ workspaces: "/tasks", points: "/points.json", env: { P: "${AIDENHQ_PRODUCT_REPO:-}" } }, { privileged: ["git-credential"], points: { ops: { schema: "x" } } }), host).services["ch-srv"];
+  assert.deepEqual(ch.volumes, ["${AIDENHQ_CONFIG_DIR:-./config}/points/ch.json:/points.json:ro", "/home/acme/aidenhq-work/tasks:/tasks:ro"]);
   assert.throws(() => gen("a", def({ workspaces: "/tasks" }), host), /workspaces: needs privileged: \[git-credential\]/);
   assert.throws(() => gen("a", def({ env: { P: "${AIDENHQ_PRODUCT_REPO:-}" } }), host), /is not allowed/);
   assert.throws(() => gen("a", def({ points: "/points.json" })), /defines no points/);
@@ -71,7 +70,7 @@ test("the App key and the job workspaces only for git-credential; a module's own
 test("remote-source modules need image digests; local ones may build in their folder", () => {
   assert.throws(() => gen("a", svc({ image: undefined, build: "./srv" }), { local: false }), /remote source needs an image by digest/);
   assert.throws(() => gen("a", svc({ image: "example.com/acme/tool:latest" })), /pinned by digest/);
-  assert.throws(() => gen("a", svc({ image: undefined, build: "../srv" })), /must be a folder in the module/);
+  assert.throws(() => gen("a", svc({ image: undefined, build: "../srv" })), /must be the module.s folder or a folder in it/);
   assert.equal(gen("a", svc({ image: undefined, build: "./srv" })).services["a-srv"].image, "aidenhq/a-srv:local");
 });
 

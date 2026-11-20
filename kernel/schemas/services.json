@@ -16,7 +16,7 @@
         "additionalProperties": false,
         "properties": {
           "image": { "type": "string", "pattern": "^[a-z0-9][a-z0-9./_-]*(:[\\w.-]+)?@sha256:[0-9a-f]{64}$" },
-          "build": { "type": "string", "pattern": "^\\./[\\w./-]+$", "description": "a folder in the module with a Dockerfile; local marketplace sources only" },
+          "build": { "type": "string", "pattern": "^\\.(/[\\w./-]+)?$", "description": "the module's folder (.) or a folder in it, with a Dockerfile; local marketplace sources only" },
           "command": { "type": "array", "items": { "type": "string" } },
           "entrypoint": { "type": "array", "items": { "type": "string" } },
           "env": { "type": "object", "additionalProperties": { "type": ["string", "number", "boolean"] }, "description": "${settings.x}, ${secrets.y} (its file path), the module's legacy host variables" },
@@ -33,8 +33,7 @@
           "data": { "type": "array", "items": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]*:/[^:]+(:ro)?$" }, "description": "<folder of the module's data dir>:<container path>[:ro]" },
           "state": { "type": "string", "pattern": "^/[^:]+(:ro)?$", "description": "the module's own vault dir (secrets.state: true) at this path" },
           "points": { "type": "string", "pattern": "^/[\\w./-]+$", "description": "its own points' contributions (config/points/<module>.json) at this path, read-only" },
-          "github_app": { "type": "string", "pattern": "^/[\\w./-]+$", "description": "privileged: [git-credential] only: the GitHub App's vault dir (github-app/) at this path, read-only" },
-          "workspaces": { "type": "string", "pattern": "^/[\\w./-]+$", "description": "privileged: [git-credential] only: the job workspaces (the host's work_dir/tasks) at this path, read-write" },
+          "workspaces": { "type": "string", "pattern": "^/[\\w./-]+$", "description": "privileged: [git-credential] only: the job workspaces (the host's work_dir/tasks) at this path, read-only (their boxes' bundles)" },
           "host_mounts": { "type": "array", "items": { "type": "string", "pattern": "^(/|/sys|/proc):/[\\w./-]+:ro(,rslave)?$" }, "description": "privileged: [host-metrics] only" },
           "egress": { "type": "boolean", "description": "outbound Internet, on the module's own egress network" },
           "links": { "type": "array", "items": { "type": "string" }, "description": "root services or networks the module's closed legacy list allows" },

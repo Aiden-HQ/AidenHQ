@@ -39,10 +39,6 @@ export const ReviewSchema = z.object({
 export type Review = z.infer<typeof ReviewSchema>;
 export type Finding = z.infer<typeof FindingSchema>;
 
-/** Who posts: `auto` is the App where it is installed with PR write on the repo, else the owner's sign-in. */
-export const IdentityWant = z.enum(["auto", "app", "owner"]);
-export type IdentityWant = z.infer<typeof IdentityWant>;
-
 const RUN = z.string().regex(/^[A-Za-z0-9_.-]{1,64}$/);
 export const PostArgsSchema = z.object({
   /** The target, from the caller's run row, never from the review's own text: a review naming another repo, PR or head is refused. */
@@ -50,7 +46,6 @@ export const PostArgsSchema = z.object({
   pr: z.number().int().min(1),
   head: z.string().regex(SHA),
   review: ReviewSchema,
-  identity: IdentityWant.default("auto"),
   /** Finding ids of an earlier run the state service wants resolved (its own threads only: review-post.ts checks). */
   resolve: z.array(z.string().regex(/^[A-Za-z0-9_-]{6,64}$/)).max(200).default([]),
   /** The run: the idempotency key, and the id the summary carries. */
@@ -84,7 +79,6 @@ export const NoticeArgsSchema = z.object({
   repo: z.string().regex(new RegExp(`^${NAME}/${NAME}$`)),
   pr: z.number().int().min(1),
   head: z.string().regex(SHA),
-  identity: IdentityWant.default("auto"),
   phase: z.enum(["queued", "running", "done", "skipped", "failed", "answered"]),
   reviewer: z.string().regex(/^[A-Za-z0-9_.-]{1,40}$/).optional(),
   reason: z.enum(Object.keys(SKIP_REASONS) as [keyof typeof SKIP_REASONS, ...(keyof typeof SKIP_REASONS)[]]).optional(),

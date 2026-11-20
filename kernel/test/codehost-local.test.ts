@@ -106,7 +106,7 @@ test("local-only: create a repo, publish a change request, merge it at its head 
   const bundles = join(tasks, "TASK-1", ".aidenhq", "bundles");
   symlinkSync(join(other, `${two}.bundle`), join(bundles, `${two}.bundle`));
   const publishTwo = () => writes.request(job, { kind: "codehost.push", args: { only: [{ repo: "local/hello", branch: "greet", sha: two }] } });
-  await assert.rejects(publishTwo(), /no bundle/);
+  await assert.rejects(publishTwo(), /is a symlink/);
   rmSync(join(bundles, `${two}.bundle`));
   renameSync(join(tasks, "TASK-1", ".aidenhq"), join(dir, "moved"));
   mkdirSync(join(other, "bundles"), { recursive: true });
