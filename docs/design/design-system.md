@@ -1,5 +1,7 @@
 # Design system for agent-built apps
 
+(The board has its own kit and guide: [board-ui.md](board-ui.md). The two share the taste, not tokens.)
+
 **Problem.** Apps that Engineers vibe-code looked and behaved below industry standard even after design passes. The old
 kit had ten CSS classes and no behaviour, so every app re-invented filters, tables and states, and the owner kept
 correcting the same things: Apply/Show buttons on filters, full page reloads that lost the search box's focus, details

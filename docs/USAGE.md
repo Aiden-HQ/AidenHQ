@@ -50,7 +50,7 @@ pushes things to you. You rarely need to open anything else.
   restricted roles, keep data, are untrusted, or need extra host access.
 - Apps that keep data (for example the warehouse, the shared Postgres) are deployed only when you say "deploy <app>".
 - Each app has its own URL on the apps' own tailnet name, `https://aidenhq-<user>-apps.<tailnet>.ts.net:<port>` (never the
-  board's name). The board's Apps tab lists them.
+  board's name). The board lists them under Fleet, Apps.
 - Every app runs sandboxed: it gets nothing outside its own containers (host files, other services, extra privileges)
   unless its registry entry (instance `apps.yaml`, or the module's own for module apps) grants it.
 
