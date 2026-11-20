@@ -9,6 +9,8 @@
 import assert from "node:assert/strict";
 import { describe, it as test } from "node:test";
 import { execFile, execFileSync, spawn } from "node:child_process";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -558,6 +560,43 @@ test("an apply whose shell is killed mid-compose (SIGTERM) reverts itself on the
   const r = await done;
   assert.notEqual(r.code, 0, r.out);
   reverted(w);
+});
+
+// The switch-over from the retired GitHub App's helper (#1104): while the org's OAuth App restriction keeps the owner's token
+// from the instance repo, the new script stops after the hand-over and puts both checkouts back where the running generation
+// has them; once GitHub lets the token read the repo, the next apply switches the helper and goes on.
+test("the switch-over off the App helper waits, checkouts put back, until the sign-in can read the instance repo", async () => {
+  const w = world();
+  const work = readFileSync(join(repo, "ops/apply-config-work.sh"), "utf8");
+  // The script before #1104 had no helper step: the App helper was the instance checkout's own.
+  const old = work.replace(/  # The instance checkout fetches with the owner's GitHub sign-in[\s\S]*?(?=  progress_line APPLY_PHASES instance\n)/, "");
+  assert.ok(old !== work && !old.includes("have_helper"), "the old script has no helper step");
+  const p1 = w.commitProduct("1", { "ops/apply-config-work.sh": old });
+  const i1 = w.commitInstance(p1);
+  assert.equal((await w.run()).status, 0);
+  const helpers = () => git(w.d("inst"), "config", "--local", "--get-all", "credential.helper");
+  git(w.d("inst"), "config", "--add", "credential.helper", "");
+  git(w.d("inst"), "config", "--add", "credential.helper", "!node /retired/ops/git-credential-app.mjs");
+  const p2 = w.commitProduct("2", { "ops/apply-config-work.sh": work, "ops/git-credential-github.mjs": readFileSync(join(repo, "ops/git-credential-github.mjs"), "utf8") });
+  w.commitInstance(p2);
+  let readable = false;
+  const api = createServer((_q, res) => void res.writeHead(readable ? 200 : 403, { "content-type": "application/json" }).end(JSON.stringify({ message: "the `acme` organization has enabled OAuth App access restrictions" })));
+  await new Promise<void>((r) => api.listen(0, "127.0.0.1", r));
+  mkdirSync(w.d("secrets/modules/github"), { recursive: true });
+  writeFileSync(w.d("secrets/modules/github/token.json"), JSON.stringify({ access_token: "gho_x", client_id: "Ov23test" }));
+  writeFileSync(w.d("prod/.env"), `AIDENHQ_INSTANCE_REPO=acme/inst\nAIDENHQ_SECRETS_DIR=${w.d("secrets")}\nAIDENHQ_GITHUB_API=http://127.0.0.1:${(api.address() as AddressInfo).port}\nAIDENHQ_KERNEL_BACKPLANE=127.0.0.1:9\n`);
+  try {
+    const stopped = await w.run();
+    assert.equal(stopped.status, 1, stopped.out);
+    assert.match(stopped.out, /apply stopped: The acme organization restricts OAuth apps.*settings\/connections\/applications\/Ov23test/, stopped.out);
+    assert.deepEqual([w.head("prod"), w.head("inst")], [p1, i1], "both checkouts back where the running generation has them");
+    assert.match(helpers(), /git-credential-app\.mjs/, "the App helper stays");
+    readable = true;
+    const r = await w.run();
+    assert.equal(r.status, 0, r.out);
+    assert.equal(w.gens().at(-1).product, p2);
+    assert.match(helpers(), /git-credential-github\.mjs$/);
+  } finally { api.close(); }
 });
 });
 
