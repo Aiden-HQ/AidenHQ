@@ -2263,7 +2263,9 @@ export function createApp(opts: AppOptions): Server {
     // A page in a browser (DNS rebinding, CSRF) carries an Origin that is not the board's own; a CLI carries none.
     const origin = req.headers.origin;
     if (origin && (origin === "null" || !URL.canParse(origin) || ![auth.board, new URL(auth.origin(req)).origin].includes(new URL(origin).origin))) throw new HttpError(403, "cross-origin");
-    const unauthorized = (error?: string) => {
+    // Every 401 leaves one line (never the token): why, the kernel's own word if it gave one, and who asked.
+    const unauthorized = (error?: string, why = "no bearer", code?: string) => {
+      log.warn({ reason: why, ...(code ? { code } : {}), userAgent: String(req.headers["user-agent"] ?? "").slice(0, 100) }, "/mcp answered 401");
       res.writeHead(401, { ...SECURITY_HEADERS, "content-type": "application/json", "cache-control": "no-store", "www-authenticate": auth.challenge(error) }).end(JSON.stringify({ error: error ?? "sign in" }));
     };
     const token = auth.bearer(req);
@@ -2275,8 +2277,12 @@ export function createApp(opts: AppOptions): Server {
     const body = await readJson(req, 1_000_000);
     const calls = (Array.isArray(body) ? body : [body]) as { method?: string; params?: { name?: string } }[];
     const writes = calls.some((m) => m?.method === "tools/call" && WRITE_TOOLS.has(String(m.params?.name)));
-    const who = await auth.check(token, writes);
-    if (!who) return unauthorized("invalid_token");
+    let code: string | undefined;
+    const who = await auth.check(token, writes, (c) => (code = c)).catch((e: Error) => {
+      log.warn({ reason: "kernel unreachable", err: String(e.message).slice(0, 100), userAgent: String(req.headers["user-agent"] ?? "").slice(0, 100) }, "/mcp answered 401");
+      return undefined;
+    });
+    if (!who) return unauthorized("invalid_token", "kernel refused", code);
     sessions.set(req, who.session);
     await mcp!(req, res, body, { token, resource: auth.resource(), origin: auth.board });
   }
