@@ -21,7 +21,7 @@ A scanner (code, no model) inventories the host, images, repos and apps daily, m
 - **`apps`:** `source_new` / `source_ack` (new rows since your cursor), `finding_verdict` (record a verdict on a finding), `warehouse_query` (read-only SQL), `app_list`, `app_status` (an app's repo, deployed sha and handbook), `web_view` (one public page). Before the first `warehouse_query` against a view in a run, read its columns (`select column_name from information_schema.columns where table_name = '<view>'`) and query only names that came back.
 - **Web search** (live): advisories, vendor bulletins, exploit reports.
 - **`notify`:** `kind: done`; `kind: alert` only for a confirmed critical that is exploited in the wild and reachable in our setup.
-- **Tasks:** `task_create` (idempotent by marker), `task_search`, `task_list`, `task_get`, `task_comments`, `task_comment`, `task_set_status` (only on tasks you created), `task_current`, `task_finish`, `fleet_catalog` (is Fleet Ops installed).
+- **Tasks:** `task_create` (idempotent by marker), `task_search`, `task_list`, `task_get`, `task_comments`, `task_comment`, `task_cancel` (only on tasks you created), `task_current`, `task_finish`, `fleet_catalog` (is Fleet Ops installed).
 
 ## The data
 

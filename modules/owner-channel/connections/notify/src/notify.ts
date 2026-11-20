@@ -47,7 +47,7 @@ export interface Deps {
   /** Posts the reply on its chat as the calling agent (the kernel's /v1/cp/agent, on this call's assertion). */
   postReply?: (issueId: string, body: string, assertion: string) => Promise<boolean>;
   /** Records that the calling job's own task waits on the owner's answer (the kernel's POST /v1/wait, on this call's assertion). */
-  wait?: (task: string, assertion: string) => Promise<void>;
+  wait?: (task: string, assertion: string, question: string) => Promise<void>;
   /** The kernel's loop brake: whether one more message about this task may go now. */
   brake?: (task: string, agent: string, decision: boolean) => Promise<{ allow: boolean; note?: string }>;
   /** Setting notify_fyi: mute. */
@@ -141,12 +141,18 @@ export async function notify(d: Deps, a: NotifyArgs, caller?: Caller, now = Date
     }
     const ok = out === "sent" || out === "down" || onChat || digested;
     if (ok) d.store.setKv(dedupe, String(now));
-    // A question on the agent's own task: the task waits on the answer (the kernel refuses any other task; that is no failure).
-    if (ok && kind === "decision" && found && caller && d.wait) await d.wait(found.issueId, caller.assertion).catch(() => {});
+    // A question on the agent's own task files an owner wait carrying its text (the kernel refuses any other task; that is no failure).
+    // A wait that failed is returned: the task would read orphaned and be woken to ask again.
+    let waitError: string | undefined;
+    if (ok && kind === "decision" && found && caller && d.wait) {
+      const question = [text, ...(a.questions ?? []).map((q) => q.question)].join("\n");
+      await d.wait(found.issueId, caller.assertion, question).catch((e: Error) => { waitError = String(e.message ?? e).slice(0, 200); });
+    }
+    const failed = waitError ? { wait_error: `the question went out, but its wait wasn't recorded (${waitError}): call task_wait for: owner with the question so the task isn't woken as idle.` } : {};
     const chat = onChat ? { onChat: true as const } : {};
     // Sent only when a channel took it, its chat holds it or the digest will carry it; waiting for a channel is never "sent".
     if (out === "down" && !onChat && !digested) return { sent: false, queued: true, note: "No channel reaches the owner right now: it goes out once one is back." };
-    if (ok) return { sent: true, ...chat, ...(digested ? { note: "Routine update: it goes to the owner in the next digest." } : {}) };
+    if (ok) return { sent: true, ...chat, ...failed, ...(digested ? { note: "Routine update: it goes to the owner in the next digest." } : {}) };
     if (muted) return { sent: false, reason: "muted", note: "The owner muted fyi messages, so nothing was sent. That is expected: don't resend it; put it in your next result instead." };
     return { sent: false, reason: "error", note: "No channel is set up to reach the owner, and this message has no chat on the board to land on." };
   } catch {

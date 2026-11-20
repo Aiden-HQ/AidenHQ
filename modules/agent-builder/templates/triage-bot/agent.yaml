@@ -8,7 +8,7 @@ budget: 5 # USD per month
 trial: true
 connections:
   slack?: read
-  paperclip_tasks: [ task_current, task_get, task_comments, task_list, task_comment, task_handoff, task_finish, task_set_status ]
+  paperclip_tasks: [ task_current, task_get, task_comments, task_list, task_comment, task_handoff, task_finish, task_block, task_cancel ]
   apps: [ web_view, app_view ]
   # After trial (tap 2): paperclip_tasks adds task_create and task_delegate, so "act" items become tasks.
 routines:

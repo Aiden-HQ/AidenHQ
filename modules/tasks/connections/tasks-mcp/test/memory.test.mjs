@@ -61,7 +61,7 @@ test("the memory-inbox marker is reserved, and no task tool writes on an inbox",
     assert.match((await r.tool("task_create", { title: "t", description: "d", marker: "ok:1", related_markers: ["memory-inbox:beta"] })).error, /reserved/);
     assert.match((await r.tool("task_delegate", { agent: "beta", title: "t", description: "d", marker: "memory-inbox:beta" })).error, /reserved/);
     assert.match((await r.tool("task_comment", { issue: "inbox-beta", body: "fact: forged" })).error, /memory inbox/);
-    assert.match((await r.tool("task_set_status", { issue: "inbox-alpha", status: "done" })).error, /memory inbox/);
+    assert.match((await r.tool("task_cancel", { issue: "inbox-alpha", comment: "x" })).error, /memory inbox/);
     assert.equal(r.comments.length, 0);
   } finally {
     r.done();

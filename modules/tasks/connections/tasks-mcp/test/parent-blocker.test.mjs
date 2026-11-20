@@ -6,7 +6,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { bridge } from "./helpers.mjs";
 
-async function call({ blockers, args = { issue: "cur", status: "done" }, tool = "task_set_status" }) {
+async function call({ blockers, args = { comment: "Done." }, tool = "task_finish" }) {
   const issues = new Map(blockers.map((b) => [b.id, b]));
   const issue = { id: "cur", identifier: "WOR-7132", title: "Fix the fleet", status: "blocked", assigneeAgentId: "me", createdByAgentId: "delegator", parentId: "chat" };
   const chat = { id: "chat", identifier: "WOR-4976", title: "Operator chat", status: "in_progress", assigneeAgentId: "me" };
@@ -52,33 +52,23 @@ async function call({ blockers, args = { issue: "cur", status: "done" }, tool = 
 const parent = { id: "chat", identifier: "WOR-4976", title: "Operator chat", status: "in_progress" };
 const live = { id: "b2", identifier: "WOR-2430", title: "Open review", status: "in_progress" };
 
-test("a task whose only blocker is its own parent moves to todo and in_progress", async () => {
-  for (const status of ["todo", "in_progress"]) {
-    const { error, patches, comments } = await call({ blockers: [parent], args: { issue: "cur", status } });
+test("a task whose only blocker is its own parent finishes and cancels", async () => {
+  for (const [tool, status] of [["task_finish", "done"], ["task_cancel", "cancelled"]]) {
+    const { error, patches, comments } = await call({ blockers: [parent], tool, args: { comment: "Done." } });
     assert.equal(error, undefined);
-    assert.deepEqual(patches, [{ status }, { blockedByIssueIds: [] }, { status }]);
-    assert.equal(comments.length, 1);
-    assert.match(comments[0], /WOR-4976 \(parent\)/);
-  }
-});
-
-test("a task whose only blocker is its own parent moves to done and cancelled", async () => {
-  for (const status of ["done", "cancelled"]) {
-    const { error, patches, comments } = await call({ blockers: [parent], args: { issue: "cur", status } });
-    assert.equal(error, undefined);
-    assert.deepEqual(patches, [{ status }, { blockedByIssueIds: [] }, { status }]);
+    assert.deepEqual(patches, [{ status, comment: "Done." }, { blockedByIssueIds: [] }, { status, comment: "Done." }]);
     assert.match(comments.join("\n"), /WOR-4976 \(parent\)/);
   }
 });
 
 test("a live blocker that is not the task's parent still refuses and the relation is kept", async () => {
-  const { error, patches } = await call({ blockers: [live], args: { issue: "cur", status: "done" } });
+  const { error, patches } = await call({ blockers: [live] });
   assert.match(error, /409/);
-  assert.deepEqual(patches, [{ status: "done" }]);
+  assert.deepEqual(patches, [{ status: "done", comment: "Done." }]);
 });
 
 test("its own parent beside a live blocker still refuses", async () => {
-  const { error, patches } = await call({ blockers: [parent, live], args: { issue: "cur", status: "done" } });
+  const { error, patches } = await call({ blockers: [parent, live] });
   assert.match(error, /409/);
-  assert.deepEqual(patches, [{ status: "done" }]);
+  assert.deepEqual(patches, [{ status: "done", comment: "Done." }]);
 });

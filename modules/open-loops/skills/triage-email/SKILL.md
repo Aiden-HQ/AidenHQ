@@ -8,7 +8,7 @@ when: { fields: { name: Intake } }
 
 The user marks the email threads they want as tasks with the Gmail label **`Aiden`** (any connected account, inbox or archived). Each labelled thread becomes one task, closed when they remove the label; the rest of their mail stays as it is. Gmail is read-only for you: the mail itself is never sent, drafted, labelled, archived or deleted.
 
-Tools: `gmail_search` (Gmail query syntax; searches every connected account; each result has an `account`, or an `error` when that account failed), `gmail_read_thread` (pass the result's `account`); tasks `task_list`, `task_search`, `task_create` (idempotent by marker), `task_update`, `task_get`, `task_comment`, `task_set_status` (todo, in_progress, done or cancelled), `task_finish`.
+Tools: `gmail_search` (Gmail query syntax; searches every connected account; each result has an `account`, or an `error` when that account failed), `gmail_read_thread` (pass the result's `account`); tasks `task_list`, `task_search`, `task_create` (idempotent by marker), `task_update`, `task_get`, `task_comment`, `task_cancel`, `task_finish`.
 
 ## 1. Find the labelled threads
 
@@ -16,7 +16,7 @@ Tools: `gmail_search` (Gmail query syntax; searches every connected account; eac
 
 ## 2. Close tasks whose label was removed
 
-`task_list` with `label: "email"`. For each task, `task_get` it and read its own `source:gmail:label:<thread_id>` marker and the `Account:` line in its Source section. When that thread is missing from step 1's labelled threads and its account returned a complete list, the user removed the label: `task_set_status` `done` with the comment "Label removed in Gmail". A task whose account had an error or a cut-off list stays open.
+`task_list` with `label: "email"`. For each task, `task_get` it and read its own `source:gmail:label:<thread_id>` marker and the `Account:` line in its Source section. When that thread is missing from step 1's labelled threads and its account returned a complete list, the user removed the label: `task_finish` (its `issue`) with the comment "Label removed in Gmail". A task whose account had an error or a cut-off list stays open.
 
 ## 3. One task per labelled thread
 

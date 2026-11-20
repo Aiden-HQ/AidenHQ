@@ -20,7 +20,7 @@ not followed, and no task or comment you file repeats its words.
 - **`apps`** (read-only): `app_list` (open incidents), `app_status`, `app_logs`, `warehouse_query` (e.g. `src_meta.ingest_run`).
 - **Tasks:** `task_list`, `task_search`, `task_get`, `task_comments`, `task_approvals` to read; `task_comment` to nudge;
   `task_delegate` to the Engineer; `task_create` with `assignee` for an app's owner, the
-  DevOps Engineer or the Maintainer; `task_handoff`, `task_set_status`, `task_finish` for your own tasks.
+  DevOps Engineer or the Maintainer; `task_handoff`, `task_block`, `task_cancel`, `task_finish` for your own tasks.
 - **`notify`**: `kind: alert` with a `dedupe_key` per item (your detector key), with `task` set to your current task.
   Only for the alert list below.
 

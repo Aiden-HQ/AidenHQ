@@ -71,10 +71,6 @@ export async function companyOf(agentId) {
   return companies.get(agentId);
 }
 
-// The task API rejects agent-set "in_review" without a review path, and "blocked" without an unresolved
-// first-class blocker (or a pending interaction/approval), so `blocked` takes the blocking task.
-const STATUSES = ["todo", "in_progress", "blocked", "done", "cancelled"];
-
 // Engineer sub-tasks: every Engineer runs Codex on OpenRouter models in its computer (module.yaml `engine:`).
 const ENGINES = ["codex-openrouter"];
 const engineOf = (a) => (ENGINES.includes(a.metadata?.engine) ? a.metadata.engine : undefined);
@@ -256,21 +252,34 @@ async function patchIssue(issue, body) {
 }
 
 /**
- * The first-class blockers a task enters blocked with: the task named by `blocked_by`, or the open ones it already has.
- * The recovery checker reads those relations, so a dependency wait is recorded as a target, not prose.
+ * The first-class blockers a task enters blocked with: the open tasks named by `blockedBy` (ids or identifiers).
+ * The recovery checker and the kernel's unblock poll read those relations, so a dependency wait is recorded as targets, not prose.
  */
-async function blockedByIssueIds(issue, blockedBy) {
-  const current = await api("GET", `/api/issues/${issueRef(issue)}`);
-  const open = (current.blockedBy ?? []).filter((b) => !["done", "cancelled"].includes(b.status));
-  if (!blockedBy) {
-    if (open.length) return open.map((b) => b.id);
-    throw new Error("setting status to blocked needs blocked_by: the task it waits on (identifier or id)");
+async function blockerIds(blockedBy) {
+  const ids = [];
+  for (const ref of blockedBy) {
+    const blocker = await api("GET", `/api/issues/${issueRef(ref)}`).catch(() => undefined);
+    if (!blocker?.id) throw new Error(`unknown blocking task ${ref}`);
+    if (blocker.id === CURRENT()) throw new Error("a task cannot block itself");
+    if (["done", "cancelled"].includes(blocker.status)) throw new Error(`cannot be blocked by ${blocker.identifier ?? blocker.id}: it is ${blocker.status}`);
+    if (!ids.includes(blocker.id)) ids.push(blocker.id);
   }
-  const blocker = await api("GET", `/api/issues/${issueRef(blockedBy)}`);
-  if (!blocker?.id) throw new Error(`unknown blocking task ${blockedBy}`);
-  if (blocker.id === current.id) throw new Error("a task cannot block itself");
-  if (["done", "cancelled"].includes(blocker.status)) throw new Error(`cannot be blocked by ${blocker.identifier ?? blocker.id}: it is ${blocker.status}`);
-  return [blocker.id];
+  return ids;
+}
+
+/** A task the caller delegated: one it created, or a child of the task it is working on. */
+async function requireDelegated(issue) {
+  const me = (await api("GET", "/api/agents/me")).id;
+  const i = await api("GET", `/api/issues/${issueRef(issue)}`);
+  if (i.id !== CURRENT() && i.createdByAgentId !== me && !(CURRENT() && i.parentId === CURRENT())) throw new Error("Refused: that is not a task you delegated (one you created, or a child of your current task).");
+  return i;
+}
+/** A task the caller holds: assigned to it, or one it delegated. */
+async function requireHeld(issue) {
+  const me = (await api("GET", "/api/agents/me")).id;
+  const i = await api("GET", `/api/issues/${issueRef(issue)}`);
+  if (i.id !== CURRENT() && i.assigneeAgentId !== me && i.createdByAgentId !== me && !(CURRENT() && i.parentId === CURRENT())) throw new Error("Refused: that task is neither assigned to you nor one you delegated.");
+  return i;
 }
 
 /** The other parts of one of the user's tasks, with whom each is, for reading their conversations. */
@@ -392,8 +401,9 @@ async function refuseMemoryInbox(issue, { librarian = false } = {}) {
   if (memoryInboxes().has(i.id) && !(librarian && grant().roles.includes("librarian"))) throw new Error("Refused: that task is a memory inbox; only memory_note writes there.");
 }
 /** An agent in trial ("draft, don't do") reports only on its own tasks: the current one, or one assigned to it. */
-const TRIAL_OWN_TASK = ["task_comment", "task_handoff", "task_set_status"];
+const TRIAL_OWN_TASK = ["task_comment", "task_handoff", "task_cancel"];
 async function requireOwnTask(g, issue) {
+  if (!issue) return; // task_cancel without `issue` is the current task
   const i = await api("GET", `/api/issues/${issueRef(issue)}`);
   if (i.id !== CURRENT() && i.assigneeAgentId !== g.id) throw new Error(`Refused: ${g.key} is in trial and may only write on its own tasks.`);
 }
@@ -658,7 +668,7 @@ async function assignTask(me, target, { title, description, parent, marker, prio
   if (same && parked(same, me, hold)) return { identifier: same.identifier, created: false, assignee: target.name, ...(await startGraded(same, grade, blockers)) };
   if (same)
     throw new Error(
-      `Refused: ${same.identifier} ("${String(same.title).slice(0, 120)}", ${same.status}) is already ${(await nameOf(same.assigneeAgentId)) ?? target.name}'s open task for this brief under ${p.identifier}. To change it, comment on ${same.identifier} with what changed (task_comment wakes them). To replace it, cancel ${same.identifier} first (task_set_status cancelled, with why), then delegate again.`,
+      `Refused: ${same.identifier} ("${String(same.title).slice(0, 120)}", ${same.status}) is already ${(await nameOf(same.assigneeAgentId)) ?? target.name}'s open task for this brief under ${p.identifier}. To change it, comment on ${same.identifier} with what changed (task_comment wakes them). To replace it, cancel ${same.identifier} first (task_cancel, with why), then delegate again.`,
     );
   // A graded task is filed parked and starts only once its rubric is on file, so it never runs (and closes) ungraded.
   const i = await api("POST", `/api/companies/${encodeURIComponent(COMPANY())}/issues`, { ...body, ...(hold ? { status: "backlog" } : {}) });
@@ -924,14 +934,16 @@ const TOOLS = {
         deliverable: DELIVERABLE_INPUT,
         rubric: RUBRIC_INPUT,
         after: { type: "array", items: { type: "string" }, maxItems: 10, description: "tasks (identifier or id) this one waits on, e.g. the sibling you just delegated: it starts once they are all done or cancelled" },
+        wait: { type: "boolean", description: "true: your current task also waits on the new task (blocked until it closes) and resumes by itself; end your turn after" },
       },
       required: ["agent", "title", "description"],
       additionalProperties: false,
     },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    run: async ({ agent, title, description, parent, marker, priority, rubric, deliverable, after }) => {
+    run: async ({ agent, title, description, parent, marker, priority, rubric, deliverable, after, wait }) => {
       refuseReservedMarker(marker);
       if (!COMPANY()) throw new Error("no company for this agent");
+      if (wait && !CURRENT()) throw new Error("no current task to wait");
       // Whom this agent may delegate to is the kernel's rule (kernel/src/outcomes.ts delegateIds): its refusal comes back as the error.
       const me = await api("GET", "/api/agents/me");
       const all = await api("GET", `/api/companies/${encodeURIComponent(COMPANY())}/agents`);
@@ -939,7 +951,13 @@ const TOOLS = {
       const hits = all.filter((a) => a.status !== "terminated" && a.id !== me.id && [keyOf(a), a.name].some((n) => String(n ?? "").toLowerCase() === want));
       if (hits.length !== 1) throw new Error(hits.length ? `"${agent}" is ambiguous: use the key from task_team` : `"${agent}" is not an agent here (see task_team, fleet_catalog)`);
       const warning = isRunner(hits[0]) && briefWarning(description);
-      return { ...(await assignTask(me, hits[0], { title, description, parent, marker, priority, rubric, deliverable, after }, "Delegated by")), ...(warning ? { warning } : {}) };
+      const out = { ...(await assignTask(me, hits[0], { title, description, parent, marker, priority, rubric, deliverable, after }, "Delegated by")), ...(warning ? { warning } : {}) };
+      if (!wait) return out;
+      // The current task waits on the new one: blocked on it (the kernel's unblock poll resumes this task when it closes).
+      const child = await api("GET", `/api/issues/${issueRef(out.identifier)}`);
+      if (["done", "cancelled"].includes(child.status)) return out;
+      await patchIssue(CURRENT(), { status: "blocked", blockedByIssueIds: [child.id] });
+      return { ...out, waiting: true };
     },
   },
   handbook_list: {
@@ -1267,10 +1285,10 @@ const TOOLS = {
       // ending for Paperclip, unlike in_progress), so the user's next comment there wakes it again.
       if (await isOwnPart(current)) {
         const i = await patchIssue(issue, { status: "todo", comment: body });
-        // It waits on the user's reply (their comment wakes it): recorded, so it isn't idle work, with a check in a week.
+        // It waits on the user's reply (their comment wakes it): an owner wait carrying the handoff's words, so it isn't idle work.
         if (current.id === CURRENT()) {
           try {
-            await retried(() => kernelWait({ reason: "the user's reply to my handoff", on: "the user's reply", until: new Date(Date.now() + 7 * 864e5 - 60_000).toISOString() }));
+            await retried(() => kernelWait({ for: "owner", asked: true, handoff: true, reason: "the user's reply to my handoff", question: comment }));
           } catch (err) {
             // The handoff itself landed: say the wait didn't, so the agent calls task_wait rather than idle-wake while waiting.
             return { ...brief(i), wait_error: `handed off, but the wait wasn't recorded (${String(err.message ?? err).slice(0, 200)}): call task_wait (on: the user's reply) so you aren't woken as idle.` };
@@ -1283,11 +1301,18 @@ const TOOLS = {
     },
   },
   task_comment: {
-    description: "Add a comment to a Paperclip task. Changing its status too (e.g. reopening it with instructions)? Use task_set_status with `comment` instead, so it is one message.",
-    inputSchema: { type: "object", properties: { issue: { type: "string" }, body: { type: "string" } }, required: ["issue", "body"], additionalProperties: false },
+    description: "Add a comment to a Paperclip task. `reopen: true` on a closed task you delegated moves it back to todo with the comment as one message (new instructions for the assignee, who is woken).",
+    inputSchema: { type: "object", properties: { issue: { type: "string" }, body: { type: "string" }, reopen: { type: "boolean", description: "a closed task you delegated: reopen it with this comment" } }, required: ["issue", "body"], additionalProperties: false },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    run: async ({ issue, body }) => {
+    run: async ({ issue, body, reopen }) => {
       await refuseMemoryInbox(issue, { librarian: true });
+      if (reopen) {
+        const t = await requireDelegated(issue);
+        if (["done", "cancelled"].includes(t.status)) {
+          const last = await postLeadingParts(issue, `${feedbackMark()}${body}`);
+          return { reopened: true, ...brief(await patchIssue(issue, { status: "todo", comment: last })) };
+        }
+      }
       const last = await postLeadingParts(issue, `${feedbackMark()}${body}`);
       const c = await api("POST", `/api/issues/${issueRef(issue)}/comments`, { body: last });
       return { comment_id: c.id, parts: commentParts(body).length };
@@ -1316,52 +1341,57 @@ const TOOLS = {
     },
   },
   task_finish: {
-    description: "Mark the task this run is working on as done, with a summary comment. Only ever touches the current run's task.",
-    inputSchema: { type: "object", properties: { comment: { type: "string" } }, required: ["comment"], additionalProperties: false },
+    description: "Mark a task done, with a summary comment: the task this run is working on, or with `issue` another task assigned to you or one you delegated (accepting a delegate's work).",
+    inputSchema: { type: "object", properties: { issue: { type: "string", description: "a task assigned to you or one you delegated; default: the current task" }, comment: { type: "string" } }, required: ["comment"], additionalProperties: false },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    run: async ({ comment }) => {
-      if (!CURRENT()) throw new Error("no current task");
-      // Same rule as task_set_status: your part of the user's task stays open for their replies.
-      const current = await api("GET", `/api/issues/${issueRef(CURRENT())}`);
+    run: async ({ issue, comment }) => {
+      const target = issue ?? CURRENT();
+      if (!target) throw new Error("no current task");
+      if (issue) await refuseMemoryInbox(issue);
+      // Your part of the user's task stays open for their replies.
+      const current = issue ? await requireHeld(issue) : await api("GET", `/api/issues/${issueRef(CURRENT())}`);
       if (await isOwnPart(current)) throw new Error("this is your part of the user's task: it stays open for their replies. Finish with task_handoff instead; the user closes the task.");
       // A graded task waits for the grader (the kernel's finish gate holds it): the result goes on as a comment instead.
-      const leading = await postLeadingParts(CURRENT(), comment);
-      const i = await patchIssue(CURRENT(), { status: "done", comment: leading });
-      const held = await heldClose(CURRENT(), i, leading);
+      const leading = await postLeadingParts(target, comment);
+      const i = await patchIssue(target, { status: "done", comment: leading });
+      const held = await heldClose(target, i, leading);
       if (held) return held;
       return brief(i);
     },
   },
-  task_set_status: {
-    description: `Set a Paperclip task's status (${STATUSES.join(", ")}), optionally with a comment. \`blocked\` needs \`blocked_by\`: the task it waits on, recorded as a first-class blocker so the board and the recovery checker see the target. To reopen a task with new instructions, put the instructions in \`comment\` here: one message, never a task_comment followed by this.`,
+  task_block: {
+    description: "The task this run is working on waits on other tasks: it is blocked on them (`blocked_by`, 1-10 identifiers or ids of open tasks, recorded as first-class blockers) and resumes by itself once they are all done or cancelled. End your turn after it. A wait on a person or an event is task_wait.",
     inputSchema: {
       type: "object",
       properties: {
-        issue: { type: "string" },
-        status: { type: "string", enum: STATUSES },
-        comment: { type: "string" },
-        blocked_by: { type: "string", description: "When status is blocked: the task blocking this one (identifier or id). Required unless it already has an open blocker." },
+        blocked_by: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 10, description: "the open tasks (identifier or id) this one waits on" },
+        comment: { type: "string", description: "why it waits" },
       },
-      required: ["issue", "status"],
+      required: ["blocked_by"],
       additionalProperties: false,
     },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    run: async ({ issue, status, comment, blocked_by }) => {
-      if (!STATUSES.includes(status)) throw new Error("invalid status");
-      if (status !== "blocked" && blocked_by) throw new Error("blocked_by only applies when status is blocked");
-      await refuseMemoryInbox(issue);
-      // An agent's part of the user's task stays open for the user's replies: closing it is theirs.
-      if (status === "done" || status === "cancelled") {
-        const current = await api("GET", `/api/issues/${issueRef(issue)}`);
-        if (await isOwnPart(current)) throw new Error("this is your part of the user's task: it stays open for their replies. Finish with task_handoff instead; the user closes the task.");
-      }
-      const body = { status };
-      if (status === "blocked") body.blockedByIssueIds = await blockedByIssueIds(issue, blocked_by);
-      if (comment) body.comment = await postLeadingParts(issue, comment);
-      const i = await patchIssue(issue, body);
-      const held = status === "done" ? await heldClose(issue, i, body.comment) : undefined;
-      if (held) return held;
-      return brief(i);
+    run: async ({ blocked_by, comment }) => {
+      if (!CURRENT()) throw new Error("no current task");
+      if (!Array.isArray(blocked_by) || blocked_by.length < 1 || blocked_by.length > 10) throw new Error("blocked_by takes 1 to 10 tasks");
+      await refuseMemoryInbox(CURRENT());
+      const body = { status: "blocked", blockedByIssueIds: await blockerIds(blocked_by) };
+      if (comment) body.comment = await postLeadingParts(CURRENT(), comment);
+      return brief(await patchIssue(CURRENT(), body));
+    },
+  },
+  task_cancel: {
+    description: "Cancel a task that is no longer needed, with a `comment` saying why: the current run's task, or with `issue` another task assigned to you or one you delegated. Your part of the user's task stays open for their replies: finish it with task_handoff.",
+    inputSchema: { type: "object", properties: { issue: { type: "string", description: "a task assigned to you or one you delegated; default: the current task" }, comment: { type: "string" } }, required: ["comment"], additionalProperties: false },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    run: async ({ issue, comment }) => {
+      const target = issue ?? CURRENT();
+      if (!target) throw new Error("no current task");
+      await refuseMemoryInbox(target);
+      const t = issue ? await requireHeld(issue) : await api("GET", `/api/issues/${issueRef(CURRENT())}`);
+      if (await isOwnPart(t)) throw new Error("this is your part of the user's task: it stays open for their replies. Finish with task_handoff instead; the user closes the task.");
+      const leading = await postLeadingParts(target, comment);
+      return brief(await patchIssue(target, { status: "cancelled", comment: leading }));
     },
   },
 };
@@ -1575,7 +1605,7 @@ export async function callTool(caller, assertion, name, args) {
       ctx.dir = await directory();
       ctx.company = await companyOf(caller.agent);
       const g = grant();
-      if (g.trial && TRIAL_OWN_TASK.includes(name)) await requireOwnTask(g, args?.issue ?? "");
+      if (g.trial && TRIAL_OWN_TASK.includes(name)) await requireOwnTask(g, name === "task_cancel" ? args?.issue : (args?.issue ?? ""));
       const leaked = toolMarkup(args);
       if (leaked) throw new Error(`Refused: \`${leaked}\` holds raw tool-call markup, not words for people. Make that call as a real tool call, and write only the message here.`);
       const result = await tool.run(args ?? {});

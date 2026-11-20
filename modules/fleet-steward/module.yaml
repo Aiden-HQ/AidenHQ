@@ -44,7 +44,7 @@ agents:
       # fleet_status through fleet-read (no fleet_control, no relaying, no approvals decided); coach_record through fleet-audit;
       # handbook_list/handbook_read/task_propose_rule through librarian. task_create/task_delegate only to delegate_to below.
       paperclip_tasks: [ task_current, task_get, task_comments, task_search, task_list, task_approvals, task_team,
-                         task_create, task_comment, task_delegate, task_handoff, task_set_status, task_finish,
+                         task_create, task_comment, task_delegate, task_handoff, task_block, task_cancel, task_finish,
                          fleet_status, fleet_catalog, fanout_map,
                          coach_record, handbook_list, handbook_read, task_propose_rule ]
       # The detector's open and recovered incidents (fleet-read), the Coach's reads (fleet-audit) and the apply generations.

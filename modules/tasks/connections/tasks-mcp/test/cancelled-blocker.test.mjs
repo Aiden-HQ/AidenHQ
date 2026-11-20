@@ -5,7 +5,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { bridge } from "./helpers.mjs";
 
-async function call({ blockers, tool = "task_set_status", args = { issue: "cur", status: "done" } }) {
+async function call({ blockers, tool = "task_finish", args = { comment: "Done: triaged." } }) {
   const relations = new Map(blockers.map((b) => [b.id, b]));
   const issue = { id: "cur", identifier: "WOR-2355", title: "Triage the fleet", status: "blocked", assigneeAgentId: "me", createdByAgentId: "aiden" };
   const patches = [];
@@ -46,16 +46,10 @@ async function call({ blockers, tool = "task_set_status", args = { issue: "cur",
 
 const cancelled = { id: "b1", identifier: "WOR-2431", title: "Stale design review", status: "cancelled" };
 
-test("task_set_status done releases a cancelled blocker and names it", async () => {
+test("task_finish closes a task whose only blocker is cancelled and names it", async () => {
   const { error, patches, comments } = await call({ blockers: [cancelled] });
   assert.equal(error, undefined);
-  assert.deepEqual(patches, [{ status: "done" }, { blockedByIssueIds: [] }, { status: "done" }]);
   assert.match(comments.join("\n"), /WOR-2431 \(cancelled\)/);
-});
-
-test("task_finish closes a task whose only blocker is cancelled", async () => {
-  const { error, patches } = await call({ blockers: [cancelled], tool: "task_finish", args: { comment: "Done: triaged." } });
-  assert.equal(error, undefined);
   assert.deepEqual(patches, [{ status: "done", comment: "Done: triaged." }, { blockedByIssueIds: [] }, { status: "done", comment: "Done: triaged." }]);
 });
 
@@ -69,12 +63,12 @@ test("an active blocker still refuses and the relation is kept", async () => {
   const active = { id: "b2", identifier: "WOR-2430", title: "Open review", status: "in_progress" };
   const { error, patches } = await call({ blockers: [active] });
   assert.match(error, /409/);
-  assert.deepEqual(patches, [{ status: "done" }]);
+  assert.deepEqual(patches, [{ status: "done", comment: "Done: triaged." }]);
 });
 
 test("a cancelled blocker beside a live one does not clear anything", async () => {
   const active = { id: "b2", identifier: "WOR-2430", title: "Open review", status: "in_progress" };
   const { error, patches } = await call({ blockers: [cancelled, active] });
   assert.match(error, /409/);
-  assert.deepEqual(patches, [{ status: "done" }]);
+  assert.deepEqual(patches, [{ status: "done", comment: "Done: triaged." }]);
 });

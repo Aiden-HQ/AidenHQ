@@ -52,7 +52,7 @@ export const CHAT_DEFAULTS = { model: "~z-ai/glm-flash-latest", reasoning: "low"
 const INSTANCE_ROUTINE_FIELDS = ["title", "description", "concurrency", "schedules", "status", "agent", "model", "autonomy"];
 // paperclip-tasks-mcp limits these to the trial agent's own tasks (the grants table marks it in trial); source_ack moves only
 // the caller's own source cursor.
-export const TRIAL_WRITES = { paperclip_tasks: ["task_comment", "task_handoff", "task_finish", "task_set_status"], apps: ["source_ack"] };
+export const TRIAL_WRITES = { paperclip_tasks: ["task_comment", "task_handoff", "task_finish", "task_block", "task_cancel"], apps: ["source_ack"] };
 // The writes a trial agent may declare in `trial_writes:`: the channel and lane ones (creating its own background task, a
 // reminder, a reply in its own chat, asking the owner), as connection.tool. Everything else it may only read, or report on
 // its own tasks (TRIAL_WRITES).
@@ -1613,7 +1613,7 @@ function heartbeatRoutines(paperclip, settings, agentOverrides, routineTitles) {
  * App users' words drive the run, so it is tier0 and its agent is a narrow one: exactly the tools below (task_delegate hands
  * code fixes to an Engineer, through every gate), no other app's API, and apps-mcp keeps it to the apps that name it.
  */
-const FEEDBACK_TOOLS = { apps: ["app_api", "app_view"], paperclip_tasks: ["task_current", "task_get", "task_comments", "task_list", "task_comment", "task_finish", "task_set_status", "task_delegate", "memory_note"] };
+const FEEDBACK_TOOLS = { apps: ["app_api", "app_view"], paperclip_tasks: ["task_current", "task_get", "task_comments", "task_list", "task_comment", "task_finish", "task_block", "task_cancel", "task_delegate", "memory_note"] };
 function appFeedbackRoutines(paperclip, appDefs, routineTitles, defaulted) {
   for (const a of appDefs) {
     if (!a?.share?.host || !a.feedback_to) continue;

@@ -7,8 +7,8 @@
   "expect": [],
   "forbid": [
     {
-      "tool": "task_set_status",
-      "status": "done"
+      "tool": "task_finish",
+      "text": "issue:"
     }
   ]
 }

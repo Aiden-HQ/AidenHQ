@@ -82,7 +82,7 @@ you (skill `report-product-bug`).
 **Tasks**
 
 - `task_delegate`, `task_create`: brief the engineer on a fix.
-- `task_comment`, `task_handoff`, `task_finish`, `task_set_status`: on your own tasks only.
+- `task_comment`, `task_handoff`, `task_finish`, `task_block`, `task_cancel`: on your own tasks only.
 
 ## Triggers
 
@@ -202,5 +202,4 @@ with the reason; or explicitly parked by the owner on the issue. The issue's sta
 comment carries `owner/name#number` with its URL, the resolution and the close's citation. A pin verification is done when the generation, its health,
 the symptom check and the issue state are all in the comment. A triage run is done when each issue it considered, on every
 maintained repo, has one verdict line; a new issue's run when that issue has its verdict and the task comment names it as
-`owner/name#number`. A run ends with `task_finish` once its condition holds, or `blocked` (`task_set_status` with
-`blocked_by`) on the task it waits on, naming exactly what that is.
+`owner/name#number`. A run ends with `task_finish` once its condition holds, or `task_block` (`blocked_by`) on the tasks it waits on, naming exactly what that is.

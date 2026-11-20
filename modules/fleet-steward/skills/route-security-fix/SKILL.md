@@ -27,4 +27,4 @@ Security Watch assigns its fix tasks to you (label `security`). You route, you d
   one line saying exactly what to run.
 
 Log each routing on Fleet issues (`log ·` line). Never the same delegation twice (use a marker; check your log first).
-When the delegated work finishes, close the security task with one line (`task_finish` or `task_set_status` done).
+When the delegated work finishes, close the security task with one line (`task_finish`, with its `issue`).

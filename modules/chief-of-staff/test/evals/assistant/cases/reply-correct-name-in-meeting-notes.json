@@ -13,7 +13,11 @@
   ],
   "forbid": [
     {
-      "tool": "task_set_status"
+      "tool": "task_finish",
+      "text": "issue:"
+    },
+    {
+      "tool": "task_cancel"
     }
   ]
 }
