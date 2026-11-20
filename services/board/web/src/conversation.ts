@@ -80,7 +80,7 @@ export function deciderOf(a: Pick<Approval, "decidedBy" | "decidedByName">): str
   if (!d || d.startsWith("auto:")) return "";
   if (d.startsWith("account:") || d.startsWith("owner:")) return "you";
   if (d === "reviewer:kernel/code") return "code";
-  if (d.startsWith("reviewer:")) return d.includes("+") ? "the review panel" : "the AI reviewer";
+  if (d.startsWith("reviewer:")) return d.includes("+") ? "the review panel" : d.includes(";unsure:") ? "the AI reviewer, approved; the second reviewer was unsure" : "the AI reviewer";
   return d;
 }
 

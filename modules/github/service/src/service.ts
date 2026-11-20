@@ -30,7 +30,9 @@ import { createMerges } from "./merges.ts";
 import { createFlow } from "./flow.ts";
 import { createReleaseTrain } from "./train.ts";
 import { LOCAL_ORG, plan as planRules } from "./plan.mjs";
-import { fileContext } from "./review-files.mjs";
+import { fileContext, numstat } from "./review-files.mjs";
+/** One changed file as git counts it (review-files.mjs numstat; a binary file has no line counts). */
+type Changed = { path: string; add?: number; del?: number };
 import { evidenceOf } from "./evidence.mjs";
 import { SOURCE_EXCEPTIONS_FILE, readCardSourceExceptions } from "./sources.mjs";
 import { candidatesOf, readSiblings } from "./siblings.mjs";
@@ -231,6 +233,8 @@ export function createService(o: Options) {
 
   const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
   const diffOf = (dir: string, from: string, to: string) => git(dir, ["-c", "core.attributesFile=/dev/null", "diff", "--no-ext-diff", "--no-textconv", "--text", "--no-renames", from, to]);
+  /** The same change counted by git itself (numstat): the reviewer checks the diff it gets against it (review-files.mjs sameChanges). */
+  const numstatOf = async (dir: string, from: string, to: string) => numstat(await git(dir, ["-c", "core.attributesFile=/dev/null", "diff", "--no-ext-diff", "--no-textconv", "--text", "--no-renames", "--numstat", from, to]));
   /**
    * The verified state plan.mjs tiers a request on (its `s`) and the card's facts (target, sentence, the diff the reviewer
    * reads): read from the workspace, the cache and GitHub, never the args.
@@ -254,6 +258,7 @@ export function createService(o: Options) {
       const merge = kind.endsWith(".merge");
       const prs = [];
       const evidence: string[] = [];
+      const changed: Changed[] = [];
       let diff = "";
       for (const p of a.prs ?? []) {
         const s = slugOf(p.repo);
@@ -268,6 +273,7 @@ export function createService(o: Options) {
           const into = await fetchRemote(s, String(pr.base?.sha));
           const mb = await git(head.dir, ["merge-base", into.sha, head.sha]).catch(() => "");
           diff += `${await diffOf(head.dir, mb || EMPTY_TREE, head.sha)}\n`;
+          changed.push(...(await numstatOf(head.dir, mb || EMPTY_TREE, head.sha)));
           if (pr.changed_files <= listed.length) for (const f of listed.map((x: any) => String(x.filename))) reads.push({ name: `${s.slug} ${f}`, read: () => git(head.dir, ["show", `${head.sha}:${f}`]) });
           evidence.push(`### https://github.com/${s.slug}/pull/${Number(p.number)}\n${evidenceOf(pr.body)}`);
           bases.push({ repo: s.slug, base: String(pr.base?.ref ?? ""), read: (path) => git(into.dir, ["show", `${into.sha}:${path}`]), dir: into.dir, tip: into.sha });
@@ -282,9 +288,10 @@ export function createService(o: Options) {
       const urls = prs.map((p) => `https://github.com/${p.repo}/pull/${p.number}`).join(", ");
       // The task a merge is for: the one that opened its PRs (pr-tasks.json), as the flow facts name it.
       const task = prs.map((p) => prTasks()[`https://github.com/${p.repo}/pull/${p.number}`.toLowerCase()]?.task).find(Boolean);
-      return { state: { ...base, prs }, facts: { target: urls, sentence: `${merge ? "Merge" : "Close"} ${urls}${merge ? " at its approved head, once its checks are green" : ""}.`, diff: diff.trim() }, reads, bases, own, task, ...(merge ? { evidence: evidence.join("\n\n") } : {}) };
+      return { state: { ...base, prs }, facts: { target: urls, sentence: `${merge ? "Merge" : "Close"} ${urls}${merge ? " at its approved head, once its checks are green" : ""}.`, diff: diff.trim() }, reads, changed, bases, own, task, ...(merge ? { evidence: evidence.join("\n\n") } : {}) };
     }
     const branches = [];
+    const changed: Changed[] = [];
     let diff = "";
     for (const b of a.only ?? []) {
       const { s, dir } = await fromWorkspace(a.workspace, b);
@@ -296,6 +303,7 @@ export function createService(o: Options) {
       // No renames: a file moved counts at both paths (one moved out of kernel/ still changes kernel/).
       const files = (await git(dir, ["diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--name-only", "-z", mb || EMPTY_TREE, b.sha])).split("\0").filter(Boolean);
       diff += `${await diffOf(dir, mb || EMPTY_TREE, b.sha)}\n`;
+      changed.push(...(await numstatOf(dir, mb || EMPTY_TREE, b.sha)));
       // Outside our own repos (the agents org, the product) the PR's text and the branch's commit messages name none of our tooling.
       if (!ownRepo(s.slug, o.agentsOrg, o.productRepo)) {
         const messages = (await git(dir, ["log", "--format=%B%x1e", mb ? `${mb}..${b.sha}` : b.sha])).split("\x1e");
@@ -310,7 +318,7 @@ export function createService(o: Options) {
       branches.push({ repo: s.slug, branch: b.branch, sha: b.sha, base: mb || undefined, files, defaultBranch: def, empty });
     }
     const names = branches.map((b) => `${b.repo} \`${b.branch}\``).join(", ");
-    return { state: { ...base, branches }, facts: { target: names, sentence: `${kind.endsWith(".pr") ? "Push and open a PR for" : "Push"} ${names}.`, diff: diff.trim() }, reads, bases, own, task: String(a.workspace ?? ""), ...(kind.endsWith(".pr") && a.text ? { evidence: evidenceOf(a.text.body) } : {}) };
+    return { state: { ...base, branches }, facts: { target: names, sentence: `${kind.endsWith(".pr") ? "Push and open a PR for" : "Push"} ${names}.`, diff: diff.trim() }, reads, changed, bases, own, task: String(a.workspace ?? ""), ...(kind.endsWith(".pr") && a.text ? { evidence: evidenceOf(a.text.body) } : {}) };
   }
 
   /**
@@ -325,13 +333,13 @@ export function createService(o: Options) {
 
   const executor: Executor = {
     async plan(req: PlanRequest) {
-      const { state, facts, reads, evidence, bases, own, task } = (await stateFor(req.kind, req.args ?? {}, req.requester, req.task)) as Awaited<ReturnType<typeof stateFor>> & { reads?: { name: string; read: () => Promise<string> }[]; evidence?: string; bases?: Base[]; own?: Set<string>; task?: string };
+      const { state, facts, reads, changed, evidence, bases, own, task } = (await stateFor(req.kind, req.args ?? {}, req.requester, req.task)) as Awaited<ReturnType<typeof stateFor>> & { reads?: { name: string; read: () => Promise<string> }[]; changed?: Changed[]; evidence?: string; bases?: Base[]; own?: Set<string>; task?: string };
       const planned = planRules({ kind: req.kind, args: req.args }, state, facts);
       // The reviewer's context goes with the filing only (a revalidation compares targets): never part of the record's digest.
       const sources = req.revalidate ? undefined : await readCardSourceExceptions(bases ?? [], (repo: string, base: string) => bases!.find((b) => b.repo === repo && b.base === base)!.read(SOURCE_EXCEPTIONS_FILE));
       // The task's other PRs already merged into these bases; a read that fails leaves them out, never the plan.
       const siblings = req.revalidate || !bases?.length ? [] : await readSiblings({ candidates: candidatesOf(prTasks(), task, own), bases, pr: async (repo: string, n: number) => api("GET", `/repos/${repo}/pulls/${n}`, await tokenFor(slugOf(repo), READ)), git }).catch((e: Error) => (log("siblings unread", { err: String(e.message ?? e).slice(0, 200) }), []));
-      const out = req.revalidate || (!reads?.length && evidence === undefined && !sources && !siblings.length) ? planned : { ...planned, review: { ...(reads?.length ? { files: await readFiles(reads) } : {}), ...(evidence !== undefined ? { evidence } : {}), ...(sources ? { sources } : {}), ...(siblings.length ? { siblings } : {}) } };
+      const out = req.revalidate || (!reads?.length && !changed?.length && evidence === undefined && !sources && !siblings.length) ? planned : { ...planned, review: { ...(reads?.length || changed?.length ? { files: { ...(reads?.length ? await readFiles(reads) : { text: "", leftOut: [], oversized: [] }), ...(changed?.length ? { changed } : {}) } } : {}), ...(evidence !== undefined ? { evidence } : {}), ...(sources ? { sources } : {}), ...(siblings.length ? { siblings } : {}) } };
       // Its commits were read from this task's workspace (stateFor), so the task is who asked to publish them.
       if (/\.(push|pr)$/.test(req.kind) && req.task) notePushedBy((req.args?.only ?? []).map((b: any) => String(b.sha)), { task: req.task, platform: isPlatform(req.requester) });
       return out;

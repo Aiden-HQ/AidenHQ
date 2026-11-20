@@ -63,7 +63,7 @@ export function deciderWords(by: string | null | undefined): string | null {
   const d = by ?? "";
   if (!d) return null;
   if (d === "reviewer:kernel/code") return "code";
-  if (d.startsWith("reviewer:")) return d.includes("+") ? "the review panel" : "the AI reviewer";
+  if (d.startsWith("reviewer:")) return d.includes("+") ? "the review panel" : d.includes(";unsure:") ? "the AI reviewer, approved; the second reviewer was unsure" : "the AI reviewer";
   if (d.startsWith("stale:")) return "code (the request moved)";
   if (d.startsWith("kernel")) return "code";
   return "you";
