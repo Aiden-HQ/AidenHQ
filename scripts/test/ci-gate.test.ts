@@ -299,6 +299,45 @@ sed "s#ROOT#$(dirname "$(pwd)")/pr#g" "${join(bin, "answer")}" > "$out"; echo '{
   assert.equal(review("export const add = (a, b) => a | b;\n", { FAIL: "tool error at src/a.ts:512" }).code, 3, "a bare number is no status");
 });
 
+// A provider's quota refusal (HTTP 402 with usage_limit) is transient: a retry minutes later succeeds, so it must never be
+// presented as an author-fixable failure. Every other 402, and our own spend cap, stay permanent.
+test("a quota-bearing 402 is transient; a bare 402 and our own spend cap stay permanent, with their own causes", async () => {
+  const { why } = await import("../../modules/ci/template/.github/code-review.ts");
+  const err = (message) => [{ type: "error", message }];
+  // 1. A provider 402 whose body names a quota: transient, with the rate-limit reason as its cause.
+  const quota = why(err("unexpected status 402 Payment Required: {\"error\":{\"code\":402,\"metadata\":{\"limit_source\":\"usage_limit\"}}}"), "");
+  assert.equal(quota[0], "transient");
+  assert.match(quota[1], /quota|rate limit/i);
+  // ... also when the quota detail arrives on the stderr side (codex's error events may only carry the status line).
+  assert.equal(why([], "stream error: unexpected status 402 Payment Required: usage_limit exceeded")[0], "transient");
+  // 2. A plain 402 with no quota stays permanent: a bare "402 Payment Required" and a 402 line number in stderr.
+  assert.equal(why(err("unexpected status 402 Payment Required"), "")[0], "permanent");
+  assert.equal(why(err("error at src/a.ts:402: unexpected end of input"), "")[0], "permanent");
+  assert.equal(why(err("unexpected status 402 Payment Required"), "see line 402 of the log")[0], "permanent");
+  // A 402-shaped number next to a quota-ish file name is still no status, and still no quota refusal.
+  assert.equal(why(err("error at src/credits.ts:402: unexpected end of input"), "")[0], "permanent");
+  // 3. Our own spend cap (the gateway's cap_reached) stays permanent and never reads as a provider quota, even when the same
+  //    error mentions a 402 or the word "quota".
+  const cap = why(err("unexpected status 402 Payment Required: spend cap reached (cap_reached)"), "");
+  assert.equal(cap[0], "permanent");
+  assert.match(cap[1], /spend cap/i);
+  assert.doesNotMatch(cap[1], /provider's quota was exhausted/i);
+  assert.equal(why(err("cap_reached: spend cap reached: CI repo $5.00 of $5.00"), "")[0], "permanent");
+  // 4. The gate prefers the review's own cause over the workflow's fixed CODEGENIE_CAUSE, so the check text says rate limit
+  //    rather than an author-fixable "provider error".
+  const failed = JSON.stringify({ findings: null, health: { status: "failed" }, cause: quota[1] });
+  const v = verdict(1, failed, "abcdef123", { failure: "transient", cause: "a provider error", attempts: "2", lines: "300" });
+  assert.equal(v.block, true);
+  assert.match(v.body, /Code review failed on `abcdef1`.*quota/i);
+  assert.doesNotMatch(v.body, /: a provider error/);
+  // The workflow's fallback still shows when the review carried no cause of its own.
+  assert.match(verdict(1, JSON.stringify({ findings: null, health: { status: "failed" } }), "", { failure: "transient", cause: "a provider error" }).body, /: a provider error/);
+  // A cap refusal reads as a cap, never as a rate limit.
+  const capped = verdict(2, JSON.stringify({ findings: null, health: { status: "failed" }, cause: cap[1] }), "", { failure: "permanent", cause: "the model gateway refused the review" });
+  assert.match(capped.body, /spend cap/i);
+  assert.doesNotMatch(capped.body, /rate limit/i);
+});
+
 test("the review tools read the PR's tree and history only: nothing outside the checkout, no .git, no options smuggled in", async () => {
   const { tools } = await import("../../modules/ci/template/.github/review-tools.ts");
   const dir = mkdtempSync(join(tmpdir(), "ci-tools-"));

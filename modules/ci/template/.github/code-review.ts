@@ -17,8 +17,9 @@
 // definition, references and diagnostics), REVIEW_MINUTES (default 40).
 // The reliability checklist (.github/code-review-checklist.json beside this script, so the base commit's, never the PR's):
 // code matches its items' triggers against the diff (review-checklist.ts) and the brief carries only the matched ones.
-// Exit: 0 a review; 1 a confirmed provider error (HTTP 429 or 5xx, a dropped connection, in codex's events or stderr): the
-// workflow retries once; 2 the model gateway refused (bad token, spend cap, model not allowed: permanent); 3 any other run
+// Exit: 0 a review; 1 a confirmed provider error (HTTP 429 or 5xx, a provider quota 402, a dropped connection, in codex's
+// events or stderr): the workflow retries once; 2 the model gateway refused (bad token, our own spend cap, model not
+// allowed: permanent); 3 any other run
 // without a verdict (a timeout, an answer that isn't the JSON asked for, no diff read, an unexplained exit): the PR's
 // content can cause that, so it is never retried (the gate fails it).
 //   node code-review.ts --lockfiles <base> <head>   the PR's package-lock.json changes, summarised (lockSummary); exit 3
@@ -219,18 +220,32 @@ function lockfiles(git: Git, base: string, head: string) {
 
 /**
  * Why the run produced no review, from codex's error events and stderr: [kind, a short cause]. kind: permanent (the gateway
- * refused: 401-403, a cap, a model not allowed), transient (a confirmed provider error: HTTP 429 or 5xx, a dropped or refused
- * connection), else none (no verdict: never retried).
+ * refused: 401-403, our own spend cap, a model not allowed), transient (a confirmed provider error: HTTP 429 or 5xx, a quota
+ * 402, a dropped or refused connection), else none (no verdict: never retried).
  */
 export function why(events: CodexEvent[], stderr: unknown) {
-  const said = [...events.filter((e) => e?.type === "error" || e?.type === "turn.failed").map((e) => e.message ?? e.error?.message ?? ""), String(stderr).slice(-2000)].join("\n");
+  const messages = events.filter((e) => e?.type === "error" || e?.type === "turn.failed").map((e) => e.message ?? e.error?.message ?? "");
+  const tail = String(stderr).slice(-2000);
+  const said = [...messages, tail].join("\n");
   const line = (re: RegExp) => said.match(new RegExp(`[^\\n]*(?:${re.source})[^\\n]*`, "i"))?.[0]?.slice(0, 200);
-  // A provider error is read from codex's error events only, and only in a status's shape (never a bare number such as a
-  // line number in stderr).
-  const errors = events.filter((e) => e?.type === "error" || e?.type === "turn.failed").map((e) => e.message ?? e.error?.message ?? "").join("\n");
-  const refused = /\b40[123]\b|cap_reached|not_allowed|unauthorized|not_priced/i;
+  // Our own spend cap (the gateway's cap_reached) is permanent and is never a provider quota: it gets its own cause, read
+  // before any 402, so a cap refusal can't be mistaken for one the provider would lift.
+  const cap = /\bcap_reached\b|spend cap reached/i;
+  if (cap.test(said)) return ["permanent", `our spend cap was reached, not a provider quota: ${line(cap) ?? "cap_reached"}`];
+  // A provider's quota refusal is transient: HTTP 402 whose same line or body names a quota (usage_limit, quota, credits).
+  // A retry minutes later succeeds. Every other 402 (a bare "402 Payment Required", a 402 line number in stderr) stays a
+  // refusal, as do the gateway's own 401-403.
+  // The 402 must be a status (never a bare number, so a line number such as src/credits.ts:402 isn't one), and the quota word
+  // must not be a file name's (credits.ts).
+  const quota = /\busage_limit\b|\bquota\b|\bcredits?\b(?!\.\w)/i;
+  const status402 = /\b(?:status|http)[ :]*402\b|\b402\s+Payment Required\b|"code"\s*:\s*402\b/i;
+  const quota402 = messages.find((m) => status402.test(m) && quota.test(m))
+    ?? tail.split("\n").find((l) => status402.test(l) && quota.test(l));
+  if (quota402) return ["transient", `the provider's quota was exhausted (a rate limit): ${quota402.slice(0, 200)}`];
+  const refused = /\b40[123]\b|not_allowed|unauthorized|not_priced/i;
   const provider = /\b(?:status|http)[ :]*(?:429|5\d\d)\b|\b(?:429 Too Many Requests|500 Internal Server Error|502 Bad Gateway|503 Service Unavailable|504 Gateway Timeout)\b|stream disconnected|connection (?:reset|refused|closed)|ECONNRESET|ECONNREFUSED|socket hang up/i;
   if (refused.test(said)) return ["permanent", line(refused) ?? "the model gateway refused"];
+  const errors = messages.join("\n");
   if (provider.test(errors)) return ["transient", errors.match(new RegExp(`[^\\n]*(?:${provider.source})[^\\n]*`, "i"))?.[0]?.slice(0, 200) ?? "a provider error"];
   return ["none", line(/error|timed out|failed/) ?? "no review came out"];
 }
