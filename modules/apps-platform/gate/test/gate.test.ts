@@ -688,7 +688,10 @@ test("the module door: a module service at the board's own host on the door port
   const cfg = {
     port: 3130, login: "password", auth_url: `http://127.0.0.1:${authPort}`, owner_email: "boss@example.com", accounts_file: join(dir, "accounts.json"), identity_key_file: KEY,
     hosts: { "board.example.com": { app: "docs", port: docPort, door: true, origin: ORIGIN } }, signin: "https://board.example.com:8446",
+    doors: { base: "localhost", file: join(dir, "doors.json") },
   };
+  // An agent app named like the module door's service never gets a door (its token would be good at that service).
+  writeFileSync(join(dir, "doors.json"), JSON.stringify({ docs: docPort, notes: docPort }));
   const g = createGate({ config: () => cfg, log: () => {} });
   const port = await listen(g);
   const send = (path, { cookie, method = "GET", origin } = {}) => new Promise((resolve) => {
@@ -717,6 +720,9 @@ test("the module door: a module service at the board's own host on the door port
     assert.equal((await send("/", { cookie: `${AC}=tok-ann-0123456789abcdef` })).status, 403);
     assert.equal((await send("/api/x", { cookie: boss, method: "POST", origin: ORIGIN })).status, 200);
     for (const o of ["https://board.example.com", "https://board.example.com:8446"]) assert.equal((await send("/api/x", { cookie: boss, method: "POST", origin: o })).status, 403, o);
+    const viaDoor = (host) => new Promise((resolve) => request({ host: "127.0.0.1", port, path: "/", headers: { host } }, (r) => { r.resume(); resolve(r.statusCode); }).end());
+    assert.equal(await viaDoor("docs.localhost"), 404);
+    assert.equal(await viaDoor("notes.localhost"), 302);
   } finally {
     for (const s of [auth, doc, g]) { s.close(); s.closeAllConnections(); }
   }

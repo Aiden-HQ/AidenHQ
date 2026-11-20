@@ -425,6 +425,9 @@ export function doorSites(): (cfg: GateConfig, host: string) => Site | undefined
     }
     const port = (Object.hasOwn(map, app) ? map[app] : undefined) as number; // checked next
     if (!Number.isInteger(port) || port < 1024 || port > 65535 || PLATFORM_PORTS.has(port)) return undefined;
+    // A name a compiled host already serves (the module door's service, e.g. primer) is never an app door's: its token would be
+    // good at that service.
+    if (Object.values(cfg.hosts ?? {}).some((h) => h.app === app)) return undefined;
     return { app, port, door: true };
   };
 }

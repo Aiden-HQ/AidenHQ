@@ -101,8 +101,12 @@ ports, so:
   refuse it (unchanged).
 - Only first-party module services take this door (a module declares `share`; agent-built apps never do), as the host's
   `tailscale serve` already serves Grafana. Primer frames agent-written HTML in sandboxed iframes without
-  `allow-same-origin` (an opaque origin) and serves it with a CSP of `connect-src 'none'` and `form-action 'none'`; a page
-  opened on its own runs its script on the door's origin, where it can make no request and post no form.
+  `allow-same-origin` (an opaque origin) and serves it with a CSP of `connect-src 'none'`, `form-action 'none'` and
+  `frame-src 'none'`. A page opened on its own runs its script on the door's origin: it can't fetch, post or frame, but it
+  can navigate the tab and, being same-site with the board and admin listener, set or flood cookies on the host name (a
+  forced sign-out at worst: every session cookie is HttpOnly, and admin writes need their CSRF token and exact Origin).
+- An agent app is never an app door under the module door's service name (the gate refuses that door name), so no agent
+  app gets a token whose audience is that service.
 
 ## Security
 
