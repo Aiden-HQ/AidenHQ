@@ -7,41 +7,40 @@ contributes:
   board.signins:
     - { id: primer, label: Primer, status_url: "http://primer-mcp:8084/auth/status", connect_url: /primer/connect, callback: /primer/callback,
         missing: "The agents can't read or publish documents until it is.", stopped: "The agents can't read or publish documents.",
-        # Connect asks for the address of the hosted Primer (connect) or the service token of this module's own (self-host).
-        secrets: [ { secret: primer_mcp_url, when: { primer_mode: connect } }, { secret: primer_service_token, when: { primer_mode: self-host } } ] }
-  # The first step of setting Primer up: which Primer (primer_mode). Then its Connect asks for that mode's value.
+        # self-host is connected from the start (the connector's token is generated); connect asks for the hosted Primer's address.
+        secrets: [ { secret: primer_mcp_url, when: { primer_mode: connect } } ] }
+  # Which Primer (primer_mode): this server's own, running with nothing to set up, or the switch to an organization's.
   board.setup_flows:
     - order: 125
       title: Primer
       why: Agents publish design docs and write-ups to Primer and read the comments people leave on them.
-      effort: about 3 minutes; running your own also needs one apply
+      effort: nothing to do; switching to your organization's takes about 3 minutes
       steps: |
-        Primer keeps documents with their versions and comments. Choose where this install's Primer lives; Connect comes next.
+        Primer keeps documents with their versions and comments. This server runs its own Primer, ready from the start: open
+        the links agents share and sign in as you do on the board. To use your organization's Primer instead, pick it here;
+        Connect comes next.
       signin: primer
       choose:
         setting: primer_mode
         options:
-          - value: connect
-            label: Connect your organization's Primer
-            detail: Paste its MCP address, then sign in. Agents act as you in your Primer.
           - value: self-host
-            label: Run your own Primer on this server
-            detail: This server runs Primer and its database, and people sign in at an address you choose. It needs one apply from you to start, then you paste a token from Primer.
-            requires:
-              setting: edge
-              otherwise: "Running your own Primer needs a public address for it, which comes with sharing apps through your own domain. Ask Aiden to set that up first, or connect your organization's Primer."
-            inputs:
-              - { setting: primer_host, label: Public address for Primer, help: "A name on your own domain, for example primer.example.com" }
-              - { setting: primer_host_aud, label: Sign-in audience for that address, help: "From the access application that covers it.", when: { app_login: [access, header-jwt] } }
+            label: This server's own Primer
+            detail: Already running. Documents open at this board's address on port 8447, for you and the admins you add.
+          - value: connect
+            label: Connect your organization's Primer instead
+            detail: Paste its MCP address, then sign in. Agents act as you in your Primer.
 settings:
-  # connect: a hosted Primer (its MCP address from Connect), signed in as the owner. self-host: this module runs Primer
-  # (primer-server, built from source at the commit its Dockerfile pins, and its own Postgres, primer-db) behind the gate at
-  # https://<primer_host>, where people sign in as app users; the connector signs in with primer_service_token. Either way
-  # a comment on a document an agent published wakes that agent (connections/primer-mcp/src/subscriber.ts).
+  # self-host (default): this module runs Primer (primer-server, built from source at the commit its Dockerfile pins, and its
+  # own Postgres, primer-db) behind the gate: the module door (the board's host on 8447, AidenHQ admins) or, with edge,
+  # https://<primer_host>, where people sign in as app users. The connector signs in as the agent user server/start.ts seeds,
+  # with the generated primer_connector_token: no setup. connect: an organization's hosted Primer (its MCP address from
+  # Connect), signed in as the owner. Either way a comment on a document an agent published wakes that agent
+  # (connections/primer-mcp/src/subscriber.ts).
   primer_mode:
-    default: connect
-    values: [connect, self-host]
-  # self-host: the gate's host for Primer (instance-only, like an app's share.host; needs settings.edge). Empty: not shared.
+    default: self-host
+    values: [self-host, connect]
+  # self-host with settings.edge: the gate's host that shares Primer with people beyond the admins (instance-only, like an
+  # app's share.host); it replaces the module door. Empty: the module door.
   primer_host:
     default: ""
     pattern: '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$'
@@ -97,16 +96,8 @@ secrets:
         label: Primer MCP address
         pattern: '^https://[a-z0-9.-]+(:[0-9]{2,5})?/[A-Za-z0-9._/-]*$'
         help: "From your Primer admin or Primer's settings, for example https://primer.example.com/mcp"
-    # self-host: a service token the owner mints in Primer (Settings, Tokens) after first signing in: a plain token, not limited
-    # to specific permissions (owner, 2026-11-19), so tools added later need no new token; the connector's write kinds gate its writes.
-    - name: primer_service_token
-      setup:
-        label: Primer service token
-        pattern: '^primer_pat_[A-Za-z0-9_-]{16,}$'
-        help: "Open https://${settings.primer_host}, sign in, go to Settings, API tokens, and create a token. Leave \"Limit this token to specific permissions\" unchecked, then paste it here."
 optional_secrets:
   - primer_mcp_url
-  - primer_service_token
 # The comment wake loop: a notice on the publishing task (kernel.wake), or one Revisions task when it is closed (kernel.tasks).
 roles:
   requests: [ kernel.wake, kernel.tasks ]
@@ -121,12 +112,16 @@ services:
       port: 3000
       ui_port: 3141 # loopback only: the gate's host for it (share)
       egress: true # Docker publishes no port from an internal network; also Primer's own outbound (email, if set)
-      # People other than AidenHQ admins get a role from the app's admins on its Access page (no default: blocked).
+      # No host: the module door (admins only). A host (with edge): people other than AidenHQ admins get a role from the
+      # app's admins on its Access page (no default: blocked). Compile passes the address as AIDENHQ_APP_URL.
       share: { host: "${settings.primer_host}", aud: "${settings.primer_host_aud}" }
       data: ["blobs:/data/blobs"]
       env:
-        AUTH_BASE_URL: "https://${settings.primer_host}"
-        ADMIN_EMAILS: "${settings.owner_email}" # the owner mints the connector's service token
+        ADMIN_EMAILS: "${settings.owner_email}"
+        # start.ts seeds the owner (as the gate names them) and the connector's agent user and token.
+        OWNER_EMAIL: "${settings.owner_email}"
+        OWNER_NAME: "${settings.owner_name}"
+        PRIMER_CONNECTOR_TOKEN_FILE: ${secrets.primer_connector_token}
         PRIMER_DB_PASSWORD_FILE: ${secrets.primer_db_password}
     primer-db:
       when: { primer_mode: self-host }
@@ -151,7 +146,7 @@ services:
         PRIMER_MCP_URL_FILE: ${secrets.primer_mcp_url}
         PRIMER_MODE: "${settings.primer_mode}"
         PRIMER_LOCAL_URL: http://primer-server:3000
-        PRIMER_SERVICE_TOKEN_FILE: ${secrets.primer_service_token}
+        PRIMER_CONNECTOR_TOKEN_FILE: ${secrets.primer_connector_token} # self-host: its token there (server/start.ts seeds it)
         PRIMER_KERNEL_KEY_FILE: ${secrets.primer_token} # the module's own token: kernel.wake, kernel.tasks
         PRIMER_STATE_DIR: /state
         # The board's https address: Connect's one-click link returns there (the default is loopback).
@@ -197,6 +192,9 @@ writes:
 board_env:
   PRIMER_AUTH_TOKEN_FILE: ${secrets.primer_auth_token}
 generated_secrets:
+  # self-host: the connector's Primer token (primer_pat_<this>), seeded by server/start.ts for the agent user "AidenHQ agents"
+  # with no scope limit (owner, 2026-11-19), so tools added later need no new token; the connector's write kinds gate its writes.
+  - primer_connector_token
   - primer_service_key
   - primer_auth_token
   - primer_token

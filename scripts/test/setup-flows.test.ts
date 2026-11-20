@@ -73,7 +73,7 @@ function grafanaInstance(settings) {
   return dir;
 }
 
-test("Primer's Connect follows primer_mode: the hosted address in connect, the service token in self-host", () => {
+test("Primer's Connect follows primer_mode: nothing to give in self-host (the default), the hosted address in connect", () => {
   const product = join(dirname(fileURLToPath(import.meta.url)), "../..");
   const fields = (settings) => {
     const dir = mkdtempSync(join(tmpdir(), "inst-"));
@@ -81,10 +81,8 @@ test("Primer's Connect follows primer_mode: the hosted address in connect, the s
     mkdirSync(join(dir, "agents"));
     return compile(product, dir).points.board.signins.find((s) => s.id === "primer").fields;
   };
-  assert.deepEqual(fields({}).map((f) => f.secret), ["primer_mcp_url"]);
-  const [token] = fields({ primer_mode: "self-host", primer_host: "primer.example.com", primer_host_aud: "service:primer", app_login: "header-jwt", edge: { identity: { header: "x-front-identity", issuer: "https://auth.example.com", jwks_url: "https://auth.example.com/jwks.json", auth_method: "sso" }, front: { address: "100.101.102.103", port: 8445 }, my_apps: { host: "apps.example.com", aud: "service:apps" } } });
-  assert.equal(token.secret, "primer_service_token");
-  assert.match(token.help, /Open https:\/\/primer\.example\.com, sign in/);
+  assert.deepEqual(fields({}), []);
+  assert.deepEqual(fields({ primer_mode: "connect" }).map((f) => f.secret), ["primer_mcp_url"]);
 });
 
 test("Primer's setup flow asks the mode first", () => {
@@ -94,8 +92,7 @@ test("Primer's setup flow asks the mode first", () => {
   mkdirSync(join(dir, "agents"));
   const flow = compile(product, dir).points.board.setup_flows.find((f) => f.module === "primer");
   assert.equal(flow.choose.setting, "primer_mode");
-  assert.deepEqual(flow.choose.options.map((o) => o.value), ["connect", "self-host"]);
-  assert.deepEqual(flow.choose.options[1].inputs.map((i) => i.setting), ["primer_host", "primer_host_aud"]);
+  assert.deepEqual(flow.choose.options.map((o) => [o.value, o.inputs, o.requires]), [["self-host", undefined, undefined], ["connect", undefined, undefined]]);
 });
 
 test("an advanced flow rides on its module's basic one, with its own secrets and pairing", () => {

@@ -12,19 +12,19 @@ import { getOwner, recordOwner } from "./owners.js";
 import { publisher } from "./publish.js";
 import { replier } from "./reply.js";
 import { createSubscriber } from "./subscriber.js";
-import { fileToken, tokenAuth } from "./token.js";
+import { connectorToken, tokenAuth } from "./token.js";
 import { oauth } from "./vendor/oauth.js";
 import { createVendorProxy } from "./vendor/proxy.js";
 
 const log = pino({ level: process.env.LOG_LEVEL ?? "info", base: { svc: "primer-mcp" }, redact: ["authorization", "*.authorization", "token", "*.token", "code"] });
 const readToken = (file: string | undefined) => (file && existsSync(file) ? readFileSync(file, "utf8").trim() || undefined : undefined);
 const stateDir = process.env.PRIMER_STATE_DIR ?? "/state";
-// primer_mode: self-host signs in to the module's own Primer (PRIMER_LOCAL_URL) with the service token the owner saved;
-// connect (default) to the hosted Primer whose URL Connect saved, as the owner.
+// primer_mode: self-host (default) signs in to the module's own Primer (PRIMER_LOCAL_URL) with the token it seeds for its agent
+// user; connect to the hosted Primer whose URL Connect saved, as the owner.
 const selfHost = process.env.PRIMER_MODE === "self-host";
 const local = process.env.PRIMER_LOCAL_URL ?? "http://primer-server:3000";
 const url = selfHost ? `${local}/mcp` : readToken(process.env.PRIMER_MCP_URL_FILE);
-const auth = selfHost ? tokenAuth(fileToken(process.env.PRIMER_SERVICE_TOKEN_FILE), local) : oauth({ name: "Primer", mcpUrl: url ?? "", stateDir });
+const auth = selfHost ? tokenAuth(connectorToken(process.env.PRIMER_CONNECTOR_TOKEN_FILE), local) : oauth({ name: "Primer", mcpUrl: url ?? "", stateDir });
 const serviceKey = readToken(process.env.MCP_TOKEN_FILE);
 const jwks = kernelJwks();
 

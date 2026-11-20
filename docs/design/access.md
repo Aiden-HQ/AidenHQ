@@ -25,7 +25,7 @@ lets in. Everything else on that interface is dropped, and 80 is closed in every
 
 | Mode | Front door | Open on the public interface |
 |---|---|---|
-| `public` | Caddy with a Let's Encrypt certificate for the host's public IPv4: the board on 443, the admin listener on 8446 | tcp 22, 443, 8446 |
+| `public` | Caddy with a Let's Encrypt certificate for the host's public IPv4: the board on 443, the admin listener on 8446, the module door on 8447 | tcp 22, 443, 8446, 8447 |
 | `tailscale` | `tailscale serve` to 127.0.0.1:3121 | tcp 22, udp 41641 |
 | `cloudflare` | cloudflared (outbound only) behind Cloudflare Access | tcp 22 |
 | `local` | none: an SSH tunnel to 127.0.0.1:3121 | tcp 22 |

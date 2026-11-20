@@ -12,7 +12,8 @@ install's exposure:
 | any, with `settings.edge` | unchanged: the edge (Cloudflare tunnel or header-jwt front door) | `https://<share.host>` | `edge.my_apps.host` |
 
 A door serves every exposed app (`expose: true`, a port, no `share.host`; `exposes()` in apps-mcp `tailnet.ts`) and only
-to AidenHQ admins (the owner and admins they made). Other people get an app only by sharing it (`share.host` under
+to AidenHQ admins (the owner and admins they made). The module door (below) serves a module's own service the same way in
+every mode, tailscale included. Other people get an app only by sharing it (`share.host` under
 `settings.edge`). Previews have no door. A local door is compiled only when the board is on loopback (not a LAN VM's
 board, where `<app>.localhost` would be the viewer's own machine).
 
@@ -65,7 +66,41 @@ with the apps node key) or the owner's own domain. Today an own domain means `se
 served by Caddy itself is not built.
 
 **Install (`ops/setup.sh`).** The SSH tunnel line forwards the gate too, on the same port, because the port is part of the
-origin: `ssh -N -L 3121:... -L 3120:... -L 3130:127.0.0.1:3130 <host>`.
+origin, and the module door's port to it: `ssh -N -L 3121:... -L 3120:... -L 3130:127.0.0.1:3130 -L 8447:127.0.0.1:3130 <host>`.
+
+## The module door
+
+A module service that declares `share` with no host (`services.run.<svc>.share`; the self-hosted Primer, whose
+`primer_host` is empty unless the owner shares it under `edge`) opens for AidenHQ admins at the board's own host name on
+port 8447, in every exposure mode without `edge`: `https://<tailnet name>:8447` (tailscale), `https://<ip>:8447` (public),
+`http://localhost:8447` (local, through the SSH tunnel). One mechanism, the gate, behind each mode's existing front door:
+
+| Mode | Front door for 8447 |
+|---|---|
+| `tailscale` | the host's `tailscale serve --https=8447` to the gate (apply, `scripts/host-serve.ts door`, while gate.json has a module door) |
+| `public` | Caddy's site `https://<ip>:8447` to the gate (the IP certificate the board's site has); the firewall opens tcp 8447 |
+| `local` | the SSH tunnel's `-L 8447:127.0.0.1:3130` |
+
+Compile (`scripts/edge.ts`, `doorConfig`) writes the gate a `hosts` entry for the board's host name with `door: true` and
+its own `origin` (scheme, host and port 8447), and `signin` (the admin listener). The gate treats it as a door: admins only,
+sign-in through the admin listener's handoff, its exact origin for writes and upgrades. The kernel's handoff accepts that
+exact origin (`doorHost`, `moduleDoors` from gate.json) and lists it in the admin pages' `form-action`. The service gets the
+address as `AIDENHQ_APP_URL` (with `edge` and a host, `https://<host>` instead), which the self-hosted Primer uses for its
+links. One module door per install: a second module sharing with no host fails compile. With `edge` and no host the
+service has no address and says so when it starts. A LAN VM's board in `local` exposure (not on loopback) gets no door.
+
+**A shared host name.** The door is the board's and the admin listener's host name on another port, and cookies ignore
+ports, so:
+
+- An app host's session is the gate's own cookie, `__Host-aidenhq-gate.session`, never Better Auth's name (the gate sends
+  it to the kernel under that name). Opening the door never overwrites the admin listener's session, and the admin
+  listener's session cookie, which the browser also sends to 8447, is never read there: the door signs in through its handoff.
+- The gate strips every `aidenhq-` cookie (the board's, its own) and Better Auth's before the service, and no service may set one.
+- A handed-off session counts only through the gate for the host it was redeemed on; the admin listener and the board
+  refuse it (unchanged).
+- Only first-party module services take this door (a module declares `share`; agent-built apps never do), as the host's
+  `tailscale serve` already serves Grafana. Primer renders agent-written HTML only in sandboxed iframes without
+  `allow-same-origin` (an opaque origin), with `connect-src 'none'` and `form-action 'none'`.
 
 ## Security
 
@@ -82,7 +117,8 @@ origin: `ssh -N -L 3121:... -L 3120:... -L 3130:127.0.0.1:3130 <host>`.
   it was redeemed on, never on the admin listener or the board; and an app's own loopback port takes no session at all,
   only the gate's signed identity.
 - **Local: no shared origin.** `<app>.localhost` is its own site. The board and admin listener stay on `127.0.0.1`, a
-  different cookie jar; no door host is bare `localhost` or an IP. Chromium and Firefox keep `__Host-` + Secure cookies
+  different cookie jar; no app door host is bare `localhost` or an IP (the module door is, for first-party module
+  services only: see The module door). Chromium and Firefox keep `__Host-` + Secure cookies
   on `http://a.localhost:<port>`, don't send them to `b.localhost`, and refuse a `Domain=localhost` cookie. WebKit keeps
   no Secure cookie on http and accepts `Domain=localhost`, so Safari is refused up front (board check above). There is
   no non-Secure fallback. The admin pages' CSP `form-action` lists the door origins (`http://*.localhost:3130`), because
@@ -102,4 +138,5 @@ origin: `ssh -N -L 3121:... -L 3120:... -L 3130:127.0.0.1:3130 <host>`.
 
 ## Not supported
 
-A Caddy-served own domain, non-admin access through a door, previews on a door, Safari on a local install.
+A Caddy-served own domain, non-admin access through a door, previews on a door, Safari on a local install, more than one
+module door, the module door under `edge` (give the service a host there).
