@@ -178,7 +178,7 @@ test("the Fleet Steward's grants: reads, plus exactly its predecessors' writes; 
   const writes = Object.entries(a.enabled_tools).flatMap(([c, list]) => list.filter((t) => writeTools(r.paperclip.mcp_servers[c]).includes(t)).map((t) => `${c}.${t}`)).sort();
   // routing_tune and routing_judge: the routing learning loop, each a reviewed kernel.apply of the instance's own routing.
   assert.deepEqual(writes, ["apps.person_identity_decide", "fleet_steward.routing_judge", "fleet_steward.routing_tune", "ops_mcp.meeting_note_correct", "owner_channel.notify", "paperclip_tasks.coach_record", "paperclip_tasks.task_block", "paperclip_tasks.task_cancel", "paperclip_tasks.task_comment", "paperclip_tasks.task_create", "paperclip_tasks.task_delegate", "paperclip_tasks.task_finish", "paperclip_tasks.task_handoff", "paperclip_tasks.task_propose_rule", "paperclip_tasks.task_wait"]);
-  assert.deepEqual(a.enabled_tools.github, ["github_app_issue_status"]);
+  assert.deepEqual(a.enabled_tools.github, ["github_app_issue_status", "github_issue_link"]);
   assert.equal(a.web_search, "disabled");
   assert.ok(!a.enabled_tools.apps.includes("web_view"));
   assert.deepEqual(a.roles, ["fleet-read", "fleet-audit", "librarian", "routing-tuner"]);
