@@ -67,9 +67,11 @@ main() {
   origin_url="$(git -C "$inst" remote get-url origin)"
   # Off the retired GitHub App's helper only once the sign-in can read the instance repo (an org's OAuth App access
   # restrictions, on by default for new orgs, hide it until an owner grants AidenHQ): until then the check names the fix and
-  # alerts the owner, and the hand-over puts back the product the host runs, whose App helper and kernel keep working.
+  # alerts the owner, and the hand-over puts both checkouts back where the running generation has them (its App helper and
+  # kernel keep working; the retry after the grant starts from there).
   if [[ "$have_helper" == *git-credential-app.mjs* ]] && ! node ops/git-credential-github.mjs check; then
     [ -z "${AIDENHQ_APPLY_BEFORE:-}" ] || git checkout --quiet --detach "$AIDENHQ_APPLY_BEFORE"
+    [ -z "${AIDENHQ_APPLY_INST_BEFORE:-}" ] || git -C "$inst" checkout --quiet --detach "$AIDENHQ_APPLY_INST_BEFORE"
     exit 1
   fi
   if [[ "$have_helper" == *git-credential-app.mjs* || "$origin_url" == https://github.com/* ]]; then
