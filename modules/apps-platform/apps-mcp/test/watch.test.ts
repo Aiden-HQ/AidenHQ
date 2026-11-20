@@ -245,12 +245,13 @@ describe("post-deploy watch", () => {
 });
 
 describe("incident webhook", () => {
-  it("counts as delivered only when Paperclip made the routine run, so a refused one is fired again next tick", () => {
-    expect(fireReached(202, { status: "issue_created" })).toBe(true);
-    expect(fireReached(202, { status: "coalesced" })).toBe(true);
+  it("counts as delivered only when Paperclip made the routine run a task, so a refused one is fired again next tick", () => {
+    expect(fireReached(202, { status: "issue_created", linkedIssueId: "i1" })).toBe(true);
+    expect(fireReached(202, { status: "coalesced", linkedIssueId: "i0" })).toBe(true);
     // Paperclip answers 202 with a failed run when the DevOps Engineer can't be invoked: no task was made.
-    expect(fireReached(202, { status: "failed", failureReason: "Agent is not invokable in its current state" })).toBe(false);
+    expect(fireReached(202, { status: "failed", linkedIssueId: null, failureReason: "Agent is not invokable in its current state" })).toBe(false);
+    expect(fireReached(202, { status: "ignored", linkedIssueId: null })).toBe(false);
+    expect(fireReached(409, undefined)).toBe(false); // the routine is paused: fired again once it is resumed
     expect(fireReached(500, undefined)).toBe(false);
-    expect(fireReached(409, undefined)).toBe(true); // the routine is paused or archived: only its owner changes that
   });
 });

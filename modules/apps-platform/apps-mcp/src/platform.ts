@@ -55,11 +55,14 @@ export interface PlatformConfig {
 }
 
 /**
- * Whether an incident webhook reached the DevOps Engineer. Paperclip answers 202 with the routine run even when the run failed
- * (e.g. "Agent is not invokable in its current state": no task was made), so a `failed` run is not delivered and the incident
- * is fired again on the next tick. 409: the routine is paused or archived, which only its owner changes (nothing to retry).
+ * Whether an incident webhook reached the DevOps Engineer: only a routine run with a task (made, or coalesced into an open one).
+ * Paperclip answers 202 even when it made none (a failed run, e.g. "Agent is not invokable in its current state"; an ignored
+ * delivery) and 409 while the routine is paused; each is fired again on the next tick until a task carries it.
  */
-export const fireReached = (status: number, run: unknown): boolean => status === 409 || (status === 202 && (run as { status?: string } | undefined)?.status !== "failed");
+export const fireReached = (status: number, run: unknown): boolean => {
+  const r = run as { status?: string; linkedIssueId?: string | null } | undefined;
+  return status === 202 && !!r?.linkedIssueId && r.status !== "failed";
+};
 
 export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: string) => void; info: (o: object, m: string) => void }) {
   const sign = agentSigner(cfg.identityKeyFile);
