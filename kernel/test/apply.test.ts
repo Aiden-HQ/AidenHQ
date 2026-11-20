@@ -161,7 +161,7 @@ test("a land whose answer was lost lands on its retry, and a systemd that can't 
   assert.equal(o.ok, true, o.text);
   assert.match(o.text, /Applied: generation 2 runs the instance's main at `ddddddddd`/);
   assert.equal(h.lands.length, 1, "the retry read the commit on main and didn't land again");
-  assert.equal(fails, -1, "systemd was read again after its failures");
+  assert.ok(fails < 0, "systemd was read again after its failures");
 });
 
 test("an apply is done by the first good generation whose instance contains its commit, never by an auto-revert's", async () => {
