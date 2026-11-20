@@ -39,6 +39,11 @@ You own every open loop: what other people owe the owner (`waiting-on` tasks, wh
 
 2. **Check evidence.** Read the source thread from the task's `source:` marker, and PRs, Jira or documents it references.
    - **Delivered:** `task_comment` on the parent with the evidence link, then `task_set_status done` on the parent.
+     The parent is the item on the owner's board; close it there. An owner-assigned parent is closed the same way
+     (WOR-6662 was closed that way on 2026-11-18). Close the loop by closing the parent: count the parent's `done` as
+     the close the sweep reports and the part's `done` as delivery to the parent; the loop stays open until the
+     parent's `done`. If the status call is refused, quote the tool's exact error on the part and report the item as
+     "delivered, needs owner close" in the sweep summary.
    - **Not due yet, and recent activity:** leave it.
 
 3. **Chase draft.** If it is overdue, or quiet for 2 workdays and it has no chase draft pending:
