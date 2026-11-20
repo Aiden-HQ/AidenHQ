@@ -129,18 +129,14 @@ const journeys = () => journeysOf(modulesFile().modules ?? {});
 // DORA's incidents: the Fleet Steward detector's tasks for something newly tripped (fleet-steward main.ts fileCheck, fleet-incident:<at>).
 const flow = createFlow({ file: path.join(dataDir, "kernel", "kernel.db"), stages, journeys, incident: (f) => f.data.origin === "module:fleet-steward" && String(f.data.source_marker ?? "").startsWith("fleet-incident:") });
 // Each task's one state (GET /v1/tasks/state), computed from its facts on its own read-only connection too.
-const paperclipAgents = async () => {
-  const out = new Map<string, { name: string; terminated: boolean }>();
-  const cos = await ownerApi("GET", "/api/companies");
-  if (cos.status !== 200 || !Array.isArray(cos.json)) throw new Error(`companies → ${cos.status}`);
-  for (const c of cos.json as { id: string }[]) {
-    const r = await ownerApi("GET", `/api/companies/${encodeURIComponent(c.id)}/agents`);
-    if (r.status !== 200 || !Array.isArray(r.json)) throw new Error(`agents → ${r.status}`);
-    for (const a of r.json as { id: string; name?: string; status?: string }[]) out.set(a.id, { name: a.name ?? a.id, terminated: a.status === "terminated" });
-  }
-  return out;
+const paperclipAgent = async (id: string) => {
+  const r = await ownerApi("GET", `/api/agents/${encodeURIComponent(id)}`);
+  if (r.status >= 400 && r.status < 500) return undefined; // Paperclip answers an unknown id with 422
+  if (r.status !== 200) throw new Error(`agent → ${r.status}`);
+  const a = r.json as { name?: string; status?: string };
+  return { name: a.name ?? id, terminated: a.status === "terminated" };
 };
-const taskStates = createTaskStateRead({ file: path.join(dataDir, "kernel", "kernel.db"), stages, agents: paperclipAgents });
+const taskStates = createTaskStateRead({ file: path.join(dataDir, "kernel", "kernel.db"), stages, agent: paperclipAgent });
 // Tasks kernel jobs create (provenance.ts): the routine trace reads them first.
 // The routines the board made for the owner's recurring tasks (cp.ts createBoardCp) hold no cap of their own: "full", so the instance's autonomy decides.
 records.db.exec("CREATE TABLE IF NOT EXISTS board_routines (id TEXT PRIMARY KEY)");
