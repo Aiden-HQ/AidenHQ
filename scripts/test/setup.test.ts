@@ -108,3 +108,14 @@ test("--unattended, exposure public: the IP's https URLs and 24-hour links, no t
     assert.ok(out.includes(want), `missing: ${want}\n${out}`);
   for (const not of ["tailscale serve", "AIDENHQ_SSH_TUNNEL"]) assert.ok(!out.includes(not), `unexpected: ${not}\n${out}`);
 });
+
+test("--unattended, no mode and no tailnet: a new install is public; --exposure names a mode or is refused", () => {
+  const bin = mkdtempSync(join(tmpdir(), "setup-bin-"));
+  writeFileSync(join(bin, "tailscale"), "#!/bin/sh\nexit 1\n", { mode: 0o755 }); // installed, not logged in
+  const run = (...args) => execFileSync("bash", [setup, "--dry-run", "--unattended", ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], env: { PATH: `${bin}:${process.env.PATH}`, AIDENHQ_USER: "alice", OWNER_EMAIL: "alice@example.com" } });
+  const out = run();
+  for (const want of ["env AIDENHQ_EXPOSURE=public AIDENHQ_NO_TAILSCALE=1", ".env: AIDENHQ_LINK_TTL_HOURS=24", "AIDENHQ_EXPOSURE=public\n"])
+    assert.ok(out.includes(want), `missing: ${want}\n${out}`);
+  assert.ok(run("--exposure", "local").includes("env AIDENHQ_EXPOSURE=local AIDENHQ_NO_TAILSCALE=1"));
+  assert.throws(() => run("--exposure", "funnel"), /--exposure is public, tailscale or local/);
+});
