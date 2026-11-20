@@ -704,14 +704,18 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
         if (!v.length) fail(`settings.${k}: at least one`);
         if (v.some((x: unknown) => !d.values.includes(x))) fail(`settings.${k}: each must be ${words}`);
       }
-      // `pattern` (anchored): what a text value looks like, where its `when` mode holds. Observe mode: a value that fails it warns
-      // and the compile goes on, so an upgrade that worked before keeps working; the board and MCP check a new value strictly
+      // `pattern` (anchored): what a text value looks like, where its `when` mode holds. Observe mode: a value that fails it warns and is
+      // dropped for the default, so an upgrade that worked before keeps compiling without the bad value reaching a service; the board and MCP check a new value strictly
       // where it is set (the settings-change path).
       // A list's entries are each checked; an entry that is a map (maintainer_repos) by its `repo`.
       const applies = Object.entries(d?.when ?? {}).every(([w, v]) => String(settings[w]) === String(v));
       if (d?.pattern && settings[k] !== "" && settings[k] != null && applies) {
         const bad = [settings[k]].flat().find((x) => { const v = x && typeof x === "object" ? (x as Obj).repo : x; return typeof v === "object" || !new RegExp(d.pattern).test(String(v)); });
-        if (bad !== undefined) warnings.push(`settings.${k}: ${JSON.stringify(bad)} doesn't match ${d.pattern}`);
+        if (bad !== undefined) {
+          // Never passed on: the value falls back to the setting's default (or is unset) until the owner fixes it.
+          warnings.push(`settings.${k}: ${typeof bad === "string" ? bad : JSON.stringify(bad)} doesn't match ${d.pattern}; using the default until it is fixed`);
+          if (d && "default" in d) settings[k] = d.default; else delete settings[k];
+        }
       }
       // `type: url` (and `host:`): the board's check, again here, where it is the gate (services/shared/url-setting.ts).
       if (d?.type === "url" && applies) {
@@ -1239,7 +1243,8 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   const graders = Object.entries<Obj>(kernelModules.modules).filter(([, m]) => (m.roles ?? []).includes("kernel.grader")).map(([n]) => n);
   if (graders.length > 1) fail(`modules ${graders.join(", ")} all request kernel.grader: one grading module at a time`);
   for (const n of graders) if (!(enabledDefs[n]?.checks ?? []).some((c: Obj) => c.at === "task.finish")) fail(`module ${n}: kernel.grader needs a finish check (checks: at: task.finish)`);
-  return { bundleState: { seen: bundle, adopted: [...adopted] }, paperclip, computersMax: settings.computers_max, apps: { apps }, points, compose, catalog, warnings, optionalSecrets, askedSecrets: setup.map((f) => f.secret), generatedSecrets, dataDirs, stateDirs, dataModules, gateway, jobcaps, engines, connections, writes, checks, kernelModules, exposure: settings.exposure, edge: edge && { gate: edge.gate, cloudflared: edge.cloudflared } };
+  const secretPatterns = Object.fromEntries([...all.values()].flatMap((m) => [m.def.secrets?.provided ?? []].flat().filter((p: Obj) => p?.setup?.pattern).map((p: Obj) => [p.name, p.setup.pattern])));
+  return { secretPatterns, bundleState: { seen: bundle, adopted: [...adopted] }, paperclip, computersMax: settings.computers_max, apps: { apps }, points, compose, catalog, warnings, optionalSecrets, askedSecrets: setup.map((f) => f.secret), generatedSecrets, dataDirs, stateDirs, dataModules, gateway, jobcaps, engines, connections, writes, checks, kernelModules, exposure: settings.exposure, edge: edge && { gate: edge.gate, cloudflared: edge.cloudflared } };
 }
 
 /**
@@ -1975,7 +1980,7 @@ const DROPPED_SETTINGS: Record<string, string> = {
  * never over a secret that has a value), and every dropped key is named, so none goes quietly. instance.yaml is the owner's git
  * repo and is not edited: the line says which keys can go. Returns the log lines. `dir` is the vault (none: lines only).
  */
-export function migrateSettings(settings: Obj | undefined, dir?: string) {
+export function migrateSettings(settings: Obj | undefined, dir?: string, patterns: Record<string, string> = {}) {
   const out: string[] = [];
   const vault = dir && existsSync(join(dir, "paperclip_auth_secret")) ? dir : undefined;
   for (const [k, v] of Object.entries(settings ?? {})) {
@@ -1984,6 +1989,9 @@ export function migrateSettings(settings: Obj | undefined, dir?: string) {
     if (SETTING_SECRETS.includes(k)) {
       if (!vault) continue;
       const file = join(vault, k);
+      // The rule Connect applies to this secret (its setup pattern, and a URL's own checks): a value that fails it is not written.
+      const problem = !new RegExp(patterns[k] ?? "^$").test(value) ? `it doesn't match ${patterns[k]}` : urlSettingProblem(value);
+      if (problem) { out.push(`setting ${k} not migrated: ${problem}; re-enter it on Connect`); continue; }
       const have = existsSync(file) ? readFileSync(file, "utf8").trim() : "";
       if (!have) { writeFileSync(file, `${value}\n`, { mode: 0o600 }); out.push(`migrated setting ${k} → secret ${k}; remove ${k} from instance.yaml`); }
       else out.push(`setting ${k} was moved to the secret ${k}${have === value ? "" : " and differs from it: the secret wins"}; remove ${k} from instance.yaml`);
