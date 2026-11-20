@@ -6,6 +6,8 @@
 //              admin's own MCP clients, and revoking one of them.
 //   POST /v1/owner/decide    (the board's key + an MCP client's bearer) cards decided as the bearer's account, via "mcp",
 //              each against the digest that was read, each on its own.
+//   POST /v1/owner/update    (the board's key + an MCP client's bearer) {to: "main" | sha}: the release updater moves this
+//              release install to that main commit once it verified it (updates.ts requestMain), as the bearer's account.
 //   POST /v1/accounts/<op>   (the board's key + {token}: a live module UI session's admin acts) account admin: list, sessions,
 //              revoke_session, invite, role, disable, enable, link, app_admins, app_admin_set, recovery_key_waiting, model_ready (a model key is in the vault), save_secret
 //              (the owner's) and setup_status (a module's declared `setup:` secrets: module-secrets.ts); `names` and `owner_request` (the
@@ -33,8 +35,9 @@ const SECRET = (v: unknown) => typeof v === "string" && /^[a-z][a-z0-9_]{1,63}$/
 /** One card an MCP client decides: approve or reject, against the digest it read; `stale` closes a dead or duplicate card (a reject, never a veto). */
 type McpCard = { id: string; digest: string; decision: "approve" | "reject"; reason?: string; stale?: boolean };
 type Decide = (id: string, digest: string, decision: "approve" | "reject", by: string, via: string, reason?: string) => Promise<{ identifier: string; state: string }>;
+type Update = (to: string, by: string) => Promise<string>;
 
-export function createAuthApi({ accounts, whoami, boardKey, operatorKey, recoveryKeyWaiting = () => false, modelReady = () => true, secrets, decide, validate }: { accounts: () => Accounts | undefined; whoami: Whoami; boardKey: () => string; operatorKey: () => string; recoveryKeyWaiting?: () => boolean; modelReady?: () => boolean; secrets?: ModuleSecrets; decide?: Decide; validate?: ModuleValidate }) {
+export function createAuthApi({ accounts, whoami, boardKey, operatorKey, recoveryKeyWaiting = () => false, modelReady = () => true, secrets, decide, update, validate }: { accounts: () => Accounts | undefined; whoami: Whoami; boardKey: () => string; operatorKey: () => string; recoveryKeyWaiting?: () => boolean; modelReady?: () => boolean; secrets?: ModuleSecrets; decide?: Decide; update?: Update; validate?: ModuleValidate }) {
   const bearer = (req: IncomingMessage) => String(req.headers.authorization ?? "").replace(/^Bearer\s+/i, "").trim();
   const is = (given: string, key: string) => { const a = Buffer.from(given), b = Buffer.from(key); return b.length > 0 && a.length === b.length && timingSafeEqual(a, b); };
   const send = (res: ServerResponse, status: number, body: unknown): void => void res.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" }).end(JSON.stringify(body));
@@ -116,6 +119,12 @@ export function createAuthApi({ accounts, whoami, boardKey, operatorKey, recover
           ));
         }
         return send(res, 200, { outcomes });
+      }
+      if (group === "owner" && op === "update") {
+        if (!update) throw fail(503, "unavailable", "release updates are off");
+        const g = await grant();
+        const to = need(b, "to", (v) => v === "main" || (typeof v === "string" && /^[0-9a-f]{40}$/.test(v))) as string;
+        try { return send(res, 200, { said: await update(to, `account:${g.account.id}`) }); } catch (e) { throw fail(409, "refused", (e as Error).message.slice(0, 500)); }
       }
       if (group === "auth") {
         if (op === "exchange") return send(res, 200, await a.exchangeUi("board", need(b, "code", (v) => typeof v === "string" && v.length >= 16 && v.length <= 100), need(b, "origin", (v) => typeof v === "string" && v.length <= 300), need(b, "state", (v) => typeof v === "string" && v.length <= 256)));
