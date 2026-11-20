@@ -5,7 +5,9 @@
 //   2. an unresolved failure (the last job failed, timed out or was lost) stays until a retry (a job queued or started), a
 //      reassignment or closure; comments never clear it
 //   3. open obligations, each counted: a running job; a queued (or due, unbound) or held job; an open card; an owner,
-//      delegator or agent wait; a blocker not closed; a scheduled wake; the task handed to the owner; backlog; a chat's turn
+//      delegator or agent wait; a blocker not closed; a scheduled wake; the task handed to the owner by an agent (handback), or
+//      the owner's own task (owner_task: held by the owner, never handed from an agent), neither while in backlog; backlog; a
+//      chat's turn
 //   4. a stage hint (a module's stage open ≤ 24 h) only says what a running job or a wait is doing; it never changes kind,
 //      reason or attention
 //   5. kind: done > working (a running job) > waiting (any obligation) > idle (failed, else unknown when the last thing was a
@@ -23,7 +25,7 @@ export type Kind = "done" | "working" | "waiting" | "idle";
 export type Reason =
   | "closed" | "cancelled"
   | "job_running"
-  | "job_queued" | "job_held" | "card_review" | "card_owner" | "owner_wait" | "delegator_wait" | "handback"
+  | "job_queued" | "job_held" | "card_review" | "card_owner" | "owner_wait" | "delegator_wait" | "handback" | "owner_task"
   | "blocked" | "agent_wait" | "scheduled" | "chat_turn" | "backlog"
   | "failed" | "orphaned" | "unknown" | "history_expired";
 export type Attention = { who: "owner" | "agent" | "reviewer"; why: "card" | "owner_wait" | "delegator_wait" | "handback" | "failed" | "orphaned" | "unknown" | "history_expired"; ref: string };
@@ -44,7 +46,7 @@ const PENDING_MAX = 2.5 * 3600_000;
 const CLOSED = new Set(["done", "cancelled"]);
 const FAILED = new Set(["failed", "timeout", "lost"]);
 /** Waiting reasons, highest first: the representative reason is the highest open one (the oldest of it on a tie). */
-const ORDER: Reason[] = ["job_queued", "job_held", "card_review", "card_owner", "owner_wait", "delegator_wait", "handback", "blocked", "agent_wait", "scheduled", "chat_turn", "backlog"];
+const ORDER: Reason[] = ["job_queued", "job_held", "card_review", "card_owner", "owner_wait", "delegator_wait", "handback", "owner_task", "blocked", "agent_wait", "scheduled", "chat_turn", "backlog"];
 
 const ms = (s: string) => Date.parse(s);
 const iso = (n: number) => new Date(n).toISOString();
@@ -90,14 +92,15 @@ export function taskState(task: string, facts: FactRow[], now: number, stages: S
   const records = new Map<string, { since: number; owner: boolean; done: boolean }>();
   let failure: FactRow | undefined;
   let wait: { f: FactRow; end?: number } | undefined;
-  let handback: FactRow | undefined;
+  let handback: { f: FactRow; fromAgent: boolean } | undefined;
   let who: string | null = null; // the holder as each fact happened
   let quiet = Math.max(ms(created.at), reopen ? ms(reopen.at) : 0); // when the latest obligation ended or anything not a hint happened
   const queuedAt: number[] = [];
   for (const f of live) {
     if (f.type === "task.assignee_changed" && f.subject === self) {
+      const before = who;
       who = str(f.data.to) ?? null;
-      handback = who === "owner" ? f : undefined;
+      handback = who === "owner" ? { f, fromAgent: before !== null && before !== "owner" } : undefined;
     }
     if (!after(f)) continue;
     if (!moduleFact(f) && f.type !== "task.commented") quiet = Math.max(quiet, ms(f.at));
@@ -161,7 +164,7 @@ export function taskState(task: string, facts: FactRow[], now: number, stages: S
     else if (until > now) open.push({ reason: "agent_wait", ref: wait.f.subject, since: ms(wait.f.at) });
     else quiet = Math.max(quiet, until);
   }
-  if (handback) open.push({ reason: "handback", ref: self, since: ms(handback.at) });
+  if (handback && status?.data.to !== "backlog") open.push({ reason: handback.fromAgent ? "handback" : "owner_task", ref: self, since: ms(handback.f.at) });
   const blockedBy = mine.filter((f) => f.type === "task.blocked_changed").at(-1);
   for (const b of Array.isArray(blockedBy?.data.blocked_by) ? (blockedBy!.data.blocked_by as unknown[]).map(String) : []) {
     const st = sorted.filter((f) => f.subject === `task:${b}` && f.type === "task.status_changed").at(-1);
@@ -169,7 +172,7 @@ export function taskState(task: string, facts: FactRow[], now: number, stages: S
     else open.push({ reason: "blocked", ref: `task:${b}`, since: ms(blockedBy!.at) });
   }
   if (status?.data.to === "backlog") open.push({ reason: "backlog", since: ms(status.at) });
-  if (created.data.chat === true && !open.length && !failure) open.push({ reason: "chat_turn", since: quiet });
+  if ((mine.filter((f) => f.type === "task.labeled").at(-1)?.data.chat ?? created.data.chat) === true && !open.length && !failure) open.push({ reason: "chat_turn", since: quiet });
 
   // Attention, across every obligation.
   const attention: Attention[] = [];
