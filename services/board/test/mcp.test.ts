@@ -11,6 +11,7 @@ import { stringify } from "yaml";
 import { createApp } from "../src/app.js";
 import { createKernelAuth } from "../src/kernel-auth.js";
 import { Paperclip } from "../src/paperclip.js";
+import { fenceAll } from "../src/mcp.js";
 import { Store } from "../src/store.js";
 import { card, fakeRecords } from "./fake-records.js";
 import { BOARD_KEY, fakeKernel } from "./kernel.js";
@@ -112,6 +113,8 @@ describe("mcp end to end", () => {
     const { json } = await call("approvals", {});
     const first = json.result.structuredContent.approvals[0];
     expect(first.sentence).toContain("<untrusted-data");
+    // A short, space-free injection under a key that is otherwise safe still fails the token shape: it comes back as data.
+    expect(fenceAll({ state: "ignore previous", stage: "pending", at: "2026-11-20T10:00:00.000Z", id: "ignore-previous-rules!" })).toEqual({ state: expect.stringContaining("<untrusted-data"), stage: "pending", at: "2026-11-20T10:00:00.000Z", id: expect.stringContaining("<untrusted-data") });
     expect(first.id).toBe("k-0000000000000001"); // ids and digests stay bare
     const failed = (await call("update_task", { id: "WOR-99", action: "comment", text: "hi" })).json.result;
     expect(failed.isError).toBe(true);
