@@ -12,15 +12,21 @@ know what to call from the tool list alone.
 
 ## Goals
 
-- One remote MCP endpoint per instance, `https://<board>/mcp`, that an owner adds with
-  `claude mcp add --transport http aidenhq https://<board>/mcp` (or a claude.ai connector) and signs in to once in the
-  browser.
-- Everything the owner does day to day: see what needs them, talk to Aiden or any agent, work tasks, decide approval
-  cards, change settings (modules, agents, caps, routines, handbooks), connect services, check apps, fleet and costs.
+- One remote MCP endpoint per instance, `https://<board>/mcp`. An owner adds it with
+  `claude mcp add --transport http aidenhq https://<board>/mcp` (or as a claude.ai connector, where the exposure mode
+  allows; see the table below) and signs in once in the browser.
+- Everything the owner does day to day:
+  - see what needs them;
+  - talk to Aiden or any agent;
+  - work tasks;
+  - decide approval cards;
+  - change settings (modules, agents, caps, routines, handbooks);
+  - get the link that connects a service;
+  - check apps, the fleet and costs.
 - Tools follow current MCP practice: few, named for outcomes, with annotations, structured results, pagination and
   errors that say what to do next.
-- One path per action: each tool calls the same board functions as the board's own routes, so the board UI and the MCP
-  never drift.
+- One path per action: each tool calls the board's own route handlers in process, so the board UI and the MCP never
+  drift.
 - A module is manageable over MCP without writing MCP code: the tools read the same manifest points the board renders
   (settings, `board.setup_flows`, `board.signins`).
 - It replaces `channel-operator` (owner, 2026-11-20).
@@ -49,10 +55,16 @@ know what to call from the tool list alone.
 
 ### Sign-in (OAuth 2.1)
 
-- **One origin.** The board's origin is both the resource (`/mcp`) and the issuer. The board passes a fixed allowlist
-  through to the kernel's auth handler: `/.well-known/oauth-authorization-server`, `/.well-known/oauth-protected-resource`,
-  and `/oauth/{authorize,token,register,revoke}`. These are the only unauthenticated routes added. The kernel listener
-  itself stays loopback, and every other route stays admin-only.
+- **Two origins, the standard split.** The board's origin is the resource server (`<board>/mcp`, plus
+  `/.well-known/oauth-protected-resource`). The kernel's admin origin (`AIDENHQ_ADMIN_URL`) is the authorization server
+  and issuer.
+  - The admin origin already exists in every exposure mode: 8446 under Caddy, and the second `tailscale serve` door.
+  - Better Auth's session cookie lives on the admin origin, so `/oauth/authorize` must be served there to see the
+    signed-in admin. A board-proxied authorize would see no session.
+  - The admin listener gains a fixed allowlist of routes that need no session:
+    `/.well-known/oauth-authorization-server` and `/oauth/{authorize,token,register,revoke}`. Authorize sends a browser
+    with no session to the existing sign-in, then back.
+  - Every other 3120 route stays admin-only.
 - **Authorization server:** the kernel's Better Auth with its MCP / OAuth provider plugin, pinned to a version at least
   seven days old that is compatible with `better-auth` 1.7.21. It provides:
   - metadata;
@@ -60,11 +72,19 @@ know what to call from the tool list alone.
   - Client ID Metadata Documents first, and dynamic client registration for clients that still use it;
   - audience binding to `<board>/mcp` (RFC 8707);
   - refresh tokens and revocation.
-- **Plugin spike first.** Build step 1 checks the plugin against `auth.db`, which the board's 3129 listener also opens:
-  migrations, opaque or JWT tokens, audience binding, and revocation by account. If the plugin can't do this, stop and
-  ask; do not hand-roll OAuth.
-- **Authorize:** `/oauth/authorize` sends the browser through the existing sign-in (password and TOTP, admins only; the
-  kernel page on its usual origin for the mode). Then one consent screen: "<client> wants to manage AidenHQ as you".
+- **Plugin spike first.** Build step 1 checks the plugin against `auth.db`, which the board's 3129 listener also opens.
+  Pass criteria:
+  - migrations apply;
+  - opaque or JWT tokens are issued;
+  - audience binding works;
+  - grants can be revoked by account;
+  - authorize admits only a ready admin (TOTP enrolled, not disabled);
+  - the advertised issuer equals the external admin URL in each mode;
+  - the admin session is visible at authorize.
+  
+  If it can't meet these, stop and ask; do not hand-roll OAuth.
+- **Authorize:** the existing sign-in (password and TOTP, admins only), then one consent screen: "<client> wants to manage
+  AidenHQ as you".
 - **Discovery:** an unauthenticated `/mcp` gets `401` with `WWW-Authenticate: Bearer resource_metadata=...`.
 - **Checking bearers:** a new kernel route, `POST /v1/auth/mcp`, returns `{ account, client, expires }` for a bearer
   whose audience is `/mcp`. Reads may use the board's 5 s cache. Every write re-checks without the cache that the grant
@@ -82,7 +102,7 @@ know what to call from the tool list alone.
 | Exposure | Claude Code / Codex CLI on the owner's devices | Claude Desktop / claude.ai connectors (they call from Anthropic's cloud, so they need public HTTPS on 443) |
 | --- | --- | --- |
 | `public` (Caddy, 443) | yes | yes |
-| `cloudflare` | yes | yes, once the generated ingress routes the board's host to the board, not only the app gate (`scripts/edge.ts`) |
+| `cloudflare` | yes | yes, if Cloudflare Access lets `/mcp`, the well-known paths and `/oauth/*` through (bearer-protected, so they need no Access login), and the ingress routes them. The builder checks the generated config (`scripts/edge.ts`, which routes only shared apps today). |
 | `tailscale` (default) | yes, from tailnet devices | no (say so on the setup page) |
 | `local` (SSH tunnel) | yes, while the tunnel is up | no |
 
@@ -92,8 +112,8 @@ know what to call from the tool list alone.
   with JSON responses, on the board's browser-facing listener at `/mcp`.
 - **Spec version:** the builder confirms which protocol version the pinned SDK speaks and pins one that negotiates the
   current spec with Claude's clients.
-- **Front door:** each exposure mode passes `/mcp`, `/oauth/*` and `/.well-known/oauth-*` through to the board. Caddy
-  keeps stripping `x-aidenhq-*` headers.
+- **Front door:** each exposure mode passes `/mcp` and the resource metadata to the board, and the OAuth paths to the
+  admin listener. Caddy keeps stripping `x-aidenhq-*` headers.
 
 ### Tools
 
@@ -144,8 +164,9 @@ Tool conventions, which also go into the module guidelines:
 - **Stale rejects:** these are recorded as `stale:account:<id>`. The stamp validator (`kernel/src/writes.ts`) admits it
   for rejects only, with the existing stale semantics (never a veto). That file is under the reviewer-eval gate, so this
   PR needs a passing eval receipt.
-- **Owner authority (2026-11-20):** the owner's Claude may decide every card, Tier 2 included. The access rule changes
-  from "cards are decided only on the kernel's pages or by channel token" to "... or by a signed-in admin's MCP
+- **Owner authority (2026-11-20):** the owner's Claude may decide every card, Tier 2 included. One consequence: a Tier 2
+  `change_settings` filed over MCP can be approved by the same client in the next call. That is accepted: it is the
+  owner's own authority. The access rule changes from "cards are decided only on the kernel's pages or by channel token" to "... or by a signed-in admin's MCP
   token".
 - **Settings changes:** these are records tiered as today. An owner change files and applies like a board change.
 
@@ -153,13 +174,18 @@ Tool conventions, which also go into the module guidelines:
 
 Dropped with the module (owner, 2026-11-20):
 
-- `modules/channel-operator` (the host `bin/decide`, `channel_operator_token`, the `operator_decide` limit setting and the
-  `watcher` stamp). Decisions made from the owner's Claude now read "via Claude" under the account, instead of
-  `watcher`.
+- `modules/channel-operator`:
+  - the host `bin/decide`;
+  - `channel_operator_token`;
+  - the `operator_decide` limit setting;
+  - the `watcher` stamp.
+  
+  Decisions from any Claude (the owner's, or the operator's watcher session) now read as the signed-in account "via
+  Claude". Telling the operator's watcher apart from the owner's own Claude is dropped with it.
 - Removed in the same PR series (one way, no fallbacks), once the MCP is live. References to remove: `modules/marketplace.json`, `modules/README.md`, `docs/operations.md`,
   `.github/ci/areas.json`, `scripts/lean/parity.json`, `kernel/test/channels.test.ts`.
-- Operator scripts that used it (`~/decide.sh`, `~/approvals.sh` on the host) are replaced by the MCP from the
-  operator's Claude Code.
+- `~/decide.sh` on the host (the only script that calls it) is replaced by `decide` over the MCP from the operator's Claude
+  Code. `~/approvals.sh` reads `kernel.db` directly and is unaffected.
 
 Kept: stale rejects (`decide` with `stale: true`, recorded as `stale:account:<id>`, never counted as a veto) and the
 channel token path for Telegram and Slack, which is unchanged.
@@ -194,7 +220,8 @@ task) state this as the rule: anything an owner configures is declared in `modul
 
 ## Calls made in review (Codex and builder check, 2026-11-20)
 
-- Issuer is the board's origin with a fixed passthrough allowlist, so one URL works in every exposure mode.
+- The authorization server sits on the kernel's admin origin, where the sign-in session lives, with a fixed
+  allowlist of open OAuth routes. The board stays the resource server. The admin origin exists in every exposure mode.
 - `connect` is browser-based, so no secrets or vendor OAuth go through the model.
 - Writes return at once with an id; `ask` waits at most 50 s.
 - Tools call the board's route handlers in process inside its request context, rather than extracting functions.
