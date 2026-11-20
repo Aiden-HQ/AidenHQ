@@ -1,5 +1,8 @@
 ## Gates and authority-expanding changes
 
+A release update (rule `release-update`) is not judged by this section: its one question, whether the release looks
+compromised, is in "Module changes" below.
+
 Gate code is ordinary Tier 1 work for the Platform Engineer's line when the chain asks for it: the reviewer decides it
 like any change. What needs care is the effect, not the file name.
 

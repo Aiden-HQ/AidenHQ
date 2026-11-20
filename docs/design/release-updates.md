@@ -75,7 +75,10 @@ Hard gates, from day one (no observe mode):
   release move, and every release with it off, is the owner's tap below full autonomy, the AI panel's at full
   (docs/design/approvals.md, Autonomy). Update now is an admin's tap on the kernel's page. No agent can file a release. New
   module authority a release brings follows the normal authority diff: under full autonomy only new spend and a non-official
-  module's new authority are the owner's.
+  module's new authority are the owner's. The AI reviewer asks one question of the updater's move: does this release look
+  like a compromised pipeline (exfiltration, new access for anyone but the owner, widened credentials or secret reads, a
+  hard gate or the write-approval lifecycle bypassed, obfuscated code or a new supply source)? Everything else in an
+  official release approves (owner, 2026-11-20; policy `09-module-changes.md`).
 
 **Residual risk.** With push access to the distro's `main` and its release workflow, an attacker can publish a release that
 passes every check above. The kernel commit must still be on the official repository's `main`, but the prebuilt images are not
