@@ -151,6 +151,16 @@ test("an agent's owner question goes to the chief of staff as one task, never to
   assert.deepEqual(w.asked.chief.map((c) => c.source), ["ask:t1:0", "ask:t1:1"]);
 });
 
+test("an agent's asks to the chief of staff are capped per agent per day; over it the call is refused, and a new day lifts it", async (t) => {
+  const w = world(t);
+  for (let i = 0; i < 10; i++) assert.equal((await w.escalate.ask("t1", "owner", `Question ${i}?`)).sent, "asked");
+  assert.equal((await w.escalate.ask("t1", "owner", "One more?")).sent, "limit");
+  assert.equal(w.asked.chief.length, 10);
+  await assert.rejects(w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "x", for: "owner", question: "Again?" }), { status: 429 });
+  w.tick(25 * 3600_000);
+  assert.equal((await w.escalate.ask("t1", "owner", "Tomorrow?")).sent, "asked");
+});
+
 test("the owner hears a question directly only on a task they are talking to its agent on, or from the chief of staff", async (t) => {
   const w = world(t);
   w.who.conversing = true;

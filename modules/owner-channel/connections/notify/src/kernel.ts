@@ -32,6 +32,10 @@ export function kernelClient(url: string, token: string, f: typeof fetch = fetch
       if (r.status !== 200) throw new Error(`POST /v1/wait -> ${r.status}`);
       return { to: typeof r.json?.to === "string" ? r.json.to : undefined, ...(r.json?.asked === false ? { open: true } : {}) };
     },
+    /** A task for the agent holding `role` (the kernel's POST /v1/tasks, role kernel.tasks): one per `source`. */
+    fileTask: async (b: { title: string; description: string; role: string; source: string }): Promise<{ id: string; deduplicated: boolean }> => call("POST", "/v1/tasks", b),
+    /** A wake notice on a task (the kernel's POST /v1/wakes {task, text}): labelled, never read as the assignee's own words, and it wakes the agent; `closed` when the task is. */
+    noticeTask: async (id: string, text: string): Promise<{ closed?: boolean }> => ((r) => (r.closed ? { closed: true } : {}))(await call("POST", "/v1/wakes", { task: id, text })),
     /** The agent's reply on its chat, posted by the kernel as that agent (this call's assertion). */
     postReply: async (issueId: string, body: string, assertion: string): Promise<boolean> => {
       const r = await raw("POST", `/v1/cp/agent/api/issues/${encodeURIComponent(issueId)}/comments`, { body }, { "x-aidenhq-caller": assertion }).catch(() => ({ status: 0 }));

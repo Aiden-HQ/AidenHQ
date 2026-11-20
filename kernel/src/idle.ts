@@ -80,6 +80,7 @@ export function createIdle({ db, facts, state, wakes, owner, team = () => false,
       // A handoff (task_handoff on the agent's part of the owner's own task) is a report on their task, not a question: it waits
       // on them as before.
       const r = who && escalate && b.handoff !== true ? await escalate.ask(caller.task, who, question, asked) : undefined;
+      if (r?.sent === "limit") throw fail(429, "rate_limited", "You have asked the chief of staff too many questions today: nothing was sent and this task isn't waiting. Decide with your handbook, brief and advisor, and note the assumption in your result.");
       // One open ask per task: a second question while the first is unanswered isn't sent and the first wait stands.
       if (r?.sent === "open") return { waiting: true, asked: false, to: r.to, note: "Your earlier question on this task is still unanswered, so this one wasn't sent: the task waits for that answer." };
       const to = r?.to ?? (who === "owner" ? "owner" : "delegator");
