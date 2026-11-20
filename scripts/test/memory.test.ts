@@ -31,7 +31,7 @@ test("setup: an inbox is only a task it created, held by its agent (one found un
     if (path === "/api/cli-auth/me") return { json: { userId: "u1" } };
     if (method === "POST") return (posted.push(body), { json: { id: "new-alpha", identifier: "WOR-1" } });
     if (method === "PATCH") return (patched.push([path, body]), { json: {} });
-    return { json: issues };
+    return { json: path.includes("offset=0") ? issues : [] }; // one page of results
   };
   const { ensureMemoryInboxes } = await import("../modules.ts");
   assert.deepEqual(await ensureMemoryInboxes({ api, companyId: "co", keys: ["alpha", "beta"], holders: { alpha: "ag-alpha", beta: "ag-beta" }, step: () => {} }), { alpha: "new-alpha", beta: "real-beta" });

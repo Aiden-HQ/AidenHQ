@@ -4,6 +4,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
+import { mapLimit } from "./modules.ts";
 import type { Api } from "./record-agent.ts";
 
 const PLUGIN_PATH = "/opt/aidenhq-events";
@@ -27,16 +28,17 @@ export async function ensureAgentKeys({ api, agents, secretsDir, baseUrl, step }
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const ids = new Set(Object.values(agents).map((a) => a.id));
   for (const f of readdirSync(dir)) if (!ids.has(f)) rmSync(join(dir, f), { force: true });
-  for (const [key, a] of Object.entries(agents)) {
+  // Each agent's check (and mint) is independent of the next one's: a few side by side.
+  await mapLimit(Object.entries(agents), 8, async ([key, a]: [string, { id: string }]) => {
     const file = join(dir, a.id);
     const existing = existsSync(file) ? readFileSync(file, "utf8").trim() : "";
     if (existing) {
       const res = await fetch(new URL("/api/agents/me", baseUrl), { headers: { authorization: `Bearer ${existing}` } });
-      if (res.ok && (await res.json()).id === a.id) continue;
+      if (res.ok && (await res.json()).id === a.id) return;
     }
     const { json } = await api("POST", `/api/agents/${a.id}/keys`, { name: "aidenhq-kernel" });
     rmSync(file, { force: true });
     writeFileSync(file, json.token, { mode: 0o400 });
     step(`Minted the kernel's Paperclip key for ${key}`);
-  }
+  });
 }
