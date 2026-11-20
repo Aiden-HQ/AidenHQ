@@ -30,7 +30,7 @@ export const SERVICE_FIELDS = ["image", "build", "command", "entrypoint", "env",
 /** The gate's public keys (scripts/identity.ts), which a shared service verifies people's identity with, as apps do. */
 export const IDENTITY_KEYS_SECRET = "aidenhq_identity_keys";
 /**
- * The code host's (privileged: [git-credential]): the job workspaces (the kernel's work_dir/tasks) read-write, and the host variables that name the product and instance repositories.
+ * The code host's (privileged: [git-credential]): the job workspaces (the kernel's work_dir/tasks) read-only, and the host variables that name the product and instance repositories.
  */
 const GIT_CREDENTIAL_HOST_ENV = ["AIDENHQ_PRODUCT_REPO", "AIDENHQ_INSTANCE_REPO"];
 const SERVICES_FIELDS = ["run", "data"];
@@ -209,7 +209,7 @@ export function generateCompose(name: string, def: Dict, ctx: { root: string; lo
     if (s.workspaces != null) {
       if (!gitCredential) fail(`${at("workspaces")}: needs privileged: [git-credential]`);
       if (!ctx.workDir || !ctx.workDir.startsWith("/") || ctx.workDir.includes(":")) fail(`${at("workspaces")}: the host's work_dir isn't known`);
-      volumes.push(`${ctx.workDir}/tasks:${mountAt("workspaces")}`);
+      volumes.push(`${ctx.workDir}/tasks:${mountAt("workspaces")}:ro`);
     }
     for (const h of s.host_mounts == null ? [] : strings(s.host_mounts, at("host_mounts"))) {
       if (!privileged.includes("host-metrics")) fail(`${at("host_mounts")}: needs privileged: [host-metrics]`);

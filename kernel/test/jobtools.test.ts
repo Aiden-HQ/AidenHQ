@@ -69,8 +69,8 @@ test("repo-checkout: a role holder's job gets the code host's snapshot; no role,
   const codehost = createCodehost({
     grants: () => [{ module: "github", snapshot: { repos: ["*/*"] } }, { module: "codehost-local", snapshot: { repos: ["local/*"] } }], repos: () => ({ agentsOrgs: ["acme-agents", "local"] }),
     kind: () => ({ module: "github", floor: 0, tools: [], executor: { url: `${host.url}/aidenhq/v1/executor`, auth_secret: "k" } }),
-    local: () => ({ snapshot: localSnapshot({ bare: (r) => join(root, "local", `${r.split("/")[1]}.git`) }), clone: async () => { throw new Error("unused"); } }),
-    secret: () => "ch-key", resolver: { resolve: async (u) => ({ host: "127.0.0.1", port: Number(new URL(u).port), path: new URL(u).pathname }), forget: () => {} }, workspace: async () => { throw new Error("unused"); },
+    local: () => ({ snapshot: localSnapshot({ bare: (r) => join(root, "local", `${r.split("/")[1]}.git`) }) }),
+    secret: () => "ch-key", resolver: { resolve: async (u) => ({ host: "127.0.0.1", port: Number(new URL(u).port), path: new URL(u).pathname }), forget: () => {} },
   });
   const db = new DatabaseSync(":memory:");
   db.exec("CREATE TABLE jobs (id TEXT PRIMARY KEY, agent TEXT, task TEXT, state TEXT, authority TEXT)");

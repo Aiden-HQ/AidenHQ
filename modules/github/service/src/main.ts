@@ -2,7 +2,7 @@
 // (8100) in one Node process, sharing the owner's one sign-in (spec 2026-11-20-github-owner-identity §1). Reads its files and
 // settings, then serves service.ts.
 //   CODEHOST_KEY_FILE       the module's own token: the kernel calls the executor with it, and it reports outcomes with it
-//   TASKS_DIR               the job workspaces (work/tasks); absent: push, pr and clone fail, saying so
+//   TASKS_DIR               the job workspaces (work/tasks, read-only: their boxes' bundles); absent: push and pr fail, saying so
 //   CACHE_DIR               the bare cache clones and the held writes (its data dir)
 //   GITHUB_FLEET_ORG        github_fleet_org: where the fleet's repos live on GitHub ("" while unset)
 //   INSTANCE_REPO, PRODUCT_REPO

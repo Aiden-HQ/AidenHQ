@@ -74,23 +74,28 @@ async function host(t) {
   let boxes;
   const jobs = createJobs({ db, cfg, cp: {}, mayDispatch: () => false, log: () => {}, boxWrap: 'exec "$@"', onEnd: (id) => boxes.ended(id) });
   const jobTools = createJobTools({ db, secret: () => secret("gateway_job_secret"), engines: () => ["wait", "wait2"] });
-  // The code host broker, faked: the task's text, a grant on acme/*, and clones that land, exist already or are refused.
+  // The task's text and a grant on acme/*; the box, faked: its `aidenhq clone` lands, finds a clone there already (the
+  // in-box test skips it), is refused, or finds the code host down until it comes back.
   const cloned = [];
+  const codehostDown = { on: false };
   const clones = {
     text: async (task) => (task === "task-3" ? "Fix acme/widget (see https://github.com/acme/api/pull/4), not acme/28 or other/thing; acme/gone too." : "Say hello."),
     may: (module, repo) => module === "acme-dispatch" && repo.startsWith("acme/"),
-    clone: async (module, repo, task) => {
-      cloned.push([module, repo, task]);
-      if (repo === "acme/api") throw Object.assign(new Error("PEN-3/api can't be made (EEXIST)"), { status: 409 });
-      if (repo === "acme/gone") throw Object.assign(new Error("acme/gone isn't on GitHub"), { status: 404 });
-      mkdirSync(join(cfg.workDir, "tasks", "PEN-3", repo.split("/")[1]), { recursive: true });
-    },
+  };
+  const boxExec = async (box, argv) => {
+    const repo = argv.at(-1), name = repo.split("/")[1];
+    cloned.push([box.container, argv]);
+    if (repo === "acme/api") return { code: 0, out: "" }; // /workspace/api/.git is there: kept, nothing fetched
+    if (codehostDown.on) return { code: 75, out: "aidenhq: the code host is unreachable" };
+    if (repo === "acme/gone") return { code: 1, out: "aidenhq: acme/gone isn't on GitHub" };
+    mkdirSync(join(cfg.workDir, "tasks", "PEN-3", name, ".git"), { recursive: true });
+    return { code: 0, out: `${repo}: cloned into /workspace/${name}` };
   };
   const attached = [];
   const attachments = { list: async () => attached.map((a) => ({ originalFilename: a.name, byteSize: a.data.length })), add: async (task, name, type, data) => void attached.push({ task, name, type, data }) };
   const once = createOnce(db);
   const draining = { on: false };
-  const make = (now) => createBoxes({ stopping: () => draining.on, db, cfg, jobs, attachments, once, cleanup: jobTools.cleanup, clones, call: launcherClient(url, () => secret("launcher_kernel_key")), secret, whoami, connections: () => ({ slack: {}, tasks: {} }), identity: (a) => ({ name: "Kai", email: `${grants[a].key}@acme.aidenhq.ai` }), handbook: (a) => (existsSync(join(dir, "config/handbooks", `${a}.md`)) ? readFileSync(join(dir, "config/handbooks", `${a}.md`), "utf8") : undefined), log: () => {}, ...(now ? { now } : {}) });
+  const make = (now) => createBoxes({ stopping: () => draining.on, db, cfg, jobs, attachments, once, cleanup: jobTools.cleanup, clones, boxExec, call: launcherClient(url, () => secret("launcher_kernel_key")), secret, whoami, connections: () => ({ slack: {}, tasks: {} }), identity: (a) => ({ name: "Kai", email: `${grants[a].key}@acme.aidenhq.ai` }), handbook: (a) => (existsSync(join(dir, "config/handbooks", `${a}.md`)) ? readFileSync(join(dir, "config/handbooks", `${a}.md`), "utf8") : undefined), log: () => {}, ...(now ? { now } : {}) });
   boxes = make();
   const wakes = new Map();
   const admission = createAdmission({
@@ -102,7 +107,7 @@ async function host(t) {
   });
   const admit = (task, { full } = {}) => { wakes.set(task, { task, agent: "agent-1" }); return admission.admit("acme-dispatch", { wake: task, prompt: "hello", ...(full ? { full_prompt: full } : {}) }); };
   const release = () => writeFileSync(join(cfg.logsDir, "release"), "");
-  return { attached, dir, cfg, db, grants, calls, whoami, admit, release, make, jobTools, cloned, launcher, draining };
+  return { attached, dir, cfg, db, grants, calls, whoami, admit, release, make, jobTools, cloned, codehostDown, launcher, draining };
 }
 
 test("admit → box → run: the kernel's key, the job token as the box's credential, the frozen tools in its config, the handbook home", async (t) => {
@@ -139,13 +144,25 @@ test("admit → box → run: the kernel's key, the job token as the box's creden
   assert.ok(other.id);
 });
 
-test("an engineer job starts in its task's clones: the named repos its dispatcher may clone, one already there kept, a refusal told", async (t) => {
+test("an engineer job's box clones its task's repos itself before the run: the named repos its dispatcher may clone, one already there kept, a refusal told, a code host down retried", async (t) => {
   const h = await host(t);
   h.grants["agent-1"].profile = "engineer";
+  // The code host is down: the job is deferred (its wake goes back for the next tick) and the box goes back; no run started.
+  h.codehostDown.on = true;
+  assert.equal((await h.admit("task-3")).state, "deferred");
+  assert.equal(h.db.prepare("SELECT COUNT(*) AS n FROM jobs").get().n, 0);
+  assert.equal(h.calls.filter((c) => c.route === "/job/release").length, 1);
+  h.codehostDown.on = false;
+  h.cloned.length = 0;
   const job = await h.admit("task-3");
   assert.equal(job.state, "running");
-  assert.deepEqual(h.cloned, [["acme-dispatch", "acme/widget", "task-3"], ["acme-dispatch", "acme/api", "task-3"], ["acme-dispatch", "acme/gone", "task-3"]]);
-  assert.equal(existsSync(join(h.cfg.workDir, "tasks", "PEN-3", "widget")), true);
+  // In the job's own box, as the job (the box's env file), in task order: the clone is the box's `aidenhq clone`.
+  const box = JSON.parse(h.db.prepare("SELECT box FROM jobs WHERE id = ?").get(job.id).box).container;
+  assert.deepEqual(h.cloned.map(([c, argv]) => [c, argv.at(-1)]), [[box, "acme/widget"], [box, "acme/api"], [box, "acme/gone"]]);
+  assert.deepEqual(h.cloned[0][1].slice(0, 2), ["sh", "-c"]);
+  assert.match(h.cloned[0][1][2], /exec aidenhq clone "\$3"$/);
+  assert.deepEqual(h.cloned[0][1].slice(4), ["/workspace/widget", "/workspace/acme--widget", "acme/widget"]);
+  assert.equal(existsSync(join(h.cfg.workDir, "tasks", "PEN-3", "widget", ".git")), true);
   const spec = JSON.parse(readFileSync(join(h.db.prepare("SELECT dir FROM jobs WHERE id = ?").get(job.id).dir, "job.json"), "utf8"));
   assert.match(spec.prompt, /^\(Kernel note: `acme\/gone` is named in the task but couldn't be cloned/);
   assert.equal(h.calls.find((c) => c.route === "/job").body.image, "engineer");

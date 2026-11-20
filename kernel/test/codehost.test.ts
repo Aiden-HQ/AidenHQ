@@ -29,7 +29,6 @@ async function setup(t, { enabled = true, localSnapshot } = {}) {
     secret: (n) => (n === "codehost_github_token" ? "ch-key" : ""),
     resolver: { resolve: async (u) => ({ host: "127.0.0.1", port: Number(new URL(u).port), path: new URL(u).pathname }), forget: () => {} },
     ...(localSnapshot ? { local: () => ({ snapshot: localSnapshot }) } : {}),
-    workspace: async (module, task) => { if (module !== "apps-platform" || task !== "t-1") throw Object.assign(new Error("not yours"), { status: 403 }); return { workspace: "TASK-1" }; },
   });
   t.after(() => host.close());
   // The backplane's side: the caller's module (resolved from its token there) and the op, then whatever op answers.
@@ -61,10 +60,8 @@ test("a module's ops go to the code host with its key, only within the module's 
   assert.deepEqual(seen.at(-1).body, { module: "github", repo: "acme/x", kind: "pr", number: 7 });
   assert.equal((await call("github", "comment", { repo: "acme/x", number: 7, body: "hi", id: 5, evil: "dropped" })).status, 200);
   assert.deepEqual(seen.at(-1).body, { module: "github", repo: "acme/x", number: 7, body: "hi", id: 5 }, "only the op's own fields are forwarded");
-  // clone: the task's workspace, as the kernel's dispatcher binding names it.
-  assert.equal((await call("apps-platform", "clone", { repo: "acme-agents/x", ref: "main", into: "t-2" })).status, 403);
-  assert.equal((await call("apps-platform", "clone", { repo: "acme-agents/x", ref: "main", into: "t-1" })).status, 200);
-  assert.deepEqual(seen.at(-1).body, { module: "apps-platform", repo: "acme-agents/x", ref: "main", into: "TASK-1" });
+  // No op writes a workspace: a box clones a repo itself from the kernel's bundle (`aidenhq clone`).
+  assert.equal((await call("apps-platform", "clone", { repo: "acme-agents/x", ref: "main", into: "t-1" })).status, 404);
 });
 
 test("token op is gone", async (t) => {
@@ -134,9 +131,9 @@ test("bundle: the kernel asks it under the clone grant; a module's call is refus
 test("dot-only repo segments and hostile refs never reach the code host", async (t) => {
   const { call, seen } = await setup(t);
   assert.equal((await call("github", "read", { repo: "acme/..", kind: "prs" })).status, 400);
-  assert.equal((await call("apps-platform", "clone", { repo: "acme-agents/x", ref: "-x", into: "t-1" })).status, 400);
-  assert.equal((await call("apps-platform", "clone", { repo: "acme-agents/x", ref: "a..b", into: "t-1" })).status, 400);
-  assert.equal((await call("apps-platform", "clone", { repo: "acme-agents/x", ref: "main@{1}", into: "t-1" })).status, 400);
+  assert.equal((await call("github", "snapshot", { repo: "acme-agents/x", ref: "-x" })).status, 400);
+  assert.equal((await call("github", "snapshot", { repo: "acme-agents/x", ref: "a..b" })).status, 400);
+  assert.equal((await call("github", "snapshot", { repo: "acme-agents/x", ref: "main@{1}" })).status, 400);
   assert.equal(seen.length, 0);
 });
 
@@ -193,8 +190,7 @@ test("with both code hosts, each repo goes to its own: local/… to this server'
 });
 
 // A local install's instance repo (setup's bare repo at AIDENHQ_INSTANCE_REMOTE, outside <data dir>/codehost): the kernel serves
-// its branches as a bundle, and the box clones it itself (`aidenhq clone`); host git never writes the workspace, so the
-// broker's clone op only says how.
+// its branches as a bundle, and the box clones it itself (`aidenhq clone`); host git never writes the workspace.
 test("the instance repo of a local install is cloned in the box from the kernel's bundle, from where setup made it", async (t) => {
   const { execFileSync } = await import("node:child_process");
   const { mkdtempSync, mkdirSync, readdirSync, rmSync, writeFileSync } = await import("node:fs");
@@ -212,7 +208,7 @@ test("the instance repo of a local install is cloned in the box from the kernel'
   const host = localHost({ root: join(dir, "codehost"), sources: { "local/aidenhq-instance": remote }, tasksDir: join(dir, "tasks"), scratchDir: join(dir, "scratch"), checks: async () => [] });
   const op = createCodehost({
     grants: () => [{ module: "dispatch", clone: { repos: ["@agents/*", "@instance"] } }], repos: () => ({ instance: "local/aidenhq-instance", agentsOrgs: ["local"] }),
-    kind: () => undefined, secret: () => "", resolver: {}, workspace: async () => ({ workspace: "TASK-1" }), local: () => ({ snapshot: localSnapshot({ bare: host.bare }), bundle: host.bundle }),
+    kind: () => undefined, secret: () => "", resolver: {}, local: () => ({ snapshot: localSnapshot({ bare: host.bare }), bundle: host.bundle }),
   });
   // The dispatcher's bundle, as the job's `aidenhq clone` gets it.
   const served = await op.ask("dispatch", "bundle", { repo: "local/aidenhq-instance", ref: "HEAD" });
@@ -225,8 +221,7 @@ test("the instance repo of a local install is cloned in the box from the kernel'
   assert.equal(git(got, "rev-parse", "HEAD"), git(seed, "rev-parse", "HEAD"));
   assert.equal(git(got, "rev-list", "--count", "HEAD"), "2", "with its history, so a branch made on it lands back");
   await assert.rejects(op.ask("nobody", "bundle", { repo: "local/aidenhq-instance", ref: "HEAD" }), (e) => e.status === 403);
-  await assert.rejects(op.ask("dispatch", "clone", { repo: "local/aidenhq-instance", ref: "HEAD", into: "t-1" }), (e) => e.status === 422 && /aidenhq clone local\/aidenhq-instance/.test(e.message));
-  await assert.rejects(op.ask("nobody", "clone", { repo: "local/aidenhq-instance", ref: "HEAD", into: "t-1" }), (e) => e.status === 403);
+  await assert.rejects(op.ask("dispatch", "clone", { repo: "local/aidenhq-instance", ref: "HEAD", into: "t-1" }), (e) => e.status === 404);
 });
 
 // The real code host's ops (modules/github/service/src/ops.ts) behind the kernel's broker, with a fake GitHub: whatever an op
@@ -258,7 +253,7 @@ test("no op answer carries the token", async (t) => {
   const op = createCodehost({
     grants: () => [{ module: "m", read: { repos: ["*/*"] }, comment: { repos: ["*/*"] }, fetch: { repos: ["*/*"] }, commit: { repos: ["*/*"], paths: ["apps.yaml"] }, runner: { orgs: ["acme"] } }],
     repos: () => ({}), kind: () => ({ module: "github", floor: 0, tools: [], executor: { url: `${url}/aidenhq/v1/executor`, auth_secret: "k" } }), secret: () => "ch-key",
-    resolver: { resolve: async (u) => ({ host: "127.0.0.1", port: Number(new URL(u).port), path: new URL(u).pathname }), forget: () => {} }, workspace: async () => ({ workspace: "W" }), noteObject: (ref, record) => noted.push([ref, record]),
+    resolver: { resolve: async (u) => ({ host: "127.0.0.1", port: Number(new URL(u).port), path: new URL(u).pathname }), forget: () => {} }, noteObject: (ref, record) => noted.push([ref, record]),
   });
   const answers = [];
   const ask = async (name, body) => {

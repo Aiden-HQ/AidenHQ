@@ -4,9 +4,9 @@
 // loader/authority.ts). It then calls the github module's code host with the code host's own key, the one it calls its
 // executor with, so the code host serves ops to the kernel alone and only it holds the owner's GitHub token: no op returns it.
 //   snapshot     {repo, ref} → a tar.gz with no .git and no credentials
-//   clone        {repo, ref, into: task} → a credential-free clone in the workspace of a task whose agent the caller dispatches
-//   bundle       {repo, ref} → the branch as a git bundle, under the clone grant; the kernel's own (a running job's `aidenhq clone`,
-//                which its box clones or fetches itself), never a module's: host git never runs in a workspace a box can write
+//   bundle       {repo, ref} → the branch as a git bundle, under the clone grant; the kernel's own (a job's `aidenhq clone`, which
+//                its box runs at start for the repos its task names, and again when it likes), never a module's: the box clones or
+//                fetches it itself, so host git never runs in a workspace a box can write
 //   fetch        {repo, ref: refs/heads/* | refs/heads/<b> | refs/pull/<n>/head} → a git bundle of those refs
 //   head         {repo, ref: <branch>} → {sha}
 //   read         {repo, kind: pr | issue | diff | job | prs, number?, id?} → that object (a PR or issue as the grader reads it, a diff, a job, the open PRs)
@@ -14,8 +14,7 @@
 //   commit       {repo, branch, path, content, parent, message} → {sha}: one file as the owner, with the trailer; 409 when the branch moved off parent
 //   runner_token {org} → {token, expires_at}: an org's runner registration token, and nothing else
 // A `local/…` repo (the org codehost-local owns) is served by codehost-local (in process: its snapshot) under the same grants
-// and the same answer (its bundle: every branch). It has no clone (host git never writes a workspace: a box clones a local repo
-// itself, `aidenhq clone`) and none of the GitHub-only ops (fetch, head, read, comment, commit, runner_token); every op without
+// and the same answer (its bundle: every branch), and none of the GitHub-only ops (fetch, head, read, comment, commit, runner_token); every op without
 // the github code host for other orgs is 404.
 // The change-request ops are write kinds, not broker ops: `codehost-local.{push,pr,merge,close,create_repo}` — declared by
 // modules/codehost-local/src/kinds.ts, executed by its host.ts in the kernel's process (no service, no key),
@@ -98,7 +97,7 @@ export function covers(slug: string, repos: string[] = [], r: KernelRepos = {}):
 const NO_HOST = "no GitHub code host here (the github module isn't enabled)";
 /** Each op's grant: the key of the module's `codehost:` it needs. */
 const GRANT_KEY: Record<string, "snapshot" | "clone" | "fetch" | "read" | "comment" | "commit" | "runner"> = {
-  snapshot: "snapshot", clone: "clone", bundle: "clone", fetch: "fetch", head: "fetch", read: "read", comment: "comment", commit: "commit", runner_token: "runner",
+  snapshot: "snapshot", bundle: "clone", fetch: "fetch", head: "fetch", read: "read", comment: "comment", commit: "commit", runner_token: "runner",
 };
 const FETCH_REF = /^(refs\/heads\/\*|refs\/heads\/(?!-)(?!.*\.\.)(?!.*@\{)[\w./-]{1,200}|refs\/pull\/\d{1,9}\/head)$/;
 const READ_KINDS = ["pr", "issue", "diff", "job", "prs"];
@@ -143,15 +142,13 @@ function shape(op: string, b: Record<string, unknown>, paths: string[] = []): Re
 /** codehost-local's ops, in process (modules/codehost-local/src). */
 export type LocalOps = { snapshot(repo: string, ref: string): Promise<Answer>; bundle(repo: string): Promise<{ file: string; done: () => void }> };
 
-export function createCodehost({ grants, repos, kind, secret, resolver, workspace, local = () => undefined, noteObject = () => {} }: {
+export function createCodehost({ grants, repos, kind, secret, resolver, local = () => undefined, noteObject = () => {} }: {
   grants: () => OpsGrant[];
   /** The kernel's own repos (AIDENHQ_INSTANCE_REPO, AIDENHQ_PRODUCT_REPO, the agents org): what @ names in grants resolve to. */
   repos: () => KernelRepos;
   /** The code host's executor (from its write kinds): where it runs, and the key it answers the kernel with. */
   kind: () => Kind | undefined;
   secret: (name: string) => string; resolver: Resolver;
-  /** The workspace folder of task `task`, if `module` dispatches its agent (jobs.ts workspace); throws otherwise. */
-  workspace: (module: string, task: unknown) => Promise<{ workspace: string }>;
   /** codehost-local's ops, when that module is enabled. */
   local?: () => LocalOps | undefined;
   /** Remembers a GitHub object a module's op made (`record` names who), so a later edit of it is known as ours (objects.ts). */
@@ -178,7 +175,6 @@ export function createCodehost({ grants, repos, kind, secret, resolver, workspac
     if (!covers(repo, grant?.repos, repos())) throw fail(403, `${module} has no ${op} grant on ${repo}`);
     if (onLocal) {
       const ref = String(b.ref ?? "");
-      if (op === "clone") throw fail(422, `a repository on this server is cloned in your computer: run \`aidenhq clone ${repo}\``);
       if (op !== "snapshot" && op !== "bundle") throw fail(404, `codehost-local has no ${op} operation`);
       if (!REF.test(ref)) throw fail(400, `${ref.slice(0, 100)} is not a branch or a commit`);
       const l = local();
@@ -195,11 +191,10 @@ export function createCodehost({ grants, repos, kind, secret, resolver, workspac
       return l.snapshot(repo, ref);
     }
     let out: Record<string, unknown> = { module, repo };
-    if (op === "snapshot" || op === "clone" || op === "bundle") {
+    if (op === "snapshot" || op === "bundle") {
       const ref = String(b.ref ?? "");
       if (!REF.test(ref)) throw fail(400, `${ref.slice(0, 100)} is not a branch or a commit`);
       out.ref = ref;
-      if (op === "clone") out.into = (await workspace(module, b.into)).workspace;
     } else {
       out = { ...out, ...shape(op, b, (g as OpsGrant).commit?.paths) };
     }
