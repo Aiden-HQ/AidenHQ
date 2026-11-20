@@ -252,15 +252,16 @@ test("upstream: off leaves every agent without an upstream tool; with issues onl
   const granted = (r, tool) => Object.entries(r).filter(([, a]) => (a.enabled_tools.github ?? []).includes(tool)).map(([k]) => k).sort();
   // What a call resolves to: github-mcp refuses a product issue to a caller without the product-issues role whatever its grant
   // says (modules/github/connections/github-mcp/src/projects.ts productTarget), and the chief of staff is that role's holder
-  // (modules/chief-of-staff/module.yaml).
+  // (modules/chief-of-staff/module.yaml); the Fleet Steward holds it too, for the digest's live-fix check (modules/fleet-steward/module.yaml).
   const resolves = (r, tool) => granted(r, tool).filter((key) => r[key].roles.includes("product-issues"));
   const on = agents("issues");
   assert.deepEqual(on["chief-of-staff"].enabled_tools.github.filter((t) => t.startsWith("github_app_issue")), ["github_app_issue", "github_app_issue_status"]);
   // Filing is the destructive write no shorthand reaches, so no other agent even holds it.
   assert.deepEqual(granted(on, "github_app_issue"), ["chief-of-staff"]);
-  // The status read is a plain read `github: read` also reaches; every other holder lacks the role, so the chief of staff is
-  // the only agent the two upstream tools resolve for.
-  for (const tool of ["github_app_issue", "github_app_issue_status"]) assert.deepEqual(resolves(on, tool), ["chief-of-staff"], tool);
+  // The status read is a plain read `github: read` also reaches; every other holder lacks the role, so only the chief of staff
+  // files and, with the Fleet Steward, reads status.
+  assert.deepEqual(resolves(on, "github_app_issue"), ["chief-of-staff"]);
+  assert.deepEqual(resolves(on, "github_app_issue_status"), ["chief-of-staff", "fleet-steward"]);
   // `off` strips both from every agent however they were granted: an own list, a read shorthand, a default grant.
   const off = agents("off");
   for (const tool of ["github_app_issue", "github_app_issue_status"]) assert.deepEqual(granted(off, tool), [], tool);
