@@ -177,9 +177,10 @@ connections:
 # The App tokens github-mcp asks the kernel for (POST /v1/codehost/token, owner authority): read-only on any repo or org the
 # App covers (issues, pull requests, checks, Actions, contents for the Maintainer's file reads, org Projects boards and search),
 # plus the writes it makes as the App: issues (product bugs on settings.product_repo, the Maintainer's comments, labels and
-# states on settings.maintainer_repos), commit statuses (the design-review check, in the agents org only) and code review's posting
+# states on settings.maintainer_repos; a pull request's comment and close also ask for pull_requests: write, since GitHub gates
+# them behind it), commit statuses (the design-review check, in the agents org only) and code review's posting
 # (src/review-post.ts: a comment review with line comments, its `aidenhq/review` status, the acknowledgement comment and Aiden's own
-# threads resolved, on any repo the App covers; never an approval or a merge: pull_requests: write is asked for only there). github-mcp
+# threads resolved, on any repo the App covers; never an approval or a merge). github-mcp
 # checks those targets itself; a grant can't name settings, so it covers whatever the App does. The code host's own checks (the
 # merge queue's reviewer eval: kernel.checks) read the repos it lands, through the kernel's snapshot.
 codehost:
