@@ -506,6 +506,27 @@ test("the Later detectors: an unstarted delegation, a merge or blocker deadlock,
   assert.deepEqual((await mk({}, { cards: [card("c1", "owner", 30), card("c2", "owner", 2), card("c3", "approved", 30)] }).card()).map((i) => i.key), ["c1"]);
 });
 
+test("a capacity queue over an hour fires only while computers sit idle; a review stall fires for a card with the AI reviewer over 15 minutes", async () => {
+  const held = (task, h, o = {}) => ({ task, identifier: `WOR-${task.toUpperCase()}`, since: ago(h), reason: "job_held", ref: "capacity", holder: "priya", attention: [], idle_wakes: 0, ...o });
+  const mk = (rows, running, capacity, records = []) => {
+    const w = world({ tasks: {}, records });
+    const call = w.call;
+    w.call = async (m, p) => (p.startsWith("/v1/tasks/state?open=1") ? { tasks: rows } : p === "/v1/work" ? { running: Array.from({ length: running }, () => ({})), capacity } : call(m, p));
+    return detect(w);
+  };
+  const rows = [held("a", 4), held("b", 3), held("c", 0.5, { holder: "sam" }), held("d", 5, { ref: "spend_cap" })];
+  const q = await mk(rows, 5, 16).queue();
+  assert.deepEqual(q.map((i) => i.key), ["priya"]);
+  assert.match(q[0].reason, /agent priya has 2 tasks held on capacity, the oldest 240 min, while 11 of 16 computers are idle/);
+  assert.deepEqual(await mk(rows, 16, 16).queue(), [], "every computer busy: a fleet at capacity is normal");
+  assert.deepEqual(await mk([held("e", 0.5)], 5, 16).queue(), [], "held under an hour");
+
+  const card = (id, state, m) => ({ id, kind: "github.merge", state, tier: 1, task: "t", identifier: "WOR-1", created_at: minsAgo(m) });
+  const s = await mk([], 0, 0, [card("c1", "review", 90), card("c2", "review", 3), card("c3", "approved", 90), card("c4", "owner", 90)])["review-stall"]();
+  assert.deepEqual(s.map((i) => i.key), ["c1"]);
+  assert.match(s[0].reason, /card c1 \(github-merge\) on task wor-1 has been with the AI reviewer for 90 min/);
+});
+
 test("quiet start: the detector still checks but files and notifies nothing until the Steward's digest routine is on", async () => {
   const routine = (status) => ({ read: async (p) => (p === "/api/companies" ? [{ id: "co" }] : [{ title: "Fleet Ops: daily digest", status }]) });
   assert.equal(await stewardOn(routine("paused"), "on"), false);

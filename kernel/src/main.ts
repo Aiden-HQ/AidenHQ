@@ -458,7 +458,7 @@ let drain: () => void = () => stop("SIGUSR2");
 for (const sig of ["SIGTERM", "SIGINT"] as const) process.on(sig, () => stop(sig));
 process.on("SIGUSR2", () => drain());
 // The finish gate (checks.ts): modules' task.finish checks (compile), holds placed as the owner.
-const work = createWork({ db: records.db, records, generationsFile: path.join(env("AIDENHQ_STATE_DIR", path.join(process.env.HOME ?? "", ".local/state/aidenhq")), "generations.jsonl") });
+const work = createWork({ db: records.db, records, generationsFile: path.join(env("AIDENHQ_STATE_DIR", path.join(process.env.HOME ?? "", ".local/state/aidenhq")), "generations.jsonl"), capacity: () => Number(computers().max) || 0 });
 // Flow: what the kernel kept before the fact log, once (idempotent), and the host's deploys as they settle (generations.ts).
 try { log("flow backfill", { recorded: backfillLocal(records.db, facts, { agentKey: (id) => grantsTable().agents?.[id]?.key }) }); } catch (e) { log("WARNING: flow backfill failed", { err: String((e as Error).message) }); }
 const deploys = createDeploys({ db: records.db, file: path.join(env("AIDENHQ_STATE_DIR", path.join(process.env.HOME ?? "", ".local/state/aidenhq")), "generations.jsonl"), repo });

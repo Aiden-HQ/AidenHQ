@@ -1,6 +1,6 @@
 ---
 name: fleet-check
-description: A detector check - find the cause of each open fleet incident (stuck, failing or looping runs, reviewer-rejection loops, unclosed work, a silent front door, sources and apps down, alerts, stale PRs, health flags), nudge or route the fix once, report product bugs through the Maintainer, and tell the owner only what needs them.
+description: A detector check - find the cause of each open fleet incident (stuck, failing or looping runs, reviewer-rejection loops, unclosed work, a capacity queue beside idle computers, a card stuck with the AI reviewer, a silent front door, sources and apps down, alerts, stale PRs, health flags), nudge or route the fix once, report product bugs through the Maintainer, and tell the owner only what needs them.
 when: { fields: { name: Fleet Steward } }
 ---
 
@@ -141,10 +141,11 @@ request open over an hour without merging) or something recovered.
   say when the last went): one `notify` (`kind: fyi`) with the card's title (`fleet_status` `approvals`), how long it has
   waited and your recommended default for them to tap. Log `reminder · <card> · <time>`. Silence never approves a card, and
   the owner decides it.
-- **Stuck work the detector names** (`unstarted:<task>`, `deadlock:<key>`, `pingpong:<task>`, `duplicate:<hash>`): read the
+- **Stuck work the detector names** (`unstarted:<task>`, `deadlock:<key>`, `pingpong:<task>`, `duplicate:<hash>`, `queue:<agent>`, `review-stall:<card>`): read the
   tasks and their comments, then act once.
   - `unstarted`: a delegated task nobody ran in an hour: comment once on it (waking its agent) with what is asked; if its
-    agent is paused or missing, tell the delegator's task.
+    agent is paused or missing, tell the delegator's task. When `queue:<agent>` is open for that agent, the task waits on that
+    finding: comment on nothing.
   - `deadlock`: a task waiting over six hours on its merge queue or CI, or tasks blocked on each other in a cycle. Read the
     PR's checks and the base branch's: a red base is a product bug (the product-bug path); a cycle is for the delegator to
     break (comment on one of the tasks, naming which blocker to drop).
@@ -152,6 +153,16 @@ request open over an hour without merging) or something recovered.
     owns the next step and the done condition; a repeat is a finding for the owner of the handbooks.
   - `duplicate`: tasks of one agent with one title. Comment on the newer one proposing it close as a duplicate of the older.
     Closing is the agent's call.
+  - `queue:<agent>`: an agent has tasks held on capacity for over an hour while computers sit idle, so work waits that other
+    agents could take. Its reason names the agent, how many tasks are held, the oldest age and how many computers idle. This
+    is a product defect (routing or admission), not agent work: report it once through the product-bug path (slug
+    `capacity-queue`) with that reason as the evidence, naming the agent and its team (`fleet_catalog`). The held agent's
+    tasks wait on the product, so each stays as it is. A fleet with every computer busy raises nothing.
+  - `review-stall:<card>`: a card has been with the AI reviewer over 15 minutes with no decision (a review lost across an
+    apply or a restart). Its reason names the card, its task and its age. This is a product defect (the reviewer path), not
+    agent work: report it once through the product-bug path (slug `review-stall`) with the card id, its kind, its age and the
+    last apply from `fleet_generation_status` as the evidence. The card and the agent waiting on it stay as they are.
+  - For either, a stall still open a day after the report is told to the owner once, as "When to tell the owner" says.
 - **Hard cases** (two causes equally likely, or a fix touching more than one agent): don't guess. Log it with `deep-look`
   and what you checked; the evening digest takes a second look. If it is on the alert list, alert the owner now anyway.
 
@@ -163,6 +174,7 @@ request open over an hour without merging) or something recovered.
 - a service or source down over 15 minutes, or anything that needs the owner's sign-in or setup;
 - a reviewer-rejection loop or a repeated failure your wake didn't resolve, the front door being silent, or an unclosed task whose
   next step is the owner's (a waiver, spend or a Tier 2 card): each with a recommended default and what you did;
+- a `queue` or `review-stall` flag still open a day after its product-bug report, with the report's task and what is waiting;
 - a security or data-loss signal (a secret in a comment or log, data deleted, an agent acting outside its grants).
 
 One message, plain words: what is wrong, since when, what you did, what you need from them. Everything else waits for
