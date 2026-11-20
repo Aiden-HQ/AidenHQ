@@ -181,8 +181,8 @@ the next run of the same content prints "already covered" and spends nothing (`-
 A refusal or failed call counts as a failure even though it escalates safely.
 
 **The eval-receipt gate** (`modules/github/service/src/evalgate.ts`, owner 2026-11-16). Reviewer code reaches the fleet only on
-a passing receipt. The reviewer's own code is the paths `REVIEWER_CODE` lists there (the single list; `REVIEWER_TREE` is its
-content as git object ids). What is judged is always a product commit, by an earlier one:
+a passing receipt. The reviewer's own code is the paths `REVIEWER_CODE` lists there (the single list; its files' git object ids
+are the reviewer's content, which decides when a passing receipt is reused). What is judged is always a product commit, by an earlier one:
 
 - a product PR that changes the reviewer's code: its head, judged by its base branch's tip; receipt for its head. When the
   base moves without changing the judging content, the eval already run stands, and a new head (a rebase) with the reviewer

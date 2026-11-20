@@ -4,11 +4,11 @@
 // brings. How the eval judges (cases, the pass rule) is the kernel's (checkjobs.ts) and tested there.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
-import { REVIEWER_CODE, REVIEWER_TREE, createEvalGate, touchesReviewer } from "../service/src/evalgate.ts";
+import { REVIEWER_CODE, createEvalGate, touchesReviewer } from "../service/src/evalgate.ts";
 import checklist from "../../ai-reviewer/service/security/checklist.json" with { type: "json" };
 
 const env = { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_AUTHOR_NAME: "T", GIT_AUTHOR_EMAIL: "t@example.com", GIT_COMMITTER_NAME: "T", GIT_COMMITTER_EMAIL: "t@example.com" };
@@ -168,6 +168,8 @@ describe("the reviewer-eval gate", { concurrency: 1 }, () => {
     const rebased = branch(prod, "fix/rebased-2", { "modules/ai-reviewer/service/src/review.ts": "// v10\n", "README.md": "rebased\n" }, tip);
     assert.equal(await gate("acme/aidenhq", pr(13, rebased)), undefined, "same reviewer and judging content: no second eval");
     assert.equal(checks.length, asked);
+    const tierToo = branch(prod, "fix/rebased-3", { "modules/ai-reviewer/service/src/review.ts": "// v10\n", "kernel/src/tier.ts": "// tier v3\n" }, tip);
+    assert.ok((await gate("acme/aidenhq", pr(13, tierToo)))?.wait, "any other REVIEWER_CODE file changed (the tiers): judged again");
     const failing = branch(prod, "fix/fails", { "modules/ai-reviewer/service/src/review.ts": "// v11\n" }, tip);
     await gate("acme/aidenhq", pr(14, failing));
     finish("fail", "1/3");
@@ -198,11 +200,9 @@ it("every path the eval-receipt checklist item names is reviewer code", () => {
   assert.deepEqual(missing, []);
 });
 
-// git ls-tree drops a path it can't find, so a renamed entry (a .mjs that became .ts) would leave its changes outside the key.
-// The same for REVIEWER_CODE, where a stale name is worse: a change to the renamed file needs no eval at all.
-it("every REVIEWER_TREE path exists and every REVIEWER_CODE pattern matches a tracked file", () => {
+// A stale pattern (a .mjs that became .ts) would take the renamed file out of the eval and out of its reuse key.
+it("every REVIEWER_CODE pattern matches a tracked file", () => {
   const root = join(import.meta.dirname, "../../..");
-  assert.deepEqual(REVIEWER_TREE.filter((p) => !existsSync(join(root, p))), []);
   const tracked = execFileSync("git", ["ls-files"], { cwd: root, encoding: "utf8" }).split("\n");
   assert.deepEqual(REVIEWER_CODE.filter((r) => !tracked.some((f) => r.test(f))).map(String), []);
 });

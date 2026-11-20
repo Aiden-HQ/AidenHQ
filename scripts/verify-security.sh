@@ -802,10 +802,11 @@ rgate="modules/github/service/src/evalgate.ts"
 # PR that changes it is judged by its base branch's tip; nothing reads a separate official modules repo or its pin.
 git -C "$repo" cat-file -e "HEAD:modules/ai-reviewer/scripts/reviewer-eval.ts" 2>/dev/null \
   && ! grep -qE 'modules-pin|modulesRepo' "$rgate" \
-  && grep -qF 'const REVIEWER_TREE = ["modules/ai-reviewer", "modules/github/service/src/plan.ts", "modules/platform/src/check.ts", "modules/github/checks", "modules/platform/checks", "modules/github/module.yaml", "modules/platform/module.yaml"];' "$rgate" \
+  && grep -qF 'const reviewerAt = async (dir: string, sha: string) => reviewerKey(await d.git(dir, ["ls-tree", "-r", "--full-tree", sha]));' "$rgate" \
+  && grep -qF '.filter((l) => touchesReviewer([l.slice(l.indexOf("\t") + 1)]))' "$rgate" \
   && pass "codehost: the reviewer-eval gate judges the product's own modules/ai-reviewer, by the base branch's tip ($rgate)" \
   || fail "codehost: the reviewer-eval gate takes the official modules from elsewhere ($rgate)"
-# A release bump of the instance's product pin to a commit whose reviewer content (REVIEWER_TREE by object id) differs lands
+# A release bump of the instance's product pin to a commit whose reviewer content (every REVIEWER_CODE file by object id) differs lands
 # only on a passing receipt for that reviewer, judged by the pinned commit; adding or moving an `aidenhq` marketplace pin is refused.
 grep -qE 'async function bump\(' "$rgate" \
   && grep -qF 'if (off.to !== null && JSON.stringify(off.from) !== JSON.stringify(off.to)) throw fail(422' modules/github/service/src/service.ts \
