@@ -600,6 +600,37 @@ test("a refusal nothing clears is dropped at once with its notice; a live job or
   k.kernel.start = start;
 });
 
+test("a refused wake is not dropped until its refusal landed: the owner is told when the task won't take it, and kept when neither does", async () => {
+  const k = fake({ task: { id: "t1", identifier: "WOR-1", title: "Fix", description: "Do it", status: "todo", assigneeAgentId: "eng", createdByUserId: "u1" } });
+  const start = k.kernel.start, note = k.kernel.note, notify = k.kernel.notify;
+  k.kernel.start = async () => { throw new KernelError(409, "kernel POST /v1/jobs → 409", { type: "task-closed", message: "task t1 is done" }); };
+  // The task won't take the notice (the same 409 a closed task gives): the owner hears the refusal, and only then is the row dropped.
+  k.kernel.note = async () => { throw new KernelError(409, "kernel POST /v1/wakes/x/note → 409", { type: "task-closed", message: "no comment on a closed task" }); };
+  k.inbox.push(wake("issue:t1:1", "assigned"));
+  await k.dispatch.tick();
+  assert.deepEqual(k.dropped.map((d) => d.key), ["issue:t1:1"]);
+  assert.equal(k.notified.length, 1, "the owner hears when the task can't carry the notice");
+  assert.equal(k.notified[0].task, "t1");
+  assert.equal(k.notified[0].dedupe_key, "refused-wake:issue:t1:1", "once per wake");
+  assert.match(k.notified[0].text, /WOR-1 was not started/);
+  assert.match(k.notified[0].text, /task-closed/);
+  assert.match(k.notified[0].text, /task t1 is done/);
+  // Neither the task nor the owner takes it: the row stays claimed, so its lease brings it back rather than dropping it silently.
+  k.kernel.notify = async () => { throw new KernelError(502, "the notify action answered 502"); };
+  k.inbox.push(wake("issue:t1:2", "assigned"));
+  await k.dispatch.tick();
+  assert.deepEqual(k.dropped.map((d) => d.key), ["issue:t1:1"], "the unlanded refusal is not dropped");
+  assert.equal(k.notified.length, 1);
+  // Once the task takes the notice again, the wake goes as before.
+  k.kernel.note = note;
+  k.inbox.push(wake("issue:t1:2", "assigned"));
+  await k.dispatch.tick();
+  assert.deepEqual(k.dropped.map((d) => d.key), ["issue:t1:1", "issue:t1:2"]);
+  assert.equal(k.notes.length, 1, "one notice on the task, once per wake");
+  k.kernel.start = start;
+  k.kernel.notify = notify;
+});
+
 test("an outcome the kernel can't post yet is retried less often each time, not every tick", async () => {
   let t = 0;
   const k = fake({ task: { id: "t1", identifier: "WOR-1", title: "Fix", status: "todo", assigneeAgentId: "eng", createdByUserId: "u1" } });

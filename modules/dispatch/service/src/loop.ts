@@ -80,13 +80,23 @@ const clears = (e: unknown) => e instanceof KernelError && (e.status === 403 || 
 const ELSEWHERE = new Set(["job-running", "wake-not-claimed"]);
 
 /**
- * What a refused wake says on its task, once: the kernel's own words and the route that refused it, so whoever reads the task sees
- * what stopped it rather than `idle · orphaned`. The kernel's type is kept in the sentence (machine-readable beside the prose).
+ * What a refused wake says, once: the kernel's own words and the route that refused it, so whoever reads the task sees what stopped
+ * it rather than `idle · orphaned`. The kernel's type is kept in the sentence (machine-readable beside the prose).
  */
-const refusalNotice = (e: KernelError) => {
+const refusalWords = (e: KernelError) => {
   const type = e.body?.type ?? "refused";
   const why = (e.body?.message ?? e.message).replace(/\s+/g, " ").trim().slice(0, 400);
+  return { type, why };
+};
+/** The notice the refused wake leaves on its task (kernel.note), naming the refusal and saying the wake is not coming back. */
+const refusalNotice = (e: KernelError) => {
+  const { type, why } = refusalWords(e);
   return `**This task was not started.** A run was queued for it, but the kernel refused to start it (\`${type}\`): ${why}\n\nNothing is running on it, and this wake was dropped rather than retried.`;
+};
+/** The owner's fallback when the task itself won't take the notice: the same refusal, named, so the stop is never silent. */
+const refusalForOwner = (id: string, e: KernelError) => {
+  const { type, why } = refusalWords(e);
+  return `🔧 **${id} was not started:** the kernel refused a run on it (\`${type}\`): ${why}. Nothing is running on it, and its wake was dropped rather than retried. Open the task to see where it stands, or re-run it.`;
 };
 
 /** How long a job whose follow failed waits before the next try: doubling from a quarter minute, at most ten minutes. */
@@ -292,6 +302,20 @@ export function createDispatch({ kernel, db, owner, log = () => {}, now = Date.n
     log("job started", { job: r.job.id, task: task.identifier, wake: w.key, cause: w.cause });
   }
 
+  /** A refused wake's one word: its task's notice, else the owner (false when neither landed: the wake must stay for its lease). */
+  async function sayRefusal(w: Wake, e: KernelError): Promise<boolean> {
+    const noted = await kernel.note(w.key, refusalNotice(e)).then(() => true, (err: Error) => {
+      log("refused wake: its notice wasn't posted, telling the owner", { wake: w.key, task: w.task, err: err.message });
+      return false;
+    });
+    if (noted) return true;
+    const id = (await kernel.task(w.task).catch(() => undefined))?.identifier ?? w.task;
+    return kernel.notify({ kind: "decision", task: w.task, dedupe_key: `refused-wake:${w.key}`, text: refusalForOwner(id, e) }).then(() => true, (err: Error) => {
+      log("refused wake: the owner's notice wasn't posted either", { wake: w.key, task: w.task, err: err.message });
+      return false;
+    });
+  }
+
   return {
     async tick() {
       await follow();
@@ -309,8 +333,17 @@ export function createDispatch({ kernel, db, owner, log = () => {}, now = Date.n
             refusals.set(w.key, tries);
             return log("wake refused: retried when its lease runs out", { wake: w.key, task: w.task, refusal: e.body?.type ?? e.status, tries, err: e.message.slice(0, 200) });
           }
+          // Another run already answers the task, or the row is no longer ours: it goes with nothing said, since a notice would say
+          // nothing is running on a task that is.
+          if (ELSEWHERE.has(e.body?.type ?? "")) {
+            refusals.delete(w.key);
+            return void (await kernel.drop(w.key, e.message).then(() => log("wake dropped: the kernel refused it", { wake: w.key, task: w.task, err: e.message.slice(0, 200) }), () => {}));
+          }
+          // The word goes out before the row: a wake dropped without one is the silent stop this is here to end. The task takes the
+          // notice; if it won't, the owner hears the same refusal. A wake is dropped only once one of those landed: when neither
+          // did, the row stays claimed and its lease brings it back, so nothing is lost and nothing is quiet.
+          if (!(await sayRefusal(w, e))) return log("wake refused: neither its notice nor the owner's landed, kept for its lease", { wake: w.key, task: w.task, refusal: e.body?.type ?? e.status, err: e.message.slice(0, 200) });
           refusals.delete(w.key);
-          if (!ELSEWHERE.has(e.body?.type ?? "")) await kernel.note(w.key, refusalNotice(e)).catch((err: Error) => log("refused wake: its notice wasn't posted", { wake: w.key, task: w.task, err: err.message }));
           await kernel.drop(w.key, e.message).then(() => log("wake dropped: the kernel refused it", { wake: w.key, task: w.task, err: e.message.slice(0, 200) }), () => {});
         });
       }
