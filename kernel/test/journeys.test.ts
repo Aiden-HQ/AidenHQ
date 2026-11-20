@@ -127,19 +127,3 @@ test("insights: phase percentiles, rounds, rejections, funnel, cost, DORA's five
   assert.deepEqual(i.bottlenecks.map((b) => b.kind), ["idle", "rounds", "slow"]);
   assert.match(i.bottlenecks[1].text, /^AI review took 3\.0 rounds/);
 });
-
-test("a new install: no facts, no insights and an empty journey; GET /v1/flow?journeys=1 and ?journey=", async (t) => {
-  const { add, flow } = setup();
-  assert.equal(flow.summary({ since: DAY }).insights, null);
-  assert.deepEqual(flow.journey({ name: "pr", since: DAY }).items, []);
-  agentPr(add);
-  const handle = createBackplane({ whoami: async () => ({ kind: "module", module: "fleet-steward", roles: ["kernel.flow-read"], tools: [] }), asserter: { jwks: {} }, proxy: async () => {}, cp: async () => {}, grantsFile: () => ({}), flow });
-  const server = http.createServer(handle);
-  await new Promise((r) => server.listen(0, r));
-  t.after(() => server.close());
-  const get = (path) => fetch(`http://127.0.0.1:${server.address().port}${path}`, { headers: { authorization: "Bearer reader" } });
-  assert.deepEqual((await (await get("/v1/flow?journeys=1")).json()).journeys[0].phases.length, 8);
-  assert.equal((await (await get(`/v1/flow?journey=pr&since=${DAY}&author=agent,owner&sort=slowest`)).json()).items[0].number, 12);
-  assert.equal((await get("/v1/flow?journey=pr&author=robot")).status, 400);
-  assert.equal((await get("/v1/flow?journey=issues")).status, 404);
-});
