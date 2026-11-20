@@ -26,11 +26,15 @@ a change too large to read) goes back to the agent, never to the owner.
   expire after 7 days.
 - **Earlier decisions bind** (`tier.ts` `priorDecisions`). The owner's rejection of an action on a task is a veto: every later
   request of it there is the owner's until they approve one. The reviewer's rejection holds for exactly that content (the same
-  commits or patch, under any branch name): such a request is refused by code before any review until the owner's own comment
-  on the task answers it (never a parent's comment, nor an edit of the title or description); the agent changes it or reports
-  back (owner, 2026-11-18: refile only after a fix). Changed content is reviewed afresh with every earlier note attached. After
-  `MAX_REJECTS` (3) reviewer rejections of one branch or PR since the owner's last yes, that target is parked with a note to the
-  agent; the task's other targets are still reviewed. A rejection counts on the branch it was raised against, by name or by the
+  commits or patch, under any branch name): such a request is refused by code before any review until a decision on the task
+  answers it: the owner's own comment, or a comment by the agent that created the task or the chief of staff (never the
+  requester's own, nor an edit of the title or description); the agent changes it or reports back (owner, 2026-11-18: refile
+  only after a fix). The reviewer reads the task's comments (TASK_COMMENTS), each under a label code writes from its author:
+  the owner's words, the delegator's or chief of staff's amendment of their request (an agent's, never the owner's), the
+  requester's own context. Changed content is reviewed afresh with every earlier note attached. After `MAX_REJECTS` (3)
+  unanswered reviewer rejections of one branch or PR since the owner's last yes, that target is parked with a note to the
+  agent; the task's other targets are still reviewed. A decision on the task lifts the park: agents' decisions once per
+  target (`AGENT_LIFTS`), the owner's always. A rejection counts on the branch it was raised against, by name or by the
   change's content key; an action that names no branch or PR (an apply, a module digest) has the task as its target. Code's own
   refusals (`CODE_REJECTS`: moved, unreadable, too large) never count; a card closed because its head moved is `stale`.
 - **A rejected head stays inspectable.** A `pr` card's head is reviewed before anything is pushed, so the code host keeps each
