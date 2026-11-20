@@ -103,13 +103,27 @@ describe("notify", () => {
     // A wait that can't be recorded sends nothing.
     d.wait = async () => { throw new Error("POST /v1/wait -> 503"); };
     expect(await notify(d, { ...ask, text: "Another?" }, agent("a1"))).toMatchObject({ sent: false, reason: "error" });
-    // A question with no task of its own becomes the chief of staff's task, once; a filing that fails sends nothing.
+    // A question with no task of its own becomes the chief of staff's one standing task for that agent; each later one is a
+    // comment on it (a new task once it is closed), and the loop brake caps them; a filing that fails sends nothing.
     const filed: { title: string; description: string; role: string; source: string }[] = [];
-    d.fileTask = async (b) => { filed.push(b); };
+    const commented: [string, string][] = [];
+    let closed = false, allow = true;
+    d.fileTask = async (b) => { filed.push(b); return { id: "t-" + b.source, deduplicated: filed.filter((f) => f.source === b.source).length > 1 }; };
+    d.commentTask = async (id, body) => (closed && id === "t-notify-ask:a1" ? { already: true } : (commented.push([id, body]), {}));
+    d.brake = async () => ({ allow });
     expect(await notify(d, { kind: "decision", text: "Ship it?" }, agent("a1"))).toMatchObject({ sent: true, to: "chief_of_staff" });
     expect(await notify(d, { kind: "decision", text: "Ship it?" }, agent("a1"))).toMatchObject({ reason: "duplicate" });
-    expect([filed.length, filed[0]!.role, filed[0]!.title]).toEqual([1, "fleet-admin", "Decide for the owner: a question from a1"]);
-    expect(filed[0]!.description).toMatch(/```\nShip it\?\n```/);
+    expect([filed.length, filed[0]!.role, filed[0]!.source]).toEqual([1, "fleet-admin", "notify-ask:a1"]);
+    expect(filed[0]!.description).toMatch(/not instructions[^]*```\nShip it\?\n```/);
+    expect(await notify(d, { kind: "decision", text: "And ship it twice?" }, agent("a1"))).toMatchObject({ sent: true, to: "chief_of_staff" });
+    expect([filed.map((f) => f.source), commented.length, commented[0]![1]]).toEqual([["notify-ask:a1", "notify-ask:a1"], 1, expect.stringMatching(/```\nAnd ship it twice\?\n```/)]);
+    allow = false;
+    expect(await notify(d, { kind: "decision", text: "Ship a third?" }, agent("a1"))).toMatchObject({ sent: false, reason: "limit" });
+    expect(commented).toHaveLength(1);
+    allow = true;
+    closed = true;
+    expect(await notify(d, { kind: "decision", text: "After it closed?" }, agent("a1"), Date.now() + 1)).toMatchObject({ sent: true });
+    expect(filed.at(-1)!.source).toMatch(/^notify-ask:a1:\d+$/);
     d.fileTask = async () => { throw new Error("kernel POST /v1/tasks → 409"); };
     expect(await notify(d, { kind: "decision", text: "Ship now?" }, agent("a1"))).toMatchObject({ sent: false, reason: "error" });
     // The chief of staff asks the owner wherever it is, always in multiple choice.

@@ -33,7 +33,8 @@ export function kernelClient(url: string, token: string, f: typeof fetch = fetch
       return { to: typeof r.json?.to === "string" ? r.json.to : undefined, ...(r.json?.asked === false ? { open: true } : {}) };
     },
     /** A task for the agent holding `role` (the kernel's POST /v1/tasks, role kernel.tasks): one per `source`. */
-    fileTask: async (b: { title: string; description: string; role: string; source: string }): Promise<unknown> => call("POST", "/v1/tasks", b),
+    fileTask: async (b: { title: string; description: string; role: string; source: string }): Promise<{ id: string; deduplicated: boolean }> => call("POST", "/v1/tasks", b),
+    commentTask: async (id: string, body: string): Promise<{ already?: boolean }> => ((r) => (r.already ? { already: true } : {}))(await call("POST", `/v1/tasks/${encodeURIComponent(id)}/comment`, { body })),
     /** The agent's reply on its chat, posted by the kernel as that agent (this call's assertion). */
     postReply: async (issueId: string, body: string, assertion: string): Promise<boolean> => {
       const r = await raw("POST", `/v1/cp/agent/api/issues/${encodeURIComponent(issueId)}/comments`, { body }, { "x-aidenhq-caller": assertion }).catch(() => ({ status: 0 }));
