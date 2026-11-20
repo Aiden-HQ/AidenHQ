@@ -169,7 +169,7 @@ export function taskState(task: string, facts: FactRow[], now: number, stages: S
     else open.push({ reason: "blocked", ref: `task:${b}`, since: ms(blockedBy!.at) });
   }
   if (status?.data.to === "backlog") open.push({ reason: "backlog", since: ms(status.at) });
-  if (created.data.chat === true && !open.length && !failure) open.push({ reason: "chat_turn", since: quiet });
+  if ((mine.filter((f) => f.type === "task.labeled").at(-1)?.data.chat ?? created.data.chat) === true && !open.length && !failure) open.push({ reason: "chat_turn", since: quiet });
 
   // Attention, across every obligation.
   const attention: Attention[] = [];

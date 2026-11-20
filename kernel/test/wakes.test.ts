@@ -21,7 +21,7 @@ function world() {
     const u = new URL(path, "http://cp");
     let m;
     if ((m = /^\/api\/agents\/([^/]+)$/.exec(u.pathname))) return { status: 200, json: { id: m[1], companyId: "c-1", status: "idle", lifecycleHolds: [] } };
-    if (u.pathname === "/api/companies/c-1/issues") return { status: 200, json: Object.values(issues).filter((i) => (u.searchParams.get("status") ?? "todo,in_progress,in_review").split(",").includes(i.status) && i.assigneeAgentId === u.searchParams.get("assigneeAgentId")) };
+    if (u.pathname === "/api/companies/c-1/issues") return { status: 200, json: Object.values(issues).filter((i) => (u.searchParams.get("status") ?? "todo,in_progress,in_review").split(",").includes(i.status) && (!u.searchParams.has("assigneeAgentId") || i.assigneeAgentId === u.searchParams.get("assigneeAgentId"))) };
     if ((m = /^\/api\/issues\/([^/]+)\/comments$/.exec(u.pathname))) {
       let list = [...(comments[m[1]] ?? [])];
       const after = u.searchParams.get("after");
@@ -399,4 +399,39 @@ test("a closure the event path missed is recorded by the next poll", async () =>
   await w.wakes.poll();
   assert.equal(of("task.status_changed").length, 2);
   assert.equal(w.db.prepare("SELECT status FROM wake_tasks WHERE task = 't1'").get().status, "done");
+});
+
+test("the poll heals every open task's facts: created, the owner as holder, an old chat's flag, closures of unpolled tasks", async () => {
+  const w = world();
+  const at = "2026-11-17T09:00:00.000Z";
+  const add = (task, type, version, data) => w.facts.record({ type, subject: `task:${task}`, version, at, actor: "unknown", task, source: "poll", data });
+  // Seen before the log had task.created (its cursor seeded from wake_tasks): only a status fact.
+  w.issue("old", { status: "todo", assigneeAgentId: OTHER, createdAt: at });
+  w.db.prepare("INSERT INTO task_facts_seen (task, holder, status) VALUES ('old', 'agent:a-2', 'todo')").run();
+  add("old", "task.status_changed", "1", { from: null, to: "todo" });
+  // Handed to the owner while nobody polled it.
+  w.issue("own", { status: "in_progress", assigneeAgentId: null, assigneeUserId: "u-1" });
+  add("own", "task.created", "created", { identifier: null });
+  add("own", "task.status_changed", "1", { from: null, to: "in_progress" });
+  add("own", "task.assignee_changed", "0", { from: null, to: OTHER });
+  // A chat whose created fact is older than the chat flag.
+  w.issue("chat", { status: "in_progress", assigneeAgentId: OTHER, labels: [{ name: "chat" }] });
+  add("chat", "task.created", "created", { identifier: null });
+  add("chat", "task.status_changed", "1", { from: null, to: "in_progress" });
+  add("chat", "task.assignee_changed", "0", { from: null, to: OTHER });
+  // Closed, and gone, while nobody polled them.
+  w.issue("shut", { status: "done", statusVersion: 2, assigneeAgentId: OTHER });
+  for (const t of ["shut", "lost"]) { add(t, "task.created", "created", {}); add(t, "task.status_changed", "1", { from: null, to: "todo" }); }
+  await w.wakes.poll();
+  const state = (t) => taskState(t, w.facts.forTask(t), w.tick(0), []);
+  assert.notEqual(state("old").reason, "history_expired");
+  assert.equal(w.facts.forTask("old").filter((f) => f.type === "task.created").length, 1);
+  assert.equal(state("own").reason, "handback");
+  assert.equal(state("chat").reason, "chat_turn");
+  assert.deepEqual([state("shut").reason, state("lost").reason], ["closed", "cancelled"]);
+  assert.deepEqual(w.facts.openTasks().sort(), ["chat", "old", "own"]);
+  // A second poll records nothing new.
+  const n = w.db.prepare("SELECT count(*) AS n FROM facts").get().n;
+  await w.wakes.poll();
+  assert.equal(w.db.prepare("SELECT count(*) AS n FROM facts").get().n, n);
 });

@@ -46,6 +46,17 @@ export function openFacts(db: DatabaseSync, now = () => new Date()) {
     forTask(task: string): FactRow[] {
       return (db.prepare("SELECT * FROM facts WHERE task = ? ORDER BY at, seq").all(task) as any[]).map(row);
     },
+    /** A subject's newest fact of each of `types` (by `at`, then `seq`, as task state reads them). */
+    latest(subject: string, types: string[]): Map<string, FactRow> {
+      const out = new Map<string, FactRow>();
+      for (const r of db.prepare(`SELECT * FROM facts WHERE subject = ? AND type IN (${types.map(() => "?").join(",")}) ORDER BY at, seq`).all(subject, ...types) as any[]) out.set(r.type, row(r));
+      return out;
+    },
+    /** The tasks whose newest status fact is open (not done or cancelled): what task state lists as open. */
+    openTasks(): string[] {
+      return (db.prepare(`SELECT subject FROM (SELECT subject, json_extract(data, '$.to') AS st, ROW_NUMBER() OVER (PARTITION BY subject ORDER BY at DESC, seq DESC) AS n
+        FROM facts WHERE type = 'task.status_changed' AND subject GLOB 'task:*') WHERE n = 1 AND st NOT IN ('done', 'cancelled')`).all() as { subject: string }[]).map((r) => r.subject.slice(5));
+    },
     /** Drops facts older than `days` (the kernel's daily sweep); returns how many. */
     prune(days = 400): number {
       return Number(db.prepare("DELETE FROM facts WHERE at < ?").run(new Date(now().getTime() - days * DAY).toISOString()).changes);

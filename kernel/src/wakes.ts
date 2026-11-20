@@ -15,7 +15,7 @@ import { createHash, randomBytes } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { Api } from "./channels.ts";
 import { inTx, iso, strictFact } from "./factlog.ts";
-import type { Facts } from "./facts.ts";
+import type { FactRow, Facts } from "./facts.ts";
 import type { Outcomes } from "./outcomes.ts";
 import { mentionedRepos } from "./boxes.ts";
 import { agentPaused } from "../sdk/src/agent-paused.ts";
@@ -59,6 +59,7 @@ type Issue = { id: string; identifier?: string; title?: string; description?: st
 type Comment = { id: string; body?: string; authorAgentId?: string | null; authorUserId?: string | null; createdAt?: string; deletedAt?: string | null };
 type Log = (msg: string, f?: Record<string, unknown>) => void;
 const ms = (t?: string) => (t ? Date.parse(t) || 0 : 0);
+const str = (v: unknown) => (typeof v === "string" && v ? v : null);
 
 export function createWakes({ db, owner, post, dispatches, containers = () => new Set(), routineKey = () => undefined, grants = () => ({}), knownRepo = () => false, teamDayUsedUp = () => false, tellBlocked = async () => {}, facts, log = () => {}, now = Date.now }: {
   /** Flow's fact log (facts.ts): task changes the scan sees, and each wake's opening, binding and dropping. */
@@ -136,15 +137,34 @@ export function createWakes({ db, owner, post, dispatches, containers = () => ne
   const blockedKey = (i: Issue) => (i.blockedBy ? i.blockedBy.map((b) => b.id).sort().join(",") : null);
 
   /**
-   * What changed on a task since the scan last saw it, as facts (spec: flow §1). Their versions come from Paperclip, so the event
-   * path and the poll that see one change record it once. A task seen first is recorded as created, with the status and assignee
-   * it has (from nothing). `actor`: who Paperclip says did it, else unknown. The holder is the agent, `"owner"` (a user assignee:
-   * every admin is the owner) or none; what changed is read against task_facts_seen, which this ends by moving to the issue.
-   * The facts and that cursor move in one transaction: a fact that can't be written leaves the cursor, so the next look records it.
+   * What changed on a task since its facts last said, as facts (spec: flow §1). Their versions come from Paperclip, so the event
+   * path and the poll that see one change record it once. A task with no task.created fact gets one (also one seen before the
+   * log had it), with the status and assignee it has (from what its facts last said). `actor`: who Paperclip says did it, else
+   * unknown. The holder is the agent, `"owner"` (a user assignee: every admin is the owner) or none. Status, holder and the chat
+   * flag are read against the facts themselves, so a fact never written heals on the next look; blockers against task_facts_seen.
+   * A chat flag the created fact lacks or that changed later is a `task.labeled` fact, dated at the created one (a flag, never
+   * activity). The facts and that cursor move in one transaction.
    */
+  const TASK_FACTS = ["task.created", "task.labeled", "task.status_changed", "task.assignee_changed"];
+  const lastFacts = (task: string) => facts?.latest(`task:${task}`, TASK_FACTS) ?? new Map<string, FactRow>();
+  /** A task's chat flag: its newest task.labeled, else its created fact's (undefined for a created fact older than the flag). */
+  const chatOf = (last: Map<string, FactRow>) => { const c = last.get("task.labeled")?.data.chat ?? last.get("task.created")?.data.chat; return typeof c === "boolean" ? c : undefined; };
+  /**
+   * The issue as its facts need it: a list row may lack the description a first fact reads (a module's markers) or the labels a
+   * chat flag reads, so a task with no created fact, or one whose chat flag nobody recorded, is read once whole.
+   */
+  const whole = async (issue: Issue): Promise<Issue> => {
+    if (!facts) return issue;
+    const last = lastFacts(issue.id);
+    const need = last.has("task.created") ? chatOf(last) === undefined && !Array.isArray(issue.labels) : issue.description === undefined || !Array.isArray(issue.labels);
+    if (!need) return issue;
+    const r = await owner("GET", `/api/issues/${encodeURIComponent(issue.id)}`);
+    return r.status === 200 ? (r.json as Issue) : issue;
+  };
   const taskFacts = (issue: Issue, source: "live" | "poll", actor: string) => inTx(db, "task_facts", () => recordTaskFacts(issue, source, actor));
   function recordTaskFacts(issue: Issue, source: "live" | "poll", actor: string) {
-    const prev = q("SELECT holder, status, blocked FROM task_facts_seen WHERE task = ?").get(issue.id) as { holder: string | null; status: string | null; blocked: string | null } | undefined;
+    const prev = q("SELECT blocked FROM task_facts_seen WHERE task = ?").get(issue.id) as { blocked: string | null } | undefined;
+    const last = lastFacts(issue.id);
     const base = { subject: `task:${issue.id}`, task: issue.id, actor, source };
     const changed = ms(issue.updatedAt) || now();
     // A task a kernel job created without a Paperclip parent: the creating job's task (provenance.ts) is its parent.
@@ -152,12 +172,17 @@ export function createWakes({ db, owner, post, dispatches, containers = () => ne
     // A task a module filed (modtasks.ts: its marker and source, no agent made it) has the module as origin and its source as marker.
     const module = issue.createdByAgentId ? undefined : /<!-- aidenhq-module:([\w-]+) -->/.exec(issue.description ?? "")?.[1];
     const marker = module ? /<!-- source:(\S{1,200}) -->/.exec(issue.description ?? "")?.[1] : undefined;
-    if (!prev) fact({ ...base, type: "task.created", version: "created", at: iso(ms(issue.createdAt) || changed), data: { parent: issue.parentId ?? parentByJob(issue.id), identifier: issue.identifier ?? null, chat: Boolean(issue.labels?.some((l) => l.name === "chat")), origin: issue.originKind ?? (module ? `module:${module}` : null), source_marker: issue.originId ?? marker ?? null } });
+    const chat = Array.isArray(issue.labels) ? issue.labels.some((l) => l.name === "chat") : undefined;
+    const created = last.get("task.created");
+    if (!created) fact({ ...base, type: "task.created", version: "created", at: iso(ms(issue.createdAt) || changed), data: { parent: issue.parentId ?? parentByJob(issue.id), identifier: issue.identifier ?? null, chat: Boolean(chat), origin: issue.originKind ?? (module ? `module:${module}` : null), source_marker: issue.originId ?? marker ?? null } });
+    else if (chat !== undefined && chatOf(last) !== chat) fact({ ...base, type: "task.labeled", version: `chat:${chat}@${issue.updatedAt ?? changed}`, at: created.at, data: { chat } });
     const status = String(issue.status ?? "");
-    if (status && (prev?.status ?? null) !== status) fact({ ...base, type: "task.status_changed", version: String(issue.statusVersion ?? issue.updatedAt ?? changed), at: iso(changed), data: { from: prev?.status ?? null, to: status } });
+    const was = str(last.get("task.status_changed")?.data.to);
+    if (status && was !== status) fact({ ...base, type: "task.status_changed", version: String(issue.statusVersion ?? issue.updatedAt ?? changed), at: iso(changed), data: { from: was, to: status } });
     const holder = issue.assigneeAgentId ? `agent:${issue.assigneeAgentId}` : issue.assigneeUserId ? "owner" : null;
-    const name = (h: string | null | undefined) => (h ? (h === "owner" ? h : keyOf(h.slice(6))) : null);
-    if ((prev?.holder ?? null) !== holder) fact({ ...base, type: "task.assignee_changed", version: String(issue.updatedAt ?? changed), at: iso(changed), data: { from: name(prev?.holder), to: name(holder) } });
+    const to = holder ? (holder === "owner" ? holder : keyOf(holder.slice(6))) : null;
+    const from = str(last.get("task.assignee_changed")?.data.to);
+    if (from !== to) fact({ ...base, type: "task.assignee_changed", version: String(issue.updatedAt ?? changed), at: iso(changed), data: { from, to } });
     const blocked = blockedKey(issue);
     if (blocked !== null && blocked !== (prev?.blocked ?? "")) fact({ ...base, type: "task.blocked_changed", version: `${blocked}@${issue.updatedAt ?? changed}`, at: iso(changed), data: { blocked_by: blocked ? blocked.split(",") : [] } });
     q("INSERT INTO task_facts_seen (task, holder, status, blocked, at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(task) DO UPDATE SET holder = excluded.holder, status = excluded.status, blocked = COALESCE(excluded.blocked, blocked), at = excluded.at").run(issue.id, holder, status, blocked, now());
@@ -180,9 +205,8 @@ export function createWakes({ db, owner, post, dispatches, containers = () => ne
   /** One task's wakes: new comments past its cursor, and a move to todo (or a first sight of an unstarted todo task). */
   async function scan(issue: Issue, { reopened = false, source = "live", actor = "unknown" }: { reopened?: boolean; source?: "live" | "poll"; actor?: string } = {}) {
     const seen = q("SELECT agent, status, comment, blocked, polled FROM wake_tasks WHERE task = ?").get(issue.id) as { agent: string | null; status: string | null; comment: string | null; blocked: string | null; polled: number } | undefined;
-    // The task's facts first: a task nobody polls (unassigned, or an agent no dispatcher claims) is recorded too. A list row may
-    // lack the description its first fact reads (a module's markers): read the task once then.
-    if (!q("SELECT 1 FROM task_facts_seen WHERE task = ?").get(issue.id) && issue.description === undefined) { const r = await owner("GET", `/api/issues/${encodeURIComponent(issue.id)}`); if (r.status === 200) issue = r.json as Issue; }
+    // The task's facts first: a task nobody polls (unassigned, or an agent no dispatcher claims) is recorded too.
+    issue = await whole(issue);
     taskFacts(issue, source, actor);
     const box = containers();
     const agent = box.has(issue.id) || (issue.identifier && box.has(issue.identifier)) ? null : issue.assigneeAgentId;
@@ -366,8 +390,9 @@ export function createWakes({ db, owner, post, dispatches, containers = () => ne
   }
 
   const companies = new Map<string, string>();
-  /** The most tasks a poll re-reads one by one (closures and hand-offs its lists can't show). */
+  /** The most tasks a poll re-reads one by one (closures and hand-offs its lists can't show), and how long its reconcile may take. */
   const RECONCILE_MAX = 100;
+  const RECONCILE_MS = 30_000;
   return {
     scan,
     /**
@@ -375,7 +400,11 @@ export function createWakes({ db, owner, post, dispatches, containers = () => ne
      * write returned. No wake: the event and the poll file those, from their own cursor.
      */
     async observe(issue: Issue, actor: string) { taskFacts(issue, "live", actor); },
-    /** The reconcile poll: every open task of every polled agent, and its blocked tasks whose blockers closed; and wakes whose jobs ended are done. */
+    /**
+     * The reconcile poll: every open task of every polled agent, and its blocked tasks whose blockers closed; and wakes whose jobs
+     * ended are done. Then every other open task of their companies (the owner's, unassigned ones, unpolled agents') has its facts
+     * recorded, and the tasks the facts call open that no list returned are read one by one.
+     */
     async poll() {
       try { q(`UPDATE wakes SET state = 'done' WHERE state = 'claimed' AND job IS NOT NULL AND job NOT IN (SELECT id FROM jobs WHERE state IN ${LIVE})`).run(); } catch (e) { log("wake poll failed", { step: "close ended wakes", err: (e as Error).message }); }
       const listed = new Set<string>();
@@ -398,17 +427,40 @@ export function createWakes({ db, owner, post, dispatches, containers = () => ne
           log("wake poll failed", { agent, err: (e as Error).message });
         }
       }
-      // A task the lists above didn't return may have closed, or been handed to the owner, with its event lost (the lists show
-      // only a polled agent's open tasks): each is read once and its changes recorded, least recently seen first.
-      const gone = (q("SELECT w.task FROM wake_tasks w LEFT JOIN task_facts_seen s ON s.task = w.task WHERE COALESCE(w.status, '') NOT IN ('done', 'cancelled') ORDER BY COALESCE(s.at, 0), w.task").all() as { task: string }[])
-        .filter((r) => !listed.has(r.task)).slice(0, RECONCILE_MAX);
-      for (const { task } of gone) {
+      const until = Date.now() + RECONCILE_MS;
+      for (const company of new Set(companies.values())) {
+        try {
+          const l = await owner("GET", `/api/companies/${encodeURIComponent(company)}/issues?status=${OPEN},blocked,backlog&limit=500`);
+          if (l.status !== 200 || !Array.isArray(l.json)) throw new Error(`control plane GET issues → ${l.status}`);
+          for (const row of l.json as Issue[]) {
+            if (listed.has(row.id) || Date.now() > until) continue;
+            listed.add(row.id);
+            try { taskFacts(await whole(row), "poll", "unknown"); } catch (e) { log("wake reconcile failed", { task: row.id, err: (e as Error).message }); }
+          }
+        } catch (e) { log("wake reconcile failed", { company, err: (e as Error).message }); }
+      }
+      // A task the facts call open that no list returned may have closed or gone, its event lost: each is read once, least
+      // recently seen first. Gone from Paperclip (404) is cancelled, by the kernel.
+      if (!facts) return;
+      const seenAt = new Map((q("SELECT task, at FROM task_facts_seen").all() as { task: string; at: number }[]).map((r) => [r.task, r.at]));
+      const gone = facts.openTasks().filter((t) => !listed.has(t)).sort((a, b) => (seenAt.get(a) ?? 0) - (seenAt.get(b) ?? 0) || a.localeCompare(b)).slice(0, RECONCILE_MAX);
+      const seen = (task: string) => q("INSERT INTO task_facts_seen (task, at) VALUES (?, ?) ON CONFLICT(task) DO UPDATE SET at = excluded.at").run(task, now());
+      for (const task of gone) {
+        if (Date.now() > until) break;
         try {
           const r = await owner("GET", `/api/issues/${encodeURIComponent(task)}`);
-          if (r.status !== 200) continue;
+          if (r.status === 404) {
+            inTx(db, "task_gone", () => {
+              fact({ type: "task.status_changed", subject: `task:${task}`, task, version: "missing", at: iso(now()), actor: "kernel", source: "poll", data: { from: str(lastFacts(task).get("task.status_changed")?.data.to), to: "cancelled" } });
+              q("UPDATE task_facts_seen SET status = 'cancelled' WHERE task = ?").run(task);
+              q("UPDATE wake_tasks SET status = 'cancelled' WHERE task = ?").run(task);
+              seen(task);
+            });
+            continue;
+          }
+          if (r.status !== 200) { seen(task); log("wake reconcile failed", { task, err: `control plane GET issue → ${r.status}` }); continue; }
           const issue = r.json as Issue;
           taskFacts(issue, "poll", "unknown");
-          // A closed task leaves this pass for good (its row's status is what selects it); a reopening moves it back on the next scan.
           if (issue.status === "done" || issue.status === "cancelled") q("UPDATE wake_tasks SET status = ? WHERE task = ?").run(issue.status, task);
         } catch (e) { log("wake reconcile failed", { task, err: (e as Error).message }); }
       }
