@@ -600,6 +600,30 @@ test("a job that couldn't start is retried later, and after three tries a notice
   assert.deepEqual(k.posts, [{ job: "j3", kind: "notice", body: "**Couldn't start:** couldn't start: the computer launcher answered 500. Say **continue** to try again." }]);
 });
 
+test("a run its machinery ended (lost, or killed by a signal) comes back as a resumed run; a run's own error doesn't", async () => {
+  const comments = [];
+  const k = fake({ task: { id: "t1", identifier: "WOR-1", title: "Fix", description: "Do it", status: "in_progress", assigneeAgentId: "eng", createdByUserId: "u1" }, comments });
+  k.inbox.push(wake("issue:t1:1", "assigned"));
+  await k.dispatch.tick();
+  comments.push({ id: "a1", authorType: "agent", authorAgentId: "eng", body: "On it.", createdAt: "2026-11-18T10:00:00Z" }); // the retry is not its first run
+  Object.assign(k.jobs.get("j1"), { state: "lost", exit: null, final: "", ended: Date.now() });
+  await k.dispatch.tick();
+  assert.deepEqual(k.scheduled.map((s) => [s.id, s.cause]), [["retry.j1", "retry"]]);
+  assert.deepEqual(k.posts, [], "no notice for a run that restarts itself");
+  k.inbox.push(wake("wake_at:dispatch.retry.j1", "scheduled: retry"));
+  await k.dispatch.tick();
+  assert.match(k.started[1].prompt, /ended before finishing/);
+  Object.assign(k.jobs.get("j2"), { state: "failed", exit: 137, final: "", ended: Date.now() });
+  await k.dispatch.tick();
+  assert.equal(k.scheduled.length, 2, "killed by a signal: retried");
+  k.inbox.push(wake("wake_at:dispatch.retry.j2", "scheduled: retry"));
+  await k.dispatch.tick();
+  Object.assign(k.jobs.get("j3"), { state: "failed", exit: 1, final: "Error: bad config", ended: Date.now() });
+  await k.dispatch.tick();
+  assert.equal(k.scheduled.length, 2, "its own error: not retried");
+  assert.match(k.posts[0].body, /^\*\*Failed\*\* \(exit code 1\)/);
+});
+
 test("an owner comment older than the newest 200 is read forward from the last seen one, never dropped", async () => {
   const comments = [];
   const k = fake({ task: { id: "t1", identifier: "WOR-1", title: "Chat", description: "Talk.", status: "todo", assigneeAgentId: "eng", createdByUserId: "u1" }, comments });
