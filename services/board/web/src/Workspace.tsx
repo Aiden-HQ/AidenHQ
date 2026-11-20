@@ -20,6 +20,7 @@ import { foldCount, foldNoise, isNoise, shortTitle, type Folded } from "./conver
 import type { Approval, Assignee, ChatAgent, ChatDetail, LaneAgent, ChatMessage, ChatRow, ChatState, FileView, Question, SettledItem, Working } from "./types";
 import { MAX_FILE, ago, elapsed, fileSize, handleOf } from "./util";
 import { openQuestions } from "./questions";
+import { Icon } from "./ui/icons";
 
 interface Props {
   selected: string | null;
@@ -365,7 +366,7 @@ function NewChat({ agents, crew, mobile, go, toast, reloadList }: { agents: Chat
       {mobile && (
         <header className="conv-head">
           <button className="icon-btn" aria-label="Back to chats" onClick={() => go("#/")}>
-            ‹
+            <Icon name="back" size={20} />
           </button>
           <span className="conv-name">New chat</span>
         </header>
@@ -602,7 +603,7 @@ function Conversation({ refId, row, mobile, crew, prefix, go, onSignIn, toast, p
           <header className="conv-head">
             {mobile && (
               <button className="icon-btn" aria-label="Back to chats" onClick={() => go("#/")}>
-                ‹
+                <Icon name="back" size={20} />
               </button>
             )}
             <Monogram name={row.agent.name} size={32} avatar={portraitOf(crew, row.agent.key)} />
@@ -646,7 +647,7 @@ function Conversation({ refId, row, mobile, crew, prefix, go, onSignIn, toast, p
         <header className="conv-head">
           {mobile && (
             <button className="icon-btn" aria-label="Back to chats" onClick={() => go("#/")}>
-              ‹
+              <Icon name="back" size={20} />
             </button>
           )}
           <Monogram name={chat.agent.name} size={32} avatar={portraitOf(crew, chat.agent.key)} />

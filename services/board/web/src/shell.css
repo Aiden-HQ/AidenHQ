@@ -133,3 +133,12 @@
 .pal-hint { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-sm); color: var(--faint); }
 .pal-kind { margin-left: auto; flex: none; font-size: var(--text-xs); color: var(--faint); }
 .palette-empty { justify-content: center; color: var(--faint); cursor: default; }
+
+/* ------------------------------------------------------------ page changes (App.tsx setView: the View Transitions API) */
+.topnav { view-transition-name: topnav; }
+.app-main { view-transition-name: page; }
+::view-transition-old(page) { animation: vt-out var(--instant) var(--ease-in) both; }
+::view-transition-new(page) { animation: vt-in var(--medium) var(--ease-out) both; }
+::view-transition-old(root), ::view-transition-new(root) { animation-duration: var(--fast); }
+@keyframes vt-out { to { opacity: 0; } }
+@keyframes vt-in { from { opacity: 0; transform: translateY(6px); } }

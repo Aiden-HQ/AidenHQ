@@ -7,6 +7,7 @@ import { prefetchView, QUERIES } from "./queries";
 import { CATEGORIES } from "./Settings";
 import type { Assignee, ChatRow, ModuleRow } from "./types";
 import { Icon, type IconName } from "./ui/icons";
+import { Ticker } from "./ui/Ticker";
 
 export type NavView = "chat" | "approvals" | "board" | "agents" | "apps" | "modules" | "reviews" | "costs" | "flow" | "settings";
 type Item = { view: NavView; name: string; icon: IconName };
@@ -93,7 +94,9 @@ export function TopNav({ view, approvals, agentsActive, onNav, spend, settingsAl
       {spend && (
         <a className={`tn-spend${spend.spent >= spend.cap ? " over" : ""}`} href="#/costs" onClick={(e) => (e.preventDefault(), onNav("costs"))} title="Today's model spend (UTC day) against the daily cap; change the cap in Settings">
           <span className="tn-spend-row">
-            <b>${spend.spent.toFixed(2)}</b>
+            <b>
+              <Ticker value={spend.spent} format={(n) => `$${n.toFixed(2)}`} />
+            </b>
             <span>of ${spend.cap % 1 ? spend.cap.toFixed(2) : spend.cap} today</span>
           </span>
           <span className="tn-meter" aria-hidden>
