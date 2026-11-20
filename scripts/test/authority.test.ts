@@ -240,12 +240,12 @@ test("a per-module pin is official only on the official repository's main; one o
   assert.equal(authorityDiff("crm", { name: "crm" }, { name: "crm" }, false, undefined, { head: `aidenhq pinned at ${onMain.slice(0, 12)}` }).changes.some((c) => c.owner), false);
 });
 
-test("a GitHub App grant (codehost:) is the owner's to give or widen; dropping it is the reviewer's", () => {
-  const grant = { token: { repos: ["acme/*"], perms: { issues: "read" } } };
+test("a code host grant (codehost:) is the owner's to give or widen; dropping it is the reviewer's", () => {
+  const grant = { read: { repos: ["acme/*"] } };
   const lines = (b, h) => authorityLines([authorityDiff("acme-crm", b, h, false)]);
-  assert.deepEqual(lines(base, with_({ codehost: grant })), ["acme-crm: changes its GitHub App grant (codehost: tokens, snapshots or clones) (owner)"]);
-  assert.deepEqual(lines(with_({ codehost: grant }), with_({ codehost: { token: { ...grant.token, perms: { issues: "write" } } } })), ["acme-crm: changes its GitHub App grant (codehost: tokens, snapshots or clones) (owner)"]);
-  assert.deepEqual(lines(with_({ codehost: grant }), base), ["acme-crm: drops its GitHub App grant (review)"]);
+  assert.deepEqual(lines(base, with_({ codehost: grant })), ["acme-crm: changes its code host grant (codehost: operations on repos as the owner) (owner)"]);
+  assert.deepEqual(lines(with_({ codehost: grant }), with_({ codehost: { ...grant, comment: { repos: ["acme/*"] } } })), ["acme-crm: changes its code host grant (codehost: operations on repos as the owner) (owner)"]);
+  assert.deepEqual(lines(with_({ codehost: grant }), base), ["acme-crm: drops its code host grant (review)"]);
 });
 
 test("a newly declared fact type is the reviewer's to see; stages are plain", () => {
@@ -255,11 +255,10 @@ test("a newly declared fact type is the reviewer's to see; stages are plain", ()
 });
 
 test("a code host's service mounts, a channel's transport and credentials, and kernel roles each say what they grant", () => {
-  const svc = { ...base.services.run["crm-mcp"], github_app: "/github-app", workspaces: "/tasks", points: "/config/points.json" };
+  const svc = { ...base.services.run["crm-mcp"], workspaces: "/tasks", points: "/config/points.json" };
   const head = with_({ services: { run: { "crm-mcp": svc } }, roles: { requests: ["kernel.apply"] } });
   assert.deepEqual(authorityLines([authorityDiff("acme-crm", base, head, false)]), [
     "acme-crm: requests role kernel.apply (files instance applies) (owner)",
-    "acme-crm: service crm-mcp: mounts the GitHub App key (read-only) (owner)",
     "acme-crm: service crm-mcp: job workspaces read-write (owner)",
     "acme-crm: service crm-mcp: reads its points file (review)",
   ]);

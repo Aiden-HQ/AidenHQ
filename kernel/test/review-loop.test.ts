@@ -323,3 +323,11 @@ test("the reviewer reads the task's comments under code's labels; a park lifts o
   assert.equal(await file(), true, "the owner's reply lifts it");
   assert.match(mod.seen.at(-1).request.comments, /the chief of staff \(aiden\), [^\n]+:\n> Decided: go on\.\n\nthe owner, [^\n]+:\n> Yes, publish it\.$/);
 });
+
+test("the reviewer reads an agent's form with its options spelled out, so the owner's \"1A, 2A\" reads against them", async () => {
+  const { spellQuestions } = await import("../src/review-loop.ts");
+  const body = "**Asking**\n\nWhere next?\n\n<!-- aidenhq-reply -->\n<!-- aidenhq-questions:[{\"question\":\"Where do you want to review the design?\",\"options\":[\"On Primer\",\"Here in chat\"]}] -->";
+  const out = spellQuestions(body);
+  assert.match(out, /1\. Where do you want to review the design\?\nA\) On Primer\nB\) Here in chat/);
+  assert.equal(spellQuestions("plain"), "plain");
+});

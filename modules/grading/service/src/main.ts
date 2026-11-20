@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { createGrading, type Kernel } from "./server.ts";
 import { createKernelGradeLoop } from "./kernel-loop.ts";
+import { createGithub } from "./github.ts";
 import { factEmitter, kernelClient } from "./aidenhq-sdk/kernel-client.ts";
 
 const log = (msg: string, f: Record<string, unknown> = {}) => console.log(new Date().toISOString(), msg, JSON.stringify(f));
@@ -37,6 +38,12 @@ setInterval(() => void tick(), 5 * 60_000).unref();
 setTimeout(() => void tick(), 30_000).unref();
 
 // The grade loop on the kernel's jobs (kernel-loop.ts), once a minute: roles kernel.cp-read, kernel.work-read, kernel.grader, kernel.wake and apps.read.
-const loop = createKernelGradeLoop({ db, runner, due: () => ({ grades: grades.due(), resubmitted: grades.resubmitted() }), kernel: kernelCall, kernelBytes, apps: appsCall, gatewayUrl: process.env.AIDENHQ_GATEWAY_URL ?? "http://10.231.0.1:8201", log, emit: facts.emit });
+// A diff is text, which the kernel client (JSON) can't read: the same op, the same token, the body as it comes.
+const kernelText = async (path: string, body: unknown) => {
+  const r = await fetch(`${kernelUrl}${path}`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(60_000) });
+  if (!r.ok) throw new Error(`kernel POST ${path} → ${r.status}`);
+  return r.text();
+};
+const loop = createKernelGradeLoop({ db, runner, due: () => ({ grades: grades.due(), resubmitted: grades.resubmitted() }), kernel: kernelCall, kernelBytes, github: createGithub({ kernel: kernelCall, text: kernelText }), apps: appsCall, gatewayUrl: process.env.AIDENHQ_GATEWAY_URL ?? "http://10.231.0.1:8201", log, emit: facts.emit });
 let grading = false;
 setInterval(() => { if (!grading) { grading = true; loop.runGrades().catch((e) => log("grade loop failed", { err: String(e.message ?? e) })).finally(() => (grading = false)); } }, 60_000).unref();

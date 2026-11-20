@@ -104,6 +104,9 @@ test("the executor sees nothing before approval; approved, it runs once and the 
   assert.equal((await k.v1("GET", `/v1/writes/${p.approval}`, undefined, ADA)).json.state, "done");
   assert.equal((await k.v1("GET", `/v1/writes/${p.approval}`, undefined, BO)).status, 404);
   assert.equal((await k.v1("POST", `/v1/writes/${p.approval}/outcome`, { ok: true, text: "x" }, "other-key")).status, 403);
+  // The kind's executor reads only {id, state}, never the outcome; another module's key reads nothing.
+  assert.deepEqual((await k.v1("GET", `/v1/writes/${p.approval}`, undefined, "twin-key")).json, { id: p.approval, state: "done" });
+  assert.equal((await k.v1("GET", `/v1/writes/${p.approval}`, undefined, "other-key")).status, 404);
   // POST /v1/writes: an agent's record is on its own run's task, whatever task it names; no grant on the kind, no record.
   const filed = await k.v1("POST", "/v1/writes", { kind: "twin.post", args: { note: "x" }, task: "OTHER-9" }, ADA);
   assert.equal(k.records.get(filed.json.id).task, "TASK-1");
@@ -338,6 +341,15 @@ test("a claimed record of a replaced module is carried to its successor's kind, 
   assert.deepEqual([c.kind, c.module, c.executor.module, c.state], ["new.post", "new", "new", "claimed"]);
   k.writes.outcome(r.id, true, "merged");
   assert.equal(k.records.get(r.id).state, "done");
+});
+
+test("only a code host's write outcomes name GitHub objects", async (t) => {
+  const k = await kernel(t, { secrets, connections: {}, writes: {} });
+  const filed = (module) => k.records.file({ kind: `${module}.post`, module, args: {}, targets: {}, executor: { module, url: "http://x/x" }, policy: "", card: { sentence: "", changes: "", reads: "", cost: "", details: "" }, requester: { agent: "", key: "", name: "", roles: [], kind: "run" }, task: "TASK-1", tier: 1, panel: false, state: "claimed" }).id;
+  k.writes.outcome(filed("github"), true, "done", ["github:o/r#1"]);
+  k.writes.outcome(filed("twin"), true, "done", ["github:o/r#2"]);
+  assert.ok(k.records.objectOf("github:o/r#1"));
+  assert.equal(k.records.objectOf("github:o/r#2"), undefined);
 });
 
 test("a record is carried only to the one staged module that replaces its module and defines the kind", () => {

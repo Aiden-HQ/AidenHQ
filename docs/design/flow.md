@@ -74,7 +74,7 @@ line, a batch the kernel refused. Current emitters:
 | `maintainer` | `issue.triaged` (the stage starts at the issue's creation) |
 | `code-review` | `review.started`, `review.ended` per review run |
 
-`pr.opened` and `issue.opened` carry `author` and `author_kind` (`agent` = the instance's GitHub App bot, `owner`, `outside`);
+`pr.opened` and `issue.opened` carry `author` and `author_kind` (`agent` = in AidenHQ's records, or carrying the AidenHQ footer or trailer; `owner` = the owner's login without them; `outside`);
 `pr.opened` carries `title`.
 
 ## 3. Declaring stages (the generic part)

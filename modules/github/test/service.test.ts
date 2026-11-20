@@ -5,18 +5,17 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { generateKeyPairSync } from "node:crypto";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { appClient } from "../service/src/github-app.ts";
 import { createService } from "../service/src/service.ts";
+import { serveOps } from "../service/src/ops.ts";
 import { render } from "../../../kernel/src/writes.ts";
 
 const sh = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8", env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_AUTHOR_NAME: "a", GIT_AUTHOR_EMAIL: "a@example.com", GIT_COMMITTER_NAME: "a", GIT_COMMITTER_EMAIL: "a@example.com" } }).trim();
 const listen = (handler) => new Promise((ok) => { const s = createServer(handler); s.listen(0, "127.0.0.1", () => ok({ s, url: `http://127.0.0.1:${s.address().port}` })); });
 
-async function setup(t, { routes = () => undefined, app: appOverride, maintained } = {}) {
+async function setup(t, { routes = () => undefined, maintained, connected = () => true } = {}) {
   const root = mkdtempSync(join(tmpdir(), "codehost-svc-"));
   const marker = join(root, "RAN");
   // "GitHub": a bare repo with main.
@@ -46,22 +45,37 @@ async function setup(t, { routes = () => undefined, app: appOverride, maintained
   for (const [k, v] of [["filter.evil.smudge", evil], ["filter.evil.clean", evil], ["filter.evil.process", evil], ["core.fsmonitor", evil], ["uploadpack.packObjectsHook", evil], ["core.sshCommand", evil]]) sh(ws, "config", k, v);
 
   const outcomes = [];
+  const states = {};
+  const oursRefs = new Set();
   const kernel = await listen(async (req, res) => {
     let body = "";
     for await (const c of req) body += c;
     const m = /^\/v1\/writes\/([^/]+)\/outcome$/.exec(req.url);
     if (m) { outcomes.push({ id: m[1], ...JSON.parse(body) }); return res.writeHead(200).end("{}"); }
+    const w = /^\/v1\/writes\/([^/]+)$/.exec(req.url);
+    if (w) return res.writeHead(200).end(JSON.stringify({ id: w[1], state: states[w[1]] ?? "claimed" }));
+    if (req.url.startsWith("/v1/objects")) return res.writeHead(200).end(JSON.stringify({ ours: oursRefs.has(decodeURIComponent(req.url.split("ref=")[1] ?? "")) }));
     res.writeHead(404).end("{}");
   });
-  const minted = [];
   const created = [];
-  const app = { token: async (org, o) => (minted.push({ org, ...o }), "tok"), createRepo: async (slug) => (created.push(slug), "created"), appInfo: async () => ({ id: 1, slug: "acme-app" }), identity: async () => ({ name: "acme-app[bot]", email: "1+acme-app[bot]@users.noreply.github.com" }) };
   const ghCalls = [];
-  const gh = async (method, path, token, body) => (ghCalls.push({ method, path, body }), routes(method, path) ?? (method === "GET" && path === "/repos/acme-agents/widget" ? { status: 200, body: { default_branch: "main" } } : { status: 404, body: { message: "fake GitHub: no route" } }));
+  const gh = async (method, path, body) => {
+    ghCalls.push({ method, path, body });
+    const m = /^\/orgs\/([^/]+)\/repos$/.exec(path);
+    if (method === "POST" && m) return (created.push(`${m[1]}/${body.name}`), { status: 201, body: {} });
+    return routes(method, path) ?? (method === "GET" && path === "/repos/acme-agents/widget" ? { status: 200, body: { default_branch: "main" } } : { status: 404, body: { message: "fake GitHub: no route" } });
+  };
+  // GitHub as the owner (github-mcp client.ts GitHubAccess), faked: the owner's login, a token, the routes above.
+  const access = {
+    connected, scopes: () => ["repo"], status: () => ({ scopes: ["repo"], problems: [] }), token: async () => "tok",
+    identity: async () => ({ login: "owner1", name: "Owner One", email: "1+owner1@users.noreply.github.com" }),
+    rest: async (method, path, body) => ({ ...(await gh(method, path, body)), headers: new Headers() }),
+    graphql: async () => ({}),
+  };
   const handle = createService({
-    key: "ch-key", kernelUrl: kernel.url, cacheDir: join(root, "cache"), tasksDir: join(root, "tasks"), app: appOverride ?? app, gh,
-    remoteUrl: (slug) => join(root, "github", `${slug}.git`), agentsOrg: "acme-agents", instanceRepo: "acme-agents/aidenhq-instance",
-    productRepo: "acme/aidenhq", allowedOrgs: ["acme-agents", "partner"], maintained,
+    key: "ch-key", kernelUrl: kernel.url, cacheDir: join(root, "cache"), tasksDir: join(root, "tasks"), access,
+    remoteUrl: (slug) => join(root, "github", `${slug}.git`), fleetOrg: "acme-agents", instanceRepo: "acme-agents/aidenhq-instance",
+    ops: serveOps, productRepo: "acme/aidenhq", allowedOrgs: ["acme-agents", "partner"], maintained,
   });
   const svc = await listen((req, res) => void handle(req, res));
   t.after(() => { kernel.s.close(); svc.s.close(); });
@@ -70,7 +84,8 @@ async function setup(t, { routes = () => undefined, app: appOverride, maintained
     return { status: r.status, json: await r.json() };
   };
   const raw = (path, body, key = "ch-key") => fetch(`${svc.url}${path}`, { method: "POST", headers: { authorization: `Bearer ${key}` }, body: JSON.stringify(body) });
-  return { root, ws, marker, origin, sha, outcomes, minted, created, ghCalls, call, raw };
+  const get = (path, key = "ch-key") => fetch(`${svc.url}${path}`, { headers: { authorization: `Bearer ${key}` } });
+  return { root, ws, marker, origin, sha, outcomes, states, oursRefs, created, ghCalls, call, raw, get, handle };
 }
 
 test("create_repo is Tier 0 in an allowed org besides the agents org; a core repo's name, and an org nobody allowed, are refused", async (t) => {
@@ -84,11 +99,11 @@ test("create_repo is Tier 0 in an allowed org besides the agents org; a core rep
   assert.match((await plan("stranger/new-app")).json.error, /outside the orgs/);
 });
 
-// Once GitHub is connected, the agents org is where new repositories go (scripts/test/codehost-switch.test.ts): the App creates it,
-// and the Engineer's first branch of the new app lands there.
-test("connected: a new app's repository is created through the App in the agents org with the app starter on main, and its first branch lands there", async (t) => {
+// Once GitHub is connected, the fleet org is where new repositories go (scripts/test/codehost-switch.test.ts): created as the
+// owner, and the Engineer's first branch of the new app lands there.
+test("connected: a new app's repository is created in the fleet org with the app starter on main as the owner, and its first branch lands there", async (t) => {
   const { root, outcomes, created, call } = await setup(t, { routes: (m, p) => (m === "GET" && ["/repos/acme-agents/new-app", "/repos/acme/aidenhq"].includes(p) ? { status: 200, body: { default_branch: "main" } } : undefined) });
-  // "GitHub": the product, whose modules/apps-platform/starter is the app starter, and the new repo as the App creates it (a README).
+  // "GitHub": the product, whose modules/apps-platform/starter is the app starter, and the new repo as the code host creates it (a README).
   const bare = (slug, files) => {
     const origin = join(root, "github", `${slug}.git`);
     mkdirSync(origin, { recursive: true });
@@ -116,7 +131,8 @@ test("connected: a new app's repository is created through the App in the agents
   assert.equal(sh(origin, "rev-parse", "main^"), readme);
   assert.deepEqual(sh(origin, "ls-tree", "-r", "--name-only", "main").split("\n"), ["README.md", "server.mjs"]);
   assert.equal(sh(origin, "show", "main:README.md"), "the starter");
-  assert.equal(sh(origin, "log", "-1", "--format=%an", "main"), "acme-app[bot]");
+  assert.equal(sh(origin, "log", "-1", "--format=%an <%ae>", "main"), "Owner One <1+owner1@users.noreply.github.com>");
+  assert.match(sh(origin, "log", "-1", "--format=%B", "main"), /^Co-authored-by: AidenHQ code host <noreply@aidenhq\.ai>$/m);
   // The Engineer's branch of it lands.
   const ws = join(root, "tasks", "TASK-2", "new-app");
   sh(root, "clone", "--quiet", origin, ws);
@@ -148,7 +164,7 @@ test("a PR to a repo outside ours is refused while its text or a commit message 
   sh(ws, "checkout", "--quiet", "-b", "agent/TASK-3/fix");
   writeFileSync(join(ws, "lib.js"), "export const z = 3;\n");
   sh(ws, "add", "lib.js");
-  sh(ws, "commit", "--quiet", "-m", "Fix the parser");
+  sh(ws, "commit", "--quiet", "-m", "Fix the parser\n\nCo-authored-by: AidenHQ Engineer <noreply@aidenhq.ai>"); // the attribution trailer is the one allowed name
   const pr = (sha, text) => call("/aidenhq/v1/executor/plan", { kind: "github.pr", args: { workspace: "TASK-3", only: [{ repo: "partner/lib", branch: "agent/TASK-3/fix", sha }], text }, requester: { kind: "job", roles: [] }, task: "t3" });
   const clean = await pr(sh(ws, "rev-parse", "HEAD"), { title: "Fix the parser", body: "Handles empty input." });
   assert.equal(clean.status, 200, JSON.stringify(clean.json));
@@ -182,7 +198,7 @@ test("a PR's card carries the branch's diff for the reviewer (#744): every kind 
 });
 
 test("a job's branch lands from its workspace; no hook, filter or fsmonitor of the workspace runs", async (t) => {
-  const { root, marker, origin, sha, outcomes, minted, call } = await setup(t);
+  const { root, marker, origin, sha, outcomes, call } = await setup(t);
   const args = { workspace: "TASK-1", only: [{ repo: "acme-agents/widget", branch: "feature", sha }] };
   const plan = await call("/aidenhq/v1/executor/plan", { kind: "github.push", args, requester: { kind: "job", roles: [] }, task: "t1" });
   assert.equal(plan.status, 200, JSON.stringify(plan.json));
@@ -195,7 +211,6 @@ test("a job's branch lands from its workspace; no hook, filter or fsmonitor of t
   assert.equal(sh(origin, "rev-parse", "refs/heads/feature"), sha);
   assert.equal(existsSync(marker), false, "a workspace hook, filter or fsmonitor ran");
   assert.match(readFileSync(join(root, "cache", ".reviewed-refs.jsonl"), "utf8"), /"repo":"acme-agents\/widget","ref":"refs\/ws\/TASK-1\/feature"/, "the kept head is noted for pruning");
-  assert.ok(minted.every((m) => m.repositories?.length === 1 && m.repositories[0] === "widget"), "every token is narrowed to the one repo");
   // The head is the task that planned it first; another task re-publishing it, noted or pushed without a note, never takes it.
   const by = () => JSON.parse(readFileSync(join(root, "cache", "pushed-by.json"), "utf8"));
   assert.deepEqual(by(), { [sha]: { task: "t1", platform: false } });
@@ -232,57 +247,85 @@ test("a head is the runner's own only in the repo it was pushed to: the same com
   assert.deepEqual([elsewhere.json.raise?.tier, elsewhere.json.raise?.rule], [1, "maintained-merge-foreign-head"]);
 });
 
-test("ops answer the kernel only (it checks each module's grant); a token is narrowed to its repo, or org-wide for owner/*", async (t) => {
-  const { call, minted } = await setup(t);
-  assert.equal((await call("/ops/token", { module: "apps-platform", repo: "acme-agents/widget", perms: { contents: "read" } }, "apps-key")).status, 401);
-  const ok = await call("/ops/token", { module: "apps-platform", repo: "acme-agents/widget", perms: { contents: "read" } });
-  assert.equal(ok.status, 200);
-  assert.deepEqual(minted.at(-1), { org: "acme-agents", repositories: ["widget"], permissions: { contents: "read" }, fresh: true });
-  const org = await call("/ops/token", { module: "ci", repo: "acme/*", perms: { organization_self_hosted_runners: "write" } });
-  assert.equal(org.status, 200, JSON.stringify(org.json));
-  assert.deepEqual(minted.at(-1), { org: "acme", permissions: { organization_self_hosted_runners: "write" }, fresh: true });
-  assert.equal(org.json.app.slug, "acme-app");
-  assert.ok(Date.parse(org.json.expires_at) > Date.now() + 50 * 60_000);
+test("ops answer the kernel only; the token op is gone", async (t) => {
+  const { call } = await setup(t);
+  assert.equal((await call("/ops/snapshot", { module: "apps-platform", repo: "acme-agents/widget", ref: "main" }, "apps-key")).status, 401);
+  assert.equal((await call("/ops/token", { module: "apps-platform", repo: "acme-agents/widget", perms: { contents: "read" } })).status, 404);
 });
 
-test("a token is answered even when GitHub refuses the bot user, and when even GET /app fails: the minted token is never lost", async (t) => {
-  // The incident: the bot-user read answered 403 and /ops/token turned a token it had already minted into a 500.
-  const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048, privateKeyEncoding: { type: "pkcs8", format: "pem" }, publicKeyEncoding: { type: "spki", format: "pem" } });
-  const github = async (botStatus, { appDown = false } = {}) => {
-    const mints = [];
-    const reads = [];
-    const fetch = async (url, init) => {
-      const path = String(url).replace("https://api.github.com", "");
-      const body = init.body ? JSON.parse(init.body) : undefined;
-      reads.push(path);
-      const res = (status, json) => ({ status, json: async () => json });
-      if (path === "/app") return appDown ? res(502, { message: "bad gateway" }) : res(200, { id: 1, slug: "acme-app" });
-      if (path.startsWith("/app/installations?")) return res(200, [{ id: 42, account: { login: "acme-agents" } }]);
-      if (path === "/app/installations/42/access_tokens") return res(201, { token: `ghs_${mints.push(body)}`, expires_at: new Date(Date.now() + 3600_000).toISOString() });
-      if (path === "/user" || path.startsWith("/users/")) return res(botStatus, { message: "refused" });
-      return res(404, {});
-    };
-    return { app: appClient({ appId: 1, key: privateKey, fetch }), mints, reads };
-  };
-  for (const botStatus of [403, 500]) {
-    const { app, mints, reads } = await github(botStatus);
-    const { call } = await setup(t, { app });
-    const ok = await call("/ops/token", { module: "github", repo: "acme-agents/widget", perms: { metadata: "read" } });
-    assert.equal(ok.status, 200, JSON.stringify(ok.json));
-    assert.match(ok.json.token, /^ghs_/, "the minted token is the answer");
-    assert.equal(ok.json.app.slug, "acme-app");
-    assert.equal(mints.length, 1, "the token is minted once");
-    assert.equal(reads.filter((p) => p === "/user" || p.startsWith("/users/")).length, 0, "the slug comes from GET /app, not the bot user");
-  }
-  // Even GET /app failing doesn't fail a token already minted: its slug is optional to every caller.
-  const { app, mints, reads } = await github(403, { appDown: true });
-  const down = await setup(t, { app });
-  const still = await down.call("/ops/token", { module: "github", repo: "acme-agents/widget", perms: { metadata: "read" } });
-  assert.equal(still.status, 200, JSON.stringify(still.json));
-  assert.match(still.json.token, /^ghs_/);
-  assert.equal(still.json.app.slug, null);
-  assert.equal(mints.length, 1);
-  assert.ok(reads.includes("/app"));
+test("held write resumes on reconnect", async (t) => {
+  let on = false;
+  const { origin, sha, outcomes, call, handle } = await setup(t, { connected: () => on });
+  const args = { workspace: "TASK-1", only: [{ repo: "acme-agents/widget", branch: "feature", sha }] };
+  assert.equal((await call("/aidenhq/v1/executor/plan", { kind: "github.push", args, requester: { kind: "job", roles: [] }, task: "t1" })).status, 200);
+  assert.deepEqual((await call("/aidenhq/v1/executor/execute", { id: "k-00000000000000d1", kind: "github.push", args, digest: "d", idempotency_key: "h" })).json, { accepted: true });
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal((await call("/aidenhq/v1/executor/status", { id: "k-00000000000000d1" })).json.state, "running");
+  assert.throws(() => sh(origin, "rev-parse", "--verify", "refs/heads/feature"), "nothing is pushed while GitHub is disconnected");
+  on = true;
+  await handle.stepHeld();
+  await handle.stepHeld(); // a second step runs nothing again
+  for (let i = 0; i < 300 && !outcomes.length; i++) await new Promise((r) => setTimeout(r, 10));
+  assert.equal(sh(origin, "rev-parse", "refs/heads/feature"), sha);
+  assert.equal(outcomes.length, 1, JSON.stringify(outcomes));
+  assert.equal(outcomes[0].ok, true);
+  assert.equal((await call("/aidenhq/v1/executor/status", { id: "k-00000000000000d1" })).json.state, "done");
+});
+
+test("held write is re-checked on reconnect", async (t) => {
+  let on = false;
+  const { root, origin, ws, sha, outcomes, call, handle } = await setup(t, { connected: () => on });
+  const args = { workspace: "TASK-1", only: [{ repo: "acme-agents/widget", branch: "feature", sha }] };
+  assert.equal((await call("/aidenhq/v1/executor/plan", { kind: "github.push", args, requester: { kind: "job", roles: [] }, task: "t1" })).status, 200);
+  await call("/aidenhq/v1/executor/execute", { id: "k-00000000000000d2", kind: "github.push", args, digest: "d", idempotency_key: "h2" });
+  await new Promise((r) => setTimeout(r, 50));
+  // While GitHub was away the task's branch moved on: the approved head is no longer what the workspace holds.
+  sh(ws, "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=", "update-ref", "refs/heads/feature", "HEAD~1");
+  const held = JSON.parse(readFileSync(join(root, "cache", "held.json"), "utf8"))["k-00000000000000d2"];
+  assert.deepEqual([held.asker.requester, held.asker.task], [{ kind: "job", roles: [] }, "t1"], "held with the requester who asked");
+  const notes = readFileSync(join(root, "cache", "pushed-by.json"), "utf8");
+  on = true;
+  await handle.stepHeld();
+  for (let i = 0; i < 300 && !outcomes.length; i++) await new Promise((r) => setTimeout(r, 10));
+  assert.equal(readFileSync(join(root, "cache", "pushed-by.json"), "utf8"), notes, "the re-check writes no provenance");
+  assert.throws(() => sh(origin, "rev-parse", "--verify", "refs/heads/feature"), "the moved branch is not pushed");
+  assert.equal(outcomes[0]?.ok, false, JSON.stringify(outcomes));
+  assert.match(outcomes[0].text, /changed while GitHub was disconnected; ask again/);
+});
+
+test("a held write whose record was cancelled while held does not run", async (t) => {
+  let on = false;
+  const { origin, sha, outcomes, states, call, handle } = await setup(t, { connected: () => on });
+  const args = { workspace: "TASK-1", only: [{ repo: "acme-agents/widget", branch: "feature", sha }] };
+  assert.equal((await call("/aidenhq/v1/executor/plan", { kind: "github.push", args, requester: { kind: "job", roles: [] }, task: "t1" })).status, 200);
+  await call("/aidenhq/v1/executor/execute", { id: "k-00000000000000d3", kind: "github.push", args, digest: "d", idempotency_key: "h3" });
+  await new Promise((r) => setTimeout(r, 50));
+  states["k-00000000000000d3"] = "cancelled";
+  on = true;
+  await handle.stepHeld();
+  for (let i = 0; i < 300 && !outcomes.length; i++) await new Promise((r) => setTimeout(r, 10));
+  assert.throws(() => sh(origin, "rev-parse", "--verify", "refs/heads/feature"), "a cancelled record is not pushed");
+  assert.equal(outcomes[0]?.ok, false, JSON.stringify(outcomes));
+});
+
+test("editing a comment is allowed only for one the kernel recorded as ours", async (t) => {
+  const { call, oursRefs, ghCalls } = await setup(t, { routes: (m, p) => (m === "PATCH" && p === "/repos/acme-agents/widget/issues/comments/55" ? { status: 200, body: { id: 55 } } : undefined) });
+  const edit = { repo: "acme-agents/widget", number: 3, id: 55, body: "x" };
+  assert.equal((await call("/ops/comment", edit)).status, 403);
+  assert.equal(ghCalls.some((c) => c.method === "PATCH"), false);
+  oursRefs.add("github:acme-agents/widget#3/comment/55");
+  assert.equal((await call("/ops/comment", edit)).status, 200);
+});
+
+test("the owner's commit identity for job boxes; 503 while GitHub isn't connected", async (t) => {
+  let on = true;
+  const { get } = await setup(t, { connected: () => on });
+  assert.equal((await get("/aidenhq/v1/identity", "apps-key")).status, 401);
+  const me = await get("/aidenhq/v1/identity");
+  assert.deepEqual(await me.json(), { name: "Owner One", email: "1+owner1@users.noreply.github.com" });
+  on = false;
+  const off = await get("/aidenhq/v1/identity");
+  assert.deepEqual([off.status, (await off.json()).error], [503, "GitHub isn't connected"]);
 });
 
 const pushArgs = (sha) => ({ workspace: "TASK-1", only: [{ repo: "acme-agents/widget", branch: "feature", sha }] });
@@ -341,6 +384,7 @@ test("clone writes only a new folder in the task workspace the kernel resolved, 
   assert.equal(readFileSync(join(dir, "README.md"), "utf8"), "widget\n");
   assert.equal(sh(dir, "remote", "get-url", "origin"), "https://github.com/acme-agents/widget.git");
   assert.doesNotMatch(readFileSync(join(dir, ".git", "config"), "utf8"), /tok|credential|extraheader/i);
+  assert.deepEqual(readdirSync(join(root, "tasks", "TASK-4")), ["widget"], "the clone was renamed into place: no scratch folder is left");
 });
 
 test("the apply read refuses what it can't read whole, and names no committer-written path on the card", async (t) => {

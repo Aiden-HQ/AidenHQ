@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { CodeHostOps } from "../src/codehost.js";
 import { bootRegistry } from "../src/git.js";
 
 const sh = (cwd: string, ...args: string[]) =>
@@ -32,11 +33,11 @@ describe("bootRegistry", () => {
     writeFileSync(`${registry}/apps.yaml`, "apps:\n  - name: demo\n");
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const tries = vi.fn(sleep);
-    // A token mint that fails every time, as the kernel answering 500 did in production.
+    // A fetch op that fails every time, as the kernel answering 500 did in production.
     const appToken = vi.fn(async () => {
-      throw new Error("couldn't get a GitHub App token for example-org/aidenhq-instance (the kernel said 500)");
+      throw new Error("the kernel said 500 to fetch: example-org/aidenhq-instance");
     });
-    await expect(bootRegistry({ ...env, appToken }, registry, "https://github.com/example-org/aidenhq-instance.git", { attempts: 3, baseDelayMs: 1, sleep: tries })).resolves.toBeUndefined();
+    await expect(bootRegistry({ ...env, ops: { fetch: appToken } as unknown as CodeHostOps }, registry, "https://github.com/example-org/aidenhq-instance.git", { attempts: 3, baseDelayMs: 1, sleep: tries })).resolves.toBeUndefined();
     expect(appToken).toHaveBeenCalledTimes(3);
     expect(tries).toHaveBeenCalledTimes(2); // no wait after the last attempt
     expect(readFileSync(`${registry}/apps.yaml`, "utf8")).toContain("demo");
@@ -54,7 +55,7 @@ describe("bootRegistry", () => {
     const attempt = vi.fn(async () => {
       throw new Error("git fetch failed: no such repo");
     });
-    await expect(bootRegistry({ ...env, appToken: attempt }, `${dir}/registry`, "https://github.com/example-org/aidenhq-instance.git", { attempts: 4, baseDelayMs: 1, sleep: tries })).rejects.toThrow("git fetch failed");
+    await expect(bootRegistry({ ...env, ops: { fetch: attempt } as unknown as CodeHostOps }, `${dir}/registry`, "https://github.com/example-org/aidenhq-instance.git", { attempts: 4, baseDelayMs: 1, sleep: tries })).rejects.toThrow("git fetch failed");
     expect(attempt).toHaveBeenCalledTimes(4);
     expect(tries).toHaveBeenCalledTimes(3);
     expect(warn).toHaveBeenCalledTimes(4);
@@ -69,7 +70,7 @@ describe("bootRegistry", () => {
     const appToken = vi.fn(async () => {
       throw new Error("the kernel said 500");
     });
-    await expect(bootRegistry({ ...env, appToken }, `${dir}/registry`, "https://github.com/example-org/aidenhq-instance.git", { attempts: 4, baseDelayMs: 10, sleep: async (ms) => void waits.push(ms) })).rejects.toThrow("the kernel said 500");
+    await expect(bootRegistry({ ...env, ops: { fetch: appToken } as unknown as CodeHostOps }, `${dir}/registry`, "https://github.com/example-org/aidenhq-instance.git", { attempts: 4, baseDelayMs: 10, sleep: async (ms) => void waits.push(ms) })).rejects.toThrow("the kernel said 500");
     expect(waits).toEqual([10, 20, 40]);
   });
 

@@ -36,8 +36,6 @@ export interface ReviewsSetup {
   github: { configured: boolean; connected: boolean; state: string | null };
   config: CodeReview | null;
   problems: string[];
-  /** The GitHub orgs reviews may post in as the owner (settings.github_comment_orgs, lowercased). */
-  comment_orgs: string[];
 }
 
 /** Not signed in (or the session ended), or an admin without an authenticator yet. */
@@ -92,8 +90,6 @@ export interface AdvancedFlowView {
   capabilities: string[];
   secrets?: string[];
   fields?: { secret: string; label: string; pattern: string; help?: string }[];
-  /** A page on the kernel's admin listener (signed-in owner) that does this part's setup. */
-  admin_page?: string;
   console_url?: string;
   pair_url?: string;
   done: boolean;
@@ -275,7 +271,7 @@ export const api = {
   reviewRun: (body: { pr_url: string; reviewer?: string; focus?: string; full?: boolean }) => call<{ run: Run }>("POST", "/api/reviews", body),
   reviewTry: (body: { reviewer: Profile; pr_url: string }) => call<{ run: Run }>("POST", "/api/reviews/try", body),
   /** settings.code_review, and/or a GitHub org reviews may post in as the owner, as one settings change. */
-  reviewConfig: (body: { value?: CodeReview; org?: string }) => call<{ identifier: string }>("POST", "/api/reviews/config", body),
+  reviewConfig: (body: { value: CodeReview }) => call<{ identifier: string }>("POST", "/api/reviews/config", body),
   connections: (fresh = false) => call<ConnectionsData>("GET", `/api/settings/connections${fresh ? "?fresh" : ""}`),
   /** Files a settings change as the Engineer's task; its commit becomes an apply card. */
   testGoogle: () => call<{ ok: true } | { ok: false; message: string; fix?: string }>("POST", "/api/google/check"),

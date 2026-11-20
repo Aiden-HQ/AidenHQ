@@ -113,16 +113,13 @@ services:
       IDENTITY_KEY_FILE: /secrets/identity_key
       REPO_DIR: "${PWD}"
       INSTANCE_DIR: "${AIDENHQ_INSTANCE_DIR:?set AIDENHQ_INSTANCE_DIR in .env}"
-      # Default: https://github.com/<agents org>/aidenhq-instance.git with an App token when the GitHub App is configured, else the instance checkout's origin remote.
+      # Default: https://github.com/<fleet org>/aidenhq-instance.git when github_fleet_org is set, else the instance checkout's origin remote.
       REGISTRY_PUSH_URL: "${AIDENHQ_INSTANCE_PUSH_URL:-}"
       APPS_DATA: "${PWD}/data/apps"
       APPS_DB: /data/apps-mcp.sqlite
       # https://<apps-edge's hostname>.<tailnet>.ts.net: apps are served at <base>:<port> by their own tailnet node.
       APPS_URL_BASE: "${APPS_URL_BASE:-}"
       APPS_EDGE_DIR: /edge
-      GITHUB_TOKEN_FILE: /run/secrets/github_token
-      # Set once the GitHub App is created: its private repos are read with App tokens from the kernel.
-      AIDENHQ_GITHUB_AGENTS_ORG: "${AIDENHQ_GITHUB_AGENTS_ORG:-}"
       APPS_INTERNAL_TOKEN_FILE: /run/secrets/apps_internal_token
       PAPERCLIP_URL: http://paperclip:3100
       # Agents' calls arrive only through the kernel's proxy (its service key); the caller is the kernel's signed assertion
@@ -153,7 +150,6 @@ services:
       - ${AIDENHQ_SECRETS_DIR}/identity/apps.pem:/secrets/identity_key:ro
       - ${HOME}/.ssh/aidenhq_instance_deploy:/secrets/deploy_key:ro
     secrets:
-      - github_token
       - apps_internal_token
       - apps_service_key # the kernel proxy's key: agents' calls reach /mcp only through it
       - apps_incident_webhook_url
@@ -316,9 +312,6 @@ secrets:
     file: ${AIDENHQ_SECRETS_DIR}/grafana_auth_token
   clickhouse_auth_token:
     file: ${AIDENHQ_SECRETS_DIR}/clickhouse_auth_token
-  # The user's GitHub token (the github module's setup flow), for github-mcp only.
-  github_token:
-    file: ${AIDENHQ_SECRETS_DIR}/github_token
   board_internal_token:
     file: ${AIDENHQ_SECRETS_DIR}/board_internal_token
   apps_service_key:

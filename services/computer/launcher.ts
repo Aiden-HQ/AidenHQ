@@ -167,7 +167,7 @@ const IDENTIFIER = /^[A-Z][A-Z0-9]*-\d+$/;
 
 /** The job and check routes (lib.ts controlAllowed). */
 const jobControl = {
-  async "/job"({ agentId, issueId, identifier, workspace, engine, state, identity, image: imageName, token, mcp, roles }: { agentId: string; issueId: string; identifier: string; workspace: string; engine: string; state: string; identity?: { name?: unknown; email?: unknown }; image: unknown; token: string; mcp: string; roles: string[] }, { kernel = false }: { kernel?: boolean } = {}) {
+  async "/job"({ agentId, issueId, identifier, workspace, engine, state, identity, image: imageName, token, mcp, roles }: { agentId: string; issueId: string; identifier: string; workspace: string; engine: string; state: string; identity?: { name?: unknown; email?: unknown; agent?: unknown }; image: unknown; token: string; mcp: string; roles: string[] }, { kernel = false }: { kernel?: boolean } = {}) {
     if (!kernel) throw fail(403, "job boxes are the kernel's");
     if (typeof agentId !== "string" || !agentId || typeof issueId !== "string" || !issueId) throw fail(400, "agentId and issueId required");
     if (typeof identifier !== "string" || !IDENTIFIER.test(identifier)) throw fail(400, "identifier must be the task's, e.g. PEN-7");

@@ -225,10 +225,10 @@ export function authorityDiff(name: string, base: ModuleDef | undefined, head: M
     else if (!eq(bw[k], hw[k])) review(`changes write kind ${id(k)}`);
   }
   for (const p of added(b.privileged, head.privileged)) owner(`adds privileged ${id(p)}`);
-  // Its GitHub App grant (codehost:): tokens, snapshots and clones derived from the App's key. Any new or changed grant is
-  // the owner's; dropping it hands out nothing.
-  if (head.codehost != null && !eq(b.codehost, head.codehost)) owner("changes its GitHub App grant (codehost: tokens, snapshots or clones)");
-  else if (!eq(b.codehost, head.codehost)) review("drops its GitHub App grant");
+  // Its code host grant (codehost:): the typed operations it may ask for, run as the owner's GitHub sign-in. Any new or
+  // changed grant is the owner's; dropping it hands out nothing.
+  if (head.codehost != null && !eq(b.codehost, head.codehost)) owner("changes its code host grant (codehost: operations on repos as the owner)");
+  else if (!eq(b.codehost, head.codehost)) review("drops its code host grant");
   // Its check job recipes (check_jobs:, kernel/src/checkjobs.ts): what runs credential-free and decides a receipt the code host
   // lands on. Any new or changed recipe is the owner's; dropping one hands out nothing.
   if (head.check_jobs != null && !eq(b.check_jobs, head.check_jobs)) owner("changes its check job recipes (check_jobs: what a signed receipt means)");
@@ -298,14 +298,13 @@ export function authorityDiff(name: string, base: ModuleDef | undefined, head: M
     for (const j of added(was.join, now.join)) owner(`${at}: joins ${id(j)}'s network`);
     for (const l of added(was.links, now.links)) owner(`${at}: links ${id(l)}`);
     for (const m of added(was.host_mounts, now.host_mounts)) owner(`${at}: host mount ${id(String(m).split(":")[0])}`);
-    // The GitHub App key and the job workspaces (both need privileged git-credential) are the owner's; its own points file
+    // The job workspaces (they need privileged git-credential) are the owner's; its own points file
     // (config/points/<module>.json, read-only: what modules contributed to the points it defines) the reviewer's.
-    if (now.github_app != null && !eq(now.github_app, was.github_app)) owner(`${at}: mounts the GitHub App key (read-only)`);
     if (now.workspaces != null && !eq(now.workspaces, was.workspaces)) owner(`${at}: job workspaces read-write`);
     if (now.points != null && !eq(now.points, was.points)) review(`${at}: reads its points file`);
     for (const d of added(was.data, now.data)) (String(d).endsWith(":ro") ? review : owner)(`${at}: data ${id(String(d).split(":")[0])}${String(d).endsWith(":ro") ? " read-only" : " read-write"}`);
     for (const f of keys(was, now)) {
-      if (eq(was[f], now[f]) || SERVICE_PLAIN.has(f) || ["user", "read_only", "egress", "ui_port", "state", "join", "links", "host_mounts", "data", "github_app", "workspaces", "points"].includes(f)) continue;
+      if (eq(was[f], now[f]) || SERVICE_PLAIN.has(f) || ["user", "read_only", "egress", "ui_port", "state", "join", "links", "host_mounts", "data", "workspaces", "points"].includes(f)) continue;
       owner(`${at}: unrecognised field ${id(f)}`);
     }
     if (s in brun && keys(was, now).some((f) => SERVICE_PLAIN.has(f) && !eq(was[f], now[f]))) review(`${at}: changes its image, command, env or limits`);

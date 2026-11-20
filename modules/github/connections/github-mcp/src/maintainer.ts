@@ -1,10 +1,11 @@
-// The Maintainer's GitHub App tools, on the repos the instance lists in `maintainer_repos` and no other: open issues
-// carrying a repo's label, their label events with a trust verdict, the repo tree and one file, and the three writes
-// (comment, label, state). A label is trusted only when our own App added it or a collaborator whose role is one of that
-// repo's `trusted` roles did; nothing in the issue's text or author decides trust.
+// The Maintainer's GitHub tools, as the owner, on the repos the instance lists in `maintainer_repos` and no other: open
+// issues carrying a repo's label, their label events with a trust verdict, the repo tree and one file, and the three writes
+// (comment, label, state). A label is trusted only when a collaborator whose role is one of that repo's `trusted` roles added
+// it (the owner's login is an admin, so its labels count); the issue's text or author never decide trust.
 import { GitHubRefused } from "./github.js";
 import { scrubProblems, scrubText } from "./scrub.js";
-import type { Projects } from "./projects.js";
+import { withFooter } from "./aidenhq-sdk/attribution.js";
+import type { GitHubAccess } from "./client.js";
 import { BUILD_LABEL, FEATURE_LABEL, type MaintainedRepo } from "./aidenhq-sdk/maintained-repos.js";
 
 const PAGE_CAP = 10;
@@ -74,7 +75,7 @@ const named = (x: string, label: string) => (label === BUILD_LABEL || label === 
 export interface MaintainerPr {
   number: number;
   author: string;
-  /** bot: another App or automation (Dependabot); fleet: our own App; human: anyone else. */
+  /** bot: an App or automation (Dependabot); fleet: in AidenHQ's records; human: anyone else. */
   author_kind: "bot" | "fleet" | "human";
   draft: boolean;
   /** The author's latest commit, comment or review on the PR (ISO), or the PR's own update time for a bot or fleet PR. */
@@ -86,16 +87,26 @@ export interface MaintainerPr {
   labels: string[];
 }
 
+/** A path or ref with a `.` or `..` segment (encodeURIComponent leaves them) could name something outside the repo: refused. */
+function noDots(v: string) {
+  if (v.split("/").some((seg) => seg === "." || seg === "..")) throw new GitHubRefused(`${v.slice(0, 200)} has a . or .. segment`);
+}
+
 export class Maintainer {
-  private slug = "";
   private roles = new Map<string, { role: string | null; at: number }>();
 
   /** `repos` is the parsed list, or why it couldn't be parsed: then every tool refuses with that reason. */
   constructor(
-    private readonly app: Projects,
+    private readonly gh: Pick<GitHubAccess, "rest">,
     private readonly repos: MaintainedRepo[] | Error,
     private readonly terms: string[] = [],
+    /** Whether a GitHub object (`github:<repo>#<n>`) is in AidenHQ's records: the fleet acts as the owner's login. */
+    private readonly ours: (ref: string) => Promise<boolean> = async () => false,
   ) {}
+
+  private ref(r: MaintainedRepo, number: number) {
+    return `github:${r.repo.toLowerCase()}#${number}`;
+  }
 
   /** The configured list (empty when it couldn't be parsed). */
   list(): MaintainedRepo[] {
@@ -116,13 +127,6 @@ export class Maintainer {
     return this.terms.filter((t) => !same(t, r.owner));
   }
 
-  /** The App's slug (its events carry it, and its bot login is `<slug>[bot]`), from codehost-github with a token on `r`. */
-  private async appSlug(r: MaintainedRepo): Promise<string> {
-    if (!this.slug) this.slug = await this.app.appSlug(r.owner, r.name);
-    if (!this.slug) throw new Error("couldn't learn the GitHub App's slug from codehost-github");
-    return this.slug;
-  }
-
   /**
    * A collaborator's role, or null when they aren't one, re-read after PERMISSION_TTL_MS. GitHub documents the permission
    * route under Metadata read (X-Accepted-Github-Permissions: metadata=read), so the token asks for that and nothing wider.
@@ -132,7 +136,7 @@ export class Maintainer {
     const key = `${owner.toLowerCase()}/${repo.toLowerCase()} ${login.toLowerCase()}`;
     const hit = this.roles.get(key);
     if (hit && Date.now() - hit.at < PERMISSION_TTL_MS) return hit.role;
-    const r = await this.app.appCall(owner, repo, { metadata: "read" }, "GET", `/repos/${owner}/${repo}/collaborators/${encodeURIComponent(login)}/permission`);
+    const r = await this.gh.rest("GET", `/repos/${owner}/${repo}/collaborators/${encodeURIComponent(login)}/permission`);
     if (r.status !== 200 && r.status !== 404) throw new Error(`couldn't read ${login}'s role on ${owner}/${repo} (GitHub said ${r.status})`);
     const role = r.status === 200 ? String(r.body.role_name ?? r.body.permission ?? "") || null : null;
     this.roles.set(key, { role, at: Date.now() });
@@ -140,19 +144,13 @@ export class Maintainer {
   }
 
   /**
-   * Whether this event adding `label` was made by our App or by a collaborator with one of the repo's trusted roles. The
-   * build label is the owner's word that a feature may be built: the App never counts there, so the fleet can't approve its own.
+   * Whether this event adding a label was made by a collaborator whose role is one of the repo's trusted roles. The owner's
+   * login is an admin, so a label it adds counts, whether the owner or an agent added it: it gives the owner visibility and
+   * is not a security boundary. A label with no actor is untrusted.
    */
-  private async trustedEvent(e: GhTimelineEvent, r: MaintainedRepo, label: string): Promise<boolean> {
-    const slug = await this.appSlug(r);
+  private async trustedEvent(e: GhTimelineEvent, r: MaintainedRepo): Promise<boolean> {
     const login = e.actor?.login;
-    const app = e.performed_via_github_app?.slug === slug || login?.toLowerCase() === `${slug.toLowerCase()}[bot]`;
-    if (label === BUILD_LABEL) {
-      if (app || !login) return false;
-    } else {
-      if (app) return true;
-      if (!login) return false;
-    }
+    if (!login) return false;
     const role = await this.role(r.owner, r.name, login);
     return role !== null && r.trusted.includes(role);
   }
@@ -167,7 +165,7 @@ export class Maintainer {
     const events: LabelEvent[] = [];
     let page = 1;
     for (; page <= PAGE_CAP; page++) {
-      const res = await this.app.appCall(owner, name, { issues: "read" }, "GET", `/repos/${owner}/${name}/issues/${number}/timeline?per_page=100&page=${page}`);
+      const res = await this.gh.rest("GET", `/repos/${owner}/${name}/issues/${number}/timeline?per_page=100&page=${page}`);
       if (res.status !== 200) throw new Error(`couldn't read ${owner}/${name}#${number}'s timeline (GitHub said ${res.status})`);
       const pageEvents = (Array.isArray(res.body) ? res.body : []) as GhTimelineEvent[];
       for (const e of pageEvents) {
@@ -181,7 +179,7 @@ export class Maintainer {
           app_id: e.performed_via_github_app?.id ?? null,
           app_slug: e.performed_via_github_app?.slug ?? null,
           created_at: String(e.created_at ?? ""),
-          trusted: await this.trustedEvent(e, r, label),
+          trusted: await this.trustedEvent(e, r),
         });
       }
       if (pageEvents.length < 100) break;
@@ -191,7 +189,7 @@ export class Maintainer {
     // and the owner relabels to approve it again. An unreadable edit time throws, so the caller fails closed.
     const build = events.filter((e) => e.label === BUILD_LABEL).at(-1);
     if (build?.action === "labeled" && build.trusted) {
-      const res = await this.app.appCall(r.owner, r.name, { issues: "read" }, "POST", "/graphql", { query: "query($o:String!,$n:String!,$i:Int!){repository(owner:$o,name:$n){issue(number:$i){lastEditedAt}}}", variables: { o: r.owner, n: r.name, i: number } });
+      const res = await this.gh.rest("POST", "/graphql", { query: "query($o:String!,$n:String!,$i:Int!){repository(owner:$o,name:$n){issue(number:$i){lastEditedAt}}}", variables: { o: r.owner, n: r.name, i: number } });
       const edited = res.body?.data?.repository?.issue?.lastEditedAt;
       if (res.status !== 200 || res.body?.errors || edited === undefined) throw new Error(`couldn't read when ${r.repo}#${number} was last edited (GitHub said ${res.status})`);
       if (edited && Date.parse(edited) > Date.parse(build.created_at)) Object.assign(build, { trusted: false, stale: true });
@@ -221,7 +219,7 @@ export class Maintainer {
     const asked = label ?? r.label;
     const issues: Record<string, unknown>[] = [];
     for (let page = 1; page <= PAGE_CAP; page++) {
-      const res = await this.app.appCall(owner, name, { issues: "read" }, "GET", `/repos/${owner}/${name}/issues?state=open&labels=${encodeURIComponent(asked)}&per_page=100&page=${page}`);
+      const res = await this.gh.rest("GET", `/repos/${owner}/${name}/issues?state=open&labels=${encodeURIComponent(asked)}&per_page=100&page=${page}`);
       if (res.status !== 200) throw new Error(`couldn't list ${owner}/${name}'s issues (GitHub said ${res.status})`);
       const pageIssues = (Array.isArray(res.body) ? res.body : []) as GhIssue[];
       for (const i of pageIssues) {
@@ -244,11 +242,11 @@ export class Maintainer {
     return { repo: r.repo, label: asked, trusted_roles: r.trusted, after_merge: r.after_merge, features: r.features, issues };
   }
 
-  /** Every page of a GET list (capped), as the App with read access to pull requests, issues, checks and contents. */
+  /** Every page of a GET list (capped), as the owner. */
   private async readAll(r: MaintainedRepo, path: string): Promise<any[]> {
     const out: any[] = [];
     for (let page = 1; page <= PAGE_CAP; page++) {
-      const res = await this.app.appCall(r.owner, r.name, { pull_requests: "read", issues: "read", checks: "read", contents: "read" }, "GET", `/repos/${r.owner}/${r.name}${path}${path.includes("?") ? "&" : "?"}per_page=100&page=${page}`);
+      const res = await this.gh.rest("GET", `/repos/${r.owner}/${r.name}${path}${path.includes("?") ? "&" : "?"}per_page=100&page=${page}`);
       if (res.status !== 200) throw new Error(`couldn't read ${r.repo}${path.split("?")[0]} (GitHub said ${res.status})`);
       const items = (Array.isArray(res.body) ? res.body : Array.isArray(res.body?.check_runs) ? res.body.check_runs : []) as any[];
       out.push(...items);
@@ -258,18 +256,17 @@ export class Maintainer {
   }
 
   /**
-   * A maintained repo's open pull requests (newest first, at most PR_CAP), each with who wrote it (bot, our own App, or a
+   * A maintained repo's open pull requests (newest first, at most PR_CAP), each with who wrote it (bot, the fleet, or a
    * human) and, for a human's, the author's latest activity and what is waiting on them. Titles and bodies are a stranger's
    * words and are not returned.
    */
   async prList(repo: string | undefined): Promise<{ repo: string; prs: MaintainerPr[] }> {
     const r = this.target(repo);
-    const slug = (await this.appSlug(r)).toLowerCase();
     const listed = (await this.readAll(r, "/pulls?state=open&sort=created&direction=desc")).slice(0, PR_CAP);
     const prs: MaintainerPr[] = [];
     for (const p of listed) {
       const login = String(p.user?.login ?? "");
-      const kind = login.toLowerCase() === `${slug}[bot]` ? "fleet" : p.user?.type === "Bot" || login.endsWith("[bot]") ? "bot" : "human";
+      const kind = (await this.ours(this.ref(r, p.number))) ? "fleet" : p.user?.type === "Bot" || login.endsWith("[bot]") ? "bot" : "human";
       const base = {
         number: p.number as number,
         author: login,
@@ -285,8 +282,8 @@ export class Maintainer {
       const n = p.number as number;
       const mine = (x: any) => String(x.user?.login ?? "").toLowerCase() === login.toLowerCase();
       const [head, detail, checks, comments, reviews, threads] = await Promise.all([
-        this.app.appCall(r.owner, r.name, { contents: "read" }, "GET", `/repos/${r.owner}/${r.name}/commits/${p.head.sha}`),
-        this.app.appCall(r.owner, r.name, { pull_requests: "read" }, "GET", `/repos/${r.owner}/${r.name}/pulls/${n}`),
+        this.gh.rest("GET", `/repos/${r.owner}/${r.name}/commits/${p.head.sha}`),
+        this.gh.rest("GET", `/repos/${r.owner}/${r.name}/pulls/${n}`),
         this.readAll(r, `/commits/${p.head.sha}/check-runs`),
         this.readAll(r, `/issues/${n}/comments`),
         this.readAll(r, `/pulls/${n}/reviews`),
@@ -327,7 +324,8 @@ export class Maintainer {
   /** The repository's file list at a ref, capped in entries and depth. */
   async repoTree(repo: string | undefined, ref = "HEAD") {
     const { owner, name, repo: slug } = this.target(repo);
-    const r = await this.app.appCall(owner, name, { contents: "read" }, "GET", `/repos/${owner}/${name}/git/trees/${encodeURIComponent(ref)}?recursive=1`);
+    noDots(ref);
+    const r = await this.gh.rest("GET", `/repos/${owner}/${name}/git/trees/${encodeURIComponent(ref)}?recursive=1`);
     if (r.status !== 200) throw new Error(`couldn't read ${owner}/${name}'s tree at ${ref} (GitHub said ${r.status})`);
     const all = (Array.isArray(r.body.tree) ? r.body.tree : []) as { path: string; type: string; size?: number; sha?: string }[];
     const kept = all.filter((e) => e.path.split("/").length <= TREE_DEPTH).slice(0, TREE_CAP);
@@ -344,11 +342,13 @@ export class Maintainer {
     const { owner, name, repo: slug } = this.target(repo);
     // Resolve the ref to a commit first, and read the file at that commit: the contents API's own `sha` is the blob's, which
     // no caller can resolve as a commit, and a branch could move between the two reads.
+    noDots(path);
+    noDots(ref ?? "HEAD");
     const commit = await this.commitSha(owner, name, ref ?? "HEAD");
     const encoded = path.split("/").map(encodeURIComponent).join("/");
-    const r = await this.app.appCall(owner, name, { contents: "read" }, "GET", `/repos/${owner}/${name}/contents/${encoded}?ref=${commit}`);
+    const r = await this.gh.rest("GET", `/repos/${owner}/${name}/contents/${encoded}?ref=${commit}`);
     if (r.status !== 200) throw new Error(`couldn't read ${owner}/${name}/${path} (GitHub said ${r.status})`);
-    if (Array.isArray(r.body)) throw new GitHubRefused(`${path} is a directory; use github_app_repo_tree`);
+    if (Array.isArray(r.body)) throw new GitHubRefused(`${path} is a directory; use github_repo_tree`);
     if (r.body.encoding !== "base64" || typeof r.body.content !== "string") throw new Error(`${path} has no inline content (the contents API omits files over 1 MB)`);
     const buf = Buffer.from(r.body.content, "base64");
     if (buf.length > FILE_CAP) throw new GitHubRefused(`${path} is ${buf.length} bytes, over the ${FILE_CAP}-byte cap`);
@@ -357,7 +357,7 @@ export class Maintainer {
 
   /** The commit a branch, tag, sha or HEAD names, or an error naming the ref and GitHub's answer. */
   private async commitSha(owner: string, name: string, ref: string) {
-    const r = await this.app.appCall(owner, name, { contents: "read" }, "GET", `/repos/${owner}/${name}/commits/${encodeURIComponent(ref)}`);
+    const r = await this.gh.rest("GET", `/repos/${owner}/${name}/commits/${encodeURIComponent(ref)}`);
     if (r.status !== 200 || typeof r.body?.sha !== "string") {
       throw new Error(`couldn't resolve ${owner}/${name} at ${ref} to a commit (GitHub said ${r.status}${r.body?.message ? `: ${r.body.message}` : ""})`);
     }
@@ -369,7 +369,7 @@ export class Maintainer {
    * trusted. A pull request shares the issue number and is marked by `pull_request` on the same read.
    */
   private async currentLabel(r: MaintainedRepo, number: number) {
-    const res = await this.app.appCall(r.owner, r.name, { issues: "read" }, "GET", `/repos/${r.owner}/${r.name}/issues/${number}`);
+    const res = await this.gh.rest("GET", `/repos/${r.owner}/${r.name}/issues/${number}`);
     if (res.status !== 200) throw new Error(`couldn't read ${r.repo}#${number} (GitHub said ${res.status})`);
     const issue = res.body as GhIssue;
     const labels = labelNames(issue);
@@ -391,41 +391,43 @@ export class Maintainer {
     return cur;
   }
 
-  /**
-   * The App token's permissions for a comment or state change on `number`: GitHub gates a pull request's comment and close
-   * behind `pull_requests: write`, while an issue's need only `issues: write`.
-   */
-  private writePerms(pull_request: boolean): Record<string, "write"> {
-    return pull_request ? { issues: "write", pull_requests: "write" } : { issues: "write" };
-  }
-
   /** The comment text with owner data removed; anything the rewrite can't reach refuses it. */
   private scrubbed(r: MaintainedRepo, body: string): string {
-    const terms = this.termsFor(r);
+    return this.scrubWith(this.termsFor(r), body);
+  }
+
+  private scrubWith(terms: string[], body: string): string {
     const text = scrubText(body, terms);
     const left = scrubProblems(text, terms);
     if (left.length) throw new GitHubRefused(`owner data can't go into a public comment; redact these and try again: ${left.join("; ")}`);
     return text;
   }
 
-  /** One scrubbed comment as the App, with the permissions its target needs. */
-  private async postComment(r: MaintainedRepo, number: number, text: string, pull_request: boolean) {
-    const res = await this.app.appCall(r.owner, r.name, this.writePerms(pull_request), "POST", `/repos/${r.owner}/${r.name}/issues/${number}/comments`, { body: text });
-    if (res.status !== 201) throw new Error(`GitHub refused the comment (${res.status} ${res.body?.message ?? ""})`.trim());
-    return { repo: r.repo, number, url: res.body.html_url, id: res.body.id };
+  /**
+   * The body `github_issue_comment` posts on `repo`: on a maintained repo it is scrubbed and refused while the issue's repo
+   * label is untrusted; on the product repo it is scrubbed; on any other repo it goes as written.
+   */
+  async commentBody(repo: string, number: number, body: string, product?: string): Promise<string> {
+    const r = this.list().find((x) => same(x.repo, repo));
+    if (r) {
+      const text = this.scrubbed(r, body);
+      await this.assertTrusted(r, number);
+      return text;
+    }
+    if (product && same(product, repo)) return this.scrubWith(this.terms.filter((t) => !same(t, product.split("/")[0]!)), body);
+    return body;
   }
 
-  /** One comment as the App, with owner data removed before it is sent; anything the rewrite can't reach refuses it. */
-  async comment(repo: string | undefined, number: number, body: string) {
-    const r = this.target(repo);
-    const text = this.scrubbed(r, body);
-    const cur = await this.assertTrusted(r, number);
-    return this.postComment(r, number, text, cur.pull_request);
+  /** One already-scrubbed comment as the owner. */
+  private async postComment(r: MaintainedRepo, number: number, text: string) {
+    const res = await this.gh.rest("POST", `/repos/${r.owner}/${r.name}/issues/${number}/comments`, { body: text });
+    if (res.status !== 201) throw new Error(`GitHub refused the comment (${res.status} ${res.body?.message ?? ""})`.trim());
+    return { repo: r.repo, number, url: res.body.html_url, id: res.body.id, objects: [`${this.ref(r, number)}/comment/${res.body.id}`] };
   }
 
   /**
-   * Add or remove the repo's fix label or `feature-request`, and nothing else (`agent-build` is the owner's word, never the
-   * App's), refusing an issue whose current fix label is untrusted.
+   * Add or remove the repo's fix label or `feature-request`, and nothing else (`agent-build` is a trusted collaborator's, never
+   * this tool's), refusing an issue whose current fix label is untrusted.
    */
   async label(repo: string | undefined, number: number, action: "add" | "remove", label?: string) {
     const r = this.target(repo);
@@ -434,25 +436,25 @@ export class Maintainer {
     if (!which) throw new GitHubRefused(`only the ${r.label} and ${FEATURE_LABEL} labels may be changed on ${r.repo}`);
     const cur = await this.assertTrusted(r, number);
     const present = cur.labels.some((l) => named(l, which));
-    const out = (changed: boolean) => ({ repo: r.repo, number, label: which, action, changed });
+    const out = (changed: boolean) => ({ repo: r.repo, number, label: which, action, changed,  });
     if (action === "add") {
       if (present) return out(false);
-      const res = await this.app.appCall(r.owner, r.name, { issues: "write" }, "POST", `/repos/${r.owner}/${r.name}/issues/${number}/labels`, { labels: [which] });
+      const res = await this.gh.rest("POST", `/repos/${r.owner}/${r.name}/issues/${number}/labels`, { labels: [which] });
       if (res.status !== 200) throw new Error(`GitHub refused the label (${res.status} ${res.body?.message ?? ""})`.trim());
       return out(true);
     }
     if (!present) return out(false);
-    const res = await this.app.appCall(r.owner, r.name, { issues: "write" }, "DELETE", `/repos/${r.owner}/${r.name}/issues/${number}/labels/${encodeURIComponent(which)}`);
+    const res = await this.gh.rest("DELETE", `/repos/${r.owner}/${r.name}/issues/${number}/labels/${encodeURIComponent(which)}`);
     if (res.status !== 200) throw new Error(`GitHub refused the label removal (${res.status} ${res.body?.message ?? ""})`.trim());
     return out(true);
   }
 
   /**
    * Close as completed or not_planned, or reopen, refusing an untrusted label. A `note` is posted as a comment first, with
-   * the same owner-data scrub as `comment`, and the state changes only once it is posted. A note citing a PR only as a bare
+   * the same owner-data scrub as `comment` and signed by `agent` (the AidenHQ footer), and the state changes only once it is posted. A note citing a PR only as a bare
    * "PR #N" is refused before anything is written: the grader's citation parser doesn't read it.
    */
-  async state(repo: string | undefined, number: number, state: "open" | "closed", reason?: "completed" | "not_planned", note?: string) {
+  async state(repo: string | undefined, number: number, state: "open" | "closed", reason?: "completed" | "not_planned", note?: string, agent = "AidenHQ") {
     const r = this.target(repo);
     if (note !== undefined && state === "open") throw new GitHubRefused("a note is posted only when closing");
     if (note !== undefined) {
@@ -460,12 +462,12 @@ export class Maintainer {
       if (bad) throw new GitHubRefused(bad);
     }
     const text = note === undefined ? undefined : this.scrubbed(r, note);
-    const cur = await this.assertTrusted(r, number);
-    if (text !== undefined) await this.postComment(r, number, text, cur.pull_request);
+    await this.assertTrusted(r, number);
+    const posted = text === undefined ? undefined : await this.postComment(r, number, withFooter(text, agent));
     const body = state === "closed" ? { state, state_reason: reason ?? "completed" } : { state };
-    const res = await this.app.appCall(r.owner, r.name, this.writePerms(cur.pull_request), "PATCH", `/repos/${r.owner}/${r.name}/issues/${number}`, body);
+    const res = await this.gh.rest("PATCH", `/repos/${r.owner}/${r.name}/issues/${number}`, body);
     if (res.status !== 200) throw new Error(`GitHub refused the state change (${res.status} ${res.body?.message ?? ""})`.trim());
-    return { repo: r.repo, number, state: res.body.state, state_reason: res.body.state_reason ?? null };
+    return { repo: r.repo, number, state: res.body.state, state_reason: res.body.state_reason ?? null, ...(posted ? { objects: posted.objects } : {}) };
   }
 
   /**
@@ -513,12 +515,12 @@ export class Maintainer {
   /**
    * The numbers of the issues labelled feature-request (by a trusted labeler) in the last day, open or closed: the watcher's valid reports that
    * its per-author triage cap leaves uncounted. Counted only when the label's latest event passes the same trust check as the
-   * fix label (the App or a collaborator with a trusted role): a template or a stranger can't self-exempt.
+   * fix label (a collaborator with a trusted role): a template or a stranger can't self-exempt.
    */
   async recentFeatureRequests(repo: string): Promise<number[]> {
     const r = this.target(repo);
     const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-    const res = await this.app.appCall(r.owner, r.name, { issues: "read" }, "GET", `/repos/${r.owner}/${r.name}/issues?state=all&labels=${FEATURE_LABEL}&since=${since}&per_page=100`);
+    const res = await this.gh.rest("GET", `/repos/${r.owner}/${r.name}/issues?state=all&labels=${FEATURE_LABEL}&since=${since}&per_page=100`);
     if (res.status !== 200) throw new Error(`couldn't list ${r.repo}'s feature requests (GitHub said ${res.status})`);
     const trusted: number[] = [];
     for (const i of ((Array.isArray(res.body) ? res.body : []) as GhIssue[]).filter((i) => !i.pull_request)) {
@@ -529,8 +531,8 @@ export class Maintainer {
   }
 
   /**
-   * One repo's open issues opened after `since` that carry no repo label and weren't filed by our App (its own filings are
-   * labelled at filing): the reports the Maintainer triages one by one. Oldest first, at most TRIAGE_BATCH; `triage_cursor`
+   * One repo's open issues opened after `since` that carry no repo label and weren't filed by the fleet (in AidenHQ's
+   * records): the reports the Maintainer triages one by one. Oldest first, at most TRIAGE_BATCH; `triage_cursor`
    * is the newest one read (the last one handed over when the batch is full). With no `since` (the first look) nothing is
    * handed over and the cursor is now: reports already open are the daily triage's, never a burst of runs. Each carries its
  * author's login, which the board counts toward its per-author triage limit.
@@ -542,16 +544,17 @@ export class Maintainer {
     const after = (i: GhIssue) => Date.parse(String(i.created_at)) > Date.parse(since);
     const newer: GhIssue[] = [];
     for (let page = 1; page <= PAGE_CAP; page++) {
-      const res = await this.app.appCall(r.owner, r.name, { issues: "read" }, "GET", `/repos/${r.owner}/${r.name}/issues?state=open&sort=created&direction=desc&per_page=100&page=${page}`);
+      const res = await this.gh.rest("GET", `/repos/${r.owner}/${r.name}/issues?state=open&sort=created&direction=desc&per_page=100&page=${page}`);
       if (res.status !== 200) throw new Error(`couldn't list ${r.repo}'s new issues (GitHub said ${res.status})`);
       const pageIssues = (Array.isArray(res.body) ? res.body : []) as GhIssue[];
       newer.push(...pageIssues.filter(after));
       if (pageIssues.length < 100 || !pageIssues.every(after)) break;
     }
-    const slug = await this.appSlug(r);
-    const ours = (i: GhIssue) => i.performed_via_github_app?.slug === slug || String(i.user?.login ?? "").toLowerCase() === `${slug.toLowerCase()}[bot]`;
+    // The fleet's own filings (in AidenHQ's records) are never triaged as a new report.
+    const filed = new Set<number>();
+    for (const i of newer) if (await this.ours(this.ref(r, i.number))) filed.add(i.number);
     const fresh = newer
-      .filter((i) => !i.pull_request && !labelNames(i).some((l) => same(l, r.label) || l === FEATURE_LABEL || l === BUILD_LABEL) && !ours(i))
+      .filter((i) => !i.pull_request && !filed.has(i.number) && !labelNames(i).some((l) => same(l, r.label) || l === FEATURE_LABEL || l === BUILD_LABEL))
       .sort((a, b) => Date.parse(String(a.created_at)) - Date.parse(String(b.created_at)))
       .slice(0, TRIAGE_BATCH)
       .map((i) => ({ number: i.number, created_at: String(i.created_at), author: String(i.user?.login ?? "") }));
@@ -575,7 +578,7 @@ export class Maintainer {
     const listed: GhIssue[] = [];
     let page = 1;
     for (; page <= PAGE_CAP; page++) {
-      const res = await this.app.appCall(owner, name, { issues: "read" }, "GET", `/repos/${owner}/${name}/issues?state=open&labels=${encodeURIComponent(asked)}&per_page=100&page=${page}`);
+      const res = await this.gh.rest("GET", `/repos/${owner}/${name}/issues?state=open&labels=${encodeURIComponent(asked)}&per_page=100&page=${page}`);
       if (res.status !== 200) throw new Error(`couldn't list ${owner}/${name}'s issues (GitHub said ${res.status})`);
       const pageIssues = (Array.isArray(res.body) ? res.body : []) as GhIssue[];
       listed.push(...pageIssues);
@@ -603,7 +606,7 @@ export class Maintainer {
           continue;
         }
         if (!latest.trusted) {
-          skipped.push({ number: i.number, reason: latest.stale ? `#${i.number} was edited after ${asked} was added; the owner relabels it to approve it again` : `${asked} label added by ${latest.actor ?? latest.app_slug ?? "an unknown actor"}, not ${asked === BUILD_LABEL ? "a trusted collaborator" : "the App or a trusted collaborator"}` });
+          skipped.push({ number: i.number, reason: latest.stale ? `#${i.number} was edited after ${asked} was added; the owner relabels it to approve it again` : `${asked} label added by ${latest.actor ?? latest.app_slug ?? "an unknown actor"}, not a trusted collaborator` });
           continue;
         }
         issues.push({ number: i.number, trusted: true, labeled_at: latest.created_at, actor: latest.actor ?? latest.app_slug ?? null, created_at: i.created_at, labels: labelNames(i) });
