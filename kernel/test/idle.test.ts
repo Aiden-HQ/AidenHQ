@@ -10,7 +10,7 @@ import { createTaskStateRead } from "../src/task-state-read.ts";
 import { KERNEL_STAGES } from "../src/flow-stages.ts";
 import { createWakes } from "../src/wakes.ts";
 import { createIdle } from "../src/idle.ts";
-import { createEscalate } from "../src/escalate.ts";
+import { createEscalate, ownerWroteAt } from "../src/escalate.ts";
 
 const AGENT = "a-1", MIN = 60_000;
 
@@ -48,13 +48,15 @@ function world(t) {
   const row = (task) => state.read({ ids: [task] }).tasks[0];
   const wakes = createWakes({ db, facts, owner, post: async () => ({}), now: () => clock, dispatches: { may: (mod, a) => mod === "dispatch" && a === AGENT, agents: () => [AGENT] } });
   wakes.claim("dispatch"); // the dispatcher joins: its agent's tasks are swept
-  const asked = { owner: [], notices: [] };
-  const escalate = createEscalate({ db, issue: async (id) => issues[id], state: (id) => row(id), asker: async () => ({ name: "Kai", key: "kai", roles: [] }), notice: (task, body) => asked.notices.push({ task, body }), owner: (n) => asked.owner.push(n), now: () => clock });
+  const asked = { owner: [], notices: [], chief: [] };
+  // Who the task's agent is (roles: ["fleet-admin"] is the chief of staff) and whether the owner is talking to it on the task.
+  const who = { roles: [], conversing: false };
+  const escalate = createEscalate({ db, issue: async (id) => issues[id], state: (id) => row(id), asker: async () => ({ name: "Kai", key: "kai", roles: who.roles }), notice: (task, body) => asked.notices.push({ task, body }), owner: (n) => asked.owner.push(n), chief: async (b) => { asked.chief.push(b); }, conversing: async () => who.conversing, now: () => clock });
   const idle = createIdle({ db, facts, state, wakes, owner, escalate, now: () => clock });
   const rows = () => db.prepare("SELECT key, cause, state FROM wakes ORDER BY at, key").all().map((r) => `${r.key.replace(/:[0-9TZ:.-]+$/, "")} ${r.cause} ${r.state}`);
   /** A job on t1 from its wake to its end. */
   const job = (id) => { add("job.queued", `job:${id}`, "t1"); add("job.started", `job:${id}`, "t1"); clock += MIN; add("job.ended", `job:${id}`, "t1", { state: "done" }); };
-  return { db, facts, idle, wakes, row, add, job, rows, reads, asked, down: (v) => (down = v), tick: (ms) => (clock += ms), now: () => clock };
+  return { db, facts, idle, wakes, row, add, job, rows, reads, asked, who, issues, down: (v) => (down = v), tick: (ms) => (clock += ms), now: () => clock };
 }
 
 test("an agent-held task orphaned 15 minutes gets an idle wake, again 15 minutes after one is dropped, at most 3 a day; the owner's task none and isn't read", async (t) => {
@@ -127,44 +129,90 @@ test("task_wait: the task waits (not orphaned) with its words, resumes at until,
   assert.equal(w.row("t1").reason, "orphaned");
 });
 
-test("task_wait for the owner asks them, headed by the task and naming its agent for the owner's mutes, and waits for the answer; one open ask per task; for the delegator, its task hears a wake notice", async (t) => {
+test("an agent's owner question goes to the chief of staff as one task, never to the owner; the chief's comment answers it and the next ask is a new task", async (t) => {
   const w = world(t);
   const ask = { reason: "which API the brief means", for: "owner", question: "Keep the v1 endpoint, or drop it?" };
   const r = await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, ask);
-  assert.equal(r.until, new Date(w.now() + 7 * 864e5).toISOString(), "it waits for the answer, not a day");
-  assert.equal(r.asked, true);
-  assert.deepEqual([w.asked.owner[0].kind, w.asked.owner[0].task, w.asked.owner[0].head, w.asked.owner[0].asker], ["decision", "T1", { agent: "Kai", issue: "t1" }, { id: AGENT, key: "kai", roles: [] }]);
-  assert.match(w.asked.owner[0].text, /T1 waits on your answer[^]*Keep the v1 endpoint, or drop it\?/);
-  // Unanswered (only its own agent and the kernel wrote since): another question, to anyone, isn't sent.
+  assert.deepEqual([r.to, r.asked, r.until], ["chief_of_staff", true, new Date(w.now() + 7 * 864e5).toISOString()]);
+  assert.equal(w.asked.owner.length, 0, "nothing reaches the owner");
+  assert.deepEqual([w.asked.chief.length, w.asked.chief[0].title, w.asked.chief[0].source], [1, "Decide for the owner: T1 (Kai)", "ask:t1:0"]);
+  assert.match(w.asked.chief[0].description, /```\nKeep the v1 endpoint, or drop it\?\n```[^]*Asked on T1 \(task id t1\) by Kai/);
   w.tick(MIN);
-  w.add("task.commented", "task:t1", "t1", { kind: "agent" }, `agent:eng`);
+  assert.deepEqual([w.row("t1").reason, w.row("t1").attention.map((a) => a.who)], ["delegator_wait", ["agent"]], "an agent answers it, not the owner");
+  // Unanswered: another question isn't sent, and the first wait stands.
   const again = await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { ...ask, question: "Or rename it?" });
-  assert.deepEqual([again.asked, w.asked.owner.length], [false, 1]);
+  assert.deepEqual([again.asked, w.asked.chief.length], [false, 1]);
+  // The chief of staff's comment is the answer: the wait ends, and the next ask is a new episode.
   w.tick(MIN);
-  assert.equal((await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "x", for: "delegator", question: "Which files?" })).asked, false);
-  w.tick(30 * MIN);
-  assert.equal(w.row("t1").reason, "delegator_wait");
-  await assert.rejects(w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "x", for: "delegator" }), /question/);
-  // The owner answered: the next ask goes, here to the delegator, as a wake notice on its task.
-  w.add("task.commented", "task:t1", "t1", { kind: "owner" }, "account:o1");
+  w.add("task.commented", "task:t1", "t1", { kind: "agent" }, "agent:aiden");
   w.tick(MIN);
-  await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "the brief's file list is stale", for: "delegator", question: "The modules were renamed: which files now?" });
-  assert.deepEqual(w.asked.notices.map((n) => n.task), ["t0"]);
-  assert.match(w.asked.notices[0].body, /^\*\*T1 asks you:\*\*[^]*```\nThe modules were renamed: which files now\?\n```[^]*<!-- aidenhq-wake -->$/);
+  assert.notEqual(w.row("t1").reason, "delegator_wait");
+  await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, ask);
+  assert.deepEqual(w.asked.chief.map((c) => c.source), ["ask:t1:0", "ask:t1:1"]);
 });
 
-test("an asked owner wait records its question and sends nothing", async (t) => {
+test("the owner hears a question directly only on a task they are talking to its agent on, or from the chief of staff", async (t) => {
   const w = world(t);
+  w.who.conversing = true;
+  const r = await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "x", for: "owner", question: "Keep v1?" });
+  assert.deepEqual([r.to, w.asked.chief.length], ["owner", 0]);
+  assert.deepEqual([w.asked.owner[0].kind, w.asked.owner[0].task, w.asked.owner[0].head, w.asked.owner[0].asker], ["decision", "T1", { agent: "Kai", issue: "t1" }, { id: AGENT, key: "kai", roles: [] }]);
+  assert.match(w.asked.owner[0].text, /T1 waits on your answer[^]*Keep v1\?/);
+  w.tick(MIN);
+  assert.equal(w.row("t1").reason, "owner_wait");
+  // The chief of staff's own question reaches the owner wherever it asks.
+  w.add("task.commented", "task:t1", "t1", { kind: "owner" }, "account:o1");
+  w.tick(MIN);
+  w.who.conversing = false;
+  w.who.roles = ["fleet-admin"];
+  assert.equal((await w.idle.wait({ agent: AGENT, key: "aiden", task: "t1" }, { reason: "x", for: "owner", question: "Raise the spend cap?" })).to, "owner");
+  assert.deepEqual([w.asked.owner.length, w.asked.chief.length], [2, 0]);
+});
+
+test("a delegator question goes to the open delegator, else the chief of staff (the chief's own: the owner)", async (t) => {
+  const w = world(t);
+  const ask = { reason: "the brief's file list is stale", for: "delegator", question: "The modules were renamed: which files now?" };
+  assert.equal((await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, ask)).to, "delegator");
+  assert.deepEqual(w.asked.notices.map((n) => n.task), ["t0"]);
+  assert.match(w.asked.notices[0].body, /^\*\*T1 asks you:\*\*[^]*```\nThe modules were renamed: which files now\?\n```[^]*<!-- aidenhq-wake -->$/);
+  await assert.rejects(w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "x", for: "delegator" }), /question/);
+  // The delegator answered; then its task closed: nobody delegated the next one, so the chief of staff settles it.
+  w.tick(MIN);
+  w.add("task.commented", "task:t1", "t1", { kind: "agent" }, "agent:lead");
+  w.tick(MIN);
+  w.issues.t0.status = "done";
+  assert.equal((await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, ask)).to, "chief_of_staff");
+  assert.deepEqual([w.asked.chief.length, w.asked.owner.length], [1, 0]);
+  w.tick(MIN);
+  w.add("task.commented", "task:t1", "t1", { kind: "agent" }, "agent:aiden");
+  w.tick(MIN);
+  w.who.roles = ["fleet-admin"];
+  assert.equal((await w.idle.wait({ agent: AGENT, key: "aiden", task: "t1" }, ask)).to, "owner", "never back to itself");
+  assert.equal(w.asked.owner.length, 1);
+});
+
+test("an asked owner wait: recorded and not sent while the owner talks to the agent there; otherwise the chief of staff gets it; a handoff waits on the owner", async (t) => {
+  const w = world(t);
+  w.who.conversing = true;
   const r = await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "the owner's answer", for: "owner", asked: true, question: "keep v1?" });
-  assert.equal(r.asked, undefined);
-  assert.equal(w.asked.owner.length, 0, "escalate.ask is not called");
+  assert.deepEqual([r.asked, r.to, w.asked.owner.length, w.asked.chief.length], [undefined, "owner", 0, 0]);
   const fact = w.db.prepare("SELECT data FROM facts WHERE type = 'work.waiting'").all().map((r) => JSON.parse(r.data));
   assert.equal(fact.length, 1);
   assert.partialDeepStrictEqual(fact[0], { reason: "owner_wait", question: "keep v1?" });
   w.tick(MIN);
-  const item = w.row("t1");
-  assert.equal(item.reason, "owner_wait");
+  assert.equal(w.row("t1").reason, "owner_wait");
   await assert.rejects(w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "x", asked: true, question: "q" }), /for: owner/);
+  // Working on its own (the owner isn't talking there): the same call goes to the chief of staff.
+  w.add("task.commented", "task:t1", "t1", { kind: "owner" }, "account:o1");
+  w.tick(MIN);
+  w.who.conversing = false;
+  assert.equal((await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "x", for: "owner", asked: true, question: "keep v2?" })).to, "chief_of_staff");
+  assert.deepEqual([w.asked.owner.length, w.asked.chief.length], [0, 1]);
+  // A handoff on the owner's own task is a report to them, not a question: it waits on them.
+  w.add("task.commented", "task:t1", "t1", { kind: "agent" }, "agent:aiden");
+  w.tick(MIN);
+  assert.equal((await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "x", for: "owner", asked: true, handoff: true, question: "Done: see the PR." })).to, "owner");
+  assert.equal(w.asked.chief.length, 1);
 });
 
 test("a chat awaiting the owner's next message is never swept", async (t) => {
@@ -178,31 +226,30 @@ test("a chat awaiting the owner's next message is never swept", async (t) => {
   assert.ok(!w.reads.includes("t3"));
 });
 
-test("an ask fails closed: an unreadable state sends nothing; a follow-up a minute after the owner's answer is sent", async (t) => {
+test("an ask fails closed: an unreadable state sends nothing; a follow-up a minute after the answer is sent", async (t) => {
   const w = world(t);
   let unreadable = false;
   const sent = [];
-  const esc = createEscalate({ db: w.db, issue: async (id) => ({ id, identifier: id.toUpperCase(), status: "todo", assigneeAgentId: AGENT }), state: (id) => (unreadable ? undefined : w.row(id)), asker: async () => ({ name: "Kai", key: "kai", roles: [] }), notice: () => {}, owner: (n) => sent.push(n), now: w.now });
+  const esc = createEscalate({ db: w.db, issue: async (id) => ({ id, identifier: id.toUpperCase(), status: "todo", assigneeAgentId: AGENT }), state: (id) => (unreadable ? undefined : w.row(id)), asker: async () => ({ name: "Kai", key: "kai", roles: [] }), notice: () => {}, owner: () => {}, chief: async (b) => { sent.push(b); }, conversing: async () => false, now: w.now });
   const idle = createIdle({ db: w.db, facts: w.facts, state: { read: () => ({ tasks: [] }) }, wakes: w.wakes, owner: async () => ({ status: 200, json: { id: "t1" } }), escalate: esc, now: w.now });
-  const wait = (q) => idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "x", for: "owner", asked: true, question: q });
-  assert.equal(await esc.ask("t1", "owner", "keep v1?"), "asked");
-  await wait("keep v1?");
+  assert.equal((await idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "x", for: "owner", question: "keep v1?" })).asked, true);
   unreadable = true;
   w.tick(60 * MIN);
-  assert.equal(await esc.ask("t1", "owner", "keep v1?"), "open", "state unreadable: fail closed");
+  assert.equal((await esc.ask("t1", "owner", "keep v1?")).sent, "open", "state unreadable: fail closed");
   unreadable = false;
-  assert.equal(await esc.ask("t1", "owner", "again?"), "open", "the wait is open");
+  assert.equal((await esc.ask("t1", "owner", "again?")).sent, "open", "the wait is open");
   w.tick(MIN);
   w.add("task.commented", "task:t1", "t1", { kind: "owner" }, "account:o1");
   w.tick(MIN);
-  assert.equal(await esc.ask("t1", "owner", "follow-up?"), "asked", "a minute after the answer");
+  assert.equal((await esc.ask("t1", "owner", "follow-up?")).sent, "asked", "a minute after the answer");
   assert.equal(sent.length, 2);
 });
 
-test("a PR task waiting on its checks is waiting (module_wait), not orphaned, and is never swept", async (t) => {
-  const w = world(t);
-  w.add("work.waiting", "pr:acme/x#1", "t1", { reason: "checks" }, "module:github");
-  w.tick(30 * MIN);
-  assert.deepEqual([w.row("t1").kind, w.row("t1").reason, w.row("t1").ref], ["waiting", "module_wait", "checks"]);
-  assert.deepEqual(await w.idle.sweep(), []);
+test("the owner wrote on a task: their own comment or the opening of a task they wrote, never a marked post, an agent's or a filed task's", () => {
+  const at = (x) => `2026-11-19T${x}:00Z`;
+  const own = { description: "Fix the login", createdAt: at("08:00"), createdByUserId: "o1", createdByAgentId: null };
+  assert.equal(ownerWroteAt(own, []), Date.parse(at("08:00")));
+  assert.equal(ownerWroteAt(own, [{ body: "[telegram] go on", authorUserId: "o1", createdAt: at("09:00") }, { body: "done", authorAgentId: "a", createdAt: at("10:00") }, { body: "[wake] x <!-- aidenhq-wake -->", authorUserId: "o1", createdAt: at("11:00") }]), Date.parse(at("09:00")));
+  assert.equal(ownerWroteAt({ ...own, description: "x\n<!-- source:ask:t:0 -->" }, []), undefined, "a kernel-filed task");
+  assert.equal(ownerWroteAt({ ...own, createdByAgentId: "a" }, []), undefined, "an agent's task");
 });

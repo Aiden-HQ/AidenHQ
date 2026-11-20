@@ -11,7 +11,7 @@ it("notify attention: block, cap, digest; decisions and the chief of staff pass"
   const chat: string[] = [];
   const warned: unknown[] = [];
   const attention = { mode: "observe" as "observe" | "enforce", blocked: ["noisy"], dailyCap: 3, digestHours: [9, 18], timezone: "UTC", warn: (o: unknown) => warned.push(o) };
-  const cfg: Deps = { store, transports: ["slack"], attention, send: async (_to, m) => (dms.push(m.text), { sent: true }), postReply: async (_i: string, b: string) => (chat.push(b), true), resolveTask: async () => ({ issueId: "i1", agentId: "w", agentName: "Worker" }) };
+  const cfg: Deps = { store, transports: ["slack"], attention, send: async (_to, m) => (dms.push(m.text), { sent: true }), postReply: async (_i: string, b: string) => (chat.push(b), true), resolveTask: async () => ({ issueId: "i1", agentId: "w", agentName: "Worker" }), wait: async () => ({ to: "owner" }) };
   const crew = { id: "w", name: "Worker", key: "worker", assertion: "j", roles: [] as string[] };
   const cos = { id: "c", name: "Aiden", key: "chief-of-staff", assertion: "j", roles: ["fleet-admin"] };
   const send = (who: typeof crew, text: string, extra = {}) => notify(cfg, { kind: "done", text, task: "WOR-1", ...extra }, who, Date.UTC(2026, 10, 17, 10));
@@ -56,7 +56,7 @@ it("digest items stay one line, so text can't forge another agent's item", async
 it("notify_fyi: mute keeps fyi out of the digest", async () => {
   const store = openStore(":memory:");
   const attention = { mode: "enforce" as const, blocked: [], dailyCap: 9, digestHours: [9], timezone: "UTC" };
-  const cfg: Deps = { store, transports: [], send: async () => ({ sent: true }), attention, muteFyi: true, resolveTask: async () => ({ issueId: "i1", agentId: "w", agentName: "Worker" }) };
+  const cfg: Deps = { store, transports: [], send: async () => ({ sent: true }), attention, muteFyi: true, resolveTask: async () => ({ issueId: "i1", agentId: "w", agentName: "Worker" }), wait: async () => ({ to: "owner" }) };
   const crew = { id: "w", name: "Worker", key: "worker", assertion: "j", roles: [] as string[] };
   await notify(cfg, { text: "news", task: "WOR-1", kind: "fyi" }, crew, Date.UTC(2026, 10, 17, 10));
   expect(store.getKv("digest:queue") ?? "[]").toBe("[]");

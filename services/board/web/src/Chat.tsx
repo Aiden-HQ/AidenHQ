@@ -153,8 +153,11 @@ export function ApprovalCard({ a, open, inline, prefix = "", unfold }: { a: Appr
  * bookkeeping (task_finish, task_comment, task_block). Policy let it run, so it's audit, not something to decide; a
  * failed one is its agent's to retry. Hidden from the history unless asked for; pushes, PRs, merges, applies and deploys stay.
  */
-/** A task that needs the owner for more than a card (a card is already listed above, whole). */
-export const onYouBeyondCards = (i: { state: ShownState }) => i.state.attention.some((a) => a.who === "owner" && a.why !== "card");
+/**
+ * A task that needs the owner for more than a card (a card is already listed above, whole) or an agent's question: questions
+ * are answered in the conversation they were asked in, never on Approvals.
+ */
+export const onYouBeyondCards = (i: { state: ShownState }) => i.state.attention.some((a) => a.who === "owner" && a.why !== "card" && a.why !== "owner_wait");
 const toolCall = (a: Approval) => a.state === "auto" && a.action.includes(".");
 
 type Filter = "pending" | "done" | "failed" | "all";
@@ -191,7 +194,7 @@ export function ApprovalsView({ open, onSignIn }: { open: (identifier: string) =
   const all = cards ?? [];
   // Only Tier 2 waits for you; Tier 1 (with the reviewer) and Tier 0 runs (audit rows) are history lines.
   const pending = all.filter(forOwner);
-  // Everything else waiting on you (the server's needs-you: an agent's open question, work handed to you); a task with
+  // Everything else waiting on you (the server's needs-you: work handed to you); a task with
   // a Tier 2 card is already one of the cards above.
   const others = (data?.items ?? []).filter(onYouBeyondCards);
   const waitingCount = pending.length + others.length;

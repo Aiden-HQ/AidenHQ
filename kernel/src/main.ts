@@ -54,7 +54,7 @@ import { createDeploys } from "./generations.ts";
 import { createFlow } from "./flow.ts";
 import { createTaskStateRead } from "./task-state-read.ts";
 import { createIdle } from "./idle.ts";
-import { createEscalate } from "./escalate.ts";
+import { CHIEF, CONVERSING_MS, createEscalate, ownerWroteAt } from "./escalate.ts";
 import { pidAlive, recordKernel } from "./previous.ts";
 import { createReviews, type ReviewerSlot } from "./reviews.ts";
 import { createReviewLoop } from "./review-loop.ts";
@@ -246,6 +246,14 @@ const escalate = createEscalate({
   },
   notice: (task, body) => { notices.queue(task, body); setImmediate(sendNotices); },
   owner: (n) => notify.queue(n),
+  // The chief of staff settles every judgement that isn't the owner's conversation: one kernel-filed task per ask, by role.
+  chief: (b) => moduleTasks.file("kernel", { ...b, role: CHIEF }),
+  conversing: async (id) => {
+    const t = encodeURIComponent(id);
+    const [i, c] = await Promise.all([cpJson(`/api/issues/${t}`), cpJson(`/api/issues/${t}/comments?order=desc&limit=50`)]);
+    const at = ownerWroteAt(i as never, Array.isArray(c) ? c : []);
+    return at !== undefined && Date.now() - at < CONVERSING_MS;
+  },
 });
 // Marketplace advisories (advisories.ts): read at start, then whenever a day has passed or an apply rewrote the catalog.
 const advisories = createAdvisories({ db: records.db, repo, catalog: path.join(configDir, "modules.json"), ownerLine: toOwner("done"), log, ref: env("AIDENHQ_ADVISORY_REF", "main"), fetch: hostFetch(repo) });

@@ -102,6 +102,8 @@ prompts:
   - { id: progress, file: prompts/progress.md, order: first }
   - { id: replying, file: prompts/replying.md, order: first }
   - { id: asking, file: prompts/asking.md, order: first, when: { tools: [ owner_channel.notify ] } }
+  # The chief of staff settles the other agents' questions for the owner (kernel escalate.ts files one task per ask).
+  - { id: deciding, file: prompts/deciding.md, when: { roles: [ fleet-admin ] } }
   - { id: privacy, file: prompts/privacy.md }
   # {{fleet_issues}}: the "Fleet issues" task where heartbeat runs note missed wake-ups (setup finds or creates it).
   - { id: heartbeat, file: prompts/heartbeat.md, order: last, when: { fields: { heartbeat: true } } }

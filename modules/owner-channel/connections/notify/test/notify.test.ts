@@ -86,22 +86,33 @@ describe("notify", () => {
     expect(sent.map((s) => s.m.text)).toEqual(["Board account reset for sam@example.com"]);
   });
 
-  it("a decision files an owner wait carrying its text; a failed wait is returned, not swallowed", async () => {
-    const { d } = world();
+  it("an agent's question reaches the owner only where they talk to it (the kernel says so); otherwise the chief of staff gets it and nothing is sent", async () => {
+    const { d, sent, posted } = world();
     d.resolveTask = async () => ({ issueId: "i9", agentId: "a1", agentName: "Architect", ownerVia: "telegram" });
     const waits: string[] = [];
-    d.wait = async (_t, _a, question) => { waits.push(question); };
-    expect(await notify(d, { kind: "decision", text: "Context.", task: "WOR-9", questions: [{ question: "Size?", options: ["S", "L"] }, { question: "Color?", options: ["R", "B"] }] }, agent("a1"))).toMatchObject({ sent: true });
-    expect(waits).toEqual(["Context.\nSize?\nColor?"]);
+    let to = "chief_of_staff";
+    d.wait = async (_t, _a, question) => (waits.push(question), { to });
+    const ask = { kind: "decision" as const, text: "Context.", task: "WOR-9", questions: [{ question: "Size?", options: ["S", "L"] }] };
+    expect(await notify(d, ask, agent("a1"))).toMatchObject({ sent: true, to: "chief_of_staff" });
+    expect(waits[0]).toMatch(/^Context\.[^]*Size\?[^]*A\) S \(recommended\)/);
+    expect([sent.length, posted.length]).toEqual([0, 0]);
+    // The owner is talking to it there: the question goes to them, after its wait is recorded.
+    to = "owner";
+    expect(await notify(d, { ...ask, text: "Context 2." }, agent("a1"))).toEqual({ sent: true, onChat: true });
+    expect([sent.length, waits.length]).toEqual([1, 2]);
+    // A wait that can't be recorded sends nothing; a question with no task of its own goes nowhere.
     d.wait = async () => { throw new Error("POST /v1/wait -> 503"); };
-    const r = await notify(d, { kind: "decision", text: "Another?", task: "WOR-9" }, agent("a1")) as { sent: boolean; wait_error?: string };
-    expect(r.sent).toBe(true);
-    expect(r.wait_error).toMatch(/wait/);
+    expect(await notify(d, { ...ask, text: "Another?" }, agent("a1"))).toMatchObject({ sent: false, reason: "error" });
+    expect(await notify(d, { kind: "decision", text: "Ship it?" }, agent("a1"))).toMatchObject({ sent: false, reason: "error" });
+    // The chief of staff asks the owner wherever it is.
+    expect(await notify(d, { kind: "decision", text: "Raise the cap?" }, { ...agent("c1"), roles: ["fleet-admin"] })).toEqual({ sent: true });
+    expect(sent).toHaveLength(2);
   });
 
   it("an agent's reply on its chat: posted as its comment, headed on the phone, the channel the owner wrote from first", async () => {
     const { d, sent, posted } = world();
     d.resolveTask = async () => ({ issueId: "i9", agentId: "a1", agentName: "Architect", ownerVia: "telegram" });
+    d.wait = async () => ({ to: "owner" });
     expect(await notify(d, { kind: "decision", text: "Which?", task: "WOR-9", questions: [{ question: "Size?", options: ["S", "L"] }] }, agent("a1"))).toEqual({ sent: true, onChat: true });
     expect(posted[0]).toContain("<!-- aidenhq-questions:");
     expect(sent[0]!.to).toBe("channel-telegram");

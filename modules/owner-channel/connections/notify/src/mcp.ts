@@ -10,7 +10,7 @@ export function buildServer(d: Deps, caller?: Caller, trial = false): McpServer 
     "notify",
     {
       description:
-        "Message the owner. It reaches them once: with `task`, as your visible reply in that chat on the board, and on their phone (the channel they last wrote from in that chat, else their Slack DM or Telegram). **bold**, `code`, - bullets and task IDs render. kind: decision (needs their answer or approval; any message with questions is one; never held back by the limit), done (a finished result), fyi (news they needn't act on; they may mute these), alert (something is wrong now and needs them: one per dedupe_key an hour, so give each incident its own key and a new key when it gets worse), digest (a routine's one summary). The same message (or the same dedupe_key, from any agent) within 10 minutes goes once. With `task` (your current chat), send one reply per turn, last; keep run notes for the log. At most 5 messages about one task between the owner's own messages there (and per UTC day): past that it returns reason \"limit\" and sends nothing, so batch updates.",
+        "Message the owner. It reaches them once: with `task`, as your visible reply in that chat on the board, and on their phone (the channel they last wrote from in that chat, else their Slack DM or Telegram). **bold**, `code`, - bullets and task IDs render. kind: decision (a question for them; any message with questions is one; never held back by the limit: it reaches the owner directly only on a task they are talking to you on, otherwise the chief of staff settles it and its answer comes as a comment on your task), done (a finished result), fyi (news they needn't act on; they may mute these), alert (something is wrong now and needs them: one per dedupe_key an hour, so give each incident its own key and a new key when it gets worse), digest (a routine's one summary). The same message (or the same dedupe_key, from any agent) within 10 minutes goes once. With `task` (your current chat), send one reply per turn, last; keep run notes for the log. At most 5 messages about one task between the owner's own messages there (and per UTC day): past that it returns reason \"limit\" and sends nothing, so batch updates.",
       // Strict: a misspelled field (e.g. "questions:") is an error the agent sees and fixes, not silently dropped.
       inputSchema: z.strictObject({
         kind: z.enum(KINDS as [string, ...string[]]),
@@ -30,7 +30,7 @@ export function buildServer(d: Deps, caller?: Caller, trial = false): McpServer 
     async (args) => {
       // An agent in trial reaches the owner and nothing else: `task` would route the message into that task's chat.
       if (trial && args.task !== undefined) return json({ sent: false, reason: "in trial, notify reaches only the owner: `task` would route it into a task chat, so nothing was sent. Send the text to the owner without it." });
-      return json(await notify(d, args as Parameters<typeof notify>[1], caller));
+      return json(await notify(d, args as Parameters<typeof notify>[1], caller && trial ? { ...caller, trial: true } : caller));
     },
   );
   return server;

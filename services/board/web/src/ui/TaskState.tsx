@@ -30,7 +30,7 @@ const REASON: Record<ShownState["reason"], (s: ShownState) => string> = {
   card_review: (s) => (s.refLabel ? `AI review: ${s.refLabel}` : "AI review"),
   card_owner: (s) => (s.refLabel ? `your approval: ${s.refLabel}` : "your approval"),
   owner_wait: (s) => (s.question ? `your answer: “${s.question.split("\n")[0]!.slice(0, 80)}”` : "your answer"),
-  delegator_wait: () => "an answer from the agent that delegated it",
+  delegator_wait: () => "an answer from another agent",
   handback: () => "handed to you",
   blocked: (s) => (s.refLabel ? `blocked by ${s.refLabel}` : "blocked"),
   agent_wait: () => "its own wait",

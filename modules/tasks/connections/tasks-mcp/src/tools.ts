@@ -1359,14 +1359,14 @@ const TOOLS: Record<string, Tool> = {
   },
   task_wait: {
     description:
-      "Record that the task this run is working on waits on something, so it isn't left idle: why, and until when (`until`, an ISO time at most 7 days ahead) or for what (`on`, the event, e.g. \"PR #12 merged\"; then you're woken in 24 hours to check). When it waits on a judgement only someone else can make (what the brief means, what to do about a reviewer's repeated rejection, a choice that is theirs), set `for` to who makes it, `delegator` (whoever handed you the task) or `owner`, and `question` to what they decide, with the context they need: they get your question, and their answer comes back to this task and wakes you. When your visible reply on the task already asked the owner (a chat with them), add `asked: true`: the kernel records the wait and your question and sends nothing more. You're woken by the event when it comes as a comment on the task, and otherwise at `until`. End your turn after it. Only ever touches the current run's task.",
+      "Record that the task this run is working on waits on something, so it isn't left idle: why, and until when (`until`, an ISO time at most 7 days ahead) or for what (`on`, the event, e.g. \"PR #12 merged\"; then you're woken in 24 hours to check). When it waits on a judgement you can't make yourself, even with your handbook, the brief and the advisor (what the brief means, what to do about a reviewer's repeated rejection, a choice that is someone else's), set `for` to who makes it, `delegator` (whoever handed you the task) or `owner`, and `question` to the decision with what another agent needs to settle it: the context, the options and your recommendation. The owner hears it directly only on a task they are talking to you on; otherwise the chief of staff settles it (as it does a delegator question when nobody handed you the task). The answer comes back to this task as a comment and wakes you; the result says who got it (`to`). When your visible reply on the task already asked the owner (a chat with them), add `asked: true`: the kernel records the wait and sends nothing more. You're woken by the event when it comes as a comment on the task, and otherwise at `until`. End your turn after it. Only ever touches the current run's task.",
     inputSchema: {
       type: "object",
       properties: {
         reason: { type: "string", description: "what the task waits on and why, in one line" },
         until: { type: "string", description: "ISO-8601 time to resume at, at most 7 days ahead" },
         on: { type: "string", description: "the event it waits for" },
-        for: { type: "string", enum: ["delegator", "owner"], description: "who makes the judgement it waits on: they are asked `question`" },
+        for: { type: "string", enum: ["delegator", "owner"], description: "who makes the judgement it waits on: `question` goes to them, or to the chief of staff when the owner isn't talking to you here or nobody handed you the task" },
         question: { type: "string", description: "with `for`: the decision you need from them, with the context they need to make it" },
         asked: { type: "boolean", description: "with `for: owner`: your reply on this task already asked them `question` (they can see it), so the kernel records the wait and sends nothing" },
       },

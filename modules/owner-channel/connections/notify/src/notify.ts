@@ -33,8 +33,8 @@ export interface NotifyArgs {
 export type Message = { kind: Kind; text: string; head?: { agent: string; task: string; issue: string }; actions?: string[]; asks?: true };
 export type Found = { issueId: string; agentId: string; agentName: string; ownerVia?: "board" | "telegram" | "slack" | undefined };
 /** Who called notify: the agent, its key, its roles, and the kernel's assertion of this call (its reply is posted on it). */
-export interface Caller { id: string; name?: string | undefined; key: string; roles?: string[] | undefined; assertion: string }
-export type Result = { sent: boolean; reason?: "duplicate" | "limit" | "muted" | "blocked" | "error"; onChat?: true; queued?: true; note?: string };
+export interface Caller { id: string; name?: string | undefined; key: string; roles?: string[] | undefined; assertion: string; trial?: boolean | undefined }
+export type Result = { sent: boolean; reason?: "duplicate" | "limit" | "muted" | "blocked" | "error"; onChat?: true; queued?: true; note?: string; to?: "chief_of_staff" };
 
 export interface Deps {
   store: Store;
@@ -46,8 +46,12 @@ export interface Deps {
   resolveTask?: (identifier: string) => Promise<Found | undefined>;
   /** Posts the reply on its chat as the calling agent (the kernel's /v1/cp/agent, on this call's assertion). */
   postReply?: (issueId: string, body: string, assertion: string) => Promise<boolean>;
-  /** Records that the calling job's own task waits on the owner's answer (the kernel's POST /v1/wait, on this call's assertion). */
-  wait?: (task: string, assertion: string, question: string) => Promise<void>;
+  /**
+   * Records that the calling job's own task waits on an answer to `question` (the kernel's POST /v1/wait, on this call's
+   * assertion). The kernel says who settles it: the owner (this message goes to them), else the chief of staff (it got the
+   * question; nothing goes to the owner).
+   */
+  wait?: (task: string, assertion: string, question: string) => Promise<{ to?: string }>;
   /** The kernel's loop brake: whether one more message about this task may go now. */
   brake?: (task: string, agent: string, decision: boolean) => Promise<{ allow: boolean; note?: string }>;
   /** Setting notify_fyi: mute. */
@@ -56,6 +60,8 @@ export interface Deps {
 }
 
 const MIN = 60_000;
+/** The chief of staff's role: the one agent whose questions reach the owner wherever it asks. */
+const CHIEF = "fleet-admin";
 const WINDOW = { alert: 60 * MIN, other: 10 * MIN };
 
 /** Marks an agent's comment as its visible reply to the owner (the board shows it as a message, not a run note). */
@@ -121,6 +127,16 @@ export async function notify(d: Deps, a: NotifyArgs, caller?: Caller, now = Date
     // Attention: a blocked or over-cap agent sends nothing; a crew agent's routine done/fyi goes to the digest (and its chat).
     const att = who && d.attention && ["decision", "done", "fyi"].includes(kind) ? attend(d.store, d.attention, { id: who.id, key: who.key, roles: who.roles ?? [] }, kind, { conversing: Boolean(found?.ownerVia), buttons: Boolean(a.actions?.length) }, now) : ({ do: "pass" } as const);
     if (att.do === "block" || att.do === "limit") return { sent: false, reason: att.do === "block" ? "blocked" : "limit", note: att.note };
+    // A question reaches the owner directly only from the chief of staff, or on a task the owner is talking to its agent on
+    // (the kernel decides, escalate.ts); any other goes to the chief of staff, which settles it. The wait is recorded first, so
+    // a question is never sent without it.
+    if (kind === "decision" && caller && !caller.roles?.includes(CHIEF) && !caller.trial) {
+      if (!found || !d.wait) return { sent: false, reason: "error", note: "A question goes on the task you are working on: set `task` to it. Nothing was sent." };
+      const question = [text, spellOut(a.questions)].join("").slice(0, 1500);
+      const w = await d.wait(found.issueId, caller.assertion, question).catch((e: Error) => ({ error: String(e.message ?? e).slice(0, 200) }));
+      if ("error" in w) return { sent: false, reason: "error", note: `Your question wasn't recorded (${w.error}): nothing was sent; try again.` };
+      if (w.to !== "owner") return { sent: true, to: "chief_of_staff", note: "The owner isn't talking with you on this task, so your question went to the chief of staff, who settles it (and brings it to the owner only when the call is theirs). Its answer comes as a comment on your task and wakes you: end your turn." };
+    }
     const muted = kind === "fyi" && d.muteFyi === true && !a.actions?.length;
     const digested = att.do === "digest" && found?.ownerVia !== "board" && !muted;
     if (digested) queueDigest(d.store, { agent: found?.agentName ?? caller?.name ?? "agent", ...(a.task ? { task: a.task } : {}), text });
@@ -141,10 +157,10 @@ export async function notify(d: Deps, a: NotifyArgs, caller?: Caller, now = Date
     }
     const ok = out === "sent" || out === "down" || onChat || digested;
     if (ok) d.store.setKv(dedupe, String(now));
-    // A question on the agent's own task files an owner wait carrying its text (the kernel refuses any other task; that is no failure).
+    // The chief of staff's question on its own task files its owner wait (the kernel refuses any other task; that is no failure).
     // A wait that failed is returned: the task would read orphaned and be woken to ask again.
     let waitError: string | undefined;
-    if (ok && kind === "decision" && found && caller && d.wait) {
+    if (ok && kind === "decision" && found && caller?.roles?.includes(CHIEF) && d.wait) {
       const question = [text, ...(a.questions ?? []).map((q) => q.question)].join("\n");
       await d.wait(found.issueId, caller.assertion, question).catch((e: Error) => { waitError = String(e.message ?? e).slice(0, 200); });
     }
