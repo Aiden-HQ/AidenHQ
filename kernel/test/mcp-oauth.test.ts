@@ -164,6 +164,14 @@ test("mcp-oauth round trip: metadata, registration, sign-in and consent, a token
   const fresh = await c("POST", "/oauth2/token", { form: { grant_type: "refresh_token", refresh_token: tok.json.refresh_token, client_id: client, resource: RESOURCE } });
   assert.equal(fresh.status, 200, fresh.body);
   assert.equal((await bearer(fresh.json.access_token)).status, 200);
+  // A client that renews without naming the resource keeps the grant's audience, and so does its rotated token.
+  const bare = await c("POST", "/oauth2/token", { form: { grant_type: "refresh_token", refresh_token: fresh.json.refresh_token, client_id: client } });
+  assert.equal(bare.status, 200, bare.body);
+  assert.equal((await bearer(bare.json.access_token)).status, 200);
+  const hop = await c("POST", "/oauth2/token", { form: { grant_type: "refresh_token", refresh_token: bare.json.refresh_token, client_id: client } });
+  assert.equal(hop.status, 200, hop.body);
+  assert.equal((await bearer(hop.json.access_token)).status, 200);
+  fresh.json = hop.json;
 
   // The account's MCP clients, then revoke: every token of that client ends at once, and the refresh token too.
   const account = who.json.account.id;
