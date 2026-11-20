@@ -8,7 +8,7 @@
 //   node best-version.ts github-release <owner/repo>       release published_at
 //   node best-version.ts github-action <owner/repo>        the same, plus the tag's commit SHA to pin
 //   node best-version.ts docker <image[:tag or tag*glob]>  Docker Hub push time (ghcr.io: GitHub Packages, with
-//                                                           GITHUB_TOKEN), plus the digest to pin; never the image's
+//                                                           GITHUB_TOKEN; another org's: PACKAGES_READ_TOKEN), plus the digest to pin; never the image's
 //                                                           own `created` time
 //   node best-version.ts apt <package> --source "<url> <dist> <component>"   the .deb's Last-Modified in that repo
 //   node best-version.ts apt-gvisor runsc                  the same, from gVisor's release repo
@@ -46,7 +46,7 @@ export async function getJson(url: string, headers: Record<string, string> = {})
 // Retries transient failures; a 404 (or another 4xx but 429) fails at once. Never returns a failed response.
 export async function fetchRetry(url: string, init: FetchInit = {}): Promise<Response> {
   const headers: Record<string, string> = { ...(init.headers as Record<string, string> | undefined) };
-  if (url.startsWith("https://api.github.com/") && process.env.GITHUB_TOKEN) headers.authorization = `Bearer ${process.env.GITHUB_TOKEN}`;
+  if (url.startsWith("https://api.github.com/") && process.env.GITHUB_TOKEN && !headers.authorization) headers.authorization = `Bearer ${process.env.GITHUB_TOKEN}`;
   let err: unknown;
   for (let i = 0; i < 4; i++) {
     try {
@@ -159,21 +159,36 @@ async function hubTags(repo: string, filter = ""): Promise<VersionInfo[]> {
   return out;
 }
 
-// ghcr.io package versions [{version (each tag), published, digest}] from the GitHub Packages API (org, then user).
-async function ghcrVersions(repo: string): Promise<VersionInfo[]> {
+// ghcr.io package versions [{version (each tag), published, digest}] from the GitHub Packages API (org, then user). Another
+// org's packages need PACKAGES_READ_TOKEN (a read:packages token; GITHUB_TOKEN can't read them), sent to these URLs only.
+// Pages of 100, newest first, read until the wanted digest is found (some packages hold thousands of versions); capped so a
+// runaway package fails closed rather than loops.
+const GHCR_MAX_PAGES = 100;
+async function ghcrVersions(repo: string, digest?: string): Promise<VersionInfo[]> {
   const [owner, ...rest] = repo.split("/");
   const pkg = encodeURIComponent(rest.join("/"));
+  const token = process.env.PACKAGES_READ_TOKEN;
+  const headers: Record<string, string> = token ? { authorization: `Bearer ${token}` } : {};
   let vs: GhcrVersion[] | undefined;
   for (const kind of ["orgs", "users"]) {
-    try { vs = await getJson(`https://api.github.com/${kind}/${owner}/packages/container/${pkg}/versions?per_page=100`); break; } catch (e) { if ((e as FetchError).status !== 404) throw undated(`ghcr.io/${repo}: ${UNDATED} (${(e as Error).message})`); }
+    try {
+      vs = [];
+      for (let page = 1; page <= GHCR_MAX_PAGES; page++) {
+        const got: GhcrVersion[] = await getJson(`https://api.github.com/${kind}/${owner}/packages/container/${pkg}/versions?per_page=100&page=${page}`, headers);
+        vs.push(...got);
+        if (got.length < 100 || (digest && got.some((g) => g.name === digest))) break;
+        if (page === GHCR_MAX_PAGES) throw new Error(`more than ${GHCR_MAX_PAGES} pages of versions`);
+      }
+      break;
+    } catch (e) { vs = undefined; if ((e as FetchError).status !== 404) throw undated(`ghcr.io/${repo}: ${UNDATED} (${(e as Error).message})`); }
   }
   if (!vs) throw undated(`ghcr.io/${repo}: ${UNDATED}`);
   return vs.flatMap((v) => (v.metadata?.container?.tags || []).map((t) => ({ version: t, published: v.created_at, digest: v.name, via: "GitHub Packages publish time" })));
 }
 
-async function imageVersions(host: string, repo: string, filter: string): Promise<VersionInfo[]> {
+async function imageVersions(host: string, repo: string, filter: string, digest?: string): Promise<VersionInfo[]> {
   if (host === "docker.io") return hubTags(repo, filter);
-  if (host === "ghcr.io") return ghcrVersions(repo);
+  if (host === "ghcr.io") return ghcrVersions(repo, digest);
   throw undated(`${host}/${repo}: ${UNDATED}`);
 }
 
@@ -353,7 +368,7 @@ export async function publishedAt(kind: string, name: string, { version, digest,
       } catch (e) { if ((e as FetchError).status !== 404) throw e; }
     }
     // The tag has moved on: another tag (or for ghcr, the package version) that still holds this digest.
-    const hit = (await imageVersions(host, repo, "")).filter((t) => t.digest === digest).sort((a, b) => Date.parse(a.published) - Date.parse(b.published)).at(-1);
+    const hit = (await imageVersions(host, repo, "", digest)).filter((t) => t.digest === digest).sort((a, b) => Date.parse(a.published) - Date.parse(b.published)).at(-1);
     if (!hit) throw undated(`${name}@${digest}: ${UNDATED}`);
     return { published: hit.published, via: `${hit.via} (as ${hit.version})` };
   }

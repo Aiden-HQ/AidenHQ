@@ -60,6 +60,24 @@ test("image dates come only from registry push records: a moved tag with no othe
   await assert.rejects(publishedAt("docker", "quay.io/acme/app:1.0", { digest: d }), /can't establish its publish time/);
 });
 
+test("ghcr images are dated across Packages API pages, with the read token sent to that API only", async (t) => {
+  const d = "sha256:" + "f".repeat(64);
+  const v = (name, tag) => ({ name, created_at: day(20), metadata: { container: { tags: [tag] } } });
+  const page1 = Array.from({ length: 100 }, (_, i) => v("sha256:" + String(i).padStart(64, "0"), `t${i}`));
+  const seen = [];
+  t.mock.method(globalThis, "fetch", async (url, init) => {
+    seen.push([String(url), init.headers.authorization]);
+    if (String(url).startsWith("https://api.github.com/orgs/acme/packages/container/app/versions")) {
+      return json(new URL(url).searchParams.get("page") === "1" ? page1 : [v(d, "1.0")]);
+    }
+    throw new Error(`unexpected ${url}`);
+  });
+  process.env.PACKAGES_READ_TOKEN = "pkg-token";
+  try { assert.equal((await publishedAt("docker", "ghcr.io/acme/app:1.0", { digest: d })).published, day(20)); } finally { delete process.env.PACKAGES_READ_TOKEN; }
+  assert.equal(seen.length, 2);
+  for (const [url, auth] of seen) assert.ok(url.startsWith("https://api.github.com/") && auth === "Bearer pkg-token", url);
+});
+
 test("pins: unpinned images, actions, installs and apt after a repo fail; new pins are dated, old ones are not", async () => {
   const d = "@sha256:" + "a".repeat(64);
   assert.deepEqual(scanFile("x/Dockerfile", `# syntax=docker/dockerfile:1.28${d}\nFROM node:24${d} AS build\nFROM build\nCOPY --from=build /a /a\nRUN npm i -g npm@11.21.2 && pip install "x==1.0"\n`).problems, []);

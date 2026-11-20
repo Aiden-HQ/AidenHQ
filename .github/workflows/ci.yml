@@ -357,6 +357,8 @@ jobs:
         if: ${{ !cancelled() }}
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          # read:packages, for other orgs' ghcr images (GITHUB_TOKEN can't read them); sent to the Packages API only
+          PACKAGES_READ_TOKEN: ${{ secrets.PACKAGES_READ_TOKEN }}
         run: |
           # a merge train is a push of main plus the PRs: its base is main, never an earlier train commit
           case "$GITHUB_REF" in refs/heads/merge-train/*) PUSH_BEFORE= ;; esac
