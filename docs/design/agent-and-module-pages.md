@@ -34,7 +34,7 @@ board at all. This makes creating, running and managing agents easier for any ow
 ## Constraints
 
 - Gates in code (CLAUDE.md): every edit is an instance-repo commit filed as a kernel record and tiered by
-  `services/runner/src/tiers.mjs` / `kernel/src/tier.ts`. Module install, update, remove and adding a marketplace follow
+  `kernel/src/tier.ts` / `kernel/src/tier.ts`. Module install, update, remove and adding a marketplace follow
   the lean-core rules: AI review always first; owner tap when the change adds authority (write kinds, secrets, roles,
   privileged entries, a marketplace, write/destructive grants).
 - Board routes need a signed-in admin. Board build: `tsc -p tsconfig.build.json`.
@@ -156,7 +156,7 @@ Header: name, version · marketplace · tier, one-line description; one action b
   part labelled by source.
 - **History**: commits touching the agent's handbook files (instance repo) and module bumps that changed its module
   handbook; each with a diff; instance commits get a reviewed **Revert**.
-- Tiers: unchanged rules in `tiers.mjs` (`role-handbook`, `agent-handbook`, `module-handbook`, `trial-handbook`);
+- Tiers: unchanged rules in `tier.ts` (`role-handbook`, `agent-handbook`, `module-handbook`, `trial-handbook`);
   creating a fork is a handbook change of the same tier.
 
 ## The write path
@@ -185,7 +185,7 @@ Typed change kinds (each: the files it may touch, nothing else; the runner refus
 | module on/off, install, update, remove, follow marketplace | `modules` (bare name or `{ name, sha }`) | lean-core §5.7 table |
 | marketplace add/update/remove | `marketplaces` | add = 2; update/remove per §5.7 |
 
-New override fields (`handbook_fork`, `connections`) need the compiler and `tiers.mjs` to accept them; anything that
+New override fields (`handbook_fork`, `connections`) need the compiler and `tier.ts` to accept them; anything that
 widens authority must tier as 2 via the existing authority diff, not by a new special case.
 
 Pause/Resume is operational, not configuration: it uses the same mechanism as Settings → Kill switches (Paperclip agent
@@ -218,10 +218,10 @@ pause) as a signed-in admin action, logged as an event; no commit.
 
 ## Calls settled after the builder check (designer's calls, open to the owner's correction)
 
-- **Fork tier.** `tiers.mjs` gains one accepted shape: a module agent's `agents/<key>/AGENTS.md` together with its
+- **Fork tier.** `tier.ts` gains one accepted shape: a module agent's `agents/<key>/AGENTS.md` together with its
   `handbook_fork` override, tiered by the same rule as that agent's handbook additions (`role-handbook` when it holds a
   role, else `module-handbook`; both Tier 1). No new tier, no authority-diff change: a handbook grants no authority.
-- **Module and marketplace tiering** is what the code already does: `tiers.mjs moduleAuthorityParts` and
+- **Module and marketplace tiering** is what the code already does: `tier.ts moduleAuthorityParts` and
   `scripts/compiler/authority.ts` (`classifyModules`, `marketplaceChanges`), from the lean-core spec §5.7 (instance repo,
   `docs/product-history/superpowers/specs/2026-11-16-lean-core-design.md`). Install, turn off and remove are edits of
   `instance.yaml modules`; no new tiering step. The install card's "what it may do" preview is computed by the same

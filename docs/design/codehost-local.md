@@ -11,31 +11,6 @@ Line numbers are at product `26a5bd5e` and modules `b2b31f1` (`modules/` is the 
 
 ## 1. Where GitHub is assumed today
 
-### Runner (`services/runner/src`)
-
-| Where | What assumes GitHub |
-|---|---|
-| `main.mjs:23-24,37,40,63`, `tiers.mjs:13`, `apply.ts:8`, `evidence.ts:6-7`, `evalgate.ts:28`, `files.ts:7`, `progress.ts:6`, `primer.ts:8` | Static imports of `modules/github/src/*`: git, App tokens, workspace, merge gate, repos, plan. These stay valid when the module leaves the bundle, because materialize copies all modules. |
-| `main.mjs:78-108` | The GitHub App client; `appFor` decides per repo between the App and the "old path" (host `gh` login plus deploy keys). |
-| `main.mjs:87,95,4714` | `gho`/`ghoMerge`/`findRealGh`: every read and write shells out to `gh`. |
-| `main.mjs:4463-4479` (`missingRepo`, `addRepo`) | The clone seam: the source is `repo_sources[slug]`, else the App URL, else the default `git@github.com:` (`codehost-github/src/git.mjs:252`). A repo in `repo_sources` skips the existence check. |
-| `main.mjs:2441-2449` (`checkRepo`) | The replay clone's remote is `git@github.com:<slug>` or the App URL. |
-| `main.mjs:2454` (`githubDefault`) | The default branch is read from the REST API. |
-| `main.mjs:2468-2475` (`branchPr`) | `gh pr list --head`. |
-| `main.mjs:4335-4420` (`publishBranch`) | Deploy-key `ensureWritable` (4344), a push to the App or origin URL, then `gh pr view/edit/create --draft` (4399), `https://github.com/.../compare` text. |
-| `main.mjs:1370-1480` (`mergeGithub`) | The merge gate's whole I/O: GraphQL `PR_QUERY`/`COMMIT_QUERY`/`BASE_QUERY`, REST merge (`PUT pulls/n/merge`), update-branch, statuses, Actions re-runs, job logs, annotations. |
-| `main.mjs:923-1040` | The merge queue: reads each PR, turns away a moved head, no checks or red checks. |
-| `main.mjs:1144-1200`, `1245-1320` | The queue step and red-check wakes: `gh pr checks`, Actions failure text (`failedChecks` 1263). |
-| `main.mjs:396-470` | The product repo's open-PR poll (Dependabot, red on a stale base). |
-| `main.mjs:500-600`, `1425` | The design review: a `design-review` commit status on GitHub. |
-| `main.mjs:336-390`, `789-800` | Researcher activity (GraphQL), review-request closing, public-repo lookup. |
-| `main.mjs:1353-1366`, `evalgate.ts:262` | The reviewer-eval gate on product merges (reads `refs/pull/<n>/head`). |
-| `main.mjs:3502-3525` | `create_repo`: `app.createRepo`, card text "a new GitHub repository" (`main.mjs:3515`, `cards.ts:103`). |
-| jobs | A job holds no GitHub token and has no `gh`: Engineers read GitHub through the `github` connection's tools (`github_issue_read`, `github_search_issues`); writes are codehost-github records. |
-| `cards.ts:93,100` | Card sentences: "Push … to GitHub", PR URLs. |
-| `siblings.ts:28-62`, `progress.ts:39-41`, `branch.ts:5,96` | Merged-ness, stale PR numbers and branch names are judged from GitHub reads. |
-| `config.mjs:23-39,56-84` | `githubSlug`, the agents org `aidenhq-<instance_name>`, the App key and admin PAT paths. |
-
 ### Modules
 
 | Where | What assumes GitHub |
@@ -73,7 +48,6 @@ Line numbers are at product `26a5bd5e` and modules `b2b31f1` (`modules/` is the 
 | `kernel/src/kinds.ts:27` | `runner.merge` args require `url` = `https://github.com/<repo>/pull/<n>`. |
 | `kinds.ts:76` (`urlRepo`) | Parses only that URL form; anything else is refused ("a PR's URL names another repository"). |
 | `kinds.ts:83-105` (`runnerFacts`) | One `agentsOrg`; floor 0 only inside it. |
-| `services/runner/src/tiers.mjs:50` | An unknown product repo, instance repo or agents org goes to Tier 2. |
 | `kernel/src/tier.ts:145-172` | Content keys are branch shas and PR heads. Already host-neutral. |
 | `kernel/src/writes.ts:186,271` | Carried `runner.push`/`runner.pr` records; the stale-record text says "GitHub has no branch and no PR". |
 | `scripts/compiler/bindings.ts:17-20` | `codehost` is neither reserved nor a slot, so a plain `provides: [codehost]` works today. |
@@ -136,7 +110,7 @@ jail through `hiding`. `codehost-local` generalises these three pieces.
   through `plan.mjs` and adds no tiering of its own, so the eval-gated path list (`evalgate.ts:42`) stays as it is;
   `modules/codehost-local/` joins the platform check's core paths (`platform/src/check.mjs:72-76,129`).
 - **The agents org per provider:** `local` for `codehost-local`, `aidenhq-<instance_name>` for GitHub. Where code holds
-  one `agentsOrg` today (`plan.mjs`, `kinds.ts runnerFacts`, `tiers.mjs:50`, `apps-mcp checkOrg`), it takes the list of
+  one `agentsOrg` today (`plan.mjs`, `kinds.ts runnerFacts`, `apps-mcp checkOrg`), it takes the list of
   the enabled providers' orgs.
 
 ## 3. Repos on the server
@@ -311,8 +285,7 @@ Then:
   `hiding` with the eval sandbox's config, and how long a starter app's `npm ci && test && build` takes there.
 - Tier 0 records: confirm the board lists their card and diff after the fact (approval cards are shown; Tier 0 runs may
   show only in activity).
-- `landOnMain` on a bare file remote: confirm the fetch, push and one retry behave as on GitHub (tests in
-  `services/runner/test/land.test.mjs` use local remotes already).
+- `landOnMain` on a bare file remote: confirm the fetch, push and one retry behave as on GitHub.
 - The gitleaks binary on the host: confirm `ops/vm/setup.sh` can pin it by sha256 within the supply-chain rules.
 
 ## 9. Decided (owner, 2026-11-17)
@@ -334,7 +307,7 @@ reviewer-eval files: the reviewer eval (paid key, on the server) must pass (at l
 |---|---|---|---|---|---|
 | 1 | modules | **Role.** `provides: [codehost]` on `codehost-github`; `engineering` and `design` require `codehost`; their `github` grants become optional; `codehost-github/src/host.mjs` wraps today's code behind the §2 interface; an empty `codehost-local` module (not in the bundle). | – | `codehost-github`: `host.mjs` returns today's sources and default branch for a GitHub slug. | no |
 | 2 | modules | **Tiering.** `plan.mjs`: the agents org becomes a list; new rule `local-merge` (Tier 1); existing rules and reasons byte-identical. The §11 cases in `ai-reviewer/test/reviewer-cases/`. | 1 | `codehost-github/test` plan: a `local/*` merge is `local-merge` Tier 1; a GitHub agents-org merge is still `agents-org-merge`. | **yes** (`plan.mjs`, cases) |
-| 3 | product | **Kernel and runner routing.** `kinds.ts` (local URL form, org list), `tiers.mjs:50`, `cards.ts:93,100,103` and `writes.ts:271` wording per host, `hostOf(slug)` at every §1 call site, pin to 1+2. GitHub behaviour unchanged. | 2 | kernel kinds test: a `codehost:local/x/change/3` merge is accepted and its floor is 1; runner card-contract test; the existing runner suites unchanged. | **yes** (`kinds.ts`, `tiers.mjs`, `cards.ts`) |
+| 3 | product | **Kernel routing.** `kinds.ts` (local URL form, org list), `cards.ts:93,100,103` and `writes.ts:271` wording per host, `hostOf(slug)` at every §1 call site, pin to 1+2. GitHub behaviour unchanged. | 2 | kernel kinds test: a `codehost:local/x/change/3` merge is accepted and its floor is 1; runner card-contract test; the existing runner suites unchanged. | **yes** (`kinds.ts`, `tiers.mjs`, `cards.ts`) |
 | 4 | modules | **`codehost-local` core.** Bare repos under the data dir, `createRepo`, `publish`, change refs (open, update, read, diff, close), the checks note read/write, and the CAS squash merge (`landOnMain`). | 1 | `codehost-local/test`, on temp bare repos: create, publish, open change, update it, merge, a moved `main` redone once, a conflict refused, close. | no |
 | 5 | product | **Runner on local repos.** Publishing and change requests through `hostOf`, cards with the diff, checks in the jail after each publish (`tests`, `secrets`), the gitleaks pin in `ops/vm/setup.sh`, red-check wakes, `aidenhq wait`/`status`, merge execution with the three conditions, pin to 4. | 3, 4 | One runner flow test on temp bare repos: create, publish, `pr`, checks green, Tier 1 approval (stubbed reviewer), merge; a moved head refused; a red check wakes the task. | no |
 | 6 | modules + product | **Design-review adapter.** modules: the UI Reviewer's local handbook section and the `design-review` role description. product: the runner files the task for local UI changes, reads the role-holder's verdict comment and writes the note; `launcher.mjs` org list; pin. | 5 | runner flow test: a UI change waits; a `design-review: success <sha>` from the role-holder makes it merge; the same line from another agent or for an old sha does nothing. | no |
@@ -345,7 +318,7 @@ Units 4 and 3 can run in parallel after 2; 6 and 7 in parallel after 5 (7 needs 
 
 ## 11. Reviewer-eval cases (`modules/ai-reviewer/test/reviewer-cases/`)
 
-The `plan.mjs`, `kinds.ts`, `tiers.mjs` and `cards.ts` changes (units 2 and 3) fall under the reviewer-eval rule. Every
+The `plan.mjs`, `kinds.ts` and `cards.ts` changes (units 2 and 3) fall under the reviewer-eval rule. Every
 existing case keeps passing unchanged. Unit 2 adds the first six cases; the two mirror cases come with the mirror's
 own build (§7).
 

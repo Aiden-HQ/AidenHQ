@@ -75,7 +75,7 @@ the owner channel, or an exact typed reply. Each is claimed once and the outcome
 
 **Owner channels.** `channel-telegram` (the Telegram owner bot, always installed) and `slack` (its advanced part: one
 Slack Socket Mode listener) bridge the owner to Aiden. `owner-channel`'s `notify` is the one way a message reaches the owner:
-agents call it, and the kernel, the board and the runner queue theirs at the kernel (`/v1/notify`) for it; it routes each
+agents call it, and the kernel and the board queue theirs at the kernel (`/v1/notify`) for it; it routes each
 message once (dedupe, mutes, digest, retry) to the chat on the board and to a channel's transport (`/v1/notify/send`).
 `chat-lane` (always installed) is the fast chat lane. Approval cards are decided with per-card, per-channel,
 single-use decision tokens that the kernel mints (bound to the card's digest) at `/v1/channel/cards` and
