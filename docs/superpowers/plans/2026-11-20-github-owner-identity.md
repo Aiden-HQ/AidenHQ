@@ -144,8 +144,6 @@ Repo patterns keep today's grammar: `@instance`, `@product`, `@orgs`, `@maintain
 - **Fleet labels on its own issues.** The fleet's triage adds `agent-fix` as the owner's login. It must start a fix, because
   the label event is in our records. The owner adding the same label by hand on GitHub must not. Test: Task 8 `agent-fix:
   recorded label trusted, owner's own not`.
-- **A push without the trailer.** A job commits with `--no-verify`, so the hook doesn't run. Expect plan.ts to reject the
-  push as `missing-trailer` before any SHA binds. Test: Task 2 `push without trailer is rejected`.
 - **The owner's token leaking through an op.** Expect no op's answer, header or error text to contain the token. Test: Task 4
   `no op answer carries the token` (the fake token string is absent from every answer body).
 
@@ -232,8 +230,8 @@ Shared files have an owner per section, so parallel lanes don't collide:
     the trailer;
   - squash merges send `commit_message` ending with the trailer;
   - `GET /aidenhq/v1/identity` (executor key) answers `{name, email}`, or 503 `GitHub isn't connected`.
-- Modify: `modules/github/service/src/plan.ts`. Add a `missing-trailer` REJECT for a push or PR whose new commits lack the
-  trailer. The service reads it from git: a `trailers` fact per branch.
+- No trailer gate in plan.ts (owner decision 2026-11-20, "minimal code gates": the commit-msg hook sets the trailer; the
+  code host doesn't re-enforce it).
 - Modify: `modules/github/service/src/merges.ts` and `pr-watch.ts`:
   - while `!access.connected()`, the queue posts `work.waiting` reason `github` and skips its step;
   - every GitHub call they make passes `{background:true}`;
@@ -274,8 +272,6 @@ Shared files have an owner per section, so parallel lanes don't collide:
 - [ ] **Step 1: Write the failing tests:**
   - `held write resumes on reconnect`: `access.connected()` is false. `execute` of an approved push answers `running`, and
     nothing is pushed. Flip to connected and step once: exactly one push, and `status` answers `done`.
-  - `push without trailer is rejected`: a workspace commit without the trailer plans to REJECT with rule `missing-trailer`.
-    The same commit with the trailer plans as before.
   - `merge queue waits while disconnected`: one queued merge, disconnected. The step emits `work.waiting` reason `github`
     and makes no GitHub call.
   - `author_kind from records and markers`: a PR whose number is `ours` is `agent`; the owner's login without markers is
