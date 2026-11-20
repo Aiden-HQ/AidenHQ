@@ -230,7 +230,7 @@ export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: 
       // deployed by the platform's own auto-deploy rather than by hand. Deep enough that a graded commit hasn't scrolled out.
       deploys: store.recentDeploys(app.name, 20).map(({ sha, at, by, status }) => ({ sha, at, by, status })),
       // Its open PRs' previews (previews.ts): reviewers may open them; nothing depends on them.
-      previews: store.previews().filter((r) => r.app === app.name).map((r) => ({ pr: r.pr, sha: r.sha, state: r.status, url: previewUrl(previewApp(app, r.pr, r.port)) })),
+      previews: store.previews().filter((r) => r.app === app.name).map((r) => ({ pr: r.pr, sha: r.sha, state: r.status, url: previewUrl(previewApp(app, r.pr, r.port)), reason: r.reason ?? undefined })),
       ...(inc ? { incident: { opened_at: inc.opened_at, kind: inc.kind, detail: inc.detail } } : {}),
       ...(stats ? { stats } : {}),
     };
