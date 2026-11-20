@@ -350,7 +350,11 @@ const settingsChange = createSettingsChanges({
   filed: (task) => records.list(["review", "owner", "approved", "claimed", "done", "failed", "rejected", "stale", "cancelled", "unknown"], 50, { task, kinds: ["kernel.apply"] }).some((r) => r.requester.kind === SETTINGS.kind && r.requester.name === SETTINGS.name),
   write: applyHost.codehost.write,
   file: (args, task, requester, owner) => writes.fileKernel("kernel.apply", { args, task, requester: requester ?? SETTINGS, ...(owner ? { owner } : {}) }),
-  sessionAccount: async (token) => { const who = await accounts?.uiSession("board", token); return who?.ready && who.account.role === "admin" ? who.account.id : undefined; },
+  credentialAccount: async (c) => {
+    if ("mcp" in c) return (await accounts?.mcpGrant(c.mcp.token, c.mcp.resource))?.account.id;
+    const who = await accounts?.uiSession("board", c.board);
+    return who?.ready && who.account.role === "admin" ? who.account.id : undefined;
+  },
 });
 // The routing learning loop (routing-tune.ts): the Fleet Steward's typed routing changes, written by the same code host and
 // filed as kernel.apply records with the Steward as their requester.

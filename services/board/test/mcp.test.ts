@@ -146,12 +146,12 @@ describe("mcp end to end", () => {
     expect(failed.content[0].text).toContain("<untrusted-data");
   });
 
-  it("change_settings files a change as the account and says where it stands", async () => {
+  it("change_settings files a change on the account's authority and says where it stands", async () => {
     const { json } = await call("change_settings", { changes: [{ kind: "setting", key: "grading", value: "off" }] });
     expect(json.result.isError).toBeFalsy();
     expect(json.result.structuredContent).toMatchObject({ task: expect.stringMatching(/^WOR-/), record: "k-0000000000000001", tier: 1, state: "review" });
     expect(records.settings.at(-1)!.changes).toEqual([{ kind: "setting", key: "grading", value: "off" }]);
-    expect(records.settings.at(-1)!.session, "an MCP client's change has no board session: the reviewer reads it").toBeUndefined();
+    expect(records.settings.at(-1)!.credential, "the owner's MCP bearer goes to the kernel, which checks it and files the change as his save").toEqual({ mcp: { token, resource: "https://board.example.com/mcp" } });
   });
 
   it("change_settings returns a module's refusal as the field's error", async () => {
