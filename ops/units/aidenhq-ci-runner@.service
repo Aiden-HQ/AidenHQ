@@ -6,7 +6,7 @@ After=network-online.target
 # The product checkout: ~/aidenhq, or where ops/setup.sh recorded it (~/.config/aidenhq-checkout.env).
 Environment=AIDENHQ_DIR=%h/aidenhq
 EnvironmentFile=-%h/.config/aidenhq-checkout.env
-# The vault holds the GitHub App key the token is minted from; the CI network is a system unit (aidenhq-ci-net).
+# The vault holds ci_token, the ci module's key for the kernel's runner_token op; the CI network is a system unit (aidenhq-ci-net).
 ExecStartPre=/usr/bin/mountpoint -q %h/.config/aidenhq
 ExecStartPre=/usr/bin/docker network inspect aidenhq-ci
 ExecStart=/usr/bin/env bash ${AIDENHQ_DIR}/ops/ci-runner.sh %i

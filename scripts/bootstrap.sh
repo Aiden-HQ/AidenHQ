@@ -64,7 +64,6 @@ placeholder paperclip_ops_key ""
 placeholder paperclip_board_key ""   # written by scripts/paperclip-setup.ts; held by the kernel alone (the board goes through it)
 mkdir -p "$AIDENHQ_SECRETS_DIR/modules/google" && chmod 0700 "$AIDENHQ_SECRETS_DIR/modules" "$AIDENHQ_SECRETS_DIR/modules/google"
 placeholder modules/google/google_oauth.json "{}"   # the google module's own vault dir (read-write at its /state)
-placeholder github_token ""      # the user's GitHub token: the github module's setup flow
 placeholder slack_live_app_token ""             # xapp- Socket Mode token
 placeholder slack_live_bot_token ""             # xoxb- bot token, posts DMs to the paired owner
 placeholder telegram_notify_bot_token ""       # BotFather token; the owner's Telegram chat with Aiden, and a channel for notify
@@ -78,8 +77,6 @@ find "$AIDENHQ_SECRETS_DIR" -maxdepth 1 -type f -exec chmod 0600 {} + # files on
 # Modules' own vault dirs (secrets.state: read-write at the service's /state): sign-ins and rotating tokens.
 for m in slack primer glean grafana clickhouse jira; do mkdir -p "$AIDENHQ_SECRETS_DIR/modules/$m" && chmod 0700 "$AIDENHQ_SECRETS_DIR/modules/$m"; done
 mkdir -p "$AIDENHQ_SECRETS_DIR/apps" && chmod 0700 "$AIDENHQ_SECRETS_DIR/apps"   # <app>.env files for apps-mcp
-# The GitHub App's key (docs/setup.md step 8, optional): compose mounts the folder, and Docker can't create it inside the vault.
-mkdir -p "$AIDENHQ_SECRETS_DIR/github-app" && chmod 0700 "$AIDENHQ_SECRETS_DIR/github-app"
 
 # apps-mcp runs as your uid with the docker group (the Docker socket); apps reach the warehouse over a shared network.
 if ! grep -q '^DOCKER_GID=' "$env_file"; then

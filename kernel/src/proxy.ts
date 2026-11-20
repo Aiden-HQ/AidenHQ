@@ -103,7 +103,7 @@ export function createProxy({ whoami, connections, asserter, resolver, secret, w
    * host's health probe. A requester that is an agent's run acts at /v1/cp/agent/* as that agent, with its own key and the run it
    * asked from, while this one call is in flight, as its live call did; any other requester has no control-plane identity.
    */
-  async function callAs(q: Requester, connection: string, tool: string, args: unknown, task?: string): Promise<{ ok: boolean; text: string }> {
+  async function callAs(q: Requester, connection: string, tool: string, args: unknown, task?: string): Promise<{ ok: boolean; text: string; objects?: unknown }> {
     const conn = connections()[connection];
     if (!conn) throw new Error(`no connection ${connection}`);
     const signed = asserter.signCaller({ agent: q.agent, key: q.key, name: q.name, roles: q.roles, ...(task ? { task } : {}), tool: `${connection}.${tool}`, aud: conn.module, kind: q.kind });
@@ -121,9 +121,9 @@ export function createProxy({ whoami, connections, asserter, resolver, secret, w
         out.end(body);
       });
       if (status >= 300) return { ok: false, text: `${connection} answered ${status}: ${text.slice(0, 2000)}` };
-      let ok = true;
-      const answer = mapMessages(text, sse, (m) => { if (m.error || m.result?.isError) ok = false; });
-      return { ok, text: answer };
+      let ok = true, objects: unknown;
+      const answer = mapMessages(text, sse, (m) => { if (m.error || m.result?.isError) ok = false; objects ??= m.result?.structuredContent?._aidenhq?.objects; });
+      return { ok, text: answer, ...(objects !== undefined ? { objects } : {}) };
     } finally {
       asserter.end(signed.jti);
     }
@@ -213,7 +213,8 @@ export function createProxy({ whoami, connections, asserter, resolver, secret, w
     }
     // A conn.tool record's outcome: the module's answer as it came (capped), once.
     let okAnswer = false;
-    const done = (ok: boolean, text: string) => { if (rec) writes!.outcome(rec.id, ok, text.slice(0, 4000)); rec = undefined; };
+    let objects: unknown;
+    const done = (ok: boolean, text: string) => { if (rec) writes!.outcome(rec.id, ok, text.slice(0, 4000), objects); rec = undefined; };
     const headers: Record<string, string> = { "content-length": String(body.length) };
     for (const h of PASS) { const v = req.headers[h]; if (typeof v === "string") headers[h] = v; }
     const key = secret(conn.auth_secret);
@@ -259,7 +260,7 @@ export function createProxy({ whoami, connections, asserter, resolver, secret, w
             try {
               answer = mapMessages(text, sse, (m) => {
               if (method === "tools/list" && Array.isArray(m.result?.tools)) m.result.tools = m.result.tools.filter((t: { name?: unknown }) => allowed.has(String(t?.name)));
-              if (rec && m.id === reqId && !("method" in m)) okAnswer = !m.error && m.result?.isError !== true;
+              if (rec && m.id === reqId && !("method" in m)) { okAnswer = !m.error && m.result?.isError !== true; objects = m.result?.structuredContent?._aidenhq?.objects; }
               if (!fenced) return true;
               if (m.id !== reqId || "method" in m) return false; // notifications and server requests: only the answer passes
               fenceAnswer(m, source(tool));

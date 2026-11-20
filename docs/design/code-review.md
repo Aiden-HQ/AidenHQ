@@ -60,8 +60,8 @@ Config is one authority: the board and Aiden write it through the normal setting
 is his approval (docs/design/settings-changes.md); the Reviewer Manager's change goes to the AI reviewer. Tier 2 (owner) changes, so the
 Reviewer Manager cannot do them alone (`owner:` rules in `module.yaml`): more spend, outside PRs or drafts reviewed
 automatically, a repo in a new org, and any change to a reviewer's model, verifier, finders, `run_usd`, focus or context or to
-a repo's ignore globs. Reviews post as the instance's identity only in orgs the App covers or `settings.github_comment_orgs`
-allows (the owner allows an org on the Reviews page). `always`, `stop` and `focus` are PR state, not config.
+a repo's ignore globs. Reviews post as the owner's GitHub sign-in on any repo it reaches. `always`, `stop` and `focus` are
+PR state, not config.
 
 ## Triggers
 
@@ -106,8 +106,8 @@ Our own markers (`<!-- aidenhq-... -->`) mark every post so the next run and the
 finding is gone on the next run are resolved, only when Aiden posted them (first comment by the posting identity with our
 finding marker); replies are read by the next run.
 
-Identity: the instance's GitHub App bot where it is installed with PR and status write on the repo, else the owner's own GitHub
-sign-in (each post still a Tier 1 write); never another person's account.
+Identity: the owner's own GitHub sign-in, COMMENT reviews only, each text ending with the AidenHQ footer (each post still a
+Tier 1 write); "ours" is a thread whose first comment is in AidenHQ's records (`/v1/objects`) and carries the finding marker.
 
 ## Reviewer Manager
 

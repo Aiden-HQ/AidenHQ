@@ -7,7 +7,7 @@
   "engines": {
     "node": ">=24"
   },
-  "description": "The GitHub code host: workspaces, git, App tokens, push/PR/merge/create_repo/land and the git rules (plan).",
+  "description": "The GitHub code host: workspaces, git on the owner's sign-in, push/PR/merge/create_repo/land and the git rules (plan).",
   "scripts": {
     "test": "node --disable-warning=ExperimentalWarning --test test/*.test.ts"
   }

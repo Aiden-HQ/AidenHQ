@@ -38,7 +38,7 @@ before you run it, and if docs/setup.md and this skill ever disagree, docs/setup
 5. **Sections 4 to 6** (secrets, board sign-in, Paperclip): hand over the human parts, run the Checks.
 6. **Section 7, "Connect your accounts"**: ask which accounts to connect (Google, Telegram, Slack, others). Do the
    chosen subsections only; the unchosen ones are skipped, not failures.
-7. **Section 8, "GitHub App"** and **section 9, "Your first agent"**: optional. Ask whether to do them now.
+7. **Section 8, "GitHub"** and **section 9, "Your first agent"**: optional. Ask whether to do them now.
 8. **Section 10, "Health check"**: run `scripts/healthcheck.sh` and judge it
    by that section's Check text. Finish by reminding the person to delete `~/person.env`.
 
