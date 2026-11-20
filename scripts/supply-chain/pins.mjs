@@ -224,14 +224,16 @@ export async function checkAges({ pins, basePins = [], exceptions = [], date = d
       if (byRelease) {
         const img = parseImage(p.name);
         const prior = basePins.filter((b) => b.kind === "docker" && parseImage(b.name).host === img.host && parseImage(b.name).repo === img.repo);
+        let blocked = false;
         for (const b of prior) {
           const before = await releaseOf(b);
           if (!before || Date.parse(published) <= Date.parse(before)) {
             problems.push(`${label}: could not be dated: a release-dated pin must move forward, but ${b.name} is not older than it (${via}); the registry keeps no push record, so use an owner exception for a downgrade or sideways move`);
+            blocked = true;
             break;
           }
         }
-        if (problems.at(-1)?.startsWith(label)) continue;
+        if (blocked) continue;
       }
       const age = now - Date.parse(published);
       if (age >= 7 * DAY) continue;
