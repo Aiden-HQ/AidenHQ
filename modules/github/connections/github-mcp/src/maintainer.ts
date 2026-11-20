@@ -4,6 +4,7 @@
 // it (the owner's login is an admin, so its labels count); the issue's text or author never decide trust.
 import { GitHubRefused } from "./github.js";
 import { scrubProblems, scrubText } from "./scrub.js";
+import { withFooter } from "./aidenhq-sdk/attribution.js";
 import type { GitHubAccess } from "./client.js";
 import { BUILD_LABEL, FEATURE_LABEL, type MaintainedRepo } from "./aidenhq-sdk/maintained-repos.js";
 
@@ -450,10 +451,10 @@ export class Maintainer {
 
   /**
    * Close as completed or not_planned, or reopen, refusing an untrusted label. A `note` is posted as a comment first, with
-   * the same owner-data scrub as `comment`, and the state changes only once it is posted. A note citing a PR only as a bare
+   * the same owner-data scrub as `comment` and signed by `agent` (the AidenHQ footer), and the state changes only once it is posted. A note citing a PR only as a bare
    * "PR #N" is refused before anything is written: the grader's citation parser doesn't read it.
    */
-  async state(repo: string | undefined, number: number, state: "open" | "closed", reason?: "completed" | "not_planned", note?: string) {
+  async state(repo: string | undefined, number: number, state: "open" | "closed", reason?: "completed" | "not_planned", note?: string, agent = "AidenHQ") {
     const r = this.target(repo);
     if (note !== undefined && state === "open") throw new GitHubRefused("a note is posted only when closing");
     if (note !== undefined) {
@@ -462,11 +463,11 @@ export class Maintainer {
     }
     const text = note === undefined ? undefined : this.scrubbed(r, note);
     await this.assertTrusted(r, number);
-    if (text !== undefined) await this.postComment(r, number, text);
+    const posted = text === undefined ? undefined : await this.postComment(r, number, withFooter(text, agent));
     const body = state === "closed" ? { state, state_reason: reason ?? "completed" } : { state };
     const res = await this.gh.rest("PATCH", `/repos/${r.owner}/${r.name}/issues/${number}`, body);
     if (res.status !== 200) throw new Error(`GitHub refused the state change (${res.status} ${res.body?.message ?? ""})`.trim());
-    return { repo: r.repo, number, state: res.body.state, state_reason: res.body.state_reason ?? null, objects: [this.ref(r, number)] };
+    return { repo: r.repo, number, state: res.body.state, state_reason: res.body.state_reason ?? null, objects: [this.ref(r, number), ...(posted?.objects ?? [])] };
   }
 
   /**

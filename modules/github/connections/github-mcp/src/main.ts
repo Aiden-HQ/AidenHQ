@@ -365,7 +365,7 @@ function buildServer(caller?: Caller): McpServer {
   server.registerTool(
     "github_issue_state",
     {
-      description: `Close a maintained repo's issue as completed or not_planned, or reopen it,. A \`note\` is posted as a comment on the issue before the state change; reopening refuses one. Refused when the issue's current label (${repoLabel}) is untrusted.`,
+      description: `Close a maintained repo's issue as completed or not_planned, or reopen it. A \`note\` is posted as a comment, signed by you (the AidenHQ footer), on the issue before the state change; reopening refuses one. Refused when the issue's current label (${repoLabel}) is untrusted.`,
       inputSchema: {
         repo: appRepo,
         number: appIssue,
@@ -375,7 +375,7 @@ function buildServer(caller?: Caller): McpServer {
       },
       annotations: write,
     },
-    run("github_issue_state", (a: { repo: string; number: number; state: "open" | "closed"; reason?: "completed" | "not_planned"; note?: string }) => maintainer.state(a.repo, a.number, a.state, a.reason, a.note)),
+    run("github_issue_state", (a: { repo: string; number: number; state: "open" | "closed"; reason?: "completed" | "not_planned"; note?: string }) => maintainer.state(a.repo, a.number, a.state, a.reason, a.note, agent)),
   );
   /** A write's outcome in the log: what and where, never content. */
   const logged =
