@@ -248,6 +248,18 @@ export function ownerRaises(key: string, rules: OwnerRule[], dflt: unknown, base
   return [...new Set(out)];
 }
 
+/**
+ * The release the owner's standing authority asks for: the kernel's updater moving the pin along the same source, forward,
+ * while auto-updates are on (both sides; unset is on), to exactly the instance.yaml it verified itself for this base
+ * (`verified`: the planner checked it, never the requester's say-so). Its name, else undefined. The record carries it
+ * (args.release), so the reviewer reads the owner's request for that release, its official modules' authority included.
+ */
+export function standingRelease(base: any, head: any, verified: boolean, back: boolean): string | undefined {
+  const auto = (i: any) => i?.settings?.auto_update !== "off";
+  const ok = verified && base?.release != null && head?.release != null && eq(base.release?.source, head.release?.source) && auto(base) && auto(head) && !back;
+  return ok && typeof head.release.name === "string" ? head.release.name : undefined;
+}
+
 function instanceParts(s: any) {
   const base = parse(s.base?.["instance.yaml"]);
   const head = parse(s.head?.["instance.yaml"]);
@@ -262,9 +274,8 @@ function instanceParts(s: any) {
   // it verified itself for this base (`s.releaseVerified`: the planner checked it, never the requester's say-so). That is the
   // owner's standing authority, so the reviewer's. Any other add or move is the owner's after the reviewer; the module parts
   // above still raise new authority to the owner. Dropping the pin leaves the module parts above to judge.
-  const auto = (i: any) => i.settings?.auto_update !== "off";
   if (keys.includes("release") && head.release != null) {
-    parts.push(s.releaseVerified === true && base.release != null && eq(base.release?.source, head.release?.source) && auto(base) && auto(head) && !s.pin?.back
+    parts.push(standingRelease(base, head, s.releaseVerified === true, Boolean(s.pin?.back))
       ? T(1, "release-pin", "the release updater moves this instance to the next release it verified, while auto-updates are on: the owner's standing authority")
       : OWNER_AFTER_REVIEW("release-pin", "adds or moves the release this instance follows: the owner's authority, unless it is the updater's verified move while auto-updates are on"));
   }
@@ -454,6 +465,17 @@ export function moduleTierState(baseText: string | undefined, headText: string |
   }
 }
 
+/**
+ * What code found, after the diff, for the reviewer (policy 09-module-changes.md): the release the owner's auto-updates ask
+ * for, and every module authority line. The reason names only the first few; the reviewer judges each line.
+ */
+export function reviewerFacts(a: { authority?: string[]; release?: string }): string {
+  return [
+    a.release && `Release update (computed by code): the kernel's updater moves this instance to release ${a.release}, which it verified, while the owner's auto-updates are on: the owner's standing request for this release.`,
+    a.authority?.length && `Module changes (the authority diff, computed by code from the module manifests; owner = new authority):\n${a.authority.join("\n")}`,
+  ].filter(Boolean).join("\n\n");
+}
+
 const AUTHORITY_MAX = 200;
 /** The authority lines an apply's args carry (so its card lists them and its digest covers them), owner changes first, capped. */
 export function authorityArgs(st: { modules?: Record<string, ModuleInput>; marketplaces?: ReturnType<typeof marketplaceChanges> }): { authority?: string[]; ownerRequired?: true } {
@@ -490,7 +512,7 @@ export async function productBump(from: string | undefined, to: string | undefin
 
 /** What an apply plan returns to writes.ts (its executor@1 plan's shape, planned by the kernel itself). */
 export type ApplyPlan = {
-  args: { repo: string; branch: string; sha: string; files: string[]; authority?: string[]; ownerRequired?: true };
+  args: { repo: string; branch: string; sha: string; files: string[]; authority?: string[]; ownerRequired?: true; release?: string };
   targets: { diff: string; content: string }; card: Record<string, string>; paths: { repo: string; files: { path: string }[] }[];
   raise?: { tier: 1 | 2; panel?: boolean; reason?: string; rule?: string; ownerOnly?: true }; review_first?: ReviewFirst;
 };
@@ -568,9 +590,10 @@ export function createApplyPlanner(h: {
     const releaseVerified = !eq(parse(baseI)?.release, parse(headI)?.release) && (await updaterMove(requester, baseI, headI));
     const t = meritOwner(highest(applyParts({ files: c.files, base: c.texts.base, head: c.texts.head, pin: bump ? { forward: bump.forward, back: bump.back } : null, routingTune: Boolean(notes), roles: h.roles(), connections: h.connections(), moduleApps: h.moduleApps(), settingDefs: h.settingDefs?.() ?? {}, byAgent: requester?.kind !== "kernel", ownerStarted: false, trialNoTap: false, releaseVerified, ...st })));
     if (t.reject) throw new Refused(String(t.reason));
-    const details = [notes, c.diff, bump && `${bump.title.replaceAll("`", "")}:\n${bump.log}`, st.remote, c.trial].filter(Boolean).join("\n\n");
+    const release = standingRelease(parse(baseI), parse(headI), releaseVerified, Boolean(bump && bump.back));
+    const full = { repo, branch: a.branch, sha: a.sha, files: c.files, ...authorityArgs(st), ...(release ? { release } : {}) };
+    const details = [notes, c.diff, bump && `${bump.title.replaceAll("`", "")}:\n${bump.log}`, reviewerFacts(full), st.remote, c.trial].filter(Boolean).join("\n\n");
     if (details.length > DETAILS_MAX) throw new Refused(`the change is too large to review (${details.length} characters with the commits and code it brings): split it into smaller ones`);
-    const full = { repo, branch: a.branch, sha: a.sha, files: c.files, ...authorityArgs(st) };
     const card = applyCard(full, details);
     return {
       args: full, targets: { diff: createHash("sha256").update(details).digest("hex"), content: readDigest(c) }, card: card as unknown as Record<string, string>,
