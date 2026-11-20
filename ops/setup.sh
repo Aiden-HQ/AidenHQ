@@ -567,11 +567,11 @@ as_user systemctl --user enable --now --no-block aidenhq-computers
 phase apply
 say "Apply: compile, start, Paperclip (ops/apply-config.sh)"
 PW="$( [ "$DRY" = 1 ] || read_secret paperclip_owner_password)"
-# --retry: setup is the owner's own command, and its contract is "fix the cause and run it again", so a generation an
+# --force: setup is the owner's own command, and its contract is "fix the cause and run it again", so a generation an
 # earlier run of it left failed is applied again rather than held (ops/apply-config-work.sh).
 # An upgrade whose apply fails is back on the release before it (apply's own revert); its pin commit is reverted too, so the
 # instance's main says what runs and no later commit applies the failed release again.
-if ! as_user AIDENHQ_PROGRESS_BASE="$(progress_slice SETUP_PHASES apply)" PAPERCLIP_EMAIL="$OWNER_EMAIL" PAPERCLIP_PASSWORD="$PW" PAPERCLIP_NAME="$OWNER_NAME" bash "$REPO/ops/apply-config.sh" --retry; then
+if ! as_user AIDENHQ_PROGRESS_BASE="$(progress_slice SETUP_PHASES apply)" PAPERCLIP_EMAIL="$OWNER_EMAIL" PAPERCLIP_PASSWORD="$PW" PAPERCLIP_NAME="$OWNER_NAME" bash "$REPO/ops/apply-config.sh" --force; then
   [ -z "$PIN_COMMIT" ] || as_user sh -c 'set -e; t="$(mktemp -d)"; git clone -q "$1" "$t/c"; cd "$t/c"; git revert --no-commit "$2"
     git -c user.name="AidenHQ updates" -c user.email=updates@aidenhq.invalid commit -q -m "update: back from $3 (its apply failed)"; git push -q origin HEAD:main; rm -rf "$t"' _ "$REMOTE" "$PIN_COMMIT" "$AIDENHQ_RELEASE" \
     || echo "!!! the instance still pins $AIDENHQ_RELEASE: revert its last commit ($PIN_COMMIT) in $INST"
@@ -636,7 +636,7 @@ if [ "$PUBLIC" = 1 ] && [ "$DRY" = 0 ]; then
     set_env AIDENHQ_ADMIN_URL "$ADMIN_URL"
     set_env AIDENHQ_LINK_TTL_HOURS ""
     set_env BOARD_GOOGLE_CONNECT 1
-    as_user PAPERCLIP_EMAIL="$OWNER_EMAIL" PAPERCLIP_PASSWORD="$PW" PAPERCLIP_NAME="$OWNER_NAME" bash "$REPO/ops/apply-config.sh" --retry
+    as_user PAPERCLIP_EMAIL="$OWNER_EMAIL" PAPERCLIP_PASSWORD="$PW" PAPERCLIP_NAME="$OWNER_NAME" bash "$REPO/ops/apply-config.sh" --force
     as_user systemctl --user restart aidenhq-kernel
   else say "Public: $BOARD_URL answers with a trusted certificate"; fi
 fi

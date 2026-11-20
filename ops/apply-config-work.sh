@@ -11,12 +11,13 @@
 #     dirs of the modules it touches, their containers stopped (spec §6.4.1); switch (compile, recreate the compose
 #     services that moved, rerun the Paperclip setup); check health; on a failed check, put the snapshot back, re-apply the
 #     last known good generation's product once (--generation) with only the failed move undone on the instance
-#     (revertInstance) and alert. A failed pair is held off until main moves (or --retry).
+#     (revertInstance) and alert. A failed pair is held off until main moves (or --force).
 #     An apply that died before its generation settled (killed, or its shell gone) is finished the same way: when its shell
 #     exits, at the start of the next apply, or at boot (--recover, aidenhq-apply-recover.service).
 # Run it through the entry point (which also checks out the product first, so a product that changed this file takes
 # effect in the same apply):
-#   ops/apply-config.sh [<instance commit sha>] [--retry]      a normal apply; --retry only from the owner's shell
+#   ops/apply-config.sh [<instance commit sha>] [--force]      a normal apply; --force applies a pair again (a held
+#                                                              or already applied one), from the owner's shell
 #   ops/apply-config.sh --generation <n>                       re-apply generation n with the module data it needs (the
 #                                                              auto-revert and ops/rollback.sh run this)
 #   ops/apply-config.sh --recover                              only finish an apply that died (the boot unit runs this)
@@ -29,10 +30,10 @@ main() {
   # Sourced before any checkout: these functions stay whatever a checkout below does to the file.
   . ops/lib/generations.sh
   . ops/lib/progress.sh
-  local want="" retry=0 gen="" recover=0
+  local want="" force=0 gen="" recover=0
   while [ $# -gt 0 ]; do
     case "$1" in
-      --retry) retry=1 ;;
+      --force) force=1 ;;
       --recover) recover=1 ;;
       --generation)
         [ $# -ge 2 ] && [[ "$2" =~ ^[0-9]+$ ]] || { echo "refusing: --generation takes a generation number" >&2; exit 1; }
@@ -43,8 +44,8 @@ main() {
     esac
     shift
   done
-  [ -z "$gen" ] || { [ -z "$want" ] && [ "$retry" = 0 ] && [ "$recover" = 0 ]; } || { echo "refusing: --generation takes no other argument" >&2; exit 1; }
-  [ "$recover" = 0 ] || { [ -z "$want" ] && [ "$retry" = 0 ]; } || { echo "refusing: --recover takes no other argument" >&2; exit 1; }
+  [ -z "$gen" ] || { [ -z "$want" ] && [ "$force" = 0 ] && [ "$recover" = 0 ]; } || { echo "refusing: --generation takes no other argument" >&2; exit 1; }
+  [ "$recover" = 0 ] || { [ -z "$want" ] && [ "$force" = 0 ]; } || { echo "refusing: --recover takes no other argument" >&2; exit 1; }
   set -a; [ -f .env ] && . ./.env; set +a
   # The apply generations (ops/lib/generations.sh), read-only into the board; an older .env predates the variable.
   export AIDENHQ_STATE_DIR="${AIDENHQ_STATE_DIR:-$HOME/.local/state/aidenhq}"
@@ -89,6 +90,14 @@ main() {
   git merge-base --is-ancestor "$product" origin/main || { echo "refusing: product $product is not on origin/main" >&2; exit 1; }
   # The kernel the instance runs: the pin, or its own fork of it (product_fork:) when that descends from the pin.
   product="$(kernelRun "$inst/instance.yaml" "$product")"
+  # Already applied: the last known good generation is this very pair, so there is nothing to do (--force applies it again,
+  # e.g. after a change only this host has: .env, a secret). Nothing is registered or touched.
+  local lkg; lkg="$(genLkg)"
+  if [ "$force" = 0 ] && [ -n "$lkg" ] && [ "$(genGet "$lkg" product)" = "$product" ] && [ "$(genGet "$lkg" instance)" = "$want" ]; then
+    echo "already applied: generation $lkg (product ${product:0:12}, instance ${want:0:12})"
+    echo "apply timing: total $(apply_secs "$apply_t0")s"
+    return 0
+  fi
   # `before` is the product this host last applied in full (a failed apply has moved HEAD without restarting anything, so
   # HEAD alone would hide the change from the retry); a re-exec (below) carries it over, since HEAD has already moved by then.
   local applied="${AIDENHQ_DATA_DIR:-$PWD/data}/applied-product"
@@ -106,7 +115,7 @@ main() {
   if [ -z "${AIDENHQ_APPLY_BEFORE:-}" ] && ! git diff --quiet "$before" "$product" -- ops/apply-config.sh ops/apply-config-work.sh ops/lib/apply-lock.sh ops/lib/generations.sh \
      && grep -q AIDENHQ_APPLY_BEFORE ops/apply-config-work.sh; then
     echo "the apply's scripts changed: running the new ones"
-    local again=("$want"); [ "$retry" = 0 ] || again+=(--retry)
+    local again=("$want"); [ "$force" = 0 ] || again+=(--force)
     AIDENHQ_APPLY_BEFORE="$before" AIDENHQ_APPLY_INST_BEFORE="$inst_before" exec ops/apply-config.sh "${again[@]}"
   fi
   # Entered through the hand-over of a script that predates generations: the instance had already moved, so the commit that
@@ -120,11 +129,11 @@ main() {
   materializeModules || { restoreCheckouts; echo "refusing: the official modules could not be fetched" >&2; exit 1; }
 
   # Held at the last known good: a pair that failed its health check is not applied again until main moves, unless the
-  # owner asks from their shell (--retry; an automated apply never passes it).
+  # owner asks from their shell (--force; an automated apply never passes it).
   local held
-  if [ "$retry" = 0 ] && held="$(genHeld "$product" "$want")"; then
+  if [ "$force" = 0 ] && held="$(genHeld "$product" "$want")"; then
     restoreCheckouts
-    echo "refusing: product ${product:0:12} with instance ${want:0:12} failed its health check as generation $held and was reverted; this host stays on the last known good until the instance's main moves (a fix or a revert), or run ops/apply-config.sh --retry from the owner's shell" >&2
+    echo "refusing: product ${product:0:12} with instance ${want:0:12} failed its health check as generation $held and was reverted; this host stays on the last known good until the instance's main moves (a fix or a revert), or run ops/apply-config.sh --force from the owner's shell" >&2
     exit 1
   fi
   # The first apply with generations: the pair running now is the last known good to come back to. A first install has
