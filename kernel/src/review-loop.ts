@@ -141,19 +141,19 @@ export function taskComments(list: { c: Comment; a: Author }[]): string {
   // Every line break a model may read as one (\r, \v, \f, U+0085, U+2028, U+2029) is a quoted line's end, and every other
   // control or format character goes, so no text starts a line of its own.
   const lines = (s: string) => s.replace(/\r\n?|[\v\f\u0085\u2028\u2029]/g, "\n").replace(/[^\P{Cc}\n\t]|\p{Cf}/gu, "").trim().slice(0, COMMENT_MAX).split("\n").map((l) => `> ${l}`).join("\n");
-  // The owner's short answers, each read against the newest form an agent asked before it (over the whole list, so a form
-  // older than the comments shown still reads them).
+  // The owner's short answers, each read only against a form that is the last agent comment before it (any other agent
+  // comment in between leaves the answer unread), over the whole list so a form older than the comments shown still counts.
   const read = new Map<Comment, string>();
   let form: ReturnType<typeof formOf>;
   for (const { c, a } of list) {
     if (a.who === "owner") { const r = readAnswer(stripHidden(c.body), form); if (r) read.set(c, r); }
-    else form = formOf(String(c.body ?? "")) ?? form;
+    else form = formOf(String(c.body ?? ""));
   }
   const out: string[] = [];
   let size = 0;
   for (const { c, a } of list.slice(-COMMENTS).reverse()) {
     const answer = read.get(c);
-    const one = `${LABEL[a.who]}${a.key ? ` (${a.key})` : ""}, ${String(c.createdAt ?? "").slice(0, 19)}:\n${lines(stripHidden(a.who === "owner" ? c.body : spellQuestions(String(c.body ?? ""))))}${answer ? `\n(code read this answer against the form asked before it: ${lines(answer).slice(2)})` : ""}`;
+    const one = `${LABEL[a.who]}${a.key ? ` (${a.key})` : ""}, ${String(c.createdAt ?? "").slice(0, 19)}:\n${lines(stripHidden(a.who === "owner" ? c.body : spellQuestions(String(c.body ?? ""))))}${answer ? `\n(code matched these letters to the options of the agent's form just before it, in the agent's words: ${lines(answer).slice(2)})` : ""}`;
     if ((size += one.length + 2) > COMMENTS_MAX) break;
     out.unshift(one);
   }
