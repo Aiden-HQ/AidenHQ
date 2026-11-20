@@ -7,7 +7,7 @@
 //
 // Deviations from the spec's sketch, kept until 3b moves review orchestration into the kernel: one dispatch carries the panel
 // (`request.panel`) and the module runs it itself, so the second reviewer is asked only after a first approve, and an unsure
-// first hands its note to the second (both as before); the verdict is today's shape (decision, code, reason, model, second,
+// first hands its note to the second (both as before); the two votes decide (the module's review()); the verdict is today's shape (decision, code, reason, model, second,
 // flag), and `panel_marked` says the first reviewer called the change authority-expanding, so the requester records that on
 // its card before acting on the verdict.
 //
@@ -27,7 +27,7 @@ export interface SourceRecords { where: string; records: Record<string, unknown>
 /** One Tier 1 request as the reviewer reads it. Everything but `card.action`, `card.rule` and `panel` is data an agent or a stranger wrote. */
 export interface ReviewRequest {
   card: ReviewCard; diff: string; files?: Files; chain?: string; siblings?: string; sources?: SourceRecords;
-  requesterModel?: string; panel?: boolean; previous?: string[]; relift?: string;
+  requesterModel?: string; panel?: boolean; previous?: string[];
   /**
    * The task grader's latest verdict that sent the work back, rendered by the kernel from the grading store: each rubric
    * criterion's number and met, and the rubric's own text for an unmet one. Absent: no such verdict or no grading module.
@@ -41,10 +41,10 @@ export interface ReviewRequest {
   component?: string;
 }
 export interface Verdict { decision: "approve" | "reject" | "escalate"; code?: string; reason: string; model: string; second?: string; flag?: boolean; panel_marked?: boolean }
-/** The model's "I can't tell" (a second reviewer decides; both unsure, the request goes back to the agent). */
+/** The model's "I can't tell" (a second reviewer is asked; both unsure, or unsure over missing input, the request goes back to the agent). */
 export const UNSURE = "reviewer_unsure";
 /** The request fields a reviewer reads; anything else in a request (a policy, a model) is dropped. */
-export const REQUEST_FIELDS = ["card", "diff", "files", "chain", "siblings", "sources", "decisions", "requesterModel", "panel", "previous", "relift", "evidence", "grader_note"] as const;
+export const REQUEST_FIELDS = ["card", "diff", "files", "chain", "siblings", "sources", "decisions", "requesterModel", "panel", "previous", "evidence", "grader_note"] as const;
 
 /** The module's reviewer: one request in, one verdict out. `onPanel` records that the change needs a second reviewer. */
 export type Review = (req: ReviewRequest, ctx: { modelToken: string; onPanel: () => Promise<void> }) => Promise<Verdict>;

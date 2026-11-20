@@ -21,7 +21,7 @@ const ok = { content: JSON.stringify({ decision: "approve", reason: "matches the
 const flagged = { content: JSON.stringify({ decision: "approve", reason: "a gate fix as asked", second_review: true }) };
 const no = { content: JSON.stringify({ decision: "reject", reason_code: "gate_change", reason: "it fails open", second_review: true }) };
 
-test("the panel: code's flag or the reviewer's own needs a second family to approve; a split is the owner's", async () => {
+test("the panel: code's flag or the reviewer's own asks a second family; approve + reject goes back to the agent", async () => {
   // Code says authority-expanding: Luna, then GLM (never DeepSeek for a DeepSeek requester, never OpenAI after Luna).
   let r = asker([ok, ok]);
   const both = await review({ card, diff: "+x", policy: "p", requesterModel: "deepseek/deepseek-flash", ask: r.ask, panel: true });
@@ -31,7 +31,8 @@ test("the panel: code's flag or the reviewer's own needs a second family to appr
   // The first reviewer's own flag adds the second reviewer; a missing flag counts as set.
   r = asker([flagged, no]);
   const split = await review({ card, diff: "+x", policy: "p", ask: r.ask });
-  assert.deepEqual([split.decision, split.code], ["escalate", "panel_split"]);
+  assert.deepEqual([split.decision, split.code, split.model], ["reject", "panel_split", GLM]);
+  assert.match(split.reason, /fix what the rejecting one names.*approve \(a gate fix as asked\).*reject \(it fails open\)/);
   r = asker([{ content: JSON.stringify({ decision: "approve", reason: "fine" }) }, ok]);
   assert.equal((await review({ card, diff: "+x", policy: "p", ask: r.ask })).second, GLM, "no flag in the answer: asked anyway");
   // A first reject never needs the second: back to the agent.
@@ -66,51 +67,65 @@ test("a refusal goes to the other model; the model that decided is named", async
   assert.deepEqual(asked, [LUNA, DEEPSEEK]);
 });
 
-test("unsure: a second reviewer may reject with the first's note; its approve or unsure goes back to the agent, never the owner", async () => {
-  const unsure = (reason) => ({ content: JSON.stringify({ decision: "unsure", reason_code: "reviewer_unsure", reason, second_review: false }) });
-  // Unsure twice: rejected (back to the agent) with both notes, decided by the second reviewer (GLM after Luna).
-  let r = asker([unsure("the diff is cut short"), unsure("37 files are missing")]);
+test("two votes (owner, 2026-11-20): approve + unsure approves, unsure + unsure goes back, missing input never approves", async () => {
+  const unsure = (reason, incomplete = false, second = false) => ({ content: JSON.stringify({ decision: "unsure", reason_code: "reviewer_unsure", reason, second_review: second, input_incomplete: incomplete }) });
+  // Unsure twice: rejected (back to the agent) with both notes, decided by the second reviewer (GLM after Luna), never the owner.
+  let r = asker([unsure("the brief contradicts itself"), unsure("37 files are missing", true)]);
   let prompts = [];
   const twice = await review({ card, diff: "+x", policy: "p", requesterModel: "deepseek/deepseek-flash", ask: async (m, p) => (prompts.push(p), r.ask(m)) });
   assert.deepEqual(r.asked, [LUNA, GLM]);
   assert.deepEqual([twice.decision, twice.code, twice.model], ["reject", "reviewer_unsure", GLM]);
-  assert.match(twice.reason, /^Two AI reviewers were unsure; fix the request: .*the diff is cut short.*37 files are missing/);
+  assert.match(twice.reason, /^Two AI reviewers were unsure; fix the request: .*the brief contradicts itself.*37 files are missing/);
+  assert.equal(twice.incomplete, undefined, "the model's flag stays inside the reviewer");
   // The second reviewer reads the first's note, fenced as data; the first never sees one.
   assert.doesNotMatch(prompts[0].user, /FIRST_REVIEWER/);
-  assert.match(prompts[1].user, /<<<FIRST_REVIEWER\nthe diff is cut short\nFIRST_REVIEWER>>>/);
-  // The second's reject decides; its escalate is the owner's; its approve never clears an unsure: back to the agent.
-  r = asker([unsure("no chain"), no]);
+  assert.match(prompts[1].user, /<<<FIRST_REVIEWER\nthe brief contradicts itself\nFIRST_REVIEWER>>>/);
+  // Unsure about the request, then approve: approved, on any card, both reviewers named.
+  for (const panel of [false, true]) {
+    r = asker([unsure("the brief contradicts itself"), ok]);
+    const yes = await review({ card, diff: "+x", policy: "p", panel, ask: r.ask });
+    assert.deepEqual([yes.decision, yes.model, yes.second], ["approve", GLM, LUNA]);
+    assert.match(yes.reason, /unsure.*the brief contradicts itself.*approve.*matches the ask/);
+  }
+  // Approve, then unsure about the request (the panel): approved.
+  r = asker([ok, unsure("the brief contradicts itself")]);
+  const panelYes = await review({ card, diff: "+x", policy: "p", panel: true, ask: r.ask });
+  assert.deepEqual([panelYes.decision, panelYes.model, panelYes.second], ["approve", LUNA, GLM]);
+  // Missing input never counts toward an approval, in either order, and an unanswered flag counts as missing.
+  for (const answers of [[unsure("the diff is cut short", true), ok], [ok, unsure("the diff is cut short", true)], [{ content: JSON.stringify({ decision: "unsure", reason_code: "reviewer_unsure", reason: "cut short" }) }, ok]]) {
+    r = asker(answers);
+    const back = await review({ card, diff: "+x", policy: "p", panel: true, ask: r.ask });
+    assert.deepEqual([back.decision, back.code], ["reject", "reviewer_unsure"]);
+  }
+  // After an unsure the second's reject decides; its escalate is the owner's.
+  r = asker([unsure("no chain", true), no]);
   const rejected = await review({ card, diff: "+x", policy: "p", ask: r.ask });
   assert.deepEqual([rejected.decision, rejected.code, rejected.model], ["reject", "gate_change", GLM]);
-  r = asker([unsure("no chain"), ok]);
-  const yes = await review({ card, diff: "+x", policy: "p", ask: r.ask });
-  assert.deepEqual([yes.decision, yes.code, yes.model], ["reject", "reviewer_unsure", GLM]);
-  r = asker([unsure("no chain"), { content: JSON.stringify({ decision: "escalate", reason_code: "destructive_change", reason: "drops a table", second_review: false }) }]);
+  r = asker([unsure("no chain", true), { content: JSON.stringify({ decision: "escalate", reason_code: "destructive_change", reason: "drops a table", second_review: false }) }]);
   assert.equal((await review({ card, diff: "+x", policy: "p", ask: r.ask })).decision, "escalate");
-  // Unsure twice, a trivially changed request, unsure twice again on the same commits (`relift`): the owner's, both rounds' notes.
-  r = asker([unsure("still cut short"), unsure("still missing")]);
-  const again = await review({ card, diff: "+x", policy: "p", relift: "Two AI reviewers were unsure; fix the request: round one", ask: r.ask });
-  assert.deepEqual([again.decision, again.code], ["escalate", "reviewer_unsure"]);
-  assert.match(again.reason, /Earlier round: .*round one.*This round: .*still cut short.*still missing/);
-  // One approval never passes an authority-expanding card: a split, the owner's.
-  r = asker([unsure("no chain"), ok]);
-  assert.equal((await review({ card, diff: "+x", policy: "p", panel: true, ask: r.ask })).code, "panel_split");
   // A reviewer's own authority-expanding flag is recorded on the card first (couldn't: retried later), and the second is
   // asked as one of two.
-  const flaggedUnsure = { content: JSON.stringify({ decision: "unsure", reason_code: "reviewer_unsure", reason: "cut short", second_review: true }) };
   const marked = [];
   prompts = [];
-  r = asker([flaggedUnsure, ok]);
-  const split = await review({ card, diff: "+x", policy: "p", onPanel: async () => marked.push("panel"), ask: async (m, p) => (prompts.push(p), r.ask(m)) });
-  assert.deepEqual([split.code, marked], ["panel_split", ["panel"]]);
+  r = asker([unsure("cut short", true, true), ok]);
+  const flaggedBack = await review({ card, diff: "+x", policy: "p", onPanel: async () => marked.push("panel"), ask: async (m, p) => (prompts.push(p), r.ask(m)) });
+  assert.deepEqual([flaggedBack.code, marked], ["reviewer_unsure", ["panel"]]);
   assert.match(prompts[1].user, /authority-expanding/);
-  r = asker([flaggedUnsure, ok]);
+  r = asker([unsure("cut short", true, true), ok]);
   const unrecorded = await review({ card, diff: "+x", policy: "p", onPanel: async () => { throw new Error("board down"); }, ask: r.ask });
   assert.deepEqual([unrecorded.code, r.asked.length], ["reviewer_failed", 1]);
   // The second's own flag is recorded too.
   marked.length = 0;
   r = asker([unsure("no chain"), flagged]);
-  assert.deepEqual([(await review({ card, diff: "+x", policy: "p", onPanel: async () => marked.push("panel"), ask: r.ask })).code, marked], ["panel_split", ["panel"]]);
+  assert.deepEqual([(await review({ card, diff: "+x", policy: "p", onPanel: async () => marked.push("panel"), ask: r.ask })).decision, marked], ["approve", ["panel"]]);
+});
+
+test("code lists the files the diff changes, so a reviewer can tell a whole diff from a cut one", async () => {
+  const diff = "diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1,2 +1,2 @@\n-old\n+new\n+more\n--- a sql comment removed\ndiff --git a/b.md b/b.md\nnew file mode 100644\n--- /dev/null\n+++ b/b.md\n@@ -0,0 +1 @@\n+hi";
+  let prompt;
+  await review({ card, diff, policy: "p", ask: async (_m, p) => ((prompt = p), ok) });
+  assert.match(prompt.user, new RegExp(`Code shows the DIFF whole, ${diff.length} characters`));
+  assert.match(prompt.user, /<<<DIFF_FILES\nsrc\/a\.ts \(\+2 -2\)\nb\.md \(\+1 -0\)\nDIFF_FILES>>>/);
 });
 
 test("the reviewer's codes are exactly the shared REVIEW_CODES (services/shared/reason-codes.ts)", () => {

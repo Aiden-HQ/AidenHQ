@@ -23,7 +23,7 @@ import { routeKind } from "./codehost.ts";
 import type { Executor, ReviewContext } from "../sdk/src/executor.ts";
 import { writeRaise, type Inventory } from "./paths.ts";
 import { gateMode } from "./gates.ts";
-import { REVIEW_TRIES, afterReview, capText, codeVerdict, computeTier, failedVerdict, heldInput, requestTargets, shadowed, type Autonomy, type Raise, type ReviewFirst, type ReviewInput, type Cap, type RoutineCap, type Tier, type Verdict } from "./tier.ts";
+import { REVIEW_TRIES, afterReview, capText, codeVerdict, computeTier, failedVerdict, heldInput, requestTargets, shadowed, splitToOwner, type Autonomy, type Raise, type ReviewFirst, type ReviewInput, type Cap, type RoutineCap, type Tier, type Verdict } from "./tier.ts";
 
 export type Schema = { type?: string; properties?: { [k: string]: Schema }; required?: string[]; additionalProperties?: boolean; enum?: unknown[]; pattern?: string; minLength?: number; maxLength?: number; items?: Schema; minItems?: number; maxItems?: number; minimum?: number; maximum?: number; exclusiveMinimum?: number };
 /** One kind (config/kernel/writes.json and kinds.ts, keyed `<module>.<kind>`); `tools` are `connection.tool`. */
@@ -74,7 +74,9 @@ export function validate(s: Schema, v: unknown, at = "args"): void {
 }
 
 /** Card text from the kind's templates over args, facts and the planner's card values: {{name}} only, printable, capped. */
-export function render(t: Partial<Card>, values: { [k: string]: unknown }, detailsMax = 80_000): Card {
+/** A card's details cap: a reviewed card's details over it are refused at filing (prepare), never cut. */
+const DETAILS_MAX = 80_000;
+export function render(t: Partial<Card>, values: { [k: string]: unknown }, detailsMax = DETAILS_MAX): Card {
   const val = (k: string) => { const v = values[k]; return v == null ? "" : typeof v === "string" ? v : JSON.stringify(v); };
   const one = (s: string | undefined, max: number, keepLines = false) => String(s ?? "").replace(/\{\{\s*([\w.]+)\s*\}\}/g, (_, k) => val(k)).replace(/[\p{Cc}\p{Cf}]/gu, (c) => (keepLines && (c === "\n" || c === "\t") ? c : " ")).slice(0, max);
   return { sentence: one(t.sentence, 300), changes: one(t.changes, 8000, true), reads: one(t.reads, 1000), cost: one(t.cost, 300), details: one(t.details, detailsMax, true), ...(t.target !== undefined ? { target: one(t.target, 500) } : {}) };
@@ -228,7 +230,8 @@ export function createWrites({ records, registry, connections, secret, resolver,
     if (k.args) validate(k.args, plan.args);
     const targets = plan.targets ?? {};
     // The kernel's planner writes its card whole; a module's kind renders its manifest's templates.
-    const card = render(own ? literal(plan.card ?? {}) : k.card ?? {}, { ...(plan.args && typeof plan.args === "object" ? plan.args : {}), ...plan.facts, ...plan.card });
+    const whole = render(own ? literal(plan.card ?? {}) : k.card ?? {}, { ...(plan.args && typeof plan.args === "object" ? plan.args : {}), ...plan.facts, ...plan.card }, Infinity);
+    const card = { ...whole, details: whole.details.slice(0, DETAILS_MAX) };
     // A job's record names its workspace (its task's identifier, from the job's row): where the code host reads its commits.
     const base = { kind, module: k.module, args: plan.args, targets, executor, policy: policy(k), card, requester, task, ...(workspace ? { identifier: workspace } : {}) };
     if (plan.satisfied) return { base, satisfied: String(plan.satisfied.evidence) };
@@ -240,6 +243,8 @@ export function createWrites({ records, registry, connections, secret, resolver,
     // The reason and rule shown: the strictest raise, the plan's on a tie.
     const weight = (r: Raise | undefined) => (r ? r.tier * 4 + (r.ownerOnly ? 2 : 0) + (r.panel ? 1 : 0) : 0);
     const top = checkRaises.reduce<Raise | undefined>((a, b) => (weight(b) > weight(a) ? b : a), raise);
+    // A reviewer reads a reviewed card's details whole or not at all: one past the cap is refused, never cut.
+    if (t.tier > 0 && whole.details.length > DETAILS_MAX) throw fail(413, "too_large", `the change is too large to review (${whole.details.length} characters, over ${DETAILS_MAX}): split it into smaller changes`);
     return { base, filed: { ...base, card: { ...card, reason: (t.rule ? capText(t.cap!) : top?.reason)?.slice(0, 300) ?? "" }, tier: t.tier, merit: t.merit, panel: t.panel, review_first: t.reviewFirst, rule: t.rule ?? top?.rule ?? null, cap: t.cap ?? null, state: t.state, ...(t.tier > 0 && plan.review ? { context: plan.review } : {}) } };
   }
 
@@ -577,7 +582,7 @@ export function createWrites({ records, registry, connections, secret, resolver,
         const model = typeof b.input?.model === "string" && MODEL.test(b.input.model) ? b.input.model : "kernel/code";
         // The cap is the record's, as it was tiered at filing: the label of a capped approve never depends on a second trace.
         const input = heldInput({ ...(b.input ?? { tier: 1 }), cap: r.cap ?? null }, r.review_first);
-        let v = codeVerdict(input, model) ?? afterReview(input, await ask(r, b.request ?? {}, model));
+        let v = codeVerdict(input, model) ?? afterReview(input, splitToOwner(input, await ask(r, b.request ?? {}, model)));
         if (v.code === "reviewer_failed") {
           const n = (wait?.n ?? 0) + 1;
           if (n < REVIEW_TRIES) {
