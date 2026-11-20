@@ -8,7 +8,7 @@
 //   kernel/sdk/src/kernel-client.ts  the module-to-kernel client, in each module that calls the kernel
 //   kernel/sdk/src/checks.ts         how check results are read, in the merge gate (codehost-github) and the grader
 //   kernel/sdk/src/paperclip.ts      the one Paperclip HTTP client (lanes through the kernel, or direct), in the board, tasks-mcp and ops-mcp
-//   kernel/sdk/src/maintained-repos.ts  maintainer_repos and its per-repo duties, in github-mcp (src/aidenhq-sdk/)
+//   kernel/sdk/src/maintained-repos.ts  maintainer_repos and its per-repo duties, in github-mcp and the code host (src/aidenhq-sdk/)
 //   kernel/sdk/src/pin-owner.ts      who moves the product pin, in the code host's release train (the kernel's updater imports it)
 //   kernel/sdk/src/judge.ts          the judges' models, cross-family choice and model call, in the reviewer and grading services
 //   services/shared/review-files.ts  the changed files as the reviewer reads them, in the reviewer module's service
@@ -76,8 +76,8 @@ export function sharedCopies(root = repo) {
   "kernel/sdk/src/judge.ts": ["modules/ai-reviewer/service/src/aidenhq-sdk/judge.ts", "modules/grading/service/src/aidenhq-sdk/judge.ts"],
   // How GitHub check results are read: the merge gate, the PR watcher and the grader.
   "kernel/sdk/src/checks.ts": ["modules/github/service/src/aidenhq-sdk/checks.ts", "modules/grading/service/src/aidenhq-sdk/checks.ts"],
-  // The one parser of maintainer_repos (per-repo duties): github-mcp's Maintainer tools and watcher read.
-  "kernel/sdk/src/maintained-repos.ts": ["modules/github/connections/github-mcp/src/aidenhq-sdk/maintained-repos.ts"],
+  // The one parser of maintainer_repos (per-repo duties): github-mcp's Maintainer tools and the code host's PR watch read.
+  "kernel/sdk/src/maintained-repos.ts": ["modules/github/connections/github-mcp/src/aidenhq-sdk/maintained-repos.ts", "modules/github/service/src/aidenhq-sdk/maintained-repos.ts"],
   // Code churn: the code host's churn pass and backfill (codehost-local calls the original from the kernel).
   "kernel/sdk/src/churn.ts": ["modules/github/service/src/aidenhq-sdk/churn.ts"],
   // Who moves the product pin: the kernel's updater and the code host's release train ask this one function.

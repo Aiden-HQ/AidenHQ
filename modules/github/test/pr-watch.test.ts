@@ -32,7 +32,7 @@ test("a Dependabot PR becomes one task once its checks finish and closes with it
     return { status: 404, body: {} };
   };
   const cacheDir = mkdtempSync(join(tmpdir(), "pr-watch-"));
-  const watch = startPrWatch({ repo: "acme/app", kernelUrl: kernel.url, key: "k", cacheDir, app: { token: async () => "tok" }, gh });
+  const watch = startPrWatch({ repos: [{ repo: "acme/app", duties: "all" }], kernelUrl: kernel.url, key: "k", cacheDir, app: { token: async () => "tok" }, gh });
   t.after(() => watch.stop());
   const made = () => calls.filter((c) => c.url === "/v1/tasks");
   const wakes = () => calls.filter((c) => c.url === "/v1/wakes");
@@ -80,7 +80,7 @@ test("an agent's green mergeable PR wakes its task to merge once per head", asyn
     ? { status: 200, body: { data: { repository: { defaultBranchRef: { name: "main", target: { oid: "m1", statusCheckRollup: checks("SUCCESS") } }, pullRequests: { nodes: open } } } } }
     : { status: 404, body: {} };
   const cacheDir = mkdtempSync(join(tmpdir(), "pr-watch-"));
-  const watch = startPrWatch({ repo: "acme/app", kernelUrl: kernel.url, key: "k", cacheDir, app: { token: async () => "tok" }, gh });
+  const watch = startPrWatch({ repos: [{ repo: "acme/app", duties: "all" }], kernelUrl: kernel.url, key: "k", cacheDir, app: { token: async () => "tok" }, gh });
   t.after(() => watch.stop());
   notePrTask(cacheDir, "https://github.com/acme/app/pull/5", { task: "ACME-5", branch: "b5" });
   const agent = { author: { __typename: "Bot", login: "aidenhq" } };
@@ -120,7 +120,7 @@ async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name:
     return { status: 200, body: {} };
   };
   const cacheDir = mkdtempSync(join(tmpdir(), "pr-watch-"));
-  const watch = startPrWatch({ repo: "acme/app", kernelUrl: kernel.url, key: "k", cacheDir, app: { token: async () => "tok" }, gh: api });
+  const watch = startPrWatch({ repos: [{ repo: "acme/app", duties: "all" }], kernelUrl: kernel.url, key: "k", cacheDir, app: { token: async () => "tok" }, gh: api });
   t.after(() => watch.stop());
   const agentPr = (n, o = {}) => { notePrTask(cacheDir, `https://github.com/acme/app/pull/${n}`, { task: `ACME-${n}`, branch: `b${n}` }); return pr(n, { author: { __typename: "Bot", login: "aidenhq" }, ...o }); };
   return { woke, gh, watch, cacheDir, agentPr, set: (v) => { open = v; }, behind: (v) => { behind = v; update = 422; } };
@@ -140,7 +140,7 @@ test("a cancelled task's PR is closed with its branch once; a done task's unmerg
   const old = new Date(Date.now() - 31 * 60_000).toISOString();
   const e = await rig(t, { taskStatus: "done", records: [{ kind: "github.merge", state: "claimed", args: { prs: [{ repo: "acme/app", number: 3, head: "h3" }] } }] });
   e.set([e.agentPr(2), e.agentPr(3)]);
-  writeFileSync(join(e.cacheDir, "pr-watch.json"), JSON.stringify({ headAt: { "https://github.com/acme/app/pull/2": { head: "h2", at: old }, "https://github.com/acme/app/pull/3": { head: "h3", at: old } } }));
+  writeFileSync(join(e.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": { headAt: { "https://github.com/acme/app/pull/2": { head: "h2", at: old }, "https://github.com/acme/app/pull/3": { head: "h3", at: old } } } }));
   await e.watch.tick(); await e.watch.tick();
   assert.equal(e.gh.filter((g) => g === "PATCH /repos/acme/app/pulls/2").length, 1, "done, unmerged and old: closed once");
   assert.ok(e.gh.includes("DELETE /repos/acme/app/git/refs/heads/b2"));
@@ -155,7 +155,7 @@ test("an agent PR red on its own head wakes its task once per head, and no PR ge
   assert.match(c.woke[0].text, /pull\/3's checks failed at `h3`: `gh pr checks https:\/\/github.com\/acme\/app\/pull\/3` lists the failures/);
   const capped = await rig(t);
   capped.set([capped.agentPr(8, redPr(8))]);
-  writeFileSync(join(capped.cacheDir, "pr-watch.json"), JSON.stringify({ wakes: { "https://github.com/acme/app/pull/8": { head: "h8", n: 3 } } }));
+  writeFileSync(join(capped.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": { wakes: { "https://github.com/acme/app/pull/8": { head: "h8", n: 3 } } } }));
   await capped.watch.tick();
   assert.equal(capped.woke.length, 0, "three wakes at this head: no more");
 });
@@ -201,33 +201,6 @@ test("a cancelled task's PR whose close GitHub refused is closed on the next tic
   await c.watch.tick();
   assert.equal(c.gh.filter((g) => g === "PATCH /repos/acme/app/pulls/4").length, 2);
   assert.ok(c.gh.includes("DELETE /repos/acme/app/git/refs/heads/b4"));
-});
-
-test("a Dependabot PR beyond a full page of open PRs keeps its task until GitHub says it is closed", async (t) => {
-  const closes = [];
-  const kernel = await listen(async (req, res) => {
-    let body = "";
-    for await (const c of req) body += c;
-    if (req.url === "/v1/tasks") return res.writeHead(200).end(JSON.stringify({ id: "t-10", identifier: "ACME-10" }));
-    if (req.url.endsWith("/close")) closes.push(req.url);
-    res.writeHead(200).end("{}");
-  });
-  t.after(() => kernel.s.close());
-  let open = [pr(10)], state10 = "open";
-  const gh = async (m, path) => {
-    if (path === "/graphql") return { status: 200, body: { data: { repository: { defaultBranchRef: { name: "main", target: { oid: "m1", statusCheckRollup: checks("SUCCESS") } }, pullRequests: { nodes: open } } } } };
-    if (path === "/repos/acme/app/pulls/10") return { status: 200, body: { state: state10 } };
-    return { status: 404, body: {} };
-  };
-  const watch = startPrWatch({ repo: "acme/app", kernelUrl: kernel.url, key: "k", cacheDir: mkdtempSync(join(tmpdir(), "pr-watch-")), app: { token: async () => "tok" }, gh });
-  t.after(() => watch.stop());
-  await watch.tick();
-  open = Array.from({ length: 50 }, (_, i) => pr(100 + i, { author: { __typename: "User", login: "dev" } })); // #10 is past the page
-  await watch.tick();
-  assert.deepEqual(closes, [], "still open on GitHub: its task stays");
-  state10 = "closed";
-  await watch.tick();
-  assert.deepEqual(closes, ["/v1/tasks/t-10/close"]);
 });
 
 test("the CI breaker: a check red again on a new head, or a third red round, tells the asker once and stops the red wakes; green resets it", async (t) => {
@@ -288,7 +261,7 @@ test("a red policy whose title now passes is re-run in place once; a still-red t
     }
     return { status: 200, body: {} };
   };
-  const watch = startPrWatch({ repo: "acme/app", kernelUrl: kernel.url, key: "k", cacheDir: mkdtempSync(join(tmpdir(), "pr-watch-")), app: { token: async () => "tok" }, gh });
+  const watch = startPrWatch({ repos: [{ repo: "acme/app", duties: "all" }], kernelUrl: kernel.url, key: "k", cacheDir: mkdtempSync(join(tmpdir(), "pr-watch-")), app: { token: async () => "tok" }, gh });
   t.after(() => watch.stop());
   const policyRed = (n, o = {}) => pr(n, {
     author: { __typename: "User", login: "dev" }, title,
@@ -332,4 +305,64 @@ test("a red policy whose title now passes is re-run in place once; a still-red t
   ] } } } }] } })];
   await watch.tick(); await watch.tick();
   assert.equal(ghCalls.filter((c) => c === "POST /repos/acme/app/actions/runs/502/rerun-failed-jobs").length, 0, "a red age/pin step: left alone");
+});
+
+// Several repos in one watch, against a fake GitHub that serves each repo's open PRs (in pages of 50) and a fake kernel.
+async function multi(t, repos, open) {
+  const tasks = [], closes = [], gh = [];
+  const kernel = await listen(async (req, res) => {
+    let body = "";
+    for await (const c of req) body += c;
+    if (req.url === "/v1/tasks") { tasks.push(JSON.parse(body)); return res.writeHead(200).end(JSON.stringify({ id: `id-${tasks.length}`, identifier: `T-${tasks.length}` })); }
+    if (req.url.endsWith("/close")) closes.push(req.url);
+    res.writeHead(200).end("{}");
+  });
+  t.after(() => kernel.s.close());
+  const api = async (method, path, token, body) => {
+    gh.push(`${method} ${path}`);
+    if (path === "/graphql") {
+      const prs = open[`${body.variables.owner}/${body.variables.repo}`] ?? [];
+      const from = Number(body.variables.after ?? 0);
+      return { status: 200, body: { data: { repository: { defaultBranchRef: { name: "main", target: { oid: "m1", statusCheckRollup: checks("SUCCESS") } }, pullRequests: { pageInfo: { hasNextPage: from + 50 < prs.length, endCursor: String(from + 50) }, nodes: prs.slice(from, from + 50) } } } } };
+    }
+    return { status: 404, body: {} };
+  };
+  const cacheDir = mkdtempSync(join(tmpdir(), "pr-watch-"));
+  const watch = startPrWatch({ repos, kernelUrl: kernel.url, key: "k", cacheDir, app: { token: async () => "tok" }, gh: api });
+  t.after(() => watch.stop());
+  return { watch, tasks, closes, gh, cacheDir };
+}
+const dep = (repo, n, o = {}) => pr(n, { url: `https://github.com/${repo}/pull/${n}`, ...o });
+const both = [{ repo: "acme/app", duties: "all" }, { repo: "other/lib", duties: "dependabot" }];
+
+test("two repos: closing repo A's PR leaves repo B's dependabot task", async (t) => {
+  const open = { "acme/app": [dep("acme/app", 1)], "other/lib": [dep("other/lib", 1)] };
+  const m = await multi(t, both, open);
+  await m.watch.tick();
+  assert.deepEqual(m.tasks.map((x) => x.source), ["dependabot:acme/app/1", "dependabot:other/lib/1"]);
+  open["acme/app"] = [];
+  await m.watch.tick();
+  assert.deepEqual(m.closes, ["/v1/tasks/id-1/close"], "only repo A's task closes");
+});
+
+test("a dependabot-only repo gets no CI rerun and no branch cleanup", async (t) => {
+  const stuck = dep("other/lib", 2, { author: { __typename: "Bot", login: "aidenhq" }, commits: { nodes: [{ commit: { statusCheckRollup: redChecks() } }] } });
+  const m = await multi(t, [{ repo: "other/lib", duties: "dependabot" }], { "other/lib": [stuck] });
+  notePrTask(m.cacheDir, stuck.url, { task: "T-9", branch: "b2" });
+  await m.watch.tick();
+  assert.ok(!m.gh.some((g) => g !== "POST /graphql"), `only the PR list is read: ${m.gh}`);
+});
+
+test("a Dependabot PR with no checks is filed", async (t) => {
+  const none = dep("acme/app", 3, { commits: { nodes: [{ commit: { statusCheckRollup: null } }] } });
+  const m = await multi(t, [{ repo: "acme/app", duties: "all" }], { "acme/app": [none] });
+  await m.watch.tick();
+  assert.equal(m.tasks.length, 1);
+});
+
+test("more than 50 open PRs are all seen", async (t) => {
+  const prs = Array.from({ length: 60 }, (_, i) => dep("acme/app", i + 1));
+  const m = await multi(t, [{ repo: "acme/app", duties: "all" }], { "acme/app": prs });
+  await m.watch.tick();
+  assert.equal(m.tasks.length, 60);
 });

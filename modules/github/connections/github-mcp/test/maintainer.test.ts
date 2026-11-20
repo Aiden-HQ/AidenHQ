@@ -328,6 +328,13 @@ it("a close's note citing a PR as owner/name#number or its /pull/ URL is accepte
   expect(f.posted.filter((p) => p.path.endsWith("/comments"))).toHaveLength(3);
 });
 
+it("a quiet PR (no fix label) closes as not_planned with the close note, through the issues endpoint", async () => {
+  const f = fake({ issues: [{ number: 9, updated_at: "2026-01-01T00:00:00Z", labels: [], pr: true }] });
+  const note = "Closed for inactivity. Reopen it if you pick it back up. If the change is still wanted, [file an issue](https://github.com/acme/product/issues/new) describing it, and the Maintainer will triage it like any report.";
+  expect(await maintainer(f).state(PRODUCT, 9, "closed", "not_planned", note)).toMatchObject({ number: 9, state: "closed", state_reason: "not_planned" });
+  expect(f.posted.map((p) => p.path)).toEqual([`/repos/${PRODUCT}/issues/9/comments`, `/repos/${PRODUCT}/issues/9`]);
+});
+
 it("a reopen carrying a note is refused, since a note is posted only when closing", async () => {
   const f = fake({ issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z" }], timelines: { 1: [labeled("acme-bot[bot]", "2026-01-01T00:00:00Z", APP)] } });
   await expect(maintainer(f).state(PRODUCT, 1, "open", undefined, "reopened after the revert")).rejects.toThrow(/only when closing/);

@@ -4,13 +4,15 @@
 //   TASKS_DIR               the job workspaces (work/tasks); absent: push, pr and clone fail, saying so
 //   CACHE_DIR               the bare cache clones (its data dir)
 //   AGENTS_ORG, INSTANCE_REPO, PRODUCT_REPO
+//   GITHUB_MAINTAINER_REPOS the maintained repos (setting maintainer_repos): those with dependabot on get the PR watch's Dependabot duty
 //   OWNER_NAME              who the design reviewer's task says approved a merge that doesn't wait for it
-// Its loops start here: the merge queue, the release train, the product repo's PR watch, the design reviews' sweep and the
+// Its loops start here: the merge queue, the release train, the PR watch, the design reviews' sweep and the
 // reviewed refs' tidying.
 import { existsSync, readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { join } from "node:path";
-import { appClient } from "./github-app.ts";
+import { appClient, inOrg } from "./github-app.ts";
+import { parseRepos } from "./aidenhq-sdk/maintained-repos.ts";
 import { createService } from "./service.ts";
 import { startPrWatch } from "./pr-watch.ts";
 import { startTidy } from "./tidy.ts";
@@ -46,8 +48,15 @@ handle.startReleases();
 handle.startDesignReviews();
 handle.startFlow();
 startTidy({ cacheDir, log });
-// The product repo's PRs (Dependabot's tasks, an agent's PR that conflicts): only with the App and the product repo set.
-if (app && env.PRODUCT_REPO) startPrWatch({ repo: env.PRODUCT_REPO, kernelUrl: env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130", key, cacheDir, app, gh, log, flow: handle.flow });
+// The fleet's own PRs (the product repo; Dependabot's tasks, an agent's PR that conflicts) and the Dependabot PRs of every maintained
+// repo with dependabot on: only with the App and the product repo set. A maintained repo in the agents org is the fleet's own.
+if (app && env.PRODUCT_REPO) {
+  const repos = new Map<string, "all" | "dependabot">([[env.PRODUCT_REPO, "all"]]);
+  for (const m of parseRepos(env.GITHUB_MAINTAINER_REPOS ?? "")) {
+    if (m.dependabot && !repos.has(m.repo)) repos.set(m.repo, inOrg(agentsOrg, m.repo) ? "all" : "dependabot");
+  }
+  startPrWatch({ repos: [...repos].map(([repo, duties]) => ({ repo, duties })), kernelUrl: env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130", key, cacheDir, app, gh, log, flow: handle.flow });
+}
 const server = createServer((req, res) => void handle(req, res));
 server.listen(Number(env.PORT ?? 8100), "0.0.0.0");
 for (const sig of ["SIGTERM", "SIGINT"] as const) process.on(sig, () => server.close(() => process.exit(0)));

@@ -225,11 +225,11 @@ waiting on the author (the red check, the requested change, the conflict, or tha
 ## A close task
 
 The watcher files it when a nudged PR stayed quiet. Read `github_app_pr_list` again first: a PR whose author acted since the
-nudge, or that has a review requested, stays open, and the task finishes saying why. Otherwise post the closing note with
-`github_app_issue_comment`, verbatim: "Closed for inactivity. Reopen it if you pick it back up. If the change is still
-wanted, [file an issue](https://github.com/<owner>/<name>/issues/new) describing it, and the Maintainer will triage it like
-any report." Then close the PR through the code host's close, which an Engineer runs (`aidenhq close <PR link>`):
-delegate it with the PR link and finish when it reports the PR closed.
+nudge, or that has a review requested, stays open, and the task finishes saying why. Otherwise close the PR yourself with
+`github_app_issue_state` (a PR is an issue on GitHub's API): `state` `closed`, `reason` `not_planned`, and as its `note`,
+verbatim: "Closed for inactivity. Reopen it if you pick it back up. If the change is still wanted,
+[file an issue](https://github.com/<owner>/<name>/issues/new) describing it, and the Maintainer will triage it like any
+report." The note is posted and the PR closed in one reviewed call; finish the task when it reports the PR closed.
 
 ## When a fix is out of scope
 
