@@ -56,6 +56,8 @@
 .ui-status > i { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--faint); }
 .ui-status-word { overflow: hidden; text-overflow: ellipsis; }
 .ui-status-working > i, .ui-status-ok > i { background: var(--working); }
+.ui-status-working > i { animation: ui-breathe 2.4s var(--ease) infinite; }
+@keyframes ui-breathe { 0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--working) 45%, transparent); } 60% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--working) 0%, transparent); } }
 .ui-status-ok { color: var(--ok-text); }
 .ui-status-needs > i { background: var(--warn); }
 .ui-status-needs { color: var(--warn-text); }
@@ -80,17 +82,21 @@ a.ui-tag { text-decoration: none; }
 a.ui-tag:hover { color: var(--text); border-color: var(--border-strong); }
 
 /* ------------------------------------------------------------ buttons (Button.tsx; the classes work on <a> too) */
-.btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 5px 11px; border-radius: var(--radius-md); border: 1px solid var(--border); background: var(--surface); color: var(--text); text-decoration: none; cursor: pointer; white-space: nowrap; box-shadow: var(--shadow); transition: background-color var(--fast) var(--ease), border-color var(--fast) var(--ease), color var(--fast) var(--ease), box-shadow var(--fast) var(--ease), filter var(--fast) var(--ease); }
+.btn { position: relative; display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 5px 11px; border-radius: var(--radius-md); border: 1px solid var(--border); background: var(--surface); color: var(--text); text-decoration: none; cursor: pointer; white-space: nowrap; box-shadow: var(--shadow); transition: background-color var(--fast) var(--ease), border-color var(--fast) var(--ease), color var(--fast) var(--ease), box-shadow var(--fast) var(--ease), filter var(--fast) var(--ease), transform var(--instant) var(--ease); }
+.btn:active:not(:disabled) { transform: scale(0.97); transition-duration: 60ms; }
 .btn:hover { border-color: var(--border-strong); }
-.btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.btn:focus-visible { outline: none; box-shadow: var(--ring); }
 .btn:disabled { opacity: 0.55; cursor: default; }
 .btn.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
 .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
-.btn.primary:hover:not(:disabled) { filter: brightness(1.08); box-shadow: 0 2px 10px color-mix(in srgb, var(--accent) 35%, transparent); }
+.btn.primary { box-shadow: inset 0 1px 0 color-mix(in srgb, var(--on-solid) 18%, transparent), 0 1px 2px color-mix(in srgb, var(--accent) 30%, transparent); }
+.btn.primary:hover:not(:disabled) { filter: brightness(1.08); box-shadow: inset 0 1px 0 color-mix(in srgb, var(--on-solid) 18%, transparent), 0 3px 12px color-mix(in srgb, var(--accent) 35%, transparent); }
+.btn.primary:focus-visible { box-shadow: var(--ring); }
 .btn.danger { color: var(--danger); box-shadow: none; }
 .btn.danger:hover { border-color: color-mix(in srgb, var(--danger) 50%, var(--border)); background: color-mix(in srgb, var(--danger) 7%, var(--surface)); }
 .btn.quiet { background: transparent; border-color: transparent; box-shadow: none; color: var(--muted); }
 .btn.quiet:hover { background: var(--hover); color: var(--text); }
+.btn.quiet:active:not(:disabled) { background: var(--pressed); }
 .btn.sm { padding: 3px 9px; font-size: var(--text-xs); border-radius: 6px; }
 
 /* ------------------------------------------------------------ choosing */
@@ -165,7 +171,10 @@ a.ui-tag:hover { color: var(--text); border-color: var(--border-strong); }
 .ui-dialog { width: min(520px, calc(100vw - 32px)); max-height: calc(100dvh - 48px); padding: 0; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); color: var(--text); box-shadow: var(--shadow-lg); }
 .ui-dialog.wide { width: min(720px, calc(100vw - 32px)); }
 .ui-dialog::backdrop { background: var(--scrim); }
-.ui-dialog[open] { animation: ui-pop var(--fast) var(--ease); }
+.ui-dialog[open] { animation: ui-dialog-in var(--medium) var(--ease-out); }
+.ui-dialog[open]::backdrop { animation: ui-fade var(--medium) var(--ease-out); }
+@keyframes ui-dialog-in { from { opacity: 0; transform: translateY(6px) scale(0.98); } }
+@keyframes ui-fade { from { opacity: 0; } }
 .ui-dialog-body { display: grid; gap: 14px; padding: 20px 22px 22px; }
 .ui-dialog-head { display: flex; align-items: flex-start; gap: 12px; }
 .ui-dialog-head h2 { flex: 1; margin: 0; font-size: var(--text-xl); font-weight: 600; letter-spacing: -0.01em; }
@@ -179,7 +188,8 @@ a.ui-tag:hover { color: var(--text); border-color: var(--border-strong); }
 .ui-menu-list button { text-align: left; border: 0; background: none; padding: 7px 10px; border-radius: 6px; cursor: pointer; font-size: var(--text-md); }
 .ui-menu-list button:hover, .ui-menu-list button:focus-visible { background: var(--hover); outline: none; }
 .ui-menu-list button.danger { color: var(--bad-text); }
-@keyframes ui-pop { from { opacity: 0; transform: translateY(-3px); } }
+@keyframes ui-pop { from { opacity: 0; transform: translateY(-4px) scale(0.98); } }
+.ui-menu-list { transform-origin: top right; }
 
 /* ------------------------------------------------------------ lists and tiles */
 /* List rows (ListRow.tsx): status, title, id, from, time. */
@@ -187,6 +197,7 @@ a.ui-tag:hover { color: var(--text); border-color: var(--border-strong); }
 .ui-row { display: grid; grid-template-columns: 7.5rem minmax(0, 1fr) auto 3.25rem; align-content: center; align-items: center; column-gap: 14px; padding: 0 14px; min-height: clamp(40px, 0.6vw + 32px, 48px); font-size: var(--text-row); border-top: 1px solid var(--border); color: inherit; text-decoration: none; transition: background-color var(--fast) var(--ease); }
 .ui-row:first-child { border-top: 0; }
 .ui-row:hover { background: var(--hover); }
+.ui-row:active { background: var(--pressed); }
 .ui-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 4px; }
 .ui-row-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
 .ui-row-meta { display: flex; gap: 12px; justify-content: flex-end; font-size: 0.88em; color: var(--muted); white-space: nowrap; }
@@ -205,8 +216,9 @@ a.ui-tag:hover { color: var(--text); border-color: var(--border-strong); }
 /* Tiles (Tile.tsx): a grid that adds columns as the screen grows; each tile one link, its action raised above it. */
 .ui-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr)); gap: 12px; }
 .ui-mono { flex: none; display: inline-grid; place-items: center; border-radius: var(--radius-md); background: var(--tone-bg); color: var(--tone-fg); font-weight: 700; letter-spacing: -0.01em; line-height: 1; }
-.ui-tile { position: relative; display: flex; flex-direction: column; gap: 8px; min-width: 0; padding: 14px 14px 12px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); transition: border-color var(--fast) var(--ease), box-shadow var(--fast) var(--ease); }
-.ui-tile:hover { border-color: color-mix(in srgb, var(--hue, var(--accent)) 40%, var(--border)); box-shadow: var(--shadow), var(--shadow-hover); }
+.ui-tile { position: relative; will-change: transform; display: flex; flex-direction: column; gap: 8px; min-width: 0; padding: 14px 14px 12px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); transition: border-color var(--fast) var(--ease), box-shadow var(--fast) var(--ease), transform var(--fast) var(--ease-out); }
+.ui-tile:hover { border-color: color-mix(in srgb, var(--hue, var(--accent)) 40%, var(--border)); box-shadow: var(--shadow), var(--shadow-hover); transform: translateY(-1px); }
+.ui-tile:active { transform: translateY(0); transition-duration: 60ms; }
 .ui-tile:has(.ui-tile-title a:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
 .ui-tile-needs { border-color: color-mix(in srgb, var(--warn) 45%, var(--border)); }
 .ui-tile-failed { border-color: color-mix(in srgb, var(--urgent) 40%, var(--border)); }
@@ -249,7 +261,8 @@ a.ui-tag:hover { color: var(--text); border-color: var(--border-strong); }
 .ui-meter.needs > i { background: var(--warn); }
 .ui-meter.failed > i { background: var(--urgent); }
 
+/* Reduced motion: every transition and animation on the board, the page's own included, becomes instant. */
 @media (prefers-reduced-motion: reduce) {
-  .ui-tile, .ui-seg button, .btn, .ui-switch, .ui-switch::after { transition: none; }
-  .ui-menu-list, .ui-dialog[open], .ui-status-busy > i { animation: none; }
+  *, *::before, *::after { animation-duration: 1ms !important; animation-iteration-count: 1 !important; transition-duration: 1ms !important; scroll-behavior: auto !important; }
+  ::view-transition-group(*), ::view-transition-old(*), ::view-transition-new(*) { animation: none !important; }
 }

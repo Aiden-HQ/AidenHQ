@@ -53,3 +53,17 @@ An item's page (agent, module, app) adds `crumb`, `face` and `status` to its `Pa
 - No class the kit replaced (`web/legacy-classes.json`, each with what to use instead), in `className` or as a CSS rule.
 
 A new token goes in `tokens.css` as `light-dark(light, dark)`, so both themes and `[data-theme]` subtrees work.
+
+## Dark mode and motion
+
+Dark mode is OLED black: the page is `#000`, cards and panels lift on dark-grey surfaces with a faint top highlight
+(`--lift`), and status and accent colours are saturated enough to read on black. Motion uses the tokens in `tokens.css`
+(`--instant` 90ms for presses, `--fast` 160ms for hovers, `--medium` 220ms for things arriving, `--ease-out` in,
+`--ease-in` out); every control shows `--ring` on keyboard focus. `prefers-reduced-motion` makes every transition and
+animation instant (`ui.css`), so a page needs no reduced-motion rule of its own.
+
+## Working on the UI without an instance
+
+`node web/dev/mock-api.mjs` answers the board's reads on :3120 with neutral fixtures, and `npm run dev:web` serves the
+UI against it on :5173. `GET /__mock?welcome=1` shows the first-run wizard, `?empty=1` empties the lists, `?slow=800`
+delays every answer (loading states).

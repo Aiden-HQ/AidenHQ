@@ -8,36 +8,37 @@
 
 :root {
   /* Surfaces: a warm paper page, white cards, a slightly sunk column. */
-  --bg: light-dark(#f6f5f2, #111215);
-  --col: light-dark(#efeee9, #16171b);
-  --surface: light-dark(#ffffff, #1c1d22);
-  --surface-2: light-dark(#faf9f7, #22232a);
-  --border: light-dark(#e4e2dc, #2b2d34);
-  --border-strong: light-dark(#d3d0c8, #3b3d46);
-  --hover: light-dark(rgba(29, 28, 26, 0.045), rgba(255, 255, 255, 0.045));
-  --scrim: light-dark(rgba(20, 19, 17, 0.32), rgba(0, 0, 0, 0.55));
+  --bg: light-dark(#f6f5f2, #000000);
+  --col: light-dark(#efeee9, #0a0a0c);
+  --surface: light-dark(#ffffff, #121216);
+  --surface-2: light-dark(#faf9f7, #19191e);
+  --border: light-dark(#e4e2dc, #26262d);
+  --border-strong: light-dark(#d3d0c8, #3a3a44);
+  --hover: light-dark(rgba(29, 28, 26, 0.045), rgba(255, 255, 255, 0.06));
+  --pressed: light-dark(rgba(29, 28, 26, 0.08), rgba(255, 255, 255, 0.1));
+  --scrim: light-dark(rgba(20, 19, 17, 0.32), rgba(0, 0, 0, 0.7));
 
   /* Ink. */
-  --text: light-dark(#1d1c1a, #ececf0);
-  --muted: light-dark(#6e6b64, #a4a6b0);
-  --faint: light-dark(#9a968d, #737682);
+  --text: light-dark(#1d1c1a, #f5f5f7);
+  --muted: light-dark(#6e6b64, #b4b6c2);
+  --faint: light-dark(#8a867d, #8b8e9b);
   --on-solid: #ffffff; /* text on a saturated fill (danger button, priority chip) */
   --knob: #ffffff; /* a switch's knob */
 
   /* Accent: indigo, for the primary action, focus and links. */
-  --accent: light-dark(#3b5bdb, #7c9bff);
-  --accent-soft: light-dark(#e7ecfc, #222b4d);
-  --accent-text: light-dark(#ffffff, #0c1024);
+  --accent: light-dark(#3b5bdb, #8099ff);
+  --accent-soft: light-dark(#e7ecfc, #18214a);
+  --accent-text: light-dark(#ffffff, #050817);
 
   /* Status. One vocabulary (ui/StatusDot.tsx): working/ok = green, needs you = amber, failed = red, idle = grey. */
-  --working: light-dark(#2f9e44, #3fbf62);
-  --ok-text: light-dark(#237a35, #6fd98b);
-  --warn: light-dark(#e8a400, #f0b429);
-  --warn-text: light-dark(#8a5d00, #f5c95c);
+  --working: light-dark(#2f9e44, #34d36b);
+  --ok-text: light-dark(#237a35, #5ce58a);
+  --warn: light-dark(#e8a400, #ffb81f);
+  --warn-text: light-dark(#8a5d00, #ffd060);
   --needs-text: var(--warn-text);
-  --urgent: light-dark(#e03131, #ff6b6b);
-  --bad-text: light-dark(#c92a2a, #ff8787);
-  --danger: light-dark(#d6336c, #f06595);
+  --urgent: light-dark(#e03131, #ff5757);
+  --bad-text: light-dark(#c92a2a, #ff8a8a);
+  --danger: light-dark(#d6336c, #ff5c9d);
   --high: #e8590c;
   --low: light-dark(#b5b1a8, #5c5a55);
   --on-warn: #2b1e00;
@@ -82,7 +83,7 @@
   --series-0: var(--cost-s1); --series-1: var(--cost-s2); --series-2: var(--cost-s3); --series-3: var(--cost-s4);
   --series-4: var(--cost-s5); --series-5: light-dark(#4d5b75, #8a9bb8); --series-6: var(--cost-s6); --series-7: light-dark(#e34948, #e66767);
   --heat: light-dark(#e8590c, #ff922b); /* the PR table's sequential tint: slower cells are warmer */
-  --hatch: light-dark(rgba(255, 255, 255, 0.62), rgba(17, 18, 21, 0.55));
+  --hatch: light-dark(rgba(255, 255, 255, 0.62), rgba(0, 0, 0, 0.55));
 
   /* Code review severities (Reviews.tsx), as GitHub shows them: important red, nit amber, pre-existing violet. */
   --sev-important: light-dark(#e03131, #ff6b6b);
@@ -93,7 +94,7 @@
   --strip-warn-bg: light-dark(#fff3bf, #3d3410); --strip-warn-fg: light-dark(#5c4400, #f5e3a3);
   --strip-bad-bg: light-dark(#ffe3e3, #3d1518); --strip-bad-fg: light-dark(#7a1414, #f5c2c2);
   --strip-ok-bg: light-dark(#d3f9d8, #13361b); --strip-ok-fg: light-dark(#1b4d24, #b2f2bb);
-  --toast-bg: light-dark(#1d1c1a, #ececea); --toast-fg: light-dark(#f6f5f2, #121214); --toast-link: light-dark(#9db1ff, #3b5bdb);
+  --toast-bg: light-dark(#1d1c1a, #f5f5f7); --toast-fg: light-dark(#f6f5f2, #0a0a0c); --toast-link: light-dark(#9db1ff, #3b5bdb);
   --diff-add: rgba(34, 197, 94, 0.15); --diff-del: rgba(239, 68, 68, 0.15);
 
   /* Type: one family; a fixed small scale for dense UI, fluid steps from body size up. */
@@ -125,15 +126,24 @@
   --radius: 10px; /* cards, rows, tiles */
   --radius-lg: 14px; /* dialogs */
 
-  /* Elevation. */
-  --shadow: 0 1px 2px light-dark(rgba(29, 28, 26, 0.06), rgba(0, 0, 0, 0.4)), 0 1px 1px light-dark(rgba(29, 28, 26, 0.04), rgba(0, 0, 0, 0));
-  --shadow-hover: 0 4px 14px light-dark(rgba(29, 28, 26, 0.06), rgba(0, 0, 0, 0.35));
-  --shadow-lg: 0 12px 32px light-dark(rgba(29, 28, 26, 0.16), rgba(0, 0, 0, 0.55)), 0 2px 6px light-dark(rgba(29, 28, 26, 0.08), rgba(0, 0, 0, 0.3));
+  /* Elevation. On black a shadow can't show, so dark surfaces lift with a faint top highlight instead. */
+  --lift: inset 0 1px 0 light-dark(rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.045));
+  --shadow: 0 1px 2px light-dark(rgba(29, 28, 26, 0.06), rgba(0, 0, 0, 0)), 0 1px 1px light-dark(rgba(29, 28, 26, 0.04), rgba(0, 0, 0, 0)), var(--lift);
+  --shadow-hover: 0 6px 18px light-dark(rgba(29, 28, 26, 0.08), rgba(0, 0, 0, 0)), 0 0 0 1px light-dark(rgba(29, 28, 26, 0), rgba(255, 255, 255, 0.06));
+  --shadow-lg: 0 16px 40px light-dark(rgba(29, 28, 26, 0.16), rgba(0, 0, 0, 0.8)), 0 2px 6px light-dark(rgba(29, 28, 26, 0.08), rgba(0, 0, 0, 0.5)), 0 0 0 1px light-dark(rgba(29, 28, 26, 0), rgba(255, 255, 255, 0.08));
   --shadow-knob: 0 1px 2px rgba(0, 0, 0, 0.25);
+  /* The focus ring: one look for every control. */
+  --ring: 0 0 0 2px var(--bg), 0 0 0 4px color-mix(in srgb, var(--accent) 70%, transparent);
 
-  /* Motion: quick, and only in answer to an action. */
+  /* Motion: quick, and mostly in answer to an action. Exits are faster than entrances. */
   --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1); /* things arriving */
+  --ease-in: cubic-bezier(0.4, 0, 1, 1); /* things leaving */
+  --ease-spring: cubic-bezier(0.34, 1.4, 0.64, 1); /* a small overshoot, for a pressed control settling */
+  --instant: 90ms;
   --fast: 160ms;
+  --medium: 220ms;
+  --slow: 320ms;
 }
 
 .hue-0 { --hue: var(--hue-0); } .hue-1 { --hue: var(--hue-1); } .hue-2 { --hue: var(--hue-2); } .hue-3 { --hue: var(--hue-3); }
