@@ -9,7 +9,7 @@ COPY tsconfig.json tsconfig.build.json ./
 COPY src ./src
 RUN npm run build && npm prune --omit=dev
 
-FROM docker:29.9.2-cli@sha256:5e6baf67325a79f64ed3bed6863954d5e05d0f3d4e57cbdb14809346814bbfdb AS docker
+FROM docker:29.9.3-cli@sha256:5a7af0dcb0e46c803efe9b45371dd21cb500e5b4453250394ac6f06d49b6e6f1 AS docker
 
 # The compose plugin docker:29.9.2-cli ships is compose v5.6.1, whose x/net v0.58.0 and klauspost/compress v1.20.0 carry
 # GO-2026-6612/6603/6611/6617 and GO-2026-6865; every published compose tag through v5.8.0 still pins those. It is built
