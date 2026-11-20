@@ -7,7 +7,7 @@
 // generations' state dir are temporary, so nothing here reaches a real host. Linux only, like the apply lock it runs under
 // (/proc, flock, stat -c): CI's runners.
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { describe, it as test } from "node:test";
 import { execFile, execFileSync, spawn } from "node:child_process";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -195,6 +195,8 @@ function world() {
   return { d, p1, i1, commitProduct, commitInstance, run, start, sh, gens, head, revertedTo, calls: () => readFileSync(d("calls"), "utf8") };
 }
 
+// Each test builds its own world (temp repos, HOME, state dir, apply lock and env), so they run side by side.
+describe("the apply as one generation", { concurrency: true }, () => {
 test("a first apply seeds the running pair as the last known good, validates, switches and marks itself good", async () => {
   const w = world();
   const r = await w.run();
@@ -521,6 +523,7 @@ test("an apply whose shell is killed mid-compose (SIGTERM) reverts itself on the
   const r = await done;
   assert.notEqual(r.code, 0, r.out);
   reverted(w);
+});
 });
 
 // The host-metrics timer runs the script of the checkout the apply applied, not the one ops/setup.sh recorded at install
