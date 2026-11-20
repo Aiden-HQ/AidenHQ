@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { bridge, parse } from "./helpers.mjs";
 const { TOOL_LIST } = await import("../src/tools.mjs"); // after helpers has set the environment
 
-function world() {
+function world({ trial = false } = {}) {
   const writes = [];
   const tasks = {
     cur: { id: "cur", identifier: "WOR-1", title: "Current", status: "in_progress", assigneeAgentId: "me", createdByAgentId: "boss" },
@@ -13,6 +13,7 @@ function world() {
     w3: { id: "w3", identifier: "WOR-3", title: "Closed", status: "done", assigneeAgentId: "eng" },
     kid: { id: "kid", identifier: "WOR-4", title: "My child", status: "in_progress", assigneeAgentId: "eng", parentId: "cur", createdByAgentId: "me" },
     old: { id: "old", identifier: "WOR-5", title: "My done child", status: "done", assigneeAgentId: "eng", parentId: "cur", createdByAgentId: "me" },
+    sibling: { id: "sibling", identifier: "WOR-7", title: "Child of mine by parent only", status: "in_progress", assigneeAgentId: "eng", parentId: "cur", createdByAgentId: "boss" },
     alien: { id: "alien", identifier: "WOR-6", title: "Not mine", status: "in_progress", assigneeAgentId: "eng", createdByAgentId: "boss" },
   };
   const byRef = (r) => Object.values(tasks).find((t) => t.id === r || t.identifier === r);
@@ -40,7 +41,7 @@ function world() {
       send([]);
     });
   };
-  const { call } = bridge({ handler, agents: { me: { key: "cos" }, eng: { key: "engineer-openrouter" } }, agent: "me", task: "cur" });
+  const { call } = bridge({ handler, agents: { me: { key: "cos", ...(trial ? { trial: true } : {}) }, eng: { key: "engineer-openrouter" } }, agent: "me", task: "cur" });
   return { call, writes };
 }
 
@@ -74,6 +75,18 @@ test("task_finish with issue closes a task the caller holds, refuses another's",
   parse(await call("task_finish", { issue: "WOR-4", comment: "Accepted." }));
   assert.deepEqual(writes, [["PATCH", "kid", { status: "done", comment: "Accepted." }]]);
   assert.match(parse(await call("task_finish", { issue: "WOR-6", comment: "x" })).error, /neither assigned to you nor/);
+  // A child of the current task that someone else created and holds is not the caller's to close or cancel.
+  assert.match(parse(await call("task_finish", { issue: "WOR-7", comment: "x" })).error, /neither assigned to you nor/);
+  assert.match(parse(await call("task_cancel", { issue: "WOR-7", comment: "x" })).error, /neither assigned to you nor/);
+  assert.equal(writes.length, 1);
+});
+
+test("a trial agent finishes only its own task", async () => {
+  const { call, writes } = world({ trial: true });
+  assert.match(parse(await call("task_finish", { issue: "WOR-4", comment: "x" })).error, /in trial/);
+  assert.equal(writes.length, 0);
+  parse(await call("task_finish", { comment: "Done." }));
+  assert.deepEqual(writes, [["PATCH", "cur", { status: "done", comment: "Done." }]]);
 });
 
 test("task_delegate wait blocks the parent on the child", async () => {

@@ -278,7 +278,7 @@ async function requireDelegated(issue) {
 async function requireHeld(issue) {
   const me = (await api("GET", "/api/agents/me")).id;
   const i = await api("GET", `/api/issues/${issueRef(issue)}`);
-  if (i.id !== CURRENT() && i.assigneeAgentId !== me && i.createdByAgentId !== me && !(CURRENT() && i.parentId === CURRENT())) throw new Error("Refused: that task is neither assigned to you nor one you delegated.");
+  if (i.id !== CURRENT() && i.assigneeAgentId !== me && i.createdByAgentId !== me) throw new Error("Refused: that task is neither assigned to you nor one you delegated.");
   return i;
 }
 
@@ -401,7 +401,9 @@ async function refuseMemoryInbox(issue, { librarian = false } = {}) {
   if (memoryInboxes().has(i.id) && !(librarian && grant().roles.includes("librarian"))) throw new Error("Refused: that task is a memory inbox; only memory_note writes there.");
 }
 /** An agent in trial ("draft, don't do") reports only on its own tasks: the current one, or one assigned to it. */
-const TRIAL_OWN_TASK = ["task_comment", "task_handoff", "task_cancel"];
+const TRIAL_OWN_TASK = ["task_comment", "task_handoff", "task_cancel", "task_finish"];
+/** Tools whose `issue` is optional (default: the current task). */
+const ISSUE_OPTIONAL = ["task_cancel", "task_finish"];
 async function requireOwnTask(g, issue) {
   if (!issue) return; // task_cancel without `issue` is the current task
   const i = await api("GET", `/api/issues/${issueRef(issue)}`);
@@ -1605,7 +1607,7 @@ export async function callTool(caller, assertion, name, args) {
       ctx.dir = await directory();
       ctx.company = await companyOf(caller.agent);
       const g = grant();
-      if (g.trial && TRIAL_OWN_TASK.includes(name)) await requireOwnTask(g, name === "task_cancel" ? args?.issue : (args?.issue ?? ""));
+      if (g.trial && TRIAL_OWN_TASK.includes(name)) await requireOwnTask(g, ISSUE_OPTIONAL.includes(name) ? args?.issue : (args?.issue ?? ""));
       const leaked = toolMarkup(args);
       if (leaked) throw new Error(`Refused: \`${leaked}\` holds raw tool-call markup, not words for people. Make that call as a real tool call, and write only the message here.`);
       const result = await tool.run(args ?? {});
