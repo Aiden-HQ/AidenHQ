@@ -91,8 +91,7 @@ verifier that keeps a finding only with a `file:line` it confirmed, then dedupe 
 excluded, `incomplete` reason) and the run's billed cost, bound into the kernel's signed receipt. Incremental runs diff from the
 last reviewed head; force-pushes, retargets and changed guidance reset the baseline; previous findings are rechecked. PR title,
 body, comments and code are fenced as data throughout. The box runs without repo hooks, plugins, shell or network beyond the
-model gateway. Settings accepted by the service are `finders` 1 to 8, but the recipe refuses more than 4 and efforts other than
-low, medium, high, xhigh.
+model gateway. The service accepts what the recipe runs: `finders` 1 to 4, effort minimal, low, medium, high or xhigh.
 
 ## Posting
 

@@ -38,7 +38,7 @@ stages:
   - { name: review, label: Code review, from: review.started, to: review.ended }
 settings:
   # Reviewers are named profiles (any number): engine (codex; claude-code and codegenie when their recipes land), model, effort
-  # (low|medium|high|xhigh|max), finders (1-8), verify, and optionally verifier (a model), context (repo paths), focus, label, and
+  # (minimal|low|medium|high|xhigh), finders (1-4), verify, and optionally verifier (a model), context (repo paths), focus, label, and
   # run_usd (what one run may spend: its reservation and its model token's cap; default $0.50 a finder + $0.50 to verify). A
   # default set to null is switched off. repos: [{ repo: owner/name, on_open: standard, on_push: quick, on_risk: deep (each a
   # reviewer or "off"), drafts: false, forks: manual|auto, month_usd: 50, ignore: [globs], max_nits: 5, per_author_day: 10,
