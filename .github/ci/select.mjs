@@ -92,12 +92,19 @@ async function main() {
     .filter((s) => names.includes(s.name) && (!s.main || env.MAIN))
     .map((s) => {
       const own = runs.find((r) => r.name === s.name) ?? s;
-      return { name: s.name, dir: s.name.split("#")[0], run: own.run, ...(own.job ? { job: own.job } : {}) };
+      return { name: s.name, dir: s.name.split("#")[0], run: own.run, secs: s.secs ?? 5, ...(own.job ? { job: own.job } : {}) };
     });
-  // The official modules' suites (job "modules"), dealt into at most 3 shards in map order.
-  const mods = tests.filter((t) => t.job === "modules");
-  const shards = [0, 1, 2].map((i) => ({ shard: i + 1, entries: mods.filter((_, j) => j % 3 === i).map((t) => ({ dir: t.dir, run: t.run })) })).filter((x) => x.entries.length);
-  process.stdout.write(`${JSON.stringify({ tests, packages: tests.some((t) => !t.job), modules: shards })}\n`);
+  // The official modules' suites (job "modules"), heaviest first (`secs` in the map, 5 when unlisted) into the lightest of at
+  // most 3 shards.
+  const mods = tests.filter((t) => t.job === "modules").sort((x, y) => y.secs - x.secs || x.name.localeCompare(y.name));
+  const shards = [0, 1, 2].map((i) => ({ shard: i + 1, load: 0, entries: [] }));
+  for (const m of mods) {
+    const s = shards.reduce((lo, x) => (x.load < lo.load ? x : lo));
+    s.load += m.secs;
+    s.entries.push({ dir: m.dir, run: m.run });
+  }
+  const modules = shards.filter((x) => x.entries.length).map(({ shard, entries }) => ({ shard, entries }));
+  process.stdout.write(`${JSON.stringify({ tests, packages: tests.some((t) => !t.job), modules })}\n`);
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) await main();
