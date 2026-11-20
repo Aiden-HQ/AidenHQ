@@ -10,7 +10,7 @@ import type { NeedsYou } from "./types";
 
 type Item = NeedsYou["items"][number];
 type Which = "needs" | "failed" | "idle";
-const UNEXPLAINED = new Set(["orphaned", "unknown", "history_expired"]);
+const UNEXPLAINED = new Set(["unpolled", "orphaned", "unknown", "history_expired"]);
 const IN: Record<Which, (i: Item) => boolean> = {
   needs: (i) => needsOwner(i.state),
   failed: (i) => i.state.attention.some((a) => a.why === "failed"),

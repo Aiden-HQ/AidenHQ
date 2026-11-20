@@ -53,14 +53,20 @@ export interface GateInfo {
   apps?: Record<string, SharedApp>;
   /** App doors (docs/design/app-doors.md): every exposed app at <name>.<base>, named by browsers with this scheme and port. */
   door?: { base: string; scheme: "http" | "https"; port?: number };
+  /** The module door (docs/design/app-doors.md): its exact origin (the board's host on the door port) → the gate's host for it. */
+  moduleDoors?: Record<string, string>;
 }
 
 export function readGate(file: string): GateInfo | undefined {
   try {
-    const g = JSON.parse(readFileSync(file, "utf8")) as { login?: string; my_apps?: { host?: string }; hosts?: Record<string, { app?: string; default_role?: string }>; previews?: unknown; doors?: { base?: unknown }; origin?: { scheme?: unknown; port?: unknown } };
+    const g = JSON.parse(readFileSync(file, "utf8")) as { login?: string; my_apps?: { host?: string }; hosts?: Record<string, { app?: string; default_role?: string; door?: unknown; origin?: unknown }>; previews?: unknown; doors?: { base?: unknown }; origin?: { scheme?: unknown; port?: unknown } };
     const door = typeof g.doors?.base === "string" && g.doors.base ? { base: g.doors.base.toLowerCase(), scheme: g.origin?.scheme === "http" ? "http" as const : "https" as const, ...(Number.isInteger(g.origin?.port) ? { port: g.origin!.port as number } : {}) } : undefined;
-    const apps = Object.fromEntries(Object.entries(g.hosts ?? {}).map(([host, h]) => [String(h.app), { host: host.toLowerCase(), ...(h.default_role ? { defaultRole: h.default_role } : {}) }]));
-    return { password: g.login === "password", myAppsHost: g.my_apps?.host?.toLowerCase(), appHosts: Object.keys(g.hosts ?? {}).map((h) => h.toLowerCase()), previews: !!g.previews, apps, ...(door ? { door } : {}) };
+    // A module door is a door, not a shared app: never an app host or a shared app, only an origin a door handoff may name.
+    const entries = Object.entries(g.hosts ?? {});
+    const shared = entries.filter(([, h]) => h.door !== true);
+    const moduleDoors = Object.fromEntries(entries.filter(([, h]) => h.door === true && typeof h.origin === "string").map(([host, h]) => [String(h.origin), host.toLowerCase()]));
+    const apps = Object.fromEntries(shared.map(([host, h]) => [String(h.app), { host: host.toLowerCase(), ...(h.default_role ? { defaultRole: h.default_role } : {}) }]));
+    return { password: g.login === "password", myAppsHost: g.my_apps?.host?.toLowerCase(), appHosts: shared.map(([h]) => h.toLowerCase()), previews: !!g.previews, apps, ...(door ? { door } : {}), ...(Object.keys(moduleDoors).length ? { moduleDoors } : {}) };
   } catch {
     return undefined;
   }
@@ -78,10 +84,12 @@ export function isAppHost(g: GateInfo | undefined, host: string): boolean {
 }
 
 /**
- * The app host a door origin names (`<scheme>://<name>.<base>[:<port>]`, exactly, as the gate builds it), or undefined. Only
+ * The app host a door origin names (the module door's exact origin, or `<scheme>://<name>.<base>[:<port>]`, exactly, as the
+ * gate builds it), or undefined. Only
  * the name's shape is checked here; whether that app runs is the gate's to check, as for previews.
  */
 export function doorHost(g: GateInfo | undefined, origin: string): string | undefined {
+  if (g?.moduleDoors && Object.hasOwn(g.moduleDoors, origin)) return g.moduleDoors[origin];
   const d = g?.door;
   if (!d) return undefined;
   const prefix = `${d.scheme}://`, suffix = `.${d.base}${d.port ? `:${d.port}` : ""}`;
@@ -90,8 +98,9 @@ export function doorHost(g: GateInfo | undefined, origin: string): string | unde
   return /^[a-z][a-z0-9-]{1,30}$/.test(name) ? `${name}.${d.base}` : undefined;
 }
 
-/** Every door origin as one CSP source expression (`http://*.localhost:3130`), or undefined without a door. */
-export const doorSource = (g: GateInfo | undefined): string | undefined => (g?.door ? `${g.door.scheme}://*.${g.door.base}${g.door.port ? `:${g.door.port}` : ""}` : undefined);
+/** Every door origin as CSP source expressions (`http://*.localhost:3130`, the module door's origin), or undefined without a door. */
+export const doorSource = (g: GateInfo | undefined): string | undefined =>
+  [...(g?.door ? [`${g.door.scheme}://*.${g.door.base}${g.door.port ? `:${g.door.port}` : ""}`] : []), ...Object.keys(g?.moduleDoors ?? {})].join(" ") || undefined;
 
 const HANDOFF_TTL_MS = 60_000;
 /** The board's MCP endpoint: the resource (RFC 8707) every MCP client's token names. */

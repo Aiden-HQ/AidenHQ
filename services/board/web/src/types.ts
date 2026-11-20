@@ -473,8 +473,8 @@ export interface AppRow {
 export type TaskKind = "done" | "working" | "waiting" | "idle";
 export type TaskReason =
   | "closed" | "cancelled" | "job_running" | "job_queued" | "job_held" | "card_review" | "card_owner" | "owner_wait" | "delegator_wait" | "handback"
-  | "blocked" | "agent_wait" | "module_wait" | "owner_task" | "scheduled" | "chat_turn" | "backlog" | "failed" | "orphaned" | "unknown" | "history_expired";
-export type Attention = { who: "owner" | "agent" | "reviewer"; why: "card" | "owner_wait" | "delegator_wait" | "handback" | "failed" | "stalled_wait" | "orphaned" | "unknown" | "history_expired"; ref: string };
+  | "blocked" | "agent_wait" | "module_wait" | "owner_task" | "scheduled" | "chat_turn" | "backlog" | "failed" | "unpolled" | "orphaned" | "unknown" | "history_expired";
+export type Attention = { who: "owner" | "agent" | "reviewer"; why: "card" | "owner_wait" | "delegator_wait" | "handback" | "failed" | "stalled_wait" | "unpolled" | "orphaned" | "unknown" | "history_expired"; ref: string };
 export interface ShownState {
   task: string;
   identifier: string | null;

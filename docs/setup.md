@@ -325,10 +325,14 @@ apply moves its listener's data and restarts it under the `slack` module.
 
 ### Others (optional)
 
-Glean, Jira, Grafana, ClickHouse and Primer: press Connect on the board (Settings, Connections). GitHub: open its setup
-(`#/setup/github`) and press Connect GitHub (step 8). Primer: see
-[the reference below](#connecting-accounts) and [docs/USAGE.md](USAGE.md#connect-jira). Each one is a
-module you add to `modules:`, plus a sign-in.
+Glean, Jira, Grafana and ClickHouse: press Connect on the board (Settings, Connections). GitHub: open its setup
+(`#/setup/github`) and press Connect GitHub (step 8). See [the reference below](#connecting-accounts) and
+[docs/USAGE.md](USAGE.md#connect-jira). Each one is a module you add to `modules:`, plus a sign-in.
+
+Primer needs nothing: this server runs its own, connected from the first apply, and the documents agents share open at the
+board's address on port 8447 (`https://<board host>:8447`, or `http://localhost:3130` through the SSH tunnel), signed in as
+you are on the board. To use your organization's Primer instead, pick it on its setup page (`#/setup/primer`) and Connect
+([modules/primer/README.md](../modules/primer/README.md)).
 
 ## 8. GitHub (reads, then optionally the code host)
 
@@ -505,7 +509,7 @@ an `ops/setup.sh` host.
 | Google (Calendar, Drive, Gmail) | On an `ops/setup.sh` host: Connect Google on the board. By hand: `scripts/google-auth.sh <client.json>` with a Desktop-app OAuth client, once per account (`--email`, `--primary`). |
 | Slack (read) | Open its setup on the board (`#/setup/slack`): paste the Slack app's Client ID and press Connect. |
 | GitHub | Open its setup on the board (`#/setup/github`), press Connect GitHub and type the code at github.com/login/device. The GitHub App (pushes, PRs, merges) is the same page's advanced part (step 8). |
-| Glean, Jira, Grafana, ClickHouse, Primer | Press Connect on the board (Settings, Connections, or the module's page). Jira, Glean, Grafana and Primer ask for their own address in the same dialog; ClickHouse asks for nothing. Grafana with `grafana_source: local` needs no sign-in. |
+| Glean, Jira, Grafana, ClickHouse, Primer | Press Connect on the board (Settings, Connections, or the module's page). Jira, Glean, Grafana and an organization's Primer (`primer_mode: connect`) ask for their own address in the same dialog; ClickHouse asks for nothing. Grafana with `grafana_source: local` and the self-hosted Primer (the default) need no sign-in. |
 
 Sign-ins started on the board (Glean, Jira, Grafana Cloud, ClickHouse, Primer, HubSpot) return to a loopback address,
 `http://localhost:3121/<id>/callback` (RFC 8252). Press Connect (Settings, Connections, or the module's page), signed in as an
@@ -624,7 +628,7 @@ admin of every shared app. If the gate can't read the file it refuses everyone (
   auth listener on `127.0.0.1:3129`, and never the session or token endpoints. An app host without a session sends the
   visitor to the my-apps host, which (once signed in) gets a one-time code from the board, bound to that app host and
   valid for 60 s and to the browser that started it (a state nonce in a short-lived cookie on the app host); the app
-  host's `/.auth/handoff` redeems it server-side and sets its own host-only `__Host-better-auth.session_token` cookie.
+  host's `/.auth/handoff` redeems it server-side and sets its own host-only `__Host-aidenhq-gate.session` cookie.
   `POST /.auth/sign-out` on an app host revokes that host's session; signing out on the my-apps host revokes all of them. No cookie is shared across hosts, the gate never passes an auth cookie to an
   app and drops any app's attempt to set one, and it checks each session server-side. Only people with an account get in (in `access` mode, anyone the Access policy admits is a member, account or not);
   `share.aud` and `team_domain` become optional, and a host

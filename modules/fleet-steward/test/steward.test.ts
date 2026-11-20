@@ -195,7 +195,7 @@ test("the run check flags three same-category failures on one task in half an ho
   assert.ok(found.includes("a1:repeat:wor-t1") && !found.some((k) => k.includes("t2")), found.join());
 });
 
-test("an orphaned item over 2h trips the stuck rule; a slower stage only logs in observe mode", async () => {
+test("an orphaned item over 2h trips the stuck rule; an unpolled one at once; a slower stage only logs in observe mode", async () => {
   const row = (r) => ({ holder: "ag1", attention: [], idle_wakes: 0, ...r });
   const idle = [
     { task: "a", identifier: "WOR-A", since: minsAgo(180), reason: "orphaned" }, // assigned todo: flagged
@@ -209,6 +209,8 @@ test("an orphaned item over 2h trips the stuck rule; a slower stage only logs in
     { task: "i", identifier: "WOR-I", since: minsAgo(60), reason: "orphaned", idle_wakes: 3 }, // the idle sweep gave up: critical now
     { task: "j", identifier: "WOR-J", since: minsAgo(300), reason: "unknown" }, // its holder's wake aged out: flagged
     { task: "k", identifier: "WOR-K", since: minsAgo(300), reason: "agent_wait" }, // waiting on something recorded
+    { task: "l", identifier: "WOR-L", since: minsAgo(5), reason: "unpolled" }, // no dispatcher runs its agent: raised at once
+    { task: "m", identifier: "WOR-M", since: minsAgo(300), reason: "unpolled", holder: "owner" }, // the owner's: not an agent's
   ].map(row);
   const tasks = {
     a: { id: "a", identifier: "WOR-A", status: "todo", assigneeAgentId: "ag1", updatedAt: minsAgo(180) },
@@ -217,6 +219,8 @@ test("an orphaned item over 2h trips the stuck rule; a slower stage only logs in
     h: { id: "h", identifier: "WOR-H", status: "todo", assigneeUserId: "u1", assigneeAgentId: null, updatedAt: minsAgo(300) },
     i: { id: "i", identifier: "WOR-I", status: "todo", assigneeAgentId: "ag1", updatedAt: minsAgo(60) },
     j: { id: "j", identifier: "WOR-J", status: "todo", assigneeAgentId: "ag1", updatedAt: minsAgo(300) },
+    l: { id: "l", identifier: "WOR-L", status: "todo", assigneeAgentId: "ag1", updatedAt: minsAgo(5) },
+    m: { id: "m", identifier: "WOR-M", status: "todo", assigneeUserId: "u1", assigneeAgentId: null, updatedAt: minsAgo(300) },
   };
   const stage = (p) => ({ name: "review", n: 12, work_p75: p, wait_p75: 0, work_p50: p / 2, waits: {} });
   const logged = [];
@@ -230,7 +234,8 @@ test("an orphaned item over 2h trips the stuck rule; a slower stage only logs in
     call: async (_m, p) => (p.startsWith("/v1/tasks/state?open=1") ? { tasks: idle } : { stages: [stage(p.endsWith(`to=${lastWeek}`) ? 100 : 200)] }),
   };
   const c = checks({ kernel, apps: async () => [], alerts: async () => [], openKeys: () => [], now: () => NOW, log: (m, f) => logged.push([m, f]) });
-  assert.deepEqual((await c.stuck()).map((i) => [i.key, Boolean(i.critical)]), [["a", false], ["g", false], ["i:idle-capped", true], ["j", false]]);
+  assert.deepEqual((await c.stuck()).map((i) => [i.key, Boolean(i.critical)]), [["a", false], ["g", false], ["i:idle-capped", true], ["j", false], ["l:unpolled", false]]);
+  assert.match((await c.stuck()).find((i) => i.key === "l:unpolled").reason, /no enabled dispatcher runs its agent ag1/);
   assert.deepEqual(await c.flow(), [], "observe mode files nothing");
   assert.deepEqual(logged, [["flow.would_file", { stage: "review" }]]);
 });

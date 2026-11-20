@@ -12,13 +12,19 @@ export type StateRead = { as_of: string; tasks: StateRow[]; counts: { needs_you:
 
 const DAY = 864e5;
 const CLOSED = new Set(["done", "cancelled"]);
-const UNEXPLAINED = new Set(["orphaned", "unknown", "history_expired"]);
+const UNEXPLAINED = new Set(["unpolled", "orphaned", "unknown", "history_expired"]);
 const taskOf = (f: FactRow) => f.task ?? (f.subject.startsWith("task:") ? f.subject.slice(5) : null);
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const AGENT_FRESH_MS = 5 * 60_000;
 
-export function createTaskStateRead({ file, stages, agent, now = () => Date.now() }: { file: string; stages: () => Stage[]; agent?: (id: string) => Promise<Agent | undefined>; now?: () => number }) {
+export function createTaskStateRead({ file, stages, agent, polled = () => true, now = () => Date.now() }: {
+  file: string; stages: () => Stage[];
+  agent?: (id: string) => Promise<Agent | undefined>;
+  /** Whether an enabled dispatcher runs this agent (compile's `dispatches`): a held task nobody polls is `unpolled`, not `orphaned`. */
+  polled?: (agent: string) => boolean;
+  now?: () => number;
+}) {
   const db = new DatabaseSync(file, { readOnly: true });
   db.exec("PRAGMA busy_timeout = 5000");
   const row = (r: any): FactRow => ({ ...r, data: JSON.parse(r.data) });
@@ -54,7 +60,7 @@ export function createTaskStateRead({ file, stages, agent, now = () => Date.now(
     for (const id of ids) {
       const fs = byTask.get(id);
       if (!fs?.length) continue;
-      const s = taskState(id, [...fs, ...ctx], t, all);
+      const s = taskState(id, [...fs, ...ctx], t, all, polled);
       const created = fs.find((f) => f.type === "task.created" && f.subject === `task:${id}`);
       const idleWakes = fs.filter((f) => f.type === "wake.opened" && f.data.cause === "idle" && Date.parse(f.at) > t - DAY && Date.parse(f.at) <= t).length;
       out.push({ ...s, task: id, identifier: typeof created?.data.identifier === "string" ? created.data.identifier : null, idle_wakes: idleWakes });

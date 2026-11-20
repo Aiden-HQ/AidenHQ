@@ -901,13 +901,15 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   }
 
   // Shared access: the gate and cloudflared when the instance sets `edge`, else the gate's door (scripts/edge.ts).
-  // Without `edge`, a door on exposure local or public (docs/design/app-doors.md): `door` is the host's public IP and admin URL.
+  // Without `edge`, doors (docs/design/app-doors.md): `door` is the host's public IP, admin URL and board URL.
   // A shared module service is a shared app to the gate (its host, the module's name, its ui_port).
   for (const sh of serviceShares) if ([...instanceApps, ...apps.map((a) => a.name)].includes(sh.name)) fail(`module ${sh.name} shares a service, but an app is already named ${sh.name}`);
   const edge = edgeConfig(settings, [...instanceAppDefs, ...serviceShares], apps, door);
   if (edge) {
     for (const [k, svc] of Object.entries(edge.compose.services)) mergeService(compose.services, k, svc);
     Object.assign(compose.secrets, edge.compose.secrets);
+    // A shared module service's address people open (its share.host, or the module door): links it makes point there.
+    for (const [k, url] of Object.entries<string>(edge.urls)) compose.services[k].environment = { ...compose.services[k].environment, AIDENHQ_APP_URL: url };
   }
   // A module service's names (its key, and the name it declared, which the kernel resolves by label) are its alone: never
   // another module's or a root service's, or a URL could reach the wrong module with this one's key.

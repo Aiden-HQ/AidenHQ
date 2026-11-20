@@ -77,6 +77,20 @@ describe("the board shows the kernel's task state", () => {
     }
   });
 
+  it("a task no dispatcher runs counts as unexplained idle, so the strip names it beside an orphan", async () => {
+    const t = task(98, { identifier: "WOR-98", status: "todo", assigneeAgentId: "fe" });
+    issues.push(t);
+    states.rows.push(row(t.id, { identifier: "WOR-98", reason: "unpolled", holder: "fe", attention: [A("agent", "orphaned", t.id)] }));
+    try {
+      const r = await get("/api/needs-you");
+      expect(r.items.find((i: { identifier: string }) => i.identifier === "WOR-98")?.state).toMatchObject({ kind: "idle", reason: "unpolled" });
+      expect(r.counts.unexplained_idle).toBe(1);
+    } finally {
+      states.rows.pop();
+      issues.pop();
+    }
+  });
+
   it("a chat header shows the kernel's state, not Paperclip's", async () => {
     const c = await get("/api/chats/WOR-1");
     expect(c.state).toMatchObject({ kind: "waiting", reason: "card_owner" });

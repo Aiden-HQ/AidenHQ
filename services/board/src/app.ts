@@ -1449,7 +1449,7 @@ export function createApp(opts: AppOptions): Server {
         const counts = {
           needs_you: rows.filter((r) => has(r, (a) => a.who === "owner")).length,
           failed: rows.filter((r) => has(r, (a) => a.why === "failed")).length,
-          unexplained_idle: rows.filter((r) => has(r, (a) => ["orphaned", "unknown", "history_expired"].includes(a.why))).length,
+          unexplained_idle: rows.filter((r) => has(r, (a) => ["unpolled", "orphaned", "unknown", "history_expired"].includes(a.why))).length,
         };
         // approvals: the Tier 2 cards the owner decides in Approvals.
         return { counts, items, approvals: (await records.list("owner")).length };

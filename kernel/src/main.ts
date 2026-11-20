@@ -138,7 +138,18 @@ const paperclipAgent = async (id: string) => {
   const a = r.json as { name?: string; status?: string };
   return { name: a.name ?? id, terminated: a.status === "terminated" };
 };
-const taskStates = createTaskStateRead({ file: path.join(dataDir, "kernel", "kernel.db"), stages, agent: paperclipAgent });
+// Whether an enabled job dispatcher runs an agent (compile: one module with kernel.jobs dispatches every agent): a held task
+// with none reads `unpolled`, never `orphaned`. The compiled list, not a dispatcher's claim, so a kernel restart doesn't make
+// every idle task look unpolled for the minute before dispatch joins. A holder is an agent key (task-state's
+// `task.assignee_changed.to`); a key no grant maps is left as before (the read names a terminated holder).
+const dispatched = dispatchesFrom(() => (modulesFile().modules ?? {}) as never, () => grantsTable().agents ?? {});
+const polledKey = (holder: string) => {
+  const agents = grantsTable().agents ?? {};
+  const id = Object.keys(agents).find((a) => agents[a]?.key === holder);
+  if (!id) return true;
+  return Object.keys(modulesFile().modules ?? {}).some((m) => dispatched(m, id));
+};
+const taskStates = createTaskStateRead({ file: path.join(dataDir, "kernel", "kernel.db"), stages, agent: paperclipAgent, polled: polledKey });
 // Tasks kernel jobs create (provenance.ts): the routine trace reads them first.
 // The routines the board made for the owner's recurring tasks (cp.ts createBoardCp) hold no cap of their own: "full", so the instance's autonomy decides.
 records.db.exec("CREATE TABLE IF NOT EXISTS board_routines (id TEXT PRIMARY KEY)");

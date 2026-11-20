@@ -2,9 +2,12 @@
 // a bearer, a timeout, JSON in and out. `call` returns the body and throws a KernelError (with the status) on a non-2xx;
 // `raw` returns {status, json} for a caller that reads the status itself; `bytes` returns a GET's raw body. Copied into each
 // module that calls the kernel (scripts/sync-shared.ts).
+/** The kernel's own error body (`error.type`, `error.message`), when it sent one (admission.ts names each refusal). */
+export type KernelRefusal = { type?: string; message?: string };
 export class KernelError extends Error {
   status: number;
-  constructor(status: number, message: string) { super(message); this.status = status; }
+  body?: KernelRefusal;
+  constructor(status: number, message: string, body?: KernelRefusal) { super(message); this.status = status; this.body = body; }
 }
 
 export function kernelClient(url: string, token: string, { timeoutMs = 30_000, fetcher = fetch }: { timeoutMs?: number; fetcher?: typeof fetch } = {}) {
@@ -15,9 +18,11 @@ export function kernelClient(url: string, token: string, { timeoutMs = 30_000, f
     const r = await send(method, path, body, headers);
     return { status: r.status, json: await r.json().catch(() => ({})) };
   };
+  // The kernel answers a refusal as {error: {code, type, message}} (backplane.ts): keep its type and words for the caller.
+  const refusalBody = (j: any): KernelRefusal | undefined => (j?.error && typeof j.error === "object" ? { ...(typeof j.error.type === "string" ? { type: j.error.type } : {}), ...(typeof j.error.message === "string" ? { message: j.error.message } : {}) } : undefined);
   const call = async (method: string, path: string, body?: unknown, headers?: Record<string, string>): Promise<any> => {
     const r = await raw(method, path, body, headers);
-    if (r.status < 200 || r.status >= 300) throw new KernelError(r.status, `kernel ${method} ${path} → ${r.status}: ${JSON.stringify(r.json).slice(0, 200)}`);
+    if (r.status < 200 || r.status >= 300) throw new KernelError(r.status, `kernel ${method} ${path} → ${r.status}: ${JSON.stringify(r.json).slice(0, 200)}`, refusalBody(r.json));
     return r.json;
   };
   return {

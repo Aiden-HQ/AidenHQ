@@ -381,7 +381,7 @@ echo "Exposure"
 # front door is compiled; until then it is closed like local.
 fw="$mode"; [ "$mode" = public ] && ! grep -qx '  caddy:' compose.modules.yaml 2>/dev/null && fw=local
 label="$mode"; [ "$fw" = "$mode" ] || label="$mode, no Caddy yet"
-case "$fw" in public) want="tcp/22 tcp/443 tcp/8446" ;; tailscale) want="tcp/22 udp/41641" ;; *) want="tcp/22" ;; esac
+case "$fw" in public) want="tcp/22 tcp/443 tcp/8446 tcp/8447" ;; tailscale) want="tcp/22 udp/41641" ;; *) want="tcp/22" ;; esac
 nftl() { if [ "$(id -u)" = 0 ]; then nft "$@"; else sudo -n nft "$@"; fi; }
 if [ ! -e /etc/default/aidenhq-public-fw ]; then
   echo "  skip  public firewall: not installed here (AIDENHQ_PUBLIC_IF=none, or no default route when setup ran)"

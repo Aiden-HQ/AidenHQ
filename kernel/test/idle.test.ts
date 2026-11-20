@@ -15,7 +15,7 @@ import { createEscalate, ownerWroteAt } from "../src/escalate.ts";
 const AGENT = "a-1", MIN = 60_000;
 
 /** t1 (agent-held) and t2 (the owner's) each ran one job that stopped at 10:01 with a plain reply, then nothing. */
-function world(t) {
+function world(t, { polls = true } = {}) {
   let clock = Date.parse("2026-11-19T10:00:00Z");
   const iso = (ms) => new Date(ms).toISOString();
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "idle-"));
@@ -44,10 +44,11 @@ function world(t) {
   }
   clock += MIN;
   for (const t of ["t1", "t2"]) add("job.ended", `job:j-${t}`, t, { state: "done" });
-  const state = createTaskStateRead({ file, stages: () => KERNEL_STAGES, now: () => clock });
+  const state = createTaskStateRead({ file, stages: () => KERNEL_STAGES, now: () => clock, polled: () => polls });
   const row = (task) => state.read({ ids: [task] }).tasks[0];
   const wakes = createWakes({ db, facts, owner, post: async () => ({}), now: () => clock, dispatches: { may: (mod, a) => mod === "dispatch" && a === AGENT, agents: () => [AGENT] } });
-  wakes.claim("dispatch"); // the dispatcher joins: its agent's tasks are swept
+  // The dispatcher joins (its agent's tasks are swept); a task whose agent no dispatcher runs never sees one.
+  if (polls) wakes.claim("dispatch");
   const asked = { owner: [], notices: [], chief: [] };
   // Who the task's agent is (roles: ["fleet-admin"] is the chief of staff) and whether the owner is talking to it on the task.
   const who = { roles: [], conversing: false };
@@ -274,4 +275,12 @@ test("the owner wrote on a task: their own comment or the opening of a chat they
   assert.equal(ownerWroteAt(own, [{ body: "[telegram] go on", authorUserId: "o1", createdAt: at("09:00") }, { body: "done", authorAgentId: "a", createdAt: at("10:00") }, { body: "[wake] x <!-- aidenhq-wake -->", authorUserId: "o1", createdAt: at("11:00") }]), Date.parse(at("09:00")));
   assert.equal(ownerWroteAt({ ...own, description: "Heartbeat: eng" }, []), undefined, "no chat marker: a routine's run, a heartbeat, a filed task");
   assert.equal(ownerWroteAt({ ...own, createdByAgentId: "a" }, []), undefined, "an agent's task");
+});
+
+test("a task whose agent no enabled dispatcher polls reads unpolled, and the sweep leaves it alone (it could not be taken)", async (t) => {
+  const w = world(t, { polls: false });
+  w.tick(20 * MIN);
+  assert.equal(w.row("t1").reason, "unpolled", "the state names why nothing runs it, never orphaned");
+  assert.deepEqual(await w.idle.sweep(), [], "the sweep leaves it alone: its wake would never be taken");
+  assert.deepEqual(w.rows().filter((r) => r.startsWith("idle:")), [], "no idle row was opened");
 });

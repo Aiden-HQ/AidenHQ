@@ -254,8 +254,8 @@ else
   fi
   echo "WARNING: AIDENHQ_PUBLIC_IF=none: no public firewall installed; only right on a host with no public address" >&2
 fi
-# An active ufw (never installed here) drops 443 and 8446 by default: public mode with its front door allows them, nothing else.
-if [ "$fw_mode" = public ] && command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q '^Status: active'; then ufw allow 443/tcp; ufw allow 8446/tcp; fi
+# An active ufw (never installed here) drops 443, 8446 and 8447 by default: public mode with its front door allows them, nothing else.
+if [ "$fw_mode" = public ] && command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q '^Status: active'; then ufw allow 443/tcp; ufw allow 8446/tcp; ufw allow 8447/tcp; fi
 
 # SSH: keys only and no root login, from a drop-in that sorts before 50-cloud-init.conf (sshd keeps the first value it
 # reads). Skipped while the user has no authorized key, so a run can't lock the owner out; sudo is left as it is.

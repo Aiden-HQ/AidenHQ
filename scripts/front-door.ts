@@ -4,6 +4,7 @@
 //   https://<ip>       → the board (127.0.0.1:3121)
 //   https://<ip>:8446  → the kernel's admin listener (127.0.0.1:3120): sign-in, links, approvals. Its own origin, as the
 //                        kernel's forms require; Caddy names the client there (X-AidenHQ-Client-IP) beside the edge secret.
+//   https://<ip>:8447  → the gate (127.0.0.1:3130): the module door (docs/design/app-doors.md), e.g. the self-hosted Primer.
 //   https://<app>.<ip-with-dashes>.sslip.io → the gate (127.0.0.1:3130), with an app door (docs/design/app-doors.md): one
 //                        certificate per name, ordered on demand only for a name the gate's door-ask approves.
 // The IP comes from the host's .env (AIDENHQ_PUBLIC_IP, which ops/setup.sh writes), never from instance.yaml: agents can
@@ -16,6 +17,7 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
+import { DOOR_PORT } from "./edge.ts";
 
 export const ADMIN_PORT = 8446;
 const GATE_PORT = 3130; // scripts/edge.ts GATE_PORT: the gate on the host's loopback // the admin listener's public port (tailscale serve uses the same one)
@@ -117,7 +119,7 @@ ${directory ? `			dir ${directory}\n` : ""}			profile shortlived
 		-Via
 	}
 }
-${site(0, "127.0.0.1:3121", false)}${site(ADMIN_PORT, "127.0.0.1:3120", true)}${doorBase ? `# App doors: each one name under ${doorBase} (one label), its own certificate, then the gate. No sign-in passes here.
+${site(0, "127.0.0.1:3121", false)}${site(ADMIN_PORT, "127.0.0.1:3120", true)}${site(DOOR_PORT, `127.0.0.1:${GATE_PORT}`, false)}${doorBase ? `# App doors: each one name under ${doorBase} (one label), its own certificate, then the gate. No sign-in passes here.
 https://*.${doorBase} {
 	tls {
 		on_demand
