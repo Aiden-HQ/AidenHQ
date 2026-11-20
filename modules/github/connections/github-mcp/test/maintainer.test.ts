@@ -67,7 +67,7 @@ function fake(opts: {
     if (one && method === "GET") {
       const n = Number(one[1]);
       const i = (opts.issues ?? []).find((x) => x.number === n);
-      return i ? json(200, { number: n, labels: (i.labels ?? ["agent-fix"]).map((name) => ({ name })) }) : json(404, {});
+      return i ? json(200, { number: n, labels: (i.labels ?? ["agent-fix"]).map((name) => ({ name })), ...(i.pr ? { pull_request: {} } : {}) }) : json(404, {});
     }
     if (one && method === "PATCH") {
       posted.push({ path: u.pathname, body });
@@ -292,6 +292,37 @@ it("a close with a note posts the note as one comment first, then closes with th
   expect(f.posted.map((p) => p.path)).toEqual([`/repos/${PRODUCT}/issues/1/comments`, `/repos/${PRODUCT}/issues/1`]);
   expect(f.posted[0]!.body).toEqual({ body: note });
   expect(f.posted[1]!.body).toEqual({ state: "closed", state_reason: "not_planned" });
+});
+
+it("a pull request's comment and close mint pull_requests: write, while an issue's ask for issues: write only", async () => {
+  const perms = (f: ReturnType<typeof fake>) => f.calls.filter((c) => c.url.endsWith("/v1/codehost/token")).map((c) => c.body.perms);
+  // A PR shares the issue number and is marked by `pull_request` on the issue read.
+  const pr = fake({ issues: [{ number: 5, updated_at: "2026-01-01T00:00:00Z", pr: true }], timelines: { 5: [labeled("acme-bot[bot]", "2026-01-01T00:00:00Z", APP)] } });
+  expect(await maintainer(pr).comment(PRODUCT, 5, "on the pull request")).toMatchObject({ number: 5 });
+  expect(perms(pr)).toContainEqual({ issues: "write", pull_requests: "write" });
+  expect(perms(pr)).not.toContainEqual({ issues: "write" });
+  const prClose = fake({ issues: [{ number: 5, updated_at: "2026-01-01T00:00:00Z", pr: true }], timelines: { 5: [labeled("acme-bot[bot]", "2026-01-01T00:00:00Z", APP)] } });
+  expect(await maintainer(prClose).state(PRODUCT, 5, "closed", "completed", "Fixed by acme/product#7.")).toMatchObject({ number: 5, state: "closed" });
+  expect(perms(prClose)).toContainEqual({ issues: "write", pull_requests: "write" });
+  expect(perms(prClose)).not.toContainEqual({ issues: "write" });
+  // An issue asks for issues: write only, so the token is never widened to pull requests.
+  const issue = fake({ issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z" }], timelines: { 1: [labeled("acme-bot[bot]", "2026-01-01T00:00:00Z", APP)] } });
+  expect(await maintainer(issue).comment(PRODUCT, 1, "on the issue")).toMatchObject({ number: 1 });
+  expect(await maintainer(issue).state(PRODUCT, 1, "closed", "completed", "Fixed by acme/product#7.")).toMatchObject({ number: 1, state: "closed" });
+  expect(perms(issue)).toContainEqual({ issues: "write" });
+  expect(perms(issue).every((p: Record<string, string>) => p.pull_requests === undefined)).toBe(true);
+});
+
+it("a pull request's label add and remove stay issues-only", async () => {
+  const added = fake({ issues: [{ number: 5, updated_at: "2026-01-01T00:00:00Z", pr: true, labels: [] }] });
+  expect(await maintainer(added).label(PRODUCT, 5, "add")).toMatchObject({ changed: true });
+  const removed = fake({ issues: [{ number: 5, updated_at: "2026-01-01T00:00:00Z", pr: true }], timelines: { 5: [labeled("acme-bot[bot]", "2026-01-01T00:00:00Z", APP)] } });
+  expect(await maintainer(removed).label(PRODUCT, 5, "remove")).toMatchObject({ changed: true });
+  for (const f of [added, removed]) {
+    const perms = f.calls.filter((c) => c.url.endsWith("/v1/codehost/token")).map((c) => c.body.perms);
+    expect(perms).toContainEqual({ issues: "write" });
+    expect(perms.every((p: Record<string, string>) => p.pull_requests === undefined)).toBe(true);
+  }
 });
 
 it("a close whose note carries owner data rejects at the comment step, before the state is changed", async () => {

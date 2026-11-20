@@ -364,16 +364,21 @@ export class Maintainer {
     return r.body.sha as string;
   }
 
-  /** The issue's current repo label and, when present, whether its latest label event is trusted. */
+  /**
+   * The issue's current repo label, whether it is a pull request, and, when present, whether its latest label event is
+   * trusted. A pull request shares the issue number and is marked by `pull_request` on the same read.
+   */
   private async currentLabel(r: MaintainedRepo, number: number) {
     const res = await this.app.appCall(r.owner, r.name, { issues: "read" }, "GET", `/repos/${r.owner}/${r.name}/issues/${number}`);
     if (res.status !== 200) throw new Error(`couldn't read ${r.repo}#${number} (GitHub said ${res.status})`);
-    const labels = labelNames(res.body as GhIssue);
+    const issue = res.body as GhIssue;
+    const labels = labelNames(issue);
+    const pull_request = Boolean(issue.pull_request);
     const present = labels.some((l) => same(l, r.label));
-    if (!present) return { present: false, trusted: true, event: undefined as LabelEvent | undefined, labels };
+    if (!present) return { present: false, trusted: true, event: undefined as LabelEvent | undefined, labels, pull_request };
     const { events } = await this.labelEvents(r.repo, number, r.label);
     const latest = this.latestLabel(r, events);
-    return { present: true, trusted: Boolean(latest?.trusted), event: latest, labels };
+    return { present: true, trusted: Boolean(latest?.trusted), event: latest, labels, pull_request };
   }
 
   /** Refuses a write on an issue whose current repo label is untrusted. */
@@ -386,17 +391,36 @@ export class Maintainer {
     return cur;
   }
 
-  /** One comment as the App, with owner data removed before it is sent; anything the rewrite can't reach refuses it. */
-  async comment(repo: string | undefined, number: number, body: string) {
-    const r = this.target(repo);
+  /**
+   * The App token's permissions for a comment or state change on `number`: GitHub gates a pull request's comment and close
+   * behind `pull_requests: write`, while an issue's need only `issues: write`.
+   */
+  private writePerms(pull_request: boolean): Record<string, "write"> {
+    return pull_request ? { issues: "write", pull_requests: "write" } : { issues: "write" };
+  }
+
+  /** The comment text with owner data removed; anything the rewrite can't reach refuses it. */
+  private scrubbed(r: MaintainedRepo, body: string): string {
     const terms = this.termsFor(r);
     const text = scrubText(body, terms);
     const left = scrubProblems(text, terms);
     if (left.length) throw new GitHubRefused(`owner data can't go into a public comment; redact these and try again: ${left.join("; ")}`);
-    await this.assertTrusted(r, number);
-    const res = await this.app.appCall(r.owner, r.name, { issues: "write" }, "POST", `/repos/${r.owner}/${r.name}/issues/${number}/comments`, { body: text });
+    return text;
+  }
+
+  /** One scrubbed comment as the App, with the permissions its target needs. */
+  private async postComment(r: MaintainedRepo, number: number, text: string, pull_request: boolean) {
+    const res = await this.app.appCall(r.owner, r.name, this.writePerms(pull_request), "POST", `/repos/${r.owner}/${r.name}/issues/${number}/comments`, { body: text });
     if (res.status !== 201) throw new Error(`GitHub refused the comment (${res.status} ${res.body?.message ?? ""})`.trim());
     return { repo: r.repo, number, url: res.body.html_url, id: res.body.id };
+  }
+
+  /** One comment as the App, with owner data removed before it is sent; anything the rewrite can't reach refuses it. */
+  async comment(repo: string | undefined, number: number, body: string) {
+    const r = this.target(repo);
+    const text = this.scrubbed(r, body);
+    const cur = await this.assertTrusted(r, number);
+    return this.postComment(r, number, text, cur.pull_request);
   }
 
   /**
@@ -424,9 +448,9 @@ export class Maintainer {
   }
 
   /**
-   * Close as completed or not_planned, or reopen, refusing an untrusted label. A `note` is posted as a comment first,
-   * through `comment` (so the owner-data scrub applies), and the state changes only once it is posted. A note citing a PR
-   * only as a bare "PR #N" is refused before anything is written: the grader's citation parser doesn't read it.
+   * Close as completed or not_planned, or reopen, refusing an untrusted label. A `note` is posted as a comment first, with
+   * the same owner-data scrub as `comment`, and the state changes only once it is posted. A note citing a PR only as a bare
+   * "PR #N" is refused before anything is written: the grader's citation parser doesn't read it.
    */
   async state(repo: string | undefined, number: number, state: "open" | "closed", reason?: "completed" | "not_planned", note?: string) {
     const r = this.target(repo);
@@ -435,10 +459,11 @@ export class Maintainer {
       const bad = noteProblem(note, state, reason);
       if (bad) throw new GitHubRefused(bad);
     }
-    if (note !== undefined) await this.comment(r.repo, number, note);
-    else await this.assertTrusted(r, number);
+    const text = note === undefined ? undefined : this.scrubbed(r, note);
+    const cur = await this.assertTrusted(r, number);
+    if (text !== undefined) await this.postComment(r, number, text, cur.pull_request);
     const body = state === "closed" ? { state, state_reason: reason ?? "completed" } : { state };
-    const res = await this.app.appCall(r.owner, r.name, { issues: "write" }, "PATCH", `/repos/${r.owner}/${r.name}/issues/${number}`, body);
+    const res = await this.app.appCall(r.owner, r.name, this.writePerms(cur.pull_request), "PATCH", `/repos/${r.owner}/${r.name}/issues/${number}`, body);
     if (res.status !== 200) throw new Error(`GitHub refused the state change (${res.status} ${res.body?.message ?? ""})`.trim());
     return { repo: r.repo, number, state: res.body.state, state_reason: res.body.state_reason ?? null };
   }
