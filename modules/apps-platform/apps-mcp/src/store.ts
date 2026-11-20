@@ -15,7 +15,10 @@ export function openStore(path: string) {
     CREATE INDEX IF NOT EXISTS deploys_app ON deploys (app, id);
     CREATE TABLE IF NOT EXISTS running (app TEXT PRIMARY KEY, sha TEXT NOT NULL, at INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS previews (name TEXT PRIMARY KEY, app TEXT NOT NULL, pr INTEGER NOT NULL, port INTEGER NOT NULL UNIQUE, sha TEXT NOT NULL, status TEXT NOT NULL, at INTEGER NOT NULL, comment_id INTEGER, reason TEXT);`);
-  if (!(db.prepare(`PRAGMA table_info(previews)`).all() as { name: string }[]).some((c) => c.name === "reason")) db.exec(`ALTER TABLE previews ADD COLUMN reason TEXT`);
+  // A database from before `reason`: added here, under the write lock so two openers can't both try the ALTER.
+  db.transaction(() => {
+    if (!(db.prepare(`PRAGMA table_info(previews)`).all() as { name: string }[]).some((c) => c.name === "reason")) db.exec(`ALTER TABLE previews ADD COLUMN reason TEXT`);
+  }).immediate();
   const putPreview = db.prepare(`INSERT INTO previews (name, app, pr, port, sha, status, at, comment_id, reason) VALUES (@name, @app, @pr, @port, @sha, @status, @at, @comment_id, @reason)
     ON CONFLICT (name) DO UPDATE SET sha = excluded.sha, status = excluded.status, at = excluded.at, comment_id = excluded.comment_id, reason = excluded.reason`);
   const allPreviews = db.prepare(`SELECT * FROM previews ORDER BY app, pr`);
