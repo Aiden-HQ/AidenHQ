@@ -2,7 +2,7 @@
 //   POST <path>/plan     { kind, args, requester, task, evidence?, revalidate? } → { args, targets?, facts?, raise?, card?, satisfied? }
 //   POST <path>/execute  { id, kind, args, digest, idempotency_key }  → { accepted: true } at once; the outcome follows to the
 //                        kernel's POST /v1/writes/:id/outcome. Once per id: a repeat is accepted and runs nothing.
-//   POST <path>/status   { id, idempotency_key } → { state: running | done | failed | unknown, text? }
+//   POST <path>/status   { id, idempotency_key } → { state: running | done | failed | unknown, text?, objects? }
 // The kernel calls execute only for an approved, claimed and revalidated record; plan never changes anything.
 //
 // First-party modules hold byte-identical copies (scripts/sync-shared.ts: edit this one and run it); third-party modules import
@@ -24,8 +24,8 @@ export type ReviewContext = { files?: { text: string; leftOut: string[]; oversiz
 export interface ExecuteRequest { id: string; kind: string; args: any; digest: string; idempotency_key: string }
 export interface Executor {
   plan(req: PlanRequest): Promise<PlanResult>;
-  /** Runs the write; its result is the outcome the kernel records and tells the task. Throwing is a failed outcome. */
-  execute(rec: ExecuteRequest): Promise<{ ok: boolean; text: string }>;
+  /** Runs the write; its result is the outcome the kernel records and tells the task. Throwing is a failed outcome. `objects`: the GitHub object refs it made (`github:o/r#12`, `github:o/r@<sha40>`, `…#12/comment/<id>`, `…#12/label/<name>`), which the kernel keeps. */
+  execute(rec: ExecuteRequest): Promise<{ ok: boolean; text: string; objects?: string[] }>;
 }
 
 /** A handler for `<path>/*`: answers and returns true, or returns false for any other path. */
@@ -34,7 +34,7 @@ export function serveExecutor(ex: Executor, { key, kernelUrl = process.env.AIDEN
   /** The first wait before an undelivered outcome is posted again; it doubles, to a minute at most. */
   retryMs?: number;
 }) {
-  const runs = new Map<string, { state: "running" | "done" | "failed"; text?: string }>();
+  const runs = new Map<string, { state: "running" | "done" | "failed"; text?: string; objects?: string[] }>();
   const send = (res: ServerResponse, status: number, body: unknown) => void res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
   const keyed = (req: IncomingMessage) => {
     const a = Buffer.from(String(req.headers.authorization ?? "").replace(/^Bearer\s+/i, "")), b = Buffer.from(key);
@@ -44,9 +44,9 @@ export function serveExecutor(ex: Executor, { key, kernelUrl = process.env.AIDEN
    * The outcome, until the kernel takes it (409: it has one already). A kernel restart or an unreachable kernel is waited out,
    * backing off to once a minute, never given up on; only a 4xx the kernel means for good (bad request, no such record) ends it.
    */
-  async function report(id: string, ok: boolean, text: string) {
+  async function report(id: string, ok: boolean, text: string, objects?: string[]) {
     for (let i = 0; ; i++) {
-      const r = await fetch(`${kernelUrl}/v1/writes/${id}/outcome`, { method: "POST", headers: { authorization: `Bearer ${key}`, "content-type": "application/json" }, body: JSON.stringify({ ok, text }), signal: AbortSignal.timeout(15_000) }).catch(() => undefined);
+      const r = await fetch(`${kernelUrl}/v1/writes/${id}/outcome`, { method: "POST", headers: { authorization: `Bearer ${key}`, "content-type": "application/json" }, body: JSON.stringify({ ok, text, ...(objects?.length ? { objects } : {}) }), signal: AbortSignal.timeout(15_000) }).catch(() => undefined);
       if (r && (r.ok || r.status === 409)) return;
       if (r && r.status >= 400 && r.status < 500 && ![401, 408, 429].includes(r.status)) return log("executor outcome refused", { id, status: r.status });
       if (i === 4) log("executor outcome not delivered yet: still trying", { id, status: r?.status });
@@ -75,9 +75,9 @@ export function serveExecutor(ex: Executor, { key, kernelUrl = process.env.AIDEN
       if (!runs.has(id)) {
         if (runs.size >= 1000) runs.delete(runs.keys().next().value!);
         runs.set(id, { state: "running" });
-        void ex.execute(body).catch((e: Error) => ({ ok: false, text: e.message })).then(async (o) => {
-          runs.set(id, { state: o.ok ? "done" : "failed", text: o.text });
-          await report(id, o.ok, o.text);
+        void ex.execute(body).catch((e: Error) => ({ ok: false, text: e.message, objects: undefined as string[] | undefined })).then(async (o) => {
+          runs.set(id, { state: o.ok ? "done" : "failed", text: o.text, ...(o.objects?.length ? { objects: o.objects } : {}) });
+          await report(id, o.ok, o.text, o.objects);
         });
       }
       return send(res, 200, { accepted: true }), true;

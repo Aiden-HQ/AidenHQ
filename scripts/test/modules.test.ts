@@ -369,8 +369,9 @@ test("journeys: the end names declared facts, a phase any fact (absent when no m
 });
 test("a codehost grant is taken literally: settings are refused, the kernel's @ names pass", async () => {
   const { kernelModuleTable } = await import("../modules.ts");
-  assert.throws(() => kernelModuleTable({ m: { codehost: { token: { repos: ["${settings.agents_org}/*"], perms: { contents: "read" } } } } }), /names no settings/);
-  assert.deepEqual(kernelModuleTable({ m: { codehost: { token: { repos: ["@instance", "@agents/*"], perms: { contents: "write" } } } } }).m.codehost.token.repos, ["@instance", "@agents/*"]);
+  assert.throws(() => kernelModuleTable({ m: { codehost: { fetch: { repos: ["${settings.fleet_org}/*"] } } } }), /names no settings/);
+  assert.deepEqual(kernelModuleTable({ m: { codehost: { fetch: { repos: ["@instance", "@agents/*"] } } } }).m.codehost.fetch.repos, ["@instance", "@agents/*"]);
+  assert.throws(() => kernelModuleTable({ m: { codehost: { token: { repos: ["@instance"], perms: { contents: "read" } } } } }), /no field token/);
 });
 test("teams: any module agent becomes a team record over named members (template, then defaults, then member)", () => {
   const teams = { research: { template: "chief-of-staff.assistant", defaults: { max_parallel: 2, reasoning_effort: "high", handbook: "Cite every source." }, caps: { day_usd: 40 }, routing: { weights: { repo: 2 } },

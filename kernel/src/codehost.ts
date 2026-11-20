@@ -1,19 +1,24 @@
-// The one path to the code hosts' operations (one-way phase 2, Lane T): every caller asks POST /v1/codehost/:op here
-// with its own module token. That covers github-mcp, apps-mcp and the ci module's runner registration. The kernel checks the
-// caller's grant once (its module.yaml `codehost:`, kernel/schemas/codehost.json, compiled into the kernel's module table;
-// owner authority, loader/authority.ts). It then calls
-// codehost-github with the code host's own key, the one it calls its executor with, so the code host serves ops to the kernel
-// alone and only codehost-github holds the GitHub App key.
-//   token    {repo: owner/name | owner/*, perms} → {token, repo, perms, expires_at, app}; owner/* is an org-wide token
-//   snapshot {repo, ref} → a tar.gz with no .git and no credentials
-//   clone    {repo, ref, into: task} → a credential-free clone in the workspace of a task whose agent the caller dispatches
-//   bundle   {repo, ref} → the branch as a git bundle, under the clone grant; the kernel's own (a running job's `aidenhq clone`,
-//            which its box clones or fetches itself), never a module's: host git never runs in a workspace a box can write
+// The one path to the code hosts' operations: every caller asks POST /v1/codehost/:op here with its own module token. That
+// covers github-mcp, apps-mcp, the grader and the ci module's runner registration. The kernel checks the caller's grant once
+// (its module.yaml `codehost:`, kernel/schemas/codehost.json, compiled into the kernel's module table; owner authority,
+// loader/authority.ts). It then calls the github module's code host with the code host's own key, the one it calls its
+// executor with, so the code host serves ops to the kernel alone and only it holds the owner's GitHub token: no op returns it.
+//   snapshot     {repo, ref} → a tar.gz with no .git and no credentials
+//   clone        {repo, ref, into: task} → a credential-free clone in the workspace of a task whose agent the caller dispatches
+//   bundle       {repo, ref} → the branch as a git bundle, under the clone grant; the kernel's own (a running job's `aidenhq clone`,
+//                which its box clones or fetches itself), never a module's: host git never runs in a workspace a box can write
+//   fetch        {repo, ref: refs/heads/* | refs/heads/<b> | refs/pull/<n>/head} → a git bundle of those refs
+//   head         {repo, ref: <branch>} → {sha}
+//   read         {repo, kind: pr | issue | diff | job | prs, number?, id?} → that object (a PR or issue as the grader reads it, a diff, a job, the open PRs)
+//   comment      {repo, number, body, id?} → {id}: posts (or edits comment `id`) with the "via AidenHQ" footer
+//   commit       {repo, branch, path, content, parent, message} → {sha}: one file as the owner, with the trailer; 409 when the branch moved off parent
+//   runner_token {org} → {token, expires_at}: an org's runner registration token, and nothing else
 // A `local/…` repo (the org codehost-local owns) is served by codehost-local (in process: its snapshot) under the same grants
-// and the same answer (its bundle: every branch). It has no token, and no clone (host git never writes a workspace: a box clones a local repo itself,
-// `aidenhq clone`); every op without codehost-github for other orgs is 404.
+// and the same answer (its bundle: every branch). It has no clone (host git never writes a workspace: a box clones a local repo
+// itself, `aidenhq clone`) and none of the GitHub-only ops (fetch, head, read, comment, commit, runner_token); every op without
+// the github code host for other orgs is 404.
 // The change-request ops are write kinds, not broker ops: `codehost-local.{push,pr,merge,close,create_repo}` — declared by
-// modules/codehost-local/src/kinds.ts, executed by its host.ts in the kernel's process (no service, no key, no GitHub App),
+// modules/codehost-local/src/kinds.ts, executed by its host.ts in the kernel's process (no service, no key),
 // with its `change` check job and the kernel's localmerge.ts auto-merge — run in the kernel, never here. A merge's refusals
 // (head-moved, checks-not-green, conflict) are modules/codehost-local/src/refuse.ts.
 //
@@ -48,13 +53,12 @@ export function routeKind(kind: string, args: unknown): string {
 }
 /** A code host's answer to an op: a status, headers and a body stream (an http response, or codehost-local's tarball). */
 export type Answer = Readable & { statusCode?: number; headers: http.IncomingHttpHeaders };
-// A module's grant (its `codehost:`, taken literally): repos are owner/name, owner/*, */* (anything the App covers), or
-// @instance, @product, @agents/<name|*> (in each agents org), @orgs (every repo of each owner the instance allows, github_orgs)
-// and @maintained (the repos it maintains, maintainer_repos), which resolve from the kernel's own configuration (its repos),
-// never from a module's settings.
-export type OpsGrant = { module: string; token?: { repos: string[]; perms: Record<string, string> }; snapshot?: { repos: string[] }; clone?: { repos: string[] } };
+// A module's grant (its `codehost:`, taken literally): repos are owner/name, owner/*, */* (anything the owner's account reaches), or
+// @instance, @product, @agents/<name|*> (in the fleet org: github_fleet_org), @orgs (every repo of each owner the instance allows,
+// github_orgs) and @maintained (the repos it maintains, maintainer_repos), which resolve from the kernel's own configuration (its
+// repos), never from a module's settings. A commit grant also names the exact paths it may write; a runner grant, the orgs.
+export type OpsGrant = { module: string; snapshot?: { repos: string[] }; clone?: { repos: string[] }; fetch?: { repos: string[] }; read?: { repos: string[] }; comment?: { repos: string[] }; commit?: { repos: string[]; paths: string[] }; runner?: { orgs: string[] } };
 
-const LEVEL = new Map([["read", 1], ["write", 2]]);
 const SLUG = /^([\w.-]+)\/([\w.-]+|\*)$/;
 const DOTS = /^\.+$/;
 // A branch, tag or commit: no leading -, no .., no @{, no control characters or spaces, at most 255 characters.
@@ -64,7 +68,7 @@ const fail = (status: number, message: string) => Object.assign(new Error(messag
 
 const PLAIN = /^[\w.-]+\/[\w.-]+$/, ORG = /^[\w.-]+$/;
 /**
- * A grant's repo entry with its @ name resolved: none when the kernel has no such repo, one per agents org for @agents/. A
+ * A grant's repo entry with its @ name resolved: none when the kernel has no such repo, one per fleet org for @agents/. A
  * resolved value is a plain owner/name (or org): a `*` only ever comes from the grant as written, which the owner saw.
  */
 export function resolveRepo(p: string, r: KernelRepos): string[] {
@@ -75,13 +79,58 @@ export function resolveRepo(p: string, r: KernelRepos): string[] {
   if (p.startsWith("@agents/")) return (r.agentsOrgs ?? []).filter((o) => ORG.test(o)).map((o) => `${o}/${p.slice("@agents/".length)}`);
   return [p];
 }
-/** The kernel's repos; `agentsOrgs`: one per enabled code host (the GitHub agents org, `local` with codehost-local). */
+/** The kernel's repos; `agentsOrgs`: one per enabled code host (the GitHub fleet org, `local` with codehost-local). */
 export type KernelRepos = { instance?: string; product?: string; agentsOrgs?: string[]; orgs?: string[]; maintained?: string[] };
 
 /** Whether a grant's repos cover `slug` (owner/name, or owner/* for an org-wide token). */
 export function covers(slug: string, repos: string[] = [], r: KernelRepos = {}): boolean {
   const owner = slug.split("/")[0]!;
   return repos.flatMap((p) => resolveRepo(p, r)).some((p) => (p === "*/*" || same(p, slug) || (p.endsWith("/*") && same(p.slice(0, -2), owner))));
+}
+
+const NO_HOST = "no GitHub code host here (the github module isn't enabled)";
+/** Each op's grant: the key of the module's `codehost:` it needs. */
+const GRANT_KEY: Record<string, "snapshot" | "clone" | "fetch" | "read" | "comment" | "commit" | "runner"> = {
+  snapshot: "snapshot", clone: "clone", bundle: "clone", fetch: "fetch", head: "fetch", read: "read", comment: "comment", commit: "commit", runner_token: "runner",
+};
+const FETCH_REF = /^(refs\/heads\/\*|refs\/heads\/(?!-)(?!.*\.\.)(?!.*@\{)[\w./-]{1,200}|refs\/pull\/\d{1,9}\/head)$/;
+const READ_KINDS = ["pr", "issue", "diff", "job", "prs"];
+const int = (v: unknown, what: string) => {
+  const n = Number(v);
+  if (!Number.isSafeInteger(n) || n < 1) throw fail(400, `${what} must be a positive integer`);
+  return n;
+};
+const text = (v: unknown, what: string, max: number) => {
+  if (typeof v !== "string" || !v || v.length > max) throw fail(400, `${what} must be 1 to ${max} characters`);
+  return v;
+};
+/** The body the code host gets for a GitHub-only op: only the fields the op names, each checked here, never the caller's object. */
+function shape(op: string, b: Record<string, unknown>, paths: string[] = []): Record<string, unknown> {
+  if (op === "fetch") {
+    const ref = String(b.ref ?? "");
+    if (!FETCH_REF.test(ref)) throw fail(400, `${ref.slice(0, 100)} is not refs/heads/*, a branch ref or a pull request's head`);
+    return { ref };
+  }
+  if (op === "head") {
+    const ref = String(b.ref ?? "");
+    if (!REF.test(ref)) throw fail(400, `${ref.slice(0, 100)} is not a branch`);
+    return { ref };
+  }
+  if (op === "read") {
+    const kind = String(b.kind ?? "");
+    if (!READ_KINDS.includes(kind)) throw fail(400, `kind is one of ${READ_KINDS.join(", ")}`);
+    if (kind === "prs") return { kind };
+    if (kind === "job") return { kind, id: int(b.id, "id") };
+    return { kind, number: int(b.number, "number") };
+  }
+  if (op === "comment") return { number: int(b.number, "number"), body: text(b.body, "body", 65_000), ...(b.id == null ? {} : { id: int(b.id, "id") }) };
+  // commit
+  const path = text(b.path, "path", 500), branch = String(b.branch ?? ""), parent = String(b.parent ?? "");
+  if (!REF.test(branch)) throw fail(400, `${branch.slice(0, 100)} is not a branch`);
+  if (!/^[0-9a-f]{40}$/.test(parent)) throw fail(400, "parent is a full commit sha");
+  if (!paths.includes(path)) throw fail(403, `the commit grant doesn't list ${path.slice(0, 200)}`);
+  if (typeof b.content !== "string" || b.content.length > 1_000_000) throw fail(400, "content must be a string of at most 1,000,000 characters");
+  return { branch, path, content: b.content, parent, message: text(b.message, "message", 10_000) };
 }
 
 /** codehost-local's ops, in process (modules/codehost-local/src). */
@@ -99,22 +148,29 @@ export function createCodehost({ grants, repos, kind, secret, resolver, workspac
   /** codehost-local's ops, when that module is enabled. */
   local?: () => LocalOps | undefined;
 }) {
-  /** Checks `module`'s grant and asks the code host: its answer as it came (JSON, or a snapshot's tarball). */
+  /** Checks `module`'s grant and asks the code host: its answer as it came (JSON, a bundle, or a snapshot's tarball). */
   async function ask(module: string, op: string, b: Record<string, unknown>): Promise<Answer> {
-    if (!["token", "snapshot", "clone", "bundle"].includes(op)) throw fail(404, `no codehost operation ${op}`);
+    if (!Object.hasOwn(GRANT_KEY, op)) throw fail(404, `no codehost operation ${op}`);
+    const g = grants().find((x) => x.module === module);
+    const k = kind();
+    if (op === "runner_token") {
+      const org = String(b?.org ?? "");
+      if (!ORG.test(org)) throw fail(400, `${org.slice(0, 100)} is not an org`);
+      if (!g?.runner?.orgs.some((o) => o === "*" || same(o, org))) throw fail(403, `${module} has no runner_token grant on ${org}`);
+      if (!k?.executor) throw fail(404, NO_HOST);
+      return forward(k, op, { module, org });
+    }
     const repo = String(b?.repo ?? "");
     const m = SLUG.exec(repo);
     const onLocal = m !== null && same(m[1]!, LOCAL_ORG);
-    const k = kind();
-    if (!onLocal && !k?.executor) throw fail(404, "no GitHub code host here (the GitHub App isn't set up)");
-    if (!m || DOTS.test(m[1]!) || DOTS.test(m[2]!) || (m[2] === "*" && op !== "token")) throw fail(400, `${repo} is not owner/name${op === "token" ? " or owner/*" : ""}`);
-    const g = grants().find((x) => x.module === module);
-    const grant = g?.[op === "bundle" ? "clone" : (op as "token" | "snapshot" | "clone")];
+    if (!onLocal && !k?.executor) throw fail(404, NO_HOST);
+    if (!m || DOTS.test(m[1]!) || DOTS.test(m[2]!) || m[2] === "*") throw fail(400, `${repo} is not owner/name`);
+    const grant = g?.[GRANT_KEY[op] as "snapshot"];
     if (!covers(repo, grant?.repos, repos())) throw fail(403, `${module} has no ${op} grant on ${repo}`);
     if (onLocal) {
       const ref = String(b.ref ?? "");
       if (op === "clone") throw fail(422, `a repository on this server is cloned in your computer: run \`aidenhq clone ${repo}\``);
-      if (op === "token") throw fail(404, "codehost-local has no token operation");
+      if (op !== "snapshot" && op !== "bundle") throw fail(404, `codehost-local has no ${op} operation`);
       if (!REF.test(ref)) throw fail(400, `${ref.slice(0, 100)} is not a branch or a commit`);
       const l = local();
       if (!l) throw fail(404, "codehost-local isn't enabled here");
@@ -129,26 +185,19 @@ export function createCodehost({ grants, repos, kind, secret, resolver, workspac
       }
       return l.snapshot(repo, ref);
     }
-    const k2 = k!;
-    let out: Record<string, unknown>;
-    if (op === "token") {
-      const asked = b.perms && typeof b.perms === "object" && !Array.isArray(b.perms) ? Object.entries(b.perms as Record<string, unknown>) : [];
-      if (!asked.length) throw fail(400, "name the permissions");
-      // Only the grant's own names and the two levels; the forwarded object holds nothing else.
-      const granted = g!.token!.perms;
-      const perms: Record<string, string> = Object.create(null);
-      for (const [p, l] of asked) {
-        const have = Object.hasOwn(granted, p) ? granted[p] : undefined;
-        if (typeof l !== "string" || !LEVEL.has(l) || typeof have !== "string" || !LEVEL.has(have) || LEVEL.get(l)! > LEVEL.get(have)!) throw fail(403, `${module} has no ${p}:${String(l)} grant`);
-        perms[p] = l;
-      }
-      out = { module, repo, perms: { ...perms } };
-    } else {
+    let out: Record<string, unknown> = { module, repo };
+    if (op === "snapshot" || op === "clone" || op === "bundle") {
       const ref = String(b.ref ?? "");
       if (!REF.test(ref)) throw fail(400, `${ref.slice(0, 100)} is not a branch or a commit`);
-      out = { module, repo, ref };
+      out.ref = ref;
       if (op === "clone") out.into = (await workspace(module, b.into)).workspace;
+    } else {
+      out = { ...out, ...shape(op, b, (g as OpsGrant).commit?.paths) };
     }
+    return forward(k!, op, out);
+  }
+  /** The GitHub code host's call: the kernel's executor key, the op's validated body, the answer as it came. */
+  async function forward(k2: Kind, op: string, out: Record<string, unknown>): Promise<Answer> {
     const key = secret(k2.executor!.auth_secret);
     if (!key) throw fail(503, `${CODEHOST}'s key is missing`);
     const url = new URL(`/ops/${op}`, k2.executor!.url).toString();
@@ -161,8 +210,30 @@ export function createCodehost({ grants, repos, kind, secret, resolver, workspac
       req.end(data);
     });
   }
+  let owner: { at: number; id: { name: string; email: string } } | undefined;
+  /** The owner's commit identity from the code host (GET /aidenhq/v1/identity), cached 10 minutes; none while GitHub isn't connected or the code host is down. */
+  async function identity(): Promise<{ name: string; email: string } | undefined> {
+    if (owner && Date.now() - owner.at < 10 * 60_000) return owner.id;
+    const k = kind(), key = k?.executor && secret(k.executor.auth_secret);
+    if (!k?.executor || !key) return undefined;
+    try {
+      const url = new URL("/aidenhq/v1/identity", k.executor.url).toString();
+      const to = await resolver.resolve(url);
+      const got = await new Promise<{ status?: number; body: string }>((ok, no) => {
+        const req = http.request({ host: to.host, port: to.port, path: to.path, method: "GET", timeout: 10_000, headers: { host: new URL(url).host, authorization: `Bearer ${key}` } }, (r) => {
+          let body = "";
+          r.on("data", (c) => (body += c)).on("end", () => ok({ status: r.statusCode, body })).on("error", no);
+        });
+        req.on("timeout", () => req.destroy(new Error("timeout"))).on("error", no).end();
+      });
+      const id = got.status === 200 ? (JSON.parse(got.body) as { name?: unknown; email?: unknown }) : undefined;
+      if (typeof id?.name !== "string" || typeof id.email !== "string") return undefined;
+      owner = { at: Date.now(), id: { name: id.name, email: id.email } };
+      return owner.id;
+    } catch { return undefined; }
+  }
   return {
-    ask,
+    ask, identity,
     /** POST /v1/codehost/:op: the answer goes back as it came. */
     async op(module: string, op: string, b: Record<string, unknown>, res: ServerResponse): Promise<void> {
       if (op === "bundle") throw fail(404, "no codehost operation bundle");
