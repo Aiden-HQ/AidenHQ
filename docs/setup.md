@@ -325,7 +325,7 @@ Glean, Jira, Grafana and ClickHouse: press Connect on the board (Settings, Conne
 [docs/USAGE.md](USAGE.md#connect-jira). Each one is a module you add to `modules:`, plus a sign-in.
 
 Primer needs nothing: this server runs its own, connected from the first apply, and the documents agents share open at the
-board's address on port 8447 (`https://<board host>:8447`, or `http://localhost:8447` through the SSH tunnel), signed in as
+board's address on port 8447 (`https://<board host>:8447`, or `http://localhost:3130` through the SSH tunnel), signed in as
 you are on the board. To use your organization's Primer instead, pick it on its setup page (`#/setup/primer`) and Connect
 ([modules/primer/README.md](../modules/primer/README.md)).
 

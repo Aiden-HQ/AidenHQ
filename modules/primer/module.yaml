@@ -25,14 +25,14 @@ contributes:
         options:
           - value: self-host
             label: This server's own Primer
-            detail: Already running. Documents open at this board's address on port 8447, for you and the admins you add.
+            detail: Already running. The documents agents share open from this board's address, for you and the admins you add.
           - value: connect
             label: Connect your organization's Primer instead
             detail: Paste its MCP address, then sign in. Agents act as you in your Primer.
 settings:
   # self-host (default): this module runs Primer (primer-server, built from source at the commit its Dockerfile pins, and its
-  # own Postgres, primer-db) behind the gate: the module door (the board's host on 8447, AidenHQ admins) or, with edge,
-  # https://<primer_host>, where people sign in as app users. The connector signs in as the agent user server/start.ts seeds,
+  # own Postgres, primer-db) behind the gate: the module door (AidenHQ admins at the board's host on 8447, or localhost:3130
+  # through a local install's tunnel) or, with edge, https://<primer_host>, where people sign in as app users. The connector signs in as the agent user server/start.ts seeds,
   # with the generated primer_connector_token: no setup. connect: an organization's hosted Primer (its MCP address from
   # Connect), signed in as the owner. Either way a comment on a document an agent published wakes that agent
   # (connections/primer-mcp/src/subscriber.ts).

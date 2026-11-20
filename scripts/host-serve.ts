@@ -45,8 +45,12 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     try { gate = JSON.parse(readFileSync("config/gate.json", "utf8")); } catch {}
     const wanted = Object.values(gate.hosts ?? {}).some((h) => h.door);
     if (wanted && !Object.keys(s.Web ?? {}).some((hp) => hp.endsWith(`:${DOOR}`))) {
-      ts("serve", "--bg", `--https=${DOOR}`, "http://127.0.0.1:3130");
-      console.log(`  host tailscale serve: the module door on ${DOOR}`);
+      try {
+        ts("serve", "--bg", `--https=${DOOR}`, "http://127.0.0.1:3130");
+        console.log(`  host tailscale serve: the module door on ${DOOR}`);
+      } catch (e) {
+        console.error(`  host tailscale serve: couldn't serve the module door on ${DOOR} (${String((e as Error).message).trim()}); run: tailscale serve --bg --https=${DOOR} http://127.0.0.1:3130`);
+      }
     }
   } else if (cmd === "prune") {
     for (const p of ports) {

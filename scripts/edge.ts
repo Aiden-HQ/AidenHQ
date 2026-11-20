@@ -23,7 +23,8 @@
 // listener (it hands a one-time code back to the app host). Tailscale's apps node and `edge` keep their own doors.
 // The module door (docs/design/app-doors.md): without `edge`, on every exposure mode (local, public, tailscale), a module
 // service shared with no host (services.run.<svc>.share, e.g. the self-hosted Primer) opens for AidenHQ admins at the
-// board's own host name on DOOR_PORT, which the front door (Caddy, `tailscale serve`, the SSH tunnel) passes to the gate,
+// board's own host name on DOOR_PORT, which the front door (Caddy, `tailscale serve`) passes to the gate (local: the gate's
+// own port, which the SSH tunnel forwards),
 // signed in like any door. Its URL reaches the service as AIDENHQ_APP_URL (with `edge`, its share.host's).
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
@@ -206,7 +207,7 @@ interface Door { publicIp?: string; adminUrl?: string; boardUrl?: string }
 /**
  * The doors without `edge` (docs/design/app-doors.md), or null. App doors: `local` serves <app>.localhost:<GATE_PORT> over
  * http, `public` <app>.<ip-with-dashes>.sslip.io through Caddy. The module door (`moduleDoors`: module services shared with no
- * host, at most one): the board's own host on DOOR_PORT in every mode, local, public and tailscale. Sign-in is the admin
+ * host, at most one): the board's own host on DOOR_PORT in public and tailscale, localhost:<GATE_PORT> in local. Sign-in is the admin
  * listener's (`adminUrl`), never the gate's.
  */
 function doorConfig(exposure: unknown, { publicIp, adminUrl, boardUrl }: Door = {}, moduleDoors: Obj[] = []) {
@@ -226,8 +227,9 @@ function doorConfig(exposure: unknown, { publicIp, adminUrl, boardUrl }: Door = 
   const hosts: Obj = {}, urls: Obj = {};
   for (const a of moduleDoors) {
     // The board's own host name (cookies ignore ports: the gate keeps its session apart, modules/apps-platform/gate/gate.ts).
+    // Local: the gate's own port, which the SSH tunnel already forwards; elsewhere the front door's DOOR_PORT.
     const board = new URL(boardUrl || "http://localhost:3121");
-    const at = `${board.protocol}//${board.hostname}:${DOOR_PORT}`;
+    const at = `${board.protocol}//${board.hostname}:${exposure === "local" ? GATE_PORT : DOOR_PORT}`;
     hosts[board.hostname] = { app: a.name, port: a.port, door: true, origin: at };
     urls[a.service] = at;
   }

@@ -66,23 +66,24 @@ with the apps node key) or the owner's own domain. Today an own domain means `se
 served by Caddy itself is not built.
 
 **Install (`ops/setup.sh`).** The SSH tunnel line forwards the gate too, on the same port, because the port is part of the
-origin, and the module door's port to it: `ssh -N -L 3121:... -L 3120:... -L 3130:127.0.0.1:3130 -L 8447:127.0.0.1:3130 <host>`.
+origin: `ssh -N -L 3121:... -L 3120:... -L 3130:127.0.0.1:3130 <host>`.
 
 ## The module door
 
 A module service that declares `share` with no host (`services.run.<svc>.share`; the self-hosted Primer, whose
 `primer_host` is empty unless the owner shares it under `edge`) opens for AidenHQ admins at the board's own host name on
 port 8447, in every exposure mode without `edge`: `https://<tailnet name>:8447` (tailscale), `https://<ip>:8447` (public),
-`http://localhost:8447` (local, through the SSH tunnel). One mechanism, the gate, behind each mode's existing front door:
+and on a local install the gate's own port the SSH tunnel already forwards, `http://localhost:3130`. One mechanism, the gate,
+behind each mode's existing front door:
 
 | Mode | Front door for 8447 |
 |---|---|
 | `tailscale` | the host's `tailscale serve --https=8447` to the gate (apply, `scripts/host-serve.ts door`, while gate.json has a module door) |
 | `public` | Caddy's site `https://<ip>:8447` to the gate (the IP certificate the board's site has); the firewall opens tcp 8447 |
-| `local` | the SSH tunnel's `-L 8447:127.0.0.1:3130` |
+| `local` | the SSH tunnel's `-L 3130:127.0.0.1:3130` (unchanged; the door is `localhost:3130`, beside the `<app>.localhost:3130` app doors) |
 
 Compile (`scripts/edge.ts`, `doorConfig`) writes the gate a `hosts` entry for the board's host name with `door: true` and
-its own `origin` (scheme, host and port 8447), and `signin` (the admin listener). The gate treats it as a door: admins only,
+its own `origin` (scheme, host and port), and `signin` (the admin listener). The gate treats it as a door: admins only,
 sign-in through the admin listener's handoff, its exact origin for writes and upgrades. The kernel's handoff accepts that
 exact origin (`doorHost`, `moduleDoors` from gate.json) and lists it in the admin pages' `form-action`. The service gets the
 address as `AIDENHQ_APP_URL` (with `edge` and a host, `https://<host>` instead), which the self-hosted Primer uses for its
@@ -99,8 +100,9 @@ ports, so:
 - A handed-off session counts only through the gate for the host it was redeemed on; the admin listener and the board
   refuse it (unchanged).
 - Only first-party module services take this door (a module declares `share`; agent-built apps never do), as the host's
-  `tailscale serve` already serves Grafana. Primer renders agent-written HTML only in sandboxed iframes without
-  `allow-same-origin` (an opaque origin), with `connect-src 'none'` and `form-action 'none'`.
+  `tailscale serve` already serves Grafana. Primer frames agent-written HTML in sandboxed iframes without
+  `allow-same-origin` (an opaque origin) and serves it with a CSP of `connect-src 'none'` and `form-action 'none'`; a page
+  opened on its own runs its script on the door's origin, where it can make no request and post no form.
 
 ## Security
 

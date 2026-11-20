@@ -18,7 +18,7 @@ let accounts, steps, adminSrv, api;
 const apps = { "tok-apps": { kind: "module", module: "apps-platform" }, "tok-board": { kind: "module", module: "board" } };
 before(async () => {
   // An app door on loopback (docs/design/app-doors.md), as compile's gate.json names it.
-  accounts = await openAccounts({ dataDir: ":memory:", hosts: [HOST], adminUrl: `http://${HOST}`, edgeSecret: () => "", notify: () => {}, log: silent, gate: () => ({ password: true, appHosts: [], door: { base: "localhost", scheme: "http", port: 3130 }, moduleDoors: { "http://localhost:8447": "localhost" } }) });
+  accounts = await openAccounts({ dataDir: ":memory:", hosts: [HOST], adminUrl: `http://${HOST}`, edgeSecret: () => "", notify: () => {}, log: silent, gate: () => ({ password: true, appHosts: [], door: { base: "localhost", scheme: "http", port: 3130 }, moduleDoors: { "https://board.example.com:8447": "board.example.com" } }) });
   steps = await stepListener(accounts);
   const cards = { ownerCards: async () => ({ live: [], finished: [] }), decideCard: async () => { throw new Error("no"); } };
   adminSrv = await serve(createAdmin({ accounts, cards, ownerMessage: async () => ({ task: { identifier: "WOR-1" } }), owner: async () => ({ status: 200, json: {} }), hosts: () => [HOST], origins: () => [`http://${HOST}`], frameOrigins: () => [], uiOrigins: () => ({ [BOARD]: "board" }), doorSource: () => doorSource({ door: { base: "localhost", scheme: "http", port: 3130 } }) }));
@@ -246,10 +246,10 @@ test("an app door: a ready admin's /auth/handoff mints the gate's code for exact
 
 test("the module door: a handoff for exactly its origin (the board's host on the door port), never the board's or another port", async () => {
   const st = "0123456789abcdef0123456789abcdef";
-  const ok = await admin("GET", handoffPath("http://localhost:8447", st), owner.jar);
+  const ok = await admin("GET", handoffPath("https://board.example.com:8447", st), owner.jar);
   assert.equal(ok.status, 303);
   const code = new URL(ok.location).searchParams.get("code");
-  assert.ok((await accounts.redeemHandoff(code, "localhost", st)).token);
-  for (const t of ["http://localhost:3121", "http://localhost:8446", "https://localhost:8447"]) assert.equal((await admin("GET", handoffPath(t, st), owner.jar)).status, 400, t);
+  assert.ok((await accounts.redeemHandoff(code, "board.example.com", st)).token);
+  for (const t of ["https://board.example.com", "https://board.example.com:8446", "http://board.example.com:8447"]) assert.equal((await admin("GET", handoffPath(t, st), owner.jar)).status, 400, t);
   assert.equal(doorSource({ password: true, appHosts: [], moduleDoors: { "https://b.example.com:8447": "b.example.com" } }), "https://b.example.com:8447");
 });

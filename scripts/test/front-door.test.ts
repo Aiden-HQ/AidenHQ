@@ -62,7 +62,7 @@ test("the module door: the board's host on 8447 in local, public and tailscale; 
   assert.deepEqual([ts.gate.hosts, ts.gate.signin, ts.gate.doors, ts.gate.origin, ts.urls], [{ "aidenhq.example.ts.net": { app: "docs", port: 3141, door: true, origin: "https://aidenhq.example.ts.net:8447" } }, "https://aidenhq.example.ts.net:8446", undefined, undefined, { "docs-server": "https://aidenhq.example.ts.net:8447" }]);
   assert.deepEqual(at("public", { publicIp: "203.0.113.7", boardUrl: "https://203.0.113.7", adminUrl: "https://203.0.113.7:8446" }).urls, { "docs-server": "https://203.0.113.7:8447" });
   const local = at("local", {});
-  assert.deepEqual([local.gate.hosts.localhost, local.urls], [{ app: "docs", port: 3141, door: true, origin: "http://localhost:8447" }, { "docs-server": "http://localhost:8447" }]);
+  assert.deepEqual([local.gate.hosts.localhost, local.urls], [{ app: "docs", port: 3141, door: true, origin: "http://localhost:3130" }, { "docs-server": "http://localhost:3130" }]); // the tunnel's gate port
   assert.equal(at(undefined, { boardUrl: "https://aidenhq.example.ts.net", adminUrl: "https://aidenhq.example.ts.net:8446" }).urls["docs-server"], "https://aidenhq.example.ts.net:8447"); // unset exposure is tailscale
   assert.equal(at("tailscale", {}), null); // no tailnet board yet: no door
   assert.equal(edgeConfig({ exposure: "tailscale" }, [], [], { boardUrl: "https://aidenhq.example.ts.net", adminUrl: "https://aidenhq.example.ts.net:8446" }), null); // nothing to serve
