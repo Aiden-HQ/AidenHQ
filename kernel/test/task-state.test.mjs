@@ -58,6 +58,8 @@ const cases = [
   ["a card the reviewer escalates is the owner's from then", [created(), card("k1", 1, "review"), f("record.decided", 4, { decision: "owner", decider: "reviewer" }, "module:ai-reviewer", { subject: "record:k1" })], NOW,
     { reason: "card_owner", since: iso(4), attention: [{ who: "owner", why: "card" }] }],
   ["an approved card is no longer open", [created(), card("k1", 1), f("record.decided", 2, { decision: "approved", decider: "owner" }, "account:o1", { subject: "record:k1" })], 5, { kind: "idle", attention: [] }],
+  ["a card the code closes (expired, replaced) is no longer open", [created(), card("k1", 1), f("record.decided", 2, { decision: "stale", decider: "code", via: "expired" }, "kernel", { subject: "record:k1" }),
+    card("k2", 3), f("record.decided", 4, { decision: "cancelled", decider: "code", via: "replaced" }, "kernel", { subject: "record:k2" })], 5, { kind: "idle", attention: [] }],
   ["an owner wait survives a job start", [created(), wait("owner_wait", 1, { question: "keep v1?" }), job("job.started", 2), job("job.ended", 3, { state: "done" })], NOW,
     { kind: "waiting", reason: "owner_wait", question: "keep v1?", attention: [{ who: "owner", why: "owner_wait", ref: "wait:t1" }] }],
   ["an older owner comment never ends a newer wait", [created(), wait("owner_wait", 2), comment("account:o1", 1)], NOW, { reason: "owner_wait" }],
