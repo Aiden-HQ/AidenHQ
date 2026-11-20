@@ -10,7 +10,7 @@ graded: true
 connections:
   # app_requests: the app's open in-app requests; the rest are read-only views of the app.
   apps: [ app_list, app_status, app_view, web_view, app_requests ]
-  paperclip_tasks: [ task_current, task_get, task_comments, task_list, task_comment, task_handoff, task_finish, task_set_status ]
+  paperclip_tasks: [ task_current, task_get, task_comments, task_list, task_comment, task_handoff, task_finish, task_block, task_cancel ]
   # After trial (tap 2): paperclip_tasks adds task_delegate (code changes to the Engineer, who takes them from any agent).
 routines:
   backlog:

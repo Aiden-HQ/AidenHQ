@@ -101,15 +101,12 @@ test("a deliverable ref is one strict token: no forged markers", async () => {
 });
 
 test("task_finish on a held task posts the result as a comment and leaves the status to the grader", async () => {
-  for (const tool of ["task_finish", "task_set_status"]) {
-    const args = tool === "task_finish" ? { comment: "Merged acme/app#12." } : { issue: "WOR-5", status: "done", comment: "Merged acme/app#12." };
-    const held = await call(tool, args, { finish: { status: 202, body: { held: { state: "pending", reason: "The grader checks this task against its rubric." } } } });
-    assert.equal(held.r.result?.isError, undefined, held.text);
-    // One move to done, which the kernel held (it forwards nothing); the result goes on as a comment.
-    assert.deepEqual(held.patches.map((p) => p.status), ["done"]);
-    assert.deepEqual(held.comments, ["Merged acme/app#12."]);
-    assert.match(held.text, /Held for grading/);
-  }
+  const held = await call("task_finish", { comment: "Merged acme/app#12." }, { finish: { status: 202, body: { held: { state: "pending", reason: "The grader checks this task against its rubric." } } } });
+  assert.equal(held.r.result?.isError, undefined, held.text);
+  // One move to done, which the kernel held (it forwards nothing); the result goes on as a comment.
+  assert.deepEqual(held.patches.map((p) => p.status), ["done"]);
+  assert.deepEqual(held.comments, ["Merged acme/app#12."]);
+  assert.match(held.text, /Held for grading/);
   const free = await call("task_finish", { comment: "Done." });
   assert.equal(free.patches[0].status, "done");
   assert.deepEqual(free.comments, []);

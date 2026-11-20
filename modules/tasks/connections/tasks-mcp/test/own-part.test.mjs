@@ -42,12 +42,6 @@ test("task_finish closes a task this agent filed under the owner's task", async 
   assert.deepEqual(patches, [{ issue: "cur", status: "done", comment: "Done: answers transcribed." }]);
 });
 
-test("task_set_status done closes a task this agent filed under the owner's task", async () => {
-  const { error, patches } = await call("task_set_status", { issue: "cur", status: "done" }, "me");
-  assert.equal(error, undefined);
-  assert.deepEqual(patches, [{ issue: "cur", status: "done" }]);
-});
-
 test("a handoff of an agent-filed task gives it back to the owner instead of parking it on the agent", async () => {
   const { error, patches } = await call("task_handoff", { issue: "cur", comment: "Waiting on your call." }, "me");
   assert.equal(error, undefined);
@@ -55,15 +49,15 @@ test("a handoff of an agent-filed task gives it back to the owner instead of par
 });
 
 test("a task this agent filed and then handed off can still be finished with done", async () => {
-  const { error, patches } = await call("task_set_status", { issue: "cur", status: "done" }, "me", "todo");
+  const { error, patches } = await call("task_finish", { comment: "Done." }, "me", "todo");
   assert.equal(error, undefined);
-  assert.deepEqual(patches, [{ issue: "cur", status: "done" }]);
+  assert.deepEqual(patches, [{ issue: "cur", status: "done", comment: "Done." }]);
 });
 
 test("a task another agent filed, now assigned to this agent, is this agent's to finish", async () => {
-  const { error, patches } = await call("task_set_status", { issue: "cur", status: "done" }, "someone-else", "todo");
+  const { error, patches } = await call("task_finish", { comment: "Done." }, "someone-else", "todo");
   assert.equal(error, undefined);
-  assert.deepEqual(patches, [{ issue: "cur", status: "done" }]);
+  assert.deepEqual(patches, [{ issue: "cur", status: "done", comment: "Done." }]);
 });
 
 test("a part the owner gave the agent still stays open for the owner's replies", async () => {

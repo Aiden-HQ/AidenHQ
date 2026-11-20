@@ -30,7 +30,7 @@ describe("graded done", () => {
     expect(reject("sha3")).toMatchObject({ state: "escalated", attempts: 3 });
     expect(grades.escalated().map((g) => g.issueId)).toEqual(["t"]);
     // Finished again: still the owner's until the runner finds a new version.
-    expect(completionGate(grades, "t", "task_set_status")).toMatchObject({ pass: false, state: "escalated" });
+    expect(completionGate(grades, "t", "task_finish")).toMatchObject({ pass: false, state: "escalated" });
     expect(grades.resubmitted().map((g) => g.issueId)).toEqual(["t"]);
     expect(grades.resubmit("t", "sha4").state).toBe("pending");
     expect(grades.record("t", { version: "sha4", outcome: "satisfied", model: "glm", criteria: [] }).state).toBe("satisfied");
@@ -107,7 +107,7 @@ describe("graded done", () => {
     expect(g).toMatchObject({ state: "grading_failed", attempts: 0, failures: 1, failedAt: new Date(at).toISOString() });
     // The owner channel reads only escalated rows: a timeout is not an accept-or-reopen decision.
     expect(grades.escalated()).toEqual([]);
-    expect(completionGate(grades, "t", "task_set_status")).toEqual({ pass: false, state: "grading_failed", label: "grading" });
+    expect(completionGate(grades, "t", "task_finish")).toEqual({ pass: false, state: "grading_failed", label: "grading" });
     for (const [i, delay] of GRADER_RETRY_MS.entries()) {
       expect(grades.due(at + delay - 1)).toEqual([]);
       expect(grades.due(at + delay).map((x) => x.issueId)).toEqual(["t"]);
@@ -171,7 +171,7 @@ describe("graded done", () => {
     expect(grades.due()).toEqual([]);
     expect(grades.escalated()).toEqual([]);
     expect(grades.unsettled()).toEqual([]);
-    expect(completionGate(grades, "t", "task_set_status", { done: true })).toEqual({ pass: true });
+    expect(completionGate(grades, "t", "task_finish", { done: true })).toEqual({ pass: true });
     // A settled row keeps its first reason.
     expect(grades.settle("t", "some other reason").closedReason).toBe("the task was cancelled before the grader settled it");
   });

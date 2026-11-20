@@ -86,6 +86,19 @@ describe("notify", () => {
     expect(sent.map((s) => s.m.text)).toEqual(["Board account reset for sam@example.com"]);
   });
 
+  it("a decision files an owner wait carrying its text; a failed wait is returned, not swallowed", async () => {
+    const { d } = world();
+    d.resolveTask = async () => ({ issueId: "i9", agentId: "a1", agentName: "Architect", ownerVia: "telegram" });
+    const waits: string[] = [];
+    d.wait = async (_t, _a, question) => { waits.push(question); };
+    expect(await notify(d, { kind: "decision", text: "Context.", task: "WOR-9", questions: [{ question: "Size?", options: ["S", "L"] }, { question: "Color?", options: ["R", "B"] }] }, agent("a1"))).toMatchObject({ sent: true });
+    expect(waits).toEqual(["Context.\nSize?\nColor?"]);
+    d.wait = async () => { throw new Error("POST /v1/wait -> 503"); };
+    const r = await notify(d, { kind: "decision", text: "Another?", task: "WOR-9" }, agent("a1")) as { sent: boolean; wait_error?: string };
+    expect(r.sent).toBe(true);
+    expect(r.wait_error).toMatch(/wait/);
+  });
+
   it("an agent's reply on its chat: posted as its comment, headed on the phone, the channel the owner wrote from first", async () => {
     const { d, sent, posted } = world();
     d.resolveTask = async () => ({ issueId: "i9", agentId: "a1", agentName: "Architect", ownerVia: "telegram" });

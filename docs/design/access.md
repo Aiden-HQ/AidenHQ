@@ -290,7 +290,7 @@ app and without giving app users' words a privileged agent.
    as people's suggestions.
 4. Grants are per agent, not per routine, so the run gets a narrow agent, enforced in code at every layer:
    - compile allows the `feedback_to` agent exactly `apps: app_api, app_view` and its task tools (`task_current`,
-     `task_get`, `task_comments`, `task_list`, `task_comment`, `task_finish`, `task_set_status`, `task_delegate`, the
+     `task_get`, `task_comments`, `task_list`, `task_comment`, `task_finish`, `task_block`, `task_cancel`, `task_delegate`, the
      automatic `memory_note`): any other tool, a read included, fails, and so does that agent in another app's `api.callers`;
    - apps-mcp refuses it any app but the ones that name it, with any tool (`feedbackOnly`), and an app may give it
      narrower API paths than its other callers (`api.callers: [{agent, paths}]`), down to exact routes (the method, then

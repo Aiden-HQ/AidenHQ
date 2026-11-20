@@ -51,7 +51,7 @@ const SCHEMA = {
 const FRAME = `You are replaying one run. The user message is your run's task and everything your read tools returned during it.
 Do not call read tools again. Reply with every write call you would make, in order, as JSON: calls are any of ${conf.writes.join(", ")}.
 For each call give
-tool, marker (the source marker, or ""), label (comma-separated labels, or ""), status (task_set_status, or ""), priority, title
+tool, marker (the source marker, or ""), label (comma-separated labels, or ""), status (a confirm or reject decision, or ""), priority, title
 and text (the task description, comment, DM or finish line). Leave a field "" when it doesn't apply.`;
 
 const matches = (call, m) => Object.entries(m).every(([k, v]) => k === "count" || k === "min" || (k === "title_re" ? new RegExp(v).test(call.title) : String(call[k] ?? "").toLowerCase().includes(String(v).toLowerCase())));

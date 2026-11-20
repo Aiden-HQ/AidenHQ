@@ -45,7 +45,7 @@ function world() {
   const rows = () => db.prepare("SELECT key, cause, state FROM wakes ORDER BY at, key").all().map((r) => `${r.key.replace(/:[0-9TZ:.-]+$/, "")} ${r.cause} ${r.state}`);
   /** A job on t1 from its wake to its end. */
   const job = (id) => { add("job.queued", `job:${id}`, "t1"); add("job.started", `job:${id}`, "t1"); clock += MIN; add("job.ended", `job:${id}`, "t1", { state: "done" }); };
-  return { idle, wakes, flow, add, job, rows, reads, asked, down: (v) => (down = v), tick: (ms) => (clock += ms), now: () => clock };
+  return { db, idle, wakes, flow, add, job, rows, reads, asked, down: (v) => (down = v), tick: (ms) => (clock += ms), now: () => clock };
 }
 
 test("an agent-held task orphaned 15 minutes gets an idle wake, again 15 minutes after one is dropped, at most 3 a day; the owner's task none and isn't read", async () => {
@@ -143,4 +143,18 @@ test("task_wait for the owner asks them, headed by the task and naming its agent
   await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "the brief's file list is stale", for: "delegator", question: "The modules were renamed: which files now?" });
   assert.deepEqual(w.asked.notices.map((n) => n.task), ["t0"]);
   assert.match(w.asked.notices[0].body, /^\*\*T1 asks you:\*\*[^]*```\nThe modules were renamed: which files now\?\n```[^]*<!-- aidenhq-wake -->$/);
+});
+
+test("an asked owner wait records its question and sends nothing", async () => {
+  const w = world();
+  const r = await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "the owner's answer", for: "owner", asked: true, question: "keep v1?" });
+  assert.equal(r.asked, undefined);
+  assert.equal(w.asked.owner.length, 0, "escalate.ask is not called");
+  const fact = w.db.prepare("SELECT data FROM facts WHERE type = 'work.waiting'").all().map((r) => JSON.parse(r.data));
+  assert.equal(fact.length, 1);
+  assert.partialDeepStrictEqual(fact[0], { reason: "owner_wait", question: "keep v1?" });
+  w.tick(MIN);
+  const item = w.flow.idleNow().items.find((i) => i.task === "t1");
+  assert.equal(item.reason, "owner_wait");
+  await assert.rejects(w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "x", asked: true, question: "q" }), /for: owner/);
 });

@@ -90,7 +90,7 @@ agents:
       # A PR's review threads (replies to its findings) and one comment answering an `@aiden` question, as the posting identity's
       # write: a kernel record the AI reviewer decides.
       github: [ github_pr_threads, github_issue_comment ]
-      paperclip_tasks: [ task_current, task_get, task_comments, task_comment, task_set_status, task_finish ]
+      paperclip_tasks: [ task_current, task_get, task_comments, task_comment, task_block, task_cancel, task_finish ]
     roles: [ reviewer-manager ]
 # Its tools (service/src/config-tool.ts), served by the state service; each call's assertion gates it to the reviewer-manager role.
 connections:

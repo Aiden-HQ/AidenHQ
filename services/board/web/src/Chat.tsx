@@ -169,7 +169,7 @@ export function ApprovalCard({ a, open, inline, prefix = "", unfold }: { a: Appr
 
 /**
  * A tool call that ran at once (Tier 0): a module's or connection's kind (conn.tool, apps-platform.api_write), mostly task
- * bookkeeping (task_finish, task_comment, task_set_status). Policy let it run, so it's audit, not something to decide; a
+ * bookkeeping (task_finish, task_comment, task_block). Policy let it run, so it's audit, not something to decide; a
  * failed one is its agent's to retry. Hidden from the history unless asked for; pushes, PRs, merges, applies and deploys stay.
  */
 const toolCall = (a: Approval) => a.state === "auto" && a.action.includes(".");

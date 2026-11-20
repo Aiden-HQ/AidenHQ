@@ -8,11 +8,11 @@ when: { fields: { name: Intake } }
 
 Your run task gives today's date, the current time and the user's task emoji (e.g. `:pushpin:`). Call `slack_owner` once at the start for the user's Slack user ID (`U…`), written `<me>` below; if no one is paired yet, finish with a note that Slack is not paired. `<yesterday>` is the date before today.
 
-Tools: `slack_search_public_and_private`, `slack_search_public`, `slack_read_thread`, `slack_read_channel`, `slack_read_user_profile`, `slack_search_users`, `slack_search_channels`, `slack_list_user_channels`; tasks `task_search`, `task_list`, `task_create` (idempotent by marker), `task_update`, `task_get`, `task_comment`, `task_set_status`, `task_finish`.
+Tools: `slack_search_public_and_private`, `slack_search_public`, `slack_read_thread`, `slack_read_channel`, `slack_read_user_profile`, `slack_search_users`, `slack_search_channels`, `slack_list_user_channels`; tasks `task_search`, `task_list`, `task_create` (idempotent by marker), `task_update`, `task_get`, `task_comment`, `task_cancel`, `task_finish`.
 
 ## 1. Close answered items
 
-`task_list` with `label: "needs-response"`. For each open task, read the thread from its own `source:slack:<channel>:<ts>` marker with `slack_read_thread`. When `<me>` replied after the ask, or the ask was withdrawn, `task_set_status` `done` with the comment "Answered in Slack" and the permalink.
+`task_list` with `label: "needs-response"`. For each open task, read the thread from its own `source:slack:<channel>:<ts>` marker with `slack_read_thread`. When `<me>` replied after the ask, or the ask was withdrawn, `task_finish` (its `issue`) with the comment "Answered in Slack" and the permalink.
 
 ## 2. Find candidates
 
@@ -54,7 +54,7 @@ One `task_create` per conversation, on the thread's root message:
 Every message the user reacted to with their task emoji is a task, whoever wrote it and however old it is, open until the user removes the reaction or closes the task.
 
 - **Find them:** search `query: "hasmy:<emoji>"` (e.g. `hasmy::pushpin:`) with `response_format: "detailed"`, `include_context: false`, `sort: "timestamp"`, `limit: 20` and no date filter, following the cursor up to 5 pages. The pinned set is known only when the last page had no cursor, no search failed, and it agrees with the threads you read. Slack search can return an empty or unfiltered page for an emoji filter with no error: when the search returns nothing, or leaves out a message whose thread still shows the user's emoji, the pinned set is unknown. Then skip closing unpinned tasks and report `pinned: unavailable` with what failed.
-- **Close the unpinned** (only with a known pinned set): `task_search` with `query: "source:slack:pin"`, `limit: 50`. A task whose own marker (`source:slack:pin:<channel_id>:<ts>`) is not among the pinned messages lost its reaction; confirm with `slack_read_thread` that the emoji is gone from that message, then `task_set_status` `done` with the comment "Reaction removed in Slack".
+- **Close the unpinned** (only with a known pinned set): `task_search` with `query: "source:slack:pin"`, `limit: 50`. A task whose own marker (`source:slack:pin:<channel_id>:<ts>`) is not among the pinned messages lost its reaction; confirm with `slack_read_thread` that the emoji is gone from that message, then `task_finish` (its `issue`) with the comment "Reaction removed in Slack".
 - **One task per pinned message:** read the thread when the message alone doesn't say what's needed, then `task_create` with `marker` `source:slack:pin:<channel_id>:<message ts>` (the pinned message's own `ts`, even inside a thread), `dedupe_closed: true` (a task the user closed stays closed), `labels: ["todo"]`, a title of what the user needs to do ("Reply to Gillian: launch checklist", "Read: <topic>" when purely informational), `priority` `high` for a deadline today or tomorrow or a blocker and `medium` otherwise, the mission's description format with `Type: Slack (pinned)` and a Reason starting "Reacted <emoji> in Slack.", and `related_markers: ["source:slack:<channel_id>:<thread_ts>"]` when it is a reply in a thread.
 - An open deduplicated task gets a `task_comment` only when the thread has a genuinely new message since it was created.
 

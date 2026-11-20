@@ -44,9 +44,9 @@ export function createIdle({ facts, flow, wakes, owner, team = () => false, esca
   return {
     /**
      * The job's own task waits: `reason` (its words), `until` (ISO) and/or `on` (the event it waits for); `for` owner or
-     * delegator, with the `question` they answer (notify's own decision wait sends `for: owner` alone: it asked already).
+     * delegator, with the `question` they answer (`asked: true`, with `for: owner`: the question went already, notify's decision or the agent's own reply, so it is recorded and not sent; `handoff: true` marks a wait on the owner's reply to a handoff).
      */
-    async wait(caller: { agent: string; key: string; task: string }, b: { reason?: unknown; until?: unknown; on?: unknown; task?: unknown; for?: unknown; question?: unknown }) {
+    async wait(caller: { agent: string; key: string; task: string }, b: { reason?: unknown; until?: unknown; on?: unknown; task?: unknown; for?: unknown; question?: unknown; asked?: unknown; handoff?: unknown }) {
       const reason = typeof b.reason === "string" ? b.reason.trim().slice(0, 300) : "";
       const on = typeof b.on === "string" ? b.on.trim().slice(0, 200) : "";
       const who = b.for === undefined ? undefined : b.for === "owner" || b.for === "delegator" ? b.for : null;
@@ -54,6 +54,9 @@ export function createIdle({ facts, flow, wakes, owner, team = () => false, esca
       if (!reason) throw fail(400, "bad_request", "send {reason, until?, on?, for?, question?}: why the task waits");
       if (who === null) throw fail(400, "bad_request", "for is owner or delegator");
       if (who === "delegator" && !question) throw fail(400, "bad_request", "a wait for the delegator sends the question it answers");
+      // `asked`: the question went to the owner already (notify's decision, the agent's own reply): it is recorded, never sent again.
+      const asked = b.asked === true;
+      if (asked && (who !== "owner" || !question)) throw fail(400, "bad_request", "asked: true goes with for: owner and the question that was asked");
       if (b.task !== undefined) {
         // A task that isn't the job's own is refused; a read that fails now (a 5xx, a timeout) is a 503 to try again, never a refusal.
         const r = await owner("GET", `/api/issues/${encodeURIComponent(String(b.task).slice(0, 100))}`).catch((e: Error) => { throw fail(503, "unavailable", `reading the task: ${e.message}`); });
@@ -71,11 +74,11 @@ export function createIdle({ facts, flow, wakes, owner, team = () => false, esca
       else throw fail(400, "bad_request", "send until (an ISO time, at most 7 days ahead) or on (the event it waits for)");
       // Asked first: a question that can't be sent now fails the call (the agent tries again), never a silent wait.
       // One open ask per task: a second question while the first is unanswered isn't sent, and the agent hears so.
-      const asked = who && question && escalate ? await escalate.ask(caller.task, who, question) : undefined;
-      fact({ type: "work.waiting", subject: `wait:${caller.task}`, version: `wait@${t}`, at: iso(t), actor: `agent:${caller.key}`, task: caller.task, data: { reason: who ? `${who}_wait` : "agent_wait", note: reason, until: iso(until), ...(on ? { on } : {}), ...(question ? { question } : {}) } });
+      const sent = who && question && escalate && !asked ? await escalate.ask(caller.task, who, question) : undefined;
+      fact({ type: "work.waiting", subject: `wait:${caller.task}`, version: `wait@${t}`, at: iso(t), actor: `agent:${caller.key}`, task: caller.task, data: { reason: who ? `${who}_wait` : "agent_wait", note: reason, until: iso(until), ...(on ? { on } : {}), ...(question ? { question } : {}), ...(b.handoff === true ? { handoff: true } : {}) } });
       wakes.open({ key: `wait:${caller.task}:${until}`, task: caller.task, agent: caller.agent, cause: `wait: ${reason}`.slice(0, 200), at: until, replaces: `wait:${caller.task}:`, author: `agent:${caller.key}` });
       log("task wait", { task: caller.task, agent: caller.key, until: iso(until) });
-      return { waiting: true, until: iso(until), ...(asked === "open" ? { asked: false, note: "Your earlier question on this task is still unanswered, so this one wasn't sent: the task waits for that answer." } : asked === "asked" ? { asked: true } : {}) };
+      return { waiting: true, until: iso(until), ...(sent === "open" ? { asked: false, note: "Your earlier question on this task is still unanswered, so this one wasn't sent: the task waits for that answer." } : sent === "asked" ? { asked: true } : {}) };
     },
 
     /** One sweep: the tasks whose holders it woke. */

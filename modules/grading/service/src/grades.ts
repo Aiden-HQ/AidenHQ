@@ -439,8 +439,8 @@ export const ESCALATION_WAIT_MS = 24 * 60 * 60_000;
 
 /** A held task's scheduled check sits at the runner's evidence deadline, well past a normal grader pass. */
 export const GRADE_CHECK_MS = 24 * 60 * 60_000;
-/** Every way a task reaches done: the tasks bridge's task_finish and task_set_status(done), the runner's finishTurn and finishMerges. */
-export type CompletionPath = "task_finish" | "task_set_status" | "finish_turn" | "finish_merges";
+/** Every way a task reaches done: the tasks bridge's task_finish, the runner's finishTurn and finishMerges. */
+export type CompletionPath = "task_finish" | "finish_turn" | "finish_merges";
 /**
  * pass: the path may close the task as it would have. Otherwise the task goes to in_review with the `grading` label and the
  * row has this state (escalated: it waits for the delegator; grading_failed: the runner retries it).
