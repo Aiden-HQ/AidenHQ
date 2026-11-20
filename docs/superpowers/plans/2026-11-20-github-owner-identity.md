@@ -107,12 +107,6 @@ Repo patterns keep today's grammar: `@instance`, `@product`, `@orgs`, `@maintain
   - `GET /v1/objects?ref=<ref>` answers `{ours: boolean, record?: string, at?: string}`;
   - `GET /v1/objects?type=pr&since=<iso>` answers `{refs: string[]}`.
 
-**Owner words** (Task 5, role `kernel.owner-words`): `POST /v1/owner-words {task, comment}` answers
-`{text, at, account}` or 403. 403 when the Paperclip comment fails any of:
-- `isOwnerComment` (`kernel/src/brake.ts`) holds;
-- its body is not a forward (`[<label>] Forwarded from`);
-- it carries no `<!-- aidenhq-` marker. The board's `<!-- aidenhq-from:` relay is allowed, as `isOwnerComment` allows it.
-
 **Fleet org:**
 - `github_fleet_org` is a github module setting.
 - Compile writes it to the kernel's modules file as `repos.fleet_org`. The kernel reads it per call, not from env.
@@ -132,19 +126,15 @@ Repo patterns keep today's grammar: `@instance`, `@product`, `@orgs`, `@maintain
 | `github_app_pr_list` | `github_pr_list` |
 | `github_app_repo_tree` | `github_repo_tree` |
 | `github_app_repo_file` | `github_repo_file` |
-| (new) | `github_issue_build`, `github_build_check` (Task 9) |
 
 ## Review Focus
 
 - **Disconnected at a bad moment.** The token is revoked while a merge is queued or a push record is approved. Expect the
   merge queue to post `work.waiting` reason `github`, `execute` to answer `running` (held), and both to resume on
   reconnect. Neither fails nor runs twice. Test: Task 2 `held write resumes on reconnect`.
-- **An agent's word dressed as the owner's.** Forwarded text, an agent comment, a wake notice carrying `<!-- aidenhq-` and a
-  board-key relay of another agent all name `repo#N`. None may file a build. Test: Task 5 `owner-words refuses non-owner
-  text`.
-- **Fleet labels on its own issues.** The fleet's triage adds `agent-fix` as the owner's login. It must start a fix, because
-  the label event is in our records. The owner adding the same label by hand on GitHub must not. Test: Task 8 `agent-fix:
-  recorded label trusted, owner's own not`.
+- **Labels work as today (owner, 2026-11-20).** `agent-build` and the fix label added by the owner's login count, as an
+  admin collaborator's do today, whether the owner or an agent added them: they give the owner visibility, they are not a
+  security boundary. Test: Task 8 `labels by the owner's login trusted, as today`.
 - **The owner's token leaking through an op.** Expect no op's answer, header or error text to contain the token. Test: Task 4
   `no op answer carries the token` (the fake token string is absent from every answer body).
 
@@ -169,7 +159,7 @@ Shared files have an owner per section, so parallel lanes don't collide:
   - the other `settings`: Task 10;
   - `board.setup_flows` and `description`: Task 13.
 - `modules/github/service/src/service.ts`: Task 2. Task 4 adds `service/src/ops.ts`, and Task 2 routes `/ops/*` to it.
-- `kernel/src/main.ts`: Task 4, except the objects and owner-words wiring, which is Task 5's.
+- `kernel/src/main.ts`: Task 4, except the objects wiring, which is Task 5's.
 
 ---
 
@@ -399,31 +389,23 @@ Shared files have an owner per section, so parallel lanes don't collide:
 - Modify: `kernel/src/facts.ts` `record`. A fact from a code host module with `data.objects` inserts into `write_objects`
   with `record` = `fact:<type>`.
 - Modify: `kernel/src/backplane.ts`:
-  - `GET /v1/objects` (role `kernel.work-read`);
-  - `POST /v1/owner-words` (new role `kernel.owner-words`, declared in the kernel's role list). It reads the comment as the
-    owner (`owner` Api, `GET /api/issues/:task/comments`) and applies the Contracts rules.
+  - `GET /v1/objects` (role `kernel.work-read`).
 - Modify: `kernel/src/main.ts`, wiring only.
-- Test: `kernel/test/objects.test.ts` (new), `kernel/test/owner-words.test.ts` (new).
+- Test: `kernel/test/objects.test.ts` (new).
 
 **Interfaces:**
-- Produces: the Contracts "Write outcome objects" and "Owner words" sections, exactly.
+- Produces: the Contracts "Write outcome objects" section, exactly.
 
 - [ ] **Step 1: Write the failing tests:**
   - `objects: outcome refs are ours`: an executor `done` with `objects:["github:o/r#12"]` makes `GET
     /v1/objects?ref=github:o/r%2312` answer `{ours:true, record:<id>}`; an unknown ref answers `{ours:false}`.
   - `objects: background fact refs are ours`: a `pr.merged` fact from module `github` with
     `data.objects:["github:o/r@<sha>"]` makes the ref `ours`.
-  - `owner-words refuses non-owner text`. All of these name `o/r#12` and answer 403:
-    - an agent's comment (`authorAgentId` set);
-    - a forward (`[telegram] Forwarded from …`);
-    - a comment with `<!-- aidenhq-wake -->`.
-    The owner's plain `[telegram] build o/r#12` answers 200 with its text.
-- [ ] **Step 2: Run** `cd kernel && node --disable-warning=ExperimentalWarning --test test/objects.test.ts
-  test/owner-words.test.ts`. Expected: FAIL.
+- [ ] **Step 2: Run** `cd kernel && node --disable-warning=ExperimentalWarning --test test/objects.test.ts`. Expected: FAIL.
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run** `cd kernel && npm test && npm run typecheck`, then regenerate the contract lock (`node
   scripts/lean/contract-lock.ts --write`, new routes `experimental`). Expected: PASS.
-- [ ] **Step 5: Commit** `feat(kernel): write outcomes record GitHub objects; owner-words check for the owner's own message`.
+- [ ] **Step 5: Commit** `feat(kernel): write outcomes record GitHub objects`.
 
 ### Task 6: apps-platform, grading and CI on code host operations (Lane C, after 4)
 
@@ -511,11 +493,9 @@ Shared files have an owner per section, so parallel lanes don't collide:
 **Files:**
 - Modify: `modules/github/connections/github-mcp/src/maintainer.ts`:
   - rename the tools per the Contracts table, and the comment tool merges into `github_issue_comment`;
-  - `trustedEvent`: a `labeled` event whose ref `github:<repo>#<n>/label/<name>` is `ours` (`/v1/objects`) is trusted for
-    the repo's fix label and `feature-request`;
-  - otherwise an actor equal to `access.identity().login` is untrusted;
-  - otherwise the collaborator-role test as today;
-  - `agent-build` handling leaves `labelEvents` (Task 9 replaces it);
+  - `trustedEvent`: the collaborator-role test as today, for every label including `agent-build` (the owner's login is an
+    admin, so its labels count whether the owner or an agent added them); only the App clauses go;
+  - `agent-build` handling stays as today;
   - every `this.app.appCall` becomes `access.rest`;
   - label, state and comment writes return their `objects`.
 - Modify: `modules/github/connections/github-mcp/src/main.ts`, the tool names (`github_product_issue`,
@@ -543,10 +523,9 @@ Shared files have an owner per section, so parallel lanes don't collide:
 - Consumes: `GitHubAccess`; `/v1/objects`.
 
 - [ ] **Step 1: Write the failing tests:**
-  - `agent-fix: recorded label trusted, owner's own not`:
-    - the fix label added by login `owner1` (= identity), with its ref `ours`, is trusted;
-    - the same event with the ref not ours is untrusted;
-    - `taylan` with role `maintain` is trusted.
+  - `labels by the owner's login trusted, as today`:
+    - the fix label and `agent-build` added by login `owner1` (= identity, role `admin`) are trusted;
+    - `taylan` with role `maintain` is trusted; a `read` collaborator is not.
   - `comment merges scrub on maintained repos`: `github_issue_comment` on a maintained repo with an owner term in the body
     is refused by the scrub; on another repo it posts with the footer.
   - `product-bug skill names github_product_issue`: the maintainer and fleet-steward skill-lint tests pass with the new name,
@@ -558,54 +537,11 @@ Shared files have an owner per section, so parallel lanes don't collide:
   test`, and `cd services/computer && node --test test/*.test.ts`. Expected: PASS.
 - [ ] **Step 5: Commit** `feat(maintainer): GitHub tools as the owner; trust from our records; product bugs without agent-fix`.
 
-### Task 9: The owner's word to build (Lane D, after 5 and 8)
+### Task 9: removed
 
-**Files:**
-- Modify: `modules/maintainer/service/src/watcher.ts`. Delete the agent-build path: `builds`, `build_cursor`,
-  `build_error`, the `kind:"build"` branch of `maintainerWake`, and the `build_cursors` query.
-- Modify: `modules/github/connections/github-mcp/src/maintainer.ts`:
-  - delete `issuesSince`'s `BUILD_LABEL` read and `labelEvents`' build staleness;
-  - add `build(repo, number, ownerTask, ownerComment)`:
-    1. Call kernel `POST /v1/owner-words` with the code host token.
-    2. The text must name the issue: `<repo>#<n>`, `<name>#<n>`, `https://github.com/<repo>/issues/<n>`, or a bare
-       `#<n>` when `repo` is the only maintained repo with `features` on. It must also contain the word `build`.
-    3. Read the issue and compute `sha256(title + "\n" + body)`.
-    4. Store `{repo#n: {hash, at, comment}}` in `/state/builds.json`.
-    5. File the task through kernel `POST /v1/tasks` for role `maintainer`, source `maintainer-issue:<repo>#<n>`. Keep
-       today's build task text, with "labelled agent-build by a trusted actor" replaced by "the owner asked for it in
-       AidenHQ".
-  - add `buildCheck(repo, number)`, which answers `{vouched, stale, at}` (`stale` when the current hash differs).
-- Modify: `kernel/sdk/src/maintained-repos.ts`. `BUILD_LABEL` goes. `features` now means: triage feature requests, and
-  build those the owner asks for in AidenHQ. Run `node scripts/sync-shared.ts`.
-- Modify: `modules/github/connections/github-mcp/src/main.ts`. Register `github_issue_build` (`{repo, number, task,
-  comment}`; the description says to pass the owner's message's task and comment id) and `github_build_check`.
-- Modify: `modules/github/module.yaml` tools:
-  - `github_issue_build` is destructive and named;
-  - `github_build_check` is named;
-  - the `github` module's `roles.requests` gains `kernel.owner-words`.
-- Grants: `modules/chief-of-staff/module.yaml` gets `github_issue_build`, and `modules/maintainer/module.yaml` gets
-  `github_build_check`.
-- Text:
-  - `modules/maintainer/agents/maintainer/AGENTS.md`: "A build task" calls `github_build_check` first, in place of "re-read
-    its agent-build label event";
-  - `modules/chief-of-staff/agents/chief-of-staff/AGENTS.md`: one line. The owner's "build <issue>" is
-    `github_issue_build` with that message's ids;
-  - `modules/maintainer/module.yaml` description: drop "you mark agent-build".
-- Test: `modules/maintainer/test/watcher.test.ts` (delete the build cases), `github-mcp/test/maintainer.test.ts`.
-
-**Interfaces:**
-- Consumes: `POST /v1/owner-words` (Task 5); Task 8's tool names.
-
-- [ ] **Step 1: Write the failing tests:**
-  - `build files once for the owner's message`: owner-words answers `[web] build #1065`, and `o/AidenHQ` is the only repo
-    with features on. One `POST /v1/tasks` with source `maintainer-issue:o/AidenHQ#1065`, and `builds.json` holds the hash.
-  - `build refused when the message names another issue`: `build #1066` for #1065 is refused, and no task is filed.
-  - `build refused for owner-words 403`: no task.
-  - `buildCheck goes stale on edit`: change the fake issue body, and `stale` is true.
-- [ ] **Step 2: Run** github-mcp `npx vitest run test/maintainer.test.ts`. Expected: FAIL.
-- [ ] **Step 3: Implement.** `git grep -n "agent-build\|BUILD_LABEL" -- modules kernel scripts ':!modules/ai-reviewer/test' ':!modules/fleet-steward/test/evals'` prints nothing.
-- [ ] **Step 4: Run** github-mcp `npm test && npm run typecheck`, and `npm test` in `modules/maintainer`. Expected: PASS.
-- [ ] **Step 5: Commit** `feat(maintainer): build a feature on the owner's own word in AidenHQ, not a GitHub label`.
+Owner, 2026-11-20: the `agent-build` label keeps working exactly as today (visibility for the owner, not a security
+boundary), so there is no owner-words route and no build tool. `watcher.ts`, `BUILD_LABEL` and the build task path are
+unchanged apart from Task 8's App-clause removal.
 
 ### Task 10: Compile and settings: github_fleet_org (Lane E)
 
@@ -764,13 +700,12 @@ Shared files have an owner per section, so parallel lanes don't collide:
   - `kernel/src/github-app.ts`, the `/setup/github-app*` routes and the `token` op;
   - `modules/github/service/src/github-app.ts`, both old Dockerfiles, `ops/git-credential-app.mjs`;
   - the `github_app` service field, `github_comment_orgs` (github, code-review, board);
-  - `github_app_*` names, the agent-build label dispatch, `agent-fix` on product filings, `IdentityWant`;
+  - `github_app_*` names, `agent-fix` on product filings, `IdentityWant`;
   - `github_official` write tools, `GITHUB_APP_DIR`, `AIDENHQ_GITHUB_AGENTS_ORG` (except the one-release mapping);
   - the App tests.
   Confirm nothing outside this spec is removed: compare against the base for stale files reverted by an old base.
 - [ ] **Step 6: Security review** (product `CLAUDE.md`: every new path gets one before it switches on):
   - the op table's grants;
-  - `/v1/owner-words`;
   - the credential helper's scope check;
   - that the token never leaves the process.
   Each finding gets a test.

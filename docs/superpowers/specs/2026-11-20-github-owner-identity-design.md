@@ -35,7 +35,7 @@ own. Everything we write says so: commits carry `Co-authored-by: AidenHQ <agent 
 
 - A fallback or a second path: no "App if present, else owner". The App code is deleted, not kept dormant.
 - The owner's GitHub token reaching an agent, a job or a computer box.
-- Anything an agent does on GitHub counting as the owner's word (labels, reviews, comments, approvals).
+- An agent's GitHub review counting as the owner's approval toward branch protection.
 - Silent degradation: a fleet repo quietly landing in `local` because GitHub dropped, a write quietly not happening.
 
 ## Constraints
@@ -132,14 +132,10 @@ nothing because nothing on GitHub carries authority. The footer still tells huma
 
 ### 6. Authority moves to AidenHQ
 
-- **`agent-build`:** the label dispatch in `modules/maintainer/service/src/watcher.ts` is deleted. The owner's word to
-  build a feature is the owner's own message in AidenHQ (board chat, Telegram, Slack DM), e.g. "build #1065". Aiden calls
-  a Maintainer tool `issue_build(repo, number, owner_message_id)`; **code** checks that the cited message is authored by
-  the owner's account (the board account / owner channel identity, as approvals are) and names that repo and issue, then
-  files the build task bound to the issue's content hash at that moment. No LLM decides it's the owner's word; a later edit
-  to the issue makes it stale, as today. One step for the owner, no extra card (my call).
-- **`agent-fix` and other trusted labels** (`modules/github/connections/github-mcp/src/maintainer.ts`): the signed-in owner's login is excluded before the
-  collaborator-role test. Other admin/maintain collaborators (e.g. Taylan) still count.
+- **Labels (`agent-build`, `agent-fix`) work as today** (owner, 2026-11-20): a label added by the owner's login counts,
+  as an admin collaborator's does now, whether the owner or an agent added it. They give the owner visibility; they are
+  not a security boundary, and an agent adding one is not a concern. Only the App clauses in
+  `modules/github/connections/github-mcp/src/maintainer.ts` go. Other admin/maintain collaborators still count.
 - **Product-bug filings** (`modules/github/connections/github-mcp/src/projects.ts` `reportIssue`): filed as the owner, scrubbed and fingerprint-deduped as today,
   **without** adding `agent-fix` (it wouldn't be trusted, and an outside reporter may not be allowed to label). The
   Maintainer triages it like any issue. `github_app_issue` becomes `github_product_issue`; the chief-of-staff and Fleet
@@ -212,7 +208,7 @@ problems and scopes. No App state exists any more.
 - Other orgs installing the public App so the fleet can PR there: now "repos the owner's account can reach".
 - The App setup page, the App key and the codehost-github App code.
 - Also dropped by this design (listed for the owner's review): `github_official`'s write tools (replaced by our typed
-  tools); `github_comment_orgs`; `agent-build` as a GitHub label trigger (replaced by the owner's word in AidenHQ);
+  tools); `github_comment_orgs`;
   `agent-fix` on product filings.
 
 ### 12. Migration (the owner's live instance)
