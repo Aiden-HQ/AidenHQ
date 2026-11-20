@@ -222,7 +222,7 @@ export function createWrites({ records, registry, connections, secret, resolver,
 
   /** Plan, tier, card and file. Tier 0 comes back claimed (the caller executes it); `satisfied` comes back done. */
   /** Plan, tier and card a request, filing nothing: the record file() files (`filed`), or the plan's `satisfied` evidence. */
-  async function prepare(kind: string, k: Kind, requester: Requester, args: unknown, task: string, evidence?: unknown, workspace?: string) {
+  async function prepare(kind: string, k: Kind, requester: Requester, args: unknown, task: string, evidence?: unknown, workspace?: string, ownerSave = false) {
     const executor = { module: k.module, url: k.executor?.url, ...(k.executor?.rev ? { rev: k.executor.rev } : {}) };
     const own = Object.hasOwn(planners, kind) ? planners[kind] : undefined;
     const plan: Plan = own ? await own({ kind, args, requester, task, ...(workspace ? { workspace } : {}) }) : await call(k, "plan", { kind, args, requester, task, ...(evidence !== undefined ? { evidence } : {}) });
@@ -238,7 +238,7 @@ export function createWrites({ records, registry, connections, secret, resolver,
     const byPaths = k.paths ? writeRaise(paths(), plan.paths, repoKindOf) : undefined;
     const checkRaises = [...(byPaths ? [byPaths] : []), ...filedRaises(kind, plan)];
     const reviewFirst: ReviewFirst = plan.review_first === "final" ? "final" : "owner";
-    const t = computeTier({ floor: k.floor, raise, reviewFirst, checkRaises, priorVeto: task ? records.vetoed(task, kind, { digest: digestOf(base) }) : false, autonomy: autonomy(), routine: await routineOf(task), panel: k.panel === true, uncapped: isUpdater(requester) });
+    const t = computeTier({ floor: k.floor, raise, reviewFirst, checkRaises, priorVeto: task ? records.vetoed(task, kind, { digest: digestOf(base) }) : false, autonomy: autonomy(), routine: await routineOf(task), panel: k.panel === true, uncapped: isUpdater(requester), ownerSave });
     // The reason and rule shown: the strictest raise, the plan's on a tie.
     const weight = (r: Raise | undefined) => (r ? r.tier * 4 + (r.ownerOnly ? 2 : 0) + (r.panel ? 1 : 0) : 0);
     const top = checkRaises.reduce<Raise | undefined>((a, b) => (weight(b) > weight(a) ? b : a), raise);
@@ -248,8 +248,8 @@ export function createWrites({ records, registry, connections, secret, resolver,
   }
 
   /** Plan, tier, card and file. Tier 0 comes back claimed (the caller executes it); `satisfied` comes back done. */
-  async function file(kind: string, k: Kind, requester: Requester, args: unknown, task: string, evidence?: unknown, workspace?: string): Promise<Rec> {
-    const { base, satisfied, filed } = await prepare(kind, k, requester, args, task, evidence, workspace);
+  async function file(kind: string, k: Kind, requester: Requester, args: unknown, task: string, evidence?: unknown, workspace?: string, ownerSave = false): Promise<Rec> {
+    const { base, satisfied, filed } = await prepare(kind, k, requester, args, task, evidence, workspace, ownerSave);
     if (satisfied !== undefined) {
       const r = records.file({ ...base, tier: 0, panel: false, state: "claimed" });
       records.finish(r.id, true, `Nothing to do: ${satisfied.slice(0, 1000)}`);
@@ -468,12 +468,20 @@ export function createWrites({ records, registry, connections, secret, resolver,
      * A kind the kernel plans (kernel.apply), filed by the kernel itself: the release updater (updates.ts, UPDATER) or the
      * owner's typed settings change (settings-change.ts, SETTINGS). Planned and tiered as any requester's. A requester of kind
      * `kernel` is set only here, never from a token, so the planner can tell the updater's own filing (a release move it
-     * verifies itself) from anyone else's.
+     * verifies itself) from anyone else's. `owner`: the owner's own settings change from his signed-in board session (the
+     * account the kernel verified, settings-change.ts): his Save is his approval, so the record is his and is decided as his
+     * account at filing (computeTier `ownerSave`), never put to the reviewer.
      */
-    async fileKernel(kind: string, { args, task, requester }: { args: unknown; task: string; requester: typeof UPDATER }): Promise<Rec> {
+    async fileKernel(kind: string, { args, task, requester, owner }: { args: unknown; task: string; requester: typeof UPDATER; owner?: { account: string; via: string } }): Promise<Rec> {
       const k = kindOf_(kind);
       if (!k || !Object.hasOwn(planners, kind)) throw fail(404, "unknown_kind", `no kernel-planned kind ${kind}`);
-      const r = await file(kind, k, requester, args, task);
+      const r = await file(kind, k, requester, args, task, undefined, undefined, Boolean(owner));
+      if (owner) {
+        const d = records.decide(r.id, r.digest, "approve", `account:${owner.account}`, owner.via);
+        if (typeof d === "string") throw fail(409, "conflict", d);
+        void run(d.id);
+        return d;
+      }
       if (r.state === "claimed") await execute(r, k);
       return r;
     },

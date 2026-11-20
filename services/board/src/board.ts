@@ -13,6 +13,8 @@ export const NOTICE_MARKER = "<!-- aidenhq-notice -->";
 /** Whether a comment carries one of our markers. */
 export const hasMarker = (body: string, marker: string) => body.includes(marker);
 export const BRIEF_LABEL = "daily-brief";
+/** The label on the owner's settings-change tasks (settings-change.ts): the Settings pages show them, the board's columns don't. */
+export const SETTINGS_LABEL = "settings-change";
 
 export type Engine = "codex" | "codex-openrouter" | "claude" | "openrouter";
 const ENGINES: Engine[] = ["codex", "codex-openrouter", "claude", "openrouter"];
@@ -130,6 +132,7 @@ export function toCard(issue: Issue, list: Assignee[], seenAt: string): Card {
 }
 
 const isBrief = (i: Issue) => (i.labels ?? []).some((l) => l.name === BRIEF_LABEL);
+const isSettings = (i: Issue) => (i.labels ?? []).some((l) => l.name === SETTINGS_LABEL);
 
 export interface BoardInput {
   open: Issue[];
@@ -172,7 +175,7 @@ export function buildBoard(input: BoardInput): Board {
     return card;
   };
   for (const issue of unique.values()) {
-    if (isBrief(issue) || folded.has(issue.id)) continue;
+    if (isBrief(issue) || isSettings(issue) || folded.has(issue.id)) continue;
     const card = withCrew(toCard(issue, input.assignees, seen(issue.id)), issue);
     const rule = input.recurring?.get(issue.id);
     if (rule) {
@@ -189,7 +192,7 @@ export function buildBoard(input: BoardInput): Board {
   recurring.sort((a, b) => (a.recurring!.nextRun ?? "~").localeCompare(b.recurring!.nextRun ?? "~"));
   for (const b of BUCKETS) buckets[b].sort((x, y) => ranked.get(x.id)! - ranked.get(y.id)! || y.createdAt.localeCompare(x.createdAt));
   const brief = briefs[0];
-  const done = [...new Map(input.closed.filter((i) => !isBrief(i) && !folded.has(i.id) && !unique.has(i.id)).map((i) => [i.id, i])).values()]
+  const done = [...new Map(input.closed.filter((i) => !isBrief(i) && !isSettings(i) && !folded.has(i.id) && !unique.has(i.id)).map((i) => [i.id, i])).values()]
     .sort((a, b) => closedAt(b).localeCompare(closedAt(a)))
     .map((i) => withCrew(toCard(i, input.assignees, seen(i.id)), i));
   return {

@@ -1,8 +1,10 @@
 # Changing settings from the board
 
 The owner changes instance settings (a connection's URL, a kill switch, an agent's model, effort or heartbeat, and the other
-typed changes below) from the board's Settings pages instead of editing `.env` or `instance.yaml` by hand. Nothing here is
-privileged: the change still lands as an instance-repo commit through a `kernel.apply` record, tiered by the existing code.
+typed changes below) from the board's Settings pages instead of editing `.env` or `instance.yaml` by hand. The change lands as
+an instance-repo commit through a `kernel.apply` record. Saved in the owner's signed-in board session, his Save is his approval
+(owner, 2026-11-20: "Owner saves skip AI review"), like tapping Approve on a card: the kernel checks that session and decides the
+record as his account. An agent's settings change keeps the AI reviewer and its module's owner rules.
 
 ## Where a value lives
 
@@ -32,10 +34,11 @@ compiler's is the last gate.
    `services/board/src/settings-change.ts`). On a team (docs/configuration.md, Teams) the kernel writes the same typed change
    where it lives: the team record's fields to `teams.<t>.defaults`, a member's to `teams.<t>.members.<key>`, the record's
    `day_usd` to `teams.<t>.caps`.
-2. The board files it as the owner's own task (label `settings-change`, no assignee, so no agent wakes), keeps the typed change
-   in its own store by task id (for the page) and hands it to the kernel: `POST /v1/settings/change` with the board's key,
-   `{ task, changes }`. Nothing reads the change from the task's text. If the kernel refuses it, the board cancels the task
-   with the reason.
+2. The board files it as the owner's own task (label `settings-change`, held by the owner, so no agent wakes; the board's
+   columns leave it out, the Settings and Code review pages show it), keeps the typed change in its own store by task id (for
+   the page) and hands it to the kernel: `POST /v1/settings/change` with the board's key, `{ task, changes, session }`, where
+   `session` is the board session token of the signed-in request it was saved in. Nothing reads the change from the task's
+   text. If the kernel refuses it, the board cancels the task with the reason.
 3. The kernel (`kernel/src/settings-change.ts`) checks the task (the owner's, made and held by no agent, open) and each change
    again: known kinds only, no unknown fields, schema-checked values, what it names exists, no free-form YAML. It computes
    exactly the files each kind may write (`PATHS`: `instance.yaml` through the yaml Document API so comments stay; an agent's
@@ -44,14 +47,18 @@ compiler's is the last gate.
 4. The instance repo's code host writes those files as one commit on main's head on `settings/<task>` (`kernel/src/apply.ts`
    `hostApply`: codehost-local for a `local/...` instance, the github module otherwise), only while main is still the commit
    the kernel read.
-5. The kernel files that commit as a `kernel.apply` on the task (requester `SETTINGS`; no exemption in any rule: the autonomy
-   caps hold it as they hold an agent, only the release updater is exempt). Its planner tiers it on its merits like any
-   instance change (`kernel/src/apply-tier.ts`): a setting is the panel's; spend caps, quiet start and any loosening of
-   `autonomy` are the owner's; an agent's `model` / `reasoning_effort` / `heartbeat` override is Tier 1; a module turned on or
-   off or a grants override is judged by the module authority diff. On approval the code host lands exactly that commit and the
-   apply runs `ops/apply-config.sh`.
-6. The board shows progress from the task and its apply record (filed, waiting for approval, applying, applied or failed), then
-   the connection's live status; for a sign-in connection, Connect becomes the next step.
+5. The kernel files that commit as a `kernel.apply` on the task (requester `SETTINGS`). With a `session` the kernel checks it
+   (`uiSession("board", token)`: a ready admin; every admin is an owner; a session that doesn't check out is refused) and the
+   record is the owner's (computeTier `ownerSave`: Tier 2, no reviewer), decided at filing as `account:<id>` via `board`. The
+   planner still reads it (`kernel/src/apply-tier.ts`), so its refusals hold and its merit tier stays on the record. Without a
+   session (the board MCP's `change_settings`, whose client is usually an AI) it is tiered on its merits like any instance
+   change: a setting is the panel's; spend caps, quiet start and any loosening of `autonomy` are the owner's; an agent's
+   `model` / `reasoning_effort` / `heartbeat` override is Tier 1; a module turned on or off or a grants override is judged by
+   the module authority diff. On approval the code host lands exactly that commit and the apply runs `ops/apply-config.sh`.
+6. An owner-decided change's task closes when its apply ends (done when it landed; cancelled with the output when it failed),
+   so it never waits on the owner. The Settings and Code review pages show progress from the apply record (filed, applying,
+   applied or failed, with the output), then the connection's live status; for a sign-in connection, Connect becomes the next
+   step. A failed apply stays a failed record, shown where failed applies show.
 
 Code writes the commit, not a model: a model adds nothing to a typed edit and could drift from it, and the card shows the exact
 diff before anything lands. The board's check is the owner's feedback; the kernel's is the gate; the compiler's the last.

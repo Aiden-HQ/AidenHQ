@@ -233,11 +233,18 @@ test("a release move is the reviewer's only as the updater's verified move under
   assert.equal(k.h.lands.length, 1, "landed on the reviewer's yes");
 });
 
-test("the owner's settings change is capped like anyone's: under autonomy off, loosening autonomy is an owner card", async () => {
+test("the owner's settings change is capped like anyone's, unless saved in his board session: then his save decides it", async () => {
   const texts = { base: `product: ${OLD}\nmodules: [core]\nsettings: { autonomy: "off" }\n`, head: `product: ${OLD}\nmodules: [core]\nsettings: { autonomy: "full" }\n` };
   const r = await kernel({ texts, autonomy: "off" }).writes.fileKernel("kernel.apply", { args: BUMP, task: "TASK-1", requester: SETTINGS });
   assert.deepEqual([r.tier, r.merit, r.rule, r.state], [2, 2, "autonomy", "review"], "the owner's on its merits, after the reviewer");
   // A merit-1 change (a setting the panel reads) is capped too: under off it waits for the owner, never the panel alone.
   const plain = { base: texts.base, head: `product: ${OLD}\nmodules: [core]\nsettings: { autonomy: "off", timezone: UTC }\n` };
   assert.equal((await kernel({ texts: plain, autonomy: "off" }).writes.fileKernel("kernel.apply", { args: BUMP, task: "TASK-1", requester: SETTINGS })).tier, 2);
+  // Saved in his signed-in board session (the account the kernel checked), it is his own approval: decided as his account at
+  // filing, never with the reviewer, and it runs.
+  const k = kernel({ texts, autonomy: "off" });
+  const saved = await k.writes.fileKernel("kernel.apply", { args: BUMP, task: "TASK-1", requester: SETTINGS, owner: { account: "acct-1", via: "board" } });
+  assert.deepEqual([saved.tier, saved.merit, saved.state, saved.decided_by, saved.via], [2, 2, "approved", "account:acct-1", "board"]);
+  await settle();
+  assert.equal(k.h.lands.length, 1, "landed on his save");
 });

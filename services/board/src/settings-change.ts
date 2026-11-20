@@ -1,7 +1,7 @@
 // A settings change from the board's pages (docs/design/settings-changes.md): a typed change, checked against the compiled
-// config and the module catalog, and filed as the owner's own task with no assignee. The kernel (kernel/src/settings-change.ts)
-// checks it again, has the instance repo's code host write exactly the files the change names and files the kernel.apply,
-// tiered by its planner; nothing here writes or applies anything.
+// config and the module catalog, and filed as the owner's own task (held by him, off the board's columns). The kernel
+// (kernel/src/settings-change.ts) checks it again, has the instance repo's code host write exactly the files the change names
+// and files the kernel.apply, decided as the signed-in owner's account; nothing here writes or applies anything.
 import { z } from "zod";
 import type { Approval } from "./records.js";
 import { HEARTBEAT_HOURS, HEARTBEAT_TOOLS, type Compiled } from "./settings.js";
@@ -88,8 +88,7 @@ export function settingsByModule(changes: Change[], catalog: Catalog[]): Map<str
   return out;
 }
 
-/** The label on the tasks this files, so the page can list them. */
-export const SETTINGS_LABEL = "settings-change";
+export { SETTINGS_LABEL } from "./board.js";
 
 const kindOf = (v: unknown) => (Array.isArray(v) ? "list" : v === null || v === undefined ? "none" : typeof v);
 const plain = (s: string) => !/[\x00-\x1f\x7f$]/.test(s);
@@ -224,7 +223,7 @@ export function taskFor(changes: Change[], compiled: Compiled | null): { title: 
   const lines = changes.map((c) => describe(c, compiled));
   const title = `Settings: ${lines.join("; ")}`.slice(0, 160);
   const description = [
-    "Changed from the board. The kernel writes exactly this change to the instance repo and files the apply here; no agent works on this task.",
+    "Changed from the board. The kernel writes exactly this change to the instance repo and files the apply here, approved by your save; no agent works on this task, and it closes once the apply ends.",
     "",
     ...lines.map((l) => `- ${l}`),
     "",

@@ -1,10 +1,10 @@
 // Settings' building blocks, shared by every page: the page header, grouped rows that open in place, controls (switch,
-// segmented choice), and the one way a change leaves the page: a preview of the exact instance.yaml lines, filed as the
-// owner's own task the runner writes, then followed on the row (task, card, applying, live). Nothing here applies anything.
+// segmented choice), and the one way a change leaves the page: a preview of the exact instance.yaml lines, saved on the
+// owner's authority (the kernel writes and applies it), then followed on the row (applying, live). Nothing here applies anything.
 import { createContext, useCallback, useContext, useEffect, useId, useMemo, useState, type ReactNode } from "react";
 import { SignInRequired, api } from "./api";
 import type { ChangeStage, FiledChange, SettingChange } from "./types";
-import { changeLines, whoDecides } from "./settings-format";
+import { changeLines } from "./settings-format";
 import { PageHeader } from "./ui";
 
 export function Page({ title, sub, children, tools }: { title: string; sub?: ReactNode; children: ReactNode; tools?: ReactNode }) {
@@ -111,7 +111,7 @@ export function ChangeProgress({ f, after }: { f: FiledChange; after?: ReactNode
   const stopped = f.stage === "failed" || f.stage === "rejected" || f.stage === "closed";
   const line =
     f.stage === "working"
-      ? "The runner is writing the change."
+      ? "The kernel is writing the change."
       : f.stage === "waiting"
         ? f.tier === 1
           ? "With the AI reviewer, or you when autonomy is off."
@@ -123,7 +123,7 @@ export function ChangeProgress({ f, after }: { f: FiledChange; after?: ReactNode
             : f.stage === "rejected"
               ? "Rejected: nothing changed."
               : f.stage === "failed"
-                ? "The apply failed; the task has the output."
+                ? "The apply failed: nothing changed."
                 : "Closed without a change.";
   return (
     <div className={`st-progress${stopped ? " stopped" : ""}`} role="status">
@@ -154,7 +154,7 @@ export function ChangeProgress({ f, after }: { f: FiledChange; after?: ReactNode
   );
 }
 
-/** The exact change, before it is filed: the instance.yaml lines, who approves it, and File change. */
+/** The exact change, before it is filed: the instance.yaml lines, and File change. */
 export function ChangePreview({ items, was, onDone, onCancel, note }: { items: SettingChange[]; was: unknown[]; onDone?: (task: string) => void; onCancel: () => void; note?: ReactNode }) {
   const { file, toast } = useChanges();
   const [busy, setBusy] = useState(false);
@@ -190,7 +190,7 @@ export function ChangePreview({ items, was, onDone, onCancel, note }: { items: S
         })}
       </dl>
       <p className="st-preview-note">
-        {note ?? whoDecides(items[0]!)} The runner commits it and it lands as an apply card; nothing changes before that.
+        {note ? <>{note} </> : null}Saving is your approval: the kernel commits exactly this and applies it, usually within a few minutes.
       </p>
       {error && (
         <p className="st-error" role="alert">

@@ -87,9 +87,6 @@ export function changeLines(ch: SettingChange, was: unknown): { path: string; fr
   return { path: ch.kind === "rules" ? `agents/${ch.agent}.md` : `agents/${ch.agent}/AGENTS.md`, from: yamlValue(was), to: ch.text.slice(0, 80) };
 }
 
-/** Who usually decides the card (the kernel's tier function decides; this only says). */
-export const whoDecides = (ch: SettingChange) =>
-  ch.kind === "agent" ? "The AI reviewer decides when autonomy is full; otherwise you do." : ch.kind === "setting" && ch.key === "slack_post_channels" ? "The AI reviewer decides adding channels when autonomy is full; otherwise you do." : "You approve it on the card.";
 
 /** A setting row's value as the change sends it: the input's text back to the setting's type. */
 export function parseInput(s: SettingRow, text: string): unknown {
