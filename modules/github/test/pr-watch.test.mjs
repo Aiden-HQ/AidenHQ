@@ -98,14 +98,14 @@ test("an agent's green mergeable PR wakes its task to merge once per head", asyn
 
 // The behaviours ported from the runner, against one fake GitHub and kernel: each case is one agent PR (acme/app#N, task ACME-N).
 const redChecks = (extra = {}) => ({ state: "FAILURE", contexts: { pageInfo: { hasNextPage: false }, nodes: [{ __typename: "CheckRun", databaseId: 77, name: "test", status: "COMPLETED", conclusion: "FAILURE", checkSuite: { workflowRun: { databaseId: 500 } }, ...extra }] } });
-async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name: "Build" }], update = 202, wakeFails = 0, closeFails = 0 } = {}) {
+async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name: "Build" }], update = 202, wakeFails = 0, closeFails = 0, records = [] } = {}) {
   const woke = [], gh = [];
   const kernel = await listen(async (req, res) => {
     let body = "";
     for await (const c of req) body += c;
     if (req.url === "/v1/wakes" && wakeFails-- > 0) return res.writeHead(503).end("{}");
     if (req.url === "/v1/wakes") woke.push(JSON.parse(body));
-    res.writeHead(200).end(JSON.stringify(req.url.startsWith("/v1/work") ? { status: taskStatus } : {}));
+    res.writeHead(200).end(JSON.stringify(req.url.startsWith("/v1/work") ? { status: taskStatus, records } : {}));
   });
   t.after(() => kernel.s.close());
   let open = [];
@@ -127,7 +127,7 @@ async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name:
 }
 const redPr = (n, o = {}) => ({ commits: { nodes: [{ commit: { statusCheckRollup: redChecks() } }] }, ...o });
 
-test("a cancelled task's PR is closed with its branch once; a done task's is left alone", async (t) => {
+test("a cancelled task's PR is closed with its branch once; a done task's unmerged PR once its head is old and no merge is open", async (t) => {
   const c = await rig(t, { taskStatus: "cancelled" });
   c.set([c.agentPr(1)]);
   await c.watch.tick(); await c.watch.tick();
@@ -136,7 +136,15 @@ test("a cancelled task's PR is closed with its branch once; a done task's is lef
   const d = await rig(t, { taskStatus: "done" });
   d.set([d.agentPr(2)]);
   await d.watch.tick();
-  assert.ok(!d.gh.some((g) => g.startsWith("PATCH")));
+  assert.ok(!d.gh.some((g) => g.startsWith("PATCH")), "its head is new: a just-finished merge isn't raced");
+  const old = new Date(Date.now() - 31 * 60_000).toISOString();
+  const e = await rig(t, { taskStatus: "done", records: [{ kind: "github.merge", state: "claimed", args: { prs: [{ repo: "acme/app", number: 3, head: "h3" }] } }] });
+  e.set([e.agentPr(2), e.agentPr(3)]);
+  writeFileSync(join(e.cacheDir, "pr-watch.json"), JSON.stringify({ headAt: { "https://github.com/acme/app/pull/2": { head: "h2", at: old }, "https://github.com/acme/app/pull/3": { head: "h3", at: old } } }));
+  await e.watch.tick(); await e.watch.tick();
+  assert.equal(e.gh.filter((g) => g === "PATCH /repos/acme/app/pulls/2").length, 1, "done, unmerged and old: closed once");
+  assert.ok(e.gh.includes("DELETE /repos/acme/app/git/refs/heads/b2"));
+  assert.ok(!e.gh.includes("PATCH /repos/acme/app/pulls/3"), "a merge of it is in flight: left alone");
 });
 
 test("an agent PR red on its own head wakes its task once per head, and no PR gets more than 3 wakes at one head", async (t) => {
