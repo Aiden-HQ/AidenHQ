@@ -39,7 +39,7 @@ function setup() {
     { name: "slack", enabled: true, chosen: true },
     { name: "glean", enabled: true, chosen: true },
     { name: "code-review", enabled: true, chosen: true, settings: { code_review: { type: "object", default: { repos: [] }, writers: ["reviewer-manager"] } } },
-    { name: "github", enabled: true, chosen: true, settings: { github_comment_orgs: { default: [], writers: ["reviewer-manager"] } } },
+    { name: "github", enabled: true, chosen: true, settings: { github_fleet_org: { writers: ["reviewer-manager"] } } },
   ]));
   const host = localApply({ bare, instanceRepo: "local/acme-instance" });
   const filed = [];
@@ -111,7 +111,7 @@ test("an agent writes a structured setting its module names its role a writer of
   // Only the module's own agents, and only the module's own settings (a writers list elsewhere doesn't open it to this module).
   await assert.rejects(apply.asAgent(manager, OTHER, [{ kind: "setting", key: "code_review", value }], "engineering"), /only for its own agents/);
   await assert.rejects(apply.asAgent({ ...manager, key: "lead" }, OTHER, [{ kind: "setting", key: "code_review", value }], "code-review"), /only for its own agents/);
-  await assert.rejects(apply.asAgent(manager, OTHER, [{ kind: "setting", key: "github_comment_orgs", value: ["acme"] }], "code-review"), /may not change github_comment_orgs/);
+  await assert.rejects(apply.asAgent(manager, OTHER, [{ kind: "setting", key: "github_fleet_org", value: "acme" }], "code-review"), /may not change github_fleet_org/);
   await assert.rejects(apply.asAgent({ ...manager, roles: [] }, OTHER, [{ kind: "setting", key: "code_review", value }], "code-review"), /may not change code_review/);
   await assert.rejects(apply.asAgent(manager, OTHER, [{ kind: "setting", key: "timezone", value: "UTC" }], "code-review"), /may not change timezone/);
   await assert.rejects(apply.asAgent(manager, OTHER, [{ kind: "module", name: "slack", on: false }], "code-review"), /settings only/);
