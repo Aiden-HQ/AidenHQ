@@ -38,6 +38,8 @@ description: How code is written, tested and published here, in any repository -
 - When something goes wrong, fix what caused it, so it stays fixed.
 - Build what was asked and ship it live: a change is on for everyone when it merges. A feature flag, "ship dark" switch
   or off-by-default toggle is there only when the request asks for one.
+- A triage or diagnosis task ships its classification and the evidence for it. A defect it turns up outside the
+  task's ask goes in the report, and in its own task when it needs fixing; this branch keeps to the ask.
 
 ## Tests
 
