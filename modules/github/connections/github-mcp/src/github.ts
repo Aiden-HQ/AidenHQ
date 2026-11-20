@@ -463,7 +463,7 @@ export class GitHub {
       const p = parseProject(input.project);
       const data = await this.graphql<{ organization?: { projectV2?: GhProject | null } | null }>("project", { org: p.org, number: p.number });
       const proj = data.organization?.projectV2;
-      if (!proj) throw new Error(`project ${p.number} not found in ${p.org} (or the token lacks the project scope: run gh auth refresh -s project, then scripts/github-auth.sh)`);
+      if (!proj) throw new Error(`project ${p.number} not found in ${p.org} (or the GitHub sign-in lacks the project scope: reconnect GitHub on the board)`);
       if (proj.closed) throw new GitHubRefused(`project "${proj.title}" is closed`);
       const counts = new Map<string, number>();
       for (const n of proj.items.nodes) {
