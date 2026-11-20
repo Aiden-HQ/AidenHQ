@@ -289,8 +289,10 @@ export const BOARD_WRITE_PATHS: [string, RegExp][] = [
   ["DELETE", new RegExp(`^/api/issues/${ID}/approvals/${ID}$`)],
   ["POST", new RegExp(`^/api/approvals/${ID}/reject$`)],
   ["POST", new RegExp(`^/api/heartbeat-runs/${ID}/cancel$`)],
+  ["POST", new RegExp(`^/api/companies/${ID}/routines$`)],
   ["PATCH", new RegExp(`^/api/routines/${ID}$`)],
-  ["POST", new RegExp(`^/api/routines/${ID}/run$`)],
+  ["POST", new RegExp(`^/api/routines/${ID}/(run|triggers)$`)],
+  ["PATCH", new RegExp(`^/api/routine-triggers/${ID}$`)],
 ];
 // An attachment the board uploads (10 MB, multipart) fits; nothing else comes near.
 const BOARD_MAX_BODY = 16 * 1024 * 1024;

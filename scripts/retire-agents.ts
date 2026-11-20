@@ -18,7 +18,8 @@ export async function retireUnconfigured({ api, companyId, cfg, step }: { api: A
   const owned = all.filter((x: Row) => String(x.metadata?.setupKey ?? "").startsWith("aidenhq:") && x.status !== "terminated");
   const ownedIds = new Set(owned.map((x: Row) => x.id));
   const { json: routines } = await api("GET", `/api/companies/${companyId}/routines`);
-  for (const r of routines.filter((r: Row) => ownedIds.has(r.assigneeAgentId) && !titles.has(r.title) && r.status !== "archived")) {
+  // The routines the board makes for the owner's recurring tasks (services/board/src/recurring.ts ROUTINE_PREFIX) aren't configuration.
+  for (const r of routines.filter((r: Row) => ownedIds.has(r.assigneeAgentId) && !titles.has(r.title) && !r.title.startsWith("Repeats: ") && r.status !== "archived")) {
     await api("PATCH", `/api/routines/${r.id}`, { status: "archived" });
     step(`Archived routine ${r.title} (no longer configured)`);
   }

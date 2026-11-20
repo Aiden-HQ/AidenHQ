@@ -17,7 +17,8 @@ import { timelineOf } from "./timeline.js";
 import { liveActivity, type SessionSources } from "./live-activity.js";
 import { cachedActivity, lastRunsOf, liveRunsOf, makeRuns, pastRunsOf, type LiveRun, type Work } from "./runs.js";
 import { agentsView, roster, runTasks, workingOn, type RunContext, type TaskRef, type Working } from "./activity.js";
-import { RecurringSchema, ScheduleSchema, changeRecurring, recurringView, scheduleMove } from "./automation.js";
+import { RecurringSchema, changeRecurring, recurringView } from "./recurring.js";
+import { ScheduleSchema, scheduleMove } from "./scheduled-moves.js";
 import { AddAgentSchema, BadRequest, CreateSchema, HandOverSchema, PassSchema, hasMarker, UpdateSchema, assignees, buildBoard, commentView, displayText, executorOf, openrouterEngine, paperclipUpdate, replyTarget, toCard, type Assignee } from "./board.js";
 import { FOR_OTHERS, RELAY_MARKER, crewOf, deliveredFrom, deliveredText, foldedChildren, fromMarker, handOverText, mentionedAgents, withHandle, partsToClose, summaryOf, waitsOnItsOwn, type DeliveredFrom } from "./crew.js";
 import { AccountError, forwardedProto, type AccountSession, type KernelAuth } from "./kernel-auth.js";
@@ -45,11 +46,11 @@ import { setupFlowRoutes, type SetupFlowPoint } from "./setup-flows.js";
 import type { SetupField } from "./config.js";
 import { welcomeRoutes } from "./welcome.js";
 import { GoogleAuthFailed, loopbackPort, type GoogleAuth } from "./google.js";
-import { OPEN, Paperclip, PaperclipError, actingAccount, type Agent, type Attachment, type Comment, type Issue, type Label } from "./paperclip.js";
+import { OPEN, Paperclip, PaperclipError, actingAccount, type Agent, type Attachment, type Comment, type Issue, type Label, type Routine } from "./paperclip.js";
 import { accountSession, type BoardSession, type SessionOf } from "./session.js";
 import { laneAgents, laneMessages, laneSend, type LaneOptions } from "./lane.js";
 import { NOTICE_MARKER, asksOwner, chatAgent, chatAgentMarker, chatState, conversation, lastWord, needsYou, openAsk, pickAgent, shownState, type Message } from "./chats.js";
-import { addDays, nextWorkday, type Weekday } from "./recurrence.js";
+import { addDays, nextWorkday, type Weekday } from "./dates.js";
 import { BUCKETS, isBucket, localDate, type Store } from "./store.js";
 import { AsideSchema, askGateway, asideMessages, holdsActive, lineageStatus, lineageTotal, modelOf, settleable, stillSettled, type LineageRow } from "./lineage.js";
 
@@ -578,7 +579,7 @@ export function createApp(opts: AppOptions): Server {
       executor: executorOf(issue, ctx.assignees),
       replyTarget: replyTarget(issue, ctx.assignees),
       scheduled: store.schedules().get(issue.id) ?? null,
-      recurring: rec ? recurringView(rec, opts.timezone) : null,
+      recurring: rec ? recurringView(rec, await pc.routine(rec.routineId).catch(() => undefined)) : null,
       working: busy.map.get(issue.identifier) ?? null,
       comments: comments.map((c) => ({ ...commentView(c, ctx.me, ctx.agents), ...byOf(names, c.id) })),
       files: fileViews(files, ctx.me),
@@ -886,7 +887,7 @@ export function createApp(opts: AppOptions): Server {
 
   async function recurringChange(ref: string, body: unknown) {
     const { ctx, issue } = await editableIssue(ref);
-    const recurring = await changeRecurring(pc, store, ctx, issue, parse(RecurringSchema, body), opts.timezone, log);
+    const recurring = await changeRecurring(pc, store, { me: ctx.me, labels: ctx.labels, assistant: ctx.assignees.find((a) => a.kind === "assistant")?.key }, issue, parse(RecurringSchema, body), opts.timezone, log);
     return { identifier: issue.identifier, recurring };
   }
 
@@ -1223,7 +1224,8 @@ export function createApp(opts: AppOptions): Server {
         // Agents' sub-tasks are part of their parent's card: they never get a place of their own.
         const folded = foldedChildren([...open, ...closed], ctx.assignees);
         store.placeNew(open.filter((i) => !folded.has(i.id)).map((i) => ({ id: i.id, createdAt: i.createdAt, status: i.status })));
-        const recurring = new Map([...store.allRecurring()].map(([id, r]) => [id, { summary: recurringView(r, opts.timezone).summary, nextRun: r.nextRun, paused: r.paused }]));
+        const routines = store.allRecurring().size ? new Map((await pc.routines()).map((r) => [r.id, r])) : new Map<string, Routine>();
+        const recurring = new Map([...store.allRecurring()].map(([id, r]) => { const v = recurringView(r, routines.get(r.routineId)); return [id, { summary: v.summary, nextRun: v.nextRun, paused: v.paused }]; }));
         const [busy, google, signIns, names, summary] = await extras;
         // The header's spend line: today against the install cap, when one is set.
         const spend = summary?.install.cap != null ? { spent: summary.install.spent, cap: summary.install.cap } : null;

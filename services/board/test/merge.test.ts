@@ -132,7 +132,7 @@ describe("merging a task into another", () => {
     const other = make({ assigneeUserId: "someone-else" });
     issues.push(other);
     expect((await merge(dup.identifier, other.identifier)).status).toBe(403);
-    store.setRecurring(dup.id, { kind: "weekly", weekday: "monday", interval: 1, time: "07:00" } as never, [], "2099-01-01T07:00:00Z");
+    store.setRecurring(dup.id, { routineId: "r-1", cadence: { kind: "weekly", weekday: "monday", interval: 1 }, time: "07:00", anchor: 1, repos: [] });
     expect((await merge(dup.identifier, target.identifier)).json.error).toContain("stop it first");
     store.stopRecurring(dup.id);
     expect(dup.status).toBe("todo");

@@ -1185,7 +1185,6 @@ function Repeats({ issue, board, done, toast }: AutoProps) {
           <div>
             <b>{r.summary}</b>
             {r.paused && <span className="muted"> · paused</span>}
-            {r.runNowPending && <span className="muted"> · run starting</span>}
           </div>
           {!r.paused && r.upcoming.length > 0 && <div className="muted small">Next: {r.upcoming.map((t) => runTime(t, board.timezone)).join(" · ")}</div>}
           {r.repos.length > 0 && <div className="muted small">GitHub: {r.repos.join(", ")}</div>}
@@ -1194,7 +1193,7 @@ function Repeats({ issue, board, done, toast }: AutoProps) {
           <button className="btn" disabled={busy} onClick={() => setEditing(true)}>
             Edit
           </button>
-          <button className="btn" disabled={busy || r.paused || r.runNowPending} onClick={() => void act({ action: "run_now" }, () => "Running now: the result lands on top of Today")}>
+          <button className="btn" disabled={busy || r.paused} onClick={() => void act({ action: "run_now" }, () => "Running now: the result lands on top of Today")}>
             Run now
           </button>
           <button className="btn" disabled={busy} onClick={() => void act({ action: r.paused ? "resume" : "pause" }, () => (r.paused ? "Resumed" : "Paused"))}>

@@ -96,16 +96,6 @@ routines:
       task_recurring, task_merge, task_cancel and task_comment, and the GitHub, Primer and meeting-note writes that section names.
       Then close this task with one line saying what you did.
     concurrency: always_enqueue
-  recurring-run:
-    title: Run recurring task
-    agent: assistant
-    # Started by the kernel when a recurring task is due; the schedule lives on the board.
-    description: |
-      Recurring task {{definition}} is due. Its instructions are that task's description.
-      Write this period's result into {{task}}, the user's task for it (already on top of their Today).
-      Period: {{since}} to {{until}} ({{timezone}}). Previous period's task: {{previous}}.
-      Follow "D. Running a recurring task" in your instructions. Then close this task with one line saying what you did.
-    concurrency: always_enqueue
 # How every crew agent works with the owner and the fleet (spec §2.1: workflow prose, not the kernel's).
 prompts:
   - { id: how-we-work, file: prompts/how-we-work.md, order: first }

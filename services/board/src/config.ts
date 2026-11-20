@@ -4,7 +4,7 @@ import { parse as parseYaml } from "yaml";
 import { z } from "zod";
 import { organisationPoints, type OrganisationPoint } from "./organisations.js";
 import { setupFlowPoints, type SetupFlowPoint } from "./setup-flows.js";
-import { WEEKDAYS, type Weekday } from "./recurrence.js";
+import { WEEKDAYS, type Weekday } from "./dates.js";
 
 const SystemSchema = z.object({
   timezone: z.string().default("UTC"),
