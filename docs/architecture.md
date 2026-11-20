@@ -97,8 +97,10 @@ the Paperclip config and grants table. See [configuration.md](configuration.md).
 
 ## Trust and data boundaries
 
-- **Inbound is private.** Nothing listens on a public port; the board and Paperclip are reachable on the LAN or the
-  tailnet, and Paperclip runs in authenticated mode. Outbound traffic is not restricted.
+- **Inbound is one door.** The board is reached through its exposure mode's front door: Caddy on the server's public IP
+  (443 and 8446, the default off a tailnet), Tailscale, or an SSH tunnel; every listener behind it stays on loopback and
+  needs a signed-in admin (password and TOTP). Paperclip is never public (tailnet or tunnel) and runs in authenticated
+  mode. Outbound traffic is not restricted. See [design/access.md](design/access.md).
 - **Untrusted text is data.** Slack messages, email, forwards and documents are fenced and never act as instructions.
   Admin actions run only on the owner's own words.
 - **Gates live in code.** Tool grants, push and merge gates, approvals and deploy rules are enforced below the model.

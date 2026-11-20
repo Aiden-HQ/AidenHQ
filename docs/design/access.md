@@ -36,11 +36,22 @@ lets in. Everything else on that interface is dropped, and 80 is closed in every
 - **443 and 8446 open only once a Caddy front door is compiled** (a `caddy` service in `compose.modules.yaml`). Until
   then `public` keeps the firewall at `local`, and setup says so. An active ufw gets `allow 443/tcp` and `8446/tcp` only
   then.
-- **Applying a mode.** Compile writes it to `config/exposure`. The firewall changes when `sudo bash ops/vm/setup.sh`
-  runs again; it writes the mode beside `PUBLIC_IF` in `/etc/default/aidenhq-public-fw`, and the boot-time unit
-  reapplies it. An unknown mode there gets SSH only.
+- **Choosing a mode.** `ops/setup.sh` (and the installer) take `--exposure public|tailscale|local`. Without it, a new
+  install takes `tailscale` on a tailnet (or with `TS_AUTHKEY`), else `public`, else (no public IPv4 of its own: behind
+  NAT, a Mac's VM) `local`; a rerun keeps the mode it has.
+- **Switching is a rerun:** `sudo ops/setup.sh --unattended --exposure <mode>` over SSH, which stays open in every mode,
+  so a switch can't lock the owner out. It commits `settings.exposure`, rewrites the `.env` URLs, and renders the firewall:
+  - leaving `public`, it closes 443 and 8446 before the apply removes Caddy;
+  - entering `public`, it opens them after the apply has compiled Caddy;
+  - leaving `tailscale` on a host that stays on the tailnet, it turns off the board's two `tailscale serve` doors.
+  No board page or agent changes the mode. The firewall is rendered only by root's `ops/vm/setup.sh`, and compile refuses
+  `public` unless setup wrote the public URLs into `.env`.
+- **Applying a mode.** Compile writes it to `config/exposure`. `ops/vm/setup.sh` writes the mode setup passes it (else
+  the compiled one) beside `PUBLIC_IF` in `/etc/default/aidenhq-public-fw`, and the boot-time unit reapplies it. An
+  unknown mode there gets SSH only.
 - **The check.** `scripts/verify-security.sh` compares the live table with the mode (as root, or with passwordless sudo)
-  and fails on a wildcard 443 listener outside public mode.
+  and fails on a wildcard 443 listener outside public mode. In public mode it also checks the door as the Internet meets
+  it: a publicly trusted certificate on both sites, and exactly 401 from `https://<ip>/api/board` without a session.
 
 Switching modes: [minimal-core-install.md](minimal-core-install.md).
 
@@ -63,10 +74,11 @@ Switching modes: [minimal-core-install.md](minimal-core-install.md).
   recreates it when the file changes.
 - **Setup proves it or falls back.** `ops/setup.sh` waits up to 3 minutes for both sites to answer over a trusted
   certificate. Without one, or without a public IPv4 of the host's own, it says so and falls back to `local`: the
-  instance's `exposure: local` (committed), loopback URLs in `.env`, an apply that drops Caddy, a kernel restart, the
-  firewall closed again, and the SSH tunnel printed. Never a half-working public address.
-- **Leaving public mode.** An apply whose config has no `caddy` service removes a running Caddy; the firewall closes 443
-  and 8446 when `ops/vm/setup.sh` runs again.
+  instance's `exposure: local` (committed), the firewall closed, loopback URLs in `.env`, an apply that drops Caddy, a
+  kernel restart, and the SSH tunnel printed. Never a half-working public address. Public by default (not asked for) on
+  a host with no public IPv4 is simply `local`, said in one line.
+- **Leaving public mode.** The rerun of setup closes 443 and 8446 first; then its apply, whose config has no `caddy`
+  service, removes the running Caddy.
 - **Certificate watch.** The kernel checks `https://<ip>` hourly with a verified handshake (`kernel/src/front-door.ts`):
   under 48 hours left, or a certificate that fails to verify, tells the owner, at most once every 12 hours.
 
