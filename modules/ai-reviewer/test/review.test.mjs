@@ -67,65 +67,84 @@ test("a refusal goes to the other model; the model that decided is named", async
   assert.deepEqual(asked, [LUNA, DEEPSEEK]);
 });
 
-test("two votes (owner, 2026-11-20): approve + unsure approves, unsure + unsure goes back, missing input never approves", async () => {
-  const unsure = (reason, incomplete = false, second = false) => ({ content: JSON.stringify({ decision: "unsure", reason_code: "reviewer_unsure", reason, second_review: second, input_incomplete: incomplete }) });
+test("two votes (owner, 2026-11-20): approve + unsure approves only on input code verified whole; unsure twice goes back", async () => {
+  const unsure = (reason, second = false) => ({ content: JSON.stringify({ decision: "unsure", reason_code: "reviewer_unsure", reason, second_review: second }) });
+  // The code host's own count of the change (numstat at filing) matches the diff, and there is a chain: verified whole.
+  const diff = "diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1 +1 @@\n-old\n+new";
+  const whole = { diff, chain: "Owner: change old to new.", files: { text: "", leftOut: [], oversized: [], changed: [{ path: "src/a.ts", add: 1, del: 1 }] } };
   // Unsure twice: rejected (back to the agent) with both notes, decided by the second reviewer (GLM after Luna), never the owner.
-  let r = asker([unsure("the brief contradicts itself"), unsure("37 files are missing", true)]);
+  let r = asker([unsure("the brief contradicts itself"), unsure("37 files are missing")]);
   let prompts = [];
-  const twice = await review({ card, diff: "+x", policy: "p", requesterModel: "deepseek/deepseek-flash", ask: async (m, p) => (prompts.push(p), r.ask(m)) });
+  const twice = await review({ card, ...whole, policy: "p", requesterModel: "deepseek/deepseek-flash", ask: async (m, p) => (prompts.push(p), r.ask(m)) });
   assert.deepEqual(r.asked, [LUNA, GLM]);
   assert.deepEqual([twice.decision, twice.code, twice.model], ["reject", "reviewer_unsure", GLM]);
   assert.match(twice.reason, /^Two AI reviewers were unsure; fix the request: .*the brief contradicts itself.*37 files are missing/);
-  assert.equal(twice.incomplete, undefined, "the model's flag stays inside the reviewer");
   // The second reviewer reads the first's note, fenced as data; the first never sees one.
   assert.doesNotMatch(prompts[0].user, /FIRST_REVIEWER/);
   assert.match(prompts[1].user, /<<<FIRST_REVIEWER\nthe brief contradicts itself\nFIRST_REVIEWER>>>/);
-  // Unsure about the request, then approve: approved, on any card, both reviewers named.
+  // Verified whole: approve + unsure approves, in either order and on any card; the unsure reviewer is second_unsure, never second.
   for (const panel of [false, true]) {
     r = asker([unsure("the brief contradicts itself"), ok]);
-    const yes = await review({ card, diff: "+x", policy: "p", panel, ask: r.ask });
-    assert.deepEqual([yes.decision, yes.model, yes.second], ["approve", GLM, LUNA]);
-    assert.match(yes.reason, /unsure.*the brief contradicts itself.*approve.*matches the ask/);
+    const yes = await review({ card, ...whole, policy: "p", panel, ask: r.ask });
+    assert.deepEqual([yes.decision, yes.model, yes.second, yes.second_unsure], ["approve", GLM, undefined, LUNA]);
+    assert.match(yes.reason, /^Approved; the first reviewer was unsure.*the brief contradicts itself.*matches the ask/);
   }
-  // Approve, then unsure about the request (the panel): approved.
   r = asker([ok, unsure("the brief contradicts itself")]);
-  const panelYes = await review({ card, diff: "+x", policy: "p", panel: true, ask: r.ask });
-  assert.deepEqual([panelYes.decision, panelYes.model, panelYes.second], ["approve", LUNA, GLM]);
-  // Missing input never counts toward an approval, in either order, and an unanswered flag counts as missing.
-  for (const answers of [[unsure("the diff is cut short", true), ok], [ok, unsure("the diff is cut short", true)], [{ content: JSON.stringify({ decision: "unsure", reason_code: "reviewer_unsure", reason: "cut short" }) }, ok]]) {
-    r = asker(answers);
-    const back = await review({ card, diff: "+x", policy: "p", panel: true, ask: r.ask });
-    assert.deepEqual([back.decision, back.code], ["reject", "reviewer_unsure"]);
+  const panelYes = await review({ card, ...whole, policy: "p", panel: true, ask: r.ask });
+  assert.deepEqual([panelYes.decision, panelYes.model, panelYes.second, panelYes.second_unsure], ["approve", LUNA, undefined, GLM]);
+  // Not verified (no count from the code host, or no request chain): an unsure never counts toward an approval, whatever
+  // the model says about its input.
+  for (const input of [{ diff, chain: whole.chain }, { ...whole, chain: "" }]) {
+    for (const answers of [[unsure("the brief contradicts itself"), ok], [ok, unsure("the brief contradicts itself")]]) {
+      r = asker(answers);
+      const back = await review({ card, ...input, policy: "p", panel: true, ask: r.ask });
+      assert.deepEqual([back.decision, back.code, back.second, back.second_unsure], ["reject", "reviewer_unsure", undefined, undefined]);
+    }
   }
   // After an unsure the second's reject decides; its escalate is the owner's.
-  r = asker([unsure("no chain", true), no]);
-  const rejected = await review({ card, diff: "+x", policy: "p", ask: r.ask });
+  r = asker([unsure("no chain"), no]);
+  const rejected = await review({ card, ...whole, policy: "p", ask: r.ask });
   assert.deepEqual([rejected.decision, rejected.code, rejected.model], ["reject", "gate_change", GLM]);
-  r = asker([unsure("no chain", true), { content: JSON.stringify({ decision: "escalate", reason_code: "destructive_change", reason: "drops a table", second_review: false }) }]);
-  assert.equal((await review({ card, diff: "+x", policy: "p", ask: r.ask })).decision, "escalate");
+  r = asker([unsure("no chain"), { content: JSON.stringify({ decision: "escalate", reason_code: "destructive_change", reason: "drops a table", second_review: false }) }]);
+  assert.equal((await review({ card, ...whole, policy: "p", ask: r.ask })).decision, "escalate");
   // A reviewer's own authority-expanding flag is recorded on the card first (couldn't: retried later), and the second is
   // asked as one of two.
   const marked = [];
   prompts = [];
-  r = asker([unsure("cut short", true, true), ok]);
+  r = asker([unsure("cut short", true), ok]);
   const flaggedBack = await review({ card, diff: "+x", policy: "p", onPanel: async () => marked.push("panel"), ask: async (m, p) => (prompts.push(p), r.ask(m)) });
   assert.deepEqual([flaggedBack.code, marked], ["reviewer_unsure", ["panel"]]);
   assert.match(prompts[1].user, /authority-expanding/);
-  r = asker([unsure("cut short", true, true), ok]);
+  r = asker([unsure("cut short", true), ok]);
   const unrecorded = await review({ card, diff: "+x", policy: "p", onPanel: async () => { throw new Error("board down"); }, ask: r.ask });
   assert.deepEqual([unrecorded.code, r.asked.length], ["reviewer_failed", 1]);
   // The second's own flag is recorded too.
   marked.length = 0;
   r = asker([unsure("no chain"), flagged]);
-  assert.deepEqual([(await review({ card, diff: "+x", policy: "p", onPanel: async () => marked.push("panel"), ask: r.ask })).decision, marked], ["approve", ["panel"]]);
+  assert.deepEqual([(await review({ card, ...whole, policy: "p", onPanel: async () => marked.push("panel"), ask: r.ask })).decision, marked], ["approve", ["panel"]]);
 });
 
-test("code lists the files the diff changes, so a reviewer can tell a whole diff from a cut one", async () => {
+test("a diff that differs from the code host's own count of the change goes back before any model reads it", async () => {
+  const diff = "diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1,2 +1,2 @@\n-old\n+new";
+  const r = asker([ok]);
+  const v = await review({ card, diff, chain: "c", policy: "p", ask: r.ask, files: { text: "", leftOut: [], oversized: [], changed: [{ path: "src/a.ts", add: 1, del: 1 }, { path: "src/server.ts", add: 40, del: 2 }] } });
+  assert.deepEqual([v.decision, v.code, r.asked.length], ["reject", "files_not_shown", 0]);
+  assert.match(v.reason, /in the change, not the diff: src\/server\.ts \(\+40 -2\)/);
+});
+
+test("code lists the files the diff changes and says whether it checked them, and when it folded the diff", async () => {
   const diff = "diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1,2 +1,2 @@\n-old\n+new\n+more\n--- a sql comment removed\ndiff --git a/b.md b/b.md\nnew file mode 100644\n--- /dev/null\n+++ b/b.md\n@@ -0,0 +1 @@\n+hi";
   let prompt;
-  await review({ card, diff, policy: "p", ask: async (_m, p) => ((prompt = p), ok) });
-  assert.match(prompt.user, new RegExp(`Code shows the DIFF whole, ${diff.length} characters`));
+  const ask = async (_m, p) => ((prompt = p), ok);
+  await review({ card, diff, policy: "p", ask });
+  assert.match(prompt.user, /Code could not check the diff/);
   assert.match(prompt.user, /<<<DIFF_FILES\nsrc\/a\.ts \(\+2 -2\)\nb\.md \(\+1 -0\)\nDIFF_FILES>>>/);
+  await review({ card, diff, policy: "p", ask, files: { text: "", leftOut: [], oversized: [], changed: [{ path: "src/a.ts", add: 2, del: 2 }, { path: "b.md", add: 1, del: 0 }] } });
+  assert.match(prompt.user, /Code checked the diff against the code host's own count of the change.*it is whole; the DIFF shown is \d+ characters/);
+  // A diff over the limit whose size is a lockfile is folded, and the prompt says so.
+  const lock = `diff --git a/package-lock.json b/package-lock.json\n--- a/package-lock.json\n+++ b/package-lock.json\n@@ -1 +1,${MAX_DIFF / 10} @@\n${"+    \"x\": \"1.0.0\",\n".repeat(MAX_DIFF / 10)}`;
+  await review({ card, diff: `${diff}\n${lock}`, policy: "p", ask });
+  assert.match(prompt.user, /folded lockfile hunks into a note/);
 });
 
 test("the reviewer's codes are exactly the shared REVIEW_CODES (services/shared/reason-codes.ts)", () => {

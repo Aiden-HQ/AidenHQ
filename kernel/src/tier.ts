@@ -21,7 +21,8 @@ export type RoutineCap = { cap: Autonomy; routine?: string };
 /** One part of a request's tier, as the requesters' rules build it. */
 export type Part = { tier: number; rule?: string; reason?: string; panel?: boolean; reject?: boolean; reviewFirst?: boolean; byMerit?: boolean; ownerOnly?: boolean; cap?: Cap | null; [k: string]: unknown };
 /** A model's verdict, or code's in its place. */
-export type Verdict = { decision: "approve" | "reject" | "escalate"; reason: string; model: string; second?: string; code?: string };
+/** `second_unsure`: an approval whose other reviewer was unsure (owner, 2026-11-20): recorded apart from `second`, which only ever names a second approval. */
+export type Verdict = { decision: "approve" | "reject" | "escalate"; reason: string; model: string; second?: string; second_unsure?: string; code?: string };
 
 /** What a cap says, for a card's reason and the reviewer's label. */
 export const capText = (c: Cap) => (c.by === "autonomy" ? `autonomy is ${c.value}` : c.routine ? `a routine's run (${c.routine}) started this task and its autonomy is ${c.value}` : "the task's routine trace couldn't be read, so it counts as a routine set to off");

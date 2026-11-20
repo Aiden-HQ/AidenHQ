@@ -93,7 +93,9 @@ export function splitChecklist(note: string): { note: string; checklist: Explana
 }
 
 const capWords = (c: NonNullable<RecordWhole["cap"]>) => (c.by === "autonomy" ? `Autonomy is ${c.value}.` : c.routine ? `A routine's run (${c.routine}) started this task and its autonomy is ${c.value}.` : `The task's routine couldn't be traced, so it counts as a routine set to ${c.value}.`);
-const models = (by: string) => (by.startsWith("reviewer:") && by !== "reviewer:kernel/code" ? by.slice("reviewer:".length).split("+") : []);
+const models = (by: string) => (by.startsWith("reviewer:") && by !== "reviewer:kernel/code" ? by.slice("reviewer:".length).split(";unsure:")[0]!.split("+") : []);
+/** The reviewer that was unsure on an approval (`;unsure:<model>`, writes.ts). */
+const unsureOf = (by: string) => /;unsure:(.+)$/.exec(by)?.[1];
 const verdict = (state: string) => (["approved", "claimed", "done", "failed", "unknown"].includes(state) ? "approved it" : state === "stale" ? "closed it: its head moved, so nothing ran" : "rejected it");
 
 export function explain(r: RecordWhole, asked: string | null): Explanation {
@@ -113,7 +115,7 @@ export function explain(r: RecordWhole, asked: string | null): Explanation {
   else if (r.review || by.startsWith("reviewer:") || r.state === "review") {
     const who = r.panel ? "The review panel" : "The AI reviewer";
     if (r.state === "review") path.push(`${who} is reading it.`);
-    else if (by.startsWith("reviewer:")) path.push(by === "reviewer:kernel/code" ? `Code ${verdict(r.state)} before any model read it.` : `${who} (${models(by).join(" and ")}) ${verdict(r.state)}.`);
+    else if (by.startsWith("reviewer:")) path.push(by === "reviewer:kernel/code" ? `Code ${verdict(r.state)} before any model read it.` : unsureOf(by) ? `${who} (${models(by).join(" and ")}) approved it; the second reviewer (${unsureOf(by)}) was unsure.` : `${who} (${models(by).join(" and ")}) ${verdict(r.state)}.`);
     else path.push(`${who} sent it to you${r.review_first ? " (after the reviewer, you decide this one)" : ""}.`);
   }
   if (r.state === "owner") path.push("It waits on your decision.");

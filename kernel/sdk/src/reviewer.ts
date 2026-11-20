@@ -22,7 +22,8 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 export interface ReviewCard { action: string; rule: string; target?: string; sentence?: string; reason?: string;
   /** The repositories that are one product for scope (the product repo and the official modules repo): code's own. */
   product?: string[] }
-export interface Files { text: string; leftOut: string[]; oversized: string[] }
+/** `changed`: the code host's own numstat of the change, read at filing: the reviewer checks the diff against it. */
+export interface Files { text: string; leftOut: string[]; oversized: string[]; changed?: { path: string; add?: number; del?: number }[] }
 export interface SourceRecords { where: string; records: Record<string, unknown>[] }
 /** One Tier 1 request as the reviewer reads it. Everything but `card.action`, `card.rule` and `panel` is data an agent or a stranger wrote. */
 export interface ReviewRequest {
@@ -40,7 +41,8 @@ export interface ReviewRequest {
   /** The ledger's name for the model calls (the card's review, or an agent's check before filing). */
   component?: string;
 }
-export interface Verdict { decision: "approve" | "reject" | "escalate"; code?: string; reason: string; model: string; second?: string; flag?: boolean; panel_marked?: boolean }
+/** `second`: the panel's second approval; `second_unsure`: an approval whose other reviewer was unsure (owner, 2026-11-20), never in `second`. */
+export interface Verdict { decision: "approve" | "reject" | "escalate"; code?: string; reason: string; model: string; second?: string; second_unsure?: string; flag?: boolean; panel_marked?: boolean }
 /** The model's "I can't tell" (a second reviewer is asked; both unsure, or unsure over missing input, the request goes back to the agent). */
 export const UNSURE = "reviewer_unsure";
 /** The request fields a reviewer reads; anything else in a request (a policy, a model) is dropped. */

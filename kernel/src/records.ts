@@ -212,7 +212,7 @@ export function openRecords(file: string, now = () => new Date()) {
     },
     /**
      * The reviewer's verdict on a record in review, bound to its digest and held to its review-first: approve decides it
-     * (only a Tier 1 record without review-first, and with the panel only when a second reviewer approved too), reject closes
+     * (only a Tier 1 record without review-first, and with the panel only when a second reviewer approved too or was unsure), reject closes
      * it (stale for stale_head; never on the owner's-on-merits record, except code's own refusals), escalate hands it to the
      * owner with the note. A refusal is the reason as a string.
      */
@@ -221,7 +221,9 @@ export function openRecords(file: string, now = () => new Date()) {
       if (!r) return "no such record";
       if (shownState(r) !== "review") return `this record is ${shownState(r)}`;
       if (r.digest !== digest) return "the digest doesn't match this record";
-      if (r.panel && v.decision === "approve" && !v.by.includes("+")) return "an authority-expanding record needs a second reviewer's approval too";
+      // Two approvals (`+`), or one approval and the other reviewer unsure about the request, with the input code verified
+      // whole (`;unsure:`, the owner's rule of 2026-11-20).
+      if (r.panel && v.decision === "approve" && !v.by.includes("+") && !/;unsure:/.test(v.by)) return "an authority-expanding record needs a second reviewer's approval too";
       if (v.decision === "approve" && (r.review_first || r.tier === 2 || (r.args as { ownerRequired?: unknown } | null)?.ownerRequired === true)) return "after the reviewer, the owner decides this record (escalate it)";
       if (v.decision === "reject" && r.review_first === "owner" && !FINAL_CODES.includes(v.code ?? "")) return "this record is the owner's on its merits: escalate the reject to them";
       const note = v.note.slice(0, 2000);
