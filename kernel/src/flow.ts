@@ -544,14 +544,14 @@ export function createFlow({ db, file, stages, journeys = () => [], now = () => 
      */
     idleNow() {
       const t = now().getTime(), { rows, truncated } = window(t - 90 * DAY, t + 1), x = index(rows), occs = pair(rows, stages());
-      const items: { task: string; identifier: string | null; since: string; reason_since: string; reason: string; note?: string; holder: string; idle_wakes: number }[] = [];
+      const items: { task: string; identifier: string | null; since: string; reason_since: string; reason: string; blocked_on?: string; note?: string; holder: string; idle_wakes: number }[] = [];
       for (const task of x.byTask.keys()) {
         const gaps = idleOf(x, task, t, occs), last = gaps.at(-1);
         if (!last || last.end !== null) continue;
         let since = last.start;
         for (let i = gaps.length - 2; i >= 0 && gaps[i]!.end === since; i--) since = gaps[i]!.start;
         const idleWakes = (x.byTask.get(task) ?? []).filter((f) => f.type === "wake.opened" && f.data.cause === "idle" && ms(f.at) > t - DAY).length;
-        items.push({ task, identifier: x.ident.get(task) ?? null, since, reason_since: last.start, reason: last.reason, ...(last.note ? { note: last.note } : {}), holder: last.holder, idle_wakes: idleWakes });
+        items.push({ task, identifier: x.ident.get(task) ?? null, since, reason_since: last.start, reason: last.reason, ...(last.blocked_on ? { blocked_on: last.blocked_on } : {}), ...(last.note ? { note: last.note } : {}), holder: last.holder, idle_wakes: idleWakes });
       }
       return { items: items.sort((a, b) => a.since.localeCompare(b.since)), truncated };
     },

@@ -131,10 +131,23 @@ request open over an hour without merging) or something recovered.
   stopped or its task is blocked, comment once on that chat with exactly what changed so it wakes, then `notify`
   (`kind: alert`, dedupe key `front:<chat>`) in one plain line: the owner's message is waiting, what you did, what you
   need from them. It recovers when anything answers.
-- **A card waiting:** Tier 1 is the AI reviewer's and Tier 2 the owner's. Never nudge an agent about a card, never approve
-  one. A Tier 2 card waiting over 24 hours (`fleet_status` `approvals`, `tier` 2, `ageMinutes`) gets one reminder to the
-  owner, once per card (your log says whether it went): one `notify` (`kind: fyi`) with the card's title, how long it has
-  waited and your recommended default for them to tap. Silence never approves a card, and the owner decides it.
+- **A card waiting** (`card:<id>`): Tier 1 is the AI reviewer's and Tier 2 the owner's. Never nudge an agent about a card,
+  never approve one. A Tier 2 card waiting over 24 hours is open under its key (the detector's reason names the card, its
+  task and how long): send the owner one reminder, at most one per card per 24 hours (your log's `reminder · <card>` lines
+  say when the last went): one `notify` (`kind: fyi`) with the card's title (`fleet_status` `approvals`), how long it has
+  waited and your recommended default for them to tap. Log `reminder · <card> · <time>`. Silence never approves a card, and
+  the owner decides it.
+- **Stuck work the detector names** (`unstarted:<task>`, `deadlock:<key>`, `pingpong:<task>`, `duplicate:<hash>`): read the
+  tasks and their comments, then act once.
+  - `unstarted`: a delegated task nobody ran in an hour: comment once on it (waking its agent) with what is asked; if its
+    agent is paused or missing, tell the delegator's task.
+  - `deadlock`: a task waiting over six hours on its merge queue or CI, or tasks blocked on each other in a cycle. Read the
+    PR's checks and the base branch's: a red base is a product bug (the product-bug path); a cycle is for the delegator to
+    break (comment on one of the tasks, naming which blocker to drop).
+  - `pingpong`: one task bounced between two agents five times in 12 hours. Comment once on the task with which agent
+    owns the next step and the done condition; a repeat is a finding for the owner of the handbooks.
+  - `duplicate`: tasks of one agent with one title. Comment on the newer one proposing it close as a duplicate of the older.
+    Closing is the agent's call.
 - **Hard cases** (two causes equally likely, or a fix touching more than one agent): don't guess. Log it with `deep-look`
   and what you checked; the evening digest takes a second look. If it is on the alert list, alert the owner now anyway.
 
