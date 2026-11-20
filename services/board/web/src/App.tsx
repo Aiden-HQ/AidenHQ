@@ -36,7 +36,7 @@ import { Markdown, setSlackTeams } from "./markdown";
 import { BUCKETS, BUCKET_NAMES, type Board, type Bucket, type Card } from "./types";
 import { dayDate, keepsSecureCookies, matches } from "./util";
 import { panelsOf } from "./sidebar";
-import { BottomBar, Palette, SubNav, TopNav, type NavView } from "./Shell";
+import { BottomBar, Palette, SubNav, TopNav, hrefOf, type NavView } from "./Shell";
 import "./shell.css";
 
 // Pages off the first screen load as their own chunks (warmed on hover and when the browser is idle: queries.ts).
@@ -222,12 +222,17 @@ export function App() {
   viewRef.current = view;
   /** When the board was last asked for (the timer below); opening Tasks asks again when that is over 10s ago. */
   const boardAt = useRef(Date.now());
-  const setView = useCallback((v: View) => {
+  /** Shows view `v` (and `next`, the route that led there, in the same commit, so no in-between page is drawn). */
+  const setView = useCallback((v: View, next?: Route) => {
+    const commit = () => {
+      if (next) setRoute(next);
+      setViewState(v);
+    };
     // A new page cross-fades in (the View Transitions API, where the browser has it; never with reduced motion).
     if (v !== viewRef.current && document.startViewTransition && !matchMedia("(prefers-reduced-motion: reduce)").matches) {
       viewRef.current = v;
-      document.startViewTransition(() => flushSync(() => setViewState(v)));
-    } else setViewState(v);
+      document.startViewTransition(() => flushSync(commit));
+    } else commit();
     try {
       localStorage.setItem(VIEW_KEY, v);
     } catch {}
@@ -316,15 +321,10 @@ export function App() {
     document.addEventListener("visibilitychange", vis);
     const hash = () => {
       const r = parseRoute();
-      setRoute(r);
       // A chat link opens the Chat tab; a tab link opens that tab.
-      if (r.kind === "chat") setView("chat");
-      if (r.kind === "view") setView(r.view);
-      if (r.kind === "agent") setView("agents");
-      if (r.kind === "module") setView("modules");
-      if (r.kind === "settings") setView("settings");
-      if (r.kind === "design") setView("design");
-      if (r.kind === "app") setView("apps");
+      const v: View | null = r.kind === "chat" ? "chat" : r.kind === "view" ? r.view : r.kind === "agent" ? "agents" : r.kind === "module" ? "modules" : r.kind === "settings" ? "settings" : r.kind === "design" ? "design" : r.kind === "app" ? "apps" : null;
+      if (v) setView(v, r);
+      else setRoute(r);
     };
     hash();
     window.addEventListener("hashchange", hash);
@@ -567,7 +567,7 @@ export function App() {
       if (k === "?") return go("#/help");
       if (k === "d") return setShowDone((s) => !s);
       if (k === "r") return setShowRecurring((s) => !s);
-      if (k === "a") return setView(view === "agents" ? "board" : "agents");
+      if (k === "a") return go(view === "agents" ? "#/board" : "#/agents");
       if (view !== "board") return;
       if (k === "j" || k === "ArrowDown") {
         e.preventDefault();
@@ -640,7 +640,8 @@ export function App() {
   const counts = Object.fromEntries(BUCKETS.map((b) => [b, items[b].length])) as Record<Bucket, number>;
   const mergeTargets = BUCKETS.flatMap((b) => items[b]).filter((c) => c.assignee === "me" && !c.recurring);
   const openChat = (identifier: string) => go(`#/c/${identifier}`);
-  const nav = (v: NavView) => (v === "agents" || v === "modules" || v === "settings" ? go(`#/${v}`) : setView(v));
+  // Every section has its own address, so the hash and the page never disagree (a click on the page already shown is a no-op).
+  const nav = (v: NavView) => go(hrefOf(v));
   const panels = panelsOf(appsQ.data?.apps ?? [], keepsSecureCookies());
   const onBoard = view === "board";
   // A chat (or a settings category) open on a phone takes the whole screen (back arrow to the list).
@@ -850,14 +851,14 @@ export function App() {
           onCreated={(identifier, agent) => {
             setCreating(false);
             toast(agent ? `Added ${identifier} · ${agent} is on it` : `Added ${identifier} to Triage`);
-            if (mobile) setTab("triage"), setView("board");
+            if (mobile) setTab("triage"), go("#/board");
             void refresh(true);
           }}
           toast={toast}
         />
       )}
 
-      {mobile && !chatFull && <BottomBar view={view} approvals={approvalsOpen} agentsActive={board.agentsActive} onNav={nav} panels={panels} />}
+      {mobile && !chatFull && <BottomBar view={view} approvals={approvalsOpen} agentsActive={board.agentsActive} onNav={nav} panels={panels} notify={notifyAsk ? () => void askForNotifications().then(() => setNotifyAsk(false)) : undefined} />}
       </div>
       </div>
       <Palette open={palette} onClose={closePalette} go={go} crew={board.assignees} apps={appsQ.data?.apps ?? []} onNewTask={newTask} />
