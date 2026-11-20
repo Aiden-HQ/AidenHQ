@@ -292,9 +292,23 @@ export async function prEvidence(prs: any[], ref: string, deps: any): Promise<an
   let left = PR_TEXT_TOTAL;
   let diff = "";
   let described = "";
-  for (const p of prs.slice(0, 5)) {
+  const candidates = prs.slice(0, 5);
+  const key = (p: any) => `${String(p.repo).toLowerCase()}#${p.number}`;
+  // Which of the task's PRs are the deliverable is decided before any is read as one: a PR closed without merging is never a
+  // `pr` task's deliverable, and when the task's own records name a merged PR in the same repo beside the superseded branch it
+  // replaced, the merged PR is what landed the work and the closed one is not read at all.
+  const states = new Map<string, any>();
+  for (const p of candidates) {
     const pr = (await deps.pr(p.repo, p.number))?.repository?.pullRequest;
     if (!pr) return { awaiting: `${p.url} can't be read yet` };
+    states.set(key(p), pr);
+  }
+  const landed = new Set(candidates.filter((p) => states.get(key(p)).state === "MERGED").map((p) => String(p.repo).toLowerCase()));
+  const graded = candidates.filter((p) => states.get(key(p)).state !== "CLOSED" || !landed.has(String(p.repo).toLowerCase()));
+  for (const p of graded) {
+    // Closed without merging is not a merge, not "still running", and not a branch a revision request can still reach: its head
+    // is fixed, so its checks and diff are not read as the task's deliverable. The row holds for evidence instead.
+    const pr = states.get(key(p));
     // The stored number is this task's change only while the record's own identifier says so (identityOf): a re-created
     // repository restarts numbering, and the number can then name an unrelated change. That change's diff and description are
     // not this task's, so nothing of it is read or graded; the wait says so, and names the merge commit the record holds.
@@ -305,6 +319,7 @@ export async function prEvidence(prs: any[], ref: string, deps: any): Promise<an
       if (who.state === "unknown") return { awaiting: unverifiable(p.url) };
       return { awaiting: `${staleFact(p.url, who.why, ids.merges)}, so this task's change cannot be read by its stored number` };
     }
+    if (pr.state === "CLOSED") return { awaiting: `${p.url} was closed without merging` };
     const checks = namedChecks(pr.commits?.nodes?.[0]?.commit?.statusCheckRollup);
     const gate = gateOn(pr, checks);
     // A read caught mid-run is never a verdict. A check still queued or running is one (GitHub also reports the rollup as
@@ -313,8 +328,8 @@ export async function prEvidence(prs: any[], ref: string, deps: any): Promise<an
     if (checks.some((c: any) => c.pending) || gate === "running") return { awaiting: `checks still running on ${p.url}` };
     // Outside the agents org and the product repo the runner can't merge and the owner doesn't: someone else merges it.
     if (pr.state === "OPEN" && deps.ownRepo && !deps.ownRepo(p.repo)) return { awaiting: `${p.url} is not merged yet` };
-    // The runner's record names the PR; GitHub says what became of it. Closed without merging is not a merge, not "still running".
-    if (byRecord && pr.state !== "MERGED") return { awaiting: `${p.url} ${pr.state === "OPEN" ? "is not merged yet" : "was closed without merging"}` };
+    // The runner's record names the PR; GitHub says what became of it, and a closed one was held above whatever named it.
+    if (byRecord && pr.state !== "MERGED") return { awaiting: `${p.url} is not merged yet` };
     const merged = pr.state === "MERGED";
     const sha = merged ? (pr.mergeCommit?.oid ?? pr.headRefOid) : pr.headRefOid;
     const head = `### ${p.url}\n`;
