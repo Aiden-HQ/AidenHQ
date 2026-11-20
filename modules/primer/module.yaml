@@ -57,22 +57,21 @@ connections:
     guide: "Primer documents (design docs and write-ups) with their versions and comments."
     url: http://primer-mcp:8084/mcp
     auth: primer_service_key
-    # Every tool Primer's server lists (probed 2026-11-18; the live-document tools added 2026-11-20). Reads added since the first nine are `named`: only a grant
-    # naming them reaches them. primer_send_events sends structured events to other people's open pages, as the owner:
-    # `destructive`, so only a grant naming it reaches it and every call is a record the AI reviewer decides first.
+    # Every tool Primer's server lists (probed 2026-11-18; the live-document tools added 2026-11-20). Reads added since the
+    # first nine are `named`: only a grant naming them reaches them. Primer decides what an agent may do on each document
+    # (its role there), so every write on a document runs as granted. Giving someone access to a document
+    # (primer_add_collaborator) and deleting a person's records are `destructive`: only a grant naming one reaches it, and
+    # every call is a record the AI reviewer decides first (owner, 2026-11-20).
     tools:
       read: [ primer_whoami, primer_resolve_url, primer_get_document, primer_get_version_content, primer_list_versions, primer_get_comments, primer_get_document_comments, primer_list_documents, primer_find_document, primer_get_all_comments, primer_get_events, primer_get_digest,
         primer_get_doc, primer_list_collaborators, primer_list_decisions, primer_list_runs, primer_list_suggestions, primer_list_tasks, primer_lookup_user, primer_read_records, primer_record_changes, primer_widget_get ]
       named: [ primer_get_all_comments, primer_get_events, primer_get_digest,
         primer_get_doc, primer_list_collaborators, primer_list_decisions, primer_list_runs, primer_list_suggestions, primer_list_tasks, primer_lookup_user, primer_read_records, primer_record_changes, primer_widget_get ]
-      write: [ primer_create_document, primer_add_version, primer_reply_to_thread, primer_resolve_thread ]
-      # The live-document tools (the self-hosted build: block edits, suggestions, runs, decisions, widgets, shared records,
-      # sharing) change documents people read, so they are destructive: only a grant naming one reaches it, and every call
-      # is a record the AI reviewer decides first.
-      destructive: [ primer_send_events, primer_add_collaborator, primer_purge_personal_records,
+      write: [ primer_create_document, primer_add_version, primer_reply_to_thread, primer_resolve_thread, primer_send_events,
         primer_apply_ops, primer_create_thread, primer_reanchor_thread, primer_update_run, primer_withdraw_suggestion,
         primer_propose_pick, primer_fork_document, primer_promote_conversation, primer_widget_draft, primer_widget_publish,
         primer_write_records, primer_revert_record_change ]
+      destructive: [ primer_add_collaborator, primer_purge_personal_records ]
 # The owner's Primer digest (skills/primer-digest): one notify a day of what others did on their documents. Quiet by
 # default: a scheduled module routine, so quiet start pauses it until the owner resumes it (the board's fleet controls).
 routines:
