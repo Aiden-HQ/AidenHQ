@@ -19,12 +19,15 @@ board, where `<app>.localhost` would be the viewer's own machine).
 
 ## How it works
 
-**The keyless apps node.** In `tailscale` mode compile always runs the apps node (`apps-edge`); with no key in the vault it
-is composed without `TS_AUTHKEY`, so it starts logged out and keeps `/state` once signed in. When an exposed app first has
-a good deploy, apps-mcp (`edgeLogin`, `platform.ts`) asks the node's `tailscale status --json`; on `NeedsLogin` it takes
-the `AuthURL` (running `tailscale up` without a key when none is printed yet) and sends the owner one `decision` notice
-(`dedupe_key` `apps-edge:login`, role `kernel.owner-notice`). Approving the link makes the node a normal member of the
-owner's tailnet, and apps work exactly as with a key.
+**The apps node's login.** In `tailscale` mode compile always runs the apps node (`apps-edge`); with no key in the vault it is
+composed without `TS_AUTHKEY`, so it starts logged out and keeps `/state` once signed in. The node is a door, and apps
+take anonymous tailnet callers (`AIDENHQ_ANONYMOUS`), only once `tailscale status --json` says `Running` (apps-mcp
+`refreshNode`, each tick); until then apps require a signed identity and the row says it waits for the sign-in. When an
+exposed app is served and the node says `NeedsLogin`, apps-mcp sends the owner one generic `decision` notice
+(`dedupe_key` `apps-edge:login`, role `kernel.owner-notice`), with no link: the login link is a bearer secret (whoever
+opens it can put the node on their own tailnet). The link is on the board's Apps page only, from apps-mcp's internal-token
+`/internal/apps-node`. When the state changes, the reconcile tick deploys each exposed app again at its running commit
+(its anonymous setting is baked in at deploy), so no hand step follows the approval.
 
 **One origin rule.** `config/gate.json` has `origin: { scheme, port }` (absent: `https`, default port). The gate's
 `sameOrigin`, `exactOrigin`, redirects and sign-out, the kernel's handoff target check and apps-mcp's app URL all build

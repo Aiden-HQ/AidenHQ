@@ -56,6 +56,8 @@ the node's own name, sslip.io needs a public address, and an app on a port of th
 decision (2026-11-20): the apps node signs in interactively instead. In `tailscale` mode compile always runs `apps-edge`;
 without `tailscale_apps_authkey` it has no `TS_AUTHKEY`, so it starts logged out with persistent `/state`. When an exposed
 app first has a good deploy, apps-mcp (`edgeLogin`) reads `tailscale status --json`; on `NeedsLogin` it takes the `AuthURL`
-(`tailscale up` without a key if none yet) and sends the owner one `decision` notice, `dedupe_key` `apps-edge:login`
-(apps-platform requests `kernel.owner-notice`). After approval apps work as with the key. Test:
+(`tailscale up` without a key if none yet) and sends the owner one generic `decision` notice, `dedupe_key`
+`apps-edge:login` (apps-platform requests `kernel.owner-notice`). The link is a bearer secret, so it is shown only on the
+board's Apps page (`/internal/apps-node`, internal token). Apps are a tailnet door, and take anonymous callers, only once
+the node is `Running`; the reconcile tick redeploys exposed apps when that changes. Test:
 `modules/apps-platform/apps-mcp/test/edge-login.test.ts`.

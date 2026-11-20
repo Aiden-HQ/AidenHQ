@@ -3,6 +3,7 @@ import { NOTE, type Result } from "./deploy.js";
 import { remoteHead } from "./git.js";
 import type { Platform } from "./platform.js";
 import type { App } from "./registry.js";
+import { exposes } from "./tailnet.js";
 import type { Deploy } from "./store.js";
 
 type Log = { warn: (o: object, m: string) => void };
@@ -134,6 +135,16 @@ export async function reconcileTick(p: Platform, log: Log): Promise<void> {
   }
   // First: the apps node leaves removed apps' networks, which reap's `compose down` removes.
   await p.syncEdge().catch((err) => log.warn({ err: String(err) }, "apps node sync failed"));
+  // Whether an app takes anonymous callers (AIDENHQ_ANONYMOUS) is baked in at deploy and follows the apps node's login: an
+  // exposed app running from the other state is deployed again (same commit), so a node that just signed in opens its apps
+  // and one that signed out stops taking anonymous callers, with no hand step.
+  for (const app of all) {
+    const last = p.store.lastDeploy(app.name);
+    if (!exposes(app) || app.host !== "local" || last?.status !== "healthy" || p.engine.locked(app) || !p.engine.deployed(app)) continue;
+    const anonymous = Object.values<any>(p.engine.compose(app).services ?? {}).some((svc) => svc.environment?.AIDENHQ_ANONYMOUS);
+    if (anonymous === p.node()) continue;
+    await p.engine.deploy(app, { sha: last.sha, by: "reconcile" }).catch((err) => log.warn({ app: app.name, err: String(err) }, "redeploy for the apps node's state failed"));
+  }
   try {
     await p.engine.reap(new Set(all.map((a) => a.name)));
   } catch (err) {

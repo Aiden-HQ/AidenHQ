@@ -1748,7 +1748,13 @@ export function createApp(opts: AppOptions): Server {
       },
     },
     // Read-only view of the apps platform (apps-mcp's status), for the Apps tab.
-    { method: "GET", path: /^\/api\/apps$/, handle: async () => appsApi("/internal/status").then((apps) => ({ apps }), (e: Error) => ({ apps: [], error: e.message })) },
+    { method: "GET", path: /^\/api\/apps$/, handle: async () =>
+        // `node.login_url`: the apps' Tailscale node waiting for its one-time sign-in. A bearer secret, so only here behind the owner's sign-in, never in a notice.
+        appsApi("/internal/status").then(
+          async (apps) => ({ apps, node: await appsApi<{ up: boolean; login_url?: string }>("/internal/apps-node", { auth: true, timeoutMs: 5000 }).catch(() => undefined) }),
+          (e: Error) => ({ apps: [], error: e.message }),
+        ),
+    },
     {
       method: "PATCH",
       path: /^\/api\/issues\/([^/]+)$/,

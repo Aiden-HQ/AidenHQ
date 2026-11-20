@@ -151,7 +151,8 @@ if (Object.keys(images).length) {
 // The apps' tailnet node is the door in tailscale mode (compose.yaml apps-edge): only there may apps-mcp let token-less callers
 // into an app as anonymous (AIDENHQ_ANONYMOUS; docs/design/app-identity.md). Anywhere else the way in is the host's loopback,
 // so every app requires a signed identity. It joins with the vault's tailscale_apps_authkey when that has a key; without one
-// it signs in once through a link apps-mcp sends the owner (platform.ts edgeLogin), and /state keeps the node.
+// it signs in once through a link on the board's Apps page (platform.ts refreshNode), and /state keeps the node. apps-mcp
+// treats it as a door only once it is logged in.
 const appsKey = secretsDir && join(secretsDir, "tailscale_apps_authkey");
 const appsNode = out.exposure === "tailscale";
 const appsKeyed = !!appsKey && existsSync(appsKey) && readFileSync(appsKey, "utf8").trim() !== "";

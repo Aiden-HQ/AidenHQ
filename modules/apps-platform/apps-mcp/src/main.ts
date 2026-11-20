@@ -130,6 +130,8 @@ const http = createServer(async (req, res) => {
   try {
     if (url.pathname === "/healthz") return send(res, 200, { ok: true });
     if (url.pathname === "/internal/status" && req.method === "GET") return send(res, 200, p.apps().map((a) => p.cached(a)));
+    // The apps node's login link is a bearer secret: the board's internal token only.
+    if (url.pathname === "/internal/apps-node" && req.method === "GET") return internalAuthorized(req) ? send(res, 200, p.nodeState()) : send(res, 401, { error: "unauthorized" });
     if (url.pathname === "/internal/host" && req.method === "GET") {
       const f = statfsSync("/data"); // the host disk that holds the apps' data
       return send(res, 200, { disk_pct: Math.round((1 - Number(f.bavail) / Number(f.blocks)) * 100) });

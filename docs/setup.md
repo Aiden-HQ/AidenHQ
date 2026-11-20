@@ -32,7 +32,7 @@ other connections, board account recovery and shared access for colleagues.
 | A server you can SSH into, able to run an Ubuntu 24.04 VM | you | step 1 |
 | Optional: a Tailscale tailnet, with MagicDNS and **HTTPS certificates** turned on (admin console, DNS page), only for `--exposure tailscale`. Without one the board is on public HTTPS (or loopback, through an SSH tunnel) | [org admin] Tailscale | step 3 |
 | Optional, tailnet only: a Tailscale auth key for the server (`TS_AUTHKEY`); you can run `sudo tailscale up` by hand instead | [org admin] Tailscale | step 3 |
-| Optional, tailnet only: a Tailscale auth key for the apps node (`TS_APPS_AUTHKEY`): reusable, pre-approved, tagged (for example `tag:aidenhq-apps` under `tagOwners`). Without it the node signs in once through a link sent to you when the first app is served | [org admin] Tailscale | step 3 |
+| Optional, tailnet only: a Tailscale auth key for the apps node (`TS_APPS_AUTHKEY`): reusable, pre-approved, tagged (for example `tag:aidenhq-apps` under `tagOwners`). Without it the node signs in once through a link on the board's Apps page when the first app is served | [org admin] Tailscale | step 3 |
 | An OpenRouter **management (provisioning) key**, or a normal OpenRouter API key you made yourself | OpenRouter account admin | step 3 |
 | Optional: a Google OAuth client of type *Web application*, with the Calendar, Drive and Gmail APIs enabled. Without it, the board's Google setup (`#/setup/google`, about 10 minutes) walks you through making one and takes the id and secret from a paste box | [org admin] Google Workspace | step 3, step 7 |
 | Read access to the AidenHQ product repo on GitHub (to clone it or fork it) | the repo owner | step 2 |
@@ -528,7 +528,7 @@ Agent-built apps get their own tailnet node and name (`aidenhq-<user>-apps`), so
 cookies. It joins with `TS_APPS_AUTHKEY` if you have one (a Tailscale admin makes it): in the Tailscale admin, add a tag (for example
 `tag:aidenhq-apps`, under `tagOwners`; if your policy isn't allow-all, let your devices reach it on the app ports),
 then Settings, Keys, *Generate auth key*: reusable, pre-approved, tagged with it. The key is optional: without it,
-when the first app is served the node prints a Tailscale login link and Aiden sends it to you (a decision); approve it
+when the first app is served the board's Apps page shows a Tailscale login link (and you get a decision notice saying so); approve it
 once as yourself and apps open exactly as with a key (the node keeps its state, so it signs in once). To use a key later,
 put it in the vault as `tailscale_apps_authkey` and apply again. The node runs in `tailscale` exposure only.
 

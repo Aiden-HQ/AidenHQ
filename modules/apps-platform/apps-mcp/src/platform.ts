@@ -20,7 +20,7 @@ import { agentSigner, forgedIdentity, IDENTITY_HEADER } from "./identity.js";
 import { readonlyPool, type WarehouseDeps } from "./sources.js";
 import { parseChecks, probeFailure, PROBE, withoutSamples, type Quality } from "./quality.js";
 import { previewApp } from "./previews.js";
-import { certificates, doorHost, doorIp, doorUrl, NO_DOOR, NOT_SERVED, readDoor, tlsCheck, WAITING_FOR_CERTIFICATE, type TlsCheck } from "./doors.js";
+import { certificates, doorHost, doorIp, doorUrl, NO_DOOR, WAITING_FOR_NODE, NOT_SERVED, readDoor, tlsCheck, WAITING_FOR_CERTIFICATE, type TlsCheck } from "./doors.js";
 
 const run = promisify(execFile);
 
@@ -53,6 +53,8 @@ export interface PlatformConfig {
   doorsFile?: string; // which apps the gate's doors serve, on which loopback port (doors.ts), beside the previews file
   /** Tells the owner one thing needs them (a `decision` notice, de-duplicated by `key`): the kernel's /v1/notify. */
   notify?: (text: string, key: string) => Promise<void>;
+  /** The apps node's `tailscale status --json` (tests stub it). */
+  nodeStatus?: () => Promise<{ BackendState?: string; AuthURL?: string }>;
   tlsCheck?: TlsCheck; // a public door's certificate check (doors.ts); tests stub it
 }
 
@@ -133,8 +135,8 @@ export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: 
     return { ok, ms: Date.now() - started };
   };
 
-  /** Is the apps' tailnet node this instance's door (tailnet.ts tailnetNode)? Re-read on use, as apply rewrites it. */
-  const node = (): boolean => tailnetNode(cfg.appsNodeFile, cfg.urlBase);
+  /** Is the apps' tailnet node this instance's door now: configured (tailnet.ts tailnetNode) and logged in? Re-read on use. */
+  const node = (): boolean => nodeConfigured() && nodeUp;
   const engine: Engine = createEngine({
     exec,
     store,
@@ -159,6 +161,7 @@ export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: 
   async function syncEdge(): Promise<void> {
     const want = new Map<string, EdgeTarget>();
     const all = apps();
+    await refreshNode(all.some((a) => exposes(a) && a.host === "local" && store.goodDeploys(a.name).length)).catch((err) => log.warn({ err: String(err) }, "apps node login check failed"));
     // Healthy previews of served apps too (previews.ts), at their own ports.
     const previews = store.previews().flatMap((r) => {
       const parent = all.find((a) => a.name === r.app);
@@ -183,7 +186,6 @@ export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: 
       log.warn({ err: String(err) }, "previews file not written");
     }
     if (!node()) return; // no apps node container without Tailscale (compose profile off)
-    if (all.some((a) => exposes(a) && a.host === "local" && store.goodDeploys(a.name).length)) await edgeLogin();
     const joined = Object.keys(JSON.parse(await exec(["inspect", EDGE_CONTAINER, "--format", "{{json .NetworkSettings.Networks}}"])) ?? {}).filter((n) => n.startsWith("app-"));
     const changes = [
       ...joined.filter((n) => !want.has(n)).map((n) => ["disconnect", n]),
@@ -193,25 +195,33 @@ export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: 
   }
 
   /**
-   * A node with no join key signs in once: when an app first needs the door and the node says NeedsLogin, its login link
-   * (`tailscale up` without a key prints one) goes to the owner as a decision. The node's /state keeps it signed in after.
+   * The apps' tailnet node is a door only once it is logged in (`tailscale status` BackendState Running): until then apps
+   * require a signed identity, as without a node. A node with no join key signs in once: when an app is served and it says
+   * NeedsLogin, the owner gets a generic decision, and its login link (a bearer secret: whoever opens it can put the node on
+   * their own tailnet) is shown only on the board's Apps page, behind the owner's sign-in (/internal/apps-node).
    */
-  let askedLogin = "";
-  async function edgeLogin(): Promise<void> {
-    if (!cfg.notify) return;
-    const ts = (...a: string[]) => exec(["exec", EDGE_CONTAINER, "tailscale", "--socket=/tmp/tailscaled.sock", ...a]);
-    try {
-      let s = JSON.parse(await ts("status", "--json")) as { BackendState?: string; AuthURL?: string };
-      if (s.BackendState !== "NeedsLogin") return;
-      if (!s.AuthURL) {
-        await ts("up", "--timeout=5s", `--hostname=${process.env.APPS_TS_HOSTNAME || "aidenhq-apps"}`).catch(() => {});
-        s = JSON.parse(await ts("status", "--json"));
-      }
-      if (!s.AuthURL || s.AuthURL === askedLogin) return;
-      await cfg.notify(`Approve the apps' Tailscale node so agent-built apps can open on your tailnet (one time): ${s.AuthURL}`, "apps-edge:login");
-      askedLogin = s.AuthURL;
-    } catch (err) {
-      log.warn({ err: String(err) }, "apps node login check failed");
+  let nodeUp = false;
+  let nodeLogin: string | undefined;
+  let askedLogin = false;
+  const nodeConfigured = (): boolean => tailnetNode(cfg.appsNodeFile, cfg.urlBase);
+  const nodeStatus = cfg.nodeStatus ?? (async () => JSON.parse(await exec(["exec", EDGE_CONTAINER, "tailscale", "--socket=/tmp/tailscaled.sock", "status", "--json"])) as { BackendState?: string; AuthURL?: string });
+  async function refreshNode(needed: boolean): Promise<void> {
+    if (!nodeConfigured()) {
+      nodeUp = false;
+      nodeLogin = undefined;
+      return;
+    }
+    let st = await nodeStatus().catch(() => ({}) as { BackendState?: string; AuthURL?: string });
+    if (needed && st.BackendState === "NeedsLogin" && !st.AuthURL) {
+      await exec(["exec", EDGE_CONTAINER, "tailscale", "--socket=/tmp/tailscaled.sock", "up", "--timeout=5s", `--hostname=${process.env.APPS_TS_HOSTNAME || "aidenhq-apps"}`]).catch(() => {});
+      st = await nodeStatus().catch(() => st);
+    }
+    nodeUp = st.BackendState === "Running";
+    nodeLogin = st.BackendState === "NeedsLogin" ? st.AuthURL : undefined;
+    if (nodeUp) askedLogin = false;
+    if (nodeLogin && needed && cfg.notify && !askedLogin) {
+      await cfg.notify("Agent-built apps need one Tailscale sign-in: open the board's Apps page to approve it.", "apps-edge:login");
+      askedLogin = true;
     }
   }
 
@@ -225,6 +235,7 @@ export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: 
    * app is served (in the doors file). Public: once its certificate verifies too. Never a link that would only be refused.
    */
   const door = (app: App): { url?: string; unpublished?: string } => {
+    if (nodeConfigured() && !nodeUp) return { unpublished: WAITING_FOR_NODE };
     const d = readDoor(cfg.gateFile);
     if (!d) return { unpublished: NO_DOOR };
     if (!(app.host === "local" && store.goodDeploys(app.name).length)) return { unpublished: NOT_SERVED };
@@ -486,6 +497,6 @@ export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: 
   const qualityFor = (a: App): Quality => quality.get(a.name) ?? { state: "unknown", why: "not probed yet" };
   /** Every probed app's checks without samples (the board's detector raises the failing ones; samples never leave here). */
   const qualityOf = () => apps().filter((a) => a.health.url).map((a) => ({ name: a.name, ...withoutSamples(qualityFor(a)) }));
-  return { previewUrl, dropPreviewDb, healthFailure, appAnswered, noAutoRollback, sign, checkNow, qualityOf, qualityFor, syncEdge, warehouse, render, lookup, auditView, auditApi, resolveApi, sendApi, runPlan, store, engine, probe, apps, find, status, cached, refresh, errors, listing, raise, notifyPending, cfg, commit };
+  return { previewUrl, dropPreviewDb, healthFailure, appAnswered, noAutoRollback, sign, checkNow, qualityOf, qualityFor, syncEdge, node, nodeState: () => ({ up: nodeUp, ...(nodeLogin ? { login_url: nodeLogin } : {}) }), warehouse, render, lookup, auditView, auditApi, resolveApi, sendApi, runPlan, store, engine, probe, apps, find, status, cached, refresh, errors, listing, raise, notifyPending, cfg, commit };
 }
 export type Platform = ReturnType<typeof createPlatform>;
