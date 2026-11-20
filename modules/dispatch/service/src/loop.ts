@@ -152,7 +152,11 @@ export function createDispatch({ kernel, db, owner, log = () => {}, now = Date.n
           const runs = await kernel.jobsOf(v.task);
           let tries = 0;
           for (const j of runs) { if (!unfinished(j)) break; tries++; }
-          if (tries < START_TRIES && !CLOSED.has(String((await kernel.task(v.task)).status))) {
+          // A run that ran is retried only on a task still in its agent's hands (todo or in progress, an agent assigned): one it
+          // left blocked or handed back to the owner waits on them, not on a retry.
+          const t = await kernel.task(v.task);
+          const open = neverStarted(v) ? !CLOSED.has(String(t.status)) : ["todo", "in_progress"].includes(String(t.status)) && Boolean(t.assigneeAgentId);
+          if (tries < START_TRIES && open) {
             await kernel.schedule({ task: v.task, at: Date.now() + RETRY_MS * tries, cause: "retry", id: `retry.${v.id}` });
             await kernel.ack(v.id);
             log("job didn't finish: retried later", { job: v.id, task: v.task, state: v.state, exit: v.exit, tries, why: v.final.slice(0, 200) });
