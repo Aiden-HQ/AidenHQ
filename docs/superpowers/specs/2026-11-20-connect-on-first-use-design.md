@@ -1,6 +1,6 @@
 # Connect on first use
 
-Status: draft for owner approval, 2026-11-20. First of three setup simplifications (then: tailnet optional, the
+Status: approved by the owner, 2026-11-20. First of three setup simplifications (then: tailnet optional, the
 organisation Google client).
 
 ## Intent
@@ -125,7 +125,7 @@ own Connect (the sign-in's Connect, or `#/setup/<module>` for a flow). By mode:
 (`/v1/operator/reset`, local to the host) returns it, built on the board's public base URL. Whoever can run it already
 controls the server, so nothing new is exposed, and it works in every mode. In Cloudflare `access` mode there is no link
 (Access owns identity) and it prints that instead. The Telegram delivery of reset links (`deliverSecrets`, the
-`credentials: true` channel) is deleted: one way (owner OK needed: this drops a behaviour).
+`credentials: true` channel) is deleted: one way (owner OK'd 2026-11-20).
 
 ### 6. Clean-ups
 
