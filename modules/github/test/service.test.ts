@@ -9,6 +9,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createService } from "../service/src/service.ts";
+import { serveOps } from "../service/src/ops.ts";
 import { render } from "../../../kernel/src/writes.ts";
 
 const sh = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8", env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_AUTHOR_NAME: "a", GIT_AUTHOR_EMAIL: "a@example.com", GIT_COMMITTER_NAME: "a", GIT_COMMITTER_EMAIL: "a@example.com" } }).trim();
@@ -45,6 +46,7 @@ async function setup(t, { routes = () => undefined, maintained, connected = () =
 
   const outcomes = [];
   const states = {};
+  const oursRefs = new Set();
   const kernel = await listen(async (req, res) => {
     let body = "";
     for await (const c of req) body += c;
@@ -52,7 +54,7 @@ async function setup(t, { routes = () => undefined, maintained, connected = () =
     if (m) { outcomes.push({ id: m[1], ...JSON.parse(body) }); return res.writeHead(200).end("{}"); }
     const w = /^\/v1\/writes\/([^/]+)$/.exec(req.url);
     if (w) return res.writeHead(200).end(JSON.stringify({ id: w[1], state: states[w[1]] ?? "claimed" }));
-    if (req.url.startsWith("/v1/objects")) return res.writeHead(200).end(JSON.stringify({ ours: false }));
+    if (req.url.startsWith("/v1/objects")) return res.writeHead(200).end(JSON.stringify({ ours: oursRefs.has(decodeURIComponent(req.url.split("ref=")[1] ?? "")) }));
     res.writeHead(404).end("{}");
   });
   const created = [];
@@ -73,7 +75,7 @@ async function setup(t, { routes = () => undefined, maintained, connected = () =
   const handle = createService({
     key: "ch-key", kernelUrl: kernel.url, cacheDir: join(root, "cache"), tasksDir: join(root, "tasks"), access,
     remoteUrl: (slug) => join(root, "github", `${slug}.git`), fleetOrg: "acme-agents", instanceRepo: "acme-agents/aidenhq-instance",
-    productRepo: "acme/aidenhq", allowedOrgs: ["acme-agents", "partner"], maintained,
+    ops: serveOps, productRepo: "acme/aidenhq", allowedOrgs: ["acme-agents", "partner"], maintained,
   });
   const svc = await listen((req, res) => void handle(req, res));
   t.after(() => { kernel.s.close(); svc.s.close(); });
@@ -83,7 +85,7 @@ async function setup(t, { routes = () => undefined, maintained, connected = () =
   };
   const raw = (path, body, key = "ch-key") => fetch(`${svc.url}${path}`, { method: "POST", headers: { authorization: `Bearer ${key}` }, body: JSON.stringify(body) });
   const get = (path, key = "ch-key") => fetch(`${svc.url}${path}`, { headers: { authorization: `Bearer ${key}` } });
-  return { root, ws, marker, origin, sha, outcomes, states, created, ghCalls, call, raw, get, handle };
+  return { root, ws, marker, origin, sha, outcomes, states, oursRefs, created, ghCalls, call, raw, get, handle };
 }
 
 test("create_repo is Tier 0 in an allowed org besides the agents org; a core repo's name, and an org nobody allowed, are refused", async (t) => {
@@ -304,6 +306,15 @@ test("a held write whose record was cancelled while held does not run", async (t
   for (let i = 0; i < 300 && !outcomes.length; i++) await new Promise((r) => setTimeout(r, 10));
   assert.throws(() => sh(origin, "rev-parse", "--verify", "refs/heads/feature"), "a cancelled record is not pushed");
   assert.equal(outcomes[0]?.ok, false, JSON.stringify(outcomes));
+});
+
+test("editing a comment is allowed only for one the kernel recorded as ours", async (t) => {
+  const { call, oursRefs, ghCalls } = await setup(t, { routes: (m, p) => (m === "PATCH" && p === "/repos/acme-agents/widget/issues/comments/55" ? { status: 200, body: { id: 55 } } : undefined) });
+  const edit = { repo: "acme-agents/widget", number: 3, id: 55, body: "x" };
+  assert.equal((await call("/ops/comment", edit)).status, 403);
+  assert.equal(ghCalls.some((c) => c.method === "PATCH"), false);
+  oursRefs.add("github:acme-agents/widget#3/comment/55");
+  assert.equal((await call("/ops/comment", edit)).status, 200);
 });
 
 test("the owner's commit identity for job boxes; 503 while GitHub isn't connected", async (t) => {

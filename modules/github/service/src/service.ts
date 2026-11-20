@@ -719,7 +719,7 @@ export function createService(o: Options) {
       if (!o.ops) throw fail(404, "no such operation");
       return o.ops(req, res, {
         access, cacheDir: o.cacheDir, cache: (s) => cache(s), git, fetchRemote: (s, name) => fetchRemote(slugOf(s.slug), name),
-        initBare,
+        initBare, ours,
       });
     }
     const b = await body(req);

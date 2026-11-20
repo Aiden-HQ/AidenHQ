@@ -136,7 +136,7 @@ function shape(op: string, b: Record<string, unknown>, paths: string[] = []): Re
 /** codehost-local's ops, in process (modules/codehost-local/src). */
 export type LocalOps = { snapshot(repo: string, ref: string): Promise<Answer>; bundle(repo: string): Promise<{ file: string; done: () => void }> };
 
-export function createCodehost({ grants, repos, kind, secret, resolver, workspace, local = () => undefined }: {
+export function createCodehost({ grants, repos, kind, secret, resolver, workspace, local = () => undefined, noteObject = () => {} }: {
   grants: () => OpsGrant[];
   /** The kernel's own repos (AIDENHQ_INSTANCE_REPO, AIDENHQ_PRODUCT_REPO, the agents org): what @ names in grants resolve to. */
   repos: () => KernelRepos;
@@ -147,6 +147,8 @@ export function createCodehost({ grants, repos, kind, secret, resolver, workspac
   workspace: (module: string, task: unknown) => Promise<{ workspace: string }>;
   /** codehost-local's ops, when that module is enabled. */
   local?: () => LocalOps | undefined;
+  /** Remembers a GitHub object a module's op made (`record` names who), so a later edit of it is known as ours (objects.ts). */
+  noteObject?: (ref: string, record: string) => void;
 }) {
   /** Checks `module`'s grant and asks the code host: its answer as it came (JSON, a bundle, or a snapshot's tarball). */
   async function ask(module: string, op: string, b: Record<string, unknown>): Promise<Answer> {
@@ -238,6 +240,15 @@ export function createCodehost({ grants, repos, kind, secret, resolver, workspac
     async op(module: string, op: string, b: Record<string, unknown>, res: ServerResponse): Promise<void> {
       if (op === "bundle") throw fail(404, "no codehost operation bundle");
       const r = await ask(module, op, b);
+      // A new comment is ours: remembered by its ref, so editing it (the comment op with `id`) is allowed and no other is.
+      if (op === "comment" && b.id == null && r.statusCode === 200) {
+        const chunks: Buffer[] = [];
+        for await (const c of r) chunks.push(c as Buffer);
+        const id = Number((JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}") as { id?: unknown }).id);
+        if (Number.isInteger(id) && id > 0) noteObject(`github:${String(b.repo)}#${Number(b.number)}/comment/${id}`, `codehost:${module}`);
+        res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ id }));
+        return;
+      }
       res.writeHead(r.statusCode ?? 502, { "content-type": String(r.headers["content-type"] ?? "application/json"), ...(r.headers["x-aidenhq-commit"] ? { "x-aidenhq-commit": String(r.headers["x-aidenhq-commit"]) } : {}) });
       await new Promise<void>((ok, reject) => { r.pipe(res); r.on("end", ok).on("error", reject); });
     },

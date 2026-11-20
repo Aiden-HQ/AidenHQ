@@ -21,6 +21,8 @@ export type OpsContext = {
   cacheDir: string;
   /** Makes a scratch bare repo (init --bare) at `dir`. */
   initBare: (dir: string) => Promise<void>;
+  /** Whether the kernel's records name this GitHub object (a ref like `github:o/r#1/comment/2`) as made by AidenHQ. */
+  ours: (ref: string) => Promise<boolean>;
 };
 type Body = Record<string, any>;
 type Answer = { status: number; json?: unknown; text?: string; stream?: Readable };
@@ -159,6 +161,8 @@ export async function answerOp(op: string, b: Body, ctx: OpsContext): Promise<An
   if (op === "read") return read(ctx, s, b);
   if (op === "comment") {
     const body = withFooter(String(b.body), String(b.module ?? "AidenHQ"));
+    // Editing a comment: only one AidenHQ posted (the kernel records each new comment's ref).
+    if (b.id && !(await ctx.ours(`github:${s.slug}#${Number(b.number)}/comment/${Number(b.id)}`))) throw fail(403, `comment ${String(b.id)} isn't one AidenHQ posted: it can't be edited`);
     const r = b.id ? await ok(ctx, "PATCH", `/repos/${s.slug}/issues/comments/${b.id}`, { body }) : await ok(ctx, "POST", `/repos/${s.slug}/issues/${b.number}/comments`, { body });
     return { status: 200, json: { id: r.body?.id } };
   }
