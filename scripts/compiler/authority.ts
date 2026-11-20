@@ -13,8 +13,11 @@ import { heir } from "../../kernel/src/successor.ts";
 
 type Dict = Record<string, unknown>;
 export type ModuleDef = Dict;
-/** `ownerOnly`: the owner's under every autonomy (new authority from a module that isn't official, or new spend). */
-export type Change = { what: string; owner: boolean; ownerOnly?: true };
+/**
+ * `ownerOnly`: the owner's under every autonomy (new authority from a module that isn't official, or new spend). `official`:
+ * new spend from an official module, which a release the owner's auto-updates take accepts (apply-tier.ts releaseParts).
+ */
+export type Change = { what: string; owner: boolean; ownerOnly?: true; official?: true };
 export type ModuleDiff = { module: string; changes: Change[]; code: boolean };
 /**
  * `origin`: where a third-party module comes from on each side (marketplace, sha, computed tier), for the card. `official`:
@@ -175,7 +178,7 @@ function join(b: Dict, a: Dict, h: Dict, conflict: (where: string) => void, path
 export function authorityDiff(name: string, base: ModuleDef | undefined, head: ModuleDef | undefined, codeChanged: boolean, replacing: { name: string; def?: ModuleDef }[] = [], origin: { base?: string; head?: string } = {}, conns: Dict = {}, official = false): ModuleDiff {
   const changes: Change[] = [];
   const owner = (what: string) => changes.push({ what, owner: true, ...(official ? {} : { ownerOnly: true as const }) });
-  const spend = (what: string) => changes.push({ what, owner: true, ownerOnly: true });
+  const spend = (what: string) => changes.push({ what, owner: true, ownerOnly: true, ...(official ? { official: true as const } : {}) });
   const review = (what: string) => changes.push({ what, owner: false });
   if (head) {
     for (const r of replacing) {

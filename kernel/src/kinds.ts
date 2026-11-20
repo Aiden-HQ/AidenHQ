@@ -17,7 +17,7 @@ const obj = (properties: Record<string, Schema>, required: string[]): Schema => 
 // auto-updates ask for, set only by the planner on the updater's verified move (apply-tier.ts standingRelease).
 const APPLY_ARGS = obj({
   repo: REPO, branch: REF, sha: SHA, files: { type: "array", minItems: 1, maxItems: 200, items: { type: "string", maxLength: 300 } },
-  authority: { type: "array", minItems: 1, maxItems: 200, items: { type: "string", maxLength: 300, pattern: "^[^\\p{Cc}\\p{Cf}]+$" } }, ownerRequired: { type: "boolean" },
+  authority: { type: "array", minItems: 1, maxItems: 1000, items: { type: "string", maxLength: 4000, pattern: "^[^\\p{Cc}\\p{Cf}]+$" } }, ownerRequired: { type: "boolean" },
   release: { type: "string", pattern: "^[0-9]{4}\\.[0-9]{1,2}(\\.[0-9]+){0,2}$" },
 }, ["repo", "branch", "sha", "files"]);
 

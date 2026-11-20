@@ -165,7 +165,7 @@ function agentDefFields(key: any, base: any, head: any, s: any) {
  * The instance's third-party marketplace changes are read here from both instance.yaml sides; a new one is the owner's. With a
  * release, `s.effective` is each side with the release's official marketplace (the runner read it at its distro sha).
  */
-function moduleAuthorityParts(s: any, base: any, head: any) {
+function moduleAuthorityParts(s: any, base: any, head: any, release?: string) {
   if (s.modulesError || !s.modules) return [REJECT("unknown-content", `couldn't read the module changes${s.modulesError ? ` (${s.modulesError})` : ""}; try again`)];
   let markets, forks;
   try { markets = marketplaceChanges(s.effective?.base ?? base, s.effective?.head ?? head); } catch (err: any) { return [REJECT("unparseable", `instance.yaml marketplaces: ${String(err.message ?? err).slice(0, 200)}`)]; }
@@ -181,6 +181,14 @@ function moduleAuthorityParts(s: any, base: any, head: any) {
   const extra = unjudged.length ? [OWNER_AFTER_REVIEW("grants-unjudged", `the grants override of ${unjudged.join(", ")} changes, and no module's authority diff covers it`, diffs.some((d) => d.code))] : [];
   // The official marketplace moving with every module's folder tree id unchanged (the 5b switch): no authority, the reviewer's.
   if (!diffs.length) return [...extra, ...(changedKeys(base, head).includes("marketplaces") ? [T(1, "marketplace-same-trees", "the official marketplace moves; every module's folder tree id is unchanged")] : [])];
+  // The owner's auto-updates taking an official release (owner, 2026-11-20: "auto update implies you are accepting new
+  // authority and anything else not actively malicious from the official releases"): every change its official modules
+  // bring is accepted, and the one AI reviewer judges only whether the update is malicious or compromised, reading every
+  // line. What isn't the release's (a module that isn't official, a marketplace or fork line) still goes as below.
+  if (release && !diffs.some((d) => d.changes.some((c) => c.ownerOnly && !c.official)) && !extra.length) {
+    const all = diffs.flatMap((d) => d.changes);
+    return [T(1, "release-update", `the release updater moves this instance to the official release ${release}, which it verified, while the owner's auto-updates are on: ${all.length} module changes (${all.filter((c) => c.owner).length} new authority), each listed after the diff; the AI reviewer checks the update is not malicious or compromised`)];
+  }
   const c = classifyModules(diffs);
   return [...extra, c.reviewFirst ? OWNER_AFTER_REVIEW(c.rule, c.reason, c.panel, c.ownerOnly) : c.panel ? PANEL(c.rule, c.reason) : T(1, c.rule, c.reason)];
 }
@@ -268,14 +276,15 @@ function instanceParts(s: any) {
   const keys = changedKeys(base, head);
   // Module authority: what the modules hand out moves with the pins and lists, and with an agent's grants override
   // (overrides.agents.<key>.connections, folded into its module's def, so the authority diff judges it like a module grant).
-  if (["product", "modules", "marketplaces", "release", "product_fork"].some((k) => keys.includes(k)) || !eq(grantOverrides(base), grantOverrides(head))) parts.push(...moduleAuthorityParts(s, base, head));
+  const release = standingRelease(base, head, s.releaseVerified === true, Boolean(s.pin?.back));
+  if (["product", "modules", "marketplaces", "release", "product_fork"].some((k) => keys.includes(k)) || !eq(grantOverrides(base), grantOverrides(head))) parts.push(...moduleAuthorityParts(s, base, head, release));
   // Following a release is the owner's (docs/design/release-updates.md). The one exception: the kernel's release updater moving
   // the pin along the same source, forward, while auto-updates are on (both sides; unset is on), to exactly the instance.yaml
   // it verified itself for this base (`s.releaseVerified`: the planner checked it, never the requester's say-so). That is the
   // owner's standing authority, so the reviewer's. Any other add or move is the owner's after the reviewer; the module parts
   // above still raise new authority to the owner. Dropping the pin leaves the module parts above to judge.
   if (keys.includes("release") && head.release != null) {
-    parts.push(standingRelease(base, head, s.releaseVerified === true, Boolean(s.pin?.back))
+    parts.push(release
       ? T(1, "release-pin", "the release updater moves this instance to the next release it verified, while auto-updates are on: the owner's standing authority")
       : OWNER_AFTER_REVIEW("release-pin", "adds or moves the release this instance follows: the owner's authority, unless it is the updater's verified move while auto-updates are on"));
   }
@@ -476,17 +485,21 @@ export function reviewerFacts(a: { authority?: string[]; release?: string }): st
   ].filter(Boolean).join("\n\n");
 }
 
-const AUTHORITY_MAX = 200;
-/** The authority lines an apply's args carry (so its card lists them and its digest covers them), owner changes first, capped. */
-export function authorityArgs(st: { modules?: Record<string, ModuleInput>; marketplaces?: ReturnType<typeof marketplaceChanges> }): { authority?: string[]; ownerRequired?: true } {
+/**
+ * The authority lines an apply's args carry (so its card lists them, the reviewer reads every one and its digest covers them),
+ * owner changes first, each whole: never cut (a change too large to review is refused by the details cap instead). Each
+ * module's `code changes` line folds into one. `release`: the release the owner's auto-updates take (standingRelease), whose
+ * official modules' new spend needs no owner tap.
+ */
+export function authorityArgs(st: { modules?: Record<string, ModuleInput>; marketplaces?: ReturnType<typeof marketplaceChanges> }, release?: string): { authority?: string[]; ownerRequired?: true } {
   const diffs = st.modules ? [...(st.marketplaces ?? []), ...diffAll(st.modules)] : [];
-  const all = authorityLines(diffs);
+  const code = diffs.filter((d) => d.changes.some((c) => c.what === "code changes" && !c.owner)).map((d) => d.module);
+  const all = authorityLines(diffs.map((d) => ({ ...d, changes: d.changes.filter((c) => !(c.what === "code changes" && !c.owner)) })));
   const isOwner = (l: string) => l.endsWith("(owner)");
-  const sorted = [...all.filter(isOwner), ...all.filter((l) => !isOwner(l))];
-  const dropped = sorted.slice(AUTHORITY_MAX - 1);
-  const lines = sorted.length > AUTHORITY_MAX ? [...sorted.slice(0, AUTHORITY_MAX - 1), `and ${dropped.length} more module changes (${dropped.some(isOwner) ? "owner" : "review"})`] : sorted;
+  const lines = [...all.filter(isOwner), ...all.filter((l) => !isOwner(l)), ...(code.length ? [`code changes in ${code.join(", ")} (review)`] : [])];
   // The owner's under every autonomy (a non-official module's new authority, new spend): the reviewer's yes never runs it (records.ts).
-  return { ...(lines.length ? { authority: lines.map((l) => l.slice(0, 300)) } : {}), ...(diffs.some((d) => d.changes.some((c) => c.ownerOnly)) ? { ownerRequired: true as const } : {}) };
+  const ownerRequired = diffs.some((d) => d.changes.some((c) => c.ownerOnly && !(release && c.official)));
+  return { ...(lines.length ? { authority: lines } : {}), ...(ownerRequired ? { ownerRequired: true as const } : {}) };
 }
 
 /** The product pin's move, as the product's git reads it on its main: the commits it adds or removes. */
@@ -591,7 +604,7 @@ export function createApplyPlanner(h: {
     const t = meritOwner(highest(applyParts({ files: c.files, base: c.texts.base, head: c.texts.head, pin: bump ? { forward: bump.forward, back: bump.back } : null, routingTune: Boolean(notes), roles: h.roles(), connections: h.connections(), moduleApps: h.moduleApps(), settingDefs: h.settingDefs?.() ?? {}, byAgent: requester?.kind !== "kernel", ownerStarted: false, trialNoTap: false, releaseVerified, ...st })));
     if (t.reject) throw new Refused(String(t.reason));
     const release = standingRelease(parse(baseI), parse(headI), releaseVerified, Boolean(bump && bump.back));
-    const full = { repo, branch: a.branch, sha: a.sha, files: c.files, ...authorityArgs(st), ...(release ? { release } : {}) };
+    const full = { repo, branch: a.branch, sha: a.sha, files: c.files, ...authorityArgs(st, release), ...(release ? { release } : {}) };
     const details = [notes, c.diff, bump && `${bump.title.replaceAll("`", "")}:\n${bump.log}`, reviewerFacts(full), st.remote, c.trial].filter(Boolean).join("\n\n");
     if (details.length > DETAILS_MAX) throw new Refused(`the change is too large to review (${details.length} characters with the commits and code it brings): split it into smaller ones`);
     const card = applyCard(full, details);
