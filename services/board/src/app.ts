@@ -123,11 +123,6 @@ export interface AppOptions {
   /** The kernel's flow reads (flow.ts): the Flow page. Without it, the page is empty. */
   flow?: Flow;
   /**
-   * The operator's key (secret board_operator_key, x-operator-key), for ops/setup.sh only, on "internal": the owner's setup
-   * link, the welcome chat and an account reset. Nothing else.
-   */
-  operatorKey?: string;
-  /**
    * Board sign-in (kernel-auth.ts, docs/design/access.md): every route on "lan" needs a ready admin's board session, handed off
    * by the kernel. Required there (or the `session` stub).
    */
@@ -350,10 +345,6 @@ export function createApp(opts: AppOptions): Server {
 
   const isChat = (i: Issue, ctx: { labels: Label[] }) => Boolean(i.labels?.some((l) => l.name === "chat") || i.labelIds?.some((id) => ctx.labels.find((l) => l.id === id)?.name === "chat"));
 
-  /** The operator's key (ops/setup.sh), on the internal listener only; it never decides or opens a session. */
-  function requireOperator(req: IncomingMessage, what: string) {
-    if (!opts.operatorKey || !keyMatches(req.headers["x-operator-key"], opts.operatorKey)) throw new HttpError(403, `only the operator ${what}`);
-  }
   /** The kernel (gateway_board_key): every channel reaches the owner's cards, decisions and notices only through it. */
   const kernelKeyed = (req: IncomingMessage) => Boolean(opts.gatewayKey && keyMatches(req.headers["x-gateway-key"], opts.gatewayKey));
   /** An agent through the tasks bridge: the kernel's caller assertion (X-AidenHQ-Caller), granted `tool` on paperclip_tasks (and `role`, if named). */
@@ -1008,16 +999,6 @@ export function createApp(opts: AppOptions): Server {
         await requireAgentTool(req, "task_approvals");
         const task = await pc.issue(issue).then((i) => i.id, () => undefined);
         return { approvals: task ? (await cardsOf("recent", { task, limit: 50 })).map(approvalView) : [] };
-      },
-    },
-    {
-      // ops/setup.sh's welcome chat (operator key): a new chat, written as the owner.
-      method: "POST",
-      path: /^\/internal\/owner\/welcome$/,
-      handle: async (m, body, u, req) => {
-        requireOperator(req, "posts the welcome chat");
-        const chats = routes.find((r) => r.method === "POST" && r.path.test("/api/chats"))!;
-        return perRequest.run({ session: OPERATOR }, () => chats.handle(m, body, u, req));
       },
     },
     // Board changes are the Researcher's (board-writer), through the tasks bridge with its own credential.

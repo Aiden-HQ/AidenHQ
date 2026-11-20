@@ -38,12 +38,11 @@ test("operator setup prints the owner's first link once, only for owner_email; r
   assert.notEqual(again.json.url, reset.json.url); // a second reset invalidates the first link
 });
 
-test("only the host can mint a link: the operator key is mounted into no container, the board's included", async () => {
+test("only the host can mint a link: the operator key is mounted into no container, and a missing key fails closed", async () => {
   const { readFileSync } = await import("node:fs");
   const { parse } = await import("yaml");
   const { OPERATOR_KEY } = await import("../src/auth-api.ts");
   const root = new URL("../../", import.meta.url);
-  assert.notEqual(OPERATOR_KEY, "board_operator_key", "the board holds board_operator_key");
   // A compile-generated kernel secret (a module declaring it fails compile: scripts/modules.ts), read by the kernel on the host.
   assert.ok(JSON.parse(readFileSync(new URL("kernel/defaults.json", root), "utf8")).generated_secrets.includes(OPERATOR_KEY));
   assert.match(readFileSync(new URL("kernel/src/main.ts", root), "utf8"), /operatorKey: \(\) => secret\(OPERATOR_KEY\)/);
@@ -60,4 +59,11 @@ test("only the host can mint a link: the operator key is mounted into no contain
     assert.equal(board.status, 401);
     assert.equal(board.json?.url, undefined);
   } finally { api.close(); accounts.close(); }
+  // An install whose key isn't generated yet fails closed.
+  const accounts2 = await openAccounts({ dataDir: ":memory:", hosts: ["localhost:3120"], adminUrl: "http://localhost:3120", ownerEmail: () => "owner@example.com", edgeSecret: () => "", notify: () => {}, log: silent });
+  const none = await authApiServer(accounts2, { operatorKey: "" });
+  try {
+    assert.equal((await none.post("/v1/operator/setup", { email: "owner@example.com", name: "Owner" })).status, 401);
+    assert.equal((await none.post("/v1/operator/setup", { email: "owner@example.com", name: "Owner" }, { "x-operator-key": "" })).status, 401);
+  } finally { none.close(); accounts2.close(); }
 });

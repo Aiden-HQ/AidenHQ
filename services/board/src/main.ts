@@ -88,7 +88,7 @@ const lan = createApp({ ...common, allowedHosts: cfg.lan.hosts, mode: "lan" });
 lan.listen(cfg.lan.port, "0.0.0.0", () => log.info({ port: cfg.lan.port, hosts: cfg.lan.hosts }, "LAN board listening"));
 
 // The tasks bridge and the kernel: bearer token, /internal/ only. Not published beyond loopback.
-const internal = cfg.internal && createApp({ ...common, allowedHosts: cfg.internal.hosts, mode: "internal", internalToken: cfg.internal.token, operatorKey: cfg.operatorKey, gatewayKey: cfg.gateway?.token });
+const internal = cfg.internal && createApp({ ...common, allowedHosts: cfg.internal.hosts, mode: "internal", internalToken: cfg.internal.token, gatewayKey: cfg.gateway?.token });
 if (internal && cfg.internal) internal.listen(cfg.internal.port, "0.0.0.0", () => log.info({ port: cfg.internal!.port }, "internal API listening"));
 
 for (const sig of ["SIGTERM", "SIGINT"] as const) {

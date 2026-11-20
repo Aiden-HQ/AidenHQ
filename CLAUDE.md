@@ -142,7 +142,7 @@ re-run it and any change to a listed file does. Cases run 8 at a time.
   decided as that admin at filing, the kernel checking the session the board forwards. Every admin is an owner: writes as the owner
   (the board through the kernel's `/v1/cp/owner`; only the kernel holds the Paperclip key), taps and typed replies decide (`account:<id>`); the board labels what non-owner admins wrote ("by <name>",
   `authored`). `kernel_operator_key` (root's ops/setup.sh on the host; no container
-  mounts it) alone makes the owner's setup link and resets an account; `board_operator_key` only posts the welcome chat. Users get apps only; each app's admins manage its access on the my-apps host's `/access` (never a
+  mounts it) alone makes the owner's setup link and resets an account. Users get apps only; each app's admins manage its access on the my-apps host's `/access` (never a
   set-password link from an app admin). The gate's auth listener is 3129 (loopback; `X-AidenHQ-Gate` =
   `gate_board_secret`); app hosts get host-only `__Host-` cookies through a one-time handoff, never a shared cookie.
   Every agent job and every check (fast checks, the reviewer eval) runs in an agent computer (gVisor box,

@@ -75,7 +75,7 @@ export async function kernel(t, { agents = {}, grants = {}, settings = {}, conne
   writeFileSync(join(dir, "grants.json"), JSON.stringify({ ...settings, agents: grants }));
   writeFileSync(join(dir, "writes.json"), JSON.stringify(kinds));
   writeFileSync(join(dir, "modules.json"), JSON.stringify(modules));
-  const allSecrets = { gateway_job_secret: "job-secret", gateway_lane_secret: "lane-secret", paperclip_board_key: "board-key", gateway_board_key: "the-boards-key", reviewer_key: "the-reviewer-key", board_operator_key: "the-operator-key", health_probe_key: "the-health-key", ...secrets };
+  const allSecrets = { gateway_job_secret: "job-secret", gateway_lane_secret: "lane-secret", paperclip_board_key: "board-key", gateway_board_key: "the-boards-key", reviewer_key: "the-reviewer-key", health_probe_key: "the-health-key", ...secrets };
   const secret = (n) => allSecrets[n] ?? "";
   // Each alias in `agents`: a running kernel job of its agent, its token minted as the kernel mints one (boxes.ts).
   const aliased = new Map(), tokens = {};
