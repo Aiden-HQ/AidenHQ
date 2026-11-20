@@ -660,7 +660,7 @@ code="$(curl -s -m 10 -o /dev/null -w '%{http_code}' -X POST -H "Authorization: 
 gh_tok="$sd/modules/github/token.json"
 { [ ! -e "$gh_tok" ] || [ "$(stat -c %a "$gh_tok" 2>/dev/null || stat -f %Lp "$gh_tok")" = 600 ]; } \
   && pass "github: the token file is mode 0600 (or GitHub is not connected)" || fail "github: $gh_tok is not mode 0600"
-tok_holders="$(docker ps -q | xargs -r docker inspect --format '{{index .Config.Labels "com.docker.compose.service"}} {{.Name}} {{range .Mounts}}{{.Source}} {{end}}' | grep -E "$sd/modules/github( |/)" | awk '$1!="github"{print $2}' | tr '\n' ' ')"
+tok_holders="$(docker ps -q | xargs -r docker inspect --format '{{index .Config.Labels "com.docker.compose.service"}} {{.Name}} {{range .Mounts}}{{.Source}} {{end}}' | grep -E "$sd/modules/github( |/)" | awk '$1!="github-github"{print $2}' | tr '\n' ' ')"
 [ -z "$tok_holders" ] && [ ! -e "$sd/github-app" ] && ! grep -qE 'github-app|github_app|codehost/token' compose.yaml \
   && pass "github: only the github service mounts the token directory; no App key, no token route" || fail "github: the token directory is mounted beyond the github service, or an App key remains: ${tok_holders:-$sd/github-app or compose.yaml}"
 pc="$(docker ps --filter "label=com.docker.compose.project=$project" --filter "label=com.docker.compose.service=paperclip" --format '{{.Names}}' | head -1)"
