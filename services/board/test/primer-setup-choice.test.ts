@@ -117,7 +117,7 @@ describe.each(["connect", "self-host"] as const)("Primer setup from a fresh inst
       expect((await owner("POST", "/api/setup-flows/primer/choose", { value: "self-host", inputs: { primer_host: "primer.example.com", primer_host_aud: "service:primer" } })).json).toEqual({ ok: true, identifier: "WOR-9" });
       expect(changesOf(created.at(-1)!.description)).toEqual([{ kind: "setting", key: "primer_mode", value: "self-host" }, { kind: "setting", key: "primer_host", value: "primer.example.com" }, { kind: "setting", key: "primer_host_aud", value: "service:primer" }]);
       // Saved in the owner's signed-in session: the board hands the kernel that session, whose account decides the apply.
-      expect(records.settings.at(-1)!.session).toMatch(/^ahqu_/);
+      expect(records.settings.at(-1)!.credential).toEqual({ board: expect.stringMatching(/^ahqu_/) });
       // Until the apply lands the page waits: the pick isn't live, so Connect keeps sending it back to the flow.
       expect(await choice()).toMatchObject({ value: "connect", chosen: "self-host" });
       expect(await owner("GET", "/primer/connect")).toMatchObject({ status: 302, location: "/#/setup/primer" });
