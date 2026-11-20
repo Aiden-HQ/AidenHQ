@@ -95,7 +95,7 @@ agents:
 # Its tools (service/src/config-tool.ts), served by the state service; each call's assertion gates it to the reviewer-manager role.
 connections:
   code_review:
-    setup: "Built in (code-review). If it is down, run `docker compose up -d code-review`, then read `docker compose logs code-review`."
+    setup: "Built in: nothing to connect."
     url: http://code-review:8098/mcp
     auth: code_review_service_key
     returns: untrusted

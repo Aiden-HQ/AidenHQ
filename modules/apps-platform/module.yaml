@@ -8,7 +8,7 @@ roles:
 # The apps connection: apps-mcp, still in the root compose until 4c moves it here.
 connections:
   apps:
-    setup: "Built in (apps-mcp). If it is down, run `docker compose up -d apps-mcp` on the host, then read `docker compose logs apps-mcp`."
+    setup: "Built in: nothing to connect."
     url: http://apps-mcp:8090/mcp
     auth: apps_service_key
     tool_timeout_sec: 600 # deploys are synchronous

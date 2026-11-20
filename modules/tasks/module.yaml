@@ -7,7 +7,7 @@ roles:
 description: "Task tools for every agent: read, create, delegate, comment on and close Paperclip tasks, as the calling agent."
 connections:
   paperclip_tasks:
-    setup: "Built in (tasks-mcp). If it is down, run `docker compose up -d tasks-mcp` on the host, then read `docker compose logs tasks-mcp`."
+    setup: "Built in: nothing to connect."
     url: http://tasks-mcp:8080/mcp
     auth: tasks_service_key
     returns: untrusted
