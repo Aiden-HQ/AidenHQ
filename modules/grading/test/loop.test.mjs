@@ -2,7 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { createGradeLoop } from "../service/src/loop.mjs";
 
-function setup(row) {
+function setup(row, over = {}) {
   const kv = new Map(), calls = [], failing = { done: 1, tell: 0 };
   const state = { get: (k) => kv.get(k), set: (k, v) => kv.set(k, v), list: (p) => [...kv].filter(([k, v]) => k.startsWith(p) && v), lastJob: () => undefined };
   const g = { issueId: "t", state: "pending", updatedAt: "2020-01-01T00:00:00Z", rubric: [], deliverable: { kind: "report" }, attempts: 0 };
@@ -11,13 +11,13 @@ function setup(row) {
   const loop = createGradeLoop({
     api: { get: async () => ({ grades: rows.filter((r) => r.state === "pending"), resubmitted: [] }), post: async () => { g.state = row; return { state: row, attempts: 1, failures: 0 }; } },
     pc: {
-      issue: async () => ({ id: "t", identifier: "T-1", title: "x", status: "in_review", parentId: "p" }),
+      issue: async () => ({ id: "t", identifier: "T-1", title: "x", status: over.status ?? "in_review", parentId: "p" }),
       agent: async () => undefined,
       setStatus: async (id, s) => { if (s === "done" && failing.done-- > 0) throw err(); calls.push(["setStatus", s]); },
       comment: async () => calls.push(["comment"]), block: async () => {}, children: async () => [],
     },
     log: () => {}, state,
-    gather: async () => ({ facts: [], version: "v1" }), grade: async () => ({ outcome: row, model: "m", criteria: [] }),
+    gather: async () => ({ facts: [], version: over.version ?? "v1" }), grade: async () => ({ outcome: row, model: "m", criteria: [] }),
     escalationFor: async () => ({}), gradeNote: () => "note", template: () => [], gradeDeps: () => ({}),
     tellParent: async (_i, kind) => { if (failing.tell-- > 0) throw err(); calls.push(["tell", kind]); return true; },
     recordsOn: async () => [], graderAsk: () => undefined, stripHidden: (x) => x, graderSpeaks: () => false, isUserInstruction: () => false,
@@ -32,6 +32,16 @@ describe("grade loop owed moves", () => {
     assert.deepEqual(calls, []);
     await loop.runGrades(); // next pass settles it
     assert.deepEqual(calls, [["setStatus", "done"], ["tell", "done"]]);
+  });
+  it("an owed close is dropped, with its notice, when the task moved on or its evidence changed", async () => {
+    for (const change of [{ status: "todo" }, { version: "v2" }]) {
+      const over = {};
+      const { loop, calls } = setup("satisfied", over);
+      await loop.runGrades(); // the first close fails and stays owed
+      Object.assign(over, change);
+      await loop.runGrades();
+      assert.deepEqual(calls, [], JSON.stringify(change));
+    }
   });
   it("an escalation's notice is retried when the tell fails, not posted on the task", async () => {
     const { loop, calls, failing } = setup("escalated");

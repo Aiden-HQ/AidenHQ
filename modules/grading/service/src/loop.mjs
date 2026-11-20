@@ -28,7 +28,16 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
       const s = steps[0];
       try {
         if (s.do === "reopen") await pc.setStatus(task, "todo", s.note);
-        else if (s.do === "done") await pc.setStatus(task, "done", s.note);
+        else if (s.do === "done") {
+          // Replayed later: still the task and evidence the grader saw? Else the verdict is stale: drop the close and the notice,
+          // and send the row back to waiting so the next pass grades what is there now.
+          const now = await pc.issue(task);
+          if (now.status !== "done" && (now.status !== s.status || (await gather(s.deliverable, gradeDeps(now), s.rubric)).version !== s.version)) {
+            log("a satisfied verdict is stale: not closed", { issue: task });
+            await api.post(`/internal/grades/${encodeURIComponent(task)}/verdict`, { version: "", outcome: "awaiting_evidence" });
+            steps.length = 1;
+          } else if (now.status !== "done") await pc.setStatus(task, "done", s.note);
+        }
         else if (s.do === "block") await pc.block(task, s.note);
         else if (!(await tellParent(s.issue, s.kind, s.text)) && s.fallback) await pc.comment(task, s.fallback);
       } catch (err) {
@@ -186,7 +195,7 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
     const note = gradeNote(v, rubric, row.state, { version: ev.version, reason: row.state === "escalated" && v.outcome === "error" ? v.reason : undefined });
     if (row.state === "satisfied") {
       // The row is satisfied now, so the close and the notice are owed steps: retried until they land, even across a restart.
-      await owe(issue.id, [{ do: "done", note }, { do: "tell", issue: { id: issue.id, parentId: issue.parentId }, kind: "done", text: `${issue.identifier} (${agent?.name ?? "its agent"}) is done, graded against its rubric: ${issue.title}. Its result is on ${issue.identifier}.` }]);
+      await owe(issue.id, [{ do: "done", note, version: ev.version, status: issue.status, deliverable: g.deliverable, rubric }, { do: "tell", issue: { id: issue.id, parentId: issue.parentId }, kind: "done", text: `${issue.identifier} (${agent?.name ?? "its agent"}) is done, graded against its rubric: ${issue.title}. Its result is on ${issue.identifier}.` }]);
     } else if (row.state === "needs_revision") {
       await owe(issue.id, [{ do: "reopen", note }]);
       fact("work.waiting", `task:${issue.id}`, attempt, issue.id, { reason: "grade_retry" });
