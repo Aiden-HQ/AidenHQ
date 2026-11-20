@@ -44,6 +44,9 @@ const ID = /^[\w.-]{1,100}$/;
 // to record it. Stopping the client stops nothing in the box: the dispatcher releases the box (the launcher destroys it).
 const WRAP = 'trap : TERM INT HUP; "$@"; echo "$?" > "$0"';
 const POLL_MS = 250;
+// Setup's retry on a lock another opener holds, while it makes the same schema (below): about five seconds in all.
+const SETUP_TRIES = 200;
+const SETUP_RETRY_MS = 25;
 const exitStatus = (file: string) => { try { return readFileSync(file, "utf8").trim(); } catch { return ""; } };
 /**
  * A failed run's cause as its log tells it: the first line that is neither the kernel's header (`# ...`) nor the engine's JSON
@@ -92,6 +95,7 @@ export function readEvents(jobDir: string, offset = 0) {
   return { events, offset: next, skipped: values.length - events.length };
 }
 
+const pause = (ms: number) => { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); };
 const clip = (s: unknown, n: number) => {
   const t = String(s ?? "").replace(/\s+/g, " ").trim();
   return t.length > n ? `${t.slice(0, n - 1)}…` : t;
@@ -155,27 +159,33 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
   boxWrap: string;
 }) {
   /**
-   * The schema, as one step two openers can't both run: inside one BEGIN IMMEDIATE (the busy timeout waits for the other
-   * rather than failing on a locked database), and every column re-read there, so the second opener sees the first's ALTERs
-   * and skips them. Two processes setup, a test and the service say, never both add the same column.
+   * The schema, as one step two openers can't both run: one BEGIN IMMEDIATE, every column read inside it, so the second opener
+   * sees the first's ALTERs and skips them. An opener that finds the database busy (another is setting it up right now) tries
+   * again just after it rather than failing, a bounded number of times so a lock that never frees is still an error.
    */
   const setup = () => {
-    db.exec("PRAGMA busy_timeout = 5000");
-    db.exec("BEGIN IMMEDIATE");
-    try {
-      db.exec(DDL);
-      db.exec(REFUSALS_DDL);
-      // A kernel-admitted job's columns, added where they are missing: what admission records (the wake, the profile, the job
-      // that started it, its frozen authority and routine cap: provenance.ts reads it), and boxes.ts's lease and release.
-      const cols = new Set((db.prepare("PRAGMA table_info(jobs)").all() as { name: string }[]).map((c) => c.name));
-      for (const [c, t] of [["wake", "TEXT"], ["profile", "TEXT"], ["parent_job", "TEXT"], ["routine", "TEXT"], ["routine_cap", "TEXT"], ["authority", "TEXT"], ["renewed", "INTEGER"], ["released", "INTEGER"], ["identifier", "TEXT"], ["full_prompt", "TEXT"], ["resumed", "INTEGER"]] as const) if (!cols.has(c)) db.exec(`ALTER TABLE jobs ADD COLUMN ${c} ${t}`);
-      db.exec("CREATE INDEX IF NOT EXISTS jobs_task ON jobs (task, state)");
-      // `acked`: the dispatcher's completion acknowledgement. Runs that ended before the column existed were dealt with by the old ledger.
-      if (!cols.has("acked")) db.exec("ALTER TABLE jobs ADD COLUMN acked INTEGER; UPDATE jobs SET acked = COALESCE(ended, at) WHERE state NOT IN ('admitted', 'running')");
-      db.exec("COMMIT");
-    } catch (e) {
-      db.exec("ROLLBACK");
-      throw e;
+    for (let attempt = 1; ; attempt++) {
+      try {
+        db.exec("BEGIN IMMEDIATE");
+        db.exec(DDL);
+        db.exec(REFUSALS_DDL);
+        // A kernel-admitted job's columns, added where they are missing: what admission records (the wake, the profile, the
+        // job that started it, its frozen authority and routine cap: provenance.ts reads it), and boxes.ts's lease and release.
+        const cols = new Set((db.prepare("PRAGMA table_info(jobs)").all() as { name: string }[]).map((c) => c.name));
+        for (const [c, t] of [["wake", "TEXT"], ["profile", "TEXT"], ["parent_job", "TEXT"], ["routine", "TEXT"], ["routine_cap", "TEXT"], ["authority", "TEXT"], ["renewed", "INTEGER"], ["released", "INTEGER"], ["identifier", "TEXT"], ["full_prompt", "TEXT"], ["resumed", "INTEGER"]] as const) if (!cols.has(c)) db.exec(`ALTER TABLE jobs ADD COLUMN ${c} ${t}`);
+        db.exec("CREATE INDEX IF NOT EXISTS jobs_task ON jobs (task, state)");
+        // `acked`: the dispatcher's completion acknowledgement. Runs that ended before the column existed were dealt with by the old ledger.
+        if (!cols.has("acked")) db.exec("ALTER TABLE jobs ADD COLUMN acked INTEGER; UPDATE jobs SET acked = COALESCE(ended, at) WHERE state NOT IN ('admitted', 'running')");
+        db.exec("COMMIT");
+        return;
+      } catch (e) {
+        // The other opener holds the lock (here or at any step inside it): wait for it and try again, bounded. The busy test is
+        // the code SQLite puts on the error (a "database is locked" message is the same thing).
+        const busy = (e as { errcode?: number }).errcode === 5 || (e as { errstr?: string }).errstr === "SQLITE_BUSY" || /database is locked/i.test(String((e as Error).message));
+        try { db.exec("ROLLBACK"); } catch {}
+        if (busy && attempt < SETUP_TRIES) { pause(SETUP_RETRY_MS); continue; }
+        throw e;
+      }
     }
   };
   setup();
