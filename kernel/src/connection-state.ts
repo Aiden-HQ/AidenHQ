@@ -1,0 +1,196 @@
+// Connect on first use (spec 2026-11-20 §2): a connection that answers needs_owner (sdk/src/vendor/needs.ts) is recorded as
+// down, by module (connection_state, keyed `<module>:<cause>[:<org>|:<scope>]`), and the kernel decides who hears about it:
+// - the owner asked for the work (the task chain's root, walked by parent links and the kernel's provenance, holds the owner's
+//   own words, escalate.ts ownerWroteAt): one decision message on that root task with the one link, once per need until it
+//   clears (`told`), and the calling task waits on the connection (idle.ts, as an agent's own wait: 7 days for a full cause,
+//   a day for a partial one, so it retries daily);
+// - anything else (a routine's run, its delegated work, a module's own call): one batched digest line a day, never a ping.
+// The agent always gets the kernel's fixed words, never the module's text. ok() clears a module (the board's Connect finished,
+// or a later successful call) and opens a `connected` wake for every task waiting on it; dispatch resumes them.
+// Partial causes (scope, sso, restricted) mean the connection works: a success never clears them and downFor() omits them.
+import type { DatabaseSync } from "node:sqlite";
+import type { Cause, Need } from "../sdk/src/vendor/needs.ts";
+import { creatorTask, ownerWroteAt } from "./escalate.ts";
+import { inTx, iso, type Log } from "./factlog.ts";
+import type { Connection, Grant, Identity } from "./identity.ts";
+import type { Idle } from "./idle.ts";
+import type { Notice } from "./notify.ts";
+import { ownerVia } from "./relay.ts";
+import type { Wakes } from "./wakes.ts";
+
+export type Down = { connection: string; module: string; cause: Cause; since: string };
+/** The wake cause ok() opens; dispatch's RESUME words it. */
+export const CONNECTED_CAUSE = "connected";
+
+type Issue = { id: string; identifier?: string; title?: string; parentId?: string | null; assigneeAgentId?: string | null; description?: unknown; createdAt?: unknown; createdByUserId?: unknown; createdByAgentId?: unknown };
+type Comment = Parameters<typeof ownerWroteAt>[1][number] & Parameters<typeof ownerVia>[1][number];
+type Row = { key: string; module: string; cause: Cause; detail: string; url: string | null; since: number; told: number; reported_day: string | null };
+
+const FULL = new Set<string>(["not_connected", "expired"]);
+const DAY = 864e5;
+/** A full cause waits until Connect wakes it (idle.ts takes at most 7 days ahead). */
+const FULL_WAIT = 7 * DAY - 60_000;
+/** A scope or org name worth showing the owner; anything else from a module is dropped. */
+const NAME = /^[\w.:/@-]{1,100}$/;
+const day = (ms: number) => iso(ms).slice(0, 10);
+
+/** The cause as the agent reads it: kernel words only, no module text. */
+const agentWords: Record<Cause, string> = { not_connected: "not connected", expired: "sign-in expired", scope: "missing a permission", sso: "an organization needs SSO authorization", restricted: "an organization restricts outside apps" };
+const ownerWords = (n: Pick<Row, "cause"> & { scope?: string; org?: string }) =>
+  n.cause === "scope" ? `missing the ${n.scope ?? "needed"} permission` : n.cause === "sso" ? `${n.org ?? "an organization"} needs SSO authorization` : n.cause === "restricted" ? `${n.org ?? "an organization"} restricts outside apps` : agentWords[n.cause];
+const verb = (n: { cause: Cause; scope?: string; org?: string }) =>
+  ({ not_connected: "connect it", expired: "reconnect it", scope: `grant the ${n.scope ?? "missing"} permission`, sso: `authorize SSO for ${n.org ?? "the organization"}`, restricted: `request access for ${n.org ?? "the organization"}` })[n.cause];
+
+export function createConnectionState(o: {
+  db: DatabaseSync;
+  idle: Pick<Idle, "wait">;
+  wakes: Pick<Wakes, "open">;
+  /** notify.queue; `batch`: a digest line owner-channel holds for its next digest. */
+  queue: (n: Notice & { batch?: true }) => void;
+  /** The control plane, as escalate's: a task, or undefined when it is gone. */
+  issue: (id: string) => Promise<Issue | undefined>;
+  /** A task's comments, newest first (limit 50). */
+  comments: (id: string) => Promise<Comment[]>;
+  agentName: (id: string) => Promise<string>;
+  /** "Google": the module's display name, else the module. */
+  label: (module: string) => string;
+  /** For downFor(): connection key -> its module. */
+  connections: () => Record<string, Connection>;
+  grants: () => Record<string, Grant | undefined>;
+  /** The board's origin; every link is `<board>/connect/<module>` (the board words what each exposure mode can do). */
+  boardUrl: () => string;
+  now?: () => number;
+  log?: Log;
+}) {
+  const { db } = o;
+  const now = o.now ?? Date.now;
+  const log = o.log ?? (() => {});
+  db.exec(`CREATE TABLE IF NOT EXISTS connection_state (key TEXT PRIMARY KEY, module TEXT NOT NULL, cause TEXT NOT NULL, detail TEXT NOT NULL, url TEXT, since INTEGER NOT NULL, told INTEGER NOT NULL DEFAULT 0, reported_day TEXT);
+    CREATE TABLE IF NOT EXISTS connection_waits (module TEXT NOT NULL, task TEXT NOT NULL, agent TEXT NOT NULL, at INTEGER NOT NULL, full INTEGER NOT NULL DEFAULT 1, PRIMARY KEY (module, task));`);
+  const q = (sql: string) => db.prepare(sql);
+
+  /** Only what the kernel may pass on: detail on one line (≤ 200), names that look like names, an https url for sso/restricted. */
+  function normalise(n: Need): { cause: Cause; detail: string; scope?: string; org?: string; url?: string } {
+    const name = (v: unknown) => (typeof v === "string" && NAME.test(v) ? v : undefined);
+    let url: string | undefined;
+    if ((n.cause === "sso" || n.cause === "restricted") && typeof n.url === "string" && n.url.length <= 500) {
+      try { if (new URL(n.url).protocol === "https:") url = n.url; } catch { /* dropped */ }
+    }
+    const scope = n.cause === "scope" ? name(n.scope) : undefined;
+    const org = n.cause === "sso" || n.cause === "restricted" ? name(n.org) : undefined;
+    return { cause: n.cause, detail: String(n.detail ?? "").replace(/\s+/g, " ").trim().slice(0, 200), ...(scope ? { scope } : {}), ...(org ? { org } : {}), ...(url ? { url } : {}) };
+  }
+  const link = (module: string, url: string | null | undefined) => url ?? `${o.boardUrl().replace(/\/+$/, "")}/connect/${module}`;
+
+  /** The task, the root of its chain (parent, else the job that created it; ≤ 10 up) and the root's comments. */
+  async function chain(task: string) {
+    const first = await o.issue(task);
+    if (!first) return undefined;
+    let root = first;
+    for (let i = 0; i < 10; i++) {
+      const up = root.parentId ?? creatorTask(db, root.id);
+      const next = up ? await o.issue(up) : undefined;
+      if (!next) break;
+      root = next;
+    }
+    const comments = await o.comments(root.id);
+    return { task: first, root, comments: Array.isArray(comments) ? comments : [] };
+  }
+
+  return {
+    /** A needs_owner answer for `who` on `module`: records, routes, and returns the agent's fixed text. Never throws. */
+    async hit(who: Identity, module: string, need: Need): Promise<string> {
+      const n = normalise(need);
+      const key = `${module}:${n.cause}${n.cause === "sso" || n.cause === "restricted" ? `:${n.org ?? ""}` : n.cause === "scope" && n.scope ? `:${n.scope}` : ""}`;
+      const t = now(), today = day(t), full = FULL.has(n.cause), label = o.label(module);
+      q("INSERT INTO connection_state (key, module, cause, detail, url, since) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(key) DO UPDATE SET detail = excluded.detail, url = excluded.url").run(key, module, n.cause, n.detail, n.url ?? null, t);
+      const row = q("SELECT * FROM connection_state WHERE key = ?").get(key) as Row;
+      const background = `${label} isn't connected (${agentWords[n.cause]}): it is in the owner's digest. Skip this source for now and carry on.`;
+      let c: Awaited<ReturnType<typeof chain>>;
+      try {
+        c = who.kind === "run" && who.task && who.agent ? await chain(who.task) : undefined;
+      } catch (e) {
+        log("connection need: the task chain couldn't be read; treated as background", { module, task: who.task, err: (e as Error).message });
+      }
+      const asked = c && ownerWroteAt(c.root, c.comments) !== undefined;
+      if (!c || !asked) {
+        // Background: one digest line a day per need, whoever hits it.
+        if (q("UPDATE connection_state SET reported_day = ? WHERE key = ? AND (reported_day IS NULL OR reported_day != ?)").run(today, key, today).changes)
+          o.queue({ kind: "digest", batch: true, text: `${label} isn't connected (${ownerWords(n)}): ${link(module, row.url)}`, dedupe_key: `connect:${key}` });
+        log("connection need", { module, cause: n.cause, to: "digest" });
+        return background;
+      }
+      const { task, root, comments } = c;
+      // The owner hears once per need until it clears (claimed before the reads below, so two hits can't both send).
+      if (q("UPDATE connection_state SET told = 1, reported_day = ? WHERE key = ? AND told = 0").run(today, key).changes) {
+        const agent = root.assigneeAgentId ? await o.agentName(root.assigneeAgentId).catch(() => "AidenHQ") : "AidenHQ";
+        const via = ownerVia(root, comments);
+        const what = String(task.title ?? "").replace(/\s+/g, " ").trim().slice(0, 80) || `carry on with ${task.identifier ?? task.id}`;
+        o.queue({
+          kind: "decision",
+          text: `${label} needs you to ${verb(n)} so I can ${what}: ${link(module, row.url)}${row.detail ? `\n${row.detail}` : ""}`,
+          task: root.identifier ?? root.id,
+          dedupe_key: `connect:${key}`,
+          ...(via ? { reply: { via, agent, issue: root.id } } : { head: { agent, issue: root.id } }),
+        });
+      }
+      try {
+        await o.idle.wait({ agent: who.agent!, key: who.key ?? "", task: who.task! }, { reason: `waiting for the ${label} connection`, on: `${module} connection`, ...(full ? { until: iso(t + FULL_WAIT) } : {}) });
+      } catch (e) {
+        log("connection need: the wait wasn't recorded", { module, task: who.task, err: (e as Error).message });
+      }
+      q("INSERT INTO connection_waits (module, task, agent, at, full) VALUES (?, ?, ?, ?, ?) ON CONFLICT(module, task) DO UPDATE SET agent = excluded.agent, at = excluded.at, full = MAX(full, excluded.full)").run(module, who.task!, who.agent!, t, full ? 1 : 0);
+      log("connection need", { module, cause: n.cause, to: "owner", task: root.identifier ?? root.id });
+      return `${label} isn't connected (${agentWords[n.cause]}): the owner has the link. Don't retry; this task is woken when it is connected. End your turn.`;
+    },
+
+    /**
+     * The module connected: drops its rows and opens a `connected` wake per waiting task; returns how many it woke. `fullOnly`
+     * (a successful call): only the full causes clear, since a partial one (scope, sso, restricted) still stands.
+     */
+    ok(module: string, fullOnly = false): number {
+      const t = now();
+      return inTx(db, "connection_ok", () => {
+        const waiters = q(`SELECT task, agent FROM connection_waits WHERE module = ?${fullOnly ? " AND full = 1" : ""}`).all(module) as { task: string; agent: string }[];
+        q(`DELETE FROM connection_state WHERE module = ?${fullOnly ? " AND cause IN ('not_connected', 'expired')" : ""}`).run(module);
+        q(`DELETE FROM connection_waits WHERE module = ?${fullOnly ? " AND full = 1" : ""}`).run(module);
+        for (const w of waiters) o.wakes.open({ key: `connect:${module}:${w.task}:${t}`, task: w.task, agent: w.agent, cause: CONNECTED_CAUSE, replaces: `wait:${w.task}:`, author: "kernel" });
+        if (waiters.length) log("connection ok", { module, woken: waiters.length });
+        return waiters.length;
+      });
+    },
+
+    /** Whether the module has a full-cause row (the proxy's cheap check before clearing on a success). */
+    down(module: string): boolean {
+      return Boolean(q("SELECT 1 FROM connection_state WHERE module = ? AND cause IN ('not_connected', 'expired') LIMIT 1").get(module));
+    },
+
+    /** The agent's granted connections whose module has a full-cause row: names, causes and dates only. */
+    downFor(agent: string): Down[] {
+      const granted = Object.keys(o.grants()[agent]?.tools ?? {});
+      const conns = o.connections();
+      const out: Down[] = [];
+      for (const connection of granted) {
+        const module = conns[connection]?.module;
+        if (!module) continue;
+        const r = q("SELECT cause, since FROM connection_state WHERE module = ? AND cause IN ('not_connected', 'expired') ORDER BY since LIMIT 1").get(module) as { cause: Cause; since: number } | undefined;
+        if (r) out.push({ connection, module, cause: r.cause, since: iso(r.since) });
+      }
+      return out;
+    },
+
+    /** Once per UTC day: one digest line per need that still has waiting tasks and wasn't reported today. */
+    tick(): void {
+      const t = now(), today = day(t);
+      q("DELETE FROM connection_waits WHERE at < ?").run(t - 7 * DAY);
+      const rows = q("SELECT * FROM connection_state s WHERE (reported_day IS NULL OR reported_day != ?) AND EXISTS (SELECT 1 FROM connection_waits w WHERE w.module = s.module)").all(today) as Row[];
+      for (const r of rows) {
+        if (!q("UPDATE connection_state SET reported_day = ? WHERE key = ? AND (reported_day IS NULL OR reported_day != ?)").run(today, r.key, today).changes) continue;
+        const named = r.key.slice(`${r.module}:${r.cause}:`.length) || undefined;
+        const n = { cause: r.cause, ...(r.cause === "scope" ? { scope: named } : {}), ...(r.cause === "sso" || r.cause === "restricted" ? { org: named } : {}) };
+        o.queue({ kind: "digest", batch: true, text: `${o.label(r.module)} isn't connected (${ownerWords(n)}), and work is waiting on it: ${link(r.module, r.url)}`, dedupe_key: `connect:${r.key}` });
+      }
+    },
+  };
+}
+export type ConnectionState = ReturnType<typeof createConnectionState>;
