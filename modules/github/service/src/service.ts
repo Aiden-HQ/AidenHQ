@@ -52,6 +52,8 @@ export type Options = {
   /** The App (github-app.ts appClient); undefined without the key: every GitHub action fails, saying so. */
   app?: App; gh: Gh; remoteUrl?: (slug: string) => string;
   agentsOrg: string; allowedOrgs?: string[]; instanceRepo?: string; productRepo?: string;
+  /** maintainer_repos ("owner/name"): where the fleet merges and closes outside the agents org and the product repo. */
+  maintained?: string[];
   log?: (msg: string, f?: Record<string, unknown>) => void;
   /** The release train's batch window, minutes (the instance's release_window_minutes). */
   releaseWindowMinutes?: number;
@@ -212,9 +214,12 @@ export function createService(o: Options) {
       ...status.items.map((x: any) => ({ pending: x.state === "pending", skipped: false, ok: x.state === "success" })),
     ];
   }
+  // The commits this code host pushed, each as "<repo, lowercase> <sha>": a head is the runner's own only in the repo it was
+  // pushed to, so the same commit opened as a PR in another repo (a maintained one, say) is never ours there.
   const pushed = join(o.cacheDir, "pushed.json");
   const pushedHeads = (): string[] => (existsSync(pushed) ? JSON.parse(readFileSync(pushed, "utf8")) : []);
-  const notePushed = (sha: string) => writeFileSync(pushed, JSON.stringify([...pushedHeads().slice(-4999), sha]));
+  const pushedKey = (repo: string, sha: string) => `${repo.toLowerCase()} ${sha}`;
+  const notePushed = (repo: string, sha: string) => writeFileSync(pushed, JSON.stringify([...pushedHeads().slice(-4999), pushedKey(repo, sha)]));
   // Who asked to publish each commit (the kernel's task and whether it was the Platform Engineer's line), noted once its push
   // or PR has planned (execute carries no requester, and a plan comes before its push), and never reassigned: another task
   // re-publishing a head, noted or already pushed without a note, doesn't take it. A product merge's head is a requester's
@@ -225,7 +230,7 @@ export function createService(o: Options) {
   const pushedBy = (): Record<string, { task: string; platform: boolean }> => (existsSync(pushedByFile) ? JSON.parse(readFileSync(pushedByFile, "utf8")) : {});
   const notePushedBy = (shas: string[], who: { task: string; platform: boolean }) => {
     const all = pushedBy();
-    const pushedAlready = pushedHeads();
+    const pushedAlready = pushedHeads().map((k) => k.split(" ").pop());
     const fresh = shas.filter((sha) => !all[sha] && !pushedAlready.includes(sha));
     if (fresh.length) writeFileSync(pushedByFile, JSON.stringify(Object.fromEntries([...Object.entries(all).slice(-(5000 - fresh.length)), ...fresh.map((sha) => [sha, who])])));
   };
@@ -241,7 +246,7 @@ export function createService(o: Options) {
    */
   async function stateFor(kind: string, a: any, requester?: { roles?: string[] }, task = "") {
     // The Platform Engineer's line: a requester holding the platform-engineer role (the kernel's record of who asked, never the args).
-    const base = { agentsOrg: o.agentsOrg, allowedOrgs: o.allowedOrgs, instanceRepo: o.instanceRepo, productRepo: o.productRepo, requester: { platform: isPlatform(requester) }, task, workspace: String(a.workspace ?? ""), also: [] as string[] };
+    const base = { agentsOrg: o.agentsOrg, allowedOrgs: o.allowedOrgs, instanceRepo: o.instanceRepo, productRepo: o.productRepo, maintained: o.maintained ?? [], requester: { platform: isPlatform(requester) }, task, workspace: String(a.workspace ?? ""), also: [] as string[] };
     if (kind.endsWith(".create_repo")) {
       const repo = slugOf(a.repo).slug;
       return { state: { ...base, repo }, facts: { target: repo, sentence: `Create the repository ${repo} on GitHub${inOrg(o.agentsOrg, repo) ? ", with the app starter on main" : ""}.`, diff: "" } };
@@ -282,7 +287,7 @@ export function createService(o: Options) {
         prs.push({
           repo: s.slug, number: Number(p.number), head: pr.head?.sha, base: pr.base?.sha, headMatches: !p.head || p.head === pr.head?.sha,
           files: pr.changed_files > listed.length ? undefined : files, checks: await checksAt(s, pr.head?.sha, token),
-          ownHead: pushedHeads().includes(pr.head?.sha), pushedBy: pushedBy()[pr.head?.sha]?.task, platformHead: pushedBy()[pr.head?.sha]?.platform === true, dependabot: pr.user?.login === "dependabot[bot]",
+          ownHead: pushedHeads().includes(pushedKey(s.slug, String(pr.head?.sha))), pushedBy: pushedBy()[pr.head?.sha]?.task, platformHead: pushedBy()[pr.head?.sha]?.platform === true, dependabot: pr.user?.login === "dependabot[bot]",
         });
       }
       const urls = prs.map((p) => `https://github.com/${p.repo}/pull/${p.number}`).join(", ");
@@ -354,7 +359,7 @@ export function createService(o: Options) {
           // A task branch may be rewritten; the default branch only ever moves forward.
           const def = String((await api("GET", `/repos/${s.slug}`, await tokenFor(s, READ))).default_branch ?? "main");
           await git(dir, ["push", "--quiet", "--no-verify", remote(s.slug), `${b.branch === def ? "" : "+"}${b.sha}:refs/heads/${b.branch}`], await tokenFor(s, PUSH));
-          notePushed(b.sha);
+          notePushed(s.slug, b.sha);
           if (action === "pr") {
             const token = await tokenFor(s, PUSH);
             const open = await api("GET", `/repos/${s.slug}/pulls?state=open&head=${encodeURIComponent(`${s.org}:${b.branch}`)}`, token);
@@ -456,7 +461,7 @@ export function createService(o: Options) {
   const merges = createMerges({
     flow,
     designReview: async (ask) => designReviews?.fileDesignReview(ask),
-    dir: join(o.cacheDir, "merges"), gh: o.gh, agentsOrg: o.agentsOrg, productRepo: o.productRepo,
+    dir: join(o.cacheDir, "merges"), gh: o.gh, agentsOrg: o.agentsOrg, productRepo: o.productRepo, maintained: o.maintained,
     report, log, now: o.now, everyMs: o.mergeEveryMs,
     token: (repo, perms) => tokenFor(slugOf(repo), perms),
     evalGate: (repo, pr) => evalGate(repo, pr),

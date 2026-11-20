@@ -8,6 +8,12 @@
 - A merge card for a product PR: judge the PR's whole diff the same way, against the chain. Code already checked that the
   head is the one the runner pushed (or the card's reason says it isn't: Dependabot's, a fork), that it has not moved, and that no named check is red; the merge runs only once every
   named check has passed on that head (a skipped check counts as passed) and `main` is green. Approve a merge whose diff is the asked change.
+- Where the fleet merges and closes: the agents org, the product repo, and the repos the owner listed in `maintainer_repos`.
+  A merge or close on a listed repo outside the agents org carries its own rule (`maintained-merge`,
+  `maintained-merge-checks-running`, `maintained-merge-foreign-head`, `maintained-close`) or a reason saying the owner
+  listed it in maintainer_repos. Judge it like an agents-org merge: approve when the PR's whole diff is the asked change.
+  Anywhere else the fleet only opens PRs and the repo's own people merge them: a merge card whose reason says the repo is
+  outside the agents org and maintainer_repos is rejected, whatever the chain says about speed or green checks.
 - Check state is code's question, never yours: on any merge card, check results, a skipped check, the head's freshness and
   `main`'s state are enforced at merge time. Their absence, or a chain that asks for them, is never a reason to say unsure
   or escalate. (Correction, 2026-11-14: a merge was sent to the owner for "21 passing, 1 skipped".)

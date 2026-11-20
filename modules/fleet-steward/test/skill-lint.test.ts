@@ -1,6 +1,6 @@
 // A stale PR outside the agents org cost two days of dead work: the `fleet-check` bullet told the Steward to have an
-// Engineer close it with `aidenhq close`, but that command reaches only the agents org and the product repo's Dependabot
-// PRs, so the close was refused and the same stale PR filed another close task the next pass. The lint keeps the caveat:
+// Engineer close it with `aidenhq close`, but that command reaches only the agents org, the repos on maintainer_repos and the
+// product repo's Dependabot PRs, so the close was refused and the same stale PR filed another close task the next pass. The lint keeps the caveat:
 // a fleet skill section that names `aidenhq close` must also state its scope and the owner path, in that same section.
 // The stale-PR nudge had the same shape: "nudge its agent" had no reachable form, a comment does not dispatch an Engineer,
 // and the Steward's status write on another agent's task is refused, so the nudge turned into a second task for the same
@@ -36,8 +36,8 @@ function closeScopeProblems(text) {
     .flatMap((section) => {
       const first = section.split("\n").find((line) => line.trim())?.replace(/^\W+\s*/, "").slice(0, 60) ?? "section";
       // "outside the agents org" is the rule; "outside that scope" only reads once the same section names that scope
-      // (`aidenhq close` reaches only the agents org and the product repo's Dependabot PRs).
-      const scope = /outside the agents org/.test(section) || (/outside that scope/.test(section) && /reaches only the agents org/.test(section) && /Dependabot PRs/.test(section));
+      // (`aidenhq close` reaches only the agents org, the repos on maintainer_repos and the product repo's Dependabot PRs).
+      const scope = /outside the agents org/.test(section) || (/outside that scope/.test(section) && /reaches only the agents org/.test(section) && /maintainer_repos/.test(section) && /Dependabot PRs/.test(section));
       const missing = [];
       if (!scope) missing.push("the close scope (`outside the agents org`)");
       if (!/is the owner's/.test(section)) missing.push("the owner path (`is the owner's`)");
@@ -78,7 +78,7 @@ const filingAskMessage = (file, section) => `${file}: the product-bug step "${se
 
 const nudgeMessage = (file, p) => `${file}: the section "${p.section}" nudges an open task's agent without ${p.missing.join(" and ")}: state that work reaches an Engineer only through a status write on its own task (handed to the chief of staff or its assignee when the board refuses), and that a second task is never filed for the same PR because the branch exists only in the task that pushed it`;
 
-const message = (file, p) => `${file}: the section "${p.section}" names \`aidenhq close\` without ${p.missing.join(" and ")}: state that aidenhq close reaches only the agents org (aidenhq-alpha) and the product repo's Dependabot PRs, and that an outside-scope PR is the owner's (no close task; the digest and one \`outside-close-scope\` log line)`;
+const message = (file, p) => `${file}: the section "${p.section}" names \`aidenhq close\` without ${p.missing.join(" and ")}: state that aidenhq close reaches only the agents org, the repos listed in maintainer_repos and the product repo's Dependabot PRs, and that an outside-scope PR is the owner's (no close task; the digest and one \`outside-close-scope\` log line)`;
 
 test("a fleet skill section naming `aidenhq close` must state its scope and the owner path", () => {
   const problems = closeScopeProblems(fleetCheck).map((p) => message("fleet-check/SKILL.md", p));
@@ -104,7 +104,7 @@ test("the merged bullet keeps the actions it had and the outside-scope line", ()
   for (const kept of ["one line with what to do (merge, fix the named check, or close)", "Never the same nudge twice"]) {
     assert.ok(bullet.includes(kept), `still says "${kept}"`);
   }
-  for (const added of ["reaches only the agents org", "Dependabot PRs", "outside that scope", "is the owner's", "file no close task", "outside-close-scope"]) {
+  for (const added of ["reaches only the agents org", "maintainer_repos", "Dependabot PRs", "outside that scope", "is the owner's", "file no close task", "outside-close-scope"]) {
     assert.ok(bullet.includes(added), `states "${added}"`);
   }
 });
@@ -122,7 +122,7 @@ test("a fleet skill section that nudges an open stale-PR task must state the rea
 });
 
 test("the lint bites: the old nudge, with no reachable path, fails with the fix; the replacement passes", () => {
-  const old = "- **A stale PR** (`pr:<repo>#<n>`): find the task that opened it (`task_search`). If that task is still open, nudge its\n  agent once: merge it if the checks are green, fix it if red, or close it as superseded (its Engineer closes it with\n  `aidenhq close <PR link> --reason \"<one line>\"`). If the task is done, `task_create` to the app's owner (else the\n  Engineer): \"merge, fix or close <PR> with one line why\". `aidenhq close` reaches only the agents org (`aidenhq-alpha`) and\n  the product repo's Dependabot PRs: a PR outside that scope is the owner's. Log `pr · <repo>#<n>`; never the same nudge twice.\n";
+  const old = "- **A stale PR** (`pr:<repo>#<n>`): find the task that opened it (`task_search`). If that task is still open, nudge its\n  agent once: merge it if the checks are green, fix it if red, or close it as superseded (its Engineer closes it with\n  `aidenhq close <PR link> --reason \"<one line>\"`). If the task is done, `task_create` to the app's owner (else the\n  Engineer): \"merge, fix or close <PR> with one line why\". `aidenhq close` reaches only the agents org, the repos on `maintainer_repos`\n  and the product repo's Dependabot PRs: a PR outside that scope is the owner's. Log `pr · <repo>#<n>`; never the same nudge twice.\n";
   const problems = stalePrNudgeProblems(old);
   assert.equal(problems.length, 1);
   assert.match(problems[0].missing.join(), /status-write sentence/);

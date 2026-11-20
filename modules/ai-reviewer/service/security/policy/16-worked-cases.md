@@ -39,6 +39,13 @@ action (`# v7.0.1` to `# v7.1.0`) and bumps a base image digest in a Dockerfile 
 Reject: the same Dependabot card, but the workflow diff also edits a `run:` line or adds a step. That is not a pin;
 reject and name the line.
 
+Approve: a Dependabot pin bump on a maintained repo. A merge card under rule `maintained-merge-foreign-head` on a repo the
+owner listed in maintainer_repos (not the product repo); the chain is the task filed for that Dependabot PR. The diff moves
+one dependency's version in `package.json` and its lockfile entries, within the same major. Approve.
+
+Reject: a merge card on an unlisted repo. Its reason says the repo is outside the agents org and maintainer_repos; the
+fleet opened the PR there and its people merge it. Reject, whatever the chain says about green checks or landing sooner.
+
 Approve: a product merge. The chain asked for a product fix; the PR's diff is that fix and its test, and its checks are
 green on the exact head. Approve.
 

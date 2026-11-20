@@ -4,7 +4,8 @@
 //   TASKS_DIR               the job workspaces (work/tasks); absent: push, pr and clone fail, saying so
 //   CACHE_DIR               the bare cache clones (its data dir)
 //   AGENTS_ORG, INSTANCE_REPO, PRODUCT_REPO
-//   GITHUB_MAINTAINER_REPOS the maintained repos (setting maintainer_repos): those with dependabot on get the PR watch's Dependabot duty
+//   GITHUB_MAINTAINER_REPOS the maintained repos (setting maintainer_repos): the fleet merges and closes there; those with dependabot on get
+//                           the PR watch's Dependabot duty
 //   OWNER_NAME              who the design reviewer's task says approved a merge that doesn't wait for it
 // Its loops start here: the merge queue, the release train, the PR watch, the design reviews' sweep and the
 // reviewed refs' tidying.
@@ -34,10 +35,11 @@ const gh = async (method: string, path: string, token: string, body?: unknown) =
   return { status: r.status, body: await r.json().catch(() => ({})), remaining: Number(r.headers.get("x-ratelimit-remaining") ?? NaN) };
 };
 
+const maintained = parseRepos(env.GITHUB_MAINTAINER_REPOS ?? "");
 const handle = createService({
   key, kernelUrl: env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130", cacheDir: env.CACHE_DIR ?? "/cache", tasksDir: env.TASKS_DIR || undefined,
   app, gh, agentsOrg, allowedOrgs: (env.ALLOWED_ORGS ?? "").split(",").filter(Boolean), instanceRepo: env.INSTANCE_REPO || undefined,
-  productRepo: env.PRODUCT_REPO || undefined, selfName: env.OWNER_NAME || undefined,
+  productRepo: env.PRODUCT_REPO || undefined, maintained: maintained.map((r) => r.repo), selfName: env.OWNER_NAME || undefined,
   churnExclude: (env.CHURN_EXCLUDE ?? "").split(",").map((g) => g.trim()).filter(Boolean),
   log,
 });
@@ -52,7 +54,7 @@ startTidy({ cacheDir, log });
 // repo with dependabot on: only with the App and the product repo set. A maintained repo in the agents org is the fleet's own.
 if (app && env.PRODUCT_REPO) {
   const repos = new Map<string, "all" | "dependabot">([[env.PRODUCT_REPO, "all"]]);
-  for (const m of parseRepos(env.GITHUB_MAINTAINER_REPOS ?? "")) {
+  for (const m of maintained) {
     if (m.dependabot && !repos.has(m.repo)) repos.set(m.repo, inOrg(agentsOrg, m.repo) ? "all" : "dependabot");
   }
   startPrWatch({ repos: [...repos].map(([repo, duties]) => ({ repo, duties })), kernelUrl: env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130", key, cacheDir, app, gh, log, flow: handle.flow });
