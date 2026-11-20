@@ -75,18 +75,18 @@ export function createModuleSecrets(deps: {
 
 /**
  * Recreates compose services in the checkout `dir` while holding the host's apply lock (data/apply.lock, the one
- * ops/apply-config.sh takes, at its fixed path in the checkout): `flock -w 600` waits for an apply in progress. The compose
+ * ops/apply-config.sh takes, at its fixed path in the checkout): it waits for the lock however long an apply holds it. The compose
  * files are the apply's: COMPOSE_FILE (the checkout's .env sets it), else compose.yaml, compose.modules.yaml and
  * compose.override.yaml when present. Service names are arguments, never shell text. A failure's message is compose's
  * last line. The next apply recreates these services once more (ops/compose-recreate.sh keeps its own record of what
  * each container read).
  */
 const LOCKED = "aidenhq: apply lock held";
-export function composeRecreate({ dir, composeFile, docker = "docker", flock = "flock", wait = 600 }: { dir: string; composeFile?: string; docker?: string; flock?: string; wait?: number }) {
+export function composeRecreate({ dir, composeFile, docker = "docker", flock = "flock" }: { dir: string; composeFile?: string; docker?: string; flock?: string }) {
   return (services: string[], locked: () => void = () => {}) => new Promise<void>((resolve, reject) => {
     const files = composeFile || ["compose.yaml", "compose.modules.yaml", ...(existsSync(path.join(dir, "compose.override.yaml")) ? ["compose.override.yaml"] : [])].join(":");
     const script = `echo '${LOCKED}' >&2; exec "$0" compose up -d --force-recreate --no-deps "$@"`;
-    const child = spawn(flock, ["-w", String(wait), path.join(dir, "data", "apply.lock"), "sh", "-c", script, docker, ...services], { cwd: dir, env: { ...process.env, COMPOSE_FILE: files }, stdio: ["ignore", "ignore", "pipe"], timeout: (wait + 300) * 1000 });
+    const child = spawn(flock, [path.join(dir, "data", "apply.lock"), "sh", "-c", script, docker, ...services], { cwd: dir, env: { ...process.env, COMPOSE_FILE: files }, stdio: ["ignore", "ignore", "pipe"] });
     let err = "", held = false;
     child.stderr.on("data", (d: Buffer) => {
       err = (err + d.toString()).slice(-8000);
@@ -96,7 +96,7 @@ export function composeRecreate({ dir, composeFile, docker = "docker", flock = "
     child.on("close", (code) => {
       if (code === 0) return resolve();
       const last = err.replace(LOCKED, "").trim().split("\n").filter(Boolean).at(-1);
-      reject(new Error(last || (held ? `compose exited ${code}` : "the apply lock stayed held")));
+      reject(new Error(last || `compose exited ${code}`));
     });
   });
 }

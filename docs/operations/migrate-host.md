@@ -413,7 +413,7 @@ Telegram task links and the app links people have.
 1. Start the stack:
 
    ```sh
-   cd ~/aidenhq && ops/apply-config.sh
+   aidenhq-apply --wait
    ```
 
    This:

@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# The one way to start an apply on this host, for people, sessions and the kernel alike:
+#   aidenhq-apply [--wait] [--unit <name>] [<ops/apply-config.sh arguments>…]
+# It queues ops/apply-config.sh as a transient user unit (so an ssh disconnect or a kernel restart never kills it) and
+# says which unit to follow. The apply waits for the host's apply lock behind any apply already running, then applies
+# the instance's origin/main as it is by then; once it holds the lock its output names its generation and that
+# generation's log. --wait follows the unit's output until it ends and exits with the apply's status. --unit names the
+# unit (the kernel names one per record, so a restart can find it again). The unit is collected when it ends, failed or
+# not: what an apply did is in its generation and the journal, never in a unit left loaded.
+#
+# /usr/local/bin/aidenhq-apply links here (ops/setup.sh).
+set -euo pipefail
+
+main() {
+  cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.."
+  [ "$(id -u)" != 0 ] || { echo "aidenhq-apply: run it as the instance's user, not root" >&2; exit 1; }
+  export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+  local wait=0 unit=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --wait) wait=1 ;;
+      --unit) [ $# -ge 2 ] && [[ "$2" =~ ^aidenhq-apply-[A-Za-z0-9-]+$ ]] || { echo "aidenhq-apply: --unit takes aidenhq-apply-<name>" >&2; exit 2; }
+        unit="$2"; shift ;;
+      *) break ;;
+    esac
+    shift
+  done
+  unit="${unit:-aidenhq-apply-$(date +%Y%m%d-%H%M%S)-$$}"
+  # The last line of the unit's output is the apply's status, which --wait reads (the unit itself is gone by then).
+  systemd-run --user --quiet --collect --unit="$unit" --working-directory="$PWD" \
+    --setenv=PATH="$PATH" --setenv=HOME="$HOME" -- \
+    bash -c 'bash ops/apply-config.sh "$@"; rc=$?; echo "aidenhq-apply: exit $rc"; exit "$rc"' aidenhq-apply "$@"
+  echo "apply queued as $unit; follow it with: journalctl --user -fu $unit"
+  [ "$wait" = 1 ] || return 0
+  follow "$unit"
+}
+
+# Copies the unit's output as it comes and exits with the apply's status once the unit has said it.
+follow() {
+  local unit="$1" dir out rc gone=0
+  dir="$(mktemp -d)"; trap 'rm -rf "$dir"' EXIT
+  while :; do
+    out="$(journalctl --user -u "$unit.service" -o cat --no-pager --cursor-file="$dir/cursor" 2>/dev/null || true)"
+    [ -z "$out" ] || printf '%s\n' "$out"
+    rc="$(sed -n 's/^aidenhq-apply: exit \([0-9][0-9]*\)$/\1/p' <<< "$out" | tail -1)"
+    [ -z "$rc" ] || exit "$rc"
+    # Ended without its status line (killed): a few more reads for lines the journal hasn't written yet, then a failure.
+    if ! systemctl --user is-active --quiet "$unit.service"; then
+      gone=$((gone + 1))
+      [ "$gone" -lt 5 ] || { echo "aidenhq-apply: $unit ended without its status (killed?); its generation says what it did" >&2; exit 1; }
+    fi
+    sleep 2
+  done
+}
+
+main "$@"

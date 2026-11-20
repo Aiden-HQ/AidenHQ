@@ -4,8 +4,9 @@
 #
 # Only one apply runs on a host at a time, and the lock is data/apply.lock at a fixed path (the data dir is where the
 # rest of the host's state lives, and it exists before anything else in the apply is read). It is taken before .env is
-# sourced, so nothing the apply reads decides what it locks. A second apply exits at once with `another apply is
-# running` rather than queueing: it would otherwise wait through a whole apply, and the caller already knows.
+# sourced, so nothing the apply reads decides what it locks. A second apply waits for the lock, one at a time, and then
+# applies the instance's origin/main as it is by then (an apply never refuses for being second). Callers start it through
+# ops/aidenhq-apply, which runs it as its own systemd unit.
 #
 # The lock's file descriptor is 9, and it is held across the exec, so apply-config-work.sh inherits the held lock.
 # AIDENHQ_APPLY_LOCKED is only the hand-over marker: a process that sets it has not thereby taken anything. With the
@@ -37,8 +38,8 @@ main() {
     mkdir -p data
     exec 9>>data/apply.lock
     if ! flock -n 9; then
-      echo "refusing: another apply is running (data/apply.lock is held)" >&2
-      exit 1
+      echo "another apply is running: this one waits its turn (data/apply.lock)"
+      flock 9
     fi
     # From here fd 9 is data/apply.lock, held for the life of this process and the one it execs. The marker says so to
     # the work script, which checks the descriptor again before it reads .env.

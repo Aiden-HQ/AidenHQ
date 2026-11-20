@@ -558,6 +558,8 @@ as_user mkdir -p "$H/.config/systemd/user"
 printf 'AIDENHQ_DIR=%s\n' "$REPO" | write_user_file "$H/.config/aidenhq-checkout.env" 644
 as_user cp "$REPO"/ops/units/aidenhq-computers.service "$REPO"/ops/units/aidenhq-kernel.service "$REPO"/ops/units/prune-docker.service "$REPO"/ops/units/prune-docker.timer "$REPO"/ops/units/aidenhq-apply-recover.service "$H/.config/systemd/user/"
 as_user systemctl --user daemon-reload
+# aidenhq-apply: the one way to start an apply on this host (ops/aidenhq-apply), on every shell's PATH.
+run ln -sfn "$REPO/ops/aidenhq-apply" /usr/local/bin/aidenhq-apply
 # aidenhq-computers: the agent-computer launcher (services/computer); idle until an agent has an image. It waits for the vault
 # and the computers network without failing, so --no-block: this step must not wait on them.
 as_user systemctl --user enable --now --no-block aidenhq-computers

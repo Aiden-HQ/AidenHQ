@@ -2,13 +2,22 @@
 
 ## Apply, upgrade, rollback
 
-`ops/apply-config.sh [<instance commit sha>]` is the whole apply, run on the host from the product checkout. It is the
-locked entry point: it opens `data/apply.lock` at that fixed path (before `.env` is read, so nothing the apply reads
-decides what it locks), holds the lock on fd 9 and execs `ops/apply-config-work.sh`, which takes no lock of its own. One
-apply runs at a time; a second one exits at once with `another apply is running` rather than queueing behind a whole
-apply. The lock is held across the hand-over to a newer script too. A land (an approved change applied by the code host module) reads
-that refusal as "wait": it tries the apply again once `data/apply.lock` is free, waiting up to 15 minutes, and reports the
-wait plainly when the lock does not clear in that time, instead of the change as failed.
+Run `aidenhq-apply --wait` on the host (as the instance's user; `ops/aidenhq-apply` in the product checkout, linked onto
+the PATH by `ops/setup.sh`). It is the one way an apply starts, for people, sessions and the kernel's approved applies
+alike: it queues `ops/apply-config.sh` as a transient user unit, so an ssh disconnect or a kernel restart never kills it,
+and prints the unit to follow (`journalctl --user -fu <unit>`). Without `--wait` it returns once the apply is queued;
+with it, it follows the output until the apply ends and exits with its status. Once the apply holds the lock its output
+names its generation and that generation's log (`~/.local/state/aidenhq/apply-<n>.log`). The unit is collected when it
+ends, failed or not.
+
+`ops/apply-config.sh [<instance commit sha>]` is the whole apply. It is the locked entry point: it opens `data/apply.lock`
+at that fixed path (before `.env` is read, so nothing the apply reads decides what it locks), holds the lock on fd 9 and
+execs `ops/apply-config-work.sh`, which takes no lock of its own. One apply runs at a time; a second one waits for the
+lock (`another apply is running: this one waits its turn`) and then applies the instance's `origin/main` as it is by then,
+so applies queued behind each other converge on main's head. A rollback, the boot recovery and a module secret's restart
+wait for the same lock. The lock is held across the hand-over to a newer script too. The kernel's approved apply
+(`kernel.apply`) lands its commit, queues an apply the same way, and is done by the first good generation whose instance
+commit contains its commit, its own apply's or one queued before it.
 
 `ops/apply-config-work.sh` is the body:
 
@@ -422,7 +431,7 @@ read it).
 2. Agents org → Settings → Actions → Runner groups → Default: allow private repositories (and public if any). No model
    secret: code review spends through the gateway (above), whose `settings.ci_review_model` (default
    `~deepseek/deepseek-flash-latest:high`) picks the model and effort. Off the gateway: the variable `CI_REVIEW_MODEL`.
-3. Instance repo: add `ci` to `modules:` in `instance.yaml`; deploy (`ops/apply-config.sh`).
+3. Instance repo: add `ci` to `modules:` in `instance.yaml`; deploy (`aidenhq-apply --wait`).
 4. On the VM (sudo, once): `sudo install -m0755 ops/vm/computer-net.sh /usr/local/sbin/aidenhq-computer-net && sudo install
    -m0644 ops/units/aidenhq-ci-net.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable
    --now aidenhq-ci-net` (`ops/vm/setup.sh` does this on new hosts).

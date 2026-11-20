@@ -103,23 +103,7 @@ test("a caller-set marker with no lock held exits naming the lock and runs no co
   assert.equal(composeRan(r), false, `compose never ran:\n${r.docker}`);
 });
 
-test("the entry point takes the lock before .env is read, and a second apply exits at once", async () => {
-  const dir = checkout();
-  // .env names a marker the fake flock would see if it were sourced first; the entry point locks before reading it.
-  writeFileSync(join(dir, ".env"), "AIDENHQ_INSTANCE_DIR=/nonexistent-instance\n");
-  const holder = run(dir, `exec 9>>data/apply.lock; flock 9; sleep 2`);
-  await new Promise((r) => setTimeout(r, 200));
-  const start = Date.now();
-  const r = await run(dir, `bash ops/apply-config.sh`);
-  const waited = Date.now() - start;
-  await holder;
-  assert.equal(r.status, 1, r.out);
-  assert.match(r.out, /another apply is running/);
-  assert.ok(waited < 1500, `it did not queue behind the holder (waited ${waited}ms)`);
-  assert.equal(composeRan(r), false, `compose never ran:\n${r.docker}`);
-});
-
-test("two applies serialise: the second exits `another apply is running` without touching compose", async () => {
+test("a second apply waits for the first, then runs: never refused for being second", async () => {
   const dir = checkout();
   // The first apply gets a checkout to work on and a `git` that takes a moment, so it is still inside the apply (holding
   // the lock) when the second one starts. Both go through the real entry point.
@@ -127,15 +111,15 @@ test("two applies serialise: the second exits `another apply is running` without
   writeFileSync(join(dir, ".env"), `AIDENHQ_INSTANCE_DIR=${join(dir, "inst")}\n`);
   writeFileSync(join(dir, "bin/git"), "#!/usr/bin/env bash\nsleep 1.5\nexit 0\n");
   chmodSync(join(dir, "bin/git"), 0o755);
-  const first = run(dir, `bash ops/apply-config.sh`);
+  const first = run(dir, `bash ops/apply-config.sh`).then((r) => ({ ...r, end: Date.now() }));
   await new Promise((r) => setTimeout(r, 300));
   const second = await run(dir, `bash ops/apply-config.sh`);
   const a = await first;
-  assert.equal(second.status, 1, second.out);
-  assert.match(second.out, /another apply is running/, second.out);
-  assert.equal(composeRan(second), false, `the second apply never ran compose:\n${second.docker}`);
-  // The first got past the lock (it was the holder) and stopped on the apply's own checks, not on the lock.
-  assert.doesNotMatch(a.out, /another apply is running/, a.out);
+  assert.match(second.out, /another apply is running: this one waits its turn/, second.out);
+  assert.doesNotMatch(second.out, /refusing/, second.out);
+  // It ran the apply only once the first had let the lock go.
+  assert.ok(Date.now() - a.end >= 1000, "the second apply's own git steps ran after the first ended");
+  assert.match(second.out, /apply timing: instance/, `the second ran the apply:\n${second.out}`);
   assert.match(a.out, /apply timing: instance/, `the holder ran the apply:\n${a.out}`);
 });
 
@@ -149,7 +133,7 @@ test("the work script is not a second entry point: a marker with no lock on fd 9
 
 test("every script the apply runs from ops/ is 100755 in git, so a checkout runs it", () => {
   // The apply runs these by path, so a lost mode bit is an apply that stops halfway.
-  const scripts = ["ops/apply-config.sh", "ops/apply-config-work.sh", "ops/compose-recreate.sh", "ops/ci-runner-units.sh"];
+  const scripts = ["ops/aidenhq-apply", "ops/apply-config.sh", "ops/apply-config-work.sh", "ops/compose-recreate.sh", "ops/ci-runner-units.sh"];
   const out = execFileSync("git", ["ls-files", "-s", ...scripts], { cwd: join(here, "../.."), encoding: "utf8" });
   const modes = Object.fromEntries(out.trim().split("\n").map((l) => { const [mode, , , file] = l.split(/\s+/); return [file, mode]; }));
   for (const f of scripts) assert.equal(modes[f], "100755", `${f} is ${modes[f]}`);
@@ -165,6 +149,6 @@ test("a hand-over keeps the lock: the entry point reuses a held fd 9 instead of 
     export AIDENHQ_APPLY_LOCKED=9 AIDENHQ_APPLY_BEFORE=deadbeef
     bash ops/apply-config.sh
   `);
-  assert.doesNotMatch(r.out, /another apply is running/, r.out);
+  assert.doesNotMatch(r.out, /waits its turn/, r.out);
   assert.match(r.out, /AIDENHQ_INSTANCE_DIR/, `the hand-over kept the lock and ran the apply:\n${r.out}`);
 });
