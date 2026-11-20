@@ -46,7 +46,9 @@ const RETRY_MS = 2 * 60_000;
 /** A job the kernel couldn't start: it ended failed with no exit code (admission.ts); a run that ran always has one. */
 const neverStarted = (j: { state: string; exit: number | null }) => j.state === "failed" && j.exit == null;
 /** A job its machinery ended (above): never started, lost, or killed by a signal (an exit above 128, jobs.ts adopt's rule). */
-const unfinished = (j: { state: string; exit: number | null }) => neverStarted(j) || j.state === "lost" || (j.state === "failed" && j.exit != null && j.exit > 128);
+/** A run that ended cleanly with no final message at all (the model returned nothing): tried again like one that didn't finish. */
+const silent = (j: { state: string; exit: number | null; final?: string; timedOut?: boolean; cancelled?: boolean }) => j.state === "done" && !j.exit && !j.timedOut && !j.cancelled && !String(j.final ?? "").trim();
+export const unfinished = (j: { state: string; exit: number | null; final?: string; timedOut?: boolean; cancelled?: boolean }) => neverStarted(j) || j.state === "lost" || (j.state === "failed" && j.exit != null && j.exit > 128) || silent(j);
 
 /** The newest comments one read returns (kernel.ts comments). */
 const COMMENT_WINDOW = 200;
@@ -181,8 +183,9 @@ export function createDispatch({ kernel, db, owner, log = () => {}, now = Date.n
           continue;
         }
         judges.delete(v.id);
+        const stopped = (q("SELECT why FROM stopped WHERE job = ?").get(v.id) as { why: string } | undefined)?.why;
         // A job that didn't get to finish is tried again by a scheduled wake (the wake it was admitted on is spent), a few times.
-        if (unfinished(v)) {
+        if (!stopped && unfinished(v)) {
           const runs = await kernel.jobsOf(v.task);
           let tries = 0;
           for (const j of runs) { if (!unfinished(j)) break; tries++; }
@@ -197,7 +200,6 @@ export function createDispatch({ kernel, db, owner, log = () => {}, now = Date.n
             continue;
           }
         }
-        const stopped = (q("SELECT why FROM stopped WHERE job = ?").get(v.id) as { why: string } | undefined)?.why;
         const o = outcome({ ...v, stopped });
         if (o) await kernel.post(v.id, o);
         const task = await kernel.task(v.task);

@@ -331,3 +331,13 @@ test("the reviewer reads an agent's form with its options spelled out, so the ow
   assert.match(out, /1\. Where do you want to review the design\?\nA\) On Primer\nB\) Here in chat/);
   assert.equal(spellQuestions("plain"), "plain");
 });
+
+test("the owner's short answer to a form is read by code against that form's options", async () => {
+  const { readAnswer } = await import("../src/review-loop.ts");
+  const form = [{ question: "Anything missing?", options: ["That's right", "Something's missing"] }, { question: "Where do you want to review the design?", options: ["On Primer", "Here in chat"] }];
+  assert.equal(readAnswer("1A, 2A", form), '"Anything missing?" → "That\'s right"; "Where do you want to review the design?" → "On Primer"');
+  assert.equal(readAnswer("2b", form), '"Where do you want to review the design?" → "Here in chat"');
+  assert.equal(readAnswer("publish it on Primer", form), undefined);
+  assert.equal(readAnswer("3A", form), undefined);
+  assert.equal(readAnswer("1A", undefined), undefined);
+});
