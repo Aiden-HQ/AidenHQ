@@ -50,11 +50,13 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.x
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      # npm's download cache, one entry per job and shard (each installs different packages). Only a push to main writes
+      # it (the save step below), so pull requests and merge trains read main's entries and never crowd them out.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.npm
-          key: npm-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
-          restore-keys: npm-${{ runner.os }}-
+          key: npm-${{ runner.os }}-${{ github.job }}-${{ strategy.job-index }}-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: npm-${{ runner.os }}-${{ github.job }}-${{ strategy.job-index }}-
       - name: Git identity (the tests make commits)
         run: git config --global user.name ci && git config --global user.email ci@example.com
       # kernel/contract.lock.json against the PR's base lock (scripts/lean/contract-lock.mjs): a stable entry is never
@@ -73,15 +75,13 @@ jobs:
         env:
           TESTS: ${{ needs.checks.outputs.tests }}
           SHARD: ${{ matrix.shard }}
-          # Seconds each suite took (GitHub-hosted, 2026-11-17), for balancing; a suite not listed counts 30. The selected
-          # suites go heaviest first into the lighter shard.
-          WEIGHTS: '{"scripts": 66, "services/computer": 36, "kernel": 30, "kernel/sdk": 8, "fixtures/twin": 6}'
         run: |
           logs="$RUNNER_TEMP/packages"; mkdir -p "$logs"
           node -e '
-            const w = JSON.parse(process.env.WEIGHTS), shard = Number(process.env.SHARD) - 1, load = [0, 0], out = [[], []];
-            const suites = JSON.parse(process.env.TESTS).filter((t) => t.job == null).sort((a, b) => (w[b.name] ?? 30) - (w[a.name] ?? 30) || a.name.localeCompare(b.name));
-            for (const t of suites) { const i = load[0] <= load[1] ? 0 : 1; load[i] += w[t.name] ?? 30; out[i].push(`${t.dir}\t${t.run}`); }
+            // The selected suites go heaviest first (`secs` in .github/ci/areas.json) into the lighter shard.
+            const shard = Number(process.env.SHARD) - 1, load = [0, 0], out = [[], []], w = (t) => t.secs ?? 5;
+            const suites = JSON.parse(process.env.TESTS).filter((t) => t.job == null).sort((a, b) => w(b) - w(a) || a.name.localeCompare(b.name));
+            for (const t of suites) { const i = load[0] <= load[1] ? 0 : 1; load[i] += w(t); out[i].push(`${t.dir}\t${t.run}`); }
             console.log(out[shard].join("\n"));' > "$logs/list"
           sed -i "/^\$/d" "$logs/list"
           echo "Shard $SHARD: $(cut -f1 "$logs/list" | tr '\n' ' ')"
@@ -103,10 +103,16 @@ jobs:
             [ "$rc" = 0 ] || { echo "::error::$dir failed"; status=1; }
           done < "$logs/list"
           exit $status
+      - if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.npm
+          key: npm-${{ runner.os }}-${{ github.job }}-${{ strategy.job-index }}-${{ hashFiles('**/package-lock.json') }}
 
   # The official modules' own suites (areas.json entries with job "modules": each module's packages, plus the module suites
   # whose paths a change touches, e.g. the kernel for the modules that import it), up to three shards. Each shard installs the
-  # kernel's and the compiler's packages once (module tests import them), then runs its entries one after another.
+  # kernel's and the compiler's packages once (module tests import them), then runs its entries four at a time (alone, the
+  # slowest shard spent ~100 s running one after another).
   modules:
     name: modules (${{ matrix.shard }})
     needs: checks
@@ -124,11 +130,13 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.x
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      # npm's download cache, one entry per job and shard (each installs different packages). Only a push to main writes
+      # it (the save step below), so pull requests and merge trains read main's entries and never crowd them out.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.npm
-          key: npm-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
-          restore-keys: npm-${{ runner.os }}-
+          key: npm-${{ runner.os }}-${{ github.job }}-${{ strategy.job-index }}-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: npm-${{ runner.os }}-${{ github.job }}-${{ strategy.job-index }}-
       - name: Git identity (the tests make commits)
         run: git config --global user.name ci && git config --global user.email ci@example.com
       - name: Test
@@ -136,15 +144,26 @@ jobs:
           ENTRIES: ${{ toJSON(matrix.entries) }}
         run: |
           (cd kernel && npm ci --silent) && (cd scripts && npm ci --silent)
+          logs="$RUNNER_TEMP/modules"; mkdir -p "$logs"
+          jq -r 'to_entries[] | [.key, .value.dir, .value.run] | @tsv' <<< "$ENTRIES" > "$logs/list"
+          # One line per entry (a folder can hold two), run in its folder: output to <n>.log, exit code to <n>.rc.
+          one() { IFS=$'\t' read -r n dir run <<< "$1"; (cd "$dir" && bash "$GITHUB_WORKSPACE/.github/ci/run-suite.sh" "$run") > "$logs/$n.log" 2>&1; echo $? > "$logs/$n.rc"; }
+          export -f one; export logs
+          # The map is read from the base, so a PR that deletes a suite's folder still lists it: nothing is left to test.
+          while IFS=$'\t' read -r n dir run; do [ -d "$dir" ] && printf '%s\n' "$n"$'\t'"$dir"$'\t'"$run" || echo "gone: $dir" >&2; done < "$logs/list" > "$logs/run"
+          tr '\n' '\0' < "$logs/run" | xargs -0 -r -P 4 -I{} bash -c 'one "$1"' _ {}
           status=0
-          while IFS=$'\t' read -r dir run; do
-            # The map is read from the base, so a PR that deletes a suite's folder still lists it: nothing is left to test.
-            [ -d "$dir" ] || { echo "gone: $dir"; continue; }
-            echo "::group::$dir"
-            (cd "$dir" && bash "$GITHUB_WORKSPACE/.github/ci/run-suite.sh" "$run") && echo "ok: $dir" || { echo "::error::$dir failed"; status=1; }
-            echo "::endgroup::"
-          done < <(jq -r '.[] | [.dir, .run] | @tsv' <<< "$ENTRIES")
+          while IFS=$'\t' read -r n dir run; do
+            rc=$(cat "$logs/$n.rc")
+            echo "::group::$dir (exit $rc)"; cat "$logs/$n.log"; echo "::endgroup::"
+            [ "$rc" = 0 ] || { echo "::error::$dir failed"; status=1; }
+          done < "$logs/run"
           exit $status
+      - if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.npm
+          key: npm-${{ runner.os }}-${{ github.job }}-${{ strategy.job-index }}-${{ hashFiles('**/package-lock.json') }}
 
   board:
     needs: checks
@@ -158,17 +177,24 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.x
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      # npm's download cache, one entry per job and shard (each installs different packages). Only a push to main writes
+      # it (the save step below), so pull requests and merge trains read main's entries and never crowd them out.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.npm
-          key: npm-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
-          restore-keys: npm-${{ runner.os }}-
+          key: npm-${{ runner.os }}-${{ github.job }}-${{ strategy.job-index }}-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: npm-${{ runner.os }}-${{ github.job }}-${{ strategy.job-index }}-
       - name: Git identity (the tests make commits)
         run: git config --global user.name ci && git config --global user.email ci@example.com
       - name: Test
         working-directory: services/board
         # The command is the suite's `run` in .github/ci/areas.json (scripts/ci-local.mjs runs the same one).
         run: bash -eo pipefail -c "$(jq -r '.suites[] | select(.name == "services/board") | .run' ../../.github/ci/areas.json)"
+      - if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.npm
+          key: npm-${{ runner.os }}-${{ github.job }}-${{ strategy.job-index }}-${{ hashFiles('**/package-lock.json') }}
 
   # The plan the jobs below wait for, kept to fast steps (~10-15 s): the suites to test, the images to scan and where the
   # heavy jobs run. Which images this change could alter: each Dockerfile it changes, or whose directory gets a changed
