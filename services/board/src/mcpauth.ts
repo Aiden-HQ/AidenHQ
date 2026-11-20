@@ -12,7 +12,7 @@ export interface McpAuthStatus {
   /** The account the sign-in is for, when the proxy knows it (GitHub). */
   login?: string;
   /** Rows the proxy reports about itself for the sign-in's card; the board renders them as given (GitHub). */
-  lines?: { label: string; value: string; state: "ok" | "warn" | "error"; action?: { label: string; href?: string; reconnect?: true } }[];
+  lines?: { label: string; value: string; time?: string; state: "ok" | "warn" | "error"; action?: { label: string; href?: string; reconnect?: true } }[];
   /** Signs in by a pasted value (a service token), never a browser sign-in: Connect asks for it until the state is ok. */
   paste?: boolean;
 }

@@ -74,8 +74,9 @@ const retiredAppId = (() => {
   const dir = env("AIDENHQ_SECRETS_DIR");
   if (!dir) return "";
   const kept = join(dir, "github_retired_app_id"), old = join(dir, "github-app", "app_id");
-  if (!existsSync(kept) && existsSync(old)) writeFileSync(kept, `${readFileSync(old, "utf8").trim()}\n`, { mode: 0o600 });
-  return existsSync(kept) ? readFileSync(kept, "utf8").trim() : "";
+  // A staged compile reads only; the switch's compile (before apply's retireUnits) keeps it.
+  if (!stage && !existsSync(kept) && existsSync(old)) writeFileSync(kept, `${readFileSync(old, "utf8").trim()}\n`, { mode: 0o600 });
+  return (existsSync(kept) ? readFileSync(kept, "utf8") : existsSync(old) ? readFileSync(old, "utf8") : "").trim();
 })();
 let out!: ReturnType<typeof compile>, computers!: ReturnType<typeof computersConfig> & { pull?: ReturnType<typeof computerPulls> };
 try { out = compile(repo, instanceDir, { revision, bundleState, oldBundle, door: { publicIp: env("AIDENHQ_PUBLIC_IP"), adminUrl: env("AIDENHQ_ADMIN_URL"), boardUrl: env("BOARD_LAN_URL") }, legacyAgentsOrg: env("AIDENHQ_GITHUB_AGENTS_ORG") ?? "", retiredAppId }); computers = computersConfig(out.paperclip, repo, out.computersMax); } catch (e) { die((e as Error).message); }

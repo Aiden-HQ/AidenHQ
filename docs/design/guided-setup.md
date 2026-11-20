@@ -58,7 +58,7 @@ ideal result.
 - **Half-baked features.** Owner's rule: a feature is either offered in full or not offered until its setup is done.
   Nothing shows up partly working, degraded, or as "still setting up, try later". In particular, Aiden's first chat is
   the full Aiden, running through Paperclip with all his tools.
-- Anything in install or first run that asks for a GitHub token, GitHub org or GitHub App. GitHub is optional: it's
+- Anything in install or first run that asks for a GitHub token or GitHub org. GitHub is optional: it's
   only for syncing work off the server. Without it everything stays on the server.
 - A step the person must finish before they can talk to Aiden, other than the account, authenticator and model.
 - A terminal command, SSH tunnel or `sudo cat` shown to the person anywhere in the default path.
@@ -218,7 +218,7 @@ elsewhere first (Google's OAuth client, the Slack app, HubSpot's MCP connector, 
 - **Channels:** `channel-telegram`, `slack` (its advanced part; was `channel-slack`).
 - **Connections:** `google` (the guided own-client flow), `slack` (read, signed in as the owner), `github`, `glean`,
   `jira` (Atlassian sign-in), `primer`, `meetings`, `grafana`, `clickhouse`.
-- **Code and engines:** `codehost-github` (the GitHub App and the bot token: "connect GitHub"), `engine-claude` (a
+- **Code and engines:** `github` (one device sign-in: "connect GitHub"), `engine-claude` (a
   subscription token), `engine-codex` (its own sign-in, when not on OpenRouter).
 - **Monitoring:** `monitoring` and `security`, if they need user keys.
 
@@ -393,8 +393,8 @@ AidenHQ keep needing GitHub (`github_bot_token`), offered with "connect GitHub".
 It is the largest piece of this design. Changes to `plan.ts` and the tier function fall under the reviewer-eval rule:
 the eval must stay at 100%.
 
-Until it lands, the GitHub modules stay in the bundle, idle. That already works: installs run today with no GitHub App
-or token until docs/setup.md step 8. So steps 1 to 5 of the order don't wait on it.
+Until it lands, the GitHub modules stay in the bundle, idle. That already works: installs run today with no GitHub
+sign-in until docs/setup.md step 8. So steps 1 to 5 of the order don't wait on it.
 
 ### Part 5: the "Getting started" page
 
