@@ -70,6 +70,10 @@ const p = createPlatform(
     appsNodeFile: `${repoDir}/config/apps-node`,
     previewsFile: process.env.APPS_PREVIEWS_FILE ?? "/previews/previews.json",
     doorsFile: process.env.APPS_DOORS_FILE ?? "/previews/doors.json",
+    notify: async (text, key) => {
+      const res = await fetch(`${kernelUrl}/v1/notify`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${serviceKey}` }, body: JSON.stringify({ kind: "decision", text, dedupe_key: key }), signal: AbortSignal.timeout(30_000) });
+      if (!res.ok) throw new Error(`kernel notify: ${res.status}`);
+    },
   },
   log,
 );

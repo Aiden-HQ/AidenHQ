@@ -51,8 +51,11 @@ Test shape (the Google flow renders steps on a bare-IP board; an app door resolv
 
 ## Built differently: item 2
 
-Not built. A door on the board's tailnet name cannot work: MagicDNS resolves no `<app>.<node>` names and `tailscale
-serve` certifies only the node's own name; the sslip.io form needs a public address for its certificate; and an app on a
-port of the board's own name shares the board's cookies (the reason apps have their own node). So `tailscale` without
-`TS_APPS_AUTHKEY` keeps no browser door, and docs say so (`docs/design/app-doors.md`, `docs/setup.md`). A real door there
-needs a decision (for example the apps node signing in interactively, or a `local` door through an SSH tunnel).
+A door on the board's tailnet name cannot work (MagicDNS resolves no `<app>.<node>` names, `tailscale serve` certifies only
+the node's own name, sslip.io needs a public address, and an app on a port of the board's name shares its cookies). Owner
+decision (2026-11-20): the apps node signs in interactively instead. In `tailscale` mode compile always runs `apps-edge`;
+without `tailscale_apps_authkey` it has no `TS_AUTHKEY`, so it starts logged out with persistent `/state`. When an exposed
+app first has a good deploy, apps-mcp (`edgeLogin`) reads `tailscale status --json`; on `NeedsLogin` it takes the `AuthURL`
+(`tailscale up` without a key if none yet) and sends the owner one `decision` notice, `dedupe_key` `apps-edge:login`
+(apps-platform requests `kernel.owner-notice`). After approval apps work as with the key. Test:
+`modules/apps-platform/apps-mcp/test/edge-login.test.ts`.

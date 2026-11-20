@@ -51,6 +51,8 @@ export interface PlatformConfig {
   appsNodeFile?: string; // config/apps-node (compile): `tailnet` when the apps' tailnet node is the instance's door (tailnet.ts tailnetNode)
   previewsFile?: string; // which shared apps' previews run, for the gate (scripts/edge.ts PREVIEWS_FILE)
   doorsFile?: string; // which apps the gate's doors serve, on which loopback port (doors.ts), beside the previews file
+  /** Tells the owner one thing needs them (a `decision` notice, de-duplicated by `key`): the kernel's /v1/notify. */
+  notify?: (text: string, key: string) => Promise<void>;
   tlsCheck?: TlsCheck; // a public door's certificate check (doors.ts); tests stub it
 }
 
@@ -181,12 +183,36 @@ export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: 
       log.warn({ err: String(err) }, "previews file not written");
     }
     if (!node()) return; // no apps node container without Tailscale (compose profile off)
+    if (all.some((a) => exposes(a) && a.host === "local" && store.goodDeploys(a.name).length)) await edgeLogin();
     const joined = Object.keys(JSON.parse(await exec(["inspect", EDGE_CONTAINER, "--format", "{{json .NetworkSettings.Networks}}"])) ?? {}).filter((n) => n.startsWith("app-"));
     const changes = [
       ...joined.filter((n) => !want.has(n)).map((n) => ["disconnect", n]),
       ...[...want.keys()].filter((n) => !joined.includes(n)).map((n) => ["connect", n]),
     ];
     for (const [op, net] of changes) await exec(["network", op!, net!, EDGE_CONTAINER]).catch((err) => log.warn({ net, err: String(err) }, `apps node network ${op} failed`));
+  }
+
+  /**
+   * A node with no join key signs in once: when an app first needs the door and the node says NeedsLogin, its login link
+   * (`tailscale up` without a key prints one) goes to the owner as a decision. The node's /state keeps it signed in after.
+   */
+  let askedLogin = "";
+  async function edgeLogin(): Promise<void> {
+    if (!cfg.notify) return;
+    const ts = (...a: string[]) => exec(["exec", EDGE_CONTAINER, "tailscale", "--socket=/tmp/tailscaled.sock", ...a]);
+    try {
+      let s = JSON.parse(await ts("status", "--json")) as { BackendState?: string; AuthURL?: string };
+      if (s.BackendState !== "NeedsLogin") return;
+      if (!s.AuthURL) {
+        await ts("up", "--timeout=5s", `--hostname=${process.env.APPS_TS_HOSTNAME || "aidenhq-apps"}`).catch(() => {});
+        s = JSON.parse(await ts("status", "--json"));
+      }
+      if (!s.AuthURL || s.AuthURL === askedLogin) return;
+      await cfg.notify(`Approve the apps' Tailscale node so agent-built apps can open on your tailnet (one time): ${s.AuthURL}`, "apps-edge:login");
+      askedLogin = s.AuthURL;
+    } catch (err) {
+      log.warn({ err: String(err) }, "apps node login check failed");
+    }
   }
 
   // An unshared app opens on the apps' tailnet node. Without one there is no door a browser can use: the app requires a signed
