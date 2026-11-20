@@ -107,6 +107,16 @@ describe("mcp end to end", () => {
     expect(json.result.structuredContent).toMatchObject({ approvals_pending: 2, approvals: [{ id: "k-0000000000000001", digest: "a".repeat(40) }, { id: "k-0000000000000002" }] });
   });
 
+  it("fences free text by default: an agent's words and an upstream error come back as data", async () => {
+    const { json } = await call("approvals", {});
+    const first = json.result.structuredContent.approvals[0];
+    expect(first.sentence).toContain("<untrusted-data");
+    expect(first.id).toBe("k-0000000000000001"); // ids and digests stay bare
+    const failed = (await call("update_task", { id: "WOR-99", action: "comment", text: "hi" })).json.result;
+    expect(failed.isError).toBe(true);
+    expect(failed.content[0].text).toContain("<untrusted-data");
+  });
+
   it("change_settings files a change as the account and says where it stands", async () => {
     const { json } = await call("change_settings", { changes: [{ kind: "setting", key: "grading", value: "off" }] });
     expect(json.result.isError).toBeFalsy();
