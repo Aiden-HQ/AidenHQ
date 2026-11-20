@@ -11,6 +11,11 @@ with it, it follows the output until the apply ends and exits with its status. O
 names its generation and that generation's log (`~/.local/state/aidenhq/apply-<n>.log`). The unit is collected when it
 ends, failed or not.
 
+An apply of a commit already applied is a no-op: when the instance's origin/main and its product pin are the last known good
+generation's pair, the apply prints `already applied: generation <n> …` and exits 0 without a new generation. `aidenhq-apply
+--wait --force` runs it in full anyway (after a change only this host has, such as `.env` or a secret); `--force` also applies a
+pair held after a failed health check.
+
 `ops/apply-config.sh [<instance commit sha>]` is the whole apply. It is the locked entry point: it opens `data/apply.lock`
 at that fixed path (before `.env` is read, so nothing the apply reads decides what it locks), holds the lock on fd 9 and
 execs `ops/apply-config-work.sh`, which takes no lock of its own. One apply runs at a time; a second one waits for the
@@ -60,7 +65,7 @@ An apply that dies mid-run (killed, its shell gone) leaves its generation `pendi
 ran. It is finished like a failed health check (the snapshot put back, the last known good re-applied) by whichever comes
 first: the dying shell's own exit trap, the next apply (before it does anything else; it holds the lock, so nothing else is
 applying), or at boot the oneshot user unit `aidenhq-apply-recover` (`ops/apply-config.sh --recover`, installed by apply
-and setup). The dead pair is then held like any failed one: `--retry` from the owner's shell applies it again. A dead
+and setup). The dead pair is then held like any failed one: `--force` from the owner's shell applies it again. A dead
 rollback is only marked failed. From the generation's first line, the apply writes to its log file
 (`~/.local/state/aidenhq/apply-<n>.log`) and a follower (`gnutail` where the host has it, else `tail -f --pid`) copies the
 lines to the caller; the apply never writes into a pipe, so a follower that dies (uutils `tee`/`tail` 0.10 have panicked)

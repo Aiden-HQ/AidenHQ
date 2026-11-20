@@ -11,7 +11,8 @@
 //
 // No apply is ever started twice. Each record moves through one row in kernel.db, written in this order:
 //   landed  the commit is on the instance's main (the code host's land is idempotent: an already landed commit is a no-op)
-//   unit    the launch intent: the unit's name and the newest generation before it, written BEFORE the launch
+//   unit    the launch intent: the unit's name, written BEFORE the launch (the mark, the newest generation before the landing, is
+//           written with `landed`)
 // A record is launched only from "landed, no intent". From "intent" it is only followed: waited on while its unit is
 // loaded (queued or running), and once it is gone (collected when it ends) decided by the generations; with no good one
 // containing the commit it failed and is not run again.
@@ -253,14 +254,15 @@ export function createApply({ db, codehost, launch, unit, generations, contains,
       });
       if (!("landed" in step)) return step;
       const { landed } = step;
-      db.prepare("UPDATE applies SET landed = ? WHERE record = ?").run(landed, r.id);
+      // The mark is taken with the landing: an apply that already ran by the time this one is launched applied the commit
+      // too, and its generation is the outcome (an apply of a commit already applied adds none).
+      db.prepare("UPDATE applies SET landed = ?, mark = ? WHERE record = ?").run(landed, generations().reduce((m, g) => Math.max(m, g.n), 0), r.id);
       log("apply landed", { record: r.id, sha: landed });
       row = get(r.id)!;
     }
     if (!row.unit) {
-      // One launch per record. It queues behind any apply running (the lock waits), so the mark is taken now.
-      const mark = generations().reduce((m, g) => Math.max(m, g.n), 0);
-      const intent = db.prepare("UPDATE applies SET unit = ?, mark = ? WHERE record = ? AND unit IS NULL").run(`aidenhq-apply-${r.id}`, mark, r.id).changes === 1;
+      // One launch per record. It queues behind any apply running (the lock waits).
+      const intent = db.prepare("UPDATE applies SET unit = ? WHERE record = ? AND unit IS NULL").run(`aidenhq-apply-${r.id}`, r.id).changes === 1;
       row = get(r.id)!;
       if (intent) {
         await launch(row.unit!);

@@ -235,8 +235,24 @@ test("an apply builds and sets up only what its inputs changed", async () => {
   assert.deepEqual([ran("setup"), ran("docker compose build")], [0, 0], "and then nothing again");
   // A service image the compose files need but this host lacks: built again, though the product is the same.
   writeFileSync(w.d("bin/docker"), readFileSync(w.d("bin/docker"), "utf8").replace("case \"$*\" in", "case \"$*\" in *\"config --images\"*) echo missing/image ;; *\"image inspect\"*) exit 1 ;; "));
-  await apply();
+  await apply("--force");
   assert.equal(ran("docker compose build"), 1, "a missing image is built");
+});
+
+test("a second apply of the pair already applied is a no-op; --force runs it in full", async () => {
+  const w = world();
+  assert.equal((await w.run()).status, 0);
+  const n = w.gens().length, before = w.calls();
+  const again = await w.run();
+  assert.equal(again.status, 0, again.out);
+  assert.match(again.out, new RegExp(`already applied: generation ${n} \\(product ${w.p1.slice(0, 12)}, instance ${w.i1.slice(0, 12)}\\)`));
+  assert.match(again.out, /apply timing: total/);
+  assert.equal(w.gens().length, n, "no new generation");
+  assert.equal(w.calls(), before, "nothing ran");
+  const forced = await w.run("--force");
+  assert.equal(forced.status, 0, forced.out);
+  assert.doesNotMatch(forced.out, /already applied/);
+  assert.equal(w.gens().length, n + 1, "--force adds a generation");
 });
 
 // A fresh host has no kernel/node_modules: the pin is read with the kernel's own parser, so its deps are installed first.
@@ -332,7 +348,7 @@ test("the retired update units are removed once the generation is good, never wh
   assert.ok(!existsSync(join(units, "aidenhq-update.service")) && !existsSync(join(units, "aidenhq-update.timer")), "a good one removes them");
 });
 
-test("A14: a post-apply health failure reverts to the LKG's product, keeps what the instance gained since, and holds the pair until --retry", async () => {
+test("A14: a post-apply health failure reverts to the LKG's product, keeps what the instance gained since, and holds the pair until --force", async () => {
   const w = world();
   assert.equal((await w.run()).status, 0);
   // An app registered after the last known good (apps-mcp commits apps.yaml straight to the instance's main).
@@ -365,14 +381,14 @@ test("A14: a post-apply health failure reverts to the LKG's product, keeps what 
   // Held: main still resolves to the failed pair, so a plain apply (the runner's) is refused and changes nothing.
   const held = await w.run();
   assert.equal(held.status, 1, held.out);
-  assert.match(held.out, /failed its health check as generation 3 .* --retry/);
+  assert.match(held.out, /failed its health check as generation 3 .* --force/);
   assert.equal(w.gens().length, 4, "no new generation");
   assert.equal(w.head("prod"), w.p1);
   assert.equal(w.head("inst"), reverted);
 
-  // --retry from the owner's shell, with the fault gone: it applies, and the instance is back on main.
+  // --force from the owner's shell, with the fault gone: it applies, and the instance is back on main.
   rmSync(w.d("ctrl/break"));
-  const retry = await w.run("--retry");
+  const retry = await w.run("--force");
   assert.equal(retry.status, 0, retry.out);
   assert.deepEqual(w.gens().at(-1), { ...w.gens().at(-1), product: p2, instance: i2, health: "good" });
   assert.equal(w.head("prod"), p2);
@@ -405,7 +421,7 @@ test("a failed auto-revert records its own log naming the step that failed", asy
   // The failed pair is still held.
   const held = await w.run();
   assert.equal(held.status, 1, held.out);
-  assert.match(held.out, /failed its health check as generation 3 .* --retry/);
+  assert.match(held.out, /failed its health check as generation 3 .* --force/);
   assert.equal(w.gens().length, 4, "no new generation");
 });
 
@@ -435,7 +451,7 @@ test("a module whose data migrates (marker 0 -> 1) and fails health comes back a
 
   // Fixed and retried, it migrates for good; a rollback to generation 2 restores acme from the first snapshot after it.
   rmSync(w.d("ctrl/break"));
-  assert.equal((await w.run("--retry")).status, 0);
+  assert.equal((await w.run("--force")).status, 0);
   assert.equal(acme(".data_version"), "1\n");
   assert.equal(acme("state/db.txt"), "v0 rows\nv1 migrated\n");
   const plan = await w.sh("ops/rollback.sh", "2", "--plan");
@@ -494,8 +510,8 @@ test("an apply SIGKILLed mid-compose is reverted to the last known good by the n
   assert.equal(r.status, 1, r.out);
   reverted(w);
   assert.match(r.out, /reverted to generation 2/);
-  assert.match(r.out, /refusing: product .* failed its health check as generation 3 .* --retry/);
-  const retry = await w.run("--retry");
+  assert.match(r.out, /refusing: product .* failed its health check as generation 3 .* --force/);
+  const retry = await w.run("--force");
   assert.equal(retry.status, 0, retry.out);
   assert.deepEqual([w.gens().at(-1).product, w.gens().at(-1).instance, w.gens().at(-1).health], [p2, i2, "good"]);
 });
