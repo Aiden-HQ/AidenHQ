@@ -23,7 +23,7 @@ function setup() {
 test("the routes need a module holding kernel.work-read", async (t) => {
   const { work } = setup();
   const whoami = async (token) => (token === "none" ? Promise.reject(new Error("no")) : { kind: "module", module: "grading", roles: token === "reader" ? ["kernel.work-read"] : token === "grader" ? ["kernel.grader"] : [], tools: [] });
-  const handle = createBackplane({ whoami, asserter: { jwks: {} }, proxy: async () => {}, cp: async () => {}, grantsFile: () => ({}), work, graderToken: (task, agent) => `tok-${task}-${agent}`, checks: { held: (module, task) => module === "grading" && task === "t1" }, owner: async (_m, path) => (path === "/api/issues/t1" ? { status: 200, json: { assigneeAgentId: "a1" } } : { status: 404, json: {} }) });
+  const handle = createBackplane({ whoami, asserter: { jwks: {} }, proxy: async () => {}, cp: async () => {}, grantsFile: () => ({}), work, graderToken: (task, agent) => `tok-${task}-${agent}`, checks: { held: (module, task) => module === "grading" && task?.id === "t1" }, owner: async (_m, path) => (path === "/api/issues/t1" ? { status: 200, json: { id: "t1", assigneeAgentId: "a1" } } : { status: 404, json: {} }) });
   const server = http.createServer(handle).listen(0);
   t.after(() => server.close());
   const get = (path, token) => fetch(`http://127.0.0.1:${server.address().port}${path}`, { headers: { authorization: `Bearer ${token}` } });

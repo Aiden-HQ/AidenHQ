@@ -24,7 +24,7 @@ import { parseGraderNote, type GraderNote } from "./grader-note.ts";
 export type Check = { module: string; at: string; url: string; rubric?: string; grade?: string; auth_secret: string; agents?: string[]; label?: string; mode?: "observe" };
 type Verdict = { verdict: "ok" | "hold" | "pending" | "reopen" | "deny"; reason?: string; until?: string; state?: string; status?: number; unlabel?: boolean; accepts?: boolean };
 export type Finish = { pass: true } | { pass: false; held: true; state: string; reason: string } | { pass: false; reopened: true; reason: string };
-type Issue = { id: string; identifier?: string; companyId?: string; status?: string; assigneeAgentId?: string | null; assigneeUserId?: string | null; createdByAgentId?: string | null; parentId?: string | null; labelIds?: string[]; labels?: { id: string }[]; executionPolicy?: Record<string, unknown> | null };
+type Issue = { id: string; identifier?: string; companyId?: string; status?: string; assigneeAgentId?: string | null; assigneeUserId?: string | null; createdByAgentId?: string | null; parentId?: string | null; labelIds?: string[]; labels?: { id: string; name?: string }[]; executionPolicy?: Record<string, unknown> | null };
 /** A hold's resolving verdicts and the status each moves the task to. */
 const RESOLVES = new Map([["ok", "done"], ["reopen", "todo"], ["block", "blocked"]]);
 const VERDICTS = ["ok", "hold", "pending", "reopen", "deny"];
@@ -190,6 +190,25 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
     return { pass: true };
   }
 
+  /** Whether `c`'s label is on the task: by name when the read carries labels, else by the company's label id. */
+  async function labelled(i: Issue, c: Check) {
+    if (!c.label) return false;
+    if ((i.labels ?? []).some((l) => l.name === c.label)) return true;
+    const l = await label(i, c.label);
+    return Boolean(l) && labelIds(i).includes(l!.id);
+  }
+  /**
+   * Whether `id` holds the task: the `check_holds` row the gate wrote is authoritative. Without one, a task still waiting in
+   * review under this check's own label is held too: the label is what the gate puts on a task it holds, and a task left
+   * that way before hold rows were written (or by a gate that recorded none) is still waiting for its verdict. An observing
+   * check never holds, and no other label counts.
+   */
+  async function holds(id: string, c: Check, i: Issue) {
+    if (!i.id) return false;
+    if (db.prepare("SELECT 1 FROM check_holds WHERE task = ? AND check_id = ?").get(i.id, id) !== undefined) return true;
+    return c.mode !== "observe" && i.status === "in_review" && (await labelled(i, c));
+  }
+
   /**
    * A check's module on a task: `release` takes its label off (the hold is over; the module's own flow moves the task on);
    * `ok`, `reopen` and `block` resolve a hold this check placed, moving the task to done, todo or blocked as the owner. Only
@@ -202,8 +221,7 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
     const to = RESOLVES.get(String(b.verdict));
     if (!to && b.verdict !== "release") throw fail(400, "bad_request", "verdict is release, ok, reopen or block");
     const i = await issue(ref);
-    const held = db.prepare("SELECT 1 FROM check_holds WHERE task = ? AND check_id = ?").get(i.id, id);
-    if (b.verdict !== "release" && !held) throw fail(409, "conflict", `${id} holds no finish on ${i.identifier ?? i.id}`);
+    if (b.verdict !== "release" && !(await holds(id, c, i))) throw fail(409, "conflict", `${id} holds no finish on ${i.identifier ?? i.id}`);
     // A module's ok moves the task to done as the owner: the same hold as an agent's finish, so a change still open on this
     // server stops it too, before the hold is released.
     if (b.verdict === "ok") await noOpenChange(i, "the grader or the module that held it can move it on once the merge lands");
@@ -240,7 +258,10 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
   }
 
   /** Whether one of this module's finish checks holds the task now (its label is on it): the module's work is that task. */
-  const held = (module: string, task: string) => finishing().some(([id, c]) => c.module === module && db.prepare("SELECT 1 FROM check_holds WHERE task = ? AND check_id = ?").get(task, id) !== undefined);
+  const held = async (module: string, i: Issue) => {
+    for (const [id, c] of finishing()) if (c.module === module && (await holds(id, c, i))) return true;
+    return false;
+  };
   /**
    * A rubric for a task a module filed (modtasks.ts, after its own check of kernel.tasks): asked of the finish checks that take
    * one (`rubric:`), with their own key, so the filer is the kernel's word and never a body field. They answer `ok`. None
