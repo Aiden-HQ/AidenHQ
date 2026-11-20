@@ -342,7 +342,21 @@ export async function publishedAt(kind, name, { version, digest, sha, source } =
       } catch (e) { if (e.status !== 404) throw e; }
     }
     // The tag has moved on: another tag (or for ghcr, the package version) that still holds this digest.
-    const hit = (await imageVersions(host, repo, "")).filter((t) => t.digest === digest).sort((a, b) => Date.parse(a.published) - Date.parse(b.published)).at(-1);
+    let all;
+    try { all = await imageVersions(host, repo, ""); } catch (e) {
+      // The Packages API lists versions only to a token with read:packages on that owner, so another org's public
+      // image is unreadable here (403). Its GitHub release of the same version, in the same-named repo, is dated by
+      // GitHub's clock (published_at) and the publisher can't backdate it.
+      if (host !== "ghcr.io" || !e.undated || !tag) throw e;
+      for (const t of [`v${tag}`, tag]) {
+        try {
+          const r = await getJson(`https://api.github.com/repos/${repo}/releases/tags/${encodeURIComponent(t)}`);
+          if (r.published_at && !r.draft) return { published: r.published_at, via: `GitHub release ${t} (the Packages API is unreadable)` };
+        } catch (re) { if (re.status !== 404) throw e; }
+      }
+      throw e;
+    }
+    const hit = all.filter((t) => t.digest === digest).sort((a, b) => Date.parse(a.published) - Date.parse(b.published)).at(-1);
     if (!hit) throw undated(`${name}@${digest}: ${UNDATED}`);
     return { published: hit.published, via: `${hit.via} (as ${hit.version})` };
   }
