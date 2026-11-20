@@ -65,33 +65,48 @@ structured content:
 
 - `cause`: `not_connected | expired | scope | sso | restricted` (owner-fixable). Non-owner-fixable causes
   (`unreachable`, `rate_limited`) are plain errors and never take this path.
-- A shared SDK helper (`kernel/sdk/src/needs.ts`, synced to modules) builds it. Connections built on the vendor proxy and
-  `board.signins` (Glean, Jira, Grafana, Primer, Google, GitHub's official MCP…) get it from the proxy's sign-in state
-  with no per-connection code; the hand-written MCPs (google-workspace, github-mcp, hubspot, slack) call the helper
-  where they used to return `<x>_auth_unavailable`. The old error codes are deleted.
-- GitHub's `client.ts` keeps its typed causes but stops notifying itself: it answers `needs_owner` and the kernel routes.
+- A shared SDK helper (new `kernel/sdk/src/needs.ts`, synced to modules) builds it.
+- Connections on the shared vendor proxy (`vendor/proxy.ts`: Glean, Jira, Grafana, Primer, GitHub's official MCP…) get it
+  with no per-connection code: the proxy already knows the sign-in state, so it answers `needs_owner` itself when there is
+  no sign-in (`not_connected`) or the upstream rejected the token (`expired`, where it already calls `mark("expired")`).
+- The hand-written MCPs (google-workspace, github-mcp, hubspot, slack) call the helper where they return
+  `<x>_auth_unavailable` today (Google's is in-band JSON text, `main.ts:103`). The old codes are deleted.
+- GitHub (after #1065 merges): its `GitHubNeed` causes map one to one (`not_connected`, `expired`, `scope`, `sso`,
+  `restricted`, with `org`), and `client.ts`'s own `kernelNotify` is deleted in this project's PR.
+- The kernel reads `needs_owner` from the module's answer **before** `fenceAnswer` strips `structuredContent` (connection
+  modules are our code; only the upstream data inside is untrusted).
 
 ### 2. The kernel routes it
 
 The kernel's tool proxy sees the `needs_owner` answer and:
 
-1. **Records connection state**: `connection_state(connection, cause, since)`; cleared when the sign-in/status reports
-   ok again (the same status sources the board uses).
+1. **Records connection state**: `connection_state(connection, cause, since)`. It clears when the owner finishes that
+   connection's Connect: the board, which runs every sign-in and setup flow, calls the kernel
+   (`POST /v1/connections/<name>/ok`) when one completes; a later successful call through the proxy also clears it.
 2. **Decides who hears**:
-   - **The owner asked**: the call belongs to a task whose chain leads to an owner message (the task was created from
-     the owner's chat, or is delegated from one that was). The kernel puts the task in `work.waiting` (reason
-     `owner_connect`, keyed by connection+cause) and posts one message in that task's owner thread: what's needed, why
-     ("to read your inbox"), and the link. Several tasks waiting on the same connection share one message (dedupe by
-     connection+cause per day). When the state clears, every task waiting on it is woken.
-   - **Background**: no message. The kernel appends `connection+cause` to the next daily digest, deduped for the day.
+   - **The owner asked**: walk the task's parent links to the root task (Paperclip parent ids); the request is the
+     owner's when that root was created from the owner's own words (an owner board comment, or a message relayed from the
+     owner's Telegram/Slack chat). A routine's run is background even if the owner created the routine. The kernel:
+     - sends one `notify` (kind `decision`, `task:` the root task, `dedupe_key` `connect:<connection>:<cause>`): what's
+       needed, why ("to read your inbox"), and the link. Owner-channel delivers it to the owner's channels and the board,
+       like any decision; the kernel only carries it (routing, mutes and dedupe stay owner-channel's);
+     - records the calling task as waiting through the same code path as an agent's own `/v1/wait` (reason
+       `agent_wait`, `on: "<connection> connection"`, wake key `connect:<connection>`), so the board shows it as waiting on
+       the connection. No new reason.
+     When the state clears, the kernel fires wake key `connect:<connection>` and every task waiting on it resumes.
+   - **Background**: no message. The kernel sends `notify` kind `digest` with `dedupe_key`
+     `connect:<connection>:<cause>`; owner-channel's existing digest batching (`notify_digest_hours`) and dedupe do the
+     rest.
 3. **Answers the agent** with a short, fixed text: "Google isn't connected; the owner has the link / it's in the
    digest. Don't retry; you'll be woken when it's connected" (owner-asked) or "… skip this source for now" (background).
 
+The agent's job ends its turn on this answer (the wait is already recorded); it doesn't call `task_wait` itself.
+
 ### 3. Agents can see what's connected
 
-The handbook preamble the kernel already compiles for each agent gains one line per granted connection that is currently
-not usable: `google: not connected since <date>`. Agents skip those tools instead of discovering it by failure. No new
-tool.
+Connection state changes at runtime, so it can't live in the compiled handbook. The per-run context the kernel/runner
+assembles at each job start gains one line per granted connection that is currently down: `google: not connected since
+<date>`. Agents skip those tools instead of discovering it by failure. No new tool.
 
 ### 4. Links that work where they land
 
@@ -106,8 +121,11 @@ own Connect (the sign-in's Connect, or `#/setup/<module>` for a flow). By mode:
 
 ### 5. Recovery without Telegram
 
-`ops/setup.sh --reset <email>` prints the one-time reset link on the server as well as queueing it for a credentials
-channel. Whoever can run it already controls the server, so nothing new is exposed; it works in every mode.
+`ops/setup.sh --reset <email>` prints the one-time reset link on the server: the operator endpoint
+(`/v1/operator/reset`, local to the host) returns it, built on the board's public base URL. Whoever can run it already
+controls the server, so nothing new is exposed, and it works in every mode. In Cloudflare `access` mode there is no link
+(Access owns identity) and it prints that instead. The Telegram delivery of reset links (`deliverSecrets`, the
+`credentials: true` channel) is deleted: one way (owner OK needed: this drops a behaviour).
 
 ### 6. Clean-ups
 
