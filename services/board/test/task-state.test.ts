@@ -66,6 +66,17 @@ describe("the board shows the kernel's task state", () => {
     expect(r.counts).toEqual({ needs_you: 2, failed: 1, unexplained_idle: 0 });
   });
 
+  it("the counts are of the rows the list shows: a task Paperclip no longer lists as open is in neither", async () => {
+    states.rows.push(row("gone", { identifier: "WOR-99", kind: "waiting", reason: "owner_wait", attention: [A("owner", "owner_wait")] }));
+    try {
+      const r = await get("/api/needs-you");
+      expect(r.items).toHaveLength(3);
+      expect(r.counts.needs_you).toBe(2);
+    } finally {
+      states.rows.pop();
+    }
+  });
+
   it("a chat header shows the kernel's state, not Paperclip's", async () => {
     const c = await get("/api/chats/WOR-1");
     expect(c.state).toMatchObject({ kind: "waiting", reason: "card_owner" });

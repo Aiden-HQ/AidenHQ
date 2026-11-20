@@ -920,16 +920,17 @@ export function createApp(opts: AppOptions): Server {
           const asking = kids.filter((k) => k.assigneeAgentId && !["done", "cancelled"].includes(k.status) && handedOutBy(source.chat, k, ctx.me) && waitsForAnswer(states.get(k.id)));
           const ask = agent.kind === "engineer" ? undefined : asking.find((k) => k.id === dest.id);
           if (ask) {
-            // When the question was asked: the wait's own start when it is what the task shows, else (another obligation leads, say a
-            // queued wake) the time of the agent's reply that asked; with neither, nothing proves the words answer it.
-            const wait = states.get(ask.id)!;
-            const askedAt = wait.reason === "owner_wait" ? wait.since : askedQuestions(await pc.comments(ask.id).catch(() => [] as Comment[]), ask.assigneeAgentId)?.at;
-            if (!askedAt) throw new Refused("refused: the board can't tell when the agent asked; answer on its task");
+            // The words must be newer than the question: the kernel's start of the open owner wait, never a guess from comments.
+            const askedAt = states.get(ask.id)!.wait_since;
+            if (!askedAt) throw new Refused("refused: the kernel has no open question on that task; answer on the task");
             if (source.comment.createdAt <= askedAt) throw new Refused("refused: that message was written before the agent asked; ask the owner again");
           }
           if (!ask && !["engineer", "assistant"].includes(agent.kind)) throw new Refused("refused: target must be an engineer's task, or a task handed out from this chat whose agent is asking the owner");
           // One set of tasks that could take the owner's words: whenever more than one could, the words must name the target.
-          const inReview = (await pc.openIssues()).filter((i) => i.status === "in_review" && ctx.assignees.some((a) => a.key === i.assigneeAgentId && a.kind === "engineer")).map((i) => i.identifier);
+          // Engineer tasks that could take the owner's words: those with their review or checks under way (the kernel's state).
+          const engineers = (await pc.openIssues()).filter((i) => ctx.assignees.some((a) => a.key === i.assigneeAgentId && a.kind === "engineer"));
+          const engineerStates = await stateRows(engineers.map((i) => i.id));
+          const inReview = engineers.filter((i) => ["card_review", "card_owner", "module_wait"].includes(engineerStates.get(i.id)?.reason ?? "")).map((i) => i.identifier);
           const waiting = [...new Set([...inReview, ...asking.filter((k) => ctx.assignees.find((a) => a.key === k.assigneeAgentId)?.kind !== "engineer").map((k) => k.identifier)])];
           assertMeantTask(words, dest.identifier, waiting, ctx.prefix);
           // Once per message, whatever the target: reserved before posting, released if the post fails.
@@ -1398,8 +1399,15 @@ export function createApp(opts: AppOptions): Server {
           const i = byId.get(state.task)!;
           return { identifier: i.identifier, title: i.title, agent: ctx.agents.find((a) => a.id === (i.assigneeAgentId ?? chatAgent(i)))?.name ?? "You", state };
         });
+        // The counts come from the rows the list shows.
+        const has = (r: ShownState, f: (a: ShownState["attention"][number]) => boolean) => r.attention.some(f);
+        const counts = {
+          needs_you: rows.filter((r) => has(r, (a) => a.who === "owner")).length,
+          failed: rows.filter((r) => has(r, (a) => a.why === "failed")).length,
+          unexplained_idle: rows.filter((r) => has(r, (a) => ["orphaned", "unknown", "history_expired"].includes(a.why))).length,
+        };
         // approvals: the Tier 2 cards the owner decides in Approvals.
-        return { counts: read.counts, items, approvals: (await records.list("owner")).length };
+        return { counts, items, approvals: (await records.list("owner")).length };
       },
     },
     // Approvals: the cards, open ones first, then the newest decided ones with their outcome, and the newest Tier 0 runs (made

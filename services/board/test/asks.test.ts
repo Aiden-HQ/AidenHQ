@@ -46,7 +46,7 @@ const ask = (question: string, options: string[]) =>
 
 // The kernel's state: the architect's task waits for the owner's answer from its question until a comment of his after it.
 const states = fakeStates();
-const waiting = (question: string, since: string) => (states.rows = [row(chat.id, { identifier: chat.identifier, kind: "waiting", reason: "chat_turn" }), row(child.id, { identifier: child.identifier, kind: "waiting", reason: "owner_wait", since, question, attention: [{ who: "owner", why: "owner_wait", ref: `wait:${child.id}` }] })]);
+const waiting = (question: string, since: string) => (states.rows = [row(chat.id, { identifier: chat.identifier, kind: "waiting", reason: "chat_turn" }), row(child.id, { identifier: child.identifier, kind: "waiting", reason: "owner_wait", since, wait_since: since, question, attention: [{ who: "owner", why: "owner_wait", ref: `wait:${child.id}` }] })]);
 const answered = () => (states.rows = [row(chat.id, { identifier: chat.identifier, kind: "waiting", reason: "chat_turn" }), row(child.id, { identifier: child.identifier, kind: "working", reason: "job_running" })]);
 
 const pc = {
@@ -134,7 +134,7 @@ describe("a delegated agent asks the owner through the chat that handed it the w
     const early = add(chat.id, { body: "[telegram] weekly please", authorType: "user", authorUserId: ME });
     const asked = ask("Which day?", ["Mon", "Tue"]);
     // The kernel woke the agent after its question: a queued job leads, the owner wait is still open.
-    states.rows = [row(chat.id, { identifier: chat.identifier, kind: "waiting", reason: "chat_turn" }), row(child.id, { identifier: child.identifier, kind: "waiting", reason: "job_queued", since: asked.createdAt, attention: [{ who: "owner", why: "owner_wait", ref: `wait:${child.id}` }] })];
+    states.rows = [row(chat.id, { identifier: chat.identifier, kind: "waiting", reason: "chat_turn" }), row(child.id, { identifier: child.identifier, kind: "waiting", reason: "job_queued", since: asked.createdAt, wait_since: asked.createdAt, attention: [{ who: "owner", why: "owner_wait", ref: `wait:${child.id}` }] })];
     expect((await call("internal", "POST", "/internal/relay", { comment_id: early.id, target: "WOR-21" })).status).toBe(403);
     const later = add(chat.id, { body: "[telegram] Tuesday", authorType: "user", authorUserId: ME });
     expect((await call("internal", "POST", "/internal/relay", { comment_id: later.id, target: "WOR-21" })).status).toBe(200);

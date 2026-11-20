@@ -37,6 +37,7 @@ const REASON: Record<ShownState["reason"], (s: ShownState) => string> = {
   module_wait: (s) => MODULE_WAIT[s.ref ?? ""] ?? (s.ref ? s.ref.replace(/_/g, " ") : "a module's step"),
   scheduled: () => "scheduled",
   chat_turn: () => "your turn",
+  owner_task: () => "your task",
   backlog: () => "backlog",
   failed: (s) => (s.refLabel ? `failed: ${s.refLabel}` : "failed"),
   orphaned: () => "nothing scheduled",
@@ -59,7 +60,7 @@ export function TaskState({ state, bare }: { state: ShownState | null | undefine
   if (!state) return null;
   const w = stateWords(state);
   const warn = showsAttention(state);
-  const quiet = state.reason === "chat_turn";
+  const quiet = state.reason === "chat_turn" || state.reason === "owner_task";
   return (
     <span className={`ts${quiet ? " ts-quiet" : ""}`} title={[w.word, w.detail].filter(Boolean).join(" · ")}>
       <StatusDot tone={w.tone}>{w.word}</StatusDot>
