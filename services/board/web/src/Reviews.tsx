@@ -257,7 +257,7 @@ function Start({ setup, onWatch, onOneOff }: { setup: ReviewsSetup; onWatch: () 
           <span className="rv-step-mark">{connected ? <Check /> : "1"}</span>
           <div className="rv-step-body">
             <b>{connected ? "GitHub is connected" : "Connect GitHub"}</b>
-            <span>{connected ? "Reviews post as your GitHub App where it's installed, otherwise as you." : "Sign in with a code at github.com. Reviews read PRs and post comments through it."}</span>
+            <span>{connected ? "Reviews post as you, labelled as AidenHQ." : "Sign in with a code at github.com. Reviews read PRs and post comments through it."}</span>
           </div>
           {!connected && <LinkButton variant="primary" href="#/settings/connections?connect=github">Connect GitHub</LinkButton>}
         </li>
@@ -582,7 +582,7 @@ function ReposTab({ config, repos, onEdit, onWatch }: { config: CodeReview; repo
                 name={r.repo}
                 title={r.repo}
                 onOpen={() => onEdit(r)}
-                status={live?.error ? <StatusDot tone="failed" title={live.error}>Can't watch</StatusDot> : !id ? undefined : id === "app" ? <StatusDot tone="ok">Posts as the App</StatusDot> : <StatusDot tone="info">Posts as you</StatusDot>}
+                status={live?.error ? <StatusDot tone="failed" title={live.error}>Can't watch</StatusDot> : !id ? undefined : <StatusDot tone="info">Posts as you</StatusDot>}
                 facts={
                   <Tags>
                     <Tag title="When a PR opens">Open: {trigger(r.on_open, REPO_DEFAULTS.on_open)}</Tag>

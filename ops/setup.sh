@@ -35,7 +35,7 @@
 # BOARD_HOST (default: this VM's tailnet name), PAPERCLIP_PASSWORD
 # (with --restore: the old VM's paperclip_owner_password; otherwise one is generated), TIMEOUT_MINUTES
 # (minutes per job, into config/runner.yaml), CI_RUNNERS (CI runner units, started once
-# the GitHub App and the ci module are set up). An unquoted value ends at ' #'.
+# github_fleet_org is set and the ci module is on). An unquoted value ends at ' #'.
 # The settings that aren't secrets may come from the environment instead (the file wins): AIDENHQ_USER, OWNER_NAME,
 # OWNER_EMAIL, TIMEZONE, COMPANY_NAME, MODULES, BOARD_HOST, TIMEOUT_MINUTES, CI_RUNNERS.
 # --fleet-org <org>: the GitHub org for agent-built repos (setting github_fleet_org; an org you can create repositories in).

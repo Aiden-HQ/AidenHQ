@@ -190,11 +190,11 @@ test("incremental runs recheck the last posted findings from the merge base; a f
   w.later(1000); w.pr(4, sha("2")); await w.tick();
   assert.equal(w.started[0].merge_base, sha("m"));
   w.finish(0); await w.tick();
-  w.outcomes.set("k-1", { state: "posted", url: "https://github.com/acme/payments/pull/4#pullrequestreview-1", resolved: 0, identity: "app" });
+  w.outcomes.set("k-1", { state: "posted", url: "https://github.com/acme/payments/pull/4#pullrequestreview-1", resolved: 0, identity: "owner" });
   await w.tick();
   const done = w.engine.runs({ repo: REPO })[0];
   assert.equal(done.review_url, "https://github.com/acme/payments/pull/4#pullrequestreview-1");
-  assert.equal(w.engine.repos().repos[0].identity, "app");
+  assert.equal(w.engine.repos().repos[0].identity, "owner");
   // A push: incremental from the posted head, with its findings to recheck; one the recheck found gone is resolved.
   w.pr(4, sha("3")); await w.tick(); w.later(DEBOUNCE); await w.tick();
   assert.equal(w.started[1].incremental_from, sha("2"));

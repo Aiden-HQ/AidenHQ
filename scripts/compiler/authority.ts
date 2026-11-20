@@ -225,10 +225,10 @@ export function authorityDiff(name: string, base: ModuleDef | undefined, head: M
     else if (!eq(bw[k], hw[k])) review(`changes write kind ${id(k)}`);
   }
   for (const p of added(b.privileged, head.privileged)) owner(`adds privileged ${id(p)}`);
-  // Its GitHub App grant (codehost:): tokens, snapshots and clones derived from the App's key. Any new or changed grant is
-  // the owner's; dropping it hands out nothing.
-  if (head.codehost != null && !eq(b.codehost, head.codehost)) owner("changes its GitHub App grant (codehost: tokens, snapshots or clones)");
-  else if (!eq(b.codehost, head.codehost)) review("drops its GitHub App grant");
+  // Its code host grant (codehost:): the typed operations it may ask for, run as the owner's GitHub sign-in. Any new or
+  // changed grant is the owner's; dropping it hands out nothing.
+  if (head.codehost != null && !eq(b.codehost, head.codehost)) owner("changes its code host grant (codehost: operations on repos as the owner)");
+  else if (!eq(b.codehost, head.codehost)) review("drops its code host grant");
   // Its check job recipes (check_jobs:, kernel/src/checkjobs.ts): what runs credential-free and decides a receipt the code host
   // lands on. Any new or changed recipe is the owner's; dropping one hands out nothing.
   if (head.check_jobs != null && !eq(b.check_jobs, head.check_jobs)) owner("changes its check job recipes (check_jobs: what a signed receipt means)");

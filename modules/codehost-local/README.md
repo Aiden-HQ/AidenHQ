@@ -8,7 +8,7 @@ no GitHub builds, reviews, merges and deploys the apps your agents make. It prov
 
 ## Connect
 
-Nothing to connect: no service, no key, no GitHub App. The kernel runs it in process.
+Nothing to connect: no service, no key, no GitHub sign-in. The kernel runs it in process.
 
 ## What agents get
 

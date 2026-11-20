@@ -59,7 +59,7 @@ routines:
     description: |
       Today is {{date}}. On every maintained repo, pick up the open labelled issues that have no open labelled-issue task,
       then triage the open issues that carry no fix label yet, as "Each run — external triage" in your instructions says.
-      This run is asked to write on each issue it triages with the App tools, one verdict per issue, each write its own
+      This run is asked to write on each issue it triages with the GitHub tools, one verdict per issue, each write its own
       tool call (a close and its note are one call): label a credible report with the repo's label and a comment naming the code path; comment on one that
       isn't credible with exactly what is missing; close an already-fixed one as completed with a note citing the fix (its
       PR, merge commit and, for product-pin, the pinned product commit that carries it); close a duplicate as not_planned

@@ -1,7 +1,6 @@
 // The real seams (seams.ts), each with this module's own token:
 // - PRs and comments: github-mcp's internal read for this module (/internal/code-review/*, opened to the code-review module alone,
-//   as the Maintainer's issue read is), with whichever GitHub identity github-mcp holds: the App where installed, else the owner's
-//   sign-in.
+//   as the Maintainer's issue read is), as the owner's GitHub sign-in github-mcp holds.
 // - Review runs: the kernel's credential-free check job `code-review` (POST /v1/checks; the recipe is lane E's), its Review read
 //   from the finished check.
 // - Posting: kernel write records (POST /v1/writes) of this module's kinds code-review.post (Tier 1, the AI reviewer decides) and
@@ -88,7 +87,7 @@ function settled(r: { id: string; state: string; outcome?: { ok: boolean; text: 
     // The executor's outcome (github-mcp review-post.ts): the review's link, the threads it resolved, the identity it posted as.
     let o: { review?: unknown; resolved?: unknown; identity?: unknown } = {};
     try { o = JSON.parse(r.outcome?.text ?? "{}"); } catch {}
-    return { state: "posted", ...(typeof o.review === "string" && /^https:\/\/github\.com\//.test(o.review) ? { url: o.review } : {}), ...(typeof o.resolved === "number" ? { resolved: o.resolved } : {}), ...(o.identity === "app" || o.identity === "owner" ? { identity: o.identity } : {}) };
+    return { state: "posted", ...(typeof o.review === "string" && /^https:\/\/github\.com\//.test(o.review) ? { url: o.review } : {}), ...(typeof o.resolved === "number" ? { resolved: o.resolved } : {}), ...(o.identity === "owner" ? { identity: o.identity } : {}) };
   }
   if (["failed", "rejected", "stale", "cancelled", "unknown"].includes(r.state)) return { state: "refused", why: `write ${r.id} ${r.state}${r.outcome?.text ? `: ${r.outcome.text.slice(0, 200)}` : ""}` };
   return { state: "pending" };

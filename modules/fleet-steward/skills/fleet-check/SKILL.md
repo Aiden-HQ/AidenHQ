@@ -86,7 +86,7 @@ request open over an hour without merging) or something recovered.
   Engineer when none) with `task_create`, marker `quality:<app>:<check>`: the check's name and count, "read the sample with
   `app_status`", and the done condition "the check passes". It recovers when the check passes.
 - **A source down:** the DevOps Engineer watches sources. Check `src_meta.ingest_run` for the error. "Not connected", "sign
-  in" or "install the GitHub App" is the owner's to fix: alert them (below). Otherwise make sure there is one comment on
+  in" or "GitHub needs you" is the owner's to fix: alert them (below). Otherwise make sure there is one comment on
   Fleet issues with key `ingest · src_<source> · stale`.
 - **A stale PR** (`pr:<repo>#<n>`): find the task that opened it (`task_search`). Work reaches an Engineer only through a
   status write on its own task, and the PR's branch exists only in that task's workspace, so never file a second task for

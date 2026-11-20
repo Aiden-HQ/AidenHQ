@@ -1,5 +1,5 @@
 name: github
-description: "GitHub in two parts. Basic: sign in with a code at github.com, and agents read your issues, pull requests and code (GitHub's own MCP server and AidenHQ's GitHub tools). Advanced: your own GitHub App makes GitHub the code host: task workspaces and cache clones, repo-narrowed App tokens minted per write, push, PR, merge at the reviewed head once green, create_repo, land, and the git rules that tier those writes."
+description: "One GitHub sign-in (a code typed at github.com). Agents read and write GitHub as you, labelled as AidenHQ: issues, pull requests, reviews, checks, Projects boards and code (GitHub's own MCP server, read-only, and AidenHQ's GitHub tools). The code host runs on your account too: task workspaces and cache clones, push, PR, merge at the reviewed head once green, create_repo, land, and the git rules that tier those writes."
 license: MIT
 # It absorbed the codehost-github module (connections-simple §1): an instance listing codehost-github runs this one. `runner` is the
 # code host's name before modules existed: records filed as runner.<action> read as github.<action> (kernel/src/kind-rename.ts).
@@ -32,7 +32,7 @@ contributes:
   board.setup_flows:
     - order: 130
       title: GitHub
-      why: Agents read your issues, pull requests, reviews, checks and code, as you.
+      why: "Agents work on GitHub as you: read, comment, open and merge pull requests, create repos, each write reviewed first and labelled as AidenHQ."
       effort: about a minute, needs your GitHub login
       signin: github
       steps: |
@@ -40,7 +40,9 @@ contributes:
         2. Open [github.com/login/device](https://github.com/login/device), sign in, and type the code.
         3. Allow **AidenHQ**. An organization may ask an owner to approve it first.
 
-        Agents read with your account: they see what you can see. Anything they post as you (a comment, a review) is reviewed first; they never push or merge with your account.
+        Agents act as you on GitHub. Everything they write says so: commits carry `Co-authored-by: AidenHQ <agent name>`, text ends with a link to [AidenHQ](https://aidenhq.ai). Nothing an agent does on GitHub counts as your approval; your word reaches them only through AidenHQ. To keep agent-built repos on GitHub, set **Fleet repos** to an organization you can create repositories in (`github_fleet_org`).
+
+        With the CI module on, GitHub asks for one more permission (`admin:org`, to register the org's self-hosted runners): press **Reconnect** on the GitHub card when it says so.
   warehouse.sources:
     - schema: src_github
       about: "src_github.issues / projects / project_items / changes / users"
@@ -105,7 +107,7 @@ settings:
     pattern: '^[A-Za-z0-9][A-Za-z0-9-]{0,38}$'
 connections:
   github:
-    setup: "Open its setup on the board (#/setup/github) and press Connect GitHub. The App's reads and writes need the GitHub App (the same page's advanced part)."
+    setup: "Open its setup on the board (#/setup/github) and press Connect GitHub."
     guide: "AidenHQ's GitHub tools: live issue and PR state, reviews, checks, a failed job's log, organization Projects (v2) boards (roadmaps, status, iterations: `github_project_read`). For code, commits, releases and search use github_official; Glean's `code_search` finds code across repos."
     url: http://github:8086/mcp
     auth: github_service_key

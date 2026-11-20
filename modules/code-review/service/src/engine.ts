@@ -488,7 +488,7 @@ export function createEngine(d: EngineDeps) {
       return { month_usd: c.month_usd, month_spent_usd: round(inst.spent), month_reserved_usd: round(inst.reserved), errors: c.errors,
         repos: c.repos.map((r) => {
           const s = spent(r.repo);
-          // Who posts there: the identity its last posted review went out as (the App where installed, else the owner's sign-in).
+          // Who posts there: the identity its last posted review went out as (the owner's sign-in).
           const identity = one<{ identity: string }>("SELECT identity FROM runs WHERE repo = ? AND identity IS NOT NULL ORDER BY ended DESC LIMIT 1", r.repo)?.identity ?? null;
           return { ...r, month_spent_usd: round(s.spent), month_reserved_usd: round(s.reserved), error: errors.get(r.repo) ?? null, identity };
         }) };

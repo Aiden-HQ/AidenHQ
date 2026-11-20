@@ -87,7 +87,7 @@ export type Ack = {
 export type Posted = {
   state: "posted" | "pending" | "refused"; why?: string; /** its kernel write record */ write?: string;
   /** Once posted (the executor's outcome): the review's link, the threads it resolved, and who posted it. */
-  url?: string; resolved?: number; identity?: "app" | "owner";
+  url?: string; resolved?: number; identity?: "owner";
 };
 export interface Poster {
   /** One GitHub review for the run's head: inline findings, the summary with the severity line and commands, the commit status;

@@ -128,7 +128,7 @@ it("flattens project items, read as the owner", async () => {
   }]);
   expect(out.next_cursor).toBeNull();
 });
-it("no GitHub App: a product bug becomes a scrubbed, encoded one-click link that fits a URL, and nothing is filed", () => {
+it("GitHub not connected: a product bug becomes a scrubbed, encoded one-click link that fits a URL, and nothing is filed", () => {
   const terms = ownerTerms("Ada,acme.example", "upstream-org/product");
   const evidence = { module: "board", version: "abc1234", reproduction: "1. open Settings & save", log: "TypeError at https://acme.example/x for ada@other.example" };
   const report = { fingerprint: "product-bug:board-settings-crash", title: "board: Settings #1 crashes", body: "Ada hit it on 10.0.0.5 twice.", evidence };

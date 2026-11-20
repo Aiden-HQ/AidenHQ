@@ -1394,7 +1394,7 @@ export function kernelModuleTable(defs: Obj, settings: Obj = {}) {
       if (ch.transport != null && !(def.generated_secrets ?? []).includes(token)) fail(`module ${name}: a channel transport needs the module's own token (generated_secrets: [${token}])`);
       if (!privileged.includes("speaks-as-owner")) fail(`module ${name}: a channel (providers.channel) needs privileged: [speaks-as-owner]`);
     }
-    // Its GitHub App grant (codehost:): what it may ask the kernel's POST /v1/codehost/:op for (kernel/src/codehost.ts). It is
+    // Its code host grant (codehost:): what it may ask the kernel's POST /v1/codehost/:op for (kernel/src/codehost.ts). It is
     // taken literally, as the authority diff showed it to the owner: no settings, so no setting can widen it. The kernel
     // resolves @instance, @product and @agents/<name|*> from its own configuration.
     const codehost = def.codehost ?? undefined;

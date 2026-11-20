@@ -267,7 +267,7 @@ for (const sig of ["SIGTERM", "SIGINT"] as const)
   });
 reconcile = startLoops(p, log, () => refreshRegistry(p.cfg.git, repo.dir, repo.pushUrl));
 // Preview deploys of open PRs on agents-org app repos and of open change requests on this server's (previews.ts): their own
-// loop, with the GitHub App for GitHub repos and the read-only mount for local ones.
+// loop, with the code host's ops for GitHub repos and the read-only mount for local ones.
 if (agentsOrg || codehost)
   startPreviews({ apps: p.apps, store: p.store, engine: p.engine, github: withLocal(codehost, agentsOrg ? githubApi(ops) : undefined), agentsRepo: (r) => inAgentsOrg(p.cfg.git, r) || isLocal(codehost, r), url: p.previewUrl, secretsDir: p.cfg.secretsDir, gitDir: p.cfg.git.gitDir, syncEdge: p.syncEdge, dropDb: p.dropPreviewDb, log });
 // People across sources: identity links proposed on exact email matches (src_meta.person_identity).

@@ -68,8 +68,8 @@ export interface RepoRow {
   month_reserved_usd?: number;
   /** Why the service can't watch it (no read access, …); null when fine. */
   error?: string | null;
-  /** Who posts there, when the service knows: the instance's GitHub App, or the owner's sign-in. */
-  identity?: "app" | "owner" | null;
+  /** Who posts there, when the service knows: the owner's sign-in. */
+  identity?: "owner" | null;
 }
 export interface ReposView {
   repos: RepoRow[];

@@ -1,5 +1,5 @@
 /**
- * The Maintainer's issue wake-up. An instance has no public ingress GitHub can reach, so a GitHub App webhook cannot
+ * The Maintainer's issue wake-up. An instance has no public ingress GitHub can reach, so a webhook cannot
  * arrive: on a timer this service asks github-mcp for the issues labelled since its last look on every maintained repo (the
  * github module's setting maintainer_repos, which github-mcp holds) and files a task for the Maintainer once per
  * trusted issue. github-mcp decides `trusted` (a label counts only from a collaborator with one of the repo's

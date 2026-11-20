@@ -29,7 +29,7 @@ agents:
       # reviewer decides first, and the owner when it touches more than 5 records.
       hubspot?: [ get_user_details, get_organization_details, discover_hubspot_schema, search_crm_objects, get_crm_objects, query_crm_data, search_properties, get_properties, search_owners, tool_guidance, manage_crm_objects ]
       owner_channel: [ notify ]
-      # Product bugs as issues on the product repo, as the GitHub App (never the owner's account), with the github module:
+      # Product bugs as issues on the product repo, as the owner labelled as AidenHQ, with the github module:
       # report one (deduped by fingerprint) and read their state. No other GitHub reads, and no repo input.
       github?: [ github_product_issue, github_product_issue_status, github_issue_link ]
       apps: [ app_list, app_status, app_view, web_view, warehouse_query, source_new, source_ack ]

@@ -255,16 +255,16 @@ test("upstream: off leaves every agent without an upstream tool; with issues onl
   // (modules/chief-of-staff/module.yaml); the Fleet Steward holds it too, for the digest's live-fix check (modules/fleet-steward/module.yaml).
   const resolves = (r, tool) => granted(r, tool).filter((key) => r[key].roles.includes("product-issues"));
   const on = agents("issues");
-  assert.deepEqual(on["chief-of-staff"].enabled_tools.github.filter((t) => t.startsWith("github_app_issue")), ["github_app_issue", "github_app_issue_status"]);
+  assert.deepEqual(on["chief-of-staff"].enabled_tools.github.filter((t) => t.startsWith("github_product_issue")), ["github_product_issue", "github_product_issue_status"]);
   // Filing is the destructive write no shorthand reaches, so no other agent even holds it.
-  assert.deepEqual(granted(on, "github_app_issue"), ["chief-of-staff"]);
+  assert.deepEqual(granted(on, "github_product_issue"), ["chief-of-staff"]);
   // The status read is a plain read `github: read` also reaches; every other holder lacks the role, so only the chief of staff
   // files and, with the Fleet Steward, reads status.
-  assert.deepEqual(resolves(on, "github_app_issue"), ["chief-of-staff"]);
-  assert.deepEqual(resolves(on, "github_app_issue_status"), ["chief-of-staff", "fleet-steward"]);
+  assert.deepEqual(resolves(on, "github_product_issue"), ["chief-of-staff"]);
+  assert.deepEqual(resolves(on, "github_product_issue_status"), ["chief-of-staff", "fleet-steward"]);
   // `off` strips both from every agent however they were granted: an own list, a read shorthand, a default grant.
   const off = agents("off");
-  for (const tool of ["github_app_issue", "github_app_issue_status"]) assert.deepEqual(granted(off, tool), [], tool);
+  for (const tool of ["github_product_issue", "github_product_issue_status"]) assert.deepEqual(granted(off, tool), [], tool);
 });
 
 test("an instance written before the fleet-steward merge (coach, fleet-ops, librarian; no dispatch or owner-channel) compiles as it stands", () => {

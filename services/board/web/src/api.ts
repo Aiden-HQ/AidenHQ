@@ -90,8 +90,6 @@ export interface AdvancedFlowView {
   capabilities: string[];
   secrets?: string[];
   fields?: { secret: string; label: string; pattern: string; help?: string }[];
-  /** A page on the kernel's admin listener (signed-in owner) that does this part's setup. */
-  admin_page?: string;
   console_url?: string;
   pair_url?: string;
   done: boolean;

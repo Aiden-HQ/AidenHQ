@@ -44,7 +44,7 @@ const agentsOrgs = (s: State) => [s.agentsOrgs ?? s.agentsOrg].flat().filter(Boo
 const inAgentsOrg = (repo: unknown, s: State) => agentsOrgs(s).some((o) => same(orgOf(repo), o));
 /**
  * A repo the owner listed in `maintainer_repos` outside the agents org (`maintained`, the code host's parsed list): the fleet
- * merges and closes there as in the agents org (owner, 2026-11-20). The App being installed on a repo never counts: it is public.
+ * merges and closes there as in the agents org (owner, 2026-11-20). The owner's account reaching a repo never counts by itself.
  */
 const inMaintained = (repo: unknown, s: State) => !inAgentsOrg(repo, s) && (s.maintained ?? []).some((r) => same(r, repo));
 const LISTED = "the owner listed it in maintainer_repos";
@@ -118,14 +118,14 @@ function closePart(p: Pr, s: State) {
 const NEW_REPO_NAME = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 /**
  * create_repo: { repo }. A new private repository, asked for only by `aidenhq create-repo` (naming, adding or detecting a
- * missing repo never creates one). Tier 0 in any org the App is installed on (owner, 2026-11-18): where repos live is not
- * decided here (the runner's allowed_orgs, passed in, and the App's installation bound it). Code still refuses the product or instance
+ * missing repo never creates one). Tier 0 in any allowed org (owner, 2026-11-18): where repos live is not
+ * decided here (the runner's allowed_orgs, passed in, and what the owner's account can create in bound it). Code still refuses the product or instance
  * repo's own name and a name that isn't a plain lowercase one.
  */
 function createRepoPart(s: State) {
   const repo = String(s.repo ?? "");
   const name = repo.split("/")[1] ?? "";
-  // The orgs the owner lists (the runner's allowed_orgs, passed in as `allowedOrgs`; the App is public, so an installation alone
+  // The orgs the owner lists (the runner's allowed_orgs, passed in as `allowedOrgs`; the owner's account reaching an org alone
   // proves nothing). Without it, only the agents orgs: a plan never says Tier 0 for an org nobody allowed.
   const allowed = [s.allowedOrgs ?? agentsOrgs(s)].flat().filter(Boolean);
   if (!allowed.some((o) => same(orgOf(repo), o))) return REJECT("outside-create-repo", `${repo} is outside the orgs this instance works in (${allowed.join(", ")}): list its org in allowed_orgs`);

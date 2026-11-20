@@ -98,7 +98,7 @@ test("create_repo is Tier 0 in an allowed org besides the agents org; a core rep
 // owner, and the Engineer's first branch of the new app lands there.
 test("connected: a new app's repository is created in the fleet org with the app starter on main as the owner, and its first branch lands there", async (t) => {
   const { root, outcomes, created, call } = await setup(t, { routes: (m, p) => (m === "GET" && ["/repos/acme-agents/new-app", "/repos/acme/aidenhq"].includes(p) ? { status: 200, body: { default_branch: "main" } } : undefined) });
-  // "GitHub": the product, whose modules/apps-platform/starter is the app starter, and the new repo as the App creates it (a README).
+  // "GitHub": the product, whose modules/apps-platform/starter is the app starter, and the new repo as the code host creates it (a README).
   const bare = (slug, files) => {
     const origin = join(root, "github", `${slug}.git`);
     mkdirSync(origin, { recursive: true });

@@ -256,7 +256,7 @@ export class Maintainer {
   }
 
   /**
-   * A maintained repo's open pull requests (newest first, at most PR_CAP), each with who wrote it (bot, our own App, or a
+   * A maintained repo's open pull requests (newest first, at most PR_CAP), each with who wrote it (bot, the fleet, or a
    * human) and, for a human's, the author's latest activity and what is waiting on them. Titles and bodies are a stranger's
    * words and are not returned.
    */
@@ -426,8 +426,8 @@ export class Maintainer {
   }
 
   /**
-   * Add or remove the repo's fix label or `feature-request`, and nothing else (`agent-build` is the owner's word, never the
-   * App's), refusing an issue whose current fix label is untrusted.
+   * Add or remove the repo's fix label or `feature-request`, and nothing else (`agent-build` is a trusted collaborator's, never
+   * this tool's), refusing an issue whose current fix label is untrusted.
    */
   async label(repo: string | undefined, number: number, action: "add" | "remove", label?: string) {
     const r = this.target(repo);
