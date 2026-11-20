@@ -1228,7 +1228,7 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   const graders = Object.entries<Obj>(kernelModules.modules).filter(([, m]) => (m.roles ?? []).includes("kernel.grader")).map(([n]) => n);
   if (graders.length > 1) fail(`modules ${graders.join(", ")} all request kernel.grader: one grading module at a time`);
   for (const n of graders) if (!(enabledDefs[n]?.checks ?? []).some((c: Obj) => c.at === "task.finish")) fail(`module ${n}: kernel.grader needs a finish check (checks: at: task.finish)`);
-  return { bundleState: { seen: bundle, adopted: [...adopted] }, paperclip, computersMax: settings.computers_max, settings, apps: { apps }, points, compose, catalog, warnings, optionalSecrets, askedSecrets: setup.map((f) => f.secret), generatedSecrets, dataDirs, stateDirs, dataModules, gateway, jobcaps, engines, connections, writes, checks, kernelModules, exposure: settings.exposure, edge: edge && { gate: edge.gate, cloudflared: edge.cloudflared } };
+  return { bundleState: { seen: bundle, adopted: [...adopted] }, paperclip, computersMax: settings.computers_max, apps: { apps }, points, compose, catalog, warnings, optionalSecrets, askedSecrets: setup.map((f) => f.secret), generatedSecrets, dataDirs, stateDirs, dataModules, gateway, jobcaps, engines, connections, writes, checks, kernelModules, exposure: settings.exposure, edge: edge && { gate: edge.gate, cloudflared: edge.cloudflared } };
 }
 
 /**
@@ -1911,8 +1911,8 @@ export async function ensureBackupRetention({ api, dailyDays, step }: Obj) {
 }
 
 /**
- * ops-mcp's vault folders and reference docs, from the meetings module's settings (vault_dir, vault_folders, knowledge_bases):
- * VAULT_DIR + VAULT_FOLDERS (comma-separated, vault-relative) and KNOWLEDGE_BASES (name=/path, read-only).
+ * ops-mcp's vault folders and reference docs, from the host's .env (never from instance.yaml, which agents can edit
+ * through apply): VAULT_DIR + VAULT_FOLDERS (comma-separated, vault-relative) and KNOWLEDGE_BASES (name=/path, read-only).
  */
 export function hostMounts(env: Obj) {
   const out: string[] = [];

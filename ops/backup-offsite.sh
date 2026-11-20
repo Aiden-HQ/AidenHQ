@@ -13,8 +13,7 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 set -a; [ -f .env ] && . ./.env; set +a
 expand() { local p="$1"; echo "${p/#\~/$HOME}"; }
 inst="$(expand "${AIDENHQ_INSTANCE_DIR:?set AIDENHQ_INSTANCE_DIR in .env}")"
-setting() { sed -n "s/^[[:space:]]\{1,\}$1:[[:space:]]*[\"']\{0,1\}\([^\"' #]*\).*/\1/p" "$inst/instance.yaml" | head -1; }
-url="$(setting backup_repository)"
+url="$(sed -n "s/^[[:space:]]\{1,\}backup_repository:[[:space:]]*[\"']\{0,1\}\([^\"' #]*\).*/\1/p" "$inst/instance.yaml" | head -1)"
 [ -n "$url" ] || { echo "backup_repository is not set in $inst/instance.yaml" >&2; exit 1; }
 secrets="$(expand "${AIDENHQ_SECRETS_DIR:-$HOME/.config/aidenhq}")"
 mountpoint -q "$secrets" || [ ! -e "$HOME/.local/share/aidenhq/vault.enc" ] || { echo "the secret vault isn't mounted at $secrets" >&2; exit 1; }
@@ -43,7 +42,7 @@ scripts/backup.sh "$staging" --plain
 
 "$restic" cat config >/dev/null 2>&1 || "$restic" init
 paths=("$staging")
-for p in "$HOME/.local/share/aidenhq/vault.enc" .env compose.override.yaml config "$(setting vault_dir)" "$(setting transcripts_dir)"; do
+for p in "$HOME/.local/share/aidenhq/vault.enc" .env compose.override.yaml config "${VAULT_DIR:-}" "${TRANSCRIPTS_DIR:-}"; do
   [ -n "$p" ] && [ -e "$(expand "$p")" ] && paths+=("$(expand "$p")")
 done
 "$restic" backup --tag aidenhq "${paths[@]}"

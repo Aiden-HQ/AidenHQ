@@ -78,13 +78,12 @@ if (process.argv.includes("--sizes")) {
 // The pre-launch agent check (scripts/agent-check.ts): before anything is written, so a failing agent never launches.
 if (report("agent-check", staticCheck(out.paperclip))) die("the agent check failed (above); fix the agent");
 
-// ops-mcp's host mounts: its config, the transcripts folder, the vault's folders and the knowledge bases, from the meetings
-// module's settings. A module can't declare a host mount; compile adds these.
+// Host paths come from the host's .env, never from instance.yaml (agents can edit that through apply): ops-mcp's config,
+// transcripts, vault folders and knowledge bases. A module can't declare a host mount; these are the host's own.
 const ops = out.compose.services["meetings-ops-mcp"];
 if (ops) {
-  const s = out.settings;
-  const own = ["${AIDENHQ_CONFIG_DIR:-./config}/system.yaml:/config/system.yaml:ro", ...(s.transcripts_dir ? [`${s.transcripts_dir}:/sources/transcripts`] : [])];
-  try { ops.volumes = [...(ops.volumes ?? []), ...own, ...hostMounts({ VAULT_DIR: s.vault_dir, VAULT_FOLDERS: s.vault_folders, KNOWLEDGE_BASES: s.knowledge_bases })]; } catch (e) { die((e as Error).message); }
+  const own = ["${AIDENHQ_CONFIG_DIR:-./config}/system.yaml:/config/system.yaml:ro", "${TRANSCRIPTS_DIR:?set TRANSCRIPTS_DIR in .env}:/sources/transcripts"];
+  try { ops.volumes = [...(ops.volumes ?? []), ...own, ...hostMounts({ VAULT_DIR: env("VAULT_DIR"), VAULT_FOLDERS: env("VAULT_FOLDERS"), KNOWLEDGE_BASES: env("KNOWLEDGE_BASES") })]; } catch (e) { die((e as Error).message); }
 }
 
 // Secrets of channels the owner may not use start as empty files, so compose can start (empty = not configured).
