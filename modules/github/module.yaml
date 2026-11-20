@@ -338,6 +338,8 @@ services:
         INSTANCE_REPO: "${AIDENHQ_INSTANCE_REPO:-}"
         OWNER_NAME: "${settings.owner_name}"
         CHURN_EXCLUDE: "${settings.churn_exclude}" # comma-separated globs
+        # The maintained repos (setting maintainer_repos, as JSON): the PR watch also covers those with dependabot on.
+        GITHUB_MAINTAINER_REPOS: "${settings.maintainer_repos}"
 # The board's Connect/Reconnect for GitHub: its sign-in token, only while this module is on.
 board_env:
   GITHUB_AUTH_TOKEN_FILE: ${secrets.github_auth_token}
