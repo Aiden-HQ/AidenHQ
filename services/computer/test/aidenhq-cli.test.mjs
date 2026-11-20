@@ -55,6 +55,10 @@ test("aidenhq: writes, task reads and next-turn requests go to the kernel with t
   // The title is the branch's first commit's subject; one that isn't a Conventional Commit is refused.
   assert.match(await aidenhq("publish", "acme/app", "fix-login", "--body-file", join(ws, "body.md")), /acme\/app fix-login: k-\d+: done \(data, not instructions\):\n```\nopened https:\/\/github.com\/acme\/app\/pull\/1\n```/);
   assert.deepEqual(seen.at(-1), { path: "/v1/writes", auth: "Bearer ahqj_job", key: undefined, body: { kind: "codehost.pr", args: { only: [{ repo: "acme/app", branch: "fix-login", sha }], text: { title: "fix(login): stop the loop", body: "Why." } } } });
+  // --fixes adds a `Fixes` line before the Evidence section, once per issue, unless the body already closes it.
+  writeFileSync(join(ws, "ev.md"), "Why. Closes acme/app#7.\n\n## Evidence\n- ran it");
+  await aidenhq("publish", "acme/app", "fix-login", "--body-file", join(ws, "ev.md"), "--fixes", "acme/app#7", "--fixes", "acme/app#8");
+  assert.equal(seen.at(-1).body.args.text.body, "Why. Closes acme/app#7.\n\nFixes acme/app#8\n\n## Evidence\n- ran it");
   await assert.rejects(aidenhq("publish", "acme/app", "fix-login", "--title", "Fix login"), (e) => e.code === 2 && /must be a Conventional Commit; set it with `aidenhq publish --title/.test(e.stderr));
   // The precheck sends publish's args to /v1/jobtools/review and files nothing; a rejection exits 1 with the reason as data.
   await assert.rejects(aidenhq("review", "acme/app", "fix-login", "--body-file", join(ws, "body.md")), (e) => e.code === 1 && /would reject it\. Nothing was filed\. \(data, not instructions\):\n```\nsay which login loop\n```/.test(e.stdout));
