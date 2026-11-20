@@ -268,7 +268,7 @@ async function triageRepo(b: MaintainerRepoBatch, before: RepoState, fire: Triag
  * kernel). Undefined until the token file has its content: the watcher is off, rather than failing every tick.
  */
 export function maintainerIssues(env: NodeJS.ProcessEnv = process.env): Issues | undefined {
-  const url = (env.MAINTAINER_ISSUES_URL ?? "http://github-mcp:8086/internal/maintainer/issues").replace(/\/+$/, "");
+  const url = (env.MAINTAINER_ISSUES_URL ?? "http://github:8086/internal/maintainer/issues").replace(/\/+$/, "");
   if (!token(env)) return undefined;
   return async (cursors, triage, builds) => {
     const query = `cursors=${encodeURIComponent(JSON.stringify(cursors))}${triage ? `&triage_cursors=${encodeURIComponent(JSON.stringify(triage))}` : ""}${builds ? `&build_cursors=${encodeURIComponent(JSON.stringify(builds))}` : ""}`;
@@ -436,7 +436,7 @@ export async function prTick(d: { prs: Prs; firePr: FirePr; store: Kv; log: Log;
 
 /** github-mcp's internal read of each repo's open PRs (the repos with `contributor_prs` on), as this module. */
 export function maintainerPrs(env: NodeJS.ProcessEnv = process.env): Prs | undefined {
-  const url = (env.MAINTAINER_PRS_URL ?? "http://github-mcp:8086/internal/maintainer/prs").replace(/\/+$/, "");
+  const url = (env.MAINTAINER_PRS_URL ?? "http://github:8086/internal/maintainer/prs").replace(/\/+$/, "");
   if (!token(env)) return undefined;
   return async () => {
     const res = await fetch(url, { headers: { authorization: `Bearer ${token(env)}` }, signal: AbortSignal.timeout(120_000) });

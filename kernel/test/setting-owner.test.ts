@@ -43,15 +43,19 @@ test("an agent's spend raise, wider reach or reviewer change is the owner's; oth
   assert.equal(fleet("acme", "ACME").tier, 1);
 });
 
-test("the shipped modules declare these rules: an agent's new fleet org, or a new repo at $500 a month, is the owner's", async () => {
+test("the shipped modules declare these rules: an agent's new fleet org or maintained repo, or a new repo at $500 a month, is the owner's", async () => {
   const { readFileSync } = await import("node:fs");
   const { checkTyped } = await import("../src/settings-change.ts");
   const decl = (m, k) => YAML.parse(readFileSync(new URL(`../../modules/${m}/module.yaml`, import.meta.url), "utf8")).settings[k];
-  const shipped = { code_review: decl("code-review", "code_review"), github_fleet_org: decl("github", "github_fleet_org") };
+  const shipped = { code_review: decl("code-review", "code_review"), github_fleet_org: decl("github", "github_fleet_org"), maintainer_repos: decl("github", "maintainer_repos") };
   const t = (k, b, h, byAgent = true) => highest(applyParts({ files: ["instance.yaml"], byAgent, settingDefs: shipped,
     base: { "instance.yaml": YAML.stringify({ settings: { [k]: b } }) }, head: { "instance.yaml": YAML.stringify({ settings: { [k]: h } }) } })).tier;
   assert.equal(t("github_fleet_org", "acme", "othercorp"), 2);
   assert.equal(t("github_fleet_org", "acme", "othercorp", false), 1);
+  assert.equal(t("maintainer_repos", ["acme/api"], ["acme/api", "othercorp/lib"]), 2);
+  assert.equal(t("maintainer_repos", ["acme/api"], ["acme/api", "othercorp/lib"], false), 1);
+  // Another shape than the default's (a string the consumer would split into repos) is the owner's.
+  assert.equal(t("maintainer_repos", ["acme/api"], "acme/api,evil/x"), 2);
   // Weakening a review quietly: a reviewer's focus or context, a repo's ignore globs.
   assert.equal(t("code_review", { repos: [{ repo: "acme/api" }] }, { repos: [{ repo: "acme/api", ignore: ["**"] }] }), 2);
   assert.equal(t("code_review", {}, { reviewers: { deep: { ...shipped.code_review.default.reviewers.deep, focus: "only typos" } } }), 2);

@@ -325,8 +325,6 @@ done
 # own secrets and its module's own vault dir; and none publishes beyond loopback. Every module container is checked.
 echo "Module isolation"
 mods=0
-# The one declared vault mount beyond a module's own: privileged git-credential's read-only github-app dir (the App key's holder).
-app_mods="$(node -e 'const m=JSON.parse(require("fs").readFileSync("config/kernel/modules.json","utf8")).modules??{};console.log(Object.keys(m).filter((k)=>(m[k].privileged??[]).includes("git-credential")).join(" "))' 2>/dev/null)"
 for c in $containers; do
   m="$(docker inspect "$c" --format '{{index .Config.Labels "aidenhq.module"}}')"
   [ -n "$m" ] || continue
@@ -338,9 +336,7 @@ for c in $containers; do
   nets="$(docker inspect "$c" --format '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}')"
   bad="$(echo "$nets" | tr ' ' '\n' | grep -v '^$' | grep -vE "$allowed" | tr '\n' ' ')"
   [ -z "$bad" ] && pass "$c ($m): on its own networks only ($nets)" || fail "$c ($m) is on another module's or a root network: $bad"
-  app_dir="/nonexistent"
-  case " $app_mods " in *" $m "*) app_dir="${AIDENHQ_SECRETS_DIR:-/nonexistent}/github-app" ;; esac
-  vault="$(docker inspect "$c" --format '{{range .Mounts}}{{.Source}}|{{.Destination}};{{end}}' | tr ';' '\n' | grep "^${AIDENHQ_SECRETS_DIR:-/nonexistent}" | grep -v '|/run/secrets/' | grep -v "^${AIDENHQ_SECRETS_DIR:-/nonexistent}/modules/$m|" | grep -vxF "$app_dir|/github-app" | tr '\n' ' ')"
+  vault="$(docker inspect "$c" --format '{{range .Mounts}}{{.Source}}|{{.Destination}};{{end}}' | tr ';' '\n' | grep "^${AIDENHQ_SECRETS_DIR:-/nonexistent}" | grep -v '|/run/secrets/' | grep -v "^${AIDENHQ_SECRETS_DIR:-/nonexistent}/modules/$m|" | tr '\n' ' ')"
   [ -z "$vault" ] && pass "$c ($m): no vault path but its secrets and its own vault dir" || fail "$c ($m) mounts another vault path: $vault"
   ! docker inspect "$c" --format '{{json .HostConfig.PortBindings}}' | grep -qE '"HostIp":"(0\.0\.0\.0)?"' && pass "$c ($m): published on loopback only, if at all" || fail "$c ($m) publishes beyond loopback"
 done
@@ -443,7 +439,8 @@ vendor_tags="$(node --input-type=module -e '
   const bad = [], seen = [];
   // A service runs the vendor proxy when any of its sources imports it (its synced copy or the SDK): every file is read.
   const PROXY = /"[^"]*vendor\/proxy(\.[jt]s)?"/;
-  const runsProxy = (dir) => existsSync(`${dir}/src`) && readdirSync(`${dir}/src`, { recursive: true }).some((f) => /\.(ts|mjs|js)$/.test(f) && f !== "vendor/proxy.ts" && PROXY.test(readFileSync(`${dir}/src/${f}`, "utf8")));
+  // Any src/ tree in the build folder of the service (the github module builds one image from its connection and its code host).
+  const runsProxy = (dir) => existsSync(dir) && readdirSync(dir, { recursive: true }).some((f) => /(^|\/)src\/.*\.(ts|mjs|js)$/.test(f) && !/node_modules|(^|\/)dist\//.test(f) && !f.endsWith("vendor/proxy.ts") && PROXY.test(readFileSync(`${dir}/${f}`, "utf8")));
   // Reviewed read tags whose first word is not a reading verb (read-only upstream, checked 2026-11-18). Add one only after reading the tool.
   const EXCEPTIONS = {
     clickhouse: ["run_select_query"],
@@ -775,11 +772,11 @@ gh_mutations="$(sed -n '/^export const GRAPHQL/,/^} as const;/p' modules/github/
 # its host refuses a moved head and checks that aren't green itself.
 rm_="modules/github/service/src/merge-gate.ts"; rq="modules/github/service/src/merges.ts"
 rplan="modules/github/service/src/plan.ts"; rcheck="modules/platform/src/check.ts"; rdr="modules/github/service/src/design-review.ts"
-[ "$(grep -c 'd\.gh(' "$rq")" = 2 ] && grep -qF 'const r = await d.gh("POST", "/graphql", await d.token(repo, READ), { query: PR_QUERY,' "$rq" \
-  && grep -qF 'const r = await d.gh("PUT", `/repos/${repo}/pulls/${number}/merge`, await d.token(repo, mergePermissions(repo, platform)), { merge_method: method, sha });' "$rq" \
-  && grep -qF 'p.sha = await mergePut(p.repo, p.number, p.head, method);' "$rq" \
-  && grep -qF 'if (!mergeable(p.repo, d.agentsOrg, platform, d.maintained ?? [])) return fail(' "$rq" \
-  && grep -qF '  ownRepo(slug, agentsOrg, productRepo) || maintained.some((m) => sameSlug(slug, m));' modules/github/service/src/github-app.ts \
+[ "$(grep -c 'd\.gh(' "$rq")" = 2 ] && grep -qF 'const r = await d.gh("POST", "/graphql", { query: PR_QUERY,' "$rq" \
+  && grep -qF 'const r = await d.gh("PUT", `/repos/${repo}/pulls/${number}/merge`, { merge_method: method, sha, ...message });' "$rq" \
+  && grep -qF 'p.sha = await mergePut(p.repo, p.number, p.head, method, String(pull?.body ?? ""));' "$rq" \
+  && grep -qF 'if (!mergeable(p.repo, d.fleetOrg, platform, d.maintained ?? [])) return fail(' "$rq" \
+  && grep -qF '  ownRepo(slug, fleetOrg, productRepo) || maintained.some((m) => sameSlug(slug, m));' modules/github/service/src/git-auth.ts \
   && grep -qF 'const inMaintained = (repo: unknown, s: State) => !inAgentsOrg(repo, s) && (s.maintained ?? []).some((r) => same(r, repo));' "$rplan" \
   && [ "$(cat "$rm_" "$rq" | grep -c 'mutation')" = 0 ] \
   && grep -qF 'if (pr.headRefOid !== head) return { do: "fail"' "$rm_" \
@@ -788,9 +785,8 @@ rplan="modules/github/service/src/plan.ts"; rcheck="modules/platform/src/check.t
   && grep -qF 'if (!named.length) return { do: "wait"' "$rm_" \
   && [ "$(grep -c 'o\.gh("POST"' "$rdr")" = 2 ] && grep -qF 'o.gh("POST", `/repos/${ask.repo}/statuses/${ask.head}`' "$rdr" && grep -qF '{ state: "pending", context: DESIGN_REVIEW.name,' "$rdr" \
   && grep -qF 'if (!listed && !inAgentsOrg(p.repo, s)) return [REJECT("outside-merge"' "$rplan" \
-  && grep -qF 'export const mergePermissions = (slug: string | undefined, productRepo: ProductRepos) => (isProduct(slug, productRepo) ? { ...WRITE, workflows: "write" } : WRITE);' modules/github/service/src/github-app.ts \
-  && grep -qF 'export const ownRepo = (slug: string | undefined, agentsOrg: string | undefined, productRepo: ProductRepos) => inOrg(agentsOrg, slug) || isProduct(slug, productRepo);' modules/github/service/src/github-app.ts \
-  && grep -qF 'const isProduct = (slug: string | undefined, product: ProductRepos) => [product ?? []].flat().some((p) => sameSlug(slug, p));' modules/github/service/src/github-app.ts \
+  && grep -qF 'export const ownRepo = (slug: string | undefined, fleetOrg: string | undefined, productRepo: ProductRepos) => inOrg(fleetOrg, slug) || isProduct(slug, productRepo);' modules/github/service/src/git-auth.ts \
+  && grep -qF 'const isProduct = (slug: string | undefined, product: ProductRepos) => [product ?? []].flat().some((p) => sameSlug(slug, p));' modules/github/service/src/git-auth.ts \
   && grep -qF 'if (same(p.repo, s.productRepo)) return [productMergePart(p, ref, s)];' "$rplan" \
   && [ "$(awk '/^function productMergePart/,/^}/' "$rplan" | grep -oE 'T\([0-9]' | sort -u | tr '\n' ' ')" = "T(1 " ] \
   && grep -qF 'if (same(p.repo, s.instanceRepo)) return [REJECT("core-repo-merge"' "$rplan" \

@@ -30,7 +30,7 @@ test("fleet org from the setting", () => {
   assert.equal(r.kernelModules.repos.fleet_org, "acme");
   assert.deepEqual(r.paperclip.agents_orgs, [{ org: "acme", host: "github" }, { org: "local", host: "local" }]);
   assert.ok(fleetOrgs(r).length > 0 && fleetOrgs(r).every((o) => o === "acme"), "the github service gets GITHUB_FLEET_ORG");
-  assert.equal(r.compose.services["github-mcp"].environment.GITHUB_SYNC_ORGS, "acme");
+  assert.equal(r.compose.services["github-github"].environment.GITHUB_SYNC_ORGS, "acme");
   assert.equal(orgLine(r, dir), "This AidenHQ's agents orgs are `acme` on GitHub and `local` on this server (its repositories are `local/<name>`); a new repository goes in `acme`, and each existing one stays where it is.");
   assert.deepEqual(r.warnings.filter((w) => /github_fleet_org/.test(w)), []);
 });
@@ -52,6 +52,6 @@ test("unset means local", () => {
   const r = compile(product, dir, { workDir: "/tmp/w" });
   assert.equal(r.kernelModules.repos.fleet_org, undefined);
   assert.deepEqual(r.paperclip.agents_orgs, [{ org: "local", host: "local" }]);
-  assert.equal(r.compose.services["github-mcp"].environment.GITHUB_SYNC_ORGS, "");
+  assert.equal(r.compose.services["github-github"].environment.GITHUB_SYNC_ORGS, "");
   assert.equal(orgLine(r, dir), "This AidenHQ's agents org is `local` on this server (its repositories are `local/<name>`).");
 });

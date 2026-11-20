@@ -443,9 +443,9 @@ export function createEngine(d: EngineDeps) {
     let p: PullRequest;
     try { p = await d.source.get(m[1]!.toLowerCase(), Number(m[2])); } catch (e) { throw new RequestError(`that PR can't be read: ${String((e as Error).message).slice(0, 200)}`); }
     if (!p.open) throw new RequestError("that PR is closed");
-    // Only where a review can post: the App installed there, or the owner's sign-in in the comment orgs (the owner allows an org).
+    // Only where a review can post: as the owner, once GitHub is connected.
     const can = await d.source.postable(p.repo).catch((e) => { throw new RequestError(`can't tell who would post on ${p.repo}: ${String((e as Error).message).slice(0, 200)}`); });
-    if (!can.identity) throw new RequestError(`reviews can't post on ${p.repo}: the GitHub App isn't installed there and ${can.org} isn't among the orgs the owner allows reviews to post in as them (the board's Reviews page)`, { owner_must_allow_orgs: [can.org] });
+    if (!can.identity) throw new RequestError(`reviews can't post on ${p.repo}: GitHub isn't connected`);
     upsertPr(p);
     return p;
   }

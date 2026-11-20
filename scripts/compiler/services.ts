@@ -23,12 +23,11 @@ export type Legacy = { links?: string[]; secrets?: string[]; hostEnv?: string[];
 /** The closed privileged list (spec §5.6) plus host-metrics: read-only host /, /sys and /proc for collectors (ruling c). */
 export const PRIVILEGED = ["docker", "host-unit", "sandbox-provider", "paperclip-plugin", "speaks-as-owner", "git-credential", "reviewer", "host-metrics"];
 
-export const SERVICE_FIELDS = ["image", "build", "command", "entrypoint", "env", "secrets", "port", "ui_port", "healthcheck", "cpus", "memory", "pids", "user", "read_only", "tmp", "data", "state", "points", "github_app", "workspaces", "host_mounts", "egress", "links", "join", "on_demand", "when", "share"];
+export const SERVICE_FIELDS = ["image", "build", "command", "entrypoint", "env", "secrets", "port", "ui_port", "healthcheck", "cpus", "memory", "pids", "user", "read_only", "tmp", "data", "state", "points", "workspaces", "host_mounts", "egress", "links", "join", "on_demand", "when", "share"];
 /** The gate's public keys (scripts/identity.ts), which a shared service verifies people's identity with, as apps do. */
 export const IDENTITY_KEYS_SECRET = "aidenhq_identity_keys";
 /**
- * The code host's (privileged: [git-credential]): the GitHub App's vault dir read-only, the job workspaces (the kernel's
- * work_dir/tasks) read-write, and the host variables that name the product and instance repositories.
+ * The code host's (privileged: [git-credential]): the job workspaces (the kernel's work_dir/tasks) read-write, and the host variables that name the product and instance repositories.
  */
 const GIT_CREDENTIAL_HOST_ENV = ["AIDENHQ_PRODUCT_REPO", "AIDENHQ_INSTANCE_REPO"];
 const SERVICES_FIELDS = ["run", "data"];
@@ -146,7 +145,7 @@ export function generateCompose(name: string, def: Dict, ctx: { root: string; lo
     const s = raw as Dict;
     for (const f of Object.keys(s)) if (!SERVICE_FIELDS.includes(f)) fail(`${at(f)} is not allowed`);
     // `when: { <setting>: <value> }`: the service runs only while every named setting has that value (primer_mode: self-host);
-    // `true` means any non-empty value (github's code host: no container until agents_org is set).
+    // `true` means any non-empty value (platform: no container until forks is set).
     if (s.when != null) {
       if (!isMap(s.when) || !Object.keys(s.when).length || Object.values(s.when).some((v) => typeof v !== "string" && v !== true)) fail(`${at("when")} maps settings to the values the service runs with (or true: set)`);
       if (!Object.entries(s.when as Dict).every(([k, v]) => (v === true ? String(ctx.settings?.[k] ?? "") !== "" : String(ctx.settings?.[k] ?? "") === v))) continue;
@@ -157,8 +156,9 @@ export function generateCompose(name: string, def: Dict, ctx: { root: string; lo
     if (s.build != null) {
       if (!ctx.local) fail(`${at("build")}: a module from a remote source needs an image by digest`);
       if (s.image != null) fail(`${at("image")}: a built service names no image (it is aidenhq/${key}:local)`);
-      const b = typeof s.build === "string" && /^\.\/[\w./-]+$/.test(s.build) && noDots(s.build) ? resolve(ctx.root, s.build) : fail(`${at("build")} must be a folder in the module (./…)`);
-      if (!b.startsWith(ctx.root + sep) || !existsSync(join(b, "Dockerfile"))) fail(`${at("build")}: ${s.build} has no Dockerfile in the module`);
+      // `.`: the module's own folder (one image built from more than one of its trees).
+      const b = typeof s.build === "string" && /^\.(\/[\w./-]+)?$/.test(s.build) && noDots(s.build.slice(1)) ? resolve(ctx.root, s.build) : fail(`${at("build")} must be the module's folder or a folder in it (. or ./…)`);
+      if (!(b === ctx.root || b.startsWith(ctx.root + sep)) || !existsSync(join(b, "Dockerfile"))) fail(`${at("build")}: ${s.build} has no Dockerfile in the module`);
       Object.assign(o, { build: b, image: `aidenhq/${key}:local` });
     } else if (typeof s.image === "string" && DIGEST.test(s.image)) o.image = s.image;
     else fail(`${at("image")} must be pinned by digest (name@sha256:…)`);
@@ -198,10 +198,6 @@ export function generateCompose(name: string, def: Dict, ctx: { root: string; lo
     if (s.points != null) {
       if (!isMap(def.points)) fail(`${at("points")}: the module defines no points`);
       volumes.push(`\${AIDENHQ_CONFIG_DIR:-./config}/points/${name}.json:${mountAt("points")}:ro`);
-    }
-    if (s.github_app != null) {
-      if (!gitCredential) fail(`${at("github_app")}: needs privileged: [git-credential]`);
-      volumes.push(`\${AIDENHQ_SECRETS_DIR}/github-app:${mountAt("github_app")}:ro`);
     }
     if (s.workspaces != null) {
       if (!gitCredential) fail(`${at("workspaces")}: needs privileged: [git-credential]`);
