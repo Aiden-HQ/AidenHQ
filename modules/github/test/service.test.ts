@@ -159,7 +159,7 @@ test("a PR to a repo outside ours is refused while its text or a commit message 
   sh(ws, "checkout", "--quiet", "-b", "agent/TASK-3/fix");
   writeFileSync(join(ws, "lib.js"), "export const z = 3;\n");
   sh(ws, "add", "lib.js");
-  sh(ws, "commit", "--quiet", "-m", "Fix the parser");
+  sh(ws, "commit", "--quiet", "-m", "Fix the parser\n\nCo-authored-by: AidenHQ Engineer <noreply@aidenhq.ai>"); // the attribution trailer is the one allowed name
   const pr = (sha, text) => call("/aidenhq/v1/executor/plan", { kind: "github.pr", args: { workspace: "TASK-3", only: [{ repo: "partner/lib", branch: "agent/TASK-3/fix", sha }], text }, requester: { kind: "job", roles: [] }, task: "t3" });
   const clean = await pr(sh(ws, "rev-parse", "HEAD"), { title: "Fix the parser", body: "Handles empty input." });
   assert.equal(clean.status, 200, JSON.stringify(clean.json));

@@ -662,3 +662,15 @@ it("an issue edited after its trusted agent-build label is untrusted until the o
   expect(out.skipped).toEqual([{ number: 1, reason: expect.stringMatching(/edited after agent-build was added/) }]);
   expect((await maintainer(f, [], FEATURES).labelEvents(PRODUCT, 1, BUILD)).events[0]).toMatchObject({ trusted: false, stale: true });
 });
+
+it("repo file refuses .. escape", async () => {
+  const f = fake({ files: { "README.md": "hi" } });
+  const m = maintainer(f);
+  await expect(m.repoFile(PRODUCT, "../../../user/keys")).rejects.toThrow(/\.\. segment/);
+  await expect(m.repoFile(PRODUCT, "README.md", "../x")).rejects.toThrow(/\.\. segment/);
+  await expect(m.repoTree(PRODUCT, "..")).rejects.toThrow(/\.\. segment/);
+  expect(f.calls).toHaveLength(0);
+  // The client itself refuses any path that resolves elsewhere, whoever builds it.
+  await expect(accessFor(f.fetchFn).rest("GET", `/repos/${PRODUCT}/contents/../../../user`)).rejects.toThrow(/resolves elsewhere/);
+  expect(f.calls).toHaveLength(0);
+});

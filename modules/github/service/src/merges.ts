@@ -16,7 +16,8 @@ import { DESIGN_REVIEW, EVAL_WAIT_MINUTES, PR_QUERY, WAIT_MINUTES, awaitsDesignR
 
 /** GitHub as the owner, background (git-auth.ts Gh with background set). */
 type Gh = (method: string, path: string, body?: unknown) => Promise<{ status: number; body: any }>;
-type Outcome = { ok: boolean; text: string };
+/** `objects`: what the queue merged, for the kernel's records (each PR and its merge commit). */
+type Outcome = { ok: boolean; text: string; objects?: string[] };
 export type EvalGate = (repo: string, pr: any) => Promise<undefined | { wait: string } | { stop: string }>;
 type Pr = { repo: string; number: number; head: string; url: string; status: string; note?: string; sha?: string; wait?: { key: string; since: string }; reviewAsked?: string; reviewAskedAgain?: string; checked?: string; unanswered?: boolean; fw?: { reason: string; since: string } };
 type Queue = { state: string; prs: Pr[]; said: string[]; startedAt: string; finishedAt?: string; outcome?: Outcome; reported?: boolean };
@@ -176,7 +177,8 @@ export function createMerges(d: {
     const n = q.prs.filter((p) => p.status === "merged" || p.status === "skipped").length;
     const headline = ok ? `**Done:** ${n} merged.` : `**Merges finished:** ${n} merged, ${q.prs.length - n} not.`;
     const merged = q.prs.filter((p) => p.status === "merged" && typeof p.sha === "string").map((p) => ({ repo: p.repo, number: p.number, head: p.head, sha: p.sha }));
-    q.outcome = { ok, text: `${MERGED_LINE}${JSON.stringify(merged)}\n\n${[...q.said, headline].join("\n\n").slice(-12_000)}` };
+    const objects = merged.flatMap((p) => [`github:${p.repo.toLowerCase()}#${p.number}`, `github:${p.repo.toLowerCase()}@${p.sha}`]);
+    q.outcome = { ok, text: `${MERGED_LINE}${JSON.stringify(merged)}\n\n${[...q.said, headline].join("\n\n").slice(-12_000)}`, ...(objects.length ? { objects } : {}) };
     Object.assign(q, { state: ok ? "done" : "stopped", finishedAt: now().toISOString() });
     log("merges finished", { record: id, ok });
     deliver(id, q);
@@ -238,10 +240,10 @@ export function createMerges(d: {
       return new Promise((ok) => waiters.set(id, ok));
     },
     /** The record's state for the kernel (executor@1 status), or undefined when it isn't a queue here. */
-    status(id: string): { state: string; text?: string } | undefined {
+    status(id: string): { state: string; text?: string; objects?: string[] } | undefined {
       const q = s.queues[id];
       if (!q) return undefined;
-      return q.outcome ? { state: q.outcome.ok ? "done" : "failed", text: q.outcome.text } : { state: "running" };
+      return q.outcome ? { state: q.outcome.ok ? "done" : "failed", text: q.outcome.text, ...(q.outcome.objects ? { objects: q.outcome.objects } : {}) } : { state: "running" };
     },
     step,
     /** The loop: one poll now and every `everyMs` (30 s). */

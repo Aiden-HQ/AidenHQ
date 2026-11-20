@@ -87,6 +87,11 @@ export interface MaintainerPr {
   labels: string[];
 }
 
+/** A path or ref with a `.` or `..` segment (encodeURIComponent leaves them) could name something outside the repo: refused. */
+function noDots(v: string) {
+  if (v.split("/").some((seg) => seg === "." || seg === "..")) throw new GitHubRefused(`${v.slice(0, 200)} has a . or .. segment`);
+}
+
 export class Maintainer {
   private roles = new Map<string, { role: string | null; at: number }>();
 
@@ -321,6 +326,7 @@ export class Maintainer {
   /** The repository's file list at a ref, capped in entries and depth. */
   async repoTree(repo: string | undefined, ref = "HEAD") {
     const { owner, name, repo: slug } = this.target(repo);
+    noDots(ref);
     const r = await this.gh.rest("GET", `/repos/${owner}/${name}/git/trees/${encodeURIComponent(ref)}?recursive=1`);
     if (r.status !== 200) throw new Error(`couldn't read ${owner}/${name}'s tree at ${ref} (GitHub said ${r.status})`);
     const all = (Array.isArray(r.body.tree) ? r.body.tree : []) as { path: string; type: string; size?: number; sha?: string }[];
@@ -338,6 +344,8 @@ export class Maintainer {
     const { owner, name, repo: slug } = this.target(repo);
     // Resolve the ref to a commit first, and read the file at that commit: the contents API's own `sha` is the blob's, which
     // no caller can resolve as a commit, and a branch could move between the two reads.
+    noDots(path);
+    noDots(ref ?? "HEAD");
     const commit = await this.commitSha(owner, name, ref ?? "HEAD");
     const encoded = path.split("/").map(encodeURIComponent).join("/");
     const r = await this.gh.rest("GET", `/repos/${owner}/${name}/contents/${encoded}?ref=${commit}`);

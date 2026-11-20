@@ -110,18 +110,19 @@ export function createAccess(o: {
 
   const connected = () => o.auth.signedIn() && o.auth.status().state !== "expired";
 
-  async function token(): Promise<string> {
-    if (!o.auth.signedIn()) fail({ cause: "not_connected" });
+  /** `background`: a loop's call, which never tells the owner GitHub isn't connected (the board shows that; an agent's need does). */
+  async function token(background = false): Promise<string> {
+    if (!o.auth.signedIn()) fail({ cause: "not_connected" }, background);
     if (o.auth.status().state === "expired") fail({ cause: "expired" });
     const t = String((await o.auth.headers()).authorization ?? "").replace(/^Bearer\s+/i, "");
-    if (!t) fail({ cause: "not_connected" });
+    if (!t) fail({ cause: "not_connected" }, background);
     return t;
   }
 
-  function fail(n: Need): never {
+  function fail(n: Need, background = false): never {
     if (n.cause === "sso" || n.cause === "restricted") problems.set(n.org.toLowerCase(), { org: n.org, cause: n.cause, url: n.url });
     const e = new GitHubNeed(n);
-    if (e.ownerFixable && o.notify && !told.has(needKey(n))) {
+    if (e.ownerFixable && o.notify && !told.has(needKey(n)) && !(background && n.cause === "not_connected")) {
       told.add(needKey(n));
       void Promise.resolve(o.notify(n)).catch(() => told.delete(needKey(n)));
     }
@@ -180,8 +181,10 @@ export function createAccess(o: {
   }
 
   async function send(method: string, path: string, body: unknown, resource: string, background: boolean, accept?: string) {
+    // Only the path asked for: a `.` or `..` segment (encodeURIComponent leaves them) would move the request elsewhere.
+    if (!path.startsWith("/") || new URL(path, API).pathname !== path.split("?")[0]) throw new Error(`refused a GitHub path that resolves elsewhere: ${path.slice(0, 200)}`);
     await admit(resource, background);
-    const t = await token();
+    const t = await token(background);
     const res = await fetchImpl(`${API}${path}`, {
       method,
       signal: AbortSignal.timeout(30_000),
@@ -205,9 +208,9 @@ export function createAccess(o: {
 
   return {
     connected,
-    token,
+    token: () => token(),
     scopes,
-    rest: (method, path, body, opts = {}) => send(method.toUpperCase(), path, body, "core", Boolean(opts.background), opts.accept),
+    rest: (method, path, body, opts = {}) => send(method.toUpperCase(), path, body, path === "/graphql" ? "graphql" : "core", Boolean(opts.background), opts.accept),
     graphql: async (query, variables, opts = {}) => (await send("POST", "/graphql", { query, variables }, "graphql", Boolean(opts.background))).body,
     async identity() {
       const t = await token();

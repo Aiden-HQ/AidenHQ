@@ -35,6 +35,8 @@ export type PrWatchOptions = {
    */
   repos: { repo: string; duties: "all" | "dependabot" }[]; kernelUrl: string; /** The module's own token (kernel.tasks, kernel.wake). */ key: string; cacheDir: string;
   gh: Gh; log?: (msg: string, f?: Record<string, unknown>) => void;
+  /** Whether GitHub is connected: signed out, a pass reads nothing and counts as idle. */
+  connected?: () => boolean;
   /** Flow facts: CI done on the head of an agent's PR. */
   flow?: Flow;
 };
@@ -392,6 +394,7 @@ export function startPrWatch(o: PrWatchOptions) {
   async function tick(): Promise<number> {
     const all: Json = Object.fromEntries(Object.entries(readJson(stateFile, {})).filter(([k]) => k.includes("/"))); // the old flat state is dropped
     let open = 0;
+    if (o.connected && !o.connected()) return open;
     for (const { repo, duties } of o.repos) {
       try { open += await scan(repo, duties, all); }
       catch (e) { open++; log("PR check failed", { repo, err: String((e as Error).message).slice(0, 300) }); }

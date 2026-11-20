@@ -155,8 +155,10 @@ export function reviewExecutor(github: (op: "preview" | "execute", body: unknown
     async execute(rec) {
       const kind = kindOf(rec.kind);
       if (!kind) return { ok: false, text: `not a code-review kind: ${rec.kind}` };
-      const v = (await github("execute", { kind, args: rec.args })) as { ok?: boolean; text?: string };
-      return { ok: v.ok === true, text: String(v.text ?? "") };
+      const v = (await github("execute", { kind, args: rec.args })) as { ok?: boolean; text?: string; objects?: unknown };
+      // The review's GitHub objects (its comments) go to the kernel's records: a later run finds its own threads by them.
+      const objects = Array.isArray(v.objects) ? v.objects.filter((o): o is string => typeof o === "string" && o.startsWith("github:")) : [];
+      return { ok: v.ok === true, text: String(v.text ?? ""), ...(objects.length ? { objects } : {}) };
     },
   };
 }

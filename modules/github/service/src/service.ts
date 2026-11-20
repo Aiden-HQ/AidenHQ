@@ -27,7 +27,7 @@ import { join, sep } from "node:path";
 import { Readable } from "node:stream";
 import { promisify } from "node:util";
 import { serveExecutor, type Executor, type PlanRequest } from "./aidenhq-sdk/executor.ts";
-import { CREDENTIAL_ARGS, disconnected, identityEnv, inOrg, needOf, ownRepo, withTrailer, type Gh } from "./git-auth.ts";
+import { CREDENTIAL_ARGS, disconnected, hasTrailer, identityEnv, inOrg, needOf, ownRepo, withFooter, withTrailer, type Gh } from "./git-auth.ts";
 import type { GitHubAccess } from "../../connections/github-mcp/src/client.ts";
 import { createEvalGate } from "./evalgate.ts";
 import { createMerges } from "./merges.ts";
@@ -327,7 +327,8 @@ export function createService(o: Options) {
       changed.push(...(await numstatOf(dir, mb || EMPTY_TREE, b.sha)));
       // Outside our own repos (the agents org, the product) the PR's text and the branch's commit messages name none of our tooling.
       if (!ownRepo(s.slug, o.fleetOrg, o.productRepo)) {
-        const messages = (await git(dir, ["log", "--format=%B%x1e", mb ? `${mb}..${b.sha}` : b.sha])).split("\x1e");
+        // The AidenHQ trailer (attribution, spec §4) is the one internal name these may carry.
+        const messages = (await git(dir, ["log", "--format=%B%x1e", mb ? `${mb}..${b.sha}` : b.sha])).split("\x1e").map((m) => m.split("\n").filter((l) => !hasTrailer(l)).join("\n"));
         const leak = kind.endsWith(".pr") ? leakIn(`${a.text?.title ?? ""}\n${a.text?.body ?? ""}`) : undefined;
         if (leak) throw fail(422, `Not done: the PR title or description mentions "${leak}". ${s.slug}'s reviewers mustn't see internal names, tools or local paths; reword it and ask again.`);
         const msg = messages.find((m) => leakIn(m));
@@ -356,8 +357,9 @@ export function createService(o: Options) {
     async plan(req: PlanRequest) {
       const { state, facts, reads, changed, evidence, bases, own, task } = (await stateFor(req.kind, req.args ?? {}, req.requester, req.task)) as Awaited<ReturnType<typeof stateFor>> & { reads?: { name: string; read: () => Promise<string> }[]; changed?: Changed[]; evidence?: string; bases?: Base[]; own?: Set<string>; task?: string };
       const planned = planRules({ kind: req.kind, args: req.args }, state, facts);
-      // Who asked, by the request's exact kind and args: a write held while GitHub is disconnected is re-checked as them.
-      if (!req.revalidate && req.requester) noteAsker(req.kind, req.args, { requester: req.requester, task: req.task });
+      // Who asked, by the request's exact kind and args (the revalidating plan carries the record's own args, as execute
+      // does): a write held while GitHub is disconnected is re-checked as them, and its PR is signed with their name.
+      if (req.requester) noteAsker(req.kind, req.args, { requester: req.requester, task: req.task });
       // The reviewer's context goes with the filing only (a revalidation compares targets): never part of the record's digest.
       const sources = req.revalidate ? undefined : await readCardSourceExceptions(bases ?? [], (repo: string, base: string) => bases!.find((b) => b.repo === repo && b.base === base)!.read(SOURCE_EXCEPTIONS_FILE));
       // The task's other PRs already merged into these bases; a read that fails leaves them out, never the plan.
@@ -380,9 +382,12 @@ export function createService(o: Options) {
       }
     },
   };
-  async function run1(rec: { id: string; kind: string; args: any }): Promise<{ ok: boolean; text: string }> {
+  /** The write itself; `objects` names what it made on GitHub for the kernel's records (spec §5). */
+  async function run1(rec: { id: string; kind: string; args: any }): Promise<{ ok: boolean; text: string; objects?: string[] }> {
     {
       const a = rec.args ?? {};
+      const objects: string[] = [];
+      const ref = (slug: string) => `github:${slug.toLowerCase()}`;
       const action = rec.kind.replace(/^github\./, "");
       const done: string[] = [];
       if (action === "push" || action === "pr") {
@@ -392,11 +397,15 @@ export function createService(o: Options) {
           const def = await defaultBranch(s.slug);
           await git(dir, ["push", "--quiet", "--no-verify", remote(s.slug), `${b.branch === def ? "" : "+"}${b.sha}:refs/heads/${b.branch}`], await token());
           notePushed(s.slug, b.sha);
+          objects.push(`${ref(s.slug)}@${b.sha}`);
           if (action === "pr") {
             const open = await api("GET", `/repos/${s.slug}/pulls?state=open&head=${encodeURIComponent(`${s.org}:${b.branch}`)}`);
-            const text = a.text;
+            // The PR's text is signed by the agent that asked for it (spec §4).
+            const asker = readAskers()[askerKey(rec.kind, rec.args)];
+            const text = a.text ? { ...a.text, ...(typeof a.text.body === "string" ? { body: withFooter(a.text.body, asker?.requester.name || "AidenHQ") } : {}) } : a.text;
             const pr = open[0] ? await api("PATCH", `/repos/${s.slug}/pulls/${open[0].number}`, text) : await api("POST", `/repos/${s.slug}/pulls`, { ...text, head: b.branch, base: def });
             done.push(pr.html_url ?? `${s.slug}#${pr.number}`);
+            if (pr.number) objects.push(`${ref(s.slug)}#${Number(pr.number)}`);
             if (pr.html_url) notePrTask(o.cacheDir, pr.html_url, { task: a.workspace, branch: b.branch }); // the PR watch wakes the task that opened it
             if (pr.number) {
               // Flow: the PR opened when this write created it, a head it moves is a push, and CI starts on every head it publishes.
@@ -414,7 +423,7 @@ export function createService(o: Options) {
             if (same(s.org, o.fleetOrg) && pr.number) void designReviews?.fileDesignReview({ repo: s.slug, number: Number(pr.number), head: b.sha }).catch((e: Error) => log("design review task failed", { pr: pr.html_url, err: String(e.message ?? e).slice(0, 300) }));
           } else done.push(`${s.slug} ${b.branch} at ${b.sha.slice(0, 12)}`);
         }
-        return { ok: true, text: `${action === "pr" ? "PRs" : "Pushed"}: ${done.join(", ")}` };
+        return { ok: true, text: `${action === "pr" ? "PRs" : "Pushed"}: ${done.join(", ")}`, objects };
       }
       // An approved merge is a queue (merges.ts): its outcome comes when every PR merged at its bound head, or the queue stopped.
       if (action === "merge") return merges.enqueue(rec.id, a);
@@ -424,8 +433,9 @@ export function createService(o: Options) {
           const closed = await api("PATCH", `/repos/${s.slug}/pulls/${Number(p.number)}`, { state: "closed" });
           if (closed?.head?.sha) flow.closed(s.slug, Number(p.number), String(closed.head.sha));
           done.push(`${s.slug}#${p.number}`);
+          objects.push(`${ref(s.slug)}#${Number(p.number)}`);
         }
-        return { ok: true, text: `Closed: ${done.join(", ")}` };
+        return { ok: true, text: `Closed: ${done.join(", ")}`, objects };
       }
       if (action === "create_repo") {
         const s = slugOf(a.repo);
@@ -454,7 +464,7 @@ export function createService(o: Options) {
 
   // ---- held writes: approved while GitHub was disconnected ----
   type Asker = { requester: PlanRequest["requester"]; task: string };
-  type Held = { id: string; kind: string; args: any; state: "held" | "running" | "done" | "failed"; text?: string; at: string; asker?: Asker };
+  type Held = { id: string; kind: string; args: any; state: "held" | "running" | "done" | "failed"; text?: string; objects?: string[]; at: string; asker?: Asker };
   // The requester of each planned write (the kernel's record of who asked; execute carries none), by a digest of its kind and
   // args, for the held re-check. The last 500 only.
   const askersFile = join(o.cacheDir, "askers.json");
@@ -469,9 +479,9 @@ export function createService(o: Options) {
   const heldFile = join(o.cacheDir, "held.json");
   const readHeld = (): Record<string, Held> => { try { return JSON.parse(readFileSync(heldFile, "utf8")); } catch { return {}; } };
   const writeHeld = (h: Record<string, Held>) => { writeFileSync(`${heldFile}.tmp`, JSON.stringify(h)); renameSync(`${heldFile}.tmp`, heldFile); };
-  const heldWaiters = new Map<string, (out: { ok: boolean; text: string }) => void>();
+  const heldWaiters = new Map<string, (out: { ok: boolean; text: string; objects?: string[] }) => void>();
   /** The record waits for the reconnect: executor@1 status answers running until it ran. */
-  function hold(rec: { id: string; kind: string; args: any }): Promise<{ ok: boolean; text: string }> {
+  function hold(rec: { id: string; kind: string; args: any }): Promise<{ ok: boolean; text: string; objects?: string[] }> {
     const h = readHeld();
     if (!h[rec.id]) {
       const asker = readAskers()[askerKey(rec.kind, rec.args)];
@@ -489,12 +499,12 @@ export function createService(o: Options) {
     try {
       for (const r of Object.values(readHeld()).filter((x) => x.state === "held" || x.state === "running")) {
         writeHeld({ ...readHeld(), [r.id]: { ...r, state: "running" } });
-        let out: { ok: boolean; text: string };
+        let out: { ok: boolean; text: string; objects?: string[] };
         try { out = (await stillApproved(r)) ? await run1(r) : { ok: false, text: "Not done: it changed while GitHub was disconnected; ask again." }; } catch (e) {
           if (disconnected(e)) { writeHeld({ ...readHeld(), [r.id]: { ...r, state: "held" } }); return; }
           out = { ok: false, text: String((e as Error).message ?? e) };
         }
-        writeHeld({ ...readHeld(), [r.id]: { ...r, state: out.ok ? "done" : "failed", text: out.text } });
+        writeHeld({ ...readHeld(), [r.id]: { ...r, state: out.ok ? "done" : "failed", text: out.text, ...(out.objects ? { objects: out.objects } : {}) } });
         const w = heldWaiters.get(r.id);
         heldWaiters.delete(r.id);
         if (w) w(out);
@@ -520,10 +530,10 @@ export function createService(o: Options) {
     ];
     return want.every(([k, sha]) => targets[k]?.commit === sha);
   }
-  const heldStatus = (id: string) => { const r = readHeld()[id]; return r ? (r.state === "done" || r.state === "failed" ? { state: r.state, text: r.text } : { state: "running" }) : undefined; };
+  const heldStatus = (id: string) => { const r = readHeld()[id]; return r ? (r.state === "done" || r.state === "failed" ? { state: r.state, text: r.text, ...(r.objects ? { objects: r.objects } : {}) } : { state: "running" }) : undefined; };
 
   const exec = serveExecutor(executor, { key: o.key, kernelUrl: o.kernelUrl, log });
-  async function report(id: string, out: { ok: boolean; text: string }) {
+  async function report(id: string, out: { ok: boolean; text: string; objects?: string[] }) {
     const r = await fetch(`${o.kernelUrl}/v1/writes/${id}/outcome`, { method: "POST", headers: { authorization: `Bearer ${o.key}`, "content-type": "application/json" }, body: JSON.stringify(out), signal: AbortSignal.timeout(15_000) });
     if (!r.ok && r.status !== 409) throw new Error(`the kernel answered ${r.status}`);
   }
@@ -543,7 +553,7 @@ export function createService(o: Options) {
   });
   // The design reviewer's tasks (design-review.ts): for a fleet-org PR's UI head when it opens, and for each head the merge
   // queue waits on for its verdict.
-  const designReviews = createDesignReviews({ kernelUrl: o.kernelUrl, key: o.key, cacheDir: o.cacheDir, selfName: o.selfName || "the owner", gh, log });
+  const designReviews = createDesignReviews({ kernelUrl: o.kernelUrl, key: o.key, cacheDir: o.cacheDir, selfName: o.selfName || "the owner", gh: (m, p, b) => gh(m, p, b, { background: true }), log });
   // The managed repos: the fleet org's, the product repo and the instance repo.
   async function managedRepos(): Promise<string[]> {
     const out = new Set([o.productRepo, o.instanceRepo].filter(Boolean).map((r) => r!.toLowerCase()));
@@ -559,7 +569,8 @@ export function createService(o: Options) {
   }
   const flow = createFlow({
     kernelUrl: o.kernelUrl, key: o.key, cacheDir: o.cacheDir, log, exclude: o.churnExclude, now: o.now,
-    repos: managedRepos,
+    // Signed out: no repos, so the passes call nothing (and tell the owner nothing) until GitHub is connected.
+    repos: async () => (access.connected() ? managedRepos() : []),
     gh: (method, path) => gh(method, path, undefined, { background: true }),
     self: ownerLogin,
     ours,

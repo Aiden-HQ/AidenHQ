@@ -52,7 +52,7 @@ if (env.PRODUCT_REPO) {
   for (const m of maintained) {
     if (m.dependabot && !repos.has(m.repo)) repos.set(m.repo, inOrg(fleetOrg, m.repo) ? "all" : "dependabot");
   }
-  startPrWatch({ repos: [...repos].map(([repo, duties]) => ({ repo, duties })), kernelUrl: env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130", key, cacheDir, gh: access.rest, log, flow: handle.flow });
+  startPrWatch({ repos: [...repos].map(([repo, duties]) => ({ repo, duties })), kernelUrl: env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130", key, cacheDir, gh: access.rest, connected: () => access.connected(), log, flow: handle.flow });
 }
 const server = createServer((req, res) => void handle(req, res));
 server.listen(Number(env.PORT ?? 8100), "0.0.0.0");
