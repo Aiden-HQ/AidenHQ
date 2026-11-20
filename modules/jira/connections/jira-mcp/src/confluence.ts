@@ -200,3 +200,4 @@ export function startConfluenceSync(store: SourceStore, call: CallJira, site: st
   };
   setTimeout(tick, 180_000).unref();
 }
+// CI timing probe (throwaway PR, never merged)
