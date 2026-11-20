@@ -29,10 +29,10 @@ export type Repo = {
 export type Config = { reviewers: Record<string, Profile>; repos: Repo[]; month_usd: number; errors: string[] };
 
 export const DEFAULT_REVIEWERS: Record<string, Profile> = {
-  quick: { engine: "codex", model: "~deepseek/deepseek-flash-latest", effort: "low", finders: 1, verify: false, run_usd: 0.5 },
-  standard: { engine: "codex", model: "~deepseek/deepseek-flash-latest", effort: "high", finders: 2, verify: true, run_usd: 1.5 },
-  deep: { engine: "codex", model: "~openai/gpt-sol-latest", effort: "high", finders: 4, verify: true, verifier: "~anthropic/claude-latest", run_usd: 2.5 },
-  triage: { engine: "codex", model: "~deepseek/deepseek-flash-latest", effort: "low", finders: 1, verify: false, focus: "triage", run_usd: 0.5 },
+  quick: { engine: "codex", model: "~openai/gpt-luna-latest", effort: "low", finders: 1, verify: false, run_usd: 0.5 },
+  standard: { engine: "codex", model: "~openai/gpt-luna-latest", effort: "high", finders: 2, verify: true, run_usd: 1.5 },
+  deep: { engine: "codex", model: "~openai/gpt-luna-latest", effort: "high", finders: 4, verify: true, verifier: "~openai/gpt-luna-latest", run_usd: 2.5 },
+  triage: { engine: "codex", model: "~openai/gpt-luna-latest", effort: "low", finders: 1, verify: false, focus: "triage", run_usd: 0.5 },
 };
 export const REPO_DEFAULTS: Omit<Repo, "repo"> = {
   on_open: "standard", on_push: "quick", on_risk: "deep", drafts: false, forks: "manual", month_usd: 50, ignore: [], max_nits: 5, per_author_day: 10, per_repo_day: 60,

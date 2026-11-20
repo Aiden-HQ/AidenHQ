@@ -822,7 +822,7 @@ function ReviewersTab({ config, rows, onEdit, onNew }: { config: CodeReview; row
 
 /** The reviewers the module ships (its defaults; removing one switches it off). */
 const DEFAULT_NAMES = ["quick", "standard", "deep", "triage"];
-const BLANK: Profile = { engine: "codex", model: "~deepseek/deepseek-flash-latest", effort: "high", finders: 2, verify: true };
+const BLANK: Profile = { engine: "codex", model: "~openai/gpt-luna-latest", effort: "high", finders: 2, verify: true };
 
 function ReviewerDialog({ config, name: name0, onClose, onSave }: { config: CodeReview; name?: string; onClose: () => void; onSave: Save }) {
   const [name, setName] = useState(name0 ?? "");

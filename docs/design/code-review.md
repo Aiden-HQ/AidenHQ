@@ -29,10 +29,10 @@ Rules that bind (owner and design):
 code_review:
   month_usd: 200                 # instance-wide monthly cap across repos
   reviewers:                     # named profiles; shipped: quick, standard, deep, triage (a name set to null is switched off)
-    quick:    { engine: codex, model: "~deepseek/deepseek-flash-latest", effort: low,  finders: 1, verify: false, run_usd: 0.5 }
-    standard: { engine: codex, model: "~deepseek/deepseek-flash-latest", effort: high, finders: 2, verify: true,  run_usd: 1.5 }
-    deep:     { engine: codex, model: "~openai/gpt-sol-latest", effort: high, finders: 4, verify: true, verifier: "~anthropic/claude-latest", run_usd: 2.5 }
-    triage:   { engine: codex, model: "~deepseek/deepseek-flash-latest", effort: low, finders: 1, verify: false, focus: triage, run_usd: 0.5 }
+    quick:    { engine: codex, model: "~openai/gpt-luna-latest", effort: low,  finders: 1, verify: false, run_usd: 0.5 }
+    standard: { engine: codex, model: "~openai/gpt-luna-latest", effort: high, finders: 2, verify: true,  run_usd: 1.5 }
+    deep:     { engine: codex, model: "~openai/gpt-luna-latest", effort: high, finders: 4, verify: true, verifier: "~openai/gpt-luna-latest", run_usd: 2.5 }
+    triage:   { engine: codex, model: "~openai/gpt-luna-latest", effort: low, finders: 1, verify: false, focus: triage, run_usd: 0.5 }
   repos:
     - repo: acme/payments
       on_open: standard          # defaults shown; each is a reviewer name or "off"
@@ -49,7 +49,8 @@ code_review:
 
 A reviewer is a whole profile: engine, model, effort, finders, verification (and its model), optional `context` (repo paths),
 `focus`, `label` and `run_usd` (what one run may spend: its reservation and its model token's cap; default $0.50 a finder
-plus $0.50 to verify). A profile or repo that does not validate is dropped loudly (listed in the config tool's errors), never
+plus $0.50 to verify). Reviewers are checkers, so the shipped ones run GPT Luna (`~openai/gpt-luna-latest`), verifier
+included. A profile or repo that does not validate is dropped loudly (listed in the config tool's errors), never
 half-used; a repo listed twice is refused whole. Engines are box recipes behind one contract (diff and context in, findings JSON
 out): only `codex` is built; `claude-code` and `codegenie` are declared names and a reviewer naming one is refused. Repo
 context is the repo's own `REVIEW.md`, `AGENTS.md` and `CLAUDE.md` at the root and above each changed file, read from the
