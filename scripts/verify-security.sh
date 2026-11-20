@@ -792,7 +792,7 @@ rplan="modules/github/service/src/plan.ts"; rcheck="modules/platform/src/check.t
   && grep -qF 'if (same(p.repo, s.instanceRepo)) return [REJECT("core-repo-merge"' "$rplan" \
   && grep -qF 'if (!inAgentsOrg(p.repo, s)) return REJECT("outside-close"' "$rplan" \
   && grep -qF 'const inAgentsOrg = (repo: unknown, s: State) => agentsOrgs(s).some((o) => same(orgOf(repo), o));' "$rplan" && grep -qF 'const agentsOrgs = (s: State) => [s.agentsOrgs ?? s.agentsOrg].flat().filter(Boolean);' "$rplan" \
-  && grep -qF 'agentsOrgs: [agentsOrg, ...(localHost() ? [LOCAL_ORG] : [])]' kernel/src/main.ts \
+  && grep -qF 'agentsOrgs: [fleetOrg(), ...(localHost() ? [LOCAL_ORG] : [])]' kernel/src/main.ts \
   && grep -qF 'if (same(p.repo, s.instanceRepo)) return REJECT("core-repo-close"' "$rplan" \
   && grep -qF 'if (p.dependabot !== true) return REJECT("core-repo-close"' "$rplan" \
   && grep -qF 'if (!s.requester?.platform) return REJECT("product-close-requester"' "$rplan" \
