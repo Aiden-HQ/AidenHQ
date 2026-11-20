@@ -109,7 +109,8 @@ export function buildItems(j: Journey, c: Ctx): Built[] {
       if (!earlier) cur.own = true;
     }
     if (!blocks.length) continue;
-    const meta = (field: string) => { for (const f of mine) if (str(f.data[field])) return f.data[field] as string; return null; };
+    // the newest fact naming a field wins: a re-recorded pr.opened (a corrected author) or a later title
+    const meta = (field: string) => { for (const f of [...mine].sort((a, b) => b.seq - a.seq)) if (str(f.data[field])) return f.data[field] as string; return null; };
     const [repo0, num] = k.slice(prefix.length).split("#");
     const repo = meta("repo") ?? repo0!, number = Number(num) || 0, task = [...tasks][0] ?? null, last = ended ?? c.now;
     const kind = meta("author_kind");

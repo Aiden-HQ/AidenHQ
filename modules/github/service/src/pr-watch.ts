@@ -51,7 +51,7 @@ const MAX_WAKES = 3;
 const HALF_HOUR = 30 * 60_000;
 /** Red rounds on one PR before its task stops being woken for them and its asker is told (the CI breaker). */
 const BREAKER_ROUNDS = 3;
-const ROLLUP = "statusCheckRollup { state contexts(first: 100) { pageInfo { hasNextPage } nodes { __typename ... on CheckRun { databaseId name status conclusion checkSuite { workflowRun { databaseId } } } ... on StatusContext { context state } } } }";
+const ROLLUP = "statusCheckRollup { state contexts(first: 100) { pageInfo { hasNextPage } nodes { __typename ... on CheckRun { databaseId name status conclusion startedAt completedAt checkSuite { workflowRun { databaseId } } } ... on StatusContext { context state } } } }";
 const OPEN_PRS_QUERY = `query($owner: String!, $repo: String!, $after: String) {
   repository(owner: $owner, name: $repo) {
     defaultBranchRef { name target { oid ... on Commit { ${ROLLUP} } } }
@@ -280,7 +280,7 @@ export function startPrWatch(o: PrWatchOptions) {
       state.open ??= {}; // PR url -> { n, head }
       for (const pr of open) {
         const url = pr.url.toLowerCase(), seen = state.open[url];
-        if (!seen) flow.opened(repo, pr.number, pr.headRefOid, pr.headRefName, new Date(pr.createdAt).toISOString(), undefined, undefined, { title: String(pr.title ?? ""), ...(await flow.authored(pr.author?.login, pr.authorAssociation)) });
+        if (!seen) flow.opened(repo, pr.number, pr.headRefOid, pr.headRefName, new Date(pr.createdAt).toISOString(), undefined, undefined, { title: String(pr.title ?? ""), ...(await flow.authored(pr.author?.login, pr.authorAssociation, repo)) });
         else if (seen.head !== pr.headRefOid) {
           const c = await o.gh("GET", `/repos/${repo}/compare/${seen.head}...${pr.headRefOid}`, token).catch(() => undefined);
           flow.pushed(repo, pr.number, pr.headRefOid, seen.head, c ? !["ahead", "identical"].includes(String(c.body?.status)) : false, String(pr.author?.login ?? "ghost"));
@@ -291,8 +291,11 @@ export function startPrWatch(o: PrWatchOptions) {
         if (open.some((p) => p.url.toLowerCase() === url)) continue;
         const r = await o.gh("GET", `/repos/${repo}/pulls/${seen.n}`, token);
         if (r.status >= 300) continue;
-        if (r.body?.state === "closed" && !r.body?.merged_at) flow.closed(repo, seen.n, String(r.body.head?.sha ?? seen.head), new Date(r.body.closed_at ?? Date.now()).toISOString());
-        if (r.body?.state === "closed") delete state.open[url];
+        const head = String(r.body?.head?.sha ?? seen.head);
+        // Merged by anyone (the owner on GitHub too, not only the merge queue): the same id as the queue's and the backfill's.
+        if (r.body?.merged_at) flow.merged(repo, seen.n, head, String(r.body.merge_commit_sha ?? ""), new Date(r.body.merged_at).toISOString(), String(r.body.title ?? ""), String(r.body.body ?? ""));
+        else if (r.body?.state === "closed") flow.closed(repo, seen.n, head, new Date(r.body.closed_at ?? Date.now()).toISOString());
+        if (r.body?.state === "closed") { delete state.open[url]; delete state.checked?.[url]; delete state.ciStarted?.[url]; }
       }
       save();
     }
@@ -302,12 +305,23 @@ export function startPrWatch(o: PrWatchOptions) {
     for (const pr of open) {
       const url = pr.url.toLowerCase();
       const opener = opened[url];
-      // Flow: CI on an agent's PR head is over once its named checks have all finished (seen here, once per head).
+      // Flow: CI on any PR's head, once per head: begun at its first check run's start, over once its named checks have all
+      // finished (at the last one's end). The task is the agent's that opened it, if one did.
       state.checked ??= {};
+      state.ciStarted ??= {};
       const named = namedChecks(rollupOf(pr));
-      if (o.flow && opener?.branch === pr.headRefName && named.length && !named.some((c) => c.pending) && state.checked[url] !== pr.headRefOid) {
+      const runs = (rollupOf(pr)?.contexts?.nodes ?? []).filter((n: Json) => n.__typename === "CheckRun");
+      const times = (k: string) => runs.map((n: Json) => Date.parse(n[k])).filter(Number.isFinite);
+      const task = opener?.branch === pr.headRefName ? opener.task : null;
+      if (o.flow && times("startedAt").length && state.ciStarted[url] !== pr.headRefOid) {
+        state.ciStarted[url] = pr.headRefOid;
+        o.flow.checksStarted(repo, pr.number, pr.headRefOid, new Date(Math.min(...times("startedAt"))).toISOString(), task);
+        save();
+      }
+      if (o.flow && named.length && !named.some((c) => c.pending) && state.checked[url] !== pr.headRefOid) {
         state.checked[url] = pr.headRefOid;
-        o.flow.checksCompleted(repo, pr.number, pr.headRefOid, named.filter((c) => !c.ok).map((c) => c.name).slice(0, 20), undefined, opener.task);
+        const ends = times("completedAt");
+        o.flow.checksCompleted(repo, pr.number, pr.headRefOid, named.filter((c) => !c.ok).map((c) => c.name).slice(0, 20), ends.length ? new Date(Math.max(...ends)).toISOString() : undefined, task);
         save();
       }
       // Any open PR whose title now passes but whose head still carries the title gate's red `policy`: clear it in place, before

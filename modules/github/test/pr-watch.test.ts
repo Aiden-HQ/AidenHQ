@@ -96,6 +96,39 @@ test("an agent's green mergeable PR wakes its task to merge once per head", asyn
   assert.match(wakes[0].text, /aidenhq merge https:\/\/github.com\/acme\/app\/pull\/5 h5/);
 });
 
+// Flow: any PR's CI (the owner's too, not only an agent's) and its merge, whoever merged it (here the owner on GitHub, not the queue).
+test("an owner's PR records its CI per head and its merge once it leaves the open list", async (t) => {
+  let open = [];
+  const kernel = await listen(async (req, res) => { for await (const _ of req); res.writeHead(200).end("{}"); });
+  t.after(() => kernel.s.close());
+  const merged = { state: "closed", merged_at: "2026-11-20T10:05:00Z", merge_commit_sha: "s7", head: { sha: "h7" }, title: "feat: x", body: "" };
+  const gh = async (m, path) => path === "/graphql"
+    ? { status: 200, body: { data: { repository: { defaultBranchRef: { name: "main", target: { oid: "m1", statusCheckRollup: checks("SUCCESS") } }, pullRequests: { nodes: open } } } } }
+    : path === "/repos/acme/app/pulls/7" ? { status: 200, body: merged } : { status: 404, body: {} };
+  const got = [];
+  const rec = (name) => (...a) => void got.push([name, ...a]);
+  const flow = { opened: rec("opened"), pushed: rec("pushed"), closed: rec("closed"), merged: rec("merged"), checksStarted: rec("started"), checksCompleted: rec("completed"), authored: async () => ({ author: "owner", author_kind: "owner" }) };
+  const cacheDir = mkdtempSync(join(tmpdir(), "pr-watch-"));
+  const watch = startPrWatch({ repos: [{ repo: "acme/app", duties: "all" }], kernelUrl: kernel.url, key: "k", cacheDir, app: { token: async () => "tok" }, gh, flow });
+  t.after(() => watch.stop());
+  const run = (status, o = {}) => ({ __typename: "CheckRun", name: "test", status, conclusion: status === "COMPLETED" ? "SUCCESS" : null, startedAt: "2026-11-20T10:01:00Z", ...o });
+  const rollup = (nodes) => ({ commits: { nodes: [{ commit: { statusCheckRollup: { state: "PENDING", contexts: { pageInfo: { hasNextPage: false }, nodes } } } }] } });
+  const owner = { author: { __typename: "User", login: "owner" }, createdAt: "2026-11-20T10:00:00Z" };
+
+  open = [pr(7, { ...owner, ...rollup([run("IN_PROGRESS")]) })];
+  await watch.tick();
+  open = [pr(7, { ...owner, ...rollup([run("COMPLETED", { completedAt: "2026-11-20T10:04:00Z" })]) })];
+  await watch.tick();
+  await watch.tick();
+  open = [];
+  await watch.tick();
+  assert.deepEqual(got.filter(([n]) => n !== "opened"), [
+    ["started", "acme/app", 7, "h7", "2026-11-20T10:01:00.000Z", null],
+    ["completed", "acme/app", 7, "h7", [], "2026-11-20T10:04:00.000Z", null],
+    ["merged", "acme/app", 7, "h7", "s7", "2026-11-20T10:05:00.000Z", "feat: x", ""],
+  ]);
+});
+
 // The behaviours ported from the runner, against one fake GitHub and kernel: each case is one agent PR (acme/app#N, task ACME-N).
 const redChecks = (extra = {}) => ({ state: "FAILURE", contexts: { pageInfo: { hasNextPage: false }, nodes: [{ __typename: "CheckRun", databaseId: 77, name: "test", status: "COMPLETED", conclusion: "FAILURE", checkSuite: { workflowRun: { databaseId: 500 } }, ...extra }] } });
 async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name: "Build" }], update = 202, wakeFails = 0, closeFails = 0, records = [] } = {}) {

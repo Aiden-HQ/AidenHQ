@@ -6,7 +6,7 @@
 // the PR, from pr-tasks.json (pr-watch.ts notePrTask). Every `at` is UTC with a Z.
 //
 // Authors: `author_kind` is "agent" for the instance's GitHub App bot (appLogin), "owner" for GitHub's author_association OWNER, MEMBER or
-// COLLABORATOR, "outside" for anyone else. A push (`pr.pushed`, version = the new head) is a head change after the PR opened.
+// COLLABORATOR or anyone with write on the repo (GitHub shows a private org member as CONTRIBUTOR), "outside" for anyone else. A push (`pr.pushed`, version = the new head) is a head change after the PR opened.
 //
 // The churn pass (every 15 minutes, a cursor per repo in the data dir) reads each repo's merged commits from its cache clone,
 // never the GitHub API. The first pass also runs the GitHub backfill once (no route, no button): the managed repos' history through
@@ -23,10 +23,13 @@ const DAY = 86_400_000;
 /** The backfill stops here: the App's hourly budget is 5,000 points and the rest of the service needs some. */
 const LOW_REMAINING = 400;
 const REPO_READ = { contents: "read", metadata: "read", pull_requests: "read", issues: "read", checks: "read" };
-/** pr.opened and issue.opened carry the author and title from this version on (the id is type, subject and version, so a re-run records them). */
+/** issue.opened carries the author and title from this version on (the id is type, subject and version, so a re-run records them). */
 export const OPENED_VERSION = "2";
-/** The backfill runs again when this changes (v2: authors, titles, pushes, closes, CI per head). */
-const BACKFILL_VERSION = 2;
+/** pr.opened's: v3 classes a private org member with write as the owner. */
+export const PR_OPENED_VERSION = "3";
+/** The backfill runs again when this changes (v2: authors, titles, pushes, closes, CI per head; v3: owners by write access, merges since v2). */
+const BACKFILL_VERSION = 3;
+const WRITERS = new Set(["admin", "maintain", "write"]);
 const MAX_COMMITS = 60;
 /** Any ISO time as UTC with a Z. */
 export const utc = (at: string | number | Date): string => new Date(at).toISOString();
@@ -78,21 +81,33 @@ export function createFlow(d: FlowDeps) {
   // The owner's backfill sends its facts straight to the kernel in batches (it stops and says so on a failure); every other fact queues.
   const emit = (x: FactIn) => { const y = { ...x, at: utc(x.at) }; return y.source === "backfill" ? backfillSend(y) : emitter.emit(y); };
   let appName: string | undefined;
-  /** Who an author is: the App's bot (agent), someone with OWNER, MEMBER or COLLABORATOR association (owner), anyone else (outside). */
-  async function kindOf(who?: string | null, association?: string | null): Promise<Kind> {
+  const writers = new Map<string, boolean>();
+  /** Whether `who` has write on `repo` (one read per repo and author; a failed read is asked again next time). */
+  async function canWrite(repo: string, who: string): Promise<boolean> {
+    const k = `${repo.toLowerCase()} ${who.toLowerCase()}`;
+    if (!writers.has(k)) {
+      const r = await d.gh!("GET", `/repos/${repo}/collaborators/${encodeURIComponent(who)}/permission`, await d.token!(repo, REPO_READ)).catch(() => undefined);
+      if (!r || r.status >= 300) return false;
+      writers.set(k, WRITERS.has(String(r.body?.permission)));
+    }
+    return writers.get(k)!;
+  }
+  /** Who an author is: the App's bot (agent), someone with OWNER, MEMBER or COLLABORATOR association or write on `repo` (owner), anyone else (outside). */
+  async function kindOf(who?: string | null, association?: string | null, repo?: string): Promise<Kind> {
     // A failed lookup is retried at the next author, never remembered as "no App".
     if (!appName) appName = login(await d.appLogin?.().catch(() => undefined));
     if (login(who) && login(who) === appName) return "agent";
-    return ["OWNER", "MEMBER", "COLLABORATOR"].includes(String(association ?? "").toUpperCase()) ? "owner" : "outside";
+    if (["OWNER", "MEMBER", "COLLABORATOR"].includes(String(association ?? "").toUpperCase())) return "owner";
+    return repo && who && d.gh && d.token && (await canWrite(repo, String(who))) ? "owner" : "outside";
   }
   /** `author` and `author_kind` for a fact's data; `association` is GitHub's author_association (REST) or authorAssociation (GraphQL). */
-  const authored = async (who?: string | null, association?: string | null) => ({ author: who ? String(who) : "ghost", author_kind: await kindOf(who, association) });
+  const authored = async (who?: string | null, association?: string | null, repo?: string) => ({ author: who ? String(who) : "ghost", author_kind: await kindOf(who, association, repo) });
 
   const f = {
     emit, flush: emitter.flush, stop: emitter.stop, taskOf,
     kindOf, authored,
     opened: (repo: string, n: number, head: string, branch: string, at = now().toISOString(), task = taskOf(repo, n), source?: "backfill", extra: Json = {}) =>
-      emit({ type: "pr.opened", subject: prSubject(repo, n), version: OPENED_VERSION, at, task, data: { repo: repo.toLowerCase(), number: n, head, branch, ...extra }, ...(source ? { source } : {}) }),
+      emit({ type: "pr.opened", subject: prSubject(repo, n), version: PR_OPENED_VERSION, at, task, data: { repo: repo.toLowerCase(), number: n, head, branch, ...extra }, ...(source ? { source } : {}) }),
     /** A head change after the PR opened: version is the new head, so a repeat from another path records once. */
     pushed: (repo: string, n: number, head: string, before: string, forced: boolean, author: string, at = now().toISOString(), task = taskOf(repo, n), source?: "backfill") =>
       emit({ type: "pr.pushed", subject: prSubject(repo, n), version: head, at, task, data: { head, before, forced, author }, ...(source ? { source } : {}) }),
@@ -163,7 +178,7 @@ export function createFlow(d: FlowDeps) {
     const emit = (x: FactIn) => void facts.push({ ...x, at: utc(x.at) });
     for (let page = 1; ; page++) {
       const items: Json[] = (await gh(repo, `/repos/${repo}/issues?state=all&since=${since}&sort=updated&direction=asc&per_page=100&page=${page}`)).body ?? [];
-      for (const i of items) if (!i.pull_request && Date.parse(i.created_at) >= Date.parse(since)) emit({ type: "issue.opened", subject: issueSubject(repo, i.number), version: OPENED_VERSION, at: i.created_at, task: null, data: { repo: key, number: i.number, labels: (i.labels ?? []).map((l: Json) => String(l.name ?? l)), state: i.state, ...(await authored(i.user?.login, i.author_association)) } });
+      for (const i of items) if (!i.pull_request && Date.parse(i.created_at) >= Date.parse(since)) emit({ type: "issue.opened", subject: issueSubject(repo, i.number), version: OPENED_VERSION, at: i.created_at, task: null, data: { repo: key, number: i.number, labels: (i.labels ?? []).map((l: Json) => String(l.name ?? l)), state: i.state, ...(await authored(i.user?.login, i.author_association, repo)) } });
       if (lowBudget) return postFacts(facts);
       if (items.length < 100) break;
     }
@@ -271,7 +286,7 @@ export function createFlow(d: FlowDeps) {
     status.repo = repo;
     await pages(repo, `/repos/${repo}/issues?state=all&sort=created&direction=asc`, async (i) => {
       if (i.pull_request) return;
-      emit({ type: "issue.opened", subject: issueSubject(repo, i.number), version: OPENED_VERSION, at: i.created_at, task: null, source: "backfill", data: { repo: repo.toLowerCase(), number: i.number, labels: (i.labels ?? []).map((l: Json) => String(l.name ?? l)), state: i.state, ...(await authored(i.user?.login, i.author_association)) } });
+      emit({ type: "issue.opened", subject: issueSubject(repo, i.number), version: OPENED_VERSION, at: i.created_at, task: null, source: "backfill", data: { repo: repo.toLowerCase(), number: i.number, labels: (i.labels ?? []).map((l: Json) => String(l.name ?? l)), state: i.state, ...(await authored(i.user?.login, i.author_association, repo)) } });
     });
     await pages(repo, `/repos/${repo}/issues/events`, (e) => {
       if (e.event !== "labeled" || !e.issue || e.issue.pull_request) return;
@@ -284,7 +299,7 @@ export function createFlow(d: FlowDeps) {
       const heads = await headsOf(repo, p.number, head, p.updated_at ?? p.created_at);
       // The head the PR opened at is the first of its heads; every later one is a push.
       const first = heads[0]?.sha ?? head;
-      f.opened(repo, p.number, first, String(p.head?.ref ?? ""), p.created_at, task, "backfill", { title: String(p.title ?? ""), ...(await authored(p.user?.login, p.author_association)) });
+      f.opened(repo, p.number, first, String(p.head?.ref ?? ""), p.created_at, task, "backfill", { title: String(p.title ?? ""), ...(await authored(p.user?.login, p.author_association, repo)) });
       for (const [i, h] of heads.entries()) {
         if (i) f.pushed(repo, p.number, h.sha, heads[i - 1]!.sha, h.forced, h.author, h.at, task, "backfill");
         if (!h.starts.length) continue;
