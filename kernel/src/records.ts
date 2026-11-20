@@ -13,6 +13,7 @@ import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { FINAL_CODES, type Cap, type ReviewFirst } from "./tier.ts";
 import { decider, openFacts, type Fact } from "./facts.ts";
+import { inTx } from "./factlog.ts";
 import type { ReviewContext } from "../sdk/src/executor.ts";
 
 export type State = "review" | "owner" | "approved" | "claimed" | "done" | "failed" | "rejected" | "stale" | "cancelled" | "unknown";
@@ -130,8 +131,17 @@ export function openRecords(file: string, now = () => new Date()) {
       .run(to, iso(), ...cols.map((c) => (c === "outcome" ? JSON.stringify((set as any)[c]) : (set as any)[c] ?? null)), id, ...from, ...(fresh ? [cutoff()] : []));
     return r.changes === 1;
   };
-  /** Open records past their 7 days: cancelled as expired (a decided one keeps who decided it). */
-  const expire = () => db.prepare(`UPDATE records SET state = 'cancelled', updated_at = ?, outcome = ? WHERE state IN ('review','owner','approved') AND created_at <= ?`).run(iso(), JSON.stringify({ ok: false, text: "expired: not decided and run within 7 days" }), cutoff());
+  /** The code closed an open record (expired, replaced): its closing fact, written in the same transaction. */
+  const cancelled = (id: string, via: "expired" | "replaced") => fact(id, "record.decided", "code:cancelled", "kernel", () => ({ decision: "cancelled", decider: "code", via }));
+  /** Open records past their 7 days: cancelled as expired (a decided one keeps who decided it), each with its closing fact. */
+  const expire = () => {
+    const ids = (db.prepare("SELECT id FROM records WHERE state IN ('review','owner','approved') AND created_at <= ?").all(cutoff()) as { id: string }[]).map((r) => r.id);
+    if (!ids.length) return;
+    const at = iso(), outcome = JSON.stringify({ ok: false, text: "expired: not decided and run within 7 days" });
+    inTx(db, "records_expire", () => {
+      for (const id of ids) if (db.prepare("UPDATE records SET state = 'cancelled', updated_at = ?, outcome = ? WHERE id = ? AND state IN ('review','owner','approved')").run(at, outcome, id).changes) cancelled(id, "expired");
+    });
+  };
   const shownState = (r: Rec) => (OPEN.includes(r.state) && r.created_at <= cutoff() ? "expired" : r.state);
 
   return {
@@ -144,7 +154,12 @@ export function openRecords(file: string, now = () => new Date()) {
       db.exec("BEGIN IMMEDIATE");
       try {
         // A changed request on the same task, kind and target replaces the open one (the requester's own target key).
-        const replaced = r.target ? db.prepare("UPDATE records SET state = 'cancelled', updated_at = ?, outcome = ? WHERE task = ? AND kind = ? AND target = ? AND digest != ? AND state IN ('review','owner','approved')").run(at, JSON.stringify({ ok: false, text: "replaced by a newer request" }), r.task, r.kind, r.target, digest).changes : 0;
+        const old = r.target ? (db.prepare("SELECT id FROM records WHERE task = ? AND kind = ? AND target = ? AND digest != ? AND state IN ('review','owner','approved')").all(r.task, r.kind, r.target, digest) as { id: string }[]).map((o) => o.id) : [];
+        for (const o of old) {
+          db.prepare("UPDATE records SET state = 'cancelled', updated_at = ?, outcome = ? WHERE id = ?").run(at, JSON.stringify({ ok: false, text: "replaced by a newer request" }), o);
+          cancelled(o, "replaced");
+        }
+        const replaced = old.length;
         db.prepare("INSERT INTO records (id, kind, module, args, targets, executor, policy, digest, tier, merit, panel, card, requester, task, state, created_at, updated_at, review_first, rule, identifier, replaced, target, content, chain, cap, context) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
           .run(id, r.kind, r.module, JSON.stringify(r.args ?? null), JSON.stringify(r.targets), JSON.stringify(r.executor), r.policy, digest, r.tier, r.merit ?? r.tier, r.panel ? 1 : 0, JSON.stringify(r.card), JSON.stringify(r.requester), r.task, r.state, at, at,
             r.review_first ?? null, r.rule ?? null, r.identifier ?? null, replaced ? 1 : 0, r.target ?? null, r.content ?? null, r.chain ?? null, r.cap ? JSON.stringify(r.cap) : null, r.context ? JSON.stringify(r.context) : null);

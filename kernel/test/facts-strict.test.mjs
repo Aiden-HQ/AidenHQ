@@ -108,3 +108,30 @@ test("one task's fact failure fails its scan, not the poll", async () => {
   assert.equal(count(db, "task.status_changed", "tA"), 2, "the next poll records A's move");
   assert.equal(cursor("tA"), "todo");
 });
+
+test("an expired card and a superseded card each leave a closing fact", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "facts-strict-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  let clock = Date.parse("2026-11-20T10:00:00Z");
+  const records = openRecords(join(dir, "kernel.db"), () => new Date(clock));
+  const card = { sentence: "s", changes: "c", reads: "r", cost: "0", details: "d" };
+  const file = (task, args, target) => records.file({ kind: "kernel.apply", module: "kernel", args, targets: {}, executor: { module: "kernel" }, policy: "p", tier: 2, panel: false, card, requester: { agent: "", key: "k", name: "n", roles: [], kind: "kernel" }, task, state: "owner", ...(target ? { target } : {}) });
+  const closing = (id) => records.db.prepare("SELECT actor, data FROM facts WHERE type = 'record.decided' AND subject = ?").all(`record:${id}`).map((f) => ({ actor: f.actor, ...JSON.parse(f.data) }));
+  // Superseded: a changed request on the same task, kind and target.
+  const first = file("t-1", { n: 1 }, "main");
+  file("t-1", { n: 2 }, "main");
+  assert.equal(records.get(first.id).state, "cancelled");
+  assert.deepEqual(closing(first.id), [{ actor: "kernel", decision: "cancelled", decider: "code", via: "replaced" }]);
+  // Expired: still open after its 7 days.
+  const old = file("t-2", { n: 3 });
+  clock += 8 * 864e5;
+  records.list(["cancelled"]);
+  assert.equal(records.get(old.id).state, "cancelled");
+  assert.deepEqual(closing(old.id), [{ actor: "kernel", decision: "cancelled", decider: "code", via: "expired" }]);
+  // Strict: a closing fact that can't be written leaves the card as it was.
+  const later = file("t-3", { n: 4 });
+  clock += 8 * 864e5;
+  fault(records.db, "record.decided");
+  assert.throws(() => records.list(["cancelled"]), /facts unwritable/);
+  assert.equal(records.get(later.id).state, "owner");
+});
