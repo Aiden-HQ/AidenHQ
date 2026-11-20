@@ -2,8 +2,8 @@
 // module against a fake Paperclip.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { bridge, parse } from "./helpers.mjs";
-const { TOOL_LIST } = await import("../src/tools.mjs"); // after helpers has set the environment
+import { bridge, parse } from "./helpers.ts";
+const { TOOL_LIST } = await import("../src/tools.ts"); // after helpers has set the environment
 
 function world({ trial = false } = {}) {
   const writes = [];

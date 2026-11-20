@@ -13,6 +13,7 @@ import { urlSettingProblem } from "../services/shared/url-setting.ts";
 import { generateCompose, ownSecrets, subnetFor } from "./compiler/services.ts";
 import { capabilityProblems, conflictProblems, danglingBindings } from "./compiler/bindings.ts";
 import { current, MANIFEST_KEYS } from "./compiler/authority.ts";
+import type { Fetch } from "./compiler/sources.ts";
 import { checkout, forkBase, forksOf, hostFetch, marketplaceEntries, OFFICIAL, onFork, pinsOf, remoteModules } from "./compiler/sources.ts";
 import { effective } from "./compiler/release.ts";
 import { compilePoints } from "./compiler/points.ts";
@@ -21,6 +22,8 @@ import { KINDS as CHECK_KINDS } from "../kernel/src/checkjobs.ts";
 import { KERNEL_KINDS, KERNEL_ROLES } from "../kernel/src/kinds.ts";
 import { teamProblems, weightsOf } from "../kernel/src/team-routing.ts";
 
+// Manifests, instance files and Paperclip data are YAML/JSON read at run time: their shapes are described by the docs, not by types here.
+export type Obj = Record<string, any>;
 const PROFILES = ["trusted", "untrusted", "code-exec"];
 // image: the agent's computer (scripts/computers.ts); the instance turns it on or off per agent.
 // caps: the agent's spend caps (grantEntry); not agent-safe (kernel/src/apply-tier.ts), so changing them is the owner's.
@@ -35,10 +38,10 @@ const OVERRIDABLE = { agents: ["model", "reasoning_effort", "engine", "timeout_s
  * the owner's, off Tier 0 too. Direct tools (slack_post, app_api) are governed by grants, not by this.
  */
 export const ROUTINE_AUTONOMY = ["off", "tier0", "full"];
-export const routineAutonomyDefault = (r) => (r.webhook ? "tier0" : "full");
+export const routineAutonomyDefault = (r: Obj) => (r.webhook ? "tier0" : "full");
 // The kernel's own settings (kernel/settings.json) and what every instance has beside its modules (kernel/defaults.json): the
 // company's description, the department registry and the secrets the kernel and the host services generate.
-const kernelJson = (f) => JSON.parse(readFileSync(new URL(`../kernel/${f}`, import.meta.url), "utf8"));
+const kernelJson = (f: string): Obj => JSON.parse(readFileSync(new URL(`../kernel/${f}`, import.meta.url), "utf8"));
 const KERNEL_SETTINGS = kernelJson("settings.json");
 const KERNEL_DEFAULTS = kernelJson("defaults.json");
 const SETTING = /\$\{settings\.([A-Za-z0-9_]+)\}/g;
@@ -61,14 +64,14 @@ export const TRIAL_WRITE_ALLOWED = ["paperclip_tasks.task_create", "chat_lane.wa
 // `write` shorthand never grants a destructive tool; an agent gets one only by naming it.
 export const DESTRUCTIVE_NAME = /delete|trash|remove|purge/i;
 /** A connection's write tools, destructive included (trial, untrusted and handbook checks treat both as writes). */
-export const writeTools = (c) => [...(c?.tools?.write ?? []), ...(c?.tools?.destructive ?? [])];
+export const writeTools = (c: Obj) => [...(c?.tools?.write ?? []), ...(c?.tools?.destructive ?? [])];
 /** A connection's tools a read shorthand reaches: its `read` tools, less the ones it also tags `named` (a grant must name those). */
-export const readTools = (c) => (c?.tools?.read ?? []).filter((t) => !(c?.tools?.named ?? []).includes(t));
+export const readTools = (c: Obj) => (c?.tools?.read ?? []).filter((t: string) => !(c?.tools?.named ?? []).includes(t));
 // Every connection is reached through the kernel's tool proxy, which holds the grants and the service keys.
 export const KERNEL_URL = "http://10.231.0.1:3130";
 
-const readYaml = (path) => YAML.parse(readFileSync(path, "utf8")) ?? {};
-const fail = (msg) => { throw new Error(msg); };
+const readYaml = (path: string) => YAML.parse(readFileSync(path, "utf8")) ?? {};
+const fail = (msg: string): never => { throw new Error(msg); };
 
 /**
  * What each module still reaches of the root stack until its kernel route lands (scripts/compiler/services.ts `Legacy`).
@@ -78,7 +81,7 @@ const fail = (msg) => { throw new Error(msg); };
  * owner chat, webhooks; one network per pair), or root networks (backplane: the kernel's listener for services without
  * egress, which can't route to it from an internal network; sources: the warehouse).
  */
-export const LEGACY_LINKS = {
+export const LEGACY_LINKS: Record<string, { until: string; to: string[] }> = {
   "chat-lane": { until: "3a", to: ["board"] },
   // 3h: the board reads grade rows from the grading module (its own key) until the board is a module; apps-mcp's grader reads
   // (role apps.read) until 4c moves apps-mcp into apps-platform (owner-approved via the coordinator, 2026-11-18).
@@ -103,7 +106,7 @@ export const LEGACY_LINKS = {
   security: { until: "4c", to: ["paperclip", "sources"] },
 };
 /** Root secrets (the root compose's) a module's services may mount, until the same units. Closed; may only shrink. */
-export const LEGACY_SECRETS = {
+export const LEGACY_SECRETS: Record<string, string[]> = {
   tasks: ["board_internal_token"],
   google: ["google_auth_token", "gateway_source_key"],
   jira: ["gateway_source_key"],
@@ -113,7 +116,7 @@ export const LEGACY_SECRETS = {
   github: ["github_token"],
 };
 /** Host variables (the host's .env, never instance.yaml: they decide whose words count and where links point). Closed. */
-export const LEGACY_HOST_ENV = {
+export const LEGACY_HOST_ENV: Record<string, string[]> = {
   "channel-telegram": ["TELEGRAM_OWNER_CHAT_ID", "TELEGRAM_TASK_URL"],
   "chat-lane": ["AIDENHQ_GATEWAY_URL", "TELEGRAM_OWNER_CHAT_ID"],
   google: ["BOARD_LAN_URL", "GOOGLE_CALENDAR_ID", "AIDENHQ_GATEWAY_URL"],
@@ -122,8 +125,8 @@ export const LEGACY_HOST_ENV = {
   slack: ["SLACK_CLIENT_ID"],
 };
 /** Networks the ops shell makes (fixed bridge, subnet and host rule: ops/units/aidenhq-ci-net.service). */
-export const OPS_NETWORKS = { ci: "aidenhq-ci" };
-const legacyOf = (name) => ({ links: LEGACY_LINKS[name]?.to, secrets: LEGACY_SECRETS[name], hostEnv: LEGACY_HOST_ENV[name], opsNetwork: OPS_NETWORKS[name] });
+export const OPS_NETWORKS: Record<string, string> = { ci: "aidenhq-ci" };
+const legacyOf = (name: string) => ({ links: LEGACY_LINKS[name]?.to, secrets: LEGACY_SECRETS[name], hostEnv: LEGACY_HOST_ENV[name], opsNetwork: OPS_NETWORKS[name] });
 
 /** Fleet default spend caps in USD (owner decision, wave 1): per run, per task, per agent per UTC day. */
 export const CAPS = { run_usd: 2, task_usd: 10, day_usd: 30 };
@@ -135,7 +138,7 @@ export const CAPS = { run_usd: 2, task_usd: 10, day_usd: 30 };
  * are graded by default (the board's completion gate and the runner's grader enforce it).
  */
 /** An agent's `chat:` block, checked, with defaults: every lane tool must be one of its own granted tools ("connection.tool"). */
-export function chatBlock(key, c, tools) {
+export function chatBlock(key: string, c: Obj, tools: Obj) {
   if (!c || typeof c !== "object" || Array.isArray(c)) fail(`agent ${key}: chat must be a map (${CHAT_FIELDS.join(", ")})`);
   for (const f of Object.keys(c)) if (!CHAT_FIELDS.includes(f)) fail(`agent ${key}: chat: unknown field ${f} (known: ${CHAT_FIELDS.join(", ")})`);
   const out = { ...CHAT_DEFAULTS, ...c, tools: c.tools ?? [] };
@@ -146,19 +149,19 @@ export function chatBlock(key, c, tools) {
   if (!Array.isArray(out.tools)) fail(`agent ${key}: chat.tools must be a list of "connection.tool"`);
   for (const t of out.tools) {
     const [conn, tool] = String(t).split(".");
-    if (!tool || !tools[conn]?.includes(tool)) fail(`agent ${key}: chat tool ${t} isn't one of its granted tools (write it as connection.tool)`);
+    if (!tool || !tools[conn!]?.includes(tool)) fail(`agent ${key}: chat tool ${t} isn't one of its granted tools (write it as connection.tool)`);
   }
   return out;
 }
 
-export function grantEntry(key, a, routines = {}) {
+export function grantEntry(key: string, a: Obj, routines: Obj = {}) {
   // A team member runs its team record's routines (their tasks are routed to it), with their own models.
-  const runs = (r) => r.agent === key || (a.member_of !== undefined && r.agent === a.member_of);
-  const ids = [a.model, ...(a.models ?? []), ...Object.values(routines).filter(runs).map((r) => r.model)];
+  const runs = (r: Obj) => r.agent === key || (a.member_of !== undefined && r.agent === a.member_of);
+  const ids = [a.model, ...(a.models ?? []), ...Object.values(routines).filter(runs).map((r: Obj) => r.model)];
   const models = [...new Set(ids.filter((m) => typeof m === "string" && m.trim()).map((m) => m.replace(/^openrouter\//, "")))];
   // What the kernel freezes into each job at admission (kernel/src/admission.ts): the profile, its engine, model and effort, how
   // many of its jobs run at once, and each of its routines' model.
-  const own = Object.entries(routines).filter(([, r]) => runs(r) && (r.model || r.reasoning_effort));
+  const own = Object.entries(routines).filter(([, r]: [string, Obj]) => runs(r) && (r.model || r.reasoning_effort));
   return {
     name: a.name, models, caps: { ...CAPS, ...(a.caps ?? {}) }, graded: a.graded === true, ...(a.jobcaps?.length ? { jobcaps: a.jobcaps } : {}), ...(a.feedback_for ? { feedback_for: a.feedback_for } : {}),
     profile: a.profile ?? "crew", ...(a.reports_to ? { reports_to: a.reports_to } : {}), ...(a.engine ? { engine: a.engine } : {}), ...(a.engines ? { engines: a.engines } : {}), ...(a.model ? { model: a.model.replace(/^openrouter\//, "") } : {}), ...(a.reasoning_effort ? { effort: a.reasoning_effort } : {}),
@@ -172,7 +175,7 @@ export function grantEntry(key, a, routines = {}) {
 const JOB_PROFILES = ["crew", "engineer", "check"];
 
 const ENGINE_FIELDS = ["kind", "bin", "live_input", "label", "effort_key", "model_prefix", "gateway", "box", "state", "reset", "seed"];
-const relPath = (p) => typeof p === "string" && p && !p.split("/").includes("..") && !/^\/\//.test(p);
+const relPath = (p: string) => typeof p === "string" && p && !p.split("/").includes("..") && !/^\/\//.test(p);
 /**
  * A module's `providers.engine` (spec §3.3.1, engine@1): one or more engine kinds, each a `bin` the runner runs in the
  * job's agent computer (only a kind with `box: true` runs at all). The rest is data the runner reads instead of knowing
@@ -180,8 +183,8 @@ const relPath = (p) => typeof p === "string" && p && !p.split("/").includes(".."
  * task | shared, under the runner's state dir; reset names and seed copies made before each run; seed `from` is the module's,
  * or the product's with a leading /). Returns config/engines.json's entries, by kind.
  */
-export function engineEntries(name, def, root, productDir) {
-  const out = {};
+export function engineEntries(name: string, def: Obj, root: string, productDir: string) {
+  const out: Obj = {};
   for (const e of [def.providers?.engine ?? []].flat()) {
     const where = `module ${name}: engine ${e?.kind}`;
     for (const f of Object.keys(e ?? {})) if (!ENGINE_FIELDS.includes(f)) fail(`${where}: unknown field ${f} (known: ${ENGINE_FIELDS.join(", ")})`);
@@ -206,8 +209,8 @@ const JOBCAP_FIELDS = ["id", "connection", "tools", "prompt", "tool_timeout_s", 
  * as the bearer) bridge to today's read endpoints. `private: true`: private data, so only an Engineer with private_reads (no
  * web search) may hold it. Returns config/jobcaps.json's entries, by id.
  */
-export function jobcapEntries(name, def) {
-  const out = {};
+export function jobcapEntries(name: string, def: Obj) {
+  const out: Obj = {};
   for (const j of def.jobcaps ?? []) {
     const where = `module ${name}: jobcap ${j?.id}`;
     for (const f of Object.keys(j ?? {})) if (!JOBCAP_FIELDS.includes(f)) fail(`${where}: unknown field ${f} (known: ${JOBCAP_FIELDS.join(", ")})`);
@@ -230,12 +233,12 @@ export function jobcapEntries(name, def) {
  * A trial agent's `trial_writes:` list, checked: a list of writes it may use in trial, each one of TRIAL_WRITE_ALLOWED and
  * granted by the definition, written connection.tool as its grants name it. Returns the names; errors name the agent and tool.
  */
-export function trialWrites(key, list, tools) {
+export function trialWrites(key: string, list: string[], tools: Obj) {
   if (!Array.isArray(list)) fail(`agent ${key}: trial_writes must be a list of tools, written connection.tool`);
   for (const raw of list) {
     const parts = typeof raw === "string" ? raw.split(".") : [];
     if (parts.length !== 2 || !parts[0] || !parts[1]) fail(`agent ${key}: trial_writes names ${JSON.stringify(raw)}, not a tool written connection.tool`);
-    const [conn, tool] = parts;
+    const [conn, tool] = parts as [string, string];
     if (!TRIAL_WRITE_ALLOWED.includes(raw)) fail(`agent ${key}: trial_writes names ${raw}, which it may not use in trial (only ${TRIAL_WRITE_ALLOWED.join(", ")})`);
     if (!(tools[conn] ?? []).includes(tool)) fail(`agent ${key}: trial_writes names ${raw}, which the definition does not grant`);
   }
@@ -243,34 +246,34 @@ export function trialWrites(key, list, tools) {
 }
 
 /** `---\nkey: value\n---\nbody` → { meta, body }. */
-export function frontmatter(text) {
+export function frontmatter(text: string) {
   const m = /^---\n([\s\S]*?)\n---\n?/.exec(text);
-  return m ? { meta: YAML.parse(m[1]) ?? {}, body: text.slice(m[0].length) } : { meta: {}, body: text };
+  return m ? { meta: YAML.parse(m[1]!) ?? {}, body: text.slice(m[0].length) } : { meta: {}, body: text };
 }
 
 /** A value's shape: list, map, or its JSON type. */
-const shapeOf = (v) => (Array.isArray(v) ? "list" : v && typeof v === "object" ? "map" : typeof v);
+const shapeOf = (v: unknown) => (Array.isArray(v) ? "list" : v && typeof v === "object" ? "map" : typeof v);
 
 /** settings.<key>.owner: what an agent's change to the setting may not do without the owner (kernel/src/apply-tier.ts ownerRaises). */
-function ownerRules(file, key, rules) {
-  const ok = (r) => r && typeof r === "object" && /^[\w*-]+(\.[\w*-]+)*$/.test(String(r.path)) && Object.keys(r).every((f) => ["path", "raise", "change", "to", "new", "before", "default"].includes(f)) && ["raise", "change", "to", "new"].filter((f) => f in r).length === 1 && (r.raise ?? r.change ?? r.new ?? true) === true;
+function ownerRules(file: string, key: string, rules: Obj) {
+  const ok = (r: Obj) => r && typeof r === "object" && /^[\w*-]+(\.[\w*-]+)*$/.test(String(r.path)) && Object.keys(r).every((f) => ["path", "raise", "change", "to", "new", "before", "default"].includes(f)) && ["raise", "change", "to", "new"].filter((f) => f in r).length === 1 && (r.raise ?? r.change ?? r.new ?? true) === true;
   if (!Array.isArray(rules) || !rules.every(ok)) fail(`${file}: settings.${key}.owner is a list of { path, one of raise: true, change: true, to: <value>, new: true (before: <text>), and the field's default where unset }`);
   return rules;
 }
 
 /** A module's settings for the board: default, allowed values, required, and the comment above each key as its `doc`. */
-function settingDefs(file, def) {
-  const map = YAML.parseDocument(readFileSync(file, "utf8")).get("settings", true);
+function settingDefs(file: string, def: Obj) {
+  const map = YAML.parseDocument(readFileSync(file, "utf8")).get("settings", true) as Obj | undefined;
   // The first key's comment is attached to the map itself.
-  const docs = Object.fromEntries((map?.items ?? []).map((p, i) => [String(p.key?.value ?? p.key), (p.key?.commentBefore ?? (i === 0 ? map.commentBefore : "") ?? "").replace(/^ ?/gm, "").replace(/\s*\n\s*/g, " ").trim()]));
-  return Object.fromEntries(Object.entries(def.settings ?? {}).filter(([k]) => !/token|secret|password/i.test(k)).map(([k, d]) => [k, { ...(d && "default" in d ? { default: d.default } : {}), ...(d?.values ? { values: d.values } : {}), ...(d?.required ? { required: true } : {}), ...(d?.type ? { type: d.type } : {}), ...(d?.host ? { host: d.host } : {}), ...(d?.writers ? { writers: [d.writers].flat().map(String) } : {}), ...(d?.owner ? { owner: ownerRules(file, k, d.owner) } : {}), ...(docs[k] ? { doc: docs[k] } : {}) }]));
+  const docs = Object.fromEntries((map?.items ?? []).map((p: Obj, i: number) => [String(p.key?.value ?? p.key), (p.key?.commentBefore ?? (i === 0 ? map!.commentBefore : "") ?? "").replace(/^ ?/gm, "").replace(/\s*\n\s*/g, " ").trim()]));
+  return Object.fromEntries(Object.entries(def.settings ?? {}).filter(([k]) => !/token|secret|password/i.test(k)).map(([k, d]: [string, any]) => [k, { ...(d && "default" in d ? { default: d.default } : {}), ...(d?.values ? { values: d.values } : {}), ...(d?.required ? { required: true } : {}), ...(d?.type ? { type: d.type } : {}), ...(d?.host ? { host: d.host } : {}), ...(d?.writers ? { writers: [d.writers].flat().map(String) } : {}), ...(d?.owner ? { owner: ownerRules(file, k, d.owner) } : {}), ...(docs[k] ? { doc: docs[k] } : {}) }]));
 }
 
 /**
  * modules/marketplace.json: the modules this product ships, each `{ name, source: "./<name>" }`. Unknown fields are ignored.
  * A remote source belongs in a third-party marketplace (instance.yaml marketplaces:) until the modules repository (5b).
  */
-export function readMarketplace(productDir) {
+export function readMarketplace(productDir: string) {
   const file = join(productDir, "modules", "marketplace.json");
   if (!existsSync(file)) fail("modules/marketplace.json is missing");
   const m = JSON.parse(readFileSync(file, "utf8"));
@@ -286,15 +289,15 @@ export function readMarketplace(productDir) {
  * Every module of modules/marketplace.json and every module instance.yaml installs from a third-party marketplace, as
  * { name, root, def, marketplace, tier, sha? }, in name order. Names are unique across marketplaces. module.yaml is strict.
  */
-function discover(productDir, instance, fetch) {
+function discover(productDir: string, instance: Obj, fetch: Fetch) {
   const dir = join(productDir, "modules");
   const plugins = readMarketplace(productDir).plugins;
-  const listed = new Set(plugins.map((p) => p.name));
+  const listed = new Set(plugins.map((p: Obj) => p.name));
   for (const name of readdirSync(dir)) {
     if (existsSync(join(dir, name, "module.yaml")) && !listed.has(name)) fail(`modules/${name} is not in modules/marketplace.json`);
   }
-  const out = new Map();
-  for (const p of [...plugins].sort((a, b) => a.name.localeCompare(b.name))) {
+  const out = new Map<string, Obj>();
+  for (const p of [...plugins].sort((a: Obj, b: Obj) => a.name.localeCompare(b.name))) {
     const { name } = p;
     const root = join(dir, name);
     const file = join(root, "module.yaml");
@@ -305,7 +308,7 @@ function discover(productDir, instance, fetch) {
   }
   // An official module the instance runs from its own fork (spec §6.9b): the fork's tree, on top of the official folder, at a
   // computed tier that is never official.
-  const parse = (t) => YAML.parse(t);
+  const parse = (t: string) => YAML.parse(t);
   const forks = forksOf(instance).filter((x) => x.target !== "kernel" && out.has(x.target));
   // An official module is part of the product (2026-11-18): the product pin (product:) moves it, never a per-module sha.
   for (const p of pinsOf(instance).filter((x) => x.marketplace === OFFICIAL)) fail(`modules: ${p.name} is pinned at ${p.sha.slice(0, 12)}, but an official module is part of the product: pin the product (product:), not the module`);
@@ -315,14 +318,15 @@ function discover(productDir, instance, fetch) {
     const r = checkout(at, fetch);
     const def = readYaml(join(r, "module.yaml"));
     if (def.name !== k.target) fail(`${k.target}: its fork's module.yaml name is ${def.name}`);
-    if (def.apps != null || Object.values(def.services?.run ?? {}).some((s) => s?.build != null)) fail(`${k.target}: apps and service builds from a fork aren't supported yet`);
+    if (def.apps != null || Object.values(def.services?.run ?? {}).some((s: any) => s?.build != null)) fail(`${k.target}: apps and service builds from a fork aren't supported yet`);
     out.set(k.target, { name: k.target, root: r, def, marketplace: OFFICIAL, tier: "declared", sha: at.sha, source: { url: at.url, path: at.path } });
   }
-  for (const r of remoteModules(instance, { ...fetch, parse: (t) => YAML.parse(t) })) {
-    if (out.has(r.name)) fail(`${r.name}@${r.marketplace}: a module named ${r.name} is already installed from ${out.get(r.name).marketplace}`);
-    if (r.def.apps != null || Object.values(r.def.services?.run ?? {}).some((s) => s?.build != null)) fail(`${r.name}@${r.marketplace}: apps and service builds from a remote source aren't supported yet`);
+  for (const r of remoteModules(instance, { ...fetch, parse: (t: string) => YAML.parse(t) })) {
+    const def = r.def as Obj;
+    if (out.has(r.name)) fail(`${r.name}@${r.marketplace}: a module named ${r.name} is already installed from ${out.get(r.name)!.marketplace}`);
+    if (def.apps != null || Object.values(def.services?.run ?? {}).some((s: any) => s?.build != null)) fail(`${r.name}@${r.marketplace}: apps and service builds from a remote source aren't supported yet`);
     const pinned = pinsOf(instance).find((p) => p.name === r.name && p.marketplace === r.marketplace)?.sha;
-    out.set(r.name, { name: r.name, root: r.root, def: r.def, marketplace: r.marketplace, tier: r.tier, sha: r.at.sha, source: { url: r.market.url, path: r.market.path }, ...(pinned ? { pinned } : {}) });
+    out.set(r.name, { name: r.name, root: r.root, def, marketplace: r.marketplace, tier: r.tier, sha: r.at.sha, source: { url: r.market.url, path: r.market.path }, ...(pinned ? { pinned } : {}) });
   }
   for (const m of out.values()) {
     const unknown = Object.keys(m.def).filter((k) => !MANIFEST_KEYS.has(k) && k !== "compose");
@@ -335,16 +339,16 @@ function discover(productDir, instance, fetch) {
  * The instance's modules, closed over `requires`, in name order. A virtual capability (a name some
  * module `provides`) never enables a module: the instance lists its provider, and the binding check below needs one enabled.
  */
-function resolveEnabled(all, wanted) {
+function resolveEnabled(all: Map<string, Obj>, wanted: string[]) {
   const virtual = new Set([...all.values()].flatMap((m) => [m.def.provides ?? []].flat().map(String)));
-  const enabled = new Set();
-  const visit = (name, path) => {
+  const enabled = new Set<string>();
+  const visit = (name: string, path: string[]) => {
     if (path.includes(name)) fail(`module cycle: ${[...path.slice(path.indexOf(name)), name].join(" → ")}`);
     if (!all.has(name)) {
       fail(`unknown module: ${name}${path.length ? ` (required by ${path.at(-1)})` : ""}`);
     }
     if (enabled.has(name)) return;
-    for (const dep of all.get(name).def.requires ?? []) if (!virtual.has(String(dep))) visit(dep, [...path, name]);
+    for (const dep of all.get(name)!.def.requires ?? []) if (!virtual.has(String(dep))) visit(dep, [...path, name]);
     enabled.add(name);
   };
   for (const name of wanted) visit(name, []);
@@ -356,14 +360,14 @@ function resolveEnabled(all, wanted) {
  * the GitHub agents org once GitHub is connected (the host's AIDENHQ_GITHUB_AGENTS_ORG, written by the kernel when the GitHub App is created (kernel/src/github-app.ts)
  * beside the App's key), and `local` (this server's repos) while codehost-local is on.
  */
-const codehostOrgs = (enabled, settings) => [...(enabled.includes("github") && settings.agents_org ? [{ org: settings.agents_org, host: "github" }] : []), ...(enabled.includes("codehost-local") ? [{ org: "local", host: "local" }] : [])];
+const codehostOrgs = (enabled: Obj, settings: Obj) => [...(enabled.includes("github") && settings.agents_org ? [{ org: settings.agents_org, host: "github" }] : []), ...(enabled.includes("codehost-local") ? [{ org: "local", host: "local" }] : [])];
 
 /**
  * config/gateway.json `models`, by id: every enabled module's `models:` entries (spec §5.12). USD per million tokens, each the
  * least a provider charges; peak (>= 1) the most a call can cost as a multiple of them; max_output the most output tokens.
  */
-export function modelPrices(defs) {
-  const out = {};
+export function modelPrices(defs: Obj) {
+  const out: Obj = {};
   for (const [name, def] of Object.entries(defs)) {
     for (const m of def.models ?? []) {
       const ok = typeof m?.id === "string" && m.id && ["in", "cached_in", "out"].every((k) => Number.isFinite(m[k]) && m[k] >= 0) && (m.peak ?? 1) >= 1 && Number.isInteger(m.max_output) && m.max_output > 0;
@@ -380,13 +384,13 @@ export function modelPrices(defs) {
  * models as the gateway sees them (codegenie's `openrouter/` provider and `:<reasoning>` suffix dropped); the review model and
  * effort the code-review job gets with its CI token (always one of the allowed models).
  */
-function ciReview(settings) {
-  const usd = (k) => {
+function ciReview(settings: Obj) {
+  const usd = (k: string) => {
     const v = Number(settings[k]);
     if (!(v > 0 && v <= 1000)) fail(`settings.${k}: USD per day, above 0 and at most 1000`);
     return v;
   };
-  const want = String(settings.ci_review_model ?? "~deepseek/deepseek-flash-latest:high").trim(), bare = (m) => String(m).trim().replace(/^openrouter\//, "").replace(/:(minimal|low|medium|high|xhigh|max)$/, "");
+  const want = String(settings.ci_review_model ?? "~deepseek/deepseek-flash-latest:high").trim(), bare = (m: unknown) => String(m).trim().replace(/^openrouter\//, "").replace(/:(minimal|low|medium|high|xhigh|max)$/, "");
   const review = { model: bare(want), effort: /:(minimal|low|medium|high|xhigh)$/.exec(want)?.[1] ?? "high" }, models = [...new Set([...[settings.ci_review_models ?? []].flat().map(bare), review.model])].filter(Boolean);
   return { orgs: [settings.agents_org].filter(Boolean), models, review, repo_day_usd: usd("ci_review_repo_day_usd"), day_usd: usd("ci_review_day_usd") };
 }
@@ -398,17 +402,17 @@ function ciReview(settings) {
  * upstream drops the upstream's own org and host.
  */
 const COMMON_WORDS = new Set(["the", "and", "for", "inc", "ltd", "llc", "labs", "lab", "company", "corp", "group", "team", "work", "home", "personal", "admin", "user", "mail", "info"]);
-function ownerTerms(own, settings, declared) {
-  const terms = new Set();
-  const add = (t) => { const v = String(t ?? "").replace(/[,$]/g, "").trim(); if (v.length >= 3 && !COMMON_WORDS.has(v.toLowerCase())) terms.add(v); };
-  const isDefault = (k) => declared.some((d) => d[k] && "default" in d[k] && d[k].default === settings[k]);
+function ownerTerms(own: Obj, settings: Obj, declared: Obj) {
+  const terms = new Set<string>();
+  const add = (t: unknown) => { const v = String(t ?? "").replace(/[,$]/g, "").trim(); if (v.length >= 3 && !COMMON_WORDS.has(v.toLowerCase())) terms.add(v); };
+  const isDefault = (k: string) => declared.some((d: Obj) => d[k] && "default" in d[k] && d[k].default === settings[k]);
   for (const k of ["owner_name", "company_name", "instance_name", "agents_org"]) {
     if (isDefault(k) || settings[k] == null) continue;
     add(settings[k]);
     if (k === "owner_name" || k === "company_name") for (const w of String(settings[k]).split(/[^\p{L}\p{N}]+/u)) add(w);
   }
   for (const o of [settings.github_orgs ?? []].flat()) add(o);
-  const walk = (v) => {
+  const walk = (v: unknown): void => {
     if (Array.isArray(v) || (v && typeof v === "object")) return Object.values(v).forEach(walk);
     if (typeof v !== "string") return;
     for (const m of v.matchAll(/([\w.+-]+)@([\w-]+(?:\.[\w-]+)+)/g)) { add(m[0]); add(m[1]); add(m[2]); }
@@ -424,9 +428,9 @@ function ownerTerms(own, settings, declared) {
  * scalars keeps its plain text (a list comma-joined). `compose`: the result is a compose file, which expands `$` itself, so
  * a setting holding one (`${SOME_SECRET}`) fails rather than smuggle another variable in.
  */
-const settingText = (v) => (v && typeof v === "object" && [v].flat().some((x) => x && typeof x === "object") ? JSON.stringify(v) : String(v));
-function substitute(value, settings, compose = false) {
-  const one = (s) => s.replace(SETTING, (_, k) => (!(k in settings) ? fail(`unknown setting: ${k}`) : compose && settingText(settings[k]).includes("$") ? fail(`settings.${k}: no $ in a value a compose file uses`) : settingText(settings[k])));
+const settingText = (v: any) => (v && typeof v === "object" && [v].flat().some((x) => x && typeof x === "object") ? JSON.stringify(v) : String(v));
+function substitute(value: any, settings: Obj, compose = false): any {
+  const one = (s: string) => s.replace(SETTING, (_: string, k: string) => (!(k in settings) ? fail(`unknown setting: ${k}`) : compose && settingText(settings[k]).includes("$") ? fail(`settings.${k}: no $ in a value a compose file uses`) : settingText(settings[k])));
   if (typeof value === "string") return one(value);
   if (Array.isArray(value)) return value.map((v) => substitute(v, settings, compose));
   if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, substitute(v, settings, compose)]));
@@ -434,13 +438,13 @@ function substitute(value, settings, compose = false) {
 }
 
 /** A module's own agent and routine values as the compiled config would have them without overrides (settings substituted; a module whose settings aren't set keeps them raw). */
-function moduleDefaults(def, settings) {
+function moduleDefaults(def: Obj, settings: Obj) {
   let d = def;
   try { d = substitute(def, settings); } catch { /* a disabled module's settings may be unset */ }
-  return { agents: d.agents ?? {}, routines: Object.fromEntries(Object.entries(d.routines ?? {}).map(([k, { when: _w, ...r }]) => [k, r])) };
+  return { agents: d.agents ?? {}, routines: Object.fromEntries(Object.entries(d.routines ?? {}).map(([k, { when: _w, ...r }]: [string, any]) => [k, r])) };
 }
 
-const isolationOf = (v, where, allowed = PROFILES) => {
+const isolationOf = (v: string | undefined, where: string, allowed = PROFILES) => {
   const p = v ?? "trusted";
   if (!allowed.includes(p)) fail(`${where}: isolation must be one of ${allowed.join(", ")} (got ${p})`);
   return p;
@@ -450,21 +454,21 @@ const isolationOf = (v, where, allowed = PROFILES) => {
  * Additions to a root compose service (modules' board_env and legacy links, the edge's): environment maps and secrets,
  * volumes and networks lists merge. Anything else declared twice, or one env var set two ways, fails.
  */
-function mergeService(services, key, svc) {
+function mergeService(services: Obj, key: string, svc: Obj) {
   const prev = services[key];
   if (!prev) return void (services[key] = svc);
-  const extra = (x) => Object.keys(x).filter((f) => !["environment", "secrets", "volumes", "networks"].includes(f));
+  const extra = (x: Obj) => Object.keys(x).filter((f) => !["environment", "secrets", "volumes", "networks"].includes(f));
   if (extra(prev).length || extra(svc).length) fail(`duplicate compose service: ${key}`);
   const env = { ...(prev.environment ?? {}) };
   for (const [n, v] of Object.entries(svc.environment ?? {})) {
     if (n in env && env[n] !== v) fail(`compose service ${key}: ${n} set two ways`);
     env[n] = v;
   }
-  const list = (f) => [...new Set([...(prev[f] ?? []), ...(svc[f] ?? [])])];
+  const list = (f: string) => [...new Set([...(prev[f] ?? []), ...(svc[f] ?? [])])];
   services[key] = { ...(Object.keys(env).length ? { environment: env } : {}), secrets: list("secrets"), ...(list("volumes").length ? { volumes: list("volumes") } : {}), ...(list("networks").length ? { networks: list("networks") } : {}) };
 }
 
-function put(target, key, value, kind) {
+function put(target: Obj, key: string, value: Obj, kind: string) {
   if (key in target) fail(`duplicate ${kind}: ${key}`);
   target[key] = value;
 }
@@ -474,19 +478,19 @@ function put(target, key, value, kind) {
  * and board.signins; a sign-in's own `secrets` (asked for on its Connect) get their fields the same way. A flow with `pair_url`
  * gets the module's generated `<module>_pair_token` (its secret's name in the flow, never its value): mounted on the board (`board_env`), and the module's service reads it as `${secrets.<module>_pair_token}`.
  */
-export function setupFlows(defs, compiled, settings = {}) {
+export function setupFlows(defs: Obj, compiled: Obj, settings: Obj = {}) {
   // Each paste field's label, pattern and help, from the secret's `setup:` (the board shows and checks them; the kernel checks again).
   // A sign-in's secret may be `{ secret, when: { <setting>: <value> } }`: asked for only in that mode (the board's Connect
   // follows the module's settings). A help text may name a setting as ${settings.<name>}.
-  const fieldsOf = (module, secrets, where) => {
+  const fieldsOf = (module: string, secrets: Obj, where: string) => {
     const declared = [defs[module].secrets?.provided ?? []].flat().filter((p) => p?.setup != null);
-    const holds = (when) => Object.entries(when ?? {}).every(([k, v]) => String(settings[k]) === String(v));
-    return (secrets ?? []).flatMap((e) => {
+    const holds = (when: Obj) => Object.entries(when ?? {}).every(([k, v]) => String(settings[k]) === String(v));
+    return (secrets ?? []).flatMap((e: Obj) => {
       const s = typeof e === "string" ? e : e.secret;
       if (typeof e !== "string" && !holds(e.when)) return [];
       const p = declared.find((x) => x.name === s);
       if (!p) fail(`${where} names a secret without setup: ${s} (give it \`setup:\` under secrets.provided)`);
-      const help = p.setup.help?.replace(/\$\{settings\.([a-z_]+)\}/g, (_, k) => settings[k] ?? "");
+      const help = p.setup.help?.replace(/\$\{settings\.([a-z_]+)\}/g, (_: string, k: string) => settings[k] ?? "");
       return [{ secret: s, label: p.setup.label, pattern: p.setup.pattern, ...(help ? { help } : {}) }];
     });
   };
@@ -498,13 +502,13 @@ export function setupFlows(defs, compiled, settings = {}) {
   for (const f of flows) {
     const where = `module ${f.module}: setup_flows`;
     const advanced = f.mode === "advanced";
-    if (flows.filter((x) => x.module === f.module && (x.mode === "advanced") === advanced).length > 1) fail(`${where}: one ${advanced ? "advanced" : "basic"} flow per module`);
+    if (flows.filter((x: Obj) => x.module === f.module && (x.mode === "advanced") === advanced).length > 1) fail(`${where}: one ${advanced ? "advanced" : "basic"} flow per module`);
     if (advanced && !f.capabilities?.length) fail(`${where}: an advanced flow lists the capabilities it unlocks`);
     if (!advanced && f.capabilities) fail(`${where}: capabilities belong on the advanced flow`);
-    if (advanced && !flows.some((x) => x.module === f.module && x.mode !== "advanced")) fail(`${where}: an advanced flow needs the module's basic flow`);
-    if (f.pair_url != null && flows.some((x) => x !== f && x.module === f.module && x.pair_url != null)) fail(`${where}: one pairing per module`);
+    if (advanced && !flows.some((x: Obj) => x.module === f.module && x.mode !== "advanced")) fail(`${where}: an advanced flow needs the module's basic flow`);
+    if (f.pair_url != null && flows.some((x: Obj) => x !== f && x.module === f.module && x.pair_url != null)) fail(`${where}: one pairing per module`);
     f.fields = fieldsOf(f.module, f.secrets, where);
-    if (f.signin != null && !(compiled.board.signins ?? []).some((x) => x.module === f.module && x.id === f.signin)) fail(`${where}: signin ${f.signin} is not one of its board.signins`);
+    if (f.signin != null && !(compiled.board.signins ?? []).some((x: Obj) => x.module === f.module && x.id === f.signin)) fail(`${where}: signin ${f.signin} is not one of its board.signins`);
     if (f.choose) {
       const declared = defs[f.module].settings ?? {};
       const mode = declared[f.choose.setting];
@@ -516,7 +520,7 @@ export function setupFlows(defs, compiled, settings = {}) {
           try { new RegExp(i.pattern); } catch { fail(`${where}: choose input ${i.setting} has a pattern that is not a regular expression`); }
         }
       }
-      if (new Set(f.choose.options.map((o) => o.value)).size !== f.choose.options.length) fail(`${where}: each choose option once`);
+      if (new Set(f.choose.options.map((o: Obj) => o.value)).size !== f.choose.options.length) fail(`${where}: each choose option once`);
     }
     if (f.pair_url == null) continue;
     const token = `${f.module.replace(/-/g, "_")}_pair_token`;
@@ -526,11 +530,11 @@ export function setupFlows(defs, compiled, settings = {}) {
     f.pair_token = token;
   }
   // The advanced flow rides on its basic one: the board reads one flow per module.
-  for (const a of flows.filter((x) => x.mode === "advanced")) {
+  for (const a of flows.filter((x: Obj) => x.mode === "advanced")) {
     const { module: _m, order: _o, wizard: _w, mode: _d, ...rest } = a;
-    flows.find((x) => x.module === a.module && x.mode !== "advanced").advanced = rest;
+    flows.find((x: Obj) => x.module === a.module && x.mode !== "advanced").advanced = rest;
   }
-  if (compiled.board?.setup_flows) compiled.board.setup_flows = flows.filter((x) => x.mode !== "advanced");
+  if (compiled.board?.setup_flows) compiled.board.setup_flows = flows.filter((x: Obj) => x.mode !== "advanced");
 }
 
 /**
@@ -540,12 +544,12 @@ export function setupFlows(defs, compiled, settings = {}) {
  * confidential secret (an optional `note` says why its values are safe to publish). The board (points board.organisations) gets each with its clients resolved to the enabled modules':
  * choosing one writes them through the admin secret write, and the connections sign in as usual.
  */
-export function organisations(list, allDefs, enabledDefs) {
+export function organisations(list: unknown, allDefs: Obj, enabledDefs: Obj) {
   if (list == null) return [];
   if (!Array.isArray(list)) fail("modules/marketplace.json: organisations is a list");
-  const publicClients = Object.fromEntries(Object.entries(allDefs).flatMap(([module, def]) => [def.secrets?.provided ?? []].flat().filter((p) => p?.setup?.public_client === true).map((p) => [p.name, { module, pattern: p.setup.pattern }])));
-  const ids = new Set();
-  return list.map((o) => {
+  const publicClients = Object.fromEntries(Object.entries(allDefs).flatMap(([module, def]: [string, Obj]) => [def.secrets?.provided ?? []].flat().filter((p) => p?.setup?.public_client === true).map((p) => [p.name, { module, pattern: p.setup.pattern }])));
+  const ids = new Set<string>();
+  return (list as Obj[]).map((o: Obj) => {
     const where = `modules/marketplace.json: organisations ${o?.id ?? "?"}`;
     if (!/^[a-z][a-z0-9-]{1,40}$/.test(String(o?.id))) fail(`${where}: id is lowercase letters, digits and -`);
     if (ids.has(o.id)) fail(`${where}: listed twice`);
@@ -555,16 +559,16 @@ export function organisations(list, allDefs, enabledDefs) {
     const extra = Object.keys(o).filter((k) => !["id", "name", "domains", "clients", "note"].includes(k));
     if (extra.length) fail(`${where}: unknown ${extra.join(", ")}`);
     if (o.note != null && (typeof o.note !== "string" || o.note.length > 500)) fail(`${where}: note is a text of 500 characters at most`);
-    if (!Array.isArray(o.domains) || !o.domains.length || o.domains.some((d) => typeof d !== "string" || !/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(d))) fail(`${where}: domains are lowercase email domains`);
+    if (!Array.isArray(o.domains) || !o.domains.length || o.domains.some((d: unknown) => typeof d !== "string" || !/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(d))) fail(`${where}: domains are lowercase email domains`);
     if (!o.clients || typeof o.clients !== "object" || Array.isArray(o.clients) || !Object.keys(o.clients).length) fail(`${where}: clients maps a connection's client secret to its public value`);
-    const clients = Object.entries(o.clients).map(([secret, value]) => {
+    const clients = Object.entries(o.clients).map(([secret, value]: [string, any]) => {
       const c = publicClients[secret];
       if (!c) fail(`${where}: ${secret} is not a module secret marked public_client (only public client values belong in the catalog)`);
       if (typeof value !== "string" || !new RegExp(c.pattern).test(value)) fail(`${where}: ${secret} doesn't fit its pattern`);
       return { module: c.module, secret, value };
     });
     return { id: o.id, name: o.name, domains: o.domains, clients: clients.filter((c) => c.module in enabledDefs) };
-  }).filter((o) => o.clients.length);
+  }).filter((o: Obj) => o.clients.length);
 }
 
 /**
@@ -572,16 +576,16 @@ export function organisations(list, allDefs, enabledDefs) {
  * (aidenhq-mod-<module>-board, internal), and `board` joins the service's aidenhq.links label (scripts/verify-security.sh).
  * The host must be one of the declaring module's own services (its compose name or alias).
  */
-export function linkPairServices(flows, compose, serviceModule, networkModule) {
-  for (const f of flows.flatMap((x) => (x.advanced ? [x, { module: x.module, ...x.advanced }] : [x]))) {
+export function linkPairServices(flows: Obj, compose: Obj, serviceModule: Obj, networkModule: Obj) {
+  for (const f of flows.flatMap((x: Obj) => (x.advanced ? [x, { module: x.module, ...x.advanced }] : [x]))) {
     if (f.pair_url == null) continue;
     const host = new URL(f.pair_url).hostname;
-    const key = Object.keys(serviceModule).find((k) => serviceModule[k].module === f.module && (k === host || serviceModule[k].alias === host));
+    const key = Object.keys(serviceModule).find((k) => serviceModule[k].module === f.module && (k === host || serviceModule[k].alias === host))!;
     if (!key) fail(`module ${f.module}: setup_flows pair_url ${f.pair_url} is not one of its services`);
     const k = `mod-${f.module}-board`;
     if (!compose.networks[k]) {
       const name = `aidenhq-mod-${f.module}-board`;
-      if (Object.values(compose.networks).some((n) => n.name === name)) fail(`module ${f.module}: its network ${name} is already another module's`);
+      if (Object.values(compose.networks).some((n: any) => n.name === name)) fail(`module ${f.module}: its network ${name} is already another module's`);
       compose.networks[k] = { name, internal: true, ipam: { config: [{ subnet: subnetFor(name) }] } };
       networkModule[k] = f.module;
     }
@@ -603,14 +607,14 @@ export function linkPairServices(flows, compose, serviceModule, networkModule) {
  * home): where the kernel keeps the job workspaces (kernel/src/sandbox-config.ts reads the same file the same way). Compile
  * hands both to the launcher in computers.json.
  */
-export function hostDirs(productDir, env = process.env) {
+export function hostDirs(productDir: string, env = process.env) {
   const file = join(resolve(productDir, env.AIDENHQ_CONFIG_DIR ?? "config"), "runner.yaml");
   const y = (existsSync(file) ? YAML.parse(readFileSync(file, "utf8")) : {}) ?? {};
-  const expand = (p) => (p.startsWith("~/") ? join(homedir(), p.slice(2)) : p);
+  const expand = (p: string) => (p.startsWith("~/") ? join(homedir(), p.slice(2)) : p);
   return { work_dir: expand(String(y.work_dir ?? "~/aidenhq-work")), state_dir: expand(String(y.state_dir ?? "~/.local/state/aidenhq-runner")) };
 }
 
-export function compile(productDir, instanceDir, { revision, bundleState, oldBundle, fetch = hostFetch(productDir), door, workDir = hostDirs(productDir).work_dir, githubOrg = "" } = {}) {
+export function compile(productDir: string, instanceDir: string, { revision, bundleState, oldBundle, fetch = hostFetch(productDir), door, workDir = hostDirs(productDir).work_dir, githubOrg = "" }: { revision?: string; bundleState?: Obj; oldBundle?: Obj; fetch?: Fetch; door?: Obj; workDir?: string; githubOrg?: string } = {}) {
   const instFile = join(instanceDir, "instance.yaml");
   if (!existsSync(instFile)) fail(`no instance.yaml in ${instanceDir}: set AIDENHQ_INSTANCE_DIR to your instance checkout (see docs/USAGE.md)`);
   const instance = readYaml(instFile);
@@ -627,8 +631,8 @@ export function compile(productDir, instanceDir, { revision, bundleState, oldBun
   const listed = new Set(current(instance.modules ?? [], known));
   const removed = new Set((instance.modules_removed ?? []).map(String));
   const seen = bundleState?.seen ?? oldBundle ?? bundle;
-  const adopted = new Set([...(bundleState?.adopted ?? []), ...bundle.filter((n) => !seen.includes(n) && !listed.has(n))].filter((n) => all.has(n)));
-  const unset = (n) => resolveEnabled(all, [n]).flatMap((m) => Object.entries(all.get(m).def.settings ?? {}).filter(([k, d]) => d?.required && !("default" in d) && instance.settings?.[k] == null).map(([k]) => k));
+  const adopted = new Set([...(bundleState?.adopted ?? []), ...bundle.filter((n: string) => !seen.includes(n) && !listed.has(n))].filter((n) => all.has(n)));
+  const unset = (n: string) => resolveEnabled(all, [n]).flatMap((m) => Object.entries(all.get(m)!.def.settings ?? {}).filter(([k, d]: [string, any]) => d?.required && !("default" in d) && instance.settings?.[k] == null).map(([k]) => k));
   const added = [...adopted].filter((n) => !removed.has(n) && !listed.has(n)).filter((n) => {
     const missing = unset(n);
     if (missing.length) console.warn(`module ${n} is not enabled yet: set ${missing.join(", ")} first`);
@@ -636,24 +640,24 @@ export function compile(productDir, instanceDir, { revision, bundleState, oldBun
   });
   const chosen = current([...(instance.modules ?? []), ...added], known);
   const enabled = resolveEnabled(all, chosen);
-  const enabledDefs = Object.fromEntries(enabled.map((n) => [n, all.get(n).def]));
+  const enabledDefs = Object.fromEntries(enabled.map((n) => [n, all.get(n)!.def]));
   const conflicts = conflictProblems(enabledDefs);
   if (conflicts.length) fail(conflicts.join("; "));
   // Module-owned points (spec §3.6): config/points/<owner>.json, one file for every module that defines any ({} when off).
-  const compiled = compilePoints(enabledDefs, Object.fromEntries(enabled.map((n) => [n, all.get(n).root])));
+  const compiled = compilePoints(enabledDefs, Object.fromEntries(enabled.map((n) => [n, all.get(n)!.root])));
   const points = Object.fromEntries([...all.values()].filter((m) => m.def.points).map((m) => [m.name, compiled[m.name] ?? {}]));
-  const warnings = [];
+  const warnings: string[] = [];
 
   // Settings: the kernel's and the modules' defaults, then the instance; required ones must end up set.
-  const declaredSettings = [["the kernel", KERNEL_SETTINGS], ...enabled.map((n) => [n, all.get(n).def.settings ?? {}])];
-  const settings = {};
+  const declaredSettings: [string, Obj][] = [["the kernel", KERNEL_SETTINGS], ...enabled.map((n): [string, Obj] => [n, all.get(n)!.def.settings ?? {}])];
+  const settings: Obj = {};
   for (const [, defs] of declaredSettings) for (const [k, d] of Object.entries(defs)) if (d && "default" in d) settings[k] = d.default;
   Object.assign(settings, instance.settings ?? {});
   setupFlows(enabledDefs, compiled, settings);
   const orgs = organisations(readMarketplace(productDir).organisations, known, enabledDefs);
   if (compiled.board && orgs.length) compiled.board.organisations = orgs;
   for (const [name, defs] of declaredSettings) {
-    for (const [k, d] of Object.entries(defs)) {
+    for (const [k, d] of Object.entries(defs) as [string, any][]) {
       if (d?.required && settings[k] == null) fail(`setting ${k} is required by ${name}`);
       // A value is the shape of its default (a list stays a list, a map a map, a number a number): a consumer that splits a
       // string where it expects a list, or a tiering rule that compares lists, can't be handed another shape.
@@ -663,7 +667,7 @@ export function compile(productDir, instanceDir, { revision, bundleState, oldBun
         const v = [settings[k]].flat();
         const words = d.values.length > 1 ? `${d.values.slice(0, -1).join(", ")} or ${d.values.at(-1)}` : d.values[0];
         if (!v.length) fail(`settings.${k}: at least one`);
-        if (v.some((x) => !d.values.includes(x))) fail(`settings.${k}: each must be ${words}`);
+        if (v.some((x: unknown) => !d.values.includes(x))) fail(`settings.${k}: each must be ${words}`);
       }
       // `type: url` (and `host:`): the board's check, again here, where it is the gate (services/shared/url-setting.ts).
       if (d?.type === "url") {
@@ -696,40 +700,40 @@ export function compile(productDir, instanceDir, { revision, bundleState, oldBun
   // Derived for upstream contributions (spec §6.9): the owner-data scrub's literals (ownerTerms).
   settings.owner_terms = ownerTerms(instance.settings ?? {}, settings, declaredSettings.map(([, defs]) => defs));
 
-  const paperclip = { company: { name: String(settings.company_name), description: KERNEL_DEFAULTS.company_description }, ...(settings.owner_name ? { owner_name: String(settings.owner_name) } : {}), ...(settings.agents_org ? { github_agents_org: settings.agents_org } : {}), agents_orgs: codehostOrgs(enabled, settings), autonomy: String(settings.autonomy ?? "off"), settings: shownSettings, labels: [], mcp_servers: {}, agents: {}, routines: {} };
-  const apps = [];
+  const paperclip: Obj = { company: { name: String(settings.company_name), description: KERNEL_DEFAULTS.company_description }, ...(settings.owner_name ? { owner_name: String(settings.owner_name) } : {}), ...(settings.agents_org ? { github_agents_org: settings.agents_org } : {}), agents_orgs: codehostOrgs(enabled, settings), autonomy: String(settings.autonomy ?? "off"), settings: shownSettings, labels: [], mcp_servers: {}, agents: {}, routines: {} };
+  const apps: Obj[] = [];
   const instanceAppDefs = existsSync(join(instanceDir, "apps.yaml")) ? (readYaml(join(instanceDir, "apps.yaml")).apps ?? []) : [];
-  const instanceApps = instanceAppDefs.map((a) => a.name);
-  const compose = { services: {}, secrets: {}, volumes: {}, networks: {} };
+  const instanceApps = instanceAppDefs.map((a: Obj) => a.name);
+  const compose: Obj = { services: {}, secrets: {}, volumes: {}, networks: {} };
   // The root compose (the product's own services, networks and secrets): what modules may reach only through LEGACY_*.
   const base = existsSync(join(productDir, "compose.yaml")) ? readYaml(join(productDir, "compose.yaml")) : {};
-  const serviceModule = {};
-  const secretOwner = {};
-  const networkModule = {};
-  const dataDirs = [], stateDirs = [];
-  const dataModules = {};
-  const labelNames = new Set();
-  const routineTitles = new Set();
-  const jobcaps = {};
-  const engines = {};
-  const writes = {};
-  const checks = {};
-  const checkJobTable = {};
-  const serviceShares = []; // module services people reach through the gate (services.run.<svc>.share)
+  const serviceModule: Obj = {};
+  const secretOwner: Obj = {};
+  const networkModule: Obj = {};
+  const dataDirs: string[] = [], stateDirs: string[] = [];
+  const dataModules: Obj = {};
+  const labelNames = new Set<string>();
+  const routineTitles = new Set<string>();
+  const jobcaps: Obj = {};
+  const engines: Obj = {};
+  const writes: Obj = {};
+  const checks: Obj = {};
+  const checkJobTable: Obj = {};
+  const serviceShares: Obj[] = []; // module services people reach through the gate (services.run.<svc>.share)
 
   for (const name of enabled) {
-    const { root } = all.get(name);
-    const def = substitute(all.get(name).def, settings);
+    const { root } = all.get(name)!;
+    const def = substitute(all.get(name)!.def, settings);
     const isolation = isolationOf(def.isolation, `module ${name}`);
     if (isolation === "untrusted" && (Object.keys(def.connections ?? {}).length || def.services || def.board_env)) fail(`untrusted module ${name} may not declare connections or services`);
     if (def.compose != null) fail(`module ${name}: compose fragments are gone; declare services: (kernel/schemas/services.json)`);
     for (const l of def.labels ?? []) { if (labelNames.has(l.name)) fail(`duplicate label: ${l.name}`); labelNames.add(l.name); paperclip.labels.push(l); }
     for (const [id, j] of Object.entries(jobcapEntries(name, def))) { if (jobcaps[id]) fail(`duplicate jobcap: ${id}`); jobcaps[id] = { ...j, module: name }; }
     for (const [kind, e] of Object.entries(engineEntries(name, def, root, productDir))) { if (engines[kind]) fail(`two modules declare engine kind ${kind}: ${engines[kind].module} and ${name}`); engines[kind] = e; }
-    for (const [k, c] of Object.entries(def.connections ?? {})) {
+    for (const [k, c] of Object.entries<Obj>(def.connections ?? {})) {
       if (!Array.isArray(c.tools?.read) || !Array.isArray(c.tools?.write)) fail(`connection ${k}: tools.read and tools.write must list its tools`);
       if (c.tools.destructive != null && !Array.isArray(c.tools.destructive)) fail(`connection ${k}: tools.destructive must be a list`);
-      if (c.tools.named != null && (!Array.isArray(c.tools.named) || c.tools.named.some((t) => typeof t !== "string" || !t))) fail(`connection ${k}: tools.named must be a list of its read tools`);
+      if (c.tools.named != null && (!Array.isArray(c.tools.named) || c.tools.named.some((t: string) => typeof t !== "string" || !t))) fail(`connection ${k}: tools.named must be a list of its read tools`);
       // `named` only narrows a read tool out of the read shorthand (never a fourth group): a tool tagged `named` is still a
       // read, on the read path, and only a grant that names it reaches it. Tagging a write or destructive tool named, or a
       // tool named without read, would make the tag stand for a tool the read path then forwards: refused at compile.
@@ -745,13 +749,13 @@ export function compile(productDir, instanceDir, { revision, bundleState, oldBun
       if (!/^[a-z0-9_]+_service_key$/.test(c.auth ?? "")) fail(`connection ${k}: auth must name its service key secret (<name>_service_key)`);
       if (c.returns != null && !["trusted", "untrusted"].includes(c.returns)) fail(`connection ${k}: returns is trusted or untrusted`);
       if (c.model_as_caller != null && typeof c.model_as_caller !== "boolean") fail(`connection ${k}: model_as_caller is true or false`);
-      if (c.upstream != null && (!Array.isArray(c.upstream) || c.upstream.some((t) => ![...c.tools.read, ...c.tools.write, ...(c.tools.destructive ?? [])].includes(t)))) fail(`connection ${k}: upstream lists tools it tags read, write or destructive`);
+      if (c.upstream != null && (!Array.isArray(c.upstream) || c.upstream.some((t: string) => ![...c.tools.read, ...c.tools.write, ...(c.tools.destructive ?? [])].includes(t)))) fail(`connection ${k}: upstream lists tools it tags read, write or destructive`);
       put(paperclip.mcp_servers, k, { ...c, module: name }, "connection");
     }
     Object.assign(writes, writeKinds(name, def, root, instance.writes ?? {}, writes));
     for (const [run, r] of Object.entries(checkJobs(name, def, root))) { if (checkJobTable[run]) fail(`two modules declare check job ${run}: ${checkJobTable[run].module} and ${name}`); checkJobTable[run] = r; }
     Object.assign(checks, checkEntries(name, def));
-    for (const [key, a] of Object.entries(def.agents ?? {})) {
+    for (const [key, a] of Object.entries<Obj>(def.agents ?? {})) {
       const file = join(root, "agents", key, "AGENTS.md");
       if (!existsSync(file)) fail(`agent ${key}: missing ${relative(productDir, file)}`);
       const { meta } = frontmatter(readFileSync(file, "utf8"));
@@ -762,7 +766,7 @@ export function compile(productDir, instanceDir, { revision, bundleState, oldBun
         ...(existsSync(extra) ? { instructions_extra: extra } : {}),
       }, "agent");
     }
-    for (const [key, { when, ...r }] of Object.entries(def.routines ?? {})) {
+    for (const [key, { when, ...r }] of Object.entries<Obj>(def.routines ?? {})) {
       if (routineTitles.has(r.title)) fail(`duplicate routine title: ${r.title}`);
       routineTitles.add(r.title);
       // `when: { forks: true }`: only while instance.yaml runs a fork (spec §6.9b); no routine, and no run, otherwise.
@@ -785,13 +789,13 @@ export function compile(productDir, instanceDir, { revision, bundleState, oldBun
       secretOwner[sec] = name;
     }
     // Its compose services, generated from `services:` (no module compose); settings substituted as compose text (no $).
-    const raw = all.get(name).def;
+    const raw = all.get(name)!.def;
     const gen = generateCompose(name, { ...def, services: substitute(raw.services, settings, true), board_env: substitute(raw.board_env, settings, true) }, { root, local: true, rootServices: Object.keys(base.services ?? {}), rootNetworks: Object.keys(base.networks ?? {}), rootSecrets: Object.keys(base.secrets ?? {}), legacy: legacyOf(name), workDir, settings });
     serviceShares.push(...gen.shares);
-    for (const [k, s] of Object.entries(gen.services)) {
+    for (const [k, s] of Object.entries(gen.services) as [string, Obj][]) {
       if (k in (base.services ?? {})) fail(`module ${name}: its service ${k} has a root service's name`);
       put(compose.services, k, s, "compose service");
-      serviceModule[k] = { module: name, alias: Object.values(s.networks).flatMap((n) => n.aliases ?? [])[0] ?? k };
+      serviceModule[k] = { module: name, alias: Object.values<Obj>(s.networks).flatMap((n) => n.aliases ?? [])[0] ?? k };
     }
     for (const [k, v] of Object.entries(gen.roots)) mergeService(compose.services, k, v);
     for (const [k, v] of Object.entries(gen.secrets)) {
@@ -800,7 +804,7 @@ export function compile(productDir, instanceDir, { revision, bundleState, oldBun
     }
     // A network is one module's: a module named like another's link network (glean-board) can't define it and share it.
     for (const [k, v] of Object.entries(gen.networks)) {
-      if (networkModule[k] || Object.values(compose.networks).some((n) => n.name === v.name)) fail(`module ${name}: its network ${v.name} is already ${networkModule[k] ?? "another module"}'s`);
+      if (networkModule[k] || Object.values<Obj>(compose.networks).some((n) => n.name === v.name)) fail(`module ${name}: its network ${v.name} is already ${networkModule[k] ?? "another module"}'s`);
       networkModule[k] = name;
       compose.networks[k] = v;
     }
@@ -822,8 +826,8 @@ export function compile(productDir, instanceDir, { revision, bundleState, oldBun
   }
   linkPairServices(points.board?.setup_flows ?? [], compose, serviceModule, networkModule);
   // Networks get fixed subnets (Docker's default pools run out); two with one subnet fail here, never at compose up.
-  const subnets = {};
-  for (const [k, n] of Object.entries(compose.networks)) {
+  const subnets: Obj = {};
+  for (const [k, n] of Object.entries<Obj>(compose.networks)) {
     const sub = n.ipam?.config?.[0]?.subnet;
     if (sub && subnets[sub]) fail(`networks ${subnets[sub]} and ${k} hash to the same subnet ${sub}: rename one module`);
     if (sub) subnets[sub] = k;
@@ -840,7 +844,7 @@ export function compile(productDir, instanceDir, { revision, bundleState, oldBun
   }
   // A module service's names (its key, and the name it declared, which the kernel resolves by label) are its alone: never
   // another module's or a root service's, or a URL could reach the wrong module with this one's key.
-  const claimed = {};
+  const claimed: Obj = {};
   for (const [k, v] of Object.entries(serviceModule)) {
     for (const n of new Set([k, v.alias])) {
       if (claimed[n] || (n !== k && (n in compose.services || n in (base.services ?? {})))) fail(`module ${v.module}: the service name ${n} is already ${claimed[n] ? `module ${claimed[n]}'s` : "a root service's"}`);
@@ -849,7 +853,7 @@ export function compile(productDir, instanceDir, { revision, bundleState, oldBun
   }
   for (const k of Object.keys(compose.services)) if (!serviceModule[k] && claimed[k]) fail(`module ${claimed[k]}: the service name ${k} is a root service's`);
   // One host port, one owner: the product's compose, the modules', the gate, the kernel's sign-in listener and the apps.
-  checkPorts([base, compose], [[GATE_PORT, "gate"], [AUTH_PORT, "the kernel's sign-in listener"], ...[...instanceAppDefs, ...apps].filter((a) => Number.isInteger(a.port)).map((a) => [a.port, `app ${a.name}`])]);
+  checkPorts([base, compose], [[GATE_PORT, "gate"], [AUTH_PORT, "the kernel's sign-in listener"], ...[...instanceAppDefs, ...apps].filter((a) => Number.isInteger(a.port)).map((a): [number, string] => [a.port, `app ${a.name}`])]);
 
   instanceAgents(instanceDir, settings, paperclip, routineTitles);
   expandTeams(instance, paperclip);
@@ -859,13 +863,13 @@ export function compile(productDir, instanceDir, { revision, bundleState, oldBun
   // stores the resolved entry (id, name, description, order) in the agent's metadata for the board.
   const departments = [...KERNEL_DEFAULTS.departments, ...(instance.departments ?? [])];
   if (!departments.some((d) => d?.id === "general")) departments.push({ id: "general", name: "General" });
-  const deptIds = new Set();
+  const deptIds = new Set<string>();
   for (const d of departments) {
     if (!/^[a-z][a-z0-9-]{0,39}$/.test(d?.id ?? "") || typeof d.name !== "string" || !d.name.trim()) fail(`departments: each needs an id (a-z, 0-9, -) and a name`);
     if (deptIds.has(d.id)) fail(`departments: ${d.id} is listed twice`);
     deptIds.add(d.id);
   }
-  for (const [key, a] of Object.entries(paperclip.agents)) {
+  for (const [key, a] of Object.entries<Obj>(paperclip.agents)) {
     const id = a.department ?? "general";
     const order = departments.findIndex((d) => d.id === id);
     if (order < 0) fail(`agent ${key}: department ${id} is not in the registry (one of ${[...deptIds].join(", ")}; an instance adds its own under departments: in instance.yaml)`);
@@ -874,11 +878,11 @@ export function compile(productDir, instanceDir, { revision, bundleState, oldBun
   }
 
   // The description is how other agents route work to an agent: setup puts it in the agent directory, where task_team and fleet_catalog read it.
-  for (const [key, a] of Object.entries(paperclip.agents)) if (!a.description) fail(`agent ${key} has no description: it is how others route work to it`);
+  for (const [key, a] of Object.entries<Obj>(paperclip.agents)) if (!a.description) fail(`agent ${key} has no description: it is how others route work to it`);
 
   // Roles (spec §3.1 `roles`): each module declares the roles it checks, and its agents hold those or the ones it requests.
-  const rolesOf = (m) => ({ declares: [all.get(m)?.def.roles?.declares ?? []].flat().map((d) => String(d?.id ?? d)), requests: [all.get(m)?.def.roles?.requests ?? []].flat().map((r) => String(r).replace(/\?$/, "")) });
-  const roleOwner = {};
+  const rolesOf = (m: string) => ({ declares: [all.get(m)?.def.roles?.declares ?? []].flat().map((d) => String(d?.id ?? d)), requests: [all.get(m)?.def.roles?.requests ?? []].flat().map((r) => String(r).replace(/\?$/, "")) });
+  const roleOwner: Obj = {};
   for (const name of enabled) for (const r of rolesOf(name).declares) roleOwner[r] = roleOwner[r] ? fail(`role ${r}: declared by ${roleOwner[r]} and ${name}`) : name;
   // Kernel roles are the kernel's: a module only requests a defined one, and declares none, nor a role named after a write kind
   // (a role of that name could pass for the grant to file the kind).
@@ -886,34 +890,34 @@ export function compile(productDir, instanceDir, { revision, bundleState, oldBun
     for (const r of rolesOf(name).declares) if (r.startsWith("kernel.") || Object.hasOwn(writes, r) || Object.hasOwn(KERNEL_KINDS, r)) fail(`module ${name}: declares role ${r}, which is the kernel's namespace or a write kind's name`);
     for (const r of rolesOf(name).requests) if (r.startsWith("kernel.") && !KERNEL_ROLES.includes(r)) fail(`module ${name}: requests role ${r}, which the kernel doesn't define (${KERNEL_ROLES.join(", ")})`);
   }
-  const defaultGrants = enabled.flatMap((name) => [all.get(name).def.default_grants ?? []].flat().map((g) => {
-    if ((g.tools ?? []).some((t) => !Object.hasOwn(all.get(name).def.connections ?? {}, t.split(".")[0]))) fail(`module ${name}: default_grants name only its own connections' tools (connection.tool)`);
+  const defaultGrants = enabled.flatMap((name) => [all.get(name)!.def.default_grants ?? []].flat().map((g) => {
+    if ((g.tools ?? []).some((t: string) => !Object.hasOwn(all.get(name)!.def.connections ?? {}, t.split(".")[0]!))) fail(`module ${name}: default_grants name only its own connections' tools (connection.tool)`);
     return { when: g.when ?? {}, unless: g.unless ?? {}, tools: g.tools ?? [] };
   }));
   // Grants: `connection: read | write | [tools]` resolve to tool lists (Codex scoping and the grants table setup writes).
   // A grant to a connection that isn't enabled fails, unless marked optional as `name?`.
   // The instance's grants override (overrides.agents.<key>.connections): per connection over the module's grants, before they
   // resolve (a key replaces the module's optional `key?` too). An instance agent's grants are its agent.yaml's.
-  for (const [key, o] of Object.entries(instance.overrides?.agents ?? {})) {
+  for (const [key, o] of Object.entries<Obj>(instance.overrides?.agents ?? {})) {
     if (o?.connections == null) continue;
     const a = paperclip.agents[key] ?? fail(`unknown agent: ${key}`);
     if (a.module === "instance") fail(`override overrides.agents.${key}.connections: an instance agent's grants are in agents/${key}/agent.yaml`);
     if (typeof o.connections !== "object" || Array.isArray(o.connections)) fail(`override overrides.agents.${key}.connections: a map of connection: read | write | [tools]`);
-    const conns = { ...(a.connections ?? {}) };
+    const conns: Obj = { ...(a.connections ?? {}) };
     for (const [c, g] of Object.entries(o.connections)) {
       delete conns[`${c}?`];
       conns[c] = g;
     }
     a.connections = conns;
   }
-  for (const [key, a] of Object.entries(paperclip.agents)) {
+  for (const [key, a] of Object.entries<Obj>(paperclip.agents)) {
     // An agent's profile (crew, engineer, check): crew unless it says otherwise. Grant and prompt tests read it.
     a.profile ??= "crew";
     if (a.reports_to && !paperclip.agents[a.reports_to]) fail(`${key}: reports_to ${a.reports_to}, which is not enabled`);
     // A role written `id?` is held only while the module declaring it is enabled (like an optional grant `connection?`).
-    a.roles = (a.roles ?? []).filter((r) => !String(r).endsWith("?") || roleOwner[r.slice(0, -1)]).map((r) => String(r).replace(/\?$/, ""));
-    const tools = {};
-    for (const [raw, grant] of Object.entries(a.connections ?? {})) {
+    a.roles = (a.roles ?? []).filter((r: string) => !String(r).endsWith("?") || roleOwner[r.slice(0, -1)]).map((r: string) => String(r).replace(/\?$/, ""));
+    const tools: Obj = {};
+    for (const [raw, grant] of Object.entries<any>(a.connections ?? {})) {
       const name = raw.replace(/\?$/, "");
       const c = paperclip.mcp_servers[name];
       if (!c) {
@@ -926,7 +930,7 @@ export function compile(productDir, instanceDir, { revision, bundleState, oldBun
       // A connection's `upstream` tools file to the product's upstream repos: granted only while the upstream setting
       // allows issues (spec §6.9a; off grants none of them).
       const upstreamOff = !["issues", "prs"].includes(String(settings.upstream ?? "off"));
-      tools[name] = list.filter((t) => !(upstreamOff && (c.upstream ?? []).includes(t)));
+      tools[name] = list.filter((t: string) => !(upstreamOff && (c.upstream ?? []).includes(t)));
       if (!tools[name].length) delete tools[name];
     }
     // Default grants (a module's `default_grants:`, on its own connections, by the same tests as prompts): e.g. owner_channel.notify
@@ -942,7 +946,7 @@ export function compile(productDir, instanceDir, { revision, bundleState, oldBun
     // jobcaps: [<id>] (`<id>?`: only when its module is on): the agent's runner jobs read through the gateway with their token.
     if (a.jobcaps != null) {
       if (!Array.isArray(a.jobcaps)) fail(`${key}: jobcaps is a list of jobcap ids`);
-      const ids = [];
+      const ids: string[] = [];
       for (const raw of a.jobcaps) {
         const id = String(raw).replace(/\?$/, "");
         const j = jobcaps[id];
@@ -968,16 +972,16 @@ export function compile(productDir, instanceDir, { revision, bundleState, oldBun
       if (a.reports_to !== "architect") fail(`${key}: an agent in trial reports to architect (got ${a.reports_to ?? "nobody"})`);
       const declared = a.trial_writes == null ? [] : trialWrites(key, a.trial_writes, tools);
       if (!declared.length) {
-        for (const [name, list] of Object.entries(tools)) {
-          const writes = list.filter((t) => writeTools(paperclip.mcp_servers[name]).includes(t) && !(TRIAL_WRITES[name] ?? []).includes(t));
+        for (const [name, list] of Object.entries<Obj>(tools)) {
+          const writes = list.filter((t: string) => writeTools(paperclip.mcp_servers[name]).includes(t) && !(TRIAL_WRITES[name as keyof typeof TRIAL_WRITES] ?? []).includes(t));
           if (writes.length) fail(`${key}: an agent in trial may not have ${name} write tools (${writes.join(", ")}); they come with tap 2`);
         }
       } else {
-        const withheld = [];
-        for (const [name, list] of Object.entries(tools)) {
-          const writes = list.filter((t) => writeTools(paperclip.mcp_servers[name]).includes(t) && !(TRIAL_WRITES[name] ?? []).includes(t));
+        const withheld: string[] = [];
+        for (const [name, list] of Object.entries<Obj>(tools)) {
+          const writes = list.filter((t: string) => writeTools(paperclip.mcp_servers[name]).includes(t) && !(TRIAL_WRITES[name as keyof typeof TRIAL_WRITES] ?? []).includes(t));
           for (const t of writes) if (!declared.includes(`${name}.${t}`)) withheld.push(`${name}.${t}`);
-          tools[name] = list.filter((t) => !writes.includes(t) || declared.includes(`${name}.${t}`));
+          tools[name] = list.filter((t: string) => !writes.includes(t) || declared.includes(`${name}.${t}`));
           if (!tools[name].length) delete tools[name];
         }
         a.enabled_tools = tools;
@@ -989,34 +993,34 @@ export function compile(productDir, instanceDir, { revision, bundleState, oldBun
     // The module's own isolation counts too: an agent can't opt itself out of an untrusted module.
     if (a.isolation === "untrusted" || all.get(a.module)?.def.isolation === "untrusted") {
       if (a.roles.length) fail(`${key}: an untrusted module's agent may not have roles`);
-      for (const [name, list] of Object.entries(tools)) {
-        const writes = list.filter((t) => writeTools(paperclip.mcp_servers[name]).includes(t));
+      for (const [name, list] of Object.entries<Obj>(tools)) {
+        const writes = list.filter((t: string) => writeTools(paperclip.mcp_servers[name]).includes(t));
         if (writes.length) fail(`${key}: an untrusted module's agent may not have ${name} write tools (${writes.join(", ")})`);
       }
     }
   }
   // delegate_to: the agents a module agent may assign work to (the tasks bridge refuses others): keys, `key?` (only when that
   // agent's module is on, as with connections), or app-owners (any agent that owns an app).
-  for (const [key, a] of Object.entries(paperclip.agents)) {
+  for (const [key, a] of Object.entries<Obj>(paperclip.agents)) {
     if (a.delegate_to === undefined) continue;
     if (!Array.isArray(a.delegate_to)) fail(`${key}: delegate_to is a list of agent keys (or app-owners)`);
     for (const k of a.delegate_to) if (k !== "app-owners" && !k.endsWith("?") && !paperclip.agents[k]) fail(`${key}: delegate_to names ${k}, which is not an enabled agent (write "${k}?" if optional)`);
-    a.delegate_to = a.delegate_to.map((k) => k.replace(/\?$/, "")).filter((k) => k === "app-owners" || paperclip.agents[k]);
+    a.delegate_to = a.delegate_to.map((k: string) => k.replace(/\?$/, "")).filter((k: string) => k === "app-owners" || paperclip.agents[k]);
   }
   // Quiet start (docs/design/quiet-start.md): a module's scheduled routines start paused until an override turns one on
   // (before the heartbeats, which quiet start leaves off unless the instance turned one on).
-  if (settings.quiet_start === "on") for (const r of Object.values(paperclip.routines)) if (r.schedules?.length && paperclip.agents[r.agent]?.module !== "instance") r.status = "paused";
+  if (settings.quiet_start === "on") for (const r of Object.values<Obj>(paperclip.routines)) if (r.schedules?.length && paperclip.agents[r.agent]?.module !== "instance") r.status = "paused";
   heartbeatRoutines(paperclip, settings, instance.overrides?.agents ?? {}, routineTitles); // before the overrides, which may change their schedules
   appFeedbackRoutines(paperclip, instanceAppDefs, routineTitles, new Set(defaultGrants.flatMap((g) => g.tools)));
-  for (const [key, r] of Object.entries(paperclip.routines)) if (!paperclip.agents[r.agent]) fail(`routine ${key}: agent ${r.agent} is not enabled`);
+  for (const [key, r] of Object.entries<Obj>(paperclip.routines)) if (!paperclip.agents[r.agent]) fail(`routine ${key}: agent ${r.agent} is not enabled`);
 
   // Instance overrides: a fixed set of fields, on things that exist.
-  for (const [kind, entries] of Object.entries(instance.overrides ?? {})) {
-    if (!OVERRIDABLE[kind]) fail(`override not allowed: ${kind}`);
+  for (const [kind, entries] of Object.entries<Obj>(instance.overrides ?? {})) {
+    if (!OVERRIDABLE[kind as keyof typeof OVERRIDABLE]) fail(`override not allowed: ${kind}`);
     for (const [key, fields] of Object.entries(entries ?? {})) {
       const target = paperclip[kind][key] ?? fail(`unknown ${kind.slice(0, -1)}: ${key}`);
-      for (const [f, v] of Object.entries(fields ?? {})) {
-        if (!OVERRIDABLE[kind].includes(f)) fail(`override not allowed: ${kind}.${key}.${f}`);
+      for (const [f, v] of Object.entries<any>(fields ?? {})) {
+        if (!OVERRIDABLE[kind as keyof typeof OVERRIDABLE].includes(f)) fail(`override not allowed: ${kind}.${key}.${f}`);
         if (kind === "agents" && f === "connections") continue; // merged before grants resolved, above
         if (kind === "agents" && f === "handbook_fork") {
           if (target.module === "instance") fail(`override agents.${key}.handbook_fork: an instance agent's handbook is already the instance's`);
@@ -1031,33 +1035,33 @@ export function compile(productDir, instanceDir, { revision, bundleState, oldBun
       }
     }
   }
-  for (const [key, r] of Object.entries(paperclip.routines)) {
+  for (const [key, r] of Object.entries<Obj>(paperclip.routines)) {
     r.autonomy ??= routineAutonomyDefault(r);
     if (!ROUTINE_AUTONOMY.includes(r.autonomy)) fail(`routine ${key}: autonomy is ${ROUTINE_AUTONOMY.join(", ")}`);
     for (const sc of r.schedules ?? []) sc.timezone ??= settings.timezone; // else Paperclip runs it in UTC
   }
   // The gateway's and grader's grants fields (grantEntry), checked after the overrides that may set them.
-  for (const [key, a] of Object.entries(paperclip.agents)) {
+  for (const [key, a] of Object.entries<Obj>(paperclip.agents)) {
     if (a.graded != null && typeof a.graded !== "boolean") fail(`${key}: graded is true, false or absent`);
     if (a.profile != null && !JOB_PROFILES.includes(a.profile)) fail(`${key}: profile is ${JOB_PROFILES.join(", ")} (absent: crew)`);
     if (a.caps == null) continue;
     if (typeof a.caps !== "object" || Array.isArray(a.caps)) fail(`${key}: caps is {run_usd, task_usd, day_usd}`);
-    for (const [f, v] of Object.entries(a.caps)) if (!(f in CAPS) || typeof v !== "number" || !(v > 0) || v > 1000) fail(`${key}: caps.${f} isn't a cap (${Object.keys(CAPS).join(", ")}: USD, above 0, at most 1000)`);
+    for (const [f, v] of Object.entries<Obj>(a.caps)) if (!(f in CAPS) || typeof v !== "number" || !(v > 0) || v > 1000) fail(`${key}: caps.${f} isn't a cap (${Object.keys(CAPS).join(", ")}: USD, above 0, at most 1000)`);
   }
 
   // model: and reasoning_effort: on a routine run its tasks with those instead of the agent's (grantEntry's `routines`: the
   // kernel's admission reads them from the grants table).
-  for (const [key, r] of Object.entries(paperclip.routines)) for (const f of ["model", "reasoning_effort"]) if (r[f] != null && (typeof r[f] !== "string" || !r[f].trim())) fail(`routine ${key}: ${f} must be a string`);
+  for (const [key, r] of Object.entries<Obj>(paperclip.routines)) for (const f of ["model", "reasoning_effort"]) if (r[f] != null && (typeof r[f] !== "string" || !r[f].trim())) fail(`routine ${key}: ${f} must be a string`);
 
   // Each connection's service learns its module (the caller assertion's audience) and where the kernel is (its keys). It
   // never gets the grants table. A connection served from the root compose (apps-mcp) is wired the same way there, by hand.
-  const owners = {};
+  const owners: Obj = {};
   // A module's service by the name its URLs use (its key, or the old name it keeps as an alias), in that module only.
-  const serviceOf = (module, host) => Object.entries(serviceModule).find(([k, v]) => v.module === module && (k === host || v.alias === host))?.[0];
-  for (const [name, c] of Object.entries(paperclip.mcp_servers)) {
+  const serviceOf = (module: string, host: string) => Object.entries(serviceModule).find(([k, v]) => v.module === module && (k === host || v.alias === host))?.[0];
+  for (const [name, c] of Object.entries<Obj>(paperclip.mcp_servers)) {
     const host = c.url && new URL(c.url).hostname;
     // Served from the root compose (apps-mcp, wired there by hand), or by a module that runs no services here.
-    if (host in (base.services ?? {}) || !Object.values(serviceModule).some((v) => v.module === c.module)) continue;
+    if (host in (base.services ?? {}) || !Object.values<Obj>(serviceModule).some((v) => v.module === c.module)) continue;
     const key = serviceOf(c.module, host) ?? fail(`connection ${name}: ${host} isn't one of module ${c.module}'s services`);
     const svc = compose.services[key];
     // One service may serve several connections of its own module (github-mcp: AidenHQ's tools and GitHub's own MCP, one sign-in).
@@ -1071,7 +1075,7 @@ export function compile(productDir, instanceDir, { revision, bundleState, oldBun
     delete j.module;
   }
   // The kernel's connection table (config/kernel/connections.json): where each connection is and with which key.
-  const connections = Object.fromEntries(Object.entries(paperclip.mcp_servers).map(([k, c]) => [k, {
+  const connections = Object.fromEntries(Object.entries<Obj>(paperclip.mcp_servers).map(([k, c]) => [k, {
     url: c.url, auth_secret: c.auth, module: c.module, returns: c.returns ?? "untrusted",
     tools: { read: [...c.tools.read], write: [...c.tools.write], destructive: [...(c.tools.destructive ?? [])], ...(c.tools.named?.length ? { named: [...c.tools.named] } : {}) }, ...(c.tool_timeout_sec ? { tool_timeout_s: c.tool_timeout_sec } : {}),
     ...(c.model_as_caller === true ? { model_as_caller: true } : {}),
@@ -1080,21 +1084,21 @@ export function compile(productDir, instanceDir, { revision, bundleState, oldBun
   // Prompt contributions (spec §3.1 `prompts`): each crew agent's handbook gets the sections whose `when` holds and
   // whose `unless` doesn't, after the kernel's own, in order first, normal, last, then module, then id. Last, after the
   // overrides (an override may set heartbeat or image).
-  const prompts = enabled.flatMap((n) => promptEntries(n, all.get(n).def, all.get(n).root)).sort(promptOrder);
+  const prompts = enabled.flatMap((n) => promptEntries(n, all.get(n)!.def, all.get(n)!.root)).sort(promptOrder);
   if (new Set(prompts.map((p) => p.id)).size !== prompts.length) fail("two prompts share an id");
   const sections = prompts.filter((p) => !p.skill);
   paperclip.prompts = Object.fromEntries(sections.map((p) => [p.id, { file: p.file, ...(p.lane ? { lane: true } : {}) }]));
-  for (const a of Object.values(paperclip.agents)) if (a.profile === "crew" && sections.some((p) => promptApplies(p, a, enabled))) a.prompts = sections.filter((p) => promptApplies(p, a, enabled)).map((p) => p.id);
+  for (const a of Object.values<Obj>(paperclip.agents)) if (a.profile === "crew" && sections.some((p) => promptApplies(p, a, enabled))) a.prompts = sections.filter((p) => promptApplies(p, a, enabled)).map((p) => p.id);
   // Skills (modules/<m>/skills/<name>/SKILL.md), for every agent whatever its profile: the ones promptApplies picks (its own
   // module's, or a module's whose connection it holds a grant on) plus those it names in `skills:`. Jobs get exactly these.
   const skills = prompts.filter((p) => p.skill);
   if (skills.length) paperclip.skills = Object.fromEntries(skills.map((s) => [s.id, { dir: dirname(s.file), description: s.summary }]));
-  for (const [key, a] of Object.entries(paperclip.agents)) {
+  for (const [key, a] of Object.entries<Obj>(paperclip.agents)) {
     const named = a.skills ?? [];
     if (!Array.isArray(named) || named.some((id) => typeof id !== "string")) fail(`agent ${key}: skills is a list of skill ids (<module>.<name>)`);
     for (const id of named) if (!paperclip.skills?.[id]) fail(`unknown skill ${id} for agent ${key}`);
     const ids = [...new Set([...skills.filter((s) => promptApplies(s, a, enabled)).map((s) => s.id), ...named])].sort();
-    const from = {};
+    const from: Obj = {};
     for (const id of ids) {
       const [module, name] = [id.slice(0, id.indexOf(".")), id.slice(id.indexOf(".") + 1)];
       if (from[name]) fail(`agent ${key}: modules ${from[name]} and ${module} both give it a skill named ${name}`);
@@ -1109,12 +1113,12 @@ export function compile(productDir, instanceDir, { revision, bundleState, oldBun
   const profile = profileOf(instanceDir, warnings);
   if (profile) paperclip.owner_profile = profile;
   // The kernel first, always on (the board's Settings lists its settings as the kernel's), then every module.
-  const kernelEntry = { name: "kernel", description: "The kernel: the settings every instance has.", enabled: true, chosen: false, requires: [], agents: [], routines: [], connections: [], apps: [], ...(revision ? { revision } : {}), settings: Object.fromEntries(Object.entries(KERNEL_SETTINGS).map(([k, d]) => [k, { ...("default" in d ? { default: d.default } : {}), ...(d.values ? { values: d.values } : {}), ...(d.required ? { required: true } : {}), ...(d.doc ? { doc: d.doc } : {}) }])) };
+  const kernelEntry: Obj = { name: "kernel", description: "The kernel: the settings every instance has.", enabled: true, chosen: false, requires: [], agents: [], routines: [], connections: [], apps: [], ...(revision ? { revision } : {}), settings: Object.fromEntries(Object.entries(KERNEL_SETTINGS).map(([k, d]) => [k, { ...("default" in d ? { default: d.default } : {}), ...(d.values ? { values: d.values } : {}), ...(d.required ? { required: true } : {}), ...(d.doc ? { doc: d.doc } : {}) }])) };
   const catalog = [kernelEntry, ...[...all.values()].map(({ name, root, def, marketplace, tier, sha, source, pinned }) => ({
     name, description: def.description ?? "", enabled: enabled.includes(name), chosen: chosen.includes(name), requires: def.requires ?? [],
     ...(def.replaces ? { replaces: [def.replaces].flat().map(String) } : {}),
     agents: Object.keys(def.agents ?? {}), routines: Object.keys(def.routines ?? {}), connections: Object.keys(def.connections ?? {}),
-    apps: (def.apps ?? []).map((a) => a.name), ...(sha ? { revision: sha } : revision ? { revision } : {}),
+    apps: (def.apps ?? []).map((a: Obj) => a.name), ...(sha ? { revision: sha } : revision ? { revision } : {}),
     // Where it comes from and its computed tier (spec §6.5): Settings > Modules and the advisories read them.
     marketplace, tier, ...(source ? { source } : {}), ...(pinned ? { pinned } : {}),
     // The board's Settings: each setting's default, allowed values and the comment above it in module.yaml; `setup`, how to set
@@ -1131,31 +1135,31 @@ export function compile(productDir, instanceDir, { revision, bundleState, oldBun
     defaults: moduleDefaults(def, settings),
   }))];
   // Secrets of channels the owner may not use: created empty when missing so compose starts (compile.ts).
-  const optionalSecrets = enabled.flatMap((name) => all.get(name).def.optional_secrets ?? []);
+  const optionalSecrets = enabled.flatMap((name) => all.get(name)!.def.optional_secrets ?? []);
   // Host-only tokens a module needs: created random when missing (compile.ts).
-  const generatedSecrets = [...KERNEL_DEFAULTS.generated_secrets, ...enabled.flatMap((name) => all.get(name).def.generated_secrets ?? [])];
+  const generatedSecrets = [...KERNEL_DEFAULTS.generated_secrets, ...enabled.flatMap((name) => all.get(name)!.def.generated_secrets ?? [])];
   validateImages(paperclip.agents); // image: an agent computer (module, instance override or instance agent)
   // Every agent's jobs run on an engine (after the overrides that may set it): its own `engine:`, else the one enabled engine
   // that runs in a computer.
   const boxEngines = Object.keys(engines).filter((k) => engines[k].box === true).sort();
-  for (const [key, a] of Object.entries(paperclip.agents)) {
+  for (const [key, a] of Object.entries<Obj>(paperclip.agents)) {
     a.engine ??= boxEngines.length === 1 ? boxEngines[0] : fail(`agent ${key}: set engine: (enabled engines that run in a computer: ${boxEngines.join(", ") || "none"})`);
     if (!engines[a.engine]) fail(`agent ${key}: unknown engine ${a.engine} (enabled: ${Object.keys(engines).sort().join(", ") || "none"})`);
   }
   // engines: the engines a kernel job may ask its next turn to run on (`aidenhq engine`); absent, only its own.
-  for (const [key, a] of Object.entries(paperclip.agents)) if (a.engines != null && (!Array.isArray(a.engines) || a.engines.some((k) => !engines[k]))) fail(`agent ${key}: engines is a list of enabled engine kinds (${Object.keys(engines).sort().join(", ") || "none"})`);
+  for (const [key, a] of Object.entries<Obj>(paperclip.agents)) if (a.engines != null && (!Array.isArray(a.engines) || a.engines.some((k: string) => !engines[k]))) fail(`agent ${key}: engines is a list of enabled engine kinds (${Object.keys(engines).sort().join(", ") || "none"})`);
   // The model gateway's prices and CI review (config/gateway.json, re-read per call).
   // spend_day_usd: the install-wide daily cap on every model call (docs/design/quiet-start.md); unset, none.
   if (settings.spend_day_usd != null && !(typeof settings.spend_day_usd === "number" && settings.spend_day_usd > 0 && settings.spend_day_usd <= 10_000)) fail("settings.spend_day_usd: USD a day, above 0 (unset for no cap)");
   if (!(typeof settings.eval_day_usd === "number" && settings.eval_day_usd >= 0 && settings.eval_day_usd <= 10_000)) fail("settings.eval_day_usd: USD a day, 0 or more");
   const gateway = { models: modelPrices(enabledDefs), ...(enabled.includes("ci") ? { ci: ciReview(settings) } : {}), ...(settings.spend_day_usd != null ? { install_day_usd: settings.spend_day_usd } : {}), eval_day_usd: settings.eval_day_usd };
-  const named = [...Object.entries(paperclip.agents).flatMap(([key, a]) => grantEntry(key, a, paperclip.routines).models), ...(gateway.ci?.models ?? [])];
+  const named = [...Object.entries<Obj>(paperclip.agents).flatMap(([key, a]) => grantEntry(key, a, paperclip.routines).models), ...(gateway.ci?.models ?? [])];
   // Checked once some module prices models (the default bundle has models-openrouter); with none, the gateway refuses every call.
   const unpriced = Object.keys(gateway.models).length ? [...new Set(named.filter((m) => !gateway.models[m]))] : [];
   if (unpriced.length) fail(`no declared price for ${unpriced.join(", ")} (a module's models:, e.g. modules/models-openrouter): the gateway refuses a model it can't price`);
   // Last, after the specific checks above: nothing may be left dangling (spec §5.7.1): an agent's engine, grants, jobcaps and roles, a module's requires, grants,
   // joins and shares, the instance's reviewer and write floors all name something an enabled module declares.
-  const dangling = danglingBindings(enabledDefs, { reviewer: instance.reviewer, writes: instance.writes, agents: Object.fromEntries(Object.entries(paperclip.agents).filter(([, a]) => a.module === "instance")) });
+  const dangling = danglingBindings(enabledDefs, { reviewer: instance.reviewer, writes: instance.writes, agents: Object.fromEntries(Object.entries<Obj>(paperclip.agents).filter(([, a]) => a.module === "instance")) });
   if (dangling.length) fail(`refusing: ${dangling.map((d) => `${d.owner} (${d.binding}) names ${d.missing}, which no enabled module provides`).join("; ")}`);
   const reviewer = reviewerSlot(enabledDefs, instance.reviewer);
   const setup = setupSecrets(enabledDefs, generatedSecrets);
@@ -1169,14 +1173,14 @@ export function compile(productDir, instanceDir, { revision, bundleState, oldBun
   const kernelModules = { owner: { name: String(settings.owner_name ?? ""), email: String(settings.owner_email).trim().toLowerCase(), timezone: String(settings.timezone ?? "UTC") }, commit_domain: settings.instance_name ? `${settings.instance_name}.aidenhq.ai` : "aidenhq.ai", repos: { orgs: [settings.github_orgs ?? []].flat().map(String), maintained: [settings.maintainer_repos ?? []].flat().map((e) => String(e?.repo ?? e)) }, modules: kernelModuleTable(enabledDefs, settings), services, ...(reviewer ? { reviewer } : {}), ...(Object.keys(checkJobTable).length ? { check_jobs: checkJobTable } : {}), ...(setup.length ? { setup, mounts } : {}) };
   // Every agent (any module's or the instance's) is the job dispatcher's: the one enabled module with kernel.jobs. The kernel
   // starts a job only for an agent its requester dispatches (kernel/src/jobs.ts).
-  const dispatchers = Object.entries(kernelModules.modules).filter(([, m]) => (m.roles ?? []).includes("kernel.jobs")).map(([n]) => n);
+  const dispatchers = Object.entries<Obj>(kernelModules.modules).filter(([, m]) => (m.roles ?? []).includes("kernel.jobs")).map(([n]) => n);
   if (dispatchers.length > 1) fail(`modules ${dispatchers.join(", ")} all request kernel.jobs: one job dispatcher at a time`);
-  if (dispatchers.length) kernelModules.modules[dispatchers[0]].dispatches = Object.keys(paperclip.agents).sort();
+  if (dispatchers.length) kernelModules.modules[dispatchers[0]!].dispatches = Object.keys(paperclip.agents).sort();
   // kernel.grader (grader tokens for a task a finish check holds) is the one grading module's: exactly one holder, and it declares a
   // task.finish check (the hold the kernel checks before it mints), the same way kernel.jobs has one dispatcher.
-  const graders = Object.entries(kernelModules.modules).filter(([, m]) => (m.roles ?? []).includes("kernel.grader")).map(([n]) => n);
+  const graders = Object.entries<Obj>(kernelModules.modules).filter(([, m]) => (m.roles ?? []).includes("kernel.grader")).map(([n]) => n);
   if (graders.length > 1) fail(`modules ${graders.join(", ")} all request kernel.grader: one grading module at a time`);
-  for (const n of graders) if (!(enabledDefs[n]?.checks ?? []).some((c) => c.at === "task.finish")) fail(`module ${n}: kernel.grader needs a finish check (checks: at: task.finish)`);
+  for (const n of graders) if (!(enabledDefs[n]?.checks ?? []).some((c: Obj) => c.at === "task.finish")) fail(`module ${n}: kernel.grader needs a finish check (checks: at: task.finish)`);
   return { bundleState: { seen: bundle, adopted: [...adopted] }, paperclip, computersMax: settings.computers_max, apps: { apps }, points, compose, catalog, warnings, optionalSecrets, askedSecrets: setup.map((f) => f.secret), generatedSecrets, dataDirs, stateDirs, dataModules, gateway, jobcaps, engines, connections, writes, checks, kernelModules, exposure: settings.exposure, edge: edge && { gate: edge.gate, cloudflared: edge.cloudflared } };
 }
 
@@ -1192,9 +1196,9 @@ export function compile(productDir, instanceDir, { revision, bundleState, oldBun
  * the owner gives in the board's setup flows (the model key on the kernel's /setup/model); each is written to the vault under its own name once it matches its anchored pattern, `required`
  * ones while the vault has none. Never a generated secret, and each one asked for by one module.
  */
-export function setupSecrets(defs, generated) {
-  const out = [];
-  for (const [module, def] of Object.entries(defs)) {
+export function setupSecrets(defs: Obj, generated: Obj) {
+  const out: Obj[] = [];
+  for (const [module, def] of Object.entries<Obj>(defs)) {
     for (const p of [def.secrets?.provided ?? []].flat()) {
       const s = p?.setup;
       if (s == null) continue;
@@ -1221,25 +1225,25 @@ const FACT_TYPE = /^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$/;
  * `stages:` ([{name, label, from, to, start?, where?}]) the flow reads from them and the kernel's facts, and `journeys:`. Compiled
  * into modules.json.
  */
-function flowDecls(name, def, declared) {
+function flowDecls(name: string, def: Obj, declared: Obj) {
   const at = `module ${name}`;
-  let facts, stages;
+  let facts: Obj | undefined, stages;
   if (def.facts != null) {
     if (typeof def.facts !== "object" || Array.isArray(def.facts)) fail(`${at}: facts is a map of type: {subject, reasons}`);
     if (!(def.roles?.requests ?? []).includes("kernel.facts")) fail(`${at}: facts: needs roles.requests kernel.facts`);
     facts = {};
-    for (const [t, f] of Object.entries(def.facts)) {
+    for (const [t, f] of Object.entries<Obj>(def.facts)) {
       if (!FACT_TYPE.test(t)) fail(`${at}: fact ${t} is <namespace>.<name> (lowercase)`);
       if (KERNEL_FACT_TYPES.includes(t)) fail(`${at}: fact ${t} is the kernel's own`);
       for (const k of Object.keys(f ?? {})) if (!["subject", "reasons"].includes(k)) fail(`${at}: fact ${t}: ${k} is not allowed (subject, reasons)`);
       if (f?.subject != null && typeof f.subject !== "string") fail(`${at}: fact ${t}: subject is a text`);
-      if (f?.reasons != null && !(Array.isArray(f.reasons) && f.reasons.every((r) => typeof r === "string"))) fail(`${at}: fact ${t}: reasons is a list`);
+      if (f?.reasons != null && !(Array.isArray(f.reasons) && f.reasons.every((r: unknown) => typeof r === "string"))) fail(`${at}: fact ${t}: reasons is a list`);
       facts[t] = { ...(f?.subject ? { subject: f.subject } : {}), ...(f?.reasons ? { reasons: f.reasons } : {}) };
     }
   }
   if (def.stages != null) {
     if (!Array.isArray(def.stages)) fail(`${at}: stages must be a list`);
-    stages = def.stages.map((s) => {
+    stages = def.stages.map((s: Obj) => {
       const w = `${at}: stage ${s?.name}`;
       if (!s || typeof s !== "object" || !/^[a-z][a-z0-9_]{0,40}$/.test(String(s.name))) fail(`${at}: each stage has a name (a-z, 0-9, _)`);
       for (const k of Object.keys(s)) if (!["name", "label", "from", "to", "start", "where"].includes(k)) fail(`${w}: ${k} is not allowed`);
@@ -1252,20 +1256,20 @@ function flowDecls(name, def, declared) {
   }
   // `journeys:` ([{name, label, subject, phases: [{name, label, from: [], where?}], end: []}]): an ordered path a subject's
   // facts take (docs/design/flow-insights.md §2), drawn by the board's journey list and read by Flow's insights.
-  let journeys;
+  let journeys: Obj[] | undefined;
   if (def.journeys != null) {
-    const ident = (v) => /^[a-z][a-z0-9_]{0,40}$/.test(String(v));
-    const types = (w, v) => { if (!Array.isArray(v) || !v.length) fail(`${w} is a list of fact types`); for (const t of v) if (!declared.has(t)) fail(`${w} names undeclared fact ${t}`); return v; };
+    const ident = (v: unknown) => /^[a-z][a-z0-9_]{0,40}$/.test(String(v));
+    const types = (w: string, v: any) => { if (!Array.isArray(v) || !v.length) fail(`${w} is a list of fact types`); for (const t of v) if (!declared.has(t)) fail(`${w} names undeclared fact ${t}`); return v; };
     if (!Array.isArray(def.journeys)) fail(`${at}: journeys must be a list`);
-    journeys = def.journeys.map((j) => {
+    journeys = def.journeys.map((j: Obj) => {
       if (!j || typeof j !== "object" || !ident(j.name)) fail(`${at}: each journey has a name (a-z, 0-9, _)`);
       const w = `${at}: journey ${j.name}`;
       for (const k of Object.keys(j)) if (!["name", "label", "subject", "phases", "end"].includes(k)) fail(`${w}: ${k} is not allowed`);
       if (typeof j.label !== "string" || !j.label) fail(`${w}: label is a short text`);
       if (!/^[a-z][a-z0-9_-]{0,40}$/.test(String(j.subject))) fail(`${w}: subject is a subject kind (e.g. pr)`);
       if (!Array.isArray(j.phases) || !j.phases.length) fail(`${w}: phases is a list`);
-      const names = new Set();
-      const phases = j.phases.map((p) => {
+      const names = new Set<string>();
+      const phases = j.phases.map((p: Obj) => {
         if (!p || typeof p !== "object" || !ident(p.name) || names.has(p.name)) fail(`${w}: each phase has a unique name (a-z, 0-9, _)`);
         names.add(p.name);
         for (const k of Object.keys(p)) if (!["name", "label", "from", "where"].includes(k)) fail(`${w}: phase ${p.name}: ${k} is not allowed`);
@@ -1279,8 +1283,8 @@ function flowDecls(name, def, declared) {
   return { facts, stages, journeys };
 }
 
-export function kernelModuleTable(defs, settings = {}) {
-  const out = {};
+export function kernelModuleTable(defs: Obj, settings: Obj = {}) {
+  const out: Obj = {};
   const declared = new Set(KERNEL_FACT_TYPES);
   for (const [name, def] of Object.entries(defs)) for (const t of Object.keys(def.facts ?? {})) declared.add(t);
   const seen = new Map();
@@ -1313,7 +1317,7 @@ export function kernelModuleTable(defs, settings = {}) {
     const codehost = def.codehost ?? undefined;
     if (codehost != null) {
       if (JSON.stringify(codehost).includes("${")) fail(`module ${name}: codehost: names no settings (use @instance, @product or @agents/…)`);
-      try { validate(CODEHOST_SCHEMA, codehost, "codehost"); } catch (err) { fail(`module ${name}: ${err.message}`); }
+      try { validate(CODEHOST_SCHEMA, codehost, "codehost"); } catch (err) { fail(`module ${name}: ${(err as Error).message}`); }
     }
     // providers.board: { url: http://<service>:<port>, auth: one of its own secrets }: the module's HTTP API the board reads
     // through the kernel (GET|POST /v1/board-api/<module>/<path>, kernel/src/board-api.ts), instead of a network to the board.
@@ -1346,7 +1350,7 @@ export function kernelModuleTable(defs, settings = {}) {
  * provider; two without a binding is an error. Its `url` and `auth` (one of its own secrets) are what the kernel calls.
  * One in-tree reviewer runs its own panel, so `reviewer.panel` names nothing the kernel calls yet.
  */
-export function reviewerSlot(defs, binding = {}) {
+export function reviewerSlot(defs: Obj, binding: Obj = {}) {
   const all = Object.entries(defs).filter(([, d]) => d.providers?.reviewer);
   const name = binding?.primary ?? (all.length > 1 ? fail(`modules ${all.map(([n]) => n).join(", ")} all provide a reviewer: name one as the instance's reviewer.primary`) : all[0]?.[0]);
   if (!name) return undefined;
@@ -1368,16 +1372,16 @@ export function reviewerSlot(defs, binding = {}) {
  * `mode: observe` (kernel/src/gates.ts) records what a task.finish check would block without blocking; write.filed checks gate
  * writes and always enforce.
  */
-export function checkEntries(name, def) {
-  const out = {};
+export function checkEntries(name: string, def: Obj) {
+  const out: Obj = {};
   for (const c of def.checks == null ? [] : Array.isArray(def.checks) ? def.checks : fail(`module ${name}: checks must be a list`)) {
     const at = `module ${name}: check ${c?.id}`;
     if (!c || typeof c !== "object" || !/^[a-z][a-z0-9-]{0,40}$/.test(String(c.id))) fail(`module ${name}: each check has an id (a-z, 0-9, -)`);
     for (const k of Object.keys(c)) if (!["id", "at", "kinds", "agents", "post", "rubric", "grade", "auth", "label", "mode"].includes(k)) fail(`${at}: ${k} is not allowed`);
     if (!["write.filed", "task.finish"].includes(c.at)) fail(`${at}: at is write.filed or task.finish`);
     for (const k of ["kinds", "agents"]) if (c[k] != null && !(Array.isArray(c[k]) && c[k].every((x) => typeof x === "string"))) fail(`${at}: ${k} is a list`);
-    let mode;
-    try { mode = gateMode(`${name}.${c.id}`, c.mode); } catch (e) { fail(`${at}: ${e.message}`); }
+    let mode: string | undefined;
+    try { mode = gateMode(`${name}.${c.id}`, c.mode); } catch (e) { fail(`${at}: ${(e as Error).message}`); }
     if (c.at !== "task.finish") {
       if (mode === "observe") fail(`${at}: a write.filed check gates writes: it always enforces`);
       if (!c.kinds?.length) fail(`${at}: a write.filed check names the write kinds it runs on (kinds)`);
@@ -1403,18 +1407,18 @@ export function checkEntries(name, def) {
  * recipe writes a JSON result the receipt binds).
  */
 const JUDGED_SPEC = ["repo", "judge_commit", "subject_commit", "cases_from", "policy_hash"];
-export function checkJobs(name, def, root) {
-  const out = {};
-  for (const [run, r] of Object.entries(def.check_jobs ?? {})) {
+export function checkJobs(name: string, def: Obj, root: string) {
+  const out: Obj = {};
+  for (const [run, r] of Object.entries<Obj>(def.check_jobs ?? {})) {
     const where = `module ${name}: check_jobs.${run}`;
     if (!/^[a-z][a-z0-9_-]{0,30}$/.test(run)) fail(`${where}: the name is lowercase letters, digits, - and _`);
     const extra = Object.keys(r ?? {}).filter((f) => !["dir", "argv", "timeout_min", "title", "spec", "declares", "cwd_from", "judged", "model", "result"].includes(f));
     if (extra.length) fail(`${where}: unknown field ${extra.join(", ")}`);
-    if (!Array.isArray(r.argv) || !r.argv.length || r.argv.some((a) => typeof a !== "string" || !a)) fail(`${where}: argv is the command, a list of strings`);
+    if (!Array.isArray(r.argv) || !r.argv.length || r.argv.some((a: unknown) => typeof a !== "string" || !a)) fail(`${where}: argv is the command, a list of strings`);
     if (!Number.isInteger(r.timeout_min) || r.timeout_min < 1 || r.timeout_min > 120) fail(`${where}: timeout_min is whole minutes, 1 to 120`);
     if (typeof r.title !== "string" || !r.title || r.title.length > 120) fail(`${where}: title is a short text`);
     const spec = r.spec ?? {};
-    if (!spec || typeof spec !== "object" || Object.entries(spec).some(([k, v]) => !/^[a-z_]{1,30}$/.test(k) || !(v in CHECK_KINDS))) fail(`${where}: spec maps field names to ${Object.keys(CHECK_KINDS).join(", ")}`);
+    if (!spec || typeof spec !== "object" || Object.entries<string>(spec).some(([k, v]) => !/^[a-z_]{1,30}$/.test(k) || !(v in CHECK_KINDS))) fail(`${where}: spec maps field names to ${Object.keys(CHECK_KINDS).join(", ")}`);
     if (r.declares != null && (typeof r.declares !== "string" || spec.base !== "sha")) fail(`${where}: declares names a package.json script and needs spec.base (sha)`);
     if (r.cwd_from != null && spec[r.cwd_from] !== "dir") fail(`${where}: cwd_from names a spec field of kind dir`);
     if (r.model != null && (typeof r.model !== "object" || Object.keys(r.model).join() !== "max_usd" || !(r.model.max_usd > 0 && r.model.max_usd <= 100) || spec.budget_usd !== "usd")) fail(`${where}: model is { max_usd: 0-100 } and needs spec.budget_usd (usd)`);
@@ -1425,11 +1429,11 @@ export function checkJobs(name, def, root) {
       const j = r.judged;
       const same = JSON.stringify(Object.keys(spec).sort()) === JSON.stringify([...JUDGED_SPEC].sort()) && spec.repo === "slug" && spec.policy_hash === "policy" && JUDGED_SPEC.slice(1, 4).every((k) => spec[k] === "sha");
       if (!same) fail(`${where}: a judged run's spec is exactly ${JUDGED_SPEC.join(", ")}`);
-      const rel = (v) => typeof v === "string" && /^(?!.*\.\.)[\w./-]+$/.test(v);
-      if (!rel(j?.cwd) || !rel(j.cases) || !Array.isArray(j.files) || !j.files.length || !j.files.every(rel) || !Array.isArray(j.expect) || j.expect.some((e) => typeof e !== "string")) fail(`${where}: judged is {cwd, cases, files: [...], expect: [...]}, paths inside the product`);
+      const rel = (v: unknown) => typeof v === "string" && /^(?!.*\.\.)[\w./-]+$/.test(v);
+      if (!rel(j?.cwd) || !rel(j.cases) || !Array.isArray(j.files) || !j.files.length || !j.files.every(rel) || !Array.isArray(j.expect) || j.expect.some((e: unknown) => typeof e !== "string")) fail(`${where}: judged is {cwd, cases, files: [...], expect: [...]}, paths inside the product`);
       judged = { cwd: j.cwd, cases: j.cases, files: j.files, expect: j.expect };
     }
-    const files = {};
+    const files: Obj = {};
     if (r.dir != null) {
       if (!/^[\w-]+$/.test(String(r.dir))) fail(`${where}: dir is a folder of the module`);
       const dir = join(root, r.dir);
@@ -1448,9 +1452,9 @@ const CARD_FIELDS = ["target", "sentence", "changes", "reads", "cost", "details"
  * The module's code revision: a hash of every file under its folder (tests, docs and installed packages aside). A record
  * keeps its executor's revision, so an executor updated between approval and execution makes it stale (lean-core A9).
  */
-function moduleRev(root) {
+function moduleRev(root: string) {
   const h = createHash("sha256");
-  const walk = (dir) => {
+  const walk = (dir: string) => {
     for (const e of readdirSync(dir, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : 1))) {
       if (["node_modules", "dist", "test"].includes(e.name) || e.name.endsWith(".md")) continue;
       const p = join(dir, e.name);
@@ -1467,14 +1471,14 @@ function moduleRev(root) {
  * templates, the args schema, its executor (`providers.executor`) and the tools routed into it (`connection.tool`): write or
  * destructive tools of the module's own connections, each in at most one kind.
  */
-export function writeKinds(name, def, root, instanceWrites = {}, taken = {}) {
-  const out = {};
-  const entries = Object.entries(def.writes ?? {});
+export function writeKinds(name: string, def: Obj, root: string, instanceWrites: Obj = {}, taken: Obj = {}) {
+  const out: Obj = {};
+  const entries = Object.entries<Obj>(def.writes ?? {});
   if (!entries.length) return out;
   const ex = def.providers?.executor;
   if (!ex || typeof ex !== "object" || !/^https?:\/\/[\w.-]+:\d+\/[\w/.-]*$/.test(ex.url ?? "")) fail(`module ${name}: write kinds need providers.executor.url (http://<service>:<port>/<path>)`);
   if (!ownSecrets(def).includes(ex.auth)) fail(`module ${name}: providers.executor.auth must name one of its own secrets`);
-  const used = new Set(Object.values(taken).flatMap((k) => k.tools));
+  const used = new Set(Object.values<Obj>(taken).flatMap((k) => k.tools));
   for (const [k, w] of entries) {
     const id = `${name}.${k}`;
     if (!/^[a-z][a-z0-9_]{0,40}$/.test(k)) fail(`write kind ${id}: the name is lowercase letters, digits and _`);
@@ -1484,11 +1488,11 @@ export function writeKinds(name, def, root, instanceWrites = {}, taken = {}) {
     if (w.panel != null && typeof w.panel !== "boolean") fail(`write kind ${id}: panel is true or false`);
     if (w.paths != null && w.paths !== true) fail(`write kind ${id}: paths is true (a repository write: its plan returns the files it changes)`);
     const card = w.card ?? {};
-    if (typeof card !== "object" || Object.entries(card).some(([f, v]) => !CARD_FIELDS.includes(f) || typeof v !== "string")) fail(`write kind ${id}: card has only ${CARD_FIELDS.join(", ")}, each a template string`);
-    const tools = (w.tools ?? []).map((t) => {
-      const c = Object.entries(def.connections ?? {}).find(([, c]) => [...(c.tools?.write ?? []), ...(c.tools?.destructive ?? [])].includes(t));
+    if (typeof card !== "object" || Object.entries<Obj>(card).some(([f, v]) => !CARD_FIELDS.includes(f) || typeof v !== "string")) fail(`write kind ${id}: card has only ${CARD_FIELDS.join(", ")}, each a template string`);
+    const tools = (w.tools ?? []).map((t: string) => {
+      const c = Object.entries<Obj>(def.connections ?? {}).find(([, c]) => [...(c.tools?.write ?? []), ...(c.tools?.destructive ?? [])].includes(t));
       if (!c) fail(`write kind ${id}: ${t} is no write or destructive tool of ${name}'s connections`);
-      const ct = `${c[0]}.${t}`;
+      const ct = `${c![0]}.${t}`;
       if (used.has(ct)) fail(`write kind ${id}: ${ct} is already routed into another kind`);
       used.add(ct);
       return ct;
@@ -1510,7 +1514,7 @@ export function writeKinds(name, def, root, instanceWrites = {}, taken = {}) {
  * registry allows nothing. Name and reporting line come from agent.yaml only (the handbook's frontmatter is ignored), so
  * a handbook-only edit can't move anything. A key a module already uses fails (an instance can't redefine `architect`).
  */
-function instanceAgents(instanceDir, settings, paperclip, routineTitles) {
+function instanceAgents(instanceDir: string, settings: Obj, paperclip: Obj, routineTitles: Set<string>) {
   const dir = join(instanceDir, "agents");
   for (const key of existsSync(dir) ? readdirSync(dir).sort() : []) {
     const file = join(dir, key, "agent.yaml");
@@ -1526,7 +1530,7 @@ function instanceAgents(instanceDir, settings, paperclip, routineTitles) {
     if (def.trial != null && def.trial !== true) fail(`agent ${key}: trial is true or absent`);
     const { description, routines, ...rest } = def;
     put(paperclip.agents, key, { ...rest, title: String(description).trim(), description: String(description).trim(), instructions: handbook, module: "instance", isolation: "trusted" }, "agent");
-    for (const [rk, r] of Object.entries(routines ?? {})) {
+    for (const [rk, r] of Object.entries<Obj>(routines ?? {})) {
       // Schedules only: webhooks and their secrets (webhook, webhook_base, secrets_prefix) come from modules.
       for (const f of Object.keys(r ?? {})) if (!INSTANCE_ROUTINE_FIELDS.includes(f)) fail(`agent ${key}: routine ${rk}: ${f} isn't allowed (known: ${INSTANCE_ROUTINE_FIELDS.join(", ")})`);
       if (r.agent && r.agent !== key) fail(`agent ${key}: routine ${rk} must run as ${key}`);
@@ -1544,9 +1548,9 @@ function instanceAgents(instanceDir, settings, paperclip, routineTitles) {
  * template with the team's `defaults` and then its own fields over it, and no roles of its own (a member's job gets the team
  * record's at admission). The team's `caps.day_usd` is the record's day cap, counted over every member's spend.
  */
-export function expandTeams(instance, paperclip) {
-  const names = new Set(Object.values(paperclip.agents).map((a) => a.name));
-  for (const [team, t] of Object.entries(instance.teams ?? {})) {
+export function expandTeams(instance: Obj, paperclip: Obj) {
+  const names = new Set(Object.values<Obj>(paperclip.agents).map((a) => a.name));
+  for (const [team, t] of Object.entries<Obj>(instance.teams ?? {})) {
     const problems = teamProblems(team, t);
     if (problems.length) fail(problems.join("; "));
     const [module, key] = t.template.split(".");
@@ -1554,7 +1558,7 @@ export function expandTeams(instance, paperclip) {
     if (!tpl || tpl.module !== module) fail(`teams.${team}.template: ${t.template} isn't an enabled module agent`);
     if (tpl.team) fail(`teams.${team}.template: ${key} is already team ${tpl.team.name}'s record`);
     if (instance.overrides?.agents?.[key]) fail(`overrides.agents.${key}: ${key} is team ${team}'s record; set its members' fields under teams.${team}`);
-    for (const [k, m] of Object.entries(t.members)) {
+    for (const [k, m] of Object.entries<Obj>(t.members)) {
       if (paperclip.agents[k]) fail(`teams.${team}.members.${k}: the key is already an agent's`);
       if (names.has(m.name)) fail(`teams.${team}.members.${k}: another agent is already called ${m.name}`);
       names.add(m.name);
@@ -1579,12 +1583,12 @@ const HEARTBEAT_PROMPT = `Today is {{date}}. This is a heartbeat run: follow "He
 heartbeat: delegate under the original work task, never this one, and finish this one with task_finish when done.
 `;
 /** A minute 0-29 per agent key, so the heartbeats of different agents don't all fire at once. */
-const heartbeatMinute = (key) => [...key].reduce((h, c) => (h * 31 + c.charCodeAt(0)) >>> 0, 7) % 30;
+const heartbeatMinute = (key: string) => [...key].reduce((h, c) => (h * 31 + c.charCodeAt(0)) >>> 0, 7) % 30;
 
-function heartbeatRoutines(paperclip, settings, agentOverrides, routineTitles) {
+function heartbeatRoutines(paperclip: Obj, settings: Obj, agentOverrides: Obj, routineTitles: Set<string>) {
   const every = Number(settings.heartbeat_hours ?? 4);
   if (!HEARTBEAT_HOURS.includes(every)) fail(`settings.heartbeat_hours: one of ${HEARTBEAT_HOURS.join(", ")}`);
-  for (const [key, a] of Object.entries(paperclip.agents)) {
+  for (const [key, a] of Object.entries<Obj>(paperclip.agents)) {
     // Quiet start: a module agent's heartbeat counts only once the instance turns it on (overrides.agents.<key>.heartbeat).
     if (settings.quiet_start === "on" && a.module !== "instance" && agentOverrides[key]?.heartbeat == null && a.heartbeat != null) a.heartbeat = false;
     const hb = agentOverrides[key]?.heartbeat ?? a.heartbeat;
@@ -1614,16 +1618,16 @@ function heartbeatRoutines(paperclip, settings, agentOverrides, routineTitles) {
  * code fixes to an Engineer, through every gate), no other app's API, and apps-mcp keeps it to the apps that name it.
  */
 const FEEDBACK_TOOLS = { apps: ["app_api", "app_view"], paperclip_tasks: ["task_current", "task_get", "task_comments", "task_list", "task_comment", "task_finish", "task_block", "task_cancel", "task_delegate", "memory_note"] };
-function appFeedbackRoutines(paperclip, appDefs, routineTitles, defaulted) {
+function appFeedbackRoutines(paperclip: Obj, appDefs: Obj[], routineTitles: Set<string>, defaulted: Set<string>) {
   for (const a of appDefs) {
     if (!a?.share?.host || !a.feedback_to) continue;
     const agent = paperclip.agents[a.feedback_to] ?? fail(`app ${a.name}: feedback_to names ${a.feedback_to}, which is not an enabled agent`);
     // The modules' default grants (`defaulted`) come to every agent they apply to; the feedback agent holds only FEEDBACK_TOOLS, so drop them.
-    for (const [c, list] of Object.entries(agent.enabled_tools)) agent.enabled_tools[c] = list.filter((t) => FEEDBACK_TOOLS[c]?.includes(t) || !defaulted.has(`${c}.${t}`));
+    for (const [c, list] of Object.entries<Obj>(agent.enabled_tools)) agent.enabled_tools[c] = list.filter((t: string) => FEEDBACK_TOOLS[c as keyof typeof FEEDBACK_TOOLS]?.includes(t) || !defaulted.has(`${c}.${t}`));
     for (const c of Object.keys(agent.enabled_tools)) if (!agent.enabled_tools[c].length) delete agent.enabled_tools[c];
-    const extra = Object.entries(agent.enabled_tools).flatMap(([c, list]) => list.filter((t) => !FEEDBACK_TOOLS[c]?.includes(t)).map((t) => `${c}.${t}`));
+    const extra = Object.entries<Obj>(agent.enabled_tools).flatMap(([c, list]) => list.filter((t: string) => !FEEDBACK_TOOLS[c as keyof typeof FEEDBACK_TOOLS]?.includes(t)).map((t: string) => `${c}.${t}`));
     if (extra.length) fail(`app ${a.name}: its feedback agent ${a.feedback_to} may hold only ${Object.entries(FEEDBACK_TOOLS).map(([c, l]) => `${c}: ${l.join(", ")}`).join("; ")}, not ${extra.join(", ")}`);
-    const elsewhere = appDefs.find((b) => b !== a && (b?.api?.callers ?? []).some((c) => (c?.agent ?? c) === a.feedback_to));
+    const elsewhere = appDefs.find((b: Obj) => b !== a && (b?.api?.callers ?? []).some((c: Obj) => (c?.agent ?? c) === a.feedback_to));
     if (elsewhere) fail(`app ${a.name}: its feedback agent ${a.feedback_to} may call no other app's API (${elsewhere.name})`);
     agent.feedback_for = [...(agent.feedback_for ?? []), a.name]; // tasks-mcp marks what it delegates as from app feedback
     const title = `App feedback: ${a.name}`;
@@ -1637,10 +1641,10 @@ decide it on its merits. Before you close, read the new items once more and hand
 
 /** An agent's curated memory (agents/<key>/memory.md in the instance repo, written only through the Librarian's apply), at most MEMORY_MAX bytes: longer is cut at a line end, with a warning. */
 export const MEMORY_MAX = 4096;
-export const memoryOf = (instanceDir, key, warnings = []) => cappedFile(instanceDir, `agents/${key}/memory.md`, warnings, "the Librarian should prune it");
+export const memoryOf = (instanceDir: string, key: string, warnings: string[] = []) => cappedFile(instanceDir, `agents/${key}/memory.md`, warnings, "the Librarian should prune it");
 /** The owner's working style (owner/profile.md in the instance repo, through the same apply), at most MEMORY_MAX bytes too. */
-export const profileOf = (instanceDir, warnings = []) => cappedFile(instanceDir, "owner/profile.md", warnings, "keep it to how the owner works");
-function cappedFile(instanceDir, path, warnings, fix) {
+export const profileOf = (instanceDir: string, warnings: string[] = []) => cappedFile(instanceDir, "owner/profile.md", warnings, "keep it to how the owner works");
+function cappedFile(instanceDir: string, path: string, warnings: string[], fix: string) {
   const file = join(instanceDir, path);
   if (!existsSync(file)) return "";
   let text = readFileSync(file, "utf8").trim();
@@ -1663,7 +1667,7 @@ const PROMPT = { fields: ["id", "file", "order", "when", "unless", "lane"], orde
  * SKILL.md format (`name`, a one-line `description`, optional `when`/`unless`) for the agents its module defines or that hold
  * a grant on one of its connections: the engine reads it natively from the job's engine home, never from the handbook.
  */
-export function promptEntries(name, def, root) {
+export function promptEntries(name: string, def: Obj, root: string): Obj[] {
   const prompts = [def.prompts ?? []].flat().map((p) => {
     const bad = Object.keys(p ?? {}).find((f) => !PROMPT.fields.includes(f)) ?? ["when", "unless"].flatMap((k) => Object.keys(p[k] ?? {}).filter((t) => !PROMPT.tests.includes(t)).map((t) => `${k}.${t}`))[0];
     if (bad || !/^[a-z0-9][a-z0-9-]*$/.test(p.id ?? "") || !PROMPT.order.includes(p.order ?? "normal") || !/^prompts\/[a-z0-9-]+\.md$/.test(p.file ?? "") || !existsSync(join(root, p.file))) fail(`module ${name}: prompt ${p?.id}: ${bad ? `unknown ${bad} (fields: ${PROMPT.fields.join(", ")}; tests: ${PROMPT.tests.join(", ")})` : "needs an id (a-z, 0-9, -), a prompts/<name>.md file that exists and an order of first, normal or last"}`);
@@ -1691,16 +1695,16 @@ export function promptEntries(name, def, root) {
   return [...prompts, ...skills];
 }
 /** Handbook order: first, normal, last; then module; then id. */
-export const promptOrder = (a, b) => PROMPT.order.indexOf(a.order) - PROMPT.order.indexOf(b.order) || a.module.localeCompare(b.module) || a.id.localeCompare(b.id);
-const holds = (t, a, enabled) => [...(t.tools ?? []).map((x) => a.enabled_tools?.[x.split(".")[0]]?.includes(x.split(".")[1]) ?? false), ...(t.roles ?? []).map((r) => (a.roles ?? []).includes(r)), ...(t.modules ?? []).map((m) => enabled.includes(m)), ...Object.entries(t.fields ?? {}).map(([f, v]) => (v === true ? a[f] != null && a[f] !== false : a[f] === v))];
+export const promptOrder = (a: Obj, b: Obj) => PROMPT.order.indexOf(a.order) - PROMPT.order.indexOf(b.order) || a.module.localeCompare(b.module) || a.id.localeCompare(b.id);
+const holds = (t: Obj, a: Obj, enabled: string[]) => [...(t.tools ?? []).map((x: string) => a.enabled_tools?.[x.split(".")[0]!]?.includes(x.split(".")[1]) ?? false), ...(t.roles ?? []).map((r: string) => (a.roles ?? []).includes(r)), ...(t.modules ?? []).map((m: string) => enabled.includes(m)), ...Object.entries(t.fields ?? {}).map(([f, v]) => (v === true ? a[f] != null && a[f] !== false : a[f] === v))];
 /** Its tests hold for the agent; a skill also needs the agent to be its module's or to hold a grant on one of its connections. */
-export const promptApplies = (p, a, enabled) => holds(p.when, a, enabled).every(Boolean) && !holds(p.unless, a, enabled).some(Boolean) && (!p.skill || a.module === p.module || p.skill.some((c) => a.enabled_tools?.[c]?.length));
+export const promptApplies = (p: Obj, a: Obj, enabled: string[]) => holds(p.when, a, enabled).every(Boolean) && !holds(p.unless, a, enabled).some(Boolean) && (!p.skill || a.module === p.module || p.skill.some((c: string) => a.enabled_tools?.[c]?.length));
 
 /**
  * instance.yaml `outcomes:`: at most 7 standing goals, each `{id, outcome, done, owner}` (id a-z, 0-9, -; owner an agent
  * key). Wrong ones fail compile.
  */
-export function outcomesOf(list, agents) {
+export function outcomesOf(list: Obj, agents: Obj) {
   const out = [list ?? []].flat();
   if (out.length > 7) fail(`instance.yaml outcomes: at most 7 (has ${out.length}): keep the few the fleet works toward`);
   const ids = new Set();
@@ -1717,7 +1721,7 @@ export function outcomesOf(list, agents) {
  * fn over items, at most `limit` at a time, results in input order: setup's independent Paperclip calls (one agent, one
  * routine, one inbox each) run side by side instead of one round trip after another. The first failure rejects.
  */
-export async function mapLimit(items, limit, fn) {
+export async function mapLimit(items: any[], limit: number, fn: (item: any, i: number) => any) {
   const out = new Array(items.length);
   let next = 0;
   const worker = async () => {
@@ -1736,15 +1740,15 @@ export async function mapLimit(items, limit, fn) {
  * wake scan never wakes on it (containers in kernel/src/main.ts). One found unheld, or held by nobody of its own, is handed
  * to its holder; otherwise an existing one is never touched. Returns { key: issue id } for the grants table.
  */
-async function ensureLogTasks({ api, companyId, keys, holders, step, marker, title, description, what }) {
+async function ensureLogTasks({ api, companyId, keys, holders, step, marker, title, description, what }: Obj) {
   if (!keys.length) return {};
   const { json: me } = await api("GET", "/api/cli-auth/me");
-  const ids = await mapLimit(keys, 4, async (key) => {
+  const ids = await mapLimit(keys, 4, async (key: string) => {
     const mark = marker(key), holder = holders[key];
     if (!holder) throw new Error(`no agent to hold the ${what(key)}`);
     const q = new URLSearchParams({ q: key, status: "backlog,todo,in_progress,in_review,blocked", limit: "50", excludeRoutineExecutions: "true" });
     const { json: open } = await api("GET", `/api/companies/${companyId}/issues?${q}`);
-    const ours = open.find((i) => String(i.description ?? "").includes(`<!-- source:${mark} -->`) && me.userId && i.createdByUserId === me.userId && !i.createdByAgentId && !i.assigneeUserId && (!i.assigneeAgentId || i.assigneeAgentId === holder));
+    const ours = open.find((i: Obj) => String(i.description ?? "").includes(`<!-- source:${mark} -->`) && me.userId && i.createdByUserId === me.userId && !i.createdByAgentId && !i.assigneeUserId && (!i.assigneeAgentId || i.assigneeAgentId === holder));
     if (ours) {
       if (ours.assigneeAgentId !== holder || ours.status !== "backlog") {
         await api("PATCH", `/api/issues/${ours.id}`, { assigneeAgentId: holder, assigneeUserId: null, status: "backlog" });
@@ -1756,7 +1760,7 @@ async function ensureLogTasks({ api, companyId, keys, holders, step, marker, tit
     step(`Created task ${made.identifier} (${what(key)})`);
     return made.id;
   });
-  return Object.fromEntries(keys.map((key, i) => [key, ids[i]]));
+  return Object.fromEntries(keys.map((key: string, i: number) => [key, ids[i]]));
 }
 
 /**
@@ -1764,27 +1768,27 @@ async function ensureLogTasks({ api, companyId, keys, holders, step, marker, tit
  * land there as comments, for the Librarian's daily pass. memory_note and the bridge's inbox guards read its id from the
  * grants table (memory_inbox); nothing searches for the marker at run time.
  */
-export const ensureMemoryInboxes = ({ api, companyId, keys, holders, step }) => ensureLogTasks({
-  api, companyId, keys, holders, step, marker: (key) => `memory-inbox:${key}`, title: (key) => `Memory inbox: ${key}`, what: (key) => `memory inbox of ${key}`,
-  description: (key) => `Facts ${key} noted for its memory, one comment each (memory_note). The Librarian curates them daily into agents/${key}/memory.md; nobody else reads or edits this task.`,
+export const ensureMemoryInboxes = ({ api, companyId, keys, holders, step }: Obj) => ensureLogTasks({
+  api, companyId, keys, holders, step, marker: (key: string) => `memory-inbox:${key}`, title: (key: string) => `Memory inbox: ${key}`, what: (key: string) => `memory inbox of ${key}`,
+  description: (key: string) => `Facts ${key} noted for its memory, one comment each (memory_note). The Librarian curates them daily into agents/${key}/memory.md; nobody else reads or edits this task.`,
 });
 
 /**
  * One "Chat with <name>" task per agent with a `chat:` block (marker chat-task:<key>), held by that agent: the fast chat
  * lane's conversation, where the kernel writes each lane turn (kernel/src/lane.ts); the lane answers the owner's words there.
  */
-export const ensureChatTasks = ({ api, companyId, agents, holders, ownerName, step }) => ensureLogTasks({
-  api, companyId, keys: Object.keys(agents), holders, step, marker: (key) => `chat-task:${key}`, title: (key) => `Chat with ${agents[key]}`, what: (key) => `chat with ${key}`,
-  description: (key) => `${ownerName || "The owner"}'s fast chat with ${agents[key]}: every message and reply, on every channel. Write here to talk to ${agents[key]}.`,
+export const ensureChatTasks = ({ api, companyId, agents, holders, ownerName, step }: Obj) => ensureLogTasks({
+  api, companyId, keys: Object.keys(agents), holders, step, marker: (key: string) => `chat-task:${key}`, title: (key: string) => `Chat with ${agents[key]}`, what: (key: string) => `chat with ${key}`,
+  description: (key: string) => `${ownerName || "The owner"}'s fast chat with ${agents[key]}: every message and reply, on every channel. Write here to talk to ${agents[key]}.`,
 });
 
 /**
  * One "Agent reviews: <key>" task per fleet-audit agent (marker review-log:<key>), held by that agent: the Agent Coach's review
  * log, one record per review (tasks bridge coach_record), which coach_due reads back (only records that agent authored).
  */
-export const ensureReviewLogs = ({ api, companyId, keys, holders, step }) => ensureLogTasks({
-  api, companyId, keys, holders, step, marker: (key) => `review-log:${key}`, title: (key) => `Agent reviews: ${key}`, what: (key) => `review log of ${key}`,
-  description: (key) => `The review log of ${key}: one record per agent review (coach_record), which decides who is due next. Read it for the history; nobody else writes here.`,
+export const ensureReviewLogs = ({ api, companyId, keys, holders, step }: Obj) => ensureLogTasks({
+  api, companyId, keys, holders, step, marker: (key: string) => `review-log:${key}`, title: (key: string) => `Agent reviews: ${key}`, what: (key: string) => `review log of ${key}`,
+  description: (key: string) => `The review log of ${key}: one record per agent review (coach_record), which decides who is due next. Read it for the history; nobody else writes here.`,
 });
 
 /**
@@ -1792,13 +1796,13 @@ export const ensureReviewLogs = ({ api, companyId, keys, holders, step }) => ens
  * triage, in backlog. Found by title and label (never one an agent created); a new one is the owner's until holdFleetIssues
  * hands it to its agent (it is made before the agents, whose handbooks name it). Returns its identifier.
  */
-export async function ensureFleetIssues({ api, companyId, step }) {
+export async function ensureFleetIssues({ api, companyId, step }: Obj) {
   const { json: labels } = await api("GET", `/api/companies/${companyId}/labels`);
-  let label = labels.find((l) => l.name === "system-error");
+  let label = labels.find((l: Obj) => l.name === "system-error");
   if (!label) label = (await api("POST", `/api/companies/${companyId}/labels`, { name: "system-error", color: "#dc2626" })).json;
   const q = new URLSearchParams({ labelId: label.id, status: "backlog,todo,in_progress,in_review,blocked", limit: "200", excludeRoutineExecutions: "true" });
   const { json: open } = await api("GET", `/api/companies/${companyId}/issues?${q}`);
-  const found = open.find((i) => i.title === "Fleet issues" && !i.createdByAgentId);
+  const found = open.find((i: Obj) => i.title === "Fleet issues" && !i.createdByAgentId);
   if (found) return found.identifier;
   const { json: company } = await api("GET", `/api/companies/${companyId}`);
   const { json: made } = await api("POST", `/api/companies/${companyId}/issues`, {
@@ -1810,7 +1814,7 @@ export async function ensureFleetIssues({ api, companyId, step }) {
 }
 
 /** The Fleet issues task is held by `holder` (the fleet-audit agent; none: it stays as it is), in backlog: a log wakes nobody. */
-export async function holdFleetIssues({ api, identifier, holder, step }) {
+export async function holdFleetIssues({ api, identifier, holder, step }: Obj) {
   if (!identifier || !holder) return;
   const { json: i } = await api("GET", `/api/issues/${encodeURIComponent(identifier)}`);
   if (i.assigneeAgentId === holder && i.status === "backlog") return;
@@ -1823,8 +1827,8 @@ export async function holdFleetIssues({ api, identifier, holder, step }) {
  * general settings row on every tick (config's database.backup.retentionDays is ignored), so a rebuilt host would fall back
  * to the 7-day default unless setup writes it. The policy object is replaced whole: the other two tiers are carried through.
  */
-export async function ensureBackupRetention({ api, dailyDays, step }) {
-  const tiers = (p) => `daily ${p.dailyDays}d, weekly ${p.weeklyWeeks}w, monthly ${p.monthlyMonths}m`;
+export async function ensureBackupRetention({ api, dailyDays, step }: Obj) {
+  const tiers = (p: Obj) => `daily ${p.dailyDays}d, weekly ${p.weeklyWeeks}w, monthly ${p.monthlyMonths}m`;
   const read = async () => (await api("GET", "/api/instance/settings/general")).json?.backupRetention ?? {};
   const current = await read();
   step(current.dailyDays == null ? "Backup retention was not set" : `Backup retention was ${tiers(current)}`);
@@ -1843,9 +1847,9 @@ export async function ensureBackupRetention({ api, dailyDays, step }) {
  * ops-mcp's vault folders and reference docs, from the host's .env (never from instance.yaml, which agents can edit
  * through apply): VAULT_DIR + VAULT_FOLDERS (comma-separated, vault-relative) and KNOWLEDGE_BASES (name=/path, read-only).
  */
-export function hostMounts(env) {
-  const out = [];
-  const plain = (p) => typeof p === "string" && p.startsWith("/") && !p.includes(":");
+export function hostMounts(env: Obj) {
+  const out: string[] = [];
+  const plain = (p: string) => typeof p === "string" && p.startsWith("/") && !p.includes(":");
   for (const raw of String(env.VAULT_FOLDERS ?? "").split(",")) {
     const f = raw.trim().replace(/^\/+|\/+$/g, "");
     if (!f) continue;
@@ -1868,10 +1872,10 @@ export function hostMounts(env) {
  * writing into it would stop gocryptfs from mounting. `generate`: a random token instead (a module's generated_secrets).
  * Returns the files created.
  */
-export function ensureOptionalSecrets(dir, names, known, generate = false) {
+export function ensureOptionalSecrets(dir: string, names: string[], known: string, generate = false) {
   if (!existsSync(join(dir, known))) return [];
   // A generated token is never left empty (a file made empty earlier, before its module generated it).
-  const made = names.filter((n) => !existsSync(join(dir, n)) || (generate && statSync(join(dir, n)).size === 0));
+  const made = names.filter((n: string) => !existsSync(join(dir, n)) || (generate && statSync(join(dir, n)).size === 0));
   for (const n of made) writeFileSync(join(dir, n), generate ? randomBytes(32).toString("hex") : "", { mode: 0o600 });
   return made;
 }
@@ -1880,12 +1884,12 @@ export function ensureOptionalSecrets(dir, names, known, generate = false) {
  * The secret files compose mounts as `<name>: { file: ${AIDENHQ_SECRETS_DIR}/<name> }` in the given compose files, each with
  * the services that mount it.
  */
-export function composeSecretFiles(...composes) {
+export function composeSecretFiles(...composes: Obj[]) {
   const file = /^\$\{AIDENHQ_SECRETS_DIR(?::?[-?][^}]*)?\}\/([A-Za-z0-9_.-]+)$/;
-  const out = {};
+  const out: Obj = {};
   for (const c of composes) {
-    for (const [k, v] of Object.entries(c?.secrets ?? {})) if (file.exec(String(v?.file ?? ""))?.[1] === k) out[k] ??= [];
-    for (const [svc, d] of Object.entries(c?.services ?? {})) for (const m of d?.secrets ?? []) { const n = typeof m === "string" ? m : m?.source; if (out[n] && !out[n].includes(svc)) out[n].push(svc); }
+    for (const [k, v] of Object.entries<Obj>(c?.secrets ?? {})) if (file.exec(String(v?.file ?? ""))?.[1] === k) out[k] ??= [];
+    for (const [svc, d] of Object.entries<Obj>(c?.services ?? {})) for (const m of d?.secrets ?? []) { const n = typeof m === "string" ? m : m?.source; if (out[n] && !out[n].includes(svc)) out[n].push(svc); }
   }
   return out;
 }
@@ -1897,7 +1901,7 @@ export function composeSecretFiles(...composes) {
  * the services that mount it, never an empty auth or signing secret. Runs after the generated tokens and identity keys.
  * Returns { created, missing: [{ secret, services }] }; nothing at all while the vault looks locked (`known` absent).
  */
-export function ensureMountedSecrets(dir, mounts, optional, known) {
+export function ensureMountedSecrets(dir: string, mounts: Obj, optional: string[], known: string) {
   if (!existsSync(join(dir, known))) return { created: [], missing: [] };
   const absent = Object.keys(mounts).filter((n) => mounts[n].length && !existsSync(join(dir, n))); // only what a service mounts
   const ok = new Set(optional);
@@ -1912,9 +1916,9 @@ export function ensureMountedSecrets(dir, mounts, optional, known) {
  * right source. Glean first: one search across the company beats searching each system. What they return is untrusted data
  * (the kernel's untrusted section says so once for every agent).
  */
-export function sourcesSection(agent, mcpServers) {
-  const names = (agent.mcp_servers ?? []).filter((n) => mcpServers[n]?.guide);
+export function sourcesSection(agent: Obj, mcpServers: Obj) {
+  const names = (agent.mcp_servers ?? []).filter((n: string) => mcpServers[n]?.guide);
   if (!names.length) return "";
-  names.sort((a, b) => (a === "glean" ? -1 : b === "glean" ? 1 : 0));
-  return `\n\n## Your sources\n\n${names.map((n) => `- \`${n}\`: ${String(mcpServers[n].guide).trim()}`).join("\n")}\n`;
+  names.sort((a: string, b: string) => (a === "glean" ? -1 : b === "glean" ? 1 : 0));
+  return `\n\n## Your sources\n\n${names.map((n: string) => `- \`${n}\`: ${String(mcpServers[n].guide).trim()}`).join("\n")}\n`;
 }
