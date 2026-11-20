@@ -20,15 +20,30 @@ RUN case "$(dpkg --print-architecture)" in \
     && chmod -R a+rX /opt/rust && /opt/rust/cargo/bin/rustc --version
 ENV PATH=/opt/rust/cargo/bin:$PATH
 # gitleaks 8.30.1 (released 2026-03-21, the version the product's CI runs): a check job's secret scan (kernel/src/checkjobs.ts).
-# Per-arch sha256 from the release's gitleaks_8.30.1_checksums.txt, checksummed before it is unpacked.
-RUN case "$(dpkg --print-architecture)" in \
-      amd64) arch=x64 sum=551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb ;; \
-      arm64) arch=arm64 sum=e4a487ee7ccd7d3a7f7ec08657610aa3606637dab924210b3aee62570fb4b080 ;; \
-    esac \
-    && curl -fsSLo /tmp/gl.tgz "https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_$arch.tar.gz" \
-    && echo "$sum  /tmp/gl.tgz" | sha256sum -c - \
-    && tar -xzf /tmp/gl.tgz -C /usr/local/bin gitleaks && rm /tmp/gl.tgz \
-    && gitleaks version
+# Built from the module at that tag with the image's Go, not from its release binary: those are cut with go1.24.11 and carry
+# brotli 1.1.2-pre (CVE-2026-111497, in CISA's KEV catalogue), x/crypto 0.35.0, x/text 0.22.0 and klauspost/compress 1.17.11,
+# and there is no newer release. gitleaks/go.mod beside this file lifts those four (and the lower-severity rardecode, xz and
+# x/sys) to their fixed versions. GOTOOLCHAIN=local and the module's `go 1.26.11` floor make a base whose Go is older fail the
+# build instead of fetching another toolchain, and the download and build caches are dropped after it. The smoke test keeps the behaviour the
+# check jobs rely on: non-zero on a finding, zero on a clean tree.
+COPY gitleaks/go.mod gitleaks/go.sum /opt/gitleaks/
+RUN cd /opt/gitleaks \
+    && GOTOOLCHAIN=local CGO_ENABLED=0 GOFLAGS=-mod=readonly GOPATH=/opt/gitleaks/cache GOCACHE=/opt/gitleaks/cache/build go mod download all \
+    && GOTOOLCHAIN=local CGO_ENABLED=0 GOFLAGS=-mod=readonly GOPATH=/opt/gitleaks/cache GOCACHE=/opt/gitleaks/cache/build go build -trimpath \
+         -ldflags "-s -w -X=github.com/zricethezav/gitleaks/v8/version.Version=8.30.1" \
+         -o /usr/local/bin/gitleaks github.com/zricethezav/gitleaks/v8 \
+    && chmod -R u+w /opt/gitleaks/cache && rm -rf /opt/gitleaks/cache && chmod 0755 /usr/local/bin/gitleaks \
+    && go version -m /usr/local/bin/gitleaks | grep -Eq '^\s+dep\s+github\.com/andybalholm/brotli\s+v1\.(2\.7|[3-9])' \
+    && go version -m /usr/local/bin/gitleaks | grep -Eq '^\s+dep\s+github\.com/klauspost/compress\s+v1\.20\.[2-9]' \
+    && go version -m /usr/local/bin/gitleaks | grep -Eq '^\s+dep\s+golang\.org/x/crypto\s+v0\.(5[6-9]|[6-9][0-9])' \
+    && go version -m /usr/local/bin/gitleaks | grep -Eq '^\s+dep\s+golang\.org/x/text\s+v0\.(4[1-9]|[5-9][0-9])' \
+    && gitleaks version | grep -qx 8.30.1 \
+    && mkdir -p /tmp/gl-smoke/leak /tmp/gl-smoke/clean \
+    && printf 'aws_access_key_id = AKIA3%s\n' EXAMPLE7K2Q4WNZ > /tmp/gl-smoke/leak/credentials \
+    && printf 'a note, no secrets\n' > /tmp/gl-smoke/clean/notes.txt \
+    && ! gitleaks dir /tmp/gl-smoke/leak --no-banner --redact --exit-code 1 >/dev/null 2>&1 \
+    && gitleaks dir /tmp/gl-smoke/clean --no-banner --redact --exit-code 1 \
+    && rm -rf /tmp/gl-smoke
 # Global npm installs land in /usr/local (the node image's prefix), readable by all.
 # pnpm 10.34.9 (2026-10-25): its vendored tree carries tar 7.5.22 (GHSA-23hp-3jrh-7fpw fixed in 7.5.19), glob 10.5.0,
 # picomatch 4.0.7, brace-expansion 2.1.7, minimatch 9.0.9 and ip-address 10.7.4 (the 14 highs 10.20.0 had).
