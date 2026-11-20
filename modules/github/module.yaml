@@ -94,10 +94,23 @@ settings:
   # for a fix (default agent-fix). `trusted` is who may vouch for it besides the App: admin, maintain or write (default
   # admin and maintain; github-mcp refuses any other role). It lists every role that counts: [write] alone trusts no admin. `after_merge` is what follows a fix's merge: done (default: the
   # merged PR is the fix) or product-pin (this instance's product pin bump, its apply and the generation's health, for the
-  # AidenHQ product repo this instance runs). Read by github-mcp (maintainer.ts), which the Maintainer's App tools and the
-  # Maintainer's watcher go through.
+  # AidenHQ product repo this instance runs). Duties, each per repo: `issues` (default true: validate `label` issues and see
+  # fixes through), `features` (default false: triage feature requests, label feature-request, and build those the owner or
+  # a trusted collaborator labels agent-build), `dependabot` (default false: every open Dependabot PR has an Engineer task),
+  # `contributor_prs` (default false: nudge, then close, a human's PR that has been quiet), `stale_days` (default 7: quiet
+  # days before the nudge and again before the close; drafts wait twice as long). A listed repo is also where the fleet's
+  # work may merge and close, with no duty on. Read by github-mcp (maintainer.ts), which the Maintainer's App tools and the
+  # Maintainer's watcher go through (kernel/sdk/src/maintained-repos.ts parses it).
   maintainer_repos:
     default: []
+    # Adding a repo, a duty switched on, or any change to a listed entry (its label, trusted roles, after_merge) is the owner's:
+    # a repo can be listed as a bare "owner/name", which `*.repo` can't reach, so `*` covers every entry's own value too.
+    owner:
+      - { path: "*", new: true }
+      - { path: "*.repo", new: true }
+      - { path: "*.features", to: true, default: false }
+      - { path: "*.dependabot", to: true, default: false }
+      - { path: "*.contributor_prs", to: true, default: false }
   # Paths the churn pass ignores (service/src/churn.ts; kernel/sdk/src/churn.ts): globs, one per entry.
   churn_exclude:
     default: [ "**/package-lock.json", "**/dist/**", "**/vendor/**", "**/*.min.*" ]
@@ -122,7 +135,7 @@ connections:
     tools:
       # github_app_issue_status: a status lookup of product-bug issues (number, state, fixing commit; no issue text), so a
       # read: tagged destructive it filed a Tier 2 owner card on every check.
-      read: [ github_whoami, github_project_read, github_issue_read, github_search_issues, github_job_log, github_pr_files, github_pr_threads, github_app_issue_status, github_app_issue_list, github_app_label_events, github_app_repo_tree, github_app_repo_file ]
+      read: [ github_whoami, github_project_read, github_issue_read, github_search_issues, github_job_log, github_pr_files, github_pr_threads, github_app_issue_status, github_app_issue_list, github_app_label_events, github_app_pr_list, github_app_repo_tree, github_app_repo_file ]
       # commit_status_set: the design-review check on agents-org PRs, as the GitHub App; it also needs the design-review role.
       write: [ commit_status_set ]
       # github_app_issue: product bugs on settings.product_repo only, as the GitHub App, and only for the product-issues role
@@ -131,11 +144,11 @@ connections:
       # The Maintainer's App writes (github_app_issue_comment, github_app_issue_label, github_app_issue_state) act on the
       # maintained repos only (setting maintainer_repos), refuse an untrusted label and scrub outgoing text. Tagged destructive for the same
       # reason: no shorthand grants them, and the Maintainer names them when it graduates.
-      # The Maintainer's App reads (github_app_issue_list, github_app_label_events, github_app_repo_tree,
+      # The Maintainer's App reads (github_app_issue_list, github_app_label_events, github_app_pr_list, github_app_repo_tree,
       # github_app_repo_file) are reads tagged `named`: `read` would hand them to every agent with `github: read`, so only a
       # grant that names one reaches it. The Maintainer's module names them when it graduates. github_pr_threads (a pull request's review
       # threads, replies included: code review's reads) is named the same way, and its resolving twin github_pr_thread_resolve is destructive.
-      named: [ github_app_issue_list, github_app_label_events, github_app_repo_tree, github_app_repo_file, github_pr_threads ]
+      named: [ github_app_issue_list, github_app_label_events, github_app_pr_list, github_app_repo_tree, github_app_repo_file, github_pr_threads ]
       # The writes with the owner's token (a comment, an issue, its state, a review, a failed job's re-run) post as the owner:
       # destructive, so only a grant naming one reaches it and every call is a record the AI reviewer decides first (floor 1).
       destructive: [ github_issue_comment, github_issue_create, github_issue_update, github_pr_review, github_pr_thread_resolve, github_rerun_failed, github_app_issue, github_app_issue_comment, github_app_issue_label, github_app_issue_state ]

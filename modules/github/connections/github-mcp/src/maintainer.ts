@@ -5,15 +5,8 @@
 import { GitHubRefused } from "./github.js";
 import { scrubProblems, scrubText } from "./scrub.js";
 import type { Projects } from "./projects.js";
+import { BUILD_LABEL, FEATURE_LABEL, type MaintainedRepo } from "./aidenhq-sdk/maintained-repos.js";
 
-export const AGENT_FIX = "agent-fix";
-// The roles a repo may trust to vouch for a label: a fixed set in code, never wider than write. A repo's `trusted` picks
-// from it (default admin and maintain); triage, read and custom roles never count.
-export const TRUST_ROLES = ["admin", "maintain", "write"] as const;
-const DEFAULT_TRUSTED = ["admin", "maintain"];
-// What follows a fix's merge: `done` (the merged PR is the fix), or `product-pin` (this instance's product pin bump, its
-// apply and the generation's health, for the AidenHQ product repo this instance runs).
-export const AFTER_MERGE = ["done", "product-pin"] as const;
 const PAGE_CAP = 10;
 const ISSUE_CAP = 200;
 // A collaborator's role is re-read at most this often: a revoked role stops trusting new labels within a minute, and a
@@ -25,6 +18,8 @@ const FILE_CAP = 256 * 1024;
 // How many new unlabelled issues one look hands the board's watcher per repo (each is one triage run): the rest come on the
 // next look, so a burst of reports is spread out rather than started at once.
 const TRIAGE_BATCH = 10;
+// The open PRs one pr_list reads in full (each human PR costs a handful of reads): the rest wait for a later look.
+const PR_CAP = 100;
 
 // A close's note must cite a PR in a form the grader's parser reads (owner/name#number or its full /pull/ URL): a bare
 // "PR #12" reads as no citation at all, so the issue looks closed without one. Matched case-insensitively, over the
@@ -37,56 +32,6 @@ export function noteProblem(note: string, state: "open" | "closed", reason?: "co
   if (BARE_PR.test(note)) return "cite the PR as owner/name#number or its full /pull/ URL; a bare 'PR #N' is not read as a citation";
   return undefined;
 }
-
-export interface MaintainedRepo {
-  repo: string;
-  owner: string;
-  name: string;
-  label: string;
-  trusted: string[];
-  after_merge: (typeof AFTER_MERGE)[number];
-}
-
-/**
- * `maintainer_repos` as compiled from the setting: JSON when an entry is `{ repo, label?, trusted?, after_merge? }`, or
- * comma-joined when every entry is a bare "owner/name" (an entry with every default). Anything malformed throws, naming
- * the entry, so the caller refuses every tool rather than act on a list it misread.
- */
-export function parseRepos(raw: string): MaintainedRepo[] {
-  if (!raw.trim()) return [];
-  let list: unknown;
-  try {
-    list = raw.trim().startsWith("[") ? JSON.parse(raw) : raw.split(",").map((x) => x.trim());
-  } catch {
-    throw new Error("maintainer_repos is not a list of { repo, label, trusted, after_merge }");
-  }
-  if (!Array.isArray(list)) throw new Error("maintainer_repos is not a list");
-  const seen = new Set<string>();
-  return list.map((entry: any, i) => {
-    const where = `maintainer_repos[${i}]`;
-    const e = typeof entry === "string" ? { repo: entry } : entry;
-    if (!e || typeof e !== "object" || Array.isArray(e)) throw new Error(`${where}: an entry is { repo, label, trusted, after_merge }`);
-    const unknown = Object.keys(e).filter((k) => !["repo", "label", "trusted", "after_merge"].includes(k));
-    if (unknown.length) throw new Error(`${where}: unknown key ${unknown.join(", ")}`);
-    const m = String(e.repo ?? "").trim().match(/^([A-Za-z0-9_.-]{1,100})\/([A-Za-z0-9_.-]{1,100})$/);
-    if (!m) throw new Error(`${where}: repo must be owner/name`);
-    const key = `${m[1]}/${m[2]}`.toLowerCase();
-    if (seen.has(key)) throw new Error(`${where}: ${m[1]}/${m[2]} is listed twice`);
-    seen.add(key);
-    const label = e.label === undefined ? AGENT_FIX : String(e.label);
-    if (!/^[A-Za-z0-9][A-Za-z0-9 ._:-]{0,49}$/.test(label)) throw new Error(`${where}: label must be 1-50 letters, digits, spaces or ._:-`);
-    const trusted = e.trusted === undefined ? DEFAULT_TRUSTED : e.trusted;
-    if (!Array.isArray(trusted) || !trusted.length || trusted.some((r) => !(TRUST_ROLES as readonly string[]).includes(r)))
-      throw new Error(`${where}: trusted must be one or more of ${TRUST_ROLES.join(", ")}`);
-    const after = e.after_merge === undefined ? "done" : e.after_merge;
-    if (!(AFTER_MERGE as readonly string[]).includes(after)) throw new Error(`${where}: after_merge must be ${AFTER_MERGE.join(" or ")}`);
-    return { repo: `${m[1]}/${m[2]}`, owner: m[1]!, name: m[2]!, label, trusted: [...new Set(trusted as string[])], after_merge: after };
-  });
-}
-
-/** One line per repo, for tool descriptions: what the Maintainer may act on and what follows a merge there. */
-export const describeRepos = (repos: MaintainedRepo[]) =>
-  repos.length ? repos.map((r) => `${r.repo} (label ${r.label}, trusted ${r.trusted.join("/")}, after merge: ${r.after_merge})`).join("; ") : "none configured (setting maintainer_repos)";
 
 export interface LabelEvent {
   label: string;
@@ -120,6 +65,24 @@ interface GhIssue {
 
 const labelNames = (i: GhIssue) => (i.labels ?? []).map((l) => (typeof l === "string" ? l : l.name));
 const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+// The two fixed labels match exactly (the owner's word is `agent-build`, not a case variant); a repo's own label keeps GitHub's
+// case-insensitive reading.
+const named = (x: string, label: string) => (label === BUILD_LABEL || label === FEATURE_LABEL ? x === label : same(x, label));
+
+export interface MaintainerPr {
+  number: number;
+  author: string;
+  /** bot: another App or automation (Dependabot); fleet: our own App; human: anyone else. */
+  author_kind: "bot" | "fleet" | "human";
+  draft: boolean;
+  /** The author's latest commit, comment or review on the PR (ISO), or the PR's own update time for a bot or fleet PR. */
+  last_author_activity: string;
+  /** A review is asked of someone (a person or team), so the PR waits on a maintainer, not its author. */
+  review_requested: boolean;
+  /** What the author must do (a failing check, a requested change, a conflict), or null when nothing is asked of them. */
+  waiting_on_author: string | null;
+  labels: string[];
+}
 
 export class Maintainer {
   private slug = "";
@@ -174,13 +137,20 @@ export class Maintainer {
     return role;
   }
 
-  /** Whether this label event was made by our App or by a collaborator with one of the repo's trusted roles. */
-  private async trustedEvent(e: GhTimelineEvent, r: MaintainedRepo): Promise<boolean> {
+  /**
+   * Whether this event adding `label` was made by our App or by a collaborator with one of the repo's trusted roles. The
+   * build label is the owner's word that a feature may be built: the App never counts there, so the fleet can't approve its own.
+   */
+  private async trustedEvent(e: GhTimelineEvent, r: MaintainedRepo, label: string): Promise<boolean> {
     const slug = await this.appSlug(r);
-    if (e.performed_via_github_app?.slug === slug) return true;
     const login = e.actor?.login;
-    if (!login) return false;
-    if (login.toLowerCase() === `${slug.toLowerCase()}[bot]`) return true;
+    const app = e.performed_via_github_app?.slug === slug || login?.toLowerCase() === `${slug.toLowerCase()}[bot]`;
+    if (label === BUILD_LABEL) {
+      if (app || !login) return false;
+    } else {
+      if (app) return true;
+      if (!login) return false;
+    }
     const role = await this.role(r.owner, r.name, login);
     return role !== null && r.trusted.includes(role);
   }
@@ -201,7 +171,7 @@ export class Maintainer {
       for (const e of pageEvents) {
         if (e.event !== "labeled" && e.event !== "unlabeled") continue;
         const label = String(e.label?.name ?? "");
-        if (!label || (only && !same(label, only))) continue;
+        if (!label || (only && !named(label, only))) continue;
         events.push({
           label,
           action: e.event,
@@ -209,7 +179,7 @@ export class Maintainer {
           app_id: e.performed_via_github_app?.id ?? null,
           app_slug: e.performed_via_github_app?.slug ?? null,
           created_at: String(e.created_at ?? ""),
-          trusted: await this.trustedEvent(e, r),
+          trusted: await this.trustedEvent(e, r, label),
         });
       }
       if (pageEvents.length < 100) break;
@@ -218,16 +188,16 @@ export class Maintainer {
     return { repo: r.repo, number, events };
   }
 
-  /** The repo's latest label event, when it is a `labeled` one: the label is currently on the issue. */
-  private latestLabel(r: MaintainedRepo, events: LabelEvent[]): LabelEvent | undefined {
-    const e = events.filter((x) => same(x.label, r.label)).at(-1);
+  /** The latest event of `label` (the repo's by default), when it is a `labeled` one: the label is currently on the issue. */
+  private latestLabel(r: MaintainedRepo, events: LabelEvent[], label = r.label): LabelEvent | undefined {
+    const e = events.filter((x) => named(x.label, label)).at(-1);
     return e?.action === "labeled" ? e : undefined;
   }
 
   /** The latest label event, or why it couldn't be read: an unreadable timeline is untrusted, never assumed. */
-  private async latestOrError(r: MaintainedRepo, number: number): Promise<{ latest?: LabelEvent; error?: string }> {
+  private async latestOrError(r: MaintainedRepo, number: number, label = r.label): Promise<{ latest?: LabelEvent; error?: string }> {
     try {
-      return { latest: this.latestLabel(r, (await this.labelEvents(r.repo, number, r.label)).events) };
+      return { latest: this.latestLabel(r, (await this.labelEvents(r.repo, number, label)).events, label) };
     } catch (err) {
       return { error: (err as Error).message.slice(0, 200) };
     }
@@ -237,14 +207,15 @@ export class Maintainer {
   async issueList(repo: string | undefined, label?: string) {
     const r = this.target(repo);
     const { owner, name } = r;
+    const asked = label ?? r.label;
     const issues: Record<string, unknown>[] = [];
     for (let page = 1; page <= PAGE_CAP; page++) {
-      const res = await this.app.appCall(owner, name, { issues: "read" }, "GET", `/repos/${owner}/${name}/issues?state=open&labels=${encodeURIComponent(label ?? r.label)}&per_page=100&page=${page}`);
+      const res = await this.app.appCall(owner, name, { issues: "read" }, "GET", `/repos/${owner}/${name}/issues?state=open&labels=${encodeURIComponent(asked)}&per_page=100&page=${page}`);
       if (res.status !== 200) throw new Error(`couldn't list ${owner}/${name}'s issues (GitHub said ${res.status})`);
       const pageIssues = (Array.isArray(res.body) ? res.body : []) as GhIssue[];
       for (const i of pageIssues) {
         if (i.pull_request || issues.length >= ISSUE_CAP) continue;
-        const { latest, error } = await this.latestOrError(r, i.number);
+        const { latest, error } = await this.latestOrError(r, i.number, asked);
         issues.push({
           number: i.number,
           title: i.title,
@@ -259,7 +230,85 @@ export class Maintainer {
       }
       if (pageIssues.length < 100) break;
     }
-    return { repo: r.repo, label: r.label, trusted_roles: r.trusted, after_merge: r.after_merge, issues };
+    return { repo: r.repo, label: asked, trusted_roles: r.trusted, after_merge: r.after_merge, features: r.features, issues };
+  }
+
+  /** Every page of a GET list (capped), as the App with read access to pull requests, issues, checks and contents. */
+  private async readAll(r: MaintainedRepo, path: string): Promise<any[]> {
+    const out: any[] = [];
+    for (let page = 1; page <= PAGE_CAP; page++) {
+      const res = await this.app.appCall(r.owner, r.name, { pull_requests: "read", issues: "read", checks: "read", contents: "read" }, "GET", `/repos/${r.owner}/${r.name}${path}${path.includes("?") ? "&" : "?"}per_page=100&page=${page}`);
+      if (res.status !== 200) throw new Error(`couldn't read ${r.repo}${path.split("?")[0]} (GitHub said ${res.status})`);
+      const items = (Array.isArray(res.body) ? res.body : Array.isArray(res.body?.check_runs) ? res.body.check_runs : []) as any[];
+      out.push(...items);
+      if (items.length < 100) break;
+    }
+    return out;
+  }
+
+  /**
+   * A maintained repo's open pull requests (newest first, at most PR_CAP), each with who wrote it (bot, our own App, or a
+   * human) and, for a human's, the author's latest activity and what is waiting on them. Titles and bodies are a stranger's
+   * words and are not returned.
+   */
+  async prList(repo: string | undefined): Promise<{ repo: string; prs: MaintainerPr[] }> {
+    const r = this.target(repo);
+    const slug = (await this.appSlug(r)).toLowerCase();
+    const listed = (await this.readAll(r, "/pulls?state=open&sort=created&direction=desc")).slice(0, PR_CAP);
+    const prs: MaintainerPr[] = [];
+    for (const p of listed) {
+      const login = String(p.user?.login ?? "");
+      const kind = login.toLowerCase() === `${slug}[bot]` ? "fleet" : p.user?.type === "Bot" || login.endsWith("[bot]") ? "bot" : "human";
+      const base = {
+        number: p.number as number,
+        author: login,
+        author_kind: kind as MaintainerPr["author_kind"],
+        draft: p.draft === true,
+        review_requested: (p.requested_reviewers?.length ?? 0) + (p.requested_teams?.length ?? 0) > 0,
+        labels: ((p.labels ?? []) as { name: string }[]).map((l) => l.name),
+      };
+      if (kind !== "human") {
+        prs.push({ ...base, last_author_activity: String(p.updated_at), waiting_on_author: null });
+        continue;
+      }
+      const n = p.number as number;
+      const mine = (x: any) => String(x.user?.login ?? "").toLowerCase() === login.toLowerCase();
+      const [head, detail, checks, comments, reviews, threads] = await Promise.all([
+        this.app.appCall(r.owner, r.name, { contents: "read" }, "GET", `/repos/${r.owner}/${r.name}/commits/${p.head.sha}`),
+        this.app.appCall(r.owner, r.name, { pull_requests: "read" }, "GET", `/repos/${r.owner}/${r.name}/pulls/${n}`),
+        this.readAll(r, `/commits/${p.head.sha}/check-runs`),
+        this.readAll(r, `/issues/${n}/comments`),
+        this.readAll(r, `/pulls/${n}/reviews`),
+        this.readAll(r, `/pulls/${n}/comments`),
+      ]);
+      if (head.status !== 200 || detail.status !== 200) throw new Error(`couldn't read ${r.repo}#${n} (GitHub said ${head.status === 200 ? detail.status : head.status})`);
+      const times = [head.body.commit?.committer?.date, ...comments.filter(mine).map((c) => c.created_at), ...reviews.filter(mine).map((x) => x.submitted_at), ...threads.filter(mine).map((c) => c.created_at)].filter(Boolean).map(String);
+      // Each reviewer's latest verdict stands: one who asked for changes and hasn't returned leaves the PR waiting on the author.
+      const verdict = new Map<string, string>();
+      for (const x of reviews) if (x.state === "CHANGES_REQUESTED" || x.state === "APPROVED" || x.state === "DISMISSED") verdict.set(String(x.user?.login), x.state);
+      const failing = checks.filter((c) => ["failure", "timed_out", "action_required"].includes(c.conclusion)).map((c) => String(c.name));
+      const waiting = [
+        failing.length ? `failing ${failing.length === 1 ? "check" : "checks"} ${failing.slice(0, 3).join(", ")}` : "",
+        [...verdict.values()].includes("CHANGES_REQUESTED") ? "requested changes" : "",
+        detail.body.mergeable_state === "dirty" ? "a merge conflict" : "",
+      ].filter(Boolean);
+      prs.push({ ...base, last_author_activity: times.sort().at(-1) ?? String(p.created_at), waiting_on_author: waiting.length ? waiting.join("; ") : null });
+    }
+    return { repo: r.repo, prs };
+  }
+
+  /** The watcher's read: each repo with `contributor_prs` on, its quiet window and open PRs (one repo's failure is its `error`). */
+  async prRepos() {
+    if (this.repos instanceof Error) throw new GitHubRefused(`maintainer_repos is invalid: ${this.repos.message}`);
+    const out: { repo: string; stale_days: number; prs?: MaintainerPr[]; error?: string }[] = [];
+    for (const r of this.repos.filter((x) => x.contributor_prs)) {
+      try {
+        out.push({ repo: r.repo, stale_days: r.stale_days, prs: (await this.prList(r.repo)).prs });
+      } catch (err) {
+        out.push({ repo: r.repo, stale_days: r.stale_days, error: (err as Error).message.slice(0, 300) });
+      }
+    }
+    return { repos: out };
   }
 
   /** The repository's file list at a ref, capped in entries and depth. */
@@ -306,11 +355,12 @@ export class Maintainer {
   private async currentLabel(r: MaintainedRepo, number: number) {
     const res = await this.app.appCall(r.owner, r.name, { issues: "read" }, "GET", `/repos/${r.owner}/${r.name}/issues/${number}`);
     if (res.status !== 200) throw new Error(`couldn't read ${r.repo}#${number} (GitHub said ${res.status})`);
-    const present = labelNames(res.body as GhIssue).some((l) => same(l, r.label));
-    if (!present) return { present: false, trusted: true, event: undefined as LabelEvent | undefined };
+    const labels = labelNames(res.body as GhIssue);
+    const present = labels.some((l) => same(l, r.label));
+    if (!present) return { present: false, trusted: true, event: undefined as LabelEvent | undefined, labels };
     const { events } = await this.labelEvents(r.repo, number, r.label);
     const latest = this.latestLabel(r, events);
-    return { present: true, trusted: Boolean(latest?.trusted), event: latest };
+    return { present: true, trusted: Boolean(latest?.trusted), event: latest, labels };
   }
 
   /** Refuses a write on an issue whose current repo label is untrusted. */
@@ -336,20 +386,26 @@ export class Maintainer {
     return { repo: r.repo, number, url: res.body.html_url, id: res.body.id };
   }
 
-  /** Add or remove the repo's label and nothing else, refusing an issue whose current label is untrusted. */
+  /**
+   * Add or remove the repo's fix label or `feature-request`, and nothing else (`agent-build` is the owner's word, never the
+   * App's), refusing an issue whose current fix label is untrusted.
+   */
   async label(repo: string | undefined, number: number, action: "add" | "remove", label?: string) {
     const r = this.target(repo);
-    if (label !== undefined && !same(label, r.label)) throw new GitHubRefused(`only the ${r.label} label may be changed on ${r.repo}`);
+    if (label !== undefined && same(label, BUILD_LABEL)) throw new GitHubRefused(`${BUILD_LABEL} is the owner's label`);
+    const which = label === undefined || same(label, r.label) ? r.label : same(label, FEATURE_LABEL) ? FEATURE_LABEL : undefined;
+    if (!which) throw new GitHubRefused(`only the ${r.label} and ${FEATURE_LABEL} labels may be changed on ${r.repo}`);
     const cur = await this.assertTrusted(r, number);
-    const out = (changed: boolean) => ({ repo: r.repo, number, label: r.label, action, changed });
+    const present = cur.labels.some((l) => named(l, which));
+    const out = (changed: boolean) => ({ repo: r.repo, number, label: which, action, changed });
     if (action === "add") {
-      if (cur.present) return out(false);
-      const res = await this.app.appCall(r.owner, r.name, { issues: "write" }, "POST", `/repos/${r.owner}/${r.name}/issues/${number}/labels`, { labels: [r.label] });
+      if (present) return out(false);
+      const res = await this.app.appCall(r.owner, r.name, { issues: "write" }, "POST", `/repos/${r.owner}/${r.name}/issues/${number}/labels`, { labels: [which] });
       if (res.status !== 200) throw new Error(`GitHub refused the label (${res.status} ${res.body?.message ?? ""})`.trim());
       return out(true);
     }
-    if (!cur.present) return out(false);
-    const res = await this.app.appCall(r.owner, r.name, { issues: "write" }, "DELETE", `/repos/${r.owner}/${r.name}/issues/${number}/labels/${encodeURIComponent(r.label)}`);
+    if (!present) return out(false);
+    const res = await this.app.appCall(r.owner, r.name, { issues: "write" }, "DELETE", `/repos/${r.owner}/${r.name}/issues/${number}/labels/${encodeURIComponent(which)}`);
     if (res.status !== 200) throw new Error(`GitHub refused the label removal (${res.status} ${res.body?.message ?? ""})`.trim());
     return out(true);
   }
@@ -379,20 +435,30 @@ export class Maintainer {
    * `error` and never holds up another's. With `triage` (the triage cursors, when the board triages each new issue), each
    * repo also carries its new unlabelled issues (`untriaged`, `triage_cursor`), or `triage_error` without failing the rest.
    */
-  async issuesSince(cursors: Record<string, string> = {}, triage?: Record<string, string>) {
+  async issuesSince(cursors: Record<string, string> = {}, triage?: Record<string, string>, builds: Record<string, string> = {}) {
     if (this.repos instanceof Error) throw new GitHubRefused(`maintainer_repos is invalid: ${this.repos.message}`);
     type Triage = Partial<Awaited<ReturnType<Maintainer["untriaged"]>>> & { triage_error?: string };
-    type Row = ({ repo: string; error: string } | ({ repo: string } & Awaited<ReturnType<Maintainer["repoSince"]>>)) & Triage;
+    // A repo with `features` on also brings its issues labelled agent-build (`builds`, from its own cursor `build_cursor`).
+    type Build = { builds?: Awaited<ReturnType<Maintainer["repoSince"]>>["issues"]; build_cursor?: string | null; build_error?: string };
+    type Row = ({ repo: string; error: string } | ({ repo: string } & Awaited<ReturnType<Maintainer["repoSince"]>>)) & Triage & Build;
     const out: Row[] = [];
     const at = (m: Record<string, string>, repo: string) => Object.entries(m).find(([k]) => same(k, repo))?.[1];
     for (const r of this.repos) {
       let row: Row;
       try {
-        row = { repo: r.repo, ...(await this.repoSince(r.repo, at(cursors, r.repo))) };
+        row = { repo: r.repo, ...(r.issues ? await this.repoSince(r.repo, at(cursors, r.repo)) : { issues: [], skipped: [], cursor: at(cursors, r.repo) ?? null }) };
       } catch (err) {
         row = { repo: r.repo, error: (err as Error).message.slice(0, 300) };
       }
-      if (triage) {
+      if (r.features) {
+        try {
+          const b = await this.repoSince(r.repo, at(builds, r.repo), BUILD_LABEL);
+          Object.assign(row, { builds: b.issues, build_cursor: b.cursor });
+        } catch (err) {
+          row.build_error = (err as Error).message.slice(0, 300);
+        }
+      }
+      if (triage && (r.issues || r.features)) {
         try {
           Object.assign(row, await this.untriaged(r.repo, at(triage, r.repo)));
         } catch (err) {
@@ -427,7 +493,7 @@ export class Maintainer {
     const slug = await this.appSlug(r);
     const ours = (i: GhIssue) => i.performed_via_github_app?.slug === slug || String(i.user?.login ?? "").toLowerCase() === `${slug.toLowerCase()}[bot]`;
     const fresh = newer
-      .filter((i) => !i.pull_request && !labelNames(i).some((l) => same(l, r.label)) && !ours(i))
+      .filter((i) => !i.pull_request && !labelNames(i).some((l) => same(l, r.label) || l === FEATURE_LABEL || l === BUILD_LABEL) && !ours(i))
       .sort((a, b) => Date.parse(String(a.created_at)) - Date.parse(String(b.created_at)))
       .slice(0, TRIAGE_BATCH)
       .map((i) => ({ number: i.number, created_at: String(i.created_at), author: String(i.user?.login ?? "") }));
@@ -439,8 +505,9 @@ export class Maintainer {
    * One repo's open labelled issues updated after `since`, each with its trust verdict, plus the untrusted and unreadable
    * ones in `skipped`. `cursor` is the newest updated_at seen (or `since`), so the next poll passes it back.
    */
-  async repoSince(repo: string, since?: string) {
+  async repoSince(repo: string, since?: string, label?: string) {
     const r = this.target(repo);
+    const asked = label ?? r.label;
     const { owner, name } = r;
     // The board's first poll has no cursor yet: that means from the start, like no since at all.
     since = since || undefined;
@@ -450,13 +517,13 @@ export class Maintainer {
     const listed: GhIssue[] = [];
     let page = 1;
     for (; page <= PAGE_CAP; page++) {
-      const res = await this.app.appCall(owner, name, { issues: "read" }, "GET", `/repos/${owner}/${name}/issues?state=open&labels=${encodeURIComponent(r.label)}&per_page=100&page=${page}`);
+      const res = await this.app.appCall(owner, name, { issues: "read" }, "GET", `/repos/${owner}/${name}/issues?state=open&labels=${encodeURIComponent(asked)}&per_page=100&page=${page}`);
       if (res.status !== 200) throw new Error(`couldn't list ${owner}/${name}'s issues (GitHub said ${res.status})`);
       const pageIssues = (Array.isArray(res.body) ? res.body : []) as GhIssue[];
       listed.push(...pageIssues);
       if (pageIssues.length < 100) break;
     }
-    if (page > PAGE_CAP) throw new GitHubRefused(`${owner}/${name} has more than ${PAGE_CAP * 100} open ${r.label} issues; refusing to read only part of them`);
+    if (page > PAGE_CAP) throw new GitHubRefused(`${owner}/${name} has more than ${PAGE_CAP * 100} open ${asked} issues; refusing to read only part of them`);
     const issues: { number: number; trusted: boolean; labeled_at: string; actor: string | null; created_at?: string; labels: string[] }[] = [];
     const skipped: { number: number; reason: string }[] = [];
     const seen = new Set<number>();
@@ -470,15 +537,15 @@ export class Maintainer {
       seen.add(i.number);
       if (since && !(Date.parse(i.updated_at) > Date.parse(since))) continue;
       try {
-        const { events } = await this.labelEvents(r.repo, i.number, r.label);
-        const latest = this.latestLabel(r, events);
+        const { events } = await this.labelEvents(r.repo, i.number, asked);
+        const latest = this.latestLabel(r, events, asked);
         read.push(i.updated_at);
         if (!latest) {
-          skipped.push({ number: i.number, reason: `no ${r.label} label event` });
+          skipped.push({ number: i.number, reason: `no ${asked} label event` });
           continue;
         }
         if (!latest.trusted) {
-          skipped.push({ number: i.number, reason: `${r.label} label added by ${latest.actor ?? latest.app_slug ?? "an unknown actor"}, not the App or a trusted collaborator` });
+          skipped.push({ number: i.number, reason: `${asked} label added by ${latest.actor ?? latest.app_slug ?? "an unknown actor"}, not ${asked === BUILD_LABEL ? "a trusted collaborator" : "the App or a trusted collaborator"}` });
           continue;
         }
         issues.push({ number: i.number, trusted: true, labeled_at: latest.created_at, actor: latest.actor ?? latest.app_slug ?? null, created_at: i.created_at, labels: labelNames(i) });
