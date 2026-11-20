@@ -32,8 +32,18 @@ async function host(t) {
   const bin = join(dir, "engines", "wait.mjs");
   writeFileSync(bin, `#!/usr/bin/env node\nimport { appendFileSync, existsSync } from "node:fs";\nimport { join } from "node:path";\nconst dir = process.argv[2];\nconst emit = (ev) => appendFileSync(join(dir, "events.jsonl"), JSON.stringify(ev) + "\\n");\nemit({ t: "session", id: "s-1" });\nwhile (!existsSync(join(dir, "..", "..", "..", "state", "logs", "release"))) await new Promise((r) => setTimeout(r, 50));\nemit({ t: "final", text: "done" });\n`);
   chmodSync(bin, 0o755);
+  // An engine that refuses only a session: Codex's own words when its home has no rollout for the stored thread id. A fresh
+  // turn (no session) runs and answers, so a stale session shows as exactly one failed resume and then a normal turn.
+  const stale = join(dir, "engines", "stale.mjs");
+  writeFileSync(stale, `#!/usr/bin/env node\nimport { appendFileSync, readFileSync } from "node:fs";\nimport { join } from "node:path";\nconst dir = process.argv[2];\nconst spec = JSON.parse(readFileSync(join(dir, "job.json"), "utf8"));\nconst emit = (ev) => appendFileSync(join(dir, "events.jsonl"), JSON.stringify(ev) + "\\n");\nif (spec.session) { console.error("Error: thread/resume failed: no rollout found for thread id " + spec.session); process.exit(1); }\nemit({ t: "session", id: "s-new" });\nemit({ t: "final", text: "fresh: " + spec.prompt });\n`);
+  chmodSync(stale, 0o755);
+  // The same error from a run that never resumed: never a reason to run it again.
+  const staleAlways = join(dir, "engines", "stale-always.mjs");
+  writeFileSync(staleAlways, `#!/usr/bin/env node\nconsole.error("Error: thread/resume failed: no rollout found for thread id s-any");\nprocess.exit(1);\n`);
+  chmodSync(staleAlways, 0o755);
   const engine = { module: "test", dir: join(dir, "engines"), bin, kind: "wait", box: true, state: "task" };
-  writeFileSync(join(dir, "engines.json"), JSON.stringify({ wait: engine, wait2: engine }));
+  const staleEngine = (kind, bin) => ({ module: "test", dir: join(dir, "engines"), bin, kind, box: true, state: "task" });
+  writeFileSync(join(dir, "engines.json"), JSON.stringify({ wait: engine, wait2: engine, stale: staleEngine("stale", stale), "stale-always": staleEngine("stale-always", staleAlways) }));
   const cfg = { workDir: join(dir, "work"), stateDir: join(dir, "state"), logsDir: join(dir, "state/logs"), secretsDir: join(dir, "secrets"), enginesFile: join(dir, "engines.json"), boxGatewayUrl: "http://10.231.2.1:8200", boxDir: join(dir, "boxes"), timeout_minutes: 2 };
   writeFileSync(join(dir, "config/handbooks/agent-1.md"), "# Acme crew handbook\n");
   const calls = [];
@@ -90,7 +100,7 @@ async function host(t) {
     wakes: { claimed: (_m, k) => wakes.get(k), bind: () => [], unclaim: () => {} },
     launch: (job) => boxes.launch(job),
   });
-  const admit = (task) => { wakes.set(task, { task, agent: "agent-1" }); return admission.admit("acme-dispatch", { wake: task, prompt: "hello" }); };
+  const admit = (task, { full } = {}) => { wakes.set(task, { task, agent: "agent-1" }); return admission.admit("acme-dispatch", { wake: task, prompt: "hello", ...(full ? { full_prompt: full } : {}) }); };
   const release = () => writeFileSync(join(cfg.logsDir, "release"), "");
   return { attached, dir, cfg, db, grants, calls, whoami, admit, release, make, jobTools, cloned, launcher, draining };
 }
@@ -253,4 +263,48 @@ test("a launcher that can't answer now, or a kernel draining for its successor, 
   assert.equal((await h.admit("task-1")).state, "running");
   h.release();
   await until("released", () => h.db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE released > 0").get().n === 1);
+});
+
+/**
+ * The stale-session recovery: a turn that resumed a session its engine can no longer find (Codex's "no rollout found") is
+ * cleared and re-run at once on a fresh one, with the full first-turn prompt — not reported failed, and never twice.
+ */
+test("a resumed session the engine can't find is cleared and the turn runs again fresh: the task is not told it failed", async (t) => {
+  const h = await host(t);
+  h.grants["agent-1"].engine = "stale";
+  h.grants["agent-1"].engines = ["stale"];
+  // A finished job of this agent's engine left the task a session; the engine now has no rollout for it.
+  h.db.prepare("INSERT INTO jobs (id, module, agent, task, engine, pid, log, dir, at, jobcaps, observing, live_input, state, authority, session, offset, released) VALUES ('j-last', 'acme-dispatch', 'agent-1', 'task-1', 'stale', 0, '', '', 1, '[]', 0, 0, 'done', '{}', 's-gone', 100, 1)").run();
+  const job = await h.admit("task-1", { full: "the whole conversation" });
+  await until("the job to end", () => ["done", "failed"].includes(h.db.prepare("SELECT state FROM jobs WHERE id = ?").get(job.id).state));
+  const v = h.db.prepare("SELECT state, exit, session, final FROM jobs WHERE id = ?").get(job.id);
+  assert.deepEqual([v.state, v.exit], ["done", 0], "the stale resume is not the run's end: the fresh turn is");
+  assert.equal(v.session, "s-new");
+  // Both runs are this job's, each in its own folder: the first resumed s-gone, the retry resumed nothing and carried the
+  // full first-turn prompt.
+  const outDir = JSON.parse(h.db.prepare("SELECT box FROM jobs WHERE id = ?").get(job.id).box).outDir;
+  const spec = (dir) => JSON.parse(readFileSync(join(outDir, dir, "job.json"), "utf8"));
+  assert.equal(spec("job").session, "s-gone");
+  const retry = spec("job-2");
+  assert.equal(retry.session, undefined, "the turn runs again with no session");
+  assert.equal(retry.prompt, "the whole conversation", "and with the full first-turn prompt");
+  assert.equal(spec("job").prompt, "hello", "not the resumed turn's short prompt");
+  // The task's stored session is cleared, not left for the next wake to fail on.
+  assert.equal(h.db.prepare("SELECT session FROM jobs WHERE id = 'j-last'").get().session, null);
+  // Nothing told the task its run failed: its one end is the fresh turn's, with its own words.
+  assert.equal(v.final, "fresh: the whole conversation");
+  assert.ok(!v.final.includes("no rollout found"));
+});
+
+test("a fresh run that reports the same error is not run again", async (t) => {
+  const h = await host(t);
+  h.grants["agent-1"].engine = "stale-always";
+  h.grants["agent-1"].engines = ["stale-always"];
+  const job = await h.admit("task-1", { full: "the whole conversation" });
+  await until("the job to end", () => ["done", "failed"].includes(h.db.prepare("SELECT state FROM jobs WHERE id = ?").get(job.id).state));
+  const v = h.db.prepare("SELECT state, exit, final FROM jobs WHERE id = ?").get(job.id);
+  assert.equal(v.state, "failed");
+  assert.match(v.final, /no rollout found for thread id/);
+  const outDir = JSON.parse(h.db.prepare("SELECT box FROM jobs WHERE id = ?").get(job.id).box).outDir;
+  assert.equal(existsSync(join(outDir, "job-2")), false, "a run that started fresh is never retried");
 });

@@ -149,6 +149,7 @@ export function buildJob({ cfg, engine, worktree, jobDir, sessionId, prompt = ""
     sandbox: { kind: "box", writable: [worktree], network: true },
   };
   writeFileSync(join(jobDir, "job.json"), JSON.stringify(spec), { mode: 0o600, flag: "wx" });
-  const argv = ["docker", "exec", "--env-file", box.envFile, "-w", "/workspace", box.container, "sh", "-c", boxWrap, "aidenhq-computer", join("/opt/aidenhq/engine", relative(entry.dir, entry.bin)), "/aidenhq-out/job"];
+  // The box path of this run's folder (a job that runs a turn again after a stale session gets its own).
+  const argv = ["docker", "exec", "--env-file", box.envFile, "-w", "/workspace", box.container, "sh", "-c", boxWrap, "aidenhq-computer", join("/opt/aidenhq/engine", relative(entry.dir, entry.bin)), join("/aidenhq-out", basename(jobDir))];
   return { argv, spec, entry };
 }

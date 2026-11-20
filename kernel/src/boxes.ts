@@ -103,8 +103,8 @@ export function createBoxes({ db, cfg, jobs, call, secret, whoami, connections, 
     insideNoLinks(join(cfg.workDir, "tasks"), workspace, "workspace");
     const notes = a.profile === "engineer" ? await cloneNamed(job) : [];
     const session = job.fresh ? undefined : lastSession(job.agent, job.task, a.engine);
-    const base = session ? job.prompt : job.fullPrompt ?? job.prompt;
-    const prompt = notes.length ? `(Kernel note: ${notes.join(" ")})\n\n${base}` : base;
+    const withNotes = (text: string) => (notes.length ? `(Kernel note: ${notes.join(" ")})\n\n${text}` : text);
+    const prompt = withNotes(session ? job.prompt : job.fullPrompt ?? job.prompt);
     // 409: the task's box is still going (the computers are full for it); a 5xx, a timeout or no answer: the launcher can't now.
     const box = (await call("/job", { agentId: job.agent, issueId: job.task, identifier: job.identifier, workspace, engine: a.engine, state, image: a.image, token, mcp, roles: a.roles, identity: identity(job.agent) }).catch((e: Error & { status?: number }) => {
       if (e.status === 409) throw Object.assign(e, { status: 503 });
@@ -119,7 +119,7 @@ export function createBoxes({ db, cfg, jobs, call, secret, whoami, connections, 
       throw new JobError(503, "draining", "the kernel is restarting; the job starts on the next one");
     }
     try {
-      jobs.runAdmitted(job.id, { box: { ...box, workspace } as Box, worktree: workspace, prompt, session, label: job.identifier });
+      jobs.runAdmitted(job.id, { box: { ...box, workspace } as Box, worktree: workspace, prompt, session, fullPrompt: withNotes(job.fullPrompt ?? job.prompt), label: job.identifier });
     } catch (e) {
       await release(job.id).catch(() => {});
       throw e;
