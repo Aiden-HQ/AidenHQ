@@ -215,6 +215,8 @@ test("checks: a restart's re-run never shares the draining kernel's folder, and 
   const first = oldK.start("codehost-github", ask);
   while (seen.length === 0) await new Promise((r) => setTimeout(r, 5));
   const newK = kernel(async (o) => { seen.push(o.workspace); assert.ok(existsSync(seen[0]), "the old run's folder is untouched"); return { exit: 0, out: "", timedOut: false }; });
+  assert.equal(newK.find("codehost-github", ask).state, "running", "the old kernel's run is its own while it drains");
+  newK.recover(); // its drain limit passed with the box still running
   assert.equal(newK.find("codehost-github", ask).state, "lost");
   let v = newK.start("codehost-github", ask);
   assert.equal(v.id, first.id);
@@ -225,6 +227,27 @@ test("checks: a restart's re-run never shares the draining kernel's folder, and 
   assert.notEqual(seen[0], seen[1]);
   const after = await newK.get("codehost-github", v.id);
   assert.deepEqual([after.state, after.receipt.verdict, after.receipt.at], ["done", "pass", v.receipt.at]);
+});
+
+test("checks: a model recipe's run lost to restarts doesn't use up its tries", async () => {
+  const review = { module: "code-review", argv: ["node", "x"], timeout_min: 30, title: "the review", spec: { base: "sha", budget_usd: "usd" }, files: {}, model: { max_usd: 2 }, result: true };
+  const dir = mkdtempSync(join(tmpdir(), "checks-"));
+  const db = new DatabaseSync(join(dir, "kernel.db"));
+  const snapshot = async () => {};
+  let t = 1000, runs = 0;
+  const kernel = (run) => createChecks({ db, secret: () => "s", recipes: () => ({ "code-review": review }), box: { run }, snapshot: () => snapshot, modelToken: () => "t", gatewayUrl: "http://gw", workDir: dir, log: () => {}, now: () => t++ });
+  const ask = { repo: "acme/app", head: A, run: "code-review", spec: { base: B, budget_usd: "1" } };
+  // Two restarts, each in the middle of a run: the box never comes back to the kernel that started it.
+  for (let i = 0; i < 2; i++) {
+    const k = kernel(() => (runs++, new Promise(() => {})));
+    assert.equal(k.start("github", ask).state, "running");
+    kernel(() => {}).recover();
+  }
+  // The third ask still runs it.
+  const k = kernel(async (o) => (runs++, writeFileSync(join(o.out, "result.json"), JSON.stringify({ findings: [] })), { exit: 0, out: "", timedOut: false }));
+  let v = k.start("github", ask);
+  while (v.state === "running") v = await k.get("github", v.id, { after: v.version, waitMs: 1000 });
+  assert.deepEqual([v.state, v.receipt.verdict, runs], ["done", "pass", 3]);
 });
 
 test("checks: a model recipe gets its own capped token, its spec and commits as files, and a receipt that binds its result", async () => {

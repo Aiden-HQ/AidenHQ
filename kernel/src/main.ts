@@ -512,6 +512,8 @@ const codehost = createCodehost({ repos: codehostRepos, grants: codehostGrants, 
   local: () => (localHost() ? { snapshot: localSnapshot({ bare: localCode.bare }) } : undefined) });
 // Check jobs (checkjobs.ts): credential-free boxes of the launcher's, snapshots from the module that provides them.
 const checkJobs = checkJobsFrom({ db: records.db, secret, recipes: () => modulesFile().check_jobs ?? {}, ask: codehost.ask, call: launcherClient(launcherUrl, () => secret("launcher_kernel_key")), workDir: sandbox.workDir, gatewayUrl: `${sandbox.boxGatewayUrl}/api/v1`, spent: (token) => gw.spentBy(token), log });
+// The previous kernel's check runs are its own until it has exited (it finishes them while it drains); then what is left is lost.
+afterPrevious(() => checkJobs.recover());
 const lane = createLane({ once: outcomes.once, owner: ownerApi, grantsFile: grantsTable, log, postAsAgent: lanePoster(outcomes) });
 // The board's reads of module services that declare a board API (providers.board), through the kernel.
 const moduleBoardApi = createBoardApi({ decl: (m) => (modulesFile().modules?.[m] as { board?: { url: string; auth_secret: string } } | undefined)?.board, secret, resolver });
@@ -719,8 +721,8 @@ every(() => {
 
 // A restart (kernel/run.sh): the next kernel is starting. This one stops its jobs' watchers (offsets saved: the next one adopts
 // them), its timers and its listeners, so the next one can bind them; then it serves only the calls it holds (idle connections
-// closed, so callers reconnect to the next one) and exits when its model calls and the job launches it had in flight have
-// finished (a launch that gets its box now gives it back: boxes.ts `stopping`), or at DRAIN_MS (the next kernel settles what
+// closed, so callers reconnect to the next one) and exits when its model calls, its check runs and the job launches it had in
+// flight have finished (a launch that gets its box now gives it back: boxes.ts `stopping`), or at DRAIN_MS (the next kernel settles what
 // is left: lib.ts sweep and true-up, afterPrevious above).
 drain = () => {
   if (draining) return;
@@ -734,8 +736,8 @@ drain = () => {
   const done = () => {
     for (const s of servers) s.closeIdleConnections();
     const t = Date.now() - t0;
-    if ((gw.inflight() > 0 || admission.inflight() > 0 || writes.inflight() > 0) && t < DRAIN_MS) return;
-    log("drained: exiting", { inflight: gw.inflight(), launches: admission.inflight(), writes: writes.inflight(), ms: t });
+    if ((gw.inflight() > 0 || admission.inflight() > 0 || writes.inflight() > 0 || checkJobs.inflight() > 0) && t < DRAIN_MS) return;
+    log("drained: exiting", { inflight: gw.inflight(), launches: admission.inflight(), writes: writes.inflight(), checks: checkJobs.inflight(), ms: t });
     process.exit(0);
   };
   done();

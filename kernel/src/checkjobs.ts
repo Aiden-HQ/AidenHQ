@@ -29,8 +29,10 @@
 //
 // The box and the snapshot are seams: the kernel's box client (boxes.ts) and codehost-github's snapshot op provide them.
 // A check the kernel lost (a restart mid-run) or couldn't run has no receipt; asking again runs it again. A restart drains: the
-// old kernel finishes its runs while the new one marks them lost, so each run attempt (the row's start time `at`) has its own
-// folder and lands its end only while the row is still that attempt's; a re-run asked meanwhile supersedes it.
+// old kernel finishes its runs (main.ts waits for them, up to its drain limit) and the new one marks what is still running lost
+// only once the old one has exited (recover), so a lost run is one no kernel follows any more, and it doesn't use up a try.
+// Each run attempt (the row's start time `at`) has its own folder and lands its end only while the row is still that attempt's;
+// a re-run asked meanwhile supersedes it.
 // A judge that writes no usable result is the harness's failure, never the change's: the check ends in error, with no receipt.
 // Missing evidence never counts as passing: whether a recipe's declared check is due is read from the base commit, and a receipt
 // says whether a check ran (`ran`); verify refuses one that didn't unless the caller's policy accepts "none" (product and
@@ -275,7 +277,8 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
     const at = now();
     db.exec("SAVEPOINT check_end");
     try {
-      if (db.prepare("UPDATE checks SET state = ?, receipt = ?, error = ?, ended = ?, result = ?, cost_usd = COALESCE(?, cost_usd), retry = ? WHERE id = ? AND at = ?").run(state, set.receipt ?? null, set.error ?? null, at, set.result ?? null, set.cost ?? null, set.retry ? 1 : 0, id, started).changes === 0) {
+      // A lost run gives its try back: a restart isn't the check's failure.
+      if (db.prepare("UPDATE checks SET state = ?, receipt = ?, error = ?, ended = ?, result = ?, cost_usd = COALESCE(?, cost_usd), retry = ?, tries = MAX(tries - ?, 0) WHERE id = ? AND at = ?").run(state, set.receipt ?? null, set.error ?? null, at, set.result ?? null, set.cost ?? null, set.retry ? 1 : 0, state === "lost" ? 1 : 0, id, started).changes === 0) {
         db.exec("RELEASE check_end");
         return false;
       }
@@ -290,9 +293,8 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
     }
   };
   const row = (id: string) => db.prepare("SELECT * FROM checks WHERE id = ?").get(id) as Record<string, any> | undefined;
-  // Lost while no kernel followed it: no receipt (fail closed); asking again runs it again. A draining kernel still running it
-  // lands its end over "lost" unless a re-run has started since.
-  for (const r of db.prepare("SELECT id, at FROM checks WHERE state = 'running'").all() as { id: string; at: number }[]) end(r.id, r.at, "lost", {});
+  /** The checks this process is running (a drain waits for them). */
+  const mine = new Set<string>();
   const versions = new Map<string, number>();
   const waiters = new Map<string, Set<() => void>>();
   const bump = (id: string) => {
@@ -418,24 +420,35 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
     const attempt = `c-${createHash("sha256").update(`${id}:${r.at}`).digest("hex").slice(0, 16)}`;
     const dir = join(workDir, "checks", attempt);
     const ids = { check: id, attempt, repo: r.repo, head: r.head, run: r.run };
-    const ended = (state: "done" | "error", set: { receipt?: string; error?: string; result?: string; cost?: number; retry?: boolean }) => {
-      const landed = end(id, r.at, state, set);
-      if (!landed) log("check superseded: a newer run of it started, this run's end is dropped", { ...ids, state });
-      return landed;
+    // Its end, tried again a few times (a busy database): a run that can't record its end stays `running` until a restart.
+    const ended = async (state: "done" | "error", set: { receipt?: string; error?: string; result?: string; cost?: number; retry?: boolean }) => {
+      for (let n = 0; ; n++) {
+        try {
+          const landed = end(id, r.at, state, set);
+          if (!landed) log("check superseded: a newer run of it started, this run's end is dropped", { ...ids, state });
+          return landed;
+        } catch (e) {
+          if (n >= 2) throw e;
+          log("check end not recorded, trying again", { ...ids, err: String((e as Error).message).slice(0, 200) });
+          await new Promise((ok) => setTimeout(ok, 1_000 * (n + 1)));
+        }
+      }
     };
+    mine.add(id);
     try {
       rmSync(dir, { recursive: true, force: true });
       mkdirSync(dir, { recursive: true, mode: 0o700 });
       const snap = snapshot(r.module);
       const v: { verdict: "pass" | "fail"; ran: boolean; summary: string; result?: string; cost?: number; retry?: boolean } = recipe.judged ? await evaluate(attempt, snap, recipe, r.head, spec, dir) : await code(attempt, snap, recipe, r.run, r.repo, r.head, spec, dir, Number(r.cost_usd ?? 0));
       const receipt = signReceipt(secret(), { check: id, repo: r.repo, head: r.head, run: r.run, judge: spec.judge_commit ?? null, policy: spec.policy_hash ?? null, hash: r.hash, verdict: v.verdict, ran: v.ran, summary: v.summary.slice(0, 12_000), at: new Date(now()).toISOString(), ...(v.result !== undefined ? { result: resultHash(v.result) } : {}) });
-      if (ended("done", { receipt: JSON.stringify(receipt), ...(v.result !== undefined ? { result: v.result } : {}), ...(v.cost !== undefined ? { cost: v.cost } : {}), retry: v.retry === true })) log("check done", { ...ids, verdict: v.verdict });
+      if (await ended("done", { receipt: JSON.stringify(receipt), ...(v.result !== undefined ? { result: v.result } : {}), ...(v.cost !== undefined ? { cost: v.cost } : {}), retry: v.retry === true })) log("check done", { ...ids, verdict: v.verdict });
     } catch (e) {
       // It couldn't run (no snapshot, no box, no result from the judge): no receipt; asking again runs it again.
       const msg = String((e as Error).message ?? e);
       const why = msg.split("\n")[0]!.slice(0, 300);
-      if (ended("error", { error: why })) log("WARNING: check couldn't run", { ...ids, err: msg.slice(0, TAIL + 600) });
+      if (await ended("error", { error: why })) log("WARNING: check couldn't run", { ...ids, err: msg.slice(0, TAIL + 600) });
     } finally {
+      mine.delete(id);
       rmSync(dir, { recursive: true, force: true });
       bump(id);
     }
@@ -466,9 +479,18 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
       if (had) db.prepare("UPDATE checks SET state = 'running', receipt = NULL, error = NULL, result = NULL, retry = 0, tries = tries + 1, at = ?, ended = NULL WHERE id = ?").run(now(), id);
       else db.prepare("INSERT INTO checks (id, module, repo, head, run, hash, spec, state, at) VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?)").run(id, module, repo.toLowerCase(), head, run, hash, JSON.stringify(spec), now());
       log("check started", { check: id, module, repo, head, run });
-      void execute(id, recipe);
+      execute(id, recipe).catch((e: Error) => log("WARNING: check run failed outside its own handling", { check: id, err: String(e?.message ?? e).slice(0, 300) }));
       return view(row(id)!);
     },
+    /**
+     * After a restart, once the previous kernel has exited (main.ts afterPrevious): the runs no kernel follows any more are lost.
+     * No receipt (fail closed); asking again runs them again, and the lost run doesn't count as a try.
+     */
+    recover() {
+      for (const r of db.prepare("SELECT id, at FROM checks WHERE state = 'running'").all() as { id: string; at: number }[]) if (!mine.has(r.id) && end(r.id, r.at, "lost", {})) bump(r.id);
+    },
+    /** The checks this process is running: a drain waits for them. */
+    inflight: () => mine.size,
     /** The check already asked for with this spec (running or done), or undefined: a read, never a run (a sweep asks `start`). */
     find(module: string, b: { repo?: unknown; head?: unknown; run?: unknown; spec?: unknown }): CheckView | undefined {
       const repo = String(b?.repo ?? ""), head = String(b?.head ?? ""), run = String(b?.run ?? "") as Run;
