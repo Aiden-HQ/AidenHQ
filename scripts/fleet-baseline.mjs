@@ -6,6 +6,7 @@
 import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
+import { paperclipClient } from "../kernel/sdk/src/paperclip.ts";
 import { OWNER_SQL } from "../kernel/src/records.ts";
 
 const DAY = 864e5;
@@ -47,12 +48,9 @@ export async function baseline({ days, now = new Date() }, { kernelDb, gradesDb,
 }
 
 /** Paperclip over GET only: the company's agents and its done/cancelled tasks since a time, paged. */
-export function paperclipReader(url, companyId, key, fetchFn = fetch) {
-  const get = async (path) => {
-    const res = await fetchFn(new URL(path, url), { headers: { authorization: `Bearer ${key}`, accept: "application/json" }, signal: AbortSignal.timeout(30_000) });
-    if (!res.ok) throw new Error(`Paperclip GET ${path.split("?")[0]} -> ${res.status}`);
-    return res.json();
-  };
+export function paperclipReader(url, companyId, key, fetcher = fetch) {
+  const client = paperclipClient({ url, token: key, lane: "direct", timeoutMs: 30_000, fetcher });
+  const get = (path) => client.request("GET", path);
   return {
     agents: () => get(`/api/companies/${companyId}/agents`),
     async closed(since) {

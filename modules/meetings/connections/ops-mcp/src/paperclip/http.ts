@@ -1,3 +1,4 @@
+import { paperclipClient, type PaperclipClient } from "../aidenhq-sdk/paperclip.js";
 import type { CreateIssueInput, IssueComment, IssueRef, PaperclipApi } from "./api.js";
 
 interface Label {
@@ -5,16 +6,19 @@ interface Label {
   name: string;
 }
 
-/** Paperclip REST client (agent API key, bearer auth). */
+/** The Paperclip surface ops-mcp uses, over the SDK's client (this module holds the agent's own key: its scan has no job to act as). */
 export class HttpPaperclipApi implements PaperclipApi {
   private labelCache = new Map<string, string>();
+  private readonly client: PaperclipClient;
 
   constructor(
-    private readonly baseUrl: string,
+    baseUrl: string,
     private readonly companyId: string,
-    private readonly apiKey: string,
-    private readonly timeoutMs = 15_000,
-  ) {}
+    apiKey: string,
+    timeoutMs = 15_000,
+  ) {
+    this.client = paperclipClient({ url: baseUrl, token: apiKey, lane: "direct", timeoutMs });
+  }
 
   async createIssue(input: CreateIssueInput): Promise<IssueRef> {
     const labelIds = await Promise.all(input.labels.map((l) => this.labelId(l)));
@@ -105,21 +109,8 @@ export class HttpPaperclipApi implements PaperclipApi {
     return created.id;
   }
 
-  private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
-    let res: Response;
-    try {
-      res = await fetch(new URL(path, this.baseUrl), {
-        method,
-        headers: { authorization: `Bearer ${this.apiKey}`, "content-type": "application/json", accept: "application/json" },
-        body: body === undefined ? undefined : JSON.stringify(body),
-        signal: AbortSignal.timeout(this.timeoutMs),
-      });
-    } catch (err) {
-      throw new Error(`Paperclip unreachable: ${(err as Error).message}`);
-    }
-    const text = await res.text();
-    if (!res.ok) throw new Error(`Paperclip ${method} ${path} → ${res.status}: ${text.slice(0, 300)}`);
-    return (text ? JSON.parse(text) : {}) as T;
+  private request<T>(method: string, path: string, body?: unknown): Promise<T> {
+    return this.client.request<T>(method, path, body);
   }
 }
 

@@ -17,6 +17,7 @@ import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { paperclipClient } from "../kernel/sdk/src/paperclip.ts";
 
 /** `systemctl list-units --plain --no-legend` rows: the unit, its active state and its sub-state. */
 export function listedUnits(text) {
@@ -65,15 +66,8 @@ async function main() {
   const base = env("PAPERCLIP_URL", "http://127.0.0.1:3100");
   const key = readFileSync(join(expand(env("AIDENHQ_SECRETS_DIR", "~/.config/aidenhq")), "paperclip_board_key"), "utf8").trim();
 
-  const api = async (method, path, body) => {
-    const res = await fetch(new URL(path, base), {
-      method,
-      headers: { authorization: `Bearer ${key}`, accept: "application/json", ...(body ? { "content-type": "application/json" } : {}) },
-      body: body ? JSON.stringify(body) : undefined,
-    });
-    if (!res.ok) throw Object.assign(new Error(`${method} ${path} → ${res.status}`), { status: res.status });
-    return res.json();
-  };
+  const paperclip = paperclipClient({ url: base, token: key, lane: "direct" });
+  const api = (method, path, body) => paperclip.request(method, path, body);
   const sh = (cmd, args) => { try { return execFileSync(cmd, args, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }); } catch { return ""; } };
   const companies = async () => (await api("GET", "/api/companies")).map((c) => c.id);
 
