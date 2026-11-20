@@ -3,12 +3,17 @@
 // session) to every port of it, so agent-built apps live on their own node (compose.yaml apps-edge), never here.
 //   node scripts/host-serve.ts check   prints what else the host's `tailscale serve` has; exit 1 if anything
 //   node scripts/host-serve.ts prune   turns every such route off (ops/apply-config.sh; e.g. an app port served here before)
+//   node scripts/host-serve.ts door    serves the module door (https 8447 → the gate) while config/gate.json has one and the
+//                                      host doesn't serve it yet (apply, in tailscale exposure)
 // Without tailscale on this host: check says so (exit 0), prune does nothing.
 import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-// Paperclip, the board (local, LAN) and the monitoring module's Grafana: trusted, signed-in services only (never an app).
-const OK = new Set(["http://127.0.0.1:3100", "http://127.0.0.1:3120", "http://127.0.0.1:3121", "http://127.0.0.1:3131"]);
+// Paperclip, the board (local, LAN), the monitoring module's Grafana and the gate's module door: trusted, signed-in services
+// only (never an agent-built app: the gate serves module services alone on this name, scripts/edge.ts).
+const OK = new Set(["http://127.0.0.1:3100", "http://127.0.0.1:3120", "http://127.0.0.1:3121", "http://127.0.0.1:3131", "http://127.0.0.1:3130"]);
+const DOOR = "8447"; // scripts/edge.ts DOOR_PORT
 
 /** Ports the host serves that aren't HTTPS to Paperclip or the board, each with why; plus funnel, which prune leaves (loud). */
 interface Served { TCP?: Record<string, { HTTPS?: boolean; TCPForward?: string }>; Web?: Record<string, { Handlers?: Record<string, { Proxy?: string; Path?: string }> }>; AllowFunnel?: Record<string, boolean> }
@@ -27,14 +32,23 @@ const ts = (...args: string[]) => execFileSync("tailscale", args, { encoding: "u
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const cmd = process.argv[2]!;
-  if (!["check", "prune"].includes(cmd)) { console.error("usage: host-serve.ts check|prune"); process.exit(2); }
+  if (!["check", "prune", "door"].includes(cmd)) { console.error("usage: host-serve.ts check|prune|door"); process.exit(2); }
   let s;
   try { s = JSON.parse(ts("serve", "status", "--json") || "{}"); } catch {
     console.log("tailscale serve status unavailable on this host");
     process.exit(0);
   }
   const { ports, funnel } = strays(s);
-  if (cmd === "prune") {
+  if (cmd === "door") {
+    // Only while the gate serves a module door (config/gate.json, compiled by scripts/edge.ts).
+    let gate: { hosts?: Record<string, { door?: boolean }> } = {};
+    try { gate = JSON.parse(readFileSync("config/gate.json", "utf8")); } catch {}
+    const wanted = Object.values(gate.hosts ?? {}).some((h) => h.door);
+    if (wanted && !Object.keys(s.Web ?? {}).some((hp) => hp.endsWith(`:${DOOR}`))) {
+      ts("serve", "--bg", `--https=${DOOR}`, "http://127.0.0.1:3130");
+      console.log(`  host tailscale serve: the module door on ${DOOR}`);
+    }
+  } else if (cmd === "prune") {
     for (const p of ports) {
       ts("serve", p.tcp ? `--tcp=${p.port}` : `--https=${p.port}`, "off");
       console.log(`  host tailscale serve: turned off ${p.why}`);

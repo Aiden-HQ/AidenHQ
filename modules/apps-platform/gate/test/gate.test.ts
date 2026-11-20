@@ -308,6 +308,7 @@ test("my apps lists only the apps the visitor isn't blocked from (all of them fo
 test("password mode: sign-in only on the my-apps host; app hosts get a host-only cookie through a one-time handoff", async () => {
   let clock = Date.now();
   const SC = "__Host-better-auth.session_token";
+  const AC = "__Host-aidenhq-gate.session"; // an app host's own session cookie, sent to the board under SC
   const people = { "s-ann": "ann@example.com", "s-gone": "gone@example.com", "s-nobody": "nobody@example.com" };
   const codes = new Map(); // the board's side (lane 1), as the gate expects it: 60 s, single use, bound to one host and state
   const revoked = [];
@@ -397,7 +398,7 @@ test("password mode: sign-in only on the my-apps host; app hosts get a host-only
     assert.equal(done.status, 302);
     assert.equal(done.headers.location, "/plan?q=1");
     const [cookie, cleared] = done.headers["set-cookie"];
-    assert.match(cookie, /^__Host-better-auth\.session_token=tok-roadmap\.example\.com-1-0123456789abcdef; Path=\/; Secure; HttpOnly; SameSite=Lax$/);
+    assert.match(cookie, /^__Host-aidenhq-gate\.session=tok-roadmap\.example\.com-1-0123456789abcdef; Path=\/; Secure; HttpOnly; SameSite=Lax$/);
     assert.doesNotMatch(cookie, /domain/i);
     assert.match(cleared, /^__Host-better-auth\.handoff_state=; Path=\/; Max-Age=0/);
     // a code works once, only on its own host, and only for 60 s
@@ -429,8 +430,9 @@ test("password mode: sign-in only on the my-apps host; app hosts get a host-only
     assert.equal(h["x-aidenhq-user"], undefined); // the forged header the client sent
     assert.equal(h.cookie, "theme=dark");
     assert.deepEqual(ok.headers["set-cookie"], ["theme=dark"]);
-    assert.equal((await send("/", { cookie: `${SC}=s-gone` })).status, 403);
-    assert.equal((await send("/", { cookie: `${SC}=s-nobody` })).status, 403); // a session but no account
+    assert.equal((await send("/", { cookie: `${AC}=s-gone` })).status, 403);
+    assert.equal((await send("/", { cookie: `${AC}=s-nobody` })).status, 403); // a session but no account
+    assert.equal((await send("/", { cookie: `${SC}=s-ann` })).status, 302); // Better Auth's own cookie counts only on the my-apps host
 
     // sign-out on an app host: same-origin only; the board revokes this host's session, the cookie expires, and the
     // gate's cache forgets it at once (the session was cached by the request above)
@@ -439,7 +441,7 @@ test("password mode: sign-in only on the my-apps host; app hosts get a host-only
     const out = await send("/.auth/sign-out", { method: "POST", origin: "https://roadmap.example.com", cookie: appCookie });
     assert.equal(out.status, 303);
     assert.equal(out.headers.location, "https://apps.example.com/");
-    assert.match(out.headers["set-cookie"][0], /^__Host-better-auth\.session_token=; Path=\/; Max-Age=0/);
+    assert.match(out.headers["set-cookie"][0], /^__Host-aidenhq-gate\.session=; Path=\/; Max-Age=0/);
     assert.deepEqual(revoked, [appCookie.split("=")[1]]);
     assert.equal((await send("/", { cookie: appCookie })).status, 302); // back to sign-in, not the cached answer
 
@@ -566,6 +568,7 @@ test("header-jwt: the front door's token for this host signs a person in; wrong 
 
 test("doors: each exposed app at <app>.<base> for admins only, signed in on the admin listener and handed back once", async () => {
   const SC = "__Host-better-auth.session_token";
+  const AC = "__Host-aidenhq-gate.session";
   const ST = "__Host-better-auth.handoff_state";
   const people = { "s-boss": "boss@example.com", "s-ann": "ann@example.com" };
   const hostOf = {};
@@ -599,7 +602,7 @@ test("doors: each exposed app at <app>.<base> for admins only, signed in on the 
   writeFileSync(join(dir, "accounts.json"), JSON.stringify({ accounts: [{ email: "boss@example.com", role: "admin", disabled: false }, { email: "ann@example.com", role: "user", disabled: false }], apps: { roadmap: { default: "member", roles: {} } } }));
   const cfg = {
     port: 3130, login: "password", auth_url: `http://127.0.0.1:${authPort}`, owner_email: "boss@example.com", accounts_file: join(dir, "accounts.json"), identity_key_file: KEY,
-    hosts: {}, origin: { scheme: "http", port: 3130 }, doors: { base: "localhost", file: DOORS, signin: "http://127.0.0.1:3120" },
+    hosts: {}, origin: { scheme: "http", port: 3130 }, doors: { base: "localhost", file: DOORS }, signin: "http://127.0.0.1:3120",
   };
   const g = createGate({ config: () => cfg, log: () => {} });
   const port = await listen(g);
@@ -629,7 +632,7 @@ test("doors: each exposed app at <app>.<base> for admins only, signed in on the 
     const done = await send(`/.auth/handoff?code=c2&state=${state}&next=/plan`, { cookie: `${ST}=${state}` });
     assert.equal(done.status, 302);
     const boss = done.headers["set-cookie"][0].split(";")[0];
-    assert.match(boss, /^__Host-better-auth\.session_token=tok-c2-/);
+    assert.match(boss, /^__Host-aidenhq-gate\.session=tok-c2-/);
     // an admin gets the app with a signed identity; any cookie the app sets is host-only
     const ok = await send("/", { cookie: `${boss}; theme=dark` });
     assert.equal(ok.status, 200);
@@ -643,7 +646,7 @@ test("doors: each exposed app at <app>.<base> for admins only, signed in on the 
     assert.equal((await send("/", { host: "other.localhost:3130", cookie: boss })).status, 302);
     assert.equal((await send("/", { cookie: boss })).status, 200);
     // a user account is refused whatever the app's default says; the gate's own app paths are a shared app's only
-    assert.equal((await send("/", { cookie: `${SC}=s-ann` })).status, 403);
+    assert.equal((await send("/", { cookie: `${AC}=s-ann` })).status, 403);
     assert.equal((await send("/.aidenhq/requests", { cookie: boss })).status, 404);
     // writes need this exact origin, port and scheme included
     assert.equal((await send("/", { cookie: boss, method: "POST", origin: "http://roadmap.localhost:3130" })).status, 200);
@@ -662,5 +665,59 @@ test("doors: each exposed app at <app>.<base> for admins only, signed in on the 
     direct.close();
   } finally {
     for (const s of [auth, doorApp, g]) { s.close(); s.closeAllConnections(); }
+  }
+});
+
+test("the module door: a module service at the board's own host on the door port, admins only, never touching the board's or admin listener's cookies", async () => {
+  const SC = "__Host-better-auth.session_token";
+  const AC = "__Host-aidenhq-gate.session";
+  const ST = "__Host-better-auth.handoff_state";
+  const people = { "tok-boss-0123456789abcdef": "boss@example.com", "tok-ann-0123456789abcdef": "ann@example.com", "admin-session": "boss@example.com" };
+  const asked = [];
+  const auth = createServer((q, s) => {
+    asked.push(q.headers.cookie);
+    const sid = new RegExp(`${SC}=([^;]+)`).exec(q.headers.cookie ?? "")?.[1];
+    const ok = q.url === "/.auth/api/get-session" && people[sid] && sid !== "admin-session"; // the admin listener's own session is never an app host's
+    s.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(ok ? { session: { id: sid }, user: { email: people[sid] } } : null));
+  });
+  const doc = createServer((q, s) => s.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(q.headers)));
+  const [authPort, docPort] = [await listen(auth), await listen(doc)];
+  const dir = mkdtempSync(join(tmpdir(), "module-door-"));
+  writeFileSync(join(dir, "accounts.json"), JSON.stringify({ accounts: [{ email: "boss@example.com", role: "admin", disabled: false }, { email: "ann@example.com", role: "user", disabled: false }], apps: {} }));
+  const ORIGIN = "https://board.example.com:8447";
+  const cfg = {
+    port: 3130, login: "password", auth_url: `http://127.0.0.1:${authPort}`, owner_email: "boss@example.com", accounts_file: join(dir, "accounts.json"), identity_key_file: KEY,
+    hosts: { "board.example.com": { app: "docs", port: docPort, door: true, origin: ORIGIN } }, signin: "https://board.example.com:8446",
+  };
+  const g = createGate({ config: () => cfg, log: () => {} });
+  const port = await listen(g);
+  const send = (path, { cookie, method = "GET", origin } = {}) => new Promise((resolve) => {
+    request({ host: "127.0.0.1", port, path, method, headers: { host: "board.example.com:8447", ...(cookie ? { cookie } : {}), ...(origin ? { origin } : {}) } }, (r) => {
+      let body = "";
+      r.on("data", (c) => (body += c)).on("end", () => resolve({ status: r.statusCode, headers: r.headers, body }));
+    }).end(method === "POST" ? "{}" : undefined);
+  });
+  try {
+    // The admin listener's Better Auth session (same host name, another port) is not this door's: sign in through the handoff,
+    // for this exact origin, port included.
+    const r = await send("/d/1", { cookie: `${SC}=admin-session` });
+    assert.equal(r.status, 302);
+    const to = new URL(r.headers.location);
+    assert.equal(to.origin + to.pathname, "https://board.example.com:8446/auth/handoff");
+    assert.equal(to.searchParams.get("to"), ORIGIN);
+    assert.ok(r.headers["set-cookie"][0].startsWith(`${ST}=`));
+    // The door's own session opens it with a signed identity; the board's and the admin listener's cookies never reach it.
+    const boss = `${AC}=tok-boss-0123456789abcdef`;
+    const ok = await send("/d/1", { cookie: `${boss}; ${SC}=admin-session; __Host-aidenhq-board=b; theme=dark` });
+    assert.equal(ok.status, 200);
+    assert.equal(who(ok.body, "docs").email, "boss@example.com");
+    assert.equal(JSON.parse(ok.body).cookie, "theme=dark");
+    assert.equal(asked.at(-1), `${SC}=tok-boss-0123456789abcdef`); // to the kernel under Better Auth's name, nothing else
+    // Admins only; writes need the door's exact origin, never the board's.
+    assert.equal((await send("/", { cookie: `${AC}=tok-ann-0123456789abcdef` })).status, 403);
+    assert.equal((await send("/api/x", { cookie: boss, method: "POST", origin: ORIGIN })).status, 200);
+    for (const o of ["https://board.example.com", "https://board.example.com:8446"]) assert.equal((await send("/api/x", { cookie: boss, method: "POST", origin: o })).status, 403, o);
+  } finally {
+    for (const s of [auth, doc, g]) { s.close(); s.closeAllConnections(); }
   }
 });

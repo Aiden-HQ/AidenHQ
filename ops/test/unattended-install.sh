@@ -143,7 +143,7 @@ ok "ops/setup.sh --unattended ran with no terminal and no tailnet"
 [ "$(grep -c '^AIDENHQ_SETUP_URL=' "$work/setup.out")" = 1 ] || fail "not exactly one AIDENHQ_SETUP_URL line"
 URL="$(tail -1 "$work/setup.out" | sed -n 's/^AIDENHQ_SETUP_URL=//p')"
 [[ "$URL" =~ ^http://localhost:3120/setup\?token=[A-Za-z0-9_-]{43}$ ]] || fail "the last line isn't the loopback /setup URL: $(tail -1 "$work/setup.out")"
-grep -q '^AIDENHQ_SSH_TUNNEL=ssh -N -L 3121:127.0.0.1:3121 -L 3120:127.0.0.1:3120 -L 3130:127.0.0.1:3130 alice@' "$work/setup.out" || fail "no SSH tunnel line"
+grep -q '^AIDENHQ_SSH_TUNNEL=ssh -N -L 3121:127.0.0.1:3121 -L 3120:127.0.0.1:3120 -L 3130:127.0.0.1:3130 -L 8447:127.0.0.1:3130 alice@' "$work/setup.out" || fail "no SSH tunnel line"
 ok "one AIDENHQ_SETUP_URL line, the last: $URL (SSH tunnel printed)"
 
 [ "$(stat -c '%U:%G %a' "$K")" = "root:root 755" ] || fail "$K isn't root:root 0755"

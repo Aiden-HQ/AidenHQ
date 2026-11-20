@@ -643,6 +643,8 @@ switchOver() {
   ops/compose-recreate.sh # recreate only the services that moved, and stop and remove what this config dropped
   # The host's own tailnet name keeps Paperclip and the board only; apps are on their own node (compose.yaml apps-edge).
   node scripts/host-serve.ts prune
+  # In tailscale exposure the host's name also carries the module door (8447 → the gate; docs/design/app-doors.md).
+  [ "$(cat config/exposure 2>/dev/null)" != tailscale ] || node scripts/host-serve.ts door
   lap compose # the kernel unit, data moves, then compose: recreates what changed
   stepRun setup setupInputs node scripts/paperclip-setup.ts
   lap setup

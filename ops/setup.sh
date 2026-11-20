@@ -306,7 +306,7 @@ fi
 # Leaving the tailnet mode on a host that stays on one: the board's two tailnet doors close (Paperclip's stays), so the
 # board has one way in, and Caddy's 443 and 8446 are free.
 if [ "$NO_TS" = 1 ] && [ "$DRY" = 0 ] && on_tailnet; then
-  tailscale serve --https=443 off >/dev/null 2>&1 || true; tailscale serve --https=8446 off >/dev/null 2>&1 || true
+  tailscale serve --https=443 off >/dev/null 2>&1 || true; tailscale serve --https=8446 off >/dev/null 2>&1 || true; tailscale serve --https=8447 off >/dev/null 2>&1 || true
 fi
 # The board's URL for links: its tailnet name over https, or (no Tailscale) loopback, reached through an SSH tunnel.
 if [ -n "$BOARD_HOST" ]; then BOARD_URL="https://$BOARD_HOST"; else BOARD_URL="http://localhost:3121"; fi
@@ -589,6 +589,7 @@ else
   # Both were just recreated (Paperclip by its sign-up setting): healthy before the setup link, or its first page meets them starting.
   as_user bash -c "cd '$REPO' && docker compose up -d --no-deps --wait --wait-timeout 300 paperclip board"
 fi
+# 8447, the module door (the gate; docs/design/app-doors.md), is the apply's (scripts/host-serve.ts door).
 [ -z "$BOARD_HOST" ] || { run tailscale serve --bg --https=443 http://127.0.0.1:3121; run tailscale serve --bg --https=8446 http://127.0.0.1:3120; }
 # Public: the machine step ran before this apply compiled the `caddy` service, so it kept 443 and 8446 closed; open them now
 # (a host without the public firewall, AIDENHQ_PUBLIC_IF=none, has no file to say so: it runs again, harmlessly).
@@ -657,7 +658,7 @@ fi
 [ -z "$CONFIG" ] || echo "Delete $CONFIG: it holds secrets (the OpenRouter key)."
 if [ "$UNATTENDED" = 0 ] && [ -e /root/aidenhq-vault-recovery.txt ]; then echo "Vault recovery key: /root/aidenhq-vault-recovery.txt. Store it, then: sudo shred -u /root/aidenhq-vault-recovery.txt"; fi
 if [ -z "$BOARD_HOST" ] && [ "$PUBLIC" = 0 ]; then
-  tunnel="ssh -N -L 3121:127.0.0.1:3121 -L 3120:127.0.0.1:3120 -L 3130:127.0.0.1:3130 $U@$(hostname -f 2>/dev/null || hostname)"
+  tunnel="ssh -N -L 3121:127.0.0.1:3121 -L 3120:127.0.0.1:3120 -L 3130:127.0.0.1:3130 -L 8447:127.0.0.1:3130 $U@$(hostname -f 2>/dev/null || hostname)"
   echo "The board listens on this host's loopback only. From $OWNER_NAME's laptop, open a tunnel first and leave it open:"
   echo "  $tunnel"
   [ "$UNATTENDED" = 0 ] || echo "AIDENHQ_SSH_TUNNEL=$tunnel"

@@ -21,6 +21,10 @@
 // every exposed app to AidenHQ admins at <app>.<base> (`localhost` over http on loopback; <ip-with-dashes>.sslip.io behind
 // Caddy, scripts/front-door.ts), with each app's port from apps-mcp's doors file and sign-in only on the kernel's admin
 // listener (it hands a one-time code back to the app host). Tailscale's apps node and `edge` keep their own doors.
+// The module door (docs/design/app-doors.md): without `edge`, on every exposure mode (local, public, tailscale), a module
+// service shared with no host (services.run.<svc>.share, e.g. the self-hosted Primer) opens for AidenHQ admins at the
+// board's own host name on DOOR_PORT, which the front door (Caddy, `tailscale serve`, the SSH tunnel) passes to the gate,
+// signed in like any door. Its URL reaches the service as AIDENHQ_APP_URL (with `edge`, its share.host's).
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -29,6 +33,7 @@ import YAML from "yaml";
 
 export const GATE_PORT = 3130; // modules/apps-platform/apps-mcp/src/tailnet.ts reserves the same port
 export const GATE_URL = `http://127.0.0.1:${GATE_PORT}`;
+export const DOOR_PORT = 8447; // the module door: the board's host on this port, through the front door to the gate
 // cloudflared's way to the gate: a unix socket in a directory only the two of them mount (data/gate/socket), so the gate
 // believes CF-Connecting-IP there and nowhere else (anything on the host's loopback reaches GATE_URL).
 export const GATE_SOCKET = "/run/gate/gate.sock";
@@ -55,9 +60,10 @@ const fail = (m: string): never => { throw new Error(m); };
 const emails = (l: unknown[] | null | undefined, where: string): string[] => (Array.isArray(l ?? []) ? l ?? [] : fail(`${where} must be a list`)).map((e: unknown) => (typeof e === "string" && e.includes("@") ? e.trim().toLowerCase() : fail(`${where}: ${e} is not an email`)));
 
 /**
- * edgeConfig(settings, instanceApps, moduleApps, { publicIp, adminUrl, boardUrl }) → { gate, cloudflared, compose }, or a door's
- * { gate, cloudflared: null, compose } without `edge` on exposure local or public, or null.
- * `share` lives only in the instance apps.yaml; a module app may not declare it.
+ * edgeConfig(settings, instanceApps, moduleApps, { publicIp, adminUrl, boardUrl }) → { gate, cloudflared, compose, urls }, or a
+ * door's { gate, cloudflared: null, compose, urls } without `edge`, or null. `urls`: each shared module service's compose key →
+ * the address people open it at (AIDENHQ_APP_URL). `share` lives only in the instance apps.yaml and module services (those carry
+ * `service`); a module app may not declare it.
  */
 export function edgeConfig(settings: Obj, instanceApps: Obj[], moduleApps: Obj[], door: Door = {}) {
   for (const a of moduleApps) if (a.share) fail(`app ${a.name}: share is set only in the instance apps.yaml, never by a module`);
@@ -68,9 +74,10 @@ export function edgeConfig(settings: Obj, instanceApps: Obj[], moduleApps: Obj[]
     if (t) fail(`app ${a.name} connects to ${t}, a shared app: shared apps are reached only through the gate`);
   }
   const edge = settings.edge;
+  const urls = Object.fromEntries(shared.filter((a) => a.service).map((a) => [a.service, `https://${a.share.host}`]));
   if (!edge) {
     if (shared.length) fail(`app ${shared[0]!.name} has share.host, but settings.edge isn't set (docs/setup.md, Shared access)`);
-    return doorConfig(settings.exposure, door);
+    return doorConfig(settings.exposure, door, instanceApps.filter((a) => a.service && !a.share?.host));
   }
   const login = settings.app_login ?? "access";
   if (!LOGINS.includes(login)) fail(`settings.app_login must be ${LOGINS.join(" or ")}`);
@@ -175,7 +182,7 @@ export function edgeConfig(settings: Obj, instanceApps: Obj[], moduleApps: Obj[]
     },
     secrets: front ? {} : { cloudflared_credentials: { file: "${AIDENHQ_SECRETS_DIR}/cloudflared_credentials.json" } },
   };
-  return { gate, cloudflared, compose };
+  return { gate, cloudflared, compose, urls };
 }
 
 const HARDENING = { security_opt: ["no-new-privileges:true"], cap_drop: ["ALL"], restart: "unless-stopped", user: "${PUID:-1000}:${PGID:-100}", read_only: true };
@@ -193,27 +200,43 @@ const gateService = (extra: string[]) => ({
   ],
 });
 
-/**
- * The door without `edge` (docs/design/app-doors.md), or null: `local` serves <app>.localhost:<GATE_PORT> over http, `public`
- * <app>.<ip-with-dashes>.sslip.io through Caddy. Sign-in is the admin listener's (`adminUrl`), never the gate's.
- */
 /** The host's own addresses, from .env (compile's `door`). */
 interface Door { publicIp?: string; adminUrl?: string; boardUrl?: string }
 
-function doorConfig(exposure: unknown, { publicIp, adminUrl, boardUrl }: Door = {}) {
-  let doors: Obj, origin: Obj | undefined;
+/**
+ * The doors without `edge` (docs/design/app-doors.md), or null. App doors: `local` serves <app>.localhost:<GATE_PORT> over
+ * http, `public` <app>.<ip-with-dashes>.sslip.io through Caddy. The module door (`moduleDoors`: module services shared with no
+ * host, at most one): the board's own host on DOOR_PORT in every mode, local, public and tailscale. Sign-in is the admin
+ * listener's (`adminUrl`), never the gate's.
+ */
+function doorConfig(exposure: unknown, { publicIp, adminUrl, boardUrl }: Door = {}, moduleDoors: Obj[] = []) {
+  let doors: Obj | undefined, origin: Obj | undefined, signin: string;
   // A local door is the viewer's own loopback: only where the board is too (not a LAN VM's board on a LAN address).
   const loopback = !boardUrl || /^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?\/?$/.test(boardUrl);
   if (exposure === "local" && loopback) {
-    doors = { base: "localhost", file: DOORS_FILE, signin: adminUrl || "http://localhost:3120" };
+    doors = { base: "localhost", file: DOORS_FILE };
     origin = { scheme: "http", port: GATE_PORT };
-  } else if (exposure === "public" && publicIp) doors = { base: sslipBase(publicIp), file: DOORS_FILE, signin: adminUrl || `https://${publicIp}:8446` };
+    signin = adminUrl || "http://localhost:3120";
+  } else if (exposure === "public" && publicIp) {
+    doors = { base: sslipBase(publicIp), file: DOORS_FILE };
+    signin = adminUrl || `https://${publicIp}:8446`;
+  } else if ((exposure ?? "tailscale") === "tailscale" && /^https:\/\//.test(boardUrl ?? "") && adminUrl) signin = adminUrl;
   else return null;
+  if (moduleDoors.length > 1) fail(`modules ${moduleDoors.map((a) => a.name).join(", ")} each share a service with no host: the module door serves one (give the others a host)`);
+  const hosts: Obj = {}, urls: Obj = {};
+  for (const a of moduleDoors) {
+    // The board's own host name (cookies ignore ports: the gate keeps its session apart, modules/apps-platform/gate/gate.ts).
+    const board = new URL(boardUrl || "http://localhost:3121");
+    const at = `${board.protocol}//${board.hostname}:${DOOR_PORT}`;
+    hosts[board.hostname] = { app: a.name, port: a.port, door: true, origin: at };
+    urls[a.service] = at;
+  }
+  if (!doors && !moduleDoors.length) return null;
   const gate: Obj = {
     port: GATE_PORT, login: "password", auth_url: AUTH_URL, auth_secret_file: AUTH_SECRET_FILE, accounts_file: ACCOUNTS_FILE, identity_key_file: IDENTITY_KEY_FILE,
-    hosts: {}, ...(origin ? { origin } : {}), doors,
+    hosts, ...(origin ? { origin } : {}), ...(doors ? { doors } : {}), signin,
   };
-  return { gate, cloudflared: null, compose: { services: { gate: gateService([PREVIEWS_MOUNT]) }, secrets: {} } };
+  return { gate, cloudflared: null, compose: { services: { gate: gateService([PREVIEWS_MOUNT]) }, secrets: {} }, urls };
 }
 
 /**

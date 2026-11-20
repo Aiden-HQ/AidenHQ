@@ -8,8 +8,11 @@ import { existsSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 
 type Dict = Record<string, unknown>;
-/** A service people reach through the gate (`share`): the gate's host for the module's app name, to its ui_port. */
-export type Share = { name: string; port: number; share: { host: string; aud?: string; default_role?: string } };
+/**
+ * A service people reach through the gate (`share`): the gate's host for the module's app name, to its ui_port; with no host,
+ * the install's module door (scripts/edge.ts). `service` is its compose key (the gate gives it AIDENHQ_APP_URL there).
+ */
+export type Share = { name: string; service: string; port: number; share: { host: string; aud?: string; default_role?: string } };
 export type Generated = { services: Record<string, Dict>; networks: Record<string, Dict>; secrets: Record<string, Dict>; roots: Record<string, Dict>; dataDirs: string[]; stateDirs: string[]; shares: Share[] };
 
 /**
@@ -224,7 +227,8 @@ export function generateCompose(name: string, def: Dict, ctx: { root: string; lo
       o.ports = [`127.0.0.1:${s.ui_port}:${s.port}`];
     }
     // `share: { host, aud?, default_role? }`: people reach the service through the gate at https://<host> as app `<module>`,
-    // like a shared app (scripts/edge.ts); host comes from a setting only the instance sets, empty: not shared. The service
+    // like a shared app (scripts/edge.ts); host comes from a setting only the instance sets, empty: the install's module door
+    // (the board's host on the door port, AidenHQ admins only; docs/design/app-doors.md). The service
     // gets the gate's public keys at /run/secrets/AIDENHQ_IDENTITY_KEYS and AIDENHQ_APP, to verify X-AidenHQ-Identity.
     if (s.share != null) {
       const sh = isMap(s.share) ? s.share : fail(`${at("share")} must be a map`);
@@ -234,7 +238,7 @@ export function generateCompose(name: string, def: Dict, ctx: { root: string; lo
       out.secrets[IDENTITY_KEYS_SECRET] = { file: "${AIDENHQ_SECRETS_DIR}/identity/keys.json" };
       o.secrets = [...((o.secrets as unknown[]) ?? []), { source: IDENTITY_KEYS_SECRET, target: "AIDENHQ_IDENTITY_KEYS" }];
       o.environment = { ...((o.environment as Dict) ?? {}), AIDENHQ_APP: name };
-      if (String(sh.host ?? "")) out.shares.push({ name, port: s.ui_port as number, share: { host: String(sh.host), ...(sh.aud ? { aud: String(sh.aud) } : {}), ...(sh.default_role ? { default_role: String(sh.default_role) } : {}) } });
+      out.shares.push({ name, service: key, port: s.ui_port as number, share: { host: String(sh.host ?? ""), ...(sh.aud ? { aud: String(sh.aud) } : {}), ...(sh.default_role ? { default_role: String(sh.default_role) } : {}) } });
     }
     if (s.healthcheck != null) {
       const h = isMap(s.healthcheck) ? s.healthcheck : fail(`${at("healthcheck")} must be a map`);
