@@ -736,6 +736,12 @@ const DESC_MAX = 8000;
 const READ_COMMENT_MAX = 1500;
 const SNIPPET_MAX = 300;
 
+/** A task_list or task_search argument the tool doesn't take (the retired `status`, say) is an error, never ignored. */
+function onlyArgs(tool: string, args: Args) {
+  const known = Object.keys(TOOLS[tool]!.inputSchema.properties);
+  const extra = Object.keys(args ?? {}).filter((k) => !known.includes(k));
+  if (extra.length) throw new Error(`${tool} takes no ${extra.map((k) => `\`${k}\``).join(", ")}${extra.includes("status") ? " (Paperclip's status is gone: filter on `state` and `attention`)" : ""}; it takes ${known.join(", ")}`);
+}
 const KINDS = ["working", "waiting", "idle", "done"];
 const ATTENTION = ["any", "owner", "agent", "reviewer"];
 const STATE_PROPS = {
@@ -788,7 +794,9 @@ const TOOLS: Record<string, Tool> = {
       additionalProperties: false,
     },
     annotations: { readOnlyHint: true, openWorldHint: false },
-    run: async ({ query, state, attention, limit }: Args) => {
+    run: async (args: Args) => {
+      onlyArgs("task_search", args);
+      const { query, state, attention, limit } = args;
       if (!COMPANY()) throw new Error("no company for this agent");
       const q = new URLSearchParams({ q: String(query).slice(0, 200), limit: String(Math.min(Number(limit) || 10, 25)), excludeRoutineExecutions: "true" });
       q.set("status", statusesFor(state));
@@ -810,7 +818,9 @@ const TOOLS: Record<string, Tool> = {
       additionalProperties: false,
     },
     annotations: { readOnlyHint: true, openWorldHint: false },
-    run: async ({ mine, state, attention, label, updated_since, limit }: Args) => {
+    run: async (args: Args) => {
+      onlyArgs("task_list", args);
+      const { mine, state, attention, label, updated_since, limit } = args;
       if (!COMPANY()) throw new Error("no company for this agent");
       const q = new URLSearchParams({ status: statusesFor(state), limit: String(Math.min(Number(limit) || 100, 200)) });
       const me = mine ? grant().id : "";

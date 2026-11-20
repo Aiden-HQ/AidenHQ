@@ -33,3 +33,8 @@ test("task_list filters on the kernel's kind and attention", async () => {
   assert.deepEqual((await call("task_list", { attention: "owner" })).out.tasks.map((t) => t.identifier), ["WOR-2"]);
   assert.match((await call("task_list", { state: "napping" })).error, /state is/);
 });
+
+test("the retired status argument is an error, not silently ignored", async () => {
+  assert.match((await call("task_list", { status: "done" })).error, /filter on `state`/);
+  assert.match((await call("task_search", { query: "x", status: "done" })).error, /takes no `status`/);
+});
