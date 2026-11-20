@@ -130,7 +130,7 @@ else {
     fetch(`https://api.telegram.org/bot${cfg.telegramToken}/sendMessage`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ chat_id: chatId, text }), signal: AbortSignal.timeout(15_000) });
   void startTelegramPoll(cfg, store, chat, log, {
     start: (u) => handleStart(u, pairing, store, sendTo),
-    command: async (text) => (text.startsWith("/") ? quickCommand(text, (_m, p) => kernel.read(p), await chat.company()) : null),
+    command: async (text) => (text.startsWith("/") ? quickCommand(text, (_m, p) => kernel.read(p), await chat.company(), kernel.openTasks) : null),
     // null: the voice module is off (the owner is told how to turn it on).
     transcribe: async (fileId: string) => ((await voiceOn(whisperUrl)) ? transcribe(cfg.telegramToken, whisperUrl, fileId) : null),
     reply: (r) => postTelegram(cfg, r.text, buttonsMarkup(store, r.actions ?? [])),

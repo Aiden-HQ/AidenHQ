@@ -119,6 +119,21 @@ async function kernelWait(body: Json) {
   return JSON.parse(text);
 }
 
+/**
+ * The kernel's one state of each task (GET /v1/tasks/state, role kernel.flow-read), by task id: one read per call, at most 200
+ * ids each. A task the kernel has no facts for has no row.
+ */
+async function stateRows(ids: string[]) {
+  const rows = new Map<string, Json>();
+  for (let n = 0; n < ids.length; n += 200) {
+    const res = await fetch(`${KERNEL}/v1/tasks/state?ids=${encodeURIComponent(ids.slice(n, n + 200).join(","))}`, { headers: { authorization: `Bearer ${SERVICE_KEY}` }, signal: AbortSignal.timeout(20_000) });
+    const text = await res.text();
+    if (!res.ok) throw new Error(`the kernel refused the task state read (${res.status}): ${text.slice(0, 300)}`);
+    for (const r of JSON.parse(text).tasks) rows.set(r.task, r);
+  }
+  return rows;
+}
+
 /** A call tried again after each pause in `delays` (a kernel or Paperclip blip); the last failure is thrown. */
 async function retried(fn: () => Promise<Json>, delays = [250, 750]) {
   for (const ms of delays) {
@@ -154,11 +169,12 @@ const fileBrief = (a: Json, all: Json) => {
   };
 };
 
-const brief = (i: Json) => ({
+/** A task as an agent sees it: never Paperclip's status; `state` (the kernel's row, when asked for) is where it stands. */
+const brief = (i: Json, s?: Json) => ({
   id: i.id,
   identifier: i.identifier,
   title: i.title,
-  status: i.status,
+  ...(s ? { state: { kind: s.kind, reason: s.reason, ...(s.ref ? { ref: s.ref } : {}), since: s.since, ...(s.note ? { note: s.note } : {}), attention: s.attention } } : {}),
   priority: i.priority,
   labels: (i.labels ?? []).map((l: Json) => l.name),
   assignee: i.assigneeAgentId ? "agent" : i.assigneeUserId ? "user" : null,
@@ -278,7 +294,8 @@ async function partsOf(parentId: string, exceptId: string) {
   if (!COMPANY()) return [];
   const q = new URLSearchParams({ parentId, status: `${OPEN_STATUSES},done,cancelled`, limit: "50" });
   const kids = (await api("GET", `/api/companies/${encodeURIComponent(COMPANY())}/issues?${q}`)).filter((k: Json) => k.parentId === parentId && k.id !== exceptId);
-  return Promise.all(kids.map(async (k: Json) => ({ identifier: k.identifier, title: k.title, status: k.status, with: k.assigneeAgentId ? (await nameOf(k.assigneeAgentId)) ?? "an agent" : "the user" })));
+  const states = await stateRows(kids.map((k: Json) => k.id));
+  return Promise.all(kids.map(async (k: Json) => ({ identifier: k.identifier, title: k.title, state: states.get(k.id)?.kind, with: k.assigneeAgentId ? (await nameOf(k.assigneeAgentId)) ?? "an agent" : "the user" })));
 }
 
 const PRIORITIES = ["critical", "high", "medium", "low"];
@@ -719,11 +736,34 @@ const DESC_MAX = 8000;
 const READ_COMMENT_MAX = 1500;
 const SNIPPET_MAX = 300;
 
+/** A task_list or task_search argument the tool doesn't take (the retired `status`, say) is an error, never ignored. */
+function onlyArgs(tool: string, args: Args) {
+  const known = Object.keys(TOOLS[tool]!.inputSchema.properties);
+  const extra = Object.keys(args ?? {}).filter((k) => !known.includes(k));
+  if (extra.length) throw new Error(`${tool} takes no ${extra.map((k) => `\`${k}\``).join(", ")}${extra.includes("status") ? " (Paperclip's status is gone: filter on `state` and `attention`)" : ""}; it takes ${known.join(", ")}`);
+}
+const KINDS = ["working", "waiting", "idle", "done"];
+const ATTENTION = ["any", "owner", "agent", "reviewer"];
+const STATE_PROPS = {
+  state: { type: "string", description: `comma-separated kinds (${KINDS.join(", ")}); default: every task but done and cancelled ones` },
+  attention: { type: "string", enum: ATTENTION, description: "only tasks someone must act on: any, or this one (the owner, an agent, a reviewer)" },
+};
+/** Paperclip statuses to ask for, given the state filter: done only when asked. */
+const statusesFor = (state: unknown) => (String(state ?? "").split(",").includes("done") ? `${OPEN_STATUSES},done,cancelled` : OPEN_STATUSES);
+/** The issues paired with their kernel rows, kept when the row matches `state` (kinds) and `attention`; a task with no row passes only without a filter. */
+async function withStates(list: Json[], state: unknown, attention: unknown) {
+  const kinds = String(state ?? "").split(",").map((k) => k.trim()).filter(Boolean);
+  const bad = kinds.filter((k) => !KINDS.includes(k));
+  if (bad.length || (attention && !ATTENTION.includes(String(attention)))) throw new Error(`state is ${KINDS.join(", ")} (comma-separated); attention is ${ATTENTION.join(", ")}`);
+  const rows = await stateRows(list.map((i) => i.id));
+  return list.map((i) => [i, rows.get(i.id)] as const).filter(([, s]) => (!kinds.length || (s && kinds.includes(s.kind))) && (!attention || (s && s.attention.some((a: Json) => attention === "any" || a.who === attention))));
+}
+
 interface Tool { description: string; inputSchema: Json; annotations: Json; run: (args: Args) => Promise<Json> | Json }
 const TOOLS: Record<string, Tool> = {
   task_current: {
     description:
-      "Get the Paperclip task this run is working on (id, identifier, title, status, description). When it's your part of one of the user's tasks, `parent` is that task (identifier, title, description) for context, and `parts` are its other parts with whom each is (read any of them, or the parent, with task_comments). Descriptions over 8000 chars are cut with a marker; task_get returns the same cut.",
+      "Get the Paperclip task this run is working on (id, identifier, title, state, description). When it's your part of one of the user's tasks, `parent` is that task (identifier, title, description) for context, and `parts` are its other parts with whom each is (read any of them, or the parent, with task_comments). Descriptions over 8000 chars are cut with a marker; task_get returns the same cut.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
     annotations: { readOnlyHint: true, openWorldHint: false },
     run: async () => {
@@ -731,43 +771,46 @@ const TOOLS: Record<string, Tool> = {
       const i = await api("GET", `/api/issues/${issueRef(CURRENT())}`);
       const p = i.parentId ? await api("GET", `/api/issues/${issueRef(i.parentId)}`).catch(() => undefined) : undefined;
       const parts = p ? await partsOf(p.id, i.id).catch(() => []) : [];
+      const s = (await stateRows([i.id])).get(i.id);
       const more = "the rest is not available here; ask for the relevant part";
-      return { task: { ...brief(i), description: clip(i.description, DESC_MAX, more) }, ...(p ? { parent: { identifier: p.identifier, title: p.title, description: clip(p.description, DESC_MAX, more) }, parts } : {}) };
+      return { task: { ...brief(i, s), description: clip(i.description, DESC_MAX, more) }, ...(p ? { parent: { identifier: p.identifier, title: p.title, description: clip(p.description, DESC_MAX, more) }, parts } : {}) };
     },
   },
   task_get: {
-    description: "Get a Paperclip task by id or identifier (e.g. PEN-12). A description over 8000 chars is cut with a marker.",
+    description: "Get a Paperclip task by id or identifier (e.g. PEN-12), with its `state`: {kind: working|waiting|idle|done, reason, ref?, since, attention[]} as the kernel computes it. A description over 8000 chars is cut with a marker.",
     inputSchema: { type: "object", properties: { issue: { type: "string" } }, required: ["issue"], additionalProperties: false },
     annotations: { readOnlyHint: true, openWorldHint: false },
     run: async ({ issue }: Args) => {
       const i = await api("GET", `/api/issues/${issueRef(issue)}`);
-      return { ...brief(i), description: clip(i.description, DESC_MAX, "the rest is not available here") };
+      return { ...brief(i, (await stateRows([i.id])).get(i.id)), description: clip(i.description, DESC_MAX, "the rest is not available here") };
     },
   },
   task_search: {
-    description: "Search open Paperclip tasks by text (also matches machine markers such as source:github:org/repo:pr:12). Returns at most 10 tasks (default 10; `limit` up to 25) with a short description snippet: open one with task_get.",
+    description: "Search open Paperclip tasks by text (also matches machine markers such as source:github:org/repo:pr:12). Returns at most 10 tasks (default 10; `limit` up to 25) with its kernel `state` and a short description snippet: open one with task_get. Filter by `state` (kind) and `attention`.",
     inputSchema: {
       type: "object",
-      properties: { query: { type: "string" }, status: { type: "string", description: "comma-separated statuses" }, limit: { type: "number" } },
+      properties: { query: { type: "string" }, ...STATE_PROPS, limit: { type: "number" } },
       required: ["query"],
       additionalProperties: false,
     },
     annotations: { readOnlyHint: true, openWorldHint: false },
-    run: async ({ query, status, limit }: Args) => {
+    run: async (args: Args) => {
+      onlyArgs("task_search", args);
+      const { query, state, attention, limit } = args;
       if (!COMPANY()) throw new Error("no company for this agent");
       const q = new URLSearchParams({ q: String(query).slice(0, 200), limit: String(Math.min(Number(limit) || 10, 25)), excludeRoutineExecutions: "true" });
-      if (status) q.set("status", String(status));
-      const list = await api("GET", `/api/companies/${encodeURIComponent(COMPANY())}/issues?${q}`);
-      return { tasks: list.map((i: Json) => ({ ...brief(i), snippet: clip(String(i.description ?? "").replace(/<!--[\s\S]*?-->/g, "").trim(), SNIPPET_MAX, "task_get for the rest") })) };
+      q.set("status", statusesFor(state));
+      const list = await withStates(await api("GET", `/api/companies/${encodeURIComponent(COMPANY())}/issues?${q}`), state, attention);
+      return { tasks: list.map(([i, s]) => ({ ...brief(i, s), snippet: clip(String(i.description ?? "").replace(/<!--[\s\S]*?-->/g, "").trim(), SNIPPET_MAX, "task_get for the rest") })) };
     },
   },
   task_list: {
-    description: "List Paperclip tasks, newest first. Defaults to open tasks (backlog, todo, in_progress, in_review, blocked). Routine run tasks are excluded, except with `mine: true`: your own open work: tasks assigned to you, including open routine runs such as incidents (not catch-up runs, not this run's task), and your chats handed back to the owner.",
+    description: "List Paperclip tasks, newest first. Each task carries its kernel `state`; filter by `state` (kind) and `attention`. Defaults to tasks that are not done. Routine run tasks are excluded, except with `mine: true`: your own open work: tasks assigned to you, including open routine runs such as incidents (not catch-up runs, not this run's task), and your chats handed back to the owner.",
     inputSchema: {
       type: "object",
       properties: {
         mine: { type: "boolean", description: "only tasks assigned to you (your open work and chats)" },
-        status: { type: "string", description: "comma-separated statuses; default: all open statuses" },
+        ...STATE_PROPS,
         label: { type: "string", description: "only tasks with this label name" },
         updated_since: { type: "string", description: "ISO-8601; only tasks updated after this" },
         limit: { type: "number", description: "default 100, max 200" },
@@ -775,9 +818,11 @@ const TOOLS: Record<string, Tool> = {
       additionalProperties: false,
     },
     annotations: { readOnlyHint: true, openWorldHint: false },
-    run: async ({ mine, status, label, updated_since, limit }: Args) => {
+    run: async (args: Args) => {
+      onlyArgs("task_list", args);
+      const { mine, state, attention, label, updated_since, limit } = args;
       if (!COMPANY()) throw new Error("no company for this agent");
-      const q = new URLSearchParams({ status: String(status || OPEN_STATUSES), limit: String(Math.min(Number(limit) || 100, 200)) });
+      const q = new URLSearchParams({ status: statusesFor(state), limit: String(Math.min(Number(limit) || 100, 200)) });
       const me = mine ? grant().id : "";
       if (me) q.set("assigneeAgentId", me);
       else q.set("excludeRoutineExecutions", "true");
@@ -799,7 +844,7 @@ const TOOLS: Record<string, Tool> = {
           list.push(...theirs.filter((i: Json) => !i.assigneeAgentId && mark.test(i.description ?? "")));
         }
       }
-      return { tasks: list.map(brief) };
+      return { tasks: (await withStates(list, state, attention)).map(([i, s]) => brief(i, s)) };
     },
   },
   task_approvals: {
@@ -1314,7 +1359,7 @@ const TOOLS: Record<string, Tool> = {
   },
   task_wait: {
     description:
-      "Record that the task this run is working on waits on something, so it isn't left idle: why, and until when (`until`, an ISO time at most 7 days ahead) or for what (`on`, the event, e.g. \"PR #12 merged\"; then you're woken in 24 hours to check). When it waits on a judgement only someone else can make (what the brief means, what to do about a reviewer's repeated rejection, a choice that is theirs), set `for` to who makes it, `delegator` (whoever handed you the task) or `owner`, and `question` to what they decide, with the context they need: they get your question, and their answer comes back to this task and wakes you. You're woken by the event when it comes as a comment on the task, and otherwise at `until`. End your turn after it. Only ever touches the current run's task.",
+      "Record that the task this run is working on waits on something, so it isn't left idle: why, and until when (`until`, an ISO time at most 7 days ahead) or for what (`on`, the event, e.g. \"PR #12 merged\"; then you're woken in 24 hours to check). When it waits on a judgement only someone else can make (what the brief means, what to do about a reviewer's repeated rejection, a choice that is theirs), set `for` to who makes it, `delegator` (whoever handed you the task) or `owner`, and `question` to what they decide, with the context they need: they get your question, and their answer comes back to this task and wakes you. When your visible reply on the task already asked the owner (a chat with them), add `asked: true`: the kernel records the wait and your question and sends nothing more. You're woken by the event when it comes as a comment on the task, and otherwise at `until`. End your turn after it. Only ever touches the current run's task.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1323,15 +1368,17 @@ const TOOLS: Record<string, Tool> = {
         on: { type: "string", description: "the event it waits for" },
         for: { type: "string", enum: ["delegator", "owner"], description: "who makes the judgement it waits on: they are asked `question`" },
         question: { type: "string", description: "with `for`: the decision you need from them, with the context they need to make it" },
+        asked: { type: "boolean", description: "with `for: owner`: your reply on this task already asked them `question` (they can see it), so the kernel records the wait and sends nothing" },
       },
       required: ["reason"],
       additionalProperties: false,
     },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    run: async ({ reason, until, on, for: who, question }: Args) => {
+    run: async ({ reason, until, on, for: who, question, asked }: Args) => {
       if (!CURRENT()) throw new Error("no current task");
       if (who && !String(question ?? "").trim()) throw new Error("`for` asks them a `question`: say what you need them to decide");
-      return kernelWait({ reason: String(reason), ...(until ? { until: String(until) } : {}), ...(on ? { on: String(on) } : {}), ...(who ? { for: String(who), question: String(question) } : {}) });
+      if (asked && who !== "owner") throw new Error("`asked` goes with `for: owner` and the `question` your reply asked");
+      return kernelWait({ reason: String(reason), ...(until ? { until: String(until) } : {}), ...(on ? { on: String(on) } : {}), ...(who ? { for: String(who), question: String(question), ...(asked ? { asked: true } : {}) } : {}) });
     },
   },
   task_finish: {

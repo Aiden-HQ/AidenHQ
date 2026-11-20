@@ -19,7 +19,7 @@ The tools are the `knowledge-daily` skill's. Without the notes tools (no meeting
    tool the agent is not granted (compare with `fleet_catalog`), a delegation to an agent outside the delegator's reach, a
    `description` that no longer says what the agent owns, and rules that pile up for one incident instead of stating the
    general rule. Quote the exact current text and write the exact replacement; a fix that cuts text beats one that adds it.
-4. **The owner's corrections.** `task_list` with `label: "correction"`, `status: "todo,in_progress,done,cancelled"` and
+4. **The owner's corrections.** `task_list` with `label: "correction"`, `state: "working,waiting,idle,done"` and
    `updated_since` 7 days ago; read each task's "Not right:" comment and what the agent did next. A correction that shows
    a missing or wrong rule is a rule fix, with the correction as its evidence. A correction about how the owner likes to
    work that holds for every agent (and your `coach:owner:profile-<slug>` lines on Fleet issues) is a profile fix: the

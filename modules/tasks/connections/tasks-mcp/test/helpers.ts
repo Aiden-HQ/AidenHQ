@@ -13,7 +13,7 @@ const listen = (handler) => new Promise((ok) => { const s = createServer(handler
 const url = (s) => `http://127.0.0.1:${s.address().port}`;
 const read = async (req) => { let b = ""; for await (const c of req) b += c; return b; };
 
-let current = { handler: () => {}, board: undefined, directory: { agents: {} } };
+let current = { handler: () => {}, board: undefined, directory: { agents: {} }, states: {} };
 /** Requests the kernel forwarded to the control plane, with the assertion and module key they came with. */
 export const cpSeen = [];
 
@@ -35,6 +35,11 @@ const kernel = await listen(async (req, res) => {
     if (!moduleKey) return send(401, {});
     const agents = Object.fromEntries(Object.entries(current.directory.agents).map(([id, g]) => [id, Object.fromEntries(DIRECTORY.filter((k) => g[k] !== undefined).map((k) => [k, g[k]]))]));
     return send(200, { agents });
+  }
+  if (u.startsWith("/v1/tasks/state?ids=")) {
+    if (!moduleKey) return send(401, {});
+    const ids = decodeURIComponent(u.split("ids=")[1]).split(",");
+    return send(200, { as_of: new Date().toISOString(), tasks: ids.filter((id) => current.states[id]).map((id) => ({ task: id, ...current.states[id] })), counts: { needs_you: 0, failed: 0, unexplained_idle: 0 } });
   }
   if (u.startsWith("/v1/cp/agent/")) {
     if (!moduleKey || !req.headers["x-aidenhq-caller"]) return send(401, {});
@@ -73,11 +78,11 @@ export async function rpc(msg, headers = {}) {
 
 /**
  * The tasks server for one agent: `handler` is the fake Paperclip (and apps-mcp, gateway), `board` the fake board (default:
- * every gate passes), `agents` the grants table the directory comes from, `agent` the caller (its key, roles and trial from
+ * every gate passes), `agents` the grants table the directory comes from, `states` the kernel's task state rows by task id, `agent` the caller (its key, roles and trial from
  * `agents`), `task`/`run` what the kernel knows of its run. call(name, args) resolves with the JSON-RPC reply ({ result }).
  */
-export function bridge({ handler, board, agents = {}, agent = "me", task, run }) {
-  current = { handler, board, directory: { agents } };
+export function bridge({ handler, board, agents = {}, agent = "me", task, run, states = {} }) {
+  current = { handler, board, directory: { agents }, states };
   forget();
   const g = agents[agent] ?? {};
   const caller = { agent, key: g.key ?? agent, roles: [...(g.roles ?? []), ...(g.trial ? ["kernel.trial"] : [])], task, run };

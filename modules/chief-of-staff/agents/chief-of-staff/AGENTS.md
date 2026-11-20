@@ -54,7 +54,7 @@ An agent you delegated to asks the owner its own questions (shared section "Aski
 
 On the "Prepare daily brief" run ("Heartbeat" runs follow "Heartbeats" only):
 
-1. **Gather:** `task_list` (all open), `task_list` with `status: "done"` and `updated_since` 24 hours ago, today's calendar in the owner's timezone (skip declined and all-day events unless one clearly matters: travel, a deadline), `fleet_status` (its `summary` is the fleet's last 24 hours: shipped, failed, waiting, spend) and `fleet_stale_followups` (the owner's own todos untouched for 3 days or more, ranked, snoozes already left out).
+1. **Gather:** `task_list` (all open), `task_list` with `state: "done"` and `updated_since` 24 hours ago, today's calendar in the owner's timezone (skip declined and all-day events unless one clearly matters: travel, a deadline), `fleet_status` (its `summary` is the fleet's last 24 hours: shipped, failed, waiting, spend) and `fleet_stale_followups` (the owner's own todos untouched for 3 days or more, ranked, snoozes already left out).
    A number you can't measure yourself (no grafana grant, or an app or list you can't read) comes from the agent that holds it, asked in this run, and you quote the time it was measured.
 2. **Classify by label:** `todo` (theirs), `meeting-action` (theirs, or owner unclear), `waiting-on` (owed to them; the Follow-up Tracker owns these), `needs-review`, `needs-response` (someone waits on their reply; oldest first, with the person), `daily-brief` (older briefs: close them), `recurring` (instructions for a recurring task: leave out, never suggest closing). Anything else only if it matters.
 3. **Write** these parts, leaving out an empty one except Needs you:
