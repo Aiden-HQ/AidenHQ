@@ -71,8 +71,6 @@ const permanent = (e: unknown): e is KernelError => e instanceof KernelError && 
  */
 const TRIES_AGAIN = new Set(["no-grants", "not-your-agent", "bad-profile", "task-not-assigned", "provenance-unsettled"]);
 const clears = (e: unknown) => e instanceof KernelError && (e.status === 403 || e.status === 409) && TRIES_AGAIN.has(e.body?.type ?? "");
-/** Refusals another run answers (`job-running`) or that aren't this module's row (`wake-not-claimed`): nothing to say. */
-const ELSEWHERE = new Set(["job-running", "wake-not-claimed"]);
 
 /** The kernel's refusal type and words, kept in the sentence so a reader sees what stopped it, not `idle · orphaned`. */
 const refusalWords = (e: KernelError) => {
@@ -80,15 +78,23 @@ const refusalWords = (e: KernelError) => {
   const why = (e.body?.message ?? e.message).replace(/\s+/g, " ").trim().slice(0, 400);
   return { type, why };
 };
-/** The notice the refused wake leaves on its task (kernel.note): the refusal, and that the wake is not coming back. */
+/**
+ * What the refused wake left behind, said truthfully either way: nothing runs it, another run answers it, or the row wasn't this
+ * dispatcher's any more. Every dropped wake says one of these on its task, so no refusal is a silent stop.
+ */
+const aftermath = (type: string) =>
+  type === "job-running" ? "Another run already answers this task, so this wake was not started and was dropped."
+  : type === "wake-not-claimed" ? "This wake was no longer held by the dispatcher that claimed it, so no run was started for it."
+  : "Nothing is running on it, and this wake was dropped rather than retried.";
+/** The notice the refused wake leaves on its task (kernel.note): the kernel's refusal and what became of the wake. */
 const refusalNotice = (e: KernelError) => {
   const { type, why } = refusalWords(e);
-  return `**This task was not started.** A run was queued for it, but the kernel refused to start it (\`${type}\`): ${why}\n\nNothing is running on it, and this wake was dropped rather than retried.`;
+  return `**This wake was not started.** The kernel refused to start a run for it (\`${type}\`): ${why}\n\n${aftermath(type)}`;
 };
 /** The owner's fallback when the task won't take it: the same refusal, named, so the stop is never silent. */
 const refusalForOwner = (id: string, e: KernelError) => {
   const { type, why } = refusalWords(e);
-  return `🔧 **${id} was not started:** the kernel refused a run on it (\`${type}\`): ${why}. Nothing is running on it, and its wake was dropped rather than retried. Open the task to see where it stands, or re-run it.`;
+  return `🔧 **A wake on ${id} was not started:** the kernel refused it (\`${type}\`): ${why}. ${aftermath(type)} Open the task to see where it stands, or re-run it.`;
 };
 
 /** How long a job whose follow failed waits before the next try: doubling from a quarter minute, at most ten minutes. */
@@ -327,9 +333,8 @@ export function createDispatch({ kernel, db, owner, log = () => {}, now = Date.n
           const dropped = () => kernel.drop(w.key, e.message).then(() => true, (err: Error) => (log("wake refused: its drop failed, kept for its lease", { wake: w.key, task: w.task, err: err.message }), false));
           const gone = async () => (await dropped()) && (refusals.delete(w.key), log("wake dropped: the kernel refused it", { wake: w.key, task: w.task, err: e.message.slice(0, 200) }), true);
           if (clears(e) && next.tries < START_TRIES) return log("wake refused: retried when its lease runs out", { wake: w.key, task: w.task, refusal: e.body?.type ?? e.status, tries: next.tries, err: e.message.slice(0, 200) });
-          // Another run answers the task, or the row is no longer ours: nothing to say, and the row goes.
-          if (ELSEWHERE.has(e.body?.type ?? "")) return void (await gone());
-          // The word goes out before the row: the task's notice, else the owner's. Neither landed: keep the row for its lease.
+          // The word goes out before the row — every dropped wake, including one another run answers or that left this dispatcher's
+          // hands (the notice says which). The task's notice first, else the owner's. Neither landed: keep the row for its lease.
           // One that already said its piece (an earlier drop that failed) says nothing more and only retries the drop.
           if (!next.noticed) {
             if (!(await sayRefusal(w, e))) return log("wake refused: neither its notice nor the owner's landed, kept for its lease", { wake: w.key, task: w.task, refusal: e.body?.type ?? e.status, err: e.message.slice(0, 200) });

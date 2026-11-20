@@ -27,7 +27,6 @@ lets in. Everything else on that interface is dropped, and 80 is closed in every
 |---|---|---|
 | `public` | Caddy with a Let's Encrypt certificate for the host's public IPv4: the board on 443, the admin listener on 8446, the module door on 8447 | tcp 22, 443, 8446, 8447 |
 | `tailscale` | `tailscale serve` to 127.0.0.1:3121 | tcp 22, udp 41641 |
-| `cloudflare` | cloudflared (outbound only) behind Cloudflare Access | tcp 22 |
 | `local` | none: an SSH tunnel to 127.0.0.1:3121 | tcp 22 |
 
 - **Admin and board listeners stay loopback** (the kernel's 3120 and 3129; the board's 3121, 3122); the front door
@@ -101,11 +100,7 @@ The board's `/mcp` (bearer-only, never cookies) lets an admin's own Claude or Co
   (`account:<id>`; `stale:account:<id>` closes a dead or duplicate card and is never a veto), always against the digest
   the client read.
 - **Front doors.** `public` (Caddy: all of 443 to the board, all of 8446 to the admin listener) and `tailscale` (the
-  same two doors) pass these paths with no change. `cloudflare`: cloudflared's ingress routes only `share.host`
-  names to the gate, so the board and admin origins are not behind the tunnel and claude.ai connectors cannot reach them.
-  To allow them, route the board and admin hostnames in the tunnel and give each a Cloudflare Access application with
-  a Bypass policy for `/mcp`, `/.well-known/oauth-protected-resource` (board) and `/oauth2/*`, `/oauth/*`,
-  `/.well-known/oauth-authorization-server` (admin). That policy lives in Cloudflare, outside this repository.
+  same two doors) pass these paths with no change.
 
 ## Accounts and sign-in
 

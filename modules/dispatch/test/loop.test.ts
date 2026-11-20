@@ -581,22 +581,21 @@ test("a refusal a recompile clears is retried on the wake's next lease, then sai
   assert.deepEqual(k.notes.length, 1, "no notice for a wake that ran");
 });
 
-test("a refusal nothing clears is dropped at once with its notice; a live job or a lost lease is not noticed", async () => {
+test("every refusal nothing clears is dropped at once, and each leaves a notice naming it and what became of the wake", async () => {
   const k = fake({ task: { id: "t1", identifier: "WOR-1", title: "Fix", description: "Do it", status: "todo", assigneeAgentId: "eng", createdByUserId: "u1" } });
   const start = k.kernel.start;
-  k.kernel.start = async () => { throw new KernelError(409, "kernel POST /v1/jobs → 409", { type: "task-closed", message: "task t1 is done" }); };
-  k.inbox.push(wake("issue:t1:1", "assigned"));
-  await k.dispatch.tick();
-  assert.deepEqual(k.dropped.map((d) => d.key), ["issue:t1:1"], "task-closed never changes: dropped on the first refusal");
-  assert.deepEqual([k.notes.length, /task-closed/.test(k.notes[0].body), /is done/.test(k.notes[0].body)], [1, true, true]);
-  // The task has a live job (another wake's), or the lease ran out mid-handle: the row goes, and the task is not told nothing runs.
-  for (const [type, key] of [["job-running", "issue:t1:2"], ["wake-not-claimed", "issue:t1:3"]] as const) {
-    k.kernel.start = async () => { throw new KernelError(409, "kernel POST /v1/jobs → 409", { type, message: type }); };
-    k.inbox.push(wake(key, "assigned"));
+  // A closed task, a task another run answers, and a row the lease took back: no refusal is dropped in silence.
+  const refusals = [["task-closed", "task t1 is done", /Nothing is running on it/], ["job-running", "task t1 already has a job", /Another run already answers this task/], ["wake-not-claimed", "wake x isn't one this module claimed", /no longer held by the dispatcher/]] as const;
+  for (const [i, [type, message, what]] of refusals.entries()) {
+    k.kernel.start = async () => { throw new KernelError(409, "kernel POST /v1/jobs → 409", { type, message }); };
+    k.inbox.push(wake(`issue:t1:${i + 1}`, "assigned"));
     await k.dispatch.tick();
+    assert.equal(k.notes.at(-1)?.body.includes(type), true, `${type}: its notice names the refusal`);
+    assert.match(k.notes.at(-1)!.body, new RegExp(message.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), `${type}: in the kernel's own words`);
+    assert.match(k.notes.at(-1)!.body, what, `${type}: and what became of the wake`);
   }
-  assert.deepEqual(k.dropped.map((d) => d.key), ["issue:t1:1", "issue:t1:2", "issue:t1:3"]);
-  assert.equal(k.notes.length, 1, "no notice where another run answers or the row isn't ours");
+  assert.deepEqual(k.dropped.map((d) => d.key), ["issue:t1:1", "issue:t1:2", "issue:t1:3"], "each refused wake is dropped once, after its notice");
+  assert.equal(k.notes.length, 3, "one notice per dropped wake");
   k.kernel.start = start;
 });
 
