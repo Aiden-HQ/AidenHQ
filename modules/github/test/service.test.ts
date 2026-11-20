@@ -269,16 +269,20 @@ test("held write resumes on reconnect", async (t) => {
 
 test("held write is re-checked on reconnect", async (t) => {
   let on = false;
-  const { origin, ws, sha, outcomes, call, handle } = await setup(t, { connected: () => on });
+  const { root, origin, ws, sha, outcomes, call, handle } = await setup(t, { connected: () => on });
   const args = { workspace: "TASK-1", only: [{ repo: "acme-agents/widget", branch: "feature", sha }] };
   assert.equal((await call("/aidenhq/v1/executor/plan", { kind: "github.push", args, requester: { kind: "job", roles: [] }, task: "t1" })).status, 200);
   await call("/aidenhq/v1/executor/execute", { id: "k-00000000000000d2", kind: "github.push", args, digest: "d", idempotency_key: "h2" });
   await new Promise((r) => setTimeout(r, 50));
   // While GitHub was away the task's branch moved on: the approved head is no longer what the workspace holds.
   sh(ws, "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=", "update-ref", "refs/heads/feature", "HEAD~1");
+  const held = JSON.parse(readFileSync(join(root, "cache", "held.json"), "utf8"))["k-00000000000000d2"];
+  assert.deepEqual([held.asker.requester, held.asker.task], [{ kind: "job", roles: [] }, "t1"], "held with the requester who asked");
+  const notes = readFileSync(join(root, "cache", "pushed-by.json"), "utf8");
   on = true;
   await handle.stepHeld();
   for (let i = 0; i < 300 && !outcomes.length; i++) await new Promise((r) => setTimeout(r, 10));
+  assert.equal(readFileSync(join(root, "cache", "pushed-by.json"), "utf8"), notes, "the re-check writes no provenance");
   assert.throws(() => sh(origin, "rev-parse", "--verify", "refs/heads/feature"), "the moved branch is not pushed");
   assert.equal(outcomes[0]?.ok, false, JSON.stringify(outcomes));
   assert.match(outcomes[0].text, /changed while GitHub was disconnected; ask again/);

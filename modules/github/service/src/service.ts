@@ -20,7 +20,7 @@
 // The commit comes from this service's own copy when it made it, else from the task's workspace. The instance repo only.
 import { execFile, spawn } from "node:child_process";
 import { once } from "node:events";
-import { timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { cpSync, createReadStream, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { join, sep } from "node:path";
@@ -356,6 +356,8 @@ export function createService(o: Options) {
     async plan(req: PlanRequest) {
       const { state, facts, reads, changed, evidence, bases, own, task } = (await stateFor(req.kind, req.args ?? {}, req.requester, req.task)) as Awaited<ReturnType<typeof stateFor>> & { reads?: { name: string; read: () => Promise<string> }[]; changed?: Changed[]; evidence?: string; bases?: Base[]; own?: Set<string>; task?: string };
       const planned = planRules({ kind: req.kind, args: req.args }, state, facts);
+      // Who asked, by the request's exact kind and args: a write held while GitHub is disconnected is re-checked as them.
+      if (!req.revalidate && req.requester) noteAsker(req.kind, req.args, { requester: req.requester, task: req.task });
       // The reviewer's context goes with the filing only (a revalidation compares targets): never part of the record's digest.
       const sources = req.revalidate ? undefined : await readCardSourceExceptions(bases ?? [], (repo: string, base: string) => bases!.find((b) => b.repo === repo && b.base === base)!.read(SOURCE_EXCEPTIONS_FILE));
       // The task's other PRs already merged into these bases; a read that fails leaves them out, never the plan.
@@ -451,7 +453,19 @@ export function createService(o: Options) {
   }
 
   // ---- held writes: approved while GitHub was disconnected ----
-  type Held = { id: string; kind: string; args: any; state: "held" | "running" | "done" | "failed"; text?: string; at: string };
+  type Asker = { requester: PlanRequest["requester"]; task: string };
+  type Held = { id: string; kind: string; args: any; state: "held" | "running" | "done" | "failed"; text?: string; at: string; asker?: Asker };
+  // The requester of each planned write (the kernel's record of who asked; execute carries none), by a digest of its kind and
+  // args, for the held re-check. The last 500 only.
+  const askersFile = join(o.cacheDir, "askers.json");
+  const askerKey = (kind: string, args: unknown) => createHash("sha256").update(JSON.stringify([kind, args ?? {}])).digest("hex");
+  const readAskers = (): Record<string, Asker> => { try { return JSON.parse(readFileSync(askersFile, "utf8")); } catch { return {}; } };
+  function noteAsker(kind: string, args: unknown, who: Asker) {
+    const all = readAskers();
+    all[askerKey(kind, args)] = who;
+    writeFileSync(`${askersFile}.tmp`, JSON.stringify(Object.fromEntries(Object.entries(all).slice(-500))));
+    renameSync(`${askersFile}.tmp`, askersFile);
+  }
   const heldFile = join(o.cacheDir, "held.json");
   const readHeld = (): Record<string, Held> => { try { return JSON.parse(readFileSync(heldFile, "utf8")); } catch { return {}; } };
   const writeHeld = (h: Record<string, Held>) => { writeFileSync(`${heldFile}.tmp`, JSON.stringify(h)); renameSync(`${heldFile}.tmp`, heldFile); };
@@ -460,7 +474,8 @@ export function createService(o: Options) {
   function hold(rec: { id: string; kind: string; args: any }): Promise<{ ok: boolean; text: string }> {
     const h = readHeld();
     if (!h[rec.id]) {
-      h[rec.id] = { id: rec.id, kind: rec.kind, args: rec.args, state: "held", at: new Date().toISOString() };
+      const asker = readAskers()[askerKey(rec.kind, rec.args)];
+      h[rec.id] = { id: rec.id, kind: rec.kind, args: rec.args, state: "held", at: new Date().toISOString(), ...(asker ? { asker } : {}) };
       writeHeld(h);
       log("write held until GitHub is connected", { record: rec.id, kind: rec.kind });
     }
@@ -488,18 +503,17 @@ export function createService(o: Options) {
     } finally { heldBusy = false; }
   }
   /**
-   * A held record runs only if what it was approved for still holds: its plan, read again now (revalidate), still passes the git
-   * rules and binds the same commits its args named (each branch at its sha, each PR at its head). Who asked isn't in the
-   * execute call, so the rules run with the platform line's reach: only the targets decide here, as the kernel's own
-   * revalidation did at approval.
+   * A held record runs only if what it was approved for still holds: its state, read again now as the requester who asked for
+   * it (stored when it was held; never made up: without one it doesn't run), still passes the git rules and binds the same
+   * commits its args named (each branch at its sha, each PR at its head). Read without the plan's side effects (no provenance
+   * note).
    */
   async function stillApproved(r: Held): Promise<boolean> {
-    const planned = await executor.plan({ kind: r.kind, args: r.args, requester: { agent: "", key: "", name: "", roles: ["platform-engineer"], kind: "job" }, task: String(r.args?.workspace ?? ""), revalidate: true }).catch((e) => {
-      if (disconnected(e)) throw e;
-      return undefined;
-    });
-    if (!planned) return false;
-    const targets = (planned.targets ?? {}) as Record<string, { commit?: string | null }>;
+    if (!r.asker) return false;
+    const targets = await stateFor(r.kind, r.args ?? {}, r.asker.requester, r.asker.task)
+      .then(({ state, facts }) => planRules({ kind: r.kind, args: r.args }, state, facts).targets as Record<string, { commit?: string | null }>)
+      .catch((e) => { if (disconnected(e)) throw e; return undefined; });
+    if (!targets) return false;
     const want = [
       ...((r.args?.only ?? []) as { repo: string; branch: string; sha: string }[]).map((b) => [`${slugOf(b.repo).slug} ${b.branch}`, b.sha] as const),
       ...((r.args?.prs ?? []) as { repo: string; number: number; head?: string }[]).filter((p) => p.head).map((p) => [`${slugOf(p.repo).slug}#${Number(p.number)}`, p.head!] as const),
