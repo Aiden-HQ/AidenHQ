@@ -19,12 +19,12 @@ const PR_QUERY = `query($owner: String!, $repo: String!, $number: Int!) {
   }
 }`;
 
-// An issue as evidence.ts reads it: state, how and by whom it closed, its labels and its newest comments.
+// An issue as evidence.ts reads it: state, how and by whom it closed, its labels and its newest comments. `closer` is GitHub's own link from a close to the merged PR whose closing keyword ("Fixes #N") did it.
 const ISSUE_QUERY = `query($owner: String!, $repo: String!, $number: Int!) {
   repository(owner: $owner, name: $repo) {
     issue(number: $number) {
       number url state stateReason closedAt labels(first: 20) { nodes { name } }
-      closedEvents: timelineItems(itemTypes: [CLOSED_EVENT], last: 1) { nodes { ... on ClosedEvent { actor { __typename login } } } }
+      closedEvents: timelineItems(itemTypes: [CLOSED_EVENT], last: 1) { nodes { ... on ClosedEvent { actor { __typename login } closer { __typename ... on PullRequest { number url state mergedAt mergeCommit { oid } repository { nameWithOwner } } } } } }
       comments(last: 10) { nodes { author { login } authorAssociation createdAt body } }
     }
   }
