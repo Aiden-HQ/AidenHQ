@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { flushDigest, queueDigest } from "../src/attention.js";
+import { flushDigest, queueBatch, queueDigest } from "../src/attention.js";
 import { openStore } from "../src/store.js";
 import { notify, type Deps } from "../src/notify.js";
 
@@ -60,4 +60,20 @@ it("notify_fyi: mute keeps fyi out of the digest", async () => {
   const crew = { id: "w", name: "Worker", key: "worker", assertion: "j", roles: [] as string[] };
   await notify(cfg, { text: "news", task: "WOR-1", kind: "fyi" }, crew, Date.UTC(2026, 10, 17, 10));
   expect(store.getKv("digest:queue") ?? "[]").toBe("[]");
+});
+
+it("a kernel batch item joins the digest and is sent at the next slot, not at once", async () => {
+  const store = openStore(":memory:");
+  const cfg = { mode: "enforce" as const, blocked: [], dailyCap: 9, digestHours: [9], timezone: "UTC" };
+  const at = Date.UTC(2026, 10, 17, 7);
+  const sent: string[] = [];
+  const item = { text: "Google isn't connected", dedupe_key: "connect:google:not_connected" };
+  expect(queueBatch(store, cfg, item, at)).toBe(true);
+  expect(queueBatch(store, cfg, item, at + 1000)).toBe(true); // same key, same day: one line
+  expect(await flushDigest(store, cfg, async (t) => (sent.push(t), true), at)).toBe(false); // before the slot
+  expect(sent).toEqual([]);
+  expect(await flushDigest(store, cfg, async (t) => (sent.push(t), true), Date.UTC(2026, 10, 17, 10))).toBe(true);
+  expect(sent).toHaveLength(1);
+  expect(sent[0]!.split("\n").filter((l) => l.startsWith("- "))).toHaveLength(1);
+  expect(queueBatch(store, { digestHours: [] }, item, at)).toBe(false); // no digest hours: the caller sends it
 });

@@ -7,7 +7,7 @@ import { createServer, type IncomingMessage } from "node:http";
 import { timingSafeEqual } from "node:crypto";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import pino from "pino";
-import { flushDigest } from "./attention.js";
+import { flushDigest, queueBatch } from "./attention.js";
 import { kernelClient } from "./kernel.js";
 import { buildServer } from "./mcp.js";
 import { KINDS, notify, retry, sendDigest, type Deps, type Kind } from "./notify.js";
@@ -118,7 +118,12 @@ const take = async () => {
   const done: number[] = [];
   try {
     for (const m of await kernel.take()) {
-      const r = await notify(d, { kind: (KINDS.includes(m.kind) ? m.kind : "alert") as Kind, text: String(m.text ?? ""), ...(m.task ? { task: String(m.task) } : {}), ...(m.dedupe_key ? { dedupe_key: String(m.dedupe_key) } : {}), ...(m.reply ? { relay: { via: m.reply.via === "slack" ? ("slack" as const) : ("telegram" as const), agentName: String(m.reply.agent), issueId: String(m.reply.issue) } } : {}), ...(m.head ? { head: { agentName: String(m.head.agent), issueId: String(m.head.issue) } } : {}), ...(m.asker ? { asker: { id: String(m.asker.id), key: String(m.asker.key), roles: Array.isArray(m.asker.roles) ? m.asker.roles.map(String) : [] } } : {}) });
+      // A kernel batch line waits for the digest slot (or goes as an fyi when there are no digest hours).
+      if (m.batch === true && queueBatch(store, d.attention!, { text: String(m.text ?? ""), ...(m.dedupe_key ? { dedupe_key: String(m.dedupe_key) } : {}) })) {
+        if (Number.isInteger(m.id)) done.push(m.id);
+        continue;
+      }
+      const r = await notify(d, { kind: (m.batch === true ? "fyi" : KINDS.includes(m.kind) ? m.kind : "alert") as Kind, text: String(m.text ?? ""), ...(m.task ? { task: String(m.task) } : {}), ...(m.dedupe_key ? { dedupe_key: String(m.dedupe_key) } : {}), ...(m.reply ? { relay: { via: m.reply.via === "slack" ? ("slack" as const) : ("telegram" as const), agentName: String(m.reply.agent), issueId: String(m.reply.issue) } } : {}), ...(m.head ? { head: { agentName: String(m.head.agent), issueId: String(m.head.issue) } } : {}), ...(m.asker ? { asker: { id: String(m.asker.id), key: String(m.asker.key), roles: Array.isArray(m.asker.roles) ? m.asker.roles.map(String) : [] } } : {}) });
       if (!r.sent) log.warn({ kind: m.kind, reason: r.reason }, "an owner message reached nobody");
       // notify() threw inside (its bare "error"): not routed, so the kernel hands it over again.
       if (Number.isInteger(m.id) && !(r.reason === "error" && !r.note)) done.push(m.id);
