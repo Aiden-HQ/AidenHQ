@@ -51,6 +51,7 @@ import { backfillLocal, openFacts } from "./facts.ts";
 import { createDeploys } from "./generations.ts";
 import { createFlow } from "./flow.ts";
 import { createIdle } from "./idle.ts";
+import { createEscalate } from "./escalate.ts";
 import { pidAlive, recordKernel } from "./previous.ts";
 import { createReviews, type ReviewerSlot } from "./reviews.ts";
 import { createReviewLoop } from "./review-loop.ts";
@@ -207,6 +208,25 @@ const channels = createChannels({ db: records.db, records, writes, board: boardA
 const notify = createNotify({ db: records.db, modules: modulesFile, secret, resolver, log, extra: () => [channels.digest()].filter((t): t is string => t !== null).map((text) => ({ kind: "digest" as const, text })) });
 // alert: something is wrong now (a page); done: a plain notice, never muted.
 const toOwner = (kind: "alert" | "done") => (text: string) => notify.queue({ kind, text });
+// A judgement a task can't make for itself (a parked target, an agent's wait on its delegator or the owner) reaches whoever
+// can make it, once (escalate.ts).
+const escalate = createEscalate({
+  db: records.db, log,
+  issue: async (id) => {
+    const r = await cpApi(`/api/issues/${encodeURIComponent(id)}`);
+    if (r.status === 404) return undefined;
+    if (!r.ok) throw Object.assign(new Error(`control plane GET task ${id} → ${r.status}`), { status: r.status });
+    return (await r.json()) as never;
+  },
+  comments: async (id) => (await cpJson(`/api/issues/${encodeURIComponent(id)}/comments?order=asc&limit=500`)) as never,
+  // The owner channel's attention reads the agent's key and roles (the grants table), as it does for the agent's own notify.
+  asker: async (id) => {
+    const g = grantsTable().agents?.[id] as { key?: string; roles?: string[] } | undefined;
+    return { name: String(((await cpJson(`/api/agents/${encodeURIComponent(id)}`)) as { name?: string }).name ?? ""), key: String(g?.key ?? id), roles: g?.roles ?? [] };
+  },
+  notice: (task, body) => { notices.queue(task, body); setImmediate(sendNotices); },
+  owner: (n) => notify.queue(n),
+});
 // Marketplace advisories (advisories.ts): read at start, then whenever a day has passed or an apply rewrote the catalog.
 const advisories = createAdvisories({ db: records.db, repo, catalog: path.join(configDir, "modules.json"), ownerLine: toOwner("done"), log, ref: env("AIDENHQ_ADVISORY_REF", "main"), fetch: hostFetch(repo) });
 // Timers a draining kernel stops (the next one runs its own).
@@ -280,6 +300,7 @@ const reviewLoop = createReviewLoop({
     comments: async (id) => ((await cpJson(`/api/issues/${encodeURIComponent(id)}/comments?order=asc&limit=500`)) as { deletedAt?: string | null }[]).filter((c) => !c.deletedAt),
     me: async () => (ownerUser ||= String(((await cpJson("/api/cli-auth/me")) as { userId?: string }).userId ?? "")),
     notify: onTask.notify,
+    escalate: (task, key, text) => escalate.delegator(task, key, text),
   },
   decisions: async () => {
     await gitIn(instanceDir, ["fetch", "-q", "origin", "main"]);
@@ -388,7 +409,7 @@ every(() => {
   void wakes.poll().catch((e: Error) => log("wake poll failed", { err: String(e.message ?? e).slice(0, 300) })).finally(() => { polling = false; });
 }, (Number(env("AIDENHQ_WAKE_POLL_SECONDS", "")) || 60) * 1000);
 // No idle agent-held task (idle.ts): agents' own waits (POST /v1/wait), and the idle sweep every 5 minutes.
-const idle = createIdle({ facts, flow, wakes, owner: ownerApi, team: (id) => Boolean(grantsTable().agents?.[id]?.team), log });
+const idle = createIdle({ facts, flow, wakes, owner: ownerApi, team: (id) => Boolean(grantsTable().agents?.[id]?.team), escalate, log });
 let sweeping = false;
 every(() => {
   if (sweeping) return;

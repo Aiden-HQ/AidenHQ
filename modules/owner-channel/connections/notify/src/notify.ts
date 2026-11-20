@@ -24,6 +24,10 @@ export interface NotifyArgs {
   dedupe_key?: string | undefined; // one message per key in the window, from any sender
   /** A job's reply the kernel relays (kernel relay.ts): already on its task, it goes only to the channel the owner wrote from. */
   relay?: { via: "telegram" | "slack"; agentName: string; issueId: string } | undefined;
+  /** The kernel's question from an agent waiting on `task` (kernel escalate.ts): headed by that agent so the owner's reply lands there. */
+  head?: { agentName: string; issueId: string } | undefined;
+  /** The agent whose question `head` carries: its mutes, caps and the task's loop brake apply as to its own notify. */
+  asker?: { id: string; key: string; roles: string[] } | undefined;
 }
 /** What a channel's transport gets: the text as written (each channel renders and escapes it), and who it is from. */
 export type Message = { kind: Kind; text: string; head?: { agent: string; task: string; issue: string }; actions?: string[]; asks?: true };
@@ -103,17 +107,19 @@ export async function notify(d: Deps, a: NotifyArgs, caller?: Caller, now = Date
     const dedupe = `dedupe:${createHash("sha256").update(a.dedupe_key ? `key\n${a.dedupe_key}` : `${kind}\n${a.task ?? ""}\n${text}\n${JSON.stringify(a.questions ?? [])}`).digest("hex").slice(0, 32)}`;
     const last = Number(d.store.getKv(dedupe) ?? 0);
     if (last && now - last < (kind === "alert" ? WINDOW.alert : WINDOW.other)) return { sent: true, reason: "duplicate" };
+    // Whose message it is for attention and the brake: the calling agent, or the agent a kernel-relayed question is from.
+    const who = caller ?? (a.head ? a.asker : undefined);
     // The loop brake (the kernel's count) on an agent's messages about a task: fails open when the kernel doesn't answer.
-    if (a.task && caller && kind !== "alert" && d.brake) {
-      const b = await d.brake(a.task, caller.id, kind === "decision").catch(() => ({ allow: true, note: undefined }));
+    if (a.task && who && kind !== "alert" && d.brake) {
+      const b = await d.brake(a.task, who.id, kind === "decision").catch(() => ({ allow: true, note: undefined }));
       if (!b.allow) return { sent: false, reason: "limit", note: b.note ?? `Limit reached on ${a.task} since the owner last wrote there (or since UTC midnight). Nothing was sent; batch it into your next update.` };
     }
     // The chat is the calling agent's own, running on it now: only then its name heads the message, the reply lands there and
     // goes where the owner wrote. (The kernel's, the board's and the runner's messages carry the task in their text.)
     const resolved = a.task && caller && d.resolveTask ? await d.resolveTask(a.task).catch(() => undefined) : undefined;
-    const found: Found | undefined = a.relay ? { issueId: a.relay.issueId, agentId: "", agentName: a.relay.agentName, ownerVia: a.relay.via } : resolved?.agentId === caller?.id ? resolved : undefined;
+    const found: Found | undefined = a.relay ? { issueId: a.relay.issueId, agentId: "", agentName: a.relay.agentName, ownerVia: a.relay.via } : a.head && !caller ? { issueId: a.head.issueId, agentId: "", agentName: a.head.agentName } : resolved?.agentId === caller?.id ? resolved : undefined;
     // Attention: a blocked or over-cap agent sends nothing; a crew agent's routine done/fyi goes to the digest (and its chat).
-    const att = caller && d.attention && ["decision", "done", "fyi"].includes(kind) ? attend(d.store, d.attention, { id: caller.id, key: caller.key, roles: caller.roles ?? [] }, kind, { conversing: Boolean(found?.ownerVia), buttons: Boolean(a.actions?.length) }, now) : ({ do: "pass" } as const);
+    const att = who && d.attention && ["decision", "done", "fyi"].includes(kind) ? attend(d.store, d.attention, { id: who.id, key: who.key, roles: who.roles ?? [] }, kind, { conversing: Boolean(found?.ownerVia), buttons: Boolean(a.actions?.length) }, now) : ({ do: "pass" } as const);
     if (att.do === "block" || att.do === "limit") return { sent: false, reason: att.do === "block" ? "blocked" : "limit", note: att.note };
     const muted = kind === "fyi" && d.muteFyi === true && !a.actions?.length;
     const digested = att.do === "digest" && found?.ownerVia !== "board" && !muted;
