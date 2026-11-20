@@ -737,8 +737,8 @@ drain = () => {
   const done = () => {
     for (const s of servers) s.closeIdleConnections();
     const t = Date.now() - t0;
-    if ((gw.inflight() > 0 || admission.inflight() > 0 || writes.inflight() > 0 || checkJobs.inflight() > 0) && t < DRAIN_MS) return;
-    log("drained: exiting", { inflight: gw.inflight(), launches: admission.inflight(), writes: writes.inflight(), checks: checkJobs.inflight(), ms: t });
+    if ((gw.inflight() > 0 || admission.inflight() > 0 || writes.inflight() > 0 || checkJobs.inflight() > 0 || notices.inflight()) && t < DRAIN_MS) return;
+    log("drained: exiting", { inflight: gw.inflight(), launches: admission.inflight(), writes: writes.inflight(), checks: checkJobs.inflight(), notices: notices.inflight(), ms: t });
     process.exit(0);
   };
   done();

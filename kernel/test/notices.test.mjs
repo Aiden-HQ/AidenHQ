@@ -11,9 +11,10 @@ test("a notice the control plane can't take now is posted on a later try; a clos
   const tasks = { "t-1": { status: "in_progress", parentId: "t-0" }, "t-0": { status: "todo" }, "t-2": { status: "done" } };
   const api = async (m, p, body) => {
     const id = decodeURIComponent(p.split("/")[3]);
+    if (m === "GET" && p.includes("/comments")) return { status: 200, json: [] };
     if (m === "GET") return tasks[id] ? { status: 200, json: tasks[id] } : { status: 404, json: {} };
     if (posts !== 201) return { status: posts, json: {} };
-    posted.push([id, body.body]);
+    posted.push([id, body.body.replace(/\n\n<!-- aidenhq-kernel-notice:[^>]*-->$/, "")]);
     return { status: 201, json: {} };
   };
   const n = createNotices({ db: new DatabaseSync(":memory:"), api, alert: (t) => alerts.push(t), now: () => now });
@@ -37,4 +38,52 @@ test("a notice the control plane can't take now is posted on a later try; a clos
   now += 3600_000;
   await n.send();
   assert.equal(posted.length, 2, "nothing left to send");
+});
+
+test("a notice is posted once: a post whose answer was lost is found by its tag; one send loop at a time, in order per task", async () => {
+  let now = 1_000_000, lose = true;
+  const comments = [];
+  let inPost = 0, maxInPost = 0;
+  const api = async (m, p, body) => {
+    if (m === "GET" && p.includes("/comments")) return { status: 200, json: comments };
+    if (m === "GET") return { status: 200, json: { status: "in_progress" } };
+    inPost++; maxInPost = Math.max(maxInPost, inPost);
+    await new Promise((r) => setTimeout(r, 5));
+    inPost--;
+    comments.unshift({ body: body.body, authorUserId: "owner" });
+    if (lose) { lose = false; throw new Error("socket hang up"); } // the control plane took it, the answer never came back
+    return { status: 201, json: {} };
+  };
+  const n = createNotices({ db: new DatabaseSync(":memory:"), api, alert: () => {}, now: () => now });
+  n.queue("t-1", "**Failed** (approval r-1)");
+  n.queue("t-1", "**Done** (approval r-2)");
+  await Promise.all([n.send(), n.send(), n.send()]);
+  assert.equal(comments.length, 1, "the later notice waits behind the earlier one");
+  now += 60_000;
+  await n.send();
+  assert.deepEqual(comments.map((c) => c.body.split("\n")[0]).reverse(), ["**Failed** (approval r-1)", "**Done** (approval r-2)"], "the lost post isn't posted again; order kept");
+  assert.equal(maxInPost, 1);
+  assert.equal(n.inflight(), false);
+});
+
+test("a comment that merely carries a notice's tag (an agent's, or the tag mid-text) doesn't pass for the notice", async () => {
+  let now = 1_000_000, fail = true;
+  const comments = [];
+  const api = async (m, p, body) => {
+    if (m === "GET" && p.includes("/comments")) return { status: 200, json: comments };
+    if (m === "GET") return { status: 200, json: { status: "in_progress" } };
+    if (fail) { fail = false; return { status: 502, json: {} }; }
+    comments.unshift({ body: body.body, authorUserId: "owner" });
+    return { status: 201, json: {} };
+  };
+  const db = new DatabaseSync(":memory:");
+  const n = createNotices({ db, api, alert: () => {}, now: () => now });
+  n.queue("t-1", "**Rejected** (approval r-1)");
+  await n.send();
+  const { nonce } = db.prepare("SELECT nonce FROM task_notices").get();
+  const tag = `<!-- aidenhq-kernel-notice:${nonce} -->`;
+  comments.push({ body: `done\n\n${tag}`, authorAgentId: "a-1" }, { body: `${tag} quoted`, authorUserId: "owner" });
+  now += 60_000;
+  await n.send();
+  assert.equal(comments.filter((c) => c.body.startsWith("**Rejected**")).length, 1, "the real notice is posted");
 });

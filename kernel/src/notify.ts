@@ -38,7 +38,7 @@ const KEEP_MS = 7 * 86_400_000;
 
 export function createNotify({ db, modules, secret, resolver, extra = () => [], log = () => {}, testHosts = false, now = Date.now }: {
   db: DatabaseSync; modules: () => ModulesFile; secret: (name: string) => string; resolver: Resolver;
-  /** What the kernel has for the owner at take time (the approvals digest), each handed over once. */
+  /** What the kernel has for the owner at take time (the approvals digest): queued then, so it is leased and acknowledged like any other. */
   extra?: () => Notice[];
   log?: (msg: string, f?: Record<string, unknown>) => void;
   /** Tests only: transports on 127.0.0.1. */
@@ -79,17 +79,19 @@ export function createNotify({ db, modules, secret, resolver, extra = () => [], 
     }
   }
   const router = (roles: string[]) => { if (!roles.includes("kernel.notify")) throw fail(403, "forbidden", "only the owner's router (role kernel.notify) takes and sends owner messages"); };
+  const queue = (n: Notice) => {
+    db.prepare("INSERT INTO owner_notify (msg, at) VALUES (?, ?)").run(JSON.stringify(n), now());
+    const old = db.prepare("DELETE FROM owner_notify WHERE at < ?").run(now() - KEEP_MS).changes;
+    if (old) log("owner messages nobody took in a week dropped", { n: old });
+  };
   return {
-    queue(n: Notice) {
-      db.prepare("INSERT INTO owner_notify (msg, at) VALUES (?, ?)").run(JSON.stringify(n), now());
-      const old = db.prepare("DELETE FROM owner_notify WHERE at < ?").run(now() - KEEP_MS).changes;
-      if (old) log("owner messages nobody took in a week dropped", { n: old });
-    },
+    queue,
     /** Up to 50 messages, oldest first, each with its `id` to acknowledge; a taken one comes back after TAKE_LEASE_MS unacknowledged. */
-    take(roles: string[]): { messages: (Notice & { id?: number })[] } {
+    take(roles: string[]): { messages: (Notice & { id: number })[] } {
       router(roles);
+      for (const n of extra()) queue(n);
       const rows = db.prepare("UPDATE owner_notify SET taken = ? WHERE id IN (SELECT id FROM owner_notify WHERE taken IS NULL OR taken < ? ORDER BY id LIMIT 50) RETURNING id, msg").all(now(), now() - TAKE_LEASE_MS) as { id: number; msg: string }[];
-      return { messages: [...extra(), ...rows.sort((x, y) => x.id - y.id).map((r) => ({ ...(JSON.parse(r.msg) as Notice), id: r.id }))] };
+      return { messages: rows.sort((x, y) => x.id - y.id).map((r) => ({ ...(JSON.parse(r.msg) as Notice), id: r.id })) };
     },
     /** The router has the messages it took (routed, or kept by it for its own retry): they go. */
     ack(roles: string[], b: { ids?: unknown }) {
