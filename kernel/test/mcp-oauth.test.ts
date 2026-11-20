@@ -62,7 +62,13 @@ async function kernel(t) {
   const bp = await serve(createBackplane({ accounts: createAuthApi({ accounts: () => accounts, whoami: async () => undefined, boardKey: () => boardKey, operatorKey: () => "", decide: channels.decideCard }), log: () => {} }));
   const api = { boardKey, post: (path, body, headers = {}) => call(bp.url, "POST", path, { host: "kernel.example", body, headers, origin: "" }) };
   t.after(() => { s.close(); bp.s.close(); accounts.close(); });
-  return { url, api, records, card };
+  /** The board's own session for a signed-in browser (the module UI handoff), as its account page holds it. */
+  const boardSession = async (jar) => {
+    const who = await accounts.sessionOf({ headers: { host: FRONT, "x-forwarded-proto": "https", cookie: [...jar].map(([k, v]) => `${k}=${v}`).join("; ") } });
+    const state = randomBytes(16).toString("hex");
+    return (await accounts.exchangeUi("board", accounts.mintUiCode(who, "board", "https://board.example.com", state), "https://board.example.com", state)).token;
+  };
+  return { url, api, records, card, accounts, boardSession, spent: new Set() }; // spent: TOTP codes are single use per file
 }
 
 /** Signs `b` in through the kernel's pages (password, then a code not yet spent), from `next`; returns where it ends. */
@@ -94,7 +100,8 @@ async function connect(k) {
   assert.equal(reg.status, 201, reg.body);
   const client = reg.json.client_id;
 
-  const b = at(k.url); // the owner's browser
+  const jar = new Map();
+  const b = at(k.url, jar); // the owner's browser
   const { path, verifier } = authorizeUrl(client);
   const hop = await b("GET", path, { headers: { "sec-fetch-site": "cross-site" } });
   assert.equal(hop.status, 200);
@@ -103,8 +110,7 @@ async function connect(k) {
   assert.equal(out.status, 303);
   const next = new URL(out.headers.location, ISSUER).searchParams.get("next");
   assert.equal(next, path);
-  const spent = new Set();
-  assert.equal(await signIn(b, next, spent), path); // back to authorize, now with the admin's session
+  assert.equal(await signIn(b, next, k.spent), path); // back to authorize, now with the admin's session
   const consent = await b("GET", path);
   assert.equal(consent.status, 302, consent.body);
   const consentPage = await b("GET", relative(consent.headers.location));
@@ -124,7 +130,7 @@ async function connect(k) {
   assert.equal(tok.status, 200, tok.body);
   assert.equal(tok.json.expires_in, 3600);
   assert.ok(tok.json.refresh_token);
-  return { c, b, client, tok };
+  return { c, b, jar, client, tok };
 }
 
 test("mcp-oauth round trip: metadata, registration, sign-in and consent, a token for the board's /mcp, refresh, revoke", async (t) => {
@@ -141,7 +147,7 @@ test("mcp-oauth round trip: metadata, registration, sign-in and consent, a token
   assert.equal((await at(k.url)("GET", "/.well-known/oauth-authorization-server", { headers: { host: "admin.example.com", "x-forwarded-proto": "" } })).json.issuer, ISSUER);
   assert.equal((await at(k.url)("GET", "/.well-known/oauth-authorization-server", { headers: { host: "localhost:3120", "x-forwarded-proto": "" } })).json.issuer, "http://localhost:3120");
 
-  const { c, b, client, tok } = await connect(k);
+  const { c, b, jar, client, tok } = await connect(k);
   const bearer = (token, resource = RESOURCE) => k.api.post("/v1/auth/mcp", { token, resource }, { authorization: `Bearer ${k.api.boardKey}` });
   const who = await bearer(tok.json.access_token);
   assert.equal(who.status, 200, who.body);
@@ -162,15 +168,27 @@ test("mcp-oauth round trip: metadata, registration, sign-in and consent, a token
   // The account's MCP clients, then revoke: every token of that client ends at once, and the refresh token too.
   const account = who.json.account.id;
   const key = { authorization: `Bearer ${k.api.boardKey}` };
-  const grants = await k.api.post("/v1/auth/mcp/grants", { account }, key);
+  // Only the signed-in admin's own clients, by the board's session: never an account the caller names.
+  const session = await k.boardSession(jar);
+  assert.equal((await k.api.post("/v1/auth/mcp/grants", { token: "ahqu_forged" }, key)).status, 401);
+  const grants = await k.api.post("/v1/auth/mcp/grants", { token: session }, key);
   assert.equal(grants.status, 200, grants.body);
   assert.equal(grants.json.grants.length, 1);
   assert.equal(grants.json.grants[0].client, "Claude Code");
   assert.ok(grants.json.grants[0].lastUsed);
-  assert.equal((await k.api.post("/v1/auth/mcp/revoke", { account, grant: grants.json.grants[0].id }, key)).status, 200);
+  assert.equal((await k.api.post("/v1/auth/mcp/revoke", { token: session, grant: "not-this-accounts" }, key)).status, 404);
+  assert.equal((await k.api.post("/v1/auth/mcp/revoke", { token: session, grant: grants.json.grants[0].id }, key)).status, 200);
   assert.equal((await bearer(fresh.json.access_token)).status, 401);
   assert.notEqual((await c("POST", "/oauth2/token", { form: { grant_type: "refresh_token", refresh_token: fresh.json.refresh_token, client_id: client, resource: RESOURCE } })).status, 200);
-  assert.equal((await k.api.post("/v1/auth/mcp/grants", { account }, key)).json.grants.length, 0);
+  assert.equal((await k.api.post("/v1/auth/mcp/grants", { token: session }, key)).json.grants.length, 0);
+
+  // A changed password ends every MCP grant.
+  const again = await connect(k);
+  assert.equal((await bearer(again.tok.json.access_token)).status, 200);
+  const form = await again.b("GET", "/auth/password");
+  assert.equal((await again.b("POST", "/auth/password", { form: { csrf: form.csrf, current: OWNER.pw, password: "a brand new password here" }, headers: page })).status, 200);
+  assert.equal((await bearer(again.tok.json.access_token)).status, 401);
+  assert.equal((await k.api.post("/v1/auth/mcp/grants", { token: await k.boardSession(again.jar) }, key)).json.grants.length, 0); // it must ask again
 
   // An admin without an authenticator is refused at authorize: no code.
   const ann = at(k.url);
@@ -183,7 +201,7 @@ test("mcp-oauth round trip: metadata, registration, sign-in and consent, a token
 
 test("owner decide over MCP: each card against its digest, as the bearer's account; stale only closes; revoked decides nothing", async (t) => {
   const k = await kernel(t);
-  const { tok } = await connect(k);
+  const { tok, jar } = await connect(k);
   const key = { authorization: `Bearer ${k.api.boardKey}` };
   const account = (await k.api.post("/v1/auth/mcp", { token: tok.json.access_token, resource: RESOURCE }, key)).json.account.id;
   const decide = (cards, token = tok.json.access_token) => k.api.post("/v1/owner/decide", { token, resource: RESOURCE, cards }, key);
@@ -205,8 +223,16 @@ test("owner decide over MCP: each card against its digest, as the bearer's accou
   assert.equal(k.records.get(two.id).decided_by, `stale:account:${account}`);
 
   // A revoked grant gets 401 before any card is touched.
-  const grant = (await k.api.post("/v1/auth/mcp/grants", { account }, key)).json.grants[0].id;
-  await k.api.post("/v1/auth/mcp/revoke", { account, grant }, key);
+  const session = await k.boardSession(jar);
+  const grant = (await k.api.post("/v1/auth/mcp/grants", { token: session }, key)).json.grants[0].id;
+  await k.api.post("/v1/auth/mcp/revoke", { token: session, grant }, key);
   assert.equal((await decide([{ id: three.id, digest: three.digest, decision: "approve" }])).status, 401);
   assert.equal(k.records.get(three.id).state, "owner");
+
+  // A password reset ends every MCP grant.
+  const again = await connect(k);
+  assert.equal((await k.api.post("/v1/auth/mcp", { token: again.tok.json.access_token, resource: RESOURCE }, key)).status, 200);
+  await k.accounts.reset(OWNER.email);
+  assert.equal((await k.api.post("/v1/auth/mcp", { token: again.tok.json.access_token, resource: RESOURCE }, key)).status, 401);
+  assert.equal(k.accounts.mcpGrants(account).length, 0);
 });

@@ -2,7 +2,8 @@
 //   POST /v1/auth/{exchange,session,sign_out}  (the board's key) a module UI's one-time code → its session token; that
 //              token → its ready admin (or 401); that session ends. The board checks its session here on every request.
 //   POST /v1/auth/mcp, /v1/auth/mcp/{grants,revoke}  (the board's key) an MCP client's bearer for {resource} (the board's
-//              /mcp) → its ready admin, client and expiry (or 401); an account's MCP clients; revoking one.
+//              /mcp) → its ready admin, client and expiry (or 401); with {token} (a live board session's ready admin) that
+//              admin's own MCP clients, and revoking one of them.
 //   POST /v1/owner/decide    (the board's key + an MCP client's bearer) cards decided as the bearer's account, via "mcp",
 //              each against the digest that was read, each on its own.
 //   POST /v1/accounts/<op>   (the board's key + {token}: a live module UI session's admin acts) account admin: list, sessions,
@@ -87,7 +88,9 @@ export function createAuthApi({ accounts, whoami, boardKey, operatorKey, recover
           const { id, email, name, role, owner } = g.account;
           return send(res, 200, { account: { id, email, name, role, owner }, client: g.client, expires: g.expires });
         }
-        const account = need(b, "account", ID);
+        const who = await a.uiSession("board", need(b, "token", (v) => typeof v === "string" && v.length <= 200));
+        if (!who?.ready) throw fail(401, "unauthorized", "sign in");
+        const account = who.account.id;
         if (op === "mcp/grants") return send(res, 200, { grants: a.mcpGrants(account) });
         if (op === "mcp/revoke") { a.revokeMcpGrant(account, need(b, "grant", ID)); return send(res, 200, { ok: true }); }
         throw fail(404, "not_found", "no such auth call");

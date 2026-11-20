@@ -200,7 +200,8 @@ export async function openAccounts(o: AccountsOptions) {
     linkTtlMs: LINK_TTL_MS,
     mcpResource: mcpResource(o.boardUrl),
     notify: o.notify,
-    onPasswordReset: () => void changed().catch(() => {}),
+    // A new password ends every MCP grant too: a client signed in with the old one must sign in again.
+    onPasswordReset: (user) => { endMcp(user.id); void changed().catch(() => {}); },
     log,
     ...(o.now ? { now: o.now } : {}),
   });
@@ -323,10 +324,12 @@ export async function openAccounts(o: AccountsOptions) {
      * cookies come back host-only for this listener, its refusal as text.
      */
     async step(req: IncomingMessage, sub: string, body: Record<string, unknown>): Promise<Step> {
+      const changing = sub === "/change-password" ? await accounts.sessionOf(req) : null;
       const r = await rules.call(auth, req, sub, "admin", { body: Buffer.from(JSON.stringify(body)), ...adminAddress(req), trusted: secretIs(req.headers[EDGE_HEADER], o.edgeSecret()), cookie: cookieOf(req) });
       const json = (await r.json().catch(() => ({}))) as Record<string, any>;
       const cookies = r.headers.getSetCookie().map((c) => outboundCookie(c, https(req), "admin"));
       if (r.ok && sub === "/sign-out") await accounts.endHandedOff(req);
+      if (r.ok && changing) endMcp(changing.account.id);
       return { ok: r.ok, status: r.status, ...(r.headers.get("retry-after") ? { retryAfter: r.headers.get("retry-after")! } : {}), json, cookies, error: r.ok ? "" : String(json.message ?? json.error ?? json.code ?? `refused (${r.status})`) };
     },
 
