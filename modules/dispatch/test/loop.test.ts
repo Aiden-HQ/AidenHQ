@@ -57,6 +57,7 @@ function fake({ task, comments = [], directory = {}, tasks = {}, paused = [] }) 
       if (b.kind === "status" && b.status) Object.assign(t, { status: b.status, blockedBy: (b.blocked_by ?? []).map((id) => ({ id, status: "todo" })) });
     },
     note: async (wake, body) => void k.notes.push({ wake, body }),
+    connectionsDown: async () => k.down ?? [],
   };
   k.db = new DatabaseSync(":memory:");
   k.dispatch = createDispatch({ kernel: k.kernel, db: k.db, owner: "Dana" });
@@ -675,6 +676,21 @@ test("a task that already ran is picked back up when its blocker closes", async 
   await k.dispatch.tick();
   assert.equal(k.started.length, 2, "the unblocked wake starts a job");
   assert.match(k.started[1].prompt, /## Pick this task back up \(not Dana's words\)\n\nWhat this task was blocked on has closed\./);
+  assert.deepEqual(k.dropped, []);
+});
+
+test("a connected wake with no new words starts a resume run", async () => {
+  const k = fake({ task: { id: "t1", identifier: "WOR-1", title: "Read mail", description: "Summarise my inbox.", status: "in_progress", assigneeAgentId: "eng", createdByUserId: "u1" } });
+  k.inbox.push(wake("issue:t1:1", "assigned"));
+  await k.dispatch.tick();
+  k.end("j1", "Google isn't connected.");
+  await k.dispatch.tick();
+  k.down = [{ connection: "google_workspace", module: "google", cause: "not_connected", since: "2026-11-20T08:00:00Z" }];
+  k.inbox.push(wake("connect:google:t1:1", "connected"));
+  await k.dispatch.tick();
+  assert.equal(k.started.length, 2, "the connected wake starts a job");
+  assert.match(k.started[1].prompt, /## Pick this task back up[^]*now connected: retry what needed it/);
+  assert.match(k.started[1].prompt, /## Connections down/);
   assert.deepEqual(k.dropped, []);
 });
 

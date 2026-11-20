@@ -20,8 +20,9 @@ import { Maintainer } from "./maintainer.js";
 import { describeRepos, parseRepos } from "./aidenhq-sdk/maintained-repos.js";
 import { isModule } from "./module-caller.js";
 import { CodeReviewReader, codeReviewRoute } from "./code-review-read.js";
-import { createAccess, GitHubNeed, kernelNotify, needAnswer, type GitHubAccess } from "./client.js";
+import { createAccess, GitHubNeed, needResult, type GitHubAccess } from "./client.js";
 import { officialProxy, signIn } from "./official.js";
+import { signedIn } from "./vendor/needs.js";
 import { ReviewPoster } from "./review-post.js";
 
 const log = pino({ level: process.env.LOG_LEVEL ?? "info", base: { svc: "github-mcp" }, redact: ["authorization", "*.authorization", "token", "*.token"] });
@@ -51,15 +52,14 @@ async function authorize(req: IncomingMessage, body: unknown): Promise<{ ok: tru
   }
 }
 // The owner's sign-in, and every GitHub call of this process through it (spec §1): one client, one rate limiter, typed needs;
-// an owner-fixable need reaches the owner once, through the kernel's notify with the module's own token (role
-// kernel.owner-notice). The token stays in this process.
+// a tool answers an owner-fixable need as needs_owner, which the kernel routes. The token stays in this process.
 const stateDir = process.env.GITHUB_STATE_DIR ?? "/state";
 const mcpUrl = process.env.GITHUB_MCP_URL || "https://api.githubcopilot.com/mcp/";
 const clientId = (process.env.GITHUB_OAUTH_CLIENT_ID ?? "").trim();
 const auth = signIn({ clientId, mcpUrl, stateDir, ci: process.env.GITHUB_CI === "1" });
 const kernelUrl = process.env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130";
 const codehostKey = () => { const f = process.env.CODEHOST_KEY_FILE; return f && existsSync(f) ? readFileSync(f, "utf8").trim() : ""; };
-const access = createAccess({ auth, clientId, notify: kernelNotify(kernelUrl, codehostKey) });
+const access = createAccess({ auth, clientId });
 /** Whether a GitHub object (`github:<repo>#<n>[/comment/<id>]`) is in AidenHQ's records; a failed read is "no". */
 const ours = async (ref: string): Promise<boolean> => {
   const r = await fetch(`${kernelUrl}/v1/objects?ref=${encodeURIComponent(ref)}`, { headers: { authorization: `Bearer ${codehostKey()}` }, signal: AbortSignal.timeout(10_000) }).catch(() => undefined);
@@ -113,20 +113,23 @@ function buildServer(caller?: Caller): McpServer {
   const write = { readOnlyHint: false, destructiveHint: false, openWorldHint: false } as const;
   // The agent the posted text is signed with (the AidenHQ footer): the caller's name, from the kernel's signed assertion.
   const agent = caller?.name ?? "AidenHQ";
+  // `usesSignIn`: the tool reads or writes GitHub with the owner's sign-in, so its success says so (the kernel clears a down state
+  // on it); github_issue_link works signed out and proves nothing.
   const run =
-    <A,>(name: string, fn: (a: A) => Promise<unknown>) =>
+    <A,>(name: string, fn: (a: A) => Promise<unknown>, usesSignIn = true) =>
     async (a: A) => {
       try {
         // A write's GitHub objects go to the kernel with its outcome (structuredContent._aidenhq.objects), not to the agent.
         const out = (await fn(a)) as { objects?: unknown } | undefined;
         const objects = out && typeof out === "object" && Array.isArray(out.objects) ? (out.objects as string[]) : undefined;
         const shown = objects ? Object.fromEntries(Object.entries(out!).filter(([k]) => k !== "objects")) : out;
-        return { content: [{ type: "text" as const, text: JSON.stringify(shown, null, 2) }], ...(objects ? { structuredContent: { _aidenhq: { objects } } } : {}) };
+        const result = { content: [{ type: "text" as const, text: JSON.stringify(shown, null, 2) }], ...(objects ? { structuredContent: { _aidenhq: { objects } } } : {}) };
+        return usesSignIn ? signedIn(result) : result;
       } catch (err) {
-        // A typed need names the cause and the fix; an owner-fixable one was already told to the owner (client.ts).
+        // A typed need names the cause and the fix; an owner-fixable one is needs_owner, which the kernel routes (client.ts).
         if (err instanceof GitHubNeed) {
           log.warn({ tool: name, need: err.need.cause }, "tool needs GitHub");
-          return { isError: true, content: [{ type: "text" as const, text: JSON.stringify(needAnswer(err)) }] };
+          return needResult(err);
         }
         const code = err instanceof GitHubRefused ? "github_refused" : "github_error";
         log.warn({ tool: name, code, err: (err as Error).message.slice(0, 300) }, "tool failed");
@@ -292,7 +295,7 @@ function buildServer(caller?: Caller): McpServer {
       } catch (err) {
         throw new GitHubRefused((err as Error).message);
       }
-    }),
+    }, false),
   );
   server.registerTool(
     "github_product_issue_status",

@@ -48,6 +48,20 @@ export function queueDigest(store: Store, item: Item): void {
   store.setKv("digest:queue", JSON.stringify(q.slice(-100)));
 }
 
+/**
+ * A kernel batch item (a line for the next digest): queued once per `dedupe_key` per UTC day. Returns false when there is no
+ * digest slot configured, so the caller sends it as an ordinary fyi instead.
+ */
+export function queueBatch(store: Store, cfg: Pick<AttentionConfig, "digestHours">, m: { text: string; dedupe_key?: string }, now = Date.now()): boolean {
+  if (!cfg.digestHours.length) return false;
+  const day = new Date(now).toISOString().slice(0, 10);
+  const key = m.dedupe_key ? `batch:${m.dedupe_key}` : undefined;
+  if (key && store.getKv(key) === day) return true;
+  queueDigest(store, { agent: "AidenHQ", text: m.text });
+  if (key) store.setKv(key, day);
+  return true;
+}
+
 /** The owner-local slot now: its date plus the latest digest hour already reached (none before the first one). */
 export function slotNow(cfg: Pick<AttentionConfig, "digestHours" | "timezone">, now: number): string | undefined {
   const p = Object.fromEntries(new Intl.DateTimeFormat("en-CA", { timeZone: cfg.timezone, year: "numeric", month: "2-digit", day: "2-digit", hour: "numeric", hourCycle: "h23" }).formatToParts(now).map((x) => [x.type, x.value]));

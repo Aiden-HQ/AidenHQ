@@ -12,3 +12,13 @@ test("an Engineer's prompt points other tasks at the delegator, not at `aidenhq 
   assert.doesNotMatch(p, /aidenhq tasks? </);
   assert.doesNotMatch(buildPrompt(args("crew")), /Your task tools reach this task only/);
 });
+
+test("down connections are listed in fresh and resumed prompts", () => {
+  const down = [{ connection: "google_workspace", module: "google", cause: "not_connected", since: "2026-11-20T08:00:00Z" }];
+  for (const resumed of [false, true]) {
+    const p = buildPrompt({ ...args("crew"), resumed, down });
+    assert.match(p, /## Connections down/);
+    assert.match(p, /google_workspace: not connected since 2026-11-20/);
+    assert.doesNotMatch(buildPrompt({ ...args("crew"), resumed, down: [] }), /## Connections down/);
+  }
+});

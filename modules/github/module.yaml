@@ -281,8 +281,8 @@ services:
         GITHUB_ORIGIN_KEY_FILE: ${secrets.github_origin_key}
         # The kernel's bearer for both connections.
         MCP_TOKEN_FILE: ${secrets.github_service_key}
-        # The module's own token: the kernel calls the executor and ops with it, and the process reports outcomes, files facts
-        # and tells the owner about a GitHub need (kernel.owner-notice) with it.
+        # The module's own token: the kernel calls the executor and ops with it, and the process reports outcomes and files facts
+        # with it.
         CODEHOST_KEY_FILE: ${secrets.codehost_github_token}
         # The maintained repos (setting maintainer_repos, as JSON): the Maintainer's tools and watcher act on these only; the PR
         # watch also covers those with dependabot on, and the fleet merges and closes there as in the fleet org (plan.ts, merges.ts).

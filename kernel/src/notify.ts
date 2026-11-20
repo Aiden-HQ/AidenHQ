@@ -5,9 +5,7 @@
 // taken again, and only an acknowledged one goes; and it hands that
 // module's sends to a channel's transport (POST /v1/notify/send → the channel's `providers.channel.transport`, with the
 // channel's own token). Routing, mutes, caps, dedupe and digests are the module's, never the kernel's.
-// A credential for the owner (an account reset link) never reaches the router: the kernel keeps it (owner_secrets) and sends
-// it itself, only to a channel that declares a private owner chat (providers.channel.credentials: the paired Telegram chat),
-// until one takes it. A transport is a compose service, never a loopback or IP address: it gets a channel's token.
+// A transport is a compose service, never a loopback or IP address: it gets a channel's token.
 import http from "node:http";
 import type { DatabaseSync } from "node:sqlite";
 import type { ModulesFile } from "./channels.ts";
@@ -21,7 +19,9 @@ export const KINDS = ["decision", "done", "fyi", "alert", "digest"] as const;
  */
 export type Notice = { kind: (typeof KINDS)[number]; text: string; task?: string; dedupe_key?: string; reply?: { via: "telegram" | "slack"; agent: string; issue: string }; head?: { agent: string; issue: string };
   /** The agent whose question `head` carries: the owner channel applies its mutes and the task's loop brake. */
-  asker?: { id: string; key: string; roles: string[] } };
+  asker?: { id: string; key: string; roles: string[] };
+  /** Kernel-set only (never from a producer's body via `notice()`): the owner channel adds it to the next digest instead of sending it at once. */
+  batch?: true };
 type Resolver = { resolve: (url: string) => Promise<Target>; forget: (url: string) => void };
 
 /** A notice from a producer's body: kind, text, and optionally the task it is about and its dedupe key. */
@@ -50,8 +50,7 @@ export function createNotify({ db, modules, secret, resolver, extra = () => [], 
   testHosts?: boolean;
   now?: () => number;
 }) {
-  db.exec(`CREATE TABLE IF NOT EXISTS owner_notify (id INTEGER PRIMARY KEY, msg TEXT NOT NULL);
-    CREATE TABLE IF NOT EXISTS owner_secrets (id INTEGER PRIMARY KEY, text TEXT NOT NULL, at TEXT NOT NULL);`);
+  db.exec(`CREATE TABLE IF NOT EXISTS owner_notify (id INTEGER PRIMARY KEY, msg TEXT NOT NULL);`);
   const cols = new Set((db.prepare("PRAGMA table_info(owner_notify)").all() as { name: string }[]).map((c) => c.name));
   for (const c of ["at", "taken"]) if (!cols.has(c)) db.exec(`ALTER TABLE owner_notify ADD COLUMN ${c} INTEGER`);
   async function post(to: string, message: unknown): Promise<{ sent: boolean; off?: true; reason?: string }> {
@@ -111,22 +110,6 @@ export function createNotify({ db, modules, secret, resolver, extra = () => [], 
       router(roles);
       if (!b.message || typeof b.message !== "object") throw fail(400, "bad_request", "send {to, message}");
       return post(String(b.to), b.message);
-    },
-    /** A credential for the owner (an account reset link): kept here and sent only to a credentials channel (deliverSecrets). */
-    secret(text: string) {
-      db.prepare("INSERT INTO owner_secrets (text, at) VALUES (?, ?)").run(text.slice(0, 3000), new Date().toISOString());
-    },
-    /** Sends each kept credential to the first credentials channel that takes it; one none takes stays, and is logged. */
-    async deliverSecrets(): Promise<number> {
-      const to = Object.entries(modules().modules ?? {}).filter(([, m]) => m.channel?.credentials === true && m.channel.transport).map(([n]) => n);
-      let n = 0;
-      for (const r of db.prepare("SELECT id, text FROM owner_secrets ORDER BY id").all() as { id: number; text: string }[]) {
-        let sent = false;
-        for (const t of to) if (!sent) sent = (await post(t, { kind: "done", text: r.text }).catch(() => ({ sent: false }))).sent;
-        if (sent) { db.prepare("DELETE FROM owner_secrets WHERE id = ?").run(r.id); n++; }
-        else log("a credential for the owner is waiting: no private owner chat took it", { channels: to });
-      }
-      return n;
     },
   };
 }

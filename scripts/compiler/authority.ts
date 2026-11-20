@@ -342,11 +342,9 @@ export function authorityDiff(name: string, base: ModuleDef | undefined, head: M
   }
   const [bpv, hpv] = [map(b.providers), map(head.providers)];
   for (const k of keys(hpv).filter((k) => k !== "engine" && !eq(bpv[k], hpv[k]))) review(`${k in bpv ? "changes provider" : "provides"} ${id(k)}`);
-  // A channel's transport gets the owner's messages and the channel's token from the kernel; credentials, the owner's own
-  // (account reset links): both the owner's.
+  // A channel's transport gets the owner's messages and the channel's token from the kernel: the owner's.
   const [bch, hch] = [map(bpv.channel), map(hpv.channel)];
   if (hch.transport != null && !eq(hch.transport, bch.transport)) owner(`channel: the kernel sends the owner's messages and its token to ${id(hch.transport)}`);
-  if (hch.credentials === true && bch.credentials !== true) owner("channel: gets the owner's credentials (account reset links)");
 
   // Agents: a write or destructive grant, a role, an isolation toward trusted, or an unknown field is the owner's.
   // A grant is judged by the highest tag a tool has on either side: a tool that was a write still counts as one when retagged.

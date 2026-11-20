@@ -1,5 +1,6 @@
 import { expect, it } from "vitest";
-import { createAccess, GitHubNeed, type Need } from "../src/client.js";
+import { createAccess, GitHubNeed, needResult } from "../src/client.js";
+import { readNeed } from "../src/vendor/needs.js";
 import type { Auth } from "../src/vendor/oauth.js";
 
 const auth = (): Auth => {
@@ -46,13 +47,19 @@ it("background calls wait below the 20% reserve", async () => {
   expect(sent[2]!.at).toBe(before);
 });
 
-it("owner-fixable need notifies once per key", async () => {
-  const told: Need[] = [];
-  const access = createAccess({ auth: auth(), notify: (n) => void told.push(n), fetchImpl: async () => answer(401, { message: "Bad credentials" }) });
-  await expect(access.rest("GET", "/user")).rejects.toThrow(GitHubNeed);
-  await expect(access.rest("GET", "/user")).rejects.toThrow(GitHubNeed);
-  expect(told).toEqual([{ cause: "expired" }]);
+it("a refused token is an expired need; the client sends nothing to the owner itself", async () => {
+  const access = createAccess({ auth: auth(), fetchImpl: async () => answer(401, { message: "Bad credentials" }) });
+  const err = await access.rest("GET", "/user").catch((e) => e);
+  expect(err).toBeInstanceOf(GitHubNeed);
+  expect(err.need).toEqual({ cause: "expired" });
   expect(access.connected()).toBe(false);
+});
+
+it("rate_limited stays a plain error", () => {
+  const r = needResult(new GitHubNeed({ cause: "rate_limited", until: "2026-11-20T10:00:00Z" }));
+  expect(r).toMatchObject({ isError: true });
+  expect("structuredContent" in r).toBe(false);
+  expect(readNeed(r)).toBeUndefined();
 });
 
 it("status lines say what works and the one fix", () => {

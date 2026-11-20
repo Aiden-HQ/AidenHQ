@@ -1,8 +1,10 @@
 // GitHub as the owner (spec 2026-11-20-github-owner-identity §1, §9): the one client every GitHub call in this process goes
 // through, with the owner's sign-in. One rate limiter (background work waits while REST or GraphQL is below a 20% reserve,
 // every call waits out a rate-limit refusal) and typed needs: a refusal the owner can fix (connect, reconnect, a scope, an
-// org's SSO or app restriction) names the cause and the one link, and reaches the owner once per cause through the kernel's
-// notify. The token never leaves this process: token() is for git children here only, and no answer carries it.
+// org's SSO or app restriction) names the cause and the one link, and a tool answers it as needs_owner (vendor/needs.ts), which
+// the kernel routes to the owner or the digest. The token never leaves this process: token() is for git children here only, and
+// no answer carries it.
+import { needsOwner } from "./vendor/needs.js";
 import type { Auth } from "./vendor/oauth.js";
 
 const API = "https://api.github.com";
@@ -17,9 +19,6 @@ export type Need =
   | { cause: "rate_limited"; until: string };
 
 const OWNER_FIXABLE = new Set<Need["cause"]>(["not_connected", "expired", "scope", "sso", "restricted"]);
-
-/** The notify dedupe key: one owner notice per cause (and org or scope). */
-export const needKey = (n: Need): string => `github:${n.cause}${n.cause === "sso" || n.cause === "restricted" ? `:${n.org}` : n.cause === "scope" ? `:${n.scope}` : ""}`;
 
 /** The cause and its fix, in one sentence. */
 export function needText(n: Need): string {
@@ -44,10 +43,13 @@ export class GitHubNeed extends Error {
   }
 }
 
-/** A tool's error for a need: what is wrong and its fix; an owner-fixable one says the owner was told (notify, at most once). */
-export function needAnswer(e: GitHubNeed): { error: "github_needs_owner" | "github_unreachable" | "github_rate_limited"; need: Need; detail: string } {
-  const error = e.ownerFixable ? "github_needs_owner" : e.need.cause === "rate_limited" ? "github_rate_limited" : "github_unreachable";
-  return { error, need: e.need, detail: e.ownerFixable ? `${e.message}: the owner was told; wait for the reconnect` : e.message };
+/** A tool's answer for a need: an owner-fixable one is needs_owner (the kernel tells whoever should hear it); the rest plain. */
+export function needResult(e: GitHubNeed): { isError: true; content: { type: "text"; text: string }[] } {
+  const n = e.need;
+  if (n.cause === "unreachable" || n.cause === "rate_limited") {
+    return { isError: true, content: [{ type: "text", text: JSON.stringify({ error: n.cause === "rate_limited" ? "github_rate_limited" : "github_unreachable", need: n, detail: e.message }) }] };
+  }
+  return needsOwner({ cause: n.cause, detail: e.message, ...(n.cause === "scope" ? { scope: n.scope } : {}), ...(n.cause === "sso" || n.cause === "restricted" ? { org: n.org, url: n.url } : {}) });
 }
 
 /** One row of the board's sign-in card (what works, or what is wrong and its one fix). The board renders these as given. */
@@ -98,8 +100,6 @@ export function createAccess(o: {
   /** The OAuth App's client ID: an org's restriction is lifted on its page (Grant, or Request) in the owner's GitHub settings. */
   clientId?: string;
   fetchImpl?: typeof fetch;
-  /** Posts the kernel notice for an owner-fixable need; called at most once per needKey. */
-  notify?: (n: Need) => Promise<void> | void;
   now?: () => number;
   sleep?: Sleep;
   /** Background calls wait while `remaining` is below this share of `limit`. */
@@ -116,28 +116,21 @@ export function createAccess(o: {
   let blockedUntil = 0;
   let granted: string[] | undefined;
   const problems = new Map<string, { org: string; cause: "sso" | "restricted"; url: string }>();
-  const told = new Set<string>();
   let me: { login: string; name: string; email: string; for: string } | undefined;
 
   const connected = () => o.auth.signedIn() && o.auth.status().state !== "expired";
 
-  /** `background`: a loop's call, which never tells the owner GitHub isn't connected (the board shows that; an agent's need does). */
-  async function token(background = false): Promise<string> {
-    if (!o.auth.signedIn()) fail({ cause: "not_connected" }, background);
+  async function token(): Promise<string> {
+    if (!o.auth.signedIn()) fail({ cause: "not_connected" });
     if (o.auth.status().state === "expired") fail({ cause: "expired" });
     const t = String((await o.auth.headers()).authorization ?? "").replace(/^Bearer\s+/i, "");
-    if (!t) fail({ cause: "not_connected" }, background);
+    if (!t) fail({ cause: "not_connected" });
     return t;
   }
 
-  function fail(n: Need, background = false): never {
+  function fail(n: Need): never {
     if (n.cause === "sso" || n.cause === "restricted") problems.set(n.org.toLowerCase(), { org: n.org, cause: n.cause, url: n.url });
-    const e = new GitHubNeed(n);
-    if (e.ownerFixable && o.notify && !told.has(needKey(n)) && !(background && n.cause === "not_connected")) {
-      told.add(needKey(n));
-      void Promise.resolve(o.notify(n)).catch(() => told.delete(needKey(n)));
-    }
-    throw e;
+    throw new GitHubNeed(n);
   }
 
   /** Waits out a rate-limit refusal (background), or refuses (interactive: a tool call can't sleep past its timeout). */
@@ -195,7 +188,7 @@ export function createAccess(o: {
     // Only the path asked for: a `.` or `..` segment (encodeURIComponent leaves them) would move the request elsewhere.
     if (!path.startsWith("/") || new URL(path, API).pathname !== path.split("?")[0]) throw new Error(`refused a GitHub path that resolves elsewhere: ${path.slice(0, 200)}`);
     await admit(resource, background);
-    const t = await token(background);
+    const t = await token();
     const res = await fetchImpl(`${API}${path}`, {
       method,
       signal: AbortSignal.timeout(30_000),
@@ -266,17 +259,4 @@ function statusLines(have: string[], problems: GitHubStatus["problems"], rate: G
     lines.push({ label: "Rate limit", value: `${rate.remaining.toLocaleString("en-US")} of ${rate.limit.toLocaleString("en-US")} left, resets`, time: new Date(rate.reset).toISOString(), state: rate.remaining < rate.limit * 0.2 ? "warn" : "ok" });
   }
   return lines;
-}
-
-/** The kernel notice for an owner-fixable need (role kernel.owner-notice, the code host's token). */
-export function kernelNotify(kernelUrl: string, key: () => string, fetchImpl: typeof fetch = fetch): (n: Need) => Promise<void> {
-  return async (n) => {
-    const r = await fetchImpl(`${kernelUrl}/v1/notify`, {
-      method: "POST",
-      signal: AbortSignal.timeout(10_000),
-      headers: { authorization: `Bearer ${key()}`, "content-type": "application/json" },
-      body: JSON.stringify({ kind: "alert", text: `${needText(n)}.`, dedupe_key: needKey(n) }),
-    });
-    if (!r.ok) throw new Error(`notify failed: ${r.status}`);
-  };
 }

@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { needsOwner } from "./aidenhq-sdk/needs.js";
 import { type AuthStatus, GoogleAuthError, GoogleClient, type StoredCredentials } from "./google.js";
 import { type DriveFile, type NormalizedEvent, Workspace } from "./workspace.js";
 
@@ -56,6 +57,18 @@ export class NoGoogleAccounts extends GoogleAuthError {}
 export function healthBody(ready: boolean, err?: unknown): { ok: boolean; state?: "missing"; detail?: string } {
   if (ready) return { ok: true };
   return { ok: false, ...(err instanceof NoGoogleAccounts ? { state: "missing" as const } : {}), detail: err instanceof Error ? err.message : undefined };
+}
+
+/**
+ * A tool's failure as the agent's MCP client gets it: what only the owner can fix (no account, a sign-in Google refused) is the
+ * needs_owner answer (needs.ts), which the kernel routes; anything else is a plain error. `loaded`: false when no accounts could be
+ * loaded at all (`err` is why).
+ */
+export function toolFailure(err: unknown, loaded = true): { isError: true; content: { type: "text"; text: string }[] } {
+  const msg = err instanceof Error ? err.message.slice(0, 300) : "";
+  if (!loaded || err instanceof NoGoogleAccounts) return needsOwner({ cause: "not_connected", detail: `Google isn't connected${msg ? `: ${msg}` : ""}` });
+  if (err instanceof GoogleAuthError && err.expired) return needsOwner({ cause: "expired", detail: `Google's sign-in stopped working: ${msg}` });
+  return { isError: true, content: [{ type: "text", text: JSON.stringify({ error: "google_api_error", detail: msg }) }] };
 }
 
 export type Check = { ok: true } | { ok: false; message: string; fix?: string };

@@ -188,8 +188,7 @@ export async function notify(d: Deps, a: NotifyArgs, caller?: Caller, now = Date
       const m: Message = { kind, text: text + spellOut(a.questions), ...(found && a.task ? { head: { agent: found.agentName, task: a.task, issue: found.issueId } } : {}), ...(a.actions?.length ? { actions: a.actions } : {}), ...(a.questions?.length ? { asks: true as const } : {}) };
       const to = a.relay ? [transportOf[a.relay.via]] : order(d.transports, found?.ownerVia);
       out = await deliver(d, m, to);
-      // The kernel's, the board's and the runner's messages have no chat to land on: they also wait for a channel to be set
-      // up (an account reset link before Telegram is paired).
+      // The kernel's, the board's and the runner's messages have no chat to land on: they also wait for a channel to be set up.
       if (out === "off" && !caller) out = "down";
       if (out === "down") d.store.wait({ m, to, at: now, keep: !caller });
     }

@@ -12,7 +12,8 @@
 //   /healthz   whether it is connected.
 // A connection adds only its real logic as hooks (a pinned argument, a site id, a deny rule) and its own routes (a write
 // kind's executor). Not signed in: it still starts, lists the tools it saw last as stand-ins, and every call says how to
-// connect (never a crash loop, never a silently empty tool list).
+// connect (never a crash loop, never a silently empty tool list): a needs_owner answer (needs.ts), which the kernel routes to
+// the owner or the digest.
 //
 // First-party modules hold byte-identical copies (scripts/sync-shared.ts: edit this one and run it); third-party modules import
 // @aidenhq/sdk/vendor/proxy (the MCP SDK, zod and pino are theirs: peer dependencies).
@@ -27,6 +28,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { CallToolRequestSchema, ListToolsRequestSchema, type CallToolResult, type Tool } from "@modelcontextprotocol/sdk/types.js";
 import type { Logger } from "pino";
 import { z } from "zod";
+import { needsOwner, signedIn } from "./needs.js";
 import { AuthError, SignInError, type Auth } from "./oauth.js";
 
 /** A connection's own logic, where it has any. */
@@ -194,7 +196,9 @@ export function createVendorProxy(o: ProxyOptions): VendorProxy {
         log.warn({ tool: name }, "refused a denied tool");
         return refusal(`Tool ${name} is not available through AidenHQ.`);
       }
-      if (!o.upstream || !auth.signedIn()) return refusal(notConnected());
+      // Only the owner can fix these: the kernel routes the need (needs.ts), never this text, to whoever should hear it.
+      const need = () => needsOwner({ cause: auth.status().state === "expired" ? "expired" : "not_connected", detail: notConnected() });
+      if (!o.upstream || !auth.signedIn()) return need();
       try {
         if (readOnly) {
           const tool = (await withUpstream(async (u) => u.tools)).find((t) => t.name === name);
@@ -203,11 +207,14 @@ export function createVendorProxy(o: ProxyOptions): VendorProxy {
             return refusal(`Tool ${name} is not a read: the read endpoint serves reads only.`);
           }
         }
-        return await call(name, req.params.arguments ?? {});
+        // Upstream answered through the owner's sign-in: a success says so, and clears a down state in the kernel (needs.ts).
+        const result = await call(name, req.params.arguments ?? {});
+        return result.isError ? result : signedIn(result);
       } catch (err) {
-        const signIn = err instanceof AuthError || isAuthFailure(err) || auth.status().state === "expired";
         log.warn({ tool: name, err: String(err).slice(0, 300) }, `${o.name} tool failed`);
-        return refusal(signIn ? `${notConnected()} (${String((err as Error).message).slice(0, 200)})` : `${o.name} error: ${String((err as Error).message).slice(0, 300)}`);
+        // A refused sign-in (marked expired) needs the owner; a vendor 5xx on refresh leaves it unknown and stays a plain error.
+        if (auth.status().state === "expired") return need();
+        return refusal(`${o.name} error: ${String((err as Error).message).slice(0, 300)}`);
       }
     });
     return server;

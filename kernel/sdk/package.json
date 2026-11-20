@@ -20,7 +20,8 @@
     "./paperclip": "./dist/src/paperclip.js",
     "./source-store": "./dist/src/source-store.js",
     "./vendor/proxy": "./dist/src/vendor/proxy.js",
-    "./vendor/oauth": "./dist/src/vendor/oauth.js"
+    "./vendor/oauth": "./dist/src/vendor/oauth.js",
+    "./vendor/needs": "./dist/src/vendor/needs.js"
   },
   "files": ["dist", "LICENSE"],
   "peerDependencies": {

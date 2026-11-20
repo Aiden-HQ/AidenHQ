@@ -17,8 +17,6 @@ const SystemSchema = z.object({
 
 export interface Config {
   companyId: string;
-  /** The operator's key (board_operator_key): ops/setup.sh's owner setup link, welcome chat and account resets, nothing else. */
-  operatorKey?: string;
   /** The model gateway (kernel/src/gateway): its billed ledger is pulled from `url`; `token` (gateway_board_key) both ways (the kernel's records). */
   gateway?: { url: string; token: string };
   timezone: string;
@@ -61,7 +59,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const system = SystemSchema.parse(parseYaml(readFileSync(env.BOARD_SYSTEM_CONFIG ?? "/config/system.yaml", "utf8")));
   return {
     companyId: system.paperclip.company_id,
-    operatorKey: keyFile(env.BOARD_OPERATOR_KEY_FILE ?? "/run/secrets/board_operator_key"),
     timezone: system.timezone,
     workdays: system.workdays,
     slackTeams: system.slack.teams,

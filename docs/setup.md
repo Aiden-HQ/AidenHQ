@@ -227,7 +227,7 @@ printed:
 
 If the link has expired and no account exists yet, get a new one with
 `sudo ops/setup.sh --config ~/owner.env --link`. Once the account exists, `--link` no longer works; use
-`--reset <email>`, which sends the new link **to your Telegram only** (step 7), so set up Telegram early.
+`--reset <email>`, which prints the new one-time link on the server only; Telegram is not needed.
 
 **Check:** the board opens at its address after sign-in, and the Chat tab has a **Welcome** chat with Aiden.
 

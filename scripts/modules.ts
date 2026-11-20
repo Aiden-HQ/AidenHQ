@@ -831,6 +831,8 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
     // Every sign-in's service answers GET /auth/check (the board's Test button): built on the SDK's vendor proxy, which does, or
     // its source names the route. A service whose source isn't in the module can't be looked at here.
     for (const x of def.contributes?.["board.signins"] ?? []) {
+      // Connection state is keyed by the module (kernel connection-state.ts), and the board tells the kernel which module's sign-in finished by this id.
+      if (x.id !== name) fail(`module ${name}: a board.signins id is the module's name (got ${x.id})`);
       const src = join(root, "connections", /^http:\/\/([a-z][a-z0-9-]*):/.exec(String(x.status_url))?.[1] ?? "-", "src");
       if (existsSync(src) && !existsSync(join(src, "vendor", "proxy.ts")) && !readdirSync(src, { recursive: true }).some((f) => /\.ts$/.test(String(f)) && readFileSync(join(src, String(f)), "utf8").includes("/auth/check"))) fail(`module ${name}: signin ${x.id}: its service must answer GET /auth/check (build it on the SDK vendor proxy, or implement the route)`);
     }
@@ -1386,13 +1388,11 @@ export function kernelModuleTable(defs: Obj, settings: Obj = {}) {
     const token = tokens.find((t) => (def.generated_secrets ?? []).includes(t)) ?? tokens[0];
     const ch = def.providers?.channel;
     if (ch != null) {
-      if (typeof ch !== "object" || Array.isArray(ch)) fail(`module ${name}: providers.channel is a map ({} or {transport, credentials})`);
-      for (const k of Object.keys(ch)) if (!["transport", "credentials"].includes(k)) fail(`module ${name}: providers.channel.${k} is not allowed (transport, credentials)`);
+      if (typeof ch !== "object" || Array.isArray(ch)) fail(`module ${name}: providers.channel is a map ({} or {transport})`);
+      for (const k of Object.keys(ch)) if (k !== "transport") fail(`module ${name}: providers.channel.${k} is not allowed (transport)`);
       // transport: where the owner's router (role kernel.notify) has the kernel send this channel's owner messages, with its own token.
       // A compose service only (never an address or localhost): the kernel sends the channel's token there.
       if (ch.transport != null && (!/^http:\/\/[a-z][a-z0-9-]*:\d+\/[\w/.-]*$/.test(String(ch.transport)) || /^http:\/\/localhost:/.test(String(ch.transport)))) fail(`module ${name}: providers.channel.transport must be http://<service>:<port>/<path>, a compose service`);
-      // credentials: its owner chat is private (paired), so the kernel sends the owner's credentials (reset links) there only.
-      if (ch.credentials != null && (ch.credentials !== true || ch.transport == null)) fail(`module ${name}: providers.channel.credentials is true, on a channel with a transport`);
       if (ch.transport != null && !(def.generated_secrets ?? []).includes(token)) fail(`module ${name}: a channel transport needs the module's own token (generated_secrets: [${token}])`);
       if (!privileged.includes("speaks-as-owner")) fail(`module ${name}: a channel (providers.channel) needs privileged: [speaks-as-owner]`);
     }
@@ -1418,12 +1418,16 @@ export function kernelModuleTable(defs: Obj, settings: Obj = {}) {
       if (seen.has(j.name) && JSON.stringify(seen.get(j.name).j) !== JSON.stringify(j)) fail(`module ${name}: journey ${j.name} differs from module ${seen.get(j.name).name}'s (one journey, one declaration)`);
       seen.set(j.name, { name, j });
     }
+    // Its display name ("GitHub", "Google"), for the kernel's owner messages: its own sign-in's label, else its setup flow's title.
+    const signin = [def.contributes?.["board.signins"] ?? []].flat().find((x: Obj) => x?.id === name);
+    const label = [signin?.label, [def.contributes?.["board.setup_flows"] ?? []].flat()[0]?.title].find((v) => typeof v === "string" && v.trim());
     const e = {
+      ...(label ? { label: String(label).trim() } : {}),
       ...(roles.length ? { roles } : {}), ...(facts ? { facts } : {}), ...(stages ? { stages } : {}), ...(journeys ? { journeys } : {}), ...(privileged.length ? { privileged } : {}), ...(codehost != null ? { codehost } : {}),
       // A module that generates its own `<module>_token` is known to the kernel by it (whoami): its roles are the kernel.* ones it requests, none otherwise.
       ...((def.generated_secrets ?? []).includes(token) ? { token } : {}),
       ...(bd != null ? { board: { url: String(bd.url), auth_secret: String(bd.auth) } } : {}),
-      ...(ch != null ? { channel: { ...(ch.stamp ? { stamp: String(ch.stamp) } : {}), ...(ch.stale === true ? { stale: true } : {}), ...(ch.transport ? { transport: String(ch.transport) } : {}), ...(ch.credentials === true ? { credentials: true } : {}) }, settings: Object.fromEntries(Object.keys(def.settings ?? {}).map((k) => [k, settings[k]])) } : {}),
+      ...(ch != null ? { channel: { ...(ch.stamp ? { stamp: String(ch.stamp) } : {}), ...(ch.stale === true ? { stale: true } : {}), ...(ch.transport ? { transport: String(ch.transport) } : {}) }, settings: Object.fromEntries(Object.keys(def.settings ?? {}).map((k) => [k, settings[k]])) } : {}),
     };
     if (Object.keys(e).length) out[name] = e;
   }

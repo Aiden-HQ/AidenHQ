@@ -385,11 +385,21 @@ test("a module's token holds the kernel roles and the enabled modules' declared 
   const t = kernelModuleTable({ apps: { roles: { declares: [{ id: "apps.read", description: "d" }] } }, grading: { roles: { requests: ["kernel.wake", "apps.read", "nobody.declares"] } } });
   assert.deepEqual(t.grading.roles, ["kernel.wake", "apps.read"]);
 });
-test("a channel's transport is a compose service (the kernel sends the channel's token there); credentials need a transport", () => {
+test("a module's display name for the kernel: its own sign-in's label, else its setup flow's title, else none", () => {
+  const t = kernelModuleTable({
+    github: { contributes: { "board.signins": [{ id: "github", label: "GitHub" }], "board.setup_flows": [{ title: "GitHub setup" }] } },
+    google: { contributes: { "board.setup_flows": [{ title: "Google" }] } },
+    plain: { roles: { requests: ["kernel.wake"] } },
+  });
+  assert.equal(t.github.label, "GitHub");
+  assert.equal(t.google.label, "Google");
+  assert.equal(t.plain.label, undefined);
+});
+test("a channel's transport is a compose service (the kernel sends the channel's token there); a credentials key is gone", () => {
   const ch = (channel) => ({ x: { privileged: ["speaks-as-owner"], providers: { channel }, generated_secrets: ["x_token"] } });
-  assert.deepEqual(kernelModuleTable(ch({ transport: "http://telegram:8089/transport/send", credentials: true })).x.channel, { transport: "http://telegram:8089/transport/send", credentials: true });
+  assert.deepEqual(kernelModuleTable(ch({ transport: "http://telegram:8089/transport/send" })).x.channel, { transport: "http://telegram:8089/transport/send" });
   for (const t of ["http://127.0.0.1:8089/t", "http://localhost:8089/t", "http://169.254.169.254:80/t", "https://example.com:443/t"]) assert.throws(() => kernelModuleTable(ch({ transport: t })), /a compose service/, t);
-  assert.throws(() => kernelModuleTable(ch({ credentials: true })), /credentials is true, on a channel with a transport/);
+  assert.throws(() => kernelModuleTable(ch({ credentials: true })), /providers.channel.credentials is not allowed/);
 });
 
 test("journeys: the end names declared facts, a phase any fact (absent when no module records it); two modules may declare one journey only alike", () => {

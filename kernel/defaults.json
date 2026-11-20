@@ -55,7 +55,7 @@
     "edge_board_secret",
     "computer_progress_token",
     "reviewer_key",
-    "board_operator_key",
+    "kernel_operator_key",
     "health_probe_key",
     "gateway_job_secret",
     "gateway_board_key",

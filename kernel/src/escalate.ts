@@ -49,6 +49,11 @@ export function ownerWroteAt(t: { description?: unknown; createdAt?: unknown; cr
   return Number.isFinite(n) ? n : undefined;
 }
 
+/** The task of the job that created `task` (a delegation without a Paperclip parent): the one chain rule, with `parentId`. */
+export function creatorTask(db: DatabaseSync, task: string): string | undefined {
+  try { return (db.prepare("SELECT j.task FROM provenance p JOIN jobs j ON j.id = p.created_by_job WHERE p.task = ?").get(task) as { task: string } | undefined)?.task; } catch { return undefined; }
+}
+
 export function createEscalate({ db, issue, state, asker, notice, owner, chief, conversing, log = () => {}, now = Date.now }: {
   db: DatabaseSync;
   /** A task as the control plane has it now; undefined when it is gone. Throws when it can't be read now. */
@@ -71,13 +76,9 @@ export function createEscalate({ db, issue, state, asker, notice, owner, chief, 
   db.exec("CREATE TABLE IF NOT EXISTS escalations (key TEXT PRIMARY KEY, task TEXT NOT NULL, kind TEXT NOT NULL, at INTEGER NOT NULL)");
   const seen = (key: string) => Boolean(db.prepare("SELECT 1 FROM escalations WHERE key = ?").get(key));
   const mark = (key: string, task: string, kind: string) => db.prepare("INSERT OR IGNORE INTO escalations (key, task, kind, at) VALUES (?, ?, ?, ?)").run(key, task, kind, now());
-  /** The task of the job that created `task` (a delegation without a Paperclip parent). */
-  const creatorTask = (task: string) => {
-    try { return (db.prepare("SELECT j.task FROM provenance p JOIN jobs j ON j.id = p.created_by_job WHERE p.task = ?").get(task) as { task: string } | undefined)?.task; } catch { return undefined; }
-  };
   /** The task's open delegator task, if any. */
   async function delegatorOf(t: Issue) {
-    const up = t.parentId ?? creatorTask(t.id);
+    const up = t.parentId ?? creatorTask(db, t.id);
     const d = up ? await issue(up) : undefined;
     return d && !CLOSED.includes(String(d.status)) ? d : undefined;
   }

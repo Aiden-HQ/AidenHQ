@@ -3,7 +3,8 @@
 // byte-identical copy; scripts/test/shared.test.ts fails when one drifts (the official modules' under modules/ included).
 //   kernel/sdk/src/{caller,fence}.ts the caller assertion check and the fence, in every module server (src/aidenhq-sdk/)
 //   kernel/sdk/src/executor.ts       the executor side of write kinds, in each module server with an executor
-//   kernel/sdk/src/vendor/{proxy,oauth}.ts  the vendor pass-through, in each vendor connection (src/vendor/)
+//   kernel/sdk/src/vendor/{proxy,oauth,needs}.ts  the vendor pass-through, in each vendor connection (src/vendor/); needs.ts
+//                                    (the needs_owner answer) also in google-workspace-mcp (src/aidenhq-sdk/)
 //   kernel/sdk/src/reviewer.ts       the reviewer side of reviewer@1, in the reviewer module's service
 //   kernel/sdk/src/kernel-client.ts  the module-to-kernel client, in each module that calls the kernel
 //   kernel/sdk/src/checks.ts         how check results are read, in the merge gate (codehost-github) and the grader
@@ -67,7 +68,9 @@ export function sharedCopies(root = repo) {
   ...Object.fromEntries(["tests.sh", "history.sh"].map((f) => [`modules/github/checks/${f}`, [`modules/codehost-local/checks/${f}`]])),
   // The vendor connections' shared pass-through (owner, 2026-11-18: every connection exposes its vendor's whole MCP server),
   // in each vendor connection's src/vendor/.
-  ...Object.fromEntries(["proxy.ts", "oauth.ts"].map((f) => [`kernel/sdk/src/vendor/${f}`, ["clickhouse/connections/clickhouse-mcp", "glean/connections/glean-mcp", "grafana/connections/grafana-mcp", "hubspot/connections/hubspot-mcp", "github/connections/github-mcp", "jira/connections/jira-mcp", "primer/connections/primer-mcp", "slack/connections/slack-mcp"].map((d) => `modules/${d}/src/vendor/${f}`)])),
+  ...Object.fromEntries(["proxy.ts", "oauth.ts", "needs.ts"].map((f) => [`kernel/sdk/src/vendor/${f}`, [...["clickhouse/connections/clickhouse-mcp", "glean/connections/glean-mcp", "grafana/connections/grafana-mcp", "hubspot/connections/hubspot-mcp", "github/connections/github-mcp", "jira/connections/jira-mcp", "primer/connections/primer-mcp", "slack/connections/slack-mcp"].map((d) => `modules/${d}/src/vendor/${f}`),
+    // The needs_owner answer, in the one hand-written connection without the vendor proxy.
+    ...(f === "needs.ts" ? ["modules/google/connections/google-workspace-mcp/src/aidenhq-sdk/needs.ts"] : [])]])),
   // The reviewer side of reviewer@1, in the reviewer module's service (its own Docker build context).
   "kernel/sdk/src/reviewer.ts": ["modules/ai-reviewer/service/src/aidenhq-sdk/reviewer.ts"],
   // The eval's pass rule: the kernel's check job and the reviewer's own eval script apply this one copy.

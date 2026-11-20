@@ -1,0 +1,6 @@
+name: signbad
+description: a board.signins id that is not its module's name
+requires: [board]
+contributes:
+  board.signins:
+    - { id: other, label: Other, status_url: "http://x:8000/auth/status", connect_url: /other/connect, callback: /other/callback, missing: m, stopped: s }

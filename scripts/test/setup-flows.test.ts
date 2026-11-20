@@ -27,6 +27,10 @@ test("setup flows compile with their module and refuse undeclared secrets", () =
   assert.throws(() => compile(mods, inst(["flowbad"])), /names a secret without setup/);
 });
 
+test("a board.signins id that isn't its module's name fails", () => {
+  assert.throws(() => compile(mods, inst(["signbad"])), /module signbad: a board.signins id is the module's name/);
+});
+
 test("the board shares a network with the service a flow pairs through, and only its own module's", () => {
   const { compose } = compile(mods, inst(["flowok"]));
   assert.deepEqual(compose.networks["mod-flowok-board"], { name: "aidenhq-mod-flowok-board", internal: true, ipam: compose.networks["mod-flowok-board"].ipam });
