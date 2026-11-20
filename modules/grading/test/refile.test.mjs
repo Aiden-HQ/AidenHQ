@@ -75,6 +75,25 @@ describe("re-filing a rubric", () => {
     assert.deepEqual(grades.get("t").deliverable, APP);
   });
 
+  it("a differing re-file of a closed task is refused while its row still reads open, and the row is untouched", () => {
+    const grades = store();
+    grades.file("t", RUBRIC, PR, "agent:cos");
+    grades.record("t", { version: "v1", outcome: "needs_revision", model: "glm", criteria: [{ id: "1", met: "no", evidence: "open" }] });
+    // The task closed, but the five-minute sweep has not settled its row: it still reads needs_revision.
+    assert.equal(grades.get("t").state, "needs_revision");
+    assert.throws(
+      () => grades.file("t", ["a one", "b two", "c three"], APP, "agent:cos", { closed: true }),
+      (e) => e instanceof Conflict && /already closed/.test(e.message),
+    );
+    assert.deepEqual(grades.get("t").rubric, RUBRIC, "the closed task's rubric is not replaced");
+    assert.deepEqual(grades.get("t").deliverable, PR);
+    assert.equal(grades.get("t").state, "needs_revision", "the row is not restarted either");
+    assert.equal(grades.get("t").attempts, 1);
+    // A byte-identical filing is still just a retry: it touches nothing.
+    assert.equal(grades.file("t", RUBRIC, PR, "agent:cos", { closed: true }).created, false);
+    assert.equal(grades.get("t").state, "needs_revision");
+  });
+
   it("a row with no filer record refuses a differing re-file, naming why the work needs a new task", () => {
     const grades = store();
     legacyRow(grades, "t");

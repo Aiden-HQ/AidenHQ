@@ -87,6 +87,9 @@ export function createGrading({ db, kernel, keys, kernelUrl = "", jwks = kernelJ
     if (d.kind === "pr" && !prRefAllowed(d.ref, await kernel.repos())) throw new HttpError(400, "deliverable.ref: a repo or PR the instance reaches (the agents org, github_orgs, maintainer_repos or the product repo) or a codehost:local repo or change, or empty for the task's own PRs");
   }
 
+  /** A task's own status says it is done or cancelled: its grade is settled work, never restarted by a later filing. */
+  const isClosed = (issue: { status?: string }) => issue.status === "done" || issue.status === "cancelled";
+
   /** The caller of a filing route and the task it names, both checked: only the agent that created the task, filing through a delegating tool. */
   async function filingCaller(req: http.IncomingMessage, ref: string) {
     const caller = await verifyCaller(req, jwks, "tasks").catch((e: Error) => { throw new HttpError(403, `refused: ${e.message}`); });
@@ -101,8 +104,9 @@ export function createGrading({ db, kernel, keys, kernelUrl = "", jwks = kernelJ
     const b = parseFiling(body);
     const { caller, issue } = await filingCaller(req, b.issue);
     await refAllowed(b.deliverable);
-    // The row records its filer as the agent that delegated the task: a differing re-file is that agent's, and only its.
-    const r = grades.file(issue.id, b.rubric, b.deliverable, `agent:${caller.agent}`);
+    // The row records its filer as the agent that delegated the task: a differing re-file is that agent's, and only its. A
+    // task already closed is left alone (its row may not have been swept to not_graded yet).
+    const r = grades.file(issue.id, b.rubric, b.deliverable, `agent:${caller.agent}`, { closed: isClosed(issue) });
     if (r.created) log("rubric filed", { task: issue.identifier, kind: b.deliverable.kind, criteria: b.rubric.length });
     return { created: r.created, state: r.grade.state };
   }
@@ -119,8 +123,11 @@ export function createGrading({ db, kernel, keys, kernelUrl = "", jwks = kernelJ
     const f = parseFiling({ issue: b.task.id, rubric: b.rubric, deliverable: b.deliverable });
     await refAllowed(f.deliverable);
     // The row records its filer as the module the kernel vouched for: the same filing again is a retry, a differing one is
-    // that module's to replace while the grade is unsettled, and any other module's is refused (grades.file).
-    const r = grades.file(b.task.id, f.rubric, f.deliverable, `module:${b.module}`);
+    // that module's to replace while the grade is unsettled, and any other module's is refused (grades.file). The kernel's
+    // body carries only the task's id and identifier, so its status is read here: a closed task is left alone, as on the
+    // agent route (its row may not have been swept to not_graded yet).
+    const issue = await kernel.issue(b.task.id);
+    const r = grades.file(b.task.id, f.rubric, f.deliverable, `module:${b.module}`, { closed: isClosed(issue) });
     if (r.created) log("rubric filed for a module's task", { task: b.task.id, module: b.module, kind: f.deliverable.kind, criteria: f.rubric.length });
     return { verdict: "ok", created: r.created };
   }

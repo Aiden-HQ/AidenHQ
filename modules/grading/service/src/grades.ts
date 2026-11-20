@@ -187,8 +187,12 @@ export class Grades {
    * upgraded: the product takes fresh starts over migrating old data unless the owner asks for a migration. Such a row
    * still refuses a differing filing, and the work is filed as a new task instead. A satisfied or not_graded row is
    * settled and keeps refusing a differing filing.
+   *
+   * `closed` is the caller's read of the task's own status (done or cancelled). A closed task's rubric is never replaced,
+   * even while its row is still `open` and the five-minute sweep has not settled it yet: the row would restart and grade
+   * work the owner has already closed or cancelled. A byte-identical filing is still a retry that touches nothing.
    */
-  file(issueId: string, rubric: string[], deliverable: Deliverable, filer?: string): { created: boolean; grade: Grade } {
+  file(issueId: string, rubric: string[], deliverable: Deliverable, filer?: string, { closed = false }: { closed?: boolean } = {}): { created: boolean; grade: Grade } {
     // One transaction over the read and the write: two filings of one task can't both see no row and both insert, and a
     // check that refuses rolls back without touching anything.
     this.db.exec("BEGIN IMMEDIATE");
@@ -201,6 +205,8 @@ export class Grades {
           return { created: false, grade: have };
         }
         if (have.state === "satisfied" || have.state === "not_graded") throw new Conflict("this task already has another rubric");
+        // Between a task closing and the sweep settling its row, the row still reads open: the task's own status decides.
+        if (closed) throw new Conflict("this task is already closed: its rubric is not replaced, and a closed task's grade is left as it settled");
         const recorded = (this.db.prepare("SELECT filer FROM grade_filers WHERE issue_id = ?").get(issueId) as { filer: string } | undefined)?.filer;
         if (!recorded) throw new Conflict("this task's rubric was filed before filers were recorded, so its deliverable cannot be re-bound: file the work as a new task");
         if (!filer || recorded !== filer) throw new Conflict(`only ${recorded}, which filed this task's rubric, may replace it`);

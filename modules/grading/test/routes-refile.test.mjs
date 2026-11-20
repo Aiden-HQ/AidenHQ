@@ -23,6 +23,8 @@ async function harness(t) {
   const tasks = {
     "WOR-1": { id: "t1", identifier: "WOR-1", status: "in_review", assigneeAgentId: "eng", createdByAgentId: "cos", parentId: null },
     "WOR-2": { id: "t2", identifier: "WOR-2", status: "in_review", assigneeAgentId: "eng", createdByAgentId: "cos", parentId: null },
+    // Closed, but its row was not swept to not_graded yet (the sweep runs every five minutes).
+    "WOR-3": { id: "t3", identifier: "WOR-3", status: "done", assigneeAgentId: "eng", createdByAgentId: "cos", parentId: null },
   };
   const byRef = (ref) => Object.values(tasks).find((i) => i.id === ref || i.identifier === ref);
   const kernel = { issue: async (ref) => { const i = byRef(ref); if (!i) throw new Error(`no task ${ref}`); return i; }, repos: async () => ({}), release: async () => {} };
@@ -105,4 +107,24 @@ test("a row with no filer record refuses a differing re-file on both the agent r
   // A byte-identical filing on such a row is still just a retry on either route.
   assert.equal((await h.agentFile("cos", { issue: "t1", rubric: RUBRIC, deliverable: PR })).status, 200);
   assert.equal((await h.moduleFile("maintainer", { task: { id: "t1" }, rubric: RUBRIC, deliverable: PR })).status, 200);
+});
+
+test("a differing re-file of a closed task is refused on both routes while its row still reads open", async (t) => {
+  const h = await harness(t);
+  // Both rows were filed and are still open, so only the task's own status stands between them and a restart.
+  assert.equal((await h.agentFile("cos", { issue: "t3", rubric: RUBRIC, deliverable: PR })).json.created, true);
+  assert.equal(h.grades.get("t3").state, "open");
+  for (const [route, r] of [
+    ["agent", await h.agentFile("cos", { issue: "t3", rubric: ["alpha one", "beta two", "gamma three"], deliverable: APP })],
+    ["module", await h.moduleFile("maintainer", { task: { id: "t3" }, rubric: ["alpha one", "beta two", "gamma three"], deliverable: APP })],
+  ]) {
+    assert.equal(r.status, 409, route);
+    assert.match(r.json.error, /already closed/, route);
+  }
+  assert.deepEqual(h.grades.get("t3").rubric, RUBRIC, "the closed task's row is left as it was");
+  assert.deepEqual(h.grades.get("t3").deliverable, PR);
+  assert.equal(h.grades.get("t3").state, "open");
+  // A byte-identical filing on a closed task is still just a retry.
+  assert.equal((await h.agentFile("cos", { issue: "t3", rubric: RUBRIC, deliverable: PR })).status, 200);
+  assert.equal((await h.moduleFile("maintainer", { task: { id: "t3" }, rubric: RUBRIC, deliverable: PR })).status, 200);
 });
