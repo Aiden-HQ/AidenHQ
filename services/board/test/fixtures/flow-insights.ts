@@ -66,6 +66,7 @@ export function fixtureItems(now = Date.parse("2026-11-19T12:00:00Z")): JourneyI
       author_kind: i === 31 ? null : kind,
       task: kind === "agent" ? `task-${n}` : null,
       identifier: kind === "agent" ? `WOR-${7000 + n}` : null,
+      links: kind === "outside" ? [{ subject: `issue:acme/acme-agents#${n - 100}`, url: `https://github.com/acme/acme-agents/issues/${n - 100}` }] : [],
       state: open ? "open" : closed ? "closed" : i < 6 ? "merged" : "deployed",
       start: blocks[0]!.start,
       end: open ? null : blocks.at(-1)!.end,
@@ -121,7 +122,7 @@ export function fixtureInsights(items = fixtureItems(), now = Date.parse("2026-1
   const openItems = items.filter((x) => !x.end);
   return {
     phases,
-    scatter: items.filter((x) => x.end).map((x) => ({ subject: x.subject, url: x.url, task: x.task, end: x.end!, total_s: x.total_s, author_kind: x.author_kind })),
+    scatter: items.filter((x) => x.end).map((x) => ({ subject: x.subject, url: x.url, task: x.task, identifier: x.identifier, title: x.title, end: x.end!, total_s: x.total_s, author_kind: x.author_kind })),
     rounds,
     rejections: [
       { reason: "missing_tests", n: 41 }, { reason: "scope_creep", n: 27 }, { reason: "unpinned_dependency", n: 18 },
@@ -129,19 +130,19 @@ export function fixtureInsights(items = fixtureItems(), now = Date.parse("2026-1
     ],
     first_pass: weeks.map((week) => ({ week, rate: 0.42 + r() * 0.3, n: 8 + Math.floor(r() * 20) })),
     aging: [
-      ...openItems.map((x) => ({ subject: x.subject, url: x.url, task: x.task, author_kind: x.author_kind, title: x.title, phase: x.blocks.at(-1)!.phase, age_s: (now - Date.parse(x.start)) / 1000, idle_reason: "reviewer" })),
+      ...openItems.map((x) => ({ subject: x.subject, url: x.url, task: x.task, identifier: x.identifier, author_kind: x.author_kind, title: x.title, phase: x.blocks.at(-1)!.phase, age_s: (now - Date.parse(x.start)) / 1000, idle_reason: "reviewer" })),
       ...Array.from({ length: 14 }, (_, i) => ({
-        subject: `pr:acme/acme-agents#${400 + i}`, url: null, task: null, author_kind: "agent", title: TITLES[(i * 5) % TITLES.length]!, phase: PHASES[[3, 3, 4, 5, 6, 6, 3, 2, 6, 7, 3, 5, 6, 1][i]!]!.name,
+        subject: `pr:acme/acme-agents#${400 + i}`, url: null, task: null, identifier: null, author_kind: "agent", title: TITLES[(i * 5) % TITLES.length]!, phase: PHASES[[3, 3, 4, 5, 6, 6, 3, 2, 6, 7, 3, 5, 6, 1][i]!]!.name,
         age_s: 300 + r() * r() * 4 * 86_400, idle_reason: [null, "owner", "reviewer", "capacity"][i % 4]!,
       })),
     ],
     cfd: days.map((day, i) => ({ day, counts: Object.fromEntries(PHASES.map((p, j) => [p.name, Math.max(0, Math.round((j === 7 ? i * 2.1 : j === 6 ? i * 0.4 + 2 : 3 + 2 * Math.sin(i / 3 + j)) + r() * 2))])) })),
-    funnel: [{ step: "issue", n: 74 }, { step: "pr_opened", n: 62 }, { step: "ci_passed", n: 58 }, { step: "review_passed", n: 51 }, { step: "merged", n: 49 }, { step: "deployed", n: 44 }],
+    funnel: [{ step: "started", label: "Started", n: 62 }, ...PHASES.map((p, i) => ({ step: p.name, label: p.label, n: [9, 21, 21, 21, 62, 62, 60, 58][i]! })), { step: "done", label: "Done", n: 44 }],
     cost: {
-      per_merged: weeks.map((week) => ({ week, usd: 1.4 + r() * 1.6 })),
-      by_agent: [{ key: "engineer", usd: 61.2, merged: 19 }, { key: "platform-engineer", usd: 23.9, merged: 6 }, { key: "devops", usd: 8.4, merged: 4 }, { key: "aiden", usd: 4.1, merged: 0 }],
-      by_model: [{ key: "deepseek/deepseek-flash", usd: 58.3, merged: 26 }, { key: "openai/gpt-luna", usd: 31.7, merged: 0 }, { key: "openai/gpt-sol", usd: 7.6, merged: 3 }],
-      unmerged_usd: 17.35,
+      per_delivered: weeks.map((week) => ({ week, usd: 1.4 + r() * 1.6 })),
+      by_agent: [{ key: "engineer", usd: 61.2, delivered: 19 }, { key: "platform-engineer", usd: 23.9, delivered: 6 }, { key: "devops", usd: 8.4, delivered: 4 }, { key: "aiden", usd: 4.1, delivered: 0 }],
+      by_model: [{ key: "deepseek/deepseek-flash", usd: 58.3, delivered: 26 }, { key: "openai/gpt-luna", usd: 31.7, delivered: 0 }, { key: "openai/gpt-sol", usd: 7.6, delivered: 3 }],
+      undelivered_usd: 17.35,
     },
     dora5: {
       deploys_per_day: metric(6.4, 3, 5.1),
@@ -150,7 +151,7 @@ export function fixtureInsights(items = fixtureItems(), now = Date.parse("2026-1
       recovery_s: metric(1800, 1200, 2700),
       rework_rate: metric(0.31, 0.1, 0.38),
     },
-    throughput: days.map((day) => ({ day, merged: Math.round(r() * r() * 9), opened: Math.round(r() * 8) })),
+    throughput: days.map((day) => ({ day, delivered: Math.round(r() * r() * 9), started: Math.round(r() * 8) })),
     bottlenecks: [
       { phase: "review", kind: "rounds", text: "AI review takes 2.1 rounds on average: 245 of 507 agent filings were rejected, most for missing tests." },
       { phase: "merge", kind: "idle", text: "Merge review holds the most idle time: 3d 4h this period, nearly all waiting on the owner." },

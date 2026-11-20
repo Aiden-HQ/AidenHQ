@@ -230,7 +230,7 @@ const text = (v: unknown, max: number) => typeof v === "string" && v.length > 0 
 /**
  * GET /v1/flow's reads, by query: ?task=, ?item=, ?journeys=1 (the declared journeys), ?journey=<name> (its items over
  * ?since= [&to=&author=agent,owner,outside&sort=recent|slowest|rounds&limit=200]), else the summary over ?since= (default 7 days)
- * [&to=&by=&scope=] with its insights.
+ * [&to=&by=&scope=] with the insights of journey ?insights=<name> (else the first declared one with items).
  */
 function flowRead(flow: Flow, p: URLSearchParams) {
   const [task, item] = [p.get("task"), p.get("item")];
@@ -250,7 +250,7 @@ function flowRead(flow: Flow, p: URLSearchParams) {
     return list;
   }
   if (!(BY as string[]).includes(by)) throw fail(400, "bad_request", `by is one of ${BY.join(", ")}`);
-  return flow.summary({ since, to, by: by as By, scope: p.get("scope")?.slice(0, 100) || undefined });
+  return flow.summary({ since, to, by: by as By, scope: p.get("scope")?.slice(0, 100) || undefined, journey: p.get("insights")?.slice(0, 100) || undefined });
 }
 
 export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boardCp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, reviewerKey = () => "", jobs, codehost, admission, outcomes, wakes, tasks, eventsKey = () => "", work, flow, taskStates, repos = () => ({}), graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, checkJobs, jobTools, precheck, repoBundle, ownerRaw, lane, healthProbe, healthKey = () => "", connectionHealth, settingsChange, validate, routing, boardApi: moduleBoardApi, log = () => {} }: {

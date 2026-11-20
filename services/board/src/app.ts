@@ -1515,16 +1515,19 @@ export function createApp(opts: AppOptions): Server {
       path: /^\/api\/flow$/,
       handle: async (_m, _b, url) => {
         const days = [7, 30, 90].includes(Number(url.searchParams.get("days"))) ? Number(url.searchParams.get("days")) : 7;
-        const scope = url.searchParams.get("scope") ?? "all";
+        const scope = url.searchParams.get("scope") ?? "all", journey = url.searchParams.get("journey") ?? undefined;
         if (!/^[a-z0-9-]{1,63}$/.test(scope)) throw new HttpError(400, "bad scope");
+        if (journey !== undefined && !/^[a-z0-9-]{1,63}$/.test(journey)) throw new HttpError(400, "bad journey");
         const now = Date.now();
         const flow = opts.flow;
         if (!flow) return { summary: null, idle: [] };
-        const [summary, idle] = await Promise.all([flow.summary({ since: new Date(now - days * 864e5).toISOString(), to: new Date(now).toISOString(), scope }), flow.idle()]);
+        const [summary, idle] = await Promise.all([flow.summary({ since: new Date(now - days * 864e5).toISOString(), to: new Date(now).toISOString(), scope, journey }), flow.idle()]);
         return { summary, idle };
       },
     },
-    // The journeys (the PRs tab): which ones modules declare, and one's items over the period, filtered and sorted by the kernel.
+    // The journeys (the Timeline tab): which ones modules declare, and one's items over the period, filtered and sorted by the
+    // kernel. A task's title is the task's own, from what Paperclip lists (open tasks, and those changed in the period); the
+    // fact log keeps none.
     {
       method: "GET",
       path: /^\/api\/flow\/journeys$/,
@@ -1535,13 +1538,19 @@ export function createApp(opts: AppOptions): Server {
       path: /^\/api\/flow\/journey$/,
       handle: async (_m, _b, url) => {
         const p = url.searchParams;
-        const name = p.get("name") ?? "pr";
+        const name = p.get("name") ?? "";
         if (!/^[a-z0-9-]{1,63}$/.test(name)) throw new HttpError(400, "bad journey");
         const days = [7, 30, 90].includes(Number(p.get("days"))) ? Number(p.get("days")) : 7;
         const author = (p.get("author") ?? "agent,owner,outside").split(",").filter((a): a is AuthorKind => a === "agent" || a === "owner" || a === "outside");
         const sort = (["recent", "slowest", "rounds"] as const).find((x) => x === p.get("sort")) ?? "recent";
         const now = Date.now();
-        const list = await opts.flow?.journey({ journey: name, since: new Date(now - days * 864e5).toISOString(), to: new Date(now).toISOString(), author, sort, limit: 500 });
+        const since = new Date(now - days * 864e5).toISOString();
+        const list = await opts.flow?.journey({ journey: name, since, to: new Date(now).toISOString(), author, sort, limit: 500 });
+        if (list?.items.some((x) => x.task && !x.title)) {
+          const tasks = [...(await pc.openIssues().catch(() => [])), ...(await pc.tasksSince(since).catch(() => []))];
+          const title = new Map(tasks.map((i) => [i.id, i.title]));
+          for (const x of list.items) if (x.task && !x.title) x.title = title.get(x.task) ?? null;
+        }
         return list ?? null;
       },
     },

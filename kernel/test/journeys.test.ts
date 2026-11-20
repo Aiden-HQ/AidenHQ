@@ -1,4 +1,5 @@
-// Journeys (journeys.ts): one PR's phases from its issue to its deploy, its rounds and idle, and the insights over them.
+// Journeys (journeys.ts): one PR's phases from its issue to its deploy, its rounds and idle, and the insights over them; one piece
+// of work's (a root task, its subtasks and their PRs), from its issue to its deploy.
 import { test } from "node:test";
 import http from "node:http";
 import assert from "node:assert/strict";
@@ -25,12 +26,12 @@ const D = "2026-11-19T";
 const NOW = `${D}23:00:00.000Z`;
 const DAY = `${D}00:00:00.000Z`;
 
-function setup() {
+function setup(journeys = [PR]) {
   const db = new DatabaseSync(":memory:");
   const facts = openFacts(db, () => new Date(NOW));
   let n = 0;
   const add = (type, subject, at, data = {}, over = {}) => facts.record({ type, subject, version: String(n++), at: `${D}${at}.000Z`, actor: "unknown", task: null, data, ...over });
-  return { db, add, flow: createFlow({ db, stages: () => KERNEL_STAGES, journeys: () => [PR], now: () => new Date(NOW), cacheMs: 0 }) };
+  return { db, add, flow: createFlow({ db, stages: () => KERNEL_STAGES, journeys: () => journeys, now: () => new Date(NOW), cacheMs: 0 }) };
 }
 
 /** An agent PR: issue, label, task, job, three review rounds, the PR, two CI rounds, merge review, merged, deployed. */
@@ -76,8 +77,8 @@ test("an agent PR's journey: every phase once, three review rounds, two CI round
   const { db, add, flow } = setup();
   agentPr(add); ownerAndOpen(add);
   // a PR whose review round no fact links to it: the task's done pr write names it in its outcome
-  db.exec("CREATE TABLE records (task TEXT, kind TEXT, args TEXT, outcome TEXT, state TEXT, created_at TEXT)");
-  db.prepare("INSERT INTO records VALUES ('t2', 'github.pr', '{}', ?, 'done', ?)").run(JSON.stringify({ ok: true, text: "opened https://github.com/acme/widgets/pull/15" }), `${D}13:30:00.000Z`);
+  db.exec("CREATE TABLE records (task TEXT, kind TEXT, args TEXT, outcome TEXT, state TEXT, created_at TEXT, identifier TEXT)");
+  db.prepare("INSERT INTO records VALUES ('t2', 'github.pr', '{}', ?, 'done', ?, 'WOR-2')").run(JSON.stringify({ ok: true, text: "opened https://github.com/acme/widgets/pull/15" }), `${D}13:30:00.000Z`);
   add("record.filed", "record:r9", "13:30:00", { kind: "github.pr", state: "review" }, { task: "t2" });
   add("pr.opened", "pr:acme/widgets#15", "14:00:00", { repo: "acme/widgets", number: 15, author_kind: "agent" });
   assert.deepEqual(flow.journey({ name: "pr", since: DAY }).items.find((i) => i.number === 15).blocks.map((b) => [b.phase, b.rounds]), [["review", 1], ["open", 1]]);
@@ -111,19 +112,84 @@ test("insights: phase percentiles, rounds, rejections, funnel, cost, DORA's five
   assert.deepEqual([review.n, review.p50, review.rounds_mean], [1, 2 * 3600 + 15 * 60, 3]);
   assert.deepEqual(i.rounds.review, { 3: 1 });
   assert.deepEqual(i.rejections, [{ reason: "scope", n: 2 }]);
-  assert.deepEqual(i.funnel.map((s) => s.n), [1, 3, 1, 2, 2, 1]);
+  assert.deepEqual(i.funnel.map((s) => [s.step, s.n]), [["started", 3], ["triage", 1], ["pickup", 1], ["coding", 1], ["review", 1], ["open", 3], ["ci", 3], ["merge", 1], ["deploy", 2], ["done", 1]]);
   assert.deepEqual(i.scatter.map((p) => p.subject), ["pr:acme/widgets#12"]);
   assert.equal(i.cost.by_agent[0].key, "engineer-a");
   assert.equal(i.cost.by_agent[0].usd, 2);
-  assert.deepEqual(i.cost.per_merged.map((w) => w.usd), [2]);
+  assert.deepEqual(i.cost.per_delivered.map((w) => w.usd), [2]);
   assert.equal(i.dora5.deploys_per_day.value, 1);
   assert.equal(i.dora5.lead_time_s.value, 60 * 60);
   assert.equal(i.dora5.rework_rate.value, 0);
   assert.equal(i.dora5.deploys_per_day.previous, 0, "the day before is loaded: no deploys, a real zero");
   assert.deepEqual(i.aging.map((a) => [a.subject, a.phase]), [["pr:acme/widgets#14", "ci"]]);
-  assert.deepEqual(i.throughput.map((d) => [d.opened, d.merged]), [[3, 2]]);
+  assert.deepEqual(i.throughput.map((d) => [d.started, d.delivered]), [[3, 2]]);
   assert.deepEqual(i.cfd[0].counts, { done: 1, deploy: 1, ci: 1 });
   assert.equal(i.first_pass[0].rate, 0);
   assert.deepEqual(i.bottlenecks.map((b) => b.kind), ["idle", "rounds", "slow"]);
   assert.match(i.bottlenecks[1].text, /^AI review took 3\.0 rounds/);
+});
+
+const WORK = {
+  name: "work", label: "Work", subject: "task", module: "tasks", end: ["task.status_changed"], end_where: { to: ["done", "cancelled"] },
+  phases: [
+    { name: "triage", label: "Triage", from: ["issue.opened"] },
+    { name: "queued", label: "Queued", from: ["issue.labeled", "task.created"] },
+    { name: "working", label: "Working", from: ["job.started"] },
+    { name: "review", label: "AI review", from: ["record.filed"], where: { kind: ["github.pr", "github.push"] } },
+    { name: "open", label: "PR open", from: ["pr.opened"] },
+    { name: "ci", label: "CI", from: ["pr.checks_started", "pr.pushed"] },
+    { name: "merge", label: "Merge review", from: ["record.filed"], where: { kind: ["github.merge"] } },
+    { name: "deploy", label: "Deploy", from: ["pr.merged"] },
+    { name: "finish", label: "Finishing", from: ["pr.deployed", "grade.requested"] },
+  ],
+};
+
+test("a piece of work: its issue, its root's and subtask's jobs and the subtask's PR, done once the PR deployed; a chat's subtask is its own root", () => {
+  const { add, flow } = setup([WORK, PR]);
+  const w = (task) => ({ task, actor: "agent:engineer-a" });
+  add("issue.opened", "issue:acme/widgets#7", "08:00:00", { author_kind: "outside" });
+  add("issue.labeled", "issue:acme/widgets#7", "08:10:00", { label: "agent" });
+  add("task.created", "task:w1", "08:11:00", { parent: null, identifier: "WOR-1", chat: false, source_marker: "maintainer-issue:Acme/Widgets#7" }, { task: "w1" });
+  add("job.started", "job:j1", "08:12:00", {}, w("w1"));
+  add("task.created", "task:w2", "08:19:00", { parent: "w1", identifier: "WOR-2", chat: false }, { task: "w2" }); // delegated: a second round of work
+  add("job.ended", "job:j1", "08:20:00", { cost_usd: 1 }, w("w1"));
+  add("job.started", "job:j2", "08:20:00", {}, w("w2"));
+  add("job.ended", "job:j2", "08:50:00", { cost_usd: 2 }, w("w2"));
+  add("record.filed", "record:r1", "08:50:00", { kind: "github.pr", state: "review" }, w("w2"));
+  add("record.decided", "record:r1", "08:55:00", { decision: "approved", decider: "reviewer" }, { task: "w2" });
+  add("pr.opened", "pr:acme/widgets#12", "08:56:00", { repo: "acme/widgets", number: 12, author_kind: "agent" }, { task: "w2" });
+  add("pr.checks_started", "pr:acme/widgets#12@h1", "08:57:00", { head: "h1" }, { task: "w2" });
+  add("record.filed", "record:m1", "09:05:00", { kind: "github.merge", state: "review", pr: "acme/widgets#12" }, w("w2"));
+  add("pr.merged", "pr:acme/widgets#12", "09:11:00", { sha: "abc" });
+  add("task.status_changed", "task:w2", "09:12:00", { to: "done" }, { task: "w2" });
+  add("task.status_changed", "task:w1", "09:15:00", { to: "done" }, { task: "w1" });
+  add("pr.deployed", "pr:acme/widgets#12", "09:30:00", { pr: "acme/widgets#12", generation: 5 });
+  // a chat (a conversation, not work) and the request it delegated
+  add("task.created", "task:c1", "07:00:00", { parent: null, identifier: "WOR-3", chat: true }, { task: "c1" });
+  add("task.created", "task:w4", "10:00:00", { parent: "c1", identifier: "WOR-4", chat: false }, { task: "w4" });
+  add("job.started", "job:j4", "10:01:00", {}, w("w4"));
+  add("task.status_changed", "task:w4", "10:06:00", { to: "done" }, { task: "w4" });
+  // done, but its merged PR (of a repo that deploys) not yet deployed: still open, in the deploy phase
+  add("task.created", "task:w5", "11:00:00", { parent: null, identifier: "WOR-5", chat: false }, { task: "w5" });
+  add("pr.opened", "pr:acme/widgets#13", "11:10:00", { repo: "acme/widgets", number: 13 }, { task: "w5" });
+  add("pr.merged", "pr:acme/widgets#13", "11:20:00", { sha: "def" }, { task: "w5" });
+  add("task.status_changed", "task:w5", "11:25:00", { to: "done" }, { task: "w5" });
+
+  const list = flow.journeys().journeys;
+  assert.equal(list[0].name, "work", "a piece of work's journey comes first");
+  const items = flow.journey({ name: "work", since: DAY }).items, of = (id) => items.find((i) => i.identifier === id);
+  assert.deepEqual(items.map((i) => i.identifier).sort(), ["WOR-1", "WOR-4", "WOR-5"], "one item per root; the chat isn't one");
+  const w1 = of("WOR-1");
+  assert.deepEqual(w1.blocks.map(span), [
+    ["triage", "08:00:00", "08:10:00", 1], ["queued", "08:10:00", "08:12:00", 1], ["working", "08:12:00", "08:50:00", 2], ["review", "08:50:00", "08:56:00", 1],
+    ["open", "08:56:00", "08:57:00", 1], ["ci", "08:57:00", "09:05:00", 1], ["merge", "09:05:00", "09:11:00", 1], ["deploy", "09:11:00", "09:30:00", 1]]);
+  assert.deepEqual([w1.subject, w1.task, w1.state, w1.end, w1.links.map((l) => l.url)],
+    ["task:w1", "w1", "done", `${D}09:30:00.000Z`, ["https://github.com/acme/widgets/issues/7", "https://github.com/acme/widgets/pull/12"]]);
+  assert.deepEqual([of("WOR-4").blocks.map(span), of("WOR-4").state], [[["queued", "10:00:00", "10:01:00", 1], ["working", "10:01:00", "10:06:00", 1]], "done"]);
+  assert.deepEqual([of("WOR-5").state, of("WOR-5").end, of("WOR-5").blocks.at(-1).phase], ["open", null, "deploy"]);
+
+  const i = flow.summary({ since: DAY, to: "2026-11-20T00:00:00.000Z", journey: "work" }).insights;
+  assert.deepEqual(i.funnel.map((s) => [s.step, s.n]).filter(([, n]) => n), [["started", 3], ["triage", 1], ["queued", 3], ["working", 2], ["review", 1], ["open", 2], ["ci", 1], ["merge", 1], ["deploy", 2], ["done", 2]]);
+  assert.equal(i.cost.by_agent[0].usd, 3, "the root's and the subtask's jobs");
+  assert.deepEqual(i.aging.map((a) => a.identifier), ["WOR-5"]);
 });

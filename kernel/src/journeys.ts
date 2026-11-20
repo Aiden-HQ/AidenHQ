@@ -1,28 +1,40 @@
 // Journeys (docs/design/flow-insights.md §2): the ordered phases a subject's facts pass through, as a module declares them in
-// module.yaml `journeys:`; the kernel knows none by name. One item per subject `<subject>:<key>` (its `<subject>:<key>@<head>`
-// facts included), with the facts of its task (a `record.filed` whose data field named like the subject kind names it, or the
-// subject's own `task`) and of the issue that task came from (its `source_marker` ends in `:<owner>/<repo>#<n>`).
+// module.yaml `journeys:`; the kernel knows none by name. One item per subject:
+//   - `<subject>:<key>` (a PR): its `<subject>:<key>@<head>` facts included, with the facts of its tasks (a `record.filed` whose
+//     data field named like the subject kind names it, the subject's own `task`, the records' own links) and of the issue a task
+//     came from (its `source_marker` ends in `:<owner>/<repo>#<n>`).
+//   - `task:<id>` (a piece of work): one per root task, the topmost one the log knows that isn't a chat (a chat's subtasks are
+//     roots of their own; chats are conversations, not work), with every descendant's facts and every subject they touch (PRs,
+//     jobs, records, the subjects a record's data names, the source issue). Facts before the root was created count only for its
+//     issue.
 //   - A phase starts at its first fact after the previous present phase began; a phase with no fact is absent. The subject's
 //     own facts count from its first fact in its earliest phase (a branch's commits before the PR opened are its prehistory).
 //   - Rounds (1 = done the first time): a fact type repeating later within the current round starts a new round, and so does
 //     an earlier phase's fact after the round saw the phase's own (a refile after a rejection, a push during merge review). So
 //     a push and the CI run it starts are one round, and a rework job and its refile are one.
-//   - The item ends at its first `end` fact, or is open (now).
+//   - The item ends at its own newest `end` fact when that one matches `end_where` (a root reopened after done is open again),
+//     once every merged subject in it (`*.merged`) of a repo the log has seen deploy is deployed (the later of the two);
+//     otherwise it is open (now).
 // Insights are computed from the items in one pass over the window the summary already loaded. Durations are seconds.
 import type { FactRow } from "./facts.ts";
 
 export type Phase = { name: string; label: string; from: string[]; where?: Record<string, string[]> };
-export type JourneyDecl = { name: string; label: string; subject: string; phases: Phase[]; end: string[] };
+export type JourneyDecl = { name: string; label: string; subject: string; phases: Phase[]; end: string[]; end_where?: Record<string, string[]> };
 export type Journey = JourneyDecl & { module: string };
 export type AuthorKind = "agent" | "owner" | "outside";
 export const AUTHOR_KINDS: AuthorKind[] = ["agent", "owner", "outside"];
 export type Block = { phase: string; start: string; end: string; rounds: number; idle_s: number; idle: Record<string, number> };
+export type State = "open" | "merged" | "closed" | "deployed" | "done" | "cancelled";
 export type JourneyItem = {
-  subject: string; repo: string; number: number; url: string | null; title: string | null; author: string | null; author_kind: AuthorKind | null;
-  task: string | null; identifier: string | null; state: "open" | "merged" | "closed" | "deployed"; start: string; end: string | null; total_s: number; blocks: Block[];
+  subject: string; title: string | null; task: string | null; identifier: string | null; url: string | null;
+  /** A PR's own: its repo and number, its author. */
+  repo: string | null; number: number | null; author: string | null; author_kind: AuthorKind | null;
+  /** The other PRs and issues the item holds (a piece of work's PRs and its issue; a PR's issue). */
+  links: { subject: string; url: string | null }[];
+  state: State; start: string; end: string | null; total_s: number; blocks: Block[];
 };
-/** An item and what insights read besides its row: its facts (time order), tasks, and when it was born, merged and ended. */
-export type Built = { item: JourneyItem; facts: FactRow[]; tasks: string[]; born: number; merged: number | null; ended: number | null };
+/** An item and what insights read besides its row: its facts (time order), tasks, and when it was born, delivered (a PR merged, a piece of work done) and ended. */
+export type Built = { item: JourneyItem; facts: FactRow[]; tasks: string[]; born: number; delivered: number | null; ended: number | null };
 /** What items are built from: the window's facts and Flow's indexes, and the idle seconds by reason a task and subject spent in [s, e]. */
 export type Ctx = {
   rows: FactRow[]; bySubject: Map<string, FactRow[]>; byTask: Map<string, FactRow[]>; ident: Map<string, string>; now: number;
@@ -41,24 +53,28 @@ const sum = (xs: number[]) => xs.reduce((a, b) => a + b, 0);
 /** Nearest-rank percentile; null when empty. */
 const pct = (xs: number[], q: number) => { if (!xs.length) return null; const s = [...xs].sort((a, b) => a - b); return s[Math.max(0, Math.ceil(q * s.length) - 1)]!; };
 const key = (subject: string) => subject.toLowerCase().replace(/@.*$/, "");
+/** `<owner>/<repo>#<n>`: how a record's data, a source marker and a PR or issue subject name a code host's item. */
+const HOSTED = /^[\w.-]+\/[\w.-]+#\d+$/;
+const matches = (f: FactRow, where?: Record<string, string[]>) => Object.entries(where ?? {}).every(([k, vs]) => vs.includes(String(f.data[k])));
 
-/** The journeys of the enabled modules, one per name (two modules may declare the same one; the compiler holds them equal). */
+/** The journeys of the enabled modules, one per name (two modules may declare the same one; the compiler holds them equal), a piece of work's (subject `task`, the widest view) first. */
 export function journeysOf(modules: Record<string, { journeys?: JourneyDecl[] }>): Journey[] {
   const out = new Map<string, Journey>();
   for (const [module, m] of Object.entries(modules)) for (const j of m.journeys ?? []) if (!out.has(j.name)) out.set(j.name, { ...j, module });
-  return [...out.values()];
+  return [...out.values()].sort((a, b) => Number(b.subject === "task") - Number(a.subject === "task"));
 }
 
-/** Every item of journey `j` with a fact in the window. */
-export function buildItems(j: Journey, c: Ctx): Built[] {
+/** One item's facts before they become blocks: its subject, tasks, facts, and which of them may predate its birth. */
+type Group = { k: string; task: string | null; tasks: string[]; facts: Map<number, FactRow>; early: (f: FactRow) => boolean };
+
+/** The issue subject a task came from: its source marker ends in `:<owner>/<repo>#<n>`. */
+const issueOf = (created?: FactRow) => { const m = /:([\w.-]+\/[\w.-]+#\d+)$/.exec(str(created?.data.source_marker) ?? "")?.[1]; return m ? `issue:${m.toLowerCase()}` : undefined; };
+
+/** One group per `<subject>:<key>`: its own facts, its tasks' (less another subject's of the journey), and their issues'. */
+function subjectGroups(j: Journey, c: Ctx, byKey: Map<string, FactRow[]>): Group[] {
   const prefix = `${j.subject}:`;
-  const phaseOf = (f: FactRow) => j.phases.findIndex((p) => p.from.includes(f.type) && Object.entries(p.where ?? {}).every(([k, vs]) => vs.includes(String(f.data[k]))));
-  const own = new Map<string, FactRow[]>(), lower = new Map<string, FactRow[]>(), recordOf = new Map<string, string>(), tasksOf = new Map<string, Set<string>>();
-  const uuid = new Map([...c.ident].map(([id, ident]) => [ident, id]));
+  const recordOf = new Map<string, string>(), tasksOf = new Map<string, Set<string>>();
   for (const f of c.rows) {
-    const s = f.subject.toLowerCase();
-    push(lower, s, f);
-    if (s.startsWith(prefix)) push(own, key(s), f);
     // A record names its subject in the data field of the subject's kind (record.filed data.pr = "<owner>/<repo>#<n>").
     if (f.type === "record.filed" && str(f.data[j.subject])) {
       const k = `${prefix}${String(f.data[j.subject]).toLowerCase()}`;
@@ -66,10 +82,11 @@ export function buildItems(j: Journey, c: Ctx): Built[] {
       if (f.task) tasksOf.set(k, (tasksOf.get(k) ?? new Set()).add(f.task));
     }
   }
-  const out: Built[] = [];
-  for (const [k, mine] of own) {
+  const out: Group[] = [];
+  for (const [k, mine] of byKey) {
+    if (!k.startsWith(prefix)) continue;
     const tasks = new Set([...(tasksOf.get(k) ?? []), ...(c.links.get(k) ?? [])]);
-    for (const f of mine) if (f.task) tasks.add(uuid.get(f.task) ?? f.task);
+    for (const f of mine) if (f.task) tasks.add(f.task);
     const facts = new Map(mine.map((f) => [f.seq, f]));
     for (const t of tasks) {
       for (const f of c.byTask.get(t) ?? []) {
@@ -78,10 +95,59 @@ export function buildItems(j: Journey, c: Ctx): Built[] {
         if ((s.startsWith(prefix) && s !== k) || (recordOf.has(f.subject) && recordOf.get(f.subject) !== k)) continue;
         facts.set(f.seq, f);
       }
-      const created = (c.bySubject.get(`task:${t}`) ?? []).find((f) => f.type === "task.created");
-      const issue = /:([\w.-]+\/[\w.-]+#\d+)$/.exec(str(created?.data.source_marker) ?? "")?.[1];
-      if (issue) for (const f of lower.get(`issue:${issue.toLowerCase()}`) ?? []) facts.set(f.seq, f);
+      const issue = issueOf((c.bySubject.get(`task:${t}`) ?? []).find((f) => f.type === "task.created"));
+      if (issue) for (const f of byKey.get(issue) ?? []) facts.set(f.seq, f);
     }
+    out.push({ k, task: [...tasks][0] ?? null, tasks: [...tasks], facts, early: (f) => key(f.subject) !== k });
+  }
+  return out;
+}
+
+/** One group per root task (not a chat): its tree's tasks and every subject they touch, records name or came from. */
+function taskGroups(c: Ctx, byKey: Map<string, FactRow[]>): Group[] {
+  const created = new Map<string, FactRow>(), chat = new Map<string, boolean>();
+  for (const [s, fs] of c.bySubject) if (s.startsWith("task:")) for (const f of fs) {
+    if (f.type === "task.created" && !created.has(s.slice(5))) created.set(s.slice(5), f);
+    // the newest chat flag (task.labeled) wins over the created fact's (time order)
+    if (f.type === "task.labeled" && typeof f.data.chat === "boolean") chat.set(s.slice(5), f.data.chat);
+  }
+  const isChat = (t: string) => chat.get(t) ?? created.get(t)?.data.chat === true;
+  const parent = (t: string) => str(created.get(t)?.data.parent);
+  const rootOf = (t: string) => { let r = t; for (let p = parent(r), n = 0; p && created.has(p) && !isChat(p) && n < 100; p = parent(r), n++) r = p; return r; };
+  const trees = new Map<string, string[]>();
+  for (const t of created.keys()) if (!isChat(t)) push(trees, rootOf(t), t);
+  const out: Group[] = [];
+  for (const [root, tasks] of trees) {
+    const subjects = new Set<string>();
+    for (const t of tasks) {
+      subjects.add(`task:${t}`);
+      for (const f of c.byTask.get(t) ?? []) {
+        subjects.add(key(f.subject));
+        // a record names the PR it acts on in its data (a merge's data.pr): that PR's facts are the work's too
+        if (f.type === "record.filed") for (const [k, v] of Object.entries(f.data)) if (typeof v === "string" && HOSTED.test(v)) subjects.add(`${k}:${v.toLowerCase()}`);
+      }
+      const issue = issueOf(created.get(t));
+      if (issue) subjects.add(issue);
+    }
+    for (const [k, ts] of c.links) if (ts.some((t) => tasks.includes(t))) subjects.add(k);
+    const facts = new Map<number, FactRow>();
+    for (const s of subjects) for (const f of byKey.get(s) ?? []) facts.set(f.seq, f);
+    out.push({ k: `task:${root}`, task: root, tasks: [root, ...tasks.filter((t) => t !== root)], facts, early: (f) => key(f.subject).startsWith("issue:") });
+  }
+  return out;
+}
+
+/** Every item of journey `j` with a fact in the window. */
+export function buildItems(j: Journey, c: Ctx): Built[] {
+  const phaseOf = (f: FactRow) => j.phases.findIndex((p) => p.from.includes(f.type) && matches(f, p.where));
+  const byKey = new Map<string, FactRow[]>();
+  for (const f of c.rows) push(byKey, key(f.subject), f);
+  // the repos the log has seen deploy: a merged PR of one waits for its deploy before its item ends
+  const repoOf = (k: string) => k.slice(k.indexOf(":") + 1).replace(/#.*$/, "");
+  const deploys = new Set(c.rows.filter((f) => /\.deployed$/.test(f.type)).map((f) => repoOf(key(f.subject))));
+  const out: Built[] = [];
+  for (const g of j.subject === "task" ? taskGroups(c, byKey) : subjectGroups(j, c, byKey)) {
+    const k = g.k, facts = g.facts;
     // one event per type, subject and time, its newest row (a source that re-sent a fact at a new version leaves the old row too)
     const event = (f: FactRow) => `${f.type}\0${f.subject.toLowerCase()}\0${ms(f.at)}`, once = new Set<string>();
     for (const f of [...facts.values()].sort((a, b) => b.seq - a.seq)) if (once.has(event(f))) facts.delete(f.seq); else once.add(event(f));
@@ -89,16 +155,29 @@ export function buildItems(j: Journey, c: Ctx): Built[] {
     const at = (f: FactRow) => ms(f.at);
     const sorted = [...facts.values()].sort((a, b) => at(a) - at(b) || (phase.get(a.seq)! + 1 || 1e9) - (phase.get(b.seq)! + 1 || 1e9) || a.seq - b.seq);
     const isOwn = (f: FactRow) => key(f.subject) === k;
-    const first = Math.min(...sorted.filter((f) => isOwn(f) && phase.get(f.seq)! >= 0).map((f) => phase.get(f.seq)!));
+    const mine = sorted.filter(isOwn);
+    const first = Math.min(...mine.filter((f) => phase.get(f.seq)! >= 0).map((f) => phase.get(f.seq)!));
     if (!Number.isFinite(first)) continue;
-    const born = Math.min(...sorted.filter((f) => isOwn(f) && phase.get(f.seq) === first).map(at));
+    const born = Math.min(...mine.filter((f) => phase.get(f.seq) === first).map(at));
+    // the end: the subject's own newest end fact, when it is one the declaration ends at, and every deploying merge deployed
+    const endFact = mine.filter((f) => j.end.includes(f.type)).at(-1);
+    let ended = endFact && matches(endFact, j.end_where) ? at(endFact) : null;
+    const mergedOf = new Map<string, number>(), deployedOf = new Map<string, number>();
+    for (const f of sorted) {
+      if (/\.merged$/.test(f.type) && !mergedOf.has(key(f.subject))) mergedOf.set(key(f.subject), at(f));
+      if (/\.deployed$/.test(f.type) && !deployedOf.has(key(f.subject))) deployedOf.set(key(f.subject), at(f));
+    }
+    if (ended !== null) for (const s of mergedOf.keys()) {
+      if (!deploys.has(repoOf(s))) continue;
+      const d = deployedOf.get(s);
+      ended = d === undefined ? null : Math.max(ended!, d);
+      if (ended === null) break;
+    }
     const blocks: { p: number; s: number; rounds: number; seen: Map<string, number>; own: boolean }[] = [];
-    let ended: number | null = null, endType = "", merged: number | null = null;
     for (const f of sorted) {
       const t = at(f);
-      if (isOwn(f) && t < born) continue;
-      if (blocks.length && j.end.includes(f.type)) { ended = t; endType = f.type; break; }
-      if (isOwn(f) && f.type === `${j.subject}.merged` && merged === null) merged = t;
+      if (ended !== null && t >= ended && blocks.length) break;
+      if (t < born && !g.early(f)) continue;
       const p = phase.get(f.seq)!;
       if (p < 0) continue;
       const cur = blocks.at(-1), type = `${p}:${f.type}`;
@@ -110,23 +189,30 @@ export function buildItems(j: Journey, c: Ctx): Built[] {
     }
     if (!blocks.length) continue;
     // the newest fact naming a field wins: a re-recorded pr.opened (a corrected author) or a later title
-    const meta = (field: string) => { for (const f of [...mine].sort((a, b) => b.seq - a.seq)) if (str(f.data[field])) return f.data[field] as string; return null; };
-    const [repo0, num] = k.slice(prefix.length).split("#");
-    const repo = meta("repo") ?? repo0!, number = Number(num) || 0, task = [...tasks][0] ?? null, last = ended ?? c.now;
-    const kind = meta("author_kind");
+    const meta = (fs: FactRow[], field: string) => { for (const f of [...fs].reverse()) if (str(f.data[field])) return f.data[field] as string; return null; };
+    const urlOf = (s: string, fs: FactRow[]) => {
+      const [kind, rest] = [s.slice(0, s.indexOf(":")), s.slice(s.indexOf(":") + 1)], [repo, n] = rest.split("#");
+      return meta(fs, "url") ?? (!HOSTED.test(rest) || repo!.startsWith("local/") ? null : `https://github.com/${meta(fs, "repo") ?? repo}/${kind === "issue" ? "issues" : "pull"}/${n}`);
+    };
+    const own = k.slice(k.indexOf(":") + 1), hosted = HOSTED.test(own), merged = mergedOf.get(k) ?? null, kind = meta(mine, "author_kind");
+    const to = str(endFact?.data.to);
+    const state: State = ended === null ? (merged !== null ? "merged" : "open")
+      : /\.deployed$/.test(endFact!.type) ? "deployed" : /\.closed$/.test(endFact!.type) ? (merged !== null ? "merged" : "closed") : to === "cancelled" ? "cancelled" : "done";
+    const last = ended ?? c.now;
+    const linked = [...new Set(sorted.map((f) => key(f.subject)))].filter((s) => s !== k && /^(pr|issue):/.test(s) && HOSTED.test(s.slice(s.indexOf(":") + 1))).sort();
     out.push({
       item: {
-        subject: k, repo, number, url: meta("url") ?? (repo.toLowerCase().startsWith("local/") || !number ? null : `https://github.com/${repo}/pull/${number}`),
-        title: meta("title"), author: meta("author"), author_kind: (AUTHOR_KINDS as string[]).includes(kind ?? "") ? (kind as AuthorKind) : null,
-        task, identifier: task ? c.ident.get(task) ?? null : null,
-        state: ended !== null && /\.deployed$/.test(endType) ? "deployed" : ended !== null && /\.closed$/.test(endType) ? (merged !== null ? "merged" : "closed") : merged !== null ? "merged" : "open",
-        start: iso(blocks[0]!.s), end: ended === null ? null : iso(ended), total_s: sec(last - blocks[0]!.s),
+        subject: k, title: meta(mine, "title"), task: g.task, identifier: g.task ? c.ident.get(g.task) ?? null : null, url: hosted ? urlOf(k, mine) : null,
+        repo: hosted ? meta(mine, "repo") ?? own.split("#")[0]! : null, number: hosted ? Number(own.split("#")[1]) : null,
+        author: meta(mine, "author"), author_kind: (AUTHOR_KINDS as string[]).includes(kind ?? "") ? (kind as AuthorKind) : null,
+        links: linked.map((s) => ({ subject: s, url: urlOf(s, byKey.get(s) ?? []) })),
+        state, start: iso(blocks[0]!.s), end: ended === null ? null : iso(ended), total_s: sec(last - blocks[0]!.s),
         blocks: blocks.map((b, i) => {
-          const e = blocks[i + 1]?.s ?? last, idle = c.idle([...tasks], k, b.s, e);
+          const e = blocks[i + 1]?.s ?? last, idle = c.idle(g.tasks, k, b.s, e);
           return { phase: j.phases[b.p]!.name, start: iso(b.s), end: iso(e), rounds: b.rounds, idle_s: sec(sum(Object.values(idle))), idle: Object.fromEntries(Object.entries(idle).map(([r, v]) => [r, sec(v)])) };
         }),
       },
-      facts: sorted, tasks: [...tasks], born, merged, ended,
+      facts: sorted, tasks: g.tasks, born, delivered: merged ?? (state === "done" ? ended : null), ended,
     });
   }
   return out;
@@ -194,8 +280,6 @@ export function insights(j: Journey, built: Built[], { t0, t1, now, previous, do
   for (const b of built) for (const f of b.facts) if (f.type === "record.decided" && f.data.decider === "reviewer" && f.data.decision === "rejected" && inWin(ms(f.at)) && !seenRec.has(f.seq)) {
     seenRec.add(f.seq); const r = str(f.data.code) ?? "unspecified"; rejected.set(r, (rejected.get(r) ?? 0) + 1);
   }
-  const has = (b: Built, type: string, ok: (f: FactRow) => boolean = () => true) => b.facts.some((f) => f.type === type && ok(f));
-  const p = j.subject;
 
   // cost: each job's cost split evenly over the items its task served (failed attempts included)
   const served = new Map<string, number>();
@@ -211,17 +295,17 @@ export function insights(j: Journey, built: Built[], { t0, t1, now, previous, do
     return usd;
   };
   const itemCost = new Map(built.map((b) => [b, costOf(b)]));
-  const mergedIn = built.filter((b) => inWin(b.merged));
+  const deliveredIn = built.filter((b) => inWin(b.delivered));
   const byKey = (pick: "agent" | "model") => {
-    const m = new Map<string, { usd: number; merged: Set<Built> }>();
+    const m = new Map<string, { usd: number; delivered: Set<Built> }>();
     for (const b of built) for (const f of b.facts) {
       const jb = jobs.get(f.seq);
       if (!jb || !inWin(jb.at) || !b.tasks.includes(f.task ?? "")) continue;
-      const e = m.get(jb[pick]) ?? { usd: 0, merged: new Set() };
-      e.usd += jb.share; if (inWin(b.merged)) e.merged.add(b);
+      const e = m.get(jb[pick]) ?? { usd: 0, delivered: new Set() };
+      e.usd += jb.share; if (inWin(b.delivered)) e.delivered.add(b);
       m.set(jb[pick], e);
     }
-    return [...m].map(([k, v]) => ({ key: k, usd: v.usd, merged: v.merged.size })).sort((a, b) => b.usd - a.usd);
+    return [...m].map(([k, v]) => ({ key: k, usd: v.usd, delivered: v.delivered.size })).sort((a, b) => b.usd - a.usd);
   };
 
   const L = t1 - t0, cur = dora(t0, t1), prev = previous ? dora(t0 - L, t0) : null, wk = weeks.map((w) => ({ w, d: dora(Math.max(w, t0), Math.min(w + 7 * DAY, t1)) }));
@@ -246,11 +330,11 @@ export function insights(j: Journey, built: Built[], { t0, t1, now, previous, do
   const openNow = built.filter((b) => b.item.state === "open");
   return {
     phases: phases.map(({ idle: _idle, ...x }) => x),
-    scatter: [...endedIn].sort((a, b) => b.ended! - a.ended!).slice(0, 1000).map((b) => ({ subject: b.item.subject, url: b.item.url, task: b.item.task, end: b.item.end!, total_s: b.item.total_s, author_kind: b.item.author_kind })),
+    scatter: [...endedIn].sort((a, b) => b.ended! - a.ended!).slice(0, 1000).map((b) => ({ subject: b.item.subject, url: b.item.url, task: b.item.task, identifier: b.item.identifier, title: b.item.title, end: b.item.end!, total_s: b.item.total_s, author_kind: b.item.author_kind })),
     rounds,
     rejections: [...rejected].map(([reason, n]) => ({ reason, n })).sort((a, b) => b.n - a.n),
     first_pass: weeks.map((w) => { const bs = endedIn.filter((b) => weekOf(b.ended!) === w); return { week: ymd(w), rate: bs.length ? bs.filter((b) => b.item.blocks.every((k) => k.rounds === 1)).length / bs.length : null, n: bs.length }; }),
-    aging: openNow.map((b) => ({ subject: b.item.subject, url: b.item.url, task: b.item.task, author_kind: b.item.author_kind, title: b.item.title, phase: b.item.blocks.at(-1)!.phase, age_s: sec(now - ms(b.item.start)), idle_reason: idleNow(b) })).sort((a, b) => b.age_s - a.age_s).slice(0, 200),
+    aging: openNow.map((b) => ({ subject: b.item.subject, url: b.item.url, task: b.item.task, identifier: b.item.identifier, author_kind: b.item.author_kind, title: b.item.title, phase: b.item.blocks.at(-1)!.phase, age_s: sec(now - ms(b.item.start)), idle_reason: idleNow(b) })).sort((a, b) => b.age_s - a.age_s).slice(0, 200),
     cfd: days.map((d) => {
       const t = Math.min(d + DAY, t1) - 1, counts: Record<string, number> = {};
       for (const b of built) {
@@ -261,25 +345,20 @@ export function insights(j: Journey, built: Built[], { t0, t1, now, previous, do
       }
       return { day: ymd(d), counts };
     }),
+    // the items born in the window, how many of them reached each phase, and how many ended delivered
     funnel: (() => {
       const bs = built.filter((b) => inWin(b.born));
-      const n = (ok: (b: Built) => boolean) => bs.filter(ok).length;
-      return [
-        { step: "issue", n: n((b) => b.facts.some((f) => f.type === "issue.opened")) },
-        { step: `${p}_opened`, n: n((b) => has(b, `${p}.opened`)) },
-        { step: "ci_passed", n: n((b) => has(b, `${p}.checks_completed`, (f) => f.data.conclusion === "success")) },
-        { step: "review_passed", n: n((b) => b.merged !== null || has(b, "record.decided", (f) => f.data.decision === "approved")) },
-        { step: "merged", n: n((b) => b.merged !== null) },
-        { step: "deployed", n: n((b) => b.item.state === "deployed") },
-      ];
+      return [{ step: "started", label: "Started", n: bs.length },
+        ...j.phases.map((p) => ({ step: p.name, label: p.label, n: bs.filter((b) => b.item.blocks.some((k) => k.phase === p.name)).length })),
+        { step: "done", label: "Done", n: bs.filter((b) => b.ended !== null && b.delivered !== null).length }];
     })(),
     cost: {
-      per_merged: weeks.map((w) => { const bs = mergedIn.filter((b) => b.tasks.length && weekOf(b.merged!) === w); return { week: ymd(w), usd: bs.length ? sum(bs.map((b) => itemCost.get(b)!)) / bs.length : null }; }),
+      per_delivered: weeks.map((w) => { const bs = deliveredIn.filter((b) => b.tasks.length && weekOf(b.delivered!) === w); return { week: ymd(w), usd: bs.length ? sum(bs.map((b) => itemCost.get(b)!)) / bs.length : null }; }),
       by_agent: byKey("agent"), by_model: byKey("model"),
-      unmerged_usd: sum(built.filter((b) => b.item.state === "closed" && inWin(b.ended)).map((b) => itemCost.get(b)!)),
+      undelivered_usd: sum(built.filter((b) => (b.item.state === "closed" || b.item.state === "cancelled") && inWin(b.ended)).map((b) => itemCost.get(b)!)),
     },
     dora5: { deploys_per_day: metric("deploys_per_day"), lead_time_s: metric("lead_time_s"), change_fail_rate: metric("change_fail_rate"), recovery_s: metric("recovery_s"), rework_rate: metric("rework_rate") },
-    throughput: days.map((d) => ({ day: ymd(d), merged: built.filter((b) => b.merged !== null && b.merged >= d && b.merged < d + DAY).length, opened: built.filter((b) => b.born >= d && b.born < d + DAY).length })),
+    throughput: days.map((d) => ({ day: ymd(d), delivered: built.filter((b) => b.delivered !== null && b.delivered >= d && b.delivered < d + DAY).length, started: built.filter((b) => b.born >= d && b.born < d + DAY).length })),
     bottlenecks,
   };
 }

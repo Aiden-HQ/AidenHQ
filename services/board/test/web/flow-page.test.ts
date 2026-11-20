@@ -16,15 +16,30 @@ describe("the empty page", () => {
   });
 });
 
-describe("the PR table", () => {
+describe("the timeline table", () => {
   it("has a column per journey phase, a dash where a PR skipped one, and rounds on looping phases", async () => {
-    const { PrTable } = await import("../../web/src/Flow");
+    const { ItemTable } = await import("../../web/src/Flow");
     const { PHASES, fixtureItems } = await import("../fixtures/flow-insights");
     const items = fixtureItems();
-    const html = renderToStaticMarkup(createElement(PrTable, { items, phases: PHASES, color: () => "red", onTask: () => {}, label: "PRs", truncated: false }));
+    const html = renderToStaticMarkup(createElement(ItemTable, { items, phases: PHASES, color: () => "red", onTask: () => {}, label: "PRs", truncated: false }));
     for (const p of PHASES) expect(html).toContain(p.label);
     expect(html).toContain("—");
     expect(html).toContain("↻2");
     expect(html.match(/<tr[ >]/g)!.length).toBe(1 + Math.min(100, items.length));
+  });
+
+  it("names a piece of work by its identifier, with links to its PRs and issue and no author column", async () => {
+    const { ItemTable } = await import("../../web/src/Flow");
+    const block = { phase: "working", start: "2026-11-19T10:00:00Z", end: "2026-11-19T11:00:00Z", rounds: 1, idle_s: 0, idle: {} };
+    const work = {
+      subject: "task:0b1c", title: "Fix the widget", task: "0b1c", identifier: "WOR-7", url: null, repo: null, number: null, author: null, author_kind: null,
+      links: [{ subject: "issue:acme/widgets#7", url: "https://github.com/acme/widgets/issues/7" }, { subject: "pr:acme/widgets#12", url: "https://github.com/acme/widgets/pull/12" }],
+      state: "done" as const, start: block.start, end: block.end, total_s: 3600, blocks: [block],
+    };
+    const html = renderToStaticMarkup(createElement(ItemTable, { items: [work], phases: [{ name: "working", label: "Working" }], color: () => "red", onTask: () => {}, label: "Work", truncated: false }));
+    expect(html).toContain("WOR-7");
+    expect(html).toContain(">PR #12</a>");
+    expect(html).toContain(">issue #7</a>");
+    expect(html).not.toContain("Author");
   });
 });

@@ -286,7 +286,7 @@ export const api = {
   costLedger: (q: URLSearchParams) => call<CostLedger>("GET", `/api/costs/ledger?${q}`),
   featureCost: (ref: string) => call<{ cost: FeatureCost | null }>("GET", `/api/issues/${encodeURIComponent(ref)}/feature-cost`),
   features: () => call<Features>("GET", "/api/costs/features"),
-  flow: (days: number, scope: string) => call<{ summary: FlowSummary | null; idle: IdleItem[] }>("GET", `/api/flow?days=${days}&scope=${encodeURIComponent(scope)}`),
+  flow: (days: number, scope: string, journey: string) => call<{ summary: FlowSummary | null; idle: IdleItem[] }>("GET", `/api/flow?days=${days}&scope=${encodeURIComponent(scope)}${journey ? `&journey=${encodeURIComponent(journey)}` : ""}`),
   flowItem: (id: string) => call<Waterfall>("GET", `/api/flow/item?id=${encodeURIComponent(id)}`),
   flowJourneys: () => call<{ journeys: JourneyInfo[] }>("GET", "/api/flow/journeys"),
   flowJourney: (name: string, days: number, author: AuthorKind[], sort: JourneySort) =>

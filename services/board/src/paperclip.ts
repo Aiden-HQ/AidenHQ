@@ -240,6 +240,11 @@ export class Paperclip {
     return this.list("done,cancelled", since, limit);
   }
 
+  /** Every task updated after `since`, routine runs included, newest first (the Flow timeline's titles). */
+  tasksSince(since: string): Promise<Issue[]> {
+    return this.list(`${OPEN},done,cancelled`, since, "500", true);
+  }
+
   /** One page of an agent's finished tasks, newest first (Paperclip filters, searches and pages; the assignee is checked here too). */
   async closedFor(agentId: string, opts: { q?: string; status?: "done" | "cancelled"; offset?: number; limit?: number } = {}): Promise<Issue[]> {
     const p = new URLSearchParams({ assigneeAgentId: agentId, status: opts.status ?? "done,cancelled", limit: String(opts.limit ?? 30), offset: String(opts.offset ?? 0), excludeRoutineExecutions: "true" });
@@ -247,8 +252,8 @@ export class Paperclip {
     return (await this.request<Issue[]>("GET", `/api/companies/${this.companyId}/issues?${p}`)).filter((i) => i.assigneeAgentId === agentId);
   }
 
-  private list(status: string, updatedSince?: string, limit = "500"): Promise<Issue[]> {
-    const q = new URLSearchParams({ status, limit, excludeRoutineExecutions: "true" });
+  private list(status: string, updatedSince?: string, limit = "500", routines = false): Promise<Issue[]> {
+    const q = new URLSearchParams({ status, limit, excludeRoutineExecutions: String(!routines) });
     if (updatedSince) q.set("updatedSince", updatedSince);
     return this.request<Issue[]>("GET", `/api/companies/${this.companyId}/issues?${q}`);
   }

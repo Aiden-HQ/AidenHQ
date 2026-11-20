@@ -3,7 +3,7 @@
 // idle time and their reasons are derived from them (flow.ts), so a definition can change without re-instrumenting.
 // The id is `<type>:<subject>:<version>`: a duplicate delivery, a poll that sees the same change, or a re-run backfill
 // records once.
-import type { DatabaseSync } from "node:sqlite";
+import type { DatabaseSync, StatementSync } from "node:sqlite";
 
 export type Fact = {
   type: string;
@@ -33,10 +33,21 @@ export function openFacts(db: DatabaseSync, now = () => new Date()) {
   normaliseFacts(db);
   const insert = db.prepare("INSERT OR IGNORE INTO facts (id, type, subject, version, task, at, seen_at, actor, source, data) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
   const row = (r: any): FactRow => ({ ...r, data: JSON.parse(r.data) });
+  // A writer may name the task by its identifier (a code host knows the workspace, WOR-12): the log keeps the id every other fact
+  // uses, from the records that know both. Kept once resolved (an identifier never moves).
+  const ids = new Map<string, string>();
+  let byIdent: StatementSync | undefined;
+  const taskId = (task: string) => {
+    if (ids.has(task)) return ids.get(task)!;
+    byIdent ??= hasRecords(db) ? db.prepare("SELECT task FROM records WHERE identifier = ? LIMIT 1") : undefined;
+    const r = byIdent?.get(task) as { task: string } | undefined;
+    if (r) ids.set(task, r.task);
+    return r?.task ?? task;
+  };
   return {
     /** Records one fact; true when it is new. Never call it outside the transaction of the change it describes, when there is one. */
     record(f: Fact): boolean {
-      return insert.run(`${f.type}:${f.subject}:${f.version}`, f.type, f.subject, f.version, f.task ?? null, f.at, now().toISOString(), f.actor, f.source ?? "live", JSON.stringify(f.data ?? {})).changes === 1;
+      return insert.run(`${f.type}:${f.subject}:${f.version}`, f.type, f.subject, f.version, f.task ? taskId(f.task) : null, f.at, now().toISOString(), f.actor, f.source ?? "live", JSON.stringify(f.data ?? {})).changes === 1;
     },
     /** Facts after `seq`, in ingestion order (incremental readers). */
     since(seq: number, limit = 1000): FactRow[] {
@@ -65,6 +76,7 @@ export function openFacts(db: DatabaseSync, now = () => new Date()) {
 }
 export type Facts = ReturnType<typeof openFacts>;
 
+const hasRecords = (db: DatabaseSync) => Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'records'").get());
 const tables = (db: DatabaseSync) => new Set((db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as { name: string }[]).map((t) => t.name));
 
 /** One fact inside the caller's transaction that can never fail it: a fact error is logged, the change goes on. */
@@ -86,14 +98,18 @@ export function decider(by: string): { decider: "reviewer" | "owner" | "code"; a
 /**
  * One idempotent pass at open: every `at` as UTC (`Z`), PR and issue subjects (and the id that embeds one) and `data.pr` / `data.repo`
  * in lowercase, since a repo's case differed between the backfill and the live writers and split one PR into two. Where the
- * lowercased id already exists the earliest fact stays. A log already in that shape costs one query that finds nothing.
+ * lowercased id already exists the earliest fact stays. A `task` a writer gave as the identifier becomes the id (record() does it
+ * since). A log already in that shape costs one query that finds nothing.
  */
 function normaliseFacts(db: DatabaseSync) {
-  // A reviewer's decision recorded before it carried its reason code gets it once from its record.
-  if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'records'").get())
+  if (hasRecords(db)) {
+    // A reviewer's decision recorded before it carried its reason code gets it once from its record.
     db.exec(`UPDATE facts SET data = json_set(data, '$.code', (SELECT review_code FROM records WHERE 'record:' || records.id = facts.subject))
       WHERE type = 'record.decided' AND json_extract(data, '$.decider') = 'reviewer' AND json_extract(data, '$.code') IS NULL
         AND (SELECT review_code FROM records WHERE 'record:' || records.id = facts.subject) IS NOT NULL`);
+    db.exec(`UPDATE facts SET task = (SELECT r.task FROM records r WHERE r.identifier = facts.task LIMIT 1)
+      WHERE task IN (SELECT identifier FROM records WHERE identifier IS NOT NULL)`);
+  }
   const low = (f: string) => `(json_extract(data, '${f}') IS NOT NULL AND typeof(json_extract(data, '${f}')) = 'text' AND json_extract(data, '${f}') != lower(json_extract(data, '${f}')))`;
   const rows = db.prepare(`SELECT seq, type, subject, version, at, data FROM facts WHERE at NOT LIKE '%Z' OR ((subject GLOB 'pr:*' OR subject GLOB 'issue:*') AND subject != lower(subject)) OR ${low("$.pr")} OR ${low("$.repo")} ORDER BY seq`).all() as
     { seq: number; type: string; subject: string; version: string; at: string; data: string }[];

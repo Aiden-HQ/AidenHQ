@@ -4,7 +4,7 @@
 import { createContext, useCallback, useContext, useLayoutEffect, useRef, useState } from "react";
 
 export const EMPTY = "Flow fills in as work happens.";
-export const series = (i: number) => `var(--series-${((i % 8) + 8) % 8})`;
+export const series = (i: number) => `var(--series-${((i % 9) + 9) % 9})`;
 
 /* ----------------------------------------------------------------------------- tooltip */
 type TipState = { x: number; y: number; body: React.ReactNode } | null;

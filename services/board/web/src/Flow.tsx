@@ -7,8 +7,9 @@ import { agoLabel } from "./util";
 import "./flow.css";
 
 // The Flow page (#/flow/<tab>, docs/design/flow-insights.md §4): where time goes between an issue and its deploy. Tabs share one
-// period. PRs: one row per item of a journey (a module declares it), its phases as coloured blocks, loops folded into rounds,
-// idle hatched. The other tabs draw the kernel's insights (GET /v1/flow summary). The kernel computes everything; this only draws.
+// period and one journey (a module declares each: a piece of work's by default, a PR's). Timeline: one row per item, its phases as
+// coloured blocks, loops folded into rounds, idle hatched. The other tabs draw the kernel's insights over the picked journey (GET
+// /v1/flow summary). The kernel computes everything; this only draws.
 
 /* ----------------------------------------------------------------------------- formatting */
 /** Seconds as "40s", "12m", "1h 40m", "2d 3h". */
@@ -31,11 +32,17 @@ const words = (reason: string) => reason.replace(/_/g, " ");
 const week = (w: string) => `Week of ${day(w)}`;
 
 const PERIODS = [["7", "7d"], ["30", "30d"], ["90", "90d"]] as const;
-const TABS = [["overview", "Overview"], ["prs", "PRs"], ["stages", "Stages"], ["rework", "Rework"], ["queue", "Queue"], ["cost", "Cost"]] as const;
+const TABS = [["overview", "Overview"], ["timeline", "Timeline"], ["stages", "Stages"], ["rework", "Rework"], ["queue", "Queue"], ["cost", "Cost"]] as const;
 type Tab = (typeof TABS)[number][0];
 const AUTHORS: [AuthorKind, string][] = [["agent", "Agent"], ["owner", "Owner"], ["outside", "Outside"]];
 const AUTHOR_COLOR: Record<string, string> = { agent: series(0), owner: series(1), outside: series(2) };
-const SORTS = [["recent", "Newest merged"], ["slowest", "Slowest"], ["rounds", "Most rounds"]] as const;
+const SORTS = [["recent", "Newest"], ["slowest", "Slowest"], ["rounds", "Most rounds"]] as const;
+const ALL_AUTHORS = AUTHORS.map(([k]) => k);
+
+/** How an item reads: a piece of work by its task's identifier, a PR (or any other subject) by its key, `acme/widgets#12`. */
+export const nameOf = (x: { subject: string; identifier: string | null }) => (x.subject.startsWith("task:") ? x.identifier ?? x.subject.slice(5, 13) : x.subject.slice(x.subject.indexOf(":") + 1));
+/** A linked PR or issue, short: `PR #12`, `issue #7`. */
+const linkName = (subject: string) => `${subject.startsWith("pr:") ? "PR" : subject.slice(0, subject.indexOf(":"))} #${subject.split("#")[1] ?? ""}`;
 
 const tabOf = (): Tab => {
   const t = /^#\/?flow\/([a-z]+)/.exec(location.hash)?.[1];
@@ -55,9 +62,11 @@ export function FlowView({ onSignIn }: { onSignIn: () => void }) {
   const [tab, setTab] = useState<Tab>(tabOf);
   const [days, setDays] = useState<(typeof PERIODS)[number][0]>("7");
   const [data, setData] = useState<{ summary: FlowSummary | null; idle: IdleItem[] } | null>(null);
-  const [journeys, setJourneys] = useState<JourneyInfo[]>([]);
-  const [journey, setJourney] = useState("pr");
-  const [authors, setAuthors] = useState<AuthorKind[]>(["agent", "owner", "outside"]);
+  // The declared journeys (null until read): the first, a piece of work's, is the default.
+  const [journeys, setJourneys] = useState<JourneyInfo[] | null>(null);
+  const [journey, setJourneyState] = useState("");
+  const [authors, setAuthors] = useState<AuthorKind[]>(ALL_AUTHORS);
+  const setJourney = useCallback((j: string) => (setJourneyState(j), setAuthors(ALL_AUTHORS)), []);
   const [sort, setSort] = useState<JourneySort>("recent");
   const [list, setList] = useState<JourneyList | null | undefined>(undefined);
   const [error, setError] = useState("");
@@ -83,17 +92,19 @@ export function FlowView({ onSignIn }: { onSignIn: () => void }) {
   }, [onSignIn]);
 
   useEffect(() => {
-    let live = true;
-    api.flow(Number(days), "all").then((d) => live && (setData(d), setError("")), (e) => live && fail(e));
-    return () => {
-      live = false;
-    };
-  }, [days, fail]);
-  useEffect(() => {
-    api.flowJourneys().then((j) => setJourneys(j.journeys), fail);
+    api.flowJourneys().then((j) => (setJourneys(j.journeys), setJourneyState((cur) => cur || j.journeys[0]?.name || "")), (e) => (setJourneys([]), fail(e)));
   }, [fail]);
   useEffect(() => {
     let live = true;
+    if (journeys === null) return;
+    api.flow(Number(days), "all", journey).then((d) => live && (setData(d), setError("")), (e) => live && fail(e));
+    return () => {
+      live = false;
+    };
+  }, [days, journey, journeys, fail]);
+  useEffect(() => {
+    let live = true;
+    if (!journey) return setList(journeys === null ? undefined : null);
     if (!authors.length) return setList(null);
     setList(undefined);
     api.flowJourney(journey, Number(days), authors, sort).then(
@@ -107,10 +118,10 @@ export function FlowView({ onSignIn }: { onSignIn: () => void }) {
     return () => {
       live = false;
     };
-  }, [journey, days, authors, sort, fail]);
+  }, [journey, journeys, days, authors, sort, fail]);
 
   const ins = data?.summary?.insights ?? null;
-  const decl = journeys.find((j) => j.name === journey) ?? (list ? { name: list.journey, label: list.label, phases: list.phases } : null);
+  const decl = journeys?.find((j) => j.name === journey) ?? (list ? { name: list.journey, label: list.label, phases: list.phases } : null);
   const phases = decl?.phases ?? ins?.phases ?? [];
   const color = useMemo(() => phaseColors(phases), [phases]);
   const openSubject = useCallback((subject: string, p?: { url: string | null; task: string | null }) => {
@@ -124,20 +135,23 @@ export function FlowView({ onSignIn }: { onSignIn: () => void }) {
     <Page className="flow-page" label="Flow">
       <PageHeader
         title="Flow"
-        sub="Where time goes between an issue and its deploy, per PR and in aggregate."
-        actions={<Segmented label="Period" options={PERIODS} value={days} onChange={setDays} />}
+        sub="Where time goes between an issue and its deploy, per piece of work and in aggregate."
+        actions={
+          <>
+            {journeys && journeys.length > 1 && <Select aria-label="Journey" value={journey} options={journeys.map((j): [string, string] => [j.name, j.label])} onChange={setJourney} />}
+            <Segmented label="Period" options={PERIODS} value={days} onChange={setDays} />
+          </>
+        }
       />
       <Tabs label="Flow views" tabs={TABS} value={tab} href={(t) => `#/flow/${t}`} />
       {error && <Banner tone="danger">Couldn't load Flow: {error}</Banner>}
       <TipLayer key={tab}>
         {!data ? (
           !error && <div className="flow-loading" aria-busy="true" />
-        ) : tab === "prs" ? (
-          <PrsTab
+        ) : tab === "timeline" ? (
+          <TimelineTab
             list={list}
-            journeys={journeys}
-            journey={journey}
-            setJourney={setJourney}
+            label={decl?.label ?? "Items"}
             authors={authors}
             setAuthors={setAuthors}
             sort={sort}
@@ -180,18 +194,18 @@ export function FlowEmpty() {
   return <EmptyState>{EMPTY}</EmptyState>;
 }
 
-/* ----------------------------------------------------------------------------- PRs */
+/* ----------------------------------------------------------------------------- Timeline */
 const PAGE = 100;
 
-function PrsTab(p: {
-  list: JourneyList | null | undefined; journeys: JourneyInfo[]; journey: string; setJourney: (j: string) => void; authors: AuthorKind[]; setAuthors: (a: AuthorKind[]) => void;
+function TimelineTab(p: {
+  list: JourneyList | null | undefined; label: string; authors: AuthorKind[]; setAuthors: (a: AuthorKind[]) => void;
   sort: JourneySort; setSort: (s: JourneySort) => void; color: (phase: string) => string; onTask: (task: string) => void;
 }) {
   const [shown, setShown] = useState(PAGE);
   const [view, setViewState] = useState<"bars" | "table">(viewOf);
   const setView = (v: "bars" | "table") => {
     setViewState(v);
-    history.replaceState(null, "", v === "table" ? "#/flow/prs?view=table" : "#/flow/prs");
+    history.replaceState(null, "", v === "table" ? "#/flow/timeline?view=table" : "#/flow/timeline");
   };
   const items = p.list?.items ?? [];
   useEffect(() => setShown(PAGE), [p.list]);
@@ -200,24 +214,27 @@ function PrsTab(p: {
     window.addEventListener("hashchange", on);
     return () => window.removeEventListener("hashchange", on);
   }, []);
-  const toggle = (a: AuthorKind) => p.setAuthors(p.authors.includes(a) ? p.authors.filter((x) => x !== a) : AUTHORS.map(([k]) => k).filter((k) => k === a || p.authors.includes(k)));
-  const label = p.journeys.find((j) => j.name === p.journey)?.label ?? p.list?.label ?? "Pull requests";
+  const toggle = (a: AuthorKind) => p.setAuthors(p.authors.includes(a) ? p.authors.filter((x) => x !== a) : ALL_AUTHORS.filter((k) => k === a || p.authors.includes(k)));
+  const label = p.label;
+  // The author chips filter items that have an author (PRs); a piece of work has none.
+  const authored = items.some((x) => x.author_kind) || p.authors.length < ALL_AUTHORS.length;
   return (
     <div className="fl-prs">
       <div className="fl-toolbar">
-        {p.journeys.length > 1 && <Select aria-label="Journey" value={p.journey} options={p.journeys.map((j): [string, string] => [j.name, j.label])} onChange={p.setJourney} />}
-        <div className="fl-chips" role="group" aria-label="Author">
-          {AUTHORS.map(([k, name]) => (
-            <button key={k} type="button" aria-pressed={p.authors.includes(k)} onClick={() => toggle(k)}>
-              <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden><rect x="0.75" y="0.75" width="10.5" height="10.5" rx="2.5" /><path d="M3.2 6.2l1.9 1.9 3.7-4" /></svg>
-              {name}
-            </button>
-          ))}
-        </div>
+        {authored && (
+          <div className="fl-chips" role="group" aria-label="Author">
+            {AUTHORS.map(([k, name]) => (
+              <button key={k} type="button" aria-pressed={p.authors.includes(k)} onClick={() => toggle(k)}>
+                <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden><rect x="0.75" y="0.75" width="10.5" height="10.5" rx="2.5" /><path d="M3.2 6.2l1.9 1.9 3.7-4" /></svg>
+                {name}
+              </button>
+            ))}
+          </div>
+        )}
         <Segmented label="Sort" options={SORTS} value={p.sort} onChange={p.setSort} />
         <Segmented label="View" options={[["bars", "Bars"], ["table", "Table"]] as const} value={view} onChange={setView} />
         <span className="fl-count">
-          {p.list ? `${items.length}${p.list.truncated ? "+" : ""} ${label.toLowerCase()}` : ""}
+          {p.list ? `${items.length}${p.list.truncated ? "+" : ""} ${items.length === 1 ? "item" : "items"}` : ""}
         </span>
       </div>
       {p.list === undefined ? (
@@ -225,19 +242,19 @@ function PrsTab(p: {
       ) : !p.list || !items.length ? (
         <FlowEmpty />
       ) : view === "table" ? (
-        <PrTable items={items} phases={p.list.phases} color={p.color} onTask={p.onTask} label={label} truncated={p.list.truncated} />
+        <ItemTable items={items} phases={p.list.phases} color={p.color} onTask={p.onTask} label={label} truncated={p.list.truncated} />
       ) : (
         <div className="fl-timeline">
           <Legend items={[...p.list.phases.map((ph) => ({ label: ph.label, color: p.color(ph.name) })), { label: "Idle", color: "var(--faint)", hatch: true }]} />
           <div className="fl-axisrow" aria-hidden>
-            <span>PR</span>
+            <span>Item</span>
             <span className="fl-axisrow-title">Title</span>
-            <span>Phases, as a share of each PR's own time</span>
+            <span>Phases, as a share of each item's own time</span>
             <span className="fl-axisrow-total">Total</span>
           </div>
           <ol className="fl-rows" aria-label={label}>
             {items.slice(0, shown).map((x) => (
-              <PrRow key={x.subject} x={x} phases={p.list!.phases} color={p.color} onTask={p.onTask} />
+              <ItemRow key={x.subject} x={x} phases={p.list!.phases} color={p.color} onTask={p.onTask} />
             ))}
           </ol>
           {(items.length > shown || p.list.truncated) && (
@@ -261,20 +278,45 @@ const viewOf = () => (/[?&]view=table\b/.test(location.hash) ? "table" : "bars")
 const KIND_LABEL: Record<string, string> = { agent: "Agent", owner: "Owner", outside: "Outside" };
 type Col = { key: string; label: string; num: boolean; get: (x: JourneyItem) => number | string | null };
 
+/** An item's name: a PR's number linking to the PR, a piece of work's identifier (its row opens the waterfall). */
+function Ref({ x, title }: { x: JourneyItem; title: string }) {
+  const text = x.number != null ? `#${x.number}` : nameOf(x);
+  return x.url ? <a href={x.url} target="_blank" rel="noopener noreferrer" title={title} onClick={(e) => e.stopPropagation()}>{text}</a> : <span title={title}>{text}</span>;
+}
+
+/** The PRs and the issue an item holds, each linking to it. */
+function Links({ x }: { x: JourneyItem }) {
+  if (!x.links.length) return null;
+  return (
+    <span className="fl-links">
+      {x.links.map((l) =>
+        l.url ? (
+          <a key={l.subject} href={l.url} target="_blank" rel="noopener noreferrer" title={l.subject} onClick={(e) => e.stopPropagation()}>{linkName(l.subject)}</a>
+        ) : (
+          <span key={l.subject} title={l.subject}>{linkName(l.subject)}</span>
+        ),
+      )}
+    </span>
+  );
+}
+
 /**
- * The PRs as a table: one column per phase of the journey (its duration, ↻n for rounds, tinted by a heat scale per column so
- * slow cells stand out), every header sorts. Sorting is over the loaded rows; the kernel's sort picks which rows load.
+ * The items as a table: one column per phase of the journey (its duration, ↻n for rounds, tinted by a heat scale per column so
+ * slow cells stand out), every header sorts. Sorting is over the loaded rows; the kernel's sort picks which rows load. The author
+ * column shows only for items that have one (PRs), the links column for items that hold PRs or an issue.
  */
-export function PrTable({ items, phases, color, onTask, label, truncated }: { items: JourneyItem[]; phases: { name: string; label: string }[]; color: (p: string) => string; onTask: (t: string) => void; label: string; truncated: boolean }) {
+export function ItemTable({ items, phases, color, onTask, label, truncated }: { items: JourneyItem[]; phases: { name: string; label: string }[]; color: (p: string) => string; onTask: (t: string) => void; label: string; truncated: boolean }) {
   const [sort, setSort] = useState<{ key: string; dir: 1 | -1 } | null>(null);
   const [shown, setShown] = useState(PAGE);
   const secs = (x: JourneyItem, ph: string) => {
     const b = x.blocks.find((y) => y.phase === ph);
     return b ? (Date.parse(b.end) - Date.parse(b.start)) / 1000 : null;
   };
+  const authored = items.some((x) => x.author_kind), linked = items.some((x) => x.links.length);
   const cols: Col[] = [
-    { key: "number", label: "PR", num: true, get: (x) => x.number },
-    { key: "author", label: "Author", num: false, get: (x) => x.author_kind },
+    { key: "name", label: "Item", num: false, get: (x) => x.number ?? nameOf(x) },
+    ...(authored ? [{ key: "author", label: "Author", num: false, get: (x: JourneyItem) => x.author_kind }] : []),
+    ...(linked ? [{ key: "links", label: "PRs and issue", num: false, get: (x: JourneyItem) => x.links.length || null }] : []),
     ...phases.map((ph): Col => ({ key: `ph:${ph.name}`, label: ph.label, num: true, get: (x) => secs(x, ph.name) })),
     { key: "total", label: "Total", num: true, get: (x) => x.total_s },
   ];
@@ -320,13 +362,10 @@ export function PrTable({ items, phases, color, onTask, label, truncated }: { it
           {rows.slice(0, shown).map((x) => (
             <tr key={x.subject} className={`${x.task ? "has-task" : ""} fl-${x.state}`} onClick={() => x.task && onTask(x.task)}>
               <th scope="row">
-                {x.url ? (
-                  <a href={x.url} target="_blank" rel="noopener noreferrer" title={x.title ?? x.subject} onClick={(e) => e.stopPropagation()}>#{x.number}</a>
-                ) : (
-                  <span title={x.title ?? x.subject}>#{x.number}</span>
-                )}
+                <Ref x={x} title={x.title ?? x.subject} />
               </th>
-              <td className="fl-td-author">{x.author_kind ? KIND_LABEL[x.author_kind] : "—"}</td>
+              {authored && <td className="fl-td-author">{x.author_kind ? KIND_LABEL[x.author_kind] : "—"}</td>}
+              {linked && <td className="fl-td-links"><Links x={x} /></td>}
               {phases.map((ph) => {
                 const b = x.blocks.find((y) => y.phase === ph.name);
                 if (!b) return <td key={ph.name} className="num fl-td-none">—</td>;
@@ -341,7 +380,7 @@ export function PrTable({ items, phases, color, onTask, label, truncated }: { it
               })}
               <td className="num fl-td-total">
                 {dur(x.total_s)}
-                {x.state !== "merged" && x.state !== "deployed" && <small> {x.state}</small>}
+                {(x.state === "open" || x.state === "closed" || x.state === "cancelled") && <small> {x.state}</small>}
               </td>
             </tr>
           ))}
@@ -361,11 +400,11 @@ export function PrTable({ items, phases, color, onTask, label, truncated }: { it
   );
 }
 
-function PrRow({ x, phases, color, onTask }: { x: JourneyItem; phases: { name: string; label: string }[]; color: (p: string) => string; onTask: (t: string) => void }) {
+function ItemRow({ x, phases, color, onTask }: { x: JourneyItem; phases: { name: string; label: string }[]; color: (p: string) => string; onTask: (t: string) => void }) {
   const tip = useTip();
   const [ref, w] = useWidth<HTMLSpanElement>();
   const label = (ph: string) => phases.find((p) => p.name === ph)?.label ?? ph;
-  // The bar is always the full width: each block takes its share of this PR's own time, at least 4px so it stays hoverable
+  // The bar is always the full width: each block takes its share of this item's own time, at least 4px so it stays hoverable
   // (the blocks above the minimum give up the room the small ones take).
   const secs = x.blocks.map((b) => Math.max(0, (Date.parse(b.end) - Date.parse(b.start)) / 1000));
   const span = secs.reduce((a, v) => a + v, 0) || 1;
@@ -383,17 +422,16 @@ function PrRow({ x, phases, color, onTask }: { x: JourneyItem; phases: { name: s
   });
   const by = x.author ? ` by ${x.author}` : "";
   const open = () => x.task && onTask(x.task);
-  const summary = `#${x.number}${x.title ? ` ${x.title}` : ""}${by}: ${x.blocks.map((b) => `${label(b.phase)} ${dur((Date.parse(b.end) - Date.parse(b.start)) / 1000)}${b.rounds > 1 ? `, ${b.rounds} rounds` : ""}`).join("; ")}; total ${dur(x.total_s)}`;
+  const summary = `${x.number != null ? `#${x.number}` : nameOf(x)}${x.title ? ` ${x.title}` : ""}${by}: ${x.blocks.map((b) => `${label(b.phase)} ${dur((Date.parse(b.end) - Date.parse(b.start)) / 1000)}${b.rounds > 1 ? `, ${b.rounds} rounds` : ""}`).join("; ")}; total ${dur(x.total_s)}`;
   return (
     <li className={`fl-row${x.task ? " has-task" : ""} fl-${x.state}`} onClick={open}>
       <span className="fl-num">
-        {x.url ? (
-          <a href={x.url} target="_blank" rel="noopener noreferrer" title={`${x.title ?? x.subject}${by}`} onClick={(e) => e.stopPropagation()}>#{x.number}</a>
-        ) : (
-          <span title={`${x.title ?? x.subject}${by}`}>#{x.number}</span>
-        )}
+        <Ref x={x} title={`${x.title ?? x.subject}${by}`} />
       </span>
-      <span className="fl-title" title={x.title ?? undefined}>{x.title ?? <span className="flow-dim">{x.repo}</span>}</span>
+      <span className="fl-title" title={x.title ?? undefined}>
+        <span className="fl-title-text">{x.title ?? <span className="flow-dim">{x.repo ?? x.identifier ?? ""}</span>}</span>
+        <Links x={x} />
+      </span>
       <span className="fl-track" ref={ref} role="img" aria-label={summary}>
         {w > 0 &&
           px.map(({ b, s, l, wd, share }, i) => {
@@ -429,7 +467,7 @@ function PrRow({ x, phases, color, onTask }: { x: JourneyItem; phases: { name: s
       <span className="fl-total">
         {dur(x.total_s)}
         {x.state === "open" && <small><i className="fl-live" />open</small>}
-        {x.state === "closed" && <small>closed</small>}
+        {(x.state === "closed" || x.state === "cancelled") && <small>{x.state}</small>}
       </span>
     </li>
   );
@@ -496,13 +534,13 @@ function Overview({ c }: { c: Ctx }) {
             <FlowEmpty />
           )}
         </Section>
-        <Section title="Funnel" hint="Issue to deploy, this period">
+        <Section title="Funnel" hint="Started this period, through each phase, delivered">
           <BarList
             label="Funnel"
             fmt={(v) => String(v)}
             rows={ins.funnel.map((f, i) => ({
               key: f.step,
-              label: FUNNEL[f.step] ?? words(f.step),
+              label: f.label,
               value: f.n,
               color: series(0),
               sub: i && funnelTop ? pct(f.n / funnelTop) : "",
@@ -510,12 +548,12 @@ function Overview({ c }: { c: Ctx }) {
           />
         </Section>
       </div>
-      <Section title="Throughput" hint="PRs per day">
+      <Section title="Throughput" hint="Items per day">
         <Columns
-          label="PRs merged and opened per day"
+          label="Items delivered and started per day"
           xs={ins.throughput.map((t) => t.day)}
-          series={[{ key: "merged", label: "Merged", color: series(0) }, { key: "opened", label: "Opened", color: series(2) }]}
-          value={(i, s) => ins.throughput[i]![s as "merged" | "opened"]}
+          series={[{ key: "delivered", label: "Delivered", color: series(0) }, { key: "started", label: "Started", color: series(2) }]}
+          value={(i, s) => ins.throughput[i]![s as "delivered" | "started"]}
           mode="group"
           fmt={(v) => String(Math.round(v))}
         />
@@ -523,7 +561,6 @@ function Overview({ c }: { c: Ctx }) {
     </>
   );
 }
-const FUNNEL: Record<string, string> = { issue: "Issues", pr_opened: "PR opened", ci_passed: "CI passed", review_passed: "Review passed", merged: "Merged", deployed: "Deployed" };
 
 /* ----------------------------------------------------------------------------- Stages */
 function Stages({ c }: { c: Ctx }) {
@@ -586,9 +623,9 @@ function Stages({ c }: { c: Ctx }) {
           <FlowEmpty />
         )}
       </Section>
-      <Section title="Cycle time" hint="Each merged PR, end to end (log scale); click a dot to open it">
+      <Section title="Cycle time" hint="Each finished item, end to end (log scale); click a dot to open it">
         <DotPlot
-          label={`Cycle time of ${ins.scatter.length} PRs by merge date; p50 ${dur(pts.length ? q(0.5) : null)}, p85 ${dur(pts.length ? q(0.85) : null)}`}
+          label={`Cycle time of ${ins.scatter.length} items by end date; p50 ${dur(pts.length ? q(0.5) : null)}, p85 ${dur(pts.length ? q(0.85) : null)}`}
           legend={AUTHORS.map(([k, name]) => ({ label: name, color: AUTHOR_COLOR[k]! }))}
           fmtY={dur}
           height={300}
@@ -598,9 +635,9 @@ function Stages({ c }: { c: Ctx }) {
             x: Date.parse(s.end),
             y: s.total_s,
             color: s.author_kind ? AUTHOR_COLOR[s.author_kind] ?? "var(--faint)" : "var(--faint)",
-            label: `${s.subject.replace(/^pr:/, "")}: ${dur(s.total_s)}, ended ${day(s.end)}`,
+            label: `${nameOf(s)}: ${dur(s.total_s)}, ended ${day(s.end)}`,
             onClick: () => c.openSubject(s.subject, s),
-            tip: () => <TipBody head={s.subject.replace(/^pr:/, "")} rows={[["Total", dur(s.total_s)], ["Ended", day(s.end)], ["Author", s.author_kind ?? "unknown"]]} />,
+            tip: () => <TipBody head={s.title ? `${nameOf(s)} ${s.title}` : nameOf(s)} rows={[["Total", dur(s.total_s)], ["Ended", day(s.end)], ...(s.author_kind ? [["Author", s.author_kind] as [string, string]] : [])]} />,
           }))}
         />
       </Section>
@@ -627,7 +664,7 @@ function Rework({ c }: { c: Ctx }) {
         )}
       </Section>
       <div className="fl-split">
-        <Section title="First pass" hint="Share of PRs through AI review without a rejection, by week">
+        <Section title="First pass" hint="Share of finished items with every phase done the first time, by week">
           <Lines label="First-pass rate by week" xs={ins.first_pass.map((f) => f.week)} series={[{ key: "rate", label: "First pass", color: series(0) }]} value={(i) => ins.first_pass[i]!.rate} fmt={pct} yMax={1} xLabel={(w) => day(w)} />
         </Section>
         <Section title="Why the AI reviewer rejected" hint="Reason codes, this period">
@@ -678,7 +715,7 @@ function Queue({ c }: { c: Ctx }) {
   return (
     <>
       {ins && (
-        <Section title="Open work by age" hint="Each open PR in its current phase; the line is that phase's p85 (log scale)" count={ins.aging.length}>
+        <Section title="Open work by age" hint="Each open item in its current phase; the line is that phase's p85 (log scale)" count={ins.aging.length}>
           <DotPlot
             label={`${ins.aging.length} open items by current phase and age`}
             cats={cats}
@@ -692,11 +729,11 @@ function Queue({ c }: { c: Ctx }) {
                 x: idx(a.phase),
                 y: a.age_s,
                 color: c.color(a.phase),
-                label: `${a.title ?? a.subject}: ${dur(a.age_s)} in ${a.phase}${a.idle_reason ? `, waiting on ${words(a.idle_reason)}` : ""}`,
+                label: `${a.title ?? nameOf(a)}: ${dur(a.age_s)} in ${a.phase}${a.idle_reason ? `, waiting on ${words(a.idle_reason)}` : ""}`,
                 onClick: () => c.openSubject(a.subject, a),
                 tip: () => (
                   <TipBody
-                    head={a.title ?? a.subject.replace(/^pr:/, "")}
+                    head={a.title ? `${nameOf(a)} ${a.title}` : nameOf(a)}
                     rows={[["Age", dur(a.age_s)], ["Phase", c.phases[idx(a.phase)]!.label], ...(a.idle_reason ? [["Waiting on", words(a.idle_reason)] as [string, string]] : [])]}
                     foot={p85 != null && a.age_s > p85 ? "Older than 85% of finished items in this phase" : undefined}
                   />
@@ -739,24 +776,24 @@ function IdleList({ items, onOpen }: { items: IdleItem[]; onOpen: (id: string) =
 function Cost({ c }: { c: Ctx }) {
   const cost = c.ins!.cost;
   const spent = cost.by_agent.reduce((a, x) => a + x.usd, 0);
-  const merged = cost.by_agent.reduce((a, x) => a + x.merged, 0);
-  const rows = (xs: { key: string; usd: number; merged: number }[], color: string) =>
+  const delivered = cost.by_agent.reduce((a, x) => a + x.delivered, 0);
+  const rows = (xs: { key: string; usd: number; delivered: number }[], color: string) =>
     [...xs].sort((a, b) => b.usd - a.usd).map((x) => ({
       key: x.key,
       label: x.key,
       value: x.usd,
       color,
-      sub: x.merged ? `${x.merged} merged · ${usd(x.usd / x.merged)} each` : "nothing merged",
+      sub: x.delivered ? `${x.delivered} delivered · ${usd(x.usd / x.delivered)} each` : "nothing delivered",
     }));
   return (
     <>
       <div className="fl-tiles">
-        <StatBlock label="Per merged PR" value={usd(merged ? spent / merged : null)} sub={`${merged} merged this period`} />
+        <StatBlock label="Per delivered item" value={usd(delivered ? spent / delivered : null)} sub={`${delivered} delivered this period (a PR merged, a piece of work done)`} />
         <StatBlock label="Spent" value={usd(spent)} sub="all agent runs, failed attempts included" />
-        <StatBlock label="Never merged" value={usd(cost.unmerged_usd)} sub={spent ? `${pct(cost.unmerged_usd / spent)} of spend went to attempts that didn't land` : "attempts that didn't land"} tone={spent && cost.unmerged_usd / spent > 0.25 ? "bad" : undefined} />
+        <StatBlock label="Never delivered" value={usd(cost.undelivered_usd)} sub={spent ? `${pct(cost.undelivered_usd / spent)} of spend went to attempts that didn't land` : "attempts that didn't land"} tone={spent && cost.undelivered_usd / spent > 0.25 ? "bad" : undefined} />
       </div>
-      <Section title="Cost per merged PR" hint="By week">
-        <Columns label="Cost per merged PR by week" xs={cost.per_merged.map((w) => w.week)} series={[{ key: "usd", label: "Per merged PR", color: series(0) }]} value={(i) => cost.per_merged[i]!.usd} fmt={(v) => `$${v.toFixed(v < 10 ? 2 : 0)}`} xLabel={week} height={200} />
+      <Section title="Cost per delivered item" hint="By week">
+        <Columns label="Cost per delivered item by week" xs={cost.per_delivered.map((w) => w.week)} series={[{ key: "usd", label: "Per delivered item", color: series(0) }]} value={(i) => cost.per_delivered[i]!.usd} fmt={(v) => `$${v.toFixed(v < 10 ? 2 : 0)}`} xLabel={week} height={200} />
       </Section>
       <div className="fl-split">
         <Section title="By agent">

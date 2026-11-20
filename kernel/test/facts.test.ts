@@ -70,3 +70,13 @@ test("opening the log normalises times to UTC and PR names to lowercase, merging
   assert.equal(db.prepare("SELECT count(*) AS n FROM facts").get().n, 3);
   assert.ok(again);
 });
+
+test("a fact's task named by its identifier is kept as the task's id, new and old rows alike", () => {
+  const records = openRecords(join(mkdtempSync(join(tmpdir(), "flow-")), "kernel.db"));
+  records.file(filing({ task: "0b1c2d3e-uuid", identifier: "WOR-5" }));
+  records.db.prepare("INSERT INTO facts (id, type, subject, version, task, at, seen_at, actor) VALUES ('old', 'pr.opened', 'pr:acme/app#1', 'v', 'WOR-5', ?, ?, 'module:github')").run("2026-11-19T10:00:00.000Z", "2026-11-19T10:00:00.000Z");
+  const facts = openFacts(records.db);
+  facts.record(fact({ type: "pr.pushed", subject: "pr:acme/app#1", task: "WOR-5" }));
+  facts.record(fact({ type: "pr.pushed", subject: "pr:acme/app#2", task: "t9" }));
+  assert.deepEqual(records.db.prepare("SELECT task FROM facts WHERE subject GLOB 'pr:*' ORDER BY seq").all().map((r) => r.task), ["0b1c2d3e-uuid", "0b1c2d3e-uuid", "t9"]);
+});
