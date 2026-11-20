@@ -51,6 +51,8 @@ export function kernelClient(url: string, token: string, f: Fetch = fetch) {
     },
     ownerMessage: async (m: OwnerMessage): Promise<{ task: { id: string; identifier: string } }> => ok("POST", "/v1/channel/owner-message", m),
     stop: async (task: string): Promise<{ stopped: number }> => ok("POST", "/v1/channel/stop", { task }),
+    /** Every open task's one state with the fleet's counts (role kernel.flow-read). */
+    openTasks: async (): Promise<any> => ok("GET", "/v1/tasks/state?open=1"),
     read,
   };
 }
