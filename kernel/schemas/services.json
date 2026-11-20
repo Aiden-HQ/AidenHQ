@@ -40,7 +40,7 @@
           "join": { "type": "array", "items": { "type": "string" }, "description": "networks of modules it requires" },
           "on_demand": { "type": "boolean", "description": "started only by `docker compose run` (profile <module>, no restart)" },
           "when": { "type": "object", "minProperties": 1, "additionalProperties": { "type": "string" }, "description": "runs only while each named setting has this value" },
-          "share": { "type": "object", "additionalProperties": false, "properties": { "host": { "type": "string" }, "aud": { "type": "string" }, "default_role": { "type": "string" } }, "description": "people reach it through the gate at https://<host> as app <module> (host from an instance setting; empty: not shared); needs ui_port; mounts the gate's public keys at /run/secrets/AIDENHQ_IDENTITY_KEYS" }
+          "share": { "type": "object", "additionalProperties": false, "properties": { "host": { "type": "string" }, "aud": { "type": "string" }, "default_role": { "type": "string" } }, "description": "people reach it through the gate at https://<host> as app <module> (host from an instance setting; empty: the module door, the board's host on 8447 for AidenHQ admins, without settings.edge); needs ui_port; it gets the address as AIDENHQ_APP_URL; mounts the gate's public keys at /run/secrets/AIDENHQ_IDENTITY_KEYS" }
         }
       }
     }

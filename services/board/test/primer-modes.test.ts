@@ -1,5 +1,6 @@
 // Primer's owner setup in each primer_mode, from a fresh install to connected, through the board's Connect (the proxy and the
-// kernel's save_secret stood in for): self-host pastes the service token; connect gives the MCP address, then signs in with OAuth.
+// kernel's save_secret stood in for): self-host (the default) is connected from the start with nothing to give (its token is
+// generated and seeded, modules/primer/server/start.ts); connect gives the MCP address, then signs in with OAuth.
 import { request } from "node:http";
 import type { AddressInfo } from "node:net";
 import pino from "pino";
@@ -12,9 +13,8 @@ import { Store } from "../src/store.js";
 import { fakeRecords } from "./fake-records.js";
 import { BOARD_KEY, fakeKernel } from "./kernel.js";
 
-const GOOD = "primer_pat_" + "a".repeat(24);
 const secrets = {
-  "self-host": [{ secret: "primer_service_token", label: "Primer service token", pattern: "^primer_pat_[A-Za-z0-9_-]{16,}$", help: "Open https://primer.example.com, sign in, go to Settings, API tokens." }],
+  "self-host": [],
   connect: [{ secret: "primer_mcp_url", label: "Primer MCP address", pattern: "^https://.+$" }],
 };
 
@@ -29,7 +29,7 @@ describe.each(["self-host", "connect"] as const)("Primer owner setup, primer_mod
     const path = new URL(String(u)).pathname;
     const value = saved().at(-1)?.value;
     if (path === "/auth/status") {
-      if (mode === "self-host") return Response.json(!value ? { configured: true, state: "missing", paste: true } : value === GOOD ? { configured: true, state: "ok", paste: true } : { configured: true, state: "expired", paste: true, detail: "Primer refused the service token" });
+      if (mode === "self-host") return Response.json({ configured: true, state: "ok" });
       return Response.json({ configured: Boolean(value), state: signedIn ? "ok" : "missing" });
     }
     if (path === "/auth/start") return Response.json({ url: "https://primer.example.com/oauth/authorize?state=s" });
@@ -66,23 +66,20 @@ describe.each(["self-host", "connect"] as const)("Primer owner setup, primer_mod
       req.end(body === undefined ? (method === "GET" ? undefined : "{}") : JSON.stringify(body));
     });
 
-  it("asks for its value on Connect and ends connected", async () => {
+  it("ends connected: self-host with nothing asked, connect after its address and sign-in", async () => {
+    if (mode === "self-host") {
+      expect((await owner("GET", "/api/sign-ins/primer")).json).toMatchObject({ asks: false, state: "ok", fields: [] });
+      expect(saved()).toEqual([]);
+      return;
+    }
     const [field] = secrets[mode];
     expect((await owner("GET", "/api/sign-ins/primer")).json).toMatchObject({ asks: true, state: "missing", fields: [{ secret: field!.secret }] });
     expect(await owner("GET", "/primer/connect")).toMatchObject({ status: 302, location: "/#/settings/connections?connect=primer" });
-    if (mode === "self-host") {
-      // A token Primer refuses is saved but not connected: it says why and still asks.
-      expect((await owner("POST", "/api/sign-ins/primer/secret", { secret: field!.secret, value: "primer_pat_" + "b".repeat(24) })).status).toBe(200);
-      expect((await owner("GET", "/api/sign-ins/primer")).json).toMatchObject({ asks: true, state: "expired", detail: "Primer refused the service token" });
-      expect((await owner("POST", "/api/sign-ins/primer/secret", { secret: field!.secret, value: GOOD })).status).toBe(200);
-      expect((await owner("GET", "/api/sign-ins/primer")).json).toMatchObject({ asks: false, state: "ok" });
-    } else {
-      expect((await owner("POST", "/api/sign-ins/primer/secret", { secret: field!.secret, value: "https://primer.example.com/mcp" })).status).toBe(200);
-      expect((await owner("GET", "/api/sign-ins/primer")).json).toMatchObject({ asks: false, state: "missing" });
-      expect(await owner("GET", "/primer/connect")).toMatchObject({ status: 302, location: "https://primer.example.com/oauth/authorize?state=s" });
-      expect((await owner("GET", "/primer/callback?state=s&code=c")).status).toBe(302);
-      expect((await owner("GET", "/api/sign-ins/primer")).json).toMatchObject({ asks: false, state: "ok" });
-    }
+    expect((await owner("POST", "/api/sign-ins/primer/secret", { secret: field!.secret, value: "https://primer.example.com/mcp" })).status).toBe(200);
+    expect((await owner("GET", "/api/sign-ins/primer")).json).toMatchObject({ asks: false, state: "missing" });
+    expect(await owner("GET", "/primer/connect")).toMatchObject({ status: 302, location: "https://primer.example.com/oauth/authorize?state=s" });
+    expect((await owner("GET", "/primer/callback?state=s&code=c")).status).toBe(302);
+    expect((await owner("GET", "/api/sign-ins/primer")).json).toMatchObject({ asks: false, state: "ok" });
     expect(saved().every((s) => s.module === "primer" && s.secret === field!.secret)).toBe(true);
   });
 });

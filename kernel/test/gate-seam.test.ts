@@ -100,7 +100,7 @@ async function openApp(host, session, path = "/") {
   assert.match(go.location, new RegExp(`^https://${host.replace(/\./g, "\\.")}/\\.auth/handoff\\?code=`));
   const handoff = await through(host, "GET", new URL(go.location).pathname + new URL(go.location).search, { cookie: state });
   assert.deepEqual([handoff.status, handoff.location], [302, path]);
-  return cookieOf(handoff.cookies, "__Host-better-auth.session_token");
+  return cookieOf(handoff.cookies, "__Host-aidenhq-gate.session");
 }
 const exported = () => JSON.parse(readFileSync(accountsFile, "utf8"));
 const signInAs = async (email) => cookieOf((await through(MY, "POST", "/.auth/api/sign-in/email", { body: { email, password: PASSWORD } })).cookies, "__Host-better-auth.session_token");
@@ -158,7 +158,7 @@ test("a PR preview host has its app's access and its own identity; only previews
     const state = cookieOf(first.cookies, "__Host-better-auth.handoff_state");
     const go = await through(MY, "GET", new URL(first.location).pathname + new URL(first.location).search, { cookie: uma, port });
     const handoff = await through("pr-4.crm.example.com", "GET", new URL(go.location).pathname + new URL(go.location).search, { cookie: state, port });
-    const session = cookieOf(handoff.cookies, "__Host-better-auth.session_token");
+    const session = cookieOf(handoff.cookies, "__Host-aidenhq-gate.session");
     assert.equal((await through("pr-4.crm.example.com", "GET", "/", { cookie: session, port })).body, "app");
     const c = who(seen.at(-1));
     assert.deepEqual({ email: c.email, role: c.role, aud: c.aud }, { email: "uma@example.com", role: "member", aud: "crm-pr-4" });
@@ -167,7 +167,7 @@ test("a PR preview host has its app's access and its own identity; only previews
     const w = await through("pr-2.wiki.example.com", "GET", "/", { port });
     const wgo = await through(MY, "GET", new URL(w.location).pathname + new URL(w.location).search, { cookie: uma, port });
     const wh = await through("pr-2.wiki.example.com", "GET", new URL(wgo.location).pathname + new URL(wgo.location).search, { cookie: cookieOf(w.cookies, "__Host-better-auth.handoff_state"), port });
-    assert.equal((await through("pr-2.wiki.example.com", "GET", "/", { cookie: cookieOf(wh.cookies, "__Host-better-auth.session_token"), port })).status, 403);
+    assert.equal((await through("pr-2.wiki.example.com", "GET", "/", { cookie: cookieOf(wh.cookies, "__Host-aidenhq-gate.session"), port })).status, 403);
   } finally {
     g.close();
   }
@@ -296,7 +296,7 @@ test("counts failed sign-ins against the visitor's Cloudflare address, not the g
 test("a local door: the admin listener's code becomes this host's session, an admin's identity, and nothing elsewhere", async () => {
   const doorsFile = join(dir, "doors.json");
   writeFileSync(doorsFile, JSON.stringify({ notes: appPort(), other: appPort() }));
-  const g = await startGate(baseConfig({ my_apps: undefined, hosts: {}, origin: { scheme: "http", port: 3130 }, doors: { base: "localhost", file: doorsFile, signin: "http://localhost:3120" } }));
+  const g = await startGate(baseConfig({ my_apps: undefined, hosts: {}, origin: { scheme: "http", port: 3130 }, doors: { base: "localhost", file: doorsFile }, signin: "http://localhost:3120" }));
   const port = g.address().port;
   try {
     const first = await through("notes.localhost:3130", "GET", "/plan", { port });
@@ -312,7 +312,7 @@ test("a local door: the admin listener's code becomes this host's session, an ad
       const code = accounts.mintDoorCode({ account: { id: s_.user.id }, session: { id: s_.session.id }, ready: true }, "http://notes.localhost:3130", state);
       const handoff = await through("notes.localhost:3130", "GET", `/.auth/handoff?${new URLSearchParams({ code, state, next: "/plan" })}`, { port, cookie: cookieOf(first.cookies, "__Host-better-auth.handoff_state") });
       assert.deepEqual([handoff.status, handoff.location], [302, "/plan"]);
-      return cookieOf(handoff.cookies, "__Host-better-auth.session_token");
+      return cookieOf(handoff.cookies, "__Host-aidenhq-gate.session");
     };
     await user("dora@example.com", "Dora");
     const session = await redeem("dora@example.com");

@@ -31,6 +31,11 @@
 // port from apps-mcp's doors file. A door has no sign-in of its own: a visitor without a session goes to the kernel's admin
 // listener (`signin`), which signs them in and hands a one-time code back to the app host. `origin` (scheme and port) is
 // how a browser names every host this gate serves; absent, https on the default port.
+// The module door (a `hosts` entry with `door` and its own `origin`): a module service shared with no host, on every exposure
+// mode without edge, at the board's own host name on the door port, which the front door passes to this gate. It is a door
+// like the others (admins only, the admin listener's sign-in). It shares a host name with the board and the admin listener,
+// whose cookies ignore ports, so an app host's session is the gate's own cookie (APP_SESSION_COOKIE), never Better Auth's
+// name, and every aidenhq- cookie (the board's) is stripped like Better Auth's before any app.
 import { createHash, createPrivateKey, createPublicKey, randomBytes, sign, timingSafeEqual, verify } from "node:crypto";
 import type { JsonWebKey, KeyObject } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
@@ -51,7 +56,7 @@ export type VerifiedEmail = Brand<string, "VerifiedEmail">;
 export type IdentityToken = Brand<string, "IdentityToken">;
 
 /** A shared app's host in the compiled config. */
-export interface HostSite { app: string; port: number; aud?: string; default_role?: string }
+export interface HostSite { app: string; port: number; aud?: string; default_role?: string; door?: true; origin?: string }
 /** The site a request is for: a shared app's host, a preview of one (`parent`: the live app), or a door (`door`). */
 export type Site = HostSite & { parent?: string; door?: true };
 /** config/gate.json, as scripts/edge.ts compiles it (my_apps, auth_url and hosts are always written). */
@@ -74,8 +79,10 @@ export interface GateConfig {
   my_apps?: { host: string; aud?: string };
   /** How browsers name this gate's hosts: the scheme and, unless the default, the port. Absent: https. */
   origin?: { scheme: "http" | "https"; port?: number };
-  /** Doors: every exposed app at <app>.<base>, its port from apps-mcp's `file`; sign-in on the admin listener `signin`. */
-  doors?: { base: string; file: string; signin: string };
+  /** Doors: every exposed app at <app>.<base>, its port from apps-mcp's `file`. */
+  doors?: { base: string; file: string };
+  /** Where a door's visitor signs in: the kernel's admin listener (every door, the module door included). */
+  signin?: string;
   identity_key_file: string;
   hosts: Record<string, HostSite>;
   previews?: { file: string; ports: [number, number] };
@@ -132,10 +139,15 @@ const AUTH_PATH = "/.auth/"; // sign-in pages (the gate's own, signin-pages.ts) 
 const AUTH_PAGES = new Set(["/.auth/sign-in", "/.auth/two-factor", "/.auth/set-password"]);
 const AUTH_ASSETS = "/.auth/assets/";
 const AUTH_API = new Set(["/.auth/api/sign-in/email", "/.auth/api/two-factor/verify-totp", "/.auth/api/reset-password", "/.auth/api/sign-out"]);
-const AUTH_COOKIE = /^(__secure-|__host-)?better-auth\./i; // Better Auth's cookies: to the auth listener only, never to an app
+// Better Auth's cookies (to the auth listener only) and AidenHQ's own (the gate's app session, the board's on a shared host
+// name): never to an app, and no app may set one.
+const AUTH_COOKIE = /^(__secure-|__host-)?(better-auth\.|aidenhq-)/i;
 // The session cookie, host-only on every host (the __Host- prefix forbids Domain, so no sibling host can toss one in).
-// The my-apps host gets it from Better Auth at sign-in; an app host gets it from the gate through a one-time handoff.
+// The my-apps host gets Better Auth's at sign-in; an app host gets the gate's own through a one-time handoff, sent on to the
+// kernel under Better Auth's name. Its own name: the module door shares a host name with the admin listener (cookies ignore
+// ports), whose Better Auth session it must never overwrite.
 const SESSION_COOKIE = "__Host-better-auth.session_token";
+const APP_SESSION_COOKIE = "__Host-aidenhq-gate.session";
 const GO_PATH = "/.auth/go"; // my-apps host: signed in → a handoff code for ?to=<app URL> → that app's HANDOFF_PATH
 const HANDOFF_PATH = "/.auth/handoff"; // app host: ?code=…&state=…&next=<path> → redeem with the board → host-only cookie
 const SIGN_OUT_PATH = "/.auth/sign-out"; // app host: POST → the board revokes this host's session
@@ -239,10 +251,10 @@ const cookies = (req: IncomingMessage) => String(req.headers.cookie ?? "").split
 const cookieName = (c: string) => c.split("=")[0]!.trim();
 /** Only Better Auth's cookies (for the auth listener), "" when there are none. */
 const authCookies = (req: IncomingMessage) => cookies(req).filter((c) => AUTH_COOKIE.test(cookieName(c))).join("; ");
-/** The session cookie's value when the request carries exactly one, else "". */
-const sessionCookie = (req: IncomingMessage) => {
-  const found = cookies(req).filter((c) => cookieName(c) === SESSION_COOKIE);
-  return found.length === 1 ? found[0]!.slice(SESSION_COOKIE.length + 1).trim() : "";
+/** The session cookie's value (`name`: Better Auth's on the my-apps host, the gate's own on an app host) when the request carries exactly one, else "". */
+const sessionCookie = (req: IncomingMessage, name: string) => {
+  const found = cookies(req).filter((c) => cookieName(c) === name);
+  return found.length === 1 ? found[0]!.slice(name.length + 1).trim() : "";
 };
 /** A same-host path to send a visitor back to, or "/". */
 const localPath = (p: unknown) => {
@@ -255,8 +267,8 @@ const localPath = (p: unknown) => {
   }
 };
 
-/** A host's origin as browsers name it (cfg.origin: scheme and port; default https on 443). */
-export const originOf = (cfg: Pick<GateConfig, "origin">, host: string) => `${cfg.origin?.scheme ?? "https"}://${host}${cfg.origin?.port ? `:${cfg.origin.port}` : ""}`;
+/** A host's origin as browsers name it: the module door's own, else cfg.origin (scheme and port; default https on 443). */
+export const originOf = (cfg: Pick<GateConfig, "origin">, host: string, site?: Site) => site?.origin ?? `${cfg.origin?.scheme ?? "https"}://${host}${cfg.origin?.port ? `:${cfg.origin.port}` : ""}`;
 
 /** The Access page and the request channel: the exact origin of this host, nothing else. */
 const exactOrigin = (req: IncomingMessage, origin: string) => req.headers.origin === origin;
@@ -413,6 +425,9 @@ export function doorSites(): (cfg: GateConfig, host: string) => Site | undefined
     }
     const port = (Object.hasOwn(map, app) ? map[app] : undefined) as number; // checked next
     if (!Number.isInteger(port) || port < 1024 || port > 65535 || PLATFORM_PORTS.has(port)) return undefined;
+    // A name a compiled host already serves (the module door's service, e.g. primer) is never an app door's: its token would be
+    // good at that service.
+    if (Object.values(cfg.hosts ?? {}).some((h) => h.app === app)) return undefined;
     return { app, port, door: true };
   };
 }
@@ -449,7 +464,7 @@ export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, l
   const sessions = new Map<string, { at: number; email: VerifiedEmail }>(); // sha256(auth cookies) → { at, email }
   /** The signed-in email from the board's get-session; null for no session; throws when the answer can't be trusted. */
   async function sessionEmail(req: IncomingMessage, cfg: GateConfig): Promise<VerifiedEmail | null> {
-    const v = sessionCookie(req);
+    const v = sessionCookie(req, cfg.my_apps?.host === hostOf(req) ? SESSION_COOKIE : APP_SESSION_COOKIE);
     if (!v) return null;
     const c = `${SESSION_COOKIE}=${v}`;
     // Per host: an app host's session is bound to the host it was handed to (the kernel checks), so its cached answer is too.
@@ -529,7 +544,7 @@ export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, l
       log({ msg: "previews or doors unreadable", err: String(e) });
       return { status: 503, msg: "unavailable: can't read the app list right now" };
     }
-    const origin = originOf(cfg, host);
+    const origin = originOf(cfg, host, site);
     const mine = !site && cfg.my_apps?.host === host;
     if (!site && !mine) return { status: 404, msg: "not found" };
     const url = String(req.url ?? "");
@@ -587,7 +602,7 @@ export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, l
         const state = randomBytes(16).toString("hex");
         const cookie = `${STATE_COOKIE}=${state}; Path=/; Max-Age=${STATE_TTL_S}; Secure; HttpOnly; SameSite=Lax`;
         // A door signs in on the kernel's admin listener, which hands a code back to this host (never a sign-in form here).
-        if (site?.door) return { status: 302, msg: "sign in", location: `${cfg.doors!.signin}/auth/handoff?${new URLSearchParams({ to: origin, state, next: url })}`, cookie };
+        if (site?.door) return { status: 302, msg: "sign in", location: `${cfg.signin}/auth/handoff?${new URLSearchParams({ to: origin, state, next: url })}`, cookie };
         if (!cfg.my_apps) return { status: 503, msg: "unavailable: misconfigured" };
         return { status: 302, msg: "sign in", location: `https://${cfg.my_apps.host}${GO_PATH}?to=${encodeURIComponent(`https://${host}${url}`)}&state=${state}`, cookie };
       }
@@ -810,7 +825,7 @@ export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, l
     try {
       const email = await sessionEmail(req, cfg);
       if (!email) return plain(res, 302, "sign in", { location: `${AUTH_PATH}sign-in?next=${encodeURIComponent(`${GO_PATH}?to=${encodeURIComponent(t.href)}&state=${state}`)}` });
-      const m = await board(cfg, "/.auth/api/handoff/mint", { host: t.hostname, state }, `${SESSION_COOKIE}=${sessionCookie(req)}`);
+      const m = await board(cfg, "/.auth/api/handoff/mint", { host: t.hostname, state }, `${SESSION_COOKIE}=${sessionCookie(req, SESSION_COOKIE)}`);
       if (m.status >= 400 && m.status < 500) return plain(res, 403, "forbidden");
       const code = m.body?.code;
       if (m.status !== 200 || typeof code !== "string" || !code) throw new Error(`handoff mint ${m.status}`);
@@ -842,7 +857,7 @@ export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, l
       if (r.status >= 400 && r.status < 500) return plain(res, 403, "forbidden: this sign-in link is used or expired; open the app again", clear);
       const token = r.body?.token;
       if (r.status !== 200 || typeof token !== "string" || !/^[A-Za-z0-9._~+/=-]{16,1024}$/.test(token)) throw new Error(`handoff redeem ${r.status}`);
-      plain(res, 302, "signed in", { location: localPath(query.get("next")), "set-cookie": [`${SESSION_COOKIE}=${token}; Path=/; Secure; HttpOnly; SameSite=Lax`, STATE_CLEAR], "referrer-policy": "no-referrer" });
+      plain(res, 302, "signed in", { location: localPath(query.get("next")), "set-cookie": [`${APP_SESSION_COOKIE}=${token}; Path=/; Secure; HttpOnly; SameSite=Lax`, STATE_CLEAR], "referrer-policy": "no-referrer" });
     } catch (e) {
       log({ msg: "handoff redeem failed", err: String(e) });
       plain(res, 503, "unavailable: can't sign you in right now", clear);
@@ -852,9 +867,9 @@ export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, l
   /** App host, POST /.auth/sign-out: the board revokes this host's session; the cookie expires and the cache forgets it. */
   async function signOut(req: IncomingMessage, res: ServerResponse) {
     const cfg = config();
-    const v = sessionCookie(req);
+    const v = sessionCookie(req, APP_SESSION_COOKIE);
     sessions.clear(); // a sign-out through the gate ends every cached answer at once, not within 60 s
-    const headers = { "set-cookie": [`${SESSION_COOKIE}=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Lax`], location: cfg.my_apps ? `https://${cfg.my_apps.host}/` : `${cfg.doors?.signin ?? ""}/` };
+    const headers = { "set-cookie": [`${APP_SESSION_COOKIE}=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Lax`], location: cfg.my_apps ? `https://${cfg.my_apps.host}/` : `${cfg.signin ?? ""}/` };
     if (!v) return plain(res, 303, "signed out", headers);
     try {
       const r = await board(cfg, "/.auth/api/handoff/revoke", { host: hostOf(req) }, `${SESSION_COOKIE}=${v}`);
