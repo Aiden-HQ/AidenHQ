@@ -7,6 +7,7 @@
 //   kernel/sdk/src/reviewer.ts       the reviewer side of reviewer@1, in the reviewer module's service
 //   kernel/sdk/src/kernel-client.ts  the module-to-kernel client, in each module that calls the kernel
 //   kernel/sdk/src/checks.ts         how check results are read, in the merge gate (codehost-github) and the grader
+//   kernel/sdk/src/paperclip.ts      the one Paperclip HTTP client (lanes through the kernel, or direct), in the board, tasks-mcp and ops-mcp
 //   kernel/sdk/src/pin-owner.ts      who moves the product pin, in the code host's release train (the kernel's updater imports it)
 //   kernel/sdk/src/judge.ts          the judges' models, cross-family choice and model call, in the reviewer and grading services
 //   services/shared/review-files.mjs  the changed files as the reviewer reads them, in the reviewer module's service
@@ -97,6 +98,8 @@ export function sharedCopies(root = repo) {
   // Who said it: a comment posted for someone else is never the owner's words (dispatch, the grader, task_comments, the board).
   "kernel/sdk/src/for-others.ts": ["modules/dispatch/service/src/aidenhq-sdk/for-others.ts", "modules/grading/service/src/aidenhq-sdk/for-others.ts", "modules/tasks/connections/tasks-mcp/src/aidenhq-sdk/for-others.ts", "services/board/src/aidenhq-sdk/for-others.ts"],
   // Whether an agent is paused (Paperclip's lifecycle holds, never its status): the board, the Telegram channel and the Fleet Steward.
+  // The one Paperclip client: the board (owner lane), the task tools (agent lane) and ops-mcp (its own key).
+  "kernel/sdk/src/paperclip.ts": ["services/board/src/aidenhq-sdk/paperclip.ts", "modules/tasks/connections/tasks-mcp/src/aidenhq-sdk/paperclip.ts", "modules/meetings/connections/ops-mcp/src/aidenhq-sdk/paperclip.ts"],
   "kernel/sdk/src/agent-paused.ts": ["services/board/src/aidenhq-sdk/agent-paused.ts", "modules/channel-telegram/connections/telegram/src/aidenhq-sdk/agent-paused.ts", "modules/fleet-steward/service/src/aidenhq-sdk/agent-paused.ts"],
   // The revert and incident linker: the board's quality report and the kernel's flow DORA (flow.ts imports the original).
   "kernel/sdk/src/quality.ts": ["services/board/src/aidenhq-sdk/quality.ts"],

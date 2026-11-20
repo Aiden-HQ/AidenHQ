@@ -8,6 +8,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { modelTools } from "./models.mjs";
 import { forOthers } from "./aidenhq-sdk/for-others.ts";
+import { paperclipClient } from "./aidenhq-sdk/paperclip.ts";
 
 const KERNEL = (process.env.AIDENHQ_KERNEL_URL || "http://10.231.0.1:3130").replace(/\/$/, "");
 const fileSecret = (f) => {
@@ -104,21 +105,8 @@ function toolMarkup(args) {
   return undefined;
 }
 
-async function api(method, path, body) {
-  const headers = { ...authHeaders(), accept: "application/json" };
-  if (body !== undefined) headers["content-type"] = "application/json";
-  const res = await fetch(`${KERNEL}/v1/cp/agent${path}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(20_000) });
-  const text = await res.text();
-  if (!res.ok) {
-    const err = new Error(`Paperclip ${method} ${path} → ${res.status}: ${text.slice(0, 300)}`);
-    err.status = res.status;
-    try {
-      err.body = text ? JSON.parse(text) : undefined;
-    } catch {}
-    throw err;
-  }
-  return text ? JSON.parse(text) : {};
-}
+const paperclip = paperclipClient({ url: KERNEL, token: SERVICE_KEY, lane: "agent", headers: () => ({ "x-aidenhq-caller": cx().assertion }) });
+const api = (method, path, body) => paperclip.request(method, path, body);
 
 /** The kernel records a wait on the caller's own task (POST /v1/wait, kernel idle.ts): its reason, and when it resumes. */
 async function kernelWait(body) {
@@ -140,11 +128,7 @@ async function retried(fn, delays = [250, 750]) {
   return fn();
 }
 
-async function apiBytes(path) {
-  const res = await fetch(`${KERNEL}/v1/cp/agent${path}`, { headers: authHeaders(), signal: AbortSignal.timeout(60_000) });
-  if (!res.ok) throw new Error(`Paperclip GET ${path} → ${res.status}`);
-  return Buffer.from(await res.arrayBuffer());
-}
+const apiBytes = (path) => paperclip.bytes(path, { timeoutMs: 60_000 });
 
 // Files on a task: text is read as text, plain images as images; a PDF through the text
 // version the board attaches next to it (<name>.txt).

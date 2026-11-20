@@ -14,6 +14,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { paperclipClient } from "../kernel/sdk/src/paperclip.ts";
 
 const LOG_MARKER = /<!-- source:(memory-inbox|review-log|chat-task):([\w-]+) -->/;
 
@@ -61,11 +62,8 @@ async function main() {
   const base = env("PAPERCLIP_URL", "http://127.0.0.1:3100");
   const key = readFileSync(join(expand(env("AIDENHQ_SECRETS_DIR", "~/.config/aidenhq")), "paperclip_board_key"), "utf8").trim();
   const grants = JSON.parse(readFileSync(join(resolve(repo, env("AIDENHQ_CONFIG_DIR", "config")), "grants", "grants.json"), "utf8")).agents ?? {};
-  const api = async (method, path, body) => {
-    const res = await fetch(new URL(path, base), { method, headers: { authorization: `Bearer ${key}`, accept: "application/json", ...(body ? { "content-type": "application/json" } : {}) }, body: body ? JSON.stringify(body) : undefined });
-    if (!res.ok) throw new Error(`${method} ${path} → ${res.status}`);
-    return res.json();
-  };
+  const paperclip = paperclipClient({ url: base, token: key, lane: "direct" });
+  const api = (method, path, body) => paperclip.request(method, path, body);
   let starts = 0;
   for (const company of await api("GET", "/api/companies")) {
     const live = (await api("GET", `/api/companies/${company.id}/agents`)).filter((a) => a.status !== "terminated" && grants[a.id]);
