@@ -6,7 +6,7 @@ import { promisify } from "node:util";
 import { dropPreviewDatabase, provisionDatabase, WAREHOUSE } from "./database.js";
 import { createEngine, type Engine, type ProbeOutcome } from "./deploy.js";
 import { apiTarget, SEND_SCRIPT, targetContainer, TIMEOUT_MS, type ApiRequest, type Resolve, type Send } from "./api.js";
-import { AGENT_TIMEOUT_MS, CHECK_SCRIPT, CHECK_TIMEOUT_MS, agentProbeScope, IDENTITY_SCRIPT, identityDoors, identityPorts, identityProbes, unprobedServices, judgeAgent, judgePage, plan, probeResult, type Declared, type Kind, type PageFacts, type PortAnswers, type ProbeResult } from "./checks.js";
+import { AGENT_TIMEOUT_MS, CHECK_SCRIPT, CHECK_TIMEOUT_MS, agentProbeScope, identityProbeArgs, identityDoors, identityPorts, identityProbes, unprobedServices, judgeAgent, judgePage, plan, probeResult, type Declared, type Kind, type PageFacts, type PortAnswers, type ProbeResult } from "./checks.js";
 import { MANIFEST_FILE, parseManifest } from "./manifest.js";
 import { lookup as dnsLookup } from "node:dns/promises";
 import { BROWSER_IMAGE, RENDER_TIMEOUT_MS, renderArgs, VIEW_SCRIPT, type Lookup, type Render, type ViewResult } from "./view.js";
@@ -402,7 +402,7 @@ export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: 
       const exposed = Object.keys(c.Config?.ExposedPorts ?? {}).filter((k) => k.endsWith("/tcp")).map((k) => parseInt(k, 10));
       const ips = Object.values<any>(c.NetworkSettings?.Networks ?? {}).flatMap((n) => [n.IPAddress, n.GlobalIPv6Address]).filter(Boolean);
       const input = { ports: [...exposed, ...required.filter((d) => d.service === service).map((d) => Number(d.port))], ips, probes: probes.map((p) => ({ method: p.method, path: p.path, headers: p.forged ? { [IDENTITY_HEADER]: forged } : {} })) };
-      const out = await exec(["run", "--rm", "-i", "--pull", "never", "--network", `container:${c.Id}`, "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--memory", "128m", cfg.healthImage, "node", "-e", IDENTITY_SCRIPT], { input: JSON.stringify(input), timeout: 300_000 });
+      const out = await exec(identityProbeArgs(cfg.healthImage, c.Id), { input: JSON.stringify(input), timeout: 300_000 });
       for (const k of (JSON.parse(out) as { sockets: { port: number; host: string; listening: boolean; raw?: PortAnswers["raw"]; statuses: number[] }[] }).sockets)
         ports.push({ service, port: k.port, host: k.host, listening: k.listening, ...(k.raw ? { raw: k.raw } : {}), answers: k.statuses.map((status, i) => ({ probe: probes[i]!, status })) });
     }
