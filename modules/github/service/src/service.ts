@@ -140,7 +140,10 @@ export function createService(o: Options) {
   async function fetchRemote(s: ReturnType<typeof slugOf>, name: string, kind: "github" | "ws" = "github") {
     const dir = await cache(s, kind);
     const ref = `refs/remote/${name}`;
-    await git(dir, ["fetch", "--quiet", "--no-tags", remote(s.slug), `+${/^[0-9a-f]{40}$/.test(name) ? name : `refs/heads/${name}`}:${ref}`], await token());
+    // git says only "Repository not found" for every refusal: the API's answer names the cause (an org's OAuth App
+    // restriction or SSO, a stale sign-in) as a typed need, and tells the owner.
+    await git(dir, ["fetch", "--quiet", "--no-tags", remote(s.slug), `+${/^[0-9a-f]{40}$/.test(name) ? name : `refs/heads/${name}`}:${ref}`], await token())
+      .catch(async (e) => { await gh("GET", `/repos/${s.slug}`); throw e; });
     return { dir, ref, sha: await git(dir, ["rev-parse", "--verify", `${ref}^{commit}`]) };
   }
 
