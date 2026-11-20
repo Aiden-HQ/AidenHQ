@@ -1,6 +1,8 @@
 name: apps-platform
 description: "The apps platform: the DevOps Engineer, apps-mcp (the apps connection and the deploy, run, restart, rollback and app API write kinds, each a kernel record it executes), the gate, the app starter and the design system. Always installed (core requires it)."
 roles:
+  # kernel.owner-notice: apps-mcp sends the owner the apps node's one-time Tailscale sign-in link (platform.ts edgeLogin).
+  requests: [ kernel.owner-notice ]
   declares:
     - { id: app-incidents, description: "Change any app with an open incident." }
     - { id: app-requests, description: "In-app requests and people roles of every shared app (apps-mcp app_requests, app_role_set)." }
@@ -121,7 +123,8 @@ routines:
     webhook_base: http://127.0.0.1:3100 # the kernel calls it from the host
     secrets_prefix: app_request_webhook # setup saves <prefix>_url / _secret for the kernel
     autonomy: tier0 # app users' text drives it: Tier 1 work from a request is the owner's
-# The apps' tailnet node's join key (compose.yaml apps-edge; docs/setup.md): created empty, the owner fills it once.
+# The apps' tailnet node's join key (compose.yaml apps-edge; docs/setup.md): optional. Without it the node signs in once
+# through a link sent to the owner.
 optional_secrets:
   - tailscale_apps_authkey
   # The app-request routine's webhook, for the kernel (paperclip-setup.ts fills it; empty = no wake).

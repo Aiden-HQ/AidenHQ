@@ -46,6 +46,7 @@ export const WAITING_FOR_CERTIFICATE =
   "Waiting for its HTTPS certificate: sslip.io names share one Let's Encrypt limit with everyone who uses sslip.io, so this can take days. Ask Aiden for your own domain or Tailscale.";
 export const NO_DOOR =
   "No browser door on this server yet: apps open through Tailscale's apps node, a shared host (settings.edge), or the gate's door on a local or public install. Ask Aiden.";
+export const WAITING_FOR_NODE = "Waiting for the apps' one-time Tailscale sign-in: approve it on the board's Apps page.";
 export const NOT_SERVED = "Its door opens once it has deployed healthy.";
 
 /**

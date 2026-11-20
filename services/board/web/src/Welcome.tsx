@@ -58,12 +58,13 @@ const write = (v: string) => { try { sessionStorage.setItem(STEP, v); } catch { 
 
 type Screen = { kind: "key" } | { kind: "org" } | { kind: "flow"; module: string } | { kind: "mcp" } | { kind: "summary" };
 
-// Claude Desktop and claude.ai call from Anthropic's cloud, so they need the board on public HTTPS; the board can't tell its exposure cheaply.
+// Claude Desktop and claude.ai call from Anthropic's cloud, so they need a public https address: not a tailnet name (*.ts.net) or loopback.
+const cloudReachable = (origin: string) => { const u = new URL(origin); return u.protocol === "https:" && !u.hostname.endsWith(".ts.net"); };
 const mcpSteps = (origin: string) => `**Claude Code:** \`claude mcp add --transport http aidenhq ${origin}/mcp\`, then \`/mcp\`, choose aidenhq, Authenticate, sign in and Allow.
 
 **Codex CLI:** \`codex mcp add aidenhq --url ${origin}/mcp\`
 
-Claude Code and Codex work from your own devices (tailnet devices on Tailscale, while the SSH tunnel is up on a local install). Claude Desktop and claude.ai connectors work only when the board is on public HTTPS.`;
+${cloudReachable(origin) ? "Claude Desktop and claude.ai connectors work here too." : "claude.ai needs public mode; Claude Code works here over the tunnel/tailnet."}`;
 
 function Wizard({ state, onFinished }: { state: WelcomeState & { orgs: boolean }; onFinished: () => void }) {
   // Your organisation first, when the catalog lists any: choosing one fills the client IDs the flows after it would ask for.

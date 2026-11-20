@@ -14,17 +14,17 @@ import { Banner } from "./ui";
 import "./settings.css";
 import "./setup-flow.css";
 
-type Board = { url: string; named: boolean };
+type Board = { url: string };
 
 export function SetupFlow({ module, change, onDone, onSignIn }: { module: string; change?: boolean; onDone: () => void; onSignIn: () => void }) {
   const [flow, setFlow] = useState<SetupFlowView | null | undefined>(undefined);
-  const [board, setBoard] = useState<Board>({ url: location.origin, named: true });
+  const [board, setBoard] = useState<Board>({ url: location.origin });
   const [error, setError] = useState("");
   const load = useCallback(
     () =>
       api.setupFlows().then(
         (r) => {
-          setBoard({ url: r.board_url, named: r.named });
+          setBoard({ url: r.board_url });
           setFlow(r.flows.find((f) => f.module === module) ?? null);
         },
         (e) => (e instanceof SignInRequired ? onSignIn() : setError((e as Error).message)),
@@ -84,19 +84,6 @@ function FlowBody({ flow, change, board, reload, onDone, onSignIn }: { flow: Set
     </button>
   );
   const head = <PageHeader title={flow.title} sub={flow.why} status={viaOrg ? <Effort effort="about a minute" /> : <Effort effort={flow.effort} admin={flow.admin} />} />;
-
-  // A setup that needs a named address, on a board reached by its IP: only why, and the way back.
-  if (flow.needs_name && !board.named) {
-    return (
-      <main className="st-page setup-page">
-        {head}
-        <section className="setup-card setup-stop">
-          <p>{flow.needs_name}</p>
-        </section>
-        <footer className="setup-foot">{later}</footer>
-      </main>
-    );
-  }
 
   const connect = flow.signin ? `/${flow.signin}/connect` : flow.connect_url;
   let n = 1;

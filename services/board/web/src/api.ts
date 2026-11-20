@@ -120,7 +120,6 @@ export interface SetupFlowView {
   fields?: { secret: string; label: string; pattern: string; help?: string }[];
   signin?: string;
   connect_url?: string;
-  needs_name?: string;
   pair_url?: string;
   console_url?: string;
   /** The exact redirect its sign-in sends (the steps' {redirect_url}): what a hand-made client must list. */
@@ -251,7 +250,7 @@ export const api = {
   organisations: () => call<Organisations>("GET", "/api/organisations"),
   organisationApply: (id: string) => call<{ ok: boolean; results: { module: string; secret: string; ok: boolean; error?: string }[] }>("POST", `/api/organisations/${encodeURIComponent(id)}/apply`, {}),
   signInSecret: (id: string, secret: string, value: string) => call<{ ok: boolean }>("POST", `/api/sign-ins/${encodeURIComponent(id)}/secret`, { secret, value }),
-  setupFlows: () => call<{ flows: SetupFlowView[]; board_url: string; named: boolean }>("GET", "/api/setup-flows"),
+  setupFlows: () => call<{ flows: SetupFlowView[]; board_url: string }>("GET", "/api/setup-flows"),
   setupSecret: (module: string, secret: string, value: string) => call<{ ok: boolean }>("POST", `/api/setup-flows/${module}/secret`, { secret, value }),
   setupChoose: (module: string, value: string, inputs: Record<string, string>) => call<{ ok: boolean; identifier?: string }>("POST", `/api/setup-flows/${module}/choose`, { value, inputs }),
   setupDismiss: (module: string) => call<{ ok: boolean }>("POST", `/api/setup-flows/${module}/dismiss`, {}),
@@ -282,7 +281,7 @@ export const api = {
   testSignIn: (id: string) => call<{ ok: true } | { ok: false; message: string; fix?: string }>("POST", `/api/sign-ins/${encodeURIComponent(id)}/check`),
   changeSettings: (changes: SettingChange[]) => call<{ identifier: string }>("POST", "/api/settings/change", { changes }),
   settingsChanges: () => call<{ changes: FiledChange[] }>("GET", "/api/settings/changes"),
-  apps: () => call<{ apps: AppRow[]; error?: string }>("GET", "/api/apps"),
+  apps: () => call<{ apps: AppRow[]; error?: string; node?: { up: boolean; login_url?: string } }>("GET", "/api/apps"),
   costLedger: (q: URLSearchParams) => call<CostLedger>("GET", `/api/costs/ledger?${q}`),
   featureCost: (ref: string) => call<{ cost: FeatureCost | null }>("GET", `/api/issues/${encodeURIComponent(ref)}/feature-cost`),
   features: () => call<Features>("GET", "/api/costs/features"),

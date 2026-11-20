@@ -76,7 +76,7 @@ describe("panel", () => {
     const make = (urlBase: string, node: string) => {
       writeFileSync(join(dir, "apps-node"), node);
       return createPlatform(
-        { registryPath, modulesRegistryPath: join(dir, "apps.modules.yaml"), appsData: dir, secretsDir: dir, hostSecretsDir: dir, identityKeyFile: join(dir, "missing.pem"), identityKeysHostFile: join(dir, "keys.json"), dbPath: join(dir, "state.sqlite"), urlBase, appsNodeFile: join(dir, "apps-node"), edgeDir: dir, healthImage: "none", git: { appsData: dir, gitDir: dir } },
+        { registryPath, modulesRegistryPath: join(dir, "apps.modules.yaml"), appsData: dir, secretsDir: dir, hostSecretsDir: dir, identityKeyFile: join(dir, "missing.pem"), identityKeysHostFile: join(dir, "keys.json"), dbPath: join(dir, "state.sqlite"), urlBase, appsNodeFile: join(dir, "apps-node"), edgeDir: dir, healthImage: "none", git: { appsData: dir, gitDir: dir }, nodeStatus: async () => ({ BackendState: "Running" }) },
         { warn: () => {}, info: () => {} },
       );
     };
@@ -84,6 +84,7 @@ describe("panel", () => {
     expect(await local.status(local.find("notes"))).toMatchObject({ url: undefined, unpublished: expect.stringMatching(/No browser door/) });
     expect(local.previewUrl(previewApp(local.find("notes")!, 3, 39100))).toBeUndefined();
     const tailnet = make("https://acme-apps.example.ts.net", "tailnet\n");
+    await tailnet.syncEdge().catch(() => {}); // the node's login state is read first (a stub: Running)
     expect(await tailnet.status(tailnet.find("notes"))).toMatchObject({ url: "https://acme-apps.example.ts.net:8123" });
     expect(await tailnet.status(tailnet.find("notes"))).not.toHaveProperty("unpublished");
     expect(tailnet.previewUrl(previewApp(tailnet.find("notes")!, 3, 39100))).toBe("https://acme-apps.example.ts.net:39100");

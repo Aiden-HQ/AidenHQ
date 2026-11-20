@@ -132,6 +132,8 @@ It is idempotent. The Engineer runs it for you after you approve a change.
 
 ## Health
 
+- Paperclip's console listens on `127.0.0.1:3100` only: in `public` and `local` mode (and `tailscale`) reach it over an SSH
+  tunnel, `ssh -N -L 3100:127.0.0.1:3100 <you>@<host>`, then `http://localhost:3100` (setup.md step 6).
 - `scripts/healthcheck.sh`: read-only check of Paperclip, the board and each service; prints `ok` or `FAIL` per check.
 - `scripts/verify-security.sh`: mechanical checks of the security criteria (token scoping, read-only endpoints,
   exposure). Run with the stack up.

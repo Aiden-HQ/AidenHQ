@@ -8,7 +8,8 @@ install's exposure:
 |---|---|---|---|
 | `local` (Mac/Lima, SSH tunnel) | the gate on the host's loopback, plain http | `http://<app>.localhost:3130` | the admin listener, `http://localhost:3120` (through the tunnel) |
 | `public` (Caddy on the IP) | Caddy to the gate on loopback | `https://<app>.<ip-with-dashes>.sslip.io` | the admin listener, `https://<ip>:8446` |
-| `tailscale` with the apps node | unchanged: the apps node | `https://<user>-apps.<tailnet>:<port>` | none (anonymous on the tailnet) |
+| `tailscale` with `TS_APPS_AUTHKEY` | unchanged: the apps node, joined with the key | `https://<user>-apps.<tailnet>:<port>` | none (anonymous on the tailnet) |
+| `tailscale`, no `TS_APPS_AUTHKEY` | the same apps node, signed in once by the owner through a login link (below) | `https://<user>-apps.<tailnet>:<port>` | none (anonymous on the tailnet) |
 | any, with `settings.edge` | unchanged: the edge (Cloudflare tunnel or header-jwt front door) | `https://<share.host>` | `edge.my_apps.host` |
 
 A door serves every exposed app (`expose: true`, a port, no `share.host`; `exposes()` in apps-mcp `tailnet.ts`) and only
@@ -18,6 +19,16 @@ every mode, tailscale included. Other people get an app only by sharing it (`sha
 board, where `<app>.localhost` would be the viewer's own machine).
 
 ## How it works
+
+**The apps node's login.** In `tailscale` mode compile always runs the apps node (`apps-edge`); with no key in the vault it is
+composed without `TS_AUTHKEY`, so it starts logged out and keeps `/state` once signed in. The node is a door, and apps
+take anonymous tailnet callers (`AIDENHQ_ANONYMOUS`), only once `tailscale status --json` says `Running` (apps-mcp
+`refreshNode`, each tick); until then apps require a signed identity and the row says it waits for the sign-in. When an
+exposed app is served and the node says `NeedsLogin`, apps-mcp sends the owner one generic `decision` notice
+(`dedupe_key` `apps-edge:login`, role `kernel.owner-notice`), with no link: the login link is a bearer secret (whoever
+opens it can put the node on their own tailnet). The link is on the board's Apps page only, from apps-mcp's internal-token
+`/internal/apps-node`. When the state changes, the reconcile tick deploys each exposed app again at its running commit
+(its anonymous setting is baked in at deploy), so no hand step follows the approval.
 
 **One origin rule.** `config/gate.json` has `origin: { scheme, port }` (absent: `https`, default port). The gate's
 `sameOrigin`, `exactOrigin`, redirects and sign-out, the kernel's handoff target check and apps-mcp's app URL all build

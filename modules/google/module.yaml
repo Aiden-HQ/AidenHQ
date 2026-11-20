@@ -8,8 +8,8 @@ contributes:
   # Your own Google client (a Desktop app), pasted on the board (#/setup/google). Connect Google is the board's own route
   # (/google/connect), not a board.signins entry, so the flow names it as `connect_url`; the board shows its button and marks
   # the flow done once an account is connected. A Desktop client takes a loopback redirect only: Connect runs on the board's
-  # loopback address, or the person pastes the redirected address back. Google refuses a bare-IP redirect, so on a bare-IP
-  # address the flow shows `needs_name`. An organisation that runs an Internal client lists it in the catalog instead
+  # loopback address, or the person pastes the redirected address back. The board's address never matters, so this works
+  # on a bare-IP board too. An organisation that runs an Internal client lists it in the catalog instead
   # (modules/marketplace.json organisations): its client ID and secret fill the two fields, and these steps are skipped.
   board.setup_flows:
     - order: 40
@@ -20,7 +20,6 @@ contributes:
       secrets: [google_client_id, google_client_secret]
       console_url: https://console.cloud.google.com/auth/clients/create
       connect_url: /google/connect
-      needs_name: "Google only accepts a named address (like aiden.example.com) or this computer's own address (127.0.0.1) for its sign-in, and this board is reached by its IP address. Open the board through an SSH tunnel to this computer's 127.0.0.1, or ask Aiden to set up Tailscale or a domain for the board."
       steps: |
         **Before you start: which kind of Google account?**
         - **Google Workspace (a company address): choose Internal.** Only people in your organisation can sign in, Google needs no review and sign-ins never expire. Your Workspace admin may need to allow it.

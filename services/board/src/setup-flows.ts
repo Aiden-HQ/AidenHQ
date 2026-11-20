@@ -2,7 +2,6 @@
 // saved by the kernel (account ops save_secret and setup_status, as the signed-in admin); pairing is the module service's own
 // endpoint, reached with the module's pair token (read from the vault by name, never sent to the browser).
 import { existsSync, readFileSync } from "node:fs";
-import { isIP } from "node:net";
 import { z } from "zod";
 import { AccountError, type AccountSession, type KernelAuth } from "./kernel-auth.js";
 import type { Store } from "./store.js";
@@ -22,8 +21,6 @@ export interface SetupFlowPoint {
   signin?: string;
   /** A connect path the board serves for a connection that isn't a board.signins entry. */
   connect_url?: string;
-  /** Shown instead of the steps and fields when the board's address is a bare IP. */
-  needs_name?: string;
   /** The vendor's page where the owner makes the client the flow's fields ask for (an https link). */
   console_url?: string;
   pair_url?: string;
@@ -69,12 +66,6 @@ export type SettingsView = Record<string, { value: unknown; set: boolean }> | un
 
 /** The one change type a choice files (the board's typed settings change). */
 export type SettingChangeInput = { kind: "setting"; key: string; value: string };
-
-/** Whether a host has a name: not an IP literal, loopback excepted (OAuth providers accept http://127.0.0.1 redirects). */
-export function namedHost(host: string): boolean {
-  const h = host.replace(/^\[(.*)\](:\d+)?$/, "$1").replace(/^([^:]+):\d+$/, "$1");
-  return !isIP(h) || h === "::1" || h.startsWith("127.");
-}
 
 /** The compiled board.setup_flows, ordered; the pair token's value is read once from `<secrets>/<pair_token>`. */
 export function setupFlowPoints(file: string, secrets: string): (SetupFlowPoint & { token?: string })[] {
@@ -189,7 +180,7 @@ export function setupFlowRoutes(d: SetupFlowDeps): SetupRoute[] {
           }),
         );
         const boardUrl = d.boardUrl(host);
-        return { flows, board_url: boardUrl, named: namedHost(new URL(boardUrl).host) };
+        return { flows, board_url: boardUrl };
       },
     },
     {

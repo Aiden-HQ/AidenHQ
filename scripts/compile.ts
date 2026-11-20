@@ -15,7 +15,7 @@
 //   config/kernel/modules.json → the kernel: modules' kernel roles, privileged entries, own tokens and channels (settings),
 //                                each enabled module's compose services and its setup secrets
 //   config/exposure           → ops/vm/setup.sh (root) and verify-security: settings.exposure, one word
-//   config/apps-node          → apps-mcp: `tailnet` when the apps' tailnet node is the instance's door, else `none`
+//   config/apps-node          → apps-mcp: `tailnet` in tailscale mode, where the apps' tailnet node is the instance's door, else `none`
 //   config/Caddyfile           → the `caddy` service, the public front door (only with exposure public, scripts/front-door.ts)
 //   config/module-data.json    → the apply (ops/lib/generations.sh): each data module's data_version
 //   config/points/<module>.json → that module's own services only: the contributions to its points (spec §3.6)
@@ -148,14 +148,24 @@ if (Object.keys(images).length) {
   out.compose = useReleaseImages(out.compose, YAML.parse(readFileSync(join(repo, "compose.yaml"), "utf8")), images);
   computers.pull = computerPulls(computers.images, images);
 }
-// The apps' tailnet node is the door only in tailscale mode with its join key in the vault (compose.yaml apps-edge): only
-// there may apps-mcp let token-less callers into an app as anonymous (AIDENHQ_ANONYMOUS; docs/design/app-identity.md).
-// Anywhere else the way in is the host's loopback, so every app requires a signed identity.
+// The apps' tailnet node is the door in tailscale mode (compose.yaml apps-edge): only there may apps-mcp let token-less callers
+// into an app as anonymous (AIDENHQ_ANONYMOUS; docs/design/app-identity.md). Anywhere else the way in is the host's loopback,
+// so every app requires a signed identity. It joins with the vault's tailscale_apps_authkey when that has a key; without one
+// it signs in once through a link on the board's Apps page (platform.ts refreshNode), and /state keeps the node. apps-mcp
+// treats it as a door only once it is logged in.
 const appsKey = secretsDir && join(secretsDir, "tailscale_apps_authkey");
-const appsNode = out.exposure === "tailscale" && appsKey && existsSync(appsKey) && readFileSync(appsKey, "utf8").trim() !== "";
-// Without that node compose.yaml's apps-edge must not run (it would register a new Tailscale node on every restart): an
-// inactive profile takes it out of the stack, and the apply removes a container left from before.
+const appsNode = out.exposure === "tailscale";
+const appsKeyed = !!appsKey && existsSync(appsKey) && readFileSync(appsKey, "utf8").trim() !== "";
+// Off tailscale mode compose.yaml's apps-edge must not run: an inactive profile takes it out of the stack, and the apply
+// removes a container left from before. Keyless, the key's secret and variable go (a missing secret file fails compose).
 if (!appsNode) out.compose.services["apps-edge"] = { profiles: ["off"] };
+else if (!appsKeyed && out.compose.services["apps-edge"]) {
+  const edge = out.compose.services["apps-edge"];
+  delete edge.environment.TS_AUTHKEY;
+  edge.secrets = edge.secrets.filter((s: string) => s !== "tailscale_apps_authkey");
+  if (!edge.secrets.length) delete edge.secrets;
+  delete out.compose.secrets?.tailscale_apps_authkey;
+}
 const compose = Object.fromEntries(Object.entries(out.compose).filter(([k, v]) => k === "services" || Object.keys(v).length));
 writeFileSync(composeOut, dump(compose));
 writeFileSync(join(cfgOut, "modules.json"), JSON.stringify(out.catalog, null, 2) + "\n");
