@@ -260,3 +260,76 @@ test("the CI breaker: a check red again on a new head, or a third red round, tel
   assert.match(c.woke.at(-1).text, /3 rounds of red checks/);
   assert.match(c.woke.at(-1).text, /```text\na check\n/, "a check name outside the safe charset is never quoted");
 });
+
+// A title-only edit starts no workflow run: the head keeps its red `policy` and `ci-required` until the run's failed jobs are
+// re-run in place. The pass covers any open same-repo PR, not only this service's own.
+test("a red policy whose title now passes is re-run in place once; a still-red title, or another red job, is left alone", async (t) => {
+  let open = [], title = "fix(github): keep the title gate green";
+  const ghCalls = [];
+  // Per run: the jobs that are red, and the steps that failed in its `policy` job.
+  const jobs = { runs: { 500: ["policy", "ci-required"] }, steps: { 500: ["Conventional Commit title"] } };
+  const kernel = await listen(async (req, res) => {
+    let body = "";
+    for await (const c of req) body += c;
+    res.writeHead(200).end(JSON.stringify({ status: "in_progress" }));
+  });
+  t.after(() => kernel.s.close());
+  const gh = async (method, path, token, body) => {
+    ghCalls.push(`${method} ${path}`);
+    if (path === "/graphql") return { status: 200, body: { data: { repository: { defaultBranchRef: { name: "main", target: { oid: "m1", statusCheckRollup: checks("SUCCESS") } }, pullRequests: { nodes: open } } } } };
+    if (path === "/repos/acme/app/pulls/11") return { status: 200, body: { title } };
+    const run = path.match(/^\/repos\/acme\/app\/actions\/runs\/(\d+)\/jobs$/)?.[1];
+    if (run) {
+      const names = jobs.runs[run] ?? ["policy", "ci-required"], bad = jobs.steps[run] ?? ["Conventional Commit title"];
+      return { status: 200, body: { jobs: ["policy", "ci-required", "checks"].map((n) => ({
+        name: n, conclusion: names.includes(n) ? "FAILURE" : "SUCCESS",
+        ...(n === "policy" ? { steps: ["Age check (lockfiles) and pins (images, actions, apt, global installs)", "Conventional Commit title"].map((s) => ({ name: s, conclusion: bad.includes(s) ? "FAILURE" : "SUCCESS" })) } : {}),
+      })) } };
+    }
+    return { status: 200, body: {} };
+  };
+  const watch = startPrWatch({ repo: "acme/app", kernelUrl: kernel.url, key: "k", cacheDir: mkdtempSync(join(tmpdir(), "pr-watch-")), app: { token: async () => "tok" }, gh });
+  t.after(() => watch.stop());
+  const policyRed = (n, o = {}) => pr(n, {
+    author: { __typename: "User", login: "dev" }, title,
+    commits: { nodes: [{ commit: { statusCheckRollup: { state: "FAILURE", contexts: { pageInfo: { hasNextPage: false }, nodes: [
+      { __typename: "CheckRun", databaseId: 71, name: "policy", status: "COMPLETED", conclusion: "FAILURE", checkSuite: { workflowRun: { databaseId: 500 } } },
+      { __typename: "CheckRun", databaseId: 72, name: "ci-required", status: "COMPLETED", conclusion: "FAILURE", checkSuite: { workflowRun: { databaseId: 500 } } },
+      { __typename: "CheckRun", databaseId: 73, name: "test", status: "COMPLETED", conclusion: "SUCCESS" },
+    ] } } } }] },
+    ...o,
+  });
+  const reruns = () => ghCalls.filter((c) => c === "POST /repos/acme/app/actions/runs/500/rerun-failed-jobs").length;
+
+  // A title that still fails the Conventional Commit gate: nothing posted (and no cache entry, so a later edit is tried).
+  title = "Keep the title gate green";
+  open = [policyRed(11)];
+  await watch.tick(); await watch.tick();
+  assert.equal(reruns(), 0, "a still-failing title is left alone");
+
+  title = "fix(github): keep the title gate green";
+  await watch.tick();
+  assert.equal(reruns(), 1, "the passing title re-runs the run's failed jobs once");
+  await watch.tick();
+  assert.equal(reruns(), 1, "once per head and title");
+
+  // Another failed job in the same run is a real failure: no re-run.
+  jobs.runs[501] = ["policy", "ci-required", "tests"];
+  open = [policyRed(12, { headRefOid: "h12", commits: { nodes: [{ commit: { statusCheckRollup: { state: "FAILURE", contexts: { pageInfo: { hasNextPage: false }, nodes: [
+    { __typename: "CheckRun", databaseId: 81, name: "policy", status: "COMPLETED", conclusion: "FAILURE", checkSuite: { workflowRun: { databaseId: 501 } } },
+    { __typename: "CheckRun", databaseId: 82, name: "ci-required", status: "COMPLETED", conclusion: "FAILURE", checkSuite: { workflowRun: { databaseId: 501 } } },
+    { __typename: "CheckRun", databaseId: 83, name: "tests", status: "COMPLETED", conclusion: "FAILURE" },
+  ] } } } }] } })];
+  await watch.tick(); await watch.tick();
+  assert.equal(ghCalls.filter((c) => c === "POST /repos/acme/app/actions/runs/501/rerun-failed-jobs").length, 0, "another red job: left alone");
+
+  // The policy job failing at the age/pin step is the change's own failure, not the title: no re-run either.
+  jobs.runs[502] = ["policy", "ci-required"];
+  jobs.steps[502] = ["Age check (lockfiles) and pins (images, actions, apt, global installs)"];
+  open = [policyRed(13, { headRefOid: "h13", commits: { nodes: [{ commit: { statusCheckRollup: { state: "FAILURE", contexts: { pageInfo: { hasNextPage: false }, nodes: [
+    { __typename: "CheckRun", databaseId: 91, name: "policy", status: "COMPLETED", conclusion: "FAILURE", checkSuite: { workflowRun: { databaseId: 502 } } },
+    { __typename: "CheckRun", databaseId: 92, name: "ci-required", status: "COMPLETED", conclusion: "FAILURE", checkSuite: { workflowRun: { databaseId: 502 } } },
+  ] } } } }] } })];
+  await watch.tick(); await watch.tick();
+  assert.equal(ghCalls.filter((c) => c === "POST /repos/acme/app/actions/runs/502/rerun-failed-jobs").length, 0, "a red age/pin step: left alone");
+});
