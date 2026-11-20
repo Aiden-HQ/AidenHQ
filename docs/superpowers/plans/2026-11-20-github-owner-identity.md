@@ -711,6 +711,8 @@ unchanged apart from Task 8's App-clause removal.
     `@instance`, which dropped deploying apps from private repos in the owner's listed orgs; keep that behaviour).
   - Board GitHub card (Task 11): send the rate-limit reset as ISO and format it in the viewer's local time (not "UTC"
     from the server); give the "Fleet repos" row a "Change" action that opens the `github_fleet_org` setting.
+  - Maintainer `state` note (issue close/reopen comment) carries no footer: route it through the same footer path as
+    every other posted text.
   - `kernel/src/objects.ts`: delete the `.../label/<name>` ref kind. Nothing reads it since labels work as today (Task 8),
     and a label ref can't prove ownership anyway.
 - [ ] **Step 6: Security review** (product `CLAUDE.md`: every new path gets one before it switches on):
