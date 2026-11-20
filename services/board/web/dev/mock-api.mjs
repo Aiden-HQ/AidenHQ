@@ -158,6 +158,13 @@ function route(method, url) {
   }
   let x;
   if ((x = m(/^\/api\/chats\/([^/]+)$/))) return [200, chatDetail(decodeURIComponent(x[1]))];
+  if ((x = m(/^\/api\/issues\/([^/]+)\/feature-cost$/))) return [200, { cost: null }];
+  if ((x = m(/^\/api\/issues\/([^/]+)\/lineage$/))) return [200, { identifier: x[1], children: [], total: { tasks: 0, running: 0, needs: 0, blocked: 0, tokens: 0, usd: 0, ms: 0 } }];
+  if ((x = m(/^\/api\/issues\/([^/]+)$/))) {
+    const c = Object.values(board().buckets).flat().find((k) => k.identifier === decodeURIComponent(x[1]) || k.id === x[1]) ?? card(790, "Ship the invoices app's export");
+    return [200, { ...c, working: c.working ?? null, description: "Add a **CSV export** to the invoices app and a monthly total row.\n\n- Export respects the current filter\n- Totals in the account currency", bucket: "today", editable: true, labelIds: [], replyTarget: "me", scheduled: null, recurring: null, comments: [{ id: "k1", body: "Started on the export; tests next.", author: { kind: "agent", name: "Engineer" }, createdAt: ago(20) }], files: [], parent: null, runs: [], crew: [] }];
+  }
+  if ((x = m(/^\/api\/models\/([^/]+)$/))) return [200, { default: "deepseek-flash", models: ["deepseek-flash", "gpt-luna"], efforts: ["medium", "high"] }];
   if ((x = m(/^\/api\/agents\/by-key\/([^/]+)$/))) return [200, { profile: profile(x[1]) }];
   if ((x = m(/^\/api\/agents\/by-key\/([^/]+)\/tasks$/))) {
     const rows = [{ identifier: "WOR-790", title: "Ship the invoices app's export", state: "working", updatedAt: ago(12), from: "WOR-818" }, { identifier: "WOR-806", title: "Why did the health check fail?", state: "failed", updatedAt: ago(52), from: null }];
