@@ -48,7 +48,7 @@ agents:
       fleet_steward?: [ fleet_generation_status ]
       paperclip_tasks: [ task_current, task_get, task_comments, task_search, task_list,
                          task_approvals, task_team, fleet_catalog,
-                         task_comment, task_handoff, task_finish, task_block, task_cancel,
+                         task_comment, task_handoff, task_file_upload, task_finish, task_block, task_cancel,
                          task_delegate, task_create ]
     roles: [ maintainer, product-issues ]
 routines:
