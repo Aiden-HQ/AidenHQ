@@ -38,6 +38,7 @@ async function harness(t) {
   };
   return {
     grades,
+    call,
     // An agent's filing, as the tasks module files it (its caller assertion, the delegating tool as the tool).
     agentFile: (agent, body) => call("POST", "/grades", { "x-aidenhq-caller": assertion(agent) }, body),
     agentRead: (agent, task) => call("GET", `/grades/${encodeURIComponent(task)}`, { "x-aidenhq-caller": assertion(agent) }),
@@ -62,6 +63,12 @@ test("an agent's differing re-file of its own task is accepted; another agent's 
   const other = await h.agentFile("other", { issue: "t1", rubric: ["alpha one", "beta two", "gamma three"], deliverable: PR });
   assert.equal(other.status, 403);
   assert.deepEqual(h.grades.get("t1").deliverable, APP);
+});
+
+test("an unauthenticated filing is refused 403 before its body is validated", async (t) => {
+  const h = await harness(t);
+  assert.equal((await h.call("POST", "/grades", {}, {})).status, 403);
+  assert.equal((await h.agentFile("cos", {})).status, 400);
 });
 
 test("the read route answers the delegating agent with the filed grade, so it can re-file the differing one", async (t) => {

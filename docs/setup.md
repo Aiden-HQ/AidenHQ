@@ -380,18 +380,14 @@ Paperclip's org chart.
 ```sh
 cd ~/aidenhq
 scripts/healthcheck.sh
-scripts/verify-security.sh
 ```
 
-**Check, healthcheck:** these lines must be `ok`: `paperclip http`, `paperclip bootstrap (account claimed)`,
+**Check:** these lines must be `ok`: `paperclip http`, `paperclip bootstrap (account claimed)`,
 `board (127.0.0.1:3121)`, `kernel admin (127.0.0.1:3120)`, plus the lines of every account you connected in step 7. Lines for things
 you didn't set up print `skip` and are listed on a `Skipped (not configured)` line at the end. What counts as set up
 is read from the install: the `meetings` module (`config/modules.json`) enables the `ops-mcp` and watcher webhook
 checks, the default engine being `codex` enables the ChatGPT login check, and a Claude engine token enables
 the `claude` job-tool check. A module or engine you did install still fails when it is broken.
-
-**Check, security:** the last line is `All security checks passed.` If not, each `FAIL` line names what is wrong. Run
-it again after every change to how the server is exposed (Tailscale serve, ports, shared access).
 
 Day-to-day use: [docs/USAGE.md](USAGE.md). Operations, backups and logs:
 [docs/operations.md](operations.md).
@@ -678,11 +674,10 @@ server.on("upgrade", protect((req, socket, head) => { /* WebSocket, checked once
 - From a browser, `https://<app>.<domain>`: the identity provider's login, then the app. A `blocked` person gets 403.
 - Forged headers are ignored: `curl -H 'X-AidenHQ-Identity: x' https://<app>.<domain>` stops at Access; on the host,
   `curl -H 'Host: <app>.<domain>' -H 'X-AidenHQ-Identity: x' http://127.0.0.1:3130/` is a 403 (no Access token).
-- Going around the gate fails: on the host, `curl http://127.0.0.1:<app port>/` gets the app's 401 (no identity);
-  `scripts/verify-security.sh` checks this for every shared app.
+- Going around the gate fails: on the host, `curl http://127.0.0.1:<app port>/` gets the app's 401 (no identity).
 - A cross-site write (a form post from another host) is a 403; a streaming page (SSE) updates live; after the Access session expires the
   next request goes back to the login.
 
 ## Verify
 
-`scripts/healthcheck.sh` and `scripts/verify-security.sh` check the stack; see [operations.md](operations.md).
+`scripts/healthcheck.sh` checks the stack; see [operations.md](operations.md).
