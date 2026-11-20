@@ -12,7 +12,7 @@ const mock = { welcome: false, empty: false, slow: 0 };
 
 // The kernel's task state (src/task-state.ts) as the board reads it: one row per task, every reason somewhere below.
 const A = (who: string, why: string, ref = "x") => ({ who, why, ref });
-const st = (kind: string, reason: string, o: Record<string, unknown> = {}) => ({ task: "t", identifier: null, kind, reason, since: ago(30), holder: null, attention: [], ...o });
+const st = (kind: string, reason: string, o: Record<string, unknown> = {}) => ({ task: "t", identifier: null as string | null, kind, reason, since: ago(30), holder: null, attention: [], ...o });
 const ASK = st("waiting", "owner_wait", { since: ago(120), question: "Which week should I compare against?", attention: [A("owner", "owner_wait", "wait:t")] });
 const CARD = st("waiting", "card_owner", { since: ago(9), ref: "record:ap1", refLabel: "Deploy the invoices app at 4e1a9c2", attention: [A("owner", "card", "record:ap1")] });
 const WORKING_CARD = st("working", "job_running", { since: ago(12), stage: "CI running", ref: "job:j-2", attention: [A("owner", "card", "record:ap2")] });
@@ -35,7 +35,7 @@ const STATES = {
   done: st("done", "closed", { since: ago(180), grade: "pass" }),
   stopped: st("done", "cancelled", { since: ago(300) }),
 };
-const named = (identifier: string, state: object) => ({ ...state, identifier });
+const named = <T extends object>(identifier: string, state: T) => ({ ...state, identifier });
 
 const dept = (id: string, name: string, order: number) => ({ id, name, order });
 const OPS = dept("ops", "Chief of staff", 0), ENG = dept("eng", "Engineering", 1), DESK = dept("desk", "Desk", 2);
