@@ -16,6 +16,10 @@ export const isActive = (s: ShownState | null | undefined) =>
 
 const KIND_WORD = { working: "Working", waiting: "Waiting", idle: "Idle", done: "Done" } as const;
 
+/** What a module is waiting on (a module wait's `ref` is its reason, not a task). */
+const MODULE_WAIT: Record<string, string> = { checks: "CI checks", eval: "reviewer eval", retry: "retry", design_review: "design review", conflict: "merge conflict" };
+const moduleWords = (ref: string) => MODULE_WAIT[ref] ?? ref.replace(/_/g, " ");
+
 /** After a dot: what a reason means to the person reading it. `refLabel` names a card, a blocker or how a job ended. */
 const REASON: Record<ShownState["reason"], (s: ShownState) => string> = {
   closed: (s) => (s.grade ? `graded ${s.grade}` : ""),
@@ -30,6 +34,7 @@ const REASON: Record<ShownState["reason"], (s: ShownState) => string> = {
   handback: () => "handed to you",
   blocked: (s) => (s.refLabel ? `blocked by ${s.refLabel}` : "blocked"),
   agent_wait: () => "its own wait",
+  module_wait: (s) => MODULE_WAIT[s.ref ?? ""] ?? (s.ref ? s.ref.replace(/_/g, " ") : "a module's step"),
   scheduled: () => "scheduled",
   chat_turn: () => "your turn",
   backlog: () => "backlog",
@@ -43,7 +48,10 @@ const REASON: Record<ShownState["reason"], (s: ShownState) => string> = {
 export function stateWords(s: ShownState): { tone: StatusTone; word: string; detail: string } {
   const tone: StatusTone = s.kind === "working" ? "working" : s.kind === "done" ? "done" : s.reason === "failed" ? "failed" : needsOwner(s) ? "needs" : "idle";
   const word = s.reason === "cancelled" ? "Stopped" : KIND_WORD[s.kind];
-  return { tone, word, detail: [REASON[s.reason](s), s.stage].filter(Boolean).join(" · ") };
+  const stalled = s.attention.find((a) => a.why === "stalled_wait");
+  const reason = stalled ? `stalled · ${moduleWords(stalled.ref)}` : REASON[s.reason](s);
+  const note = s.note && s.note !== reason ? (s.note.length > 60 ? `${s.note.slice(0, 59)}…` : s.note) : "";
+  return { tone, word, detail: [reason, note, s.stage].filter(Boolean).join(" · ") };
 }
 
 /** One state as a chip: `<dot> Waiting · your answer: “keep v1?”`, with ⚠ when an agent must act. Nothing for a task without one. */

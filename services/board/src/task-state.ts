@@ -8,14 +8,16 @@ export type Reason =
   | "closed" | "cancelled"
   | "job_running"
   | "job_queued" | "job_held" | "card_review" | "card_owner" | "owner_wait" | "delegator_wait" | "handback"
-  | "blocked" | "agent_wait" | "scheduled" | "chat_turn" | "backlog"
+  | "blocked" | "agent_wait" | "module_wait" | "scheduled" | "chat_turn" | "backlog"
   | "failed" | "orphaned" | "unknown" | "history_expired";
-export type Attention = { who: "owner" | "agent" | "reviewer"; why: "card" | "owner_wait" | "delegator_wait" | "handback" | "failed" | "orphaned" | "unknown" | "history_expired"; ref: string };
+export type Attention = { who: "owner" | "agent" | "reviewer"; why: "card" | "owner_wait" | "delegator_wait" | "handback" | "failed" | "stalled_wait" | "orphaned" | "unknown" | "history_expired"; ref: string };
 export type TaskState = {
   kind: Kind; reason: Reason; ref?: string; since: string; holder: string | null; attention: Attention[];
   stage?: string;
   grade?: "pass" | "fail";
   question?: string;
+  /** The open wait's own words. */
+  note?: string;
 };
 export type StateRow = TaskState & { task: string; identifier: string | null; idle_wakes: number };
 export type StateRead = { as_of: string; tasks: StateRow[]; counts: { needs_you: number; failed: number; unexplained_idle: number } };
