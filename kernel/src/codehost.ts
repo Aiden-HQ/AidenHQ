@@ -12,8 +12,10 @@
 // A `local/…` repo (the org codehost-local owns) is served by codehost-local (in process: its snapshot) under the same grants
 // and the same answer (its bundle: every branch). It has no token, and no clone (host git never writes a workspace: a box clones a local repo itself,
 // `aidenhq clone`); every op without codehost-github for other orgs is 404.
-// The change-request ops are write kinds, not broker ops: `codehost-local.{push,pr,merge,close,create_repo}` (host.ts's
-// executor, its `change` check job, and the kernel's localmerge.ts auto-merge) run in the kernel, never here.
+// The change-request ops are write kinds, not broker ops: `codehost-local.{push,pr,merge,close,create_repo}` — declared by
+// modules/codehost-local/src/kinds.ts, executed by its host.ts in the kernel's process (no service, no key, no GitHub App),
+// with its `change` check job and the kernel's localmerge.ts auto-merge — run in the kernel, never here. A merge's refusals
+// (head-moved, checks-not-green, conflict) are modules/codehost-local/src/refuse.ts.
 //
 // Which host owns a repo is hostOf's, the one routing rule: codehost-local the org `local`, codehost-github every other. A
 // write names an action on repos (`codehost.<action>`) and routeKind turns it into that host's kind.
