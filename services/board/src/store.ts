@@ -2,7 +2,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { Events } from "./events.js";
-import type { Rule } from "./recurrence.js";
+import type { Cadence } from "./recurring.js";
 
 /** The board's own columns. Paperclip has no ordering or buckets, so these live here. */
 export const BUCKETS = ["triage", "today", "tomorrow", "later", "backlog"] as const;
@@ -133,57 +133,17 @@ export interface ScheduledMove {
   position: "top" | "bottom";
 }
 
+/** A task that repeats: its Paperclip routine (recurring.ts) and the cadence the owner picked. */
 export interface Recurring {
-  issueId: string;
-  rule: Rule;
-  /** GitHub repositories (owner/name) whose activity the runner collects for each run. */
+  routineId: string;
+  cadence: Cadence;
+  /** Local time of day, HH:MM. */
+  time: string;
+  /** The month (1-12) an every-N-months rule counts from. */
+  anchor: number;
+  /** GitHub repositories (owner/name) whose activity each run reads. */
   repos: string[];
-  nextRun: string | null;
-  manualAt: string | null;
-  paused: boolean;
-  /** End of the window the last run covered: the next window starts here. */
-  lastUntil: string | null;
 }
-
-export interface RecurringRun {
-  issueId: string;
-  /** Local date and time of the run ("2026-10-12T07:00"): one run per definition and occurrence. */
-  occurrence: string;
-  outputId: string;
-  outputIdentifier: string;
-  since: string;
-  until: string;
-  previous: string | null;
-  state: "claimed" | "started" | "failed";
-  attempts: number;
-  claimedAt: string;
-}
-
-interface RunRow {
-  issue_id: string;
-  occurrence: string;
-  output_id: string;
-  output_identifier: string;
-  since: string;
-  until: string;
-  previous: string | null;
-  state: string;
-  attempts: number;
-  claimed_at: string;
-}
-
-const toRun = (r: RunRow): RecurringRun => ({
-  issueId: r.issue_id,
-  occurrence: r.occurrence,
-  outputId: r.output_id,
-  outputIdentifier: r.output_identifier,
-  since: r.since,
-  until: r.until,
-  previous: r.previous,
-  state: r.state as RecurringRun["state"],
-  attempts: r.attempts,
-  claimedAt: r.claimed_at,
-});
 
 /** Bucket and rank per Paperclip issue, read markers, the rollover date, scheduled moves and recurring tasks. */
 export class Store {
@@ -208,7 +168,7 @@ export class Store {
       DROP TABLE IF EXISTS pairing_outbox;
       DROP TABLE IF EXISTS pairing_nonces;
       CREATE TABLE IF NOT EXISTS scheduled_moves (issue_id TEXT PRIMARY KEY, date TEXT NOT NULL, bucket TEXT NOT NULL, position TEXT NOT NULL, created_at TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS recurring (issue_id TEXT PRIMARY KEY, rule TEXT NOT NULL, repos TEXT NOT NULL, next_run TEXT, manual_at TEXT, paused INTEGER NOT NULL DEFAULT 0, last_until TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS repeats (issue_id TEXT PRIMARY KEY, routine_id TEXT NOT NULL, cadence TEXT NOT NULL, time TEXT NOT NULL, anchor INTEGER NOT NULL, repos TEXT NOT NULL);
       -- Model usage with what OpenRouter billed (or the runner's Engineer jobs and AI reviewer, which Paperclip doesn't record):
       -- one row per job or call, by key; agent_id for an agent's calls through the model gateway.
       CREATE TABLE IF NOT EXISTS usage (key TEXT PRIMARY KEY, at TEXT NOT NULL, component TEXT NOT NULL, model TEXT NOT NULL, input INTEGER NOT NULL, cached INTEGER NOT NULL, output INTEGER NOT NULL, cost_usd REAL);
@@ -216,7 +176,6 @@ export class Store {
       CREATE TABLE IF NOT EXISTS authored (id TEXT PRIMARY KEY, account_id TEXT NOT NULL, at TEXT NOT NULL);
       -- Finished chats and tasks the owner settled out of the active lists (a snapshot, for the searchable Settled view).
       CREATE TABLE IF NOT EXISTS settled (issue_id TEXT PRIMARY KEY, identifier TEXT NOT NULL, title TEXT NOT NULL, agent TEXT NOT NULL, kind TEXT NOT NULL, at TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS recurring_runs (issue_id TEXT NOT NULL, occurrence TEXT NOT NULL, output_id TEXT NOT NULL, output_identifier TEXT NOT NULL, since TEXT NOT NULL, until TEXT NOT NULL, previous TEXT, state TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, claimed_at TEXT NOT NULL, PRIMARY KEY (issue_id, occurrence));
     `);
     const columns = (this.db.prepare("PRAGMA table_info(placements)").all() as { name: string }[]).map((c) => c.name);
     if (!columns.includes("carried")) this.db.exec("ALTER TABLE placements ADD COLUMN carried INTEGER NOT NULL DEFAULT 0");
@@ -407,13 +366,10 @@ export class Store {
 
   // ---------------------------------------------------------------- recurring tasks
 
-  setRecurring(issueId: string, rule: Rule, repos: string[], nextRun: string): void {
-    const now = new Date().toISOString();
+  setRecurring(issueId: string, r: Recurring): void {
     this.db
-      .prepare(
-        "INSERT INTO recurring (issue_id, rule, repos, next_run, paused, created_at, updated_at) VALUES (?, ?, ?, ?, 0, ?, ?) ON CONFLICT(issue_id) DO UPDATE SET rule = excluded.rule, repos = excluded.repos, next_run = excluded.next_run, paused = 0, updated_at = excluded.updated_at",
-      )
-      .run(issueId, JSON.stringify(rule), JSON.stringify(repos), nextRun, now, now);
+      .prepare("INSERT OR REPLACE INTO repeats (issue_id, routine_id, cadence, time, anchor, repos) VALUES (?, ?, ?, ?, ?, ?)")
+      .run(issueId, r.routineId, JSON.stringify(r.cadence), r.time, r.anchor, JSON.stringify(r.repos));
   }
 
   /** The account that wrote a task or comment on the board (shown as "by <name>" when it isn't the owner's). */
@@ -430,95 +386,23 @@ export class Store {
   }
 
   allRecurring(): Map<string, Recurring> {
-    const rows = this.db.prepare("SELECT issue_id, rule, repos, next_run, manual_at, paused, last_until FROM recurring").all() as {
-      issue_id: string;
-      rule: string;
-      repos: string;
-      next_run: string | null;
-      manual_at: string | null;
-      paused: number;
-      last_until: string | null;
-    }[];
-    return new Map(
-      rows.map((r) => [
-        r.issue_id,
-        { issueId: r.issue_id, rule: JSON.parse(r.rule) as Rule, repos: JSON.parse(r.repos) as string[], nextRun: r.next_run, manualAt: r.manual_at, paused: r.paused === 1, lastUntil: r.last_until },
-      ]),
-    );
-  }
-
-  /**
-   * Pause (no next run, any "run now" dropped) or resume with the given next run. After a pause the
-   * next window is one period again, not everything since the last run.
-   */
-  setPaused(issueId: string, paused: boolean, nextRun: string | null): void {
-    const now = new Date().toISOString();
-    if (paused) this.db.prepare("UPDATE recurring SET paused = 1, next_run = NULL, manual_at = NULL, updated_at = ? WHERE issue_id = ?").run(now, issueId);
-    else this.db.prepare("UPDATE recurring SET paused = 0, next_run = ?, last_until = NULL, updated_at = ? WHERE issue_id = ?").run(nextRun, now, issueId);
-  }
-
-  /** Move the rule on without a run (this occurrence already ran). */
-  skipTo(issueId: string, nextRun: string): void {
-    this.db.prepare("UPDATE recurring SET next_run = ?, manual_at = NULL, updated_at = ? WHERE issue_id = ?").run(nextRun, new Date().toISOString(), issueId);
-  }
-
-  /** An extra run the next time the runner checks. */
-  runNow(issueId: string): void {
-    const now = new Date().toISOString();
-    this.db.prepare("UPDATE recurring SET manual_at = ?, updated_at = ? WHERE issue_id = ?").run(now, now, issueId);
+    const rows = this.db.prepare("SELECT issue_id, routine_id, cadence, time, anchor, repos FROM repeats").all() as { issue_id: string; routine_id: string; cadence: string; time: string; anchor: number; repos: string }[];
+    return new Map(rows.map((r) => [r.issue_id, { routineId: r.routine_id, cadence: JSON.parse(r.cadence) as Cadence, time: r.time, anchor: r.anchor, repos: JSON.parse(r.repos) as string[] }]));
   }
 
   stopRecurring(issueId: string): boolean {
-    return Number(this.db.prepare("DELETE FROM recurring WHERE issue_id = ?").run(issueId).changes) > 0;
+    return Number(this.db.prepare("DELETE FROM repeats WHERE issue_id = ?").run(issueId).changes) > 0;
   }
 
-  /** Recurring tasks with a run due at `now` (scheduled or "run now"); paused ones are left out. */
-  dueRecurring(now: string): Recurring[] {
-    return [...this.allRecurring().values()].filter((r) => !r.paused && ((r.nextRun !== null && r.nextRun <= now) || r.manualAt !== null));
+  /** The schedules the board's own scheduler kept before routines (the `recurring` table), or undefined once converted. */
+  legacyRecurring(): { issueId: string; cadence: Cadence; time: string; repos: string[]; paused: boolean }[] | undefined {
+    if (!this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'recurring'").get()) return undefined;
+    const rows = this.db.prepare("SELECT issue_id, rule, repos, paused FROM recurring").all() as { issue_id: string; rule: string; repos: string; paused: number }[];
+    return rows.map((r) => ({ issueId: r.issue_id, ...(JSON.parse(r.rule) as { cadence: Cadence; time: string }), repos: JSON.parse(r.repos) as string[], paused: r.paused === 1 }));
   }
 
-  /**
-   * Record a claimed run and move the rule on: the next run after now, any "run now" cleared, and
-   * for a scheduled run the end of the window just covered (where the next window starts).
-   */
-  claimRun(run: Omit<RecurringRun, "state" | "attempts">, nextRun: string, scheduled = true): void {
-    this.tx(() => {
-      this.db
-        .prepare("INSERT INTO recurring_runs (issue_id, occurrence, output_id, output_identifier, since, until, previous, state, attempts, claimed_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'claimed', 1, ?)")
-        .run(run.issueId, run.occurrence, run.outputId, run.outputIdentifier, run.since, run.until, run.previous, run.claimedAt);
-      if (scheduled) this.db.prepare("UPDATE recurring SET next_run = ?, last_until = ?, manual_at = NULL, updated_at = ? WHERE issue_id = ?").run(nextRun, run.until, new Date().toISOString(), run.issueId);
-      else this.db.prepare("UPDATE recurring SET next_run = ?, manual_at = NULL, updated_at = ? WHERE issue_id = ?").run(nextRun, new Date().toISOString(), run.issueId);
-    });
-  }
-
-  run(issueId: string, occurrence: string): RecurringRun | undefined {
-    const r = this.db.prepare("SELECT * FROM recurring_runs WHERE issue_id = ? AND occurrence = ?").get(issueId, occurrence) as unknown as RunRow | undefined;
-    return r && toRun(r);
-  }
-
-  /** Runs claimed but not started within `staleMs` (the runner stopped mid-way), handed out again a few times. */
-  retryRuns(staleMs: number, maxAttempts: number): RecurringRun[] {
-    const cutoff = new Date(Date.now() - staleMs).toISOString();
-    const rows = this.db.prepare("SELECT * FROM recurring_runs WHERE state = 'claimed' AND claimed_at < ? AND attempts < ?").all(cutoff, maxAttempts) as unknown as RunRow[];
-    const now = new Date().toISOString();
-    const stmt = this.db.prepare("UPDATE recurring_runs SET attempts = attempts + 1, claimed_at = ? WHERE issue_id = ? AND occurrence = ?");
-    this.tx(() => rows.forEach((r) => stmt.run(now, r.issue_id, r.occurrence)));
-    return rows.map((r) => ({ ...toRun(r), attempts: r.attempts + 1, claimedAt: now }));
-  }
-
-  /** Claimed runs that were never started and are out of attempts. */
-  abandonedRuns(staleMs: number, maxAttempts: number): RecurringRun[] {
-    const cutoff = new Date(Date.now() - staleMs).toISOString();
-    return (this.db.prepare("SELECT * FROM recurring_runs WHERE state = 'claimed' AND claimed_at < ? AND attempts >= ?").all(cutoff, maxAttempts) as unknown as RunRow[]).map(toRun);
-  }
-
-  setRunState(issueId: string, occurrence: string, state: "started" | "failed"): boolean {
-    return Number(this.db.prepare("UPDATE recurring_runs SET state = ? WHERE issue_id = ? AND occurrence = ?").run(state, issueId, occurrence).changes) > 0;
-  }
-
-  /** The output task of the latest run so far (the next run builds on it). */
-  lastOutput(issueId: string): string | undefined {
-    return (this.db.prepare("SELECT output_identifier FROM recurring_runs WHERE issue_id = ? ORDER BY until DESC LIMIT 1").get(issueId) as { output_identifier: string } | undefined)?.output_identifier;
+  dropLegacyRecurring(): void {
+    this.db.exec("DROP TABLE IF EXISTS recurring; DROP TABLE IF EXISTS recurring_runs;");
   }
 
   /**

@@ -289,8 +289,10 @@ export const BOARD_WRITE_PATHS: [string, RegExp][] = [
   ["DELETE", new RegExp(`^/api/issues/${ID}/approvals/${ID}$`)],
   ["POST", new RegExp(`^/api/approvals/${ID}/reject$`)],
   ["POST", new RegExp(`^/api/heartbeat-runs/${ID}/cancel$`)],
+  ["POST", new RegExp(`^/api/companies/${ID}/routines$`)],
   ["PATCH", new RegExp(`^/api/routines/${ID}$`)],
-  ["POST", new RegExp(`^/api/routines/${ID}/run$`)],
+  ["POST", new RegExp(`^/api/routines/${ID}/(run|triggers)$`)],
+  ["PATCH", new RegExp(`^/api/routine-triggers/${ID}$`)],
 ];
 // An attachment the board uploads (10 MB, multipart) fits; nothing else comes near.
 const BOARD_MAX_BODY = 16 * 1024 * 1024;
@@ -302,7 +304,7 @@ const BOARD_MAX_BODY = 16 * 1024 * 1024;
  * answers pass as they are (an attachment upload is multipart, its content bytes). `X-AidenHQ-Account` names the signed-in
  * admin a write is for (none: the board's own timers and notices); it is logged with the write.
  */
-export function createBoardCp({ controlUrl, key, fetch = globalThis.fetch, observe, facts, log = () => {} }: { /** The fact log: the owner's comments are recorded here, whichever agents are polled. */ facts?: Facts; controlUrl: string; key: () => string; fetch?: typeof globalThis.fetch; observe?: (issue: { id: string }, actor: string) => Promise<void>; log?: (msg: string, f?: Record<string, unknown>) => void }) {
+export function createBoardCp({ controlUrl, key, fetch = globalThis.fetch, observe, facts, log = () => {}, onRoutine = () => {} }: { onRoutine?: (id: string) => void; /** The fact log: the owner's comments are recorded here, whichever agents are polled. */ facts?: Facts; controlUrl: string; key: () => string; fetch?: typeof globalThis.fetch; observe?: (issue: { id: string }, actor: string) => Promise<void>; log?: (msg: string, f?: Record<string, unknown>) => void }) {
   return async function boardCp(req: IncomingMessage, res: ServerResponse, lane: string, path: string, query: string): Promise<void> {
     const method = String(req.method);
     const allowed = lane === "read" ? method === "GET" && BOARD_READ_PATHS.some((re) => re.test(path)) : BOARD_WRITE_PATHS.some(([m, re]) => m === method && re.test(path));
@@ -334,6 +336,10 @@ export function createBoardCp({ controlUrl, key, fetch = globalThis.fetch, obser
     });
     const out = Buffer.from(await r.arrayBuffer());
     if (out.length > MAX) throw fail(502, "too_large", "the control plane's answer is too large");
+    // A routine the board makes for the owner's recurring task ("Repeats: <task>") is the owner's own: the kernel records its id (main.ts caps it "full").
+    if (r.ok && method === "POST" && /^\/api\/companies\/[^/]+\/routines$/.test(path)) {
+      try { if (String(JSON.parse(body!.toString("utf8")).title).startsWith("Repeats: ")) onRoutine(String(JSON.parse(out.toString("utf8")).id)); } catch { /* not a routine answer */ }
+    }
     if (lane === "owner") log("cp owner", { method, path, status: r.status, ...(account ? { account } : {}) });
     // The owner's comment is a fact at once (version = its id), whoever holds the task.
     if (lane === "owner" && r.ok && method === "POST") {

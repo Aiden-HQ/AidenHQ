@@ -1041,7 +1041,7 @@ const TOOLS: Record<string, Tool> = {
   },
   task_schedule: {
     description:
-      "Researcher only, when the user asks in their own comment: on a date, move one of their tasks to a board column (default: the top of Today), e.g. \"bring this back on the 15th\". Resolve the user's words to a calendar date in their timezone first. A date of today moves it now; a later move by hand replaces the schedule. clear: true removes it.",
+      "Researcher only, when the user asks in their own comment (or a recurring task's own run, skill recurring-reports): on a date, move one of their tasks to a board column (default: the top of Today), e.g. \"bring this back on the 15th\". Resolve the user's words to a calendar date in their timezone first. A date of today moves it now; a later move by hand replaces the schedule. clear: true removes it.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1063,7 +1063,7 @@ const TOOLS: Record<string, Tool> = {
   },
   task_recurring: {
     description:
-      "Researcher only, when the user asks in their own comment: make one of their tasks recurring, or pause, resume, stop or run it now. Each run follows the task's description as instructions; the result lands on top of the user's Today as a new task, at 07:00 unless they name a time. cadence: {kind: \"weekly\", weekday, interval?} (interval 2 = every other week), {kind: \"monthly_day\", day: 1-31 or \"last\", interval?}, or {kind: \"monthly_weekday\", nth: 1-4 or \"last\", weekday, interval?}; weekdays lowercase English. repos: GitHub repositories (owner/name) the instructions name; their activity is collected for each run. Returns the rule in words and the next runs: tell the user.",
+      "Researcher only, when the user asks in their own comment: make one of their tasks recurring, or pause, resume, stop or run it now. Each run follows the task's description as instructions; the schedule is a Paperclip routine and each run lands on top of the user's Today as a new task, at 07:00 unless they name a time. cadence: {kind: \"weekly\", weekday} (weekly only: every other week is refused), {kind: \"monthly_day\", day: 1-28, interval?}, or {kind: \"monthly_weekday\", nth: 1-4, weekday, interval?} (interval 1, 2, 3, 4, 6 or 12 months); weekdays lowercase English. Cadences cron can't say (the last day or weekday of a month, days 29-31, other intervals) are refused with the reason. repos: GitHub repositories (owner/name) the instructions name; each run reads their activity. Returns the rule in words and the next run: tell the user.",
     inputSchema: {
       type: "object",
       properties: {

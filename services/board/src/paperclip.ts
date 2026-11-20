@@ -79,7 +79,7 @@ export interface Routine {
   status: string;
   assigneeAgentId?: string | null;
   lastTriggeredAt?: string | null;
-  triggers?: { kind?: string; enabled?: boolean; label?: string | null; nextRunAt?: string | null; lastFiredAt?: string | null }[];
+  triggers?: { id?: string; kind?: string; enabled?: boolean; label?: string | null; cronExpression?: string | null; nextRunAt?: string | null; lastFiredAt?: string | null }[];
 }
 
 export interface Comment {
@@ -119,7 +119,10 @@ export class Paperclip {
 
   async request<T>(method: string, path: string, body?: unknown): Promise<T> {
     // A write may change the open tasks: a read that starts after it never shares one already on its way.
-    if (method !== "GET") this.cache.delete("open");
+    if (method !== "GET") {
+      this.cache.delete("open");
+      if (/\/routine/.test(path)) this.cache.delete("routines");
+    }
     return this.client.request<T>(method, path, body || undefined);
   }
 
@@ -253,6 +256,11 @@ export class Paperclip {
   /** The company's routines (schedules), for the Agents page. */
   routines(): Promise<Routine[]> {
     return this.cached("routines", 60_000, () => this.request<Routine[]>("GET", `/api/companies/${this.companyId}/routines`));
+  }
+
+  /** One routine with its triggers, fresh. */
+  routine(id: string): Promise<Routine> {
+    return this.request<Routine>("GET", `/api/routines/${encodeURIComponent(id)}`);
   }
 
   /** An issue's title and origin, which rarely change: cached for a minute. */

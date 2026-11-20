@@ -184,7 +184,6 @@ export interface RecurringView {
   paused: boolean;
   nextRun: string | null;
   upcoming: string[];
-  runNowPending: boolean;
 }
 
 export interface Board {
