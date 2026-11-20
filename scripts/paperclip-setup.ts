@@ -247,7 +247,8 @@ const display = (key: string, a: Obj) => {
   // A team (compile's teams): the team record lists its members ({key, name}); a member names its team record's key. The
   // board's Agents page draws the org from these.
   const team = a.team ? { team: { name: a.team.name, members: a.team.members.map((k: string) => ({ key: k, name: cfg.agents[k].name })) } } : {};
-  return { ...(a.avatar ? { avatar: a.avatar } : {}), ...(a.department ? { department: a.department } : {}), ...team, ...(a.member_of ? { memberOf: a.member_of, ...(a.repos?.length ? { repos: a.repos } : {}) } : {}) };
+  // roles: what the agent does, kept on its record so a successor can be found by role once it is retired (retire-agents.ts).
+  return { ...(a.avatar ? { avatar: a.avatar } : {}), ...(a.department ? { department: a.department } : {}), ...(!a.member_of && a.roles?.length ? { roles: a.roles } : {}), ...team, ...(a.member_of ? { memberOf: a.member_of, ...(a.repos?.length ? { repos: a.repos } : {}) } : {}) };
 };
 
 // Paperclip secrets only Paperclip-run agents used: deleted once no agent refers to them (after ensureAgents).

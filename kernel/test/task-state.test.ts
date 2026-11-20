@@ -102,5 +102,12 @@ const cases = [
   ["done with its final grade", [created(), grade(false, 1, 1), grade(true, 2, 2), status("done", 3)], NOW, { kind: "done", grade: "pass" }],
   ["since is when the reason and ref began", [created(), card("k1", 1), card("k2", 5)], NOW,
     { reason: "card_owner", ref: "record:k1", since: iso(1), attention: [{ why: "card", ref: "record:k1" }, { why: "card", ref: "record:k2" }] }],
+  // A finish check's hold (grading) and its release to the delegator: in review is never orphaned.
+  ["a finish hold waits on the check's module", [created(), assignee("kai", 0), status("in_review", 2), f("finish.held", 2, { check: "grading.finish" })], NOW,
+    { kind: "waiting", reason: "module_wait", ref: "grading", since: iso(2), attention: [] }],
+  ["a released hold waits on the delegator", [created(), assignee("kai", 0), status("in_review", 2), f("finish.held", 2, { check: "grading.finish" }), f("finish.verdict", 5, { check: "grading.finish", verdict: "release" })], NOW,
+    { kind: "waiting", reason: "delegator_wait", since: iso(5), wait_since: iso(5), attention: [{ who: "agent", why: "delegator_wait", ref: "task:t1" }] }],
+  ["a hold ends when the task leaves review", [created(), assignee("kai", 0), status("in_review", 2), f("finish.held", 2, { check: "grading.finish" }), status("todo", 5, "in_review")], NOW,
+    { kind: "idle", reason: "orphaned" }],
 ];
 for (const [name, rows, now, want] of cases) test(name, () => check(taskState("t1", rows, T0 + now * MIN, STAGES), want));

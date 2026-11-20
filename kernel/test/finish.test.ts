@@ -157,7 +157,12 @@ test("/v1/checks/:task: only the check's module; release drops its label; ok and
   assert.equal((await resolve({ verdict: "release" }, "other-tok")).status, 403);
   assert.equal((await resolve({ verdict: "ok" })).status, 409, "no hold yet");
   assert.equal((await resolve({ verdict: "constructor" })).status, 400, "only the named verdicts resolve");
+  // A release on a task the check never held changes nothing and records nothing.
   Object.assign(issue, { labelIds: ["lbl-x", "lbl-held"] });
+  const before = writes.length;
+  assert.equal((await resolve({ verdict: "release" })).status, 200);
+  assert.equal(writes.length, before, "a task the check never held is not touched");
+  await finish({ status: "done" });
   assert.equal((await resolve({ verdict: "release" })).status, 200);
   assert.deepEqual(writes.at(-1), { as: "board-key", body: { labelIds: ["lbl-x"] } });
   await finish({ status: "done" });
@@ -165,6 +170,9 @@ test("/v1/checks/:task: only the check's module; release drops its label; ok and
   // One move: the status, the label off and the comment together.
   assert.deepEqual(writes.at(-1), { as: "board-key", body: { status: "done", labelIds: ["lbl-x"], comment: "Graded: satisfied." } });
   assert.equal((await resolve({ verdict: "reopen" })).status, 409, "the hold was resolved once");
+  // Each hold and its end are facts task state reads: held (waiting on the module), then released (the delegator's) or resolved.
+  const facts = k.records.db.prepare("SELECT type, json_extract(data, '$.verdict') AS v FROM facts WHERE task = ? AND type LIKE 'finish.%' ORDER BY seq").all(TASK).map((r) => `${r.type}${r.v ? `:${r.v}` : ""}`);
+  assert.deepEqual(facts, ["finish.held", "finish.verdict:release", "finish.held", "finish.verdict:ok"]);
 });
 
 test("a resolve the control plane fails keeps the hold, so the module's retry moves the task", async (t) => {
