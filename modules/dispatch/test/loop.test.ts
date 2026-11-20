@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { createDispatch } from "../service/src/loop.ts";
+import { createDispatch, unfinished } from "../service/src/loop.ts";
 import { KernelError } from "../service/src/kernel.ts";
 
 function fake({ task, comments = [], directory = {}, tasks = {}, paused = [] }) {
@@ -759,4 +759,11 @@ test("an owner comment older than the newest 200 is read forward from the last s
   assert.deepEqual(k.dropped, []);
   assert.equal(k.started.length, 2);
   assert.match(k.started[1].prompt, /Book the flight\./);
+});
+
+test("a run that ended with no reply at all is tried again, like one that didn't finish; NO_REPLY and a real reply are not", () => {
+  assert.equal(unfinished({ state: "done", exit: 0, final: "" }), true);
+  assert.equal(unfinished({ state: "done", exit: 0, final: "NO_REPLY" }), false);
+  assert.equal(unfinished({ state: "done", exit: 0, final: "Here is the link." }), false);
+  assert.equal(unfinished({ state: "done", exit: 0, final: "", timedOut: true }), false);
 });

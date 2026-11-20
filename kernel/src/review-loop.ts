@@ -100,15 +100,37 @@ const REPLY_MARKS = /<!-- aidenhq(?::job=[\w-]+ kind=reply|-reply|-actions:\[[^\
  * spellOut writes them), so an answer like "1A, 2B" reads against its options.
  */
 export function spellQuestions(body: string): string {
+  const qs = formOf(body);
+  const text = (qs ?? []).map((q, n) => [`${n + 1}. ${q.question}`, ...q.options.map((o, i) => `${letter(i)}) ${o}`)].join("\n")).join("\n\n");
+  return text ? `The form's questions (code spelled them out):\n${text}\n\n${body}` : body;
+}
+
+const letter = (i: number) => String.fromCharCode(65 + i);
+/** The questions of a reply's form (notify's questions mark), or undefined. */
+function formOf(body: string): { question: string; options: string[] }[] | undefined {
   const m = /<!-- aidenhq-questions:(\[[^\n]*?\]) -->/.exec(body);
-  if (!m) return body;
-  let qs: unknown;
-  try { qs = JSON.parse(m[1]!); } catch { return body; }
-  if (!Array.isArray(qs)) return body;
-  const text = qs.flatMap((q: { question?: unknown; options?: unknown }, n) => typeof q?.question === "string" && Array.isArray(q.options)
-    ? [[`${n + 1}. ${q.question}`, ...q.options.filter((o): o is string => typeof o === "string").map((o, i) => `${String.fromCharCode(65 + i)}) ${o}`)].join("\n")]
-    : []).join("\n\n");
-  return text ? `${body}\n\nThe form's questions (code spelled them out):\n${text}` : body;
+  if (!m) return undefined;
+  try {
+    const qs = JSON.parse(m[1]!) as unknown;
+    if (!Array.isArray(qs)) return undefined;
+    const out = qs.flatMap((q: { question?: unknown; options?: unknown }) => typeof q?.question === "string" && Array.isArray(q.options)
+      ? [{ question: q.question, options: q.options.filter((o): o is string => typeof o === "string") }] : []);
+    return out.length ? out : undefined;
+  } catch { return undefined; }
+}
+
+/**
+ * The owner's short answer to a form ("1A", "1A, 2B", "2c"), read by code against the newest form an agent asked before it:
+ * each picked option's own text, so the reviewer judges the option, not a letter. Undefined for anything else.
+ */
+export function readAnswer(answer: string, form: { question: string; options: string[] }[] | undefined): string | undefined {
+  const text = answer.trim();
+  if (!form || !/^(?:\d+\s*[A-Za-z]\b[\s,;.&]*(?:and\s+)?)+$/.test(text)) return undefined;
+  const picks = [...text.matchAll(/(\d+)\s*([A-Za-z])/g)].map(([, n, l]) => {
+    const q = form[Number(n) - 1], o = q?.options[l!.toUpperCase().charCodeAt(0) - 65];
+    return q && o ? `"${q.question}" → "${o}"` : undefined;
+  });
+  return picks.length && picks.every(Boolean) ? picks.join("; ") : undefined;
 }
 
 /**
@@ -119,10 +141,19 @@ export function taskComments(list: { c: Comment; a: Author }[]): string {
   // Every line break a model may read as one (\r, \v, \f, U+0085, U+2028, U+2029) is a quoted line's end, and every other
   // control or format character goes, so no text starts a line of its own.
   const lines = (s: string) => s.replace(/\r\n?|[\v\f\u0085\u2028\u2029]/g, "\n").replace(/[^\P{Cc}\n\t]|\p{Cf}/gu, "").trim().slice(0, COMMENT_MAX).split("\n").map((l) => `> ${l}`).join("\n");
+  // The owner's short answers, each read against the newest form an agent asked before it (over the whole list, so a form
+  // older than the comments shown still reads them).
+  const read = new Map<Comment, string>();
+  let form: ReturnType<typeof formOf>;
+  for (const { c, a } of list) {
+    if (a.who === "owner") { const r = readAnswer(stripHidden(c.body), form); if (r) read.set(c, r); }
+    else form = formOf(String(c.body ?? "")) ?? form;
+  }
   const out: string[] = [];
   let size = 0;
   for (const { c, a } of list.slice(-COMMENTS).reverse()) {
-    const one = `${LABEL[a.who]}${a.key ? ` (${a.key})` : ""}, ${String(c.createdAt ?? "").slice(0, 19)}:\n${lines(stripHidden(a.who === "owner" ? c.body : spellQuestions(String(c.body ?? ""))))}`;
+    const answer = read.get(c);
+    const one = `${LABEL[a.who]}${a.key ? ` (${a.key})` : ""}, ${String(c.createdAt ?? "").slice(0, 19)}:\n${lines(stripHidden(a.who === "owner" ? c.body : spellQuestions(String(c.body ?? ""))))}${answer ? `\n(code read this answer against the form asked before it: ${lines(answer).slice(2)})` : ""}`;
     if ((size += one.length + 2) > COMMENTS_MAX) break;
     out.unshift(one);
   }
