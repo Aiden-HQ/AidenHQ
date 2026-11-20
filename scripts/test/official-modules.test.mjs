@@ -1,8 +1,9 @@
 // The official modules (modules/) compile with the product's compiler on two fixture instances, the default bundle and
 // every module, with each required setting given a placeholder so only manifest errors remain; and a vendor connection's
-// read endpoint gets exactly its connection's `read` tags (kernel/sdk/src/vendor/proxy.ts serves only those).
+// read endpoint gets exactly its connection's `read` tags (kernel/sdk/src/vendor/proxy.ts serves only those); and no skill
+// names a tool its module's connection does not grant.
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
@@ -28,6 +29,28 @@ test("the default bundle and every official module compile", () => {
     mkdirSync(join(dir, "agents"), { recursive: true });
     writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules, settings }));
     assert.doesNotThrow(() => compile(product, dir), label);
+  }
+});
+
+test("every tool a skill names is one its module's connection grants", () => {
+  const groups = ["read", "named", "write", "destructive"];
+  for (const [n, def] of Object.entries(defs)) {
+    const conns = Object.keys(def.connections ?? {});
+    const skills = join(product, "modules", n, "skills");
+    if (!conns.length || !existsSync(skills)) continue;
+    for (const skill of readdirSync(skills)) {
+      const file = join(skills, skill, "SKILL.md");
+      if (!existsSync(file)) continue;
+      const lines = readFileSync(file, "utf8").split("\n");
+      for (const [i, line] of lines.entries()) {
+        for (const [, id] of line.matchAll(/`([a-z0-9_]+)`/g)) {
+          const conn = conns.find((c) => id.startsWith(`${c}_`));
+          if (!conn) continue;
+          const granted = groups.flatMap((g) => def.connections[conn].tools?.[g] ?? []);
+          assert.ok(granted.includes(id), `modules/${n}/skills/${skill}/SKILL.md:${i + 1}: ${id} is not a tool of connection ${conn}`);
+        }
+      }
+    }
   }
 });
 
