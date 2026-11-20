@@ -3,7 +3,7 @@
 type Json = any;
 type KernelCall = (method: string, path: string, body?: unknown) => Promise<Json>;
 
-const PERMS = { pull_requests: "read", contents: "read", checks: "read", statuses: "read", issues: "read" };
+const PERMS = { pull_requests: "read", contents: "read", checks: "read", statuses: "read", issues: "read", actions: "read" };
 const SLUG = /^[\w.-]+\/[\w.-]+$/;
 
 // The PR as evidence.ts reads it (the code host's own PR query, trimmed to the fields the grader uses).
@@ -62,5 +62,14 @@ export function createGithub({ kernel, fetchFn = fetch, api = "https://api.githu
       return { ...r.data, appSlug: appOf(repo) };
     },
     diff: async (repo: string, number: number): Promise<string> => (await call(repo, `/repos/${repo}/pulls/${number}`, {}, "application/vnd.github.diff")).text(),
+    /** One Actions job by id in `repo`, as a report cites it: state, conclusion and name; null when the repo has no such job. */
+    async job(repo: string, id: string | number): Promise<Json> {
+      if (!SLUG.test(repo) || !/^\d{1,20}$/.test(String(id))) throw new Error(`${repo} with job ${id} is not a readable Actions job`);
+      const r = await fetchFn(`${api}/repos/${repo}/actions/jobs/${String(id)}`, { headers: { authorization: `Bearer ${await token(repo)}`, accept: "application/vnd.github+json", "user-agent": "aidenhq-grading" }, signal: AbortSignal.timeout(60_000) });
+      if (r.status === 404) return null;
+      if (!r.ok) throw new Error(`GitHub /repos/${repo}/actions/jobs/${String(id)} → ${r.status}`);
+      const j = await r.json();
+      return { id: j.id, name: j.name, state: j.status, conclusion: j.conclusion, run_id: j.run_id, url: j.html_url };
+    },
   };
 }

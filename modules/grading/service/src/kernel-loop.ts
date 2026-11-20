@@ -54,6 +54,12 @@ export function createKernelGradeLoop({ db, runner, due, kernel, kernelBytes, ap
     lastJob: (task: string): Json => undefined,
   };
   const read = (path: string) => kernel("GET", `/v1/cp/read${path}`);
+  // The kernel's write records by id (a card a report cites): GET /v1/work?record=<id>, null when there is none.
+  const writes = {
+    record: async (id: string) => {
+      try { return await kernel("GET", `/v1/work${q({ record: id })}`); } catch (err: Json) { if (Number(err?.status) === 404) return null; throw err; }
+    },
+  };
   const workCache = new Map<string, Promise<Json>>();
   const work = (task: string) => kernel("GET", `/v1/work${q({ task })}`);
   // A task's jobs, read once per pass (cleared at each pass's start): lastJob is synchronous in the loop, so the pass's reads are made first (prime).
@@ -118,6 +124,19 @@ export function createKernelGradeLoop({ db, runner, due, kernel, kernelBytes, ap
       attachments: () => pc.attachments(issue.id), content: (id: string) => pc.attachmentContent(issue.id, id),
       identifier: issue.identifier,
       otherTask: async (ident: string) => (await pc.issue(ident).catch(() => null)) && notAvailable("another task's files")(),
+      // The ids a report cites, read one at a time (evidence.ts citedEvidence): a task's identifier, title and state as the
+      // control plane has them; a card's state and outcome from the kernel's write record; an Actions job from GitHub.
+      citedTask: async (ident: string) => {
+        try {
+          const i = await pc.issue(ident);
+          return { identifier: i.identifier ?? ident, title: i.title ?? "", state: i.status ?? "unknown", exists: true };
+        } catch (err: Json) {
+          if (Number(err?.status) === 404) return { exists: false };
+          throw err;
+        }
+      },
+      citedCard: (id: string) => (writes.record(id) as Promise<Json | null>),
+      citedJob: async (repo: string, id: string) => github.job(repo, id),
     };
   };
   // The kernel mints a grader-kind token for the task (billed to it, never capped) on each model call.

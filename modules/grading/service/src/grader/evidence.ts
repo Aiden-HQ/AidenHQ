@@ -510,9 +510,10 @@ export function pickComments(all: any[], own: (c: any) => boolean, rubric = "", 
     shown.set(c, s);
   }
   const text = all.filter((c) => shown.has(c)).map((c) => `${head(c)}${shown.get(c)}`).join("\n\n");
+  const ownText = all.filter((c) => shown.has(c) && own(c)).map((c) => shown.get(c)).join("\n\n");
   const extra = [...shown.keys()].filter((c) => !newest.includes(c)).length;
   const fact = `TASK_COMMENTS holds ${shown.size} of the task's ${all.length} comments (the grader's own not counted): the newest${extra ? `, and ${extra} earlier one${extra > 1 ? "s" : ""} by the task's agent or delegator picked by what the rubric and its latest result name` : ""}${cut ? `; ${cut} cut to fit (each at most ${COMMENT_MAX} characters, all at most ${COMMENTS_TOTAL})` : ""}${out ? `; ${out} more left out over that budget` : ""}`;
-  return { text, fact };
+  return { text, fact, ownText };
 }
 
 /**
@@ -540,7 +541,7 @@ export async function wordsEvidence(deps: any, rubric: string[] = []): Promise<a
   if (all.length) facts.push(picked.fact);
   const version = comments.length || files.length ? hash([...comments.map((c: any) => c.id), ...files.map((f: any) => f.id)].join(" ")) : "";
   const names = files.map((f: any) => `${f.label}: ${nameOf(f).slice(0, 200)} (${String(f.contentType ?? "").slice(0, 100)}; ${Number(f.byteSize) || 0} bytes)`).join("\n");
-  return { version, facts, files, data: { TASK_COMMENTS: picked.text, ...(files.length ? { FILE_NAMES: names } : {}) } };
+  return { version, facts, files, report: picked.ownText, data: { TASK_COMMENTS: picked.text, ...(files.length ? { FILE_NAMES: names } : {}) } };
 }
 
 const MAX_OTHER_TASKS = 3;
@@ -604,6 +605,128 @@ export async function otherTaskEvidence(idents: string[], deps: any, own: any[] 
     facts.push(`${ident} (another task the rubric names; its file list read now, not the files' contents): ${files.length} file${files.length > 1 ? "s" : ""} attached${(t.files ?? []).length > files.length ? ` (the newest ${files.length} of ${t.files.length})` : ""}: ${lines.join("; ")} (their names and types are in OTHER_TASK_FILES)`);
   }
   return { facts, data: names.length ? { OTHER_TASK_FILES: names.join("\n") } : {}, version: ids.length ? hash(ids.join(" ")) : "" };
+}
+
+
+/** The most ids one report's citations may add to the evidence: the facts stay small and the prompt bounded. */
+export const MAX_CITED = 20;
+
+/** An id a report cites: a task of this company, an approval card, or a GitHub Actions job. */
+export type Citation = { kind: "task"; id: string } | { kind: "card"; id: string } | { kind: "job"; id: string; repo?: string };
+
+/**
+ * The ids a report cites, in the order it names them, at most MAX_CITED: this task's company prefix (its own identifier's,
+ * never the graded task itself), approval cards (`k-` and 16 hex), and Actions jobs (a `.../actions/runs/<n>/job/<id>` URL,
+ * or `job <id>` / `job_id: <id>`). Only the report's own words: an id in the rubric is not a citation the report made.
+ */
+export function citedIds(texts: unknown[], own: string | undefined): Citation[] {
+  const prefix = /^([A-Z][A-Z0-9]*)-\d+$/.exec(String(own ?? ""))?.[1];
+  const found: { at: number; c: Citation }[] = [];
+  const seen = new Set<string>();
+  const add = (at: number, c: Citation) => {
+    // An Actions job id is GitHub's own and unique across repositories, so the same id from a URL and from "job <id>" is one.
+    const key = `${c.kind}:${c.id}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    found.push({ at, c });
+  };
+  let offset = 0;
+  for (const t of texts) {
+    const text = String(t ?? "");
+    const at = (i: number | undefined) => offset + (i ?? 0);
+    for (const m of text.matchAll(/https?:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/actions\/runs\/\d+\/job\/(\d{1,20})/g)) add(at(m.index), { kind: "job", repo: m[1]!, id: m[2]! });
+    if (prefix) for (const m of text.matchAll(/\b([A-Z][A-Z0-9]*)-(\d{1,7})\b/g)) if (m[1] === prefix && m[0] !== own) add(at(m.index), { kind: "task", id: m[0]! });
+    for (const m of text.matchAll(/\bk-[0-9a-f]{16}\b/g)) add(at(m.index), { kind: "card", id: m[0]! });
+    for (const m of text.matchAll(/\bjob(?:_id)?\s*[:#=]?\s*(\d{4,20})\b/gi)) add(at(m.index), { kind: "job", id: m[1]! });
+    offset += text.length + 1;
+  }
+  // The order the report names them, then the cap: the evidence (and so the prompt) stays bounded.
+  return found.sort((a, b) => a.at - b.at).slice(0, MAX_CITED).map((x) => x.c);
+}
+
+/** What one cited id resolved to; `exists: false` is a real answer ("no such id"), not a read failure. */
+export type ResolvedCitation = {
+  citation: Citation;
+  id: string;
+  exists: boolean;
+  /** A task's state, a card's state, or an Actions job's state. */
+  state?: string;
+  /** A task's title (the task's own words: fenced as data by citedEvidence). */
+  title?: string;
+  /** A card's outcome. */
+  outcome?: { ok?: boolean; text?: string };
+  /** An Actions job's conclusion and name (the workflow's words: fenced as data). */
+  conclusion?: string;
+  name?: string;
+  repo?: string;
+};
+
+/**
+ * Resolve one cited id with the reads the grader holds: deps.citedTask(ident) (the control plane's task: identifier, title,
+ * state, exists), deps.citedCard(id) (the kernel's write record: state, ok, outcome_text; null for none), and
+ * deps.citedJob(repo, id) (GitHub's Actions job: state, conclusion, name; null for none). A job cited without a repo is
+ * looked for in `repos` (the graded PRs' and the report's own PR links), at most three. A 404 is `exists: false`; any other
+ * read failure is thrown so the caller can wait for the next look rather than report "no such id" for a failed read.
+ */
+export async function resolveCitation(c: Citation, deps: any, repos: string[] = []): Promise<ResolvedCitation> {
+  if (c.kind === "task") {
+    const t = await deps.citedTask(c.id);
+    if (!t || t.exists === false) return { citation: c, id: c.id, exists: false };
+    return { citation: c, id: String(t.identifier ?? c.id), exists: true, state: String(t.state ?? "unknown"), title: String(t.title ?? "") };
+  }
+  if (c.kind === "card") {
+    const r = await deps.citedCard(c.id);
+    if (!r) return { citation: c, id: c.id, exists: false };
+    const text = r.outcome_text ?? r.outcome?.text ?? "";
+    return { citation: c, id: c.id, exists: true, state: String(r.state ?? "unknown"), outcome: { ...(typeof r.ok === "boolean" ? { ok: r.ok } : r.outcome?.ok !== undefined ? { ok: Boolean(r.outcome.ok) } : {}), text: String(text ?? "") } };
+  }
+  const candidates = c.repo ? [c.repo] : [...new Set(repos.map((r) => String(r).toLowerCase()))].slice(0, 3);
+  for (const repo of candidates) {
+    const j = await deps.citedJob(repo, c.id);
+    if (!j) continue;
+    return { citation: c, id: c.id, exists: true, state: String(j.state ?? j.status ?? "unknown"), conclusion: String(j.conclusion ?? ""), name: String(j.name ?? ""), repo };
+  }
+  return { citation: c, id: c.id, exists: false };
+}
+
+/** A task title, a card's outcome or a job name on one line, cut: these are agents' or workflows' words, never a fact. */
+const oneLine = (s: unknown, n: number) => String(s ?? "").replace(/[\r\n]+/g, " ").trim().slice(0, n);
+
+/**
+ * The ids a report cites, resolved by code: each is a task of this company, an approval card or an Actions job, and the
+ * trusted facts say whether it exists and its state — an id the facts call "no such …" does not exist, which is the answer
+ * a criterion about citing a real id needs, never an error. The titles, card outcomes and job names are their authors'
+ * words: they go in CITED_IDS as data. A read that fails waits for the next look (missing evidence is never a pass).
+ * { awaiting } or { facts, data, version } (version: a hash of the resolutions, "" with none).
+ */
+export async function citedEvidence(citations: Citation[], deps: any, repos: string[] = []): Promise<any> {
+  const facts: string[] = [];
+  const lines: string[] = [];
+  const seen: string[] = [];
+  for (const c of citations) {
+    let r: ResolvedCitation;
+    try {
+      r = await resolveCitation(c, deps, repos);
+    } catch (err: any) {
+      return { awaiting: `the cited ${c.kind === "task" ? "task" : c.kind === "card" ? "card" : "Actions job"} ${c.id} could not be read yet (${String(err.message ?? err).replace(/[^\w .:/()-]/g, "").slice(0, 160)})` };
+    }
+    const state = r.state ? `, state ${oneLine(r.state, 40)}` : "";
+    if (c.kind === "task") {
+      facts.push(r.exists ? `cited task ${r.id}: exists${state}; its title is in CITED_IDS` : `cited id ${c.id}: no such task in this company`);
+      if (r.exists) lines.push(`${r.id} (task): title ${oneLine(r.title, 200) || "(empty)"} (state ${oneLine(r.state, 40)})`);
+    } else if (c.kind === "card") {
+      const outcome = r.outcome?.text ? `, outcome ${r.outcome.ok === false ? "failed" : r.outcome.ok ? "ok" : "unknown"}` : "";
+      facts.push(r.exists ? `cited card ${c.id}: exists${state}${outcome}; its outcome text is in CITED_IDS` : `cited id ${c.id}: no such approval card`);
+      if (r.exists) lines.push(`${c.id} (card): outcome ${oneLine(r.outcome?.text, 300) || "(none)"} (state ${oneLine(r.state, 40)})`);
+    } else {
+      const repo = r.repo ?? c.repo ?? "an unknown repo";
+      const conclusion = r.conclusion ? `, conclusion ${oneLine(r.conclusion, 40)}` : "";
+      facts.push(r.exists ? `cited Actions job ${c.id} in ${repo}: exists${state}${conclusion}; its name is in CITED_IDS` : `cited id ${c.id}: no such Actions job${c.repo ? ` in ${c.repo}` : ""}`);
+      if (r.exists) lines.push(`${c.id} (Actions job in ${repo}): name ${oneLine(r.name, 120) || "(empty)"} (state ${oneLine(r.state, 40)}${r.conclusion ? `, conclusion ${oneLine(r.conclusion, 40)}` : ""})`);
+    }
+    seen.push(`${c.kind}:${r.id}:${r.exists}:${r.state ?? ""}:${r.conclusion ?? ""}`);
+  }
+  return { facts, data: lines.length ? { CITED_IDS: lines.join("\n") } : {}, version: lines.length ? `cited:${hash(seen.join("\n"))}` : "" };
 }
 
 /** A content type as code may state it among the trusted facts: a plain type/subtype, or "unknown type". */
