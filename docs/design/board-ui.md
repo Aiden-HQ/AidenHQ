@@ -1,17 +1,36 @@
-# The board's design system
+# The board's design guide
 
-The board (`services/board/web`) has one kit: tokens in `web/src/ui/tokens.css`, components in `web/src/ui/` (import
-from `./ui`), their styles in `web/src/ui/ui.css`. Every part is on `#/design`, in the light and the dark theme side by
-side. (Agent-built apps have their own system, shadcn-based: [design-system.md](design-system.md).)
+The board (`services/board/web`) is the owner's daily surface. It has one kit: tokens in `web/src/ui/tokens.css`,
+components in `web/src/ui/` (import from `./ui`), their styles in `web/src/ui/ui.css`, the frame in `Shell.tsx` and
+`shell.css`. Every part is on `#/design`, light and dark side by side. Agent-built apps have their own system
+(shadcn on Radix palettes, MIT, synced into the starter): [design-system.md](design-system.md). The two share the taste
+below, not tokens; change one without the other.
 
-The look: Stripe's polish and Linear's crispness, with more colour. Warm paper background, white surfaces, an indigo
-accent, one hue per item (an agent, a module, an app) that colours its face, tab underline and charts. Moderate radius
-that shrinks with the element (tags 5px, controls 8px, cards 10px, dialogs 14px), never a pill. Dense but calm.
-Fluid at every size: clamp() gutters and type, grids that add columns, never a narrow column on a big screen.
+**The look:** Stripe's polish and Linear's crispness, with more colour. Moderate radius that shrinks with the element,
+never a pill. Dense but calm, little wasted space. Fluid at every size (1512, 1920, 2560 and a phone): clamp() gutters
+and type, grids that add columns, never a narrow column in the middle of a big screen.
 
-## A new page
+## Priorities
 
-Start from the template and add only the page's own layout, in its own small CSS file:
+1. **Chat is the heart.** It is the home view, gets the most width and care, and nothing in the frame crowds it: a
+   change that costs chat space or speed loses.
+2. **Tasks** next, then everything else.
+
+## The frame
+
+- **Top bar** (`TopNav`): Chat, Approvals, Tasks, Fleet, Insight; then ⌘K search, today's spend, shortcuts, Settings.
+  Live counts sit on the section (approvals waiting, agents working).
+- **A section of several pages lists them on its left** (`SubNav`): Fleet is Agents, Apps (with pinned app panels),
+  Modules, Reviews; Insight is Costs, Flow. Settings uses the same list for its categories. A section of one page has
+  no list; chat keeps the full width under the bar with its own conversation list.
+- **⌘K** (`Palette`) jumps to any page, agent, chat, app, module or setting from cached data only.
+- **Phone**: a bottom bar (Chat, Approvals, Agents, Tasks, More); an open conversation is full screen with no bars.
+- **A page's own tools** go in the page (its header, or a `.page-tools` row like Tasks), never in the top bar.
+
+A new board page: add its view to `NavView`/`ITEMS` in `Shell.tsx` and to a section in `SECTIONS` (an existing one
+unless it is daily work), its route in `App.tsx`, and a `VIEW_CHUNKS` entry in `queries.ts` so hover prefetches it.
+
+## A page
 
 ```tsx
 <Page>
@@ -20,50 +39,67 @@ Start from the template and add only the page's own layout, in its own small CSS
 </Page>
 ```
 
-An item's page (agent, module, app) adds `crumb`, `face` and `status` to its `PageHeader`, puts `hueClass(name)` on the
-`Page`, `Tabs` under the header (each tab its own URL), and `.ui-split` for the work on the left and a rail of
-`Card`s with `Facts` on the right.
-
-## What to use for what
+Add only the page's own layout, in its own small CSS file. An item's page (agent, module, app) adds `crumb`, `face`
+and `status` to its `PageHeader`, puts `hueClass(name)` on the `Page`, `Tabs` under the header (each tab its own URL),
+and `.ui-split` for the work on the left and a rail of `Card`s with `Facts` on the right.
 
 | Need | Use |
 | --- | --- |
-| A state (working, connected, failed, waiting on you) | `StatusDot` with one tone: `working`, `ok`, `needs`, `failed`, `idle`, `done`, `info`, `busy`, `hue` |
+| A state (working, connected, failed, waiting on you) | `StatusDot`: `working`, `ok`, `needs`, `failed`, `idle`, `done`, `info`, `busy`, `hue` |
 | A fact (a count, a kind, a version) | `Tag` (`neutral`, `accent`, `ok`, `needs`, `failed`) |
 | The parts of one page | `Tabs` |
 | A filter or a choice of two to four values | `Segmented` |
 | An action | `Button` / `LinkButton`: one `primary` per view, `quiet` for the least important, `danger` for removal |
 | A list of tasks | `ListRows` + `ListRow` |
-| A collection of items (modules, apps, connections) | `TileGrid` + `Tile` (one target per tile, its action raised above it) |
-| A number and its trend | `StatBlock` (with `bars`) or `BarChart` |
+| A collection (modules, apps, connections) | `TileGrid` + `Tile` (one target per tile, its action raised above it) |
+| A number and its trend | `StatBlock` (with `bars`) or `BarChart`; a count or cost that changes: `Ticker` |
 | A few label/value facts | `Card` + `Facts`; a usage bar: `Meter` |
-| A form | `Field` (label, control, help or error), `Input`, `Select`, `Switch`, `Checks` |
-| A setting on a settings page | `FieldRow`: its name and help on the left, its value or control on the right |
+| A form | `Field`, `Input`, `Select`, `Switch`, `Checks`; a setting: `FieldRow` |
 | Something new or wrong above the content | `Banner` (`info`, `warn`, `danger`) with one action |
 | Nothing to show | `EmptyState`, which says what to do |
-| A short decision or a form that shouldn't leave the page | `Dialog` |
-| Extra actions | `Menu` |
+| Loading | a skeleton shaped like the content (`Skeleton.tsx`), never a spinner |
+| A short decision | `Dialog`; extra actions: `Menu`; an icon: `Icon` (`ui/icons.tsx`) |
+
+## Tokens
+
+- **Colour**: every colour is a token, `light-dark(light, dark)`. Light is a warm paper page with white surfaces and an
+  indigo accent. **Dark is OLED black**: the page is `#000`; cards and panels lift on dark-grey surfaces with hairline
+  borders and a faint top highlight (`--lift`), since shadows can't show on black; text and status colours are bright
+  and saturated enough to read on black. One hue per item (`hueClass`) colours its face, tab underline and charts.
+- **Type**: one family (Inter, else the system face). Fixed small steps for dense UI (`--text-3xs`…`--text-body`), fluid steps above
+  (`--text-row`…`--text-3xl`). Sentence case everywhere; no uppercase labels.
+- **Space**: a 4px grid (`--sp-*`); page gutters `--gutter`, `--page-top`, `--stack`.
+- **Radius**: tags 5px, controls 8px, cards 10px, dialogs and columns 14px; never a pill.
+- **Elevation**: `--shadow` at rest, `--shadow-hover` lifted, `--shadow-lg` for overlays.
+
+## Motion
+
+Fast and in answer to an action: `--instant` 90ms (presses), `--fast` 160ms (hovers, exits), `--medium` 220ms (things
+arriving), `--slow` 320ms (meters); `--ease-out` in, `--ease-in` out, `--ease-spring` for a small settle. Messages,
+cards and list rows rise in; pages cross-fade (View Transitions, `App.tsx` `setView`); toasts spring in and slide out;
+counts tick. Working states breathe in a small dot, never a large animated area (OLED smear). `prefers-reduced-motion`
+makes every transition and animation instant (`ui.css`), so a page needs no rule of its own.
+
+## Accessibility
+
+Every control is a real button or link, reachable by keyboard, with `--ring` on focus; text meets AA on every surface in
+both themes (body aims for AAA); state is never colour alone (a `StatusDot` has a word); dialogs trap focus and close on
+Escape; phone inputs are 16px (no zoom).
 
 ## Rules the lint enforces
 
-`npm run lint` in `services/board` (ESLint and stylelint, config only; CI runs it):
+`npm run lint` in `services/board` (ESLint and stylelint, config only; CI runs it): no raw colours or px font sizes
+outside `tokens.css`, and no class the kit replaced (`web/legacy-classes.json`, each with what to use instead).
 
-- No raw colours (hex, `rgb()`, `hsl()`) outside `tokens.css`, in CSS or in a `className`/`style` string.
-- No px font sizes outside `tokens.css`: use a `--text-*` step.
-- No class the kit replaced (`web/legacy-classes.json`, each with what to use instead), in `className` or as a CSS rule.
+## Modules
 
-A new token goes in `tokens.css` as `light-dark(light, dark)`, so both themes and `[data-theme]` subtrees work.
-
-## Dark mode and motion
-
-Dark mode is OLED black: the page is `#000`, cards and panels lift on dark-grey surfaces with a faint top highlight
-(`--lift`), and status and accent colours are saturated enough to read on black. Motion uses the tokens in `tokens.css`
-(`--instant` 90ms for presses, `--fast` 160ms for hovers, `--medium` 220ms for things arriving, `--ease-out` in,
-`--ease-in` out); every control shows `--ring` on keyboard focus. `prefers-reduced-motion` makes every transition and
-animation instant (`ui.css`), so a page needs no reduced-motion rule of its own.
+Modules don't ship board UI. They contribute data the board draws with this kit: `board.signins` (a Connect on
+Settings, Connections), `board.setup_flows` (a setup sheet and wizard step, [guided-setup.md](guided-setup.md)) and
+`providers.board` (an API a board page reads, like Reviews). A module that needs a new kind of page asks for one in the
+board, built here, under a section of the top bar.
 
 ## Working on the UI without an instance
 
 `node web/dev/mock-api.mjs` answers the board's reads on :3120 with neutral fixtures, and `npm run dev:web` serves the
 UI against it on :5173. `GET /__mock?welcome=1` shows the first-run wizard, `?empty=1` empties the lists, `?slow=800`
-delays every answer (loading states).
+delays every answer (loading states). Check a change at 1512, 1920, 2560 and 390 wide, light and dark, chat first.
