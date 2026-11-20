@@ -92,28 +92,20 @@ function authorOf(c: Comment, { owner, requester, delegator, agent }: { owner: s
 
 /**
  * The task's comments as the reviewer reads them (TASK_COMMENTS): oldest first, each under a label line code wrote (its
- * author's place in the request and when), every line of its text marked with that author ("[the requesting agent ada] "),
- * so no line of it reads as anyone else's: a label imitated inside the text still carries its real author's mark. A first
- * line counts who of those that may amend the request (the owner, the delegating agent, the chief of staff) wrote any of
- * them, so a claim that one of them agreed is checked against code's count, not the claim.
+ * author's place in the request and when) and its text quoted line by line ("> "), so no comment can write a label of its own.
  */
 export function taskComments(list: { c: Comment; a: Author }[]): string {
-  // Every line break a model may read as one (\r, \v, \f, U+0085, U+2028, U+2029) is a marked line's end, and every other
+  // Every line break a model may read as one (\r, \v, \f, U+0085, U+2028, U+2029) is a quoted line's end, and every other
   // control or format character goes, so no text starts a line of its own.
-  const lines = (s: string, mark: string) => s.replace(/\r\n?|[\v\f\u0085\u2028\u2029]/g, "\n").replace(/[^\P{Cc}\n\t]|\p{Cf}/gu, "").trim().slice(0, COMMENT_MAX).split("\n").map((l) => `${mark} ${l}`.trimEnd()).join("\n");
+  const lines = (s: string) => s.replace(/\r\n?|[\v\f\u0085\u2028\u2029]/g, "\n").replace(/[^\P{Cc}\n\t]|\p{Cf}/gu, "").trim().slice(0, COMMENT_MAX).split("\n").map((l) => `> ${l}`).join("\n");
   const out: string[] = [];
-  const shown: Author["who"][] = [];
   let size = 0;
   for (const { c, a } of list.slice(-COMMENTS).reverse()) {
-    const who = `${LABEL[a.who]}${a.key ? ` (${a.key})` : ""}`;
-    const one = `${who}, ${String(c.createdAt ?? "").slice(0, 19)}:\n${lines(stripHidden(c.body), `[${LABEL[a.who]}${a.key ? ` ${a.key}` : ""}]`)}`;
+    const one = `${LABEL[a.who]}${a.key ? ` (${a.key})` : ""}, ${String(c.createdAt ?? "").slice(0, 19)}:\n${lines(stripHidden(c.body))}`;
     if ((size += one.length + 2) > COMMENTS_MAX) break;
     out.unshift(one);
-    shown.push(a.who);
   }
-  if (!out.length) return "";
-  const count = (["owner", "delegator", "chief"] as const).map((w) => `${LABEL[w]} ${shown.filter((x) => x === w).length}`).join(", ");
-  return [`Comments below by those who may amend the request (code's count): ${count}.`, ...out].join("\n\n");
+  return out.join("\n\n");
 }
 
 /**

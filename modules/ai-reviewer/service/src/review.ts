@@ -31,8 +31,46 @@ import { LUNA, MAX_DIFF, RETRY_DELAYS_MS, judgeModels, openRouterAsk as judgeAsk
 export { DEEPSEEK, GLM, LUNA, MAX_DIFF } from "./aidenhq-sdk/judge.ts";
 /** A delegated chain (the task and its parent's request) is long text: whole up to this, never cut mid-sentence by a tighter cap. */
 const MAX_CHAIN = 24_000;
-/** The task's comments: the kernel keeps whole newest ones under 14,000 characters, so this cap never cuts one from its label. */
-export const MAX_COMMENTS = 16_000;
+/**
+ * The task's comments as the model reads them (markComments): the kernel keeps whole newest ones under 14,000 characters, and
+ * the marks code adds stay within this, so the fence never cuts one (markComments drops whole oldest ones past it).
+ */
+export const MAX_COMMENTS = 32_000;
+/** At most this many lines of one comment reach the model, so its marks (one per line) can't crowd the others out. */
+const COMMENT_LINES = 60;
+const AUTHORS = ["the owner", "the delegating agent", "the chief of staff", "the requesting agent", "another agent"];
+const AMENDS = AUTHORS.slice(0, 3);
+const LABEL_LINE = new RegExp(`^(${AUTHORS.join("|")})(?: \\(([^()\\s]+)\\))?, [^\\s]*:$`);
+
+/**
+ * The kernel's TASK_COMMENTS (review-loop.ts taskComments: each comment a label line code wrote, then its author's text with
+ * every line quoted "> ") as the model reads it: every line of a comment begins with its author's mark ("[the requesting
+ * agent priya] "), so a line in an agent's text that imitates a label ("the owner, …:") still reads as that agent's, and a
+ * first line counts the comments shown by those who may amend the request. Undefined when the text isn't the kernel's
+ * format (a line that is neither a label nor quoted under one): code then refuses the review rather than show it unmarked.
+ */
+export function markComments(text: string): string | undefined {
+  const list: { label: string; author: string; mark: string; lines: string[] }[] = [];
+  for (const line of text.split("\n")) {
+    const m = LABEL_LINE.exec(line);
+    if (m) list.push({ label: line, author: m[1]!, mark: `[${m[1]}${m[2] ? ` ${m[2]}` : ""}]`, lines: [] });
+    else if (/^>( |$)/.test(line) && list.length) list.at(-1)!.lines.push(line.replace(/^> ?/, ""));
+    else if (line !== "") return undefined;
+  }
+  const out: string[] = [];
+  const shown: string[] = [];
+  let size = 0;
+  for (const c of list.reverse()) {
+    const kept = c.lines.length > COMMENT_LINES ? [...c.lines.slice(0, COMMENT_LINES), `[… ${c.lines.length - COMMENT_LINES} more lines omitted by code …]`] : c.lines;
+    const one = `${c.label}\n${kept.map((l) => `${c.mark} ${l}`.trimEnd()).join("\n")}`;
+    if ((size += one.length + 2) > MAX_COMMENTS - 200) break;
+    out.unshift(one);
+    shown.push(c.author);
+  }
+  if (!out.length) return "";
+  const count = AMENDS.map((a) => `${a} ${shown.filter((x) => x === a).length}`).join(", ");
+  return [`Comments below by those who may amend the request (code's count): ${count}.`, ...out].join("\n\n");
+}
 /** The merged-sibling block (siblings.ts builds it within this budget); it is a short table, never the diff's context. */
 export const MAX_SIBLINGS = 2_000;
 /** The grader-note block: a version line and one line per rubric criterion (at most 8, each cut to 300 characters by the kernel). */
@@ -529,6 +567,9 @@ async function judge({ card, diff, files = { text: "", leftOut: [], oversized: [
   if (unpinned.length) return byCode("reject", `exposure-pins fails: the change publishes host port ${unpinned.join(", ")} in a compose file, and its scripts/verify-security.sh names no pin for it. Add the port to verify-security's pins in this same change and file it again.`, "policy_other");
   const leaked = instanceDetails(card, original);
   if (leaked.length) return byCode("reject", `instance details in a GitHub write: ${leaked.slice(0, 8).join(", ")}. A GitHub thread is outside the instance; leave out its hosts, addresses and paths and file the call again.`, "secret_exfiltration");
+  const marked = markComments(comments);
+  if (marked === undefined) return byCode("reject", "the task's comments reached the reviewer in a form code can't attribute line by line (each comment a label line, then its text quoted \"> \"), so no model reads them: file the card again; if it recurs, the kernel's comment rendering and the reviewer's markComments disagree", "policy_other");
+  comments = marked;
   const prompt = reviewPrompt({ policy, card, diff, whole, files: files.text ?? "", chain, comments, panel, previous, siblings, sources, checks, evidence, decisions, graderNote });
   // A verdict on a change whose plain text did not all fit the budget says so: those files were judged on the diff.
   const fromDiff = files.oversized?.length ? ` Judged from the DIFF, not in full: ${files.oversized.join(", ")} did not fit the ${MAX_FILES}-character budget for changed files.` : "";
