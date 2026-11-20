@@ -32,6 +32,8 @@ export const scorecardQuery = (id: string) => q(`agents.${id}.scorecard`, () => 
 export const agentProfileQuery = (key: string) => q(`agents.${key}.profile`, () => api.agentProfile(key).then((r) => r.profile));
 /** Task titles stay off the device, like chats. */
 export const agentOpenQuery = (key: string) => q(`agents.${key}.open`, () => api.agentOpenTasks(key), false);
+/** The Activity tab: task titles and error text stay off the device. */
+export const agentTimelineQuery = (key: string) => q(`agents.${key}.timeline`, () => api.agentTimeline(key).then((r) => r.entries), false);
 /** One chat. `peek`: a prefetch (a hovered row), which must not mark the chat read. */
 export const chatQuery = (ref: string) => q(`chats.${ref}`, () => api.chat(ref), false);
 const peeking = new Set<string>();

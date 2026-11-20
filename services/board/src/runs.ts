@@ -7,6 +7,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { UsageRecord } from "./store.js";
+import type { AgentJob } from "./timeline.js";
 
 /** A kernel job as GET /v1/work?job= gives it (a task's jobs carry the first eight fields). */
 export interface KernelJob {
@@ -29,6 +30,8 @@ export interface KernelJob {
 export interface Work {
   job(id: string): Promise<KernelJob | null>;
   task(id: string): Promise<KernelJob[]>;
+  /** An agent's last 50 jobs, newest first, with what the timeline shows of each (GET /v1/work?agent=, timeline.ts). */
+  agent(id: string): Promise<AgentJob[]>;
   /** What runs now, what waits and who is failing, per agent id (GET /v1/work). */
   activity(): Promise<KernelActivity>;
   /** The owner's Stop (POST /v1/stop, `account` the signed-in admin): the running jobs of a task or an agent end cancelled; their ids. */
@@ -108,6 +111,7 @@ export function kernelWork(k: { url: string; token: string }): Work {
   return {
     job: (id) => get(`job=${encodeURIComponent(id)}`),
     task: async (id) => ((await get(`task=${encodeURIComponent(id)}`)) as { jobs: KernelJob[] }).jobs,
+    agent: async (id) => ((await get(`agent=${encodeURIComponent(id)}`)) as { jobs: AgentJob[] }).jobs,
     activity: () => get(""),
     async stop(what, account) {
       const res = await fetch(`${k.url}/v1/stop`, { method: "POST", headers: { authorization: `Bearer ${k.token}`, "content-type": "application/json", "x-aidenhq-account": account }, body: JSON.stringify(what), signal: AbortSignal.timeout(15_000) });
