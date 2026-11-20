@@ -35,7 +35,8 @@ export function Sidebar({ view, approvals, agentsActive, onNav, panels, spend, s
   notify?: () => void;
   brief: boolean;
   rail: boolean;
-  onRail: () => void;
+  /** Absent: the screen is too narrow for anything but the rail. */
+  onRail?: () => void;
   onPalette: () => void;
 }) {
   const share = spend ? Math.min(1, spend.spent / (spend.cap || 1)) : 0;
@@ -46,9 +47,9 @@ export function Sidebar({ view, approvals, agentsActive, onNav, panels, spend, s
           <img src="/icon.png" alt="" />
           <span>AidenHQ</span>
         </a>
-        <button type="button" className="sb-icon" onClick={onRail} aria-label={rail ? "Expand the sidebar" : "Collapse the sidebar"} title={rail ? "Expand" : "Collapse"}>
+        {onRail && <button type="button" className="sb-icon" onClick={onRail} aria-label={rail ? "Expand the sidebar" : "Collapse the sidebar"} title={rail ? "Expand" : "Collapse"}>
           <Icon name="collapse" />
-        </button>
+        </button>}
       </div>
       <button type="button" className="sb-search" onClick={onPalette} title={`Search and jump (${paletteKey})`}>
         <Icon name="search" />

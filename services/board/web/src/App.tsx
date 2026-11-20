@@ -230,6 +230,9 @@ export function App() {
   const mobile = useMedia("(max-width: 860px)");
   // The sidebar: full, or an icon rail (the owner's choice, kept on this device; always a rail on a narrow screen).
   const narrow = useMedia("(max-width: 1180px)");
+  // Chat is the heart of the board: below 1800px it takes the room, with the sidebar as a rail until the owner opens it.
+  const roomy = useMedia("(min-width: 1800px)");
+  const [chatSidebar, setChatSidebar] = useState(false);
   const [railPref, setRailPref] = useState(() => {
     try {
       return localStorage.getItem("aidenhq.rail") === "1";
@@ -674,8 +677,8 @@ export function App() {
           settingsAlert={!connectionsOk}
           notify={notifyAsk ? () => void askForNotifications().then(() => setNotifyAsk(false)) : undefined}
           brief={!!board.brief}
-          rail={railPref || narrow}
-          onRail={toggleRail}
+          rail={narrow || (view === "chat" && !roomy ? !chatSidebar : railPref)}
+          onRail={narrow ? undefined : view === "chat" && !roomy ? () => setChatSidebar((o) => !o) : toggleRail}
           onPalette={() => setPalette(true)}
         />
       )}
