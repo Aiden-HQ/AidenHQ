@@ -29,6 +29,7 @@ import type { Asserter } from "./assert.ts";
 import type { Checks } from "./checks.ts";
 import { factWriter, iso } from "./factlog.ts";
 import type { Facts } from "./facts.ts";
+import { TYPED } from "./cplimit.ts";
 import type { Connection, Grant, Whoami } from "./identity.ts";
 import type { Once } from "./once.ts";
 import { delegateIds, OutcomeError, type PluginPost } from "./outcomes.ts";
@@ -334,7 +335,8 @@ export function createBoardCp({ controlUrl, key, fetch = globalThis.fetch, obser
     }
     const r = await fetch(new URL(`${path}${query}`, controlUrl), {
       method, signal: AbortSignal.timeout(60_000),
-      headers: { authorization: `Bearer ${key()}`, accept: String(req.headers.accept ?? "application/json"), ...(body?.length && type ? { "content-type": String(type) } : {}) },
+      // The board's own typed-words mark (its compose box, crew instructions) passes to the owner-key caller, which strips it (cplimit.ts markCode).
+      headers: { authorization: `Bearer ${key()}`, accept: String(req.headers.accept ?? "application/json"), ...(body?.length && type ? { "content-type": String(type) } : {}), ...(req.headers[TYPED] === "owner" ? { [TYPED]: "owner" } : {}) },
       ...(body?.length ? { body } : {}),
     });
     const out = Buffer.from(await r.arrayBuffer());

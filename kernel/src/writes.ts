@@ -23,7 +23,7 @@ import { routeKind } from "./codehost.ts";
 import type { Executor, ReviewContext } from "../sdk/src/executor.ts";
 import { writeRaise, type Inventory } from "./paths.ts";
 import { gateMode } from "./gates.ts";
-import { REVIEW_TRIES, afterReview, capText, codeVerdict, computeTier, failedVerdict, heldInput, requestTargets, shadowed, splitToOwner, type Autonomy, type Raise, type ReviewFirst, type ReviewInput, type Cap, type RoutineCap, type Tier, type Verdict } from "./tier.ts";
+import { REVIEW_TRIES, afterReview, requestHash, capText, codeVerdict, computeTier, failedVerdict, heldInput, requestTargets, shadowed, splitToOwner, type Autonomy, type Raise, type ReviewFirst, type ReviewInput, type Cap, type RoutineCap, type Tier, type Verdict } from "./tier.ts";
 
 export type Schema = { type?: string; properties?: { [k: string]: Schema }; required?: string[]; additionalProperties?: boolean; enum?: unknown[]; pattern?: string; minLength?: number; maxLength?: number; items?: Schema; minItems?: number; maxItems?: number; minimum?: number; maximum?: number; exclusiveMinimum?: number };
 /** One kind (config/kernel/writes.json and kinds.ts, keyed `<module>.<kind>`); `tools` are `connection.tool`. */
@@ -87,7 +87,6 @@ const literal = (c: Partial<Card>) => Object.fromEntries(Object.keys(c).filter((
 /** Text a module wrote, inside a fence it can't close, for a notice posted on a task. */
 export const fenced = (text: string) => { const f = "`".repeat(Math.max(3, ...[...text.matchAll(/`+/g)].map((m) => m[0].length + 1))); return `${f}\n${text}\n${f}`; };
 export const MARKER = "<!-- aidenhq-approval -->";
-const hash = (s: string) => createHash("sha256").update(s).digest("hex");
 const UNSURE = "reviewer_unsure";
 const MODEL = /^~?[\w.-]+\/[\w.:-]+$/;
 
@@ -603,8 +602,8 @@ export function createWrites({ records, registry, connections, secret, resolver,
         if (!MODEL.test(post.model) && post.model !== "kernel/code") return { record: r, refused: "the verdict names no model" };
         if (post.second !== undefined && (!MODEL.test(post.second) || post.second === post.model)) return { record: r, refused: "the second reviewer must be another model" };
         if (post.second_unsure !== undefined && (post.second !== undefined || post.whole !== true || !MODEL.test(post.second_unsure) || post.second_unsure === post.model)) return { record: r, refused: "an approval with an unsure second reviewer names another model and attests the input was verified whole" };
-        // The request chain an unsure or a panel split was about: a changed chain lifts that rejection of the same content (tier.ts priorDecisions).
-        const chain = post.decision === "reject" && (post.code === UNSURE || post.code === "panel_split") && typeof b.request?.chain === "string" && b.request.chain ? hash(b.request.chain).slice(0, 32) : undefined;
+        // The request an unsure or a panel split was about (the chain and the task's comments): once it changes, that rejection of the same content lifts (tier.ts priorDecisions).
+        const chain = post.decision === "reject" && (post.code === UNSURE || post.code === "panel_split") && typeof b.request?.chain === "string" && b.request.chain ? requestHash(b.request.chain, typeof b.request.comments === "string" ? b.request.comments : "") : undefined;
         // `+`: two approvals (the panel); `;unsure:`: one approval and the other reviewer unsure (owner, 2026-11-20).
         const by = `reviewer:${post.model}${post.decision === "approve" && post.second ? `+${post.second}` : post.decision === "approve" && post.second_unsure ? `;unsure:${post.second_unsure}` : ""}`;
         const out = records.review(id, r.digest, { decision: post.decision, by, note: post.reason, code: post.code, chain });

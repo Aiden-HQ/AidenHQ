@@ -15,6 +15,9 @@
 - A connection tool call (card action `conn.tool`) is one step of the agent's work: a comment, a label change and a close
   are each their own call, each reviewed alone. Approve a call that is one of the writes the request asks for, aimed where
   it asks, even though the request's other steps are not in it; they come as their own calls.
+  Whether a stranger's issue is credible is the triaging agent's judgement in its run: a triage write (a label, a
+  comment, a close) on the issue the request names, of the kind the request lists for the verdict the agent reached, is
+  judged on that. The issue's own text is not evidence you are owed; the agent's account of it in TASK_COMMENTS is context.
 - No unrelated files. Lockfile churn, config edits, renamed directories or "while I was here" cleanups that the chain
   did not ask for are a reason to reject. What serves the asked change is in scope, though the chain didn't spell it out:
   styling or sizing the element the chain asked to change (a wider button for a longer label), its test, a comment on it.

@@ -10,6 +10,8 @@ export { PaperclipError };
 
 /** The signed-in admin a write is for (app.ts sets it per request); sent to the kernel, which logs it with the write. */
 export const actingAccount = new AsyncLocalStorage<string>();
+/** Set while the board posts the user's own typed words: the kernel then leaves the comment unmarked (kernel cplimit.ts markCode). */
+const typedWords = new AsyncLocalStorage<true>();
 
 export interface Label {
   id: string;
@@ -114,7 +116,7 @@ export class Paperclip {
 
   /** `kernelUrl`: the kernel's backplane; `key`: the board's key on it (gateway_board_key). */
   constructor(kernelUrl: string, readonly companyId: string, key: string, fetchImpl: typeof fetch = fetch) {
-    this.client = paperclipClient({ url: kernelUrl, token: key, lane: "owner", fetcher: fetchImpl, headers: (method): Record<string, string> => { const account = actingAccount.getStore(); return account && method !== "GET" ? { "x-aidenhq-account": account } : {}; } });
+    this.client = paperclipClient({ url: kernelUrl, token: key, lane: "owner", fetcher: fetchImpl, headers: (method): Record<string, string> => { const account = actingAccount.getStore(); return { ...(account && method !== "GET" ? { "x-aidenhq-account": account } : {}), ...(typedWords.getStore() ? { "x-aidenhq-typed": "owner" } : {}) }; } });
   }
 
   async request<T>(method: string, path: string, body?: unknown): Promise<T> {
@@ -293,8 +295,13 @@ export class Paperclip {
     return this.request<Issue>("PATCH", `/api/issues/${encodeURIComponent(id)}`, body);
   }
 
-  addComment(id: string, body: string): Promise<Comment> {
-    return this.request<Comment>("POST", `/api/issues/${encodeURIComponent(id)}/comments`, { body });
+  /**
+   * A comment as the owner. `typed`: the user's own words (the compose box, crew instructions, a fast chat); anything else
+   * the board writes is marked by the kernel as code's, so it is never read as the owner's words.
+   */
+  addComment(id: string, body: string, typed = false): Promise<Comment> {
+    const post = () => this.request<Comment>("POST", `/api/issues/${encodeURIComponent(id)}/comments`, { body });
+    return typed ? typedWords.run(true, post) : post();
   }
 
   createIssue(body: Record<string, unknown>): Promise<Issue> {

@@ -53,5 +53,5 @@ export async function laneMessages(pc: Paperclip, lane: LaneOptions | undefined,
 export async function laneSend(pc: Paperclip, lane: LaneOptions | undefined, key: string, text: string, by?: string): Promise<void> {
   const t = chatTasks(lane).find((x) => x.key === key);
   if (!t) throw new Error(`${key} has no fast chat`);
-  await pc.addComment(t.task, `${by ? `(by ${by}) ` : ""}${displayText(text)}`);
+  await pc.addComment(t.task, `${by ? `(by ${by}) ` : ""}${displayText(text)}`, true);
 }

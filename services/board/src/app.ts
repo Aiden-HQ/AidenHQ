@@ -520,7 +520,7 @@ export function createApp(opts: AppOptions): Server {
     const text = marker ? `${displayText(instructions)}\n\n${marker}` : displayText(instructions);
     const existing = (await pc.children(parent.id)).find((k) => k.assigneeAgentId === agent.key && !["done", "cancelled"].includes(k.status));
     if (existing) {
-      await pc.addComment(existing.id, text);
+      await pc.addComment(existing.id, text, true);
       log.info({ issue: parent.identifier, part: existing.identifier, agent: agent.name }, "instructions to the crew");
       return existing;
     }
@@ -1778,9 +1778,9 @@ export function createApp(opts: AppOptions): Server {
         const others = named.filter((a) => a.key !== own);
         // Hidden markers are machine-only: the runner ignores comments that carry its marker.
         let posted;
-        if (!others.length || named.length > others.length) posted = await pc.addComment(issue.id, displayText(text));
+        if (!others.length || named.length > others.length) posted = await pc.addComment(issue.id, displayText(text), true);
         // On the user's own task the message stays in the team chat; the Researcher leaves it to the others.
-        else if (issue.id === task!.id) posted = await pc.addComment(issue.id, `${displayText(text)}\n\n${FOR_OTHERS}`);
+        else if (issue.id === task!.id) posted = await pc.addComment(issue.id, `${displayText(text)}\n\n${FOR_OTHERS}`, true);
         log.info({ issue: issue.identifier, mentions: named.map((a) => a.name) }, "comment added");
         // A message to a finished chat reopens it.
         // A chat keeps its agent: a message to a chat the agent handed back goes to that agent again.

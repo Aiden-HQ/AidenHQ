@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { limitIssueLists } from "../src/cplimit.ts";
+import { CODE_MARK, TYPED, limitIssueLists, markCode } from "../src/cplimit.ts";
 
 test("at most `max` company issue lists are in flight; other reads pass straight through", async () => {
   let inFlight = 0, peak = 0, others = 0;
@@ -18,4 +18,18 @@ test("at most `max` company issue lists are in flight; other reads pass straight
   assert.equal(done.length, 12);
   assert.equal(peak, 3);
   assert.equal(others, 1);
+});
+
+test("every comment the owner-key caller writes is marked as code's, except the owner's own typed words", async () => {
+  const sent = [];
+  const f = markCode(async (input, init) => (sent.push({ path: new URL(input).pathname, typed: new Headers(init.headers).get(TYPED), body: init.body ? JSON.parse(String(init.body)) : undefined }), new Response("{}")));
+  const u = (p) => `http://cp${p}`;
+  await f(u("/api/issues/T-1/comments"), { method: "POST", body: JSON.stringify({ body: "Approved: widen it." }) });
+  await f(u("/api/issues/T-1/comments"), { method: "POST", headers: { [TYPED]: "owner" }, body: JSON.stringify({ body: "Yes, publish it." }) });
+  await f(u("/api/issues/T-1"), { method: "PATCH", body: JSON.stringify({ status: "todo", comment: "[grading] reason" }) });
+  await f(u("/api/issues/T-1/comments"), { method: "POST", body: Buffer.from(JSON.stringify({ body: "notice\n\n<!-- aidenhq-wake -->" })) });
+  await f(u("/api/issues/T-1"), { method: "PATCH", body: JSON.stringify({ status: "done" }) });
+  assert.deepEqual(sent.map((s) => [s.typed, s.body?.body ?? s.body?.comment ?? null]), [
+    [null, `Approved: widen it.\n\n${CODE_MARK}`], [null, "Yes, publish it."], [null, `[grading] reason\n\n${CODE_MARK}`], [null, "notice\n\n<!-- aidenhq-wake -->"], [null, null],
+  ], "the typed mark never reaches the control plane");
 });

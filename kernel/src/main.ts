@@ -92,7 +92,7 @@ import { sandboxConfig } from "./sandbox-config.ts";
 import { createCertWatch } from "./front-door.ts";
 import { createUpdates, runCheck, runVerify } from "./updates.ts";
 import { BOX_EXEC_WRAP } from "../../services/computer/lib.ts";
-import { limitIssueLists } from "./cplimit.ts";
+import { TYPED, limitIssueLists, markCode } from "./cplimit.ts";
 
 const log = (msg: string, fields: Record<string, unknown> = {}) => console.log(new Date().toISOString(), msg, JSON.stringify(fields));
 
@@ -103,8 +103,9 @@ const grantsTable = watched(grantsFile, (j) => j as { agents?: Record<string, Gr
 const connections = watched(path.join(configDir, "kernel", "connections.json"), (j) => j as Record<string, Connection>, {});
 // The control plane with the owner key (paperclip_board_key: only the kernel holds it; the board reaches it through cp.ts createBoardCp): a record's task.
 // One owner-key caller to the control plane, kept under its issue-list cap (cplimit.ts).
-const ownerFetch = limitIssueLists(fetch);
-const cpApi = (p: string, init: RequestInit = {}) => ownerFetch(new URL(p, controlUrl), { ...init, headers: { authorization: `Bearer ${secret("paperclip_board_key")}`, "content-type": "application/json" }, signal: AbortSignal.timeout(15_000) });
+// Every comment it writes is marked as code's unless it carries the owner's typed words (cplimit.ts markCode).
+const ownerFetch = markCode(limitIssueLists(fetch));
+const cpApi = (p: string, init: RequestInit = {}, typed = false) => ownerFetch(new URL(p, controlUrl), { ...init, headers: { authorization: `Bearer ${secret("paperclip_board_key")}`, "content-type": "application/json", ...(typed ? { [TYPED]: "owner" } : {}) }, signal: AbortSignal.timeout(15_000) });
 // Modules with kernel roles, a privileged entry, a token of their own or a channel (compile).
 const modulesFile = watched(path.join(configDir, "kernel", "modules.json"), (j) => j as ModulesFile & { snapshot?: string; reviewer?: ReviewerSlot; setup?: SetupField[]; services?: Record<string, string[]>; mounts?: Record<string, string[]>; check_jobs?: Recipes }, {});
 const whoami = createIdentity({
@@ -221,7 +222,7 @@ const asApi = (call: (p: string, init: RequestInit) => Promise<Response>): Api =
 };
 const ownerApi = asApi(cpApi);
 const boardApi = asApi((p, init) => fetch(new URL(p, env("BOARD_INTERNAL_URL", "http://127.0.0.1:3122")), { ...init, headers: { authorization: `Bearer ${secret("board_internal_token")}`, "x-gateway-key": secret("gateway_board_key"), "content-type": "application/json" }, signal: AbortSignal.timeout(20_000) }));
-const channels = createChannels({ db: records.db, records, writes, board: boardApi, owner: ownerApi, modules: modulesFile, facts, log });
+const channels = createChannels({ db: records.db, records, writes, board: boardApi, owner: ownerApi, ownerTyped: asApi((p, init) => cpApi(p, init, true)), modules: modulesFile, facts, log });
 // The owner's messages: the kernel's own (alerts, the approvals digest) and the board's and the runner's, queued for
 // owner-channel's notify (notify.ts). Account reset links are credentials: the kernel keeps them and sends them only to the
 // private owner chat (notify.secret, below).
@@ -328,6 +329,8 @@ const reviewLoop = createReviewLoop({
     me: async () => (ownerUser ||= String(((await cpJson("/api/cli-auth/me")) as { userId?: string }).userId ?? "")),
     notify: onTask.notify,
     escalate: (task, key, text) => escalate.delegator(task, key, text),
+    delegator: async (i) => escalate.creatorAgent(i),
+    agent: (id) => grantsTable().agents?.[id] as { key?: string; roles?: string[] } | undefined,
   },
   decisions: async () => {
     await gitIn(instanceDir, ["fetch", "-q", "origin", "main"]);
