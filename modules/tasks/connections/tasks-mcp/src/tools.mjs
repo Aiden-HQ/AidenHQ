@@ -600,8 +600,9 @@ async function assignTask(me, target, { title, description, parent, marker, prio
   // The parent must be the current task or one assigned to the caller, so a delegation can't be attached to someone else's task.
   if (p && p.id !== CURRENT() && p.assigneeAgentId !== me.id) throw new Error("parent must be your current task or a task assigned to you");
   // A task that waits on others is filed parked, then blocked on them: it never runs (todo) before they close.
+  // Keyed on `after` itself, not its open blockers: a retry after they closed still finds and starts the parked child.
   const blockers = await afterIds(after, p);
-  const hold = grade || blockers.length;
+  const hold = grade || after?.length;
   const origin = `${verb} ${me.name} (agent)${p ? ` from ${p.identifier}` : ""}. This is an agent request, not the owner's words.`;
   let src = "";
   refuseReservedMarker(marker);
