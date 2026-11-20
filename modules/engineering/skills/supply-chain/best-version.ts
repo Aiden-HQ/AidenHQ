@@ -165,28 +165,10 @@ async function ghcrVersions(repo: string): Promise<VersionInfo[]> {
   const pkg = encodeURIComponent(rest.join("/"));
   let vs: GhcrVersion[] | undefined;
   for (const kind of ["orgs", "users"]) {
-    try { vs = await getJson(`https://api.github.com/${kind}/${owner}/packages/container/${pkg}/versions?per_page=100`); break; } catch (e) { if ((e as FetchError).status !== 404) throw Object.assign(undated(`ghcr.io/${repo}: ${UNDATED} (${(e as Error).message})`), { status: (e as FetchError).status }); }
+    try { vs = await getJson(`https://api.github.com/${kind}/${owner}/packages/container/${pkg}/versions?per_page=100`); break; } catch (e) { if ((e as FetchError).status !== 404) throw undated(`ghcr.io/${repo}: ${UNDATED} (${(e as Error).message})`); }
   }
   if (!vs) throw undated(`ghcr.io/${repo}: ${UNDATED}`);
   return vs.flatMap((v) => (v.metadata?.container?.tags || []).map((t) => ({ version: t, published: v.created_at, digest: v.name, via: "GitHub Packages publish time" })));
-}
-
-// The digest ghcr's registry serves for a tag now (anonymous pull token, then a manifest HEAD).
-async function ghcrDigest(repo: string, tag: string) {
-  const { token } = await getJson(`https://ghcr.io/token?scope=repository:${repo}:pull`);
-  const accept = ["application/vnd.oci.image.index.v1+json", "application/vnd.docker.distribution.manifest.list.v2+json", "application/vnd.oci.image.manifest.v1+json", "application/vnd.docker.distribution.manifest.v2+json"].join(", ");
-  return (await fetchRetry(`https://ghcr.io/v2/${repo}/manifests/${encodeURIComponent(tag)}`, { method: "HEAD", headers: { authorization: `Bearer ${token}`, accept } })).headers.get("docker-content-digest");
-}
-
-// The published GitHub release of an image tag (`v<tag>` or `<tag>`) in the same-named repo: {tag, published}, or null.
-export async function ghcrRelease(repo: string, tag: string, onError?: unknown) {
-  for (const t of [`v${tag}`, tag]) {
-    try {
-      const r = await getJson(`https://api.github.com/repos/${repo}/releases/tags/${encodeURIComponent(t)}`);
-      if (r.published_at && !r.draft) return { tag: t, published: r.published_at };
-    } catch (re) { if ((re as FetchError).status !== 404) throw onError || re; }
-  }
-  return null;
 }
 
 async function imageVersions(host: string, repo: string, filter: string): Promise<VersionInfo[]> {
@@ -337,7 +319,7 @@ export function localExceptions(dir = process.cwd()): Exception[] {
  *   npm, pypi: name + version.  github-action: owner/repo + version (the tag in the pin's comment) + sha, which must be
  *   that tag's commit.  docker: name (repo:tag) + digest.  apt: name + version + source.
  */
-export async function publishedAt(kind: string, name: string, { version, digest, sha, source }: { version?: string; digest?: string; sha?: string; source?: string } = {}): Promise<{ published: string; via: string; byRelease?: boolean }> {
+export async function publishedAt(kind: string, name: string, { version, digest, sha, source }: { version?: string; digest?: string; sha?: string; source?: string } = {}): Promise<{ published: string; via: string }> {
   if (kind === "npm") {
     const t = (await getJson(`https://registry.npmjs.org/${name.replace("/", "%2f")}`)).time?.[version!];
     if (!t) throw new Error(`${name}@${version}: not in the npm registry`);
@@ -371,20 +353,7 @@ export async function publishedAt(kind: string, name: string, { version, digest,
       } catch (e) { if ((e as FetchError).status !== 404) throw e; }
     }
     // The tag has moved on: another tag (or for ghcr, the package version) that still holds this digest.
-    let all;
-    try { all = await imageVersions(host, repo, ""); } catch (e) {
-      // The Packages API lists versions only to a token with read:packages on that owner, so another org's public
-      // image answers 401/403. Then the tag must (1) still resolve, on ghcr's registry, to the pinned digest, and (2) have
-      // a GitHub release of the same version in the same-named repo, dated by GitHub's clock (published_at), which the
-      // publisher can't backdate. A re-pushed old tag fails (1)'s digest or pins.mjs's changed-tag rule; the result is
-      // marked `byRelease` so pins.mjs can refuse a digest-only change on an unchanged tag.
-      if (host !== "ghcr.io" || ![401, 403].includes((e as FetchError).status!) || !tag) throw e;
-      if ((await ghcrDigest(repo, tag)) !== digest) throw undated(`${name}@${digest}: tag ${tag} no longer resolves to the pinned digest`);
-      const rel = await ghcrRelease(repo, tag, e);
-      if (rel) return { published: rel.published, via: `GitHub release ${rel.tag} (the Packages API is unreadable)`, byRelease: true };
-      throw e;
-    }
-    const hit = all.filter((t) => t.digest === digest).sort((a, b) => Date.parse(a.published) - Date.parse(b.published)).at(-1);
+    const hit = (await imageVersions(host, repo, "")).filter((t) => t.digest === digest).sort((a, b) => Date.parse(a.published) - Date.parse(b.published)).at(-1);
     if (!hit) throw undated(`${name}@${digest}: ${UNDATED}`);
     return { published: hit.published, via: `${hit.via} (as ${hit.version})` };
   }

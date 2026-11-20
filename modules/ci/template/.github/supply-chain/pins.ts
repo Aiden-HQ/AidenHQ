@@ -21,7 +21,7 @@
 // apt or github-release; `package`, `version`, `advisory`, `reason`; and `digest`/`sha` for a pin the registry can't date).
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { DAY, ghcrRelease, parseImage, publishedAt, readExceptions } from "./best-version.ts";
+import { DAY, parseImage, publishedAt, readExceptions } from "./best-version.ts";
 import type { Exception, FetchError } from "./best-version.ts";
 
 export interface Pin { kind: string; name: string; package: string; version?: string; digest?: string; sha?: string; at: string; sources?: string[]; releases?: string[]; release?: string; distro?: string }
@@ -209,7 +209,7 @@ const ownerApproved = (p: Pin, exceptions: Exception[], now: number) => exceptio
   && now < Date.parse(e.expires!) && Date.parse(e.expires!) - now <= 14 * DAY && e.digest === p.digest && e.sha === p.sha);
 
 /** Date each new or changed pin; the problems, one line each. `date(pin)` returns {published, via} or throws. */
-export async function checkAges({ pins, basePins = [], exceptions = [], date = datePin, releaseOf = baseRelease, now = Date.now() }: { pins: Pin[]; basePins?: Pin[]; exceptions?: Exception[]; date?: (p: Pin) => Promise<{ published: string; via: string; byRelease?: boolean }>; releaseOf?: (b: Pin) => Promise<string | null>; now?: number }): Promise<string[]> {
+export async function checkAges({ pins, basePins = [], exceptions = [], date = datePin, now = Date.now() }: { pins: Pin[]; basePins?: Pin[]; exceptions?: Exception[]; date?: (p: Pin) => Promise<{ published: string; via: string }>; now?: number }): Promise<string[]> {
   const old = new Set(basePins.map(key));
   const seen = new Set<string>();
   const problems: string[] = [];
@@ -218,27 +218,7 @@ export async function checkAges({ pins, basePins = [], exceptions = [], date = d
     seen.add(key(p));
     const label = `${p.at}: ${p.name}${p.version && p.kind !== "docker" ? ` ${p.version}` : ""}${p.digest ? `@${p.digest.slice(0, 19)}…` : ""}${p.release ? ` (${p.release})` : ""}`;
     try {
-      const { published, via, byRelease } = await date(p);
-      // A release dates a version, not a digest: a new digest under a tag the base already pinned could be a re-push.
-      if (byRelease && basePins.some((b) => b.kind === p.kind && b.name === p.name)) {
-        problems.push(`${label}: could not be dated: only the digest changed on an unchanged tag, and the registry keeps no push record to date a re-push by (${via}); bump to a new tag`);
-        continue;
-      }
-      // ...and must move forward: its release is newer than the release of the base's tag for the same image.
-      if (byRelease) {
-        const img = parseImage(p.name);
-        const prior = basePins.filter((b) => b.kind === "docker" && parseImage(b.name).host === img.host && parseImage(b.name).repo === img.repo);
-        let blocked = false;
-        for (const b of prior) {
-          const before = await releaseOf(b);
-          if (!before || Date.parse(published) <= Date.parse(before)) {
-            problems.push(`${label}: could not be dated: a release-dated pin must move forward, but ${b.name} is not older than it (${via}); the registry keeps no push record, so use an owner exception for a downgrade or sideways move`);
-            blocked = true;
-            break;
-          }
-        }
-        if (blocked) continue;
-      }
+      const { published, via } = await date(p);
       const age = now - Date.parse(published);
       if (age >= 7 * DAY) continue;
       if (exceptionFor(p, exceptions) || ownerApproved(p, exceptions, now)) continue;
@@ -253,12 +233,6 @@ export async function checkAges({ pins, basePins = [], exceptions = [], date = d
     }
   }
   return problems;
-}
-
-// The release date of a base pin's tag (null when it has none), to compare a release-dated move against.
-async function baseRelease(b: Pin) {
-  const { repo, tag } = parseImage(b.name);
-  return tag ? (await ghcrRelease(repo, tag))?.published ?? null : null;
 }
 
 async function datePin(p: Pin) {
