@@ -120,7 +120,6 @@ export interface SetupFlowView {
   fields?: { secret: string; label: string; pattern: string; help?: string }[];
   signin?: string;
   connect_url?: string;
-  needs_name?: string;
   pair_url?: string;
   console_url?: string;
   /** The exact redirect its sign-in sends (the steps' {redirect_url}): what a hand-made client must list. */
@@ -251,7 +250,7 @@ export const api = {
   organisations: () => call<Organisations>("GET", "/api/organisations"),
   organisationApply: (id: string) => call<{ ok: boolean; results: { module: string; secret: string; ok: boolean; error?: string }[] }>("POST", `/api/organisations/${encodeURIComponent(id)}/apply`, {}),
   signInSecret: (id: string, secret: string, value: string) => call<{ ok: boolean }>("POST", `/api/sign-ins/${encodeURIComponent(id)}/secret`, { secret, value }),
-  setupFlows: () => call<{ flows: SetupFlowView[]; board_url: string; named: boolean }>("GET", "/api/setup-flows"),
+  setupFlows: () => call<{ flows: SetupFlowView[]; board_url: string }>("GET", "/api/setup-flows"),
   setupSecret: (module: string, secret: string, value: string) => call<{ ok: boolean }>("POST", `/api/setup-flows/${module}/secret`, { secret, value }),
   setupChoose: (module: string, value: string, inputs: Record<string, string>) => call<{ ok: boolean; identifier?: string }>("POST", `/api/setup-flows/${module}/choose`, { value, inputs }),
   setupDismiss: (module: string) => call<{ ok: boolean }>("POST", `/api/setup-flows/${module}/dismiss`, {}),

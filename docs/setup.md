@@ -30,9 +30,9 @@ other connections, board account recovery and shared access for colleagues.
 | Item | Who | Used in |
 |---|---|---|
 | A server you can SSH into, able to run an Ubuntu 24.04 VM | you | step 1 |
-| A Tailscale tailnet, with MagicDNS and **HTTPS certificates** turned on (admin console, DNS page) | [org admin] Tailscale | step 3 |
-| A Tailscale auth key for the server (`TS_AUTHKEY`). Optional: you can run `sudo tailscale up` by hand instead | [org admin] Tailscale | step 3 |
-| A Tailscale auth key for the apps node (`TS_APPS_AUTHKEY`): reusable, pre-approved, tagged (for example `tag:aidenhq-apps` under `tagOwners`). Optional: without it, agent-built apps run but nobody can reach them | [org admin] Tailscale | step 3 |
+| Optional: a Tailscale tailnet, with MagicDNS and **HTTPS certificates** turned on (admin console, DNS page), only for `--exposure tailscale`. Without one the board is on public HTTPS (or loopback, through an SSH tunnel) | [org admin] Tailscale | step 3 |
+| Optional, tailnet only: a Tailscale auth key for the server (`TS_AUTHKEY`); you can run `sudo tailscale up` by hand instead | [org admin] Tailscale | step 3 |
+| Optional, tailnet only: a Tailscale auth key for the apps node (`TS_APPS_AUTHKEY`): reusable, pre-approved, tagged (for example `tag:aidenhq-apps` under `tagOwners`). It only gives agent-built apps their own tailnet node; without it, apps run but have no browser door in `tailscale` mode (`public` and `local` have one without it) | [org admin] Tailscale | step 3 |
 | An OpenRouter **management (provisioning) key**, or a normal OpenRouter API key you made yourself | OpenRouter account admin | step 3 |
 | Optional: a Google OAuth client of type *Web application*, with the Calendar, Drive and Gmail APIs enabled. Without it, the board's Google setup (`#/setup/google`, about 10 minutes) walks you through making one and takes the id and secret from a paste box | [org admin] Google Workspace | step 3, step 7 |
 | Read access to the AidenHQ product repo on GitHub (to clone it or fork it) | the repo owner | step 2 |
@@ -55,8 +55,8 @@ key. A **virtual TPM** is strongly recommended: the secret vault (step 3) seals 
 the vault still works, but its password is sealed with a key stored on the same disk, which protects a copied vault
 folder but not a stolen disk.
 
-This guide reaches the board over Tailscale (no inbound ports). Without a tailnet, setup serves the board over HTTPS on
-the server's public IP instead (tcp 443 and 8446 open, password and authenticator), or on loopback through an SSH tunnel
+Tailscale is optional. A new install without a tailnet serves the board over HTTPS on
+the server's public IP (tcp 443 and 8446 open, password and authenticator), or on loopback through an SSH tunnel
 behind NAT: `--exposure public|tailscale|local` picks one, and running setup again with another switches
 ([design/access.md](design/access.md#exposure-modes)).
 
@@ -214,18 +214,23 @@ Recovery without the TPM, and how app secrets live in the vault: [ops/vault/READ
 
 ## 5. Sign in to the board
 
-The board is at `https://<board-host>`, reachable only from devices on your tailnet, and every page needs a signed-in
-admin with an authenticator app.
+Every page needs a signed-in admin with an authenticator app. Where the board is depends on the exposure mode setup
+printed:
 
-1. Install Tailscale on your laptop (and phone) and join the same tailnet.
-2. Open the one-time link setup printed. It is for `OWNER_EMAIL`, works once and is valid for 72 hours.
-3. Set a password (12 characters or more), sign in, and **scan the QR code with an authenticator app** [human].
+- `public`: `https://<server's public IP>`, from any device. The one-time link lasts 24 hours.
+- `tailscale`: `https://<board-host>`, from devices on your tailnet (install Tailscale on your laptop and phone and join
+  it first). The link lasts 72 hours.
+- `local`: `http://localhost:3121` through the SSH tunnel setup printed (`ssh -N -L 3121:... -L 3120:...`). The link lasts
+  72 hours.
+
+1. Open the one-time link setup printed. It is for `OWNER_EMAIL` and works once.
+2. Set a password (12 characters or more), sign in, and **scan the QR code with an authenticator app** [human].
 
 If the link has expired and no account exists yet, get a new one with
 `sudo ops/setup.sh --config ~/owner.env --link`. Once the account exists, `--link` no longer works; use
 `--reset <email>`, which sends the new link **to your Telegram only** (step 7), so set up Telegram early.
 
-**Check:** the board opens at `https://<board-host>` after sign-in, and the Chat tab has a **Welcome** chat with Aiden.
+**Check:** the board opens at its address after sign-in, and the Chat tab has a **Welcome** chat with Aiden.
 
 ## 6. Paperclip (the fleet console)
 
@@ -417,7 +422,6 @@ disabling or resetting an account revokes its clients too.
 | `public` | yes | yes |
 | `tailscale` (default) | yes, from tailnet devices | no |
 | `local` | yes, while the SSH tunnel is up | no |
-| `cloudflare` | yes | only if Cloudflare Access lets `/mcp`, `/.well-known/*`, `/oauth2/*` and `/oauth/*` through (see [design/access.md](design/access.md#the-aidenhq-mcp)) |
 
 ## Upgrading the product
 
@@ -523,8 +527,7 @@ board without an https address (local exposure with no Tailscale) signs Google i
 Agent-built apps get their own tailnet node and name (`aidenhq-<user>-apps`), so they never share the board's
 cookies. It needs `TS_APPS_AUTHKEY` (a Tailscale admin makes it): in the Tailscale admin, add a tag (for example
 `tag:aidenhq-apps`, under `tagOwners`; if your policy isn't allow-all, let your devices reach it on the app ports),
-then Settings, Keys, *Generate auth key*: reusable, pre-approved, tagged with it. Without it apps run but aren't
-reachable. To add it later, put the key in the vault as `tailscale_apps_authkey` and apply again (apps-edge runs only
+then Settings, Keys, *Generate auth key*: reusable, pre-approved, tagged with it. Without it apps run but, in `tailscale` mode, have no browser door. To add it later, put the key in the vault as `tailscale_apps_authkey` and apply again (apps-edge runs only
 once the key is there, in `tailscale` exposure).
 
 ## GitHub App for the code host

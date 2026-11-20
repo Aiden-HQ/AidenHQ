@@ -9,6 +9,7 @@ install's exposure:
 | `local` (Mac/Lima, SSH tunnel) | the gate on the host's loopback, plain http | `http://<app>.localhost:3130` | the admin listener, `http://localhost:3120` (through the tunnel) |
 | `public` (Caddy on the IP) | Caddy to the gate on loopback | `https://<app>.<ip-with-dashes>.sslip.io` | the admin listener, `https://<ip>:8446` |
 | `tailscale` with the apps node | unchanged: the apps node | `https://<user>-apps.<tailnet>:<port>` | none (anonymous on the tailnet) |
+| `tailscale` without the apps node (no `TS_APPS_AUTHKEY`) | none: apps run, and the Apps row says why there is no link (a door on the board's own tailnet name isn't possible: MagicDNS has no per-app names, and a port on the board's name would share its cookies) | none | n/a |
 | any, with `settings.edge` | unchanged: the edge (Cloudflare tunnel or header-jwt front door) | `https://<share.host>` | `edge.my_apps.host` |
 
 A door serves every exposed app (`expose: true`, a port, no `share.host`; `exposes()` in apps-mcp `tailnet.ts`) and only

@@ -48,3 +48,11 @@ shared issuance limits, same-site with strangers' hosts) and isn't needed once G
 ## Left to the builder
 
 Test shape (the Google flow renders steps on a bare-IP board; an app door resolves in tailscale-without-key); exact copy.
+
+## Built differently: item 2
+
+Not built. A door on the board's tailnet name cannot work: MagicDNS resolves no `<app>.<node>` names and `tailscale
+serve` certifies only the node's own name; the sslip.io form needs a public address for its certificate; and an app on a
+port of the board's own name shares the board's cookies (the reason apps have their own node). So `tailscale` without
+`TS_APPS_AUTHKEY` keeps no browser door, and docs say so (`docs/design/app-doors.md`, `docs/setup.md`). A real door there
+needs a decision (for example the apps node signing in interactively, or a `local` door through an SSH tunnel).
