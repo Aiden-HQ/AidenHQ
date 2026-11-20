@@ -21,7 +21,7 @@
 import { execFile, spawn } from "node:child_process";
 import { once } from "node:events";
 import { createHash, timingSafeEqual } from "node:crypto";
-import { cpSync, createReadStream, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, createReadStream, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { join, sep } from "node:path";
 import { Readable } from "node:stream";
@@ -765,19 +765,19 @@ export function createService(o: Options) {
       if (!st || st.isSymbolicLink() || !st.isDirectory() || realpathSync(ws) !== ws || !ws.startsWith(root + sep)) throw fail(400, `${into} isn't a task's workspace folder`);
       const target = join(ws, s.name);
       if (lstatSync(target, { throwIfNoEntry: false })) throw fail(409, `${into}/${s.name} can't be made (it exists)`);
-      // A credential-free clone with history, built in a scratch folder only this service can write (host git never runs in a
-      // folder a box can write): origin is the plain GitHub URL, the head checked out by the cache's own git; then copied into the
-      // new workspace folder, which is made here, exclusively.
-      const scratch = mkdtempSync(join(o.cacheDir, "clone-"));
+      // A credential-free clone with history: origin is the plain GitHub URL, the head checked out by the cache's own git. Built
+      // in a private scratch folder beside the target (the same filesystem) and renamed into place in one step: no recursive copy
+      // into a folder a box can write, and an existing target is never replaced.
+      const scratch = mkdtempSync(join(ws, ".clone-"));
       try {
         const t = (...args: string[]) => run("git", [...SAFE_GIT_ARGS, "-C", scratch, ...args], { env: ENV });
         await run("git", [...SAFE_GIT_ARGS, "init", "--quiet", scratch], { env: ENV });
         await t("remote", "add", "origin", `https://github.com/${s.slug}.git`);
         await t("fetch", "--quiet", "--no-tags", dir, `+${ref}:refs/remotes/origin/${/^[0-9a-f]{40}$/.test(name) ? "fetched" : name}`);
         await t("checkout", "--quiet", "--detach", sha);
-        try { mkdirSync(target); } catch (e) { throw fail((e as { code?: string }).code === "EEXIST" ? 409 : 400, `${into}/${s.name} can't be made (${(e as Error).message})`); }
-        if (realpathSync(target) !== target) throw fail(400, `${into}/${s.name} resolves elsewhere`);
-        cpSync(scratch, target, { recursive: true, verbatimSymlinks: true });
+        if (lstatSync(target, { throwIfNoEntry: false })) throw fail(409, `${into}/${s.name} can't be made (it exists)`);
+        chmodSync(scratch, 0o755); // mkdtemp makes it 0700; the box user reads the clone
+        try { renameSync(scratch, target); } catch (e) { throw fail(["EEXIST", "ENOTEMPTY"].includes((e as { code?: string }).code ?? "") ? 409 : 400, `${into}/${s.name} can't be made (${(e as Error).message})`); }
       } finally { rmSync(scratch, { recursive: true, force: true }); }
       return send(res, 200, { path: `${into}/${s.name}`, commit: sha });
     }
