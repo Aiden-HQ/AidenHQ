@@ -26,6 +26,9 @@ test("jobtools: a job token reaches only its own live job", () => {
   assert.throws(() => tools.run(tokenA, "engine", { engine: "codex", model: "acme/other" }), /isn't one this agent may use/);
   assert.throws(() => tools.run(tokenA, "engine", { engine: "other" }), /isn't one this agent may run/); // in the registry, not in its engines
   // A job's prechecks: three reviewer calls, then refused; never a next-turn request.
+  // One whose reviewer call failed is refunded, once: it got no review.
+  const refund = tools.review(tokenA);
+  refund(); refund();
   for (let i = 0; i < 3; i++) tools.review(tokenA);
   assert.throws(() => tools.review(tokenA), /had its 3 prechecks/);
   // Read by the task's next turn once the job has ended; spent once that turn has started.

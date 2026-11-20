@@ -103,11 +103,16 @@ export function createJobTools({ db, secret, engines, orgs = () => [], mayClone 
       if (!mayClone(r!.module, repo)) throw new JobToolError(403, "not-allowed", `${repo} isn't a repository this job's dispatcher may clone`);
       return { repo };
     },
-    /** One of this live job's prechecks, counted before its reviewer call: at most PRECHECKS a job. */
-    review(token: string): void {
+    /**
+     * One of this live job's prechecks, counted before its reviewer call: at most PRECHECKS a job. Returns its refund, for a
+     * reviewer call that failed (a 5xx, a timeout): a precheck that got no review doesn't use one up.
+     */
+    review(token: string): () => void {
       const job = jobOf(token);
       const got = db.prepare("INSERT INTO jobtool_reviews (job, n) VALUES (?, 1) ON CONFLICT (job) DO UPDATE SET n = n + 1 WHERE n < ? RETURNING n").get(job, PRECHECKS);
       if (!got) throw new JobToolError(429, "precheck-limit", `this job has had its ${PRECHECKS} prechecks: publish, and the AI reviewer decides`);
+      let refunded = false;
+      return () => { if (!refunded) (refunded = true, db.prepare("UPDATE jobtool_reviews SET n = n - 1 WHERE job = ? AND n > 0").run(job)); };
     },
     /** What the task's last ended job asked of its next turn, if anything (read in the admission transaction). */
     pending(task: string): NextTurn | undefined {

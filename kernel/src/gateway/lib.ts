@@ -241,7 +241,7 @@ const RETRY_DELAYS_MS = [1000, 3000, 9000, 20000];
  * The gateway: handle(req, res). `secret(name)` reads a secret file (fresh each time, so a rotation needs no restart);
  * `upstream` is OpenRouter's API base; Paperclip and the board's internal API as URLs.
  */
-export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, asCaller, secret, upstream = "https://openrouter.ai/api/v1", paperclipUrl, fileRaiseCap, githubJwksUrl, jobLive = () => false, log = () => {}, now = Date.now, retryDelaysMs = RETRY_DELAYS_MS }: {
+export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, asCaller, secret, upstream = "https://openrouter.ai/api/v1", paperclipUrl, fileRaiseCap, githubJwksUrl, jobLive = () => false, log = () => {}, now = Date.now, retryDelaysMs = RETRY_DELAYS_MS, streamIdleMs = 120_000, taskRetryMs = [500, 2_000] }: {
   /** Whether a kernel job (a job token's id) is still admitted or running: an ended job's token buys nothing. */
   jobLive?: (id: string) => boolean;
   dbFile: string; legacyDbFile?: string; grantsFile: string; settingsFile: string;
@@ -250,6 +250,10 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
   githubJwksUrl?: string; log?: Log; now?: () => number;
   /** Waits between attempts at a transient OpenRouter failure (tests pass zeros). */
   retryDelaysMs?: number[];
+  /** How long an answer's stream may go quiet before it is cut (OpenRouter sends keep-alives while a model thinks). */
+  streamIdleMs?: number;
+  /** Waits between tries of a job's task read when the control plane doesn't answer. */
+  taskRetryMs?: number[];
   /** Files a kernel.raise_cap record (writes.ts fileNative): the owner's, after the AI reviewer. No task: the install cap's. */
   fileRaiseCap?: (b: { task: string | null; scope: string; agentId: string; subject: string; cap: number; spent: number }) => Promise<void>;
 }) {
@@ -311,7 +315,8 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
     db.prepare("DELETE FROM ci_tokens WHERE exp < ?").run(new Date(now() - 2 * DAY_MS).toISOString());
   };
   prune();
-  const pruner = setInterval(prune, 3600_000);
+  // A timer's throw would exit the kernel: a failed prune or true-up is logged, and the next one tries again.
+  const pruner = setInterval(() => { try { prune(); } catch (e) { log("ledger prune failed", { err: String((e as Error).message).slice(0, 200) }); } }, 3600_000);
   pruner.unref();
 
   /**
@@ -338,7 +343,7 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
       }
     }
   }
-  const trueUps = setInterval(() => void trueUp(), 60_000);
+  const trueUps = setInterval(() => void trueUp().catch((e: Error) => log("true-up failed", { err: String(e?.message ?? e).slice(0, 200) })), 60_000);
   trueUps.unref();
   let live = 0; // this process's model calls in flight (main.ts drains on them)
 
@@ -348,9 +353,24 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
     return res.json();
   }
 
-  /** A job's task and whether that task is perpetual (a chat task, or a routine's execution task). */
+  /**
+   * A job's task and whether that task is perpetual (a chat task, or a routine's execution task). It is settled once for the
+   * run, so a control plane that doesn't answer is never read as "not perpetual": tried again briefly, then the call is
+   * refused with a 503 (the engine retries it) and nothing is settled. A task it refuses (gone, say) is not perpetual.
+   */
   async function taskOf(issueId: string | null) {
-    const issue = (issueId ? await paperclip(`/api/issues/${encodeURIComponent(issueId)}`, secret("paperclip_board_key")).catch(() => undefined) : undefined) as { labels?: ({ name?: string } | null)[]; originKind?: string } | undefined;
+    let issue: { labels?: ({ name?: string } | null)[]; originKind?: string } | undefined;
+    for (let n = 0; issueId && paperclipUrl; n++) {
+      try {
+        issue = (await paperclip(`/api/issues/${encodeURIComponent(issueId)}`, secret("paperclip_board_key"))) as typeof issue;
+        break;
+      } catch (e) {
+        const st = (e as { status?: number }).status;
+        if (st !== undefined && st >= 400 && st < 500 && st !== 429) break;
+        if (n >= taskRetryMs.length) throw fail(503, "control_plane_unavailable", "the control plane didn't answer for this job's task; try again");
+        await new Promise((r) => setTimeout(r, taskRetryMs[n]));
+      }
+    }
     return { issueId, perpetual: Boolean(issue && ((issue.labels ?? []).some((l) => l?.name === "chat") || issue.originKind === "routine_execution")) };
   }
 
@@ -619,7 +639,8 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
       try { q.settle.run(u?.key ?? id, ...row); } catch { q.settle.run(id, ...row); } // a generation id already used keeps the reservation's key
     };
     let up: Response;
-    const post = () => fetch(`${upstream}/${path}`, { method: "POST", headers: { "content-type": "application/json", accept: req.headers.accept ?? "*/*", authorization: `Bearer ${upKey}` }, body: JSON.stringify(body) });
+    let attempt = new AbortController();
+    const post = () => (attempt = new AbortController(), fetch(`${upstream}/${path}`, { method: "POST", headers: { "content-type": "application/json", accept: req.headers.accept ?? "*/*", authorization: `Bearer ${upKey}` }, body: JSON.stringify(body), signal: attempt.signal }));
     try {
       // A transient refusal (rate limit, "high demand" 502, a reset) is retried with backoff before any byte reaches the caller.
       for (let n = 0; ; n++) {
@@ -642,11 +663,16 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
     const sse = String(up.headers.get("content-type") ?? "").includes("event-stream");
     const tap = usageTap(sse);
     const text = new TextDecoder();
-    // Read to the end even if the caller hung up, so what OpenRouter billed still lands in the ledger.
+    // Read to the end even if the caller hung up, so what OpenRouter billed still lands in the ledger. A stream that goes quiet
+    // for streamIdleMs is cut: its reservation is settled (and trued up from OpenRouter's record) instead of held for minutes.
     let status = "upstream_aborted", gen = "";
+    let idle: NodeJS.Timeout | undefined;
+    const poke = () => { clearTimeout(idle); idle = setTimeout(() => attempt.abort(new Error("the answer's stream went quiet")), streamIdleMs); };
     try {
       res.writeHead(up.status, Object.fromEntries([...up.headers].filter(([k]) => !["content-encoding", "content-length", "transfer-encoding", "connection"].includes(k))));
+      if (sse) poke();
       if (up.body) for await (const c of up.body) {
+        if (sse) poke();
         if (!res.destroyed) res.write(c);
         const s = text.decode(c, { stream: true });
         tap.feed(s);
@@ -655,6 +681,7 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
       }
       status = up.ok ? "ok" : `upstream_${up.status}`;
     } finally {
+      clearTimeout(idle);
       settle(status, tap.done(), !up.ok && !sse && status !== "upstream_aborted"); // a definite error answer, no stream started
     }
     if (!res.destroyed) res.end();
