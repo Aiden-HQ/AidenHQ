@@ -6,14 +6,15 @@ type KernelCall = (method: string, path: string, body?: unknown) => Promise<Json
 const PERMS = { pull_requests: "read", contents: "read", checks: "read", statuses: "read", issues: "read" };
 const SLUG = /^[\w.-]+\/[\w.-]+$/;
 
-// The PR as evidence.ts reads it (the code host's own PR query, trimmed to the fields the grader uses). No field here is the
-// commit the PR is based on: `baseRefOid` is the base ref's oid (a tip that a rebase or a base update moves), and a merge
-// commit's parents depend on the merge method (two for a merge commit, one for a squash, and for a rebase the "merge commit" is
-// the last replayed head commit, whose parent is another head commit). That commit is read separately, as the git merge base.
+// The PR as evidence.ts reads it (the code host's own PR query, trimmed to the fields the grader uses). A merged PR's base commit
+// is derived from the merge commit, per merge method: a merge commit has two parents (base, head) and a squash merge one, whose
+// parent is the base tip. A rebase merge is the last replayed head commit, so a one-parent merge whose parent is one of the PR's
+// own commits (`own`) is a rebase and yields no base. `baseRefOid` is never used: it is the base ref's moving tip.
 const PR_QUERY = `query($owner: String!, $repo: String!, $number: Int!) {
   repository(owner: $owner, name: $repo) {
     pullRequest(number: $number) {
-      number title body url state headRefOid headRefName baseRefName baseRefOid mergedAt mergeCommit { oid }
+      number title body url state headRefOid headRefName baseRefName baseRefOid mergedAt mergeCommit { oid parents(first: 2) { totalCount nodes { oid } } }
+      own: commits(last: 100) { pageInfo { hasNextPage } nodes { commit { oid } } }
       files(first: 100) { pageInfo { hasNextPage } nodes { path } }
       history: commits(last: 30) { nodes { commit { oid tree { oid } parents(first: 1) { totalCount } } } }
       commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes { __typename ... on CheckRun { name status conclusion } ... on StatusContext { context state } } } } } } }
