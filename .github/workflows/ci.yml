@@ -302,14 +302,16 @@ jobs:
           elif ! git show "$src:modules/github/service/src/evalgate.ts" > "$gate" 2>/dev/null; then git show "origin/main:modules/github/service/src/evalgate.ts" > "$gate" || exit 1; fi
           # The eval's cache key (the reviewer-eval job): every file of the one list (REVIEWER_CODE) by object id, at the head
           # (the reviewer judged) and at the judging commit (the harness and cases the job takes from it), as evalgate.ts's reviewerAt.
-          git diff --name-only "$base" "$HEAD_SHA" > "$RUNNER_TEMP/changed"
-          git ls-tree -r --full-tree "$HEAD_SHA" > "$RUNNER_TEMP/head.tree"
-          git ls-tree -r --full-tree "${src:-$HEAD_SHA}" > "$RUNNER_TEMP/judge.tree"
+          # NUL-separated and unquoted, so a path with an odd character can't drop out of either.
+          git -c core.quotePath=false diff --name-only -z "$base" "$HEAD_SHA" > "$RUNNER_TEMP/changed"
+          git -c core.quotePath=false ls-tree -r -z --full-tree "$HEAD_SHA" > "$RUNNER_TEMP/head.tree"
+          git -c core.quotePath=false ls-tree -r -z --full-tree "${src:-$HEAD_SHA}" > "$RUNNER_TEMP/judge.tree"
           node --input-type=module -e '
             const { readFileSync, appendFileSync } = await import("node:fs"), { createHash } = await import("node:crypto");
             const { touchesReviewer } = await import(process.argv[1]), t = process.env.RUNNER_TEMP;
-            const hit = touchesReviewer(readFileSync(`${t}/changed`, "utf8").split("\n").filter(Boolean));
-            const key = (f) => createHash("sha256").update(readFileSync(`${t}/${f}`, "utf8").split("\n").filter((l) => touchesReviewer([l.slice(l.indexOf("\t") + 1)])).join("\n")).digest("hex").slice(0, 32);
+            const hit = touchesReviewer(readFileSync(`${t}/changed`, "utf8").split("\0").filter(Boolean));
+            // an entry it cannot parse counts (fail closed)
+            const key = (f) => createHash("sha256").update(readFileSync(`${t}/${f}`, "utf8").split("\0").filter((e) => { const tab = e.indexOf("\t"); return tab < 0 ? e.trim() !== "" : touchesReviewer([e.slice(tab + 1)]); }).join("\0")).digest("hex").slice(0, 32);
             console.log(`Touches the AI reviewer: ${hit}`);
             appendFileSync(process.env.GITHUB_OUTPUT, `eval=${hit}\neval_key=${key("head.tree")}-${key("judge.tree")}\n`);' "$gate"
       - id: find

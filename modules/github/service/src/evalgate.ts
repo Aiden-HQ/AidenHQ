@@ -39,10 +39,11 @@ export const REVIEWER_CODE = [
   /^(paths\.yaml|scripts\/paths\.ts|kernel\/src\/paths\.ts)$/,
 ];
 export const touchesReviewer = (files: string[]) => files.some((f) => REVIEWER_CODE.some((r) => r.test(f)));
-/** The reviewer's content: a hash of every REVIEWER_CODE file's path and object id in `git ls-tree -r` output. The same ids
- *  are the same reviewer, whatever commit holds them; CI's reviewer-eval job keys its cache by it too. */
+/** The reviewer's content: a hash of every REVIEWER_CODE file's path and object id in `git ls-tree -r -z` output (NUL
+ *  separated, paths unquoted, so no odd name drops out); an entry it can't parse counts too. The same ids are the same
+ *  reviewer, whatever commit holds them; CI's reviewer-eval job keys its cache the same way. */
 export const reviewerKey = (lsTree: string) =>
-  createHash("sha256").update(lsTree.split("\n").filter((l) => touchesReviewer([l.slice(l.indexOf("\t") + 1)])).join("\n")).digest("hex").slice(0, 32);
+  createHash("sha256").update(lsTree.split("\0").filter((e) => { const tab = e.indexOf("\t"); return tab < 0 ? e.trim() !== "" : touchesReviewer([e.slice(tab + 1)]); }).join("\0")).digest("hex").slice(0, 32);
 /** The policy whose hash a receipt binds: its git tree id at the commit under test. */
 const POLICY = "modules/ai-reviewer/service/security";
 
@@ -75,7 +76,7 @@ export function createEvalGate(d: {
   const s: { reviewers: Record<string, { head: string; at: string }>; covered: Record<string, { head: string; at: string }>; checks: Record<string, { id: string; asks: number; judge: string }> } = (() => { try { return { reviewers: {}, covered: {}, checks: {}, ...JSON.parse(readFileSync(file, "utf8")) }; } catch { return { reviewers: {}, covered: {}, checks: {} }; } })();
   const save = () => { writeFileSync(`${file}.tmp`, JSON.stringify(s)); renameSync(`${file}.tmp`, file); };
 
-  const reviewerAt = async (dir: string, sha: string) => reviewerKey(await d.git(dir, ["ls-tree", "-r", "--full-tree", sha]));
+  const reviewerAt = async (dir: string, sha: string) => reviewerKey(await d.git(dir, ["-c", "core.quotePath=false", "ls-tree", "-r", "-z", "--full-tree", sha]));
   const files = async (dir: string, from: string, head: string): Promise<string[]> =>
     (await d.git(dir, ["diff", "--no-ext-diff", "--no-textconv", "--name-only", "--no-renames", "-z", from, head])).split("\0").filter(Boolean);
 

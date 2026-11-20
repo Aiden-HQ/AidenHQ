@@ -170,6 +170,9 @@ describe("the reviewer-eval gate", { concurrency: 1 }, () => {
     assert.equal(checks.length, asked);
     const tierToo = branch(prod, "fix/rebased-3", { "modules/ai-reviewer/service/src/review.ts": "// v10\n", "kernel/src/tier.ts": "// tier v3\n" }, tip);
     assert.ok((await gate("acme/aidenhq", pr(13, tierToo)))?.wait, "any other REVIEWER_CODE file changed (the tiers): judged again");
+    // git quotes a path with a tab in plain ls-tree output: read unquoted, it is in the key like any other.
+    const oddName = branch(prod, "fix/rebased-4", { "modules/ai-reviewer/service/src/review.ts": "// v10\n", "modules/ai-reviewer/test/reviewer-cases/odd\tname.json": "{}\n" }, tip);
+    assert.ok((await gate("acme/aidenhq", pr(13, oddName)))?.wait, "a gated file with a tab in its name: judged again");
     const failing = branch(prod, "fix/fails", { "modules/ai-reviewer/service/src/review.ts": "// v11\n" }, tip);
     await gate("acme/aidenhq", pr(14, failing));
     finish("fail", "1/3");
