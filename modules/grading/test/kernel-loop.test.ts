@@ -183,7 +183,7 @@ test("a kernel.apply record on the task reaches the grader as its apply delivera
   const db = new DatabaseSync(":memory:");
   const { runner, grades } = createGrading({ db, kernel: { issue: async () => issue, settings: async () => ({}), release: async () => {} }, keys: { check: "c", runner: "r", board: "b" } });
   grades.file(issue.id, ["the apply's record ended applied, and its log shows no error", "the diff makes the change asked for", "the diff changes nothing else"], { kind: "apply", ref: "" });
-  const loop = createKernelGradeLoop({ db, runner, due: () => ({ grades: grades.due(), resubmitted: [] }), kernel, kernelBytes: async () => Buffer.alloc(0), apps: async () => ({}), gatewayUrl: `http://127.0.0.1:${gateway.address().port}`, log: () => {} });
+  const loop = createKernelGradeLoop({ db, runner, due: () => ({ grades: grades.due(), resubmitted: [] }), kernel, kernelBytes: async () => Buffer.alloc(0), apps: async () => ({}), gatewayUrl: `http://127.0.0.1:${gateway.address().port}`, github: noGithub, log: () => {} });
   completionGate(grades, issue.id, "finish_turn"); // the held-and-waiting row the loop picks up (as in the W7 test)
   const realNow = Date.now;
   Date.now = () => realNow() + 10_000;

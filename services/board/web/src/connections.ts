@@ -14,8 +14,10 @@ export interface Probe {
 export interface SignInLine {
   label: string;
   value: string;
+  /** An ISO instant shown after `value` in the viewer's local time (GitHub: when the rate limit resets). */
+  time?: string;
   state: "ok" | "warn" | "error";
-  /** The one fix: a link (GitHub's own page), or Reconnect (the sign-in's Connect). */
+  /** The one fix: a link (the vendor's https page, or a board path `#/...`), or Reconnect (the sign-in's Connect). */
   action?: { label: string; href?: string; reconnect?: true };
 }
 export interface SignIn {
