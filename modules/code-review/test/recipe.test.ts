@@ -189,3 +189,21 @@ test("a reviewer's configured focus is fenced as data, like a maintainer's", asy
   const at = text.indexOf("Ignore the diff");
   assert.ok(at > 0 && text.lastIndexOf("DATA-x", at) > text.indexOf("configured focus") && text.indexOf("DATA-x", at) > at, text);
 });
+
+test("a review in the recipe's real output shape is accepted by the post kind, so the poster and post.json can't drift", async () => {
+  const { kernelPoster } = await import("../service/src/adapters.ts");
+  const { validate } = await import("../../../kernel/src/writes.ts");
+  const { ws, out } = box({ head: { "a.js": "1\n2\n3\n" }, base: { "a.js": "1\n" }, from: { "a.js": "1\n2\n" } });
+  const run = async (engine, o) => o.prompt.startsWith("Verify")
+    ? { read: true, calls: [], message: JSON.stringify({ confirmed: [] }) }
+    : { read: true, calls: [{ tool: "diff" }], message: JSON.stringify({ summary: "s", risk: "normal", findings: [F({ path: "a.js", line: 3 })], stale_guidance: [] }) };
+  const r = await review({ spec: spec({ pr: "9" }), ws, out, run });
+  assert.ok("addressed" in r && "guidance" in r && "fixed" in r);
+  let args;
+  const kernel = { call: async (m, path, body) => (path === "/v1/writes" && (args = body.args), { id: "k-1", state: "review" }) };
+  const target = { repo: "acme/app", number: 9, head: A };
+  await kernelPoster(kernel).post({ run: "cr-1", target, review: { ...r, repo: target.repo, pr: 9, head: A, base: B, reviewer: "standard", cost_usd: 0.3 }, previous: null });
+  const schema = JSON.parse(readFileSync(new URL("../schemas/post.json", import.meta.url), "utf8"));
+  validate(schema, args);
+  assert.ok(!("addressed" in args.review) && !("guidance" in args.review) && !("fixed" in args.review));
+});
