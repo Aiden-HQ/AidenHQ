@@ -123,8 +123,9 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
 
   /**
    * The finish gate for one task: `agent` and `tool` for an agent's own close, `via` for the runner's. Throws on a deny.
-   * `cross`: an agent closing a task that isn't its job's own (its delegator's acceptance of an escalated grade): refused
-   * before anything moves unless a check answers `accepts`, so no other cross-task close passes.
+   * `cross`: an agent closing a task that is neither its job's own nor one its agent holds (its delegator's acceptance of an
+   * escalated grade): refused before anything moves unless a check answers `accepts`, so no other cross-task close passes.
+   * A task the closing agent holds (an orphaned run's task, say) is its own and asks the checks like its job's own task.
    */
   /** A finish check's verdict on a task (a grader's reopen, say): an outcome the routing learning loop trusts (routing-tune.ts), never its words. */
   const verdictEvent = (task: string, check: string, verdict: string) => noteFact(facts, verdictFact(task, check, verdict));

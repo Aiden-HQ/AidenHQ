@@ -580,6 +580,19 @@ export function createWakes({ db, owner, post, dispatches, containers = () => ne
       return post({ id, agent: w.agent, task: w.task }, { kind: "note", body: body.slice(0, 20_000) });
     },
     /**
+     * Whether a task has a wake still waiting to start a job: an open row (not yet due, or due and unclaimed) or one a
+     * dispatcher claimed with no job yet. A task with a live job is asked about its job instead (`GET /v1/jobs?task=`): the
+     * two together are a task in flight. Dispatch reads this before folding a routine run into an earlier one (routines.ts):
+     * a run whose job ended and left no wake is idle work, not something a new run belongs to.
+     */
+    pending(module: string, task: string) {
+      // Same rule as claim(): only a row for an agent this dispatcher runs. A task it doesn't dispatch: nothing pending.
+      const agent = (q("SELECT agent FROM wakes WHERE task = ? ORDER BY at DESC LIMIT 1").get(task) as { agent: string } | undefined)?.agent;
+      if (!agent || !dispatches.may(module, agent)) return false;
+      return Boolean(q("SELECT 1 FROM wakes WHERE task = ? AND (state = 'open' OR (state = 'claimed' AND job IS NULL)) LIMIT 1").get(task));
+      // (`until` doesn't matter: a scheduled row is a wake still to come, and one whose lease ran out is claimable again.)
+    },
+    /**
      * A dispatcher's cancel of a routine run's task, posted as the task's agent (once per task and reason): folded into an
      * earlier run of its routine (`coalesced`), or overtaken by a later one that finished (`stale`). Dispatch judges which; the
      * kernel only lets it cancel an open or blocked routine run of an agent it dispatches, never any other task.
