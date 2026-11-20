@@ -97,7 +97,7 @@ test("--unattended: no config file, settings from the environment, the SSH-tunne
     "AIDENHQ_SSH_TUNNEL=ssh -N -L 3121:127.0.0.1:3121 -L 3120:127.0.0.1:3120 -L 3130:127.0.0.1:3130 alice@",
     "kernel: the first-run page's one-time link, last: AIDENHQ_SETUP_URL=", // the full run: ops/test/unattended-install.sh
   ]) assert.ok(out.includes(want), `missing: ${want}\n${out}`);
-  for (const not of ["tailscale serve", "APPS_URL_BASE", "sk-SECRET"]) assert.ok(!out.includes(not), `unexpected: ${not}\n${out}`);
+  for (const not of ["tailscale serve", "APPS_URL_BASE=https", "sk-SECRET"]) assert.ok(!out.includes(not), `unexpected: ${not}\n${out}`);
   assert.throws(() => run({}), /--unattended needs OWNER_EMAIL/);
   assert.throws(() => run({ OWNER_EMAIL: "alice@example.com", TIMEOUT_MINUTES: "8; rm -rf /" }), /TIMEOUT_MINUTES must be a whole number/);
 });

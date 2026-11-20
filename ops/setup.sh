@@ -206,6 +206,7 @@ elif [ -f "$INST/instance.yaml" ]; then
 elif [ -n "$BOARD_HOST" ] || [ -n "$(cfg TS_AUTHKEY)" ] || on_tailnet; then EXPOSURE=tailscale
 elif [ -n "$RESTORE" ]; then die "this host isn't on a tailnet: name the restored instance's mode, --exposure public or --exposure local"
 else EXPOSURE=public AUTO_PUBLIC=1; fi
+unset AIDENHQ_EXPOSURE   # read: from here on the mode is $EXPOSURE, and .env holds it for compile (never this run's input)
 PUBLIC=0 PUBLIC_IP=""
 case "$EXPOSURE" in public) PUBLIC=1; NO_TS=1; BOARD_HOST="" ;; local) NO_TS=1; BOARD_HOST="" ;; *) NO_TS=0 ;; esac
 # The board's address on the tailnet: the link, Google's redirect and the apps all hang off it.
@@ -268,8 +269,14 @@ fi
 phase packages
 say "System packages, Docker, gVisor$( [ "$NO_TS" = 1 ] || echo ', Tailscale')"
 # The machine step renders the host firewall for the mode (ops/vm/public-fw.sh): leaving public closes 443 and 8446 here,
-# before the apply removes Caddy; entering it opens them only once Caddy is compiled (after the apply, step 7).
-run env AIDENHQ_EXPOSURE="$EXPOSURE" AIDENHQ_NO_TAILSCALE="$NO_TS" AIDENHQ_USER="$U" AIDENHQ_CHECKOUT="$REPO" bash "$SRC/ops/vm/setup.sh"
+# before the apply removes Caddy; entering it opens them only once Caddy is compiled (after the apply, step 7). Tailscale
+# asked for on a host that isn't on a tailnet and has no key to join one: it installs Tailscale but keeps the firewall at the
+# mode the host has, and setup stops below at the sign-in step, so a switch that can't finish moves nothing.
+FW_EXPOSURE="$EXPOSURE"
+if [ "$EXPOSURE" = tailscale ] && [ -z "$BOARD_HOST" ] && [ -z "$(cfg TS_AUTHKEY)" ]; then
+  FW_EXPOSURE="$(head -c 32 "$REPO/config/exposure" 2>/dev/null | tr -d '[:space:]' || true)"; FW_EXPOSURE="${FW_EXPOSURE:-local}"
+fi
+run env AIDENHQ_EXPOSURE="$FW_EXPOSURE" AIDENHQ_NO_TAILSCALE="$NO_TS" AIDENHQ_USER="$U" AIDENHQ_CHECKOUT="$REPO" bash "$SRC/ops/vm/setup.sh"
 # The machine step just added the user to the docker group, but their systemd user manager (kept alive by linger, so
 # logging out doesn't restart it) still has the old groups: the user units started below couldn't reach Docker.
 if [ "$DRY" = 0 ]; then
@@ -291,7 +298,10 @@ if [ -z "$BOARD_HOST" ] && [ "$NO_TS" = 0 ]; then
     tailscale up --auth-key="file:$keyfile" --hostname="aidenhq-$U"
     rm -f "$keyfile"
     BOARD_HOST="$(tailscale status --json | jq -r '.Self.DNSName' | sed 's/\.$//')"
-  else die "this VM isn't on the tailnet: set TS_AUTHKEY in ${CONFIG:-a --config file}, or run 'sudo tailscale up', then run setup again"; fi
+  else
+    say "Tailscale is installed, but this server isn't signed in to a tailnet. Run: sudo tailscale up (it prints a sign-in link), then run this again. Nothing else changed."
+    die "this VM isn't on the tailnet: run 'sudo tailscale up' (or set TS_AUTHKEY in ${CONFIG:-a --config file}), then run setup again"
+  fi
 fi
 # Leaving the tailnet mode on a host that stays on one: the board's two tailnet doors close (Paperclip's stays), so the
 # board has one way in, and Caddy's 443 and 8446 are free.
@@ -401,7 +411,9 @@ set_env AIDENHQ_LINK_TTL_HOURS "$( [ "$PUBLIC" = 0 ] || echo 24)"
 if [ -n "$BOARD_HOST" ]; then
   set_env APPS_TS_HOSTNAME "aidenhq-$U-apps"
   set_env APPS_URL_BASE "https://aidenhq-$U-apps.${BOARD_HOST#*.}"
-fi
+else set_env APPS_TS_HOSTNAME ""; set_env APPS_URL_BASE ""; fi
+# The mode, for compile: settings.exposure must match it, so an instance edit alone can't move the board's door.
+set_env AIDENHQ_EXPOSURE "$EXPOSURE"
 # Connect Google from the board (the company's Web-app client); Google refuses a bare IP as a redirect, so not in public.
 set_env BOARD_GOOGLE_CONNECT "$( [ "$PUBLIC" = 1 ] || echo 1)"
 grep -q '^WORK_COMPANY_ID=.' "$ENVF" 2>/dev/null || set_env WORK_COMPANY_ID pending   # known after Paperclip's setup
@@ -615,6 +627,7 @@ if [ "$PUBLIC" = 1 ] && [ "$DRY" = 0 ]; then
     fall_back_local "Let's Encrypt couldn't reach https://$PUBLIC_IP within 3 minutes (above: Caddy's last errors). Usually tcp 443 is blocked before this host (a cloud security group or the provider's firewall), or the address isn't this host's."
     # The firewall closes first, then the apply drops Caddy: no moment with 443 open and the mode already local.
     run env AIDENHQ_EXPOSURE=local AIDENHQ_NO_TAILSCALE=1 AIDENHQ_USER="$U" AIDENHQ_CHECKOUT="$REPO" bash "$SRC/ops/vm/setup.sh"
+    set_env AIDENHQ_EXPOSURE local
     set_env BOARD_LAN_HOSTS "127.0.0.1:3121,localhost:3121"
     set_env BOARD_LAN_URL "$BOARD_URL"
     set_env AIDENHQ_ADMIN_URL "$ADMIN_URL"
@@ -647,8 +660,8 @@ if [ -z "$BOARD_HOST" ] && [ "$PUBLIC" = 0 ]; then
   [ "$UNATTENDED" = 0 ] || echo "AIDENHQ_SSH_TUNNEL=$tunnel"
 fi
 if [ "$PUBLIC" = 1 ]; then
-  echo "The board is on the public Internet, behind your password and authenticator. To keep it off the Internet, put this"
-  echo "server on your tailnet and run: sudo ops/setup.sh --unattended --exposure tailscale (in $REPO)"
+  echo "The board is on the public Internet, behind your password and authenticator. To keep it off the Internet, move it to"
+  echo "your tailnet: sudo ops/setup.sh --unattended --exposure tailscale (in $REPO; it installs Tailscale and says how to sign in)"
 fi
 [ "$UNATTENDED" = 0 ] || echo "AIDENHQ_EXPOSURE=$EXPOSURE"   # the mode this run ended in (the installer's last message follows it)
 [ "$UNATTENDED" = 0 ] || echo "AIDENHQ_BOARD_URL=$BOARD_URL"   # an upgrade has no setup link: the installer names the board instead

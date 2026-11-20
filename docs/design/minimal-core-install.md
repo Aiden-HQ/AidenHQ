@@ -19,10 +19,13 @@ default. Without it a rerun keeps the instance's mode. Tailscale is installed on
 
 **Switching mode is a rerun.** The installer, or `sudo ops/setup.sh --unattended --exposure tailscale` in the
 checkout, run over SSH:
-- it writes `settings.exposure` into the instance and commits it;
+- it writes `settings.exposure` into the instance and commits it, and the mode into `.env`;
 - it re-renders the firewall before the apply when leaving public, and after the apply (once Caddy is compiled) when
   entering it;
 - it turns off the board's two `tailscale serve` doors when leaving `tailscale` on a host that stays on the tailnet;
+- asked for `tailscale` on a host that isn't signed in to one (a public install has no Tailscale yet), it installs
+  Tailscale, leaves the firewall and the mode as they are, and stops with the sign-in step (`sudo tailscale up`, then
+  the same command again);
 - it rewrites the `.env` URLs, and the apply removes Caddy when it is no longer compiled.
 
 SSH stays open in every mode, so a switch can't lock the owner out.
@@ -30,9 +33,11 @@ SSH stays open in every mode, so a switch can't lock the owner out.
 **Cut, and why:**
 - **U5, the secure-your-server card and the two-phase switch.** It existed to stop one click on the board from locking
   the owner out. A rerun over SSH can't, and it needs no board code, no `exposure: *-pending` state and no `tier.ts`
-  change. Agents still can't open a port:
+  change. Agents can't move the door at all:
   - the firewall is rendered only by root's `ops/vm/setup.sh`, which only an operator's setup run starts;
-  - compile refuses `exposure: public` unless the host's `.env` (written by setup) already names the public URLs.
+  - setup writes the mode into the host's `.env` (`AIDENHQ_EXPOSURE`), and compile refuses an instance whose
+    `settings.exposure` differs. An agent's edit of the setting (a Tier 1 panel change, like every setting) therefore
+    fails its apply, in either direction. The approved design's owner-only tier for the setting isn't needed.
   The installer and `ops/setup.sh` print the Tailscale recommendation and the switch command instead of the card.
 - **The containerised `edge-tailscale` node (D6 a).** Tailscale mode keeps the host package. It is installed only in
   that mode, so a public or local install has none.
