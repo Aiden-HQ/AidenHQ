@@ -54,7 +54,7 @@ import { createDeploys } from "./generations.ts";
 import { createFlow } from "./flow.ts";
 import { createTaskStateRead } from "./task-state-read.ts";
 import { createIdle } from "./idle.ts";
-import { createEscalate } from "./escalate.ts";
+import { CHIEF, CONVERSING_MS, createEscalate, ownerWroteAt } from "./escalate.ts";
 import { pidAlive, recordKernel } from "./previous.ts";
 import { createReviews, type ReviewerSlot } from "./reviews.ts";
 import { createReviewLoop } from "./review-loop.ts";
@@ -246,6 +246,14 @@ const escalate = createEscalate({
   },
   notice: (task, body) => { notices.queue(task, body); setImmediate(sendNotices); },
   owner: (n) => notify.queue(n),
+  // The chief of staff settles every judgement that isn't the owner's conversation: one kernel-filed task per ask, by role.
+  chief: (b) => moduleTasks.file("kernel", { ...b, role: CHIEF }),
+  conversing: async (id) => {
+    const t = encodeURIComponent(id);
+    const [i, c] = await Promise.all([cpJson(`/api/issues/${t}`), cpJson(`/api/issues/${t}/comments?order=desc&limit=50`)]);
+    const at = ownerWroteAt(i as never, Array.isArray(c) ? c : []);
+    return at !== undefined && Date.now() - at < CONVERSING_MS;
+  },
 });
 // Marketplace advisories (advisories.ts): read at start, then whenever a day has passed or an apply rewrote the catalog.
 const advisories = createAdvisories({ db: records.db, repo, catalog: path.join(configDir, "modules.json"), ownerLine: toOwner("done"), log, ref: env("AIDENHQ_ADVISORY_REF", "main"), fetch: hostFetch(repo) });
@@ -468,6 +476,14 @@ const graderToken = (task: string, agent: string) => {
 };
 const checks = createChecks({ db: records.db, registry: checksRegistry, owner: ownerApi, secret, resolver, log, agentKey: (id) => grantsTable().agents?.[id]?.key, graded: (id) => grantsTable().agents?.[id]?.graded === true, pending: (task) => records.list(["review", "owner", "approved"], 100, { task }),
   // A task's own change requests on this server: none may be open when it closes (a green-but-unmerged change is not shipped).
+  // A grade escalated on a task nobody delegated: the chief of staff decides it (escalate.ts), one task per escalation.
+  released: (task, check) => escalate.undelegated(task, `release:${task}`, (id) => {
+    const what = `**${id}'s finish waits on a decision:** its finish check (${check}) couldn't settle it (for grading: the work was sent back three times, the grader couldn't judge it, or five grader passes failed), and nobody delegated it.`;
+    return {
+      body: `${what} Read the grade note on ${id}, then comment on ${id} with what its agent does: rework it with what is missing, cancel it if it is moot, or finish it again (graded afresh after a day).`,
+      ownerText: `${what} It is yours: comment on ${id} with what its agent does, or cancel it.`,
+    };
+  }),
   localChanges: async ({ id, identifier }) => localHost() ? (await localCode.open()).filter((c) => (c.task && (c.task === id || c.task === identifier))).map((c) => ({ url: c.url, checks: c.checks.map(({ ok, pending }) => ({ ok, pending })) })) : [] });
 // First-run setup (/setup): the keys the modules ask for go into the vault view (AIDENHQ_SECRETS_DIR) as new 0600 files renamed into place; the
 // vault's recovery key waits there (ops/setup.sh --unattended moves it out of root's home) until the owner has seen it.

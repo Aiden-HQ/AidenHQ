@@ -4,9 +4,10 @@
 //   (subject wait:<task>, reason agent_wait, its words as `note`), so flow names the wait instead of `orphaned`, and a wake
 //   at `until` (at most 7 days; 24 hours when it names only an event), so the task resumes by itself. The task's next job
 //   ends the wait (the state, and admission drops its timed wake); a new wait replaces the last. A wait `for` the owner or the
-//   delegator is a judgement the task can't make itself: its reason is owner_wait or delegator_wait (the steward raises one
-//   left too long), it lasts until the answer wakes the task (7 days unless `until`), and its `question` goes to them once
-//   (escalate.ts): the owner as a decision message headed by the task, the delegator as a notice on its own task.
+//   delegator is a judgement the task can't make itself: it lasts until the answer wakes the task (7 days unless `until`),
+//   and its `question` goes once to whoever settles it (escalate.ts): the owner directly (reason owner_wait) only from the
+//   chief of staff or on a task the owner is talking to its agent on; otherwise the open delegator or the chief of staff
+//   (reason delegator_wait: an agent answers). The steward raises either left too long.
 // - sweep(): every few minutes, each open (todo, in_progress) task an agent holds that the task state reports `orphaned` (a
 //   chat is `chat_turn`, never orphaned) or `unknown` (its holder's wake aged out) for 15 minutes
 //   gets one wake for its holder, cause `idle` (dispatch words it), once each time it becomes idle (the key is when: a wake
@@ -45,7 +46,7 @@ export function createIdle({ db, facts, state, wakes, owner, team = () => false,
   return {
     /**
      * The job's own task waits: `reason` (its words), `until` (ISO) and/or `on` (the event it waits for); `for` owner or
-     * delegator, with the `question` they answer (`asked: true`, with `for: owner`: the question went already, notify's decision or the agent's own reply, so it is recorded and not sent; `handoff: true` marks a wait on the owner's reply to a handoff).
+     * delegator, with the `question` they answer (`asked: true`, with `for: owner`: the question went already, notify's decision or the agent's own reply, so it is recorded and not sent when it may go to them directly; `handoff: true` marks a wait on the owner's reply to a handoff).
      */
     async wait(caller: { agent: string; key: string; task: string }, b: { reason?: unknown; until?: unknown; on?: unknown; task?: unknown; for?: unknown; question?: unknown; asked?: unknown; handoff?: unknown }) {
       const reason = typeof b.reason === "string" ? b.reason.trim().slice(0, 300) : "";
@@ -54,8 +55,9 @@ export function createIdle({ db, facts, state, wakes, owner, team = () => false,
       const question = typeof b.question === "string" ? b.question.trim().slice(0, 1500) : "";
       if (!reason) throw fail(400, "bad_request", "send {reason, until?, on?, for?, question?}: why the task waits");
       if (who === null) throw fail(400, "bad_request", "for is owner or delegator");
-      if (who === "delegator" && !question) throw fail(400, "bad_request", "a wait for the delegator sends the question it answers");
-      // `asked`: the question went to the owner already (notify's decision, the agent's own reply): it is recorded, never sent again.
+      if (who && !question) throw fail(400, "bad_request", "a wait for the owner or the delegator sends the question it answers");
+      // `asked`: the question went to the owner already (notify's decision, the agent's own reply): recorded, never sent again,
+      // when it may go to them directly; otherwise the chief of staff gets it (escalate.ts).
       const asked = b.asked === true;
       if (asked && (who !== "owner" || !question)) throw fail(400, "bad_request", "asked: true goes with for: owner and the question that was asked");
       if (b.task !== undefined) {
@@ -73,17 +75,23 @@ export function createIdle({ db, facts, state, wakes, owner, team = () => false,
       } else if (who) until = t + MAX_WAIT;
       else if (on) until = t + DAY;
       else throw fail(400, "bad_request", "send until (an ISO time, at most 7 days ahead) or on (the event it waits for)");
-      // Asked first: a question that can't be sent now fails the call (the agent tries again), never a silent wait.
-      // One open ask per task: a second question while the first is unanswered isn't sent, and the agent hears so.
-      const sent = who && question && escalate && !asked ? await escalate.ask(caller.task, who, question) : undefined;
+      // Asked first: a question that can't be sent now fails the call (the agent tries again), never a silent wait. The
+      // kernel picks who settles it (escalate.ts); an `asked` question that may not go to the owner directly goes there too.
+      // A handoff (task_handoff on the agent's part of the owner's own task) is a report on their task, not a question: it waits
+      // on them as before.
+      const r = who && escalate && b.handoff !== true ? await escalate.ask(caller.task, who, question, asked) : undefined;
+      // One open ask per task: a second question while the first is unanswered isn't sent and the first wait stands.
+      if (r?.sent === "open") return { waiting: true, asked: false, to: r.to, note: "Your earlier question on this task is still unanswered, so this one wasn't sent: the task waits for that answer." };
+      const to = r?.to ?? (who === "owner" ? "owner" : "delegator");
       // The wait's fact and its wake in one transaction: a wait that can't be recorded fails the call (the agent tries again).
       inTx(db, "task_wait", () => {
-        if (who && question && escalate) escalate.record(caller.task, who);
-        fact({ type: "work.waiting", subject: `wait:${caller.task}`, version: `wait@${t}`, at: iso(t), actor: `agent:${caller.key}`, task: caller.task, data: { reason: who ? `${who}_wait` : "agent_wait", note: reason, until: iso(until), ...(on ? { on } : {}), ...(question ? { question } : {}), ...(b.handoff === true ? { handoff: true } : {}) } });
+        if (who && escalate) escalate.record(caller.task, to === "owner" ? "owner" : "delegator");
+        fact({ type: "work.waiting", subject: `wait:${caller.task}`, version: `wait@${t}`, at: iso(t), actor: `agent:${caller.key}`, task: caller.task, data: { reason: who ? (to === "owner" ? "owner_wait" : "delegator_wait") : "agent_wait", note: reason, until: iso(until), ...(on ? { on } : {}), ...(question ? { question } : {}), ...(b.handoff === true ? { handoff: true } : {}) } });
         wakes.open({ key: `wait:${caller.task}:${until}`, task: caller.task, agent: caller.agent, cause: `wait: ${reason}`.slice(0, 200), at: until, replaces: `wait:${caller.task}:`, author: `agent:${caller.key}` });
       });
-      log("task wait", { task: caller.task, agent: caller.key, until: iso(until) });
-      return { waiting: true, until: iso(until), ...(sent === "open" ? { asked: false, note: "Your earlier question on this task is still unanswered, so this one wasn't sent: the task waits for that answer." } : sent === "asked" ? { asked: true } : {}) };
+      log("task wait", { task: caller.task, agent: caller.key, until: iso(until), ...(who ? { to } : {}) });
+      const chief = to === "chief_of_staff" ? { note: "Your question went to the chief of staff, who settles it (and brings it to the owner only when the call is theirs). Its answer comes as a comment on this task and wakes you." } : {};
+      return { waiting: true, until: iso(until), ...(who ? { to } : {}), ...(r?.sent === "asked" ? { asked: true } : {}), ...chief };
     },
 
     /** One sweep: the tasks whose holders it woke. */

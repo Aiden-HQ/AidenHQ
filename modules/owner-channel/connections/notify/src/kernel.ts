@@ -23,10 +23,14 @@ export function kernelClient(url: string, token: string, f: typeof fetch = fetch
     activity: async (): Promise<{ recent: { agent: string; task: string; state: string; ended_at: string | null; error: string | null }[] }> => call("GET", "/v1/work"),
     work: async (task: string): Promise<{ jobs: { agent: string; state: string }[] }> => call("GET", `/v1/work?task=${encodeURIComponent(task)}`),
     brake: (task: string, agent: string, decision: boolean): Promise<{ allow: boolean; note?: string }> => call("POST", "/v1/brake/notify", { task, agent, ...(decision ? { decision: true } : {}) }),
-    /** The calling job's own task waits on the owner's answer (kernel idle.ts): `question` is recorded, not sent (it went already); it resumes on their reply. */
-    wait: async (task: string, assertion: string, question: string): Promise<void> => {
-      const r = await raw("POST", "/v1/wait", { task, reason: "the owner's answer to my question", on: "the owner's answer", for: "owner", asked: true, question }, { "x-aidenhq-caller": assertion });
+    /**
+     * The calling job's own task waits on an answer (kernel idle.ts): `question` is recorded, not sent, when it goes to the owner
+     * (`to: "owner"`: this message carries it); otherwise the kernel gives it to the chief of staff. It resumes on the answer.
+     */
+    wait: async (task: string, assertion: string, question: string): Promise<{ to?: string; open?: boolean }> => {
+      const r = await raw("POST", "/v1/wait", { task, reason: "the answer to my question", on: "the answer", for: "owner", asked: true, question }, { "x-aidenhq-caller": assertion });
       if (r.status !== 200) throw new Error(`POST /v1/wait -> ${r.status}`);
+      return { to: typeof r.json?.to === "string" ? r.json.to : undefined, ...(r.json?.asked === false ? { open: true } : {}) };
     },
     /** The agent's reply on its chat, posted by the kernel as that agent (this call's assertion). */
     postReply: async (issueId: string, body: string, assertion: string): Promise<boolean> => {
