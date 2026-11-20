@@ -1,15 +1,24 @@
 // The comment wake loop: one outbound SSE subscription to Primer's caller-scoped event stream (GET /api/events/stream?scope=me,
-// resumed with Last-Event-ID). A primer.comment.created on a document an agent published (the ownership map, from publish
-// receipts) wakes that agent's task with a fixed notice naming only the document, thread and comment ids (never the body: the
-// agent reads it through the fenced Primer tools). Dispatch delivers the notice into the agent's live run, or starts the next.
+// resumed with Last-Event-ID). On a document an agent published (the ownership map, from publish receipts), a
+// primer.comment.created, or a primer.version.published that is an automatic checkpoint of people's live edits (not by the
+// connector's own Primer identity), wakes that agent's task with a fixed notice naming only ids and whether the author is the
+// owner (never a name or the body: the agent reads them through the fenced Primer tools). Dispatch delivers the notice into the
+// agent's live run, or starts the next.
+//
+// - Who: the connector's identity comes from Primer once (GET /api/me). The owner is the person it acts via (viaUserId; the
+//   identity itself when it is the owner, in connect mode). "by the owner" in a notice is set here in code, by author id.
+// - Coalesced: after a wake, more comments and edits on that document within COALESCE_MS wake nobody (a burst is one wake);
+//   the agent's next version or reply on the document ends that, and whatever arrived meanwhile and is still unaddressed gets
+//   one wake then. An owner's comment always wakes: its notice is the only place that says it is the owner's.
 //
 // - Echo: the connector acts as the owner in Primer, so its own replies arrive as comments too. Every connector write runs
 //   through guard(), which records the comment ids its receipt names; events are held while a write is in flight (the event
 //   can beat the receipt), then checked against those ids. Never by author.
 // - Closed task: the kernel answers {closed}; the connector files one "Revisions: <title>" task for the owning agent (kernel
 //   tasks route, keyed by the document so a retry is the same task), keeps it in its state and wakes that next time.
-// - Batches: comments not yet covered by a version are pending; a version the connector publishes covers the comments that
-//   were pending when its write started (one arriving mid-publish waits for the next batch).
+// - Batches: comments not yet addressed are pending; a version the connector publishes covers the comments that were pending
+//   when its write started (one arriving mid-publish waits for the next batch), and a thread reply addresses that thread's.
+//   A version Primer didn't make (nothing applied) covers nothing.
 // - Durable: processed comment ids are stored once their wake is accepted, the stream cursor only after its event is handled,
 //   so a restart replays without a second wake.
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
@@ -21,7 +30,10 @@ export interface Kernel {
   /** POST /v1/tasks: a task for an agent (by id), idempotent by source. */
   file(b: { title: string; description: string; agent: string; source: string; parent?: string }): Promise<{ id: string; identifier?: string }>;
 }
-interface DocState { pending: string[]; batches: { version?: string; comments: string[] }[]; revisions?: number }
+/** Per document. threads: a pending comment's thread; woken: when its last wake went (ms); quiet: what arrived after it unwoken. */
+interface DocState { pending: string[]; batches: { version?: string; comments: string[] }[]; revisions?: number; threads?: Record<string, string>; woken?: number; quiet?: string[] }
+/** The connector's Primer identity: its own user id, and the owner's (the person it acts via, or itself). */
+interface Identity { self: string; owner: string; agent: boolean }
 interface State { cursor?: string; created: string[]; processed: string[]; docs: Record<string, DocState> }
 type Log = (msg: string, f?: Record<string, unknown>) => void;
 
@@ -33,6 +45,8 @@ const READ = /^primer_(whoami|resolve_url|get_|list_|find_)/;
 /** A kernel answer that will never change on a retry (a deleted task, a paused agent): skipped loudly, never replayed. */
 const permanent = (e: unknown) => [400, 403, 404, 409, 422].includes(Number((e as { status?: number }).status));
 const id = (v: unknown) => (typeof v === "string" && ID.test(v) ? v : undefined);
+/** A burst of comments and edits on one document within this of its last wake is one wake. */
+export const COALESCE_MS = 5 * 60_000;
 
 /** The comment ids a write's receipt names (JSON anywhere in the text: comment_id / commentId, or a reply's {comment: {id}}). */
 export function createdIds(text: string): string[] {
@@ -50,9 +64,14 @@ export function createdIds(text: string): string[] {
   return [...out];
 }
 
-/** The fixed notice: ids only. */
-export const notice = (doc: string, thread: string | undefined, comment: string, pending: number) =>
-  `New comment on Primer document ${doc} (thread ${thread ?? "unknown"}, comment ${comment}; ${pending} comment${pending === 1 ? "" : "s"} not yet addressed by a version). Read the open threads with the Primer tools and revise as the primer-docs skill says.`;
+const by = (owner: boolean) => (owner ? "by the owner" : "by someone else");
+/** The fixed notices: ids and authorship only. */
+export const notice = (doc: string, thread: string | undefined, comment: string, pending: number, owner = false) =>
+  `New comment ${by(owner)} on Primer document ${doc} (thread ${thread ?? "unknown"}, comment ${comment}; ${pending} comment${pending === 1 ? "" : "s"} not yet addressed). Read the open threads with the Primer tools and handle them as the primer-docs skill says.`;
+export const editNotice = (doc: string, version: string, owner: boolean) =>
+  `Primer document ${doc} was edited directly ${by(owner)} (checkpoint version ${version}). Read it and handle it as the primer-docs skill says.`;
+const followUp = (doc: string, pending: number) =>
+  `More happened on Primer document ${doc} since your last wake (${pending} comment${pending === 1 ? "" : "s"} not yet addressed, or direct edits). Read it and its open threads and handle them as the primer-docs skill says.`;
 
 export function createSubscriber(o: {
   /** Primer's origin (self-hosted http://primer-server:3000, or the hosted MCP address's origin). */
@@ -66,8 +85,10 @@ export function createSubscriber(o: {
   stateFile: string;
   log: Log;
   fetch?: typeof fetch;
+  now?: () => number;
 }) {
   const f = o.fetch ?? fetch;
+  const now = o.now ?? Date.now;
   const st: State = existsSync(o.stateFile) ? { created: [], processed: [], docs: {}, ...JSON.parse(readFileSync(o.stateFile, "utf8")) } : { created: [], processed: [], docs: {} };
   const save = () => {
     st.created = st.created.slice(-KEEP);
@@ -76,34 +97,57 @@ export function createSubscriber(o: {
     renameSync(`${o.stateFile}.tmp`, o.stateFile);
   };
   const doc = (d: string) => (st.docs[d] ??= { pending: [], batches: [] });
+  /** The connector's identity, read once (retried on the next event while Primer doesn't answer). */
+  let me: Identity | undefined;
+  async function identity(): Promise<Identity | undefined> {
+    if (me) return me;
+    try {
+      const r = await f(`${o.primer}/api/me`, { headers: await o.headers(), signal: AbortSignal.timeout(10_000) });
+      const j = r.ok ? ((await r.json()) as { id?: unknown; kind?: unknown; viaUserId?: unknown }) : undefined;
+      const self = id(j?.id);
+      if (self) me = { self, owner: id(j?.viaUserId) ?? self, agent: j?.kind === "agent" };
+    } catch { /* not now: the next event asks again */ }
+    return me;
+  }
   let inflight = 0;
   let drained: (() => void)[] = [];
   const idle = () => (inflight ? new Promise<void>((r) => drained.push(r)) : Promise.resolve());
 
   /**
    * Runs one connector write (a version, a thread reply). Events wait until it returns; the comment ids its receipt names are
-   * the connector's own. A version (primer_add_version with documentId) covers the comments pending when it started.
+   * the connector's own. A version (primer_add_version with documentId) covers the comments pending when it started, a reply
+   * its thread's; either ends the document's coalescing, and what arrived unwoken meanwhile and is still pending wakes once.
    */
-  async function guard<T extends { text: string; isError?: boolean }>(tool: string, args: Record<string, unknown>, run: () => Promise<T>): Promise<T> {
+  async function guard<T extends { text: string; isError?: boolean }>(tool: string, args: Record<string, unknown>, run: () => Promise<T>, document?: string): Promise<T> {
     if (READ.test(tool)) return run();
-    const d = typeof args.documentId === "string" ? args.documentId : undefined;
-    const covers = tool === "primer_add_version" && d ? [...doc(d).pending] : [];
+    const d = document ?? (typeof args.documentId === "string" ? args.documentId : undefined);
+    const version = tool === "primer_add_version";
+    const covers = version && d ? [...doc(d).pending] : [];
     inflight++;
+    let after: (() => Promise<unknown>) | undefined;
     try {
       const r = await run();
       if (!r.isError) {
         st.created.push(...createdIds(r.text));
-        if (d && tool === "primer_add_version") {
+        if (d && st.docs[d]) {
           const s = doc(d);
-          s.batches.push({ version: /"version_?[iI]d"\s*:\s*"([\w-]+)"/.exec(r.text)?.[1], comments: covers });
-          s.batches = s.batches.slice(-50);
-          s.pending = s.pending.filter((c) => !covers.includes(c));
+          const made = /"version_?[iI]d"\s*:\s*"([\w-]+)"/.exec(r.text)?.[1];
+          // A version Primer didn't make (nothing applied) addresses nothing; a reply addresses its thread's comments.
+          const done = version ? (made ? covers : []) : s.pending.filter((c) => s.threads?.[c] === args.thread_id);
+          if (version && made) s.batches = [...s.batches, { version: made, comments: covers }].slice(-50);
+          s.pending = s.pending.filter((c) => !done.includes(c));
+          for (const c of done) delete s.threads?.[c];
+          const left = (s.quiet ?? []).filter((q) => s.pending.includes(q) || (q.startsWith("edit:") && !(version && made)));
+          s.woken = undefined;
+          s.quiet = [];
+          if (left.length) after = () => wake(d, followUp(d, s.pending.length));
         }
         save();
       }
       return r;
     } finally {
       if (--inflight === 0) { const w = drained; drained = []; w.forEach((r) => r()); }
+      if (after) await after().catch((e: Error) => o.log("follow-up wake failed; the next event wakes it", { err: e.message }));
     }
   }
 
@@ -123,7 +167,7 @@ export function createSubscriber(o: {
     } catch { /* the id is title enough */ }
     const t = await o.kernel.file({
       title: `Revisions: ${title}`,
-      description: `People are commenting on Primer document ${d}, which you published on a task that is now closed. Revisions for it come here.\n\n${notice(d, undefined, "(see the open threads)", s.pending.length)}`,
+      description: `People are commenting on or editing Primer document ${d}, which you published on a task that is now closed. Revisions for it come here.\n\n${notice(d, undefined, "(see the open threads)", s.pending.length)}`,
       agent: own.agent, source: `primer-revisions:${d}:${n}`, ...(UUID.test(own.task) ? { parent: own.task } : {}),
     });
     s.revisions = n;
@@ -132,33 +176,67 @@ export function createSubscriber(o: {
     return t.id;
   }
 
-  /** One primer.comment.created: at most one wake, none for the connector's own comment or an unmapped document. */
-  async function comment(p: Record<string, unknown>) {
-    const d = id(p.document_id), c = id(p.comment_id), thread = id(p.thread_id);
-    if (!d || !c) return;
-    await idle();
-    if (st.created.includes(c) || st.processed.includes(c)) return;
+  /** Wakes the document's owning task with a notice (a closed task gets a Revisions task); returns the task woken. */
+  async function wake(d: string, text: string): Promise<string | undefined> {
     const own = o.owner(d);
-    if (!own) return;
-    const s = doc(d);
-    if (!s.pending.includes(c)) s.pending.push(c);
-    const text = notice(d, thread, c, s.pending.length);
+    if (!own) return undefined;
     let target = own.task;
     try {
       // Closed: a new Revisions task, whose assignment starts its agent by itself (its description is the notice).
       if ((await o.kernel.wake(target, text)).closed) target = await revisions(d, own);
     } catch (e) {
       if (!permanent(e)) throw e; // the kernel or the network: the event replays
-      o.log("comment wake refused for good; skipped", { document: d, comment: c, task: target, err: (e as Error).message });
+      o.log("wake refused for good; skipped", { document: d, task: target, err: (e as Error).message });
     }
+    doc(d).woken = now();
+    return target;
+  }
+
+  /** Whether a wake on this document went out recently and nothing the agent did since ended it. */
+  const coalescing = (s: DocState) => s.woken !== undefined && now() - s.woken < COALESCE_MS;
+
+  /** One primer.comment.created: at most one wake, none for the connector's own comment or an unmapped document. */
+  async function comment(p: Record<string, unknown>) {
+    const d = id(p.document_id), c = id(p.comment_id), thread = id(p.thread_id);
+    if (!d || !c) return;
+    await idle();
+    if (st.created.includes(c) || st.processed.includes(c)) return;
+    if (!o.owner(d)) return;
+    const owner = (await identity())?.owner === p.author_id;
+    const s = doc(d);
+    if (!s.pending.includes(c)) s.pending.push(c);
+    if (thread) (s.threads ??= {})[c] = thread;
+    let target: string | undefined;
+    if (coalescing(s) && !owner) (s.quiet ??= []).push(c);
+    else target = await wake(d, notice(d, thread, c, s.pending.length, owner));
     st.processed.push(c);
     save();
-    o.log("comment wake", { document: d, thread, comment: c, task: target });
+    o.log(target ? "comment wake" : "comment coalesced", { document: d, thread, comment: c, task: target });
+  }
+
+  /** One primer.version.published: an automatic checkpoint of people's live edits wakes like a comment; the connector's own never. */
+  async function version(p: Record<string, unknown>) {
+    const d = id(p.document_id), v = id(p.version_id);
+    if (!d || !v || p.automatic !== true) return;
+    await idle();
+    const key = `edit:${v}`;
+    if (st.processed.includes(key) || !o.owner(d)) return;
+    const me = await identity();
+    // The connector's own live edits (an agent identity of its own; in connect mode it is the owner and edits nothing live).
+    if (me?.agent && p.author_id === me.self) return;
+    const s = doc(d);
+    let target: string | undefined;
+    if (coalescing(s)) (s.quiet ??= []).push(key);
+    else target = await wake(d, editNotice(d, v, me?.owner === p.author_id));
+    st.processed.push(key);
+    save();
+    o.log(target ? "edit wake" : "edit coalesced", { document: d, version: v, task: target });
   }
 
   /** Handles one stream event (exported for the stream loop and tests); the cursor moves only after it. */
   async function handle(ev: { id?: string; type: string; data: Record<string, unknown> }) {
     if (ev.type === "primer.comment.created") await comment(ev.data);
+    if (ev.type === "primer.version.published") await version(ev.data);
     if (ev.id) { st.cursor = ev.id; save(); }
   }
 
