@@ -1,25 +1,38 @@
 // Telegram output for owner messages: readable formatting and one-tap buttons, without letting agent text inject markup.
 // Formatting: the text is HTML-escaped first, then a small markdown subset is rendered (bold, italics, headings, inline code,
-// code blocks, bullets). Task IDs become links only through a host-configured URL template; agent links stay literal
-// (Telegram links bare URLs itself), so a label can't hide a different URL.
+// code blocks, bullets). Task IDs become links only through a host-configured URL template; a `[label](#/route)` link points
+// at the board's own configured address and nowhere else, and any other agent link stays literal (Telegram links bare URLs
+// itself), so a label can't hide a different URL.
 // Buttons: each label is stored server-side; a press delivers exactly that label as the owner's message, once.
 import { randomBytes } from "node:crypto";
 import type { ChatMessage } from "./chat.js";
 import type { Store } from "./store.js";
 
 export const escape = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+/** A board's https address as a bare origin: anything else (unset, malformed) gives "" and links stay literal. */
+const boardOrigin = (url?: string): string => { if (!url) return ""; try { return new URL(url).origin; } catch { return ""; } };
+// An in-app route: a plain label, and a path (no host, scheme or markup) after "#/".
+const ROUTE_LINK = /\[([^[\]\n<>`&*_]+)\]\(#\/([A-Za-z0-9][A-Za-z0-9\-._/]*)\)/g;
 
-export function toTelegramHtml(text: string, taskUrl?: string): string {
+export function toTelegramHtml(text: string, taskUrl?: string, boardUrl?: string): string {
+  const board = boardOrigin(boardUrl);
   const parts = escape(text).split(/```(?:[a-z]*)\n?([\s\S]*?)\n?```/);
   return parts
     .map((part, i) => {
       if (i % 2 === 1) return `<pre>${part}</pre>`;
+      // Inline code is kept as written, so a markdown link written inside it stays literal.
       let s = part
-        .replace(/`([^`\n]+)`/g, "<code>$1</code>")
-        .replace(/^[ \t]*#{1,6}[ \t]+(.+?)[ \t]*$/gm, "<b>$1</b>")
-        .replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>")
-        .replace(/__([^_\n]+)__/g, "<i>$1</i>")
-        .replace(/^[ \t]*[-*] /gm, "• ");
+        .split(/(`[^`\n]+`)/)
+        .map((seg, j) => {
+          if (j % 2 === 1) return `<code>${seg.slice(1, -1)}</code>`;
+          const out = seg
+            .replace(/^[ \t]*#{1,6}[ \t]+(.+?)[ \t]*$/gm, "<b>$1</b>")
+            .replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>")
+            .replace(/__([^_\n]+)__/g, "<i>$1</i>")
+            .replace(/^[ \t]*[-*] /gm, "• ");
+          return board ? out.replace(ROUTE_LINK, (_, label: string, route: string) => `<a href="${board}/#/${route}">${label}</a>`) : out;
+        })
+        .join("");
       if (taskUrl) s = s.replace(/(?<![\w/-])([A-Z][A-Z0-9]*-\d+)\b(?![^<]*<\/code>)/g, (id) => `<a href="${escape(taskUrl.replace("{id}", id))}">${id}</a>`);
       return s;
     })

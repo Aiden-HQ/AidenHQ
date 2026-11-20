@@ -329,3 +329,33 @@ test("a job's facts: started, then ended with what the gateway billed for it and
   assert.equal(lost.data.state, "lost");
   assert.equal(lost.data.acted, false);
 });
+
+// Two openers setup at once on one jobs database (a body and its map, a test and the service): the schema is one
+// BEGIN IMMEDIATE behind a busy timeout, each column read inside it, so the second opener sees the first's ALTERs instead of
+// trying them again. Both start while a third connection holds the write lock, so neither can win it before the other.
+test("two openers of the same jobs database setup cleanly at once: no duplicate column, no lock failure", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "kernel-jobs-race-"));
+  const file = join(dir, "kernel.db");
+  const open = () => new DatabaseSync(file);
+  const holder = open();
+  // The oldest shape: a jobs table without any of the columns added since.
+  holder.exec(`CREATE TABLE jobs (id TEXT PRIMARY KEY, module TEXT NOT NULL, agent TEXT NOT NULL, task TEXT NOT NULL, engine TEXT NOT NULL,
+    pid INTEGER NOT NULL, log TEXT NOT NULL, dir TEXT NOT NULL, at INTEGER NOT NULL, jobcaps TEXT NOT NULL, observing INTEGER NOT NULL,
+    live_input INTEGER NOT NULL, box TEXT, session TEXT, offset INTEGER NOT NULL DEFAULT 0, state TEXT NOT NULL, exit INTEGER,
+    final TEXT NOT NULL DEFAULT '', why TEXT NOT NULL DEFAULT '{}', usage TEXT, progress TEXT NOT NULL DEFAULT '{}', ended INTEGER);
+    PRAGMA journal_mode = WAL;`);
+  holder.exec("BEGIN IMMEDIATE");
+  const opener = () => spawn(process.execPath, ["--disable-warning=ExperimentalWarning", join(import.meta.dirname, "fixtures/jobs-open.ts")], { env: { ...process.env, JOBS_DB: file }, stdio: ["ignore", "pipe", "pipe"] });
+  const done = (p) => new Promise<{ code: number | null; message: string }>((r) => { let t = ""; p.stderr.on("data", (d) => (t += d)); p.on("close", (code) => r({ code, message: t })); });
+  // Both are waiting on the same held lock when it is released: whichever wakes first runs the ALTERs, the other must not repeat them.
+  const both = [opener(), opener()].map(done);
+  await wait(300);
+  holder.exec("COMMIT");
+  holder.close();
+  const [a, b] = await Promise.all(both);
+  assert.deepEqual([a.code, b.code], [0, 0], `both openers setup: ${a.message} | ${b.message}`);
+  const db = open();
+  const cols = (db.prepare("PRAGMA table_info(jobs)").all() as { name: string }[]).map((c) => c.name);
+  for (const c of ["full_prompt", "resumed", "acked", "authority", "identifier"]) assert.ok(cols.includes(c), c);
+  db.close();
+});

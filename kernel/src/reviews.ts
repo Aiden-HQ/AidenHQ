@@ -14,7 +14,7 @@ type Pending = { token: Buffer; done: (v: { verdict?: unknown; error?: string })
 const fail = (status: number, type: string, message: string) => Object.assign(new Error(message), { status, type });
 const hash = (s: string) => createHash("sha256").update(s).digest();
 
-export function createReviews({ slot, secret, resolver, modelToken, timeoutMs = 45 * 60_000, log = () => {} }: {
+export function createReviews({ slot, secret, resolver, modelToken, timeoutMs = 15 * 60_000, log = () => {} }: {
   slot: () => ReviewerSlot | undefined; secret: (n: string) => string; resolver: Resolver;
   /** A reviewer-kind gateway token for one review's model calls (the ledger's component names it). */
   modelToken: (component: string) => string;

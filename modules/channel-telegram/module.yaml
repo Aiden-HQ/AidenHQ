@@ -70,6 +70,9 @@ services:
         # (.env), never instance.yaml: where task links point.
         TELEGRAM_OWNER_CHAT_ID: "${TELEGRAM_OWNER_CHAT_ID:-}"
         TELEGRAM_TASK_URL: "${TELEGRAM_TASK_URL:-}"
+        # The board's https address (its setup flow sends the owner here): in-app `#/route` links in a message resolve
+        # against it, since Telegram cannot open a bare `#/` route.
+        BOARD_LAN_URL: "${BOARD_LAN_URL:-}"
         # Voice notes are transcribed on this host (audio never leaves it) by the optional voice module, whose Whisper joins
         # this module's network under this name; while it is off, a voice note gets "Voice notes are off" and typing works.
         WHISPER_URL: http://whisper:9000

@@ -46,8 +46,8 @@ plus what to publish (`pr`). An Engineer's task tools reach its own task only, s
 ## Choosing the agent
 
 - Pick by what the work needs, using `task_team`: it lists each agent's description and roles. Product-repo code goes to the holder of the
-  `platform-engineer` role: only its writes there go to the AI reviewer. It publishes its PR and merges it at its head once
-  the checks are green, each a card (a second reviewer joins for gate code, a role holder's handbook or a module's grants,
+  `platform-engineer` role: only its writes there go to the AI reviewer. It publishes its PR, and once
+  the checks are green its merge is filed for its task at that head, each a card (a second reviewer joins for gate code, a role holder's handbook or a module's grants,
   tools or models). Several product tasks may go to it at once.
 - Every Engineer has the repository, its tests and toolchains, package installs into the workspace, the
   public Internet and a headless browser: for UI work it runs the app's Playwright setup (`npm run screens`: the
@@ -127,9 +127,8 @@ task settles it.
 
 ## Done, and after
 
-- A change is done when it is merged and, for an app, deployed and healthy; an open PR is not done. In agents-org repos
-  the runner merges the PR itself once its checks are green on the head; elsewhere ask for `merge` once they are. The
-  runner tiers each write.
+- A change is done when it is merged and, for an app, deployed and healthy; an open PR is not done. A task's own PR
+  has its merge filed for its task once its checks are green at the head it published. The code host tiers each write.
 - **A new app is done when it is live and whoever asked has its link.** It takes two hand-offs, each waking you when it
   ends:
   1. The Engineer builds it: deliverable `pr` on the app's repository, done when the PR is merged into main. The merge's

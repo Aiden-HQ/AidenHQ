@@ -22,10 +22,15 @@
 // - The kernel (createUpdates) files `ready` as a kernel.apply on a task of its own and follows the record: installed, or
 //   failed (a failed apply leaves the pin landed, as any apply does: apply's own health check put the host back on the last
 //   good generation). The night never files a failed release again. Each event is told to the owner once.
+// - A main commit (docs/design/release-updates.md, "A main commit"): the owner's MCP `update` tool asks for `main` or a sha.
+//   verifyMain checks it (on the kernel repository's main, after the running product, its `ci-required` check green on that
+//   commit) and the same check prepares it as Update now prepares a release: `product:` moves, `release:` stays, and the
+//   apply builds the images from the checkout (release.ts). The next graduated release whose kernel descends from it rejoins.
 //   node kernel/src/updates.ts check [<release> <by>]   (the kernel) find, verify and prepare; with a release: Update now
 //     (AIDENHQ_UPDATE_CANDIDATE=<release> on the host's own run: that pre-release, for graduation's test instance)
 //   node kernel/src/updates.ts verify <name> <distro sha> < base instance.yaml   (the apply planner) the verified pin, as JSON
 //   node kernel/src/updates.ts pin <name> <distro sha>  (ops/setup.sh, the installer run again) move the pin to that release
+//   node kernel/src/updates.ts main <main|sha>          (the kernel, before it asks) the main commit verified, as JSON
 import { execFile, execFileSync, spawnSync } from "node:child_process";
 import { closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -35,7 +40,7 @@ import { isDeepStrictEqual } from "node:util";
 import type { DatabaseSync } from "node:sqlite";
 import YAML, { Scalar } from "yaml";
 import { pinOwner } from "../sdk/src/pin-owner.ts";
-import { resolveRelease } from "../../scripts/compiler/release.ts";
+import { ciRefusal, ciRunsUrl, resolveRelease } from "../../scripts/compiler/release.ts";
 import { OFFICIAL, repoAt, type Fetch, type Where } from "../../scripts/compiler/sources.ts";
 
 type Dict = Record<string, unknown>;
@@ -50,6 +55,8 @@ const isMap = (v: unknown): v is Dict => !!v && typeof v === "object" && !Array.
 
 /** A release that failed verification: never installed, and the owner is told once. Anything else (network) is retried. */
 export class Refused extends Error {}
+/** A release whose kernel is behind the running product (cut before the main commit the owner moved to): refused, quietly. */
+export class Behind extends Refused {}
 
 /** The host's candidate exception (graduation's test instance): read only by the CLI's check, from the shell that runs it. */
 export const CANDIDATE_ENV = "AIDENHQ_UPDATE_CANDIDATE";
@@ -230,7 +237,7 @@ export async function verify(d: Pick<Deps, "base" | "fetch" | "download">, text:
   const kernel = String(file.kernel);
   const product = String(instance.product ?? "");
   const kernelRepo = onMain(d, at(d, KERNEL, kernel), `${name}'s kernel`);
-  if (!isAncestor(kernelRepo, product, kernel)) throw new Refused(`${name}'s kernel ${kernel.slice(0, 12)} doesn't descend from the running product ${product.slice(0, 12)}`);
+  if (!isAncestor(kernelRepo, product, kernel)) throw new (isAncestor(kernelRepo, kernel, product) ? Behind : Refused)(`${name}'s kernel ${kernel.slice(0, 12)} doesn't descend from the running product ${product.slice(0, 12)}`);
   const next = pinText(text, file, name, sha);
   // The release workflow's stamp: the published asset is this file with `tested` written, from a release.yml run on this commit.
   const asset = await d.download(`${GITHUB}/${DISTRO}/releases/download/${name}/${name}.json`);
@@ -247,6 +254,47 @@ export async function verify(d: Pick<Deps, "base" | "fetch" | "download">, text:
   if (!isMap(r) || r.path !== ".github/workflows/release.yml" || r.head_sha !== sha || !onTag || r.conclusion !== "success") throw new Refused(`${name}'s tested stamp doesn't name a successful release run on its commit`);
   const notes = (Array.isArray(file.notes) ? file.notes : typeof file.notes === "string" ? [file.notes] : []).slice(0, 20).map((n) => plain(n)).filter(Boolean);
   return { name, sha, kernel, notes, compare: `${GITHUB}/${KERNEL}/compare/${product.slice(0, 12)}...${kernel.slice(0, 12)}`, images: images.length, from: { name: cur.name, product }, text: next };
+}
+
+/** A main move: the 40-char sha it asks for, where a release move has the release's name. */
+const isMain = (release: string) => SHA.test(release);
+/** How the owner reads a move: the release's name, or the main commit. */
+export const labelOf = (release: string) => (isMain(release) ? `main commit ${release.slice(0, 12)}` : release);
+
+export type MainMove = { sha: string; from: string; compare: string; text: string };
+/**
+ * A commit on the kernel repository's main (`main`: its head now), checked as a move of `instance` (its instance.yaml `text`):
+ * the instance follows a release, the commit is on main and after the running product, its `ci-required` check (GitHub
+ * Actions') passed on exactly that commit, and the pinned instance resolves. Throws Refused with the reason; any other error
+ * is the network's.
+ */
+export async function verifyMain(d: Pick<Deps, "base" | "fetch" | "download">, text: string, to: string): Promise<MainMove> {
+  const cur = followed(text);
+  if (!cur) throw new Refused("this instance doesn't follow a release from the official distro repo: it pins its product by hand (docs/operations/hand-pinned.md)");
+  if (to !== "main" && !SHA.test(to)) throw new Refused(`${plain(to, 60)} isn't main or a 40-character commit`);
+  let sha = to;
+  if (to === "main") {
+    const head = /^([0-9a-f]{40})\trefs\/heads\/main$/m.exec(git(tmpdir(), ["ls-remote", "--", url(d, KERNEL), "refs/heads/main"]));
+    if (!head) throw new Error(`${KERNEL} has no main`);
+    sha = head[1]!;
+  }
+  const product = String((YAML.parse(text) as Dict).product ?? "");
+  const kernelRepo = onMain(d, at(d, KERNEL, sha), "commit");
+  if (sha === product) throw new Refused(`this server already runs ${sha.slice(0, 12)}`);
+  if (!isAncestor(kernelRepo, product, sha)) throw new Refused(`${sha.slice(0, 12)} doesn't descend from the running product ${product.slice(0, 12)}: downgrades are refused`);
+  // Product CI on exactly this commit (release.ts ciRefusal, the one judge; every apply asks it again).
+  const ci = ciRefusal(await d.download(ciRunsUrl(sha)), sha);
+  if (ci) throw new Refused(ci);
+  const doc = YAML.parseDocument(text);
+  doc.set("product", sha);
+  const next = doc.toString({ lineWidth: 0 });
+  // The pinned instance resolves as the apply will read it (release.ts: the release kept, product after its kernel on main).
+  const distro = repoAt(at(d, DISTRO, cur.sha), d.fetch);
+  try {
+    const file = JSON.parse(execFileSync("git", ["--git-dir", distro, "show", `${cur.sha}:releases/${cur.name}.json`], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }));
+    resolveRelease(file, (YAML.parse(next) ?? {}) as Dict, (k, p) => { if (!isAncestor(kernelRepo, k, p)) throw new Error("it doesn't descend from the release's kernel"); });
+  } catch (e) { throw new Refused((e as Error).message); }
+  return { sha, from: cur.name, compare: `${GITHUB}/${KERNEL}/compare/${product.slice(0, 12)}...${sha.slice(0, 12)}`, text: next };
 }
 
 // ------------------------------------------------------------------------------------------------ state
@@ -331,6 +379,7 @@ async function checkLocked(d: Deps, asked: Asked, candidate: string): Promise<St
           break;
         } catch (e) {
           if (!(e instanceof Refused)) throw e;
+          if (e instanceof Behind) continue; // older than what runs here (the owner moved to a later main commit): nothing to say
           s.error = `${tag.name} was refused: ${plain(e.message)}`;
           event(s, `refused:${tag.name}`, `AidenHQ ${tag.name} was published but failed this server's checks (${plain(e.message, 200)}), so it won't be installed. Nothing changed here.`);
         }
@@ -339,9 +388,20 @@ async function checkLocked(d: Deps, asked: Asked, candidate: string): Promise<St
   }
   const a = s.available;
   const busy = s.ready ?? s.flight;
+  if (asked && isMain(asked.release)) {
+    // The owner's main commit, asked for alone: the night's release waits for the next check.
+    const why = (m: string) => event(s, `now:${now.toISOString()}`, `Update to ${labelOf(asked.release)} didn't start: ${m}. Nothing changed.`);
+    if (!cur) why("this instance doesn't follow a release");
+    else if (busy) why(`${labelOf(busy.release)} is already being installed`);
+    else {
+      try { s.ready = prepareMain(d, await verifyMain(d, text, asked.release), text, String(asked.by).slice(0, 100)); } catch (e) { s.error = plain((e as Error).message); why(plain((e as Error).message, 200)); }
+    }
+    writeState(d, s);
+    return s;
+  }
   const by = !a || busy ? null : asked?.release === a.name ? String(asked.by).slice(0, 100)
     : s.auto && atNight(now, s.timezone) && !(s.failed ?? []).includes(a.name) ? "auto-update" : null;
-  if (asked && !by) event(s, `now:${now.toISOString()}`, `Update now didn't start: ${busy ? `${busy.release} is already being installed` : s.error ?? `${plain(asked.release, 40)} isn't the release available any more`}. Nothing changed.`);
+  if (asked && !by) event(s, `now:${now.toISOString()}`, `Update now didn't start: ${busy ? `${labelOf(busy.release)} is already being installed` : s.error ?? `${plain(asked.release, 40)} isn't the release available any more`}. Nothing changed.`);
   if (a && by) {
     try {
       s.ready = { ...prepare(d, a, text, next, by), ...(candidate ? { candidate: a.sha } : {}) };
@@ -390,6 +450,17 @@ function prepare(d: Deps, c: Candidate, text: string, next: string, by: string):
   return { release: c.name, kernel: c.kernel, from: c.from.name, branch, sha, by, notes: c.notes, compare: c.compare };
 }
 
+/** The main commit, ready to file: on the product origin's main, `product:` committed on update/main-<sha12> (release: stays). */
+function prepareMain(d: Deps, m: MainMove, text: string, by: string): Ready {
+  landKernel(d, m.sha);
+  const branch = `update/main-${m.sha.slice(0, 12)}`;
+  const sha = commitOn(d.inst, branch, `update: AidenHQ main ${m.sha.slice(0, 12)}\n\nFrom ${m.from}: product ${m.sha}; release ${m.from} kept (the next release after it rejoins).\nBy ${by}. What changed: ${m.compare}`, (clone) => {
+    if (readFileSync(join(clone, "instance.yaml"), "utf8") !== text) throw new Error("instance.yaml moved while the commit was checked; ask again");
+    writeFileSync(join(clone, "instance.yaml"), m.text);
+  });
+  return { release: m.sha, kernel: m.sha, from: m.from, branch, sha, by, notes: [], compare: m.compare };
+}
+
 /**
  * The installer run again (ops/setup.sh on an existing instance): the pin moves to the release the installer verified (its
  * baked digest), when it is newer than what the instance follows; the same release is nothing to do, an older one refused.
@@ -431,13 +502,15 @@ const MOVED_TRIES = 3;
  * The kernel's half: runs the check (hourly, and at once on Update now), files the release it prepared as a kernel.apply and
  * follows that record to its end, tells the owner each event once (kernel.db), and the /updates page reads the state.
  */
-export function createUpdates({ db, dir, board, inst, ownerLine, check, file, record, close, log = () => {}, now = Date.now }: {
+export function createUpdates({ db, dir, board, inst, ownerLine, check, main, file, record, close, log = () => {}, now = Date.now }: {
   db: DatabaseSync; dir: string; board?: string;
   /** The instance checkout: until the first check has run, the page reads the release followed from its instance.yaml. */
   inst?: string;
   ownerLine: (text: string) => void;
   /** Runs `node kernel/src/updates.ts check [release by]` (a child process: its git and network work stays off the kernel's loop). */
   check: (asked: Asked) => Promise<void>;
+  /** Runs `node kernel/src/updates.ts main <to>` (verifyMain, a child): the commit, or Refused with the reason. */
+  main: (to: string) => Promise<{ sha: string; compare: string }>;
   /** Files the prepared release: a task of the kernel's and a kernel.apply on it; returns both ids. */
   file: (r: Ready) => Promise<{ record: string; task: string }>;
   /** A record's state and outcome, undefined when there is none. */
@@ -462,11 +535,12 @@ export function createUpdates({ db, dir, board, inst, ownerLine, check, file, re
     const times = s.moved?.release === f.release ? s.moved.n : 0;
     if (r?.state === "done") {
       s.last = { release: f.release, outcome: "installed", at, by: f.by };
-      s.current = { name: f.release, product: f.kernel };
-      s.available = null;
+      // A main commit keeps the release it follows: the next one after that commit rejoins.
+      s.current = { name: isMain(f.release) ? f.from : f.release, product: f.kernel };
+      if (!isMain(f.release)) s.available = null;
       s.failed = (s.failed ?? []).filter((n) => n !== f.release);
       delete s.moved;
-      event(s, `installed:${f.release}`, `AidenHQ is updated to ${f.release} (from ${f.from}).${f.notes.length ? ` What changed: ${f.notes.slice(0, 5).join("; ")}.` : ""} Every change: ${f.compare}`);
+      event(s, `installed:${f.release}`, `AidenHQ is updated to ${labelOf(f.release)} (from ${f.from}).${f.notes.length ? ` What changed: ${f.notes.slice(0, 5).join("; ")}.` : ""} Every change: ${f.compare}`);
     } else if (moved && (f.by === "auto-update" || times < MOVED_TRIES)) {
       if (f.by === "auto-update") checked = 0;
       else {
@@ -478,12 +552,12 @@ export function createUpdates({ db, dir, board, inst, ownerLine, check, file, re
       const why = !r ? "its record is gone" : r.state === "failed" ? plain(String(r.outcome?.text ?? "").split("\n")[0], 400) || "the apply failed" : `the card was ${r.state}`;
       s.last = { release: f.release, outcome: "failed", why, at, by: f.by };
       s.failed = [...new Set([...(s.failed ?? []), f.release])];
-      event(s, `failed:${f.release}:${at}`, `AidenHQ ${f.release} didn't install: ${why}. This server stays on ${f.from}: a failed apply puts the host back on it and holds it there (if that revert fails too, a separate apply alert says so). The night won't file it again; Update now in Settings > Instance does.`);
+      event(s, `failed:${f.release}:${at}`, `AidenHQ ${labelOf(f.release)} didn't install: ${why}. This server stays on ${f.from}: a failed apply puts the host back on it and holds it there (if that revert fails too, a separate apply alert says so). The night won't file it again; Update now in Settings > Instance does.`);
     }
     delete s.flight;
     writeState(d, s);
     const done = s.last?.release === f.release && s.last.at === at;
-    await close(f.task, !done ? `Not landed: the instance's main moved first; it is prepared again on the new main${f.by === "auto-update" ? " (tonight)" : ""}.` : s.last!.outcome === "installed" ? `Installed: this server runs AidenHQ ${f.release}.` : `**Not installed:** ${s.last!.why}.`).catch((e: Error) => log("update task not closed", { task: f.task, err: e.message }));
+    await close(f.task, !done ? `Not landed: the instance's main moved first; it is prepared again on the new main${f.by === "auto-update" ? " (tonight)" : ""}.` : s.last!.outcome === "installed" ? `Installed: this server runs AidenHQ ${labelOf(f.release)}.` : `**Not installed:** ${s.last!.why}.`).catch((e: Error) => log("update task not closed", { task: f.task, err: e.message }));
   }
 
   async function pass() {
@@ -560,6 +634,16 @@ export function createUpdates({ db, dir, board, inst, ownerLine, check, file, re
       this.tick().catch((e: Error) => log("update pass failed", { err: e.message.slice(0, 300) }));
       return `Filing ${release} now. ${s.auto ? "The AI reviewer checks it" : "It installs on your approval (its card)"}; the board and this page restart while it installs, and you'll get a message when it is done.`;
     },
+    /** The owner's move to a main commit (`main` or a sha): verified first, so a refusal is the answer; then asked as Update now. */
+    async requestMain(to: string, by: string): Promise<string> {
+      const s = readState(dir);
+      const busy = s.ready ?? s.flight;
+      if (busy) throw new Refused(`${labelOf(busy.release)} is already being installed`);
+      const m = await main(to);
+      asked = { release: m.sha, by };
+      this.tick().catch((e: Error) => log("update pass failed", { err: e.message.slice(0, 300) }));
+      return `Verified ${m.sha.slice(0, 12)}: on main, CI green, after what runs now. Filing it as an apply (tiered like any forward product move); you'll get a message when it installs. What changed: ${m.compare}`;
+    },
   };
 }
 export type Updates = ReturnType<typeof createUpdates>;
@@ -593,10 +677,13 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       // The planner's check of a release move (apply-tier.ts): the instance.yaml this base moves to, every check passed. A
       // pre-release passes only as the candidate the host's check prepared (its mark in the state file, never the environment).
       process.stdout.write(JSON.stringify({ text: (await verify(d, readFileSync(0, "utf8"), a, b, candidateMarked(readState(d.dir), a, b))).text }));
+    } else if (cmd === "main" && a) {
+      const { sha, compare } = await verifyMain(d, instanceText(d.inst), a);
+      process.stdout.write(JSON.stringify({ sha, compare }));
     } else if (cmd === "pin" && a && b) {
       console.log(pinTo(d, a, b, git(product, ["rev-parse", "HEAD"]).trim()));
     } else {
-      console.error("usage: node kernel/src/updates.ts check [<release> <by>] | verify <release> <distro sha> < instance.yaml | pin <release> <distro sha>");
+      console.error("usage: node kernel/src/updates.ts check [<release> <by>] | verify <release> <distro sha> < instance.yaml | pin <release> <distro sha> | main <main|sha>");
       process.exitCode = 2;
     }
   } catch (e) {
@@ -608,6 +695,15 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
 /** The kernel's check: this file's CLI as a child process, so the git and network work never blocks the kernel. Never a candidate run. */
 export function runCheck(product: string) {
   return (asked: Asked) => new Promise<void>((ok, no) => execFile(process.execPath, ["--disable-warning=ExperimentalWarning", join(product, "kernel/src/updates.ts"), "check", ...(asked ? [asked.release, asked.by] : [])], { cwd: product, env: { ...process.env, [CANDIDATE_ENV]: undefined }, timeout: 15 * 60_000, maxBuffer: 4 * 1024 * 1024 }, (e, _out, err) => (e && (e as { code?: unknown }).code !== 3 ? no(new Error(String(err || e.message).trim().slice(0, 500))) : ok())));
+}
+
+/** The kernel's check of a main move before it asks (verifyMain in a child): the commit, or Refused with the child's reason. */
+export function runMain(product: string) {
+  return (to: string) => new Promise<{ sha: string; compare: string }>((ok, no) => execFile(process.execPath, ["--disable-warning=ExperimentalWarning", join(product, "kernel/src/updates.ts"), "main", to], { cwd: product, timeout: 90_000, maxBuffer: 1024 * 1024 }, (e, out, err) => {
+    if (!e) { try { return ok(JSON.parse(String(out)) as { sha: string; compare: string }); } catch { return no(new Error("the check said nothing readable")); } }
+    const why = String(err || e.message).trim().split("\n")[0]!.replace(/^update: (refused: )?/, "").slice(0, 400);
+    no((e as { code?: unknown }).code === 3 ? new Refused(why) : new Error(why));
+  }));
 }
 
 /** The planner's verification of a release move: the instance.yaml `verify` writes for this base, or null when it refuses or fails. */

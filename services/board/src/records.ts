@@ -82,8 +82,8 @@ export type Records = {
   advisories(): Promise<Advisory[]>;
   /** Every connection's /healthz as the kernel reaches it (the one place connection health is probed). {} when the kernel can't be asked. */
   connectionHealth(): Promise<Record<string, Probe>>;
-  /** The owner's typed settings change on their settings task: the kernel writes it and files its apply (kernel/src/settings-change.ts). Throws the kernel's reason. */
-  settingsChange(task: string, changes: unknown[]): Promise<{ record: string; tier: number; state: string }>;
+  /** The owner's typed settings change on their settings task: the kernel writes it and files its apply (kernel/src/settings-change.ts). `session`: the signed-in board session it was saved in, whose account the kernel checks and decides the record as. Throws the kernel's reason. */
+  settingsChange(task: string, changes: unknown[], session?: string): Promise<{ record: string; tier: number; state: string }>;
   /** A module's own check of settings about to be filed (module.yaml `validate:`, kernel/src/module-validate.ts). Throws the kernel's reason. */
   validate(module: string, settings: Record<string, unknown>): Promise<Validation>;
   /** A card's "Explain" (explain.ts): the record whole and its task's request chain. Throws the kernel's answer (404 for no such record). */
@@ -119,9 +119,9 @@ export function kernelRecords(k: { url: string; token: string } | undefined, log
     const res = await fetch(`${k.url}/v1/connections/health`, { headers: { authorization: `Bearer ${k.token}` }, signal: AbortSignal.timeout(15_000) }).catch(() => undefined);
     return res?.ok ? (((await res.json()) as { probes: Record<string, Probe> }).probes ?? {}) : {};
   };
-  const settingsChange: Records["settingsChange"] = async (task, changes) => {
+  const settingsChange: Records["settingsChange"] = async (task, changes, session) => {
     if (!k) throw new Error("the board has no kernel to write the change");
-    const res = await fetch(`${k.url}/v1/settings/change`, { method: "POST", headers: { authorization: `Bearer ${k.token}`, "content-type": "application/json" }, body: JSON.stringify({ task, changes }), signal: AbortSignal.timeout(180_000) });
+    const res = await fetch(`${k.url}/v1/settings/change`, { method: "POST", headers: { authorization: `Bearer ${k.token}`, "content-type": "application/json" }, body: JSON.stringify({ task, changes, ...(session ? { session } : {}) }), signal: AbortSignal.timeout(180_000) });
     const j = (await res.json().catch(() => ({}))) as { record?: string; tier?: number; state?: string; message?: string; error?: string };
     if (!res.ok) throw new Error(String(j.message ?? j.error ?? `the kernel answered ${res.status}`));
     return { record: String(j.record), tier: Number(j.tier), state: String(j.state) };

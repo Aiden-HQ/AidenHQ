@@ -165,7 +165,7 @@ function FlowBody({ flow, change, board, reload, onDone, onSignIn }: { flow: Set
       </div>
       {flow.advanced && <Advanced flow={flow} advanced={flow.advanced} board={board} reload={reload} fail={fail} />}
       <footer className="setup-foot">
-        <span className={flow.done ? "setup-ok-line" : "setup-hint"}>{flow.done ? `${flow.title} is set up.` : "You can finish this later from Settings."}</span>
+        <span className={flow.done ? "setup-ok-line" : "setup-hint"}>{flow.done ? `${flow.title} is set up.` : <>You can finish this later from <a href="#/settings">Settings</a>.</>}</span>
         {flow.done ? (
           <button className="btn primary" onClick={onDone}>
             Done

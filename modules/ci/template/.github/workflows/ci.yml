@@ -354,8 +354,9 @@ jobs:
             code=$?
           }
           # No verdict is never a pass: the gate fails it (fail closed, whatever the size). One retry only after a confirmed
-          # provider error (exit 1: HTTP 429 or 5xx, a dropped connection), when time is left; never after a timeout or an
-          # answer that isn't a review (exit 3: the PR's content can cause it).
+          # provider error (exit 1: HTTP 429 or 5xx, a provider quota 402, a dropped connection), when time is left; never after
+          # a timeout or an answer that isn't a review (exit 3: the PR's content can cause it), nor after a refusal (exit 2:
+          # the gateway's 401-403 or our own spend cap, which a retry can't fix).
           review 40
           attempts=1
           if [ "$code" = 1 ]; then
@@ -371,7 +372,8 @@ jobs:
           case "$code" in
             0) echo "CODE_REVIEW_DONE=1" >> "$GITHUB_ENV" ;;
             2) printf 'CODEGENIE_FAILURE=permanent\nCODEGENIE_CAUSE=the model gateway refused the review\n' >> "$GITHUB_ENV" ;;
-            # The cause goes into a PR comment: a fixed class only; the detail is in this log (code-review.ts's stderr).
+            # The cause goes into a PR comment: a fixed class only; the detail is in this log (code-review.ts's stderr). The
+            # gate prefers the review's own cause (a quota's rate-limit reason, our spend cap) when the run left one.
             1) printf 'CODEGENIE_FAILURE=transient\nCODEGENIE_CAUSE=a provider error\n' >> "$GITHUB_ENV" ;;
             *) printf "CODEGENIE_FAILURE=no-verdict\nCODEGENIE_CAUSE=no verdict (a timeout or an answer that isn't a review)\n" >> "$GITHUB_ENV" ;;
           esac

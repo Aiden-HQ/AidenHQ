@@ -58,10 +58,13 @@ export async function fakeKernel(): Promise<{
         return send(200, { secrets: { ...saved } });
       }
       case "/v1/auth/mcp":
+      case "/v1/owner/update":
       case "/v1/owner/decide": {
         const g = grants.get(body.token);
         if (!g || g.revoked || g.resource !== body.resource) return send(401, { error: { message: "no such grant" } });
         if (req.url === "/v1/auth/mcp") return send(200, { account: g.account, client: g.client, expires: new Date(Date.now() + 3_600_000).toISOString() });
+        // The updater's answer: main is verified, any sha here is refused with its reason.
+        if (req.url === "/v1/owner/update") return body.to === "main" ? send(200, { said: "Verified 1111111111aa. Filing it as an apply now." }) : send(409, { error: { message: `${body.to.slice(0, 12)} isn't on Aiden-HQ/AidenHQ's main` } });
         // Each card on its own; `by` comes from the grant, never the body.
         return send(200, { outcomes: body.cards.map((c: { id: string; digest: string; decision: string }) => (digests.get(c.id) === c.digest ? { id: c.id, ok: true, state: c.decision === "approve" ? "approved" : "rejected", by: `account:${g.account.id}` } : { id: c.id, ok: false, error: `card ${c.id} changed since you read it: call approvals again` })) });
       }

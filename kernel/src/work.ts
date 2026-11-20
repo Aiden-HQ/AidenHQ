@@ -1,8 +1,8 @@
 // Reads of the kernel's jobs (phase 2 W7, W12): what the grading module and the monitoring side see, from the jobs table and the
 // records. Read-only; the loops that use them are started at the big switch, where the runner's copies are deleted.
-//   GET /v1/work?task=<id>   a task's (by id or identifier) jobs (newest first) and the write records filed on it (with their args and outcome text, which the grading module reads PRs from): { status, busy, jobs, records }
+//   GET /v1/work?task=<id>   a task's (by id or identifier) jobs (newest first) and the write records filed on it (with their args, outcome text and, for an apply, the card's diff, which the grading module reads PRs and applies from): { status, busy, jobs, records }
 //   GET /v1/work             what runs now, what waits (queued) and what ended lately, and the agents failing (their last 3 jobs all failed or were lost): the board's Agents view;
-//                            `waiting` (claimable wakes: count, oldest_at, oldest_cause) and `last_started_at` say whether dispatch has stalled
+//                            `capacity` (the computers the kernel admits jobs into), `waiting` (claimable wakes: count, oldest_at, oldest_cause) and `last_started_at` say whether dispatch has stalled
 //   GET /v1/work?job=<id>    one job for its run page (the board): state, times, why it ended, its engine's token count, its
 //                            progress (said, plan, steps) and final words (both the agent's: untrusted)
 //   GET /v1/work?record=<id> one write record (an approval card) by its id: state, kind, task, identifier, ok and outcome text
@@ -25,7 +25,7 @@ import { CODE_REJECTS, requestTargets } from "./tier.ts";
 const BUCKETS = [60, 300, 900, 1800, 3600, 7200, Infinity];
 const iso = (ms: unknown) => (typeof ms === "number" && ms > 0 ? new Date(ms).toISOString() : null);
 
-export function createWork({ db, records, generationsFile = "" }: { db: DatabaseSync; records: Records; generationsFile?: string }) {
+export function createWork({ db, records, generationsFile = "", capacity = () => 0 }: { db: DatabaseSync; records: Records; generationsFile?: string; capacity?: () => number }) {
   const rows = (sql: string, ...args: (string | number)[]) => db.prepare(sql).all(...args) as Record<string, any>[];
   const job = (r: Record<string, any>) => ({ id: r.id, agent: r.agent, task: r.task, engine: r.engine, state: r.state, started_at: iso(r.at), ended_at: iso(r.ended), session: r.session ?? null });
   /** A rejection the retry bound counts (tier.ts priorDecisions): the AI reviewer's judgment, not code's refusal (a moved head, too large). */
@@ -70,7 +70,9 @@ export function createWork({ db, records, generationsFile = "" }: { db: Database
       try { status = (db.prepare("SELECT status FROM wake_tasks WHERE task = ?").get(task) as { status: string | null } | undefined)?.status ?? null; } catch { /* the wake inbox is off */ }
       return {
         status, busy: jobs.some((j) => j.state === "running"), jobs,
-        records: recs.map((r) => ({ id: r.id, kind: r.kind, state: r.state, ok: r.outcome?.ok ?? null, args: r.args ?? null, outcome_text: r.outcome?.text ?? null, decided_at: r.decided_at ?? null, updated_at: r.updated_at, created_at: r.created_at })),
+        // An apply's diff is what its grader reads against the rubric (modules/grading evidence.ts applyEvidence): the card's
+        // details, sent for apply records only (every other kind's card is not a deliverable's evidence here).
+        records: recs.map((r) => ({ id: r.id, kind: r.kind, state: r.state, ok: r.outcome?.ok ?? null, args: r.args ?? null, outcome_text: r.outcome?.text ?? null, ...(r.kind === "kernel.apply" ? { details: r.card?.details ?? "" } : {}), decided_at: r.decided_at ?? null, updated_at: r.updated_at, created_at: r.created_at })),
       };
     },
     agent(id: string) {
@@ -127,7 +129,7 @@ export function createWork({ db, records, generationsFile = "" }: { db: Database
       const oldest = w.n ? rows("SELECT cause FROM wakes WHERE ((state = 'open' AND (until IS NULL OR until <= ?)) OR (state = 'claimed' AND job IS NULL AND until <= ?)) AND at = ? LIMIT 1", t, t, w.oldest)[0] : undefined;
       const waiting = { count: w.n as number, oldest_at: w.n ? iso(w.oldest) : null, oldest_cause: (oldest?.cause as string | undefined) ?? null };
       const last_started_at = iso(rows("SELECT MAX(at) AS at FROM jobs WHERE state != 'admitted'")[0]?.at);
-      return { running, recent, latest: [...latest].slice(0, 200).map(([task, state]) => ({ task, state })), queued, parked, failing, waiting, last_started_at };
+      return { running, capacity: capacity(), recent, latest: [...latest].slice(0, 200).map(([task, state]) => ({ task, state })), queued, parked, failing, waiting, last_started_at };
     },
     metrics(now = Date.now()) {
       const all = rows("SELECT * FROM jobs");

@@ -4,18 +4,20 @@ type Json = any;
 
 /** The UI Reviewer's design review: advisory in the named checks (the merge gate reads it on its own). */
 export const DESIGN_REVIEW_CHECK = "design-review";
+/** Code review's commit status (modules/code-review): advice only, so it never holds or fails a merge. */
+export const CODE_REVIEW_STATUS = "aidenhq/review";
 /** The aggregate check a repository's CI may end with (the product's ci.yml `ci-required`). */
 export const GATE_CHECK = "ci-required";
 
 /** One context's result: a check run's conclusion once completed, else PENDING; a status's state. */
 export const contextStatus = (n: Json): string | null | undefined => (n.__typename === "CheckRun" ? (n.status === "COMPLETED" ? n.conclusion : "PENDING") : n.state);
 
-/** The named checks in a rollup, the design review left out: { name, status, ok, pending, skipped? }. */
+/** The named checks in a rollup, the design review and code review left out: { name, status, ok, pending, skipped? }. */
 export function namedChecks(rollup: Json): { name: string; status: string | null | undefined; ok: boolean; pending: boolean; skipped?: true }[] {
   const pass = new Set(["SUCCESS", "NEUTRAL", "SKIPPED"]);
   return (rollup?.contexts?.nodes ?? [])
     .map((n: Json) => ({ name: n.name ?? n.context, status: contextStatus(n) }))
-    .filter((c: Json) => c.name && c.name !== DESIGN_REVIEW_CHECK)
+    .filter((c: Json) => c.name && c.name !== DESIGN_REVIEW_CHECK && c.name !== CODE_REVIEW_STATUS)
     .map((c: Json) => ({ ...c, ok: pass.has(c.status), pending: ["PENDING", "EXPECTED", "QUEUED", null, undefined].includes(c.status), ...(c.status === "SKIPPED" ? { skipped: true } : {}) }));
 }
 

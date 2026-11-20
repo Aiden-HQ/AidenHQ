@@ -11,8 +11,9 @@ one place per thing. Code: `services/board/web/src` (`AgentPage.tsx`, `AgentSett
 - **No second editor for a value** (caps are not editable on two pages), no instant save that bypasses review, no pending
   value shown as if live, no owner text silently rewritten on its way into the repo, and no capped list presented as an
   agent's complete history.
-- **Every edit is an exact commit with no model in it,** filed as a kernel record and tiered by the existing rules
-  (`kernel/src/apply-tier.ts`); see [settings-changes.md](settings-changes.md). Module install, update, remove and adding
+- **Every edit is an exact commit with no model in it,** filed as a kernel record: saved in the owner's signed-in board
+  session it is his own approval, otherwise tiered by the existing rules (`kernel/src/apply-tier.ts`); see
+  [settings-changes.md](settings-changes.md). Module install, update, remove and adding
   a marketplace follow the lean-core rules: AI review always first, an owner tap when the change adds authority.
 - Board routes need a signed-in admin. Reuse the board's kit ([board-ui.md](board-ui.md)): no new visual language.
 - One pending change per field: while one is in flight its editor shows the stage and offers Cancel; the live value stays
@@ -87,9 +88,11 @@ defaults. **Changes:** pending and past changes, with reviewed revert.
 ## Typed changes
 
 The board validates a typed change (`POST /api/settings/change`, kinds in `services/board/src/settings-change.ts`), files
-it as the owner's task with no assignee and hands it to the kernel (`kernel/src/settings-change.ts`), which checks it
-again and has the instance repo's code host write exactly the files the kind allows (YAML through the `yaml` document API
-so comments survive, text verbatim) and file a `kernel.apply`. The board shows the stage from the record.
+it as the owner's task (held by him, off the board's columns) and hands it to the kernel (`kernel/src/settings-change.ts`)
+with his board session, which checks both again and has the instance repo's code host write exactly the files the kind
+allows (YAML through the `yaml` document API so comments survive, text verbatim) and file a `kernel.apply`, decided as his
+account. The board shows the stage from the record. The Tier column is what a change without a board session (the MCP's
+`change_settings`) gets.
 
 | Kind | Writes | Tier |
 |---|---|---|

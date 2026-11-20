@@ -11,7 +11,12 @@ const pick = (candidates, repos = ["acme/api"], extra = {}) => pickMember({ repo
 test("the scorer: repo match, continuity and load each move the pick; ties go to the least load, then the key", () => {
   assert.equal(pick([member("kai"), member("mina", { repos: ["acme/*"] })]).pick.key, "mina"); // repo match (3)
   assert.equal(pick([member("kai"), member("mina", { repos: ["other/*"] })]).pick.key, "kai"); // no match: the key decides
-  assert.equal(pick([member("kai"), member("mina", { done: 2 })]).pick.key, "mina"); // continuity is a count
+  assert.equal(pick([member("kai"), member("mina", { done: 2 })]).pick.key, "mina"); // continuity: finished something there
+  // Continuity counts once, so load decides between familiar members: the busy veteran (34 done, 1 running, 15 queued) loses
+  // to an idle member with 2 done (the 2026-11-20 snapshot that held 30 tasks on one slot).
+  const live = pick([member("priya", { done: 34, running: 1, queued: 15 }), member("lena", { done: 22, running: 1, queued: 4 }), member("amara", { done: 2 })]);
+  assert.equal(live.pick.key, "amara");
+  assert.deepEqual(live.scored.map((x) => [x.key, x.continuity]), [["amara", 1], ["lena", 1], ["priya", 1]]);
   assert.equal(pick([member("kai", { running: 1 }), member("mina")]).pick.key, "mina"); // load
   assert.equal(pick([member("kai", { queued: 2, maxParallel: 2 }), member("mina", { running: 1 })]).pick.key, "kai"); // both load 1: the key
   // A tie on score with different load (repo match offsets load): the least loaded wins.
@@ -151,4 +156,43 @@ test("a task's repos are only those the code hosts have: a branch, a path or a l
   w.issue("t1", { title: "Fix fix/monitoring-stack-bumps", description: "In ACME/api, see modules/monitoring and modules/marketplace.json; bump x/net and klauspost/compress." });
   await w.wakes.event({ issueId: "t1" });
   assert.deepEqual(JSON.parse(w.db.prepare("SELECT repos FROM team_routes WHERE task = 't1'").get().repos), ["acme/api"]);
+});
+
+test("a never-started task on a busy member moves to a free one when its member's scan sees it; once, recorded", async () => {
+  const w = world();
+  w.issue("t1");
+  await w.wakes.event({ issueId: "t1" });
+  assert.equal(w.issues.t1.assigneeAgentId, KAI); // both idle: the key
+  w.issue("other", { assigneeAgentId: KAI, status: "in_progress" });
+  w.db.prepare("INSERT INTO jobs VALUES ('j-other', 'other', ?, 'running', 1)").run(KAI);
+  w.tick();
+  await w.wakes.poll();
+  assert.equal(w.issues.t1.assigneeAgentId, MINA);
+  assert.match(w.comments.t1.at(-1).body, /^\*\*Re-routed to mina\*\* \(team engineering\): it never started and kai is busy\./);
+  assert.equal(w.db.prepare("SELECT member FROM team_routes WHERE task = 't1'").get().member, MINA);
+  assert.deepEqual(w.wakeRows().filter((r) => r.includes("issue")), [`${KAI} issue dropped`, `${MINA} issue open`]);
+  const patches = w.patches.length;
+  await w.wakes.poll();
+  assert.equal(w.patches.length, patches); // mina's own scan leaves it there
+});
+
+test("a task that ran a job, a named task and a placement that still scores best stay with their busy member", async () => {
+  const w = world();
+  w.issue("ran"); w.issue("t2");
+  await w.wakes.event({ issueId: "ran" });
+  assert.equal(w.issues.ran.assigneeAgentId, KAI);
+  w.db.prepare("INSERT INTO jobs VALUES ('j-ran', 'ran', ?, 'done', 1)").run(KAI);
+  w.issue("named", { assigneeAgentId: KAI });
+  w.issue("other", { assigneeAgentId: KAI, status: "in_progress" });
+  w.db.prepare("INSERT INTO jobs VALUES ('j-other', 'other', ?, 'running', 1)").run(KAI);
+  // A placement onto the busy member (its repo match outweighs its load) settles, and stays on the next poll.
+  w.grants[KAI].repos = ["acme/*"];
+  w.grants[TEAM].team.weights = { repo: 10 };
+  await w.wakes.event({ issueId: "t2" });
+  assert.equal(w.issues.t2.assigneeAgentId, KAI);
+  const patches = w.patches.length;
+  w.tick();
+  await w.wakes.poll();
+  assert.deepEqual(["ran", "named", "t2"].map((t) => w.issues[t].assigneeAgentId), [KAI, KAI, KAI]);
+  assert.equal(w.patches.length, patches);
 });

@@ -171,8 +171,11 @@ teams:
 The template's key (`engineer`) becomes the team record: it keeps its roles, routines and description, so delegation, routines
 and role-filed tasks keep one address, and it never runs. Each member is a real agent (its own record, grants, memory and
 sessions). The kernel's wake path gives every task on the team record to one member (`kernel/src/wakes.ts`): a member named in
-the assignment keeps it; otherwise the best score of repo match, continuity (tasks it finished in that repo in the last 7
-days) and load, ties to the least loaded and then the key, even when that member is busy. A decision record goes on the task.
+the assignment keeps it; otherwise the best score of repo match, continuity (1 if it finished a task in that repo in the last
+7 days: familiarity, not volume) and load, ties to the least loaded and then the key, even when that member is busy. A task
+the router placed that never ran a job, on a member running its `max_parallel` while another member has a free slot, is
+scored again at that member's next scan and moves if another member scores higher; a task that ran a job, or one named
+straight to a member, stays. A decision record goes on the task (each move too).
 With no eligible member (all paused, or the team's day cap used up) the task is blocked and whoever delegated it is told. A
 member with open tasks can't be removed: drain or hand them off first. Every agent commits as `<key>@<instance_name>.aidenhq.ai`.
 The board's Agents page draws the team as a parent row (running of its members' parallel slots) over its members, and its
@@ -340,7 +343,7 @@ Copy `.env.example` to `.env`. It holds host paths and endpoints, never agent-ed
   it trusts `X-Forwarded-Proto` from whoever reaches it. Only a LAN-only VM in `local` exposure with
   `AIDENHQ_PUBLIC_IF=none` may publish it on the LAN; `scripts/verify-security.sh` fails it anywhere else. An https
   `BOARD_LAN_URL` is where a one-click vendor sign-in (board.signins: Connect's secondary link, and every `https_only` one)
-  returns, from a request that reached the board by that name; the default returns to `http://localhost:3121` and is pasted back; a module contributing board.signins may pass it to its service (`${BOARD_LAN_URL:-}`) as its allowed redirect.
+  returns, from a request that reached the board by that name; the default returns to `http://localhost:3121` and is pasted back; a module contributing board.signins may pass it to its service (`${BOARD_LAN_URL:-}`) as its allowed redirect, and one contributing board.setup_flows (a chat message links back to the board) may pass it so an in-app `#/route` link resolves to the board's own address.
 - Host firewall: `AIDENHQ_PUBLIC_IF`, read by `ops/vm/setup.sh` with `settings.exposure` (default: the default-route interface; see
   [operations/migrate-host.md](operations/migrate-host.md#2-the-new-host-what-reaches-it-from-the-internet)).
 - `PAPERCLIP_DISABLE_SIGN_UP`, `TELEGRAM_TASK_URL`, `COMPOSE_FILE`.

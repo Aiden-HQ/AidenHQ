@@ -22,9 +22,18 @@ export interface PaperclipOptions {
   fetcher?: typeof fetch;
 }
 
-/** Paperclip's `error` field, else the start of the body. */
+/** Paperclip's `error` field — a string, or the kernel's `{ code, type, message }` — else the start of the body. */
 function errorMessage(text: string): string {
-  try { return (JSON.parse(text) as { error?: string }).error ?? text.slice(0, 300); } catch { return text.slice(0, 300); }
+  try {
+    const error = (JSON.parse(text) as { error?: unknown }).error;
+    if (typeof error === "string" && error) return error;
+    if (error && typeof error === "object") {
+      const { type, message } = error as { type?: unknown; message?: unknown };
+      if (typeof message === "string" && message) return typeof type === "string" && type ? `${type}: ${message}` : message;
+      return JSON.stringify(error).slice(0, 300);
+    }
+  } catch { /* not JSON */ }
+  return text.slice(0, 300);
 }
 
 export function paperclipClient({ url, token, lane, headers, timeoutMs = 20_000, fetcher = fetch }: PaperclipOptions) {

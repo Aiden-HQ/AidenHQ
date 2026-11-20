@@ -148,6 +148,57 @@ function heldKernel(issue, calls) {
   return { kernel, release: async () => void (await kernel("POST", `/v1/checks/${issue.id}`, { verdict: "release" })) };
 }
 
+test("a kernel.apply record on the task reaches the grader as its apply deliverable: action normalised, diff and log carried", async (t) => {
+  // The model answers for the apply's rubric, and the prompt code hands it is what this test reads: the trusted facts and
+  // APPLY_CHANGE/APPLY_OUTCOME, never "no apply filed yet" and never an object printed into a fact.
+  const prompts = [];
+  const gateway = http.createServer(async (req, res) => {
+    let body = "";
+    for await (const c of req) body += c;
+    prompts.push(JSON.parse(body).messages.at(-1).content);
+    res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify(answer(["yes", "yes", "yes"])) } }] }));
+  }).listen(0);
+  t.after(() => gateway.close());
+  const issue = { id: "t4", identifier: "WOR-4", title: "apply", description: "Land it.", status: "in_review", companyId: "co", assigneeAgentId: "eng", createdByAgentId: "cos", parentId: null };
+  const calls = { resolve: [], wake: [] };
+  const DIFF = "diff --git a/instance.yaml b/instance.yaml\n+product: bbbb\n";
+  const record = {
+    id: "k-apply1", kind: "kernel.apply", state: "done", ok: true,
+    args: { repo: "acme/aidenhq-instance", branch: "fleet/handbook", sha: "c".repeat(40), files: ["instance.yaml"] },
+    outcome_text: "apply 305: landed on main\ngeneration 305 is healthy\n", details: DIFF,
+    decided_at: "2026-11-20T15:59:00Z", updated_at: "2026-11-20T16:00:00Z", created_at: "2026-11-20T15:58:00Z",
+  };
+  const kernel = async (method, path, body) => {
+    if (path === `/v1/cp/read/api/issues/${issue.id}`) return issue;
+    if (path.endsWith("/comments")) return [];
+    if (path.endsWith("/attachments")) return [];
+    if (path === "/v1/cp/read/api/agents/eng") return { id: "eng", name: "Dana" };
+    if (path.startsWith("/v1/cp/read/api/companies/co/issues")) return [];
+    if (path === `/v1/work?task=${issue.id}`) return { busy: false, jobs: [{ id: "j", state: "done", engine: "codex", ended_at: new Date(Date.now() - 60_000).toISOString() }], records: [record] };
+    if (path === "/v1/work/grader-token") return { token: "tok" };
+    if (path === `/v1/checks/${issue.id}`) return calls.resolve.push(body), (issue.status = body.verdict === "ok" ? "done" : "todo"), {};
+    if (path === "/v1/wakes") return calls.wake.push(body), { posted: true };
+    throw new Error(`unexpected ${method} ${path}`);
+  };
+  const db = new DatabaseSync(":memory:");
+  const { runner, grades } = createGrading({ db, kernel: { issue: async () => issue, settings: async () => ({}), release: async () => {} }, keys: { check: "c", runner: "r", board: "b" } });
+  grades.file(issue.id, ["the apply's record ended applied, and its log shows no error", "the diff makes the change asked for", "the diff changes nothing else"], { kind: "apply", ref: "" });
+  const loop = createKernelGradeLoop({ db, runner, due: () => ({ grades: grades.due(), resubmitted: [] }), kernel, kernelBytes: async () => Buffer.alloc(0), apps: async () => ({}), gatewayUrl: `http://127.0.0.1:${gateway.address().port}`, log: () => {} });
+  completionGate(grades, issue.id, "finish_turn"); // the held-and-waiting row the loop picks up (as in the W7 test)
+  const realNow = Date.now;
+  Date.now = () => realNow() + 10_000;
+  t.after(() => { Date.now = realNow; });
+  await loop.runGrades();
+  assert.deepEqual(calls.resolve.map((c) => c.verdict), ["ok"], "the applied card is graded, not woken as 'no apply filed yet'");
+  assert.equal(calls.wake.length, 0);
+  const prompt = prompts[0];
+  assert.match(prompt, /apply k-apply1: used, apply 305: landed on main/, "the fact prints the outcome text");
+  assert.doesNotMatch(prompt, /no apply filed yet|\[object Object\]/);
+  assert.match(prompt, /the diff it carried is in APPLY_CHANGE; its log is in APPLY_OUTCOME/);
+  assert.ok(prompt.includes(`<<<APPLY_CHANGE\n${DIFF}`), "the card's diff is the APPLY_CHANGE block");
+  assert.ok(prompt.includes("<<<APPLY_OUTCOME\napply 305: landed on main"));
+});
+
 test("a model with no route grades with the next one, and the hold lasts until the verdict's resolve", async (t) => {
   const asked = [];
   const gateway = http.createServer(async (req, res) => {

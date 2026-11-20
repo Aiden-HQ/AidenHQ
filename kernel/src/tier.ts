@@ -40,17 +40,21 @@ export const capText = (c: Cap) => (c.by === "autonomy" ? `autonomy is ${c.value
  * Tier 0 to the owner's tap (rule autonomy-off or routine-autonomy) and makes Tier 1 review-first (the reviewer's reject is
  * final, its approve goes on to the owner); a routine's tier0 does the latter only. The instance's tier0 isn't a cap here:
  * it shadows the reviewer's verdict at review. `cap`: the cap that changed the tier, for the record.
+ * `ownerSave`: the owner's own settings change from a signed-in board session (settings-change.ts, verified by the kernel):
+ * his Save is his approval, so the record is his (Tier 2, no reviewer) and the kernel decides it as his account at filing.
  */
-export function computeTier({ floor, instanceFloor = 0, raise, checkRaises = [], priorVeto = false, reviewFirst = "owner", autonomy, routine, panel = false, uncapped = false }: {
+export function computeTier({ floor, instanceFloor = 0, raise, checkRaises = [], priorVeto = false, reviewFirst = "owner", autonomy, routine, panel = false, uncapped = false, ownerSave = false }: {
   floor: Tier; instanceFloor?: Tier; raise?: Raise; checkRaises?: Raise[]; priorVeto?: boolean; reviewFirst?: ReviewFirst | null; autonomy?: Autonomy; routine?: RoutineCap; panel?: boolean;
   /** The release updater's own filing (records.ts isUpdater): it acts on an owner setting's standing authority (auto_update), so the caps don't hold it. Every other requester is capped. */
   uncapped?: boolean;
+  ownerSave?: boolean;
 }): { tier: Tier; merit: Tier; panel: boolean; reviewFirst: ReviewFirst | null; cap?: Cap; rule?: string; state: "claimed" | "review" | "owner" } {
   const full = autonomy === "full" && (!routine || routine.cap === "full");
   if (uncapped) { autonomy = undefined; routine = undefined; }
   const raises = [...(raise ? [raise] : []), ...checkRaises];
   const relaxed = full && raises.some((r) => r.tier === 2 && !r.ownerOnly);
   const merit = Math.max(floor, instanceFloor, ...raises.map((r) => (full && r.tier === 2 && !r.ownerOnly ? 1 : r.tier)), priorVeto ? 2 : 0) as Tier;
+  if (ownerSave) return { tier: 2, merit, panel: false, reviewFirst: null, state: "owner" };
   // The caps that hold, the routine's first (its label names it when both do).
   const caps = [routine && routine.cap !== "full" ? { by: "routine", value: routine.cap, ...(routine.routine ? { routine: routine.routine } : {}) } : undefined, autonomy === "off" ? { by: "autonomy", value: "off" } : undefined].filter(Boolean) as Cap[];
   const off = caps.find((c) => c.value === "off");

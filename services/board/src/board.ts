@@ -13,6 +13,8 @@ export const NOTICE_MARKER = "<!-- aidenhq-notice -->";
 /** Whether a comment carries one of our markers. */
 export const hasMarker = (body: string, marker: string) => body.includes(marker);
 export const BRIEF_LABEL = "daily-brief";
+/** The label on the owner's settings-change tasks (settings-change.ts): the Settings pages show them, the board's columns don't. */
+export const SETTINGS_LABEL = "settings-change";
 
 export type Engine = "codex" | "codex-openrouter" | "claude" | "openrouter";
 const ENGINES: Engine[] = ["codex", "codex-openrouter", "claude", "openrouter"];
@@ -130,6 +132,8 @@ export function toCard(issue: Issue, list: Assignee[], seenAt: string): Card {
 }
 
 const isBrief = (i: Issue) => (i.labels ?? []).some((l) => l.name === BRIEF_LABEL);
+/** The owner's settings task as the board files it (made by no agent, held by none): a label alone hides nothing. */
+const isSettings = (i: Issue) => !i.assigneeAgentId && !i.createdByAgentId && (i.labels ?? []).some((l) => l.name === SETTINGS_LABEL);
 
 export interface BoardInput {
   open: Issue[];
@@ -172,7 +176,7 @@ export function buildBoard(input: BoardInput): Board {
     return card;
   };
   for (const issue of unique.values()) {
-    if (isBrief(issue) || folded.has(issue.id)) continue;
+    if (isBrief(issue) || isSettings(issue) || folded.has(issue.id)) continue;
     const card = withCrew(toCard(issue, input.assignees, seen(issue.id)), issue);
     const rule = input.recurring?.get(issue.id);
     if (rule) {
@@ -189,7 +193,7 @@ export function buildBoard(input: BoardInput): Board {
   recurring.sort((a, b) => (a.recurring!.nextRun ?? "~").localeCompare(b.recurring!.nextRun ?? "~"));
   for (const b of BUCKETS) buckets[b].sort((x, y) => ranked.get(x.id)! - ranked.get(y.id)! || y.createdAt.localeCompare(x.createdAt));
   const brief = briefs[0];
-  const done = [...new Map(input.closed.filter((i) => !isBrief(i) && !folded.has(i.id) && !unique.has(i.id)).map((i) => [i.id, i])).values()]
+  const done = [...new Map(input.closed.filter((i) => !isBrief(i) && !isSettings(i) && !folded.has(i.id) && !unique.has(i.id)).map((i) => [i.id, i])).values()]
     .sort((a, b) => closedAt(b).localeCompare(closedAt(a)))
     .map((i) => withCrew(toCard(i, input.assignees, seen(i.id)), i));
   return {
@@ -239,14 +243,19 @@ export function commentView(c: Comment, me: string, agents: Agent[]): CommentVie
   return { id: c.id, body: displayText(c.body), author, createdAt: c.createdAt };
 }
 
-/** Who reads a reply on this task (shown under the reply box). */
-export function replyTarget(issue: Issue, list: Assignee[]): string {
+/**
+ * Who reads a reply on this task (shown under the reply box). `agentsOnTask` says whether the owner's task has
+ * agents working in parts of it: with no assigned agent, a message either way stays on the task until one is named.
+ */
+export function replyTarget(issue: Issue, list: Assignee[], agentsOnTask = false): string {
   const labels = new Set((issue.labels ?? []).map((l) => l.name));
   const a = list.find((x) => x.key === issue.assigneeAgentId);
-  if (a?.kind === "engineer" || labels.has("engineer")) return "The Engineer reads replies here and continues the coding job.";
+  if (a?.kind === "engineer") return "The Engineer reads replies here and continues the coding job.";
   if (labels.has("needs-review")) return "AidenHQ applies review replies here (pick N, ignore).";
   if (a?.kind === "assistant") return "The Researcher is working on this and reads replies.";
-  return "The Researcher picks up replies here after about 90 seconds.";
+  if (a) return `${a.name} reads replies here.`;
+  if (agentsOnTask) return "This message stays on the task; @name sends it to an agent.";
+  return "No agent is assigned; this message stays on the task. @name brings an agent in.";
 }
 
 // ------------------------------------------------------------------ edits

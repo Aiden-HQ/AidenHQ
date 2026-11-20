@@ -7,6 +7,7 @@ import { deciderOf, foldsInChat, outcomeOf } from "./conversation";
 import { Explain } from "./Explain";
 import { CardListSkeleton, SkeletonLines, Updating } from "./Skeleton";
 import type { Approval, ShownState } from "./types";
+import { StatusDot } from "./ui/StatusDot";
 import { TaskState } from "./ui/TaskState";
 import { ago } from "./util";
 
@@ -23,6 +24,8 @@ const OUTCOME: Record<Approval["state"], string> = {
 const TIER_WORDS = ["Tier 0: ran at once", "Tier 1: the AI reviewer decides", "Tier 2: yours to decide"];
 /** Waiting for the owner: a pending Tier 2 card. A pending Tier 1 card is with the AI reviewer. */
 const forOwner = (a: Approval) => a.state === "pending" && a.tier === 2;
+/** A card the AI reviewer has not decided yet (Tier 1): in progress, not waiting on the owner. */
+const withAI = (a: Approval) => a.state === "pending" && !forOwner(a);
 
 /**
  * One approval card: one sentence, what it reads and changes, the cost, Details; the outcome stays here. A pending card is
@@ -194,13 +197,14 @@ export function ApprovalsView({ open, onSignIn }: { open: (identifier: string) =
   const all = cards ?? [];
   // Only Tier 2 waits for you; Tier 1 (with the reviewer) and Tier 0 runs (audit rows) are history lines.
   const pending = all.filter(forOwner);
+  const reviewing = all.filter(withAI);
   // Everything else waiting on you (the server's needs-you: work handed to you); a task with
   // a Tier 2 card is already one of the cards above.
   const others = (data?.items ?? []).filter(onYouBeyondCards);
   const waitingCount = pending.length + others.length;
   const f: Filter = filter ?? (waitingCount ? "pending" : "all");
   const calls = all.filter(toolCall).length;
-  const past = groups(all.filter((a) => !forOwner(a) && (showCalls || !toolCall(a))));
+  const past = groups(all.filter((a) => !forOwner(a) && !withAI(a) && (showCalls || !toolCall(a))));
   const history = past.filter((g) => inFilter(g[0]!, f));
   const count = (k: Filter) => (k === "pending" ? waitingCount : k === "all" ? waitingCount + past.length : past.filter((g) => inFilter(g[0]!, k)).length);
   return (
@@ -269,6 +273,28 @@ export function ApprovalsView({ open, onSignIn }: { open: (identifier: string) =
           {(f === "pending" || f === "all") && !data && !needsQ.error && (
             <section aria-label="Also waiting on you">
               <SkeletonLines lines={2} />
+            </section>
+          )}
+          {(f === "pending" || f === "all") && reviewing.length > 0 && (
+            <section>
+              <header className="section-head">
+                <h2>AI reviewing</h2>
+                <span className="count">{reviewing.length}</span>
+              </header>
+              <ul className="history">
+                {reviewing.map((a) => (
+                  <li key={a.id}>
+                    <button className="history-row" onClick={() => open(a.identifier)} title={`${a.sentence}\n${a.target}`}>
+                      <span className="history-state wide">
+                        <StatusDot tone="working">AI reviewing</StatusDot>
+                      </span>
+                      <span className="history-who">{a.requestedBy}</span>
+                      <span className="history-what">{a.sentence}</span>
+                      <span className="history-target">{a.identifier}</span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
             </section>
           )}
           {f === "pending" && data && !pending.length && !others.length && <p className="empty-state">You're all caught up. New requests from your agents show here and in Telegram.</p>}

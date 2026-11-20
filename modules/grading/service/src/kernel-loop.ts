@@ -90,6 +90,9 @@ export function createKernelGradeLoop({ db, runner, due, kernel, kernelBytes, ap
   const recordsOn = async (issue: Json) => ((await work(issue.id)).records ?? []).map((r: Json) => ({
     id: r.id, action: r.kind, state: r.state === "review" || r.state === "owner" ? "pending" : r.state === "claimed" || r.state === "done" || r.state === "failed" ? "used" : r.state,
     outcome: r.state === "done" || r.state === "failed" ? { ok: r.ok } : undefined, usedAt: r.updated_at, decidedAt: r.decided_at, createdAt: r.created_at, args: r.args ?? {},
+    // What an apply's card carries beyond its args (evidence.ts applyEvidence): the committed diff (APPLY_CHANGE) and the
+    // apply's own log tail (APPLY_OUTCOME). The kernel's task read sends the diff for apply records only.
+    details: r.details ?? "", outcomeText: r.outcome_text ?? "",
   }));
   // The task's PRs, from the code host's records on it (a task that handed its code to an Engineer has those of the tasks its agent
   // delegated under it): each `pr` write's outcome lists its PR links in the order of its branches, which is how a number is tied

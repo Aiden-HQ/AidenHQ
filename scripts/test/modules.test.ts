@@ -66,6 +66,22 @@ test("grants resolve to tool lists: read, write, or a list", () => {
   assert.deepEqual(x.roles, []);
   assert.equal(x.connections, undefined);
 });
+// `upstream: off` is one rule for every grant path: an agent's own list, a shorthand, and a module's `default_grants:`. The
+// default-grant loop runs after the connection loop, so without the same gate it put back the upstream tool that the opt-out
+// had stripped (WOR-6794).
+test("upstream: off strips an upstream tool a default grant names too, and a connection's other tools stay", () => {
+  const grants = (settings) => Object.fromEntries(Object.entries(compile(mods, finst(["up"], { ...base, ...settings })).paperclip.agents).map(([k, a]) => [k, a.enabled_tools]));
+  const off = grants({ upstream: "off" });
+  for (const [key, tools] of Object.entries(off)) for (const t of Object.values(tools)) assert.ok(!["up_status", "up_file"].includes(t), `${key} still has an upstream tool`);
+  assert.deepEqual(off.user, { upconn: ["up_get"] }, "the agent's own grant loses the upstream read, and keeps the rest");
+  assert.deepEqual(off.boss, { tasks: ["t"] }, "a default grant that names only an upstream tool adds no connection at all");
+  // The same fixture with the setting on: the default grant and the agent's own list both resolve, so the assertion above
+  // is about the setting, not about a fixture that never granted them.
+  const on = grants({ upstream: "issues" });
+  assert.deepEqual(on.boss, { tasks: ["t"], upconn: ["up_file"] });
+  assert.deepEqual(on.user, { upconn: ["up_get", "up_file"] });
+  assert.deepEqual(on.status, { upconn: ["up_get", "up_status", "up_file"] });
+});
 test("an optional grant (name?) is dropped when its module is off, kept when on", () => {
   assert.equal(compile(mods, finst(["a"])).paperclip.agents.x.enabled_tools.glean, undefined);
   assert.deepEqual(compile(mods, finst(["a", "glean"])).paperclip.agents.x.enabled_tools.glean, ["search"]);
@@ -231,6 +247,26 @@ test("the intake agents' Slack read grant has no draft tool", () => {
 // The real product: nothing needs Slack; the owner channel is its own module.
 const product = join(here, "../..");
 const owner = { timezone: "Europe/London", owner_name: "Sam", owner_email: "o@x" };
+test("upstream: off leaves every agent without an upstream tool; with issues only the chief of staff resolves them", () => {
+  const agents = (upstream) => compile(product, pinst([], { ...owner, upstream })).paperclip.agents;
+  const granted = (r, tool) => Object.entries(r).filter(([, a]) => (a.enabled_tools.github ?? []).includes(tool)).map(([k]) => k).sort();
+  // What a call resolves to: github-mcp refuses a product issue to a caller without the product-issues role whatever its grant
+  // says (modules/github/connections/github-mcp/src/projects.ts productTarget), and the chief of staff is that role's holder
+  // (modules/chief-of-staff/module.yaml); the Fleet Steward holds it too, for the digest's live-fix check (modules/fleet-steward/module.yaml).
+  const resolves = (r, tool) => granted(r, tool).filter((key) => r[key].roles.includes("product-issues"));
+  const on = agents("issues");
+  assert.deepEqual(on["chief-of-staff"].enabled_tools.github.filter((t) => t.startsWith("github_app_issue")), ["github_app_issue", "github_app_issue_status"]);
+  // Filing is the destructive write no shorthand reaches, so no other agent even holds it.
+  assert.deepEqual(granted(on, "github_app_issue"), ["chief-of-staff"]);
+  // The status read is a plain read `github: read` also reaches; every other holder lacks the role, so only the chief of staff
+  // files and, with the Fleet Steward, reads status.
+  assert.deepEqual(resolves(on, "github_app_issue"), ["chief-of-staff"]);
+  assert.deepEqual(resolves(on, "github_app_issue_status"), ["chief-of-staff", "fleet-steward"]);
+  // `off` strips both from every agent however they were granted: an own list, a read shorthand, a default grant.
+  const off = agents("off");
+  for (const tool of ["github_app_issue", "github_app_issue_status"]) assert.deepEqual(granted(off, tool), [], tool);
+});
+
 test("an instance written before the fleet-steward merge (coach, fleet-ops, librarian; no dispatch or owner-channel) compiles as it stands", () => {
   const old = BUNDLE.filter((n) => !["fleet-steward", "dispatch", "owner-channel"].includes(n));
   const r = compile(product, inst([...old, "coach", "fleet-ops", "librarian"], { product_repo: "acme/aidenhq", ...owner }));

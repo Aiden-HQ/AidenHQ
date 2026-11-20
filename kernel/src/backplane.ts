@@ -10,6 +10,8 @@
 //   POST /v1/writes            (run, module, or job token naming the kind) request a write (writes.ts); GET /v1/writes/:id its
 //                              record (own only; the board: any)
 //   POST /v1/writes/:id/outcome (the kind's executor module) the outcome of an execute
+//   POST /v1/merges            (a code host module, for its own kind) {task, repo, number, head, branch}: a green PR's merge, filed
+//                              as the agent whose approved PR record on the task pushed that head (writes.fileOwnMerge), or {skip}
 //   GET  /v1/writes            (the board's key) records by state or task (`tier0=1`: Tier 0 runs too)
 //   GET  /v1/writes/:id/chain  (the board's key) what the record's task asks, as the AI reviewer reads it (review-loop.ts requestChain)
 //   GET  /v1/channel/cards, POST /v1/channel/{decide,owner-message,stop,thread}  (a speaks-as-owner channel's token) cards
@@ -76,7 +78,7 @@
 //                              branch; every branch on this server), which the box clones, or fetches into its clone, itself
 //   GET  /v1/advisories        (the board's key) the marketplace advisories open against installed modules (advisories.ts)
 //   GET  /v1/connections/health (the board's key) every connection's /healthz as the kernel reaches it -> {probes: {name: {ok, status?, state?, detail?, channels?, checkedAt}}} (health.ts)
-//   POST /v1/auth/:op, /v1/auth/mcp/:op, /v1/owner/decide, /v1/accounts/:op, /v1/apps/:op, /v1/operator/:op  the accounts' routes (auth-api.ts): module UI
+//   POST /v1/auth/:op, /v1/auth/mcp/:op, /v1/owner/{decide,update}, /v1/accounts/:op, /v1/apps/:op, /v1/operator/:op  the accounts' routes (auth-api.ts): module UI
 //                              sessions and account admin (the board), in-app requests (apps-platform), setup links (operator)
 //   POST /v1/health/probe      (the host's health_probe_key, x-health-key) {probe}: one of the modules' declared health probes (health.ts), called as the
 //                              agent granted it -> {ok, ms, error?}, never the tool's answer; scripts/healthcheck.sh's reads
@@ -137,6 +139,7 @@ export const ROUTES = [
   { method: "GET", path: "/v1/writes/:id", auth: "bearer" },
   { method: "GET", path: "/v1/writes/:id/chain", auth: "board" },
   { method: "POST", path: "/v1/writes/:id/outcome", auth: "module" },
+  { method: "POST", path: "/v1/merges", auth: "module" },
   { method: "GET", path: "/v1/channel/cards", auth: "module" },
   { method: "POST", path: "/v1/channel/decide", auth: "module" },
   { method: "POST", path: "/v1/channel/owner-message", auth: "module" },
@@ -198,6 +201,7 @@ export const ROUTES = [
   { method: "POST", path: "/v1/auth/:op", auth: "board" },
   { method: "POST", path: "/v1/auth/mcp/:op", auth: "board" },
   { method: "POST", path: "/v1/owner/decide", auth: "board+mcp" },
+  { method: "POST", path: "/v1/owner/update", auth: "board+mcp" },
   { method: "POST", path: "/v1/accounts/:op", auth: "board+session" },
   { method: "POST", path: "/v1/apps/:op", auth: "module" },
   { method: "POST", path: "/v1/operator/:op", auth: "operator-key" },
@@ -323,7 +327,7 @@ export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boar
   /** The owner's typed settings change on their settings task (settings-change.ts). */
   /** A module's own check of settings the board is about to file (module-validate.ts). */
   validate?: (module: string, input: { settings?: Record<string, unknown> }) => Promise<unknown>;
-  settingsChange?: ((task: unknown, changes: unknown) => Promise<unknown>) & { asAgent?: (requester: Requester, task: string, changes: unknown, module: string) => Promise<unknown> };
+  settingsChange?: ((task: unknown, changes: unknown, session?: unknown) => Promise<unknown>) & { asAgent?: (requester: Requester, task: string, changes: unknown, module: string) => Promise<unknown> };
   /** The routing learning loop (routing-tune.ts). */
   routing?: Routing;
   /** A module's board API (board-api.ts): the board's reads of a module service, through the kernel. */
@@ -549,8 +553,9 @@ export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boar
           if (!isBoard(req)) throw fail(401, "unauthorized", "the board's key is required");
           if (!settingsChange) throw fail(503, "unavailable", "settings changes are off");
           const b = await json(req, 2_000_000);
-          // The owner reads why: a refusal of the change itself, or the code host's or the planner's answer.
-          try { return send(res, 200, await settingsChange(b.task, b.changes)); } catch (e) { throw fail((e as { status?: number }).status ?? 502, "refused", String((e as Error).message).slice(0, 1000)); }
+          // The owner reads why: a refusal of the change itself, or the code host's or the planner's answer. `session`: the
+          // signed-in board session it was saved in (the kernel checks it; its account decides the record).
+          try { return send(res, 200, await settingsChange(b.task, b.changes, b.session)); } catch (e) { throw fail((e as { status?: number }).status ?? 502, "refused", String((e as Error).message).slice(0, 1000)); }
         }
       }
       if (hit?.path === "/v1/settings/agent") {
@@ -720,9 +725,9 @@ export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boar
           }
         }
       }
-      if (hit && /^\/v1\/((auth|accounts|apps|operator)\/:op|auth\/mcp\/:op|owner\/decide)$/.test(hit.path)) {
+      if (hit && /^\/v1\/((auth|accounts|apps|operator)\/:op|auth\/mcp\/:op|owner\/(decide|update))$/.test(hit.path)) {
         if (!accounts) throw fail(503, "unavailable", "accounts are off");
-        return await accounts(req, res, hit.path.split("/")[2]!, hit.path === "/v1/owner/decide" ? "decide" : hit.path === "/v1/auth/mcp/:op" ? `mcp/${m[0]}` : m[0]!);
+        return await accounts(req, res, hit.path.split("/")[2]!, hit.path.startsWith("/v1/owner/") ? hit.path.slice(10) : hit.path === "/v1/auth/mcp/:op" ? `mcp/${m[0]}` : m[0]!);
       }
       if (hit?.path === "/v1/flow") {
         if (!isBoard(req)) { const w = await moduleOf(req); if (!w.roles.includes("kernel.flow-read")) throw fail(403, "forbidden", `${w.module} may not read flow (role kernel.flow-read)`); }
@@ -845,6 +850,13 @@ export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boar
         const b = await json(req);
         if (!b || typeof b !== "object" || !reviews.verdict(m[0]!, bearer(req), b)) throw fail(404, "not_found", "no review waits for that token");
         return send(res, 200, { ok: true });
+      }
+      if (hit?.path === "/v1/merges") {
+        // A code host module's green PR: its task's merge, filed by the kernel as the agent whose approved PR pushed that head.
+        if (!writes) throw fail(503, "unavailable", "records are off");
+        const w = await moduleOf(req);
+        const r = await writes.fileOwnMerge(w.module!, await json(req));
+        return send(res, 200, r.filed ? { filed: { id: r.filed.id, tier: r.filed.tier, state: r.filed.state } } : { skip: r.skip });
       }
       if (hit && hit.path.startsWith("/v1/writes")) {
         if (!writes || !records) throw fail(503, "unavailable", "records are off");

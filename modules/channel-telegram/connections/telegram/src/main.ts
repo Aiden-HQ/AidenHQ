@@ -42,6 +42,7 @@ const cfg: TgConfig & { telegramToken: string; telegramChatId: string } = {
     return store.ownerChat() ?? "";
   },
   taskUrl: env("TELEGRAM_TASK_URL"),
+  boardUrl: env("BOARD_LAN_URL"),
 };
 const chat = makeChat(cfg, store, kernel, log);
 

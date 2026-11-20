@@ -1,10 +1,12 @@
 // The owner's typed settings changes (docs/design/settings-changes.md). The owner files one from a board page: the board
-// checks it, files it as the owner's own task (label settings-change, no assignee) and hands the typed change to the kernel
+// checks it, files it as the owner's own task (label settings-change, held by the owner) and hands the typed change to the kernel
 // (POST /v1/settings/change, the board's key). Here it is checked again (the gate: known kinds, schema-checked values, what
 // it names exists, no free-form YAML), written as exactly the files its kind allows (instance.yaml through the yaml Document
 // API, so comments stay; handbook texts verbatim) by the instance repo's code host (apply.ts hostApply: codehost-local for a
-// `local/…` instance, codehost-github otherwise), and filed as a kernel.apply on the task, which the kernel's planner tiers
-// on its merits like any instance change. No model writes the commit.
+// `local/…` instance, codehost-github otherwise), and filed as a kernel.apply on the task. A change saved in the owner's
+// signed-in board session (the board forwards its session token; the kernel checks it here) is his own approval: the record
+// is decided as his account at filing (via "save") and its outcome notice closes the task (writes.ts outcomeOf). Any other filing (the MCP's change_settings,
+// an agent's asAgent) is tiered on its merits by the kernel's planner like any instance change. No model writes the commit.
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { readFileSync } from "node:fs";
@@ -15,7 +17,7 @@ import type { Write } from "./apply.ts";
 import type { Requester } from "./records.ts";
 
 export class Refused extends Error { status = 422; }
-/** The label the board files a settings task with (services/board/src/settings-change.ts SETTINGS_LABEL). */
+/** The label the board files a settings task with (services/board/src/board.ts SETTINGS_LABEL). */
 const SETTINGS_LABEL = "settings-change";
 const refuse = (msg: string): never => {
   throw new Refused(msg);
@@ -343,8 +345,10 @@ export type SettingsDeps = {
   filed: (task: string) => boolean;
   /** The code host's write (apply.ts hostApply): the commit, on `branch`. */
   write: (w: Write) => Promise<{ sha: string }>;
-  /** Files the kernel.apply on the task (writes.fileKernel with SETTINGS, or the agent that asked). */
-  file: (args: { repo: string; branch: string; sha: string }, task: string, requester?: Requester) => Promise<{ id: string; tier: number; state: string }>;
+  /** Files the kernel.apply on the task (writes.fileKernel with SETTINGS, or the agent that asked); `owner`: decided as that account at filing. */
+  file: (args: { repo: string; branch: string; sha: string }, task: string, requester?: Requester, owner?: { account: string; via: string }) => Promise<{ id: string; tier: number; state: string }>;
+  /** The board session token's ready admin account (every admin is an owner), or undefined: an ended, unknown or non-admin session. */
+  sessionAccount: (token: string) => Promise<string | undefined>;
   log?: (msg: string, f?: Record<string, unknown>) => void;
 };
 
@@ -356,9 +360,12 @@ export type SettingsDeps = {
 export function createSettingsChanges(d: SettingsDeps) {
   const sources = (): Sources => ({ compiled: YAML.parse(readFileSync(join(d.configDir, "paperclip.yaml"), "utf8")) ?? {}, catalog: JSON.parse(readFileSync(join(d.configDir, "modules.json"), "utf8")) });
   const count = (changes: unknown) => ((Array.isArray(changes) && changes.length && changes.length <= 10) || refuse("changes: one to ten typed changes"));
-  async function apply(taskId: unknown, changes: unknown): Promise<{ record: string; tier: number; state: string; sha: string }> {
+  async function apply(taskId: unknown, changes: unknown, session?: unknown): Promise<{ record: string; tier: number; state: string; sha: string }> {
     if (typeof taskId !== "string" || !/^[0-9a-f-]{36}$/.test(taskId)) refuse("task is the settings task's id");
     count(changes);
+    // The owner's signed-in board session, checked here: its account decides the record. A session that doesn't check out is
+    // refused, never quietly put to the reviewer instead.
+    const account = session === undefined ? undefined : (typeof session === "string" && session.length <= 200 && (await d.sessionAccount(session))) || refuse("that board session has ended: sign in again");
     // The owner's own task, held by no agent: the board filed it a moment ago with the owner's key.
     const issue = (await d.task(taskId as string)) ?? refuse("no such task");
     const owner = await d.owner();
@@ -366,7 +373,7 @@ export function createSettingsChanges(d: SettingsDeps) {
     if (!(issue.labels ?? []).some((l: Dict) => l?.name === SETTINGS_LABEL)) refuse(`that task isn't a settings change (no ${SETTINGS_LABEL} label)`);
     if (["done", "cancelled"].includes(String(issue.status))) refuse("that task is closed");
     if (d.filed(taskId as string)) refuse("a settings change was already written on that task: file a new one");
-    return write(taskId as string, issue, changes as unknown[], sources());
+    return write(taskId as string, issue, changes as unknown[], sources(), undefined, account ? { account, via: "save" } : undefined);
   }
   async function asAgent(requester: Requester, taskId: string, changes: unknown, module: string): Promise<{ record: string; tier: number; state: string; sha: string }> {
     count(changes);
@@ -382,7 +389,7 @@ export function createSettingsChanges(d: SettingsDeps) {
     const issue = (await d.task(taskId)) ?? refuse("no such task");
     return write(taskId, issue, changes as unknown[], src, requester);
   }
-  async function write(taskId: string, issue: Dict, changes: unknown[], src: Sources, requester?: Requester) {
+  async function write(taskId: string, issue: Dict, changes: unknown[], src: Sources, requester?: Requester, owner?: { account: string; via: string }) {
     const repo = d.instanceRepo() ?? refuse("this kernel has no instance repo (AIDENHQ_INSTANCE_REPO)");
     for (const ch of changes) checkTyped(ch, src);
     const typed = changes as Change[];
@@ -407,7 +414,7 @@ export function createSettingsChanges(d: SettingsDeps) {
     const branch = requester ? `settings/${ident}-${Date.now().toString(36)}` : `settings/${ident}`;
     const by = requester ? `${requester.key || requester.name}'s` : "the owner's";
     const { sha } = await d.write({ repo, base, branch, files: Object.fromEntries(files), message: `settings: ${typed.map((c) => c.kind).join(", ")} (${issue.identifier ?? taskId})\n\nWritten by the kernel from ${by} typed change on ${issue.identifier ?? taskId}; no agent wrote it.` });
-    const r = await d.file({ repo, branch, sha }, taskId, requester);
+    const r = await d.file({ repo, branch, sha }, taskId, requester, owner);
     d.log?.("settings change filed", { task: issue.identifier, kinds: typed.map((c) => c.kind), record: r.id, tier: r.tier, ...(requester ? { agent: requester.key } : {}) });
     return { record: r.id, tier: r.tier, state: r.state, sha };
   }

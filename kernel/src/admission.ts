@@ -171,7 +171,7 @@ export function createAdmission({ db, grants, kinds, capacity, spend, mayDispatc
       const live = (db.prepare(`SELECT COUNT(*) AS n FROM jobs WHERE ${LIVE}`).get() as { n: number }).n;
       if (live >= capacity()) throw new JobError(429, "busy", `all ${capacity()} computers are taken; try again shortly`);
       const mine = (db.prepare(`SELECT COUNT(*) AS n FROM jobs WHERE agent = ? AND ${LIVE}`).get(agent) as { n: number }).n;
-      if (mine >= (g.max_parallel ?? 1)) throw new JobError(429, "busy", `agent ${agent} already runs ${mine} job(s), its max_parallel`);
+      if (mine >= (g.max_parallel ?? 1)) throw new JobError(429, "max-parallel", `agent ${agent} already runs ${mine} job(s), its max_parallel`);
       const over = spend(agent, task);
       if (over.length) throw new JobError(429, "over-cap", `the ${over.map((o) => o.scope).join(", ")} spend cap is used up`);
       const authority = freeze(g, w.cause, platformTask(t));
@@ -195,7 +195,7 @@ export function createAdmission({ db, grants, kinds, capacity, spend, mayDispatc
       job = { id, module, agent, task, identifier, profile: authority.profile, authority, prompt: b.prompt, ...(b.full_prompt ? { fullPrompt: b.full_prompt } : {}), fresh, wake: b.wake };
     } catch (e) {
       if (db.isTransaction) db.exec("ROLLBACK");
-      const reason = ({ busy: "capacity", "over-cap": "spend_cap" } as Record<string, string>)[(e as JobError).code];
+      const reason = ({ busy: "capacity", "max-parallel": "max_parallel", "over-cap": "spend_cap" } as Record<string, string>)[(e as JobError).code];
       if (reason) held(b.wake, task, agent, reason);
       throw e;
     }
