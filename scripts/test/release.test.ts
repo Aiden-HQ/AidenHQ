@@ -78,6 +78,10 @@ test("a product after the release's kernel on the kernel repo's main resolves wi
   const ci = { [k2]: [run("success")], [off]: [run("success")] };
   const runs = (sha) => ({ check_runs: ci[sha] ?? [] });
   const read = (product) => readRelease(pin(product), f(), kernelUrl, runs);
+  // Green is remembered per sha: a cached green commit resolves without asking GitHub.
+  const warm = f();
+  readRelease(pin(k2), warm, kernelUrl, runs);
+  assert.deepEqual(readRelease(pin(k2), warm, kernelUrl, () => { throw new Error("GitHub asked again"); }).images, {});
   assert.equal(Object.keys(read(k1).images).length, 1, "the release's own kernel: its images are pulled");
   assert.deepEqual(read(k2), { name: "2026.11", kernel: k1, images: {} }, "a later main commit with CI green: built from source");
   assert.throws(() => read(off), /isn't on the kernel repository's main/, "off main");

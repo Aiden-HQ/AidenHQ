@@ -96,6 +96,8 @@ Hard gates, from day one (no observe mode):
   Actions `ci-required` run on exactly that commit completed with success (`ciRefusal`, the one judge the updater uses too).
   A red, missing or running check refuses the apply, and so does a CI status that can't be read (GitHub's API down): nothing
   runs unverified. So another filer's forward pin on a release install (an agent's `kernel.apply`) gets the same checks.
+  A green result never changes, so it is remembered per commit (`~/.cache/aidenhq/sources/ci-green/<sha>`): one GitHub read
+  per commit, well under the API's unauthenticated 60 an hour. Red, missing, running and unreadable are never remembered.
 - **Authority.** Auto-updates on is the owner's standing authority, so the updater's verified move is the AI reviewer's; any other
   release move, and every release with it off, is the owner's tap below full autonomy, the AI panel's at full
   (docs/design/approvals.md, Autonomy). Update now is an admin's tap on the kernel's page. No agent can file a release. New

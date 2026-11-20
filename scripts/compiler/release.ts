@@ -8,8 +8,8 @@
 // A release name is display: only its sha resolves.
 //   node scripts/compiler/release.ts <instance.yaml>     the apply's check: prints the resolved release; exit 2 refused
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { hostFetch, OFFICIAL, onOfficialMain, repoAt, sourceOf, type Fetch, type Where } from "./sources.ts";
 
@@ -84,8 +84,9 @@ export function resolveRelease(file: unknown, instance: Dict, ahead?: (kernel: s
 
 /**
  * The release instance.yaml pins, read from the distro repo at exactly its sha, and resolved; null without one. A product
- * after the release's kernel is checked in the official kernel repository (`kernelUrl`) and on GitHub's check runs (`runs`);
- * a test passes local stand-ins. A CI status that can't be read refuses.
+ * after the release's kernel is checked in the official kernel repository (`kernelUrl`) and on GitHub's check runs (`runs`,
+ * read only for a commit not yet seen green: `<cacheDir>/ci-green/<sha>`); a test passes local stand-ins. A CI status that
+ * can't be read refuses.
  */
 export function readRelease(instance: Dict, f: Fetch, kernelUrl = KERNEL_URL, runs: (sha: string) => unknown = checkRuns): Resolved | null {
   const r = releaseOf(instance);
@@ -96,10 +97,16 @@ export function readRelease(instance: Dict, f: Fetch, kernelUrl = KERNEL_URL, ru
     const at: Where = { url: kernelUrl, path: "", sha: product, owned: true };
     if (!onOfficialMain(at, f)) throw new Error("it isn't on the kernel repository's main");
     try { execFileSync("git", ["--git-dir", repoAt(at, f), "merge-base", "--is-ancestor", kernel, product], { stdio: "ignore", timeout: 30_000 }); } catch { throw new Error("it doesn't descend from the release's kernel"); }
+    // A commit's green ci-required never changes: green is remembered per sha (one GitHub read per commit across applies, the
+    // planner and the authority diff), never red, missing, running or unreadable.
+    const green = join(f.cacheDir, "ci-green", product);
+    if (existsSync(green)) return;
     let answer: unknown;
     try { answer = runs(product); } catch (e) { throw new Error(`its CI status can't be read (${String((e as Error).message).split("\n")[0]!.slice(0, 200)})`); }
     const no = ciRefusal(answer, product);
     if (no) throw new Error(no);
+    mkdirSync(join(f.cacheDir, "ci-green"), { recursive: true });
+    writeFileSync(green, "");
   });
 }
 
