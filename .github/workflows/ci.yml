@@ -450,37 +450,61 @@ jobs:
 
   # The AI reviewer's exit test, for a change to its code (checks' `eval` step). Only a push to main or a same-repo PR: a
   # fork's run never gets the key. The key is in the eval step's env alone, in a job of its own on a fresh hosted runner,
-  # and the checkout keeps no credentials. A passing run is cached by the module's content (every file under
-  # modules/ai-reviewer, all the eval reads): the script's receipt (XDG_STATE_HOME) restored for the same content prints
-  # "already covered" and spends nothing. GitHub scopes a cache entry to the ref that wrote it (a PR's is read by that PR
-  # only, main's by every run), so a PR can skip only its own re-runs, never main's or another PR's.
+  # and the checkout keeps no credentials. It is judged as the kernel's check job judges it (module.yaml `judged:`): the
+  # harness (the eval script, its case padding and the pass rule: `judged.files`) and every existing case with its
+  # expectations come from the PR's base (main for a merge train), the reviewer's code, policy and added cases from the
+  # head, so a PR can't loosen its own test; a push to main runs its own tree. A passing run is cached by that laid-out
+  # content (every file under modules/ai-reviewer, all the eval reads): the script's receipt restored for the same content
+  # prints "already covered" and spends nothing. GitHub scopes a cache entry to the ref that wrote it (a PR's is read by
+  # that PR only, main's by every run), so a PR can skip only its own re-runs, never main's or another PR's.
   reviewer-eval:
     needs: checks
     if: needs.checks.outputs.eval == 'true' && (github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
+    env:
+      PR_BASE: ${{ github.event.pull_request.base.sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.x
+      - name: The harness and existing cases from the base
+        run: |
+          src="$PR_BASE"
+          case "$GITHUB_REF" in refs/heads/merge-train/*) src=$(git rev-parse origin/main) ;; refs/heads/main) src="" ;; esac
+          [ -n "$src" ] || { echo "a push to main: its own harness"; exit 0; }
+          m=modules/ai-reviewer
+          files=$(git show "$src:$m/module.yaml" | node -e '
+            const y = require("fs").readFileSync(0, "utf8"), f = /\bjudged:[\s\S]*?\bfiles:\s*\[([^\]]*)\]/.exec(y);
+            if (!f) process.exit(1);
+            console.log(f[1].split(",").map((x) => x.trim()).filter(Boolean).join("\n"));') \
+            || { echo "::error::the base's modules/ai-reviewer/module.yaml names no judged files"; exit 1; }
+          while IFS= read -r f; do
+            case "$f" in ""|/*|*..*) echo "::error::bad judged file: $f"; exit 1 ;; esac
+            git show "$src:$m/$f" > "$m/$f" && echo "from the base: $m/$f"
+          done <<< "$files"
+          git ls-tree --name-only "$src" -- "$m/test/reviewer-cases/" | while IFS= read -r c; do git show "$src:$c" > "$c"; done
+          echo "existing cases from the base: $(git ls-tree --name-only "$src" -- "$m/test/reviewer-cases/" | wc -l)"
       - id: receipt
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ${{ runner.temp }}/state
+          path: .eval-state
           key: reviewer-eval-${{ hashFiles('modules/ai-reviewer/**') }}
       - name: Reviewer eval
         working-directory: modules/ai-reviewer
         env:
           OPENROUTER_API_KEY: ${{ secrets.GRADUATE_OPENROUTER_KEY }}
-          XDG_STATE_HOME: ${{ runner.temp }}/state
+          XDG_STATE_HOME: ${{ github.workspace }}/.eval-state
         run: node --disable-warning=ExperimentalWarning scripts/reviewer-eval.ts
-      - if: steps.receipt.outputs.cache-hit != 'true'
+      # Only a script that records receipts leaves one (an older base's doesn't).
+      - if: steps.receipt.outputs.cache-hit != 'true' && hashFiles('.eval-state/**') != ''
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ${{ runner.temp }}/state
+          path: .eval-state
           key: reviewer-eval-${{ hashFiles('modules/ai-reviewer/**') }}
 
   # The one result a merge waits for: every job above passed (packages, board and image-scan jobs may
