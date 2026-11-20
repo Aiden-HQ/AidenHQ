@@ -94,8 +94,16 @@ function closedAt(x: Index, task: string, t: number) {
   return closed;
 }
 
-/** A wake not bound this long past its due time no longer counts as pending (above a job's two-hour timeout, so a busy fleet doesn't trip it). */
+/**
+ * A wake not bound this long past its due time, and never held by admission (`job.held`: queued behind the agent's
+ * max_parallel, the computers, a spend cap), no longer counts as pending: nothing is taking it to a job.
+ */
 const PENDING_MAX = 2.5 * 3600_000;
+/** When a wake stops counting as pending by age (PENDING_MAX), or never when it closed or admission holds it. */
+const agesOut = (x: Index, fs: FactRow[], f: FactRow) =>
+  (x.bySubject.get(f.subject) ?? []).some((g) => g.type === "wake.bound" || g.type === "wake.dropped" || g.type === "job.held") || fs.some((g) => g.type === "job.queued" && ms(g.at) >= ms(f.at))
+    ? Infinity
+    : Math.max(ms(f.at), ms(f.seen_at)) + PENDING_MAX;
 
 /**
  * Why a task is idle, asked at times that never go back (`at(t, now)`; `now`: the gap is still open now, so `orphaned` may
@@ -109,15 +117,15 @@ function reasoner(x: Index, task: string, stale: Occurrence[]) {
   const lastWait = new Map<string, FactRow>(), records = new Map<string, { done: boolean; owner: boolean }>();
   let blocked: FactRow | undefined;
   // wakes: pending from when the kernel knew of it (seen_at) until bound or dropped, or until a job on the task is queued after it
-  // (the kernel settles a comment that arrived before a job started as done, with no fact: that job reads it), and for at most
-  // PENDING_MAX past its due time (a wake the dispatcher keeps handing back, busy or deferred, never binds: the task is then
-  // orphaned, so the idle sweep and the steward see it); scheduled while its time is still ahead
+  // (the kernel settles a comment that arrived before a job started as done, with no fact: that job reads it), or until it ages
+  // out (agesOut: one nothing takes to a job makes the task orphaned, so the idle sweep and the steward see it); scheduled while
+  // its time is still ahead
   const edges: [number, number, number][] = []; // [time, pending delta, future delta]
   const queued = fs.filter((g) => g.type === "job.queued").map((g) => ms(g.at));
   for (const f of fs) if (f.type === "wake.opened") {
     const due = ms(f.at);
     const s = ms(f.seen_at);
-    const close = Math.min(Math.max(s, due) + PENDING_MAX, ...(x.bySubject.get(f.subject) ?? []).filter((g) => g.type === "wake.bound" || g.type === "wake.dropped").map((g) => ms(g.at)), ...queued.filter((q) => q >= due));
+    const close = Math.min(agesOut(x, fs, f), ...(x.bySubject.get(f.subject) ?? []).filter((g) => g.type === "wake.bound" || g.type === "wake.dropped").map((g) => ms(g.at)), ...queued.filter((q) => q >= due));
     if (s < close) { edges.push([s, 1, 0], [close, -1, 0]); if (s < Math.min(due, close)) edges.push([s, 0, 1], [Math.min(due, close), 0, -1]); }
   }
   edges.sort((a, b) => a[0] - b[0]);
@@ -200,8 +208,7 @@ function idleOf(x: Index, task: string, now: number, occs: Occurrence[]): Idle[]
   for (const f of [...fs, ...(x.children.get(task) ?? []).flatMap((c) => x.bySubject.get(`task:${c}`) ?? [])]) {
     marks.push(ms(f.at), ms(f.seen_at));
     if (str(f.data.until)) marks.push(ms(f.data.until as string));
-    // a wake that never closed (bound, dropped, or a job queued after it) stops being pending here (reasoner, PENDING_MAX)
-    if (f.type === "wake.opened" && !(x.bySubject.get(f.subject) ?? []).some((g) => g.type === "wake.bound" || g.type === "wake.dropped") && !fs.some((g) => g.type === "job.queued" && ms(g.at) >= ms(f.at))) marks.push(Math.max(ms(f.at), ms(f.seen_at)) + PENDING_MAX);
+    if (f.type === "wake.opened" && agesOut(x, fs, f) < Infinity) marks.push(agesOut(x, fs, f));
   }
   marks.sort((a, b) => a - b);
   const assigns = own.filter((f) => f.type === "task.assignee_changed");

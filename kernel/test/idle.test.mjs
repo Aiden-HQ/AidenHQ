@@ -78,6 +78,11 @@ test("a wake the dispatcher keeps handing back without a job reads as orphaned a
   w.tick(46 * MIN);
   assert.equal(w.flow.idleNow().items.find((i) => i.task === "t1").reason, "orphaned");
   assert.deepEqual(await w.idle.sweep(), ["t1"]);
+  // One admission holds (queued behind the agent's max_parallel, the computers, a spend cap) is a queue, not orphaned.
+  w.wakes.open({ key: "comment:c2", task: "t1", agent: AGENT, cause: "comment" });
+  w.add("job.held", "wake:comment:c2", "t1", { reason: "capacity" });
+  w.tick(3 * 60 * MIN);
+  assert.equal(w.flow.idleNow().items.find((i) => i.task === "t1").reason, "unknown");
 });
 
 test("task_wait naming its task: a read that fails now is a 503 to retry, never a refusal", async () => {
