@@ -163,7 +163,7 @@ interface Company { id: string }
 interface AgentRow { id: string; name: string; status: string; adapterConfig?: { timeoutSec?: number } }
 interface JobRow { id: string; agent: string; task?: string; routine?: string | null; state: string; started_at: string | null; ended_at: string | null; exit?: number | null; timed_out?: boolean; steps?: number; has_final?: boolean }
 interface RoutineRow { id: string; title: string; status: string; triggers?: { kind?: string; enabled?: boolean; label?: string | null; nextRunAt?: string | null }[] }
-interface IssueRow { id: string; identifier?: string; title?: string; status: string; priority?: string; updatedAt: string; assigneeUserId?: string | null; assigneeAgentId?: string | null; originKind?: string | null; labels?: ({ name?: string } | null)[] }
+interface IssueRow { id: string; identifier?: string; title?: string; status: string; createdAt?: string; parentId?: string | null; priority?: string; updatedAt: string; assigneeUserId?: string | null; assigneeAgentId?: string | null; originKind?: string | null; labels?: ({ name?: string } | null)[] }
 interface CommentRow { authorType?: string; authorAgentId?: string | null; body?: string; createdAt: string; deletedAt?: string | null }
 interface WorkRecord { task: string | null; identifier: string | null; state?: string; judged?: boolean; targets?: string[]; decided_at: string | null; created_at?: string }
 
@@ -183,6 +183,58 @@ const FLOW_MIN_N = 10;
 const STALE_FOLLOWUP_MS = 3 * DAY_MS;
 const SILENT_MS = 15 * MIN; // an owner message on a chat task with no reply
 const SILENT_LOOKBACK_MS = 6 * HOUR_MS; // older than this, the owner has long since seen the silence
+
+const UNSTARTED_MS = HOUR_MS; // a delegated task assigned to an agent, still todo with no job ever, this long after it was created
+const MERGE_WAIT_MS = 6 * HOUR_MS; // a task waiting on its merge queue or CI (flow reasons checks, retry, eval) this long
+const MERGE_WAITS = ["checks", "retry", "eval"];
+const PING_PONG = { n: 5, spanMs: 12 * HOUR_MS }; // runs of one task that alternate between two agents, all started within spanMs
+const CARD_WAIT_MS = DAY_MS; // a Tier 2 card waiting on the owner this long gets the Steward's one reminder a day
+const MAX_LOOKUPS = 20;
+type IdleItem = { task: string; identifier: string | null; since: string; reason: string; reason_since: string; blocked_on?: string };
+
+/** Tasks whose idle stretch is a merge or CI wait over MERGE_WAIT_MS (the queue or a red base holds them), and tasks blocked on each other in a cycle. */
+export function mergeDeadlocks(items: IdleItem[], t: number): { key: string; reason: string }[] {
+  const out: { key: string; reason: string }[] = [];
+  for (const i of items.filter((x) => MERGE_WAITS.includes(x.reason) && age(x.reason_since, t) > MERGE_WAIT_MS)) out.push({ key: i.task, reason: `task ${i.identifier ?? i.task} has waited ${mins(age(i.reason_since, t))} on its merge queue or CI (${i.reason}), so the queue or a red base is holding it` });
+  const by = new Map(items.filter((x) => x.identifier).map((x) => [x.identifier!, x]));
+  const seen = new Set<string>();
+  for (const i of items.filter((x) => x.reason === "blocked" && x.blocked_on)) {
+    const ring = [i.identifier ?? i.task];
+    for (let n = by.get(i.blocked_on!), k = 0; n && k < 10; n = n.blocked_on ? by.get(n.blocked_on) : undefined, k++) {
+      if (n.identifier === ring[0]) {
+        const key = [...ring].sort().join("+");
+        if (!seen.has(key)) { seen.add(key); out.push({ key: slug(key), reason: `tasks ${ring.join(", ")} are blocked on each other in a cycle` }); }
+        break;
+      }
+      if (n.reason !== "blocked" || ring.includes(n.identifier ?? n.task)) break;
+      ring.push(n.identifier ?? n.task);
+    }
+  }
+  return out;
+}
+
+/** Tasks whose last runs alternate between exactly two agents: PING_PONG.n runs, started within the span, at least n - 1 changes of agent. */
+export function pingPong(jobs: JobRow[], t: number): { task: string; agents: string[]; n: number }[] {
+  const by = new Map<string, JobRow[]>();
+  for (const j of jobs) if (j.task && j.started_at && age(j.started_at, t) < PING_PONG.spanMs) by.set(j.task, [...(by.get(j.task) ?? []), j]);
+  const out: { task: string; agents: string[]; n: number }[] = [];
+  for (const [task, list] of by) {
+    const runs = list.sort((a, b) => a.started_at!.localeCompare(b.started_at!));
+    const agents = [...new Set(runs.map((j) => j.agent))];
+    if (agents.length === 2 && runs.length >= PING_PONG.n && runs.every((j, i) => i === 0 || j.agent !== runs[i - 1]!.agent)) out.push({ task, agents, n: runs.length });
+  }
+  return out;
+}
+
+/** Open tasks of one agent and parent with the same title (case and punctuation aside): the same work filed twice. Each group once, by its identifiers. */
+export function duplicateTasks(issues: IssueRow[]): { key: string; ids: string[] }[] {
+  const by = new Map<string, IssueRow[]>();
+  for (const i of issues.filter((x) => !exempt(x) && x.assigneeAgentId)) {
+    const title = String(i.title ?? "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+    if (title.length >= 12) by.set(`${i.assigneeAgentId}\u0000${i.parentId ?? ""}\u0000${title}`, [...(by.get(`${i.assigneeAgentId}\u0000${i.parentId ?? ""}\u0000${title}`) ?? []), i]);
+  }
+  return [...by.entries()].filter(([, v]) => v.length > 1).map(([k, v]) => ({ key: createHash("sha256").update(k).digest("hex").slice(0, 8), ids: v.map((i) => i.identifier ?? i.id) }));
+}
 
 /** Tasks outside monitoring, by what no agent can set: the bake-off project's identifier prefix and a routine's own run. A title or label is agent-set text and never exempts. */
 export const exempt = (i: Pick<IssueRow, "identifier" | "originKind">): boolean => /^BAKA?-/i.test(i.identifier ?? "") || i.originKind === "routine_execution";
@@ -500,6 +552,50 @@ export function checks(d: { kernel: KernelClient; kv: Kv; pause: (routine: strin
       return items
         .filter((i) => JUDGEMENT_WAIT_MS[i.reason] !== undefined && age(i.reason_since, t) > JUDGEMENT_WAIT_MS[i.reason]! && !exempt({ identifier: i.identifier, originKind: null }))
         .map((i) => ({ key: i.task, reason: `task ${i.identifier ?? i.task} has waited ${mins(age(i.reason_since, t))} on its ${i.reason === "owner_wait" ? "owner's" : "delegator's"} answer` }));
+    },
+    // A delegated task (a sub-task assigned to an agent) still todo an hour after it was made, with no job ever on it: the delegation never started.
+    async unstarted() {
+      const t = now();
+      const out: Incident[] = [];
+      let looked = 0;
+      for (const c of await companies()) {
+        const todo = (await d.kernel.read(`/api/companies/${c.id}/issues?status=todo&limit=200&excludeRoutineExecutions=true`)) as IssueRow[];
+        for (const i of todo.filter((x) => x.parentId && x.assigneeAgentId && !exempt(x) && age(x.createdAt, t) > UNSTARTED_MS && looked < MAX_LOOKUPS)) {
+          looked++;
+          const w = (await d.kernel.call("GET", `/v1/work?task=${encodeURIComponent(i.id)}`).catch(() => undefined)) as { busy?: boolean; jobs?: unknown[] } | undefined;
+          if (w && !w.busy && !w.jobs?.length) out.push({ key: i.id, reason: `delegated task ${i.identifier ?? i.id} has had no run ${mins(age(i.createdAt, t))} after it was assigned` });
+        }
+      }
+      return out;
+    },
+    // Merge waits over 6 hours, and tasks blocked on each other: the queue or a red base holds them.
+    async deadlock() {
+      const items = ((await d.kernel.call("GET", "/v1/flow?idle=1")).items ?? []) as IdleItem[];
+      return mergeDeadlocks(items.filter((i) => !exempt({ identifier: i.identifier, originKind: null })), now());
+    },
+    // One task whose runs alternate between two agents five times in 12 hours.
+    async pingpong() {
+      const t = now();
+      const out: Incident[] = [];
+      const live = lookup();
+      for (const a of await agents()) {
+        for (const p of pingPong(await jobsOf(a.id), t)) {
+          const task = await live(p.task);
+          if (task && !out.some((o) => o.key === slug(task))) out.push({ key: slug(task), reason: `task ${task}: ${p.n} runs in 12 hours alternated between two agents (${p.agents.map(slug).join(", ")})` });
+        }
+      }
+      return out;
+    },
+    // The same work filed twice: open tasks of one agent and parent with one title.
+    async duplicate() {
+      const open = (await Promise.all((await companies()).map(async (c) => (await d.kernel.read(`/api/companies/${c.id}/issues?status=todo,in_progress,in_review,blocked&limit=200&excludeRoutineExecutions=true`)) as IssueRow[]))).flat();
+      return duplicateTasks(open).map((g) => ({ key: g.key, reason: `tasks ${g.ids.map(slug).join(", ")} are open for the same agent with the same title` }));
+    },
+    // A Tier 2 card on the owner for over 24 hours: the Steward sends the owner one reminder per card per 24 hours (fleet-check).
+    async card() {
+      const t = now();
+      const r = (await d.kernel.call("GET", `/v1/work?since=${encodeURIComponent(new Date(t - 7 * DAY_MS).toISOString())}`)) as { records?: (WorkRecord & { id?: string; kind?: string; tier?: number })[] };
+      return (r.records ?? []).filter((x) => x.state === "owner" && x.tier === 2 && x.id && age(x.created_at, t) > CARD_WAIT_MS).map((x) => ({ key: slug(x.id), reason: `Tier 2 card ${slug(x.kind)} on task ${slug(x.identifier ?? x.task)} has waited ${mins(age(x.created_at, t))} on the owner` }));
     },
     // An owner message on a chat task with no reply: the front door is silent.
     async front() {

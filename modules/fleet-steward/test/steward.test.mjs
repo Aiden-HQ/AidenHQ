@@ -455,3 +455,33 @@ test("owner notices are marked told only once sent: a failed critical alert, sta
   await tick(k3, {}, async () => false, async (t) => void msgs.push(t), new Date(NOW));
   assert.equal(msgs.length, 1);
 });
+
+test("the Later detectors: an unstarted delegation, a merge or blocker deadlock, ping-pong, duplicates and a Tier 2 card over 24h fire; healthy state is quiet", async () => {
+  const mk = (tasks, o = {}) => {
+    const w = world({ tasks, ...o });
+    const call = w.call;
+    w.call = async (m, p) => (p.startsWith("/v1/flow?idle=1") ? { items: o.idle ?? [] } : p.startsWith("/v1/work?since=") && o.cards ? { records: o.cards, usage: [] } : call(m, p));
+    return detect(w);
+  };
+  const delegated = (id, o = {}) => task(id, { parentId: "p", assigneeAgentId: "a1", createdAt: ago(3), ...o });
+  const stale = mk({ a: delegated("a"), b: delegated("b", { createdAt: minsAgo(10) }), c: delegated("c", { parentId: null }) }, { todo: ["a", "b", "c"], work: { b: { busy: false, jobs: [] } } });
+  assert.deepEqual((await stale.unstarted()).map((i) => i.key), ["a"]);
+  assert.deepEqual(await mk({ a: delegated("a") }, { todo: ["a"], work: { a: { busy: false, jobs: [{ id: "j" }] } } }).unstarted(), []);
+
+  const idle = (task, reason, h, o = {}) => ({ task, identifier: `WOR-${task.toUpperCase()}`, since: ago(h), reason_since: ago(h), reason, ...o });
+  const jammed = await mk({}, { idle: [idle("m", "checks", 7), idle("n", "checks", 1), idle("x", "blocked", 2, { blocked_on: "WOR-Y" }), idle("y", "blocked", 2, { blocked_on: "WOR-X" }), idle("z", "blocked", 2, { blocked_on: "WOR-M" })] }).deadlock();
+  assert.deepEqual(jammed.map((i) => i.key), ["m", "wor-x-wor-y"]);
+  assert.deepEqual(await mk({}, { idle: [idle("n", "checks", 1), idle("z", "blocked", 2, { blocked_on: "WOR-N" })] }).deadlock(), []);
+
+  const run = (id, agent, m) => ({ id, agent, task: "t", state: "done", started_at: minsAgo(m), ended_at: minsAgo(m - 1) });
+  const bounced = [["j1", "a1", 50], ["j2", "a2", 40], ["j3", "a1", 30], ["j4", "a2", 20], ["j5", "a1", 10]].map((r) => run(...r));
+  assert.deepEqual((await mk({ t: task("t") }, { jobs: { a1: bounced, a2: [] } }).pingpong()).map((i) => i.key), ["wor-t"]);
+  assert.deepEqual(await mk({ t: task("t") }, { jobs: { a1: [run("j1", "a1", 50), run("j2", "a1", 40), run("j3", "a1", 30), run("j4", "a1", 20), run("j5", "a1", 10)] } }).pingpong(), []);
+
+  const open = (id, title, o = {}) => task(id, { title, assigneeAgentId: "a1", ...o });
+  assert.equal((await mk({ a: open("a", "Fix the login redirect"), b: open("b", "fix the login redirect!"), c: open("c", "Fix the login redirect", { assigneeAgentId: "a2" }) }, { todo: ["a", "b", "c"] }).duplicate()).length, 1);
+  assert.deepEqual(await mk({ a: open("a", "Fix the login redirect"), b: open("b", "Fix the logout redirect") }, { todo: ["a", "b"] }).duplicate(), []);
+
+  const card = (id, state, h) => ({ id, kind: "github.merge", state, tier: 2, task: "t", identifier: "WOR-1", created_at: ago(h) });
+  assert.deepEqual((await mk({}, { cards: [card("c1", "owner", 30), card("c2", "owner", 2), card("c3", "approved", 30)] }).card()).map((i) => i.key), ["c1"]);
+});
