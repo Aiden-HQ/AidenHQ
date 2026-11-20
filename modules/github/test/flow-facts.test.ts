@@ -18,6 +18,7 @@ const FIXTURE = {
   "/repos/Acme/App/pulls": [
     { number: 2, title: "Fix the thing", state: "closed", merged_at: "2026-11-10T12:00:00Z", merge_commit_sha: "m".repeat(40), created_at: "2026-11-10T09:00:00Z", updated_at: "2026-11-10T12:00:00Z", user: { login: "acme-agents[bot]" }, head: { sha: "c3", ref: "fix" }, body: "" },
     { number: 3, title: "Stranger's PR", state: "closed", merged_at: null, closed_at: "2026-11-11T10:00:00Z", created_at: "2026-11-11T09:00:00Z", updated_at: "2026-11-11T10:00:00Z", user: { login: "someone" }, author_association: "FIRST_TIME_CONTRIBUTOR", head: { sha: "d1", ref: "x" }, body: "" },
+    { number: 4, title: "Owner's PR", state: "open", merged_at: null, created_at: "2026-11-11T11:00:00Z", updated_at: "2026-11-11T11:00:00Z", user: { login: "Mudit-Owner" }, author_association: "CONTRIBUTOR", head: { sha: "e1", ref: "y" }, body: "" },
   ],
   "/repos/Acme/App/issues/2/timeline": [
     { event: "committed", sha: "c1", committer: { date: "2026-11-10T08:50:00Z" }, author: { name: "acme-agents[bot]" } },
@@ -29,6 +30,11 @@ const FIXTURE = {
   "/repos/Acme/App/commits/c2/check-runs": { check_runs: [run("test", "2026-11-10T09:31:00Z", "2026-11-10T09:34:00Z", "failure")] },
   "/repos/Acme/App/commits/c3/check-runs": { check_runs: [run("test", "2026-11-10T10:01:00Z", "2026-11-10T10:03:00Z")] },
   "/repos/Acme/App/commits/d1/check-runs": { check_runs: [] },
+  "/repos/Acme/App/issues/4/timeline": [],
+  "/repos/Acme/App/commits/e1/check-runs": { check_runs: [] },
+  // A private org member: GitHub says CONTRIBUTOR, the permission read says admin.
+  "/repos/Acme/App/collaborators/Mudit-Owner/permission": { permission: "admin" },
+  "/repos/Acme/App/collaborators/someone/permission": { permission: "read" },
 };
 
 async function harness(t, cacheDir) {
@@ -70,6 +76,7 @@ test("the backfill records authors, pushes, CI per head and a close without a me
   const opened = of("pr.opened", "pr:acme/app#2")[0];
   assert.deepEqual([opened.data.title, opened.data.author_kind, opened.data.head], ["Fix the thing", "agent", "c1"]);
   assert.deepEqual(of("pr.opened", "pr:acme/app#3")[0].data.author_kind, "outside");
+  assert.deepEqual(of("pr.opened", "pr:acme/app#4")[0].data.author_kind, "owner", "write on the repo is the owner's, whatever the association");
 
   const pushes = of("pr.pushed", "pr:acme/app#2");
   assert.deepEqual(pushes.map((f) => [f.version, f.data.before, f.data.forced]), [["c2", "c1", false], ["c3", "c2", true]]);
