@@ -54,7 +54,7 @@ function world(t) {
   const rows = () => db.prepare("SELECT key, cause, state FROM wakes ORDER BY at, key").all().map((r) => `${r.key.replace(/:[0-9TZ:.-]+$/, "")} ${r.cause} ${r.state}`);
   /** A job on t1 from its wake to its end. */
   const job = (id) => { add("job.queued", `job:${id}`, "t1"); add("job.started", `job:${id}`, "t1"); clock += MIN; add("job.ended", `job:${id}`, "t1", { state: "done" }); };
-  return { db, idle, wakes, row, add, job, rows, reads, asked, down: (v) => (down = v), tick: (ms) => (clock += ms), now: () => clock };
+  return { db, facts, idle, wakes, row, add, job, rows, reads, asked, down: (v) => (down = v), tick: (ms) => (clock += ms), now: () => clock };
 }
 
 test("an agent-held task orphaned 15 minutes gets an idle wake, again 15 minutes after one is dropped, at most 3 a day; the owner's task none and isn't read", async (t) => {
@@ -178,27 +178,25 @@ test("a chat awaiting the owner's next message is never swept", async (t) => {
   assert.ok(!w.reads.includes("t3"));
 });
 
-test("an ask fails closed: an unreadable state sends nothing; an answered wait lets a later ask go", async (t) => {
+test("an ask fails closed: an unreadable state sends nothing; a follow-up a minute after the owner's answer is sent", async (t) => {
   const w = world(t);
   let unreadable = false;
   const sent = [];
   const esc = createEscalate({ db: w.db, issue: async (id) => ({ id, identifier: id.toUpperCase(), status: "todo", assigneeAgentId: AGENT }), state: (id) => (unreadable ? undefined : w.row(id)), asker: async () => ({ name: "Kai", key: "kai", roles: [] }), notice: () => {}, owner: (n) => sent.push(n), now: w.now });
+  const idle = createIdle({ db: w.db, facts: w.facts, state: { read: () => ({ tasks: [] }) }, wakes: w.wakes, owner: async () => ({ status: 200, json: { id: "t1" } }), escalate: esc, now: w.now });
+  const wait = (q) => idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "x", for: "owner", asked: true, question: q });
   assert.equal(await esc.ask("t1", "owner", "keep v1?"), "asked");
+  await wait("keep v1?");
   unreadable = true;
   w.tick(60 * MIN);
-  assert.equal(await esc.ask("t1", "owner", "keep v1?"), "open");
-  assert.equal(sent.length, 1);
+  assert.equal(await esc.ask("t1", "owner", "keep v1?"), "open", "state unreadable: fail closed");
   unreadable = false;
-  w.tick(MIN);
-  assert.equal(await esc.ask("t1", "owner", "again?"), "asked", "no wait recorded and the grace passed: a new ask");
-  w.tick(MIN);
-  await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "x", for: "owner", asked: true, question: "again?" });
-  assert.equal(await esc.ask("t1", "owner", "third?"), "open");
+  assert.equal(await esc.ask("t1", "owner", "again?"), "open", "the wait is open");
   w.tick(MIN);
   w.add("task.commented", "task:t1", "t1", { kind: "owner" }, "account:o1");
-  w.tick(10 * MIN);
-  assert.equal(await esc.ask("t1", "owner", "third?"), "asked");
-  assert.equal(sent.length, 3);
+  w.tick(MIN);
+  assert.equal(await esc.ask("t1", "owner", "follow-up?"), "asked", "a minute after the answer");
+  assert.equal(sent.length, 2);
 });
 
 test("a PR task waiting on its checks is waiting (module_wait), not orphaned, and is never swept", async (t) => {

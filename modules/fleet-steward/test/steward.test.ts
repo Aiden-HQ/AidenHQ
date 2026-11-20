@@ -162,14 +162,15 @@ test("a branch parked by three judged rejections that nothing moved for 6h is a 
 
 test("a task waiting on the owner's answer over a day, or its delegator's over 6 hours, is raised", async () => {
   const items = [
-    { task: "a", identifier: "WOR-A", reason: "owner_wait", since: minsAgo(25 * 60) },
-    { task: "b", identifier: "WOR-B", reason: "owner_wait", since: minsAgo(20 * 60) },
-    { task: "c", identifier: "WOR-C", reason: "delegator_wait", since: minsAgo(7 * 60) },
-    { task: "d", identifier: "WOR-D", reason: "agent_wait", since: minsAgo(50 * 60) },
+    { task: "a", identifier: "WOR-A", reason: "owner_wait", since: minsAgo(25 * 60), attention: [{ who: "owner", why: "owner_wait" }] },
+    { task: "b", identifier: "WOR-B", reason: "owner_wait", since: minsAgo(20 * 60), attention: [{ who: "owner", why: "owner_wait" }] },
+    { task: "c", identifier: "WOR-C", reason: "delegator_wait", since: minsAgo(7 * 60), attention: [{ who: "agent", why: "delegator_wait" }] },
+    { task: "d", identifier: "WOR-D", reason: "agent_wait", since: minsAgo(50 * 60), attention: [] },
+    { task: "e", identifier: "WOR-E", reason: "job_running", since: minsAgo(1), wait_since: minsAgo(30 * 60), attention: [{ who: "owner", why: "owner_wait" }] }, // running, still waiting on the owner
   ];
   const c = checks({ kernel: { read: async () => ({}), call: async () => ({ tasks: items }) }, apps: async () => [], alerts: async () => [], openKeys: () => [], now: () => NOW });
   const found = await c.judgement();
-  assert.deepEqual(found.map((i) => i.key), ["a", "c"]);
+  assert.deepEqual(found.map((i) => i.key), ["a", "c", "e"]);
   assert.match(found[0].reason, /WOR-A has waited 1500 min on its owner's answer/);
 });
 
@@ -201,10 +202,10 @@ test("an orphaned item over 2h trips the stuck rule; a slower stage only logs in
     { task: "b", identifier: "WOR-B", since: minsAgo(30), reason: "orphaned" }, // not idle long enough
     { task: "c", identifier: "BAK-3", since: minsAgo(300), reason: "orphaned" }, // bake-off
     { task: "d", identifier: "WOR-D", since: minsAgo(300), reason: "owner_wait" }, // waiting on the owner
-    { task: "e", identifier: "WOR-E", since: minsAgo(9000), reason: "orphaned" }, // backlog inbox: parked
-    { task: "f", identifier: "WOR-F", since: minsAgo(9000), reason: "orphaned" }, // unassigned todo log
-    { task: "g", identifier: "WOR-G", since: minsAgo(300), reason: "orphaned" }, // its read fails: stays flagged
-    { task: "h", identifier: "WOR-H", since: minsAgo(300), reason: "orphaned" }, // owner-assigned todo: not an agent's stuck work
+    { task: "e", identifier: "WOR-E", since: minsAgo(9000), reason: "backlog" }, // backlog inbox: parked, never idle
+    { task: "f", identifier: "WOR-F", since: minsAgo(9000), reason: "orphaned", holder: null }, // unassigned todo log
+    { task: "g", identifier: "WOR-G", since: minsAgo(300), reason: "orphaned" }, // flagged
+    { task: "h", identifier: "WOR-H", since: minsAgo(300), reason: "orphaned", holder: "owner" }, // owner-assigned todo: not an agent's stuck work
     { task: "i", identifier: "WOR-I", since: minsAgo(60), reason: "orphaned", idle_wakes: 3 }, // the idle sweep gave up: critical now
     { task: "j", identifier: "WOR-J", since: minsAgo(300), reason: "unknown" }, // its holder's wake aged out: flagged
     { task: "k", identifier: "WOR-K", since: minsAgo(300), reason: "agent_wait" }, // waiting on something recorded

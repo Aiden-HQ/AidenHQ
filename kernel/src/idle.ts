@@ -36,7 +36,7 @@ export function createIdle({ db, facts, state, wakes, owner, team = () => false,
   db: DatabaseSync;
   facts?: Facts; state: Pick<TaskStateRead, "read">; wakes: Pick<Wakes, "open" | "polls">; owner: Api;
   /** Where a wait's question goes (escalate.ts); none: the wait is recorded and nobody is asked. */
-  escalate?: Pick<Escalate, "ask">;
+  escalate?: Pick<Escalate, "ask" | "record">;
   /** Whether an agent id is a team record (its tasks go to a member; it never runs). */
   team?: (agent: string) => boolean;
   now?: () => number; log?: Log;
@@ -78,6 +78,7 @@ export function createIdle({ db, facts, state, wakes, owner, team = () => false,
       const sent = who && question && escalate && !asked ? await escalate.ask(caller.task, who, question) : undefined;
       // The wait's fact and its wake in one transaction: a wait that can't be recorded fails the call (the agent tries again).
       inTx(db, "task_wait", () => {
+        if (who && question && escalate) escalate.record(caller.task, who);
         fact({ type: "work.waiting", subject: `wait:${caller.task}`, version: `wait@${t}`, at: iso(t), actor: `agent:${caller.key}`, task: caller.task, data: { reason: who ? `${who}_wait` : "agent_wait", note: reason, until: iso(until), ...(on ? { on } : {}), ...(question ? { question } : {}), ...(b.handoff === true ? { handoff: true } : {}) } });
         wakes.open({ key: `wait:${caller.task}:${until}`, task: caller.task, agent: caller.agent, cause: `wait: ${reason}`.slice(0, 200), at: until, replaces: `wait:${caller.task}:`, author: `agent:${caller.key}` });
       });

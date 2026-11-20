@@ -37,10 +37,14 @@ export type TaskState = {
   grade?: "pass" | "fail";
   /** The open owner wait's question. */
   question?: string;
+  /** When the open owner or delegator wait began, whatever the representative reason (only the owner's has a `question`). */
+  wait_since?: string;
   /** The open wait's own words (task_wait's reason). */
   note?: string;
 };
 
+export /** How long after a job ends its reply may still arrive (the kernel posts it a few seconds later). */
+const REPLY_GRACE_MS = 60_000;
 export const ATTENTION_AFTER_MS = 15 * 60_000;
 /** A module's wait (CI checks, a merge queue) open this long needs an agent (attention `stalled_wait`). */
 export const MODULE_WAIT_STALLED_MS = 6 * 3600_000;
@@ -92,9 +96,12 @@ export function taskState(task: string, facts: FactRow[], now: number, stages: S
   const after = (f: FactRow) => !reopen || (f.type === "wake.opened" ? ms(f.seen_at) >= ms(reopen.at) : byTime(f, reopen) > 0);
   const live = own.filter((f) => f.type !== "wake.opened" && ms(f.at) <= now);
 
+  const isChat = (mine.filter((f) => f.type === "task.labeled").at(-1)?.data.chat ?? created.data.chat) === true;
   const jobs = new Map<string, { queued?: FactRow; started?: FactRow; ended?: FactRow }>();
   const records = new Map<string, { since: number; owner: boolean; done: boolean }>();
   let failure: FactRow | undefined;
+  let silent: FactRow | undefined; // a chat's job that ended done: ended without a reply unless an agent comment came with it
+  const agentComments: FactRow[] = [];
   let wait: { f: FactRow; end?: number } | undefined;
   const mwaits = new Map<string, FactRow>(); // a module's waits by subject (a PR), until its work.resumed or a job starts
   let handback: { f: FactRow; fromAgent: boolean } | undefined;
@@ -108,17 +115,22 @@ export function taskState(task: string, facts: FactRow[], now: number, stages: S
       handback = who === "owner" ? { f, fromAgent: before !== null && before !== "owner" } : undefined;
     }
     if (!after(f)) continue;
+    if (f.type === "task.commented" && f.actor.startsWith("agent:")) agentComments.push(f);
     if (!moduleFact(f) && f.type !== "task.commented") quiet = Math.max(quiet, ms(f.at));
     const job = f.subject.startsWith("job:") ? jobs.get(f.subject) ?? (jobs.set(f.subject, {}), jobs.get(f.subject)!) : undefined;
     switch (f.type) {
-      case "job.queued": job!.queued = f; failure = undefined; queuedAt.push(ms(f.at)); break;
+      case "job.queued": job!.queued = f; failure = silent = undefined; queuedAt.push(ms(f.at)); break;
       case "job.started":
-        job!.started = f; failure = undefined;
+        job!.started = f; failure = silent = undefined;
         if (wait && !wait.end && wait.f.data.reason === "agent_wait") wait.end = ms(f.at);
         mwaits.clear();
         break;
-      case "job.ended": job!.ended = f; if (FAILED.has(String(f.data.state))) failure = f; break;
-      case "task.assignee_changed": if (f.subject === self) failure = undefined; break;
+      case "job.ended":
+        job!.ended = f; silent = undefined;
+        if (FAILED.has(String(f.data.state))) failure = f;
+        else if (isChat && f.data.state === "done" && f.data.acted !== true) silent = f;
+        break;
+      case "task.assignee_changed": if (f.subject === self) failure = silent = undefined; break;
       case "work.waiting": if (f.subject === `wait:${task}`) wait = { f }; else if (moduleFact(f)) mwaits.set(f.subject, f); break;
       case "work.resumed": if (moduleFact(f)) mwaits.delete(f.subject); break;
       case "task.commented": {
@@ -171,7 +183,11 @@ export function taskState(task: string, facts: FactRow[], now: number, stages: S
     else if (until > now) open.push({ reason: "agent_wait", ref: wait.f.subject, since: ms(wait.f.at) });
     else quiet = Math.max(quiet, until);
   }
-  for (const [subject, w] of mwaits) {
+  // The unresolved failure: a failed job, or a chat's job that ended with no agent comment between its start and a minute
+  // after its end (the reply is posted a few seconds after the job ends).
+  const noReply = silent && !failure && now - ms(silent.at) >= REPLY_GRACE_MS && !agentComments.some((c) => c.data.job === silent!.subject.slice(4) || (ms(c.at) >= ms(jobs.get(silent!.subject)?.started?.at ?? silent!.at) && ms(c.at) <= ms(silent!.at) + REPLY_GRACE_MS));
+  const fail = failure ? { ref: failure.subject, at: failure.at } : noReply ? { ref: "no_reply", at: silent!.at } : undefined;
+  for (const [subject, w] of fail ? [] : mwaits) {
     const until = str(w.data.until) ? ms(w.data.until as string) : Infinity;
     if (until > now) open.push({ reason: "module_wait", ref: str(w.data.reason) ?? subject, since: ms(w.at) });
   }
@@ -183,7 +199,7 @@ export function taskState(task: string, facts: FactRow[], now: number, stages: S
     else open.push({ reason: "blocked", ref: `task:${b}`, since: ms(blockedBy!.at) });
   }
   if (status?.data.to === "backlog") open.push({ reason: "backlog", since: ms(status.at) });
-  if ((mine.filter((f) => f.type === "task.labeled").at(-1)?.data.chat ?? created.data.chat) === true && !open.length && !failure) open.push({ reason: "chat_turn", since: quiet });
+  if (isChat && !open.length && !fail) open.push({ reason: "chat_turn", since: quiet });
 
   // Attention, across every obligation.
   const attention: Attention[] = [];
@@ -195,12 +211,13 @@ export function taskState(task: string, facts: FactRow[], now: number, stages: S
     if (o.reason === "delegator_wait") attention.push({ who: "agent", why: "delegator_wait", ref: o.ref! });
     if (o.reason === "handback") attention.push({ who: "owner", why: "handback", ref: o.ref! });
   }
-  if (failure) attention.push({ who: "agent", why: "failed", ref: failure.subject });
+  if (fail) attention.push({ who: "agent", why: "failed", ref: fail.ref });
   for (const o of open) if (o.reason === "module_wait" && now - o.since > MODULE_WAIT_STALLED_MS) attention.push({ who: "agent", why: "stalled_wait", ref: o.ref! });
 
   const ownerWait = wait && !wait.end && wait.f.data.reason === "owner_wait" ? str(wait.f.data.question) : undefined;
+  const judging = wait && !wait.end && (wait.f.data.reason === "owner_wait" || wait.f.data.reason === "delegator_wait") ? wait.f.at : undefined;
   const openNote = wait && open.some((o) => o.ref === wait!.f.subject) ? str(wait.f.data.note) : undefined;
-  const extra = { ...(ownerWait ? { question: ownerWait } : {}), ...(openNote ? { note: openNote } : {}) };
+  const extra = { ...(ownerWait ? { question: ownerWait } : {}), ...(openNote ? { note: openNote } : {}), ...(judging ? { wait_since: judging } : {}) };
   const hint = () => {
     const occ = pair(own.filter((f) => after(f) && ms(f.at) <= now), stages)
       .filter((o) => o.module_fact && !o.end && ms(o.start) <= now && now - ms(o.start) <= STAGE_HINT_MS).at(-1);
@@ -214,7 +231,7 @@ export function taskState(task: string, facts: FactRow[], now: number, stages: S
     const top = pick(open);
     return { kind: "waiting", reason: top.reason, ...(top.ref ? { ref: top.ref } : {}), since: iso(top.since), holder, attention, ...extra, ...hint() };
   }
-  if (failure) return { kind: "idle", reason: "failed", ref: failure.subject, since: failure.at, holder, attention };
+  if (fail) return { kind: "idle", reason: "failed", ref: fail.ref, since: fail.at, holder, attention };
   // Nothing open: unknown when the last thing was a wake nothing took (someone holds the task), else orphaned.
   const unknown = Boolean(holder && agedOut && agedOut.due >= quiet);
   const since = unknown ? agedOut!.at : quiet;

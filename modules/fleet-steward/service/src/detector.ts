@@ -190,7 +190,7 @@ const PING_PONG = { n: 5, spanMs: 12 * HOUR_MS }; // runs of one task that alter
 const CARD_WAIT_MS = DAY_MS; // a Tier 2 card waiting on the owner this long gets the Steward's one reminder a day
 const MAX_LOOKUPS = 20;
 /** A row of the kernel's task state (GET /v1/tasks/state, kernel/src/task-state-read.ts). */
-type StateRow = { task: string; identifier: string | null; since: string; reason: string; ref?: string; holder: string | null; attention: { who: string; why: string }[]; idle_wakes: number };
+type StateRow = { task: string; identifier: string | null; since: string; reason: string; ref?: string; holder: string | null; attention: { who: string; why: string }[]; idle_wakes: number; wait_since?: string };
 /** Idle with nothing recorded to wake it, a wake nothing took, or its history pruned: the state's unexplained idle. */
 const UNEXPLAINED = ["orphaned", "unknown", "history_expired"];
 type IdleItem = { task: string; identifier: string | null; reason: string; blocked_on?: string };
@@ -514,15 +514,12 @@ export function checks(d: { kernel: KernelClient; kv: Kv; pause: (routine: strin
     async stuck() {
       const t = now();
       const out: Incident[] = [];
-      const read = taskReads();
       const items = await openStates();
       const capped = (x: { idle_wakes?: number }) => (x.idle_wakes ?? 0) >= IDLE_WAKE_CAP;
       for (const i of items.filter((x) => UNEXPLAINED.includes(x.reason) && (capped(x) || age(x.since, t) > IDLE_MS) && !exempt({ identifier: x.identifier, originKind: null }) && !suppressed(x.task, `stuck:${x.task}`))) {
-        const task = await read(i.task);
-        // Parked in backlog, owned by nobody, or owned by the owner (a person, not an agent's work): not someone's stuck work
-        // (the inbox, review-log and issues tasks are idle by design; owner-assigned todos are the stale follow-up check's).
-        // A task that can't be read stays flagged: a failed lookup never hides an incident.
-        if (task && (task.status === "backlog" || !task.assigneeAgentId)) continue;
+        // Owned by nobody, or by the owner (a person, not an agent's work): not someone's stuck work (the inbox, review-log and
+        // issues tasks are idle by design; owner-assigned todos are the stale follow-up check's). A backlog task is `backlog`, never idle.
+        if (!i.holder || i.holder === "owner") continue;
         if (capped(i)) out.push({ key: `${i.task}:idle-capped`, critical: true, reason: `task ${i.identifier ?? i.task} is still idle after ${i.idle_wakes} idle wakes of its agent today (nothing running, filed or waiting on it, ${mins(age(i.since, t))}): waking it again won't move it` });
         else out.push({ key: i.task, reason: `task ${i.identifier ?? i.task} idle for ${mins(age(i.since, t))} with nothing running, filed or waiting on it (${slug(i.reason)})` });
       }
@@ -556,9 +553,14 @@ export function checks(d: { kernel: KernelClient; kv: Kv; pause: (routine: strin
     // A task waiting on a judgement past its limit (a day on the owner, 6 hours on its delegator): the ask went unanswered.
     async judgement() {
       const t = now();
-      return (await openStates())
-        .filter((i) => JUDGEMENT_WAIT_MS[i.reason] !== undefined && age(i.since, t) > JUDGEMENT_WAIT_MS[i.reason]! && !exempt({ identifier: i.identifier, originKind: null }))
-        .map((i) => ({ key: i.task, reason: `task ${i.identifier ?? i.task} has waited ${mins(age(i.since, t))} on its ${i.reason === "owner_wait" ? "owner's" : "delegator's"} answer` }));
+      // By attention, not the representative reason: a task also running, queued or on a card still waits on the answer.
+      const out: Incident[] = [];
+      for (const i of await openStates()) {
+        const why = i.attention.map((a) => a.why).find((w) => JUDGEMENT_WAIT_MS[w] !== undefined);
+        const since = i.wait_since ?? i.since;
+        if (why && age(since, t) > JUDGEMENT_WAIT_MS[why]! && !exempt({ identifier: i.identifier, originKind: null })) out.push({ key: i.task, reason: `task ${i.identifier ?? i.task} has waited ${mins(age(since, t))} on its ${why === "owner_wait" ? "owner's" : "delegator's"} answer` });
+      }
+      return out;
     },
     // A delegated task (a sub-task assigned to an agent) still todo an hour after it was made, with no job ever on it: the delegation never started.
     async unstarted() {
