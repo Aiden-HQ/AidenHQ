@@ -117,8 +117,9 @@ export function TopNav({ view, approvals, agentsActive, onNav, spend, settingsAl
       <a className="tn-icon" href="#/help" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts">
         <Icon name="help" />
       </a>
-      <a className={`tn-icon${view === "settings" ? " on" : ""}`} href="#/settings" onClick={(e) => (e.preventDefault(), onNav("settings"))} aria-current={view === "settings" ? "page" : undefined} title="Settings: connections, approvals, accounts and the instance" aria-label="Settings">
+      <a className={`tn-item tn-settings${view === "settings" ? " on" : ""}`} href="#/settings" onClick={(e) => (e.preventDefault(), onNav("settings"))} aria-current={view === "settings" ? "page" : undefined} title="Settings: connections, approvals, accounts and the instance" aria-label="Settings">
         <Icon name="settings" />
+        Settings
         {settingsAlert && <span className="tn-dot" title="A connection needs you" />}
       </a>
     </header>
@@ -250,6 +251,7 @@ export function Palette({ open, onClose, go, crew, apps, onNewTask }: { open: bo
       { id: "new-chat", kind: "Action", label: "New chat with Aiden", icon: "chat", run: nav("#/c/") },
       { id: "new-task", kind: "Action", label: "New task", icon: "plus", run: () => (onClose(), onNewTask()) },
       ...ITEMS.map((i) => ({ id: `v-${i.view}`, kind: "Go to", label: i.name, icon: i.icon, run: nav(hrefOf(i.view)) })),
+      { id: "v-settings", kind: "Go to", label: "Settings", icon: "settings", run: nav("#/settings") },
       ...CATEGORIES.map((c) => ({ id: `s-${c.key}`, kind: "Settings", label: c.name, icon: "settings" as const, run: nav(`#/settings/${c.key}`) })),
       ...crew.filter((a) => a.kind !== "me").map((a) => ({ id: `a-${a.key}`, kind: "Agent", label: a.name, icon: "agents" as const, run: nav(`#/agents/${a.key}`) })),
       ...chats.map((c) => ({ id: `c-${c.identifier}`, kind: "Chat", label: c.title, hint: `${c.agent.name} · ${c.identifier}`, icon: "chat" as const, run: nav(`#/c/${c.identifier}`) })),
