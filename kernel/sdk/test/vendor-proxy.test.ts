@@ -8,7 +8,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import pino from "pino";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { readNeed } from "../src/vendor/needs.js";
+import { readNeed, servedSignedIn } from "../src/vendor/needs.js";
 import { AuthError, oauth, redirectAllowed, staticAuth, type Auth } from "../src/vendor/oauth.js";
 import { createVendorProxy, type VendorProxy } from "../src/vendor/proxy.js";
 
@@ -90,12 +90,15 @@ describe("vendor pass-through", () => {
     expect((await rpc("/mcp", "svc", "tools/call", { name: "send_message", arguments: { q: "hi" } })).body.result.content[0].text).toMatch(/Refused: no caller assertion/);
     const ok = await rpc("/mcp", "svc", "tools/call", { name: "send_message", arguments: { q: "hi", site: "other" } }, "ok");
     expect(ok.body.result.content[0].text).toBe("ran send_message");
+    expect(servedSignedIn(ok.body.result)).toBe(true); // served by the sign-in: the kernel clears a down state on it
     expect(seen.at(-1)).toEqual({ name: "send_message", args: { q: "hi", site: "pinned" } });
     expect((await rpc("/mcp/read", "rd", "tools/call", { name: "send_message", arguments: {} })).body.result).toMatchObject({ isError: true });
     expect((await rpc("/mcp/read", "rd", "tools/call", { name: "search", arguments: { q: "x" } })).body.result.content[0].text).toBe("ran search");
     expect((await rpc("/mcp", "svc", "tools/call", { name: "drop_everything", arguments: {} }, "ok")).body.result).toMatchObject({ isError: true });
     expect((await rpc("/mcp/read", "rd", "tools/call", { name: "manage_routing", arguments: {} })).body.result).toMatchObject({ isError: true });
-    expect((await rpc("/mcp", "svc", "tools/call", { name: "not_listed", arguments: {} }, "ok")).body.result.content[0].text).toMatch(/doesn't offer not_listed/);
+    const unlisted = (await rpc("/mcp", "svc", "tools/call", { name: "not_listed", arguments: {} }, "ok")).body.result;
+    expect(unlisted.content[0].text).toMatch(/doesn't offer not_listed/);
+    expect(servedSignedIn(unlisted)).toBe(false);
     expect(seen.some((s) => s.name === "drop_everything")).toBe(false);
   });
 });

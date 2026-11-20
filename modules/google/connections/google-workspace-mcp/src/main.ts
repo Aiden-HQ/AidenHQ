@@ -9,6 +9,7 @@ import { checkGoogle, healthBody, MultiWorkspace, toolFailure } from "./accounts
 import { FixtureWorkspace } from "./fixtures.js";
 import { Reconnect, ReconnectError } from "./reconnect.js";
 import { kernelJwks, verifyCaller, type Caller } from "./aidenhq-sdk/caller.js";
+import { signedIn } from "./aidenhq-sdk/needs.js";
 import { SourceStore } from "./source-store.js";
 import { startSync } from "./sources.js";
 
@@ -101,7 +102,8 @@ function buildServer(): McpServer {
     async (a: A) => {
       if (!workspace) return toolFailure(authError, false);
       try {
-        return { content: [{ type: "text" as const, text: JSON.stringify(await fn(workspace, a), null, 2) }] };
+        // Every tool here reads Google with the owner's sign-in: a success says so (the kernel clears a down state on it).
+        return signedIn({ content: [{ type: "text" as const, text: JSON.stringify(await fn(workspace, a), null, 2) }] });
       } catch (err) {
         log.warn({ tool: name, err: (err as Error).message }, "tool failed");
         return toolFailure(err);

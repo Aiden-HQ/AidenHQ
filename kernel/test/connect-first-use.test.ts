@@ -2,7 +2,7 @@
 // owner's own request gets one message and its task resumes once connected; background work gets one digest line.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { needsOwner } from "../sdk/src/vendor/needs.ts";
+import { needsOwner, signedIn } from "../sdk/src/vendor/needs.ts";
 import { openFacts } from "../src/facts.ts";
 import { kernel, moduleServer } from "./helpers.ts";
 
@@ -86,12 +86,17 @@ test("a trusted connection's answer passes unchanged, and its needs_owner is sti
   assert.equal((await w.take())[0].kind, "decision");
 });
 
-test("a successful call clears a full-cause state", async (t) => {
-  let need = true;
-  const w = await setup(t, { answer: () => (need ? needsOwner({ cause: "not_connected", detail: "" }) : { content: [{ type: "text", text: "ok" }] }) });
+test("a successful call clears a full-cause state only when the sign-in served it", async (t) => {
+  let answer = "need";
+  const w = await setup(t, { answer: () => (answer === "need" ? needsOwner({ cause: "not_connected", detail: "" }) : answer === "link" ? { content: [{ type: "text", text: "a prefilled link" }] } : signedIn({ content: [{ type: "text", text: "ok" }] })) });
   await w.call();
   assert.equal((await w.k.v1("GET", `/v1/connections/down?agent=${AGENT}`, undefined, "dispatch-key")).json.down.length, 1);
-  need = false;
+  // A tool that works signed out (github_issue_link) succeeds without the marker: still down, nobody woken.
+  answer = "link";
+  assert.match((await w.call()).result.content[0].text, /prefilled link/);
+  assert.equal((await w.k.v1("GET", `/v1/connections/down?agent=${AGENT}`, undefined, "dispatch-key")).json.down.length, 1);
+  assert.ok(!w.wakeRows().some((x) => x.cause === "connected"));
+  answer = "ok";
   assert.match((await w.call()).result.content[0].text, /ok/);
   assert.deepEqual((await w.k.v1("GET", `/v1/connections/down?agent=${AGENT}`, undefined, "dispatch-key")).json.down, []);
   assert.ok(w.wakeRows().some((x) => x.cause === "connected" && x.state === "open"), "the waiting task wakes");

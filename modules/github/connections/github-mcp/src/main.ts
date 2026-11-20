@@ -22,6 +22,7 @@ import { isModule } from "./module-caller.js";
 import { CodeReviewReader, codeReviewRoute } from "./code-review-read.js";
 import { createAccess, GitHubNeed, needResult, type GitHubAccess } from "./client.js";
 import { officialProxy, signIn } from "./official.js";
+import { signedIn } from "./vendor/needs.js";
 import { ReviewPoster } from "./review-post.js";
 
 const log = pino({ level: process.env.LOG_LEVEL ?? "info", base: { svc: "github-mcp" }, redact: ["authorization", "*.authorization", "token", "*.token"] });
@@ -111,15 +112,18 @@ function buildServer(caller?: Caller): McpServer {
   const write = { readOnlyHint: false, destructiveHint: false, openWorldHint: false } as const;
   // The agent the posted text is signed with (the AidenHQ footer): the caller's name, from the kernel's signed assertion.
   const agent = caller?.name ?? "AidenHQ";
+  // `usesSignIn`: the tool reads or writes GitHub with the owner's sign-in, so its success says so (the kernel clears a down state
+  // on it); github_issue_link works signed out and proves nothing.
   const run =
-    <A,>(name: string, fn: (a: A) => Promise<unknown>) =>
+    <A,>(name: string, fn: (a: A) => Promise<unknown>, usesSignIn = true) =>
     async (a: A) => {
       try {
         // A write's GitHub objects go to the kernel with its outcome (structuredContent._aidenhq.objects), not to the agent.
         const out = (await fn(a)) as { objects?: unknown } | undefined;
         const objects = out && typeof out === "object" && Array.isArray(out.objects) ? (out.objects as string[]) : undefined;
         const shown = objects ? Object.fromEntries(Object.entries(out!).filter(([k]) => k !== "objects")) : out;
-        return { content: [{ type: "text" as const, text: JSON.stringify(shown, null, 2) }], ...(objects ? { structuredContent: { _aidenhq: { objects } } } : {}) };
+        const result = { content: [{ type: "text" as const, text: JSON.stringify(shown, null, 2) }], ...(objects ? { structuredContent: { _aidenhq: { objects } } } : {}) };
+        return usesSignIn ? signedIn(result) : result;
       } catch (err) {
         // A typed need names the cause and the fix; an owner-fixable one is needs_owner, which the kernel routes (client.ts).
         if (err instanceof GitHubNeed) {
@@ -290,7 +294,7 @@ function buildServer(caller?: Caller): McpServer {
       } catch (err) {
         throw new GitHubRefused((err as Error).message);
       }
-    }),
+    }, false),
   );
   server.registerTool(
     "github_product_issue_status",

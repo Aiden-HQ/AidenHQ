@@ -28,7 +28,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { CallToolRequestSchema, ListToolsRequestSchema, type CallToolResult, type Tool } from "@modelcontextprotocol/sdk/types.js";
 import type { Logger } from "pino";
 import { z } from "zod";
-import { needsOwner } from "./needs.js";
+import { needsOwner, signedIn } from "./needs.js";
 import { AuthError, SignInError, type Auth } from "./oauth.js";
 
 /** A connection's own logic, where it has any. */
@@ -207,7 +207,9 @@ export function createVendorProxy(o: ProxyOptions): VendorProxy {
             return refusal(`Tool ${name} is not a read: the read endpoint serves reads only.`);
           }
         }
-        return await call(name, req.params.arguments ?? {});
+        // Upstream answered through the owner's sign-in: a success says so, and clears a down state in the kernel (needs.ts).
+        const result = await call(name, req.params.arguments ?? {});
+        return result.isError ? result : signedIn(result);
       } catch (err) {
         log.warn({ tool: name, err: String(err).slice(0, 300) }, `${o.name} tool failed`);
         // A refused sign-in (marked expired) needs the owner; a vendor 5xx on refresh leaves it unknown and stays a plain error.

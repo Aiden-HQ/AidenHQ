@@ -15,6 +15,24 @@ export function needsOwner(need: Need): { isError: true; content: [{ type: "text
   return { isError: true, content: [{ type: "text", text: need.detail }], structuredContent: { error: "needs_owner", need } };
 }
 
+/**
+ * The `_meta` key a connection sets on a successful answer its sign-in served. Only such an answer clears the connection's down
+ * state in the kernel: a tool that works signed out (a prefilled link) proves nothing about the sign-in.
+ */
+export const SIGNED_IN = "aidenhq/signed_in";
+
+/** Marks a result as served by the connection's sign-in (SIGNED_IN). */
+export function signedIn<T extends object>(result: T): T {
+  const meta = (result as { _meta?: Record<string, unknown> })._meta;
+  return { ...result, _meta: { ...(meta && typeof meta === "object" ? meta : {}), [SIGNED_IN]: true } };
+}
+
+/** Whether a tools/call result is a success the connection's sign-in served. */
+export function servedSignedIn(result: unknown): boolean {
+  const r = result as { isError?: unknown; _meta?: Record<string, unknown> } | null | undefined;
+  return Boolean(r && typeof r === "object" && r.isError !== true && r._meta && typeof r._meta === "object" && r._meta[SIGNED_IN] === true);
+}
+
 /** The need in a tools/call result, if it is one; an unknown cause reads as not_connected. Only known string fields are kept. */
 export function readNeed(result: unknown): Need | undefined {
   const r = result as { isError?: unknown; structuredContent?: { error?: unknown; need?: Record<string, unknown> } } | null | undefined;
