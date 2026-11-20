@@ -92,7 +92,7 @@ export function taskState(task: string, facts: FactRow[], now: number, stages: S
   let wait: { f: FactRow; end?: number } | undefined;
   let handback: FactRow | undefined;
   let who: string | null = null; // the holder as each fact happened
-  let quiet = ms(created.at); // when the latest obligation ended or anything not a hint happened
+  let quiet = Math.max(ms(created.at), reopen ? ms(reopen.at) : 0); // when the latest obligation ended or anything not a hint happened
   const queuedAt: number[] = [];
   for (const f of live) {
     if (f.type === "task.assignee_changed" && f.subject === self) {
@@ -138,8 +138,10 @@ export function taskState(task: string, facts: FactRow[], now: number, stages: S
   // Wakes: pending from due until bound, dropped or a job queued at or after it (held: until bound or dropped); a due one
   // nothing takes ages out; one still ahead is scheduled.
   let agedOut: { due: number; at: number } | undefined;
+  const bySubject = new Map<string, FactRow[]>();
+  for (const f of own) if (f.subject.startsWith("wake:")) (bySubject.get(f.subject) ?? bySubject.set(f.subject, []).get(f.subject)!).push(f);
   for (const opened of own.filter((f) => f.type === "wake.opened" && after(f))) {
-    const later = own.filter((g) => g.subject === opened.subject && g.seq > opened.seq);
+    const later = bySubject.get(opened.subject)!.filter((g) => g.seq > opened.seq);
     if (later.some((g) => g.type === "wake.opened")) continue; // reopened: the newest counts
     if (later.some((g) => (g.type === "wake.bound" || g.type === "wake.dropped") && ms(g.at) <= now)) continue;
     const held = later.filter((g) => g.type === "job.held" && ms(g.at) <= now).at(-1);

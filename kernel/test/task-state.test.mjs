@@ -41,6 +41,7 @@ const not = (x) => (v) => v !== x;
 const cases = [
   ["closed beats an open card and a wait", [created(), wait("owner_wait", 1), card("k1", 2), status("done", 3)], NOW, { kind: "done", reason: "closed", since: iso(3), attention: [] }],
   ["cancelled is done", [created(), status("cancelled", 3)], NOW, { kind: "done", reason: "cancelled" }],
+  ["a reopen is when idle began", [created(), assignee("kai", 0), status("done", 2), status("todo", 25, "done")], NOW, { kind: "idle", reason: "orphaned", since: iso(25), attention: [] }],
   ["reopened starts fresh", [created(), card("k1", 1), status("done", 2), status("todo", 3, "done"), job("job.started", 4)], NOW, { kind: "working", reason: "job_running", attention: [] }],
   ["a failure stays through comments", [created(), assignee("kai", 0), job("job.ended", 1, { state: "failed" }), comment("account:o1", 2)], NOW,
     { kind: "idle", reason: "failed", ref: "job:j1", since: iso(1), attention: [{ who: "agent", why: "failed", ref: "job:j1" }] }],
