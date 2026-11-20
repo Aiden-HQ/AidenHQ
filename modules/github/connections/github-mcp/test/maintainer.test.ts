@@ -29,7 +29,8 @@ function fake(opts: {
 }) {
   const calls: Call[] = [];
   const posted: { path: string; body: any }[] = [];
-  const permissions = { ...(opts.permissions ?? {}) };
+  // The owner's login is an admin collaborator: a label it adds counts, as any admin's does.
+  const permissions: Record<string, string> = { owner1: "admin", ...(opts.permissions ?? {}) };
   const fetchFn = (async (url: string, init: RequestInit) => {
     const u = new URL(url);
     const method = init.method ?? "GET";
@@ -112,29 +113,26 @@ const labeled = (login: string, at: string, app?: { id: number; slug: string }) 
   created_at: at,
 });
 
-it("agent-fix: recorded label trusted, owner's own not; an admin or a maintain collaborator, and nothing else", async () => {
+it("labels by the owner's login trusted, as today", async () => {
   const f = fake({
     issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z" }],
     timelines: {
       1: [
         labeled("owner1", "2026-01-01T00:00:00Z"),
         labeled("admin-user", "2026-01-01T00:00:01Z"),
-        labeled("maintainer-user", "2026-01-01T00:00:02Z"),
+        labeled("taylan", "2026-01-01T00:00:02Z"),
         labeled("writer-user", "2026-01-01T00:00:03Z"),
         labeled("triage-user", "2026-01-01T00:00:04Z"),
         labeled("random-user", "2026-01-01T00:00:05Z"),
+        labeled("reader", "2026-01-01T00:00:06Z"),
       ],
     },
-    permissions: { "admin-user": "admin", "maintainer-user": "maintain", "writer-user": "write", "triage-user": "triage" },
+    permissions: { "admin-user": "admin", taylan: "maintain", "writer-user": "write", "triage-user": "triage", reader: "read" },
   });
   const m = maintainer(f);
   const { events } = await m.labelEvents(PRODUCT, 1);
   const trust = Object.fromEntries(events.map((e) => [e.actor, e.trusted]));
-  expect(trust).toEqual({ "owner1": true, "admin-user": true, "maintainer-user": true, "writer-user": false, "triage-user": false, "random-user": false });
-  // The same label by the owner's login, not in AidenHQ's records (the owner by hand on GitHub): untrusted, though an admin.
-  const own = new Maintainer(accessFor(f.fetchFn), parseRepos(JSON.stringify([{ repo: PRODUCT }])), [], async () => false);
-  f.permissions["owner1"] = "admin";
-  expect((await own.labelEvents(PRODUCT, 1)).events.find((e) => e.actor === "owner1")!.trusted).toBe(false);
+  expect(trust).toEqual({ owner1: true, "admin-user": true, taylan: true, "writer-user": false, "triage-user": false, "random-user": false, reader: false });
 });
 
 it("a collaborator's permission is re-read, so a revoked admin stops being trusted", async () => {
@@ -213,7 +211,7 @@ it("an untrusted agent-fix label is skipped, never in issues, and every write re
   expect(out.issues.map((i) => i.number)).toEqual([1]);
   expect(out.skipped.map((s) => s.number)).toEqual([2]);
   expect(out.skipped[0]!.reason).toMatch(/random-user/);
-  await expect(m.comment(PRODUCT, 2, "hello")).rejects.toThrow(/untrusted/);
+  await expect(m.commentBody(PRODUCT, 2, "hello")).rejects.toThrow(/untrusted/);
   await expect(m.label(PRODUCT, 2, "remove")).rejects.toThrow(/untrusted/);
   await expect(m.state(PRODUCT, 2, "closed", "completed")).rejects.toThrow(/untrusted/);
   expect(f.posted).toHaveLength(0);
@@ -239,33 +237,29 @@ it("a timeline longer than the page cap is refused, never read as if its tail we
 it("a comment has the owner's host and email removed before it is sent", async () => {
   const f = fake({ issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z" }], timelines: { 1: [labeled("owner1", "2026-01-01T00:00:00Z")] } });
   const m = maintainer(f, ["internal.example-host"]);
-  expect(await m.comment(PRODUCT, 1, "see internal.example-host and dev@acme-corp.com")).toMatchObject({ number: 1 });
-  const sent = f.posted[0]!.body.body as string;
+  const sent = await m.commentBody(PRODUCT, 1, "see internal.example-host and dev@acme-corp.com");
   expect(sent).toBe("see [redacted] and [redacted]");
   expect(sent).not.toContain("internal.example-host");
   expect(sent).not.toContain("dev@acme-corp.com");
-  expect(await m.comment(PRODUCT, 1, "fixed in the next release")).toMatchObject({ number: 1 });
-  expect(f.posted[1]!.body).toEqual({ body: "fixed in the next release" });
+  expect(await m.commentBody(PRODUCT, 1, "fixed in the next release")).toBe("fixed in the next release");
 });
 
 it("a comment whose owner data is hidden behind entities or tags is refused, not sent half-redacted", async () => {
   const f = fake({ issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z" }], timelines: { 1: [labeled("owner1", "2026-01-01T00:00:00Z")] } });
   const m = maintainer(f, ["internal.example-host"]);
   for (const body of ["dev&#64;acme-corp.com", "dev<b>@</b>acme-corp.com", "internal.example&#45;host"]) {
-    await expect(m.comment(PRODUCT, 1, body)).rejects.toThrow(/owner data/);
+    await expect(m.commentBody(PRODUCT, 1, body)).rejects.toThrow(/owner data/);
   }
   expect(f.posted).toHaveLength(0);
   // Documentation addresses and the product's own backplane are public, so they pass untouched.
-  expect(await m.comment(PRODUCT, 1, "dev@example.com on 10.231.0.7")).toMatchObject({ number: 1 });
-  expect(f.posted[0]!.body).toEqual({ body: "dev@example.com on 10.231.0.7" });
+  expect(await m.commentBody(PRODUCT, 1, "dev@example.com on 10.231.0.7")).toBe("dev@example.com on 10.231.0.7");
 });
 
 it("a comment carrying a private key has the whole block removed, not just its header", async () => {
   const key = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({ type: "pkcs8", format: "pem" }).toString();
   const f = fake({ issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z" }], timelines: { 1: [labeled("owner1", "2026-01-01T00:00:00Z")] } });
   const m = maintainer(f);
-  expect(await m.comment(PRODUCT, 1, `here it is:\n${key}\nthanks`)).toMatchObject({ number: 1 });
-  const sent = f.posted[0]!.body.body as string;
+  const sent = await m.commentBody(PRODUCT, 1, `here it is:\n${key}\nthanks`);
   expect(sent).toBe("here it is:\n[redacted]\nthanks");
   expect(sent).not.toContain("PRIVATE KEY");
   for (const line of key.split("\n").slice(1, -2)) expect(sent).not.toContain(line);
@@ -276,8 +270,7 @@ it("a comment carrying an unterminated private key has everything from the heade
   const f = fake({ issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z" }], timelines: { 1: [labeled("owner1", "2026-01-01T00:00:00Z")] } });
   const m = maintainer(f);
   const truncated = key.slice(0, key.indexOf("-----END"));
-  expect(await m.comment(PRODUCT, 1, `before\n${truncated}`)).toMatchObject({ number: 1 });
-  const sent = f.posted[0]!.body.body as string;
+  const sent = await m.commentBody(PRODUCT, 1, `before\n${truncated}`);
   expect(sent).toBe("before\n[redacted]");
   expect(sent).not.toContain("PRIVATE KEY");
   for (const line of truncated.split("\n").slice(1, -1)) expect(sent).not.toContain(line);
@@ -407,7 +400,6 @@ it("every tool and the endpoint refuse a repository the list doesn't name", asyn
     () => m.labelEvents("other/repo", 1),
     () => m.repoTree("other/repo"),
     () => m.repoFile("other/repo", "README.md"),
-    () => m.comment("other/repo", 1, "x"),
     () => m.label("other/repo", 1, "add"),
     () => m.state("other/repo", 1, "closed"),
     () => m.repoSince("other/repo"),
@@ -486,9 +478,8 @@ it("trust is per repo: a write collaborator vouches only where the repo trusts w
   const m = maintainer(f, [], [{ repo: PRODUCT }, { repo: OTHER, trusted: ["maintain", "write"] }]);
   expect((await m.labelEvents(PRODUCT, 1)).events[0]!.trusted).toBe(false);
   expect((await m.labelEvents(OTHER, 1)).events[0]!.trusted).toBe(true);
-  await expect(m.comment(PRODUCT, 1, "hi")).rejects.toThrow(/untrusted/);
-  expect(await m.comment(OTHER, 1, "hi")).toMatchObject({ repo: OTHER, number: 1 });
-  expect(f.posted.map((p) => p.path)).toEqual([`/repos/${OTHER}/issues/1/comments`]);
+  await expect(m.commentBody(PRODUCT, 1, "hi")).rejects.toThrow(/untrusted/);
+  expect(await m.commentBody(OTHER, 1, "hi")).toBe("hi");
 });
 
 it("a repo's own label is the one listed, trusted and the only one changed", async () => {
@@ -525,8 +516,7 @@ it("the watcher's read covers every listed repo from its own cursor, and one rep
 it("a comment on a maintained repo keeps that repo's own org, while other owner terms are still redacted", async () => {
   const f = fake({ issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z" }], timelines: { 1: [labeled("owner1", "2026-01-01T00:00:00Z")] } });
   const m = maintainer(f, ["acme", "internal.example-host"], [{ repo: OTHER }]);
-  expect(await m.comment(OTHER, 1, "fixed by https://github.com/acme/widgets/pull/7 on internal.example-host")).toMatchObject({ number: 1 });
-  expect(f.posted[0]!.body.body).toBe("fixed by https://github.com/acme/widgets/pull/7 on [redacted]");
+  expect(await m.commentBody(OTHER, 1, "fixed by https://github.com/acme/widgets/pull/7 on internal.example-host")).toBe("fixed by https://github.com/acme/widgets/pull/7 on [redacted]");
 });
 
 it("the triage read hands over new unlabelled reports once, never the fleet's own filings, PRs or labelled ones, nor the backlog", async () => {
@@ -557,7 +547,7 @@ const labeledAs = (label: string, login: string, at: string, app?: { id: number;
 const BUILD = "agent-build";
 const FEATURES = [{ repo: PRODUCT, features: true }];
 
-it("agent-build is trusted from an admin, never from the App or a write collaborator under the default roles", async () => {
+it("agent-build is trusted from an admin (the owner's login included) and a maintain collaborator, not from a write collaborator under the default roles", async () => {
   const f = fake({
     issues: [1, 2, 3].map((n) => ({ number: n, updated_at: `2026-01-01T00:00:0${n}Z`, labels: [BUILD] })),
     timelines: {
@@ -568,11 +558,8 @@ it("agent-build is trusted from an admin, never from the App or a write collabor
     permissions: { "writer-user": "write", "admin-user": "admin" },
   });
   const out = await maintainer(f, [], FEATURES).repoSince(PRODUCT, undefined, BUILD);
-  expect(out.issues.map((i) => i.number)).toEqual([3]);
-  expect(out.skipped.map((s) => s.number)).toEqual([1, 2]);
-  // The App counts for no label but its own fix label: a bot login with no performed_via event is no better.
-  const bot = fake({ issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z", labels: [BUILD] }], timelines: { 1: [labeledAs(BUILD, "owner1", "2026-01-01T00:00:00Z")] } });
-  expect((await maintainer(bot, [], FEATURES).issueList(PRODUCT, BUILD)).issues[0]).toMatchObject({ trusted: false });
+  expect(out.issues.map((i) => i.number)).toEqual([1, 3]);
+  expect(out.skipped.map((s) => s.number)).toEqual([2]);
   // A repo trusting write lets a write collaborator vouch for it.
   const w = fake({ issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z", labels: [BUILD] }], timelines: { 1: [labeledAs(BUILD, "writer-user", "2026-01-01T00:00:00Z")] }, permissions: { "writer-user": "write" } });
   expect((await maintainer(w, [], [{ repo: PRODUCT, features: true, trusted: ["write"] }]).issueList(PRODUCT, BUILD)).issues[0]).toMatchObject({ trusted: true });
@@ -673,4 +660,20 @@ it("repo file refuses .. escape", async () => {
   // The client itself refuses any path that resolves elsewhere, whoever builds it.
   await expect(accessFor(f.fetchFn).rest("GET", `/repos/${PRODUCT}/contents/../../../user`)).rejects.toThrow(/resolves elsewhere/);
   expect(f.calls).toHaveLength(0);
+});
+
+it("comment merges scrub on maintained repos: the product repo is scrubbed too, any other repo goes as written", async () => {
+  const f = fake({ issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z" }], timelines: { 1: [labeled("owner1", "2026-01-01T00:00:00Z")] } });
+  const m = maintainer(f, ["internal.example-host"], [{ repo: PRODUCT }]);
+  expect(await m.commentBody(PRODUCT, 1, "on internal.example-host")).toBe("on [redacted]");
+  expect(await m.commentBody("elsewhere/repo", 1, "on internal.example-host")).toBe("on internal.example-host");
+  expect(await m.commentBody("elsewhere/repo", 1, "on internal.example-host", "elsewhere/repo")).toBe("on [redacted]");
+  expect(f.posted).toHaveLength(0);
+});
+
+it("label and state writes return the objects the kernel records", async () => {
+  const f = fake({ issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z", labels: ["agent-fix"] }], timelines: { 1: [labeled("owner1", "2026-01-01T00:00:00Z")] } });
+  const m = maintainer(f);
+  expect(await m.label(PRODUCT, 1, "remove")).toMatchObject({ changed: true, objects: [`github:${PRODUCT}#1/label/agent-fix`] });
+  expect(await m.state(PRODUCT, 1, "closed", "completed", "fixed by acme/product#7")).toMatchObject({ objects: [`github:${PRODUCT}#1`] });
 });

@@ -7,8 +7,8 @@ import { readFileSync } from "node:fs";
 
 const handbook = readFileSync(new URL("../agents/maintainer/AGENTS.md", import.meta.url), "utf8");
 
-test("the github_app_issue_state bullet states the citation form", () => {
-  const bullet = handbook.slice(handbook.indexOf("- `github_app_issue_state`"));
+test("the github_issue_state bullet states the citation form", () => {
+  const bullet = handbook.slice(handbook.indexOf("- `github_issue_state`"));
   const text = bullet.slice(0, bullet.indexOf("\n\n")).replace(/\s+/g, " ");
   assert.match(text, /Write each PR as `owner\/name#number`/, "names owner/name#number");
   assert.match(text, /full `https:\/\/github\.com\/owner\/name\/pull\/N` URL/, "names the full /pull/ URL");
