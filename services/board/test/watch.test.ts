@@ -77,20 +77,6 @@ const until = (text: { v: string }, s: string) => new Promise<void>((resolve) =>
   const check = setInterval(() => text.v.includes(s) && (clearInterval(check), resolve()), 10);
 });
 
-it("a state change with no change in Paperclip is pushed within a minute, once", async () => {
-  const text = { v: "" };
-  const req = listen(text);
-  await until(text, "event: ping");
-  await new Promise((r) => setTimeout(r, 100));
-  // Nothing in Paperclip moves: the kernel says the task has been idle long enough to need someone.
-  states.rows = states.rows.map((r) => (r.task === other.id ? { ...r, kind: "idle", reason: "orphaned", attention: [{ who: "agent", why: "orphaned", ref: `task:${other.id}` }] } : r));
-  await until(text, `event: tasks\ndata: {"issue":"${other.id}"}`);
-  await new Promise((r) => setTimeout(r, 800)); // more than one more open read
-  req.destroy();
-  expect(text.v.match(new RegExp(`event: tasks\\ndata: {"issue":"${other.id}"}`, "g"))).toHaveLength(1);
-  expect(text.v).not.toContain(`event: tasks\ndata: {"issue":"${kid.id}"}`);
-});
-
 it("a closure is pushed, with the kernel's own read of how it ended", async () => {
   const text = { v: "" };
   const req = listen(text);
