@@ -30,7 +30,7 @@ checks:
 codehost:
   token:
     repos: [ "@agents/*", "@product", "@orgs", "@maintained" ]
-    perms: { pull_requests: read, contents: read, checks: read, statuses: read, issues: read }
+    perms: { pull_requests: read, contents: read, checks: read, statuses: read, issues: read, actions: read }
 labels:
   - { name: grading, color: "#7c3aed" }
 # The board's reads (held parts, wake-ups, rollover, Fleet Ops' stale grades), with its own key, until the board is a module.

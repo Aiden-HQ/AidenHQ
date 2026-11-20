@@ -48,10 +48,10 @@
 //   POST /v1/codehost/:op      (a module's own token) token | snapshot | clone on the code host that owns the repo, under the module's
 //                              codehost grant (codehost.ts)
 //   POST /v1/jobs/workspace    (a module with role kernel.jobs) {task}: the workspace folder it may write into (a task of an agent it dispatches)
-//   GET  /v1/work[?task=|?job=|?agent=|?since=], GET /v1/work/metrics  (a module with role kernel.work-read) the jobs and records
+//   GET  /v1/work[?task=|?job=|?record=|?agent=|?since=], GET /v1/work/metrics  (a module with role kernel.work-read) the jobs and records
 //                              of the kernel's work: a task's, one job, an agent's, the records and billed cost since a time, or what
 //                              runs and ended lately; Prometheus text (work.ts)
-//   GET  /v1/work[?task=|?job=|?agent=|?since=]  (the board) the same reads; never the metrics or a token
+//   GET  /v1/work[?task=|?job=|?record=|?agent=|?since=]  (the board) the same reads; never the metrics or a token
 //   GET  /v1/flow?task=|?item=|?journeys=1|?journey=|?since=[&to=&by=&scope=]  (the board, or a module with role
 //                              kernel.flow-read) Flow's views over the fact log (flow.ts): a task's or item's waterfall, the declared journeys, a journey's items (journeys.ts), the summary with its insights
 //   GET  /v1/tasks/state?ids=|?open=1  (the board, or a module with role kernel.flow-read) each task's one state, computed from
@@ -210,10 +210,11 @@ async function json(req: IncomingMessage, max = 1_000_000): Promise<any> {
   try { return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}"); } catch { throw fail(400, "bad_request", "the body must be JSON"); }
 }
 
-/** GET /v1/work's reads, by query: ?job=, ?task=, ?agent=, ?since=[&to=], ?generations=1, or what runs now (work.ts). */
+/** GET /v1/work's reads, by query: ?job=, ?record=, ?task=, ?agent=, ?since=[&to=], ?generations=1, or what runs now (work.ts). */
 function workRead(work: Work, p: URLSearchParams) {
-  const [job, task, agent, since] = [p.get("job"), p.get("task"), p.get("agent"), p.get("since")];
+  const [job, task, agent, since, record] = [p.get("job"), p.get("task"), p.get("agent"), p.get("since"), p.get("record")];
   if (p.get("generations")) return work.generations();
+  if (record) return work.record(record.slice(0, 40)) ?? (() => { throw fail(404, "not_found", `no record ${record.slice(0, 40)}`); })();
   if (job) return work.job(job.slice(0, 40)) ?? (() => { throw fail(404, "not_found", `no job ${job.slice(0, 40)}`); })();
   if (agent) return work.agent(agent.slice(0, 100));
   if (since) {

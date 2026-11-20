@@ -5,6 +5,8 @@
 //                            `waiting` (claimable wakes: count, oldest_at, oldest_cause) and `last_started_at` say whether dispatch has stalled
 //   GET /v1/work?job=<id>    one job for its run page (the board): state, times, why it ended, its engine's token count, its
 //                            progress (said, plan, steps) and final words (both the agent's: untrusted)
+//   GET /v1/work?record=<id> one write record (an approval card) by its id: state, kind, task, identifier, ok and outcome text
+//                            (the grader resolves a card a report cites; never the card's args or its requester)
 //   GET /v1/work?agent=<id>  an agent's last 50 jobs (newest first), each with how it ended and the routine its task traces to,
 //                            and for the board's timeline the wake that started it, why it ended, its billed cost and the
 //                            records the agent filed while it ran: { jobs }
@@ -83,6 +85,12 @@ export function createWork({ db, records, generationsFile = "" }: { db: Database
       return { records: recs, usage };
     },
     generations: () => fleetGenerations(generationsFile),
+    /** One write record (an approval card) by id, for a reader that only has the id a report cited; null for none. */
+    record(id: string) {
+      const r = records.get(id);
+      if (!r) return null;
+      return { id: r.id, kind: r.kind, state: r.state, task: r.task, identifier: r.identifier ?? null, ok: r.outcome?.ok ?? null, outcome_text: r.outcome?.text ?? null, decided_at: r.decided_at ?? null, updated_at: r.updated_at, created_at: r.created_at };
+    },
     job(id: string) {
       const r = rows("SELECT * FROM jobs WHERE id = ?", id)[0];
       if (!r) return null;
