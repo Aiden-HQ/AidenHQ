@@ -177,3 +177,26 @@ test("a chat awaiting the owner's next message is never swept", async (t) => {
   assert.deepEqual(await w.idle.sweep(), ["t1"]);
   assert.ok(!w.reads.includes("t3"));
 });
+
+test("an ask fails closed: an unreadable state sends nothing; an answered wait lets a later ask go", async (t) => {
+  const w = world(t);
+  let unreadable = false;
+  const sent = [];
+  const esc = createEscalate({ db: w.db, issue: async (id) => ({ id, identifier: id.toUpperCase(), status: "todo", assigneeAgentId: AGENT }), state: (id) => (unreadable ? undefined : w.row(id)), asker: async () => ({ name: "Kai", key: "kai", roles: [] }), notice: () => {}, owner: (n) => sent.push(n), now: w.now });
+  assert.equal(await esc.ask("t1", "owner", "keep v1?"), "asked");
+  unreadable = true;
+  w.tick(60 * MIN);
+  assert.equal(await esc.ask("t1", "owner", "keep v1?"), "open");
+  assert.equal(sent.length, 1);
+  unreadable = false;
+  w.tick(MIN);
+  assert.equal(await esc.ask("t1", "owner", "again?"), "asked", "no wait recorded and the grace passed: a new ask");
+  w.tick(MIN);
+  await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "x", for: "owner", asked: true, question: "again?" });
+  assert.equal(await esc.ask("t1", "owner", "third?"), "open");
+  w.tick(MIN);
+  w.add("task.commented", "task:t1", "t1", { kind: "owner" }, "account:o1");
+  w.tick(10 * MIN);
+  assert.equal(await esc.ask("t1", "owner", "third?"), "asked");
+  assert.equal(sent.length, 3);
+});
