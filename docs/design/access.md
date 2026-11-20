@@ -44,8 +44,10 @@ lets in. Everything else on that interface is dropped, and 80 is closed in every
   - leaving `public`, it closes 443 and 8446 before the apply removes Caddy;
   - entering `public`, it opens them after the apply has compiled Caddy;
   - leaving `tailscale` on a host that stays on the tailnet, it turns off the board's two `tailscale serve` doors.
-  No board page or agent changes the mode. The firewall is rendered only by root's `ops/vm/setup.sh`, and compile refuses
-  `public` unless setup wrote the public URLs into `.env`.
+  Asked for `tailscale` on a host not yet signed in to a tailnet, it installs Tailscale, moves nothing else and stops
+  with the sign-in step (`sudo tailscale up`, then the same command again). No board page or agent changes the mode:
+  the firewall is rendered only by root's `ops/vm/setup.sh`, and setup writes the mode into `.env` (`AIDENHQ_EXPOSURE`),
+  where compile refuses an instance whose `settings.exposure` differs.
 - **Applying a mode.** Compile writes it to `config/exposure`. `ops/vm/setup.sh` writes the mode setup passes it (else
   the compiled one) beside `PUBLIC_IF` in `/etc/default/aidenhq-public-fw`, and the boot-time unit reapplies it. An
   unknown mode there gets SSH only.
