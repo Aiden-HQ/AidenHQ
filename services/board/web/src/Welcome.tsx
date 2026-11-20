@@ -123,7 +123,6 @@ function Wizard({ state, onFinished }: { state: WelcomeState & { orgs: boolean }
               <Steps text={mcpSteps(location.origin)} />
               <div className="setup-actions">
                 <button className="btn primary" onClick={next}>Continue</button>
-                <button className="btn" onClick={next}>Skip</button>
               </div>
             </section>
           </Page>
