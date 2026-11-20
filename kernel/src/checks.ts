@@ -46,7 +46,7 @@ export function checksFile(file: string): () => Record<string, Check> {
   };
 }
 
-export function createChecks({ db, registry, owner, secret, resolver, agentKey = () => undefined, graded = () => false, pending = () => [], localChanges = async () => [], log = () => {} }: {
+export function createChecks({ db, registry, owner, secret, resolver, agentKey = () => undefined, graded = () => false, pending = () => [], localChanges = async () => [], released = async () => {}, log = () => {} }: {
   db: DatabaseSync; registry: () => Record<string, Check>; owner: Api; secret: (n: string) => string; resolver: Resolver;
   /** An agent id's key (the grants table), for a check scoped to `agents`. */
   agentKey?: (id: string) => string | undefined;
@@ -56,6 +56,8 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
   pending?: (task: string) => { id: string; kind: string }[];
   /** A task's own change requests on this server that are still open (codehost-local's host), with their checks: none may when it closes. */
   localChanges?: (task: { id: string; identifier?: string }) => Promise<{ url: string; checks: { ok: boolean; pending: boolean }[] }[]>;
+  /** A hold released to the task's delegator (an escalated grade): with no open delegator, the chief of staff hears it (escalate.ts). */
+  released?: (task: string, check: string) => Promise<unknown>;
   log?: (msg: string, f?: Record<string, unknown>) => void;
 }) {
   db.exec("CREATE TABLE IF NOT EXISTS check_holds (task TEXT NOT NULL, check_id TEXT NOT NULL, at TEXT NOT NULL, PRIMARY KEY (task, check_id))");
@@ -254,6 +256,8 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
       strict(verdictFact(i.id, id, String(b.verdict)));
     });
     log("finish check resolved", { task: i.identifier, check: id, verdict: b.verdict });
+    // Released with nobody to decide it: the chief of staff gets it. A failure is logged loudly; the release itself stands.
+    if (b.verdict === "release") await released(i.id, id).catch((e: Error) => log("released hold reached nobody: the chief of staff wasn't told", { task: i.identifier, check: id, err: String(e.message).slice(0, 300) }));
     return { ok: true };
   }
   /**

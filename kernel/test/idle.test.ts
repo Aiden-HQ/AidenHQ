@@ -56,7 +56,7 @@ function world(t) {
   const rows = () => db.prepare("SELECT key, cause, state FROM wakes ORDER BY at, key").all().map((r) => `${r.key.replace(/:[0-9TZ:.-]+$/, "")} ${r.cause} ${r.state}`);
   /** A job on t1 from its wake to its end. */
   const job = (id) => { add("job.queued", `job:${id}`, "t1"); add("job.started", `job:${id}`, "t1"); clock += MIN; add("job.ended", `job:${id}`, "t1", { state: "done" }); };
-  return { db, facts, idle, wakes, row, add, job, rows, reads, asked, who, issues, down: (v) => (down = v), tick: (ms) => (clock += ms), now: () => clock };
+  return { db, facts, idle, escalate, wakes, row, add, job, rows, reads, asked, who, issues, down: (v) => (down = v), tick: (ms) => (clock += ms), now: () => clock };
 }
 
 test("an agent-held task orphaned 15 minutes gets an idle wake, again 15 minutes after one is dropped, at most 3 a day; the owner's task none and isn't read", async (t) => {
@@ -189,6 +189,18 @@ test("a delegator question goes to the open delegator, else the chief of staff (
   w.who.roles = ["fleet-admin"];
   assert.equal((await w.idle.wait({ agent: AGENT, key: "aiden", task: "t1" }, ask)).to, "owner", "never back to itself");
   assert.equal(w.asked.owner.length, 1);
+});
+
+test("an escalated grade nobody delegated goes to the chief of staff, once per escalation; with an open delegator, nobody else is told", async (t) => {
+  const w = world(t);
+  const text = (id) => ({ body: `${id}'s finish waits on a decision`, ownerText: "x" });
+  assert.equal(await w.escalate.undelegated("t1", "release:t1", text), "delegator", "the open parent reads it as its wait");
+  w.issues.t0.status = "done";
+  assert.equal(await w.escalate.undelegated("t1", "release:t1", text), "chief_of_staff");
+  assert.equal(await w.escalate.undelegated("t1", "release:t1", text), "chief_of_staff", "the next escalation is a new episode");
+  assert.deepEqual(w.asked.chief.map((c) => [c.title, c.source.slice(0, 11)]), [["Decide for the owner: T1 (Kai)", "escalation:"], ["Decide for the owner: T1 (Kai)", "escalation:"]]);
+  assert.notEqual(w.asked.chief[0].source, w.asked.chief[1].source);
+  assert.equal(w.asked.owner.length, 0);
 });
 
 test("an asked owner wait: recorded and not sent while the owner talks to the agent there; otherwise the chief of staff gets it; a handoff waits on the owner", async (t) => {

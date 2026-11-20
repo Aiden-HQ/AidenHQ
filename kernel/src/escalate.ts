@@ -105,7 +105,7 @@ export function createEscalate({ db, issue, state, asker, notice, owner, chief, 
       source,
     });
   }
-  return {
+  const api = {
     /** The ask's durable marker, written with the wait fact (one transaction: no awaiting); each recorded ask is a new episode. */
     record(task: string, who: "owner" | "delegator") {
       db.prepare("INSERT OR REPLACE INTO escalations (key, task, kind, at) VALUES (?, ?, ?, ?)").run(`ask:${task}`, task, who, now());
@@ -123,6 +123,18 @@ export function createEscalate({ db, issue, state, asker, notice, owner, chief, 
       const to = await send(t, text(t.identifier ?? t.id), `escalation:${createHash("sha256").update(key).digest("hex").slice(0, 32)}`);
       mark(key, t.id, "delegator");
       return to;
+    },
+    /**
+     * A judgement a finish check handed to the task's delegator (a grade escalated, checks.ts `release`): the open delegator
+     * already reads it as waiting on them; with none, the chief of staff gets it (one task per escalation: `key`, a prefix,
+     * takes the episode), so no escalation waits on nobody.
+     */
+    async undelegated(task: string, key: string, text: (id: string) => { body: string; ownerText: string }): Promise<"delegator" | "chief_of_staff" | "owner" | "seen" | "gone"> {
+      const t = await issue(task);
+      if (!t || CLOSED.includes(String(t.status))) return "gone";
+      if (await delegatorOf(t)) return "delegator";
+      const episode = (db.prepare("SELECT COUNT(*) AS n FROM escalations WHERE key LIKE ?").get(`${key}:%`) as { n: number }).n;
+      return api.delegator(t.id, `${key}:${episode}`, text);
     },
     /**
      * The agent waiting on `task` asks `who` its question. The owner hears it directly only from the chief of staff, or on a
@@ -149,6 +161,7 @@ export function createEscalate({ db, issue, state, asker, notice, owner, chief, 
       return { sent: "asked", to };
     },
   };
+  return api;
 
   /** To the task's open delegator as a wake notice, else the chief of staff, else (the chief of staff's own task) the owner. */
   async function send(t: Issue, { body, ownerText }: { body: string; ownerText: string }, source: string): Promise<AskTo> {
