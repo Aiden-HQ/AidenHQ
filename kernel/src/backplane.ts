@@ -78,6 +78,10 @@
 //                              branch; every branch on this server), which the box clones, or fetches into its clone, itself
 //   GET  /v1/advisories        (the board's key) the marketplace advisories open against installed modules (advisories.ts)
 //   GET  /v1/connections/health (the board's key) every connection's /healthz as the kernel reaches it -> {probes: {name: {ok, status?, state?, detail?, channels?, checkedAt}}} (health.ts)
+//   POST /v1/connections/:module/ok  (the board's key) a sign-in or setup flow of that module finished: its down state clears and
+//                              the tasks waiting on it wake -> {woken} (connection-state.ts); 404 for a module with no connection
+//   GET  /v1/connections/down?agent=  (a module with role kernel.jobs) the agent's granted connections that are down ->
+//                              {down: [{connection, module, cause, since}]}: names, causes and dates only (the dispatch preamble)
 //   POST /v1/auth/:op, /v1/auth/mcp/:op, /v1/owner/{decide,update}, /v1/accounts/:op, /v1/apps/:op, /v1/operator/:op  the accounts' routes (auth-api.ts): module UI
 //                              sessions and account admin (the board), in-app requests (apps-platform), setup links (operator)
 //   POST /v1/health/probe      (the host's health_probe_key, x-health-key) {probe}: one of the modules' declared health probes (health.ts), called as the
@@ -114,6 +118,7 @@ import { wakeNotice, type Wakes } from "./wakes.ts";
 import type { ModuleTasks } from "./modtasks.ts";
 import { CONN_TOOL, type Writes } from "./writes.ts";
 import { requestChain } from "./review-loop.ts";
+import type { ConnectionState } from "./connection-state.ts";
 
 const MAX_ATTACHMENT = 25 * 1024 * 1024;
 type Handler = (req: IncomingMessage, res: ServerResponse, ...a: string[]) => Promise<void>;
@@ -192,6 +197,8 @@ export const ROUTES = [
   { method: "POST", path: "/v1/checkout", auth: "job" },
   { method: "GET", path: "/v1/advisories", auth: "board" },
   { method: "GET", path: "/v1/connections/health", auth: "board" },
+  { method: "POST", path: "/v1/connections/:module/ok", auth: "board" },
+  { method: "GET", path: "/v1/connections/down", auth: "module" },
   { method: "POST", path: "/v1/settings/change", auth: "board" },
   { method: "POST", path: "/v1/validate", auth: "board" },
   { method: "POST", path: "/v1/stop", auth: "board" },
@@ -264,7 +271,7 @@ function flowRead(flow: Flow, p: URLSearchParams) {
   return flow.summary({ since, to, by: by as By, scope: p.get("scope")?.slice(0, 100) || undefined, journey: p.get("insights")?.slice(0, 100) || undefined });
 }
 
-export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boardCp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, reviewerKey = () => "", jobs, codehost, admission, outcomes, wakes, tasks, eventsKey = () => "", work, flow, taskStates, repos = () => ({}), graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, checkJobs, jobTools, precheck, repoBundle, ownerRaw, lane, healthProbe, healthKey = () => "", connectionHealth, settingsChange, validate, routing, boardApi: moduleBoardApi, log = () => {} }: {
+export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boardCp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, reviewerKey = () => "", jobs, codehost, admission, outcomes, wakes, tasks, eventsKey = () => "", work, flow, taskStates, repos = () => ({}), graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, checkJobs, jobTools, precheck, repoBundle, ownerRaw, lane, healthProbe, healthKey = () => "", connectionHealth, connectionState, settingsChange, validate, routing, boardApi: moduleBoardApi, log = () => {} }: {
   /** Flow's fact log (facts.ts): POST /v1/facts. */
   facts?: Facts;
   /** An agent's own wait on its job's task (idle.ts): POST /v1/wait. */
@@ -324,6 +331,8 @@ export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boar
   healthKey?: () => string;
   /** Every connection's /healthz (health.ts createConnectionHealth). */
   connectionHealth?: () => Promise<Record<string, unknown>>;
+  /** Connect on first use (connection-state.ts): the board's /ok and the dispatcher's down list. */
+  connectionState?: Pick<ConnectionState, "ok" | "downFor" | "has">;
   /** The owner's typed settings change on their settings task (settings-change.ts). */
   /** A module's own check of settings the board is about to file (module-validate.ts). */
   validate?: (module: string, input: { settings?: Record<string, unknown> }) => Promise<unknown>;
@@ -524,6 +533,20 @@ export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boar
           if (!isBoard(req)) throw fail(401, "unauthorized", "the board's key is required");
           if (!boardCp) throw fail(503, "unavailable", "the board's control-plane routes are off");
           return await boardCp(req, res, read ? "read" : "owner", m[0]!, query);
+        }
+        case "POST /v1/connections/:module/ok": {
+          if (!isBoard(req)) throw fail(401, "unauthorized", "the board's key is required");
+          if (!connectionState) throw fail(503, "unavailable", "connection state is off");
+          if (!connectionState.has(m[0]!)) throw fail(404, "not_found", `no connection of module ${m[0]}`);
+          return send(res, 200, { woken: connectionState.ok(m[0]!) });
+        }
+        case "GET /v1/connections/down": {
+          const w = await moduleOf(req);
+          if (!w.roles.includes("kernel.jobs")) throw fail(403, "forbidden", `${w.module} may not read connection state (role kernel.jobs)`);
+          if (!connectionState) throw fail(503, "unavailable", "connection state is off");
+          const agent = new URLSearchParams(q ?? "").get("agent") ?? "";
+          if (!/^[\w-]{1,100}$/.test(agent)) throw fail(400, "bad_request", "send ?agent=<id>");
+          return send(res, 200, { down: connectionState.downFor(agent) });
         }
         case "GET /v1/connections/health": if (!isBoard(req)) throw fail(401, "unauthorized", "the board's key is required"); return send(res, 200, { probes: connectionHealth ? await connectionHealth() : {} });
         case "GET /v1/advisories": if (!isBoard(req)) throw fail(401, "unauthorized", "the board's key is required"); return send(res, 200, { advisories: advisories() });

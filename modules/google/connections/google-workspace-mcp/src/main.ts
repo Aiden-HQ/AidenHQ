@@ -5,9 +5,8 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import pino from "pino";
 import { z } from "zod";
-import { checkGoogle, healthBody, MultiWorkspace } from "./accounts.js";
+import { checkGoogle, healthBody, MultiWorkspace, toolFailure } from "./accounts.js";
 import { FixtureWorkspace } from "./fixtures.js";
-import { GoogleAuthError } from "./google.js";
 import { Reconnect, ReconnectError } from "./reconnect.js";
 import { kernelJwks, verifyCaller, type Caller } from "./aidenhq-sdk/caller.js";
 import { SourceStore } from "./source-store.js";
@@ -100,13 +99,12 @@ function buildServer(): McpServer {
   const run =
     <A,>(name: string, fn: (ws: WorkspaceLike, a: A) => Promise<unknown>) =>
     async (a: A) => {
-      if (!workspace) return { isError: true, content: [{ type: "text" as const, text: JSON.stringify({ error: "google_auth_unavailable", detail: authMessage() }) }] };
+      if (!workspace) return toolFailure(authError, false);
       try {
         return { content: [{ type: "text" as const, text: JSON.stringify(await fn(workspace, a), null, 2) }] };
       } catch (err) {
-        const auth = err instanceof GoogleAuthError;
         log.warn({ tool: name, err: (err as Error).message }, "tool failed");
-        return { isError: true, content: [{ type: "text" as const, text: JSON.stringify({ error: auth ? "google_auth_failed" : "google_api_error", detail: (err as Error).message.slice(0, 300) }) }] };
+        return toolFailure(err);
       }
     };
 

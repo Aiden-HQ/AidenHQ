@@ -53,6 +53,7 @@ import { createDeploys } from "./generations.ts";
 import { createFlow } from "./flow.ts";
 import { createTaskStateRead } from "./task-state-read.ts";
 import { createIdle } from "./idle.ts";
+import { createConnectionState, type ConnectionState } from "./connection-state.ts";
 import { CHIEF, CONVERSING_MS, createEscalate, ownerWroteAt } from "./escalate.ts";
 import { pidAlive, recordKernel } from "./previous.ts";
 import { createReviews, type ReviewerSlot } from "./reviews.ts";
@@ -221,7 +222,9 @@ const writes = createWrites({
   executors: (): Record<string, Executor> => (localHost() ? { "codehost-local": localCode.executor } : {}),
   resume: ["kernel.apply"],
 });
-const proxy = createProxy({ whoami, connections, asserter, resolver, secret, writes, log });
+// Connect on first use (connection-state.ts): built below once notify, wakes and idle are; the proxy reads it late-bound.
+let connectionState: ConnectionState | undefined;
+const proxy = createProxy({ whoami, connections, asserter, resolver, secret, writes, needs: () => connectionState, log });
 replay = proxy.replay as never;
 const healthProbe = createHealthProbe({ grants: () => grantsTable().agents ?? {}, connections, kindOf: writes.kindOf, callAs: proxy.callAs, log });
 // JSON both ways: the control plane as the owner (only the kernel holds the board key), and the board's internal listener with
@@ -241,14 +244,16 @@ const notify = createNotify({ db: records.db, modules: modulesFile, secret, reso
 const toOwner = (kind: "alert" | "done") => (text: string) => notify.queue({ kind, text });
 // A judgement a task can't make for itself (a parked target, an agent's wait on its delegator or the owner) reaches whoever
 // can make it, once (escalate.ts).
+// A task as the control plane has it now (undefined when gone; throws when it can't be read now): escalate and connection state.
+const escalateIssue = async (id: string) => {
+  const r = await cpApi(`/api/issues/${encodeURIComponent(id)}`);
+  if (r.status === 404) return undefined;
+  if (!r.ok) throw Object.assign(new Error(`control plane GET task ${id} → ${r.status}`), { status: r.status });
+  return (await r.json()) as never;
+};
 const escalate = createEscalate({
   db: records.db, log,
-  issue: async (id) => {
-    const r = await cpApi(`/api/issues/${encodeURIComponent(id)}`);
-    if (r.status === 404) return undefined;
-    if (!r.ok) throw Object.assign(new Error(`control plane GET task ${id} → ${r.status}`), { status: r.status });
-    return (await r.json()) as never;
-  },
+  issue: escalateIssue,
   state: (id) => taskStates.read({ ids: [id] }).tasks[0],
   // The owner channel's attention reads the agent's key and roles (the grants table), as it does for the agent's own notify.
   asker: async (id) => {
@@ -455,6 +460,18 @@ every(() => {
 }, (Number(env("AIDENHQ_WAKE_POLL_SECONDS", "")) || 60) * 1000);
 // No idle agent-held task (idle.ts): agents' own waits (POST /v1/wait), and the idle sweep every 5 minutes.
 const idle = createIdle({ db: records.db, facts, state: taskStates, wakes, owner: ownerApi, team: (id) => Boolean(grantsTable().agents?.[id]?.team), escalate, log });
+// A connection only the owner can fix: the owner hears in their own conversation, background work gets the digest (connection-state.ts).
+connectionState = createConnectionState({
+  db: records.db, idle, wakes, queue: notify.queue, log,
+  issue: (id) => escalateIssue(id),
+  comments: async (id) => { const c = await cpJson(`/api/issues/${encodeURIComponent(id)}/comments?order=desc&limit=50`); return Array.isArray(c) ? c : []; },
+  agentName: async (id) => String(((await cpJson(`/api/agents/${encodeURIComponent(id)}`)) as { name?: string }).name ?? "") || "AidenHQ",
+  label: (m) => m.charAt(0).toUpperCase() + m.slice(1),
+  connections, grants: () => grantsTable().agents ?? {},
+  // The board's origin (declared below; read only when a need is routed, after the listeners are up).
+  boardUrl: () => boardOrigins[0] ?? "http://localhost:3121",
+});
+every(() => connectionState?.tick(), 10 * 60_000);
 let sweeping = false;
 every(() => {
   if (sweeping) return;
@@ -623,7 +640,7 @@ async function precheck(who: Parameters<typeof writes.preview>[0], b: { kind: st
   const said = v.decision === "approve" ? (panel ? "would approve it, and a second reviewer would still be asked" : "would approve it") : v.decision === "reject" ? "would reject it" : "would leave it to the owner";
   return { decision: v.decision, text: `${v.model === "kernel/code" ? "The kernel's own rules" : `The AI reviewer (${v.model})`} ${said}. Nothing was filed.`, reason: v.reason };
 }
-const backplane = createBackplane({ idle, boardApi: moduleBoardApi, facts, repos: codehostRepos, healthProbe, settingsChange, validate: moduleValidate, routing, connectionHealth: createConnectionHealth({ connections, resolver }), healthKey: () => secret("health_probe_key"), codehost: codehost.op, checks, checkJobs, lane, whoami, asserter, grantsFile: grantsTable, log, writes, records, channels, brake, notify, owner: ownerApi, ownerRaw: (p) => cpApi(p), modules: modulesFile, boardKey: () => secret("gateway_board_key"), reviews, reviewerKey: () => secret("reviewer_key"), jobs, admission, outcomes, wakes, tasks: moduleTasks, work, flow, taskStates, graderToken, dropGraderToken: (task) => graderTokens.delete(task), eventsKey: () => secret("paperclip_events_key"), jobTools, precheck, repoBundle: (module: string, repo: string) => codehost.ask(module, "bundle", { repo, ref: "HEAD" }), advisories: advisories.list, accounts: createAuthApi({ accounts: () => accounts, whoami, boardKey: () => secret("gateway_board_key"), recoveryKeyWaiting: () => Boolean(firstRun.recoveryKey()), modelReady: model.ready, operatorKey: () => secret("board_operator_key"), secrets: moduleSecrets, decide: channels.decideCard, update: (to, by) => updates.requestMain(to, by), validate: moduleValidate }), proxy: (req, res, c) => proxy(req, res, c!), cp: createCp({ appOwners: () => appOwners(), asserter, whoami, plugin, once: outcomes.once, agentKey: (id) => secret(`paperclip-agents/${id}`), grants: () => grantsTable().agents ?? {}, fleetIssues: () => String(grantsTable().fleet_issues ?? ""), controlUrl, checks, provenance, observe: wakes.observe, log }) as never, boardCp: createBoardCp({ controlUrl, key: () => secret("paperclip_board_key"), fetch: ownerFetch, observe: wakes.observe, facts, log, onRoutine: (id) => void records.db.prepare("INSERT OR IGNORE INTO board_routines (id) VALUES (?)").run(id) }) as never });
+const backplane = createBackplane({ idle, boardApi: moduleBoardApi, facts, repos: codehostRepos, healthProbe, settingsChange, validate: moduleValidate, routing, connectionHealth: createConnectionHealth({ connections, resolver }), connectionState, healthKey: () => secret("health_probe_key"), codehost: codehost.op, checks, checkJobs, lane, whoami, asserter, grantsFile: grantsTable, log, writes, records, channels, brake, notify, owner: ownerApi, ownerRaw: (p) => cpApi(p), modules: modulesFile, boardKey: () => secret("gateway_board_key"), reviews, reviewerKey: () => secret("reviewer_key"), jobs, admission, outcomes, wakes, tasks: moduleTasks, work, flow, taskStates, graderToken, dropGraderToken: (task) => graderTokens.delete(task), eventsKey: () => secret("paperclip_events_key"), jobTools, precheck, repoBundle: (module: string, repo: string) => codehost.ask(module, "bundle", { repo, ref: "HEAD" }), advisories: advisories.list, accounts: createAuthApi({ accounts: () => accounts, whoami, boardKey: () => secret("gateway_board_key"), recoveryKeyWaiting: () => Boolean(firstRun.recoveryKey()), modelReady: model.ready, operatorKey: () => secret("board_operator_key"), secrets: moduleSecrets, decide: channels.decideCard, update: (to, by) => updates.requestMain(to, by), validate: moduleValidate }), proxy: (req, res, c) => proxy(req, res, c!), cp: createCp({ appOwners: () => appOwners(), asserter, whoami, plugin, once: outcomes.once, agentKey: (id) => secret(`paperclip-agents/${id}`), grants: () => grantsTable().agents ?? {}, fleetIssues: () => String(grantsTable().fleet_issues ?? ""), controlUrl, checks, provenance, observe: wakes.observe, log }) as never, boardCp: createBoardCp({ controlUrl, key: () => secret("paperclip_board_key"), fetch: ownerFetch, observe: wakes.observe, facts, log, onRoutine: (id) => void records.db.prepare("INSERT OR IGNORE INTO board_routines (id) VALUES (?)").run(id) }) as never });
 // The admin listener's accounts (data/kernel/auth/auth.db) and pages. Accounts not moved yet, or a malformed URL setting: the
 // listener refuses while every other part of the kernel serves.
 const urlOf = (v: string) => { try { return v ? new URL(v) : undefined; } catch { log("ignoring a malformed URL setting", { value: v.slice(0, 100) }); return undefined; } };
