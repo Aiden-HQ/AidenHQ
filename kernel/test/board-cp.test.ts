@@ -65,3 +65,13 @@ test("an owner's comment through the proxy is a task.commented fact at its own t
   await createBoardCp({ controlUrl: "http://cp", key: () => "k", fetch, facts: { record: (f) => void recorded.push(f) } })(req, res, "owner", "/api/issues/t1/comments", "");
   assert.deepEqual(recorded.map((f) => [f.type, f.task, f.version, f.at, f.actor, f.data]), [["task.commented", "t1", "c9", "2026-11-20T10:00:00.000Z", "account:acct_2", { kind: "comment" }]]);
 });
+
+test("a routine the board makes for a recurring task is recorded as the owner's; other routines aren't", async () => {
+  const { createBoardCp } = await import("../src/cp.ts");
+  const made = [];
+  const cp = createBoardCp({ controlUrl: "http://cp.test", key: () => "k", fetch: async () => new Response(JSON.stringify({ id: "r-9" }), { status: 201 }), onRoutine: (id) => made.push(id) });
+  const post = (title) => cp({ method: "POST", headers: {}, async *[Symbol.asyncIterator]() { yield Buffer.from(JSON.stringify({ title })); } }, { writeHead() { return { end() {} }; } }, "owner", "/api/companies/11111111-1111-1111-1111-111111111111/routines", "");
+  await post("Repeats: PEN-1");
+  await post("Heartbeat: x");
+  assert.deepEqual(made, ["r-9"]);
+});
