@@ -11,7 +11,7 @@ import type { Paperclip } from "../src/paperclip.js";
 import { Store } from "../src/store.js";
 import { fakeRecords } from "./fake-records.js";
 
-// The compiled config as scripts/modules.mjs writes it (paperclip.yaml, modules.json) and the grants table setup writes.
+// The compiled config as scripts/modules.ts writes it (paperclip.yaml, modules.json) and the grants table setup writes.
 const dir = mkdtempSync(join(tmpdir(), "settings-"));
 const files = { compiled: join(dir, "paperclip.yaml"), catalog: join(dir, "modules.json"), grants: join(dir, "grants.json") };
 writeFileSync(

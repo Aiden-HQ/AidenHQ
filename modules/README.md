@@ -37,7 +37,7 @@ Connect opens once it is live (Primer: connect or self-host).
 
 ## Test locally
 
-Each module package is a CI suite of its own (`.github/ci/areas.json`, job `modules`); `node scripts/ci-local.mjs` runs the
+Each module package is a CI suite of its own (`.github/ci/areas.json`, job `modules`); `node scripts/ci-local.ts` runs the
 suites your diff touches. By hand, from the repository root:
 
 ```sh

@@ -59,7 +59,7 @@ type Deps = {
   log?: (msg: string, f?: Record<string, unknown>) => void;
 };
 
-/** What the listener serves: the router dispatches from this table and scripts/lean/contract-lock.mjs reads it. */
+/** What the listener serves: the router dispatches from this table and scripts/lean/contract-lock.ts reads it. */
 export const ROUTES = [
   { method: "GET", path: "/healthz", auth: "none" },
   { method: "GET", path: "/setup", auth: "setup-token" },

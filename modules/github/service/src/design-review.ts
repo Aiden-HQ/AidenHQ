@@ -15,7 +15,7 @@
 // also answers for a control-plane blip) only after MISSES in a row.
 import { readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { DESIGN_REVIEW, PR_QUERY, prTouchesUi, supersededDesignReview } from "./merge-gate.mjs";
+import { DESIGN_REVIEW, PR_QUERY, prTouchesUi, supersededDesignReview } from "./merge-gate.ts";
 
 type Json = any;
 type Gh = (method: string, path: string, token: string, body?: unknown) => Promise<{ status: number; body: any }>;

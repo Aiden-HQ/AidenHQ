@@ -138,7 +138,7 @@ Generated Caddyfile (compile writes it, from the detected public IP):
 }
 ```
 
-- **As built (U2, `scripts/front-door.mjs`).** Since lean-core 3a, sign-in lives on the kernel's admin listener (3120),
+- **As built (U2, `scripts/front-door.ts`).** Since lean-core 3a, sign-in lives on the kernel's admin listener (3120),
   which needs its own origin. So Caddy serves two sites on the one IP, as `tailscale serve` does: `https://<ip>` → the
   board and `https://<ip>:8446` → the admin listener, which alone gets the two headers. Public mode opens tcp 8446 too.
   Each site names its ACME issuer (a global `cert_issuer` let Caddy pick its local CA for the IP), and `default_sni`
@@ -337,7 +337,7 @@ Today:
 
 In public mode:
 - **With a domain**, every app goes through the gate. No app is exposed directly.
-  - Compile gains an `ingress: caddy` arm in `scripts/edge.mjs` beside cloudflared's. Every `share.host`, the my-apps
+  - Compile gains an `ingress: caddy` arm in `scripts/edge.ts` beside cloudflared's. Every `share.host`, the my-apps
     host and the preview wildcard go to `127.0.0.1:3130` (the gate), and nothing else. The existing `checkIngress`
     refusal applies to the Caddyfile.
   - `app_login` defaults to `password`. Sign-in happens on `apps.<domain>`, and each app host gets its own `__Host-`
@@ -396,7 +396,7 @@ New in all modes:
 | Mode | Checks |
 |---|---|
 | `public` | From outside (the host's public IP, a request with `--resolve`): <br>- 443 serves a publicly trusted certificate for the IP with more than 24 hours left; <br>- `/api/board` without a session gives 401; <br>- 80, 3100, 3120-3131 and 8765 are closed on the public IP. <br><br>Also: <br>- Caddy's routes are the board plus the gate's compiled hosts only; <br>- Caddy strips a client-sent `X-AidenHQ-Edge` (a probe through 443 with a forged one is treated as unauthenticated); <br>- the owner account has TOTP enrolled, or no owner exists yet. |
-| `tailscale` | Existing `scripts/host-serve.mjs check`, run inside `edge-tailscale`: the board node serves only Paperclip, the board and Grafana. <br>Also: <br>- `apps-edge` has its own node name; <br>- 443 is closed on the public IP; <br>- Funnel is off on both nodes. |
+| `tailscale` | Existing `scripts/host-serve.ts check`, run inside `edge-tailscale`: the board node serves only Paperclip, the board and Grafana. <br>Also: <br>- `apps-edge` has its own node name; <br>- 443 is closed on the public IP; <br>- Funnel is off on both nodes. |
 | `cloudflare` | Existing `checkIngress`; every ingress rule targets the board or the gate; 443 is closed on the public IP; the board's host requires Access. |
 | `local` | No front door; only 22 open on the public interface. Lima: 3121 and 3130 are reached only through Lima's forwarder (the guest's public-interface rule still applies). |
 
@@ -471,11 +471,11 @@ Order: U1 → (U2, U3 in parallel) → U4 → U5, U6 → U7, U8. No public port 
 | Unit | PR title | What changes | Tests | Notes |
 |---|---|---|---|---|
 | **U1** | `feat(board): trusted client address from the front door, address bans and sign-in notices` | `accounts.ts` changes: <br>- `X-AidenHQ-Client-IP` on 3121 only with `edge_board_secret` (a new generated secret in compile); <br>- a per-address ban (20 in 15 minutes → 1 hour); <br>- an account-wide alert (no lock); <br>- a new-session notice; <br>- setup-link TTL 24 hours in public mode; <br>- `--reset` prints on the terminal while the owner has never enrolled TOTP. | Two vitest cases: a forged address without the secret locks only the socket address, and 20 failures from one address across emails get banned. | Board sign-in is gate core: panel review and the paid reviewer eval apply. |
-| **U2** | `feat(ops): the exposure setting and a Caddy front door with an IP certificate` | `settings.exposure` in `modules.mjs` and `compile.mjs`; generated `caddy` service and Caddyfile; `BOARD_LAN_*` derived from the mode; `apps-edge` moved into generated compose for `tailscale` only. | `scripts/test` compile cases per mode. | Exit check: live staging issuance of an IPv4 certificate over TLS-ALPN-01 on a throwaway VM. |
-| **U3** | `feat(ops): mode-aware public firewall and host features from pins.json` | `public-fw.sh` renders its ports from the mode. `pins.json` gains `features`; `ops/vm/setup.sh` installs the compiled union. Tailscale is out of the base. Also: ufw detection, the root helper units, and `github-app-setup.mjs` bound to loopback. | A `pins.mjs` CI check over `features`; `public-fw.sh --check` per mode. | Supply chain: `pins.mjs` dates every feature pin. |
+| **U2** | `feat(ops): the exposure setting and a Caddy front door with an IP certificate` | `settings.exposure` in `modules.ts` and `compile.ts`; generated `caddy` service and Caddyfile; `BOARD_LAN_*` derived from the mode; `apps-edge` moved into generated compose for `tailscale` only. | `scripts/test` compile cases per mode. | Exit check: live staging issuance of an IPv4 certificate over TLS-ALPN-01 on a throwaway VM. |
+| **U3** | `feat(ops): mode-aware public firewall and host features from pins.json` | `public-fw.sh` renders its ports from the mode. `pins.json` gains `features`; `ops/vm/setup.sh` installs the compiled union. Tailscale is out of the base. Also: ufw detection, the root helper units, and `github-app-setup.mjs` bound to loopback. | A `pins.ts` CI check over `features`; `public-fw.sh --check` per mode. | Supply chain: `pins.ts` dates every feature pin. |
 | **U4** | `feat(ops): install public by default, Tailscale and tunnel opt-in` | `ops/setup.sh` changes: <br>- default `public`, plus `--exposure tailscale\|local\|cloudflare`; `--no-tailscale` keeps its promise of no public port and means `--exposure local`; <br>- detects the public IPv4 and waits for the certificate; <br>- falls back to `local` loudly; <br>- prints `https://<ip>` and the link. <br>`distro/install.sh`: messages and flags; uninstall removes Caddy and the helper. | The installer's container test runs with `--exposure local`; a live VM test for public. | Lean-core 5d's exit check changes (section 10). |
 | **U5** | `feat(board): secure-your-server card with a two-phase switch to Tailscale or Cloudflare` | The board card; `exposure: *-pending`; `edge-tailscale` auth-URL readout; confirmation only from the new path; `settings.exposure` as Tier 2 in `tier.ts`. | A vitest case: a confirm carrying `X-AidenHQ-Edge`, or under any `Host` other than the tailnet name, is refused. | Settings changes ride the existing settings-change flow. A `tier.ts` change: the paid reviewer eval must stay at 100%. |
-| **U6** | `feat(apps): publish apps through the gate behind Caddy with a domain` | `edge.mjs` `ingress: caddy`; `checkIngress` for the Caddyfile; gate client address from the edge secret; apps-mcp sets `AIDENHQ_ANONYMOUS` only for `apps-edge` apps; an Apps-tab notice when there's no domain. | `scripts/test` edge cases; the gate test for a forged client address. | Gate changes are gate core: panel review. |
+| **U6** | `feat(apps): publish apps through the gate behind Caddy with a domain` | `edge.ts` `ingress: caddy`; `checkIngress` for the Caddyfile; gate client address from the edge secret; apps-mcp sets `AIDENHQ_ANONYMOUS` only for `apps-edge` apps; an Apps-tab notice when there's no domain. | `scripts/test` edge cases; the gate test for a forged client address. | Gate changes are gate core: panel review. |
 | **U7** | `refactor(modules): voice, browser, gh and engine CLIs follow their modules; passt required` | The `voice` module; `host:` tags; the kernel refuses jobs without pasta. | Existing suites; one test that a job without pasta is refused. | |
 | **U8** | `feat(ops): verify-security per exposure mode, and docs` | Section 4.7's checks. Docs: `access.md`, `SETUP.md`, `CLAUDE.md` Inbound, `docs/architecture.md`. Instance repo: spec §2.3 and §6.10, plan 5d. | `scripts/verify-security.sh` on a live host in each mode. | |
 
@@ -546,8 +546,8 @@ Migration of existing instances:
 | `services/board/src/accounts.ts:732` `forwardedProto` | Anyone reaching 3121 may claim https | Kept; 3121 is loopback-only, asserted (U8) |
 | `modules/apps-platform/apps-mcp/src/tailnet.ts`, `policy.ts:166-179` (`AIDENHQ_ANONYMOUS=tailnet`) | Exposure means the tailnet, and the tailnet is the perimeter | Anonymous only for `apps-edge` apps (U6) |
 | `modules/apps-platform/gate/gate.ts:270` | `cf-connecting-ip` comes from cloudflared | Edge-secret-bound address (U6) |
-| `scripts/edge.mjs` `header-jwt` `edge.front` | The front door reaches the gate over the tailnet | Kept (an opt-in mode) |
-| `scripts/host-serve.mjs`, `ops/apply-config.sh` prune, `verify-security.sh` "Tailnet" section | Host `tailscale serve` | Run against `edge-tailscale` in `tailscale` mode; skipped otherwise (U8) |
+| `scripts/edge.ts` `header-jwt` `edge.front` | The front door reaches the gate over the tailnet | Kept (an opt-in mode) |
+| `scripts/host-serve.ts`, `ops/apply-config.sh` prune, `verify-security.sh` "Tailnet" section | Host `tailscale serve` | Run against `edge-tailscale` in `tailscale` mode; skipped otherwise (U8) |
 | `ops/github-app-setup.mjs:29-83` | A LAN or tailnet address on `0.0.0.0:8765` | Loopback plus a tunnel (U3) |
 | `distro/install.sh:13, 259, 482, 536-545, 570` | Tailscale default; "same tailnet"; `tailscale serve off` on uninstall | Mode-driven (U4) |
 | `docs/design/access.md` ("the host keeps zero inbound ports"; "An instance without the `edge` setting stays tailnet-only") | | Rewritten (U8) |

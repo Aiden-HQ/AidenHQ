@@ -109,7 +109,7 @@ services:
       data:
         - sbom:/sbom:ro # written by the host timer
         - cache:/cache
-        - registry:/registry:ro # the instance's apps.yaml, copied by scripts/compile.mjs on every compile
+        - registry:/registry:ro # the instance's apps.yaml, copied by scripts/compile.ts on every compile
       env:
         WAREHOUSE_PASSWORD_FILE: ${secrets.warehouse_src_security_password}
         SBOM_DIR: /sbom

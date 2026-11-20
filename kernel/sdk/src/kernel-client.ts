@@ -1,7 +1,7 @@
 // The one client a module uses to call the kernel (and, through its /v1/cp/read route, the control plane): its own token as
 // a bearer, a timeout, JSON in and out. `call` returns the body and throws a KernelError (with the status) on a non-2xx;
 // `raw` returns {status, json} for a caller that reads the status itself; `bytes` returns a GET's raw body. Copied into each
-// module that calls the kernel (scripts/sync-shared.mjs).
+// module that calls the kernel (scripts/sync-shared.ts).
 export class KernelError extends Error {
   status: number;
   constructor(status: number, message: string) { super(message); this.status = status; }

@@ -1,7 +1,7 @@
-# The one source of the Slack app manifest. scripts/slack-manifest.mjs makes both of the module page's links from it:
+# The one source of the Slack app manifest. scripts/slack-manifest.ts makes both of the module page's links from it:
 #   basic     = everything here except `advanced`: the sign-in app (user scopes for search and history), the "Create a Slack app" link;
 #   advanced  = basic with `advanced` merged on top (lists add): the bot, Socket Mode and events, the "Unlock more" link.
-# After editing, run `node scripts/slack-manifest.mjs --write` (a test fails while module.yaml's links differ from this file).
+# After editing, run `node scripts/slack-manifest.ts --write` (a test fails while module.yaml's links differ from this file).
 #
 # The scopes are the live app's audit (2026-11-19): what the code calls, nothing else.
 #   - basic, user token: Slack's MCP server reads for the person (search, history, names) plus the optional MCP reads

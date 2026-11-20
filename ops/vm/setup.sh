@@ -68,8 +68,8 @@ arch="$(dpkg --print-architecture)"
 # (CONTRIBUTING.md, "Supply chain"; .github/supply-chain-exceptions.yaml). The versions are in pins.json: `apt` for the
 # builds every release shares, `releases.<codename>.apt` for the rest (Docker's builds carry the release in their
 # version; fail2ban is the distro's, pinned the same way). Choose one with
-#   node scripts/supply-chain/best-version.mjs apt <package> --source "<repo url> <suite> <component>"
-# pins.mjs dates every pin in pins.json from its repository (the distro's pockets for a distro package). Distro packages
+#   node scripts/supply-chain/best-version.ts apt <package> --source "<repo url> <suite> <component>"
+# pins.ts dates every pin in pins.json from its repository (the distro's pockets for a distro package). Distro packages
 # go in the installs above, before any repo is added (CI rejects an unpinned install after one). Held, so `apt-get
 # upgrade` leaves them; changing a version up- or downgrades it on the next run.
 #

@@ -1,6 +1,6 @@
 // The kernel's Paperclip plugin: task events to its wake inbox (kernel/src/wakes.ts; ids only, no state), and the `post`
 // action, the kernel's writes as an agent without a Paperclip run (post.js, kernel/src/outcomes.ts). Plain JS, no build; mounted
-// read-only into the paperclip container at /opt/aidenhq-events (compose.yaml) and installed by setup (scripts/paperclip-events.mjs).
+// read-only into the paperclip container at /opt/aidenhq-events (compose.yaml) and installed by setup (scripts/paperclip-events.ts).
 export default {
   id: "aidenhq.events",
   apiVersion: 1,

@@ -1,5 +1,5 @@
 // The merge queue: an approved github.merge record becomes a queue here, kept in the service's data dir, and a loop
-// polls each of its PRs with the merge gate (merge-gate.mjs `decide`) until every one merged or was reported not merged. Its
+// polls each of its PRs with the merge gate (merge-gate.ts `decide`) until every one merged or was reported not merged. Its
 // outcome is the record's: ok only when every PR it names merged at its bound head.
 //
 // One queue per repository: a poll merges at most one PR per repository, records in the order they were approved, so two merges
@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { namedChecks } from "./aidenhq-sdk/checks.ts";
 import { waitReason, type Flow } from "./flow.ts";
 import { READ, mergePermissions, ownRepo } from "./github-app.ts";
-import { DESIGN_REVIEW, EVAL_WAIT_MINUTES, PR_QUERY, WAIT_MINUTES, awaitsDesignReview, decide, mergeMethod, withGate } from "./merge-gate.mjs";
+import { DESIGN_REVIEW, EVAL_WAIT_MINUTES, PR_QUERY, WAIT_MINUTES, awaitsDesignReview, decide, mergeMethod, withGate } from "./merge-gate.ts";
 
 type Gh = (method: string, path: string, token: string, body?: unknown) => Promise<{ status: number; body: any }>;
 type Outcome = { ok: boolean; text: string };

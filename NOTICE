@@ -23,7 +23,7 @@ This product includes code from Pennyworth (https://github.com/taylanpince/penny
 Copyright (c) 2026 Taylan Pince, used under the MIT License (see LICENSES/pennyworth-MIT.txt).
 AidenHQ began as a fork of Pennyworth. Files derived from it, wholly or in part, include:
 - what was ported from its runner: modules/github/ (the merge queue and git rules), modules/dispatch/,
-  modules/grading/service/src/loop.mjs and services/computer/images/engineer/bin/
+  modules/grading/service/src/loop.ts and services/computer/images/engineer/bin/
 - services/board/ (the board server and web UI, including web/public/icon.png, which is Pennyworth's own)
 - services/paperclip-tasks-mcp/
 - modules/meetings/connections/ops-mcp/, modules/google/connections/google-workspace-mcp/,
@@ -31,8 +31,8 @@ AidenHQ began as a fork of Pennyworth. Files derived from it, wholly or in part,
   modules/glean/connections/glean-mcp/, modules/primer/connections/primer-mcp/,
   modules/slack/connections/slack-mcp/, modules/github/connections/github-mcp/, parts of
   modules/jira/connections/jira-mcp/, and kernel/sdk/src/vendor/ (the vendor connections' shared proxy)
-- scripts/ (paperclip-setup.mjs, healthcheck.sh, bootstrap.sh, verify-security.sh, the
-  *-auth.sh scripts, trigger-meeting-scan.sh, dev/mcp-call.mjs)
+- scripts/ (paperclip-setup.ts, healthcheck.sh, bootstrap.sh, verify-security.sh, the
+  *-auth.sh scripts, trigger-meeting-scan.sh, dev/mcp-call.ts)
 - config/*.example.yaml, compose.yaml, .env.example
 - the handbooks of the researcher, meeting-librarian, slack-scout and inbox-agent agents
 - fixtures/

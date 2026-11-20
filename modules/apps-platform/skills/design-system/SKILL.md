@@ -77,4 +77,4 @@ passing (it builds, serves and checks the CSP), and an existing app's server mus
   `?preview=loading|error|empty` or the seed.
 
 In the product repo the source is `modules/apps-platform/design-system/` and `modules/apps-platform/starter/`; after changing either
-run `node scripts/sync-shared.mjs` (the computers carry copies).
+run `node scripts/sync-shared.ts` (the computers carry copies).

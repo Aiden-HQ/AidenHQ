@@ -7,7 +7,7 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
-import { mcpBlock } from "../../services/computer/lib.mjs";
+import { mcpBlock } from "../../services/computer/lib.ts";
 import type { Admitted } from "./admission.ts";
 import { mintToken } from "./gateway/token.ts";
 import type { Whoami } from "./identity.ts";

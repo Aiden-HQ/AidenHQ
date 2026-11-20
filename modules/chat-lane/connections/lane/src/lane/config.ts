@@ -1,4 +1,4 @@
-// The fast chat lane's configuration: one secret file setup writes (scripts/paperclip-setup.mjs, `lane_config`), re-read
+// The fast chat lane's configuration: one secret file setup writes (scripts/paperclip-setup.ts, `lane_config`), re-read
 // whenever it changes, so an apply that adds or changes a lane agent needs no restart. Empty or missing: no lane agents.
 // Per agent: its Paperclip id and name, its chat task, its own agent API key (tool calls cross the kernel as that agent, so the normal grants apply),
 // the model settings from its `chat:` block, its handbook, the tools it may use here (by connection name), and its

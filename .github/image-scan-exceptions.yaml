@@ -1,4 +1,4 @@
-# Paths the `image-scan` check ignores in one base image (scripts/supply-chain/image-scan.mjs): files a Dockerfile replaces,
+# Paths the `image-scan` check ignores in one base image (scripts/supply-chain/image-scan.ts): files a Dockerfile replaces,
 # or never copies out of a build stage. image-scan builds nothing, so it scans base images as published; without these, a
 # fix made in a RUN step (or a stage only partly copied) would stay red forever.
 # The owner's review of a change to this file is the approval; the check reads it from the base commit, so an entry lands

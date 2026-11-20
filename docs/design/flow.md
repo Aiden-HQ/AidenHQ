@@ -88,7 +88,7 @@ stages:
   - { name: merge_queue, label: Merge queue, from: work.waiting, to: work.resumed }
 ```
 
-The compiler (`scripts/modules.mjs`) validates them (a stage naming an undeclared fact fails at apply; a module may name
+The compiler (`scripts/modules.ts`) validates them (a stage naming an undeclared fact fails at apply; a module may name
 the kernel's own fact types in a stage but never declare them) and writes `config/kernel/modules.json`; the kernel loads
 them. A stage is an interval from a `from` fact to the next `to` fact on the same subject (`kernel/src/flow-stages.ts`).
 `where` filters the `to` fact's data; `start` takes the real start from a data field; `from === to` makes one fact the whole

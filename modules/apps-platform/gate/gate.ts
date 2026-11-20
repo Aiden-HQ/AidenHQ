@@ -8,7 +8,7 @@
 // upgrades need a same-origin Origin (or Sec-Fetch-Site: same-origin), since sibling app hostnames are same-site.
 // The app gets X-AidenHQ-Identity: a JWT the gate mints per request (docs/design/app-identity.md; Ed25519, 5 minutes, aud =
 // the app), verified by the app with the shared middleware and the public keys. The upstream port comes only from the
-// compiled config (config/gate.json, written by scripts/compile.mjs at the owner's apply).
+// compiled config (config/gate.json, written by scripts/compile.ts at the owner's apply).
 // App access (docs/design/access.md): the board's accounts.json says who is an
 // account (email, name, role, disabled) and each shared app's default role and assignments by email. A member is an enabled
 // account in password mode, and any Access-verified email whose account isn't disabled in access mode. Their role on an app:
@@ -54,7 +54,7 @@ export type IdentityToken = Brand<string, "IdentityToken">;
 export interface HostSite { app: string; port: number; aud?: string; default_role?: string }
 /** The site a request is for: a shared app's host, a preview of one (`parent`: the live app), or a door (`door`). */
 export type Site = HostSite & { parent?: string; door?: true };
-/** config/gate.json, as scripts/edge.mjs compiles it (my_apps, auth_url and hosts are always written). */
+/** config/gate.json, as scripts/edge.ts compiles it (my_apps, auth_url and hosts are always written). */
 export interface GateConfig {
   port: number;
   login?: string;
@@ -164,7 +164,7 @@ const IDENTITY_TTL_S = 300;
 /** A person's stable, opaque id: the same under every sign-in method, from the email that method verified. */
 export const subOf = (email: VerifiedEmail) => `u_${createHash("sha256").update(`aidenhq-user:${email.trim().toLowerCase()}`).digest("base64url").slice(0, 22)}`;
 
-/** The gate's signing key (identity_key_file, Ed25519 PKCS#8), re-read when the file changes; its kid as scripts/identity.mjs computes it. */
+/** The gate's signing key (identity_key_file, Ed25519 PKCS#8), re-read when the file changes; its kid as scripts/identity.ts computes it. */
 export function signingKey(file: string): () => Signer {
   let cached: Signer | undefined, mtime = -1;
   return () => {
@@ -475,7 +475,7 @@ export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, l
     try {
       if (!aud) throw new Error("no aud for this host");
       if (!token || Array.isArray(token)) throw new Error("no token");
-      // compile writes certs_url whenever a host has an aud (an aud needs the team: scripts/edge.mjs)
+      // compile writes certs_url whenever a host has an aud (an aud needs the team: scripts/edge.ts)
       const claims = await verifyToken(token, { issuer: cfg.issuer, aud, key: keyFor(cfg.certs_url!) });
       // The Access token checked out: the brand is minted here and in sessionEmail only.
       const email = (typeof claims.email === "string" ? claims.email.trim().toLowerCase() : "") as VerifiedEmail;

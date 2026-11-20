@@ -22,7 +22,7 @@ export async function recurringTick({ pc, store, timezone, log }: RecurringDeps)
   for (const run of await claimDue(pc, store, { me, labels }, timezone, log)) {
     try {
       const routine = (await pc.routines()).find((r) => r.title === RECURRING_ROUTINE);
-      if (!routine) throw new Error(`routine "${RECURRING_ROUTINE}" not found (run scripts/paperclip-setup.mjs)`);
+      if (!routine) throw new Error(`routine "${RECURRING_ROUTINE}" not found (run scripts/paperclip-setup.ts)`);
       await pc.request("POST", `/api/routines/${encodeURIComponent(routine.id)}/run`, {
         source: "api",
         variables: { definition: run.definition, task: run.output, since: run.sinceLocal, until: run.untilLocal, timezone: run.timezone, previous: run.previous ?? "none (first run)" },

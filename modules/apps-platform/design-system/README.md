@@ -16,7 +16,7 @@ components wear, the rules, and the review checklist.
 The catalog is the starter's dev-only `catalog.html` (`npm run catalog`): every block, component, variant, shell and
 preset, themed, with palette and mode pickers (`?palette=crisp&mode=dark`). Apps never ship it. The product repo is the
 source. The starter vendors `tokens.css`, `shadcn.css` and `presets/` in `src/styles/`, and the agent computers carry this folder at `/opt/aidenhq/design-system/` and the starter at
-`/opt/aidenhq/app-starter/` (byte-identical copies, `node scripts/sync-shared.mjs`; a test fails on drift).
+`/opt/aidenhq/app-starter/` (byte-identical copies, `node scripts/sync-shared.ts`; a test fails on drift).
 
 ## A new app
 

@@ -8,11 +8,11 @@ import { dirname, join } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { EFFORTS, compiledEngine } from "./board.js";
 
-/** The hours a heartbeat may run every (scripts/modules.mjs HEARTBEAT_HOURS), and the tools it needs (HEARTBEAT_TOOLS). */
+/** The hours a heartbeat may run every (scripts/modules.ts HEARTBEAT_HOURS), and the tools it needs (HEARTBEAT_TOOLS). */
 export const HEARTBEAT_HOURS = [1, 2, 3, 4, 6, 8, 12, 24];
 export const HEARTBEAT_TOOLS = ["task_list", "task_comments", "task_approvals", "task_comment", "task_finish"];
 
-/** The fleet default spend caps (scripts/modules.mjs CAPS): an agent's own caps in the grants table override them. */
+/** The fleet default spend caps (scripts/modules.ts CAPS): an agent's own caps in the grants table override them. */
 const CAPS = { run_usd: 2, task_usd: 10, day_usd: 30 };
 
 export interface SettingDef {
@@ -32,7 +32,7 @@ interface CatalogEntry {
   revision?: string;
   settings?: Record<string, SettingDef>;
   setup?: string;
-  /** Its own agents' and routines' module.yaml values, before the instance's overrides (scripts/modules.mjs). */
+  /** Its own agents' and routines' module.yaml values, before the instance's overrides (scripts/modules.ts). */
   defaults?: { agents?: Record<string, Record<string, unknown>>; routines?: Record<string, Record<string, unknown>> };
 }
 interface Schedule {

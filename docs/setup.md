@@ -185,7 +185,7 @@ shell doesn't have it yet (setup restarts your systemd user manager itself, so t
 | Vault | `systemctl is-active aidenhq-vault; mountpoint ~/.config/aidenhq` | `active`, then `... is a mountpoint` |
 | Vault key type | the setup output line `vault ready: N files encrypted; key: ...` | `key: tpm2` (`key: host` means no TPM: see step 1) |
 | Instance repo | `git -C ~/aidenhq-instance log --oneline -1 && grep '^product:' ~/aidenhq-instance/instance.yaml` | `instance for <name>`, and a 40-character sha |
-| OpenRouter key | the setup output line `OpenRouter key ok (...)` (setup stops before the apply if OpenRouter rejects the key); re-check with `AIDENHQ_SECRETS_DIR=~/.config/aidenhq node ~/aidenhq/scripts/openrouter-key.mjs check` | `OpenRouter key ok`, with your remaining limit |
+| OpenRouter key | the setup output line `OpenRouter key ok (...)` (setup stops before the apply if OpenRouter rejects the key); re-check with `AIDENHQ_SECRETS_DIR=~/.config/aidenhq node ~/aidenhq/scripts/openrouter-key.ts check` | `OpenRouter key ok`, with your remaining limit |
 | Paperclip | `curl -s http://127.0.0.1:3100/api/health` | contains `"status":"ok"` and `"bootstrapStatus":"ready"` |
 | Board | `curl -s http://127.0.0.1:3121/healthz` | `ok` |
 | Sign-in and approvals (the kernel) | `curl -s http://127.0.0.1:3120/healthz` | `ok` |

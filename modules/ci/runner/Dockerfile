@@ -44,11 +44,11 @@ RUN cd /opt/hostedtoolcache/node/24.22.3/x64/bin \
  && ln -s ../lib/node_modules/npm/bin/npx-cli.js npx \
  && touch /opt/hostedtoolcache/node/24.22.3/x64.complete \
  && chown -R runner:runner /opt/hostedtoolcache
-# The job-started hook (job-started.sh, .mjs): refuses untrusted jobs (fork PRs, other repos) before any step runs.
+# The job-started hook (job-started.sh, .ts): refuses untrusted jobs (fork PRs, other repos) before any step runs.
 # Root-owned and read-only, outside every checkout. /opt/aidenhq/allowed is the runner's to write once, in the entrypoint
 # (module.yaml), which then makes it read-only.
 COPY --chown=root:root --chmod=0555 job-started.sh /opt/aidenhq/job-started.sh
-COPY --chown=root:root --chmod=0444 job-started.mjs /opt/aidenhq/job-started.mjs
+COPY --chown=root:root --chmod=0444 job-started.ts /opt/aidenhq/job-started.ts
 RUN install -o runner -g runner -m 0644 /dev/null /opt/aidenhq/allowed
 ENV ACTIONS_RUNNER_HOOK_JOB_STARTED=/opt/aidenhq/job-started.sh
 # The runner owns the tool cache: setup-node for a version not baked in here downloads it and caches it for this job

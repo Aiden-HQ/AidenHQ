@@ -1,4 +1,4 @@
-// The Modules tab and a module's page: the compiled catalog (config/modules.json, scripts/modules.mjs) with how each module is on.
+// The Modules tab and a module's page: the compiled catalog (config/modules.json, scripts/modules.ts) with how each module is on.
 import type { SettingDef } from "./settings.js";
 export type ModuleState = "core" | "on" | "dependency" | "off";
 

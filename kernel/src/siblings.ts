@@ -1,5 +1,5 @@
 // The task's other PRs already merged into this change's base, as the AI reviewer reads them (reviewer@1 `siblings`; the old
-// runner's siblings.ts, 03ecfcda4^). The code host's plan reads the rows (modules/github/service/src/siblings.mjs: GitHub's own
+// runner's siblings.ts, 03ecfcda4^). The code host's plan reads the rows (modules/github/service/src/siblings.ts: GitHub's own
 // merge, the base's files since) and the record keeps them (records.context.siblings); this renders them. Every PR-chosen name
 // is encoded, so the block is safe inside its fence.
 

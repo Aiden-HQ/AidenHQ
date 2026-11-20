@@ -8,14 +8,14 @@
 # aidenhq) only when hosted capacity is saturated (checks' `runner` step), the repository variable CI_SELF_HOSTED is
 # 'true' (docs/operations.md) and the run is a push to main or a same-repo pull request. Fork PRs stay hosted, and the
 # runners' job-started hook refuses any job that is not a push or same-repo PR of a repo they serve.
-# The AI reviewer's exit test (modules/ai-reviewer/scripts/reviewer-eval.mjs) needs a paid OpenRouter key, so the
+# The AI reviewer's exit test (modules/ai-reviewer/scripts/reviewer-eval.ts) needs a paid OpenRouter key, so the
 # maintainer runs it by hand for changes to the reviewer, its policy or its cases.
 name: ci
 
 on:
   pull_request:
   push:
-    # merge-train/<n>: the merge queue's trains (modules/github merge-gate.mjs), main plus the PRs it tests together,
+    # merge-train/<n>: the merge queue's trains (modules/github merge-gate.ts), main plus the PRs it tests together,
     # made in one push at the finished commit (they are built on merge-build/<n>, which runs nothing).
     branches: [main, "merge-train/**"]
 
@@ -59,7 +59,7 @@ jobs:
           restore-keys: npm-${{ runner.os }}-${{ github.job }}-${{ strategy.job-index }}-
       - name: Git identity (the tests make commits)
         run: git config --global user.name ci && git config --global user.email ci@example.com
-      # kernel/contract.lock.json against the PR's base lock (scripts/lean/contract-lock.mjs): a stable entry is never
+      # kernel/contract.lock.json against the PR's base lock (scripts/lean/contract-lock.ts): a stable entry is never
       # removed or reshaped. The scripts suite checks the lock against the code on every run.
       - name: Contract lock
         if: github.event_name == 'pull_request' && matrix.shard == 1
@@ -70,7 +70,7 @@ jobs:
           (cd scripts && npm ci --ignore-scripts)
           # The checkout keeps no credentials: pass the read-only token for this one fetch.
           git -c "http.extraheader=Authorization: Basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)" fetch --no-tags --depth=1 origin "$PR_BASE"
-          node --disable-warning=ExperimentalWarning scripts/lean/contract-lock.mjs --check --base "$PR_BASE"
+          node --disable-warning=ExperimentalWarning scripts/lean/contract-lock.ts --check --base "$PR_BASE"
       - name: Test
         env:
           TESTS: ${{ needs.checks.outputs.tests }}
@@ -188,7 +188,7 @@ jobs:
         run: git config --global user.name ci && git config --global user.email ci@example.com
       - name: Test
         working-directory: services/board
-        # The command is the suite's `run` in .github/ci/areas.json (scripts/ci-local.mjs runs the same one).
+        # The command is the suite's `run` in .github/ci/areas.json (scripts/ci-local.ts runs the same one).
         run: bash -eo pipefail -c "$(jq -r '.suites[] | select(.name == "services/board") | .run' ../../.github/ci/areas.json)"
       - if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -205,7 +205,7 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read
-      actions: read # the earlier green runs of a rebased PR (.github/ci/select.mjs) and how busy hosted runners are
+      actions: read # the earlier green runs of a rebased PR (.github/ci/select.ts) and how busy hosted runners are
     outputs:
       dockerfiles: ${{ steps.find.outputs.dockerfiles }}
       tests: ${{ steps.tests.outputs.tests }}
@@ -246,7 +246,7 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.x
-      # The suites to test (.github/ci/select.mjs, map in .github/ci/areas.json): on a pull request, those its changed
+      # The suites to test (.github/ci/select.ts, map in .github/ci/areas.json): on a pull request, those its changed
       # files touch, both files read from the base so a PR can't shrink its own set (a base without them runs every suite);
       # on a rebased head with an unchanged patch, only those main's new commits also touch. Every suite on a push to main.
       - id: tests
@@ -272,10 +272,10 @@ jobs:
           if [ "$GITHUB_EVENT_NAME" != pull_request ]; then export ALL="a push to main or a merge train"; fi
           # the slow suites (areas.json `main: true`) run only on a push to main
           if [ "$GITHUB_EVENT_NAME" = push ] && [ "$GITHUB_REF" = refs/heads/main ]; then export MAIN=1; fi
-          if [ -z "$src" ] || ! { git show "$src:.github/ci/select.mjs" > "$d/select.mjs" && git show "$src:.github/ci/areas.json" > "$d/areas.json"; } 2>/dev/null; then
-            export ALL="${ALL:-the base has no suite map}"; cp .github/ci/select.mjs .github/ci/areas.json "$d/"
+          if [ -z "$src" ] || ! { git show "$src:.github/ci/select.ts" > "$d/select.ts" && git show "$src:.github/ci/areas.json" > "$d/areas.json"; } 2>/dev/null; then
+            export ALL="${ALL:-the base has no suite map}"; cp .github/ci/select.ts .github/ci/areas.json "$d/"
           fi
-          out=$(node "$d/select.mjs")
+          out=$(node "$d/select.ts")
           tests=$(jq -c .tests <<< "$out")
           echo "Suites to test: $(jq -r 'map(.name) | join(" ")' <<< "$tests")"
           echo "tests=$tests" >> "$GITHUB_OUTPUT"
@@ -310,7 +310,7 @@ jobs:
 
   # The 7-day rule (lockfile entries, images, actions, apt packages and global installs this change adds or alters must be
   # 7+ days old, unless an owner-approved security exception in .github/supply-chain-exceptions.yaml (read from the base)
-  # covers them, and every one is pinned: scripts/supply-chain/pins.mjs) and the PR title. Beside the plan, never before
+  # covers them, and every one is pinned: scripts/supply-chain/pins.ts) and the PR title. Beside the plan, never before
   # the tests: only ci-required waits for it.
   policy:
     runs-on: ubuntu-latest
@@ -345,8 +345,8 @@ jobs:
             base=$(git merge-base origin/main "$HEAD_SHA" 2>/dev/null || git rev-parse "$HEAD_SHA~1")
           fi
           status=0
-          node scripts/supply-chain/npm-age.mjs "$base" "$HEAD_SHA" || status=1
-          node scripts/supply-chain/pins.mjs "$base" "$HEAD_SHA" || status=1
+          node scripts/supply-chain/npm-age.ts "$base" "$HEAD_SHA" || status=1
+          node scripts/supply-chain/pins.ts "$base" "$HEAD_SHA" || status=1
           exit $status
       - name: Conventional Commit title
         if: ${{ !cancelled() && github.event_name == 'pull_request' }}
@@ -369,7 +369,7 @@ jobs:
   # The `image-scan` check: for each image this change could alter, grype scans its directory (lock files, manifests) and
   # every base image its FROM and COPY --from lines name, pulled from the registry, and fails on a high or critical
   # vulnerability that has a fix. Nothing is built and no PR code runs (a build would run the PR's RUN steps on our
-  # runner): scripts/supply-chain/image-scan.mjs reads each Dockerfile as text and passes grype only digest-pinned
+  # runner): scripts/supply-chain/image-scan.ts reads each Dockerfile as text and passes grype only digest-pinned
   # references. Not covered: packages RUN steps install, so only base-image and lock-file changes are proven here. It is
   # the evidence for image and CVE work (Engineers have no Docker); skipped when no image could change. grype is
   # installed below, at the version the security module pins.
@@ -403,34 +403,34 @@ jobs:
         run: |
           # On a pull request the scanner and its exceptions come from the base commit, on a merge train from main (its tree holds
           # the PRs' own edits), so no PR can run its own code here or loosen its own scan; a base without the scanner fails
-          # closed. A push to main runs main's own.
+          # closed (image-scan.mjs: a base from before the scripts moved to TypeScript). A push to main runs main's own.
           src="$PR_BASE"
           case "$GITHUB_REF" in refs/heads/merge-train/*) src=$(git rev-parse origin/main) ;; refs/heads/main) src="" ;; esac
           if [ -n "$src" ]; then
-            git show "$src:scripts/supply-chain/image-scan.mjs" > "$RUNNER_TEMP/image-scan.mjs" \
-              || { echo "::error::the base commit has no scripts/supply-chain/image-scan.mjs: the PR that adds the scanner can't run it"; exit 1; }
+            { git show "$src:scripts/supply-chain/image-scan.ts" || git show "$src:scripts/supply-chain/image-scan.mjs"; } > "$RUNNER_TEMP/image-scan.ts" \
+              || { echo "::error::the base commit has no scripts/supply-chain/image-scan.ts: the PR that adds the scanner can't run it"; exit 1; }
             git show "$src:.github/image-scan-exceptions.yaml" > "$RUNNER_TEMP/exceptions.yaml" 2>/dev/null || : > "$RUNNER_TEMP/exceptions.yaml"
             git show "$src:.github/image-scan-accepted.yaml" > "$RUNNER_TEMP/accepted.yaml" 2>/dev/null || : > "$RUNNER_TEMP/accepted.yaml"
           else
-            cp scripts/supply-chain/image-scan.mjs "$RUNNER_TEMP/image-scan.mjs"
+            cp scripts/supply-chain/image-scan.ts "$RUNNER_TEMP/image-scan.ts"
             cp .github/image-scan-exceptions.yaml "$RUNNER_TEMP/exceptions.yaml"
             cp .github/image-scan-accepted.yaml "$RUNNER_TEMP/accepted.yaml"
           fi
           # A base whose scanner predates --accepted gets no list (its scan is unchanged).
-          grep -q -- '--accepted' "$RUNNER_TEMP/image-scan.mjs" && accepted=(--accepted "$RUNNER_TEMP/accepted.yaml") || accepted=()
+          grep -q -- '--accepted' "$RUNNER_TEMP/image-scan.ts" && accepted=(--accepted "$RUNNER_TEMP/accepted.yaml") || accepted=()
           mkdir -p "$RUNNER_TEMP/grype-db"
           # The computer images build FROM each other (an ARG default: engineer on agent-base, agent-base on the browser
           # image): each scanned through its own Dockerfile, never pulled from a registry image of the same name. DOCKERFILES is split on spaces, never globbed (set -f); the
           # find step refused any path with whitespace or a leading -, and -- ends the options.
           set -f
-          GRYPE_DB_CACHE_DIR="$RUNNER_TEMP/grype-db" node "$RUNNER_TEMP/image-scan.mjs" --exceptions "$RUNNER_TEMP/exceptions.yaml" "${accepted[@]}" \
+          GRYPE_DB_CACHE_DIR="$RUNNER_TEMP/grype-db" node "$RUNNER_TEMP/image-scan.ts" --exceptions "$RUNNER_TEMP/exceptions.yaml" "${accepted[@]}" \
             --local aidenhq/computer-agent-base=services/computer/images/agent-base/Dockerfile \
             --local aidenhq/computer-browser=services/computer/images/browser/Dockerfile -- $DOCKERFILES
 
   # The one result a merge waits for: every job above passed (packages, board and image-scan jobs may
   # be skipped: not a pull request, or the change doesn't touch them). Jobs that
   # need another appear only once it finishes, so without this a PR can look all green for a moment before its tests
-  # exist; the code host treats this check as required once the base branch has it (modules/github/service/src/merge-gate.mjs withGate).
+  # exist; the code host treats this check as required once the base branch has it (modules/github/service/src/merge-gate.ts withGate).
   ci-required:
     if: always()
     needs: [checks, policy, packages, modules, board, image-scan]

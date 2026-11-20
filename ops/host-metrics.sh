@@ -21,7 +21,7 @@ dir="$data/modules/monitoring/textfile"
 
 # Label values come from systemd and Docker names: keep [A-Za-z0-9_.@:/-] only.
 clean() { tr -c 'A-Za-z0-9_.@:/ \n-' '_'; }
-# A planned drain (scripts/fleet-pause.mjs) records the units it stopped in the data dir, so a stop on purpose is not read
+# A planned drain (scripts/fleet-pause.ts) records the units it stopped in the data dir, so a stop on purpose is not read
 # as a crash: no UnitFailed (Prometheus cannot tell the two apart) and no CiRunnersDown while it lasts.
 paused_units() { # one unit name per line
   [ -f "$data/fleet-paused.json" ] || return 0

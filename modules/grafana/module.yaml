@@ -42,7 +42,7 @@ connections:
       # Listed read-only by mcp-grafana under --disable-write, but they can change things (routing; an API request of any
       # method): destructive, by what they can do, not the vendor's hint.
       destructive: [ alerting_manage_routing, grafana_api_request ]
-# Runner jobs of an Engineer with private reads, through the model gateway with their own token (scripts/modules.mjs jobcapEntries):
+# Runner jobs of an Engineer with private reads, through the model gateway with their own token (scripts/modules.ts jobcapEntries):
 # Grafana's read tools, served on grafana-mcp's read endpoint, which lists only what the upstream marks read-only.
 jobcaps:
   - id: grafana-read

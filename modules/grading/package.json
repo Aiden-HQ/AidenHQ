@@ -9,6 +9,6 @@
   },
   "description": "Graded done: the grade rows, the task.finish check, the board's routes and the grade loop.",
   "scripts": {
-    "test": "node --disable-warning=ExperimentalWarning --test test/*.test.mjs"
+    "test": "node --disable-warning=ExperimentalWarning --test test/*.test.ts"
   }
 }

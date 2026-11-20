@@ -10,7 +10,7 @@ let cfg: GateConfig, mtime = -1;
 const config = (): GateConfig => {
   const m = statSync(file).mtimeMs;
   if (m !== mtime) {
-    cfg = JSON.parse(readFileSync(file, "utf8")) as GateConfig; // compiled by scripts/edge.mjs at the owner's apply
+    cfg = JSON.parse(readFileSync(file, "utf8")) as GateConfig; // compiled by scripts/edge.ts at the owner's apply
     mtime = m;
   }
   return cfg;

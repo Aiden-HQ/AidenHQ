@@ -21,7 +21,7 @@
     "n": 3,
     "workflow": "Agent asks the owner (notify), brake at 5",
     "today": [
-      "kernel/test/channels.test.mjs"
+      "kernel/test/channels.test.ts"
     ],
     "next": "channel-telegram + /v1/brake/notify test"
   },
@@ -29,7 +29,7 @@
     "n": 4,
     "workflow": "Card approve/reject on the kernel's approval page",
     "today": [
-      "kernel/test/accounts.test.mjs"
+      "kernel/test/accounts.test.ts"
     ],
     "next": "kernel page tests (unit 3a)"
   },
@@ -45,8 +45,8 @@
     "n": 6,
     "workflow": "Watcher decide and stale reject",
     "today": [
-      "kernel/test/channels.test.mjs",
-      "modules/channel-operator/test/decide.test.mjs"
+      "kernel/test/channels.test.ts",
+      "modules/channel-operator/test/decide.test.ts"
     ],
     "next": "channel-operator test"
   },
@@ -54,8 +54,8 @@
     "n": 7,
     "workflow": "Tier 0 runs, Tier 1 reviewer, Tier 2 owner, panel",
     "today": [
-      "kernel/test/writes.test.mjs",
-      "modules/ai-reviewer/test/review.test.mjs"
+      "kernel/test/writes.test.ts",
+      "modules/ai-reviewer/test/review.test.ts"
     ],
     "next": "kernel K5/K6 + ai-reviewer"
   },
@@ -63,7 +63,7 @@
     "n": 8,
     "workflow": "Engineer job: prompt, run, comment mid-run, finish",
     "today": [
-      "kernel/test/jobs.test.mjs"
+      "kernel/test/jobs.test.ts"
     ],
     "next": "engineering + engine-codex + K7"
   },
@@ -71,7 +71,7 @@
     "n": 9,
     "workflow": "Runner restart adopts jobs",
     "today": [
-      "kernel/test/jobs.test.mjs"
+      "kernel/test/jobs.test.ts"
     ],
     "next": "K7 adopt test"
   },
@@ -79,7 +79,7 @@
     "n": 10,
     "workflow": "Push / PR to agents org and outside it",
     "today": [
-      "modules/github/test/stale.test.mjs"
+      "modules/github/test/stale.test.ts"
     ],
     "next": "codehost-github executor tests"
   },
@@ -87,8 +87,8 @@
     "n": 11,
     "workflow": "Merge at reviewed head once green, queue, breaker",
     "today": [
-      "modules/github/test/merge-queue.test.mjs",
-      "modules/github/test/stale.test.mjs"
+      "modules/github/test/merge-queue.test.ts",
+      "modules/github/test/stale.test.ts"
     ],
     "next": "codehost-github + engineering"
   },
@@ -96,8 +96,8 @@
     "n": 12,
     "workflow": "create_repo in agents org",
     "today": [
-      "modules/github/test/plan.test.mjs",
-      "modules/github/test/hardening.test.mjs"
+      "modules/github/test/plan.test.ts",
+      "modules/github/test/hardening.test.ts"
     ],
     "next": "codehost-github"
   },
@@ -105,9 +105,9 @@
     "n": 13,
     "workflow": "Fleet apply, Tier 0 instance changes, land",
     "today": [
-      "kernel/test/apply-plan.test.mjs",
-      "modules/github/test/release-train.test.mjs",
-      "scripts/test/apply-atomic.test.mjs"
+      "kernel/test/apply-plan.test.ts",
+      "modules/github/test/release-train.test.ts",
+      "scripts/test/apply-atomic.test.ts"
     ],
     "next": "kernel.apply + github.land"
   },
@@ -115,9 +115,9 @@
     "n": 14,
     "workflow": "Product PR watch, Dependabot pin-only merges, supply chain",
     "today": [
-      "modules/github/test/pr-watch.test.mjs",
-      "scripts/test/supply-chain.test.mjs",
-      "scripts/test/pins.test.mjs"
+      "modules/github/test/pr-watch.test.ts",
+      "scripts/test/supply-chain.test.ts",
+      "scripts/test/pins.test.ts"
     ],
     "next": "platform events + check"
   },
@@ -125,7 +125,7 @@
     "n": 15,
     "workflow": "Design-review tasks and status",
     "today": [
-      "modules/github/test/design-review.test.mjs"
+      "modules/github/test/design-review.test.ts"
     ],
     "next": "design events + check"
   },
@@ -133,8 +133,8 @@
     "n": 16,
     "workflow": "Graded done, reopen on failed grade",
     "today": [
-      "modules/grading/test/parity.test.mjs",
-      "modules/grading/test/grades.test.mjs"
+      "modules/grading/test/parity.test.ts",
+      "modules/grading/test/grades.test.ts"
     ],
     "next": "grading task.finish check"
   },
@@ -142,7 +142,7 @@
     "n": 17,
     "workflow": "Delegation and outcomes to parents",
     "today": [
-      "modules/dispatch/test/loop.test.mjs"
+      "modules/dispatch/test/loop.test.ts"
     ],
     "next": "tasks + K6 notices"
   },
@@ -150,7 +150,7 @@
     "n": 18,
     "workflow": "Spend caps, raise_cap card",
     "today": [
-      "kernel/test/gateway.test.mjs"
+      "kernel/test/gateway.test.ts"
     ],
     "next": "K8 tests"
   },
@@ -169,8 +169,8 @@
     "n": 20,
     "workflow": "Shared apps sign-in (gate, 3129)",
     "today": [
-      "modules/apps-platform/gate/test/gate.test.mjs",
-      "kernel/test/gate-seam.test.mjs"
+      "modules/apps-platform/gate/test/gate.test.ts",
+      "kernel/test/gate-seam.test.ts"
     ],
     "next": "apps-platform + /auth/handoff"
   },
@@ -196,9 +196,9 @@
     "n": 23,
     "workflow": "Coach, memory, librarian tools",
     "today": [
-      "modules/tasks/connections/tasks-mcp/test/coach-tools.test.mjs",
-      "scripts/test/memory.test.mjs",
-      "modules/tasks/connections/tasks-mcp/test/librarian-tools.test.mjs"
+      "modules/tasks/connections/tasks-mcp/test/coach-tools.test.ts",
+      "scripts/test/memory.test.ts",
+      "modules/tasks/connections/tasks-mcp/test/librarian-tools.test.ts"
     ],
     "next": "modules' tests"
   },
@@ -206,7 +206,7 @@
     "n": 24,
     "workflow": "Heartbeats, wake-ups, recurring tasks",
     "today": [
-      "scripts/test/heartbeat.test.mjs"
+      "scripts/test/heartbeat.test.ts"
     ],
     "next": "chief-of-staff"
   },
@@ -222,8 +222,8 @@
     "n": 26,
     "workflow": "Instance agents, trial, graduate",
     "today": [
-      "scripts/test/agents.test.mjs",
-      "modules/tasks/connections/tasks-mcp/test/trial-tasks.test.mjs"
+      "scripts/test/agents.test.ts",
+      "modules/tasks/connections/tasks-mcp/test/trial-tasks.test.ts"
     ],
     "next": "loader + agent-builder"
   },
@@ -231,9 +231,9 @@
     "n": 27,
     "workflow": "Agent computers",
     "today": [
-      "services/computer/test/jobs.test.mjs",
-      "services/computer/test/lib.test.mjs",
-      "scripts/test/computers.test.mjs"
+      "services/computer/test/jobs.test.ts",
+      "services/computer/test/lib.test.ts",
+      "scripts/test/computers.test.ts"
     ],
     "next": "computer (privileged)"
   },
@@ -259,7 +259,7 @@
     "today": [
       "services/board/test/fleet.test.ts",
       "services/board/test/relay.test.ts",
-      "scripts/test/fleet-pause.test.mjs"
+      "scripts/test/fleet-pause.test.ts"
     ],
     "next": "K11 tests"
   },
@@ -267,7 +267,7 @@
     "n": 31,
     "workflow": "Monitoring, alerts",
     "today": [
-      "scripts/test/monitoring.test.mjs"
+      "scripts/test/monitoring.test.ts"
     ],
     "next": "monitoring module"
   },

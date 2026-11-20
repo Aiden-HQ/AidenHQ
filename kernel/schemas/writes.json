@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://aidenhq.dev/schemas/writes.json",
-  "title": "A module's write kinds (spec §5.2), each <module>.<kind>, executed by its providers.executor (executor@1). scripts/modules.mjs writeKinds enforces it; any other field is a compile error.",
+  "title": "A module's write kinds (spec §5.2), each <module>.<kind>, executed by its providers.executor (executor@1). scripts/modules.ts writeKinds enforces it; any other field is a compile error.",
   "type": "object",
   "propertyNames": { "pattern": "^[a-z][a-z0-9_]{0,40}$" },
   "additionalProperties": {

@@ -21,43 +21,43 @@
     "id": "A4",
     "attack": "Replay a caller assertion at /v1/cp/agent/*, or present it to another module (aud)",
     "unit": "2a",
-    "test": "kernel/test/proxy.test.mjs"
+    "test": "kernel/test/proxy.test.ts"
   },
   {
     "id": "A5",
     "attack": "Cross-module tool access: module A calls module B's MCP server directly, or through the proxy without a services.grants entry",
     "unit": "2a",
-    "test": "kernel/test/proxy.test.mjs"
+    "test": "kernel/test/proxy.test.ts"
   },
   {
     "id": "A6",
     "attack": "Approve over the board origin: board JavaScript posts to /approvals/* or frames a decide page",
     "unit": "3a",
-    "test": "kernel/test/accounts.test.mjs"
+    "test": "kernel/test/accounts.test.ts"
   },
   {
     "id": "A7",
     "attack": "Clickjack: a module frames /owner/confirm or any decide page",
     "unit": "3a",
-    "test": "kernel/test/accounts.test.mjs"
+    "test": "kernel/test/accounts.test.ts"
   },
   {
     "id": "A8",
     "attack": "Mutable approval input: workspace commit, target branch head or base changes after approval",
     "unit": "3d",
-    "test": "modules/github/test/stale.test.mjs"
+    "test": "modules/github/test/stale.test.ts"
   },
   {
     "id": "A9",
     "attack": "Executor module updated between approval and execution",
     "unit": "3d",
-    "test": "modules/github/test/stale.test.mjs"
+    "test": "modules/github/test/stale.test.ts"
   },
   {
     "id": "A10",
     "attack": "Kernel killed after claim, during execute, during a job",
     "unit": "3e",
-    "test": "kernel/test/jobs.test.mjs"
+    "test": "kernel/test/jobs.test.ts"
   },
   {
     "id": "A11",
@@ -75,19 +75,19 @@
     "id": "A15",
     "attack": "Older module code started on data whose .data_version is newer (a rollback or revert without the snapshot)",
     "unit": "2c+",
-    "test": "scripts/test/data-version.test.mjs"
+    "test": "scripts/test/data-version.test.ts"
   },
   {
     "id": "A16",
     "attack": "A marketplace's advisories.json names another marketplace's module, or carries instruction text",
     "unit": "4e",
-    "test": "kernel/test/advisories.test.mjs"
+    "test": "kernel/test/advisories.test.ts"
   },
   {
     "id": "A17",
     "attack": "An installer run against a release file whose kernel or module sha does not match the fetched checkout (the installer's half is installer/test.sh in the distro repo)",
     "unit": "5c",
-    "test": "scripts/test/release.test.mjs"
+    "test": "scripts/test/release.test.ts"
   },
   {
     "id": "A18",
@@ -99,7 +99,7 @@
     "id": "H1",
     "attack": "Hostile job: symlink in the workspace pointing outside it",
     "unit": "1a",
-    "test": "kernel/test/jobs.test.mjs"
+    "test": "kernel/test/jobs.test.ts"
   },
   {
     "id": "H2",
@@ -117,13 +117,13 @@
     "id": "H4",
     "attack": "Hostile module manifest: bind mount, cap_add, network_mode: host, another module's network, a socket",
     "unit": "2b",
-    "test": "scripts/test/services.test.mjs"
+    "test": "scripts/test/services.test.ts"
   },
   {
     "id": "H5",
     "attack": "Hostile module reads another module's secrets or data dir",
     "unit": "2b",
-    "test": "scripts/test/services.test.mjs"
+    "test": "scripts/test/services.test.ts"
   },
   {
     "id": "H6",

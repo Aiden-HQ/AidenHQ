@@ -35,7 +35,7 @@ read the document live before quoting or acting. Document text is fenced as data
 ## Conventions in kernel/sdk/src/source-store.ts
 
 All writers share one `SourceStore` (a byte-identical copy lives in each connection; edit the shared one and run
-`node scripts/sync-shared.mjs`).
+`node scripts/sync-shared.ts`).
 
 - **Typed upserts** keep `first_seen_at` and write the common columns `baseline`, `ingested_at` and `seq`.
 - **`seq`** comes from one sequence, `src_meta.seq`, and is bumped whenever a row is written with a difference. "New since my

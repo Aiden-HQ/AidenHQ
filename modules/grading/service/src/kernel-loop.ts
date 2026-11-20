@@ -1,10 +1,10 @@
-// The grade loop on the kernel's jobs (phase 2 W7): loop.mjs wired to this module's own rows and to the kernel as the one source of a
+// The grade loop on the kernel's jobs (phase 2 W7): loop.ts wired to this module's own rows and to the kernel as the one source of a
 // task's jobs, comments, agents and verdict moves, run once a minute by main.ts. A PR's facts and diff are read from GitHub with a
 // token the kernel's broker mints (github.ts); its PRs are named by the codehost-github pr and merge records on the task (/v1/work):
 // by what their executor wrote in their outcome, never by the args an agent filed.
 // An app's status, deploys and rendered view are read from apps-mcp with this module's own token (role apps.read, apps-evidence.ts).
 import type { DatabaseSync } from "node:sqlite";
-import { createGradeLoop } from "./loop.mjs";
+import { createGradeLoop } from "./loop.ts";
 import { forOthers } from "./aidenhq-sdk/for-others.ts";
 import { GRADE_SCHEMA, escalationFor, gather, grade, gradeNote, template } from "./grader/grade.ts";
 import { findPrs, stripHidden } from "./grader/text.ts";

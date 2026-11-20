@@ -103,6 +103,6 @@ board, built here, under a section of the top bar.
 
 ## Working on the UI without an instance
 
-`node web/dev/mock-api.mjs` answers the board's reads on :3120 with neutral fixtures, and `npm run dev:web` serves the
+`node web/dev/mock-api.ts` answers the board's reads on :3120 with neutral fixtures, and `npm run dev:web` serves the
 UI against it on :5173. `GET /__mock?welcome=1` shows the first-run wizard, `?empty=1` empties the lists, `?slow=800`
 delays every answer (loading states). Check a change at 1512, 1920, 2560 and 390 wide, light and dark, chat first.

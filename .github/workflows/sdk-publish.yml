@@ -5,7 +5,7 @@ on:
   push:
     tags: ["sdk-v*"]
   pull_request:
-    paths: ["kernel/sdk/**", "scripts/sdk-pack.mjs", ".github/workflows/sdk-publish.yml"]
+    paths: ["kernel/sdk/**", "scripts/sdk-pack.ts", ".github/workflows/sdk-publish.yml"]
 # No job a PR can trigger gets a secret or OIDC: only the tag job holds id-token.
 permissions:
   contents: read

@@ -39,9 +39,9 @@ session) and redirects to `<app origin>/.auth/handoff?code=...&state=...&next=..
 3129 and sets the app host's own `__Host-` cookie. Signing out on the admin listener ends every app host session it
 handed out.
 
-**Compile (`scripts/edge.mjs`, `doorConfig`).** With no `settings.edge` and exposure `local` or `public`, compile emits
+**Compile (`scripts/edge.ts`, `doorConfig`).** With no `settings.edge` and exposure `local` or `public`, compile emits
 the gate (`login: password`, `hosts: {}`, the `doors` block, `origin` for local) instead of nothing. The gate mounts
-`data/previews` read-only. In `public` mode the Caddyfile (`scripts/front-door.mjs`) gains a wildcard site for the door
+`data/previews` read-only. In `public` mode the Caddyfile (`scripts/front-door.ts`) gains a wildcard site for the door
 base: `tls { on_demand; issuer acme { disable_http_challenge } }` (TLS-ALPN-01 on 443; port 80 stays closed),
 `reverse_proxy 127.0.0.1:3130`, and a global `on_demand_tls { ask http://127.0.0.1:3130/.aidenhq/door-ask }`. The gate
 answers 200 only for a name in the doors file, so a stranger can't make Caddy order certificates for arbitrary names. A

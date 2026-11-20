@@ -56,7 +56,7 @@ services:
         OPS_MCP_TOKEN_FILE: ${secrets.ops_service_key}
         # Shared sources (src_meetings): its warehouse login.
         WAREHOUSE_PASSWORD_FILE: ${secrets.warehouse_src_meetings_password}
-      # scripts/compile.mjs adds the host's folders from its .env: config/system.yaml, TRANSCRIPTS_DIR (writable: ops-mcp
+      # scripts/compile.ts adds the host's folders from its .env: config/system.yaml, TRANSCRIPTS_DIR (writable: ops-mcp
       # renames recorder-named transcripts and deletes their audio once published), VAULT_DIR's VAULT_FOLDERS and
       # KNOWLEDGE_BASES (validated; only the listed folders).
 # src_meetings' warehouse login (ops/warehouse-sources.sh gives the role this password); compile creates it when missing.

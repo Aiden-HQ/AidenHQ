@@ -9,7 +9,7 @@ license: MIT
 # an app's status, deploys and live view are held ("not available"): apps-mcp's internal API has no route this module may reach.
 roles:
   requests: [ kernel.cp-read, kernel.work-read, kernel.grader, kernel.wake, apps.read, kernel.facts ] # apps.read: an app deliverable's status, deploys and live view (apps-mcp)
-# Flow (docs/design/flow.md): a task's grade attempts and the waits its retry ladder puts on the task, emitted by service/src/loop.mjs.
+# Flow (docs/design/flow.md): a task's grade attempts and the waits its retry ladder puts on the task, emitted by service/src/loop.ts.
 facts:
   grade.requested: { subject: grade }
   grade.verdict: { subject: grade }

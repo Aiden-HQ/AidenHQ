@@ -3,7 +3,7 @@
 // there. The client is registered dynamically (RFC 7591) or is one the owner made in the vendor (HubSpot, Slack). Only this
 // service sees the tokens: the pair lives in /state/token.json (0600), refreshed here, rotated pairs written back atomically.
 //
-// First-party modules hold byte-identical copies (scripts/sync-shared.mjs: edit this one and run it); third-party modules import
+// First-party modules hold byte-identical copies (scripts/sync-shared.ts: edit this one and run it); third-party modules import
 // @aidenhq/sdk/vendor/oauth.
 import { createHash, randomBytes } from "node:crypto";
 import { chmodSync, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";

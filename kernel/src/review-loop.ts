@@ -34,7 +34,7 @@ export type TaskApi = { issue(id: string): Promise<Issue>; comments(id: string):
 /** The module kinds the reviewer has always read by their card names. */
 const LEGACY: Record<string, string> = { "apps-platform.deploy": "deploy_app", "apps-platform.run": "app_run" };
 // A code host's write kinds are the bare actions its own plan reads (`codehost-github.pr` is a `pr`, not a module digest):
-// the retry bound, the rejected-content check and the merge carry all key on the action, as the code hosts' plan.mjs does.
+// the retry bound, the rejected-content check and the merge carry all key on the action, as the code hosts' plan.ts does.
 export const actionOf = (kind: string) =>
   LEGACY[kind] ?? (/^codehost-(github|local)\.(push|pr|merge|close|create_repo)$/.test(kind) ? kind.replace(/^codehost-(github|local)\./, "") : kind.replace(/^(runner|kernel)\./, ""));
 const STATE: Partial<Record<State, string>> = { review: "pending", owner: "pending", approved: "approved", claimed: "used", done: "used", failed: "used", unknown: "used", rejected: "rejected", stale: "stale", cancelled: "expired" };

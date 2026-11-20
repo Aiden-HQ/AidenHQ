@@ -70,7 +70,7 @@ groups:
         labels: { severity: critical }
         annotations:
           summary: "{{ $labels.service }}{{ $labels.unit }}{{ $labels.job }} has been down for over 5 minutes"
-      # A planned drain (scripts/fleet-pause.mjs) writes no aidenhq_unit_failed for the units it stopped
+      # A planned drain (scripts/fleet-pause.ts) writes no aidenhq_unit_failed for the units it stopped
       # (ops/host-metrics.sh), so this fires on a crash only.
       # An apply that failed its health check (the host went back to the last known good and stays there until the instance's
       # main moves) or was refused at validation (nothing switched): ops/host-metrics.sh, from generations.jsonl.

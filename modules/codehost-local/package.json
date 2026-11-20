@@ -9,6 +9,6 @@
   },
   "description": "The on-server code host: bare repos, change requests as git refs, the checks receipt and the compare-and-swap squash merge.",
   "scripts": {
-    "test": "node --disable-warning=ExperimentalWarning --test test/*.test.mjs"
+    "test": "node --disable-warning=ExperimentalWarning --test test/*.test.ts"
   }
 }

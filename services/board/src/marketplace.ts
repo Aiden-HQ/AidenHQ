@@ -17,7 +17,7 @@ interface Entry {
   tier?: string;
   source?: { url?: string };
   setup_flow?: { title?: string };
-  /** Write kinds it declares (kind → floor, scripts/modules.mjs) and the secret names it mounts. */
+  /** Write kinds it declares (kind → floor, scripts/modules.ts) and the secret names it mounts. */
   writes?: Record<string, { floor: number; panel?: boolean }>;
   secrets?: string[];
   setup?: string;

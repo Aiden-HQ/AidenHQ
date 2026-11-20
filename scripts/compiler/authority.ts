@@ -232,7 +232,7 @@ export function authorityDiff(name: string, base: ModuleDef | undefined, head: M
   const [bp, hp] = [pathRanks(b.paths), pathRanks(head.paths)];
   for (const [k, r] of bp) if (!((hp.get(k) ?? -1) >= r)) owner(`lowers the sensitivity of path ${id(k)}`);
   if (!eq(b.paths, head.paths)) review("changes its path inventory");
-  // Dropping privileged also drops its folder's floor in the path inventory (scripts/paths.mjs): the owner's too.
+  // Dropping privileged also drops its folder's floor in the path inventory (scripts/paths.ts): the owner's too.
   for (const p of added(head.privileged, b.privileged)) owner(`drops privileged ${id(p)}`);
 
   // Secrets: every name it may mount (generated, optional, provided, connection service keys, jobcap read secrets).

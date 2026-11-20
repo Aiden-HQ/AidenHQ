@@ -1,7 +1,7 @@
 // The on-server code host (docs/design/codehost-local.md): the org `local`'s repos are bare repos on this host, written only
 // by the kernel, which runs this module in process (it has no service). It is the executor of the codehost-local write kinds
 // (executor@1's shape, kernel/sdk/src/executor.ts): the kernel files, tiers and revalidates their records as any module's, and
-// plan.mjs's git rules tier them, as they tier codehost-github's. Host git never runs in, or writes, a workspace: a box
+// plan.ts's git rules tier them, as they tier codehost-github's. Host git never runs in, or writes, a workspace: a box
 // clones a repo from a bundle the kernel serves (`aidenhq clone`), and a job's commits come back as a bundle (git.ts ingest).
 //
 // A change request is git refs in its bare repo, never a database (apps-mcp's codehost.ts reads them for previews):
@@ -12,10 +12,10 @@
 // job (check_jobs in module.yaml, run in a credential-free box from a snapshot) with a receipt the kernel signed.
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { planParts, plan as planRules } from "../../github/service/src/plan.mjs";
-import { fileContext, numstat } from "../../github/service/src/review-files.mjs";
-import { evidenceOf } from "../../github/service/src/evidence.mjs";
-import { SOURCE_EXCEPTIONS_FILE, readCardSourceExceptions } from "../../github/service/src/sources.mjs";
+import { planParts, plan as planRules } from "../../github/service/src/plan.ts";
+import { fileContext, numstat } from "../../github/service/src/review-files.ts";
+import { evidenceOf } from "../../github/service/src/evidence.ts";
+import { SOURCE_EXCEPTIONS_FILE, readCardSourceExceptions } from "../../github/service/src/sources.ts";
 import { DEFAULT_CHURN_EXCLUDE, churnFromGit } from "../../../kernel/sdk/src/churn.ts";
 import type { FactIn } from "../../../kernel/sdk/src/kernel-client.ts";
 import { IDENTITY, bareOf, fail, git, ingest } from "./git.ts";
@@ -38,14 +38,14 @@ const CHANGES = (head: boolean) => obj({ prs: { type: "array", minItems: 1, maxI
 const CARD = { target: "{{target}}", sentence: "{{sentence}}", details: "{{diff}}" };
 /**
  * The write kinds this code host executes: the same actions, args, floors and repository writes (`paths: true`: push, pr and
- * merge, tiered by the files plan.mjs returns) as codehost-github's; the kernel registers them when the module is enabled.
+ * merge, tiered by the files plan.ts returns) as codehost-github's; the kernel registers them when the module is enabled.
  */
 export const LOCAL_KINDS = Object.fromEntries(Object.entries({
   push: BRANCHES, pr: BRANCHES, merge: CHANGES(true), close: CHANGES(false),
   create_repo: obj({ repo: { type: "string", pattern: "^local/[a-z][a-z0-9-]{0,62}$" } }, ["repo"]),
 }).map(([action, args]) => [`codehost-local.${action}`, { module: "codehost-local", floor: 0 as const, ...(["push", "pr", "merge"].includes(action) ? { paths: true } : {}), tools: [] as string[], args, card: CARD }]));
 
-/** Each change's checks, as plan.mjs reads them ({ ok, pending }); the kernel's `change` check job on (repo, head, base). */
+/** Each change's checks, as plan.ts reads them ({ ok, pending }); the kernel's `change` check job on (repo, head, base). */
 /** `retry`: run again a check that couldn't run (a new request); otherwise the one asked for before, as it stands. `summary`: its receipt's. */
 export type ChangeChecks = (repo: string, head: string, base: string, retry?: boolean) => Promise<{ ok: boolean; pending: boolean; missing?: boolean; summary?: string }[]>;
 
@@ -78,7 +78,7 @@ export function localHost({ root, sources = {}, tasksDir, scratchDir, instanceRe
     const d = await git(["--git-dir", dir, "-c", "core.attributesFile=/dev/null", "diff", "--no-ext-diff", "--no-textconv", "--text", "--no-renames", from, to], { raw: true });
     return d;
   };
-  /** The same change counted by git itself (numstat): the reviewer checks the diff it gets against it (review-files.mjs sameChanges). */
+  /** The same change counted by git itself (numstat): the reviewer checks the diff it gets against it (review-files.ts sameChanges). */
   const numstatOf = async (repo: string, from: string, to: string, dir = bare(repo)) => numstat(await git(["--git-dir", dir, "-c", "core.attributesFile=/dev/null", "diff", "--no-ext-diff", "--no-textconv", "--text", "--no-renames", "--numstat", from, to], { raw: true }));
 
   async function readChange(repo: string, n: number) {
@@ -160,7 +160,7 @@ export function localHost({ root, sources = {}, tasksDir, scratchDir, instanceRe
   const parse = (url: string) => /^codehost:(local\/[\w.-]+)\/change\/(\d+)$/.exec(url);
   const base = (requester?: { roles?: string[] }) => ({ agentsOrgs: [LOCAL_ORG], allowedOrgs: [LOCAL_ORG], instanceRepo, productRepo, requester: { platform: (requester?.roles ?? []).includes("platform-engineer") } });
 
-  /** The verified state plan.mjs tiers a request on, and the card's diff: read from the bare repos and the workspace, never the args. */
+  /** The verified state plan.ts tiers a request on, and the card's diff: read from the bare repos and the workspace, never the args. */
   async function stateFor(action: string, a: any, requester?: { roles?: string[] }): Promise<{ state: any; target: string; sentence: string; diff: string; reads?: { name: string; read: () => Promise<string> }[]; changed?: { path: string; add?: number; del?: number }[]; evidence?: string; bases?: { repo: string; base: string; read: (path: string) => Promise<string> }[] }> {
     // What the reviewer reads beside the diff: each changed file at the reviewed head, and the change's Evidence section.
     const reads: { name: string; read: () => Promise<string> }[] = [];
@@ -239,7 +239,7 @@ export function localHost({ root, sources = {}, tasksDir, scratchDir, instanceRe
     async plan(req: { kind: string; args: any; requester?: { roles?: string[] }; revalidate?: boolean }) {
       const action = String(req.kind).replace(/^codehost-local\./, "");
       const s = await stateFor(action, req.args ?? {}, req.requester);
-      // plan.mjs's rules, as codehost-github's: the bare action, so it reads the same parts.
+      // plan.ts's rules, as codehost-github's: the bare action, so it reads the same parts.
       const planned = planRules({ kind: action, args: req.args }, s.state, { target: s.target, sentence: s.sentence, diff: s.diff });
       // The reviewer's context goes with the filing only, as codehost-github's (the runner's readFiles: past 300 files not read).
       if (req.revalidate) return planned;

@@ -1,5 +1,5 @@
 // The code host as its own service: the executor of codehost-github.{push,pr,merge,close,create_repo} (executor@1; the
-// kernel tiers each record with plan.mjs and calls execute only for an approved, claimed and revalidated one), and narrow
+// kernel tiers each record with plan.ts and calls execute only for an approved, claimed and revalidated one), and narrow
 // GitHub operations for other modules (/ops/token, /ops/snapshot, /ops/clone), which only the kernel calls: it checks each
 // module's grant (its own module.yaml `codehost:`) at POST /v1/codehost/:op and calls here with this
 // service's key.
@@ -29,13 +29,13 @@ import { createEvalGate } from "./evalgate.ts";
 import { createMerges } from "./merges.ts";
 import { createFlow } from "./flow.ts";
 import { createReleaseTrain } from "./train.ts";
-import { LOCAL_ORG, plan as planRules } from "./plan.mjs";
-import { fileContext, numstat } from "./review-files.mjs";
-/** One changed file as git counts it (review-files.mjs numstat; a binary file has no line counts). */
+import { LOCAL_ORG, plan as planRules } from "./plan.ts";
+import { fileContext, numstat } from "./review-files.ts";
+/** One changed file as git counts it (review-files.ts numstat; a binary file has no line counts). */
 type Changed = { path: string; add?: number; del?: number };
-import { evidenceOf } from "./evidence.mjs";
-import { SOURCE_EXCEPTIONS_FILE, readCardSourceExceptions } from "./sources.mjs";
-import { candidatesOf, readSiblings } from "./siblings.mjs";
+import { evidenceOf } from "./evidence.ts";
+import { SOURCE_EXCEPTIONS_FILE, readCardSourceExceptions } from "./sources.ts";
+import { candidatesOf, readSiblings } from "./siblings.ts";
 import { notePrTask } from "./pr-watch.ts";
 import { createDesignReviews, startDesignReviewSweep } from "./design-review.ts";
 import { noteKept } from "./tidy.ts";
@@ -188,7 +188,7 @@ export function createService(o: Options) {
   }
 
 
-  // GitHub's checks on a commit as plan.mjs reads them: { ok, pending, skipped } each (names never leave this function).
+  // GitHub's checks on a commit as plan.ts reads them: { ok, pending, skipped } each (names never leave this function).
   // Every page is read; if GitHub reports more than could be read, one check stays pending: missing evidence never passes.
   async function checksAt(s: ReturnType<typeof slugOf>, sha: string, token: string) {
     const all = async (path: string, key: string) => {
@@ -218,7 +218,7 @@ export function createService(o: Options) {
   // Who asked to publish each commit (the kernel's task and whether it was the Platform Engineer's line), noted once its push
   // or PR has planned (execute carries no requester, and a plan comes before its push), and never reassigned: another task
   // re-publishing a head, noted or already pushed without a note, doesn't take it. A product merge's head is a requester's
-  // own only when it noted it (plan.mjs productMergePart).
+  // own only when it noted it (plan.ts productMergePart).
   // Which task opened each PR this code host opened (pr-watch.ts notePrTask): the task's sibling PRs for the reviewer.
   const prTasks = (): Record<string, { task?: string; branch?: string }> => { try { return JSON.parse(readFileSync(join(o.cacheDir, "pr-tasks.json"), "utf8")); } catch { return {}; } };
   const pushedByFile = join(o.cacheDir, "pushed-by.json");
@@ -233,10 +233,10 @@ export function createService(o: Options) {
 
   const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
   const diffOf = (dir: string, from: string, to: string) => git(dir, ["-c", "core.attributesFile=/dev/null", "diff", "--no-ext-diff", "--no-textconv", "--text", "--no-renames", from, to]);
-  /** The same change counted by git itself (numstat): the reviewer checks the diff it gets against it (review-files.mjs sameChanges). */
+  /** The same change counted by git itself (numstat): the reviewer checks the diff it gets against it (review-files.ts sameChanges). */
   const numstatOf = async (dir: string, from: string, to: string) => numstat(await git(dir, ["-c", "core.attributesFile=/dev/null", "diff", "--no-ext-diff", "--no-textconv", "--text", "--no-renames", "--numstat", from, to]));
   /**
-   * The verified state plan.mjs tiers a request on (its `s`) and the card's facts (target, sentence, the diff the reviewer
+   * The verified state plan.ts tiers a request on (its `s`) and the card's facts (target, sentence, the diff the reviewer
    * reads): read from the workspace, the cache and GitHub, never the args.
    */
   async function stateFor(kind: string, a: any, requester?: { roles?: string[] }, task = "") {
@@ -249,7 +249,7 @@ export function createService(o: Options) {
     // What the reviewer reads beside the diff (review): each changed file at the reviewed head, and the PR's Evidence section.
     const reads: { name: string; read: () => Promise<string> }[] = [];
     // The bases the change targets, each with a way to read a file there (the owner's source exceptions: never the change's own).
-    // `dir` and `tip`: the cache clone holding the base at that commit, where the task's merged sibling PRs are read (siblings.mjs).
+    // `dir` and `tip`: the cache clone holding the base at that commit, where the task's merged sibling PRs are read (siblings.ts).
     const bases: Base[] = [];
     // A merge card's own PRs (`repo#n`), never its siblings. A push or PR card's own PR is open, so never counted as merged:
     // an earlier merged PR on a reused branch name is a real sibling.

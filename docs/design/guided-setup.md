@@ -347,7 +347,7 @@ server.
 
 **Build on what exists.** Setup already creates a local bare repo as the instance repo's remote. The kernel's job workspaces
 already clone from local URLs, and the git sandbox already blocks direct pushes. `codehost-local` extends these:
-- it reuses `codehost-github/src/{git.mjs,plan.mjs}` for git handling and tiering;
+- it reuses `codehost-github/src/{git.mjs,plan.ts}` for git handling and tiering;
 - it uses existing kernel write records for review;
 - it adds no PR database and no new UI.
 
@@ -387,10 +387,10 @@ AidenHQ keep needing GitHub (`github_bot_token`), offered with "connect GitHub".
 **This part is a goal and a shape, not yet a buildable design.** It gets its own short spec after a recon pass:
 - Map every GitHub assumption in the runner, the apps platform (`apps-mcp`), the `ci` module and the platform module's
   self-improvement flow.
-- Then split the shared part (the write kinds and their tiering in `codehost-github/src/plan.mjs`) from the
+- Then split the shared part (the write kinds and their tiering in `codehost-github/src/plan.ts`) from the
   GitHub-specific transport.
 
-It is the largest piece of this design. Changes to `plan.mjs` and the tier function fall under the reviewer-eval rule:
+It is the largest piece of this design. Changes to `plan.ts` and the tier function fall under the reviewer-eval rule:
 the eval must stay at 100%.
 
 Until it lands, the GitHub modules stay in the bundle, idle. That already works: installs run today with no GitHub App
@@ -415,7 +415,7 @@ The prompt's final message links to it.
 | `ops/setup.sh --unattended`, `ops/apply-config.sh` | parallel pulls instead of builds, progress lines, public exposure default with Caddy (U2), recovery key shown by the kernel |
 | kernel `/setup` | account, authenticator, OpenRouter PKCE (+ paste fallback); recovery key and `github_bot_token` move out |
 | kernel | admin secret-write endpoint for declared `setup:` secrets, recreating that module's containers; `/recovery-key` show-once page |
-| `scripts/modules.mjs`, compile | `board.setup_flows` point validated and written into `config/points/board.json` |
+| `scripts/modules.ts`, compile | `board.setup_flows` point validated and written into `config/points/board.json` |
 | board | `/setup/<module>` flow component, `GET /api/setup-flows`, `/welcome` wizard, welcome note to Aiden at the end |
 | modules needing user setup (list above) | `board.setup_flows` points and `setup:` fields replacing shell-only setup; Telegram and Slack pairing; Slack and Google join the bundle |
 | modules: codehost role | new `codehost-local`; `codehost-github` provides `codehost`; engineering requires `codehost`; GitHub modules leave the bundle |

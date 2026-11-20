@@ -11,11 +11,11 @@
 // flag), and `panel_marked` says the first reviewer called the change authority-expanding, so the requester records that on
 // its card before acting on the verdict.
 //
-// The requester shapes the changed files with `fileContext` (services/shared/review-files.mjs: the contract's budget), so the
+// The requester shapes the changed files with `fileContext` (services/shared/review-files.ts: the contract's budget), so the
 // request stays small whatever the files weigh.
 //
 // Canonical copy: kernel/sdk/src/reviewer.ts. The reviewer module holds a byte-identical copy at src/aidenhq-sdk/reviewer.ts:
-// edit this one, then run `node scripts/sync-shared.mjs`.
+// edit this one, then run `node scripts/sync-shared.ts`.
 import { timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 

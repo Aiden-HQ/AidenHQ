@@ -8,7 +8,7 @@ requires:
   - warehouse # its source schema lives in the shared warehouse
   - board # its sign-in and setup flow
 # The code host part (service/) is the only holder of the GitHub App key (vault github-app/) and the owner of all git state. Its
-# write kinds github.{push,pr,merge,close,create_repo} go through the kernel's /v1/writes, with service/src/plan.mjs as their
+# write kinds github.{push,pr,merge,close,create_repo} go through the kernel's /v1/writes, with service/src/plan.ts as their
 # executor@1 plan. Outside the agents org it is PR-only (no merge, no workflows; create_repo is Tier 0 in any github_orgs org it is
 # installed on), except product-repo merges the reviewer or the owner approved. It talks to the kernel with its own token
 # (codehost_github_token): the module's roles below go with that token alone, never with the connections' service key
@@ -19,7 +19,7 @@ privileged: [ git-credential ]
 paths:
   - sensitivity: panel
     owner_role: platform-engineer
-    patterns: [ service/src/merges.ts, service/src/merge-gate.mjs, service/src/evalgate.ts ]
+    patterns: [ service/src/merges.ts, service/src/merge-gate.ts, service/src/evalgate.ts ]
 # The code host role (docs/design/codehost-local.md §2): it hosts every org codehost-local doesn't own, once the App is set up.
 provides: [ codehost ]
 # Its sign-in and setup flow on the board (modules/board/schemas/), and its schema and the views agents read with source_new
@@ -341,15 +341,15 @@ services:
 # The board's Connect/Reconnect for GitHub: its sign-in token, only while this module is on.
 board_env:
   GITHUB_AUTH_TOKEN_FILE: ${secrets.github_auth_token}
-# The kernel calls the kinds' plan, execute and status here with the code host's own token (executor@1); plan is service/src/plan.mjs's
+# The kernel calls the kinds' plan, execute and status here with the code host's own token (executor@1); plan is service/src/plan.ts's
 # rules on the state the service reads itself (the workspace, its cache clone, GitHub), never the args.
 providers:
   executor:
     url: http://codehost-github:8100/aidenhq/v1/executor
     auth: codehost_github_token
-# Each card is plan.mjs's facts, read from git by the service: what it acts on, one sentence, and the diff the reviewer reads.
+# Each card is plan.ts's facts, read from git by the service: what it acts on, one sentence, and the diff the reviewer reads.
 writes:
-  # push, pr and merge are repository writes (paths: true): plan.mjs returns the files each changes, read from git, and the
+  # push, pr and merge are repository writes (paths: true): plan.ts returns the files each changes, read from git, and the
   # kernel raises their tier by the path inventory (paths.yaml) and runs the platform check on them (writes.ts).
   push: { args: schemas/push.json, floor: 0, paths: true, card: &card { target: "{{target}}", sentence: "{{sentence}}", details: "{{diff}}" } }
   pr: { args: schemas/pr.json, floor: 0, paths: true, card: *card }

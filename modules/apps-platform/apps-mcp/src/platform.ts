@@ -49,7 +49,7 @@ export interface PlatformConfig {
   webhookDir?: string; // holds apps_incident_webhook_url and _secret
   gateFile?: string; // the gate's compiled config (config/gate.json): its `previews` turns on shared apps' previews
   appsNodeFile?: string; // config/apps-node (compile): `tailnet` when the apps' tailnet node is the instance's door (tailnet.ts tailnetNode)
-  previewsFile?: string; // which shared apps' previews run, for the gate (scripts/edge.mjs PREVIEWS_FILE)
+  previewsFile?: string; // which shared apps' previews run, for the gate (scripts/edge.ts PREVIEWS_FILE)
   doorsFile?: string; // which apps the gate's doors serve, on which loopback port (doors.ts), beside the previews file
   tlsCheck?: TlsCheck; // a public door's certificate check (doors.ts); tests stub it
 }

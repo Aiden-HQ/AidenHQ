@@ -1,5 +1,5 @@
 # An agent's computer: the base every computer image builds FROM. Runs under gVisor, one container per run, started
-# by the host launcher (services/computer/launcher.mjs). No logins, keys or tokens are ever baked in or mounted.
+# by the host launcher (services/computer/launcher.ts). No logins, keys or tokens are ever baked in or mounted.
 # BASE is the browser image's tag (ops/computer-images.sh): Node, agent-browser and its pinned Chrome (services/computer/images/browser).
 # node: Paperclip's sandbox runner needs sh, node, nohup. Codex pinned to the paperclip image's (0.166.0).
 ARG BASE=aidenhq/computer-browser
@@ -20,9 +20,9 @@ RUN ln -s "$(find "$(npm root -g)/@openai/codex" -path '*/vendor/*/bin/codex' -t
 # `aidenhq-browse`) and cargo: put them back for login shells.
 RUN echo 'case ":$PATH:" in *:/opt/aidenhq/bin:*) ;; *) PATH="/opt/aidenhq/bin:/opt/rust/cargo/bin:$PATH" ;; esac' > /etc/profile.d/aidenhq-path.sh
 WORKDIR /workspace
-# repo-checkout is not in the image: the launcher mounts it (lib.mjs jobMounts) only into a job box whose agent holds the role.
+# repo-checkout is not in the image: the launcher mounts it (lib.ts jobMounts) only into a job box whose agent holds the role.
 # ui-review: screenshots, axe (embedded in agent-browser), web vitals and layout checks for a running app; the design system
-# (synced from modules/apps-platform/design-system by scripts/sync-shared.mjs) as the review reference; the app starter (synced from
+# (synced from modules/apps-platform/design-system by scripts/sync-shared.ts) as the review reference; the app starter (synced from
 # modules/apps-platform/starter: shadcn/ui on Vite + React) to scaffold new apps and mockups from, and to serve /catalog.
 COPY --chmod=755 ui-review /usr/local/bin/ui-review
 COPY ui-review-copy.json /usr/local/bin/ui-review-copy.json

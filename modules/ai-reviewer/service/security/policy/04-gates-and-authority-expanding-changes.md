@@ -13,12 +13,12 @@ A change is **authority-expanding** when it:
   be sent, or spending (caps, models, budgets);
 - edits the gate's own core: the kernel (`kernel/`: the tier function, the write lifecycle and review loop, the apply
   planner, job admission and boxes), the code host (`modules/github/`: its git rules, merge queue, merge gate and
-  eval gate), the path inventory (`paths.yaml`), what a job can reach (`scripts/computers.mjs`), the engine modules (`modules/engine-*/`: what
+  eval gate), the path inventory (`paths.yaml`), what a job can reach (`scripts/computers.ts`), the engine modules (`modules/engine-*/`: what
   runs inside a job and what it passes on) and the SDK (`kernel/sdk/`), the AI reviewer module (`modules/ai-reviewer/`: its service, this policy,
-  its eval cases, `scripts/reviewer-eval.mjs` and its pass rule `service/src/aidenhq-sdk/pass-rule.ts`), the board's `approvals.ts`, `app.ts`,
+  its eval cases, `scripts/reviewer-eval.ts` and its pass rule `service/src/aidenhq-sdk/pass-rule.ts`), the board's `approvals.ts`, `app.ts`,
   `fleet.ts`, `accounts.ts` and `session.ts`, the kernel (`kernel/`: the tool proxy, caller identity, the model gateway, and the job sandbox and lifecycle in
   `sandbox.ts` and `jobs.ts`: mounts, network jail, env, the job's identity binding) and
-  each module server's caller check (`aidenhq-sdk/caller.ts`), `scripts/modules.mjs` and `scripts/paperclip-setup.mjs`,
+  each module server's caller check (`aidenhq-sdk/caller.ts`), `scripts/modules.ts` and `scripts/paperclip-setup.ts`,
   `services/computer/`, `ops/`, `scripts/verify-security.sh`, `scripts/supply-chain/`,
   `.gitleaks.toml`, and the product's `.github/` (each of these files is the same file as `.ts`, once converted from `.mjs`);
   or anything that can bypass them.

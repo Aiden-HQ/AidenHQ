@@ -124,7 +124,7 @@ routines:
 # The apps' tailnet node's join key (compose.yaml apps-edge; docs/setup.md): created empty, the owner fills it once.
 optional_secrets:
   - tailscale_apps_authkey
-  # The app-request routine's webhook, for the kernel (paperclip-setup.mjs fills it; empty = no wake).
+  # The app-request routine's webhook, for the kernel (paperclip-setup.ts fills it; empty = no wake).
   - app_request_webhook_url
   - app_request_webhook_secret
 settings:

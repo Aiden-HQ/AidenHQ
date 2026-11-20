@@ -22,7 +22,7 @@ export function grantsTable(file: string | undefined): () => Record<string, Gran
     try {
       st = statSync(file);
     } catch {
-      throw new Error("grants are not set up yet (scripts/paperclip-setup.mjs writes them)");
+      throw new Error("grants are not set up yet (scripts/paperclip-setup.ts writes them)");
     }
     if (!cached || cached.mtimeMs !== st.mtimeMs || cached.size !== st.size) {
       let agents: unknown;

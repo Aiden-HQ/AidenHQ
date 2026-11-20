@@ -1,5 +1,5 @@
 {
-  "about": "The product's reliability checklist (policy.md, 'Reliability checklist'). Code matches each item's trigger against the diff (review-checklist.mjs) and the reviewer checks only the matched ones. The service reads this file from its own image (the deployed modules pin), never from the change. Paths are written both ways: the product repo's (modules/<x>/...) and aidenhq-modules' own (<x>/...). Each item: id; scope (optional; product: only a change to the product or the official modules repo, the card's code-set `product` list; review.mjs productScoped); trigger (paths: globs, lines: a regex over the changed lines of a matching file; both set means both); check (what must be true, visible in the diff or the changed files); why (the incidents behind it).",
+  "about": "The product's reliability checklist (policy.md, 'Reliability checklist'). Code matches each item's trigger against the diff (review-checklist.ts) and the reviewer checks only the matched ones. The service reads this file from its own image (the deployed modules pin), never from the change. Paths are written both ways: the product repo's (modules/<x>/...) and aidenhq-modules' own (<x>/...). Each item: id; scope (optional; product: only a change to the product or the official modules repo, the card's code-set `product` list; review.ts productScoped); trigger (paths: globs, lines: a regex over the changed lines of a matching file; both set means both); check (what must be true, visible in the diff or the changed files); why (the incidents behind it).",
   "items": [
     {
       "id": "data-mount-dirs",
@@ -9,7 +9,7 @@
     },
     {
       "id": "reviewer-cases-kept",
-      "trigger": { "paths": ["modules/ai-reviewer/**", "modules/github/service/src/merges.ts", "modules/github/service/src/merge-gate.mjs", "modules/github/service/src/evalgate.ts", "kernel/src/review-loop.ts", "kernel/src/apply-tier.ts", "services/shared/review-files.*", "kernel/sdk/src/reviewer.ts", "kernel/src/tier.ts", "kernel/src/writes.ts", "kernel/src/records.ts", "kernel/src/reviews.ts", "kernel/src/kinds.ts", "scripts/compiler/authority.ts", "modules/github/service/src/plan.mjs", "modules/platform/src/check.mjs"] },
+      "trigger": { "paths": ["modules/ai-reviewer/**", "modules/github/service/src/merges.ts", "modules/github/service/src/merge-gate.ts", "modules/github/service/src/evalgate.ts", "kernel/src/review-loop.ts", "kernel/src/apply-tier.ts", "services/shared/review-files.*", "kernel/sdk/src/reviewer.ts", "kernel/src/tier.ts", "kernel/src/writes.ts", "kernel/src/records.ts", "kernel/src/reviews.ts", "kernel/src/kinds.ts", "scripts/compiler/authority.ts", "modules/github/service/src/plan.ts", "modules/platform/src/check.ts"] },
       "check": "Code merges a change to the reviewer's or the tiers' code only with a 100% receipt of the paid reviewer eval for its exact head (modules/github/service/src/evalgate.ts), so the eval's result is not your question. What you check: every planted case under modules/ai-reviewer/test/reviewer-cases/ is kept, with its expect, expect_code, expect_second and expect_flag as they were; the diff adds cases or leaves them alone.",
       "why": "CLAUDE.md: the reviewer eval must stay at 100%; every false reject becomes a planted case."
     },
@@ -40,8 +40,8 @@
     },
     {
       "id": "sync-shared",
-      "trigger": { "paths": ["services/shared/**", "kernel/sdk/src/**", "scripts/supply-chain/*.mjs", "modules/apps-platform/design-system/**", "apps-platform/design-system/**", "modules/apps-platform/starter/**", "apps-platform/starter/**", "modules/ci/template/.github/**", "ci/template/.github/**", "**/aidenhq-sdk/**", "modules/ai-reviewer/service/src/review-files.mjs", "ai-reviewer/service/src/review-files.mjs", "modules/ai-reviewer/service/src/review-checklist.mjs", "ai-reviewer/service/src/review-checklist.mjs", "services/computer/images/agent-base/design-system/**", "services/computer/images/agent-base/app-starter/**"] },
-      "check": "A file the product's scripts/sync-shared.mjs copies is changed together with every copy, identically (node scripts/sync-shared.mjs). When the canonical file and its copies sit in different repos (the product and aidenhq-modules), this diff changes its side and the request chain names the other side's PR; a copy is never edited on its own. A diff that carries the file and every copy of it together (all the paths are in this one diff, in one repository) holds, with no other PR to name. A file that sync-shared.mjs doesn't list has no copies.",
+      "trigger": { "paths": ["services/shared/**", "kernel/sdk/src/**", "scripts/supply-chain/*.ts", "modules/apps-platform/design-system/**", "apps-platform/design-system/**", "modules/apps-platform/starter/**", "apps-platform/starter/**", "modules/ci/template/.github/**", "ci/template/.github/**", "**/aidenhq-sdk/**", "modules/ai-reviewer/service/src/review-files.ts", "ai-reviewer/service/src/review-files.ts", "modules/ai-reviewer/service/src/review-checklist.ts", "ai-reviewer/service/src/review-checklist.ts", "services/computer/images/agent-base/design-system/**", "services/computer/images/agent-base/app-starter/**"] },
+      "check": "A file the product's scripts/sync-shared.ts copies is changed together with every copy, identically (node scripts/sync-shared.ts). When the canonical file and its copies sit in different repos (the product and aidenhq-modules), this diff changes its side and the request chain names the other side's PR; a copy is never edited on its own. A diff that carries the file and every copy of it together (all the paths are in this one diff, in one repository) holds, with no other PR to name. A file that sync-shared.ts doesn't list has no copies.",
       "why": "CLAUDE.md: services/shared, the SDK, the design system and the app starter are copied into services and modules; scripts/test fails on drift."
     },
     {
@@ -64,7 +64,7 @@
     },
     {
       "id": "module-contract-docs",
-      "trigger": { "paths": ["scripts/compiler/authority.ts", "scripts/compiler/points.ts", "scripts/modules.mjs", "scripts/modules.ts", "kernel/contract.lock.json", "kernel/schemas/**", "kernel/sdk/src/**"] },
+      "trigger": { "paths": ["scripts/compiler/authority.ts", "scripts/compiler/points.ts", "scripts/modules.ts", "scripts/modules.ts", "kernel/contract.lock.json", "kernel/schemas/**", "kernel/sdk/src/**"] },
       "check": "A change to the module contract (a module.yaml key the loader or the compiler reads, a point, kernel/contract.lock.json, or a kernel API that modules call through the SDK) updates docs/modules.md in the same diff to describe it. A change that leaves the contract as it was (an internal fix, a refactor that keeps every key and call) holds.",
       "why": "Owner, 2026-11-17: module authors build from docs/modules.md, so a contract change it doesn't describe breaks the next module written from it."
     }

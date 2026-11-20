@@ -13,7 +13,7 @@ shape: a change is a `kernel.apply` record whose card carries the exact diff, la
 | `src/git.ts` | Hardened git (no hooks, fsmonitor, `ext::` transport, global or system config; literal pathspecs), where each repo's bare dir is, `ingest` of a job's bundle |
 | `src/snapshot.ts` | A repo's tree at a commit as a tar with no `.git`, for check jobs and an Engineer's `repo-checkout` |
 | `src/apply.ts` | The kernel apply land on the instance repo (read, land by compare-and-swap, write a settings change) |
-| `checks/tests.sh`, `checks/history.sh` | The `change` check job's recipe (a copy of `github`'s, kept by `scripts/sync-shared.mjs`) |
+| `checks/tests.sh`, `checks/history.sh` | The `change` check job's recipe (a copy of `github`'s, kept by `scripts/sync-shared.ts`) |
 | `kernel/src/codehost.ts` | `hostOf`, `routeKind`, the broker's `snapshot` op for `local/*`, `localFacts` |
 | `kernel/src/localmerge.ts` | The auto-merge pass (section 5) |
 
@@ -30,7 +30,7 @@ shape: a change is a `kernel.apply` record whose card carries the exact diff, la
   (`kernel/src/github-app.ts`). Until it is set the `github` module's code host service runs no container
   (`when: { agents_org: true }`) and the handbooks name only `local`. The kernel treats `local` as an agents org too while
   `codehost-local` is enabled (`kernel/src/main.ts`).
-- Tiering is `modules/github/service/src/plan.mjs`'s, shared: `codehost-local` adds no tiering of its own beyond the rule
+- Tiering is `modules/github/service/src/plan.ts`'s, shared: `codehost-local` adds no tiering of its own beyond the rule
   `local-merge` (Tier 1; `LOCAL_ORG` is `local` there). The product repo is always on GitHub.
 - Bound by the owner: a local agents-org merge goes to the AI reviewer at Tier 1 (`local-merge`); both providers run together;
   a feature is offered in full or not at all.

@@ -53,7 +53,7 @@ recorder ops/vm/setup.sh ':'
 recorder ops/vault/init.sh "runuser -u $U -- mkdir -p $H/.local/share/aidenhq/vault.enc; printf '0123456789abcdef%.0s' 1 2 3 4 > /root/aidenhq-vault-recovery.txt"
 # The apply (as the user): the real compile (the kernel's generated secrets, the modules' /setup fields in
 # config/kernel/modules.json), then what Paperclip's setup records: the company.
-recorder ops/apply-config.sh 'cd "$(dirname "${BASH_SOURCE[0]}")/.." && node scripts/compile.mjs > /dev/null || exit 1
+recorder ops/apply-config.sh 'cd "$(dirname "${BASH_SOURCE[0]}")/.." && node scripts/compile.ts > /dev/null || exit 1
 sed -i "s/^  company_id: \"\"/  company_id: \"00000000-0000-4000-8000-000000000001\"/" config/system.yaml'
 g -C "$work/k" init -q && g -C "$work/k" add -A && g -C "$work/k" commit -qm kernel
 g clone -q --bare "$work/k" "$work/git/kernel.git"
@@ -271,7 +271,7 @@ const line = `Skipped: ${wizard.map((f) => f.title).join(", ")}.`;
 want(chats[0].body.description.includes("Connected: nothing yet.") && chats[0].body.description.includes(line), `it names what was skipped: ${line}`);
 EOF
 # The RFC 6238 code, as the kernel's tests compute it (no dependency).
-sed -n '/^export function totp/,/^}/p' "$src/kernel/test/auth-helpers.mjs" | sed '1i import { createHmac } from "node:crypto";' > "$work/totp.mjs"
+sed -n '/^export function totp/,/^}/p' "$src/kernel/test/auth-helpers.ts" | sed '1i import { createHmac } from "node:crypto";' > "$work/totp.mjs"
 node "$work/http.mjs" "$URL" "$MODEL_KEY" "$H/aidenhq/config/points/board.json" "$work/paperclip.log" || fail "/setup and the welcome over HTTP"
 
 [ "$(cat "$S/openrouter_key")" = "$MODEL_KEY" ] && [ "$(stat -c '%U %a' "$S/openrouter_key")" = "$U 600" ] || fail "the model key isn't in the vault as $U, 0600"

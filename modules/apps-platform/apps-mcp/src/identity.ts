@@ -12,7 +12,7 @@ export type Sign = (app: string, agent: string, scope: Scope) => string;
 
 const b64 = (o: object) => Buffer.from(JSON.stringify(o)).toString("base64url");
 
-/** A signer reading the key file (re-read when it changes); kid as scripts/identity.mjs computes it. */
+/** A signer reading the key file (re-read when it changes); kid as scripts/identity.ts computes it. */
 export function agentSigner(file: string, now: () => number = Date.now): Sign {
   let cached: { key: KeyObject; kid: string } | undefined, mtime = -1;
   const key = () => {

@@ -13,7 +13,7 @@
 // falls out of the newest PER_APP, or its app leaves the registry. The PR gets one comment with the URL, edited as it
 // changes. Tailnet apps' previews are served by the apps' tailnet node at <APPS_URL_BASE>:<port>. A shared app's is at
 // https://pr-<n>.<share.host> through the gate, with the app's own access, once the instance sets settings.edge.previews
-// (scripts/edge.mjs); apps-mcp tells the gate which previews run (platform.ts).
+// (scripts/edge.ts); apps-mcp tells the gate which previews run (platform.ts).
 import { randomBytes } from "node:crypto";
 import { existsSync, rmSync } from "node:fs";
 import { put } from "./database.js";

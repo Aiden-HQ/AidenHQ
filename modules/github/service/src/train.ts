@@ -1,5 +1,5 @@
 // The release train's loop (W3; the runner's runReleases, moved): once a minute, the instance target's bump decided by
-// release.mjs trainStep, written by code and filed as a kernel.apply through the kernel's /v1/writes with this module's own
+// release.ts trainStep, written by code and filed as a kernel.apply through the kernel's /v1/writes with this module's own
 // token (role kernel.apply). The kernel plans it (kernel/src/apply-tier.ts) and tiers it like any apply: the instance rules,
 // the module authority the move brings and the path inventory, with no branch for who filed it. Its task is one the kernel
 // files for the agent holding the platform-engineer role (POST /v1/tasks, role kernel.tasks), once per tip.
@@ -18,7 +18,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pinOwner } from "./aidenhq-sdk/pin-owner.ts";
-import { bumpInstance, trainDescription, trainStep } from "./release.mjs";
+import { bumpInstance, trainDescription, trainStep } from "./release.ts";
 
 type Gate = undefined | { wait: string } | { stop: string };
 export type Commit = { repo: string; sha: string; subject: string };

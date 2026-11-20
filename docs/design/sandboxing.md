@@ -17,15 +17,15 @@ public Internet is open by owner policy, so no tier alone stops exfiltration thr
 | Module services | a module's containers (`services:`) | compose, `isolation:` below |
 
 The image a job gets is frozen at admission (`kernel/src/admission.ts`: `image:` wins, else crew `agent-base`, engineer
-and check `engineer`). `scripts/computers.mjs` builds the images (`browser` is the base of both) tagged by content hash;
+and check `engineer`). `scripts/computers.ts` builds the images (`browser` is the base of both) tagged by content hash;
 an agent may name only `agent-base` or `engineer`. An Engineer's `image:` must be `engineer`. No repo code runs on the
 host: a repo's checks are check jobs.
 
 ## A box
 
-`services/computer/launcher.mjs` (systemd user unit `aidenhq-computers`, on the host) creates each box with
+`services/computer/launcher.ts` (systemd user unit `aidenhq-computers`, on the host) creates each box with
 `docker run --runtime=runsc` (gVisor) on the `aidenhq-computers` network, with `--memory`/`--memory-swap` the limit,
-`--cpus`, `--shm-size` 1g and `--pids-limit` 1024 (`dockerRunArgs` in `services/computer/lib.mjs`).
+`--cpus`, `--shm-size` 1g and `--pids-limit` 1024 (`dockerRunArgs` in `services/computer/lib.ts`).
 
 - **Credentials.** A box's only credential is its job token (`ahqj_`), minted by the kernel (`kernel/src/boxes.ts`),
   authority frozen at admission, revocable. The box's env file is built from an allowlist (`JOB_ENV_NAMES`). The model key
@@ -51,12 +51,12 @@ host: a repo's checks are check jobs.
   `max_parallel`.
 
 Compile refuses `image:` on a non-Engineer agent in trial (its limits would run inside a box it controls), and an
-Engineer's private grants require `private_reads: true`, which drops web search and `web_view` (`scripts/computers.mjs`,
+Engineer's private grants require `private_reads: true`, which drops web search and `web_view` (`scripts/computers.ts`,
 checked at compile).
 
 ## Module isolation
 
-A module or agent declares `isolation: trusted` (default), `code-exec` or `untrusted` (`scripts/modules.mjs`). An
+A module or agent declares `isolation: trusted` (default), `code-exec` or `untrusted` (`scripts/modules.ts`). An
 untrusted module may not declare connections or services, and its agents may have no roles and no write tools on any
 connection (compile fails otherwise); an agent can't opt out of its module's `untrusted`. `scripts/compiler/authority.ts`
 ranks `untrusted` < `code-exec` < `trusted` when judging authority changes. `engineering` is `code-exec`.

@@ -9,6 +9,6 @@
   },
   "description": "The product gate check: the owner-approval records change alone.",
   "scripts": {
-    "test": "node --disable-warning=ExperimentalWarning --test test/*.test.mjs"
+    "test": "node --disable-warning=ExperimentalWarning --test test/*.test.ts"
   }
 }

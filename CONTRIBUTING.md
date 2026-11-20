@@ -46,7 +46,7 @@ get its permission first. Pull requests without the box ticked fail the `communi
 
 ## Running the tests
 
-Before you push, run `node scripts/ci-local.mjs`: it runs the suites CI would run for your diff, with CI's own selection
+Before you push, run `node scripts/ci-local.ts`: it runs the suites CI would run for your diff, with CI's own selection
 and commands (`--list` shows the selection only, `--base <ref>` changes the base, default `origin/main`). On macOS the
 `flock` apply tests fail and are shown as expected; CI judges them.
 
@@ -55,7 +55,7 @@ No live instance and no paid keys are needed. Use Node 24 and run `npm ci` once 
 | Package | Commands |
 |---|---|
 | `scripts` (compiler, setup, `paperclip-tasks-mcp`, shared-code drift) | `npm test` |
-| `services/computer` | `node --test test/*.test.mjs` |
+| `services/computer` | `node --test test/*.test.ts` |
 | `modules/apps-platform/gate` | `npm test && npm run typecheck` |
 | `services/gateway` | `npm test && npm run typecheck` |
 | `services/board` | `npx vitest run && npx tsc -p tsconfig.build.json --noEmit && npm run typecheck && npm run build` |
@@ -64,8 +64,8 @@ No live instance and no paid keys are needed. Use Node 24 and run `npm ci` once 
 - **The board's build check.** `npx tsc -p tsconfig.build.json --noEmit` is stricter than vitest and matches the
   Docker build. Run it for every board change.
 - **Shared code.** After editing `kernel/sdk/src/caller.ts`, `kernel/sdk/src/fence.ts`, `kernel/sdk/src/source-store.ts` or `kernel/sdk/src/vendor/`, run
-  `node scripts/sync-shared.mjs`; the `scripts` tests fail if the copies drift.
-- **The reviewer eval.** `node modules/ai-reviewer/scripts/reviewer-eval.mjs` runs the AI reviewer against every planted
+  `node scripts/sync-shared.ts`; the `scripts` tests fail if the copies drift.
+- **The reviewer eval.** `node modules/ai-reviewer/scripts/reviewer-eval.ts` runs the AI reviewer against every planted
   case in `modules/ai-reviewer/test/reviewer-cases/` and must stay at 100%. It needs a paid `OPENROUTER_API_KEY`, so CI
   doesn't run it. If your PR touches a path in `REVIEWER_CODE` (`modules/github/service/src/evalgate.ts`), say so in the PR; the maintainer runs it before merging. A reviewer
   false reject you hit becomes a new planted case.
@@ -77,7 +77,7 @@ Read [CLAUDE.md](CLAUDE.md) first; it is also the guide coding agents follow. In
 - **Generic core.** New behaviour is an agent definition, handbook text or a tool, not a special-case branch.
 - **Gates in code.** Writes, approvals and access checks are enforced below the model. Don't move a gate into a
   prompt. Changes to gate files (`kernel/src/tier.ts`, `kernel/`, `modules/apps-platform/gate/`,
-  `ops/`, `scripts/paperclip-setup.mjs`) get extra review.
+  `ops/`, `scripts/paperclip-setup.ts`) get extra review.
 - **Minimal tests.** A few tests that prove the change works end to end. No tests for obvious code.
 - **Simple.** Less code, no speculative options or compatibility shims.
 - **Commits.** One focused change per PR, titled as a Conventional Commit, with a body that says why, not only what.
@@ -94,9 +94,9 @@ Supply chain: unless it is a security fix, never adopt or upgrade to a dependenc
 Pin everything: lockfiles, images by digest (`name:tag@sha256:…`, the tag kept for reading), GitHub Actions by commit
 SHA with the tag in a comment, apt packages from vendor repos as `name=version` (held), `npm i -g name@1.2.3`,
 `pip install name==1.2.3`, downloads by checksum, never `curl … | sh`. Pick a version with
-`node scripts/supply-chain/best-version.mjs <npm|pypi|docker|github-action|github-release|apt|apt-gvisor> <name>`: the
+`node scripts/supply-chain/best-version.ts <npm|pypi|docker|github-action|github-release|apt|apt-gvisor> <name>`: the
 newest one 7+ days old (or the security fix, below), with the digest or SHA to pin.
-Dependabot waits 7 days before proposing a version. CI (`scripts/supply-chain/npm-age.mjs` and `pins.mjs`) fails anything
+Dependabot waits 7 days before proposing a version. CI (`scripts/supply-chain/npm-age.ts` and `pins.ts`) fails anything
 unpinned, and any lockfile entry, image, action, apt or global package a change adds or alters that is under 7 days old.
 Images are dated by the registry's own record (Docker Hub's push time, ghcr.io's GitHub Packages publish time), never by
 the image's `created` field, which its author sets; an image no record dates fails. A security
@@ -148,7 +148,7 @@ checks.
 - **CI for fork PRs runs on GitHub-hosted runners only**, with no secrets and no access to our self-hosted runners. Don't
   expect a deploy, a reviewer-eval or anything else that needs a secret to run on your PR; the maintainer runs those.
   Those hosted checks are advisory, not required: the maintainer's own review and our self-hosted CI decide the merge.
-  `scripts/supply-chain/fork-lint.mjs` (run by the scripts suite) fails any workflow change that lets a fork PR reach a
+  `scripts/supply-chain/fork-lint.ts` (run by the scripts suite) fails any workflow change that lets a fork PR reach a
   self-hosted runner.
 
 ### How community PRs are reviewed

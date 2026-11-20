@@ -2,7 +2,7 @@
 // credentials, and share the models they may use, the cross-family choice and the one schema-bound, tool-less model call.
 //
 // Canonical copy: kernel/sdk/src/judge.ts. The reviewer and grading services hold byte-identical copies at
-// src/aidenhq-sdk/judge.ts: edit this one, then run `node scripts/sync-shared.mjs`.
+// src/aidenhq-sdk/judge.ts: edit this one, then run `node scripts/sync-shared.ts`.
 
 // GPT Luna at medium, then DeepSeek Flash at high (the owner's pick, 2026-11-13; the reviewer eval scores it). GLM Flash at high
 // is the owner's checker model (the reviewer's second opinion).
