@@ -19,6 +19,8 @@ const script = join(here, "../../ops/security-sbom.sh");
  * differ on the containerd image store, where every build writes a new top-level id over stable content. `held` lists
  * the ids the daemon still has: `docker save` reads those and fails on any other. `inspectErrors` names ids its
  * `docker image inspect` fails on for a reason other than the image being gone, as a daemon that can't answer does.
+ * `saveErrors` maps an id the daemon still holds to the error its `docker save` fails with, as a store that collects the
+ * image between the inspect and the save does.
  */
 async function run(env = {}, {
   containers = [{ id: "c1", image: "sha256:1111", config: "aidenhq/board:local" }],
@@ -26,6 +28,7 @@ async function run(env = {}, {
   manifests = {},
   held = null,
   inspectErrors = [],
+  saveErrors = {},
 } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "security-sbom-"));
   mkdirSync(join(dir, "bin"), { recursive: true });
@@ -33,6 +36,7 @@ async function run(env = {}, {
   const tagsFile = join(dir, "tags");
   const heldFile = join(dir, "held");
   const brokenFile = join(dir, "broken");
+  const saveErrorsFile = join(dir, "save-errors");
   writeFileSync(join(dir, "bin/stat"), "#!/usr/bin/env bash\necho 0\n"); // the Docker socket's group
   writeFileSync(join(dir, "bin/docker"), `#!/usr/bin/env bash
 # A fake daemon: containers (\`id<TAB>.Image<TAB>.Config.Image<TAB>compose image label\`), the tag table (ref<TAB>
@@ -71,6 +75,7 @@ case "$1" in
     fi ;;
   save)
     id="$4"
+    failed="$(awk -F '\\t' -v ref="$id" '$1 == ref { print $2; found = 1 } END { exit !found }' "$SAVE_ERRORS")" && { echo "$failed" >&2; exit 1; }
     if grep -qxF -- "$id" "$HELD"; then : > "$SAVED"; exit 0; fi
     echo "Error response from daemon: No such image: $id" >&2; exit 1 ;;
 esac
@@ -81,6 +86,7 @@ exit 0
   writeFileSync(tagsFile, Object.entries(tags).map(([ref, id]) => `${ref}\t${id}\t${manifests[ref] ?? id}`).join("\n") + "\n");
   writeFileSync(heldFile, (held ?? [...containers.map((c) => c.image), ...Object.values(tags)]).join("\n") + "\n");
   writeFileSync(brokenFile, inspectErrors.join("\n") + "\n");
+  writeFileSync(saveErrorsFile, Object.entries(saveErrors).map(([id, err]) => `${id}\t${err}`).join("\n") + "\n");
   const calls = join(dir, "calls");
   const data = join(dir, "data");
   const r = await new Promise((resolve) => {
@@ -89,7 +95,7 @@ exit 0
       env: {
         ...process.env, PATH: `${join(dir, "bin")}:/usr/bin:/bin`, CALLS: calls, AIDENHQ_DATA_DIR: data,
         AIDENHQ_INSTANCE_DIR: "", CONTAINERS: containersFile, TAGS: tagsFile, HELD: heldFile, BROKEN: brokenFile,
-        SAVED: join(dir, "saved.tar"), ...env,
+        SAVE_ERRORS: saveErrorsFile, SAVED: join(dir, "saved.tar"), ...env,
       },
     }, (error, stdout, stderr) => resolve({ status: error ? error.code : 0, out: `${stdout}${stderr}` }));
   });
@@ -209,6 +215,39 @@ test("security-sbom: an image the daemon cannot inspect is recorded, not dropped
   assert.match(line[2], /docker image inspect: .*cannot inspect/, JSON.stringify(line));
   assert.equal(line[1], "-", "no syft ran for it");
   assert.ok(!calls.some((c) => c.startsWith("save ")), calls.join("\n"));
+});
+
+test("security-sbom: an image the store collects between the inspect and the save records no line either", async () => {
+  // The daemon answered the inspect, so the id is not one it already calls gone; by the time `docker save` runs the store
+  // has collected it. That is the same vanished image as the case above, not a target that went missing, so the batch
+  // keeps no line for it instead of a `docker save` failure the pass could never close.
+  const { status, out, calls, targets } = await run({}, {
+    containers: [{ id: "c8", image: "sha256:eeee", config: "aidenhq/racing:local", label: "sha256:ffff" }],
+    tags: {},
+    held: ["sha256:eeee"],
+    saveErrors: { "sha256:eeee": "Error response from daemon: No such image: sha256:eeee" },
+  });
+  assert.equal(status, 0, out);
+  assert.equal(batchLine(targets, "image:sha256:eeee"), undefined, `no line for a collected image:\n${targets.join("\n")}`);
+  assert.ok(calls.some((c) => c.startsWith("save ")), `the save is attempted:\n${calls.join("\n")}`);
+  assert.ok(!targets.some((t) => t[2]), `no target failed:\n${targets.join("\n")}`);
+});
+
+test("security-sbom: a save that fails for another reason keeps its line with the error", async () => {
+  // Not every failed save is a collected image: a disk full or a broken daemon says the target was not inventoried, so it
+  // keeps a line rather than the pass reading as if it had listed it.
+  const { status, out, calls, targets } = await run({}, {
+    containers: [{ id: "c9", image: "sha256:dddd", config: "aidenhq/diskfull:local", label: "sha256:cccc" }],
+    tags: {},
+    held: ["sha256:dddd"],
+    saveErrors: { "sha256:dddd": "Error response from daemon: write /var/lib/docker/tmp/x.tar: no space left on device" },
+  });
+  assert.equal(status, 0, out);
+  const line = batchLine(targets, "image:sha256:dddd");
+  assert.ok(line, `the target keeps a line:\n${targets.join("\n")}`);
+  assert.match(line[2], /docker save: .*no space left/, JSON.stringify(line));
+  assert.equal(line[1], "-", "no syft ran for it");
+  assert.ok(calls.some((c) => c.startsWith("save ")), calls.join("\n"));
 });
 
 test("security-sbom: a container whose configured reference no longer exists is scanned too, and the syft image is not", async () => {

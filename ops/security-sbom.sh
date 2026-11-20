@@ -105,7 +105,9 @@ for image in $(printf '%s\n' "${!running[@]}" | sort); do
     if err="$(docker save -o "$work/image.tar" "$image" 2>&1)"; then
       # $work is on disk and emptied after each syft run, so the archive is not held for the next target.
       scan "image:$image" "" -- "docker-archive:/work/image.tar"
-    else
+    elif [[ "$err" != *"No such image"* ]]; then
+      # The store can collect an image between the inspect and the save: that is gone like the one above, not a target
+      # that went missing, so it is left out rather than recorded as a `docker save` failure the pass can't close.
       fail "image:$image" "docker save: ${err:-failed}"
     fi
   elif [[ "$err" != *"No such image"* ]]; then
