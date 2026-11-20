@@ -33,7 +33,7 @@ const SECTIONS: { name: string; views: NavView[] }[] = [
   { name: "Fleet", views: ["agents", "apps", "modules", "reviews"] },
   { name: "Insight", views: ["costs", "flow"] },
 ];
-export const hrefOf = (v: NavView) => `#/${v === "board" ? "" : v}`;
+export const hrefOf = (v: NavView) => `#/${v}`;
 
 const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
 export const paletteKey = isMac ? "⌘K" : "Ctrl K";
@@ -136,7 +136,7 @@ export function SubNav({ view, onNav, panels }: { view: string; onNav: (v: NavVi
         const it = item(v);
         return (
           <div key={v}>
-            <a className={`sn-item${view === v ? " on" : ""}`} href={hrefOf(v)} aria-current={view === v ? "page" : undefined} onClick={(e) => (e.preventDefault(), onNav(v))} onPointerEnter={() => prefetchView(v)} onFocus={() => prefetchView(v)}>
+            <a className={`sn-item${view === v ? " on" : ""}`} href={hrefOf(v)} title={it.name} aria-current={view === v ? "page" : undefined} onClick={(e) => (e.preventDefault(), onNav(v))} onPointerEnter={() => prefetchView(v)} onFocus={() => prefetchView(v)}>
               <Icon name={it.icon} />
               <span className="sn-label">{it.name}</span>
             </a>
@@ -156,7 +156,7 @@ export function SubNav({ view, onNav, panels }: { view: string; onNav: (v: NavVi
 
 /** The phone's sections: four at hand, the rest behind More. */
 const PHONE: NavView[] = ["chat", "approvals", "agents", "board"];
-export function BottomBar({ view, approvals, agentsActive, onNav, panels }: Common & { panels: Panel[] }) {
+export function BottomBar({ view, approvals, agentsActive, onNav, panels, notify }: Common & { panels: Panel[]; notify?: () => void }) {
   const [more, setMore] = useState(false);
   const rest = ITEMS.filter((i) => !PHONE.includes(i.view));
   const inMore = !PHONE.includes(view as NavView);
@@ -192,6 +192,12 @@ export function BottomBar({ view, approvals, agentsActive, onNav, panels }: Comm
                 <span className="sn-label">{it.name}</span>
               </a>
             ))}
+            {notify && (
+              <button type="button" className="sn-item" onClick={() => (setMore(false), notify())}>
+                <Icon name="bell" />
+                <span className="sn-label">Notify me</span>
+              </button>
+            )}
             {panels.map((p) => (
               <a key={p.name} className="sn-item" href={p.url} target="_blank" rel="noopener noreferrer">
                 <Icon name="external" />

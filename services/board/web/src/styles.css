@@ -446,7 +446,7 @@ kbd {
 /* ------------------------------------------------------------ the task and its crew */
 .task-top { padding: 14px 22px 4px; display: flex; flex-direction: column; gap: 8px; }
 .head-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
-.chip { display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--border); background: var(--surface-2); border-radius: 999px; padding: 1px 9px; font-size: var(--text-xs); color: var(--muted); cursor: pointer; }
+.chip { display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--border); background: var(--surface-2); border-radius: var(--radius-sm); padding: 1px 9px; font-size: var(--text-xs); color: var(--muted); cursor: pointer; }
 .chip:hover { border-color: var(--border-strong); color: var(--text); }
 .chip.prio-critical { color: var(--urgent); border-color: color-mix(in srgb, var(--urgent) 40%, var(--border)); }
 .chip.prio-high { color: var(--high); border-color: color-mix(in srgb, var(--high) 40%, var(--border)); }
@@ -749,7 +749,7 @@ kbd {
 .live-row.failed { color: var(--bad-text); display: block; }
 .live-row.working .live-line b { color: var(--text); }
 .live-row.working .live-line .btn { margin-left: auto; }
-.live-clock { font-variant-numeric: tabular-nums; color: var(--faint); padding: 0 6px; border-radius: 999px; background: var(--surface-2); font-size: var(--text-xs); }
+.live-clock { font-variant-numeric: tabular-nums; color: var(--faint); padding: 0 6px; border-radius: var(--radius-sm); background: var(--surface-2); font-size: var(--text-xs); }
 /* "is working": a soft light sweeping over the words. */
 .shimmer { color: var(--ok-text); background: linear-gradient(90deg, var(--ok-text) 0 40%, color-mix(in srgb, var(--ok-text) 35%, var(--surface)) 50%, var(--ok-text) 60% 100%) 0 0 / 250% 100%; -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; animation: shimmer 2.2s linear infinite; }
 @keyframes shimmer { from { background-position: 100% 0; } to { background-position: -150% 0; } }
@@ -806,7 +806,7 @@ button.live-toggle:focus-visible { outline: 2px solid var(--accent); border-radi
   .ws-panel .panel { padding-top: 44px; }
 }
 .details-btn { display: inline-flex; align-items: center; gap: 6px; }
-.details-needs { min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px; background: var(--warn); color: var(--on-warn); font-size: var(--text-2xs); font-weight: 700; display: inline-grid; place-items: center; font-variant-numeric: tabular-nums; }
+.details-needs { min-width: 18px; height: 18px; padding: 0 5px; border-radius: var(--radius-sm); background: var(--warn); color: var(--on-warn); font-size: var(--text-2xs); font-weight: 700; display: inline-grid; place-items: center; font-variant-numeric: tabular-nums; }
 /* Context: one compact row of facts above the tasks. */
 .panel-context { display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 0; padding: 2px 4px 0; font-size: var(--text-sm); }
 .panel-context > div { display: flex; gap: 6px; min-width: 0; }
@@ -834,7 +834,7 @@ button.live-toggle:focus-visible { outline: 2px solid var(--accent); border-radi
 .handed-dot { grid-area: dot; }
 .handed-agent { grid-area: agent; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-xs); color: var(--muted); }
 .handed-title { grid-area: title; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.handed-state { grid-area: state; font-size: var(--text-2xs); font-weight: 550; padding: 0 7px; border-radius: 999px; color: var(--muted); background: var(--surface-2); white-space: nowrap; }
+.handed-state { grid-area: state; font-size: var(--text-2xs); font-weight: 550; padding: 0 7px; border-radius: var(--radius-sm); color: var(--muted); background: var(--surface-2); white-space: nowrap; }
 .handed-state.hs-working { color: var(--ok-text); background: color-mix(in srgb, var(--working) 15%, transparent); }
 .handed-state.hs-in-review { border: 1px dashed var(--border-strong); background: transparent; }
 .handed-state.hs-waiting-for-you, .handed-state.hs-waiting-for-approval { color: var(--warn-text); background: color-mix(in srgb, var(--warn) 16%, transparent); }
@@ -941,7 +941,7 @@ button.live-toggle:focus-visible { outline: 2px solid var(--accent); border-radi
 .fleet-line.faint, .fleet-empty { color: var(--faint); }
 .fleet-clip { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .fleet-sub { font-size: var(--text-xs); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.fleet-more { flex: none; font-size: var(--text-2xs); font-weight: 600; color: var(--working); padding: 0 6px; border-radius: 999px; background: color-mix(in srgb, var(--working) 12%, transparent); }
+.fleet-more { flex: none; font-size: var(--text-2xs); font-weight: 600; color: var(--working); padding: 0 6px; border-radius: var(--radius-sm); background: color-mix(in srgb, var(--working) 12%, transparent); }
 .fleet-toggle svg { transition: transform var(--fast) var(--ease); }
 .fleet-row.open .fleet-toggle svg { transform: rotate(180deg); }
 .fleet-detail { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: 18px 28px; padding: 8px 20px 20px 68px; background: var(--hover); animation: msg-in 180ms var(--ease) both; }
@@ -1204,7 +1204,7 @@ a.cost-top-name:focus-visible { outline: 2px solid var(--accent); outline-offset
 .cost-cover-rows li.gap > span:last-child { color: var(--urgent); font-weight: 600; }
 .cost-cover-rows li.accurate > span:last-child { color: var(--ok-text); }
 .cost-task-facts { grid-template-columns: auto minmax(0, 1fr); margin-bottom: 8px; }
-.cost-status { margin-left: 8px; padding: 0 6px; border-radius: 999px; background: var(--col); font-size: var(--text-2xs); color: var(--muted); }
+.cost-status { margin-left: 8px; padding: 0 6px; border-radius: var(--radius-sm); background: var(--col); font-size: var(--text-2xs); color: var(--muted); }
 .cost-status.done { color: var(--ok-text); }
 .cost-status.cancelled { color: var(--warn-text); }
 .cost-waste-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
