@@ -118,6 +118,11 @@ export type State = {
   flight?: Ready & { record: string; task: string };
   /** What the kernel tells the owner, each once (by id); the newest 20. */
   events?: { id: string; text: string }[];
+  /** The owner's Update now, kept until a check has run it (or said why it didn't start): `tries` failed checks so far, the
+   * next not before `after`. */
+  asking?: { release: string; by: string; tries: number; after: number };
+  /** A release the owner asked for that lost its land to another change on main, and how many times (it is prepared again). */
+  moved?: { release: string; n: number };
 };
 
 const url = (d: Pick<Deps, "base">, repo: string) => `${d.base}/${repo}.git`;
@@ -417,6 +422,10 @@ export function pinTo(d: Pick<Deps, "base" | "fetch" | "inst">, name: string, sh
 /** Records still going; any other state is the end. */
 const MOVING = ["review", "owner", "approved", "claimed"];
 const HOUR = 3_600_000;
+/** Checks an Update now gets (a failed child: the network, a timeout), the waits between them growing from ASK_WAIT. */
+const ASK_TRIES = 3, ASK_WAIT = 2 * 60_000;
+/** Times an owner-asked release is prepared again after another change reached main first. */
+const MOVED_TRIES = 3;
 
 /**
  * The kernel's half: runs the check (hourly, and at once on Update now), files the release it prepared as a kernel.apply and
@@ -447,14 +456,23 @@ export function createUpdates({ db, dir, board, inst, ownerLine, check, file, re
     const r = record(f.record);
     if (r && MOVING.includes(r.state)) return;
     const at = new Date(now()).toISOString();
+    // Another change reached the instance's main first: nothing was tried, so it is prepared again on the new main: the
+    // owner's Update now at once (as asked again, a few times at most), the night's at this pass's check.
+    const moved = r?.state === "failed" && /moved on since this commit's base/.test(String(r.outcome?.text ?? ""));
+    const times = s.moved?.release === f.release ? s.moved.n : 0;
     if (r?.state === "done") {
       s.last = { release: f.release, outcome: "installed", at, by: f.by };
       s.current = { name: f.release, product: f.kernel };
       s.available = null;
       s.failed = (s.failed ?? []).filter((n) => n !== f.release);
+      delete s.moved;
       event(s, `installed:${f.release}`, `AidenHQ is updated to ${f.release} (from ${f.from}).${f.notes.length ? ` What changed: ${f.notes.slice(0, 5).join("; ")}.` : ""} Every change: ${f.compare}`);
-    } else if (r?.state === "failed" && /moved on since this commit's base/.test(String(r.outcome?.text ?? ""))) {
-      // Another change reached the instance's main first: nothing was tried, so the next check prepares it again on the new main.
+    } else if (moved && (f.by === "auto-update" || times < MOVED_TRIES)) {
+      if (f.by === "auto-update") checked = 0;
+      else {
+        s.moved = { release: f.release, n: times + 1 };
+        s.asking = { release: f.release, by: f.by, tries: 0, after: 0 };
+      }
       log("release to prepare again: the instance's main moved", { release: f.release });
     } else {
       const why = !r ? "its record is gone" : r.state === "failed" ? plain(String(r.outcome?.text ?? "").split("\n")[0], 400) || "the apply failed" : `the card was ${r.state}`;
@@ -465,16 +483,33 @@ export function createUpdates({ db, dir, board, inst, ownerLine, check, file, re
     delete s.flight;
     writeState(d, s);
     const done = s.last?.release === f.release && s.last.at === at;
-    await close(f.task, !done ? "Not landed: the instance's main moved first; it is prepared again on the new main." : s.last!.outcome === "installed" ? `Installed: this server runs AidenHQ ${f.release}.` : `**Not installed:** ${s.last!.why}.`).catch((e: Error) => log("update task not closed", { task: f.task, err: e.message }));
+    await close(f.task, !done ? `Not landed: the instance's main moved first; it is prepared again on the new main${f.by === "auto-update" ? " (tonight)" : ""}.` : s.last!.outcome === "installed" ? `Installed: this server runs AidenHQ ${f.release}.` : `**Not installed:** ${s.last!.why}.`).catch((e: Error) => log("update task not closed", { task: f.task, err: e.message }));
   }
 
   async function pass() {
-    await locked(dir, async () => { const s = readState(dir); if (s.flight) await follow(s); });
-    const ask = asked;
+    await locked(dir, async () => {
+      const s = readState(dir);
+      // Update now is kept in the state until a check has run it: a restart, or a check that fails, doesn't drop it.
+      if (asked) { s.asking = { ...asked, tries: 0, after: 0 }; asked = null; writeState(d, s); }
+      if (s.flight) await follow(s);
+    });
+    const waiting = readState(dir).asking;
+    const ask = waiting && now() >= waiting.after ? waiting : undefined;
     if (ask || now() - checked >= HOUR) {
-      asked = null;
       checked = now();
-      await check(ask).catch((e: Error) => log("update check failed", { err: e.message.slice(0, 300) }));
+      let failed: Error | undefined;
+      await check(ask ? { release: ask.release, by: ask.by } : null).catch((e: Error) => { failed = e; log("update check failed", { err: e.message.slice(0, 300) }); });
+      // A check that ran has told the owner itself (filed, or why not). One that failed is tried again, bounded; then said.
+      if (ask) await locked(dir, async () => {
+        const s = readState(dir);
+        if (s.asking?.release !== ask.release || s.asking.by !== ask.by) return;
+        if (failed && ask.tries + 1 < ASK_TRIES) s.asking = { ...ask, tries: ask.tries + 1, after: now() + ASK_WAIT * 2 ** ask.tries };
+        else {
+          if (failed) event(s, `now:${new Date(now()).toISOString()}`, `Update now didn't start: ${plain(failed.message, 200)}. Nothing changed; try again in a while.`);
+          delete s.asking;
+        }
+        writeState(d, s);
+      });
     }
     // The check (a child process) takes the lock itself; filing is the state's next read-modify-write.
     await locked(dir, async () => {
