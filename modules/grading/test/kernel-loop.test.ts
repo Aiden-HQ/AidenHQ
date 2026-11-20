@@ -11,6 +11,8 @@ import { createKernelGradeLoop, verifiedMerges } from "../service/src/kernel-loo
 
 const answer = (met) => ({ verdict: met.every((m) => m === "yes") ? "satisfied" : "needs_revision", criteria: met.map((m, i) => ({ id: String(i + 1), met: m, evidence: m === "yes" ? "shown" : "missing" })) });
 
+const noGithub = { pr: async () => { throw new Error("no github"); }, issue: async () => { throw new Error("no github"); }, diff: async () => "", job: async () => null };
+
 test("a kernel job's graded task is graded, reopened with the unmet criterion, then closed on a pass", async (t) => {
   const models = [];
   const answers = [answer(["yes", "no", "yes"]), answer(["yes", "yes", "yes"])];
@@ -39,7 +41,7 @@ test("a kernel job's graded task is graded, reopened with the unmet criterion, t
   const db = new DatabaseSync(":memory:");
   const { runner, grades } = createGrading({ db, kernel: { issue: async () => issue, settings: async () => ({}), release: async () => {} }, keys: { check: "c", runner: "r", board: "b" } });
   grades.file("t1", ["says where Legacy is used", "links each source", "names the next step"], { kind: "report", ref: "" });
-  const loop = createKernelGradeLoop({ db, runner, due: () => ({ grades: grades.due(), resubmitted: [] }), kernel, kernelBytes: async () => { throw new Error("no attachment bytes"); }, apps: async () => { throw new Error("no apps"); }, gatewayUrl: `http://127.0.0.1:${gateway.address().port}`, log: () => {}, emit: (f) => facts.push(f) });
+  const loop = createKernelGradeLoop({ db, runner, due: () => ({ grades: grades.due(), resubmitted: [] }), kernel, kernelBytes: async () => { throw new Error("no attachment bytes"); }, apps: async () => { throw new Error("no apps"); }, gatewayUrl: `http://127.0.0.1:${gateway.address().port}`, github: noGithub, log: () => {}, emit: (f) => facts.push(f) });
 
   completionGate(grades, "t1", "finish_turn"); // the agent finished: the gate holds the task and the row waits for the grader
   // A just-filed row waits 5 s for a bridge close's comment; the clock moves past it.
@@ -181,7 +183,7 @@ test("a kernel.apply record on the task reaches the grader as its apply delivera
   const db = new DatabaseSync(":memory:");
   const { runner, grades } = createGrading({ db, kernel: { issue: async () => issue, settings: async () => ({}), release: async () => {} }, keys: { check: "c", runner: "r", board: "b" } });
   grades.file(issue.id, ["the apply's record ended applied, and its log shows no error", "the diff makes the change asked for", "the diff changes nothing else"], { kind: "apply", ref: "" });
-  const loop = createKernelGradeLoop({ db, runner, due: () => ({ grades: grades.due(), resubmitted: [] }), kernel, kernelBytes: async () => Buffer.alloc(0), apps: async () => ({}), gatewayUrl: `http://127.0.0.1:${gateway.address().port}`, log: () => {} });
+  const loop = createKernelGradeLoop({ db, runner, due: () => ({ grades: grades.due(), resubmitted: [] }), kernel, kernelBytes: async () => Buffer.alloc(0), apps: async () => ({}), gatewayUrl: `http://127.0.0.1:${gateway.address().port}`, github: noGithub, log: () => {} });
   completionGate(grades, issue.id, "finish_turn"); // the held-and-waiting row the loop picks up (as in the W7 test)
   const realNow = Date.now;
   Date.now = () => realNow() + 10_000;
@@ -216,7 +218,7 @@ test("a model with no route grades with the next one, and the hold lasts until t
   const { runner, grades } = createGrading({ db, kernel: { issue: async () => issue, settings: async () => ({}), release }, keys: { check: "c", board: "b" } });
   grades.file("t3", ["says it"], { kind: "report", ref: "" });
   completionGate(grades, "t3", "finish_turn");
-  const loop = createKernelGradeLoop({ db, runner, due: () => ({ grades: grades.due(), resubmitted: [] }), kernel, kernelBytes: async () => Buffer.alloc(0), apps: async () => ({}), gatewayUrl: `http://127.0.0.1:${gateway.address().port}`, log: () => {} });
+  const loop = createKernelGradeLoop({ db, runner, due: () => ({ grades: grades.due(), resubmitted: [] }), kernel, kernelBytes: async () => Buffer.alloc(0), apps: async () => ({}), gatewayUrl: `http://127.0.0.1:${gateway.address().port}`, github: noGithub, log: () => {} });
   const realNow = Date.now;
   Date.now = () => realNow() + 10_000;
   t.after(() => { Date.now = realNow; });
@@ -241,7 +243,7 @@ test("a grader that keeps failing keeps its hold, then blocks the task with the 
   const { runner, grades } = createGrading({ db, kernel: { issue: async () => issue, settings: async () => ({}), release }, keys: { check: "c", board: "b" } });
   grades.file("t4", ["says it"], { kind: "report", ref: "" });
   completionGate(grades, "t4", "finish_turn");
-  const loop = createKernelGradeLoop({ db, runner, due: () => ({ grades: grades.due(), resubmitted: [] }), kernel, kernelBytes: async () => Buffer.alloc(0), apps: async () => ({}), gatewayUrl: `http://127.0.0.1:${gateway.address().port}`, log: () => {} });
+  const loop = createKernelGradeLoop({ db, runner, due: () => ({ grades: grades.due(), resubmitted: [] }), kernel, kernelBytes: async () => Buffer.alloc(0), apps: async () => ({}), gatewayUrl: `http://127.0.0.1:${gateway.address().port}`, github: noGithub, log: () => {} });
   const realNow = Date.now;
   let skew = 10_000;
   Date.now = () => realNow() + skew;
@@ -283,7 +285,7 @@ test("a verdict's reopen and its parent's notice that hit a kernel 5xx land on t
   const db = new DatabaseSync(":memory:");
   const { runner, grades } = createGrading({ db, kernel: { issue: async () => issue, settings: async () => ({}), release: async () => {} }, keys: { check: "c", runner: "r", board: "b" } });
   grades.file("t3", ["says it"], { kind: "report", ref: "" });
-  const loop = createKernelGradeLoop({ db, runner, due: () => ({ grades: grades.due(), resubmitted: [] }), kernel, kernelBytes: async () => { throw new Error("no"); }, apps: async () => { throw new Error("no"); }, gatewayUrl: `http://127.0.0.1:${gateway.address().port}`, log: () => {} });
+  const loop = createKernelGradeLoop({ db, runner, due: () => ({ grades: grades.due(), resubmitted: [] }), kernel, kernelBytes: async () => { throw new Error("no"); }, apps: async () => { throw new Error("no"); }, gatewayUrl: `http://127.0.0.1:${gateway.address().port}`, github: noGithub, log: () => {} });
   completionGate(grades, "t3", "finish_turn");
   const realNow = Date.now;
   let skew = 10_000;
@@ -302,7 +304,7 @@ test("a verdict's reopen and its parent's notice that hit a kernel 5xx land on t
   const close = kernel;
   let closed = false;
   const k2 = async (m, p, b) => { if (p === "/v1/wakes" && !closed) { closed = true; throw Object.assign(new Error("kernel 502"), { status: 502 }); } return close(m, p, b); };
-  const loop2 = createKernelGradeLoop({ db, runner, due: () => ({ grades: grades.due(), resubmitted: [] }), kernel: k2, kernelBytes: async () => { throw new Error("no"); }, apps: async () => { throw new Error("no"); }, gatewayUrl: `http://127.0.0.1:${gateway.address().port}`, log: () => {} });
+  const loop2 = createKernelGradeLoop({ db, runner, due: () => ({ grades: grades.due(), resubmitted: [] }), kernel: k2, kernelBytes: async () => { throw new Error("no"); }, apps: async () => { throw new Error("no"); }, gatewayUrl: `http://127.0.0.1:${gateway.address().port}`, github: noGithub, log: () => {} });
   await loop2.runGrades();
   assert.deepEqual(calls.resolve, ["reopen", "ok"]);
   assert.deepEqual(calls.wake, [], "the parent's notice failed");

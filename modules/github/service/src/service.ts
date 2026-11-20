@@ -1,13 +1,15 @@
 // The code host as its own service: the executor of codehost-github.{push,pr,merge,close,create_repo} (executor@1; the
-// kernel tiers each record with plan.ts and calls execute only for an approved, claimed and revalidated one), and narrow
-// GitHub operations for other modules (/ops/token, /ops/snapshot, /ops/clone, /ops/bundle), which only the kernel calls: it checks each
-// module's grant (its own module.yaml `codehost:`) at POST /v1/codehost/:op and calls here with this
-// service's key.
+// kernel tiers each record with plan.ts and calls execute only for an approved, claimed and revalidated one), and typed
+// GitHub operations for other modules (/ops/snapshot, /ops/clone, /ops/bundle here; fetch, head, read, comment, commit and
+// runner_token in ops.ts), which only the kernel calls: it checks each module's grant (its own module.yaml `codehost:`) at
+// POST /v1/codehost/:op and calls here with this service's key. Every GitHub call is the owner's (spec
+// 2026-11-20-github-owner-identity): `access` holds the sign-in, and no answer ever carries its token.
 //
 // Repo code never runs here. Every git command carries SAFE_GIT_ARGS and no global or system config but the service's own
 // (no hooks, no filters, no fsmonitor); a job's commits come in by a fetch from its workspace's .git into this service's
-// bare cache clone, which is never checked out; the App token lives only in the env of the one git or GitHub call that
-// needs it. An approved merge runs as a queue (merges.ts) whose outcome
+// bare cache clone, which is never checked out; the owner's token lives only in the env of the one git call that needs it.
+// Every commit it makes is the owner's with the AidenHQ trailer. An approved write that finds GitHub disconnected is held
+// (held.json) and runs once by id after the reconnect. An approved merge runs as a queue (merges.ts) whose outcome
 // comes once its PRs merged at their approved heads, or it stopped.
 //
 // The instance's land for kernel.apply (the kernel's executor, with this service's executor key): POST /aidenhq/v1/apply/read
@@ -18,14 +20,15 @@
 // The commit comes from this service's own copy when it made it, else from the task's workspace. The instance repo only.
 import { execFile, spawn } from "node:child_process";
 import { once } from "node:events";
-import { timingSafeEqual } from "node:crypto";
-import { cpSync, createReadStream, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { createHash, timingSafeEqual } from "node:crypto";
+import { chmodSync, cpSync, createReadStream, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { join, sep } from "node:path";
 import { Readable } from "node:stream";
 import { promisify } from "node:util";
 import { serveExecutor, type Executor, type PlanRequest } from "./aidenhq-sdk/executor.ts";
-import { CREDENTIAL_ARGS, identityEnv, inOrg, ownRepo } from "./github-app.ts";
+import { CREDENTIAL_ARGS, disconnected, hasTrailer, identityEnv, inOrg, needOf, ownRepo, withFooter, withTrailer, type Gh } from "./git-auth.ts";
+import type { GitHubAccess } from "../../connections/github-mcp/src/client.ts";
 import { createEvalGate } from "./evalgate.ts";
 import { createMerges } from "./merges.ts";
 import { createFlow } from "./flow.ts";
@@ -39,6 +42,7 @@ import { SOURCE_EXCEPTIONS_FILE, readCardSourceExceptions } from "./sources.ts";
 import { candidatesOf, readSiblings } from "./siblings.ts";
 import { notePrTask } from "./pr-watch.ts";
 import { createDesignReviews, startDesignReviewSweep } from "./design-review.ts";
+import { packBundle, type OpsContext } from "./ops.ts";
 import { noteKept } from "./tidy.ts";
 
 const run = promisify(execFile);
@@ -46,13 +50,17 @@ const run = promisify(execFile);
 /** The hardened git arguments: hooks, fsmonitor and ext:: transports off whatever a workspace's config says. */
 export const SAFE_GIT_ARGS = ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=", "-c", "protocol.ext.allow=never", "-c", "safe.bareRepository=explicit"];
 
-type Gh = (method: string, path: string, token: string, body?: unknown) => Promise<{ status: number; body: any; remaining?: number }>;
-type App = { token(org: string, o: { repositories?: string[]; permissions?: Record<string, string>; fresh?: boolean }): Promise<string>; createRepo(slug: string): Promise<"exists" | "created">; appInfo(): Promise<{ id: number; slug: string }>; identity(): Promise<{ name: string }> };
 export type Options = {
   key: string; kernelUrl: string; cacheDir: string; tasksDir?: string;
-  /** The App (github-app.ts appClient); undefined without the key: every GitHub action fails, saying so. */
-  app?: App; gh: Gh; remoteUrl?: (slug: string) => string;
-  agentsOrg: string; allowedOrgs?: string[]; instanceRepo?: string; productRepo?: string;
+  /** GitHub as the owner (github-mcp client.ts): the one sign-in, limiter and typed needs. */
+  access: GitHubAccess; remoteUrl?: (slug: string) => string;
+  /** True while the merge queue must hold (the App migration, migrate.ts): approved merges wait like a disconnect. */
+  holdMerges?: () => boolean;
+  /** The typed ops other modules get through the kernel (ops.ts serveOps: fetch, head, read, comment, commit, runner_token), run
+   * here with the owner's token and never answering it; unset: those ops answer 404. */
+  ops?: (req: IncomingMessage, res: ServerResponse, ctx: OpsContext) => Promise<void>;
+  /** github_fleet_org: where the fleet's repos live on GitHub ("" while unset). */
+  fleetOrg: string; allowedOrgs?: string[]; instanceRepo?: string; productRepo?: string;
   /** maintainer_repos ("owner/name"): where the fleet merges and closes outside the agents org and the product repo. */
   maintained?: string[];
   log?: (msg: string, f?: Record<string, unknown>) => void;
@@ -66,14 +74,10 @@ export type Options = {
   churnExclude?: string[];
 };
 
-const READ = { contents: "read", metadata: "read" };
 /** A base a change targets: a file read there (source exceptions), and its cache clone at `tip` (siblings). */
 type Base = { repo: string; base: string; read: (path: string) => Promise<string>; dir?: string; tip?: string };
 // What an apply read collects for the kernel: per file, in all (texts and diff), and how many files.
 const MAX_TEXT = 1 << 20, MAX_TOTAL = 8 << 20, MAX_FILES = 200;
-const PUSH = { contents: "write", pull_requests: "write", metadata: "read" };
-const MERGE = { contents: "write", pull_requests: "write", checks: "read", statuses: "read", metadata: "read" };
-const LEVEL: Record<string, number> = { read: 1, write: 2, admin: 3 };
 const SLUG = /^([\w.-]+)\/([\w.-]+)$/;
 /** The instance config files a settings write may touch (kernel/src/apply.ts APPLY_PATHS). */
 const INSTANCE_PATH = /^(instance\.yaml|apps\.yaml|agents\/[\w-][\w.-]*\.md|agents\/[a-z0-9][a-z0-9-]*\/(agent\.yaml|AGENTS\.md|memory\.md)|owner\/profile\.md)$/;
@@ -90,8 +94,6 @@ const slugOf = (repo: unknown) => {
   if (!m || m[2]!.endsWith(".git") || m.slice(1).some((p) => /^\.+$/.test(p))) throw fail(400, `${String(repo)} is not owner/name`);
   return { slug: `${m[1]}/${m[2]}`, org: m[1]!, name: m[2]! };
 };
-// An org-wide token's target: owner/*.
-const ORG_WIDE = /^([\w.-]+)\/\*$/;
 
 export function createService(o: Options) {
   const log = o.log ?? (() => {});
@@ -106,15 +108,21 @@ export function createService(o: Options) {
     const full = [...SAFE_GIT_ARGS, ...(token ? CREDENTIAL_ARGS : []), "--git-dir", dir, ...args];
     return (await run("git", full, { env, maxBuffer: 64 * 1024 * 1024 })).stdout.trim();
   }
-  const app = () => o.app ?? (() => { throw fail(503, "the GitHub App key isn't mounted: codehost-github can't reach GitHub"); })();
-  /** The App's bot login, or undefined: a Flow fact never fails the write it describes. */
-  const botName = () => o.app?.identity().then((i) => i.name, () => undefined);
-  const tokenFor = (s: { org: string; name: string }, permissions: Record<string, string>) => app().token(s.org, { repositories: [s.name], permissions });
-  async function api(method: string, path: string, token: string, body?: unknown) {
-    const r = await o.gh(method, path, token, body);
+  const initBare = async (dir: string) => void (await run("git", [...SAFE_GIT_ARGS, "init", "--quiet", "--bare", dir], { env: ENV }));
+  const access = o.access;
+  /** The owner's token, for one git child's env only. */
+  const token = () => access.token();
+  /** The owner's login, or undefined: a Flow fact never fails the write it describes. */
+  const ownerLogin = () => access.identity().then((i) => i.login, () => undefined);
+  const gh: Gh = (method, path, body, opts) => access.rest(method, path, body, opts);
+  async function api(method: string, path: string, body?: unknown) {
+    const r = await gh(method, path, body);
     if (r.status >= 300) throw fail(502, `GitHub ${method} ${path.split("?")[0]}: ${r.status} ${r.body?.message ?? ""}`.trim());
     return r.body;
   }
+  const defaultBranch = async (slug: string) => String((await api("GET", `/repos/${slug}`)).default_branch ?? "main");
+  /** Whether a GitHub object is in AidenHQ's records (the kernel's GET /v1/objects); a failed read is "no". */
+  const ours = (ref: string) => kernel("GET", `/v1/objects?ref=${encodeURIComponent(ref)}`).then((j) => j?.ours === true, () => false);
 
   /**
    * A repo's bare cache clone (created on first use), never checked out. `github`: GitHub's objects only, the one snapshot and
@@ -132,7 +140,7 @@ export function createService(o: Options) {
   async function fetchRemote(s: ReturnType<typeof slugOf>, name: string, kind: "github" | "ws" = "github") {
     const dir = await cache(s, kind);
     const ref = `refs/remote/${name}`;
-    await git(dir, ["fetch", "--quiet", "--no-tags", remote(s.slug), `+${/^[0-9a-f]{40}$/.test(name) ? name : `refs/heads/${name}`}:${ref}`], await tokenFor(s, READ));
+    await git(dir, ["fetch", "--quiet", "--no-tags", remote(s.slug), `+${/^[0-9a-f]{40}$/.test(name) ? name : `refs/heads/${name}`}:${ref}`], await token());
     return { dir, ref, sha: await git(dir, ["rev-parse", "--verify", `${ref}^{commit}`]) };
   }
 
@@ -193,12 +201,12 @@ export function createService(o: Options) {
 
   // GitHub's checks on a commit as plan.ts reads them: { ok, pending, skipped } each (names never leave this function).
   // Every page is read; if GitHub reports more than could be read, one check stays pending: missing evidence never passes.
-  async function checksAt(s: ReturnType<typeof slugOf>, sha: string, token: string) {
+  async function checksAt(s: ReturnType<typeof slugOf>, sha: string) {
     const all = async (path: string, key: string) => {
       const items: any[] = [];
       let total = Infinity;
       for (let page = 1; page <= 10 && items.length < total; page++) {
-        const r = await api("GET", `/repos/${s.slug}/commits/${sha}/${path}?per_page=100&page=${page}`, token);
+        const r = await api("GET", `/repos/${s.slug}/commits/${sha}/${path}?per_page=100&page=${page}`);
         total = Number(r.total_count ?? 0);
         const got = r[key] ?? [];
         items.push(...got);
@@ -247,10 +255,12 @@ export function createService(o: Options) {
    */
   async function stateFor(kind: string, a: any, requester?: { roles?: string[] }, task = "") {
     // The Platform Engineer's line: a requester holding the platform-engineer role (the kernel's record of who asked, never the args).
-    const base = { agentsOrg: o.agentsOrg, allowedOrgs: o.allowedOrgs, instanceRepo: o.instanceRepo, productRepo: o.productRepo, maintained: o.maintained ?? [], requester: { platform: isPlatform(requester) }, task, workspace: String(a.workspace ?? ""), also: [] as string[] };
+    const base = { agentsOrg: o.fleetOrg, allowedOrgs: o.allowedOrgs, instanceRepo: o.instanceRepo, productRepo: o.productRepo, maintained: o.maintained ?? [], requester: { platform: isPlatform(requester) }, task, workspace: String(a.workspace ?? ""), also: [] as string[] };
     if (kind.endsWith(".create_repo")) {
       const repo = slugOf(a.repo).slug;
-      return { state: { ...base, repo }, facts: { target: repo, sentence: `Create the repository ${repo} on GitHub${inOrg(o.agentsOrg, repo) ? ", with the app starter on main" : ""}.`, diff: "" } };
+      // Never a quiet switch to `local`: a repo for GitHub while GitHub is signed out is refused, saying so.
+      if (!access.connected()) throw fail(503, "GitHub isn't connected");
+      return { state: { ...base, repo }, facts: { target: repo, sentence: `Create the repository ${repo} on GitHub${inOrg(o.fleetOrg, repo) ? ", with the app starter on main" : ""}.`, diff: "" } };
     }
     // What the reviewer reads beside the diff (review): each changed file at the reviewed head, and the PR's Evidence section.
     const reads: { name: string; read: () => Promise<string> }[] = [];
@@ -268,10 +278,9 @@ export function createService(o: Options) {
       let diff = "";
       for (const p of a.prs ?? []) {
         const s = slugOf(p.repo);
-        const token = await tokenFor(s, MERGE);
-        const pr = await api("GET", `/repos/${s.slug}/pulls/${Number(p.number)}`, token);
+        const pr = await api("GET", `/repos/${s.slug}/pulls/${Number(p.number)}`);
         // A rename counts at both paths: a file moved out of `.github/` still changes `.github/`.
-        const listed = await api("GET", `/repos/${s.slug}/pulls/${Number(p.number)}/files?per_page=100`, token);
+        const listed = await api("GET", `/repos/${s.slug}/pulls/${Number(p.number)}/files?per_page=100`);
         const files = listed.flatMap((f: any) => [f.filename, f.previous_filename].filter(Boolean));
         // A merge's card carries the PR's diff at its head (the one the record binds), against its merge base with the base branch.
         if (merge) {
@@ -287,7 +296,7 @@ export function createService(o: Options) {
         own.add(`${s.slug.toLowerCase()}#${Number(p.number)}`);
         prs.push({
           repo: s.slug, number: Number(p.number), head: pr.head?.sha, base: pr.base?.sha, headMatches: !p.head || p.head === pr.head?.sha,
-          files: pr.changed_files > listed.length ? undefined : files, checks: await checksAt(s, pr.head?.sha, token),
+          files: pr.changed_files > listed.length ? undefined : files, checks: await checksAt(s, pr.head?.sha),
           ownHead: pushedHeads().includes(pushedKey(s.slug, String(pr.head?.sha))), pushedBy: pushedBy()[pr.head?.sha]?.task, platformHead: pushedBy()[pr.head?.sha]?.platform === true, dependabot: pr.user?.login === "dependabot[bot]",
         });
       }
@@ -301,8 +310,7 @@ export function createService(o: Options) {
     let diff = "";
     for (const b of a.only ?? []) {
       const { s, dir } = await fromWorkspace(a.workspace, b);
-      const info = await api("GET", `/repos/${s.slug}`, await tokenFor(s, READ));
-      const def = String(info.default_branch ?? "main");
+      const def = await defaultBranch(s.slug);
       const tip = await fetchRemote(s, def, "ws").then((r) => r.sha, () => "");
       const empty = !tip;
       const mb = empty ? "" : await git(dir, ["merge-base", b.sha, `refs/remote/${def}`]).catch(() => "");
@@ -311,8 +319,9 @@ export function createService(o: Options) {
       diff += `${await diffOf(dir, mb || EMPTY_TREE, b.sha)}\n`;
       changed.push(...(await numstatOf(dir, mb || EMPTY_TREE, b.sha)));
       // Outside our own repos (the agents org, the product) the PR's text and the branch's commit messages name none of our tooling.
-      if (!ownRepo(s.slug, o.agentsOrg, o.productRepo)) {
-        const messages = (await git(dir, ["log", "--format=%B%x1e", mb ? `${mb}..${b.sha}` : b.sha])).split("\x1e");
+      if (!ownRepo(s.slug, o.fleetOrg, o.productRepo)) {
+        // The AidenHQ trailer (attribution, spec §4) is the one internal name these may carry.
+        const messages = (await git(dir, ["log", "--format=%B%x1e", mb ? `${mb}..${b.sha}` : b.sha])).split("\x1e").map((m) => m.split("\n").filter((l) => !hasTrailer(l)).join("\n"));
         const leak = kind.endsWith(".pr") ? leakIn(`${a.text?.title ?? ""}\n${a.text?.body ?? ""}`) : undefined;
         if (leak) throw fail(422, `Not done: the PR title or description mentions "${leak}". ${s.slug}'s reviewers mustn't see internal names, tools or local paths; reword it and ask again.`);
         const msg = messages.find((m) => leakIn(m));
@@ -341,66 +350,90 @@ export function createService(o: Options) {
     async plan(req: PlanRequest) {
       const { state, facts, reads, changed, evidence, bases, own, task } = (await stateFor(req.kind, req.args ?? {}, req.requester, req.task)) as Awaited<ReturnType<typeof stateFor>> & { reads?: { name: string; read: () => Promise<string> }[]; changed?: Changed[]; evidence?: string; bases?: Base[]; own?: Set<string>; task?: string };
       const planned = planRules({ kind: req.kind, args: req.args }, state, facts);
+      // Who asked, by the request's exact kind and args (the revalidating plan carries the record's own args, as execute
+      // does): a write held while GitHub is disconnected is re-checked as them, and its PR is signed with their name.
+      if (req.requester) noteAsker(req.kind, req.args, { requester: req.requester, task: req.task });
       // The reviewer's context goes with the filing only (a revalidation compares targets): never part of the record's digest.
       const sources = req.revalidate ? undefined : await readCardSourceExceptions(bases ?? [], (repo: string, base: string) => bases!.find((b) => b.repo === repo && b.base === base)!.read(SOURCE_EXCEPTIONS_FILE));
       // The task's other PRs already merged into these bases; a read that fails leaves them out, never the plan.
-      const siblings = req.revalidate || !bases?.length ? [] : await readSiblings({ candidates: candidatesOf(prTasks(), task, own), bases, pr: async (repo: string, n: number) => api("GET", `/repos/${repo}/pulls/${n}`, await tokenFor(slugOf(repo), READ)), git }).catch((e: Error) => (log("siblings unread", { err: String(e.message ?? e).slice(0, 200) }), []));
+      const siblings = req.revalidate || !bases?.length ? [] : await readSiblings({ candidates: candidatesOf(prTasks(), task, own), bases, pr: async (repo: string, n: number) => api("GET", `/repos/${repo}/pulls/${n}`), git }).catch((e: Error) => (log("siblings unread", { err: String(e.message ?? e).slice(0, 200) }), []));
       const out = req.revalidate || (!reads?.length && !changed?.length && evidence === undefined && !sources && !siblings.length) ? planned : { ...planned, review: { ...(reads?.length || changed?.length ? { files: { ...(reads?.length ? await readFiles(reads) : { text: "", leftOut: [], oversized: [] }), ...(changed?.length ? { changed } : {}) } } : {}), ...(evidence !== undefined ? { evidence } : {}), ...(sources ? { sources } : {}), ...(siblings.length ? { siblings } : {}) } };
       // Its commits were read from this task's workspace (stateFor), so the task is who asked to publish them.
       if (/\.(push|pr)$/.test(req.kind) && req.task) notePushedBy((req.args?.only ?? []).map((b: any) => String(b.sha)), { task: req.task, platform: isPlatform(req.requester) });
       return out;
     },
     async execute(rec) {
+      // A merge is its own durable queue, which waits for the reconnect itself (merges.ts, work.waiting reason github).
+      if (rec.kind.endsWith(".merge")) return merges.enqueue(rec.id, rec.args ?? {});
+      // GitHub signed out, or signed out mid-write: the approved record waits (held.json) and runs once by id after the reconnect.
+      if (!access.connected()) return hold(rec);
+      try {
+        return await run1(rec);
+      } catch (e) {
+        if (disconnected(e)) return hold(rec);
+        throw e;
+      }
+    },
+  };
+  /** The write itself; `objects` names what it made on GitHub for the kernel's records (spec §5). */
+  async function run1(rec: { id: string; kind: string; args: any }): Promise<{ ok: boolean; text: string; objects?: string[] }> {
+    {
       const a = rec.args ?? {};
+      const objects: string[] = [];
+      const ref = (slug: string) => `github:${slug.toLowerCase()}`;
       const action = rec.kind.replace(/^github\./, "");
       const done: string[] = [];
       if (action === "push" || action === "pr") {
         for (const b of a.only) {
           const { s, dir } = await fromWorkspace(a.workspace, b);
           // A task branch may be rewritten; the default branch only ever moves forward.
-          const def = String((await api("GET", `/repos/${s.slug}`, await tokenFor(s, READ))).default_branch ?? "main");
-          await git(dir, ["push", "--quiet", "--no-verify", remote(s.slug), `${b.branch === def ? "" : "+"}${b.sha}:refs/heads/${b.branch}`], await tokenFor(s, PUSH));
+          const def = await defaultBranch(s.slug);
+          await git(dir, ["push", "--quiet", "--no-verify", remote(s.slug), `${b.branch === def ? "" : "+"}${b.sha}:refs/heads/${b.branch}`], await token());
           notePushed(s.slug, b.sha);
+          objects.push(`${ref(s.slug)}@${b.sha}`);
           if (action === "pr") {
-            const token = await tokenFor(s, PUSH);
-            const open = await api("GET", `/repos/${s.slug}/pulls?state=open&head=${encodeURIComponent(`${s.org}:${b.branch}`)}`, token);
-            const text = a.text;
-            const pr = open[0] ? await api("PATCH", `/repos/${s.slug}/pulls/${open[0].number}`, token, text) : await api("POST", `/repos/${s.slug}/pulls`, token, { ...text, head: b.branch, base: (await api("GET", `/repos/${s.slug}`, token)).default_branch });
+            const open = await api("GET", `/repos/${s.slug}/pulls?state=open&head=${encodeURIComponent(`${s.org}:${b.branch}`)}`);
+            // The PR's text is signed by the agent that asked for it (spec §4).
+            const asker = readAskers()[askerKey(rec.kind, rec.args)];
+            const text = a.text ? { ...a.text, ...(typeof a.text.body === "string" ? { body: withFooter(a.text.body, asker?.requester.name || "AidenHQ") } : {}) } : a.text;
+            const pr = open[0] ? await api("PATCH", `/repos/${s.slug}/pulls/${open[0].number}`, text) : await api("POST", `/repos/${s.slug}/pulls`, { ...text, head: b.branch, base: def });
             done.push(pr.html_url ?? `${s.slug}#${pr.number}`);
+            if (pr.number && !open[0]) objects.push(`${ref(s.slug)}#${Number(pr.number)}`); // ours only when this write opened it
             if (pr.html_url) notePrTask(o.cacheDir, pr.html_url, { task: a.workspace, branch: b.branch }); // the PR watch wakes the task that opened it
             if (pr.number) {
               // Flow: the PR opened when this write created it, a head it moves is a push, and CI starts on every head it publishes.
               const n = Number(pr.number);
-              if (!open[0]) flow.opened(s.slug, n, b.sha, b.branch, pr.created_at, a.workspace, undefined, { title: String(pr.title ?? text?.title ?? ""), ...(await flow.authored(pr.user?.login ?? await botName(), pr.author_association)) });
+              // This write opened it: an agent's PR (the owner's login, AidenHQ's record).
+              if (!open[0]) flow.opened(s.slug, n, b.sha, b.branch, pr.created_at, a.workspace, undefined, { title: String(pr.title ?? text?.title ?? ""), author: String(pr.user?.login ?? (await ownerLogin()) ?? "ghost"), author_kind: "agent" });
               else if (open[0].head?.sha && open[0].head.sha !== b.sha) {
                 // Forced: the old head is no ancestor of the new one.
-                const cmp = await api("GET", `/repos/${s.slug}/compare/${open[0].head.sha}...${b.sha}`, token).catch(() => undefined);
-                flow.pushed(s.slug, n, b.sha, String(open[0].head.sha), cmp ? !["ahead", "identical"].includes(String(cmp.status)) : false, String((await botName()) ?? "ghost"), undefined, a.workspace);
+                const cmp = await api("GET", `/repos/${s.slug}/compare/${open[0].head.sha}...${b.sha}`).catch(() => undefined);
+                flow.pushed(s.slug, n, b.sha, String(open[0].head.sha), cmp ? !["ahead", "identical"].includes(String(cmp.status)) : false, String((await ownerLogin()) ?? "ghost"), undefined, a.workspace);
               }
               flow.checksStarted(s.slug, n, b.sha, undefined, a.workspace);
             }
-            // An agents-org PR that changes UI files gets its design review at this head (one that changes none files nothing).
-            if (same(s.org, o.agentsOrg) && pr.number) void designReviews?.fileDesignReview({ repo: s.slug, number: Number(pr.number), head: b.sha }).catch((e: Error) => log("design review task failed", { pr: pr.html_url, err: String(e.message ?? e).slice(0, 300) }));
+            // A fleet-org PR that changes UI files gets its design review at this head (one that changes none files nothing).
+            if (same(s.org, o.fleetOrg) && pr.number) void designReviews?.fileDesignReview({ repo: s.slug, number: Number(pr.number), head: b.sha }).catch((e: Error) => log("design review task failed", { pr: pr.html_url, err: String(e.message ?? e).slice(0, 300) }));
           } else done.push(`${s.slug} ${b.branch} at ${b.sha.slice(0, 12)}`);
         }
-        return { ok: true, text: `${action === "pr" ? "PRs" : "Pushed"}: ${done.join(", ")}` };
+        return { ok: true, text: `${action === "pr" ? "PRs" : "Pushed"}: ${done.join(", ")}`, objects };
       }
       // An approved merge is a queue (merges.ts): its outcome comes when every PR merged at its bound head, or the queue stopped.
       if (action === "merge") return merges.enqueue(rec.id, a);
       if (action === "close") {
         for (const p of a.prs) {
           const s = slugOf(p.repo);
-          const closed = await api("PATCH", `/repos/${s.slug}/pulls/${Number(p.number)}`, await tokenFor(s, MERGE), { state: "closed" });
+          const closed = await api("PATCH", `/repos/${s.slug}/pulls/${Number(p.number)}`, { state: "closed" });
           if (closed?.head?.sha) flow.closed(s.slug, Number(p.number), String(closed.head.sha));
           done.push(`${s.slug}#${p.number}`);
         }
-        return { ok: true, text: `Closed: ${done.join(", ")}` };
+        return { ok: true, text: `Closed: ${done.join(", ")}`, objects };
       }
       if (action === "create_repo") {
         const s = slugOf(a.repo);
-        if ((await app().createRepo(s.slug)) !== "created") return { ok: true, text: `${s.slug}: exists (nothing was created).` };
-        // A new app repository in the agents org starts with the app starter on main; a failed seed is said, never hidden.
-        if (!inOrg(o.agentsOrg, s.slug)) return { ok: true, text: `${s.slug}: created (private, with a README).` };
+        if ((await createRepo(s)) !== "created") return { ok: true, text: `${s.slug}: exists (nothing was created).` };
+        // A new app repository in the fleet org starts with the app starter on main; a failed seed is said, never hidden.
+        if (!inOrg(o.fleetOrg, s.slug)) return { ok: true, text: `${s.slug}: created (private, with a README).` };
         const failed = await seedStarter(s).then(() => "", (e: Error) => String(e.message ?? e).slice(0, 300));
         if (failed) log("app starter not seeded", { repo: s.slug, err: failed });
         return { ok: true, text: failed
@@ -408,10 +441,98 @@ export function createService(o: Options) {
           : `${s.slug}: created (private, with the app starter on main: build on it, so the first change holds only the app's own work).` };
       }
       return { ok: false, text: `no such kind ${rec.kind}` };
-    },
-  };
+    }
+  }
+  /**
+   * Create org/name, private, with a README: only for an approved create_repo (the one caller). Naming, adding or detecting a
+   * repo never creates one. "exists" when GitHub says the name is taken.
+   */
+  async function createRepo(s: ReturnType<typeof slugOf>): Promise<"exists" | "created"> {
+    const r = await gh("POST", `/orgs/${s.org}/repos`, { name: s.name, private: true, auto_init: true });
+    if (r.status === 201) return "created";
+    if (r.status === 422 && /already exists/i.test(JSON.stringify(r.body?.errors ?? r.body?.message ?? ""))) return "exists";
+    throw fail(502, `couldn't create ${s.slug}: GitHub said ${r.status} ${r.body?.message ?? ""}`.trim());
+  }
+
+  // ---- held writes: approved while GitHub was disconnected ----
+  type Asker = { requester: PlanRequest["requester"]; task: string };
+  type Held = { id: string; kind: string; args: any; state: "held" | "running" | "done" | "failed"; text?: string; objects?: string[]; at: string; asker?: Asker };
+  // The requester of each planned write (the kernel's record of who asked; execute carries none), by a digest of its kind and
+  // args, for the held re-check. The last 500 only.
+  const askersFile = join(o.cacheDir, "askers.json");
+  const askerKey = (kind: string, args: unknown) => createHash("sha256").update(JSON.stringify([kind, args ?? {}])).digest("hex");
+  const readAskers = (): Record<string, Asker> => { try { return JSON.parse(readFileSync(askersFile, "utf8")); } catch { return {}; } };
+  function noteAsker(kind: string, args: unknown, who: Asker) {
+    const all = readAskers();
+    all[askerKey(kind, args)] = who;
+    writeFileSync(`${askersFile}.tmp`, JSON.stringify(Object.fromEntries(Object.entries(all).slice(-500))));
+    renameSync(`${askersFile}.tmp`, askersFile);
+  }
+  const heldFile = join(o.cacheDir, "held.json");
+  const readHeld = (): Record<string, Held> => { try { return JSON.parse(readFileSync(heldFile, "utf8")); } catch { return {}; } };
+  const writeHeld = (h: Record<string, Held>) => { writeFileSync(`${heldFile}.tmp`, JSON.stringify(h)); renameSync(`${heldFile}.tmp`, heldFile); };
+  const heldWaiters = new Map<string, (out: { ok: boolean; text: string; objects?: string[] }) => void>();
+  /** The record waits for the reconnect: executor@1 status answers running until it ran. */
+  function hold(rec: { id: string; kind: string; args: any }): Promise<{ ok: boolean; text: string; objects?: string[] }> {
+    const h = readHeld();
+    if (!h[rec.id]) {
+      const asker = readAskers()[askerKey(rec.kind, rec.args)];
+      h[rec.id] = { id: rec.id, kind: rec.kind, args: rec.args, state: "held", at: new Date().toISOString(), ...(asker ? { asker } : {}) };
+      writeHeld(h);
+      log("write held until GitHub is connected", { record: rec.id, kind: rec.kind });
+    }
+    return new Promise((ok) => heldWaiters.set(rec.id, ok));
+  }
+  let heldBusy = false;
+  /** Once connected: each held record runs once by id; its outcome goes to its waiter, or to the kernel after a restart. */
+  async function stepHeld() {
+    if (heldBusy || !access.connected()) return;
+    heldBusy = true;
+    try {
+      for (const r of Object.values(readHeld()).filter((x) => x.state === "held" || x.state === "running")) {
+        writeHeld({ ...readHeld(), [r.id]: { ...r, state: "running" } });
+        let out: { ok: boolean; text: string; objects?: string[] };
+        try { out = (await stillClaimed(r.id)) && (await stillApproved(r)) ? await run1(r) : { ok: false, text: "Not done: it changed while GitHub was disconnected; ask again." }; } catch (e) {
+          if (disconnected(e)) { writeHeld({ ...readHeld(), [r.id]: { ...r, state: "held" } }); return; }
+          out = { ok: false, text: String((e as Error).message ?? e) };
+        }
+        writeHeld({ ...readHeld(), [r.id]: { ...r, state: out.ok ? "done" : "failed", text: out.text, ...(out.objects ? { objects: out.objects } : {}) } });
+        const w = heldWaiters.get(r.id);
+        heldWaiters.delete(r.id);
+        if (w) w(out);
+        else await report(r.id, out).catch((e: Error) => log("held outcome not delivered", { record: r.id, err: String(e.message).slice(0, 200) }));
+      }
+    } finally { heldBusy = false; }
+  }
+  /** The kernel's record is still claimed or approved: one cancelled or decided otherwise while held is dropped, not run. */
+  async function stillClaimed(id: string): Promise<boolean> {
+    const st = await kernel("GET", `/v1/writes/${id}`).then((j) => String(j?.state));
+    const ok = st === "claimed" || st === "approved";
+    if (!ok) log("held write dropped: its record is no longer live", { record: id, state: st });
+    return ok;
+  }
+  /**
+   * A held record runs only if what it was approved for still holds: its state, read again now as the requester who asked for
+   * it (stored when it was held; never made up: without one it doesn't run), still passes the git rules and binds the same
+   * commits its args named (each branch at its sha, each PR at its head). Read without the plan's side effects (no provenance
+   * note).
+   */
+  async function stillApproved(r: Held): Promise<boolean> {
+    if (!r.asker) return false;
+    const targets = await stateFor(r.kind, r.args ?? {}, r.asker.requester, r.asker.task)
+      .then(({ state, facts }) => planRules({ kind: r.kind, args: r.args }, state, facts).targets as Record<string, { commit?: string | null }>)
+      .catch((e) => { if (disconnected(e)) throw e; return undefined; });
+    if (!targets) return false;
+    const want = [
+      ...((r.args?.only ?? []) as { repo: string; branch: string; sha: string }[]).map((b) => [`${slugOf(b.repo).slug} ${b.branch}`, b.sha] as const),
+      ...((r.args?.prs ?? []) as { repo: string; number: number; head?: string }[]).filter((p) => p.head).map((p) => [`${slugOf(p.repo).slug}#${Number(p.number)}`, p.head!] as const),
+    ];
+    return want.every(([k, sha]) => targets[k]?.commit === sha);
+  }
+  const heldStatus = (id: string) => { const r = readHeld()[id]; return r ? (r.state === "done" || r.state === "failed" ? { state: r.state, text: r.text, ...(r.objects ? { objects: r.objects } : {}) } : { state: "running" }) : undefined; };
+
   const exec = serveExecutor(executor, { key: o.key, kernelUrl: o.kernelUrl, log });
-  async function report(id: string, out: { ok: boolean; text: string }) {
+  async function report(id: string, out: { ok: boolean; text: string; objects?: string[] }) {
     const r = await fetch(`${o.kernelUrl}/v1/writes/${id}/outcome`, { method: "POST", headers: { authorization: `Bearer ${o.key}`, "content-type": "application/json" }, body: JSON.stringify(out), signal: AbortSignal.timeout(15_000) });
     if (!r.ok && r.status !== 409) throw new Error(`the kernel answered ${r.status}`);
   }
@@ -427,33 +548,34 @@ export function createService(o: Options) {
     productRepo: o.productRepo, dir: join(o.cacheDir, "merges"), kernel, log,
     fetch: async (repo, ref) => fetchRemote(slugOf(repo), ref),
     git: (dir, args) => git(dir, args),
-    defaultBranch: async (repo) => String((await api("GET", `/repos/${slugOf(repo).slug}`, await tokenFor(slugOf(repo), READ))).default_branch ?? "main"),
+    defaultBranch: async (repo) => defaultBranch(slugOf(repo).slug),
   });
-  // The design reviewer's tasks (design-review.ts): for an agents-org PR's UI head when it opens, and for each head the merge
+  // The design reviewer's tasks (design-review.ts): for a fleet-org PR's UI head when it opens, and for each head the merge
   // queue waits on for its verdict.
-  const designReviews = o.app ? createDesignReviews({ kernelUrl: o.kernelUrl, key: o.key, cacheDir: o.cacheDir, selfName: o.selfName || "the owner", app: o.app, gh: o.gh, log }) : undefined;
-  // The managed repos: the agents org's (the App's installation), the product repo and the instance repo.
+  const designReviews = createDesignReviews({ kernelUrl: o.kernelUrl, key: o.key, cacheDir: o.cacheDir, selfName: o.selfName || "the owner", gh: (m, p, b) => gh(m, p, b, { background: true }), log });
+  // The managed repos: the fleet org's, the product repo and the instance repo.
   async function managedRepos(): Promise<string[]> {
     const out = new Set([o.productRepo, o.instanceRepo].filter(Boolean).map((r) => r!.toLowerCase()));
-    if (o.app && o.agentsOrg) {
-      const token = await o.app.token(o.agentsOrg, { permissions: { metadata: "read" } });
+    if (o.fleetOrg && access.connected()) {
       for (let page = 1; ; page++) {
-        const r = await api("GET", `/installation/repositories?per_page=100&page=${page}`, token);
-        for (const x of r.repositories ?? []) if (!x.archived && !x.fork) out.add(String(x.full_name).toLowerCase());
-        if ((r.repositories ?? []).length < 100) break;
+        const r = await gh("GET", `/orgs/${o.fleetOrg}/repos?type=all&per_page=100&page=${page}`, undefined, { background: true });
+        if (r.status >= 300) throw fail(502, `GitHub GET /orgs/${o.fleetOrg}/repos: ${r.status}`);
+        for (const x of r.body ?? []) if (!x.archived && !x.fork) out.add(String(x.full_name).toLowerCase());
+        if ((r.body ?? []).length < 100) break;
       }
     }
     return [...out];
   }
   const flow = createFlow({
     kernelUrl: o.kernelUrl, key: o.key, cacheDir: o.cacheDir, log, exclude: o.churnExclude, now: o.now,
-    repos: o.app ? managedRepos : undefined,
-    token: (repo, perms) => tokenFor(slugOf(repo), perms),
-    gh: o.gh,
-    appLogin: o.app ? async () => (await o.app!.identity()).name : undefined,
+    // Signed out: no repos, so the passes call nothing (and tell the owner nothing) until GitHub is connected.
+    repos: async () => (access.connected() ? managedRepos() : []),
+    gh: (method, path) => gh(method, path, undefined, { background: true }),
+    self: ownerLogin,
+    ours,
     fetchDefault: async (repo) => {
       const s = slugOf(repo);
-      const def = String((await api("GET", `/repos/${s.slug}`, await tokenFor(s, READ))).default_branch ?? "main");
+      const def = await defaultBranch(s.slug);
       const { dir, sha } = await fetchRemote(s, def);
       return { dir, sha };
     },
@@ -462,9 +584,9 @@ export function createService(o: Options) {
   const merges = createMerges({
     flow,
     designReview: async (ask) => designReviews?.fileDesignReview(ask),
-    dir: join(o.cacheDir, "merges"), gh: o.gh, agentsOrg: o.agentsOrg, productRepo: o.productRepo, maintained: o.maintained,
+    dir: join(o.cacheDir, "merges"), gh: (method, path, body) => gh(method, path, body, { background: true }), connected: () => access.connected() && !o.holdMerges?.(),
+    fleetOrg: o.fleetOrg, productRepo: o.productRepo, maintained: o.maintained,
     report, log, now: o.now, everyMs: o.mergeEveryMs,
-    token: (repo, perms) => tokenFor(slugOf(repo), perms),
     evalGate: (repo, pr) => evalGate(repo, pr),
   });
   const keyed = (req: IncomingMessage) => {
@@ -474,7 +596,7 @@ export function createService(o: Options) {
   /** executor@1 status for a merge record answers from its queue, which outlives a restart; any other goes to the SDK. */
   async function status(req: IncomingMessage, res: ServerResponse) {
     const raw = await body(req).catch(() => ({}));
-    const q = keyed(req) ? merges.status(String(raw?.id ?? "")) : undefined;
+    const q = keyed(req) ? merges.status(String(raw?.id ?? "")) ?? heldStatus(String(raw?.id ?? "")) : undefined;
     if (q) return send(res, 200, q);
     await exec(Object.assign(Readable.from([Buffer.from(JSON.stringify(raw))]), { headers: req.headers, url: req.url, method: req.method }) as unknown as IncomingMessage, res);
   }
@@ -491,7 +613,7 @@ export function createService(o: Options) {
       if (typeof b.workspace !== "string" || !b.workspace) throw fail(404, `${sha.slice(0, 12)} isn't here and no workspace names it`);
       await fromWorkspace(b.workspace, { repo: s.slug, branch: String(b.branch ?? ""), sha });
     }
-    const def = String((await api("GET", `/repos/${s.slug}`, await tokenFor(s, READ))).default_branch ?? "main");
+    const def = await defaultBranch(s.slug);
     const { sha: main } = await fetchRemote(s, def, "ws");
     const base = await git(dir, ["merge-base", sha, main]).catch(() => "");
     if (!base) throw fail(409, `${sha.slice(0, 12)} shares no history with the instance's ${def}`);
@@ -578,7 +700,7 @@ export function createService(o: Options) {
     const off = b.official;
     if (!off || !pin(off.from) || !pin(off.to)) throw fail(400, "name the official modules' pin on both sides (official: {from, to}, each {repo, sha} or null)");
     if (off.to !== null && JSON.stringify(off.from) !== JSON.stringify(off.to)) throw fail(422, "not landed: it adds or moves an `aidenhq` marketplace pin; the official modules come with the product pin");
-    await git(c.dir, ["push", "--quiet", "--no-verify", remote(c.s.slug), `${c.sha}:refs/heads/${c.def}`], await tokenFor(c.s, PUSH));
+    await git(c.dir, ["push", "--quiet", "--no-verify", remote(c.s.slug), `${c.sha}:refs/heads/${c.def}`], await token());
     log("instance landed", { repo: c.s.slug, sha: c.sha });
     return { landed: c.sha };
   }
@@ -593,30 +715,23 @@ export function createService(o: Options) {
   async function ops(op: string, req: IncomingMessage, res: ServerResponse) {
     // Only the kernel calls the ops, with this service's key: POST /v1/codehost/:op brokers them under each module's grant.
     if (!keyed(req)) throw fail(401, "the kernel only");
+    if (op !== "snapshot" && op !== "clone" && op !== "bundle") {
+      if (!o.ops) throw fail(404, "no such operation");
+      return o.ops(req, res, {
+        access, cacheDir: o.cacheDir, cache: (s) => cache(s), git, fetchRemote: (s, name) => fetchRemote(slugOf(s.slug), name),
+        initBare, ours,
+      });
+    }
     const b = await body(req);
     // b.module: the module the kernel checked the grant of (for the log).
     log("ops", { op, module: String(b.module ?? ""), repo: String(b.repo ?? "") });
-    if (op === "token") {
-      // owner/name: a token narrowed to that repo; owner/*: an org-wide one (org permissions such as self-hosted runners or
-      // projects, org search).
-      const org = ORG_WIDE.exec(String(b.repo ?? ""))?.[1];
-      const s = org ? { slug: `${org}/*`, org, name: "" } : slugOf(b.repo);
-      const perms: Record<string, string> = b.perms && typeof b.perms === "object" ? b.perms : {};
-      if (!Object.keys(perms).length || Object.values(perms).some((l) => !LEVEL[l])) throw fail(400, "name the permissions (read or write)");
-      const token = await app().token(s.org, { ...(org ? {} : { repositories: [s.name] }), permissions: perms, fresh: true });
-      // A fresh installation token lasts an hour; the App's slug tells its own events (performed_via_github_app) from others'.
-      // A read that fails doesn't fail the token we already hold: callers treat a missing slug as optional.
-      const slug = await app().appInfo().then((i) => i.slug, () => null);
-      return send(res, 200, { token, repo: s.slug, perms, expires_at: new Date(Date.now() + 55 * 60_000).toISOString(), app: { slug } });
-    }
     const s = slugOf(b.repo);
-    if (op !== "snapshot" && op !== "clone" && op !== "bundle") throw fail(404, "no such operation");
     // HEAD: the repo's default branch, by its name (a clone then has origin/<that branch>). A repo GitHub doesn't show is a 404.
     const asked = String(b.ref ?? "").replace(/^refs\/heads\//, "");
     let name = asked;
     if (asked === "HEAD") {
-      const r = await o.gh("GET", `/repos/${s.slug}`, await tokenFor(s, READ));
-      if (r.status === 404) throw fail(404, `${s.slug} isn't on GitHub (or the App can't see it)`);
+      const r = await gh("GET", `/repos/${s.slug}`).catch((e) => { throw needOf(e)?.cause === "unreachable" ? fail(404, `${s.slug} isn't on GitHub (or your account can't see it)`) : e; });
+      if (r.status === 404) throw fail(404, `${s.slug} isn't on GitHub (or your account can't see it)`);
       if (r.status >= 300) throw fail(502, `GitHub GET /repos/${s.slug}: ${r.status}`);
       name = String(r.body?.default_branch ?? "");
     }
@@ -632,19 +747,9 @@ export function createService(o: Options) {
     if (op === "bundle") {
       // The branch alone as a git bundle (its HEAD and refs/heads/<branch>), for a running job's box to clone or fetch itself
       // (`aidenhq clone`): host git never runs in a workspace a box can write. GitHub's objects only (the github cache).
-      const tmp = mkdtempSync(join(o.cacheDir, "bundle-")), file = join(tmp, "repo.bundle"), bare = join(tmp, "repo.git");
-      try {
-        await run("git", [...SAFE_GIT_ARGS, "init", "--quiet", "--bare", bare], { env: ENV });
-        writeFileSync(join(bare, "objects", "info", "alternates"), `${join(dir, "objects")}\n`);
-        await git(bare, ["update-ref", `refs/heads/${name}`, sha]);
-        await git(bare, ["symbolic-ref", "HEAD", `refs/heads/${name}`]);
-        await git(bare, ["bundle", "create", "--quiet", file, "HEAD", `refs/heads/${name}`]);
-        // Sent from the open file, gone from disk at once: nothing is left behind however the send ends.
-        const stream = createReadStream(file);
-        await once(stream, "open");
-        res.writeHead(200, { "content-type": "application/octet-stream", "x-aidenhq-commit": sha });
-        stream.pipe(res);
-      } finally { rmSync(tmp, { recursive: true, force: true }); }
+      const stream = await packBundle({ cacheDir: o.cacheDir, git, initBare }, dir, new Map([[`refs/heads/${name}`, sha]]), `refs/heads/${name}`);
+      res.writeHead(200, { "content-type": "application/octet-stream", "x-aidenhq-commit": sha });
+      stream.pipe(res);
       return;
     }
     {
@@ -659,14 +764,21 @@ export function createService(o: Options) {
       const st = lstatSync(ws, { throwIfNoEntry: false });
       if (!st || st.isSymbolicLink() || !st.isDirectory() || realpathSync(ws) !== ws || !ws.startsWith(root + sep)) throw fail(400, `${into} isn't a task's workspace folder`);
       const target = join(ws, s.name);
-      try { mkdirSync(target); } catch (e) { throw fail((e as { code?: string }).code === "EEXIST" ? 409 : 400, `${into}/${s.name} can't be made (${(e as Error).message})`); }
-      if (realpathSync(target) !== target) throw fail(400, `${into}/${s.name} resolves elsewhere`);
-      // A credential-free clone with history: origin is the plain GitHub URL, the head checked out by the cache's own git.
-      const t = (...args: string[]) => run("git", [...SAFE_GIT_ARGS, "-C", target, ...args], { env: ENV });
-      await run("git", [...SAFE_GIT_ARGS, "init", "--quiet", target], { env: ENV });
-      await t("remote", "add", "origin", `https://github.com/${s.slug}.git`);
-      await t("fetch", "--quiet", "--no-tags", dir, `+${ref}:refs/remotes/origin/${/^[0-9a-f]{40}$/.test(name) ? "fetched" : name}`);
-      await t("checkout", "--quiet", "--detach", sha);
+      if (lstatSync(target, { throwIfNoEntry: false })) throw fail(409, `${into}/${s.name} can't be made (it exists)`);
+      // A credential-free clone with history: origin is the plain GitHub URL, the head checked out by the cache's own git. Built
+      // in a private scratch folder beside the target (the same filesystem) and renamed into place in one step: no recursive copy
+      // into a folder a box can write, and an existing target is never replaced.
+      const scratch = mkdtempSync(join(ws, ".clone-"));
+      try {
+        const t = (...args: string[]) => run("git", [...SAFE_GIT_ARGS, "-C", scratch, ...args], { env: ENV });
+        await run("git", [...SAFE_GIT_ARGS, "init", "--quiet", scratch], { env: ENV });
+        await t("remote", "add", "origin", `https://github.com/${s.slug}.git`);
+        await t("fetch", "--quiet", "--no-tags", dir, `+${ref}:refs/remotes/origin/${/^[0-9a-f]{40}$/.test(name) ? "fetched" : name}`);
+        await t("checkout", "--quiet", "--detach", sha);
+        if (lstatSync(target, { throwIfNoEntry: false })) throw fail(409, `${into}/${s.name} can't be made (it exists)`);
+        chmodSync(scratch, 0o755); // mkdtemp makes it 0700; the box user reads the clone
+        try { renameSync(scratch, target); } catch (e) { throw fail(["EEXIST", "ENOTEMPTY"].includes((e as { code?: string }).code ?? "") ? 409 : 400, `${into}/${s.name} can't be made (${(e as Error).message})`); }
+      } finally { rmSync(scratch, { recursive: true, force: true }); }
       return send(res, 200, { path: `${into}/${s.name}`, commit: sha });
     }
   }
@@ -676,17 +788,18 @@ export function createService(o: Options) {
    * new text, or null to delete) are made from that same head, and the author, committer and dates are fixed by the head, so
    * the same head and files give the same commit.
    */
-  async function commitOnHead(repo: string, who: string, message: string, files: (dir: string, head: string, def: string) => Promise<Record<string, string | null>>) {
+  async function commitOnHead(repo: string, agent: string, message: string, files: (dir: string, head: string, def: string) => Promise<Record<string, string | null>>) {
     const s = slugOf(repo);
-    const def = String((await api("GET", `/repos/${s.slug}`, await tokenFor(s, READ))).default_branch ?? "main");
+    const def = await defaultBranch(s.slug);
     const { dir, sha: head } = await fetchRemote(s, def, "ws");
     const edits = await files(dir, head, def);
     const date = await git(dir, ["log", "-1", "--format=%cI", head]);
-    const email = `${who.toLowerCase().replace(/[^a-z]+/g, "-")}@aidenhq.invalid`;
+    // The owner's, with the AidenHQ trailer naming the writer (spec §4).
+    const who = identityEnv(await access.identity());
     const index = join(mkdtempSync(join(o.cacheDir, "scratch-")), "index");
     try {
       const g = (args: string[], input?: string) => new Promise<string>((ok, no) => {
-        const p = spawn("git", [...SAFE_GIT_ARGS, "--git-dir", dir, ...args], { env: { ...ENV, GIT_INDEX_FILE: index, GIT_AUTHOR_NAME: `AidenHQ ${who}`, GIT_AUTHOR_EMAIL: email, GIT_COMMITTER_NAME: `AidenHQ ${who}`, GIT_COMMITTER_EMAIL: email, GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date } });
+        const p = spawn("git", [...SAFE_GIT_ARGS, "--git-dir", dir, ...args], { env: { ...ENV, GIT_INDEX_FILE: index, ...who, GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date } });
         let out = "", err = "";
         p.stdout.on("data", (d) => (out += d)); p.stderr.on("data", (d) => (err += d));
         p.on("close", (code) => (code === 0 ? ok(out.trim()) : no(new Error(`git ${args[0]}: ${err.trim().slice(0, 300)}`))));
@@ -699,7 +812,7 @@ export function createService(o: Options) {
         if (text === null) await g(["update-index", "--index-info"], `0 0000000000000000000000000000000000000000\t${path}\n`);
         else await g(["update-index", "--add", "--cacheinfo", `100644,${await g(["hash-object", "-w", "--stdin"], text)},${path}`]);
       }
-      const sha = await g(["commit-tree", await g(["write-tree"]), "-p", head], message);
+      const sha = await g(["commit-tree", await g(["write-tree"]), "-p", head], withTrailer(message, agent));
       await git(dir, ["update-ref", `refs/train/${sha}`, sha]);
       return sha;
     } finally {
@@ -708,15 +821,16 @@ export function createService(o: Options) {
   }
   /**
    * A new app repository's first commit after GitHub's README: the app starter's tracked files (the product repo's
-   * modules/apps-platform/starter at its default branch, `git archive`, so nothing untracked) as the bot, fast-forwarded onto
+   * modules/apps-platform/starter at its default branch, `git archive`, so nothing untracked) as the owner with the AidenHQ
+   * trailer, fast-forwarded onto
    * the new repo's default branch. So an app's first PR holds only the app's own work, and the reviewer never reads the
    * starter (its identity check, its pages, its lock file) as the agent's additions.
    */
   async function seedStarter(s: ReturnType<typeof slugOf>) {
     if (!o.productRepo) throw new Error("no product repo is set, so there is no app starter to copy");
     const p = slugOf(o.productRepo);
-    const source = await fetchRemote(p, String((await api("GET", `/repos/${p.slug}`, await tokenFor(p, READ))).default_branch ?? "main"));
-    const def = String((await api("GET", `/repos/${s.slug}`, await tokenFor(s, READ))).default_branch ?? "main");
+    const source = await fetchRemote(p, await defaultBranch(p.slug));
+    const def = await defaultBranch(s.slug);
     const { dir, sha: parent } = await fetchRemote(s, def, "ws");
     const tmp = mkdtempSync(join(o.cacheDir, "scratch-"));
     try {
@@ -724,11 +838,11 @@ export function createService(o: Options) {
       mkdirSync(files);
       await git(source.dir, ["archive", "--format=tar", "-o", join(tmp, "starter.tar"), `${source.sha}:modules/apps-platform/starter`]);
       await run("tar", ["-xf", join(tmp, "starter.tar"), "-C", files], { env: ENV });
-      const env = { ...ENV, ...identityEnv(await app().identity()), GIT_INDEX_FILE: join(tmp, "index") };
+      const env = { ...ENV, ...identityEnv(await access.identity()), GIT_INDEX_FILE: join(tmp, "index") };
       const g = async (args: string[]) => (await run("git", [...SAFE_GIT_ARGS, "--git-dir", dir, "--work-tree", files, ...args], { env, maxBuffer: 64 * 1024 * 1024 })).stdout.trim();
       await g(["add", "--all", "--force", "."]);
-      const sha = await g(["commit-tree", await g(["write-tree"]), "-p", parent, "-m", "chore: start from the app starter\n\nWritten by the code host when it created this repository; no agent wrote it."]);
-      await git(dir, ["push", "--quiet", "--no-verify", remote(s.slug), `${sha}:refs/heads/${def}`], await tokenFor(s, PUSH));
+      const sha = await g(["commit-tree", await g(["write-tree"]), "-p", parent, "-m", withTrailer("chore: start from the app starter\n\nWritten by the code host when it created this repository; no agent wrote it.", "code host")]);
+      await git(dir, ["push", "--quiet", "--no-verify", remote(s.slug), `${sha}:refs/heads/${def}`], await token());
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
@@ -766,21 +880,20 @@ export function createService(o: Options) {
     github: {
       async tip(repo) {
         const s = slugOf(repo);
-        const token = await tokenFor(s, MERGE);
-        const def = String((await api("GET", `/repos/${s.slug}`, token)).default_branch ?? "main");
-        const tip = String((await api("GET", `/repos/${s.slug}/commits/${def}`, token)).sha ?? "");
-        const checks = await checksAt(s, tip, token);
+        const def = await defaultBranch(s.slug);
+        const tip = String((await api("GET", `/repos/${s.slug}/commits/${def}`)).sha ?? "");
+        const checks = await checksAt(s, tip);
         return { tip: /^[0-9a-f]{40}$/.test(tip) ? tip : undefined, green: checks.length > 0 && checks.every((c) => c.ok && !c.pending) };
       },
       async text(repo, path) {
         const s = slugOf(repo);
-        const ref = String((await api("GET", `/repos/${s.slug}`, await tokenFor(s, READ))).default_branch ?? "main");
+        const ref = await defaultBranch(s.slug);
         const { dir, sha } = await fetchRemote(s, ref);
         return fileAt(dir, sha, path);
       },
       async commits(repo, from, to) {
         const s = slugOf(repo);
-        const r = await api("GET", `/repos/${s.slug}/compare/${from}...${to}`, await tokenFor(s, READ));
+        const r = await api("GET", `/repos/${s.slug}/compare/${from}...${to}`);
         // Only each subject's PR number: a subject is whoever merged it's words.
         return (r.commits ?? []).slice(-100).map((c: any) => ({ repo: s.slug, sha: String(c.sha), subject: /\(#(\d+)\)\s*$/.exec(String(c.commit?.message ?? "").split("\n")[0]!)?.[0] ?? "" }));
       },
@@ -790,6 +903,13 @@ export function createService(o: Options) {
   return Object.assign(async function handle(req: IncomingMessage, res: ServerResponse) {
     try {
       if (req.url === "/healthz") return send(res, 200, { ok: true });
+      // The commit identity a job's box commits as (the kernel's job identity, the executor key): the owner's.
+      if (req.url === "/aidenhq/v1/identity" && req.method === "GET") {
+        if (!keyed(req)) return send(res, 401, { error: "the kernel's executor key only" });
+        if (!access.connected()) return send(res, 503, { error: "GitHub isn't connected" });
+        const me = await access.identity();
+        return send(res, 200, { name: me.name, email: me.email });
+      }
       if (req.url === "/aidenhq/v1/executor/status" && req.method === "POST") return await status(req, res);
       if (await exec(req, res)) return;
       const ap = /^\/aidenhq\/v1\/apply\/(read|land|write)$/.exec(String(req.url ?? ""));
@@ -798,13 +918,15 @@ export function createService(o: Options) {
         const b = await body(req, ap[1] === "write" ? 1_000_000 : 100_000);
         return send(res, 200, ap[1] === "read" ? await applyRead(b) : ap[1] === "land" ? await applyLand(b) : await applyWrite(b));
       }
-      const m = /^\/ops\/(token|snapshot|clone|bundle)$/.exec(String(req.url ?? ""));
+      const m = /^\/ops\/(snapshot|clone|bundle|fetch|head|read|comment|commit|runner_token)$/.exec(String(req.url ?? ""));
       if (m && req.method === "POST") return await ops(m[1]!, req, res);
       send(res, 404, { error: "not found" });
     } catch (e) {
       const err = e as { status?: number; message: string };
-      log("codehost-github request failed", { url: req.url, error: err.message });
-      if (!res.headersSent) send(res, err.status ?? 500, { error: err.message });
+      log("github request failed", { url: req.url, error: err.message });
+      // A typed need (client.ts): its own words (never a token); signed out is 503 "GitHub isn't connected".
+      const need = needOf(e);
+      if (!res.headersSent) send(res, err.status ?? (need ? (need.cause === "unreachable" ? 404 : need.cause === "rate_limited" ? 429 : 503) : 500), { error: err.message, ...(need ? { need } : {}) });
       else res.end();
     }
   }, {
@@ -812,8 +934,11 @@ export function createService(o: Options) {
     startMerges: () => merges.start(),
     /** The release train (train.ts): only with the product and instance repos set. */
     startReleases: () => train?.start(),
-    /** The superseded design reviews' sweep (design-review.ts): only with the App. */
-    startDesignReviews: () => designReviews && startDesignReviewSweep(designReviews, { log }),
+    /** The superseded design reviews' sweep (design-review.ts). */
+    startDesignReviews: () => startDesignReviewSweep(designReviews, { log }),
+    /** Held writes run once GitHub is connected again: checked every 30 s. */
+    startHeld: () => { const t = setInterval(() => void stepHeld(), 30_000); t.unref?.(); return () => clearInterval(t); },
+    stepHeld,
     /** Flow: the churn loop (flow.ts), and the fact queue sent now (tests, shutdown). */
     startFlow: () => flow.startChurn(),
     flushFacts: () => flow.flush(),

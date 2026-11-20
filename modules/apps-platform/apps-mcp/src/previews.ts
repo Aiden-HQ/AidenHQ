@@ -19,7 +19,7 @@ import { existsSync, rmSync } from "node:fs";
 import { put } from "./database.js";
 import { PREVIEW_NAME, PREVIEW_PORTS, type App } from "./registry.js";
 import type { Engine } from "./deploy.js";
-import type { RepoToken } from "./github-app.js";
+import type { CodeHostOps } from "./codehost.js";
 import type { PreviewRow, Store } from "./store.js";
 
 export const PER_APP = 3;
@@ -51,28 +51,16 @@ export interface GitHub {
   comment: (repo: string, pr: number, body: string, id?: number | null) => Promise<number>;
 }
 
-/** GitHub's REST API with the App's repo-narrowed token (contents read, pull_requests write: list and comment). */
-export function githubApi(token: RepoToken, fetchImpl: typeof fetch = fetch): GitHub {
-  const call = async (repo: string, method: string, path: string, body?: object): Promise<any> => {
-    const t = await token(repo, "read", { pull_requests: "write" });
-    const r = await fetchImpl(`https://api.github.com/repos/${repo}${path}`, {
-      method,
-      headers: { authorization: `Bearer ${t}`, accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28", ...(body ? { "content-type": "application/json" } : {}) },
-      ...(body ? { body: JSON.stringify(body) } : {}),
-      signal: AbortSignal.timeout(20_000),
-    });
-    if (!r.ok) throw new Error(`GitHub ${method} ${path.split("?")[0]} on ${repo}: ${r.status}`);
-    return r.json();
-  };
-  const post = async (repo: string, pr: number, body: string) => Number((await call(repo, "POST", `/issues/${pr}/comments`, { body })).id);
+/** The open PRs and the preview comments of a repo, through the code host's read and comment ops. */
+export function githubApi(ops: CodeHostOps): GitHub {
   return {
     openPrs: async (repo) => {
-      const list = await call(repo, "GET", "/pulls?state=open&per_page=100");
-      if (!Array.isArray(list)) throw new Error(`GitHub listed no pulls for ${repo}`);
-      return list.map((p: any) => ({ number: Number(p.number), sha: String(p.head?.sha ?? ""), base: String(p.base?.ref ?? ""), head_repo: String(p.head?.repo?.full_name ?? "") }));
+      const list = await ops.read(repo, { kind: "prs" });
+      if (!Array.isArray(list)) throw new Error(`the code host listed no pulls for ${repo}`);
+      return list.map((p) => ({ number: Number(p.number), sha: String(p.sha ?? ""), base: String(p.base ?? ""), head_repo: String(p.head_repo ?? "") }));
     },
     // A comment someone deleted is posted again.
-    comment: async (repo, pr, body, id) => (id ? call(repo, "PATCH", `/issues/comments/${id}`, { body }).then((c) => Number(c.id), () => post(repo, pr, body)) : post(repo, pr, body)),
+    comment: async (repo, pr, body, id) => (id ? ops.comment(repo, pr, body, id).catch(() => ops.comment(repo, pr, body)) : ops.comment(repo, pr, body)),
   };
 }
 

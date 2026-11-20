@@ -1,5 +1,5 @@
 // The kernel brokers the GitHub code host's operations: one grant check here, the code host's own key on the call, the answer
-// passed back as it came; no code host → 404.
+// passed back as it came; no code host → 404. The owner's token is never an op: the code host holds it and runs each op itself.
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { Readable } from "node:stream";
@@ -12,14 +12,19 @@ async function setup(t, { enabled = true, localSnapshot } = {}) {
     let body = "";
     req.on("data", (c) => (body += c)).on("end", () => {
       seen.push({ path: req.url, auth: req.headers.authorization, body: JSON.parse(body) });
-      res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ token: "ghs_x" }));
+      res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ok: true }));
     });
   });
   await new Promise((ok) => host.listen(0, "127.0.0.1", ok));
   const url = `http://127.0.0.1:${host.address().port}`;
   const op = createCodehost({
-    grants: () => [{ module: "github", token: { repos: ["*/*"], perms: { issues: "write", contents: "read" } } }, { module: "apps-platform", token: { repos: ["acme-agents/x"], perms: { contents: "read" } }, clone: { repos: ["acme-agents/*"] } }, { module: "registry", token: { repos: ["@instance", "@product"], perms: { contents: "write" } }, snapshot: { repos: ["@agents/*"] } }, { module: "reviewer", snapshot: { repos: ["local/*", "acme-agents/*"] } }],
-    repos: () => ({ instance: "acme-agents/aidenhq-instance", agentsOrgs: ["acme-agents"] }),
+    grants: () => [
+      { module: "github", fetch: { repos: ["*/*"] }, read: { repos: ["*/*"] }, comment: { repos: ["*/*"] }, commit: { repos: ["@instance"], paths: ["apps.yaml"] }, runner: { orgs: ["acme", "@agents", "@orgs"] }, snapshot: { repos: ["*/*"] } },
+      { module: "apps-platform", fetch: { repos: ["acme-agents/x"] }, clone: { repos: ["acme-agents/*"] } },
+      { module: "registry", fetch: { repos: ["@instance", "@product"] }, snapshot: { repos: ["@agents/*"] } },
+      { module: "reviewer", snapshot: { repos: ["local/*", "acme-agents/*"] } },
+    ],
+    repos: () => ({ instance: "acme-agents/aidenhq-instance", agentsOrgs: ["acme-agents"], orgs: ["partner"] }),
     kind: () => (enabled ? { module: "github", floor: 0, tools: [], executor: { url: `${url}/aidenhq/v1/executor`, auth_secret: "codehost_github_token" } } : undefined),
     secret: (n) => (n === "codehost_github_token" ? "ch-key" : ""),
     resolver: { resolve: async (u) => ({ host: "127.0.0.1", port: Number(new URL(u).port), path: new URL(u).pathname }), forget: () => {} },
@@ -44,18 +49,75 @@ async function setup(t, { enabled = true, localSnapshot } = {}) {
 
 test("a module's ops go to the code host with its key, only within the module's grant", async (t) => {
   const { call, seen } = await setup(t);
-  assert.equal((await call("apps-platform", "token", { repo: "acme-agents/y", perms: { contents: "read" } })).status, 403);
-  assert.equal((await call("apps-platform", "token", { repo: "acme-agents/x", perms: { contents: "write" } })).status, 403);
-  assert.equal((await call("apps-platform", "token", { repo: "acme-agents/*", perms: { contents: "read" } })).status, 403); // org-wide needs owner/*
+  assert.equal((await call("apps-platform", "fetch", { repo: "acme-agents/y", ref: "refs/heads/main" })).status, 403);
+  assert.equal((await call("apps-platform", "fetch", { repo: "acme-agents/*", ref: "refs/heads/main" })).status, 400, "owner/* names no repository");
   assert.equal((await call("nobody", "snapshot", { repo: "acme-agents/x", ref: "main" })).status, 403);
+  assert.equal((await call("apps-platform", "read", { repo: "acme-agents/x", kind: "prs" })).status, 403, "a fetch grant isn't a read grant");
   assert.equal(seen.length, 0);
-  const ok = await call("github", "token", { repo: "acme/*", perms: { issues: "write" } });
-  assert.deepEqual(ok, { status: 200, body: { token: "ghs_x" } });
-  assert.deepEqual(seen.at(-1), { path: "/ops/token", auth: "Bearer ch-key", body: { module: "github", repo: "acme/*", perms: { issues: "write" } } });
+  const ok = await call("apps-platform", "fetch", { repo: "acme-agents/x", ref: "refs/pull/12/head" });
+  assert.deepEqual(ok, { status: 200, body: { ok: true } });
+  assert.deepEqual(seen.at(-1), { path: "/ops/fetch", auth: "Bearer ch-key", body: { module: "apps-platform", repo: "acme-agents/x", ref: "refs/pull/12/head" } });
+  assert.equal((await call("github", "read", { repo: "acme/x", kind: "pr", number: 7 })).status, 200);
+  assert.deepEqual(seen.at(-1).body, { module: "github", repo: "acme/x", kind: "pr", number: 7 });
+  assert.equal((await call("github", "comment", { repo: "acme/x", number: 7, body: "hi", id: 5, evil: "dropped" })).status, 200);
+  assert.deepEqual(seen.at(-1).body, { module: "github", repo: "acme/x", number: 7, body: "hi", id: 5 }, "only the op's own fields are forwarded");
   // clone: the task's workspace, as the kernel's dispatcher binding names it.
   assert.equal((await call("apps-platform", "clone", { repo: "acme-agents/x", ref: "main", into: "t-2" })).status, 403);
   assert.equal((await call("apps-platform", "clone", { repo: "acme-agents/x", ref: "main", into: "t-1" })).status, 200);
   assert.deepEqual(seen.at(-1).body, { module: "apps-platform", repo: "acme-agents/x", ref: "main", into: "TASK-1" });
+});
+
+test("token op is gone", async (t) => {
+  const { call, op, seen } = await setup(t);
+  assert.equal((await call("github", "token", { repo: "acme/x", perms: { issues: "write" } })).status, 404);
+  await assert.rejects(op.ask("github", "token", { repo: "acme/x", perms: { issues: "write" } }), (e) => e.status === 404);
+  assert.equal(seen.length, 0);
+});
+
+test("fetch refs are refs/heads/*, a branch or a pull request's head; head and read check their fields", async (t) => {
+  const { call, seen } = await setup(t);
+  for (const ref of ["refs/heads/*", "refs/heads/feat/a", "refs/pull/9/head"]) assert.equal((await call("github", "fetch", { repo: "acme/x", ref })).status, 200, ref);
+  for (const ref of ["main", "refs/tags/v1", "refs/pull/x/head", "refs/heads/a..b", "refs/heads/-x"]) assert.equal((await call("github", "fetch", { repo: "acme/x", ref })).status, 400, ref);
+  assert.equal((await call("github", "head", { repo: "acme/x", ref: "main" })).status, 200);
+  assert.equal((await call("github", "read", { repo: "acme/x", kind: "secrets" })).status, 400);
+  assert.equal((await call("github", "read", { repo: "acme/x", kind: "job", id: "abc" })).status, 400);
+  assert.equal(seen.length, 4);
+});
+
+test("fetch needs the fetch grant: @agents/* covers the fleet org's repos only", async (t) => {
+  const { call, op } = await setup(t);
+  // `registry` has fetch on @instance and @product only; the fleet org's repos are no one's unless granted.
+  assert.equal((await call("registry", "fetch", { repo: "acme-agents/aidenhq-instance", ref: "refs/heads/main" })).status, 200);
+  assert.equal((await call("registry", "fetch", { repo: "acme-agents/other", ref: "refs/heads/main" })).status, 403);
+  const { covers } = await import("../src/codehost.ts");
+  assert.equal(covers("acme/app1", ["@agents/*"], { agentsOrgs: ["acme"] }), true);
+  assert.equal(covers("other/app1", ["@agents/*"], { agentsOrgs: ["acme"] }), false);
+  assert.ok(op);
+});
+
+test("commit refuses an unlisted path, a stale parent shape and a missing grant", async (t) => {
+  const { call, seen } = await setup(t);
+  const body = { repo: "acme-agents/aidenhq-instance", branch: "feat", path: "apps.yaml", content: "a: 1\n", parent: "a".repeat(40), message: "tune" };
+  assert.equal((await call("github", "commit", { ...body, path: "instance.yaml" })).status, 403);
+  assert.equal((await call("github", "commit", { ...body, parent: "main" })).status, 400);
+  assert.equal((await call("apps-platform", "commit", body)).status, 403);
+  assert.equal((await call("github", "commit", { ...body, repo: "acme/other" })).status, 403, "the grant's repos");
+  assert.equal(seen.length, 0);
+  assert.equal((await call("github", "commit", body)).status, 200);
+  assert.deepEqual(seen.at(-1).body, { module: "github", ...body });
+});
+
+test("runner_token: only the granted orgs, and only the org goes to the code host", async (t) => {
+  const { call, seen } = await setup(t);
+  assert.equal((await call("github", "runner_token", { org: "other" })).status, 403);
+  assert.equal((await call("apps-platform", "runner_token", { org: "acme" })).status, 403);
+  assert.equal((await call("github", "runner_token", { org: "ac me" })).status, 400);
+  assert.equal(seen.length, 0);
+  assert.equal((await call("github", "runner_token", { org: "acme", extra: 1 })).status, 200);
+  assert.deepEqual(seen.at(-1), { path: "/ops/runner_token", auth: "Bearer ch-key", body: { module: "github", org: "acme" } });
+  assert.equal((await call("github", "runner_token", { org: "acme-agents" })).status, 200, "@agents resolves to the fleet org");
+  assert.equal((await call("github", "runner_token", { org: "Partner" })).status, 200, "@orgs resolves to github_orgs");
+  assert.equal((await call("github", "runner_token", { org: "stranger" })).status, 403, "an org outside the grant");
 });
 
 // A running job's `aidenhq clone`: the kernel's own bundle op, under the dispatcher's clone grant; never a module's to call.
@@ -69,12 +131,9 @@ test("bundle: the kernel asks it under the clone grant; a module's call is refus
   assert.deepEqual(seen.at(-1), { path: "/ops/bundle", auth: "Bearer ch-key", body: { module: "apps-platform", repo: "acme-agents/x", ref: "HEAD" } });
 });
 
-test("prototype names, dot-only repo segments and hostile refs never reach the code host", async (t) => {
+test("dot-only repo segments and hostile refs never reach the code host", async (t) => {
   const { call, seen } = await setup(t);
-  assert.equal((await call("github", "token", JSON.parse('{"repo":"acme/x","perms":{"__proto__":"read"}}'))).status, 403);
-  assert.equal((await call("github", "token", { repo: "acme/x", perms: { constructor: "read" } })).status, 403);
-  assert.equal((await call("github", "token", { repo: "acme/x", perms: { issues: "constructor" } })).status, 403);
-  assert.equal((await call("github", "token", { repo: "acme/..", perms: { issues: "read" } })).status, 400);
+  assert.equal((await call("github", "read", { repo: "acme/..", kind: "prs" })).status, 400);
   assert.equal((await call("apps-platform", "clone", { repo: "acme-agents/x", ref: "-x", into: "t-1" })).status, 400);
   assert.equal((await call("apps-platform", "clone", { repo: "acme-agents/x", ref: "a..b", into: "t-1" })).status, 400);
   assert.equal((await call("apps-platform", "clone", { repo: "acme-agents/x", ref: "main@{1}", into: "t-1" })).status, 400);
@@ -83,18 +142,18 @@ test("prototype names, dot-only repo segments and hostile refs never reach the c
 
 test("@instance and @agents resolve from the kernel's own repos; an @ name the kernel lacks covers nothing", async (t) => {
   const { call, seen } = await setup(t);
-  assert.equal((await call("registry", "token", { repo: "acme-agents/aidenhq-instance", perms: { contents: "write" } })).status, 200);
-  assert.equal((await call("registry", "token", { repo: "acme-agents/other", perms: { contents: "write" } })).status, 403);
-  assert.equal((await call("registry", "token", { repo: "acme/product", perms: { contents: "write" } })).status, 403); // no @product here
+  assert.equal((await call("registry", "fetch", { repo: "acme-agents/aidenhq-instance", ref: "refs/heads/main" })).status, 200);
+  assert.equal((await call("registry", "fetch", { repo: "acme-agents/other", ref: "refs/heads/main" })).status, 403);
+  assert.equal((await call("registry", "fetch", { repo: "acme/product", ref: "refs/heads/main" })).status, 403); // no @product here
   assert.equal((await call("registry", "snapshot", { repo: "acme-agents/app", ref: "main" })).status, 200);
   assert.equal(seen.length, 2);
 });
 
-test("@agents follows the kernel's AIDENHQ_GITHUB_AGENTS_ORG only: a changed setting never moves it", async () => {
+test("@agents follows the fleet org the modules file names (repos.fleet_org), read per call", async () => {
   const { readFileSync } = await import("node:fs");
   const main = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
-  assert.match(main, /^const agentsOrg = env\("AIDENHQ_GITHUB_AGENTS_ORG"\) \|\| undefined;$/m);
-  assert.doesNotMatch(main, /github_agents_org|instance_name/);
+  assert.match(main, /^const fleetOrg = \(\) => modulesFile\(\)\.repos\?\.fleet_org \|\| undefined;$/m);
+  assert.doesNotMatch(main, /AGENTS_ORG/);
   const { covers } = await import("../src/codehost.ts");
   assert.equal(covers("acme-agents/app", ["@agents/*"], {}), false); // unset: @agents names nothing
   assert.equal(covers("acme-agents/app", ["@agents/*"], { agentsOrgs: ["acme-agents"] }), true);
@@ -109,17 +168,17 @@ test("@orgs and @maintained cover the instance's github_orgs and maintainer_repo
   assert.equal(covers("partner/x", grant, {}), false); // the kernel lists none: they name nothing
 });
 
-test("without codehost-github there is no GitHub code host: 404", async (t) => {
+test("without the github module there is no GitHub code host: 404", async (t) => {
   const { call } = await setup(t, { enabled: false });
-  const r = await call("github", "token", { repo: "acme/x", perms: { issues: "write" } });
+  const r = await call("github", "read", { repo: "acme/x", kind: "prs" });
   assert.equal(r.status, 404);
   assert.match(r.error, /no GitHub code host/);
 });
 
-test("no grant can ask for Administration: the schema doesn't list it", async () => {
+test("no grant names a token: the schema lists the typed ops only", async () => {
   const { readFileSync } = await import("node:fs");
   const schema = JSON.parse(readFileSync(new URL("../schemas/codehost.json", import.meta.url), "utf8"));
-  assert.equal("administration" in schema.properties.token.properties.perms.properties, false);
+  assert.deepEqual(Object.keys(schema.properties).sort(), ["clone", "comment", "commit", "fetch", "read", "runner", "snapshot"]);
 });
 
 test("with both code hosts, each repo goes to its own: local/… to this server's, the agents org's to GitHub", async (t) => {
@@ -168,4 +227,66 @@ test("the instance repo of a local install is cloned in the box from the kernel'
   await assert.rejects(op.ask("nobody", "bundle", { repo: "local/aidenhq-instance", ref: "HEAD" }), (e) => e.status === 403);
   await assert.rejects(op.ask("dispatch", "clone", { repo: "local/aidenhq-instance", ref: "HEAD", into: "t-1" }), (e) => e.status === 422 && /aidenhq clone local\/aidenhq-instance/.test(e.message));
   await assert.rejects(op.ask("nobody", "clone", { repo: "local/aidenhq-instance", ref: "HEAD", into: "t-1" }), (e) => e.status === 403);
+});
+
+// The real code host's ops (modules/github/service/src/ops.ts) behind the kernel's broker, with a fake GitHub: whatever an op
+// answers, success or failure, the owner's token is not in it.
+test("no op answer carries the token", async (t) => {
+  const { serveOps } = await import("../../modules/github/service/src/ops.ts");
+  const TOKEN = "gho_SECRETSECRET";
+  const calls = [];
+  const access = {
+    token: async () => TOKEN,
+    identity: async () => ({ login: "owner", name: "Owner", email: "1+owner@users.noreply.github.com" }),
+    rest: async (method, path, body) => {
+      calls.push({ method, path, body });
+      const ok = (b, status = 200) => ({ status, body: b, headers: new Headers() });
+      if (path.endsWith("/branches/feat")) return ok({ commit: { sha: "a".repeat(40) } });
+      if (path.includes("/contents/")) return method === "PUT" ? ok({ commit: { sha: "b".repeat(40) } }, 201) : ok({ message: "Not Found" }, 404);
+      if (path.endsWith("/comments")) return ok({ id: 99 }, 201);
+      if (path.endsWith("/registration-token")) return ok({ token: "AAAREG", expires_at: "2026-11-20T10:00:00Z" }, 201);
+      if (path === "/repos/acme/x/pulls?state=open&per_page=100&page=1") return ok([{ number: 3, head: { sha: "c".repeat(40), repo: { full_name: "acme/x" } }, base: { ref: "main" } }]);
+      if (path === "/repos/acme/x/pulls/3") return ok("diff --git a/f b/f\n+changed");
+      return ok({ message: `Bad credentials for ${TOKEN}` }, 401); // GitHub (or a proxy) echoing the token in an error
+    },
+  };
+  const noted = [];
+  const host = createServer((req, res) => void serveOps(req, res, { access, cacheDir: "/nowhere" }).catch((e) => res.writeHead(500).end(e.message)));
+  await new Promise((ok) => host.listen(0, "127.0.0.1", ok));
+  t.after(() => host.close());
+  const url = `http://127.0.0.1:${host.address().port}`;
+  const op = createCodehost({
+    grants: () => [{ module: "m", read: { repos: ["*/*"] }, comment: { repos: ["*/*"] }, fetch: { repos: ["*/*"] }, commit: { repos: ["*/*"], paths: ["apps.yaml"] }, runner: { orgs: ["acme"] } }],
+    repos: () => ({}), kind: () => ({ module: "github", floor: 0, tools: [], executor: { url: `${url}/aidenhq/v1/executor`, auth_secret: "k" } }), secret: () => "ch-key",
+    resolver: { resolve: async (u) => ({ host: "127.0.0.1", port: Number(new URL(u).port), path: new URL(u).pathname }), forget: () => {} }, workspace: async () => ({ workspace: "W" }), noteObject: (ref, record) => noted.push([ref, record]),
+  });
+  const answers = [];
+  const ask = async (name, body) => {
+    const r = await op.ask("m", name, body);
+    let text = "";
+    for await (const c of r) text += c;
+    answers.push({ status: r.statusCode, headers: JSON.stringify(r.headers), text });
+    return { status: r.statusCode, text };
+  };
+  const sha = "a".repeat(40);
+  assert.equal((await ask("head", { repo: "acme/x", ref: "feat" })).status, 200);
+  assert.equal((await ask("read", { repo: "acme/x", kind: "prs" })).status, 200);
+  assert.equal((await ask("read", { repo: "acme/x", kind: "diff", number: 3 })).status, 200);
+  assert.equal((await ask("comment", { repo: "acme/x", number: 3, body: "hello" })).status, 200);
+  assert.equal(calls.at(-1).body.body, "hello\n\n🤖 Generated by m with [AidenHQ](https://aidenhq.ai)", "the footer is added in the code host");
+  // Through POST /v1/codehost/comment: a new comment's ref is remembered (so editing it is allowed), an edit adds nothing.
+  const sent = { head: 0, body: "" };
+  const res = { writeHead(c) { sent.head = c; return this; }, end(b) { sent.body = b; }, write() {}, on() { return this; }, once() { return this; }, emit() {} };
+  await op.op("m", "comment", { repo: "acme/x", number: 3, body: "again" }, res);
+  assert.deepEqual([sent.head, JSON.parse(sent.body), noted], [200, { id: 99 }, [["github:acme/x#3/comment/99", "codehost:m"]]]);
+  assert.equal((await ask("commit", { repo: "acme/x", branch: "feat", path: "apps.yaml", content: "a: 1\n", parent: sha, message: "tune" })).status, 200);
+  const put = calls.find((c) => c.method === "PUT").body;
+  assert.match(put.message, /\n\nCo-authored-by: AidenHQ m <noreply@aidenhq\.ai>$/);
+  assert.deepEqual(put.committer, { name: "Owner", email: "1+owner@users.noreply.github.com" });
+  assert.equal((await ask("commit", { repo: "acme/x", branch: "feat", path: "apps.yaml", content: "a: 1\n", parent: "d".repeat(40), message: "tune" })).status, 409, "the branch is not at parent");
+  assert.equal((await ask("runner_token", { org: "acme" })).status, 200);
+  assert.equal((await ask("read", { repo: "acme/x", kind: "issue", number: 1 })).status, 502, "an error that echoed the token");
+  assert.ok(answers.length >= 8);
+  for (const a of answers) assert.ok(!a.text.includes(TOKEN) && !a.headers.includes(TOKEN), a.text);
+  assert.match(answers.at(-1).text, /\*\*\*/, "scrubbed, not dropped");
 });

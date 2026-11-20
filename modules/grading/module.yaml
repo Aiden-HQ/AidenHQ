@@ -25,12 +25,11 @@ checks:
     grade: http://grading:8096/check/grade # the latest verdict that sent the task's work back: the AI reviewer reads it (kernel/src/review-loop.ts)
     auth: grading_check_key
     label: grading
-# PR and issue evidence: a read token for the instance's known repositories (agents org, product, github_orgs, maintainer_repos) from the kernel's broker (POST /v1/codehost/token, with this module's
-# token; service/src/github.ts), to read a PR, its checks and its diff from GitHub. Checks and statuses are the PR's rollup.
+# PR and issue evidence: typed reads of the instance's known repositories (agents org, product, github_orgs, maintainer_repos)
+# through the kernel's code host (POST /v1/codehost/read, service/src/github.ts): a PR, its checks and its diff, an issue, a job.
 codehost:
-  token:
+  read:
     repos: [ "@agents/*", "@product", "@orgs", "@maintained" ]
-    perms: { pull_requests: read, contents: read, checks: read, statuses: read, issues: read, actions: read }
 labels:
   - { name: grading, color: "#7c3aed" }
 # The board's reads (held parts, wake-ups, rollover, Fleet Ops' stale grades), with its own key, until the board is a module.
