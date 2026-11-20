@@ -704,6 +704,11 @@ unchanged apart from Task 8's App-clause removal.
   - `github_official` write tools, `GITHUB_APP_DIR`, `AIDENHQ_GITHUB_AGENTS_ORG` (except the one-release mapping);
   - the App tests.
   Confirm nothing outside this spec is removed: compare against the base for stale files reverted by an old base.
+- [ ] **Step 5b: Fix the queued review findings (2026-11-20):**
+  - `kernel/src/writes.ts` `outcomeOf` and `kernel/src/proxy.ts`: accept `objects` / `_aidenhq.objects` only from a
+    code-host module (the same CODEHOSTS check as `facts.ts`); drop the field from every other connection.
+  - `kernel/src/objects.ts`: delete the `.../label/<name>` ref kind. Nothing reads it since labels work as today (Task 8),
+    and a label ref can't prove ownership anyway.
 - [ ] **Step 6: Security review** (product `CLAUDE.md`: every new path gets one before it switches on):
   - the op table's grants;
   - the credential helper's scope check;
