@@ -21,9 +21,9 @@ import { configDir, dataDir, env, repo, secret } from "./env.ts";
 import { INSTALL_CAP, createGateway, watched } from "./gateway/lib.ts";
 import { createAdmin, type SetupField } from "./admin.ts";
 import { createAuthApi } from "./auth-api.ts";
-import { checkModel, exchange, readiness, startPkce } from "./openrouter-pkce.ts";
+import { MODEL_KEY, createModelStep } from "../../modules/models-openrouter/src/model-step.ts";
 import { convert as convertGithubApp, saveApp as saveGithubApp, seedAppId } from "./github-app.ts";
-import { composeRecreate, createModuleSecrets, vaultWriter } from "./module-secrets.ts";
+import { composeRecreate, createModuleSecrets, secretFits, vaultWriter } from "./module-secrets.ts";
 import { doorSource, readGate } from "./accounts.ts";
 import { routineWake, webhookWake, type Manifest } from "./app-access.ts";
 import { createSignin } from "./signin.ts";
@@ -472,8 +472,19 @@ const firstRun = {
   save: vaultWriter(secretsDir),
   forgetRecoveryKey: () => rmSync(path.join(secretsDir, "vault_recovery_key"), { force: true }),
 };
-// The model step's record of whether the vault's model key last passed its check (model_ready, the first-run redirects).
-const modelState = readiness({ get: secret, exists: (n) => existsSync(path.join(secretsDir, n)), save: firstRun.save });
+// The first run's model step (/setup/model; the models-openrouter module's flow, served on the admin listener): OpenRouter's
+// PKCE and a 1-token check on the gateway's upstream, against the first model the modules price (config/gateway.json, in the
+// order the modules list them: the default first). Its readiness is model_ready and the first-run redirects.
+const upstream = env("AIDENHQ_GATEWAY_UPSTREAM", "https://openrouter.ai/api/v1");
+const gatewaySettings = watched(path.join(configDir, "gateway.json"), (j) => j as { models?: Record<string, unknown>; install_day_usd?: unknown }, {});
+const model = createModelStep({
+  upstream,
+  model: () => Object.keys(gatewaySettings().models ?? {})[0] ?? "~deepseek/deepseek-flash-latest",
+  vault: { get: secret, exists: (n) => existsSync(path.join(secretsDir, n)), save: firstRun.save },
+  fits: (key) => { const f = firstRun.fields().find((x) => x.secret === MODEL_KEY); return !f || secretFits(f, key); },
+  dayCap: () => { const n = Number(gatewaySettings().install_day_usd); return n > 0 ? n : undefined; },
+  log,
+});
 // A module's declared setup secrets from the board (save_secret, setup_status): the same vault writes, then that module's
 // services and every other one mounting the secret recreated in the checkout under the apply lock.
 const moduleSecrets = createModuleSecrets({
@@ -567,7 +578,7 @@ async function precheck(who: Parameters<typeof writes.preview>[0], b: { kind: st
   const said = v.decision === "approve" ? (panel ? "would approve it, and a second reviewer would still be asked" : "would approve it") : v.decision === "reject" ? "would reject it" : "would leave it to the owner";
   return { decision: v.decision, text: `${v.model === "kernel/code" ? "The kernel's own rules" : `The AI reviewer (${v.model})`} ${said}. Nothing was filed.`, reason: v.reason };
 }
-const backplane = createBackplane({ idle, boardApi: moduleBoardApi, facts, repos: codehostRepos, healthProbe, settingsChange, routing, connectionHealth: createConnectionHealth({ connections, resolver }), healthKey: () => secret("health_probe_key"), codehost: codehost.op, checks, checkJobs, lane, whoami, asserter, grantsFile: grantsTable, log, writes, records, channels, brake, notify, owner: ownerApi, ownerRaw: (p) => cpApi(p), modules: modulesFile, boardKey: () => secret("gateway_board_key"), reviews, reviewerKey: () => secret("reviewer_key"), jobs, admission, outcomes, wakes, tasks: moduleTasks, work, flow, taskStates, graderToken, dropGraderToken: (task) => graderTokens.delete(task), eventsKey: () => secret("paperclip_events_key"), jobTools, precheck, localBundle: (repo: string) => (localHost() ? localCode.bundle(repo) : Promise.reject(Object.assign(new Error("codehost-local isn't enabled here"), { status: 404 }))), advisories: advisories.list, accounts: createAuthApi({ accounts: () => accounts, whoami, boardKey: () => secret("gateway_board_key"), recoveryKeyWaiting: () => Boolean(firstRun.recoveryKey()), modelReady: modelState.ready, operatorKey: () => secret("board_operator_key"), secrets: moduleSecrets }), proxy: (req, res, c) => proxy(req, res, c!), cp: createCp({ appOwners: () => appOwners(), asserter, whoami, plugin, once: outcomes.once, agentKey: (id) => secret(`paperclip-agents/${id}`), grants: () => grantsTable().agents ?? {}, fleetIssues: () => String(grantsTable().fleet_issues ?? ""), controlUrl, checks, provenance, observe: wakes.observe, log }) as never, boardCp: createBoardCp({ controlUrl, key: () => secret("paperclip_board_key"), fetch: ownerFetch, observe: wakes.observe, facts, log, onRoutine: (id) => void records.db.prepare("INSERT OR IGNORE INTO board_routines (id) VALUES (?)").run(id) }) as never });
+const backplane = createBackplane({ idle, boardApi: moduleBoardApi, facts, repos: codehostRepos, healthProbe, settingsChange, routing, connectionHealth: createConnectionHealth({ connections, resolver }), healthKey: () => secret("health_probe_key"), codehost: codehost.op, checks, checkJobs, lane, whoami, asserter, grantsFile: grantsTable, log, writes, records, channels, brake, notify, owner: ownerApi, ownerRaw: (p) => cpApi(p), modules: modulesFile, boardKey: () => secret("gateway_board_key"), reviews, reviewerKey: () => secret("reviewer_key"), jobs, admission, outcomes, wakes, tasks: moduleTasks, work, flow, taskStates, graderToken, dropGraderToken: (task) => graderTokens.delete(task), eventsKey: () => secret("paperclip_events_key"), jobTools, precheck, localBundle: (repo: string) => (localHost() ? localCode.bundle(repo) : Promise.reject(Object.assign(new Error("codehost-local isn't enabled here"), { status: 404 }))), advisories: advisories.list, accounts: createAuthApi({ accounts: () => accounts, whoami, boardKey: () => secret("gateway_board_key"), recoveryKeyWaiting: () => Boolean(firstRun.recoveryKey()), modelReady: model.ready, operatorKey: () => secret("board_operator_key"), secrets: moduleSecrets }), proxy: (req, res, c) => proxy(req, res, c!), cp: createCp({ appOwners: () => appOwners(), asserter, whoami, plugin, once: outcomes.once, agentKey: (id) => secret(`paperclip-agents/${id}`), grants: () => grantsTable().agents ?? {}, fleetIssues: () => String(grantsTable().fleet_issues ?? ""), controlUrl, checks, provenance, observe: wakes.observe, log }) as never, boardCp: createBoardCp({ controlUrl, key: () => secret("paperclip_board_key"), fetch: ownerFetch, observe: wakes.observe, facts, log, onRoutine: (id) => void records.db.prepare("INSERT OR IGNORE INTO board_routines (id) VALUES (?)").run(id) }) as never });
 // The admin listener's accounts (data/kernel/auth/auth.db) and pages. Accounts not moved yet, or a malformed URL setting: the
 // listener refuses while every other part of the kernel serves.
 const urlOf = (v: string) => { try { return v ? new URL(v) : undefined; } catch { log("ignoring a malformed URL setting", { value: v.slice(0, 100) }); return undefined; } };
@@ -619,18 +630,6 @@ if (accounts) {
 const boardOrigins = env("AIDENHQ_BOARD_ORIGINS", [boardUrl?.origin, "http://localhost:3121", "http://127.0.0.1:3121"].filter(Boolean).join(",")).split(",").map((o) => o.trim()).filter(Boolean);
 // The board's origins are the module UI origins a session may be handed to (/auth/handoff).
 const uiOrigins = () => Object.fromEntries(boardOrigins.map((o) => [o, "board"]));
-// The first run's model step (/setup/model): OpenRouter's PKCE and a 1-token check on the gateway's upstream, against the first
-// model the modules price (config/gateway.json, in the order the modules list them: the default first).
-const upstream = env("AIDENHQ_GATEWAY_UPSTREAM", "https://openrouter.ai/api/v1");
-const gatewaySettings = watched(path.join(configDir, "gateway.json"), (j) => j as { models?: Record<string, unknown> }, {});
-const model = {
-  start: (callback: string, state: string) => startPkce(callback, { upstream, state }),
-  exchange: (code: string, verifier: string) => exchange(code, verifier, fetch, upstream),
-  check: (key: string) => checkModel(key, { model: Object.keys(gatewaySettings().models ?? {})[0] ?? "~deepseek/deepseek-flash-latest", upstream }),
-  saved: () => secret("openrouter_key"),
-  dayCap: () => { const n = Number((gatewaySettings() as { install_day_usd?: unknown }).install_day_usd); return n > 0 ? n : undefined; },
-  ...modelState,
-};
 // The github module's App (github-app.ts), made from the admin pages: its key goes into the vault, the agents org into .env.
 const instanceName = () => /^([a-z0-9-]+)\.aidenhq\.ai$/.exec(String(modulesFile().commit_domain ?? ""))?.[1];
 seedAppId(secretsDir);
