@@ -8,10 +8,12 @@ settings:
   # How long Prometheus keeps samples (Prometheus duration: 30d, 8w).
   monitoring_retention:
     default: 30d
+    pattern: '^[0-9]+[smhdwy]$'
   # Grafana's https address on the tailnet, e.g. https://host.tailnet.ts.net:8444 (docs/operations.md, Monitoring). Links in
   # Grafana use it; empty = http://localhost:3131.
   grafana_root_url:
     default: ""
+    type: url
 # Read-only host /, /sys and /proc for node-exporter and cAdvisor (filesystems, CPU, memory, pressure, OOM kills by cgroup).
 privileged: [host-metrics]
 # Nothing is published beyond loopback; Grafana alone is (127.0.0.1:3131, `tailscale serve` for the tailnet). Each image is

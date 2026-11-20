@@ -14,8 +14,8 @@ const log = pino({ level: process.env.LOG_LEVEL ?? "info", base: { svc: "grafana
 const readToken = (file: string | undefined) => (file && existsSync(file) ? readFileSync(file, "utf8").trim() || undefined : undefined);
 const local = process.env.GRAFANA_SOURCE === "local";
 const stateDir = process.env.GRAFANA_STATE_DIR ?? "/state";
-// The stack Connect saved, else the old grafana_url setting's env value (an upgraded instance keeps working).
-const stack = (readToken(process.env.GRAFANA_URL_FILE) || process.env.GRAFANA_URL || "").replace(/\/+$/, "");
+// The stack Connect saved.
+const stack = (readToken(process.env.GRAFANA_URL_FILE) ?? "").replace(/\/+$/, "");
 const mcpUrl = process.env.GRAFANA_MCP_URL || "https://mcp.grafana.com/mcp";
 const jwks = kernelJwks();
 

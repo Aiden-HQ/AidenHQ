@@ -74,21 +74,18 @@ settings:
   # through your own OAuth App (device flow enabled); empty: the sign-in says it isn't configured.
   github_oauth_client_id:
     default: Ov23liJ0rnoi7nCmm4FZ
+    pattern: '^[A-Za-z0-9._-]{8,40}$'
   # GitHub's own MCP server: the sign-in's token is its bearer.
   github_mcp_url:
     default: https://api.githubcopilot.com/mcp/
     type: url
     host: api.githubcopilot.com
-  # owner/repo of the AidenHQ product this instance runs (the warehouse module requires it): where the Maintainer reports product
-  # bugs. Unset (null) leaves github_app_issue refusing.
-  product_repo:
-    default: null
   # Contributing to the product upstream (spec §6.9a; a platform setting, here until the platform module lands): "issues"
   # grants the connection's upstream tools (github_app_issue and its status read) to the agents that name them; "off" grants
-  # none. "prs" is accepted and acts as "issues" until upstream PRs from a bot account's fork exist.
+  # none.
   upstream:
     default: issues
-    values: ["off", "issues", "prs"]
+    values: ["off", "issues"]
   # The repos the Maintainer watches, triages and fixes, each with the GitHub App installed on it:
   # [{ repo: owner/name, label: agent-fix, trusted: [admin, maintain], after_merge: done }]. `label` is the label that asks
   # for a fix (default agent-fix). `trusted` is who may vouch for it besides the App: admin, maintain or write (default
@@ -103,6 +100,7 @@ settings:
   # Maintainer's watcher go through (kernel/sdk/src/maintained-repos.ts parses it).
   maintainer_repos:
     default: []
+    pattern: '^[\w.-]+/[\w.-]+$'
     # Adding a repo, a duty switched on, or any change to a listed entry (its label, trusted roles, after_merge) is the owner's:
     # a repo can be listed as a bare "owner/name", which `*.repo` can't reach, so `*` covers every entry's own value too.
     owner:
@@ -117,13 +115,16 @@ settings:
   # The org the GitHub App is made for (aidenhq-<instance_name> unless this names another). Creating the App records it on the
   # host (AIDENHQ_GITHUB_AGENTS_ORG): from then on it is the agents org, where new repositories go.
   github_agents_org:
+    pattern: '^[A-Za-z0-9][A-Za-z0-9-]{0,38}$'
   # GitHub orgs/users (besides the agents org) the owner allows: the apps platform builds trusted apps from their repos, and create_repo
   # creates repos there at Tier 0 (the App must be installed on the org, else it fails loudly; a stranger's install of the public App changes nothing).
   github_orgs:
     default: []
+    pattern: '^[A-Za-z0-9][A-Za-z0-9-]{0,38}$'
   # The GitHub orgs owner-identity writes (comments, reviews) may reach; github-mcp refuses a write anywhere else.
   github_comment_orgs:
     default: []
+    pattern: '^[A-Za-z0-9][A-Za-z0-9-]{0,38}$'
     # An org added by an agent's change is the owner's to approve (it widens where writes as the owner may land).
     owner: [ { path: "*", new: true } ]
 connections:

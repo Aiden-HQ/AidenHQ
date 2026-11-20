@@ -549,7 +549,9 @@ export function setupFlows(defs: Obj, compiled: Obj, settings: Obj = {}) {
         if (!mode.values.includes(o.value)) fail(`${where}: choose option ${o.value} is not a value of ${f.choose.setting}`);
         for (const i of o.inputs ?? []) {
           if (!(i.setting in declared)) fail(`${where}: choose input ${i.setting} is not one of its settings`);
-          try { new RegExp(i.pattern); } catch { fail(`${where}: choose input ${i.setting} has a pattern that is not a regular expression`); }
+          // The value's shape lives once, on the setting; the board reads it from the input.
+          if (!declared[i.setting].pattern) fail(`${where}: choose input ${i.setting} needs the setting's own pattern`);
+          i.pattern = declared[i.setting].pattern;
         }
       }
       if (new Set(f.choose.options.map((o: Obj) => o.value)).size !== f.choose.options.length) fail(`${where}: each choose option once`);
@@ -702,12 +704,14 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
         if (v.some((x: unknown) => !d.values.includes(x))) fail(`settings.${k}: each must be ${words}`);
       }
       // `pattern` (anchored): what a text value looks like, where its `when` mode holds.
-      if (d?.pattern && settings[k] !== "" && settings[k] != null && Object.entries(d.when ?? {}).every(([w, v]) => String(settings[w]) === String(v))) {
-        const bad = [settings[k]].flat().find((x) => typeof x === "object" || !new RegExp(d.pattern).test(String(x)));
+      // A list's entries are each checked; an entry that is a map (maintainer_repos) by its `repo`.
+      const applies = Object.entries(d?.when ?? {}).every(([w, v]) => String(settings[w]) === String(v));
+      if (d?.pattern && settings[k] !== "" && settings[k] != null && applies) {
+        const bad = [settings[k]].flat().find((x) => { const v = x && typeof x === "object" ? (x as Obj).repo : x; return typeof v === "object" || !new RegExp(d.pattern).test(String(v)); });
         if (bad !== undefined) fail(`settings.${k}: ${JSON.stringify(bad)} doesn't match ${d.pattern}`);
       }
       // `type: url` (and `host:`): the board's check, again here, where it is the gate (services/shared/url-setting.ts).
-      if (d?.type === "url") {
+      if (d?.type === "url" && applies) {
         const problem = urlSettingProblem(settings[k], d.host);
         if (problem) fail(`settings.${k}: ${problem}`);
       }
@@ -972,7 +976,7 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
       for (const t of list) if (!all.includes(t)) fail(`${key}: ${name} has no tool ${t}`);
       // A connection's `upstream` tools file to the product's upstream repos: granted only while the upstream setting
       // allows issues (spec §6.9a; off grants none of them).
-      const upstreamOff = !["issues", "prs"].includes(String(settings.upstream ?? "off"));
+      const upstreamOff = String(settings.upstream ?? "off") !== "issues";
       tools[name] = list.filter((t: string) => !(upstreamOff && (c.upstream ?? []).includes(t)));
       if (!tools[name].length) delete tools[name];
     }
@@ -1224,7 +1228,7 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   const graders = Object.entries<Obj>(kernelModules.modules).filter(([, m]) => (m.roles ?? []).includes("kernel.grader")).map(([n]) => n);
   if (graders.length > 1) fail(`modules ${graders.join(", ")} all request kernel.grader: one grading module at a time`);
   for (const n of graders) if (!(enabledDefs[n]?.checks ?? []).some((c: Obj) => c.at === "task.finish")) fail(`module ${n}: kernel.grader needs a finish check (checks: at: task.finish)`);
-  return { bundleState: { seen: bundle, adopted: [...adopted] }, paperclip, computersMax: settings.computers_max, apps: { apps }, points, compose, catalog, warnings, optionalSecrets, askedSecrets: setup.map((f) => f.secret), generatedSecrets, dataDirs, stateDirs, dataModules, gateway, jobcaps, engines, connections, writes, checks, kernelModules, exposure: settings.exposure, edge: edge && { gate: edge.gate, cloudflared: edge.cloudflared } };
+  return { bundleState: { seen: bundle, adopted: [...adopted] }, paperclip, computersMax: settings.computers_max, settings, apps: { apps }, points, compose, catalog, warnings, optionalSecrets, askedSecrets: setup.map((f) => f.secret), generatedSecrets, dataDirs, stateDirs, dataModules, gateway, jobcaps, engines, connections, writes, checks, kernelModules, exposure: settings.exposure, edge: edge && { gate: edge.gate, cloudflared: edge.cloudflared } };
 }
 
 /**
@@ -1907,8 +1911,8 @@ export async function ensureBackupRetention({ api, dailyDays, step }: Obj) {
 }
 
 /**
- * ops-mcp's vault folders and reference docs, from the host's .env (never from instance.yaml, which agents can edit
- * through apply): VAULT_DIR + VAULT_FOLDERS (comma-separated, vault-relative) and KNOWLEDGE_BASES (name=/path, read-only).
+ * ops-mcp's vault folders and reference docs, from the meetings module's settings (vault_dir, vault_folders, knowledge_bases):
+ * VAULT_DIR + VAULT_FOLDERS (comma-separated, vault-relative) and KNOWLEDGE_BASES (name=/path, read-only).
  */
 export function hostMounts(env: Obj) {
   const out: string[] = [];

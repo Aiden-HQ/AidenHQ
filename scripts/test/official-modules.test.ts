@@ -72,8 +72,7 @@ test("a fresh install of the default bundle compiles with no optional connection
   const { compose, paperclip } = compile(product, dir);
   for (const k of ["meeting-scan", "security-scan", "security-weekly", "red-team-new", "red-team-weekly"]) assert.equal(paperclip.routines[k].status, "paused", `${k} waits for the owner (quiet start)`);
   for (const k of ["ui-designer", "ui-reviewer"]) assert.equal(paperclip.agents[k].heartbeat, false, `${k} has no heartbeat until the owner sets one`);
-  assert.equal(compose.services["jira-mcp"], undefined, "jira-mcp waits for the owner's site");
-  assert.ok(compose.services["glean-mcp"] && compose.services["primer-mcp"], "the idle connection servers are there");
+  assert.ok(compose.services["jira-mcp"] && compose.services["glean-mcp"] && compose.services["primer-mcp"], "the idle connection servers are there: unconnected, they start and say how to connect");
 });
 
 test("the Primer digest waits for the owner under quiet start, and the Researcher can read it", () => {

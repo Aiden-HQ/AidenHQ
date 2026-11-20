@@ -35,17 +35,26 @@ test("a URL setting: https, a public host, the declared host, no credentials", (
 
 function instance(settings) {
   const dir = mkdtempSync(join(tmpdir(), "inst-"));
-  writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules: BUNDLE, settings: { timezone: "Europe/London", owner_name: "Sam", owner_slack_user_id: "U1", owner_email: "o@example.com", product_repo: "acme/aidenhq", ...settings } }));
+  writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules: [...BUNDLE, "hubspot", "grafana", "monitoring"], settings: { timezone: "Europe/London", owner_name: "Sam", owner_email: "o@example.com", product_repo: "acme/aidenhq", ...settings } }));
   mkdirSync(join(dir, "agents"));
   return dir;
 }
 
 test("a saved URL reaches the connection's service; a bad one fails compile", () => {
-  const url = "https://acme-be.glean.com/mcp/default";
-  const r = compile(repo, instance({ glean_mcp_url: url }));
-  assert.equal(r.compose.services["glean-mcp"].environment.GLEAN_MCP_URL, url);
-  const glean = r.catalog.find((m) => m.name === "glean");
-  assert.deepEqual({ type: glean.settings.glean_mcp_url.type, host: glean.settings.glean_mcp_url.host }, { type: "url", host: "*.glean.com" });
-  assert.equal(compile(repo, instance({})).compose.services["glean-mcp"].environment.GLEAN_MCP_URL, "", "not set: the connection is off");
-  assert.throws(() => compile(repo, instance({ glean_mcp_url: "https://evil.example.com/mcp" })), /settings\.glean_mcp_url: the host must be/);
+  const url = "https://mcp.hubspot.com/custom";
+  const r = compile(repo, instance({ hubspot_mcp_url: url }));
+  assert.equal(r.compose.services["hubspot-mcp"].environment.HUBSPOT_MCP_URL, url);
+  const hubspot = r.catalog.find((m) => m.name === "hubspot");
+  assert.deepEqual({ type: hubspot.settings.hubspot_mcp_url.type, host: hubspot.settings.hubspot_mcp_url.host }, { type: "url", host: "mcp.hubspot.com" });
+  assert.throws(() => compile(repo, instance({ hubspot_mcp_url: "https://evil.example.com/mcp" })), /settings\.hubspot_mcp_url: the host must be/);
+});
+
+test("a setting's pattern and values hold, in the mode where it applies", () => {
+  assert.throws(() => compile(repo, instance({ slack_post_channels: ["general"] })), /settings\.slack_post_channels: "general" doesn't match/);
+  assert.throws(() => compile(repo, instance({ heartbeat_hours: 5 })), /settings\.heartbeat_hours: each must be/);
+  assert.throws(() => compile(repo, instance({ maintainer_repos: [{ repo: "not-a-repo" }] })), /settings\.maintainer_repos/);
+  compile(repo, instance({ maintainer_repos: [{ repo: "acme/app" }, "acme/other"] }));
+  // grafana_mcp_url applies only in cloud mode: a bad value in local mode is not asked of anyone.
+  assert.throws(() => compile(repo, instance({ grafana_source: "cloud", grafana_mcp_url: "https://evil.example.com/mcp" })), /settings\.grafana_mcp_url: the host must be/);
+  compile(repo, instance({ grafana_source: "local", grafana_mcp_url: "https://evil.example.com/mcp" }));
 });

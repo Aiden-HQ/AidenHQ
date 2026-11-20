@@ -1,4 +1,4 @@
-// glean-mcp: the organization's Glean MCP server (GLEAN_MCP_URL), the company-wide search over Slack, Drive, Confluence,
+// glean-mcp: the organization's Glean MCP server (GLEAN_MCP_URL_FILE), the company-wide search over Slack, Drive, Confluence,
 // Jira, GitHub and the rest, passed through whole as the owner (src/vendor/proxy.ts; the kernel decides which tools each
 // agent reaches, from module.yaml's tags and its grants). The board signs in through /auth/* with its own token.
 import { existsSync, readFileSync } from "node:fs";
@@ -10,8 +10,8 @@ import { createVendorProxy } from "./vendor/proxy.js";
 const log = pino({ level: process.env.LOG_LEVEL ?? "info", base: { svc: "glean-mcp" }, redact: ["authorization", "*.authorization", "token", "*.token", "code"] });
 const readToken = (file: string | undefined) => (file && existsSync(file) ? readFileSync(file, "utf8").trim() || undefined : undefined);
 const stateDir = process.env.GLEAN_STATE_DIR ?? "/state";
-// The URL Connect saved, else the old glean_mcp_url setting's env value (an upgraded instance keeps working).
-const url = readToken(process.env.GLEAN_MCP_URL_FILE) || process.env.GLEAN_MCP_URL;
+// The URL Connect saved.
+const url = readToken(process.env.GLEAN_MCP_URL_FILE);
 const jwks = kernelJwks();
 
 // Agents reached for each system's own tools and skipped Glean (2026-11-11): the two entry points say what they're for.

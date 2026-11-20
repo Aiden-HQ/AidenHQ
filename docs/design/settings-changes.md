@@ -6,7 +6,7 @@ privileged: the change still lands as an instance-repo commit through a `kernel.
 
 ## Where a value lives
 
-- **Connection URLs are module settings** (`glean_mcp_url`, `grafana_url`, `jira_url` and the like), declared in each module's
+- **A fixed connection URL is a module setting** (`hubspot_mcp_url`, `atlassian_mcp_url`, `grafana_mcp_url` and the like; the owner's own address is a sign-in secret asked for on Connect: `glean_mcp_url`, `grafana_url`, `jira_url`, `primer_mcp_url`), declared in each module's
   `module.yaml` and passed to compose as `${settings.<key>}`. They live in `instance.yaml` in the instance repo: in git,
   reviewable, reverted by a revert. Not a board-written file (nothing would apply it, and apply-config refuses a dirty checkout).
 - A setting declares `type: url` (optionally `host: "*.glean.com"`): the board shows a URL input and both the board and the
