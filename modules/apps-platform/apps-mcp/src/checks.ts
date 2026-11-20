@@ -271,7 +271,8 @@ process.stdin.on("data", (c) => (s += c)).on("end", async () => {
   for (const p of fs.readdirSync(proc)) {
     if (!/^\d+$/.test(p)) continue;
     let fds;
-    try { fds = fs.readdirSync(proc + "/" + p + "/fd"); } catch { continue; }
+    // A process that exited is gone; any other unreadable fd table would hide its listeners, so it fails the scan loudly.
+    try { fds = fs.readdirSync(proc + "/" + p + "/fd"); } catch (e) { if (e.code === "ENOENT" || e.code === "ESRCH") continue; throw new Error("can't read process " + p + "'s sockets (" + e.code + ")"); }
     for (const f of fds) {
       let t;
       try { t = fs.readlinkSync(proc + "/" + p + "/fd/" + f); } catch { continue; }
@@ -318,11 +319,12 @@ process.stdin.on("data", (c) => (s += c)).on("end", async () => {
 /**
  * `docker run` argv for one container's identity scan. Its network namespace is the app's door, and its pid namespace is what
  * makes the scan the app's own: peers the platform runs there (the render's browser) share the network but not these pids, so
- * IDENTITY_SCRIPT drops their listeners. SYS_PTRACE is what lets the root helper read a non-root app's /proc/<pid>/fd; it is
- * the helper's one capability, and apps-mcp already holds the Docker socket.
+ * IDENTITY_SCRIPT drops their listeners. Reading a non-root app's /proc/<pid>/fd takes both SYS_PTRACE (the ptrace access
+ * check) and DAC_READ_SEARCH (the directory is the app user's, mode 0500); they are the helper's only capabilities, and
+ * apps-mcp already holds the Docker socket.
  */
 export function identityProbeArgs(image: string, id: string): string[] {
-  return ["run", "--rm", "-i", "--pull", "never", "--network", `container:${id}`, "--pid", `container:${id}`, "--cap-drop", "ALL", "--cap-add", "SYS_PTRACE", "--security-opt", "no-new-privileges", "--memory", "128m", image, "node", "-e", IDENTITY_SCRIPT];
+  return ["run", "--rm", "-i", "--pull", "never", "--network", `container:${id}`, "--pid", `container:${id}`, "--cap-drop", "ALL", "--cap-add", "SYS_PTRACE", "--cap-add", "DAC_READ_SEARCH", "--security-opt", "no-new-privileges", "--memory", "128m", image, "node", "-e", IDENTITY_SCRIPT];
 }
 
 export const probeResult = (probe: Kind, path: string, findings: Finding[]): ProbeResult => ({ probe, path, ok: !findings.some((f) => f.hard), findings: findings.slice(0, 10) });

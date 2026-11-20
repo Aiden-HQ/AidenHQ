@@ -243,8 +243,8 @@ describe("identity gate", () => {
     const id = "a".repeat(64);
     const a = identityProbeArgs("aidenhq/apps-mcp-helper:abc", id);
     expect(a.slice(a.indexOf("--network"), a.indexOf("--network") + 4)).toEqual(["--network", `container:${id}`, "--pid", `container:${id}`]);
-    // Root, but the one capability the fd read needs, and nothing looser: no privileged, mounts or shared host namespaces.
-    expect(a.slice(a.indexOf("--cap-drop"), a.indexOf("--cap-drop") + 4)).toEqual(["--cap-drop", "ALL", "--cap-add", "SYS_PTRACE"]);
+    // Root, but only the two capabilities the fd read needs, and nothing looser: no privileged, mounts or shared host namespaces.
+    expect(a.slice(a.indexOf("--cap-drop"), a.indexOf("--cap-drop") + 6)).toEqual(["--cap-drop", "ALL", "--cap-add", "SYS_PTRACE", "--cap-add", "DAC_READ_SEARCH"]);
     expect(a.indexOf("--cap-add")).toBeGreaterThan(a.indexOf("--cap-drop"));
     expect(a.join(" ")).not.toMatch(/--privileged|-v |--volume|--mount|--pid host|--network host/);
   });
