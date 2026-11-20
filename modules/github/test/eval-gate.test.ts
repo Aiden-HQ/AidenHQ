@@ -4,11 +4,11 @@
 // brings. How the eval judges (cases, the pass rule) is the kernel's (checkjobs.ts) and tested there.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
-import { createEvalGate, touchesReviewer } from "../service/src/evalgate.ts";
+import { REVIEWER_TREE, createEvalGate, touchesReviewer } from "../service/src/evalgate.ts";
 import checklist from "../../ai-reviewer/service/security/checklist.json" with { type: "json" };
 
 const env = { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_AUTHOR_NAME: "T", GIT_AUTHOR_EMAIL: "t@example.com", GIT_COMMITTER_NAME: "T", GIT_COMMITTER_EMAIL: "t@example.com" };
@@ -158,6 +158,24 @@ describe("the reviewer-eval gate", { concurrency: 1 }, () => {
     assert.equal(checks.at(-1).spec.judge_commit, cases);
   });
 
+  it("a new head with the content of one that passed is covered (a rebase); one that failed is asked again", async () => {
+    const tip = sh(prod, "rev-parse", "main");
+    const head = branch(prod, "fix/rebased", { "modules/ai-reviewer/service/src/review.ts": "// v10\n" }, tip);
+    await gate("acme/aidenhq", pr(13, head));
+    finish("pass");
+    assert.equal(await gate("acme/aidenhq", pr(13, head)), undefined);
+    const asked = checks.length;
+    const rebased = branch(prod, "fix/rebased-2", { "modules/ai-reviewer/service/src/review.ts": "// v10\n", "README.md": "rebased\n" }, tip);
+    assert.equal(await gate("acme/aidenhq", pr(13, rebased)), undefined, "same reviewer and judging content: no second eval");
+    assert.equal(checks.length, asked);
+    const failing = branch(prod, "fix/fails", { "modules/ai-reviewer/service/src/review.ts": "// v11\n" }, tip);
+    await gate("acme/aidenhq", pr(14, failing));
+    finish("fail", "1/3");
+    assert.ok((await gate("acme/aidenhq", pr(14, failing)))?.stop);
+    const retry = branch(prod, "fix/fails-2", { "modules/ai-reviewer/service/src/review.ts": "// v11\n", "README.md": "retry\n" }, tip);
+    assert.ok((await gate("acme/aidenhq", pr(14, retry)))?.wait, "a failed eval is never reused: a new head asks again");
+  });
+
   it("anything it can't read waits and asks again: the kernel unreachable never passes and never stops the merge", async () => {
     const broken = createEvalGate({ productRepo: "acme/aidenhq", dir: join(root, "data2"), kernel: async () => { throw new Error("the kernel's /v1/checks answered 503"); }, fetch: fetchInto, git: async (dir, args) => sh(dir, ...args), defaultBranch: async () => "main" });
     const head = branch(prod, "fix/down", { "modules/ai-reviewer/service/src/review.ts": "// v8\n" });
@@ -178,4 +196,9 @@ it("every path the eval-receipt checklist item names is reviewer code", () => {
   const item = checklist.items.find((i) => i.check.includes("100% receipt"));
   const missing = item.trigger.paths.filter((p) => !touchesReviewer([p.replace("**", "x").replace("*", "ts")]));
   assert.deepEqual(missing, []);
+});
+
+// git ls-tree drops a path it can't find, so a renamed entry (a .mjs that became .ts) would leave its changes outside the key.
+it("every REVIEWER_TREE path exists in the product", () => {
+  assert.deepEqual(REVIEWER_TREE.filter((p) => !existsSync(join(import.meta.dirname, "../../..", p))), []);
 });
