@@ -154,10 +154,28 @@ async function ghcrVersions(repo) {
   const pkg = encodeURIComponent(rest.join("/"));
   let vs;
   for (const kind of ["orgs", "users"]) {
-    try { vs = await getJson(`https://api.github.com/${kind}/${owner}/packages/container/${pkg}/versions?per_page=100`); break; } catch (e) { if (e.status !== 404) throw undated(`ghcr.io/${repo}: ${UNDATED} (${e.message})`); }
+    try { vs = await getJson(`https://api.github.com/${kind}/${owner}/packages/container/${pkg}/versions?per_page=100`); break; } catch (e) { if (e.status !== 404) throw Object.assign(undated(`ghcr.io/${repo}: ${UNDATED} (${e.message})`), { status: e.status }); }
   }
   if (!vs) throw undated(`ghcr.io/${repo}: ${UNDATED}`);
   return vs.flatMap((v) => (v.metadata?.container?.tags || []).map((t) => ({ version: t, published: v.created_at, digest: v.name, via: "GitHub Packages publish time" })));
+}
+
+// The digest ghcr's registry serves for a tag now (anonymous pull token, then a manifest HEAD).
+async function ghcrDigest(repo, tag) {
+  const { token } = await getJson(`https://ghcr.io/token?scope=repository:${repo}:pull`);
+  const accept = ["application/vnd.oci.image.index.v1+json", "application/vnd.docker.distribution.manifest.list.v2+json", "application/vnd.oci.image.manifest.v1+json", "application/vnd.docker.distribution.manifest.v2+json"].join(", ");
+  return (await fetchRetry(`https://ghcr.io/v2/${repo}/manifests/${encodeURIComponent(tag)}`, { method: "HEAD", headers: { authorization: `Bearer ${token}`, accept } })).headers.get("docker-content-digest");
+}
+
+// The published GitHub release of an image tag (`v<tag>` or `<tag>`) in the same-named repo: {tag, published}, or null.
+export async function ghcrRelease(repo, tag, onError) {
+  for (const t of [`v${tag}`, tag]) {
+    try {
+      const r = await getJson(`https://api.github.com/repos/${repo}/releases/tags/${encodeURIComponent(t)}`);
+      if (r.published_at && !r.draft) return { tag: t, published: r.published_at };
+    } catch (re) { if (re.status !== 404) throw onError || re; }
+  }
+  return null;
 }
 
 async function imageVersions(host, repo, filter) {
@@ -342,7 +360,20 @@ export async function publishedAt(kind, name, { version, digest, sha, source } =
       } catch (e) { if (e.status !== 404) throw e; }
     }
     // The tag has moved on: another tag (or for ghcr, the package version) that still holds this digest.
-    const hit = (await imageVersions(host, repo, "")).filter((t) => t.digest === digest).sort((a, b) => Date.parse(a.published) - Date.parse(b.published)).at(-1);
+    let all;
+    try { all = await imageVersions(host, repo, ""); } catch (e) {
+      // The Packages API lists versions only to a token with read:packages on that owner, so another org's public
+      // image answers 401/403. Then the tag must (1) still resolve, on ghcr's registry, to the pinned digest, and (2) have
+      // a GitHub release of the same version in the same-named repo, dated by GitHub's clock (published_at), which the
+      // publisher can't backdate. A re-pushed old tag fails (1)'s digest or pins.mjs's changed-tag rule; the result is
+      // marked `byRelease` so pins.mjs can refuse a digest-only change on an unchanged tag.
+      if (host !== "ghcr.io" || ![401, 403].includes(e.status) || !tag) throw e;
+      if ((await ghcrDigest(repo, tag)) !== digest) throw undated(`${name}@${digest}: tag ${tag} no longer resolves to the pinned digest`);
+      const rel = await ghcrRelease(repo, tag, e);
+      if (rel) return { published: rel.published, via: `GitHub release ${rel.tag} (the Packages API is unreadable)`, byRelease: true };
+      throw e;
+    }
+    const hit = all.filter((t) => t.digest === digest).sort((a, b) => Date.parse(a.published) - Date.parse(b.published)).at(-1);
     if (!hit) throw undated(`${name}@${digest}: ${UNDATED}`);
     return { published: hit.published, via: `${hit.via} (as ${hit.version})` };
   }
