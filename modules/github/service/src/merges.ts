@@ -11,7 +11,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { join } from "node:path";
 import { namedChecks } from "./aidenhq-sdk/checks.ts";
 import { waitReason, type Flow } from "./flow.ts";
-import { READ, mergePermissions, ownRepo } from "./github-app.ts";
+import { READ, mergePermissions, mergeable } from "./github-app.ts";
 import { DESIGN_REVIEW, EVAL_WAIT_MINUTES, PR_QUERY, WAIT_MINUTES, awaitsDesignReview, decide, mergeMethod, withGate } from "./merge-gate.ts";
 
 type Gh = (method: string, path: string, token: string, body?: unknown) => Promise<{ status: number; body: any }>;
@@ -34,6 +34,8 @@ export function createMerges(d: {
   token(repo: string, perms: Record<string, string>): Promise<string>;
   gh: Gh;
   agentsOrg: string; productRepo?: string;
+  /** maintainer_repos ("owner/name"): merged here as in the agents org, read when each PR is polled. */
+  maintained?: string[];
   evalGate: EvalGate;
   /** Flow facts (flow.ts): CI done on a head, merges, and each wait with its reason. */
   flow?: Flow;
@@ -95,8 +97,9 @@ export function createMerges(d: {
       else p.reviewAsked = p.head;
       await d.designReview?.({ repo: p.repo, number: p.number, head: p.head, ...(again ? { again } : {}) }).catch((e: Error) => log("design review task failed", { pr: p.url, err: says(e) }));
     };
-    // Outside the agents org and the product repo the App is PR-only: it merges nothing there.
-    if (!ownRepo(p.repo, d.agentsOrg, platform)) return fail(`\`${p.repo}\` is outside the agents org and the product repo, where the code host only opens PRs: merge it there`);
+    // Outside the agents org, the product repo and maintainer_repos the App is PR-only: it merges nothing there (a repo taken
+    // off the list after its record was approved included).
+    if (!mergeable(p.repo, d.agentsOrg, platform, d.maintained ?? [])) return fail(`\`${p.repo}\` is outside the agents org, the product repo and maintainer_repos, where the code host only opens PRs: merge it there`);
     try {
       const data = await readPr(p.repo, p.number);
       const uiReview = inAgentsOrg(p.repo);

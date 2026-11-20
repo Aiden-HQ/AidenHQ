@@ -63,3 +63,33 @@ describe("plan: the product repo", () => {
     assert.equal(merge({ requester: { platform: true } }, { pushedBy: "t-7" }).rule, "product-merge-engineer-head");
   });
 });
+
+describe("plan: maintained repos (maintainer_repos)", () => {
+  const m = { ...s, maintained: ["globex/payments", s.productRepo, s.instanceRepo] };
+  const rules = (action, st, p) => planParts(action, { ...st, prs: [p] })[0].map((x) => [x.rule, x.tier]);
+
+  it("merge on a maintained repo outside the agents org is planned like an agents-org merge, a Dependabot head at Tier 1", () => {
+    assert.deepEqual(rules("merge", m, pr("globex/payments")), [["maintained-merge", 0]]);
+    assert.deepEqual(rules("merge", m, pr("Globex/Payments", { checks: [{ name: "tests", pending: true }] })), [["maintained-merge-checks-running", 0]]);
+    assert.deepEqual(rules("merge", m, pr("globex/payments", { ownHead: false, dependabot: true })), [["maintained-merge-foreign-head", 1], ["maintained-merge", 0]]);
+    assert.match(planParts("merge", { ...m, prs: [pr("globex/payments", { ownHead: false })] })[0][0].reason, /the owner listed it in maintainer_repos/);
+    assert.equal(rules("merge", m, pr("globex/payments", { checks: [{ name: "tests", ok: false }] }))[0][0], "checks-not-green", "the same friction");
+    assert.equal(rules("merge", m, pr("globex/payments", { headMatches: false }))[0][0], "head-moved");
+    // Listing the product or instance repo changes nothing: their own rules come first.
+    assert.deepEqual(rules("merge", { ...m, requester: { platform: true } }, pr(s.productRepo, { platformHead: true })), [["product-merge", 1]]);
+    assert.equal(rules("merge", m, pr(s.instanceRepo))[0][0], "core-repo-merge");
+  });
+
+  it("close on a maintained repo is Tier 0; the product and instance repos keep their rules when listed", () => {
+    assert.deepEqual(rules("close", m, { repo: "globex/payments", number: 4 }), [["maintained-close", 0]]);
+    assert.deepEqual(rules("close", { ...m, requester: { platform: true } }, { repo: "globex/payments", number: 4, dependabot: true }), [["maintained-close", 0]]);
+    assert.equal(rules("close", m, { repo: s.productRepo, number: 4 })[0][0], "core-repo-close");
+    assert.equal(rules("close", m, { repo: s.instanceRepo, number: 4 })[0][0], "core-repo-close");
+  });
+
+  it("a repo the App is installed on but not maintained is still outside-merge and outside-close", () => {
+    assert.equal(rules("merge", m, pr("globex/other"))[0][0], "outside-merge");
+    assert.equal(rules("close", m, { repo: "globex/other", number: 4 })[0][0], "outside-close");
+    assert.equal(rules("merge", s, pr("globex/payments"))[0][0], "outside-merge", "no maintained list in the state: nothing widens");
+  });
+});

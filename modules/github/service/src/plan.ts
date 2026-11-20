@@ -18,6 +18,8 @@ interface State {
   agentsOrg?: string;
   instanceRepo?: string;
   productRepo?: string;
+  /** maintainer_repos ("owner/name"): merged and closed as in the agents org. */
+  maintained?: string[];
   requester?: { platform?: boolean };
   workspace?: string;
   task?: string;
@@ -40,6 +42,12 @@ const isLocal = (repo: unknown) => same(orgOf(repo), LOCAL_ORG);
 /** The agents orgs, one per enabled code host (`agentsOrgs`; `agentsOrg` alone is the GitHub-only state). */
 const agentsOrgs = (s: State) => [s.agentsOrgs ?? s.agentsOrg].flat().filter(Boolean);
 const inAgentsOrg = (repo: unknown, s: State) => agentsOrgs(s).some((o) => same(orgOf(repo), o));
+/**
+ * A repo the owner listed in `maintainer_repos` outside the agents org (`maintained`, the code host's parsed list): the fleet
+ * merges and closes there as in the agents org (owner, 2026-11-20). The App being installed on a repo never counts: it is public.
+ */
+const inMaintained = (repo: unknown, s: State) => !inAgentsOrg(repo, s) && (s.maintained ?? []).some((r) => same(r, repo));
+const LISTED = "the owner listed it in maintainer_repos";
 
 /**
  * Each item's parts (a branch of a push or PR, a PR of a merge or close; create_repo is one item), in the request's order.
@@ -89,10 +97,10 @@ function publishParts(action: string, b: Branch, s: State): Part[] {
 }
 
 /**
- * close: prs [{ repo, dependabot? }]. Tier 0 in the agents org (reversible, no code changes); the instance repo's PRs are the
- * owner's. On the product repo only a Dependabot PR (its author verified as dependabot[bot] from the GitHub API by the runner,
- * never from text) may be closed, by the Platform Engineer's line, at Tier 0 (owner, 2026-11-13): closing changes no code,
- * the reason is posted on the PR, and reopening it undoes it.
+ * close: prs [{ repo, dependabot? }]. Tier 0 in the agents org and on a maintained repo (reversible, no code changes); the
+ * instance repo's PRs are the owner's. On the product repo (listed or not) only a Dependabot PR (its author verified as
+ * dependabot[bot] from the GitHub API by the runner, never from text) may be closed, by the Platform Engineer's line, at
+ * Tier 0 (owner, 2026-11-13): closing changes no code, the reason is posted on the PR, and reopening it undoes it.
  */
 function closePart(p: Pr, s: State) {
   if (same(p.repo, s.productRepo)) {
@@ -100,8 +108,9 @@ function closePart(p: Pr, s: State) {
     if (!s.requester?.platform) return REJECT("product-close-requester", "only the Platform Engineer's line may close the product repo's Dependabot PRs");
     return T(0, "product-dependabot-close", "closing a Dependabot PR of the product repo is reversible (reopen) and changes no code");
   }
-  if (!inAgentsOrg(p.repo, s)) return REJECT("outside-close", `${p.repo} is outside the agents org`);
   if (same(p.repo, s.instanceRepo)) return REJECT("core-repo-close", `${p.repo} is the instance repo: its PRs are the owner's`);
+  if (inMaintained(p.repo, s)) return T(0, "maintained-close", `closing a PR of ${p.repo} (${LISTED}) is reversible and changes no code`);
+  if (!inAgentsOrg(p.repo, s)) return REJECT("outside-close", `${p.repo} is outside the agents org and maintainer_repos`);
   return T(0, "agents-org-close", `closing a PR of ${p.repo} is reversible and changes no code`);
 }
 
@@ -151,23 +160,28 @@ function mergeParts(p: Pr, s: State): Part[] {
   if (same(p.repo, s.instanceRepo)) return [REJECT("core-repo-merge", `${ref} is the instance repo: it changes only through apply`)];
   if (same(p.repo, s.productRepo)) return [productMergePart(p, ref, s)];
   if (!Array.isArray(p.files)) return [REJECT("unknown-files", `couldn't list every file ${ref} changes; try again`)];
-  // Outside the agents org and the product repo the code host only opens PRs: the merge queue refuses it too (merges.ts).
-  if (!inAgentsOrg(p.repo, s)) return [REJECT("outside-merge", `${ref} is outside the agents org: the code host only opens PRs there`)];
+  // A maintained repo outside the agents org merges like an agents-org repo, under its own rule names (the reviewer sees
+  // where it is). Anywhere else the code host only opens PRs: the merge queue refuses it too (merges.ts).
+  const listed = inMaintained(p.repo, s);
+  if (!listed && !inAgentsOrg(p.repo, s)) return [REJECT("outside-merge", `${ref} is outside the agents org and maintainer_repos: the code host only opens PRs there`)];
   const friction = mergeFriction(p, ref);
   if (friction) return [friction];
   const parts: Part[] = [];
   const workflow = p.files.find((f) => GITHUB.test(f));
-  if (workflow && p.ciTemplate !== true) parts.push(T(1, "github-dir", `${ref} changes ${workflow}`));
+  if (workflow && p.ciTemplate !== true) parts.push(T(1, "github-dir", `${ref} changes ${workflow}${listed ? ` (${LISTED})` : ""}`));
   // Existing sensitivity alone doesn't make every merge the owner's: the reviewer reads it (and flags new reach).
   if (p.sensitive) parts.push(T(1, "sensitive-app", `${ref} is a sensitive app's repo (access, caps or connects to paperclip)`));
-  // A head the runner didn't push (a fork, someone else's push): the reviewer reads the diff first.
-  if (!p.ownHead) parts.push(T(1, "agents-org-merge-foreign-head", `${ref}: its head isn't a commit the runner pushed to a branch of ${p.repo}`));
+  // A head the runner didn't push (a fork, someone else's push, Dependabot's): the reviewer reads the diff first.
+  if (!p.ownHead) parts.push(listed
+    ? T(1, "maintained-merge-foreign-head", `${ref}: its head isn't a commit the runner pushed to a branch of ${p.repo} (${LISTED})`)
+    : T(1, "agents-org-merge-foreign-head", `${ref}: its head isn't a commit the runner pushed to a branch of ${p.repo}`));
   // Merged at once when CI is green (owner, 2026-11-12): the PR merges on its own (an independent queue), strict and bound to
   // this head, only once every named check passed on it; red leaves it unmerged. Still running is not red.
   const n = `${p.checks.length} named check${p.checks.length === 1 ? "" : "s"}`;
   // A change request on this server: no CI code-review job read it (that needs GitHub's OIDC), so the AI reviewer reads the
   // card's diff and the request chain (owner, 2026-11-17). Merged only once every named check is green on this head.
   if (isLocal(p.repo)) parts.push(T(1, "local-merge", `${ref}: a change request on this server; ${n}, ${p.checks.some((c) => c.pending) ? "still running on the exact head (merged only once green)" : "all green on the exact head"}`));
+  else if (listed) parts.push(p.checks.some((c) => c.pending) ? T(0, "maintained-merge-checks-running", `${ref} (${LISTED}): ${n}, still running on the exact head (merged only once green)`) : T(0, "maintained-merge", `${ref} (${LISTED}): ${n}, all green on the exact head`));
   else parts.push(p.checks.some((c) => c.pending) ? T(0, "agents-org-merge-checks-running", `${ref}: ${n}, still running on the exact head (merged only once green)`) : T(0, "agents-org-merge", `${ref}: ${n}, all green on the exact head`));
   return parts;
 }

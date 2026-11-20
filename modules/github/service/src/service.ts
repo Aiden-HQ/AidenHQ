@@ -52,6 +52,8 @@ export type Options = {
   /** The App (github-app.ts appClient); undefined without the key: every GitHub action fails, saying so. */
   app?: App; gh: Gh; remoteUrl?: (slug: string) => string;
   agentsOrg: string; allowedOrgs?: string[]; instanceRepo?: string; productRepo?: string;
+  /** maintainer_repos ("owner/name"): where the fleet merges and closes outside the agents org and the product repo. */
+  maintained?: string[];
   log?: (msg: string, f?: Record<string, unknown>) => void;
   /** The release train's batch window, minutes (the instance's release_window_minutes). */
   releaseWindowMinutes?: number;
@@ -241,7 +243,7 @@ export function createService(o: Options) {
    */
   async function stateFor(kind: string, a: any, requester?: { roles?: string[] }, task = "") {
     // The Platform Engineer's line: a requester holding the platform-engineer role (the kernel's record of who asked, never the args).
-    const base = { agentsOrg: o.agentsOrg, allowedOrgs: o.allowedOrgs, instanceRepo: o.instanceRepo, productRepo: o.productRepo, requester: { platform: isPlatform(requester) }, task, workspace: String(a.workspace ?? ""), also: [] as string[] };
+    const base = { agentsOrg: o.agentsOrg, allowedOrgs: o.allowedOrgs, instanceRepo: o.instanceRepo, productRepo: o.productRepo, maintained: o.maintained ?? [], requester: { platform: isPlatform(requester) }, task, workspace: String(a.workspace ?? ""), also: [] as string[] };
     if (kind.endsWith(".create_repo")) {
       const repo = slugOf(a.repo).slug;
       return { state: { ...base, repo }, facts: { target: repo, sentence: `Create the repository ${repo} on GitHub${inOrg(o.agentsOrg, repo) ? ", with the app starter on main" : ""}.`, diff: "" } };
@@ -456,7 +458,7 @@ export function createService(o: Options) {
   const merges = createMerges({
     flow,
     designReview: async (ask) => designReviews?.fileDesignReview(ask),
-    dir: join(o.cacheDir, "merges"), gh: o.gh, agentsOrg: o.agentsOrg, productRepo: o.productRepo,
+    dir: join(o.cacheDir, "merges"), gh: o.gh, agentsOrg: o.agentsOrg, productRepo: o.productRepo, maintained: o.maintained,
     report, log, now: o.now, everyMs: o.mergeEveryMs,
     token: (repo, perms) => tokenFor(slugOf(repo), perms),
     evalGate: (repo, pr) => evalGate(repo, pr),

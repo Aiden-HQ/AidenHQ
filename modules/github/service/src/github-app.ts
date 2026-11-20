@@ -184,6 +184,14 @@ const isProduct = (slug: string | undefined, product: ProductRepos) => [product 
 export const ownRepo = (slug: string | undefined, agentsOrg: string | undefined, productRepo: ProductRepos) => inOrg(agentsOrg, slug) || isProduct(slug, productRepo);
 
 /**
+ * Where the merge queue merges (owner, 2026-11-20): our own repositories and every repository the owner listed in
+ * maintainer_repos (`maintained`). An App installation alone never counts (the App is public). Leak checks and workflow-write
+ * tokens stay on ownRepo.
+ */
+export const mergeable = (slug: string | undefined, agentsOrg: string | undefined, productRepo: ProductRepos, maintained: string[]) =>
+  ownRepo(slug, agentsOrg, productRepo) || maintained.some((m) => sameSlug(slug, m));
+
+/**
  * A push token's permissions: read-only, or Contents write. Workflows: write goes to the repositories whose pipelines we own
  * (the agents org's and the product repo's): a push that touches a workflow file is refused unless the token itself carries
  * it, whatever the App declares. Elsewhere (another org, which gates workflow files itself) Contents only.

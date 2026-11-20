@@ -233,7 +233,7 @@ test("a product PR merges only on a verified eval receipt for its bound head; a 
   await settle();
   assert.equal(github.merges().length, 1);
   assert.equal(outcomes[0]?.ok, false);
-  assert.match(outcomes[0].text, /outside the agents org and the product repo/);
+  assert.match(outcomes[0].text, /outside the agents org, the product repo and maintainer_repos/);
 
   // The product PR moved after its record was approved: stopped at once, never merged.
   prs["acme/aidenhq"] = { head: "e".repeat(40), checks: "SUCCESS" };
@@ -332,4 +332,32 @@ test("a red default branch takes no merge on top, except the PR that already hol
   assert.deepEqual(decide(data(rollup("CANCELLED", { names: ["build", "ci-required"] }), 2), HEAD, { uiReview: false }), { do: "merge" }, "a cancelled run never judged the base");
   assert.deepEqual(decide(data(rollup("SUCCESS"), 2), HEAD, { uiReview: false }), { do: "merge" });
   assert.deepEqual(decide(data(rollup("SUCCESS", { names: [] }), 2), HEAD, { uiReview: false }), { do: "merge" }, "a base whose CI runs on PRs only");
+});
+
+test("a maintained repo merges with the App's token; once it leaves maintainer_repos its approved merge is refused at queue time", async () => {
+  const prs = { "globex/payments": { head: HEAD, checks: "SUCCESS" } };
+  const github = fakeGitHub(prs);
+  const dir = mkdtempSync(join(tmpdir(), "merges-"));
+  const reports = [];
+  const queue = (maintained) => createMerges({
+    dir, token: async (repo, perms) => JSON.stringify(perms), gh: github.gh, agentsOrg: "acme-agents", productRepo: "acme/aidenhq", maintained,
+    evalGate: async () => undefined, report: async (id, o) => void reports.push({ id, ...o }),
+  });
+  const tick = () => new Promise((r) => setTimeout(r, 20));
+  const listed = queue(["Globex/Payments"]);
+  void listed.enqueue("k-00000000000000f1", { prs: [{ repo: "globex/payments", number: 1, head: HEAD }] });
+  await listed.step();
+  await tick();
+  assert.deepEqual(github.merges().map((w) => [w.path, w.body.sha, w.perms.contents]), [["/repos/globex/payments/pulls/1/merge", HEAD, "write"]]);
+  assert.equal(listed.status("k-00000000000000f1").state, "done");
+
+  // Approved while listed, then the owner took the repo off the list (the service restarts with the new setting).
+  prs["globex/payments"] = { head: HEAD, checks: "SUCCESS" };
+  void listed.enqueue("k-00000000000000f2", { prs: [{ repo: "globex/payments", number: 2, head: HEAD }] });
+  const unlisted = queue([]);
+  await unlisted.step();
+  await tick();
+  assert.equal(github.merges().length, 1, "not merged");
+  assert.equal(unlisted.status("k-00000000000000f2").state, "failed");
+  assert.match(reports.find((r) => r.id === "k-00000000000000f2").text, /outside the agents org, the product repo and maintainer_repos/);
 });
