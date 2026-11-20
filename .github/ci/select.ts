@@ -35,16 +35,17 @@ export function suitesFor(map: AreaMap, files: string[]): Selection {
 }
 
 /**
- * A test job's shards: as many as the suites' measured time needs (their total over what a shard runs in its slowest
- * suite's time, PARALLEL suites side by side on its 4 CPUs (measured: a shard's wall time is about half its suites' sum);
- * at most MAX_SHARDS), filled heaviest first into the lightest shard so they finish together.
+ * A test job's shards: enough that each runs in about TARGET seconds (its suites' measured `secs` summed, over how many of
+ * them a 4-CPU runner runs side by side: `parallel`), at most MAX_SHARDS, filled heaviest first into the lightest shard so
+ * they finish together. The packages job's suites each use every CPU (node --test over many files): one at a time; the
+ * modules' small suites overlap about two at a time (measured 2026-11-20: a shard took half its suites' sum).
  */
-const MAX_SHARDS = 4, PARALLEL = 2;
-export function shard(tests: { name: string; dir: string; run?: string; secs: number }[]) {
+const MAX_SHARDS = 4, TARGET = 45;
+export function shard(tests: { name: string; dir: string; run?: string; secs: number }[], parallel: number) {
   const sorted = [...tests].sort((a, b) => b.secs - a.secs || a.name.localeCompare(b.name));
   if (!sorted.length) return [];
   const total = sorted.reduce((n, t) => n + t.secs, 0);
-  const k = Math.min(MAX_SHARDS, Math.ceil(total / (PARALLEL * Math.max(sorted[0]!.secs, 30))));
+  const k = Math.min(MAX_SHARDS, Math.ceil(total / (parallel * TARGET)));
   const shards = Array.from({ length: k }, (_, i) => ({ shard: i + 1, load: 0, entries: [] as { name: string; dir: string; run?: string; secs: number }[] }));
   for (const t of sorted) {
     const s = shards.reduce((lo, x) => (x.load < lo.load ? x : lo));
@@ -119,7 +120,7 @@ async function main() {
       return { name: s.name, dir: s.name.split("#")[0]!, run: own.run, secs: s.secs ?? 5, ...(own.job ? { job: own.job } : {}) };
     });
   // The test jobs' shards; heavy: the jobs that may run on our own runners (ci.yml's `runner` step), the packages shards and board.
-  const pk = shard(tests.filter((t) => t.job == null)), md = shard(tests.filter((t) => t.job === "modules"));
+  const pk = shard(tests.filter((t) => t.job == null), 1), md = shard(tests.filter((t) => t.job === "modules"), 2);
   const plan = { packages: pk, modules: md, heavy: pk.length + (tests.some((t) => t.job === "board") ? 1 : 0) };
   process.stdout.write(`${JSON.stringify({ tests, shards: plan })}\n`);
 }
