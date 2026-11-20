@@ -1,6 +1,8 @@
 // The accounts' backplane routes (lean 3g): what modules ask of the one opener of the accounts file.
 //   POST /v1/auth/{exchange,session,sign_out}  (the board's key) a module UI's one-time code → its session token; that
 //              token → its ready admin (or 401); that session ends. The board checks its session here on every request.
+//   POST /v1/auth/mcp, /v1/auth/mcp/{grants,revoke}  (the board's key) an MCP client's bearer for {resource} (the board's
+//              /mcp) → its ready admin, client and expiry (or 401); an account's MCP clients; revoking one.
 //   POST /v1/accounts/<op>   (the board's key + {token}: a live module UI session's admin acts) account admin: list, sessions,
 //              revoke_session, invite, role, disable, enable, link, app_admins, app_admin_set, recovery_key_waiting, model_ready (a model key is in the vault), save_secret
 //              (the owner's) and setup_status (a module's declared `setup:` secrets: module-secrets.ts); `names` and `owner_request` (the
@@ -67,6 +69,23 @@ export function createAuthApi({ accounts, whoami, boardKey, operatorKey, recover
       // The board's key from here on.
       if (!is(bearer(req), boardKey())) throw fail(401, "unauthorized", "the board's key is required");
       const b = await json(req);
+      // An MCP client's bearer, for the resource it must name (the board's /mcp): checked afresh on every call.
+      const grant = async () => {
+        const g = await a.mcpGrant(need(b, "token", (v) => typeof v === "string" && v.length >= 16 && v.length <= 200), need(b, "resource", (v) => typeof v === "string" && v.length <= 300));
+        if (!g) throw fail(401, "unauthorized", "this MCP sign-in has expired or was revoked: sign in again from your client");
+        return g;
+      };
+      if (group === "auth" && op.startsWith("mcp")) {
+        if (op === "mcp") {
+          const g = await grant();
+          const { id, email, name, role, owner } = g.account;
+          return send(res, 200, { account: { id, email, name, role, owner }, client: g.client, expires: g.expires });
+        }
+        const account = need(b, "account", ID);
+        if (op === "mcp/grants") return send(res, 200, { grants: a.mcpGrants(account) });
+        if (op === "mcp/revoke") { a.revokeMcpGrant(account, need(b, "grant", ID)); return send(res, 200, { ok: true }); }
+        throw fail(404, "not_found", "no such auth call");
+      }
       if (group === "auth") {
         if (op === "exchange") return send(res, 200, await a.exchangeUi("board", need(b, "code", (v) => typeof v === "string" && v.length >= 16 && v.length <= 100), need(b, "origin", (v) => typeof v === "string" && v.length <= 300), need(b, "state", (v) => typeof v === "string" && v.length <= 256)));
         const token = need(b, "token", (v) => typeof v === "string" && v.length <= 200);

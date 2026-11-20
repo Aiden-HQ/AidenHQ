@@ -613,9 +613,11 @@ const manifest = async (app: string): Promise<Manifest> => {
   if (!r.ok) throw new Error(`apps-mcp answered ${r.status}`);
   return (await r.json()) as Manifest;
 };
+// The board's origins: its front door (BOARD_LAN_URL) and its loopback addresses (the SSH tunnel, local mode).
+const boardOrigins = env("AIDENHQ_BOARD_ORIGINS", [boardUrl?.origin, "http://localhost:3121", "http://127.0.0.1:3121"].filter(Boolean).join(",")).split(",").map((o) => o.trim()).filter(Boolean);
 const ttl = Number(env("AIDENHQ_LINK_TTL_HOURS", ""));
 const accounts = await import("./accounts.ts").then((a) => a.openAccounts({
-  dataDir, hosts: [...adminHosts, ...signinHosts], origins: adminUrl ? [adminUrl.origin] : [], ...(adminUrl ? { adminUrl: adminUrl.origin } : {}),
+  dataDir, hosts: [...adminHosts, ...signinHosts], origins: adminUrl ? [adminUrl.origin] : [], ...(adminUrl ? { adminUrl: adminUrl.origin } : {}), boardUrl: boardOrigins[0],
   edgeSecret: () => secret("edge_board_secret"), gateSecret: () => secret("gate_board_secret"), gate: gateInfo,
   // The gate's account map (compile makes it with settings.edge); without shared apps (no config/gate.json) there's no gate to tell.
   gateAccountsFile: path.join(dataDir, "gate", "accounts.json"),
@@ -633,8 +635,6 @@ if (accounts) {
   void accounts.syncGate();
   every(() => void accounts.syncGate(), 60_000);
 }
-// The board's origins: its front door (BOARD_LAN_URL) and its loopback addresses (the SSH tunnel, local mode).
-const boardOrigins = env("AIDENHQ_BOARD_ORIGINS", [boardUrl?.origin, "http://localhost:3121", "http://127.0.0.1:3121"].filter(Boolean).join(",")).split(",").map((o) => o.trim()).filter(Boolean);
 // The board's origins are the module UI origins a session may be handed to (/auth/handoff).
 const uiOrigins = () => Object.fromEntries(boardOrigins.map((o) => [o, "board"]));
 // The github module's App (github-app.ts), made from the admin pages: its key goes into the vault, the agents org into .env.

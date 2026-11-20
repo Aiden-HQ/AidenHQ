@@ -94,8 +94,11 @@ export function doorHost(g: GateInfo | undefined, origin: string): string | unde
 export const doorSource = (g: GateInfo | undefined): string | undefined => (g?.door ? `${g.door.scheme}://*.${g.door.base}${g.door.port ? `:${g.door.port}` : ""}` : undefined);
 
 const HANDOFF_TTL_MS = 60_000;
+/** The board's MCP endpoint: the resource (RFC 8707) every MCP client's token names. */
+export const mcpResource = (boardUrl = "http://localhost:3121") => `${new URL(boardUrl).origin}/mcp`;
 const same = (a: string, b: string) => a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
 const sha = (s: string) => createHash("sha256").update(s).digest("hex");
+const dateOf = (v: string | number) => new Date(typeof v === "number" ? v : String(v));
 
 export interface AccountsOptions {
   /** data/: the accounts file is data/kernel/auth/auth.db (":memory:" in tests). */
@@ -106,6 +109,8 @@ export interface AccountsOptions {
   origins?: string[];
   /** The admin listener's address (AIDENHQ_ADMIN_URL): where admin links open. */
   adminUrl?: string;
+  /** The board's address (its front door, else its loopback one): MCP clients' tokens are for its /mcp. */
+  boardUrl?: string;
   /** The front door's proof on the admin listener (edge_board_secret). */
   edgeSecret: () => string;
   /** The gate's proof on the sign-in listener (gate_board_secret): only a request carrying it may name the client's address. */
@@ -141,6 +146,15 @@ export async function openAccounts(o: AccountsOptions) {
   // First-run setup's single-use token (/setup, spec §6.10): its hash only, at most one row.
   db.exec("CREATE TABLE IF NOT EXISTS setup_token (hash TEXT NOT NULL, expires INTEGER NOT NULL)");
   const https = (req: Pick<IncomingMessage, "headers">) => forwardedProto(req) === "https";
+  /**
+   * The admin listener's address as Better Auth sees it: the front door's own (AIDENHQ_ADMIN_URL, scheme and port) when a
+   * request names its host, however the proxy passed it on, so the OAuth issuer and its endpoints are always that origin.
+   */
+  const front = o.adminUrl ? new URL(o.adminUrl) : undefined;
+  const adminAddress = (req: Pick<IncomingMessage, "headers">): { host: string; proto?: "https" | "http" } => {
+    const h = String(req.headers.host ?? "").toLowerCase();
+    return front && (h === front.host || h === front.hostname) ? { host: front.host, proto: front.protocol === "https:" ? "https" : "http" } : { host: h };
+  };
 
   /**
    * The gate's accounts.json (accounts: email, name, role, disabled; apps: each shared app's default and assignments; no
@@ -184,6 +198,7 @@ export async function openAccounts(o: AccountsOptions) {
       return [...(o.origins ?? []), ...(h ? [`https://${h}`] : [])];
     },
     linkTtlMs: LINK_TTL_MS,
+    mcpResource: mcpResource(o.boardUrl),
     notify: o.notify,
     onPasswordReset: () => void changed().catch(() => {}),
     log,
@@ -265,6 +280,11 @@ export async function openAccounts(o: AccountsOptions) {
   const isHandoffSession = (token: string | undefined) => Boolean(token && db.prepare("SELECT 1 FROM handoff_session WHERE token = ?").get(token));
   /** A request's cookies, minus an app host's handed-off session (that one counts only on its app host, through the gate). */
   const cookieOf = (req: Pick<IncomingMessage, "headers">) => (isHandoffSession(sessionToken(req)) ? "" : inboundCookies(req.headers.cookie, https(req)));
+  /** Ends an account's MCP grants (one client's, or all): tokens first, then the consent, so the client must ask again. */
+  const endMcp = (userId: string, clientId?: string) => {
+    const where = clientId ? "userId = ? AND clientId = ?" : "userId = ?";
+    for (const t of ["oauthAccessToken", "oauthRefreshToken", "oauthConsent"]) db.prepare(`DELETE FROM ${t} WHERE ${where}`).run(...(clientId ? [userId, clientId] : [userId]));
+  };
   const endHostSession = async (token: string) => {
     await ctx.internalAdapter.deleteSession(token);
     db.prepare("DELETE FROM handoff_session WHERE token = ?").run(token);
@@ -303,7 +323,7 @@ export async function openAccounts(o: AccountsOptions) {
      * cookies come back host-only for this listener, its refusal as text.
      */
     async step(req: IncomingMessage, sub: string, body: Record<string, unknown>): Promise<Step> {
-      const r = await rules.call(auth, req, sub, "admin", { body: Buffer.from(JSON.stringify(body)), host: String(req.headers.host ?? ""), trusted: secretIs(req.headers[EDGE_HEADER], o.edgeSecret()), cookie: cookieOf(req) });
+      const r = await rules.call(auth, req, sub, "admin", { body: Buffer.from(JSON.stringify(body)), ...adminAddress(req), trusted: secretIs(req.headers[EDGE_HEADER], o.edgeSecret()), cookie: cookieOf(req) });
       const json = (await r.json().catch(() => ({}))) as Record<string, any>;
       const cookies = r.headers.getSetCookie().map((c) => outboundCookie(c, https(req), "admin"));
       if (r.ok && sub === "/sign-out") await accounts.endHandedOff(req);
@@ -484,6 +504,52 @@ export async function openAccounts(o: AccountsOptions) {
       return { ok: true };
     },
 
+    /**
+     * The OAuth authorization server's endpoints on the admin listener (admin.ts routes them): metadata, authorize (with the
+     * browser's session; admin.ts lets only a ready admin reach it), token, register and revoke (no cookies: a client's
+     * own credentials).
+     */
+    async oauth(req: IncomingMessage, res: ServerResponse, sub: string, search = ""): Promise<void> {
+      const body = req.method === "POST" ? await readBody(req, 64_000) : undefined;
+      const r = await rules.call(auth, req, sub, "admin", { ...(body ? { body, type: String(req.headers["content-type"] ?? "application/json") } : {}), search, ...adminAddress(req), trusted: secretIs(req.headers[EDGE_HEADER], o.edgeSecret()), cookie: sub === "/oauth2/authorize" ? cookieOf(req) : "" });
+      await rules.write(r, res, https(req), "admin");
+    },
+
+    /** An MCP client's name, as it registered or its metadata document says (the consent page). */
+    mcpClientName(clientId: string): string {
+      const row = db.prepare("SELECT name FROM oauthClient WHERE clientId = ?").get(clientId) as { name: string | null } | undefined;
+      return row?.name || clientId;
+    },
+
+    /**
+     * An MCP client's access token for `resource` (the board's /mcp): its ready admin, the client's name and when it
+     * expires; null when it is unknown, expired, revoked, for another resource, or its account is no longer a ready admin.
+     */
+    async mcpGrant(token: string, resource: string): Promise<{ account: Account; client: string; expires: string } | null> {
+      const row = db.prepare("SELECT t.userId, t.clientId, t.expiresAt, t.revoked, t.resources, c.name FROM oauthAccessToken t LEFT JOIN oauthClient c ON c.clientId = t.clientId WHERE t.token = ?")
+        .get(createHash("sha256").update(token).digest("base64url")) as { userId: string | null; clientId: string; expiresAt: string | number; revoked: string | number | null; resources: string | null; name: string | null } | undefined;
+      if (!row?.userId || row.revoked || dateOf(row.expiresAt).getTime() <= Date.now()) return null;
+      if (!(JSON.parse(row.resources ?? "[]") as string[]).includes(resource)) return null;
+      const account = await find(row.userId).catch(() => null);
+      if (!account || account.disabled || account.role !== "admin" || !account.twoFactorEnabled) return null;
+      return { account, client: row.name || row.clientId, expires: dateOf(row.expiresAt).toISOString() };
+    },
+
+    /** An account's MCP clients (each one it allowed): when each last got a token. */
+    mcpGrants(accountId: string): { id: string; client: string; lastUsed: string | null }[] {
+      const rows = db.prepare("SELECT g.id, g.clientId, c.name, (SELECT max(t.createdAt) FROM oauthAccessToken t WHERE t.userId = g.userId AND t.clientId = g.clientId) AS lastUsed FROM oauthConsent g LEFT JOIN oauthClient c ON c.clientId = g.clientId WHERE g.userId = ? ORDER BY g.createdAt")
+        .all(accountId) as { id: string; clientId: string; name: string | null; lastUsed: string | number | null }[];
+      return rows.map((r) => ({ id: r.id, client: r.name || r.clientId, lastUsed: r.lastUsed === null ? null : dateOf(r.lastUsed).toISOString() }));
+    },
+
+    /** Revokes one of an account's MCP clients: its tokens end at once, and it must ask the account again. */
+    revokeMcpGrant(accountId: string, grantId: string): void {
+      const g = db.prepare("SELECT clientId FROM oauthConsent WHERE id = ? AND userId = ?").get(grantId, accountId) as { clientId: string } | undefined;
+      if (!g) throw new AccountError(404, "no such MCP client");
+      endMcp(accountId, g.clientId);
+      log.info({ account: accountId, client: g.clientId }, "MCP client revoked");
+    },
+
     /** A server-side call from the gate: it carries the gate's shared secret (gate_board_secret). */
     fromGate(req: Pick<IncomingMessage, "headers">): boolean {
       return secretIs(req.headers[GATE_HEADER], o.gateSecret?.());
@@ -578,6 +644,7 @@ export async function openAccounts(o: AccountsOptions) {
       if (a.owner) throw new AccountError(403, "the owner's account can't be changed here");
       await ctx.internalAdapter.updateUser(id, { role });
       await ctx.internalAdapter.deleteUserSessions(id);
+      endMcp(id);
       log.info({ account: id, role, by: by.id }, "account role changed");
       await exported();
       return find(id);
@@ -588,7 +655,7 @@ export async function openAccounts(o: AccountsOptions) {
       const a = await find(id);
       if (a.owner) throw new AccountError(403, "the owner's account can't be disabled");
       await ctx.internalAdapter.updateUser(id, disabled ? { banned: true, banReason: "disabled", banExpires: null } : { banned: false, banReason: null, banExpires: null });
-      if (disabled) await ctx.internalAdapter.deleteUserSessions(id);
+      if (disabled) { await ctx.internalAdapter.deleteUserSessions(id); endMcp(id); }
       log.info({ account: id, disabled, by: by.id }, disabled ? "account disabled" : "account enabled");
       await exported();
       return find(id);
@@ -605,6 +672,7 @@ export async function openAccounts(o: AccountsOptions) {
       await ctx.internalAdapter.updateUser(a.id, { banned: false, banReason: null, banExpires: null, ...(a.role === "admin" ? { twoFactorEnabled: false } : {}) });
       if (a.role === "admin") await ctx.adapter.deleteMany({ model: "twoFactor", where: [{ field: "userId", value: a.id }] });
       await ctx.internalAdapter.deleteUserSessions(a.id);
+      endMcp(a.id);
       rules.forget(a.email);
       await exported();
       // A user in `access` mode signs in through Cloudflare Access: there's no password to set.

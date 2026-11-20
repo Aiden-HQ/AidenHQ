@@ -15,6 +15,9 @@ import { type BetterAuthOptions } from "better-auth";
 import { APIError, createAuthMiddleware, getSessionFromCtx } from "better-auth/api";
 import { fromNodeHeaders } from "better-auth/node";
 import { admin, twoFactor } from "better-auth/plugins";
+import { cimd } from "@better-auth/cimd";
+import { fetchClientMetadataResource } from "@better-auth/cimd/node";
+import { oauthProvider } from "@better-auth/oauth-provider";
 
 /** Which listener a request came in on: the kernel's admin listener (3120) or the gate-facing sign-in listener (3129). */
 export type Listener = "admin" | "signin";
@@ -22,7 +25,9 @@ export type Log = { info: (o: object, m: string) => void; warn: (o: object, m: s
 
 /** What each listener lets through to Better Auth; everything else is a 404 (admin routes, sign-up, backup codes, trust-device...). */
 export const EXPOSED: Record<Listener, Set<string>> = {
-  admin: new Set(["POST /sign-in/email", "POST /sign-out", "GET /get-session", "POST /reset-password", "POST /two-factor/enable", "POST /two-factor/verify-totp", "POST /change-password"]),
+  admin: new Set(["POST /sign-in/email", "POST /sign-out", "GET /get-session", "POST /reset-password", "POST /two-factor/enable", "POST /two-factor/verify-totp", "POST /change-password",
+    // The OAuth authorization server for the owner's MCP clients (oauthProvider below); /oauth2/consent only from the kernel's consent page.
+    "GET /.well-known/oauth-authorization-server", "GET /oauth2/authorize", "POST /oauth2/token", "POST /oauth2/register", "POST /oauth2/revoke", "POST /oauth2/consent"]),
   signin: new Set(["POST /sign-in/email", "POST /sign-out", "GET /get-session", "POST /reset-password", "POST /two-factor/verify-totp"]),
 };
 
@@ -186,6 +191,8 @@ export interface AuthCoreOptions {
   trustedOrigins?: () => string[];
   /** Setup, invite and reset links last this long (ms). */
   linkTtlMs: number;
+  /** The board's MCP (`<board>/mcp`): the one resource (RFC 8707 audience) OAuth access tokens are issued for. */
+  mcpResource: string;
   /** One line to the owner's channel: sign-in alerts and new-sign-in notices. */
   notify?: (line: string) => void;
   /** After a link is claimed (the gate's account map is exported again). */
@@ -345,6 +352,9 @@ export function authCore(o: AuthCoreOptions) {
     appName: "AidenHQ",
     database: db,
     secret: o.secret,
+    // Endpoints at the root, so the OAuth issuer is the admin listener's own origin (AIDENHQ_ADMIN_URL) with its metadata at
+    // /.well-known/oauth-authorization-server; only the kernel's own requests reach Better Auth (call below).
+    basePath: "/",
     // One instance per process: the request's host decides the URL (fallback for server-side calls).
     baseURL: { allowedHosts: o.hosts, protocol: "auto", fallback: `http://${o.hosts[0] ?? "localhost:3120"}` },
     trustedOrigins: () => o.trustedOrigins?.() ?? [],
@@ -395,6 +405,25 @@ export function authCore(o: AuthCoreOptions) {
       admin({ defaultRole: "user", adminRoles: ["admin"] }),
       // Our lockout covers TOTP failures too (one lockout, not two).
       twoFactor({ issuer: "AidenHQ", accountLockout: { enabled: false } }),
+      // The owner's MCP clients (docs/superpowers/specs/2026-11-20-owner-mcp-design.md): authorization code + PKCE, opaque
+      // tokens bound to the board's /mcp (1 hour; refresh 30 days, rotated on use), clients by metadata document (CIMD) or
+      // open registration. The kernel's pages do sign-in and consent (admin.ts); only a ready admin gets that far.
+      oauthProvider({
+        loginPage: "/auth/sign-in",
+        consentPage: "/oauth/consent",
+        disableJwtPlugin: true,
+        scopes: ["offline_access"],
+        grantTypes: ["authorization_code", "refresh_token"],
+        accessTokenExpiresIn: 3600,
+        refreshTokenExpiresIn: 30 * 86_400,
+        resources: [o.mcpResource],
+        resourceSeedMode: "overwrite",
+        clientRegistrationDefaultResources: [o.mcpResource],
+        allowDynamicClientRegistration: true,
+        allowUnauthenticatedClientRegistration: true,
+        clientRegistrationDefaultApplicationType: "infer",
+      }),
+      cimd({ fetchClientMetadataResource }),
     ],
     hooks: {
       before: createAuthMiddleware(async (ctx) => {
@@ -536,13 +565,13 @@ export function authCore(o: AuthCoreOptions) {
   /**
    * One Better Auth endpoint (`sub`, e.g. "/sign-in/email") as this listener exposes it: a 404 otherwise, a 429 for a banned
    * address. The listener and the peer address are set here, never passed through. `trusted`: the request carries its
-   * proxy's secret, so the proxy-named client address counts. `host`: the host Better Auth sees. `cookie`: the cookies to
-   * send (already filtered by the caller).
+   * proxy's secret, so the proxy-named client address counts. `host` (and `proto`, else the forwarded scheme): the address
+   * Better Auth sees. `cookie`: the cookies to send (already filtered by the caller).
    */
-  async function call(auth: { handler: (r: Request) => Promise<Response> }, req: IncomingMessage, sub: string, listener: Listener, a: { body?: Buffer; search?: string; host: string; trusted: boolean; cookie: string }): Promise<Response> {
+  async function call(auth: { handler: (r: Request) => Promise<Response> }, req: IncomingMessage, sub: string, listener: Listener, a: { body?: Buffer; type?: string; search?: string; host: string; proto?: "https" | "http"; trusted: boolean; cookie: string }): Promise<Response> {
     const method = String(req.method ?? "GET").toUpperCase();
     if (!EXPOSED[listener].has(`${method} ${sub}`)) return Response.json({ error: "not found" }, { status: 404 });
-    const https = forwardedProto(req) === "https";
+    const https = (a.proto ?? forwardedProto(req)) === "https";
     const headers = fromNodeHeaders(req.headers);
     headers.set("host", a.host);
     headers.delete("cookie");
@@ -552,11 +581,11 @@ export function authCore(o: AuthCoreOptions) {
     const named = (a.trusted ? ipOr(req.headers[CLIENT_IP_HEADER]) : "") || tailnetPeer(req, listener);
     headers.set(PEER_HEADER, named || ipOr(req.socket?.remoteAddress) || "unknown");
     if (named) headers.set(NAMED_HEADER, named);
-    if (a.body) headers.set("content-type", "application/json");
+    if (a.body) headers.set("content-type", a.type ?? "application/json");
     // A banned address is refused before Better Auth (its per-minute limit would answer first) and before any hashing.
     const ban = BAN_STEPS.has(sub) ? banKey({ headers }) : undefined;
     if (ban && (bans.get(ban) ?? 0) > Date.now()) return Response.json({ code: "BANNED", message: "too many failed sign-ins from this address: try again in an hour" }, { status: 429 });
-    return auth.handler(new Request(`${https ? "https" : "http"}://${a.host}/api/auth${sub}${a.search ?? ""}`, { method, headers, body: a.body && new Uint8Array(a.body) }));
+    return auth.handler(new Request(`${https ? "https" : "http"}://${a.host}${sub}${a.search ?? ""}`, { method, headers, body: a.body && new Uint8Array(a.body) }));
   }
 
   /** A Better Auth response written to the client: no-store, host-only cookies for this listener. */
