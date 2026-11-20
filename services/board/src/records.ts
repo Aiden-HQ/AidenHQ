@@ -2,6 +2,7 @@
 // on the kernel's approval page or in a channel; the board lists them with the board's key (gateway_board_key) and shows them.
 import type { ReviewCode } from "./reason-codes.js";
 import type { Probe } from "./settings.js";
+import { explain, type Explanation, type RecordWhole } from "./explain.js";
 
 /** auto: a Tier 0 run, made at once with no decision (an audit row only). */
 export type State = "pending" | "approved" | "rejected" | "stale" | "expired" | "used" | "auto";
@@ -85,6 +86,8 @@ export type Records = {
   connectionHealth(): Promise<Record<string, Probe>>;
   /** The owner's typed settings change on their settings task: the kernel writes it and files its apply (kernel/src/settings-change.ts). Throws the kernel's reason. */
   settingsChange(task: string, changes: unknown[]): Promise<{ record: string; tier: number; state: string }>;
+  /** A card's "Explain" (explain.ts): the record whole and its task's request chain. Throws the kernel's answer (404 for no such record). */
+  explain(id: string): Promise<Explanation>;
 };
 export type Advisory = { id: string; module: string; severity: string; fixed: string; summary: string; url: string };
 
@@ -121,5 +124,14 @@ export function kernelRecords(k: { url: string; token: string } | undefined, log
     if (!res.ok) throw new Error(String(j.message ?? j.error ?? `the kernel answered ${res.status}`));
     return { record: String(j.record), tier: Number(j.tier), state: String(j.state) };
   };
-  return { list, connectionHealth, awaiting: async () => new Set((await list("owner")).map((a) => a.issueId)), advisories, settingsChange };
+  const explainOf: Records["explain"] = async (id) => {
+    if (!k) throw new Error("the board has no kernel to read the record from");
+    const get = (path: string) => fetch(`${k.url}${path}`, { headers: { authorization: `Bearer ${k.token}` }, signal: AbortSignal.timeout(15_000) });
+    const [rec, chain] = await Promise.all([get(`/v1/writes/${encodeURIComponent(id)}`), get(`/v1/writes/${encodeURIComponent(id)}/chain`).catch(() => undefined)]);
+    if (!rec.ok) throw Object.assign(new Error(rec.status === 404 ? "no such record" : `the kernel answered ${rec.status}`), { status: rec.status === 404 ? 404 : 502 });
+    // The chain is the task as it reads now: a task that is gone (or a kernel without the read) explains without it.
+    const asked = chain?.ok ? String(((await chain.json()) as { chain?: unknown }).chain ?? "") : null;
+    return explain((await rec.json()) as RecordWhole, asked);
+  };
+  return { list, connectionHealth, explain: explainOf, awaiting: async () => new Set((await list("owner")).map((a) => a.issueId)), advisories, settingsChange };
 }

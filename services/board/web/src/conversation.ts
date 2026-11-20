@@ -73,13 +73,14 @@ export function outcomeOf(a: Approval): Outcome {
  */
 export const foldsInChat = (a: Approval, seenPending: boolean) => a.state !== "pending" && !seenPending;
 
-/** Who decided a card, in words: a named admin, you (your tap or reply), the AI reviewer, or the stamp itself (watcher). */
+/** Who decided a card, in words: a named admin, you (your tap or reply), code, the AI reviewer or the panel, or the stamp itself (watcher). */
 export function deciderOf(a: Pick<Approval, "decidedBy" | "decidedByName">): string {
   if (a.decidedByName) return a.decidedByName;
   const d = a.decidedBy ?? "";
   if (!d || d.startsWith("auto:")) return "";
   if (d.startsWith("account:") || d.startsWith("owner:")) return "you";
-  if (d.startsWith("reviewer:")) return "the AI reviewer";
+  if (d === "reviewer:kernel/code") return "code";
+  if (d.startsWith("reviewer:")) return d.includes("+") ? "the review panel" : "the AI reviewer";
   return d;
 }
 

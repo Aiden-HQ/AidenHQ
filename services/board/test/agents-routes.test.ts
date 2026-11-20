@@ -30,7 +30,7 @@ const requests: string[] = [];
 describe("GET /api/agents/roster", () => {
   let signedIn = true;
   // Paperclip never runs agents: its status is a leftover. The kernel's jobs say Aiden is working, Roadmap Keeper failed its last 3 and Napper is paused.
-  const work = { job: async () => null, task: async () => [], activity: async () => ({
+  const work = { job: async () => null, task: async () => [], agent: async () => [], activity: async () => ({
     running: [{ id: "j1", agent: "cos", task: "t7", state: "running", started_at: "2026-11-14T04:00:00Z", ended_at: null }],
     recent: [{ id: "j0", agent: "keeper", task: "t8", state: "failed", started_at: "2026-11-14T03:00:00Z", ended_at: new Date().toISOString(), error: "The job failed: boom" }],
     queued: [],

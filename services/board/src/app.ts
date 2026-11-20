@@ -13,6 +13,7 @@ import { z } from "zod";
 import { handbook, history } from "./agent-handbook.js";
 import { PauseSchema, setAgentPaused } from "./agent-pause.js";
 import { HISTORY_PAGE, agentByKey, agentProfile, historyPage, splitTasks } from "./agent-page.js";
+import { timelineOf } from "./timeline.js";
 import { liveActivity, type SessionSources } from "./live-activity.js";
 import { cachedActivity, lastRunsOf, liveRunsOf, makeRuns, pastRunsOf, type LiveRun, type Work } from "./runs.js";
 import { agentsView, roster, runTasks, workingOn, type RunContext, type TaskRef, type Working } from "./activity.js";
@@ -257,7 +258,7 @@ export function createApp(opts: AppOptions): Server {
   const cardsOf = async (state: Parameters<Records["list"]>[0], opt?: Parameters<Records["list"]>[1]) => Promise.all((await records.list(state, opt)).map(named));
 
   const sessionOf = liveActivity(opts.sessions);
-  const work = opts.work ?? { job: async () => null, task: async () => [], activity: async () => ({ running: [], recent: [], queued: [], failing: [] }), stop: async () => [] };
+  const work = opts.work ?? { job: async () => null, task: async () => [], agent: async () => [], activity: async () => ({ running: [], recent: [], queued: [], failing: [] }), stop: async () => [] };
   const kernelActivity = cachedActivity(work);
   const liveRuns = async () => liveRunsOf(await kernelActivity());
   const recentRuns = async () => pastRunsOf(await kernelActivity());
@@ -1317,6 +1318,24 @@ export function createApp(opts: AppOptions): Server {
         const owed = new Map(needs.map((i) => [i.id, i.state]));
         return splitTasks(open, agent.id, chat?.id, (i) => owed.get(i.id) ?? chatState(i, live, lastRun(i), ctx.me, awaiting).state, ctx.agents, new Set(owed.keys()));
       },
+    },
+    // The Activity tab (timeline.ts): the agent's last 50 jobs, one kernel read; task titles from what Paperclip already lists.
+    {
+      method: "GET",
+      path: /^\/api\/agents\/by-key\/([a-z0-9-]+)\/timeline$/,
+      handle: async (m) => {
+        const agents = await pc.agents();
+        const agent = agentByKey(agents, m[1]!);
+        if (!agent) throw new HttpError(404, "no such agent");
+        const [jobs, open, closed, routines] = await Promise.all([work.agent(agent.id), pc.openIssues().catch(() => []), pc.closedFor(agent.id, { limit: 100 }).catch(() => []), pc.routines().catch(() => [])]);
+        return { entries: timelineOf(jobs, { agents, issues: [...open, ...closed], routines }) };
+      },
+    },
+    // A card's "Explain" (explain.ts): who decided, why, what was asked and what it would change.
+    {
+      method: "GET",
+      path: /^\/api\/approvals\/(k-[0-9a-f]{16})\/explain$/,
+      handle: async (m) => records.explain(m[1]!).then((explanation) => ({ explanation }), (e: Error & { status?: number }) => { throw new HttpError(e.status === 404 ? 404 : 502, e.message); }),
     },
     { method: "GET", path: /^\/api\/agents\/([0-9a-f-]{36})\/scorecard$/, handle: async (m) => scorecard(await gatherFacts(pc, recentRuns, store, records, grading), m[1]!) },
     {
