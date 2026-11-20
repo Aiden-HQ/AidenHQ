@@ -15,6 +15,7 @@ const CLOSED = new Set(["done", "cancelled"]);
 const UNEXPLAINED = new Set(["orphaned", "unknown", "history_expired"]);
 const taskOf = (f: FactRow) => f.task ?? (f.subject.startsWith("task:") ? f.subject.slice(5) : null);
 
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const AGENT_FRESH_MS = 5 * 60_000;
 
 export function createTaskStateRead({ file, stages, agent, now = () => Date.now() }: { file: string; stages: () => Stage[]; agent?: (id: string) => Promise<Agent | undefined>; now?: () => number }) {
@@ -66,7 +67,7 @@ export function createTaskStateRead({ file, stages, agent, now = () => Date.now(
     /** A read with the removed agents' holders named, each from its own record (the company agent lists leave terminated agents out): read once per 5 minutes per holder, and a bad read leaves that row as it is. */
     async named(r: StateRead): Promise<StateRead> {
       if (!agent) return r;
-      const ids = [...new Set(r.tasks.flatMap((x) => (x.holder ? [x.holder] : [])))];
+      const ids = [...new Set(r.tasks.flatMap((x) => (x.holder && UUID.test(x.holder) ? [x.holder] : [])))]; // a key ("owner", "app-maintainer") is no Paperclip agent
       await Promise.all(ids.map(async (id) => {
         const k = known.get(id);
         if (k && now() - k.at <= AGENT_FRESH_MS) return;

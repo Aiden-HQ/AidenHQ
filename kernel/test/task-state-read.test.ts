@@ -93,21 +93,25 @@ test("one snapshot", (t) => {
   assert.equal(reader.read({ open: true }).tasks[0].kind, "working");
 });
 
+const A1 = "11111111-1111-4111-8111-111111111111";
+const A2 = "22222222-2222-4222-8222-222222222222";
 test("a holder Paperclip reports terminated is named and marked gone; a failed agent read leaves the rows as they are", async (t) => {
   const calls = [];
-  const agent = async (id) => { calls.push(id); return { a1: { name: "Platform Engineer", terminated: true }, a2: { name: "Kai", terminated: false } }[id]; };
+  const agent = async (id) => { calls.push(id); return { [A1]: { name: "Platform Engineer", terminated: true }, [A2]: { name: "Kai", terminated: false } }[id]; };
   const w = setup(t, 30, agent);
   w.task("t1", "WOR-1");
-  w.add("task.assignee_changed", "t1", 1, { from: null, to: "a1" });
+  w.add("task.assignee_changed", "t1", 1, { from: null, to: A1 });
   w.task("t2", "WOR-2");
-  w.add("task.assignee_changed", "t2", 1, { from: null, to: "a2" });
-  const rows = (await w.reader.named(w.reader.read({ ids: ["t1", "t2"] }))).tasks;
+  w.add("task.assignee_changed", "t2", 1, { from: null, to: A2 });
+  w.task("t3", "WOR-3");
+  w.add("task.assignee_changed", "t3", 1, { from: null, to: "app-maintainer" });
+  const rows = (await w.reader.named(w.reader.read({ ids: ["t1", "t2", "t3"] }))).tasks;
   const by = (id) => rows.find((r) => r.task === id);
   assert.deepEqual([by("t1").holder_name, by("t1").holder_gone, by("t2").holder_name], ["Platform Engineer", true, undefined]);
-  await w.reader.named(w.reader.read({ ids: ["t1", "t2"] }));
-  assert.deepEqual(calls, ["a1", "a2"]); // cached for the next read
+  await w.reader.named(w.reader.read({ ids: ["t1", "t2", "t3"] }));
+  assert.deepEqual(calls, [A1, A2]); // a key is never fetched; the rest are cached for the next read
   const bad = setup(t, 30, async () => { throw new Error("down"); });
   bad.task("t1", "WOR-1");
-  bad.add("task.assignee_changed", "t1", 1, { from: null, to: "a1" });
+  bad.add("task.assignee_changed", "t1", 1, { from: null, to: A1 });
   assert.equal((await bad.reader.named(bad.reader.read({ ids: ["t1"] }))).tasks[0].holder_name, undefined);
 });

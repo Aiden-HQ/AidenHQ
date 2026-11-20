@@ -131,7 +131,7 @@ const flow = createFlow({ file: path.join(dataDir, "kernel", "kernel.db"), stage
 // Each task's one state (GET /v1/tasks/state), computed from its facts on its own read-only connection too.
 const paperclipAgent = async (id: string) => {
   const r = await ownerApi("GET", `/api/agents/${encodeURIComponent(id)}`);
-  if (r.status === 404) return undefined;
+  if (r.status >= 400 && r.status < 500) return undefined; // Paperclip answers an unknown id with 422
   if (r.status !== 200) throw new Error(`agent → ${r.status}`);
   const a = r.json as { name?: string; status?: string };
   return { name: a.name ?? id, terminated: a.status === "terminated" };
