@@ -70,12 +70,13 @@ test("an upgrade moves removed settings into their secrets and names every dropp
   writeFileSync(join(vault, "jira_url"), "");
   writeFileSync(join(vault, "glean_mcp_url"), "https://kept.glean.com/mcp");
   const pat = { jira_url: "^https://[a-z0-9-]+\\.atlassian\\.net/?$", glean_mcp_url: "^https://[a-z0-9.-]+\\.glean\\.com/mcp/?$" };
-  const lines = migrateSettings({ jira_url: "https://acme.atlassian.net", glean_mcp_url: "https://old.glean.com/mcp", owner_email: "o@example.com", grafana_url: "https://evil.example.com" }, vault, { ...pat, grafana_url: "^https://[a-z0-9-]+\\.grafana\\.net/?$" }).join("\n");
+  const lines = migrateSettings({ jira_url: "https://acme.atlassian.net", glean_mcp_url: "https://old.glean.com/mcp", owner_email: "o@example.com", owner_slack_user_id: "U123", grafana_url: "https://evil.example.com" }, vault, { ...pat, grafana_url: "^https://[a-z0-9-]+\\.grafana\\.net/?$" }).join("\n");
   assert.match(lines, /setting grafana_url not migrated: .*re-enter it on Connect/);
   assert.equal(existsSync(join(vault, "grafana_url")), false);
   assert.equal(readFileSync(join(vault, "jira_url"), "utf8").trim(), "https://acme.atlassian.net");
   assert.equal(readFileSync(join(vault, "glean_mcp_url"), "utf8").trim(), "https://kept.glean.com/mcp");
   assert.match(lines, /migrated setting jira_url → secret jira_url; remove jira_url from instance\.yaml/);
   assert.match(lines, /glean_mcp_url.*the secret wins/);
-  assert.match(lines, /setting owner_email was removed in this release: ignored/);
+  assert.match(lines, /setting owner_slack_user_id was removed in this release: ignored/);
+  assert.doesNotMatch(lines, /owner_email/); // a live kernel setting, never named as dropped
 });

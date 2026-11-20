@@ -1972,7 +1972,6 @@ const SETTING_SECRETS = ["jira_url", "glean_mcp_url", "primer_mcp_url", "grafana
 /** Settings an earlier release dropped with no successor, and why: named at every apply while an instance still sets them. */
 const DROPPED_SETTINGS: Record<string, string> = {
   owner_slack_user_id: "the owner's Slack id is learned from the paired Slack channel",
-  owner_email: "nothing reads it any more",
 };
 
 /**
