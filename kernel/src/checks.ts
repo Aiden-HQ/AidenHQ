@@ -197,15 +197,15 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
     const l = await label(i, c.label);
     return Boolean(l) && labelIds(i).includes(l!.id);
   }
+  /** Whether the finish gate recorded its hold of the task: the `check_holds` row `finish()` wrote, which resolving a hold requires. */
+  const recorded = (id: string, i: Issue) => Boolean(i.id) && db.prepare("SELECT 1 FROM check_holds WHERE task = ? AND check_id = ?").get(i.id, id) !== undefined;
   /**
-   * Whether `id` holds the task: the `check_holds` row the gate wrote is authoritative. Without one, a task still waiting in
-   * review under this check's own label is held too: the label is what the gate puts on a task it holds, and a task left
-   * that way before hold rows were written (or by a gate that recorded none) is still waiting for its verdict. An observing
-   * check never holds, and no other label counts.
+   * Whether `id` holds the task for the grader's token: the recorded row, or — without one — a task still waiting in review
+   * under this check's own label, which is what the gate puts on a task it holds and what a task left that way before hold rows
+   * were written still carries. An observing check never holds, and no other label counts.
    */
   async function holds(id: string, c: Check, i: Issue) {
-    if (!i.id) return false;
-    if (db.prepare("SELECT 1 FROM check_holds WHERE task = ? AND check_id = ?").get(i.id, id) !== undefined) return true;
+    if (recorded(id, i)) return true;
     return c.mode !== "observe" && i.status === "in_review" && (await labelled(i, c));
   }
 
@@ -221,7 +221,7 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
     const to = RESOLVES.get(String(b.verdict));
     if (!to && b.verdict !== "release") throw fail(400, "bad_request", "verdict is release, ok, reopen or block");
     const i = await issue(ref);
-    if (b.verdict !== "release" && !(await holds(id, c, i))) throw fail(409, "conflict", `${id} holds no finish on ${i.identifier ?? i.id}`);
+    if (b.verdict !== "release" && !recorded(id, i)) throw fail(409, "conflict", `${id} holds no finish on ${i.identifier ?? i.id}`);
     // A module's ok moves the task to done as the owner: the same hold as an agent's finish, so a change still open on this
     // server stops it too, before the hold is released.
     if (b.verdict === "ok") await noOpenChange(i, "the grader or the module that held it can move it on once the merge lands");

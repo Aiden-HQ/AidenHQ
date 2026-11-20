@@ -141,6 +141,10 @@ test("a grader token is minted for an in_review task under the finish check's la
   Object.assign(s.issue, { status: "in_review", labelIds: ["lbl-x"] });
   assert.equal((await mint()).status, 403, "another label is no hold");
   assert.equal((await mint(DELEGATED)).status, 403, "a task no finish check of the module holds");
+  // The label makes the task gradable; it is not the gate's recorded hold, so it cannot be resolved by the module: only the row
+  // that `finish()` writes can (a module may not close a hold it never placed).
+  Object.assign(s.issue, { status: "in_review", labelIds: ["lbl-x", "lbl-grading"] });
+  assert.equal((await s.k.v1("POST", `/v1/checks/${TASK}`, { verdict: "ok" }, "grading-tok")).status, 409, "no recorded row to resolve");
   // A recorded hold is authoritative: the row holds whatever the task's status or labels say (the gate took the label).
   s.k.records.db.prepare("INSERT INTO check_holds (task, check_id, at) VALUES (?, 'grading.finish', ?)").run(TASK, new Date().toISOString());
   Object.assign(s.issue, { status: "todo" });
