@@ -65,6 +65,23 @@ test("a holding check: the move to done isn't forwarded; the owner holds the tas
   assert.deepEqual(writes, [{ as: "board-key", body: { status: "in_review", labelIds: ["lbl-x", "lbl-held"], executionPolicy: { mode: "normal", monitor: { nextCheckAt: until, notes: "The grader checks this task against its rubric." } } } }]);
 });
 
+test("a holding check that named no until: still in review with the check's label and a saved check at the default deadline", async (t) => {
+  const before = Date.now();
+  const { writes, finish } = await setup(t, () => ({ verdict: "hold", reason: "needs a look" }));
+  const r = await finish({ status: "done" });
+  assert.deepEqual(r, { status: 202, json: { held: { state: "hold", reason: "needs a look" } } });
+  assert.equal(writes.length, 1);
+  const { as, body } = writes[0];
+  assert.equal(as, "board-key");
+  assert.deepEqual(body.labelIds, ["lbl-x", "lbl-held"]);
+  assert.equal(body.status, "in_review");
+  assert.equal(body.executionPolicy.mode, "normal");
+  assert.equal(body.executionPolicy.monitor.notes, "needs a look");
+  const at = Date.parse(body.executionPolicy.monitor.nextCheckAt);
+  assert.ok(at > before, `${body.executionPolicy.monitor.nextCheckAt} is in the future`);
+  assert.ok(at <= Date.now() + 61 * 60_000, `${body.executionPolicy.monitor.nextCheckAt} is at the default hour`);
+});
+
 test("a deny refuses the close with its status and reason, and a failed check refuses it too: nothing moves either way", async (t) => {
   let answer = { verdict: "deny", status: 403, reason: "only its assignee finishes it" };
   const { writes, finish } = await setup(t, () => answer);

@@ -28,6 +28,8 @@ type Issue = { id: string; identifier?: string; companyId?: string; status?: str
 /** A hold's resolving verdicts and the status each moves the task to. */
 const RESOLVES = new Map([["ok", "done"], ["reopen", "todo"], ["block", "blocked"]]);
 const VERDICTS = ["ok", "hold", "pending", "reopen", "deny"];
+/** The follow-up deadline for a holding check that named none: the task's review path is saved for an hour, never left unscheduled. */
+const DEFAULT_HOLD_CHECK_MS = 60 * 60_000;
 
 /** config/kernel/checks.json, reread when it changes. Missing, unreadable or not a map throws: a load error, never "no checks". */
 export function checksFile(file: string): () => Record<string, Check> {
@@ -173,11 +175,12 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
     const held = verdicts.filter((x) => x.v.verdict === "hold" || x.v.verdict === "pending");
     if (held.length) {
       // In review, with each holding check's label and the first scheduled check (the control plane's review path: without
-      // one it wakes the assignee to repair the review instead of leaving it to the check).
+      // one it wakes the assignee to repair the review instead of leaving it to the check). A holding check that named no
+      // `until` still saves one, at the default follow-up deadline.
       const ids = labelIds(i);
       const add = (await Promise.all(held.map((x) => (x.c.label ? label(i, x.c.label) : undefined)))).filter((l): l is { id: string } => Boolean(l) && !ids.includes(l!.id));
-      const timed = held.find((x) => x.v.until);
-      const monitor = timed && i.assigneeAgentId && !i.assigneeUserId ? { executionPolicy: { ...(i.executionPolicy ?? {}), monitor: { nextCheckAt: timed.v.until, notes: String(timed.v.reason ?? "").slice(0, 500) } } } : {};
+      const nextCheckAt = held.find((x) => x.v.until)?.v.until ?? new Date(Date.now() + DEFAULT_HOLD_CHECK_MS).toISOString();
+      const monitor = i.assigneeAgentId && !i.assigneeUserId ? { executionPolicy: { ...(i.executionPolicy ?? {}), monitor: { nextCheckAt, notes: String(held[0]!.v.reason ?? "").slice(0, 500) } } } : {};
       await patch(i, { ...(i.status !== "in_review" ? { status: "in_review" } : {}), ...(add.length ? { labelIds: [...ids, ...new Set(add.map((l) => l.id))] } : {}), ...monitor });
       for (const x of held) db.prepare("INSERT OR REPLACE INTO check_holds (task, check_id, at) VALUES (?, ?, ?)").run(i.id, x.id, new Date().toISOString());
       log("finish held", { task: i.identifier, via: caller.via, checks: held.map((x) => x.id) });
