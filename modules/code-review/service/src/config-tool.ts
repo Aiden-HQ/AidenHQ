@@ -90,7 +90,7 @@ export function applyChange(raw: Dict, ch: Change, orgs: string[]): { value: Dic
 
 const PROFILE = {
   type: "object",
-  description: "A whole reviewer profile: engine (codex; claude-code and codegenie are refused until built), model (an OpenRouter id like ~deepseek/deepseek-flash-latest), effort (low|medium|high|xhigh|max), finders (1-8), verify, and optionally verifier (a model), context (repo paths read from the base branch), focus, label, run_usd.",
+  description: "A whole reviewer profile: engine (codex; claude-code and codegenie are refused until built), model (an OpenRouter id like ~deepseek/deepseek-flash-latest), effort (minimal|low|medium|high|xhigh), finders (1-4), verify, and optionally verifier (a model), context (repo paths read from the base branch), focus, label, run_usd.",
 };
 const REPO_ENTRY = {
   type: "object",

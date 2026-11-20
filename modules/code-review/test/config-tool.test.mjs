@@ -19,7 +19,7 @@ test("a change that wouldn't validate is refused whole; a default reviewer remov
   assert.throws(() => applyChange({ repos: [] }, { watch: [{ repo: "acme/x", on_open: "nope" }] }, ["acme"]), /names no reviewer/);
   assert.throws(() => applyChange({ repos: [] }, { unwatch: ["acme/x"] }, []), /isn't watched/);
   assert.throws(() => applyChange({ repos: [{ repo: "acme/x" }, { repo: "ACME/x" }] }, { month_usd: 100 }, ["acme"]), /listed more than once/);
-  const r = applyChange({ repos: [{ repo: "acme/x", on_push: "off" }] }, { reviewers: { quick: null, sec: { engine: "codex", model: "~openai/gpt-sol-latest", effort: "max", finders: 3, verify: true, focus: "auth" } } }, ["acme"]);
+  const r = applyChange({ repos: [{ repo: "acme/x", on_push: "off" }] }, { reviewers: { quick: null, sec: { engine: "codex", model: "~openai/gpt-sol-latest", effort: "xhigh", finders: 3, verify: true, focus: "auth" } } }, ["acme"]);
   assert.deepEqual(r.value.reviewers.quick, null);
   assert.equal(r.value.reviewers.sec.run_usd, 2); // stored whole, its cost filled in
   assert.equal(r.addOrgs.length, 0);

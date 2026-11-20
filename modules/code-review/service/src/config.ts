@@ -3,7 +3,8 @@
 // module.yaml; a profile or repo that doesn't validate is dropped loudly (its error is listed), never half-used.
 
 export const ENGINES = ["codex", "claude-code", "codegenie"] as const;
-export const EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
+// The recipe's values (recipe/engines.mjs runs the review in its own box: no shared import across that image boundary).
+export const EFFORTS = ["minimal", "low", "medium", "high", "xhigh"] as const;
 export type Engine = (typeof ENGINES)[number];
 
 /** A reviewer: a whole profile (engine, model, effort, finders, verification and its model, extra context, a focus). */
@@ -57,7 +58,7 @@ export function profile(raw: unknown): Profile | { error: string } {
   if (!ENGINES.includes(p.engine as Engine)) return { error: `engine is one of ${ENGINES.join(", ")}` };
   if (typeof p.model !== "string" || !MODEL.test(p.model)) return { error: "model is a model id such as ~deepseek/deepseek-flash-latest" };
   if (!EFFORTS.includes(p.effort as (typeof EFFORTS)[number])) return { error: `effort is one of ${EFFORTS.join(", ")}` };
-  if (!Number.isInteger(p.finders) || (p.finders as number) < 1 || (p.finders as number) > 8) return { error: "finders is 1 to 8" };
+  if (!Number.isInteger(p.finders) || (p.finders as number) < 1 || (p.finders as number) > 4) return { error: "finders is 1 to 4" };
   if (typeof p.verify !== "boolean") return { error: "verify is true or false" };
   if (p.verifier !== undefined && (typeof p.verifier !== "string" || !MODEL.test(p.verifier))) return { error: "verifier is a model id" };
   if (p.verifier !== undefined && !p.verify) return { error: "a verifier needs verify: true" };
