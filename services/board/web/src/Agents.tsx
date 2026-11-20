@@ -270,14 +270,15 @@ export function CrewView({ crew, onSignIn }: { crew: Assignee[]; onSignIn: () =>
   );
 }
 
-/** Where the agent stands, from the kernel's jobs (a.state): working, queued, idle, failing (its last 3 jobs failed) or paused by the owner. */
+/** Where the agent stands, from the kernel's jobs (a.state): working, queued (can start now), waiting (only parked waits), idle, failing (its last 3 jobs failed) or paused by the owner. */
 function standing(a: RosterAgent, now: number, team?: TeamLoad): { text: string; tone: StatusTone } {
-  if (team && (a.state === "working" || a.state === "idle" || a.state === "queued")) return { text: `${team.running}/${team.capacity} running`, tone: team.running ? "working" : "idle" };
+  if (team && (a.state === "working" || a.state === "idle" || a.state === "queued" || a.state === "waiting")) return { text: `${team.running}/${team.capacity} running`, tone: team.running ? "working" : "idle" };
   switch (a.state) {
     case "working": return { text: a.workingSince ? `Working ${elapsed(a.workingSince, now)}` : "Working", tone: "working" };
     case "paused": return { text: "Paused", tone: "needs" };
     case "failing": return { text: "Failing", tone: "failed" };
     case "queued": return { text: "Queued", tone: "idle" };
+    case "waiting": return { text: a.waitUntil ? `Waiting until ${when(a.waitUntil)}` : "Waiting", tone: "idle" };
     default: return { text: "Idle", tone: "idle" };
   }
 }

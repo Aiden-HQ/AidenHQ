@@ -118,7 +118,7 @@ export interface Scorecard {
 
 /** GET /api/agents/by-key/:key (agent-page.ts). */
 /** From the kernel's jobs; paused is the owner's setting (activity.ts agentState). */
-export type AgentState = "working" | "queued" | "idle" | "failing" | "paused";
+export type AgentState = "working" | "queued" | "waiting" | "idle" | "failing" | "paused";
 
 export interface AgentProfile {
   id: string;
@@ -160,6 +160,7 @@ export interface RosterAgent {
   maxParallel?: number;
   state: AgentState;
   stateNote?: string;
+  waitUntil?: string;
   running: number;
   queued: number;
   workingSince: string | null;

@@ -53,6 +53,8 @@ export interface KernelActivity {
   running: ActivityJob[];
   recent: ActivityJob[];
   queued: { agent: string; n: number }[];
+  /** Waits an agent parked for later: the count, the earliest due time and its reason. */
+  parked: { agent: string; n: number; until: string; cause: string }[];
   failing: { agent: string; error: string }[];
 }
 

@@ -70,11 +70,14 @@ test("activity: what waits, and the agents whose last 3 ended jobs all failed or
   const { work, records } = setup();
   records.db.exec("CREATE TABLE wakes (key TEXT PRIMARY KEY, agent TEXT, state TEXT, cause TEXT, at INTEGER, until INTEGER, job TEXT)");
   records.db.prepare("INSERT INTO wakes (key, agent, state) VALUES ('w1', 'a2', 'open'), ('w2', 'a2', 'done')").run();
+  const day = 86_400_000;
+  records.db.prepare("INSERT INTO wakes (key, agent, state, cause, at, until) VALUES ('w3', 'eng', 'open', 'wait: PR #9 merged', 1, ?), ('w4', 'eng', 'open', 'wait: later', 1, ?)").run(Date.now() + 2 * day, Date.now() + 5 * day);
   const add = (id, agent, state, ended, final) => records.db.prepare("INSERT INTO jobs (id, module, agent, task, engine, pid, log, dir, at, jobcaps, observing, live_input, state, ended, final) VALUES (?, 'dispatch', ?, 't', 'codex', 1, '', '', 1, '[]', 0, 0, ?, ?, ?)").run(id, agent, state, ended, final ?? "");
   for (const [i, state] of ["failed", "lost", "failed"].entries()) add(`f${i}`, "bad", state, 10 + i, state === "failed" ? `The job failed: boom ${i}\nmore` : null);
   for (const [i, state] of ["failed", "done", "failed", "failed"].entries()) add(`m${i}`, "mixed", state, 10 + i);
   const a = work.activity();
-  assert.deepEqual(a.queued, [{ agent: "a2", n: 1 }]);
+  assert.deepEqual(a.queued, [{ agent: "a2", n: 1 }], "a wait that is not yet due is parked, not queued");
+  assert.deepEqual(a.parked.map((p) => [p.agent, p.n, p.cause]), [["eng", 2, "PR #9 merged"]]);
   assert.deepEqual(a.failing, [{ agent: "bad", error: "The job failed: boom 2" }]);
   assert.deepEqual(a.recent.filter((r) => r.agent === "bad").map((r) => [r.id, r.error]), [["f2", "The job failed: boom 2"], ["f1", "lost"], ["f0", "The job failed: boom 0"]]);
 });

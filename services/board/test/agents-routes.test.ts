@@ -34,6 +34,7 @@ describe("GET /api/agents/roster", () => {
     running: [{ id: "j1", agent: "cos", task: "t7", state: "running", started_at: "2026-11-14T04:00:00Z", ended_at: null }],
     recent: [{ id: "j0", agent: "keeper", task: "t8", state: "failed", started_at: "2026-11-14T03:00:00Z", ended_at: new Date().toISOString(), error: "The job failed: boom" }],
     queued: [],
+    parked: [],
     failing: [{ agent: "keeper", error: "The job failed: boom" }],
   }), stop: async () => [] };
   const app = createApp({ paperclip: pc, work, store: new Store(":memory:"), log: pino({ level: "silent" }), allowedHosts: ["localhost:3120"], staticDir: "/nonexistent", timezone: "UTC", session: () => (signedIn ? { accountId: "owner", role: "admin" as const } : null) });
