@@ -73,3 +73,22 @@ reopen never runs, so a card its delegator has closed stays closed. A closed or 
 
 Use it to keep a card the module already opened current — a module that dedupes its escalations by episode posts the newest
 reason here instead of filing a second card.
+
+## `GET /v1/wakes/pending?task=<task>` — is a wake still waiting for a task?
+
+Grant: `kernel.jobs`.
+
+```http
+GET /v1/wakes/pending?task=<task id>
+```
+
+Answers `{ "pending": true | false }`: whether the kernel still holds a wake for the task that has not started a job —
+an open row (due now or scheduled for later), or one a dispatcher has claimed whose job has not started. A task with a
+live job is not pending: read `GET /v1/jobs?task=<task>` for that. The two together say whether a task is in flight.
+
+Only a wake for an agent this module dispatches counts; a task the module does not dispatch answers `false`. The task is
+read by id and must match `[\w.:-]{1,100}`; anything else is refused with 400. The answer is a read only: nothing is
+claimed or changed.
+
+Dispatch uses it before folding a routine run into an earlier open run of the same routine (`routines.ts`): an earlier
+run whose job ended and left no wake is idle, not in flight, so a new run proceeds instead of being cancelled into it.
