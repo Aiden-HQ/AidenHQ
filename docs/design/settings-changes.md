@@ -1,114 +1,97 @@
 # Changing settings from the board
 
-The owner changes instance settings (a connection's URL, a kill switch, an agent's model, effort or heartbeat) from the
-board's Settings pages instead of editing `.env` or `instance.yaml` by hand. Nothing new is privileged: the change still
-lands as an instance-repo commit through the fleet apply card, tiered by the existing code.
+The owner changes instance settings (a connection's URL, a kill switch, an agent's model, effort or heartbeat, and the other
+typed changes below) from the board's Settings pages instead of editing `.env` or `instance.yaml` by hand. Nothing here is
+privileged: the change still lands as an instance-repo commit through a `kernel.apply` record, tiered by the existing code.
 
 ## Where a value lives
 
-- **Connection URLs are module settings.** `GLEAN_MCP_URL`, `GRAFANA_URL`, `GRAFANA_MCP_URL`, `CLICKHOUSE_MCP_URL` and
-  `PRIMER_MCP_URL` were `.env` variables; they become `settings.glean_mcp_url` and the like, declared in each module's
-  `module.yaml` and passed to compose as `${settings.<key>}` (Jira's `jira_url` already worked this way). They live in
-  `instance.yaml` in the instance repo: in git, reviewable, reverted by a revert. Not a board-written file: nothing would
-  apply it, and apply-config refuses a dirty checkout.
-- A setting declares `type: url` (and optionally `host: "*.glean.com"`): the board shows a URL input for it and both the
-  board and the compiler check the value (below). None of them is `required`, so a module compiles before it is set up.
-- Secrets never go here. A URL that carries a credential is refused (no current connection needs one: each signs in with
-  OAuth through its proxy). If one ever does, it belongs in the vault, not in settings.
+- **Connection URLs are module settings** (`glean_mcp_url`, `grafana_url`, `jira_url` and the like), declared in each module's
+  `module.yaml` and passed to compose as `${settings.<key>}`. They live in `instance.yaml` in the instance repo: in git,
+  reviewable, reverted by a revert. Not a board-written file (nothing would apply it, and apply-config refuses a dirty checkout).
+- A setting declares `type: url` (optionally `host: "*.glean.com"`): the board shows a URL input and both the board and the
+  compiler check the value. None is `required`, so a module compiles before it is set up.
+- Secrets never go here. A URL that carries a credential is refused; credentials belong in the vault, and connections sign in
+  with OAuth.
 
-## The check (services/shared/url-setting.ts, one copy for the board and the compiler)
+## The URL check (`services/shared/url-setting.ts`, one copy for the board and the compiler)
 
-`https:` only; no user or password; no `$` (the value lands in compose, which would expand `${SECRET}` into an outbound
-URL); no whitespace or control characters; at most 500 characters; a public-looking host (a dotted name, not `localhost`,
-not an IP literal), and the declared host pattern when there is one; no fragment; no query parameter whose name looks
-like a credential (`token`, `key`, `secret`, `sig`, `password`, `auth`, `code`, `session`, `credential`). Other query
-parameters stay allowed (Atlassian's default carries `?tools=all`). The board's check is for the owner's feedback; the
+`https:` only; no user or password; no `$` (the value lands in compose); no whitespace or control characters; at most 500
+characters; a public-looking host (a dotted name, not an IP literal or a local name), and the declared host pattern when there
+is one; no fragment; no query parameter whose name looks like a credential (`token`, `key`, `secret`, `sig`, `password`,
+`auth`, `code`, `session`, `credential`). Other query parameters stay allowed. The board's check is the owner's feedback; the
 compiler's is the last gate.
 
 ## The path
 
-1. The owner (a signed-in admin) presses Save or Change on a Settings page. `POST /api/settings/change` (`requireAdmin`)
-   takes a typed change: `{ setting, value }` for a declared, non-secret setting, `{ agent, field, value }` for the
-   override fields tiers already treat as safe (`model`, `reasoning_effort`, `heartbeat`), `{ caps, agent, value }` for
-   an agent's spend caps, or `{ module, name, on }` (each tiered by the apply planner, step 5). The board checks it against
-   the compiled config and the module catalog (the setting exists, the value is one of its `values`, a URL passes the
-   check, the agent exists, the effort is a known level, the heartbeat is one of the compiler's hours and the agent is
-   not runner-dispatched). On a team (docs/configuration.md, Teams) the kernel writes the same typed change where it lives:
-   the team record's fields to `teams.<t>.defaults`, a member's to `teams.<t>.members.<key>`, the record's `day_usd` to
-   `teams.<t>.caps` (compile refuses `overrides.agents` on either).
-2. The board files it as the owner's own task (label `settings-change`, no assignee, so no agent wakes), keeps the typed
-   change in its own store by task id (for the page) and hands it to the kernel: `POST /v1/settings/change` with the
-   board's key, `{ task, changes }`. Nothing reads the change from the task's text. If the kernel refuses it, the board
-   cancels the task with the reason and the page shows it.
-3. The kernel (`kernel/src/settings-change.ts`) checks the task (the owner's, made and held by no agent, open) and each
-   change again against the compiled config and catalog: known kinds only, no unknown fields, schema-checked values, what
-   it names exists, no free-form YAML. It computes exactly the files its kind allows (`PATHS`: `instance.yaml` edited
-   through the yaml Document API, so comments stay; handbook texts verbatim) from the instance repo's main, read from its
-   instance checkout. Turning off a module of the default bundle also lists it in `modules_removed` (so an upgrade never
-   adds it back); turning it on takes it off that list.
-4. The instance repo's code host writes those files as one commit on main's head, on `settings/<task>` (`apply.ts`
-   `hostApply` routes by the repo: codehost-local's `write` for a `local/…` instance, codehost-github's
-   `/aidenhq/v1/apply/write` otherwise), only while main is still the commit the kernel read.
-5. The kernel files that commit as a `kernel.apply` on the task (requester `SETTINGS`, kind `kernel`, with no exemption in
-   any rule: the autonomy caps hold it as they hold an agent, only the release updater is exempt), and its planner tiers it
-   on its merits like any instance change (`kernel/src/apply-tier.ts`): a setting is the panel's, spend caps, quiet start
-   and any loosening of `autonomy` are the owner's, an agent's `model` / `reasoning_effort` / `heartbeat`
-   override is Tier 1, a module turned on or off or a grants override is judged by the module authority diff. On approval
-   the code host lands exactly that commit and the apply runs `ops/apply-config.sh`.
-6. The board shows the change's progress from the task and its apply record (filed, waiting for approval, applying,
-   applied or failed), then the connection's live status; for a sign-in connection, Connect becomes the next step.
+1. The owner (a signed-in admin) presses Save or Change. `POST /api/settings/change` takes a typed change: `setting`
+   (`{ key, value }`), `agent` (`model`, `reasoning_effort`, `heartbeat`, `max_parallel`), `caps`, `module` (on or off),
+   `routine`, `rules`, `handbook`, `unfork`, `pin`, `marketplace` or `grants`. The board checks it against the compiled config
+   and module catalog (the setting exists, a value is one of its `values`, a URL passes the check, the agent exists, the
+   heartbeat is one of the compiler's hours, and an Engineer or team member has no heartbeat of its own;
+   `services/board/src/settings-change.ts`). On a team (docs/configuration.md, Teams) the kernel writes the same typed change
+   where it lives: the team record's fields to `teams.<t>.defaults`, a member's to `teams.<t>.members.<key>`, the record's
+   `day_usd` to `teams.<t>.caps`.
+2. The board files it as the owner's own task (label `settings-change`, no assignee, so no agent wakes), keeps the typed change
+   in its own store by task id (for the page) and hands it to the kernel: `POST /v1/settings/change` with the board's key,
+   `{ task, changes }`. Nothing reads the change from the task's text. If the kernel refuses it, the board cancels the task
+   with the reason.
+3. The kernel (`kernel/src/settings-change.ts`) checks the task (the owner's, made and held by no agent, open) and each change
+   again: known kinds only, no unknown fields, schema-checked values, what it names exists, no free-form YAML. It computes
+   exactly the files each kind may write (`PATHS`: `instance.yaml` through the yaml Document API so comments stay; an agent's
+   `AGENTS.md` for `rules` and `handbook`) from the instance repo's main. Turning off a module of the default bundle also lists
+   it in `modules_removed` (an upgrade never adds it back); turning it on takes it off the list.
+4. The instance repo's code host writes those files as one commit on main's head on `settings/<task>` (`kernel/src/apply.ts`
+   `hostApply`: codehost-local for a `local/...` instance, the github module otherwise), only while main is still the commit
+   the kernel read.
+5. The kernel files that commit as a `kernel.apply` on the task (requester `SETTINGS`; no exemption in any rule: the autonomy
+   caps hold it as they hold an agent, only the release updater is exempt). Its planner tiers it on its merits like any
+   instance change (`kernel/src/apply-tier.ts`): a setting is the panel's; spend caps, quiet start and any loosening of
+   `autonomy` are the owner's; an agent's `model` / `reasoning_effort` / `heartbeat` override is Tier 1; a module turned on or
+   off or a grants override is judged by the module authority diff. On approval the code host lands exactly that commit and the
+   apply runs `ops/apply-config.sh`.
+6. The board shows progress from the task and its apply record (filed, waiting for approval, applying, applied or failed), then
+   the connection's live status; for a sign-in connection, Connect becomes the next step.
 
-## Why code writes the commit
+Code writes the commit, not a model: a model adds nothing to a typed edit and could drift from it, and the card shows the exact
+diff before anything lands. The board's check is the owner's feedback; the kernel's is the gate; the compiler's the last.
 
-A model adds nothing to a typed edit and could drift from it; the kernel writes it deterministically from the change the
-board handed it, and the card shows the exact diff before anything lands. The board's check is the owner's feedback; the
-kernel's is the gate, and the compiler's the last.
+## Routing tuning
 
-## Routing tuning (the learning loop, kernel/src/routing-tune.ts)
-
-The same writer has one agent-filed variant, `routing.tune`, for the Fleet Steward (role `routing-tuner`; the fleet-steward
-module requests the kernel role `kernel.routing`). Its daily routine (`routing-review`, 00:15 UTC) runs its
-`routing-review` skill through four tools on its own connection, which the module forwards to `POST /v1/routing/<op>` with
-the Steward job's caller assertion; the kernel reads the job from its own token, never from the request.
+The learning loop (`kernel/src/routing-tune.ts`): the same writer has one agent-filed variant, `routing.tune`, for the Fleet
+Steward (role `routing-tuner`; the fleet-steward module requests the kernel role `kernel.routing`). Its routine
+`routing-review` runs daily at 00:15 UTC with `autonomy: full`, using four tools on its own connection, which the module
+forwards to `POST /v1/routing/<op>` with the Steward job's caller assertion; the kernel reads the job from its own token,
+never from the request.
 
 - **Evidence** (`routing_evidence`): the previous UTC day's decisions from `team_routes`, each with outcomes the kernel
-  recorded: task status and completion time, reopen wakes, and finish-gate reopens such as the grader's (`finish.verdict`
-  events). Never task text.
-- **Replay** (`routing_replay`): code re-runs each recorded decision's candidate snapshot (`team_routes.snapshot`) with the
-  proposed weights or repos.
+  recorded: task status and completion time, reopen wakes and finish-gate reopens such as the grader's. Never task text.
+- **Replay** (`routing_replay`): code re-runs each decision's candidate snapshot (`team_routes.snapshot`) with the proposed
+  weights or repos.
 - **Scope**: members' `repos` and `teams.<t>.routing.weights` on existing teams and members, within the one team schema
   (weights 0 to 10, load at least 1). One gate, `routingDiff` in `apply-tier.ts`, proves a diff is only that: the writer
   refuses anything else, and the apply planner proposes Tier 1 `routing-only` for a commit this loop wrote (and refuses one
-  that moves more), only while its experiment is live and only as filed by the experiment's agent on its own task: anyone
-  else filing the same commit gets the normal `teams` rules. Any other `teams` change keeps its own rules (the panel's; a day cap the owner's).
+  that moves more), only while its experiment is live and only as filed by the experiment's agent on its own task. Any other
+  `teams` change keeps its own rules (the panel's; a day cap the owner's).
 - **Filing** (`routing_tune`): `{ base_sha, team, weights?, repos?, decisions, hypothesis, revert }`. The kernel writes the
-  commit with the code host and files one `kernel.apply` with the Steward as its requester (no owner identity, no updater
+  commit with the code host and files one `kernel.apply` with the Steward as requester (no owner identity, no updater
   exemption). `computeTier` alone sets the tier: under autonomy `full` the AI reviewer approves it; with autonomy off or
-  `tier0`, a restrictive routine cap, or an owner veto, the owner decides as for any Tier 1 write. The routine sets
-  `autonomy: full`, so it is the instance's autonomy that decides. The card leads with the
-  kernel's notes: the leaves, the replay, the revert criterion and the Steward's hypothesis, fenced as data.
-- **Limits** (kernel.db `routing_experiments`, held by unique indexes): one open experiment per instance, one proposal per
-  UTC day. No minimum sample or wait before the next change (owner, 2026-11-19: active discovery). After the review or the
-  owner turns a team's proposal down, that team gets no other for 3 days, whatever its values (no review shopping), and the
-  same change can't be filed again unchanged.
+  `tier0`, a restrictive routine cap or an owner veto, the owner decides as for any Tier 1 write. The card leads with the
+  kernel's notes (the leaves, the replay, the revert criterion, the Steward's hypothesis, fenced as data).
+- **Limits** (kernel.db `routing_experiments`, held by unique indexes): one open experiment per instance, one proposal per UTC
+  day. No minimum sample or wait before the next change (owner, 2026-11-19: active discovery). After the review or the owner
+  turns a team's proposal down, that team gets no other for 3 days, whatever its values, and the same change can't be filed
+  again unchanged.
 - **Revert** (`routing_judge`): the criterion is a finite schema (`metric`: `reopen_rate`, `cycle_hours` or `blocked_rate`;
-  `min_sample`; `threshold`; `deadline_days`). Past the threshold, the kernel files a rollback of only the experiment's own
-  leaves still at the values it applied, through the same reviewed apply, so a later owner change stays. A rollback that
-  can't be filed any more (the team gone, or main no longer a plain routing diff) closes the experiment as superseded. At the deadline it
-  is kept, or closed as inconclusive with too small a sample.
+  `min_sample` 1 to 500; `threshold`; `deadline_days` 1 to 30). Past the threshold the kernel files a rollback of only the
+  experiment's own leaves still at the values it applied, through the same reviewed apply, so a later owner change stays. A
+  rollback that can't be filed any more (the team gone, or nothing left to revert) closes the experiment as superseded. At the
+  deadline it is kept, or closed as inconclusive when the sample is too small.
 
-## Open points (from the architecture cross-check)
+## Known limits
 
-- **A changed URL keeps the old sign-in.** The proxies keep one token per connection; pointed at a new server they would
-  send it there. The declared host patterns (`*.glean.com`, `*.grafana.net`, `*.clickhouse.cloud`, `mcp.atlassian.com`)
-  bound that to the same vendor; Primer has none. Binding each stored token to the URL it was issued for (reconnect on
-  a change) is the fix, in the proxies.
-- **The compiler's check runs after the commit lands.** A bad value the owner approved anyway lands on main and fails
-  the apply (revert to undo). A compile of the change before landing would stop it first.
+- **A changed URL keeps the old sign-in.** The proxies keep one token per connection; the declared host patterns (for example
+  `*.glean.com`, `*.grafana.net`) bound that to the same vendor; a setting with no pattern has no such bound.
+- **The compiler's check runs after the commit lands.** A bad value the owner approved anyway lands on main and fails the
+  apply (revert to undo).
 - DNS rebinding to private addresses is not checked (the URL is the owner's own input, approved on a card).
-
-## The move from .env
-
-Instances that set these URLs in `.env` move them once: put each in `instance.yaml` under `settings:` (in the same
-commit as the product bump that brings this change), and remove them from `.env`. Until then that connection reads as
-not set up.

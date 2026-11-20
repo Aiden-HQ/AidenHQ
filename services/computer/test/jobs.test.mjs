@@ -1,4 +1,4 @@
-// Kernel jobs in a computer (docs/design/sandboxing.md, the strong tier): the boundary scenarios of the launcher's side.
+// Kernel jobs in a computer (docs/design/sandboxing.md, Tiers): the boundary scenarios of the launcher's side.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, symlinkSync } from "node:fs";

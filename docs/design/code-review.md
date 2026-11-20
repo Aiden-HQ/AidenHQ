@@ -1,174 +1,131 @@
 # Code Review: an agent that reviews pull requests
 
-Status: design (2026-11-19).
+The `code-review` module (`modules/code-review`) watches the repos you list, or reviews one PR on request, and posts one
+updating GitHub review per PR head. It models Anthropic's hosted Claude Code Review (not the CI action): per-repo triggers,
+several finders then a verification pass, advice only. It is separate from the CI `code-review` job (which blocks and stays
+for repos that carry it) and from the AI reviewer (a write-authority gate, not a code reviewer). In the default bundle, idle
+until a repo is added: nothing runs or spends by itself. Everything is set up by telling Aiden (or on the board).
 
-## Why
+Rules that bind (owner and design):
 
-A Polygon colleague wants to point an agent at a repo's open PRs, have it triage them, and run a dedicated review on the
-high-value ones. Today AidenHQ reviews code only in CI (the `code-review` job, which a repo must carry and which skips
-fork PRs); the AI reviewer is a write-authority gate, not a code reviewer. The owner's direction: model it on Anthropic's
-hosted Claude Code Review (not the CI action), configurable per repo or per PR, the default cheap, a deep review with a
-chosen engine, model, effort and repo context for production PRs, all set up by telling Aiden.
+- The review is advice: it never approves or blocks a merge, never pushes fixes. A repo may gate on the severity line in its
+  own CI.
+- An outside PR's text never steers the reviewer; a review box holds no credentials.
+- Spend is visible and capped; partial coverage is never presented as clean.
 
-## What we take from hosted Claude Code Review (docs, 2026-11)
+## Components
 
-- Per-repo triggers: once after open, after every push, or manual; `@claude review [always|stop]` on any PR; drafts and
-  fork PRs skipped unless someone with write access asks.
-- Several finder agents in parallel, then a **verification pass** that re-checks each finding against the code, then
-  dedupe and rank: the main false-positive control.
-- Prose config only: `REVIEW.md` (root and per folder) and `CLAUDE.md`, read from the **base branch**, never the PR.
-- Levels Quick / Standard / Deep (we generalise them to named reviewers); severities 🔴 Important, 🟡 Nit, 🟣 Pre-existing; a neutral check run; a
-  machine-readable severity line; incremental re-review; threads auto-resolve when fixed; replies read next time.
-- Spend cap with a skip comment; analytics: reviews per day, cost per repo, findings by severity, auto-resolved rate.
-- Peers add: a risk label and summary (Bugbot, CodeRabbit), learning from dismissals, adaptive depth (Copilot).
+| Part | What it does |
+|---|---|
+| State service (`service/`, port 8098) | Watches the listed repos' PRs and comments through github-mcp's internal read (as this module, never `/mcp`), decides which head gets which reviewer, runs each review as a check job, files posts, records flow facts |
+| Check job `code-review` (`recipe/`) | The review run itself: credential-free box, read-only repo tools, a model token capped at the run's reservation (`check_jobs:` in `module.yaml`, 45 min timeout) |
+| Poster (`modules/github/connections/github-mcp/src/review-post.ts`, `review-render.ts`) | Turns findings into GitHub text; code, never the model |
+| Reviewer Manager agent (`agents/reviewer-manager/`) | Conversation only: sets up and edits config when the owner asks Aiden, starts one-off reviews, answers `@aiden` questions on reviews. Holds no code tools and no delegation |
+| Board Reviews page (`services/board/web/src/Reviews.tsx`, `services/board/src/reviews.ts`) | Tabs Reviews, Repos, Reviewers, Insights |
 
-## Goals, non-goals
-
-- Goals: watch repos or review one PR on request; outside PRs safe; one updating review per PR head; any number of named
-  reviewers, each its own engine, model, effort and context; setup by asking Aiden; cost visible and capped.
-- Non-goals: approving or blocking merges (the review is advice; a repo may gate on the severity line in its own CI),
-  pushing fixes, replacing CI's code-review job (it stays for repos that carry it).
-- Anti-goals: an outside PR's text steering the reviewer; a reviewer box that holds credentials; noise (nits, lint CI
-  already catches, re-reviewing unchanged diffs).
-
-## Design
-
-### Config (module settings, per repo; Aiden edits them through the normal config write)
+## Config (`settings.code_review`, schema in `module.yaml`, validated in `service/src/config.ts`)
 
 ```yaml
 code_review:
-  reviewers:                                # named profiles; three ship, add as many as you like
-    quick:    { engine: codex, model: "~deepseek/deepseek-flash-latest", effort: low, finders: 1, verify: false }
-    standard: { engine: codex, model: "~deepseek/deepseek-flash-latest", effort: high, finders: 2, verify: true }
-    deep:     { engine: codex, model: "~openai/gpt-sol-latest", effort: high, finders: 4, verify: true, verifier: "~anthropic/claude-latest" }
-    # e.g. prod-security: { engine: claude-code, model: "~anthropic/claude-latest", effort: max, context: "docs/threat-model.md", focus: security }
-    # e.g. genie:         { engine: codegenie, ... }
+  month_usd: 200                 # instance-wide monthly cap across repos
+  reviewers:                     # named profiles; shipped: quick, standard, deep, triage (a name set to null is switched off)
+    quick:    { engine: codex, model: "~deepseek/deepseek-flash-latest", effort: low,  finders: 1, verify: false, run_usd: 0.5 }
+    standard: { engine: codex, model: "~deepseek/deepseek-flash-latest", effort: high, finders: 2, verify: true,  run_usd: 1.5 }
+    deep:     { engine: codex, model: "~openai/gpt-sol-latest", effort: high, finders: 4, verify: true, verifier: "~anthropic/claude-latest", run_usd: 2.5 }
+    triage:   { engine: codex, model: "~deepseek/deepseek-flash-latest", effort: low, finders: 1, verify: false, focus: triage, run_usd: 0.5 }
   repos:
     - repo: acme/payments
-      on_open: standard                      # default
-      on_push: quick                         # default; incremental
-      on_risk: deep                          # the manager escalates high-risk PRs to this reviewer
+      on_open: standard          # defaults shown; each is a reviewer name or "off"
+      on_push: quick             # incremental
+      on_risk: deep              # a PR the triage reviewer calls high-risk
       drafts: false
-      forks: manual                          # write-access commenter must ask
+      forks: manual              # manual: only when someone with write access asks; auto: like any PR
       month_usd: 50
-      ignore: ["**/generated/**", "*.lock"]
+      ignore: ["**/generated/**"]
       max_nits: 5
+      per_author_day: 10         # automatic runs a day per PR author / per repo; past either, a PR waits for someone to ask
+      per_repo_day: 60
 ```
 
-A **reviewer** is a whole profile, not a strength setting: engine, model, effort, finders, verification (and its model),
-extra context files and a focus. Engines are pluggable box recipes behind one contract (diff + context in, findings JSON
-out): `codex` first; `claude-code` and `codegenie` as further recipes. Any number of reviewers; the three defaults are
-just shipped examples. Repo context is the repo's own `REVIEW.md` (root and per folder) plus `AGENTS.md`/`CLAUDE.md`, read
-from the base commit.
+A reviewer is a whole profile: engine, model, effort, finders, verification (and its model), optional `context` (repo paths),
+`focus`, `label` and `run_usd` (what one run may spend: its reservation and its model token's cap; default $0.50 a finder
+plus $0.50 to verify). A profile or repo that does not validate is dropped loudly (listed in the config tool's errors), never
+half-used; a repo listed twice is refused whole. Engines are box recipes behind one contract (diff and context in, findings JSON
+out): only `codex` is built; `claude-code` and `codegenie` are declared names and a reviewer naming one is refused. Repo
+context is the repo's own `REVIEW.md`, `AGENTS.md` and `CLAUDE.md` at the root and above each changed file, read from the
+**base** commit, never the PR; guidance grants no authority.
 
-### Triggers
+Config is one authority: the board and Aiden write it through the normal settings change. Tier 2 (owner) changes, so the
+Reviewer Manager cannot do them alone (`owner:` rules in `module.yaml`): more spend, outside PRs or drafts reviewed
+automatically, a repo in a new org, and any change to a reviewer's model, verifier, finders, `run_usd`, focus or context or to
+a repo's ignore globs. Reviews post as the instance's identity only in orgs the App covers or `settings.github_comment_orgs`
+allows (the owner allows an org on the Reviews page). `always`, `stop` and `focus` are PR state, not config.
 
-A watcher (the Maintainer's watcher generalised to PRs: repo list, per-author and per-repo daily caps) files one review
-per PR head per the repo's trigger. On any watched PR, a write-access commenter may say `@aiden review` (once, standard),
-`@aiden review <reviewer>` (e.g. `deep`), `@aiden review always`, `@aiden review stop`, or `@aiden review focus: <text>`. Asking Aiden
-"review <PR URL> deep" does the same for any PR the instance can read.
+## Triggers
 
-### The review run (credential-free)
+The service polls the watched repos (`code_review_poll_seconds`, default 60). A new PR (or one leaving draft) is triaged and
+reviewed with `on_open`; a push gets `on_push` incrementally, debounced 3 minutes (a burst is one review; another push
+replaces the queued run's head). The triage reviewer's summary and risk (`trivial`, `normal`, `high`) ride on the next
+review, and a high-risk PR is escalated once per head to `on_risk`. A run is reserved against the repo's and the instance's
+month caps in one transaction before it starts; a run whose PR moved on or closed while it ran is superseded and never posts.
+A skip is a run too, acknowledged once per PR and reason (a budget skip once per head), never silent: draft, fork, daily
+limit, budget, closed, stopped, superseded.
 
-One check-job recipe per PR head, in the existing sandbox box (no credentials, no tools beyond read-only repo reads, a
-capped model token): N finders in parallel on the diff with the repo context, then (if `verify`) a verifier that keeps a
-finding only with a `file:line` it confirmed, then dedupe and rank. It returns findings JSON (severity, path, line,
-title, why, evidence) and a signed receipt. Incremental runs diff since the last reviewed head and say how many findings
-were withheld. PR title, body, comments and code are fenced as data throughout.
+Commands in a PR comment (`service/src/commands.ts`; only a command line counts, never a quoted line, a code block or our own
+post; the commenter needs write access now):
 
-### Posting
+| Comment | Effect |
+|---|---|
+| `@aiden review [<reviewer>] [full]` | one review now (default `on_open` reviewer; `full` is not incremental) |
+| `@aiden review always` / `stop` | review every push / stop automatic reviews and drop queued ones |
+| `@aiden review focus: <text>` | a focus handed to the reviewer as data (300 characters) |
+| `@aiden review status` / `help` | the last run's phase, reviewer, findings and cost / the command list |
 
-Code, never the model, turns findings into one GitHub review per head: inline comments with severity markers and a
-collapsed "why flagged", a summary, a commit status `aidenhq/review`, and the severity line
-`<!-- aidenhq-review: {"important":n,"nit":n,"pre_existing":n} -->`. Threads whose finding is gone on the next run are
-resolved; replies are read by the next run.
+Asking Aiden "review <PR URL> deep" (the Reviewer Manager's `code_review_run`) does the same for any PR the instance can read.
 
-Identity (per instance): the instance's own GitHub App bot where installed with PR write; otherwise the instance owner's
-own GitHub sign-in (connections-simple.md), each post a Tier 1 write the AI reviewer approves. Never another person's
-account.
+## The review run
 
-### The Reviewer Manager (one agent)
+`recipe/review.mjs`, one check job per PR head: N finders in parallel on the diff with the guidance, then, if `verify`, a
+verifier that keeps a finding only with a `file:line` it confirmed, then dedupe and rank. It returns findings JSON (severity
+`important`, `nit` or `pre_existing`; path, line, title, why, evidence, fix brief), a `coverage` block (files reviewed and
+excluded, `incomplete` reason) and the run's billed cost, bound into the kernel's signed receipt. Incremental runs diff from the
+last reviewed head; force-pushes, retargets and changed guidance reset the baseline; previous findings are rechecked. PR title,
+body, comments and code are fenced as data throughout. The box runs without repo hooks, plugins, shell or network beyond the
+model gateway. Settings accepted by the service are `finders` 1 to 8, but the recipe refuses more than 4 and efforts other than
+low, medium, high, xhigh.
 
-Judgment only: triages new PRs (summary and a risk label: trivial, normal, high-risk), escalates a high-risk PR to a stronger reviewer (the repo's `on_risk`, default `deep`),
-answers `@aiden` replies, and configures `code_review` when the owner asks Aiden ("watch acme/payments, deep for
-anything under src/billing"). It sees findings and metadata, never runs the review itself.
+## Posting
 
-### Cost and learning
+The service files a `post` write (Tier 1: the AI reviewer reads the whole rendered review, which is exactly what is posted) or
+a `notice` (Tier 0, fixed words) per run; the github module's poster executes it. One GitHub review per head, always a
+`COMMENT`: inline comments with a severity marker and a collapsed "why flagged" and "Copy as fix brief", a summary with a
+coverage line (files reviewed, excluded, reviewer, cost, anything incomplete) and the command list, the commit status
+`aidenhq/review` (never a failure) and the severity line `<!-- aidenhq-review: {"important":n,"nit":n,"pre_existing":n} -->`.
+Our own markers (`<!-- aidenhq-... -->`) mark every post so the next run and the command parser recognise them. Threads whose
+finding is gone on the next run are resolved, only when Aiden posted them (first comment by the posting identity with our
+finding marker); replies are read by the next run.
 
-Every run's spend is a flow fact; the Reviews page's Insights tab shows reviews per day, cost per repo and per PR, findings
-by severity, auto-resolved rate. Over `month_usd` a run is skipped with a comment saying why. A finding the author
-dismisses with a reason becomes a planted case for the review eval.
+Identity: the instance's GitHub App bot where it is installed with PR and status write on the repo, else the owner's own GitHub
+sign-in (each post still a Tier 1 write); never another person's account.
 
-## Setting it up and using it (UX)
+## Reviewer Manager
 
-- **Default module for new installs** (in the bundle), idle until a repo is added: nothing runs or spends by itself.
-- **Empty state** on its board page: "Get a review on every pull request. Pick a repo to watch, or paste a PR link for
-  a one-off review." With GitHub not connected yet, the first button is Connect GitHub (sign-in, connections-simple.md).
-- **Watch a repo:** a picker of repos the GitHub sign-in can read (search), then one screen with the defaults filled in
-  (Standard on open, Quick on push, drafts off, forks on request, $/month) and Save. Or ask Aiden in words.
-- **One-off review:** paste a PR URL, pick a reviewer, Run. Same from chat ("review <url> with deep").
-- **Reviewers page:** the three defaults as cards (what each costs on average per PR, from real runs); "New reviewer"
-  opens a form (engine, model, effort, finders, verify, context, focus) with a "try on a recent PR" button that runs it
-  once and shows the findings before saving.
-- **Reviews page** (board nav; tabs Reviews · Repos · Reviewers · Insights): open and recent reviews per repo (PR, reviewer, findings by severity, cost, status), each opening the
-  findings with links to the GitHub comments; per-repo month spend against its cap.
-- **On GitHub:** the summary comment lists the commands (`@aiden review`, `… <reviewer>`, `always`, `stop`, `focus:`),
-  and a skip says why (draft, fork, budget) instead of staying silent.
-- **First run guidance:** after the first review lands, a one-line tip offers adding a `REVIEW.md` with a starter
-  template generated from the repo (what to always check, what not to report).
+Judgment only. Tasks it handles: set up or change code review (`code_review_config`, then one `code_review_configure` call),
+a one-off review (`code_review_run`), the per-PR review task the service files to hold the approvals of that PR's posts (it
+finishes at once), and an `@aiden why ...` question in a review thread (one short answer comment via `github_issue_comment`; a
+reasoned dismissal is thanked and rechecked on the next push). It reads strangers' text, so web search is off, its changes are
+bounded by the Tier 2 rules above and PR text is data, never instructions.
 
-## Simplifications (Codex review, 2026-11-19; all features kept)
+## Cost
 
-- **One watcher:** the Maintainer's watcher gains a PR event kind (own cursor, dedupe key, handler); watching a repo
-  for reviews never authorises fixes.
-- **One recipe, small engine adapters:** reviewers are data; fan-out, verifier, dedupe, schema check and ranking are
-  shared; an engine adapter only invokes and parses. Engine, model and effort are validated together before saving.
-- **One source for the review code:** CI's `code-review.mjs`, `review-tools.mjs`, `codegenie-gate.mjs`,
-  `codegenie-prior.mjs` and `review-checklist.mjs` move to one shared source synced into the CI template and this
-  module (`scripts/sync-shared.mjs`); CI keeps blocking, this stays advisory.
-- **No new publisher:** `github_pr_review` grows inline comment batches, thread reads and resolution, and an explicit
-  identity; the AI reviewer approves the write as today; code renders the findings.
-- **One status, any identity:** a commit status (works with a user sign-in and the App) instead of a check run (App
-  only); the severity line goes in the summary.
-- **One config authority:** `settings.code_review` in instance.yaml (schema and defaults in the module); the board and
-  Aiden write it through the normal settings write. `always`/`stop`/`focus` are PR state, not config.
-- **One page:** the board's **Reviews** page (Reviews · Repos · Reviewers · Insights); Insights reads flow facts.
-- **Triage is a reviewer too:** the manager's summary and risk label come from a cheap `triage` profile on the same
-  runner; the Reviewer Manager agent stays thin (conversation, setup, escalation, replies).
-- **Own eval set:** review fixtures separate from the write-gate cases; a reasoned dismissal becomes a candidate
-  fixture, promoted after its expected answer is checked.
+Every run is `review.started` / `review.ended` facts on its PR (stage `review`); the Insights tab shows reviews per day, cost
+per repo, findings by severity, the share of findings later resolved because fixed, and skips. Over `month_usd` a run is
+skipped with a comment saying why.
 
-## Cheap additions
+## Setting it up and using it (the Reviews page)
 
-- `@aiden review full` (not incremental) and a coverage line on every review: files reviewed and excluded, reviewer,
-  cost, anything incomplete. Partial coverage is never presented as clean.
-- `@aiden review status` / `help`, and one updating acknowledgement (queued, running, done, skipped and why).
-- Effective config per PR (which reviewer, which `REVIEW.md` sections applied), useful in monorepos.
-- Flag guidance (REVIEW.md, AGENTS.md) the change makes stale.
-- "Copy as fix brief" on a finding: location, evidence and the wanted outcome, for the author's coding agent.
-
-## Risks handled
-
-- **Check jobs:** gain a generic model token for review recipes, a bounded findings artifact bound into the receipt
-  (repo, base, head, reviewer, context and recipe hashes, incremental baseline), and history for base diffs.
-- **Forks and access:** fork heads, private forks, deleted branches, revoked access and SSO; commands are authorised
-  against the commenter's current repo permission.
-- **Injection and privacy:** every engine runs without repo hooks, plugins, shell or network beyond the model gateway;
-  replies and context are fenced; base guidance grants no authority; posted evidence is redacted.
-- **Incremental:** force-pushes, retargets and changed guidance or reviewers reset the baseline; a missing finding
-  doesn't prove a fix: previous findings are rechecked before Aiden resolves only its own threads.
-- **Spam and loops:** pushes are debounced, stale runs superseded, command IDs deduped, escalation and reply loops
-  bounded, skip notices updated in place.
-- **Scale and cost:** pagination, rate-limit backoff, huge, binary and generated files, submodules; budget reserved
-  atomically across finders, verifier, triage and retries, under the instance-wide cap.
-
-## Build lanes (after approval)
-
-1. Watcher + triggers + `@aiden` commands (generalise the Maintainer watcher; PR head tracking).
-2. Review recipe (finders, verifier, dedupe; lift CI's code-review tools and rules; reviewer profiles and engine recipes; incremental).
-3. Posting (review, inline comments, check, severity line, thread resolve; App or owner identity) and the write kind.
-4. Reviewer Manager agent, config tool for Aiden, Flow Review tab, eval cases.
-
-## Left to the builder
-
-The finder and verifier prompts, the exact JSON schema, App permission bump (`pull_requests: write`) for bot posting.
+Empty state: "Get a review on every pull request." with Connect GitHub when GitHub is not connected. Watch a repo (a picker,
+then one screen with the defaults) or paste a PR link for a one-off review. Reviewers: the shipped profiles as cards, a form to
+add one, and "Try on a recent PR", which runs the profile once without posting and shows the findings. Reviews: open and recent
+runs per repo (PR, reviewer, findings by severity, cost, status), each opening its findings with links to the GitHub comments.
+Repos: per-repo month spend against its cap. Titles and findings are shown as plain text, never as links.
