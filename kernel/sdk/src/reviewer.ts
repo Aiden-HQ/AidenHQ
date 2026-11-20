@@ -37,7 +37,8 @@ export interface ReviewRequest {
   /**
    * The task's comments as they stand, oldest first, rendered by the kernel: each under a label line code wrote (the owner's
    * own typed words, or an agent by its place in the request: the delegating agent, the chief of staff, the requesting agent,
-   * another agent) with its text quoted line by line. The text is its author's; only the labels are code's.
+   * another agent) with every line of its text marked with that author, after a first line counting the comments by those who
+   * may amend the request. The text after each mark is its author's; the count, the labels and the marks are code's.
    */
   comments?: string;
   /** A PR's Evidence section (the author's account of how it verified the change): sent for pr and merge cards only. */
