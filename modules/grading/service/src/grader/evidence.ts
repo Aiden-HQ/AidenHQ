@@ -428,10 +428,17 @@ export async function issueEvidence(ref: string, deps: any): Promise<any> {
   // The App is a Bot actor (a user account is never one, whatever it is named) whose login is exactly its slug, which GraphQL
   // gives without the `[bot]` REST adds.
   const actor = i.closedEvents?.nodes?.[0]?.actor;
-  const trusted = Boolean(closer) && ((Boolean(read.appSlug) && actor?.__typename === "Bot" && [read.appSlug, `${read.appSlug}[bot]`].includes(closer)) || ["OWNER", "MEMBER", "COLLABORATOR"].includes(closing?.authorAssociation));
+  // GitHub's own close through a merged PR's closing keyword ("Fixes #N"): the close event's `closer` is that PR, structured, so
+  // it counts as closed and cited by it when it merged in this issue's repo, whoever merged it.
+  const by = i.closedEvents?.nodes?.[0]?.closer;
+  const keywordPr = i.state === "CLOSED" && by?.__typename === "PullRequest" && by.state === "MERGED" && String(by.repository?.nameWithOwner ?? "").toLowerCase() === repo.toLowerCase() ? by : undefined;
+  const trusted = Boolean(keywordPr) || Boolean(closer) && ((Boolean(read.appSlug) && actor?.__typename === "Bot" && [read.appSlug, `${read.appSlug}[bot]`].includes(closer)) || ["OWNER", "MEMBER", "COLLABORATOR"].includes(closing?.authorAssociation));
   const facts = [`${ref}: ${i.state === "CLOSED" ? `closed${i.stateReason ? ` as ${String(i.stateReason).toLowerCase()}` : ""} at ${i.closedAt}${closer ? ` by ${closer}` : ""}` : "open"}; labels: ${(i.labels?.nodes ?? []).map((l: any) => l.name).join(", ") || "none"}`];
   const merges: string[] = [];
-  if (i.state === "CLOSED" && !trusted) facts.push(`the close does not count: ${closer ?? "its closer"} is not the instance's App, and no comment shows them as an owner, member or collaborator, so the issue is treated as not resolved`);
+  if (keywordPr) {
+    merges.push(keywordPr.mergeCommit?.oid ?? "");
+    facts.push(`closed by GitHub through the closing keyword of ${keywordPr.url}, which cites it as the fix: ${keywordPr.url}: merged${keywordPr.mergedAt ? ` at ${keywordPr.mergedAt}` : ""}${keywordPr.mergeCommit?.oid ? ` (merge commit ${keywordPr.mergeCommit.oid})` : ""}`);
+  } else if (i.state === "CLOSED" && !trusted) facts.push(`the close does not count: ${closer ?? "its closer"} is not the instance's App, and no comment shows them as an owner, member or collaborator, so the issue is treated as not resolved`);
   else if (closing) {
     const prs = findPrs(closing.body).slice(0, 3);
     facts.push(prs.length ? `the closing comment (by ${closer}, ${closing.createdAt}) cites ${prs.map((p) => p.url).join(", ")}` : `the closing comment (by ${closer}, ${closing.createdAt}) cites no PR`);
@@ -443,7 +450,7 @@ export async function issueEvidence(ref: string, deps: any): Promise<any> {
     }
   } else if (i.state === "CLOSED") facts.push(`no comment by ${closer} just before the close: nothing is cited`);
   const text = comments.slice(-5).map((c) => `--- ${c.author?.login ?? "ghost"} (${c.authorAssociation}) ${c.createdAt} ---\n${String(c.body ?? "").slice(0, 2000)}`).join("\n\n");
-  const closed = i.state === "CLOSED" ? `${trusted ? "" : "untrusted:"}${i.stateReason}:${i.closedAt}:${merges.map((m) => m.slice(0, 12)).join(",")}+${hash(closing?.body ?? "")}` : "open";
+  const closed = i.state === "CLOSED" ? `${trusted ? "" : "untrusted:"}${keywordPr ? `kw${keywordPr.number}:` : ""}${i.stateReason}:${i.closedAt}:${merges.map((m) => m.slice(0, 12)).join(",")}+${hash(closing?.body ?? "")}` : "open";
   return { version: `${ref}@${closed}`.slice(0, 200), facts, data: { ISSUE_COMMENTS: text || "(none)" } };
 }
 

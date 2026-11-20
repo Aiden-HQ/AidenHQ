@@ -99,3 +99,16 @@ test("issue evidence counts a close only by the App or an owner, member or colla
   assert.match(other.facts.join("\n"), /not in acme\/app/);
   assert.deepEqual(read, ["acme/app#9", "acme/app#9"]);
 });
+
+test("an issue GitHub closed through a merged PR's Fixes keyword counts as closed and cited by that PR", async () => {
+  const { issueEvidence } = await import("../service/src/grader/evidence.ts");
+  const closer = (state, repo = "acme/app") => ({ __typename: "PullRequest", number: 9, url: "https://github.com/acme/app/pull/9", state, mergedAt: "2026-11-19T10:00:00Z", mergeCommit: { oid: "b".repeat(40) }, repository: { nameWithOwner: repo } });
+  const issue = (c) => ({ repository: { issue: { state: "CLOSED", stateReason: "COMPLETED", closedAt: "2026-11-19T10:00:01Z", labels: { nodes: [] }, closedEvents: { nodes: [{ actor: { __typename: "User", login: "someone" }, closer: c }] },
+    comments: { nodes: [{ author: { login: "aidenhq-app" }, authorAssociation: "NONE", createdAt: "2026-11-19T11:00:00Z", body: "Verified, fixed by acme/app#9." }] } } }, appSlug: "aidenhq-app" });
+  const ev = (c) => issueEvidence("acme/app#7", { issue: async () => issue(c), pr: async () => { throw new Error("not read: GitHub's close event carries the PR"); } });
+  const ok = await ev(closer("MERGED"));
+  assert.match(ok.facts.join("\n"), /closed by GitHub through the closing keyword of https:\/\/github.com\/acme\/app\/pull\/9.*merged at 2026-11-19T10:00:00Z/);
+  assert.doesNotMatch(ok.facts.join("\n"), /does not count/);
+  assert.match((await ev(closer("OPEN"))).facts.join("\n"), /the close does not count/, "an unmerged closer is no citation");
+  assert.match((await ev(closer("MERGED", "evil/repo"))).facts.join("\n"), /the close does not count/, "a PR in another repo is no citation");
+});
