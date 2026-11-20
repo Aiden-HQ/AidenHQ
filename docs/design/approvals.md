@@ -10,7 +10,7 @@ agent, never to the owner.
 
 ## Principles
 
-- **Code assigns the tier, never the request.** `services/runner/src/tiers.mjs` is pure (no I/O). It computes the tier
+- **Code assigns the tier, never the request.** `kernel/src/tier.ts` is pure (no I/O). It computes the tier
   from state the runner looked up itself: the authenticated requester, the real repos, bases and heads, the files in the
   actual diff, and the compiled config diff for `apply`. It runs when the request is filed and again just before it
   executes. A request with several parts takes its highest part (the panel above plain Tier 1), and anything unrecognized
@@ -28,7 +28,7 @@ agent, never to the owner.
   branches are still reviewed on their own merits. A rejection is counted on the branch it was raised against, by its name
   or by the change's content key (a rebased or renamed resubmission keeps its budget); an action that names no branch or PR
   (an apply, a module digest) has the task as its target. Code's own refusals (moved, unreadable, too large) never count; a
-  card closed because its head moved is stored `stale`, not `rejected`. `tiers.mjs` `priorDecisions`; the board keeps its
+  card closed because its head moved is stored `stale`, not `rejected`. `tier.ts` `priorDecisions`; the board keeps its
   own check of the owner's veto.
 - **A rejected head stays inspectable.** A `pr` card's head is reviewed before anything is pushed, so a rejection that
   held to its content would otherwise have nothing left to read: the runner keeps each reviewed head in its cache clone as
@@ -39,7 +39,7 @@ agent, never to the owner.
   authentication, sandbox or secret control, changes who can approve, widens credentials, grants, public access, data
   destinations or spending, or edits the gate's own core. Code decides most of it (the path inventory `paths.yaml`, which the kernel reads for every
   push, PR and merge, the platform check `modules/platform/src/check.mjs`, the git rules in `modules/github/service/src/plan.mjs`, the module and apply rules in
-  `tiers.mjs`, `panel: true`): the runner's `tiers`, `review-request`, `siblings`, `apply`, `netjail`, `state`, `config`,
+  `tier.ts`, `panel: true`): the runner's `tiers`, `review-request`, `siblings`, `apply`, `netjail`, `state`, `config`,
   `main`, the code host module (`modules/github/`: the GitHub App, git, workspaces, the merge gate and the git
   rules), the platform check, the merge queue, and what a job can reach: `engines` (its sandbox, mounts and env),
   `files`, `commands` (repo access, the owner's words, private reads) and `scripts/computers.mjs`; the AI reviewer module (`modules/ai-reviewer/`: its service, policy, eval cases and
@@ -93,7 +93,7 @@ agent, never to the owner.
   raise, or nothing recognised. The AI reviewer reads every one first (owner, 2026-11-16: every write is reviewed before it
   reaches the owner), and its verdict is on the owner's card:
   - **Tier 2 on its merits** (the owner's veto, a spend-cap raise, an owner-approval record, unknown repos, nothing
-    recognised; `tiers.mjs` `meritOwner`, `byMerit`): the reviewer's approve and its reject both go on to the owner
+    recognised; `tier.ts` `meritOwner`, `byMerit`): the reviewer's approve and its reject both go on to the owner
     (`owner_tier`). Only code's own refusals (the head moved, `refused_by_code`) close it, and a reviewer that keeps failing
     hands it to the owner with that note. The kernel refuses a reviewer approve or reject on such a card (`review_first =
     owner`), and its own owner-veto check files the card for the reviewer first.
@@ -121,7 +121,7 @@ ask to merge it when its own task pushed the head (recorded with the head at the
 `product-merge-engineer-head`). Bare branch pushes, PRs that change `.github/`, and merges of another requester's head or of
 a `.github/` change on the product repo are this line's only.
 
-Typical assignments in `tiers.mjs` (read the file for the full rules):
+Typical assignments in `tier.ts` (read the file for the full rules):
 
 | Request | Tier |
 |---|---|

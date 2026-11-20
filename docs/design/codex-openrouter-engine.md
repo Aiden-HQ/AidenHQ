@@ -67,8 +67,7 @@ Jobs used to run under `bwrap --dev-bind / /` with a list of masked paths: a job
   task's own layer (`<work_dir>/.cache-layers/<task>`), so a job's writes never reach another's (read-write and shared
   when bwrap can't mount overlays, before 0.11; the runner logs a warning);
 - read-only: `/usr` (merged-/usr links recreated), `/etc`, `/opt`, the home's toolchains (`~/.local/bin`, `~/.local/lib`,
-  `~/.cargo`, `~/go/bin`, … plus `sandbox.read_only_roots`), node's own prefix, the runner's wrappers
-  (`services/runner/bin`), and `/run/systemd/resolve` for DNS;
+  `~/.cargo`, `~/go/bin`, … plus `sandbox.read_only_roots`), node's own prefix, the engine's wrappers, and `/run/systemd/resolve` for DNS;
 - the clones' `core.hooksPath` (`<work_dir>/.guard-hooks`, the pre-push refusal), read-only;
 - an empty tmpfs for `/tmp` and the home; the host's `/dev` and `/sys` (a fresh `--dev` breaks the jail's route setup);
 - its own PID and IPC namespaces (`--unshare-pid --unshare-ipc`) with a fresh procfs (`--proc /proc`): no other
@@ -145,7 +144,7 @@ agent's adapterConfig, so the Settings page's effort reaches the runner.
 
 **Fallback.** `openrouter` (opencode inside `codex sandbox`) stays a supported engine. Set an Engineer's `engine:` back
 to `openrouter`, as an instance override (`overrides.agents.<key>.engine`, an owner-tier change), and its jobs run on
-opencode again (and set `engines.default: opencode` in runner.yaml for jobs with no Engineer). Words that name OpenRouter
+opencode again. Words that name OpenRouter
 models (`openrouter`, `glm`, `openrouter:<model>`, a bare `org/model`, "use Kimi") resolve to `codex-openrouter`; only
 `opencode` names the fallback engine. The tasks bridge's `openrouter` means OpenRouter models: the Engineer that runs
 them, on whichever OpenRouter engine it is set to. A switch of engine starts a new session (sessions are kept per

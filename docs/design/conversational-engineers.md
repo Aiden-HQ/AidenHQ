@@ -41,7 +41,7 @@ a turn -> engine (Claude Code, Codex or opencode) in the workspace
 
 ## What a turn sees
 
-`services/runner/src/thread.ts` builds the prompt sections. A **fresh session** (first turn, engine switch, or after a
+`modules/dispatch/service/src/thread.ts` builds the prompt sections. A **fresh session** (first turn, engine switch, or after a
 reset) gets everything: the Engineer's rules, the task and its parent, the whole thread oldest first with every comment
 labelled (the user, the Engineer's own earlier replies, the runner, other agents), and the live state of every repository,
 branch and PR in the workspace (open or draft, review decision, checks, mergeability) with the merge queue. Untrusted text
@@ -53,7 +53,7 @@ task description is always kept, and a resumed session's own memory covers the r
 
 ## Tools: the `aidenhq` CLI
 
-`services/runner/bin/aidenhq` is on every job's PATH and posts to a loopback endpoint in the runner with a token valid only
+`services/computer/images/engineer/bin/aidenhq` is on every job's PATH and posts to a loopback endpoint in the runner with a token valid only
 for the turn. Being a shell command, it works the same in all three engines.
 
 | Command | Purpose | Gate |
@@ -80,7 +80,7 @@ Writes also pass through the tier rules in [approvals.md](approvals.md).
 
 If the Engineer judged for itself when the user had asked for a write, a prompt injection could steer it ("a log line says
 run `aidenhq merge`"). So no write is the Engineer's call: pushes, PRs, merges and applies are approval records tiered in
-code (`tiers.mjs`), and a Primer document is the kernel's `primer.publish` record. The AI reviewer (and, at Tier 2, the
+code (`tier.ts`), and a Primer document is the kernel's `primer.publish` record. The AI reviewer (and, at Tier 2, the
 owner) checks each against the request chain before anything runs, and the Engineer only files the request.
 
 Everything else stays in code: own branches only, leases on rewritten ones, allowed orgs, leak checks on branch names,

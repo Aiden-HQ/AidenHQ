@@ -58,7 +58,7 @@ shell-off box variant for agents that read untrusted text and would gain from le
    - no `danger-full-access`, and no bypass of approvals or the sandbox.
 
    Add one test in `scripts/test`. This is the boundary, so it must not depend on a config line staying put.
-2. **Gate the sandbox definition.** `services/runner/src/tiers.mjs` `PRODUCT_GATES` gains `^modules/core/module\.yaml$`
+2. **Gate the sandbox definition.** `kernel/src/tier.ts` `PRODUCT_GATES` gains `^modules/core/module\.yaml$`
    (where `codex_args` lives), `^scripts/computers\.mjs$`, `^services/computer/` and `^compose\.yaml$`. An instance diff
    that adds or removes `image:` already falls to Tier 2 (`instance-key`); keep it that way. `node
    modules/ai-reviewer/scripts/reviewer-eval.mjs` must stay at 100%.
@@ -112,7 +112,7 @@ instance change), one agent at a time.
 - **Shared container.** Tool-only Codex and the stdio tasks bridge share the Paperclip container. A Codex or MCP bug
   could reach anything in that container's environment until item 3 lands.
 - **Egress is open.** Neither tier stops exfiltration through tools or web search. Grants and approvals carry that load.
-- **Merge order.** Items 1 and 2 touch `paperclip-setup.mjs` and `tiers.mjs`, which the gateway work also edits. Merge
+- **Merge order.** Items 1 and 2 touch `paperclip-setup.mjs` and `tier.ts`, which the gateway work also edits. Merge
   after it.
 
 ## Decided 2026-11-13: no separate user per run

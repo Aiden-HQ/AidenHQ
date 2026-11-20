@@ -123,7 +123,7 @@ One run sets up the whole machine. It is idempotent: if it stops partway, fix th
 1. installs system packages, Docker, Node 24, gVisor, gocryptfs and
    Tailscale (`ops/vm/setup.sh`);
 2. joins the tailnet with `TS_AUTHKEY` as `aidenhq-<you>` (unless the VM is already on it, or `BOARD_HOST` is set);
-3. writes `.env` and `config/runner.yaml`, and runs `scripts/bootstrap.sh` (secrets folder, generated tokens, data
+3. writes `.env` and `config/runner.yaml` (job tuning), and runs `scripts/bootstrap.sh` (secrets folder, generated tokens, data
    folders);
 4. creates your **instance repo**: a local git repo at `~/aidenhq-instance`, whose `origin` is a bare repo at
    `~/aidenhq-instance.git` on the same VM (no GitHub needed). It contains `instance.yaml` (pinned to the product

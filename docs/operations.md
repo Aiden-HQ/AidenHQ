@@ -356,7 +356,7 @@ locked, nothing that needs secrets starts. Recovery without the TPM: [ops/vault/
 
 ## User units
 
-`aidenhq-kernel` is a systemd user unit; the optional `config/runner.yaml` holds host tuning it reads. Units start only once the vault is
+`aidenhq-kernel` is a systemd user unit; the optional `config/runner.yaml` holds the job tuning it reads. Units start only once the vault is
 mounted and restart on failure. Other units: `aidenhq-computers` (the agent computer launcher, optional; a restart
 never ends a run: boxes stay up, an agent's turn runs detached in its box and the plugin collects its result from the new
 launcher; a new image applies from the next acquire) and

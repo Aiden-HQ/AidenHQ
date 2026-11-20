@@ -54,7 +54,7 @@ so a routine turned on after weeks paused starts at its next tick with no backlo
   grader). Approving it doubles today's cap; tomorrow starts at the setting again. The owner changes the setting itself
   in Settings (Tier 2).
 - The raise card reaches the owner at once, as every `raise_cap` does: the runner's tier for it is Tier 2 from code
-  (`tiers.mjs` `raise_cap`), so no reviewer model call is made, which the cap it raises would refuse.
+  (`tier.ts` `raise_cap`), so no reviewer model call is made, which the cap it raises would refuse.
 - Per-agent caps (2/10/30 USD) stay as they are: run and task already fit under 10, and the install cap binds first.
 
 ### 3. Turning things on
