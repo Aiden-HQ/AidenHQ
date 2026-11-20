@@ -11,6 +11,7 @@
 //                              record (own only; the board: any)
 //   POST /v1/writes/:id/outcome (the kind's executor module) the outcome of an execute
 //   GET  /v1/writes            (the board's key) records by state or task (`tier0=1`: Tier 0 runs too)
+//   GET  /v1/writes/:id/chain  (the board's key) what the record's task asks, as the AI reviewer reads it (review-loop.ts requestChain)
 //   GET  /v1/channel/cards, POST /v1/channel/{decide,owner-message,stop,thread}  (a speaks-as-owner channel's token) cards
 //                              with decision tokens, a token spent, the owner's words (channels.ts)
 //   GET  /v1/cp/read/<path>    (a channel, or a module with role kernel.cp-read) the control plane's read routes, as the owner;
@@ -104,6 +105,7 @@ import type { Reviews } from "./reviews.ts";
 import { wakeNotice, type Wakes } from "./wakes.ts";
 import type { ModuleTasks } from "./modtasks.ts";
 import { CONN_TOOL, type Writes } from "./writes.ts";
+import { requestChain } from "./review-loop.ts";
 
 const MAX_ATTACHMENT = 25 * 1024 * 1024;
 type Handler = (req: IncomingMessage, res: ServerResponse, ...a: string[]) => Promise<void>;
@@ -127,6 +129,7 @@ export const ROUTES = [
   { method: "POST", path: "/v1/writes", auth: "bearer" },
   { method: "GET", path: "/v1/writes", auth: "board" },
   { method: "GET", path: "/v1/writes/:id", auth: "bearer" },
+  { method: "GET", path: "/v1/writes/:id/chain", auth: "board" },
   { method: "POST", path: "/v1/writes/:id/outcome", auth: "module" },
   { method: "GET", path: "/v1/channel/cards", auth: "module" },
   { method: "POST", path: "/v1/channel/decide", auth: "module" },
@@ -810,6 +813,14 @@ export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boar
             const own = w.kind === "module" ? w.module === r.requester.module && r.requester.kind === "module" : Boolean(w.agent) && w.agent === r.requester.agent;
             if (!own) throw fail(404, "not_found", `no record ${id}`);
             return send(res, 200, { id: r.id, kind: r.kind, tier: r.tier, state: r.state, outcome: r.outcome, ...(r.owner_reason ? { reason: r.owner_reason } : {}) });
+          }
+          case "GET /v1/writes/:id/chain": {
+            // What was asked, as the AI reviewer reads it (review-loop.ts requestChain), from the task as it reads now: the
+            // board's "Explain" on a card.
+            if (!isBoard(req)) throw fail(401, "unauthorized", "the board's key is required");
+            if (!owner) throw fail(503, "unavailable", "the control plane is off");
+            const issue = async (task: string) => { const r = await owner("GET", `/api/issues/${encodeURIComponent(task)}`); if (r.status !== 200) throw fail(404, "not_found", `no task ${task}`); return r.json; };
+            return send(res, 200, { chain: await requestChain(await issue(record(id).task), issue) });
           }
           case "POST /v1/writes/:id/outcome": {
             const r = record(id);

@@ -5,7 +5,9 @@
 //                            `waiting` (claimable wakes: count, oldest_at, oldest_cause) and `last_started_at` say whether dispatch has stalled
 //   GET /v1/work?job=<id>    one job for its run page (the board): state, times, why it ended, its engine's token count, its
 //                            progress (said, plan, steps) and final words (both the agent's: untrusted)
-//   GET /v1/work?agent=<id>  an agent's last 50 jobs (newest first), each with how it ended and the routine its task traces to: { jobs }
+//   GET /v1/work?agent=<id>  an agent's last 50 jobs (newest first), each with how it ended and the routine its task traces to,
+//                            and for the board's timeline the wake that started it, why it ended, its billed cost and the
+//                            records the agent filed while it ran: { jobs }
 //   GET /v1/work?since=<iso>[&to=<iso>]  the records filed or decided since then (tier 1 and 2) and the billed cost per agent and
 //                            UTC day from the gateway ledger: { records, usage } (the Fleet Steward's scorecards; each record says
 //                            whether it is a `judged` rejection and the branches or PRs it was aimed at, `targets`)
@@ -28,6 +30,33 @@ export function createWork({ db, records, generationsFile = "" }: { db: Database
   const judged = (r: { state: string; decided_by?: string | null; review_code?: string | null }) => r.state === "rejected" && /^reviewer:/.test(r.decided_by ?? "") && !CODE_REJECTS.includes(r.review_code ?? "");
   /** Where a record was aimed; a record whose args can't be read names none (one malformed record never fails the read). */
   const targetsOf = (r: { kind: string; args?: unknown }): string[] => { try { return (requestTargets(actionOf(r.kind), r.args)?.targets ?? []).map((t) => t.key); } catch { return []; } };
+  /** One row, or undefined when its table isn't there (a kernel without the wake inbox or the fact log). */
+  const one = (sql: string, ...args: (string | number)[]) => { try { return db.prepare(sql).get(...args) as Record<string, any> | undefined; } catch { return undefined; } };
+  const factData = (subject: string, type: string) => { const f = one("SELECT data FROM facts WHERE subject = ? AND type = ? ORDER BY seq DESC LIMIT 1", subject, type); return f ? (JSON.parse(f.data) as Record<string, unknown>) : undefined; };
+  /**
+   * What the agent page's timeline adds to a job (the board's Activity tab): the task's identifier, the wake that started it
+   * (its cause and who caused it, from its wake.opened fact), why it ended and what the gateway billed (its job.ended fact;
+   * null while it runs or when the fact is gone), and the write records the agent filed on its task while it ran.
+   */
+  const timeline = (r: Record<string, any>) => {
+    const wake = r.wake ? one("SELECT key, cause FROM wakes WHERE key = ?", r.wake) : one("SELECT key, cause FROM wakes WHERE job = ?", r.id);
+    const ended = factData(`job:${r.id}`, "job.ended");
+    const failed = ["failed", "lost", "timeout", "cancelled"].includes(r.state);
+    const writes = (() => {
+      try {
+        return rows("SELECT id, kind, tier, state, decided_by, review_code, created_at FROM records WHERE task = ? AND json_extract(requester, '$.agent') = ? AND created_at >= ? AND created_at <= ? ORDER BY created_at LIMIT 30", r.task, r.agent, iso(r.at) ?? "", iso(r.ended) ?? "9999")
+          .map((w) => ({ id: w.id, kind: w.kind, tier: w.tier, state: w.state, decided_by: w.decided_by ?? null, review_code: w.review_code ?? null, created_at: w.created_at }));
+      } catch { return []; }
+    })();
+    return {
+      identifier: r.identifier ?? null,
+      cause: (wake?.cause as string | undefined) ?? null,
+      caused_by: wake ? (String(factData(`wake:${wake.key}`, "wake.opened")?.author ?? "") || null) : null,
+      cost_usd: typeof ended?.cost_usd === "number" ? ended.cost_usd : null,
+      error: failed ? (String(ended?.why || "") || String(r.final || r.state).split("\n")[0]!).slice(0, 300) : null,
+      writes,
+    };
+  };
   return {
     task(ref: string) {
       // The task by its id or its identifier (WOR-12, which a module's tables hold): a job row has both.
@@ -45,7 +74,7 @@ export function createWork({ db, records, generationsFile = "" }: { db: Database
     agent(id: string) {
       return { jobs: rows("SELECT * FROM jobs WHERE agent = ? ORDER BY at DESC LIMIT 50", id).map((r) => {
         const why = JSON.parse(r.why || "{}"), progress = JSON.parse(r.progress || "{}");
-        return { ...job(r), exit: r.exit ?? null, timed_out: why.timedOut === true, steps: Array.isArray(progress.steps) ? progress.steps.length : 0, has_final: Boolean(r.final), routine: r.routine ?? null };
+        return { ...job(r), exit: r.exit ?? null, timed_out: why.timedOut === true, steps: Array.isArray(progress.steps) ? progress.steps.length : 0, has_final: Boolean(r.final), routine: r.routine ?? null, ...timeline(r) };
       }) };
     },
     since(from: string, to = new Date().toISOString()) {
