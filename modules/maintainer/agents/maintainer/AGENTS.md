@@ -124,8 +124,8 @@ Name the issue as `owner/name#number` everywhere (tasks, comments, searches): is
 4. For `real`, brief the engineer: an Engineer.
    The brief names the repo, the symptom, the sha, the `path:line`, the repro and the exact change wanted, and asks for a
    PR on that repo; its PR deliverable is the task's own PR (no ref), which grading accepts on any repo. Where the PR
-   merges on its approved card (step 5), the brief also asks the engineer to merge it at its head once its checks are
-   green (`aidenhq merge`). Do not write the patch yourself.
+   merges on its approved card (step 5), its merge is filed for the engineer's task once its checks are green at the head
+   it published, so the brief's done condition is the PR merged. Do not write the patch yourself.
    A brief asks for what the product should do from now on, and a new table or a fresh row is the fresh start that is
    allowed. A brief takes a back-compat path, a migration of old data or an upgrade of an existing table from the owner's
    own words, carrying that request in their words. A rejection that quotes a recorded product decision answers the

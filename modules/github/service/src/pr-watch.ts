@@ -3,8 +3,9 @@
 // finished becomes one task for the agent holding the platform-engineer role (kernel POST /v1/tasks, role kernel.tasks), closed
 // again once the PR is merged or closed; an agent's own PR (one this service opened: notePrTask) that conflicts with the default
 // branch, or is red while behind a green one, wakes the task that opened it (POST /v1/wakes with text, role kernel.wake), at most once per
-// head of main and half hour; an agent's own PR whose named checks are all green on a mergeable head wakes that task once per head, to merge
-// it (engineers end a job on running checks, "I'll merge once green", and nothing else would bring them back); one whose named checks have
+// head of main and half hour; an agent's own PR whose named checks are all green on a mergeable head has its merge filed once per head, by the kernel
+// as the agent whose approved PR record on that task pushed exactly that head (POST /v1/merges: no agent turn waits in between),
+// when it is the task's only open PR; any other green head (one GitHub updated, a task with several PRs) wakes the task to merge it; one whose named checks have
 // finished red on its own mergeable head (not only behind main) wakes it once per head to fix it. A check whose job never started (GitHub
 // refused it: billing, no runner; the runner's environmentFailure) is re-run once at that head, never rebased and never woken for. The PR of
 // a cancelled task is closed with its branch, once (the runner's abandoned PR), and so is a done task's unmerged PR once its head is half an hour old with no merge of it open. A PR behind main with no conflict is updated by GitHub
@@ -144,6 +145,21 @@ export function startPrWatch(o: PrWatchOptions) {
       state.wakes[pr.url.toLowerCase()] = w;
       save();
       return "sent";
+    }
+    /**
+     * Ask the kernel to file a green PR's merge for its task (POST /v1/merges): "filed", "merging" (one is already asked for),
+     * "wake" (not the head the task's approved PR pushed, a closed task, or a refusal: the agent decides), or "failed" (the
+     * kernel didn't answer: asked again next tick).
+     */
+    async function askMerge(pr: Json, task: string): Promise<"filed" | "merging" | "wake" | "failed"> {
+      try {
+        const r = await kernel("POST", "/v1/merges", { task, repo, number: pr.number, head: pr.headRefOid, branch: pr.headRefName });
+        return r.filed ? "filed" : r.skip === "merging" ? "merging" : "wake";
+      } catch (e) {
+        const status = (e as { status?: number }).status;
+        log("merge not filed", { pr: pr.url, task, err: String((e as Error).message).slice(0, 200) });
+        return status !== undefined && status < 500 ? "wake" : "failed";
+      }
     }
     /** Re-run the failed jobs of red checks whose jobs never started, once per head. True when the red checks are all of that kind. */
     async function neverStarted(pr: Json): Promise<boolean> {
@@ -344,6 +360,15 @@ export function startPrWatch(o: PrWatchOptions) {
         }
       }
       if (pr.mergeable === "MERGEABLE" && !pr.isDraft && named.length && named.every((c) => c.ok) && state.greened[url] !== pr.headRefOid) {
+        // The task's only open PR, green at the head its approved PR record pushed: the kernel files its merge, as its agent.
+        const only = open.filter((p) => opened[p.url.toLowerCase()]?.task === opener.task && opened[p.url.toLowerCase()]?.branch === p.headRefName).length === 1;
+        const asked = only ? await askMerge(pr, opener.task) : "wake";
+        if (asked === "failed") continue;
+        if (asked !== "wake") {
+          state.greened[url] = pr.headRefOid; delete state.breaker[url]; save();
+          log(asked === "filed" ? "merge filed" : "merge already asked for", { pr: pr.url, task: opener.task, head: pr.headRefOid });
+          continue;
+        }
         const w = await wake(pr, opener.task, `${pr.url}'s checks are green at \`${pr.headRefOid}\`. If this PR is your task's change, merge it with \`aidenhq merge ${pr.url} ${pr.headRefOid}\`; if it is superseded, close it with \`aidenhq close ${pr.url}\`. Nothing else.`);
         if (w !== "failed") { state.greened[url] = pr.headRefOid; delete state.breaker[url]; save(); }
         if (w === "sent") log("merge requested", { pr: pr.url, task: opener.task, head: pr.headRefOid });
