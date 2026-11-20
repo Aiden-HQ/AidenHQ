@@ -11,9 +11,13 @@
 // The CI breaker: after 3 red rounds on an agent's PR (heads whose own checks finished red), or the same named check red on two
 // heads, its task is no longer woken for red checks; whoever asked for the task (its open parent, else the task) is told once,
 // with the failing checks and the last failure's summary fenced as data. A green head resets it.
+// The title gate: a title-only edit starts no workflow run, so the red `policy` (and `ci-required`) it caused stays on the head.
+// Any open same-repo PR whose only failed jobs in that run are `policy` and `ci-required`, and whose title now passes
+// ci.yml's Conventional Commit test, has that run's failed jobs re-run in place, once per head and title.
 // Task text is fixed here: a PR's title, body, commits and check output never reach a task (only the breaker's fenced note).
 //
 // Started by main.ts. Not ported from the runner: the environment receipt comment on the task, rebaseInCode's replay of approved commits and approval move (GitHub updates the branch instead), and the parked-branch refusal (MAX_REJECTS).
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DESIGN_REVIEW_CHECK, GATE_CHECK, namedChecks } from "./aidenhq-sdk/checks.ts";
@@ -33,6 +37,11 @@ export type PrWatchOptions = {
 const WATCH = { contents: "read", pull_requests: "read", checks: "read", statuses: "read", actions: "read", metadata: "read" };
 const CLOSE = { contents: "write", pull_requests: "write", metadata: "read" };
 const RERUN = { actions: "write", metadata: "read" };
+/** ci.yml's "Conventional Commit title" test, unchanged: every `policy` run reads the PR's title. */
+const CONVENTIONAL_TITLE = /^(feat|fix|docs|chore|test|refactor|perf|ci|build|style|revert)(\([a-z0-9][a-z0-9._\/-]*\))?!?: \S/;
+const POLICY_CHECK = "policy";
+/** ci.yml's step that reads the title; the `policy` job's other steps (the age and pin checks) are the change's own. */
+const TITLE_STEP = "Conventional Commit title";
 /** Wakes per PR per head, whatever their cause (the runner's RED_WAKES). */
 const MAX_WAKES = 3;
 const HALF_HOUR = 30 * 60_000;
@@ -100,6 +109,7 @@ export function startPrWatch(o: PrWatchOptions) {
     state.pinged ??= {};     // `<pr url>:<main oid>` -> when
     state.reded ??= {};      // PR url -> the head whose red checks woke its task
     state.reran ??= {};      // `<pr url>:<head>` -> when its never-started checks were re-run
+    state.policyRan ??= {};  // `<pr url>:<head>:<sha256(title)>` -> when its red policy was re-run for that title
     state.abandoned ??= {};  // PR url -> when it was closed for its cancelled task
     state.headAt ??= {};     // PR url -> { head, at }: when this head was first seen
     state.updated ??= {};    // `<pr url>:<head>:<main oid>` -> "ok" or "refused": GitHub was asked to update the branch
@@ -146,6 +156,41 @@ export function startPrWatch(o: PrWatchOptions) {
         log(r.status < 300 ? "checks re-run" : "check re-run refused", { pr: pr.url, head: pr.headRefOid, run, status: r.status });
       }
       return true;
+    }
+    /**
+     * A title-only edit starts no workflow run, so a red `policy` (the Conventional Commit title gate) stays on the head, and
+     * `ci-required` with it. When the title now passes and the run's only failed jobs are `policy` and `ci-required`, re-run its
+     * failed jobs in place: the same run replaces both results on this head, once per head and title. True when that re-run was
+     * asked for, so the caller skips the red-head rules: a passing title is not the fix a push brings. A refused request falls
+     * through, and the task is woken for the red head as usual.
+     */
+    async function clearPolicy(pr: Json): Promise<boolean> {
+      if (pr.isCrossRepository !== false) return false;
+      const named = namedChecks(rollupOf(pr));
+      if (!named.length || named.some((c) => c.pending)) return false;
+      const policy = (rollupOf(pr)?.contexts?.nodes ?? []).find((n: Json) => n.__typename === "CheckRun" && n.name === POLICY_CHECK && n.status === "COMPLETED" && n.conclusion === "FAILURE");
+      const run = policy?.checkSuite?.workflowRun?.databaseId;
+      if (!run) return false;
+      const jobs = await o.gh("GET", `/repos/${o.repo}/actions/runs/${run}/jobs`, await watchToken());
+      if (jobs.status >= 300 || !Array.isArray(jobs.body?.jobs)) return false;
+      const failed: string[] = jobs.body.jobs.filter((j: Json) => j.conclusion === "FAILURE").map((j: Json) => String(j.name)).sort();
+      // A red test or another job is a real failure: re-running would only repeat it.
+      if (failed.length !== 2 || failed[0] !== GATE_CHECK || failed[1] !== POLICY_CHECK) return false;
+      // `policy` also runs the age and pin checks: only a title step that failed means the title is the whole failure.
+      const policyJob = jobs.body.jobs.find((j: Json) => j.name === POLICY_CHECK);
+      const failedSteps = (policyJob?.steps ?? []).filter((s: Json) => s.conclusion === "FAILURE").map((s: Json) => String(s.name));
+      if (!Array.isArray(policyJob?.steps) || failedSteps.length !== 1 || failedSteps[0] !== TITLE_STEP) return false;
+      const p = await o.gh("GET", `/repos/${o.repo}/pulls/${pr.number}`, await watchToken());
+      const title = p.status < 300 ? p.body?.title : undefined;
+      if (typeof title !== "string" || !CONVENTIONAL_TITLE.test(title)) return false;
+      // The title is data: it reaches only this regex test and the cache key, never a log line.
+      const key = `${pr.url.toLowerCase()}:${pr.headRefOid}:${createHash("sha256").update(title).digest("hex")}`;
+      if (state.policyRan[key]) return false;
+      state.policyRan[key] = new Date().toISOString();
+      save();
+      const r = await o.gh("POST", `/repos/${o.repo}/actions/runs/${run}/rerun-failed-jobs`, await o.app.token(owner!, { repositories: [name!], permissions: RERUN }), {});
+      log(r.status < 300 ? "red policy re-run" : "policy re-run refused", { pr: pr.url, head: pr.headRefOid, run, status: r.status });
+      return r.status < 300;
     }
     /** Have GitHub update a behind, non-conflicting branch (rebase if the repo allows, else merge), at most once per head and head of main. True when it did. */
     async function updateBranch(pr: Json, base: string) {
@@ -257,6 +302,9 @@ export function startPrWatch(o: PrWatchOptions) {
         o.flow.checksCompleted(o.repo, pr.number, pr.headRefOid, named.filter((c) => !c.ok).map((c) => c.name).slice(0, 20), undefined, opener.task);
         save();
       }
+      // Any open PR whose title now passes but whose head still carries the title gate's red `policy`: clear it in place, before
+      // the agent-only rules below (a wake would tell its task to fix a check no push can fix).
+      if (await clearPolicy(pr)) continue;
       // Only an agent's own PR, by the task that opened it: a reused PR number (a recreated repository) belongs to nobody here.
       if (isDependabot(pr) || pr.isCrossRepository !== false || !opener || opener.branch !== pr.headRefName) continue;
       if (state.headAt[url]?.head !== pr.headRefOid) state.headAt[url] = { head: pr.headRefOid, at: new Date().toISOString() };
