@@ -96,7 +96,8 @@ export function localApply({ bare, instanceRepo, ingest }: { bare: string; insta
       const diff = await git(["-c", "core.attributesFile=/dev/null", "diff", "--no-ext-diff", "--no-textconv", "--text", "--no-renames", c.base, c.sha], Math.max(budget, 1)).catch((e: Error & { code?: string }) => {
         throw e.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" ? fail(413, `the commit's diff is too large to review (over ${MAX_TOTAL} bytes with its files)`) : e;
       });
-      return { files, texts, diff, trial: await trialEdits(c.base, agents, texts) };
+      // base: the merge base with main (the kernel reads base === sha as "already on main").
+      return { files, texts, diff, trial: await trialEdits(c.base, agents, texts), base: c.base };
     },
     /** `official`: the official modules' pin on both sides (apply.ts officialMove). No reviewer-eval gate runs here, so a move is refused. */
     async land(s: Source & { official: { from: Pin; to: Pin } }) {

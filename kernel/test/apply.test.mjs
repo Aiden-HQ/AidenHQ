@@ -133,6 +133,30 @@ test("a crash between launching the unit and recording its outcome never starts 
   assert.equal(h3.launches.length, 0);
 });
 
+test("a land whose answer was lost lands on its retry, and a systemd that can't be read for a moment isn't an outcome", async () => {
+  const h = fakeHost();
+  // The land pushes, then its answer times out (no status): the retry finds the commit on main (merge base = the commit, an
+  // empty diff) and takes the code host's no-op land, never "no longer changes the files that were approved".
+  let pushed = false;
+  h.codehost.read = async () => (pushed ? { files: [], texts: { base: {}, head: {} }, diff: "", base: SHA } : h.read);
+  h.codehost.land = async (s) => { h.lands.push(s); if (!pushed) { pushed = true; throw new Error("the code host's land didn't answer in 3 minutes"); } return { landed: "f".repeat(40), already: true }; };
+  // And systemctl show fails twice while the unit runs.
+  let fails = 2;
+  const unit = h.unit;
+  h.unit = (u) => (fails-- > 0 ? Promise.reject(new Error("systemctl show: Connection timed out")) : unit(u));
+  const records = openRecords(dbFile());
+  const applies = createApply({ db: records.db, ...h, pollMs: 5, retryMs: [5] });
+  const r = claimed(records);
+  const done = applies.execute(r);
+  await until(() => h.launches.length === 1);
+  h.units[h.launches[0]] = { loaded: true, active: "active", sub: "exited", result: "success" };
+  const o = await done;
+  assert.equal(o.ok, true, o.text);
+  assert.match(o.text, /Applied: the instance's main is `fffffffff`/);
+  assert.equal(h.lands.length, 2);
+  assert.equal(fails, -1, "systemd was read again after its failures");
+});
+
 test("a failed apply marks the record failed, though the auto-revert left the host healthy", async () => {
   for (const reboot of [false, true]) {
     const db = dbFile();

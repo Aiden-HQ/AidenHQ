@@ -125,7 +125,7 @@ export function officialMove(base: string | undefined, head: string | undefined)
  * rules read on both sides (each changed file, the agent.yaml of each agent it touches, and instance.yaml; absent where the
  * file isn't), the diff, and the graduation card's trial edits (handbook commits since an agent's trial began; "" if none).
  */
-export type Read = { files: string[]; texts: { base: Record<string, string>; head: Record<string, string> }; diff: string; trial?: string };
+export type Read = { files: string[]; texts: { base: Record<string, string>; head: Record<string, string> }; diff: string; trial?: string; base?: string };
 /**
  * What an apply's commit changes, as one digest: its files, the texts read on both sides and the diff. The plan binds it into
  * the record's targets; the land re-reads the commit and lands only when it is exactly the same.
@@ -152,8 +152,13 @@ export type ApplyHost = {
   tail(unit: string): Promise<string>;
 };
 
-export function createApply({ db, codehost, launch, unit, generations, busy, tail, log = () => {}, pollMs = 5_000, lockWaitMs = 15 * 60_000 }: ApplyHost & {
+/** A failure worth trying again: no answer, a timeout, a 5xx or a 429 (a 4xx is the code host's answer). */
+const transient = (e: unknown) => { const st = (e as { status?: number }).status; return st === undefined || st >= 500 || st === 429; };
+
+export function createApply({ db, codehost, launch, unit, generations, busy, tail, log = () => {}, pollMs = 5_000, lockWaitMs = 15 * 60_000, retryMs = [5_000, 30_000, 120_000], unitWaitMs = 30 * 60_000 }: ApplyHost & {
   db: DatabaseSync; log?: (msg: string, f?: Record<string, unknown>) => void; pollMs?: number; lockWaitMs?: number;
+  /** The waits between tries of a code host call that failed transiently; `unitWaitMs`: how long systemd may stay unreadable. */
+  retryMs?: number[]; unitWaitMs?: number;
 }) {
   db.exec("CREATE TABLE IF NOT EXISTS applies (record TEXT PRIMARY KEY, sha TEXT NOT NULL, landed TEXT, unit TEXT, mark INTEGER)");
   type Row = { record: string; sha: string; landed: string | null; unit: string | null; mark: number | null };
@@ -161,12 +166,38 @@ export function createApply({ db, codehost, launch, unit, generations, busy, tai
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
   // A record this process is already carrying (an approval's run and the start's reconcile can meet): the same promise.
   const inflight = new Map<string, Promise<Outcome>>();
+  /** A code host call, tried again after a transient failure (bounded, with backoff). Safe: read is a read, land is idempotent. */
+  async function retried<T>(what: string, record: string, fn: () => Promise<T>): Promise<T> {
+    for (let n = 0; ; n++) {
+      try { return await fn(); } catch (e) {
+        if (!transient(e) || n >= retryMs.length) throw e;
+        log(`apply: the code host's ${what} failed, trying again`, { record, attempt: n + 1, err: String((e as Error).message).slice(0, 200) });
+        await sleep(retryMs[n]!);
+      }
+    }
+  }
 
   /** The apply's outcome: the unit while systemd has it, else the generation that applied this commit after the mark. */
   async function follow(row: Row): Promise<Outcome> {
+    let unread = 0;
     for (;;) {
-      const u = await unit(row.unit!);
       const g = generations().find((x) => x.n > (row.mark ?? 0) && x.instance === row.landed && !x.revert_of);
+      let u: Unit;
+      try {
+        u = await unit(row.unit!);
+        unread = 0;
+      } catch (e) {
+        // systemd unreadable for a moment (a busy user manager, a timeout): never an outcome. A settled generation decides;
+        // else ask again, and only a systemd that stays unreadable for unitWaitMs fails the record.
+        if (g && g.health !== "pending") u = { loaded: false, active: "", sub: "", result: "" };
+        else {
+          unread ||= Date.now();
+          if (Date.now() - unread >= unitWaitMs) throw e;
+          log("apply: its unit couldn't be read, trying again", { unit: row.unit, err: String((e as Error).message).slice(0, 200) });
+          await sleep(pollMs);
+          continue;
+        }
+      }
       const gen = g ? ` (generation ${g.n}: ${g.health}${g.reason ? `, ${g.reason}` : ""}${g.log ? `; log ${g.log}` : ""})` : "";
       const said = async (ok: boolean, head: string) => ({ ok, text: `${head}${gen}.${ok ? "" : `\n\n\`\`\`\n${(await tail(row.unit!).catch(() => "")).replace(/\x1b\[[0-9;]*m/g, "").trim().split("\n").slice(-40).join("\n")}\n\`\`\``}` });
       if (u.loaded && (u.active === "failed" || (u.active === "active" && u.sub === "exited") || u.active === "inactive")) {
@@ -195,18 +226,21 @@ export function createApply({ db, codehost, launch, unit, generations, busy, tai
     let row = get(r.id)!;
     if (!row.landed) {
       const src: Source = { repo: a.repo, branch: a.branch, sha: a.sha, ...(r.identifier ? { workspace: r.identifier } : {}) };
-      const c = await codehost.read(src);
+      const c = await retried("read", r.id, () => codehost.read(src));
+      // Already on main (a land whose answer was lost, or a restart before it was recorded): the approved commit is there, so
+      // the land below is the code host's no-op that names main. Its diff against its own merge base is empty by then.
+      const onMain = c.base === a.sha;
       // What lands is what the card showed: the same files, read again from git at the commit, never from the args alone.
-      if ([...c.files].sort().join("\n") !== [...a.files].sort().join("\n")) return { ok: false, text: "Not applied: the commit no longer changes the files that were approved; it needs a new approval." };
+      if (!onMain && [...c.files].sort().join("\n") !== [...a.files].sort().join("\n")) return { ok: false, text: "Not applied: the commit no longer changes the files that were approved; it needs a new approval." };
       // And exactly what was reviewed: every text and the diff, not only the file names.
-      if ((r.targets as { content?: unknown })?.content !== readDigest(c)) return { ok: false, text: "Not applied: what the commit changes is no longer exactly what was approved; it needs a new approval." };
+      if (!onMain && (r.targets as { content?: unknown })?.content !== readDigest(c)) return { ok: false, text: "Not applied: what the commit changes is no longer exactly what was approved; it needs a new approval." };
       const stray = strayFiles(c.files);
       if (stray.length) return { ok: false, text: `Not applied: it changes files outside the instance config (${stray.join(", ")}).` };
       const untrialed = untrialedNewAgents(c.files, c.texts.base, c.texts.head);
       if (untrialed.length) return { ok: false, text: `Not applied: a new agent must start in trial (${untrialed.join(", ")}).` };
       const official = officialMove(c.texts.base["instance.yaml"], c.texts.head["instance.yaml"]);
       if ("error" in official) return { ok: false, text: `Not applied: ${official.error}.` };
-      const { landed } = await codehost.land({ ...src, official });
+      const { landed } = await retried("land", r.id, () => codehost.land({ ...src, official }));
       db.prepare("UPDATE applies SET landed = ? WHERE record = ?").run(landed, r.id);
       log("apply landed", { record: r.id, sha: landed });
       row = get(r.id)!;
@@ -249,12 +283,12 @@ export function hostApply({ repo, stateDir, resolver, codehost, local }: {
   const provider = (s: { repo: string }): ApplyHost["codehost"] => {
     if (String(s.repo).split("/")[0]!.toLowerCase() !== LOCAL_ORG) return { read: (x) => call<Read>("read", x), land: (x) => call<{ landed: string }>("land", x), write: (x) => call<{ sha: string }>("write", x) };
     const l = local();
-    if (!l) throw new Error(`${s.repo} is on this server, but codehost-local isn't enabled here`);
+    if (!l) throw Object.assign(new Error(`${s.repo} is on this server, but codehost-local isn't enabled here`), { status: 424 });
     return localApply({ bare: l.bare, instanceRepo: l.repo, ingest: l.ingest });
   };
   async function call<T>(op: "read" | "land" | "write", body: Source | Write): Promise<T> {
     const c = codehost();
-    if (!c?.key) throw new Error("the GitHub code host (the github module) isn't installed here, so nothing can land on the instance repo");
+    if (!c?.key) throw Object.assign(new Error("the GitHub code host (the github module) isn't installed here, so nothing can land on the instance repo"), { status: 424 });
     const url = `${new URL(c.url).origin}/aidenhq/v1/apply/${op}`;
     const to = await resolver.resolve(url);
     const data = Buffer.from(JSON.stringify(body));
@@ -263,8 +297,8 @@ export function hostApply({ repo, stateDir, resolver, codehost, local }: {
         let text = "";
         res.setEncoding("utf8").on("data", (d) => { if (text.length < 4_000_000) text += d; }).on("end", () => {
           let j: any;
-          try { j = JSON.parse(text); } catch { return reject(new Error(`the code host's ${op} answered ${res.statusCode} with no JSON`)); }
-          if ((res.statusCode ?? 500) >= 300) return reject(new Error(String(j?.error ?? `the code host's ${op} answered ${res.statusCode}`).slice(0, 1000)));
+          try { j = JSON.parse(text); } catch { return reject(Object.assign(new Error(`the code host's ${op} answered ${res.statusCode} with no JSON`), { status: res.statusCode })); }
+          if ((res.statusCode ?? 500) >= 300) return reject(Object.assign(new Error(String(j?.error ?? `the code host's ${op} answered ${res.statusCode}`).slice(0, 1000)), { status: res.statusCode }));
           resolve(j as T);
         });
       });
