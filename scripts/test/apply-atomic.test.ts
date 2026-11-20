@@ -40,7 +40,7 @@ fs.writeFileSync(out + "/modules.json", JSON.stringify({ modules: /^modules: (.*
 fs.writeFileSync(stage ? "compose.modules.next.yaml" : "compose.modules.yaml",
   (inst.includes("monitoring") ? "services:\\n  monitoring-node-exporter:\\n    image: x\\n" : "services: {}\\n") + "# " + v);
 const dv = fs.existsSync("DATA_VERSION") ? Number(fs.readFileSync("DATA_VERSION", "utf8")) : 0;
-fs.writeFileSync(out + "/module-data.json", JSON.stringify({ acme: { data_version: dv, services: "s" } }));
+fs.writeFileSync(out + "/module-data.json", JSON.stringify({ acme: { data_version: dv } }));
 const acme = "data/modules/acme";
 if (fs.existsSync(acme)) {
   try { checkDataVersion("acme", dv, acme, !stage); } catch (e) { console.error("compile: " + e.message); process.exit(1); }

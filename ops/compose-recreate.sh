@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # The apply's compose step, in order:
-#   1. an empty service list stops it, before it builds, dumps or removes anything: an empty list would make every
+# The images are built before this step (the apply's validate, or its switch when nothing was validated).
+#   1. an empty service list stops it, before it dumps or removes anything: an empty list would make every
 #      stopped container a leftover, and nothing here should guess at what the config runs;
 #   2. a fresh dump of the warehouse, when this host runs one, taken before anything is recreated (see dump);
-#   3. every image this config builds (cached unless its context changed);
-#   4. only the services whose image, compose config or mounted secret content moved are recreated; every other container
+#   3. only the services whose image, compose config or mounted secret content moved are recreated; every other container
 #      keeps running;
-#   5. compose's leftovers for services this config dropped are removed, and never a CI job's runner;
-#   6. a service still left `created` (never started) is started;
-#   7. a container, running or already stopped, of a service this config dropped (a removed or replaced module's, or Caddy
+#   4. compose's leftovers for services this config dropped are removed, and never a CI job's runner;
+#   5. a service still left `created` (never started) is started;
+#   6. a container, running or already stopped, of a service this config dropped (a removed or replaced module's, or Caddy
 #      once exposure is no longer public) is removed: compose's own service container only (com.docker.compose.oneoff=False), so a CI
 #      job's runner (a one-off) is never one.
 #
@@ -49,7 +49,7 @@ dump_dir="$data/dumps"
 dump_base=warehouse
 
 # The warehouse's password comes from the vault (apps-mcp writes it there). Checked before the first docker command, so a
-# host that lost it stops here with a clear message instead of after a build it can't protect. A host with no warehouse
+# host that lost it stops here with a clear message instead of after a step it can't protect. A host with no warehouse
 # deployment has nothing to dump and carries on.
 requireDumpPassword() {
   [ -d "$secrets/apps/warehouse" ] || return 0
@@ -177,14 +177,15 @@ recordSecretState() {
 # writes a new index (a fresh provenance attestation), so comparing it recreated every built service on every apply. The
 # service's own image comes from the model: `config --images <service>` lists its dependencies' images too.
 moved() {
-  local service="$1" id
+  local service="$1" id digest
   id="$(docker compose ps -a -q "$service" 2>/dev/null | head -1)"
   WAS_IDS[$service]="$id"
-  [ -n "$id" ] || return 0
-  [ "$(docker inspect -f '{{.State.Running}}' "$id" 2>/dev/null || true)" = "true" ] || return 0
-  local digest
+  # Read before any early return: a service recreated because it was missing or stopped (a snapshot stopped it) gets its
+  # record after the up too, or the next apply finds the old container's record and recreates it once more.
   digest="$(secretDigest "$service")" || exit 1
   BEFORE_DIGESTS[$service]="$digest"
+  [ -n "$id" ] || return 0
+  [ "$(docker inspect -f '{{.State.Running}}' "$id" 2>/dev/null || true)" = "true" ] || return 0
   local image want have
   image="$(jq -r --arg service "$service" '.services[$service].image // empty' <<< "$model")"
   if [ -n "$image" ]; then
@@ -262,17 +263,16 @@ summary() {
   done
 }
 
-# Before the first docker call of any kind: a host that can't dump its warehouse stops here, not after a build.
+# Before the first docker call of any kind: a host that can't dump its warehouse stops here.
 requireDumpPassword
 desired="$(docker compose config --services | sort -u)"
-# Before anything is built, dumped or removed.
-[ -n "$desired" ] || { echo "compose: docker compose config lists no services: nothing built, dumped or removed" >&2; exit 1; }
+# Before anything is dumped or removed.
+[ -n "$desired" ] || { echo "compose: docker compose config lists no services: nothing dumped or removed" >&2; exit 1; }
 model="$(docker compose config --format json)"
 platform="$(docker version -f '{{.Server.Os}}/{{.Server.Arch}}')"
 
 RECREATED=()
 dump
-docker compose build
 
 out="$(mktemp)"; trap 'rm -f "$out"' EXIT
 status=0; step "$out" "$desired" || status=$?

@@ -36,10 +36,10 @@ commit contains its commit, its own apply's or one queued before it.
    `node scripts/paperclip-setup.ts`;
 6. restarts the kernel when its code changed.
 
-`ops/compose-recreate.sh` is the compose step. It stops before building, dumping or removing anything when the config
-lists no services; dumps the warehouse first, when this host runs one (a fresh file created exclusively under `umask 077`
+`ops/compose-recreate.sh` is the compose step. The images are already built (by validation, or by the switch when nothing
+was validated, as in `--generation`). It stops before dumping or removing anything when the config lists no services; dumps the warehouse first, when this host runs one (a fresh file created exclusively under `umask 077`
 in a `0700` directory, so a taken name is skipped rather than truncated and the dump is `0600`; an older dump is never
-rewritten, only has its mode tightened, and only the newest two are kept, the rest removed); builds every image;
+rewritten, only has its mode tightened, and only the newest two are kept, the rest removed);
 recreates only the services whose image, compose config or mounted secret content moved; removes compose's leftovers for
 services this config dropped, never a CI job's runner; and retries once for the daemon's two races (a removal already in
 progress, a container name still in use). A recreate that was killed leaves its half-made replacement behind (compose
@@ -73,14 +73,15 @@ that content changes. The digest is taken before a service starts, and recorded 
 only if the files still match it afterwards: a secret that rotates mid-start may have been read either way, so that
 container is recreated again on the next apply rather than trusted. A container with no record yet (the first apply after
 this was added) is recreated once, then recorded, and a record written for a service the step started is what keeps the
-retry after a daemon race from starting it a second time.
+retry after a daemon race from starting it a second time. A service recreated because it was stopped or missing (a data
+snapshot stops its module's containers) is recorded the same way, so the next apply keeps it.
 
 Each phase prints one line, `apply timing: <phase> <seconds>s`, and a total; run by the installer (`AIDENHQ_PROGRESS_BASE` set), setup and the apply also print `AIDENHQ_PROGRESS=<n>/<total> <percent>% <step> ~<minutes left>` as each phase starts (`ops/lib/progress.sh`; the phase tables, with estimated seconds, sit in `ops/setup.sh` and `ops/apply-config-work.sh`); setup prints its own sections on one
 `setup timing:` line. A cached image build costs a few seconds; a changed one is the real build (the board's tsc and vite
 build is about 17s). Setup's Paperclip calls run four at a time.
 
 Module data (spec §6.4.1): before an apply switches, it stops the containers of each module it touches that has
-`services.data: true` (its code, its compose services with their settings, or its `data_version` changed) and archives `data/modules/<module>/` to
+`services.data: true` (new to this host's config, or its `data_version` changed) and archives `data/modules/<module>/` to
 `~/checkpoints/gen-<n>/<module>.tar` (as root in a pinned container, so root-owned files come along; the archive is the
 owner's, `0600`). Without room for it (1.2 times the dirs plus 20 GB, as `scripts/backup.sh`) the apply is refused and the
 containers start again. The newest two `gen-*` snapshots are kept. A failed health check puts the whole snapshot back
@@ -88,7 +89,9 @@ before the last known good starts. `ops/rollback.sh <n>` puts back only modules 
 `data_version` generation `n` declared, each from the earliest snapshot after `n`, and refuses when that snapshot was
 pruned. A restore unpacks into a fresh sibling folder and swaps it in, so a module never has half its old data.
 `data/kernel/`, the vault, Paperclip's database and live Postgres clusters are never in a snapshot; `scripts/backup.sh`
-covers them.
+covers them. A code-only change to a module is not snapshotted (git and the images bring the old code back), so a
+module that changes its data's format must bump `data_version` in its `module.yaml`, or a failed apply can't put its old
+data back.
 
 It is idempotent. The Engineer runs it for you after you approve a change.
 
