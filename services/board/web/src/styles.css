@@ -313,10 +313,6 @@ kbd {
 .powered-by a:hover { color: var(--muted); text-decoration: underline; }
 
 /* ------------------------------------------------------------ phone */
-.tabs { display: flex; gap: 4px; padding: 8px 12px; overflow-x: auto; border-bottom: 1px solid var(--border); scrollbar-width: none; }
-.tabs button { flex: none; display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 999px; border: 1px solid var(--border); background: var(--surface); font-size: var(--text-base); cursor: pointer; }
-.tabs button.on { background: var(--text); color: var(--bg); border-color: var(--text); }
-.tabs .count { font-size: var(--text-2xs); opacity: 0.7; font-variant-numeric: tabular-nums; }
 .app.mobile .topbar { padding-left: 12px; padding-right: 12px; }
 .app.mobile .brand span { display: none; }
 .app.mobile .search { flex: 1 1 140px; }
@@ -536,13 +532,6 @@ kbd {
 .new-title { font-size: var(--text-input); padding: 9px 11px; border-radius: 9px; border: 1px solid var(--border); background: var(--surface-2); outline: none; }
 .new-where { margin-right: auto; }
 
-/* Chat, Approvals, Connections, Activity */
-.main-tabs { display: flex; gap: 2px; flex-wrap: wrap; padding: 3px; border-radius: 10px; background: var(--col); border: 1px solid var(--border); }
-.main-tabs .btn { border-color: transparent; background: transparent; box-shadow: none; color: var(--muted); padding: 5px 12px; }
-.main-tabs .btn:hover { color: var(--text); background: var(--hover); }
-.main-tabs .btn.on { background: var(--surface); color: var(--text); border-color: var(--border); box-shadow: var(--shadow); font-weight: 600; }
-/* Every section stays in the bar on one line; when the window is too narrow for the bar and the page tools, the tools wrap below. */
-.main-tabs { margin-left: 12px; align-items: center; flex: none; flex-wrap: nowrap; }
 .topbar { flex-wrap: wrap; row-gap: 8px; }
 .topbar-tools { display: flex; align-items: center; gap: 8px; margin-left: auto; }
 /* Today's spend against the daily cap: small, quiet, red once the cap is reached. */
@@ -550,14 +539,6 @@ kbd {
 .spend-today:hover { color: inherit; }
 .spend-today.over { color: var(--danger); font-weight: 600; }
 .app.mobile .topbar-tools { flex: 1; min-width: 0; flex-wrap: wrap; justify-content: flex-end; row-gap: 6px; }
-.main-tabs .btn { flex: none; white-space: nowrap; }
-@media (max-width: 1240px) { .main-tabs { margin-left: 4px; } .main-tabs .btn { padding: 5px 9px; } }
-/* Apps pinned into the nav (apps.yaml panel): plain links that open the app's own host in a tab, set off from the board's sections. */
-.main-tabs .panel-link { text-decoration: none; display: inline-flex; align-items: center; gap: 4px; }
-.main-tabs .panel-link:first-of-type { margin-left: 6px; border-left: 1px solid var(--border); border-radius: 0 6px 6px 0; padding-left: 14px; }
-.main-tabs .panel-link span { color: var(--muted); font-size: var(--text-2xs); }
-.tabs .panel-link { flex: none; padding: 6px 12px; border-radius: 999px; border: 1px dashed var(--border); font-size: var(--text-base); color: inherit; text-decoration: none; }
-.main-tabs .needs-dot { width: 7px; height: 7px; }
 .topbar { gap: 10px; padding-left: clamp(16px, 1.4vw, 28px); padding-right: clamp(16px, 1.4vw, 28px); }
 .page { max-width: clamp(860px, 55vw, 1100px); margin: 0 auto; padding: 16px; width: 100%; box-sizing: border-box; display: grid; gap: 12px; align-content: start; }
 .page .empty { color: var(--muted); }
@@ -992,7 +973,7 @@ button.live-toggle:focus-visible { outline: 2px solid var(--accent); border-radi
 .run-bad { color: var(--bad-text); }
 .run-meh { background: var(--surface-2); }
 /* The bars keep their height when a page runs long (the page scrolls under them). */
-.topbar, .tabs, .offline, .alert { flex: none; }
+.topbar, .offline, .alert { flex: none; }
 .app > .page { flex: 1 0 auto; }
 
 /* ------------------------------------------------------------ approvals page */
@@ -1270,8 +1251,6 @@ a.cost-top-name:focus-visible { outline: 2px solid var(--accent); outline-offset
 .run-err { flex-basis: 100%; padding-left: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
 
 /* ------------------------------------------------------------------ Settings (Settings.tsx): Chat's sidebar, one pane per category */
-.settings-btn { display: inline-flex; align-items: center; gap: 6px; text-decoration: none; color: var(--text); }
-.settings-btn .needs-dot { margin-left: 2px; }
 /* ------------------------------------------------------------ agent faces (AgentAvatar, avatar.ts) */
 /* Each tone: a tinted disc with dark letters (light mode) or a deep disc with light letters (dark mode), 7:1 or better. */
 .agent-face { flex: none; display: inline-block; vertical-align: middle; border-radius: 50%; }
