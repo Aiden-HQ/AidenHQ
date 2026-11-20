@@ -425,7 +425,7 @@ function verdictOf(raw: { content?: unknown; refusal?: unknown } | undefined, sh
 
 /**
  * The judge call with the reviewer's strict JSON schema. Retries a transient OpenRouter failure by default (reviewer-eval
- * reaches OpenRouter directly); through the model gateway, which retries, the service passes `retryDelaysMs: []` (server.mjs).
+ * reaches OpenRouter directly); through the model gateway, which retries, the service passes `retryDelaysMs: []` (server.ts).
  */
 export const openRouterAsk = (key: string, { schema = REVIEW_SCHEMA, retryDelaysMs = RETRY_DELAYS_MS, ...o }: Partial<Parameters<typeof judgeAsk>[1]> = {}) => judgeAsk(key, { schema, retryDelaysMs, ...o });
 
