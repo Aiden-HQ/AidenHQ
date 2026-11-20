@@ -130,6 +130,17 @@ describe("a delegated agent asks the owner through the chat that handed it the w
     expect((await call("internal", "POST", "/internal/relay", { comment_id: more.id, target: "WOR-21" })).status).toBe(403);
   });
 
+  it("refuses words older than the question even when another obligation leads the task's state, and takes newer ones", async () => {
+    const early = add(chat.id, { body: "[telegram] weekly please", authorType: "user", authorUserId: ME });
+    const asked = ask("Which day?", ["Mon", "Tue"]);
+    // The kernel woke the agent after its question: a queued job leads, the owner wait is still open.
+    states.rows = [row(chat.id, { identifier: chat.identifier, kind: "waiting", reason: "chat_turn" }), row(child.id, { identifier: child.identifier, kind: "waiting", reason: "job_queued", since: asked.createdAt, attention: [{ who: "owner", why: "owner_wait", ref: `wait:${child.id}` }] })];
+    expect((await call("internal", "POST", "/internal/relay", { comment_id: early.id, target: "WOR-21" })).status).toBe(403);
+    const later = add(chat.id, { body: "[telegram] Tuesday", authorType: "user", authorUserId: ME });
+    expect((await call("internal", "POST", "/internal/relay", { comment_id: later.id, target: "WOR-21" })).status).toBe(200);
+    answered();
+  });
+
   it("ignores a task another agent hung under the owner's chat: not shown, and the owner's words aren't relayed to it", async () => {
     child.createdByAgentId = ARCH;
     try {

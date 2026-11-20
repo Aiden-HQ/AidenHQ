@@ -919,8 +919,14 @@ export function createApp(opts: AppOptions): Server {
           const states = await stateRows(kids.map((k) => k.id));
           const asking = kids.filter((k) => k.assigneeAgentId && !["done", "cancelled"].includes(k.status) && handedOutBy(source.chat, k, ctx.me) && waitsForAnswer(states.get(k.id)));
           const ask = agent.kind === "engineer" ? undefined : asking.find((k) => k.id === dest.id);
-          const wait = ask && states.get(ask.id)!;
-          if (wait?.reason === "owner_wait" && source.comment.createdAt <= wait.since) throw new Refused("refused: that message was written before the agent asked; ask the owner again");
+          if (ask) {
+            // When the question was asked: the wait's own start when it is what the task shows, else (another obligation leads, say a
+            // queued wake) the time of the agent's reply that asked; with neither, nothing proves the words answer it.
+            const wait = states.get(ask.id)!;
+            const askedAt = wait.reason === "owner_wait" ? wait.since : askedQuestions(await pc.comments(ask.id).catch(() => [] as Comment[]), ask.assigneeAgentId)?.at;
+            if (!askedAt) throw new Refused("refused: the board can't tell when the agent asked; answer on its task");
+            if (source.comment.createdAt <= askedAt) throw new Refused("refused: that message was written before the agent asked; ask the owner again");
+          }
           if (!ask && !["engineer", "assistant"].includes(agent.kind)) throw new Refused("refused: target must be an engineer's task, or a task handed out from this chat whose agent is asking the owner");
           // One set of tasks that could take the owner's words: whenever more than one could, the words must name the target.
           const inReview = (await pc.openIssues()).filter((i) => i.status === "in_review" && ctx.assignees.some((a) => a.key === i.assigneeAgentId && a.kind === "engineer")).map((i) => i.identifier);
