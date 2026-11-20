@@ -2,7 +2,8 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { GitHubNeed, needAnswer } from "../src/client.js";
+import { GitHubNeed, needResult } from "../src/client.js";
+import { readNeed } from "../src/vendor/needs.js";
 import { GitHub, GitHubRefused, GRAPHQL, guard, parseRef } from "../src/github.js";
 import { accessFor } from "./fake-access.js";
 
@@ -324,10 +325,10 @@ describe("GitHub", () => {
 
 });
 
-it("tool error names the need: an org's SSO comes back as github_needs_owner with its link", async () => {
+it("an owner-fixable GitHubNeed answers needs_owner with its org and url", async () => {
   const url = "https://github.com/orgs/acme/sso?authorization_request=x";
   const sso = (async () => new Response(JSON.stringify({ message: "Resource protected by organization SAML enforcement." }), { status: 403, headers: { "x-github-sso": `required; url=${url}` } })) as typeof fetch;
   const err = (await owner(sso).read({ owner: "acme", repo: "app", number: 1 }).catch((e: unknown) => e)) as GitHubNeed;
   expect(err).toBeInstanceOf(GitHubNeed);
-  expect(needAnswer(err)).toEqual({ error: "github_needs_owner", need: { cause: "sso", org: "acme", url }, detail: expect.stringMatching(/the owner was told/) });
+  expect(readNeed(needResult(err))).toEqual({ cause: "sso", org: "acme", url, detail: expect.stringContaining("authorize single sign-on") });
 });

@@ -14,7 +14,13 @@ export interface StoredCredentials {
   scopes?: string[];
 }
 
-export class GoogleAuthError extends Error {}
+/** A sign-in failure. `expired`: Google refused the sign-in itself (a dead refresh token, a rejected access token), which only
+ * the owner's reconnect fixes; otherwise it may pass on its own. */
+export class GoogleAuthError extends Error {
+  constructor(message: string, readonly expired = false) {
+    super(message);
+  }
+}
 
 /**
  * Whether an account's sign-in still works, from its last token refresh. "expired": Google refused
@@ -59,7 +65,7 @@ export class GoogleClient {
       const dead = json.error && DEAD_GRANT.has(json.error);
       const detail = `token refresh failed: ${json.error ?? res.status} ${json.error_description ?? ""}`.trim() + (dead ? `. ${explainGoogle(json.error)}` : "");
       this.record(dead ? "expired" : "error", detail);
-      throw new GoogleAuthError(detail);
+      throw new GoogleAuthError(detail, Boolean(dead));
     }
     this.record("ok");
     this.accessToken = { value: json.access_token, expiresAt: Date.now() + (json.expires_in ?? 3600) * 1000 };
@@ -88,7 +94,7 @@ export class GoogleClient {
     const res = await this.fetchImpl(u, { headers: { authorization: `Bearer ${await this.token()}` }, signal: AbortSignal.timeout(30_000) });
     if (res.status === 401 || res.status === 403) {
       const text = await res.text();
-      throw new GoogleAuthError(`Google API ${res.status}: ${text.slice(0, 300)}`);
+      throw new GoogleAuthError(`Google API ${res.status}: ${text.slice(0, 300)}`, res.status === 401);
     }
     if (!res.ok) throw new Error(`Google API ${res.status}: ${(await res.text()).slice(0, 300)}`);
     return (await res.json()) as T;
