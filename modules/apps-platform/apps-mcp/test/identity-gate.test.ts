@@ -207,7 +207,9 @@ describe("identity gate", () => {
     expect(identityPorts([], [{ service: "app", port: "8080" }]).ok).toBe(false);
     // A process no scan could read fails closed and is named, even when every required door answered.
     const open = { service: "app", port: 8080, host: "127.0.0.1", listening: true, answers: [] };
-    expect(identityPorts([open], [], ["app:7"])).toMatchObject({ ok: false, findings: [{ hard: true, what: expect.stringMatching(/couldn't read the sockets of process app:7/) }] });
+    const denied = identityPorts([open], [], ["app:7"]);
+    expect(denied.ok).toBe(false);
+    expect(denied.findings[0]).toMatchObject({ hard: true, what: expect.stringMatching(/couldn't read the sockets of process app:7/) });
   }, 120_000);
 
   it.runIf(process.platform === "linux")("probes a socket the app's own process holds, wherever a peer listener sits on the same network", async () => {
