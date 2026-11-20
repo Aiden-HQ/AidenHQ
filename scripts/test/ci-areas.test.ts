@@ -15,7 +15,7 @@ test("a docs-only change selects nothing", () => {
 test("a kernel change selects the kernel's suites, not the board's alone", () => {
   const { all, names } = suitesFor(map, ["kernel/src/writes.ts"]);
   assert.equal(all, false);
-  for (const n of ["kernel", "scripts#1"]) assert.ok(names.includes(n), n);
+  for (const n of ["kernel#1", "kernel#2", "scripts#1"]) assert.ok(names.includes(n), n);
   assert.equal(names.includes("services/board"), false);
   assert.deepEqual(suitesFor(map, ["services/board/web/App.tsx"]).names, ["scripts#1", "scripts#2", "scripts#3", "services/board"]);
 });
