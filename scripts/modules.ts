@@ -646,7 +646,7 @@ export function hostDirs(productDir: string, env = process.env) {
   return { work_dir: expand(String(y.work_dir ?? "~/aidenhq-work")), state_dir: expand(String(y.state_dir ?? "~/.local/state/aidenhq-runner")) };
 }
 
-export function compile(productDir: string, instanceDir: string, { revision, bundleState, oldBundle, fetch = hostFetch(productDir), door, workDir = hostDirs(productDir).work_dir, legacyAgentsOrg = "" }: { revision?: string; bundleState?: Obj; oldBundle?: Obj; fetch?: Fetch; door?: Obj; workDir?: string; legacyAgentsOrg?: string } = {}) {
+export function compile(productDir: string, instanceDir: string, { revision, bundleState, oldBundle, fetch = hostFetch(productDir), door, workDir = hostDirs(productDir).work_dir, legacyAgentsOrg = "", retiredAppId = "" }: { revision?: string; bundleState?: Obj; oldBundle?: Obj; fetch?: Fetch; door?: Obj; workDir?: string; legacyAgentsOrg?: string; retiredAppId?: string } = {}) {
   const instFile = join(instanceDir, "instance.yaml");
   if (!existsSync(instFile)) fail(`no instance.yaml in ${instanceDir}: set AIDENHQ_INSTANCE_DIR to your instance checkout (see docs/USAGE.md)`);
   const instance = readYaml(instFile);
@@ -752,8 +752,10 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   // asks for admin:org) and the official MCP's read tools (every other tool of it is refused).
   settings.github_fleet_org = fleetOrg;
   settings.github_ci = enabled.includes("ci") ? "1" : "";
-  // DELETE in the release after #1065: set while the old App's host variable is (the live instance), so the github process moves the repos' rules off the App once.
-  settings.github_migrate_from_app = legacyAgentsOrg ? "1" : "";
+  // DELETE in the release after #1065: the retired App's id (compile.ts keeps it from the vault), so the github process moves the
+  // repos' rules that name that App, and only it, off it once. Empty: no migration.
+  if (retiredAppId && !/^[1-9][0-9]*$/.test(retiredAppId)) throw new Error(`the retired GitHub App id is not a number: ${retiredAppId}`);
+  settings.github_migrate_from_app = retiredAppId;
   settings.github_official_read = ((enabledDefs.github?.connections?.github_official?.tools?.read ?? []) as string[]).join(",");
   // Derived for upstream contributions (spec §6.9): the owner-data scrub's literals (ownerTerms).
   settings.owner_terms = ownerTerms(instance.settings ?? {}, settings, declaredSettings.map(([, defs]) => defs));

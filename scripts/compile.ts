@@ -68,8 +68,17 @@ try { revision = execFileSync("git", ["-C", repo, "rev-parse", "HEAD"], { encodi
 const bundleFile = join(repo, "data", "bundle-state.json");
 let bundleState: Obj | undefined; try { bundleState = JSON.parse(readFileSync(bundleFile, "utf8")); } catch {}
 let oldBundle: Obj | undefined; try { oldBundle = JSON.parse(env("AIDENHQ_OLD_BUNDLE") || "null") ?? undefined; } catch {}
+// DELETE in the release after #1065: the retired GitHub App's id, which the github process looks for in the repos' rules
+// (migrate.ts). Apply removes the vault's github-app dir after the first good generation, so the id is kept beside it first.
+const retiredAppId = (() => {
+  const dir = env("AIDENHQ_SECRETS_DIR");
+  if (!dir) return "";
+  const kept = join(dir, "github_retired_app_id"), old = join(dir, "github-app", "app_id");
+  if (!existsSync(kept) && existsSync(old)) writeFileSync(kept, `${readFileSync(old, "utf8").trim()}\n`, { mode: 0o600 });
+  return existsSync(kept) ? readFileSync(kept, "utf8").trim() : "";
+})();
 let out!: ReturnType<typeof compile>, computers!: ReturnType<typeof computersConfig> & { pull?: ReturnType<typeof computerPulls> };
-try { out = compile(repo, instanceDir, { revision, bundleState, oldBundle, door: { publicIp: env("AIDENHQ_PUBLIC_IP"), adminUrl: env("AIDENHQ_ADMIN_URL"), boardUrl: env("BOARD_LAN_URL") }, legacyAgentsOrg: env("AIDENHQ_GITHUB_AGENTS_ORG") ?? "" }); computers = computersConfig(out.paperclip, repo, out.computersMax); } catch (e) { die((e as Error).message); }
+try { out = compile(repo, instanceDir, { revision, bundleState, oldBundle, door: { publicIp: env("AIDENHQ_PUBLIC_IP"), adminUrl: env("AIDENHQ_ADMIN_URL"), boardUrl: env("BOARD_LAN_URL") }, legacyAgentsOrg: env("AIDENHQ_GITHUB_AGENTS_ORG") ?? "", retiredAppId }); computers = computersConfig(out.paperclip, repo, out.computersMax); } catch (e) { die((e as Error).message); }
 if (!stage) { mkdirSync(dirname(bundleFile), { recursive: true }); writeFileSync(bundleFile, JSON.stringify(out.bundleState)); }
 if (process.argv.includes("--sizes")) {
   try { console.log(sizesReport(out.paperclip, { repo, instanceDir, engines: out.engines })); } catch (e) { die((e as Error).message); }

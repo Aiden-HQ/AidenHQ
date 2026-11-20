@@ -1,10 +1,11 @@
 // DELETE in the release after #1065: the one-off that takes the retired GitHub App out of the repos' rules (spec
 // 2026-11-20-github-owner-identity §12). On the first sign-in with the new scopes (the owner's reconnect) it rewrites, with the
-// owner's token, each repo's rulesets and branch protection that name the App, then tells the owner once to delete the App on
-// GitHub. The merge queue holds while it runs (main.ts). Runs once per repo: the repos done are in the cache dir.
-//   bypass actor `Integration`            -> the repository admin role (RepositoryRole 5: GitHub's docs don't list the role ids;
+// owner's token, each repo's rulesets and branch protection that name the App (by its id), then tells the owner once to delete
+// the App on GitHub. Entries naming any other app (GitHub Actions' pinned checks, other integrations) stay as they are. The merge
+// queue holds while it runs (main.ts). Runs once per repo: the repos done are in the cache dir.
+//   bypass actor `Integration` of the App -> the repository admin role (RepositoryRole 5: GitHub's docs don't list the role ids;
 //                                            otterdog's ruleset model and a third-party repo-setup test both use 5 for admin)
-//   required check with an integration id -> any source (ruleset: no integration_id; branch protection: app_id -1, per
+//   required check pinned to the App      -> any source (ruleset: no integration_id; branch protection: app_id -1, per
 //                                            docs.github.com/rest/branches/branch-protection "Pass -1 to explicitly allow any app")
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -22,19 +23,19 @@ class Refused extends Error {
   constructor(status: number, what: string) { super(`${what}: GitHub said ${status}`); this.status = status; }
 }
 
-/** The ruleset's new body when it names the App (an Integration bypass actor or a check with an integration id), else undefined. */
-export function rewriteRuleset(rs: any): Record<string, unknown> | undefined {
+/** The ruleset's new body when it names the App (its Integration bypass actor or a check pinned to it), else undefined. */
+export function rewriteRuleset(rs: any, appId: number): Record<string, unknown> | undefined {
   let changed = false;
   const seen = new Set<string>();
   const bypass_actors = (rs.bypass_actors ?? []).flatMap((a: any) => {
-    if (a.actor_type !== "Integration") return [a];
+    if (a.actor_type !== "Integration" || Number(a.actor_id) !== appId) return [a];
     changed = true;
     return [{ actor_type: "RepositoryRole", actor_id: ADMIN_ROLE, bypass_mode: a.bypass_mode ?? "always" }];
   }).filter((a: any) => { const k = `${a.actor_type}:${a.actor_id}`; return seen.has(k) ? false : (seen.add(k), true); });
   const rules = (rs.rules ?? []).map((r: any) => {
     if (r.type !== "required_status_checks") return r;
     return { ...r, parameters: { ...r.parameters, required_status_checks: (r.parameters?.required_status_checks ?? []).map((c: any) => {
-      if (c.integration_id == null) return c;
+      if (Number(c.integration_id) !== appId) return c;
       changed = true;
       const { integration_id: _, ...rest } = c;
       return rest;
@@ -56,12 +57,12 @@ async function list(access: Rest, path: string): Promise<any[]> {
   }
 }
 
-async function rewriteRepo(access: Rest, repo: string): Promise<string> {
+async function rewriteRepo(access: Rest, repo: string, appId: number): Promise<string> {
   const notes: string[] = [];
   for (const { id } of await list(access, `/repos/${repo}/rulesets?includes_parents=false`)) {
     const full = await access.rest("GET", `/repos/${repo}/rulesets/${id}`, undefined, bg);
     if (full.status !== 200) throw new Refused(full.status, `reading ruleset ${id}`);
-    const body = rewriteRuleset(full.body);
+    const body = rewriteRuleset(full.body, appId);
     if (!body) continue;
     const put = await access.rest("PUT", `/repos/${repo}/rulesets/${id}`, body, bg);
     if (put.status !== 200) throw new Refused(put.status, `rewriting ruleset ${id}`);
@@ -70,32 +71,32 @@ async function rewriteRepo(access: Rest, repo: string): Promise<string> {
   const info = await access.rest("GET", `/repos/${repo}`, undefined, bg);
   if (info.status !== 200) throw new Refused(info.status, "reading the repo");
   const checks = await access.rest("GET", `/repos/${repo}/branches/${encodeURIComponent(info.body.default_branch)}/protection/required_status_checks`, undefined, bg);
-  if (checks.status === 200 && (checks.body.checks ?? []).some((c: any) => c.app_id != null && c.app_id !== -1)) {
+  if (checks.status === 200 && (checks.body.checks ?? []).some((c: any) => Number(c.app_id) === appId)) {
     const patch = await access.rest("PATCH", `/repos/${repo}/branches/${encodeURIComponent(info.body.default_branch)}/protection/required_status_checks`,
-      { strict: checks.body.strict, checks: checks.body.checks.map((c: any) => ({ context: c.context, app_id: -1 })) }, bg);
+      { strict: checks.body.strict, checks: checks.body.checks.map((c: any) => ({ context: c.context, app_id: Number(c.app_id) === appId ? -1 : c.app_id ?? -1 })) }, bg);
     if (patch.status !== 200) throw new Refused(patch.status, "rewriting branch protection");
     notes.push("branch protection");
   }
   return notes.length ? `rewrote ${notes.join(", ")}` : "nothing named the App";
 }
 
-/** The repos to rewrite: the fleet org's, the product repo and the instance repo. */
-export async function migrationRepos(access: Rest, d: { fleetOrg?: string; productRepo?: string; instanceRepo?: string }): Promise<string[]> {
+/** The repos to rewrite: the fleet org's, the product repo, the maintained repos (maintainer_repos) and the instance repo. */
+export async function migrationRepos(access: Rest, d: { fleetOrg?: string; productRepo?: string; maintained?: string[]; instanceRepo?: string }): Promise<string[]> {
   const fleet = d.fleetOrg ? (await list(access, `/orgs/${d.fleetOrg}/repos?type=all`)).filter((r) => !r.archived).map((r) => String(r.full_name)) : [];
-  return [...new Set([...fleet, d.productRepo, d.instanceRepo].filter((r): r is string => Boolean(r)))];
+  return [...new Set([...fleet, d.productRepo, ...(d.maintained ?? []), d.instanceRepo].filter((r): r is string => Boolean(r)))];
 }
 
 /**
  * Once per repo (recorded in `file`), then one owner alert to delete the App. A repo GitHub refuses (4xx, or one the owner
  * can't reach) is recorded as skipped and logged; a 5xx, rate limit or network error rejects and the next pass resumes.
  */
-export async function dropApp(access: Rest, repos: string[], notify: Notify, o: { file: string; org: string; log?: (msg: string, f?: Record<string, unknown>) => void }): Promise<void> {
+export async function dropApp(access: Rest, repos: string[], notify: Notify, o: { file: string; org: string; appId: number; log?: (msg: string, f?: Record<string, unknown>) => void }): Promise<void> {
   const state: State = existsSync(o.file) ? JSON.parse(readFileSync(o.file, "utf8")) : { repos: {} };
   const save = () => { writeFileSync(`${o.file}.tmp`, JSON.stringify(state)); renameSync(`${o.file}.tmp`, o.file); };
   for (const repo of repos) {
     if (state.repos[repo]) continue;
     try {
-      state.repos[repo] = await rewriteRepo(access, repo);
+      state.repos[repo] = await rewriteRepo(access, repo, o.appId);
     } catch (e) {
       const need = (e as { need?: { cause?: string } }).need;
       if (e instanceof Refused ? e.status < 500 : need?.cause === "unreachable") state.repos[repo] = `skipped: ${(e as Error).message}`;
@@ -113,7 +114,7 @@ export async function dropApp(access: Rest, repos: string[], notify: Notify, o: 
  * Runs dropApp on the first pass whose sign-in has the `workflow` scope (the reconnect), every 30 s until it finishes.
  * `pending()` is true from that sign-in until then: the merge queue holds.
  */
-export function startAppMigration(d: { access: GitHubAccess; cacheDir: string; fleetOrg?: string; productRepo?: string; instanceRepo?: string; kernelUrl: string; key: string; log: (msg: string, f?: Record<string, unknown>) => void }) {
+export function startAppMigration(d: { access: GitHubAccess; appId: number; cacheDir: string; fleetOrg?: string; productRepo?: string; maintained?: string[]; instanceRepo?: string; kernelUrl: string; key: string; log: (msg: string, f?: Record<string, unknown>) => void }) {
   const file = join(d.cacheDir, "migrated-from-app.json");
   let finished = existsSync(file) && Boolean((JSON.parse(readFileSync(file, "utf8")) as State).complete);
   const notify: Notify = async (n) => {
@@ -127,7 +128,7 @@ export function startAppMigration(d: { access: GitHubAccess; cacheDir: string; f
     if (running || !pending()) return;
     running = true;
     try {
-      await dropApp(d.access, await migrationRepos(d.access, d), notify, { file, org, log: d.log });
+      await dropApp(d.access, await migrationRepos(d.access, d), notify, { file, org, appId: d.appId, log: d.log });
       finished = true;
     } catch (e) { d.log("app migration will retry", { err: (e as Error).message }); } finally { running = false; }
   };

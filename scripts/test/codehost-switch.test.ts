@@ -37,8 +37,9 @@ test("fleet org from the setting", () => {
 
 test("legacy env maps once", () => {
   const dir = inst();
-  const r = compile(product, dir, { workDir: "/tmp/w", legacyAgentsOrg: "aidenhq-alpha" });
+  const r = compile(product, dir, { workDir: "/tmp/w", legacyAgentsOrg: "aidenhq-alpha", retiredAppId: "5708236" });
   assert.equal(r.kernelModules.repos.fleet_org, "aidenhq-alpha");
+  assert.equal(r.compose.services["github-github"].environment.GITHUB_MIGRATE_FROM_APP, "5708236", "the migration targets the retired App only");
   assert.deepEqual(r.paperclip.agents_orgs[0], { org: "aidenhq-alpha", host: "github" });
   assert.ok(r.warnings.includes("set github_fleet_org: aidenhq-alpha in instance.yaml; this mapping is removed in the next release"));
   // The setting wins over the old variable, with no warning.
