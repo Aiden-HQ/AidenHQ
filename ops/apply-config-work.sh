@@ -61,11 +61,16 @@ main() {
   # directly (no container needed) and answers for the instance repo alone. Set per checkout, written only when it differs;
   # a failing step stops the apply (set -e), as the fetch below would without a credential.
   local helper="!node $product_dir/ops/git-credential-github.mjs" have_helper have_http origin_url
-  have_helper="$(git -C "$inst" config --get credential.helper || true)"
+  # All values: an empty first entry clears helpers inherited from the global config (an older setup wrote one).
+  have_helper="$(git -C "$inst" config --local --get-all credential.helper || true)"
   have_http="$(git -C "$inst" config --get credential.useHttpPath || true)"
   origin_url="$(git -C "$inst" remote get-url origin)"
   if [[ "$have_helper" == *git-credential-app.mjs* || "$origin_url" == https://github.com/* ]]; then
-    [ "$have_helper" = "$helper" ] || git -C "$inst" config credential.helper "$helper"
+    if [ "$have_helper" != $'\n'"$helper" ]; then
+      git -C "$inst" config --local --unset-all credential.helper || [ $? -eq 5 ]
+      git -C "$inst" config --add credential.helper ""
+      git -C "$inst" config --add credential.helper "$helper"
+    fi
     [ "$have_http" = true ] || git -C "$inst" config credential.useHttpPath true
   fi
 
