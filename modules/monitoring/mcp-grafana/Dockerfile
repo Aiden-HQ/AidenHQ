@@ -6,10 +6,11 @@ FROM grafana/mcp-grafana:2.3.0@sha256:c27248b5919d09d64ea273ca1b128b32902c6796f6
 FROM debian:sid-slim@sha256:07a3205e8583fdff12d2b05bd030f50437e9fd340ee616df0c05dc77af75767b
 # CA certificates for Grafana's TLS; sid-slim ships none and the upstream image had them. No apt lists left in the image.
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
-# The upstream image runs as mcp-grafana, uid 1000; this base has no such account, so it is re-created.
-RUN groupadd --gid 1000 mcp-grafana && useradd --uid 1000 --gid mcp-grafana --no-create-home --shell /usr/sbin/nologin mcp-grafana
+# The upstream image runs as mcp-grafana, uid 1000, gid 999 (/home/mcp-grafana, /bin/sh); this base has no such account, so
+# it is re-created, and the runtime keeps that identity so a mounted secret readable by gid 999 stays readable.
+RUN groupadd --gid 999 mcp-grafana && useradd --uid 1000 --gid 999 --create-home --shell /bin/sh mcp-grafana
 WORKDIR /app
 COPY --from=upstream /app/mcp-grafana /app/mcp-grafana
-USER 1000
+USER 1000:999
 EXPOSE 8000
 ENTRYPOINT ["/app/mcp-grafana", "--transport", "sse", "--address", "0.0.0.0:8000"]
