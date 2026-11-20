@@ -671,6 +671,8 @@ export function createService(o: Options) {
         let out = "", err = "";
         p.stdout.on("data", (d) => (out += d)); p.stderr.on("data", (d) => (err += d));
         p.on("close", (code) => (code === 0 ? ok(out.trim()) : no(new Error(`git ${args[0]}: ${err.trim().slice(0, 300)}`))));
+        // A git that reads no stdin (read-tree) can exit before the write: the EPIPE isn't the outcome, its exit code is.
+        p.stdin.on("error", () => {});
         p.stdin.end(input ?? "");
       });
       await g(["read-tree", head]);
