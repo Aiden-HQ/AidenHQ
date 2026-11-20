@@ -415,8 +415,8 @@ export function createWrites({ records, registry, connections, secret, resolver,
 
   /** Who may ask for `asked` and on which task: the routed kind, its definition, the record's task and the args a job's own workspace is forced into. */
   function admit(who: Identity, asked: string, args: unknown, task?: string) {
-    // A new repo named without its org goes to the instance's default agents org: GitHub's once it is connected
-    // (AIDENHQ_GITHUB_AGENTS_ORG), else this server's. An existing repo keeps its host: routing reads only the repo.
+    // A new repo named without its org goes to the instance's fleet org: github_fleet_org when set (refused while GitHub isn't
+    // connected), else this server's. An existing repo keeps its host: routing reads only the repo.
     const newRepo = (args as { repo?: unknown } | null)?.repo;
     if (asked === "codehost.create_repo" && typeof newRepo === "string" && !newRepo.includes("/")) args = { ...(args as object), repo: `${repos().agentsOrg ?? LOCAL_ORG}/${newRepo}` };
     let kind: string;

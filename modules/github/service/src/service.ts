@@ -42,6 +42,7 @@ import { SOURCE_EXCEPTIONS_FILE, readCardSourceExceptions } from "./sources.ts";
 import { candidatesOf, readSiblings } from "./siblings.ts";
 import { notePrTask } from "./pr-watch.ts";
 import { createDesignReviews, startDesignReviewSweep } from "./design-review.ts";
+import { packBundle, type OpsContext } from "./ops.ts";
 import { noteKept } from "./tidy.ts";
 
 const run = promisify(execFile);
@@ -49,24 +50,13 @@ const run = promisify(execFile);
 /** The hardened git arguments: hooks, fsmonitor and ext:: transports off whatever a workspace's config says. */
 export const SAFE_GIT_ARGS = ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=", "-c", "protocol.ext.allow=never", "-c", "safe.bareRepository=explicit"];
 
-type Slug = { org: string; name: string; slug: string };
-/**
- * The typed ops other modules get through the kernel (ops.ts serveOps: fetch, head, read, comment, commit, runner_token), run
- * here with the owner's token and never answering it. It reads the request and answers it itself.
- */
-export type Ops = (req: IncomingMessage, res: ServerResponse, ctx: {
-  access: GitHubAccess; cacheDir: string;
-  cache: (s: Slug) => Promise<string>;
-  git: (dir: string, args: string[], token?: string) => Promise<string>;
-  fetchRemote: (s: Slug, name: string) => Promise<{ dir: string; ref: string; sha: string }>;
-  initBare: (dir: string) => Promise<void>;
-}) => Promise<void>;
 export type Options = {
   key: string; kernelUrl: string; cacheDir: string; tasksDir?: string;
   /** GitHub as the owner (github-mcp client.ts): the one sign-in, limiter and typed needs. */
   access: GitHubAccess; remoteUrl?: (slug: string) => string;
-  /** The typed ops (ops.ts); unset: those ops answer 404. */
-  ops?: Ops;
+  /** The typed ops other modules get through the kernel (ops.ts serveOps: fetch, head, read, comment, commit, runner_token), run
+   * here with the owner's token and never answering it; unset: those ops answer 404. */
+  ops?: (req: IncomingMessage, res: ServerResponse, ctx: OpsContext) => Promise<void>;
   /** github_fleet_org: where the fleet's repos live on GitHub ("" while unset). */
   fleetOrg: string; allowedOrgs?: string[]; instanceRepo?: string; productRepo?: string;
   /** maintainer_repos ("owner/name"): where the fleet merges and closes outside the agents org and the product repo. */
@@ -116,6 +106,7 @@ export function createService(o: Options) {
     const full = [...SAFE_GIT_ARGS, ...(token ? CREDENTIAL_ARGS : []), "--git-dir", dir, ...args];
     return (await run("git", full, { env, maxBuffer: 64 * 1024 * 1024 })).stdout.trim();
   }
+  const initBare = async (dir: string) => void (await run("git", [...SAFE_GIT_ARGS, "init", "--quiet", "--bare", dir], { env: ENV }));
   const access = o.access;
   /** The owner's token, for one git child's env only. */
   const token = () => access.token();
@@ -720,7 +711,7 @@ export function createService(o: Options) {
       if (!o.ops) throw fail(404, "no such operation");
       return o.ops(req, res, {
         access, cacheDir: o.cacheDir, cache: (s) => cache(s), git, fetchRemote: (s, name) => fetchRemote(slugOf(s.slug), name),
-        initBare: async (dir) => void (await run("git", [...SAFE_GIT_ARGS, "init", "--quiet", "--bare", dir], { env: ENV })),
+        initBare,
       });
     }
     const b = await body(req);
@@ -748,19 +739,9 @@ export function createService(o: Options) {
     if (op === "bundle") {
       // The branch alone as a git bundle (its HEAD and refs/heads/<branch>), for a running job's box to clone or fetch itself
       // (`aidenhq clone`): host git never runs in a workspace a box can write. GitHub's objects only (the github cache).
-      const tmp = mkdtempSync(join(o.cacheDir, "bundle-")), file = join(tmp, "repo.bundle"), bare = join(tmp, "repo.git");
-      try {
-        await run("git", [...SAFE_GIT_ARGS, "init", "--quiet", "--bare", bare], { env: ENV });
-        writeFileSync(join(bare, "objects", "info", "alternates"), `${join(dir, "objects")}\n`);
-        await git(bare, ["update-ref", `refs/heads/${name}`, sha]);
-        await git(bare, ["symbolic-ref", "HEAD", `refs/heads/${name}`]);
-        await git(bare, ["bundle", "create", "--quiet", file, "HEAD", `refs/heads/${name}`]);
-        // Sent from the open file, gone from disk at once: nothing is left behind however the send ends.
-        const stream = createReadStream(file);
-        await once(stream, "open");
-        res.writeHead(200, { "content-type": "application/octet-stream", "x-aidenhq-commit": sha });
-        stream.pipe(res);
-      } finally { rmSync(tmp, { recursive: true, force: true }); }
+      const stream = await packBundle({ cacheDir: o.cacheDir, git, initBare }, dir, new Map([[`refs/heads/${name}`, sha]]), `refs/heads/${name}`);
+      res.writeHead(200, { "content-type": "application/octet-stream", "x-aidenhq-commit": sha });
+      stream.pipe(res);
       return;
     }
     {

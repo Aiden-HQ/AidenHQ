@@ -18,6 +18,7 @@ import { inOrg } from "./git-auth.ts";
 import { startGithubMcp } from "../../connections/github-mcp/dist/src/main.js";
 import { parseRepos } from "./aidenhq-sdk/maintained-repos.ts";
 import { createService } from "./service.ts";
+import { serveOps } from "./ops.ts";
 import { startPrWatch } from "./pr-watch.ts";
 import { startTidy } from "./tidy.ts";
 
@@ -32,7 +33,7 @@ const fleetOrg = env.GITHUB_FLEET_ORG ?? "";
 const maintained = parseRepos(env.GITHUB_MAINTAINER_REPOS ?? "");
 const handle = createService({
   key, kernelUrl: env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130", cacheDir: env.CACHE_DIR ?? "/cache", tasksDir: env.TASKS_DIR || undefined,
-  access, fleetOrg, allowedOrgs: (env.ALLOWED_ORGS ?? "").split(",").filter(Boolean), instanceRepo: env.INSTANCE_REPO || undefined,
+  access, ops: serveOps, fleetOrg, allowedOrgs: (env.ALLOWED_ORGS ?? "").split(",").filter(Boolean), instanceRepo: env.INSTANCE_REPO || undefined,
   productRepo: env.PRODUCT_REPO || undefined, maintained: maintained.map((r) => r.repo), selfName: env.OWNER_NAME || undefined,
   churnExclude: (env.CHURN_EXCLUDE ?? "").split(",").map((g) => g.trim()).filter(Boolean),
   log,
