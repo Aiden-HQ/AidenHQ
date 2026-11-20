@@ -96,3 +96,18 @@ test("a message the router took and never acknowledged (it crashed, its answer w
   now += 3 * 60_000;
   assert.equal(n.take(router).messages.length, 0);
 });
+
+test("the approvals digest is queued when taken: a take whose answer was lost hands it over again after the lease", () => {
+  let now = 1_000_000, digest = "🧾 Approvals digest";
+  const n = createNotify({ db: new DatabaseSync(":memory:"), secret: () => "", resolver: {}, modules: () => ({}), now: () => now, extra: () => (digest ? [{ kind: "digest", text: digest }] : []) });
+  const first = n.take(["kernel.notify"]).messages;
+  digest = null; // the kernel marked the day sent: it never makes it again today
+  assert.deepEqual(first.map((m) => m.text), ["🧾 Approvals digest"]);
+  assert.deepEqual(n.take(["kernel.notify"]).messages, [], "leased");
+  now += 3 * 60_000; // the router never acknowledged it
+  const again = n.take(["kernel.notify"]).messages;
+  assert.deepEqual(again.map((m) => [m.id, m.text]), [[first[0].id, "🧾 Approvals digest"]]);
+  n.ack(["kernel.notify"], { ids: [again[0].id] });
+  now += 3 * 60_000;
+  assert.deepEqual(n.take(["kernel.notify"]).messages, []);
+});
