@@ -1177,6 +1177,17 @@ export function createApp(opts: AppOptions): Server {
         return r;
       },
     },
+    // Test connection for Google: one live read through the same Google connection the Connect button uses.
+    {
+      method: "POST",
+      path: /^\/api\/google\/check$/,
+      handle: async () => {
+        if (!opts.google) throw new HttpError(404, "Google sign-in isn't set up on the board");
+        const r = await opts.google.check();
+        store.events.emit("connections");
+        return r;
+      },
+    },
     // Finishing a Google sign-in with a Desktop client: the loopback address its tab ended on, pasted on its Connect dialog.
     {
       method: "POST",

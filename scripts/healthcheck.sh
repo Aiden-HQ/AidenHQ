@@ -47,7 +47,7 @@ module_on() { # name: installed unless modules.json says it isn't
   node -e 'const m=JSON.parse(require("fs").readFileSync("config/modules.json","utf8")).find(x=>x.name===process.argv[1]); process.exit(m&&!m.enabled?1:0)' "$1"
 }
 secrets="${AIDENHQ_SECRETS_DIR:-/nonexistent}"
-# The kernel's fixed read probes (gmail, calendar, github: POST /v1/health/probe, the host's health_probe_key, sent as a header
+# The modules' read probes (a connection's `health_probes` in module.yaml: gmail, calendar, github; POST /v1/health/probe, the host's health_probe_key, sent as a header
 # from stdin so it never shows in argv). Prints nothing on success, the reason on failure; 0 ok, 1 failed, 3 when no agent holds
 # the probe's tool (skipped).
 probe() { # name

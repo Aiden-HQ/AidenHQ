@@ -5,7 +5,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import pino from "pino";
 import { z } from "zod";
-import { healthBody, MultiWorkspace } from "./accounts.js";
+import { checkGoogle, healthBody, MultiWorkspace } from "./accounts.js";
 import { FixtureWorkspace } from "./fixtures.js";
 import { GoogleAuthError } from "./google.js";
 import { Reconnect, ReconnectError } from "./reconnect.js";
@@ -230,6 +230,7 @@ async function handleAuth(req: IncomingMessage, path: string): Promise<[number, 
     if (fixturesDir) return [200, { accounts: [] }];
     return [200, { accounts: multi?.authStatus() ?? [], client_type: reconnect.clientType(), ...(authError ? { error: authMessage() } : {}) }];
   }
+  if (path === "/auth/check" && req.method === "GET") return [200, await checkGoogle(fixturesDir ? undefined : multi, authError)];
   if (req.method !== "POST") return [405, { error: "method not allowed" }];
   try {
     if (path === "/auth/start") {

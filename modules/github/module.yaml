@@ -154,6 +154,9 @@ connections:
       destructive: [ github_issue_comment, github_issue_create, github_issue_update, github_pr_review, github_pr_thread_resolve, github_rerun_failed, github_app_issue, github_app_issue_comment, github_app_issue_label, github_app_issue_state ]
     # Granted only while the upstream setting allows issues.
     upstream: [ github_app_issue, github_app_issue_status ]
+    # The host's health probe (kernel/src/health.ts): the owner's sign-in answers a read.
+    health_probes:
+      github: { tool: github_whoami }
   # GitHub's own MCP server (its default toolsets), passed through whole as the signed-in owner (src/vendor/proxy.ts). Reads are
   # `read`. The owner-authored writes are `destructive`: only a grant naming one reaches it, and the AI reviewer decides each
   # call first. Git writes (branches, files, pushes, merges, repositories, forks) are refused in github-mcp (official.ts DENY):

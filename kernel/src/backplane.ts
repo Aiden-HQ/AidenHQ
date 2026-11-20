@@ -75,7 +75,7 @@
 //   GET  /v1/connections/health (the board's key) every connection's /healthz as the kernel reaches it -> {probes: {name: {ok, status?, state?, detail?, channels?, checkedAt}}} (health.ts)
 //   POST /v1/auth/:op, /v1/auth/mcp/:op, /v1/owner/decide, /v1/accounts/:op, /v1/apps/:op, /v1/operator/:op  the accounts' routes (auth-api.ts): module UI
 //                              sessions and account admin (the board), in-app requests (apps-platform), setup links (operator)
-//   POST /v1/health/probe      (the host's health_probe_key, x-health-key) {probe}: one of health.ts's fixed read probes, called as the
+//   POST /v1/health/probe      (the host's health_probe_key, x-health-key) {probe}: one of the modules' declared health probes (health.ts), called as the
 //                              agent granted it -> {ok, ms, error?}, never the tool's answer; scripts/healthcheck.sh's reads
 import { pipeline } from "node:stream/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";

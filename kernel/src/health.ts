@@ -1,5 +1,5 @@
-// The host's health probes (POST /v1/health/probe {probe}, the host's health_probe_key): a fixed set, each one read tool of a
-// connection with fixed arguments, called as the narrowest agent granted it through the module call a replayed record makes.
+// The host's health probes (POST /v1/health/probe {probe}, the host's health_probe_key): the modules' own (a connection's
+// `health_probes` in module.yaml), each one read tool of that connection with fixed arguments, called as the narrowest agent granted it through the module call a replayed record makes.
 // The caller names a probe and nothing else; it gets back whether the call worked, never what the tool answered.
 import { fail } from "./proxy.ts";
 import type { Connection, Grant } from "./identity.ts";
@@ -8,13 +8,6 @@ import type { Requester } from "./records.ts";
 import type { Resolver } from "./net.ts";
 
 type Log = (msg: string, fields?: Record<string, unknown>) => void;
-const day = () => new Date().toISOString().slice(0, 10);
-export const PROBES: Record<string, { connection: string; tool: string; args: () => Record<string, unknown> }> = {
-  gmail: { connection: "google_workspace", tool: "gmail_search", args: () => ({ query: "in:inbox", max_results: 1 }) },
-  calendar: { connection: "google_workspace", tool: "calendar_list_events", args: () => ({ start: `${day()}T00:00:00Z`, end: `${day()}T23:59:59Z`, max_results: 5 }) },
-  github: { connection: "github", tool: "github_whoami", args: () => ({}) },
-};
-
 export function createHealthProbe({ grants, connections, kindOf, callAs, log = () => {} }: {
   grants: () => Record<string, Grant>; connections: () => Record<string, Connection>;
   /** writes.kindOf: a tool with a write kind is never probed. */
@@ -23,10 +16,10 @@ export function createHealthProbe({ grants, connections, kindOf, callAs, log = (
   log?: Log;
 }) {
   return async function probe(b: { probe?: unknown }): Promise<{ ok: boolean; ms: number; error?: string }> {
-    const p = Object.hasOwn(PROBES, String(b.probe)) ? PROBES[String(b.probe)] : undefined;
-    if (!p) throw fail(404, "not_found", `no probe ${String(b.probe).slice(0, 40)} (${Object.keys(PROBES).join(", ")})`);
-    const conn = Object.hasOwn(connections(), p.connection) ? connections()[p.connection] : undefined;
-    if (!conn) throw fail(404, "not_found", `no connection ${p.connection}`);
+    const declared = Object.entries(connections()).flatMap(([connection, conn]) => Object.entries(conn.health_probes ?? {}).map(([name, h]) => ({ name, connection, conn, tool: h.tool, args: () => h.args ?? {} })));
+    const p = declared.find((d) => d.name === String(b.probe));
+    if (!p) throw fail(404, "not_found", `no probe ${String(b.probe).slice(0, 40)} (${declared.map((d) => d.name).join(", ")})`);
+    const conn = p.conn;
     // Reads only: a tool the connection tags write or destructive, or that has a write kind, is never called.
     if (!conn.tools.read.includes(p.tool) || conn.tools.write.includes(p.tool) || conn.tools.destructive.includes(p.tool) || kindOf(p.connection, p.tool)) throw fail(409, "not_read", `${p.connection}.${p.tool} is not a plain read tool`);
     // The agent holding it with the fewest tools overall, then by id: the narrowest caller there is.

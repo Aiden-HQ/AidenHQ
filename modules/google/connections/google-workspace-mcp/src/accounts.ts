@@ -58,6 +58,22 @@ export function healthBody(ready: boolean, err?: unknown): { ok: boolean; state?
   return { ok: false, ...(err instanceof NoGoogleAccounts ? { state: "missing" as const } : {}), detail: err instanceof Error ? err.message : undefined };
 }
 
+export type Check = { ok: true } | { ok: false; message: string; fix?: string };
+
+/** The board's Test: one live Calendar read on the primary account (a refresh and an API call), answered in words. */
+export async function checkGoogle(ws: { listEvents(start: string, end: string, query?: string, max?: number): Promise<unknown> } | undefined, err?: unknown): Promise<Check> {
+  if (!ws) return { ok: false, message: err instanceof NoGoogleAccounts ? "No Google account is connected." : "Google isn't available.", ...(err instanceof NoGoogleAccounts ? { fix: "Connect" } : {}) };
+  const now = new Date().toISOString();
+  try {
+    await ws.listEvents(now, now, undefined, 1);
+    return { ok: true };
+  } catch (e) {
+    return e instanceof GoogleAuthError
+      ? { ok: false, message: "Google no longer accepts the sign-in.", fix: "Reconnect" }
+      : { ok: false, message: `Google didn't answer: ${(e as Error).message.slice(0, 200)}` };
+  }
+}
+
 export function loadAccounts(path: string): { primary: string; accounts: Map<string, StoredCredentials> } {
   const raw = readCredentials(path);
   const accounts = new Map<string, StoredCredentials>();

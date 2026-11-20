@@ -126,6 +126,7 @@ function ConnectionTile({ r, v, can, connect: asked, onAsked }: { r: ConnectionR
           </p>
           {v.hint && <p className="st-hint">{v.hint}</p>}
           {r.signIn?.state === "ok" && <TestSignIn id={r.name} />}
+          {r.google?.accounts.some((a) => a.state === "ok") && <TestSignIn id={r.name} google />}
           {!connect && r.setup && v.status === "not_configured" && <p className="st-hint">{r.setup}</p>}
           <Facts r={r} />
           {r.google && <GoogleAccounts g={r.google} can={can.google || r.google.client_type === "desktop"} />}
@@ -136,13 +137,13 @@ function ConnectionTile({ r, v, can, connect: asked, onAsked }: { r: ConnectionR
 }
 
 /** Test connection: one live read through the sign-in; what is wrong comes back in words with the one thing to do. */
-function TestSignIn({ id }: { id: string }) {
+function TestSignIn({ id, google }: { id: string; google?: boolean }) {
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<Awaited<ReturnType<typeof api.testSignIn>> | null>(null);
   const test = () => {
     setBusy(true);
     setResult(null);
-    api.testSignIn(id).then(setResult, (e: Error) => setResult({ ok: false, message: e.message })).finally(() => setBusy(false));
+    (google ? api.testGoogle() : api.testSignIn(id)).then(setResult, (e: Error) => setResult({ ok: false, message: e.message })).finally(() => setBusy(false));
   };
   return (
     <div className="st-test">
