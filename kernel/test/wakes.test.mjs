@@ -360,8 +360,11 @@ test("an owner comment is task.commented at its own time; a chat is marked at cr
   w.comment("t1", "c2", { authorAgentId: AGENT, createdAt: at2, body: "ok\n<!-- aidenhq:job=j-9 kind=reply -->" });
   await w.wakes.poll();
   const of = (task, type) => w.facts.forTask(task).filter((f) => f.type === type);
-  assert.deepEqual(of("t1", "task.commented").map((f) => [f.version, f.actor, f.at, f.data]),
-    [["c1", "account:u1", at, { kind: "comment" }], ["c2", `agent:${AGENT}`, at2, { kind: "reply", job: "j-9" }]]);
+  // The kernel-tagged c2 is its writer's to record (cp.ts, outcomes.ts): scan seeing it first leaves that writer's fact (job = the run id) alone.
+  assert.deepEqual(of("t1", "task.commented").map((f) => [f.version, f.actor, f.at, f.data]), [["c1", "account:u1", at, { kind: "comment" }]]);
+  w.facts.record({ type: "task.commented", subject: "task:t1", version: "c2", at: at2, actor: `agent:${AGENT}`, task: "t1", data: { kind: "cp", job: "run-1" } });
+  await w.wakes.poll();
+  assert.deepEqual(of("t1", "task.commented").map((f) => [f.version, f.data.job]), [["c1", undefined], ["c2", "run-1"]]);
   assert.deepEqual([of("t1", "task.created")[0].data.chat, of("t2", "task.created")[0].data.chat], [true, false]);
 });
 

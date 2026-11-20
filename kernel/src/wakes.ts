@@ -194,12 +194,11 @@ export function createWakes({ db, owner, post, dispatches, containers = () => ne
     const all = (r.json as Comment[]).slice().sort((a, b) => ms(a.createdAt) - ms(b.createdAt));
     // First sight: only what came after the dispatcher joined or the agent's last word on the task.
     const boundary = prev ? 0 : Math.max(since(agent, joined), ...all.filter((c) => c.authorAgentId === agent || SELF_TAG.test(c.body ?? "")).map((c) => ms(c.createdAt)));
-    // Every comment read is a fact (version = its id, so a writer that recorded its own, cp.ts or outcomes.ts, keeps it): the
-    // owner's say, an agent's, a kernel notice's. A kernel tag names the kind and job the writer would have recorded.
+    // Every untagged comment read is a fact (version = its id): the owner's say, an agent's. A comment the kernel wrote carries a
+    // tag and is recorded by its writer (cp.ts, outcomes.ts, the owner paths), whose fact names the job: scan never races it.
     for (const c of all) {
-      if (c.deletedAt) continue;
-      const tag = /<!-- aidenhq:job=(\S+) kind=(\S+) -->/.exec(c.body ?? "");
-      fact({ type: "task.commented", subject: `task:${issue.id}`, version: String(c.id), at: iso(ms(c.createdAt) || now()), actor: c.authorAgentId ? `agent:${keyOf(c.authorAgentId)}` : c.authorUserId ? `account:${c.authorUserId}` : "unknown", task: issue.id, source, data: tag ? { kind: tag[2], job: tag[1] } : { kind: "comment" } });
+      if (c.deletedAt || /<!-- aidenhq:(job|op)=/.test(c.body ?? "")) continue;
+      fact({ type: "task.commented", subject: `task:${issue.id}`, version: String(c.id), at: iso(ms(c.createdAt) || now()), actor: c.authorAgentId ? `agent:${keyOf(c.authorAgentId)}` : c.authorUserId ? `account:${c.authorUserId}` : "unknown", task: issue.id, source, data: { kind: "comment" } });
     }
     for (const c of all) {
       if (c.deletedAt || ms(c.createdAt) <= boundary || c.authorAgentId === agent || SELF_TAG.test(c.body ?? "")) continue;

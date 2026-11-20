@@ -8,6 +8,8 @@
 // neutralised, so neither can forge a marker.
 import { neutral, type Api } from "./channels.ts";
 import type { Once } from "./once.ts";
+import type { Facts } from "./facts.ts";
+import { factWriter, iso } from "./factlog.ts";
 import { fail } from "./proxy.ts";
 
 /** Posts a comment as an agent once per `job` (outcomes.ts `post`, kind `lane`): the agent's own words, which wake nobody. */
@@ -16,7 +18,9 @@ export type PostAsAgent = (agent: string, task: string, job: string, body: strin
 const TURN = /^[A-Za-z0-9_-]{1,59}$/;
 const ownerTag = (job: string) => `<!-- aidenhq:job=${job} kind=owner -->`;
 
-export function createLane({ once, owner, postAsAgent, grantsFile, log = () => {} }: {
+export function createLane({ once, owner, postAsAgent, grantsFile, facts, log = () => {} }: {
+  /** The fact log: the owner's words are a task.commented fact (actor `account:<via>`). */
+  facts?: Facts;
   /** The one durable once-only write (once.ts). */
   once: Once;
   /** The control plane as the owner. */
@@ -53,7 +57,10 @@ export function createLane({ once, owner, postAsAgent, grantsFile, log = () => {
       if (typeof task !== "string" || !task) throw fail(404, "not_found", `${agent} has no chat task (no chat: block)`);
       const job = `lane-${turn}`;
       const out: { task: string; owner?: string; agent?: string } = { task };
-      if (said) out.owner = await ownerOnce(task, job, `[${via}] ${said}`);
+      if (said) {
+        out.owner = await ownerOnce(task, job, `[${via}] ${said}`);
+        factWriter(facts, log)({ type: "task.commented", subject: `task:${task}`, version: out.owner, at: iso(Date.now()), actor: `account:${via}`, task, data: { kind: "comment" } });
+      }
       if (reply)
         out.agent = (await postAsAgent(agent, task, job, reply).catch((e: Error & { status?: number; code?: string }) => {
           throw e.name === "OutcomeError" ? fail(e.status!, e.code!, e.message) : e;

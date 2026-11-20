@@ -302,7 +302,7 @@ const BOARD_MAX_BODY = 16 * 1024 * 1024;
  * answers pass as they are (an attachment upload is multipart, its content bytes). `X-AidenHQ-Account` names the signed-in
  * admin a write is for (none: the board's own timers and notices); it is logged with the write.
  */
-export function createBoardCp({ controlUrl, key, fetch = globalThis.fetch, observe, log = () => {} }: { controlUrl: string; key: () => string; fetch?: typeof globalThis.fetch; observe?: (issue: { id: string }, actor: string) => Promise<void>; log?: (msg: string, f?: Record<string, unknown>) => void }) {
+export function createBoardCp({ controlUrl, key, fetch = globalThis.fetch, observe, facts, log = () => {} }: { /** The fact log: the owner's comments are recorded here, whichever agents are polled. */ facts?: Facts; controlUrl: string; key: () => string; fetch?: typeof globalThis.fetch; observe?: (issue: { id: string }, actor: string) => Promise<void>; log?: (msg: string, f?: Record<string, unknown>) => void }) {
   return async function boardCp(req: IncomingMessage, res: ServerResponse, lane: string, path: string, query: string): Promise<void> {
     const method = String(req.method);
     const allowed = lane === "read" ? method === "GET" && BOARD_READ_PATHS.some((re) => re.test(path)) : BOARD_WRITE_PATHS.some(([m, re]) => m === method && re.test(path));
@@ -335,6 +335,14 @@ export function createBoardCp({ controlUrl, key, fetch = globalThis.fetch, obser
     const out = Buffer.from(await r.arrayBuffer());
     if (out.length > MAX) throw fail(502, "too_large", "the control plane's answer is too large");
     if (lane === "owner") log("cp owner", { method, path, status: r.status, ...(account ? { account } : {}) });
+    // The owner's comment is a fact at once (version = its id), whoever holds the task.
+    if (lane === "owner" && r.ok && method === "POST") {
+      const m = /^\/api\/issues\/([^/]+)\/comments$/.exec(path);
+      try {
+        const c = JSON.parse(out.toString("utf8")) as { id?: unknown; createdAt?: unknown };
+        if (m && typeof c.id === "string") factWriter(facts, log)({ type: "task.commented", subject: `task:${decodeURIComponent(m[1]!)}`, version: c.id, at: typeof c.createdAt === "string" ? c.createdAt : iso(Date.now()), actor: account ? `account:${account}` : "unknown", task: decodeURIComponent(m[1]!), data: { kind: "comment" } });
+      } catch { /* not JSON: nothing to record */ }
+    }
     // A task the owner just changed or made has its facts recorded at once, from the issue the write returned; the write stands if that fails.
     if (lane === "owner" && r.ok && (created || changed)) {
       try {
