@@ -1,0 +1,72 @@
+# Building a module
+
+The framework every official module follows, so all of them install, connect, look and behave alike. It is a short list on
+purpose: each line links the rule's home, and [CLAUDE.md](../CLAUDE.md) "Conventions" still applies in full.
+
+## The owner's experience
+
+- **Quiet until the owner turns it on.** A module installs with nothing scheduled and no spend. Unconnected, it is an empty
+  state that says how to connect, never an error or a failing check
+  ([quiet-start.md](../docs/design/quiet-start.md), CLAUDE.md "Every owner, every new install").
+- **Fewest steps to connected.** One Connect (a `board.signins` entry), module defaults for every fixed or discoverable
+  value, and one inline field only for a genuinely per-install value (CLAUDE.md "A connection connects in one click").
+- **A setup flow only when the owner must act elsewhere.** Use a `board.setup_flows` entry for something the owner makes
+  first (an OAuth client, an app, a token, a bot), a channel to pair, or a mode to pick (`choose`, a setting with
+  `values`) ([guided-setup.md](../docs/design/guided-setup.md), [configuration.md](../docs/configuration.md)).
+- **Every mode, every surface.** A mode changes the Connect, status, setup help and secrets alike, with one test per mode
+  from a fresh install to connected (CLAUDE.md "Modules with modes").
+
+## Declare, and the board and the owner's Claude both drive it
+
+- **Everything the owner configures is declared in `module.yaml`:** settings (typed, with `values` and a comment that
+  explains them), `board.signins`, `board.setup_flows` and `providers.board`. The board draws them with its kit and theme
+  ([board-ui.md](../docs/design/board-ui.md)). The owner's MCP reads and sets the same declarations
+  ([design](../docs/superpowers/specs/2026-11-20-owner-mcp-design.md)), so a module adds no owner-facing code of its own.
+- **Secrets go through a board field, never chat.** Declare each with `setup:`. The board stores it in the vault and the
+  module reads it as a file.
+- **A richer page is a module view.** When declarations can't express a page, a module ships it as a view in the MCP Apps
+  format: a sandboxed HTML resource on the design system that calls only the module's own tools, so it works on the board
+  and in the owner's Claude alike. No module has needed one yet; the first module that does builds the board's view host
+  (owner, 2026-11-20). Board code stays the board's.
+- **Every setting is explained.** Put a comment above each setting in `module.yaml`; it is the help the board and the MCP
+  show. Add `pattern` for a value's shape, and `when` for a setting that applies only in one mode.
+- **Every sign-in can be tested.** Its service answers `/auth/check` with ok, or what's wrong and how to fix it. The SDK
+  proxy does this for you.
+- **Setup can be changed later.** A finished setup flow reopens with its current choices; design it so that every step
+  makes sense the second time.
+- **Validate at the module.** A module whose values need more than a `pattern` declares a `validate` hook. The board and
+  the MCP show its errors under the field.
+- **A new building block goes in the schema, for every module.** Add it to `modules/board/schemas/` and the board, never to
+  one module ([design](../docs/superpowers/specs/2026-11-20-module-primitives-design.md)).
+
+## Connections are MCP servers
+
+- **Build on the SDK's vendor proxy** (`kernel/sdk/src/vendor/proxy.ts`). The full upstream MCP passes through; tools are
+  tagged read, write or destructive in `module.yaml`; the module adds hooks only
+  ([configuration.md](../docs/configuration.md)). A first-party server uses the same SDK in stateless Streamable HTTP mode
+  with `readOnlyHint` annotations (`modules/apps-platform/apps-mcp/src/main.ts`).
+- **Not signed in still starts.** `/healthz` says whether it is connected, the tools it saw last stay listed, and every call
+  says how to connect: never a crash loop, never a silently empty tool list. Health comes from the kernel, not board
+  probes.
+- **Grants decide access.** Any agent a tool is granted may use it ([CLAUDE.md](../CLAUDE.md) "One shared tools
+  repository").
+
+## Code
+
+- **TypeScript, one way, one owner.** These are CLAUDE.md's "TypeScript", "One way to do each thing" and "One authority per
+  concern". Behaviour that varies lives in the module, never as a kernel branch.
+- **Agent behaviour is a module skill or prompt.** A handbook states the mission and links the skill (CLAUDE.md "Rules live
+  in one place").
+- **Gates.** A new non-security gate ships in observe mode. A module never touches the host firewall
+  ([minimal-core-install.md](../docs/design/minimal-core-install.md)).
+- **Apps a module owns** start from the app starter and the design system (`modules/apps-platform/`).
+
+## Tests and docs
+
+- **A few end-to-end tests** per package, run by its CI suite (`.github/ci/areas.json`; [README.md](README.md) "Test
+  locally").
+- **A README with one shape:**
+  1. what the module does for the owner;
+  2. how to connect it (or "nothing to connect");
+  3. what it grants agents (its tools, read or write);
+  4. what a new install sees (`New installs`).
