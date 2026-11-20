@@ -162,12 +162,12 @@ test("a branch parked by three judged rejections that nothing moved for 6h is a 
 
 test("a task waiting on the owner's answer over a day, or its delegator's over 6 hours, is raised", async () => {
   const items = [
-    { task: "a", identifier: "WOR-A", reason: "owner_wait", reason_since: minsAgo(25 * 60) },
-    { task: "b", identifier: "WOR-B", reason: "owner_wait", reason_since: minsAgo(20 * 60) },
-    { task: "c", identifier: "WOR-C", reason: "delegator_wait", reason_since: minsAgo(7 * 60) },
-    { task: "d", identifier: "WOR-D", reason: "agent_wait", reason_since: minsAgo(50 * 60) },
+    { task: "a", identifier: "WOR-A", reason: "owner_wait", since: minsAgo(25 * 60) },
+    { task: "b", identifier: "WOR-B", reason: "owner_wait", since: minsAgo(20 * 60) },
+    { task: "c", identifier: "WOR-C", reason: "delegator_wait", since: minsAgo(7 * 60) },
+    { task: "d", identifier: "WOR-D", reason: "agent_wait", since: minsAgo(50 * 60) },
   ];
-  const c = checks({ kernel: { read: async () => ({}), call: async () => ({ items }) }, apps: async () => [], alerts: async () => [], openKeys: () => [], now: () => NOW });
+  const c = checks({ kernel: { read: async () => ({}), call: async () => ({ tasks: items }) }, apps: async () => [], alerts: async () => [], openKeys: () => [], now: () => NOW });
   const found = await c.judgement();
   assert.deepEqual(found.map((i) => i.key), ["a", "c"]);
   assert.match(found[0].reason, /WOR-A has waited 1500 min on its owner's answer/);
@@ -195,23 +195,27 @@ test("the run check flags three same-category failures on one task in half an ho
 });
 
 test("an orphaned item over 2h trips the stuck rule; a slower stage only logs in observe mode", async () => {
+  const row = (r) => ({ holder: "ag1", attention: [], idle_wakes: 0, ...r });
   const idle = [
     { task: "a", identifier: "WOR-A", since: minsAgo(180), reason: "orphaned" }, // assigned todo: flagged
     { task: "b", identifier: "WOR-B", since: minsAgo(30), reason: "orphaned" }, // not idle long enough
     { task: "c", identifier: "BAK-3", since: minsAgo(300), reason: "orphaned" }, // bake-off
-    { task: "d", identifier: "WOR-D", since: minsAgo(300), reason: "owner" }, // waiting on the owner
+    { task: "d", identifier: "WOR-D", since: minsAgo(300), reason: "owner_wait" }, // waiting on the owner
     { task: "e", identifier: "WOR-E", since: minsAgo(9000), reason: "orphaned" }, // backlog inbox: parked
     { task: "f", identifier: "WOR-F", since: minsAgo(9000), reason: "orphaned" }, // unassigned todo log
     { task: "g", identifier: "WOR-G", since: minsAgo(300), reason: "orphaned" }, // its read fails: stays flagged
     { task: "h", identifier: "WOR-H", since: minsAgo(300), reason: "orphaned" }, // owner-assigned todo: not an agent's stuck work
     { task: "i", identifier: "WOR-I", since: minsAgo(60), reason: "orphaned", idle_wakes: 3 }, // the idle sweep gave up: critical now
-  ];
+    { task: "j", identifier: "WOR-J", since: minsAgo(300), reason: "unknown" }, // its holder's wake aged out: flagged
+    { task: "k", identifier: "WOR-K", since: minsAgo(300), reason: "agent_wait" }, // waiting on something recorded
+  ].map(row);
   const tasks = {
     a: { id: "a", identifier: "WOR-A", status: "todo", assigneeAgentId: "ag1", updatedAt: minsAgo(180) },
     e: { id: "e", identifier: "WOR-E", status: "backlog", updatedAt: minsAgo(9000) },
     f: { id: "f", identifier: "WOR-F", status: "todo", updatedAt: minsAgo(9000) },
     h: { id: "h", identifier: "WOR-H", status: "todo", assigneeUserId: "u1", assigneeAgentId: null, updatedAt: minsAgo(300) },
     i: { id: "i", identifier: "WOR-I", status: "todo", assigneeAgentId: "ag1", updatedAt: minsAgo(60) },
+    j: { id: "j", identifier: "WOR-J", status: "todo", assigneeAgentId: "ag1", updatedAt: minsAgo(300) },
   };
   const stage = (p) => ({ name: "review", n: 12, work_p75: p, wait_p75: 0, work_p50: p / 2, waits: {} });
   const logged = [];
@@ -222,10 +226,10 @@ test("an orphaned item over 2h trips the stuck rule; a slower stage only logs in
       if (!tasks[id]) throw new Error("control plane down");
       return tasks[id];
     },
-    call: async (_m, p) => (p.startsWith("/v1/flow?idle=1") ? { items: idle } : { stages: [stage(p.endsWith(`to=${lastWeek}`) ? 100 : 200)] }),
+    call: async (_m, p) => (p.startsWith("/v1/tasks/state?open=1") ? { tasks: idle } : { stages: [stage(p.endsWith(`to=${lastWeek}`) ? 100 : 200)] }),
   };
   const c = checks({ kernel, apps: async () => [], alerts: async () => [], openKeys: () => [], now: () => NOW, log: (m, f) => logged.push([m, f]) });
-  assert.deepEqual((await c.stuck()).map((i) => [i.key, Boolean(i.critical)]), [["a", false], ["g", false], ["i:idle-capped", true]]);
+  assert.deepEqual((await c.stuck()).map((i) => [i.key, Boolean(i.critical)]), [["a", false], ["g", false], ["i:idle-capped", true], ["j", false]]);
   assert.deepEqual(await c.flow(), [], "observe mode files nothing");
   assert.deepEqual(logged, [["flow.would_file", { stage: "review" }]]);
 });
@@ -456,11 +460,11 @@ test("owner notices are marked told only once sent: a failed critical alert, sta
   assert.equal(msgs.length, 1);
 });
 
-test("the Later detectors: an unstarted delegation, a merge or blocker deadlock, ping-pong, duplicates and a Tier 2 card over 24h fire; healthy state is quiet", async () => {
+test("the Later detectors: an unstarted delegation, a blocker deadlock, ping-pong, duplicates and a Tier 2 card over 24h fire; healthy state is quiet", async () => {
   const mk = (tasks, o = {}) => {
     const w = world({ tasks, ...o });
     const call = w.call;
-    w.call = async (m, p) => (p.startsWith("/v1/flow?idle=1") ? { items: o.idle ?? [] } : p.startsWith("/v1/work?since=") && o.cards ? { records: o.cards, usage: [] } : call(m, p));
+    w.call = async (m, p) => (p.startsWith("/v1/tasks/state?open=1") ? { tasks: o.idle ?? [] } : p.startsWith("/v1/work?since=") && o.cards ? { records: o.cards, usage: [] } : call(m, p));
     return detect(w);
   };
   const delegated = (id, o = {}) => task(id, { parentId: "p", assigneeAgentId: "a1", createdAt: ago(3), ...o });
@@ -468,10 +472,10 @@ test("the Later detectors: an unstarted delegation, a merge or blocker deadlock,
   assert.deepEqual((await stale.unstarted()).map((i) => i.key), ["a"]);
   assert.deepEqual(await mk({ a: delegated("a") }, { todo: ["a"], work: { a: { busy: false, jobs: [{ id: "j" }] } } }).unstarted(), []);
 
-  const idle = (task, reason, h, o = {}) => ({ task, identifier: `WOR-${task.toUpperCase()}`, since: ago(h), reason_since: ago(h), reason, ...o });
-  const jammed = await mk({}, { idle: [idle("m", "checks", 7), idle("n", "checks", 1), idle("x", "blocked", 2, { blocked_on: "WOR-Y" }), idle("y", "blocked", 2, { blocked_on: "WOR-X" }), idle("z", "blocked", 2, { blocked_on: "WOR-M" })] }).deadlock();
-  assert.deepEqual(jammed.map((i) => i.key), ["m", "wor-x-wor-y"]);
-  assert.deepEqual(await mk({}, { idle: [idle("n", "checks", 1), idle("z", "blocked", 2, { blocked_on: "WOR-N" })] }).deadlock(), []);
+  const idle = (task, reason, h, o = {}) => ({ task, identifier: `WOR-${task.toUpperCase()}`, since: ago(h), reason, holder: "a1", attention: [], idle_wakes: 0, ...o });
+  const jammed = await mk({}, { idle: [idle("m", "job_queued", 7), idle("x", "blocked", 2, { ref: "task:y" }), idle("y", "blocked", 2, { ref: "task:x" }), idle("z", "blocked", 2, { ref: "task:m" })] }).deadlock();
+  assert.deepEqual(jammed.map((i) => i.key), ["wor-x-wor-y"]);
+  assert.deepEqual(await mk({}, { idle: [idle("n", "job_queued", 1), idle("z", "blocked", 2, { ref: "task:n" })] }).deadlock(), []);
 
   const run = (id, agent, m) => ({ id, agent, task: "t", state: "done", started_at: minsAgo(m), ended_at: minsAgo(m - 1) });
   const bounced = [["j1", "a1", 50], ["j2", "a2", 40], ["j3", "a1", 30], ["j4", "a2", 20], ["j5", "a1", 10]].map((r) => run(...r));

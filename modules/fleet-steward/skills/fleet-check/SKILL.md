@@ -141,9 +141,8 @@ request open over an hour without merging) or something recovered.
   tasks and their comments, then act once.
   - `unstarted`: a delegated task nobody ran in an hour: comment once on it (waking its agent) with what is asked; if its
     agent is paused or missing, tell the delegator's task.
-  - `deadlock`: a task waiting over six hours on its merge queue or CI, or tasks blocked on each other in a cycle. Read the
-    PR's checks and the base branch's: a red base is a product bug (the product-bug path); a cycle is for the delegator to
-    break (comment on one of the tasks, naming which blocker to drop).
+  - `deadlock`: tasks blocked on each other in a cycle: for the delegator to break (comment on one of the tasks, naming
+    which blocker to drop).
   - `pingpong`: one task bounced between two agents five times in 12 hours. Comment once on the task with which agent
     owns the next step and the done condition; a repeat is a finding for the owner of the handbooks.
   - `duplicate`: tasks of one agent with one title. Comment on the newer one proposing it close as a duplicate of the older.

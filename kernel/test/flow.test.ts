@@ -67,7 +67,6 @@ test("an open owner record makes the gap's reason owner; idle now with nothing p
   w = flow.task("t1");
   assert.deepEqual(w.idle.slice(-2).map((i) => [i.start.slice(11, 19), i.end?.slice(11, 19) ?? null, i.reason]), [["10:37:27", "11:00:00", "owner"], ["11:00:00", null, "orphaned"]]);
   assert.deepEqual(w.stages.filter((s) => s.name === "owner").map((s) => [s.actor, secs(s)]), [["account:o1", 23 * 60]]);
-  assert.deepEqual(flow.idleNow().items, [{ task: "t1", identifier: "WOR-8567", since: `${D}10:37:27.000Z`, reason_since: `${D}11:00:00.000Z`, reason: "orphaned", holder: "engineer-b", idle_wakes: 0 }]);
 });
 
 test("a comment wake the kernel settled into a job that started after it isn't pending: idle afterwards is orphaned", () => {
@@ -75,7 +74,6 @@ test("a comment wake the kernel settled into a job that started after it isn't p
   wor8567(add);
   // A comment at 10:34:30 while j2 was being admitted: j2 reads it, and the kernel settles the wake with no wake.bound.
   add("wake.opened", "wake:w9", "10:34:30", { cause: "comment", author: "account:o1" });
-  assert.deepEqual(flow.idleNow().items, [{ task: "t1", identifier: "WOR-8567", since: `${D}10:37:27.000Z`, reason_since: `${D}10:37:27.000Z`, reason: "orphaned", holder: "engineer-b", idle_wakes: 0 }]);
 });
 
 test("an open stage is work, not idle: grading after the job leaves no gap and no wait", () => {
@@ -88,7 +86,6 @@ test("an open stage is work, not idle: grading after the job leaves no gap and n
   assert.deepEqual(w.idle.map((i) => i.start.slice(11, 19)), ["10:33:56"]);
   const grade = flow.summary({ since: `${D}00:00:00.000Z` }).stages.find((r) => r.name === "grade");
   assert.deepEqual([grade.n, grade.samples, grade.waits], [1, [600], {}]);
-  assert.deepEqual(flow.idleNow().items, [], "a done task is not idle");
 });
 
 test("a stage a module opened is work for a day, then its task is idle as stage_open", () => {
@@ -128,7 +125,6 @@ test("empty log gives an empty waterfall, summary and idle list", () => {
   assert.deepEqual(flow.task("t1"), { task: "t1", root: "t1", facts: [], stages: [], idle: [], truncated: false });
   const s = flow.summary({ since: `${D}00:00:00.000Z` });
   assert.deepEqual([s.stages, s.dora, s.churn, s.fleet.completions, s.fleet.first_pass_grade], [[], null, null, 0, null]);
-  assert.deepEqual(flow.idleNow(), { items: [], truncated: false });
 });
 
 test("item walks to the root and includes its descendants", () => {
@@ -156,7 +152,6 @@ test("summary: p50/p75 per stage, fewer than 5 gives samples, DORA from deploys 
   const review = s.stages.find((r) => r.name === "review");
   assert.deepEqual([review.n, review.samples, review.work_p50], [1, [120], undefined]);
   assert.equal(s.dora, null);
-  assert.deepEqual(flow.idleNow().items, [], "tasks no task fact shows open are never idle");
 
   add("task.created", "task:t7", "09:00:00", {}, { task: "t7" });
   add("job.started", "job:j7", "09:00:00", {}, { task: "t7", actor: "agent:engineer-a" });
@@ -207,7 +202,6 @@ test("GET /v1/flow: the board's key or a module with kernel.flow-read", async (t
   assert.equal((await get("/v1/flow?task=t1", "none")).status, 401);
   assert.equal((await get("/v1/flow?task=t1", "other")).status, 403);
   assert.equal((await (await get("/v1/flow?task=t1", "reader")).json()).stages.length, 4);
-  assert.equal((await (await get("/v1/flow?idle=1", "board-key")).json()).items[0].identifier, "WOR-8567");
   assert.equal((await get("/v1/flow?since=2026-11-19&by=colour", "board-key")).status, 400);
   assert.equal((await get("/v1/flow?since=yesterday", "board-key")).status, 400);
   assert.ok(Array.isArray((await (await get("/v1/flow?since=2026-11-19T00:00:00Z&by=model", "reader")).json()).stages));

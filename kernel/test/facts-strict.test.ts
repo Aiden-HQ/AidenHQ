@@ -49,7 +49,7 @@ test("a wait isn't recorded when its fact can't be written", async () => {
   const facts = openFacts(db);
   const owner = async () => ({ status: 404, json: {} });
   const wakes = createWakes({ db, facts, owner, post: async () => ({}), dispatches: { may: () => false, agents: () => [] } });
-  const idle = createIdle({ db, facts, flow: { idleNow: () => ({ items: [] }) }, wakes, owner });
+  const idle = createIdle({ db, facts, state: { read: () => ({ tasks: [] }) }, wakes, owner });
   fault(db, "work.waiting");
   await assert.rejects(idle.wait({ agent: "a-1", key: "eng", task: "t1" }, { reason: "PR #12 merges", on: "PR merges" }), /facts unwritable/);
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM wakes WHERE key LIKE 'wait:t1:%'").get().n, 0);
