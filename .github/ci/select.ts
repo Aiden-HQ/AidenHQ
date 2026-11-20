@@ -34,6 +34,25 @@ export function suitesFor(map: AreaMap, files: string[]): Selection {
   return { all: false, names };
 }
 
+/**
+ * A test job's shards: as many as the suites' measured time needs (their total over the slowest suite, which no split can
+ * beat; at most MAX_SHARDS), filled heaviest first into the lightest shard so they finish together.
+ */
+const MAX_SHARDS = 4;
+export function shard(tests: { name: string; dir: string; run?: string; secs: number }[]) {
+  const sorted = [...tests].sort((a, b) => b.secs - a.secs || a.name.localeCompare(b.name));
+  if (!sorted.length) return [];
+  const total = sorted.reduce((n, t) => n + t.secs, 0);
+  const k = Math.min(MAX_SHARDS, Math.ceil(total / Math.max(sorted[0]!.secs, 30)));
+  const shards = Array.from({ length: k }, (_, i) => ({ shard: i + 1, load: 0, entries: [] as { name: string; dir: string; run?: string; secs: number }[] }));
+  for (const t of sorted) {
+    const s = shards.reduce((lo, x) => (x.load < lo.load ? x : lo));
+    s.load += t.secs;
+    s.entries.push({ name: t.name, dir: t.dir, run: t.run, secs: t.secs });
+  }
+  return shards;
+}
+
 /** The suites to run again on a rebased head: those both the PR and main's gained commits touch. */
 export function reuse(map: AreaMap, prFiles: string[], gainedFiles: string[]) {
   const pr = suitesFor(map, prFiles).names;
@@ -96,7 +115,7 @@ async function main() {
     .filter((s: Suite) => names.includes(s.name) && (!s.main || env.MAIN))
     .map((s: Suite) => {
       const own = runs.find((r: { name: string }) => r.name === s.name) ?? s;
-      return { name: s.name, dir: s.name.split("#")[0], run: own.run, secs: s.secs ?? 5, ...(own.job ? { job: own.job } : {}) };
+      return { name: s.name, dir: s.name.split("#")[0]!, run: own.run, secs: s.secs ?? 5, ...(own.job ? { job: own.job } : {}) };
     });
   // The official modules' suites (job "modules"), heaviest first (`secs` in the map, 5 when unlisted) into the lightest of at
   // most 3 shards.
@@ -108,7 +127,10 @@ async function main() {
     s.entries.push({ dir: m.dir, run: m.run });
   }
   const modules = shards.filter((x) => x.entries.length).map(({ shard, entries }) => ({ shard, entries }));
-  process.stdout.write(`${JSON.stringify({ tests, packages: tests.some((t) => !t.job), modules })}\n`);
+  // The shards ci.yml's test jobs take (the next step drops `packages` and `modules` above).
+  const pk = shard(tests.filter((t) => t.job == null)), md = shard(tests.filter((t) => t.job === "modules"));
+  const plan = { packages: pk, modules: md, heavy: pk.length + (tests.some((t) => t.job === "board") ? 1 : 0) };
+  process.stdout.write(`${JSON.stringify({ tests, packages: tests.some((t) => !t.job), modules, shards: plan })}\n`);
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) await main();
