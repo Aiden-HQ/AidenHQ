@@ -1,7 +1,9 @@
 name: tasks
 requires: [ grading ] # task_delegate files rubrics with it (its network)
 roles:
-  requests: [ kernel.wake ] # task_wait and task_handoff record the job's own task's wait (POST /v1/wait, kernel idle.ts)
+  # kernel.wake: task_wait and task_handoff record the job's own task's wait (POST /v1/wait, kernel idle.ts); kernel.flow-read:
+  # each task's one state (GET /v1/tasks/state)
+  requests: [ kernel.wake, kernel.flow-read ]
 description: "Task tools for every agent: read, create, delegate, comment on and close Paperclip tasks, as the calling agent."
 connections:
   paperclip_tasks:

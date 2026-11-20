@@ -55,6 +55,9 @@
 //   GET  /v1/flow?task=|?item=|?idle=1|?journeys=1|?journey=|?since=[&to=&by=&scope=]  (the board, or a module with role
 //                              kernel.flow-read) Flow's views over the fact log (flow.ts): a task's or item's waterfall, idle
 //                              now, the declared journeys, a journey's items (journeys.ts), the summary with its insights
+//   GET  /v1/tasks/state?ids=|?open=1  (the board, or a module with role kernel.flow-read) each task's one state, computed from
+//                              its facts (task-state.ts): `ids` (≤ 200, ids or identifiers, closures included) or every open task,
+//                              in one snapshot, with the needs-you, failed and unexplained-idle counts (task-state-read.ts)
 //   POST /v1/work/grader-token  (the one module with role kernel.grader) {task} -> a gateway
 //                              token billed to the task's assignee under its caps, for a task its finish check holds; one live token per task
 //   POST /v1/jobs/:job/post    (that job's module) {kind: reply|status|notice, body, status?, blocked_by?}: posted on the job's
@@ -100,6 +103,7 @@ import type { Records, Requester, State } from "./records.ts";
 import type { BoardApi } from "./board-api.ts";
 import type { Work } from "./work.ts";
 import { BY, type By, type Flow } from "./flow.ts";
+import type { TaskStateRead } from "./task-state-read.ts";
 import { AUTHOR_KINDS, SORTS, type AuthorKind, type Sort } from "./journeys.ts";
 import type { Reviews } from "./reviews.ts";
 import { wakeNotice, type Wakes } from "./wakes.ts";
@@ -153,6 +157,7 @@ export const ROUTES = [
   { method: "POST", path: "/v1/wakes/:key/note", auth: "module" },
   { method: "POST", path: "/v1/routines/cancel", auth: "module" },
   { method: "POST", path: "/v1/routines/pause", auth: "module" },
+  { method: "GET", path: "/v1/tasks/state", auth: "module|board" },
   { method: "POST", path: "/v1/tasks", auth: "module" },
   { method: "POST", path: "/v1/tasks/:task/close", auth: "module" },
   { method: "POST", path: "/v1/tasks/:task/comment", auth: "module" },
@@ -247,7 +252,7 @@ function flowRead(flow: Flow, p: URLSearchParams) {
   return flow.summary({ since, to, by: by as By, scope: p.get("scope")?.slice(0, 100) || undefined });
 }
 
-export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boardCp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, reviewerKey = () => "", jobs, codehost, admission, outcomes, wakes, tasks, eventsKey = () => "", work, flow, repos = () => ({}), graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, checkJobs, jobTools, precheck, localBundle, ownerRaw, lane, healthProbe, healthKey = () => "", connectionHealth, settingsChange, routing, boardApi: moduleBoardApi, log = () => {} }: {
+export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boardCp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, reviewerKey = () => "", jobs, codehost, admission, outcomes, wakes, tasks, eventsKey = () => "", work, flow, taskStates, repos = () => ({}), graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, checkJobs, jobTools, precheck, localBundle, ownerRaw, lane, healthProbe, healthKey = () => "", connectionHealth, settingsChange, routing, boardApi: moduleBoardApi, log = () => {} }: {
   /** Flow's fact log (facts.ts): POST /v1/facts. */
   facts?: Facts;
   /** An agent's own wait on its job's task (idle.ts): POST /v1/wait. */
@@ -280,6 +285,8 @@ export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boar
   work?: Work;
   /** Flow's views over the fact log (flow.ts). */
   flow?: Flow;
+  /** Each task's one state (task-state-read.ts). */
+  taskStates?: Pick<TaskStateRead, "read">;
   /** The repos the instance reaches (codehostRepos in main.ts): GET /v1/agents hands them to modules. */
   repos?: () => Record<string, unknown>;
   /** A grader-kind gateway token for a task (the kernel is the only minter). */
@@ -547,6 +554,14 @@ export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boar
         try {
           return send(res, 200, op === "evidence" ? await routing.evidence(b) : op === "replay" ? routing.replay(b) : op === "tune" ? await routing.tune(requester, job.task, b) : await routing.judge(requester, job.task));
         } catch (e) { throw fail((e as { status?: number }).status ?? 502, "refused", String((e as Error).message).slice(0, 1000)); }
+      }
+      if (hit?.path === "/v1/tasks/state") {
+        if (!isBoard(req)) { const w = await moduleOf(req); if (!w.roles.includes("kernel.flow-read")) throw fail(403, "forbidden", `${w.module} may not read task state (role kernel.flow-read)`); }
+        if (!taskStates) throw fail(503, "unavailable", "task state reads are off");
+        const p = new URLSearchParams(q ?? ""), ids = p.get("ids")?.split(",").map((s) => s.trim()).filter(Boolean);
+        if (p.get("open") === "1") return send(res, 200, taskStates.read({ open: true }));
+        if (!ids?.length || ids.length > 200 || ids.some((s) => s.length > 100)) throw fail(400, "bad_request", "send ?open=1 or ?ids= (1 to 200 task ids or identifiers, comma-separated)");
+        return send(res, 200, taskStates.read({ ids }));
       }
       if (hit?.path.startsWith("/v1/tasks")) {
         const w = await moduleOf(req);
