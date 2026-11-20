@@ -41,7 +41,7 @@ ideal result.
    - Aiden names skipped steps, Google, and further modules (Jira, GitHub, Glean, ...) and offers to set them up.
 5. **Every module that needs user setup has a setup flow,** one generic component opened at `/setup/<module>`. The
    wizard uses three of them, Aiden links to them, and the marketplace (other work) triggers them after install or
-   enable. Skipped ones stay reachable that way, never as a nag.
+   enable. Skipped ones stay reachable that way. Background work never pings the owner; his own request gets the one Connect link in that conversation.
 6. **No GitHub needed, apps included.** A new on-server code host (`codehost-local`) lets agents build, review, merge
    and deploy apps with git repos on the server. GitHub becomes an optional add-on for syncing off the server.
 

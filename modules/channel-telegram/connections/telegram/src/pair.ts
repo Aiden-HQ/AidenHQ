@@ -1,4 +1,4 @@
-// Pairing: which Telegram chat is the owner's. That chat decides approval cards and gets account-reset links, so a code is
+// Pairing: which Telegram chat is the owner's. That chat decides approval cards, so a code is
 // minted only through the board (a signed-in admin with an authenticator; the board's bearer is this module's pair token).
 // A code has 128 random bits, is kept only as its hash, is used once (one transaction with recording the chat), lives 15
 // minutes, and each chat gets 5 wrong tries a minute. Only a private chat can pair: the owner checks compare the chat, not
