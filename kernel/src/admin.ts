@@ -10,16 +10,17 @@
 //   while no admin exists. A GET changes nothing; the submit is checked in full, then spends the token, makes the owner's
 //   account and hands over to /auth/enrol for the authenticator. The owner then picks the model on /setup/model: Connect
 //   OpenRouter (PKCE) or a pasted key, then one 1-token call; on success the key goes into the vault and the owner on to the
-//   board's welcome. OpenRouter's return is a cross-site navigation, so the SameSite=Strict session cookie isn't sent: the
-//   callback /setup/openrouter/<state> needs no session. The random state in its path names a pending entry the owner's
+//   board's welcome. The flow is the models-openrouter module's (modules/models-openrouter/src/model-step.ts); its pages and
+//   routes are served here. OpenRouter's return is a cross-site navigation, so the SameSite=Strict session cookie isn't sent:
+//   the callback /setup/openrouter/<state> needs no session. The random state in its path names a pending entry the owner's
 //   model page made (verifier, account), spent on first use and gone after 10 minutes. It answers with a page that moves on
 //   to /setup/model itself (a same-site navigation, so the cookie comes back) with the outcome.
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { MODEL_KEY, type ModelStep } from "../../modules/models-openrouter/src/model-step.ts";
 import type { AdminSession, Step } from "./accounts.ts";
 import type { Api } from "./channels.ts";
 import { ORG, manifest, type MadeApp } from "./github-app.ts";
-import { secretFits } from "./module-secrets.ts";
 import type { State as UpdateState } from "./updates.ts";
 
 type Card = Record<string, any>;
@@ -46,8 +47,8 @@ type Deps = {
   frameOrigins: () => string[];
   /** Module UI origins a session may be handed to (/auth/handoff), each with its module: the board's origins. */
   uiOrigins?: () => Record<string, string>;
-  /** The model step: OpenRouter's PKCE start and exchange, the 1-token check, and the key the vault holds (for Retry). */
-  model?: { start: (callback: string, state: string) => { url: string; verifier: string }; exchange: (code: string, verifier: string) => Promise<string>; check: (key: string) => Promise<"ok" | "no_credit" | "error">; saved: () => string; /** The install-wide daily cap (settings.spend_day_usd), if set. */ dayCap?: () => number | undefined; ready: () => boolean; checked: (key: string, ok: boolean) => void };
+  /** The model step (models-openrouter): Connect's pending states and exchange, the 1-token check and the vault's key. */
+  model?: ModelStep;
   /** The app doors' origins as one CSP source (`http://*.localhost:3130`), when there is a door: sign-in ends on a door host. */
   doorSource?: () => string | undefined;
   /** The board's front door: /recovery-key and the model step send the owner on to its welcome. */
@@ -101,8 +102,6 @@ const STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "don
 
 /** A secret a module asks for on /setup (its provided secret's `setup:`, compiled into config/kernel/modules.json `setup`). */
 export type SetupField = { module: string; secret: string; label: string; pattern: string; help?: string; required?: boolean };
-/** The gateway's model key: the one module secret the first run still asks for, on the model step. */
-const MODEL_KEY = "openrouter_key";
 const CREDITS = "https://openrouter.ai/settings/credits";
 const esc = (v: unknown) => String(v ?? "").replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 class Refusal extends Error {
@@ -192,8 +191,6 @@ export function createAdmin(d: Deps) {
 <button class="b">Create account</button>`)}`);
   };
   // The model step. Connect needs a callback OpenRouter takes: https, or localhost on any port; elsewhere the paste field leads.
-  // Pending Connects, by their state: the verifier and the owner who started it.
-  const pkce = new Map<string, { verifier: string; account: string; at: number }>();
   // Pending GitHub App manifests, by their state: the org it is for and the admin who started it.
   const appPending = new Map<string, { org: string; account: string; at: number; replace: boolean; code?: string }>();
   // The board's own sign-in handoff (services/board/src/kernel-auth.ts): the owner arrives signed in there, and the board's
@@ -211,32 +208,20 @@ export function createAdmin(d: Deps) {
     // Two equal ways: a key the owner already has, and (where OpenRouter can call back) Connect.
     let connect = "";
     if (callable) {
-      for (const [k, v] of pkce) if (Date.now() - v.at > 600_000) pkce.delete(k);
-      const state = randomBytes(16).toString("base64url");
-      const { url, verifier } = d.model!.start(`${origin}/setup/openrouter/${state}`, state);
-      pkce.set(state, { verifier, account: s.account.id, at: Date.now() });
+      const url = d.model!.connect((state) => `${origin}/setup/openrouter/${state}`, s.account.id);
       connect = `<div class="card"><h2>Connect your account</h2><p class="muted">Sign in to OpenRouter (or make an account) and approve; you come straight back here.</p><a class="b" href="${esc(url)}">Connect OpenRouter</a></div>`;
     }
     const field = d.firstRun?.fields().find((f) => f.secret === MODEL_KEY);
     // A pasted key keeps whatever limit it has; the install cap (a new install's) stops spend first.
-    const cap = d.model?.dayCap?.();
+    const cap = d.model?.dayCap();
     const capLine = cap ? `<p class="muted">This key's own limit applies; AidenHQ also stops at $${cap}/day (change it in Settings).</p>` : "";
     const paste = `<div class="card"><h2>Use your API key</h2><p class="muted">Paste a key you have, or make one at <a href="https://openrouter.ai/settings/keys" target="_blank" rel="noopener">openrouter.ai/settings/keys</a>.</p>${form("/setup/model", `<input type="hidden" name="action" value="paste"><label>${esc(field?.label ?? "OpenRouter API key")}<input name="${MODEL_KEY}" type="password" autocomplete="off" maxlength="300" placeholder="sk-or-…" required></label><button class="b">Save</button>`, s)}${capLine}</div>`;
     const retry = credit ? `<div class="card"><p>Your OpenRouter account needs credit before agents can run.</p><p><a href="${CREDITS}" target="_blank" rel="noopener">Add credit in OpenRouter</a>, then retry.</p>${form("/setup/model", `<input type="hidden" name="action" value="retry"><button class="b">Retry</button>`, s)}</div>` : "";
     const has = d.model?.ready() && !credit ? `<p class="muted">A working key is already in the vault; saving or connecting replaces it. <a href="${esc(welcome())}">Continue</a></p>` : "";
     return doc("Connect a model", `<h1>Connect a model</h1><p>Your agents think with AI models on OpenRouter. The key goes into the vault, read only by the kernel's model gateway.</p>${msg}${retry}${has}${credit ? "" : `<div class="pick">${paste}${connect}</div>`}`, s);
   };
-  /** One 1-token call with the key; saved when it works or only lacks credit (Retry then needs no new key). */
-  async function takeKey(key: string, by: string) {
-    const r = await d.model!.check(key);
-    if (r === "error") return r;
-    d.firstRun!.save(MODEL_KEY, key);
-    d.model!.checked(key, r === "ok"); // ready only once a check of this key passed (no credit: Retry checks it again)
-    log("model key saved", { by, check: r });
-    return r;
-  }
   async function useKey(req: IncomingMessage, res: ServerResponse, s: AdminSession, key: string) {
-    const r = await takeKey(key, `account:${s.account.id}`);
+    const r = await d.model!.take(key, `account:${s.account.id}`);
     if (r === "error") return send(res, 400, modelPage(req, s, err("OpenRouter didn't accept a call with that key. Try again, or paste another key.")));
     if (r === "no_credit") return send(res, 200, modelPage(req, s, "", true));
     return redirect(res, welcome());
@@ -337,16 +322,8 @@ export function createAdmin(d: Deps) {
         case "GET /setup/openrouter/:state": {
           // OpenRouter's callback (header): no session; the state's pending entry, single-use and fresh; a denial carries no code.
           if (!d.model || !d.firstRun) throw new Refusal(404, "not found");
-          const p = pkce.get(id), code = url.searchParams.get("code") ?? "";
-          pkce.delete(id);
           // No entry (a reload, an old or made-up state): no outcome, so this unauthenticated page says nothing of the vault.
-          let outcome = p ? "failed" : "";
-          if (p && code && Date.now() - p.at <= 600_000) {
-            const key = await d.model.exchange(code, p.verifier).catch((e: Error) => (log("openrouter exchange failed", { err: e.message.slice(0, 200) }), ""));
-            const field = d.firstRun.fields().find((x) => x.secret === MODEL_KEY);
-            const r = key && (!field || secretFits(field, key)) ? await takeKey(key, `account:${p.account}`) : "error";
-            outcome = r === "ok" ? "ok" : r === "no_credit" ? "credit" : "failed";
-          }
+          const outcome = await d.model.callback(id, url.searchParams.get("code") ?? "");
           const to = `/setup/model${outcome ? `?connect=${outcome}` : ""}`;
           return send(res, 200, doc("Connecting", `<p>Back from OpenRouter. <a href="${to}">Continue</a></p>`, null, `<meta http-equiv="refresh" content="0;url=${to}">`));
         }
@@ -440,7 +417,7 @@ export function createAdmin(d: Deps) {
           if (action === "retry") return useKey(req, res, s, d.model.saved());
           if (action !== "paste") throw new Refusal(400, "paste or retry");
           const key = (f.get(MODEL_KEY) ?? "").trim(), field = d.firstRun.fields().find((x) => x.secret === MODEL_KEY);
-          if (!key || key.length > 300 || /\s/.test(key) || (field && !secretFits(field, key))) return send(res, 400, modelPage(req, s, err(`That isn't a valid ${field?.label ?? "OpenRouter API key"}.`)));
+          if (!key || key.length > 300 || /\s/.test(key) || !d.model.fits(key)) return send(res, 400, modelPage(req, s, err(`That isn't a valid ${field?.label ?? "OpenRouter API key"}.`)));
           return useKey(req, res, s, key);
         }
         case "GET /recovery-key": {

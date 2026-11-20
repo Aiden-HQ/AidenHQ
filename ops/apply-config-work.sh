@@ -506,8 +506,9 @@ switchOver() {
   ops/computer-images.sh # the browser image (always: apps-mcp renders in it) and the computer images an agent names
   lap computer-images
   # The kernel (every model and tool call passes it): installed and started if missing, restarted only when its own code or
-  # unit changed (a restart cuts the streams in flight; Codex and opencode retry). Before compose and setup point callers at
-  # it. Not keyed on a product change, so it also heals a missing unit. The model gateway's old unit goes (lean-core 2a).
+  # unit changed (a restart cuts the streams in flight; Codex and opencode retry); its own code includes the module code it
+  # loads in process (modules/<m>/src). Before compose and setup point callers at it. Not keyed on a product change, so it
+  # also heals a missing unit. The model gateway's old unit goes (lean-core 2a).
   local old="$HOME/.config/systemd/user/aidenhq-gateway.service" kn="$HOME/.config/systemd/user/aidenhq-kernel.service"
   mkdir -p "$(dirname "$kn")"   # a fresh host's first apply runs before ops/setup.sh installs the other units
   if [ -e "$old" ]; then
@@ -546,7 +547,7 @@ switchOver() {
       && systemctl --user restart aidenhq-kernel && echo "kernel unit installed/updated"
   elif ! systemctl --user is-active --quiet aidenhq-kernel; then
     systemctl --user restart aidenhq-kernel && echo "kernel started"
-  elif [ "$before" != "$product" ] && ! git diff --quiet "$before" "$product" -- kernel ops/units/aidenhq-kernel.service; then
+  elif [ "$before" != "$product" ] && ! git diff --quiet "$before" "$product" -- kernel ':(glob)modules/*/src/**' ops/units/aidenhq-kernel.service; then
     systemctl --user restart aidenhq-kernel && echo "kernel code changed: restarted"
   fi
   # The board mounts this mirror's directory read-only, so it must exist before compose starts (a first apply on a fresh host).

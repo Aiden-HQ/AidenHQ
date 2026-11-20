@@ -6,16 +6,20 @@ import assert from "node:assert/strict";
 import { request } from "node:http";
 import { openAccounts } from "../src/accounts.ts";
 import { createAdmin } from "../src/admin.ts";
-import { checkModel, exchange, readiness, startPkce } from "../src/openrouter-pkce.ts";
+import { createModelStep } from "../../modules/models-openrouter/src/model-step.ts";
 import { PASSWORD, silent, totp } from "./auth-helpers.ts";
 import { serve } from "./helpers.ts";
 
 const HOST = "localhost:3120", BOARD = "http://board.example:3121", KEY = `sk-or-v1-${"a".repeat(64)}`;
 const field = { module: "models-openrouter", secret: "openrouter_key", label: "OpenRouter API key", pattern: "^sk-or-[A-Za-z0-9_-]{16,200}$", required: true };
 const vault = new Map();
-// What the kernel's model_ready op answers (main.ts wires the same readiness to it and to the admin pages).
-const state = readiness({ get: (n) => vault.get(n) ?? "", exists: (n) => vault.has(n), save: (n, v) => vault.set(n, v) });
-let accounts, adminSrv, verdict = "ok", exchanged = [];
+let accounts, adminSrv, model, exchanged = [];
+// OpenRouter: the key exchange (recorded) and the 1-token check.
+const openrouter = async (url, init) => {
+  if (url === "https://openrouter.test/api/v1/auth/keys") { exchanged.push(JSON.parse(init.body)); return Response.json({ key: KEY }); }
+  if (url === "https://openrouter.test/api/v1/chat/completions") return new Response("{}");
+  return new Response("", { status: 404 });
+};
 const madeApps = [], savedApps = [];
 const githubApp = {
   defaultOrg: () => "acme-agents", agentsOrg: () => undefined, name: () => "AidenHQ acme", ready: () => savedApps.length > 0,
@@ -25,13 +29,8 @@ const githubApp = {
 before(async () => {
   accounts = await openAccounts({ dataDir: ":memory:", hosts: [HOST], adminUrl: `http://${HOST}`, edgeSecret: () => "", notify: () => {}, log: silent });
   const firstRun = { ownerEmail: () => undefined, recoveryKey: () => "", fields: () => [field, { ...field, module: "github", secret: "github_bot_token", label: "GitHub token" }], has: (n) => vault.has(n), save: (n, v) => vault.set(n, v), forgetRecoveryKey() {} };
-  const model = {
-    start: (callback, state) => ({ url: `https://openrouter.test/auth?${new URLSearchParams({ callback_url: callback, state })}`, verifier: "v".repeat(43) }),
-    exchange: async (code, verifier) => { exchanged.push([code, verifier]); return KEY; },
-    check: async () => verdict,
-    saved: () => vault.get("openrouter_key") ?? "",
-    ...state,
-  };
+  // What the kernel wires (main.ts); its readiness is also the model_ready op's answer.
+  model = createModelStep({ upstream: "https://openrouter.test/api/v1", model: () => "~deepseek/deepseek-flash-latest", vault: { get: (n) => vault.get(n) ?? "", exists: (n) => vault.has(n), save: (n, v) => vault.set(n, v) }, fits: (k) => new RegExp(field.pattern).test(k), fetchImpl: openrouter });
   const cards = { ownerCards: async () => ({ live: [], finished: [] }), decideCard: async () => { throw new Error("no"); } };
   adminSrv = await serve(createAdmin({ accounts, firstRun, model, githubApp, boardUrl: () => BOARD, cards, ownerMessage: async () => ({ task: { identifier: "WOR-1" } }), owner: async () => ({ status: 200, json: {} }), hosts: () => [HOST], origins: () => [`http://${HOST}`], frameOrigins: () => [], log: (m, f) => (m === "admin error" ? console.error(m, f) : 0) }));
 });
@@ -78,9 +77,9 @@ test("setup takes account then model", async () => {
   const back = await page("GET", `/setup/openrouter/${stateOf(step.body)}?code=c0de`, undefined, new Map());
   assert.equal(back.status, 200);
   assert.match(back.body, /<meta http-equiv="refresh" content="0;url=\/setup\/model\?connect=ok">/); // a same-site move on, with the cookie
-  assert.deepEqual(exchanged, [["c0de", "v".repeat(43)]]);
+  assert.deepEqual(exchanged.map((x) => [x.code, x.code_verifier.length]), [["c0de", 43]]);
   assert.equal(vault.get("openrouter_key"), KEY);
-  assert.equal(state.ready(), true);
+  assert.equal(model.ready(), true);
   assert.equal((await page("GET", "/setup/model?connect=ok")).location, `${BOARD}/auth/start`);
   assert.match((await page("GET", `/setup/openrouter/${stateOf(step.body)}?code=c0de`, undefined, new Map())).body, /url=\/setup\/model">/); // a reload: spent, no outcome
   assert.equal(exchanged.length, 1);
