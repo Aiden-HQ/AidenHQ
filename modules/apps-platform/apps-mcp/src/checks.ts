@@ -230,11 +230,16 @@ export function identityPorts(ports: PortAnswers[], required: Door[]): ProbeResu
 
 export const PORT_PROBE_MS = 3_000;
 /**
- * Run as `node -e` in a one-shot container on `--network container:<id>`, so /proc/net/tcp{,6} are that container's own
- * sockets. stdin { ports: number[] (exposed or required), ips: string[] (the container's addresses), probes: { method, path,
- * headers }[] }. Every listening socket (but Docker's DNS on 127.0.0.11) is probed on the address it is bound to; a wildcard
- * bind on loopback and every container address; a given port nothing listens on, on the same. Every probe is sent to every
- * socket; one that answered none gets a plain TCP look. Prints { sockets: [{ port, host, listening, raw?, statuses }] }.
+ * Run as `node -e` in a one-shot container on `--network container:<id>` and `--pid container:<id>`, so /proc/net/tcp{,6} and
+ * the pids are that container's own. The network namespace is shared with helpers the platform runs there (the render's
+ * Chrome keeps an ephemeral DevTools listener for the life of a render), so a listening socket is the app's only when a
+ * process of this pid namespace holds it: its inode appears as a `socket:[<inode>]` fd of some /proc/<pid>/fd. A listener
+ * no fd attributes (it vanished between the two reads) is dropped too; the registry's required doors are still checked.
+ * stdin { ports: number[] (exposed or required), ips: string[] (the container's addresses), probes: { method, path,
+ * headers }[] }, and `proc`, the proc root those pids and net tables are read from (the platform leaves it unset: /proc; a
+ * test passes a fixture tree). Every such socket (but Docker's DNS on 127.0.0.11) is probed on the address it is bound to; a
+ * wildcard bind on loopback and every container address; a given port nothing listens on, on the same. Every probe is sent to
+ * every socket; one that answered none gets a plain TCP look. Prints { sockets: [{ port, host, listening, raw?, statuses }] }.
  */
 export const IDENTITY_SCRIPT = String.raw`
 const fs = require("fs"), net = require("net");
@@ -260,15 +265,28 @@ const raw = (host, port) => new Promise((done) => {
 let s = "";
 process.stdin.on("data", (c) => (s += c)).on("end", async () => {
   const r = JSON.parse(s);
+  const proc = r.proc ?? "/proc";
   const wild = ["127.0.0.1", ...r.ips];
+  const held = new Set();
+  for (const p of fs.readdirSync(proc)) {
+    if (!/^\d+$/.test(p)) continue;
+    let fds;
+    try { fds = fs.readdirSync(proc + "/" + p + "/fd"); } catch { continue; }
+    for (const f of fds) {
+      let t;
+      try { t = fs.readlinkSync(proc + "/" + p + "/fd/" + f); } catch { continue; }
+      const m = /^socket:\[(\d+)\]$/.exec(t);
+      if (m) held.add(m[1]);
+    }
+  }
   const sockets = new Map();
   const add = (port, host, listening) => { const k = host + " " + port; if (!sockets.has(k) || listening) sockets.set(k, { port, host, listening }); };
-  for (const [f, dec] of [["/proc/net/tcp", v4], ["/proc/net/tcp6", v6]]) {
+  for (const [f, dec] of [[proc + "/net/tcp", v4], [proc + "/net/tcp6", v6]]) {
     let t = "";
     try { t = fs.readFileSync(f, "utf8"); } catch { continue; }
     for (const l of t.split("\n").slice(1)) {
       const c = l.trim().split(/\s+/);
-      if (c[3] !== "0A") continue;
+      if (c[3] !== "0A" || !held.has(c[9])) continue;
       const [hex, ph] = c[1].split(":");
       const addr = dec(hex), port = parseInt(ph, 16);
       if (addr === "127.0.0.11") continue;
@@ -296,6 +314,16 @@ process.stdin.on("data", (c) => (s += c)).on("end", async () => {
   process.stdout.write(JSON.stringify({ sockets: out }));
 });
 `;
+
+/**
+ * `docker run` argv for one container's identity scan. Its network namespace is the app's door, and its pid namespace is what
+ * makes the scan the app's own: peers the platform runs there (the render's browser) share the network but not these pids, so
+ * IDENTITY_SCRIPT drops their listeners. SYS_PTRACE is what lets the root helper read a non-root app's /proc/<pid>/fd; it is
+ * the helper's one capability, and apps-mcp already holds the Docker socket.
+ */
+export function identityProbeArgs(image: string, id: string): string[] {
+  return ["run", "--rm", "-i", "--pull", "never", "--network", `container:${id}`, "--pid", `container:${id}`, "--cap-drop", "ALL", "--cap-add", "SYS_PTRACE", "--security-opt", "no-new-privileges", "--memory", "128m", image, "node", "-e", IDENTITY_SCRIPT];
+}
 
 export const probeResult = (probe: Kind, path: string, findings: Finding[]): ProbeResult => ({ probe, path, ok: !findings.some((f) => f.hard), findings: findings.slice(0, 10) });
 export const failed = (rs: ProbeResult[]) => rs.filter((r) => !r.ok);

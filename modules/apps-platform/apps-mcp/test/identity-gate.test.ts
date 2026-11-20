@@ -1,12 +1,12 @@
 // The identity gate (checks.ts identityProbes) against the real starter server, run as the platform runs it.
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { createHash, generateKeyPairSync } from "node:crypto";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { networkInterfaces, tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
-import { finishedJob, IDENTITY_SCRIPT, identityDoors, identityPorts, identityProbes, judgeIdentity, NO_SIGN_IN, unprobedServices, type Door } from "../src/checks.js";
+import { finishedJob, IDENTITY_SCRIPT, identityDoors, identityPorts, identityProbeArgs, identityProbes, judgeIdentity, NO_SIGN_IN, unprobedServices, type Door } from "../src/checks.js";
 import { agentSigner, forgedIdentity, IDENTITY_HEADER } from "../src/identity.js";
 import { parseApp } from "../src/registry.js";
 
@@ -47,23 +47,59 @@ async function gate(app: typeof tailnet, base: string, node = true) {
   return judgeIdentity(answers);
 }
 
-/** The platform's scan of one container (platform.ts identityCheck): IDENTITY_SCRIPT given its exposed ports, then the verdict. */
-function scan(app: typeof tailnet, exposed: number[], o: { required?: Door[]; ips?: string[]; keep?: number[] } = {}) {
+/**
+ * The platform's scan of one container (platform.ts identityCheck): IDENTITY_SCRIPT given its exposed ports, then the verdict.
+ * `proc` replays a container's proc tree (a real one's topology needs Docker's pid namespace); without it the host's /proc
+ * stands in, and sockets are off unless `keep`.
+ */
+function scan(app: typeof tailnet, exposed: number[], o: { required?: Door[]; ips?: string[]; keep?: number[]; proc?: string } = {}) {
   const probes = identityProbes(app, true, app.health.url ? new URL(app.health.url).pathname : undefined);
   const forged = forgedIdentity(app.name, noKey);
-  const input = { ports: exposed, ips: o.ips ?? [], probes: probes.map((p) => ({ method: p.method, path: p.path, headers: p.forged ? { [IDENTITY_HEADER]: forged } : {} })) };
+  const input = { ports: exposed, ips: o.ips ?? [], ...(o.proc ? { proc: o.proc } : {}), probes: probes.map((p) => ({ method: p.method, path: p.path, headers: p.forged ? { [IDENTITY_HEADER]: forged } : {} })) };
   return new Promise<ReturnType<typeof identityPorts>>((ok, fail) => {
     // Sockets off unless `keep`: here /proc/net/tcp is the test host's, not one app container's.
-    const script = o.keep ? IDENTITY_SCRIPT : IDENTITY_SCRIPT.replace('[["/proc/net/tcp", v4], ["/proc/net/tcp6", v6]]', "[]");
+    const script = o.keep || o.proc ? IDENTITY_SCRIPT : IDENTITY_SCRIPT.replace('[[proc + "/net/tcp", v4], [proc + "/net/tcp6", v6]]', "[]");
     const c = execFile(process.execPath, ["-e", script], (err, out) => {
       if (err) return fail(err);
-      const sockets = (JSON.parse(out) as { sockets: any[] }).sockets.filter((k) => (o.keep ?? exposed).includes(k.port)); // only this test's servers
+      const sockets = (JSON.parse(out) as { sockets: any[] }).sockets.filter((k) => o.proc || (o.keep ?? exposed).includes(k.port)); // only this test's servers
       ok(identityPorts(sockets.map((k) => ({ service: "app", port: k.port, host: k.host, listening: k.listening, raw: k.raw, answers: k.statuses.map((status: number, i: number) => ({ probe: probes[i]!, status })) })), o.required ?? []));
     });
     c.stdin!.end(JSON.stringify(input));
   });
 }
+
+/**
+ * A proc tree as IDENTITY_SCRIPT sees a container's: its net/tcp{,6} rows and the pids whose /proc/<pid>/fd hold socket
+ * inodes. A peer helper that shares the network namespace but not the pid namespace is a listener whose inode no pid holds.
+ */
+function procTree(o: { listeners: { port: number; inode: number }[]; held: number[] }): string {
+  const root = mkdtempSync(`${tmpdir()}/proc-`);
+  mkdirSync(`${root}/net`);
+  const row = (port: number, inode: number, local = "0100007F") =>
+    `0: ${local}:${port.toString(16).toUpperCase().padStart(4, "0")} 00000000:0000 0A 00000000:00000000 00:00000000 00000000 0 0 ${inode} 1 0000000000000000 100 0 0 10 0`;
+  writeFileSync(`${root}/net/tcp`, ["  sl  local_address rem_address   st tx_queue:rx_queue tr:tm->when retrnsmt   uid  timeout inode", ...o.listeners.map((l) => row(l.port, l.inode))].join("\n"));
+  writeFileSync(`${root}/net/tcp6`, "  sl  local_address rem_address   st tx_queue:rx_queue tr:tm->when retrnsmt   uid  timeout inode\n");
+  // The app's own processes: pid 42 holds its listeners (and an unrelated stdin); pid 43 is the app's second process.
+  const pid = (n: number, links: Record<string, string>) => {
+    mkdirSync(`${root}/${n}/fd`, { recursive: true });
+    for (const [fd, target] of Object.entries(links)) symlinkSync(target, `${root}/${n}/fd/${fd}`);
+  };
+  pid(42, Object.fromEntries([["0", "/dev/null"], ...o.held.map((i, n) => [String(n + 3), `socket:[${i}]`])]));
+  pid(43, { 0: "/dev/null" });
+  return root;
+}
 const portOf = (base: string) => Number(new URL(base).port);
+/** The socket inode of a listening TCP port in this host's table (undefined where /proc/net/tcp isn't readable). */
+function inodeOf(port: number): number | undefined {
+  let t = "";
+  try { t = readFileSync("/proc/net/tcp", "utf8"); } catch { return undefined; }
+  for (const l of t.split("\n").slice(1)) {
+    const c = l.trim().split(/\s+/);
+    if (c[3] !== "0A" || parseInt(c[1]!.split(":")[1]!, 16) !== port) continue;
+    return Number(c[9]);
+  }
+  return undefined;
+}
 /** A raw TCP server on a free port: `code` is its connection handler `(s) => ...`. */
 async function tcp(code: string, host = "127.0.0.1"): Promise<number> {
   const port = await freePort();
@@ -170,6 +206,48 @@ describe("identity gate", () => {
     expect(identityPorts([], [])).toMatchObject({ ok: true, findings: [{ hard: false, what: expect.stringMatching(/nothing can reach it/) }] });
     expect(identityPorts([], [{ service: "app", port: "8080" }]).ok).toBe(false);
   }, 120_000);
+
+  it.runIf(process.platform === "linux")("probes a socket the app's own process holds, wherever a peer listener sits on the same network", async () => {
+    // Real listeners: the app's own HTTP server (a starter) and a peer's, both in this host's network namespace. The proc tree
+    // stands for the container's: the app's pids hold one inode, and the peer's listener belongs to no pid in that namespace.
+    const own = await starter({});
+    const peer = await tcp("() => {}");
+    const ownInode = inodeOf(portOf(own))!;
+    const proc = procTree({ listeners: [{ port: portOf(own), inode: ownInode }, { port: peer, inode: ownInode + 1000 }], held: [ownInode] });
+    // Nothing to expose: both listeners are in the table, so only the inode filter can tell them apart.
+    const r = await scan(hello2, [], { proc });
+    // The peer's listener is not the app's: it is not even probed. The app's own socket is, and fails closed as it should.
+    expect(r.path).toBe(`app:${portOf(own)}`);
+    expect(r.findings.map((f) => f.what).join(" ")).not.toContain(`app:${peer}`);
+    expect(r.findings[0]!.what).toContain(NO_SIGN_IN);
+    expect(r.ok).toBe(false);
+  }, 60_000);
+
+  it.runIf(process.platform === "linux")("drops a listener no process of the app's pid namespace holds, even when it answers HTTP on the app's port", async () => {
+    // A port the app is supposed to answer on, listening, but held by nobody the app's pids own: not the app's to judge.
+    const open = await starter({});
+    const inode = inodeOf(portOf(open))!;
+    // A helper's own HTTP answer (200, so it would be a hard finding) that the app's pid namespace does not hold.
+    const peer = await tcp(`(s) => s.end("HTTP/1.0 200 OK\r\n\r\n")`);
+    const proc = procTree({ listeners: [{ port: peer, inode: inode + 7 }], held: [] });
+    expect(await scan(hello2, [], { proc })).toMatchObject({ ok: true, findings: [{ hard: false, what: expect.stringMatching(/nothing can reach it/) }] });
+    // The same socket attributed to the app's own process is probed and fails closed.
+    const held = procTree({ listeners: [{ port: peer, inode: inode + 7 }], held: [inode + 7] });
+    const r = await scan(hello2, [], { proc: held });
+    expect(r.ok).toBe(false);
+    expect(r.findings[0]!.what).toContain(`app:${peer}`);
+  }, 60_000);
+
+  it("runs the identity scan in the app container's pid namespace as well as its network namespace", () => {
+    // The inode filter only sees the app's own processes with --pid; without it every peer's listener would count again.
+    const id = "a".repeat(64);
+    const a = identityProbeArgs("aidenhq/apps-mcp-helper:abc", id);
+    expect(a.slice(a.indexOf("--network"), a.indexOf("--network") + 4)).toEqual(["--network", `container:${id}`, "--pid", `container:${id}`]);
+    // Root, but the one capability the fd read needs, and nothing looser: no privileged, mounts or shared host namespaces.
+    expect(a.slice(a.indexOf("--cap-drop"), a.indexOf("--cap-drop") + 4)).toEqual(["--cap-drop", "ALL", "--cap-add", "SYS_PTRACE"]);
+    expect(a.indexOf("--cap-add")).toBeGreaterThan(a.indexOf("--cap-drop"));
+    expect(a.join(" ")).not.toMatch(/--privileged|-v |--volume|--mount|--pid host|--network host/);
+  });
 
   it("fails closed on any service without a running container, unless it is a current, port-less one-shot job that finished", () => {
     // `sidecar` declares no port at all: it may listen anyway, or start later.
