@@ -33,12 +33,12 @@ const PRIMER_READ = /^primer_(whoami|resolve_url|get_|list_|find_)/;
 
 // primer.publish's and primer.reply's executor (executor@1): the kernel calls it with the service key; execute only for an approved record.
 // Every write runs through the comment loop's guard: the comment ids its receipt names are the connector's own (never a wake).
-const send = (name: string, args: Record<string, unknown>) =>
+const send = (name: string, args: Record<string, unknown>, document?: string) =>
   subscriber.guard(name, args, async () => {
     const res = await http.call(name, args);
     log.info({ tool: name, error: Boolean(res.isError) }, "Primer write");
     return { text: (res.content as { text?: string }[]).map((c) => c.text ?? "").join("\n"), isError: Boolean(res.isError) };
-  });
+  }, document);
 const publish = publisher(send);
 const reply = replier(send);
 const executor = serviceKey

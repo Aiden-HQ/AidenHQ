@@ -15,7 +15,9 @@ Nothing to connect. It tells you through the owner channel, so it needs a channe
 - It declares two roles: `architect` (its Engineer tasks may use the trial exception) and `repo-checkout` (a commit of an
   agents-org repo placed in its computer).
 - The Architect reads: apps (`app_list`, `app_status`, `app_logs`, `app_view`, `web_view`, `warehouse_query`) and, when
-  connected, a narrow read set of Glean, Jira and Slack. It writes only `notify`. It changes nothing itself.
+  connected, a narrow read set of Glean, Jira, Slack and Primer. It writes `notify` (its questions are forms) and, with Primer
+  connected, its design docs and its replies to their review there (skill `design-doc`, and Primer's `primer-docs`). It
+  changes nothing in the fleet itself.
 
 ## New installs
 

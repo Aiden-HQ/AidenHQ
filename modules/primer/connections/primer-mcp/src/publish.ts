@@ -11,7 +11,7 @@ import { createHash } from "node:crypto";
 import type { Executor } from "./aidenhq-sdk/executor.js";
 import { fileOwners, type Owner, type Owners } from "./owners.js";
 
-export type Publish = { title?: string; content: string; format: "markdown" | "html"; description?: string; documentId?: string; versionNote?: string; path?: string; own?: true; by?: Owner };
+export type Publish = { title?: string; content: string; format: "markdown" | "html"; description?: string; documentId?: string; versionNote?: string; baseVersionNumber?: number; path?: string; own?: true; by?: Owner };
 type Call = (tool: string, args: Record<string, unknown>) => Promise<{ text: string; isError?: boolean }>;
 
 const str = (v: unknown) => (typeof v === "string" && v.trim() ? v : undefined);
@@ -20,6 +20,8 @@ const str = (v: unknown) => (typeof v === "string" && v.trim() ? v : undefined);
 export function normalise(a: any, fromRunner = false): Publish {
   const args: Publish = { content: str(a?.content) ?? "", format: a?.format === "html" ? "html" : "markdown" };
   for (const k of ["title", "description", "documentId", "versionNote", "path"] as const) if (str(a?.[k])) args[k] = str(a[k])!.trim();
+  // The version the agent read: Primer merges people's edits since then (three-way) and refuses a stale one.
+  if (args.documentId && Number.isInteger(a?.baseVersionNumber) && a.baseVersionNumber > 0) args.baseVersionNumber = a.baseVersionNumber;
   if (fromRunner && args.documentId && a?.own === true) args.own = true;
   if (!args.content) throw new Error("the document is empty: nothing to publish");
   if (!args.documentId && !args.title) throw new Error("a new document needs a title");
@@ -35,6 +37,22 @@ export function documentRef(text: string): { url?: string; documentId?: string }
   const url = json?.url ?? json?.documentUrl ?? /https?:\/\/[^\s"')]+\/d\/[A-Za-z0-9-]+/.exec(String(text))?.[0];
   const documentId = json?.documentId ?? json?.id ?? (url ? /\/d\/([A-Za-z0-9-]+)/.exec(url)?.[1] : undefined);
   return { url, documentId };
+}
+
+/**
+ * What primer_add_version answered, for the agent: the version Primer made (number, id, link) and how a live document took
+ * the new text (reconciliation: applied, suggested or conflict per changed part). No version when nothing was applied.
+ */
+export function versionResult(documentId: string, text: string): string {
+  let j: any;
+  try {
+    j = JSON.parse(text);
+  } catch {
+    return `New version on Primer (document ${documentId}). Primer answered: ${text.slice(0, 1500)}`;
+  }
+  const head = j?.versionNumber ? `New version v${j.versionNumber} on Primer (document ${documentId}, version ${j.versionId ?? "?"})` : `No new version on Primer (document ${documentId}): nothing was applied`;
+  const rec = j?.reconciliation ? `\nReconciliation: ${JSON.stringify(j.reconciliation).slice(0, 2000)}` : "";
+  return `${head}${j?.url ? `: ${j.url}` : "."}${rec}`;
 }
 
 /** The requester's identity as the kernel names it: the agent and its task (a module or an empty one has none). */
@@ -57,7 +75,7 @@ export function publisher(call: Call, owners: Owners = fileOwners()): Executor {
         card: {
           what: args.documentId ? `a new version of Primer document ${args.documentId}` : `the new document "${args.title}"`,
           changes: args.documentId
-            ? `Adds this as the latest version of document ${args.documentId} (its earlier versions stay in its history); everyone who can read it sees it.`
+            ? `Adds this as the latest version of document ${args.documentId} (its earlier versions stay in its history)${args.baseVersionNumber ? `, merged onto version ${args.baseVersionNumber} so people's edits since are kept` : ""}; everyone who can read it sees it.`
             : "Creates a new Primer document that everyone in the organization can read.",
           from: args.path ? `, from the workspace file ${args.path}` : "",
         },
@@ -68,11 +86,11 @@ export function publisher(call: Call, owners: Owners = fileOwners()): Executor {
       const by: Owner | undefined = rec.args?.by?.agent && rec.args.by.task ? { agent: String(rec.args.by.agent), task: String(rec.args.by.task) } : undefined;
       if (a.documentId) {
         // A call that threw may have landed: read the versions back instead of publishing again.
-        const r = await call("primer_add_version", { documentId: a.documentId, content: a.content, format: a.format, ...(a.versionNote ? { versionNote: a.versionNote } : {}) }).catch(async (e: Error) => {
+        const r = await call("primer_add_version", { documentId: a.documentId, content: a.content, format: a.format, ...(a.versionNote ? { versionNote: a.versionNote } : {}), ...(a.baseVersionNumber ? { baseVersionNumber: a.baseVersionNumber } : {}) }).catch(async (e: Error) => {
           const seen = a.versionNote && (await call("primer_list_versions", { documentId: a.documentId! }).catch(() => undefined))?.text.includes(a.versionNote);
-          return seen ? { text: "", isError: false } : { text: `outcome unknown (${e.message}): check the document's versions on Primer before publishing again`, isError: true };
+          return seen ? { text: "a version with this note is on Primer: read its versions for the number", isError: false } : { text: `outcome unknown (${e.message}): check the document's versions on Primer before publishing again`, isError: true };
         });
-        return r.isError ? { ok: false, text: r.text.slice(0, 2000) } : { ok: true, text: `New version on Primer (document ${a.documentId}).` };
+        return r.isError ? { ok: false, text: r.text.slice(0, 2000) } : { ok: true, text: versionResult(a.documentId, r.text) };
       }
       const r = await call("primer_create_document", { title: a.title, content: a.content, format: a.format, ...(a.description ? { description: a.description } : {}) })
         .catch((e: Error) => ({ text: `outcome unknown (${e.message}): look for the document on Primer before publishing again`, isError: true }));
