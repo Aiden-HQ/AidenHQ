@@ -43,10 +43,10 @@ journeys:
       - { name: triage, label: Triage, from: [ issue.opened ] }
       - { name: pickup, label: Pickup, from: [ issue.labeled, task.created ] }
       - { name: coding, label: Coding, from: [ job.started ] }
-      - { name: review, label: AI review, from: [ record.filed ], where: { kind: [ github.pr, github.push, codehost-github.pr, codehost-github.push, codehost-local.pr, codehost-local.push, runner.pr, runner.push ] } }
+      - { name: review, label: AI review, from: [ record.filed ], where: { kind: [ github.pr, github.push, codehost-local.pr, codehost-local.push ] } }
       - { name: open, label: PR open, from: [ pr.opened ] }
       - { name: ci, label: CI, from: [ pr.checks_started, pr.pushed ] }
-      - { name: merge, label: Merge review, from: [ record.filed ], where: { kind: [ github.merge, codehost-github.merge, codehost-local.merge, runner.merge ] } }
+      - { name: merge, label: Merge review, from: [ record.filed ], where: { kind: [ github.merge, codehost-local.merge ] } }
       - { name: deploy, label: Deploy, from: [ pr.merged ] }
     end: [ pr.deployed, pr.closed ]
 # Its check jobs and an Engineer's repo-checkout read the repos it hosts, through the kernel's broker.
