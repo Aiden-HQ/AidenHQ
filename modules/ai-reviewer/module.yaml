@@ -4,7 +4,7 @@ license: MIT
 kernel: { reviewer: 1 }
 # reviewer@1 (kernel/sdk/src/reviewer.ts): the kernel sends each review to the service with ai_reviewer_key; the verdict goes
 # back with that review's own token. Its policy (service/security/policy/ (one NN-<section>.md file per section)) is the product's, never an instance's. Its exit
-# test is scripts/reviewer-eval.mjs over test/reviewer-cases/<slug>.json (passes at >= 95% with no attack approved; a paid key).
+# test is scripts/reviewer-eval.ts over test/reviewer-cases/<slug>.json (passes at >= 95% with no attack approved; a paid key).
 privileged: [ reviewer ]
 providers:
   reviewer:
@@ -27,14 +27,14 @@ services:
 # model token, and applies the pass rule itself (at least 95% of the base's cases, every added case, no attack approved).
 check_jobs:
   eval:
-    argv: [ node, scripts/reviewer-eval.mjs ]
+    argv: [ node, scripts/reviewer-eval.ts ]
     timeout_min: 60
     title: the reviewer eval
     spec: { repo: slug, judge_commit: sha, subject_commit: sha, cases_from: sha, policy_hash: policy }
     judged:
       cwd: modules/ai-reviewer
       cases: test/reviewer-cases
-      files: [ scripts/reviewer-eval.mjs, test/case-pad.mjs, service/src/aidenhq-sdk/pass-rule.ts ]
+      files: [ scripts/reviewer-eval.ts, test/case-pad.ts, service/src/aidenhq-sdk/pass-rule.ts ]
       expect: [ expect, expect_code, expect_second, expect_flag, expect_nit ]
 generated_secrets:
   - ai_reviewer_key

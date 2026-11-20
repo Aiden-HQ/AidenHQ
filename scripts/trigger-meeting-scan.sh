@@ -7,7 +7,7 @@ set -euo pipefail
 secrets="${AIDENHQ_SECRETS_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/aidenhq}"
 url_file="$secrets/meeting_webhook_url"
 secret_file="$secrets/meeting_webhook_secret"
-[ -s "$url_file" ] && [ -s "$secret_file" ] || { echo "webhook not configured (run scripts/paperclip-setup.mjs)" >&2; exit 0; }
+[ -s "$url_file" ] && [ -s "$secret_file" ] || { echo "webhook not configured (run scripts/paperclip-setup.ts)" >&2; exit 0; }
 
 url="$(cat "$url_file")"
 ts="$(date +%s)"

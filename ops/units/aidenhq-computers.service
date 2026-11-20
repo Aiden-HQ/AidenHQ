@@ -1,5 +1,5 @@
 [Unit]
-Description=AidenHQ computer launcher (services/computer/launcher.mjs)
+Description=AidenHQ computer launcher (services/computer/launcher.ts)
 After=network-online.target
 
 [Service]
@@ -11,7 +11,7 @@ EnvironmentFile=-%h/.config/aidenhq-checkout.env
 # quietly (no start timeout) instead of failing and restarting every 15 s.
 TimeoutStartSec=infinity
 ExecStartPre=/bin/sh -c 'until /usr/bin/mountpoint -q "%h/.config/aidenhq" && /usr/bin/docker network inspect aidenhq-computers >/dev/null 2>&1; do sleep 5; done'
-ExecStart=/usr/bin/env node ${AIDENHQ_DIR}/services/computer/launcher.mjs
+ExecStart=/usr/bin/env node ${AIDENHQ_DIR}/services/computer/launcher.ts
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 Restart=on-failure
 RestartSec=15

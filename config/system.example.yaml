@@ -70,7 +70,7 @@ routing:
 
 paperclip:
   base_url: http://paperclip:3100
-  company_id: ""                         # filled in by scripts/paperclip-setup.mjs
+  company_id: ""                         # filled in by scripts/paperclip-setup.ts
   api_key_file: /run/secrets/paperclip_ops_key
   # Which meeting actions become tasks: mine (default) | mine_and_unclear | all
   meeting_action_tasks: mine

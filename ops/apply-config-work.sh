@@ -94,7 +94,7 @@ main() {
   local applied="${AIDENHQ_DATA_DIR:-$PWD/data}/applied-product"
   local before; before="${AIDENHQ_APPLY_BEFORE:-$(cat "$applied" 2>/dev/null || git rev-parse HEAD)}"
   git cat-file -e "$before^{commit}" 2>/dev/null || before="$(git rev-parse HEAD)"
-  # The previous product's default bundle: compile adds what the new one gained (scripts/compile.mjs, once per host).
+  # The previous product's default bundle: compile adds what the new one gained (scripts/compile.ts, once per host).
   export AIDENHQ_OLD_BUNDLE; AIDENHQ_OLD_BUNDLE="$(git show "$before:modules/marketplace.json" 2>/dev/null | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{console.log(JSON.stringify(JSON.parse(s).bundle))}catch{}})' || true)"
   git checkout --quiet --detach "$product"
   lap product
@@ -152,7 +152,7 @@ main() {
   local baseline="$GEN_DIR/apply-$n.baseline" staged=0 why=""
   : > "$baseline"
   # 1. Validate the whole generation before anything restarts (a product that predates staging compiles in place, as before).
-  if grep -q AIDENHQ_COMPILE_STAGE scripts/compile.mjs; then
+  if grep -q AIDENHQ_COMPILE_STAGE scripts/compile.ts; then
     staged=1
     validate || refuseGeneration
   fi
@@ -450,9 +450,9 @@ stagedComposeFiles() {
 
 # Step 1 of spec §5.7.2: everything that can refuse, before anything is touched. Sets `why` on a refusal.
 validate() {
-  AIDENHQ_COMPILE_STAGE=1 node scripts/compile.mjs || { why="the staged compile failed"; return 1; }
+  AIDENHQ_COMPILE_STAGE=1 node scripts/compile.ts || { why="the staged compile failed"; return 1; }
   if [ -f config.next/cloudflared.yml ]; then
-    node scripts/edge.mjs check config.next/cloudflared.yml || { why="the staged config/cloudflared.yml targets something other than the gate"; return 1; }
+    node scripts/edge.ts check config.next/cloudflared.yml || { why="the staged config/cloudflared.yml targets something other than the gate"; return 1; }
   fi
   local files; files="$(stagedComposeFiles)"
   COMPOSE_FILE="$files" docker compose config -q || { why="docker compose config refused the staged compose files"; return 1; }
@@ -498,10 +498,10 @@ sameAsStaged() {
 # Step 3: the real compile, then today's steps. Runs in a subshell with errexit (main and applyGeneration).
 switchOver() {
   rm -f config/module-data.json # an older product's compile writes none: no stale data versions on its generation
-  node scripts/compile.mjs
+  node scripts/compile.ts
   if [ "$staged" = 1 ]; then sameAsStaged; rm -rf config.next compose.modules.next.yaml; fi
   # Shared access: the tunnel may only point at the gate (never the board, Paperclip or an app port directly).
-  node scripts/edge.mjs check config/cloudflared.yml || { echo "refusing: config/cloudflared.yml targets something other than the gate" >&2; exit 1; }
+  node scripts/edge.ts check config/cloudflared.yml || { echo "refusing: config/cloudflared.yml targets something other than the gate" >&2; exit 1; }
   lap compile
   ops/computer-images.sh # the browser image (always: apps-mcp renders in it) and the computer images an agent names
   lap computer-images
@@ -517,9 +517,9 @@ switchOver() {
   local data="${AIDENHQ_DATA_DIR:-$PWD/data}"
   # The grade rows move from the board's database to the grading module's (lean-core 3h), once (a marker in its data dir), with
   # the board stopped so the old board writes nothing mid-move; compose then starts the grading service on them.
-  if [ -f ops/grades-move.mjs ] && [ ! -f "$data/modules/grading/grades/.moved-from-board" ]; then
+  if [ -f ops/grades-move.ts ] && [ ! -f "$data/modules/grading/grades/.moved-from-board" ]; then
     stopBoard
-    echo "grades: $(node ops/grades-move.mjs "$data") (data/board/board.sqlite -> data/modules/grading/grades/)"
+    echo "grades: $(node ops/grades-move.ts "$data") (data/board/board.sqlite -> data/modules/grading/grades/)"
   fi
   # codehost-github became the github module's code host part (docs/design/connections-simple.md): its data dir (cache clones,
   # merge queue, PR-task map, release train) moves once, its old container stopped first so nothing writes mid-move; compose
@@ -537,9 +537,9 @@ switchOver() {
   fi
   # channel-slack merged into slack (connections build): its listener's data moves once, the old container stopped first so its
   # SQLite isn't open while the folder moves; compose then starts the listener as slack-live on the moved data.
-  if [ -f ops/slack-live-move.mjs ] && [ -d "$data/modules/channel-slack/slack-live" ]; then
+  if [ -f ops/slack-live-move.ts ] && [ -d "$data/modules/channel-slack/slack-live" ]; then
     docker ps -q --filter label=aidenhq.module=channel-slack | xargs -r docker stop >/dev/null
-    echo "slack-live: $(node ops/slack-live-move.mjs "$data") (data/modules/channel-slack/ -> data/modules/slack/)"
+    echo "slack-live: $(node ops/slack-live-move.ts "$data") (data/modules/channel-slack/ -> data/modules/slack/)"
   fi
   if ! cmp -s ops/units/aidenhq-kernel.service "$kn"; then
     cp ops/units/aidenhq-kernel.service "$kn" && systemctl --user daemon-reload && systemctl --user enable --quiet aidenhq-kernel \
@@ -554,9 +554,9 @@ switchOver() {
   [ -e "$AIDENHQ_GENERATIONS_MIRROR" ] || : > "$AIDENHQ_GENERATIONS_MIRROR"
   ops/compose-recreate.sh # build what moved, recreate only those services, and stop and remove what this config dropped
   # The host's own tailnet name keeps Paperclip and the board only; apps are on their own node (compose.yaml apps-edge).
-  node scripts/host-serve.mjs prune
+  node scripts/host-serve.ts prune
   lap compose # the gateway check, then compose: builds (cached unless a context changed) and recreates what changed
-  node scripts/paperclip-setup.mjs
+  node scripts/paperclip-setup.ts
   lap setup
   ops/warehouse-sources.sh # shared sources: roles, schemas, src_meta (skips while the warehouse isn't running)
   lap warehouse
@@ -575,8 +575,13 @@ switchOver() {
     cp ops/units/aidenhq-apply-recover.service "$rec" && systemctl --user daemon-reload && systemctl --user enable --quiet aidenhq-apply-recover \
       && echo "apply recovery unit installed/updated"
   fi
-  # The computer launcher holds live run tokens in memory: restart it only when its code changed (running computers get new tokens next run).
-  if [ "$before" != "$product" ] && ! git diff --quiet "$before" "$product" -- services/computer/launcher.mjs services/computer/lib.mjs \
+  # The computer launcher holds live run tokens in memory: restart it only when its code or its unit changed (running computers
+  # get new tokens next run). Setup installed the unit once, so a changed unit (its ExecStart path) reaches the host here.
+  local cu="$HOME/.config/systemd/user/aidenhq-computers.service"
+  if systemctl --user is-enabled --quiet aidenhq-computers 2>/dev/null && ! cmp -s ops/units/aidenhq-computers.service "$cu"; then
+    cp ops/units/aidenhq-computers.service "$cu" && systemctl --user daemon-reload && systemctl --user restart aidenhq-computers \
+      && echo "computer launcher unit updated, launcher restarted"
+  elif [ "$before" != "$product" ] && ! git diff --quiet "$before" "$product" -- services/computer/launcher.ts services/computer/lib.ts \
      && systemctl --user is-enabled --quiet aidenhq-computers 2>/dev/null; then
     systemctl --user restart aidenhq-computers && echo "computer launcher restarted"
   fi
@@ -659,11 +664,11 @@ health() {
   fi
   echo "health: the kernel answers and every check that passed before passes"
   lap health
-  # The live agent check: each connection an agent is granted answers and is signed in (scripts/agent-check.mjs). Its
+  # The live agent check: each connection an agent is granted answers and is signed in (scripts/agent-check.ts). Its
   # output goes to the apply log as it printed it, and its ERROR lines are the generation's reason, so the alert says which
   # connection failed and why.
   if [ -n "$prev" ]; then
-    out="$(node scripts/agent-check.mjs live --since "$prev" 2>&1)" || rc=$?
+    out="$(node scripts/agent-check.ts live --since "$prev" 2>&1)" || rc=$?
     [ -z "$out" ] || printf '%s\n' "$out"
     if [ "$rc" -ne 0 ]; then
       while IFS= read -r err; do [ -z "$err" ] || why+="${why:+; }$err"; done <<< "$(sed -n 's/^  agent-check ERROR: //p' <<< "$out")"

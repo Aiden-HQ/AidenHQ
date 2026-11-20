@@ -1,6 +1,6 @@
 // Agent teams (docs/configuration.md, Teams): a team is one address (the team record, which never runs) over named members, each a
 // real agent. A task assigned to the team goes to one member, picked here by a pure function of a snapshot the wake path
-// gathers (wakes.ts route). The schema below is the one both compile (scripts/modules.mjs) and the router read.
+// gathers (wakes.ts route). The schema below is the one both compile (scripts/modules.ts) and the router read.
 
 /** Score weights (teams.<t>.routing.weights): repo match, continuity and load. */
 export type Weights = { repo: number; continuity: number; load: number };

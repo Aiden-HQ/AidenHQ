@@ -5,7 +5,7 @@ The code AidenHQ modules share, one copy on npm. MIT. Entry points: `types`, `en
 kinds), `reviewer` (reviewer@1), `source-store` (source writers; `pg` is a peer dependency) and `vendor/proxy`,
 `vendor/oauth` (vendor connections; the MCP SDK, zod and pino are peer dependencies).
 
-The official modules in this repo hold synced copies of these files instead (`scripts/sync-shared.mjs`), so what they run
+The official modules in this repo hold synced copies of these files instead (`scripts/sync-shared.ts`), so what they run
 is gated source. A third-party module depends on an exact version (`"@aidenhq/sdk": "X.Y.Z"`). Our own scope is exempt from the 7-day rule, so a module
 may pin a version the day it is published.
 
@@ -13,4 +13,4 @@ may pin a version the day it is published.
 
 Push a tag `sdk-vX.Y.Z` on a commit of `main`. `.github/workflows/sdk-publish.yml` takes the version from the tag and publishes
 with npm trusted publishing (provenance, no token). Pull requests that touch this folder dry-run the same publish. The pack
-step (`scripts/sdk-pack.mjs`) compiles with this folder's own TypeScript: `npm ci` here first.
+step (`scripts/sdk-pack.ts`) compiles with this folder's own TypeScript: `npm ci` here first.

@@ -22,7 +22,7 @@ For what each component adds over Paperclip, see [core-components.md](core-compo
 
 **Paperclip (control plane).** The source of truth for companies, agents, tasks, routines, approvals and run
 history. Its UI is the fleet console. It runs nothing: the kernel runs every agent as a job in its computer (Codex on OpenRouter). The generated
-`config/paperclip.yaml` is applied to it idempotently by `scripts/paperclip-setup.mjs`.
+`config/paperclip.yaml` is applied to it idempotently by `scripts/paperclip-setup.ts`.
 
 **Chief of staff and crews.** Aiden is the single entry point: it reads widely and delegates writes. Crews are
 specialist agents woken by schedules (Paperclip routines) or events (routine webhooks); the wake inbox turns each into a kernel job. Every agent is a

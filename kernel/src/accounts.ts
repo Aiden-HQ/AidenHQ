@@ -40,7 +40,7 @@ export interface Account {
 export type AdminSession = { account: Account; session: { id: string; expiresAt: string }; ready: boolean };
 
 /**
- * What the kernel reads from the gate's config (config/gate.json, scripts/edge.mjs), re-read on use: the sign-in host
+ * What the kernel reads from the gate's config (config/gate.json, scripts/edge.ts), re-read on use: the sign-in host
  * (my_apps.host), the app hosts, and whether apps sign in with a password (login: password) or Cloudflare Access.
  */
 export interface GateInfo {

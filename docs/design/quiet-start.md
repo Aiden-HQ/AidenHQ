@@ -13,7 +13,7 @@ settings:
 
 ## 1. `quiet_start: on`: nothing scheduled runs
 
-Compile (`scripts/modules.mjs`), for module agents only (an instance agent's schedules are the owner's own request):
+Compile (`scripts/modules.ts`), for module agents only (an instance agent's schedules are the owner's own request):
 
 - **Scheduled routines start paused.** A routine with `schedules:` compiles with `status: paused` unless
   `overrides.routines.<key>.status` sets it. Routines without schedules (webhooks, or started by the board

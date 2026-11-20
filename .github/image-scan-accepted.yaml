@@ -1,4 +1,4 @@
-# Accepted risks for the `image-scan` check (scripts/supply-chain/image-scan.mjs): one finding in one exact base image that
+# Accepted risks for the `image-scan` check (scripts/supply-chain/image-scan.ts): one finding in one exact base image that
 # no newer upstream release of that image fixes yet. Anything a bump fixes is bumped instead. The owner's review of a change
 # to this file is the approval; the check reads it from the base commit, so an entry lands in its own PR first. Each entry
 # expires at most 14 days out; an expired entry fails the scan until it is renewed (with a fresh look for a release) or dropped.

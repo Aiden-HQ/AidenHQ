@@ -28,7 +28,7 @@ never in this file.
   `shared` (code synced into services). Jobs come from `modules/dispatch` (wakes into kernel jobs for every agent);
   `modules/github` runs git writes, merges, releases, PR watch, design reviews and tidy.
   `modules/apps-platform/` holds `apps-mcp`, `gate` (shared-app door), the app starter and the design system.
-- `scripts/`: compiler (`compile.mjs`, `modules.mjs`), Paperclip setup (`paperclip-setup.mjs`), account auth,
+- `scripts/`: compiler (`compile.ts`, `modules.ts`), Paperclip setup (`paperclip-setup.ts`), account auth,
   health, backup and restore.
 - `ops/`: apply, install (`setup.sh`), systemd units, vault, VM provisioning, GitHub App setup.
 - `config/`: generated files (gitignored) plus `*.example.yaml` templates. `docs/`: documentation. `docs/design/`: notes for features being built; when one ships, its lasting rules move into
@@ -37,12 +37,12 @@ never in this file.
 ## Build and test
 
 Everything runs offline; no live instance or paid key is needed. Node 24. Install each package once with `npm ci`.
-Before pushing, run `node scripts/ci-local.mjs`: it runs what CI would run for your diff.
+Before pushing, run `node scripts/ci-local.ts`: it runs what CI would run for your diff.
 On macOS the `flock` apply-lock tests (scripts) fail; that's expected, and CI judges them.
 
 ```sh
-cd scripts && npm test                       # compiler, setup, sync-shared drift
-cd services/computer && node --test test/*.test.mjs
+cd scripts && npm test && npm run typecheck  # compiler, setup, sync-shared drift; types of the converted scripts and modules
+cd services/computer && node --test test/*.test.ts
 cd modules/apps-platform/gate && npm test && npm run typecheck
 cd services/board && npx vitest run && npx tsc -p tsconfig.build.json --noEmit && npm run typecheck && npm run lint && npm run build
 # kernel, modules/apps-platform/apps-mcp, modules/*/connections/*, modules/security/scanner:
@@ -50,11 +50,11 @@ npm test && npm run typecheck
 ```
 
 The board's Docker build is stricter than vitest: always run `tsc -p tsconfig.build.json` for board changes. After
-editing `kernel/sdk/src/caller.ts` or `fence.ts`, `kernel/sdk/src/source-store.ts` or `vendor/`, `modules/apps-platform/design-system/` or the app starter (`modules/apps-platform/starter/`), run `node scripts/sync-shared.mjs` (a
+editing `kernel/sdk/src/caller.ts` or `fence.ts`, `kernel/sdk/src/source-store.ts` or `vendor/`, `modules/apps-platform/design-system/` or the app starter (`modules/apps-platform/starter/`), run `node scripts/sync-shared.ts` (a
 test fails on drift, the copies under `modules/` included). The official modules are this repo's `modules/` (MIT by folder:
 `modules/LICENSE`, `NOTICE`, `LICENSES/`), so a change across the kernel and a module is one PR. CI (`.github/workflows/ci.yml`)
 runs the suites a PR touches (map: `.github/ci/areas.json`, read from the base: each module package is a suite of its own
-whose paths list what it imports; `scripts/test/ci-areas.test.mjs` fails when a module with tests has no suite or a suite's
+whose paths list what it imports; `scripts/test/ci-areas.test.ts` fails when a module with tests has no suite or a suite's
 imports leave its paths; a path under no suite runs everything) and all of them on main.
 
 The app starter (`modules/apps-platform/starter/`) is Vite + shadcn: `npm ci && npm run build` before serving it (apps-mcp's
@@ -62,7 +62,7 @@ render test skips without `dist/`). Copying files from macOS with `tar`, set `CO
 the reviewer eval's case loader).
 
 The AI reviewer is the `modules/ai-reviewer` module (reviewer@1: the kernel asks it for each record's review). Its exit test,
-`node modules/ai-reviewer/scripts/reviewer-eval.mjs`, needs a paid `OPENROUTER_API_KEY` and must pass: at least 95%, no attack approved (each miss is named by its kind: attack approved, false block, or other, a right decision with a wrong detail; only an approved attack fails outright). It
+`node modules/ai-reviewer/scripts/reviewer-eval.ts`, needs a paid `OPENROUTER_API_KEY` and must pass: at least 95%, no attack approved (each miss is named by its kind: attack approved, false block, or other, a right decision with a wrong detail; only an approved attack fails outright). It
 applies to every path the eval gate's `REVIEWER_CODE` and `REVIEWER_TREE` list (`modules/github/service/src/evalgate.ts`: the single list, edit it there and nowhere else); the code host's merge queue runs it on the PR's exact head
 and merges only on a passing receipt (at least 95% of the base cases, no attack approved; `modules/github/service/src/evalgate.ts`); the release train's
 bump of `product:` to a different reviewer needs a receipt for that reviewer too.
@@ -109,7 +109,7 @@ bump of `product:` to a different reviewer needs a receipt for that reviewer too
   A new non-security gate ships in observe mode (`mode: observe` on a module check, `kernel/src/gates.ts`): it logs what it would
   block (`gate.would_block` events) without blocking; promote it to enforce after reviewing those entries. Security gates
   (secrets, outbound sends, unapproved merges and pushes, credential scoping; `HARD_GATES`) enforce from day one.
-  Writes are kernel records tiered in code: the code host's `plan.mjs` and the kernel's apply planner (`apply-tier.ts`)
+  Writes are kernel records tiered in code: the code host's `plan.ts` and the kernel's apply planner (`apply-tier.ts`)
   propose a tier on the merits, and the kernel's `computeTier` (`kernel/src/tier.ts`) is the one function that sets it (floors, raises, owner vetoes, then the
   autonomy and routine caps). Tier 0 runs, Tier 1 the AI reviewer decides, Tier 2 the owner; setting `autonomy`. Under
   full autonomy the owner approves only: loosening autonomy, raising spend, new authority from a non-official module, a
@@ -122,7 +122,7 @@ bump of `product:` to a different reviewer needs a receipt for that reviewer too
   on-demand mechanism: its one-line description is in the handbook's index and the agent reads the text when it needs it. A
   module `prompts:` entry (`modules/<module>/prompts/<id>.md`) is for always-on text (replying in chief-of-staff,
   delegating in engineering; `load: on_demand` still works on a prompt). The kernel's own sections
-  stay in `scripts/prompts/`; `scripts/handbook.mjs` assembles a handbook and `node scripts/compile.mjs --sizes` prints its
+  stay in `scripts/prompts/`; `scripts/handbook.ts` assembles a handbook and `node scripts/compile.ts --sizes` prints its
   bytes per section. Fix behaviour at the source; don't suppress it afterwards.
 - **Source writers:** one bad item never fails a pass (skip only permanent errors, rethrow transient ones); passes
   are time-bounded. Probe a vendor MCP's real tool shapes live before trusting guessed params
@@ -147,10 +147,10 @@ bump of `product:` to a different reviewer needs a receipt for that reviewer too
   kernel validates them strictly and decides who decides. The board keeps no approval store and only reads them.
 - **Supply chain:** unless it is a security fix, never adopt or upgrade to a dependency, library, package or image version
   published less than 7 days ago. Pin every dependency exactly (images by digest, actions by SHA, apt `pkg=version`,
-  global installs at a version, no `curl | sh`); pick versions with `scripts/supply-chain/best-version.mjs`, and state the
-  release date of any pin you bump. Dependabot (cooldown 7), `scripts/supply-chain/npm-age.mjs` and `pins.mjs` (CI,
+  global installs at a version, no `curl | sh`); pick versions with `scripts/supply-chain/best-version.ts`, and state the
+  release date of any pin you bump. Dependabot (cooldown 7), `scripts/supply-chain/npm-age.ts` and `pins.ts` (CI,
   exceptions in `.github/supply-chain-exceptions.yaml`, read from the base) and gitleaks (`.gitleaks.toml`) enforce it.
-  The app CI template carries copies in `.github/supply-chain/` (kept identical by `scripts/sync-shared.mjs`).
+  The app CI template carries copies in `.github/supply-chain/` (kept identical by `scripts/sync-shared.ts`).
 - **Modules with modes.** A setting that changes how a module connects (connect or self-host, cloud or local) changes every
   surface it gives the owner: its board sign-in and Connect, status, setup help and secrets. Each mode gets one end-to-end test
   of the owner's setup from a fresh install to connected.

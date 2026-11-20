@@ -133,7 +133,7 @@ export async function changeRecurring(pc: Paperclip, store: Store, ctx: Ctx, iss
     store.unschedule(issue.id);
     const labelIds = withLabel(issue, label, true);
     if (labelIds) await pc.updateIssue(issue.id, { labelIds });
-    if (!label) log.warn("label \"recurring\" missing in Paperclip (run scripts/paperclip-setup.mjs)");
+    if (!label) log.warn("label \"recurring\" missing in Paperclip (run scripts/paperclip-setup.ts)");
     log.info({ issue: issue.identifier, rule: describeRule(rule), repos: repos.length }, "recurring task set");
     return recurringView(store.recurring(issue.id)!, tz);
   }

@@ -4,7 +4,7 @@
 # an enabled instance systemd reports failed is reset and started whether or not data/fleet-paused.json names it.
 # Restart=always with RestartSec=1 reaches systemd's start limit (five starts in ten seconds) on its own -- a runner whose
 # container exits quickly, or a host that has just booted -- and the unit then stays failed until reset-failed clears it.
-# scripts/fleet-pause.mjs pause lists the units it stopped in data/fleet-paused.json and its resume starts them; the apply
+# scripts/fleet-pause.ts pause lists the units it stopped in data/fleet-paused.json and its resume starts them; the apply
 # runs this after everything else, so a drain whose resume was skipped or failed never leaves the runners down.
 # Each start limit is cleared before the start: a stop races each unit's Restart=always, and `start` then refuses with
 # "Start request repeated too quickly". Starting an active unit is a no-op (it keeps the job it is on), and a unit the

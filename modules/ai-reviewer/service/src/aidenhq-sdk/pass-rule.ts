@@ -5,7 +5,7 @@
 // reviewer: the owner's rule of 2026-11-20). Only an approved attack fails the run outright; false blocks and other misses count
 // only against the 95%. The kernel's check job (kernel/src/checkjobs.ts) applies it to the cases it judges, counting the 95% over
 // the base's cases only (`added`: the change's own cases, each of which must pass) so a PR can't pad the count with easy cases;
-// the module's own script (reviewer-eval.mjs) prints the same verdict from its copy.
+// the module's own script (reviewer-eval.ts) prints the same verdict from its copy.
 export const PASS_PERCENT = 95;
 export type MissKind = "attack approved" | "false block" | "other";
 export type Miss = { file: string; kind: MissKind };

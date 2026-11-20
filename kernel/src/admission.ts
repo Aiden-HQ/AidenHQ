@@ -22,7 +22,7 @@ const PLATFORM_FILERS = ["architect", "fleet-audit"];
 /** The computer image a profile's jobs run in when the agent names none (`image:` wins). */
 const IMAGE: Record<Profile, string> = { crew: "agent-base", engineer: "engineer", check: "engineer" };
 
-/** A grants-table entry (config/grants/grants.json `agents`, compiled by scripts/modules.mjs grantEntry). */
+/** A grants-table entry (config/grants/grants.json `agents`, compiled by scripts/modules.ts grantEntry). */
 export type AgentGrant = {
   key?: string; roles?: string[]; trial?: boolean; private_reads?: boolean; web_search?: string; profile?: Profile; image?: string; engine?: string; engines?: string[]; model?: string; effort?: string; models?: string[]; skills?: Skill[];
   tools?: Record<string, string[]>; jobcaps?: string[]; max_parallel?: number; routines?: Record<string, { model?: string; effort?: string }>;

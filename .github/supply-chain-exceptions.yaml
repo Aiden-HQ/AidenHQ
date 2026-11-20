@@ -10,7 +10,7 @@
 # Use it only when waiting would block a release of code already running elsewhere in the product.
 # ecosystem: npm (lockfiles and global installs), pypi, docker (package = the image without its tag, version = the
 # tag), github-action, github-release or apt. npm entries are checked against the GitHub Advisory Database
-# (scripts/supply-chain/npm-age.mjs); the others rest on review. scripts/supply-chain/best-version.mjs returns a listed
+# (scripts/supply-chain/npm-age.ts); the others rest on review. scripts/supply-chain/best-version.ts returns a listed
 # version for its package.
 exceptions:
   - { ecosystem: apt, package: containerd.io, version: 2.4.2-4~ubuntu.24.04~noble, advisory: CVE-2026-119101, reason: "bundles runc 1.5.3 (released 2026-11-12) with the high-severity runc fix; installed on the host 2026-11-12" }

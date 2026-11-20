@@ -115,7 +115,7 @@ s_health="$(curl -s -m 10 "$(svc slack-mcp 8082)/healthz" 2>&1)"
 if echo "$s_health" | grep -q '"ok":true'; then
   # The host's read-only endpoint (its own token): /mcp needs an agent's key.
   stoken="$(cat "${AIDENHQ_SECRETS_DIR:-/nonexistent}/slack_mcp_read_token" 2>/dev/null)"
-  check "slack read (own profile)" sh -c "node scripts/dev/mcp-call.mjs '$(svc slack-mcp 8082)/mcp/read' slack_read_user_profile '{\"response_format\":\"concise\"}' '$stoken' >/dev/null"
+  check "slack read (own profile)" sh -c "node scripts/dev/mcp-call.ts '$(svc slack-mcp 8082)/mcp/read' slack_read_user_profile '{\"response_format\":\"concise\"}' '$stoken' >/dev/null"
 else
   printf '  skip  slack (not connected: %s)\n' "$(echo "$s_health" | cut -c1-80)"
 fi
@@ -124,7 +124,7 @@ p_health="$(curl -s -m 10 "$(svc primer-mcp 8084)/healthz" 2>&1)"
 if echo "$p_health" | grep -q '"ok":true'; then
   # The Engineer jobs' read-only endpoint (the kernel forwards their calls there), with its own token: /mcp needs an agent's key.
   prtoken="$(cat "${AIDENHQ_SECRETS_DIR:-/nonexistent}/primer_mcp_read_token" 2>/dev/null)"
-  check "primer (whoami)" sh -c "node scripts/dev/mcp-call.mjs '$(svc primer-mcp 8084)/mcp/read' primer_whoami '{}' '$prtoken' >/dev/null"
+  check "primer (whoami)" sh -c "node scripts/dev/mcp-call.ts '$(svc primer-mcp 8084)/mcp/read' primer_whoami '{}' '$prtoken' >/dev/null"
   check "primer (runner, read-only)" sh -c "curl -fsS -X POST '$(svc primer-mcp 8084)/mcp/read' -H 'Authorization: Bearer $prtoken' -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' -d '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}' | grep -q primer_get_document"
 else
   printf '  skip  primer (not connected: %s)\n' "$(echo "$p_health" | cut -c1-80)"

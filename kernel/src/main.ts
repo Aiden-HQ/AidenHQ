@@ -77,7 +77,7 @@ import { checkJobsFrom } from "./checkbox.ts";
 import type { Recipes } from "./checkjobs.ts";
 import { localSnapshot } from "../../modules/codehost-local/src/snapshot.ts";
 import { LOCAL_KINDS, localHost as codehostLocal } from "../../modules/codehost-local/src/host.ts";
-import { check as productGate } from "../../modules/platform/src/check.mjs";
+import { check as productGate } from "../../modules/platform/src/check.ts";
 import { ingest } from "../../modules/codehost-local/src/git.ts";
 import { localMergePass } from "./localmerge.ts";
 import { createJobTools } from "./jobtools.ts";
@@ -89,7 +89,7 @@ import { readEngines } from "./sandbox.ts";
 import { sandboxConfig } from "./sandbox-config.ts";
 import { createCertWatch } from "./front-door.ts";
 import { createUpdates, runCheck, runVerify } from "./updates.ts";
-import { BOX_EXEC_WRAP } from "../../services/computer/lib.mjs";
+import { BOX_EXEC_WRAP } from "../../services/computer/lib.ts";
 import { limitIssueLists } from "./cplimit.ts";
 
 const log = (msg: string, fields: Record<string, unknown> = {}) => console.log(new Date().toISOString(), msg, JSON.stringify(fields));
@@ -571,7 +571,7 @@ const boardUrl = urlOf(env("BOARD_LAN_URL", ""));
 const loopback = env("AIDENHQ_ADMIN_HOSTS", "localhost:3120,127.0.0.1:3120").split(",").map((h) => h.trim().toLowerCase()).filter(Boolean);
 const adminHosts = [...loopback, ...(adminUrl ? [adminUrl.host, adminUrl.hostname] : [])];
 const adminOrigins = [...loopback.map((h) => `http://${h}`), ...(adminUrl ? [adminUrl.origin] : [])];
-// The sign-in listener's own Host names (the gate calls it at 127.0.0.1:3129), and shared apps' config (scripts/edge.mjs).
+// The sign-in listener's own Host names (the gate calls it at 127.0.0.1:3129), and shared apps' config (scripts/edge.ts).
 const signinHosts = env("AIDENHQ_SIGNIN_HOSTS", "127.0.0.1:3129,localhost:3129").split(",").map((h) => h.trim().toLowerCase()).filter(Boolean);
 const gateFile = path.join(configDir, "gate.json");
 const gateInfo = () => readGate(gateFile);

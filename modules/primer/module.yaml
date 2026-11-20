@@ -84,7 +84,7 @@ routines:
     concurrency: skip_if_active
     schedules:
       - { cron: "0 8 * * *", timezone: "${settings.timezone}", label: "every morning" }
-# Runner jobs read Primer through the model gateway with their own token (scripts/modules.mjs jobcapEntries); read_url and
+# Runner jobs read Primer through the model gateway with their own token (scripts/modules.ts jobcapEntries); read_url and
 # read_secret are today's loopback read endpoint and its token, which only the gateway holds.
 jobcaps:
   - { id: primer-read, connection: primer, tools: read, read_url: "http://primer-mcp:8084/mcp/read", read_secret: primer_mcp_read_token }

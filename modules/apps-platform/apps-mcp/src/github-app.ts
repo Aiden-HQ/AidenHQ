@@ -10,7 +10,7 @@ function readSettings(instanceDir: string): Record<string, unknown> | undefined 
   return existsSync(f) ? (parse(readFileSync(f, "utf8")) as { settings?: Record<string, unknown> } | null)?.settings : undefined;
 }
 
-/** The agents org: settings.github_agents_org, else aidenhq-<instance_name> (scripts/modules.mjs agrees). */
+/** The agents org: settings.github_agents_org, else aidenhq-<instance_name> (scripts/modules.ts agrees). */
 export function readAgentsOrg(instanceDir: string): string | undefined {
   const s = readSettings(instanceDir);
   return (s?.github_agents_org as string) || (s?.instance_name ? `aidenhq-${s.instance_name}` : undefined);

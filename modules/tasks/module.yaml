@@ -12,7 +12,7 @@ connections:
     # advisor_ask and fanout_map bill the caller's run through the gateway.
     model_as_caller: true
     tools:
-      # advisor_ask, fanout_map (models.mjs): model calls billed to the caller's run through the gateway; they change nothing.
+      # advisor_ask, fanout_map (models.ts): model calls billed to the caller's run through the gateway; they change nothing.
       # memory_note: a comment on the caller's own memory inbox task (a note for the Fleet Steward), so trial agents have it too.
       # coach_record: the fleet-audit role's (the Fleet Steward); its coach_due and coach_evidence reads are the fleet-steward module's.
       read: [ task_current, task_get, task_search, task_list, task_team, task_comments, task_files, task_file_read, task_approvals, fleet_status, fleet_costs, fleet_catalog, handbook_list, handbook_read, advisor_ask, fanout_map, memory_note ]
@@ -25,7 +25,7 @@ services:
       tmp: 16m
       links: [backplane] # no egress: the kernel's listener, the board's internal API and apps-mcp
       join: [grading] # rubrics, filed as the caller
-      data: ["catalog:/catalog:ro"] # fleet_catalog's static half (scripts/paperclip-setup.mjs writes it)
+      data: ["catalog:/catalog:ro"] # fleet_catalog's static half (scripts/paperclip-setup.ts writes it)
       env:
         MCP_TOKEN_FILE: ${secrets.tasks_service_key}
         # The board's internal API (schedules, fleet tools), as the caller (X-AidenHQ-Caller).

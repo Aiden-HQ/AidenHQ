@@ -1,6 +1,6 @@
 # AidenHQ core stack. Start with: docker compose up -d (ops/apply-config.sh does this).
 # Configuration comes from .env (see .env.example); secrets from $AIDENHQ_SECRETS_DIR.
-# Module services (connections) live in modules/<name>/compose.yaml; scripts/compile.mjs merges the enabled ones into
+# Module services (connections) live in modules/<name>/compose.yaml; scripts/compile.ts merges the enabled ones into
 # compose.modules.yaml, which COMPOSE_FILE in .env adds after this file.
 
 name: aidenhq
@@ -26,7 +26,7 @@ services:
       - /bin/sh
       - -c
       # No connection token or internal token lives here: agents' tool calls go to the kernel's proxy with the run's own
-      # credential (scripts/paperclip-setup.mjs ensureCodexConfig). $$ escapes compose interpolation.
+      # credential (scripts/paperclip-setup.ts ensureCodexConfig). $$ escapes compose interpolation.
       - >-
         export BETTER_AUTH_SECRET="$$(cat /run/secrets/paperclip_auth_secret)"
         PAPERCLIP_AGENT_JWT_SECRET="$$(cat /run/secrets/paperclip_agent_jwt_secret)";
@@ -50,7 +50,7 @@ services:
       USER_GID: "${PGID:-100}"
       # No usage telemetry to Paperclip's servers.
       # One database dump every 6 hours (the default is hourly: 73 dumps of 780 MB filled 50 GB); how many are kept is the
-      # instance setting scripts/modules.mjs ensureBackupRetention writes.
+      # instance setting scripts/modules.ts ensureBackupRetention writes.
       PAPERCLIP_DB_BACKUP_INTERVAL_MINUTES: "360"
       PAPERCLIP_TELEMETRY_DISABLED: "1"
       DO_NOT_TRACK: "1"
@@ -134,7 +134,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       # The apps node's serve config (apps-edge reads it); never the host's tailscaled.
       - ${AIDENHQ_DATA_DIR:-./data}/apps-edge/serve:/edge
-      # Which shared apps' PR previews run, for the gate (modules/apps-platform/apps-mcp/src/previews.ts; scripts/edge.mjs).
+      # Which shared apps' PR previews run, for the gate (modules/apps-platform/apps-mcp/src/previews.ts; scripts/edge.ts).
       - ${AIDENHQ_DATA_DIR:-./data}/previews:/previews
       # The repo at its own path: Docker resolves bind mounts on the host, so paths must match. Holds each app's checkout and
       # data under data/apps, and module apps' source (its origin/main, at the pin). The instance checkout is read-only (instance.yaml, its origin URL): the apply owns it; the apps.yaml registry lives in apps-mcp's own clone under /data.

@@ -8,8 +8,8 @@ description: Pick and pin a dependency, package, Docker image, GitHub Action or 
 Add a dependency only when the change needs it. Every version you adopt or upgrade to was published at least 7 days ago,
 unless it is a security fix (step 4).
 
-1. Pick the version with `best-version.mjs` (Node 22+, no dependencies). The repository's own copy wins when it has one:
-   `scripts/supply-chain/best-version.mjs` in the product, `.github/supply-chain/best-version.mjs` in an app repo. Else
+1. Pick the version with `best-version.ts` (Node 22+, no dependencies). The repository's own copy wins when it has one:
+   `scripts/supply-chain/best-version.ts` in the product, `.github/supply-chain/best-version.ts` in an app repo. Else
    use the copy next to this file (`$BV` below is that path, or the repository's copy):
 
    ```sh

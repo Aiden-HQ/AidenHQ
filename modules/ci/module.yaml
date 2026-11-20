@@ -42,7 +42,7 @@ services:
           fi
           ./config.sh --unattended --ephemeral --disableupdate --url "$$RUNNER_URL" --token "$$RUNNER_TOKEN" --name "aidenhq-$$(hostname)" --labels aidenhq --work _work "$${group[@]}"
           unset RUNNER_TOKEN
-          # The job-started hook's allow list (runner/job-started.mjs), from settings, then read-only and out of the env.
+          # The job-started hook's allow list (runner/job-started.ts), from settings, then read-only and out of the env.
           printf '%s/*\n' "$$AIDENHQ_AGENTS_ORG" > /opt/aidenhq/allowed
           printf '%s\n' $$AIDENHQ_CI_REPOS >> /opt/aidenhq/allowed
           chmod 0444 /opt/aidenhq/allowed
@@ -53,7 +53,7 @@ services:
       cpus: 4
       memory: 8g
       pids: 2048
-# The runner registration token's source (ops/ci-runner.sh → ops/ci-runner-token.mjs on the host): an org-wide App token
+# The runner registration token's source (ops/ci-runner.sh → ops/ci-runner-token.ts on the host): an org-wide App token
 # narrowed to organization_self_hosted_runners, from the kernel's POST /v1/codehost/token with this module's own ci_token
 # (owner authority; only codehost-github holds the App's key). Any org the App serves runners for.
 codehost:
@@ -62,7 +62,7 @@ codehost:
     perms: { organization_self_hosted_runners: write }
 settings:
   # Repositories outside the agents org whose jobs the runners take (space-separated owner/name), from a push to the
-  # default branch or a same-repo PR only (runner/job-started.mjs). The App and that org's runner group
+  # default branch or a same-repo PR only (runner/job-started.ts). The App and that org's runner group
   # (ci_org_runner_group) must also serve them (docs/operations.md, "CI runners").
   ci_runner_repos:
     default: "Aiden-HQ/AidenHQ Aiden-HQ/aidenhq-modules Aiden-HQ/aidenhq-distro"
@@ -82,6 +82,6 @@ settings:
     default: 5
   ci_review_day_usd:
     default: 20
-# The host's runner registration (ops/ci-runner-token.mjs) asks the kernel with it.
+# The host's runner registration (ops/ci-runner-token.ts) asks the kernel with it.
 generated_secrets:
   - ci_token

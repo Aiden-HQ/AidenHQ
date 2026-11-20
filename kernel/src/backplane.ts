@@ -116,7 +116,7 @@ const DIRECTORY = ["key", "roles", "profile", "trial", "description", "delegate_
 const WAIT_TOOLS = ["task_wait", "task_handoff", "notify"];
 /** What a task shows when the owner stops its run: the kernel's own words, the dispatcher posts nothing else for it. */
 const STOPPED_NOTE = "**Stopped by the owner.** Say **continue** to pick up where it stopped.";
-/** What the listener serves: the router dispatches from this table and scripts/lean/contract-lock.mjs reads it, so the lock can't miss a route. */
+/** What the listener serves: the router dispatches from this table and scripts/lean/contract-lock.ts reads it, so the lock can't miss a route. */
 export const ROUTES = [
   { method: "GET", path: "/healthz", auth: "none" },
   { method: "GET", path: "/v1/jwks", auth: "none" },

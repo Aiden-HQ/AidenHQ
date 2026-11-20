@@ -15,7 +15,7 @@
 #                                                      --kernel-token-file: a read token for a private kernel repo, used
 #                                                      only for setup's fetch of it, never written into the checkout.
 #                                                      AIDENHQ_EXPOSURE=public: the board on this host's public IPv4
-#                                                      over HTTPS (Caddy, scripts/front-door.mjs; AIDENHQ_PUBLIC_IP, else
+#                                                      over HTTPS (Caddy, scripts/front-door.ts; AIDENHQ_PUBLIC_IP, else
 #                                                      the default route's), no tailnet. A rerun keeps the compiled mode.
 #                                                      No certificate within 3 minutes (443 blocked upstream) or no
 #                                                      public IPv4: a loud fallback to local and the SSH tunnel.
@@ -308,7 +308,7 @@ fall_back_local() { # WHY
 if [ "$PUBLIC" = 1 ]; then
   PUBLIC_IP="${AIDENHQ_PUBLIC_IP:-$(sed -n 's/^AIDENHQ_PUBLIC_IP=//p' "$ENVF" 2>/dev/null | tail -1)}"
   if [ -z "$PUBLIC_IP" ] && [ "$DRY" = 1 ]; then PUBLIC_IP="<this host's public IPv4>"
-  elif [ -z "$PUBLIC_IP" ]; then PUBLIC_IP="$(node "$SRC/scripts/front-door.mjs" detect)" || true; fi
+  elif [ -z "$PUBLIC_IP" ]; then PUBLIC_IP="$(node "$SRC/scripts/front-door.ts" detect)" || true; fi
 fi
 if [ "$PUBLIC" = 1 ] && [ -z "$PUBLIC_IP" ]; then
   fall_back_local "this host has no public IPv4 of its own (above: behind NAT, or only a private address). Set AIDENHQ_PUBLIC_IP if the address that forwards 443 and 8446 here is known."
@@ -479,7 +479,7 @@ if [ -z "$(read_secret openrouter_key)" ]; then
     cfg OPENROUTER_KEY | write_user_file "$SECRETS/openrouter_key" 600
   elif [ -n "$(cfg OPENROUTER_MANAGEMENT_KEY)" ]; then
     say "OpenRouter key: a new one for $U, limit \$$LIMIT a month"
-    as_user OPENROUTER_MANAGEMENT_KEY="$(cfg OPENROUTER_MANAGEMENT_KEY)" AIDENHQ_SECRETS_DIR="$SECRETS" node "$REPO/scripts/openrouter-key.mjs" create "aidenhq-$U" "$LIMIT"
+    as_user OPENROUTER_MANAGEMENT_KEY="$(cfg OPENROUTER_MANAGEMENT_KEY)" AIDENHQ_SECRETS_DIR="$SECRETS" node "$REPO/scripts/openrouter-key.ts" create "aidenhq-$U" "$LIMIT"
   elif [ "$UNATTENDED" = 1 ]; then say "Model key: none yet (the setup page asks for it)"
   elif [ "$DRY" = 1 ]; then echo "  ! would fail: set OPENROUTER_MANAGEMENT_KEY (or OPENROUTER_KEY) in $CONFIG"
   else die "set OPENROUTER_MANAGEMENT_KEY (or OPENROUTER_KEY) in $CONFIG"; fi
@@ -487,7 +487,7 @@ fi
 # Fail now on a rejected key, not after an apply that waits minutes per agent. (A dry run only says what it would check.)
 if [ "$DRY" = 1 ]; then echo "  + check the OpenRouter key against openrouter.ai (GET /api/v1/key); stop if it is rejected"
 elif [ -z "$(read_secret openrouter_key)" ]; then :   # no key yet: the board asks for the model on first sign-in
-else as_user AIDENHQ_SECRETS_DIR="$SECRETS" node "$REPO/scripts/openrouter-key.mjs" check || die "the OpenRouter key was rejected (see above)"; fi
+else as_user AIDENHQ_SECRETS_DIR="$SECRETS" node "$REPO/scripts/openrouter-key.ts" check || die "the OpenRouter key was rejected (see above)"; fi
 if [ -n "$(cfg GOOGLE_CLIENT_ID)" ] && ! grep -q '"client_id"' "$SECRETS/modules/google/google_oauth.json" 2>/dev/null; then
   say "Google: the company OAuth app behind Connect"
   [ "$DRY" = 1 ] || as_user mkdir -p -m 700 "$SECRETS/modules/google"
@@ -581,7 +581,7 @@ fi
 # Caddy, the kernel restarts on loopback URLs and the firewall closes 443 and 8446 again.
 if [ "$PUBLIC" = 1 ] && [ "$DRY" = 0 ]; then
   say "Waiting for the HTTPS certificate for $PUBLIC_IP (Let's Encrypt; up to 3 minutes)"
-  if ! node "$SRC/scripts/front-door.mjs" wait "$PUBLIC_IP" 180; then
+  if ! node "$SRC/scripts/front-door.ts" wait "$PUBLIC_IP" 180; then
     as_user bash -c "cd '$REPO' && docker compose logs --tail 200 caddy 2>&1" | grep -iE '"level":"(error|warn)"' | tail -5 || true
     fall_back_local "Let's Encrypt couldn't reach https://$PUBLIC_IP within 3 minutes (above: Caddy's last errors). Usually tcp 443 is blocked before this host (a cloud security group or the provider's firewall), or the address isn't this host's."
     set_env BOARD_LAN_HOSTS "127.0.0.1:3121,localhost:3121"

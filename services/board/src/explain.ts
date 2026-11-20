@@ -79,7 +79,7 @@ const REVIEW_WORDS: Record<string, string> = {
   stale_head: "Its head moved before review, so nothing ran.",
 };
 
-/** The checklist code cites at the end of the reviewer's note (modules/ai-reviewer review.mjs): "… Checklist: a holds, b fails." */
+/** The checklist code cites at the end of the reviewer's note (modules/ai-reviewer review.ts): "… Checklist: a holds, b fails." */
 const CHECKLIST = /\s*Checklist: ((?:[\w.-]+ (?:holds|fails|not reported)(?:, )?)+)\.$/;
 
 export function splitChecklist(note: string): { note: string; checklist: Explanation["checklist"] } {

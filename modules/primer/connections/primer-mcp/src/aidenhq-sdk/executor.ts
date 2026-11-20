@@ -5,7 +5,7 @@
 //   POST <path>/status   { id, idempotency_key } → { state: running | done | failed | unknown, text? }
 // The kernel calls execute only for an approved, claimed and revalidated record; plan never changes anything.
 //
-// First-party modules hold byte-identical copies (scripts/sync-shared.mjs: edit this one and run it); third-party modules import
+// First-party modules hold byte-identical copies (scripts/sync-shared.ts: edit this one and run it); third-party modules import
 // @aidenhq/sdk/executor.
 import { timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -15,7 +15,7 @@ export interface PlanRequest { kind: string; args: any; requester: Requester; ta
 export interface PlanResult {
   args: unknown; targets?: Record<string, unknown>; facts?: Record<string, unknown>;
   raise?: { tier: 1 | 2; panel?: boolean; reason: string; rule: string }; card?: Record<string, string>; satisfied?: { evidence: string };
-  /** What the AI reviewer reads beside the card (reviewer@1): the changed files at the reviewed head (review-files.mjs fileContext), a PR's Evidence section, the owner's source exceptions, the task's merged sibling PRs. */
+  /** What the AI reviewer reads beside the card (reviewer@1): the changed files at the reviewed head (review-files.ts fileContext), a PR's Evidence section, the owner's source exceptions, the task's merged sibling PRs. */
   review?: ReviewContext;
 }
 export type ReviewContext = { files?: { text: string; leftOut: string[]; oversized: string[]; changed?: { path: string; add?: number; del?: number }[] }; evidence?: string; sources?: { where: string; records: Record<string, unknown>[] };

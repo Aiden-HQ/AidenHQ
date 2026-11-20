@@ -1,4 +1,4 @@
-// The public front door's certificate (settings.exposure: public; scripts/front-door.mjs): a verified TLS handshake with
+// The public front door's certificate (settings.exposure: public; scripts/front-door.ts): a verified TLS handshake with
 // the host's own https://<ip>, as a browser makes it (no SNI for an IP). Caddy renews the 160-hour certificate itself; when
 // it has under 48 hours left, or fails to verify, the owner hears it, at most once every 12 hours.
 import tls from "node:tls";

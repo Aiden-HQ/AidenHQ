@@ -38,7 +38,7 @@ containerd (Docker builds) and `/user.slice`. The "CPU by source" panel stacks `
 are fine; `AppsCpuStarved` fires only when deployed apps are starved. Network counters from node-exporter are its own
 namespace's (no host networking); disk, memory, CPU, pressure and OOM kills are the host's.
 
-Images (pinned by digest in each folder's Dockerfile; Dependabot bumps them; release dates per `scripts/supply-chain/best-version.mjs`):
+Images (pinned by digest in each folder's Dockerfile; Dependabot bumps them; release dates per `scripts/supply-chain/best-version.ts`):
 `prom/prometheus:v3.16.0` (2026-11-05), `prom/node-exporter:v1.12.1` (2026-07-14), `prom/alertmanager:v0.35.0` (2026-11-09),
 `grafana/grafana:13.3.1` (release date not recorded here), `ghcr.io/google/cadvisor:v0.60.6` (GitHub release 2026-09-18),
 `grafana/mcp-grafana:2.3.0` (2026-11-10).
@@ -99,7 +99,7 @@ first line built from slugs.
 ## Access
 
 Every listener is loopback or in-network. Grafana is published on `127.0.0.1:3131` and reaches the tailnet through the host's
-`tailscale serve`; `scripts/host-serve.mjs` allows it next to Paperclip and the board (trusted services that sign people in;
+`tailscale serve`; `scripts/host-serve.ts` allows it next to Paperclip and the board (trusted services that sign people in;
 never an app). Grafana: admin user `admin`, password in the vault (`grafana_admin_password`, made by compile), anonymous access
 and sign-up off, update checks and plugin installs off. The datasource and the dashboards (Node Exporter Full, stock from
 rfmoz/grafana-dashboards, Apache-2.0; Containers and Fleet, ours) are provisioned from git and cannot be edited in the UI.

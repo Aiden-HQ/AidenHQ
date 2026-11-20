@@ -1,0 +1,558 @@
+// Records for every write (spec §5.2-§5.4), end to end through the proxy: a fixture module with a write kind and an executor
+// served by the SDK (the twin), a conn.tool write and a destructive tool, and a record's review (the kernel's review loop).
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { serveExecutor } from "../sdk/src/executor.ts";
+import { mintToken } from "../src/gateway/token.ts";
+import { verifyCaller } from "../sdk/src/caller.ts";
+import { reviewInput, requestChain } from "../src/review-loop.ts";
+import { CONN_TOOL_ARGS_MAX } from "../src/writes.ts";
+import { carryTarget } from "../src/successor.ts";
+import { kernel, moduleServer, readBody, serve } from "./helpers.ts";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import { openRecords } from "../src/records.ts";
+import { openFacts } from "../src/facts.ts";
+import { createChecks } from "../src/checks.ts";
+import { createRouting } from "../src/routing-tune.ts";
+
+// A run's JWT (its run id names the task, TASK-1, through the fake control plane).
+const jwt = (run, who) => `eyJhbGciOiJub25lIn0.${Buffer.from(JSON.stringify({ run_id: run, who })).toString("base64url")}.sig`;
+const ADA = jwt("run-1", "ada"), BO = jwt("run-2", "bo");
+const agents = { [ADA]: { id: "ag-ada", name: "Ada" }, [BO]: { id: "ag-bo", name: "Bo" } };
+const TOOLS = ["note_read", "post_note", "ping", "note_write", "note_drop"];
+const grants = { "ag-ada": { key: "ada", roles: [], tools: { twin: TOOLS } }, "ag-bo": { key: "bo", roles: [], tools: { twin: ["note_read"] } } };
+const secrets = { twin_service_key: "twin-key", other_service_key: "other-key" };
+const until = async (fn) => { for (let i = 0; i < 200 && !fn(); i++) await new Promise((r) => setTimeout(r, 10)); assert.ok(fn()); };
+const text = async (r) => (await r.json()).result.content[0].text;
+
+async function twin(t, { satisfied, settings, onControl, issues, agents: who = agents } = {}) {
+  const fx = { plans: [], executes: [], target: "c1", satisfied: false, ...(satisfied ? { satisfied } : {}) };
+  let handler = () => false;
+  const ex = await serve(async (req, res) => { if (fx.down && req.url.endsWith("/plan")) return void res.writeHead(503, { "content-type": "application/json" }).end('{"error":"starting"}'); if (!(await handler(req, res))) res.writeHead(404).end(); });
+  t.after(() => ex.s.close());
+  const mod = await moduleServer(t, { key: "twin-key", tools: TOOLS, answer: (msg) => ({ content: [{ type: "text", text: `${msg.params.name} done` }] }) });
+  const executor = { url: `${ex.url}/aidenhq/v1/executor`, auth_secret: "twin_service_key" };
+  const verdicts = [];
+  const k = await kernel(t, {
+    agents: who, grants, secrets, settings, onControl, issues, reviewer: () => verdicts.shift(),
+    // A kernel job of ag-bo on TASK-7 whose frozen authority names the write kinds after its id's "jw:" (a comma list).
+    job: (id) => (id.startsWith("jw:") ? { agent: "ag-bo", task: "TASK-7", state: "running", identifier: "TASK-7", authority: { tools: {}, jobcaps: [], writes: id.slice(3).split(",").filter(Boolean), roles: [] } } : undefined), repos: { product: "acme/aidenhq", instance: "acme/aidenhq-instance", agentsOrg: "acme" },
+    connections: {
+      twin: { url: `${mod.url}/mcp`, auth_secret: "twin_service_key", module: "twin", returns: "untrusted", tools: { read: ["note_read"], write: ["post_note", "ping", "note_write"], destructive: ["note_drop"] } },
+      other: { url: `${mod.url}/mcp`, auth_secret: "other_service_key", module: "other", returns: "untrusted", tools: { read: [], write: [], destructive: [] } },
+    },
+    writes: {
+      "twin.post": { module: "twin", floor: 1, tools: ["twin.post_note"], card: { sentence: "Post {{note}}.", details: "note: {{note}}\ntarget: {{target}}" }, executor,
+        args: { type: "object", additionalProperties: false, required: ["note"], properties: { note: { type: "string", maxLength: 100 } } } },
+      "twin.ping": { module: "twin", floor: 0, tools: ["twin.ping"], executor },
+    },
+  });
+  handler = serveExecutor({
+    plan: async (req) => {
+      fx.plans.push(req);
+      if (fx.satisfied) return { args: { note: String(req.args.note) }, satisfied: { evidence: fx.satisfied } };
+      if (req.kind === "twin.ping") return { args: {} };
+      return { args: { note: String(req.args.note ?? "") }, targets: { commit: fx.target }, card: { target: fx.target } };
+    },
+    execute: async (rec) => (fx.executes.push(rec), { ok: true, text: `posted ${rec.args.note ?? "ping"}` }),
+  }, { key: "twin-key", kernelUrl: k.url });
+  const tool = (name, args = {}, token = ADA, meta) => k.call("twin", token, { method: "tools/call", params: { name, arguments: args, ...(meta ? { _meta: meta } : {}) } });
+  const pending = async (r) => JSON.parse((await text(r)).split("\n")[0]);
+  /** A record's review as the review loop asks for it: its tier input, and the reviewer module answers `v`. */
+  const review = async (id, v, input = { tier: 1 }) => {
+    if (v) verdicts.push(v);
+    try { return { status: 200, json: await k.writes.review(id, { input: { model: "~acme/model-a", ...input }, request: { card: {} } }) }; } catch (e) { return { status: e.status ?? 500, json: { error: e.message } }; }
+  };
+  return { k, fx, mod, tool, pending, review, moduleCalls: () => mod.seen.filter((s) => s.method === "tools/call").map((s) => s.name) };
+}
+
+test("the executor sees nothing before approval; approved, it runs once and the task hears the outcome", async (t) => {
+  const { k, fx, tool, pending, review, moduleCalls } = await twin(t);
+  const p = await pending(await tool("post_note", { note: "hi" }));
+  assert.deepEqual({ tier: p.tier, state: p.state }, { tier: 1, state: "review" });
+  assert.match(p.approval, /^k-[0-9a-f]{16}$/);
+  // Plan only: nothing executed, and the tool never reached the module.
+  assert.equal(fx.plans.length, 1);
+  assert.equal(fx.plans[0].requester.agent, "ag-ada");
+  assert.equal(fx.plans[0].task, "TASK-1");
+  assert.equal(fx.executes.length, 0);
+  assert.deepEqual(moduleCalls(), []);
+  const rec = k.records.get(p.approval);
+  assert.equal(rec.card.sentence, "Post hi.");
+  // Only the board's key lists; the bound reviewer reads the review.
+  assert.equal((await k.v1("GET", "/v1/writes?state=review", undefined, ADA)).status, 401);
+  assert.deepEqual((await k.v1("GET", "/v1/writes?state=review")).json.records.map((r) => r.id), [p.approval]);
+  assert.equal((await k.v1("GET", "/v1/writes?state=review", undefined, "the-reviewer-key")).status, 401);
+  const verdict = { decision: "approve", reason: "fine", model: "~acme/model-a" };
+  assert.equal((await review(p.approval, verdict)).json.record.state, "approved");
+  assert.deepEqual(k.reviewed.at(-1), { card: {}, panel: false });
+  await until(() => k.records.get(p.approval).state === "done");
+  // Revalidated (plan again) before the one execute, keyed by the record id.
+  assert.equal(fx.plans.at(-1).revalidate, true);
+  assert.deepEqual(fx.executes.map((e) => [e.id, e.idempotency_key, e.args.note]), [[p.approval, p.approval, "hi"]]);
+  await until(() => k.notices.length === 1);
+  assert.equal(k.notices[0].task, "TASK-1");
+  assert.match(k.notices[0].text, /^\*\*Done\*\* \(approval k-[0-9a-f]{16}, twin\.post\)[\s\S]*```\nposted hi\n```/);
+  // Decided once: a replayed review or outcome changes nothing.
+  assert.equal((await review(p.approval, verdict)).status, 409);
+  assert.equal((await k.v1("POST", `/v1/writes/${p.approval}/outcome`, { ok: false, text: "again" }, "twin-key")).status, 409);
+  assert.equal(fx.executes.length, 1);
+  // Its requester reads its own record; another agent can't, nor can another module report its outcome.
+  assert.equal((await k.v1("GET", `/v1/writes/${p.approval}`, undefined, ADA)).json.state, "done");
+  assert.equal((await k.v1("GET", `/v1/writes/${p.approval}`, undefined, BO)).status, 404);
+  assert.equal((await k.v1("POST", `/v1/writes/${p.approval}/outcome`, { ok: true, text: "x" }, "other-key")).status, 403);
+  // POST /v1/writes: an agent's record is on its own run's task, whatever task it names; no grant on the kind, no record.
+  const filed = await k.v1("POST", "/v1/writes", { kind: "twin.post", args: { note: "x" }, task: "OTHER-9" }, ADA);
+  assert.equal(k.records.get(filed.json.id).task, "TASK-1");
+  assert.equal((await k.v1("POST", "/v1/writes", { kind: "twin.post", args: { note: "x" } }, BO)).status, 403);
+  // A kernel job files only the kinds its frozen authority names, as its agent on its own task (whatever task it names), tiered
+  // as anyone's request; a job whose authority names none files nothing.
+  const job = (writes) => mintToken("job-secret", { kind: "job", job: `jw:${writes.join(",")}`, agentId: "ag-bo", issueId: "TASK-7" });
+  const byJob = await k.v1("POST", "/v1/writes", { kind: "twin.post", args: { note: "y" }, task: "OTHER-9" }, job(["twin.post"]));
+  assert.deepEqual({ tier: byJob.json.tier, state: byJob.json.state }, { tier: 1, state: "review" });
+  assert.deepEqual([k.records.get(byJob.json.id).task, k.records.get(byJob.json.id).requester.agent], ["TASK-7", "ag-bo"]);
+  assert.equal((await k.v1("POST", "/v1/writes", { kind: "twin.post", args: { note: "y" } }, job([]))).status, 403);
+  assert.equal((await k.v1("POST", "/v1/writes", { kind: "twin.post", args: { note: "y" } }, job(["twin.ping"]))).status, 403);
+  // A floor-0 kind it names is tiered as anyone's: Tier 0 here, so it runs at once.
+  const ping = await k.v1("POST", "/v1/writes", { kind: "twin.ping", args: {} }, job(["twin.ping"]));
+  assert.equal(ping.json.tier, 0);
+  await until(() => fx.executes.some((e) => e.id === ping.json.id));
+});
+
+test("a changed target on revalidate gives stale and a refile; the owner's decision is a channel's token, stamped as one", async (t) => {
+  const { k, fx, tool, pending, review } = await twin(t);
+  const p = await pending(await tool("post_note", { note: "a" }));
+  // The same request again while it is open is that record, never a second card.
+  assert.equal((await pending(await tool("post_note", { note: "a" }))).approval, p.approval);
+  const rec = k.records.get(p.approval);
+  // The reviewer escalates: the owner decides (Tier 2), never with a reviewer's or the code's stamp.
+  assert.equal((await review(p.approval, { decision: "escalate", reason: "owner's", model: "~acme/model-a" })).json.record.state, "owner");
+  const decide = { digest: rec.digest, decision: "approve", by: "owner:chat", via: "chat" };
+  // No route decides a record any more (channels spend tokens, channels.test.ts); the stamps writes.decide takes are closed.
+  assert.equal((await k.v1("POST", `/v1/writes/${p.approval}/decide`, decide)).status, 404);
+  for (const by of ["reviewer:~acme/model-a", "kernel", "auto:x", ""]) assert.equal(typeof k.writes.decide(p.approval, { ...decide, by }), "string");
+  fx.target = "c2"; // what it acts on moves after the card was filed
+  assert.equal(k.writes.decide(p.approval, decide).decided_by, "owner:chat");
+  await until(() => k.records.get(p.approval).state === "stale" && k.records.list(["review"]).length === 1); // the refile follows the stale close
+  assert.equal(fx.executes.length, 0);
+  const refiled = k.records.list(["review"]);
+  assert.equal(refiled.length, 1);
+  assert.notEqual(refiled[0].id, p.approval);
+  assert.equal(refiled[0].targets.commit, "c2");
+  await until(() => k.notices.some((n) => n.text.startsWith("**Stale**") && n.text.includes(refiled[0].id)));
+  // An open request re-filed after the owner's no on its kind is never reused at its old tier: it is cancelled and refiled at Tier 2.
+  const open1 = await pending(await tool("post_note", { note: "v" }));
+  const veto = await pending(await tool("post_note", { note: "w" }));
+  const vr = k.records.get(veto.approval);
+  await review(veto.approval, { decision: "escalate", reason: "r", model: "~acme/model-a" });
+  k.writes.decide(veto.approval, { ...decide, digest: vr.digest, decision: "reject" });
+  const again = await pending(await tool("post_note", { note: "v" }));
+  assert.notEqual(again.approval, open1.approval);
+  assert.equal(again.tier, 2);
+  assert.equal(k.records.get(open1.approval).state, "cancelled");
+  assert.equal((await pending(await tool("post_note", { note: "v" }))).approval, again.approval);
+  // The owner's no on a kind makes the next request on the task theirs (Tier 2), the reviewer still first.
+  const next = k.records.get(refiled[0].id);
+  await review(next.id, { decision: "escalate", reason: "r", model: "~acme/model-a" });
+  k.writes.decide(next.id, { ...decide, digest: next.digest, decision: "reject" });
+  assert.equal((await pending(await tool("post_note", { note: "b" }))).tier, 2);
+  // Tier 2 on its merits (the veto): the reviewer's reject reaches the owner with its note, not a final no. A record only
+  // capped to Tier 2 (autonomy, merit 1) keeps Tier 1's final reject.
+  const merit = k.records.get(again.approval);
+  assert.equal(merit.merit, 2);
+  const rj = await review(merit.id, { decision: "reject", reason: "it widens access", model: "~acme/model-a" });
+  assert.equal(rj.json.record.state, "owner");
+  assert.match(rj.json.record.review, /^The AI reviewer rejected \(~acme\/model-a\): it widens access It is Tier 2 on its merits/);
+  // The board reads the merit tier from the kernel's list (recordApproval: baseTier, review_first).
+  assert.equal((await k.v1("GET", "/v1/writes?state=owner")).json.records.find((r) => r.id === merit.id)?.merit, 2);
+  const capped = k.records.file({ ...merit, args: { note: "capped" }, tier: 2, merit: 1, review_first: "final", state: "review" });
+  assert.equal((await review(capped.id, { decision: "reject", reason: "no", model: "~acme/model-a" })).json.record.state, "rejected");
+});
+
+test("a module write on a task under a routine's run task gets that routine's autonomy cap, as the runner's kinds do", async (t) => {
+  // TASK-1 is a child of RUN-1, the routine r1's run task.
+  const issues = { "TASK-1": { id: "TASK-1", parentId: "RUN-1" }, "RUN-1": { id: "RUN-1", originKind: "routine_execution", originId: "r1" } };
+  let down = false;
+  const onControl = (req) => {
+    const id = /^\/api\/issues\/([^/]+)$/.exec(req.url)?.[1];
+    if (id) return down ? { status: 500, body: {} } : { body: issues[id] };
+  };
+  const capped = await twin(t, { settings: { routines: { r1: "tier0" } }, onControl });
+  const p = await capped.pending(await capped.tool("post_note", { note: "a" }));
+  assert.deepEqual(((r) => [r.tier, r.merit, r.review_first, r.cap])(capped.k.records.get(p.approval)), [2, 1, "final", { by: "routine", value: "tier0", routine: "r1" }]);
+  // A trace the control plane can't answer now files nothing (never a stricter cap from a blip); once it answers, a
+  // destructive tool (conn.tool, Tier 1) is capped the same way.
+  down = true;
+  assert.match(JSON.stringify(await (await capped.tool("note_drop", { id: "1" })).json()), /routine trace couldn't be read now/);
+  down = false;
+  const d = await capped.pending(await capped.tool("note_drop", { id: "1" }));
+  assert.deepEqual([d.tier, capped.k.records.get(d.approval).review_first, capped.k.records.get(d.approval).cap], [2, "final", { by: "routine", value: "tier0", routine: "r1" }]);
+  // A routine with full autonomy leaves it the reviewer's.
+  const full = await twin(t, { settings: { routines: { r1: "full" } }, onControl });
+  assert.equal((await full.pending(await full.tool("post_note", { note: "a" }))).tier, 1);
+});
+
+test("a Tier 0 conn.tool call leaves a completed record whose outcome is the MCP result; a Tier 0 kind answers with its outcome", async (t) => {
+  const { k, fx, tool, moduleCalls } = await twin(t);
+  const r = await tool("note_write", { text: "x" });
+  assert.match(await text(r), /UNTRUSTED CONTENT from twin\.note_write[\s\S]*note_write done/);
+  const [rec] = k.records.list(["done"]);
+  assert.equal(rec.kind, "conn.tool");
+  assert.equal(rec.tier, 0);
+  assert.deepEqual(rec.args, { connection: "twin", tool: "note_write", arguments: { text: "x" } });
+  assert.match(rec.outcome.text, /note_write done/);
+  assert.equal(rec.outcome.ok, true);
+  // The board's history shows it after the fact (tier0=1); the card lists leave it out.
+  assert.deepEqual((await k.v1("GET", "/v1/writes?state=recent&tier0=1")).json.records.map((r) => [r.id, r.tier, r.state]), [[rec.id, 0, "done"]]);
+  assert.deepEqual((await k.v1("GET", "/v1/writes?state=recent")).json.records, []);
+  // A read is no record.
+  await tool("note_read");
+  assert.equal(k.records.list(["done"]).length, 1);
+  // A Tier 0 kind runs at once through its executor; the caller gets the outcome, fenced.
+  assert.match(await text(await tool("ping")), /UNTRUSTED CONTENT from twin\.ping[\s\S]*posted ping/);
+  assert.equal(fx.executes.length, 1);
+  assert.deepEqual(moduleCalls(), ["note_write", "note_read"]);
+  // A tool the caller isn't granted is refused before any record.
+  assert.equal((await (await tool("note_write", {}, BO)).json()).error.message, "no-grant");
+  assert.equal(k.records.list(["done", "review", "claimed"]).length, 2);
+});
+
+test("satisfied posts its evidence and files no card", async (t) => {
+  const { k, fx, tool } = await twin(t, { satisfied: "the note is already there" });
+  assert.match(await text(await tool("post_note", { note: "hi" })), /Nothing to do: the note is already there/);
+  assert.deepEqual(k.records.list(["review", "owner"]), []);
+  assert.equal(k.records.list(["done"])[0].kind, "twin.post");
+  assert.equal(fx.executes.length, 0);
+});
+
+test("a repeat of one carded conn.tool call returns its record: one card, one run, even after it ran", async (t) => {
+  const { k, tool, pending, review, moduleCalls } = await twin(t);
+  const p = await pending(await tool("note_drop", { id: 7 }));
+  assert.equal((await pending(await tool("note_drop", { id: 7 }))).approval, p.approval);
+  await review(p.approval, { decision: "approve", reason: "ok", model: "~acme/model-a" });
+  await until(() => k.records.get(p.approval).state === "done");
+  assert.match(await text(await tool("note_drop", { id: 7 })), /note_drop done/);
+  assert.deepEqual(moduleCalls(), ["note_drop"]);
+  assert.equal(k.records.list(["review", "owner", "approved", "claimed", "done"]).length, 1);
+  assert.notEqual((await pending(await tool("note_drop", { id: 8 }))).approval, p.approval);
+});
+
+test("a finished Tier 0 record of the same call never stands in for a call that now needs a card", async (t) => {
+  const { k, tool, pending, moduleCalls } = await twin(t);
+  const card = { sentence: "s", changes: "c", reads: "r", cost: "c", details: "d" };
+  const old = k.records.file({ kind: "conn.tool", module: "twin", args: { connection: "twin", tool: "note_drop", arguments: { id: 7 } }, targets: {}, executor: { module: "twin" }, policy: "", tier: 0, panel: false, card, requester: { agent: "ag-ada", key: "ada", name: "Ada", roles: [], kind: "run", task: "TASK-1" }, task: "TASK-1", state: "done" });
+  const p = await pending(await tool("note_drop", { id: 7 }));
+  assert.notEqual(p.approval, old.id);
+  assert.equal(k.records.get(p.approval).state, "review");
+  assert.deepEqual(moduleCalls(), []);
+});
+
+test("a destructive tool with no kind is conn.tool at Tier 1: replayed once, as its requester, only after approval", async (t) => {
+  const { k, mod, tool, pending, review, moduleCalls } = await twin(t);
+  const p = await pending(await tool("note_drop", { id: 7 }));
+  assert.equal(p.tier, 1);
+  assert.deepEqual(moduleCalls(), []);
+  const rec = k.records.get(p.approval);
+  await review(p.approval, { decision: "approve", reason: "ok", model: "~acme/model-a" });
+  await until(() => k.records.get(p.approval).state === "done");
+  assert.deepEqual(moduleCalls(), ["note_drop"]);
+  const s = mod.seen.at(-1);
+  assert.equal(s.auth, "Bearer twin-key");
+  assert.equal(JSON.parse(s.raw).params.arguments.id, 7);
+  const caller = await verifyCaller({ headers: { "x-aidenhq-caller": s.caller } }, k.jwks, "twin");
+  assert.deepEqual([caller.agent, caller.key, caller.task, caller.tool], ["ag-ada", "ada", "TASK-1", "twin.note_drop"]);
+  // The owner's no on that tool makes it theirs on the task; the task's other writes stay Tier 0.
+  const q = await pending(await tool("note_drop", { id: 8 }));
+  const qr = k.records.get(q.approval);
+  await review(q.approval, { decision: "escalate", reason: "r", model: "~acme/model-a" });
+  k.writes.decide(q.approval, { digest: qr.digest, decision: "reject", by: "owner:chat", via: "chat" });
+  assert.equal((await pending(await tool("note_drop", { id: 9 }))).tier, 2);
+  assert.match(await text(await tool("note_write", { text: "y" })), /note_write done/);
+});
+
+test("a carded conn.tool card names its target, as requestTargets labels it, so the reviewer never reads a blank one", async (t) => {
+  const { k, tool, pending } = await twin(t);
+  // No aim argument: the label is the tool itself.
+  const p = await pending(await tool("note_drop", {}));
+  const rec = k.records.get(p.approval);
+  assert.equal(rec.card.target, "twin.note_drop");
+  const task = { issue: async (id) => ({ id, title: "Drop the note", description: "Drop it." }), comments: async () => [], me: async () => "" };
+  const { request } = await reviewInput(rec, { records: k.records, task, product: [] });
+  assert.equal(request.card.target, "twin.note_drop");
+  // Aim arguments, when named, ride along as requestTargets writes them.
+  const aimed = k.records.get((await pending(await tool("note_drop", { id: 7 }))).approval);
+  assert.equal(aimed.card.target, "twin.note_drop (id=7)");
+});
+
+test("a carded conn.tool call over the limit is refused with its size and the limit: no record, nothing forwarded", async (t) => {
+  const { k, tool, moduleCalls } = await twin(t);
+  const args = { id: 7, body: "x".repeat(CONN_TOOL_ARGS_MAX) };
+  const size = JSON.stringify(args).length;
+  const r = await tool("note_drop", args);
+  const body = await r.json();
+  assert.equal(body.result.isError, true);
+  assert.match(body.result.content[0].text, new RegExp(`${size.toLocaleString("en-US")} characters, over the ${CONN_TOOL_ARGS_MAX.toLocaleString("en-US")}-character limit`));
+  assert.equal(k.records.list(["review", "owner", "approved", "claimed", "done", "failed", "rejected"]).length, 0);
+  assert.deepEqual(moduleCalls(), []);
+});
+
+test("a carded conn.tool call under the limit carries its whole serialised arguments in the card", async (t) => {
+  const { k, tool, pending } = await twin(t);
+  const body = `${"y".repeat(CONN_TOOL_ARGS_MAX - 40)}ZEND`;
+  const args = { id: 7, body };
+  assert.ok(JSON.stringify(args).length < CONN_TOOL_ARGS_MAX);
+  const p = await pending(await tool("note_drop", args));
+  const details = k.records.get(p.approval).card.details;
+  assert.ok(details.endsWith(`${JSON.stringify(args).slice(-60)}`), "the card's arguments end where the JSON does");
+  assert.match(details, /ZEND"\}$/);
+});
+
+test("a replace with a claimed record reconciles it before A stops: its executor's status settles it, open ones are cancelled", async (t) => {
+  const status = [];
+  const ex = await serve(async (req, res) => {
+    const b = JSON.parse(await readBody(req));
+    status.push(b.id);
+    res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(b.id === done ? { state: "done", text: "it went through" } : { state: "unknown" }));
+  });
+  t.after(() => ex.s.close());
+  const k = await kernel(t, { secrets, connections: {}, writes: { "a.post": { module: "a", floor: 1, tools: [], executor: { url: `${ex.url}/x`, auth_secret: "twin_service_key" } } } });
+  const base = { kind: "a.post", module: "a", args: {}, targets: {}, executor: { module: "a", url: `${ex.url}/x` }, policy: "", card: { sentence: "", changes: "", reads: "", cost: "", details: "" }, requester: { agent: "", key: "", name: "", roles: [], kind: "run" }, task: "TASK-1", tier: 1, panel: false };
+  const done = k.records.file({ ...base, state: "claimed" }).id;
+  const lost = k.records.file({ ...base, state: "claimed" }).id;
+  const open = k.records.file({ ...base, state: "review" }).id;
+  const other = k.records.file({ ...base, kind: "b.post", module: "b", state: "review" }).id;
+  assert.deepEqual(await k.writes.reconcile(["a"]), [`${lost} a.post unknown`]);
+  assert.deepEqual(status.sort(), [done, lost].sort());
+  assert.deepEqual([done, lost, open, other].map((id) => k.records.get(id).state), ["done", "unknown", "cancelled", "review"]);
+  assert.equal(k.records.get(done).outcome.text, "it went through");
+});
+
+test("a claimed record of a replaced module is carried to its successor's kind, and the successor's outcome settles it", async (t) => {
+  const k = await kernel(t, { secrets, connections: {}, writes: {} });
+  const r = k.records.file({ kind: "old.post", module: "old", args: {}, targets: {}, executor: { module: "old", url: "http://old/x" }, policy: "", card: { sentence: "", changes: "", reads: "", cost: "", details: "" }, requester: { agent: "", key: "", name: "", roles: [], kind: "run" }, task: "TASK-1", tier: 1, panel: false, state: "claimed" });
+  assert.equal(k.records.carry(r.id, "new.post", "new", { module: "new" }), true);
+  const c = k.records.get(r.id);
+  assert.deepEqual([c.kind, c.module, c.executor.module, c.state], ["new.post", "new", "new", "claimed"]);
+  k.writes.outcome(r.id, true, "merged");
+  assert.equal(k.records.get(r.id).state, "done");
+});
+
+test("a record is carried only to the one staged module that replaces its module and defines the kind", () => {
+  const reg = { "new.post": { module: "new", floor: 1, tools: [], executor: { url: "http://new/x", auth_secret: "s" } } };
+  const entry = (name, replaces) => ({ name, enabled: true, replaces });
+  assert.deepEqual(carryTarget([entry("new", ["old"])], reg, "old", "old.post"), { kind: "new.post", module: "new", executor: { module: "new", url: "http://new/x" } });
+  assert.equal(carryTarget([entry("new", ["old"]), entry("other", ["old"])], reg, "old", "old.post"), undefined, "two claimants");
+  assert.equal(carryTarget([entry("new", ["old"])], reg, "old", "old.merge"), undefined, "the successor lacks the kind");
+});
+
+test("another requester's identical request is its own record, and a stricter refile never cancels an approved one", async (t) => {
+  const { k, tool, pending } = await twin(t);
+  const a = await pending(await tool("post_note", { note: "same" }));
+  // Cy files the same request on the same task: its own record; Ada's is untouched.
+  const cy = { kind: "run", agent: "ag-cy", key: "cy", name: "Cy", roles: [], tools: { twin: ["post_note"] }, task: "TASK-1", credential: "" };
+  const c = await k.writes.request(cy, { kind: "twin.post", args: { note: "same" } });
+  assert.notEqual(c.id, a.approval);
+  assert.equal(k.records.get(a.approval).state, "review");
+  assert.equal((await k.writes.request(cy, { kind: "twin.post", args: { note: "same" } })).id, c.id);
+  // An approved record (here one a restart left unclaimed) stays approved when a stricter refile comes after the owner's no.
+  const ar = k.records.get(a.approval);
+  const approved = k.records.file({ ...ar, state: "approved" });
+  const veto = k.records.file({ ...ar, args: { note: "other" }, state: "owner", tier: 2 });
+  k.records.decide(veto.id, veto.digest, "reject", "owner:chat", "chat");
+  const again = await pending(await tool("post_note", { note: "same" }));
+  assert.equal(again.tier, 2);
+  assert.equal(k.records.get(approved.id).state, "approved");
+  assert.equal(k.records.get(c.id).state, "review");
+});
+
+test("a raise_cap card, the install cap's included, goes straight to the owner: no model call the cap would refuse", async (t) => {
+  const k = await kernel(t, { reviewer: async () => ({ decision: "approve", reason: "fine", model: "~acme/model-a" }) });
+  const card = { target: "AidenHQ day cap", sentence: "Double it.", changes: "c", reads: "Nothing new.", cost: "Up to $10.00 more.", details: "d" };
+  const args = (agentId) => ({ scope: "day", agentId, subject: "2026-11-18", cap: 10, spent: 10.2, to: 20 });
+  for (const [task, who] of [["TASK-9", "install"], ["TASK-8", "ag-ada"]]) {
+    const r = k.writes.fileNative("kernel.raise_cap", { task, args: args(who), card, reason: "a cap", rule: "raise-cap" });
+    assert.deepEqual([r.state, r.tier, r.review_first], ["owner", 2, null]);
+  }
+  assert.equal(k.reviewed.length, 0, "no model call: the cap it raises would refuse one");
+});
+
+test("the owner's reason for a rejection reaches the requester's task, fenced and neutralised", async (t) => {
+  const k = await kernel(t, { repos: { product: "acme/aidenhq", instance: "acme/aidenhq-instance" } });
+  const r = k.records.file({ kind: "acme.post", module: "acme", args: { note: "x" }, targets: {}, executor: { module: "acme" }, policy: "p", tier: 2, panel: false, card: { sentence: "x", changes: "", reads: "", cost: "", details: "" }, requester: { agent: "ag-ada", key: "ada", name: "Ada", roles: [], kind: "run" }, task: "TASK-1", identifier: "ACME-1", state: "owner" });
+  k.writes.decide(r.id, { digest: r.digest, decision: "reject", by: "account:owner", via: "web", reason: "Wrong fix: change the retry, not the timeout. ```<!-- x -->" });
+  await new Promise((res) => setTimeout(res, 50));
+  const n = k.notices.find((x) => x.text.startsWith("**Rejected**"));
+  assert.match(n.text, /The owner's reason[^]*```\nWrong fix: change the retry, not the timeout\. ‹!-- x --›\n```/);
+  assert.equal(n.text.match(/<!-- aidenhq-approval -->/g).length, 1);
+  assert.equal(k.records.get(r.id).owner_reason.startsWith("Wrong fix"), true);
+});
+
+test("revalidate at execution: a reviewer's yes doesn't run once autonomy is off; the record is held for the owner", async (t) => {
+  const { readFileSync, writeFileSync } = await import("node:fs");
+  const k = await kernel(t, { reviewer: async () => ({ decision: "approve", reason: "fine", model: "~acme/model-a" }), repos: { product: "acme/aidenhq", instance: "acme/aidenhq-instance", agentsOrg: "acme" } });
+  // A Tier 1 record the AI reviewer approved, then autonomy turned off before it ran.
+  const r = k.records.file({ kind: "acme.post", module: "acme", args: { note: "x" }, targets: {}, executor: { module: "acme" }, policy: "p", tier: 1, panel: false, card: { sentence: "x", changes: "", reads: "", cost: "", details: "" }, requester: { agent: "ag-ada", key: "ada", name: "Ada", roles: [], kind: "run" }, task: "TASK-1", state: "review" });
+  k.records.review(r.id, r.digest, { decision: "approve", by: "reviewer:~acme/model-a", note: "fine" });
+  writeFileSync(k.grantsFile, JSON.stringify({ ...JSON.parse(readFileSync(k.grantsFile, "utf8")), autonomy: "off" }));
+  await new Promise((res) => setTimeout(res, 50));
+  await k.writes.run(r.id);
+  const held = k.records.get(r.id);
+  assert.deepEqual([held.state, held.tier, held.cap], ["owner", 2, { by: "autonomy", value: "off" }]);
+  assert.match(held.review, /Held for the owner before it ran: since the AI reviewer approved it, autonomy is off/);
+});
+
+test("a revalidation plan the executor can't answer now leaves the record approved for a later try, never stale; reconcile leaves this kernel's claims", async (t) => {
+  const { k, fx, tool, pending, review } = await twin(t);
+  const p = await pending(await tool("post_note", { note: "a" }));
+  fx.down = true; // the module is restarting: its executor answers 503
+  assert.equal((await review(p.approval, { decision: "approve", reason: "fine", model: "~acme/model-a" })).json.record.state, "approved");
+  await new Promise((r) => setTimeout(r, 100));
+  assert.equal(k.records.get(p.approval).state, "approved");
+  assert.equal(k.notices.length, 0);
+  fx.down = false;
+  await k.writes.run(p.approval);
+  await until(() => k.records.get(p.approval).state === "done");
+  assert.equal(fx.executes.length, 1);
+  // A restart's reconcile takes only the previous kernel's claims (before this one started), never one of this kernel's.
+  const q = await pending(await tool("post_note", { note: "b" }));
+  k.records.review(q.approval, k.records.get(q.approval).digest, { decision: "approve", by: "reviewer:~acme/model-a", note: "fine" });
+  k.records.claim(q.approval);
+  assert.deepEqual(await k.writes.reconcile(undefined, "2000-01-01T00:00:00.000Z"), []);
+  assert.equal(k.records.get(q.approval).state, "claimed");
+});
+
+test("a kernel job's write names its own workspace, whatever its args say", async (t) => {
+  const plans = [];
+  const ex = await serve(async (req, res) => {
+    const b = JSON.parse(await readBody(req));
+    if (req.url.endsWith("/plan")) plans.push(b.args);
+    res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(req.url.endsWith("/plan") ? { args: b.args, targets: {} } : { ok: true, text: "pushed" }));
+  });
+  t.after(() => ex.s.close());
+  const rows = { "j-1": { agent: "ag-bo", task: "task-uuid-7", state: "running", identifier: "PEN-7", authority: { tools: { code: ["push"] }, jobcaps: [], writes: [], roles: [], model: "~z-ai/glm-flash-latest" } } };
+  const args = { type: "object", additionalProperties: false, required: ["workspace", "branch"], properties: { workspace: { type: "string", pattern: "^[A-Za-z][A-Za-z0-9]*-[0-9]+$" }, branch: { type: "string" } } };
+  const k = await kernel(t, { secrets, grants, connections: {}, job: (id) => rows[id], writes: { "code.push": { module: "code", floor: 1, tools: ["code.push"], args, executor: { url: `${ex.url}/x`, auth_secret: "twin_service_key" } } } });
+  const token = mintToken("job-secret", { kind: "job", job: "j-1", agentId: "ag-bo", issueId: "task-uuid-7" });
+  const filed = await k.v1("POST", "/v1/writes", { kind: "code.push", args: { workspace: "PEN-9", branch: "fix" } }, token);
+  assert.equal(filed.status, 200);
+  assert.deepEqual([plans[0].workspace, k.records.get(filed.json.id).args.workspace], ["PEN-7", "PEN-7"]);
+  // Its record carries the job's model, so its reviewer is never of that family (review-loop.ts requesterModel).
+  assert.equal(k.records.get(filed.json.id).requester.model, "~z-ai/glm-flash-latest");
+});
+
+// Flow facts (facts.ts) of records: written in the move's transaction, only when the move wins, only for tier 1 and 2.
+const filing = (over = {}) => ({ kind: "twin.post_note", module: "twin", args: { n: 1 }, targets: {}, executor: { module: "twin" }, policy: "p", tier: 1, panel: false,
+  card: { sentence: "s", changes: "", reads: "", cost: "", details: "" }, requester: { agent: "ag-ada", key: "ada", name: "Ada", roles: [], kind: "run" }, task: "t1", state: "review", ...over });
+const dbFile = () => join(mkdtempSync(join(tmpdir(), "flow-")), "kernel.db");
+
+test("records write facts in the same transaction", () => {
+  const records = openRecords(dbFile());
+  const facts = openFacts(records.db);
+  const r = records.file(filing());
+  assert.equal(typeof records.review(r.id, r.digest, { decision: "approve", by: "reviewer:m", note: "ok" }), "object");
+  assert.equal(typeof records.review(r.id, r.digest, { decision: "approve", by: "reviewer:m", note: "again" }), "string", "the lost move");
+  assert.ok(records.hold(r.id, { by: "autonomy", value: "low" }, "a stricter cap"));
+  assert.equal(typeof records.decide(r.id, r.digest, "approve", "account:a1", "web"), "object");
+  assert.ok(records.claim(r.id));
+  assert.ok(!records.claim(r.id), "claimed once");
+  assert.ok(records.finish(r.id, true, "done"));
+  const rows = facts.forTask("t1");
+  assert.deepEqual(rows.map((f) => [f.type, f.version, f.actor]), [
+    ["record.filed", "filed", "agent:ada"], ["record.decided", "reviewer:approved", "module:ai-reviewer"], ["record.held", "held", "kernel"],
+    ["record.decided", "owner:approved", "account:a1"], ["record.claimed", "claimed", "kernel"], ["record.landed", "done", "kernel"]]);
+  assert.ok(rows.every((f) => f.subject === `record:${r.id}`));
+  assert.deepEqual(rows[0].data, { kind: "twin.post_note", tier: 1, panel: false, requester: "ada", state: "review" });
+  const merge = records.file(filing({ kind: "github.merge", args: { prs: [{ repo: "Acme/App", number: 7, head: "a".repeat(40) }] }, task: "t2" }));
+  assert.equal(facts.forTask("t2")[0].data.pr, "acme/app#7", "a PR's write names it, lowercase");
+  assert.ok(merge.id);
+  const zero = records.file(filing({ tier: 0, state: "approved", task: "t0" }));
+  records.claim(zero.id);
+  records.finish(zero.id, true, "ran");
+  assert.deepEqual(facts.forTask("t0"), [], "a tier-0 record writes none");
+});
+
+test("migrates and drops events", () => {
+  const file = dbFile();
+  const old = new DatabaseSync(file);
+  old.exec("CREATE TABLE events (id TEXT PRIMARY KEY, type TEXT NOT NULL, at TEXT NOT NULL, data TEXT NOT NULL)");
+  old.close();
+  const records = openRecords(file);
+  const one = records.file(filing()), zero = records.file(filing({ tier: 0, state: "approved", task: "t0" }));
+  records.db.exec("DELETE FROM facts");
+  records.db.exec("CREATE TABLE events (id TEXT PRIMARY KEY, type TEXT NOT NULL, at TEXT NOT NULL, data TEXT NOT NULL)");
+  const ev = records.db.prepare("INSERT INTO events (id, type, at, data) VALUES (?, ?, ?, ?)");
+  const at = "2026-11-18T10:00:00.000Z";
+  ev.run("e-1", "approval.filed", at, JSON.stringify({ record: one.id, kind: one.kind, tier: 1, panel: false, requester: "ada", task: "t1" }));
+  ev.run("e-2", "approval.decided", at, JSON.stringify({ record: one.id, decision: "approve", by: "account:a1", via: "web" }));
+  ev.run("e-3", "approval.held", at, JSON.stringify({ record: one.id, why: "cap" }));
+  ev.run("e-4", "write.outcome", at, JSON.stringify({ record: one.id, kind: one.kind, ok: false, text: "no" }));
+  ev.run("e-5", "approval.filed", at, JSON.stringify({ record: zero.id, kind: zero.kind, tier: 0, panel: false, requester: "ada", task: "t0" }));
+  ev.run("e-6", "gate.would_block", at, JSON.stringify({ gate: "judge.finish", task: "WOR-1", verdict: "deny", reason: "r", via: "task_finish" }));
+  ev.run("e-7", "finish.verdict", at, JSON.stringify({ task: "t1", check: "grading.grade", verdict: "reopen" }));
+  const facts = openFacts(records.db);
+  const all = facts.since(0);
+  assert.deepEqual(all.map((f) => [f.type, f.version, f.source]).sort(), [
+    ["finish.verdict", "e-7", "backfill"], ["gate.would_block", "e-6", "backfill"], ["record.decided", "e-2", "backfill"],
+    ["record.failed", "e-4", "backfill"], ["record.filed", "e-1", "backfill"], ["record.held", "e-3", "backfill"]]);
+  assert.deepEqual(all.find((f) => f.type === "record.decided").data, { decision: "approved", decider: "owner", via: "web" });
+  assert.equal(records.db.prepare("SELECT name FROM sqlite_master WHERE name = 'events'").get(), undefined);
+});
+
+test("records and checks open one db and file", async () => {
+  const records = openRecords(dbFile());
+  const facts = openFacts(records.db);
+  createChecks({ db: records.db, registry: () => ({}), owner: async () => ({ status: 200, json: {} }), secret: () => "", resolver: {} });
+  createRouting({ db: records.db, records, grants: () => ({}) });
+  const r = records.file(filing());
+  assert.equal(facts.forTask("t1")[0].subject, `record:${r.id}`);
+  assert.equal(records.db.prepare("SELECT name FROM sqlite_master WHERE name = 'events'").get(), undefined);
+});
+
+// A heartbeat-shaped run task whose chain is the heartbeat's generic text, and the triage task the job actually works.
+const HEARTBEAT = { "HB-1": { id: "HB-1", identifier: "HB-1", status: "in_progress", title: "Heartbeat", description: "Follow the heartbeat instructions." } };
+const TRIAGE = { "TASK-9": { id: "TASK-9", identifier: "WOR-8637", status: "open", assigneeAgentId: "ag-ada", title: "Label AidenHQ#788 agent-fix", description: "Apply the agent-fix label to AidenHQ#788." } };
+const ON_HEARTBEAT = { hb: { id: "ag-ada", name: "Ada", task: "HB-1", identifier: "HB-1" } };
+
+test("a conn.tool call naming an open task of its own agent is filed on that task, with its identifier and its chain", async (t) => {
+  const { k, mod, pending, review } = await twin(t, { agents: ON_HEARTBEAT, issues: { ...HEARTBEAT, ...TRIAGE } });
+  const p = await pending(await k.call("twin", k.token("hb"), { method: "tools/call", params: { name: "note_drop", arguments: { id: 7 }, _meta: { task: "TASK-9" } } }));
+  const rec = k.records.get(p.approval);
+  // The record (and so the reviewer's chain) is the named task; the requester stays the job's own run task, so replay
+  // still acts as that job and can't finish the named task as its own.
+  assert.deepEqual([rec.task, rec.identifier, rec.requester.task], ["TASK-9", "WOR-8637", "HB-1"]);
+
+  // The reviewer reads the record's own task: the triage request, never the heartbeat's generic text.
+  const chain = await requestChain(TRIAGE["TASK-9"], async (id) => ({ ...HEARTBEAT, ...TRIAGE })[id]);
+  assert.match(chain, /Label AidenHQ#788 agent-fix/);
+  assert.doesNotMatch(chain, /heartbeat/i);
+
+  // Approved, it replays as the job it was: its caller assertion names the job's own run task, never the named one.
+  await review(p.approval, { decision: "approve", reason: "ok", model: "~acme/model-a" });
+  await until(() => k.records.get(p.approval).state === "done");
+  const s = mod.seen.at(-1);
+  const caller = await verifyCaller({ headers: { "x-aidenhq-caller": s.caller } }, k.jwks, "twin");
+  assert.deepEqual([caller.task, caller.tool], ["HB-1", "twin.note_drop"]);
+});
+
+test("a conn.tool call naming a task assigned to another agent is refused, and no record is filed", async (t) => {
+  const { k, token } = await twin(t, { agents: ON_HEARTBEAT, issues: { ...HEARTBEAT, ...TRIAGE, "TASK-10": { id: "TASK-10", identifier: "WOR-9000", status: "open", assigneeAgentId: "ag-bo" } } });
+  const r = await k.call("twin", k.token("hb"), { method: "tools/call", params: { name: "note_drop", arguments: { id: 7 }, _meta: { task: "TASK-10" } } });
+  const body = await r.json();
+  assert.equal(body.result.isError, true);
+  assert.match(body.result.content[0].text, /WOR-9000 isn't yours to write on/);
+  assert.equal(k.records.list(["review", "owner", "claimed", "done"]).length, 0);
+  // A `task` that isn't a task id is refused too, never quietly dropped.
+  const bad = await (await k.call("twin", k.token("hb"), { method: "tools/call", params: { name: "note_drop", arguments: { id: 7 }, _meta: { task: "../etc" } } })).json();
+  assert.match(bad.error.message, /_meta\.task must be a task id/);
+  assert.equal(k.records.list(["review", "owner", "claimed", "done"]).length, 0);
+});
+
+test("a conn.tool call naming no task stays on the job's own task", async (t) => {
+  const { k, pending } = await twin(t, { agents: ON_HEARTBEAT, issues: { ...HEARTBEAT, ...TRIAGE } });
+  const p = await pending(await k.call("twin", k.token("hb"), { method: "tools/call", params: { name: "note_drop", arguments: { id: 7 } } }));
+  const rec = k.records.get(p.approval);
+  assert.deepEqual([rec.task, rec.identifier, rec.requester.task], ["HB-1", "HB-1", "HB-1"]);
+});

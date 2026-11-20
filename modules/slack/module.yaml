@@ -6,7 +6,7 @@ requires:
   - board # its sign-in and setup flows
 # Its sign-in on the board (the board's point, modules/board/schemas/signins.json), and its setup flows (setup_flows.json): basic is the
 # sign-in; advanced is "your own app" for the bot. Both make their Slack app from the one manifest in slack-app-manifest.yml: the link
-# and the manifest below come from it (node scripts/slack-manifest.mjs --write; a test fails while they differ).
+# and the manifest below come from it (node scripts/slack-manifest.ts --write; a test fails while they differ).
 contributes:
   board.signins:
     - { id: slack, label: Slack, status_url: "http://slack-mcp:8082/auth/status", connect_url: /slack/connect, callback: /slack/callback,
@@ -130,7 +130,7 @@ settings:
   # channel needs the owner's approval too.
   slack_post_channels:
     default: []
-# Runner jobs of an Engineer with private reads, through the model gateway with their own token (scripts/modules.mjs jobcapEntries).
+# Runner jobs of an Engineer with private reads, through the model gateway with their own token (scripts/modules.ts jobcapEntries).
 jobcaps:
   - { id: slack-read, connection: slack, tools: read, private: true, read_url: "http://slack-mcp:8082/mcp/read", read_secret: slack_mcp_read_token }
 secrets:

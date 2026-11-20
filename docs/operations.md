@@ -22,8 +22,8 @@ wait plainly when the lock does not clear in that time, instead of the change as
    that commit changes `ops/apply-config.sh` or `ops/apply-config-work.sh`, it hands over to the new script once (`exec`,
    with the previous product in `AIDENHQ_APPLY_BEFORE` so restarts are still decided against it), so one run is always
    enough;
-5. runs `node scripts/compile.mjs`, builds agent computer images, runs `ops/compose-recreate.sh`, and
-   `node scripts/paperclip-setup.mjs`;
+5. runs `node scripts/compile.ts`, builds agent computer images, runs `ops/compose-recreate.sh`, and
+   `node scripts/paperclip-setup.ts`;
 6. restarts the kernel when its code changed.
 
 `ops/compose-recreate.sh` is the compose step. It stops before building, dumping or removing anything when the config
@@ -104,7 +104,7 @@ It is idempotent. The Engineer runs it for you after you approve a change.
 
 - **The model gateway** (`kernel/src/gateway`, user unit `aidenhq-kernel`): every model call goes through it, and it alone reads `openrouter_key`. apply-config installs and starts the unit before compose and setup, and restarts it only when `kernel/src/gateway` or its unit changed. A host whose apply-config predates the hand-over (step 3) runs its old script for the apply that brings the hand-over in; start that one apply with the new script instead: `git fetch -q origin main && git show <product sha>:ops/apply-config.sh > ops/.apply-next.sh && bash ops/.apply-next.sh; rm -f ops/.apply-next.sh` (it checks out the product, sees the script changed and hands over to the checked-out one). A bind that fails (the backplane address before compose is up) is retried in the process while loopback serves. It listens on `127.0.0.1:8201` (Engineer jobs through their jail, the AI reviewer, and the computer launcher, which forwards its boxes' model calls with the box's run token; the gateway names that run at the launcher's `/whoami`) and `10.231.0.1:8201` (Codex in Paperclip with the run's own JWT, the source writers, the board's `/usage` pull), and, with the ci module on, `10.231.4.1:8201` (the CI runners' bridge: CI tokens only, see CI runners). Spend (spec §5.12): each call reserves its worst case at the model's declared price (`modules/models-openrouter`; an unpriced model is refused) against its run, task and agent-day caps (grants `caps`, default $2 / $10 / $30) before it is sent, with its output limit cut to what the tightest cap has left; it settles at max(what OpenRouter reported, tokens × price). A call that would pass a cap gets HTTP 402 and the owner a `raise_cap` card; there is no off switch. Ledger: `data/kernel/kernel.db` (`calls`); the old `data/gateway/usage.db` is merged in at every start while it exists (idempotent) and otherwise left alone. If it is down, no model call is made (`systemctl --user status aidenhq-gateway`, `journalctl --user -u aidenhq-gateway`).
 - **Agent memory** (`agent_memory`): `memory_note` writes to the agent's own inbox task; the Fleet Steward's daily pass curates it into `agents/<key>/memory.md`, landed by an apply card. To clear one agent's memory, apply a change that empties its file. Kill switch: `agent_memory: off`.
-- **Advisor and fan-out** (`modules/tasks/connections/tasks-mcp/src/models.mjs`): `advisor_ask` (every Codex agent; GPT Sol, 5 calls per run) and `fanout_map` (granted per agent; up to 25 items on DeepSeek Flash) call the gateway's `/advisor` and `/fanout` routes with the run's own credential, billed to its run. Engineer jobs consult the same advisor with `aidenhq advise "<brief>"` (on the job's own credential; 5 per job). Both send `ADVISOR_MODEL` (models.mjs). Not yet in agent computers. The kill switch below drops only the agents' tools; `aidenhq advise` stays (still under the gateway's caps). Kill switch: `settings.model_tools: off`, then apply.
+- **Advisor and fan-out** (`modules/tasks/connections/tasks-mcp/src/models.ts`): `advisor_ask` (every Codex agent; GPT Sol, 5 calls per run) and `fanout_map` (granted per agent; up to 25 items on DeepSeek Flash) call the gateway's `/advisor` and `/fanout` routes with the run's own credential, billed to its run. Engineer jobs consult the same advisor with `aidenhq advise "<brief>"` (on the job's own credential; 5 per job). Both send `ADVISOR_MODEL` (models.ts). Not yet in agent computers. The kill switch below drops only the agents' tools; `aidenhq advise` stays (still under the gateway's caps). Kill switch: `settings.model_tools: off`, then apply.
 
 ## Health
 
@@ -220,7 +220,7 @@ by `auto-deploy` a little later, while an app-side failure is still never retrie
 Apps are on their own tailnet node, `https://$APPS_TS_HOSTNAME.<tailnet>.ts.net:<port>` (`apps-edge` in
 `compose.yaml`), never on the host's name: a browser sends the host's cookies, the board's session among them, to
 every port of it. The host's own `tailscale serve` has the board only (`https://<board-host>` on 443, to `127.0.0.1:3121`;
-Paperclip's `127.0.0.1:3100` is also allowed, but `ops/setup.sh` doesn't publish it): apply turns anything else off (`scripts/host-serve.mjs prune`) and `scripts/verify-security.sh` fails on it. apps-mcp writes the
+Paperclip's `127.0.0.1:3100` is also allowed, but `ops/setup.sh` doesn't publish it): apply turns anything else off (`scripts/host-serve.ts prune`) and `scripts/verify-security.sh` fails on it. apps-mcp writes the
 node's serve config (`data/apps-edge/serve/serve.json`) from the registry and joins the node to each exposed app's
 own network, where the app's port-publishing service answers as `edge-<app>` (an alias only the platform sets; an
 app deployed before it is served after its next deploy). The node joins once with the vault's
@@ -279,7 +279,7 @@ without the owner reaches Telegram once a day from 21:00.
 - Before `autonomy: full`, run the planted eval on the host and require 100%:
 
 ```sh
-cd ~/aidenhq && OPENROUTER_API_KEY="$(cat ~/.config/aidenhq/openrouter_eval_key)" node modules/ai-reviewer/scripts/reviewer-eval.mjs
+cd ~/aidenhq && OPENROUTER_API_KEY="$(cat ~/.config/aidenhq/openrouter_eval_key)" node modules/ai-reviewer/scripts/reviewer-eval.ts
 ```
 
 - Pause: set `autonomy: off` and apply (a settings change: the AI reviewer and a second reviewer decide it; or edit the
@@ -371,7 +371,7 @@ change under 20 added plus deleted lines with no sensitive path; `package-lock.j
 the same kind of runner, registered to the product repo's org (below). Each `aidenhq-ci-runner@<n>` user unit (agents
 org) or `aidenhq-ci-runner@<org>-<n>` unit (another org the App is installed on) runs
 `ops/ci-runner.sh`: it mints a one-hour registration token on the host from the GitHub App
-(`ops/ci-runner-token.mjs [org]`, installation token narrowed to `organization_self_hosted_runners`), then
+(`ops/ci-runner-token.ts [org]`, installation token narrowed to `organization_self_hosted_runners`), then
 `docker compose run --rm ci-runner`: a new container that registers ephemerally, takes one job, exits and is removed;
 the unit then starts the next. Nothing carries between jobs. The container has no host mounts, no docker socket and none
 of the instance's secrets; it sits on `aidenhq-ci` (system unit `aidenhq-ci-net`: the public Internet and, on the host,
@@ -391,10 +391,10 @@ server tools or stored responses, zero data retention forced, under CI's own cap
 out and settles at what was billed (a Responses stream at its `response.completed`); a cut stream keeps its reservation.
 Every call lands in the ledger as kind `ci-code-review` with `<owner>/<repo>#<pr>` and the head the job sent (advisory):
 the Costs tab's "App CI code review" line. Revoke: removing the `ci` module refuses every CI token at once.
-The reviewer is codex with codex review's guidelines (`.github/code-review.mjs`, pinned `@openai/codex`), at the model's effort (critical paths
+The reviewer is codex with codex review's guidelines (`.github/code-review.ts`, pinned `@openai/codex`), at the model's effort (critical paths
 too), one higher (xhigh) only with the `deep-review` label or text addressed to a reviewer. codex runs with its shell off: the
 runner container can't give it its sandbox (bubblewrap needs user namespaces, which Docker and the host's AppArmor refuse
-there), so its only tools are `.github/review-tools.mjs`, a stdio MCP server that reads the PR's tree and git history
+there), so its only tools are `.github/review-tools.ts`, a stdio MCP server that reads the PR's tree and git history
 (diff, log, show, blame, read a file, list files, search; for TypeScript and JavaScript definition, references and
 diagnostics from a pinned typescript-language-server, with no dependencies installed and type acquisition off) and
 nothing else: nothing of the PR runs, writes or connects, and its
@@ -431,12 +431,12 @@ read it).
    systemctl --user enable --now aidenhq-ci-runner@1 aidenhq-ci-runner@2`. Check: the org's Settings → Actions →
    Runners lists `aidenhq-<container id>` idle; `journalctl --user -u aidenhq-ci-runner@1`.
 
-CI health on demand (queue time, red rate, slow and failing jobs, merged-PR flakes, both repos): `node scripts/ci-report.mjs [--hours 24]`.
+CI health on demand (queue time, red rate, slow and failing jobs, merged-PR flakes, both repos): `node scripts/ci-report.ts [--hours 24]`.
 
 **The product repo's org.** The product workflows' heavy jobs can overflow to `[self-hosted, aidenhq]` (below).
 `image-scan` builds nothing (a build would run a PR's RUN steps on our runner, and the runner has no Docker): the grype
 baked into the runner image scans each changed image's directory (lock files) and the digest-pinned base images its
-Dockerfile names (`scripts/supply-chain/image-scan.mjs` reads the Dockerfile as text), so packages RUN steps install are
+Dockerfile names (`scripts/supply-chain/image-scan.ts` reads the Dockerfile as text), so packages RUN steps install are
 not covered there; the security module's scans of deployed images cover them. A base image's files a Dockerfile replaces
 or never copies out (node's bundled npm, the Alpine packages of a stage only partly copied) are owner-approved entries in
 `.github/image-scan-exceptions.yaml`, read from the base commit. A PR from a fork is routed to `ubuntu-latest` instead of
@@ -482,7 +482,7 @@ shrink. Every unit is up to 4 CPUs and 8 GB while it runs a job, whichever org i
 the size docs/setup.md suggests (e.g. 2 for the product org, 1-2 for the agents org). The enabled instances are what the config
 declares runs, and an apply starts every declared one that systemd reports failed: `Restart=always` alone reaches systemd's
 start limit and leaves a unit failed with nothing to clear it, so `ops/ci-runner-units.sh` resets and starts those (and the
-ones a drain record names) after everything else. A drain (`node scripts/fleet-pause.mjs pause`) stops them without
+ones a drain record names) after everything else. A drain (`node scripts/fleet-pause.ts pause`) stops them without
 cancelling a job under it, and its resume -- or an apply, or `ops/ci-runner-units.sh` on its own -- clears each unit's
 start limit before starting it, so a stopped unit never stays start-limited and failed. Stop all: `systemctl --user stop 'aidenhq-ci-runner@*'` (a running job
 is cancelled; GitHub retries nothing, so re-run it).

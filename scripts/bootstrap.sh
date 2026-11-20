@@ -19,7 +19,7 @@ case "$AIDENHQ_SECRETS_DIR" in "$repo"*) die "AIDENHQ_SECRETS_DIR must be outsid
 echo "Checking prerequisites"
 command -v docker >/dev/null || die "docker not found"
 docker compose version >/dev/null 2>&1 || die "docker compose plugin not found"
-command -v node >/dev/null || die "node (>= 24) not found; it runs scripts/paperclip-setup.mjs"
+command -v node >/dev/null || die "node (>= 24) not found; it runs scripts/paperclip-setup.ts"
 if docker info --format '{{.SecurityOptions}}' 2>/dev/null | grep -q rootless; then
   say "docker: rootless"
 else
@@ -61,7 +61,7 @@ gen_secret apps_internal_token   # apps-mcp POST /internal/deploy: the board and
 gen_secret paperclip_master_key  # Paperclip's secret-store key (PAPERCLIP_SECRETS_MASTER_KEY_FILE)
 gen_secret computer_progress_token  # the board → the launcher's /progress only (live view)
 placeholder paperclip_ops_key ""
-placeholder paperclip_board_key ""   # written by scripts/paperclip-setup.mjs; held by the kernel alone (the board goes through it)
+placeholder paperclip_board_key ""   # written by scripts/paperclip-setup.ts; held by the kernel alone (the board goes through it)
 mkdir -p "$AIDENHQ_SECRETS_DIR/modules/google" && chmod 0700 "$AIDENHQ_SECRETS_DIR/modules" "$AIDENHQ_SECRETS_DIR/modules/google"
 placeholder modules/google/google_oauth.json "{}"   # the google module's own vault dir (read-write at its /state)
 placeholder github_token ""      # the user's GitHub token: the github module's setup flow
@@ -70,7 +70,7 @@ placeholder slack_live_bot_token ""             # xoxb- bot token, posts DMs to 
 placeholder telegram_notify_bot_token ""       # BotFather token; the owner's Telegram chat with Aiden, and a channel for notify
 placeholder slack_live_triage_webhook_url ""    # the slack-triage routine's webhook; empty = no poke
 placeholder slack_live_triage_webhook_secret ""
-placeholder apps_incident_webhook_url ""       # the app-incident routine's webhook (paperclip-setup.mjs writes it); empty = no wake
+placeholder apps_incident_webhook_url ""       # the app-incident routine's webhook (paperclip-setup.ts writes it); empty = no wake
 placeholder apps_incident_webhook_secret ""
 placeholder app_request_webhook_url ""         # the app-request routine's webhook (the board fires it); empty = no wake
 placeholder app_request_webhook_secret ""
@@ -108,6 +108,6 @@ echo "Validating compose"
 docker compose --env-file "$env_file" -f compose.yaml config --quiet
 echo "Done. Next:"
 echo "  1. set AIDENHQ_INSTANCE_DIR in $env_file (your instance repo checkout)"
-echo "  2. node scripts/compile.mjs"
+echo "  2. node scripts/compile.ts"
 echo "  3. docker compose up -d --build"
-echo "  4. node scripts/paperclip-setup.mjs   (or ops/apply-config.sh)"
+echo "  4. node scripts/paperclip-setup.ts   (or ops/apply-config.sh)"

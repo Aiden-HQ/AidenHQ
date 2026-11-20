@@ -46,7 +46,7 @@ Switching modes: [minimal-core-install.md](minimal-core-install.md).
 
 ### The public front door (Caddy)
 
-`scripts/front-door.mjs`, compiled only with `exposure: public`, for the IPv4 in `.env` (`AIDENHQ_PUBLIC_IP`; never
+`scripts/front-door.ts`, compiled only with `exposure: public`, for the IPv4 in `.env` (`AIDENHQ_PUBLIC_IP`; never
 `instance.yaml`, which agents can change through an apply):
 
 - **Two sites on one name:** `https://<ip>` to the board (3121) and `https://<ip>:8446` to the kernel's admin listener
@@ -141,7 +141,7 @@ setup link and resets with the operator key).
 
 `modules/apps-platform/gate/gate.ts` is unprivileged: no Docker socket, a read-only compiled config (`config/gate.json`)
 and the board's account map (`accounts.json`), its signing key (the vault's `identity/gate.pem`), and reach only to the
-apps' loopback ports. `scripts/edge.mjs` generates its config and cloudflared's ingress (every `share.host` to the gate,
+apps' loopback ports. `scripts/edge.ts` generates its config and cloudflared's ingress (every `share.host` to the gate,
 then a 404), and apply refuses any ingress rule whose target is not the gate. Per request the gate:
 
 1. Maps `Host` to an app (unknown host: 404). The upstream comes only from the compiled config (a PR preview's port from
@@ -285,7 +285,7 @@ app and without giving app users' words a privileged agent.
 2. The board counts the notice and runs the app's `App feedback: <app>` routine through Paperclip with that count alone:
    the first at once, then at most one run per app per 10 minutes (the minute sync fires what waited). Paperclip
    coalesces a run into a live one.
-3. `scripts/modules.mjs` compiles that routine for a shared app whose registry entry sets `feedback_to`:
+3. `scripts/modules.ts` compiles that routine for a shared app whose registry entry sets `feedback_to`:
    `coalesce_if_active`, autonomy `tier0` (any Tier 1 write goes to the owner), fixed product text that fences the items
    as people's suggestions.
 4. Grants are per agent, not per routine, so the run gets a narrow agent, enforced in code at every layer:

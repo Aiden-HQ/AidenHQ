@@ -19,4 +19,4 @@ COPY security ./security
 USER 1000:1000
 EXPOSE 8095
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 CMD ["node", "-e", "fetch('http://127.0.0.1:8095/healthz').then(r=>process.exit(r.status<600?0:1)).catch(()=>process.exit(1))"]
-CMD ["node", "--disable-warning=ExperimentalWarning", "src/server.mjs"]
+CMD ["node", "--disable-warning=ExperimentalWarning", "src/server.ts"]

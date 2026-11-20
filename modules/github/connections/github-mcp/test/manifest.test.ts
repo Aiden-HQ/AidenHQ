@@ -11,7 +11,7 @@ const MAINTAINER_WRITES = ["github_app_issue_comment", "github_app_issue_label",
 const grants = manifest.split("\n").filter((l) => !l.trim().startsWith("#")).join("\n");
 const group = (key: string) => (new RegExp(`^\\s+${key}: \\[([^\\]]*)\\]`, "m").exec(grants)?.[1] ?? "").split(",").map((t) => t.trim()).filter(Boolean);
 // What the product's compiler makes of them: `named` narrows a read out of the read shorthand, and a named tool must also be
-// a read (scripts/modules.mjs:63 `readTools`, :641). So a tool tagged named is listed to read, never granted by it.
+// a read (scripts/modules.ts:63 `readTools`, :641). So a tool tagged named is listed to read, never granted by it.
 const readShorthand = group("read").filter((t) => !group("named").includes(t));
 const writeShorthand = [...readShorthand, ...group("write")];
 

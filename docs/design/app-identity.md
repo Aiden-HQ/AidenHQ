@@ -36,7 +36,7 @@ would mean migrating apps' stored `sub`s.
 - `header-jwt`: a front door's signed identity header (`cfg.identity`: header, issuer, JWKS, optional `auth_method`), see access.md.
 - `password`: the board's Better Auth session through the auth listener (3129).
 
-The gate's `login` setting (`settings.app_login`, `LOGINS` in `scripts/edge.mjs`: `access`, `password`, `header-jwt`) and
+The gate's `login` setting (`settings.app_login`, `LOGINS` in `scripts/edge.ts`: `access`, `password`, `header-jwt`) and
 the host's `aud` decide which adapters run, and all of them must pass: a `password` host with an `aud` still needs Access
 (checked before `/.auth` routing), then the session. When both run, Access only admits and the password session
 identifies; the two emails may differ. The gate then maps the email to the account and role (accounts.json), refuses
@@ -98,7 +98,7 @@ identities only, so apps-mcp cannot impersonate people. An agent's role is fixed
 
 The vault dir `identity/` holds `gate.pem` and `apps.pem` (Ed25519 private keys, PKCS#8, mode 600) and `keys.json` (the
 public keys as a JWK set; each key has `kid` = first 16 characters of the base64url SHA-256 of its raw public key and
-`iss`). `scripts/identity.mjs` (run by `scripts/compile.mjs` on every apply) creates a missing private key and rewrites
+`iss`). `scripts/identity.ts` (run by `scripts/compile.ts` on every apply) creates a missing private key and rewrites
 `keys.json` in place (a single-file bind mount pins the inode) from every `gate*.pem` and `apps*.pem` in the dir. Mounts:
 
 - the gate: `identity/gate.pem` (read-only), nothing else of the dir;

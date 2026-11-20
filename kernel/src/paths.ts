@@ -1,5 +1,5 @@
 // The path inventory (spec §4.4, phase 2 Task T5): how sensitive each path of a repository is, and which role owns it.
-// scripts/paths.mjs generates it (config/kernel/paths.json) from the product's paths.yaml and each module's `paths:` (with
+// scripts/paths.ts generates it (config/kernel/paths.json) from the product's paths.yaml and each module's `paths:` (with
 // every privileged module's folder at least the reviewer's); the kernel reads it to raise a repository write's tier by the
 // files it changes. It is one term of computeTier beside the semantic authority diff (scripts/compiler/authority.ts): what a file is
 // says how carefully its change is read, what the change hands out is judged by content there. Sensitivity only raises,

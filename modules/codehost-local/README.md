@@ -7,7 +7,7 @@ provides the `codehost` role beside `codehost-github`; each repository is hosted
 The kernel runs it in process (it has no service):
 
 - `src/host.ts`: the executor of its write kinds (`create_repo`, `push`, `pr`, `merge`, `close`: the same actions as
-  codehost-github's, tiered by the same `plan.mjs` rules), and a repo's clone into a job's workspace. A `pr` opens a change
+  codehost-github's, tiered by the same `plan.ts` rules), and a repo's clone into a job's workspace. A `pr` opens a change
   request (`codehost:local/<name>/change/<n>`, git refs in the bare repo); a `merge` squashes it onto the default branch once
   its `change` check job passed on its exact head.
 - `src/snapshot.ts`: a repo's tree at a commit, for check jobs and an Engineer's repo-checkout.

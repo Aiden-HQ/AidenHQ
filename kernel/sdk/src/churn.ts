@@ -2,7 +2,7 @@
 // PRs' unified diffs in merge order: every line is tracked by identity (the PR that added it, and when) through later hunks and
 // renames, so a line counts once: as added by its PR, and, when a later PR removes it inside the window, as rewritten. A hunk
 // a PR removes in one place and adds in another unchanged is a move: the lines keep their owner and count as neither.
-// Copied into the code host's service (scripts/sync-shared.mjs); codehost-local calls it from the kernel.
+// Copied into the code host's service (scripts/sync-shared.ts); codehost-local calls it from the kernel.
 
 /** The paths churn ignores unless the code host's `churn_exclude` setting says otherwise. */
 export const DEFAULT_CHURN_EXCLUDE = ["**/package-lock.json", "**/dist/**", "**/vendor/**", "**/*.min.*"];

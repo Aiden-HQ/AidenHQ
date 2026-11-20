@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Build the images config/computers.json names: always the browser image (agent-browser and its pinned Chrome; apps-mcp renders
 # its views in it), and the computer images some agent uses, each FROM its parent's tag. Each is tagged by content hash
-# (scripts/computers.mjs), so an unchanged image is never rebuilt. Run by ops/apply-config.sh after compile.
+# (scripts/computers.ts), so an unchanged image is never rebuilt. Run by ops/apply-config.sh after compile.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
-[ -f config/computers.json ] || { echo "config/computers.json missing: run node scripts/compile.mjs" >&2; exit 1; }
+[ -f config/computers.json ] || { echo "config/computers.json missing: run node scripts/compile.ts" >&2; exit 1; }
 declare -A parent=([agent-base]=browser [engineer]=agent-base)
 # A release's prebuilt images (computers.json `pull`: tag -> digest) are pulled all at once and tagged as the build would be.
 pulled=()

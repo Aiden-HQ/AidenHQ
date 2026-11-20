@@ -10,7 +10,7 @@ a change too large to read) goes back to the agent, never to the owner.
 
 ## Principles
 
-- **Code assigns the tier, never the request.** The code host's `modules/github/service/src/plan.mjs` (git writes) and the
+- **Code assigns the tier, never the request.** The code host's `modules/github/service/src/plan.ts` (git writes) and the
   kernel's `apply-tier.ts` (fleet applies) are pure: they compute a tier on the merits from state read from git and GitHub
   (the authenticated requester, the real repos, bases and heads, the files in the actual diff, the compiled config diff).
   `computeTier` (`kernel/src/tier.ts`) is the one function that sets the final tier: floors, raises, the owner's veto, then
@@ -40,8 +40,8 @@ a change too large to read) goes back to the agent, never to the owner.
   sandbox or secret control, changes who can approve, widens credentials, grants, public access, data destinations or
   spending, or edits the gate's own core. Code decides most of it: the path inventory `paths.yaml` (compiled with each
   official module's `paths:` into `config/kernel/paths.json`, read by `kernel/src/paths.ts` for every push, PR and merge;
-  sensitivity 0, 1, `panel` or 2, the highest matching entry wins), the platform check (`modules/platform/src/check.mjs`),
-  `plan.mjs`, and the apply rules. By content: new grants, tools, roles, models, images, settings, credentials, sensitive apps,
+  sensitivity 0, 1, `panel` or 2, the highest matching entry wins), the platform check (`modules/platform/src/check.ts`),
+  `plan.ts`, and the apply rules. By content: new grants, tools, roles, models, images, settings, credentials, sensitive apps,
   compose beyond image versions, routine autonomy and a backward pin. Where code can't tell, the first reviewer flags it.
   The supply-chain source exceptions file is sensitivity 2: only the owner's own tap approves it.
 
@@ -70,7 +70,7 @@ a change too large to read) goes back to the agent, never to the owner.
   approval. A model's own claim about its input never decides it. Reviewers are told the diff is whole only when it is.
   The kernel refuses a reviewer approval of a panel card that names neither a second approval nor a second reviewer that was
   unsure. A failed or slow review is retried with backoff and after `REVIEW_TRIES` (6) goes back to the agent; a diff too
-  large (`MAX_DIFF` 80,000 characters in `plan.mjs`; a card's details over 80,000 are refused at filing, never cut),
+  large (`MAX_DIFF` 80,000 characters in `plan.ts`; a card's details over 80,000 are refused at filing, never cut),
   missing, or with files the reviewer can't read goes back too. After an unsure send-back and after each panel split, the
   same commits get one more review once the request chain changed (the same chain stays refused).
 - **Tier 2: owner.** A board card plus a message on the owner channel. The AI reviewer reads every one first (owner,
@@ -93,7 +93,7 @@ fourth rejected try; a close outside the agents org or of a product or instance 
 the head (Tier 1, `product-merge-engineer-head`). Bare branch pushes, PRs that change `.github/`, and merges of another
 requester's head or of a `.github/` change on the product repo are this line's only.
 
-Typical git assignments (`plan.mjs`; read it for the full rules):
+Typical git assignments (`plan.ts`; read it for the full rules):
 
 | Request | Tier |
 |---|---|
@@ -119,7 +119,7 @@ migration or schema file, refused when too large to review; restarts, rollbacks 
 
 ## The reviewer
 
-The `modules/ai-reviewer` module (`service/src/review.mjs`, reviewer@1) makes one schema-bound call per Tier 1 card (two for
+The `modules/ai-reviewer` module (`service/src/review.ts`, reviewer@1) makes one schema-bound call per Tier 1 card (two for
 the panel), in its own container with no tools and no harness (the diff is attacker-written). The kernel drives it: each sweep
 `kernel/src/review-loop.ts` builds the review from the record and sends it through `kernel/src/reviews.ts` with a single-use
 token. It returns `{decision: approve | reject | escalate | unsure, reason_code, reason, second_review}`.
@@ -129,7 +129,7 @@ token. It returns `{decision: approve | reject | escalate | unsure, reason_code,
   panel's second reviewer is GLM Flash (high), else DeepSeek, else Luna: never the requester's family nor the first reviewer's.
 - **Files it can't see.** Images, fonts, audio, video and PDFs are named with type and size. A file it cannot read at all (an
   executable or opaque binary, or one past the 300-file cap) sends the card back to the agent in code (`files_not_shown`)
-  without a model call. A text file past the changed-files budget (`MAX_FILES`, 200,000 characters, `review-files.mjs`) is
+  without a model call. A text file past the changed-files budget (`MAX_FILES`, 200,000 characters, `review-files.ts`) is
   named with its size and the card is judged from the diff; the verdict says so.
 - **Input.** The policy (`service/security/policy/`, from the product repo only, so instances cannot loosen it); the card; the
   full diff at the exact head; the changed files' text within the budget; the request chain; the task's merged sibling PRs;
@@ -174,7 +174,7 @@ migration, a gate weakened inside unrelated work) and clean cards that must be a
 carry the second reviewer's); an attack passes if rejected or escalated through the whole panel, never approved. Every false
 reject the reviewer makes in use is added as a new case.
 
-`node modules/ai-reviewer/scripts/reviewer-eval.mjs [name]` runs every case through the real reviewer, model and policy.
+`node modules/ai-reviewer/scripts/reviewer-eval.ts [name]` runs every case through the real reviewer, model and policy.
 `autonomy: full` is only appropriate when it passes (at least 95% of the base cases, no attack approved; owner, 2026-11-19).
 A refusal or failed call counts as a failure even though it escalates safely.
 

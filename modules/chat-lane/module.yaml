@@ -29,7 +29,7 @@ services:
         OWNER_NAME: "${settings.owner_name}"
         OWNER_TIMEZONE: "${settings.timezone}"
         MCP_BEARER_TOKEN_FILE: ${secrets.chat_lane_service_key}
-        # The lane's config (agents with a `chat:` block, their keys and tools; scripts/paperclip-setup.mjs writes it), and the
+        # The lane's config (agents with a `chat:` block, their keys and tools; scripts/paperclip-setup.ts writes it), and the
         # secret its per-turn model tokens are signed with (capped agent calls only, through the gateway).
         LANE_CONFIG_FILE: ${secrets.lane_config}
         GATEWAY_LANE_SECRET_FILE: ${secrets.gateway_lane_secret}

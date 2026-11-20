@@ -108,7 +108,7 @@ export function applyParts(s: any) {
 const forked = (s: any, key: any) => ["base", "head"].some((side) => parse(s[side]?.["instance.yaml"])?.overrides?.agents?.[key]?.handbook_fork != null);
 
 /**
- * A routine's effective status as compile gives it (scripts/modules.mjs): the instance override, else the definition's own
+ * A routine's effective status as compile gives it (scripts/modules.ts): the instance override, else the definition's own
  * `status`, else active. Compile's quiet-start pause covers module agents only, never an instance agent's own routines.
  */
 const instanceRoutineStatus = (key: any, def: any, rk: any, instance: any) => instance?.overrides?.routines?.[`${key}-${rk}`]?.status ?? def?.routines?.[rk]?.status ?? "active";

@@ -1,6 +1,6 @@
 // A URL setting (module.yaml `type: url`, optional `host:` pattern): one check for the board (the owner's feedback as he
-// types) and the compiler (the gate: an agent writes the commit). Plain TypeScript Node runs as is (scripts/modules.mjs
-// imports this file directly); the board holds a synced copy (scripts/sync-shared.mjs). docs/design/settings-changes.md.
+// types) and the compiler (the gate: an agent writes the commit). Plain TypeScript Node runs as is (scripts/modules.ts
+// imports this file directly); the board holds a synced copy (scripts/sync-shared.ts). docs/design/settings-changes.md.
 
 /** Query parameters whose name says they carry a credential: those belong in the vault, never in a setting. */
 const SECRET_PARAM = /token|key|secret|sig|password|passwd|auth|code|session|credential/i;

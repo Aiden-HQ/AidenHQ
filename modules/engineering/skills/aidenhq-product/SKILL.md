@@ -21,11 +21,11 @@ Read `CLAUDE.md` at the repo root first: it is the source for layout, convention
   say so in the PR.
 - **No owner data.** Tests and docs use `acme`, `example.com` and documentation IP ranges.
 - **Shared code.** After editing `kernel/sdk/src/caller.ts`, `kernel/sdk/src/fence.ts`, `kernel/sdk/src/source-store.ts` or `kernel/sdk/src/vendor/`, or the design
-  system, run `node scripts/sync-shared.mjs`; a test fails on drift.
+  system, run `node scripts/sync-shared.ts`; a test fails on drift.
 
 ## Tests
 
-Before pushing, run `node scripts/ci-local.mjs` from the product root: it runs exactly the suites CI will run for your
+Before pushing, run `node scripts/ci-local.ts` from the product root: it runs exactly the suites CI will run for your
 diff (the same selection and commands as CI) and exits non-zero on a failure. `--list` shows the selection only.
 
 Commit per meaningful change with a message that says why.

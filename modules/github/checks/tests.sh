@@ -8,7 +8,7 @@ git show "$AIDENHQ_BASE:.gitleaks.toml" > "$OUT/gitleaks.toml" 2>/dev/null || pr
 echo "secret scan (gitleaks, the base's config)"
 gitleaks git --no-banner --redact --exit-code 1 --config "$OUT/gitleaks.toml" --log-opts "$AIDENHQ_BASE..HEAD" . || status=1
 echo "supply chain (the product's checks)"
-node /opt/aidenhq/supply-chain/npm-age.mjs "$AIDENHQ_BASE" HEAD || status=1
-node /opt/aidenhq/supply-chain/pins.mjs "$AIDENHQ_BASE" HEAD || status=1
+node /opt/aidenhq/supply-chain/npm-age.ts "$AIDENHQ_BASE" HEAD || status=1
+node /opt/aidenhq/supply-chain/pins.ts "$AIDENHQ_BASE" HEAD || status=1
 [ "$status" = 0 ] || exit 1
 npm ci && npm run --if-present lint && npm test && npm run --if-present build

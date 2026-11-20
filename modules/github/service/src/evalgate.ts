@@ -23,22 +23,22 @@ import { join } from "node:path";
 export const REVIEWER_CODE = [
   /^modules\/ai-reviewer\//,
   /^kernel\/sdk\/src\/(reviewer|pass-rule)\.ts$/,
-  /^services\/shared\/review-files\.(mjs|ts)$/,
-  /^modules\/github\/service\/src\/(plan\.mjs|merges\.ts|merge-gate\.mjs|evalgate\.ts)$/,
-  /^modules\/platform\/(src\/check\.mjs|checks\/)/,
+  /^services\/shared\/review-files\.ts$/,
+  /^modules\/github\/service\/src\/(plan|merges|merge-gate|evalgate)\.ts$/,
+  /^modules\/platform\/(src\/check\.ts|checks\/)/,
   /^modules\/github\/checks\//,
   /^modules\/(github|platform)\/module\.yaml$/,
-  /^scripts\/modules\.mjs$/,
+  /^scripts\/modules\.ts$/,
   /^kernel\/src\/checkbox\.ts$/,
   /^kernel\/src\/(tier|provenance|writes|records|reviews|review-loop|kinds|checkjobs|apply|apply-tier)\.ts$/,
   /^scripts\/compiler\/authority\.ts$/,
   // The panel-path registry: a change could take a path out of the panel.
-  /^(paths\.yaml|scripts\/paths\.mjs|kernel\/src\/paths\.ts)$/,
+  /^(paths\.yaml|scripts\/paths\.ts|kernel\/src\/paths\.ts)$/,
 ];
 export const touchesReviewer = (files: string[]) => files.some((f) => REVIEWER_CODE.some((r) => r.test(f)));
 /** The reviewer's content in a product commit, by git object id: the same ids are the same reviewer, whatever commit holds them.
  *  It covers all a judging commit gives the eval (the recipe's `judged:` cases and files, all under modules/ai-reviewer). */
-const REVIEWER_TREE = ["modules/ai-reviewer", "modules/github/service/src/plan.mjs", "modules/platform/src/check.mjs", "modules/github/checks", "modules/platform/checks", "modules/github/module.yaml", "modules/platform/module.yaml"];
+const REVIEWER_TREE = ["modules/ai-reviewer", "modules/github/service/src/plan.ts", "modules/platform/src/check.ts", "modules/github/checks", "modules/platform/checks", "modules/github/module.yaml", "modules/platform/module.yaml"];
 /** The policy whose hash a receipt binds: its git tree id at the commit under test. */
 const POLICY = "modules/ai-reviewer/service/security";
 

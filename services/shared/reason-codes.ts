@@ -1,9 +1,9 @@
 // Reason codes: one stable word for why a write, a tool call or a model call was decided the way it was, recorded next to
 // the prose reason so the board can show and count them. Plain `as const` lists (no TS enum): Node strips the types.
 //
-// Canonical copy: services/shared/reason-codes.ts. Each consumer holds a byte-identical copy (scripts/sync-shared.mjs);
-// the reviewer module keeps its own list in modules/ai-reviewer/service/src/review.mjs, which
-// modules/ai-reviewer/test/review.test.mjs pins to REVIEW_CODES here.
+// Canonical copy: services/shared/reason-codes.ts. Each consumer holds a byte-identical copy (scripts/sync-shared.ts);
+// the reviewer module keeps its own list in modules/ai-reviewer/service/src/review.ts, which
+// modules/ai-reviewer/test/review.test.ts pins to REVIEW_CODES here.
 //
 // A card's tier rule (kernel/src/tier.ts `rule`, or the board's own for its actions) is a reason code too: those
 // are kebab-case words owned by the classifier, checked by shape (TIER_RULE), not listed here, so a new rule needs no edit.

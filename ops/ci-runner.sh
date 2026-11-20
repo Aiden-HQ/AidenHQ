@@ -8,7 +8,7 @@ cd "$(dirname "$0")/.."
 id="${1:-1}"
 org=""
 [[ "$id" == *-* ]] && org="${id%-*}" # an org name may hold dashes; the runner number is after the last one
-RUNNER_TOKEN="$(node ops/ci-runner-token.mjs ${org:+"$org"})"
+RUNNER_TOKEN="$(node ops/ci-runner-token.ts ${org:+"$org"})"
 export RUNNER_TOKEN
 args=(-e RUNNER_TOKEN)
 [ -n "$org" ] && args+=(-e "RUNNER_URL=https://github.com/$org") # else compose's default, the agents org

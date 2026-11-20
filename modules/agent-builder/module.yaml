@@ -4,7 +4,7 @@ requires: [ owner-channel ] # the Architect tells the owner through its notify t
 roles:
   declares:
     - { id: architect, description: "Its Engineer tasks may use the trial exception (the runner reads it from the grants table)." }
-    - { id: repo-checkout, description: "A commit of an agents-org repo placed in its computer (services/computer/launcher.mjs POST /repo)." }
+    - { id: repo-checkout, description: "A commit of an agents-org repo placed in its computer (services/computer/launcher.ts POST /repo)." }
 agents:
   architect:
     department: agents

@@ -24,7 +24,7 @@ codehost:
 check_jobs:
   code-review:
     dir: recipe
-    argv: [ node, /aidenhq-out/recipe/review.mjs ]
+    argv: [ node, /aidenhq-out/recipe/review.ts ]
     timeout_min: 45
     title: the code review
     spec: { base: sha, incremental_from: sha, pr: int, profile: json, focus: text, budget_usd: usd, previous: json }

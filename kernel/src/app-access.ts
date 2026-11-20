@@ -385,7 +385,7 @@ export function webhookWake(urlFile: string, secretFile: string, log: Log, contr
 }
 
 /**
- * Runs the app's "App feedback: <app>" routine (scripts/modules.mjs makes one per shared app, for the agent its registry
+ * Runs the app's "App feedback: <app>" routine (scripts/modules.ts makes one per shared app, for the agent its registry
  * names) with only the count: the run is tier0 by its routine, whatever started it. No active routine (not applied yet, or
  * paused): nothing to retry. A run coalesced into a live one (409) went through. `cp`: the control plane as the owner.
  */

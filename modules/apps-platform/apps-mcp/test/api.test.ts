@@ -10,7 +10,7 @@ import { isSensitive, parseApp } from "../src/registry.js";
 const api = { callers: ["roadmap-keeper"], paths: ["/api/agent/roadmap"] };
 const app = (o: object = {}) => parseApp({ name: "roadmap-keeper", repo: "example-org/roadmap-keeper", owner: "app-maintainer", description: "d", health: { url: "http://app:8080/api/health" }, api, ...o });
 
-/** apps-mcp's key and the public keys.json an app mounts (as scripts/identity.mjs writes them), plus the app's middleware. */
+/** apps-mcp's key and the public keys.json an app mounts (as scripts/identity.ts writes them), plus the app's middleware. */
 export async function identityFixture() {
   const dir = mkdtempSync(`${tmpdir()}/identity-`);
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");

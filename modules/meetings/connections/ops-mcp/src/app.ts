@@ -37,7 +37,7 @@ export function paperclipFromConfig(cfg: Config, log: Logger): PaperclipApi | un
   }
   const key = readFileSync(api_key_file, "utf8").trim();
   if (!key) {
-    log.warn("Paperclip API key file is empty: tasks are queued locally until scripts/paperclip-setup.mjs runs");
+    log.warn("Paperclip API key file is empty: tasks are queued locally until scripts/paperclip-setup.ts runs");
     return undefined;
   }
   return new HttpPaperclipApi(base_url, company_id, key);

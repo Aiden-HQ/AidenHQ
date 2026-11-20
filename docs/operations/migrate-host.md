@@ -206,7 +206,7 @@ its remote console.
    - Reboot once. Check that `mountpoint ~/.config/aidenhq` reports a mountpoint and that
      `systemctl status aidenhq-vault` is active.
 
-   The secrets must be in place before anything on the new host runs `scripts/bootstrap.sh` or `scripts/compile.mjs`.
+   The secrets must be in place before anything on the new host runs `scripts/bootstrap.sh` or `scripts/compile.ts`.
    Both generate every secret that is missing, and a freshly generated key would not match the databases you are about
    to restore.
 
@@ -260,11 +260,11 @@ Rules for the pre-seed:
 
   ```sh
   cd ~/aidenhq && bash scripts/bootstrap.sh   # data dirs, the apps_warehouse network, host node deps; secrets exist
-  node scripts/compile.mjs && docker compose pull --ignore-buildable && docker compose build && ops/computer-images.sh
+  node scripts/compile.ts && docker compose pull --ignore-buildable && docker compose build && ops/computer-images.sh
   docker pull <each image in modules/*/apps/*/compose.yaml and each FROM in modules/**/Dockerfile, by its pinned digest>
   ```
 
-  `bootstrap.sh` and `compile.mjs` write config and data folders, and create only the secrets that are missing (none,
+  `bootstrap.sh` and `compile.ts` write config and data folders, and create only the secrets that are missing (none,
   after step 3). If the product pin moves before the window, run this again.
 
   Do **not** run `docker compose up` or `ops/apply-config.sh` yet. Two live copies would share:
@@ -276,13 +276,13 @@ Rules for the pre-seed:
 
 ## 5. Drain (start of the window)
 
-The old host must run a product that has `scripts/fleet-pause.mjs`. Bump its pin through the usual deploy before the
+The old host must run a product that has `scripts/fleet-pause.ts`. Bump its pin through the usual deploy before the
 window if it doesn't.
 
 On the old host, ask the owner not to chat with Aiden until step 8, then run:
 
 ```sh
-cd ~/aidenhq && node scripts/fleet-pause.mjs pause
+cd ~/aidenhq && node scripts/fleet-pause.ts pause
 ```
 
 This:
@@ -298,7 +298,7 @@ wake (Slack, the board's wake-ups) can start a new run while it waits; let it fi
 jobs. A `running` row copied to the new host has no live process there, so the new runner marks it interrupted and
 resumes that task the moment it starts.
 
-A routine paused this way stays paused through applies (`scripts/paperclip-setup.mjs` resumes only the ones it paused
+A routine paused this way stays paused through applies (`scripts/paperclip-setup.ts` resumes only the ones it paused
 itself). The exception is a routine whose instance config sets a `status:`: setup applies that status. Check those
 after step 8.1.
 
@@ -394,7 +394,7 @@ Telegram task links and the app links people have.
    - `tailscale serve --bg --https=8446 http://127.0.0.1:3120` (the kernel's sign-in and approval pages);
    - or `ops/setup.sh`'s routes, `--https=443 http://127.0.0.1:3121` and `--https=8446 http://127.0.0.1:3120`.
 
-   `scripts/host-serve.mjs check` must pass.
+   `scripts/host-serve.ts check` must pass.
 5. The apps node needs nothing: its identity came with `data/apps-edge/state`, and only one copy of it ever runs
    (the old one is stopped and disabled).
 
@@ -421,7 +421,7 @@ Telegram task links and the app links people have.
    - compiles;
    - installs and starts the gateway;
    - runs `docker compose up -d --build`, against the restored data;
-   - runs `paperclip-setup.mjs`;
+   - runs `paperclip-setup.ts`;
    - runs `ops/warehouse-sources.sh`, which skips while the warehouse is down.
 2. Install and enable the same user units the old host had:
 
@@ -457,7 +457,7 @@ Telegram task links and the app links people have.
 5. Resume what step 5 paused, from the new host. `data/fleet-paused.json` came with the final pass:
 
    ```sh
-   node scripts/fleet-pause.mjs resume
+   node scripts/fleet-pause.ts resume
    ```
 
    It reactivates exactly the recorded routines, clears each recorded CI runner unit's start limit and starts it (a stop
@@ -483,7 +483,7 @@ clean: scheduled routines fire, agents finish their tasks, backups run (step 10)
 
    Otherwise, reconnect those accounts afterwards.
 4. On the old host: `sudo systemctl enable --now docker.socket docker.service`, `docker compose up -d`, start its app
-   containers, re-enable its user units and serve routes, then run `node scripts/fleet-pause.mjs resume` (its own
+   containers, re-enable its user units and serve routes, then run `node scripts/fleet-pause.ts resume` (its own
    `data/fleet-paused.json` is still there).
 
 Rollback loses everything written on the new host since the cutover: Paperclip tasks and comments, board approvals and

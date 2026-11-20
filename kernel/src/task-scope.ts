@@ -7,7 +7,7 @@ export type TaskIssue = { id: string; identifier?: string | null; assigneeAgentI
 export type LogGrants = { agents?: Record<string, { memory_inbox?: string; review_log?: string; chat_task?: string } | undefined>; fleet_issues?: string };
 
 /**
- * Setup's log tasks (scripts/modules.mjs ensureLogTasks, ensureFleetIssues), by id or identifier, from the grants table only:
+ * Setup's log tasks (scripts/modules.ts ensureLogTasks, ensureFleetIssues), by id or identifier, from the grants table only:
  * an agent holds each, but holding one never widens what it may write there (comments only, cp.ts), and none wakes anyone.
  */
 export function logTasks(g: LogGrants): Set<string> {

@@ -13,7 +13,7 @@
 // kind's executor). Not signed in: it still starts, lists the tools it saw last as stand-ins, and every call says how to
 // connect (never a crash loop, never a silently empty tool list).
 //
-// First-party modules hold byte-identical copies (scripts/sync-shared.mjs: edit this one and run it); third-party modules import
+// First-party modules hold byte-identical copies (scripts/sync-shared.ts: edit this one and run it); third-party modules import
 // @aidenhq/sdk/vendor/proxy (the MCP SDK, zod and pino are theirs: peer dependencies).
 import { timingSafeEqual } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";

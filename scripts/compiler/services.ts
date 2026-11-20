@@ -2,7 +2,7 @@
 // any field outside kernel/schemas/services.json is a compile error, so a manifest can't express a bind mount, a socket, a
 // capability, a host namespace, a DNS override or another module's network. Every service gets the hardened settings, its
 // module's own network (aidenhq-mod-<module>, internal), its own egress network if it declares egress, its own secrets
-// and, if declared, its module's data dir and own vault dir. Pure: scripts/modules.mjs calls it and writes nothing here.
+// and, if declared, its module's data dir and own vault dir. Pure: scripts/modules.ts calls it and writes nothing here.
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
@@ -24,7 +24,7 @@ export type Legacy = { links?: string[]; secrets?: string[]; hostEnv?: string[];
 export const PRIVILEGED = ["docker", "host-unit", "sandbox-provider", "paperclip-plugin", "speaks-as-owner", "git-credential", "reviewer", "host-metrics"];
 
 export const SERVICE_FIELDS = ["image", "build", "command", "entrypoint", "env", "secrets", "port", "ui_port", "healthcheck", "cpus", "memory", "pids", "user", "read_only", "tmp", "data", "state", "points", "github_app", "workspaces", "host_mounts", "egress", "links", "join", "on_demand", "when", "share"];
-/** The gate's public keys (scripts/identity.mjs), which a shared service verifies people's identity with, as apps do. */
+/** The gate's public keys (scripts/identity.ts), which a shared service verifies people's identity with, as apps do. */
 export const IDENTITY_KEYS_SECRET = "aidenhq_identity_keys";
 /**
  * The code host's (privileged: [git-credential]): the GitHub App's vault dir read-only, the job workspaces (the kernel's
@@ -220,7 +220,7 @@ export function generateCompose(name: string, def: Dict, ctx: { root: string; lo
       o.ports = [`127.0.0.1:${s.ui_port}:${s.port}`];
     }
     // `share: { host, aud?, default_role? }`: people reach the service through the gate at https://<host> as app `<module>`,
-    // like a shared app (scripts/edge.mjs); host comes from a setting only the instance sets, empty: not shared. The service
+    // like a shared app (scripts/edge.ts); host comes from a setting only the instance sets, empty: not shared. The service
     // gets the gate's public keys at /run/secrets/AIDENHQ_IDENTITY_KEYS and AIDENHQ_APP, to verify X-AidenHQ-Identity.
     if (s.share != null) {
       const sh = isMap(s.share) ? s.share : fail(`${at("share")} must be a map`);

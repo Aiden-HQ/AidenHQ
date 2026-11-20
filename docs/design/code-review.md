@@ -85,7 +85,7 @@ Asking Aiden "review <PR URL> deep" (the Reviewer Manager's `code_review_run`) d
 
 ## The review run
 
-`recipe/review.mjs`, one check job per PR head: N finders in parallel on the diff with the guidance, then, if `verify`, a
+`recipe/review.ts`, one check job per PR head: N finders in parallel on the diff with the guidance, then, if `verify`, a
 verifier that keeps a finding only with a `file:line` it confirmed, then dedupe and rank. It returns findings JSON (severity
 `important`, `nit` or `pre_existing`; path, line, title, why, evidence, fix brief), a `coverage` block (files reviewed and
 excluded, `incomplete` reason) and the run's billed cost, bound into the kernel's signed receipt. Incremental runs diff from the

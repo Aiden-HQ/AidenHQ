@@ -76,7 +76,7 @@ defaults. **Changes:** pending and past changes, with reviewed revert.
   updates). For an instance (Architect-built) agent the box is its whole `agents/<key>/AGENTS.md`, with no fork.
 - **Main handbook:** read-only until **Edit main handbook**, which warns that it makes the instance's own copy and stops
   module handbook updates until **Update** (which replaces the edits, keeping Your rules).
-- **Fork storage:** `agents/<key>/AGENTS.md` plus `overrides.agents.<key>.handbook_fork`; `scripts/handbook.mjs
+- **Fork storage:** `agents/<key>/AGENTS.md` plus `overrides.agents.<key>.handbook_fork`; `scripts/handbook.ts
   readInstructions` reads the fork when that is set; Update is one commit removing both. The page shows "Forked", and when
   the module's file at the pin differs from the fork's base, "module has a newer version" with a diff.
 - **What it reads:** the compiled handbook as the agent gets it. **History:** commits touching its handbook files and

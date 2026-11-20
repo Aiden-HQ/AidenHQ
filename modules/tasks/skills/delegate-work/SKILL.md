@@ -35,7 +35,7 @@ plus what to publish (`pr`).
   branch and name a job that is there (`sed -n '/^jobs:/,$p' .github/workflows/*.yml | rg -N '^  [a-z][a-z0-9_-]*:$'`):
   the product repo runs `ci-required` (its `modules` job for the official modules), where `image-scan` is the product repo's and the app repos' that copied
   its CI template, so each criterion is one this repository's CI can satisfy. Name the selector and its rule ("pin what
-  `best-version.mjs` prints"), not a version: the description can't be edited after filing, and the AI reviewer reads it,
+  `best-version.ts` prints"), not a version: the description can't be edited after filing, and the AI reviewer reads it,
   not the comments.
 - **The Engineer's rules travel with it.** Engineers follow skill `write-code` (tests, flaky checks, shipping live,
   `.github/code-review-critical`, additive data-app migrations, the `No-Auto-Rollback: security fix` trailer, large
