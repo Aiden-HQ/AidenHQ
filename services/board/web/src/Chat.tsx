@@ -305,7 +305,7 @@ export function ApprovalsView({ open, onSignIn }: { open: (identifier: string) =
                   ))}
                 </ul>
               ) : (
-                <p className="empty-state">{f === "failed" ? "Nothing failed." : "Nothing here yet."}</p>
+                <p className="empty-state">{f === "failed" ? "Nothing failed." : waitingCount ? "Nothing here yet." : "All clear. When a write needs your say, its card lands here."}</p>
               )}
             </section>
           )}
