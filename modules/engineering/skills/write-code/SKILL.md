@@ -58,6 +58,10 @@ description: How code is written, tested and published here, in any repository -
   found" means that step was skipped.
 - While you iterate, run the one test file you are working on. Run the full suite of each package you changed once,
   before you publish and before you say it works.
+- A long build or test command must never be piped through `tail`, `head` or another filter that withholds its
+  output: the run shows no progress and is stopped as stalled after about 35 minutes. Let its output stream, or write
+  it to a log file and read the end of that file, and give it a timeout short enough that the run ends before the stall
+  window.
 - Judge the work by using it: run it, look at it, click through it.
 - Image CVE scans are the PR's `image-scan` check (lock files and pinned base images, no build), not a local step.
 
