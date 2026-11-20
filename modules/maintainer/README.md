@@ -17,7 +17,7 @@ The `maintainer` agent holds the roles `maintainer` and `product-issues` and use
 and set state on issues, list PRs and read repo files. A watcher service looks for newly labelled issues every
 `maintainer_poll_minutes` (default 5).
 
-Settings: `external_triage`, `triage_per_author_day` (3) and `triage_per_repo_day` (30) bound new-issue triage runs a day.
+Settings: `external_triage`, `triage_invalid_per_author_day` (5, invalid issues only: a fix-labelled or feature-request issue doesn't count) and `triage_per_repo_day` (30) bound new-issue triage runs a day.
 
 ## New installs
 

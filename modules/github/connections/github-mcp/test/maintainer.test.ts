@@ -646,6 +646,7 @@ it("triage skips issues already labelled feature-request or agent-build, and a f
   const row = out.repos[0]! as any;
   expect(row.untriaged.map((i: any) => i.number)).toEqual([3]);
   expect(row.builds.map((i: any) => [i.number, i.trusted])).toEqual([[2, true]]);
+  expect(row.featured).toEqual([1]);
   // A repo without `features` reads no builds.
   expect(((await maintainer(f).issuesSince({})).repos[0]! as any).builds).toBeUndefined();
 });

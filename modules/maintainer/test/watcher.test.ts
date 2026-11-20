@@ -136,6 +136,22 @@ test("triage runs are capped a day per author and per repo, the rest left to the
   assert.deepEqual(log.infoLines.filter((l) => /triage limit reached/.test(l.m)).map((l) => l.o.issue), [2, 4]);
 });
 
+test("valid issues don't count against their author's cap; the invalid ones do", async () => {
+  const at = (h) => `2026-01-01T${String(h).padStart(2, "0")}:00:00Z`;
+  const fired = [], store = kv(), log = logs();
+  const u = (number) => ({ number, created_at: at(number), author: "donn" });
+  store.setMeta("maintainer_issues", JSON.stringify({ repos: { [R]: { triage_cursor: at(0) } } }));
+  const run = (batch) => maintainerTick({ issues: async () => batch, fire: async () => true, triage: async (_r, n) => (fired.push(n), true), limits: { perAuthor: 5, perRepo: 30 }, store, log });
+  // Seven issues in a burst: none has a verdict yet, so the sixth and seventh are left to the daily run.
+  await run({ repos: [{ repo: R, issues: [], cursor: "c1", untriaged: [1, 2, 3, 4, 5, 6, 7].map(u), triage_cursor: at(7) }] });
+  assert.deepEqual(fired, [1, 2, 3, 4, 5]);
+  // Three get verdicts: #1 a fix label (trusted), #2 and #3 feature-request. Their slots free, so the next two are triaged.
+  const issue = { number: 1, trusted: true };
+  await run({ repos: [{ repo: R, issues: [issue], cursor: "c2", featured: [2, 3], untriaged: [8, 9, 10, 11].map(u), triage_cursor: at(11) }] });
+  assert.deepEqual(fired, [1, 2, 3, 4, 5, 8, 9, 10]);
+  assert.deepEqual(log.infoLines.filter((l) => /triage limit reached/.test(l.m)).map((l) => l.o.issue), [6, 7, 11]);
+});
+
 test("the watcher is off until the module's token is there, and picks it up without a restart", async () => {
   const dir = mkdtempSync(join(tmpdir(), "maintainer-"));
   assert.equal(maintainerIssues({}), undefined);
