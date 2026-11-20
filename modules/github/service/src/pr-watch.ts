@@ -6,7 +6,7 @@
 // it (engineers end a job on running checks, "I'll merge once green", and nothing else would bring them back); one whose named checks have
 // finished red on its own mergeable head (not only behind main) wakes it once per head to fix it. A check whose job never started (GitHub
 // refused it: billing, no runner; the runner's environmentFailure) is re-run once at that head, never rebased and never woken for. The PR of
-// a cancelled task is closed with its branch, once (the runner's abandoned PR). A PR behind main with no conflict is updated by GitHub
+// a cancelled task is closed with its branch, once (the runner's abandoned PR), and so is a done task's unmerged PR once its head is half an hour old with no merge of it open. A PR behind main with no conflict is updated by GitHub
 // (update-branch, the runner's rebaseInCode) instead of waking its task, once per head and head of main. No PR gets more than MAX_WAKES wakes at one head (RED_WAKES).
 // The CI breaker: after 3 red rounds on an agent's PR (heads whose own checks finished red), or the same named check red on two
 // heads, its task is no longer woken for red checks; whoever asked for the task (its open parent, else the task) is told once,
@@ -101,6 +101,7 @@ export function startPrWatch(o: PrWatchOptions) {
     state.reded ??= {};      // PR url -> the head whose red checks woke its task
     state.reran ??= {};      // `<pr url>:<head>` -> when its never-started checks were re-run
     state.abandoned ??= {};  // PR url -> when it was closed for its cancelled task
+    state.headAt ??= {};     // PR url -> { head, at }: when this head was first seen
     state.updated ??= {};    // `<pr url>:<head>:<main oid>` -> "ok" or "refused": GitHub was asked to update the branch
     state.wakes ??= {};      // PR url -> { head, n }: wakes sent at this head
     state.breaker ??= {};    // PR url -> { rounds, failed: { check name -> head }, told? }: red rounds since its last green head
@@ -179,14 +180,14 @@ export function startPrWatch(o: PrWatchOptions) {
       log("ci breaker tripped", { pr: pr.url, task, why });
       return "sent";
     }
-    /** Close a cancelled task's PR and delete its branch, once: recorded only once GitHub closed it, so a refused close is tried again next tick. */
-    async function abandon(pr: Json, task: string) {
+    /** Close a cancelled or done task's PR and delete its branch, once: recorded only once GitHub closed it, so a refused close is tried again next tick. */
+    async function abandon(pr: Json, task: string, comment: string) {
       const t = await o.app.token(owner!, { repositories: [name!], permissions: CLOSE });
       const c = await o.gh("PATCH", `/repos/${o.repo}/pulls/${pr.number}`, t, { state: "closed" });
       if (c.status >= 300) return log("abandoned PR not closed: retried next tick", { pr: pr.url, task, status: c.status });
       state.abandoned[pr.url.toLowerCase()] = new Date().toISOString();
       save();
-      await o.gh("POST", `/repos/${o.repo}/issues/${pr.number}/comments`, t, { body: `Closed by the code host: ${task}, the task this PR was for, is cancelled.` });
+      await o.gh("POST", `/repos/${o.repo}/issues/${pr.number}/comments`, t, { body: comment });
       const d = await o.gh("DELETE", `/repos/${o.repo}/git/refs/heads/${pr.headRefName}`, t);
       log("abandoned PR closed", { pr: pr.url, task, branchDeleted: d.status < 300 });
     }
@@ -258,11 +259,19 @@ export function startPrWatch(o: PrWatchOptions) {
       }
       // Only an agent's own PR, by the task that opened it: a reused PR number (a recreated repository) belongs to nobody here.
       if (isDependabot(pr) || pr.isCrossRepository !== false || !opener || opener.branch !== pr.headRefName) continue;
-      // A cancelled task's PR is closed with its branch, once; a done task's is left alone (it may be merging).
+      if (state.headAt[url]?.head !== pr.headRefOid) state.headAt[url] = { head: pr.headRefOid, at: new Date().toISOString() };
+      // A cancelled task's PR is closed with its branch, once. A done task's unmerged PR is too, unless a merge of it may be in flight
+      // (an open github.merge record on the task) or its head is under half an hour old (a just-finished merge isn't raced).
       if (!state.abandoned[url]) {
-        const status = await kernel("GET", `/v1/work?task=${encodeURIComponent(opener.task)}`).then((t) => t?.status, (e) => (log("task read failed", { pr: pr.url, err: String(e.message).slice(0, 200) }), undefined));
+        const work = await kernel("GET", `/v1/work?task=${encodeURIComponent(opener.task)}`).catch((e) => (log("task read failed", { pr: pr.url, err: String(e.message).slice(0, 200) }), undefined));
+        const status = work?.status;
         if (!status) log("task status unknown: the cancelled-task rule cannot run", { pr: pr.url, task: opener.task });
-        if (status === "cancelled") { await abandon(pr, opener.task); continue; }
+        if (status === "cancelled") { await abandon(pr, opener.task, `Closed by the code host: ${opener.task}, the task this PR was for, is cancelled.`); continue; }
+        const merging = (work?.records ?? []).some((r: Json) => r.kind === "github.merge" && ["review", "owner", "approved", "claimed"].includes(r.state) && (r.args?.prs ?? []).some((p: Json) => p.number === pr.number));
+        if (status === "done" && !merging && Date.now() - Date.parse(state.headAt[url].at) >= HALF_HOUR) {
+          await abandon(pr, opener.task, `Closing: its task ${opener.task} is done; its change landed elsewhere or isn't needed.`);
+          continue;
+        }
       }
       if (pr.mergeable === "MERGEABLE" && !pr.isDraft && named.length && named.every((c) => c.ok) && state.greened[url] !== pr.headRefOid) {
         const w = await wake(pr, opener.task, `${pr.url}'s checks are green at \`${pr.headRefOid}\`. If this PR is your task's change, merge it with \`aidenhq merge ${pr.url} ${pr.headRefOid}\`; if it is superseded, close it with \`aidenhq close ${pr.url}\`. Nothing else.`);
