@@ -328,3 +328,54 @@ test("a failing close of ended wakes is logged and the poll still scans every ag
   w.db.exec("DROP TABLE jobs");
   await assert.doesNotReject(w.wakes.poll());
 });
+
+test("handed to the owner is recorded as owner, and observing a change doesn't swallow its wake", async () => {
+  const w = world();
+  w.issue("t1", { status: "in_progress" });
+  await w.wakes.poll();
+  w.tick();
+  Object.assign(w.issues.t1, { assigneeAgentId: null, assigneeUserId: "u1", updatedAt: "2026-11-18T10:01:00.000Z" });
+  await w.wakes.event({ issueId: "t1" });
+  const of = (task, type) => w.facts.forTask(task).filter((f) => f.type === type);
+  assert.deepEqual(of("t1", "task.assignee_changed").map((f) => [f.data.from, f.data.to]), [[null, AGENT], [AGENT, "owner"]]);
+  // The kernel's own write observed first (as cp.ts does) records the facts but files no wake: the event still does.
+  w.tick();
+  Object.assign(w.issues.t1, { assigneeAgentId: AGENT, assigneeUserId: null, status: "todo", statusVersion: 3, updatedAt: "2026-11-18T10:02:00.000Z" });
+  await w.wakes.observe(w.issues.t1, "account:u1");
+  assert.deepEqual(of("t1", "task.assignee_changed").map((f) => f.data.to), [AGENT, "owner", AGENT]);
+  assert.deepEqual(w.rows("t1"), []);
+  await w.wakes.event({ issueId: "t1" });
+  assert.equal(w.rows("t1").length, 1);
+  assert.equal(of("t1", "task.assignee_changed").length, 3);
+});
+
+test("an owner comment is task.commented at its own time; a chat is marked at creation", async () => {
+  const w = world();
+  w.issue("t1", { status: "in_progress", labels: [{ name: "chat" }] });
+  w.issue("t2", { status: "in_progress" });
+  await w.wakes.poll();
+  w.tick();
+  const at = "2026-11-18T10:00:30.000Z", at2 = "2026-11-18T10:00:40.000Z";
+  w.comment("t1", "c1", { authorUserId: "u1", createdAt: at });
+  w.comment("t1", "c2", { authorAgentId: AGENT, createdAt: at2, body: "ok\n<!-- aidenhq:job=j-9 kind=reply -->" });
+  await w.wakes.poll();
+  const of = (task, type) => w.facts.forTask(task).filter((f) => f.type === type);
+  assert.deepEqual(of("t1", "task.commented").map((f) => [f.version, f.actor, f.at, f.data]),
+    [["c1", "account:u1", at, { kind: "comment" }], ["c2", `agent:${AGENT}`, at2, { kind: "reply", job: "j-9" }]]);
+  assert.deepEqual([of("t1", "task.created")[0].data.chat, of("t2", "task.created")[0].data.chat], [true, false]);
+});
+
+test("a closure the event path missed is recorded by the next poll", async () => {
+  const w = world();
+  w.issue("t1", { status: "in_progress" });
+  await w.wakes.poll();
+  w.tick();
+  Object.assign(w.issues.t1, { status: "done", statusVersion: 2, updatedAt: iso(Date.now()) }); // the event was lost, and the open list omits it
+  await w.wakes.poll();
+  const of = (type) => w.facts.forTask("t1").filter((f) => f.type === type);
+  assert.deepEqual(of("task.status_changed").map((f) => f.data.to), ["in_progress", "done"]);
+  // Once closed it leaves the reconcile.
+  await w.wakes.poll();
+  assert.equal(of("task.status_changed").length, 2);
+  assert.equal(w.db.prepare("SELECT status FROM wake_tasks WHERE task = 't1'").get().status, "done");
+});

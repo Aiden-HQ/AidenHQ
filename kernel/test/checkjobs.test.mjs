@@ -359,3 +359,12 @@ test("checks: a result recipe's one retry spends what its budget has left; none 
   await ask("0.06");
   assert.equal(runs.length, 3);
 });
+
+test("checks: check.ended carries the task it was asked for", async () => {
+  const pkg = JSON.stringify({ scripts: { "aidenhq:fast-check": "eslint ." } });
+  const { checks, done, db } = setup({ [A]: { "package.json": pkg }, [B]: { "package.json": pkg } });
+  const v = await done(checks.start("github", { repo: "acme/app", head: A, run: "fast", spec: { base: B }, task: "t-1" }));
+  assert.equal(db.prepare("SELECT task FROM facts WHERE type = 'check.ended'").get().task, "t-1");
+  assert.throws(() => checks.start("github", { repo: "acme/app", head: A, run: "fast", spec: { base: B }, task: "a b" }), /task id/);
+  assert.equal(v.state, "done");
+});

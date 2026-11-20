@@ -36,3 +36,21 @@ test("the board reads and writes as the owner through the kernel, only on its li
   // (A read with another bearer is a module's read: the module routes refuse it.)
   assert.equal((await at("GET", "/v1/cp/read/api/issues/issue-1", { token: "the-runners-key" })).status, 401);
 });
+
+test("an owner change to a task is observed with its admin as the actor; a failed observe leaves the write standing", async () => {
+  const { createBoardCp } = await import("../src/cp.ts");
+  const { Readable } = await import("node:stream");
+  const seen = [], log = [];
+  const fetch = async () => new Response(JSON.stringify({ id: "t1", assigneeUserId: "u1" }), { status: 200, headers: { "content-type": "application/json" } });
+  const call = async (observe, headers) => {
+    const req = Object.assign(Readable.from([Buffer.from(JSON.stringify({ comment: "x" }))]), { method: "PATCH", headers });
+    let out;
+    const res = { writeHead: (s) => ((out = s), res), end: () => {} };
+    await createBoardCp({ controlUrl: "http://cp", key: () => "k", fetch, observe, log: (m) => log.push(m) })(req, res, "owner", "/api/issues/t1", "");
+    return out;
+  };
+  assert.equal(await call(async (i, actor) => void seen.push([i.id, actor]), { "x-aidenhq-account": "acct_2" }), 200);
+  assert.deepEqual(seen, [["t1", "account:acct_2"]]);
+  assert.equal(await call(async () => { throw new Error("no"); }, {}), 200);
+  assert.ok(log.includes("observe failed"));
+});

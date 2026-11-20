@@ -276,6 +276,8 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
   // The running attempt's model token's run key (never the token), and how many of its runs restarts have lost.
   if (!cols.has("run_key")) db.exec("ALTER TABLE checks ADD COLUMN run_key TEXT");
   if (!cols.has("lost")) db.exec("ALTER TABLE checks ADD COLUMN lost INTEGER NOT NULL DEFAULT 0");
+  // The task the check was asked for (the asker's own say), carried on its check.ended fact.
+  if (!cols.has("task")) db.exec("ALTER TABLE checks ADD COLUMN task TEXT");
   const facts = openFacts(db);
   /** The end of the attempt that started at `started` and its check.ended fact, in one transaction (a re-run reuses the id: its
    * start time is the version). False when a newer attempt has taken the row: this one's end is dropped. */
@@ -291,7 +293,7 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
         return false;
       }
       const verdict = state === "done" ? (JSON.parse(set.receipt!) as Receipt).verdict : state;
-      noteFact(facts, { type: "check.ended", subject: `check:${id}`, version: String(r.at), at: new Date(at).toISOString(), actor: `module:${r.module}`, data: { kind: r.run, repo: r.repo, head: r.head, verdict } });
+      noteFact(facts, { type: "check.ended", subject: `check:${id}`, version: String(r.at), at: new Date(at).toISOString(), actor: `module:${r.module}`, ...(r.task ? { task: r.task } : {}), data: { kind: r.run, repo: r.repo, head: r.head, verdict } });
       db.exec("RELEASE check_end");
       return true;
     } catch (e) {
@@ -472,9 +474,10 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
 
   return {
     /** A check of `repo@head`: the one already asked for with this spec (running or done), else a new run. */
-    start(module: string, b: { repo?: unknown; head?: unknown; run?: unknown; spec?: unknown }): CheckView {
+    start(module: string, b: { repo?: unknown; head?: unknown; run?: unknown; spec?: unknown; task?: unknown }): CheckView {
       const repo = String(b?.repo ?? ""), head = String(b?.head ?? ""), run = String(b?.run ?? "") as Run;
       const recipe = recipes()[run];
+      if (b?.task !== undefined && !(typeof b.task === "string" && /^[\w-]{1,100}$/.test(b.task))) throw new CheckError(400, "bad-request", "task is a task id");
       if (!KINDS.slug.test(repo) || !KINDS.sha.test(head) || !recipe) throw new CheckError(400, "bad-request", `send {repo: owner/name, head: <commit sha>, run: ${Object.keys(recipes()).join("|") || "(no module declares one)"}, spec}`);
       const spec = checkSpec(run, recipe, b.spec);
       if (recipe.model && !(Number(spec.budget_usd) > 0)) throw new CheckError(400, "bad-spec", `a ${run} check's spec.budget_usd is more than 0`);
@@ -487,8 +490,9 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
       const again = had && (had.state === "done" ? Boolean(recipe.result && !had.result && had.retry) : had.state !== "running") && (!recipe.model || had.tries < 2) && had.lost < MAX_LOST;
       if (had && !again) return view(had);
       const id = had?.id ?? `c-${randomBytes(8).toString("hex")}`;
-      if (had) db.prepare("UPDATE checks SET state = 'running', receipt = NULL, error = NULL, result = NULL, retry = 0, tries = tries + 1, run_key = NULL, at = ?, ended = NULL WHERE id = ?").run(now(), id);
-      else db.prepare("INSERT INTO checks (id, module, repo, head, run, hash, spec, state, at) VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?)").run(id, module, repo.toLowerCase(), head, run, hash, JSON.stringify(spec), now());
+      // The task is the latest asker's: a re-run for another task is that task's evidence from here on.
+      if (had) db.prepare("UPDATE checks SET task = COALESCE(?, task), state = 'running', receipt = NULL, error = NULL, result = NULL, retry = 0, tries = tries + 1, run_key = NULL, at = ?, ended = NULL WHERE id = ?").run((b.task as string | undefined) ?? null, now(), id);
+      else db.prepare("INSERT INTO checks (id, module, repo, head, run, hash, spec, state, at, task) VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?, ?)").run(id, module, repo.toLowerCase(), head, run, hash, JSON.stringify(spec), now(), (b.task as string | undefined) ?? null);
       log("check started", { check: id, module, repo, head, run });
       execute(id, recipe).catch((e: Error) => log("WARNING: check run failed outside its own handling", { check: id, err: String(e?.message ?? e).slice(0, 300) }));
       return view(row(id)!);
