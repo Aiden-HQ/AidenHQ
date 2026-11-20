@@ -11,10 +11,10 @@
 // The churn pass (every 15 minutes, a cursor per repo in the data dir) reads each repo's merged commits from its cache clone,
 // never the GitHub API. The first pass also runs the GitHub backfill once (no route, no button): the managed repos' history through
 // the API within the App's rate budget. It stops when GitHub says little is left and the next pass goes on; done is recorded in the data dir.
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { churnFromGit, DEFAULT_CHURN_EXCLUDE } from "./aidenhq-sdk/churn.ts";
-import { factEmitter, kernelClient, type FactIn } from "./aidenhq-sdk/kernel-client.ts";
+import { factEmitter, kernelClient, type FactIn, type KernelError } from "./aidenhq-sdk/kernel-client.ts";
 
 type Json = any;
 type Gh = (method: string, path: string, token: string, body?: unknown) => Promise<{ status: number; body: any; remaining?: number }>;
@@ -38,6 +38,8 @@ const FAILED = new Set(["failure", "timed_out", "cancelled", "action_required", 
 export const prSubject = (repo: string, n: number | string) => `pr:${repo.toLowerCase()}#${n}`;
 const issueSubject = (repo: string, n: number) => `issue:${repo.toLowerCase()}#${n}`;
 const readJson = (f: string, empty: Json): Json => { try { return existsSync(f) ? JSON.parse(readFileSync(f, "utf8")) : empty; } catch { return empty; } };
+/** A state file written whole: tmp then rename, so a crash never leaves half a file. */
+const writeJson = (f: string, v: Json) => { writeFileSync(`${f}.tmp`, JSON.stringify(v)); renameSync(`${f}.tmp`, f); };
 /** The wait reason (module.yaml `work.waiting` reasons) of a merge queue's wait key (merge-gate.mjs `why`, or merges.ts's own). */
 export const waitReason = (key: string): string => (key === "eval" ? "eval" : key === "retry" || key === "error" || key === "put" ? "retry" : /design review/i.test(key) ? "design_review" : "checks");
 /** A reverting PR's target, from its title and body (GitHub's and git's own revert texts): { of_pr?, of_sha? } or undefined. */
@@ -78,7 +80,8 @@ export function createFlow(d: FlowDeps) {
   let appName: string | undefined;
   /** Who an author is: the App's bot (agent), someone with OWNER, MEMBER or COLLABORATOR association (owner), anyone else (outside). */
   async function kindOf(who?: string | null, association?: string | null): Promise<Kind> {
-    appName ??= login(await d.appLogin?.().catch(() => undefined));
+    // A failed lookup is retried at the next author, never remembered as "no App".
+    if (!appName) appName = login(await d.appLogin?.().catch(() => undefined));
     if (login(who) && login(who) === appName) return "agent";
     return ["OWNER", "MEMBER", "COLLABORATOR"].includes(String(association ?? "").toUpperCase()) ? "owner" : "outside";
   }
@@ -129,8 +132,9 @@ export function createFlow(d: FlowDeps) {
       prOf: (subject) => { const n = /\(#(\d+)\)\s*$/.exec(subject)?.[1] ?? /^Merge pull request #(\d+)/.exec(subject)?.[1]; return n ? `${slug}#${n}` : undefined; },
       onError: (commit, e) => d.log("churn: a commit's diff couldn't be read", { repo, commit, err: String((e as Error)?.message ?? e).slice(0, 200) }),
     });
-    let emitted = 0;
-    const put = (x: FactIn) => { emit({ ...x, ...(source ? { source } : {}) }); emitted++; };
+    // Sent straight to the kernel, and the cursor moves only once it took them (a restart or a refusal must not lose them).
+    const facts: FactIn[] = [];
+    const put = (x: FactIn) => { const y = { ...x, at: utc(x.at), ...(source ? { source } : {}) }; facts.push(y); if (source) status.emitted++; };
     for (const [pr, lines] of Object.entries(out.added)) {
       const at = out.mergedAt.get(pr)!;
       if (lines && out.fresh(at)) put({ type: "code.added", subject: prSubject(repo, num(pr)), version: "1", at, task: taskOf(repo, num(pr)), data: { pr, lines } });
@@ -139,8 +143,9 @@ export function createFlow(d: FlowDeps) {
       const at = out.mergedAt.get(r.by_pr)!;
       if (out.fresh(at)) put({ type: "code.rewritten", subject: prSubject(repo, num(r.pr)), version: r.by_pr, at, task: taskOf(repo, num(r.pr)), data: r });
     }
-    if (out.last) writeFileSync(cursorFile, JSON.stringify({ ...readJson(cursorFile, {}), [slug]: out.last }));
-    return emitted;
+    await postFacts(facts);
+    if (out.last) writeJson(cursorFile, { ...readJson(cursorFile, {}), [slug]: out.last });
+    return facts.length;
   }
   // ---- live issues ----
   const issuesFile = join(d.cacheDir, "issues.json");
@@ -154,10 +159,12 @@ export function createFlow(d: FlowDeps) {
     const key = repo.toLowerCase(), startedAt = now().toISOString();
     const since = String(readJson(issuesFile, {})[key] ?? utc(now().getTime() - DAY));
     lowBudget = "";
+    const facts: FactIn[] = [];
+    const emit = (x: FactIn) => void facts.push({ ...x, at: utc(x.at) });
     for (let page = 1; ; page++) {
       const items: Json[] = (await gh(repo, `/repos/${repo}/issues?state=all&since=${since}&sort=updated&direction=asc&per_page=100&page=${page}`)).body ?? [];
       for (const i of items) if (!i.pull_request && Date.parse(i.created_at) >= Date.parse(since)) emit({ type: "issue.opened", subject: issueSubject(repo, i.number), version: OPENED_VERSION, at: i.created_at, task: null, data: { repo: key, number: i.number, labels: (i.labels ?? []).map((l: Json) => String(l.name ?? l)), state: i.state, ...(await authored(i.user?.login, i.author_association)) } });
-      if (lowBudget) return;
+      if (lowBudget) return postFacts(facts);
       if (items.length < 100) break;
     }
     // Events come newest first: read back to the cursor.
@@ -167,10 +174,11 @@ export function createFlow(d: FlowDeps) {
         if (Date.parse(e.created_at) <= Date.parse(since)) { more = false; continue; }
         if (e.event === "labeled" && e.issue && !e.issue.pull_request) emit({ type: "issue.labeled", subject: issueSubject(repo, e.issue.number), version: `${OPENED_VERSION}:${e.id}`, at: e.created_at, task: null, data: { label: String(e.label?.name ?? ""), by: String(e.actor?.login ?? "ghost") } });
       }
-      if (lowBudget) return;
+      if (lowBudget) return postFacts(facts);
       if (events.length < 100) more = false;
     }
-    writeFileSync(issuesFile, JSON.stringify({ ...readJson(issuesFile, {}), [key]: startedAt }));
+    await postFacts(facts);
+    writeJson(issuesFile, { ...readJson(issuesFile, {}), [key]: startedAt });
   }
   let churning = false;
   async function churnPass() {
@@ -192,10 +200,22 @@ export function createFlow(d: FlowDeps) {
   let status: Status = savedProgress().status ?? { state: "idle", emitted: 0 };
   if (status.state === "running") status = { ...status, state: "paused", message: "the service restarted: it goes on at the next pass" };
   let buffer: FactIn[] = [];
+  /** One batch to the kernel. A refusal (4xx; not a rate limit or timeout) splits the batch to find the fact it won't take, which is dropped and logged, so one bad fact never wedges the rest; anything else throws and the caller retries later. */
+  async function postBatch(batch: FactIn[]): Promise<void> {
+    try {
+      await client.call("POST", "/v1/facts", { facts: batch });
+    } catch (e) {
+      const status = (e as KernelError).status;
+      if (!(status >= 400 && status < 500) || status === 408 || status === 429) throw e;
+      if (batch.length > 1) { const mid = batch.length >> 1; await postBatch(batch.slice(0, mid)); return postBatch(batch.slice(mid)); }
+      d.log("facts: the kernel refused a fact, dropped", { status, type: batch[0]!.type, subject: batch[0]!.subject, error: String((e as Error).message).slice(0, 200) });
+    }
+  }
+  async function postFacts(facts: FactIn[]) { for (let i = 0; i < facts.length; i += 500) await postBatch(facts.slice(i, i + 500)); }
   async function backfillFlush() {
     while (buffer.length) {
       const batch = buffer.slice(0, 500);
-      await client.call("POST", "/v1/facts", { facts: batch });
+      await postBatch(batch);
       buffer = buffer.slice(batch.length);
     }
   }
@@ -294,7 +314,7 @@ export function createFlow(d: FlowDeps) {
         status = e instanceof Paused ? { ...status, state: "paused", message: `${e.message}: it goes on at a later pass` } : { ...status, state: "failed", message: String((e as Error).message).slice(0, 300) };
         d.log("backfill stopped", { ...status });
       } finally {
-        writeFileSync(progressFile, JSON.stringify({ version: BACKFILL_VERSION, done: status.state === "done" ? {} : progress, status }));
+        writeJson(progressFile, { version: BACKFILL_VERSION, done: status.state === "done" ? {} : progress, status });
         running = undefined;
       }
     })();
