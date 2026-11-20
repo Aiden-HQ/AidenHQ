@@ -48,7 +48,7 @@ Kernel:
   `wake_tasks` in both the event path and the poll backstop (same ids from the same fields, so one change counts once; a
   change the poll never saw is lost and shows as `unknown`), and the wake lifecycle (`wake.opened`, `wake.bound`,
   `wake.dropped`).
-- `admission.ts` / `jobs.ts`: `job.queued` (with `wake_at`), `job.held` (`reason`: capacity, spend_cap, paused, no_computer,
+- `admission.ts` / `jobs.ts`: `job.queued` (with `wake_at`), `job.held` (`reason`: capacity, max_parallel, spend_cap, paused, no_computer,
   launcher_unavailable), `job.started`, `job.ended` (state, exit, cost and tokens summed from the gateway's calls for the job).
 - `records.ts`: `record.filed`, `record.decided` (decider: reviewer, owner or code), `record.held`, `record.claimed`,
   `record.landed` / `record.failed`. `checks.ts`: `gate.would_block`, `finish.verdict` (kernel-only). `checkjobs.ts`:

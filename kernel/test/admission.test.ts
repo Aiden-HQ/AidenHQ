@@ -86,16 +86,21 @@ test("profiles: an engineer gets the engineer image, its jobcaps and the code ho
   assert.deepEqual([chk.authority.tools, chk.authority.writes, chk.authority.jobcaps], [{}, [], []]);
 });
 
-test("at capacity or at the agent's max_parallel → 429 busy and the wake stays claimed for a retry", async () => {
-  const { adm, wake, wakes } = setup({ capacity: 2 });
+test("at capacity or at the agent's max_parallel → 429 and the wake stays claimed for a retry", async () => {
+  // Every computer taken: 429 "busy" (dispatch retries on the status, and the hold says capacity).
+  const { adm, wake, wakes, facts } = setup({ capacity: 2 });
   await adm.admit("acme-dispatch", req(wake("w1", "task-3", "agent-2")));
   await adm.admit("acme-dispatch", req(wake("w2", "task-4", "agent-2")));
   await assert.rejects(adm.admit("acme-dispatch", req(wake("w3", "task-1", "agent-1"))), (e) => e.status === 429 && e.code === "busy");
   assert.deepEqual([wakes.get("w3").state, wakes.get("w3").job], ["claimed", null]);
+  assert.deepEqual(facts.forTask("task-1").filter((f) => f.type === "job.held").map((f) => f.data.reason), ["capacity"]);
+  // The agent's own max_parallel with computers free: still 429 (dispatch retries on the status, not the code), but its own
+  // reason, so the hold doesn't read as a capacity queue beside idle computers.
   const roomy = setup({ capacity: 12 });
   await roomy.adm.admit("acme-dispatch", req(roomy.wake("w1", "task-3", "agent-2")));
   await roomy.adm.admit("acme-dispatch", req(roomy.wake("w2", "task-4", "agent-2")));
-  await assert.rejects(roomy.adm.admit("acme-dispatch", req(roomy.wake("w3", "task-5", "agent-2"))), (e) => e.status === 429 && e.code === "busy");
+  await assert.rejects(roomy.adm.admit("acme-dispatch", req(roomy.wake("w3", "task-5", "agent-2"))), (e) => e.status === 429 && e.code === "max-parallel");
+  assert.deepEqual(roomy.facts.forTask("task-5").filter((f) => f.type === "job.held").map((f) => f.data.reason), ["max_parallel"]);
 });
 
 test("spend caps used up → 429 and no job", async () => {
