@@ -41,6 +41,8 @@ export interface LabelEvent {
   app_slug: string | null;
   created_at: string;
   trusted: boolean;
+  /** The issue was edited after this agent-build event, so it no longer vouches for what the issue now says. */
+  stale?: true;
 }
 
 interface GhTimelineEvent {
@@ -79,7 +81,7 @@ export interface MaintainerPr {
   last_author_activity: string;
   /** A review is asked of someone (a person or team), so the PR waits on a maintainer, not its author. */
   review_requested: boolean;
-  /** What the author must do (a failing check, a requested change, a conflict), or null when nothing is asked of them. */
+  /** What the author must do (failing checks, requested changes, a conflict, still a draft), or null when nothing is asked of them. */
   waiting_on_author: string | null;
   labels: string[];
 }
@@ -185,6 +187,15 @@ export class Maintainer {
       if (pageEvents.length < 100) break;
     }
     if (page > PAGE_CAP) throw new GitHubRefused(`#${number}'s timeline is longer than ${PAGE_CAP * 100} events, so its latest label event can't be read; refusing to guess`);
+    // The owner approved the issue as it read then: an edit to its title or body since (GitHub's lastEditedAt) withdraws that,
+    // and the owner relabels to approve it again. An unreadable edit time throws, so the caller fails closed.
+    const build = events.filter((e) => e.label === BUILD_LABEL).at(-1);
+    if (build?.action === "labeled" && build.trusted) {
+      const res = await this.app.appCall(r.owner, r.name, { issues: "read" }, "POST", "/graphql", { query: "query($o:String!,$n:String!,$i:Int!){repository(owner:$o,name:$n){issue(number:$i){lastEditedAt}}}", variables: { o: r.owner, n: r.name, i: number } });
+      const edited = res.body?.data?.repository?.issue?.lastEditedAt;
+      if (res.status !== 200 || res.body?.errors || edited === undefined) throw new Error(`couldn't read when ${r.repo}#${number} was last edited (GitHub said ${res.status})`);
+      if (edited && Date.parse(edited) > Date.parse(build.created_at)) Object.assign(build, { trusted: false, stale: true });
+    }
     return { repo: r.repo, number, events };
   }
 
@@ -286,11 +297,13 @@ export class Maintainer {
       // Each reviewer's latest verdict stands: one who asked for changes and hasn't returned leaves the PR waiting on the author.
       const verdict = new Map<string, string>();
       for (const x of reviews) if (x.state === "CHANGES_REQUESTED" || x.state === "APPROVED" || x.state === "DISMISSED") verdict.set(String(x.user?.login), x.state);
-      const failing = checks.filter((c) => ["failure", "timed_out", "action_required"].includes(c.conclusion)).map((c) => String(c.name));
+      // Fixed words only: a check's name is whatever the repo's CI (or a stranger's workflow) calls it, so it never reaches a task.
+      const failing = checks.filter((c) => ["failure", "timed_out", "action_required"].includes(c.conclusion)).length;
       const waiting = [
-        failing.length ? `failing ${failing.length === 1 ? "check" : "checks"} ${failing.slice(0, 3).join(", ")}` : "",
+        failing ? `failing checks (${failing})` : "",
         [...verdict.values()].includes("CHANGES_REQUESTED") ? "requested changes" : "",
         detail.body.mergeable_state === "dirty" ? "a merge conflict" : "",
+        base.draft ? "still a draft" : "",
       ].filter(Boolean);
       prs.push({ ...base, last_author_activity: times.sort().at(-1) ?? String(p.created_at), waiting_on_author: waiting.length ? waiting.join("; ") : null });
     }
@@ -545,7 +558,7 @@ export class Maintainer {
           continue;
         }
         if (!latest.trusted) {
-          skipped.push({ number: i.number, reason: `${asked} label added by ${latest.actor ?? latest.app_slug ?? "an unknown actor"}, not ${asked === BUILD_LABEL ? "a trusted collaborator" : "the App or a trusted collaborator"}` });
+          skipped.push({ number: i.number, reason: latest.stale ? `#${i.number} was edited after ${asked} was added; the owner relabels it to approve it again` : `${asked} label added by ${latest.actor ?? latest.app_slug ?? "an unknown actor"}, not ${asked === BUILD_LABEL ? "a trusted collaborator" : "the App or a trusted collaborator"}` });
           continue;
         }
         issues.push({ number: i.number, trusted: true, labeled_at: latest.created_at, actor: latest.actor ?? latest.app_slug ?? null, created_at: i.created_at, labels: labelNames(i) });

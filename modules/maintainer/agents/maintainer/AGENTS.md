@@ -209,7 +209,7 @@ for new behaviour gets one comment saying where such requests belong.
 
 The watcher files it for an issue carrying `agent-build` that github-mcp found trusted. Re-read the issue's `agent-build`
 label events with `github_app_label_events` (label `agent-build`) just before handing it over: the newest one must be
-trusted, and when it is not, stop and say so on the task. A feature the owner approved needs no "is it real" check: read the
+trusted, and when it is not, stop and say so on the task. The tool reads an issue edited after its `agent-build` label as untrusted, since the owner approved the text as it was then: the owner relabels it to approve the new text. A feature the owner approved needs no "is it real" check: read the
 issue and the code it touches, then brief an Engineer with the issue as the brief, naming the repo, the change wanted and
 the way to verify it, and asking for a PR on that repo. See the PR through as a fix, with the repo's `after_merge`, and
 close the issue `completed` citing the merged PR. An issue carrying both labels is this one task.

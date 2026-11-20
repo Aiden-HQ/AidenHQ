@@ -26,6 +26,8 @@ function fake(opts: {
   failList?: string[];
   /** A status the commit lookup answers with instead of a commit (e.g. 404 for an unknown ref). */
   failCommit?: number;
+  /** Issues' lastEditedAt (GraphQL), by number; unset is never edited. */
+  edited?: Record<number, string>;
 }) {
   const calls: Call[] = [];
   const posted: { path: string; body: any }[] = [];
@@ -38,6 +40,7 @@ function fake(opts: {
     const json = (status: number, b: unknown) => ({ status, json: async () => b });
     // The kernel's /v1/codehost/token: the App's token and its slug.
     if (url === "http://codehost/v1/codehost/token") return json(200, { token: "ghs_t", expires_at: new Date(Date.now() + 3300_000).toISOString(), app: { slug: APP.slug } });
+    if (url === "https://api.github.com/graphql") return json(200, { data: { repository: { issue: { lastEditedAt: opts.edited?.[body.variables.i] ?? null } } } });
     const perm = u.pathname.match(/^\/repos\/[^/]+\/[^/]+\/collaborators\/([^/]+)\/permission$/);
     if (perm && opts.failPermission) return json(opts.failPermission, { message: "Forbidden" });
     if (perm) {
@@ -636,6 +639,19 @@ it("pr_list tells bot, fleet and human PRs apart, and reads a human author's lat
   const { prs } = await m.prList(PRODUCT);
   expect(prs.map((p) => [p.number, p.author_kind])).toEqual([[1, "bot"], [2, "fleet"], [3, "human"], [4, "human"]]);
   // Dave's comment is not the author's: Carol's latest word is her own comment, and a review is asked of someone.
-  expect(prs[2]).toMatchObject({ draft: true, review_requested: true, last_author_activity: "2026-02-01T00:00:00Z", waiting_on_author: null });
-  expect(prs[3]).toMatchObject({ review_requested: false, last_author_activity: "2026-01-10T00:00:00Z", waiting_on_author: "failing check lint; requested changes; a merge conflict" });
+  expect(prs[2]).toMatchObject({ draft: true, review_requested: true, last_author_activity: "2026-02-01T00:00:00Z", waiting_on_author: "still a draft" });
+  expect(prs[3]).toMatchObject({ review_requested: false, last_author_activity: "2026-01-10T00:00:00Z", waiting_on_author: "failing checks (1); requested changes; a merge conflict" });
+});
+
+it("an issue edited after its trusted agent-build label is untrusted until the owner relabels it", async () => {
+  const f = fake({
+    issues: [1, 2].map((n) => ({ number: n, updated_at: "2026-01-01T00:00:09Z", labels: [BUILD] })),
+    timelines: { 1: [labeledAs(BUILD, "admin-user", "2026-01-01T00:00:01Z")], 2: [labeledAs(BUILD, "admin-user", "2026-01-01T00:00:01Z")] },
+    permissions: { "admin-user": "admin" },
+    edited: { 1: "2026-01-01T00:00:05Z", 2: "2025-12-31T00:00:00Z" },
+  });
+  const out = await maintainer(f, [], FEATURES).repoSince(PRODUCT, undefined, BUILD);
+  expect(out.issues.map((i) => i.number)).toEqual([2]);
+  expect(out.skipped).toEqual([{ number: 1, reason: expect.stringMatching(/edited after agent-build was added/) }]);
+  expect((await maintainer(f, [], FEATURES).labelEvents(PRODUCT, 1, BUILD)).events[0]).toMatchObject({ trusted: false, stale: true });
 });

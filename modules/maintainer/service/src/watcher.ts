@@ -420,7 +420,7 @@ export function maintainerPrWake(env: NodeJS.ProcessEnv = process.env): FirePr |
   return token(env) ? async (repo, t) => !!(await (t.kind === "nudge"
     ? fileTask(env, `Maintainer: nudge ${repo}#${t.number}`, `${repo}#${t.number}
 
-This pull request's author has been quiet, and what waits on them is: ${t.waiting ?? "it is still a draft"}. Nudge it, as "A nudge task" in your instructions says, with the date it closes if they stay quiet: ${t.close_by}.`, `maintainer-pr-nudge:${repo}#${t.number}@${t.activity}`)
+This pull request's author has been quiet, and what waits on them is: ${t.waiting ?? "nothing is named"}. Nudge it, as "A nudge task" in your instructions says, with the date it closes if they stay quiet: ${t.close_by}.`, `maintainer-pr-nudge:${repo}#${t.number}@${t.activity}`)
     : fileTask(env, `Maintainer: close quiet ${repo}#${t.number}`, `${repo}#${t.number}
 
 This pull request was nudged and its author stayed quiet since. Close it, as "A close task" in your instructions says: read its author's activity and review requests again first, and close only if the author is still quiet and no review is waiting.`, `maintainer-pr-close:${repo}#${t.number}@${t.activity}`))) : undefined;
