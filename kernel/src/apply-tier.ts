@@ -182,12 +182,17 @@ function moduleAuthorityParts(s: any, base: any, head: any, release?: string) {
   // The official marketplace moving with every module's folder tree id unchanged (the 5b switch): no authority, the reviewer's.
   if (!diffs.length) return [...extra, ...(changedKeys(base, head).includes("marketplaces") ? [T(1, "marketplace-same-trees", "the official marketplace moves; every module's folder tree id is unchanged")] : [])];
   // The owner's auto-updates taking an official release (owner, 2026-11-20: "auto update implies you are accepting new
-  // authority and anything else not actively malicious from the official releases"): every change its official modules
-  // bring is accepted, and the one AI reviewer judges only whether the update is malicious or compromised, reading every
-  // line. What isn't the release's (a module that isn't official, a marketplace or fork line) still goes as below.
-  if (release && !diffs.some((d) => d.changes.some((c) => c.ownerOnly && !c.official)) && !extra.length) {
+  // authority and anything else not actively malicious from the official releases"): when every change is an official
+  // module's, all of them are accepted, new spend included (the card names each spend increase), and the AI reviewer judges
+  // only whether the update is malicious or compromised, reading every line: the panel of two when any code changed, never
+  // the owner. Anything else (a module that isn't official, a marketplace or fork line, an unjudged grants override) goes
+  // as below.
+  if (release && !extra.length && diffs.every((d) => d.official && d.changes.every((c) => !c.ownerOnly || c.spend))) {
     const all = diffs.flatMap((d) => d.changes);
-    return [T(1, "release-update", `the release updater moves this instance to the official release ${release}, which it verified, while the owner's auto-updates are on: ${all.length} module changes (${all.filter((c) => c.owner).length} new authority), each listed after the diff; the AI reviewer checks the update is not malicious or compromised`)];
+    const spent = all.filter((c) => c.spend).length;
+    // Short enough that the record's reason (writes.ts, 300 characters) is never cut: the lines carry the detail.
+    const part = T(1, "release-update", `official release ${release}, verified by the updater, under the owner's auto-updates: ${all.length} module changes, ${all.filter((c) => c.owner).length} new authority, ${spent} spend increases (marked "spend increase"), every line after the diff; check it is not malicious or compromised`);
+    return [diffs.some((d) => d.code) ? { ...part, panel: true } : part];
   }
   const c = classifyModules(diffs);
   return [...extra, c.reviewFirst ? OWNER_AFTER_REVIEW(c.rule, c.reason, c.panel, c.ownerOnly) : c.panel ? PANEL(c.rule, c.reason) : T(1, c.rule, c.reason)];
@@ -488,17 +493,19 @@ export function reviewerFacts(a: { authority?: string[]; release?: string }): st
 /**
  * The authority lines an apply's args carry (so its card lists them, the reviewer reads every one and its digest covers them),
  * owner changes first, each whole: never cut (a change too large to review is refused by the details cap instead). Each
- * module's `code changes` line folds into one. `release`: the release the owner's auto-updates take (standingRelease), whose
- * official modules' new spend needs no owner tap.
+ * module's `code changes` line folds into one; a spend or limit increase is marked as one. `release`: the release the owner's
+ * auto-updates take (standingRelease): when every change is an official module's, its new spend needs no owner tap.
  */
 export function authorityArgs(st: { modules?: Record<string, ModuleInput>; marketplaces?: ReturnType<typeof marketplaceChanges> }, release?: string): { authority?: string[]; ownerRequired?: true } {
   const diffs = st.modules ? [...(st.marketplaces ?? []), ...diffAll(st.modules)] : [];
   const code = diffs.filter((d) => d.changes.some((c) => c.what === "code changes" && !c.owner)).map((d) => d.module);
-  const all = authorityLines(diffs.map((d) => ({ ...d, changes: d.changes.filter((c) => !(c.what === "code changes" && !c.owner)) })));
+  // A spend or limit increase says so on its line, so the reviewer weighs it whoever decides after.
+  const all = authorityLines(diffs.map((d) => ({ ...d, changes: d.changes.filter((c) => !(c.what === "code changes" && !c.owner)).map((c) => (c.spend ? { ...c, what: `spend increase: ${c.what}` } : c)) })));
   const isOwner = (l: string) => l.endsWith("(owner)");
   const lines = [...all.filter(isOwner), ...all.filter((l) => !isOwner(l)), ...(code.length ? [`code changes in ${code.join(", ")} (review)`] : [])];
   // The owner's under every autonomy (a non-official module's new authority, new spend): the reviewer's yes never runs it (records.ts).
-  const ownerRequired = diffs.some((d) => d.changes.some((c) => c.ownerOnly && !(release && c.official)));
+  const taken = Boolean(release) && diffs.every((d) => d.official && d.changes.every((c) => !c.ownerOnly || c.spend));
+  const ownerRequired = !taken && diffs.some((d) => d.changes.some((c) => c.ownerOnly));
   return { ...(lines.length ? { authority: lines } : {}), ...(ownerRequired ? { ownerRequired: true as const } : {}) };
 }
 

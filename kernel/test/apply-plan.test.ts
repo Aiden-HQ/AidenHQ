@@ -175,12 +175,18 @@ test("a release move is the reviewer's only as the updater's verified move under
   assert.equal(filed.args.release, "2026.11.3");
   // The reviewer reads both after the diff (its request's diff is the card's details), every authority line whole.
   assert.match(filed.card.details, /Release update \(computed by code\): the kernel's updater moves this instance to release 2026\.11\.3[^\n]*auto-updates are on[\s\S]*Module changes \(the authority diff[^\n]*\nacme: adds write kind post \(owner\)/);
-  // The owner's auto-update takes the official release's new authority and spend (owner, 2026-11-20): under any autonomy one
-  // AI reviewer, judging only whether the update is malicious or compromised, decides; every line reaches it whole.
+  // The owner's auto-update takes the official release's new authority and spend (owner, 2026-11-20): under any autonomy the
+  // AI reviewer (the panel of two when code changed, never the owner) judges only whether the update is malicious or
+  // compromised; every line reaches it whole, a spend increase marked as one.
   const tools = Array.from({ length: 30 }, (_, i) => `primer_tool_number_${i}`);
   const official = { modules: { acme: { base: { name: "acme", connections: { primer: { tools: { write: [] } } } }, head: { name: "acme", writes: { post: {} }, connections: { primer: { tools: { write: tools } } }, agents: { bot: { connections: { primer: tools }, caps: { day_usd: 50 } } } }, codeChanged: true, official: true } }, marketplaces: [] };
   const taken = await kernel({ texts, verifyRelease: verified, modules: official, autonomy: "tier0" }).writes.fileKernel("kernel.apply", { args: BUMP, task: "TASK-1", requester: UPDATER });
-  assert.deepEqual([taken.tier, taken.rule, taken.panel, taken.args.ownerRequired], [1, "release-update", false, undefined]);
+  assert.deepEqual([taken.tier, taken.rule, taken.panel, taken.args.ownerRequired], [1, "release-update", true, undefined]);
+  assert.ok(taken.card.reason.length <= 300 && /1 spend increases/.test(taken.card.reason), taken.card.reason);
+  assert.ok(taken.args.authority.some((l) => /^acme: spend increase: agent bot: day_usd up to 50 \(owner\)$/.test(l)), "the spend line says so");
+  const noCode = { modules: { acme: { ...official.modules.acme, codeChanged: false } }, marketplaces: [] };
+  const plain = await kernel({ texts, verifyRelease: verified, modules: noCode, autonomy: "tier0" }).writes.fileKernel("kernel.apply", { args: BUMP, task: "TASK-1", requester: UPDATER });
+  assert.deepEqual([plain.tier, plain.rule, plain.panel], [1, "release-update", false], "one reviewer when no code changed");
   assert.ok(taken.args.authority.some((l) => l.length > 300 && l.includes(tools.at(-1)) && l.endsWith("(owner)")), "a long line, whole");
   assert.ok(taken.args.authority.includes("code changes in acme (review)"));
   assert.match(taken.card.details, new RegExp(`${tools.at(-1)}[^\\n]*\\(owner\\)`));
@@ -190,6 +196,10 @@ test("a release move is the reviewer's only as the updater's verified move under
   const third = { modules: { acme: { ...official.modules.acme, official: false } }, marketplaces: [] };
   const notOurs = await kernel({ texts, verifyRelease: verified, modules: third }).writes.fileKernel("kernel.apply", { args: BUMP, task: "TASK-1", requester: UPDATER });
   assert.deepEqual([notOurs.tier, notOurs.rule, notOurs.args.ownerRequired], [2, "module-authority", true]);
+  // Beside an official one, a module that isn't official keeps today's tiering for the whole update, even with no owner line.
+  const mixed = { modules: { ...noCode.modules, other: { base: { name: "other" }, head: { name: "other" }, codeChanged: true } }, marketplaces: [] };
+  const both = await kernel({ texts, verifyRelease: verified, modules: mixed, autonomy: "tier0" }).writes.fileKernel("kernel.apply", { args: BUMP, task: "TASK-1", requester: UPDATER });
+  assert.deepEqual([both.tier, both.rule, both.args.ownerRequired], [2, "module-authority", true]);
   const other = await kernel({ texts, verifyRelease: verified, modules: withAuthority }).writes.request(codehost, { kind: "kernel.apply", args: BUMP, task: "TASK-1" });
   assert.match(other.card.details, /Module changes[^\n]*\nacme: adds write kind post \(owner\)/);
   assert.doesNotMatch(other.card.details, /Release update/);
