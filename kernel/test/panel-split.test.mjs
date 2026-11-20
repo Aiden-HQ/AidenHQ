@@ -44,3 +44,28 @@ test("a panel record takes two approvals, or one with the other reviewer unsure;
   const two = file(3);
   assert.equal(records.review(two.id, two.digest, { decision: "approve", by: "reviewer:~acme/a+~acme/b", note: "ok" }).state, "approved");
 });
+
+test("an approve + unsure on a record that is the owner's on its merits reaches the owner; one without code's attestation is refused", async (t) => {
+  const { kernel } = await import("./helpers.mjs");
+  const verdicts = [];
+  const k = await kernel(t, { reviewer: async () => verdicts.shift() });
+  const file = (n, over = {}) => k.records.file({ kind: "acme.post", module: "acme", args: { n }, targets: {}, executor: { module: "acme" }, policy: "p", tier: 1, panel: true, card: { sentence: "x", changes: "", reads: "", cost: "", details: "" }, requester: { agent: "ag-ada", key: "ada", name: "Ada", roles: [], kind: "run" }, task: "TASK-1", state: "review", ...over });
+  const approveUnsure = { decision: "approve", code: "in_scope", reason: "Approved; the second reviewer was unsure.", model: "~acme/model-a", second_unsure: "~acme/model-b", whole: true };
+  // Tier 2 on its merits (reviewed first, then the owner's): the approval goes on to the owner, never stuck in review.
+  const owners = file(1, { tier: 2, review_first: "owner" });
+  verdicts.push(approveUnsure);
+  const out = await k.writes.review(owners.id, { input: { tier: 2, reviewFirst: true, byMerit: true, rule: "owner-veto", reason: "the owner's", model: "~acme/model-a" }, request: { card: {} } });
+  assert.equal(out.refused, undefined);
+  assert.deepEqual([k.records.get(owners.id).state, out.posted.code], ["owner", "owner_tier"]);
+  // A Tier 1 panel record: approved, stamped apart from a second approval.
+  const tier1 = file(2);
+  verdicts.push(approveUnsure);
+  await k.writes.review(tier1.id, { input: { tier: 1, model: "~acme/model-a" }, request: { card: {} } });
+  assert.deepEqual([k.records.get(tier1.id).state, k.records.get(tier1.id).decided_by], ["approved", "reviewer:~acme/model-a;unsure:~acme/model-b"]);
+  // Without code's attestation that the input was verified whole: refused, left in review.
+  const bare = file(3);
+  verdicts.push({ ...approveUnsure, whole: undefined });
+  const refused = await k.writes.review(bare.id, { input: { tier: 1, model: "~acme/model-a" }, request: { card: {} } });
+  assert.match(refused.refused, /attests the input was verified whole/);
+  assert.equal(k.records.get(bare.id).state, "review");
+});

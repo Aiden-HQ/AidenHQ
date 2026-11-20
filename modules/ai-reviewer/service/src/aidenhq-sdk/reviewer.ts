@@ -41,8 +41,12 @@ export interface ReviewRequest {
   /** The ledger's name for the model calls (the card's review, or an agent's check before filing). */
   component?: string;
 }
-/** `second`: the panel's second approval; `second_unsure`: an approval whose other reviewer was unsure (owner, 2026-11-20), never in `second`. */
-export interface Verdict { decision: "approve" | "reject" | "escalate"; code?: string; reason: string; model: string; second?: string; second_unsure?: string; flag?: boolean; panel_marked?: boolean }
+/**
+ * `second`: the panel's second approval; `second_unsure`: an approval whose other reviewer was unsure (owner, 2026-11-20), never
+ * in `second`, given only with `whole`: code verified the input whole (the diff matched the code host's count, nothing folded
+ * or over budget, a request chain).
+ */
+export interface Verdict { decision: "approve" | "reject" | "escalate"; code?: string; reason: string; model: string; second?: string; second_unsure?: string; whole?: boolean; flag?: boolean; panel_marked?: boolean }
 /** The model's "I can't tell" (a second reviewer is asked; both unsure, or unsure over missing input, the request goes back to the agent). */
 export const UNSURE = "reviewer_unsure";
 /** The request fields a reviewer reads; anything else in a request (a policy, a model) is dropped. */

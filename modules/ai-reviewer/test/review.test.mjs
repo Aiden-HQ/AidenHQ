@@ -86,7 +86,7 @@ test("two votes (owner, 2026-11-20): approve + unsure approves only on input cod
   for (const panel of [false, true]) {
     r = asker([unsure("the brief contradicts itself"), ok]);
     const yes = await review({ card, ...whole, policy: "p", panel, ask: r.ask });
-    assert.deepEqual([yes.decision, yes.model, yes.second, yes.second_unsure], ["approve", GLM, undefined, LUNA]);
+    assert.deepEqual([yes.decision, yes.model, yes.second, yes.second_unsure, yes.whole], ["approve", GLM, undefined, LUNA, true]);
     assert.match(yes.reason, /^Approved; the first reviewer was unsure.*the brief contradicts itself.*matches the ask/);
   }
   r = asker([ok, unsure("the brief contradicts itself")]);
@@ -94,7 +94,7 @@ test("two votes (owner, 2026-11-20): approve + unsure approves only on input cod
   assert.deepEqual([panelYes.decision, panelYes.model, panelYes.second, panelYes.second_unsure], ["approve", LUNA, undefined, GLM]);
   // Not verified (no count from the code host, or no request chain): an unsure never counts toward an approval, whatever
   // the model says about its input.
-  for (const input of [{ diff, chain: whole.chain }, { ...whole, chain: "" }]) {
+  for (const input of [{ diff, chain: whole.chain }, { ...whole, chain: "" }, { ...whole, files: { ...whole.files, oversized: ["src/a.ts (300000 characters)"] } }]) {
     for (const answers of [[unsure("the brief contradicts itself"), ok], [ok, unsure("the brief contradicts itself")]]) {
       r = asker(answers);
       const back = await review({ card, ...input, policy: "p", panel: true, ask: r.ask });
@@ -137,9 +137,9 @@ test("code lists the files the diff changes and says whether it checked them, an
   let prompt;
   const ask = async (_m, p) => ((prompt = p), ok);
   await review({ card, diff, policy: "p", ask });
-  assert.match(prompt.user, /Code could not check the diff/);
+  assert.match(prompt.user, /Code did not verify this input whole/);
   assert.match(prompt.user, /<<<DIFF_FILES\nsrc\/a\.ts \(\+2 -2\)\nb\.md \(\+1 -0\)\nDIFF_FILES>>>/);
-  await review({ card, diff, policy: "p", ask, files: { text: "", leftOut: [], oversized: [], changed: [{ path: "src/a.ts", add: 2, del: 2 }, { path: "b.md", add: 1, del: 0 }] } });
+  await review({ card, diff, chain: "c", policy: "p", ask, files: { text: "", leftOut: [], oversized: [], changed: [{ path: "src/a.ts", add: 2, del: 2 }, { path: "b.md", add: 1, del: 0 }] } });
   assert.match(prompt.user, /Code checked the diff against the code host's own count of the change.*it is whole; the DIFF shown is \d+ characters/);
   // A diff over the limit whose size is a lockfile is folded, and the prompt says so.
   const lock = `diff --git a/package-lock.json b/package-lock.json\n--- a/package-lock.json\n+++ b/package-lock.json\n@@ -1 +1,${MAX_DIFF / 10} @@\n${"+    \"x\": \"1.0.0\",\n".repeat(MAX_DIFF / 10)}`;

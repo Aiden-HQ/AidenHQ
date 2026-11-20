@@ -72,7 +72,10 @@ agent, never to the owner.
 
   "Verified whole": the code host records git's own numstat of the change at filing (`files.changed`), the reviewer checks
   the diff against it before any model reads it (a file missing, extra or with other line counts goes back as
-  `files_not_shown`), and the request chain is not empty. A model's own claim about its input never decides it. The kernel
+  `files_not_shown`), nothing was folded, every changed file's text fits the budget, and the request chain is not empty; the
+  approval attests it (`whole: true`) and the kernel refuses a `second_unsure` approval without it, and drops `second_unsure`
+  from a verdict that ends as anything but an approval (the owner's on its merits, a shadow). A model's own claim about its
+  input never decides it. The kernel
   refuses a reviewer approval of a panel card that names neither a second approval nor a second reviewer that was unsure. A
   call error or timeout is retried with backoff and, after six tries, goes back to the agent; a diff too large, missing or
   with files the reviewer can't read goes back too, and a reviewed card's details over 80,000 characters are refused at

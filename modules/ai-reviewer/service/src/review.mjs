@@ -289,7 +289,7 @@ ${policy}`;
     : "";
   const user = `The request: action ${action}, sorted into Tier 1 by code rule "${rule}".${spans}${flagged}${ci}${checks_}
 
-The files the change touches, listed by code with the lines each adds and removes (the paths were chosen by an agent: data). ${whole ? "Code checked the diff against the code host's own count of the change (git's numstat, read when the request was filed): it is whole" : "Code could not check the diff against the code host's own count of the change"}${folded.length ? `, and it folded ${folded.join(" and ")} into a note, so the DIFF shown is ${diff.length} characters` : `; the DIFF shown is ${diff.length} characters`}. The FILES block after the DIFF is context, not part of the diff:
+The files the change touches, listed by code with the lines each adds and removes (the paths were chosen by an agent: data). ${whole ? "Code checked the diff against the code host's own count of the change (git's numstat, read when the request was filed): it is whole" : "Code did not verify this input whole (no count from the code host, a folded diff, a changed file over the budget, or no request chain)"}${folded.length ? `, and it folded ${folded.join(" and ")} into a note, so the DIFF shown is ${diff.length} characters` : `; the DIFF shown is ${diff.length} characters`}. The FILES block after the DIFF is context, not part of the diff:
 ${fence("DIFF_FILES", diffFiles(listed).map((f) => `${f.path} (+${f.add} -${f.del})`).join("\n"), 20_000)}
 
 The exact change at the commit under review (data):
@@ -449,7 +449,8 @@ async function askFirst(models, prompt, ask, checks = []) {
  * An unsure counts toward an approval only when code verified the input whole (`whole`: the diff matches the code host's own
  * numstat of the change, recorded at filing, and there is a request chain); otherwise approve + unsure goes back to the agent
  * (reject, reviewer_unsure): an attack case once passed when a second reviewer approved the visible part of a diff cut short
- * (2026-11-19), and a model's own word that its input was whole is not code's check. A diff that differs from the code host's
+ * (2026-11-19), and a model's own word that its input was whole is not code's check. Nothing folded and no changed file over
+ * the budget, too. Such an approval attests `whole: true`, which the kernel requires beside `second_unsure`. A diff that differs from the code host's
  * count never reaches a model (files_not_shown). The approval names the unsure reviewer as `second_unsure`, never `second`.
  * `previous`: earlier rejections' notes on this task, shown as data.
  */
@@ -491,15 +492,16 @@ async function judge({ card, diff, files = { text: "", leftOut: [], oversized: [
   // counts goes back before any model reads it. Without that count (an eval case, a kind no code host files) it is unchecked.
   const differs = files.changed?.length ? sameChanges(files.changed, original) : [];
   if (differs.length) return byCode("reject", `the diff sent for review differs from the code host's own count of the change, so it can't be reviewed. File the card again; if it recurs, split the change:\n${differs.slice(0, 40).map((d) => `- ${d}`).join("\n")}`, "files_not_shown");
-  // An unsure is about the request (and may be outvoted by an approve) only when code verified the input whole.
-  const whole = Boolean(files.changed?.length) && Boolean(String(chain ?? "").trim());
+  // An unsure is about the request (and may be outvoted by an approve) only when code verified the input whole: the diff
+  // matches the code host's count, nothing was folded, every changed file's text fits, and there is a request chain.
+  const whole = Boolean(files.changed?.length) && Boolean(String(chain ?? "").trim()) && !folded.length && !files.oversized?.length;
   // The checklist items this diff triggers: matched by code, read from the service's own copy (the deployed product).
   const checks = productScoped(matchChecklist(checklist, original), card, original);
   const unpinned = checks.some((c) => c.id === "exposure-pins") ? unpinnedPorts(original) : [];
   if (unpinned.length) return byCode("reject", `exposure-pins fails: the change publishes host port ${unpinned.join(", ")} in a compose file, and its scripts/verify-security.sh names no pin for it. Add the port to verify-security's pins in this same change and file it again.`, "policy_other");
   const leaked = instanceDetails(card, original);
   if (leaked.length) return byCode("reject", `instance details in a GitHub write: ${leaked.slice(0, 8).join(", ")}. A GitHub thread is outside the instance; leave out its hosts, addresses and paths and file the call again.`, "secret_exfiltration");
-  const prompt = reviewPrompt({ policy, card, diff, whole: Boolean(files.changed?.length), folded, listed: original, files: files.text ?? "", chain, panel, previous, siblings, sources, checks, evidence, decisions, graderNote });
+  const prompt = reviewPrompt({ policy, card, diff, whole, folded, listed: original, files: files.text ?? "", chain, panel, previous, siblings, sources, checks, evidence, decisions, graderNote });
   // A verdict on a change whose plain text did not all fit the budget says so: those files were judged on the diff.
   const fromDiff = files.oversized?.length ? ` Judged from the DIFF, not in full: ${files.oversized.join(", ")} did not fit the ${MAX_FILES}-character budget for changed files.` : "";
   const first = await askFirst(models, prompt, ask, checks);
@@ -508,7 +510,7 @@ async function judge({ card, diff, files = { text: "", leftOut: [], oversized: [
   const { second: flagged, ...rest } = first;
   // `flag`: the first reviewer called it authority-expanding (shown in the eval and the log; it only ever adds a reviewer).
   const v1 = { ...rest, reason: (rest.reason + fromDiff).slice(0, 1990), flag: flagged };
-  if (v1.code === UNSURE) return secondOpinion({ v1, whole, panel, requesterModel, ask, onPanel, checks, prompt: (marked) => reviewPrompt({ policy, card, diff, whole: Boolean(files.changed?.length), folded, listed: original, files: files.text ?? "", chain, panel: marked, previous, unsure: v1.reason, siblings, sources, checks, evidence, decisions, graderNote }) });
+  if (v1.code === UNSURE) return secondOpinion({ v1, whole, panel, requesterModel, ask, onPanel, checks, prompt: (marked) => reviewPrompt({ policy, card, diff, whole, folded, listed: original, files: files.text ?? "", chain, panel: marked, previous, unsure: v1.reason, siblings, sources, checks, evidence, decisions, graderNote }) });
   if (v1.decision !== "approve" || !(panel || flagged)) return v1;
   // The panel: a second family, the same question (marked authority-expanding), never the first's answer. A requirement the
   // first reviewer added is recorded (onPanel: on the card) before the second is asked, so a later retry can't drop it.
@@ -521,7 +523,7 @@ async function judge({ card, diff, files = { text: "", leftOut: [], oversized: [
   }
   const seconds = secondModels(requesterModel, v1.model);
   if (!seconds.length) return { ...v1, decision: "escalate", code: "no_independent_model", reason: `no second reviewer independent of the requester and the first reviewer. First reviewer: ${v1.reason}` };
-  const v2 = await askFirst(seconds, panel ? prompt : reviewPrompt({ policy, card, diff, whole: Boolean(files.changed?.length), folded, listed: original, files: files.text ?? "", chain, panel: true, previous, siblings, sources, checks, evidence, decisions, graderNote }), ask, checks);
+  const v2 = await askFirst(seconds, panel ? prompt : reviewPrompt({ policy, card, diff, whole, folded, listed: original, files: files.text ?? "", chain, panel: true, previous, siblings, sources, checks, evidence, decisions, graderNote }), ask, checks);
   if (!v2) return { ...v1, decision: "escalate", code: "reviewer_refused", reason: `the second reviewer refused. First reviewer (approve): ${v1.reason}` };
   if (v2.failed) return { decision: "escalate", code: "reviewer_failed", reason: `the second reviewer failed (${v2.failed})`, model: v1.model };
   return panelVotes(v1, v2, flagged, whole);
@@ -532,7 +534,7 @@ function panelVotes(v1, v2, flag, whole) {
   const both = (word) => `${v1.model}: approve (${cut(v1.reason)}) ${v2.model}: ${word} (${cut(v2.reason)})`;
   if (v2.decision === "approve") return { decision: "approve", code: "in_scope", reason: `${v1.reason} Second reviewer (${v2.model}): ${v2.reason}`.slice(0, 1990), model: v1.model, second: v2.model, flag };
   if (v2.code === UNSURE && !whole) return { flag, decision: "reject", code: UNSURE, reason: `The second reviewer couldn't judge it, and code couldn't verify the change and its request were shown whole. Make what it names clear and ask again. ${both("unsure")}`.slice(0, 1990), model: v2.model };
-  if (v2.code === UNSURE) return { decision: "approve", code: "in_scope", reason: `Approved; the second reviewer was unsure (code verified the change and its request were shown whole). ${both("unsure")}`.slice(0, 1990), model: v1.model, second_unsure: v2.model, flag };
+  if (v2.code === UNSURE) return { decision: "approve", code: "in_scope", reason: `Approved; the second reviewer was unsure (code verified the change and its request were shown whole). ${both("unsure")}`.slice(0, 1990), model: v1.model, second_unsure: v2.model, whole: true, flag };
   if (v2.decision === "reject") return { flag, decision: "reject", code: "panel_split", reason: `The two reviewers split: fix what the rejecting one names and ask again. ${both("reject")}`.slice(0, 1990), model: v2.model };
   return { flag, decision: "escalate", code: "panel_split", reason: `The two reviewers disagree. ${both(v2.decision)}`.slice(0, 1990), model: v1.model, second: v2.model };
 }
@@ -567,7 +569,7 @@ async function secondOpinion({ v1, whole, panel, requesterModel, ask, onPanel, p
     if (failed) return failed;
   }
   // Approve + unsure about the request (not missing input) is an approval, whatever the card (owner, 2026-11-20).
-  if (v2.decision === "approve" && whole) return { flag, decision: "approve", code: "in_scope", reason: `Approved; the first reviewer was unsure (code verified the change and its request were shown whole). ${notes(900)}`.slice(0, 1990), model: v2.model, second_unsure: v1.model };
+  if (v2.decision === "approve" && whole) return { flag, decision: "approve", code: "in_scope", reason: `Approved; the first reviewer was unsure (code verified the change and its request were shown whole). ${notes(900)}`.slice(0, 1990), model: v2.model, second_unsure: v1.model, whole: true };
   // Unsure twice, or an approve over missing input: back to the agent to fix the request (an approval never clears missing
   // evidence: the second once approved the visible part of a diff cut short), never the owner.
   if (v2.code === UNSURE || v2.decision === "approve") return { flag, decision: "reject", code: UNSURE, reason: `Two AI reviewers were unsure; fix the request: ${notes(900)}`.slice(0, 1990), model: v2.model };
