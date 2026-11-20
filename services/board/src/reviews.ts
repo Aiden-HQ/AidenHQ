@@ -137,10 +137,10 @@ export const CodeReviewSchema = z
 export type CodeReview = z.infer<typeof CodeReviewSchema>;
 /** The module's shipped reviewers (modules/code-review service/src/config.ts DEFAULT_REVIEWERS): merged under the setting's own. */
 export const DEFAULT_REVIEWERS: Record<string, Profile> = {
-  quick: { engine: "codex", model: "~deepseek/deepseek-flash-latest", effort: "low", finders: 1, verify: false },
-  standard: { engine: "codex", model: "~deepseek/deepseek-flash-latest", effort: "high", finders: 2, verify: true },
-  deep: { engine: "codex", model: "~openai/gpt-sol-latest", effort: "high", finders: 4, verify: true, verifier: "~anthropic/claude-latest" },
-  triage: { engine: "codex", model: "~deepseek/deepseek-flash-latest", effort: "low", finders: 1, verify: false, focus: "triage" },
+  quick: { engine: "codex", model: "~openai/gpt-luna-latest", effort: "low", finders: 1, verify: false },
+  standard: { engine: "codex", model: "~openai/gpt-luna-latest", effort: "high", finders: 2, verify: true },
+  deep: { engine: "codex", model: "~openai/gpt-luna-latest", effort: "high", finders: 4, verify: true, verifier: "~openai/gpt-luna-latest" },
+  triage: { engine: "codex", model: "~openai/gpt-luna-latest", effort: "low", finders: 1, verify: false, focus: "triage" },
 };
 /** A repo's defaults when the owner watches it (the spec's UX: Standard on open, Quick on push, drafts off, forks on request). */
 export const REPO_DEFAULTS = { on_open: "standard", on_push: "quick", on_risk: "deep", drafts: false, forks: "manual", month_usd: 50, max_nits: 5, per_author_day: 10, per_repo_day: 60 } as const;
