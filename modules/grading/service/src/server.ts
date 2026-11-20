@@ -91,18 +91,19 @@ export function createGrading({ db, kernel, keys, kernelUrl = "", jwks = kernelJ
   const isClosed = (issue: { status?: string }) => issue.status === "done" || issue.status === "cancelled";
 
   /** The caller of a filing route and the task it names, both checked: only the agent that created the task, filing through a delegating tool. */
-  async function filingCaller(req: http.IncomingMessage, ref: string) {
+  async function filingCaller(req: http.IncomingMessage, ref: string | (() => string)) {
     const caller = await verifyCaller(req, jwks, "tasks").catch((e: Error) => { throw new HttpError(403, `refused: ${e.message}`); });
     const tool = String(caller.tool ?? "").split(".").pop()!;
     if (!FILERS.includes(tool)) throw new HttpError(403, `only an agent granted one of ${FILERS.join(", ")} may file a rubric`);
-    const issue = await kernel.issue(ref);
+    const issue = await kernel.issue(typeof ref === "string" ? ref : ref());
     if (issue.createdByAgentId !== caller.agent) throw new HttpError(403, "only the agent that delegated a task files its rubric");
     return { caller, issue };
   }
 
   async function file(req: http.IncomingMessage, body: unknown) {
-    const b = parseFiling(body);
-    const { caller, issue } = await filingCaller(req, b.issue);
+    // The caller is authenticated before the body is read: an unauthenticated request gets 403, never a validation error.
+    let b!: ReturnType<typeof parseFiling>;
+    const { caller, issue } = await filingCaller(req, () => (b = parseFiling(body)).issue);
     await refAllowed(b.deliverable);
     // The row records its filer as the agent that delegated the task: a differing re-file is that agent's, and only its. A
     // task already closed is left alone (its row may not have been swept to not_graded yet).

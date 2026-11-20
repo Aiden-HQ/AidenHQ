@@ -39,7 +39,7 @@ before you run it, and if docs/setup.md and this skill ever disagree, docs/setup
 6. **Section 7, "Connect your accounts"**: ask which accounts to connect (Google, Telegram, Slack, others). Do the
    chosen subsections only; the unchosen ones are skipped, not failures.
 7. **Section 8, "GitHub App"** and **section 9, "Your first agent"**: optional. Ask whether to do them now.
-8. **Section 10, "Health check"**: run `scripts/healthcheck.sh` and `scripts/verify-security.sh` and judge them
+8. **Section 10, "Health check"**: run `scripts/healthcheck.sh` and judge it
    by that section's Check text. Finish by reminding the person to delete `~/person.env`.
 
 Report at the end: which sections passed their Check, which were skipped on purpose, and what is left for the

@@ -198,8 +198,8 @@ for c in $containers; do
     *github-mcp*)
       [ "$(docker inspect "$c" --format '{{json .HostConfig.PortBindings}}')" = "{}" ] && pass "github-mcp: no published ports" || fail "github-mcp publishes ports"
       # Only its own secrets, and never the GitHub App key (codehost-github alone holds it; github-mcp asks the kernel's route).
-      ! echo "$mounts" | tr ';' '\n' | grep -v '/run/secrets' | grep -q . && ! echo "$mounts" | grep -q 'github-app\|github_app' \
-        && pass "github-mcp: only its own secrets mounted, never the GitHub App key" || fail "github-mcp has unexpected mounts: $mounts"
+      [ "$(echo "$mounts" | tr ';' '\n' | grep -c '|/state|')" = "1" ] && ! echo "$mounts" | tr ';' '\n' | grep -v '/run/secrets' | grep -v '|/state|' | grep -q . && ! echo "$mounts" | grep -q 'github-app\|github_app' \
+        && pass "github-mcp: only its own secrets and its own state directory mounted, never the GitHub App key" || fail "github-mcp has unexpected mounts: $mounts"
       ;;
     *apps-edge*)
       # The apps' tailnet node: its own way out plus the exposed apps' own networks (apps-mcp joins it), nothing else.
@@ -449,30 +449,37 @@ vendor_tags="$(node --input-type=module -e '
     clickhouse: ["run_select_query"],
     glean: ["employee_search", "meeting_lookup", "code_search", "chat", "user_activity", "memory_schema"],
     grafana: ["alerting_rules_read", "alerting_silences_read", "generate_deeplink", "render_grafana_app", "suggest_loki_alloy_label_config", "user_info", "validate_provisioning_file"],
+    // the own tools of github-mcp (every route they use is listed in the GitHub check below) share its host with github_official.
+    github: ["github_project_read", "github_issue_read", "github_job_log", "github_pr_files", "github_pr_threads", "github_app_issue_status", "github_app_issue_list", "github_app_label_events", "github_app_pr_list", "github_app_repo_tree", "github_app_repo_file"],
+    github_official: ["issue_read", "pull_request_read"],
     hubspot: ["tool_guidance"],
+    primer: ["primer_record_changes", "primer_widget_get"],
     jira: ["atlassianUserInfo"],
   };
   for (const { name } of JSON.parse(readFileSync("modules/marketplace.json", "utf8")).plugins) {
     const def = YAML.parse(readFileSync(`modules/${name}/module.yaml`, "utf8"));
     for (const [svc, s] of Object.entries(def.services?.run ?? {})) {
       if (!runsProxy(`modules/${name}/${s.build ?? "-"}`)) continue;
-      const [k, c] = Object.entries(def.connections ?? {}).find(([, c]) => new URL(c.url).hostname === svc) ?? [];
-      if (!c) { bad.push(`${name}/${svc} runs the vendor proxy but no connection points at it`); continue; }
-      seen.push(k);
-      // Fail closed: a read tag passes only when its first word (vendor prefix stripped) is a reading verb, or the tool is in
-      // the reviewed exception list for its module. Anything else is refused, whatever else its name says.
-      const words = (t) => t.replace(/([a-z])([A-Z])/g, "$1_$2").toLowerCase().split("_").filter((w) => !["slack", "primer", "grafana", "github"].includes(w));
-      const READS = /^(get|list|read|search|query|find|lookup|fetch|describe|show|check|analyze|diff|download|export|discover|whoami|resolve)$/;
-      const unreviewed = c.tools.read.filter((t) => !READS.test(words(t)[0] ?? "") && !(EXCEPTIONS[k] ?? []).includes(t));
-      if (unreviewed.length) bad.push(`${k} tags ${unreviewed.join(", ")} read (not a reading verb, not in the reviewed exceptions)`);
-      if (k === "grafana") {
-        const refused = c.tools.read.filter((t) => /exec|patch|handler|sql|investigation|assistant|gcx/i.test(t));
-        if (refused.length) bad.push(`grafana tags ${refused.join(", ")} read (its refused families)`);
+      const conns = Object.entries(def.connections ?? {}).filter(([, c]) => new URL(c.url).hostname === svc);
+      if (!conns.length) { bad.push(`${name}/${svc} runs the vendor proxy but no connection points at it`); continue; }
+      // Every connection on the service is checked: github-mcp serves its own tools and the official server.
+      for (const [k, c] of conns) {
+        seen.push(k);
+        // Fail closed: a read tag passes only when its first word (vendor prefix stripped) is a reading verb, or the tool is in
+        // the reviewed exception list for its module. Anything else is refused, whatever else its name says.
+        const words = (t) => t.replace(/([a-z])([A-Z])/g, "$1_$2").toLowerCase().split("_").filter((w) => !["slack", "primer", "grafana", "github"].includes(w));
+        const READS = /^(get|list|read|search|query|find|lookup|fetch|describe|show|check|analyze|diff|download|export|discover|whoami|resolve)$/;
+        const unreviewed = c.tools.read.filter((t) => !READS.test(words(t)[0] ?? "") && !(EXCEPTIONS[k] ?? []).includes(t));
+        if (unreviewed.length) bad.push(`${k} tags ${unreviewed.join(", ")} read (not a reading verb, not in the reviewed exceptions)`);
+        if (k === "grafana") {
+          const refused = c.tools.read.filter((t) => /exec|patch|handler|sql|investigation|assistant|gcx/i.test(t));
+          if (refused.length) bad.push(`grafana tags ${refused.join(", ")} read (its refused families)`);
+        }
+        if (s.env?.MCP_READ_TOKEN_FILE && s.env?.READ_TOOLS !== c.tools.read.join(",")) bad.push(`${k}: READ_TOOLS is not its read tags`);
       }
-      if (s.env?.MCP_READ_TOKEN_FILE && s.env?.READ_TOOLS !== c.tools.read.join(",")) bad.push(`${k}: READ_TOOLS is not its read tags`);
     }
   }
-  for (const k of ["clickhouse", "glean", "grafana", "jira", "primer", "slack", "hubspot"]) if (!seen.includes(k)) bad.push(`vendor connection ${k} was not checked`);
+  for (const k of ["clickhouse", "glean", "grafana", "jira", "primer", "slack", "hubspot", "github", "github_official"]) if (!seen.includes(k)) bad.push(`vendor connection ${k} was not checked`);
   console.log(bad.length ? `BAD ${bad.join("; ")}` : `ok ${seen.join(" ")}`);
 ' 2>&1)"
 case "$vendor_tags" in ok*) pass "vendor connections (${vendor_tags#ok }): every read tag is a reading verb or a reviewed exception; each read endpoint serves only its read tags";; *) fail "vendor connections: $vendor_tags";; esac
@@ -724,7 +731,7 @@ else
   pass "ci: no CI runner network or image on this host"
 fi
 # GitHub: the user's gh token can push and delete; the guard allows fixed reads plus issue comments, new issues,
-# fixed GraphQL documents whose only mutations add an issue to a project and set its status, and
+# fixed GraphQL documents whose only mutations add an issue to a project, set its status and resolve a review thread, and
 # issue state/labels/assignees, pull request reviews and failed-job re-runs.
 gh_routes="$(sed -n '/^export const ROUTES/,/^\];/p' modules/github/connections/github-mcp/src/github.ts | grep '^  { method:')"
 bad_gh="$(echo "$gh_routes" | grep -v '{ method: "GET", path: ' | grep -vxF \
@@ -737,15 +744,19 @@ bad_gh="$(echo "$gh_routes" | grep -v '{ method: "GET", path: ' | grep -vxF \
   -e '  { method: "POST", path: new RegExp(`^/repos/${NAME}/${NAME}/issues/${NUM}/assignees$`) },' \
   -e '  { method: "DELETE", path: new RegExp(`^/repos/${NAME}/${NAME}/issues/${NUM}/assignees$`) },' \
   -e '  { method: "POST", path: new RegExp(`^/repos/${NAME}/${NAME}/pulls/${NUM}/reviews$`) },' \
+  -e '  { method: "PATCH", path: new RegExp(`^/repos/${NAME}/${NAME}/issues/comments/${NUM}$`) },' \
+  -e '  { method: "POST", path: new RegExp(`^/repos/${NAME}/${NAME}/statuses/[0-9a-f]{40}$`) },' \
   -e '  { method: "POST", path: new RegExp(`^/repos/${NAME}/${NAME}/actions/runs/${RUN}/rerun-failed-jobs$`) },' || true)"
 [ -n "$gh_routes" ] && [ -z "$bad_gh" ] && grep -q 'guard(method, path, opts.body)' modules/github/connections/github-mcp/src/github.ts && [ "$(grep -c 'fetchImpl(' modules/github/connections/github-mcp/src/github.ts)" = 2 ] \
   && grep -q '!to || !logHostAllowed(to)' modules/github/connections/github-mcp/src/github.ts \
   && grep -qF 'await this.fetchImpl(to, { redirect: "error", signal: AbortSignal.timeout(30_000) })' modules/github/connections/github-mcp/src/github.ts \
   && grep -qF '{ method: "PATCH", path: /\/issues\/[0-9]+$/, fields: ["state", "state_reason"] },' modules/github/connections/github-mcp/src/github.ts \
-  && pass "github-mcp: every request goes through the guard (the one other fetch is a job-log download from GitHub log hosts only, without the token); the only writes are issue comments, new issues, issue state/labels/assignees, reviews, failed-job re-runs and GraphQL (modules/github/connections/github-mcp/src/github.ts)" || fail "github-mcp: unexpected GitHub requests allowed: $bad_gh"
+  && grep -qF '{ method: "PATCH", path: /\/issues\/comments\/[0-9]+$/, fields: ["body"] },' modules/github/connections/github-mcp/src/github.ts \
+  && grep -qF 'refused a commit status that isn' modules/github/connections/github-mcp/src/github.ts \
+  && pass "github-mcp: every request goes through the guard (the one other fetch is a job-log download from GitHub log hosts only, without the token); the only writes are issue comments, new issues, issue state/labels/assignees, reviews, the review comment edited in place, the one advisory commit status, failed-job re-runs and GraphQL (modules/github/connections/github-mcp/src/github.ts)" || fail "github-mcp: unexpected GitHub requests allowed: $bad_gh"
 gh_mutations="$(sed -n '/^export const GRAPHQL/,/^} as const;/p' modules/github/connections/github-mcp/src/github.ts | grep -oE 'mutation\([^)]*\) \{ [A-Za-z0-9]+' | awk '{print $NF}' | sort -u | tr '\n' ' ')"
-[ "$gh_mutations" = "addProjectV2ItemById updateProjectV2ItemFieldValue " ] && grep -q 'GRAPHQL_DOCS.has(' modules/github/connections/github-mcp/src/github.ts \
-  && pass "github-mcp: GraphQL limited to fixed documents whose only mutations add an issue to a project and set its status" || fail "github-mcp: unexpected GraphQL mutations: $gh_mutations"
+[ "$gh_mutations" = "addProjectV2ItemById resolveReviewThread updateProjectV2ItemFieldValue " ] && grep -q 'GRAPHQL_DOCS.has(' modules/github/connections/github-mcp/src/github.ts \
+  && pass "github-mcp: GraphQL limited to fixed documents whose only mutations add an issue to a project, set its status and resolve a review thread" || fail "github-mcp: unexpected GraphQL mutations: $gh_mutations"
 # The code host (codehost-github) merges the PRs an approved merge record lists (merges.ts over merge-gate.ts's decide, #630):
 # one queue per repo, at most one merge per repo a poll, only in our own repos (the agents org and the product repo) and the
 # repos the owner listed in maintainer_repos (an App installation alone never counts; elsewhere the App only opens PRs: plan.ts
