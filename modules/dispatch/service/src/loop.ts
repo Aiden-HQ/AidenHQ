@@ -34,13 +34,19 @@ const RESUME: Record<string, string> = {
   reopen: "This task was reopened",
   status: "This task was moved back to todo",
   assigned: "This task was handed to you",
+  // follow() below: the retry of a run that didn't get to finish (kernel wakes.ts schedule prefixes a module's cause).
+  "scheduled: retry": "Your last run on this task ended before finishing (its computer or the kernel went away)",
 };
-// A job that never started (the kernel couldn't launch it: no box, a launcher error) is retried this many times, a little later
-// each time, before whoever asked is told.
+// A job that didn't get to finish for want of its machinery is retried this many times in a row, a little later each time,
+// before whoever asked is told: one that never started (the kernel couldn't launch it: no box, a launcher error), one lost while
+// no kernel followed it (a reboot), or one killed by a signal it didn't send itself (its computer went away, an OOM kill). A run
+// that exited with an error of its own is not: the same run would fail the same way, so its notice goes out at once.
 const START_TRIES = 3;
 const RETRY_MS = 2 * 60_000;
 /** A job the kernel couldn't start: it ended failed with no exit code (admission.ts); a run that ran always has one. */
 const neverStarted = (j: { state: string; exit: number | null }) => j.state === "failed" && j.exit == null;
+/** A job its machinery ended (above): never started, lost, or killed by a signal (an exit above 128, jobs.ts adopt's rule). */
+const unfinished = (j: { state: string; exit: number | null }) => neverStarted(j) || j.state === "lost" || (j.state === "failed" && j.exit != null && j.exit > 128);
 
 /** The newest comments one read returns (kernel.ts comments). */
 const COMMENT_WINDOW = 200;
@@ -141,15 +147,19 @@ export function createDispatch({ kernel, db, owner, log = () => {}, now = Date.n
           continue;
         }
         judges.delete(v.id);
-        // A job that never started is tried again by a scheduled wake (the wake it was admitted on is spent), a few times.
-        if (neverStarted(v)) {
+        // A job that didn't get to finish is tried again by a scheduled wake (the wake it was admitted on is spent), a few times.
+        if (unfinished(v)) {
           const runs = await kernel.jobsOf(v.task);
           let tries = 0;
-          for (const j of runs) { if (!neverStarted(j)) break; tries++; }
-          if (tries < START_TRIES && !CLOSED.has(String((await kernel.task(v.task)).status))) {
+          for (const j of runs) { if (!unfinished(j)) break; tries++; }
+          // A run that ran is retried only on a task still in its agent's hands (todo or in progress, an agent assigned): one it
+          // left blocked or handed back to the owner waits on them, not on a retry.
+          const t = await kernel.task(v.task);
+          const open = neverStarted(v) ? !CLOSED.has(String(t.status)) : ["todo", "in_progress"].includes(String(t.status)) && Boolean(t.assigneeAgentId);
+          if (tries < START_TRIES && open) {
             await kernel.schedule({ task: v.task, at: Date.now() + RETRY_MS * tries, cause: "retry", id: `retry.${v.id}` });
             await kernel.ack(v.id);
-            log("job couldn't start: retried later", { job: v.id, task: v.task, tries, why: v.final.slice(0, 200) });
+            log("job didn't finish: retried later", { job: v.id, task: v.task, state: v.state, exit: v.exit, tries, why: v.final.slice(0, 200) });
             continue;
           }
         }
@@ -226,11 +236,11 @@ export function createDispatch({ kernel, db, owner, log = () => {}, now = Date.n
     if (first && ownRequest(task)) words.task = "owner";
     else if (first && agentMade(task) && stripHidden(task.description).trim()) words.task = "agent";
     else if (first && moduleMade(task)) words.task = "module";
+    else if (!first && !fresh.length && RESUME[w.cause]) { words.task = "resume"; words.resume = RESUME[w.cause]; }
     else if (scheduled && !fresh.length) words.task = "scheduled";
     // The kernel's idle sweep, or the agent's own wait coming due (kernel idle.ts): a run with its fixed words.
     else if (w.cause === "idle" && !fresh.length) words.task = "idle";
     else if (/^wait(:|$)/.test(w.cause) && !fresh.length) Object.assign(words, { task: "wait", waited: w.cause.replace(/^wait:\s*/, "") });
-    else if (!first && !fresh.length && RESUME[w.cause]) { words.task = "resume"; words.resume = RESUME[w.cause]; }
 
     if (!words.task && !fresh.length) {
       if (!first) return kernel.drop(w.key, "nothing new to act on");
