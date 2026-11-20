@@ -41,26 +41,6 @@ contributes:
         3. Allow **AidenHQ**. An organization may ask an owner to approve it first.
 
         Agents read with your account: they see what you can see. Anything they post as you (a comment, a review) is reviewed first; they never push or merge with your account.
-    # The owner's own GitHub App (the code host): created on the kernel's admin page (admin_page), which writes the key into the
-    # vault and github_app_id, the flow's completion.
-    - mode: advanced
-      order: 131
-      title: GitHub App
-      why: Agents push branches, open pull requests and merge in your agents' organization, as your App's bot.
-      effort: about 3 minutes, needs an organization you own
-      capabilities:
-        - Push branches and open pull requests as the App's bot, each one reviewed first
-        - Merge at the reviewed head once checks are green (the merge queue)
-        - New repositories for apps and agents in your agents' organization
-        - Self-hosted CI runners, the design-review check and the Maintainer's issue triage
-      secrets: [github_app_id]
-      admin_page: /setup/github-app
-      steps: |
-        1. Make (or pick) a GitHub organization for your agents' repositories, for example `acme-agents`. You must own it.
-        2. Press **Create the GitHub App**, name the organization and approve the App on GitHub. Its key goes straight into your vault.
-        3. Install the App on that organization (**All repositories**), using the link shown when it is created.
-
-        The code host starts at the next apply. Other organizations (your company's) can install the same App on the repositories the fleet may change; there it only opens pull requests.
   warehouse.sources:
     - schema: src_github
       about: "src_github.issues / projects / project_items / changes / users"
@@ -112,12 +92,14 @@ settings:
   # Paths the churn pass ignores (service/src/churn.ts; kernel/sdk/src/churn.ts): globs, one per entry.
   churn_exclude:
     default: [ "**/package-lock.json", "**/dist/**", "**/vendor/**", "**/*.min.*" ]
-  # The org the GitHub App is made for (aidenhq-<instance_name> unless this names another). Creating the App records it on the
-  # host (AIDENHQ_GITHUB_AGENTS_ORG): from then on it is the agents org, where new repositories go.
-  github_agents_org:
+  # The org the fleet's repositories live in: bare create_repo names and `@agents` grants resolve to it. Chosen once from the
+  # orgs the owner can create repos in; unset, the fleet's repos live in `local`. It survives a disconnect (create_repo then
+  # refuses "GitHub isn't connected" rather than switching to `local`). A change is the owner's.
+  github_fleet_org:
     pattern: '^[A-Za-z0-9][A-Za-z0-9-]{0,38}$'
-  # GitHub orgs/users (besides the agents org) the owner allows: the apps platform builds trusted apps from their repos, and create_repo
-  # creates repos there at Tier 0 (the App must be installed on the org, else it fails loudly; a stranger's install of the public App changes nothing).
+    owner: [ { path: "", new: true } ]
+  # GitHub orgs/users (besides the fleet org) the owner allows: the apps platform builds trusted apps from their repos, and
+  # create_repo may create in them.
   github_orgs:
     default: []
     pattern: '^[A-Za-z0-9][A-Za-z0-9-]{0,38}$'
@@ -261,29 +243,17 @@ check_jobs:
     timeout_min: 30
     title: "the secret scan, supply-chain checks, lint, tests and build"
     spec: { base: sha }
-# github_token: the old fine-grained token or `gh auth token` the setup used to ask for. github-mcp seeds its sign-in from it
-# once (official.ts), and apps-mcp (the root compose) reads it for private repos the App doesn't cover. Nothing asks for it now.
 # github_bot_token: the owner's GitHub bot account (spec §6.9, decision 25): a fine-grained token that forks our repos and
 # files issues and pull requests upstream from that fork, nothing more. Asked for on the first-run page (/setup); empty =
 # nothing goes upstream.
 secrets:
   state: true # its own vault dir, read-write at github-mcp's /state: the sign-in's token
   provided:
-    - name: github_token
-    # The GitHub App's id: written with its key when the App is created (kernel/src/github-app.ts), so it marks the advanced
-    # part done. The key itself is only in the vault's github-app/ (the code host's mount).
-    - name: github_app_id
-      setup:
-        label: GitHub App ID
-        pattern: '^[0-9]{1,12}$'
-        help: "Filled in when you create the App above. Paste one only for an App whose key you put in the vault's github-app/ yourself."
     - name: github_bot_token
       setup:
         label: GitHub bot token
         pattern: '^(github_pat_[A-Za-z0-9_]{20,250}|gh[pousr]_[A-Za-z0-9]{30,250})$'
         help: "A fine-grained token of a GitHub account you made for this AidenHQ: it files issues and pull requests to AidenHQ from its own fork. Without it, nothing is sent upstream."
-optional_secrets:
-  - github_token
 services:
   data: true # the code host's cache clones, merge queue, PR-task map and release train
   run:
@@ -295,15 +265,17 @@ services:
       links: [board, sources] # the board's sign-in and health check; the warehouse (shared sources)
       state: /state
       env:
-        GITHUB_TOKEN_FILE: ${secrets.github_token}
         GITHUB_STATE_DIR: /state
         GITHUB_OAUTH_CLIENT_ID: "${settings.github_oauth_client_id}"
         GITHUB_MCP_URL: "${settings.github_mcp_url}"
         # The board's sign-in endpoints: state, and starting a device sign-in.
         GITHUB_AUTH_TOKEN_FILE: ${secrets.github_auth_token}
         GITHUB_COMMENT_ORGS: "${settings.github_comment_orgs}" # comma-separated
-        # commit_status_set (the design-review check) writes only here, as the GitHub App.
-        GITHUB_AGENTS_ORG: "${settings.agents_org}"
+        # commit_status_set (the design-review check) writes only here; create_repo's bare names land here (compile derives it).
+        GITHUB_FLEET_ORG: "${settings.github_fleet_org}"
+        # `1` while the ci module is on (the sign-in then asks for admin:org), and the official MCP's read tools (everything else is denied).
+        GITHUB_CI: "${settings.github_ci}"
+        GITHUB_OFFICIAL_READ: "${settings.github_official_read}"
         # Product bugs (github_app_issue) go only to this repo.
         GITHUB_PRODUCT_REPO: "${settings.product_repo}"
         # The owner-data scrub refuses this instance's own names and hosts (compiled from its settings) in anything filed
@@ -337,8 +309,8 @@ services:
         AIDENHQ_KERNEL_URL: http://10.231.0.1:3130
         CODEHOST_KEY_FILE: ${secrets.codehost_github_token}
         CACHE_DIR: /cache
-        AGENTS_ORG: "${settings.agents_org}" # the host's AIDENHQ_GITHUB_AGENTS_ORG (compile derives it)
-        ALLOWED_ORGS: "${settings.github_sync_orgs}" # the orgs create_repo may create in: github_orgs plus the agents org (compile derives it)
+        GITHUB_FLEET_ORG: "${settings.github_fleet_org}"
+        ALLOWED_ORGS: "${settings.github_sync_orgs}" # the orgs create_repo may create in: github_orgs plus the fleet org (compile derives it)
         GITHUB_APP_DIR: /github-app
         TASKS_DIR: /tasks
         PRODUCT_REPO: "${AIDENHQ_PRODUCT_REPO:-}"

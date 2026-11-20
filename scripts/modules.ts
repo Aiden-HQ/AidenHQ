@@ -113,7 +113,6 @@ export const LEGACY_SECRETS: Record<string, string[]> = {
   glean: ["glean_auth_token"],
   grafana: ["grafana_auth_token"],
   clickhouse: ["clickhouse_auth_token"],
-  github: ["github_token"],
 };
 /** Host variables (the host's .env, never instance.yaml: they decide whose words count and where links point). Closed. */
 export const LEGACY_HOST_ENV: Record<string, string[]> = {
@@ -254,9 +253,9 @@ export function frontmatter(text: string) {
 /** A value's shape: list, map, or its JSON type. */
 const shapeOf = (v: unknown) => (Array.isArray(v) ? "list" : v && typeof v === "object" ? "map" : typeof v);
 
-/** settings.<key>.owner: what an agent's change to the setting may not do without the owner (kernel/src/apply-tier.ts ownerRaises). */
+/** settings.<key>.owner: what an agent's change to the setting may not do without the owner (kernel/src/apply-tier.ts ownerRaises). An empty `path` is the setting itself (a scalar). */
 function ownerRules(file: string, key: string, rules: Obj) {
-  const ok = (r: Obj) => r && typeof r === "object" && /^[\w*-]+(\.[\w*-]+)*$/.test(String(r.path)) && Object.keys(r).every((f) => ["path", "raise", "change", "to", "new", "before", "default"].includes(f)) && ["raise", "change", "to", "new"].filter((f) => f in r).length === 1 && (r.raise ?? r.change ?? r.new ?? true) === true;
+  const ok = (r: Obj) => r && typeof r === "object" && /^([\w*-]+(\.[\w*-]+)*)?$/.test(String(r.path)) && Object.keys(r).every((f) => ["path", "raise", "change", "to", "new", "before", "default"].includes(f)) && ["raise", "change", "to", "new"].filter((f) => f in r).length === 1 && (r.raise ?? r.change ?? r.new ?? true) === true;
   if (!Array.isArray(rules) || !rules.every(ok)) fail(`${file}: settings.${key}.owner is a list of { path, one of raise: true, change: true, to: <value>, new: true (before: <text>), and the field's default where unset }`);
   return rules;
 }
@@ -389,8 +388,7 @@ function resolveEnabled(all: Map<string, Obj>, wanted: string[]) {
 
 /**
  * Where agent-built repos live, one org per enabled code host (the handbooks name them), the org for new repositories first:
- * the GitHub agents org once GitHub is connected (the host's AIDENHQ_GITHUB_AGENTS_ORG, written by the kernel when the GitHub App is created (kernel/src/github-app.ts)
- * beside the App's key), and `local` (this server's repos) while codehost-local is on.
+ * the GitHub fleet org once the owner has set `github_fleet_org`, and `local` (this server's repos) while codehost-local is on.
  */
 const codehostOrgs = (enabled: Obj, settings: Obj) => [...(enabled.includes("github") && settings.agents_org ? [{ org: settings.agents_org, host: "github" }] : []), ...(enabled.includes("codehost-local") ? [{ org: "local", host: "local" }] : [])];
 
@@ -648,7 +646,7 @@ export function hostDirs(productDir: string, env = process.env) {
   return { work_dir: expand(String(y.work_dir ?? "~/aidenhq-work")), state_dir: expand(String(y.state_dir ?? "~/.local/state/aidenhq-runner")) };
 }
 
-export function compile(productDir: string, instanceDir: string, { revision, bundleState, oldBundle, fetch = hostFetch(productDir), door, workDir = hostDirs(productDir).work_dir, githubOrg = "" }: { revision?: string; bundleState?: Obj; oldBundle?: Obj; fetch?: Fetch; door?: Obj; workDir?: string; githubOrg?: string } = {}) {
+export function compile(productDir: string, instanceDir: string, { revision, bundleState, oldBundle, fetch = hostFetch(productDir), door, workDir = hostDirs(productDir).work_dir, legacyAgentsOrg = "" }: { revision?: string; bundleState?: Obj; oldBundle?: Obj; fetch?: Fetch; door?: Obj; workDir?: string; legacyAgentsOrg?: string } = {}) {
   const instFile = join(instanceDir, "instance.yaml");
   if (!existsSync(instFile)) fail(`no instance.yaml in ${instanceDir}: set AIDENHQ_INSTANCE_DIR to your instance checkout (see docs/USAGE.md)`);
   const instance = readYaml(instFile);
@@ -733,22 +731,32 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   if (settings.instance_name != null && !/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(String(settings.instance_name))) fail("settings.instance_name: lowercase letters, digits and - (a DNS label)");
 
 
-  // Derived (not settable): the orgs the src_github sync covers, github_orgs plus the agents org.
-  // GitHub is connected once the host records its agents org (AIDENHQ_GITHUB_AGENTS_ORG, written by the kernel when the GitHub App is created (kernel/src/github-app.ts)
-  // beside the App's key; the kernel reads the same variable): the one fact every GitHub part follows. Unset, codehost-github's
-  // service doesn't run (`when: { agents_org: true }`) and the handbooks name only `local`.
-  settings.agents_org = githubOrg; // the only org github-mcp's commit_status_set may write to
-  settings.github_sync_orgs = [...new Set([...[settings.github_orgs ?? []].flat(), settings.agents_org].filter(Boolean))].join(",");
+  // The fleet org: the owner's `github_fleet_org`, where bare create_repo names and `@agents` grants land. Unset, the fleet's
+  // repos live in `local` and the handbooks name only that.
+  // DELETE in the release after #1065: the one-release mapping from the old host variable the App's setup wrote.
+  if (!settings.github_fleet_org && legacyAgentsOrg) {
+    settings.github_fleet_org = legacyAgentsOrg;
+    warnings.push(`set github_fleet_org: ${legacyAgentsOrg} in instance.yaml; this mapping is removed in the next release`);
+  }
+  const fleetOrg = String(settings.github_fleet_org ?? "");
+  // Derived (not settable): the orgs the src_github sync covers, github_orgs plus the fleet org.
+  settings.agents_org = fleetOrg;
+  settings.github_sync_orgs = [...new Set([...[settings.github_orgs ?? []].flat(), fleetOrg].filter(Boolean))].join(",");
 
   // What the board's Settings shows (services/board/src/settings.ts): every setting an enabled module declares or the instance
   // sets, with whether instance.yaml sets it. Snapshotted before the derived keys below; never a secret-looking key.
   const shownSettings = Object.fromEntries([...new Set([...declaredSettings.flatMap(([, defs]) => Object.keys(defs)), ...Object.keys(instance.settings ?? {})])]
     .filter((k) => !/token|secret|password/i.test(k) && settings[k] !== undefined)
     .map((k) => [k, { value: settings[k], set: Object.hasOwn(instance.settings ?? {}, k) }]));
+  // Derived for the github module's process: the fleet org ("" when unset), whether the ci module is on (the sign-in then
+  // asks for admin:org) and the official MCP's read tools (every other tool of it is refused).
+  settings.github_fleet_org = fleetOrg;
+  settings.github_ci = enabled.includes("ci") ? "1" : "";
+  settings.github_official_read = ((enabledDefs.github?.connections?.github_official?.tools?.read ?? []) as string[]).join(",");
   // Derived for upstream contributions (spec §6.9): the owner-data scrub's literals (ownerTerms).
   settings.owner_terms = ownerTerms(instance.settings ?? {}, settings, declaredSettings.map(([, defs]) => defs));
 
-  const paperclip: Obj = { company: { name: String(settings.company_name), description: KERNEL_DEFAULTS.company_description }, ...(settings.owner_name ? { owner_name: String(settings.owner_name) } : {}), ...(settings.agents_org ? { github_agents_org: settings.agents_org } : {}), agents_orgs: codehostOrgs(enabled, settings), autonomy: String(settings.autonomy ?? "off"), settings: shownSettings, labels: [], mcp_servers: {}, agents: {}, routines: {} };
+  const paperclip: Obj = { company: { name: String(settings.company_name), description: KERNEL_DEFAULTS.company_description }, ...(settings.owner_name ? { owner_name: String(settings.owner_name) } : {}), agents_orgs: codehostOrgs(enabled, settings), autonomy: String(settings.autonomy ?? "off"), settings: shownSettings, labels: [], mcp_servers: {}, agents: {}, routines: {} };
   const apps: Obj[] = [];
   const instanceAppDefs = existsSync(join(instanceDir, "apps.yaml")) ? (readYaml(join(instanceDir, "apps.yaml")).apps ?? []) : [];
   const instanceApps = instanceAppDefs.map((a: Obj) => a.name);
@@ -1232,7 +1240,7 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   // (apps-mcp mounts github_token), and they are recreated with it.
   const mounted = composeSecretFiles(base, compose);
   const mounts = Object.fromEntries(setup.map((f) => [f.secret, [...(mounted[f.secret] ?? [])].sort()]));
-  const kernelModules = { owner: { name: String(settings.owner_name ?? ""), email: String(settings.owner_email).trim().toLowerCase(), timezone: String(settings.timezone ?? "UTC") }, commit_domain: settings.instance_name ? `${settings.instance_name}.aidenhq.ai` : "aidenhq.ai", repos: { orgs: [settings.github_orgs ?? []].flat().map(String), maintained: [settings.maintainer_repos ?? []].flat().map((e) => String(e?.repo ?? e)) }, modules: kernelModuleTable(enabledDefs, settings), services, ...(reviewer ? { reviewer } : {}), ...(Object.keys(checkJobTable).length ? { check_jobs: checkJobTable } : {}), ...(setup.length ? { setup, mounts } : {}) };
+  const kernelModules = { owner: { name: String(settings.owner_name ?? ""), email: String(settings.owner_email).trim().toLowerCase(), timezone: String(settings.timezone ?? "UTC") }, commit_domain: settings.instance_name ? `${settings.instance_name}.aidenhq.ai` : "aidenhq.ai", repos: { ...(fleetOrg ? { fleet_org: fleetOrg } : {}), orgs: [settings.github_orgs ?? []].flat().map(String), maintained: [settings.maintainer_repos ?? []].flat().map((e) => String(e?.repo ?? e)) }, modules: kernelModuleTable(enabledDefs, settings), services, ...(reviewer ? { reviewer } : {}), ...(Object.keys(checkJobTable).length ? { check_jobs: checkJobTable } : {}), ...(setup.length ? { setup, mounts } : {}) };
   // Every agent (any module's or the instance's) is the job dispatcher's: the one enabled module with kernel.jobs. The kernel
   // starts a job only for an agent its requester dispatches (kernel/src/jobs.ts).
   const dispatchers = Object.entries<Obj>(kernelModules.modules).filter(([, m]) => (m.roles ?? []).includes("kernel.jobs")).map(([n]) => n);

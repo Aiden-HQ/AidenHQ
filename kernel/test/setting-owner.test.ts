@@ -12,7 +12,7 @@ const RULES = [
   { path: "reviewers.*.model", change: true }, { path: "reviewers.*.finders", change: true }, { path: "reviewers.*.run_usd", change: true },
 ];
 const DEFAULT = { reviewers: { quick: { model: "~m/flash", finders: 1, run_usd: 0.5 } }, repos: [], month_usd: 200 };
-const defs = { code_review: { default: DEFAULT, owner: RULES }, github_comment_orgs: { default: [], owner: [{ path: "*", new: true }] } };
+const defs = { code_review: { default: DEFAULT, owner: RULES }, github_fleet_org: { owner: [{ path: "", new: true }] } };
 const BASE = { reviewers: {}, repos: [{ repo: "acme/api", month_usd: 50 }], month_usd: 200 };
 const tierOf = (cr, byAgent = true, base = { code_review: BASE }) => highest(applyParts({ files: ["instance.yaml"], byAgent, settingDefs: defs,
   base: { "instance.yaml": YAML.stringify({ settings: base }) }, head: { "instance.yaml": YAML.stringify({ settings: { ...base, code_review: cr } }) } }));
@@ -36,23 +36,22 @@ test("an agent's spend raise, wider reach or reviewer change is the owner's; oth
     assert.equal(tierOf(cr).tier, 1, JSON.stringify(cr));
   // The owner's own change from the board: their authority already.
   assert.equal(tierOf({ ...BASE, month_usd: 900 }, false).tier, 1);
-  // A new org in the github module's comment orgs.
-  const orgs = (v) => highest(applyParts({ files: ["instance.yaml"], byAgent: true, settingDefs: defs, base: { "instance.yaml": YAML.stringify({ settings: { github_comment_orgs: ["acme"] } }) }, head: { "instance.yaml": YAML.stringify({ settings: { github_comment_orgs: v } }) } }));
-  assert.equal(orgs(["acme", "othercorp"]).tier, 2);
-  assert.equal(orgs([]).tier, 1);
+  // The github module's fleet org (a scalar): any other org, or one chosen where none was, is the owner's.
+  const fleet = (b, v) => highest(applyParts({ files: ["instance.yaml"], byAgent: true, settingDefs: defs, base: { "instance.yaml": YAML.stringify({ settings: b === undefined ? {} : { github_fleet_org: b } }) }, head: { "instance.yaml": YAML.stringify({ settings: { github_fleet_org: v } }) } }));
+  assert.equal(fleet("acme", "othercorp").tier, 2);
+  assert.equal(fleet(undefined, "acme").tier, 2);
+  assert.equal(fleet("acme", "ACME").tier, 1);
 });
 
-test("the shipped modules declare these rules: an agent's new comment org, or a new repo at $500 a month, is the owner's", async () => {
+test("the shipped modules declare these rules: an agent's new fleet org, or a new repo at $500 a month, is the owner's", async () => {
   const { readFileSync } = await import("node:fs");
   const { checkTyped } = await import("../src/settings-change.ts");
   const decl = (m, k) => YAML.parse(readFileSync(new URL(`../../modules/${m}/module.yaml`, import.meta.url), "utf8")).settings[k];
-  const shipped = { code_review: decl("code-review", "code_review"), github_comment_orgs: decl("github", "github_comment_orgs") };
+  const shipped = { code_review: decl("code-review", "code_review"), github_fleet_org: decl("github", "github_fleet_org") };
   const t = (k, b, h, byAgent = true) => highest(applyParts({ files: ["instance.yaml"], byAgent, settingDefs: shipped,
     base: { "instance.yaml": YAML.stringify({ settings: { [k]: b } }) }, head: { "instance.yaml": YAML.stringify({ settings: { [k]: h } }) } })).tier;
-  assert.equal(t("github_comment_orgs", ["acme"], ["acme", "othercorp"]), 2);
-  assert.equal(t("github_comment_orgs", ["acme"], ["acme", "othercorp"], false), 1);
-  // Another shape than the default's (a string the consumer would split into orgs) is the owner's.
-  assert.equal(t("github_comment_orgs", ["acme"], "acme,evil"), 2);
+  assert.equal(t("github_fleet_org", "acme", "othercorp"), 2);
+  assert.equal(t("github_fleet_org", "acme", "othercorp", false), 1);
   // Weakening a review quietly: a reviewer's focus or context, a repo's ignore globs.
   assert.equal(t("code_review", { repos: [{ repo: "acme/api" }] }, { repos: [{ repo: "acme/api", ignore: ["**"] }] }), 2);
   assert.equal(t("code_review", {}, { reviewers: { deep: { ...shipped.code_review.default.reviewers.deep, focus: "only typos" } } }), 2);
@@ -61,5 +60,5 @@ test("the shipped modules declare these rules: an agent's new comment org, or a 
   assert.equal(t("code_review", { repos: [{ repo: "acme/api" }] }, { repos: [{ repo: "acme/api" }, { repo: "acme/web" }] }), 1);
   assert.equal(t("code_review", {}, { reviewers: { deep: { ...shipped.code_review.default.reviewers.deep, finders: 6 } } }), 2);
   // The owner's board still sets the list as a typed change.
-  checkTyped({ kind: "setting", key: "github_comment_orgs", value: ["acme", "othercorp"] }, { compiled: { settings: {}, agents: {} }, catalog: [{ name: "github", enabled: true, settings: { github_comment_orgs: { default: [] } } }] });
+  checkTyped({ kind: "setting", key: "github_fleet_org", value: "othercorp" }, { compiled: { settings: {}, agents: {} }, catalog: [{ name: "github", enabled: true, settings: { github_fleet_org: {} } }] });
 });
