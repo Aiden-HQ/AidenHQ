@@ -56,7 +56,7 @@ const DesignView = lazy(() => VIEW_CHUNKS.design().then((m) => ({ default: m.Des
 const PageLoading = () => <main className="page wide" aria-busy="true" />;
 
 type Items = Record<Bucket, Card[]>;
-type Route = { kind: "board" } | { kind: "chat"; ref: string | null } | { kind: "view"; view: View } | { kind: "settings"; cat: Category | null } | { kind: "agent"; key: string; tab: AgentTab } | { kind: "module"; name: string; tab: ModuleTab } | { kind: "task"; ref: string; focus?: string } | { kind: "run"; id: string } | { kind: "brief" } | { kind: "help" } | { kind: "design" } | { kind: "app"; name: string } | { kind: "setup"; module: string };
+type Route = { kind: "board" } | { kind: "chat"; ref: string | null } | { kind: "view"; view: View } | { kind: "settings"; cat: Category | null } | { kind: "agent"; key: string; tab: AgentTab } | { kind: "module"; name: string; tab: ModuleTab } | { kind: "task"; ref: string; focus?: string } | { kind: "run"; id: string } | { kind: "brief" } | { kind: "help" } | { kind: "design" } | { kind: "app"; name: string } | { kind: "setup"; module: string; change?: boolean };
 
 const HINTS: Record<Bucket, string> = {
   triage: "New tasks land here",
@@ -137,8 +137,8 @@ function parseRoute(): Route {
   if (/^reviews(\/[\w/-]*)?$/.test(h)) return { kind: "view", view: "reviews" };
   // #/flow/<tab> opens a Flow tab (Flow.tsx reads the tab itself).
   if (/^flow\/[a-z]+(\?.*)?$/.test(h)) return { kind: "view", view: "flow" };
-  const setup = /^setup\/([a-z0-9-]{1,63})$/.exec(h);
-  if (setup) return { kind: "setup", module: setup[1]! };
+  const setup = /^setup\/([a-z0-9-]{1,63})(\?change=1)?$/.exec(h);
+  if (setup) return { kind: "setup", module: setup[1]!, ...(setup[2] ? { change: true } : {}) };
   if (h === "brief") return { kind: "brief" };
   if (h === "help") return { kind: "help" };
   if (h === "design") return { kind: "design" };
@@ -847,7 +847,7 @@ export function App() {
       )}
       {route.kind === "run" && <Suspense fallback={null}><RunPage key={route.id} id={route.id} onClose={() => (history.length > 1 ? history.back() : go("#/"))} onSignIn={signInNeeded} /></Suspense>}
       {route.kind === "help" && <Help />}
-      {route.kind === "setup" && <SetupFlow key={route.module} module={route.module} onDone={() => go("#/")} onSignIn={signInNeeded} />}
+      {route.kind === "setup" && <SetupFlow key={route.module} module={route.module} change={route.change} onDone={() => go("#/")} onSignIn={signInNeeded} />}
       {creating && (
         <NewTask
           board={board}

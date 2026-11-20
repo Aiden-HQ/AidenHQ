@@ -3,7 +3,9 @@ description: Core
 roles:
   declares: [ { id: fleet-admin, description: declared here, so another module may not grant it } ]
 settings:
+  # The owner's timezone.
   timezone: { required: true }
+  # The company's name.
   company_name: { default: work }
 company: { name: "${settings.company_name}", description: Core company }
 requires: [eng]

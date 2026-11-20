@@ -20,7 +20,7 @@ never in this file.
 ## Layout
 
 - `modules/<name>/`: `module.yaml` (its containers under `services:`; compile generates their compose), plus
-  `agents/<key>/AGENTS.md` handbooks, `connections/<svc>/` MCP servers and `apps/<app>/`. The instance lists its modules (`modules/marketplace.json` `bundle` is the default set); the kernel's own settings are `kernel/settings.json`.
+  `agents/<key>/AGENTS.md` handbooks, `connections/<svc>/` MCP servers and `apps/<app>/`. The instance lists its modules (`modules/marketplace.json` `bundle` is the default set); the kernel's own settings are `kernel/settings.json`. How a module is built: `modules/AGENTS.md`.
 - `kernel/`: the `aidenhq-kernel` host service (the model gateway and the tool proxy in front of every connection: grants,
   caller assertions, fencing) and the module SDK (`kernel/sdk`).
 - `services/`: `board` (owner UI and approvals), `computer` (the launcher of agent computers: every job runs in one),
@@ -164,7 +164,7 @@ re-run it and any change to a listed file does. Cases run 8 at a time.
   of the owner's setup from a fresh install to connected.
 - **Minimal tests.** A few that prove the thing works end to end; no tests for obvious code.
 - **Board UI follows [docs/design/board-ui.md](docs/design/board-ui.md)**: chat first, the frame and kit in
-  `services/board/web/src`, tokens only, both themes, motion tokens. Modules contribute data the board draws, never board UI.
+  `services/board/web/src`, tokens only, both themes, motion tokens. Modules declare what the board and the owner's Claude draw and drive: [modules/AGENTS.md](modules/AGENTS.md).
 - **Fluid UI, checked at real sizes.** Board and app pages are fluid at every common resolution: fluid widths with clamp()
   gutters, a clamp() type scale, grids that reflow, never a fixed narrow column floating on a large screen. Before
   calling a UI change done, set the browser viewport explicitly and screenshot it at 1512x982, 1920x1080, 2560x1440,

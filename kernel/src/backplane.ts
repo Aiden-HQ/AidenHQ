@@ -184,6 +184,7 @@ export const ROUTES = [
   { method: "GET", path: "/v1/advisories", auth: "board" },
   { method: "GET", path: "/v1/connections/health", auth: "board" },
   { method: "POST", path: "/v1/settings/change", auth: "board" },
+  { method: "POST", path: "/v1/validate", auth: "board" },
   { method: "POST", path: "/v1/stop", auth: "board" },
   { method: "POST", path: "/v1/routing/:op", auth: "module+assertion" },
   { method: "POST", path: "/v1/settings/agent", auth: "module+assertion" },
@@ -252,7 +253,7 @@ function flowRead(flow: Flow, p: URLSearchParams) {
   return flow.summary({ since, to, by: by as By, scope: p.get("scope")?.slice(0, 100) || undefined });
 }
 
-export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boardCp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, reviewerKey = () => "", jobs, codehost, admission, outcomes, wakes, tasks, eventsKey = () => "", work, flow, taskStates, repos = () => ({}), graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, checkJobs, jobTools, precheck, repoBundle, ownerRaw, lane, healthProbe, healthKey = () => "", connectionHealth, settingsChange, routing, boardApi: moduleBoardApi, log = () => {} }: {
+export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boardCp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, reviewerKey = () => "", jobs, codehost, admission, outcomes, wakes, tasks, eventsKey = () => "", work, flow, taskStates, repos = () => ({}), graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, checkJobs, jobTools, precheck, repoBundle, ownerRaw, lane, healthProbe, healthKey = () => "", connectionHealth, settingsChange, validate, routing, boardApi: moduleBoardApi, log = () => {} }: {
   /** Flow's fact log (facts.ts): POST /v1/facts. */
   facts?: Facts;
   /** An agent's own wait on its job's task (idle.ts): POST /v1/wait. */
@@ -313,6 +314,8 @@ export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boar
   /** Every connection's /healthz (health.ts createConnectionHealth). */
   connectionHealth?: () => Promise<Record<string, unknown>>;
   /** The owner's typed settings change on their settings task (settings-change.ts). */
+  /** A module's own check of settings the board is about to file (module-validate.ts). */
+  validate?: (module: string, input: { settings?: Record<string, unknown> }) => Promise<unknown>;
   settingsChange?: ((task: unknown, changes: unknown) => Promise<unknown>) & { asAgent?: (requester: Requester, task: string, changes: unknown, module: string) => Promise<unknown> };
   /** The routing learning loop (routing-tune.ts). */
   routing?: Routing;
@@ -521,6 +524,13 @@ export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boar
             await outcomes.post(j, { kind: "notice", body: STOPPED_NOTE }).catch((e: Error) => log("stop note failed", { job: j.id, err: e.message }));
           }
           return send(res, 200, { stopped: stopped.map((j) => j.id) });
+        }
+        case "POST /v1/validate": {
+          if (!isBoard(req)) throw fail(401, "unauthorized", "the board's key is required");
+          if (!validate) throw fail(503, "unavailable", "validation is off");
+          const b = await json(req, 200_000);
+          if (typeof b.module !== "string" || !/^[a-z][a-z0-9-]{0,62}$/.test(b.module) || !b.settings || typeof b.settings !== "object" || Array.isArray(b.settings)) throw fail(400, "bad_request", "send {module, settings}");
+          return send(res, 200, await validate(b.module, { settings: b.settings as Record<string, unknown> }));
         }
         case "POST /v1/settings/change": {
           if (!isBoard(req)) throw fail(401, "unauthorized", "the board's key is required");

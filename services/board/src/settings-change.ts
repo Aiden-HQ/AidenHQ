@@ -54,7 +54,7 @@ interface Catalog {
   pinned?: string;
   /** Listed in instance.yaml modules: (an enabled module that isn't chosen is on as a dependency). */
   chosen?: boolean;
-  settings?: Record<string, { default?: unknown; values?: unknown[]; type?: string; host?: string }>;
+  settings?: Record<string, { default?: unknown; values?: unknown[]; type?: string; host?: string; pattern?: string }>;
 }
 
 export class ChangeRefused extends Error {}
@@ -76,6 +76,16 @@ export function boundedProblem(v: unknown): string | undefined {
     return "plain values only";
   };
   return walk(v, 0);
+}
+
+/** The setting changes grouped by the module that declares each, as its validate hook is asked (module.yaml `validate:`). */
+export function settingsByModule(changes: Change[], catalog: Catalog[]): Map<string, Record<string, unknown>> {
+  const out = new Map<string, Record<string, unknown>>();
+  for (const ch of changes) {
+    const m = ch.kind === "setting" ? catalog.find((x) => x.enabled && x.settings?.[ch.key]) : undefined;
+    if (ch.kind === "setting" && m) out.set(m.name, { ...out.get(m.name), [ch.key]: ch.value });
+  }
+  return out;
 }
 
 /** The label on the tasks this files, so the page can list them. */
@@ -113,6 +123,9 @@ export function checkChange(ch: Change, compiled: Compiled | null, catalog: Cata
       const problem = urlSettingProblem(ch.value, def.host);
       if (problem) throw new ChangeRefused(`${ch.key}: ${problem}`);
     }
+    // `pattern` (anchored, module.yaml): the shape of a text value; empty clears it.
+    const shape = def?.pattern ? new RegExp(def.pattern) : undefined;
+    if (shape && each.some((v) => v !== "" && !shape.test(String(v)))) throw new ChangeRefused(`${ch.key} must match ${def!.pattern}`);
     if (each.some((v) => typeof v === "string" && !plain(v))) throw new ChangeRefused(`${ch.key}: no control characters or $`);
     return ch;
   }

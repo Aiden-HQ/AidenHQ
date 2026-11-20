@@ -285,7 +285,7 @@ function Routines({ d }: { d: ModuleDetail }) {
 function ModuleSettings({ m, onSignIn }: { m: ModuleRow; onSignIn: () => void }) {
   const [rows, setRows] = useState<SettingRow[] | null>(null);
   useEffect(() => {
-    api.settings().then((r) => setRows(r.settings.filter((s) => s.module === m.name)), (e) => e instanceof SignInRequired && onSignIn());
+    api.settings().then((r) => setRows(r.settings.filter((s) => s.module === m.name && Object.entries(s.when ?? {}).every(([k, v]) => String(r.settings.find((x) => x.key === k)?.value ?? r.settings.find((x) => x.key === k)?.default) === String(v)))), (e) => e instanceof SignInRequired && onSignIn());
   }, [m.name, onSignIn]);
   if (!rows) return <SkeletonLines lines={3} />;
   if (!rows.length) return <EmptyState><strong>Nothing to set.</strong> {m.name} works as it is; it has no settings of its own.</EmptyState>;

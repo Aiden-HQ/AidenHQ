@@ -10,12 +10,13 @@ import { Markdown } from "./markdown";
 import { ChangeProgress, Page } from "./settings-ui";
 import type { FiledChange } from "./types";
 import { PageHeader } from "./ui/PageHeader";
+import { Banner } from "./ui";
 import "./settings.css";
 import "./setup-flow.css";
 
 type Board = { url: string; named: boolean };
 
-export function SetupFlow({ module, onDone, onSignIn }: { module: string; onDone: () => void; onSignIn: () => void }) {
+export function SetupFlow({ module, change, onDone, onSignIn }: { module: string; change?: boolean; onDone: () => void; onSignIn: () => void }) {
   const [flow, setFlow] = useState<SetupFlowView | null | undefined>(undefined);
   const [board, setBoard] = useState<Board>({ url: location.origin, named: true });
   const [error, setError] = useState("");
@@ -45,7 +46,7 @@ export function SetupFlow({ module, onDone, onSignIn }: { module: string; onDone
           {flow === null && <button className="btn" onClick={onDone}>Back</button>}
         </Page>
       ) : (
-        <FlowBody flow={flow} board={board} reload={load} onDone={onDone} onSignIn={onSignIn} />
+        <FlowBody flow={flow} change={change} board={board} reload={load} onDone={onDone} onSignIn={onSignIn} />
       )}
     </div>
   );
@@ -60,7 +61,7 @@ function valid(pattern: string, value: string): boolean {
   }
 }
 
-function FlowBody({ flow, board, reload, onDone, onSignIn }: { flow: SetupFlowView; board: Board; reload: () => Promise<void>; onDone: () => void; onSignIn: () => void }) {
+function FlowBody({ flow, change, board, reload, onDone, onSignIn }: { flow: SetupFlowView; change?: boolean; board: Board; reload: () => Promise<void>; onDone: () => void; onSignIn: () => void }) {
   const [error, setError] = useState("");
   const fields = flow.fields ?? [];
   // A module with modes: its Connect waits for the pick to be live (the setting holds it).
@@ -102,6 +103,7 @@ function FlowBody({ flow, board, reload, onDone, onSignIn }: { flow: SetupFlowVi
   return (
     <main className="st-page setup-page">
       {head}
+      {flow.done && change && <Banner>Changing setup: your current choices are shown. A new pick files a settings change for approval; pasting a secret replaces the saved one (its value is never shown).</Banner>}
       <div className="setup-grid">
         {viaOrg ? (
           <Step n={n++} title={`Using ${org}'s app`} state="done">

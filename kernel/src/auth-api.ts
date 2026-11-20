@@ -20,6 +20,7 @@ import { AccountError, type Accounts, type Role } from "./accounts.ts";
 import { AccessError, assertNamesApp } from "../../modules/apps-platform/src/app-access.ts";
 import type { Whoami } from "./identity.ts";
 import type { ModuleSecrets } from "./module-secrets.ts";
+import type { ModuleValidate } from "./module-validate.ts";
 import { fail } from "./proxy.ts";
 
 const EMAIL = (v: unknown) => typeof v === "string" && v.length <= 200;
@@ -33,7 +34,7 @@ const SECRET = (v: unknown) => typeof v === "string" && /^[a-z][a-z0-9_]{1,63}$/
 type McpCard = { id: string; digest: string; decision: "approve" | "reject"; reason?: string; stale?: boolean };
 type Decide = (id: string, digest: string, decision: "approve" | "reject", by: string, via: string, reason?: string) => Promise<{ identifier: string; state: string }>;
 
-export function createAuthApi({ accounts, whoami, boardKey, operatorKey, recoveryKeyWaiting = () => false, modelReady = () => true, secrets, decide }: { accounts: () => Accounts | undefined; whoami: Whoami; boardKey: () => string; operatorKey: () => string; recoveryKeyWaiting?: () => boolean; modelReady?: () => boolean; secrets?: ModuleSecrets; decide?: Decide }) {
+export function createAuthApi({ accounts, whoami, boardKey, operatorKey, recoveryKeyWaiting = () => false, modelReady = () => true, secrets, decide, validate }: { accounts: () => Accounts | undefined; whoami: Whoami; boardKey: () => string; operatorKey: () => string; recoveryKeyWaiting?: () => boolean; modelReady?: () => boolean; secrets?: ModuleSecrets; decide?: Decide; validate?: ModuleValidate }) {
   const bearer = (req: IncomingMessage) => String(req.headers.authorization ?? "").replace(/^Bearer\s+/i, "").trim();
   const is = (given: string, key: string) => { const a = Buffer.from(given), b = Buffer.from(key); return b.length > 0 && a.length === b.length && timingSafeEqual(a, b); };
   const send = (res: ServerResponse, status: number, body: unknown): void => void res.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" }).end(JSON.stringify(body));
@@ -160,7 +161,11 @@ export function createAuthApi({ accounts, whoami, boardKey, operatorKey, recover
             const module = need(b, "module", MODULE);
             if (op === "setup_status") return send(res, 200, { secrets: secrets.status(module) });
             if (!by.owner) throw fail(403, "forbidden", "only the owner");
-            return send(res, 200, { ok: true, ...(await secrets.save(module, need(b, "secret", SECRET), need(b, "value", (v) => typeof v === "string" && v.length <= 1000))) });
+            const name = need(b, "secret", SECRET), value = need(b, "value", (v) => typeof v === "string" && v.length <= 1000);
+            // The module's own check, before the value is written (module-validate.ts): its refusal is the field's error.
+            const checked = await validate?.(module, { secret: { name, value: value.trim() } });
+            if (checked && !checked.ok) throw fail(400, "bad_request", checked.errors.map((e) => e.message).join(" "));
+            return send(res, 200, { ok: true, ...(await secrets.save(module, name, value)), ...(checked?.ok && checked.unchecked ? { unchecked: checked.unchecked } : {}) });
           }
         }
         throw fail(404, "not_found", "no such accounts call");

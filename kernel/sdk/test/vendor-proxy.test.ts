@@ -251,3 +251,30 @@ describe("device sign-in", () => {
     p.close();
   });
 });
+
+describe("/auth/check", () => {
+  it("is ok while the token works, and says to reconnect once the vendor revokes it", async () => {
+    let revoked = false;
+    const up = createServer(async (req, res) => {
+      if (revoked) return void res.writeHead(401).end("invalid_token");
+      const server = new Server({ name: "vendor", version: "1" }, { capabilities: { tools: {} } });
+      server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [{ name: "whoami", inputSchema: { type: "object" as const } }] }));
+      const t = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
+      res.on("close", () => void t.close());
+      await server.connect(t);
+      await t.handleRequest(req, res);
+    });
+    const upUrl = await listen(up);
+    let state: "ok" | "expired" = "ok";
+    const auth = { ...staticAuth({ authorization: "Bearer t" }), status: () => ({ state, since: "" }), mark: (s: "ok" | "expired") => void (state = s) };
+    const p = createVendorProxy({ name: "Acme", upstream: new URL(`${upUrl}/mcp`), auth, log, authKey: "brd", caller: async () => {}, instructions: "" });
+    const url = await listen(p);
+    const check = (key = "brd") => fetch(`${url}/auth/check`, { headers: { authorization: `Bearer ${key}` } });
+    expect((await check("wrong")).status).toBe(401);
+    expect(await (await check()).json()).toEqual({ ok: true });
+    revoked = true;
+    expect(await (await check()).json()).toEqual({ ok: false, message: "Acme no longer accepts the sign-in.", fix: "Reconnect" });
+    p.close();
+    up.close();
+  });
+});

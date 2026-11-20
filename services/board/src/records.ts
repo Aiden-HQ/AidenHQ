@@ -84,9 +84,13 @@ export type Records = {
   connectionHealth(): Promise<Record<string, Probe>>;
   /** The owner's typed settings change on their settings task: the kernel writes it and files its apply (kernel/src/settings-change.ts). Throws the kernel's reason. */
   settingsChange(task: string, changes: unknown[]): Promise<{ record: string; tier: number; state: string }>;
+  /** A module's own check of settings about to be filed (module.yaml `validate:`, kernel/src/module-validate.ts). Throws the kernel's reason. */
+  validate(module: string, settings: Record<string, unknown>): Promise<Validation>;
   /** A card's "Explain" (explain.ts): the record whole and its task's request chain. Throws the kernel's answer (404 for no such record). */
   explain(id: string): Promise<Explanation>;
 };
+/** What a module's validate hook said: fine (`unchecked`: it couldn't be asked, so it went unchecked), or each field's error. */
+export type Validation = { ok: true; unchecked?: string } | { ok: false; errors: { field: string; message: string }[] };
 export type Advisory = { id: string; module: string; severity: string; fixed: string; summary: string; url: string };
 
 export function kernelRecords(k: { url: string; token: string } | undefined, log?: { warn(o: object, m: string): void }): Records {
@@ -122,6 +126,13 @@ export function kernelRecords(k: { url: string; token: string } | undefined, log
     if (!res.ok) throw new Error(String(j.message ?? j.error ?? `the kernel answered ${res.status}`));
     return { record: String(j.record), tier: Number(j.tier), state: String(j.state) };
   };
+  const validate: Records["validate"] = async (module, settings) => {
+    if (!k) return { ok: true };
+    const res = await fetch(`${k.url}/v1/validate`, { method: "POST", headers: { authorization: `Bearer ${k.token}`, "content-type": "application/json" }, body: JSON.stringify({ module, settings }), signal: AbortSignal.timeout(20_000) });
+    const j = (await res.json().catch(() => ({}))) as Validation & { message?: string; error?: string };
+    if (!res.ok) throw new Error(String(j.message ?? j.error ?? `the kernel answered ${res.status}`));
+    return j;
+  };
   const explainOf: Records["explain"] = async (id) => {
     if (!k) throw new Error("the board has no kernel to read the record from");
     const get = (path: string) => fetch(`${k.url}${path}`, { headers: { authorization: `Bearer ${k.token}` }, signal: AbortSignal.timeout(15_000) });
@@ -131,5 +142,5 @@ export function kernelRecords(k: { url: string; token: string } | undefined, log
     const asked = chain?.ok ? String(((await chain.json()) as { chain?: unknown }).chain ?? "") : null;
     return explain((await rec.json()) as RecordWhole, asked);
   };
-  return { list, connectionHealth, explain: explainOf, advisories, settingsChange };
+  return { list, connectionHealth, explain: explainOf, advisories, settingsChange, validate };
 }

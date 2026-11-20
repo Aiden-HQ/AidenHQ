@@ -106,6 +106,18 @@ describe("POST /api/settings/change", () => {
     expect(records.settings).toEqual([{ task: "i1", changes }]);
   });
 
+  it("asks the module's validate hook first: its refusal is the field's error and nothing is filed", async () => {
+    const asked: unknown[] = [];
+    const was = records.validate;
+    records.validate = async (module, settings) => (asked.push([module, settings]), { ok: false, errors: [{ field: "glean_mcp_url", message: "that workspace isn't reachable" }] });
+    const before = created.length;
+    const r = await post({ changes: [{ kind: "setting", key: "glean_mcp_url", value: "https://acme-be.glean.com/mcp/default" }] });
+    records.validate = was;
+    expect(r).toMatchObject({ status: 422, body: { error: "glean_mcp_url: that workspace isn't reachable", errors: [{ field: "glean_mcp_url", message: "that workspace isn't reachable" }] } });
+    expect(asked).toEqual([["glean", { glean_mcp_url: "https://acme-be.glean.com/mcp/default" }]]);
+    expect(created).toHaveLength(before);
+  });
+
   it("lists a filed change with where it stands", async () => {
     const r = await new Promise<{ status: number; body: any }>((resolve, reject) => {
       const req = request({ host: "127.0.0.1", port, method: "GET", path: "/api/settings/changes", headers: { host: "localhost:3120" } }, (res) => {

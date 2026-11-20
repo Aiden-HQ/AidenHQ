@@ -31,7 +31,7 @@ import type { AuthorKind, Flow } from "./flow.js";
 import { moduleAuthority, moduleStates } from "./modules.js";
 import { CommitUnreadable, agentGrants, browseModules, createResolver, marketplacesOf } from "./marketplace.js";
 import { connectionsView, readSources, readUpdates, settingsView, type Probe } from "./settings.js";
-import { ChangeRefused, ChangesSchema, SETTINGS_LABEL, changesOf, checkChange, stageOf, taskFor, type Change } from "./settings-change.js";
+import { ChangeRefused, ChangesSchema, SETTINGS_LABEL, changesOf, checkChange, settingsByModule, stageOf, taskFor, type Change } from "./settings-change.js";
 import { createGrading, gradePassed, type Grading } from "./grading.js";
 import { COMMENT_ORGS, CodeReviewSchema, ProfileSchema, configProblems, insightsOf } from "./reviews.js";
 import { ReviewsRefused, ReviewsUnavailable, type Reviews } from "./reviews-client.js";
@@ -167,7 +167,7 @@ const TYPES: Record<string, string> = {
 };
 
 class HttpError extends Error {
-  constructor(readonly status: number, message: string) {
+  constructor(readonly status: number, message: string, readonly errors?: { field: string; message: string }[]) {
     super(message);
   }
 }
@@ -409,6 +409,13 @@ export function createApp(opts: AppOptions): Server {
       if (e instanceof ChangeRefused) throw new HttpError(400, e.message);
       throw e;
     }
+    // The module's own check of the values it is about to be given (module.yaml `validate:`): a refusal is the field's error.
+    const unchecked: string[] = [];
+    for (const [module, settings] of settingsByModule(changes, catalog)) {
+      const v = await records.validate(module, settings).catch((e: Error) => { throw new HttpError(502, `couldn't check ${module}'s settings: ${e.message}`); });
+      if (!v.ok) throw new HttpError(422, v.errors.map((e) => (e.field ? `${e.field}: ${e.message}` : e.message)).join(" "), v.errors);
+      if (v.unchecked) unchecked.push(v.unchecked);
+    }
     const ctx = await context();
     const label = await labelNamed(ctx, SETTINGS_LABEL, "#7048e8");
     const { title, description } = taskFor(changes, compiled);
@@ -425,7 +432,7 @@ export function createApp(opts: AppOptions): Server {
       throw new HttpError(422, `not written: ${(e as Error).message}`);
     }
     log.info({ issue: issue.identifier, changes: changes.map((c) => c.kind) }, "settings change filed");
-    return { identifier: issue.identifier, ...filed };
+    return { identifier: issue.identifier, ...filed, ...(unchecked.length ? { unchecked } : {}) };
   }
 
   // Agent activity (Paperclip runs).
@@ -1156,6 +1163,18 @@ export function createApp(opts: AppOptions): Server {
           redirect: s.httpsOnly || s.mode === "device" ? null : `${SIGNIN_LOOPBACK}${s.callback}`,
           oneClick: s.httpsOnly ? null : (httpsBoard?.hostname ?? null),
         };
+      },
+    },
+    // Test connection: one live read through the sign-in's proxy, answered in words (ok, or what is wrong and how to fix it).
+    {
+      method: "POST",
+      path: /^\/api\/sign-ins\/([a-z0-9-]{1,63})\/check$/,
+      handle: async (m) => {
+        const s = (opts.signIns ?? []).find((x) => x.id === m[1]);
+        if (!s) throw new HttpError(404, "no such sign-in");
+        const r = await s.auth.check();
+        store.events.emit("connections");
+        return r;
       },
     },
     // Finishing a Google sign-in with a Desktop client: the loopback address its tab ended on, pasted on its Connect dialog.
@@ -2244,7 +2263,9 @@ export function createApp(opts: AppOptions): Server {
     // A page in a browser (DNS rebinding, CSRF) carries an Origin that is not the board's own; a CLI carries none.
     const origin = req.headers.origin;
     if (origin && (origin === "null" || !URL.canParse(origin) || ![auth.board, new URL(auth.origin(req)).origin].includes(new URL(origin).origin))) throw new HttpError(403, "cross-origin");
-    const unauthorized = (error?: string) => {
+    // Every 401 leaves one line (never the token): why, the kernel's own word if it gave one, and who asked.
+    const unauthorized = (error?: string, why = "no bearer", code?: string) => {
+      log.warn({ reason: why, ...(code ? { code } : {}), userAgent: String(req.headers["user-agent"] ?? "").slice(0, 100) }, "/mcp answered 401");
       res.writeHead(401, { ...SECURITY_HEADERS, "content-type": "application/json", "cache-control": "no-store", "www-authenticate": auth.challenge(error) }).end(JSON.stringify({ error: error ?? "sign in" }));
     };
     const token = auth.bearer(req);
@@ -2256,8 +2277,12 @@ export function createApp(opts: AppOptions): Server {
     const body = await readJson(req, 1_000_000);
     const calls = (Array.isArray(body) ? body : [body]) as { method?: string; params?: { name?: string } }[];
     const writes = calls.some((m) => m?.method === "tools/call" && WRITE_TOOLS.has(String(m.params?.name)));
-    const who = await auth.check(token, writes);
-    if (!who) return unauthorized("invalid_token");
+    let code: string | undefined;
+    const who = await auth.check(token, writes, (c) => (code = c)).catch((e: Error) => {
+      log.warn({ reason: "kernel unreachable", err: String(e.message).slice(0, 100), userAgent: String(req.headers["user-agent"] ?? "").slice(0, 100) }, "/mcp answered 401");
+      return undefined;
+    });
+    if (!who) return unauthorized("invalid_token", "kernel refused", code);
     sessions.set(req, who.session);
     await mcp!(req, res, body, { token, resource: auth.resource(), origin: auth.board });
   }
@@ -2323,7 +2348,7 @@ export function createApp(opts: AppOptions): Server {
     } catch (err) {
       const status = statusOf(err);
       if (status >= 500) log.error({ err: String((err as Error).message ?? err).slice(0, 500), path: url.pathname }, "request failed");
-      if (!res.headersSent) send(res, status, JSON.stringify({ error: (err as Error).message ?? "error" }), "application/json");
+      if (!res.headersSent) send(res, status, JSON.stringify({ error: (err as Error).message ?? "error", ...(err instanceof HttpError && err.errors ? { errors: err.errors } : {}) }), "application/json");
     }
   });
 }

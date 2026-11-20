@@ -2,6 +2,7 @@ name: a
 description: Module A
 requires: [b]
 settings:
+  # The owner's email.
   owner_email: { required: true }
 connections:
   aconn: { url: "http://a-mcp:1/mcp", auth: a_service_key, tools: { read: [a_get], write: [a_set] } }

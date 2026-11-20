@@ -37,6 +37,22 @@ function market(edit) {
 }
 test("a remote source in the product's own marketplace is refused (third-party marketplaces hold those)", () =>
   assert.throws(() => compile(market((m) => ({ ...m, plugins: m.plugins.map((p) => (p.name === "b" ? { name: "b", source: { source: "github", repo: "acme/b", sha: "1".repeat(40) } } : p)) })), finst(["a"])), /a remote source belongs in a third-party marketplace/));
+test("an official module's setting without a comment above it fails compile; the comment is its doc", () => {
+  const add = (settings) => {
+    const dir = market((m) => ({ ...m, plugins: [...m.plugins, { name: "doc", source: "./doc" }] }));
+    mkdirSync(join(dir, "modules", "doc"));
+    writeFileSync(join(dir, "modules", "doc", "module.yaml"), `name: doc\ndescription: d\nsettings:\n${settings}`);
+    return dir;
+  };
+  assert.throws(() => compile(add("  host: { default: x }\n"), finst(["doc"])), /module doc: settings host need a comment above them/);
+  const out = compile(add("  # Where it listens.\n  host: { default: x, pattern: '^[a-z]+$' }\n"), finst(["doc"]));
+  assert.deepEqual(out.catalog.find((m) => m.name === "doc").settings.host, { default: "x", pattern: "^[a-z]+$", doc: "Where it listens." });
+});
+test("a validate hook is compiled for the module's own service only: another module's service, an IP or localhost is refused", () => {
+  const def = (post) => ({ secrets: { provided: ["acme_key"] }, services: { run: { hook: {} } }, validate: { post, auth: "acme_key" } });
+  assert.deepEqual(checkEntries("acme", def("http://hook:8080/validate"))["acme.validate"], { module: "acme", at: "validate", url: "http://hook:8080/validate", auth_secret: "acme_key" });
+  for (const post of ["http://other-mcp:8080/validate", "http://10.0.0.5:8080/validate", "http://localhost:8080/validate"]) assert.throws(() => checkEntries("acme", def(post)), /post must be one of the module's own services/);
+});
 test("engines: two modules with one engine kind fail compile", () =>
   assert.throws(() => compile(mods, finst(["engdup"])), /two modules declare engine kind codex-openrouter: eng and engdup/));
 test("engines: a runner agent on an engine no enabled module provides fails compile", () => {

@@ -278,6 +278,7 @@ export const api = {
   reviewConfig: (body: { value?: CodeReview; org?: string }) => call<{ identifier: string }>("POST", "/api/reviews/config", body),
   connections: (fresh = false) => call<ConnectionsData>("GET", `/api/settings/connections${fresh ? "?fresh" : ""}`),
   /** Files a settings change as the Engineer's task; its commit becomes an apply card. */
+  testSignIn: (id: string) => call<{ ok: true } | { ok: false; message: string; fix?: string }>("POST", `/api/sign-ins/${encodeURIComponent(id)}/check`),
   changeSettings: (changes: SettingChange[]) => call<{ identifier: string }>("POST", "/api/settings/change", { changes }),
   settingsChanges: () => call<{ changes: FiledChange[] }>("GET", "/api/settings/changes"),
   apps: () => call<{ apps: AppRow[]; error?: string }>("GET", "/api/apps"),

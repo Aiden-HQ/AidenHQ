@@ -39,7 +39,7 @@ const added = (b: unknown, h: unknown) => list(h).map((x) => (isMap(x) ? x.name 
 /** Top-level keys that never hand out authority by themselves (their contents are checked where they can). */
 const PLAIN = new Set(["stages", "journeys", "name", "version", "description", "license", "publisher", "homepage", "kernel", "requires", "provides", "conflicts", "replaces", "data_version", "labels", "company", "departments", "setup", "apps", "events", "checks", "points", "contributes", "prompts", "skills", "models", "jobcaps"]);
 /** Checked below, field by field. */
-const CHECKED = new Set(["facts", "writes", "privileged", "secrets", "generated_secrets", "optional_secrets", "roles", "default_grants", "connections", "services", "agents", "providers", "isolation", "routines", "board_env", "workspaces", "paths", "codehost", "check_jobs", "settings"]);
+const CHECKED = new Set(["facts", "writes", "privileged", "secrets", "generated_secrets", "optional_secrets", "roles", "default_grants", "connections", "services", "agents", "providers", "isolation", "routines", "board_env", "workspaces", "paths", "codehost", "check_jobs", "settings", "validate"]);
 /** Every top-level module.yaml key the kernel knows: any other is a compile error (module.yaml is strict, spec §3.1). */
 export const MANIFEST_KEYS = new Set([...PLAIN, ...CHECKED]);
 /** Agent fields that hand out nothing (model and engine choice, scheduling, presentation, the module text it reads: skills, like
@@ -207,6 +207,8 @@ export function authorityDiff(name: string, base: ModuleDef | undefined, head: M
   const checkIds = (x: Dict) => list(x.checks).filter((c) => !(isMap(c) && c.mode === "observe")).map((c) => JSON.stringify(isMap(c) ? c.id ?? c : c));
   const gone = checkIds(b).filter((c) => !checkIds(head).includes(c));
   if (gone.length) owner(`drops ${gone.length} check${gone.length === 1 ? "" : "s"}`);
+  // A validate hook is sent the values of the settings and secrets the owner saves for the module: a new or changed one is the owner's.
+  if (head.validate != null && !eq(b.validate, head.validate)) owner(`validate hook ${id(String(map(head.validate).post ?? ""))}: receives the module's pasted secrets and settings`);
   for (const k of ["reviewer", "executor"]) if (map(b.providers)[k] && !map(head.providers)[k]) owner(`drops its ${k} provider`);
 
   for (const k of keys(b, head)) {

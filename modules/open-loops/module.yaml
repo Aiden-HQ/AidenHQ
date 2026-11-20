@@ -8,6 +8,7 @@ settings:
   # fallback while nothing is paired.
   owner_slack_user_id:
     default: ""
+  # The owner's own email address: the inbox agent's prompt names it as the user whose mail it triages.
   owner_email:
     required: true
 agents:

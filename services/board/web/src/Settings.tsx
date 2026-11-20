@@ -277,7 +277,8 @@ function SettingEditor({ s, onDone }: { s: SettingRow; onDone: () => void }) {
   const [text, setText] = useState(Array.isArray(v) ? (v as unknown[]).join(", ") : v === null || v === undefined ? "" : String(v));
   const [review, setReview] = useState(false);
   const next = values.length ? v : parseInput(s, text);
-  const problem = s.type === "url" ? urlSettingProblem(next, s.host) : typeof (s.default ?? s.value) === "number" && Number.isNaN(next) ? "a number" : null;
+  const shaped = s.pattern && typeof next === "string" && next !== "" && !new RegExp(s.pattern).test(next) ? `a value like ${s.pattern}` : null;
+  const problem = s.type === "url" ? urlSettingProblem(next, s.host) : typeof (s.default ?? s.value) === "number" && Number.isNaN(next) ? "a number" : shaped;
   const same = JSON.stringify(next) === JSON.stringify(s.value ?? s.default);
   return (
     <form className="st-editor" onSubmit={(e) => (e.preventDefault(), !problem && !same && setReview(true))}>
