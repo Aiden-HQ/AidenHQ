@@ -55,7 +55,7 @@ export function createNotices({ db, api, alert, log = () => {}, now = Date.now }
     if (r.nonce) {
       const l = await api("GET", `/api/issues/${encodeURIComponent(task)}/comments?order=desc&limit=100`);
       if (l.status !== 200 || !Array.isArray(l.json)) throw new Error(`reading the comments on ${task}: ${l.status}`);
-      if (l.json.some((c: { body?: unknown; authorAgentId?: unknown }) => !c.authorAgentId && typeof c.body === "string" && c.body.endsWith(tagOf(r.nonce!)))) return;
+      if (l.json.some((c: { body?: unknown; authorAgentId?: unknown }) => !c.authorAgentId && typeof c.body === "string" && c.body.trimEnd().endsWith(tagOf(r.nonce!)))) return;
     }
     const nonce = r.nonce ?? randomBytes(16).toString("hex");
     db.prepare("UPDATE task_notices SET nonce = ? WHERE key = ?").run(nonce, r.key);
