@@ -122,6 +122,7 @@ button.st-row-hit:hover { background: var(--hover); }
 .st-line-label { color: var(--muted); }
 .st-line-act { justify-self: end; min-height: 1px; }
 .st-line .ui-status { align-items: flex-start; }
+.st-line .ui-status i { margin-top: 0.5em; }
 .st-line .ui-status-word { white-space: normal; overflow: visible; text-overflow: clip; }
 .st-need { color: var(--warn-text); font-weight: 500; }
 @media (max-width: 640px) { .st-line { grid-template-columns: minmax(0, 1fr) auto; } .st-line-label { grid-column: 1 / -1; } }
