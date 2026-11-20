@@ -166,7 +166,7 @@ export const taskRoutineCap = (pc: Trace, task: string, routines: Record<string,
 export type Prior = { id?: string; action: string; args?: any; state: string; decidedBy?: string | null; decidedAt?: string | null; reviewCode?: string | null; review?: string | null; requestChain?: string; digest?: string; answered?: boolean };
 /** The actions a record carries: a product PR card with `args.merge` is also a merge, so neither dodges the other's no. */
 const carried = (r: Prior) => [r.action, ...(r.action === "pr" && r.args?.merge ? ["merge"] : [])];
-/** A watcher's no on a stale or duplicate card (decided_by `stale:watcher`) judged nothing: neither a veto nor a rejection. */
+/** A no on a stale or duplicate card (decided_by `stale:account:<id>`) judged nothing: neither a veto nor a rejection. */
 const STALE = (r: Prior) => /^stale:/.test(r.decidedBy ?? "");
 
 /**

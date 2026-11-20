@@ -17,7 +17,7 @@ import { actionOf, type Records } from "./records.ts";
 import type { Writes } from "./writes.ts";
 
 /** config/kernel/modules.json (compile): modules with kernel roles, a privileged entry, a token of their own or a channel. */
-export type ModuleInfo = { roles?: string[]; privileged?: string[]; token?: string; channel?: { stamp?: string; stale?: boolean; transport?: string; credentials?: boolean }; settings?: Record<string, unknown>; facts?: Record<string, { subject?: string; reasons?: string[] }>; stages?: StageDecl[]; journeys?: JourneyDecl[] };
+export type ModuleInfo = { roles?: string[]; privileged?: string[]; token?: string; channel?: { transport?: string; credentials?: boolean }; settings?: Record<string, unknown>; facts?: Record<string, { subject?: string; reasons?: string[] }>; stages?: StageDecl[]; journeys?: JourneyDecl[] };
 export type ModulesFile = { modules?: Record<string, ModuleInfo>; owner?: { name?: string; email?: string; timezone?: string }; commit_domain?: string; repos?: { orgs?: string[]; maintained?: string[] } };
 export type Api = (method: string, path: string, body?: unknown) => Promise<{ status: number; json: any }>;
 type Log = (msg: string, f?: Record<string, unknown>) => void;
@@ -215,7 +215,7 @@ export function createChannels({ db, records, writes, board, owner, modules, fac
     decideCard,
 
     /** Spends one token: checked against its channel and the card's current digest; every token of the card burns after. */
-    async decide(module: string, b: { token?: unknown; sender?: unknown; reply?: unknown; stale?: unknown }) {
+    async decide(module: string, b: { token?: unknown; sender?: unknown; reply?: unknown }) {
       const m = channelOf(module);
       const ch = m.channel!;
       const token = str(b.token, 200);
@@ -227,9 +227,7 @@ export function createChannels({ db, records, writes, board, owner, modules, fac
       if (row.channel !== module) { restore(); throw fail(403, "forbidden", "this token was issued to another channel"); }
       // The setting as it is now (the owner may have narrowed it since the token was minted): a withheld card burns its tokens.
       if (!decides(m, { kind: row.kind, panel: row.panel === 1 })) { db.prepare("DELETE FROM channel_tokens WHERE card = ? AND channel = ?").run(row.card, module); throw fail(403, "forbidden", `${module}'s decide setting keeps this card for the owner's other channels`); }
-      const base = ch.stamp ?? `owner:${channelId(module)}`;
-      if (b.stale === true && !(ch.stale === true && row.decision === "reject")) { restore(); throw fail(400, "bad_request", "stale is only a reject, and only from a channel allowed to close stale cards"); }
-      const by = b.stale === true ? `stale:${base}` : b.reply === true && base.startsWith("owner:") ? "owner:reply" : base;
+      const by = b.reply === true ? "owner:reply" : `owner:${channelId(module)}`;
       const via = channelId(module);
       const out = await decideCard(row.card, row.digest, row.decision, by, via).catch((e: Error & { status?: number }) => {
         if (e.status === 502) restore(); else db.prepare("DELETE FROM channel_tokens WHERE card = ?").run(row.card);

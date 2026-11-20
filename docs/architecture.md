@@ -69,6 +69,10 @@ the gate, with the app's own Access audience and roles, once `settings.edge.prev
 **Warehouse.** A shared Postgres app (`modules/warehouse`) that sources and apps ingest into, with a read-only role for
 consumers.
 
+**AidenHQ MCP.** The board's `/mcp` lets the owner's own Claude or Codex manage the instance with the same typed
+actions as the board. The kernel is its OAuth authorization server (`/oauth2/*` on the admin origin); every call
+carries a signed-in admin's token, and writes still go through the tiered write gates.
+
 **Board.** The owner's daily surface (`services/board`): today's tasks, chats with agents, the Approvals page,
 connections, apps and the fleet. Approvals are kernel records that the board only reads and shows: the exact request, one tap by a signed-in admin or from
 the owner channel, or an exact typed reply. Each is claimed once and the outcome is shown on the card.

@@ -84,6 +84,29 @@ Switching modes: [minimal-core-install.md](minimal-core-install.md).
 - **Certificate watch.** The kernel checks `https://<ip>` hourly with a verified handshake (`kernel/src/front-door.ts`):
   under 48 hours left, or a certificate that fails to verify, tells the owner, at most once every 12 hours.
 
+## The AidenHQ MCP
+
+The board's `/mcp` (bearer-only, never cookies) lets an admin's own Claude or Codex manage the instance
+([docs/setup.md](../setup.md#manage-aidenhq-from-your-claude)).
+
+- **Token type.** The kernel is the OAuth authorization server on the admin origin: `/oauth2/{authorize,token,register,revoke}`,
+  the consent page `/oauth/consent` and `/.well-known/oauth-authorization-server` (clients register by dynamic
+  registration or a client ID metadata document). The board serves `/mcp` and `/.well-known/oauth-protected-resource`.
+  A token is bound to the board's `/mcp` audience and to an admin account; the board asks the kernel to verify it on
+  each call (writes bypass the cache). Disabling or resetting the account, or Revoke on the Accounts page, ends it.
+- **Open routes.** `/oauth2/*`, `/oauth/consent` and the well-known path are the exception to "every admin-listener
+  route needs a signed-in admin": a client calls them before it has a token. Authorize and consent still require the
+  password and TOTP sign-in; token, register and revoke are protocol endpoints.
+- **Decide rule.** A card is decided on the kernel's pages, by channel token, or by a signed-in admin's MCP token
+  (`account:<id>`; `stale:account:<id>` closes a dead or duplicate card and is never a veto), always against the digest
+  the client read.
+- **Front doors.** `public` (Caddy: all of 443 to the board, all of 8446 to the admin listener) and `tailscale` (the
+  same two doors) pass these paths with no change. `cloudflare`: cloudflared's ingress routes only `share.host`
+  names to the gate, so the board and admin origins are not behind the tunnel and claude.ai connectors cannot reach them.
+  To allow them, route the board and admin hostnames in the tunnel and give each a Cloudflare Access application with
+  a Bypass policy for `/mcp`, `/.well-known/oauth-protected-resource` (board) and `/oauth2/*`, `/oauth/*`,
+  `/.well-known/oauth-authorization-server` (admin). That policy lives in Cloudflare, outside this repository.
+
 ## Accounts and sign-in
 
 Accounts use Better Auth inside the kernel, stored in its own SQLite file `data/kernel/auth/auth.db` (mode 600, its
