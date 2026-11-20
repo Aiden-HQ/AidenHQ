@@ -49,6 +49,19 @@ test("a task's read carries its status as the wake scan last saw it, null when i
   assert.deepEqual(work.task("ACME-1").jobs.map((j) => j.id), ["j-2", "j-1"]);
 });
 
+test("a task's read carries an apply's card diff (its grader's APPLY_CHANGE) and no other kind's card details", () => {
+  const { work, records } = setup();
+  const card = (details) => ({ sentence: "s", changes: "c", reads: "r", cost: "none", details });
+  const file = (kind, details) => records.file({ kind, module: "kernel", args: {}, targets: {}, executor: { module: "kernel" }, policy: "p", tier: 1, panel: false, card: card(details), requester: { agent: "a1", key: "eng", name: "eng", roles: [], kind: "job" }, task: "t1", state: "review" });
+  const apply = file("kernel.apply", "diff --git a/instance.yaml b/instance.yaml\n+product: bbbb\n");
+  const cap = file("kernel.raise_cap", "cap: $10.00 -> $20.00");
+  const rows = work.task("t1").records;
+  const byId = (id) => rows.find((r) => r.id === id);
+  assert.equal(byId(apply.id).details, "diff --git a/instance.yaml b/instance.yaml\n+product: bbbb\n", "the apply's committed diff is sent to its grader");
+  assert.equal(byId(apply.id).kind, "kernel.apply");
+  assert.equal("details" in byId(cap.id), false, "another kind's card is not the task's evidence");
+});
+
 test("the board reads GET /v1/work with its key, one job included, and nothing else under /v1/work", async (t) => {
   const { work, records } = setup();
   records.db.prepare("UPDATE jobs SET usage = ?, progress = ?, final = ?, why = ?, exit = 1 WHERE id = 'j-1'").run(JSON.stringify({ input: 10, cached: 4, output: 2 }), JSON.stringify({ said: "building", plan: ["a"], steps: [] }), "done it", JSON.stringify({ timedOut: true }));
