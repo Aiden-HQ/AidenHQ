@@ -4,7 +4,10 @@
 // close and moves nothing; any reopen reopens; any hold or pending holds the task in review with the check's label and a
 // scheduled check; otherwise it passes. A check never marks a task done. Fail closed: a check that errors, answers non-2xx
 // or malformed, or takes over 10 s refuses the close, and so do a checks file that is missing or won't load, and a graded
-// agent's task (the grants table's `graded`) that no check covers: the gate never fails open. The check's module later
+// agent's task (the grants table's `graded`) that no check covers: the gate never fails open. The one exception is a service
+// being replaced: a check whose address doesn't resolve yet or whose socket refuses is asked again a few times, and if it is
+// still down an enforcing check holds the task in review for its scheduled re-check rather than refusing a finish that would
+// be lost. The check's module later
 // releases its label, or resolves a hold it placed (POST /v1/checks/:task). A check in observe mode (`mode: observe`, gates.ts)
 // is asked like the others, but a verdict other than ok, or its failure, is only recorded as a would-block: it never moves,
 // holds or refuses the task, and it doesn't count as covering a graded agent's task. A task with an undecided approval card
@@ -31,6 +34,16 @@ const RESOLVES = new Map([["ok", "done"], ["reopen", "todo"], ["block", "blocked
 const VERDICTS = ["ok", "hold", "pending", "reopen", "deny"];
 /** The follow-up deadline for a holding check that named none: the task's review path is saved for an hour, never left unscheduled. */
 const DEFAULT_HOLD_CHECK_MS = 60 * 60_000;
+/** A check's service mid-replacement: how often its address is re-inspected and asked, and how long between attempts. */
+const ASK_ATTEMPTS = 3;
+const ASK_BACKOFF_MS = 1_000;
+/** Socket failures that mean the container isn't there yet (or anymore), not that the check refused. */
+const TRANSIENT_CODES = new Set(["ECONNREFUSED", "ECONNRESET", "EHOSTUNREACH", "ETIMEDOUT"]);
+
+/** A check nobody answered because its service is being replaced: the caller may hold the task and ask again, not fail the close. */
+type Unavailable = Error & { unavailable: true };
+const unavailable = (e: Error): Unavailable => Object.assign(e, { unavailable: true as const });
+const isUnavailable = (e: unknown) => (e as { unavailable?: boolean } | null)?.unavailable === true;
 
 /** config/kernel/checks.json, reread when it changes. Missing, unreadable or not a map throws: a load error, never "no checks". */
 export function checksFile(file: string): () => Record<string, Check> {
@@ -103,9 +116,12 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
     if (l && ids.includes(l.id)) await patch(i, { labelIds: ids.filter((x) => x !== l.id) });
   }
 
-  function ask(id: string, c: Check, body: unknown, at = c.url): Promise<Verdict> {
-    const key = secret(c.auth_secret);
-    if (!key) return Promise.reject(new Error("its key is missing"));
+  /**
+   * One POST to the check at `at`. A failure the service may shake off — the container being replaced, so its name resolves to
+   * nothing or its socket refuses — is tagged `unavailable`; any other failure (a status, a malformed body, a timeout, a deny
+   * wrapped in an error) is the check's own answer and is not.
+   */
+  function post(key: string, at: string, body: unknown): Promise<Verdict> {
     return resolver.resolve(at).then((to) => new Promise<Verdict>((resolve, reject) => {
       const data = Buffer.from(JSON.stringify(body));
       const req = http.request({ host: to.host, port: to.port, path: to.path, method: "POST", timeout: 10_000, headers: { host: new URL(at).host, authorization: `Bearer ${key}`, "content-type": "application/json", "content-length": data.length } }, (res) => {
@@ -118,16 +134,35 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
         });
       });
       req.on("timeout", () => req.destroy(new Error("didn't answer in 10 s")));
-      req.on("error", (e) => { resolver.forget(at); reject(e); });
+      req.on("error", (e: NodeJS.ErrnoException) => { resolver.forget(at); reject(TRANSIENT_CODES.has(String(e.code)) ? unavailable(e) : e); });
       req.end(data);
-    })).catch((e: Error) => { throw fail(503, "check_failed", `the finish check ${id} failed (${e.message}): the task stays as it is; try again`); });
+    }), (e: Error) => { throw /isn't running/.test(String(e.message)) ? unavailable(e) : e; });
+  }
+  /**
+   * A check's verdict, retried a few times when its service is unavailable (the address cache is dropped between attempts so a
+   * replaced container is inspected afresh). A check that answered — any status, verdict, body or its 10 s timeout — is never
+   * retried. When the service is still down the error carries `unavailable`, and the finish gate holds the task on it.
+   */
+  async function ask(id: string, c: Check, body: unknown, at = c.url): Promise<Verdict> {
+    const key = secret(c.auth_secret);
+    if (!key) throw fail(503, "check_failed", `the finish check ${id} failed (its key is missing): the task stays as it is`);
+    for (let n = 1; ; n++) {
+      try { return await post(key, at, body); }
+      catch (e) {
+        if (!isUnavailable(e) || n >= ASK_ATTEMPTS) throw Object.assign(fail(503, "check_failed", `the finish check ${id} failed (${(e as Error).message}): the task stays as it is; try again`), { unavailable: isUnavailable(e), cause: (e as Error).message });
+        resolver.forget(at);
+        await new Promise((r) => setTimeout(r, ASK_BACKOFF_MS));
+      }
+    }
   }
 
   /**
    * The finish gate for one task: `agent` and `tool` for an agent's own close, `via` for the runner's. Throws on a deny.
    * `cross`: an agent closing a task that is neither its job's own nor one its agent holds (its delegator's acceptance of an
-   * escalated grade): refused before anything moves unless a check answers `accepts`, so no other cross-task close passes.
-   * A task the closing agent holds (an orphaned run's task, say) is its own and asks the checks like its job's own task.
+   * escalated grade): refused before anything moves unless a check answers `accepts`, so no other cross-task close passes. A
+   * task the closing agent holds (an orphaned run's task, say) is its own and asks the checks like its job's own task. A check
+   * that is unavailable hasn't answered, so the close parks in review for the check's re-check rather than being refused;
+   * only its `accepts` ever lets it pass.
    */
   /** A finish check's verdict on a task (a grader's reopen, say): an outcome the routing learning loop trusts (routing-tune.ts), never its words. */
   const verdictEvent = (task: string, check: string, verdict: string) => noteFact(facts, verdictFact(task, check, verdict));
@@ -167,8 +202,22 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
       if (caller.cross) throw refuseCross();
       return { pass: true };
     }
-    const [verdicts] = await Promise.all([Promise.all(mine.map(async ([id, c]) => ({ id, c, v: await ask(id, c, body) }))), watched]);
-    if (caller.cross && !verdicts.some((x) => x.v.verdict === "ok" && x.v.accepts)) throw refuseCross();
+    // An enforcing check whose service is still unavailable (a container being replaced) holds the task in review instead of
+    // refusing the close: the scheduled re-check asks again once it is back, and a real verdict is never invented here.
+    const [verdicts] = await Promise.all([Promise.all(mine.map(async ([id, c]) => {
+      try { return { id, c, v: await ask(id, c, body), down: false }; }
+      catch (e) {
+        if (!isUnavailable(e)) throw e;
+        const why = String((e as { cause?: unknown }).cause ?? (e as Error).message);
+        log("finish check unavailable, holding", { task: i.identifier, check: id, err: why });
+        return { id, c, down: true, v: { verdict: "pending", state: "pending", reason: `the finish check ${id} couldn't be reached (${why}): the task waits in review while its service comes back` } as Verdict };
+      }
+    })), watched]);
+    // A cross-task close passes only on the check's own `accepts`. When a check couldn't be reached it has given no verdict, so
+    // the finish parks in review for its scheduled re-check rather than being refused and lost; a real deny or reopen still
+    // refuses it as before, and no unavailable check ever stands in for the `accepts`.
+    const settled = verdicts.some((x) => x.v.verdict === "deny" || x.v.verdict === "reopen");
+    if (caller.cross && !verdicts.some((x) => x.v.verdict === "ok" && x.v.accepts) && (!verdicts.some((x) => x.down) || settled)) throw refuseCross();
     const deny = verdicts.find((x) => x.v.verdict === "deny");
     if (deny) throw fail(deny.v.status === 409 ? 409 : 403, "refused", String(deny.v.reason ?? `refused by ${deny.id}`).slice(0, 500));
     const reopen = verdicts.find((x) => x.v.verdict === "reopen");

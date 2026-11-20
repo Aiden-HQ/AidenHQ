@@ -4,6 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { kernel, moduleServer, readBody, serve } from "./helpers.ts";
 import { HARD_GATES } from "../src/gates.ts";
+import { createResolver } from "../src/net.ts";
 
 const conn = (url, module, tools) => ({ url: `${url}/mcp`, auth_secret: `${module}_service_key`, module, returns: "trusted", tools: { read: [], write: [], destructive: [], ...tools } });
 const ADA = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -16,7 +17,7 @@ const grants = { [ADA]: { key: "ada", roles: [], tools: { todo: ["task_finish"] 
  * A kernel with a task connection, one finish check answering `verdict(body)`, and a control plane holding TASK (Ada's) and
  * DELEGATED (Bo's); `extra`: more tasks by id, and a second job of Ada's on one of them (`job`).
  */
-async function setup(t, verdict, { agentsScope, checks, graded = false, keyless = false, localChanges, status = "in_progress", labelIds = ["lbl-x"], extra = {}, job = "run-jwt-ada" } = {}) {
+async function setup(t, verdict, { agentsScope, checks, checkResolver, graded = false, keyless = false, localChanges, status = "in_progress", labelIds = ["lbl-x"], extra = {}, job = "run-jwt-ada" } = {}) {
   const asked = [];
   const check = await serve(async (req, res) => {
     const body = JSON.parse((await readBody(req)) || "{}");
@@ -44,6 +45,7 @@ async function setup(t, verdict, { agentsScope, checks, graded = false, keyless 
     modules: { modules: { judge: { roles: ["kernel.cp-read"], token: "judge_token" }, other: { roles: ["kernel.cp-read"], token: "other_token" }, grading: { roles: ["kernel.grader"], token: "grading_token" } } },
     graderToken: (task, agent) => `grader-${task}-${agent}`,
     checks: checks ?? ({ "judge.finish": { module: "judge", at: "task.finish", url: `${check.url}/check/finish`, auth_secret: "judge_check_key", label: "held", ...(agentsScope ? { agents: agentsScope } : {}) } }),
+    ...(checkResolver ? { checkResolver } : {}),
     ...(localChanges ? { localChanges } : {}),
     onControl: async (req, body, auth) => {
       const ref = /^\/api\/issues\/([^/?]+)$/.exec(req.url ?? "")?.[1];
@@ -87,6 +89,78 @@ test("a holding check that named no until: still in review with the check's labe
   const at = Date.parse(body.executionPolicy.monitor.nextCheckAt);
   assert.ok(at > before, `${body.executionPolicy.monitor.nextCheckAt} is in the future`);
   assert.ok(at <= Date.now() + 61 * 60_000, `${body.executionPolicy.monitor.nextCheckAt} is at the default hour`);
+});
+
+/** A resolver that fails to find the service `down` times ("isn't running", what a container mid-replacement looks like) and
+ * then answers as the real one: each attempt is counted and each forget() recorded. */
+function flakyResolver(down) {
+  const real = createResolver(), calls = { resolve: 0, forget: 0 };
+  return {
+    calls,
+    resolve: async (url) => { calls.resolve++; if (calls.resolve <= down) throw new Error(`the service ${new URL(url).hostname} isn't running`); return real.resolve(url); },
+    forget: (url) => { calls.forget++; real.forget(url); },
+  };
+}
+
+test("a check whose service is mid-replacement is asked again, and the finish passes: no hold row, no 503", async (t) => {
+  const resolver = flakyResolver(1);
+  const s = await setup(t, () => ({ verdict: "ok" }), { checkResolver: resolver });
+  const r = await s.finish({ status: "done" });
+  assert.equal(r.status, 200);
+  assert.deepEqual(resolver.calls, { resolve: 2, forget: 1 }, "the address is inspected afresh between attempts");
+  assert.deepEqual(s.writes, [{ as: "ada-key", body: { status: "done", gated: true } }]);
+  assert.equal(s.k.records.db.prepare("SELECT 1 FROM check_holds").get(), undefined, "no hold was recorded");
+});
+
+test("a check service still unavailable after its attempts holds the task in review instead of refusing the close", async (t) => {
+  const before = Date.now();
+  const resolver = flakyResolver(Infinity);
+  const s = await setup(t, () => ({ verdict: "ok" }), { checkResolver: resolver });
+  const r = await s.finish({ status: "done" });
+  assert.equal(r.status, 202, "a restarting service parks the finish, it doesn't 503");
+  assert.equal(r.json.held.state, "pending");
+  assert.match(r.json.held.reason, /couldn't be reached/);
+  assert.equal(resolver.calls.resolve, 3, "a bounded number of attempts");
+  assert.equal(resolver.calls.forget, 2, "one forget between each pair");
+  // The held branch: the owner keeps it in review under the check's label with a saved re-check, and the hold row is written.
+  assert.equal(s.writes.length, 1);
+  const { as, body } = s.writes[0];
+  assert.equal(as, "board-key");
+  assert.equal(body.status, "in_review");
+  assert.deepEqual(body.labelIds, ["lbl-x", "lbl-held"]);
+  const at = Date.parse(body.executionPolicy.monitor.nextCheckAt);
+  assert.ok(at > before && at <= Date.now() + 61 * 60_000, `${body.executionPolicy.monitor.nextCheckAt} is at the default hour`);
+  assert.equal(s.issue.status, "in_review");
+  assert.ok(s.k.records.db.prepare("SELECT 1 FROM check_holds WHERE task = ? AND check_id = 'judge.finish'").get(TASK), "the hold is recorded");
+});
+
+test("a cross-task finish whose check service is unavailable parks in review, and no unavailable check stands in for accepts", async (t) => {
+  const resolver = flakyResolver(Infinity);
+  const s = await setup(t, () => ({ verdict: "ok", accepts: true }), { checkResolver: resolver });
+  const r = await s.finish({ status: "done" }, DELEGATED);
+  assert.equal(r.status, 202, "the delegator's acceptance isn't lost while the service restarts");
+  assert.equal(r.json.held.state, "pending");
+  assert.equal(s.writes.length, 1);
+  assert.equal(s.writes[0].as, "board-key");
+  assert.notEqual(s.writes[0].body.status, "done", "nothing moved the task to done");
+  assert.deepEqual(s.writes[0].body.labelIds, ["lbl-held"], "held under the check's label");
+  assert.ok(s.writes[0].body.executionPolicy.monitor.nextCheckAt, "the re-check is saved");
+  assert.ok(s.k.records.db.prepare("SELECT 1 FROM check_holds WHERE task = ? AND check_id = 'judge.finish'").get(DELEGATED), "the hold is recorded");
+});
+
+test("a check that answers deny or reopen is not retried: one ask, and the close still refuses or reopens", async (t) => {
+  const resolver = flakyResolver(0);
+  let answer = { verdict: "deny", status: 403, reason: "not yet" };
+  const s = await setup(t, () => answer, { checkResolver: resolver });
+  let r = await s.finish({ status: "done" });
+  assert.equal(r.status, 403);
+  assert.equal(resolver.calls.resolve, 1, "a real verdict is never retried");
+  answer = { verdict: "reopen", reason: "the tests are red" };
+  r = await s.finish({ status: "done" });
+  assert.deepEqual(r, { status: 202, json: { reopened: { reason: "the tests are red" } } });
+  assert.equal(s.issue.status, "todo");
+  assert.equal(resolver.calls.resolve, 2, "one ask per finish, no retry storm");
+  assert.equal(resolver.calls.forget, 0);
 });
 
 test("a deny refuses the close with its status and reason, and a failed check refuses it too: nothing moves either way", async (t) => {
