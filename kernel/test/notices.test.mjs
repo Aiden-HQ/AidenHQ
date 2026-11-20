@@ -50,7 +50,7 @@ test("a notice is posted once: a post whose answer was lost is found by its tag;
     inPost++; maxInPost = Math.max(maxInPost, inPost);
     await new Promise((r) => setTimeout(r, 5));
     inPost--;
-    comments.unshift({ body: body.body });
+    comments.unshift({ body: body.body, authorUserId: "owner" });
     if (lose) { lose = false; throw new Error("socket hang up"); } // the control plane took it, the answer never came back
     return { status: 201, json: {} };
   };
@@ -64,4 +64,26 @@ test("a notice is posted once: a post whose answer was lost is found by its tag;
   assert.deepEqual(comments.map((c) => c.body.split("\n")[0]).reverse(), ["**Failed** (approval r-1)", "**Done** (approval r-2)"], "the lost post isn't posted again; order kept");
   assert.equal(maxInPost, 1);
   assert.equal(n.inflight(), false);
+});
+
+test("a comment that merely carries a notice's tag (an agent's, or the tag mid-text) doesn't pass for the notice", async () => {
+  let now = 1_000_000, fail = true;
+  const comments = [];
+  const api = async (m, p, body) => {
+    if (m === "GET" && p.includes("/comments")) return { status: 200, json: comments };
+    if (m === "GET") return { status: 200, json: { status: "in_progress" } };
+    if (fail) { fail = false; return { status: 502, json: {} }; }
+    comments.unshift({ body: body.body, authorUserId: "owner" });
+    return { status: 201, json: {} };
+  };
+  const db = new DatabaseSync(":memory:");
+  const n = createNotices({ db, api, alert: () => {}, now: () => now });
+  n.queue("t-1", "**Rejected** (approval r-1)");
+  await n.send();
+  const { nonce } = db.prepare("SELECT nonce FROM task_notices").get();
+  const tag = `<!-- aidenhq-kernel-notice:${nonce} -->`;
+  comments.push({ body: `done\n\n${tag}`, authorAgentId: "a-1" }, { body: `${tag} quoted`, authorUserId: "owner" });
+  now += 60_000;
+  await n.send();
+  assert.equal(comments.filter((c) => c.body.startsWith("**Rejected**")).length, 1, "the real notice is posted");
 });

@@ -7,7 +7,7 @@
 // leased before its send, so a draining kernel and its successor never both post it. A task's notices go in the order they were
 // queued: one not yet posted holds the later ones back. A task that is done or cancelled by then gets nothing (a comment would
 // reopen it); a notice for the task's parent (`parent`) goes to the parent the task has when it is sent.
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { Api } from "./channels.ts";
 
@@ -17,7 +17,7 @@ const MAX_MS = 30 * 60_000;
 const GIVE_UP_MS = 24 * 3600_000;
 const CLOSED = ["done", "cancelled"];
 
-type Row = { key: string; task: string; body: string; parent: number; at: number; tries: number; next: number; posting: number };
+type Row = { key: string; task: string; body: string; parent: number; at: number; tries: number; next: number; nonce: string | null };
 
 export function createNotices({ db, api, alert, log = () => {}, now = Date.now }: {
   db: DatabaseSync;
@@ -29,9 +29,9 @@ export function createNotices({ db, api, alert, log = () => {}, now = Date.now }
   now?: () => number;
 }) {
   db.exec("CREATE TABLE IF NOT EXISTS task_notices (key TEXT PRIMARY KEY, task TEXT NOT NULL, body TEXT NOT NULL, parent INTEGER NOT NULL, at INTEGER NOT NULL, tries INTEGER NOT NULL DEFAULT 0, next INTEGER NOT NULL)");
-  if (!(db.prepare("PRAGMA table_info(task_notices)").all() as { name: string }[]).some((c) => c.name === "posting")) db.exec("ALTER TABLE task_notices ADD COLUMN posting INTEGER NOT NULL DEFAULT 0");
-  // One queued notice's tag (its key and when it was queued: the same text queued again later is another notice).
-  const tagOf = (r: { key: string; at: number }) => `<!-- aidenhq-kernel-notice:${r.key}:${r.at} -->`;
+  if (!(db.prepare("PRAGMA table_info(task_notices)").all() as { name: string }[]).some((c) => c.name === "nonce")) db.exec("ALTER TABLE task_notices ADD COLUMN nonce TEXT");
+  // A notice's tag: a random nonce, set before its first post, so nobody else can write a comment that passes for it.
+  const tagOf = (nonce: string) => `<!-- aidenhq-kernel-notice:${nonce} -->`;
   const permanent = (status: number, what: string) => Object.assign(new Error(`${what}: the control plane answered ${status}`), { permanent: true });
 
   /** One notice: posted where it belongs, or nothing when that task is gone or closed. Throws to be tried again. */
@@ -50,13 +50,16 @@ export function createNotices({ db, api, alert, log = () => {}, now = Date.now }
     }
     const i = await read(task);
     if (!i || CLOSED.includes(String(i.status))) return;
-    const tag = tagOf(r);
-    if (r.posting) {
+    // Tried before (a crash, or an answer lost after the control plane took it): posted already if a comment the kernel wrote
+    // (a user's, not an agent's) ends with its tag.
+    if (r.nonce) {
       const l = await api("GET", `/api/issues/${encodeURIComponent(task)}/comments?order=desc&limit=100`);
       if (l.status !== 200 || !Array.isArray(l.json)) throw new Error(`reading the comments on ${task}: ${l.status}`);
-      if (l.json.some((c: { body?: unknown }) => typeof c.body === "string" && c.body.includes(tag))) return;
+      if (l.json.some((c: { body?: unknown; authorAgentId?: unknown }) => !c.authorAgentId && typeof c.body === "string" && c.body.endsWith(tagOf(r.nonce!)))) return;
     }
-    db.prepare("UPDATE task_notices SET posting = 1 WHERE key = ?").run(r.key);
+    const nonce = r.nonce ?? randomBytes(16).toString("hex");
+    db.prepare("UPDATE task_notices SET nonce = ? WHERE key = ?").run(nonce, r.key);
+    const tag = tagOf(nonce);
     const c = await api("POST", `/api/issues/${encodeURIComponent(task)}/comments`, { body: `${r.body}\n\n${tag}` });
     if (c.status === 404) return;
     if (c.status >= 400 && c.status < 500 && c.status !== 429) throw permanent(c.status, `posting on ${task}`);
