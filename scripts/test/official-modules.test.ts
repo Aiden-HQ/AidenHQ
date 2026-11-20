@@ -105,3 +105,13 @@ test("an install made before the bundle grew gets the new members once its host 
   assert.ok(kept.compose.services["security-scanner"]);
   assert.equal(run("first", {}, {}).compose.services["glean-mcp"], undefined, "with no old bundle and no record, nothing extra");
 });
+
+test("every module has a README in the one shape (modules/AGENTS.md)", () => {
+  const headings = ["## What it does", "## Connect", "## What agents get", "## New installs"];
+  for (const n of readdirSync(join(product, "modules"))) {
+    if (!existsSync(join(product, "modules", n, "module.yaml"))) continue;
+    const lines = readFileSync(join(product, "modules", n, "README.md"), "utf8").split("\n");
+    assert.deepEqual(lines.filter((l) => l.startsWith("## ")), headings, `modules/${n}/README.md`);
+    assert.equal(lines[0], `# ${n}`, `modules/${n}/README.md title`);
+  }
+});
