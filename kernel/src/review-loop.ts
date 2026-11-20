@@ -27,7 +27,8 @@ export type Comment = { body?: string | null; authorType?: string; authorUserId?
 /**
  * The control plane as the owner (the board key): the task, its comments, the key's own user, and a notice on the task.
  * `escalate`: whoever delegated the task hears a parked target once per park (escalate.ts delegator).
- * `delegator`: the agent of the task's open delegator task (escalate.ts); `agent`: an agent's key and roles (the grants table).
+ * `delegator`: the agent that created the task (escalate.ts creatorAgent: the kernel's provenance, else the control plane's
+ * creator; never its parent's assignee, which the requester could move); `agent`: an agent's key and roles (the grants table).
  */
 export type TaskApi = { issue(id: string): Promise<Issue>; comments(id: string): Promise<Comment[]>; me(): Promise<string>; notify(task: string, text: string): Promise<void>;
   escalate?(task: string, key: string, text: (id: string) => { body: string; ownerText: string }): Promise<unknown>;
@@ -64,8 +65,11 @@ export async function requestChain(task: Issue, issue: (id: string) => Promise<I
 
 /** Who wrote a comment, as the request reads it: the owner's own typed words, an agent by its place in the request, or nobody (left out). */
 type Author = { who: "owner" | "delegator" | "chief" | "requester" | "agent"; key?: string };
-/** The comments the reviewer reads and the ones that decide, newest last: at most this many, each cut to COMMENT_MAX. */
-const COMMENTS = 12, COMMENT_MAX = 2000;
+/**
+ * The comments the reviewer reads and the ones that decide, newest last: at most COMMENTS, each cut to COMMENT_MAX, and whole
+ * oldest ones dropped past COMMENTS_MAX in all (under the reviewer's TASK_COMMENTS cap, so it never cuts one mid-text).
+ */
+const COMMENTS = 12, COMMENT_MAX = 2000, COMMENTS_MAX = 14_000;
 const LABEL: Record<Author["who"], string> = { owner: "the owner", delegator: "the delegating agent", chief: "the chief of staff", requester: "the requesting agent", agent: "another agent" };
 
 /**
@@ -91,7 +95,17 @@ function authorOf(c: Comment, { owner, requester, delegator, agent }: { owner: s
  * author's place in the request and when) and its text quoted line by line ("> "), so no comment can write a label of its own.
  */
 export function taskComments(list: { c: Comment; a: Author }[]): string {
-  return list.slice(-COMMENTS).map(({ c, a }) => `${LABEL[a.who]}${a.key ? ` (${a.key})` : ""}, ${String(c.createdAt ?? "").slice(0, 19)}:\n${stripHidden(c.body).trim().slice(0, COMMENT_MAX).split("\n").map((l) => `> ${l}`).join("\n")}`).join("\n\n");
+  // Every line break a model may read as one (\r, \v, \f, U+0085, U+2028, U+2029) is a quoted line's end, and every other
+  // control or format character goes, so no text starts a line of its own.
+  const lines = (s: string) => s.replace(/\r\n?|[\v\f\u0085\u2028\u2029]/g, "\n").replace(/[^\P{Cc}\n\t]|\p{Cf}/gu, "").trim().slice(0, COMMENT_MAX).split("\n").map((l) => `> ${l}`).join("\n");
+  const out: string[] = [];
+  let size = 0;
+  for (const { c, a } of list.slice(-COMMENTS).reverse()) {
+    const one = `${LABEL[a.who]}${a.key ? ` (${a.key})` : ""}, ${String(c.createdAt ?? "").slice(0, 19)}:\n${lines(stripHidden(c.body))}`;
+    if ((size += one.length + 2) > COMMENTS_MAX) break;
+    out.unshift(one);
+  }
+  return out.join("\n\n");
 }
 
 /**
@@ -129,7 +143,7 @@ export async function reviewInput(r: Rec, { records, task, decisions, product, g
   const issue = await task.issue(r.task);
   // Comments, the owner's id or the delegator unread: no comment is read and nothing is lifted.
   const [comments, owner, delegator, chain, graded] = await Promise.all([task.comments(r.task).catch(() => []), task.me().catch(() => ""), task.delegator?.(issue).catch(() => undefined), requestChain(issue, task.issue), grade(issue.id)]);
-  const authored = comments.flatMap((c) => { const a = authorOf(c, { owner, requester: r.requester.agent, delegator, agent: task.agent }); return a ? [{ c, a }] : []; });
+  const authored = comments.flatMap((c) => { const a = authorOf(c, { owner, requester: r.requester.agent, delegator: delegator === r.requester.agent ? undefined : delegator, agent: task.agent }); return a ? [{ c, a }] : []; });
   const said = taskComments(authored);
   const chainHash = requestHash(chain, said);
   const split = answered(records.list(ALL, 500, { task: r.task, reviewed: true }).filter((x) => x.id !== r.id).map(asPrior), authored.slice(-COMMENTS));

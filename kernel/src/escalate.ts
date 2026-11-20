@@ -22,7 +22,7 @@ import type { Notice } from "./notify.ts";
 import type { StateRow } from "./task-state-read.ts";
 import { MARKER, fenced } from "./writes.ts";
 
-type Issue = { id: string; identifier?: string; status?: string; parentId?: string | null; assigneeAgentId?: string | null };
+type Issue = { id: string; identifier?: string; status?: string; parentId?: string | null; assigneeAgentId?: string | null; createdByAgentId?: string | null };
 const CLOSED = ["done", "cancelled"];
 /** Marks a comment as a wake notice: it wakes the task's agent and is never read as the owner's words (dispatch thread.ts). */
 export const WAKE_NOTICE = "<!-- aidenhq-wake -->";
@@ -114,8 +114,15 @@ export function createEscalate({ db, issue, state, asker, notice, owner, chief, 
       db.prepare("INSERT OR REPLACE INTO escalations (key, task, kind, at) VALUES (?, ?, ?, ?)").run(`ask:${task}`, task, who, now());
       db.prepare("INSERT OR IGNORE INTO escalations (key, task, kind, at) VALUES (?, ?, ?, ?)").run(`asked:${task}:${now()}`, task, who, now());
     },
-    /** The agent of the task's open delegator task (its parent, else the task of the job that created it), if any. */
-    delegatorAgent: async (t: Issue) => (await delegatorOf(t))?.assigneeAgentId ?? undefined,
+    /**
+     * The agent that delegated `t`, as nothing its assignee can change records it: the agent of the job that created it (the
+     * kernel's provenance), else the agent the control plane says created it.
+     */
+    creatorAgent(t: Issue): string | undefined {
+      let job: { agent: string } | undefined;
+      try { job = db.prepare("SELECT j.agent FROM provenance p JOIN jobs j ON j.id = p.created_by_job WHERE p.task = ?").get(t.id) as { agent: string } | undefined; } catch { job = undefined; }
+      return job?.agent || t.createdByAgentId || undefined;
+    },
     /**
      * Whoever delegated `task` hears `body` once per `key`: its open parent, else the open task of the job that created it,
      * else the chief of staff (the owner, `ownerText`, when the task is the chief of staff's own). Nothing is marked until it

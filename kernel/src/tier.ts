@@ -357,7 +357,7 @@ export function priorPart(p: ReturnType<typeof priorDecisions> | undefined): Par
   if (!p) return undefined;
   if (p.ownerVeto) return T(2, "owner-veto", "the owner rejected this action on this task, and only their own yes lifts it");
   if (p.same !== undefined) return REJECT("rejected-content", `the AI reviewer already rejected exactly this request on this task, so it isn't reviewed again unchanged (its note: ${String(p.same).slice(0, 400)}). Change what it found and file the changed request, or report back to whoever asked why it can't change`);
-  if (p.rejects >= MAX_REJECTS) return REJECT("retries-exhausted", `parked: the AI reviewer rejected this action ${p.rejects} times on ${(p as { scope?: string }).scope ?? "this task"}, so it isn't reviewed again here until whoever delegated this task (or the chief of staff) decides on it in a comment on the task. A different branch, PR or tool target of the task is reviewed on its own; report what it found to whoever asked for this work`);
+  if (p.rejects >= MAX_REJECTS) return REJECT("retries-exhausted", `parked: the AI reviewer rejected this action ${p.rejects} times on ${(p as { scope?: string }).scope ?? "this task"}, so it isn't reviewed again here until a decision on the task lifts it (whoever delegated the task, or the chief of staff, once; after that, only the owner). A different branch, PR or tool target of the task is reviewed on its own; report what it found to whoever asked for this work`);
   return undefined;
 }
 
