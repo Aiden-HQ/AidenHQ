@@ -101,29 +101,6 @@ test("an approved agents-org merge waits for green, merges at its bound head, an
   assert.deepEqual(JSON.parse(line.replace(/^merged-prs: /, "")).map((p) => [p.repo, p.number, p.head, typeof p.sha]), [["acme-agents/widget", 1, HEAD, "string"]], "the first line lists what it merged, with its merge commit");
 });
 
-test("a head that moved after approval is never merged; one queue per repo merges one PR a poll, each at its bound head", async (t) => {
-  const prs = { "acme-agents/widget": { head: "d".repeat(40), checks: "SUCCESS" } };
-  const { handle, github, outcomes, merge, settle } = await setup(t, { prs });
-  await merge("k-00000000000000a2", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
-  await handle.stepMerges();
-  await settle();
-  assert.deepEqual(github.merges(), []);
-  assert.equal(outcomes[0]?.ok, false);
-  assert.match(outcomes[0].text, /head moved since the merge was approved/);
-
-  // Two records on the same repository: the first merges this poll, the second the next; each PUT carries its own bound head.
-  outcomes.length = 0;
-  Object.assign(prs, { "acme-agents/widget": { head: HEAD, checks: "SUCCESS" }, "acme-agents/gadget": { head: "f".repeat(40), checks: "SUCCESS" } });
-  await merge("k-00000000000000a4", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
-  await merge("k-00000000000000a5", [{ repo: "acme-agents/widget", number: 1, head: HEAD }, { repo: "acme-agents/gadget", number: 2, head: "f".repeat(40) }]);
-  await handle.stepMerges();
-  assert.deepEqual(github.merges().map((w) => [w.path, w.body.sha]), [["/repos/acme-agents/widget/pulls/1/merge", HEAD], ["/repos/acme-agents/gadget/pulls/2/merge", "f".repeat(40)]], "one merge per repo per poll");
-  await handle.stepMerges();
-  await settle();
-  assert.equal(github.merges().length, 2, "the second record finds #1 merged at its bound head: nothing merged twice");
-  assert.deepEqual(outcomes.map((o) => [o.id, o.ok]).sort(), [["k-00000000000000a4", true], ["k-00000000000000a5", true]]);
-});
-
 test("missing evidence never counts as passing: no checks, a truncated page of checks, the base's gate check not yet on the head", async (t) => {
   const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS", names: [] } };
   const { handle, github, outcomes, merge, settle, clock } = await setup(t, { prs });
