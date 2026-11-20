@@ -66,8 +66,9 @@ No live instance and no paid keys are needed. Use Node 24 and run `npm ci` once 
 - **Shared code.** After editing `kernel/sdk/src/caller.ts`, `kernel/sdk/src/fence.ts`, `kernel/sdk/src/source-store.ts` or `kernel/sdk/src/vendor/`, run
   `node scripts/sync-shared.ts`; the `scripts` tests fail if the copies drift.
 - **The reviewer eval.** `node modules/ai-reviewer/scripts/reviewer-eval.ts` runs the AI reviewer against every planted
-  case in `modules/ai-reviewer/test/reviewer-cases/` and must stay at 100%. It needs a paid `OPENROUTER_API_KEY`, so CI
-  doesn't run it. If your PR touches a path in `REVIEWER_CODE` (`modules/github/service/src/evalgate.ts`), say so in the PR; the maintainer runs it before merging. A reviewer
+  case in `modules/ai-reviewer/test/reviewer-cases/` and must pass. It needs a paid model key, so CI runs it (the
+  `reviewer-eval` job) only for a same-repo PR or a push to main that touches a path in `REVIEWER_CODE`
+  (`modules/github/service/src/evalgate.ts`); for a fork's PR the maintainer pushes its branch here so it runs. A reviewer
   false reject you hit becomes a new planted case.
 
 ## What a good change looks like
