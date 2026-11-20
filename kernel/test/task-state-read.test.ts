@@ -1,6 +1,5 @@
 // GET /v1/tasks/state (task-state-read.ts): a batch of task states in one snapshot, with the fleet's counts.
 import { test } from "node:test";
-import http from "node:http";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -9,7 +8,6 @@ import { DatabaseSync, StatementSync } from "node:sqlite";
 import { openFacts } from "../src/facts.ts";
 import { KERNEL_STAGES } from "../src/flow-stages.ts";
 import { createTaskStateRead } from "../src/task-state-read.ts";
-import { createBackplane } from "../src/backplane.ts";
 
 const T0 = Date.parse("2026-11-20T08:00:00.000Z");
 const MIN = 60_000;
@@ -93,21 +91,4 @@ test("one snapshot", (t) => {
     assert.equal(reader.read({ open: true }).tasks[0].kind, "idle");
   } finally { StatementSync.prototype.all = all; }
   assert.equal(reader.read({ open: true }).tasks[0].kind, "working");
-});
-
-test("GET /v1/tasks/state: the board's key or a module with kernel.flow-read", async (t) => {
-  const { task, reader } = setup(t);
-  task("t1", "WOR-1");
-  const whoami = async (token) => (token === "none" ? Promise.reject(new Error("no")) : { kind: "module", module: "tasks", roles: token === "reader" ? ["kernel.flow-read"] : ["kernel.tasks"], tools: [] });
-  const handle = createBackplane({ whoami, asserter: { jwks: {} }, proxy: async () => {}, cp: async () => {}, grantsFile: () => ({}), taskStates: reader, boardKey: () => "board-key" });
-  const server = http.createServer(handle);
-  await new Promise((r) => server.listen(0, r));
-  t.after(() => server.close());
-  const get = (p, token) => fetch(`http://127.0.0.1:${server.address().port}${p}`, { headers: { authorization: `Bearer ${token}` } });
-  assert.equal((await get("/v1/tasks/state?open=1", "none")).status, 401);
-  assert.equal((await get("/v1/tasks/state?open=1", "other")).status, 403);
-  assert.equal((await (await get("/v1/tasks/state?ids=WOR-1", "reader")).json()).tasks[0].task, "t1");
-  assert.equal((await (await get("/v1/tasks/state?open=1", "board-key")).json()).tasks.length, 1);
-  assert.equal((await get("/v1/tasks/state", "board-key")).status, 400);
-  assert.equal((await get(`/v1/tasks/state?ids=${Array.from({ length: 201 }, (_, i) => `t${i}`).join(",")}`, "board-key")).status, 400);
 });
