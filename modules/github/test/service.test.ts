@@ -16,7 +16,7 @@ import { render } from "../../../kernel/src/writes.ts";
 const sh = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8", env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_AUTHOR_NAME: "a", GIT_AUTHOR_EMAIL: "a@example.com", GIT_COMMITTER_NAME: "a", GIT_COMMITTER_EMAIL: "a@example.com" } }).trim();
 const listen = (handler) => new Promise((ok) => { const s = createServer(handler); s.listen(0, "127.0.0.1", () => ok({ s, url: `http://127.0.0.1:${s.address().port}` })); });
 
-async function setup(t, { routes = () => undefined, app: appOverride } = {}) {
+async function setup(t, { routes = () => undefined, app: appOverride, maintained } = {}) {
   const root = mkdtempSync(join(tmpdir(), "codehost-svc-"));
   const marker = join(root, "RAN");
   // "GitHub": a bare repo with main.
@@ -61,7 +61,7 @@ async function setup(t, { routes = () => undefined, app: appOverride } = {}) {
   const handle = createService({
     key: "ch-key", kernelUrl: kernel.url, cacheDir: join(root, "cache"), tasksDir: join(root, "tasks"), app: appOverride ?? app, gh,
     remoteUrl: (slug) => join(root, "github", `${slug}.git`), agentsOrg: "acme-agents", instanceRepo: "acme-agents/aidenhq-instance",
-    productRepo: "acme/aidenhq", allowedOrgs: ["acme-agents", "partner"],
+    productRepo: "acme/aidenhq", allowedOrgs: ["acme-agents", "partner"], maintained,
   });
   const svc = await listen((req, res) => void handle(req, res));
   t.after(() => { kernel.s.close(); svc.s.close(); });
@@ -204,6 +204,32 @@ test("a job's branch lands from its workspace; no hook, filter or fsmonitor of t
   writeFileSync(join(root, "cache", "pushed-by.json"), "{}");
   await call("/aidenhq/v1/executor/plan", { kind: "github.push", args, requester: { kind: "job", roles: [] }, task: "t2" });
   assert.deepEqual(by(), {});
+});
+
+test("a head is the runner's own only in the repo it was pushed to: the same commit as a PR on a maintained repo is reviewed, never Tier 0", async (t) => {
+  let pulls = {};
+  const checks = { status: 200, body: { total_count: 1, check_runs: [{ status: "completed", conclusion: "success" }], statuses: [] } };
+  const { root, origin, sha, outcomes, call } = await setup(t, { maintained: ["globex/payments"], routes: (method, path) => (path in pulls ? { status: 200, body: pulls[path] } : /\/commits\/\w+\/(check-runs|status)/.test(path) ? checks : undefined) });
+  const args = { workspace: "TASK-1", only: [{ repo: "acme-agents/widget", branch: "feature", sha }] };
+  assert.equal((await call("/aidenhq/v1/executor/plan", { kind: "github.push", args, requester: { kind: "job", roles: [] }, task: "t1" })).status, 200);
+  await call("/aidenhq/v1/executor/execute", { id: "k-0123456789abcdee", kind: "github.push", args, digest: "d", idempotency_key: "i" });
+  for (let i = 0; i < 300 && !outcomes.length; i++) await new Promise((r) => setTimeout(r, 10));
+  assert.equal(outcomes[0]?.ok, true, JSON.stringify(outcomes));
+  // The same commit, opened as a PR on a maintained repo outside the agents org.
+  const other = join(root, "github", "globex", "payments.git");
+  mkdirSync(other, { recursive: true });
+  sh(other, "init", "--quiet", "--bare", "-b", "main");
+  sh(origin, "push", "--quiet", other, "main", `${sha}:refs/heads/feature`);
+  const main = sh(origin, "rev-parse", "main");
+  const pr = (repo) => ({ [`/repos/${repo}/pulls/1`]: { number: 1, head: { sha }, base: { sha: main }, changed_files: 2, user: { login: "someone" } }, [`/repos/${repo}/pulls/1/files?per_page=100`]: [{ filename: "app.js" }, { filename: ".gitattributes" }] });
+  pulls = { ...pr("acme-agents/widget"), ...pr("globex/payments") };
+  const merge = (repo) => call("/aidenhq/v1/executor/plan", { kind: "github.merge", args: { prs: [{ repo, number: 1, head: sha }] }, requester: { kind: "job", roles: [] }, task: "t1" });
+  const own = await merge("acme-agents/widget");
+  assert.equal(own.status, 200, JSON.stringify(own.json));
+  assert.equal(own.json.raise, undefined, "pushed to this repo: Tier 0");
+  const elsewhere = await merge("globex/payments");
+  assert.equal(elsewhere.status, 200, JSON.stringify(elsewhere.json));
+  assert.deepEqual([elsewhere.json.raise?.tier, elsewhere.json.raise?.rule], [1, "maintained-merge-foreign-head"]);
 });
 
 test("ops answer the kernel only (it checks each module's grant); a token is narrowed to its repo, or org-wide for owner/*", async (t) => {
