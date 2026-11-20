@@ -20,7 +20,7 @@ import { Maintainer } from "./maintainer.js";
 import { describeRepos, parseRepos } from "./aidenhq-sdk/maintained-repos.js";
 import { isModule } from "./module-caller.js";
 import { CodeReviewReader, codeReviewRoute } from "./code-review-read.js";
-import { createAccess, kernelNotify } from "./client.js";
+import { createAccess, kernelNotify, type GitHubAccess } from "./client.js";
 import { officialProxy, ownerToken, signIn } from "./official.js";
 import { ReviewPoster } from "./review-post.js";
 import { IdentityWant } from "./review-render.js";
@@ -649,6 +649,13 @@ const http = createServer(async (req, res) => {
   }
 });
 
-http.listen(port, "0.0.0.0", () => log.info({ port, comment_orgs: [...commentOrgs] }, "github-mcp listening"));
-official.listen(8087, "0.0.0.0", () => log.info({ port: 8087 }, "GitHub's MCP server and the sign-in listening"));
-for (const sig of ["SIGTERM", "SIGINT"] as const) process.on(sig, () => { official.close(); http.close(() => process.exit(0)); });
+/**
+ * Starts both connections (8086 AidenHQ's tools, 8087 GitHub's own MCP and the sign-in) and hands back the owner's access: the
+ * GitHub process's code host (modules/github/service/src/main.ts) runs on the same sign-in.
+ */
+export async function startGithubMcp(): Promise<GitHubAccess> {
+  http.listen(port, "0.0.0.0", () => log.info({ port, comment_orgs: [...commentOrgs] }, "github-mcp listening"));
+  official.listen(8087, "0.0.0.0", () => log.info({ port: 8087 }, "GitHub's MCP server and the sign-in listening"));
+  for (const sig of ["SIGTERM", "SIGINT"] as const) process.on(sig, () => { official.close(); http.close(); });
+  return access;
+}

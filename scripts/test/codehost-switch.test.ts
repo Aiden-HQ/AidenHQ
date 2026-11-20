@@ -29,12 +29,11 @@ test("the bundle has both code hosts: local until GitHub is connected, then GitH
   const fresh = inst({ github_agents_org: "acme-agents" });
   const before = compile(product, fresh, { workDir: "/tmp/w" });
   assert.deepEqual(before.paperclip.agents_orgs, [{ org: "local", host: "local" }]);
-  assert.equal(before.compose.services["github-codehost-github"], undefined, "no code host container while unconnected");
-  assert.equal(before.compose.services["github-mcp"].environment.GITHUB_SYNC_ORGS, "", "nothing to sync");
+  assert.equal(before.compose.services["github-github"].environment.GITHUB_SYNC_ORGS, "", "nothing to sync");
   assert.equal(orgLine(before, fresh), "This AidenHQ's agents org is `local` on this server (its repositories are `local/<name>`).");
   // Connected: the GitHub org comes first, new repositories go there, and `local` stays an agents org for the repos already on it.
   const after = compile(product, fresh, { workDir: "/tmp/w", githubOrg: "acme-agents" });
   assert.deepEqual(after.paperclip.agents_orgs, [{ org: "acme-agents", host: "github" }, { org: "local", host: "local" }]);
-  assert.equal(after.compose.services["github-codehost-github"].environment.AGENTS_ORG, "acme-agents");
+  assert.equal(after.compose.services["github-github"].environment.GITHUB_FLEET_ORG, "acme-agents");
   assert.equal(orgLine(after, fresh), "This AidenHQ's agents orgs are `acme-agents` on GitHub and `local` on this server (its repositories are `local/<name>`); a new repository goes in `acme-agents`, and each existing one stays where it is.");
 });

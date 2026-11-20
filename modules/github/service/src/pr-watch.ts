@@ -23,24 +23,24 @@ import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DESIGN_REVIEW_CHECK, GATE_CHECK, namedChecks } from "./aidenhq-sdk/checks.ts";
 import type { Flow } from "./flow.ts";
+import { withFooter } from "./git-auth.ts";
 
 type Json = any;
-type Gh = (method: string, path: string, token: string, body?: unknown) => Promise<{ status: number; body: any }>;
+/** GitHub as the owner (git-auth.ts Gh): every call here is background work. */
+type Gh = (method: string, path: string, body?: unknown, o?: { background?: boolean }) => Promise<{ status: number; body: any }>;
 export type PrWatchOptions = {
   /**
    * The repos to watch, owner/name: `all` for the fleet's own (the product repo, the agents org's), `dependabot` for a maintained
    * repo elsewhere, where only the Dependabot duty runs (no CI reruns, no branch cleanup, no flow facts).
    */
   repos: { repo: string; duties: "all" | "dependabot" }[]; kernelUrl: string; /** The module's own token (kernel.tasks, kernel.wake). */ key: string; cacheDir: string;
-  app: { token(org: string, o: { repositories?: string[]; permissions?: Record<string, string> }): Promise<string> };
   gh: Gh; log?: (msg: string, f?: Record<string, unknown>) => void;
   /** Flow facts: CI done on the head of an agent's PR. */
   flow?: Flow;
 };
 
-const WATCH = { contents: "read", pull_requests: "read", checks: "read", statuses: "read", actions: "read", metadata: "read" };
-const CLOSE = { contents: "write", pull_requests: "write", metadata: "read" };
-const RERUN = { actions: "write", metadata: "read" };
+/** The pass runs every minute while a watched PR is open; with none open it waits twice as long each pass, up to 30 minutes. */
+const EVERY_MS = 60_000, IDLE_MAX_MS = 30 * 60_000;
 /** ci.yml's "Conventional Commit title" test, unchanged: every `policy` run reads the PR's title. */
 const CONVENTIONAL_TITLE = /^(feat|fix|docs|chore|test|refactor|perf|ci|build|style|revert)(\([a-z0-9][a-z0-9._\/-]*\))?!?: \S/;
 const POLICY_CHECK = "policy";
@@ -89,6 +89,7 @@ export function notePrTask(cacheDir: string, url: string, v: { task: string; bra
 
 export function startPrWatch(o: PrWatchOptions) {
   const log = o.log ?? (() => {});
+  const gh = (method: string, path: string, body?: unknown) => o.gh(method, path, body, { background: true });
   const stateFile = join(o.cacheDir, "pr-watch.json");
   async function kernel(method: string, path: string, body: unknown): Promise<Json> {
     const r = await fetch(`${o.kernelUrl}${path}`, { method, headers: { authorization: `Bearer ${o.key}`, "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(15_000) });
@@ -98,14 +99,12 @@ export function startPrWatch(o: PrWatchOptions) {
   }
 
   /** One repo's pass; `all` is the state file's content, keyed by lowercased repo, and `save` writes it whole. */
-  async function scan(repo: string, duties: "all" | "dependabot", all: Json) {
+  async function scan(repo: string, duties: "all" | "dependabot", all: Json): Promise<number> {
     const [owner, name] = repo.split("/");
-    const watchToken = () => o.app.token(owner!, { repositories: [name!], permissions: WATCH });
-    const token = await watchToken();
     let r: Json;
     const open: Json[] = [];
     for (let after: string | null = null; ;) {
-      const g = await o.gh("POST", "/graphql", token, { query: OPEN_PRS_QUERY, variables: { owner, repo: name, after } });
+      const g = await gh("POST", "/graphql", { query: OPEN_PRS_QUERY, variables: { owner, repo: name, after } });
       const page = g.body?.data?.repository;
       if (g.status >= 300 || !page?.pullRequests) throw new Error(`GitHub /graphql: ${g.status} ${g.body?.errors?.[0]?.message ?? "no pull requests"}`);
       r ??= page;
@@ -154,7 +153,7 @@ export function startPrWatch(o: PrWatchOptions) {
       const unstarted: Json[] = [];
       for (const n of own.length ? own : red) {
         if (n.__typename !== "CheckRun" || !n.databaseId) return false;
-        const job = await o.gh("GET", `/repos/${repo}/actions/jobs/${n.databaseId}`, await watchToken());
+        const job = await gh("GET", `/repos/${repo}/actions/jobs/${n.databaseId}`);
         if (job.status >= 300 || !Array.isArray(job.body?.steps) || job.body.steps.length) return false; // a step ran: it judged the commit
         unstarted.push(n);
       }
@@ -164,7 +163,7 @@ export function startPrWatch(o: PrWatchOptions) {
       save();
       const runs = new Set(unstarted.map((n) => n.checkSuite?.workflowRun?.databaseId).filter(Boolean));
       for (const run of runs) {
-        const r = await o.gh("POST", `/repos/${repo}/actions/runs/${run}/rerun-failed-jobs`, await o.app.token(owner!, { repositories: [name!], permissions: RERUN }), {});
+        const r = await gh("POST", `/repos/${repo}/actions/runs/${run}/rerun-failed-jobs`, {});
         log(r.status < 300 ? "checks re-run" : "check re-run refused", { pr: pr.url, head: pr.headRefOid, run, status: r.status });
       }
       return true;
@@ -183,7 +182,7 @@ export function startPrWatch(o: PrWatchOptions) {
       const policy = (rollupOf(pr)?.contexts?.nodes ?? []).find((n: Json) => n.__typename === "CheckRun" && n.name === POLICY_CHECK && n.status === "COMPLETED" && n.conclusion === "FAILURE");
       const run = policy?.checkSuite?.workflowRun?.databaseId;
       if (!run) return false;
-      const jobs = await o.gh("GET", `/repos/${repo}/actions/runs/${run}/jobs`, await watchToken());
+      const jobs = await gh("GET", `/repos/${repo}/actions/runs/${run}/jobs`);
       if (jobs.status >= 300 || !Array.isArray(jobs.body?.jobs)) return false;
       const failed: string[] = jobs.body.jobs.filter((j: Json) => j.conclusion === "FAILURE").map((j: Json) => String(j.name)).sort();
       // A red test or another job is a real failure: re-running would only repeat it.
@@ -192,7 +191,7 @@ export function startPrWatch(o: PrWatchOptions) {
       const policyJob = jobs.body.jobs.find((j: Json) => j.name === POLICY_CHECK);
       const failedSteps = (policyJob?.steps ?? []).filter((s: Json) => s.conclusion === "FAILURE").map((s: Json) => String(s.name));
       if (!Array.isArray(policyJob?.steps) || failedSteps.length !== 1 || failedSteps[0] !== TITLE_STEP) return false;
-      const p = await o.gh("GET", `/repos/${repo}/pulls/${pr.number}`, await watchToken());
+      const p = await gh("GET", `/repos/${repo}/pulls/${pr.number}`);
       const title = p.status < 300 ? p.body?.title : undefined;
       if (typeof title !== "string" || !CONVENTIONAL_TITLE.test(title)) return false;
       // The title is data: it reaches only this regex test and the cache key, never a log line.
@@ -200,7 +199,7 @@ export function startPrWatch(o: PrWatchOptions) {
       if (state.policyRan[key]) return false;
       state.policyRan[key] = new Date().toISOString();
       save();
-      const r = await o.gh("POST", `/repos/${repo}/actions/runs/${run}/rerun-failed-jobs`, await o.app.token(owner!, { repositories: [name!], permissions: RERUN }), {});
+      const r = await gh("POST", `/repos/${repo}/actions/runs/${run}/rerun-failed-jobs`, {});
       log(r.status < 300 ? "red policy re-run" : "policy re-run refused", { pr: pr.url, head: pr.headRefOid, run, status: r.status });
       return r.status < 300;
     }
@@ -210,9 +209,8 @@ export function startPrWatch(o: PrWatchOptions) {
       if (state.updated[key]) return state.updated[key] === "ok"; // an update GitHub has not shown yet is waited for, not asked about
       state.updated[key] = "refused";
       save();
-      const t = await o.app.token(owner!, { repositories: [name!], permissions: CLOSE });
       for (const update_method of ["rebase", "merge"]) {
-        const r = await o.gh("PUT", `/repos/${repo}/pulls/${pr.number}/update-branch`, t, { expected_head_sha: pr.headRefOid, update_method });
+        const r = await gh("PUT", `/repos/${repo}/pulls/${pr.number}/update-branch`, { expected_head_sha: pr.headRefOid, update_method });
         if (r.status < 300) {
           state.updated[key] = "ok";
           await wake(pr, "");
@@ -226,7 +224,7 @@ export function startPrWatch(o: PrWatchOptions) {
     /** The breaker tripped: whoever asked for the task hears it once, the checks and the last failure's summary fenced as data. */
     async function tellAsker(pr: Json, task: string, red: string[], why: string): Promise<"sent" | "failed"> {
       const run = (rollupOf(pr)?.contexts?.nodes ?? []).find((n: Json) => n.__typename === "CheckRun" && n.databaseId && red.includes(n.name));
-      const out = run ? await o.gh("GET", `/repos/${repo}/check-runs/${run.databaseId}`, await watchToken()).catch(() => undefined) : undefined;
+      const out = run ? await gh("GET", `/repos/${repo}/check-runs/${run.databaseId}`).catch(() => undefined) : undefined;
       const last = [out?.body?.output?.title, out?.body?.output?.summary].filter(Boolean).join("\n") || "no summary";
       // Check names and output are the PR's workflow's (whoever pushed it): only inside the fence, names charset-limited.
       const name = (n: string) => (/^[\w .:\/()-]{1,100}$/.test(n) ? n : "a check");
@@ -239,13 +237,12 @@ export function startPrWatch(o: PrWatchOptions) {
     }
     /** Close a cancelled or done task's PR and delete its branch, once: recorded only once GitHub closed it, so a refused close is tried again next tick. */
     async function abandon(pr: Json, task: string, comment: string) {
-      const t = await o.app.token(owner!, { repositories: [name!], permissions: CLOSE });
-      const c = await o.gh("PATCH", `/repos/${repo}/pulls/${pr.number}`, t, { state: "closed" });
+      const c = await gh("PATCH", `/repos/${repo}/pulls/${pr.number}`, { state: "closed" });
       if (c.status >= 300) return log("abandoned PR not closed: retried next tick", { pr: pr.url, task, status: c.status });
       state.abandoned[pr.url.toLowerCase()] = new Date().toISOString();
       save();
-      await o.gh("POST", `/repos/${repo}/issues/${pr.number}/comments`, t, { body: comment });
-      const d = await o.gh("DELETE", `/repos/${repo}/git/refs/heads/${pr.headRefName}`, t);
+      await gh("POST", `/repos/${repo}/issues/${pr.number}/comments`, { body: withFooter(comment, "PR watch") });
+      const d = await gh("DELETE", `/repos/${repo}/git/refs/heads/${pr.headRefName}`);
       log("abandoned PR closed", { pr: pr.url, task, branchDeleted: d.status < 300 });
     }
 
@@ -271,7 +268,7 @@ export function startPrWatch(o: PrWatchOptions) {
       save();
     }
 
-    if (duties === "dependabot") return;
+    if (duties === "dependabot") return open.length;
 
     // Flow: what this watch sees of every open PR, whoever opened it: its opening, a head that moved (a push), and one that left
     // the list unmerged (closed). Facts are idempotent by head, so the service's own facts for an agent's PR don't repeat.
@@ -282,14 +279,14 @@ export function startPrWatch(o: PrWatchOptions) {
         const url = pr.url.toLowerCase(), seen = state.open[url];
         if (!seen) flow.opened(repo, pr.number, pr.headRefOid, pr.headRefName, new Date(pr.createdAt).toISOString(), undefined, undefined, { title: String(pr.title ?? ""), ...(await flow.authored(pr.author?.login, pr.authorAssociation, repo)) });
         else if (seen.head !== pr.headRefOid) {
-          const c = await o.gh("GET", `/repos/${repo}/compare/${seen.head}...${pr.headRefOid}`, token).catch(() => undefined);
+          const c = await gh("GET", `/repos/${repo}/compare/${seen.head}...${pr.headRefOid}`).catch(() => undefined);
           flow.pushed(repo, pr.number, pr.headRefOid, seen.head, c ? !["ahead", "identical"].includes(String(c.body?.status)) : false, String(pr.author?.login ?? "ghost"));
         }
         state.open[url] = { n: pr.number, head: pr.headRefOid };
       }
       for (const [url, seen] of Object.entries<{ n: number; head: string }>(state.open)) {
         if (open.some((p) => p.url.toLowerCase() === url)) continue;
-        const r = await o.gh("GET", `/repos/${repo}/pulls/${seen.n}`, token);
+        const r = await gh("GET", `/repos/${repo}/pulls/${seen.n}`);
         if (r.status >= 300) continue;
         const head = String(r.body?.head?.sha ?? seen.head);
         // Merged by anyone (the owner on GitHub too, not only the merge queue): the same id as the queue's and the backfill's.
@@ -300,7 +297,7 @@ export function startPrWatch(o: PrWatchOptions) {
       save();
     }
 
-    if (!main.oid) return;
+    if (!main.oid) return open.length;
     const opened = readJson(prTasksFile(o.cacheDir), {});
     for (const pr of open) {
       const url = pr.url.toLowerCase();
@@ -354,7 +351,7 @@ export function startPrWatch(o: PrWatchOptions) {
       const why = rebaseReason(pr, main.rollup);
       if (why === "conflict" || why === "red") {
         const key = `${url}:${main.oid}`;
-        const behind = why === "conflict" || Number((await o.gh("GET", `/repos/${repo}/compare/${main.oid}...${pr.headRefOid}`, token)).body?.behind_by) > 0;
+        const behind = why === "conflict" || Number((await gh("GET", `/repos/${repo}/compare/${main.oid}...${pr.headRefOid}`)).body?.behind_by) > 0;
         if (behind) {
           // Behind with no conflict: GitHub updates the branch (the runner's rebaseInCode), once per head and head of main, and no task is woken.
           if (why === "red" && await updateBranch(pr, main.oid)) continue;
@@ -388,22 +385,26 @@ export function startPrWatch(o: PrWatchOptions) {
         if (w === "sent") log("red head wake", { pr: pr.url, task: opener.task, head: pr.headRefOid });
       }
     }
+    return open.length;
   }
 
-  async function tick() {
+  /** One pass over every watched repo: how many PRs were open (a repo that failed counts as open: it is tried again soon). */
+  async function tick(): Promise<number> {
     const all: Json = Object.fromEntries(Object.entries(readJson(stateFile, {})).filter(([k]) => k.includes("/"))); // the old flat state is dropped
+    let open = 0;
     for (const { repo, duties } of o.repos) {
-      try { await scan(repo, duties, all); }
-      catch (e) { log("PR check failed", { repo, err: String((e as Error).message).slice(0, 300) }); }
+      try { open += await scan(repo, duties, all); }
+      catch (e) { open++; log("PR check failed", { repo, err: String((e as Error).message).slice(0, 300) }); }
     }
+    return open;
   }
 
-  let busy = false;
-  const timer = setInterval(() => {
-    if (busy) return;
-    busy = true;
-    void tick().finally(() => { busy = false; });
-  }, 60_000);
-  timer.unref();
-  return { tick, stop: () => clearInterval(timer) };
+  let every = EVERY_MS, timer: NodeJS.Timeout | undefined, stopped = false;
+  const next = () => {
+    if (stopped) return;
+    timer = setTimeout(() => void tick().then((open) => { every = open ? EVERY_MS : Math.min(every * 2, IDLE_MAX_MS); }, () => {}).finally(next), every);
+    timer.unref();
+  };
+  next();
+  return { tick, stop: () => { stopped = true; clearTimeout(timer); } };
 }

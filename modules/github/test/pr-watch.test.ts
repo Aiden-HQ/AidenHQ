@@ -26,13 +26,13 @@ test("a Dependabot PR becomes one task once its checks finish and closes with it
     res.writeHead(200).end(JSON.stringify({ status: "done" }));
   });
   t.after(() => kernel.s.close());
-  const gh = async (method, path, token, body) => {
+  const gh = async (method, path, body) => {
     if (path === "/graphql") return { status: 200, body: { data: { repository: { defaultBranchRef: { name: "main", target: { oid: mainOid, statusCheckRollup: checks("SUCCESS") } }, pullRequests: { nodes: open } } } } };
     if (path.startsWith("/repos/acme/app/compare/")) return { status: 200, body: { behind_by: 3 } };
     return { status: 404, body: {} };
   };
   const cacheDir = mkdtempSync(join(tmpdir(), "pr-watch-"));
-  const watch = startPrWatch({ repos: [{ repo: "acme/app", duties: "all" }], kernelUrl: kernel.url, key: "k", cacheDir, app: { token: async () => "tok" }, gh });
+  const watch = startPrWatch({ repos: [{ repo: "acme/app", duties: "all" }], kernelUrl: kernel.url, key: "k", cacheDir, gh });
   t.after(() => watch.stop());
   const made = () => calls.filter((c) => c.url === "/v1/tasks");
   const wakes = () => calls.filter((c) => c.url === "/v1/wakes");
@@ -80,7 +80,7 @@ test("an agent's green mergeable PR wakes its task to merge once per head", asyn
     ? { status: 200, body: { data: { repository: { defaultBranchRef: { name: "main", target: { oid: "m1", statusCheckRollup: checks("SUCCESS") } }, pullRequests: { nodes: open } } } } }
     : { status: 404, body: {} };
   const cacheDir = mkdtempSync(join(tmpdir(), "pr-watch-"));
-  const watch = startPrWatch({ repos: [{ repo: "acme/app", duties: "all" }], kernelUrl: kernel.url, key: "k", cacheDir, app: { token: async () => "tok" }, gh });
+  const watch = startPrWatch({ repos: [{ repo: "acme/app", duties: "all" }], kernelUrl: kernel.url, key: "k", cacheDir, gh });
   t.after(() => watch.stop());
   notePrTask(cacheDir, "https://github.com/acme/app/pull/5", { task: "ACME-5", branch: "b5" });
   const agent = { author: { __typename: "Bot", login: "aidenhq" } };
@@ -109,7 +109,7 @@ test("an owner's PR records its CI per head and its merge once it leaves the ope
   const rec = (name) => (...a) => void got.push([name, ...a]);
   const flow = { opened: rec("opened"), pushed: rec("pushed"), closed: rec("closed"), merged: rec("merged"), checksStarted: rec("started"), checksCompleted: rec("completed"), authored: async () => ({ author: "owner", author_kind: "owner" }) };
   const cacheDir = mkdtempSync(join(tmpdir(), "pr-watch-"));
-  const watch = startPrWatch({ repos: [{ repo: "acme/app", duties: "all" }], kernelUrl: kernel.url, key: "k", cacheDir, app: { token: async () => "tok" }, gh, flow });
+  const watch = startPrWatch({ repos: [{ repo: "acme/app", duties: "all" }], kernelUrl: kernel.url, key: "k", cacheDir, gh, flow });
   t.after(() => watch.stop());
   const run = (status, o = {}) => ({ __typename: "CheckRun", name: "test", status, conclusion: status === "COMPLETED" ? "SUCCESS" : null, startedAt: "2026-11-20T10:01:00Z", ...o });
   const rollup = (nodes) => ({ commits: { nodes: [{ commit: { statusCheckRollup: { state: "PENDING", contexts: { pageInfo: { hasNextPage: false }, nodes } } } }] } });
@@ -142,7 +142,7 @@ async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name:
   });
   t.after(() => kernel.s.close());
   let open = [];
-  const api = async (method, path, token, body) => {
+  const api = async (method, path, body) => {
     gh.push(`${method} ${path}${body?.update_method ? ` ${body.update_method}` : ""}`);
     if (path === "/graphql") return { status: 200, body: { data: { repository: { defaultBranchRef: { name: "main", target: { oid: "m1", statusCheckRollup: checks("SUCCESS") } }, pullRequests: { nodes: open } } } } };
     if (path.startsWith("/repos/acme/app/compare/")) return { status: 200, body: { behind_by: behind } };
@@ -153,7 +153,7 @@ async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name:
     return { status: 200, body: {} };
   };
   const cacheDir = mkdtempSync(join(tmpdir(), "pr-watch-"));
-  const watch = startPrWatch({ repos: [{ repo: "acme/app", duties: "all" }], kernelUrl: kernel.url, key: "k", cacheDir, app: { token: async () => "tok" }, gh: api });
+  const watch = startPrWatch({ repos: [{ repo: "acme/app", duties: "all" }], kernelUrl: kernel.url, key: "k", cacheDir, gh: api });
   t.after(() => watch.stop());
   const agentPr = (n, o = {}) => { notePrTask(cacheDir, `https://github.com/acme/app/pull/${n}`, { task: `ACME-${n}`, branch: `b${n}` }); return pr(n, { author: { __typename: "Bot", login: "aidenhq" }, ...o }); };
   return { woke, gh, watch, cacheDir, agentPr, set: (v) => { open = v; }, behind: (v) => { behind = v; update = 422; } };
@@ -280,7 +280,7 @@ test("a red policy whose title now passes is re-run in place once; a still-red t
     res.writeHead(200).end(JSON.stringify({ status: "in_progress" }));
   });
   t.after(() => kernel.s.close());
-  const gh = async (method, path, token, body) => {
+  const gh = async (method, path, body) => {
     ghCalls.push(`${method} ${path}`);
     if (path === "/graphql") return { status: 200, body: { data: { repository: { defaultBranchRef: { name: "main", target: { oid: "m1", statusCheckRollup: checks("SUCCESS") } }, pullRequests: { nodes: open } } } } };
     if (path === "/repos/acme/app/pulls/11") return { status: 200, body: { title } };
@@ -294,7 +294,7 @@ test("a red policy whose title now passes is re-run in place once; a still-red t
     }
     return { status: 200, body: {} };
   };
-  const watch = startPrWatch({ repos: [{ repo: "acme/app", duties: "all" }], kernelUrl: kernel.url, key: "k", cacheDir: mkdtempSync(join(tmpdir(), "pr-watch-")), app: { token: async () => "tok" }, gh });
+  const watch = startPrWatch({ repos: [{ repo: "acme/app", duties: "all" }], kernelUrl: kernel.url, key: "k", cacheDir: mkdtempSync(join(tmpdir(), "pr-watch-")), gh });
   t.after(() => watch.stop());
   const policyRed = (n, o = {}) => pr(n, {
     author: { __typename: "User", login: "dev" }, title,
@@ -351,7 +351,7 @@ async function multi(t, repos, open) {
     res.writeHead(200).end("{}");
   });
   t.after(() => kernel.s.close());
-  const api = async (method, path, token, body) => {
+  const api = async (method, path, body) => {
     gh.push(`${method} ${path}`);
     if (path === "/graphql") {
       const prs = open[`${body.variables.owner}/${body.variables.repo}`] ?? [];
@@ -361,7 +361,7 @@ async function multi(t, repos, open) {
     return { status: 404, body: {} };
   };
   const cacheDir = mkdtempSync(join(tmpdir(), "pr-watch-"));
-  const watch = startPrWatch({ repos, kernelUrl: kernel.url, key: "k", cacheDir, app: { token: async () => "tok" }, gh: api });
+  const watch = startPrWatch({ repos, kernelUrl: kernel.url, key: "k", cacheDir, gh: api });
   t.after(() => watch.stop());
   return { watch, tasks, closes, gh, cacheDir };
 }

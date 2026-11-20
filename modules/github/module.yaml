@@ -7,12 +7,12 @@ replaces: [ codehost-github, runner ]
 requires:
   - warehouse # its source schema lives in the shared warehouse
   - board # its sign-in and setup flow
-# The code host part (service/) is the only holder of the GitHub App key (vault github-app/) and the owner of all git state. Its
-# write kinds github.{push,pr,merge,close,create_repo} go through the kernel's /v1/writes, with service/src/plan.ts as their
-# executor@1 plan. Outside the agents org it is PR-only (no merge, no workflows; create_repo is Tier 0 in any github_orgs org it is
-# installed on), except product-repo merges the reviewer or the owner approved. It talks to the kernel with its own token
-# (codehost_github_token): the module's roles below go with that token alone, never with the connections' service key
-# (kernel/src/identity.ts), so github-mcp holds no kernel role and can't report a write's outcome.
+# The GitHub process (service `github`) is the only holder of the owner's GitHub token (its /state) and the owner of all git
+# state. Its write kinds github.{push,pr,merge,close,create_repo} go through the kernel's /v1/writes, with service/src/plan.ts as
+# their executor@1 plan. Outside the fleet org, the product repo and maintainer_repos it is PR-only (no merge; create_repo is
+# Tier 0 in any github_orgs org). It talks to the kernel with its own token (codehost_github_token): the module's roles below go
+# with that token alone, never with the connections' service key (kernel/src/identity.ts), so a call on the connections' key
+# holds no kernel role and can't report a write's outcome.
 privileged: [ git-credential ]
 # The merge queue, its gate rules and the reviewer-eval gate are the gate's own core: read by the reviewer and a second one on
 # another model family (the path inventory, paths.yaml; the rest of the code host part is the reviewer's).
@@ -20,14 +20,14 @@ paths:
   - sensitivity: panel
     owner_role: platform-engineer
     patterns: [ service/src/merges.ts, service/src/merge-gate.ts, service/src/evalgate.ts ]
-# The code host role (docs/design/codehost-local.md §2): it hosts every org codehost-local doesn't own, once the App is set up.
+# The code host role (docs/design/codehost-local.md §2): it hosts every org codehost-local doesn't own, once GitHub is connected.
 provides: [ codehost ]
 # Its sign-in and setup flow on the board (modules/board/schemas/), and its schema and the views agents read with source_new
 # (the warehouse's point, modules/warehouse/schemas/sources.json).
 contributes:
   # The device sign-in (a code typed at github.com, no redirect): github-mcp holds the token and uses it for both connections.
   board.signins:
-    - { id: github, label: GitHub, mode: device, status_url: "http://github-mcp:8087/auth/status", connect_url: /github/connect, callback: /github/callback,
+    - { id: github, label: GitHub, mode: device, status_url: "http://github:8087/auth/status", connect_url: /github/connect, callback: /github/callback,
         missing: "The agents can't read GitHub until it is.", stopped: "The agents can't read GitHub." }
   board.setup_flows:
     - order: 130
@@ -131,7 +131,7 @@ connections:
   github:
     setup: "Open its setup on the board (#/setup/github) and press Connect GitHub. The App's reads and writes need the GitHub App (the same page's advanced part)."
     guide: "AidenHQ's GitHub tools: live issue and PR state, reviews, checks, a failed job's log, organization Projects (v2) boards (roadmaps, status, iterations: `github_project_read`). For code, commits, releases and search use github_official; Glean's `code_search` finds code across repos."
-    url: http://github-mcp:8086/mcp
+    url: http://github:8086/mcp
     auth: github_service_key
     tools:
       # github_app_issue_status: a status lookup of product-bug issues (number, state, fixing commit; no issue text), so a
@@ -167,7 +167,7 @@ connections:
   github_official:
     setup: "Open its setup on the board (#/setup/github) and press Connect GitHub."
     guide: "GitHub's own MCP server, as you: file contents, commits, branches, tags, releases, code, commit, issue, PR, repository and user search, issue and PR details. Use github for CI logs, Projects boards and the Maintainer's tools."
-    url: http://github-mcp:8087/mcp
+    url: http://github:8087/mcp
     auth: github_service_key
     tools:
       read: [ get_me, get_file_contents, get_commit, list_commits, list_branches, list_tags, get_tag, list_releases, get_latest_release, get_release_by_tag, get_label, get_teams, get_team_members,
@@ -176,19 +176,9 @@ connections:
       write: []
       destructive: [ add_issue_comment, update_issue_comment, issue_write, sub_issue_write, create_pull_request, update_pull_request, pull_request_review_write, add_comment_to_pending_review,
                      add_reply_to_pull_request_comment, request_copilot_review ]
-# The App tokens github-mcp asks the kernel for (POST /v1/codehost/token, owner authority): read-only on any repo or org the
-# App covers (issues, pull requests, checks, Actions, contents for the Maintainer's file reads, org Projects boards and search),
-# plus the writes it makes as the App: issues (product bugs on settings.product_repo, the Maintainer's comments, labels and
-# states on settings.maintainer_repos; a pull request's comment and close also ask for pull_requests: write, since GitHub gates
-# them behind it), commit statuses (the design-review check, in the agents org only) and code review's posting
-# (src/review-post.ts: a comment review with line comments, its `aidenhq/review` status, the acknowledgement comment and Aiden's own
-# threads resolved, on any repo the App covers; never an approval or a merge). github-mcp
-# checks those targets itself; a grant can't name settings, so it covers whatever the App does. The code host's own checks (the
-# merge queue's reviewer eval: kernel.checks) read the repos it lands, through the kernel's snapshot.
+# The code host's own checks (the merge queue's reviewer eval: kernel.checks) read the repos it lands, through the kernel's
+# snapshot.
 codehost:
-  token:
-    repos: ["*/*"]
-    perms: { contents: read, metadata: read, issues: write, pull_requests: write, checks: read, statuses: write, actions: read, organization_projects: read }
   snapshot: { repos: [ "*/*" ] }
 # The PR watch (service/src/pr-watch.ts, W5) files the Platform Engineer's Dependabot tasks and closes them
 # (kernel.tasks), wakes the task that opened a PR (kernel.wake) and reads that task's status from the kernel's work read (kernel.work-read) to close a cancelled
@@ -204,7 +194,7 @@ codehost:
 # whose process is gone. That listing reads no other source and closes no other family (kernel/src/modtasks.ts).
 # All of them go with the code host's own token (codehost_github_token), never with github-mcp's service key.
 roles:
-  requests: [ kernel.tasks, kernel.wake, kernel.checks, kernel.apply, kernel.work-read, kernel.facts ]
+  requests: [ kernel.tasks, kernel.wake, kernel.checks, kernel.apply, kernel.work-read, kernel.facts, kernel.owner-notice ]
 # Flow (docs/design/flow.md): the facts the code host emits through the kernel (service/src/flow.ts), each carrying the task that opened
 # the PR (pr-tasks.json). pr.opened and issue.opened carry the author (author_kind: agent, owner or outside, from GitHub's author_association); pr.pushed is a head
 # change after opening (version = the head); pr.closed is a close without a merge. CI is one interval per head (subject pr:<repo>#<n>@<head>); a merge-queue wait and its end are
@@ -217,8 +207,8 @@ facts:
   pr.checks_completed: { subject: pr }
   pr.merged: { subject: pr }
   pr.reverted: { subject: pr }
-  work.waiting: { subject: pr, reasons: [ checks, design_review, eval, retry, conflict ] }
-  work.resumed: { subject: pr, reasons: [ checks, design_review, eval, retry, conflict ] }
+  work.waiting: { subject: pr, reasons: [ checks, design_review, eval, retry, conflict, github ] }
+  work.resumed: { subject: pr, reasons: [ checks, design_review, eval, retry, conflict, github ] }
   code.added: { subject: pr }
   code.rewritten: { subject: pr }
   issue.opened: { subject: issue }
@@ -285,25 +275,32 @@ secrets:
 optional_secrets:
   - github_token
 services:
-  data: true # the code host's cache clones, merge queue, PR-task map and release train
+  data: true # the code host's cache clones, merge queue, held writes, PR-task map and release train
   run:
-    # Both connections (8086 AidenHQ's tools, 8087 GitHub's own MCP) and the sign-in (8087's /auth/*), in one process: one token.
-    github-mcp:
-      build: ./connections/github-mcp
-      tmp: 16m
-      egress: true
+    # The GitHub process (spec 2026-11-20-github-owner-identity §1): both connections (8086 AidenHQ's tools, 8087 GitHub's own
+    # MCP and the board's sign-in at /auth/*) and the code host (8100: the executor of the write kinds below, the merge queue,
+    # the release train, the PR watch, design reviews and tidying, and the typed GitHub operations other modules get through the
+    # kernel, /v1/codehost/:op), in one Node process on the owner's one sign-in. Its token stays in this container's /state; it
+    # mounts the job workspaces. It starts with the module and answers "GitHub isn't connected" until the owner connects.
+    github:
+      build: .
+      tmp: 64m
+      port: 8100
+      egress: true # GitHub, and the kernel's listener (a host address)
       links: [board, sources] # the board's sign-in and health check; the warehouse (shared sources)
       state: /state
+      data: ["cache:/cache"]
+      workspaces: /tasks
       env:
-        GITHUB_TOKEN_FILE: ${secrets.github_token}
+        AIDENHQ_KERNEL_URL: http://10.231.0.1:3130
         GITHUB_STATE_DIR: /state
         GITHUB_OAUTH_CLIENT_ID: "${settings.github_oauth_client_id}"
         GITHUB_MCP_URL: "${settings.github_mcp_url}"
         # The board's sign-in endpoints: state, and starting a device sign-in.
         GITHUB_AUTH_TOKEN_FILE: ${secrets.github_auth_token}
         GITHUB_COMMENT_ORGS: "${settings.github_comment_orgs}" # comma-separated
-        # commit_status_set (the design-review check) writes only here, as the GitHub App.
-        GITHUB_AGENTS_ORG: "${settings.agents_org}"
+        # github_fleet_org: where the fleet's repos live on GitHub; commit_status_set writes only there.
+        GITHUB_FLEET_ORG: "${settings.agents_org}"
         # Product bugs (github_app_issue) go only to this repo.
         GITHUB_PRODUCT_REPO: "${settings.product_repo}"
         # The owner-data scrub refuses this instance's own names and hosts (compiled from its settings) in anything filed
@@ -311,43 +308,24 @@ services:
         GITHUB_OWNER_TERMS: "${settings.owner_terms}"
         # The key of a product issue's opaque origin ids (scrub.ts originIds); without it nothing is filed upstream.
         GITHUB_ORIGIN_KEY_FILE: ${secrets.github_origin_key}
+        # The kernel's bearer for both connections.
         MCP_TOKEN_FILE: ${secrets.github_service_key}
-        # The Maintainer's repos (setting maintainer_repos, as JSON): its App tools and the Maintainer's watcher act on these only.
+        # The module's own token: the kernel calls the executor and ops with it, and the process reports outcomes, files facts
+        # and tells the owner about a GitHub need (kernel.owner-notice) with it.
+        CODEHOST_KEY_FILE: ${secrets.codehost_github_token}
+        # The maintained repos (setting maintainer_repos, as JSON): the Maintainer's tools and watcher act on these only; the PR
+        # watch also covers those with dependabot on, and the fleet merges and closes there as in the fleet org (plan.ts, merges.ts).
         GITHUB_MAINTAINER_REPOS: "${settings.maintainer_repos}"
-        # Shared sources (src_github): the orgs it syncs (github_orgs plus the agents org) and its warehouse login.
+        # Shared sources (src_github): the orgs it syncs (github_orgs plus the fleet org) and its warehouse login.
         GITHUB_SYNC_ORGS: "${settings.github_sync_orgs}"
         WAREHOUSE_PASSWORD_FILE: ${secrets.warehouse_src_github_password}
-        # The GitHub App's tokens (repo reads, org Projects boards, the sync, its writes): the kernel's /v1/codehost/token, asked
-        # for with MCP_TOKEN_FILE's token.
-        AIDENHQ_KERNEL_URL: http://10.231.0.1:3130
-    # The code host (service/): the executor of the write kinds below, the merge queue, the release train, the PR watch, design
-    # reviews and tidying, and narrow GitHub operations other modules get through the kernel (/v1/codehost/:op). It lands in the
-    # agents org and the product repo (elsewhere it only opens PRs). It alone mounts the App key (read-only), and the job workspaces.
-    codehost-github:
-      # Idle until the GitHub App is set up (compile derives agents_org from it): no image, no container.
-      when: { agents_org: true }
-      build: ./service
-      tmp: 64m
-      port: 8100
-      egress: true # GitHub, and the kernel's listener (a host address)
-      data: ["cache:/cache"]
-      github_app: /github-app
-      workspaces: /tasks
-      env:
-        AIDENHQ_KERNEL_URL: http://10.231.0.1:3130
-        CODEHOST_KEY_FILE: ${secrets.codehost_github_token}
         CACHE_DIR: /cache
-        AGENTS_ORG: "${settings.agents_org}" # the host's AIDENHQ_GITHUB_AGENTS_ORG (compile derives it)
-        ALLOWED_ORGS: "${settings.github_sync_orgs}" # the orgs create_repo may create in: github_orgs plus the agents org (compile derives it)
-        GITHUB_APP_DIR: /github-app
+        ALLOWED_ORGS: "${settings.github_sync_orgs}" # the orgs create_repo may create in: github_orgs plus the fleet org
         TASKS_DIR: /tasks
         PRODUCT_REPO: "${AIDENHQ_PRODUCT_REPO:-}"
         INSTANCE_REPO: "${AIDENHQ_INSTANCE_REPO:-}"
         OWNER_NAME: "${settings.owner_name}"
         CHURN_EXCLUDE: "${settings.churn_exclude}" # comma-separated globs
-        # The maintained repos (setting maintainer_repos, as JSON): the PR watch also covers those with dependabot on, and the
-        # fleet merges and closes there as in the agents org (plan.ts, merges.ts).
-        GITHUB_MAINTAINER_REPOS: "${settings.maintainer_repos}"
 # The board's Connect/Reconnect for GitHub: its sign-in token, only while this module is on.
 board_env:
   GITHUB_AUTH_TOKEN_FILE: ${secrets.github_auth_token}
@@ -355,7 +333,7 @@ board_env:
 # rules on the state the service reads itself (the workspace, its cache clone, GitHub), never the args.
 providers:
   executor:
-    url: http://codehost-github:8100/aidenhq/v1/executor
+    url: http://github:8100/aidenhq/v1/executor
     auth: codehost_github_token
 # Each card is plan.ts's facts, read from git by the service: what it acts on, one sentence, and the diff the reviewer reads.
 # How the fleet reports a product bug, for the agents that hold the link tool (the Fleet Steward and the chief of staff).

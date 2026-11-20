@@ -255,11 +255,10 @@ test("a newly declared fact type is the reviewer's to see; stages are plain", ()
 });
 
 test("a code host's service mounts, a channel's transport and credentials, and kernel roles each say what they grant", () => {
-  const svc = { ...base.services.run["crm-mcp"], github_app: "/github-app", workspaces: "/tasks", points: "/config/points.json" };
+  const svc = { ...base.services.run["crm-mcp"], workspaces: "/tasks", points: "/config/points.json" };
   const head = with_({ services: { run: { "crm-mcp": svc } }, roles: { requests: ["kernel.apply"] } });
   assert.deepEqual(authorityLines([authorityDiff("acme-crm", base, head, false)]), [
     "acme-crm: requests role kernel.apply (files instance applies) (owner)",
-    "acme-crm: service crm-mcp: mounts the GitHub App key (read-only) (owner)",
     "acme-crm: service crm-mcp: job workspaces read-write (owner)",
     "acme-crm: service crm-mcp: reads its points file (review)",
   ]);
