@@ -146,6 +146,8 @@ export function createWakes({ db, owner, post, dispatches, containers = () => ne
    * activity). The facts and that cursor move in one transaction.
    */
   const TASK_FACTS = ["task.created", "task.labeled", "task.status_changed", "task.assignee_changed", "task.blocked_changed"];
+/** The statuses the pinned recovery sweep scans (idle.ts holds a settled wait out of all of them). */
+const SCANNED = new Set(["todo", "in_progress", "in_review"]);
   const lastFacts = (task: string) => facts?.latest(`task:${task}`, TASK_FACTS) ?? new Map<string, FactRow>();
   /** A task's chat flag: its newest task.labeled, else its created fact's (undefined for a created fact older than the flag). */
   const chatOf = (last: Map<string, FactRow>) => { const c = last.get("task.labeled")?.data.chat ?? last.get("task.created")?.data.chat; return typeof c === "boolean" ? c : undefined; };
@@ -452,6 +454,9 @@ export function createWakes({ db, owner, post, dispatches, containers = () => ne
   }
 
   const companies = new Map<string, string>();
+  /** The wait-park reconcile, once idle.ts has it (it is made after this inbox): a task's own event re-parks a restored wait at
+   *  once, so the recovery sweep's tick never gets to see a settled wait in a status it scans. */
+  let settleOn: ((issue: Issue) => Promise<unknown>) | undefined;
   /** The most tasks a poll re-reads one by one (closures and hand-offs its lists can't show), and how long its reconcile may take. */
   const RECONCILE_MAX = 100;
   const RECONCILE_MS = 30_000;
@@ -460,6 +465,8 @@ export function createWakes({ db, owner, post, dispatches, containers = () => ne
   const missing = new Map<string, number>();
   return {
     scan,
+    /** Hand the task reconcile to the inbox (idle.ts settleOne): called on a task's own event, before the next settle tick. */
+    settleOn: (f: (issue: Issue) => Promise<unknown>) => { settleOn = f; },
     /**
      * A change the kernel just made through the control plane (cp.ts, the owner proxy): the task's facts at once, from the issue the
      * write returned. No wake: the event and the poll file those, from their own cursor.
@@ -546,7 +553,12 @@ export function createWakes({ db, owner, post, dispatches, containers = () => ne
       // Who Paperclip says did it (the event's actor), as a fact's actor.
       const id = typeof b.actorId === "string" && /^[\w-]{1,100}$/.test(b.actorId) ? b.actorId : "";
       const actor = id && b.actorType === "agent" ? `agent:${keyOf(id)}` : id && b.actorType === "user" ? `account:${id}` : "unknown";
-      await scan(r.json as Issue, { reopened: b.reopened === true, actor });
+      const issue = r.json as Issue;
+      await scan(issue, { reopened: b.reopened === true, actor });
+      // A task put back into a status the recovery sweep scans while its own wait is armed is parked again here rather than at
+      // the next settle tick: the sweep's tick is 60–90 s and so is the poll, so the poll alone would leave a window in which
+      // it can act first (idle.ts).
+      if (settleOn && SCANNED.has(String(issue.status))) await settleOn(issue).catch((e: Error) => log("wait settle on event failed", { task: issue.id, err: e.message }));
       return { scanned: true };
     },
     /** A module's scheduled wake (role kernel.wake) for the task's assignee, due at `at`. */

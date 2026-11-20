@@ -169,15 +169,29 @@ const fileBrief = (a: Json, all: Json) => {
   };
 };
 
+/**
+ * Who holds a task, as a caller can act on it: the agent's own key (the directory's grant key, so "agent" never stands for "the
+ * one agent this caller cannot name"), with its display name when Paperclip lists it; `"user"` for the owner's own task, `null`
+ * for an unassigned one. The key is the caller-visible identity every other tool takes (`assignee`, `to`), never a bare "agent".
+ */
+async function assigneeOf(i: Json) {
+  if (i.assigneeAgentId) {
+    const g = dirAgents()[i.assigneeAgentId];
+    const name = await nameOf(i.assigneeAgentId);
+    return { assignee: String(g?.key ?? name ?? i.assigneeAgentId), ...(name ? { assignee_name: name } : {}) };
+  }
+  return { assignee: i.assigneeUserId ? "user" : null };
+}
+
 /** A task as an agent sees it: never Paperclip's status; `state` (the kernel's row, when asked for) is where it stands. */
-const brief = (i: Json, s?: Json) => ({
+const brief = async (i: Json, s?: Json) => ({
   id: i.id,
   identifier: i.identifier,
   title: i.title,
   ...(s ? { state: { kind: s.kind, reason: s.reason, ...(s.ref ? { ref: s.ref } : {}), since: s.since, ...(s.note ? { note: s.note } : {}), attention: s.attention } } : {}),
   priority: i.priority,
   labels: (i.labels ?? []).map((l: Json) => l.name),
-  assignee: i.assigneeAgentId ? "agent" : i.assigneeUserId ? "user" : null,
+  ...(await assigneeOf(i)),
   ...(i.parentId ? { parent: i.parentId } : {}),
   ...(memoryInboxes().has(i.id) ? { memory_inbox: memoryInboxes().get(i.id) } : {}),
   createdAt: i.createdAt,
@@ -188,7 +202,10 @@ const brief = (i: Json, s?: Json) => ({
 // comments say whose they are. Empty when Paperclip won't list them: names are only a help.
 async function nameOf(agentId: string) {
   if (!agentId || !COMPANY()) return undefined;
-  const names = await memo("names", async () => new Map((await api("GET", `/api/companies/${encodeURIComponent(COMPANY())}/agents`).catch(() => [])).map((a: Json) => [a.id, a.name])));
+  const names = await memo("names", async () => {
+    const list = await api("GET", `/api/companies/${encodeURIComponent(COMPANY())}/agents`).catch(() => []);
+    return new Map((Array.isArray(list) ? list : []).map((a: Json) => [a.id, a.name]));
+  });
   return names.get(agentId);
 }
 
@@ -616,7 +633,7 @@ async function afterIds(after: Json, parent: Json) {
 async function heldClose(issue: Json, f: Json, comment: Json) {
   if (!f.held && !f.reopened) return undefined;
   if (comment && f.held) await api("POST", `/api/issues/${issueRef(issue)}/comments`, { body: comment });
-  return { ...brief(await api("GET", `/api/issues/${issueRef(issue)}`)), ...(f.held ? { grading: GRADING_NOTE } : { reopened: f.reopened.reason }) };
+  return { ...(await brief(await api("GET", `/api/issues/${issueRef(issue)}`))), ...(f.held ? { grading: GRADING_NOTE } : { reopened: f.reopened.reason }) };
 }
 const DELIVERABLE_INPUT = {
   type: "object",
@@ -773,7 +790,7 @@ const TOOLS: Record<string, Tool> = {
       const parts = p ? await partsOf(p.id, i.id).catch(() => []) : [];
       const s = (await stateRows([i.id])).get(i.id);
       const more = "the rest is not available here; ask for the relevant part";
-      return { task: { ...brief(i, s), description: clip(i.description, DESC_MAX, more) }, ...(p ? { parent: { identifier: p.identifier, title: p.title, description: clip(p.description, DESC_MAX, more) }, parts } : {}) };
+      return { task: { ...(await brief(i, s)), description: clip(i.description, DESC_MAX, more) }, ...(p ? { parent: { identifier: p.identifier, title: p.title, description: clip(p.description, DESC_MAX, more) }, parts } : {}) };
     },
   },
   task_get: {
@@ -782,7 +799,7 @@ const TOOLS: Record<string, Tool> = {
     annotations: { readOnlyHint: true, openWorldHint: false },
     run: async ({ issue }: Args) => {
       const i = await api("GET", `/api/issues/${issueRef(issue)}`);
-      return { ...brief(i, (await stateRows([i.id])).get(i.id)), description: clip(i.description, DESC_MAX, "the rest is not available here") };
+      return { ...(await brief(i, (await stateRows([i.id])).get(i.id))), description: clip(i.description, DESC_MAX, "the rest is not available here") };
     },
   },
   task_search: {
@@ -801,7 +818,7 @@ const TOOLS: Record<string, Tool> = {
       const q = new URLSearchParams({ q: String(query).slice(0, 200), limit: String(Math.min(Number(limit) || 10, 25)), excludeRoutineExecutions: "true" });
       q.set("status", statusesFor(state));
       const list = await withStates(await api("GET", `/api/companies/${encodeURIComponent(COMPANY())}/issues?${q}`), state, attention);
-      return { tasks: list.map(([i, s]) => ({ ...brief(i, s), snippet: clip(String(i.description ?? "").replace(/<!--[\s\S]*?-->/g, "").trim(), SNIPPET_MAX, "task_get for the rest") })) };
+      return { tasks: await Promise.all(list.map(async ([i, s]) => ({ ...(await brief(i, s)), snippet: clip(String(i.description ?? "").replace(/<!--[\s\S]*?-->/g, "").trim(), SNIPPET_MAX, "task_get for the rest") }))) };
     },
   },
   task_list: {
@@ -844,7 +861,7 @@ const TOOLS: Record<string, Tool> = {
           list.push(...theirs.filter((i: Json) => !i.assigneeAgentId && mark.test(i.description ?? "")));
         }
       }
-      return { tasks: (await withStates(list, state, attention)).map(([i, s]) => brief(i, s)) };
+      return { tasks: await Promise.all((await withStates(list, state, attention)).map(([i, s]) => brief(i, s))) };
     },
   },
   task_approvals: {
@@ -918,8 +935,8 @@ const TOOLS: Record<string, Tool> = {
       for (const k of new Set(markers)) {
         const existing = await findByMarker(k, statuses);
         // A graded task left parked by a failed rubric filing: this retry files it and starts it.
-        if (existing && start && parked(existing, { id: g.id }, grade)) return { ...brief(existing), deduplicated: true, ...(await startGraded(existing, grade)) };
-        if (existing) return { ...brief(existing), deduplicated: true };
+        if (existing && start && parked(existing, { id: g.id }, grade)) return { ...(await brief(existing)), deduplicated: true, ...(await startGraded(existing, grade)) };
+        if (existing) return { ...(await brief(existing)), deduplicated: true };
       }
       const body: Args = {
         title: String(title).slice(0, 200),
@@ -940,9 +957,9 @@ const TOOLS: Record<string, Tool> = {
         body.assigneeUserId = owner;
       }
       const i = await api("POST", `/api/companies/${encodeURIComponent(COMPANY())}/issues`, body);
-      if (i.deduplicated) return { ...brief(i), deduplicated: true, ...(warning ? { warning } : {}) };
+      if (i.deduplicated) return { ...(await brief(i)), deduplicated: true, ...(warning ? { warning } : {}) };
       const graded = start ? await startGraded(i, grade) : await fileGrade(i.id, grade);
-      return { ...brief(start && grade ? { ...i, status: "todo" } : i), deduplicated: false, ...graded, ...(warning ? { warning } : {}) };
+      return { ...(await brief(start && grade ? { ...i, status: "todo" } : i)), deduplicated: false, ...graded, ...(warning ? { warning } : {}) };
     },
   },
   task_team: {
@@ -1338,7 +1355,7 @@ const TOOLS: Record<string, Tool> = {
             await retried(() => kernelWait({ for: "owner", asked: true, handoff: true, reason: "the user's reply to my handoff", question: comment }));
           } catch (err) {
             // The handoff itself landed: say the wait didn't, so the agent calls task_wait rather than idle-wake while waiting.
-            return { ...brief(i), wait_error: `handed off, but the wait wasn't recorded (${String((err as Error).message ?? err).slice(0, 200)}): call task_wait (on: the user's reply) so you aren't woken as idle.` };
+            return { ...(await brief(i)), wait_error: `handed off, but the wait wasn't recorded (${String((err as Error).message ?? err).slice(0, 200)}): call task_wait (on: the user's reply) so you aren't woken as idle.` };
           }
         }
         return brief(i);
@@ -1357,7 +1374,7 @@ const TOOLS: Record<string, Tool> = {
         const t = await requireDelegated(issue);
         if (["done", "cancelled"].includes(t.status)) {
           const last = await postLeadingParts(issue, `${feedbackMark()}${body}`);
-          return { reopened: true, ...brief(await patchIssue(issue, { status: "todo", comment: last })) };
+          return { reopened: true, ...(await brief(await patchIssue(issue, { status: "todo", comment: last }))) };
         }
       }
       const last = await postLeadingParts(issue, `${feedbackMark()}${body}`);

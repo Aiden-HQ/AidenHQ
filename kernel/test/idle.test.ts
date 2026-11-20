@@ -25,13 +25,50 @@ function world(t, { polls = true } = {}) {
   db.exec("PRAGMA journal_mode = WAL");
   db.exec("CREATE TABLE jobs (id TEXT PRIMARY KEY, task TEXT, agent TEXT, state TEXT, at INTEGER)");
   const facts = openFacts(db, () => new Date(clock));
-  const issues = { t0: { id: "t0", identifier: "T0", status: "blocked" }, t1: { id: "t1", identifier: "T1", status: "todo", assigneeAgentId: AGENT, parentId: "t0" }, t2: { id: "t2", status: "todo", assigneeAgentId: null, assigneeUserId: "owner" } };
+  const issues = { t0: { id: "t0", identifier: "T0", status: "blocked" }, t1: { id: "t1", identifier: "T1", status: "todo", assigneeAgentId: AGENT, parentId: "t0", companyId: "co" }, t2: { id: "t2", status: "todo", assigneeAgentId: null, assigneeUserId: "owner" } };
+  // Paperclip's agents (statuses + org chain: the sweep's invokability check), by id, and what the owner API saw.
+  const agents = { [AGENT]: { id: AGENT, companyId: "co", status: "idle", lifecycleHolds: [], reportsTo: null }, boss: { id: "boss", companyId: "co", status: "idle", lifecycleHolds: [], reportsTo: null } };
   const reads = [];
+  const writes = [];
+  const seen = [];
+  const resolved = [];
   let down = false;
-  const owner = async (method, path) => {
+  // A status the control plane refuses (a PATCH that fails): the park must leave nothing behind and be tried again.
+  let refusePatch;
+  // A PATCH that applies and then answers with an error, and a read that fails once: together, "did the park land?" is unknown.
+  let refuseAfterApply = false;
+  let blindNext = 0;
+  const parks = () => db.prepare("SELECT task, agent, from_status FROM wait_parks").all();
+  const owner = async (method, path, body) => {
     const m = /^\/api\/issues\/([^/?]+)$/.exec(path);
-    if (m) reads.push(m[1]);
+    if (m && method === "GET") {
+      reads.push(m[1]);
+      if (blindNext > 0) { blindNext -= 1; return { status: 502, json: {} }; }
+    }
     if (down) return { status: 502, json: {} };
+    if (m && method === "PATCH") {
+      if (!issues[m[1]]) return { status: 404, json: {} };
+      if (refusePatch === "backlog" && body.status === "backlog") {
+        if (!refuseAfterApply) return { status: 409, json: { error: "refused (test)" } };
+        // The write lands and the answer is lost: the control plane is now parked, the kernel only knows it failed.
+        if (body.status) issues[m[1]] = { ...issues[m[1]], status: body.status };
+        blindNext = 1;
+        return { status: 504, json: { error: "gateway timeout (test)" } };
+      }
+      // What the kernel's db held at the instant of the write: a park's row must already be there, so no crash after the write
+      // can leave a parked issue nothing knows about.
+      seen.push({ task: m[1], status: body.status, rows: db.prepare("SELECT task FROM wait_parks").all().map((r) => r.task) });
+      writes.push({ task: m[1], body });
+      if (body.status) issues[m[1]] = { ...issues[m[1]], status: body.status };
+      return { status: 200, json: issues[m[1]] };
+    }
+    const res = /^\/api\/issues\/([^/?]+)\/recovery-actions\/resolve$/.exec(path);
+    if (res && method === "POST") {
+      resolved.push({ task: res[1], body });
+      issues[res[1]] = { ...issues[res[1]], status: body.sourceIssueStatus, activeRecoveryAction: null };
+      return { status: 200, json: { issue: issues[res[1]] } };
+    }
+    if (/^\/api\/companies\/[^/]+\/agents$/.test(path)) return { status: 200, json: Object.values(agents) };
     return m && issues[m[1]] ? { status: 200, json: issues[m[1]] } : { status: 404, json: {} };
   };
   const add = (type, subject, task, data = {}, actor = "unknown") => facts.record({ type, subject, version: actor.startsWith("module:") ? `${actor.slice(7)}/${clock}` : `${type}@${clock}`, at: iso(clock), actor, task, data });
@@ -53,11 +90,11 @@ function world(t, { polls = true } = {}) {
   // Who the task's agent is (roles: ["fleet-admin"] is the chief of staff) and whether the owner is talking to it on the task.
   const who = { roles: [], conversing: false };
   const escalate = createEscalate({ db, issue: async (id) => issues[id], state: (id) => row(id), asker: async () => ({ name: "Kai", key: "kai", roles: who.roles }), notice: (task, body) => asked.notices.push({ task, body }), owner: (n) => asked.owner.push(n), chief: async (b) => { asked.chief.push(b); }, conversing: async () => who.conversing, now: () => clock });
-  const idle = createIdle({ db, facts, state, wakes, owner, escalate, now: () => clock });
+  const idle = createIdle({ db, facts, state, wakes, owner, keyOf: (id) => (id === AGENT ? "eng" : id), escalate, now: () => clock });
   const rows = () => db.prepare("SELECT key, cause, state FROM wakes ORDER BY at, key").all().map((r) => `${r.key.replace(/:[0-9TZ:.-]+$/, "")} ${r.cause} ${r.state}`);
   /** A job on t1 from its wake to its end. */
   const job = (id) => { add("job.queued", `job:${id}`, "t1"); add("job.started", `job:${id}`, "t1"); clock += MIN; add("job.ended", `job:${id}`, "t1", { state: "done" }); };
-  return { db, facts, idle, escalate, wakes, row, add, job, rows, reads, asked, who, issues, down: (v) => (down = v), tick: (ms) => (clock += ms), now: () => clock };
+  return { db, facts, idle, escalate, wakes, row, add, job, rows, reads, writes, seen, resolved, parks, asked, who, agents, issues, down: (v) => (down = v), refusePatch: (v) => (refusePatch = v), refuseAfterApply: (v) => (refuseAfterApply = v), blindNext: (n) => (blindNext = n), tick: (ms) => (clock += ms), now: () => clock };
 }
 
 test("an agent-held task orphaned 15 minutes gets an idle wake, again 15 minutes after one is dropped, at most 3 a day; the owner's task none and isn't read", async (t) => {
@@ -283,4 +320,326 @@ test("a task whose agent no enabled dispatcher polls reads unpolled, and the swe
   assert.equal(w.row("t1").reason, "unpolled", "the state names why nothing runs it, never orphaned");
   assert.deepEqual(await w.idle.sweep(), [], "the sweep leaves it alone: its wake would never be taken");
   assert.deepEqual(w.rows().filter((r) => r.startsWith("idle:")), [], "no idle row was opened");
+});
+
+// ---- A settled wait is not the sweep's work (WOR-9033, Aiden-HQ/AidenHQ#1004) ----
+/** Paperclip's pinned recovery sweep's own candidate test: todo/in_progress/in_review, an agent assignee, no user assignee. */
+const sweepWouldScan = (i) => ["todo", "in_progress", "in_review"].includes(i.status) && Boolean(i.assigneeAgentId) && !i.assigneeUserId;
+
+test("an armed wait parks the issue in backlog: outside the pinned sweep's eligible set, however the holder's status changes", async (t) => {
+  const w = world(t);
+  assert.ok(sweepWouldScan(w.issues.t1), "before the wait the issue is one the sweep scans");
+  const until = new Date(w.now() + 2 * 60 * MIN).toISOString();
+  await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "PR #12 merges", until });
+  assert.equal(w.issues.t1.status, "backlog");
+  assert.ok(!sweepWouldScan(w.issues.t1), "an armed wait's issue is never in the sweep's eligible set");
+  assert.deepEqual(w.writes.map((x) => [x.task, x.body.status]), [["t1", "backlog"]]);
+  assert.match(w.writes[0].body.comment, /<!-- aidenhq:job=kernel kind=wait-park -->/);
+  // The holder pauses while the wait is armed (the live repro): the park is what keeps the issue out, not the holder's status.
+  w.agents[AGENT] = { ...w.agents[AGENT], status: "paused", lifecycleHolds: ["manual"] };
+  w.tick(MIN);
+  assert.deepEqual(await w.idle.settle(), { parked: [], resumed: [], resolved: [] }, "already parked: nothing written");
+  assert.equal(w.issues.t1.status, "backlog");
+  // A supported comment or a status restore that puts it back in todo/in_progress while the wait is armed: parked again, once.
+  w.issues.t1 = { ...w.issues.t1, status: "in_progress" };
+  assert.deepEqual(await w.idle.settle(), { parked: ["t1"], resumed: [], resolved: [] });
+  assert.equal(w.issues.t1.status, "backlog");
+  assert.deepEqual(await w.idle.settle(), { parked: [], resumed: [], resolved: [] }, "idempotent");
+  assert.equal(w.writes.filter((x) => x.body.status === "backlog").length, 2, "one park, then one re-park after the restore");
+});
+
+test("a wake ends the wait and reconciles the issue exactly once (backlog → in_progress, never todo: no second dispatch)", async (t) => {
+  const w = world(t);
+  const until = new Date(w.now() + 61 * MIN).toISOString();
+  await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "PR #12 merges", until });
+  assert.equal(w.issues.t1.status, "backlog");
+  w.tick(62 * MIN);
+  // The wait's wake is due and the dispatcher claims it: the wait is no longer open, so the pass restores the issue once.
+  assert.deepEqual(w.wakes.claim("dispatch").map((r) => [r.task, r.cause]), [["t1", "wait: PR #12 merges"]]);
+  assert.deepEqual(await w.idle.settle(), { parked: [], resumed: ["t1"], resolved: [] });
+  assert.equal(w.issues.t1.status, "in_progress");
+  assert.deepEqual(w.writes.filter((x) => x.body.status === "in_progress").map((x) => x.task), ["t1"]);
+  assert.deepEqual(await w.idle.settle(), { parked: [], resumed: [], resolved: [] }, "a re-run writes nothing");
+  assert.equal(w.writes.filter((x) => x.body.status === "in_progress").length, 1, "exactly one reconcile");
+  // todo would be Paperclip's own status-wake path (a second job): the restore never writes it.
+  assert.ok(!w.writes.some((x) => x.body.status === "todo"));
+});
+
+test("a cancelled wait (its wake dropped by a dispatcher, or replaced by a superseding wait) reconciles once", async (t) => {
+  const w = world(t);
+  const until = new Date(w.now() + 2 * 60 * MIN).toISOString();
+  await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "PR #12 merges", until });
+  assert.equal(w.issues.t1.status, "backlog");
+  w.wakes.open({ key: "comment:c1", task: "t1", agent: AGENT, cause: "comment" });
+  w.wakes.drop("dispatch", w.wakes.claim("dispatch")[0].key, "another agent's comment");
+  assert.equal(w.issues.t1.status, "backlog", "the wait is still armed");
+  // A superseding wait replaces the first: the issue stays parked, and the row remembers what to restore.
+  w.tick(MIN);
+  const until2 = new Date(w.now() + 3 * 60 * MIN).toISOString();
+  await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "the reviewer answers", until: until2 });
+  assert.equal(w.issues.t1.status, "backlog");
+  // The second wait is cancelled outright: its wake goes, and the pass restores the issue once.
+  assert.deepEqual(w.wakes.claim("dispatch"), [], "not due");
+  w.db.prepare("UPDATE wakes SET state = 'dropped' WHERE task = 't1' AND key LIKE 'wait:%'").run();
+  assert.deepEqual(await w.idle.settle(), { parked: [], resumed: ["t1"], resolved: [] });
+  assert.equal(w.issues.t1.status, "in_progress");
+  assert.deepEqual(await w.idle.settle(), { parked: [], resumed: [], resolved: [] });
+});
+
+test("a wait on a task with no wait to restore for stays parked until its holder is invokable again", async (t) => {
+  const w = world(t);
+  // A paused holder: its task is parked while it waits, and the wait's wake is dropped with no restore (the holder can't run it).
+  w.agents[AGENT] = { ...w.agents[AGENT], status: "paused", lifecycleHolds: ["manual"] };
+  const until = new Date(w.now() + 2 * 60 * MIN).toISOString();
+  await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "the owner unpauses me", until });
+  assert.equal(w.issues.t1.status, "backlog");
+  w.db.prepare("UPDATE wakes SET state = 'dropped' WHERE task = 't1' AND key LIKE 'wait:%'").run();
+  assert.deepEqual(await w.idle.settle(), { parked: [], resumed: [], resolved: [] }, "restoring work to a paused holder is the loop this fixes");
+  w.agents[AGENT] = { ...w.agents[AGENT], status: "idle", lifecycleHolds: [] };
+  assert.deepEqual(await w.idle.settle(), { parked: [], resumed: ["t1"], resolved: [] });
+  assert.equal(w.issues.t1.status, "in_progress");
+});
+
+test("a stale stranded_assigned_issue hold is resolved once through recovery-actions/resolve, and parked again if the wait is armed", async (t) => {
+  const w = world(t);
+  // The live symptom: Paperclip blocked the task and left its board-owned hold behind; the agent re-armed its wait after.
+  w.issues.t1 = { ...w.issues.t1, status: "blocked", activeRecoveryAction: { id: "ra-1", cause: "stranded_assigned_issue", status: "active", ownerType: "board" } };
+  const until = new Date(w.now() + 2 * 60 * MIN).toISOString();
+  // A wait on a blocked task: reconcileOne has no row yet, so the pass sees the hold and leaves a task it did not park alone.
+  w.db.prepare("INSERT OR REPLACE INTO wakes (key, task, agent, cause, at, state) VALUES (?, 't1', ?, 'wait: x', ?, 'open')").run(`wait:t1:${Date.parse(until)}`, AGENT, Date.parse(until));
+  // Its own park row (as the loop leaves one before Paperclip blocks it) is what makes the hold the kernel's to release.
+  w.db.prepare("INSERT OR REPLACE INTO wait_parks (task, agent, from_status, at) VALUES ('t1', ?, 'todo', ?)").run(AGENT, w.now());
+  assert.deepEqual(await w.idle.settle(), { parked: [], resumed: [], resolved: ["t1"] });
+  assert.deepEqual(w.resolved.map((r) => [r.task, r.body.actionId, r.body.outcome, r.body.sourceIssueStatus]), [["t1", "ra-1", "restored", "todo"]]);
+  assert.equal(w.issues.t1.status, "backlog", "resolved, then parked again at once: never dropped back into the sweep");
+  assert.deepEqual(await w.idle.settle(), { parked: [], resumed: [], resolved: [] }, "one pass, no retry loop");
+  assert.equal(w.resolved.length, 1);
+});
+
+test("a hold is not resolved while its holder is still not invokable and no wait is armed: the board keeps it", async (t) => {
+  const w = world(t);
+  w.issues.t1 = { ...w.issues.t1, status: "blocked", activeRecoveryAction: { id: "ra-2", cause: "stranded_assigned_issue", status: "active", ownerType: "board" } };
+  w.agents[AGENT] = { ...w.agents[AGENT], status: "paused", lifecycleHolds: ["manual"] };
+  w.db.prepare("INSERT OR REPLACE INTO wait_parks (task, agent, from_status, at) VALUES ('t1', ?, 'todo', ?)").run(AGENT, w.now());
+  assert.deepEqual(await w.idle.settle(), { parked: [], resumed: [], resolved: [] });
+  assert.equal(w.resolved.length, 0, "resolving would drop it straight back into the sweep");
+  assert.equal(w.issues.t1.status, "blocked");
+  // A hold of another cause is never the loop's: left alone even with the holder invokable.
+  w.agents[AGENT] = { ...w.agents[AGENT], status: "idle", lifecycleHolds: [] };
+  w.issues.t1 = { ...w.issues.t1, activeRecoveryAction: { id: "ra-3", cause: "provider_quota", status: "active", ownerType: "board" } };
+  assert.deepEqual(await w.idle.settle(), { parked: [], resumed: [], resolved: [] });
+  assert.equal(w.resolved.length, 0);
+});
+
+test("a park the control plane refuses leaves no row, and the next pass parks it instead of restoring it", async (t) => {
+  const w = world(t);
+  w.refusePatch("backlog");
+  const until = new Date(w.now() + 2 * 60 * MIN).toISOString();
+  await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "PR #12 merges", until });
+  assert.equal(w.issues.t1.status, "todo", "the failed park changed nothing");
+  assert.deepEqual(w.parks(), [], "no row for a park that never happened");
+  // The wait is armed, so the sweep's set is not where the issue may stay: the next pass tries the park again.
+  assert.deepEqual(await w.idle.settle(), { parked: [], resumed: [], resolved: [] }, "still refused");
+  assert.deepEqual(w.parks(), []);
+  assert.equal(w.issues.t1.status, "todo", "never restored off a park that never happened (todo is not a restore target anyway)");
+  w.refusePatch(undefined);
+  assert.deepEqual(await w.idle.settle(), { parked: ["t1"], resumed: [], resolved: [] });
+  assert.equal(w.issues.t1.status, "backlog");
+  assert.deepEqual(w.parks().map((r) => [r.task, r.agent]), [["t1", AGENT]], "the row exists only now that the issue is parked");
+  // And with the row in place the restore still lands once, on the wake.
+  w.tick(3 * 60 * MIN);
+  assert.deepEqual(w.wakes.claim("dispatch").map((r) => r.task), ["t1"]);
+  assert.deepEqual(await w.idle.settle(), { parked: [], resumed: ["t1"], resolved: [] });
+  assert.equal(w.issues.t1.status, "in_progress");
+});
+
+test("a crash between the park's PATCH and its row is recovered: an armed backlog task with no row is adopted, restored once", async (t) => {
+  const w = world(t);
+  const until = new Date(w.now() + 2 * 60 * MIN).toISOString();
+  await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "PR #12 merges", until });
+  assert.equal(w.issues.t1.status, "backlog");
+  // The park landed but the kernel died before recording it: the issue is parked, the wait is armed, the row is gone.
+  w.db.prepare("DELETE FROM wait_parks").run();
+  assert.deepEqual(w.parks(), []);
+  assert.deepEqual(await w.idle.settle(), { parked: [], resumed: [], resolved: [] }, "adopted, not written: nothing to change on the issue");
+  assert.deepEqual(w.parks().map((r) => [r.task, r.agent]), [["t1", AGENT]], "the next pass takes the park back");
+  assert.equal(w.writes.filter((x) => x.body.status === "backlog").length, 1, "a review of the parked task writes no second park");
+  // From there it settles as any parked wait does: the wake restores it exactly once, and never to todo.
+  w.tick(3 * 60 * MIN);
+  assert.deepEqual(w.wakes.claim("dispatch").map((r) => r.task), ["t1"]);
+  assert.deepEqual(await w.idle.settle(), { parked: [], resumed: ["t1"], resolved: [] });
+  assert.equal(w.issues.t1.status, "in_progress");
+  assert.deepEqual(w.parks(), []);
+});
+
+test("a task the sweep blocked before the park landed is released once, because its own wait is armed", async (t) => {
+  const w = world(t);
+  const until = new Date(w.now() + 2 * 60 * MIN).toISOString();
+  await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "PR #12 merges", until });
+  // The same loop: Paperclip's tick won the race before the park's PATCH, so there is no row to say the block was ours.
+  w.issues.t1 = { ...w.issues.t1, status: "blocked", activeRecoveryAction: { id: "ra-9", cause: "stranded_assigned_issue", status: "active", ownerType: "board" } };
+  w.db.prepare("DELETE FROM wait_parks").run();
+  w.writes.length = 0;
+  assert.deepEqual(await w.idle.settle(), { parked: [], resumed: [], resolved: ["t1"] });
+  assert.deepEqual(w.resolved.map((r) => [r.task, r.body.actionId]), [["t1", "ra-9"]]);
+  assert.equal(w.issues.t1.status, "backlog", "released and parked again in the same pass: never left in the sweep's set");
+  assert.deepEqual(await w.idle.settle(), { parked: [], resumed: [], resolved: [] }, "one pass, no retry loop");
+  assert.equal(w.resolved.length, 1);
+  // A hold on a task with no row and no armed wait is still the board's: not touched.
+  w.db.prepare("UPDATE wakes SET state = 'dropped' WHERE task = 't1'").run();
+  w.issues.t1 = { ...w.issues.t1, status: "blocked", activeRecoveryAction: { id: "ra-10", cause: "stranded_assigned_issue", status: "active", ownerType: "board" } };
+  w.db.prepare("DELETE FROM wait_parks").run();
+  assert.deepEqual(await w.idle.settle(), { parked: [], resumed: [], resolved: [] });
+  assert.equal(w.resolved.length, 1);
+  assert.equal(w.issues.t1.status, "blocked");
+});
+
+test("a park records its row before the issue write: no crash can leave a parked issue unrecorded", async (t) => {
+  const w = world(t);
+  const until = new Date(w.now() + 2 * 60 * MIN).toISOString();
+  await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "PR #12 merges", until });
+  const park = w.seen.find((x) => x.status === "backlog");
+  assert.ok(park, "the park was written");
+  assert.deepEqual(park.rows, ["t1"], "the row existed when the PATCH was issued, not after it");
+  // A refused write whose parked state is nevertheless there (a proxy that applied it and lost the answer) keeps its row.
+  w.issues.t1 = { ...w.issues.t1, status: "in_progress" };
+  w.db.prepare("DELETE FROM wait_parks").run();
+  w.refusePatch("backlog");
+  await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "PR #12 merges", until });
+  assert.deepEqual(w.parks().map((r) => r.task), [], "the park did not land, so its row is rolled back");
+});
+
+test("an in_review task the sweep's review branch would block is parked, and restored to in_review once", async (t) => {
+  const w = world(t);
+  // The one in_review shape 2026.1106.0 escalates: a pending execution-review participant held by an agent (service.ts:5097);
+  // with no participant it skips instead. This is a task whose wait outlived its run into review.
+  w.issues.t1 = { ...w.issues.t1, status: "in_review", executionState: { status: "pending", currentParticipant: { type: "agent", agentId: AGENT } } };
+  const until = new Date(w.now() + 2 * 60 * MIN).toISOString();
+  await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "the reviewer answers", until });
+  assert.equal(w.issues.t1.status, "backlog", "outside every status the pinned sweep scans");
+  assert.deepEqual(w.parks().map((r) => [r.task, r.from_status]), [["t1", "in_review"]], "the park remembers it came from review");
+  // A comment or a manual restore puts it back in review while it still waits: parked again, not left in the sweep's set.
+  w.issues.t1 = { ...w.issues.t1, status: "in_review" };
+  assert.deepEqual(await w.idle.settle(), { parked: ["t1"], resumed: [], resolved: [] });
+  assert.equal(w.issues.t1.status, "backlog");
+  // The wait ends (woken by the answer): it goes back to review, never to in_progress (which would restart the work) or todo.
+  w.tick(3 * 60 * MIN);
+  assert.deepEqual(w.wakes.claim("dispatch").map((r) => r.task), ["t1"]);
+  assert.deepEqual(await w.idle.settle(), { parked: [], resumed: ["t1"], resolved: [] });
+  assert.equal(w.issues.t1.status, "in_review");
+  assert.deepEqual(w.writes.filter((x) => x.body.status === "in_progress"), [], "a review task is never resumed as work");
+  assert.deepEqual(await w.idle.settle(), { parked: [], resumed: [], resolved: [] }, "exactly once");
+});
+
+test("an in_review task the sweep skips is never parked: the finish gate holds it in review", async (t) => {
+  const w = world(t);
+  // checks.ts holds a task in review under its check's label so the finish gate can decide it; with no pending execution-review
+  // participant the pinned sweep's review branch skips (service.ts:5098-5101), so there is nothing to park it out of.
+  w.issues.t1 = { ...w.issues.t1, status: "in_review" };
+  const until = new Date(w.now() + 2 * 60 * MIN).toISOString();
+  await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "the reviewer answers", until });
+  assert.equal(w.issues.t1.status, "in_review", "the gate's hold is not cut");
+  assert.deepEqual(w.parks(), [], "nothing parked: no row");
+  assert.deepEqual(await w.idle.settle(), { parked: [], resumed: [], resolved: [] });
+  assert.equal(w.issues.t1.status, "in_review");
+  // The gate's own monitor is the same case: never parked either.
+  w.issues.t1 = { ...w.issues.t1, monitorNextCheckAt: new Date(w.now() + 60 * MIN).toISOString(), executionState: { status: "pending", currentParticipant: { type: "agent", agentId: AGENT } } };
+  assert.deepEqual(await w.idle.settle(), { parked: [], resumed: [], resolved: [] });
+  assert.equal(w.issues.t1.status, "in_review");
+  assert.deepEqual(w.parks(), []);
+});
+
+test("an adopted park of a task that came from review goes back to in_review, from the fact log", async (t) => {
+  const w = world(t);
+  // A review-participant task whose park landed but whose row was lost.
+  w.issues.t1 = { ...w.issues.t1, status: "in_review", executionState: { status: "pending", currentParticipant: { type: "agent", agentId: AGENT } } };
+  const until = new Date(w.now() + 2 * 60 * MIN).toISOString();
+  await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "the reviewer answers", until });
+  w.db.prepare("DELETE FROM wait_parks").run();
+  w.add("task.status_changed", "task:t1", "t1", { from: "in_progress", to: "in_review" });
+  // The park's own write is a status fact too, and it is the newest one: the adoption has to look past it.
+  w.tick(MIN);
+  w.add("task.status_changed", "task:t1", "t1", { from: "in_review", to: "backlog" });
+  const newest = w.db.prepare("SELECT data FROM facts WHERE subject = 'task:t1' AND type = 'task.status_changed' ORDER BY seq DESC LIMIT 1").get();
+  assert.equal(JSON.parse(newest.data).to, "backlog", "the history really is: in_review, then our own park");
+  assert.deepEqual(await w.idle.settle(), { parked: [], resumed: [], resolved: [] });
+  assert.deepEqual(w.parks().map((r) => [r.task, r.from_status]), [["t1", "in_review"]], "the fact log says where it came from, past our own park");
+  w.tick(3 * 60 * MIN);
+  assert.deepEqual(w.wakes.claim("dispatch").map((r) => r.task), ["t1"]);
+  assert.deepEqual(await w.idle.settle(), { parked: [], resumed: ["t1"], resolved: [] });
+  assert.equal(w.issues.t1.status, "in_review", "not resumed as fresh work");
+});
+
+test("a park whose outcome is unknown keeps its row, so a task that did land is still reconciled once its wait ends", async (t) => {
+  const w = world(t);
+  // The reviewer's case: the PATCH lands on the control plane but answers with an error, and the confirming read fails too.
+  w.refusePatch("backlog");
+  w.refuseAfterApply(true);
+  const until = new Date(w.now() + 2 * 60 * MIN).toISOString();
+  await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "PR #12 merges", until });
+  assert.equal(w.issues.t1.status, "backlog", "the write landed against the control plane");
+  assert.deepEqual(w.parks().map((r) => [r.task, r.from_status]), [["t1", "todo"]], "the row is kept: the outcome was unknown, not a miss");
+  // The wait ends before any other pass could adopt the issue: the kept row is what still selects it, and it restores once.
+  w.refusePatch(undefined);
+  w.refuseAfterApply(false);
+  w.db.prepare("UPDATE wakes SET state = 'dropped' WHERE task = 't1' AND key LIKE 'wait:%'").run();
+  assert.deepEqual(await w.idle.settle(), { parked: [], resumed: ["t1"], resolved: [] });
+  assert.equal(w.issues.t1.status, "in_progress", "never left parked with nothing to reconcile it");
+  assert.deepEqual(w.parks(), []);
+  assert.deepEqual(await w.idle.settle(), { parked: [], resumed: [], resolved: [] }, "exactly once");
+});
+
+test("a park confirmed not to have landed drops its row, and the armed wait parks it again", async (t) => {
+  const w = world(t);
+  // The write is refused and the read that confirms it succeeds: the row goes, and the retry parks the task.
+  w.refusePatch("backlog");
+  const until = new Date(w.now() + 2 * 60 * MIN).toISOString();
+  await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "PR #12 merges", until });
+  assert.equal(w.issues.t1.status, "todo", "nothing was parked");
+  assert.deepEqual(w.parks(), [], "the read confirmed the miss, so the row goes");
+  w.refusePatch(undefined);
+  assert.deepEqual(await w.idle.settle(), { parked: ["t1"], resumed: [], resolved: [] });
+  assert.equal(w.issues.t1.status, "backlog");
+});
+
+test("a comment or status restore is re-parked from the task's own event, not at the next settle tick", async (t) => {
+  const w = world(t);
+  const until = new Date(w.now() + 2 * 60 * MIN).toISOString();
+  await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "PR #12 merges", until });
+  assert.equal(w.issues.t1.status, "backlog");
+  // A supported comment or a status restore lands the task back in a scanned status, and Paperclip reports it at once.
+  w.issues.t1 = { ...w.issues.t1, status: "in_progress" };
+  await w.idle.settleOne(w.issues.t1);
+  assert.equal(w.issues.t1.status, "backlog", "parked again in the same breath: no window for the sweep's tick");
+  // The park's own write emits an issue.updated too: reconciling it again must settle on the first pass and write nothing.
+  const before = w.writes.length;
+  await w.idle.settleOne(w.issues.t1);
+  assert.equal(w.writes.length, before, "the park's own event is a no-op, never a loop");
+  // A task with neither an armed wait nor a row is not this pass's: a re-run writes nothing.
+  w.issues.t2 = { ...w.issues.t2, status: "in_progress" };
+  await w.idle.settleOne(w.issues.t2);
+  assert.equal(w.issues.t2.status, "in_progress");
+  assert.deepEqual(w.writes.filter((x) => x.task === "t2"), []);
+  // And a task whose wait already ended is restored by its own event too, without waiting for the timer.
+  w.db.prepare("UPDATE wakes SET state = 'dropped' WHERE task = 't1' AND key LIKE 'wait:%'").run();
+  await w.idle.settleOne(w.issues.t1);
+  assert.equal(w.issues.t1.status, "in_progress");
+  assert.deepEqual(w.parks(), []);
+  assert.equal(w.writes.filter((x) => x.task === "t1" && x.body.status === "in_progress").length, 1, "exactly once");
+});
+
+test("an adopted park whose only status fact is our own backlog goes back to in_progress, not to review", async (t) => {
+  const w = world(t);
+  const until = new Date(w.now() + 2 * 60 * MIN).toISOString();
+  await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "PR #12 merges", until });
+  w.db.prepare("DELETE FROM wait_parks").run();
+  // A task that started in backlog and was parked from todo: the newest status facts are the park's own writes, and none of
+  // them was a review, so it resumes as work.
+  for (const [from, to] of [["todo", "backlog"], ["backlog", "backlog"]]) { w.add("task.status_changed", "task:t1", "t1", { from, to }); w.tick(MIN); }
+  assert.deepEqual(await w.idle.settle(), { parked: [], resumed: [], resolved: [] });
+  assert.deepEqual(w.parks().map((r) => [r.task, r.from_status]), [["t1", "in_progress"]]);
+  w.tick(3 * 60 * MIN);
+  w.wakes.claim("dispatch");
+  assert.deepEqual(await w.idle.settle(), { parked: [], resumed: ["t1"], resolved: [] });
+  assert.equal(w.issues.t1.status, "in_progress");
 });

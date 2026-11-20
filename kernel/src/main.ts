@@ -453,7 +453,7 @@ every(() => {
   void wakes.poll().catch((e: Error) => log("wake poll failed", { err: String(e.message ?? e).slice(0, 300) })).finally(() => { polling = false; });
 }, (Number(env("AIDENHQ_WAKE_POLL_SECONDS", "")) || 60) * 1000);
 // No idle agent-held task (idle.ts): agents' own waits (POST /v1/wait), and the idle sweep every 5 minutes.
-const idle = createIdle({ db: records.db, facts, state: taskStates, wakes, owner: ownerApi, team: (id) => Boolean(grantsTable().agents?.[id]?.team), escalate, log });
+const idle = createIdle({ db: records.db, facts, state: taskStates, wakes, owner: ownerApi, team: (id) => Boolean(grantsTable().agents?.[id]?.team), keyOf: (id) => String(grantsTable().agents?.[id]?.key ?? id), escalate, log });
 // A connection only the owner can fix: the owner hears in their own conversation, background work gets the digest (connection-state.ts).
 connectionState = createConnectionState({
   db: records.db, idle, wakes, queue: notify.queue, log,
@@ -473,6 +473,18 @@ every(() => {
   sweeping = true;
   void idle.sweep().catch((e: Error) => log("idle sweep failed", { err: e.message })).finally(() => { sweeping = false; });
 }, 5 * 60_000);
+// A wait's issue is reconciled at the poll cadence, not the idle sweep's: a wait that just ended (its wake bound to a job, dropped
+// or replaced) is restored from `backlog` at once, and a comment or a status restore that put it back in the sweep's set while it
+// still waits is parked again (idle.ts settle).
+// A task's own Paperclip event re-parks a restored wait at once (wakes.ts event → idle.ts settleOne), so the recovery sweep's
+// 60–90 s tick never sees a settled wait in a status it scans; the timer above is only the backstop.
+wakes.settleOn(idle.settleOne);
+let settling = false;
+every(() => {
+  if (settling) return;
+  settling = true;
+  void idle.settle().catch((e: Error) => log("task wait settle failed", { err: e.message })).finally(() => { settling = false; });
+}, (Number(env("AIDENHQ_WAKE_POLL_SECONDS", "")) || 60) * 1000);
 // A closed task's workspace goes after CLOSED_DAYS (workspaces.ts): hourly, and once soon after start.
 const sweepWorkspaces = createWorkspaceSweep({ db: records.db, owner: ownerApi, workDir: sandbox.workDir, log });
 const sweepDisk = () => { void sweepWorkspaces().catch((e: Error) => log("workspace sweep failed", { err: e.message })); try { pruneSkillRuntimes({ companiesDir: path.join(dataDir, "paperclip/instances/default/companies"), log }); } catch (e) { log("skill runtime prune failed", { err: (e as Error).message }); } };
