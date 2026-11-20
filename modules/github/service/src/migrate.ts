@@ -3,8 +3,9 @@
 // owner's token, each repo's rulesets and branch protection that name the App (by its id), then tells the owner once to delete
 // the App on GitHub. Entries naming any other app (GitHub Actions' pinned checks, other integrations) stay as they are. The merge
 // queue holds while it runs (main.ts). Runs once per repo: the repos done are in the cache dir.
-//   bypass actor `Integration` of the App -> the repository admin role (RepositoryRole 5: GitHub's docs don't list the role ids;
-//                                            otterdog's ruleset model and a third-party repo-setup test both use 5 for admin)
+//   bypass actor `Integration` of the App -> on the fleet org's repos and the product repo: the repository admin role (RepositoryRole 5,
+//                                            verified live 2026-11-20 via GraphQL repositoryRoleName); on any other repo (a maintained
+//                                            repo in someone else's org) the actor is only removed: no role is granted there
 //   required check pinned to the App      -> any source (ruleset: no integration_id; branch protection: app_id -1, per
 //                                            docs.github.com/rest/branches/branch-protection "Pass -1 to explicitly allow any app")
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
@@ -24,13 +25,13 @@ class Refused extends Error {
 }
 
 /** The ruleset's new body when it names the App (its Integration bypass actor or a check pinned to it), else undefined. */
-export function rewriteRuleset(rs: any, appId: number): Record<string, unknown> | undefined {
+export function rewriteRuleset(rs: any, appId: number, admin: boolean): Record<string, unknown> | undefined {
   let changed = false;
   const seen = new Set<string>();
   const bypass_actors = (rs.bypass_actors ?? []).flatMap((a: any) => {
     if (a.actor_type !== "Integration" || Number(a.actor_id) !== appId) return [a];
     changed = true;
-    return [{ actor_type: "RepositoryRole", actor_id: ADMIN_ROLE, bypass_mode: a.bypass_mode ?? "always" }];
+    return !admin ? [] : [{ actor_type: "RepositoryRole", actor_id: ADMIN_ROLE, bypass_mode: a.bypass_mode ?? "always" }];
   }).filter((a: any) => { const k = `${a.actor_type}:${a.actor_id}`; return seen.has(k) ? false : (seen.add(k), true); });
   const rules = (rs.rules ?? []).map((r: any) => {
     if (r.type !== "required_status_checks") return r;
@@ -57,12 +58,12 @@ async function list(access: Rest, path: string): Promise<any[]> {
   }
 }
 
-async function rewriteRepo(access: Rest, repo: string, appId: number): Promise<string> {
+async function rewriteRepo(access: Rest, repo: string, appId: number, admin: boolean): Promise<string> {
   const notes: string[] = [];
   for (const { id } of await list(access, `/repos/${repo}/rulesets?includes_parents=false`)) {
     const full = await access.rest("GET", `/repos/${repo}/rulesets/${id}`, undefined, bg);
     if (full.status !== 200) throw new Refused(full.status, `reading ruleset ${id}`);
-    const body = rewriteRuleset(full.body, appId);
+    const body = rewriteRuleset(full.body, appId, admin);
     if (!body) continue;
     const put = await access.rest("PUT", `/repos/${repo}/rulesets/${id}`, body, bg);
     if (put.status !== 200) throw new Refused(put.status, `rewriting ruleset ${id}`);
@@ -90,13 +91,13 @@ export async function migrationRepos(access: Rest, d: { fleetOrg?: string; produ
  * Once per repo (recorded in `file`), then one owner alert to delete the App. A repo GitHub refuses (4xx, or one the owner
  * can't reach) is recorded as skipped and logged; a 5xx, rate limit or network error rejects and the next pass resumes.
  */
-export async function dropApp(access: Rest, repos: string[], notify: Notify, o: { file: string; org: string; appId: number; log?: (msg: string, f?: Record<string, unknown>) => void }): Promise<void> {
+export async function dropApp(access: Rest, repos: string[], notify: Notify, o: { file: string; org: string; appId: number; admin: (repo: string) => boolean; log?: (msg: string, f?: Record<string, unknown>) => void }): Promise<void> {
   const state: State = existsSync(o.file) ? JSON.parse(readFileSync(o.file, "utf8")) : { repos: {} };
   const save = () => { writeFileSync(`${o.file}.tmp`, JSON.stringify(state)); renameSync(`${o.file}.tmp`, o.file); };
   for (const repo of repos) {
     if (state.repos[repo]) continue;
     try {
-      state.repos[repo] = await rewriteRepo(access, repo, o.appId);
+      state.repos[repo] = await rewriteRepo(access, repo, o.appId, o.admin(repo));
     } catch (e) {
       const need = (e as { need?: { cause?: string } }).need;
       if (e instanceof Refused ? e.status < 500 : need?.cause === "unreachable") state.repos[repo] = `skipped: ${(e as Error).message}`;
@@ -128,7 +129,7 @@ export function startAppMigration(d: { access: GitHubAccess; appId: number; cach
     if (running || !pending()) return;
     running = true;
     try {
-      await dropApp(d.access, await migrationRepos(d.access, d), notify, { file, org, appId: d.appId, log: d.log });
+      await dropApp(d.access, await migrationRepos(d.access, d), notify, { file, org, appId: d.appId, admin: (r) => (d.fleetOrg ? r.startsWith(`${d.fleetOrg}/`) : false) || r === d.productRepo, log: d.log });
       finished = true;
     } catch (e) { d.log("app migration will retry", { err: (e as Error).message }); } finally { running = false; }
   };

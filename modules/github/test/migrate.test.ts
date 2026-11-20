@@ -32,7 +32,7 @@ function fakeGitHub() {
 test("dropApp rewrites App rules once", async () => {
   const gh = fakeGitHub();
   const notices = [];
-  const o = { file: join(mkdtempSync(join(tmpdir(), "migrate-")), "migrated-from-app.json"), org: "acme", appId: 99 };
+  const o = { file: join(mkdtempSync(join(tmpdir(), "migrate-")), "migrated-from-app.json"), org: "acme", appId: 99, admin: () => true };
   const notify = async (n) => { notices.push(n); };
   await dropApp(gh, ["acme/api", "acme/clean"], notify, o);
   const put = gh.writes.find((w) => w.method === "PUT");
@@ -51,7 +51,15 @@ test("dropApp rewrites App rules once", async () => {
 
 test("dropApp leaves repos that name only other apps alone", async () => {
   const gh = fakeGitHub();
-  const o = { file: join(mkdtempSync(join(tmpdir(), "migrate-")), "migrated-from-app.json"), org: "acme", appId: 7777 };
+  const o = { file: join(mkdtempSync(join(tmpdir(), "migrate-")), "migrated-from-app.json"), org: "acme", appId: 7777, admin: () => true };
   await dropApp(gh, ["acme/api"], async () => {}, o);
   assert.equal(gh.writes.length, 0);
+});
+
+test("on a repo outside the fleet org and product repo the App's bypass actor is removed and no role is added", async () => {
+  const gh = fakeGitHub();
+  const o = { file: join(mkdtempSync(join(tmpdir(), "migrate-")), "migrated-from-app.json"), org: "acme", appId: 99, admin: () => false };
+  await dropApp(gh, ["acme/api"], async () => {}, o);
+  const put = gh.writes.find((w) => w.method === "PUT");
+  assert.deepEqual(put.body.bypass_actors, [{ actor_type: "Integration", actor_id: 42, bypass_mode: "always" }, { actor_type: "Team", actor_id: 3, bypass_mode: "pull_request" }]);
 });
