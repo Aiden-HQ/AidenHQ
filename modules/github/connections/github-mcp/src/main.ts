@@ -20,6 +20,7 @@ import { Maintainer } from "./maintainer.js";
 import { describeRepos, parseRepos } from "./aidenhq-sdk/maintained-repos.js";
 import { isModule } from "./module-caller.js";
 import { CodeReviewReader, codeReviewRoute } from "./code-review-read.js";
+import { createAccess, kernelNotify } from "./client.js";
 import { officialProxy, ownerToken, signIn } from "./official.js";
 import { ReviewPoster } from "./review-post.js";
 import { IdentityWant } from "./review-render.js";
@@ -71,7 +72,11 @@ const REPOS = describeRepos(maintainer.list());
 // user's own token); everything else, and every write, keeps the user's token.
 const stateDir = process.env.GITHUB_STATE_DIR ?? "/state";
 const mcpUrl = process.env.GITHUB_MCP_URL || "https://api.githubcopilot.com/mcp/";
-const auth = signIn({ clientId: (process.env.GITHUB_OAUTH_CLIENT_ID ?? "").trim(), mcpUrl, stateDir, oldTokenFile: process.env.GITHUB_TOKEN_FILE });
+const auth = signIn({ clientId: (process.env.GITHUB_OAUTH_CLIENT_ID ?? "").trim(), mcpUrl, stateDir, oldTokenFile: process.env.GITHUB_TOKEN_FILE, ci: process.env.GITHUB_CI === "1" });
+// Every GitHub call of this process (spec §1): one client, one rate limiter, typed needs; an owner-fixable one reaches the owner
+// once, through the kernel's notify with the code host's own token (role kernel.owner-notice).
+const codehostKey = () => { const f = process.env.CODEHOST_KEY_FILE; return f && existsSync(f) ? readFileSync(f, "utf8").trim() : ""; };
+const access = createAccess({ auth, notify: kernelNotify(process.env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130", codehostKey) });
 const github = new GitHub(ownerToken(auth), commentOrgs, fetch, projects);
 // Code review's posting (review-post.ts): the code-review module's executor reaches it through /internal/review below.
 const poster = new ReviewPoster(github, ownerToken(auth), projects, commentOrgs);
@@ -80,7 +85,7 @@ const crReader = new CodeReviewReader(github, (owner, repo) => poster.identity(o
 // GitHub's own MCP server (connection github_official) and the board's sign-in endpoints, on their own port.
 const authKeyFile = process.env.GITHUB_AUTH_TOKEN_FILE;
 const official = officialProxy({
-  auth, mcpUrl, log, stateDir, serviceKey: inboundToken,
+  auth, access, mcpUrl, log, stateDir, serviceKey: inboundToken,
   authKey: authKeyFile && existsSync(authKeyFile) ? readFileSync(authKeyFile, "utf8").trim() || undefined : undefined,
   caller: (req) => verifyCaller(req, jwks, process.env.AIDENHQ_MODULE ?? "github"),
 });
