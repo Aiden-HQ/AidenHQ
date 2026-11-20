@@ -424,6 +424,13 @@ test("the poll heals every open task's facts: created, the owner as holder, an o
   for (const t of ["shut", "lost"]) { add(t, "task.created", "created", {}); add(t, "task.status_changed", "1", { from: null, to: "todo" }); }
   await w.wakes.poll();
   const state = (t) => taskState(t, w.facts.forTask(t), w.tick(0), []);
+  // One 404 is not gone yet: only a second one at least 10 minutes later cancels it.
+  assert.equal(state("lost").reason, "orphaned");
+  w.tick(5 * 60_000);
+  await w.wakes.poll();
+  assert.equal(state("lost").reason, "orphaned");
+  w.tick(5 * 60_000);
+  await w.wakes.poll();
   assert.notEqual(state("old").reason, "history_expired");
   assert.equal(w.facts.forTask("old").filter((f) => f.type === "task.created").length, 1);
   assert.equal(state("own").reason, "handback");

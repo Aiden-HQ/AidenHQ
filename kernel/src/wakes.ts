@@ -393,6 +393,9 @@ export function createWakes({ db, owner, post, dispatches, containers = () => ne
   /** The most tasks a poll re-reads one by one (closures and hand-offs its lists can't show), and how long its reconcile may take. */
   const RECONCILE_MAX = 100;
   const RECONCILE_MS = 30_000;
+  /** A task Paperclip says is gone is cancelled only once it is missing on two passes this far apart (first miss: in memory). */
+  const MISSING_MS = 10 * 60_000;
+  const missing = new Map<string, number>();
   return {
     scan,
     /**
@@ -440,7 +443,7 @@ export function createWakes({ db, owner, post, dispatches, containers = () => ne
         } catch (e) { log("wake reconcile failed", { company, err: (e as Error).message }); }
       }
       // A task the facts call open that no list returned may have closed or gone, its event lost: each is read once, least
-      // recently seen first. Gone from Paperclip (404) is cancelled, by the kernel.
+      // recently seen first. Gone from Paperclip (404 on two passes ≥ 10 minutes apart) is cancelled, by the kernel.
       if (!facts) return;
       const seenAt = new Map((q("SELECT task, at FROM task_facts_seen").all() as { task: string; at: number }[]).map((r) => [r.task, r.at]));
       const gone = facts.openTasks().filter((t) => !listed.has(t)).sort((a, b) => (seenAt.get(a) ?? 0) - (seenAt.get(b) ?? 0) || a.localeCompare(b)).slice(0, RECONCILE_MAX);
@@ -450,6 +453,9 @@ export function createWakes({ db, owner, post, dispatches, containers = () => ne
         try {
           const r = await owner("GET", `/api/issues/${encodeURIComponent(task)}`);
           if (r.status === 404) {
+            const first = missing.get(task) ?? (missing.set(task, now()), now());
+            if (now() - first < MISSING_MS) { seen(task); continue; }
+            missing.delete(task);
             inTx(db, "task_gone", () => {
               fact({ type: "task.status_changed", subject: `task:${task}`, task, version: "missing", at: iso(now()), actor: "kernel", source: "poll", data: { from: str(lastFacts(task).get("task.status_changed")?.data.to), to: "cancelled" } });
               q("UPDATE task_facts_seen SET status = 'cancelled' WHERE task = ?").run(task);
@@ -458,6 +464,7 @@ export function createWakes({ db, owner, post, dispatches, containers = () => ne
             });
             continue;
           }
+          missing.delete(task);
           if (r.status !== 200) { seen(task); log("wake reconcile failed", { task, err: `control plane GET issue → ${r.status}` }); continue; }
           const issue = r.json as Issue;
           taskFacts(issue, "poll", "unknown");
