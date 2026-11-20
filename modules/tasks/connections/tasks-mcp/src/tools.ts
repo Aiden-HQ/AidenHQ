@@ -174,7 +174,7 @@ const brief = (i: Json, s?: Json) => ({
   id: i.id,
   identifier: i.identifier,
   title: i.title,
-  ...(s ? { state: { kind: s.kind, reason: s.reason, ...(s.ref ? { ref: s.ref } : {}), since: s.since, attention: s.attention } } : {}),
+  ...(s ? { state: { kind: s.kind, reason: s.reason, ...(s.ref ? { ref: s.ref } : {}), since: s.since, ...(s.note ? { note: s.note } : {}), attention: s.attention } } : {}),
   priority: i.priority,
   labels: (i.labels ?? []).map((l: Json) => l.name),
   assignee: i.assigneeAgentId ? "agent" : i.assigneeUserId ? "user" : null,
