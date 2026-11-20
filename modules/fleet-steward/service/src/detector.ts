@@ -143,8 +143,8 @@ export async function tick(kv: Kv, checks: Record<string, Check>, file: (body: {
   // a flag's own text), since that is the case where nobody else would act.
   const unheard = Object.values(s.open).filter((o) => !o.fired && !o.told && Date.parse(at) - Date.parse(o.at) > DAY_MS);
   if (unheard.length) {
-    for (const o of unheard) o.told = true;
-    await notify("The Fleet Steward is unreachable: its health flags have not reached it for a day. Ask Aiden to check the fleet-steward module.").catch(() => {});
+    // Marked told only once the notice went out (a kernel blip is retried on the next tick).
+    if (await notify("The Fleet Steward is unreachable: its health flags have not reached it for a day. Ask Aiden to check the fleet-steward module.").then(() => true, () => false)) for (const o of unheard) o.told = true;
   }
   const incidents = Object.entries(s.open).filter(([, o]) => !o.fired).map(([key, o]) => ({ key, ...(o.critical ? { critical: true } : {}) }));
   const recovered = s.recovered.filter((r) => !r.fired).map(({ key }) => ({ key }));
@@ -154,7 +154,8 @@ export async function tick(kv: Kv, checks: Record<string, Check>, file: (body: {
     for (const r of s.recovered) r.fired = true;
     kv.set("last_filed", at);
   }
-  s.recovered = s.recovered.slice(-20);
+  // Only recoveries already filed are trimmed: an unfiled one is still owed to the Steward.
+  s.recovered = [...s.recovered.filter((r) => r.fired).slice(-20), ...s.recovered.filter((r) => !r.fired)];
   kv.set(STATE_KEY, JSON.stringify(s));
 }
 
@@ -296,6 +297,22 @@ export function checks(d: { kernel: KernelClient; kv: Kv; pause: (routine: strin
   };
   /** Tasks a component incident explains this run: their own incidents are not raised anew (one already open stays until it recovers). */
   let explained = new Set<string>();
+  // An owner notice per incident, recorded as told only once it went out: a failed send is tried again on the next check, and
+  // forgotten when the incident is gone, so its next occurrence is told again.
+  const told = (): string[] => JSON.parse(d.kv.get("owner_told") ?? "[]");
+  const announce = async (key: string, text: string) => {
+    if (told().includes(key)) return;
+    try {
+      await d.notify?.(text, key);
+    } catch {
+      return;
+    }
+    d.kv.set("owner_told", JSON.stringify([...told(), key]));
+  };
+  const forgetTold = (prefix: string, keep: string[]) => {
+    const now = told(), left = now.filter((k) => !k.startsWith(prefix) || keep.includes(k));
+    if (left.length !== now.length) d.kv.set("owner_told", JSON.stringify(left));
+  };
   const suppressed = (task: string, key: string) => explained.has(task) && !d.openKeys().includes(key);
   return {
     // The same failure on several tasks is one component down (the grader, the job runner), whatever the per-task checks below see.
@@ -331,8 +348,9 @@ export function checks(d: { kernel: KernelClient; kv: Kv; pause: (routine: strin
         for (const id of g.tasks.keys()) explained.add(id);
         const names = [...g.tasks.values()].slice(0, 10).map(slug).join(", ");
         out.push({ key, critical: true, reason: `${g.component} is failing the same way on ${g.tasks.size} tasks within 30 minutes (${names}); the error as the component reported it:\n${fence(g.error, "component.error")}` });
-        if (!isOpen) await d.notify?.(`A component is down: the ${g.component} has failed the same way on ${SHARED_FAIL.n} or more tasks. The Fleet Steward is on it.`, `component:${key}`).catch(() => {});
+        await announce(`component:${key}`, `A component is down: the ${g.component} has failed the same way on ${SHARED_FAIL.n} or more tasks. The Fleet Steward is on it.`);
       }
+      forgetTold("component:", out.map((i) => `component:${i.key}`));
       return out;
     },
     // Stuck, failing and silent runs, from the kernel's job ledger.
@@ -403,9 +421,9 @@ export function checks(d: { kernel: KernelClient; kv: Kv; pause: (routine: strin
     async dispatch() {
       const t = now();
       const w = (await d.kernel.call("GET", "/v1/work")) as { waiting?: { count: number; oldest_at: string | null; oldest_cause: string | null }; last_started_at?: string | null };
-      if (!w.waiting?.count || age(w.waiting.oldest_at, t) <= DOWN_MS || age(w.last_started_at, t) <= DOWN_MS) return [];
+      if (!w.waiting?.count || age(w.waiting.oldest_at, t) <= DOWN_MS || age(w.last_started_at, t) <= DOWN_MS) return (forgetTold("dispatch-stalled", []), []);
       const text = `No agent work has started for ${mins(Math.min(age(w.last_started_at, t), age(w.waiting.oldest_at, t)))} while ${w.waiting.count} wake${w.waiting.count === 1 ? "" : "s"} wait (oldest: ${slug(w.waiting.oldest_cause)}).`;
-      if (!d.openKeys().includes("dispatch:stalled")) await d.notify?.(text, "dispatch-stalled").catch(() => {});
+      await announce("dispatch-stalled", text);
       return [{ key: "stalled", critical: true, reason: text }];
     },
     // A task held for grading (label grading, in review) for over a day: the grader's verdict is overdue.

@@ -219,7 +219,7 @@ test("the same failure on 3 tasks in 30 minutes is one component incident and on
   w.read = ((read) => async (p) => (p === "/api/issues/z" ? task("z") : read(p)))(w.read);
   const sent = [];
   const kv = kvOf();
-  const all = checks({ kernel: w, apps: async () => [], alerts: async () => [], openKeys: () => Object.keys(detectorState(kv).open), notify: async (text, key) => void sent.push([text, key]), gradeFailures: async () => failures, now: () => NOW });
+  const all = checks({ kernel: w, kv, apps: async () => [], alerts: async () => [], openKeys: () => Object.keys(detectorState(kv).open), notify: async (text, key) => void sent.push([text, key]), gradeFailures: async () => failures, now: () => NOW });
   const filed = [];
   await tick(kv, { component: all.component, grade: all.grade, run: all.run }, async (b) => (filed.push(b.incidents), true), async () => {}, new Date(NOW), 0);
   const open = Object.keys(detectorState(kv).open);
@@ -231,7 +231,7 @@ test("the same failure on 3 tasks in 30 minutes is one component incident and on
   await tick(kv, { component: all.component }, async () => true, async () => {}, new Date(NOW), 0);
   assert.equal(sent.length, 1, "told once while it stays open");
   // The notes age out of the window: recovered.
-  const later = checks({ kernel: w, apps: async () => [], alerts: async () => [], openKeys: () => Object.keys(detectorState(kv).open), notify: async () => {}, gradeFailures: async () => failures, now: () => NOW + 40 * 60_000 });
+  const later = checks({ kernel: w, kv, apps: async () => [], alerts: async () => [], openKeys: () => Object.keys(detectorState(kv).open), notify: async () => {}, gradeFailures: async () => failures, now: () => NOW + 40 * 60_000 });
   await tick(kv, { component: later.component }, async () => true, async () => {}, new Date(NOW + 40 * 60_000), 0);
   assert.deepEqual(Object.keys(detectorState(kv).open).filter((k) => k.startsWith("component:")), []);
   assert.equal(detectorState(kv).recovered.length, 1);
@@ -355,7 +355,7 @@ test("dispatch stalled: queued wakes with no job started for 15 minutes tell the
   const run = async (oldest, started) => {
     const sent = [];
     const kernel = { call: async () => ({ waiting: { count: 3, oldest_at: minsAgo(oldest), oldest_cause: "routine:daily-brief" }, last_started_at: minsAgo(started) }) };
-    const c = checks({ kernel, apps: async () => [], alerts: async () => [], openKeys: () => [], notify: async (text) => void sent.push(text), gradeFailures: async () => [], now: () => NOW });
+    const c = checks({ kernel, kv: kvOf(), apps: async () => [], alerts: async () => [], openKeys: () => [], notify: async (text) => void sent.push(text), gradeFailures: async () => [], now: () => NOW });
     return { found: await c.dispatch(), sent };
   };
   const stalled = await run(20, 20);
@@ -399,4 +399,35 @@ test("missed fires: an active routine whose next schedule fire is over 15 minute
   const found = await c.missed();
   assert.deepEqual(found.map((i) => i.key), ["late:daily"]);
   assert.match(found[0].reason, /fire due 20 min ago, no run started/);
+});
+
+test("owner notices are marked told only once sent: a failed critical alert, stall or unreachable notice is tried again; recoveries are trimmed only once filed", async () => {
+  // A critical alert whose notice failed is told by the next webhook.
+  const kv = kvOf(), told = [];
+  const alert = parseAlerts({ alerts: [{ status: "firing", fingerprint: "ab", labels: { alertname: "CoreServiceDown", severity: "critical" }, annotations: {} }] });
+  await receiveAlerts(kv, alert, async () => { throw new Error("kernel down"); });
+  await receiveAlerts(kv, alert, async (t) => void told.push(t));
+  await receiveAlerts(kv, alert, async (t) => void told.push(t));
+  assert.equal(told.length, 1);
+  // A dispatch stall whose notice failed is told on the next check, then once.
+  const k2 = kvOf(), sent = [];
+  let fail = true;
+  const kernel = { call: async () => ({ waiting: { count: 1, oldest_at: minsAgo(20), oldest_cause: "x" }, last_started_at: minsAgo(20) }) };
+  const c = checks({ kernel, kv: k2, apps: async () => [], alerts: async () => [], openKeys: () => ["dispatch:stalled"], notify: async (t) => { if (fail) throw new Error("503"); sent.push(t); }, gradeFailures: async () => [], now: () => NOW });
+  await c.dispatch();
+  fail = false;
+  await c.dispatch();
+  await c.dispatch();
+  assert.equal(sent.length, 1);
+  // The unreachable-Steward notice, and unfiled recoveries beyond 20 are kept.
+  const k3 = kvOf(), msgs = [];
+  const old = new Date(NOW - 2 * 86_400_000).toISOString();
+  k3.set("detector", JSON.stringify({ open: { "x:y": { reason: "r", at: old, fired: false } }, recovered: Array.from({ length: 25 }, (_, n) => ({ key: `r${n}`, reason: "", at: old, fired: false })) }));
+  const down = async () => { throw new Error("503"); };
+  await tick(k3, {}, async () => false, down, new Date(NOW));
+  assert.equal(detectorState(k3).open["x:y"].told, undefined);
+  assert.equal(detectorState(k3).recovered.length, 25);
+  await tick(k3, {}, async () => false, async (t) => void msgs.push(t), new Date(NOW));
+  await tick(k3, {}, async () => false, async (t) => void msgs.push(t), new Date(NOW));
+  assert.equal(msgs.length, 1);
 });
