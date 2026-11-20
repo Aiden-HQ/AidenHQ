@@ -214,7 +214,12 @@ export async function checkAges({ pins, basePins = [], exceptions = [], date = d
     seen.add(key(p));
     const label = `${p.at}: ${p.name}${p.version && p.kind !== "docker" ? ` ${p.version}` : ""}${p.digest ? `@${p.digest.slice(0, 19)}…` : ""}${p.release ? ` (${p.release})` : ""}`;
     try {
-      const { published, via } = await date(p);
+      const { published, via, byRelease } = await date(p);
+      // A release dates a version, not a digest: a new digest under a tag the base already pinned could be a re-push.
+      if (byRelease && basePins.some((b) => b.kind === p.kind && b.name === p.name)) {
+        problems.push(`${label}: could not be dated: only the digest changed on an unchanged tag, and the registry keeps no push record to date a re-push by (${via}); bump to a new tag`);
+        continue;
+      }
       const age = now - Date.parse(published);
       if (age >= 7 * DAY) continue;
       if (exceptionFor(p, exceptions) || ownerApproved(p, exceptions, now)) continue;
