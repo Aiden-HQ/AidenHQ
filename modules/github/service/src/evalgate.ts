@@ -9,13 +9,14 @@
 // What is judged, always a product commit (the reviewer is the product's modules/ai-reviewer and REVIEWER_CODE), by an
 // earlier one:
 // - a product PR that changes the reviewer's code: its head, judged by its base branch's tip (never a commit the PR picks, such
-//   as an old merge base), receipt for its head and that tip. When the base moves without changing what judges (REVIEWER_TREE's
-//   object ids, which hold everything the judged run takes from the judging commit: the base cases and the judge's files), the
-//   eval already asked for the head stands (its receipt verified for its own judge); a change to that content runs it again.
-//   A new head (a rebase, a commit outside REVIEWER_TREE) whose reviewer content and judging content match an eval that passed
-//   is already covered: the same content runs the same eval. A failed eval is never reused (a new head asks again);
+//   as an old merge base), receipt for its head and that tip. When the base moves without changing what judges (the
+//   reviewer's content, reviewerAt: every REVIEWER_CODE file by object id, which holds everything the judged run takes from
+//   the judging commit: the base cases and the judge's files), the eval already asked for the head stands (its receipt
+//   verified for its own judge); a change to that content runs it again. A new head (a rebase) whose reviewer content and
+//   judging content match an eval that passed is already covered: the same list that triggers the eval decides its reuse,
+//   so a head that changes any REVIEWER_CODE file is judged again. A failed eval is never reused (a new head asks again);
 // - the release train's bump of the instance's product pin (`bump`) whose reviewer content differs: the new commit, judged by
-//   the pinned one, receipt for the new commit. A passing receipt for the same reviewer content (REVIEWER_TREE's object ids),
+//   the pinned one, receipt for the new commit. A passing receipt for the same reviewer content (reviewerAt),
 //   from any head, already covers it.
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
@@ -38,10 +39,11 @@ export const REVIEWER_CODE = [
   /^(paths\.yaml|scripts\/paths\.ts|kernel\/src\/paths\.ts)$/,
 ];
 export const touchesReviewer = (files: string[]) => files.some((f) => REVIEWER_CODE.some((r) => r.test(f)));
-/** The reviewer's content in a product commit, by git object id (git ls-tree drops a missing path silently, so a test holds
- *  every entry to an existing path): the same ids are the same reviewer, whatever commit holds them.
- *  It covers all a judging commit gives the eval (the recipe's `judged:` cases and files, all under modules/ai-reviewer). */
-export const REVIEWER_TREE = ["modules/ai-reviewer", "modules/github/service/src/plan.ts", "modules/platform/src/check.ts", "modules/github/checks", "modules/platform/checks", "modules/github/module.yaml", "modules/platform/module.yaml"];
+/** The reviewer's content: a hash of every REVIEWER_CODE file's path and object id in `git ls-tree -r -z` output (NUL
+ *  separated, paths unquoted, so no odd name drops out); an entry it can't parse counts too. The same ids are the same
+ *  reviewer, whatever commit holds them; CI's reviewer-eval job keys its cache the same way. */
+export const reviewerKey = (lsTree: string) =>
+  createHash("sha256").update(lsTree.split("\0").filter((e) => { const tab = e.indexOf("\t"); return tab < 0 ? e.trim() !== "" : touchesReviewer([e.slice(tab + 1)]); }).join("\0")).digest("hex").slice(0, 32);
 /** The policy whose hash a receipt binds: its git tree id at the commit under test. */
 const POLICY = "modules/ai-reviewer/service/security";
 
@@ -74,7 +76,7 @@ export function createEvalGate(d: {
   const s: { reviewers: Record<string, { head: string; at: string }>; covered: Record<string, { head: string; at: string }>; checks: Record<string, { id: string; asks: number; judge: string }> } = (() => { try { return { reviewers: {}, covered: {}, checks: {}, ...JSON.parse(readFileSync(file, "utf8")) }; } catch { return { reviewers: {}, covered: {}, checks: {} }; } })();
   const save = () => { writeFileSync(`${file}.tmp`, JSON.stringify(s)); renameSync(`${file}.tmp`, file); };
 
-  const reviewerAt = async (dir: string, sha: string) => createHash("sha256").update(await d.git(dir, ["ls-tree", sha, "--", ...REVIEWER_TREE])).digest("hex").slice(0, 32);
+  const reviewerAt = async (dir: string, sha: string) => reviewerKey(await d.git(dir, ["-c", "core.quotePath=false", "ls-tree", "-r", "-z", "--full-tree", sha]));
   const files = async (dir: string, from: string, head: string): Promise<string[]> =>
     (await d.git(dir, ["diff", "--no-ext-diff", "--no-textconv", "--name-only", "--no-renames", "-z", from, head])).split("\0").filter(Boolean);
 

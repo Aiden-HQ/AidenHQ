@@ -214,6 +214,7 @@ jobs:
       modules: ${{ steps.tests.outputs.modules }}
       runner: ${{ steps.runner.outputs.runner }}
       eval: ${{ steps.eval.outputs.eval }}
+      eval_key: ${{ steps.eval.outputs.eval_key }}
     env:
       PR_BASE: ${{ github.event.pull_request.base.sha }}
       PUSH_BEFORE: ${{ github.event.before }}
@@ -296,13 +297,23 @@ jobs:
           src="$PR_BASE"
           case "$GITHUB_REF" in refs/heads/merge-train/*) src=$(git rev-parse origin/main) ;; refs/heads/main) src="" ;; esac
           gate="$RUNNER_TEMP/evalgate.ts"
-          if [ -z "$src" ] || ! git show "$src:modules/github/service/src/evalgate.ts" > "$gate" 2>/dev/null; then cp modules/github/service/src/evalgate.ts "$gate"; fi
-          git diff --name-only "$base" "$HEAD_SHA" | node --input-type=module -e '
-            const { touchesReviewer } = await import(process.argv[1]);
-            const files = (await new Response(process.stdin).text()).split("\n").filter(Boolean);
-            const hit = touchesReviewer(files);
+          # a base without it takes main's, never the head's
+          if [ -z "$src" ]; then cp modules/github/service/src/evalgate.ts "$gate"
+          elif ! git show "$src:modules/github/service/src/evalgate.ts" > "$gate" 2>/dev/null; then git show "origin/main:modules/github/service/src/evalgate.ts" > "$gate" || exit 1; fi
+          # The eval's cache key (the reviewer-eval job): every file of the one list (REVIEWER_CODE) by object id, at the head
+          # (the reviewer judged) and at the judging commit (the harness and cases the job takes from it), as evalgate.ts's reviewerAt.
+          # NUL-separated and unquoted, so a path with an odd character can't drop out of either.
+          git -c core.quotePath=false diff --name-only -z "$base" "$HEAD_SHA" > "$RUNNER_TEMP/changed"
+          git -c core.quotePath=false ls-tree -r -z --full-tree "$HEAD_SHA" > "$RUNNER_TEMP/head.tree"
+          git -c core.quotePath=false ls-tree -r -z --full-tree "${src:-$HEAD_SHA}" > "$RUNNER_TEMP/judge.tree"
+          node --input-type=module -e '
+            const { readFileSync, appendFileSync } = await import("node:fs"), { createHash } = await import("node:crypto");
+            const { touchesReviewer } = await import(process.argv[1]), t = process.env.RUNNER_TEMP;
+            const hit = touchesReviewer(readFileSync(`${t}/changed`, "utf8").split("\0").filter(Boolean));
+            // an entry it cannot parse counts (fail closed)
+            const key = (f) => createHash("sha256").update(readFileSync(`${t}/${f}`, "utf8").split("\0").filter((e) => { const tab = e.indexOf("\t"); return tab < 0 ? e.trim() !== "" : touchesReviewer([e.slice(tab + 1)]); }).join("\0")).digest("hex").slice(0, 32);
             console.log(`Touches the AI reviewer: ${hit}`);
-            await import("node:fs").then((fs) => fs.appendFileSync(process.env.GITHUB_OUTPUT, `eval=${hit}\n`));' "$gate"
+            appendFileSync(process.env.GITHUB_OUTPUT, `eval=${hit}\neval_key=${key("head.tree")}-${key("judge.tree")}\n`);' "$gate"
       - id: find
         run: |
           set -f # DOCKERFILES is split on spaces below, never globbed
@@ -453,9 +464,10 @@ jobs:
   # and the checkout keeps no credentials. It is judged as the kernel's check job judges it (module.yaml `judged:`): the
   # harness (the eval script, its case padding and the pass rule: `judged.files`) and every existing case with its
   # expectations come from the PR's base (main for a merge train), the reviewer's code, policy and added cases from the
-  # head, so a PR can't loosen its own test; a push to main runs its own tree. A passing run is cached by that laid-out
-  # content (every file under modules/ai-reviewer, all the eval reads): the script's receipt restored for the same content
-  # prints "already covered" and spends nothing. GitHub scopes a cache entry to the ref that wrote it (a PR's is read by
+  # head, so a PR can't loosen its own test; a push to main runs its own tree. A passing run is cached by checks'
+  # `eval_key`: every REVIEWER_CODE file at the head and at the judging commit, the one list that also triggers the eval, so
+  # a change to any of them (the tiers too) runs it again. The script's receipt restored for that key prints "already
+  # covered" and spends nothing. GitHub scopes a cache entry to the ref that wrote it (a PR's is read by
   # that PR only, main's by every run), so a PR can skip only its own re-runs, never main's or another PR's.
   reviewer-eval:
     needs: checks
@@ -493,7 +505,7 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .eval-state
-          key: reviewer-eval-${{ hashFiles('modules/ai-reviewer/**') }}
+          key: reviewer-eval-${{ needs.checks.outputs.eval_key }}
       - name: Reviewer eval
         working-directory: modules/ai-reviewer
         env:
@@ -505,7 +517,7 @@ jobs:
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .eval-state
-          key: reviewer-eval-${{ hashFiles('modules/ai-reviewer/**') }}
+          key: reviewer-eval-${{ needs.checks.outputs.eval_key }}
 
   # The one result a merge waits for: every job above passed (packages, board and image-scan jobs may
   # be skipped: not a pull request, or the change doesn't touch them). Jobs that

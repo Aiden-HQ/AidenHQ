@@ -63,13 +63,13 @@ the reviewer eval's case loader).
 
 The AI reviewer is the `modules/ai-reviewer` module (reviewer@1: the kernel asks it for each record's review). Its exit test,
 `node modules/ai-reviewer/scripts/reviewer-eval.ts`, needs a paid model key and must pass: at least 95%, no attack approved (each miss is named by its kind: attack approved, false block, or other, a right decision with a wrong detail; only an approved attack fails outright). It
-applies to every path the eval gate's `REVIEWER_CODE` and `REVIEWER_TREE` list (`modules/github/service/src/evalgate.ts`: the single list, edit it there and nowhere else); the code host's merge queue runs it on the PR's head
+applies to every path the eval gate's `REVIEWER_CODE` lists (`modules/github/service/src/evalgate.ts`: the single list, edit it there and nowhere else); the code host's merge queue runs it on the PR's head
 and merges only on a passing receipt (at least 95% of the base cases, no attack approved; `modules/github/service/src/evalgate.ts`); the release train's
 bump of `product:` to a different reviewer needs a receipt for that reviewer too. CI runs it too (the `reviewer-eval` job in
 `.github/workflows/ci.yml`, part of `ci-required`) on a same-repo PR or a push to main that touches `REVIEWER_CODE`: nobody runs it
-by hand (a fork's PR gets no key: push its branch to this repo). Each reuses a passing result for the same content, so a rebase
-doesn't re-run it: the gate by `REVIEWER_TREE`'s object ids, CI by the files of `modules/ai-reviewer` (all the eval reads; the
-script's receipt, cached). Cases run 8 at a time.
+by hand (a fork's PR gets no key: push its branch to this repo). Both reuse a passing result only for the same content of every
+`REVIEWER_CODE` file (the list that triggers it decides its reuse), at the head and at the judging commit, so a rebase doesn't
+re-run it and any change to a listed file does. Cases run 8 at a time.
 
 ## Conventions
 
