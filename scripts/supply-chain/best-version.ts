@@ -337,7 +337,7 @@ export function localExceptions(dir = process.cwd()): Exception[] {
  *   npm, pypi: name + version.  github-action: owner/repo + version (the tag in the pin's comment) + sha, which must be
  *   that tag's commit.  docker: name (repo:tag) + digest.  apt: name + version + source.
  */
-export async function publishedAt(kind: string, name: string, { version, digest, sha, source }: { version?: string; digest?: string; sha?: string; source?: string } = {}): Promise<{ published: string; via: string }> {
+export async function publishedAt(kind: string, name: string, { version, digest, sha, source }: { version?: string; digest?: string; sha?: string; source?: string } = {}): Promise<{ published: string; via: string; byRelease?: boolean }> {
   if (kind === "npm") {
     const t = (await getJson(`https://registry.npmjs.org/${name.replace("/", "%2f")}`)).time?.[version!];
     if (!t) throw new Error(`${name}@${version}: not in the npm registry`);
@@ -378,7 +378,7 @@ export async function publishedAt(kind: string, name: string, { version, digest,
       // a GitHub release of the same version in the same-named repo, dated by GitHub's clock (published_at), which the
       // publisher can't backdate. A re-pushed old tag fails (1)'s digest or pins.mjs's changed-tag rule; the result is
       // marked `byRelease` so pins.mjs can refuse a digest-only change on an unchanged tag.
-      if (host !== "ghcr.io" || ![401, 403].includes(e.status) || !tag) throw e;
+      if (host !== "ghcr.io" || ![401, 403].includes((e as FetchError).status!) || !tag) throw e;
       if ((await ghcrDigest(repo, tag)) !== digest) throw undated(`${name}@${digest}: tag ${tag} no longer resolves to the pinned digest`);
       const rel = await ghcrRelease(repo, tag, e);
       if (rel) return { published: rel.published, via: `GitHub release ${rel.tag} (the Packages API is unreadable)`, byRelease: true };
