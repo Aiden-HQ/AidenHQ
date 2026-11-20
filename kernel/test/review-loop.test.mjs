@@ -10,6 +10,7 @@ import { openRecords } from "../src/records.ts";
 import { createReviews } from "../src/reviews.ts";
 import { createWrites } from "../src/writes.ts";
 import { createReviewLoop } from "../src/review-loop.ts";
+import { createEscalate } from "../src/escalate.ts";
 import { createResolver } from "../src/net.ts";
 import { REVIEW_TRIES } from "../src/tier.ts";
 import { readBody, serve } from "./helpers.mjs";
@@ -20,7 +21,7 @@ const KIND = "acme.post";
 const OK = { decision: "approve", reason: "fine", model: "~acme/model-a" };
 
 /** A kernel's review side over `file` (a restart is a second one on the same db), with a fake reviewer module. */
-async function side(t, file, module, { comments = [], grade } = {}) {
+async function side(t, file, module, { comments = [], grade, escalate } = {}) {
   const records = openRecords(file);
   const reviews = createReviews({ slot: () => ({ module: "ai-reviewer", url: module.url, auth_secret: "reviewer_service_key" }), secret: () => "svc-key", resolver: createResolver(), modelToken: () => "model-token", timeoutMs: 5_000 });
   const ran = [], notices = [];
@@ -34,6 +35,7 @@ async function side(t, file, module, { comments = [], grade } = {}) {
   const task = {
     issue: async (id) => ({ id, title: "Post the release note", description: "Post it in #general.", createdByUserId: "u-owner", status: "in_progress" }),
     comments: async () => comments, me: async () => "u-owner", notify: async (task, text) => void notices.push({ task, text }),
+    ...(escalate ? { escalate: escalate(records) } : {}),
   };
   const loop = createReviewLoop({ records, writes, task, decisions: async () => undefined, product: () => ["acme/aidenhq"], ...(grade ? { grade } : {}) });
   return { records, reviews, writes, loop, ran, notices };
@@ -78,6 +80,31 @@ test("a Tier 1 record is reviewed by the module and then executed; a reviewer's 
   await k.loop.tick();
   assert.equal(mod.seen.length, 2, "no second model call for the same content");
   assert.deepEqual([k.records.get(again.id).state, k.records.get(again.id).review_code], ["rejected", "refused_by_code"]);
+});
+
+test("the rejection that parks a task wakes its delegator once, with the reviewer's last note; a request refused as parked after it wakes nobody again", async (t) => {
+  const mod = await reviewer(t);
+  const told = [], owner = [];
+  const tasks = { "TASK-1": { id: "TASK-1", identifier: "WOR-1", status: "in_progress", parentId: "TASK-0" }, "TASK-0": { id: "TASK-0", identifier: "WOR-0", status: "blocked" } };
+  const k = await side(t, db(), mod, { escalate: (records) => {
+    const e = createEscalate({ db: records.db, issue: async (id) => tasks[id], agentName: async () => "Kai", notice: (task, body) => told.push({ task, body }), owner: (n) => owner.push(n) });
+    return (task, key, text) => e.delegator(task, key, text);
+  } });
+  for (const [n, note] of ["a", "b", "c"].entries()) {
+    fileRecord(k.records, { args: { note } });
+    const sweep = k.loop.tick();
+    await until(() => mod.seen.length === n + 1);
+    k.reviews.verdict(mod.seen[n].id, mod.seen[n].token, { decision: "reject", reason: `keep the shim out (${note})`, model: "~acme/model-a" });
+    await sweep;
+    assert.equal(told.length, n === 2 ? 1 : 0, `told only at the third rejection (after ${n + 1})`);
+  }
+  assert.equal(told[0].task, "TASK-0", "the delegator: the task's parent, blocked on it");
+  assert.match(told[0].body, /^\*\*WOR-1 is stuck:\*\* the AI reviewer rejected acme\.post on this task 3 times[^]*re-brief it[^]*close it[^]*ask the owner[^]*```\nkeep the shim out \(c\)\n```/);
+  // Filed again: refused as parked by code (no model), and the delegator isn't told twice.
+  const again = fileRecord(k.records, { args: { note: "d" } });
+  await k.loop.tick();
+  assert.match(k.records.get(again.id).review ?? "", /^parked:/);
+  assert.deepEqual([told.length, owner.length, mod.seen.length], [1, 0, 3]);
 });
 
 test("a panel record gets two reviewers; a first reviewer's panel mark sends it back as a panel", async (t) => {

@@ -107,13 +107,16 @@ request open over an hour without merging) or something recovered.
     agent; Aiden resumes the routine once it is fixed. Never pause or resume one yourself.
   - `missed:<id>:<schedule>`: a routine's next fire is over 15 minutes overdue and no run started, so Paperclip's scheduler is
     not firing. When several are open at once, say so in one line in the digest and ask the owner to check Paperclip.
-- **A reviewer-rejection loop** (`loop:<task>:<branch>`): the AI reviewer rejected the same branch three times in six hours,
-  and the kernel has parked it. Read the task's cards and the reviewer's notes (`task_approvals`, `task_comments`). Post one
-  summary on the task: the rejection codes, what the reviewer asks, and whether that contradicts the task or a test. Wake the
-  agent that owns the task once with those notes and one concrete way forward, and send the delegator the same summary. When
-  the reviewer and the task disagree, or the work is the same after the wake, ask the owner (below) with a recommended
-  default: split the task, narrow the diff to the files the reviewer names, or close and re-scope. The reviewer's decision
-  stands, and a waiver is the owner's to give.
+- **A parked branch nobody moved** (`loop:<task>:<branch>`): the AI reviewer rejected the same branch three times, the
+  kernel parked it and woke the task's delegator (or told the owner when nobody delegated it), and six hours later nothing
+  was filed on the task. Read the task's cards and the reviewer's notes (`task_approvals`, `task_comments`) and the
+  delegator's task. Ask the owner (below) with a recommended default: re-brief it with what the reviewer needs, narrow the
+  diff to the files the reviewer names, or close and re-scope. The reviewer's decision stands, and a waiver is the owner's
+  to give.
+- **A judgement left unanswered** (`judgement:<task>`: a task waiting on its owner's answer over a day, or its delegator's
+  over six hours; its agent asked with `task_wait` `for`): read the task's last comments for the question. The delegator's:
+  wake that agent once with the question and the default you recommend. The owner's: put it in the owner digest in one line
+  with the task and the question, once.
 - **Repeated failed runs** (`run:<agent>:repeat:<task>`: three runs of one task ended the same way within half an hour):
   read the failed jobs' last lines. A transient cause (a lost session, a restarted box) gets one bounded wake with the
   evidence and a fresh start; a cause that repeats is a finding for the owner of the fix (the Engineer for a

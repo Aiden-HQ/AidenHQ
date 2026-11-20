@@ -133,24 +133,39 @@ const task = (id, o = {}) => ({ id, identifier: `WOR-${id.toUpperCase()}`, title
 const detect = (w, now = NOW) => checks({ kernel: w, apps: async (p) => (p === "/internal/open-prs" ? { prs: w.prs } : []), alerts: async () => [], openKeys: () => [], now: () => now });
 const minsAgo = (m) => new Date(NOW - m * 60_000).toISOString();
 
-test("three judged rejections of one branch in 6h is a loop; code's refusals, other branches and the bake-off project are not; an agent-set title or label exempts nothing", async () => {
-  const rej = (task, target, at, judged = true) => ({ task, identifier: null, judged, targets: [target], decided_at: at });
+test("a branch parked by three judged rejections that nothing moved for 6h is a loop; a re-filed or closed task, code's refusals, other branches and the bake-off project are not", async () => {
+  const rej = (task, target, at, judged = true) => ({ task, identifier: null, judged, targets: [target], decided_at: at, created_at: at });
   const w = world({
-    tasks: { t1: task("t1"), t2: task("t2"), t3: task("t3", { identifier: "BAK-3" }), t4: task("t4", { title: "TEST: loop", labels: [{ name: "chat" }] }) },
+    tasks: { t1: task("t1"), t2: task("t2"), t3: task("t3", { identifier: "BAK-3" }), t4: task("t4", { title: "TEST: loop", labels: [{ name: "chat" }] }), t5: task("t5"), t6: task("t6", { status: "done" }), t7: task("t7") },
     records: [
-      ...[1, 2, 3].map((h) => rej("t1", "acme/app|feat-a", ago(h))), // a loop
-      ...[1, 2].map((h) => rej("t2", "acme/app|feat-a", ago(h))), rej("t2", "acme/app|feat-b", ago(1)), rej("t2", "acme/app|feat-a", ago(1), false), // 2 + 1 + stale_head: none reaches 3
-      ...[1, 2, 3].map((h) => rej("t3", "acme/app|x", ago(h))), ...[1, 2, 3].map((h) => rej("t4", "acme/app|x", ago(h))),
-      ...[7, 8, 9].map((h) => rej("t2", "acme/app|old", ago(h))), // older than the window
+      ...[7, 8, 9].map((h) => rej("t1", "acme/app|feat-a", ago(h))), // parked 7h ago, nothing since
+      ...[7, 8].map((h) => rej("t2", "acme/app|feat-a", ago(h))), rej("t2", "acme/app|feat-b", ago(7)), rej("t2", "acme/app|feat-a", ago(7), false), // 2 + 1 + stale_head: none reaches 3
+      ...[7, 8, 9].map((h) => rej("t3", "acme/app|x", ago(h))), ...[7, 8, 9].map((h) => rej("t4", "acme/app|x", ago(h))),
+      ...[7, 8, 9].map((h) => rej("t5", "acme/app|y", ago(h))), { task: "t5", identifier: null, judged: false, targets: ["acme/app|z"], decided_at: null, created_at: ago(2) }, // re-briefed: a new request since
+      ...[7, 8, 9].map((h) => rej("t6", "acme/app|y", ago(h))), // closed
+      ...[1, 2, 3].map((h) => rej("t7", "acme/app|y", ago(h))), // parked only an hour ago: its delegator has it
     ],
   });
   const found = await detect(w).loop();
   assert.deepEqual(found.map((i) => i.key), ["t1:acme-app-feat-a", "t4:acme-app-x"]);
-  assert.match(found[0].reason, /WOR-T1: the AI reviewer rejected acme-app-feat-a 3 times/);
+  assert.match(found[0].reason, /WOR-T1: the AI reviewer rejected acme-app-feat-a 3 times \(parked at 3\) and nothing has moved for 420 min/);
+});
+
+test("a task waiting on the owner's answer over a day, or its delegator's over 6 hours, is raised", async () => {
+  const items = [
+    { task: "a", identifier: "WOR-A", reason: "owner_wait", reason_since: minsAgo(25 * 60) },
+    { task: "b", identifier: "WOR-B", reason: "owner_wait", reason_since: minsAgo(20 * 60) },
+    { task: "c", identifier: "WOR-C", reason: "delegator_wait", reason_since: minsAgo(7 * 60) },
+    { task: "d", identifier: "WOR-D", reason: "agent_wait", reason_since: minsAgo(50 * 60) },
+  ];
+  const c = checks({ kernel: { read: async () => ({}), call: async () => ({ items }) }, apps: async () => [], alerts: async () => [], openKeys: () => [], now: () => NOW });
+  const found = await c.judgement();
+  assert.deepEqual(found.map((i) => i.key), ["a", "c"]);
+  assert.match(found[0].reason, /WOR-A has waited 1500 min on its owner's answer/);
 });
 
 test("a failed task lookup still raises the incident with the raw id, and is not remembered: the next run reads it again", async () => {
-  const records = [1, 2, 3].map((h) => ({ task: "t9", identifier: null, judged: true, targets: ["acme/app|b"], decided_at: ago(h) }));
+  const records = [7, 8, 9].map((h) => ({ task: "t9", identifier: null, judged: true, targets: ["acme/app|b"], decided_at: ago(h) }));
   let down = true;
   const w = { read: async () => { if (down) throw new Error("control plane down"); return task("t9", { identifier: "BAK-9" }); }, call: async () => ({ records }) };
   const c = detect(w);

@@ -165,10 +165,14 @@ interface JobRow { id: string; agent: string; task?: string; routine?: string | 
 interface RoutineRow { id: string; title: string; status: string; triggers?: { kind?: string; enabled?: boolean; label?: string | null; nextRunAt?: string | null }[] }
 interface IssueRow { id: string; identifier?: string; title?: string; status: string; priority?: string; updatedAt: string; assigneeUserId?: string | null; assigneeAgentId?: string | null; originKind?: string | null; labels?: ({ name?: string } | null)[] }
 interface CommentRow { authorType?: string; body?: string; createdAt: string; deletedAt?: string | null }
-interface WorkRecord { task: string | null; identifier: string | null; judged?: boolean; targets?: string[]; decided_at: string | null }
+interface WorkRecord { task: string | null; identifier: string | null; judged?: boolean; targets?: string[]; decided_at: string | null; created_at?: string }
 
 const HOUR_MS = 60 * MIN;
-const REJECT_LOOP = { n: 3, windowMs: 6 * HOUR_MS }; // n = the kernel's MAX_REJECTS (tier.ts): the point where a branch is parked
+// n = the kernel's MAX_REJECTS (tier.ts): the point where a branch is parked and the kernel wakes the task's delegator
+// (escalate.ts); a park nothing moved for quietMs (no new request on the task) is the Steward's.
+const REJECT_LOOP = { n: 3, windowMs: 7 * DAY_MS, quietMs: 6 * HOUR_MS };
+// A task waiting on a judgement (task_wait `for`, kernel idle.ts) longer than this: the owner's answer, or its delegator's.
+const JUDGEMENT_WAIT_MS: Record<string, number> = { owner_wait: 24 * HOUR_MS, delegator_wait: 6 * HOUR_MS };
 const REPEAT_FAILS = { n: 3, spanMs: 30 * MIN, freshMs: HOUR_MS }; // same category on one task within spanMs, the newest within freshMs
 const IDLE_MS = 120 * MIN;
 const IDLE_WAKE_CAP = 3; // the kernel's idle sweep stops waking a task's agent after this many a day (kernel/src/idle.ts IDLE_CAP) // an orphaned item (nothing running, filed or waiting on it) idle this long is stuck
@@ -224,16 +228,19 @@ export function groupFailures(hits: { component: string; error: string; id: stri
 }
 
 /** Records the AI reviewer judged and rejected, grouped by (task, branch or PR): the ones at the kernel's retry bound within the window. */
-export function rejectLoops(records: WorkRecord[], t: number): { task: string; identifier: string | null; target: string; n: number }[] {
-  const by = new Map<string, { task: string; identifier: string | null; target: string; n: number }>();
+export function rejectLoops(records: WorkRecord[], t: number): { task: string; identifier: string | null; target: string; n: number; last: string }[] {
+  const by = new Map<string, { task: string; identifier: string | null; target: string; n: number; last: string }>();
   for (const r of records) {
-    if (!r.judged || !r.task || age(r.decided_at, t) > REJECT_LOOP.windowMs) continue;
+    if (!r.judged || !r.task || !r.decided_at || age(r.decided_at, t) > REJECT_LOOP.windowMs) continue;
     for (const target of r.targets?.length ? r.targets : [r.task]) {
       const k = `${r.task}\u0000${target}`;
-      by.set(k, { task: r.task, identifier: r.identifier, target, n: (by.get(k)?.n ?? 0) + 1 });
+      const was = by.get(k);
+      by.set(k, { task: r.task, identifier: r.identifier, target, n: (was?.n ?? 0) + 1, last: was && was.last > r.decided_at ? was.last : r.decided_at });
     }
   }
-  return [...by.values()].filter((x) => x.n >= REJECT_LOOP.n);
+  // Parked, and nothing filed on the task since its last rejection for quietMs: nobody re-briefed it or closed it.
+  const moved = (x: { task: string; last: string }) => records.some((r) => r.task === x.task && String(r.created_at ?? "") > x.last);
+  return [...by.values()].filter((x) => x.n >= REJECT_LOOP.n && age(x.last, t) > REJECT_LOOP.quietMs && !moved(x));
 }
 
 /** The owner's own typed words on a chat task (not a relayed notice, the kernel's, or deleted). */
@@ -466,17 +473,26 @@ export function checks(d: { kernel: KernelClient; kv: Kv; pause: (routine: strin
       for (const name of slowerStages(cur!, prev!)) d.log?.("flow.would_file", { stage: name });
       return [];
     },
-    // The AI reviewer rejecting the same branch again and again (the kernel parks it at 3; nobody hears of the park).
+    // A parked branch (the kernel parks it at 3 rejections and wakes the delegator) that nothing moved for 6 hours.
     async loop() {
       const t = now();
       const r = (await d.kernel.call("GET", `/v1/work?since=${encodeURIComponent(new Date(t - REJECT_LOOP.windowMs).toISOString())}`)) as { records?: WorkRecord[] };
       const out: Incident[] = [];
-      const live = lookup();
+      const read = taskReads();
       for (const l of rejectLoops(r.records ?? [], t)) {
-        const task = await live(l.task);
-        if (task) out.push({ key: `${l.task}:${slug(l.target)}`, reason: `task ${task}: the AI reviewer rejected ${slug(l.target)} ${l.n} times in 6 hours (parked at ${REJECT_LOOP.n})` });
+        const task = await read(l.task);
+        if (task && (exempt(task) || ["done", "cancelled"].includes(task.status))) continue;
+        out.push({ key: `${l.task}:${slug(l.target)}`, reason: `task ${task?.identifier ?? l.task}: the AI reviewer rejected ${slug(l.target)} ${l.n} times (parked at ${REJECT_LOOP.n}) and nothing has moved for ${mins(age(l.last, t))}` });
       }
       return out;
+    },
+    // A task waiting on a judgement past its limit (a day on the owner, 6 hours on its delegator): the ask went unanswered.
+    async judgement() {
+      const t = now();
+      const items = ((await d.kernel.call("GET", "/v1/flow?idle=1")).items ?? []) as { task: string; identifier: string | null; reason: string; reason_since: string; note?: string }[];
+      return items
+        .filter((i) => JUDGEMENT_WAIT_MS[i.reason] !== undefined && age(i.reason_since, t) > JUDGEMENT_WAIT_MS[i.reason]! && !exempt({ identifier: i.identifier, originKind: null }))
+        .map((i) => ({ key: i.task, reason: `task ${i.identifier ?? i.task} has waited ${mins(age(i.reason_since, t))} on its ${i.reason === "owner_wait" ? "owner's" : "delegator's"} answer` }));
     },
     // An owner message on a chat task with no reply: the front door is silent.
     async front() {

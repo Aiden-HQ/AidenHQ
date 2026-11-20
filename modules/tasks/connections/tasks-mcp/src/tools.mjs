@@ -1243,21 +1243,24 @@ const TOOLS = {
   },
   task_wait: {
     description:
-      "Record that the task this run is working on waits on something, so it isn't left idle: why, and until when (`until`, an ISO time at most 7 days ahead) or for what (`on`, the event, e.g. \"PR #12 merged\", \"the owner's answer\"; then you're woken in 24 hours to check). You're woken by the event when it comes as a comment on the task, and otherwise at `until`. End your turn after it. Only ever touches the current run's task.",
+      "Record that the task this run is working on waits on something, so it isn't left idle: why, and until when (`until`, an ISO time at most 7 days ahead) or for what (`on`, the event, e.g. \"PR #12 merged\"; then you're woken in 24 hours to check). When it waits on a judgement only someone else can make (what the brief means, what to do about a reviewer's repeated rejection, a choice that is theirs), set `for` to who makes it, `delegator` (whoever handed you the task) or `owner`, and `question` to what they decide, with the context they need: they get your question, and their answer comes back to this task and wakes you. You're woken by the event when it comes as a comment on the task, and otherwise at `until`. End your turn after it. Only ever touches the current run's task.",
     inputSchema: {
       type: "object",
       properties: {
         reason: { type: "string", description: "what the task waits on and why, in one line" },
         until: { type: "string", description: "ISO-8601 time to resume at, at most 7 days ahead" },
         on: { type: "string", description: "the event it waits for" },
+        for: { type: "string", enum: ["delegator", "owner"], description: "who makes the judgement it waits on: they are asked `question`" },
+        question: { type: "string", description: "with `for`: the decision you need from them, with the context they need to make it" },
       },
       required: ["reason"],
       additionalProperties: false,
     },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    run: async ({ reason, until, on }) => {
+    run: async ({ reason, until, on, for: who, question }) => {
       if (!CURRENT()) throw new Error("no current task");
-      return kernelWait({ reason: String(reason), ...(until ? { until: String(until) } : {}), ...(on ? { on: String(on) } : {}) });
+      if (who && !String(question ?? "").trim()) throw new Error("`for` asks them a `question`: say what you need them to decide");
+      return kernelWait({ reason: String(reason), ...(until ? { until: String(until) } : {}), ...(on ? { on: String(on) } : {}), ...(who ? { for: String(who), question: String(question) } : {}) });
     },
   },
   task_finish: {

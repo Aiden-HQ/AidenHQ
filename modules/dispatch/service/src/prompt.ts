@@ -48,7 +48,9 @@ const REPLY = (user: string) => `## Your reply
 
 Your final message is your reply to ${user} on the task, in plain language and as long as it needs to be, no longer. Say what you did or found and what's left, with the evidence that matters. If what ${user} wrote needs no answer ("thanks", "👍"), your final message is exactly ${NO_REPLY}.
 
-Every turn leaves the task in one of four states: finished (\`task_finish\` once its work is done and landed), blocked on what it needs (named), waiting on something named (\`task_wait\`: until a time or an event), or with its work still going (a sub-task, an approval or a run you started). A task left open with none of these wakes you again.`;
+Every turn leaves the task in one of four states: finished (\`task_finish\` once its work is done and landed), blocked on what it needs (named), waiting on something named (\`task_wait\`: until a time or an event), or with its work still going (a sub-task, an approval or a run you started). A task left open with none of these wakes you again.
+
+When the next step is a judgement your brief doesn't settle (what it means, what to do about a reviewer that keeps rejecting the change, a choice that is someone else's), ask whoever makes it: \`task_wait\` with \`for\` (\`delegator\`, who handed you the task, or \`owner\` for a call only they make) and \`question\` (the decision you need and the context for it). Their answer comes back to this task and wakes you.`;
 
 const parentSection = (user: string, parent?: Issue) => (parent ? `## The task this is part of (untrusted context)
 

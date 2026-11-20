@@ -3,7 +3,10 @@
 // - wait(): an agent's own wait on its job's task (POST /v1/wait, the tasks connection's task_wait): a `work.waiting` fact
 //   (subject wait:<task>, reason agent_wait, its words as `note`), so flow names the wait instead of `orphaned`, and a wake
 //   at `until` (at most 7 days; 24 hours when it names only an event), so the task resumes by itself. The task's next job
-//   ends the wait (flow, and admission drops its timed wake); a new wait replaces the last.
+//   ends the wait (flow, and admission drops its timed wake); a new wait replaces the last. A wait `for` the owner or the
+//   delegator is a judgement the task can't make itself: its reason is owner_wait or delegator_wait (the steward raises one
+//   left too long), it lasts until the answer wakes the task (7 days unless `until`), and its `question` goes to them once
+//   (escalate.ts): the owner as a decision message headed by the task, the delegator as a notice on its own task.
 // - sweep(): every few minutes, each open (todo, in_progress) task an agent holds (not a chat: it waits on the owner's next
 //   message, which reopens it) that flow reports `orphaned` for 15 minutes
 //   gets one wake for its holder, cause `idle` (dispatch words it), once each time it becomes orphaned (the key is when: a wake
@@ -17,6 +20,7 @@ import type { Facts } from "./facts.ts";
 import type { Flow } from "./flow.ts";
 import { fail } from "./proxy.ts";
 import type { Wakes } from "./wakes.ts";
+import type { Escalate } from "./escalate.ts";
 
 export const IDLE_AFTER_MS = 15 * 60_000;
 export const IDLE_CAP = 3;
@@ -26,8 +30,10 @@ const MAX_WAIT = 7 * DAY;
 const MIN_WAIT = 15 * 60_000;
 const SWEPT = new Set(["todo", "in_progress"]);
 
-export function createIdle({ facts, flow, wakes, owner, team = () => false, now = Date.now, log = () => {} }: {
+export function createIdle({ facts, flow, wakes, owner, team = () => false, escalate, now = Date.now, log = () => {} }: {
   facts?: Facts; flow: Pick<Flow, "idleNow">; wakes: Pick<Wakes, "open" | "polls">; owner: Api;
+  /** Where a wait's question goes (escalate.ts); none: the wait is recorded and nobody is asked. */
+  escalate?: Pick<Escalate, "ask">;
   /** Whether an agent id is a team record (its tasks go to a member; it never runs). */
   team?: (agent: string) => boolean;
   now?: () => number; log?: Log;
@@ -36,11 +42,18 @@ export function createIdle({ facts, flow, wakes, owner, team = () => false, now 
   /** Chat tasks seen (a label that stays): never read again. */
   const chats = new Set<string>();
   return {
-    /** The job's own task waits: `reason` (its words), `until` (ISO) and/or `on` (the event it waits for). */
-    async wait(caller: { agent: string; key: string; task: string }, b: { reason?: unknown; until?: unknown; on?: unknown; task?: unknown }) {
+    /**
+     * The job's own task waits: `reason` (its words), `until` (ISO) and/or `on` (the event it waits for); `for` owner or
+     * delegator, with the `question` they answer (notify's own decision wait sends `for: owner` alone: it asked already).
+     */
+    async wait(caller: { agent: string; key: string; task: string }, b: { reason?: unknown; until?: unknown; on?: unknown; task?: unknown; for?: unknown; question?: unknown }) {
       const reason = typeof b.reason === "string" ? b.reason.trim().slice(0, 300) : "";
       const on = typeof b.on === "string" ? b.on.trim().slice(0, 200) : "";
-      if (!reason) throw fail(400, "bad_request", "send {reason, until?, on?}: why the task waits");
+      const who = b.for === undefined ? undefined : b.for === "owner" || b.for === "delegator" ? b.for : null;
+      const question = typeof b.question === "string" ? b.question.trim().slice(0, 1500) : "";
+      if (!reason) throw fail(400, "bad_request", "send {reason, until?, on?, for?, question?}: why the task waits");
+      if (who === null) throw fail(400, "bad_request", "for is owner or delegator");
+      if (who === "delegator" && !question) throw fail(400, "bad_request", "a wait for the delegator sends the question it answers");
       if (b.task !== undefined) {
         // A task that isn't the job's own is refused; a read that fails now (a 5xx, a timeout) is a 503 to try again, never a refusal.
         const r = await owner("GET", `/api/issues/${encodeURIComponent(String(b.task).slice(0, 100))}`).catch((e: Error) => { throw fail(503, "unavailable", `reading the task: ${e.message}`); });
@@ -53,9 +66,12 @@ export function createIdle({ facts, flow, wakes, owner, team = () => false, now 
         until = typeof b.until === "string" ? Date.parse(b.until) : NaN;
         if (!Number.isFinite(until) || until < t + MIN_WAIT) throw fail(400, "bad_request", "until is an ISO time at least 15 minutes ahead");
         if (until > t + MAX_WAIT) throw fail(400, "bad_request", "until is at most 7 days ahead: wait again then if it still waits");
-      } else if (on) until = t + DAY;
+      } else if (who) until = t + MAX_WAIT;
+      else if (on) until = t + DAY;
       else throw fail(400, "bad_request", "send until (an ISO time, at most 7 days ahead) or on (the event it waits for)");
-      fact({ type: "work.waiting", subject: `wait:${caller.task}`, version: `wait@${t}`, at: iso(t), actor: `agent:${caller.key}`, task: caller.task, data: { reason: "agent_wait", note: reason, until: iso(until), ...(on ? { on } : {}) } });
+      // Asked first: a question that can't be sent now fails the call (the agent tries again), never a silent wait.
+      if (who && question && escalate) await escalate.ask(caller.task, who, question);
+      fact({ type: "work.waiting", subject: `wait:${caller.task}`, version: `wait@${t}`, at: iso(t), actor: `agent:${caller.key}`, task: caller.task, data: { reason: who ? `${who}_wait` : "agent_wait", note: reason, until: iso(until), ...(on ? { on } : {}), ...(question ? { question } : {}) } });
       wakes.open({ key: `wait:${caller.task}:${until}`, task: caller.task, agent: caller.agent, cause: `wait: ${reason}`.slice(0, 200), at: until, replaces: `wait:${caller.task}:`, author: `agent:${caller.key}` });
       log("task wait", { task: caller.task, agent: caller.key, until: iso(until) });
       return { waiting: true, until: iso(until) };
