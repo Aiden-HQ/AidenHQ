@@ -19,12 +19,12 @@ async function setup(t, { enabled = true, localSnapshot } = {}) {
   const url = `http://127.0.0.1:${host.address().port}`;
   const op = createCodehost({
     grants: () => [
-      { module: "github", fetch: { repos: ["*/*"] }, read: { repos: ["*/*"] }, comment: { repos: ["*/*"] }, commit: { repos: ["@instance"], paths: ["apps.yaml"] }, runner: { orgs: ["acme"] }, snapshot: { repos: ["*/*"] } },
+      { module: "github", fetch: { repos: ["*/*"] }, read: { repos: ["*/*"] }, comment: { repos: ["*/*"] }, commit: { repos: ["@instance"], paths: ["apps.yaml"] }, runner: { orgs: ["acme", "@agents", "@orgs"] }, snapshot: { repos: ["*/*"] } },
       { module: "apps-platform", fetch: { repos: ["acme-agents/x"] }, clone: { repos: ["acme-agents/*"] } },
       { module: "registry", fetch: { repos: ["@instance", "@product"] }, snapshot: { repos: ["@agents/*"] } },
       { module: "reviewer", snapshot: { repos: ["local/*", "acme-agents/*"] } },
     ],
-    repos: () => ({ instance: "acme-agents/aidenhq-instance", agentsOrgs: ["acme-agents"] }),
+    repos: () => ({ instance: "acme-agents/aidenhq-instance", agentsOrgs: ["acme-agents"], orgs: ["partner"] }),
     kind: () => (enabled ? { module: "github", floor: 0, tools: [], executor: { url: `${url}/aidenhq/v1/executor`, auth_secret: "codehost_github_token" } } : undefined),
     secret: (n) => (n === "codehost_github_token" ? "ch-key" : ""),
     resolver: { resolve: async (u) => ({ host: "127.0.0.1", port: Number(new URL(u).port), path: new URL(u).pathname }), forget: () => {} },
@@ -115,6 +115,9 @@ test("runner_token: only the granted orgs, and only the org goes to the code hos
   assert.equal(seen.length, 0);
   assert.equal((await call("github", "runner_token", { org: "acme", extra: 1 })).status, 200);
   assert.deepEqual(seen.at(-1), { path: "/ops/runner_token", auth: "Bearer ch-key", body: { module: "github", org: "acme" } });
+  assert.equal((await call("github", "runner_token", { org: "acme-agents" })).status, 200, "@agents resolves to the fleet org");
+  assert.equal((await call("github", "runner_token", { org: "Partner" })).status, 200, "@orgs resolves to github_orgs");
+  assert.equal((await call("github", "runner_token", { org: "stranger" })).status, 403, "an org outside the grant");
 });
 
 // A running job's `aidenhq clone`: the kernel's own bundle op, under the dispatcher's clone grant; never a module's to call.

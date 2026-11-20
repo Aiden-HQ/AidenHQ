@@ -56,10 +56,11 @@ services:
       pids: 2048
 # The runner registration token's source (ops/ci-runner.sh → ops/ci-runner-token.ts on the host): the kernel's
 # POST /v1/codehost/runner_token with this module's own ci_token, run as the owner inside the github module (the owner's
-# sign-in needs admin:org while this module is on). Any org it reaches: the fleet org's runners and another org's
-# (@<org>-<n> units); the runner gets only the one-hour registration token. (The grant takes org names or *, not @agents.)
+# sign-in needs admin:org while this module is on). The fleet org's runners and the product repo's org's or another listed
+# org's (@<org>-<n> units: a runner for any other org needs it in github_orgs, the owner's call); the runner gets only the
+# one-hour registration token.
 codehost:
-  runner: { orgs: ["*"] }
+  runner: { orgs: ["@agents", "@product", "@orgs"] }
 settings:
   # Repositories outside the fleet org whose jobs the runners take (space-separated owner/name), from a push to the
   # default branch or a same-repo PR only (runner/job-started.ts). That org's runner group

@@ -79,6 +79,13 @@ export function resolveRepo(p: string, r: KernelRepos): string[] {
   if (p.startsWith("@agents/")) return (r.agentsOrgs ?? []).filter((o) => ORG.test(o)).map((o) => `${o}/${p.slice("@agents/".length)}`);
   return [p];
 }
+/** A runner grant's org entry with its @ name resolved (the grant as written may also be a plain org name or `*`). */
+export function resolveOrg(p: string, r: KernelRepos): string[] {
+  if (p === "@agents") return r.agentsOrgs ?? [];
+  if (p === "@product") return r.product && PLAIN.test(r.product) ? [r.product.split("/")[0]!] : [];
+  if (p === "@orgs") return r.orgs ?? [];
+  return [p];
+}
 /** The kernel's repos; `agentsOrgs`: one per enabled code host (the GitHub fleet org, `local` with codehost-local). */
 export type KernelRepos = { instance?: string; product?: string; agentsOrgs?: string[]; orgs?: string[]; maintained?: string[] };
 
@@ -158,7 +165,7 @@ export function createCodehost({ grants, repos, kind, secret, resolver, workspac
     if (op === "runner_token") {
       const org = String(b?.org ?? "");
       if (!ORG.test(org)) throw fail(400, `${org.slice(0, 100)} is not an org`);
-      if (!g?.runner?.orgs.some((o) => o === "*" || same(o, org))) throw fail(403, `${module} has no runner_token grant on ${org}`);
+      if (!g?.runner?.orgs.some((o) => o === "*" || resolveOrg(o, repos()).some((x) => same(x, org)))) throw fail(403, `${module} has no runner_token grant on ${org}`);
       if (!k?.executor) throw fail(404, NO_HOST);
       return forward(k, op, { module, org });
     }
