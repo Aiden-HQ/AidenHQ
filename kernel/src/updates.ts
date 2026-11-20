@@ -40,7 +40,7 @@ import { isDeepStrictEqual } from "node:util";
 import type { DatabaseSync } from "node:sqlite";
 import YAML, { Scalar } from "yaml";
 import { pinOwner } from "../sdk/src/pin-owner.ts";
-import { resolveRelease } from "../../scripts/compiler/release.ts";
+import { ciRefusal, ciRunsUrl, resolveRelease } from "../../scripts/compiler/release.ts";
 import { OFFICIAL, repoAt, type Fetch, type Where } from "../../scripts/compiler/sources.ts";
 
 type Dict = Record<string, unknown>;
@@ -282,13 +282,9 @@ export async function verifyMain(d: Pick<Deps, "base" | "fetch" | "download">, t
   const kernelRepo = onMain(d, at(d, KERNEL, sha), "commit");
   if (sha === product) throw new Refused(`this server already runs ${sha.slice(0, 12)}`);
   if (!isAncestor(kernelRepo, product, sha)) throw new Refused(`${sha.slice(0, 12)} doesn't descend from the running product ${product.slice(0, 12)}: downgrades are refused`);
-  // Product CI on exactly this commit, as the distro's release.yml requires of a release's kernel: the newest ci-required run.
-  const runs = await d.download(`https://api.github.com/repos/${KERNEL}/commits/${sha}/check-runs?check_name=ci-required&per_page=20`);
-  const list = (isMap(runs) && Array.isArray(runs.check_runs) ? runs.check_runs : []).filter((r): r is Dict => isMap(r) && isMap(r.app) && r.app.slug === "github-actions");
-  const last = list.sort((a, b) => String(a.started_at).localeCompare(String(b.started_at))).at(-1);
-  if (!last) throw new Refused(`${sha.slice(0, 12)} has no ci-required check: CI hasn't run on it`);
-  if (last.status !== "completed") throw new Refused(`CI is still running on ${sha.slice(0, 12)}: ask again when it is green`);
-  if (last.conclusion !== "success") throw new Refused(`CI failed on ${sha.slice(0, 12)} (ci-required: ${plain(last.conclusion, 40)})`);
+  // Product CI on exactly this commit (release.ts ciRefusal, the one judge; every apply asks it again).
+  const ci = ciRefusal(await d.download(ciRunsUrl(sha)), sha);
+  if (ci) throw new Refused(ci);
   const doc = YAML.parseDocument(text);
   doc.set("product", sha);
   const next = doc.toString({ lineWidth: 0 });
@@ -296,7 +292,7 @@ export async function verifyMain(d: Pick<Deps, "base" | "fetch" | "download">, t
   const distro = repoAt(at(d, DISTRO, cur.sha), d.fetch);
   try {
     const file = JSON.parse(execFileSync("git", ["--git-dir", distro, "show", `${cur.sha}:releases/${cur.name}.json`], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }));
-    resolveRelease(file, (YAML.parse(next) ?? {}) as Dict, (k, p) => isAncestor(kernelRepo, k, p));
+    resolveRelease(file, (YAML.parse(next) ?? {}) as Dict, (k, p) => { if (!isAncestor(kernelRepo, k, p)) throw new Error("it doesn't descend from the release's kernel"); });
   } catch (e) { throw new Refused((e as Error).message); }
   return { sha, from: cur.name, compare: `${GITHUB}/${KERNEL}/compare/${product.slice(0, 12)}...${sha.slice(0, 12)}`, text: next };
 }

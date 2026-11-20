@@ -40,7 +40,7 @@ now, by asking their own Claude (Claude Code on the board's owner MCP), not by e
 - **Tier.** Whatever the apply planner gives the move: `release:` doesn't change, so it is a forward product pin
   (`pin-forward`, Tier 1, the AI reviewer) plus the module authority diff, as on any instance. Nothing in the planner changes.
 - **release.ts.** `product:` must be the release's kernel, or descend from it on the kernel repo's main (checked in the
-  official repository, a constant). Anything else is refused as before.
+  official repository, a constant) with its `ci-required` green. Anything else is refused as before.
 - **Build vs pull (one decision).** `readRelease` returns the release's prebuilt images only when `product:` is the
   release's kernel. Otherwise it returns none, so compile leaves every image to build from the checkout (compose and the
   computers), as a hand-pinned instance does.
@@ -54,9 +54,9 @@ now, by asking their own Claude (Claude Code on the board's owner MCP), not by e
 - Fixed source: the kernel repository is the constant; `to` is `main` or a 40-char sha, nothing else.
 - Verified before anything runs, twice (the precheck, then the check that prepares), and the planner checks the product
   move is forward along product main again.
-- Residual: release.ts now resolves a release install whose `product:` moved forward along main, so another filer's
-  forward pin (an agent's `kernel.apply`) resolves too; it gets the same `pin-forward` tier as on a hand-pinned instance.
-  The CI check is the updater's alone.
+- CI green always (owner, 2026-11-20): release.ts resolves a `product:` ahead of the release's kernel only with that commit's
+  `ci-required` green (one judge, `ciRefusal`, shared with the updater); an unreadable status refuses. Another filer's forward
+  pin on a release install meets the same checks.
 
 ## New installs
 

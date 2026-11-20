@@ -57,11 +57,12 @@ is `kernel/src/updates.ts`.
   the reason when it refuses: `main` is the kernel repo's head (`git ls-remote`); the commit is on the kernel repo's main,
   descends from the running `product:` and isn't it; its `ci-required` check run (GitHub Actions', the newest by start)
   completed with success on exactly that commit, as the distro's release.yml requires of a release's kernel (still running,
-  failed and missing each say so); and the pinned instance resolves (release.ts). Then it is asked for as Update now asks for
+  failed and missing each say so; `ciRefusal` in release.ts is the one judge); and the pinned instance resolves (release.ts). Then it is asked for as Update now asks for
   a release: the check verifies it again on the instance's main, puts it on the product checkout's origin main, commits
   `product: <sha>` with `release:` unchanged on `update/main-<sha12>`, and the kernel files, follows and reports it with the
   same notices. The planner tiers it as any forward product move (`pin-forward`, Tier 1, plus the module authority diff):
-  `release:` doesn't move. With `product:` after the release's kernel, release.ts resolves the release with no images, so
+  `release:` doesn't move. With `product:` after the release's kernel, release.ts resolves the release only while that
+  commit's CI is green (checked again on every apply) and with no images, so
   apply builds every image from the checkout. The install still follows its release: a newer release whose kernel is behind
   the running product is skipped without a notice, and the next one whose kernel descends from it installs as usual.
   Leaving releases for good is the hand-pinned mode: [docs/operations/hand-pinned.md](../operations/hand-pinned.md).
@@ -77,7 +78,7 @@ Hard gates, from day one (no observe mode):
   can't redirect them: a `kernel_repo` other than the official one, or an image outside `ghcr.io/aiden-hq/`, is refused.
 - **Verified before anything runs.** The tag's commit is on the distro's `main`; the release file resolves against the instance
   it would pin (`scripts/compiler/release.ts`: 40-char shas, image digests, `product:` = kernel, or after it on the official
-  kernel repository's main, then with no prebuilt images); the kernel commit is on the
+  kernel repository's main with `ci-required` green on that commit, then with no prebuilt images); the kernel commit is on the
   repository's `main` (GitHub serves fork and PR commits through the upstream URL, so a sha alone proves nothing). Apply reads
   the file again at the pinned distro sha and checks out exactly those shas; images are pulled by digest.
 - **Graduated.** Published and not a pre-release, in discovery and in `verify`, except the host's candidate.
@@ -89,9 +90,12 @@ Hard gates, from day one (no observe mode):
   without the release workflow passing, or a hand-edited asset, is refused and the owner told once.
 - **A main commit** has the same fixed repository, main ancestry and no-downgrade checks, and product CI's own `ci-required`
   result on that commit in place of the release's tested stamp. It is an admin's request through the owner MCP, verified
-  before anything is prepared and again by the planner (forward along product main). release.ts accepts any `product:` after
-  the release's kernel on main, so another filer's forward pin on a release install resolves too, at the same `pin-forward`
-  tier as on a hand-pinned instance; the CI check is the updater's alone.
+  before anything is prepared and again by the planner (forward along product main). **CI green always** (owner,
+  2026-11-20): release.ts, which every apply, the planner's module diff and compile run, resolves a `product:` after the
+  release's kernel only when it is on the official kernel repository's main, descends from the kernel, and its newest GitHub
+  Actions `ci-required` run on exactly that commit completed with success (`ciRefusal`, the one judge the updater uses too).
+  A red, missing or running check refuses the apply, and so does a CI status that can't be read (GitHub's API down): nothing
+  runs unverified. So another filer's forward pin on a release install (an agent's `kernel.apply`) gets the same checks.
 - **Authority.** Auto-updates on is the owner's standing authority, so the updater's verified move is the AI reviewer's; any other
   release move, and every release with it off, is the owner's tap below full autonomy, the AI panel's at full
   (docs/design/approvals.md, Autonomy). Update now is an admin's tap on the kernel's page. No agent can file a release. New

@@ -73,8 +73,21 @@ test("a product after the release's kernel on the kernel repo's main resolves wi
   execFileSync("git", ["clone", "-q", "--bare", dist, `${dist}.git`]);
   const pin = (product) => ({ product, release: { name: "2026.11", source: { source: "url", url: `${dist}.git` }, sha: distSha } });
   const f = () => ({ cacheDir: mkdtempSync(join(tmpdir(), "sources-")) });
-  assert.equal(Object.keys(readRelease(pin(k1), f(), kernelUrl).images).length, 1, "the release's own kernel: its images are pulled");
-  assert.deepEqual(readRelease(pin(k2), f(), kernelUrl), { name: "2026.11", kernel: k1, images: {} }, "a later main commit: built from source");
-  assert.throws(() => readRelease(pin(off), f(), kernelUrl), /neither the release's kernel/, "off main");
-  assert.throws(() => readRelease(pin(C), f(), kernelUrl), /neither the release's kernel/, "unknown commit");
+  // GitHub's check runs, by commit: product CI's ci-required, GitHub Actions'.
+  const run = (conclusion) => ({ name: "ci-required", status: "completed", conclusion, started_at: "2026-11-20T10:00:00Z", app: { slug: "github-actions" } });
+  const ci = { [k2]: [run("success")], [off]: [run("success")] };
+  const runs = (sha) => ({ check_runs: ci[sha] ?? [] });
+  const read = (product) => readRelease(pin(product), f(), kernelUrl, runs);
+  assert.equal(Object.keys(read(k1).images).length, 1, "the release's own kernel: its images are pulled");
+  assert.deepEqual(read(k2), { name: "2026.11", kernel: k1, images: {} }, "a later main commit with CI green: built from source");
+  assert.throws(() => read(off), /isn't on the kernel repository's main/, "off main");
+  assert.throws(() => read(C), /isn't on the kernel repository's main/, "unknown commit");
+  // CI must be green on that exact commit: red, missing, still running or unreadable each refuse the apply.
+  ci[k2] = [run("failure")];
+  assert.throws(() => read(k2), /CI failed on/);
+  ci[k2] = [];
+  assert.throws(() => read(k2), /has no ci-required check/);
+  ci[k2] = [{ ...run(null), status: "in_progress" }];
+  assert.throws(() => read(k2), /CI is still running/);
+  assert.throws(() => readRelease(pin(k2), f(), kernelUrl, () => { throw new Error("api.github.com answered 503"); }), /CI status can't be read \(api\.github\.com answered 503\)/);
 });
