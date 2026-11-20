@@ -4,9 +4,10 @@
 // it names exists, no free-form YAML), written as exactly the files its kind allows (instance.yaml through the yaml Document
 // API, so comments stay; handbook texts verbatim) by the instance repo's code host (apply.ts hostApply: codehost-local for a
 // `local/…` instance, codehost-github otherwise), and filed as a kernel.apply on the task. A change saved in the owner's
-// signed-in board session (the board forwards its session token; the kernel checks it here) is his own approval: the record
-// is decided as his account at filing (via "save") and its outcome notice closes the task (writes.ts outcomeOf). Any other filing (the MCP's change_settings,
-// an agent's asAgent) is tiered on its merits by the kernel's planner like any instance change. No model writes the commit.
+// signed-in board session, or through his MCP client's own sign-in (the board forwards the credential; the kernel checks it
+// here), is his own approval: the record is decided as his account at filing (via "save") and its outcome notice closes the
+// task (writes.ts outcomeOf). Any other filing (an agent's asAgent) is tiered on its merits by the kernel's planner like any
+// instance change. No model writes the commit.
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { readFileSync } from "node:fs";
@@ -15,6 +16,15 @@ import YAML from "yaml";
 import { urlSettingProblem } from "../../services/shared/url-setting.ts";
 import type { Write } from "./apply.ts";
 import type { Requester } from "./records.ts";
+
+/** What the board forwards of the owner's sign-in: his board session token, or his MCP client's bearer and the resource it was minted for. */
+export type Credential = { board: string } | { mcp: { token: string; resource: string } };
+const isCredential = (c: unknown): c is Credential => {
+  const v = c as { board?: unknown; mcp?: { token?: unknown; resource?: unknown } } | null;
+  if (!v || typeof v !== "object") return false;
+  if (typeof v.board === "string") return v.board.length <= 200;
+  return typeof v.mcp?.token === "string" && v.mcp.token.length <= 200 && typeof v.mcp.resource === "string" && v.mcp.resource.length <= 300;
+};
 
 export class Refused extends Error { status = 422; }
 /** The label the board files a settings task with (services/board/src/board.ts SETTINGS_LABEL). */
@@ -347,8 +357,8 @@ export type SettingsDeps = {
   write: (w: Write) => Promise<{ sha: string }>;
   /** Files the kernel.apply on the task (writes.fileKernel with SETTINGS, or the agent that asked); `owner`: decided as that account at filing. */
   file: (args: { repo: string; branch: string; sha: string }, task: string, requester?: Requester, owner?: { account: string; via: string }) => Promise<{ id: string; tier: number; state: string }>;
-  /** The board session token's ready admin account (every admin is an owner), or undefined: an ended, unknown or non-admin session. */
-  sessionAccount: (token: string) => Promise<string | undefined>;
+  /** The ready admin account (every admin is an owner) behind a credential, or undefined: an ended, revoked, unknown or non-admin one. */
+  credentialAccount: (c: Credential) => Promise<string | undefined>;
   log?: (msg: string, f?: Record<string, unknown>) => void;
 };
 
@@ -360,12 +370,12 @@ export type SettingsDeps = {
 export function createSettingsChanges(d: SettingsDeps) {
   const sources = (): Sources => ({ compiled: YAML.parse(readFileSync(join(d.configDir, "paperclip.yaml"), "utf8")) ?? {}, catalog: JSON.parse(readFileSync(join(d.configDir, "modules.json"), "utf8")) });
   const count = (changes: unknown) => ((Array.isArray(changes) && changes.length && changes.length <= 10) || refuse("changes: one to ten typed changes"));
-  async function apply(taskId: unknown, changes: unknown, session?: unknown): Promise<{ record: string; tier: number; state: string; sha: string }> {
+  async function apply(taskId: unknown, changes: unknown, credential?: unknown): Promise<{ record: string; tier: number; state: string; sha: string }> {
     if (typeof taskId !== "string" || !/^[0-9a-f-]{36}$/.test(taskId)) refuse("task is the settings task's id");
     count(changes);
-    // The owner's signed-in board session, checked here: its account decides the record. A session that doesn't check out is
+    // The owner's sign-in (board session or MCP client), checked here: its account decides the record. A credential that doesn't check out is
     // refused, never quietly put to the reviewer instead.
-    const account = session === undefined ? undefined : (typeof session === "string" && session.length <= 200 && (await d.sessionAccount(session))) || refuse("that board session has ended: sign in again");
+    const account = credential === undefined ? undefined : (isCredential(credential) && (await d.credentialAccount(credential))) || refuse("that sign-in has ended: sign in again");
     // The owner's own task, held by no agent: the board filed it a moment ago with the owner's key.
     const issue = (await d.task(taskId as string)) ?? refuse("no such task");
     const owner = await d.owner();

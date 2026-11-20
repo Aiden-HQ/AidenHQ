@@ -25,7 +25,7 @@ import { AccountError, forwardedProto, type AccountSession, type KernelAuth } fr
 import { INLINE_TYPES, MAX_UPLOAD_BODY, UploadSchema, decode, fileType, fileViews, isPdf, pdfText, safeName } from "./files.js";
 import { ControlSchema, CostsSchema, RelaySchema, Refused, holdsRole, appsApi, assertMeantTask, boundedFleetStatus, fleetControl, fleetCosts, fleetStatus, relayableWords, requireAgent, requireFleetRole } from "./fleet.js";
 import { metricsText } from "./monitoring.js";
-import { kernelRecords, type Approval, type Records } from "./records.js";
+import { kernelRecords, type Approval, type Records, type SettingsCredential } from "./records.js";
 import { gatherFacts, scorecard, statusSummary } from "./fleet-stats.js";
 import type { AuthorKind, Flow } from "./flow.js";
 import { moduleAuthority, moduleStates } from "./modules.js";
@@ -212,7 +212,7 @@ export function createApp(opts: AppOptions): Server {
    * Outside a session (the internal listener, timers, the board's own notices) nothing is recorded.
    */
   /** `req`: a signed-in browser request (routeApi), whose board session a settings change forwards to the kernel. */
-  const perRequest = new AsyncLocalStorage<{ session: BoardSession | null; via?: "mcp"; req?: IncomingMessage }>();
+  const perRequest = new AsyncLocalStorage<{ session: BoardSession | null; via?: "mcp"; req?: IncomingMessage; credential?: SettingsCredential }>();
   const pc = new Proxy(boardPc, {
     get(client, prop) {
       const value = Reflect.get(client, prop, client);
@@ -403,13 +403,17 @@ export function createApp(opts: AppOptions): Server {
 
   /**
    * A typed settings change (docs/design/settings-changes.md): checked, filed as the owner's own task (kept here by task id for
-   * the page), and handed to the kernel with the signed-in board session it was saved in, so the kernel decides it as that
-   * account. The MCP's change_settings has no board session: its change is tiered and reviewed.
+   * the page), and handed to the kernel with the owner's sign-in it was made in (the board session of a save, the OAuth bearer
+   * of the MCP's change_settings), so the kernel checks it and decides the change as that account.
    */
   async function fileSettingsChange(changes: Change[]) {
-    const req = perRequest.getStore()?.req;
-    const session = req && opts.accounts ? (await opts.accounts.sessionOf(req))?.token : undefined;
-    if (req && opts.accounts && !session) throw new HttpError(401, "sign in");
+    const ctx0 = perRequest.getStore();
+    let credential = ctx0?.credential;
+    if (!credential && ctx0?.req && opts.accounts) {
+      const board = (await opts.accounts.sessionOf(ctx0.req))?.token;
+      if (!board) throw new HttpError(401, "sign in");
+      credential = { board };
+    }
     const { compiled, catalog } = readSources(settingsFiles());
     try {
       for (const ch of changes) checkChange(ch, compiled, catalog);
@@ -432,7 +436,7 @@ export function createApp(opts: AppOptions): Server {
     // The kernel checks it again, has the instance repo's code host write exactly its files and files the apply on the task.
     let filed: { record: string; tier: number; state: string };
     try {
-      filed = await records.settingsChange(issue.id, changes, session);
+      filed = await records.settingsChange(issue.id, changes, credential);
     } catch (e) {
       await pc.addComment(issue.id, `**Not written:** ${String((e as Error).message).slice(0, 500)}`).catch(() => {});
       await pc.updateIssue(issue.id, { status: "cancelled" }).catch(() => {});
@@ -2273,16 +2277,16 @@ export function createApp(opts: AppOptions): Server {
    * A board route run in process (the MCP's tools): the same table and the same request context `routeApi` installs, as the
    * MCP's session, so a write carries the account's byline exactly as a tap does. Never HTTP to itself.
    */
-  async function callRoute(method: string, path: string, body: unknown, session: BoardSession, req: IncomingMessage) {
+  async function callRoute(method: string, path: string, body: unknown, session: BoardSession, req: IncomingMessage, credential: SettingsCredential) {
     const url = new URL(path, "http://board");
     const route = routes.find((r) => r.method === method && r.path.test(url.pathname));
     if (!route) throw new HttpError(404, `no such route ${method} ${url.pathname}`);
-    return perRequest.run({ session, via: "mcp" }, () => route.handle(url.pathname.match(route.path)!, body, url, req));
+    return perRequest.run({ session, via: "mcp", credential }, () => route.handle(url.pathname.match(route.path)!, body, url, req));
   }
   const mcpAuth = opts.accounts && opts.adminUrl ? createMcpAuth(opts.accounts, opts.adminUrl) : undefined;
   /** The same dispatch with the bearer's own session (checked per request), for the tools' `callRoute`. */
-  const sessions = new WeakMap<IncomingMessage, BoardSession>();
-  const mcp = mcpAuth && createMcp({ callRoute: (m, p, b, req) => callRoute(m, p, b, sessions.get(req)!, req), decide: (t, r, c) => opts.accounts!.mcpDecide(t, r, c), update: (t, r, to) => opts.accounts!.mcpUpdate(t, r, to), flows: () => opts.setupFlows?.flows ?? [] });
+  const sessions = new WeakMap<IncomingMessage, { session: BoardSession; credential: SettingsCredential }>();
+  const mcp = mcpAuth && createMcp({ callRoute: (m, p, b, req) => { const s = sessions.get(req)!; return callRoute(m, p, b, s.session, req, s.credential); }, decide: (t, r, c) => opts.accounts!.mcpDecide(t, r, c), update: (t, r, to) => opts.accounts!.mcpUpdate(t, r, to), flows: () => opts.setupFlows?.flows ?? [] });
 
   /** /mcp and its discovery document: bearer only (never a cookie), before the board's own request checks. */
   async function handleMcp(req: IncomingMessage, res: ServerResponse, url: URL) {
@@ -2313,7 +2317,7 @@ export function createApp(opts: AppOptions): Server {
       return undefined;
     });
     if (!who) return unauthorized("invalid_token", "kernel refused", code);
-    sessions.set(req, who.session);
+    sessions.set(req, { session: who.session, credential: { mcp: { token, resource: auth.resource() } } });
     await mcp!(req, res, body, { token, resource: auth.resource(), origin: auth.board });
   }
 

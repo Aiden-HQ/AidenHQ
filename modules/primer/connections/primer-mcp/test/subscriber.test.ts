@@ -1,15 +1,17 @@
 // End to end against a fake Primer event stream and a fake kernel: a comment wakes its document's task once (a replay after a
-// restart doesn't); a second comment wakes the same task again (dispatch puts it into the live run); the connector's own reply
-// never wakes; a version covers the comments pending when it started; a closed task gets one Revisions task, reused.
+// restart doesn't); a burst is one wake until the agent's next reply or version; the connector's own reply never wakes; a
+// version covers the comments pending when it started; people's live edits wake like a comment; notices say whether the owner
+// wrote; a closed task gets one Revisions task, reused.
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { createSubscriber, type Kernel } from "../src/subscriber.js";
+import { COALESCE_MS, createSubscriber, type Kernel } from "../src/subscriber.js";
 
 const T1 = "11111111-1111-4111-8111-111111111111";
 
-function harness(closed = new Set<string>(), gone = new Set<string>()) {
+function harness(closed = new Set<string>(), gone = new Set<string>(), me: Record<string, unknown> | null = { id: "u_agents", kind: "agent", viaUserId: "u_owner" }) {
+  const clock = { t: 1_000_000 };
   const wakes: { task: string; text: string }[] = [], filed: any[] = [];
   const owners: Record<string, { task: string; agent: string }> = { d1: { task: T1, agent: "agent-1" } };
   const kernel: Kernel = {
@@ -25,6 +27,7 @@ function harness(closed = new Set<string>(), gone = new Set<string>()) {
   const seen: (string | null)[] = [];
   const fetch = (async (url: string, init: RequestInit) => {
     if (String(url).endsWith("/api/documents/d1")) return new Response(JSON.stringify({ title: "Q3 plan" }));
+    if (String(url).endsWith("/api/me")) return me ? new Response(JSON.stringify(me)) : new Response("{}", { status: 503 });
     const h = new Headers(init.headers);
     seen.push(h.get("last-event-id"));
     const from = Number(h.get("last-event-id") ?? 0);
@@ -38,11 +41,14 @@ function harness(closed = new Set<string>(), gone = new Set<string>()) {
     streams.at(-1)?.ctl.enqueue(new TextEncoder().encode(e));
   };
   const stateFile = join(mkdtempSync(join(tmpdir(), "primer-sub-")), "comments.json");
-  const make = () => createSubscriber({ primer: "http://primer-server:3000", headers: async () => ({ authorization: "Bearer primer_pat_test" }), kernel, owner: (d) => owners[d], recordOwner: (d, o) => void (owners[d] = o), stateFile, log: () => {}, fetch });
-  return { wakes, filed, emit, streams, seen, make, owners };
+  const make = () => createSubscriber({ primer: "http://primer-server:3000", headers: async () => ({ authorization: "Bearer primer_pat_test" }), kernel, owner: (d) => owners[d], recordOwner: (d, o) => void (owners[d] = o), stateFile, log: () => {}, fetch, now: () => clock.t });
+  const later = () => void (clock.t += COALESCE_MS + 1);
+  return { wakes, filed, emit, streams, seen, make, owners, later };
 }
 const settle = () => new Promise((r) => setTimeout(r, 20));
-const c = (comment_id: string, thread_id = "th1", document_id = "d1") => ({ document_id, version_id: "v1", thread_id, comment_id, author_id: "proxy:u_someone" });
+const c = (comment_id: string, thread_id = "th1", document_id = "d1", author_id = "u_someone") => ({ document_id, version_id: "v1", thread_id, comment_id, author_id });
+const edit = (version_id: string, author_id: string, automatic = true) => ({ type: "primer.version.published", data: { document_id: "d1", version_id, number: 3, author_id, ...(automatic ? { automatic } : {}) } });
+const woken = (h: { wakes: { text: string }[] }) => h.wakes.map((w) => w.text.match(/comment (\S+);/)?.[1] ?? w.text.slice(0, 40));
 
 describe("the comment wake loop", () => {
   it("wakes the publishing task once per comment, with ids only; a replay after a restart wakes nobody", async () => {
@@ -57,7 +63,9 @@ describe("the comment wake loop", () => {
     expect(h.wakes[0]!.task).toBe(T1);
     expect(h.wakes[0]!.text).toMatch(/document d1 \(thread th1, comment c1;/);
     expect(h.wakes[0]!.text).not.toMatch(/section 2/);
-    // Ten seconds later, while the agent's run is live: a second notice on the same task (dispatch delivers it into that run).
+    expect(h.wakes[0]!.text).toMatch(/^New comment by someone else on/);
+    // Later, while the agent's run is live: a second notice on the same task (dispatch delivers it into that run).
+    h.later();
     h.emit(c("c2", "th2"));
     await settle();
     expect(h.wakes.map((w) => w.task)).toEqual([T1, T1]);
@@ -84,26 +92,73 @@ describe("the comment wake loop", () => {
     answer({ text: '{"thread_id":"th1","comment_id":"c-own"}' });
     await replying;
     await held;
-    expect(h.wakes.map((w) => w.text.match(/comment (\S+);/)?.[1])).toEqual(["c1"]);
+    expect(woken(h)).toEqual(["c1"]);
     // A read through the same path (the reply executor's primer_get_comments) names people's comments: never taken as ours.
     await s.guard("primer_get_comments", { documentId: "d1" }, async () => ({ text: '{"comments":[{"thread_id":"th5","comment_id":"c5"}]}' }));
+    expect(s.state().docs.d1!.pending).toEqual(["c1"]);
+    // The reply above was on d1's thread th1: it addressed c1 and ended the burst, so the next comment wakes again.
+    await s.guard("primer_reply_to_thread", { thread_id: "th1", body: "Done in v2" }, async () => ({ text: '{"thread_id":"th1","comment_id":"c-own2"}' }), "d1");
+    expect(s.state().docs.d1!.pending).toEqual([]);
     await s.handle({ id: "2b", type: "primer.comment.created", data: c("c5", "th5") });
-    expect(h.wakes.map((w) => w.text.match(/comment (\S+);/)?.[1])).toEqual(["c1", "c5"]);
-    // A version: c1 was pending when it started; c3 arrives mid-publish and waits for the next batch.
+    expect(woken(h)).toEqual(["c1", "c5"]);
+    // A version: c5 was pending when it started; c3 arrives mid-publish and waits for the next batch (its event is held until
+    // the write returns, which ended the burst, so it wakes).
     let done!: (v: { text: string }) => void;
-    const publishing = s.guard("primer_add_version", { documentId: "d1", content: "v2" }, () => new Promise<{ text: string }>((r) => (done = r)));
+    const publishing = s.guard("primer_add_version", { documentId: "d1", content: "v2", baseVersionNumber: 1 }, () => new Promise<{ text: string }>((r) => (done = r)));
     const mid = s.handle({ id: "3", type: "primer.comment.created", data: c("c3", "th3") });
-    done({ text: '{"versionId":"v2"}' });
+    done({ text: '{"versionId":"v2","versionNumber":2}' });
     await publishing;
     await mid;
-    expect(s.state().docs.d1!.batches).toEqual([{ version: "v2", comments: ["c1", "c5"] }]);
+    expect(s.state().docs.d1!.batches).toEqual([{ version: "v2", comments: ["c5"] }]);
     expect(s.state().docs.d1!.pending).toEqual(["c3"]);
+    expect(woken(h)).toEqual(["c1", "c5", "c3"]);
+    // A version Primer didn't make (every change became a suggestion) addresses nothing.
+    await s.guard("primer_add_version", { documentId: "d1", content: "v3" }, async () => ({ text: '{"url":"https://p/d/d1","reconciliation":{}}' }));
+    expect(s.state().docs.d1!.pending).toEqual(["c3"]);
+  });
+
+  it("coalesces a burst of comments into one wake, but never the owner's; people's live edits wake, the connector's own never", async () => {
+    const h = harness();
+    const s = h.make();
+    await s.handle({ id: "1", type: "primer.comment.created", data: c("c1") });
+    await s.handle({ id: "2", type: "primer.comment.created", data: c("c2", "th2") });
+    await s.handle({ id: "3", type: "primer.comment.created", data: c("c3", "th3", "d1", "u_owner") });
+    expect(woken(h)).toEqual(["c1", "c3"]);
+    expect(h.wakes[1]!.text).toMatch(/^New comment by the owner on Primer document d1 \(thread th3, comment c3; 3 comments/);
+    // c4 lands in th1 inside the burst. The agent answers th1: the burst ends, and c2 and c4, which arrived unwoken (the agent
+    // may not have read them), stay pending and get one wake.
+    await s.handle({ id: "3b", type: "primer.comment.created", data: c("c4") });
+    await s.guard("primer_reply_to_thread", { thread_id: "th1", body: "Done" }, async () => ({ text: "{}" }), "d1");
+    expect(s.state().docs.d1!.pending).toEqual(["c2", "c3", "c4"]);
+    expect(h.wakes).toHaveLength(3);
+    expect(h.wakes[2]!.text).toMatch(/^More happened on Primer document d1 since your last wake \(3 comments not yet addressed/);
+    // Checkpoints: the connector's own live edit and a non-automatic version (its own publish) wake nobody; a person's does.
+    h.later();
+    await s.handle({ id: "4", ...edit("v4", "u_agents") });
+    await s.handle({ id: "5", ...edit("v5", "u_someone", false) });
+    expect(h.wakes).toHaveLength(3);
+    await s.handle({ id: "6", ...edit("v6", "u_owner") });
+    expect(h.wakes.at(-1)!.text).toBe("Primer document d1 was edited directly by the owner (checkpoint version v6). Read it and handle it as the primer-docs skill says.");
+    await s.handle({ id: "6", ...edit("v6", "u_owner") }); // a replay
+    expect(h.wakes).toHaveLength(4);
+  });
+
+  it("marks every author as someone else when the connector has no owner of its own to compare with", async () => {
+    const h = harness(new Set(), new Set(), null);
+    const s = h.make();
+    await s.handle({ id: "1", type: "primer.comment.created", data: c("c1", "th1", "d1", "u_owner") });
+    expect(h.wakes[0]!.text).toMatch(/^New comment by someone else/);
+    // Connect mode: the connector is the owner's own account, which every agent's Primer tools also write as.
+    const hosted = harness(new Set(), new Set(), { id: "u_owner", kind: "person", viaUserId: null });
+    await hosted.make().handle({ id: "1", type: "primer.comment.created", data: c("c1", "th1", "d1", "u_owner") });
+    expect(hosted.wakes[0]!.text).toMatch(/^New comment by someone else/);
   });
 
   it("files one Revisions task for a closed publishing task and reuses it", async () => {
     const h = harness(new Set([T1]));
     const s = h.make();
     await s.handle({ id: "1", type: "primer.comment.created", data: c("c1") });
+    h.later();
     await s.handle({ id: "2", type: "primer.comment.created", data: c("c2", "th2") });
     expect(h.filed).toHaveLength(1);
     expect(h.filed[0]).toMatchObject({ title: "Revisions: Q3 plan", agent: "agent-1", source: "primer-revisions:d1:0", parent: T1 });

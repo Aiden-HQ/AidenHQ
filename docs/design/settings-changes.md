@@ -36,8 +36,9 @@ compiler's is the last gate.
    `day_usd` to `teams.<t>.caps`.
 2. The board files it as the owner's own task (label `settings-change`, held by the owner, so no agent wakes; the board's
    columns leave it out, the Settings and Code review pages show it), keeps the typed change in its own store by task id (for
-   the page) and hands it to the kernel: `POST /v1/settings/change` with the board's key, `{ task, changes, session }`, where
-   `session` is the board session token of the signed-in request it was saved in. Nothing reads the change from the task's
+   the page) and hands it to the kernel: `POST /v1/settings/change` with the board's key, `{ task, changes, credential }`, where
+   `credential` is the owner's sign-in it was made in: `{ board: <session token> }` of the signed-in request of a save, or
+   `{ mcp: { token, resource } }` of the OAuth bearer of his MCP client. Nothing reads the change from the task's
    text. If the kernel refuses it, the board cancels the task with the reason.
 3. The kernel (`kernel/src/settings-change.ts`) checks the task (the owner's, made and held by no agent, open) and each change
    again: known kinds only, no unknown fields, schema-checked values, what it names exists, no free-form YAML. It computes
@@ -47,12 +48,13 @@ compiler's is the last gate.
 4. The instance repo's code host writes those files as one commit on main's head on `settings/<task>` (`kernel/src/apply.ts`
    `hostApply`: codehost-local for a `local/...` instance, the github module otherwise), only while main is still the commit
    the kernel read.
-5. The kernel files that commit as a `kernel.apply` on the task (requester `SETTINGS`). With a `session` the kernel checks it
-   (`uiSession("board", token)`: a ready admin; every admin is an owner; a session that doesn't check out is refused) and the
+5. The kernel files that commit as a `kernel.apply` on the task (requester `SETTINGS`). With a `credential` (the board session a
+   save was made in, or the OAuth bearer of the owner's MCP client that called `change_settings` with the resource it was
+   minted for) the kernel checks it (`uiSession("board", token)` or `mcpGrant(token, resource)`: a ready admin; every admin is
+   an owner; a credential that doesn't check out is refused) and the
    record is the owner's (computeTier `ownerSave`: Tier 2, no reviewer), decided at filing as `account:<id>` via `save`. The
-   planner still reads it (`kernel/src/apply-tier.ts`), so its refusals hold and its merit tier stays on the record. Without a
-   session (the board MCP's `change_settings`, whose client is usually an AI) it is tiered on its merits like any instance
-   change: a setting is the panel's; spend caps, quiet start and any loosening of `autonomy` are the owner's; an agent's
+   planner still reads it (`kernel/src/apply-tier.ts`), so its refusals hold and its merit tier stays on the record. An agent's own
+   change (`asAgent`) carries none and is tiered on its merits like any instance change: a setting is the panel's; spend caps, quiet start and any loosening of `autonomy` are the owner's; an agent's
    `model` / `reasoning_effort` / `heartbeat` override is Tier 1; a module turned on or off or a grants override is judged by
    the module authority diff. On approval the code host lands exactly that commit and the apply runs `ops/apply-config.sh`.
 6. An owner-decided change's task closes with its apply's outcome notice (one delivery, `notices.ts` `close`: done when it

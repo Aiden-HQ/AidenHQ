@@ -2,7 +2,7 @@
 // records. Read-only; the loops that use them are started at the big switch, where the runner's copies are deleted.
 //   GET /v1/work?task=<id>   a task's (by id or identifier) jobs (newest first) and the write records filed on it (with their args, outcome text and, for an apply, the card's diff, which the grading module reads PRs and applies from): { status, busy, jobs, records }
 //   GET /v1/work             what runs now, what waits (queued) and what ended lately, and the agents failing (their last 3 jobs all failed or were lost): the board's Agents view;
-//                            `capacity` (the computers the kernel admits jobs into), `waiting` (claimable wakes: count, oldest_at, oldest_cause) and `last_started_at` say whether dispatch has stalled
+//                            `capacity` (the computers the kernel admits jobs into), `waiting` (wakes that could start now, not an agent's with a live job: count, oldest_at, oldest_cause) and `last_started_at` say whether dispatch has stalled
 //   GET /v1/work?job=<id>    one job for its run page (the board): state, times, why it ended, its engine's token count, its
 //                            progress (said, plan, steps) and final words (both the agent's: untrusted)
 //   GET /v1/work?record=<id> one write record (an approval card) by its id: state, kind, task, identifier, ok and outcome text
@@ -122,11 +122,13 @@ export function createWork({ db, records, generationsFile = "", capacity = () =>
       const ends = new Map<string, Record<string, any>[]>();
       for (const r of rows("SELECT agent, state, final FROM jobs WHERE state NOT IN ('admitted', 'running') ORDER BY ended DESC LIMIT 2000")) ends.set(r.agent, [...(ends.get(r.agent) ?? []), r].slice(0, 3));
       const failing = [...ends].filter(([, l]) => l.length === 3 && l.every((r) => r.state === "failed" || r.state === "lost")).map(([agent, l]) => ({ agent, error: String(l[0]!.final || l[0]!.state).split("\n")[0]!.slice(0, 200) }));
-      // Dispatch health (the Fleet Steward's stall check): the wakes a module could claim now (open and due, or claimed with the lease
-      // expired and no job), and when a job last started.
+      // Dispatch health (the Fleet Steward's stall check): the wakes that could start now (open and due, or claimed with the lease
+      // expired and no job) of an agent with no live job (an agent already working has its queue held by max_parallel, which is not a
+      // stall), and when a job last started.
       const t = now;
-      const w = rows("SELECT COUNT(*) AS n, MIN(at) AS oldest FROM wakes WHERE (state = 'open' AND (until IS NULL OR until <= ?)) OR (state = 'claimed' AND job IS NULL AND until <= ?)", t, t)[0]!;
-      const oldest = w.n ? rows("SELECT cause FROM wakes WHERE ((state = 'open' AND (until IS NULL OR until <= ?)) OR (state = 'claimed' AND job IS NULL AND until <= ?)) AND at = ? LIMIT 1", t, t, w.oldest)[0] : undefined;
+      const startable = "((state = 'open' AND (until IS NULL OR until <= ?)) OR (state = 'claimed' AND job IS NULL AND until <= ?)) AND agent NOT IN (SELECT agent FROM jobs WHERE state IN ('admitted', 'running'))";
+      const w = rows(`SELECT COUNT(*) AS n, MIN(at) AS oldest FROM wakes WHERE ${startable}`, t, t)[0]!;
+      const oldest = w.n ? rows(`SELECT cause FROM wakes WHERE ${startable} AND at = ? LIMIT 1`, t, t, w.oldest)[0] : undefined;
       const waiting = { count: w.n as number, oldest_at: w.n ? iso(w.oldest) : null, oldest_cause: (oldest?.cause as string | undefined) ?? null };
       const last_started_at = iso(rows("SELECT MAX(at) AS at FROM jobs WHERE state != 'admitted'")[0]?.at);
       return { running, capacity: capacity(), recent, latest: [...latest].slice(0, 200).map(([task, state]) => ({ task, state })), queued, parked, failing, waiting, last_started_at };

@@ -1359,7 +1359,7 @@ const TOOLS: Record<string, Tool> = {
   },
   task_wait: {
     description:
-      "Record that the task this run is working on waits on something, so it isn't left idle: why, and until when (`until`, an ISO time at most 7 days ahead) or for what (`on`, the event, e.g. \"PR #12 merged\"; then you're woken in 24 hours to check). When it waits on a judgement you can't make yourself, even with your handbook, the brief and the advisor (what the brief means, what to do about a reviewer's repeated rejection, a choice that is someone else's), set `for` to who makes it, `delegator` (whoever handed you the task) or `owner`, and `question` to the decision with what another agent needs to settle it: the context, the options and your recommendation. The owner hears it directly only on a task they are talking to you on; otherwise the chief of staff settles it (as it does a delegator question when nobody handed you the task). The answer comes back to this task as a comment and wakes you; the result says who got it (`to`). When your visible reply on the task already asked the owner (a chat with them), add `asked: true`: the kernel records the wait and sends nothing more. You're woken by the event when it comes as a comment on the task, and otherwise at `until`. End your turn after it. Only ever touches the current run's task.",
+      "Record that the task this run is working on waits on something, so it isn't left idle: why, and until when (`until`, an ISO time at most 7 days ahead) or for what (`on`, the event, e.g. \"PR #12 merged\"; then you're woken in 24 hours to check). When it waits on a judgement you can't make yourself, even with your handbook, the brief and the advisor (what the brief means, what to do about a reviewer's repeated rejection, a choice that is someone else's), set `for` to who makes it, `delegator` (whoever handed you the task) or `owner`, and `question` to the decision with what another agent needs to settle it: the context, the options and your recommendation. The owner hears it directly only on a task they are talking to you on; otherwise the chief of staff settles it (as it does a delegator question when nobody handed you the task). The answer comes back to this task as a comment and wakes you; the result says who got it (`to`). To ask the owner in a chat with them, use notify's form instead: it records this wait itself. You're woken by the event when it comes as a comment on the task, and otherwise at `until`. End your turn after it. Only ever touches the current run's task.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1368,17 +1368,15 @@ const TOOLS: Record<string, Tool> = {
         on: { type: "string", description: "the event it waits for" },
         for: { type: "string", enum: ["delegator", "owner"], description: "who makes the judgement it waits on: `question` goes to them, or to the chief of staff when the owner isn't talking to you here or nobody handed you the task" },
         question: { type: "string", description: "with `for`: the decision you need from them, with the context they need to make it" },
-        asked: { type: "boolean", description: "with `for: owner`: your reply on this task already asked them `question` (they can see it), so the kernel records the wait and sends nothing" },
       },
       required: ["reason"],
       additionalProperties: false,
     },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    run: async ({ reason, until, on, for: who, question, asked }: Args) => {
+    run: async ({ reason, until, on, for: who, question }: Args) => {
       if (!CURRENT()) throw new Error("no current task");
       if (who && !String(question ?? "").trim()) throw new Error("`for` asks them a `question`: say what you need them to decide");
-      if (asked && who !== "owner") throw new Error("`asked` goes with `for: owner` and the `question` your reply asked");
-      return kernelWait({ reason: String(reason), ...(until ? { until: String(until) } : {}), ...(on ? { on: String(on) } : {}), ...(who ? { for: String(who), question: String(question), ...(asked ? { asked: true } : {}) } : {}) });
+      return kernelWait({ reason: String(reason), ...(until ? { until: String(until) } : {}), ...(on ? { on: String(on) } : {}), ...(who ? { for: String(who), question: String(question) } : {}) });
     },
   },
   task_finish: {
