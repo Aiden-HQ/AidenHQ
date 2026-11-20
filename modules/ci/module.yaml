@@ -44,7 +44,8 @@ services:
           unset RUNNER_TOKEN
           # The job-started hook's allow list (runner/job-started.ts), from settings, then read-only and out of the env.
           printf '%s/*\n' "$$AIDENHQ_AGENTS_ORG" > /opt/aidenhq/allowed
-          printf '%s\n' $$AIDENHQ_CI_REPOS >> /opt/aidenhq/allowed
+          # Only owner/name entries are written (quoted: a setting's value is never shell syntax).
+          printf '%s\n' "$$AIDENHQ_CI_REPOS" | tr ' ' '\n' | grep -E '^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$' >> /opt/aidenhq/allowed || true
           chmod 0444 /opt/aidenhq/allowed
           unset AIDENHQ_AGENTS_ORG AIDENHQ_CI_REPOS AIDENHQ_ORG_RUNNER_GROUP
           exec ./run.sh
