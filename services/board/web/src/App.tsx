@@ -35,7 +35,7 @@ import { Markdown, setSlackTeams } from "./markdown";
 import { BUCKETS, BUCKET_NAMES, type Board, type Bucket, type Card } from "./types";
 import { dayDate, keepsSecureCookies, matches } from "./util";
 import { panelsOf } from "./sidebar";
-import { BottomBar, Palette, Sidebar, type NavView } from "./Shell";
+import { BottomBar, Palette, SubNav, TopNav, type NavView } from "./Shell";
 import "./shell.css";
 
 // Pages off the first screen load as their own chunks (warmed on hover and when the browser is idle: queries.ts).
@@ -228,26 +228,6 @@ export function App() {
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [creating, setCreating] = useState(false);
   const mobile = useMedia("(max-width: 860px)");
-  // The sidebar: full, or an icon rail (the owner's choice, kept on this device; always a rail on a narrow screen).
-  const narrow = useMedia("(max-width: 1180px)");
-  // Chat is the heart of the board: below 1800px it takes the room, with the sidebar as a rail until the owner opens it.
-  const roomy = useMedia("(min-width: 1800px)");
-  const [chatSidebar, setChatSidebar] = useState(false);
-  const [railPref, setRailPref] = useState(() => {
-    try {
-      return localStorage.getItem("aidenhq.rail") === "1";
-    } catch {
-      return false;
-    }
-  });
-  const toggleRail = useCallback(() => {
-    setRailPref((r) => {
-      try {
-        localStorage.setItem("aidenhq.rail", r ? "0" : "1");
-      } catch {}
-      return !r;
-    });
-  }, []);
   const [palette, setPalette] = useState(false);
   const closePalette = useCallback(() => setPalette(false), []);
   const newTask = useCallback(() => setCreating(true), []);
@@ -641,7 +621,7 @@ export function App() {
       <div className="splash">Can't reach the board: {error}</div>
     ) : (
       <div className={`app boot${mobile ? " mobile" : ""}`} aria-busy="true" aria-label="Loading">
-        {!mobile && <div className="sidebar boot-side" />}
+        {!mobile && <div className="topnav" />}
         <div className="app-main" />
       </div>
     );
@@ -667,21 +647,20 @@ export function App() {
   return (
     <div className={`app${mobile ? " mobile" : ""}${view === "chat" ? " on-chat" : ""}`}>
       {!mobile && (
-        <Sidebar
+        <TopNav
           view={view}
           approvals={approvalsOpen}
           agentsActive={board.agentsActive}
           onNav={nav}
-          panels={panels}
           spend={board.spend}
           settingsAlert={!connectionsOk}
           notify={notifyAsk ? () => void askForNotifications().then(() => setNotifyAsk(false)) : undefined}
           brief={!!board.brief}
-          rail={narrow || (view === "chat" && !roomy ? !chatSidebar : railPref)}
-          onRail={narrow ? undefined : view === "chat" && !roomy ? () => setChatSidebar((o) => !o) : toggleRail}
           onPalette={() => setPalette(true)}
         />
       )}
+      <div className="app-row">
+      {!mobile && <SubNav view={view} onNav={nav} panels={panels} />}
       <div className="app-main">
       {mobile && (
         <header className="topbar" hidden={chatFull}>
@@ -869,6 +848,7 @@ export function App() {
       )}
 
       {mobile && !chatFull && <BottomBar view={view} approvals={approvalsOpen} agentsActive={board.agentsActive} onNav={nav} panels={panels} />}
+      </div>
       </div>
       <Palette open={palette} onClose={closePalette} go={go} crew={board.assignees} apps={appsQ.data?.apps ?? []} onNewTask={newTask} />
       <div className="toasts" aria-live="polite">

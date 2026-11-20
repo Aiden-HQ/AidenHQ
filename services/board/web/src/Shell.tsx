@@ -1,5 +1,6 @@
-// The board's frame: the sidebar (sections grouped by job, live counts, today's spend, Settings), the phone's bottom bar,
-// and the ⌘K palette that jumps anywhere from what the board already has cached. Navigation only: every page is App.tsx's.
+// The board's frame: a slim top bar of sections (a section of several pages lists them on its own left), the phone's
+// bottom bar, and the ⌘K palette that jumps anywhere from what the board already has cached. Chat, the heart of the board,
+// keeps the full width under the bar. Navigation only: every page is App.tsx's.
 import { useEffect, useMemo, useRef, useState } from "react";
 import { peek } from "./cache";
 import { prefetchView, QUERIES } from "./queries";
@@ -9,13 +10,28 @@ import { Icon, type IconName } from "./ui/icons";
 
 export type NavView = "chat" | "approvals" | "board" | "agents" | "apps" | "modules" | "reviews" | "costs" | "flow" | "settings";
 type Item = { view: NavView; name: string; icon: IconName };
+type Panel = { name: string; label: string; url: string };
 
-const GROUPS: { name: string | null; items: Item[] }[] = [
-  { name: null, items: [{ view: "chat", name: "Chat", icon: "chat" }, { view: "approvals", name: "Approvals", icon: "approvals" }, { view: "board", name: "Tasks", icon: "tasks" }] },
-  { name: "Fleet", items: [{ view: "agents", name: "Agents", icon: "agents" }, { view: "apps", name: "Apps", icon: "apps" }, { view: "modules", name: "Modules", icon: "modules" }] },
-  { name: "Insight", items: [{ view: "reviews", name: "Reviews", icon: "reviews" }, { view: "costs", name: "Costs", icon: "costs" }, { view: "flow", name: "Flow", icon: "flow" }] },
+const ITEMS: Item[] = [
+  { view: "chat", name: "Chat", icon: "chat" },
+  { view: "approvals", name: "Approvals", icon: "approvals" },
+  { view: "board", name: "Tasks", icon: "tasks" },
+  { view: "agents", name: "Agents", icon: "agents" },
+  { view: "apps", name: "Apps", icon: "apps" },
+  { view: "modules", name: "Modules", icon: "modules" },
+  { view: "reviews", name: "Reviews", icon: "reviews" },
+  { view: "costs", name: "Costs", icon: "costs" },
+  { view: "flow", name: "Flow", icon: "flow" },
 ];
-const ALL = GROUPS.flatMap((g) => g.items);
+const item = (v: NavView) => ITEMS.find((i) => i.view === v)!;
+/** The top bar's sections; one of several pages opens on its first and lists the rest on its left (SubNav). */
+const SECTIONS: { name: string; views: NavView[] }[] = [
+  { name: "Chat", views: ["chat"] },
+  { name: "Approvals", views: ["approvals"] },
+  { name: "Tasks", views: ["board"] },
+  { name: "Fleet", views: ["agents", "apps", "modules", "reviews"] },
+  { name: "Insight", views: ["costs", "flow"] },
+];
 export const hrefOf = (v: NavView) => `#/${v === "board" ? "" : v}`;
 
 const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
@@ -28,130 +44,129 @@ interface Common {
   onNav: (v: NavView) => void;
 }
 
-export function Sidebar({ view, approvals, agentsActive, onNav, panels, spend, settingsAlert, notify, brief, rail, onRail, onPalette }: Common & {
-  panels: { name: string; label: string; url: string }[];
+export function TopNav({ view, approvals, agentsActive, onNav, spend, settingsAlert, notify, brief, onPalette }: Common & {
   spend: { spent: number; cap: number } | null | undefined;
   settingsAlert: boolean;
   notify?: () => void;
   brief: boolean;
-  rail: boolean;
-  /** Absent: the screen is too narrow for anything but the rail. */
-  onRail?: () => void;
   onPalette: () => void;
 }) {
   const share = spend ? Math.min(1, spend.spent / (spend.cap || 1)) : 0;
   return (
-    <nav className={`sidebar${rail ? " rail" : ""}`} aria-label="Sections">
-      <div className="sb-top">
-        <a className="sb-brand" href="#/c/" onClick={() => onNav("chat")} title="AidenHQ">
-          <img src="/icon.png" alt="" />
-          <span>AidenHQ</span>
-        </a>
-        {onRail && <button type="button" className="sb-icon" onClick={onRail} aria-label={rail ? "Expand the sidebar" : "Collapse the sidebar"} title={rail ? "Expand" : "Collapse"}>
-          <Icon name="collapse" />
-        </button>}
-      </div>
-      <button type="button" className="sb-search" onClick={onPalette} title={`Search and jump (${paletteKey})`}>
+    <header className="topnav">
+      <a className="tn-brand" href="#/c/" onClick={(e) => (e.preventDefault(), onNav("chat"))} title="AidenHQ">
+        <img src="/icon.png" alt="" />
+        <span>AidenHQ</span>
+      </a>
+      <nav className="tn-items" aria-label="Sections">
+        {SECTIONS.map((sec) => {
+          const on = sec.views.includes(view as NavView);
+          const first = sec.views[0]!;
+          return (
+            <a
+              key={sec.name}
+              className={`tn-item${on ? " on" : ""}`}
+              href={hrefOf(first)}
+              aria-current={on ? "page" : undefined}
+              onClick={(e) => (e.preventDefault(), onNav(first))}
+              onPointerEnter={() => sec.views.forEach(prefetchView)}
+              onFocus={() => sec.views.forEach(prefetchView)}
+            >
+              {sec.name}
+              {first === "approvals" && approvals > 0 && <span className="tn-badge" key={approvals}>{approvals}</span>}
+              {sec.name === "Fleet" && agentsActive > 0 && (
+                <span className="tn-live" title={`${agentsActive} working now`}>
+                  <i />
+                  {agentsActive}
+                </span>
+              )}
+            </a>
+          );
+        })}
+      </nav>
+      <span className="spacer" />
+      <button type="button" className="tn-search" onClick={onPalette} title={`Search and jump (${paletteKey})`}>
         <Icon name="search" />
         <span>Search</span>
         <kbd>{paletteKey}</kbd>
       </button>
-      <div className="sb-scroll">
-        {GROUPS.map((g) => (
-          <div key={g.name ?? "work"} className="sb-group">
-            {g.name && <div className="sb-group-name">{g.name}</div>}
-            {g.items.map((it) => {
-              const on = view === it.view;
-              const badge = it.view === "approvals" && approvals > 0 ? approvals : null;
-              return (
-                <div key={it.view}>
-                  <a
-                    className={`sb-item${on ? " on" : ""}`}
-                    href={hrefOf(it.view)}
-                    aria-current={on ? "page" : undefined}
-                    title={rail ? it.name : undefined}
-                    onClick={(e) => (e.preventDefault(), onNav(it.view))}
-                    onPointerEnter={() => prefetchView(it.view)}
-                    onFocus={() => prefetchView(it.view)}
-                  >
-                    <Icon name={it.icon} />
-                    <span className="sb-label">{it.name}</span>
-                    {badge !== null && <span className="sb-badge needs" key={badge}>{badge}</span>}
-                    {it.view === "agents" && agentsActive > 0 && (
-                      <span className="sb-live" title={`${agentsActive} working now`}>
-                        <i />
-                        <span className="sb-live-n">{agentsActive}</span>
-                      </span>
-                    )}
-                  </a>
-                  {it.view === "apps" &&
-                    panels.map((p) => (
-                      <a key={p.name} className="sb-item sb-sub" href={p.url} target="_blank" rel="noopener noreferrer" title={`${p.label} opens in a new tab`}>
-                        <Icon name="external" size={14} />
-                        <span className="sb-label">{p.label}</span>
-                      </a>
-                    ))}
-                </div>
-              );
-            })}
+      {spend && (
+        <a className={`tn-spend${spend.spent >= spend.cap ? " over" : ""}`} href="#/costs" onClick={(e) => (e.preventDefault(), onNav("costs"))} title="Today's model spend (UTC day) against the daily cap; change the cap in Settings">
+          <span className="tn-spend-row">
+            <b>${spend.spent.toFixed(2)}</b>
+            <span>of ${spend.cap % 1 ? spend.cap.toFixed(2) : spend.cap} today</span>
+          </span>
+          <span className="tn-meter" aria-hidden>
+            <i style={{ width: `${share * 100}%` }} />
+          </span>
+        </a>
+      )}
+      {notify && (
+        <button type="button" className="btn sm" onClick={notify} title="Get a browser notification when something needs you">
+          Notify me
+        </button>
+      )}
+      {brief && (
+        <a className="tn-icon" href="#/brief" title="Today's brief (b)" aria-label="Today's brief">
+          <Icon name="brief" />
+        </a>
+      )}
+      <a className="tn-icon" href="#/help" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts">
+        <Icon name="help" />
+      </a>
+      <a className={`tn-icon${view === "settings" ? " on" : ""}`} href="#/settings" onClick={(e) => (e.preventDefault(), onNav("settings"))} aria-current={view === "settings" ? "page" : undefined} title="Settings: connections, approvals, accounts and the instance" aria-label="Settings">
+        <Icon name="settings" />
+        {settingsAlert && <span className="tn-dot" title="A connection needs you" />}
+      </a>
+    </header>
+  );
+}
+
+/** The pages of the open section, on its left (Fleet, Insight); nothing for a section of one page. */
+export function SubNav({ view, onNav, panels }: { view: string; onNav: (v: NavView) => void; panels: Panel[] }) {
+  const sec = SECTIONS.find((t) => t.views.length > 1 && t.views.includes(view as NavView));
+  if (!sec) return null;
+  return (
+    <nav className="subnav" aria-label={sec.name}>
+      <div className="sn-name">{sec.name}</div>
+      {sec.views.map((v) => {
+        const it = item(v);
+        return (
+          <div key={v}>
+            <a className={`sn-item${view === v ? " on" : ""}`} href={hrefOf(v)} aria-current={view === v ? "page" : undefined} onClick={(e) => (e.preventDefault(), onNav(v))} onPointerEnter={() => prefetchView(v)} onFocus={() => prefetchView(v)}>
+              <Icon name={it.icon} />
+              <span className="sn-label">{it.name}</span>
+            </a>
+            {v === "apps" &&
+              panels.map((p) => (
+                <a key={p.name} className="sn-item sn-sub" href={p.url} target="_blank" rel="noopener noreferrer" title={`${p.label} opens in a new tab`}>
+                  <Icon name="external" size={14} />
+                  <span className="sn-label">{p.label}</span>
+                </a>
+              ))}
           </div>
-        ))}
-      </div>
-      <div className="sb-foot">
-        {spend && (
-          <a className={`sb-spend${spend.spent >= spend.cap ? " over" : ""}`} href="#/costs" onClick={(e) => (e.preventDefault(), onNav("costs"))} title="Today's model spend (UTC day) against the daily cap">
-            <span className="sb-spend-row">
-              <span className="sb-label">Today</span>
-              <b>${spend.spent.toFixed(2)}</b>
-              <span className="sb-label sb-cap">of ${spend.cap % 1 ? spend.cap.toFixed(2) : spend.cap}</span>
-            </span>
-            <span className="sb-meter" aria-hidden>
-              <i style={{ width: `${share * 100}%` }} />
-            </span>
-          </a>
-        )}
-        {notify && (
-          <button type="button" className="sb-item" onClick={notify} title="Get a browser notification when something needs you">
-            <Icon name="bell" />
-            <span className="sb-label">Notify me</span>
-          </button>
-        )}
-        {brief && (
-          <a className="sb-item" href="#/brief" title="Today's brief (b)">
-            <Icon name="brief" />
-            <span className="sb-label">Brief</span>
-          </a>
-        )}
-        <a className={`sb-item${view === "settings" ? " on" : ""}`} href="#/settings" onClick={(e) => (e.preventDefault(), onNav("settings"))} aria-current={view === "settings" ? "page" : undefined} title="Settings: connections, approvals, accounts and the instance">
-          <Icon name="settings" />
-          <span className="sb-label">Settings</span>
-          {settingsAlert && <span className="sb-dot" title="A connection needs you" />}
-        </a>
-        <a className="sb-item" href="#/help" title="Keyboard shortcuts (?)">
-          <Icon name="help" />
-          <span className="sb-label">Shortcuts</span>
-        </a>
-      </div>
+        );
+      })}
     </nav>
   );
 }
 
 /** The phone's sections: four at hand, the rest behind More. */
 const PHONE: NavView[] = ["chat", "approvals", "agents", "board"];
-export function BottomBar({ view, approvals, agentsActive, onNav, panels }: Common & { panels: { name: string; label: string; url: string }[] }) {
+export function BottomBar({ view, approvals, agentsActive, onNav, panels }: Common & { panels: Panel[] }) {
   const [more, setMore] = useState(false);
-  const rest = ALL.filter((i) => !PHONE.includes(i.view));
+  const rest = ITEMS.filter((i) => !PHONE.includes(i.view));
   const inMore = !PHONE.includes(view as NavView);
   return (
     <>
       <nav className="bottombar" aria-label="Sections">
         {PHONE.map((v) => {
-          const it = ALL.find((i) => i.view === v)!;
+          const it = item(v);
           return (
             <a key={v} className={`bb-item${view === v ? " on" : ""}`} href={hrefOf(v)} aria-current={view === v ? "page" : undefined} onClick={(e) => (e.preventDefault(), setMore(false), onNav(v))}>
               <span className="bb-icon">
                 <Icon name={it.icon} size={20} />
-                {v === "approvals" && approvals > 0 && <span className="sb-badge needs">{approvals}</span>}
+                {v === "approvals" && approvals > 0 && <span className="tn-badge">{approvals}</span>}
                 {v === "agents" && agentsActive > 0 && <span className="bb-live" />}
               </span>
               <span>{it.name}</span>
@@ -169,15 +184,15 @@ export function BottomBar({ view, approvals, agentsActive, onNav, panels }: Comm
         <div className="bb-sheet-backdrop" onPointerDown={(e) => e.target === e.currentTarget && setMore(false)}>
           <div className="bb-sheet" role="dialog" aria-label="More sections">
             {[...rest, { view: "settings" as const, name: "Settings", icon: "settings" as const }].map((it) => (
-              <a key={it.view} className={`sb-item${view === it.view ? " on" : ""}`} href={hrefOf(it.view)} onClick={(e) => (e.preventDefault(), setMore(false), onNav(it.view))}>
+              <a key={it.view} className={`sn-item${view === it.view ? " on" : ""}`} href={hrefOf(it.view)} onClick={(e) => (e.preventDefault(), setMore(false), onNav(it.view))}>
                 <Icon name={it.icon} />
-                <span className="sb-label">{it.name}</span>
+                <span className="sn-label">{it.name}</span>
               </a>
             ))}
             {panels.map((p) => (
-              <a key={p.name} className="sb-item" href={p.url} target="_blank" rel="noopener noreferrer">
+              <a key={p.name} className="sn-item" href={p.url} target="_blank" rel="noopener noreferrer">
                 <Icon name="external" />
-                <span className="sb-label">{p.label}</span>
+                <span className="sn-label">{p.label}</span>
               </a>
             ))}
           </div>
@@ -225,7 +240,7 @@ export function Palette({ open, onClose, go, crew, apps, onNewTask }: { open: bo
     return [
       { id: "new-chat", kind: "Action", label: "New chat with Aiden", icon: "chat", run: nav("#/c/") },
       { id: "new-task", kind: "Action", label: "New task", icon: "plus", run: () => (onClose(), onNewTask()) },
-      ...ALL.map((i) => ({ id: `v-${i.view}`, kind: "Go to", label: i.name, icon: i.icon, run: nav(hrefOf(i.view)) })),
+      ...ITEMS.map((i) => ({ id: `v-${i.view}`, kind: "Go to", label: i.name, icon: i.icon, run: nav(hrefOf(i.view)) })),
       ...CATEGORIES.map((c) => ({ id: `s-${c.key}`, kind: "Settings", label: c.name, icon: "settings" as const, run: nav(`#/settings/${c.key}`) })),
       ...crew.filter((a) => a.kind !== "me").map((a) => ({ id: `a-${a.key}`, kind: "Agent", label: a.name, icon: "agents" as const, run: nav(`#/agents/${a.key}`) })),
       ...chats.map((c) => ({ id: `c-${c.identifier}`, kind: "Chat", label: c.title, hint: `${c.agent.name} · ${c.identifier}`, icon: "chat" as const, run: nav(`#/c/${c.identifier}`) })),
@@ -288,3 +303,4 @@ export function Palette({ open, onClose, go, crew, apps, onNewTask }: { open: bo
     </div>
   );
 }
+
