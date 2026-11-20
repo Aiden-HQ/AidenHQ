@@ -245,11 +245,11 @@ test("an ask fails closed: an unreadable state sends nothing; a follow-up a minu
   assert.equal(sent.length, 2);
 });
 
-test("the owner wrote on a task: their own comment or the opening of a task they wrote, never a marked post, an agent's or a filed task's", () => {
+test("the owner wrote on a task: their own comment or the opening of a chat they opened, never a marked post, an agent's task or a routine's", () => {
   const at = (x) => `2026-11-19T${x}:00Z`;
-  const own = { description: "Fix the login", createdAt: at("08:00"), createdByUserId: "o1", createdByAgentId: null };
+  const own = { description: "Fix the login\n\n<!-- aidenhq-chat-agent:eng -->", createdAt: at("08:00"), createdByUserId: "o1", createdByAgentId: null };
   assert.equal(ownerWroteAt(own, []), Date.parse(at("08:00")));
   assert.equal(ownerWroteAt(own, [{ body: "[telegram] go on", authorUserId: "o1", createdAt: at("09:00") }, { body: "done", authorAgentId: "a", createdAt: at("10:00") }, { body: "[wake] x <!-- aidenhq-wake -->", authorUserId: "o1", createdAt: at("11:00") }]), Date.parse(at("09:00")));
-  assert.equal(ownerWroteAt({ ...own, description: "x\n<!-- source:ask:t:0 -->" }, []), undefined, "a kernel-filed task");
+  assert.equal(ownerWroteAt({ ...own, description: "Heartbeat: eng" }, []), undefined, "no chat marker: a routine's run, a heartbeat, a filed task");
   assert.equal(ownerWroteAt({ ...own, createdByAgentId: "a" }, []), undefined, "an agent's task");
 });

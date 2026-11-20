@@ -51,7 +51,7 @@ export interface Deps {
    * assertion). The kernel says who settles it: the owner (this message goes to them), else the chief of staff (it got the
    * question; nothing goes to the owner).
    */
-  wait?: (task: string, assertion: string, question: string) => Promise<{ to?: string }>;
+  wait?: (task: string, assertion: string, question: string) => Promise<{ to?: string; open?: boolean }>;
   /** The kernel's loop brake: whether one more message about this task may go now. */
   brake?: (task: string, agent: string, decision: boolean) => Promise<{ allow: boolean; note?: string }>;
   /** Setting notify_fyi: mute. */
@@ -135,7 +135,9 @@ export async function notify(d: Deps, a: NotifyArgs, caller?: Caller, now = Date
       const question = [text, spellOut(a.questions)].join("").slice(0, 1500);
       const w = await d.wait(found.issueId, caller.assertion, question).catch((e: Error) => ({ error: String(e.message ?? e).slice(0, 200) }));
       if ("error" in w) return { sent: false, reason: "error", note: `Your question wasn't recorded (${w.error}): nothing was sent; try again.` };
-      if (w.to !== "owner") return { sent: true, to: "chief_of_staff", note: "The owner isn't talking with you on this task, so your question went to the chief of staff, who settles it (and brings it to the owner only when the call is theirs). Its answer comes as a comment on your task and wakes you: end your turn." };
+      if (w.open) return { sent: false, reason: "duplicate", note: "Your earlier question on this task is still unanswered, so this one wasn't sent: the task waits for that answer." };
+      if (w.to !== "owner" && w.to !== "chief_of_staff") return { sent: false, reason: "error", note: "Your question wasn't routed: nothing was sent; try again." };
+      if (w.to === "chief_of_staff") return { sent: true, to: "chief_of_staff", note: "The owner isn't talking with you on this task, so your question went to the chief of staff, who settles it (and brings it to the owner only when the call is theirs). Its answer comes as a comment on your task and wakes you: end your turn." };
     }
     const muted = kind === "fyi" && d.muteFyi === true && !a.actions?.length;
     const digested = att.do === "digest" && found?.ownerVia !== "board" && !muted;

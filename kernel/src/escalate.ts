@@ -36,11 +36,12 @@ export type AskTo = "owner" | "chief_of_staff" | "delegator";
 type Comment = { body?: unknown; authorUserId?: unknown; authorAgentId?: unknown; createdAt?: unknown; deletedAt?: unknown };
 /**
  * When the owner last wrote on a task (ms), from its comments and opening: a person's comment that isn't one of the kernel's or
- * a module's marked posts, or the opening of a task they wrote themselves (no agent made it, no generated source marker).
+ * a module's marked posts, or the opening of a chat they opened with an agent (the board's or a channel's chat marker; no
+ * agent made it). A routine's run, a heartbeat or a filed task carries no chat marker, so its opening is never theirs.
  */
 export function ownerWroteAt(t: { description?: unknown; createdAt?: unknown; createdByUserId?: unknown; createdByAgentId?: unknown }, comments: Comment[]): number | undefined {
   const at = comments.filter((c) => !c.deletedAt && !c.authorAgentId && c.authorUserId && String(c.body ?? "").trim() && !String(c.body).includes("<!-- aidenhq")).map((c) => Date.parse(String(c.createdAt)));
-  if (t.createdByUserId && !t.createdByAgentId && !/<!--\s*source:/.test(String(t.description ?? ""))) at.push(Date.parse(String(t.createdAt)));
+  if (t.createdByUserId && !t.createdByAgentId && /<!-- aidenhq-chat-agent:[\w-]+ -->\s*$/.test(String(t.description ?? ""))) at.push(Date.parse(String(t.createdAt)));
   const n = Math.max(...at.filter(Number.isFinite));
   return Number.isFinite(n) ? n : undefined;
 }
