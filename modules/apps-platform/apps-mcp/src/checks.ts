@@ -215,7 +215,9 @@ export function identityPorts(ports: PortAnswers[], required: Door[], denied: st
   const name = (p: { service: string; port: number | string }) => `${p.service}:${p.port}`;
   const at = (p: PortAnswers) => `${name(p)} on ${p.host}`;
   const findings: Finding[] = [];
-  for (const d of required) if (!ports.some((p) => p.listening && name(p) === name(d))) findings.push({ hard: true, what: denied.length ? `${UNCONFIRMED}: no listener on ${name(d)} could be attributed: couldn't read the sockets of process ${denied.join(", ")}` : `${UNCONFIRMED}: nothing listens on ${name(d)}` });
+  // A process no scan could read may hold a listener nobody probed: fail closed, naming it.
+  if (denied.length) findings.push({ hard: true, what: `${UNCONFIRMED}: couldn't read the sockets of process ${denied.join(", ")}` });
+  for (const d of required) if (!ports.some((p) => p.listening && name(p) === name(d))) findings.push({ hard: true, what: `${UNCONFIRMED}: nothing listens on ${name(d)}` });
   if (!ports.length && !findings.length) return probeResult("identity", "*", [{ hard: false, what: "not probed: no container of the app listens on or exposes a TCP port, so nothing can reach it" }]);
   for (const p of ports) {
     const req = required.some((d) => name(d) === name(p));
@@ -271,8 +273,8 @@ process.stdin.on("data", (c) => (s += c)).on("end", async () => {
   for (const p of fs.readdirSync(proc)) {
     if (!/^\d+$/.test(p)) continue;
     let fds;
-    // A process that exited is gone; any other unreadable fd table is named in the output, so a door it hides says why.
-    try { fds = fs.readdirSync(proc + "/" + p + "/fd"); } catch (e) { if (e.code !== "ENOENT" && e.code !== "ESRCH") denied.push(p + " (" + e.code + ")"); continue; }
+    // A process that exited is gone; any other unreadable fd table is listed (a scan as its own uid reads it).
+    try { fds = fs.readdirSync(proc + "/" + p + "/fd"); } catch (e) { if (e.code !== "ENOENT" && e.code !== "ESRCH") denied.push(p); continue; }
     for (const f of fds) {
       let t;
       try { t = fs.readlinkSync(proc + "/" + p + "/fd/" + f); } catch { continue; }
@@ -316,21 +318,30 @@ process.stdin.on("data", (c) => (s += c)).on("end", async () => {
 });
 `;
 
-/** The uid of a container's main process (State.Pid), from `docker top <id> -eo uid,pid`; unknown fails the gate loudly. */
-export function mainUid(top: string, pid: unknown): number {
-  for (const l of top.split("\n").slice(1)) {
-    const [uid, p] = l.trim().split(/\s+/);
-    if (p && Number(p) === Number(pid) && /^\d+$/.test(uid ?? "")) return Number(uid);
-  }
-  throw new Error(`the container's main process (pid ${String(pid)}) isn't in docker top`);
+/** The distinct uids of a container's processes, from `docker top <id> -eo uid,pid`; none fails the gate loudly. */
+export function processUids(top: string): number[] {
+  const uids = [...new Set(top.split("\n").slice(1).map((l) => l.trim().split(/\s+/)[0] ?? "").filter((u) => /^\d+$/.test(u)).map(Number))];
+  if (!uids.length) throw new Error("docker top lists no process of the container");
+  return uids;
+}
+
+/**
+ * One container's scans, one per uid, merged: a socket listens when any scan attributed it (the first such answer is
+ * kept), and a process stays denied only when every scan was refused it.
+ */
+export function mergeScans(scans: { sockets: { port: number; host: string; listening: boolean; raw?: PortAnswers["raw"]; statuses: number[] }[]; denied?: string[] }[]) {
+  const sockets = new Map<string, (typeof scans)[number]["sockets"][number]>();
+  for (const sc of scans) for (const k of sc.sockets) { const key = `${k.host} ${k.port}`; if (!sockets.has(key) || (k.listening && !sockets.get(key)!.listening)) sockets.set(key, k); }
+  const denied = (scans[0]?.denied ?? []).filter((p) => scans.every((sc) => (sc.denied ?? []).includes(p)));
+  return { sockets: [...sockets.values()], denied };
 }
 
 /**
  * `docker run` argv for one container's identity scan. Its network namespace is the app's door, and its pid namespace is what
  * makes the scan the app's own: peers the platform runs there (the render's browser) share the network but not these pids, so
- * IDENTITY_SCRIPT drops their listeners. The helper runs as the uid of the container's main process with no capabilities:
- * a process's /proc/<pid>/fd is readable by its own uid, so no ptrace or DAC capability is needed (DAC_READ_SEARCH would
- * re-open open_by_handle_at, a container-escape primitive). A process of another uid stays unreadable and is named.
+ * IDENTITY_SCRIPT drops their listeners. The helper runs with no capabilities, once per uid the container's processes run
+ * as: a process's /proc/<pid>/fd is readable by its own uid, so no ptrace or DAC capability is needed (DAC_READ_SEARCH
+ * would re-open open_by_handle_at, a container-escape primitive). A process no scan could read fails the gate.
  */
 export function identityProbeArgs(image: string, id: string, uid: number): string[] {
   return ["run", "--rm", "-i", "--pull", "never", "--user", `${uid}:${uid}`, "--network", `container:${id}`, "--pid", `container:${id}`, "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--memory", "128m", image, "node", "-e", IDENTITY_SCRIPT];

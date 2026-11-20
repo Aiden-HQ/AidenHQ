@@ -6,7 +6,7 @@ import { createServer } from "node:net";
 import { networkInterfaces, tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
-import { finishedJob, IDENTITY_SCRIPT, identityDoors, identityPorts, identityProbeArgs, mainUid, identityProbes, judgeIdentity, NO_SIGN_IN, unprobedServices, type Door } from "../src/checks.js";
+import { finishedJob, IDENTITY_SCRIPT, identityDoors, identityPorts, identityProbeArgs, mergeScans, processUids, identityProbes, judgeIdentity, NO_SIGN_IN, unprobedServices, type Door } from "../src/checks.js";
 import { agentSigner, forgedIdentity, IDENTITY_HEADER } from "../src/identity.js";
 import { parseApp } from "../src/registry.js";
 
@@ -205,8 +205,9 @@ describe("identity gate", () => {
     expect((await scan(hello2, [await freePort()])).findings[0]).toMatchObject({ hard: false, what: expect.stringMatching(/nothing listens/) });
     expect(identityPorts([], [])).toMatchObject({ ok: true, findings: [{ hard: false, what: expect.stringMatching(/nothing can reach it/) }] });
     expect(identityPorts([], [{ service: "app", port: "8080" }]).ok).toBe(false);
-    // A door hidden by a process the scan couldn't read says so, rather than "nothing listens".
-    expect(identityPorts([], [{ service: "app", port: "8080" }], ["app:1 (EACCES)"]).findings[0]!.what).toMatch(/couldn't read the sockets of process app:1 \(EACCES\)/);
+    // A process no scan could read fails closed and is named, even when every required door answered.
+    const open = { service: "app", port: 8080, host: "127.0.0.1", listening: true, answers: [] };
+    expect(identityPorts([open], [], ["app:7"])).toMatchObject({ ok: false, findings: [{ hard: true, what: expect.stringMatching(/couldn't read the sockets of process app:7/) }] });
   }, 120_000);
 
   it.runIf(process.platform === "linux")("probes a socket the app's own process holds, wherever a peer listener sits on the same network", async () => {
@@ -252,10 +253,12 @@ describe("identity gate", () => {
     expect(a.join(" ")).not.toMatch(/--privileged|-v |--volume|--mount|--pid host|--network host/);
   });
 
-  it("scans as the uid of the container's main process", () => {
-    const top = "UID                 PID\n0                   4100\n1000                4122\n";
-    expect(mainUid(top, 4122)).toBe(1000);
-    expect(() => mainUid(top, 9)).toThrow(/isn't in docker top/);
+  it("scans once per uid and keeps a process denied only when every scan was refused it", () => {
+    expect(processUids("UID                 PID\n0                   4100\n1000                4122\n1000                4130\n")).toEqual([0, 1000]);
+    const k = (listening: boolean) => ({ port: 8080, host: "127.0.0.1", listening, statuses: [401] });
+    const merged = mergeScans([{ sockets: [k(false)], denied: ["7", "9"] }, { sockets: [k(true)], denied: ["1", "9"] }]);
+    expect(merged.sockets).toEqual([k(true)]);
+    expect(merged.denied).toEqual(["9"]);
   });
 
   it("fails closed on any service without a running container, unless it is a current, port-less one-shot job that finished", () => {
