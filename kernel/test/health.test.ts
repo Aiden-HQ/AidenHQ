@@ -11,7 +11,7 @@ const grants = {
 
 test("a health probe is a fixed read call as the narrowest agent, answered with status only", async (t) => {
   const g = await moduleServer(t, { key: "g-key", tools: ["gmail_search", "calendar_list_events", "gmail_send"], answer: () => ({ content: [{ type: "text", text: "SECRET MAIL" }] }) });
-  const conn = { url: `${g.url}/mcp`, auth_secret: "g_service_key", module: "g", returns: "untrusted", tools: { read: ["gmail_search", "calendar_list_events"], write: ["gmail_send"], destructive: [] } };
+  const conn = { url: `${g.url}/mcp`, auth_secret: "g_service_key", module: "g", returns: "untrusted", tools: { read: ["gmail_search", "calendar_list_events"], write: ["gmail_send"], destructive: [] }, health_probes: { gmail: { tool: "gmail_search", args: { query: "in:inbox", max_results: 1 } } } };
   const k = await kernel(t, { grants, secrets: { g_service_key: "g-key" }, connections: { google_workspace: conn } });
   const probe = (b, key = "the-health-key", header = "x-health-key") => fetch(`${k.url}/v1/health/probe`, { method: "POST", headers: { [header]: key, "content-type": "application/json" }, body: JSON.stringify(b) }).then(async (r) => ({ status: r.status, text: await r.text() }));
   const calls = () => g.seen.filter((s) => s.method === "tools/call");
@@ -43,7 +43,7 @@ test("a health probe is a fixed read call as the narrowest agent, answered with 
 
 test("a probe whose tool has a write kind is refused", async (t) => {
   const g = await moduleServer(t, { key: "g-key", tools: ["gmail_search"], answer: () => ({ content: [] }) });
-  const conn = { url: `${g.url}/mcp`, auth_secret: "g_service_key", module: "g", returns: "untrusted", tools: { read: ["gmail_search"], write: [], destructive: [] } };
+  const conn = { url: `${g.url}/mcp`, auth_secret: "g_service_key", module: "g", returns: "untrusted", tools: { read: ["gmail_search"], write: [], destructive: [] }, health_probes: { gmail: { tool: "gmail_search", args: { query: "in:inbox", max_results: 1 } } } };
   const k = await kernel(t, { grants, secrets: { g_service_key: "g-key" }, connections: { google_workspace: conn }, writes: { "g.search": { module: "g", floor: 1, tools: ["google_workspace.gmail_search"], executor: { url: `${g.url}/x`, auth_secret: "g_service_key" } } } });
   const r = await fetch(`${k.url}/v1/health/probe`, { method: "POST", headers: { "x-health-key": "the-health-key" }, body: JSON.stringify({ probe: "gmail" }) });
   assert.equal(r.status, 409);

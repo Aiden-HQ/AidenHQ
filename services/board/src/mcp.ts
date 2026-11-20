@@ -476,6 +476,8 @@ async function signinState(call: CallRoute, origin: string, module: string, id: 
 async function flowState(call: CallRoute, origin: string, f: SetupFlowPoint, done: boolean) {
   const signin = f.signin ? await call("GET", `/api/sign-ins/${f.signin}`).catch(() => undefined) : undefined;
   // A connected sign-in is tested live (the board's Test button); a finished flow's link reopens it as "Change setup".
-  const check = signin?.state === "ok" ? await call("POST", `/api/sign-ins/${f.signin}/check`).catch(() => undefined) : undefined;
+  // Google's Connect is the board's own route, not a sign-in: its Test is /api/google/check.
+  const checkPath = f.signin ? `/api/sign-ins/${f.signin}/check` : f.connect_url === "/google/connect" && done ? "/api/google/check" : undefined;
+  const check = checkPath && (!f.signin || signin?.state === "ok") ? await call("POST", checkPath).catch(() => undefined) : undefined;
   return { module: f.module, title: f.title, why: f.why, effort: f.effort, state: signin?.state ?? (f.signin ? "unknown" : "open_link"), link: `${origin}/#/setup/${f.module}${done ? "?change=1" : ""}`, ...(check ? { check } : {}), ...(signin?.connect ? { connect_link: `${origin}${signin.connect}` } : {}) };
 }

@@ -52,6 +52,10 @@ connections:
     tools:
       read: [ calendar_list_events, calendar_search_events, calendar_get_event, drive_list_recent_files, drive_list_meeting_documents, drive_search_files, drive_read_file, gmail_search, gmail_read_thread, docs_read ]
       write: []
+    # The host's health probes (kernel/src/health.ts): one read each, as the narrowest agent granted the tool.
+    health_probes:
+      gmail: { tool: gmail_search, args: { query: "in:inbox", max_results: 1 } }
+      calendar: { tool: calendar_list_events, args: { start: "2000-01-01T00:00:00Z", end: "2000-01-01T00:00:01Z", max_results: 1 } }
 # Empty until pasted: with them empty, the client already in google_oauth.json (set up before the guided flow) stands.
 optional_secrets:
   - google_client_id

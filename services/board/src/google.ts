@@ -51,6 +51,17 @@ export class GoogleAuth {
     return status;
   }
 
+  /** The sign-in tried live (the service's /auth/check: one Calendar read): works, or what is wrong and the one thing to do. */
+  async check(): Promise<{ ok: true } | { ok: false; message: string; fix?: string }> {
+    try {
+      return await this.call("GET", "/auth/check");
+    } catch (err) {
+      return { ok: false, message: `google-workspace-mcp couldn't be asked: ${String((err as Error).message).slice(0, 150)}` };
+    } finally {
+      this.cached = undefined;
+    }
+  }
+
   /** A consent URL: reconnecting `account`, or (none given) connecting a new one. */
   start(account: string | undefined, redirectUri: string) {
     return this.call<{ url: string }>("POST", "/auth/start", { ...(account ? { account } : {}), redirect_uri: redirectUri });

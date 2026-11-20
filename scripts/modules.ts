@@ -751,6 +751,7 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   const dataModules: Obj = {};
   const labelNames = new Set<string>();
   const routineTitles = new Set<string>();
+  const healthProbeOwners: Record<string, string> = {};
   const jobcaps: Obj = {};
   const engines: Obj = {};
   const writes: Obj = {};
@@ -786,6 +787,12 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
       if (!/^[a-z0-9_]+_service_key$/.test(c.auth ?? "")) fail(`connection ${k}: auth must name its service key secret (<name>_service_key)`);
       if (c.returns != null && !["trusted", "untrusted"].includes(c.returns)) fail(`connection ${k}: returns is trusted or untrusted`);
       if (c.model_as_caller != null && typeof c.model_as_caller !== "boolean") fail(`connection ${k}: model_as_caller is true or false`);
+      // health_probes: name -> { tool, args }: the host's health probe (kernel/src/health.ts) calls that read tool as the narrowest agent granted it.
+      for (const [pn, hp] of Object.entries<Obj>(c.health_probes ?? {})) {
+        if (!/^[a-z][a-z0-9_]{0,30}$/.test(pn) || !hp || typeof hp !== "object" || !c.tools.read.includes(hp.tool) || (hp.args != null && (typeof hp.args !== "object" || Array.isArray(hp.args)))) fail(`connection ${k}: health_probes.${pn} is { tool: <one of its read tools>, args: {...} }`);
+        if (healthProbeOwners[pn]) fail(`two connections declare health probe ${pn}: ${healthProbeOwners[pn]} and ${k}`);
+        healthProbeOwners[pn] = k;
+      }
       if (c.upstream != null && (!Array.isArray(c.upstream) || c.upstream.some((t: string) => ![...c.tools.read, ...c.tools.write, ...(c.tools.destructive ?? [])].includes(t)))) fail(`connection ${k}: upstream lists tools it tags read, write or destructive`);
       put(paperclip.mcp_servers, k, { ...c, module: name }, "connection");
     }
@@ -1122,6 +1129,7 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
     url: c.url, auth_secret: c.auth, module: c.module, returns: c.returns ?? "untrusted",
     tools: { read: [...c.tools.read], write: [...c.tools.write], destructive: [...(c.tools.destructive ?? [])], ...(c.tools.named?.length ? { named: [...c.tools.named] } : {}) }, ...(c.tool_timeout_sec ? { tool_timeout_s: c.tool_timeout_sec } : {}),
     ...(c.model_as_caller === true ? { model_as_caller: true } : {}),
+    ...(c.health_probes ? { health_probes: c.health_probes } : {}),
   }]));
 
   // Prompt contributions (spec §3.1 `prompts`): each crew agent's handbook gets the sections whose `when` holds and
