@@ -831,6 +831,8 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
     // Every sign-in's service answers GET /auth/check (the board's Test button): built on the SDK's vendor proxy, which does, or
     // its source names the route. A service whose source isn't in the module can't be looked at here.
     for (const x of def.contributes?.["board.signins"] ?? []) {
+      // Connection state is keyed by the module (kernel connection-state.ts), and the board tells the kernel which module's sign-in finished by this id.
+      if (x.id !== name) fail(`module ${name}: a board.signins id is the module's name (got ${x.id})`);
       const src = join(root, "connections", /^http:\/\/([a-z][a-z0-9-]*):/.exec(String(x.status_url))?.[1] ?? "-", "src");
       if (existsSync(src) && !existsSync(join(src, "vendor", "proxy.ts")) && !readdirSync(src, { recursive: true }).some((f) => /\.ts$/.test(String(f)) && readFileSync(join(src, String(f)), "utf8").includes("/auth/check"))) fail(`module ${name}: signin ${x.id}: its service must answer GET /auth/check (build it on the SDK vendor proxy, or implement the route)`);
     }

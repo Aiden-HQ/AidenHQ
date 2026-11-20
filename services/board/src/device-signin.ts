@@ -9,7 +9,7 @@ import type { SetupRoute } from "./setup-flows.js";
 
 export interface DeviceSignIn { id: string; label: string; mode?: "redirect" | "device"; auth: McpAuth }
 
-export function deviceRoutes(d: { signIns: DeviceSignIn[]; onSignedIn: () => void; now?: () => number }): SetupRoute[] {
+export function deviceRoutes(d: { signIns: DeviceSignIn[]; onSignedIn: (id: string) => void; now?: () => number }): SetupRoute[] {
   const now = d.now ?? Date.now;
   const pending = new Map<string, { account: string; expires: number }>();
   const signIn = (id: string) => {
@@ -62,7 +62,7 @@ export function deviceRoutes(d: { signIns: DeviceSignIn[]; onSignedIn: () => voi
         mine(s.id, who.account.id);
         const st = await s.auth.deviceState();
         if (st.state !== "pending") pending.delete(s.id);
-        if (st.state === "ok") d.onSignedIn();
+        if (st.state === "ok") d.onSignedIn(s.id);
         const detail = st.state === "denied" ? vendorWords("access_denied") : st.detail;
         return { state: st.state, ...(detail ? { detail } : {}) };
       },

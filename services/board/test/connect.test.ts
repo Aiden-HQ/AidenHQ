@@ -6,6 +6,7 @@ import { createApp } from "../src/app.js";
 import { McpAuth } from "../src/mcpauth.js";
 import type { Paperclip } from "../src/paperclip.js";
 import { Store } from "../src/store.js";
+import { fakeRecords } from "./fake-records.js";
 
 // One Connect per connection (owner, 2026-11-18): a sign-in with nothing to ask goes straight to the vendor (no setup page); one
 // whose vendor offers scopes, or that needs a per-install value, opens its Connect dialog on Settings > Connections first, which
@@ -29,7 +30,10 @@ const proxy = (offer: boolean, configured = true) =>
     return Response.json({}, { status: 404 });
   }) as typeof fetch);
 const signIn = (id: string, auth: McpAuth, fields: { secret: string; label: string; pattern: string }[] = []) => ({ id, label: "Acme", connect: `/${id}/connect`, callback: `/${id}/callback`, missing: "m", stopped: "s", fields, auth });
+const kernelOk: string[] = [];
+const records = { ...fakeRecords(), connectionOk: async (m: string) => void kernelOk.push(m) };
 const app = createApp({
+  records,
   paperclip: {} as Paperclip,
   store: new Store(":memory:"),
   log: pino({ level: "silent" }),
@@ -40,6 +44,7 @@ const app = createApp({
   allowedHosts: ["localhost:3121", "board.example.ts.net"],
   mode: "lan",
   lan: { url: "https://board.example.ts.net" },
+  setupFlows: { flows: [{ module: "google", title: "Google", connect_url: "/google/connect" } as never, { module: "acme", title: "Acme" } as never] },
 });
 let base = "";
 beforeAll(async () => {
@@ -130,4 +135,20 @@ it("finishes a loopback sign-in from the pasted address, refusing any other addr
 it("keeps one click to the board's https address as the other way", async () => {
   expect(await get("/plain/connect?oneclick=1", "board.example.ts.net")).toMatchObject({ status: 302, location: "https://auth.example.com/authorize?state=s" });
   expect(seen.at(-1)).toEqual({ path: "/auth/start", body: { redirect_uri: "https://board.example.ts.net/plain/callback" } });
+});
+
+// The one link the kernel gives the owner (connection-state.ts): the same path in every exposure mode, redirecting to what that
+// module's Connect is.
+it("/connect/<module> goes to a sign-in's Connect, a flow's own connect path, else its setup page", async () => {
+  for (const host of ["localhost:3121", "board.example.ts.net"]) {
+    expect(await get("/connect/plain", host)).toMatchObject({ status: 302, location: "/plain/connect" });
+    expect(await get("/connect/google", host)).toMatchObject({ status: 302, location: "/google/connect" });
+    expect(await get("/connect/telegram", host)).toMatchObject({ status: 302, location: "/#/setup/telegram" });
+  }
+});
+
+it("a finished sign-in tells the kernel once", async () => {
+  kernelOk.length = 0;
+  await post("/api/sign-ins/plain/finish", { url: "http://localhost:3121/plain/callback?state=s&code=c0de" });
+  expect(kernelOk).toEqual(["plain"]);
 });

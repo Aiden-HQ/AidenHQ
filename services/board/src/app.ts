@@ -255,6 +255,14 @@ export function createApp(opts: AppOptions): Server {
   };
   // Every approval record lives in the kernel (records.ts). A record names its task by id (and its identifier when its filer knew it).
   const records = opts.records ?? kernelRecords(undefined);
+  /**
+   * A sign-in or setup flow for `module` finished: the open tabs refresh, and the kernel clears the module's down state and wakes
+   * the tasks waiting on it. A kernel that doesn't answer is logged, not fatal: the next successful tool call clears the state too.
+   */
+  function connected(module: string) {
+    store.events.emit("connections");
+    void records.connectionOk(module).catch((err) => log.warn({ err: String((err as Error).message ?? err).slice(0, 300), module }, "couldn't tell the kernel a connection is up"));
+  }
   const identifiers = new Map<string, string>();
   async function named<T extends Approval>(a: T): Promise<T> {
     if (a.identifier !== a.issueId) return a;
@@ -1209,7 +1217,7 @@ export function createApp(opts: AppOptions): Server {
           log.warn({ err: String((err as Error).message ?? err).slice(0, 500) }, "Google sign-in failed");
           throw err instanceof McpAuthFailed || err instanceof GoogleAuthFailed ? new HttpError(400, `Couldn't connect Google: ${err.message}`) : new HttpError(502, "Couldn't connect Google: google-workspace-mcp isn't answering");
         }
-        store.events.emit("connections");
+        connected("google");
         return { ok: true };
       },
     },
@@ -1231,7 +1239,7 @@ export function createApp(opts: AppOptions): Server {
           throw err instanceof McpAuthFailed ? new HttpError(400, `Couldn't connect ${s.label}: ${err.message}`) : new HttpError(502, `Couldn't connect ${s.label}: ${s.label.toLowerCase()}-mcp isn't answering`);
         }
         log.info(`${s.label} connected`);
-        store.events.emit("connections");
+        connected(s.id);
         return { ok: true };
       },
     },
@@ -2014,7 +2022,7 @@ export function createApp(opts: AppOptions): Server {
       },
     },
     ...(opts.accounts && opts.organisations?.length ? organisationRoutes({ orgs: opts.organisations, accounts: opts.accounts, store, onApplied: () => store.events.emit("connections") }) : []),
-    ...((opts.signIns ?? []).some((s) => s.mode === "device") ? deviceRoutes({ signIns: opts.signIns!, onSignedIn: () => store.events.emit("connections") }) : []),
+    ...((opts.signIns ?? []).some((s) => s.mode === "device") ? deviceRoutes({ signIns: opts.signIns!, onSignedIn: connected }) : []),
     // App admins (docs/design/access.md, Per-app roles): every shared app, its admins and default; name or remove one.
     ...(opts.setupFlows?.flows.length && opts.accounts
       ? setupFlowRoutes({
@@ -2112,7 +2120,18 @@ export function createApp(opts: AppOptions): Server {
     const s = opts.session ? await opts.session(req) : accountSession(await opts.accounts!.sessionOf(req));
     return s?.role === "admin";
   };
-  const isConnect = (path: string) => path === "/google/connect" || (opts.signIns ?? []).some((s) => s.connect === path);
+  const isConnect = (path: string) => path === "/google/connect" || /^\/connect\/[a-z0-9-]{1,63}$/.test(path) || (opts.signIns ?? []).some((s) => s.connect === path);
+  /**
+   * The one link the kernel gives the owner for a module (kernel connection-state.ts): to its sign-in's Connect, else its setup
+   * flow's own connect path, else its setup page. Those handlers word what can't work from this address (an https-only vendor
+   * on a plain-http board, a loopback flow away from the tunnel), so the link is the same in every exposure mode.
+   */
+  function connectLink(res: ServerResponse, module: string) {
+    const to = (opts.signIns ?? []).find((s) => s.id === module)?.connect
+      ?? opts.setupFlows?.flows.find((f) => f.module === module && f.connect_url)?.connect_url
+      ?? `/#/setup/${module}`;
+    res.writeHead(302, { ...SECURITY_HEADERS, location: to, "cache-control": "no-store" }).end();
+  }
   /** A connect path's connection (a setup flow's connect_url): signed in, or undefined when the board serves no such path. */
   async function connectionSignedIn(path: string): Promise<boolean | undefined> {
     if (path === "/google/connect") return opts.google ? !!(await opts.google.status())?.accounts.some((a) => a.state === "ok") : undefined;
@@ -2153,7 +2172,7 @@ export function createApp(opts: AppOptions): Server {
         // Google's own error goes to the service, which explains it in words (the person refused, the project doesn't allow them).
         const { email } = await opts.google.finish(state, code, code ? undefined : (url.searchParams.get("error") ?? "no_code").slice(0, 100));
         log.info({ account: email }, "Google account connected");
-        store.events.emit("connections");
+        connected("google");
         res.writeHead(302, { ...SECURITY_HEADERS, location: "/", "cache-control": "no-store" }).end();
         return;
       }
@@ -2228,7 +2247,7 @@ export function createApp(opts: AppOptions): Server {
         await auth.finish(state, code);
         log.info(`${name} connected`);
         // The tab that pressed Connect turns Connected now (events.ts); this one, opened for the sign-in, closes itself or shows it.
-        store.events.emit("connections");
+        connected(s.id);
         res.writeHead(302, { ...SECURITY_HEADERS, location: `/#/settings/connections?connected=${s.id}`, "cache-control": "no-store" }).end();
         return;
       }
@@ -2360,6 +2379,7 @@ export function createApp(opts: AppOptions): Server {
       else if (url.pathname === "/auth/start" && req.method === "GET" && opts.accounts) opts.accounts.start(req, res);
       else if (url.pathname === "/auth/handoff" && req.method === "GET" && opts.accounts) await opts.accounts.finish(req, res, url);
       else if (isConnect(url.pathname) && !(await adminSignedIn(req))) throw new HttpError(403, "sign in as an admin to connect accounts");
+      else if (url.pathname.startsWith("/connect/") && req.method === "GET") connectLink(res, url.pathname.slice("/connect/".length));
       else if (url.pathname.startsWith("/google/") && req.method === "GET") await handleGoogle(req, res, url);
       else if (signInFor(url.pathname) && req.method === "GET") await handleSignIn(req, res, url, signInFor(url.pathname)!);
       else if (req.method === "GET" || req.method === "HEAD") await serveStatic(req, res, url.pathname);
