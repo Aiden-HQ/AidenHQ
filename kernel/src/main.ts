@@ -25,7 +25,7 @@ import { MODEL_KEY, createModelStep } from "../../modules/models-openrouter/src/
 import { convert as convertGithubApp, saveApp as saveGithubApp, seedAppId } from "./github-app.ts";
 import { composeRecreate, createModuleSecrets, secretFits, vaultWriter } from "./module-secrets.ts";
 import { doorSource, readGate } from "./accounts.ts";
-import { routineWake, webhookWake, type Manifest } from "./app-access.ts";
+import { routineWake, webhookWake, type Manifest } from "../../modules/apps-platform/src/app-access.ts";
 import { createSignin } from "./signin.ts";
 import { createAsserter, loadKey } from "./assert.ts";
 import { chiefOfStaff, createBackplane } from "./backplane.ts";

@@ -13,7 +13,7 @@
 // No admin route is here: no page, no approval, no account admin.
 import type { IncomingMessage, RequestListener, ServerResponse } from "node:http";
 import { AccountError, type Accounts, type GateInfo } from "./accounts.ts";
-import { AccessError } from "./app-access.ts";
+import { AccessError } from "../../modules/apps-platform/src/app-access.ts";
 import { forwardedProto, type Log } from "./auth-rules.ts";
 
 const HEADERS = {

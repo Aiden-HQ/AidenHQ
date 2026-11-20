@@ -10,7 +10,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openAccounts } from "../src/accounts.ts";
-import { FEEDBACK_GAP_MS, routineWake } from "../src/app-access.ts";
+import { FEEDBACK_GAP_MS, routineWake } from "../../modules/apps-platform/src/app-access.ts";
 import { createSignin } from "../src/signin.ts";
 import { createGate } from "../../modules/apps-platform/gate/gate.ts";
 import { ensureIdentityKeys } from "../../scripts/identity.ts";

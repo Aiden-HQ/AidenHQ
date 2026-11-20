@@ -14,7 +14,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { dirname, join } from "node:path";
 import { betterAuth } from "better-auth";
 import { getMigrations } from "better-auth/db/migration";
-import { createAppAccess, type Manifest, type SharedApp } from "./app-access.ts";
+import { createAppAccess, type Manifest, type SharedApp } from "../../modules/apps-platform/src/app-access.ts";
 import { AccountError, authCore, authSecret, forwardedProto, GATE_HEADER, inboundCookies, openAuthDb, outboundCookie, readBody, secretIs, EDGE_HEADER, type Log } from "./auth-rules.ts";
 
 export { AccountError };

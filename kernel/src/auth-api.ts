@@ -12,7 +12,7 @@
 import { timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { AccountError, type Accounts, type Role } from "./accounts.ts";
-import { AccessError, assertNamesApp } from "./app-access.ts";
+import { AccessError, assertNamesApp } from "../../modules/apps-platform/src/app-access.ts";
 import type { Whoami } from "./identity.ts";
 import type { ModuleSecrets } from "./module-secrets.ts";
 import { fail } from "./proxy.ts";

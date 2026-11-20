@@ -1,7 +1,7 @@
 // App access helpers (ported from services/board/test/app-access.test.ts; routineWake's run assertions from gate-seam).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { assertNamesApp, routineWake } from "../src/app-access.ts";
+import { assertNamesApp, routineWake } from "../../modules/apps-platform/src/app-access.ts";
 import { silent } from "./auth-helpers.ts";
 
 test("the owner's words name the app, by name or host, as a whole word; anything else is refused with what to ask", () => {

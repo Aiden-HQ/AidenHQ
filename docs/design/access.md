@@ -89,7 +89,8 @@ Switching modes: [minimal-core-install.md](minimal-core-install.md).
 Accounts use Better Auth inside the kernel, stored in its own SQLite file `data/kernel/auth/auth.db` (mode 600, its
 `auth.secret` beside it). Only the kernel opens it. `kernel/src/auth-rules.ts` holds the options and sign-in rules,
 `accounts.ts` accounts, sessions, links, handoffs and the gate's account map, `admin.ts` the admin pages, `signin.ts` the
-gate-facing sign-in listener (127.0.0.1:3129), `app-access.ts` per-app roles and in-app requests, and `auth-api.ts` the
+gate-facing sign-in listener (127.0.0.1:3129), `modules/apps-platform/src/app-access.ts` (the apps platform's, loaded by
+the kernel) per-app roles and in-app requests, and `auth-api.ts` the
 backplane routes modules use (the board's session and account administration, apps-mcp's in-app requests, `ops/setup.sh`'s
 setup link and resets with the operator key).
 
