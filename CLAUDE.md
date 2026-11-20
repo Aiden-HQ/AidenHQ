@@ -202,7 +202,8 @@ updated, so that rule would re-review every open PR on every merge.
    user unit (an ssh drop doesn't kill it), waits behind any apply already running and exits with the apply's status.
    Never `git pull` first: apply diffs the checkout's old product against the new one to decide restarts.
    Applying a commit already applied is a no-op (`already applied: generation <n>`); `aidenhq-apply --wait --force` re-runs it
-   (e.g. after a host-only `.env` or secret change).
+   (e.g. after a host-only `.env` or secret change). From another machine, use its full path, since a non-login ssh
+   command doesn't read `~/.local/bin`: `ssh <host> '~/aidenhq/ops/aidenhq-apply --wait'`.
 4. Nothing else: apply rebuilds every image whose context changed and recreates the services whose image or compose
    config changed. Force-recreate a service (`docker compose up -d --force-recreate <svc>`) only after changing a file it
    reads once at start outside compose (a secret, e.g. a rotated token). Each apply prints `apply timing: <phase> <s>s`.
