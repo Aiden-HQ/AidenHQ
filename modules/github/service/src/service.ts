@@ -492,7 +492,7 @@ export function createService(o: Options) {
       for (const r of Object.values(readHeld()).filter((x) => x.state === "held" || x.state === "running")) {
         writeHeld({ ...readHeld(), [r.id]: { ...r, state: "running" } });
         let out: { ok: boolean; text: string; objects?: string[] };
-        try { out = (await stillApproved(r)) ? await run1(r) : { ok: false, text: "Not done: it changed while GitHub was disconnected; ask again." }; } catch (e) {
+        try { out = (await stillClaimed(r.id)) && (await stillApproved(r)) ? await run1(r) : { ok: false, text: "Not done: it changed while GitHub was disconnected; ask again." }; } catch (e) {
           if (disconnected(e)) { writeHeld({ ...readHeld(), [r.id]: { ...r, state: "held" } }); return; }
           out = { ok: false, text: String((e as Error).message ?? e) };
         }
@@ -503,6 +503,13 @@ export function createService(o: Options) {
         else await report(r.id, out).catch((e: Error) => log("held outcome not delivered", { record: r.id, err: String(e.message).slice(0, 200) }));
       }
     } finally { heldBusy = false; }
+  }
+  /** The kernel's record is still claimed or approved: one cancelled or decided otherwise while held is dropped, not run. */
+  async function stillClaimed(id: string): Promise<boolean> {
+    const st = await kernel("GET", `/v1/writes/${id}`).then((j) => String(j?.state));
+    const ok = st === "claimed" || st === "approved";
+    if (!ok) log("held write dropped: its record is no longer live", { record: id, state: st });
+    return ok;
   }
   /**
    * A held record runs only if what it was approved for still holds: its state, read again now as the requester who asked for

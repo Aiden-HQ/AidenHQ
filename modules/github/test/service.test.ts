@@ -44,11 +44,14 @@ async function setup(t, { routes = () => undefined, maintained, connected = () =
   for (const [k, v] of [["filter.evil.smudge", evil], ["filter.evil.clean", evil], ["filter.evil.process", evil], ["core.fsmonitor", evil], ["uploadpack.packObjectsHook", evil], ["core.sshCommand", evil]]) sh(ws, "config", k, v);
 
   const outcomes = [];
+  const states = {};
   const kernel = await listen(async (req, res) => {
     let body = "";
     for await (const c of req) body += c;
     const m = /^\/v1\/writes\/([^/]+)\/outcome$/.exec(req.url);
     if (m) { outcomes.push({ id: m[1], ...JSON.parse(body) }); return res.writeHead(200).end("{}"); }
+    const w = /^\/v1\/writes\/([^/]+)$/.exec(req.url);
+    if (w) return res.writeHead(200).end(JSON.stringify({ id: w[1], state: states[w[1]] ?? "claimed" }));
     if (req.url.startsWith("/v1/objects")) return res.writeHead(200).end(JSON.stringify({ ours: false }));
     res.writeHead(404).end("{}");
   });
@@ -80,7 +83,7 @@ async function setup(t, { routes = () => undefined, maintained, connected = () =
   };
   const raw = (path, body, key = "ch-key") => fetch(`${svc.url}${path}`, { method: "POST", headers: { authorization: `Bearer ${key}` }, body: JSON.stringify(body) });
   const get = (path, key = "ch-key") => fetch(`${svc.url}${path}`, { headers: { authorization: `Bearer ${key}` } });
-  return { root, ws, marker, origin, sha, outcomes, created, ghCalls, call, raw, get, handle };
+  return { root, ws, marker, origin, sha, outcomes, states, created, ghCalls, call, raw, get, handle };
 }
 
 test("create_repo is Tier 0 in an allowed org besides the agents org; a core repo's name, and an org nobody allowed, are refused", async (t) => {
@@ -286,6 +289,21 @@ test("held write is re-checked on reconnect", async (t) => {
   assert.throws(() => sh(origin, "rev-parse", "--verify", "refs/heads/feature"), "the moved branch is not pushed");
   assert.equal(outcomes[0]?.ok, false, JSON.stringify(outcomes));
   assert.match(outcomes[0].text, /changed while GitHub was disconnected; ask again/);
+});
+
+test("a held write whose record was cancelled while held does not run", async (t) => {
+  let on = false;
+  const { origin, sha, outcomes, states, call, handle } = await setup(t, { connected: () => on });
+  const args = { workspace: "TASK-1", only: [{ repo: "acme-agents/widget", branch: "feature", sha }] };
+  assert.equal((await call("/aidenhq/v1/executor/plan", { kind: "github.push", args, requester: { kind: "job", roles: [] }, task: "t1" })).status, 200);
+  await call("/aidenhq/v1/executor/execute", { id: "k-00000000000000d3", kind: "github.push", args, digest: "d", idempotency_key: "h3" });
+  await new Promise((r) => setTimeout(r, 50));
+  states["k-00000000000000d3"] = "cancelled";
+  on = true;
+  await handle.stepHeld();
+  for (let i = 0; i < 300 && !outcomes.length; i++) await new Promise((r) => setTimeout(r, 10));
+  assert.throws(() => sh(origin, "rev-parse", "--verify", "refs/heads/feature"), "a cancelled record is not pushed");
+  assert.equal(outcomes[0]?.ok, false, JSON.stringify(outcomes));
 });
 
 test("the owner's commit identity for job boxes; 503 while GitHub isn't connected", async (t) => {

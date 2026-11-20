@@ -885,6 +885,9 @@ export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boar
             const w = await whoami(bearer(req)).catch((e: Error) => { throw fail(401, "unauthorized", e.message); });
             const r = record(id);
             const own = w.kind === "module" ? w.module === r.requester.module && r.requester.kind === "module" : Boolean(w.agent) && w.agent === r.requester.agent;
+            // The kind's executor (as the outcome route checks it) reads only whether the record is still live.
+            const exec = w.kind === "module" && w.module === r.executor.module && r.kind !== CONN_TOOL && (w.connection === undefined || (Boolean(r.executor.url) && new URL(r.executor.url).hostname === w.connection));
+            if (!own && exec) return send(res, 200, { id: r.id, state: r.state });
             if (!own) throw fail(404, "not_found", `no record ${id}`);
             return send(res, 200, { id: r.id, kind: r.kind, tier: r.tier, state: r.state, outcome: r.outcome, ...(r.owner_reason ? { reason: r.owner_reason } : {}) });
           }
