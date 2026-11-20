@@ -78,9 +78,11 @@ scan host "" -v /:/host:ro -- dir:/host "${host_args[@]}"
 # container as `com.docker.compose.image` (ops/compose-recreate.sh decides a recreate by the same comparison): the
 # top-level id is an image index and every build rewrites it, so comparing that would drop the target after any rebuild.
 # Containers without the label, and daemons where the top-level id is the content id, are compared by that id. Any other
-# container's image is named by its own id, which is stable across passes, and syft reads it from a `docker save` archive;
-# an id the daemon no longer holds is left out of the batch, since the store collected it and there is nothing to scan or
-# report. A name only counts when it isn't an image id itself: syft can't resolve a bare id, it would try to pull it.
+# container's image is named by its own id, which is stable across passes, and syft reads it from a `docker save` archive.
+# An id the daemon confirms it no longer holds is left out of the batch: the store collected it, so there is nothing to
+# scan and no coverage to lose. Any other reason it can't be read (a daemon that won't answer, say) is a line with its
+# error, so a broken daemon never reads as a clean pass. A name only counts when it isn't an image id itself: syft can't
+# resolve a bare id, it would try to pull it.
 fail() { # <target> <error>: a target that never reached syft is a line with its error, like a failed scan
   n=$((n + 1))
   printf '%s\t-\t%s\t\n' "$1" "$(printf '%s' "$2" | tr '\t\n' '  ' | tail -c 300)" >> "$next/targets.tsv"
@@ -99,13 +101,16 @@ done <<< "$(docker ps -q | xargs -r docker inspect -f '{{.Id}} {{.Image}} {{.Con
 for image in $(printf '%s\n' "${!running[@]}" | sort); do
   if [ -n "${tags[$image]:-}" ]; then
     scan "image:${tags[$image]}" "" -v /var/run/docker.sock:/var/run/docker.sock:ro -- "docker:${tags[$image]}"
-  elif docker image inspect "$image" >/dev/null 2>&1; then
+  elif err="$(docker image inspect "$image" 2>&1 >/dev/null)"; then
     if err="$(docker save -o "$work/image.tar" "$image" 2>&1)"; then
       # $work is on disk and emptied after each syft run, so the archive is not held for the next target.
       scan "image:$image" "" -- "docker-archive:/work/image.tar"
     else
       fail "image:$image" "docker save: ${err:-failed}"
     fi
+  elif [[ "$err" != *"No such image"* ]]; then
+    # Only an image the daemon says is gone is the store having collected it; anything else is a target that went missing.
+    fail "image:$image" "docker image inspect: ${err:-failed}"
   fi
 done
 scan repo:product "$(git -C "$PWD" rev-parse HEAD 2>/dev/null || true)" -v "$PWD:/src:ro" -- dir:/src --exclude './data/**' --exclude './.git/**' --exclude '**/node_modules/**'

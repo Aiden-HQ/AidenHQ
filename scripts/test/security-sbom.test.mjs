@@ -17,19 +17,22 @@ const script = join(here, "../../ops/security-sbom.sh");
  * (`.Config.Image`) and the `com.docker.compose.image` label. `tags` maps each configured reference to the image's
  * top-level id now and `manifests` to its platform manifest (what `docker image inspect --platform` reports). The two
  * differ on the containerd image store, where every build writes a new top-level id over stable content. `held` lists
- * the ids the daemon still has: `docker save` reads those and fails on any other.
+ * the ids the daemon still has: `docker save` reads those and fails on any other. `inspectErrors` names ids its
+ * `docker image inspect` fails on for a reason other than the image being gone, as a daemon that can't answer does.
  */
 async function run(env = {}, {
   containers = [{ id: "c1", image: "sha256:1111", config: "aidenhq/board:local" }],
   tags = { "aidenhq/board:local": "sha256:1111" },
   manifests = {},
   held = null,
+  inspectErrors = [],
 } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "security-sbom-"));
   mkdirSync(join(dir, "bin"), { recursive: true });
   const containersFile = join(dir, "containers");
   const tagsFile = join(dir, "tags");
   const heldFile = join(dir, "held");
+  const brokenFile = join(dir, "broken");
   writeFileSync(join(dir, "bin/stat"), "#!/usr/bin/env bash\necho 0\n"); // the Docker socket's group
   writeFileSync(join(dir, "bin/docker"), `#!/usr/bin/env bash
 # A fake daemon: containers (\`id<TAB>.Image<TAB>.Config.Image<TAB>compose image label\`), the tag table (ref<TAB>
@@ -54,10 +57,18 @@ case "$1" in
       [ "$1" = -f ] && shift 2
       if [ "$#" -eq 0 ]; then cut -f"$col" "$TAGS"; exit 0; fi
       found="$(awk -F '\\t' -v ref="$1" '$1 == ref { print $'"$col"'; found = 1 }' "$TAGS")"
-      if [ -z "$found" ]; then grep -qxF -- "$1" "$HELD"; exit $?; fi
+      if [ -z "$found" ]; then
+        if grep -qxF -- "$1" "$HELD"; then printf '%s\\n' "$1"; exit 0; fi
+        if grep -qxF -- "$1" "$BROKEN"; then echo "Error response from daemon: cannot inspect $1: unexpected EOF" >&2; exit 1; fi
+        echo "Error response from daemon: No such image: $1" >&2; exit 1
+      fi
       printf '%s\\n' "$found"; exit 0
     fi
-    if [ -n "$1" ]; then grep -qxF -- "$1" "$HELD"; exit $?; fi ;;
+    if [ -n "$1" ]; then
+      if grep -qxF -- "$1" "$HELD"; then printf '%s\\n' "$1"; exit 0; fi
+      if grep -qxF -- "$1" "$BROKEN"; then echo "Error response from daemon: cannot inspect $1: unexpected EOF" >&2; exit 1; fi
+      echo "Error response from daemon: No such image: $1" >&2; exit 1
+    fi ;;
   save)
     id="$4"
     if grep -qxF -- "$id" "$HELD"; then : > "$SAVED"; exit 0; fi
@@ -69,6 +80,7 @@ exit 0
   writeFileSync(containersFile, containers.map((c) => `${c.id}\t${c.image}\t${c.config}\t${c.label ?? ""}`).join("\n") + "\n");
   writeFileSync(tagsFile, Object.entries(tags).map(([ref, id]) => `${ref}\t${id}\t${manifests[ref] ?? id}`).join("\n") + "\n");
   writeFileSync(heldFile, (held ?? [...containers.map((c) => c.image), ...Object.values(tags)]).join("\n") + "\n");
+  writeFileSync(brokenFile, inspectErrors.join("\n") + "\n");
   const calls = join(dir, "calls");
   const data = join(dir, "data");
   const r = await new Promise((resolve) => {
@@ -76,7 +88,7 @@ exit 0
       cwd: join(here, "../.."),
       env: {
         ...process.env, PATH: `${join(dir, "bin")}:/usr/bin:/bin`, CALLS: calls, AIDENHQ_DATA_DIR: data,
-        AIDENHQ_INSTANCE_DIR: "", CONTAINERS: containersFile, TAGS: tagsFile, HELD: heldFile,
+        AIDENHQ_INSTANCE_DIR: "", CONTAINERS: containersFile, TAGS: tagsFile, HELD: heldFile, BROKEN: brokenFile,
         SAVED: join(dir, "saved.tar"), ...env,
       },
     }, (error, stdout, stderr) => resolve({ status: error ? error.code : 0, out: `${stdout}${stderr}` }));
@@ -180,6 +192,23 @@ test("security-sbom: an image id the daemon no longer holds is left out of the b
   assert.ok(!calls.some((c) => c.startsWith("save ")), `the vanished image is not saved:\n${calls.join("\n")}`);
   assert.ok(!targets.some((t) => t[2]), `no target failed:\n${targets.join("\n")}`);
   assert.ok(!out.includes("docker save"), out);
+});
+
+test("security-sbom: an image the daemon cannot inspect is recorded, not dropped as if it were gone", async () => {
+  // Only "No such image" is the store having collected it. A daemon that can't answer says nothing about coverage, so
+  // the target keeps a line with the error rather than the pass claiming to have listed every running image.
+  const { status, out, calls, targets } = await run({}, {
+    containers: [{ id: "c7", image: "sha256:cccc", config: "aidenhq/broken:local", label: "sha256:dddd" }],
+    tags: {},
+    held: [],
+    inspectErrors: ["sha256:cccc"],
+  });
+  assert.equal(status, 0, out);
+  const line = batchLine(targets, "image:sha256:cccc");
+  assert.ok(line, `the target keeps a line:\n${targets.join("\n")}`);
+  assert.match(line[2], /docker image inspect: .*cannot inspect/, JSON.stringify(line));
+  assert.equal(line[1], "-", "no syft ran for it");
+  assert.ok(!calls.some((c) => c.startsWith("save ")), calls.join("\n"));
 });
 
 test("security-sbom: a container whose configured reference no longer exists is scanned too, and the syft image is not", async () => {
