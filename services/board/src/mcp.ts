@@ -159,6 +159,15 @@ export function createMcp(d: McpDeps) {
       return (id: unknown) => (id == null ? null : id === "me" ? { key: "me", name: "You" } : (names.get(String(id)) ?? { key: String(id) }));
     };
 
+    /** An agent by its roster key (as `fleet` lists it), its id or its name: the board's routes take the id, the by-key ones the key. */
+    const agentRef = async (ref: string): Promise<{ id: string; key: string }> => {
+      const roster = ((await call("GET", "/api/agents/roster")).roster ?? []) as any[];
+      const lower = ref.toLowerCase();
+      const r = roster.find((x) => x.key === ref || x.id === ref) ?? roster.find((x) => String(x.name).toLowerCase() === lower);
+      if (!r) throw new Error(`unknown agent "${ref}": use a key from fleet`);
+      return { id: r.id, key: r.key ?? r.id };
+    };
+
     tool(
       "status",
       "What needs the owner now: tasks waiting on them, pending approval cards, failing apps, connections that are down or still to set up, spend limits and the running generation. The place to start.",
@@ -211,7 +220,7 @@ export function createMcp(d: McpDeps) {
           seen = (await read(id)).replies.length;
           if (lane(id)) await call("POST", `/api/lane/${encodeURIComponent(lane(id)!)}/messages`, { text: a.text });
           else await call("POST", `/api/issues/${encodeURIComponent(id)}/comments`, { body: a.text, brief: true });
-        } else id = (await call("POST", "/api/chats", { text: a.text, ...(a.agent ? { agent: a.agent } : {}) })).identifier as string;
+        } else id = (await call("POST", "/api/chats", { text: a.text, ...(a.agent ? { agent: (await agentRef(a.agent)).id } : {}) })).identifier as string;
         const until = Date.now() + a.wait_seconds * 1000;
         for (;;) {
           const { replies } = await read(id);
@@ -231,12 +240,13 @@ export function createMcp(d: McpDeps) {
       "read",
       async (a) => {
         const has = (t: any) => !a.text || `${t.identifier} ${t.title}`.toLowerCase().includes(String(a.text).toLowerCase());
-        if (a.agent && a.finished) {
-          const r = await call("GET", `/api/agents/by-key/${encodeURIComponent(a.agent)}/tasks${q({ view: "history", q: a.text, offset: a.cursor })}`);
+        const key = a.agent ? (await agentRef(a.agent)).key : undefined;
+        if (key && a.finished) {
+          const r = await call("GET", `/api/agents/by-key/${encodeURIComponent(key)}/tasks${q({ view: "history", q: a.text, offset: a.cursor })}`);
           return out(`${r.rows.length} finished tasks.`, { tasks: r.rows, next_cursor: r.next == null ? null : String(r.next) });
         }
-        const all: any[] = a.agent
-          ? await call("GET", `/api/agents/by-key/${encodeURIComponent(a.agent)}/tasks`).then((r) => [...r.needs, ...r.ongoing].filter(has))
+        const all: any[] = key
+          ? await call("GET", `/api/agents/by-key/${encodeURIComponent(key)}/tasks`).then((r) => [...r.needs, ...r.ongoing].filter(has))
           : await call("GET", "/api/board").then((b) => Object.entries(b.buckets as Record<string, any[]>).filter(([k]) => !a.bucket || k === a.bucket).flatMap(([bucket, l]) => l.filter(has).map((t) => ({ bucket, ...slimTask(t) }))));
         const p = page(all, a.cursor, a.limit);
         const who = await agentOf(p.items);
@@ -260,9 +270,9 @@ export function createMcp(d: McpDeps) {
         const { comments, crew, files, runs: _runs, ...task } = view;
         const all = collapse(comments as any[]);
         const p = newest(all, a.cursor, a.limit);
-        const who = await agentOf([task]);
+        const who = await agentOf([task, ...(crew as any[]).map((c) => ({ assignee: c.agent }))]);
         const linked = (cards.approvals as any[]).filter((c) => c.identifier === view.identifier).map(cardRow);
-        return out(`${view.identifier}: ${p.items.length} of ${all.length} comments.`, { task: { ...task, assignee: who(task.assignee) }, thread: p.items.map((c) => clip(c, "body")), next_cursor: p.next_cursor, files, sub_tasks: crew, approvals: linked });
+        return out(`${view.identifier}: ${p.items.length} of ${all.length} comments.`, { task: { ...task, assignee: who(task.assignee) }, thread: p.items.map((c) => clip(c, "body")), next_cursor: p.next_cursor, files, sub_tasks: (crew as any[]).map((c) => (c.agent ? { ...c, agent: who(c.agent) } : c)), approvals: linked });
       },
     );
 
@@ -274,7 +284,7 @@ export function createMcp(d: McpDeps) {
       "write",
       async (a) => {
         const t = await call("POST", "/api/issues", { title: a.title, description: a.description, bucket: a.bucket });
-        if (a.agent) await call("POST", `/api/issues/${t.id}/agents`, { agent: a.agent, instructions: a.instructions ?? (a.description || a.title) });
+        if (a.agent) await call("POST", `/api/issues/${t.id}/agents`, { agent: (await agentRef(a.agent)).id, instructions: a.instructions ?? (a.description || a.title) });
         if (a.date) await call("POST", `/api/issues/${t.id}/schedule`, { date: a.date, bucket: a.bucket });
         if (a.recurring) await call("POST", `/api/issues/${t.id}/recurring`, a.recurring);
         return out(`Created ${t.identifier}.`, { identifier: t.identifier, id: t.id });
@@ -303,12 +313,13 @@ export function createMcp(d: McpDeps) {
       "write",
       async (a) => {
         const p = `/api/issues/${encodeURIComponent(a.id)}`;
+        const toId = async () => (await agentRef(need(a.to, "to"))).id;
         const result = await {
           comment: () => call("POST", `${p}/comments`, { body: need(a.text, "text"), brief: true }),
           status: () => call("PATCH", p, { status: need(a.status, "status") }).then((v) => ({ status: v.status })),
           move: () => call("POST", `${p}/move`, { bucket: need(a.bucket, "bucket"), ...(a.position ? { position: a.position } : {}) }),
           stop: () => call("POST", `${p}/stop`, {}),
-          hand_over: () => call("POST", `${p}/handover`, { from: need(a.from, "from"), to: need(a.to, "to") }).then(() => ({ ok: true })),
+          hand_over: async () => call("POST", `${p}/handover`, { from: need(a.from, "from"), to: await toId() }).then(() => ({ ok: true })),
           schedule: () => call("POST", `${p}/schedule`, a.clear ? { clear: true } : { date: need(a.date, "date"), ...(a.bucket ? { bucket: a.bucket } : {}) }),
           settle: () => call("POST", `${p}/settle`, { settled: a.settled }),
           merge: () => call("POST", `${p}/merge`, { into: need(a.into, "into") }),
@@ -355,9 +366,11 @@ export function createMcp(d: McpDeps) {
       async (a) => {
         if (!a.agent) {
           const r = await call("GET", "/api/agents/roster");
-          return out(`${r.roster.length} agents.`, { roster: r.roster, profile: null });
+          const short = (t: unknown) => (typeof t === "string" && t.length > 120 ? `${t.slice(0, 119)}…` : t ?? null);
+          const compact = (r.roster as any[]).map((x) => ({ key: x.key ?? x.id, name: x.name, state: x.state, state_note: short(x.stateNote), running: x.running ?? 0, trial: Boolean(x.trial) }));
+          return out(`${compact.length} agents. Pass \`agent\` for one agent's title, department, model and schedules.`, { roster: compact, profile: null });
         }
-        const k = encodeURIComponent(a.agent);
+        const k = encodeURIComponent((await agentRef(a.agent)).key);
         const [profile, handbook, grants, runs] = await Promise.all([
           call("GET", `/api/agents/by-key/${k}`),
           a.include.includes("handbook") ? call("GET", `/api/agents/by-key/${k}/handbook`) : undefined,

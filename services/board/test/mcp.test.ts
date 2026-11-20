@@ -206,6 +206,14 @@ describe("mcp end to end", () => {
     expect(json.result.structuredContent.grants.connections).toEqual([{ connection: "jira", module: "jira", granted: [{ tool: expect.stringContaining("jira_get"), class: "read" }], ungranted: 2 }]);
   });
 
+  it("takes an agent by its roster key, and the roster stays compact", async () => {
+    const roster = (await call("fleet", {})).json.result.structuredContent.roster;
+    expect(roster).toEqual([{ key: "chief-of-staff", name: expect.stringContaining("Aiden"), state: expect.any(String), state_note: null, running: 0, trial: false }]);
+    const r = (await call("create_task", { title: "Keyed", agent: "chief-of-staff" })).json.result;
+    expect(r.isError, JSON.stringify(r.content)).toBeFalsy();
+    expect((await call("create_task", { title: "Nobody", agent: "nobody" })).json.result.content[0].text).toContain("unknown agent");
+  });
+
   it("every tool answers with output its schema accepts", async () => {
     const card1 = "k-0000000000000002";
     const calls: [string, unknown][] = [
