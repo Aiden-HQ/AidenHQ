@@ -372,6 +372,7 @@ applyGeneration() {
   echo "generation $m: re-applying generation $gen (product ${product:0:12}, instance ${instance:0:12})"
   local prev_config; prev_config="$(mktemp)"; cp config/paperclip.yaml "$prev_config" 2>/dev/null || true
   local rc=0 staged=0
+  lap product # the data restore, both checkouts and the npm deps
   set +e
   ( set -e; switchOver )
   rc=$?
@@ -394,6 +395,7 @@ refuseGeneration() {
   restoreCheckouts
   rm -f "$prev_config"
   echo "refusing: $why; nothing was switched or restarted (generation $n refused)" >&2
+  echo "apply timing: total $(apply_secs "$apply_t0")s"
   exit 1
 }
 
