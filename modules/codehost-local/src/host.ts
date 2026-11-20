@@ -19,31 +19,15 @@ import { SOURCE_EXCEPTIONS_FILE, readCardSourceExceptions } from "../../github/s
 import { DEFAULT_CHURN_EXCLUDE, churnFromGit } from "../../../kernel/sdk/src/churn.ts";
 import type { FactIn } from "../../../kernel/sdk/src/kernel-client.ts";
 import { IDENTITY, bareOf, fail, git, ingest } from "./git.ts";
+import { baseMoved, checksNotGreen, headMoved } from "./refuse.ts";
+
+export { LOCAL_KINDS } from "./kinds.ts";
 
 export const LOCAL_ORG = "local";
 const ZERO = "0".repeat(40);
 const IDENT = /^[A-Za-z][A-Za-z0-9]*-\d+$/;
 /** A change request's URL. */
 export const changeUrl = (repo: string, n: number) => `codehost:${repo}/change/${n}`;
-
-type Schema = Record<string, unknown>;
-const obj = (properties: Record<string, Schema>, required: string[]): Schema => ({ type: "object", additionalProperties: false, required, properties });
-const REPO = { type: "string", pattern: "^local/[\\w.-]+$" };
-const BRANCHES = obj({
-  workspace: { type: "string", pattern: "^[A-Za-z][A-Za-z0-9]*-[0-9]+$" },
-  only: { type: "array", minItems: 1, maxItems: 30, items: obj({ repo: REPO, branch: { type: "string", minLength: 1, maxLength: 200, pattern: "^[\\w./-]+$" }, sha: { type: "string", pattern: "^[0-9a-f]{40}$" } }, ["repo", "branch", "sha"]) },
-  text: obj({ title: { type: "string", maxLength: 300 }, body: { type: "string", maxLength: 60000 } }, ["title", "body"]),
-}, ["workspace", "only"]);
-const CHANGES = (head: boolean) => obj({ prs: { type: "array", minItems: 1, maxItems: 30, items: obj({ repo: REPO, number: { type: "integer", minimum: 1 }, ...(head ? { head: { type: "string", pattern: "^[0-9a-f]{40}$" } } : {}) }, head ? ["repo", "number", "head"] : ["repo", "number"]) } }, ["prs"]);
-const CARD = { target: "{{target}}", sentence: "{{sentence}}", details: "{{diff}}" };
-/**
- * The write kinds this code host executes: the same actions, args, floors and repository writes (`paths: true`: push, pr and
- * merge, tiered by the files plan.ts returns) as codehost-github's; the kernel registers them when the module is enabled.
- */
-export const LOCAL_KINDS = Object.fromEntries(Object.entries({
-  push: BRANCHES, pr: BRANCHES, merge: CHANGES(true), close: CHANGES(false),
-  create_repo: obj({ repo: { type: "string", pattern: "^local/[a-z][a-z0-9-]{0,62}$" } }, ["repo"]),
-}).map(([action, args]) => [`codehost-local.${action}`, { module: "codehost-local", floor: 0 as const, ...(["push", "pr", "merge"].includes(action) ? { paths: true } : {}), tools: [] as string[], args, card: CARD }]));
 
 /** Each change's checks, as plan.ts reads them ({ ok, pending }); the kernel's `change` check job on (repo, head, base). */
 /** `retry`: run again a check that couldn't run (a new request); otherwise the one asked for before, as it stands. `summary`: its receipt's. */
@@ -123,7 +107,8 @@ export function localHost({ root, sources = {}, tasksDir, scratchDir, instanceRe
     return locked(repo, async () => {
       const c = await readChange(repo, n);
       if (c.state !== "open") throw fail(409, `${changeUrl(repo, n)} is ${c.state}`);
-      if (c.head !== head) throw fail(409, `${changeUrl(repo, n)} moved since it was approved: ask again for its new head`);
+      const moved = headMoved(changeUrl(repo, n), c.head, head);
+      if (moved) throw fail(409, moved);
       if (!c.base) throw fail(409, `${changeUrl(repo, n)} shares no history with its default branch`);
       const def = await defaultBranch(repo);
       const tree = await g(repo, ["merge-tree", "--write-tree", `--merge-base=${c.base}`, c.main, head]).catch((e: { code?: number }) => (e.code === 1 ? "" : Promise.reject(e)));
@@ -133,7 +118,8 @@ export function localHost({ root, sources = {}, tasksDir, scratchDir, instanceRe
       // Compare-and-swap on the base ref: a base that moved under the merge is refused, never overwritten (its checks were run
       // against the base read above, and nobody reviewed a merge onto another).
       await g(repo, ["update-ref", `refs/heads/${def}`, sha, c.main]).catch(async (e: { code?: number }) => {
-        if ((await rev(repo, `refs/heads/${def}`)) !== c.main) throw fail(409, `${changeUrl(repo, n)}: ${def} moved while it merged (conflict): ask again, and its checks run against the new base`);
+        const clash = baseMoved(changeUrl(repo, n), c.main, await rev(repo, `refs/heads/${def}`));
+        if (clash) throw fail(409, clash);
         throw e;
       });
       await refs(repo, [`create refs/changes/${n}/merged ${sha}`]);
@@ -224,14 +210,18 @@ export function localHost({ root, sources = {}, tasksDir, scratchDir, instanceRe
     return { state: { ...base(requester), workspace: a.workspace, branches }, target: names, sentence: `${action === "pr" ? "Publish and open a change request for" : "Push"} ${names}.`, diff, reads, changed, bases, ...(action === "pr" && a.text ? { evidence: evidenceOf(a.text.body) } : {}) };
   }
 
-  /** Waits until the change's checks are all green (""), or one is red or they don't finish in time (why, with its summary). */
+  /**
+   * Waits until the change's checks are all green on this head and base (""), or refuses with why they aren't: a missing
+   * check, a red one, or a run that didn't finish in the wait (refuse.ts `checksNotGreen`, the same rule plan.ts names).
+   */
   async function green(repo: string, head: string, baseSha: string) {
     for (const until = Date.now() + waitMs; ;) {
       const cs = await checks(repo, head, baseSha, true);
       if (cs.length && cs.every((c) => c.ok)) return "";
-      const red = cs.find((c) => !c.ok && !c.pending);
-      if (!cs.length || red || Date.now() > until) return red ? `failed: ${red.summary ?? "no summary"}` : "didn't finish in time";
-      await new Promise((r) => setTimeout(r, 2000));
+      const why = checksNotGreen(cs, Date.now() > until);
+      // Still green-able: nothing red or missing yet, so wait for the run.
+      if (!why) { await new Promise((r) => setTimeout(r, 2000)); continue; }
+      return why;
     }
   }
 

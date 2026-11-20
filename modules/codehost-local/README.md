@@ -6,8 +6,11 @@ provides the `codehost` role beside `codehost-github`; each repository is hosted
 
 The kernel runs it in process (it has no service):
 
-- `src/host.ts`: the executor of its write kinds (`create_repo`, `push`, `pr`, `merge`, `close`: the same actions as
-  codehost-github's, tiered by the same `plan.ts` rules), and a repo's clone into a job's workspace. A `pr` opens a change
+- `src/kinds.ts`: the write kinds themselves (`create_repo`, `push`, `pr`, `merge`, `close`: the same actions as
+  codehost-github's, each with its args schema, floor and card, and this module's own in-process executor, so there is no
+  service URL, no key and no GitHub App). `kernel/src/main.ts` registers them, and a `codehost.<action>` naming a `local/*`
+  repo routes to them (`kernel/src/codehost.ts`).
+- `src/host.ts`: the executor of those kinds, tiered by the same `plan.ts` rules, and a repo's clone into a job's workspace. A `pr` opens a change
   request (`codehost:local/<name>/change/<n>`, git refs in the bare repo); a `merge` squashes it onto the default branch once
   its `change` check job passed on its exact head.
 - `src/snapshot.ts`: a repo's tree at a commit, for check jobs and an Engineer's repo-checkout.
@@ -22,7 +25,7 @@ and the caps still apply. It is never asked for a done or cancelled task, nor fo
 running. And a task whose own change is still open cannot reach `done`: the finish gate refuses it, green-but-unmerged most
 of all, so the merge card is never approved on an already-closed task (AidenHQ#709).
 
-**The merge's refusals** are code's, with a test each: a head that isn't the change's current head (`head-moved`), a
-required check missing or not green on that head (`checks-not-green`), and a base that conflicts (`conflict`). It lands by
-compare-and-swap on the base ref, so a base that moves during the merge refuses instead of landing unchecked, and the task
-branch goes.
+**The merge's refusals** are code's (`src/refuse.ts`), with a test each in `test/refuse.test.ts`: a head that isn't the
+change's current head (`head-moved`), a required check missing, red or still running past the wait on that head
+(`checks-not-green`), and a base that conflicts, including a base ref that moves during the merge (`conflict`). It lands by
+compare-and-swap on the base ref, so a base that moved refuses instead of landing unchecked, and the task branch goes.
