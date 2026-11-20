@@ -205,7 +205,7 @@ const MAX_LOOKUPS = 20;
 /** A row of the kernel's task state (GET /v1/tasks/state, kernel/src/task-state-read.ts). */
 type StateRow = { task: string; identifier: string | null; since: string; reason: string; ref?: string; holder: string | null; attention: { who: string; why: string }[]; idle_wakes: number; wait_since?: string };
 /** Idle with nothing recorded to wake it, a wake nothing took, or its history pruned: the state's unexplained idle. */
-const UNEXPLAINED = ["orphaned", "unknown", "history_expired"];
+const UNEXPLAINED = ["unpolled", "orphaned", "unknown", "history_expired"];
 type IdleItem = { task: string; identifier: string | null; reason: string; blocked_on?: string };
 
 /** Tasks waiting on a module over MERGE_WAIT_MS (a PR's checks, eval or merge queue: the queue or a red base holds them), and tasks blocked on each other in a cycle (a blocked row's `ref` is `task:<blocker id>`). */
@@ -536,8 +536,8 @@ export function checks(d: { kernel: KernelClient; kv: Kv; pause: (routine: strin
       }
       return out;
     },
-    // Orphaned work: the kernel's task state (nothing running, filed or waiting on the task: orphaned, unknown or history
-    // expired), over 2 hours. The one stuck-work rule.
+    // Orphaned work: the kernel's task state (nothing running, filed or waiting on the task: unpolled, orphaned, unknown or
+    // history expired), over 2 hours. The one stuck-work rule.
     // A task whose holder the kernel's idle sweep already woke 3 times in a day (kernel idle.ts) is critical at once: waking
     // it again won't move it, so Fleet Ops looks at it.
     async stuck() {
@@ -545,11 +545,16 @@ export function checks(d: { kernel: KernelClient; kv: Kv; pause: (routine: strin
       const out: Incident[] = [];
       const items = await openStates();
       const capped = (x: { idle_wakes?: number }) => (x.idle_wakes ?? 0) >= IDLE_WAKE_CAP;
-      for (const i of items.filter((x) => UNEXPLAINED.includes(x.reason) && (capped(x) || age(x.since, t) > IDLE_MS) && !exempt({ identifier: x.identifier, originKind: null }) && !suppressed(x.task, `stuck:${x.task}`))) {
+      // `unpolled`: no enabled dispatcher runs the holder, so the idle sweep skips it and no wake would ever be taken. It is raised
+      // as soon as it is seen, not after IDLE_MS, because nothing the kernel does moves it; not critical, since a dispatcher
+      // outage makes every idle task unpolled at once and one fleet-level fix covers them all.
+      const stuck = (x: { reason: string; idle_wakes?: number; since: string }) => capped(x) || x.reason === "unpolled" || age(x.since, t) > IDLE_MS;
+      for (const i of items.filter((x) => UNEXPLAINED.includes(x.reason) && stuck(x) && !exempt({ identifier: x.identifier, originKind: null }) && !suppressed(x.task, `stuck:${x.task}`))) {
         // Owned by nobody, or by the owner (a person, not an agent's work): not someone's stuck work (the inbox, review-log and
         // issues tasks are idle by design; owner-assigned todos are the stale follow-up check's). A backlog task is `backlog`, never idle.
         if (!i.holder || i.holder === "owner") continue;
-        if (capped(i)) out.push({ key: `${i.task}:idle-capped`, critical: true, reason: `task ${i.identifier ?? i.task} is still idle after ${i.idle_wakes} idle wakes of its agent today (nothing running, filed or waiting on it, ${mins(age(i.since, t))}): waking it again won't move it` });
+        if (i.reason === "unpolled") out.push({ key: `${i.task}:unpolled`, reason: `task ${i.identifier ?? i.task} is idle for ${mins(age(i.since, t))} and no enabled dispatcher runs its agent ${i.holder}: no wake will ever start it, so its agent's assignment has to be fixed or the task re-routed` });
+        else if (capped(i)) out.push({ key: `${i.task}:idle-capped`, critical: true, reason: `task ${i.identifier ?? i.task} is still idle after ${i.idle_wakes} idle wakes of its agent today (nothing running, filed or waiting on it, ${mins(age(i.since, t))}): waking it again won't move it` });
         else out.push({ key: i.task, reason: `task ${i.identifier ?? i.task} idle for ${mins(age(i.since, t))} with nothing running, filed or waiting on it (${slug(i.reason)})` });
       }
       return out;

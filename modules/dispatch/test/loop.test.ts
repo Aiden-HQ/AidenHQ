@@ -553,6 +553,53 @@ test("a wake the kernel refuses is dropped; a transient failure keeps it; a job 
   assert.match(k.notified[0].text, /reply for WOR-1 was dropped/);
 });
 
+test("a refusal a recompile clears is retried on the wake's next lease, then said on the task and dropped", async () => {
+  const task = { id: "t1", identifier: "WOR-1", title: "Fix", description: "Do it", status: "todo", assigneeAgentId: "eng", createdByUserId: "u1" };
+  const k = fake({ task });
+  const start = k.kernel.start;
+  // Admission refused it: the agent has no grants (kernel/src/admission.ts no-grants, 403) — a recompile can add them.
+  k.kernel.start = async () => { throw new KernelError(403, "kernel POST /v1/jobs → 403", { type: "no-grants", message: "agent eng has no grants" }); };
+  for (const tick of [1, 2]) {
+    k.inbox.push(wake("issue:t1:1", "assigned"));
+    await k.dispatch.tick();
+    assert.deepEqual([k.dropped, k.notes], [[], []], `try ${tick}: kept for its next lease, nothing said yet`);
+  }
+  assert.equal(k.started.length, 0);
+  // The third refusal is the last START_TRIES allows: it goes on the task, naming the refusal, and the wake is dropped.
+  k.inbox.push(wake("issue:t1:1", "assigned"));
+  await k.dispatch.tick();
+  assert.deepEqual(k.dropped.map((d) => d.key), ["issue:t1:1"]);
+  assert.equal(k.notes.length, 1, "one notice on the task, once per wake");
+  assert.match(k.notes[0].body, /not started/);
+  assert.match(k.notes[0].body, /no-grants/);
+  assert.match(k.notes[0].body, /agent eng has no grants/);
+  // A wake the recompiled kernel then takes starts its job: the retries did not wedge it.
+  k.kernel.start = start;
+  k.inbox.push(wake("issue:t1:2", "status"));
+  await k.dispatch.tick();
+  assert.equal(k.started.length, 1);
+  assert.deepEqual(k.notes.length, 1, "no notice for a wake that ran");
+});
+
+test("a refusal nothing clears is dropped at once with its notice; a live job or a lost lease is not noticed", async () => {
+  const k = fake({ task: { id: "t1", identifier: "WOR-1", title: "Fix", description: "Do it", status: "todo", assigneeAgentId: "eng", createdByUserId: "u1" } });
+  const start = k.kernel.start;
+  k.kernel.start = async () => { throw new KernelError(409, "kernel POST /v1/jobs → 409", { type: "task-closed", message: "task t1 is done" }); };
+  k.inbox.push(wake("issue:t1:1", "assigned"));
+  await k.dispatch.tick();
+  assert.deepEqual(k.dropped.map((d) => d.key), ["issue:t1:1"], "task-closed never changes: dropped on the first refusal");
+  assert.deepEqual([k.notes.length, /task-closed/.test(k.notes[0].body), /is done/.test(k.notes[0].body)], [1, true, true]);
+  // The task has a live job (another wake's), or the lease ran out mid-handle: the row goes, and the task is not told nothing runs.
+  for (const [type, key] of [["job-running", "issue:t1:2"], ["wake-not-claimed", "issue:t1:3"]] as const) {
+    k.kernel.start = async () => { throw new KernelError(409, "kernel POST /v1/jobs → 409", { type, message: type }); };
+    k.inbox.push(wake(key, "assigned"));
+    await k.dispatch.tick();
+  }
+  assert.deepEqual(k.dropped.map((d) => d.key), ["issue:t1:1", "issue:t1:2", "issue:t1:3"]);
+  assert.equal(k.notes.length, 1, "no notice where another run answers or the row isn't ours");
+  k.kernel.start = start;
+});
+
 test("an outcome the kernel can't post yet is retried less often each time, not every tick", async () => {
   let t = 0;
   const k = fake({ task: { id: "t1", identifier: "WOR-1", title: "Fix", status: "todo", assigneeAgentId: "eng", createdByUserId: "u1" } });

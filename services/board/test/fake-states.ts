@@ -19,7 +19,7 @@ export function fakeStates(rows: StateRow[] = []): TaskStates & { rows: StateRow
         counts: {
           needs_you: tasks.filter((r) => needs(r, (a) => a.who === "owner")).length,
           failed: tasks.filter((r) => needs(r, (a) => a.why === "failed")).length,
-          unexplained_idle: tasks.filter((r) => needs(r, (a) => ["orphaned", "unknown", "history_expired"].includes(a.why))).length,
+          unexplained_idle: tasks.filter((r) => needs(r, (a) => ["unpolled", "orphaned", "unknown", "history_expired"].includes(a.why))).length,
         },
       };
     },

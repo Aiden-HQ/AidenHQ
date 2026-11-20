@@ -65,6 +65,29 @@ const blockedEpisode = (task: Issue) => `blocked:${(task.blockedBy ?? []).filter
 
 /** A kernel answer that retrying never changes: a refusal (4xx, except 429's "busy") or an agent the kernel holds no key for. */
 const permanent = (e: unknown): e is KernelError => e instanceof KernelError && ((e.status >= 400 && e.status < 500 && e.status !== 429) || /no-agent-key/.test(e.message));
+/**
+ * Kernel refusals a recompile or a re-queue clears (admission.ts): the grants, the agent's profile or the dispatcher's list were
+ * replaced while a dispatcher held an older table, provenance had not settled yet, or the task moved under the wake. The wake is
+ * kept and tried again (`START_TRIES` in a row, each after its lease — a minute apart), never dropped on its first refusal.
+ * `wake-not-claimed` (the lease ran out mid-handle) needs neither a notice nor a drop: the row is no longer ours.
+ */
+const TRIES_AGAIN = new Set(["no-grants", "not-your-agent", "bad-profile", "task-not-assigned", "provenance-unsettled"]);
+const clears = (e: unknown) => e instanceof KernelError && (e.status === 403 || e.status === 409) && TRIES_AGAIN.has(e.body?.type ?? "");
+/**
+ * Refusals another run already answers (`job-running`: the task has a live job) or a row that is no longer this module's
+ * (`wake-not-claimed`): the wake goes with nothing said, since a notice would say nothing is running on a task that is.
+ */
+const ELSEWHERE = new Set(["job-running", "wake-not-claimed"]);
+
+/**
+ * What a refused wake says on its task, once: the kernel's own words and the route that refused it, so whoever reads the task sees
+ * what stopped it rather than `idle · orphaned`. The kernel's type is kept in the sentence (machine-readable beside the prose).
+ */
+const refusalNotice = (e: KernelError) => {
+  const type = e.body?.type ?? "refused";
+  const why = (e.body?.message ?? e.message).replace(/\s+/g, " ").trim().slice(0, 400);
+  return `**This task was not started.** A run was queued for it, but the kernel refused to start it (\`${type}\`): ${why}\n\nNothing is running on it, and this wake was dropped rather than retried.`;
+};
 
 /** How long a job whose follow failed waits before the next try: doubling from a quarter minute, at most ten minutes. */
 const retryAfter = (fails: number) => Math.min(600_000, 15_000 * 2 ** (fails - 1));
@@ -80,6 +103,9 @@ export function createDispatch({ kernel, db, owner, log = () => {}, now = Date.n
   const judges = new Map<string, ReturnType<typeof progressTracker>>();
   // Jobs whose follow failed with an error worth retrying: how often, and not before when (a restart starts fresh).
   const backoff = new Map<string, { fails: number; next: number }>();
+  // Wake starts the kernel refused: how many times in a row, so a refusal a recompile clears is retried a bounded number of
+  // times before it is said on the task and the wake is dropped (a restart starts fresh).
+  const refusals = new Map<string, number>();
 
   /**
    * After a run of an agent's task ends, whoever asked hears what it needs: a task left blocked, with the run's reply as the reason;
@@ -272,11 +298,21 @@ export function createDispatch({ kernel, db, owner, log = () => {}, now = Date.n
       await routines.sweep(async () => Object.keys(await kernel.directory()));
       const tick = { agents: new Map<string, Agent>(), redirected: new Set<string>() };
       for (const w of await kernel.claim(20)) {
-        // A kernel refusal (not its agent, task closed or gone, no right to read it) never changes: the wake is dropped. Anything
-        // else (a lost answer included) leaves it claimed: its lease brings it back if no job came of it, and a job that did is in the open list.
-        await handle(w, tick).catch((e: Error) => permanent(e)
-          ? kernel.drop(w.key, e.message).then(() => log("wake dropped: the kernel refused it", { wake: w.key, err: e.message }), () => {})
-          : log("wake failed", { wake: w.key, err: e.message }));
+        // A claim whose handling was lost (the answer never came) leaves the row claimed: its lease brings it back if no job came of
+        // it, and a job that did is in the open list. A refusal that a recompile or a re-queue clears is retried a few times that
+        // way first; any other refusal is final, and says so on the task before the row goes, so it is never a silent
+        // `idle · orphaned`.
+        await handle(w, tick).then(() => refusals.delete(w.key)).catch(async (e: Error) => {
+          if (!permanent(e)) return log("wake failed", { wake: w.key, err: e.message });
+          const tries = (refusals.get(w.key) ?? 0) + 1;
+          if (clears(e) && tries < START_TRIES) {
+            refusals.set(w.key, tries);
+            return log("wake refused: retried when its lease runs out", { wake: w.key, task: w.task, refusal: e.body?.type ?? e.status, tries, err: e.message.slice(0, 200) });
+          }
+          refusals.delete(w.key);
+          if (!ELSEWHERE.has(e.body?.type ?? "")) await kernel.note(w.key, refusalNotice(e)).catch((err: Error) => log("refused wake: its notice wasn't posted", { wake: w.key, task: w.task, err: err.message }));
+          await kernel.drop(w.key, e.message).then(() => log("wake dropped: the kernel refused it", { wake: w.key, task: w.task, err: e.message.slice(0, 200) }), () => {});
+        });
       }
     },
   };
