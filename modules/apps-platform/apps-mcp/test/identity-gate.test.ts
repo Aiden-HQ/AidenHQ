@@ -525,10 +525,11 @@ describe("identity gate", () => {
     expect(r.findings[0]).toMatchObject({ hard: true, what: expect.stringMatching(/answers HTTPS/) });
   }, 60_000);
 
-  // What a ClientHello offers, read from its structure: the versions in supported_versions (type 43), the named groups in
-  // supported_groups (type 10) and the groups in key_share (type 51). A 1.3-only listener can only negotiate with a hello
-  // that offers TLS 1.3 and a key share for a group it accepts; one that offers neither is closed silently, as an
-  // unsupported hello is. Null while the hello has not all arrived.
+  // What a ClientHello offers, read from its structure: the cipher suites in its list, the versions in supported_versions
+  // (type 43), the named groups in supported_groups (type 10) and the groups in key_share (type 51). A 1.3-only listener
+  // can only negotiate with a hello that offers TLS 1.3 and a key share for a group it accepts, and a 1.2-only listener
+  // only with one whose cipher list carries a 1.2 suite; one that offers neither is closed silently, as an unsupported
+  // hello is. Null while the hello has not all arrived.
   const HELLO_OFFERS = `(b) => {
     try {
       if (b.length < 5) return null;
@@ -536,6 +537,8 @@ describe("identity gate", () => {
       if (b.length < need) return null;
       let i = 5 + 4 + 2 + 32;
       i += 1 + b[i]; // session id
+      const suites = [];
+      for (let j = i + 2; j + 1 < i + 2 + b.readUInt16BE(i); j += 2) suites.push(b.readUInt16BE(j));
       i += 2 + b.readUInt16BE(i); // cipher suites
       i += 1 + b[i]; // compression
       const end = i + 2 + b.readUInt16BE(i);
@@ -549,7 +552,7 @@ describe("identity gate", () => {
         if (type === 43) for (let j = at + 1; j + 1 < at + len; j += 2) if (b.readUInt16BE(j) === 0x0304) v13 = true;
         i = at + len;
       }
-      return { v13, groups: [...groups], shares: [...shares] };
+      return { v13, suites, groups: [...groups], shares: [...shares] };
     } catch { return null; }
   }`;
 
@@ -577,6 +580,34 @@ describe("identity gate", () => {
       });
     }`);
     const r = await scan(db, [modern], { sni: ["warehouse"] });
+    expect(r.ok).toBe(false);
+    expect(r.findings[0]).toMatchObject({ hard: true, what: expect.stringMatching(/answers HTTPS/) });
+  }, 60_000);
+
+  it.runIf(process.platform === "linux")("finds a TLS 1.2-only endpoint: the ClientHello offers a TLS 1.2 suite", async () => {
+    // A multiplexer serves PostgreSQL and HTTPS on one port. The plaintext probes identify PostgreSQL, so the port gets a
+    // TLS hello too; an endpoint that only speaks TLS 1.2 cannot negotiate with a hello whose cipher list holds 1.3 suites
+    // alone and silently drops it, which would read as a database-only port and be skipped. The hello offers 1.2 suites, so
+    // the 1.2-only side answers it and the port stays hard.
+    const db = parseApp({ name: "warehouse", repo: "example-org/x", owner: "a", description: "d", port: 5433, expose: false, protocol: "postgres" });
+    const legacy = await tcp(`(s) => {
+      let stage = 0, got = Buffer.alloc(0);
+      const offers = ${HELLO_OFFERS};
+      s.on("data", (d) => {
+        got = Buffer.concat([got, d]);
+        if (stage === 0 && got[0] === 0x16) { // the TLS hello, on its own connection
+          const o = offers(got);
+          if (o === null) return; // not all arrived yet: judge only the whole hello
+          if (o.suites.includes(0xc02f)) s.end(Buffer.from([0x16, 0x03, 0x03, 0, 2, 2, 40])); // a 1.2-capable endpoint answers
+          else s.destroy(); // unsupported hello: closed silently, as a 1.2-only listener does
+          return;
+        }
+        if (stage === 0 && got[0] === 0x47) return s.destroy(); // the HTTP GET
+        if (stage === 0) { stage = 1; return s.write("N"); } // the SSLRequest
+        if (stage === 1) s.end(Buffer.from([0x52, 0, 0, 0, 8, 0, 0, 0, 0])); // the startup message
+      });
+    }`);
+    const r = await scan(db, [legacy], { sni: ["warehouse"] });
     expect(r.ok).toBe(false);
     expect(r.findings[0]).toMatchObject({ hard: true, what: expect.stringMatching(/answers HTTPS/) });
   }, 60_000);

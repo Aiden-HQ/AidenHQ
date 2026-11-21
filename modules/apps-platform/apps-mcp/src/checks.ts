@@ -392,12 +392,14 @@ const postgres = (host, port) => new Promise((done) => {
 // that host in SNI; a router that serves its default endpoint when SNI is absent and silently closes an unknown name only
 // answers a hello without SNI. RFC 6066 allows one host_name per server_name list, so each host gets its own hello rather
 // than a list of several, and the unnamed hello is tried too. Any answer keeps the socket hard. The hello offers TLS 1.3 and
-// a key share, so a 1.3-only endpoint can answer it rather than silently dropping it as unsupported.
+// a key share, so a 1.3-only endpoint can answer it rather than silently dropping it as unsupported, and TLS 1.2 suites, so
+// a 1.2-only endpoint can answer it too.
 const tlsExt = (type, body) => Buffer.concat([Buffer.from([type >> 8, type & 255]), Buffer.from([body.length >> 8, body.length & 255]), body]);
-// A modern ClientHello: TLS 1.3 and 1.2, TLS 1.3 suites, x25519 and secp256r1 key shares, and the signatures a current
-// client offers. A 1.3-only endpoint cannot negotiate with a hello that offers neither 1.3 nor a key share; a listener that
-// silently drops an unsupported hello would read as a database, so the hello has to be one a current client would send. It
-// carries no certificate and completes no handshake: only the server's first record matters.
+// A modern ClientHello: TLS 1.3 and 1.2, TLS 1.3 and TLS 1.2 suites, x25519 and secp256r1 key shares, and the signatures a
+// current client offers. A 1.3-only endpoint cannot negotiate with a hello that offers neither 1.3 nor a key share, and a
+// 1.2-only endpoint cannot negotiate with a hello whose cipher list holds 1.3 suites alone; a listener that silently drops
+// an unsupported hello would read as a database, so the hello has to be one a current client would send. It carries no
+// certificate and completes no handshake: only the server's first record matters.
 const hello = (name) => {
   const exts = [];
   if (name) {
@@ -423,7 +425,9 @@ const hello = (name) => {
     Buffer.from([0x03, 0x03]),
     Buffer.alloc(32, 7), // random
     Buffer.from([0x00]), // no session
-    Buffer.from([0, 4, 0x13, 0x01, 0x13, 0x02]), // TLS_AES_128_GCM_SHA256, TLS_AES_256_GCM_SHA384
+    // TLS 1.3 suites first, then TLS 1.2 suites (ECDHE with ECDSA or RSA, AES-128/256-GCM and ChaCha20-Poly1305): a 1.2-only
+    // listener that offers only 1.2 suites must find one here, or a strict one closes the hello silently and escapes the probe.
+    Buffer.from([0, 16, 0x13, 0x01, 0x13, 0x02, 0xc0, 0x2b, 0xc0, 0x2f, 0xc0, 0x2c, 0xc0, 0x30, 0xcc, 0xa9, 0xcc, 0xa8]),
     Buffer.from([0x01, 0x00]), // one compression, null
     Buffer.from([extensions.length >> 8, extensions.length & 255]),
     extensions,
