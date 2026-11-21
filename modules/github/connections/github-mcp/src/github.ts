@@ -60,6 +60,7 @@ export const ROUTES: { method: Method; path: RegExp }[] = [
   { method: "POST", path: new RegExp(`^/repos/${NAME}/${NAME}/pulls/${NUM}/reviews$`) },
   // Code review's posting (review-post.ts): the acknowledgement comment edited in place, a review's summary updated with its
   // threads' links, a file comment for a finding on a file without diff lines, and the one commit status it mirrors its verdict to.
+  { method: "GET", path: new RegExp(`^/repos/${NAME}/${NAME}/issues/comments/${NUM}$`) },
   { method: "PATCH", path: new RegExp(`^/repos/${NAME}/${NAME}/issues/comments/${NUM}$`) },
   { method: "PUT", path: new RegExp(`^/repos/${NAME}/${NAME}/pulls/${NUM}/reviews/${RUN}$`) },
   // An agent's reply on a review thread (github_pr_thread_reply): how a finding is answered (fixed / disputed …).
@@ -93,9 +94,12 @@ export const GRAPHQL = {
   // Review threads of a pull request (their first comment's author and body, and the replies) and resolving one by id
   // (review-post.ts resolves only the threads it posted itself).
   reviewThreads: `query($owner: String!, $name: String!, $number: Int!, $after: String) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { reviewThreads(first: 100, after: $after) { pageInfo { hasNextPage endCursor } nodes { id isResolved isOutdated path line comments(first: 20) { nodes { databaseId url body author { login } } } } } } } }`,
-  resolveThread: `mutation($thread: ID!) { resolveReviewThread(input: { threadId: $thread }) { thread { id isResolved } } }`,
 } as const;
-const GRAPHQL_DOCS = new Set<string>(Object.values(GRAPHQL));
+/** The most threads one resolve request takes (a post resolves at most 100). */
+export const RESOLVE_MAX = 100;
+/** One request resolving `n` threads: aliased mutations `t0..t<n-1>`, each with its own `$t<i>` variable. */
+const resolveDoc = (n: number) => `mutation(${Array.from({ length: n }, (_, i) => `$t${i}: ID!`).join(", ")}) { ${Array.from({ length: n }, (_, i) => `t${i}: resolveReviewThread(input: { threadId: $t${i} }) { thread { id isResolved } }`).join(" ")} }`;
+const GRAPHQL_DOCS = new Set<string>([...Object.values(GRAPHQL), ...Array.from({ length: RESOLVE_MAX }, (_, i) => resolveDoc(i + 1))]);
 
 export class GitHubRefused extends Error {}
 
@@ -460,6 +464,12 @@ export class GitHub {
     const res = await this.request<{ data?: T; errors?: { message: string }[] }>("POST", "/graphql", { body: { query: GRAPHQL[doc], variables } });
     if (res.errors?.length || !res.data) throw new Error(`GitHub GraphQL: ${res.errors?.map((e) => e.message).join("; ").slice(0, 300) ?? "no data"}`);
     return res.data;
+  }
+
+  /** Resolves the review threads (at most RESOLVE_MAX) in one request. */
+  async resolveThreads(ids: string[]): Promise<void> {
+    const res = await this.request<{ data?: unknown; errors?: { message: string }[] }>("POST", "/graphql", { body: { query: resolveDoc(ids.length), variables: Object.fromEntries(ids.map((id, i) => [`t${i}`, id])) } });
+    if (res.errors?.length || !res.data) throw new Error(`GitHub GraphQL: ${res.errors?.map((e) => e.message).join("; ").slice(0, 300) ?? "no data"}`);
   }
 
   /** A read whose failure is reported in the output (as `<field>_error`) instead of thrown or flattened to empty. */

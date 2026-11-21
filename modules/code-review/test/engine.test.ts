@@ -482,21 +482,21 @@ test("a PR open before its repo was gated gets its mandatory review; a fork's au
   assert.deepEqual(codes(f.engine.verdict(REPO, 3, sha("3"))), ["findings"]);
 });
 
-test("the commit status mirrors the verdict per head, written only when it changes: pending while the review runs, failure with findings open, success once clean", async () => {
+test("the commit status mirrors the verdict per head, written only when it changes and only once decided: nothing while the review runs, failure with findings open, success once clean", async () => {
   const w = gatedWorld();
   await opened(w, 2, sha("2"));
+  assert.equal(w.statuses.length, 0, "a running review writes no status");
   const last = () => { const s = w.statuses.at(-1); return [s.head, s.reason, s.important, s.running.length]; };
-  assert.deepEqual(last(), [sha("2"), "running", 0, 1]);
+  w.finish(0); await w.tick({ github: false });
+  assert.deepEqual(last(), [sha("2"), "findings", 1, 0]);
   const n = w.statuses.length;
-  w.outcomes.set(`s-${n}`, { state: "pending" }); // still running: its outcome read back names no write
+  w.outcomes.set(`s-${n}`, { state: "pending" }); // still settling: its outcome read back names no write
   await w.tick({ github: false });
   w.outcomes.delete(`s-${n}`);
   await w.tick({ github: false });
   assert.equal(w.statuses.length, n, "nothing changed, nothing written: the pending write settled by its own id");
-  w.finish(0); await w.tick({ github: false });
-  assert.deepEqual(last(), [sha("2"), "findings", 1, 0]);
   w.pr(2, sha("3")); await w.tick();
-  assert.deepEqual(last(), [sha("3"), "queued", 1, 1], "the push's review waits out its debounce");
+  assert.equal(w.statuses.length, n, "the push's review waits out its debounce without a status");
   w.later(DEBOUNCE + 1); await w.tick({ github: false });
   w.finish(1, { findings: [], fixed: ["f1"] }); await w.tick({ github: false });
   assert.deepEqual(last(), [sha("3"), "pass", 0, 0]);

@@ -8,7 +8,7 @@
 import type { z } from "zod";
 import { withFooter } from "./aidenhq-sdk/attribution.js";
 import type { GitHubAccess } from "./client.js";
-import { GitHub, GitHubRefused, objectRef, type Ref } from "./github.js";
+import { GitHub, GitHubRefused, RESOLVE_MAX, objectRef, type Ref } from "./github.js";
 import {
   FINDING_MARK, SCALES, comboText, NoticeArgsSchema, PostArgsSchema, RUN_MARK, STATUS_CONTEXT, StatusArgsSchema, anchors, counts, renderNotice,
   renderReview, renderStatus, rightLines, type NoticeArgs, type Placed, type PostArgs, type StatusArgs,
@@ -127,8 +127,10 @@ export class ReviewPoster {
       if (!t) skipped.push({ thread: id, why: missing });
       else if (!t.ours) skipped.push({ thread: id, why: "not a thread code review recorded as its own" });
       else if (t.resolved) skipped.push({ thread: id, why: "already resolved" });
-      else { await this.gh.graphql("resolveThread", { thread: id }); resolved.push(id); }
+      else resolved.push(id);
     }
+    // One request for all of them.
+    if (resolved.length) await this.gh.resolveThreads(resolved.slice(0, RESOLVE_MAX));
     return { resolved, skipped };
   }
 
@@ -162,8 +164,12 @@ export class ReviewPoster {
   private async ack(ref: Ref, text: string, id?: number): Promise<{ id: number; url: string; object: string }> {
     const signed = withFooter(text, AGENT);
     if (id) {
-      const ok = await this.gh.request<{ html_url: string }>("PATCH", `${api(ref)}/issues/comments/${id}`, { body: { body: signed } }).catch((e: Error) => { if (/\b404\b/.test(e.message)) return undefined; throw e; });
-      if (ok) return { id, url: ok.html_url, object: `${objectRef(ref)}/comment/${id}` };
+      // Read it first: a notice whose words are already there writes nothing.
+      const have = await this.gh.request<{ html_url: string; body?: string }>("GET", `${api(ref)}/issues/comments/${id}`, {}).catch((e: Error) => { if (/\b404\b/.test(e.message)) return undefined; throw e; });
+      if (have) {
+        const ok = have.body === signed ? have : await this.gh.request<{ html_url: string }>("PATCH", `${api(ref)}/issues/comments/${id}`, { body: { body: signed } });
+        return { id, url: ok.html_url, object: `${objectRef(ref)}/comment/${id}` };
+      }
     }
     const made = await this.gh.request<{ id: number; html_url: string }>("POST", `${api(ref)}/issues/${ref.number}/comments`, { body: { body: signed } });
     return { id: made.id, url: made.html_url, object: `${objectRef(ref)}/comment/${made.id}` };
@@ -231,6 +237,10 @@ export class ReviewPoster {
     const ref = { ...split(a.repo), number: a.pr };
     const who = await this.identity();
     const s = renderStatus(a);
+    // The latest status of this context on the commit: the same state and words write nothing.
+    const now = await this.gh.request<{ statuses?: { context: string; state: string; description: string | null }[] }>("GET", `${api(ref)}/commits/${a.head}/status`, { query: { per_page: 100 } });
+    const had = now.statuses?.find((x) => x.context === STATUS_CONTEXT);
+    if (had?.state === s.state && had.description === s.description) return { ok: true, text: JSON.stringify({ identity: "owner", login: who.login, state: s.state, unchanged: true }), objects: [] };
     await this.gh.request("POST", `${api(ref)}/statuses/${a.head}`, { body: { state: s.state, context: STATUS_CONTEXT, description: s.description, target_url: `https://github.com/${a.repo}/pull/${a.pr}` } });
     return { ok: true, text: JSON.stringify({ identity: "owner", login: who.login, state: s.state }), objects: [] };
   }
@@ -259,14 +269,14 @@ export class ReviewPoster {
     const anchored = anchors(r.findings, await this.diffLines(ref, r.base, r.head, pr.head.sha === r.head));
     const place = new Map([...anchored].filter(([id]) => shown.has(id)));
     const first = renderReview(r, a.run, { place, earlier, gated: a.gated, scale });
-    let review: { id: number; html_url: string } | undefined;
+    let review: { id: number; html_url: string; body?: string } | undefined;
     for (let page = 1; page <= 10 && !review; page++) {
       const rs = await this.gh.request<{ id: number; html_url: string; body?: string; user?: { login: string } }[]>("GET", `${api(ref)}/pulls/${ref.number}/reviews`, { query: { per_page: 100, page } });
       review = rs.find((x) => x.body?.includes(RUN_MARK(a.run)) && norm(x.user?.login ?? "") === norm(who.login));
       if (rs.length < 100) break;
     }
     const onLines = first.comments.filter((c) => !c.file);
-    review ??= await this.gh.request<{ id: number; html_url: string }>("POST", `${api(ref)}/pulls/${ref.number}/reviews`, {
+    review ??= await this.gh.request<{ id: number; html_url: string; body?: string }>("POST", `${api(ref)}/pulls/${ref.number}/reviews`, {
       body: { event: "COMMENT", commit_id: r.head, body: withFooter(first.summary, AGENT), ...(onLines.length ? { comments: onLines.map((c) => ({ path: c.path, line: c.line, side: "RIGHT", ...(c.start_line ? { start_line: c.start_line } : {}), body: c.body })) } : {}) },
     });
     // Its inline comments (each thread's first comment) by finding, for the links and AidenHQ's records.
@@ -283,7 +293,9 @@ export class ReviewPoster {
     }
     const links = new Map(made.filter((m) => m.finding).map((m) => [m.finding!, m.url]));
     const placed = new Map([...place].filter(([id]) => !unthreaded.has(id)));
-    await tryTo("summary links", () => this.gh.request("PUT", `${api(ref)}/pulls/${ref.number}/reviews/${review!.id}`, { body: { body: withFooter(renderReview(r, a.run, { place: placed, earlier, links, gated: a.gated, scale }).summary, AGENT) } }));
+    // The review's own body already says all there is when no finding got a thread link: the PUT is only for a body that changes.
+    const linked = withFooter(renderReview(r, a.run, { place: placed, earlier, links, gated: a.gated, scale }).summary, AGENT);
+    if (linked !== review.body) await tryTo("summary links", () => this.gh.request("PUT", `${api(ref)}/pulls/${ref.number}/reviews/${review!.id}`, { body: { body: linked } }));
     // A missing finding isn't proof of a fix: the state service names the ids its recheck confirmed, and only the threads it
     // recorded as its own posts (`own`, its database) for findings the review no longer reports are resolved, and only for the
     // PR's current head (a review of an older one leaves them to the newer head's review).
