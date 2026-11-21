@@ -49,4 +49,12 @@ describe("judging", () => {
     expect(errored.findings[0]).toMatchObject({ hard: true, what: expect.stringContaining("couldn't confirm") });
     expect(errored.findings[0]!.what).not.toContain(NO_SIGN_IN);
   });
+
+  it("an app that answers 503 to every identity probe is unconfirmed, not a confirmed refusal", () => {
+    const probe = (method: "GET" | "HEAD", path: string) => ({ probe: { method, path, forged: true, counts: true }, status: 503 });
+    const r = judgeIdentity([probe("GET", "/"), probe("HEAD", "/api/health")]);
+    expect(r.ok).toBe(false);
+    expect(r.findings[0]).toMatchObject({ hard: true, what: expect.stringContaining("couldn't confirm") });
+    expect(r.findings[0]!.what).not.toContain(NO_SIGN_IN);
+  });
 });

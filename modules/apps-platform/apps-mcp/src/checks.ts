@@ -112,8 +112,12 @@ export function judgeAgent(r: { status: number; body: string }, declared: boolea
 
 /** The identity gate's finding, word for word in the deploy result, its record and the app's incident. */
 export const NO_SIGN_IN = "the app answers without the platform's sign-in: keep the starter's identity check (aidenhq-identity protect) in server.mjs";
-/** What the app's identity middleware answers when it refuses (aidenhq-identity.mjs: 401, 403, or 503 without its keys). */
-const REFUSED = new Set([401, 403, 503]);
+/**
+ * What the app's identity middleware answers when it refuses. 503 is deliberately absent: the middleware answers it when
+ * it cannot read its keys, which proves nothing about whether an app checks identity at all (a handler that 503s every
+ * request would otherwise pass).
+ */
+const REFUSED = new Set([401, 403]);
 const UNCONFIRMED = "couldn't confirm the app refuses requests without the platform's sign-in";
 
 /**

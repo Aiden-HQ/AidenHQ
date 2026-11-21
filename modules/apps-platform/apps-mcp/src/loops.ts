@@ -55,6 +55,7 @@ export const WATCH_FAILS = 3;
 export const WATCH_SPAN_MS = 5 * 60_000;
 type Streak = { deploy: string; first: number; count: number; why: string };
 const streaks = new Map<string, Streak>(); // each app's consecutive failed probes with app-side evidence, at one deploy
+const teardownPaged = new Set<string>(); // app@sha already raised for a failed teardown across retries of one commit
 
 /**
  * The post-deploy watch: a healthy auto-deploy that starts failing within WATCH_MS, with app-side evidence on WATCH_FAILS
@@ -121,10 +122,16 @@ export async function reconcileTick(p: Platform, log: Log): Promise<void> {
       // The failed checks' generated reasons (never page text): the maintainer sees why it rolled back.
       const why = r.checks && failed(r.checks).length ? `: ${summary(r.checks)}` : "";
       // A stopped app says so first (the incident keeps 200 characters), and replaces an incident an earlier refused commit
-      // opened ("rolled back"): the app is down now.
-      if (r.stopped) p.store.closeIncident(app.name);
-      if (r.stopped) await p.raise(app.name, "deploy_failed", `deploy of ${head.slice(0, 8)} refused; ${r.stopped}${r.previous ? ` (as does the rollback target ${r.previous.slice(0, 8)})` : ""}${why}`);
-      else if (r.status !== "healthy") await p.raise(app.name, "deploy_failed", `deploy of ${head.slice(0, 8)} ${r.status}${r.previous ? `, rolled back to ${r.previous.slice(0, 8)}` : ""}${why}; ${NOTE}`);
+      // opened ("rolled back"): the app is down now. A build_failed commit is retried, so do not close and re-raise the
+      // same teardown failure on every attempt: the first alert stands until a different commit is tried.
+      if (r.stopped) {
+        const key = `${app.name}@${head}`;
+        if (!teardownPaged.has(key)) {
+          teardownPaged.add(key);
+          p.store.closeIncident(app.name);
+          await p.raise(app.name, "deploy_failed", `deploy of ${head.slice(0, 8)} refused; ${r.stopped}${r.previous ? ` (as does the rollback target ${r.previous.slice(0, 8)})` : ""}${why}`);
+        }
+      } else if (r.status !== "healthy") await p.raise(app.name, "deploy_failed", `deploy of ${head.slice(0, 8)} ${r.status}${r.previous ? `, rolled back to ${r.previous.slice(0, 8)}` : ""}${why}; ${NOTE}`);
     } catch (err) {
       // Nothing started (fetch, checkout, policy, secrets): retried next tick, not recorded as a deploy, paged once per commit.
       p.errors.set(app.name, String((err as Error).message ?? err).slice(0, 300));

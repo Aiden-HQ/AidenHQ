@@ -65,6 +65,19 @@ export function createEngine(d: Deps) {
   const docker = (app: App, args: string[], o: Opts = {}) => d.exec([...(app.host === "local" ? [] : ["--context", app.host]), ...args], { env: { APPS_DATA: d.appsData }, ...o });
   const compose = (app: App, args: string[], o?: Opts) => docker(app, ["compose", "-p", project(app), "-f", sandboxed(app), ...args], o);
 
+  /** The newest good deploy that may be returned to: one found answering without sign-in is never a target again. */
+  const usableGood = (good: Deploy[]): Deploy | undefined => good.find((g) => !g.disqualified);
+
+  /**
+   * The previous good deploy a manual rollback returns to. Stopping at the first different commit first keeps the old
+   * choice (a commit redeployed repeatedly does not become its own predecessor); a target found open is skipped only
+   * after that boundary.
+   */
+  const rollbackTarget = (good: Deploy[]): Deploy | undefined => {
+    const first = good.findIndex((g) => g.sha !== good[0]?.sha);
+    return first < 0 ? undefined : good.slice(first).find((g) => !g.disqualified);
+  };
+
   async function exclusive<T>(app: App, fn: () => Promise<T>): Promise<T> {
     if (draining) throw new Error("apps-mcp is shutting down: not starting new work");
     if (locks.has(app.name)) throw new Error(`deploy in progress for ${app.name}`);
@@ -170,9 +183,9 @@ export function createEngine(d: Deps) {
   async function stopIfOpen(app: App, id: ProbeResult | undefined, good: Deploy[], sha: string, note: string): Promise<string | undefined> {
     if (!id?.findings.some((f) => f.hard && f.what.includes(NO_SIGN_IN))) return undefined;
     const left = await halt(app);
-    // A confirmed stop disqualifies the target for good. A failed down proves nothing about what still runs, so the
-    // target stays out of the confirmed-stop history, though the deploy that found it is still refused.
-    if (!left) for (const g of good) if (g.sha === sha) d.store.markRolledBack(g.id, `${STOPPED_OPEN}${note}`);
+    // Found open is enough to disqualify the target for good. A confirmed stop also puts it in the confirmed-stop history;
+    // a failed down proves nothing about what still runs, so its healthy row stays healthy but out of rollback selection.
+    for (const g of good) if (g.sha === sha) left ? d.store.disqualify(g.id, `${STOPPED_OPEN}; ${left}`) : d.store.markRolledBack(g.id, `${STOPPED_OPEN}${note}`);
     return left ? `${STOPPED_OPEN}; ${left}` : STOPPED_OPEN;
   }
 
@@ -198,7 +211,7 @@ export function createEngine(d: Deps) {
   async function deploy(app: App, o: { sha?: string; by: string; allowStateful?: boolean }): Promise<Result> {
     if (app.stateful && !o.allowStateful) throw new Error(`${app.name} is stateful: deploy needs the owner's approval ("deploy ${app.name}" in chat)`);
     return exclusive(app, async () => {
-      const prev = d.store.goodDeploys(app.name)[0];
+      const prev = usableGood(d.store.goodDeploys(app.name));
       const next = await apply(app, o.sha);
       // Healthy is not enough: the light checks (a page that renders styled, an agent API that answers) must pass too. A
       // deploy that ran but wasn't healthy carries the health finding too, so its caller sees the class, not only the status.
@@ -250,7 +263,7 @@ export function createEngine(d: Deps) {
     if (app.stateful) throw new Error(`${app.name} is stateful: rollback needs the owner's approval`);
     return exclusive(app, async () => {
       const good = d.store.goodDeploys(app.name);
-      const prev = good.find((g) => g.sha !== good[0]?.sha);
+      const prev = rollbackTarget(good);
       if (!prev) throw new Error(`no previous good deploy of ${app.name} to roll back to`);
       const back = await apply(app, prev.sha);
       // A failed `up` may have replaced only some containers: stop it all, as the deploy path does.

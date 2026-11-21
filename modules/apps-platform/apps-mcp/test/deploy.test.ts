@@ -108,7 +108,26 @@ describe("deploy engine", () => {
     const r = await r0.engine.rollback(app(), { by: "t" });
     expect(r).toMatchObject({ sha: "v1", status: "failed", stopped: `${STOPPED_OPEN}; ${TEARDOWN_FAILED}` });
     expect(r0.store.goodDeploys("demo").find((g) => g.sha === "v1")?.status).toBe("healthy");
+    expect(r0.store.goodDeploys("demo").find((g) => g.sha === "v1")?.disqualified).toBe(1); // found open: never a target again
     expect(r0.store.running("demo")).toBe("v1"); // the failed down may still be serving it
+  });
+  it("a target found open with a failed down is not re-admitted by a later health-only rollback", async () => {
+    let open = false;
+    let st!: { running: string };
+    const r0 = setup(["v1", "v2"], undefined, async () => {
+      return probeResult("identity", "/", open && st.running === "v1" ? [{ hard: true, what: NO_SIGN_IN }] : []);
+    });
+    st = r0.st;
+    await r0.engine.deploy(app(), { sha: "v1", by: "t" });
+    await r0.engine.deploy(app(), { sha: "v2", by: "t" });
+    open = true;
+    r0.st.downFails = true;
+    await r0.engine.rollback(app(), { by: "t" }); // v1 found open; its down failed
+    open = false;
+    r0.st.downFails = false;
+    const r = await r0.engine.deploy(app(), { sha: "v3", by: "t" }); // v3 fails health only, so no identity re-probe
+    expect(r).toMatchObject({ sha: "v3", status: "rolled_back", previous: "v2" });
+    expect(st.running).toBe("v2");
   });
   it("a rollback that could not start reports the teardown failure and keeps no previous revision", async () => {
     const { engine, st, store } = setup(["v1", "v2"]);

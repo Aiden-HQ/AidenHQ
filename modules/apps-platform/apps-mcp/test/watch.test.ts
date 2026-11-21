@@ -16,7 +16,7 @@ const FIX = "f".repeat(40);
 // `failure` is the reason the probe recorded (a class, or an HTTP error, which is app-side evidence too). `broken` shas fail in
 // `up` like a build or host error does: nothing of that commit ever runs.
 function setup(o: { message?: string } = {}) {
-  const st = { out: "", running: "", good: new Set<string>(), broken: new Set<string>(), open: new Set<string>(), failure: undefined as string | undefined, app: parseApp({ name: "demo", repo: "example-org/x", owner: "a", description: "d" }) as App };
+  const st = { out: "", running: "", good: new Set<string>(), broken: new Set<string>(), open: new Set<string>(), downFails: false, failure: undefined as string | undefined, app: parseApp({ name: "demo", repo: "example-org/x", owner: "a", description: "d" }) as App };
   const t = { now: 0 };
   const src = mkdtempSync(`${tmpdir()}/src-`);
   writeFileSync(`${src}/compose.yaml`, "services:\n  web:\n    image: x\n");
@@ -33,6 +33,7 @@ function setup(o: { message?: string } = {}) {
         if (st.broken.has(st.out)) throw new Error("docker compose -p app-demo failed: buildx Docker CLI plugin not found: falling back to the classic builder");
         st.running = st.out;
       }
+      if (args.includes("down") && st.downFails) throw new Error("docker compose down failed");
       if (args.includes("down")) st.running = "";
       return "";
     },
@@ -241,6 +242,17 @@ describe("post-deploy watch", () => {
     st.broken.delete(FIX);
     await reconcileTick(p, quiet);
     expect(store.lastDeploy("demo")).toMatchObject({ sha: FIX, by: "auto-deploy", status: "healthy" });
+  });
+
+  it("raises a failed teardown once across retries of the same commit", async () => {
+    const { p, st, store, raised, deployed } = setup();
+    await deployed();
+    st.broken.add("v1").add("v2").add(FIX);
+    st.downFails = true;
+    st.app = { ...st.app, pin: FIX };
+    for (let i = 0; i < BUILD_ATTEMPTS; i++) await reconcileTick(p, quiet);
+    expect(store.lastDeploy("demo")).toMatchObject({ sha: FIX, status: "build_failed", detail: expect.stringContaining("teardown failed") });
+    expect(raised.filter((r) => r.detail.includes("teardown failed"))).toHaveLength(1);
   });
 });
 

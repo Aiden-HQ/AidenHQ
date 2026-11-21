@@ -113,7 +113,9 @@ keys are not secret; the file sits in the vault only to share its mount path.
 
 ## Failure modes
 
-- `keys.json` missing, unreadable or torn mid-write: the middleware refuses (401/503) and re-reads on the next request.
+- `keys.json` missing, unreadable or torn mid-write: the middleware refuses (401, or 503 for its own unavailable keys) and
+  re-reads on the next request. The identity gate treats a 503 as unconfirmed, not as proof the app checks identity: only a
+  refused request (401/403) shows the middleware ran.
 - The gate's key missing: the gate answers 503 for app hosts. apps-mcp's key missing: `app_api`/`app_view` fail with a clear error.
 - An app without the middleware: anything that reaches its port is trusted. Shared apps sit on loopback and their own
   networks (no app may `connects` to a shared app). Fleet Steward's agent review flags an app that doesn't verify
