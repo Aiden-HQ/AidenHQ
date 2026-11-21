@@ -495,9 +495,10 @@ describe("identity gate", () => {
     expect(r.findings[0]).toMatchObject({ hard: true, what: expect.stringMatching(/answers HTTPS/) });
   }, 60_000);
 
-  // What a ClientHello offers, read from its structure: the versions in supported_versions (type 43) and whether it carries
-  // a key_share (type 51). A 1.3-only listener can only negotiate with a hello that offers TLS 1.3 and a key share; one
-  // that offers neither is closed silently, as an unsupported hello is. Null while the hello has not all arrived.
+  // What a ClientHello offers, read from its structure: the versions in supported_versions (type 43), the named groups in
+  // supported_groups (type 10) and the groups in key_share (type 51). A 1.3-only listener can only negotiate with a hello
+  // that offers TLS 1.3 and a key share for a group it accepts; one that offers neither is closed silently, as an
+  // unsupported hello is. Null while the hello has not all arrived.
   const HELLO_OFFERS = `(b) => {
     try {
       if (b.length < 5) return null;
@@ -509,14 +510,16 @@ describe("identity gate", () => {
       i += 1 + b[i]; // compression
       const end = i + 2 + b.readUInt16BE(i);
       i += 2;
-      let v13 = false, keyShare = false;
+      let v13 = false;
+      const groups = new Set(), shares = new Set();
       while (i + 4 <= end) {
         const type = b.readUInt16BE(i), len = b.readUInt16BE(i + 2), at = i + 4;
-        if (type === 51) keyShare = true;
+        if (type === 10) for (let j = at + 2; j + 1 < at + len; j += 2) groups.add(b.readUInt16BE(j));
+        if (type === 51) for (let j = at + 2; j + 3 < at + len;) { const g = b.readUInt16BE(j); shares.add(g); j += 4 + b.readUInt16BE(j + 2); }
         if (type === 43) for (let j = at + 1; j + 1 < at + len; j += 2) if (b.readUInt16BE(j) === 0x0304) v13 = true;
         i = at + len;
       }
-      return { v13, keyShare };
+      return { v13, groups: [...groups], shares: [...shares] };
     } catch { return null; }
   }`;
 
@@ -534,7 +537,7 @@ describe("identity gate", () => {
         if (stage === 0 && got[0] === 0x16) { // the TLS hello, on its own connection
           const o = offers(got);
           if (o === null) return; // not all arrived yet: judge only the whole hello
-          if (o.v13 && o.keyShare) s.end(Buffer.from([0x16, 0x03, 0x03, 0, 2, 2, 40])); // a 1.3-capable endpoint answers
+          if (o.v13 && o.shares.includes(0x001d)) s.end(Buffer.from([0x16, 0x03, 0x03, 0, 2, 2, 40])); // a 1.3-capable endpoint answers
           else s.destroy(); // unsupported hello: closed silently, as a 1.3-only listener does
           return;
         }
@@ -544,6 +547,32 @@ describe("identity gate", () => {
       });
     }`);
     const r = await scan(db, [modern], { sni: ["warehouse"] });
+    expect(r.ok).toBe(false);
+    expect(r.findings[0]).toMatchObject({ hard: true, what: expect.stringMatching(/answers HTTPS/) });
+  }, 60_000);
+
+  it.runIf(process.platform === "linux")("finds a TLS 1.3 listener restricted to secp256r1: the hello offers that group and a share", async () => {
+    // A listener that accepts only secp256r1 silently drops a hello whose key shares are all x25519. The hello offers a
+    // share for both groups, so such a listener answers and its port stays hard instead of being read as a database.
+    const db = parseApp({ name: "warehouse", repo: "example-org/x", owner: "a", description: "d", port: 5433, expose: false, protocol: "postgres" });
+    const p256 = await tcp(`(s) => {
+      let stage = 0, got = Buffer.alloc(0);
+      const offers = ${HELLO_OFFERS};
+      s.on("data", (d) => {
+        got = Buffer.concat([got, d]);
+        if (stage === 0 && got[0] === 0x16) {
+          const o = offers(got);
+          if (o === null) return;
+          if (o.v13 && o.groups.includes(0x0017) && o.shares.includes(0x0017)) s.end(Buffer.from([0x16, 0x03, 0x03, 0, 2, 2, 40]));
+          else s.destroy();
+          return;
+        }
+        if (stage === 0 && got[0] === 0x47) return s.destroy();
+        if (stage === 0) { stage = 1; return s.write("N"); }
+        if (stage === 1) s.end(Buffer.from([0x52, 0, 0, 0, 8, 0, 0, 0, 0]));
+      });
+    }`);
+    const r = await scan(db, [p256], { sni: ["warehouse"] });
     expect(r.ok).toBe(false);
     expect(r.findings[0]).toMatchObject({ hard: true, what: expect.stringMatching(/answers HTTPS/) });
   }, 60_000);

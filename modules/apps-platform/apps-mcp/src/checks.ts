@@ -391,7 +391,7 @@ const postgres = (host, port) => new Promise((done) => {
 // than a list of several, and the unnamed hello is tried too. Any answer keeps the socket hard. The hello offers TLS 1.3 and
 // a key share, so a 1.3-only endpoint can answer it rather than silently dropping it as unsupported.
 const tlsExt = (type, body) => Buffer.concat([Buffer.from([type >> 8, type & 255]), Buffer.from([body.length >> 8, body.length & 255]), body]);
-// A modern ClientHello: TLS 1.3 and 1.2, TLS 1.3 suites, x25519 and secp256r1 key exchange, and the signatures a current
+// A modern ClientHello: TLS 1.3 and 1.2, TLS 1.3 suites, x25519 and secp256r1 key shares, and the signatures a current
 // client offers. A 1.3-only endpoint cannot negotiate with a hello that offers neither 1.3 nor a key share; a listener that
 // silently drops an unsupported hello would read as a database, so the hello has to be one a current client would send. It
 // carries no certificate and completes no handshake: only the server's first record matters.
@@ -403,10 +403,18 @@ const hello = (name) => {
     const entry = Buffer.concat([Buffer.from([0]), Buffer.from([n.length >> 8, n.length & 255]), n]);
     exts.push(tlsExt(0, Buffer.concat([Buffer.from([(entry.length + 2) >> 8, (entry.length + 2) & 255]), entry])));
   }
-  exts.push(tlsExt(10, Buffer.from([0, 4, 0, 2, 0, 0x1d]))); // supported_groups: x25519, secp256r1
+  // Named groups are their two-byte code: x25519 0x001d, secp256r1 0x0017. The list length covers both entries.
+  exts.push(tlsExt(10, Buffer.from([0, 4, 0x00, 0x1d, 0x00, 0x17]))); // supported_groups: x25519, secp256r1
   exts.push(tlsExt(13, Buffer.from([0, 4, 0x04, 0x03, 0x08, 0x04]))); // signature_algorithms: ecdsa_secp256r1_sha256, rsa_pss_rsae_sha256
   exts.push(tlsExt(43, Buffer.from([4, 0x03, 0x04, 0x03, 0x03]))); // supported_versions: TLS 1.3, TLS 1.2
-  exts.push(tlsExt(51, Buffer.concat([Buffer.from([0, 36, 0, 0x1d, 0, 32]), Buffer.alloc(32, 9)]))); // key_share: x25519
+  // A key share for each group offered: x25519's 32 bytes and secp256r1's 65-byte uncompressed point (the curve's base
+  // point, a valid point; the handshake is never completed, only the server's first record matters). A 1.3 listener
+  // restricted to either group can answer without a HelloRetryRequest, and one that silently drops a hello without a
+  // matching share cannot be mistaken for a database.
+  const x25519 = Buffer.concat([Buffer.from([0x00, 0x1d, 0x00, 0x20]), Buffer.alloc(32, 9)]);
+  const p256 = Buffer.from("00170041046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5", "hex");
+  const shares = Buffer.concat([x25519, p256]);
+  exts.push(tlsExt(51, Buffer.concat([Buffer.from([shares.length >> 8, shares.length & 255]), shares]))); // key_share: x25519, secp256r1
   const extensions = Buffer.concat(exts);
   const body = Buffer.concat([
     Buffer.from([0x03, 0x03]),
