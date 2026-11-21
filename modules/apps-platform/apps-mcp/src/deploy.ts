@@ -180,8 +180,12 @@ export function createEngine(d: Deps) {
   };
 
   /** A rollback target that answers without the platform's sign-in: stopped, and never a rollback target again. */
+  const confirmedOpen = (id: ProbeResult | undefined) => !!id?.findings.some((f) => f.hard && f.what.includes(NO_SIGN_IN));
+  /** A hard identity finding that is not a confirmed open answer (the probe errored, or got 5xx): never a safe rollback. */
+  const unconfirmedIdentity = (id: ProbeResult | undefined) => !!id?.findings.some((f) => f.hard && !f.what.includes(NO_SIGN_IN));
+
   async function stopIfOpen(app: App, id: ProbeResult | undefined, good: Deploy[], sha: string, note: string): Promise<string | undefined> {
-    if (!id?.findings.some((f) => f.hard && f.what.includes(NO_SIGN_IN))) return undefined;
+    if (!confirmedOpen(id)) return undefined;
     const left = await halt(app);
     // Found open is enough to disqualify the target for good. A confirmed stop also puts it in the confirmed-stop history;
     // a failed down proves nothing about what still runs, so its healthy row stays healthy but out of rollback selection.
@@ -247,11 +251,13 @@ export function createEngine(d: Deps) {
       // it; a probe that couldn't run leaves the target up, as health decided.
       const refused = !!checks?.some((c) => c.probe === "identity" && !c.ok);
       const open = refused && back.ok ? await identity(app) : undefined;
+      const unconfirmed = unconfirmedIdentity(open);
       const stopped = await stopIfOpen(app, open, d.store.goodDeploys(app.name), prev.sha, ` (found when ${next.sha.slice(0, 8)} was refused)`);
+      const accepted = back.ok && !stopped && !unconfirmed;
       // A commit whose `up` failed never got running: `build_failed` says the build or host failed, so the loop tries it again.
       // Anything that ran and then failed is the commit's own, and is never retried.
-      const r: Result = { sha: next.sha, status: !next.built ? "build_failed" : back.ok && !stopped ? "rolled_back" : "failed", images: next.images, previous: prev.sha, ...(checks ? { checks } : {}), ...(stopped ? { stopped } : {}) };
-      const after = stopped ? `${stopped} (as does the rollback target ${prev.sha.slice(0, 8)})` : back.ok ? `rolled back to ${prev.sha.slice(0, 8)}` : `rollback to ${prev.sha.slice(0, 8)} also unhealthy`;
+      const r: Result = { sha: next.sha, status: !next.built ? "build_failed" : accepted ? "rolled_back" : "failed", images: next.images, ...(accepted || stopped ? { previous: prev.sha } : {}), ...(checks ? { checks } : {}), ...(stopped ? { stopped } : {}) };
+      const after = stopped ? `${stopped} (as does the rollback target ${prev.sha.slice(0, 8)})` : unconfirmed ? `rollback target ${prev.sha.slice(0, 8)} could not confirm its identity` : back.ok ? `rolled back to ${prev.sha.slice(0, 8)}` : `rollback to ${prev.sha.slice(0, 8)} also unhealthy`;
       record(app, r, o.by, stopped ? `${after}; ${next.err ?? ""}` : `${next.err ?? "health check failed"}; ${after}; ${NOTE}`);
       if (back.ok && !stopped) record(app, { sha: back.sha, status: "healthy", images: back.images }, "auto-rollback");
       return r;
@@ -280,8 +286,9 @@ export function createEngine(d: Deps) {
       // Health sets its status, as for the auto-rollback, except after an answer without sign-in: that target is stopped and
       // never a rollback target again. The checks' findings are reported with it.
       const checks = await verify(app, back.ok, back.declared);
-      const stopped = back.ok ? await stopIfOpen(app, checks.find((c) => c.probe === "identity"), good, prev.sha, "") : undefined;
-      const r: Result = { sha: back.sha, status: back.ok && !stopped ? "healthy" : "failed", images: back.images, previous: good[0]!.sha, checks, ...(stopped ? { stopped } : {}) };
+      const id = checks.find((c) => c.probe === "identity");
+      const stopped = back.ok ? await stopIfOpen(app, id, good, prev.sha, "") : undefined;
+      const r: Result = { sha: back.sha, status: back.ok && !stopped && !unconfirmedIdentity(id) ? "healthy" : "failed", images: back.images, previous: good[0]!.sha, checks, ...(stopped ? { stopped } : {}) };
       record(app, r, o.by, `rollback; ${[summary(checks), NOTE].filter(Boolean).join("; ")}`);
       return r;
     });

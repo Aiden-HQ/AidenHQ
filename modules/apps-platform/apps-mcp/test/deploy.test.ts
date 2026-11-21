@@ -129,6 +129,30 @@ describe("deploy engine", () => {
     expect(r).toMatchObject({ sha: "v3", status: "rolled_back", previous: "v2" });
     expect(st.running).toBe("v2");
   });
+  it("an unconfirmed identity check on an auto-rollback target is not reported as rolled back", async () => {
+    let id = 0;
+    const unconfirmed = () => probeResult("identity", "/", [{ hard: true, what: "couldn't confirm the app refuses requests without the platform's sign-in: every request without a valid identity errored" }]);
+    const r0 = setup(["v1", "v2"], undefined, async () => {
+      id++;
+      if (id === 1) return probeResult("identity", "/", []); // v1 deploy
+      if (id === 2) return probeResult("identity", "/", [{ hard: true, what: NO_SIGN_IN }]); // v2 is refused
+      return unconfirmed(); // the rollback target v1 cannot be confirmed
+    });
+    await r0.engine.deploy(app(), { sha: "v1", by: "t" });
+    const r = await r0.engine.deploy(app(), { sha: "v2", by: "t" });
+    expect(r.status).toBe("failed");
+    expect(r.stopped).toBeUndefined();
+    expect(r.previous).toBeUndefined();
+  });
+  it("an unconfirmed identity check on a manual rollback target is not reported as healthy", async () => {
+    let id = 0;
+    const r0 = setup(["v1", "v2"], undefined, async () => (++id >= 3 ? probeResult("identity", "/", [{ hard: true, what: "couldn't confirm the app refuses requests without the platform's sign-in: every request without a valid identity errored" }]) : probeResult("identity", "/", [])));
+    await r0.engine.deploy(app(), { sha: "v1", by: "t" });
+    await r0.engine.deploy(app(), { sha: "v2", by: "t" });
+    const r = await r0.engine.rollback(app(), { by: "t" });
+    expect(r.status).toBe("failed");
+    expect(r.stopped).toBeUndefined();
+  });
   it("a rollback that could not start reports the teardown failure and keeps no previous revision", async () => {
     const { engine, st, store } = setup(["v1", "v2"]);
     await engine.deploy(app(), { sha: "v1", by: "t" });
