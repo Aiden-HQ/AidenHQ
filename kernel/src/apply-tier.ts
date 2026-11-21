@@ -224,8 +224,9 @@ function reach(v: unknown, path: string[], at = "", dup = { found: false }): { v
 /**
  * What an agent's change to a setting does that its module makes the owner's (OwnerRule), each value read as the module runs
  * it (unset or removed: the rule's default; the setting's default under both sides): `raise`, a number above what it was (a
- * new entry: above the default); `change`, any different value; `to`, the value newly set to that; `new`, a value (its part
- * before `before`) none had before. A list holding one key twice is the owner's too.
+ * new entry: above the default); `change`, any different value; `to`, the value newly set to that (an entry removed holds its
+ * default from then: removing one that held another value sets it to the default); `new`, a value (its part before `before`)
+ * none had before. A list holding one key twice is the owner's too.
  */
 export function ownerRaises(key: string, rules: OwnerRule[], dflt: unknown, base: unknown, head: unknown): string[] {
   // A value of another shape than its default (a string where a list is meant) is one the rules can't read: the owner's.
@@ -256,6 +257,10 @@ export function ownerRaises(key: string, rules: OwnerRule[], dflt: unknown, base
         : r.change ? !eq(was, now)
         : "to" in r ? eq(now, r.to) && !eq(was, r.to) : false;
       if (hit) out.push(`${key}${at}.${leaf}: ${r.raise ? "raised" : r.change ? "changed" : "set"} to ${JSON.stringify(now).slice(0, 60)}`);
+    }
+    if ("to" in r) for (const [at, entry] of bv.values) {
+      if (hv.values.has(at) || entry === null || !eq(r.default, r.to) || eq(val(entry), r.to)) continue;
+      out.push(`${key}${at}.${leaf}: removed, so ${JSON.stringify(r.to).slice(0, 60)}`);
     }
   }
   return [...new Set(out)];

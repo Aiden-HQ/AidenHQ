@@ -54,7 +54,23 @@ export interface EngineInput {
 /** `incomplete`: the engine covered only part of the change. `untracked`: it reads the change its own way, so which parts it read
  * isn't tracked (its tool calls aren't reported): a note, never partial coverage. */
 export interface EngineResult { message: string; read: boolean; calls?: Call[]; cause?: string; incomplete?: string; untracked?: string }
-export type Call = { tool: string; path?: string; from?: number; stat?: boolean };
+/** `whole`: a read through the shell (`git diff`) whose output came back whole, of the paths after `--` or, with none, all. */
+export type Call = { tool: string; path?: string; from?: number; stat?: boolean; whole?: boolean };
+/**
+ * A shell command that reads the change's diff over the review's range (`git diff <base>..HEAD`, `<base>...HEAD` or
+ * `<base> HEAD`; not a listing such as --stat or --name-only), as the reads it makes: one per path after `--`, or the whole
+ * diff. Any other range reads something else: no read.
+ */
+export function shellDiff(command: unknown, base: string): Call[] {
+  const c = String(command ?? "").replace(/^\s*cd\s+\S+\s*&&\s*/, ""); // `cd <repo> && git diff …`
+  if (!/^\s*git\b[^|;&<>]*\bdiff\b/.test(c) || /[|;&<>]|--(stat|numstat|shortstat|name-only|name-status|summary|dirstat|raw)\b/.test(c)) return [];
+  // The range ends the command, or ends what comes before ` -- <paths>`: `git diff <base> HEAD src/x` names paths without `--`,
+  // which isn't a read of the whole diff (nor one counted per path).
+  const range = c.split(/\s--\s/)[0]!;
+  if (!/^[0-9a-f]{7,40}$/.test(base) || !new RegExp(`(^|\\s)${base.slice(0, 7)}[0-9a-f]*(\\.\\.\\.?|\\s+)HEAD\\s*$`).test(range)) return [];
+  const paths = c.split(/\s--\s/)[1]?.trim().split(/\s+/).map((x) => x.replace(/^['"]|['"]$/g, "")).filter(Boolean) ?? [];
+  return paths.length ? paths.map((path) => ({ tool: "diff", path, whole: true })) : [{ tool: "diff", whole: true }];
+}
 /**
  * A tool call's coverage arguments, as code reads them from the call's own input; undefined for one with a wrong-typed
  * argument, which the tools refuse (review-tools argsProblem), so a refused call never counts as a read.
@@ -128,10 +144,14 @@ async function run(cmd: string, args: string[], o: { cwd: string; env: Record<st
 const stopped = (r: { code: number | null; stderr: string; timedOut: boolean }, said = "") =>
   r.timedOut ? "timed out" : /\b402\b|cap_reached|budget/i.test(said + r.stderr) ? "the run's budget ran out" : `the engine stopped (exit ${r.code})`;
 
+/** How Claude Code says a tool's output didn't come back whole: persisted to a file with a preview shown, at the start of the
+ * result (never a word inside the diff itself). */
+const CUT = /^"?(<persisted-output>|Output too large|\[?\d+ (characters|lines) truncated)/i;
+
 // Claude Code's repo tools are ours (the same read-only MCP server codex gets), named mcp__repo__<tool>.
 const REPO_TOOLS = ["diff", "log", "show", "blame", "read_file", "list_files", "search", "definition", "references", "diagnostics"];
 type CodexEvent = { type?: string; message?: string; error?: { message?: string }; item?: { type?: string; tool?: string; status?: string; error?: unknown; result?: { isError?: boolean }; arguments?: Record<string, unknown>; aggregated_output?: string } };
-type ClaudeEvent = { type?: string; subtype?: string; session_id?: string; result?: string; is_error?: boolean; message?: { content?: { type?: string; name?: string; input?: { path?: unknown } }[] } };
+type ClaudeEvent = { type?: string; subtype?: string; session_id?: string; result?: string; is_error?: boolean; message?: { content?: { type?: string; id?: string; name?: string; tool_use_id?: string; is_error?: boolean; content?: unknown; input?: { path?: unknown; command?: unknown } }[] } };
 
 async function claudeCode({ prompt, instructions, model, effort, root, base, minutes, scratch, own }: EngineInput): Promise<EngineResult> {
   const tmp = mkdtempSync(join(scratch, "claude-"));
@@ -161,10 +181,18 @@ async function claudeCode({ prompt, instructions, model, effort, root, base, min
   const turn = async (task: string, resume?: string) => {
     const r = await run("claude", ["-p", task, ...base_args, ...(resume ? ["--resume", resume] : [])], { cwd, env, minutes });
     const events: ClaudeEvent[] = r.stdout.split("\n").map((l) => { try { return JSON.parse(l); } catch { return undefined; } }).filter(Boolean);
+    // Claude Code's own review reads the diff with its shell too (`git diff`): a read that came back whole (no error, not cut
+    // short by Claude Code's output limit) counts like the repo tools' diff.
+    const shell = new Map<string, Call[]>();
     for (const e of events) for (const c of e.type === "assistant" ? e.message?.content ?? [] : []) {
       const t = c.type === "tool_use" && /^mcp__repo__(\w+)$/.exec(String(c.name))?.[1];
       const call = t ? callOf(t, c.input) : undefined;
       if (call) calls.push(call);
+      if (c.type === "tool_use" && c.name === "Bash" && c.id) { const reads = shellDiff(c.input?.command, base); if (reads.length) shell.set(c.id, reads); }
+    }
+    for (const e of events) for (const c of e.type === "user" ? e.message?.content ?? [] : []) {
+      const reads = c.type === "tool_result" && c.tool_use_id ? shell.get(c.tool_use_id) : undefined;
+      if (reads && !c.is_error && !CUT.test(JSON.stringify(c.content ?? "").slice(0, 400))) calls.push(...reads);
     }
     const end = events.findLast((e) => e.type === "result");
     return { r, end, ok: r.code === 0 && end?.subtype === "success" && !end.is_error };

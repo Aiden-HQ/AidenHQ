@@ -20,6 +20,8 @@ export type Review = {
   tokens?: { input: number; cached: number; output: number };
   /** Earlier findings (the PR's open ones, by id) a recheck found gone at this head: their threads are resolved. */
   fixed?: string[];
+  /** Findings closed by an answer (fixed, disputed, …) whose fix or reason the recheck found unsafe or malicious: open again. */
+  unsafe?: string[];
 };
 
 /** An open (or just closed) pull request as the watcher needs it. `base` is the base branch's commit the PR is against. */
@@ -53,15 +55,11 @@ export interface PrSource {
   postable(repo: string): Promise<{ identity: "owner" | null; org: string }>;
   /** Repos the instance's GitHub identity can read whose name holds `q` (the board's repo picker). */
   repos(q: string): Promise<{ repo: string; private: boolean; url?: string }[]>;
-  /** The PR's review threads: `ours` (Aiden opened it), the finding its marker names, its first comment's id and the replies
-   * (strangers' text; `ruling`: Aiden's own answer to a dispute). */
+  /** The PR's review threads: the finding its marker names, its first comment's id and the replies (strangers' text). Whether a
+   * thread is Aiden's own is the service's record (its comments table), never this. */
   threads(repo: string, number: number): Promise<Thread[]>;
-  /** The PR's commit messages (their trailers name the AidenHQ agents that wrote them). */
-  messages(repo: string, number: number): Promise<string[]>;
 }
-export type Thread = { ours: boolean; finding: string | null; comment: number; replies: { id: number; author: string; body: string; ruling: boolean }[] };
-/** A dispute's ruling, posted as a reply on the finding's thread (the poster's `ruling`). */
-export type Ruling = { run: string; repo: string; number: number; head: string; finding: string; comment: number; verdict: "dismissed" | "upheld"; reason: string };
+export type Thread = { finding: string | null; comment: number; replies: { id: number; author: string; body: string }[] };
 
 /** What one review run reviews: the check job's spec (lane E's recipe takes exactly these). */
 export type ReviewSpec = {
@@ -70,12 +68,11 @@ export type ReviewSpec = {
   merge_base: string;
   focus: string | null; incremental_from: string | null; full: boolean;
   /** The PR's still-open findings, rechecked at this head and given to the finders as already reported (the batch's first
-   * mandatory run, else its first). `gating`: an important one a mandatory run found, rechecked whatever the change touched. */
-  previous: { id: string; severity: string; path: string; line: number; title: string; why?: string; evidence?: string; gating?: boolean }[];
+   * mandatory run, else its first). `gating`: an important one a mandatory run found, rechecked whatever the change touched;
+   * `claim`: one closed by an answer on its thread, rechecked only for a fix or reason that is unsafe. */
+  previous: { id: string; severity: string; path: string; line: number; title: string; why?: string; evidence?: string; gating?: boolean; claim?: string }[];
   /** Its combo is mandatory (a new important finding of it may restate only a gating one). */
   mandatory: boolean;
-  /** A dispute's judge (the recipe's judge mode): the finding and the reply disputing it (a stranger's words). */
-  judge?: { finding: { id: string; path: string; line: number; title: string; why: string; evidence: string }; reply: { author: string; body: string } };
   /** The most the run may spend (its run_usd): the cap on its box's model token. */
   budget_usd: number; ignore: string[]; max_nits: number;
 };
@@ -101,23 +98,35 @@ export type Ack = {
   run?: string; combo?: ComboRef; why?: string;
   /** The run's findings and cost (a done run's notice, a status). */
   counts?: { important: number; nit: number; pre_existing: number; cost_usd: number };
+  /** The posted review's link (a done notice after its post settles). */
+  review?: string;
 };
+/** What the commit status mirrors: the verdict's first reason (its code; "pass" when there is none). */
+export type Status = { repo: string; number: number; head: string; reason: string; important: number; running: { model: string; effort: string }[]; partial?: true };
 /** A posted review's outcome: posted, waiting on the AI reviewer's decision (a Tier 1 write), or refused. */
 export type Posted = {
   state: "posted" | "pending" | "refused"; why?: string; /** its kernel write record */ write?: string;
+  /** A refusal that wasn't the AI reviewer's (stale after a restart, a failed GitHub call): filing it again may post it. */
+  retry?: boolean;
   /** Once posted (the executor's outcome): the review's link, the threads it resolved, and who posted it. */
   url?: string; resolved?: number; identity?: "owner";
+  /** The comment ids it opened (its threads' first comments): what makes a thread Aiden's own. */
+  comments?: number[];
+  /** The acknowledgement comment it wrote. */
+  ack?: number;
 };
 export interface Poster {
-  /** One GitHub review for the run's head: inline findings, the summary with the severity line and commands, the commit status;
+  /** One GitHub review for the run's head: a thread per finding, the summary with the severity line and commands;
    * `target`: where it goes, from the run itself (the poster never takes its target from the review body); `previous`: the last
    * review posted on this PR (its threads are the ones Aiden may resolve). */
-  post(p: { run: string; target: { repo: string; number: number; head: string; once?: boolean }; review: Review; previous: Review | null }): Promise<Posted>;
-  ack(a: Ack): Promise<void>;
+  post(p: { run: string; target: { repo: string; number: number; head: string; once?: boolean }; review: Review; previous: Review | null; gated: boolean; own?: number[]; ack?: number }): Promise<Posted>;
+  /** The commit status aidenhq/review on a gated repo's PR head: its merge verdict's reason, the open important findings and the
+   * mandatory reviewers still queued or running (a Tier 0 write: fixed words). */
+  status(s: Status): Promise<Posted>;
+  /** The one acknowledgement (a Tier 0 write; `ack`: the comment the service recorded, edited in place). Undefined: nothing filed. */
+  ack(a: Ack & { ack?: number }): Promise<Posted | undefined>;
   /** A filed post's outcome now (pending until the AI reviewer and the executor are done). */
   outcome(write: string): Promise<Posted>;
-  /** Files a dispute's ruling (a Tier 1 write: the judge's text). */
-  ruling(r: Ruling): Promise<Posted>;
   /** Closes the PR's review task (it only holds its posts' approvals) once the PR is closed or a one-off's post is settled. */
   close(repo: string, number: number, why: string, run?: string): Promise<void>;
 }

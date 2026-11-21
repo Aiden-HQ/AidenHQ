@@ -2,7 +2,7 @@ name: code-review
 description: "Code Review: reviews pull requests on the repos you list, or one PR on request. Each moment (a PR opens, each push) runs a list of combos (engine: Codex, Claude Code or Codegenie; model; effort) in a credential-free box; each combo posts its own GitHub review, a write the AI reviewer approves, and its cost and findings are kept for later analysis. Idle until a repo is added: nothing runs or spends by itself."
 license: MIT
 # Design: docs/design/code-review.md. The state service (service/) watches the listed repos' PRs and comments through github-mcp's
-# internal read (as this module, never /mcp), decides which head gets which combos (triggers, `@aiden review …` from someone with
+# internal read (as this module, never /mcp), decides which head gets which combos (triggers, `aiden review …` from someone with
 # write access now, debounce, supersede, a run starts only while the day's real spend is under its caps), runs each review as the kernel's
 # check job `code-review` (kernel.checks: no credentials in the box, a model token capped at the run's run_usd), hands the
 # finished review to the github module's poster (a kernel write record) and records each run as flow facts on its PR.
@@ -20,9 +20,8 @@ codehost:
 # POST /v1/checks {repo, head, run: code-review, spec} (service/src/adapters.ts checkSpec): base is the merge base (a full review's
 # incremental_from is that base too), the combo (engine, model, effort) with the repo's ignore globs and max_nits in combo, budget_usd
 # is the run's run_usd less earlier attempts' spend (its model token's cap), previous the PR's still-open findings to recheck (and
-# that the finders take as already reported), judge {} on a review. A dispute's judge is the same job in judge mode: judge holds
-# the finding and the fenced reply, combo the judge's model (another family than the PR author's). It reads back GET /v1/checks/:id
-# with `result` (the Review JSON, or the judge's { verdict, reason }, bound into the receipt, stamped with the ledger's cost_usd
+# that the finders take as already reported, and the answered ones whose claim it checks for an unsafe fix). It reads back GET /v1/checks/:id
+# with `result` (the Review JSON, bound into the receipt, stamped with the ledger's cost_usd
 # and tokens) and `billed_usd` (a running check's spend so far too).
 check_jobs:
   code-review:
@@ -30,7 +29,7 @@ check_jobs:
     argv: [ node, /aidenhq-out/recipe/review.ts ]
     timeout_min: 45
     title: the code review
-    spec: { base: sha, incremental_from: sha, pr: int, combo: json, focus: text, budget_usd: usd, previous: json, judge: json }
+    spec: { base: sha, incremental_from: sha, pr: int, combo: json, focus: text, budget_usd: usd, previous: json }
     model: { max_usd: 25 }
     result: true
 # Flow (docs/design/flow.md): one started and one ended fact per review run (version: the run id) on its PR.
@@ -45,25 +44,35 @@ settings:
   # id), effort (the engine's: codex and codex-native minimal-xhigh, the others low-max), run_usd (what one run may spend: its model token's hard
   # cap, not a reservation; default $5 for each engine), mandatory (default false) }; each moment runs every combo it lists (at most 4, each its
   # own review), [] none. A mandatory combo's review gates the repo's merges: the github module's merge queue merges a PR only
-  # once the mandatory combos reviewed its head and none of their important findings is open (fixed, judged dismissed on a
-  # dispute, or dismissed by the owner on the board); a gated repo has one at both moments, and its mandatory runs are never
+  # once the mandatory combos reviewed its head and none of their important findings is open (fixed, answered on its thread by the
+  # PR's author or a writer: fixed, disputed, by design or won't fix with a reason, or dismissed by the owner on the board); a gated repo has one at both moments, and its mandatory runs are never
   # skipped for budget and review forks by themselves. ai_review_code's unless_code_review_mandatory reads the same repos. on_push reviews only the new changes. day_usd: the instance-wide cap across repos, a UTC day's real spend (a run starts while spent is under it; runs in flight may overshoot by their run_usd each, bounded by the launcher's computers_max; a run whose spend can't be read counts at its whole run_usd). Read by the service
   # (service/src/config.ts).
   code_review:
     type: object
     writers: [ reviewer-manager ]
     # What the Reviewer Manager's change may not do without the owner (Tier 2; it reads strangers' review threads): more spend,
-    # outside PRs or drafts reviewed by themselves, a repo in an org not watched before, any change to a moment's combos (another
-    # engine or model, more run cap, one more combo: what changes what a review costs or how it judges), or a repo's ignore globs
-    # (what would quietly weaken reviews).
+    # outside PRs or drafts reviewed by themselves, a repo in an org not watched before, a combo's engine, model or effort changed
+    # or one more combo (what changes what a review costs or how it judges), more run cap, a mandatory reviewer turned off or
+    # removed (its combo, or its repo, gone), or a repo's ignore globs (what would quietly weaken reviews). Turning a combo
+    # mandatory is its to do: it only adds a gate.
     owner:
       - { path: day_usd, raise: true }
       - { path: "repos.*.day_usd", raise: true, default: 200 }
       - { path: "repos.*.forks", to: auto, default: manual }
       - { path: "repos.*.drafts", to: true, default: false }
       - { path: "repos.*.repo", new: true, before: "/" }
-      - { path: "repos.*.on_open", change: true, default: [ { engine: codex, model: "~deepseek/deepseek-flash-latest", effort: medium, run_usd: 5 } ] }
-      - { path: "repos.*.on_push", change: true, default: [ { engine: codex, model: "~deepseek/deepseek-flash-latest", effort: low, run_usd: 5 } ] }
+      # Each combo's fields, an absent one read as the moment's default combo (a combo added past them differs in one of them).
+      - { path: "repos.*.on_open.*.engine", change: true, default: codex }
+      - { path: "repos.*.on_open.*.model", change: true, default: "~deepseek/deepseek-flash-latest" }
+      - { path: "repos.*.on_open.*.effort", change: true, default: medium }
+      - { path: "repos.*.on_open.*.run_usd", raise: true, default: 5 }
+      - { path: "repos.*.on_open.*.mandatory", to: false, default: false }
+      - { path: "repos.*.on_push.*.engine", change: true, default: codex }
+      - { path: "repos.*.on_push.*.model", change: true, default: "~deepseek/deepseek-flash-latest" }
+      - { path: "repos.*.on_push.*.effort", change: true, default: low }
+      - { path: "repos.*.on_push.*.run_usd", raise: true, default: 5 }
+      - { path: "repos.*.on_push.*.mandatory", to: false, default: false }
       - { path: "repos.*.ignore", change: true, default: [] }
     default:
       repos: []
@@ -85,7 +94,7 @@ agents:
     connections:
       apps: [ app_view ]
       code_review: [ code_review_config, code_review_runs, code_review_run, code_review_configure ]
-      # A PR's review threads (replies to its findings) and one comment answering an `@aiden` question, as the posting identity's
+      # A PR's review threads (replies to its findings) and one comment answering an `aiden` question, as the posting identity's
       # write: a kernel record the AI reviewer decides.
       github: [ github_pr_threads, github_issue_comment ]
       paperclip_tasks: [ task_current, task_get, task_comments, task_comment, task_block, task_cancel, task_finish ]
@@ -100,10 +109,11 @@ connections:
     tools:
       read: [ code_review_config, code_review_runs ]
       write: [ code_review_run, code_review_configure ]
-# Posting: this service files a record per post, per acknowledgement and per ruling and executes it (executor@1) through
+# Posting: this service files a record per post, per acknowledgement and per status and executes it (executor@1) through
 # github-mcp's /internal/review routes (the github module's poster, as the owner's sign-in). A post is Tier 1 (the AI reviewer
-# reads the whole rendered review first), and so is a ruling (a dispute's answer on the finding's thread: the judge's text); a
-# notice is Tier 0 (fixed words: phase and reason only). Plan refuses a record this service didn't file for one of its runs.
+# reads the whole rendered review first); a
+# notice is Tier 0 (fixed words: phase and reason only), and so is a status (the commit status aidenhq/review on a gated repo's PR
+# head, mirroring the merge verdict in fixed words). Plan refuses a record this service didn't file for one of its runs.
 providers:
   board: { url: "http://code-review:8098", auth: code_review_api_token }
   executor:
@@ -115,13 +125,13 @@ writes:
     floor: 1
     tools: []
     card: { target: "{{target}}", sentence: "{{sentence}}", changes: "{{changes}}", details: "{{details}}" }
-  ruling:
-    args: schemas/ruling.json
-    floor: 1
-    tools: []
-    card: { target: "{{target}}", sentence: "{{sentence}}", changes: "{{changes}}", details: "{{details}}" }
   notice:
     args: schemas/notice.json
+    floor: 0
+    tools: []
+    card: { target: "{{target}}", sentence: "{{sentence}}", changes: "{{changes}}", details: "{{details}}" }
+  status:
+    args: schemas/status.json
     floor: 0
     tools: []
     card: { target: "{{target}}", sentence: "{{sentence}}", changes: "{{changes}}", details: "{{details}}" }

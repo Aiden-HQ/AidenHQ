@@ -246,6 +246,17 @@
     "type": "string",
     "pattern": "^[A-Za-z0-9_-]{6,64}$"
    }
+  },
+  "gated": {
+   "type": "boolean"
+  },
+  "own": {
+   "type": "array",
+   "maxItems": 1000,
+   "items": {
+    "type": "integer",
+    "minimum": 1
+   }
   }
  }
 }
