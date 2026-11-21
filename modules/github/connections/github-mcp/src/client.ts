@@ -254,6 +254,7 @@ export function createAccess(o: {
     const need = classify(path, res, parsed, true);
     if (need?.cause === "expired") o.auth.mark("expired", "GitHub refused the token (401)");
     if (need) fail(need);
+    if (res.ok) o.auth.mark("ok"); // the sign-in's state starts "unknown" after every restart; a call that worked settles it
     if (res.ok && /^\/orgs\/([^/]+)/.test(path)) problems.delete(ownerOf(path)!.toLowerCase());
     return { status: res.status, body: parsed, headers: res.headers };
   }
