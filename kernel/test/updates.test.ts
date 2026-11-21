@@ -495,6 +495,10 @@ test("the instance checkout is fetched with its own credential helper; a URL tha
   // A fresh clone of its origin gets the same settings as -c arguments.
   assert.deepEqual(gitOwn(tmpdir(), ["config", "--get-all", "credential.helper"], ownCredentials(w.d.inst)).trim().split("\n"), [helpers()[0]]);
   assert.deepEqual(ownCredentials(join(w.root, "product")), []);
+  // A failing git names its subcommand and git's words, never the argv (which holds the credential settings).
+  assert.throws(() => gitOwn(tmpdir(), ["clone", "-q", "--", join(w.root, "missing"), "c"], ownCredentials(w.d.inst)), (e) => /^git clone failed/.test(e.message) && !/secret|credential/.test(e.message));
+  // Only "none configured" (exit 1) is no credentials; an unreadable checkout throws.
+  assert.throws(() => ownCredentials(join(w.root, "missing")));
 });
 
 test("a check that keeps failing tells the owner once, with the error's first line, and again only after a pass succeeds", async () => {

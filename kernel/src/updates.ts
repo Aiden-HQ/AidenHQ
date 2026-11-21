@@ -140,9 +140,11 @@ const runGit = (cred: string[], cwd: string, args: string[], input?: string) => 
       cwd, encoding: "utf8", input, timeout: 120_000, stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_DIR: undefined, GIT_WORK_TREE: undefined },
     });
   } catch (e) {
-    // The failure's own words (git's first stderr line) go with the command, so a log or an alert says why.
+    // The failure's own words (git's first stderr line) go with the subcommand, so a log or an alert says why. Never the argv:
+    // it carries the checkout's credential.* settings.
     const why = String((e as { stderr?: unknown }).stderr ?? "").trim().split("\n")[0];
-    throw why ? Object.assign(new Error(`${(e as Error).message.split("\n")[0]}: ${why}`), { cause: e }) : e;
+    const sub = args.find((a, i) => !a.startsWith("-") && !["-c", "--git-dir"].includes(args[i - 1] ?? "")) ?? "command";
+    throw Object.assign(new Error(`git ${sub} failed${why ? `: ${why}` : ""}`), { status: (e as { status?: number }).status });
   }
 };
 /** git for a URL that isn't ours (the release repos, the distro): no credential helper, so none is ever offered to it. */
@@ -152,7 +154,7 @@ export const gitOwn = (cwd: string, args: string[], cred: string[] = []) => runG
 /** The checkout's credential.* settings as -c arguments, for a fresh clone of its origin (which has none of its own). */
 export function ownCredentials(inst: string): string[] {
   let out = "";
-  try { out = runGit([], inst, ["config", "--get-regexp", "^credential\\."]); } catch { /* none configured: exit 1 */ }
+  try { out = runGit([], inst, ["config", "--get-regexp", "^credential\\."]); } catch (e) { if ((e as { status?: number }).status !== 1) throw e; /* none configured: exit 1 */ }
   return out.split("\n").filter(Boolean).flatMap((l) => ["-c", l.replace(/ /, "=")]);
 }
 /** Whether commit a is an ancestor of b in repo: false when it isn't (or a isn't there at all); any other git failure throws. */
