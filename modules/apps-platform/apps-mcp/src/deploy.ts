@@ -150,18 +150,27 @@ export function createEngine(d: Deps) {
   const identity = (app: App): Promise<ProbeResult | undefined> =>
     (d.identity?.(app) ?? Promise.resolve(undefined)).catch((e) => probeResult("identity", "*", [{ hard: true, what: `couldn't confirm the app refuses requests without the platform's sign-in (${String((e as Error).message ?? e).slice(0, 160)})` }]));
 
-  /** Stops every container of the app and forgets the running commit: nothing running is known to be a good one. */
-  const halt = async (app: App) => {
-    await compose(app, ["down", "--remove-orphans"]).catch(() => "");
+  const TEARDOWN_FAILED = "teardown failed: it may still be serving";
+  /**
+   * Stops every container of the app. The running commit is forgotten only once the stop is confirmed; the outcome is
+   * what callers report: undefined when stopped, TEARDOWN_FAILED when `down` failed.
+   */
+  const halt = async (app: App): Promise<string | undefined> => {
+    try {
+      await compose(app, ["down", "--remove-orphans"]);
+    } catch {
+      return TEARDOWN_FAILED;
+    }
     d.store.clearRunning(app.name);
+    return undefined;
   };
 
   /** A rollback target that answers without the platform's sign-in: stopped, and never a rollback target again. */
   async function stopIfOpen(app: App, id: ProbeResult | undefined, good: Deploy[], sha: string, note: string): Promise<string | undefined> {
     if (!id?.findings.some((f) => f.hard && f.what.includes(NO_SIGN_IN))) return undefined;
-    await halt(app);
+    const left = await halt(app);
     for (const g of good) if (g.sha === sha) d.store.markRolledBack(g.id, `${STOPPED_OPEN}${note}`);
-    return STOPPED_OPEN;
+    return left ? `${STOPPED_OPEN}; ${left}` : STOPPED_OPEN;
   }
 
   const up = (app: App) => compose(app, ["up", "-d", "--build", "--remove-orphans"]);
@@ -243,9 +252,9 @@ export function createEngine(d: Deps) {
       const back = await apply(app, prev.sha);
       // A failed `up` may have replaced only some containers: stop it all, as the deploy path does.
       if (!back.built) {
-        await halt(app);
-        const r: Result = { sha: back.sha, status: "build_failed", images: back.images, previous: good[0]!.sha };
-        record(app, r, o.by, `rollback could not start: ${back.err ?? ""}; stopped`);
+        const left = await halt(app);
+        const r: Result = { sha: back.sha, status: "build_failed", images: back.images, previous: good[0]!.sha, stopped: left ?? "stopped" };
+        record(app, r, o.by, `rollback could not start: ${back.err ?? ""}; ${r.stopped}`);
         return r;
       }
       // Health sets its status, as for the auto-rollback, except after an answer without sign-in: that target is stopped and

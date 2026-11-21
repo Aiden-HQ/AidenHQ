@@ -1,7 +1,7 @@
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
-import { createEngine, type Deps } from "../src/deploy.js";
+import { createEngine, type Deps, STOPPED_OPEN } from "../src/deploy.js";
 import { NO_SIGN_IN, probeResult } from "../src/checks.js";
 import { parseApp } from "../src/registry.js";
 import { openStore } from "../src/store.js";
@@ -83,6 +83,16 @@ describe("deploy engine", () => {
     expect(r.checks?.find((c) => c.probe === "identity")?.findings[0]?.what).toBe(NO_SIGN_IN);
     expect(st.running).toBe("v1");
     expect(await r0.engine.deploy(app(), { sha: "v3", by: "t" })).toMatchObject({ status: "rolled_back" });
+  });
+  it("a manual rollback to a commit that answers without sign-in stops it and never targets it again", async () => {
+    let open = false;
+    const r0 = setup(["v1", "v2"], undefined, async () => probeResult("identity", "/", open ? [{ hard: true, what: NO_SIGN_IN }] : []));
+    await r0.engine.deploy(app(), { sha: "v1", by: "t" });
+    await r0.engine.deploy(app(), { sha: "v2", by: "t" });
+    open = true; // v1 predates the gate: it answers without sign-in now
+    const r = await r0.engine.rollback(app(), { by: "t" });
+    expect(r).toMatchObject({ sha: "v1", status: "failed", stopped: STOPPED_OPEN });
+    await expect(r0.engine.rollback(app(), { by: "t" })).rejects.toThrow(/no previous good deploy/);
   });
   it("a healthy deploy whose page renders unstyled is rolled back, and says why", async () => {
     // v2 is healthy, but its render check finds the incident's signals: the deploy rolls back to v1.
