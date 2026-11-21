@@ -24,23 +24,24 @@ const PR_CAP = 100;
 
 // A close's note must cite a PR in a form the grader's parser reads (owner/name#number or its full /pull/ URL): a bare
 // "PR #12" reads as no citation at all, so the issue looks closed without one. The word PR standing on its own is the
-// bare form wherever it sits — "PR #12", "PR#12", "the PR #12", "abc/PR #12", "see acme/product/PR #12" — and none of
-// those is a form the parser reads. The one "PR#N" that is a citation is a repo actually named PR in owner/name#N
-// ("acme/PR#12"), so that case, and only that case, is let through; the ordinary accepted forms ("owner/name#12",
-// "/pull/12", "codehost:.../change/12") carry no standalone PR at all.
+// bare form wherever it sits — "PR #12", "PR#12", "the PR #12", "abc/PR #12", "see acme/product/PR #12" — unless the
+// token is part of the owner/name#N citation itself. The span decides, not what precedes the token, because that is
+// what the parser does: a repo whose name ends in PR ("acme/foo-PR#12") is one citation, while a real link beside a
+// "PR #700" leaves that token uncited.
 const PR_TOKEN = /(?<!\w)PR\s*#\s*\d+\b/gi;
-// "owner/PR#N" with nothing between the slash and the word PR, where the owner starts where the parser starts one: the
-// only PR#N that is a citation. "acme/ PR#12" is not one (findPrs reads no PR there), so the slash must be adjacent.
-const REPO_NAMED_PR = /(?<![\w./:-])[\w.-]+\/$/;
+// The parser's owner/name#N form, mirrored from modules/grading/service/src/grader/text.ts (findPrs): github-mcp is its
+// own build context and doesn't import the grading module.
+const OWNER_NAME_PR = /(?<![\w./:-])[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+#\d+\b/g;
 
 /** Why a close's `note` is refused, or undefined when it cites what it must. */
 export function noteProblem(note: string, state: "open" | "closed", reason?: "completed" | "not_planned"): string | undefined {
   if (state !== "closed") return undefined;
+  const cited = [...note.matchAll(OWNER_NAME_PR)].map((m) => ({ from: m.index ?? 0, to: (m.index ?? 0) + m[0].length }));
   for (const m of note.matchAll(PR_TOKEN)) {
-    // A spaced "PR #N" is never a citation, whatever sits before it; an unspaced "PR#N" is one only as owner/PR#N, with
-    // the slash immediately before PR (a space after the slash is not the owner/name#N form the parser reads).
-    const citation = !/\s/.test(m[0]) && REPO_NAMED_PR.test(note.slice(0, m.index));
-    if (!citation) return "cite the PR as owner/name#number or its full /pull/ URL; a bare 'PR #N' is not read as a citation";
+    const from = m.index ?? 0;
+    // Inside an owner/name#N citation the token is that citation's own name; anywhere else it is the bare form.
+    if (!cited.some((c) => from >= c.from && from + m[0].length <= c.to))
+      return "cite the PR as owner/name#number or its full /pull/ URL; a bare 'PR #N' is not read as a citation";
   }
   return undefined;
 }
