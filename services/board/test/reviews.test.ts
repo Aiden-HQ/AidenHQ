@@ -11,7 +11,7 @@ import { stringify } from "yaml";
 import { createApp } from "../src/app.js";
 import type { Paperclip } from "../src/paperclip.js";
 import type { Reviews } from "../src/reviews-client.js";
-import { insightsOf, type Run } from "../src/reviews.js";
+import { configProblems, insightsOf, type Run } from "../src/reviews.js";
 import { Store } from "../src/store.js";
 import { fakeRecords } from "./fake-records.js";
 
@@ -85,4 +85,8 @@ describe("the Reviews page's routes", () => {
     expect(i.resolved_rate).toBeCloseTo(1 / 3);
     expect(i.skips).toEqual([{ why: "draft", n: 1 }]);
   });
+});
+
+it("a combo may leave run_usd to the engine's default, and a repo may be mandatory (the module's shape)", () => {
+  expect(configProblems({ day_usd: 1000, repos: [{ repo: "a/b", on_open: [{ engine: "codex-native", model: "openai/gpt-6.2-sol", effort: "medium" }], on_push: [], mandatory: true }] })).toEqual([]);
 });
