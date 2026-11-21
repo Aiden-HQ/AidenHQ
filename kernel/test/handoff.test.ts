@@ -7,7 +7,7 @@ import { request } from "node:http";
 import { doorSource, openAccounts, AccountError } from "../src/accounts.ts";
 import { createAdmin } from "../src/admin.ts";
 import { PASSWORD, authApiServer, jsonBrowser, reqWith, silent, stepListener, totp } from "./auth-helpers.ts";
-import { serve } from "./helpers.ts";
+import { rawStatus, serve } from "./helpers.ts";
 
 const HOST = "localhost:3120";
 const BOARD = "http://board.example:3121";
@@ -33,6 +33,11 @@ const admin = (method, path, jar, { origin = `http://${HOST}` } = {}) => new Pro
   r.on("error", no);
   r.end(method === "POST" ? "" : undefined);
 });
+test("a request target the URL parser rejects gets 400 and the listener keeps serving", async () => {
+  for (const target of ["//[", "http://[::1", "//"]) assert.equal(await rawStatus(adminSrv.url, target), 400, target);
+  assert.equal(await rawStatus(adminSrv.url, "/healthz"), 200);
+});
+
 const handoffPath = (to = BOARD, state = STATE) => `/auth/handoff?to=${encodeURIComponent(to)}&state=${encodeURIComponent(state)}`;
 
 /** An enrolled admin (TOTP set up, so a ready session) as a signed-in jar: the owner first, then invited admins. */

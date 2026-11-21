@@ -273,12 +273,12 @@ export const originOf = (cfg: Pick<GateConfig, "origin">, host: string, site?: S
 /** The Access page and the request channel: the exact origin of this host, nothing else. */
 const exactOrigin = (req: IncomingMessage, origin: string) => req.headers.origin === origin;
 
-/** Same-origin for a state-changing request or an upgrade: the exact origin of this host, else Sec-Fetch-Site. */
 function safeEqual(a: string, b: string) {
   const x = Buffer.from(a), y = Buffer.from(b);
   return x.length === y.length && timingSafeEqual(x, y);
 }
 
+/** Same-origin for a state-changing request or an upgrade: the exact origin of this host, else Sec-Fetch-Site. */
 export function sameOrigin(req: IncomingMessage, origin: string) {
   const o = req.headers.origin;
   if (o !== undefined) return o === origin;

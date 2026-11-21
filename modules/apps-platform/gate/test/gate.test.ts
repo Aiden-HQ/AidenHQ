@@ -628,6 +628,10 @@ test("doors: each exposed app at <app>.<base> for admins only, signed in on the 
     const nostate = await send(`/.auth/handoff?code=c1&state=${state}&next=/plan`);
     assert.equal(nostate.status, 403);
     assert.match(nostate.body, /Chrome or Firefox/);
+    // a state cookie of the same length in characters but not in bytes is refused (403), and its code stays unspent
+    codes.set("c3", { host: "roadmap.localhost", state, email: "boss@example.com" });
+    assert.equal((await send(`/.auth/handoff?code=c3&state=${state}&next=/plan`, { cookie: `${ST}=${"é".repeat(state.length)}` })).status, 403);
+    assert.ok(codes.has("c3"));
     codes.set("c2", { host: "roadmap.localhost", state, email: "boss@example.com" });
     const done = await send(`/.auth/handoff?code=c2&state=${state}&next=/plan`, { cookie: `${ST}=${state}` });
     assert.equal(done.status, 302);
