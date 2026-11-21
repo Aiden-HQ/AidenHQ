@@ -85,11 +85,13 @@ export type Call = { tool: string; path?: string; from?: number; stat?: boolean;
  */
 export function shellDiff(command: unknown, base: string): Call[] {
   const c = String(command ?? "").replace(/^\s*cd\s+\S+\s*&&\s*/, ""); // `cd <repo> && git diff …`
-  // Not a read of the diff: a listing, no patch (--no-patch, -s, --quiet, --exit-code, --check) or output written to a file.
-  if (!/^\s*git\b[^|;&<>]*\bdiff\b/.test(c) || /[|;&<>]|--(stat|numstat|shortstat|name-only|name-status|summary|dirstat|raw|no-patch|quiet|check|exit-code|output)\b|\s-[A-Za-z]*s\b/.test(c)) return [];
+  if (!/^\s*git\b[^|;&<>]*\bdiff\b/.test(c) || /[|;&<>]/.test(c)) return [];
   // The range ends the command, or ends what comes before ` -- <paths>`: `git diff <base> HEAD src/x` names paths without `--`,
   // which isn't a read of the whole diff (nor one counted per path).
   const range = c.split(/\s--\s/)[0]!;
+  // Not a read of the diff (options only, never the paths): a listing, no patch (--no-patch, -s in any bundle, --quiet,
+  // --exit-code, --check) or output written to a file.
+  if (/--(stat|numstat|shortstat|name-only|name-status|summary|dirstat|raw|no-patch|quiet|check|exit-code|output)\b|\s-[A-Za-z]*s[A-Za-z]*(?=\s|$)/.test(range)) return [];
   if (!/^[0-9a-f]{7,40}$/.test(base) || !new RegExp(`(^|\\s)${base.slice(0, 7)}[0-9a-f]*(\\.\\.\\.?|\\s+)HEAD\\s*$`).test(range)) return [];
   const paths = c.split(/\s--\s/)[1]?.trim().split(/\s+/).map((x) => x.replace(/^['"]|['"]$/g, "")).filter(Boolean) ?? [];
   return paths.length ? paths.map((path) => ({ tool: "diff", path, whole: true })) : [{ tool: "diff", whole: true }];

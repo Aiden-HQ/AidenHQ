@@ -398,7 +398,7 @@ export function createEngine(d: EngineDeps) {
     // it came back (its row links its earlier thread).
     const unsafe = r.mandatory && !stale ? [...new Set((review.unsafe ?? []).filter((x) => typeof x === "string"))] : [];
     for (const id of unsafe) {
-      const f = one<Omit<Finding, "fix_brief">>("SELECT id, severity, path, line, title, COALESCE(why, '') AS why, COALESCE(evidence, '') AS evidence FROM findings WHERE repo = ? AND number = ? AND id = ? AND claim IS NOT NULL ORDER BY rowid DESC LIMIT 1", r.repo, r.number, id);
+      const f = one<Omit<Finding, "fix_brief">>("SELECT id, severity, path, line, title, COALESCE(why, '') AS why, COALESCE(evidence, '') AS evidence FROM findings WHERE repo = ? AND number = ? AND id = ? AND claim IS NOT NULL ORDER BY severity = 'important' DESC, rowid DESC LIMIT 1", r.repo, r.number, id);
       if (!f) continue;
       const at = review.findings.findIndex((x) => x.id === id), was = at >= 0 ? review.findings[at]! : { ...f, fix_brief: "Fix it and push, or answer on its thread again with a reason that holds." };
       const reopened = { ...was, title: `${REOPENED.title}${was.title.replace(REOPENED.title, "")}`.slice(0, 200), why: `${REOPENED.why}${was.why.replace(REOPENED.why, "")}`.slice(0, 3000) };
@@ -798,10 +798,11 @@ export function createEngine(d: EngineDeps) {
     }
     for (const cfg of d.config().repos) {
       if (!gated(cfg)) continue;
-      // A status is per commit: PRs sharing a head get one, the least ready of their verdicts (failure, then pending, then pass).
+      // A status is per commit: PRs sharing a head get one, the least ready of their verdicts (failure, then pending, then a pass
+      // without a failed review's warning, then pass).
       const prs = all<{ number: number; head: string; status_key: string | null }>("SELECT number, head, status_key FROM prs WHERE repo = ? AND open = 1 AND draft = 0", cfg.repo);
       const heads = new Map<string, Mirror>();
-      const rank = (m: Mirror) => (m.reason === "pass" ? 2 : PENDING.has(m.reason) ? 1 : 0);
+      const rank = (m: Mirror) => (m.reason === "pass" ? 3 : m.reason === "failed" ? 2 : PENDING.has(m.reason) ? 1 : 0);
       for (const p of prs) { const m = mirrored(cfg.repo, p.number, p.head), had = heads.get(p.head); if (!had || rank(m) < rank(had)) heads.set(p.head, m); }
       for (const p of prs) {
         const id = `${cfg.repo}@${p.head}`;
