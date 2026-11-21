@@ -165,3 +165,18 @@ test("a data version 1 database keeps its PR runs, reviews and findings readable
   assert.deepEqual([r.run.target, r.run.number, r.review.version], ["pr", 4, 1]);
   assert.deepEqual(r.findings, [{ id: "f1", severity: "important", path: "a.ts", line: 3, title: "t", outcome: "fixed" }]);
 });
+
+test("a tree result with a finding out of shape fails that option with the reason; the next option still runs and the report lists the failure", async () => {
+  const w = world();
+  const b = await w.engine.repoReview({ target: { repo: REPO }, options: ["sec.gitleaks", "sec.cloudflare"] });
+  await w.tick();
+  // A repo-level SARIF result with no file or line: refused (a wrong result is never retried), never stored half-made.
+  w.finish(0, { findings: [{ id: "r1", severity: "important", title: "leaked key" }] });
+  await w.tick();
+  assert.deepEqual(w.started.map((s) => s.combo.engine), ["tools", "skill:sec.cloudflare"]);
+  assert.equal(w.db.prepare("SELECT COUNT(*) n FROM findings").get().n, 0);
+  w.finish(1); await w.tick();
+  assert.deepEqual(w.engine.runs({ repo: REPO }).map((r) => r.status).sort(), ["done", "failed"]);
+  assert.equal(w.engine.batches({})[0].verdict, "incomplete");
+  assert.match(w.engine.report(b.batch), /sec\.gitleaks: \*\*failed\*\*: the review's result isn't for this run: a finding isn't in the shared shape/);
+});
