@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { Store } from "./store.js";
 import type { Kind } from "./notify.js";
 
@@ -14,7 +15,7 @@ export interface AttentionConfig {
   warn?: (obj: Record<string, unknown>, msg: string) => void;
 }
 export type Attend = { do: "pass" } | { do: "block" | "limit"; note: string } | { do: "digest" };
-type Item = { agent: string; task?: string; text: string };
+type Item = { id?: string; agent: string; task?: string; text: string };
 
 const dayOf = (now: number) => new Date(now).toISOString().slice(0, 10);
 
@@ -44,7 +45,7 @@ export function queueDigest(store: Store, item: Item): void {
   const q = JSON.parse(store.getKv("digest:queue") || "[]") as Item[];
   // One line per item: agent-supplied whitespace and newlines collapse so an item can't forge another agent's line.
   const one = (t: string, max: number) => t.replace(/\s+/g, " ").trim().slice(0, max);
-  q.push({ agent: one(item.agent, 60), ...(item.task ? { task: one(item.task, 40) } : {}), text: one(item.text, 300) });
+  q.push({ id: randomUUID(), agent: one(item.agent, 60), ...(item.task ? { task: one(item.task, 40) } : {}), text: one(item.text, 300) });
   store.setKv("digest:queue", JSON.stringify(q.slice(-100)));
 }
 
@@ -75,7 +76,9 @@ export async function flushDigest(store: Store, cfg: AttentionConfig, send: (tex
   if (!slot || store.getKv("digest:slot") === slot) return false;
   const q = JSON.parse(store.getKv("digest:queue") || "[]") as Item[];
   if (q.length && !(await send(`Digest: ${q.length} update${q.length > 1 ? "s" : ""}\n\n${q.map((i) => `- ${i.agent}${i.task ? ` · ${i.task}` : ""}: ${i.text}`).join("\n")}`))) return false;
-  store.setKv("digest:queue", "[]");
+  // Only what was sent goes: a notice queued during the send (or a trim that shifted the queue) stays for the next digest.
+  const sent = new Set(q.map((i) => i.id));
+  store.setKv("digest:queue", JSON.stringify((JSON.parse(store.getKv("digest:queue") || "[]") as Item[]).filter((i) => !sent.has(i.id))));
   store.setKv("digest:slot", slot);
   return q.length > 0;
 }

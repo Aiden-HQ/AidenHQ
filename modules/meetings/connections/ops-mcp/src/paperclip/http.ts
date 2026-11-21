@@ -61,8 +61,9 @@ export class HttpPaperclipApi implements PaperclipApi {
   }
 
   async listComments(issueId: string): Promise<IssueComment[]> {
-    const raw = await this.request<unknown>("GET", `/api/issues/${encodeURIComponent(issueId)}/comments?order=asc&limit=200`);
-    const list = (Array.isArray(raw) ? raw : []) as Record<string, unknown>[];
+    const raw = await this.request<unknown>("GET", `/api/issues/${encodeURIComponent(issueId)}/comments?order=desc&limit=200`);
+    // The newest 200, oldest first.
+    const list = ((Array.isArray(raw) ? raw : []) as Record<string, unknown>[]).sort((a, b) => String(a.createdAt ?? "").localeCompare(String(b.createdAt ?? "")));
     return list
       .filter((c) => !c.deletedAt)
       .map((c) => ({
@@ -97,9 +98,18 @@ export class HttpPaperclipApi implements PaperclipApi {
     }
   }
 
-  private async labelId(name: string): Promise<string> {
+  private creating = new Map<string, Promise<string>>();
+
+  /** One creation per label name at a time: concurrent callers share it. */
+  private labelId(name: string): Promise<string> {
     const cached = this.labelCache.get(name);
-    if (cached) return cached;
+    if (cached) return Promise.resolve(cached);
+    const pending = this.creating.get(name) ?? this.findOrCreateLabel(name).finally(() => this.creating.delete(name));
+    this.creating.set(name, pending);
+    return pending;
+  }
+
+  private async findOrCreateLabel(name: string): Promise<string> {
     const labels = await this.request<Label[]>("GET", `/api/companies/${this.companyId}/labels`);
     for (const l of labels) this.labelCache.set(l.name, l.id);
     const found = this.labelCache.get(name);

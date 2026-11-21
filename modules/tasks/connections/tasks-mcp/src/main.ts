@@ -26,6 +26,7 @@ export const server = createServer(async (req, res) => {
   if (req.method !== "POST") return res.writeHead(405, { allow: "POST" }).end();
   if (!sameKey(req.headers.authorization ?? "")) return send(res, 401, { error: "unauthorized" });
   let raw = "";
+  req.setEncoding("utf8");
   for await (const c of req) {
     raw += c;
     if (raw.length > MAX_BODY) return send(res, 413, { error: "too large" });

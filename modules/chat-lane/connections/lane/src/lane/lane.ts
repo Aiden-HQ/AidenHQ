@@ -83,12 +83,13 @@ export function makeLane(d: LaneDeps) {
   let active = 0;
   const waiting: (() => void)[] = [];
   const slot = async () => {
-    if (active >= MAX_TURNS) await new Promise<void>((r) => waiting.push(r));
-    active++;
+    if (active < MAX_TURNS) active++;
+    else await new Promise<void>((r) => waiting.push(r)); // the slot is handed over, never freed and re-taken
   };
   const free = () => {
-    active--;
-    waiting.shift()?.();
+    const next = waiting.shift();
+    if (next) next();
+    else active--;
   };
 
   /** Posts on the chat task as the agent (once per key), then to Telegram when asked. A post that fails throws. */
@@ -309,8 +310,12 @@ export function makeLane(d: LaneDeps) {
           continue;
         }
         const ask = t.ask.length > 80 ? `${t.ask.slice(0, 80)}…` : t.ask;
-        await send(agent, `s${t.id}`, `No result yet on "${ask}" from my background task; it may have stalled. I'll post here if it finishes.`, true);
-        d.store.settle(t.id, now());
+        try {
+          await send(agent, `s${t.id}`, `No result yet on "${ask}" from my background task; it may have stalled. I'll post here if it finishes.`, true);
+          d.store.settle(t.id, now());
+        } catch (e) {
+          d.log.warn({ agent: t.agent, err: (e as Error).message }, "lane stall notice failed; retried next tick");
+        }
       }
     },
     busy: (agentKey: string) => running.has(agentKey),

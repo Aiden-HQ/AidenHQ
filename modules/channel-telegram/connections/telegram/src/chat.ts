@@ -12,6 +12,7 @@ import type { Store } from "./store.js";
 import { COMMANDS, type QuickReply } from "./commands.js";
 import { approvalPress, decideByReply, decideCard, decideList, decidedText, parseReply, type DecideSetting } from "./approvals.js";
 import type { Kernel } from "./kernel.js";
+import { KernelError } from "./aidenhq-sdk/kernel-client.js";
 import { fromTelegramCallback } from "./telegram.js";
 import { chatAgentOf, routeOwnerMessage, type AgentLite } from "./threads.js";
 import { markOwnerMessage } from "./send.js";
@@ -125,6 +126,7 @@ export async function startTelegramPoll(cfg: ChatConfig, store: Store, deliver: 
   // The "/" menu in Telegram.
   if (extras) await tg("setMyCommands", { commands: COMMANDS });
   for (;;) {
+    let handling: number | undefined;
     try {
       const offset = Number(store.getKv("tg_offset") ?? 0);
       const q = new URLSearchParams({ timeout: "30", offset: String(offset), allowed_updates: '["message","callback_query"]' });
@@ -132,6 +134,7 @@ export async function startTelegramPoll(cfg: ChatConfig, store: Store, deliver: 
       const data = (await res.json()) as { ok?: boolean; result?: { update_id: number }[] };
       if (!data.ok) throw new Error(`getUpdates ${res.status}`);
       for (const u of data.result ?? []) {
+        handling = u.update_id;
         if (await extras?.start?.(u)) {
           store.setKv("tg_offset", String(u.update_id + 1));
           continue;
@@ -183,6 +186,13 @@ export async function startTelegramPoll(cfg: ChatConfig, store: Store, deliver: 
         store.setKv("tg_offset", String(u.update_id + 1));
       }
     } catch (err) {
+      // An update the kernel refuses for good (a deleted chat task, a removed agent) is skipped, or it blocks every later message.
+      if (handling !== undefined && err instanceof KernelError && [400, 404, 422].includes(err.status)) {
+        store.setKv("tg_offset", String(handling + 1));
+        log.warn({ err: String(err).replace(cfg.telegramToken, "***"), update: handling }, "telegram update refused by the kernel; skipped");
+        await extras?.reply({ text: "⚠ That message couldn't be delivered: the kernel refused it (its chat or agent may be gone). Send it again as a new message." }).catch(() => {});
+        continue;
+      }
       log.warn({ err: String(err).replace(cfg.telegramToken, "***") }, "telegram poll failed; retrying");
       await new Promise((r) => setTimeout(r, 10_000));
     }
