@@ -305,7 +305,7 @@ export function createEngine(d: EngineDeps) {
     if (pr && !pr.open) {
       // Merged or closed unmerged: GitHub says which. When it can't say now, the run stays running and the next tick finishes it
       // again (its review is kept; the writes above are idempotent), never dropped as closed on a failed read.
-      const merged = await d.source.get(r.repo, r.number).then((c) => !!c.merged, () => undefined);
+      const merged = await d.source.get(r.repo, r.number).then((c) => !!c.merged).catch(() => undefined);
       if (merged === undefined) return void log("finished review not posted yet: whether its PR merged can't be read now; the next tick asks again", { run: r.id });
       if (!merged) return done("skipped", "closed");
     }
