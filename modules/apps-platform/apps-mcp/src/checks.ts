@@ -300,14 +300,21 @@ const pgFrame = (b) => {
   if (len < 4 || len > 1 << 20 || !"REN".includes(type)) return "invalid";
   if (b.length < 1 + len) return ""; // the frame has not all arrived
   const body = b.subarray(5, 1 + len);
-  // AuthenticationRequest carries an int32 code and the payload that code requires: MD5 a four-byte salt, SASL a
-  // null-terminated mechanism list, the rest none. Codes PostgreSQL no longer sends are not identification.
+  // AuthenticationRequest carries an int32 code and exactly the payload that code requires: none for AuthenticationOk,
+  // cleartext, GSS and SSPI; a four-byte salt for MD5; a null-terminated, non-empty mechanism list for SASL. Any other
+  // code, or a payload of the wrong length, is not identification. The continuation codes (GSSContinue, SASLContinue,
+  // SASLFinal) only follow a client reply this probe never sends, so a first reply carrying one is not a server's.
   if (type === "R") {
     if (body.length < 4) return "invalid";
-    const code = body.readUInt32BE(0), rest = body.length - 4;
-    if (code === 5) return rest === 4 ? "postgres" : "invalid";
-    if (code === 10) return rest >= 2 && body[body.length - 1] === 0 ? "postgres" : "invalid";
-    return [0, 3, 7, 8, 9, 11, 12].includes(code) ? "postgres" : "invalid";
+    const code = body.readUInt32BE(0), rest = body.subarray(4);
+    if ([0, 3, 7, 9].includes(code)) return rest.length === 0 ? "postgres" : "invalid";
+    if (code === 5) return rest.length === 4 ? "postgres" : "invalid";
+    if (code === 10) {
+      if (rest.length < 3 || rest[rest.length - 1] !== 0) return "invalid";
+      const names = rest.subarray(0, rest.length - 1).toString("latin1").split("\0");
+      return names.every((n) => n.length > 0) ? "postgres" : "invalid";
+    }
+    return "invalid";
   }
   // ErrorResponse and NoticeResponse carry null-terminated fields, each starting with a type byte and ending with the
   // single zero-length terminator field. PostgreSQL always sends severity (S, or V in 9.6+), SQLSTATE (C) and a message

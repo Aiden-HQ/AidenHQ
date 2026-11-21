@@ -330,11 +330,17 @@ describe("identity gate", () => {
     const frame = (bytes: number[]) => `(s) => { let stage = 0; s.on("data", (d) => { if (stage === 0 && d[0] === 0x47) return s.destroy(); if (stage === 0) { stage = 1; return s.write("N"); } s.end(Buffer.from(${JSON.stringify(bytes)})); }); }`;
     const hard = async (bytes: number[]) => (await scan(db, [await tcp(frame(bytes))])).ok;
     expect(await hard([0x52, 0, 0, 0, 8, 0, 0, 0, 0])).toBe(true); // AuthenticationOk
+    expect(await hard([0x52, 0, 0, 0, 8, 0, 0, 0, 3])).toBe(true); // cleartext password
     expect(await hard([0x52, 0, 0, 0, 12, 0, 0, 0, 5, 1, 2, 3, 4])).toBe(true); // MD5 with its salt
-    expect(await hard([0x52, 0, 0, 0, 15, 0, 0, 0, 10, 0x53, 0x43, 0x52, 0x41, 0x4d, 0, 0])).toBe(true); // SASL, mechanism list
+    expect(await hard([0x52, 0, 0, 0, 14, 0, 0, 0, 10, 0x53, 0x43, 0x52, 0x41, 0x4d, 0])).toBe(true); // SASL, mechanism list
     expect(await hard([0x52, 0, 0, 0, 8, 0, 0, 0, 99])).toBe(false); // a code PostgreSQL never sends
+    expect(await hard([0x52, 0, 0, 0, 12, 0, 0, 0, 0, 1, 2, 3, 4])).toBe(false); // AuthenticationOk with a payload
+    expect(await hard([0x52, 0, 0, 0, 12, 0, 0, 0, 3, 1, 2, 3, 4])).toBe(false); // cleartext with a payload
     expect(await hard([0x52, 0, 0, 0, 8, 0, 0, 0, 5])).toBe(false); // MD5 without its salt
-    expect(await hard([0x52, 0, 0, 0, 14, 0, 0, 0, 10, 0x53, 0x43, 0x52, 0x41, 0x4d])).toBe(false); // SASL, unterminated list
+    expect(await hard([0x52, 0, 0, 0, 11, 0, 0, 0, 5, 1, 2, 3])).toBe(false); // MD5 with a short salt
+    expect(await hard([0x52, 0, 0, 0, 12, 0, 0, 0, 10, 0x53, 0x43, 0x52, 0x41, 0x4d])).toBe(false); // SASL, unterminated list
+    expect(await hard([0x52, 0, 0, 0, 5, 0, 0, 0, 10, 0])).toBe(false); // SASL, an empty mechanism
+    expect(await hard([0x52, 0, 0, 0, 12, 0, 0, 0, 11, 1, 2, 3, 4])).toBe(false); // a continuation code on a first reply
   }, 90_000);
 
   it.runIf(process.platform === "linux")("requires the mandatory fields of a PostgreSQL error or notice reply", async () => {
