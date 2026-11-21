@@ -197,3 +197,22 @@ test("a repo listed twice is not ambiguous; a bare citation refused everywhere i
   assert.match(out.facts.join("\n"), /could not be read \(no grant on acme\/a\)/);
 });
 
+test("a bare job citation tries every candidate repo: found, all 404, a refusal, or a rate limit", async () => {
+  const err = (status: number, message: string, headers?: object) => Object.assign(new Error(message), { status, headers });
+  const ok = { name: "ci", state: "completed", conclusion: "success" };
+  const cases: { name: string; answers: any[]; want: RegExp; awaiting?: boolean }[] = [
+    { name: "found after a refusal and a 404", answers: [err(403, "no grant"), err(404, "Not Found"), ok], want: /cited Actions job 424242 in acme\/c: exists/ },
+    { name: "404 everywhere is no such job", answers: [err(404, "Not Found"), null, err(404, "Not Found")], want: /no such Actions job/ },
+    { name: "a refusal and no find is unreadable", answers: [err(404, "Not Found"), err(403, "Resource not accessible by integration"), null], want: /could not be read \(Resource not accessible by integration\)/ },
+    { name: "a rate limit is retried", answers: [err(403, "no grant"), err(403, "forbidden", { "retry-after": "60" })], want: /could not be read yet/, awaiting: true },
+  ];
+  for (const k of cases) {
+    const answers = [...k.answers];
+    const deps = citeDeps({ citedJob: async () => { const a = answers.shift(); if (a instanceof Error) throw a; return a; } });
+    const [bare] = citedIds(["ci: job 424242"], "WOR-9");
+    const out = await citedEvidence([bare!], deps, ["acme/a", "acme/b", "acme/c"]);
+    assert.match(String(k.awaiting ? out.awaiting : out.facts.join("\n")), k.want, k.name);
+    assert.equal(out.awaiting !== undefined, Boolean(k.awaiting), k.name);
+  }
+});
+

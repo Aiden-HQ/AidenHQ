@@ -717,16 +717,16 @@ export async function resolveCitation(c: Citation, deps: any, repos: string[] = 
     try {
       j = await deps.citedJob(repo, c.id);
     } catch (err: any) {
-      // A 403 or 404 on a cited repo is a definite refusal (no grant, not owner/name, "Resource not accessible by integration",
-      // no such repo) that waiting never changes: the answer, shown once. A rate limit (message, x-ratelimit-remaining: 0 or a
-      // retry-after header) and any other failure are rethrown so the next look retries them.
-      if ([403, 404].includes(Number(err?.status)) && !rateLimited(err)) {
-        // A bare citation tries each known repo: one the grader cannot read is skipped, not a reason to wait.
-        if (!c.repo) {
-          refused ??= { repo, message: String(err.message ?? err) };
-          continue;
-        }
-        return { citation: c, id: c.id, exists: false, unreadable: String(err.message ?? err), repo };
+      // One rule for a cited and a bare job alike: a rate limit (message, x-ratelimit-remaining: 0 or a retry-after header) and any
+      // other failure are rethrown so the next look retries them; a 404 is "no such job there" (as a null); a 403 (no grant,
+      // "Resource not accessible by integration") is a permission refusal that waiting never changes. A bare citation tries
+      // every candidate and keeps the first refusal; a cited repo answers with it at once.
+      const status = Number(err?.status ?? err?.statusCode ?? err?.response?.status);
+      if (!rateLimited(err) && status === 404) continue;
+      if (!rateLimited(err) && status === 403) {
+        if (c.repo) return { citation: c, id: c.id, exists: false, unreadable: String(err.message ?? err), repo };
+        refused ??= { repo, message: String(err.message ?? err) };
+        continue;
       }
       throw err;
     }
