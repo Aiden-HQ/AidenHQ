@@ -30,7 +30,7 @@ function setup(trees, judge = () => ({ failed: [] }), extra = {}, onRun) {
         const script = readFileSync(join(o.workspace, "modules/ai-reviewer/scripts/reviewer-eval.ts"), "utf8");
         const failed = judge(cases, runs.filter((r) => r.argv.includes("scripts/reviewer-eval.ts")).length).failed;
         o.seen = { total: cases.length, script, cases: Object.fromEntries(cases.map((c) => [c, readFileSync(join(o.workspace, CASES, c), "utf8")])) };
-        writeFileSync(join(o.out, "result.json"), JSON.stringify({ total: cases.length, passed: cases.length - failed.length, failed }));
+        writeFileSync(join(o.out, "result.json"), JSON.stringify({ total: cases.length, passed: cases.length - failed.length, failed, capped: [] }));
         return { exit: 0, out: "", timedOut: false };
       }
       return { exit: trees.exit ?? 0, out: "lint: 1 error", timedOut: false };
@@ -278,16 +278,31 @@ test("checks: a capped list that isn't the run's cases is malformed, never read 
   }
 });
 
-test("checks: a result that omits the capped list is an older judge's passing run, not a malformed result", async () => {
-  // The gate judges a PR by its base's tip, so the harness that writes the result can predate the `capped` list: a passing run
-  // with no list at all is that judge's normal result, not malformed (a capped case it scores as a miss is still a verdict).
+test("checks: a result that omits the capped list is malformed, never a passing run", async () => {
+  // Fail closed: a judge that writes no `capped` list could be scoring a cap-cut case as a miss, so this kernel can't read its
+  // result at all. No receipt; asking again runs it again.
   const { checks, done } = setup(evalTree(), undefined, {}, (o) => {
     const cases = readdirSync(join(o.workspace, CASES)).sort();
     writeFileSync(join(o.out, "result.json"), JSON.stringify({ total: cases.length, passed: cases.length, pass: true, failed: [] }));
     return { exit: 0, out: "", timedOut: false };
   });
   const v = await done(checks.start("github", { repo: "acme/product", head: A, run: "eval", spec: evalSpec }));
-  assert.deepEqual([v.state, v.receipt?.verdict, v.capped], ["done", "pass", null]);
+  assert.deepEqual([v.state, v.receipt], ["error", null]);
+  assert.match(v.error, /writes no `capped` list/);
+});
+
+test("checks: a failed row whose case was cut by the cap is capped, never counted as a miss", async () => {
+  // A harness that scores a `review_cap` escalation as a failure (an older one, with no `capped` list) must still not pass:
+  // the row names the cap code, so the case is lifted into `capped` and the run ends in error with no receipt.
+  const { checks, done } = setup(evalTree(), undefined, {}, (o) => {
+    const cases = readdirSync(join(o.workspace, CASES)).sort();
+    const line = { file: cases[0], want: "approve", got: "escalate review_cap", reason: 'OpenRouter 402: {"type":"cap_reached","scope":"eval-day"}' };
+    writeFileSync(join(o.out, "result.json"), JSON.stringify({ total: cases.length, passed: cases.length - 1, pass: false, failed: [line], capped: [] }));
+    return { exit: 0, out: "402 cap_reached", timedOut: false };
+  });
+  const v = await done(checks.start("github", { repo: "acme/product", head: A, run: "eval", spec: evalSpec }));
+  assert.deepEqual([v.state, v.receipt, v.capped], ["error", null, "unknown"], "a cap-scored miss is no verdict on the head");
+  assert.match(v.error, /spend cap reached; retry when it frees/);
 });
 
 test("checks: a result that lists one failed case twice is malformed, never counted twice into the pass rule", async () => {

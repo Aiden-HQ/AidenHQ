@@ -255,23 +255,27 @@ const evalPasses = (failed: Failure[], total: number, added: string[]) =>
 function readResult(file: string, cases: string[]): EvalResult {
   let r: any;
   try { r = JSON.parse(smallFile(file) ?? ""); } catch { return { total: cases.length, passed: 0, failed: cases.map((f) => ({ file: f, reason: "the eval wrote no result" })), capped: [], cap: "unknown", broken: true }; }
-  const failed: Failure[] = (Array.isArray(r?.failed) ? r.failed : []).filter((f: any) => cases.includes(f?.file)).map((f: any) => ({ file: f.file, want: String(f.want ?? "").slice(0, 80), got: String(f.got ?? "").slice(0, 80), reason: String(f.reason ?? "").slice(0, 600) }));
-  // The eval names the cases the spend cap cut before the reviewer judged them (its `capped` list): the judge and the kernel
-  // read one contract. A malformed list is the harness's failure, as any malformed result is: a name that isn't one of the cases
-  // (or a value that isn't a list) could hide a capped case and let a run pass. Only an older judge that omits the field reads empty.
-  const named: unknown = r?.capped === undefined ? [] : r.capped;
-  const cappedOk = Array.isArray(named) && named.every((f: unknown) => typeof f === "string" && cases.includes(f));
-  const capped = cappedOk ? [...new Set<string>(named as string[])] : [];
+  const rows: Failure[] = (Array.isArray(r?.failed) ? r.failed : []).filter((f: any) => cases.includes(f?.file)).map((f: any) => ({ file: f.file, want: String(f.want ?? "").slice(0, 80), got: String(f.got ?? "").slice(0, 80), reason: String(f.reason ?? "").slice(0, 600) }));
+  // The eval names the cases the spend cap cut before the reviewer judged them (its `capped` list), and the field is required:
+  // a judge that names no list is one this kernel can't read, so its result is malformed (broken, no receipt), never a pass. A
+  // name that isn't one of the cases (or a value that isn't a list) could hide a capped case the same way.
+  const named: unknown = r?.capped;
+  const cappedOk = Array.isArray(named) && (named as unknown[]).every((f: unknown) => typeof f === "string" && cases.includes(f));
+  // A failure row whose `got` names the cap code is a case the cap cut, not the reviewer's verdict: a harness that scores it a
+  // miss (an older one, which has no `capped` list) still can't turn that case into a pass, so lift it into `capped`.
+  const cutByCap = (f: Failure) => /(?:^|\s)review_cap(?:\s|$)/.test(f.got ?? "");
+  const failed = rows.filter((f) => !cutByCap(f));
+  const capped = cappedOk ? [...new Set<string>([...(named as string[]), ...rows.filter(cutByCap).map((f) => f.file)])] : [];
   // Which cap stopped it, when the eval names one ("eval-day" or "install"): a name, never a path or free text. A judge whose
-  // harness predates `capScope` (the gate judges a PR by its base's tip, so that is a normal case) names none: the error then
-  // says a spend cap, never a budget it wasn't told about.
+  // harness predates `capScope` names none: the error then says a spend cap, never a budget it wasn't told about.
   const cap = r?.capScope === "eval-day" || r?.capScope === "install" ? r.capScope : "unknown";
   // Each case counts once, capped or failed: a capped case's line may sit in `failed` beside the `capped` list. A duplicate
   // row in `failed` is malformed, never counted twice into the pass rule.
-  const failedFiles = failed.map((f) => f.file);
+  const failedFiles = failed.map((f) => f.file), namedFiles = rows.map((f) => f.file);
   const notPassed = new Set([...failedFiles, ...capped]);
-  const why = !cappedOk ? "its `capped` list isn't a list of its cases"
-    : new Set(failedFiles).size !== failedFiles.length ? "it lists one failed case twice"
+  const why = named === undefined ? "it writes no `capped` list"
+    : !cappedOk ? "its `capped` list isn't a list of its cases"
+    : new Set(namedFiles).size !== namedFiles.length ? "it lists one failed case twice"
     : r?.total !== cases.length || r?.passed !== cases.length - notPassed.size ? `its counts don't match its ${cases.length} cases` : "";
   if (why) return { total: cases.length, passed: 0, failed: cases.map((f) => ({ file: f, reason: `the eval's result is malformed: ${why}` })), capped: [], cap: "unknown", broken: true };
   return { total: cases.length, passed: r.passed, failed, capped, cap };
