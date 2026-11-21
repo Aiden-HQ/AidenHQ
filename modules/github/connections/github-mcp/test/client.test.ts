@@ -140,3 +140,10 @@ it("a write that stays refused past the patience fails as a transient rate_limit
   expect(err).toBeInstanceOf(GitHubNeed);
   expect(err.need.cause).toBe("rate_limited");
 });
+
+it("a call that works marks the sign-in ok (its state starts unknown after a restart)", async () => {
+  const marked: string[] = [];
+  const a = { ...auth(), mark: (s: "ok" | "expired") => void marked.push(s) };
+  await createAccess({ auth: a, fetchImpl: async () => answer(200, {}) }).rest("GET", "/repos/acme/api");
+  expect(marked).toEqual(["ok"]);
+});
