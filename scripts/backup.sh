@@ -27,7 +27,7 @@ env_file="${AIDENHQ_ENV_FILE:-.env}"
 [ -f "$env_file" ] && { set -a; . "$env_file"; set +a; }
 data="$(cd "${AIDENHQ_DATA_DIR:-./data}" && pwd)"
 config="$(cd "${AIDENHQ_CONFIG_DIR:-./config}" && pwd)"
-state="$(sed -n 's/^state_dir:[[:space:]]*//p' "$config/runner.yaml" 2>/dev/null | tr -d "\"'" | head -1)"
+state=; [ ! -f "$config/runner.yaml" ] || state="$(sed -n 's/^state_dir:[[:space:]]*//p' "$config/runner.yaml" | tr -d "\"'" | head -1)"
 state="${state:-~/.local/state/aidenhq-runner}"; state="${state/#\~/$HOME}"
 out_dir="${args[0]:-$repo/backups}"
 mkdir -p "$out_dir"

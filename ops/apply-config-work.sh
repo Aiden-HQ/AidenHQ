@@ -99,7 +99,10 @@ main() {
   # checkouts, so a hand-over's record of what ran before no longer holds: it is read again below.
   local recovered=0
   recoverLogged || true
-  [ "$recover" = 0 ] || return 0
+  if [ "$recover" = 1 ]; then # the boot unit fails (and is retried) unless the dead apply's recovery ended on a good generation
+    [ "$recovered" = 0 ] || [ "$(genGet "$(( $(genJs next) - 1 ))" health)" = good ] || { echo "apply alert: recovering the dead apply did not end on a good generation" >&2; exit 1; }
+    return 0
+  fi
   [ "$recovered" = 0 ] || unset AIDENHQ_APPLY_BEFORE AIDENHQ_APPLY_INST_BEFORE
 
   # The instance commit running before this apply (a hand-over carries it, since HEAD has moved by then).
@@ -663,12 +666,17 @@ switchOver() {
     echo "slack-live: $(node ops/slack-live-move.ts "$data") (data/modules/channel-slack/ -> data/modules/slack/)"
   fi
   if ! cmp -s ops/units/aidenhq-kernel.service "$kn"; then
-    cp ops/units/aidenhq-kernel.service "$kn" && systemctl --user daemon-reload && systemctl --user enable --quiet aidenhq-kernel \
-      && systemctl --user restart aidenhq-kernel && echo "kernel unit installed/updated"
+    cp ops/units/aidenhq-kernel.service "$kn"
+    systemctl --user daemon-reload
+    systemctl --user enable --quiet aidenhq-kernel
+    systemctl --user restart aidenhq-kernel
+    echo "kernel unit installed/updated"
   elif ! systemctl --user is-active --quiet aidenhq-kernel; then
-    systemctl --user restart aidenhq-kernel && echo "kernel started"
+    systemctl --user restart aidenhq-kernel
+    echo "kernel started"
   elif [ "$before" != "$product" ] && ! git diff --quiet "$before" "$product" -- kernel ':(glob)modules/*/src/**' ops/units/aidenhq-kernel.service; then
-    systemctl --user restart aidenhq-kernel && echo "kernel code changed: restarted"
+    systemctl --user restart aidenhq-kernel
+    echo "kernel code changed: restarted"
   fi
   # The board mounts this mirror's directory read-only, so it must exist before compose starts (a first apply on a fresh host).
   mkdir -p "$(dirname "$AIDENHQ_GENERATIONS_MIRROR")"

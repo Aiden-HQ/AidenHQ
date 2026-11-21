@@ -17,7 +17,9 @@ env_file="${AIDENHQ_ENV_FILE:-.env}"
 [ -f "$env_file" ] && { set -a; . "$env_file"; set +a; }
 IMG=postgres:17@sha256:ff87138949ad9a46f32ff23bd6852b52ce024a13dffe9b4087be98292cdd3b4f # as scripts/backup.sh
 
-running="$(docker compose --env-file "$env_file" ps --status running --services 2>/dev/null || true)"
+# A failing `docker compose ps` stops the restore: it must not read as "nothing running".
+compose_env=(); [ ! -f "$env_file" ] || compose_env=(--env-file "$env_file")
+running="$(docker compose "${compose_env[@]}" ps --status running --services)"
 if [ -n "$running" ]; then
   echo "error: refusing to restore while containers are running: $(echo $running)" >&2
   echo "       stop them first: docker compose down" >&2
@@ -42,8 +44,9 @@ stamp="$(date +%Y%m%d-%H%M%S)"
 # the file copy's owner) and drop the file copy's -wal/-shm, which belong to the torn copy.
 restore_tree() { # name dir
   local name="$1" dir="$2"
-  local part; part="$(ls "$work/$name".tar* 2>/dev/null | head -1)"
-  [ -n "$part" ] || return 0
+  local parts=("$work/$name".tar*) part
+  [ -e "${parts[0]}" ] || return 0
+  part="${parts[0]}"
   mkdir -p "$dir"
   docker run --rm -v "$dir:/d" -v "$work:/b:ro" -e PART="/b/$(basename "$part")" -e NAME="$name" -e ASIDE="/d/.pre-restore-$stamp" "$IMG" sh -euc '
     for top in $(tar -tf "$PART" | sed -n "s|^\./\([^/][^/]*\).*|\1|p" | sort -u); do
