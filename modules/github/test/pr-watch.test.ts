@@ -220,7 +220,8 @@ test("a behind, non-conflicting red PR is updated by GitHub, not woken; a refuse
   const e = await rig(t, { behind: 2, update: 502 });
   e.set([e.agentPr(7, redPr(7))]);
   await e.watch.tick(); await e.watch.tick();
-  assert.equal(e.gh.filter((g) => g === "PUT /repos/acme/app/pulls/7/update-branch rebase").length, 2, "a 5xx is asked again next tick; only a conflict is final");
+  assert.equal(e.gh.filter((g) => g === "PUT /repos/acme/app/pulls/7/update-branch rebase").length, 1, "a 5xx is asked again after its backoff, not every tick");
+  assert.equal(e.woke.length, 0, "no wake while the update will retry");
 });
 
 test("a green agent PR has its merge filed by the kernel for its task, once per head; a head its task's PR didn't push wakes the task", async (t) => {

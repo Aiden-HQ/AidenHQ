@@ -9,7 +9,7 @@
 // finished red on its own mergeable head (not only behind main) wakes it once per head to fix it. A check whose job never started (GitHub
 // refused it: billing, no runner; the runner's environmentFailure) is re-run once at that head, never rebased and never woken for. The PR of
 // a cancelled task is closed with its branch, once (the runner's abandoned PR), and so is a done task's unmerged PR once its head is half an hour old with no merge of it open. A PR behind main with no conflict is updated by GitHub
-// (update-branch, the runner's rebaseInCode) instead of waking its task, once per head and head of main. No PR gets more than MAX_WAKES wakes at one head (RED_WAKES); the asker is told once when it is capped. A 4xx update-branch refusal is final; a 5xx or race retries.
+// (update-branch, the runner's rebaseInCode) instead of waking its task, once per head and head of main. No PR gets more than MAX_WAKES wakes at one head (RED_WAKES); the asker is told once when it is capped. A conflict or no-rights update-branch refusal is final; a transient failure retries after five minutes without waking the task.
 // The CI breaker: after 3 red rounds on an agent's PR (heads whose own checks finished red), or the same named check red on two
 // heads, its task is no longer woken for red checks; whoever asked for the task (its open parent, else the task) is told once,
 // with the failing checks and the last failure's summary fenced as data. A green head resets it.
@@ -126,7 +126,7 @@ export function startPrWatch(o: PrWatchOptions) {
     state.policyRan ??= {};  // `<pr url>:<head>:<sha256(title)>` -> when its red policy was re-run for that title
     state.abandoned ??= {};  // PR url -> when it was closed for its cancelled task
     state.headAt ??= {};     // PR url -> { head, at }: when this head was first seen
-    state.updated ??= {};    // `<pr url>:<head>:<main oid>` -> "ok" (GitHub updated it) or "final" (a 4xx refusal; a 5xx or race retries)
+    state.updated ??= {};    // `<pr url>:<head>:<main oid>` -> "ok" (GitHub updated it), "final" (a conflict or no right) or "retry:<time>" (a transient failure)
     state.wakes ??= {};      // PR url -> { head, n, escalated? }: wakes sent at this head, and whether the asker was told it is capped
     state.breaker ??= {};    // PR url -> { rounds, failed: { check name -> head }, told? }: red rounds since its last green head
     const save = () => writeJson(stateFile, all);
@@ -234,11 +234,13 @@ export function startPrWatch(o: PrWatchOptions) {
     /** Have GitHub update a behind, non-conflicting branch (rebase if the repo allows, else merge), at most once per head and head of main. True when it did. */
     async function updateBranch(pr: Json, base: string) {
       const key = `${pr.url.toLowerCase()}:${pr.headRefOid}:${base}`;
-      if (state.updated[key] === "ok") return true; // an update GitHub has not shown yet is waited for, not asked about
-      if (state.updated[key] === "final") return false;
-      let last: Json;
+      const prior: string | undefined = state.updated[key];
+      if (prior === "ok") return true; // an update GitHub has not shown yet is waited for, not asked about
+      if (prior === "final") return false;
+      if (prior?.startsWith("retry:") && Date.parse(prior.slice(6)) > Date.now()) return "retry";
+      let retry = false;
       for (const update_method of ["rebase", "merge"]) {
-        const r = last = await gh("PUT", `/repos/${repo}/pulls/${pr.number}/update-branch`, { expected_head_sha: pr.headRefOid, update_method });
+        const r = await gh("PUT", `/repos/${repo}/pulls/${pr.number}/update-branch`, { expected_head_sha: pr.headRefOid, update_method });
         if (r.status < 300) {
           state.updated[key] = "ok";
           await wake(pr, "");
@@ -246,10 +248,14 @@ export function startPrWatch(o: PrWatchOptions) {
           return true;
         }
         log("branch update refused", { pr: pr.url, update_method, status: r.status });
+        // Only a merge conflict or no right to update is permanent; a 5xx, a 429, a sha race or any other 422 may pass.
+        if (!(r.status === 403 || r.status === 404 || (r.status === 422 && /conflict/i.test(String(r.body?.message ?? ""))))) retry = true;
       }
-      // A 4xx answer (a conflict, no right to update a fork) is final for this head and main. A 5xx, a 429 or a race on expected_head_sha (a 422 too) is asked again next tick.
-      if (last.status >= 400 && last.status < 500 && last.status !== 429 && !/expected.*sha|sha.*expected/i.test(String(last.body?.message ?? ""))) { state.updated[key] = "final"; save(); }
-      return false;
+      if (!retry) { state.updated[key] = "final"; save(); return false; }
+      // Asked again in five minutes, and no task is woken meanwhile: the update owns this rebase until it is final.
+      state.updated[key] = `retry:${new Date(Date.now() + 5 * 60_000).toISOString()}`;
+      save();
+      return "retry";
     }
     /** The breaker tripped: whoever asked for the task hears it once, the checks and the last failure's summary fenced as data. */
     async function tellAsker(pr: Json, task: string, red: string[], why: string): Promise<"sent" | "failed"> {
