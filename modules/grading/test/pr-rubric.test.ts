@@ -43,5 +43,6 @@ test("the grader prompt treats the base commit as the start of the PR's history,
   assert.match(system, /never decide that a change is included because this base commit.s id happens to equal another fact.s commit id/);
   assert.match(system, /stays unknown unless another trusted fact proves that ordering/);
   assert.match(system, /never answer it yes from the base commit alone/);
-  assert.doesNotMatch(system, /is judged from that base commit[^.]*was cut from a commit a prerequisite produced/);
+  assert.match(system, /is met only when the DIFF or another trusted fact shows the change is there/);
+  assert.match(system, /the base commit id alone names a commit and proves no content/);
 });

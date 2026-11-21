@@ -45,7 +45,7 @@ const PR_QUERY = `query($owner: String!, $repo: String!, $number: Int!) {
   repository(owner: $owner, name: $repo) {
     pullRequest(number: $number) {
       number title body url state headRefOid headRefName baseRefName mergedAt mergeCommit { oid }
-      chain: commits(first: 100) { pageInfo { hasNextPage } nodes { commit { oid parents(first: 1) { totalCount nodes { oid } } } } }
+      chain: commits(first: 100) { pageInfo { hasNextPage } nodes { commit { oid parents(first: 10) { totalCount nodes { oid } } } } }
       files(first: 100) { pageInfo { hasNextPage } nodes { path } }
       history: commits(last: 30) { nodes { commit { oid tree { oid } parents(first: 1) { totalCount } } } }
       commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes { __typename ... on CheckRun { name status conclusion } ... on StatusContext { context state } } } } } } }

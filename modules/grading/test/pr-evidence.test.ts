@@ -104,6 +104,20 @@ test("baseCommitOf names the parent of the single commit that starts the PR's hi
   assert.equal(baseCommitOf({ ...merged(606, "3", "4"), chain: { nodes: [{ commit: { oid: SHA("3"), parents: { totalCount: 1, nodes: [{ oid: SHA("3") }] } } }], pageInfo: { hasNextPage: false } } }), "", "a commit that starts nothing establishes nothing");
 });
 
+// A merge commit in the middle of the list is not the start when its second parent ties it to another of the PR's commits:
+// every parent is checked, so a commit whose first parent is outside the list but whose second parent is in it is not a start.
+test("a commit is a start only when none of its parents is in the PR's own list", () => {
+  const pr = { ...merged(607, "3", "4"), chain: { pageInfo: { hasNextPage: false }, nodes: [["3", "b"], ["b", "2", "3"]].map(([oid, ...ps]) => ({ commit: { oid: SHA(oid), parents: { totalCount: ps.length, nodes: ps.map((x) => ({ oid: SHA(x) })) } } })) } };
+  assert.equal(baseCommitOf(pr), "", "the merge's first parent is outside the list, but its second parent is the PR's head, so the merge is not the start and nothing establishes a base");
+});
+
+// A parent list that was cut short establishes nothing even when the count says one: the second parent it did not return could
+// be a tie to the rest of the list.
+test("a starting commit whose parents were not all read establishes nothing", () => {
+  const pr = { ...merged(608, "3", "4"), chain: { pageInfo: { hasNextPage: false }, nodes: [{ commit: { oid: SHA("3"), parents: { totalCount: 2, nodes: [{ oid: SHA("2") }] } } }] } };
+  assert.equal(baseCommitOf(pr), "", "one parent read out of two is not proof of a plain commit");
+});
+
 // The oldest commit is found by the graph, not by the list's order: GitHub documents neither the connection's order nor that one page
 // holds every commit, so a list given newest first must still yield the same single starting commit.
 test("the oldest commit is the one whose parent is outside the list, whatever order the list is in", async () => {

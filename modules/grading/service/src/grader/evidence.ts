@@ -91,29 +91,31 @@ const samePr = (a: { repo: string; number: number }, b: { repo: string; number: 
  * establish one.
  *
  * GitHub defines a PR's commits as the head branch's commits not present in the base branch (`pullRequest.commits`). In that
- * list the starting commit is the one commit whose first parent is not itself in the list, so its parent is the commit this
- * history starts from. It is found by the parent edges, never by list order: GitHub documents neither the connection's order
- * nor that one page holds every commit.
+ * list a commit starts the history when none of its parents is itself in the list -- every parent, not just the first, since a
+ * merge commit's second parent can be the one that ties it to the rest. The start is found by the parent edges, never by list
+ * order: GitHub documents neither the connection's order nor that one page holds every commit.
  *
  * The value states only that relationship. It is not where the branch was cut -- a rebase after opening re-parents the oldest
  * commit -- and it is not the base branch's tip or the git merge base, both of which move; neither is ever substituted for it.
  *
  * Nothing is established (""), rather than guessed, when the PR is not merged; the list was cut off
- * (`pageInfo.hasNextPage`) or is empty; more than one commit starts the history (a merge commit that starts it counts: with
- * several parents, which one is the base is not settled); or the starting commit's parent is missing, ambiguous or not a
- * commit id.
+ * (`pageInfo.hasNextPage`) or is empty; more than one commit starts the history; the single start has no parent or several (a
+ * merge commit that starts it: which parent would be the base is not settled); any of its parents was not read; or its parent
+ * is not a commit id.
  */
 export function baseCommitOf(pr: any): string {
   if (pr?.state !== "MERGED" || pr.chain?.pageInfo?.hasNextPage) return "";
-  const chain = (pr.chain?.nodes ?? []).map((n: any) => n?.commit ?? n).filter((c: any) => c && typeof c.oid === "string");
+  const chain = (pr.chain?.nodes ?? []).map((n: any) => n?.commit).filter((c: any) => c && typeof c.oid === "string");
   const own = new Set(chain.map((c: any) => c.oid));
+  const parents = (c: any): string[] => (c?.parents?.nodes ?? []).map((p: any) => p?.oid).filter((oid: any) => typeof oid === "string");
   // One entry per distinct commit, so a repeated node is not read as two starting commits.
   const starts = new Map<string, any>();
-  for (const c of chain) if (!own.has(c?.parents?.nodes?.[0]?.oid)) starts.set(c.oid, c);
+  for (const c of chain) if (!parents(c).some((oid) => own.has(oid))) starts.set(c.oid, c);
   if (starts.size !== 1) return "";
   const [root] = [...starts.values()];
-  if (root?.parents?.totalCount !== 1) return "";
-  const parent = root?.parents?.nodes?.[0]?.oid;
+  // Every parent must have been read, or a second one could be hiding a tie to the rest of the list.
+  if (root?.parents?.totalCount !== 1 || root.parents.totalCount !== parents(root).length) return "";
+  const [parent] = parents(root);
   return typeof parent === "string" && SHA40.test(parent) ? parent : "";
 }
 
