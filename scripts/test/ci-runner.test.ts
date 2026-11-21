@@ -6,16 +6,21 @@ import { execFile } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { test } from "node:test";
+import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 // The unit's scripts and the helper both source, at the paths they use in a checkout.
 const scripts = ["ci-runner.sh", "ci-runner-backoff.sh", "lib/ci-runner-backoff.sh"].map((name) => join(here, "../../ops", name));
 
+// Every checkout goes when the file's tests do, so a run leaves no /tmp trees behind.
+const made: string[] = [];
+after(() => { for (const dir of made) rmSync(dir, { recursive: true, force: true }); });
+
 /** A checkout whose node, docker and sleep are fakes recording each call; `token` fails while the fixture file says so. */
 function checkout() {
   const dir = mkdtempSync(join(tmpdir(), "ci-runner-"));
+  made.push(dir);
   mkdirSync(join(dir, "bin"));
   for (const script of scripts) {
     const into = join(dir, "ops", script.slice(script.lastIndexOf("/ops/") + 5));
