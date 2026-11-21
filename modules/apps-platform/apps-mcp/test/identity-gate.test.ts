@@ -288,6 +288,41 @@ describe("identity gate", () => {
     expect(r.findings[0]).toMatchObject({ hard: true, what: expect.stringMatching(/no HTTP answer/) });
   }, 60_000);
 
+  it.runIf(process.platform === "linux")("keeps a truncated PostgreSQL reply hard: a header alone is not a protocol message", async () => {
+    // The peer declines SSL and sends the first five bytes of an AuthenticationRequest that claims eight more bytes it never
+    // sends, then hangs up. A header is not a message: the gate must wait for the whole frame and stay closed when it never
+    // arrives, or a multiplexer could answer one plausible type byte and be exempted on the strength of it.
+    const db = parseApp({ name: "warehouse", repo: "example-org/x", owner: "a", description: "d", port: 5433, expose: false });
+    const truncated = await tcp(`(s) => { let stage = 0; s.on("data", (d) => { if (stage === 0 && d[0] === 0x47) return s.destroy(); if (stage === 0) { stage = 1; return s.write("N"); } s.end(Buffer.from([0x52, 0, 0, 0, 100])); }); }`);
+    const r = await scan(db, [truncated]);
+    expect(r.ok).toBe(false);
+    expect(r.findings[0]).toMatchObject({ hard: true, what: expect.stringMatching(/no HTTP answer/) });
+    // A frame whose body is not the type's structure (an ErrorResponse with no terminator field) is not identification either.
+    const malformed = await tcp(`(s) => { let stage = 0; s.on("data", (d) => { if (stage === 0 && d[0] === 0x47) return s.destroy(); if (stage === 0) { stage = 1; return s.write("N"); } s.end(Buffer.from([0x45, 0, 0, 0, 6, 0x53, 0x41])); }); }`);
+    expect(await scan(db, [malformed])).toMatchObject({ ok: false, findings: [{ hard: true, what: expect.stringMatching(/no HTTP answer/) }] });
+    // The same frame, sent whole, is identified: it is the completeness, not the type byte, that decides.
+    const whole = await tcp(`(s) => { let stage = 0; s.on("data", (d) => { if (stage === 0 && d[0] === 0x47) return s.destroy(); if (stage === 0) { stage = 1; return s.write("N"); } s.end(Buffer.from([0x52, 0, 0, 0, 8, 0, 0, 0, 0])); }); }`);
+    expect(await scan(db, [whole])).toMatchObject({ ok: true, findings: [{ hard: false, what: expect.stringMatching(/speaks PostgreSQL/) }] });
+  }, 60_000);
+
+  it.runIf(process.platform === "linux")("reads the TLS reply across chunks: a split record header still marks the port HTTPS", async () => {
+    // Node can deliver the first TLS byte in its own `data` event. A probe that decides on the first chunk would see a
+    // one-byte reply, call it not-TLS, and skip the port as PostgreSQL while it also serves HTTPS. The prefix is buffered.
+    const db = parseApp({ name: "warehouse", repo: "example-org/x", owner: "a", description: "d", port: 5433, expose: false });
+    const split = await tcp(`(s) => {
+      let stage = 0;
+      s.on("data", (d) => {
+        if (stage === 0 && d[0] === 0x16) { stage = 2; s.write(Buffer.from([0x16])); return setTimeout(() => s.end(Buffer.from([0x03, 0x03, 0, 2, 2, 40])), 100); }
+        if (stage === 0 && d[0] === 0x47) return s.destroy();
+        if (stage === 0) { stage = 1; return s.write("N"); }
+        s.end(Buffer.from([0x52, 0, 0, 0, 8, 0, 0, 0, 0]));
+      });
+    }`);
+    const r = await scan(db, [split]);
+    expect(r.ok).toBe(false);
+    expect(r.findings[0]).toMatchObject({ hard: true, what: expect.stringMatching(/answers HTTPS/) });
+  }, 60_000);
+
   it.runIf(process.platform === "linux")("keeps an unconfirmed silent socket hard even on an app the registry says serves no HTTP", async () => {
     // Silence is not identification: a server that hangs up on plaintext (an HTTPS listener, say) or never answers is still
     // judged, so the no-HTTP exemption cannot hide a listener that never showed it speaks a database's protocol.

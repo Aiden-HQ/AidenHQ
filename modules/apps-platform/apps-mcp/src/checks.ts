@@ -287,9 +287,29 @@ const raw = (host, port) => new Promise((done) => {
 });
 // A PostgreSQL server waits for the client, so an HTTP GET makes it hang up (raw: closed) and says nothing about what it is.
 // An SSLRequest's reply alone is not identification either: a TLS listener offers SSL too. So the server must decline SSL
-// (\"N\") and then answer a startup message with a protocol message (AuthenticationRequest, ErrorResponse or
-// NoticeResponse). No credentials are sent: the handshake is dropped at the server's first answer. A server that offers SSL
-// (\"S\") is not identified: the port may be HTTPS, so it stays closed.
+// (\"N\") and then answer a startup message with a *complete, well-formed* protocol message (AuthenticationRequest,
+// ErrorResponse or NoticeResponse). A truncated header, a frame whose length runs past what arrived, or a malformed body is
+// not identification: a half-answer must not exempt a port. No credentials are sent: the handshake is dropped at the
+// server's first answer. A server that offers SSL (\"S\") is not identified: the port may be HTTPS, so it stays closed.
+// One complete frame, validated against its own type, or nothing.
+const pgFrame = (b) => {
+  if (b.length < 5) return "";
+  const type = String.fromCharCode(b[0]), len = b.readUInt32BE(1);
+  if (len < 4 || len > 1 << 20 || !"REN".includes(type)) return "";
+  if (b.length < 1 + len) return ""; // the frame has not all arrived
+  const body = b.subarray(5, 1 + len);
+  // AuthenticationRequest carries an int32 authentication code; ErrorResponse and NoticeResponse carry null-terminated
+  // fields, each starting with a type byte and ending with the single zero-length terminator field.
+  if (type === "R") return body.length >= 4 ? "postgres" : "";
+  if (!body.length || body[body.length - 1] !== 0) return "";
+  for (let i = 0; i < body.length;) {
+    if (body[i] === 0) return i === body.length - 1 ? "postgres" : "";
+    const z = body.indexOf(0, i + 1);
+    if (z < 0) return ""; // a field with no terminator
+    i = z + 1;
+  }
+  return "";
+};
 const postgres = (host, port) => new Promise((done) => {
   let stage = 0, got = Buffer.alloc(0);
   const end = (r) => { s.destroy(); done(r); };
@@ -306,14 +326,10 @@ const postgres = (host, port) => new Promise((done) => {
       const head = Buffer.alloc(8); head.writeUInt32BE(8 + user.length, 0); head.writeUInt32BE(196608, 4);
       s.write(Buffer.concat([head, user])); // a startup message, protocol 3.0
     }
-    if (stage === 1) {
-      if (got.length < 5) return;
-      const type = String.fromCharCode(got[0]), len = got.readUInt32BE(1);
-      end(len >= 4 && len <= 1 << 20 && "REN".includes(type) ? "postgres" : "");
-    }
+    if (stage === 1) { const r = pgFrame(got); if (r) end(r); }
   });
   s.on("timeout", () => end(""));
-  s.on("end", () => end(""));
+  s.on("end", () => end(stage === 1 ? pgFrame(got) : ""));
   s.on("error", () => end(""));
 });
 // A multiplexer can serve PostgreSQL and HTTPS on one port: the plaintext probes never see that HTTP, so a socket identified as
@@ -325,14 +341,20 @@ const TLS_HELLO = Buffer.concat([
   Buffer.alloc(32, 7), // random
   Buffer.from([0x00, 0x00, 0x02, 0x00, 0x2f, 0x01, 0x00, 0x00, 0x00]), // no session, one suite, null compression, no extensions
 ]);
+// The record header can arrive in pieces: hold what came until the five-byte header is complete, then a handshake (0x16) or
+// alert (0x15) on TLS 0x03 says the port speaks TLS too. A connection that ends mid-header after a TLS opening byte still
+// counts: the port began a TLS record, so it could serve HTTPS. Anything short of that is not TLS, and Postgres alone gets no
+// such bytes back from a hello it does not understand.
+const TLS_PREFIX = (b) => b.length >= 1 && (b[0] === 0x16 || b[0] === 0x15) && (b.length < 2 || b[1] === 0x03);
 const tls = (host, port) => new Promise((done) => {
+  let got = Buffer.alloc(0);
   const end = (r) => { s.destroy(); done(r); };
   const s = net.connect({ host, port, timeout: ${PORT_PROBE_MS} });
   s.on("connect", () => s.write(TLS_HELLO));
-  s.on("data", (d) => end(d.length >= 2 && (d[0] === 0x16 || d[0] === 0x15) && d[1] === 0x03 ? "https" : ""));
+  s.on("data", (d) => { got = Buffer.concat([got, d]); if (got.length >= 5) end(TLS_PREFIX(got) ? "https" : ""); });
   s.on("timeout", () => end(""));
-  s.on("end", () => end(""));
-  s.on("error", () => end(""));
+  s.on("end", () => end(TLS_PREFIX(got) ? "https" : ""));
+  s.on("error", () => end(TLS_PREFIX(got) ? "https" : ""));
 });
 let s = "";
 process.stdin.on("data", (c) => (s += c)).on("end", async () => {
