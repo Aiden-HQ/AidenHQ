@@ -216,6 +216,8 @@ const applyPlanner = hostPlanner({ repo, instanceRepo: () => repos().instance, c
 const checksRegistry = checksFile(path.join(configDir, "kernel", "checks.json"));
 const writes = createWrites({
   records, registry, connections, secret, resolver, reviews, onTask, log, replay: (r) => replay(r as never), repos, paths: pathInventory,
+  // ai_review_code (the ai-reviewer module's setting) and the mandatory code-review repos, compiled into the modules file.
+  reviewCode: () => ({ mode: modulesFile().repos?.review_code, mandatory: modulesFile().repos?.code_review_mandatory }),
   // The write.filed checks' code, run in process: the platform check (a hard gate, gates.ts) on the code hosts' git writes.
   checks: checksRegistry, filedChecks: { "platform.product-gate": productGate },
   autonomy: () => (["off", "tier0", "full"].includes(grantsTable().autonomy as string) ? grantsTable().autonomy : "off") as never,

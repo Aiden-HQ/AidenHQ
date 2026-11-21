@@ -93,13 +93,28 @@ export const MARKER = "<!-- aidenhq-approval -->";
 const UNSURE = "reviewer_unsure";
 const MODEL = /^~?[\w.-]+\/[\w.:-]+$/;
 
-export function createWrites({ records, registry, connections, secret, resolver, reviews, autonomy = () => "full", repos = () => ({}), paths = () => undefined, checks = () => ({}), filedChecks = {}, onTask, replay, native = {}, planners = {}, executors = () => ({}), resume = [], log = () => {} }: {
+/** The setting ai_review_code (the ai-reviewer module's) and the repos whose code_review entry is `mandatory`, as compiled. */
+export type ReviewCode = { mode?: string; mandatory?: string[] };
+/**
+ * Whether code review owns a write instead of the AI reviewer (ai_review_code): only a code host's push or PR, and only when
+ * every repo it names is skipped, `none` for every repo, `unless_code_review_mandatory` for those whose code review is
+ * mandatory. Everything else (merges, closes, create_repo, sends, settings, deploys, tool calls) is always reviewed.
+ */
+export function codeReviewOwns(r: Pick<Rec, "kind" | "targets">, { mode = "all", mandatory = [] }: ReviewCode) {
+  if (!/^(github|codehost-local)\.(push|pr)$/.test(r.kind) || mode === "all") return false;
+  const repos = Object.values(r.targets ?? {}).map((t) => String((t as { repo?: unknown })?.repo ?? "").toLowerCase());
+  return repos.length > 0 && repos.every((repo) => repo && (mode === "none" || (mode === "unless_code_review_mandatory" && mandatory.includes(repo))));
+}
+
+export function createWrites({ records, registry, connections, secret, resolver, reviews, autonomy = () => "full", repos = () => ({}), reviewCode = () => ({}), paths = () => undefined, checks = () => ({}), filedChecks = {}, onTask, replay, native = {}, planners = {}, executors = () => ({}), resume = [], log = () => {} }: {
   records: Records; registry: () => { [kind: string]: Kind }; connections: () => { [c: string]: Connection }; secret: (n: string) => string; resolver: Resolver;
   /** The bound reviewer module (reviews.ts): every record's review goes there. */
   reviews?: Reviews;
   autonomy?: () => Autonomy;
   /** The product and instance repositories (which repository a `paths: true` kind's files are in). */
   repos?: () => Repos;
+  /** ai_review_code and the mandatory code-review repos (codeReviewOwns), read on each review. */
+  reviewCode?: () => ReviewCode;
   /** The path inventory (config/kernel/paths.json, paths.ts): a `paths: true` kind's files raise its tier; missing is the owner's. */
   paths?: () => Inventory | undefined;
   /** The checks registry (config/kernel/checks.json, the finish gate's too): its write.filed entries run on every filing of their kinds; one that won't load throws. */
@@ -633,7 +648,9 @@ export function createWrites({ records, registry, connections, secret, resolver,
         const model = typeof b.input?.model === "string" && MODEL.test(b.input.model) ? b.input.model : "kernel/code";
         // The cap is the record's, as it was tiered at filing: the label of a capped approve never depends on a second trace.
         const input = heldInput({ ...(b.input ?? { tier: 1 }), cap: r.cap ?? null }, r.review_first);
-        let v = codeVerdict(input, model) ?? afterReview(input, splitToOwner(input, await ask(r, b.request ?? {}, model)));
+        // A push or PR the owner leaves to code review (ai_review_code) is code's approval, held to the record's review-first.
+        const owns = codeReviewOwns(r, reviewCode());
+        let v = codeVerdict(input, model) ?? afterReview(input, splitToOwner(input, owns ? { decision: "approve", code: "code_review_owns", reason: "Not reviewed by the AI reviewer: the owner's ai_review_code setting leaves pushes and PRs on this repo to code review.", model: "kernel/code" } : await ask(r, b.request ?? {}, model)));
         if (v.code === "reviewer_failed") {
           const n = (wait?.n ?? 0) + 1;
           if (n < REVIEW_TRIES) {

@@ -32,6 +32,8 @@ export const REVIEW_CODES = [
   "files_not_shown",
   // the review reached a spend cap before it finished: the owner decides
   "review_cap",
+  // ai_review_code skips the AI review of this push or PR (code review owns it): code approved it
+  "code_review_owns",
   "check_failed",
   "tier_raised",
   // the reviewer approved a module change that adds authority: the owner decides next, with that verdict on the card

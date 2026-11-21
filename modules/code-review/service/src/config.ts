@@ -28,6 +28,8 @@ export type Repo = {
   /** manual: a fork PR is reviewed only when someone with write access asks; auto: like any other. */
   forks: "manual" | "auto";
   day_usd: number; ignore: string[]; max_nits: number;
+  /** Code review is a required merge step for this repo (read by ai_review_code; not yet enforced as a merge gate). */
+  mandatory: boolean;
 };
 export type Config = { repos: Repo[]; day_usd: number; errors: string[] };
 
@@ -35,7 +37,7 @@ export const DEFAULT_MODEL = "~deepseek/deepseek-flash-latest";
 export const REPO_DEFAULTS: Omit<Repo, "repo"> = {
   on_open: [{ engine: "codex", model: DEFAULT_MODEL, effort: "medium", run_usd: 5 }],
   on_push: [{ engine: "codex", model: DEFAULT_MODEL, effort: "low", run_usd: 5 }],
-  drafts: false, forks: "manual", day_usd: 200, ignore: [], max_nits: 5,
+  drafts: false, forks: "manual", day_usd: 200, ignore: [], max_nits: 5, mandatory: false,
 };
 export const INSTANCE_DAY_USD = 200;
 /** The most combos one moment (or one ask) runs. */
@@ -87,6 +89,7 @@ function repo(raw: unknown): Repo | { error: string } {
     out[k] = c;
   }
   if (typeof out.drafts !== "boolean") return { error: "drafts is true or false" };
+  if (typeof out.mandatory !== "boolean") return { error: "mandatory is true or false" };
   if (!["manual", "auto"].includes(out.forks)) return { error: "forks is manual or auto" };
   for (const k of ["day_usd", "max_nits"] as const) if (Number.isNaN(num(out[k], 0))) return { error: `${k} is a number` };
   if (!Array.isArray(out.ignore) || !out.ignore.every((g) => typeof g === "string" && g.length <= 200)) return { error: "ignore is a list of globs" };

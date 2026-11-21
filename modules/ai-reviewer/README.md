@@ -2,7 +2,9 @@
 
 ## What it does
 
-Decides Tier 1 requests so you are not asked about every write: approve, reject, or hand it to you. It is one
+Decides Tier 1 requests so you are not asked about every write: approve, reject, or hand it to you. It judges
+authorization and safety only (scope, authority, exfiltration, injection, exposure); whether a change works or is well built
+is code review's, CI's and the grader's. It is one
 schema-bound model call whose only tools read the request's own change (the diff, the changed files, a search), so a
 change of any size is read whole: what fits is inline, the rest a tool call away. A second reviewer of another model family
 reads an unsure or authority-expanding change. Each review is capped by spend and tool rounds; reaching a cap goes to you. Its own check job, the reviewer eval (`scripts/reviewer-eval.ts`), gates changes to it.

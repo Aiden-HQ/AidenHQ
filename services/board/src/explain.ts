@@ -25,7 +25,7 @@ export interface Explanation {
   tier: { tier: number; merit: number | null; rule: string | null; ruleWords: string | null; reason: string; cap: string | null; panel: boolean };
   /** The AI reviewer's note (its checklist tail taken off), its reason code and the code in words. */
   review: { note: string; code: string | null; codeWords: string | null } | null;
-  /** The reliability checklist items the reviewer was shown, as code cited them at the end of its note. */
+  /** The security checklist items the reviewer was shown, as code cited them at the end of its note. */
   checklist: { id: string; result: "holds" | "fails" | "not reported" }[];
   /** The owner's reason for a no, in their words. */
   ownerReason: string | null;
@@ -67,6 +67,7 @@ const REVIEW_WORDS: Record<string, string> = {
   no_diff: "There was no change to read.",
   files_not_shown: "The reviewer couldn't see every file.",
   review_cap: "The review reached its spend cap before it finished: you decide.",
+  code_review_owns: "Code approved it without an AI review: your setting leaves pushes and PRs on this repo to code review.",
   check_failed: "A required check failed.",
   tier_raised: "Its tier was raised after filing.",
   new_authority: "It adds authority: the reviewer approved, you decide next.",
