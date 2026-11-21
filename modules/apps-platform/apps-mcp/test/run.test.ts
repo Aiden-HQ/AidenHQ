@@ -48,12 +48,13 @@ describe("engine.run", () => {
       probe: async () => ({ ok: true, ms: 1 }),
     });
     await engine.deploy(app, { by: "t" });
-    expect(await engine.run(app, { script: "seed:backfill", service: "", timeoutMs: 600_000 })).toEqual({ ok: true, timed_out: false, output: "seeded 3 rows\n" });
+    expect(await engine.run(app, { script: "seed:backfill", service: "", sha: "v1", timeoutMs: 600_000 })).toEqual({ ok: true, timed_out: false, output: "seeded 3 rows\n" });
     const ex = calls.find((c) => c.args.includes("exec"))!;
     expect(ex.args.slice(-6)).toEqual(["-e", "npm_config_update_notifier=false", "app", "npm", "run", "seed:backfill"]);
     expect(ex.args.slice(0, 3)).toEqual(["compose", "-p", "app-demo"]);
     expect(ex.o?.timeout).toBe(600_000);
     fail = true;
-    expect(await engine.run(app, { script: "seed:backfill", service: "app", timeoutMs: 1000 })).toMatchObject({ ok: false, output: expect.stringContaining("partial") });
+    expect(await engine.run(app, { script: "seed:backfill", service: "app", sha: "v1", timeoutMs: 1000 })).toMatchObject({ ok: false, output: expect.stringContaining("partial") });
+    await expect(engine.run(app, { script: "seed:backfill", service: "app", sha: "v0", timeoutMs: 1000 })).rejects.toThrow(/not the approved v0/);
   });
 });

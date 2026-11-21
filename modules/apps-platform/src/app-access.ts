@@ -347,7 +347,10 @@ export function createAppAccess(d: AppAccessDeps) {
     /** The agent's answer: a status and one line the requester sees. */
     reply(app: string, id: string, status: Exclude<RequestStatus, "open">, reply: string): { ok: true } {
       const line = reply.replace(/[\p{Cc}\p{Cf}]/gu, " ").replace(/\s+/g, " ").trim().slice(0, 300);
-      if (!db.prepare("UPDATE app_requests SET status = ?, reply = ? WHERE id = ? AND app = ?").run(status, line, id, app).changes) throw new AccessError(404, `no request ${id} on ${app}`);
+      if (!db.prepare("UPDATE app_requests SET status = ?, reply = ? WHERE id = ? AND app = ? AND status = 'open'").run(status, line, id, app).changes) {
+        const exists = db.prepare("SELECT 1 FROM app_requests WHERE id = ? AND app = ?").get(id, app);
+        throw new AccessError(exists ? 409 : 404, exists ? `request ${id} is already answered` : `no request ${id} on ${app}`);
+      }
       return { ok: true };
     },
 
