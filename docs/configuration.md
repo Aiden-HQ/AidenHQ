@@ -107,7 +107,7 @@ outcomes:
   find there, an invalid value, or a trace past 24 issues as `off`. It caps cards only (push, PR, merge, apply, deploy, app_run): direct tools such as `slack_post` and
   `app_api` are governed by grants. Setting or changing a routine's autonomy is always a Tier 2 change.
 - **Instance agents** (`agents/<key>/`) take `name`, `description` (the routing contract), `reports_to`, `model`,
-  `reasoning_effort`, `timeout_sec`, `connections`, `routines` (schedules, `model` and `autonomy` only), `budget` (USD, required), `max_parallel`,
+  `reasoning_effort`, `timeout_sec`, `connections`, `routines` (schedules, `model` and `autonomy` only), `max_parallel`,
   `image`, `trial`, `trial_writes`, `heartbeat` and `skills` (module skill ids). They cannot have roles. An agent that writes
   or designs code lists `engineering.write-code` in `skills` (how code is written here); every agent gets "How we work".
   `trial: true` keeps writes to reporting on the
@@ -160,7 +160,6 @@ outcomes:
 teams:
   engineering:
     template: engineering.engineer   # any module agent: <module>.<agent>
-    caps: { day_usd: 90 }            # one day cap for the whole team, over every member's spend
     routing: { weights: { repo: 3, continuity: 1, load: 1 } }
     defaults: { max_parallel: 5 }    # over the template, under each member
     members:
@@ -176,11 +175,11 @@ the assignment keeps it; otherwise the best score of repo match, continuity (1 i
 the router placed that never ran a job, on a member running its `max_parallel` while another member has a free slot, is
 scored again at that member's next scan and moves if another member scores higher; a task that ran a job, or one named
 straight to a member, stays. A decision record goes on the task (each move too).
-With no eligible member (all paused, or the team's day cap used up) the task is blocked and whoever delegated it is told. A
+With no eligible member (all paused) the task is blocked and whoever delegated it is told. A
 member with open tasks can't be removed: drain or hand them off first. Every agent commits as `<key>@<instance_name>.aidenhq.ai`.
 The board's Agents page draws the team as a parent row (running of its members' parallel slots) over its members, and its
 Settings tab edits the team in place: the record's model, effort and `max_parallel` write `teams.<name>.defaults`, a member's
-write `teams.<name>.members.<key>`, and the day cap `teams.<name>.caps` (the owner's authority).
+write `teams.<name>.members.<key>`.
 A task's repos are only those the code hosts have (the agents org's, the product, the instance, `github_orgs`, `maintainer_repos`, and `local/…`
 repos that exist): a branch, a path or a library named like `owner/name` is none. Weights are each 0 to 10, load at least 1;
 a member lists at most 20 repo patterns. The Fleet Steward tunes members' `repos` and the `weights` daily, as reviewed
@@ -265,12 +264,12 @@ Set under `settings:` in `instance.yaml`. The board's Settings page (gear in the
 | `github_orgs` | github | no | `[]` | GitHub orgs or users, besides the fleet org, the owner allows: the apps platform builds trusted apps from their repos (private ones through the code host) and `create-repo` creates repositories there at Tier 0. |
 | `autonomy` | core | no | `off` (`ops/setup.sh` writes `full` for a new install) | Tiered approvals: `off` = every write is the owner's card, the AI reviewer reading Tier 1 first (its reject is final; also the pause switch); `tier0` = Tier 0 runs at once, the AI reviewer only notes its verdict on Tier 1; `full` = the reviewer decides Tier 1. A new install starts at `full` (owner, 2026-11-18); the reviewer's exit test (`modules/ai-reviewer/scripts/reviewer-eval.ts`) gates every change to the reviewer. Changing it is itself a Tier 2 apply. |
 | `quiet_start` | core | no | | `on` (`ops/setup.sh` writes it for a new install): every module routine with `schedules:` compiles paused and every module agent's heartbeat off, until `overrides.routines.<key>.status: active` or `overrides.agents.<key>.heartbeat` turns one on (Aiden offers them; the agent's Settings tab has the switch). Webhook-started routines and instance agents are untouched. Unset or `off`: as the modules declare. [design/quiet-start.md](design/quiet-start.md) |
-| `spend_day_usd` | core | no | | The install-wide cap on every model call (agents, jobs, the AI reviewer, grader, source writers, side chat, CI), USD per UTC day; `ops/setup.sh` writes 10. Past it the gateway refuses calls (402) and files one `raise_cap` card for today; the board's header shows today's spend against it. Unset: no install-wide cap. |
+| `spend_day_usd`, `spend_month_usd` | core | no | `50`, `1000` | The install's spend limit on every model call (agents, check jobs, the AI reviewer, grader, CI review, source writers, side chat): USD per UTC day and per UTC calendar month, enforced in the kernel's model gateway. Past either, a call gets 402 `cap_reached` and the owner is told once per limit, period and value (no card); the board's header shows today's spend against the day limit. Raising one is the owner's at every autonomy; lowering is the panel's. |
+| `task_usd` | core | no | `20` | What an agent's calls on one task may spend, install-wide (a chat or routine task: per UTC day). Past it that task's calls get 402 and the delegator is told once (a wake notice on the parent task, else the owner); admission holds new jobs on it. Raising it is the owner's. |
 | `heartbeat_hours` | core | no | `4` | Hours between each `heartbeat: true` agent's "Heartbeat: <key>" routine run (1, 2, 3, 4, 6, 8, 12 or 24; DeepSeek Flash at low effort). An agent's `heartbeat: <hours>` or `overrides.agents.<key>.heartbeat` sets its own; `false` turns it off for that agent. |
 | `agent_memory` | core | no | `on` | Agent memory: every Codex agent has `memory_note` (a fact and its source, to its own `Memory inbox: <key>` task, 10 a run); the Fleet Steward curates the inboxes daily against run history and proposes `agents/<key>/memory.md` (max 4 KB, cut at a line end past that) through the Engineer and an apply (Tier 1 for an agent without a role, Tier 2 for one with); compile adds it to the handbook as "What you've learned". `off` is the kill switch: no tool, no section (the files stay in git). |
 | `ci_review_model` | ci | no | `~deepseek/deepseek-flash-latest:high` | The template's code review (codex review): `<OpenRouter id>:<effort>` (minimal, low, medium, high, xhigh), handed to the job with its CI token; critical paths run one effort higher. Always allowed. |
 | `ci_review_models` | ci | no | `[~deepseek/deepseek-flash-latest]` | Models a CI token may call besides `ci_review_model`: repos still on the older template (OpenRouter ids; codegenie's `openrouter/` and `:<reasoning>` are dropped). |
-| `ci_review_repo_day_usd`, `ci_review_day_usd` | ci | no | `5`, `20` | CI code review's spend caps per UTC day: each repo's, and all repos' together. Always enforced; past one, reviews fail until the next day. |
 | `backup_repository` | core | no | | Off-host backup: a restic repository URL, for example a Hetzner Storage Box at `sftp://u12345@u12345.your-storagebox.de:23/aidenhq`. Set, `ops/apply-config.sh` installs `aidenhq-backup.timer` (nightly at 03:00 UTC, after the warehouse dump), which runs `ops/backup-offsite.sh`: `scripts/backup.sh --plain`, then restic with the vault ciphertext, `.env`, `compose.override.yaml`, `config/` and the notes vault; it keeps 7 daily, 4 weekly and 6 monthly snapshots. The password is the vault secret `restic_password` (keep a copy off the host); the host user's SSH key must be authorised on the target. Unset, the timer is removed. |
 | `slack_post_channels` | slack | no | `[]` | Slack channel ids agents may post to with `slack_post` (the tool must also be granted); a post to any other channel is Tier 2 (the owner decides). |
 | `notify_fyi` | owner-channel | no | `send` | `notify` messages of `kind: fyi`: `send`, or `mute` (they still land on the board's chat; returns reason `muted` when nothing else got them). `decision`, `done` and `alert` messages are never muted. Set on the board's Notifications page. |

@@ -9,12 +9,12 @@ description: The layout of a new agent's design doc on Primer, as a filled examp
 tables, and replace every example value with the agent you designed:
 
 1. The three header lines, with the agent's name.
-2. **At a glance**: name, its job in one line, what wakes it, schedule, budget, whom it reports to.
+2. **At a glance**: name, its job in one line, what wakes it, schedule, whom it reports to.
 3. **How each run works**: one Mermaid `flowchart LR` from what wakes it, through each run's steps, to its output and
    escalation, then the same steps "In words". Keep every label in double quotes, decisions as `{"…?"}` with `-- "yes" -->`
    edges, and short labels; check that each node is connected.
 4. **What it can read and change**: in trial and after trial.
-5. **Schedule and cost**: runs a month, cost a run, cost a month against the budget.
+5. **Schedule and cost**: runs a month, cost a run, cost a month (for the owner's information).
 6. **Trial plan**, **Examples** (the test cases: what happens, and what a good result contains) and **Open decisions**, each
    with the recommended choice in bold and why in a few words.
 

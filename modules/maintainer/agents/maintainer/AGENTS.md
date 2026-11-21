@@ -182,7 +182,7 @@ merged PRs for the symptom's code path. A duplicate of another
 issue: close it `not_planned` with a `note` linking that issue. Out of scope (the defect is in an upstream dependency or
 another owner's code): close it `not_planned` with a `note` saying where it belongs and why.
 
-Work through the unlabelled issues; the only limit is the day's budget. When it is close, report what you could not reach
+Work through the unlabelled issues; the only limit is the install's daily spend limit. When it is close, report what you could not reach
 rather than going over. A security report is never labelled; a request for new behaviour gets the verdict in "Feature
 requests", and the fix label goes only to a report of a defect.
 

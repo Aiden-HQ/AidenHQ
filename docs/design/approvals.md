@@ -79,8 +79,7 @@ a change too large to read) goes back to the agent, never to the owner.
   unsure. A failed or slow review is retried with backoff and after `REVIEW_TRIES` (6) goes back to the agent; a diff
   missing, or with files the reviewer can't read, goes back too. Nothing is refused at filing for its size: the card stores
   its details cut (with code's note) and the record's context carries them whole while it is open, for the reviewer and the
-  owner's card. Each review's model calls are capped (`REVIEW_USD`, $10, on its gateway token); a review that reaches a
-  spend cap goes to the owner (`review_cap`), never approved. After an unsure send-back and after each panel split, the
+  owner's card. After an unsure send-back and after each panel split, the
   same commits get one more review once the request chain changed (the same chain stays refused).
 - **Tier 2: owner.** A board card plus a message on the owner channel. The AI reviewer reads every one first (owner,
   2026-11-16: every write is reviewed before it reaches the owner) and its verdict is on the card.
@@ -117,7 +116,7 @@ Typical git assignments (`plan.ts`; read it for the full rules):
 Fleet applies (`kernel.apply`, floor 1, planned by `apply-tier.ts`): a new trial agent, a handbook or memory change, a
 graduation that adds no tools, a non-sensitive app change, removing an agent or app and a forward product pin are Tier 0 or 1;
 new grants, roles, write connections or credentials, sensitive apps, settings, routine autonomy, a backward pin and unrecognised
-files are Tier 1 + panel; loosening autonomy, raising spend caps and setting an owner-only setting are the owner's. Module
+files are Tier 1 + panel; loosening autonomy, raising a spend limit and setting an owner-only setting are the owner's. Module
 authority changes come from the authority diff (`scripts/compiler/authority.ts`).
 
 Module write kinds are records too: a tool a module routes into a kind (manifest `writes:`) goes to that module's executor
@@ -158,7 +157,7 @@ token. It returns `{decision: approve | reject | escalate | unsure, reason_code,
   for size. What fits one call is inline: the diff up to `MAX_DIFF` (150,000 characters) whole, else each file's diff in
   order while it fits, and the changed files' text up to `MAX_FILES` (200,000). The rest is named in `DIFF_FILES`
   (`[not inline]`) and read with the tools. Code counts an approval that did not read a not-inline file's diff to the end as
-  unsure. Each review is bounded by spend (`REVIEW_USD`) and by tool rounds (`MAX_TURNS`, 30, `judge.ts`); reaching either
+  unsure. Each review is bounded by tool rounds (`MAX_TURNS`, 30, `judge.ts`); reaching it
   goes to the owner (`review_cap`), never approved. Considered and not taken: chunking the change into parts judged
   separately (a change split across parts can hide what only the parts together do) and an agentic reviewer in a check-job
   box with the whole repo (no eval could run it, cards without a repo need another path, minutes per vote). The tools read
@@ -188,11 +187,10 @@ now fails the request with 503 rather than guessing.
 - `tier0`: Tier 0 runs; on Tier 1 the reviewer only comments (shadow: its approve or reject becomes an escalation to the owner,
   `shadowed`) and the owner decides. For the instance this is not a cap in `computeTier`; for a routine, `tier0` makes Tier 1
   review-first as `off` does but leaves Tier 0 running.
-- `full`: the reviewer decides Tier 1, and the owner approves only: loosening autonomy, raising spend, new authority from a
+- `full`: the reviewer decides Tier 1, and the owner approves only: loosening autonomy, raising a spend limit, new authority from a
   non-official module, an owner path (`paths.yaml` sensitivity 2) and anything they vetoed (owner, 2026-11-19: "full autonomy
   mode should not bug me for approval almost ever"). Every other Tier 2 raise is Tier 1 for the panel. Rules mark the owner's
-  own with `ownerOnly` (`apply-tier.ts`) and `computeTier` alone applies it; a kind's own floor (`kernel.raise_cap`) stays the
-  owner's. An official module is one read from the product's own `modules/` at the pinned commit (`officialSides`).
+  own with `ownerOnly` (`apply-tier.ts`) and `computeTier` alone applies it; the `spend-cap` rule makes raising `spend_day_usd`, `spend_month_usd` or `task_usd` the owner's. An official module is one read from the product's own `modules/` at the pinned commit (`officialSides`).
 - **Caps.** The instance's `off` and a routine's `tier0` / `off` are caps, kept on the record (`cap`) and labelled for the
   reviewer: `autonomy_off` and `routine_autonomy`. A cap lifts a Tier 0 write to the owner (instance `off`, routine `off`) and
   makes Tier 1 review-first with a final reject. Full autonomy applies only when the instance and every routine on the trace

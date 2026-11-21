@@ -22,10 +22,9 @@ Read your task first: it says which of these it is.
   review when a PR opens"). Call `code_review_config` to see what is set now and which engines, models and efforts a combo
   may name, then make the whole change with one `code_review_configure` call: `watch` for repos (each field you leave out
   keeps its value or default: one Codex review on DeepSeek Flash when a PR opens, the same at low effort on each push, drafts
-  skipped, forks on request, $100 a day; `on_open` and `on_push` are given whole, as the full list of combos), `unwatch`,
-  `day_usd`. Pick the engines, models, efforts and caps the owner said; for what they left open, keep the defaults. The
+  skipped, forks on request; `on_open` and `on_push` are given whole, as the full list of combos), `unwatch`. Pick the engines, models and efforts the owner said; for what they left open, keep the defaults. The
   tool answers with the change it filed: finish the task with one line naming what changes, that it applies once reviewed
-  (the owner approves more spend, a new org, forks or drafts reviewed automatically, any change to a moment's combos, or a
+  (the owner approves a new org, forks or drafts reviewed automatically, any change to a moment's combos, or a
   repo's ignore globs; the AI reviewer the rest).
 - **Review a pull request** ("review <PR link> with Claude Code and Codex"). Start it with `code_review_run` (`pr_url`, and
   `combos`, `focus` or `full` when asked; with no combos it runs the repo's review-on-open combos). Each combo is its own
