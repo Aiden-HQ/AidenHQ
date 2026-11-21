@@ -108,11 +108,11 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
 
   /**
    * When a graded task last moved, for a deliverable that doesn't exist yet: its grade row, its last job's end, or a card on it
-   * decided or run. An open sub-task (the work handed on) is movement now. A row long held is not stale while the work goes
+   * decided or run. An open sub-task (the work handed on) is movement now; a closed one is not (WOR-9756 sat 14 hours on one). A row long held is not stale while the work goes
    * round: a rejection between two jobs, or an Engineer sub-task still building the PR, is not "finished without it".
    */
   async function lastMoved(issue: Json, g: Json) {
-    if ((await pc.children(issue.id)).length) return Date.now();
+    if ((await pc.children(issue.id)).some((c: Json) => !["done", "cancelled"].includes(c.status))) return Date.now();
     const cards = await recordsOn(issue).catch(() => []);
     return Math.max(Date.parse(g.updatedAt) || 0, Date.parse(state.lastJob(issue.id)?.finished_at ?? "") || 0, ...cards.map((a: Json) => Date.parse(a.usedAt ?? a.decidedAt ?? a.createdAt ?? "") || 0));
   }
@@ -158,7 +158,8 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
       // Evidence that never comes (a PR nobody merges, a deploy that never lands) closes the task done, ungraded, after a day, saying why;
       // a deliverable that doesn't exist at all (finished with no PR, no apply, nothing posted) after MISSING_WAIT_MS, since
       // nothing is coming. A task still moving (a run, its merges, an open card) is never cut short.
-      const waitOver = !ev.busy && (ev.missing ? Date.now() - (await lastMoved(issue, g)) >= MISSING_WAIT_MS : Date.now() - Date.parse(g.updatedAt) >= GRADE_WAIT_MS);
+      // Every wait ends: a day after the close at most, whatever else it waits on (WOR-5476).
+      const waitOver = !ev.busy && (Date.now() - Date.parse(g.updatedAt) >= GRADE_WAIT_MS || (Boolean(ev.missing) && Date.now() - (await lastMoved(issue, g)) >= MISSING_WAIT_MS));
       // Before that, a stalled wait (the run ended, nothing open on it) wakes the task with the reason, once per reason and at
       // most MAX_WAKES times; a reason already woken, or one past the cap, ends the wait now.
       const nudge = ev.busy || waitOver ? "" : await stalled(issue, g, ev.awaiting);
