@@ -647,8 +647,7 @@ switchOver() {
   # the board stopped so the old board writes nothing mid-move; compose then starts the grading service on them.
   if [ -f ops/grades-move.ts ] && [ ! -f "$data/modules/grading/grades/.moved-from-board" ]; then
     stopBoard
-    moved="$(node ops/grades-move.ts "$data")"
-    echo "grades: $moved (data/board/board.sqlite -> data/modules/grading/grades/)"
+    echo "grades: $(node ops/grades-move.ts "$data") (data/board/board.sqlite -> data/modules/grading/grades/)"
   fi
   # codehost-github became the github module's code host part (docs/design/connections-simple.md): its data dir (cache clones,
   # merge queue, PR-task map, release train) moves once, its old container stopped first so nothing writes mid-move; compose
@@ -668,8 +667,7 @@ switchOver() {
   # SQLite isn't open while the folder moves; compose then starts the listener as slack-live on the moved data.
   if [ -f ops/slack-live-move.ts ] && [ -d "$data/modules/channel-slack/slack-live" ]; then
     docker ps -q --filter label=aidenhq.module=channel-slack | xargs -r docker stop >/dev/null
-    moved="$(node ops/slack-live-move.ts "$data")"
-    echo "slack-live: $moved (data/modules/channel-slack/ -> data/modules/slack/)"
+    echo "slack-live: $(node ops/slack-live-move.ts "$data") (data/modules/channel-slack/ -> data/modules/slack/)"
   fi
   if ! cmp -s ops/units/aidenhq-kernel.service "$kn"; then
     cp ops/units/aidenhq-kernel.service "$kn"
