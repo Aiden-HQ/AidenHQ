@@ -463,6 +463,9 @@ export function checks(d: { kernel: KernelClient; kv: Kv; pause: (routine: strin
     };
   };
   const routines = async () => (await Promise.all((await companies()).map(async (c) => (await d.kernel.read(`/api/companies/${c.id}/routines`)) as RoutineRow[]))).flat();
+  // Whether a task an agent made (its creator never changes): kept across passes, so each pass reads at most MAX_LOOKUPS new
+  // handbacks and every one is reached in turn. A failed read is not kept.
+  const agentMade = new Map<string, boolean>();
   let unresumedAt = 0; // where the next `unresumed` pass starts in its list, so a bounded pass reaches every eligible wait
   let jobCache = new Map<string, JobRow[]>(); // one check run's job reads, shared by `component` and `run`
   const jobsOf = async (agent: string) => {
@@ -577,7 +580,8 @@ export function checks(d: { kernel: KernelClient; kv: Kv; pause: (routine: strin
           await d.pause(routine);
           since[routine] = new Date(t).toISOString();
           d.kv.set("routine_paused_at", JSON.stringify(since));
-          await d.notify?.(`Routine paused: ${plain(row.title)} failed ${failures} runs in a row. Resume it once its cause is fixed.`, `routine-paused:${routine}`).catch(() => {});
+          // Its id only: a routine's title is an agent's words, and this text is the chief of staff's instruction.
+          await d.notify?.(`Routine paused: routine ${routine} failed ${failures} runs in a row (fleet_status names it). Resume it once its cause is fixed.`, `routine-paused:${routine}`).catch(() => {});
         }
         out.push({ key: routine, reason: `routine ${plain(row.title)}: its last ${failures} runs failed${row.status === "paused" ? " (paused until the owner resumes it)" : ""}` });
       }
@@ -691,11 +695,10 @@ export function checks(d: { kernel: KernelClient; kv: Kv; pause: (routine: strin
       return out;
     },
     // A task waiting on someone else's call over an hour (a delegator wait, or an agent's task handed to the
-    // owner): the Steward settles it. A handback is raised only on a task an agent made (read once each, at most MAX_LOOKUPS a
-    // pass): a task the owner made and got back is their own result to read.
+    // owner): the Steward settles it. A handback is raised only on a task an agent made (each task read once, kept across passes,
+    // at most MAX_LOOKUPS new reads a pass): a task the owner made and got back is their own result to read.
     async judgement() {
       const t = now();
-      const read = taskReads();
       let looked = 0;
       // By attention, not the representative reason: a task also running, queued or on a card still waits on the answer.
       const out: Incident[] = [];
@@ -703,12 +706,13 @@ export function checks(d: { kernel: KernelClient; kv: Kv; pause: (routine: strin
         const why = i.attention.map((a) => a.why).find((w) => JUDGEMENTS[w] !== undefined);
         const since = i.wait_since ?? i.since;
         if (!why || age(since, t) <= JUDGEMENT_WAIT_MS || exempt({ identifier: i.identifier, originKind: null })) continue;
-        if (why === "handback") {
-          // Past the pass's lookups, a handback already open stays open unread; a failed read is unknown, so it is raised.
+        if (why === "handback" && !agentMade.has(i.task)) {
+          // Past this pass's reads, a handback already open stays open (a later pass reads it); a failed read is unknown, so it is raised.
           if (looked++ >= MAX_LOOKUPS) { if (d.openKeys().includes(`judgement:${i.task}`)) out.push({ key: i.task, reason: "" }); continue; }
-          const task = await read(i.task);
-          if (task && !(task.createdByAgentId && !task.createdByUserId)) continue;
+          const task = (await (d.kernel.read(`/api/issues/${encodeURIComponent(i.task)}`) as Promise<IssueRow>).catch(() => undefined)) ?? undefined;
+          if (task) agentMade.set(i.task, Boolean(task.createdByAgentId && !task.createdByUserId));
         }
+        if (why === "handback" && agentMade.get(i.task) === false) continue;
         out.push({ key: i.task, reason: `task ${i.identifier ?? i.task} has ${JUDGEMENTS[why]} for ${mins(age(since, t))} (${why})` });
       }
       return out;
