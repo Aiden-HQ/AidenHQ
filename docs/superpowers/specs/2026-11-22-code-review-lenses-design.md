@@ -94,7 +94,7 @@ The run request is one JSON shape, used by the board, the Reviewer Manager (`cod
 
 ### The option catalog
 
-There is one catalog file, `modules/code-review/catalog.yaml`, the single source for the board, the tools and the recipe.
+There is one catalog file, `modules/code-review/catalog.json`, the single source for the board, the tools and the recipe.
 Each entry has these fields:
 
 | Field | Meaning |
@@ -146,7 +146,6 @@ base and the head.
 | Codex Security `cs scan` | openai/codex-security (Apache) | hidden until verified | hidden until verified |
 | Claude Code `/security-review` | Claude Code (built-in) | | ✓ |
 | Trail of Bits audit skills: audit-context-building, insecure-defaults, sharp-edges, fp-check, differential-review | trailofbits/skills (CC-BY-SA, unmodified) | ✓ | ✓ (differential-review) |
-| Anthropic threat-model and vuln-scan skills | anthropics/defending-code-reference-harness (unmaintained) | ✓ | |
 | Smart contracts: solidity-auditor + slither | pashov/skills (MIT), crytic/slither (AGPL, unmodified) | ★ when Solidity is present | ★ on changed `.sol` |
 | LLM apps: garak | NVIDIA/garak (Apache) | ✓ when the app embeds a model | |
 | Agent skills and MCP servers in the repo: SkillSpector | NVIDIA/skillspector (Apache) | ✓ | ✓ |
@@ -173,14 +172,13 @@ base and the head.
 | Linters: ruff PERF, clippy perf, rubocop-performance, squawk | astral-sh/ruff, rust-clippy, rubocop, sbdchd/squawk (MIT/Apache) | ★ | ★ on changed files and new migrations |
 | Postgres best practices | supabase/agent-skills (MIT) | ★ when Postgres is present | ✓ |
 | React/Next best practices | vercel-labs/agent-skills react-best-practices (MIT, per its skill file) | ★ when React is present | ✓ |
-| MongoDB query optimizer | mongodb/agent-skills (Apache) | ✓ when a local database can run | |
-| Web vitals: web-perf + Chrome DevTools LCP/memory (runs code) | cloudflare/skills, ChromeDevTools/chrome-devtools-mcp (Apache) | ✓ when the app serves locally | |
-| Bundle budgets: size-limit, Lighthouse CI | ai/size-limit (MIT), GoogleChrome/lighthouse-ci (Apache) | ✓ | ✓ |
+| Bundle budgets: size-limit | ai/size-limit (MIT) | ✓ | ✓ |
 | Framework skills: django-perf-review, react-native-best-practices, dotnet performance agent | getsentry/skills (Apache), callstackincubator/agent-skills (MIT), dotnet/skills (MIT) | ✓ by stack | ✓ by stack |
-| N+1 detectors in the test run (runs code) | bullet, prosopite, laravel-query-detector (MIT) | ✓ by stack | |
 | Profile the test suite: py-spy, pprof (runs code) | benfred/py-spy (MIT), google/pprof (Apache) | ✓ | |
 | Benchmarks, base against head (runs code) | the repo's own, plus hyperfine or benchstat | | ✓ when benchmarks exist |
-| Index advisor: dexter (runs code) | ankane/dexter (MIT) | ✓ when Postgres and HypoPG can run locally | |
+
+**Later, once boxes can run services:** the MongoDB query optimizer, dexter, web vitals (Cloudflare web-perf with the Chrome
+DevTools skills), Lighthouse CI, and N+1 detectors that need a database.
 
 **Left out:**
 - qlty: BUSL, with an exclusion for AI review services.
@@ -191,6 +189,7 @@ base and the head.
 - Semgrep registry rules: restrictive licence.
 - CodeRabbit, Qodo, Endor, Socket, snyk agent-scan and promptfoo code scan: they need vendor accounts or a hosted backend.
 - Strix: a live pentest, not code review.
+- Anthropic defending-code-reference-harness: unmaintained, so it fails the trust bar.
 - Repos with 0 stars or no licence.
 
 **Added plugins.** The owner can add a Claude Code plugin to the catalog by repo and pinned commit (for example a company's
@@ -212,16 +211,17 @@ A marketplace itself is never a checkbox.
 
 ### deepsec: set up or scan
 
-- `.deepsec/` exists at the commit → the run scans: `scan` + `process` + `revalidate` for one-off runs, or
+- Any `.deepsec/` file exists at the commit → the run scans: `scan` + `process` + `revalidate` for one-off runs, or
   `process --diff <base>` for continuous runs.
 - `.deepsec/` is missing → the run sets up in the box (`init`), which writes the repo summary, config and generated matchers,
-  then scans. The service files a **setup PR** write adding only the files deepsec means to be committed (see the settled decisions). Later runs reuse that
+  then scans. The service asks for a **setup PR** that adds only the files deepsec means to be committed and that are
+  missing; it never overwrites a committed file (see the settled decisions). Later runs reuse that
   PR's files until it merges. "Force set-up" re-runs set-up and updates the PR.
-- deepsec state (`DEEPSEC_DATA_ROOT`) lives in the run's temp directory. Its spend cap is `run_usd`. Its model goes through
+- deepsec state (`DEEPSEC_DATA_ROOT`) lives in the run's temp directory. Its spend cap is the check's `budget_usd` (`run_usd` minus what the run has already spent). Its model goes through
   the gateway on its pi backend's OpenAI-compatible route.
-- The setup PR is the module's first write that changes a repository. It goes through the github module's code host
-  operations as a kernel write record at Tier 1, so the AI reviewer reads the diff. This is the owner-approved exception to
-  "a review never pushes": it is setup, not a fix. It is PR-only on repos outside the agents org.
+- The setup PR is the module's first write that changes a repository, and it is always a branch plus a PR, in any org,
+  agents org included. It never pushes to a default branch. This is the owner-approved exception to "a review never
+  pushes": it is setup, not a fix.
 
 ### Reports in Primer
 
@@ -240,15 +240,21 @@ A marketplace itself is never a checkbox.
 
 ### The box
 
-- One-off runs are a new check job, `repo-review`, with a larger cap (`max_usd` set by the catalog's high-cost options; the
-  run's `run_usd` is the hard cap) and a longer timeout (3 hours). Continuous options run in today's `code-review` job.
-- **Options may install dependencies and run the repo's code** (owner, 2026-11-21). The checkout is copied into the run's
-  writable temp directory first. The network stays open.
+- One-off and continuous runs use the two check profiles in the settled decisions below: `code-review-tools` and
+  `code-review`. There is no third job.
+- **Options may install dependencies and run the repo's code** (owner, 2026-11-21), but **only in the token-free
+  `code-review-tools` check**: `runs_code` options are always `tool` kind. The checkout is copied into the run's writable
+  temp directory first, and the network stays open. Model-holding checks (skills and engines) keep today's read-only
+  policy and never execute repo code.
+- **Fork PRs never run `runs_code` options**, whatever the repo's `forks` setting: a stranger's PR runs no code here.
 - The model token never reaches repo processes. Deterministic tools and repo commands run with an environment that holds
   no token. Output is redacted for key-shaped text before anything is mapped, as today.
-- Each tool runs once per run, even when two lenses list it. Findings from all options are merged by file, line and
-  underlying issue, keeping every option that found them.
+- Each tool runs once per run, even when two lenses list it. Findings are stored per option; the report groups matching
+  findings for display only (see the settled decisions).
 - A failed, timed-out or skipped option is listed under coverage. A run never reports clean when coverage was partial.
+- Snapshots come from `git archive`, which drops `export-ignore` paths. The tools check reads `.gitattributes`, and every
+  `export-ignore` path is a coverage gap in the report.
+- Per option, every important finding is kept. Nits are capped at 200, and the dropped count is shown.
 
 ### Earning the stars
 
@@ -260,14 +266,16 @@ each option. Recommended marks change by that measure, through a catalog PR, nev
 - **Who gets the report.** Every admin is an owner, so the requester is the owner's Primer account. Code review's
   module token can't file Primer's write, so Primer gains an authenticated internal route for code review's report
   submissions. Primer files its own `publish` write record, creates the document private to the requester, adds a version
-  when the repo already has a document, and serialises first publication per repo so concurrent runs share one document.
+  when the repo already has a document, and serialises first publication per repo so concurrent runs share one document. Before adding a version, Primer checks that the document is still private to the requester. If it was shared more widely, it
+  starts a new private document instead.
 - **Runs and spend.** There is one run lifecycle for both modes. The existing batches, runs, findings, `kernelRunner` and
   `/reviews` API gain a PR-or-tree target through a forward-only migration. One recipe has two check profiles:
   - `code-review-tools`: token-free, running the selected tool options.
   - `code-review`: one metered check per model option, run in sequence, each with `budget_usd = run_usd - spent`.
 
-  The kernel attributes spend per check, so each option's cost is that check's bill. The generic check-job limits in the
-  compiler rise explicitly to `max_usd` 150 and a 180-minute timeout. A failed or timed-out check becomes a coverage gap.
+  The kernel attributes spend per check, so each option's cost is that check's bill. A single check stays under the
+  compiler's existing ceiling (`max_usd` 100); the $150 maximum is the run's total across its checks. Continuous checks
+  keep their combo's `run_usd` as `budget_usd`, as today. Only the timeout limit rises, to 180 minutes. A failed or timed-out check becomes a coverage gap.
 
   The recipe's `max_usd` is a fixed ceiling of 150, and `run_usd` is the real cap. The timeout is 180 minutes per job. A
   failed or timed-out job becomes a coverage gap, and the run carries on.
@@ -275,11 +283,10 @@ each option. Recommended marks change by that measure, through a catalog PR, nev
   Engineers benefit from them too, and the kernel's image list doesn't change. The box has no Docker daemon, so options
   that need a database or a served app are **left out of v1**: the MongoDB optimizer, dexter, web vitals, Lighthouse
   CI, and the N+1 detectors that need a database. Options that run tests, profilers or benchmarks with no services stay.
-- **The token and repo code.** Tool options and repo commands are spawned by the recipe with an environment that holds no
-  token. Skill and engine options follow the existing per-engine rule: the harness scrubs its shell's environment
-  (codex's `shell_environment_policy`, Claude Code's subprocess scrub). For deepsec, the token goes only in the
-  environment variable its route names. The owner already accepted that a command can read the capped, time-limited token
-  from the engine process.
+- **The token and repo code.** The token-free tools check is the only place repo code runs, and it holds no model token.
+  Model checks hold their capped, time-limited token under today's per-engine policy (read-only shell, scrubbed
+  environment). The owner already accepted that a command in such a check could read it. Those checks run no repo code,
+  install scripts included.
 - **Continuous options.** A continuous model option is a combo entry like today's, posting its own GitHub review as a
   comment. Tool options run together in one extra job, which posts one review only when it has findings. Nothing posted
   requests changes or gates a merge.
@@ -295,12 +302,17 @@ each option. Recommended marks change by that measure, through a catalog PR, nev
   run starts (the network is open). The supply-chain rule covers installed code only.
 - **The default branch's head.** When no commit is given, the code host's `snapshot` of `HEAD` returns the SHA, resolved
   once at start. Stack detection runs once, in the service, on that snapshot, and the board shows the result.
-- **The deepsec setup PR.** It is one reviewed write, `code-review.setup`, with a Tier 1 floor (following the
-  `code-review.post` pattern). The record holds the repo, the base SHA, the setup branch, its expected tip, and the exact
-  allowlisted `.deepsec/` files. After approval, the executor calls an authenticated github internal op. That op creates or
-  updates the branch with **one commit** (refused if the tip moved or a path is outside the allowlist), then opens or
-  reuses the PR using github's existing PR code. Pending setup files are read through `snapshot` at the recorded tip. No
-  generic commit grant is added.
+- **The deepsec setup PR.** Code review calls the kernel's code host op `setup` (`/v1/codehost/setup`) under a literal
+  `codehost.setup` grant that names the allowlisted paths. The request holds the repo, the setup branch, its expected tip
+  and the files. The github module, the only holder of the GitHub token, files its **own** Tier-1 write record (kind
+  `setup`, schema `modules/github/schemas/setup.json`) and executes it only once that record is approved. That binds the
+  push to the approved repo, base, branch, tip and file contents. It does the following:
+  - bases the branch on the repo's **default branch head**, never the reviewed commit;
+  - adds one commit with only the allowlisted files that are missing, and refuses if the tip moved;
+  - checks that the full PR diff against the default branch contains only those paths, and refuses otherwise;
+  - opens or reuses the PR.
+
+  Pending setup files are read through `snapshot` at the recorded tip.
 
 ## New installs
 
@@ -311,6 +323,9 @@ each option. Recommended marks change by that measure, through a catalog PR, nev
 - Options whose upstream needs a credential the box doesn't hold never appear. Options gated on a locally runnable app or
   database appear only when the repo's compose or test setup provides one.
 - Another owner's plugins plug in through **Added plugins**, under the same trust bar.
+
+- **Activation.** One-off repo reviews and continuous options ship behind one setting, `code_review.lenses: false` by
+  default. It is switched on only after the security review in the build order is done and its findings are fixed.
 
 ## Left to the builder
 

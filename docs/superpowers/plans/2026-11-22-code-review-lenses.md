@@ -25,16 +25,16 @@ the code host ops and write records.
 - Trust bar: each option is published by its vendor or a known organisation, or has at least 1k stars; it was active in the
   last 3 months; and its licence is accepted (permissive, or AGPL/CC-BY-SA run unmodified).
 - Pins: every tool, skill and package is pinned to a version at least 7 days old (today 2026-11-22, so published on or
-  before 2026-11-15), unless the newer version is a security fix.
-- Spend: `run_usd` defaults to 25 with a maximum of 150. The `repo-review` recipe's `max_usd` is 150 and its timeout is 180
-  minutes.
+  before 2026-11-14), unless the newer version is a security fix.
+- Spend: `run_usd` defaults to 25 with a maximum of 150, as the run's total across checks. A single check stays at most
+  100 (the compiler's existing ceiling). Only the timeout limit rises, to 180.
 - Model options run in sequence. Each job's `budget_usd` is `run_usd` minus what the run has already spent.
 - The model token never reaches tool or repo processes: tools are spawned with a token-free environment.
 - Codex Security is in the catalog with `hidden: true` until verified.
 - Out of v1 (the box has no Docker): the MongoDB optimizer, dexter, web vitals, Lighthouse CI, and N+1 detectors that need a
   database.
 - Every PR is squash-merged with a Conventional Commit title. Run the touched suites (`modules/code-review`, `services/board`
-  with `npx tsc -p tsconfig.build.json --noEmit`, `services/computer`, `scripts`) before merging.
+  with `npx tsc -p tsconfig.build.json --noEmit`, `services/computer`, `scripts`, `kernel`, `modules/github`, `modules/primer`) before merging.
 
 ## Review focus
 
@@ -57,8 +57,8 @@ the code host ops and write records.
 **Files:** create `modules/code-review/catalog.json`, `modules/code-review/recipe/catalog.ts` (shared by recipe and service),
 `modules/code-review/recipe/tools.ts` (the tools runner) and `modules/code-review/recipe/sarif.ts` (one SARIF reader plus small
 adapters for knip, jscpd, vulture and scc). Modify `modules/code-review/module.yaml` (`check_jobs.code-review-tools`: no
-`model:`, timeout 180; `code-review`: `model.max_usd: 150`, timeout 180), `scripts/modules.ts` (raise the generic check-job
-limits to max_usd 150 and timeout 180, explicitly), `kernel/src/checkjobs.ts` (a plain check also gets `AIDENHQ_RESULT`, if it
+`model:`, timeout 180; `code-review`: `model.max_usd: 100`, timeout 180), `scripts/modules.ts` (raise only the timeout limit
+to 180), `kernel/src/checkjobs.ts` (a plain check also gets `AIDENHQ_RESULT`, if it
 doesn't today) and `services/computer/images/engineer/Dockerfile` (the tools, pinned).
 
 **Interfaces (produces):**
@@ -164,3 +164,25 @@ repo code running in the box. Fix each finding with a test.
 Lanes R1, R2, S, P and E start together, using the interfaces above. F and G come after they merge. Then one integration
 pass: deploy, run a one-off review of `Aiden-HQ/AidenHQ` with the recommended options, read the Primer report, and fix
 at the source.
+
+## Fixes from Aiden's review of this PR (binding on every lane)
+
+- The catalog is `catalog.json`. The tools check spec always carries `base`, set to the commit itself for a tree target,
+  because the kernel requires every declared field.
+- `runs_code` options are `tool` kind only, so repo code runs only in the token-free tools check. Model checks keep
+  today's read-only policy. Fork PRs never run `runs_code` options.
+- The finding cap: keep every important finding, cap nits at 200 and record the dropped count. `export-ignore` paths from
+  `.gitattributes` are coverage gaps.
+- deepsec scans when any `.deepsec/` file exists, and init runs only when none does. Setup adds missing files only and
+  never overwrites. deepsec's cap is the check's `budget_usd`.
+- Setup PR: code review calls the kernel's `/v1/codehost/setup` under a `codehost.setup` grant that lists the allowlisted
+  paths.
+  - The github module files its own Tier-1 `setup` write, with schema `modules/github/schemas/setup.json` (lane P), and
+    executes it only when approved.
+  - The branch is based on the default branch head. The full PR diff must hold only the allowlisted paths. Every org gets a
+    branch plus a PR.
+  - Lane S drops its own `code-review.setup` write kind.
+- Primer creates the document private. Before each version it checks the audience, and starts a new private document if
+  the old one was shared.
+- Activation: everything new sits behind `code_review.lenses` (default false) until lane G's security review is done.
+- Single-check cap: `max_usd` 100. The $150 maximum is the run total.
