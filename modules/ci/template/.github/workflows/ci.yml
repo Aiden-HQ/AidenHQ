@@ -370,9 +370,15 @@ jobs:
             left=$(( (85 * 60 - SECONDS) / 60 - 1 ))
             if [ "$left" -ge 10 ]; then
               echo "::warning::The review gave no verdict: retrying in 60 seconds."
+              # Findings the first attempt published still decide: kept when the retry publishes none.
+              cp "$RUNNER_TEMP/review.json" "$RUNNER_TEMP/review.1.json"; code1=$code
               sleep 60
               review $(( left < 40 ? left : 40 ))
               attempts=2
+              found='((.findings // []) + (.summaryOnlyFindings // [])) | length > 0'
+              if ! jq -e "$found" "$RUNNER_TEMP/review.json" >/dev/null 2>&1 && jq -e "$found" "$RUNNER_TEMP/review.1.json" >/dev/null 2>&1; then
+                cp "$RUNNER_TEMP/review.1.json" "$RUNNER_TEMP/review.json"; code=$code1
+              fi
             fi
           fi
           printf 'CODEGENIE_EXIT=%s\nCODEGENIE_ATTEMPTS=%s\n' "$code" "$attempts" >> "$GITHUB_ENV"
