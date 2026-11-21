@@ -140,18 +140,6 @@ export function createEscalate({ db, issue, state, asker, notice, owner, chief, 
       return to;
     },
     /**
-     * A judgement a finish check handed to the task's delegator (a grade escalated, checks.ts `release`): the open delegator
-     * already reads it as waiting on them; with none, the chief of staff gets it (one task per escalation: `key`, a prefix,
-     * takes the episode), so no escalation waits on nobody.
-     */
-    async undelegated(task: string, key: string, text: (id: string) => { body: string; ownerText: string }): Promise<"delegator" | "chief_of_staff" | "owner" | "seen" | "gone"> {
-      const t = await issue(task);
-      if (!t || CLOSED.includes(String(t.status))) return "gone";
-      if (await delegatorOf(t)) return "delegator";
-      const episode = (db.prepare("SELECT COUNT(*) AS n FROM escalations WHERE key LIKE ?").get(`${key}:%`) as { n: number }).n;
-      return api.delegator(t.id, `${key}:${episode}`, text);
-    },
-    /**
      * The agent waiting on `task` asks `who` its question. The owner hears it directly only from the chief of staff, or on a
      * task the owner is talking to its agent on; every other owner question goes to the chief of staff. A delegator question
      * goes to the open delegator, else the chief of staff (else the owner, for the chief of staff's own task). `asked`: the

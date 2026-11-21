@@ -6,22 +6,19 @@
 //   POST /grades                           the tasks module, as the delegating agent (its caller assertion, aud tasks): file a rubric
 //   GET  /grades/<task>                    the same caller: the task's filed grade, before re-filing a corrected one
 //   POST /board/grades, POST /board/grades/<task>/settle   the board (grading_board_key): its reads
-// It reads tasks and settings from the kernel with its own token (kernel.cp-read) and releases its label there
-// (POST /v1/checks/:task); it never writes to the control plane itself. Every five minutes it settles rows whose task closed.
+// It reads tasks and settings from the kernel with its own token (kernel.cp-read); it never writes to the control plane itself. Every five minutes it settles rows whose task closed.
 import http from "node:http";
 import { timingSafeEqual } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { kernelJwks, verifyCaller, type JWKS } from "./aidenhq-sdk/caller.ts";
-import { ESCALATION_WAIT_MS, GRADE_CHECK_MS, Conflict, Grades, Invalid, backfillEscalatedDelegators, completionGate, parseFiling, parseVerdict, prRefAllowed, graderNote, settleClosedGrades, type KnownRepos, type CompletionPath } from "./grades.ts";
+import { GRADE_CHECK_MS, Conflict, Grades, Invalid, completionGate, parseFiling, parseVerdict, prRefAllowed, graderNote, settleClosedGrades, type KnownRepos, type CompletionPath } from "./grades.ts";
 import { template } from "./grader/grade.ts";
 
 type Issue = { id: string; identifier?: string; status: string; assigneeAgentId?: string | null; createdByAgentId?: string | null; parentId?: string | null };
-/** The kernel as this module: its control-plane reads, its directory's settings, and its label released on a task. */
+/** The kernel as this module: its control-plane reads and its directory's settings. */
 export type Kernel = {
   issue: (ref: string) => Promise<Issue>;
   repos: () => Promise<KnownRepos>;
-  /** True when the kernel held the task and released it to its delegator (false: nothing held it). */
-  release: (task: string, before?: string) => Promise<boolean>;
 };
 class HttpError extends Error { status: number; constructor(status: number, message: string) { super(message); this.status = status; } }
 /** Tools that hand a task to an agent and file its rubric: task_delegate, task_create with an assignee. */
@@ -48,31 +45,13 @@ export function createGrading({ db, kernel, keys, kernelUrl = "", jwks = kernelJ
     const runner = b.via === "finish_turn" || b.via === "finish_merges";
     if (!runner && !b.agent) return { verdict: "deny", status: 403, reason: "only an agent's own close or the runner's moves a graded task" };
     // A cancelled task is never graded or moved by a late close: its row ends, and the close is refused before the hold
-    // would reopen it. This comes before the delegator's acceptance: closing a cancelled task does not accept the work.
+    // would reopen it.
     if (issue.status === "cancelled") {
       grades.settle(issue.id, "the task was cancelled before the grader settled it");
       return { verdict: "deny", status: 409, reason: "the task is cancelled" };
     }
     const g = grades.get(issue.id)!;
-    // An escalated grade is its delegator's call whatever else that agent is: the delegators saved when it escalated (else
-    // the task's creator) accept the work in place of a verdict, and the row is settled rather than left escalated. Read
-    // before the assignee rule, because a delegator is often also the task's assignee (a task an agent delegated to
-    // itself, or re-delegated): its close would otherwise reach completionGate, which only marks a resubmitted row, and
-    // each new deliverable version (an app's redeploy, say) would send the row back to the grader and escalate again.
-    const delegators = g.state === "escalated" ? (g.delegators?.length ? g.delegators : [issue.createdByAgentId].filter((id): id is string => Boolean(id))) : [];
-    if (!runner && g.state === "escalated" && delegators.includes(b.agent!)) {
-      grades.accept(issue.id, b.agent!);
-      log("escalated grade accepted by its delegator", { task: issue.identifier, by: b.agent });
-      return { verdict: "ok", unlabel: true, accepts: true };
-    }
-    // A delegator that stayed silent for a day: the assignee finishing again sends the row back to the grader for a fresh
-    // verdict on today's facts. Never an acceptance: only a delegator accepts, and a timeout never records `satisfied`.
-    if (!runner && g.state === "escalated" && issue.assigneeAgentId === b.agent && Date.now() - Date.parse(g.updatedAt) >= ESCALATION_WAIT_MS) {
-      grades.regrade(issue.id);
-      log("escalated grade sent back to the grader after a day without the delegator", { task: issue.identifier, by: b.agent });
-      return { verdict: "pending", state: "pending", reason: NOTE, until: new Date(Date.now() + GRADE_CHECK_MS).toISOString() };
-    }
-    // Only the task's own assignee moves any other grade.
+    // Only the task's own assignee moves a grade.
     if (!runner && issue.assigneeAgentId !== b.agent) {
       if (!(g.state === "satisfied" && issue.status === "done")) return { verdict: "deny", status: 403, reason: "this task is graded: the grader closes it once its rubric is met (only its assignee finishes it)" };
       return { verdict: "ok" };
@@ -135,30 +114,19 @@ export function createGrading({ db, kernel, keys, kernelUrl = "", jwks = kernelJ
   }
 
   async function runner(method: string, path: string, body: unknown) {
-    if (method === "GET" && path === "/internal/grades") return { grades: grades.due(), resubmitted: grades.resubmitted() };
+    if (method === "GET" && path === "/internal/grades") return { grades: grades.due() };
     const one = /^\/internal\/grades\/([0-9a-f-]{36})$/i.exec(path);
     // One task's grade state (null: ungraded): a sub-task whose grade will speak keeps its progress to itself.
     if (method === "GET" && one) return { state: grades.get(one[1]!)?.state || null };
-    const m = /^\/internal\/grades\/([^/]+)\/(verdict|resubmit)$/.exec(path);
+    const m = /^\/internal\/grades\/([^/]+)\/verdict$/.exec(path);
     if (method !== "POST" || !m) throw new HttpError(404, "no such route");
     const issue = await kernel.issue(decodeURIComponent(m[1]!));
-    if (m[2] === "resubmit") {
-      const g = grades.resubmit(issue.id, String((body as { version?: unknown })?.version ?? ""));
-      if (!g) throw new HttpError(404, "no grade for this task");
-      log("escalated grade resubmitted", { task: issue.identifier, state: g.state });
-      return g;
-    }
     const v = parseVerdict(body);
     if (!grades.get(issue.id)) throw new HttpError(404, "no grade for this task");
-    // An escalation is addressed to the agent that filed the task and the agent on its parent task, as of now.
-    const parent = issue.parentId ? await kernel.issue(issue.parentId).catch(() => undefined) : undefined;
     // Cancelled while the pass was running: no verdict, the cancel settles the row (a reopened task is graded again).
     if (issue.status === "cancelled") return grades.settle(issue.id, "the task was cancelled before the grader settled it");
-    const g = grades.record(issue.id, v, Date.now(), [issue.createdByAgentId, parent?.assigneeAgentId].filter((x): x is string => Boolean(x)));
-    // The hold stays while the grade loop still needs it: its grader token, and the resolve that closes, reopens or blocks the
-    // task (satisfied, needs_revision, grading_failed). Only an escalation, the delegator's to decide,
-    // takes the label off here. The verdict stands if the kernel can't (it restarts on applies).
-    if (g.state === "escalated") await kernel.release(issue.id).catch((err: Error) => log("grading label not released", { task: issue.identifier, err: String(err.message).slice(0, 200) }));
+    // The hold stays while the grade loop still needs it: its grader token, and the resolve that closes, reopens or blocks the task.
+    const g = grades.record(issue.id, v);
     if (v.outcome === "grading_failed" && v.reason) grades.noteFailure(issue.id, v.reason);
     else if (v.outcome !== "awaiting_evidence") grades.clearFailure(issue.id);
     log("grade recorded", { task: issue.identifier, outcome: v.outcome, version: v.version.slice(0, 60), state: g.state, attempts: g.attempts, failures: g.failures });
@@ -177,29 +145,13 @@ export function createGrading({ db, kernel, keys, kernelUrl = "", jwks = kernelJ
     throw new HttpError(404, "no such route");
   }
 
-  /**
-   * Every five minutes: rows whose task closed before the grader settled them, escalated rows with no saved delegators, and the
-   * holds on escalated rows. An escalated grade is its delegator's: the finish gate holds the task again when its assignee finishes
-   * it again (completionGate), and once the runner has checked that finish for a new version and the row stayed escalated, the hold
-   * goes back to the delegator here; so does one an earlier release didn't reach. Releasing a task nothing holds changes nothing.
-   */
+  /** Every five minutes: rows whose task closed before the grader settled them. */
   async function tick() {
     try {
       const settled = await settleClosedGrades(grades, (id) => kernel.issue(id));
       if (settled.length) log("graded rows settled on a closed task", { tasks: settled.map((g) => g.issueId) });
-      const filled = await backfillEscalatedDelegators(grades, (id) => kernel.issue(id));
-      if (filled.length) log("escalated grades given their creator as delegator", { tasks: filled.map((g) => g.issueId) });
     } catch (err) {
       log("settling closed grades failed", { err: String((err as Error).message ?? err) });
-    }
-    // Only holds placed by the time the rows were read: a finish after it marks its row and holds again, for the runner's check.
-    const read = new Date().toISOString();
-    for (const g of grades.escalatedUnmarked()) {
-      try {
-        if (await kernel.release(g.issueId, read)) log("escalated grade's hold released to its delegator", { task: g.issueId });
-      } catch (err) {
-        log("escalated grade's hold not released", { task: g.issueId, err: String((err as Error).message ?? err).slice(0, 200) });
-      }
     }
   }
 

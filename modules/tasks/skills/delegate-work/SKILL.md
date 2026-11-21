@@ -1,6 +1,6 @@
 ---
 name: delegate-work
-description: Hand work to an Engineer, the UI/UX Designer or another graded agent (task_delegate, or task_create with an assignee), and decide an escalated grade - the brief, the deliverable and rubric, choosing the agent, UI work, and what counts as done.
+description: Hand work to an Engineer, the UI/UX Designer or another graded agent (task_delegate, or task_create with an assignee) - the brief, the deliverable and rubric, choosing the agent, UI work, and what counts as done.
 unless: { fields: { module: engineering } }
 ---
 
@@ -94,14 +94,14 @@ plus what to publish (`pr`). An Engineer's task tools reach its own task only, s
 
 Work delegated to the Engineer, the DevOps Engineer and the UI/UX Designer is graded, however you hand it
 on (`task_delegate`, or `task_create` with an `assignee`; an Engineer sub-task is graded on its PRs): it closes only once
-the grader finds it meeting its rubric, and is otherwise reopened with the unmet criteria. After 3 rejected versions it
-escalates to you. A grader that is down, can't judge it or can't verify a criterion closes the task done, with an
-"ungraded: <reason>" note.
+the grader finds it meeting its rubric, and is otherwise reopened to its agent with the criteria it shows unmet. Nothing
+parks on you: a grader that is down, can't judge it or can't verify a criterion, and a third rejected version, close the
+task done with an "ungraded: <reason>" note, and you hear it as done. Reopen it with what to change if it isn't.
 
 - **Deliverable:** `pr` (the repo or PR link), `app` (the app name), `apply` or `file`. `report` (read-only work: a
   diagnosis, research) and `none` (a question) are not graded: read the answer and close the task. A brief whose honest
-  answer may be "no release carries the fix, record that and park" is a `report` (the tools refuse it as a `pr`: that
-  rubric can only pass with a merged PR that may never exist).
+  answer may be "no release carries the fix, record that and park" is a `report`: a `pr` rubric can only pass with a
+  merged PR that may never exist, so it would close ungraded.
 - **Rubric:** 3-8 criteria, each naming a fact the grader is given for that deliverable. For a `pr`: the PR's diff, its
   head and merge commit, its named checks, and for an app repo its deploys, newest first ("deployed at the merged commit"
   is checkable; a `by: auto-deploy` deploy is the platform's). Standard criteria, made specific to the request:
@@ -148,9 +148,5 @@ escalates to you. A grader that is down, can't judge it or can't verify a criter
   `assignee` the app's owning agent per `fleet_catalog`, else yourself; marker `code-review:<owner/name>#<PR number>`;
   priority low; `deliverable` pr with that repo when the assignee's work is graded). The PR merges without waiting for
   them.
-- **An escalated grade is yours to decide, in that turn**, from the grader's note and the work's evidence: close the task
-  (`task_finish` with its `issue`) when the work meets what was asked, even if a criterion was worded so it could not pass;
-  reopen it with the exact changes still needed (`task_comment` with `reopen: true`); or cancel it (`task_cancel`) and hand the work to someone better placed. The owner
-  decides only what is theirs by authority (spend, a veto, a choice of taste), as one `decision` with concrete options.
 - A task blocked on one you might cancel: closing the dependent releases it once the blocker ends cancelled; an active
   blocker still holds it.

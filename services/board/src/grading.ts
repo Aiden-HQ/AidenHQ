@@ -2,7 +2,7 @@
 // write). Types mirror the module's Grade. An unreachable or erroring module throws: each caller decides how to fail.
 import { readFileSync } from "node:fs";
 
-export type GradeState = "open" | "pending" | "awaiting_evidence" | "satisfied" | "needs_revision" | "grading_failed" | "escalated" | "not_graded";
+export type GradeState = "open" | "pending" | "awaiting_evidence" | "satisfied" | "needs_revision" | "grading_failed" | "not_graded";
 export interface Deliverable {
   kind: "pr" | "app" | "apply" | "file" | "report";
   ref: string;

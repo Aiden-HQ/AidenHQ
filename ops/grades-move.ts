@@ -20,12 +20,11 @@ export function moveGrades(dataDir: string) {
       const db = new DatabaseSync(join(dir, "grades.sqlite"));
       new Grades(db); // the module's own schema
       db.exec("BEGIN");
-      const cols = ["issue_id", "rubric", "deliverable", "attempts", "state", "verdicts", "failures", "failed_at", "delegators", "closed_reason", "created_at", "updated_at"];
+      const cols = ["issue_id", "rubric", "deliverable", "attempts", "state", "verdicts", "failures", "failed_at", "closed_reason", "created_at", "updated_at"];
       const have = new Set(src.prepare("PRAGMA table_info(grades)").all().map((c) => c.name));
       const use = cols.filter((c) => have.has(c));
       const put = db.prepare(`INSERT OR IGNORE INTO grades (${use.join(", ")}) VALUES (${use.map(() => "?").join(", ")})`);
       for (const r of src.prepare(`SELECT ${use.join(", ")} FROM grades`).all()) n += Number(put.run(...use.map((c) => r[c]!)).changes);
-      if (has("grade_resubmits")) for (const r of src.prepare("SELECT issue_id, at FROM grade_resubmits").all()) db.prepare("INSERT OR IGNORE INTO grade_resubmits (issue_id, at) VALUES (?, ?)").run(r.issue_id!, r.at!);
       db.exec("COMMIT");
       db.close();
     }

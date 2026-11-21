@@ -463,20 +463,6 @@ const GRADING = (process.env.GRADING_URL || "http://grading:8096").replace(/\/$/
 const DELIVERABLES = ["pr", "app", "apply", "file", "report", "none"];
 const GRADING_NOTE = "Held for grading: the grader checks this task against its rubric, then closes it or reopens it with the unmet criteria. Nothing more to do now: end your turn.";
 const gradedAgent = (id: Json) => dirAgents()[id]?.graded === true;
-// A fix brief whose honest answer may be "no release carries the fix": it says so ("if no upstream release meets the
-// floors, record that and park", "do not patch the image locally"). Filed with a pr deliverable, every route grades
-// against a merged PR that cannot exist, so the grade holds and escalates again on the fallback. The answer is
-// read-only, so the task is a report and its delegator reads it.
-const NO_RELEASE = /\bno (?:upstream |newer |later |published |available |released )*(?:release|releases|tag|tags|version|versions)\b[^.\n]{0,120}\b(?:meets?|meeting|has|have|had|satisf\w*|fix\w*|contains?|carries?|publishes?)\b/i;
-// The instruction the fallback carries: park the task, or don't patch the image locally.
-const PARK = /\bpark\b|\bdo not (?:patch|edit|rebuild|bump|retag|re-tag)\b[^.\n]{0,60}\blocal(?:ly)?\b/i;
-function refuseParkedPr(description: Json, deliverable: Json) {
-  // Both shapes grade on a shipped change (a merged PR, a deploy); a parked brief ships none.
-  if (deliverable?.kind !== "pr" && deliverable?.kind !== "app") return;
-  const text = String(description ?? "");
-  if (!NO_RELEASE.test(text) || !PARK.test(text)) return;
-  throw new Error('Refused: this brief has a fallback branch ("if no upstream release meets the floors, record that and park"), so its honest answer may be no change at all. A pr or app deliverable would be graded against a merged PR or a deploy that may never exist: the grade holds, escalates and reopens as a new task. File it as a report (deliverable {kind: "report"}), saying what the parked answer records: the floors and the scan rows that set them, the upstream state with its sources and date, and the reopen signal. Keep pr, and its rubric, for a brief where the change is always available: if a release now carries the fix, name it and drop the fallback branch.');
-}
 // A repo retired from service is a dead end: a brief or rubric graded on a PR there can never pass, and the grade holds and
 // reopens. Checked against this static list at filing time, with no network call, so a delegation stays fast and works offline.
 const RETIRED_REPOS = ["Aiden-HQ/aidenhq-modules"];
@@ -550,7 +536,6 @@ function metricWarning(description: Json, ...at: Json[]) {
 function gradeFor(target: Json, rubric: Json, deliverable: Json, description: Json) {
   const kind = deliverable?.kind;
   if (kind != null && !DELIVERABLES.includes(kind)) throw new Error(`deliverable.kind is one of ${DELIVERABLES.join(", ")}`);
-  refuseParkedPr(description, deliverable);
   const list = (Array.isArray(rubric) ? rubric : []).map((c) => String(c).trim()).filter(Boolean);
   refuseRetiredRepo(deliverable, list, description);
   if (list.length && (list.length < 3 || list.length > 8 || list.some((c) => c.length > 200))) throw new Error("rubric: 3-8 checkable criteria, each at most 200 characters");

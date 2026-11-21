@@ -512,14 +512,6 @@ const graderToken = (task: string, agent: string) => {
 };
 const checks = createChecks({ db: records.db, registry: checksRegistry, owner: ownerApi, secret, resolver, log, agentKey: (id) => grantsTable().agents?.[id]?.key, graded: (id) => grantsTable().agents?.[id]?.graded === true, pending: (task) => records.list(["review", "owner", "approved"], 100, { task }),
   // A task's own change requests on this server: none may be open when it closes (a green-but-unmerged change is not shipped).
-  // A grade escalated on a task nobody delegated: the chief of staff decides it (escalate.ts), one task per escalation.
-  released: (task, check) => escalate.undelegated(task, `release:${task}`, (id) => {
-    const what = `**${id}'s finish waits on a decision:** its finish check (${check}) couldn't settle it (for grading: the work was sent back three times, the grader couldn't judge it, or five grader passes failed), and nobody delegated it.`;
-    return {
-      body: `${what} Read the grade note on ${id}, then comment on ${id} with what its agent does: rework it with what is missing, cancel it if it is moot, or finish it again (graded afresh after a day).`,
-      ownerText: `${what} It is yours: comment on ${id} with what its agent does, or cancel it.`,
-    };
-  }),
   localChanges: async ({ id, identifier }) => localHost() ? (await localCode.open()).filter((c) => (c.task && (c.task === id || c.task === identifier))).map((c) => ({ url: c.url, checks: c.checks.map(({ ok, pending }) => ({ ok, pending })) })) : [] });
 // First-run setup (/setup): the keys the modules ask for go into the vault view (AIDENHQ_SECRETS_DIR) as new 0600 files renamed into place; the
 // vault's recovery key waits there (ops/setup.sh --unattended moves it out of root's home) until the owner has seen it.

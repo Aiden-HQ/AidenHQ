@@ -512,7 +512,7 @@ export function Scorecard({ id }: { id: string }) {
           {was(s.done.prior)} <span title="done per day">{spark(s.daily.map((d) => d.done))}</span>
         </dd>
         <dt>Sent back</dt>
-        <dd>{s.reopen.graded ? `${s.reopen.reopened} of ${s.reopen.graded} graded tasks` + (s.reopen.escalated ? `, ${s.reopen.escalated} escalated` : "") : "no graded tasks"}</dd>
+        <dd>{s.reopen.graded ? `${s.reopen.reopened} of ${s.reopen.graded} graded tasks` : "no graded tasks"}</dd>
         <dt>Cards rejected</dt>
         <dd>
           {s.approvals.rejected} of {s.approvals.filed} filed{was(s.approvals.priorRejected)}
