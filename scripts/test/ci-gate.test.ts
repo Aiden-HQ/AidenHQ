@@ -50,6 +50,7 @@ test("no verdict passes with a note (fail open); past the review target the note
   assert.deepEqual([late.block, late.partial], [true, true]);
   assert.match(late.body, /no verdict[^]*still decide[^]*Bug/);
   assert.equal(verdict(1, "", "", { failure: "policy", cause: "The PR changes codex config (.codex/config.toml)" }).block, true);
+  assert.equal(verdict(1, "", "", { failure: "permanent", cause: "The PR changes codex config (.codex/config.toml): remove it." }).block, true, "an older workflow's refusal still blocks");
   assert.match(verdict(1, "", "abcdef123").body, /See the job log for why\./, "an unknown failure still says where to look");
 });
 

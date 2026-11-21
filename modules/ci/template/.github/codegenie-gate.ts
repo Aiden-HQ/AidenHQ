@@ -82,7 +82,8 @@ function judge(exitCode: number, stdout: string, sha: string, { failure, cause, 
     return { block: false, partial: true, short: true, body: `${MARKER}\n**Code review: no verdict${at}** (not blocking: review exit ${exitCode}${tries}${why ? `: ${clip(why, 300)}` : ""}). ${NEXT[failure!] ?? FALLBACK} ${size}A re-run or the next push reviews it.` };
   };
   // A policy refusal (the PR changes codex config: a prompt-injection guard, not a review verdict) always blocks.
-  if (failure === "policy") return { block: true, short: true, body: `${MARKER}\n**Code review: refused${at}**: ${clip(cause, 400)}` };
+  // An older workflow (a PR on an older base) still reports the codex-config refusal as permanent: recognised by its cause.
+  if (failure === "policy" || (failure === "permanent" && /changes codex config/i.test(String(cause ?? "")))) return { block: true, short: true, body: `${MARKER}\n**Code review: refused${at}**: ${clip(cause, 400)}` };
   // Findings a run published still decide, even when it then failed or exited non-zero; only a run with none is no verdict.
   const published = Boolean(review) && Array.isArray(review!.findings) && review!.findings!.length + (review!.summaryOnlyFindings?.length ?? 0) > 0;
   const unfinished = exitCode !== 0 || !readable;
