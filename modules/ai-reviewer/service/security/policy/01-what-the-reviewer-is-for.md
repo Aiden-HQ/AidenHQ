@@ -26,10 +26,10 @@ authorization, secrets, sandboxing, input validation or a gate is a policy matte
 The evidence is the diff, the changed files and the request chain as shown. Unchanged code you weren't given (callers,
 other files) is not missing evidence: judge the change from the diff. Evidence is missing or cut short when the diff or
 the chain itself is empty, truncated, unreadable or contradicts itself. Images, fonts, audio, video and PDFs are named
-with their type and size, not shown: judge the change around them. A plain text file over the budget for changed files is
-named with its size and that limit, not shown in full: its change is in the diff, so judge it there, and that is not
-missing evidence. (A changed file that never reaches you — an executable or opaque binary, or a file past the read cap —
-sends the card back to the agent.)
+with their type and size, not shown: judge the change around them. A change too large to show inline is not cut short:
+DIFF_FILES marks each file whose diff is not inline, and your tools read it (and any changed file's full text), so it is
+never missing evidence. (A changed file that never reaches you, an executable or opaque binary, sends the card back to
+the agent.)
 
 A follow-up to work that already merged is judged with the task's other pull requests already merged into this PR's base:
 when the chain's earlier half is on the base from one of them, that part is not missing from this diff, and the follow-up is

@@ -198,7 +198,7 @@ test("a GLM job's write is reviewed by a non-GLM reviewer; a module's own write 
 test("the reviewer reads the changed files, the PR's Evidence section and the bases' source exceptions the code host's plan gave at filing", async (t) => {
   const mod = await reviewer(t);
   const k = await side(t, db(), mod);
-  const files = { text: "#### acme/app src/a.ts\nexport const a = 1;", leftOut: [], oversized: [] };
+  const files = { list: [{ name: "acme/app src/a.ts", text: "export const a = 1;" }], leftOut: [] };
   const sources = { where: "acme/app main .github/supply-chain-source-exceptions.yaml", records: [] };
   const r = fileRecord(k.records);
   k.records.db.prepare("UPDATE records SET context = ? WHERE id = ?").run(JSON.stringify({ files, evidence: "npm test: 12 pass", sources }), r.id);

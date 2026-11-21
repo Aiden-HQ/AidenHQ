@@ -97,9 +97,8 @@ description: How code is written, tested and published here, in any repository -
   - for performance work, before/after numbers;
   - "Not verified: <why>" for anything you did not check.
   The AI reviewer and the grader read that section; without it the runner adds "Evidence: none given".
-- Size: one PR stays under about 1,500 changed lines (`code-review` refuses a diff much over ~2,000) and under 150,000
-  characters of diff (what the AI reviewer reads per card). Plan a bigger change as ordered, stacked PRs from the start
-  (`references/large-changes.md`).
+- Size: one PR stays under about 1,500 changed lines (the CI code review gate refuses a diff much over ~2,000). Plan a
+  bigger change as ordered, stacked PRs from the start (`references/large-changes.md`).
 
 ## Repository files that are the app's own
 

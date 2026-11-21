@@ -1,12 +1,12 @@
 // The reviewer's plumbing with a fake model: a refusal is retried once on the other model, then escalated; a
-// DeepSeek requester never gets DeepSeek; oversize or missing diffs go back to the agent without a call; the panel needs
-// two families to approve.
+// DeepSeek requester never gets DeepSeek; a missing diff goes back to the agent without a call, a large one is read with the
+// tools; the panel needs two families to approve.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { CODE_CODES, DEEPSEEK, GLM, LUNA, MAX_COMMENTS, MAX_DIFF, MODEL_CODES, markComments, diffSections, foldDeletions, foldLockfiles, policyVersion, readPolicy, openRouterAsk, review, reviewPrompt, sourcesInDiff } from "../service/src/review.ts";
-import { MAX_FILES, fileContext } from "../service/src/review-files.ts";
+import { CODE_CODES, DEEPSEEK, GLM, LUNA, MAX_COMMENTS, MAX_DIFF, MAX_FILES, MODEL_CODES, changeTools, changeView, markComments, diffSections, policyVersion, readPolicy, openRouterAsk, review, reviewPrompt, sourcesInDiff } from "../service/src/review.ts";
+import { fileContext } from "../service/src/review-files.ts";
 import { padCase } from "./case-pad.ts";
 import { REVIEW_CODES } from "../../../services/shared/reason-codes.ts";
 
@@ -71,7 +71,7 @@ test("two votes (owner, 2026-11-20): approve + unsure approves only on input cod
   const unsure = (reason, second = false) => ({ content: JSON.stringify({ decision: "unsure", reason_code: "reviewer_unsure", reason, second_review: second }) });
   // The code host's own count of the change (numstat at filing) matches the diff, and there is a chain: verified whole.
   const diff = "diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1 +1 @@\n-old\n+new";
-  const whole = { diff, chain: "Owner: change old to new.", files: { text: "", leftOut: [], oversized: [], changed: [{ path: "src/a.ts", add: 1, del: 1 }] } };
+  const whole = { diff, chain: "Owner: change old to new.", files: { list: [], leftOut: [], changed: [{ path: "src/a.ts", add: 1, del: 1 }] } };
   // Unsure twice: rejected (back to the agent) with both notes, decided by the second reviewer (GLM after Luna), never the owner.
   let r = asker([unsure("the brief contradicts itself"), unsure("37 files are missing")]);
   let prompts = [];
@@ -94,7 +94,7 @@ test("two votes (owner, 2026-11-20): approve + unsure approves only on input cod
   assert.deepEqual([panelYes.decision, panelYes.model, panelYes.second, panelYes.second_unsure], ["approve", LUNA, undefined, GLM]);
   // Not verified (no count from the code host, or no request chain): an unsure never counts toward an approval, whatever
   // the model says about its input.
-  for (const input of [{ diff, chain: whole.chain }, { ...whole, chain: "" }, { ...whole, files: { ...whole.files, oversized: ["src/a.ts (300000 characters)"] } }]) {
+  for (const input of [{ diff, chain: whole.chain }, { ...whole, chain: "" }]) {
     for (const answers of [[unsure("the brief contradicts itself"), ok], [ok, unsure("the brief contradicts itself")]]) {
       r = asker(answers);
       const back = await review({ card, ...input, policy: "p", panel: true, ask: r.ask });
@@ -127,7 +127,7 @@ test("two votes (owner, 2026-11-20): approve + unsure approves only on input cod
 test("a diff that differs from the code host's own count of the change goes back before any model reads it", async () => {
   const diff = "diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1,2 +1,2 @@\n-old\n+new";
   const r = asker([ok]);
-  const v = await review({ card, diff, chain: "c", policy: "p", ask: r.ask, files: { text: "", leftOut: [], oversized: [], changed: [{ path: "src/a.ts", add: 1, del: 1 }, { path: "src/server.ts", add: 40, del: 2 }] } });
+  const v = await review({ card, diff, chain: "c", policy: "p", ask: r.ask, files: { list: [], leftOut: [], changed: [{ path: "src/a.ts", add: 1, del: 1 }, { path: "src/server.ts", add: 40, del: 2 }] } });
   assert.deepEqual([v.decision, v.code, r.asked.length], ["reject", "files_not_shown", 0]);
   assert.match(v.reason, /in the change, not the diff: src\/server\.ts \(\+40 -2\)/);
 });
@@ -139,7 +139,7 @@ test("code lists the files the diff changes only when it checked them whole, and
   // Unverified input reads as it did before the count existed: no list, no word on wholeness (it made reviewers doubt clean diffs).
   await review({ card, diff, policy: "p", ask });
   assert.doesNotMatch(prompt.system + prompt.user, /DIFF_FILES|whole/);
-  await review({ card, diff, chain: "c", policy: "p", ask, files: { text: "", leftOut: [], oversized: [], changed: [{ path: "src/a.ts", add: 2, del: 2 }, { path: "b.md", add: 1, del: 0 }] } });
+  await review({ card, diff, chain: "c", policy: "p", ask, files: { list: [], leftOut: [], changed: [{ path: "src/a.ts", add: 2, del: 2 }, { path: "b.md", add: 1, del: 0 }] } });
   assert.match(prompt.user, /Code checked the diff against the code host's own count of the change.*it is whole; the DIFF shown is \d+ characters/);
   assert.match(prompt.user, /<<<DIFF_FILES\nsrc\/a\.ts \(\+2 -2\)\nb\.md \(\+1 -0\)\nDIFF_FILES>>>/);
 });
@@ -342,71 +342,69 @@ test("a GitHub write carrying the instance's hosts, addresses or paths is refuse
   assert.equal((await review({ card: clean.card, diff: clean.diff, policy: "p", ask: async () => ok })).decision, "approve");
 });
 
-test("too large or missing: back to the agent; a failed call: reviewer_failed (the runner retries it)", async () => {
+test("missing: back to the agent; a failed call: reviewer_failed (the runner retries it)", async () => {
   const never = async () => assert.fail("not asked");
-  const big = await review({ card, diff: "x".repeat(MAX_DIFF + 1), policy: "p", ask: never });
-  assert.deepEqual([big.decision, big.code], ["reject", "too_large"]);
-  assert.match(big.reason, new RegExp(`the diff is ${MAX_DIFF + 1} characters, over the ${MAX_DIFF}-character limit`), "the size and the limit, not \"can't read\"");
   assert.equal((await review({ card, diff: "", policy: "p", ask: never })).decision, "reject");
   const failed = await review({ card, diff: "+x", policy: "p", ask: async () => { throw new Error("timeout"); } });
   assert.match(failed.reason, /failed \(timeout\)/);
   assert.equal(failed.code, "reviewer_failed");
 });
 
-test("an oversize diff that is lockfile churn is folded, keeping what policy 06 rejects on; anything else oversize is still too large", async () => {
-  const entry = (i) => ` "node_modules/pkg-${i}": {\n   "version": "1.0.${i}",\n   "resolved": "https://registry.npmjs.org/pkg-${i}/-/pkg-${i}-1.0.${i}.tgz",\n   "integrity": "sha512-${"a".repeat(80)}"\n },`;
-  const lock = Array.from({ length: 900 }, (_, i) => entry(i).split("\n").map((l) => `+${l}`).join("\n")).join("\n");
-  const sneaky = '+ "node_modules/evil": {\n+   "version": "1.0.0",\n+   "resolved": "git+ssh://git@example.com/evil.git#abc",\n+   "hasInstallScript": true\n+ },';
-  const app = "diff --git a/src/app.tsx b/src/app.tsx\nnew file mode 100644\n--- /dev/null\n+++ b/src/app.tsx\n@@ -0,0 +1 @@\n+export const App = () => null;\n";
-  const diff = `### local/hello main\n${app}diff --git a/package-lock.json b/package-lock.json\nnew file mode 100644\n--- /dev/null\n+++ b/package-lock.json\n@@ -0,0 +1,3600 @@\n${lock}\n${sneaky}\n\n### local/other main\n${app}`;
+// The owner's rule (2026-11-21): a change of any size gets a real judgment. What fits one call is inline; the rest is read with
+// read-only tools over the request's own change, and an approval that skipped a not-inline file's diff counts as unsure.
+const fileDiff = (path, n, word = "row") => `diff --git a/${path} b/${path}\n--- a/${path}\n+++ b/${path}\n@@ -0,0 +1,${n} @@\n${Array.from({ length: n }, (_, i) => `+export const ${word}${i} = "${"v".repeat(60)}";`).join("\n")}`;
+const unsureVote = (reason) => ({ content: JSON.stringify({ decision: "unsure", reason_code: "reviewer_unsure", reason, second_review: false }) });
+
+test("a change over one call's budget: what fits is inline, the rest is named for the tools, and every line is reachable", () => {
+  const diff = `### acme/app feat base main\n${fileDiff("src/a.ts", 1200)}\n${fileDiff("src/b.ts", 1200)}\n${fileDiff("src/c.ts", 3)}`;
   assert.ok(diff.length > MAX_DIFF);
-  const folded = foldLockfiles(diff);
-  assert.ok(folded.length < 10_000, `folded to ${folded.length}`);
-  assert.match(folded, /lockfile folded by code: \+4505 -0 lines/);
-  assert.match(folded, /node_modules\/evil: "resolved": "git\+ssh:\/\/git@example\.com\/evil\.git#abc"/, "a non-registry source is kept, with its entry");
-  assert.match(folded, /node_modules\/evil: "hasInstallScript": true/, "an install script is kept");
-  assert.doesNotMatch(folded, /registry\.npmjs\.org/, "default-registry lines are folded");
-  assert.equal(diffSections(folded).length, 2, "the next part's heading survives the fold");
-  assert.equal(folded.split("export const App").length, 3, "every non-lockfile file stays whole");
-  let shown = "";
-  const v = await review({ card, diff, policy: "p", ask: async (_m, prompt) => ((shown = JSON.stringify(prompt)), ok) });
-  assert.notEqual(v.code, "too_large");
-  assert.match(shown, /lockfile folded by code/);
-  // Within the limit nothing is folded: a lockfile bump is read whole.
-  const small = `diff --git a/package-lock.json b/package-lock.json\n--- a/package-lock.json\n+++ b/package-lock.json\n@@ -1 +1 @@\n-  "version": "1.0.0",\n+  "version": "1.0.1",\n`;
-  await review({ card, diff: small, policy: "p", ask: async (_m, prompt) => ((shown = JSON.stringify(prompt)), ok) });
-  assert.doesNotMatch(shown, /lockfile folded/);
-  assert.match(shown, /1\.0\.1/);
+  const list = [{ name: "acme/app src/a.ts", text: "a\n".repeat(150_000) }, { name: "acme/app src/c.ts", text: "C" }];
+  const view = changeView(diff, list);
+  assert.ok(view.diff.length <= MAX_DIFF);
+  assert.deepEqual(view.rest, ["acme/app src/b.ts"], "the file that doesn't fit is named; a later small one still goes inline");
+  assert.match(view.diff, /^### acme\/app feat base main\ndiff --git a\/src\/a\.ts/);
+  assert.match(view.files, /acme\/app src\/a\.ts: 300000-character text file, not inline: read it with read_file/);
+  const t = changeTools(diff, list, view.rest);
+  assert.deepEqual(t.unread(), ["acme/app src/b.ts"]);
+  let text = "", from = 1;
+  for (;;) {
+    const out = t.tools.diff.run({ path: "acme/app src/b.ts", from });
+    assert.match(out, /^<<<TOOL_RESULT\n/, "tool answers are fenced as data");
+    const body = out.replace(/^<<<TOOL_RESULT\n|\nTOOL_RESULT>>>$/g, "");
+    const next = /\n\[answer lines \d+-\d+ of \d+: call again with from: (\d+) for the rest\]$/.exec(body);
+    text += (text ? "\n" : "") + (next ? body.slice(0, next.index) : body);
+    if (!next) break;
+    from = Number(next[1]);
+  }
+  assert.equal(text, `### acme/app feat base main\n${fileDiff("src/b.ts", 1200)}`, "paged to the end, nothing cut");
+  assert.deepEqual(t.unread(), [], "read to the end");
+  assert.match(t.tools.read_file.run({ path: "src/c.ts" }), /     1\tC/);
+  assert.match(t.tools.grep.run({ text: "row1199 =" }), /diff of acme\/app src\/a\.ts:\d+: \+export const row1199/);
+  // A change that fits is shown as it always was: the diff itself and every file whole.
+  const small = changeView(`${fileDiff("src/a.ts", 3)}\n`, [{ name: "src/a.ts", text: "A" }]);
+  assert.deepEqual(small, { diff: `${fileDiff("src/a.ts", 3)}\n`, files: "#### src/a.ts\nA", rest: [] });
 });
 
-test("an oversize diff folds whole-file deletions to one line each, but never the server's, the identity check's or CI's", async () => {
-  const del = (path, n) => `diff --git a/${path} b/${path}\ndeleted file mode 100644\n--- a/${path}\n+++ /dev/null\n@@ -1,${n} +0,0 @@\n${Array.from({ length: n }, (_, i) => `-  const row${i} = rows.filter((r) => r.ok); // demo line ${i}`).join("\n")}\n`;
-  const diff = `### local/hello main\n${del("src/pages/projects.tsx", 2000)}${del("src/catalog/catalog.tsx", 1000)}${del("aidenhq-identity.mjs", 40)}${del(".github/workflows/ci.yml", 20)}diff --git a/src/App.tsx b/src/App.tsx\n--- a/src/App.tsx\n+++ b/src/App.tsx\n@@ -1 +1 @@\n-old\n+export const App = () => "Hello";\n`;
-  assert.ok(diff.length > MAX_DIFF);
-  const folded = foldDeletions(diff);
-  assert.match(folded, /^deleted src\/pages\/projects\.tsx \(2000 lines/m);
-  assert.match(folded, /^deleted src\/catalog\/catalog\.tsx \(1000 lines/m);
-  assert.equal(folded.split("demo line").length - 1, 60, "the identity check's and the workflow's deletions stay whole");
-  assert.match(folded, /export const App = \(\) => "Hello"/, "a modified file stays whole");
-  let shown = "";
-  const v = await review({ card, diff, policy: "p", ask: async (_m, prompt) => ((shown = JSON.stringify(prompt)), ok) });
-  assert.notEqual(v.code, "too_large");
-  assert.match(shown, /deleted src\/pages\/projects\.tsx/);
-  // Only app UI or content under src/ or public/ folds: a server-side lib, a security-named file, a manifest stay whole.
-  for (const path of ["lib/acl.ts", "src/lib/acl.ts", "src/middleware/session.ts", "src/package.json"]) assert.match(foldDeletions(del(path, 3)), /demo line 2/, path);
-  // A path git quotes (a space in it) or names ambiguously is never folded.
-  const quoted = del("src/x.tsx", 3).replace("diff --git a/src/x.tsx b/src/x.tsx", 'diff --git "a/src/my file.tsx" "b/src/my file.tsx"').replace("--- a/src/x.tsx", '--- "a/src/my file.tsx"');
-  assert.match(foldDeletions(quoted), /demo line 2/);
-  assert.match(foldDeletions(del("src/x.tsx", 3).replace("--- a/src/x.tsx", "--- a/src/y.tsx")), /demo line 2/, "headers that disagree");
-  // The checklist matches the change itself, so a trigger inside a folded file still fires.
-  const checklist = [{ id: "demo-rows", trigger: { paths: ["src/pages/**"], lines: "rows\\.filter" }, check: "the rows filter is kept" }];
-  await review({ card, diff, checklist, policy: "p", ask: async (_m, prompt) => ((shown = JSON.stringify(prompt)), ok) });
-  assert.match(shown, /deleted src\/pages\/projects\.tsx/);
-  assert.match(shown, /demo-rows/);
-  // Within the limit nothing is folded.
-  const small = del("src/pages/teams.tsx", 3);
-  await review({ card, diff: small, policy: "p", ask: async (_m, prompt) => ((shown = JSON.stringify(prompt)), ok) });
-  assert.match(shown, /demo line 2/);
+test("an approval that left a not-inline file unread is code's unsure; read to the end, it stands", async () => {
+  const diff = `${fileDiff("src/a.ts", 1200)}\n${fileDiff("src/b.ts", 1200)}`;
+  const changed = [{ path: "src/a.ts", add: 1200, del: 0 }, { path: "src/b.ts", add: 1200, del: 0 }];
+  const input = { card, diff, chain: "Owner: add the rows.", files: { list: [], leftOut: [], changed }, policy: "p" };
+  const prompts = [];
+  const lazy = await review({ ...input, ask: async (_m, p) => (prompts.push(p), ok) });
+  assert.match(prompts[0].system, /DIFF_FILES marks the files whose diff is \[not inline\]/);
+  assert.match(prompts[0].user, /src\/b\.ts \(\+1200 -0\) \[not inline\]/);
+  assert.deepEqual([lazy.decision, lazy.code], ["reject", "reviewer_unsure"], "two approvals that skipped it: back to the agent");
+  assert.match(lazy.reason, /approved without reading the diff of 1 file not shown inline \(src\/b\.ts\)/);
+  const reader = async (_m, p) => {
+    for (let from = 1; ; ) {
+      const next = /call again with from: (\d+)/.exec(p.tools.diff.run({ path: "src/b.ts", from }));
+      if (!next) break;
+      from = Number(next[1]);
+    }
+    return ok;
+  };
+  const read = await review({ ...input, ask: reader });
+  assert.deepEqual([read.decision, read.code], ["approve", "in_scope"]);
 });
 
 test("changed files go to the reviewer whole, as fenced data; inert media is named with type and size, not escalated", async () => {
@@ -421,112 +419,41 @@ test("changed files go to the reviewer whole, as fenced data; inert media is nam
   assert.equal(asked.length, 1);
 });
 
-// The reported bug: a card whose changed set is large plain text was rejected as unreadable, so the agent could never
-// get the change approved, however small its diff. Plain text over the budget is named with its size and the limit,
-// and the reviewer judges it on the diff.
-test("plain text over the whole-file budget reaches a verdict naming its size and the limit, judged from the diff", async () => {
-  const files = fileContext([
-    { name: "acme/app modules/core/templates/app/package-lock.json", text: "{\n" + "  \"x\": 1,\n".repeat(25_000) + "}\n" },
-    { name: "acme/app README.md", text: "# App starter\n" },
-  ]);
-  assert.deepEqual(files.leftOut, [], "large plain text is never unreadable");
-  assert.equal(files.oversized.length, 1);
-  const { asked, ask } = asker([ok]);
+// The reported bug (PR #1135, 2026-11-21): a 55,000-character diff whose changed files' text came to 364,000 characters was
+// judged with the files past the budget unread, so the input wasn't whole and a second reviewer's unsure always sent it back.
+// Every file is a read_file away now, and the input stays whole.
+test("changed files past the inline budget keep the input whole: approve + unsure approves on the panel (#1135)", async () => {
+  const files = Array.from({ length: 17 }, (_, i) => ({ path: `src/f${i}.ts`, text: `export const f${i} = 1;\n${"// context\n".repeat(2000)}` }));
+  const diff = files.map((f) => fileDiff(f.path, 40)).join("\n");
+  assert.ok(diff.length < MAX_DIFF && files.reduce((n, f) => n + f.text.length, 0) > MAX_FILES);
+  const changed = files.map((f) => ({ path: f.path, add: 40, del: 0 }));
+  const list = fileContext(files.map((f) => ({ name: `acme/app ${f.path}`, text: f.text }))).list;
   let prompt;
-  const v = await review({ card, diff: "+x", files, policy: "p", ask: async (m, p) => ((prompt = p), ask(m)) });
-  assert.equal(v.decision, "approve");
-  assert.equal(asked.length, 1);
-  assert.match(prompt.user, /package-lock\.json: \d+-character text file, larger on its own than the 200000-character budget/);
-  assert.match(v.reason, new RegExp(`Judged from the DIFF, not in full: .*package-lock\\.json \\(\\d+ characters\\) did not fit the ${MAX_FILES}-character budget`));
-  assert.doesNotMatch(v.reason, /can't read/);
+  const v = await review({ card, diff, chain: "Owner: add the f constants.", files: { list, leftOut: [], changed }, policy: "p", panel: true, ask: async (m, p) => (m === LUNA ? ((prompt = p), ok) : unsureVote("can't tell")) });
+  assert.deepEqual([v.decision, v.second_unsure, v.whole], ["approve", GLM, true]);
+  assert.match(prompt.user, /not inline: read it with read_file/);
+  assert.match(prompt.tools.read_file.run({ path: "acme/app src/f16.ts" }), /export const f16 = 1;/);
 });
 
-// The reported bug put the same file in "changed files the reviewer can't read" at one head and not at the next, because
-// one shared budget had been spent by its neighbours. Readability is the file's own: byte-identical content is read the
-// same way at both heads, whatever grew around it.
-test("the same file content at two heads gets the same readability verdict", () => {
-  const file = { name: "services/runner/test/runner.test.mjs", text: "t".repeat(199_000) };
-  const at = (neighbour) => fileContext([{ name: "scripts/paperclip-setup.ts", text: "s".repeat(neighbour) }, { ...file }]);
-  const before = at(500);
-  const after = at(150_000);
-  for (const files of [before, after]) assert.deepEqual(files.leftOut, [], "never unreadable, at either head");
-  assert.deepEqual(at(1).leftOut, before.leftOut, "the same verdict as the file on its own");
-  assert.match(before.text, /runner\.test\.mjs/);
-  assert.match(after.text, /runner\.test\.mjs/);
-});
-
-// The incident itself: the app starter's two byte-identical lockfiles, 121,215 characters each, changed together.
-test("the paired 121,215-character app-starter lockfiles reach a verdict naming their size, not \"can't read\"", async () => {
-  const lock = (name, n = 121_215) => ({ name, text: ("{\n  \"lockfileVersion\": 3,\n" + "  \"node_modules/x\": { \"version\": \"1.0.0\" },\n".repeat(n)).slice(0, n - 2) + "}\n" });
-  const pair = [lock("Aiden-HQ/AidenHQ modules/core/templates/app/package-lock.json"), lock("Aiden-HQ/AidenHQ services/computer/images/agent-base/app-starter/package-lock.json")];
-  assert.equal(pair[0].text.length, 121_215);
-  assert.equal(pair[1].text, pair[0].text, "the app-starter copies are byte-identical");
-  const files = fileContext(pair);
-  assert.deepEqual(files.leftOut, [], "both are plain text: neither sends the card back");
-  assert.equal(files.oversized.length, 1, "the second one no longer fits the budget");
-  const { asked, ask } = asker([ok]);
-  let prompt;
-  const v = await review({ card, diff: "+x", files, policy: "p", ask: async (m, p) => ((prompt = p), ask(m)) });
-  assert.equal(v.decision, "approve");
-  assert.equal(asked.length, 1);
-  assert.match(prompt.user, /services\/computer\/images\/agent-base\/app-starter\/package-lock\.json: 121215-character text file/);
-  assert.match(v.reason, /Judged from the DIFF, not in full: .*121215 characters/);
-  assert.doesNotMatch(v.reason, /can't read/);
-});
-
-// The notes are reserved before any text, but 300 files with paths near git's limit cost more in notes than the budget
-// on their own. Unnamed, that used to overflow the FILES fence, which cut off the tail: the last files were neither shown
-// nor named. Shortening those names keeps every file accounted for and the text whole.
-test("long file names can't push the context past the budget, and no file is dropped", () => {
-  const long = (i, size) => ({ name: `acme/app ${"d".repeat(700)}/f${i}.mjs`, text: "y".repeat(size) });
-  for (const size of [1_000, 50_000]) {
-    const files = fileContext(Array.from({ length: 300 }, (_, i) => long(i, size)));
-    assert.deepEqual(files.leftOut, [], "plain text is still readable");
-    assert.ok(files.text.length <= MAX_FILES, `${size}-byte files: context is ${files.text.length}, within ${MAX_FILES}`);
-    const shown = (files.text.match(/^####/gm) ?? []).length;
-    const named = (files.text.match(/^\(acme/gm) ?? []).length;
-    const counted = Number(/\((\d+) more are not named/.exec(files.text)?.[1] ?? 0);
-    assert.equal(shown + named + counted, 300, `${size}-byte files: every file is shown, named or counted`);
-  }
-});
-
-test("the real app-starter lockfiles are byte-identical, and the pair still reaches a verdict", async () => {
-  const names = ["modules/apps-platform/starter/package-lock.json", "services/computer/images/agent-base/app-starter/package-lock.json"];
-  const texts = names.map((n) => readFileSync(join(REPO_ROOT, n), "utf8"));
-  assert.equal(texts[1], texts[0], "the two copies are byte-identical");
-  const files = fileContext(names.map((name, i) => ({ name: `Aiden-HQ/AidenHQ ${name}`, text: texts[i] })));
-  assert.deepEqual(files.leftOut, []);
-  const { asked, ask } = asker([ok]);
-  const v = await review({ card, diff: "+x", files, policy: "p", ask });
-  assert.equal(v.decision, "approve");
-  assert.equal(asked.length, 1);
-  assert.ok(texts[0].length > MAX_FILES / 2, "each is over half the budget, so the second cannot be shown whole");
-  assert.match(v.reason, new RegExp(`Judged from the DIFF, not in full: .*${texts[0].length} characters`));
-});
-
-test("an executable or opaque binary, or a file never read, goes back to the agent naming it and what to do", async () => {
+test("an executable or opaque binary goes back to the agent naming it and what to do; large text never does", async () => {
   const elf = "\u007fELF\u0000";
   const files = fileContext([
     { name: "acme/app lib/native.so", text: elf },
     { name: "acme/app public/cat.png", text: elf }, // an ELF dressed as an image
     { name: "acme/app vendor/blob.dat", text: "\u0000\u0001" },
     { name: "acme/app big.ts", text: "y".repeat(MAX_FILES + 1) },
-    { name: "acme/app past-the-cap.ts", text: null },
   ]);
   assert.deepEqual(files.leftOut, [
     "acme/app lib/native.so (binary, 5 bytes)",
     "acme/app public/cat.png (binary, 5 bytes)",
     "acme/app vendor/blob.dat (binary, 2 bytes)",
-    "acme/app past-the-cap.ts (not read, size unknown)",
-  ], "only what cannot be read is left out; the big text file is reviewed on the diff");
-  assert.equal(files.oversized.length, 1);
+  ], "only what cannot be read is left out; the big text file is read");
   const never = async () => assert.fail("not asked");
   const v = await review({ card, diff: "+x", files, policy: "p", ask: never });
   assert.deepEqual([v.decision, v.code], ["reject", "files_not_shown"]);
   assert.match(v.reason, /- acme\/app lib\/native\.so \(binary, 5 bytes\)/);
-  assert.match(v.reason, new RegExp(`Plain text is read up to ${MAX_FILES} characters per changed file`));
-  assert.match(v.reason, /Take the binary out of the change, or split the change so every changed file is plain text within that limit, and file the card again/);
-  assert.doesNotMatch(v.reason, /big\.ts/, "plain text over the budget is not named as unreadable");
+  assert.match(v.reason, /take the binary out of the change and file the card again/);
+  assert.doesNotMatch(v.reason, /big\.ts/, "plain text is never named as unreadable");
 });
 
 // Every blocking file is named, one line each with its size: "and N more" sent the agent back without knowing which
@@ -736,4 +663,44 @@ test("a call refused at a spend cap goes to the owner (review_cap), never approv
   assert.match(capped.reason, /spend cap .*the owner decides/);
   const failed = await review({ card, diff: "+x", policy: "p", ask: async () => { throw new Error("timeout"); } });
   assert.equal(failed.code, "reviewer_failed");
+});
+
+test("openRouterAsk answers the model's tool calls with the caller's tools until it answers, and stops at MAX_TURNS", async () => {
+  const bodies = [];
+  const call = { choices: [{ message: { content: "", tool_calls: [{ id: "c1", type: "function", function: { name: "diff", arguments: '{"path":"a.ts"}' } }] } }] };
+  const tools = { diff: { description: "d", parameters: { type: "object", properties: {} }, run: ({ path }) => `<<<TOOL_RESULT\ndiff of ${path}\nTOOL_RESULT>>>` } };
+  let n = 0;
+  const ask = openRouterAsk("k", { fetchFn: async (_u, init) => (bodies.push(JSON.parse(init.body)), new Response(JSON.stringify(n++ ? { choices: [{ message: { content: "{}" } }] } : call))) });
+  const out = await ask("m", { system: "s", user: "u", tools });
+  assert.deepEqual([out.content, out.turns], ["{}", 1]);
+  assert.equal(bodies[0].tools[0].function.name, "diff");
+  assert.deepEqual(bodies[1].messages.at(-1), { role: "tool", tool_call_id: "c1", content: "<<<TOOL_RESULT\ndiff of a.ts\nTOOL_RESULT>>>" });
+  const forever = openRouterAsk("k", { fetchFn: async () => new Response(JSON.stringify(call)) });
+  await assert.rejects(forever("m", { system: "s", user: "u", tools }), /max_turns/);
+  // A review whose call stops at the limit goes to the owner, never approved.
+  const v = await review({ card, diff: "+x", policy: "p", ask: async () => { throw new Error("max_turns: the judge asked for more than 30 rounds of tool calls"); } });
+  assert.deepEqual([v.decision, v.code], ["escalate", "review_cap"]);
+});
+
+test("the same path in two repos is two files to the tools: reading one never marks the other read, and a bare path is ambiguous", () => {
+  const one = (repo) => `### ${repo} feat base main\n${fileDiff("src/x.ts", 1500)}`;
+  const diff = `${one("acme/app")}\n${one("acme/app")}\n${one("acme/lib")}`;
+  const view = changeView(diff, []);
+  assert.deepEqual(view.rest.length, 2);
+  const t = changeTools(diff, [], view.rest);
+  assert.match(t.tools.diff.run({}), /acme\/app src\/x\.ts \(\+1500 -0\)[^\n]*\nacme\/app src\/x\.ts \[2\] \(\+1500 -0\)/, "unique names in the index");
+  assert.match(t.tools.diff.run({ path: "src/x.ts" }), /2 changed files end with src\/x\.ts: name one as DIFF_FILES does/);
+  for (const name of view.rest.slice(0, 1)) for (let from = 1; ; ) {
+    const m = /call again with from: (\d+)/.exec(t.tools.diff.run({ path: name, from }));
+    if (!m) break;
+    from = Number(m[1]);
+  }
+  assert.deepEqual(t.unread(), view.rest.slice(1), "only the file read counts as read");
+});
+
+test("grep is a literal search, never a pattern: regex text matches only itself, and the scan is bounded", () => {
+  const t = changeTools("+x", [{ name: "a.ts", text: "const re = /(a+)+$/;\naaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa!" }], []);
+  assert.match(t.tools.grep.run({ text: "(a+)+$" }), /a\.ts:1: const re/);
+  assert.match(t.tools.grep.run({ text: "AAAA", ignore_case: true }), /a\.ts:2:/);
+  assert.match(t.tools.grep.run({ text: ".*" }), /no matches/);
 });

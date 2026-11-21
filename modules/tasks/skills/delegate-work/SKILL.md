@@ -63,9 +63,8 @@ plus what to publish (`pr`). An Engineer's task tools reach its own task only, s
   the rubric says "`image-scan` green on the PR's head"; elsewhere it names the change and the PR carries the registry's
   vulnerability data for the tag and digest it pins. What a Dockerfile's RUN steps install is proven by the deployed
   image's security scan.
-- One task per change: the Engineer publishes, merges and rebases its one PR. A change
-  over 150,000 characters of diff (a redesign, a framework swap) is briefed as stacked PRs from the start, naming the
-  slices.
+- One task per change: the Engineer publishes, merges and rebases its one PR. A change over about 2,000 changed lines
+  (a redesign, a framework swap) is briefed as stacked PRs from the start, naming the slices.
 - Before routing app work, check the app's open PRs for a large rewrite: the files it replaces are held (write-code's
   rule), so a change to them targets the rewrite branch or waits.
 

@@ -275,7 +275,7 @@ export const requestHash = (chain: string | undefined, comments?: string) => (ch
 /** Panel splits (approve + reject) sent back to the agent on one target before the next goes to the owner (owner, 2026-11-20). */
 export const MAX_SPLITS = 3;
 /** Rejections code made without judging the change (it moved, couldn't be read, too large): they are never findings. */
-export const CODE_REJECTS = ["refused_by_code", "stale_head", "check_failed", "too_large", "files_not_shown", "no_diff", "reviewer_failed"];
+export const CODE_REJECTS = ["refused_by_code", "stale_head", "check_failed", "files_not_shown", "no_diff", "reviewer_failed"];
 const byOwner = (r: Prior) => Boolean(r.decidedBy) && !/^(reviewer|auto|stale):/.test(r.decidedBy!);
 // An approved card a newer request replaced is `expired`, still decided (a yes).
 const decided = (r: Prior) => ["approved", "used", "expired", "rejected"].includes(r.state) && Boolean(r.decidedBy);

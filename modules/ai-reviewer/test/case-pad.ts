@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 type CaseFile = { padTo?: number; text: string; [k: string]: unknown };
 type Deletion = { path: string; lines: number };
 type Case = { diff: string; deletions?: Deletion[]; lockfilePad?: number; files?: CaseFile[]; [k: string]: unknown };
@@ -6,8 +7,9 @@ type Case = { diff: string; deletions?: Deletion[]; lockfilePad?: number; files?
 // Two files with the same text and `padTo` are byte-identical, as the app starter's two lockfile copies are.
 export const padFile = ({ padTo, ...f }: CaseFile) => (padTo === undefined ? f : { ...f, text: (f.text + " ".repeat(padTo)).slice(0, padTo) });
 // A diff may hold `@@LOCKFILE_PAD@@` and give `lockfilePad` (a count): that many added default-registry package-lock.json
-// entries go there, so a case can carry a lockfile far over the diff cap and still be a small file.
-const lockEntry = (i: number) => [`"node_modules/pkg-${i}": {`, `  "version": "1.${i % 50}.${i % 7}",`, `  "resolved": "https://registry.npmjs.org/pkg-${i}/-/pkg-${i}-1.${i % 50}.${i % 7}.tgz",`, `  "integrity": "sha512-${String(i).padStart(86, "0")}==",`, `  "license": "MIT"`, "},"].map((l) => `+    ${l}`).join("\n");
+// entries go there, so a case can carry a lockfile far over the diff cap and still be a small file. Each is a transitive
+// dependency of the app's own devDependency (vite), as a real lockfile's bulk is: the reviewer reads every line of it now.
+const lockEntry = (i: number) => [`"node_modules/vite/node_modules/vite-dep-${i}": {`, `  "version": "1.${i % 50}.${i % 7}",`, `  "resolved": "https://registry.npmjs.org/vite-dep-${i}/-/vite-dep-${i}-1.${i % 50}.${i % 7}.tgz",`, `  "integrity": "sha512-${createHash("sha512").update(`vite-dep-${i}`).digest("base64")}",`, `  "license": "MIT"`, "},"].map((l) => `+    ${l}`).join("\n");
 // A diff may hold `@@DELETIONS@@` and give `deletions` ([{ path, lines }]): each becomes a whole-file deletion of that many
 // lines there, so a case can delete thousands of lines (a minimal app trimming the starter's demo) and still be a small file.
 const deletedLine = (path: string, i: number) => `-  const row${i} = rows.filter((r) => r.status === "s${i % 4}" && r.team !== "${path.length}"); // ${i}`;

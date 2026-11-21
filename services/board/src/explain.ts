@@ -65,7 +65,6 @@ const REVIEW_WORDS: Record<string, string> = {
   reviewer_refused: "The reviewer's answer was refused by code.",
   no_independent_model: "No reviewer model independent of the requester was available.",
   no_diff: "There was no change to read.",
-  too_large: "The change was too large to review.",
   files_not_shown: "The reviewer couldn't see every file.",
   review_cap: "The review reached its spend cap before it finished: you decide.",
   check_failed: "A required check failed.",

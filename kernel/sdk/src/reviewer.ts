@@ -11,8 +11,8 @@
 // flag), and `panel_marked` says the first reviewer called the change authority-expanding, so the requester records that on
 // its card before acting on the verdict.
 //
-// The requester shapes the changed files with `fileContext` (services/shared/review-files.ts: the contract's budget), so the
-// request stays small whatever the files weigh.
+// The requester reads the changed files with `fileContext` (services/shared/review-files.ts) and sends each whole, whatever
+// its size: the reviewer shows what fits inline and reads the rest with read-only tools over the request.
 //
 // Canonical copy: kernel/sdk/src/reviewer.ts. The reviewer module holds a byte-identical copy at src/aidenhq-sdk/reviewer.ts:
 // edit this one, then run `node scripts/sync-shared.ts`.
@@ -22,8 +22,11 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 export interface ReviewCard { action: string; rule: string; target?: string; sentence?: string; reason?: string;
   /** The repositories that are one product for scope (the product repo and the official modules repo): code's own. */
   product?: string[] }
-/** `changed`: the code host's own numstat of the change, read at filing: the reviewer checks the diff against it. */
-export interface Files { text: string; leftOut: string[]; oversized: string[]; changed?: { path: string; add?: number; del?: number }[] }
+/**
+ * `list`: each changed file at the reviewed head, plain text whole or code's note (media, binary); `leftOut`: the files it
+ * can't read (binary); `changed`: the code host's own numstat of the change, read at filing: the reviewer checks the diff against it.
+ */
+export interface Files { list: { name: string; text?: string; note?: string }[]; leftOut: string[]; changed?: { path: string; add?: number; del?: number }[] }
 export interface SourceRecords { where: string; records: Record<string, unknown>[] }
 /** One Tier 1 request as the reviewer reads it. Everything but `card.action`, `card.rule` and `panel` is data an agent or a stranger wrote. */
 export interface ReviewRequest {
@@ -49,8 +52,8 @@ export interface ReviewRequest {
 }
 /**
  * `second`: the panel's second approval; `second_unsure`: an approval whose other reviewer was unsure (owner, 2026-11-20), never
- * in `second`, given only with `whole`: code verified the input whole (the diff matched the code host's count, nothing folded
- * or over budget, a request chain).
+ * in `second`, given only with `whole`: code verified the input whole (the diff matched the code host's count, every changed
+ * file and the whole diff reachable by the reviewer, a request chain).
  */
 export interface Verdict { decision: "approve" | "reject" | "escalate"; code?: string; reason: string; model: string; second?: string; second_unsure?: string; whole?: boolean; flag?: boolean; panel_marked?: boolean }
 /** The model's "I can't tell" (a second reviewer is asked; both unsure, or unsure over missing input, the request goes back to the agent). */

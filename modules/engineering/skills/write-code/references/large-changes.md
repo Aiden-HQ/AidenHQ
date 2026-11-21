@@ -17,9 +17,9 @@ Work that spans several tasks splits the same way: several Engineer tasks side b
 
 ## Stacked PRs
 
-The AI reviewer reads up to 150,000 characters of diff per card, and `code-review` refuses a diff much over ~2,000
-lines. A change bigger than that is planned as stacked PRs from the start: each branch made from the one before, split
-at file seams, each diff under those sizes, each published on its own (`aidenhq pr <org/repo> <branch>`).
+The CI code review gate refuses a diff much over ~2,000 lines. A change bigger than that is planned as stacked PRs from
+the start: each branch made from the one before, split at file seams, each diff under that size, each published on its
+own (`aidenhq pr <org/repo> <branch>`).
 
 ## Large rewrites hold the files they replace
 

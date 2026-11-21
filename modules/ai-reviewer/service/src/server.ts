@@ -1,6 +1,6 @@
 // The AI reviewer module's service (reviewer@1, aidenhq-sdk/reviewer.ts): the kernel sends each review here with this
 // module's key; the verdict goes back to the kernel with the review's own token. Model calls go through the gateway with
-// the reviewer token the kernel minted for that review; the model gets no tools.
+// the reviewer token the kernel minted for that review; the model's only tools read the request's own change (review.ts changeTools).
 import http from "node:http";
 import { readFileSync } from "node:fs";
 import { serveReviewer } from "./aidenhq-sdk/reviewer.ts";
