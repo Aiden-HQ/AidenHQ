@@ -336,7 +336,7 @@ export function createWrites({ records, registry, connections, secret, resolver,
   }
 
   /** A failure that a later try may not have: a 5xx, a timeout, an executor or control plane that didn't answer. */
-  const transient = (e: unknown) => { const st = (e as { status?: number }).status; return st === undefined || st >= 500 || st === 429; };
+  const transient = (e: unknown) => { const st = (e as { status?: number }).status; return st === undefined ? !(e instanceof TypeError || e instanceof SyntaxError || e instanceof RangeError || e instanceof ReferenceError) : st >= 500 || st === 429; };
 
   /**
    * An approved record: revalidated, its task still open and (a module kind) planned again, then claimed once and executed.
@@ -716,7 +716,9 @@ export function createWrites({ records, registry, connections, secret, resolver,
      */
     retryApproved() {
       const now = Date.now();
-      for (const r of records.list(["approved"], null)) if ((runRetries.get(r.id)?.next ?? 0) <= now) void run(r.id);
+      const open = records.list(["approved"], null);
+      for (const id of runRetries.keys()) if (!open.some((r) => r.id === id)) runRetries.delete(id);
+      for (const r of open) if ((runRetries.get(r.id)?.next ?? 0) <= now) void run(r.id);
     },
     /** Approved records running and records executing in this process (a drain waits for them). */
     inflight: () => running.size + executing.size,

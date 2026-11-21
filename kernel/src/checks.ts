@@ -128,7 +128,7 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
         res.setEncoding("utf8").on("data", (d) => { if (text.length < 100_000) text += d; }).on("end", () => {
           let v: Verdict;
           try { v = JSON.parse(text); } catch { return reject(new Error(`answered ${res.statusCode} with no JSON`)); }
-          if (v && (v.verdict === "deny" || v.verdict === "reopen")) return resolve(v);
+          if (v && (v.verdict === "deny" || v.verdict === "reopen") && (res.statusCode ?? 500) < 500) return resolve(v);
           if ((res.statusCode ?? 500) >= 300 || !v || !VERDICTS.includes(v.verdict)) return reject(new Error(`answered ${res.statusCode}${v?.verdict ? ` (${v.verdict})` : ""}`));
           resolve(v);
         });
@@ -283,19 +283,25 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
    */
   // One resolution at a time per task, so two checks' oks never each see the other's hold and both leave the task in review.
   const resolving = new Map<string, Promise<unknown>>();
-  async function resolve(module: string, ref: string, b: { check?: unknown; verdict?: unknown; comment?: unknown; before?: unknown }) {
+  type Resolve = { check?: unknown; verdict?: unknown; comment?: unknown; before?: unknown };
+  /** The module's one finish check and the verdict's target status, or the refusal: asked before any task is looked up. */
+  function pick(module: string, b: Resolve) {
+    const mine = finishing().filter(([id, c]) => c.module === module && (b.check === undefined || id === `${module}.${String(b.check)}`));
+    if (mine.length !== 1) throw fail(403, "forbidden", `${module} has ${mine.length ? "several finish checks: name one (check)" : "no finish check"}`);
+    const to = RESOLVES.get(String(b.verdict));
+    if (!to && b.verdict !== "release") throw fail(400, "bad_request", "verdict is release, ok, reopen or block");
+    return { id: mine[0]![0], c: mine[0]![1], to };
+  }
+  async function resolve(module: string, ref: string, b: Resolve) {
+    pick(module, b);
     const task = (await issue(ref)).id;
     const run = (resolving.get(task) ?? Promise.resolve()).then(() => resolveOne(module, ref, b));
     const tail = run.catch(() => undefined).then(() => { if (resolving.get(task) === tail) resolving.delete(task); });
     resolving.set(task, tail);
     return run;
   }
-  async function resolveOne(module: string, ref: string, b: { check?: unknown; verdict?: unknown; comment?: unknown; before?: unknown }) {
-    const mine = finishing().filter(([id, c]) => c.module === module && (b.check === undefined || id === `${module}.${String(b.check)}`));
-    if (mine.length !== 1) throw fail(403, "forbidden", `${module} has ${mine.length ? "several finish checks: name one (check)" : "no finish check"}`);
-    const [id, c] = mine[0]!;
-    const to = RESOLVES.get(String(b.verdict));
-    if (!to && b.verdict !== "release") throw fail(400, "bad_request", "verdict is release, ok, reopen or block");
+  async function resolveOne(module: string, ref: string, b: Resolve) {
+    const { id, c, to } = pick(module, b);
     const i = await issue(ref);
     if (b.verdict !== "release" && !recorded(id, i)) throw fail(409, "conflict", `${id} holds no finish on ${i.identifier ?? i.id}`);
     // A release hands the task to its delegator: only a task this check holds (its row, or in review under its label). On any
