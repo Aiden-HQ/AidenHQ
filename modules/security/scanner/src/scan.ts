@@ -8,8 +8,10 @@
 // A pass: refresh grype's DB (a failure fails the pass: transient), then each target oldest-scanned first, within a time
 // budget. One target that can't be matched (bad SBOM, grype error) is an error ingest_run row and is skipped; database
 // errors rethrow. A finding no longer matched in a target that scanned cleanly is marked present = false. A present
-// target missing from a fresh batch is not resolved: it is recorded as absent with its findings unverified. A stale
-// batch resolves nothing.
+// target missing from a fresh batch is not resolved: it is recorded as absent with its findings unverified. The
+// exception is a target in RETIRED_TARGETS whose replacement was scanned cleanly in the same pass: it is recorded as
+// retired (src_meta.ingest_run.status) and its findings are settled against the replacement's rows. A stale batch
+// resolves nothing.
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { capText, tableDdl, type Row, type SourceStore, type Table } from "./source-store.js";
@@ -20,7 +22,7 @@ export const FINDING: Table = {
   cols: {
     target: "text", package: "text", version: "text", vuln_id: "text", finding_id: "text", target_kind: "text", tool: "text",
     pkg_type: "text", purl: "text", locations: "text[]", severity: "text", cvss: "real", fixed_version: "text", fix_state: "text",
-    aliases: "text[]", title: "text", description: "text", url: "text", present: "boolean", resolved_at: "timestamptz", last_seen: "timestamptz",
+    aliases: "text[]", title: "text", description: "text", url: "text", present: "boolean", resolved_at: "timestamptz", resolved_reason: "text", last_seen: "timestamptz",
   },
   tracked: ["severity", "fixed_version", "fix_state", "present"],
   scope: "target",
@@ -30,6 +32,7 @@ export const FINDING: Table = {
 
 const common = "baseline, first_seen_at, ingested_at, seq";
 export const DDL = `${tableDdl("src_security", FINDING)}
+ALTER TABLE src_security.finding ADD COLUMN IF NOT EXISTS resolved_reason text;
 CREATE INDEX IF NOT EXISTS finding_present ON src_security.finding (target, tool) WHERE present;
 -- Security Watch's verdicts (apps-mcp finding_verdict writes them as the warehouse superuser). at_* is the finding as the
 -- verdict saw it: the view shows the verdict only while severity, fix and presence still match, so a changed finding is open again.
@@ -40,12 +43,12 @@ CREATE TABLE IF NOT EXISTS src_security.verdict (
 CREATE OR REPLACE VIEW src_security.findings AS
   SELECT f.finding_id, target, target_kind, tool, package, version, pkg_type, purl, locations, vuln_id, aliases, severity, cvss, fixed_version, fix_state,
     title, description, url, present, resolved_at, last_seen, first_seen_at AS first_seen, ${common}, tsv,
-    d.verdict, d.reason AS verdict_reason, d.by_agent AS verdict_by, d.decided_at AS verdict_at
+    d.verdict, d.reason AS verdict_reason, d.by_agent AS verdict_by, d.decided_at AS verdict_at, f.resolved_reason
   FROM src_security.finding f LEFT JOIN src_security.verdict d ON d.finding_id = f.finding_id
     AND d.at_severity IS NOT DISTINCT FROM f.severity AND d.at_fixed_version IS NOT DISTINCT FROM f.fixed_version
     AND d.at_fix_state IS NOT DISTINCT FROM f.fix_state AND d.at_present IS NOT DISTINCT FROM f.present
     AND (d.verdict <> 'not-affected' OR d.decided_at > now() - interval '30 days');
-COMMENT ON VIEW src_security.findings IS 'Vulnerabilities in what we run, one row per (target, package, version, vuln_id). target: host (the VM''s OS packages, kernel, Docker, Node), image:<ref> (a running container image), repo:product, repo:instance, app:<name> (an app''s deployed source). tool grype = a known CVE/GHSA matched against the inventory (severity critical|high|medium|low|negligible|unknown; fixed_version and fix_state fixed|not-fixed|wont-fix|unknown); tool app-auditor = AppSec''s App Auditor vibe audit of an app repo (no fixed_version). finding_id = stable short id (use it in task markers). present false = no longer found by a scan of that same target (resolved_at); a target absent from a pass keeps present = true with an ingest_run row saying its findings are unverified. first_seen / last_seen = when our scans first and last saw it. verdict (confirmed|not-affected, with verdict_reason, verdict_by, verdict_at) = Security Watch''s review of this finding as it stands now; null = not reviewed, or the finding changed since, or a not-affected verdict is over 30 days old. Changes (severity, fix, present): src_security.changes.';
+COMMENT ON VIEW src_security.findings IS 'Vulnerabilities in what we run, one row per (target, package, version, vuln_id). target: host (the VM''s OS packages, kernel, Docker, Node), image:<ref> (a running container image), repo:product, repo:instance, app:<name> (an app''s deployed source). tool grype = a known CVE/GHSA matched against the inventory (severity critical|high|medium|low|negligible|unknown; fixed_version and fix_state fixed|not-fixed|wont-fix|unknown); tool app-auditor = AppSec''s App Auditor vibe audit of an app repo (no fixed_version). finding_id = stable short id (use it in task markers). present false = no longer found by a scan of that same target or settled when the target was retired (resolved_at; resolved_reason names the target's replacement when retired); a target absent from a pass keeps present = true with an ingest_run row saying its findings are unverified, unless it is a known retired target whose replacement was scanned cleanly (then its ingest_run row says retired). first_seen / last_seen = when our scans first and last saw it. verdict (confirmed|not-affected, with verdict_reason, verdict_by, verdict_at) = Security Watch''s review of this finding as it stands now; null = not reviewed, or the finding changed since, or a not-affected verdict is over 30 days old. Changes (severity, fix, present): src_security.changes.';
 CREATE OR REPLACE VIEW src_security.changes AS
   SELECT seq, entity, entity_id, scope, field, old_value, new_value, url, observed_at, false AS baseline FROM src_security.change;
 COMMENT ON VIEW src_security.changes IS 'Finding changes after first sight: field severity, fixed_version, fix_state or present (false = resolved, true = back). scope = the target; entity_id = target/package/version/vuln_id.';
@@ -83,7 +86,7 @@ export function parseGrype(target: string, out: any): Row[] {
       cvss: scores.length ? Math.max(...scores) : null, fixed_version: (v.fix?.versions ?? []).join(", ") || null, fix_state: v.fix?.state ?? null,
       aliases: [...new Set(related.map((r) => String(r?.id ?? "")).filter((id) => id && id !== v.id))].sort(), title: null,
       description: capText(v.description || related.find((r) => r?.description)?.description || null, 1000).text,
-      url: v.dataSource || v.urls?.[0] || related[0]?.dataSource || null, present: true, resolved_at: null,
+      url: v.dataSource || v.urls?.[0] || related[0]?.dataSource || null, present: true, resolved_at: null, resolved_reason: null,
     });
   }
   return [...rows.values()];
@@ -111,10 +114,25 @@ async function resolveGone(store: SourceStore, target: string, tool: string, kee
   let n = 0;
   for (const r of cur.rows as { package: string; version: string; vuln_id: string }[]) {
     if (keep.has(`${r.package}|${r.version}|${r.vuln_id}`)) continue;
-    if ((await store.upsert(FINDING, { target, package: r.package, version: r.version, vuln_id: r.vuln_id, present: false, resolved_at: now }, { baseline: false })) !== "same") n++;
+    if ((await store.upsert(FINDING, { target, package: r.package, version: r.version, vuln_id: r.vuln_id, present: false, resolved_at: now, resolved_reason: null }, { baseline: false })) !== "same") n++;
   }
   return n;
 }
+
+/** Retired image targets and the live target that replaced them. ops/security-sbom.sh lists only the targets it scanned,
+ * so a replacement cannot be inferred from the batch: the mapping ships here. An absent target not in this map (or whose
+ * replacement was not scanned cleanly in the same pass) keeps the absent/unverified path. */
+export const RETIRED_TARGETS: Readonly<Record<string, string>> = {
+  "image:aidenhq/channel-slack-slack:local": "image:aidenhq/slack-live:local",
+  "image:aidenhq/codehost-github-codehost-github:local": "image:aidenhq/github-github:local",
+  "image:aidenhq/github-codehost-github:local": "image:aidenhq/github-github:local",
+  "image:aidenhq/github-mcp:local": "image:aidenhq/github-github:local",
+  "image:aidenhq/computer-engineer:793c5d759a52": "image:aidenhq/computer-engineer:4e7b73eb627d",
+  "image:aidenhq/computer-agent-base:e22cc951334c": "image:aidenhq/computer-agent-base:cb94c7b36572",
+  "image:app-roadmap-keeper-app": "image:app-roadmap-keeper/app",
+  "image:sha256:1beb013da1202abe6cf6e05c8083c28b9dfbc6018db2013b2f5e8f480467c843": "image:aidenhq/github-github:local",
+  "image:sha256:c0639aab7ed2094796afcfc54dbc44112078e713391a75bd4df0c4be19d2cdee": "image:aidenhq/github-github:local",
+};
 
 /** The host's SBOM batch (ops/security-sbom.sh): each target's SBOM file, or the reason the host couldn't make one. */
 export interface Batch {
@@ -143,6 +161,48 @@ export interface PassDeps {
 /** A target that can't be scanned this pass, for a reason a retry won't fix: recorded, skipped, never fails the pass. */
 export class Skip extends Error {}
 
+/**
+ * A retired target's present findings, settled against its replacement's rows from the same pass: the replacement's
+ * own rows stay present; the retired target's rows become present = false, with the reason saying covered or gone.
+ *
+ * The settlements and the retired ingest_run row are one transaction, the row written after them: a target never reads
+ * as retired (a success marker) with its findings still present, and its findings are never settled without the marker
+ * that makes the retirement durable. A failure rolls both back and the next pass retries. The change log gets the
+ * present -> false entry the shared upsert would have written.
+ */
+async function retireTarget(store: SourceStore, target: string, replacement: string, rows: Row[], now: Date): Promise<number> {
+  const carried = new Set(rows.map((r) => `${r.package}|${r.version}|${r.vuln_id}`));
+  const c = await store.pool.connect();
+  try {
+    await c.query("BEGIN");
+    const cur = await c.query(`SELECT package, version, vuln_id, url FROM src_security.finding WHERE target = $1 AND tool = 'grype' AND present`, [target]);
+    const found = cur.rows as { package: string; version: string; vuln_id: string; url: string | null }[];
+    for (const r of found) {
+      const reason = carried.has(`${r.package}|${r.version}|${r.vuln_id}`)
+        ? `covered by replacement ${replacement}: it was scanned in this pass and reports the same package, version and vulnerability`
+        : `gone: replacement ${replacement} was scanned in this pass and does not report it`;
+      await c.query(
+        `UPDATE src_security.finding SET present = false, resolved_at = $4, resolved_reason = $5, baseline = false, ingested_at = now(), seq = nextval('src_meta.seq')
+         WHERE target = $1 AND package = $2 AND version = $3 AND vuln_id = $6`,
+        [target, r.package, r.version, now, reason, r.vuln_id],
+      );
+      // The same change entry the shared upsert writes for a tracked "present" difference.
+      await c.query(
+        `INSERT INTO src_security.change (entity, entity_id, scope, field, old_value, new_value, url) VALUES ('finding', $1, $2, 'present', 'true', 'false', $3)`,
+        [[target, r.package, r.version, r.vuln_id].join("/"), target, r.url],
+      );
+    }
+    await c.query(`INSERT INTO src_meta.ingest_run (source, scope, started_at, rows, error, status) VALUES ($1, $2, $3, $4, $5, $6)`, ["security", target, now, found.length, null, "retired"]);
+    await c.query("COMMIT");
+    return found.length;
+  } catch (err) {
+    await c.query("ROLLBACK").catch(() => undefined);
+    throw err;
+  } finally {
+    c.release();
+  }
+}
+
 export async function scanPass(store: SourceStore, d: PassDeps): Promise<number> {
   const now = d.now ?? Date.now;
   const start = now();
@@ -156,6 +216,7 @@ export async function scanPass(store: SourceStore, d: PassDeps): Promise<number>
     const why = batch.finishedAt ? `SBOM batch is from ${batch.finishedAt.toISOString()}: is the host timer (aidenhq-security-sbom.timer) running?` : "no SBOM batch yet: run ops/security-sbom.sh on the host (operator step)";
     await store.run("security", "sbom-batch", async () => { throw new Error(why); }).catch(() => undefined);
   }
+  const clean = new Map<string, Row[]>(); // targets scanned cleanly this pass, with the rows that scan wrote
   const synced = await store.scopesByPrefix("");
   const order = [...batch.targets].sort((a, b) => (synced.get(a.target)?.syncedAt ?? 0) - (synced.get(b.target)?.syncedAt ?? 0));
   let written = 0;
@@ -170,7 +231,9 @@ export async function scanPass(store: SourceStore, d: PassDeps): Promise<number>
         } catch (err) {
           throw new Skip(`grype on ${t.target}: ${String((err as Error).message ?? err).slice(0, 300)}`);
         }
-        return syncTarget(store, t.target, "grype", rows, new Date(now()));
+        const n = await syncTarget(store, t.target, "grype", rows, new Date(now()));
+        clean.set(t.target, rows);
+        return n;
       }, { commit: t.commit });
       await store.saveScope(t.target, new Date(now()).toISOString(), true);
     } catch (err) {
@@ -178,13 +241,21 @@ export async function scanPass(store: SourceStore, d: PassDeps): Promise<number>
     }
   }
   // A present target this batch did not enumerate was not scanned clean: its findings stay present and unverified,
-  // and the absence is recorded as an ingest_run row so readers can see it. Findings resolve only in syncTarget,
-  // for a target that was actually scanned in the pass.
+  // and the absence is recorded as an ingest_run row so readers can see it. The one exception is a target with a
+  // shipped mapping whose replacement was scanned cleanly in this same pass: it is retired, its ingest_run row carries
+  // status "retired" and error null (not a failing target), and its findings are settled against that replacement.
   if (fresh) {
     const listed = new Set(batch.targets.map((t) => t.target));
     const r = await store.pool.query(`SELECT DISTINCT target FROM src_security.finding WHERE tool = 'grype' AND present`);
-    for (const { target } of r.rows as { target: string }[])
-      if (!listed.has(target)) await store.run("security", target, async () => { throw new Skip("absent from this pass's SBOM inventory: findings unverified"); }).catch(() => undefined);
+    for (const { target } of r.rows as { target: string }[]) {
+      if (listed.has(target)) continue;
+      const replacement = RETIRED_TARGETS[target];
+      const rows = replacement ? clean.get(replacement) : undefined;
+      // A failed retirement rolls back as a whole and is recorded as absent, so it stays visible and the next pass retries.
+      const retired = replacement && rows ? await retireTarget(store, target, replacement, rows, new Date(now())).catch(() => undefined) : undefined;
+      if (retired == null) await store.run("security", target, async () => { throw new Skip("absent from this pass's SBOM inventory: findings unverified"); }).catch(() => undefined);
+      else written += retired;
+    }
   }
   return written;
 }

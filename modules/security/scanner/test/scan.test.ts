@@ -1,11 +1,11 @@
 import { expect, it } from "vitest";
-import { parseTargets, scanPass, type Batch } from "../src/scan.js";
+import { parseTargets, RETIRED_TARGETS, scanPass, type Batch } from "../src/scan.js";
 import type { SourceStore } from "../src/source-store.js";
 
 // The writer against an in-memory store that keys rows like Postgres would (the SQL itself follows the other writers).
-function fakeStore() {
+function fakeStore(failIngestInsert = { value: false }) {
   const rows = new Map<string, Record<string, any>>();
-  const runs: { scope: string; error: string | null; commit: string | null }[] = [];
+  const runs: { scope: string; error: string | null; commit: string | null; status: string | null }[] = [];
   const scopes = new Map<string, { baselined: boolean; cursor: string | null; syncedAt: number }>();
   const key = (r: Record<string, any>) => [r.target, r.package, r.version, r.vuln_id].join("|");
   const store = {
@@ -13,10 +13,10 @@ function fakeStore() {
     run: async (_source: string, scope: string, fn: () => Promise<number>, meta: { commit?: string | null } = {}) => {
       try {
         const n = await fn();
-        runs.push({ scope, error: null, commit: meta.commit ?? null });
+        runs.push({ scope, error: null, commit: meta.commit ?? null, status: null });
         return n;
       } catch (err) {
-        runs.push({ scope, error: String((err as Error).message), commit: meta.commit ?? null });
+        runs.push({ scope, error: String((err as Error).message), commit: meta.commit ?? null, status: null });
         throw err;
       }
     },
@@ -30,15 +30,41 @@ function fakeStore() {
       return changed ? "changed" : "same";
     },
     pool: {
-      query: async (sql: string, p: any[] = []) => {
-        const all = [...rows.values()];
-        if (sql.startsWith("UPDATE")) for (const r of all) if (r.target === p[0] && r.tool === p[1] && r.present) r.last_seen = p[2];
-        if (sql.includes("DISTINCT target")) return { rows: [...new Set(all.filter((r) => r.present).map((r) => r.target))].map((target) => ({ target })) };
-        return { rows: all.filter((r) => r.target === p[0] && r.tool === p[1] && r.present) };
+      query: async (sql: string, p: any[] = []) => query(sql, p),
+      connect: async () => {
+        let snapshot: { rows: [string, Record<string, any>][]; runs: number } | null = null;
+        return {
+          query: async (sql: string, p: any[] = []) => {
+            if (sql === "BEGIN") snapshot = { rows: [...rows].map(([k, v]) => [k, { ...v }]), runs: runs.length };
+            if (sql === "ROLLBACK" && snapshot) {
+              rows.clear();
+              for (const [k, v] of snapshot.rows) rows.set(k, v);
+              runs.length = snapshot.runs;
+              snapshot = null;
+            }
+            if (sql === "COMMIT") snapshot = null;
+            return query(sql, p);
+          },
+          release: () => undefined,
+        };
       },
     },
   };
-  return { store: store as unknown as SourceStore, rows, runs };
+  async function query(sql: string, p: any[] = []) {
+    const all = [...rows.values()];
+    if (sql.startsWith("INSERT INTO src_meta.ingest_run") && p[5] != null && failIngestInsert.value) throw new Error("column status does not exist");
+    if (sql.startsWith("INSERT INTO src_meta.ingest_run") && p[5] != null) runs.push({ scope: p[1], error: p[4] ?? null, commit: null, status: p[5] });
+    else if (sql.startsWith("INSERT INTO src_meta.ingest_run")) runs.push({ scope: p[1], error: p[4] ?? null, commit: null, status: null });
+    if (sql.includes("SET present = false")) {
+      const r = rows.get(`${p[0]}|${p[1]}|${p[2]}|${p[5]}`);
+      if (r) Object.assign(r, { present: false, resolved_at: p[3], resolved_reason: p[4] });
+    }
+    if (sql.includes("SELECT package, version, vuln_id, url FROM src_security.finding")) return { rows: all.filter((r) => r.target === p[0] && r.tool === "grype" && r.present).map((r) => ({ package: r.package, version: r.version, vuln_id: r.vuln_id, url: r.url ?? null })) };
+    if (sql.includes("SET last_seen")) for (const r of all) if (r.target === p[0] && r.tool === p[1] && r.present) r.last_seen = p[2];
+    if (sql.includes("DISTINCT target")) return { rows: [...new Set(all.filter((r) => r.present).map((r) => r.target))].map((target) => ({ target })) };
+    return { rows: all.filter((r) => r.target === p[0] && r.tool === p[1] && r.present) };
+  }
+  return { store: store as unknown as SourceStore, rows, runs, failIngestInsert };
 }
 
 const match = (pkg: string, version: string, id: string, path: string, fixed = "1.2.4") => ({
@@ -102,4 +128,136 @@ it("src_security: one row per finding key across passes and paths, gone findings
   expect(await scanPass(store, { ...deps, readBatch: async () => ({ finishedAt: new Date(now - 5 * 86_400_000), targets: [] }) })).toBe(0);
   expect(rows.get("repo:product|lodash|4.17.20|CVE-2021-23337")!.present).toBe(true);
   expect(runs.find((r) => r.scope === "sbom-batch")?.error).toMatch(/host timer/);
+});
+
+it("src_security: a mapped target absent from a fresh batch is retired against its clean replacement and its findings settled", async () => {
+  const { store, rows, runs } = fakeStore();
+  const retired = "image:aidenhq/github-mcp:local";
+  const replacement = "image:aidenhq/github-github:local";
+  const unmapped = "image:aidenhq/board:local";
+  const sboms: Record<string, unknown> = {
+    // First pass: both targets exist; the retired one also has a finding the replacement does not carry.
+    "retired.json": { matches: [match("openssl", "3.0.1", "CVE-2024-0001", "/var/lib/dpkg/status"), match("zlib", "1.2.11", "CVE-2022-37434", "/usr/lib/libz.so")] },
+    "replacement.json": { matches: [match("openssl", "3.0.1", "CVE-2024-0001", "/usr/bin/git")] },
+    "unmapped.json": { matches: [match("curl", "7.88.1", "CVE-2023-0001", "/usr/bin/curl")] },
+  };
+  let now = Date.parse("2026-11-11T00:00:00Z");
+  const index = (targets: string[]): string => targets.map((t) => `${t}\t${t === retired ? "retired" : t === replacement ? "replacement" : "unmapped"}.json\t\t`).join("\n");
+  const deps = (targets: string[]) => ({
+    dbUpdate: async () => undefined,
+    readBatch: async (): Promise<Batch> => ({ finishedAt: new Date(now - 3_600_000), targets: parseTargets(index(targets), "/sbom") }),
+    grype: async (f: string) => sboms[f.split("/").pop()!],
+    now: () => now,
+  });
+
+  expect(await scanPass(store, deps([retired, replacement, unmapped]))).toBe(4);
+  const retiredOnly = `${retired}|zlib|1.2.11|CVE-2022-37434`;
+  const carried = `${retired}|openssl|3.0.1|CVE-2024-0001`;
+  const replacementRow = `${replacement}|openssl|3.0.1|CVE-2024-0001`;
+  const unmappedRow = `${unmapped}|curl|7.88.1|CVE-2023-0001`;
+  expect(rows.get(retiredOnly)).toMatchObject({ present: true });
+  expect(rows.get(replacementRow)).toMatchObject({ present: true });
+
+  // Next pass: the retired and the unmapped target are gone from the inventory; only the replacement is scanned.
+  now += 86_400_000;
+  runs.length = 0;
+  expect(await scanPass(store, deps([replacement]))).toBe(2); // the two present findings on the retired target
+
+  // Retired, not absent: a status marker with no error, so scan-health does not read it as a failing target.
+  const run = runs.find((x) => x.scope === retired)!;
+  expect(run).toMatchObject({ status: "retired", error: null });
+  expect(runs.filter((x) => x.scope === retired)).toHaveLength(1);
+
+  // The finding the replacement does not carry is gone, with the replacement named as the reason.
+  expect(rows.get(retiredOnly)).toMatchObject({ present: false, resolved_reason: expect.stringContaining(replacement) });
+  expect(rows.get(retiredOnly)!.resolved_at).toEqual(new Date(now));
+  expect(rows.get(retiredOnly)!.resolved_reason).toMatch(/does not report/);
+  // The finding the replacement carries is settled on the retired target as covered, and stays present on the replacement.
+  expect(rows.get(carried)).toMatchObject({ present: false, resolved_reason: expect.stringContaining(replacement) });
+  expect(rows.get(carried)!.resolved_reason).toMatch(/covered by replacement/);
+  expect(rows.get(replacementRow)).toMatchObject({ present: true, resolved_at: null });
+
+  // A target with no mapping keeps the existing absent/unverified path and its finding stays present.
+  expect(runs.find((x) => x.scope === unmapped)).toMatchObject({ status: null, error: expect.stringMatching(/absent from this pass's SBOM inventory/) });
+  expect(rows.get(unmappedRow)).toMatchObject({ present: true, resolved_at: null });
+});
+
+it("src_security: a mapped target whose replacement did not scan cleanly keeps the absent/unverified path", async () => {
+  const { store, rows, runs } = fakeStore();
+  const retired = "image:aidenhq/github-mcp:local";
+  const replacement = "image:aidenhq/github-github:local";
+  const sboms: Record<string, unknown> = { "retired.json": { matches: [match("zlib", "1.2.11", "CVE-2022-37434", "/usr/lib/libz.so")] } };
+  let now = Date.parse("2026-11-11T00:00:00Z");
+  const deps = (index: string): Parameters<typeof scanPass>[1] => ({
+    dbUpdate: async () => undefined,
+    readBatch: async (): Promise<Batch> => ({ finishedAt: new Date(now - 3_600_000), targets: parseTargets(index, "/sbom") }),
+    grype: async (f: string) => sboms[f.split("/").pop()!],
+    now: () => now,
+  });
+
+  expect(await scanPass(store, deps(`${retired}\tretired.json\t\t`))).toBe(1);
+  const key = `${retired}|zlib|1.2.11|CVE-2022-37434`;
+  expect(rows.get(key)).toMatchObject({ present: true });
+
+  // The replacement is listed but the host could not inventory it: not a clean scan, so nothing is retired or resolved.
+  now += 86_400_000;
+  runs.length = 0;
+  expect(await scanPass(store, deps(`${replacement}\t-\tsyft exited 1\t`))).toBe(0);
+  expect(runs.find((x) => x.scope === retired)).toMatchObject({ status: null, error: expect.stringMatching(/absent from this pass's SBOM inventory/) });
+  expect(rows.get(key)).toMatchObject({ present: true, resolved_at: null });
+
+  // A stale batch resolves nothing, even with the replacement scanned: no retirement row, finding still present.
+  now += 86_400_000;
+  runs.length = 0;
+  sboms["replacement.json"] = { matches: [] };
+  const staleIndex = `${replacement}\treplacement.json\t\t`;
+  expect(await scanPass(store, { ...deps(staleIndex), readBatch: async () => ({ finishedAt: new Date(now - 5 * 86_400_000), targets: parseTargets(staleIndex, "/sbom") }) })).toBe(0);
+  expect(runs.filter((x) => x.scope === retired)).toHaveLength(0);
+  expect(rows.get(key)).toMatchObject({ present: true, resolved_at: null });
+});
+
+it("src_security: the shipped retirement map carries all nine pairs, the sha256 ids mapped to the github-github lineage", () => {
+  expect(RETIRED_TARGETS).toEqual({
+    "image:aidenhq/channel-slack-slack:local": "image:aidenhq/slack-live:local",
+    "image:aidenhq/codehost-github-codehost-github:local": "image:aidenhq/github-github:local",
+    "image:aidenhq/github-codehost-github:local": "image:aidenhq/github-github:local",
+    "image:aidenhq/github-mcp:local": "image:aidenhq/github-github:local",
+    "image:aidenhq/computer-engineer:793c5d759a52": "image:aidenhq/computer-engineer:4e7b73eb627d",
+    "image:aidenhq/computer-agent-base:e22cc951334c": "image:aidenhq/computer-agent-base:cb94c7b36572",
+    "image:app-roadmap-keeper-app": "image:app-roadmap-keeper/app",
+    "image:sha256:1beb013da1202abe6cf6e05c8083c28b9dfbc6018db2013b2f5e8f480467c843": "image:aidenhq/github-github:local",
+    "image:sha256:c0639aab7ed2094796afcfc54dbc44112078e713391a75bd4df0c4be19d2cdee": "image:aidenhq/github-github:local",
+  });
+});
+
+it("src_security: a retired row the warehouse could not take settles nothing, so the next pass retries it", async () => {
+  const { store, rows, runs } = fakeStore();
+  const retired = "image:aidenhq/github-mcp:local";
+  const replacement = "image:aidenhq/github-github:local";
+  const sboms: Record<string, unknown> = {
+    "retired.json": { matches: [match("zlib", "1.2.11", "CVE-2022-37434", "/usr/lib/libz.so")] },
+    "replacement.json": { matches: [] },
+  };
+  let now = Date.parse("2026-11-11T00:00:00Z");
+  const index = (targets: string[]): string => targets.map((t) => `${t}\t${t === retired ? "retired" : "replacement"}.json\t\t`).join("\n");
+  const deps = (targets: string[]) => ({
+    dbUpdate: async () => undefined,
+    readBatch: async (): Promise<Batch> => ({ finishedAt: new Date(now - 3_600_000), targets: parseTargets(index(targets), "/sbom") }),
+    grype: async (f: string) => sboms[f.split("/").pop()!],
+    now: () => now,
+  });
+
+  expect(await scanPass(store, deps([retired, replacement]))).toBe(1);
+  const key = `${retired}|zlib|1.2.11|CVE-2022-37434`;
+  expect(rows.get(key)).toMatchObject({ present: true });
+
+  // The warehouse has not applied sources.sql's status column: the marker insert fails, so the finding must stay present.
+  now += 86_400_000;
+  const failing = fakeStore({ value: true });
+  for (const r of rows.values()) failing.rows.set([r.target, r.package, r.version, r.vuln_id].join("|"), { ...r });
+  expect(await scanPass(failing.store, deps([replacement]))).toBe(0);
+  // The marker and the settlements are one transaction: a failed marker rolls both back, the finding stays present and
+  // the target reads as absent (visible, retried next pass) instead of retired.
+  expect(failing.rows.get(key)).toMatchObject({ present: true, resolved_at: null });
+  expect(failing.runs.filter((x) => x.scope === retired)).toMatchObject([{ status: null, error: expect.stringMatching(/absent from this pass's SBOM inventory/) }]);
 });
