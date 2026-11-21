@@ -21,14 +21,15 @@
 // lifecycle: its catalog options as runs of one batch, in sequence: the tools check (the selected tool options together,
 // token-free) first, then each model option as its own metered check, each with what the batch's run_usd has left (none left:
 // skipped, "run cap spent"). Its runs never post, gate or ack; once the last ends, report.ts renders the report, which goes to
-// Primer (one document per repo, a version per review) and is served to the board. deepsec's set-up files from a run are filed
-// once as a setup PR (code-review.setup), and later runs read them at that PR's tip until it merges.
+// Primer (one document per repo, a version per review) and is served to the board. deepsec's set-up files from a run are asked
+// for once as a setup PR (the code host's `setup` op: github files its own reviewed write), and later runs scan with the files on
+// that PR's branch until it merges. Everything here is off until settings.code_review.lenses is on.
 import type { DatabaseSync } from "node:sqlite";
 import { randomBytes } from "node:crypto";
 import { parseCommand, type Command } from "./commands.ts";
 import { combos as parseCombos, DEFAULT_MODEL, ENGINES, gated, REPO_DEFAULTS, type Combo, type Config, type Repo } from "./config.ts";
-import type { Ack, Posted, Poster, PrSource, Publisher, PullRequest, Review, ReviewRunner, RunResult, SetupOutcome, Snapshots, Status as Mirror } from "./seams.ts";
-import { detect, type Option } from "./catalog.ts";
+import type { Ack, CodeHost, Posted, Poster, PrSource, Publisher, PullRequest, Review, ReviewRunner, RunResult, Status as Mirror } from "./seams.ts";
+import { detect, toolSpec, type Option } from "./catalog.ts";
 import { render } from "./report.ts";
 import { SETUP_BRANCH, SETUP_PATH } from "./adapters.ts";
 import type { FactIn } from "./aidenhq-sdk/kernel-client.ts";
@@ -87,11 +88,18 @@ export type RunRow = {
 export type BatchRow = {
   id: string; repo: string; sha: string; options: string; combo: string; run_usd: number; status: "running" | "done"; verdict: string | null;
   report: string | null; report_url: string | null; report_version: number | null; report_why: string | null; created: number; ended: string | null; author: string;
-  /** The commit has deepsec set up (.deepsec/INFO.md): no pending setup PR's files are read. */
+  /** The commit has deepsec set up (any `.deepsec/` file): deepsec scans, and no setup branch is read. */
   deepsec: number;
+  /** The deepsec setup branch when the review started (deepsec picked and not set up at the commit): its tip and files, which
+   * deepsec scans with; a branch there means its PR is pending, so no second one is asked for. */
+  setup_tip: string | null; setup_files: string | null;
 };
 /** A repo review's cap (USD, across all its options): the default and the most. */
 export const RUN_USD = { default: 25, min: 1, max: 150 };
+/** The most one check of a repo review may spend (module.yaml check_jobs.code-review model.max_usd). */
+export const CHECK_MAX_USD = 100;
+/** A deepsec setup PR asked for and not on the code host yet (refused, or still with the AI reviewer) is asked for again after this. */
+const SETUP_RETRY = 24 * 3600_000;
 const EFFORTS = ["minimal", "low", "medium", "high", "xhigh", "max"];
 
 const DDL = `
@@ -122,9 +130,9 @@ CREATE TABLE IF NOT EXISTS cursors (repo TEXT PRIMARY KEY, comments TEXT NOT NUL
 CREATE TABLE IF NOT EXISTS comments (repo TEXT NOT NULL, number INTEGER NOT NULL, comment INTEGER NOT NULL, run TEXT NOT NULL, PRIMARY KEY (repo, comment));
 CREATE TABLE IF NOT EXISTS batches (id TEXT PRIMARY KEY, repo TEXT NOT NULL, sha TEXT NOT NULL, options TEXT NOT NULL, combo TEXT NOT NULL, run_usd REAL NOT NULL,
   status TEXT NOT NULL, verdict TEXT, report TEXT, report_url TEXT, report_version INTEGER, report_why TEXT, created INTEGER NOT NULL, ended TEXT,
-  author TEXT NOT NULL DEFAULT '', deepsec INTEGER NOT NULL DEFAULT 0);
+  author TEXT NOT NULL DEFAULT '', deepsec INTEGER NOT NULL DEFAULT 0, setup_tip TEXT, setup_files TEXT);
 CREATE TABLE IF NOT EXISTS documents (repo TEXT PRIMARY KEY, document TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS setups (repo TEXT PRIMARY KEY, base TEXT NOT NULL, filed_for TEXT NOT NULL, tip TEXT, pr_url TEXT, write_id TEXT, state TEXT NOT NULL, at TEXT NOT NULL);`;
+CREATE TABLE IF NOT EXISTS setups (repo TEXT PRIMARY KEY, asked INTEGER NOT NULL, answer TEXT);`;
 /** The data's format (module.yaml data_version), migrated forward at start. 1: combos and findings; a database from before starts
  * fresh (its runs, its PRs and today's spend counts are dropped: the first look at each repo then records what is open, as on a new
  * install). 2: repo reviews (batches, documents, setups; runs' target, option and profile) and findings per option observation
@@ -135,7 +143,7 @@ type Log = (msg: string, f?: Record<string, unknown>) => void;
 export type EngineDeps = {
   db: DatabaseSync; config: () => Config; source: PrSource; runner: ReviewRunner; poster: Poster;
   /** Repo reviews: the code host's snapshots (a tree's commit and paths), the option catalog, and Primer (absent: the report is on the board only). */
-  snapshots: Snapshots; catalog: () => Option[]; publisher?: Publisher;
+  codehost: CodeHost; catalog: () => Option[]; publisher?: Publisher;
   emit?: (f: FactIn) => void; log?: Log; now?: () => number;
 };
 export class RequestError extends Error {
@@ -305,7 +313,7 @@ export function createEngine(d: EngineDeps) {
         const b = batchRow(r.batch)!;
         const others = one<{ s: number }>("SELECT COALESCE(SUM(CASE WHEN status = 'queued' THEN billed_prior ELSE cost_usd END), 0) s FROM runs WHERE batch = ? AND id != ? AND status != 'running'", r.batch, r.id)!.s;
         if (b.run_usd - others - r.billed_prior < 0.01) return "run cap spent";
-        run("UPDATE runs SET run_usd = ? WHERE id = ?", Math.round((b.run_usd - others) * 10_000) / 10_000, r.id);
+        run("UPDATE runs SET run_usd = ? WHERE id = ?", Math.round(Math.min(b.run_usd - others, r.billed_prior + CHECK_MAX_USD) * 10_000) / 10_000, r.id);
       }
       // A mandatory run is never skipped for budget (its repo's merges wait on it); its spend still counts and shows.
       if (r.mandatory) return void run("UPDATE runs SET status = 'running', started = ? WHERE id = ? AND status = 'queued'", iso(), r.id);
@@ -406,12 +414,14 @@ export function createEngine(d: EngineDeps) {
     run("UPDATE runs SET attempts = attempts + 1, merge_base = ? WHERE id = ?", r.head, r.id);
     const b = batchRow(r.batch)!;
     const tools = r.profile === "code-review-tools";
-    // A pending setup PR's files (deepsec not set up at this commit): read at its branch's tip.
-    const s = !tools && r.engine === "deepsec" && !b.deepsec ? one<{ tip: string | null; pr_url: string | null }>("SELECT tip, pr_url FROM setups WHERE repo = ?", r.repo) : undefined;
+    const opts = new Map(catalogSafe().map((o) => [o.id, o]));
+    const o = tools ? undefined : opts.get(r.option!);
     try {
-      const { check } = await d.runner.start({ repo: r.repo, number: 0, base: r.head, head: r.head, merge_base: r.head, combo: comboOf(r), target: "tree", profile: tools ? "code-review-tools" : "code-review",
-        ...(tools ? { options: r.option!.split(",") } : {}), setup_tip: s?.pr_url && s.tip ? s.tip : null,
-        focus: null, incremental_from: null, full: true, previous: [], mandatory: false, budget_usd: Math.max(0, r.run_usd - r.billed_prior), ignore: [], max_nits: 50 });
+      const { check } = await d.runner.start({ repo: r.repo, number: 0, base: r.head, head: r.head, merge_base: r.head, target: "tree", profile: tools ? "code-review-tools" : "code-review",
+        combo: { ...comboOf(r), ...(o?.kind === "skill" ? { harness: o.run.harness, skill: o.run.skill } : {}) },
+        ...(tools ? { tools: toolSpec(r.option!.split(",").map((id) => opts.get(id)).filter((x): x is Option => !!x)) } : { option: r.option!, lens: o?.lens ?? "" }),
+        ...(r.engine === "deepsec" && b.setup_files ? { setup_files: JSON.parse(b.setup_files) as Record<string, string> } : {}),
+        focus: null, incremental_from: null, full: true, previous: [], mandatory: false, budget_usd: Math.max(0, r.run_usd - r.billed_prior), ignore: [], max_nits: 200 });
       run("UPDATE runs SET check_job = ? WHERE id = ?", check, r.id);
     } catch (e) {
       if (!permanent(e)) {
@@ -577,27 +587,21 @@ export function createEngine(d: EngineDeps) {
   }
 
   /**
-   * deepsec set the repo up in a run: its set-up files (`.deepsec/` only) are filed as one setup PR write, once for the branch's
-   * tip it expects (none: a new branch), and never while its PR is open (later runs read the files at its tip until it merges,
-   * when the commit has `.deepsec/` and deepsec scans).
+   * deepsec set the repo up in a run: its set-up files (deepsec's allowlisted `.deepsec/` files only) are asked for as one setup PR
+   * through the code host (github files and reviews its own write, on a branch from the default branch's head). Never while the
+   * setup branch exists (its PR is pending or open: runs scan with its files), and once a day at most while it doesn't yet.
    */
   async function fileSetup(r: RunRow, raw: Record<string, string>) {
     const files = Object.fromEntries(Object.entries(raw ?? {}).filter(([p, c]) => SETUP_PATH.test(p) && typeof c === "string"));
-    if (!Object.keys(files).length) return;
-    const had = one<{ tip: string | null; pr_url: string | null; filed_for: string; state: string }>("SELECT tip, pr_url, filed_for, state FROM setups WHERE repo = ?", r.repo);
-    const expected = had?.tip ?? null;
-    if (had && (had.pr_url || (had.filed_for === (expected ?? "") && had.state !== "refused"))) return;
-    let o: SetupOutcome;
-    try { o = await d.poster.setup({ repo: r.repo, base: r.head, branch: SETUP_BRANCH, expected_tip: expected, files }); } catch (e) { o = { state: "refused", why: String((e as Error).message).slice(0, 200) }; }
-    run(`INSERT INTO setups (repo, base, filed_for, tip, write_id, state, at) VALUES (?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT (repo) DO UPDATE SET base = excluded.base, filed_for = excluded.filed_for, write_id = excluded.write_id, state = excluded.state, at = excluded.at`, r.repo, r.head, expected ?? "", expected, o.write ?? null, "pending", iso());
-    setupSettled(r.repo, o);
-  }
-  /** A setup write's outcome: done records its PR and the branch tip it made; refused may be filed again by a later run. */
-  function setupSettled(repo: string, o: SetupOutcome) {
-    if (o.state === "pending") return;
-    if (o.state === "refused") return void (run("UPDATE setups SET state = 'refused' WHERE repo = ?", repo), log("deepsec setup PR not opened", { repo, why: String(o.why ?? "").slice(0, 200) }));
-    run("UPDATE setups SET state = 'done', tip = COALESCE(?, tip), pr_url = COALESCE(?, pr_url) WHERE repo = ?", o.tip ?? null, o.pr_url ?? null, repo);
+    if (!Object.keys(files).length || batchRow(r.batch)?.setup_tip) return;
+    const asked = one<{ asked: number }>("SELECT asked FROM setups WHERE repo = ?", r.repo)?.asked;
+    if (asked !== undefined && now() - asked < SETUP_RETRY) return;
+    let answer: string;
+    try { answer = JSON.stringify(await d.codehost.setup({ repo: r.repo, branch: SETUP_BRANCH, expected_tip: null, files })).slice(0, 1000); } catch (e) {
+      answer = `refused: ${String((e as Error).message).slice(0, 300)}`;
+      log("deepsec setup PR not asked for", { repo: r.repo, err: answer });
+    }
+    run("INSERT INTO setups (repo, asked, answer) VALUES (?, ?, ?) ON CONFLICT (repo) DO UPDATE SET asked = excluded.asked, answer = excluded.answer", r.repo, now(), answer);
   }
 
   const retries = (r: RunRow, o: Posted) => o.state === "refused" && !!o.retry && !r.post_tries;
@@ -856,8 +860,6 @@ export function createEngine(d: EngineDeps) {
     }
     for (const r of all<RunRow>("SELECT * FROM runs WHERE posted = 'pending' AND write_id IS NOT NULL")) await settle(r);
     for (const r of all<RunRow>("SELECT * FROM runs WHERE posted = 'retry' AND post_due <= ?", now())) await repost(r);
-    for (const s of all<{ repo: string; write_id: string }>("SELECT repo, write_id FROM setups WHERE state = 'pending' AND write_id IS NOT NULL"))
-      setupSettled(s.repo, await d.poster.setupOutcome(s.write_id).catch(() => ({ state: "pending" as const })));
     for (const [write, t] of [...acking]) {
       if (write.startsWith("slot:")) continue;
       const o = await d.poster.outcome(write).catch(() => ({ state: "pending" as const }));
@@ -1048,15 +1050,16 @@ export function createEngine(d: EngineDeps) {
 
   // ---- the API's reads and one-offs -----------------------------------------------------------------------------------------
 
+  const lensesOn = () => { if (!d.config().lenses) throw new RequestError("repo reviews are off: they turn on with settings.code_review.lenses (the owner's)"); };
   /** A repo at a commit (none: its default branch's head) through the code host's snapshot: the commit it resolved and its paths. */
   async function readTree(repoIn: unknown, commit: unknown) {
     const repo = String(repoIn ?? "").toLowerCase();
     if (!/^[\w.-]{1,100}\/[\w.-]{1,100}$/.test(repo)) throw new RequestError("repo is owner/name");
-    if (commit !== undefined && commit !== null && commit !== "" && !(typeof commit === "string" && /^[0-9a-f]{40}$/.test(commit))) throw new RequestError("commit is a full commit sha (or leave it out for the default branch's head)");
+    if (commit !== undefined && commit !== null && commit !== "" && !(typeof commit === "string" && /^[0-9a-f]{7,40}$/.test(commit))) throw new RequestError("commit is a commit sha (or leave it out for the default branch's head)");
     const ref = (commit as string) || "HEAD";
     let tree: { sha: string; paths: string[] };
-    try { tree = await d.snapshots.tree(repo, ref); } catch (e) { throw new RequestError(`${repo} can't be read at ${ref === "HEAD" ? "its default branch" : ref.slice(0, 12)}: ${String((e as Error).message).slice(0, 200)} (a repo snapshot needs the github or codehost-local module)`); }
-    if (ref !== "HEAD" && tree.sha !== ref) throw new RequestError(`the snapshot of ${repo} is of ${tree.sha.slice(0, 12)}, not ${ref.slice(0, 12)}`);
+    try { tree = await d.codehost.tree(repo, ref); } catch (e) { throw new RequestError(`${repo} can't be read at ${ref === "HEAD" ? "its default branch" : ref.slice(0, 12)}: ${String((e as Error).message).slice(0, 200)} (a repo snapshot needs the github or codehost-local module)`); }
+    if (ref !== "HEAD" && !tree.sha.startsWith(ref)) throw new RequestError(`the snapshot of ${repo} is of ${tree.sha.slice(0, 12)}, not ${ref.slice(0, 12)}`);
     return { repo, tree };
   }
 
@@ -1127,6 +1130,7 @@ export function createEngine(d: EngineDeps) {
     engines() { return ENGINES; },
     /** The options a repo's tree fits at a commit (default: its default branch's head, resolved now), and the commit. */
     async catalogFor(q: { repo?: unknown; commit?: unknown }) {
+      lensesOn();
       const { repo, tree } = await readTree(q.repo, q.commit);
       const { available, recommended } = detect(tree.paths, d.catalog(), "one_off");
       return { repo, sha: tree.sha, recommended, options: available.map((o) => ({ id: o.id, lens: o.lens, kind: o.kind, runs_code: o.runs_code, cost: o.cost, recommended: recommended.includes(o.id), source: o.source })) };
@@ -1136,6 +1140,7 @@ export function createEngine(d: EngineDeps) {
      * (default: the recommended ones the tree fits), the combo for the model options and its cap (run_usd, $25 by default, at most $150).
      */
     async repoReview(b: { target?: unknown; options?: unknown; combo?: unknown; run_usd?: unknown; author?: unknown }) {
+      lensesOn();
       const t = (b.target ?? {}) as { repo?: unknown; commit?: unknown };
       const run_usd = b.run_usd === undefined ? RUN_USD.default : b.run_usd;
       if (typeof run_usd !== "number" || !Number.isFinite(run_usd) || run_usd < RUN_USD.min || run_usd > RUN_USD.max) throw new RequestError(`run_usd is ${RUN_USD.min} to ${RUN_USD.max} dollars (the cap across every option of the review)`);
@@ -1152,9 +1157,11 @@ export function createEngine(d: EngineDeps) {
       const picked = available.filter((o) => ids.includes(o.id));
       const id = `b-${randomBytes(6).toString("hex")}`;
       const author = String(b.author ?? "").toLowerCase().slice(0, 100);
-      const deepsec = tree.paths.includes(".deepsec/INFO.md") ? 1 : 0;
+      // deepsec scans when the commit has any of its files; else a pending setup branch's files (its PR not merged yet) are scanned with.
+      const deepsec = tree.paths.some((p) => p.startsWith(".deepsec/")) ? 1 : 0;
+      const pending = !deepsec && picked.some((o) => o.kind === "engine" && o.run.engine === "deepsec") ? await d.codehost.setupBranch(repo).catch((e) => void log("deepsec setup branch not read", { repo, err: String((e as Error).message).slice(0, 200) })) : undefined;
       tx(() => {
-        run("INSERT INTO batches (id, repo, sha, options, combo, run_usd, status, created, author, deepsec) VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?, ?)", id, repo, tree.sha, JSON.stringify(ids), JSON.stringify(combo), run_usd, now(), author, deepsec);
+        run("INSERT INTO batches (id, repo, sha, options, combo, run_usd, status, created, author, deepsec, setup_tip, setup_files) VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?)", id, repo, tree.sha, JSON.stringify(ids), JSON.stringify(combo), run_usd, now(), author, deepsec, pending?.tip ?? null, pending ? JSON.stringify(pending.files) : null);
         const add = (engine: string, model: string, effort: string, option: string, profile: string) => run(`INSERT INTO runs (id, repo, number, head, base, engine, model, effort, run_usd, kind, status, full, due, created, author, batch, target, option, profile)
           VALUES (?, ?, 0, ?, ?, ?, ?, ?, 0, 'oneoff', 'queued', 1, ?, ?, ?, ?, 'tree', ?, ?)`, `cr-${randomBytes(6).toString("hex")}`, repo, tree.sha, tree.sha, engine, model, effort, now(), now(), author, id, option, profile);
         // The tools first (free), then each model option in the catalog's order: each gets what the ones before it left.
@@ -1164,10 +1171,13 @@ export function createEngine(d: EngineDeps) {
       });
       return { batch: id, repo, sha: tree.sha, run_usd, options: ids, runs: all<RunRow>("SELECT * FROM runs WHERE batch = ? ORDER BY rowid", id).map((r) => view(r)) };
     },
-    /** Repo reviews, newest first: each one's commit, options, cap and spend, and once ended its verdict and report link. */
+    /** Repo reviews, newest first (the board's TreeBatch): commit, spend, status and why, and once ended the verdict, the report
+     * the service serves and its Primer document. */
     batches(q: { repo?: string; limit?: number }) {
       return all<BatchRow & { cost: number }>(`SELECT b.*, (SELECT COALESCE(SUM(cost_usd), 0) FROM runs r WHERE r.batch = b.id) cost FROM batches b ${q.repo ? "WHERE b.repo = ?" : ""} ORDER BY b.created DESC LIMIT ?`, ...(q.repo ? [q.repo.toLowerCase()] : []), Math.min(Math.max(1, q.limit ?? 50), 500))
-        .map(({ report: _r, combo, options, cost, deepsec: _d, ...b }) => ({ ...b, target: "tree" as const, options: JSON.parse(options) as string[], combo: JSON.parse(combo), cost_usd: round(cost), report: b.status === "done" ? `/reviews/${b.id}/report` : null }));
+        .map((b) => ({ id: b.id, repo: b.repo, sha: b.sha, sha7: b.sha.slice(0, 7), verdict: b.verdict, cost_usd: round(b.cost), run_usd: b.run_usd, status: b.status, why: b.report_why,
+          started: new Date(b.created).toISOString(), ended: b.ended, options: JSON.parse(b.options) as string[], combo: JSON.parse(b.combo),
+          ...(b.status === "done" ? { report_url: `/reviews/${b.id}/report` } : {}), ...(b.report_url ? { primer_url: b.report_url } : {}) }));
     },
     /** A finished repo review's report (markdown), as Primer has it. */
     report(id: string) { return batchRow(id)?.report ?? undefined; },

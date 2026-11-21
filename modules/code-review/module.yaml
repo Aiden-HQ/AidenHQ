@@ -16,6 +16,11 @@ roles:
 # A review run's snapshot of repo@head (and its base), read under this grant: any repo the owner's GitHub sign-in reaches.
 codehost:
   snapshot: { repos: [ "*/*" ] }
+  # A repo review's deepsec setup PR (POST /v1/codehost/setup): deepsec's own set-up files on aidenhq/deepsec-setup, branched from
+  # the default branch's head; github files and reviews its own Tier 1 write for it. Only these paths.
+  setup:
+    repos: [ "*/*" ]
+    paths: [ .deepsec/deepsec.config.ts, .deepsec/generated-matchers.ts, .deepsec/package.json, .deepsec/package-lock.json, .deepsec/pnpm-lock.yaml, .deepsec/yarn.lock, ".deepsec/data/*/INFO.md" ]
 # The review run: a credential-free check job per PR head (kernel/src/checkjobs.ts), the recipe in recipe/. The state service asks
 # POST /v1/checks {repo, head, run: code-review, spec} (service/src/adapters.ts checkSpec): base is the merge base (a full review's
 # incremental_from is that base too), the combo (engine, model, effort) with the repo's ignore globs and max_nits in combo, budget_usd
@@ -29,10 +34,11 @@ check_jobs:
     argv: [ node, /aidenhq-out/recipe/review.ts ]
     timeout_min: 45
     title: the code review
-    # target: pr, or tree (a whole repo at head: pr is empty and base is the head); setup_tip: a pending deepsec setup PR's tip
-    # (its .deepsec/ files, read there), else the base.
-    spec: { base: sha, incremental_from: sha, pr: text, target: text, setup_tip: sha, combo: json, focus: text, budget_usd: usd, previous: json }
-    model: { max_usd: 25 }
+    # target: pr, or tree (a whole repo at head: pr is empty and base is the head); option and lens: a catalog option's (empty
+    # for a combo); setup_files: a pending deepsec setup branch's files ({} for none).
+    spec: { base: sha, incremental_from: sha, pr: text, target: text, option: text, lens: text, setup_files: json, combo: json, focus: text, budget_usd: usd, previous: json }
+    # The most one check spends; a repo review's run_usd (at most 150) is the total across its checks.
+    model: { max_usd: 100 }
     result: true
 # Flow (docs/design/flow.md): one started and one ended fact per review run (version: the run id) on its PR.
 facts:
@@ -49,7 +55,7 @@ settings:
   # once the mandatory combos reviewed its head and none of their important findings is open (fixed, answered on its thread by the
   # PR's author or a writer: fixed, disputed, by design or won't fix with a reason, or dismissed by the owner on the board); a gated repo has one at both moments, and its mandatory runs are never
   # skipped for budget and review forks by themselves. ai_review_code's unless_code_review_mandatory reads the same repos. on_push reviews only the new changes. day_usd: the instance-wide cap across repos, a UTC day's real spend (a run starts while spent is under it; runs in flight may overshoot by their run_usd each, bounded by the launcher's computers_max; a run whose spend can't be read counts at its whole run_usd). Read by the service
-  # (service/src/config.ts).
+  # (service/src/config.ts). lenses (default false): repo reviews and the option catalog, off until their security review is done.
   code_review:
     type: object
     writers: [ reviewer-manager ]
@@ -60,6 +66,7 @@ settings:
     # mandatory is its to do: it only adds a gate.
     owner:
       - { path: day_usd, raise: true }
+      - { path: lenses, to: true, default: false }
       - { path: "repos.*.day_usd", raise: true, default: 200 }
       - { path: "repos.*.forks", to: auto, default: manual }
       - { path: "repos.*.drafts", to: true, default: false }
@@ -79,6 +86,7 @@ settings:
     default:
       repos: []
       day_usd: 200
+      lenses: false
   # Seconds between the service's looks at the watched repos.
   code_review_poll_seconds: { default: 60 }
 # The Reviewer Manager (agents/reviewer-manager/AGENTS.md): conversation only. It reads strangers' review threads, so it holds no
@@ -135,13 +143,6 @@ writes:
   status:
     args: schemas/status.json
     floor: 0
-    tools: []
-    card: { target: "{{target}}", sentence: "{{sentence}}", changes: "{{changes}}", details: "{{details}}" }
-  # A deepsec setup PR: deepsec's own set-up files (.deepsec/ only) as one commit on aidenhq/deepsec-setup and its PR, through
-  # github's internal setup op; Tier 1, so the AI reviewer reads every file first. Filed once per branch tip, never while its PR is open.
-  setup:
-    args: schemas/setup.json
-    floor: 1
     tools: []
     card: { target: "{{target}}", sentence: "{{sentence}}", changes: "{{changes}}", details: "{{details}}" }
 services:

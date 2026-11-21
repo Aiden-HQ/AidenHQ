@@ -2,7 +2,7 @@
 // from (github-mcp's internal read, as this module), what runs a review (the kernel's credential-free check job, lane E's recipe)
 // and what posts it (the github module's poster, lane P's). main.ts wires the real ones; the tests use fakes.
 /** A run's engine, model and effort. */
-export type ComboRef = { engine: string; model: string; effort: string };
+export type ComboRef = { engine: string; model: string; effort: string; /** a skill option's, from the catalog */ harness?: string; skill?: string };
 
 /** The review recipe's output and the poster's input (the shared contract, version 1). */
 export type Finding = {
@@ -74,10 +74,12 @@ export type ReviewSpec = {
   target: "pr" | "tree";
   /** The check job: `code-review` (one model option or combo, metered) or `code-review-tools` (the selected tool options, token-free). */
   profile: "code-review" | "code-review-tools";
-  /** The tools run's catalog option ids. */
-  options?: string[];
-  /** A pending deepsec setup PR's branch tip: its `.deepsec/` files are read at that commit (absent: none pending). */
-  setup_tip?: string | null;
+  /** The tools run's selected tool options, as the recipe runs them (catalog.ts toolSpec). */
+  tools?: Record<string, unknown>;
+  /** A model option's catalog id and lens (stamped on its findings); none for a combo. */
+  option?: string; lens?: string;
+  /** A pending deepsec setup branch's files (path → text): deepsec scans with them instead of setting up. */
+  setup_files?: Record<string, string>;
   /** The merge base of the PR's base and head: what a full review diffs against. */
   merge_base: string;
   focus: string | null; incremental_from: string | null; full: boolean;
@@ -129,14 +131,7 @@ export type Posted = {
   /** The acknowledgement comment it wrote. */
   ack?: number;
 };
-/** A deepsec setup PR write (code-review.setup): filed, its outcome (the PR and the branch tip it made), or refused. */
-export type SetupArgs = { repo: string; base: string; branch: "aidenhq/deepsec-setup"; expected_tip: string | null; files: Record<string, string> };
-export type SetupOutcome = { state: "pending" | "done" | "refused"; write?: string; pr_url?: string; tip?: string; why?: string };
 export interface Poster {
-  /** Files the deepsec setup PR write (Tier 1). */
-  setup(a: SetupArgs): Promise<SetupOutcome>;
-  /** A filed setup write's outcome now. */
-  setupOutcome(write: string): Promise<SetupOutcome>;
   /** One GitHub review for the run's head: a thread per finding, the summary with the severity line and commands;
    * `target`: where it goes, from the run itself (the poster never takes its target from the review body); `previous`: the last
    * review posted on this PR (its threads are the ones Aiden may resolve). */
@@ -152,10 +147,14 @@ export interface Poster {
   close(repo: string, number: number, why: string, run?: string): Promise<void>;
 }
 
-/** A repo at a ref through the code host's snapshot (the kernel's /v1/codehost/snapshot, under this module's grant): the commit
- * it resolved (`HEAD`: the default branch's head) and the tree's file paths. */
-export interface Snapshots {
+/** The code host through the kernel (/v1/codehost/:op, this module's grant). */
+export interface CodeHost {
+  /** A repo at a ref (snapshot): the commit it resolved (`HEAD`: the default branch's head) and the tree's file paths. */
   tree(repo: string, ref: string): Promise<{ sha: string; paths: string[] }>;
+  /** The deepsec setup branch's tip and its allowlisted files; undefined when there is no such branch. */
+  setupBranch(repo: string): Promise<{ tip: string; files: Record<string, string> } | undefined>;
+  /** Asks for the deepsec setup PR (codehost.setup): github files its own Tier 1 write, based on the default branch's head. */
+  setup(b: { repo: string; branch: string; expected_tip: string | null; files: Record<string, string> }): Promise<unknown>;
 }
 /** Primer's report submission (primer-mcp's /internal/report): a new document, or a version of `documentId`. */
 export type ReportIn = { repo: string; title: string; content: string; documentId?: string; versionNote: string };
