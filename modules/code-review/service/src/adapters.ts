@@ -186,7 +186,11 @@ export function reviewExecutor(github: (op: "preview" | "execute", body: unknown
 /** github-mcp's internal review routes, as this module. */
 export function githubReview(base: string, token: () => string, fetcher: typeof fetch = fetch) {
   return async (op: "preview" | "execute", body: unknown) => {
-    const r = await fetcher(`${base.replace(/\/+$/, "")}/internal/review/${op}`, { method: "POST", headers: { authorization: `Bearer ${token()}`, "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(120_000) });
+    // An execute waits in github-mcp's one serial write queue (a second apart, and out a secondary rate limit for up to 15 minutes
+    // per write); it answers when the post is done, so only the preview (no GitHub write) gets a short timeout. A post that
+    // timed out here still finished in the background, then failed as an outcome the owner saw.
+    const timeoutMs = op === "execute" ? 30 * 60_000 : 120_000;
+    const r = await fetcher(`${base.replace(/\/+$/, "")}/internal/review/${op}`, { method: "POST", headers: { authorization: `Bearer ${token()}`, "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(timeoutMs) });
     const j = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(`github-mcp review ${op}: ${r.status} ${String((j as { detail?: string }).detail ?? "").slice(0, 300)}`);
     return j;
