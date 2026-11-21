@@ -103,7 +103,8 @@ export interface Combo {
   engine: Engine;
   model: string;
   effort: string;
-  run_usd: number;
+  /** The run's cap; unset means the engine's default (the module's ENGINES run_usd). */
+  run_usd?: number;
 }
 /** The most combos one moment (or one ask) runs. */
 export const MAX_COMBOS = 4;
@@ -122,7 +123,7 @@ export const ComboSchema = z
     engine: z.enum(["codex", "claude-code", "codegenie", "codex-native"]),
     model: z.string().regex(/^~?[\w.-]+\/[\w.:~-]+$/, "a model is an OpenRouter id, like ~deepseek/deepseek-flash-latest"),
     effort: z.string(),
-    run_usd: z.number().min(0.01).max(20),
+    run_usd: z.number().min(0.01).max(20).optional(),
   })
   .strict()
   .superRefine((c, ctx) => {
@@ -139,6 +140,7 @@ export const RepoSchema = z
     day_usd: z.number().positive().max(10_000).optional(),
     ignore: z.array(PLAIN(200).min(1)).max(50).optional(),
     max_nits: z.number().int().min(0).max(50).optional(),
+    mandatory: z.boolean().optional(),
   })
   .strict();
 export type RepoConfig = z.infer<typeof RepoSchema>;
@@ -154,11 +156,11 @@ export const CodeReviewSchema = z
 export type CodeReview = z.infer<typeof CodeReviewSchema>;
 /** A repo's defaults when the owner watches it (the module's REPO_DEFAULTS). */
 export const REPO_DEFAULTS = {
-  on_open: [{ engine: "codex", model: "~deepseek/deepseek-flash-latest", effort: "medium", run_usd: 1 }] as Combo[],
-  on_push: [{ engine: "codex", model: "~deepseek/deepseek-flash-latest", effort: "low", run_usd: 1 }] as Combo[],
+  on_open: [{ engine: "codex", model: "~deepseek/deepseek-flash-latest", effort: "medium", run_usd: 5 }] as Combo[],
+  on_push: [{ engine: "codex", model: "~deepseek/deepseek-flash-latest", effort: "low", run_usd: 5 }] as Combo[],
   drafts: false,
   forks: "manual" as "manual" | "auto",
-  day_usd: 100,
+  day_usd: 200,
   max_nits: 5,
 };
 /**
