@@ -118,8 +118,8 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
 
   /**
    * One POST to the check at `at`. A failure the service may shake off — the container being replaced, so its name resolves to
-   * nothing or its socket refuses — is tagged `unavailable`; any other failure (a status, a malformed body, a timeout, a deny
-   * wrapped in an error) is the check's own answer and is not.
+   * nothing or its socket refuses — is tagged `unavailable` and retried; any other failure (a status, a malformed body, a
+   * timeout) is not retried. Only an explicit deny or reopen verdict, whatever its status, is the check's answer.
    */
   function post(key: string, at: string, body: unknown): Promise<Verdict> {
     return resolver.resolve(at).then((to) => new Promise<Verdict>((resolve, reject) => {
@@ -129,6 +129,7 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
         res.setEncoding("utf8").on("data", (d) => { if (text.length < 100_000) text += d; }).on("end", () => {
           let v: Verdict;
           try { v = JSON.parse(text); } catch { return reject(new Error(`answered ${res.statusCode} with no JSON`)); }
+          if (v && (v.verdict === "deny" || v.verdict === "reopen")) return resolve(v);
           if ((res.statusCode ?? 500) >= 300 || !v || !VERDICTS.includes(v.verdict)) return reject(new Error(`answered ${res.statusCode}${v?.verdict ? ` (${v.verdict})` : ""}`));
           resolve(v);
         });
@@ -140,16 +141,16 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
   }
   /**
    * A check's verdict, retried a few times when its service is unavailable (the address cache is dropped between attempts so a
-   * replaced container is inspected afresh). A check that answered — any status, verdict, body or its 10 s timeout — is never
-   * retried. When the service is still down the error carries `unavailable`, and the finish gate holds the task on it.
+   * replaced container is inspected afresh). Any other failure — a status, a malformed body, its 10 s timeout — is not retried.
+   * Every failure carries `unavailable`, and the finish gate holds the task on it: only an explicit verdict refuses.
    */
   async function ask(id: string, c: Check, body: unknown, at = c.url): Promise<Verdict> {
     const key = secret(c.auth_secret);
-    if (!key) throw fail(503, "check_failed", `the finish check ${id} failed (its key is missing): the task stays as it is`);
+    if (!key) throw Object.assign(fail(503, "check_failed", `the finish check ${id} failed (its key is missing): the task waits in review`), { unavailable: true, cause: "its key is missing" });
     for (let n = 1; ; n++) {
       try { return await post(key, at, body); }
       catch (e) {
-        if (!isUnavailable(e) || n >= ASK_ATTEMPTS) throw Object.assign(fail(503, "check_failed", `the finish check ${id} failed (${(e as Error).message}): the task stays as it is; try again`), { unavailable: isUnavailable(e), cause: (e as Error).message });
+        if (!isUnavailable(e) || n >= ASK_ATTEMPTS) throw Object.assign(fail(503, "check_failed", `the finish check ${id} failed (${(e as Error).message}): the task waits in review`), { unavailable: true, cause: (e as Error).message });
         resolver.forget(at);
         await new Promise((r) => setTimeout(r, ASK_BACKOFF_MS));
       }
@@ -198,7 +199,11 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
     }));
     if (!mine.length) {
       await watched;
-      if (i.assigneeAgentId && graded(i.assigneeAgentId)) throw fail(503, "check_failed", `the finish gate is unavailable: ${i.identifier ?? i.id}'s assignee is graded and no finish check covers it: the task stays as it is`);
+      if (i.assigneeAgentId && graded(i.assigneeAgentId)) {
+        const note = { gate: "finish", task: i.identifier ?? i.id, verdict: "uncovered", reason: "the assignee is graded and no finish check covers it: passed", via: caller.via };
+        noteFact(facts, { type: "gate.would_block", subject: `task:${note.task}`, version: `e-${randomBytes(8).toString("hex")}`, task: i.id, at: new Date().toISOString(), actor: "kernel", data: note });
+        log("graded task finished with no covering check", note);
+      }
       if (caller.cross) throw refuseCross();
       return { pass: true };
     }
@@ -207,7 +212,6 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
     const [verdicts] = await Promise.all([Promise.all(mine.map(async ([id, c]) => {
       try { return { id, c, v: await ask(id, c, body), down: false }; }
       catch (e) {
-        if (!isUnavailable(e)) throw e;
         const why = String((e as { cause?: unknown }).cause ?? (e as Error).message);
         log("finish check unavailable, holding", { task: i.identifier, check: id, err: why });
         return { id, c, down: true, v: { verdict: "pending", state: "pending", reason: `the finish check ${id} couldn't be reached (${why}): the task waits in review while its service comes back` } as Verdict };

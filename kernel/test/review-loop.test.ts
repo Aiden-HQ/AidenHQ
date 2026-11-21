@@ -1,6 +1,6 @@
 // The kernel's own review loop (review-loop.ts): a record in review is sent to the bound reviewer module (reviews.ts, a
 // single-use token), its verdict moves the record once, and an approved one runs. A reject is final, a panel needs a second
-// reviewer, an outage is tried REVIEW_TRIES times and then rejected, and a restart mid-review reviews the record once more.
+// reviewer, an outage is retried and never rejected, and a restart mid-review reviews the record once more.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
@@ -12,7 +12,7 @@ import { createWrites } from "../src/writes.ts";
 import { createReviewLoop } from "../src/review-loop.ts";
 import { createEscalate } from "../src/escalate.ts";
 import { createResolver } from "../src/net.ts";
-import { MAX_REJECTS, REVIEW_TRIES } from "../src/tier.ts";
+import { MAX_REJECTS, RETRY_CAP_MS } from "../src/tier.ts";
 import { readBody, serve } from "./helpers.ts";
 import { judgeModels as reviewerModels, secondModels } from "../sdk/src/judge.ts";
 
@@ -139,22 +139,21 @@ test("a panel record gets two reviewers; a first reviewer's panel mark sends it 
   assert.equal(k.records.get(r.id).decided_by, "reviewer:~acme/model-a+~acme/model-b");
 });
 
-test("a reviewer outage is tried REVIEW_TRIES times, then the record is rejected", async (t) => {
+test("a reviewer outage is retried at a capped interval and never rejects the record", async (t) => {
   const down = await serve((req, res) => res.writeHead(200).end());
   down.s.close();
   const k = await side(t, db(), { url: `${down.url}/aidenhq/v1/reviewer` });
   const r = fileRecord(k.records);
   t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
-  for (let i = 1; i < REVIEW_TRIES; i++) {
+  for (let i = 1; i <= 12; i++) {
     await k.loop.tick();
     assert.equal(k.records.get(r.id).state, "review", `try ${i}: deferred`);
     await k.loop.tick();
     assert.ok(k.writes.retryAt(r.id) > Date.now(), "waits out its backoff");
-    t.mock.timers.tick(60_000 * 2 ** (i - 1));
+    assert.ok(k.writes.retryAt(r.id) - Date.now() <= RETRY_CAP_MS, "never waits past the cap");
+    t.mock.timers.tick(RETRY_CAP_MS);
   }
-  await k.loop.tick();
-  assert.deepEqual([k.records.get(r.id).state, k.records.get(r.id).review_code], ["rejected", "reviewer_failed"]);
-  assert.match(k.notices.at(-1).text, /Not reviewed[^]*6 times/);
+  assert.equal(k.records.get(r.id).state, "review");
 });
 
 test("a kernel restart mid-review: the record is reviewed once more, never twice, and the old token opens nothing", async (t) => {

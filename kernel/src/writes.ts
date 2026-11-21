@@ -23,7 +23,7 @@ import { CODEHOSTS, routeKind } from "./codehost.ts";
 import type { Executor, ReviewContext } from "../sdk/src/executor.ts";
 import { writeRaise, type Inventory } from "./paths.ts";
 import { gateMode } from "./gates.ts";
-import { REVIEW_TRIES, afterReview, requestHash, capText, codeVerdict, computeTier, failedVerdict, heldInput, requestTargets, shadowed, splitToOwner, type Autonomy, type Raise, type ReviewFirst, type ReviewInput, type Cap, type RoutineCap, type Tier, type Verdict } from "./tier.ts";
+import { retryWait, afterReview, requestHash, capText, codeVerdict, computeTier, heldInput, requestTargets, shadowed, splitToOwner, type Autonomy, type Raise, type ReviewFirst, type ReviewInput, type Cap, type RoutineCap, type Tier, type Verdict } from "./tier.ts";
 
 export type Schema = { type?: string; properties?: { [k: string]: Schema }; required?: string[]; additionalProperties?: boolean; enum?: unknown[]; pattern?: string; minLength?: number; maxLength?: number; items?: Schema; minItems?: number; maxItems?: number; minimum?: number; maximum?: number; exclusiveMinimum?: number };
 /** One kind (config/kernel/writes.json and kinds.ts, keyed `<module>.<kind>`); `tools` are `connection.tool`. */
@@ -337,13 +337,12 @@ export function createWrites({ records, registry, connections, secret, resolver,
 
   /** A failure that a later try may not have: a 5xx, a timeout, an executor or control plane that didn't answer. */
   const transient = (e: unknown) => { const st = (e as { status?: number }).status; return st === undefined || st >= 500 || st === 429; };
-  /** Tries for an approved record whose checks before running failed transiently (1, 2, 4 … 64 minutes apart), then it fails. */
-  const RUN_TRIES = 8;
 
   /**
    * An approved record: revalidated, its task still open and (a module kind) planned again, then claimed once and executed.
    * Everything before the claim that fails transiently (the routine trace, the task read, the executor's plan) leaves the
-   * record approved, to be run again with backoff (retryApproved); only after RUN_TRIES does it fail, told on its task.
+   * record approved, to be run again with backoff capped at 15 minutes (retryApproved), for as long as its task is open: only a real
+   * 4xx, a stale record or a closed task ends it.
    * Never throws.
    */
   async function run(id: string): Promise<void> {
@@ -373,13 +372,8 @@ export function createWrites({ records, registry, connections, secret, resolver,
     } catch (e) {
       const n = (runRetries.get(id)?.n ?? 0) + 1;
       const why = String((e as Error).message ?? e).slice(0, 300);
-      if (n < RUN_TRIES) {
-        runRetries.set(id, { n, next: Date.now() + 60_000 * 2 ** (n - 1) });
-        return void log("approved write waits to run", { record: id, tries: n, err: why });
-      }
-      runRetries.delete(id);
-      if (records.claim(id)) outcomeOf(id, false, `not executed: what it needs before it runs couldn't be read in ${RUN_TRIES} tries (${why})`);
-      return;
+      runRetries.set(id, { n, next: Date.now() + retryWait(n) });
+      return void log("approved write waits to run", { record: id, tries: n, err: why });
     }
     runRetries.delete(id);
     if (!records.claim(id)) return;
@@ -639,7 +633,7 @@ export function createWrites({ records, registry, connections, secret, resolver,
      * One record's review (the kernel's review loop, review-loop.ts): the requester's tier input now and what the reviewer
      * reads. Code decides first (the input couldn't be computed, code refuses it, it is the owner's now); else the bound
      * reviewer is asked, and its verdict is held to the record's review-first (tier.ts afterReview), a failed review waits
-     * out its backoff (REVIEW_TRIES, then back or to the owner), and autonomy tier0 makes any verdict a note for the owner.
+     * out its backoff (capped at 15 minutes, never rejected for it), and autonomy tier0 makes any verdict a note for the owner.
      * The record moves once; the verdict as posted comes back, so the requester can follow it up (its notes, the breaker).
      */
     async review(id: string, b: { input: ReviewInput & { model?: string }; request: Record<string, unknown> }): Promise<{ record: Rec; posted?: Verdict; deferred?: number; refused?: string }> {
@@ -653,15 +647,12 @@ export function createWrites({ records, registry, connections, secret, resolver,
         const model = typeof b.input?.model === "string" && MODEL.test(b.input.model) ? b.input.model : "kernel/code";
         // The cap is the record's, as it was tiered at filing: the label of a capped approve never depends on a second trace.
         const input = heldInput({ ...(b.input ?? { tier: 1 }), cap: r.cap ?? null }, r.review_first);
-        let v = codeVerdict(input, model) ?? afterReview(input, splitToOwner(input, await ask(r, b.request ?? {}, model)));
+        const v = codeVerdict(input, model) ?? afterReview(input, splitToOwner(input, await ask(r, b.request ?? {}, model)));
         if (v.code === "reviewer_failed") {
           const n = (wait?.n ?? 0) + 1;
-          if (n < REVIEW_TRIES) {
-            retries.set(id, { n, next: Date.now() + 60_000 * 2 ** (n - 1) });
-            log("review deferred", { record: id, tries: n, reason: v.reason.slice(0, 200) });
-            return { record: r, deferred: retries.get(id)!.next };
-          }
-          v = failedVerdict(input, v, n);
+          retries.set(id, { n, next: Date.now() + retryWait(n) });
+          log("review deferred", { record: id, tries: n, reason: v.reason.slice(0, 200) });
+          return { record: r, deferred: retries.get(id)!.next };
         }
         retries.delete(id);
         // The autonomy cap holds every requester but the release updater (computeTier `uncapped`), whose record takes the verdict as given.

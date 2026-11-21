@@ -163,7 +163,7 @@ test("a check that answers deny or reopen is not retried: one ask, and the close
   assert.equal(resolver.calls.forget, 0);
 });
 
-test("a deny refuses the close with its status and reason, and a failed check refuses it too: nothing moves either way", async (t) => {
+test("a deny refuses the close with its status and reason, and a failed check holds the task in review instead", async (t) => {
   let answer = { verdict: "deny", status: 403, reason: "only its assignee finishes it" };
   const { writes, finish } = await setup(t, () => answer);
   let r = await finish({ status: "done" });
@@ -171,14 +171,14 @@ test("a deny refuses the close with its status and reason, and a failed check re
   assert.match(r.json.error.message, /only its assignee finishes it/);
   answer = { verdict: "deny", status: 409, reason: "the task is cancelled" };
   assert.equal((await finish({ status: "done" })).status, 409);
-  // Fail closed: an error status, a malformed verdict, a hang past 10 s are all a refusal (503), never a pass.
+  assert.equal(writes.length, 0);
+  // Fail open: an error status, a malformed verdict, a hang past 10 s hold the task in review for the re-check, never a refusal or a pass.
   for (const bad of [{ http: 500, body: { error: "boom" } }, { verdict: "maybe" }]) {
     answer = bad;
     r = await finish({ status: "done" });
-    assert.equal(r.status, 503, JSON.stringify(bad));
-    assert.match(r.json.error.message, /the finish check judge\.finish failed/);
+    assert.equal(r.status, 202, JSON.stringify(bad));
+    assert.match(r.json.held.reason, /couldn't be reached/);
   }
-  assert.deepEqual(writes, []);
 });
 
 test("ok passes the close on: Ada's own write through the plugin, gated; ok with unlabel drops the check's label first; other changes skip the gate", async (t) => {
@@ -270,22 +270,19 @@ test("a resolve the control plane fails keeps the hold, so the module's retry mo
   assert.equal(issue.status, "done");
 });
 
-test("the finish gate never fails open: a graded assignee's task with no check covering it, or a checks file that won't load, refuses the close", async (t) => {
+test("a graded assignee's task with no check covering it passes with a note; a checks file that won't load refuses the close", async (t) => {
   // No finish check registered (the check's module isn't installed, or compile wrote none): an ungraded agent's close goes
-  // ahead, a graded agent's is refused and nothing moves.
+  // ahead, and so does a graded agent's (noted).
   let s = await setup(t, () => ({ verdict: "ok" }), { checks: {} });
   assert.equal((await s.finish({ status: "done" })).status, 200);
   s = await setup(t, () => ({ verdict: "ok" }), { checks: {}, graded: true });
-  let r = await s.finish({ status: "done" });
-  assert.equal(r.status, 503);
-  assert.match(r.json.error.message, /the finish gate is unavailable: WOR-1's assignee is graded and no finish check covers it/);
-  assert.deepEqual(s.writes, []);
+  assert.equal((await s.finish({ status: "done" })).status, 200);
   // A check scoped to other agents covers nothing here either.
   s = await setup(t, () => ({ verdict: "ok" }), { agentsScope: ["someone-else"], graded: true });
-  assert.equal((await s.finish({ status: "done" })).status, 503);
+  assert.equal((await s.finish({ status: "done" })).status, 200);
   // checks.json missing or unparsable: a load error, for every close (graded or not), never "no checks".
   s = await setup(t, () => ({ verdict: "ok" }), { checks: () => { throw new SyntaxError("Unexpected end of JSON input"); } });
-  r = await s.finish({ status: "done" });
+  const r = await s.finish({ status: "done" });
   assert.equal(r.status, 503);
   assert.match(r.json.error.message, /the finish gate is unavailable: the finish checks didn't load \(Unexpected end of JSON input\)/);
   assert.deepEqual(s.writes, []);

@@ -25,3 +25,17 @@ test("a task's records: the capped page hides an old one, and limit null reads t
   assert.equal(page.length, 50);
   assert.ok(page.every((r) => r.module === "github"), "the capped page is what would have hidden it");
 });
+
+test("after 7 days an undecided record expires but an approved one stays open and can still be claimed", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "records-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  let clock = Date.parse("2026-11-19T09:00:00Z");
+  const records = openRecords(join(dir, "kernel.db"), () => new Date(clock));
+  const card = { sentence: "s", changes: "c", reads: "r", cost: "0", details: "d" };
+  const file = (n, state) => records.file({ kind: "kernel.apply", module: "m", args: { n }, targets: {}, executor: { module: "m" }, policy: "p", tier: 0, panel: false, card, requester: { agent: "", key: "k", name: "n", roles: [], kind: "run" }, task: "t-1", state });
+  const waiting = file(1, "review"), approved = file(2, "approved");
+  clock += 8 * 86_400_000;
+  assert.deepEqual(records.list(["review", "owner", "approved"], null).map((r) => r.id), [approved.id]);
+  assert.equal(records.get(waiting.id)!.state, "cancelled");
+  assert.equal(records.claim(approved.id), true);
+});

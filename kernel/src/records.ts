@@ -58,7 +58,7 @@ export type Rec = {
 };
 const JSON_COLS = ["args", "targets", "executor", "card", "requester", "outcome", "cap", "context"] as const;
 const OPEN: State[] = ["review", "owner", "approved"];
-/** Open records past this are expired: decided within a week or not at all. */
+/** Undecided records past this are expired: decided within a week or not at all. An approved record is not: it runs, retrying a transient failure, until its task closes. */
 export const TTL_MS = 7 * 86_400_000;
 /** Decided by the owner: never the reviewer, a stale close, the code (kernel) or a Tier 0 run. */
 export const OWNER_SQL ="decided_by IS NOT NULL AND decided_by NOT LIKE 'reviewer:%' AND decided_by NOT LIKE 'stale:%' AND decided_by NOT LIKE 'kernel%'";
@@ -140,16 +140,16 @@ export function openRecords(file: string, now = () => new Date()) {
   };
   /** The code closed an open record (expired, replaced): its closing fact, written in the same transaction. */
   const cancelled = (id: string, via: "expired" | "replaced") => fact(id, "record.decided", "code:cancelled", "kernel", () => ({ decision: "cancelled", decider: "code", via }));
-  /** Open records past their 7 days: cancelled as expired (a decided one keeps who decided it), each with its closing fact. */
+  /** Undecided records past their 7 days: cancelled as expired, each with its closing fact. */
   const expire = () => {
-    const ids = (db.prepare("SELECT id FROM records WHERE state IN ('review','owner','approved') AND created_at <= ?").all(cutoff()) as { id: string }[]).map((r) => r.id);
+    const ids = (db.prepare("SELECT id FROM records WHERE state IN ('review','owner') AND created_at <= ?").all(cutoff()) as { id: string }[]).map((r) => r.id);
     if (!ids.length) return;
     const at = iso(), outcome = JSON.stringify({ ok: false, text: "expired: not decided and run within 7 days" });
     inTx(db, "records_expire", () => {
-      for (const id of ids) if (db.prepare("UPDATE records SET state = 'cancelled', updated_at = ?, outcome = ?, context = NULL WHERE id = ? AND state IN ('review','owner','approved')").run(at, outcome, id).changes) cancelled(id, "expired");
+      for (const id of ids) if (db.prepare("UPDATE records SET state = 'cancelled', updated_at = ?, outcome = ?, context = NULL WHERE id = ? AND state IN ('review','owner')").run(at, outcome, id).changes) cancelled(id, "expired");
     });
   };
-  const shownState = (r: Rec) => (OPEN.includes(r.state) && r.created_at <= cutoff() ? "expired" : r.state);
+  const shownState = (r: Rec) => (r.state !== "approved" && OPEN.includes(r.state) && r.created_at <= cutoff() ? "expired" : r.state);
 
   return {
     db,
@@ -204,7 +204,7 @@ export function openRecords(file: string, now = () => new Date()) {
     /** The open records of this content on this task (a repeated request returns its own, never a second card). */
     /** The same request that is running or already ran (done or failed) since `since`: a repeat of it is not a new write. */
     ran: (task: string, kind: string, digest: string, since: string): Rec[] => rows(db.prepare("SELECT * FROM records WHERE task = ? AND kind = ? AND digest = ? AND state IN ('claimed','done','failed') AND created_at > ? ORDER BY created_at DESC").all(task, kind, digest, since)),
-    open: (task: string, kind: string, digest: string): Rec[] => rows(db.prepare("SELECT * FROM records WHERE task = ? AND kind = ? AND digest = ? AND state IN ('review','owner','approved') AND created_at > ?").all(task, kind, digest, cutoff())),
+    open: (task: string, kind: string, digest: string): Rec[] => rows(db.prepare("SELECT * FROM records WHERE task = ? AND kind = ? AND digest = ? AND (state = 'approved' OR (state IN ('review','owner') AND created_at > ?))").all(task, kind, digest, cutoff())),
     /** A claimed record of a module its successor absorbed (`replaces`) moves to the successor's kind, so the successor reports its outcome. */
     carry(id: string, kind: string, module: string, executor: Rec["executor"]): boolean {
       return db.prepare("UPDATE records SET kind = ?, module = ?, executor = ? WHERE id = ? AND state = 'claimed'").run(kind, module, JSON.stringify(executor), id).changes === 1;
@@ -275,11 +275,11 @@ export function openRecords(file: string, now = () => new Date()) {
      */
     hold(id: string, cap: Cap, why: string): boolean {
       const r = get(id);
-      return Boolean(r) && moved(() => move(id, ["approved"], "owner", { tier: 2, review_first: "final", cap: JSON.stringify(cap), review: `${r!.review ?? ""}\n\nHeld for the owner before it ran: ${why}`.trim() }, true),
+      return Boolean(r) && moved(() => move(id, ["approved"], "owner", { tier: 2, review_first: "final", cap: JSON.stringify(cap), review: `${r!.review ?? ""}\n\nHeld for the owner before it ran: ${why}`.trim() }),
         () => fact(id, "record.held", "held", "kernel", () => ({ why })));
     },
     /** approved → claimed, once, within its 7 days. */
-    claim: (id: string) => moved(() => move(id, ["approved"], "claimed", {}, true), () => fact(id, "record.claimed", "claimed", "kernel", (r) => ({ kind: r.kind }))),
+    claim: (id: string) => moved(() => move(id, ["approved"], "claimed", {}), () => fact(id, "record.claimed", "claimed", "kernel", (r) => ({ kind: r.kind }))),
     /** GitHub objects the outcome of record `id` made (objects.ts). */
     addObjects: (id: string, refs: unknown) => addObjects(db, id, refs, iso()),
     objectOf: (ref: string) => objectOf(db, ref),
