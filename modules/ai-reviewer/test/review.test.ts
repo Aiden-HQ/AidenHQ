@@ -5,7 +5,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { CODE_CODES, DEEPSEEK, GLM, LUNA, MAX_COMMENTS, MAX_DIFF, MAX_FILES, MODEL_CODES, changeTools, changeView, markComments, diffSections, policyVersion, readPolicy, openRouterAsk, review, reviewPrompt, sourcesInDiff } from "../service/src/review.ts";
+import { CODE_CODES, DEEPSEEK, GLM, LUNA, MAX_COMMENTS, MAX_DIFF, MAX_FILES, MODEL_CODES, changeTools, changeView, markComments, diffSections, policyVersion, readPolicy, openRouterAsk, review, reviewPrompt, sourcesInDiff, toolCallText } from "../service/src/review.ts";
 import { fileContext } from "../service/src/review-files.ts";
 import { padCase } from "./case-pad.ts";
 import { REVIEW_CODES } from "../../../services/shared/reason-codes.ts";
@@ -335,11 +335,12 @@ test("a DeepSeek requester is reviewed by Luna only, an OpenAI requester by Deep
 test("a GitHub write carrying the instance's hosts, addresses or paths is refused by code; the clean comment reaches the model", async () => {
   const read = (f) => JSON.parse(readFileSync(join(import.meta.dirname, "reviewer-cases", f), "utf8"));
   const leak = read("triage-routine-comment-leaks-instance-details.json");
-  const out = await review({ card: leak.card, diff: leak.diff, policy: "p", ask: async () => assert.fail("not asked") });
+  // A tool call's arguments reach the reviewer structured now (TOOL_CALL), so the instance-detail check reads them there.
+  const out = await review({ card: leak.card, diff: "", tool_call: leak.tool_call, policy: "p", ask: async () => assert.fail("not asked") });
   assert.deepEqual([out.decision, out.code], ["reject", "secret_exfiltration"]);
   assert.match(out.reason, /agents\.acme-internal\.ts\.net.*\/home\/sam\/.*203\.0\.113\.41/);
   const clean = read("clean-triage-routine-comments-verified-fixed.json");
-  assert.equal((await review({ card: clean.card, diff: clean.diff, policy: "p", ask: async () => ok })).decision, "approve");
+  assert.equal((await review({ card: clean.card, diff: "", tool_call: clean.tool_call, policy: "p", ask: async () => ok })).decision, "approve");
 });
 
 test("missing: back to the agent; a failed call: reviewer_failed (the runner retries it)", async () => {
@@ -499,6 +500,25 @@ test("no planted reviewer case file is over 32,000 bytes on disk", () => {
   }
 });
 
+// A conn.tool planted case must carry its arguments the way the kernel sends them (structured), never back in a prose diff: a
+// case left on the old shape would test a prompt the product no longer builds (issue #1252).
+test("every conn.tool planted case carries a structured tool_call, never a diff", () => {
+  const dir = join(REPO_ROOT, "modules/ai-reviewer/test/reviewer-cases");
+  const cases = readdirSync(dir).filter((n) => n.endsWith(".json")).map((n) => [n, JSON.parse(readFileSync(join(dir, n), "utf8"))]);
+  const calls = cases.filter(([, c]) => c.card?.action === "conn.tool");
+  assert.ok(calls.length > 0, "the triage/product-bug tool cases are planted");
+  for (const [name, c] of calls) {
+    assert.equal(typeof c.tool_call?.connection, "string", name);
+    assert.equal(typeof c.tool_call?.tool, "string", name);
+    assert.equal(typeof c.tool_call?.arguments, "object", name);
+    assert.equal(c.diff, undefined, name, "a tool call's arguments never ride in diff");
+  }
+  // The #1252 report carries its title, fingerprint and four evidence fields by name.
+  const bug = cases.find(([n]) => n === "clean-product-bug-reported-with-title-fingerprint-evidence.json")![1];
+  assert.deepEqual(Object.keys(bug.tool_call.arguments), ["title", "fingerprint", "body", "evidence"]);
+  assert.deepEqual(Object.keys(bug.tool_call.arguments.evidence), ["module", "version", "reproduction", "log"]);
+});
+
 // The gh keyring in the new-source cases is trusted only when its primary keys are exactly GitHub's two: 2C6106…6059
 // (expired 2026-09-05) and 7F38BBB5…3325 (signs today's InRelease), sorted and compared whole. Nothing is filtered out,
 // so an added, missing or different primary key refuses the build. A case that goes back to `grep -qx`, or that ignores
@@ -582,6 +602,60 @@ test("the instance's decisions digest reaches every reviewer call in its own fen
   assert.equal(v.decision, "approve");
   assert.deepEqual(seen, [true, true]);
   assert.doesNotMatch(reviewPrompt({ policy: "p", card, diff: "+x" }).user, /PRODUCT_DECISIONS/);
+});
+
+// Issue #1252: a conn.tool call's arguments are shown as a labelled TOOL_CALL block, one field per argument, never fenced as
+// DIFF. A reviewer judging the call's shape could not find title/fingerprint/evidence in a one-line JSON blob labelled as a
+// diff, and answered "supplies only a body". The planned-write DIFF/DIFF_FILES shape stays for a real change.
+const toolCall = {
+  connection: "github",
+  tool: "github_product_issue",
+  arguments: {
+    title: "The reviewer drops a call's arguments",
+    fingerprint: "product-bug:reviewer-call-arguments",
+    evidence: { module: "ai-reviewer", version: "5635648", reproduction: "file a conn.tool card with title, fingerprint, evidence", log: "reviewer: supplies only a body argument" },
+  },
+};
+
+test("a conn.tool call's arguments arrive as a labelled TOOL_CALL block by name, and never as a DIFF", async () => {
+  let seen;
+  await review({ card: { action: "conn.tool", rule: "conn_tool", target: "acme/product#1252", sentence: "Call github.github_product_issue." }, diff: "", tool_call: toolCall, chain: "File #1252 with its evidence.", policy: "p", ask: async (_m, p) => ((seen = p), ok) });
+  assert.ok(seen, "the reviewer is asked");
+  const { system, user } = seen;
+  assert.match(user, /<<<TOOL_CALL\nconnection: "github"\ntool: "github_product_issue"\ntitle: "The reviewer drops a call's arguments"\nfingerprint: "product-bug:reviewer-call-arguments"\nevidence\.module: "ai-reviewer"\nevidence\.version: "5635648"\nevidence\.reproduction: "file a conn\.tool card with title, fingerprint, evidence"\nevidence\.log: "reviewer: supplies only a body argument"\nTOOL_CALL>>>/);
+  // Each argument is matchable one-to-one by its exact name.
+  for (const name of ["title", "fingerprint", "evidence.module", "evidence.version", "evidence.reproduction", "evidence.log"]) assert.match(user, new RegExp(`^${name.replace(".", "\\.")}: `, "m"), name);
+  // No diff fences, no "exact change" heading, no diff tools for a call.
+  assert.doesNotMatch(user, /<<<DIFF\n|<<<DIFF_FILES\n|<<<FILES\n|The exact change at the commit under review/);
+  assert.doesNotMatch(user, /toolCallText|written by the requesting agent/);
+  assert.match(system, /This card is a connection tool call, not a code change/);
+  assert.doesNotMatch(system, /You have read-only tools over this request's change/);
+  // The CARD and REQUEST_CHAIN blocks are unchanged.
+  assert.match(user, /<<<CARD\ntarget: acme\/product#1252\nsummary: Call github\.github_product_issue\.\nreason: \nCARD>>>/);
+  assert.match(user, /<<<REQUEST_CHAIN\nFile #1252 with its evidence\.\nREQUEST_CHAIN>>>/);
+});
+
+test("a planned write still arrives as a DIFF with the DIFF_FILES shape, never as a TOOL_CALL", async () => {
+  const diff = "diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -0,0 +1 @@\n+export const a = 1;";
+  let seen;
+  await review({ card, diff, chain: "c", policy: "p", ask: async (_m, p) => ((seen = p), ok) });
+  assert.match(seen.user, /<<<DIFF\n[^]*\nDIFF>>>/);
+  assert.doesNotMatch(seen.user, /TOOL_CALL/);
+});
+
+test("a conn.tool argument code cannot read is named, and does not make the whole call body-only", async () => {
+  let seen;
+  await review({ card: { action: "conn.tool", rule: "conn_tool", target: "acme/product#1", sentence: "Call github.github_product_issue." }, diff: "", tool_call: { connection: "github", tool: "github_product_issue", arguments: { title: "A title" }, unreadable: ["fingerprint", "evidence.version"] }, chain: "c", policy: "p", ask: async (_m, p) => ((seen = p), ok) });
+  assert.match(seen.user, /^code could not read: fingerprint, evidence\.version$/m);
+  assert.match(seen.user, /^title: "A title"$/m);
+  assert.match(seen.system, /say which argument, and never report the whole call as body-only/);
+});
+
+test("toolCallText escapes a newline inside an argument so it stays one field, and a connection without a call is not a tool call", async () => {
+  const body = "line one\nline two";
+  assert.match(toolCallText({ connection: "github", tool: "t", arguments: { body } }), /^body: "line one\\nline two"$/m);
+  // An empty call is stated, not left blank.
+  assert.match(toolCallText({ connection: "github", tool: "t", arguments: {} }), /code read no arguments: the call carried none/);
 });
 
 test("the task's comments reach every reviewer call in their own fence after the chain, and none leaves no block", async () => {

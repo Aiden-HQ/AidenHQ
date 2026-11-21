@@ -316,6 +316,31 @@ test("a carded conn.tool card names its target, as requestTargets labels it, so 
   assert.equal(aimed.card.target, "twin.note_drop (id=7)");
 });
 
+test("a Tier 1 conn.tool record reaches the reviewer as a structured tool_call, never as a diff", async (t) => {
+  const { k, tool, pending } = await twin(t);
+  const args = { title: "Drops the call's arguments", fingerprint: "product-bug:reviewer-call-arguments", evidence: { module: "ai-reviewer", version: "5635648", reproduction: "file a card", log: "body only" } };
+  const p = await pending(await tool("note_drop", args));
+  const rec = k.records.get(p.approval);
+  const task = { issue: async (id) => ({ id, title: "Fix it", description: "Fix it." }), comments: async () => [], me: async () => "" };
+  const { request } = await reviewInput(rec, { records: k.records, task, product: [] });
+  // The call arrives by name, each argument as the tool takes it, and the card's prose is not a diff.
+  assert.deepEqual(request.tool_call, { connection: "twin", tool: "note_drop", arguments: args });
+  assert.equal(request.diff, "", "a tool call has no diff for the reviewer to read");
+  // A planned write's record (its diff in context) is unchanged: the whole diff still rides in request.diff.
+  const planned = k.records.file({ kind: "twin.post", module: "twin", args: { note: "hello" }, targets: {}, executor: { module: "twin" }, policy: "", card: { sentence: "Post.", changes: "c", reads: "r", cost: "none", details: "note: hello" }, requester: { agent: "ag-ada", key: "ada", name: "Ada", roles: [], kind: "run" }, task: "TASK-1", tier: 1, panel: false, state: "review" });
+  k.records.db.prepare("UPDATE records SET context = ? WHERE id = ?").run(JSON.stringify({ diff: "+the whole diff" }), planned.id);
+  const { request: written } = await reviewInput(k.records.get(planned.id)!, { records: k.records, task, product: [] });
+  assert.deepEqual([written.diff, written.tool_call], ["+the whole diff", undefined]);
+});
+
+test("a carded conn.tool call whose arguments code cannot read names the missing field, not a body-only call", async (t) => {
+  const { k } = await twin(t);
+  const rec = k.records.file({ kind: "conn.tool", module: "twin", args: { connection: "twin", tool: "note_drop" }, targets: {}, executor: { module: "twin" }, policy: "", card: { sentence: "Call it.", changes: "c", reads: "r", cost: "none", details: "tool: twin.note_drop\narguments (written by the requesting agent): {}" }, requester: { agent: "ag-ada", key: "ada", name: "Ada", roles: [], kind: "run" }, task: "TASK-1", tier: 1, panel: false, state: "review" });
+  const task = { issue: async (id) => ({ id, title: "Fix it", description: "Fix it." }), comments: async () => [], me: async () => "" };
+  const { request } = await reviewInput(k.records.get(rec.id)!, { records: k.records, task, product: [] });
+  assert.deepEqual(request.tool_call, { connection: "twin", tool: "note_drop", arguments: {}, unreadable: ["arguments"] });
+});
+
 test("a carded conn.tool call over the limit is refused with its size and the limit: no record, nothing forwarded", async (t) => {
   const { k, tool, moduleCalls } = await twin(t);
   const args = { id: 7, body: "x".repeat(CONN_TOOL_ARGS_MAX) };

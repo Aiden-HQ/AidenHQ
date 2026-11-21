@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 type CaseFile = { padTo?: number; text: string; [k: string]: unknown };
 type Deletion = { path: string; lines: number };
-type Case = { diff: string; deletions?: Deletion[]; lockfilePad?: number; files?: CaseFile[]; [k: string]: unknown };
+type Case = { diff?: string; deletions?: Deletion[]; lockfilePad?: number; files?: CaseFile[]; [k: string]: unknown };
 // A planted case stays small on disk (a case file over the diff size cap would make its own PR unreviewable): a changed
 // file may give `padTo` instead of its full text, and the text is padded with spaces to exactly that many characters.
 // Two files with the same text and `padTo` are byte-identical, as the app starter's two lockfile copies are.
@@ -14,10 +14,10 @@ const lockEntry = (i: number) => [`"node_modules/vite/node_modules/vite-dep-${i}
 // lines there, so a case can delete thousands of lines (a minimal app trimming the starter's demo) and still be a small file.
 const deletedLine = (path: string, i: number) => `-  const row${i} = rows.filter((r) => r.status === "s${i % 4}" && r.team !== "${path.length}"); // ${i}`;
 const deletion = ({ path, lines }: Deletion) => [`diff --git a/${path} b/${path}`, "deleted file mode 100644", "index 1a2b3c4..0000000", `--- a/${path}`, "+++ /dev/null", `@@ -1,${lines} +0,0 @@`, ...Array.from({ length: lines }, (_, i) => deletedLine(path, i))].join("\n");
-const padDeletions = (c: Case): Case => (c.deletions ? { ...c, diff: c.diff.replace("@@DELETIONS@@", c.deletions.map(deletion).join("\n") + "\n") } : c);
+const padDeletions = (c: Case): Case => (c.deletions && c.diff ? { ...c, diff: c.diff.replace("@@DELETIONS@@", c.deletions.map(deletion).join("\n") + "\n") } : c);
 const padDiff = (c0: Case) => {
   const c = padDeletions(c0);
-  return c.lockfilePad ? { ...c, diff: c.diff.replace("@@LOCKFILE_PAD@@", Array.from({ length: c.lockfilePad }, (_, i) => lockEntry(i)).join("\n")) } : c;
+  return c.lockfilePad && c.diff ? { ...c, diff: c.diff.replace("@@LOCKFILE_PAD@@", Array.from({ length: c.lockfilePad }, (_, i) => lockEntry(i)).join("\n")) } : c;
 };
 export const padCase = <C extends Case>(c0: C): C => {
   const c = padDiff(c0);
