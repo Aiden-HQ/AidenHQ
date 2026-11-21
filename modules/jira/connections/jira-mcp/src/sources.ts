@@ -186,8 +186,9 @@ export async function syncJira(store: SourceStore, call: CallJira, site: string,
 
   const rec = await store.scope("reconcile");
   if (rec.baselined && now - Date.parse(rec.cursor ?? "") < 7 * DAY) return written;
+  let checked = true;
   if (rec.baselined) {
-    // Its own ingest_run: a refused check is visible there and doesn't fail the issue sync.
+    // Its own ingest_run: a refused check is visible there and doesn't fail the issue sync; its cursor stays, so the next pass retries it.
     await store
       .run("jira", "reconcile", async () => {
         const live = new Set<string>();
@@ -199,9 +200,9 @@ export async function syncJira(store: SourceStore, call: CallJira, site: string,
         for (const key of gone) await put(ISSUE, { key, deleted: true }, false);
         return gone.length;
       })
-      .catch(() => undefined);
+      .catch(() => void (checked = false));
   }
-  await store.saveScope("reconcile", new Date(now).toISOString(), true);
+  if (checked) await store.saveScope("reconcile", new Date(now).toISOString(), true);
   return written;
 }
 

@@ -72,11 +72,12 @@ export async function syncDrive(store: SourceStore, drive: Drive, now = Date.now
   await store.migrate(DDL);
   const st = await store.scope("drive");
   const baseline = !st.baselined;
-  const since = st.cursor ?? new Date(now - BASELINE_DAYS * DAY).toISOString();
+  // A pass that hit the cap saves "<since>#<page token>": the next one resumes that exact query, so any number of files with one timestamp still gets through.
+  const [since, resume] = (st.cursor ?? new Date(now - BASELINE_DAYS * DAY).toISOString()).split("#") as [string, string | undefined];
   let cursor = since;
   let written = 0;
   let seen = 0;
-  let page: string | undefined;
+  let page = resume;
   do {
     const r = await drive.changedFiles(since, page);
     for (const f of r.files) {
@@ -87,7 +88,7 @@ export async function syncDrive(store: SourceStore, drive: Drive, now = Date.now
     page = r.nextPageToken;
   } while (page && seen < MAX_FILES);
   // The baseline is done once a pass got to the end; until then later passes continue it, still as baseline.
-  await store.saveScope("drive", cursor, !page);
+  await store.saveScope("drive", page ? `${since}#${page}` : cursor, !page);
   return written;
 }
 

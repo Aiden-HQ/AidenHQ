@@ -42,6 +42,26 @@ it("src_docs: the first drive pass is a 30-day baseline, later passes continue f
   expect(writes.map((w) => [w.row.doc_id, w.baseline])).toEqual([["d3", false]]);
 });
 
+it("src_docs: a pass that hits the file cap resumes the same query at its page token, so one shared timestamp never loops", async () => {
+  const { store, scopes } = fakeStore();
+  const pages: [string, string | undefined][] = [];
+  const same = "2026-11-09T10:00:00.000Z";
+  const drive = {
+    changedFiles: async (since: string, page?: string) => {
+      pages.push([since, page]);
+      const n = Number(page ?? 0);
+      return { files: Array.from({ length: 250 }, (_, i) => file(`d${n}-${i}`, same)), nextPageToken: n < 2 ? String(n + 1) : undefined };
+    },
+    readFile: async () => ({ text: "", truncated: false }),
+  };
+  const now = Date.parse("2026-11-11T00:00:00Z");
+  await syncDrive(store, drive, now);
+  expect(scopes.get("drive")).toEqual({ baselined: false, cursor: "2026-10-12T00:00:00.000Z#2" });
+  await syncDrive(store, drive, now);
+  expect(pages.at(-1)).toEqual(["2026-10-12T00:00:00.000Z", "2"]);
+  expect(scopes.get("drive")).toEqual({ baselined: true, cursor: same });
+});
+
 it("src_docs: summaries only for quiet docs whose revision changed, stamped with revision, model and prompt, never flipping baseline", async () => {
   const due = [{ doc_id: "d1", title: "Plan", revision: "12" }, { doc_id: "d2", title: "Gone", revision: "3" }, { doc_id: "d3", title: "Refused", revision: "5" }];
   const { store, writes, queries } = fakeStore(due);
