@@ -116,12 +116,27 @@ const pr = (link) => {
   return { repo: m[1], number: Number(m[2]) };
 };
 /**
- * A branch's commit in this workspace's clone of org/repo (<name> or <org>--<name>), the one the code host takes, with the
- * branch's bundle beside it (.aidenhq/bundles/<sha>.bundle): a host-side code host reads that one file, never the clone's .git.
+ * This workspace's clone of org/repo: the first of <name> and <org>--<name> whose origin names it (any transport, any case) or
+ * that has no origin (`have`), and every clone at those paths (`there`).
+ */
+const cloneOf = (repo) => {
+  const [org, name] = repo.split("/");
+  const want = repo.toLowerCase();
+  const names = (d) => {
+    let o = "";
+    try { o = execFileSync("git", ["-C", d, "remote", "get-url", "origin"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim().toLowerCase().replace(/\.git$/, ""); } catch {}
+    return !o || o.endsWith(`/${want}`) || o.endsWith(`:${want}`);
+  };
+  const there = [name, `${org}--${name}`].map((d) => join(workspace, d)).filter((d) => existsSync(join(d, ".git")));
+  return { have: there.find(names), there };
+};
+/**
+ * A branch's commit in this workspace's clone of org/repo (cloneOf), the one the code host takes, with the branch's bundle
+ * beside it (.aidenhq/bundles/<sha>.bundle): a host-side code host reads that one file, never the clone's .git.
  */
 const commitOf = (repo, branch) => {
   const [org, name] = repo.split("/");
-  const dir = [name, `${org}--${name}`].map((d) => join(workspace, d)).find((d) => existsSync(join(d, ".git")));
+  const dir = cloneOf(repo).have;
   if (!dir) fail(`this workspace has no clone of ${repo} (${name} or ${org}--${name})`, 2);
   let sha;
   try {
@@ -136,8 +151,7 @@ const commitOf = (repo, branch) => {
 const CONVENTIONAL = /^(feat|fix|docs|chore|test|refactor|perf|ci|build|style|revert)(\([a-z0-9][a-z0-9._\/-]*\))?!?: \S/;
 /** The subject of the branch's first commit (the oldest one no remote branch has), the one a squash merge would carry. */
 const firstSubject = (repo, branch) => {
-  const [org, name] = repo.split("/");
-  const dir = [name, `${org}--${name}`].map((d) => join(workspace, d)).find((d) => existsSync(join(d, ".git")));
+  const dir = cloneOf(repo).have;
   return execFileSync("git", ["-C", dir, "log", "--reverse", "--format=%s", `refs/heads/${branch}`, "--not", "--remotes"], { encoding: "utf8" }).split("\n")[0];
 };
 /** One tool of tasks-mcp, through the kernel's tool proxy as this job (its frozen tools), as the box's own MCP config calls it. */
@@ -210,13 +224,10 @@ if (command === "publish" || command === "review") {
 } else if (command === "clone") {
   if (words.length !== 1 || !/^[\w.-]+\/[\w.-]+$/.test(words[0])) fail("usage: aidenhq clone <org/name>", 2);
   const [org, name] = words[0].split("/");
-  // The clone already here (as the job's start made it, <name> or <org>--<name>) is refreshed; else a new one at <name>. A
-  // clone whose origin names another repository (another org's <name>) is never fetched into.
-  const repoOf = (d) => { try { return execFileSync("git", ["-C", d, "remote", "get-url", "origin"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim().toLowerCase().replace(/\.git$/, ""); } catch { return ""; } };
-  const want = words[0].toLowerCase();
-  const there = [name, `${org}--${name}`].map((d) => join(workspace, d)).filter((d) => existsSync(join(d, ".git")));
-  const have = there.find((d) => { const o = repoOf(d); return !o || o.endsWith(`/${want}`) || o.endsWith(`:${want}`); });
-  if (!have && there.length) fail(`${there[0]} is a clone of another repository (${repoOf(there[0])}), not ${words[0]}`, 2);
+  // The clone already here (as the job's start made it) is refreshed; else a new one at <name>. A clone of another
+  // repository (another org's <name>) is never fetched into.
+  const { have, there } = cloneOf(words[0]);
+  if (!have && there.length) fail(`${there[0]} is a clone of another repository, not ${words[0]}`, 2);
   const dest = have ?? join(workspace, name);
   if (!have && existsSync(dest)) fail(`${dest} is already there and isn't a clone`, 2);
   // Exit 75 when the kernel or the code host can't answer now: the kernel's job start (boxes.ts) then tries again later.

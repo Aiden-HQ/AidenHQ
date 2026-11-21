@@ -95,8 +95,16 @@ export function createBoxes({ db, cfg, jobs, call, secret, whoami, connections, 
   stopping?: () => boolean;
 }) {
 
+  /** Jobs this process is launching (their rows are admitted, their boxes cloning). */
+  const launching = new Set<string>();
+
   /** admission.ts `launch`: the job's token, its engine home and workspace, its box, then the run. */
   async function launch(job: Admitted) {
+    launching.add(job.id);
+    try { await launchJob(job); } finally { launching.delete(job.id); }
+  }
+
+  async function launchJob(job: Admitted) {
     const { authority: a } = job;
     const workspace = join(cfg.workDir, "tasks", job.identifier);
     const state = engineState(cfg, a.engine, `${job.agent}/${job.task}`, a.skills);
@@ -242,6 +250,14 @@ export function createBoxes({ db, cfg, jobs, call, secret, whoami, connections, 
 
   return {
     launch,
+    /**
+     * Once the previous kernel has exited (main.ts, before admission.recover drops their rows): the boxes of launches it left
+     * admitted go back. One the launcher can't take back now lapses with its lease.
+     */
+    async abandoned() {
+      for (const r of db.prepare("SELECT id FROM jobs WHERE state = 'admitted' AND box IS NOT NULL AND released IS NULL").all() as { id: string }[])
+        if (!launching.has(r.id)) await release(r.id).catch((e: Error) => log("couldn't release an abandoned launch's computer", { job: r.id, err: e.message }));
+    },
     /** jobs.ts onEnd: the job is over, its box goes. */
     ended: (id: string) => void release(id).catch((e: Error) => log("couldn't release a job's computer", { job: id, err: e.message })),
     tend,
