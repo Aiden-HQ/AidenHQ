@@ -738,9 +738,11 @@ export function createService(o: Options) {
     if (!BRANCH.test(name)) throw fail(400, "name a branch or a commit");
     const { dir, sha } = await fetchRemote(s, name);
     if (op === "snapshot") {
-      // git archive: the tree only, no .git and no credentials; no filter runs (no config defines one).
+      // git archive: the tree only, no .git and no credentials; no filter runs (no config defines one). The whole tree: the repo's
+      // own .gitattributes don't apply (no export-ignore, no export-subst), since a check reads every tracked file. In the bare
+      // cache --worktree-attributes reads no tree's attributes, and attr.tree (the empty tree) keeps git off HEAD's.
       res.writeHead(200, { "content-type": "application/gzip", "x-aidenhq-commit": sha });
-      const p = spawn("git", [...SAFE_GIT_ARGS, "--git-dir", dir, "archive", "--format=tar.gz", sha], { env: ENV, stdio: ["ignore", "pipe", "ignore"] });
+      const p = spawn("git", [...SAFE_GIT_ARGS, "-c", "attr.tree=4b825dc642cb6eb9a060e54bf8d69288fbee4904", "--git-dir", dir, "archive", "--worktree-attributes", "--format=tar.gz", sha], { env: ENV, stdio: ["ignore", "pipe", "ignore"] });
       p.stdout.pipe(res);
       return;
     }

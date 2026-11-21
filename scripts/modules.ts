@@ -10,6 +10,7 @@ import { validateImages } from "./computers.ts";
 import { validate } from "../kernel/src/writes.ts";
 import { AUTH_PORT, checkPorts, edgeConfig, GATE_PORT } from "./edge.ts";
 import { urlSettingProblem } from "../services/shared/url-setting.ts";
+import { MAX_CHECK_MIN } from "../services/computer/lib.ts";
 import { generateCompose, ownSecrets, subnetFor } from "./compiler/services.ts";
 import { capabilityProblems, conflictProblems, danglingBindings } from "./compiler/bindings.ts";
 import { current, MANIFEST_KEYS } from "./compiler/authority.ts";
@@ -1512,6 +1513,8 @@ export function checkEntries(name: string, def: Obj) {
  * ({ max_usd }: a model token of the check's own, capped at its spec's `budget_usd` up to max_usd) and `result` (true: the
  * recipe writes a JSON result the receipt binds).
  */
+/** The most a check job's model token may spend (USD); its time ceiling is the launcher's (MAX_CHECK_MIN). */
+export const MAX_CHECK_USD = 100;
 const JUDGED_SPEC = ["repo", "judge_commit", "subject_commit", "cases_from", "policy_hash"];
 export function checkJobs(name: string, def: Obj, root: string) {
   const out: Obj = {};
@@ -1521,13 +1524,13 @@ export function checkJobs(name: string, def: Obj, root: string) {
     const extra = Object.keys(r ?? {}).filter((f) => !["dir", "argv", "timeout_min", "title", "spec", "declares", "cwd_from", "judged", "model", "result"].includes(f));
     if (extra.length) fail(`${where}: unknown field ${extra.join(", ")}`);
     if (!Array.isArray(r.argv) || !r.argv.length || r.argv.some((a: unknown) => typeof a !== "string" || !a)) fail(`${where}: argv is the command, a list of strings`);
-    if (!Number.isInteger(r.timeout_min) || r.timeout_min < 1 || r.timeout_min > 120) fail(`${where}: timeout_min is whole minutes, 1 to 120`);
+    if (!Number.isInteger(r.timeout_min) || r.timeout_min < 1 || r.timeout_min > MAX_CHECK_MIN) fail(`${where}: timeout_min is whole minutes, 1 to ${MAX_CHECK_MIN}`);
     if (typeof r.title !== "string" || !r.title || r.title.length > 120) fail(`${where}: title is a short text`);
     const spec = r.spec ?? {};
     if (!spec || typeof spec !== "object" || Object.entries<string>(spec).some(([k, v]) => !/^[a-z_]{1,30}$/.test(k) || !(v in CHECK_KINDS))) fail(`${where}: spec maps field names to ${Object.keys(CHECK_KINDS).join(", ")}`);
     if (r.declares != null && (typeof r.declares !== "string" || spec.base !== "sha")) fail(`${where}: declares names a package.json script and needs spec.base (sha)`);
     if (r.cwd_from != null && spec[r.cwd_from] !== "dir") fail(`${where}: cwd_from names a spec field of kind dir`);
-    if (r.model != null && (typeof r.model !== "object" || Object.keys(r.model).join() !== "max_usd" || !(r.model.max_usd > 0 && r.model.max_usd <= 100) || spec.budget_usd !== "usd")) fail(`${where}: model is { max_usd: 0-100 } and needs spec.budget_usd (usd)`);
+    if (r.model != null && (typeof r.model !== "object" || Object.keys(r.model).join() !== "max_usd" || !(r.model.max_usd > 0 && r.model.max_usd <= MAX_CHECK_USD) || spec.budget_usd !== "usd")) fail(`${where}: model is { max_usd: 0-${MAX_CHECK_USD} } and needs spec.budget_usd (usd)`);
     if (r.result != null && r.result !== true) fail(`${where}: result is true or absent`);
     if ((r.model != null || r.result != null) && r.judged != null) fail(`${where}: a judged run takes neither model nor result`);
     let judged;
