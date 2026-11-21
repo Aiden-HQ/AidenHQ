@@ -25,7 +25,7 @@ const routeOf = (): Route => {
 
 const SEVERITIES: [Severity, string][] = [["important", "Important"], ["nit", "Nit"], ["pre_existing", "Pre-existing"]];
 /** A skip's reason ("draft: …", the service's words after the colon) in the page's words. */
-const SKIPS: Record<string, string> = { draft: "Draft PR", fork: "Fork PR, waiting for someone with write access to ask", budget: "Over the repo's monthly cap", "month cap": "Over the monthly cap", closed: "PR closed", stopped: "Reviews stopped on this PR", superseded: "A newer push replaced it" };
+const SKIPS: Record<string, string> = { draft: "Draft PR", fork: "Fork PR, waiting for someone with write access to ask", budget: "Over the repo daily cap", "day cap": "Over the daily cap", closed: "PR closed", stopped: "Reviews stopped on this PR", superseded: "A newer push replaced it" };
 const skipWords = (why: string | null) => {
   if (!why) return "Skipped";
   const key = why.split(":")[0]!.trim().toLowerCase();
@@ -184,7 +184,7 @@ export function ReviewsView({ onSignIn }: { onSignIn: () => void }) {
     },
     [loadFiled],
   );
-  const spent = repos?.month_spent_usd ?? 0;
+  const spent = repos?.day_spent_usd ?? 0;
   const tab = "tab" in route ? route.tab : "reviews";
 
   if ("run" in route) return <RunPage id={route.run} config={config} engines={engines} onSignIn={onSignIn} />;
@@ -196,11 +196,11 @@ export function ReviewsView({ onSignIn }: { onSignIn: () => void }) {
       actions={
         ready && config ? (
           <>
-            <button type="button" className="rv-spend" onClick={() => setDialog({ kind: "cap" })} title="This month's review spend across repos, against the cap. Change the cap.">
+            <button type="button" className="rv-spend" onClick={() => setDialog({ kind: "cap" })} title="Today review spend across repos, against the cap. Change the cap.">
               <span>
-                {usd(spent)} <span className="rv-spend-of">of {usd(config.month_usd, 0)} this month</span>
+                {usd(spent)} <span className="rv-spend-of">of {usd(config.day_usd, 0)} today</span>
               </span>
-              <Meter value={spent / config.month_usd} tone={spent >= config.month_usd ? "failed" : spent >= config.month_usd * 0.8 ? "needs" : undefined} label="Spend this month against the cap" />
+              <Meter value={spent / config.day_usd} tone={spent >= config.day_usd ? "failed" : spent >= config.day_usd * 0.8 ? "needs" : undefined} label="Spend today against the cap" />
             </button>
             <Button variant="primary" onClick={() => setDialog({ kind: "oneoff" })}>Review a PR</Button>
           </>
@@ -290,7 +290,7 @@ function Start({ setup, onWatch, onOneOff }: { setup: ReviewsSetup; onWatch: () 
           <span className="rv-step-mark">2</span>
           <div className="rv-step-body">
             <b>Watch a repo</b>
-            <span>A review when a PR opens and a lighter one on each push, by the engines and models you pick. $50 a month cap to start.</span>
+            <span>A review when a PR opens and a lighter one on each push, by the engines and models you pick. $100 a day cap to start.</span>
           </div>
           <Button variant={connected ? "primary" : "default"} disabled={!connected} onClick={onWatch}>Watch a repo</Button>
         </li>
@@ -622,9 +622,9 @@ function ReposTab({ config, repos, engines, onEdit, onWatch }: { config: CodeRev
         <TileGrid>
           {config.repos.map((r) => {
             const live = row(r.repo);
-            const cap = r.month_usd ?? REPO_DEFAULTS.month_usd;
+            const cap = r.day_usd ?? REPO_DEFAULTS.day_usd;
             const moment = (k: "on_open" | "on_push", name: string) => (r[k].length ? r[k].map((c, i) => <Tag key={`${k}${i}`} title={`${name}: ${c.engine} · ${c.model} · ${c.effort}`}>{name}: {comboLabel(c, engines ?? undefined)}</Tag>) : <Tag key={k} title={name}>{name}: off</Tag>);
-            const spent = live?.month_spent_usd ?? 0;
+            const spent = live?.day_spent_usd ?? 0;
             const id = live?.identity;
             return (
               <Tile
@@ -644,8 +644,8 @@ function ReposTab({ config, repos, engines, onEdit, onWatch }: { config: CodeRev
                 }
                 foot={
                   <span className="rv-tile-spend">
-                    <Meter value={spent / cap} tone={spent >= cap ? "failed" : spent >= cap * 0.8 ? "needs" : undefined} label={`${r.repo} spend this month`} />
-                    <span>{usd(spent)} of {usd(cap, 0)} this month</span>
+                    <Meter value={spent / cap} tone={spent >= cap ? "failed" : spent >= cap * 0.8 ? "needs" : undefined} label={`${r.repo} spend today`} />
+                    <span>{usd(spent)} of {usd(cap, 0)} today</span>
                   </span>
                 }
                 action={<Button size="sm" onClick={() => onEdit(r)}>Edit</Button>}
@@ -679,7 +679,7 @@ function RepoDialog({ config, engines, edit, onClose, onSave }: { config: CodeRe
   const validRepo = /^[\w.-]+\/[\w.-]+$/.test(repo) && (edit || !watched.has(repo.toLowerCase()));
   const entry = (): RepoConfig => {
     const ignore = ignoreText.split("\n").map((s) => s.trim()).filter(Boolean);
-    return { repo, on_open: f.on_open, on_push: f.on_push, drafts: f.drafts, forks: f.forks, month_usd: f.month_usd, max_nits: f.max_nits, ...(ignore.length ? { ignore } : {}) };
+    return { repo, on_open: f.on_open, on_push: f.on_push, drafts: f.drafts, forks: f.forks, day_usd: f.day_usd, max_nits: f.max_nits, ...(ignore.length ? { ignore } : {}) };
   };
   const submit = async (value: CodeReview, what: string) => {
     setBusy(true);
@@ -702,7 +702,7 @@ function RepoDialog({ config, engines, edit, onClose, onSave }: { config: CodeRe
         <>
           {edit && <Button variant="danger" className="rv-left" disabled={busy} onClick={() => void submit({ ...config, repos: others }, `stop watching ${edit.repo}`)}>Stop watching</Button>}
           <Button variant="quiet" onClick={onClose}>Cancel</Button>
-          <Button variant="primary" disabled={!validRepo || busy || !(f.month_usd > 0) || !combosOk([...f.on_open, ...f.on_push])} onClick={() => void submit({ ...config, repos: edit ? config.repos.map((r) => (r.repo === edit.repo ? entry() : r)) : [...config.repos, entry()] }, edit ? `${repo} updated` : `watch ${repo}`)}>
+          <Button variant="primary" disabled={!validRepo || busy || !(f.day_usd > 0) || !combosOk([...f.on_open, ...f.on_push])} onClick={() => void submit({ ...config, repos: edit ? config.repos.map((r) => (r.repo === edit.repo ? entry() : r)) : [...config.repos, entry()] }, edit ? `${repo} updated` : `watch ${repo}`)}>
             {busy ? "Saving…" : edit ? "Save" : "Watch repo"}
           </Button>
         </>
@@ -742,11 +742,11 @@ function RepoDialog({ config, engines, edit, onClose, onSave }: { config: CodeRe
       <Field label="When a PR opens" help="Each row is one review, posted on its own">{() => <ComboPicker label="When a PR opens" value={f.on_open} engines={engines} none="No review" onChange={(v) => setF({ ...f, on_open: v })} />}</Field>
       <Field label="On each push" help="Only the new changes">{() => <ComboPicker label="On each push" value={f.on_push} engines={engines} none="No review" onChange={(v) => setF({ ...f, on_push: v })} />}</Field>
       <div className="rv-grid3">
-        <Field label="Monthly cap" help="Reviews past it are skipped, with a comment saying why">
+        <Field label="Daily cap" help="Reviews past it are skipped, with a comment saying why">
           {(id, d) => (
             <span className="rv-money">
               <span aria-hidden>$</span>
-              <Input id={id} aria-describedby={d} type="number" min={1} step={5} value={f.month_usd} onChange={(e) => setF({ ...f, month_usd: Number(e.target.value) })} />
+              <Input id={id} aria-describedby={d} type="number" min={1} step={5} value={f.day_usd} onChange={(e) => setF({ ...f, day_usd: Number(e.target.value) })} />
             </span>
           )}
         </Field>
@@ -771,22 +771,22 @@ function RepoDialog({ config, engines, edit, onClose, onSave }: { config: CodeRe
 }
 
 function CapDialog({ config, spent, onClose, onSave }: { config: CodeReview; spent: number; onClose: () => void; onSave: Save }) {
-  const [cap, setCap] = useState(config.month_usd);
+  const [cap, setCap] = useState(config.day_usd);
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
   return (
     <Dialog
       open
       onClose={onClose}
-      title="Monthly cap across repos"
+      title="Daily cap across repos"
       actions={
         <>
           <Button variant="quiet" onClick={onClose}>Cancel</Button>
-          <Button variant="primary" disabled={busy || !(cap > 0) || cap === config.month_usd} onClick={() => (setBusy(true), void onSave({ ...config, month_usd: cap }, `monthly cap $${cap}`).catch((e: Error) => (setErr(e.message), setBusy(false))))}>{busy ? "Saving…" : "Save cap"}</Button>
+          <Button variant="primary" disabled={busy || !(cap > 0) || cap === config.day_usd} onClick={() => (setBusy(true), void onSave({ ...config, day_usd: cap }, `daily cap $${cap}`).catch((e: Error) => (setErr(e.message), setBusy(false))))}>{busy ? "Saving…" : "Save cap"}</Button>
         </>
       }
     >
-      <p>{usd(spent)} spent this month. Each repo keeps its own cap too; a review is skipped when either is reached.</p>
+      <p>{usd(spent)} spent today. Each repo keeps its own cap too; a review is skipped when either is reached.</p>
       <Field label="Cap" error={err || null}>
         {(id) => (
           <span className="rv-money">

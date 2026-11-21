@@ -77,14 +77,14 @@ export interface Run {
   /** Threads Aiden resolved on this head because their finding was gone. */
   resolved?: number;
 }
-/** GET /repos: each watched repo as the service runs it, with this month's spend (UTC) and what running reviews hold. */
+/** GET /repos: each watched repo as the service runs it, with today spend (UTC) and what running reviews hold. */
 export interface RepoRow {
   repo: string;
   on_open: Combo[];
   on_push: Combo[];
-  month_usd: number;
-  month_spent_usd: number;
-  month_reserved_usd?: number;
+  day_usd: number;
+  day_spent_usd: number;
+  day_reserved_usd?: number;
   /** Why the service can't watch it (no read access, …); null when fine. */
   error?: string | null;
   /** Who posts there, when the service knows: the owner's sign-in. */
@@ -92,8 +92,8 @@ export interface RepoRow {
 }
 export interface ReposView {
   repos: RepoRow[];
-  month_usd: number;
-  month_spent_usd: number;
+  day_usd: number;
+  day_spent_usd: number;
   errors?: string[];
 }
 /** GET /engines: the catalog the pickers offer (the module's ENGINES). */
@@ -136,7 +136,7 @@ export const RepoSchema = z
     on_push: CombosSchema,
     drafts: z.boolean().optional(),
     forks: z.enum(["manual", "auto"]).optional(),
-    month_usd: z.number().positive().max(10_000).optional(),
+    day_usd: z.number().positive().max(10_000).optional(),
     ignore: z.array(PLAIN(200).min(1)).max(50).optional(),
     max_nits: z.number().int().min(0).max(50).optional(),
   })
@@ -145,7 +145,7 @@ export type RepoConfig = z.infer<typeof RepoSchema>;
 export const CodeReviewSchema = z
   .object({
     repos: z.array(RepoSchema).max(100),
-    month_usd: z.number().positive().max(100_000),
+    day_usd: z.number().positive().max(100_000),
   })
   .strict()
   .superRefine((v, ctx) => {
@@ -158,7 +158,7 @@ export const REPO_DEFAULTS = {
   on_push: [{ engine: "codex", model: "~deepseek/deepseek-flash-latest", effort: "low", run_usd: 1 }] as Combo[],
   drafts: false,
   forks: "manual" as "manual" | "auto",
-  month_usd: 50,
+  day_usd: 100,
   max_nits: 5,
 };
 /**
@@ -177,8 +177,8 @@ export function upgradeConfig(raw: unknown): CodeReview | null {
     const use = ok.success ? ok : fallback;
     if (use.success && !repos.some((x) => x.repo.toLowerCase() === use.data.repo.toLowerCase())) repos.push(use.data);
   }
-  const m = v.month_usd;
-  return { repos, month_usd: typeof m === "number" && m > 0 ? m : 200 };
+  const m = v.day_usd;
+  return { repos, day_usd: typeof m === "number" && m > 0 ? m : 100 };
 }
 /** A combo's short label: "Codex · deepseek-flash-latest · medium". */
 export const comboLabel = (c: Pick<Combo, "engine" | "model" | "effort">, catalog?: EngineCatalog) =>

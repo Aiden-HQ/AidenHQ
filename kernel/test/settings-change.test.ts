@@ -121,7 +121,7 @@ test("on a team, the record's settings edit teams.<t>.defaults, a member's its e
 test("an agent writes a structured setting its module names its role a writer of, on its own task, and nothing else", async () => {
   const { apply, filed, at } = setup();
   const manager = { agent: "a1", key: "reviewer-manager", name: "Reviewer Manager", roles: ["reviewer-manager"], kind: "run", task: OTHER };
-  const value = { repos: [{ repo: "acme/payments", on_open: "deep" }], month_usd: 100 };
+  const value = { repos: [{ repo: "acme/payments", on_open: "deep" }], day_usd: 100 };
   // Only the module's own agents, and only the module's own settings (a writers list elsewhere doesn't open it to this module).
   await assert.rejects(apply.asAgent(manager, OTHER, [{ kind: "setting", key: "code_review", value }], "engineering"), /only for its own agents/);
   await assert.rejects(apply.asAgent({ ...manager, key: "lead" }, OTHER, [{ kind: "setting", key: "code_review", value }], "code-review"), /only for its own agents/);

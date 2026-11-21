@@ -6,7 +6,7 @@
 //   GET  /reviews/:id                    → { run, review, findings: [{ id, severity, path, line, title, outcome }] }
 //   POST /reviews { pr_url, combos?, focus?, full? } → { runs }   a one-off review of any PR the instance can read, one run per
 //                                        combo (default: the repo's on_open), each posted
-//   GET  /repos                          → { repos (with month spend), month_usd, month_spent_usd, … }
+//   GET  /repos                          → { repos (with today spend), day_usd, day_spent_usd, … }
 //   GET  /engines                        → { engines }  each engine's efforts, offered models and default run cap
 //   GET  /github/repos?q=                → { repos }   repos the GitHub identity can read (the board's picker)
 // Errors are { error, detail }.

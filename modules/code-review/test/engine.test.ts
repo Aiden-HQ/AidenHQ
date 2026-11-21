@@ -144,7 +144,7 @@ test("commands: only a writer's count, our own posts and quoted lines never do, 
 });
 
 test("budgets are reserved atomically against the repo cap; drafts and forks skip with a reason", async () => {
-  const w = world({ repos: [{ repo: REPO, month_usd: 2.5, on_open: [CODEX, CLAUDE] }] });
+  const w = world({ repos: [{ repo: REPO, day_usd: 2.5, on_open: [CODEX, CLAUDE] }] });
   await w.tick();
   w.pr(1, sha("1"));
   w.pr(4, sha("4"), { draft: true });
@@ -155,7 +155,7 @@ test("budgets are reserved atomically against the repo cap; drafts and forks ski
   assert.deepEqual(runs.filter((r) => r.status === "running").map((r) => r.engine), ["codex"]);
   assert.ok(runs.some((r) => r.status === "skipped" && r.engine === "claude-code" && r.why.startsWith("budget")));
   assert.deepEqual(w.acks.filter((a) => a.state === "skipped").map((a) => [a.number, a.why.split(":")[0]]).sort(), [[1, "budget"], [4, "draft"], [5, "fork"]]);
-  assert.equal(w.engine.repos().repos[0].month_reserved_usd, 1);
+  assert.equal(w.engine.repos().repos[0].day_reserved_usd, 1);
 });
 
 test("a run is charged what the kernel billed (never what the box says), and a result for another head is refused", async () => {
@@ -176,8 +176,8 @@ test("a run is charged what the kernel billed (never what the box says), and a r
   const by = Object.fromEntries(w.engine.runs({ repo: REPO }).filter((r) => r.status !== "skipped").map((r) => [`${r.engine}/${r.effort}`, r]));
   assert.deepEqual([by["codex/medium"].cost_usd, by["claude-code/high"].cost_usd, by["codex/low"].cost_usd], [0.7, 2, 1]);
   assert.equal(by["codex/low"].status, "failed");
-  // The month's spend is the billed costs (0.7 + 2 + 1), and nothing is still held at a reservation.
-  assert.deepEqual([w.engine.repos().month_spent_usd, w.engine.repos().month_reserved_usd], [3.7, 0]);
+  // Today spend is the billed costs (0.7 + 2 + 1), and nothing is still held at a reservation.
+  assert.deepEqual([w.engine.repos().day_spent_usd, w.engine.repos().day_reserved_usd], [3.7, 0]);
   // GET /reviews/:id carries the run's combo, cost, tokens, duration and its findings in full.
   const one = w.engine.run(by["codex/medium"].id)!;
   assert.ok(one.run.model && one.run.cost_usd === 0.7 && "duration_ms" in one.run && "tokens_in" in one.run && Array.isArray(one.review!.findings) && Array.isArray(one.findings));

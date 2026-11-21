@@ -18,7 +18,7 @@ import { fakeRecords } from "./fake-records.js";
 const COMBO = { engine: "codex", model: "~deepseek/deepseek-flash-latest", effort: "medium", run_usd: 1 };
 const CONFIG = {
   repos: [] as unknown[],
-  month_usd: 200,
+  day_usd: 200,
 };
 const dir = mkdtempSync(join(tmpdir(), "reviews-"));
 writeFileSync(join(dir, "paperclip.yaml"), stringify({ settings: { code_review: { value: CONFIG, set: false } }, agents: {} }));
@@ -69,7 +69,7 @@ describe("the Reviews page's routes", () => {
   });
 
   it("files a watched repo as one settings change, and refuses the old reviewers and string-trigger shape", async () => {
-    const value = { ...CONFIG, repos: [{ repo: "acme/payments", on_open: [COMBO], on_push: [{ ...COMBO, effort: "low" }], month_usd: 50 }] };
+    const value = { ...CONFIG, repos: [{ repo: "acme/payments", on_open: [COMBO], on_push: [{ ...COMBO, effort: "low" }], day_usd: 50 }] };
     expect((await call("POST", "/api/reviews/config", { value: { ...value, repos: [{ repo: "acme/payments", on_open: "standard", on_push: [] }] } })).status).toBe(400);
     expect((await call("POST", "/api/reviews/config", { value: { ...value, reviewers: {} } })).status).toBe(400);
     expect((await call("POST", "/api/reviews/config", { value: { ...value, repos: [{ ...value.repos[0], on_open: [{ ...COMBO, effort: "max" }] }] } })).status).toBe(400);
