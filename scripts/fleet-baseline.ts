@@ -14,7 +14,7 @@ const DAY = 864e5;
 interface PaperclipAgent { id: string; name?: string; metadata?: { setupKey?: string } }
 interface Issue { id: string; status: string; assigneeAgentId?: string; completedAt?: string; updatedAt: string }
 interface Paperclip { agents(): Promise<PaperclipAgent[]>; closed(since: string): Promise<Issue[]> }
-interface Stats { runs: number; costUsd: number; tasksDone: number; tasksCancelled: number; costPerDone: number | null; records: { filed: number; rejected: number; failed: number; ownerDecided: number }; grades: { satisfied: number; escalated: number; failed: number }; reopened: number }
+interface Stats { runs: number; costUsd: number; tasksDone: number; tasksCancelled: number; costPerDone: number | null; records: { filed: number; rejected: number; failed: number; ownerDecided: number }; grades: { satisfied: number; failed: number }; reopened: number }
 interface Grade { issue_id: string; state: string; failures: number; attempts: number }
 
 export async function baseline({ days, now = new Date() }: { days: number; now?: Date }, { kernelDb, gradesDb, paperclip }: { kernelDb: DatabaseSync; gradesDb: DatabaseSync; paperclip: Paperclip }) {
@@ -24,7 +24,7 @@ export async function baseline({ days, now = new Date() }: { days: number; now?:
   const names = new Map((await paperclip.agents()).map((a): [string, string] => [a.id, a.metadata?.setupKey ?? a.name ?? a.id]));
   const key = (id: string) => names.get(id) ?? id;
   const agents: Record<string, Stats> = {};
-  const of = (id: string) => (agents[key(id)] ??= { runs: 0, costUsd: 0, tasksDone: 0, tasksCancelled: 0, costPerDone: null, records: { filed: 0, rejected: 0, failed: 0, ownerDecided: 0 }, grades: { satisfied: 0, escalated: 0, failed: 0 }, reopened: 0 });
+  const of = (id: string) => (agents[key(id)] ??= { runs: 0, costUsd: 0, tasksDone: 0, tasksCancelled: 0, costPerDone: null, records: { filed: 0, rejected: 0, failed: 0, ownerDecided: 0 }, grades: { satisfied: 0, failed: 0 }, reopened: 0 });
 
   for (const r of kernelDb.prepare("SELECT agent_id, COUNT(DISTINCT run_key) runs, SUM(cost_usd) cost FROM calls WHERE day >= ? AND agent_id IS NOT NULL GROUP BY agent_id").all(fromDay) as unknown as { agent_id: string; runs: number; cost: number | null }[]) {
     const a = of(r.agent_id);
@@ -45,7 +45,6 @@ export async function baseline({ days, now = new Date() }: { days: number; now?:
     const g = grade.get(i.id);
     if (!g) continue;
     if (g.state === "satisfied") a.grades.satisfied++;
-    if (g.state === "escalated") a.grades.escalated++;
     if (g.state === "grading_failed") a.grades.failed++;
     if (g.attempts > 0) a.reopened++;
   }

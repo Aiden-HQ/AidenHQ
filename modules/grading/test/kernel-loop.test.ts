@@ -39,7 +39,7 @@ test("a kernel job's graded task is graded, reopened with the unmet criterion, t
     throw new Error(`unexpected ${method} ${path}`);
   };
   const db = new DatabaseSync(":memory:");
-  const { runner, grades } = createGrading({ db, kernel: { issue: async () => issue, settings: async () => ({}), release: async () => {} }, keys: { check: "c", runner: "r", board: "b" } });
+  const { runner, grades } = createGrading({ db, kernel: { issue: async () => issue, settings: async () => ({}) }, keys: { check: "c", runner: "r", board: "b" } });
   grades.file("t1", ["says where Legacy is used", "links each source", "names the next step"], { kind: "report", ref: "" });
   const loop = createKernelGradeLoop({ db, runner, due: () => ({ grades: grades.due(), resubmitted: [] }), kernel, kernelBytes: async () => { throw new Error("no attachment bytes"); }, apps: async () => { throw new Error("no apps"); }, gatewayUrl: `http://127.0.0.1:${gateway.address().port}`, github: noGithub, log: () => {}, emit: (f) => facts.push(f) });
 
@@ -94,7 +94,7 @@ test("a graded PR task's PR is read through the broker's token and graded; a PR 
   let readable = true;
   const github = { pr: async (repo, n) => { calls.tokens.push(`${repo}#${n}`); if (!readable) throw new Error("GitHub has no readable PR"); return { repository: { pullRequest: pr } }; }, diff: async () => "diff --git a/x b/x\n+fixed" };
   const db = new DatabaseSync(":memory:");
-  const { runner, grades } = createGrading({ db, kernel: { issue: async () => issue, settings: async () => ({}), release: async () => {} }, keys: { check: "c", runner: "r", board: "b" } });
+  const { runner, grades } = createGrading({ db, kernel: { issue: async () => issue, settings: async () => ({}) }, keys: { check: "c", runner: "r", board: "b" } });
   grades.file("t2", ["the change fixes the thing"], { kind: "pr", ref: "https://github.com/acme-agents/app/pull/7" });
   const loop = createKernelGradeLoop({ db, runner, due: () => ({ grades: grades.due(), resubmitted: [] }), kernel, kernelBytes: async () => { throw new Error("no bytes"); }, apps: async () => { throw new Error("no apps"); }, gatewayUrl: `http://127.0.0.1:${gateway.address().port}`, github, log: () => {} });
   completionGate(grades, "t2", "finish_turn");
@@ -124,7 +124,7 @@ test("a merge counts only as its executor wrote it on a record that ended ok, ne
   assert.deepEqual(verifiedMerges({ state: "done", ok: true, args, outcome_text: `merged-prs: []\n\n${line}` }), [], "only the first line counts");
 });
 
-// The kernel's finish-check hold as checks.ts keeps it: the grader token and a resolve (ok, reopen, block) need it; release drops it.
+// The kernel's finish-check hold as checks.ts keeps it: the grader token and a resolve (ok, reopen, block) need it.
 function heldKernel(issue, calls) {
   let held = true;
   const kernel = async (method, path, body) => {
@@ -137,15 +137,15 @@ function heldKernel(issue, calls) {
     if (path === "/v1/work/grader-token") { if (!held) throw new Error("kernel POST /v1/work/grader-token → 403"); return { token: "tok" }; }
     if (path === `/v1/checks/${issue.id}`) {
       calls.resolve.push(body.verdict);
-      if (body.verdict !== "release" && !held) throw new Error("kernel POST /v1/checks → 409: holds no finish");
+      if (!held) throw new Error("kernel POST /v1/checks → 409: holds no finish");
       held = false;
-      if (body.verdict !== "release") issue.status = { ok: "done", reopen: "todo", block: "blocked" }[body.verdict];
+      issue.status = { ok: "done", reopen: "todo", block: "blocked" }[body.verdict];
       return {};
     }
     if (path === "/v1/wakes") return calls.wake.push(body), { posted: true };
     throw new Error(`unexpected ${method} ${path}`);
   };
-  return { kernel, release: async () => void (await kernel("POST", `/v1/checks/${issue.id}`, { verdict: "release" })) };
+  return { kernel };
 }
 
 test("a kernel.apply record on the task reaches the grader as its apply deliverable: action normalised, diff and log carried", async (t) => {
@@ -181,7 +181,7 @@ test("a kernel.apply record on the task reaches the grader as its apply delivera
     throw new Error(`unexpected ${method} ${path}`);
   };
   const db = new DatabaseSync(":memory:");
-  const { runner, grades } = createGrading({ db, kernel: { issue: async () => issue, settings: async () => ({}), release: async () => {} }, keys: { check: "c", runner: "r", board: "b" } });
+  const { runner, grades } = createGrading({ db, kernel: { issue: async () => issue, settings: async () => ({}) }, keys: { check: "c", runner: "r", board: "b" } });
   grades.file(issue.id, ["the apply's record ended applied, and its log shows no error", "the diff makes the change asked for", "the diff changes nothing else"], { kind: "apply", ref: "" });
   const loop = createKernelGradeLoop({ db, runner, due: () => ({ grades: grades.due(), resubmitted: [] }), kernel, kernelBytes: async () => Buffer.alloc(0), apps: async () => ({}), gatewayUrl: `http://127.0.0.1:${gateway.address().port}`, github: noGithub, log: () => {} });
   completionGate(grades, issue.id, "finish_turn"); // the held-and-waiting row the loop picks up (as in the W7 test)
@@ -213,9 +213,9 @@ test("a model with no route grades with the next one, and the hold lasts until t
   t.after(() => gateway.close());
   const issue = { id: "t3", identifier: "WOR-3", title: "report", description: "", status: "in_review", companyId: "co", assigneeAgentId: "eng", createdByAgentId: "cos", parentId: "p1" };
   const calls = { resolve: [], wake: [] };
-  const { kernel, release } = heldKernel(issue, calls);
+  const { kernel } = heldKernel(issue, calls);
   const db = new DatabaseSync(":memory:");
-  const { runner, grades } = createGrading({ db, kernel: { issue: async () => issue, settings: async () => ({}), release }, keys: { check: "c", board: "b" } });
+  const { runner, grades } = createGrading({ db, kernel: { issue: async () => issue, settings: async () => ({}) }, keys: { check: "c", board: "b" } });
   grades.file("t3", ["says it"], { kind: "report", ref: "" });
   completionGate(grades, "t3", "finish_turn");
   const loop = createKernelGradeLoop({ db, runner, due: () => ({ grades: grades.due(), resubmitted: [] }), kernel, kernelBytes: async () => Buffer.alloc(0), apps: async () => ({}), gatewayUrl: `http://127.0.0.1:${gateway.address().port}`, github: noGithub, log: () => {} });
@@ -238,9 +238,9 @@ test("a grader that keeps failing keeps its hold, then closes the task done, ung
   t.after(() => gateway.close());
   const issue = { id: "t4", identifier: "WOR-4", title: "report", description: "", status: "in_review", companyId: "co", assigneeAgentId: "eng", createdByAgentId: "cos", parentId: "p1" };
   const calls = { resolve: [], wake: [] };
-  const { kernel, release } = heldKernel(issue, calls);
+  const { kernel } = heldKernel(issue, calls);
   const db = new DatabaseSync(":memory:");
-  const { runner, grades } = createGrading({ db, kernel: { issue: async () => issue, settings: async () => ({}), release }, keys: { check: "c", board: "b" } });
+  const { runner, grades } = createGrading({ db, kernel: { issue: async () => issue, settings: async () => ({}) }, keys: { check: "c", board: "b" } });
   grades.file("t4", ["says it"], { kind: "report", ref: "" });
   completionGate(grades, "t4", "finish_turn");
   const loop = createKernelGradeLoop({ db, runner, due: () => ({ grades: grades.due(), resubmitted: [] }), kernel, kernelBytes: async () => Buffer.alloc(0), apps: async () => ({}), gatewayUrl: `http://127.0.0.1:${gateway.address().port}`, github: noGithub, log: () => {} });
@@ -283,7 +283,7 @@ test("a verdict's reopen and its parent's notice that hit a kernel 5xx land on t
     throw new Error(`unexpected ${method} ${path}`);
   };
   const db = new DatabaseSync(":memory:");
-  const { runner, grades } = createGrading({ db, kernel: { issue: async () => issue, settings: async () => ({}), release: async () => {} }, keys: { check: "c", runner: "r", board: "b" } });
+  const { runner, grades } = createGrading({ db, kernel: { issue: async () => issue, settings: async () => ({}) }, keys: { check: "c", runner: "r", board: "b" } });
   grades.file("t3", ["says it"], { kind: "report", ref: "" });
   const loop = createKernelGradeLoop({ db, runner, due: () => ({ grades: grades.due(), resubmitted: [] }), kernel, kernelBytes: async () => { throw new Error("no"); }, apps: async () => { throw new Error("no"); }, gatewayUrl: `http://127.0.0.1:${gateway.address().port}`, github: noGithub, log: () => {} });
   completionGate(grades, "t3", "finish_turn");
@@ -345,7 +345,7 @@ async function namedTaskHarness(t, { id, identifier, rubric, named, attachments 
   };
   const db = new DatabaseSync(":memory:");
   const byRef = { [id]: task(id, identifier), [identifier]: task(id, identifier) };
-  const { runner, grades } = createGrading({ db, kernel: { issue: async (ref) => byRef[ref], settings: async () => ({}), release: async () => {} }, keys: { check: "c", runner: "r", board: "b" } });
+  const { runner, grades } = createGrading({ db, kernel: { issue: async (ref) => byRef[ref], settings: async () => ({}) }, keys: { check: "c", runner: "r", board: "b" } });
   grades.file(id, [rubric], { kind: "report", ref: "" });
   const loop = () => createKernelGradeLoop({ db, runner, due: () => ({ grades: grades.due(), resubmitted: [] }), kernel, kernelBytes: async () => { throw new Error("no bytes"); }, apps: async () => { throw new Error("no apps"); }, gatewayUrl: `http://127.0.0.1:${gateway.address().port}`, github: noGithub, log: () => {} });
   completionGate(grades, id, "finish_turn");

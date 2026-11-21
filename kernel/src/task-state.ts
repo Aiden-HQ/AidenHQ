@@ -6,8 +6,7 @@
 //      reassignment or closure; comments never clear it
 //   3. open obligations, each counted: a running job; a queued (or due, unbound) or held job; an open card; an owner,
 //      delegator or agent wait; a module's wait (a PR on its checks: `module_wait`, its reason as `ref`; a finish check holding
-//      the task in review: `module_wait`, the check's module as `ref`, until its verdict or the task leaves review); a task a
-//      finish check released to its delegator (`release`: an escalated grade), still in review: `delegator_wait`; a blocker not closed; a
+//      the task in review: `module_wait`, the check's module as `ref`, until its verdict or the task leaves review); a blocker not closed; a
 //      scheduled wake; the task handed to the owner by an agent (handback), or the owner's own task (owner_task: held by the
 //      owner, never handed from an agent), neither while in backlog; backlog; a chat's turn
 //   4. a stage hint (a module's stage open ≤ 24 h) only says what a running job or a wait is doing; it never changes kind,
@@ -109,7 +108,6 @@ export function taskState(task: string, facts: FactRow[], now: number, stages: S
   const mwaits = new Map<string, FactRow>(); // a module's waits by subject (a PR), until its work.resumed or a job starts
   let handback: { f: FactRow; fromAgent: boolean } | undefined;
   const holds = new Map<string, FactRow>(); // the finish checks holding the task in review, by check
-  let released: FactRow | undefined; // a finish check's release of the task to its delegator
   let who: string | null = null; // the holder as each fact happened
   let quiet = Math.max(ms(created.at), reopen ? ms(reopen.at) : 0); // when the latest obligation ended or anything not a hint happened
   const queuedAt: number[] = [];
@@ -127,7 +125,10 @@ export function taskState(task: string, facts: FactRow[], now: number, stages: S
       case "job.queued": job!.queued = f; failure = silent = undefined; queuedAt.push(ms(f.at)); break;
       case "job.started":
         job!.started = f; failure = silent = undefined;
-        if (wait && !wait.end && wait.f.data.reason === "agent_wait") wait.end = ms(f.at);
+        // The task's next job ends an agent's own wait and a delegator wait: it reads the thread, and asks again if it still
+        // needs to. A delegator's answer can wake the task without a comment fact the state reads (WOR-9335). An owner wait
+        // ends only on the owner's words.
+        if (wait && !wait.end && wait.f.data.reason !== "owner_wait") wait.end = ms(f.at);
         mwaits.clear();
         break;
       case "job.ended":
@@ -136,9 +137,9 @@ export function taskState(task: string, facts: FactRow[], now: number, stages: S
         else if (isChat && f.data.state === "done" && f.data.acted !== true) silent = f;
         break;
       case "task.assignee_changed": if (f.subject === self) failure = silent = undefined; break;
-      case "task.status_changed": if (f.subject === self && f.data.to !== "in_review") { holds.clear(); released = undefined; } break;
-      case "finish.held": holds.set(String(f.data.check), f); released = undefined; break;
-      case "finish.verdict": holds.delete(String(f.data.check)); released = f.data.verdict === "release" ? f : undefined; break;
+      case "task.status_changed": if (f.subject === self && f.data.to !== "in_review") holds.clear(); break;
+      case "finish.held": holds.set(String(f.data.check), f); break;
+      case "finish.verdict": holds.delete(String(f.data.check)); break;
       case "work.waiting": if (f.subject === `wait:${task}`) wait = { f }; else if (moduleFact(f)) mwaits.set(f.subject, f); break;
       case "work.resumed": if (moduleFact(f)) mwaits.delete(f.subject); break;
       case "task.commented": {
@@ -200,7 +201,6 @@ export function taskState(task: string, facts: FactRow[], now: number, stages: S
     if (until > now) open.push({ reason: "module_wait", ref: str(w.data.reason) ?? subject, since: ms(w.at) });
   }
   for (const [check, h] of holds) open.push({ reason: "module_wait", ref: check.split(".")[0]!, since: ms(h.at) });
-  if (released && !holds.size && status?.data.to === "in_review") open.push({ reason: "delegator_wait", ref: self, since: ms(released.at) });
   if (handback && status?.data.to !== "backlog") open.push({ reason: handback.fromAgent ? "handback" : "owner_task", ref: self, since: ms(handback.f.at) });
   const blockedBy = mine.filter((f) => f.type === "task.blocked_changed").at(-1);
   for (const b of Array.isArray(blockedBy?.data.blocked_by) ? (blockedBy!.data.blocked_by as unknown[]).map(String) : []) {
@@ -225,8 +225,7 @@ export function taskState(task: string, facts: FactRow[], now: number, stages: S
   for (const o of open) if (o.reason === "module_wait" && now - o.since > MODULE_WAIT_STALLED_MS) attention.push({ who: "agent", why: "stalled_wait", ref: o.ref! });
 
   const ownerWait = wait && !wait.end && wait.f.data.reason === "owner_wait" ? str(wait.f.data.question) : undefined;
-  const judging = wait && !wait.end && (wait.f.data.reason === "owner_wait" || wait.f.data.reason === "delegator_wait") ? wait.f.at
-    : open.some((o) => o.reason === "delegator_wait") ? released!.at : undefined;
+  const judging = wait && !wait.end && (wait.f.data.reason === "owner_wait" || wait.f.data.reason === "delegator_wait") ? wait.f.at : undefined;
   const openNote = wait && open.some((o) => o.ref === wait!.f.subject) ? str(wait.f.data.note) : undefined;
   const extra = { ...(ownerWait ? { question: ownerWait } : {}), ...(openNote ? { note: openNote } : {}), ...(judging ? { wait_since: judging } : {}) };
   const hint = () => {

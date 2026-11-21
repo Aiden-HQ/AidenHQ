@@ -72,6 +72,7 @@ const cases = [
   ["an agent comment is not an answer", [created(), wait("owner_wait", 1), comment("agent:kai", 2)], NOW, { reason: "owner_wait" }],
   ["a delegator wait ends at another's comment, not the holder's", [created(), assignee("kai", 0), wait("delegator_wait", 1, { question: "q" }), comment("agent:kai", 2)], NOW,
     { reason: "delegator_wait", attention: [{ who: "agent", why: "delegator_wait" }] }],
+  ["the task's next job ends a delegator wait (an answer that woke it without a comment fact)", [created(), assignee("kai", 0), wait("delegator_wait", 1, { question: "q" }), job("job.started", 2), job("job.ended", 3, { state: "done" })], NOW, { reason: not("delegator_wait") }],
   ["a delegator's answer ends the delegator wait", [created(), assignee("kai", 0), wait("delegator_wait", 1, { question: "q" }), comment("agent:aiden", 2)], NOW, { reason: not("delegator_wait") }],
   ["a PR on its checks is waiting, never orphaned", [created(), assignee("kai", 0), job("job.ended", 1, { state: "done" }), prWait("checks", 2)], NOW, { kind: "waiting", reason: "module_wait", ref: "checks", since: iso(2), attention: [] }],
   ["a module wait resumed is over", [created(), assignee("kai", 0), prWait("checks", 2), prResumed(5)], NOW, { reason: not("module_wait") }],
@@ -107,11 +108,9 @@ const cases = [
   ["done with its final grade", [created(), grade(false, 1, 1), grade(true, 2, 2), status("done", 3)], NOW, { kind: "done", grade: "pass" }],
   ["since is when the reason and ref began", [created(), card("k1", 1), card("k2", 5)], NOW,
     { reason: "card_owner", ref: "record:k1", since: iso(1), attention: [{ why: "card", ref: "record:k1" }, { why: "card", ref: "record:k2" }] }],
-  // A finish check's hold (grading) and its release to the delegator: in review is never orphaned.
+  // A finish check's hold (grading): in review is never orphaned.
   ["a finish hold waits on the check's module", [created(), assignee("kai", 0), status("in_review", 2), f("finish.held", 2, { check: "grading.finish" })], NOW,
     { kind: "waiting", reason: "module_wait", ref: "grading", since: iso(2), attention: [] }],
-  ["a released hold waits on the delegator", [created(), assignee("kai", 0), status("in_review", 2), f("finish.held", 2, { check: "grading.finish" }), f("finish.verdict", 5, { check: "grading.finish", verdict: "release" })], NOW,
-    { kind: "waiting", reason: "delegator_wait", since: iso(5), wait_since: iso(5), attention: [{ who: "agent", why: "delegator_wait", ref: "task:t1" }] }],
   ["a hold ends when the task leaves review", [created(), assignee("kai", 0), status("in_review", 2), f("finish.held", 2, { check: "grading.finish" }), status("todo", 5, "in_review")], NOW,
     { kind: "idle", reason: "orphaned" }],
 ];

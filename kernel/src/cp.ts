@@ -15,9 +15,8 @@
 //   refused, naming whom to ask. Each write carries a tag (the plugin's once-only key): on the job's own task and the tasks its
 //   grants list the job tag (wakes.ts SELF_TAG: it wakes nobody), elsewhere `aidenhq:op=`, which wakes the task's assignee as any
 //   agent's comment does.
-// - A status change to `done` is for the job's own task, a task the job's agent holds (from an earlier run that left it open),
-//   or a delegated task whose escalated grade its delegator accepts; it passes the finish gate first (checks.ts): held or
-//   reopened, nothing is written and the answer says so (202).
+// - A status change to `done` is for the job's own task, or a task the job's agent holds (from an earlier run that left it
+//   open); it passes the finish gate first (checks.ts): held or reopened, nothing is written and the answer says so (202).
 // - A task a job creates gets the kernel's provenance row (provenance.ts) from the plugin's answer.
 // A user assignee is only ever the owner; a PATCH hands a task back (assigneeAgentId null, to the owner), never to another agent.
 // Every open task has a holder, an agent or the owner (leavesNoHolder): a create or a change that would leave one with neither
@@ -230,15 +229,11 @@ export function createCp({ whoami, asserter, plugin, once, agentKey, grants, fle
     const scope = (await scopeOf(t)) ?? (status === undefined && !Object.keys(patch).length ? commentScope(t) : undefined) ?? refuse(t);
     let gated = false;
     if (status === "done") {
-      // The finish gate. `cross`: a task that is neither this job's own nor one this job's agent holds, so closing it is its
-      // delegator accepting an escalated grade (the check answers `accepts`, checks.ts). A job's own task, and one its agent
-      // holds from an earlier run that left it open (an orphaned routine run), pass the gate as they are; a task in review
-      // under a finish check is still held by that check (checks.ts), never by the obstacle this flag sets.
-      const cross = t.id !== task && t.assigneeAgentId !== agent;
-      if (cross && !checks) throw fail(403, "forbidden", `only this job's own task is finished here; ${t.identifier ?? t.id} is finished by its assignee`);
+      // The finish gate. Only this job's own task, or one this job's agent holds (an orphaned routine run's), is finished here.
+      if (t.id !== task && t.assigneeAgentId !== agent) throw fail(403, "forbidden", `only this job's own task is finished here; ${t.identifier ?? t.id} is finished by its assignee`);
       if (checks) {
         const tool = String(c.tool ?? "").split(".").pop()!;
-        const f = await checks.finish(t.id, { agent, tool, via: tool, ...(cross ? { cross } : {}) });
+        const f = await checks.finish(t.id, { agent, tool, via: tool });
         if (!f.pass) {
           log("cp", { module: mod.module, agent: c.key, method, path, finish: "held" in f ? "held" : "reopened" });
           return answer(202, Buffer.from(JSON.stringify("held" in f ? { held: { state: f.state, reason: f.reason } } : { reopened: { reason: f.reason } })));

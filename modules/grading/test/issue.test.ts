@@ -38,7 +38,7 @@ test("a module-filed task with a rubric is graded: an open issue reopens it, a c
   const pr = { number: 9, state: "MERGED", mergedAt: "2026-11-19T10:00:00Z", mergeCommit: { oid: "b".repeat(40) }, headRefOid: "a".repeat(40) };
   const github = { issue: async () => ({ repository: { issue: gh } }), pr: async () => ({ repository: { pullRequest: pr } }), diff: async () => "" };
   const db = new DatabaseSync(":memory:");
-  const { server, runner, grades } = createGrading({ db, kernel: { issue: async () => issue, settings: async () => ({}), release: async () => {} }, keys: { check: KEY, board: "b" } });
+  const { server, runner, grades } = createGrading({ db, kernel: { issue: async () => issue, settings: async () => ({}) }, keys: { check: KEY, board: "b" } });
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
   t.after(() => server.close());
   const file = (key, body) => fetch(`http://127.0.0.1:${server.address().port}/check/rubric`, { method: "POST", headers: { authorization: `Bearer ${key}`, "content-type": "application/json" }, body: JSON.stringify(body) });

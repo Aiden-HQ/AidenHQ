@@ -10,7 +10,7 @@ import { graderBlock } from "../../../kernel/src/grader-note.ts";
 const KEYS = { check: "c".repeat(32), board: "b".repeat(32) };
 
 test("the grade read answers the sent-back verdict's unmet criteria with their rubric text, only to the check key", async (t) => {
-  const kernel = { issue: async () => { throw new Error("unused"); }, repos: async () => ({}), release: async () => {} };
+  const kernel = { issue: async () => { throw new Error("unused"); }, repos: async () => ({}) };
   const { server, grades } = createGrading({ db: new DatabaseSync(":memory:"), kernel, keys: KEYS });
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
   t.after(() => server.close());
@@ -34,7 +34,7 @@ test("the grade read answers the sent-back verdict's unmet criteria with their r
 });
 
 test("the kernel reads it through the finish check's grade: URL with the check's key; no grade: URL, no note", async (t) => {
-  const kernel = { issue: async () => { throw new Error("unused"); }, repos: async () => ({}), release: async () => {} };
+  const kernel = { issue: async () => { throw new Error("unused"); }, repos: async () => ({}) };
   const { server, grades } = createGrading({ db: new DatabaseSync(":memory:"), kernel, keys: KEYS });
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
   t.after(() => server.close());

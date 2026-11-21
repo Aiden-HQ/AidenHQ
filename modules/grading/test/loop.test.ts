@@ -49,12 +49,4 @@ describe("grade loop owed moves", () => {
       assert.deepEqual(calls, [], JSON.stringify(change));
     }
   });
-  it("an escalation's notice is retried when the tell fails, not posted on the task", async () => {
-    const { loop, calls, failing } = setup("escalated");
-    failing.done = 0; failing.tell = 1;
-    await loop.runGrades();
-    assert.deepEqual(calls, []);
-    await loop.runGrades();
-    assert.deepEqual(calls, [["tell", "escalated"]]);
-  });
 });

@@ -134,26 +134,6 @@ test("a check service still unavailable after its attempts holds the task in rev
   assert.ok(s.k.records.db.prepare("SELECT 1 FROM check_holds WHERE task = ? AND check_id = 'judge.finish'").get(TASK), "the hold is recorded");
 });
 
-test("a cross-task finish whose check service is unavailable parks in review, and no unavailable check stands in for accepts", async (t) => {
-  const resolver = flakyResolver(Infinity);
-  const s = await setup(t, () => ({ verdict: "ok", accepts: true }), { checkResolver: resolver });
-  const r = await s.finish({ status: "done" }, DELEGATED);
-  assert.equal(r.status, 202, "the delegator's acceptance isn't lost while the service restarts");
-  assert.equal(r.json.held.state, "pending");
-  assert.equal(s.writes.length, 1);
-  assert.equal(s.writes[0].as, "board-key");
-  assert.notEqual(s.writes[0].body.status, "done", "nothing moved the task to done");
-  assert.deepEqual(s.writes[0].body.labelIds, ["lbl-held"], "held under the check's label");
-  assert.ok(s.writes[0].body.executionPolicy.monitor.nextCheckAt, "the re-check is saved");
-  assert.ok(s.k.records.db.prepare("SELECT 1 FROM check_holds WHERE task = ? AND check_id = 'judge.finish'").get(DELEGATED), "the hold is recorded");
-});
-
-test("a cross-task finish whose check errors (5xx) is held, never passed", async (t) => {
-  const s = await setup(t, () => ({ http: 500, body: { error: "boom" } }));
-  const r = await s.finish({ status: "done" }, DELEGATED);
-  assert.deepEqual([r.status, s.writes.some((w) => w.body.status === "done")], [202, false]);
-});
-
 test("a check that answers deny or reopen is not retried: one ask, and the close still refuses or reopens", async (t) => {
   const resolver = flakyResolver(0);
   let answer = { verdict: "deny", status: 403, reason: "not yet" };
@@ -187,18 +167,12 @@ test("a deny refuses the close with its status and reason, and a failed check ho
   }
 });
 
-test("ok passes the close on: Ada's own write through the plugin, gated; ok with unlabel drops the check's label first; other changes skip the gate", async (t) => {
+test("ok passes the close on: Ada's own write through the plugin, gated; other changes skip the gate", async (t) => {
   let answer = { verdict: "ok" };
   const { asked, writes, issue, finish } = await setup(t, () => answer);
   let r = await finish({ status: "done", comment: "Done." });
   assert.equal(r.status, 200);
   assert.deepEqual(writes, [{ as: "ada-key", body: { status: "done", gated: true } }]);
-  writes.length = 0;
-  Object.assign(issue, { status: "in_progress" });
-  Object.assign(issue, { status: "in_review", labelIds: ["lbl-x", "lbl-held"] });
-  answer = { verdict: "ok", unlabel: true };
-  await finish({ status: "done" });
-  assert.deepEqual(writes, [{ as: "board-key", body: { labelIds: ["lbl-x"] } }, { as: "ada-key", body: { status: "done", gated: true } }]);
   const n = asked.length;
   await finish({ status: "blocked" });
   assert.equal(asked.length, n, "only a move to done asks the checks");
@@ -237,32 +211,21 @@ test("a grader token is minted for an in_review task under the finish check's la
   assert.equal((await mint()).status, 200);
 });
 
-test("/v1/checks/:task: only the check's module; release drops its label; ok and reopen only resolve a hold it placed", async (t) => {
+test("/v1/checks/:task: only the check's module; ok and reopen only resolve a hold it placed", async (t) => {
   const { k, writes, issue, finish } = await setup(t, () => ({ verdict: "pending", state: "pending", reason: "r", until: "2026-11-17T12:00:00.000Z" }));
   const resolve = (body, token = "judge-tok") => k.v1("POST", `/v1/checks/${TASK}`, body, token);
-  assert.equal((await resolve({ verdict: "release" }, "other-tok")).status, 403);
+  assert.equal((await resolve({ verdict: "ok" }, "other-tok")).status, 403);
   assert.equal((await resolve({ verdict: "ok" })).status, 409, "no hold yet");
-  assert.equal((await resolve({ verdict: "constructor" })).status, 400, "only the named verdicts resolve");
-  // A release on a task the check never held changes nothing and records nothing.
-  Object.assign(issue, { labelIds: ["lbl-x", "lbl-held"] });
-  const before = writes.length;
-  assert.equal((await resolve({ verdict: "release" })).status, 200);
-  assert.equal(writes.length, before, "a task the check never held is not touched");
-  await finish({ status: "done" });
-  // A release naming a time before the hold (the module read its state earlier) leaves that newer hold alone.
-  const kept = writes.length;
-  assert.deepEqual((await resolve({ verdict: "release", before: "2000-01-01T00:00:00.000Z" })).json, { ok: true, held: false });
-  assert.equal(writes.length, kept);
-  assert.equal((await resolve({ verdict: "release", before: new Date(Date.now() + 1000).toISOString() })).status, 200);
-  assert.deepEqual(writes.at(-1), { as: "board-key", body: { labelIds: ["lbl-x"] } });
+  assert.equal((await resolve({ verdict: "release" })).status, 400, "only the named verdicts resolve");
+  Object.assign(issue, { labelIds: ["lbl-x"] });
   await finish({ status: "done" });
   assert.equal((await resolve({ verdict: "ok", comment: "Graded: satisfied." })).status, 200);
   // One move: the status, the label off and the comment together.
   assert.deepEqual(writes.at(-1), { as: "board-key", body: { status: "done", labelIds: ["lbl-x"], comment: "Graded: satisfied." } });
   assert.equal((await resolve({ verdict: "reopen" })).status, 409, "the hold was resolved once");
-  // Each hold and its end are facts task state reads: held (waiting on the module), then released (the delegator's) or resolved.
+  // Each hold and its end are facts task state reads: held (waiting on the module), then resolved.
   const facts = k.records.db.prepare("SELECT type, json_extract(data, '$.verdict') AS v FROM facts WHERE task = ? AND type LIKE 'finish.%' ORDER BY seq").all(TASK).map((r) => `${r.type}${r.v ? `:${r.v}` : ""}`);
-  assert.deepEqual(facts, ["finish.held", "finish.verdict:release", "finish.held", "finish.verdict:ok"]);
+  assert.deepEqual(facts, ["finish.held", "finish.verdict:ok"]);
 });
 
 test("a resolve the control plane fails keeps the hold, so the module's retry moves the task", async (t) => {
@@ -342,7 +305,7 @@ test("observe mode (gates.ts): a check's deny becomes a would-block entry and th
   assert.match(r.json.error.message, /is a hard gate: it always enforces/);
 });
 
-test("a delegated task closes from its delegator only when a check accepts (an escalated grade); any other cross-task close is refused", async (t) => {
+test("a cross-task close is refused before any check is asked, whatever the check would say", async (t) => {
   let answer = { verdict: "ok" };
   const { finish, writes } = await setup(t, () => answer);
   for (const v of [{ verdict: "ok" }, { verdict: "pending", state: "pending", reason: "r" }, { verdict: "deny", status: 403, reason: "x" }]) {
@@ -351,8 +314,6 @@ test("a delegated task closes from its delegator only when a check accepts (an e
     assert.equal(r.status, 403, JSON.stringify(v));
   }
   assert.deepEqual(writes, [], "a refused cross-task close moves nothing");
-  answer = { verdict: "ok", unlabel: true, accepts: true };
-  assert.equal((await finish({ status: "done" }, DELEGATED)).status, 200);
 });
 
 test("a task the closing agent holds from an earlier run closes (an orphaned run's task); another agent's is still refused; a graded one is held by the check", async (t) => {
@@ -369,15 +330,13 @@ test("a task the closing agent holds from an earlier run closes (an orphaned run
   assert.deepEqual(s.writes, [{ as: "ada-key", body: { status: "done", gated: true } }], "closed as Ada, gated, on the orphan's own task");
   assert.equal(s.issues[ORPHAN].status, "done");
   assert.equal(s.asked.at(-1).body.task.id, ORPHAN, "the check heard the task it closes, never the job's own");
-  // A task assigned to another agent is nobody's here but its delegator's acceptance: still refused, before anything moves.
+  // A task assigned to another agent is refused, before anything moves.
   const before = s.writes.length;
   for (const v of [{ verdict: "ok" }, { verdict: "pending", state: "pending", reason: "r" }]) {
     answer = v;
     assert.equal((await s.finish({ status: "done" }, DELEGATED)).status, 403, JSON.stringify(v));
   }
   assert.equal(s.writes.length, before, "a refused close of another agent's task moves nothing");
-  answer = { verdict: "ok", unlabel: true, accepts: true };
-  assert.equal((await s.finish({ status: "done" }, DELEGATED)).status, 200, "the delegated-grade path is unchanged");
   // A graded task of Ada's own (from an earlier run too) is still held by the grader: the check's hold decides, no bypass.
   answer = { verdict: "pending", state: "pending", reason: "the grader checks this task", until: "2026-11-17T12:00:00.000Z" };
   assert.deepEqual((await s.finish({ status: "done" }, ORPHAN)).status, 202);

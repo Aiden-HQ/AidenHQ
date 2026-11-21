@@ -47,7 +47,7 @@ export function scorecard(f: Facts, agentId: string, now = Date.now()) {
     window: { from: new Date(week).toISOString(), days: 7 },
     done: { count: done.length, prior: mine.filter((i) => inPrior(doneAt(i))).length, tasks: done.slice(0, 20).map((i) => ({ identifier: i.identifier, title: i.title })) },
     // Reopen rate: of the graded tasks finished this week, how many had a version the grader sent back (attempts, graded done).
-    reopen: { graded: graded.length, reopened: graded.filter((g) => g.attempts > 0).length, escalated: graded.filter((g) => g.state === "escalated").length },
+    reopen: { graded: graded.length, reopened: graded.filter((g) => g.attempts > 0).length },
     approvals: { filed: apIn(inWeek).length, rejected: apIn(inWeek).filter((a) => a.state === "rejected").length, priorRejected: apIn(inPrior).filter((a) => a.state === "rejected").length },
     runsFailed: runs.filter((r) => FAILED_RUN.includes(r.status)).length,
     cost: { usd: costUsd, prior: spend(inPrior), perDone: done.length ? costUsd / done.length : null, billed: rows.length > 0 && rows.every((c) => c.priced === c.rows) },

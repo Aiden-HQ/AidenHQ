@@ -386,8 +386,8 @@ export function createIdle({ db, facts, state, wakes, owner, team = () => false,
         try {
           const r = await owner("GET", `/api/issues/${encodeURIComponent(i.task)}`);
           const task = r.json as { status?: string; assigneeAgentId?: string | null };
-          // In review with nothing running, filed or waiting on it (an escalated grade the finish gate never held, a merge that
-          // landed after the last job): the holder has nothing left to do, so the one who delegated it decides, once per stretch.
+          // In review with nothing running, filed or waiting on it (a merge that landed after
+          // the last job): the holder has nothing left to do, so the one who delegated it decides, once per stretch.
           // Only once the state read the sweep started from includes the review (its `since` is then this stretch's), never while an
           // agent reviewer is pending on it or the control plane monitors it, and never against the holder's wake cap.
           if (r.status === 200 && String(task.status) === "in_review" && task.assigneeAgentId && escalate) {
