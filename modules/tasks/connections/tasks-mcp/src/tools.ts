@@ -484,7 +484,7 @@ const RETIRED_REPO_ERROR = "retired repo: modules live in Aiden-HQ/AidenHQ under
 // Every repo reference, in any shape DELIVERABLE_REF accepts and the shapes a brief writes: owner/name, owner/name#123, an
 // https link, or a clone URL (`git@host:owner/name.git`, `https://host/owner/name.git`), any case.
 const REPO_REF = /(?:(?:https?|git)(?:\+ssh)?:\/\/(?:[^@/\s]+@)?[^/\s]+\/|git@[^:\s]+:)?([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?(?![A-Za-z0-9_.-])/gi;
-const reposIn = (text: Json) => [...String(text ?? "").matchAll(REPO_REF)].map((m) => `${m[1]}/${m[2].replace(/\.+$/, "")}`.toLowerCase());
+const reposIn = (text: Json) => [...String(text ?? "").matchAll(REPO_REF)].map((m) => `${m[1]}/${String(m[2]).replace(/\.+$/, "")}`.toLowerCase());
 /** Refuses a `pr` deliverable, rubric or brief that names a retired repo. */
 function refuseRetiredRepo(deliverable: Json, list: string[], description: Json) {
   if (deliverable?.kind !== "pr") return;
