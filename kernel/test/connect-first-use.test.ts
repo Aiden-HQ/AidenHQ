@@ -59,7 +59,7 @@ test("owner-asked: Gmail missing → one message → connect → the task resume
   assert.equal((await w.k.v1("POST", "/v1/connections/nope/ok", {})).status, 404);
   assert.deepEqual((await w.k.v1("POST", "/v1/connections/google/ok", {})).json, { woken: 1 });
   const rows = w.wakeRows().filter((x) => x.state === "open");
-  assert.ok(rows.some((x) => x.key.startsWith("connect:google:w2:") && x.cause === "connected"), JSON.stringify(rows));
+  assert.ok(rows.some((x) => x.key.startsWith("connect:google_workspace:w2:") && x.cause === "connected"), JSON.stringify(rows));
   assert.ok(!rows.some((x) => x.key.startsWith("wait:")), JSON.stringify(rows));
   assert.deepEqual((await w.k.v1("GET", `/v1/connections/down?agent=${AGENT}`, undefined, "dispatch-key")).json.down, []);
 });

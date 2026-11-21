@@ -332,7 +332,7 @@ export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boar
   /** Every connection's /healthz (health.ts createConnectionHealth). */
   connectionHealth?: () => Promise<Record<string, unknown>>;
   /** Connect on first use (connection-state.ts): the board's /ok and the dispatcher's down list. */
-  connectionState?: Pick<ConnectionState, "ok" | "downFor" | "has">;
+  connectionState?: Pick<ConnectionState, "okModule" | "downFor" | "has">;
   /** The owner's typed settings change on their settings task (settings-change.ts). */
   /** A module's own check of settings the board is about to file (module-validate.ts). */
   validate?: (module: string, input: { settings?: Record<string, unknown> }) => Promise<unknown>;
@@ -538,7 +538,7 @@ export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boar
           if (!isBoard(req)) throw fail(401, "unauthorized", "the board's key is required");
           if (!connectionState) throw fail(503, "unavailable", "connection state is off");
           if (!connectionState.has(m[0]!)) throw fail(404, "not_found", `no connection of module ${m[0]}`);
-          return send(res, 200, { woken: connectionState.ok(m[0]!) });
+          return send(res, 200, { woken: connectionState.okModule(m[0]!) });
         }
         case "GET /v1/connections/down": {
           const w = await moduleOf(req);
