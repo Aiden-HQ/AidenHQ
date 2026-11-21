@@ -1,4 +1,4 @@
-// Tool output to raw findings: one SARIF reader (gitleaks, osv-scanner, govulncheck, zizmor, trivy, ruff, fallow, …) and a small
+// Tool output to raw findings: one SARIF reader (gitleaks, osv-scanner, govulncheck, zizmor, ruff, fallow, …) and a small
 // adapter each for the tools with their own format (knip, jscpd, vulture, scc) and for plain `path:line:col: message` lines
 // (oxlint, squawk). A raw finding is what review.ts `clean` takes; tools.ts places it, tags its option and lens and caps
 // it. Every adapter throws on output that isn't its format (that is a failed tool, never a clean one).

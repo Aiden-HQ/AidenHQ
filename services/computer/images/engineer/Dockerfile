@@ -57,7 +57,7 @@ COPY --chmod=755 bin/sleep bin/aidenhq-browse /opt/aidenhq/bin/
 # Each is pinned (versions published on or before 2026-11-14, so 7+ days old) and checksummed (release downloads: sha256 per
 # architecture from the GitHub release's own digests), or resolved as of that date (npm --before, uv --exclude-newer, the Go
 # module proxy with its checksum database). gitleaks is the one above. Nothing is downloaded when a review runs, except the
-# vulnerability databases osv-scanner, trivy and govulncheck read (data, not code).
+# vulnerability databases osv-scanner and govulncheck read (data, not code).
 # uv 0.13.8 builds the Python tools' venv, then stays only as a build step's tool.
 RUN case "$(dpkg --print-architecture)" in \
       amd64) triple=x86_64-unknown-linux-gnu sum=5acfd9177cfecf0bf87578f059728215ccc884388988f55f7a65041b57387d91 ;; \
@@ -76,7 +76,7 @@ RUN npm i -g --before=2026-11-14 oxlint@1.93.0 knip@6.45.1 jscpd@5.4.3 fallow@3.
 # govulncheck v1.9.0 (2026-10-11), built with the image's Go from the module proxy (go.sum and the checksum database verify it).
 RUN GOTOOLCHAIN=local CGO_ENABLED=0 GOBIN=/usr/local/bin GOPATH=/tmp/gopath GOCACHE=/tmp/gocache go install golang.org/x/vuln/cmd/govulncheck@v1.9.0 \
     && chmod -R u+w /tmp/gopath && rm -rf /tmp/gopath /tmp/gocache && govulncheck -version | grep -q v1.9.0
-# osv-scanner 2.7.1, zizmor 1.32.0, trivy 0.76.2, scc 4.1.0 and squawk 2.72.0: release binaries.
+# osv-scanner 2.7.1, zizmor 1.32.0, scc 4.1.0 and squawk 2.72.0: release binaries.
 RUN case "$(dpkg --print-architecture)" in \
       amd64) a=fb7dab19a8bd9bbe5c3189f09d4b7ee1820c9553a23bac202648a56efd2f6ee8 file=osv-scanner_linux_amd64 ;; \
       arm64) a=983d22fbad9724514e3fcc6acc83b5fa64c5ffa6b0d9f510028f22c1b223ff81 file=osv-scanner_linux_arm64 ;; \
@@ -89,12 +89,6 @@ RUN case "$(dpkg --print-architecture)" in \
     esac \
     && curl -fsSLo /tmp/zz.tgz "https://github.com/zizmorcore/zizmor/releases/download/v1.32.0/$file" && echo "$a  /tmp/zz.tgz" | sha256sum -c - \
     && tar -xzf /tmp/zz.tgz -C /usr/local/bin zizmor && rm /tmp/zz.tgz && zizmor --version | grep -q 1.32.0
-RUN case "$(dpkg --print-architecture)" in \
-      amd64) a=bc0fc726e017b8927a62b2d3531d7a84ee01769daf5c99ed866dced54089fdbf file=trivy_0.76.2_Linux-64bit.tar.gz ;; \
-      arm64) a=ab9d51f86e6a5fb936f605faff6b593ac51bc378fff4d3e8b9d58358b9c367c3 file=trivy_0.76.2_Linux-ARM64.tar.gz ;; \
-    esac \
-    && curl -fsSLo /tmp/tv.tgz "https://github.com/aquasecurity/trivy/releases/download/v0.76.2/$file" && echo "$a  /tmp/tv.tgz" | sha256sum -c - \
-    && tar -xzf /tmp/tv.tgz -C /usr/local/bin trivy && rm /tmp/tv.tgz && trivy --version | head -n1 | grep -qx 'Version: 0.76.2'
 RUN case "$(dpkg --print-architecture)" in \
       amd64) a=c7328436d3027f4357d3d7853f7dc3ac2bbcb4ca08f1adad91a27c593884079b file=scc_Linux_x86_64.tar.gz ;; \
       arm64) a=6e0d2a1f8d3540ba7df185477dec40bb7340f1b214bfd303147de5cad2bd7b8b file=scc_Linux_arm64.tar.gz ;; \
