@@ -466,10 +466,11 @@ export class GitHub {
     return res.data;
   }
 
-  /** Resolves the review threads (at most RESOLVE_MAX) in one request. */
-  async resolveThreads(ids: string[]): Promise<void> {
-    const res = await this.request<{ data?: unknown; errors?: { message: string }[] }>("POST", "/graphql", { body: { query: resolveDoc(ids.length), variables: Object.fromEntries(ids.map((id, i) => [`t${i}`, id])) } });
-    if (res.errors?.length || !res.data) throw new Error(`GitHub GraphQL: ${res.errors?.map((e) => e.message).join("; ").slice(0, 300) ?? "no data"}`);
+  /** Resolves the review threads (at most RESOLVE_MAX) in one request; returns the ids GitHub resolved (a stale id fails alone). */
+  async resolveThreads(ids: string[]): Promise<string[]> {
+    const res = await this.request<{ data?: Record<string, unknown> | null; errors?: { message: string }[] }>("POST", "/graphql", { body: { query: resolveDoc(ids.length), variables: Object.fromEntries(ids.map((id, i) => [`t${i}`, id])) } });
+    if (!res.data) throw new Error(`GitHub GraphQL: ${res.errors?.map((e) => e.message).join("; ").slice(0, 300) ?? "no data"}`);
+    return ids.filter((_, i) => res.data![`t${i}`]);
   }
 
   /** A read whose failure is reported in the output (as `<field>_error`) instead of thrown or flattened to empty. */

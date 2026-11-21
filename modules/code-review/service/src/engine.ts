@@ -152,10 +152,11 @@ export function createEngine(d: EngineDeps) {
   /** Notices filed and not settled yet (write id: its PR), and the latest notice waiting behind one (by PR). */
   const acking = new Map<string, { repo: string; number: number }>();
   const ackNext = new Map<string, Ack>();
+  const acking_ = (repo: string, n: number) => [...acking.values()].some((t) => t.repo === repo && t.number === n);
   // The notice is the only path that makes the acknowledgement: one at a time per PR until its comment's id is known (two in
   // flight would each make one); a notice meanwhile waits, the latest replacing an earlier one, and goes once it is known.
   const ack = (a: Ack): Promise<void> => {
-    if (!ackOf(a.repo, a.number) && [...acking.values()].some((t) => t.repo === a.repo && t.number === a.number)) return void ackNext.set(`${a.repo}#${a.number}`, a), Promise.resolve();
+    if (!ackOf(a.repo, a.number) && acking_(a.repo, a.number)) return void ackNext.set(`${a.repo}#${a.number}`, a), Promise.resolve();
     // The PR's slot is taken now, before the call returns: a second notice meanwhile waits behind it.
     const slot = `slot:${randomBytes(6).toString("hex")}`;
     acking.set(slot, { repo: a.repo, number: a.number });
@@ -497,7 +498,7 @@ export function createEngine(d: EngineDeps) {
       landed(r);
       // The review's own summary says what the acknowledgement would, so a PR with no acknowledgement yet (an automatic review) gets
       // none; one already asked for (a command's queued notice) is updated with the outcome. A review of an older head leaves it to the newer one's.
-      if (ackOf(r.repo, r.number) && prRow(r.repo, r.number)?.head === r.head) void ack({ repo: r.repo, number: r.number, head: r.head, state: "done", run: r.id, combo: comboOf(r), counts: { important: r.important, nit: r.nit, pre_existing: r.pre_existing, cost_usd: round(r.cost_usd) }, ...(o.url ? { review: o.url } : {}) });
+      if ((ackOf(r.repo, r.number) || acking_(r.repo, r.number)) && prRow(r.repo, r.number)?.head === r.head) void ack({ repo: r.repo, number: r.number, head: r.head, state: "done", run: r.id, combo: comboOf(r), counts: { important: r.important, nit: r.nit, pre_existing: r.pre_existing, cost_usd: round(r.cost_usd) }, ...(o.url ? { review: o.url } : {}) });
     }
     if (r.write_id && ownTask(r)) void d.poster.close(r.repo, r.number, "The one-off review's post is settled.", r.id).catch((e) => log("review task not closed", { run: r.id, err: String((e as Error).message).slice(0, 200) }));
   }
@@ -770,8 +771,10 @@ export function createEngine(d: EngineDeps) {
           if (statusFiled.has(id)) continue;
         }
         const s = heads.get(p.head)!;
-        // One status per head: its verdict. The stages before it (queued, reviewing) are not written: an unreported required check already waits.
-        if (PENDING.has(s.reason)) continue;
+        // One status per head: its verdict. The stages before it (queued, reviewing) are not written, unless the head shows a failure
+        // (its earlier verdict, now being reviewed again): that one pending write replaces the stale red; an unreported check already waits.
+        const shown = p.status_key?.startsWith("{") ? (JSON.parse(p.status_key) as Mirror).reason : "pass";
+        if (PENDING.has(s.reason) && (PENDING.has(shown) || shown === "pass")) continue;
         const key = JSON.stringify(s), failed = statusFailed.get(id);
         if (key === p.status_key || (failed?.key === key && now() - failed.at < STATUS_RETRY)) continue;
         saved(key, await d.poster.status(s).catch((e) => ({ state: "refused" as const, why: String((e as Error).message).slice(0, 200) })));

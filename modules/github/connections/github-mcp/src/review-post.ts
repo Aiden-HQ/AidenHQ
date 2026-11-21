@@ -117,7 +117,7 @@ export class ReviewPoster {
   /** Resolves the listed threads that are Aiden's own (`mine`: the service's record) and still open; the others are reported, never touched. */
   async resolve(ref: Ref, wanted: { thread_ids?: string[]; finding_ids?: string[] }, mine: (t: Thread) => boolean): Promise<{ resolved: string[]; skipped: { thread: string; why: string }[] }> {
     const all = (await this.threads(ref)).map((t) => ({ ...t, ours: mine(t) }));
-    const resolved: string[] = [];
+    const open: string[] = [];
     const skipped: { thread: string; why: string }[] = [];
     const picks = new Map<string, string>();
     for (const id of wanted.thread_ids ?? []) picks.set(id, all.some((t) => t.id === id) ? "" : "no such thread on this pull request");
@@ -127,10 +127,11 @@ export class ReviewPoster {
       if (!t) skipped.push({ thread: id, why: missing });
       else if (!t.ours) skipped.push({ thread: id, why: "not a thread code review recorded as its own" });
       else if (t.resolved) skipped.push({ thread: id, why: "already resolved" });
-      else resolved.push(id);
+      else open.push(id);
     }
-    // One request for all of them.
-    if (resolved.length) await this.gh.resolveThreads(resolved.slice(0, RESOLVE_MAX));
+    // One request for all of them; only the ones GitHub resolved are reported.
+    const resolved = open.length ? await this.gh.resolveThreads(open.slice(0, RESOLVE_MAX)) : [];
+    for (const id of open) if (!resolved.includes(id)) skipped.push({ thread: id, why: "GitHub didn't resolve it" });
     return { resolved, skipped };
   }
 
@@ -167,8 +168,8 @@ export class ReviewPoster {
       // Read it first: a notice whose words are already there writes nothing.
       const have = await this.gh.request<{ html_url: string; body?: string }>("GET", `${api(ref)}/issues/comments/${id}`, {}).catch((e: Error) => { if (/\b404\b/.test(e.message)) return undefined; throw e; });
       if (have) {
-        const ok = have.body === signed ? have : await this.gh.request<{ html_url: string }>("PATCH", `${api(ref)}/issues/comments/${id}`, { body: { body: signed } });
-        return { id, url: ok.html_url, object: `${objectRef(ref)}/comment/${id}` };
+        const ok = have.body === signed ? have : await this.gh.request<{ html_url: string }>("PATCH", `${api(ref)}/issues/comments/${id}`, { body: { body: signed } }).catch((e: Error) => { if (/\b404\b/.test(e.message)) return undefined; throw e; });
+        if (ok) return { id, url: ok.html_url, object: `${objectRef(ref)}/comment/${id}` };
       }
     }
     const made = await this.gh.request<{ id: number; html_url: string }>("POST", `${api(ref)}/issues/${ref.number}/comments`, { body: { body: signed } });

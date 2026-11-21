@@ -495,10 +495,13 @@ test("the commit status mirrors the verdict per head, written only when it chang
   w.outcomes.delete(`s-${n}`);
   await w.tick({ github: false });
   assert.equal(w.statuses.length, n, "nothing changed, nothing written: the pending write settled by its own id");
+  w.later(1000); w.say(2, "alice", "aiden review full"); await w.tick();
+  assert.deepEqual([w.statuses.length, last()[1]], [n + 1, "running"], "a head showing a failure gets one pending while it is reviewed again");
+  w.finish(1); await w.tick({ github: false });
   w.pr(2, sha("3")); await w.tick();
-  assert.equal(w.statuses.length, n, "the push's review waits out its debounce without a status");
+  assert.equal(w.statuses.length, n + 2, "the push's review waits out its debounce without a status (the new head shows none)");
   w.later(DEBOUNCE + 1); await w.tick({ github: false });
-  w.finish(1, { findings: [], fixed: ["f1"] }); await w.tick({ github: false });
+  w.finish(2, { findings: [], fixed: ["f1"] }); await w.tick({ github: false });
   assert.deepEqual(last(), [sha("3"), "pass", 0, 0]);
   // An ungated repo gets no status.
   const plain = world();
