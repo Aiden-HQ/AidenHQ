@@ -269,7 +269,9 @@ export function renderReview(r: Review, run: string, opts: { place?: ReadonlyMap
   const { earlier = new Map<string, string>(), links = new Map<string, string>() } = opts;
   const ranked = [...r.findings].sort((a, b) => ORDER.indexOf(a.severity) - ORDER.indexOf(b.severity));
   const place = opts.place ?? new Map(ranked.map((f): [string, Anchor] => [f.id, f.end_line && f.end_line > f.line ? { line: f.end_line, start_line: f.line } : { line: f.line }]));
-  const chosen = ranked.filter((f) => !earlier.has(f.id) && place.has(f.id)).slice(0, INLINE_MAX);
+  // Every important finding gets a thread (answering it there is how it closes); the others up to INLINE_MAX.
+  const open = ranked.filter((f) => !earlier.has(f.id) && place.has(f.id));
+  const chosen = [...open.filter((f) => f.severity === "important"), ...open.filter((f) => f.severity !== "important").slice(0, INLINE_MAX)];
   const ids = new Set(chosen.map((f) => f.id));
   const comments = chosen.map((f): Placed => {
     const a = place.get(f.id)!;
@@ -283,7 +285,7 @@ export function renderReview(r: Review, run: string, opts: { place?: ReadonlyMap
   // Fixed command words, named on the AI reviewer's card instead (they read like instructions to it); model text is never touched.
   const cmd = (words: string) => (opts.card ? "[AidenHQ's fixed command for another review]" : `\`${words}\``);
   const partial = !!incomplete || r.withheld.important > 0;
-  const blocks = !opts.gated ? "" : c.important ? " · **blocks the merge** until each important one is fixed or dismissed" : partial ? " · **blocks the merge**: the review isn't whole" : " · doesn't block the merge";
+  const blocks = !opts.gated ? "" : c.important ? " · **blocks the merge** until each important one is fixed or answered" : partial ? " · doesn't block the merge (a partial review: see below)" : " · doesn't block the merge";
   const row = (f: Finding) => { const url = links.get(f.id) || earlier.get(f.id); const t = cell(plain(f.title, 160)); return `| ${ICON[f.severity]} | ${url ? `[${t}](${url})` : t} | ${fileLine(f)} |`; };
   const table = (fs: Finding[]) => ["| | Finding | Where |", "|---|---|---|", ...fs.map(row)].join("\n");
   const important = ranked.filter((f) => f.severity === "important" && threaded(f));

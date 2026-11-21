@@ -57,12 +57,15 @@ export interface EngineResult { message: string; read: boolean; calls?: Call[]; 
 /** `whole`: a read through the shell (`git diff`) whose output came back whole, of the paths after `--` or, with none, all. */
 export type Call = { tool: string; path?: string; from?: number; stat?: boolean; whole?: boolean };
 /**
- * A shell command that reads the change's diff (`git diff …`, not a listing such as --stat or --name-only), as the reads it
- * makes: one per path after `--`, or the whole diff.
+ * A shell command that reads the change's diff over the review's range (`git diff <base>..HEAD`, `<base>...HEAD` or
+ * `<base> HEAD`; not a listing such as --stat or --name-only), as the reads it makes: one per path after `--`, or the whole
+ * diff. Any other range reads something else: no read.
  */
-export function shellDiff(command: unknown): Call[] {
+export function shellDiff(command: unknown, base: string): Call[] {
   const c = String(command ?? "").replace(/^\s*cd\s+\S+\s*&&\s*/, ""); // `cd <repo> && git diff …`
   if (!/^\s*git\b[^|;&<>]*\bdiff\b/.test(c) || /[|;&<>]|--(stat|numstat|shortstat|name-only|name-status|summary|dirstat|raw)\b/.test(c)) return [];
+  const range = c.split(/\s--\s/)[0]!;
+  if (!/^[0-9a-f]{7,40}$/.test(base) || !new RegExp(`(^|\\s)${base.slice(0, 7)}[0-9a-f]*(\\.\\.\\.?|\\s+)HEAD(\\s|$)`).test(range)) return [];
   const paths = c.split(/\s--\s/)[1]?.trim().split(/\s+/).map((x) => x.replace(/^['"]|['"]$/g, "")).filter(Boolean) ?? [];
   return paths.length ? paths.map((path) => ({ tool: "diff", path, whole: true })) : [{ tool: "diff", whole: true }];
 }
@@ -179,7 +182,7 @@ async function claudeCode({ prompt, instructions, model, effort, root, base, min
       const t = c.type === "tool_use" && /^mcp__repo__(\w+)$/.exec(String(c.name))?.[1];
       const call = t ? callOf(t, c.input) : undefined;
       if (call) calls.push(call);
-      if (c.type === "tool_use" && c.name === "Bash" && c.id) { const reads = shellDiff(c.input?.command); if (reads.length) shell.set(c.id, reads); }
+      if (c.type === "tool_use" && c.name === "Bash" && c.id) { const reads = shellDiff(c.input?.command, base); if (reads.length) shell.set(c.id, reads); }
     }
     for (const e of events) for (const c of e.type === "user" ? e.message?.content ?? [] : []) {
       const reads = c.type === "tool_result" && c.tool_use_id ? shell.get(c.tool_use_id) : undefined;

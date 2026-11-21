@@ -6,6 +6,14 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFil
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { bound, history, review, scrub } from "../recipe/review.ts";
+import { shellDiff } from "../recipe/engines.ts";
+
+test("a shell git diff counts as a read only over the review's range", () => {
+  const b = "ab".repeat(20);
+  assert.deepEqual(shellDiff(`git diff ${b}..HEAD`, b), [{ tool: "diff", whole: true }]);
+  assert.deepEqual(shellDiff(`cd /w && git diff ${b.slice(0, 9)}...HEAD -- a.ts`, b), [{ tool: "diff", path: "a.ts", whole: true }]);
+  for (const c of ["git diff", "git diff HEAD~1", `git diff --stat ${b}..HEAD`, `git diff ${b}..HEAD | head`]) assert.deepEqual(shellDiff(c, b), [], c);
+});
 import { argsProblem, page, tools } from "../recipe/review-tools.ts";
 import { execFileSync } from "node:child_process";
 import { asker, callOf, nativeFindings, nativeReview, plan, runEngine } from "../recipe/engines.ts";

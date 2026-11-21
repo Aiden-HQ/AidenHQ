@@ -147,10 +147,8 @@ export function createMerges(d: {
       if (gate && "stop" in gate) return fail(gate.stop);
       if (gate) return wait("eval", gate.wait, EVAL_WAIT_MINUTES);
       const review = await d.reviewGate(p.repo, p.number, p.head);
-      if (review && "bypass" in review) {
-        log("merging without code review's verdict", { pr: p.url, why: review.bypass.slice(0, 300) });
-        d.flow?.reviewBypassed(p.repo, p.number, p.head, review.bypass);
-      } else if (review) {
+      const bypass = review && "bypass" in review ? review.bypass : undefined;
+      if (review && !bypass && "wait" in review) {
         if (p.note !== review.wait) log("merge waits for code review", { pr: p.url, why: review.wait.slice(0, 500) });
         p.note = review.wait;
         return wait("review", review.wait, Infinity);
@@ -171,6 +169,11 @@ export function createMerges(d: {
       }
       const mergedAt = now().toISOString();
       Object.assign(p, { status: "merged", mergedAt });
+      // Merged without code review's verdict (unreachable too long): recorded only now that the merge went ahead.
+      if (bypass) {
+        log("merged without code review's verdict", { pr: p.url, why: bypass.slice(0, 300) });
+        d.flow?.reviewBypassed(p.repo, p.number, p.head, bypass);
+      }
       d.flow?.merged(p.repo, p.number, p.head, String(p.sha ?? ""), mergedAt, String(pull?.title ?? ""), String(pull?.body ?? ""));
       delete p.wait;
       merged.add(p.repo.toLowerCase());

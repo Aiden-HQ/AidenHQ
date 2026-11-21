@@ -58,7 +58,9 @@ describe("rendering model text", () => {
     const partial = review([]);
     partial.coverage.incomplete = "the diff was cut at 300 files";
     expect(renderReview(partial, "r", { gated: true }).summary).toMatch(/Partial review[\s\S]*/);
-    expect(renderReview(partial, "r", { gated: true }).summary).toContain("**blocks the merge**: the review isn't whole");
+    expect(renderReview(partial, "r", { gated: true }).summary).toContain("doesn't block the merge (a partial review: see below)");
+    // Every important finding gets a thread, past INLINE_MAX too (answering it there is how it closes).
+    expect(renderReview(review(Array.from({ length: 20 }, (_, i) => finding(`f_imp_${100 + i}`, "src/pay.ts", 2))), "r").comments).toHaveLength(20);
     // The AI reviewer's card names the fixed command words, never hides model text that happens to quote them.
     const quoting = review([finding("f_q_1", "src/pay.ts", 2, { title: "Docs say `aiden review full` reruns" })]);
     const card = renderReview(quoting, "r", { card: true }).summary;

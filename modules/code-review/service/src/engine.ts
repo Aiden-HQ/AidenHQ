@@ -156,7 +156,14 @@ export function createEngine(d: EngineDeps) {
   // flight would each make one); a notice meanwhile waits, the latest replacing an earlier one, and goes once it is known.
   const ack = (a: Ack): Promise<void> => {
     if (!ackOf(a.repo, a.number) && [...acking.values()].some((t) => t.repo === a.repo && t.number === a.number)) return void ackNext.set(`${a.repo}#${a.number}`, a), Promise.resolve();
-    return d.poster.ack({ ...a, ack: ackOf(a.repo, a.number) }).then((o) => acked(a.repo, a.number, o)).catch((e) => log("ack not posted", { repo: a.repo, pr: a.number, state: a.state, err: String((e as Error).message).slice(0, 200) }));
+    // The PR's slot is taken now, before the call returns: a second notice meanwhile waits behind it.
+    const slot = `slot:${randomBytes(6).toString("hex")}`;
+    acking.set(slot, { repo: a.repo, number: a.number });
+    return d.poster.ack({ ...a, ack: ackOf(a.repo, a.number) }).then((o) => (acking.delete(slot), acked(a.repo, a.number, o)), (e) => {
+      acking.delete(slot);
+      log("ack not posted", { repo: a.repo, pr: a.number, state: a.state, err: String((e as Error).message).slice(0, 200) });
+      acked(a.repo, a.number, undefined);
+    });
   };
 
   function upsertPr(p: PullRequest) {
@@ -472,9 +479,14 @@ export function createEngine(d: EngineDeps) {
    * first head, on_push each push after it, `aiden review` any head. A one-off never counts (its runs are never mandatory).
    */
   function cover(r: RunRow) {
-    const runs = all<RunRow>("SELECT * FROM runs WHERE batch = ? AND mandatory = 1", r.batch);
-    if (!runs.length || !runs.every((x) => x.complete === 1 && (x.incremental_from === null || isCovered(x.repo, x.number, x.incremental_from)))) return;
-    run("INSERT OR REPLACE INTO covered (repo, number, head, base, at, policy) VALUES (?, ?, ?, ?, ?, ?)", r.repo, r.number, r.head, r.base, iso(), r.policy);
+    // Under the repo's mandatory reviewers now: each one of the run's moment has its latest mandatory run at this head whole,
+    // over a range from the merge base or a covered head (a run of an older set, or one partial, never counts).
+    const cfg = repoCfg(r.repo);
+    if (!cfg || !r.mandatory) return;
+    const at = all<RunRow>("SELECT * FROM runs WHERE repo = ? AND number = ? AND head = ? AND mandatory = 1 AND kind != 'oneoff' ORDER BY created DESC", r.repo, r.number, r.head);
+    const need = (r.moment === "push" ? cfg.on_push : cfg.on_open).filter((c) => c.mandatory).map((c) => at.find((x) => x.engine === c.engine && x.model === c.model && x.effort === c.effort));
+    if (!need.length || !need.every((x) => x && x.complete === 1 && (x.incremental_from === null || isCovered(x.repo, x.number, x.incremental_from)))) return;
+    run("INSERT OR REPLACE INTO covered (repo, number, head, base, at, policy) VALUES (?, ?, ?, ?, ?, ?)", r.repo, r.number, r.head, r.base, iso(), policyOf(cfg));
   }
 
   /** A post's outcome is in: a posted one is the PR's baseline and keeps its link; a one-off's task is done either way. */
@@ -494,7 +506,7 @@ export function createEngine(d: EngineDeps) {
   function landed(r: RunRow) {
     // A delayed post of an older run never rolls the baseline back past one a newer run set.
     run(`UPDATE prs SET last_reviewed_head = ?, last_reviewed_base = ? WHERE repo = ? AND number = ?
-      AND NOT EXISTS (SELECT 1 FROM runs x WHERE x.repo = prs.repo AND x.number = prs.number AND x.head = prs.last_reviewed_head AND x.posted = posted AND x.created > ?)`, r.head, r.base, r.repo, r.number, r.created);
+      AND NOT EXISTS (SELECT 1 FROM runs x WHERE x.repo = prs.repo AND x.number = prs.number AND x.head = prs.last_reviewed_head AND x.posted = 'posted' AND x.created > ?)`, r.head, r.base, r.repo, r.number, r.created);
   }
   /** A filed post's outcome, once the AI reviewer and the executor are done with it. */
   async function settle(r: RunRow) {
@@ -622,7 +634,7 @@ export function createEngine(d: EngineDeps) {
     // No mandatory run on the PR yet (it was open before its repo was gated): its opening review, whole.
     if (!last) return trigger(cfg, p, pushed(cfg, p) && one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND mandatory = 1 AND kind != 'oneoff'", p.repo, p.number) ? "push" : "open");
     const m: Moment = last.moment === "push" ? "push" : "open";
-    const lack = (m === "open" ? cfg.on_open : cfg.on_push).filter((c) => c.mandatory && !one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND head = ? AND engine = ? AND model = ? AND effort = ? AND kind != 'oneoff'", p.repo, p.number, p.head, c.engine, c.model, c.effort));
+    const lack = (m === "open" ? cfg.on_open : cfg.on_push).filter((c) => c.mandatory && !one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND head = ? AND engine = ? AND model = ? AND effort = ? AND kind != 'oneoff' AND mandatory = 1", p.repo, p.number, p.head, c.engine, c.model, c.effort));
     if (lack.length) queue(p, lack, "auto", { moment: m, keep: true, focus: prRow(p.repo, p.number)?.focus ?? null });
   }
   const runsOn = (p: PullRequest) => !!one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND status != 'skipped'", p.repo, p.number);
@@ -676,6 +688,7 @@ export function createEngine(d: EngineDeps) {
     for (const r of all<RunRow>("SELECT * FROM runs WHERE posted = 'pending' AND write_id IS NOT NULL")) await settle(r);
     for (const r of all<RunRow>("SELECT * FROM runs WHERE posted = 'retry' AND post_due <= ?", now())) await repost(r);
     for (const [write, t] of [...acking]) {
+      if (write.startsWith("slot:")) continue;
       const o = await d.poster.outcome(write).catch(() => ({ state: "pending" as const }));
       if (o.state === "pending") continue;
       acking.delete(write);
@@ -727,7 +740,7 @@ export function createEngine(d: EngineDeps) {
     for (const p of all<{ repo: string; number: number; head: string }>("SELECT repo, number, head FROM prs WHERE open = 1 AND status_key IS NOT NULL AND status_key != 'retired'")) {
       if (gatedRepos.has(p.repo)) continue;
       const o = await d.poster.status({ repo: p.repo, number: p.number, head: p.head, reason: "ungated", important: 0, running: [] }).catch(() => ({ state: "refused" as const }));
-      if (o.state !== "refused") run("UPDATE prs SET status_key = 'retired' WHERE repo = ? AND number = ?", p.repo, p.number);
+      if (o.state === "posted") run("UPDATE prs SET status_key = 'retired' WHERE repo = ? AND number = ?", p.repo, p.number);
     }
     for (const cfg of d.config().repos) {
       if (!gated(cfg)) continue;
@@ -766,7 +779,13 @@ export function createEngine(d: EngineDeps) {
   // ---- answers: a reply on a gating finding's thread closes it ---------------------------------------------------------------
 
   /** A reply that answers a finding: its first word (fixed, disputed, by design, won't fix) and the reason after it. */
-  const ANSWER = /^\s*(fixed|disputed|by design|won['’]?t fix)\b[\s:,.;\-–—]*(\S[\s\S]*)$/i;
+  const ANSWER = /^\s*(fixed|disputed|by design|won['’]?t fix)\b[\s:,.;\-–—]*([\s\S]*)$/i;
+  /** The answer in a reply: its word and its reason, which must say something (letters, not only punctuation or a signature). */
+  const answerOf = (body: string) => {
+    const m = ANSWER.exec(body.split("\n").filter((l) => !/\]\(https:\/\/aidenhq\.ai\b/.test(l)).join("\n"));
+    const reason = m?.[2]?.trim() ?? "";
+    return m && /\p{L}{2,}/u.test(reason) ? { word: m[1]!, reason } : undefined;
+  };
   /**
    * A gated repo's open PRs with open gating findings: a reply on Aiden's own thread for one (the service recorded the thread's
    * first comment from its post) from the PR's author (not a fork's: an outsider) or someone with write access now, starting
@@ -783,12 +802,12 @@ export function createEngine(d: EngineDeps) {
         for (const r of t.replies) {
           const key = `reply:${r.id}`;
           if (one("SELECT 1 FROM seen WHERE repo = ? AND comment = ?", cfg.repo, key)) continue;
-          const m = ANSWER.exec(r.body);
+          const m = answerOf(r.body);
           const may = !!m && ((r.author.toLowerCase() === p.author && !p.fork) || WRITERS.has(await d.source.permission(cfg.repo, r.author)));
           if (m && !may) log("an answer from someone who isn't the PR's author and has no write access: ignored", { repo: cfg.repo, pr: p.number, author: r.author.slice(0, 40) });
           if (m && may) {
-            const word = m[1]!.toLowerCase().replace(/['’]/g, "").replace("wont", "won't");
-            const claim = `${word}: ${m[2]!.trim()}`.slice(0, 1500);
+            const word = m.word.toLowerCase().replace(/['’]/g, "").replace("wont", "won't");
+            const claim = `${word}: ${m.reason}`.slice(0, 1500);
             tx(() => {
               if (run("UPDATE findings SET outcome = ?, outcome_at = ?, claim = ? WHERE repo = ? AND number = ? AND id = ? AND outcome IS NULL", word === "fixed" ? "fixed" : "dismissed", iso(), claim, cfg.repo, p.number, t.finding).changes)
                 dispose([t.finding!], { repo: cfg.repo, number: p.number, head: p.head }, word === "fixed" ? "fixed" : "dismissed", `answered by ${r.author.slice(0, 40)}: ${claim}`, `reply:${r.author.slice(0, 40)}`, r.body);
@@ -824,7 +843,7 @@ export function createEngine(d: EngineDeps) {
     // missing one is queued by the next poll.
     const runs = all<RunRow>("SELECT * FROM runs WHERE repo = ? AND number = ? AND head = ? AND kind != 'oneoff' ORDER BY created DESC", repo, n, head);
     const m = runs.find((r) => r.mandatory)?.moment === "push" ? cfg.on_push : cfg.on_open;
-    const latest = m.filter((c) => c.mandatory).map((c) => runs.find((r) => r.engine === c.engine && r.model === c.model && r.effort === c.effort));
+    const latest = m.filter((c) => c.mandatory).map((c) => runs.find((r) => r.mandatory && r.engine === c.engine && r.model === c.model && r.effort === c.effort));
     const busy = latest.filter((r) => r && (r.status === "queued" || r.status === "running"));
     if (!runs.some((r) => r.mandatory)) reasons.push({ code: "not_started", text: `the review of ${head.slice(0, 7)} hasn't started`, unblock: "it starts by itself within a minute or two" });
     else if (busy.length || latest.some((r) => !r)) reasons.push({ code: "running", text: `the mandatory review of ${head.slice(0, 7)} is ${busy.some((r) => r!.status === "running") ? "running" : "queued"}`, unblock: "it resumes by itself when the review finishes" });
