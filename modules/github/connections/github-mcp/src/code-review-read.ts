@@ -38,7 +38,7 @@ export function sinceArg(v: string | null): string {
 }
 
 type GhPr = {
-  number: number; state: string; merged_at?: string | null; title?: string; draft?: boolean; html_url: string; user?: { login?: string } | null;
+  number: number; state: string; merged_at?: string | null; merge_commit_sha?: string | null; title?: string; draft?: boolean; html_url: string; user?: { login?: string } | null;
   head?: { sha?: string; repo?: { full_name?: string } | null }; base?: { sha?: string; ref?: string; repo?: { full_name?: string } | null };
 };
 
@@ -104,6 +104,27 @@ export class CodeReviewReader {
     return { merge_base: r.merge_base_commit.sha, status: r.status as "ahead" };
   }
 
+  /**
+   * The PR's true merge base with `head`: what the PR changes. GitHub's `base.sha` is the base branch's tip when the PR was last
+   * synced (stale for an open PR once the branch moves or is merged into the head, and for a merged one, the tip at merge), so
+   * it is never the base. An open PR is compared with its base branch; a merged one with the first parent of its merge commit.
+   */
+  async mergeBase(repo: string, number: number, head: string): Promise<{ merge_base: string }> {
+    const p = await this.github.request<GhPr>("GET", `/repos/${repo}/pulls/${number}`);
+    let base: string;
+    if (!p.merged_at) {
+      const b = await this.github.request<{ commit?: { sha?: string } }>("GET", `/repos/${repo}/branches/${encodeURIComponent(String(p.base?.ref))}`);
+      if (!b.commit?.sha) throw new Error("GitHub's base branch has no tip");
+      base = b.commit.sha;
+    } else {
+      if (!p.merge_commit_sha) throw new Error("GitHub's merged PR has no merge commit");
+      const c = await this.github.request<{ parents?: { sha?: string }[] }>("GET", `/repos/${repo}/commits/${p.merge_commit_sha}`);
+      if (!c.parents?.[0]?.sha) throw new Error("GitHub's merge commit has no parent");
+      base = c.parents[0].sha;
+    }
+    return { merge_base: (await this.compare(repo, base, head)).merge_base };
+  }
+
   /** The repos the owner's sign-in can read whose name contains `q` (at most 30). */
   async repos(q: string): Promise<{ repo: string; private: boolean; url: string }[]> {
     const out: { repo: string; private: boolean; url: string }[] = [];
@@ -137,6 +158,7 @@ export async function codeReviewRoute(reader: CodeReviewReader, op: string, q: U
     if (op === "pr") return { status: 200, body: { pr: await reader.get(repo, numberArg(q.get("number"))) } };
     if (op === "comments") return { status: 200, body: await reader.comments(repo, sinceArg(q.get("since"))) };
     if (op === "compare") return { status: 200, body: await reader.compare(repo, shaArg(q.get("base")), shaArg(q.get("head"))) };
+    if (op === "merge-base") return { status: 200, body: await reader.mergeBase(repo, numberArg(q.get("number")), shaArg(q.get("head"))) };
     if (op === "postable") return { status: 200, body: await reader.postable(repo) };
     // A login that isn't one (a bot's, an empty or deleted user's) has no permission: an answer, never an error to retry.
     if (op === "permission") {

@@ -30,7 +30,8 @@ function world(settings = {}) {
       comments: async (_r, since) => ({ comments: comments.filter((c) => c.created_at > since), cursor: new Date(t).toISOString() }),
       permission: async (_r, login) => { if (perms.down) { perms.down = false; throw new Error("GitHub 502"); } if (perms.refuse) { perms.refuse = false; throw Object.assign(new Error("github-mcp permission: 400"), { status: 400 }); } return perms[login] ?? "none"; },
       // The merge base is sha("m"); a head is "ahead" of an earlier one unless the test force-pushed past it.
-      compare: async (_r, base, head) => { const f = fails.shift(); if (f) throw Object.assign(new Error(`github-mcp compare: ${f}`), { status: f }); return { merge_base: sha("m"), status: rewritten.has(base) ? "diverged" : "ahead", head }; },
+      compare: async (_r, base, head) => ({ merge_base: sha("m"), status: rewritten.has(base) ? "diverged" : "ahead", head }),
+      mergeBase: async () => { const f = fails.shift(); if (f) throw Object.assign(new Error(`github-mcp merge-base: ${f}`), { status: f }); return { merge_base: sha("m") }; },
       repos: async () => [],
       postable: async (repo) => ({ identity: repo.startsWith("acme/") ? "owner" : null, org: repo.split("/")[0] }), // null: GitHub not connected
     },
@@ -263,7 +264,7 @@ test("a run that can't start because GitHub or the kernel can't answer now waits
   const [b] = await w.engine.oneoff({ pr_url: `https://github.com/${REPO}/pull/7`, combos: [{ ...CODEX, effort: "low" }] });
   w.fails.push(404);
   await w.tick();
-  assert.match(w.engine.run(b.id).run.why, /^couldn't start: github-mcp compare: 404/);
+  assert.match(w.engine.run(b.id).run.why, /^couldn't start: github-mcp merge-base: 404/);
 });
 
 test("a run whose check job has no computer yet shows as waiting, not running", async () => {

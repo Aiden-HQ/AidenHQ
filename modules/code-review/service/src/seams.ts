@@ -47,6 +47,8 @@ export interface PrSource {
   permission(repo: string, login: string): Promise<Permission>;
   /** GitHub's compare of two commits: their merge base, and whether `head` is ahead of `base` (base is then its ancestor). */
   compare(repo: string, base: string, head: string): Promise<{ merge_base: string; status: "ahead" | "behind" | "identical" | "diverged" }>;
+  /** The PR's merge base with `head` (what the PR changes), open or merged: never the PR's recorded base sha, which goes stale. */
+  mergeBase(repo: string, number: number, head: string): Promise<{ merge_base: string }>;
   /** Who a review on the repo would post as: the App where installed, else the owner's sign-in in the comment orgs; null: nobody. */
   postable(repo: string): Promise<{ identity: "owner" | null; org: string }>;
   /** Repos the instance's GitHub identity can read whose name holds `q` (the board's repo picker). */
