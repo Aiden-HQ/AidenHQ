@@ -62,8 +62,12 @@ test("a panel PR card passes on code's code_review_owns approval; a panel record
   assert.deepEqual([posted.decision, posted.code], ["approve", "code_review_owns"]);
   assert.equal(records.get(pr.id).state, "approved");
   const other = file("github.merge");
-  assert.match(records.review(other.id, other.digest, { decision: "approve", by: "reviewer:openai/gpt-x", note: "ok" }) as string, /second reviewer/);
+  assert.match(String(records.review(other.id, other.digest, { decision: "approve", by: "reviewer:openai/gpt-x", note: "ok" })), /second reviewer/);
+  // A panel push lands on a branch directly: code's approval leaves it with the panel.
+  const pushRec = file("github.push");
+  const held = await writes.review(pushRec.id, { input: { tier: 1, rule: "gate-core", reason: "x" }, request: {} });
+  assert.match(held.refused ?? "", /second reviewer/);
   // A verdict naming code_review_owns on a record code review doesn't own (a merge) gets no exemption.
   const merge = file("github.merge");
-  assert.match(records.review(merge.id, merge.digest, { decision: "approve", by: "reviewer:kernel/code", note: "x", code: "code_review_owns" }) as string, /second reviewer/);
+  assert.match(String(records.review(merge.id, merge.digest, { decision: "approve", by: "reviewer:kernel/code", note: "x", code: "code_review_owns" })), /second reviewer/);
 });

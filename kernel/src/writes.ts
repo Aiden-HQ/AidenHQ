@@ -425,8 +425,8 @@ export function createWrites({ records, registry, connections, secret, resolver,
    * or PR the owner leaves to code review (ai_review_code, codeReviewOwns) is code's approval instead, held like any verdict to
    * the record's review-first.
    */
-  async function ask(r: Rec, request: Record<string, unknown>, model: string): Promise<Verdict> {
-    if (codeReviewOwns(r, reviewCode())) return { decision: "approve", code: "code_review_owns", reason: "Not reviewed by the AI reviewer: the owner's ai_review_code setting leaves pushes and PRs on this repo to code review.", model: "kernel/code" };
+  async function ask(r: Rec, request: Record<string, unknown>, model: string, owned: boolean): Promise<Verdict> {
+    if (owned) return { decision: "approve", code: "code_review_owns", reason: "Not reviewed by the AI reviewer: the owner's ai_review_code setting leaves pushes and PRs on this repo to code review.", model: "kernel/code" };
     let v: Verdict & { panel_marked?: boolean };
     try {
       if (!reviews) throw new Error("reviews are off");
@@ -653,7 +653,9 @@ export function createWrites({ records, registry, connections, secret, resolver,
         const model = typeof b.input?.model === "string" && MODEL.test(b.input.model) ? b.input.model : "kernel/code";
         // The cap is the record's, as it was tiered at filing: the label of a capped approve never depends on a second trace.
         const input = heldInput({ ...(b.input ?? { tier: 1 }), cap: r.cap ?? null }, r.review_first);
-        let v = codeVerdict(input, model) ?? afterReview(input, splitToOwner(input, await ask(r, b.request ?? {}, model)));
+        // Read once: the verdict code issues and the panel exemption below rest on the same answer, whatever the setting does meanwhile.
+        const owned = codeReviewOwns(r, reviewCode());
+        let v = codeVerdict(input, model) ?? afterReview(input, splitToOwner(input, await ask(r, b.request ?? {}, model, owned)));
         if (v.code === "reviewer_failed") {
           const n = (wait?.n ?? 0) + 1;
           if (n < REVIEW_TRIES) {
@@ -676,7 +678,7 @@ export function createWrites({ records, registry, connections, secret, resolver,
         const chain = post.decision === "reject" && (post.code === UNSURE || post.code === "panel_split") && typeof b.request?.chain === "string" && b.request.chain ? requestHash(b.request.chain, typeof b.request.comments === "string" ? b.request.comments : "") : undefined;
         // `+`: two approvals (the panel); `;unsure:`: one approval and the other reviewer unsure (owner, 2026-11-20).
         const by = `reviewer:${post.model}${post.decision === "approve" && post.second ? `+${post.second}` : post.decision === "approve" && post.second_unsure ? `;unsure:${post.second_unsure}` : ""}`;
-        const out = records.review(id, r.digest, { decision: post.decision, by, note: post.reason, code: post.code, chain, codeOwned: post.code === "code_review_owns" && codeReviewOwns(r, reviewCode()) });
+        const out = records.review(id, r.digest, { decision: post.decision, by, note: post.reason, code: post.code, chain, codeOwned: owned && post.code === "code_review_owns" && /\.pr$/.test(r.kind) });
         if (typeof out === "string") return { record: records.get(id)!, posted: post, refused: out };
         log("reviewed", { record: id, kind: r.kind, decision: post.decision, code: post.code, model: post.model, second: post.second, second_unsure: post.second_unsure });
         if (out.state === "approved") void run(id);
