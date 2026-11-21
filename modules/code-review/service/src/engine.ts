@@ -155,7 +155,8 @@ export function createEngine(d: EngineDeps) {
     void ack({ repo: p.repo, number: p.number, head: p.head, state: "skipped", run: id, combo: c, why });
   }
 
-  /** What each running run's check job has spent so far (the kernel's figure, read each tick), by run id. */
+  /** What each running run's check job has spent so far (the kernel's figure, read each tick), by run id. A run with no figure
+   * (not read yet, the kernel unreachable) counts at its whole run_usd: unknown spend is never 0. */
   const live = new Map<string, number>();
 
   /** Spent today (UTC), real money only: ended runs' billed cost plus what running ones have spent so far, for one repo or the whole instance. */
@@ -164,12 +165,13 @@ export function createEngine(d: EngineDeps) {
     const where = repo ? " AND repo = ?" : "";
     const ended = one<{ s: number }>(`SELECT COALESCE(SUM(cost_usd), 0) s FROM runs WHERE substr(ended, 1, 10) = ?${where}`, m, ...(repo ? [repo] : []))!.s;
     const running = all<RunRow>(`SELECT * FROM runs WHERE status = 'running'${where}`, ...(repo ? [repo] : []));
-    return ended + running.reduce((n, r) => n + Math.min(r.billed_prior + (live.get(r.id) ?? 0), r.run_usd), 0);
+    return ended + running.reduce((n, r) => n + (live.has(r.id) ? Math.min(r.billed_prior + live.get(r.id)!, r.run_usd) : r.run_usd), 0);
   }
 
   /**
    * Moves a due queued run to running while the day's real spend is under the caps, in one transaction with the checks. Nothing is
-   * reserved: runs in flight may overshoot a cap by at most their own run_usd each. Undefined when it may not start (and it is
+   * reserved: runs in flight may overshoot a cap by at most their own run_usd each (so by concurrent runs x run_usd in all,
+   * which the launcher's computers_max bounds). Undefined when it may not start (and it is
    * then skipped with why).
    */
   function admit(r: RunRow): RunRow | undefined {
@@ -449,7 +451,9 @@ export function createEngine(d: EngineDeps) {
     for (const r of all<RunRow>("SELECT * FROM runs WHERE posted = 'pending' AND write_id IS NOT NULL")) await settle(r);
     for (const r of all<RunRow>("SELECT * FROM runs WHERE status = 'running' AND check_job IS NOT NULL")) {
       const res = await d.runner.result(r.check_job!).catch((e) => ({ state: "running" as const, err: e }));
-      if (res.state === "running") { if (res.billed_usd !== undefined) live.set(r.id, res.billed_usd); } else await finish(r, res);
+      if (res.state !== "running") await finish(r, res);
+      else if (res.billed_usd !== undefined && !("err" in res)) live.set(r.id, res.billed_usd);
+      else live.delete(r.id); // no figure this tick: back to the whole run_usd
     }
     for (const r of all<RunRow>("SELECT * FROM runs WHERE status = 'queued' AND due <= ? ORDER BY created", now())) {
       const started = admit(r);

@@ -127,7 +127,7 @@ bounded by the Tier 2 rules above and PR text is data, never instructions.
 
 Every run is `review.started` / `review.ended` facts on its PR (stage `review`, with its engine, model and effort); the Insights
 tab shows reviews per day, cost per repo, findings by severity, the share of findings later resolved because fixed, and skips.
-Only the budget caps reviews (no per-author or per-repo review limits): a run is skipped, with a comment saying why, when the repo's or the instance's `day_usd` is spent. A day's spend (UTC) is real money only: finished runs' billed `cost_usd` plus what each running run's check job has spent so far (the kernel's `billed_usd` on `GET /v1/checks/:id`, read each tick). Nothing is reserved; runs in flight may overshoot a cap by at most their own `run_usd` each.
+Only the budget caps reviews (no per-author or per-repo review limits): a run is skipped, with a comment saying why, when the repo's or the instance's `day_usd` is spent. A day's spend (UTC) is real money only: finished runs' billed `cost_usd` plus what each running run's check job has spent so far (the kernel's `billed_usd` on `GET /v1/checks/:id`, read each tick). A running run with no readable figure (not read yet, the kernel unreachable) counts at its whole `run_usd`, never 0. Nothing is reserved; runs in flight may overshoot a cap by at most their own `run_usd` each, so by concurrent runs x `run_usd` in all, which the launcher's computer pool (`computers_max`) bounds.
 
 For comparing reviewers later, the module's SQLite (`data/modules/code-review/reviews/code-review.sqlite`, data version 1)
 keeps plain columns: `runs` has each run's `engine`, `model`, `effort`, `cost_usd` (the kernel's billing of its model token,

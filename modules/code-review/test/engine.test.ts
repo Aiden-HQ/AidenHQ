@@ -152,12 +152,22 @@ test("the day budget counts real spend only: a running run at its spend so far; 
   await w.tick();
   // Nothing is reserved: both combos ($1 + $2 caps, over the $2.5 cap together) start, nothing is spent yet.
   assert.deepEqual(w.engine.runs({ repo: REPO }).filter((r) => r.status === "running").map((r) => r.engine).sort(), ["claude-code", "codex"]);
-  assert.equal(w.engine.repos().repos[0].day_spent_usd, 0);
+  // No figure read yet: a running run counts at its whole run_usd (fail closed), never 0.
+  assert.equal(w.engine.repos().repos[0].day_spent_usd, 3);
   // The kernel's live figure for a running check is what counts: $3 spent so far (each within its run_usd) passes the cap.
   w.results.set("c-1", { state: "running", billed_usd: 1 });
   w.results.set("c-2", { state: "running", billed_usd: 2 });
   await w.tick();
   assert.equal(w.engine.repos().repos[0].day_spent_usd, 3);
+  // A readable figure replaces the cap: $0.5 and $0.25 so far; then the kernel can't be reached: both back at their run_usd.
+  w.results.set("c-1", { state: "running", billed_usd: 0.5 });
+  w.results.set("c-2", { state: "running", billed_usd: 0.25 });
+  await w.tick();
+  assert.equal(w.engine.repos().repos[0].day_spent_usd, 0.75);
+  w.results.set("c-1", { state: "running" });
+  w.results.set("c-2", { state: "running", billed_usd: 2 });
+  await w.tick();
+  assert.equal(w.engine.repos().repos[0].day_spent_usd, 3, "c-1 has no figure: its whole $1");
   w.later(1000);
   w.pr(2, sha("2"));
   await w.tick();
