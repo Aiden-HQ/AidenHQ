@@ -197,7 +197,7 @@ export function openRecords(file: string, now = () => new Date()) {
       return {
         created: q("SELECT tier, COUNT(*) AS n FROM records WHERE created_at >= ? AND tier > 0 GROUP BY tier", at) as { tier: number; n: number }[],
         decided: q("SELECT tier, state, COUNT(*) AS n FROM records WHERE decided_at >= ? GROUP BY tier, state", at) as { tier: number; state: string; n: number }[],
-        pending: q("SELECT CASE state WHEN 'review' THEN 1 ELSE 2 END AS tier, COUNT(*) AS n FROM records WHERE state IN ('review','owner') AND created_at > ? GROUP BY 1", cutoff()) as { tier: number; n: number }[],
+        pending: q("SELECT CASE state WHEN 'review' THEN 1 ELSE 2 END AS tier, COUNT(*) AS n FROM records WHERE state IN ('review','owner') AND COALESCE(decided_at, created_at) > ? GROUP BY 1", cutoff()) as { tier: number; n: number }[],
       };
     },
     shownState,
