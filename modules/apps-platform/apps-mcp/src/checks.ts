@@ -10,7 +10,7 @@
 // declared ones are strict. One attempt each, short timeouts. Only hard findings fail a deploy; warnings are reported.
 //   identity every TCP port any of the app's containers listens on or exposes: a security gate, not a light check
 //            (identityProbes below). Fails closed; only an app nobody can reach is skipped, and so is a PostgreSQL socket of
-//            a PostgreSQL socket of an app that declares protocol: postgres (and so has no HTTP door), each said as a
+//            an app that declares protocol: postgres (and so has no HTTP door), each said as a
 //            warning. Identification is positive (a PostgreSQL startup handshake, not an SSLRequest reply alone, which a TLS
 //            listener also gives), and a socket that answers HTTP — plaintext or over TLS — is judged either way; silence
 //            alone never skips.
@@ -44,6 +44,19 @@ export const isWeb = (app: App) => app.expose && !!app.port && !!app.health.url;
  * even so a socket is skipped only after it is positively identified as PostgreSQL, and one that answers HTTP is judged.
  */
 export const postgresOnly = (app: App) => app.protocol === "postgres";
+
+/**
+ * The compose service and container port the app's published port maps to: the one socket a `protocol: postgres`
+ * declaration covers. A published port can be remapped (5433 → 5432), and a multi-service app can listen on several
+ * ports, so the declaration never covers a socket it doesn't name. Undefined when the compose publishes no such port: the
+ * declaration then exempts nothing and the gate stays closed.
+ */
+export function declaredPort(app: App, compose: { services?: Record<string, any> }): Door | undefined {
+  if (!postgresOnly(app) || !app.port) return undefined;
+  for (const [service, s] of Object.entries<any>(compose.services ?? {}))
+    for (const p of s.ports ?? []) if (Number(p.published) === app.port) return { service, port: String(p.target) };
+  return undefined;
+}
 
 /** Which render and agent probes to run, and whether each path was declared (strict) or inferred (lenient). */
 export function plan(app: App, declared: Declared = {}): { render: { path: string; declared: boolean }[]; agent: { path: string; declared: boolean }[] } {
@@ -221,13 +234,13 @@ export interface PortAnswers { service: string; port: number; host: string; list
 /**
  * The gate over every socket of every container (IDENTITY_SCRIPT's findings). A socket that answered HTTP is judged by
  * judgeIdentity. One that didn't is skipped when it clearly isn't HTTP (a non-HTTP banner), when nothing listens on an
- * exposed port, or when the app declares `protocol: postgres` (`noHttp`: a registry declaration the gate trusts, refused
- * beside any HTTP door) and the socket is positively identified as PostgreSQL; never on a port the registry says is HTTP
- * (required) or one that speaks TLS (`https`: it could serve HTTP), and any other silence, `closed` and `silent` included,
- * fails closed. No socket at all: nobody can reach the
- * app, the one skip, recorded as a warning. Every skip is a non-hard finding.
+ * exposed port, or when the app declares `protocol: postgres` and the socket is the one its published port maps to
+ * (`declared`: the compose service and target port the registry declaration covers, refused beside any HTTP door),
+ * positively identified as PostgreSQL; never on another socket of the same app, on a port the registry says is HTTP
+ * (required) or on one that speaks TLS (`https`: it could serve HTTP), and any other silence, `closed` and `silent`
+ * included, fails closed. No socket at all: nobody can reach the app, the one skip, every skip is a non-hard finding.
  */
-export function identityPorts(ports: PortAnswers[], required: Door[], denied: string[] = [], noHttp = false): ProbeResult {
+export function identityPorts(ports: PortAnswers[], required: Door[], denied: string[] = [], declared?: Door): ProbeResult {
   const name = (p: { service: string; port: number | string }) => `${p.service}:${p.port}`;
   const at = (p: PortAnswers) => `${name(p)} on ${p.host}`;
   const findings: Finding[] = [];
@@ -241,7 +254,7 @@ export function identityPorts(ports: PortAnswers[], required: Door[], denied: st
     else if (p.raw === "banner" && !req) findings.push({ hard: false, what: `${at(p)} speaks something other than HTTP: not probed` });
     else if (p.raw === "refused" && !p.listening && !req) findings.push({ hard: false, what: `${at(p)} is exposed but nothing listens: not probed` });
     else if (p.raw === "https") findings.push({ hard: true, what: `${at(p)}: ${UNCONFIRMED}: answers HTTPS, so it is a web app the gate can't judge over these probes` });
-    else if (noHttp && !req && p.raw === "postgres") findings.push({ hard: false, what: `${at(p)}: speaks PostgreSQL, not HTTP: not probed (the app declares protocol: postgres and has no HTTP door)` });
+    else if (declared && p.service === declared.service && String(p.port) === declared.port && !req && p.raw === "postgres") findings.push({ hard: false, what: `${at(p)}: speaks PostgreSQL, not HTTP: not probed (the app declares protocol: postgres for this published port, and has no HTTP door)` });
     else findings.push({ hard: true, what: `${at(p)}: ${UNCONFIRMED}: no HTTP answer (${p.raw ?? "none"})` });
   }
   // Hard findings first, so the deploy's summary keeps the sentence.
@@ -256,7 +269,8 @@ export const PORT_PROBE_MS = 3_000;
  * process of this pid namespace holds it: its inode appears as a `socket:[<inode>]` fd of some /proc/<pid>/fd. A listener
  * no fd attributes (it vanished between the two reads) is dropped too; the registry's required doors are still checked.
  * stdin { ports: number[] (exposed or required), ips: string[] (the container's addresses), probes: { method, path,
- * headers }[], postgresProbe: whether to identify a silent socket as PostgreSQL (an app declaring protocol: postgres), sni: the names
+ * headers }[], postgresProbe: the container port the app's protocol: postgres declaration covers (only it is identified as a
+ * database), sni: the names
  * to offer a TLS listener }, and `proc`,
  * the proc root those pids and net tables are read from (the platform leaves it unset: /proc; a test passes a fixture tree).
  * Every such socket (but Docker's DNS on 127.0.0.11) is probed on the address it is bound to; a wildcard bind on loopback and
@@ -322,14 +336,22 @@ const pgFrame = (b) => {
   }
   // ErrorResponse and NoticeResponse carry null-terminated fields, each starting with a type byte and ending with the
   // single zero-length terminator field. PostgreSQL always sends severity (S, or V in 9.6+), SQLSTATE (C) and a message
-  // (M), so a reply without all three is malformed and not identification.
+  // (M), so a reply without all three, or with an empty value or a SQLSTATE that is not the five-character code, is
+  // malformed and not identification.
   if (!body.length || body[body.length - 1] !== 0) return "invalid";
-  const fields = new Set();
+  const fields = new Map();
   for (let i = 0; i < body.length;) {
-    if (body[i] === 0) return i === body.length - 1 && fields.has("C") && fields.has("M") && (fields.has("S") || fields.has("V")) ? "postgres" : "invalid";
+    if (body[i] === 0) {
+      const c = fields.get("C"), m = fields.get("M"), s = fields.get("S") ?? fields.get("V");
+      if (i !== body.length - 1 || !c || !m || !s) return "invalid";
+      if (!/^[0-9A-Z]{5}$/.test(c) || !s.trim() || !m.trim()) return "invalid";
+      return "postgres";
+    }
     const z = body.indexOf(0, i + 1);
     if (z < 0) return "invalid"; // a field with no terminator
-    fields.add(String.fromCharCode(body[i]));
+    const tag = String.fromCharCode(body[i]);
+    if (fields.has(tag)) return "invalid"; // a repeated field is malformed
+    fields.set(tag, body.subarray(i + 1, z).toString("latin1"));
     i = z + 1;
   }
   return "invalid";
@@ -366,21 +388,32 @@ const postgres = (host, port) => new Promise((done) => {
 // to see the answer, only its record header. A listener that serves HTTPS only for a recognized name needs the hello to name
 // that host in SNI; a router that serves its default endpoint when SNI is absent and silently closes an unknown name only
 // answers a hello without SNI. RFC 6066 allows one host_name per server_name list, so each host gets its own hello rather
-// than a list of several, and the unnamed hello is tried too. Any answer keeps the socket hard.
+// than a list of several, and the unnamed hello is tried too. Any answer keeps the socket hard. The hello offers TLS 1.3 and
+// a key share, so a 1.3-only endpoint can answer it rather than silently dropping it as unsupported.
+const tlsExt = (type, body) => Buffer.concat([Buffer.from([type >> 8, type & 255]), Buffer.from([body.length >> 8, body.length & 255]), body]);
+// A modern ClientHello: TLS 1.3 and 1.2, TLS 1.3 suites, x25519 and secp256r1 key exchange, and the signatures a current
+// client offers. A 1.3-only endpoint cannot negotiate with a hello that offers neither 1.3 nor a key share; a listener that
+// silently drops an unsupported hello would read as a database, so the hello has to be one a current client would send. It
+// carries no certificate and completes no handshake: only the server's first record matters.
 const hello = (name) => {
-  const ext = [];
+  const exts = [];
   if (name) {
-    // One server_name list holding one host_name: the name type (0), its two-byte length and the name. A list of several
-    // host_names is invalid per RFC 6066, so each host gets its own ClientHello.
+    // One server_name list holding one host_name (RFC 6066 allows one): the name type (0), its two-byte length and the name.
     const n = Buffer.from(name, "ascii");
     const entry = Buffer.concat([Buffer.from([0]), Buffer.from([n.length >> 8, n.length & 255]), n]);
-    ext.push(Buffer.from([0, 0, (entry.length + 2) >> 8, (entry.length + 2) & 255, entry.length >> 8, entry.length & 255]), entry);
+    exts.push(tlsExt(0, Buffer.concat([Buffer.from([(entry.length + 2) >> 8, (entry.length + 2) & 255]), entry])));
   }
-  const extensions = Buffer.concat(ext);
+  exts.push(tlsExt(10, Buffer.from([0, 4, 0, 2, 0, 0x1d]))); // supported_groups: x25519, secp256r1
+  exts.push(tlsExt(13, Buffer.from([0, 4, 0x04, 0x03, 0x08, 0x04]))); // signature_algorithms: ecdsa_secp256r1_sha256, rsa_pss_rsae_sha256
+  exts.push(tlsExt(43, Buffer.from([4, 0x03, 0x04, 0x03, 0x03]))); // supported_versions: TLS 1.3, TLS 1.2
+  exts.push(tlsExt(51, Buffer.concat([Buffer.from([0, 36, 0, 0x1d, 0, 32]), Buffer.alloc(32, 9)]))); // key_share: x25519
+  const extensions = Buffer.concat(exts);
   const body = Buffer.concat([
     Buffer.from([0x03, 0x03]),
     Buffer.alloc(32, 7), // random
-    Buffer.from([0x00, 0x00, 0x02, 0x00, 0x2f, 0x01, 0x00]), // no session, one suite, null compression
+    Buffer.from([0x00]), // no session
+    Buffer.from([0, 4, 0x13, 0x01, 0x13, 0x02]), // TLS_AES_128_GCM_SHA256, TLS_AES_256_GCM_SHA384
+    Buffer.from([0x01, 0x00]), // one compression, null
     Buffer.from([extensions.length >> 8, extensions.length & 255]),
     extensions,
   ]);
@@ -455,7 +488,7 @@ process.stdin.on("data", (c) => (s += c)).on("end", async () => {
       // The cheap HTTP look first; only its silence is worth identifying as a database's own protocol.
       const look = await raw(k.host, k.port);
       let seen = look;
-      if (r.postgresProbe && (look === "closed" || look === "silent")) {
+      if (r.postgresProbe && k.port === r.postgresProbe && (look === "closed" || look === "silent")) {
         seen = (await postgres(k.host, k.port)) || look;
         // One hello per name, then one without: a TLS router may only answer its default route without SNI or only a
         // recognized name with it, and any answer means the port could serve HTTPS. Names are only strings; a name over

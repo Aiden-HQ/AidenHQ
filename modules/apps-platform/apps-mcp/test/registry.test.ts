@@ -174,6 +174,11 @@ describe("a declared protocol", () => {
     const { parseApp } = await import("../src/registry.js");
     expect(() => parseApp(db({ protocol: "https" }))).toThrow();
   });
+  it("names the published port the gate scopes its exemption to", async () => {
+    const { parseApp } = await import("../src/registry.js");
+    const { port: _port, ...portless } = db();
+    expect(() => parseApp({ ...portless, protocol: "postgres" })).toThrow(/protocol: postgres needs the app's published port/);
+  });
 });
 
 describe("an app's path", () => {

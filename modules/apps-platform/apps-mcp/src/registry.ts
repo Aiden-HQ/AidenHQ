@@ -86,6 +86,8 @@ const AppSchema = z
   // `protocol: postgres` is a database's declaration: any HTTP door (a tailnet route, a share host, a health url, an agent
   // API) would make the app an HTTP app the identity gate must judge, so the declaration is refused there.
   .refine((a) => !a.protocol || (!a.expose && !a.share?.host && !a.health.url && !a.api), "protocol: postgres is for an app with no HTTP surface: not exposed, no share.host, no health.url, no api")
+  // The declaration names the app's published port, so the gate can scope the exemption to the one socket that port maps to.
+  .refine((a) => !a.protocol || a.port, "protocol: postgres needs the app's published port (port), which the gate scopes the exemption to")
   // aud is required by compile (scripts/edge.ts) unless settings.app_login is password, which this registry doesn't know.
   .refine((a) => !a.share?.host || a.port, "share.host needs a port (the gate proxies to 127.0.0.1:<port>)")
   .refine((a) => a.internet || !a.port, "internet: false apps can't publish a port (Docker doesn't publish from internal networks)")
