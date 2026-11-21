@@ -173,7 +173,7 @@ export const taskRoutineCap = (pc: Trace, task: string, routines: Record<string,
  * requester; at most one agent lift per REVIEW_COOLDOWN_MS). An answered rejection no longer refuses the same content nor
  * counts toward MAX_REJECTS.
  */
-export type Prior = { id?: string; action: string; args?: any; state: string; decidedBy?: string | null; decidedAt?: string | null; reviewCode?: string | null; review?: string | null; requestChain?: string; digest?: string; answered?: "owner" | "agent"; /** No agent filed it (a module's own write). */ service?: boolean };
+export type Prior = { id?: string; action: string; args?: any; state: string; decidedBy?: string | null; decidedAt?: string | null; reviewCode?: string | null; review?: string | null; requestChain?: string; digest?: string; answered?: "owner" | "agent"; /** No agent filed it (a module's own write). */ service?: boolean; /** Reviewed as a panel (two families). */ panel?: boolean };
 /** The actions a record carries: a product PR card with `args.merge` is also a merge, so neither dodges the other's no. */
 const carried = (r: Prior) => [r.action, ...(r.action === "pr" && r.args?.merge ? ["merge"] : [])];
 /** A no on a stale or duplicate card (decided_by `stale:account:<id>`) judged nothing: neither a veto nor a rejection. */
@@ -298,7 +298,7 @@ const rejector = (r: Prior | undefined) => (r?.decidedBy ?? "").replace(/^review
  *   the busiest of the branches or PRs `targets` names (tier.ts requestTargets), counted per target: a rejection belongs to a
  *   target by its name, or by the change's content key (a rebased or renamed resubmission on another branch), and never to a
  *   target it wasn't raised against, so three spread across three branches park none of them. Without `targets` (an action
- *   that names neither branch nor PR) the task is the target. `parkedUntil`: at MAX_REJECTS, the busiest target's last
+ *   that names neither branch nor PR) the task is the target. `parkedUntil`: at MAX_REJECTS, the strictest target's last
  *   rejection plus the cooldown (priorPart).
  * - same: exactly this content (requestKey, or the same patch keys: an amended, rebased or renamed resubmission; a conn.tool
  *   call's or module kind's digest) was rejected twice, or once and neither the reviewer's inputs (`chain`: the request chain,
@@ -329,16 +329,22 @@ export function priorDecisions(records: Prior[], action: string, also: string[] 
     const byContent = (key !== undefined && recordKey(r) === key) || (typeof patches === "string" && recordPatches(r) === patches) ? targets!.targets.map((t) => t.key) : [];
     for (const k of new Set<string>([...named, ...byPatch, ...byContent])) onTarget.set(k, [...(onTarget.get(k) ?? []), r]);
   }
-  // The busiest target (the latest rejected on a tie); its rejections are in decision order.
-  const busiest = targets?.targets.length ? [...onTarget.values()].reduce<Prior[]>((a, b) => (b.length > a.length || (b.length === a.length && String(b.at(-1)?.decidedAt) > String(a.at(-1)?.decidedAt)) ? b : a), []) : open;
-  const rejects = busiest.length;
-  // The park, walked in decision order: it starts at the MAX_REJECTS-th rejection; a later rejection counts as a panel's
-  // (`panels`) only when it came after the cooldown since the park started or the last panel's, so rejections of requests
-  // reviewed side by side before the park was recorded never stand in for a panel.
+  // Each target's park, walked in decision order: it starts at the MAX_REJECTS-th rejection; a later rejection counts as a
+  // panel's (`panels`) only when it was reviewed as a panel and came after the cooldown since the park started or the last
+  // panel's, so ordinary reviews that ran side by side, or late, never stand in for one. The request takes the strictest
+  // state across its targets.
   const at = (r: Prior | undefined) => Date.parse(String(r?.decidedAt ?? ""));
-  let parkAt = rejects >= MAX_REJECTS ? at(busiest[MAX_REJECTS - 1]) : NaN, panels = 0;
-  for (const r of busiest.slice(MAX_REJECTS)) if (at(r) >= parkAt + cooldown) { panels++; parkAt = at(r); }
-  const parkedUntil = Number.isFinite(parkAt) ? parkAt + cooldown : undefined;
+  const state = (list: Prior[]) => {
+    let parkAt = list.length >= MAX_REJECTS ? at(list[MAX_REJECTS - 1]) : NaN, panels = 0;
+    for (const r of list.slice(MAX_REJECTS)) if (r.panel && at(r) >= parkAt + cooldown) { panels++; parkAt = at(r); }
+    return { list, panels, parkedUntil: Number.isFinite(parkAt) ? parkAt + cooldown : undefined };
+  };
+  const states = (targets?.targets.length ? [...onTarget.values()] : [open]).map(state);
+  const rejects = Math.max(0, ...states.map((s) => s.list.length));
+  const panels = Math.max(0, ...states.map((s) => s.panels));
+  const parked = states.filter((s) => s.parkedUntil !== undefined);
+  const parkedUntil = parked.length ? Math.max(...parked.map((s) => s.parkedUntil!)) : undefined;
+  const lastParked = parked.map((s) => s.list.at(-1)!).sort((a, b) => String(a.decidedAt).localeCompare(String(b.decidedAt)));
   // Content is judged task-wide: this is about what was written, not where it was aimed. One rejection of it gets one fresh
   // review once the reviewer's inputs changed (`chain` now, `requestChain` then; the requester may edit the chain and the
   // comments, so this lifts once per content: a second rejection of it is final) or after the cooldown.
@@ -351,7 +357,7 @@ export function priorDecisions(records: Prior[], action: string, also: string[] 
   // Same content: the commits, or the patch keys (a rebased or renamed resubmission). Patch keys that couldn't be computed
   // (null) fail closed: any owner rejection of the action on the task makes it theirs.
   const ownerNo = mine.some((r) => byOwner(r) && r.state === "rejected" && (patches === null || (sameContent(r) && !mine.some((y) => byOwner(y) && y.state !== "rejected" && sameContent(y) && String(y.decidedAt) > String(r.decidedAt)))));
-  const avoid = fresh ? rejector(only) : rejects >= MAX_REJECTS ? rejector(busiest.at(-1)) : undefined;
+  const avoid = fresh ? rejector(only) : rejects >= MAX_REJECTS ? rejector(lastParked.at(-1)) : undefined;
   return { ownerVeto: lastOwner?.state === "rejected" || ownerNo, same: sameOne ? sameOne.review || "no note" : undefined, rejects, panels, ...(parkedUntil !== undefined ? { parkedUntil } : {}), ...(avoid ? { avoid } : {}), findings: open.map((r) => r.review).filter(Boolean) as string[], ...(targets?.targets.length ? { scope: targets.label } : {}) };
 }
 

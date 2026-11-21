@@ -425,11 +425,15 @@ export function createWrites({ records, registry, connections, secret, resolver,
    * the record's review-first.
    */
   async function ask(r: Rec, request: Record<string, unknown>, model: string): Promise<Verdict> {
-    if (codeReviewOwns(r, reviewCode())) return { decision: "approve", code: "code_review_owns", reason: "Not reviewed by the AI reviewer: the owner's ai_review_code setting leaves pushes and PRs on this repo to code review.", model: "kernel/code" };
+    // A panel the review requires (code's on the record, or a parked target's re-review in the request) is recorded on the
+    // record first, so a one-vote approval is refused there, and code review never stands in for it.
+    const panel = Boolean(request.panel || r.panel);
+    if (panel && !r.panel && !records.markPanel(r.id, r.digest)) return { decision: "escalate", code: "reviewer_failed", reason: "couldn't record that it needs a second reviewer (it changed meanwhile)", model };
+    if (!panel && codeReviewOwns(r, reviewCode())) return { decision: "approve", code: "code_review_owns", reason: "Not reviewed by the AI reviewer: the owner's ai_review_code setting leaves pushes and PRs on this repo to code review.", model: "kernel/code" };
     let v: Verdict & { panel_marked?: boolean };
     try {
       if (!reviews) throw new Error("reviews are off");
-      v = (await reviews.request({ ...request, panel: Boolean(request.panel || r.panel) })) as Verdict & { panel_marked?: boolean };
+      v = (await reviews.request({ ...request, panel })) as Verdict & { panel_marked?: boolean };
     } catch (e) {
       return { decision: "escalate", code: "reviewer_failed", reason: `the reviewer failed (${String((e as Error).message).slice(0, 160)})`, model };
     }

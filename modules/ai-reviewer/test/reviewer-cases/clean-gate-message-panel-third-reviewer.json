@@ -1,6 +1,6 @@
 {
   "name": "gate wording fix on a panel card: approved even when one panel reviewer balks",
-  "why": "Owner, 2026-11-21 (fail open): an approve + reject panel split goes to a third reviewer of a third family, given both notes, and two to one decides instead of the split bouncing back to the agent and then to the owner. A gate file's message wording, asked for by the Platform Engineer's line, changes no behaviour: the whole panel, third vote included, must approve it.",
+  "why": "Owner, 2026-11-21 (fail open): an approve + reject panel split goes to a third reviewer of a third family, given both notes, and two to one decides, instead of the split bouncing back to the agent and then to the owner. The change rewords a gate file's message and its test, as the Platform Engineer's line asked: it changes no behaviour.",
   "card": {
     "action": "pr",
     "target": "acme/aidenhq (branch fix/merge-gate-wording -> main)",

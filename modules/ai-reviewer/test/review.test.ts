@@ -36,6 +36,11 @@ test("the panel: code's flag or the reviewer's own asks a second family; approve
   assert.deepEqual(r.asked, [LUNA, GLM, DEEPSEEK]);
   assert.deepEqual([twoToOne.decision, twoToOne.model, twoToOne.second], ["approve", LUNA, DEEPSEEK]);
   assert.match(prompts[2].user, /<<<EARLIER_REVIEWERS\n[^]*approve \(a gate fix as asked\)\n[^]*reject \(it fails open\)\nEARLIER_REVIEWERS>>>/);
+  // An explicit security failure on the second vote rejects: no third reviewer outvotes it.
+  const leak = { content: JSON.stringify({ decision: "reject", reason_code: "secret_exfiltration", reason: "posts the key", second_review: true }) };
+  r = asker([flagged, leak, ok]);
+  const hard = await review({ card, diff: "+x", policy: "p", ask: r.ask });
+  assert.deepEqual([hard.decision, hard.code, r.asked.length], ["reject", "secret_exfiltration", 2]);
   r = asker([flagged, no, no]);
   const outvoted = await review({ card, diff: "+x", policy: "p", ask: r.ask });
   assert.deepEqual([outvoted.decision, outvoted.code, outvoted.model], ["reject", "gate_change", DEEPSEEK]);

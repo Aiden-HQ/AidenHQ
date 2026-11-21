@@ -101,6 +101,8 @@ export const MODEL_CODES = ["in_scope", "out_of_scope", "secret_exfiltration", "
 export const CODE_CODES = ["reviewer_failed", "reviewer_refused", "no_independent_model", "no_diff", "files_not_shown", "review_cap", "code_review_owns", "check_failed", "tier_raised", "new_authority", "autonomy_off", "routine_autonomy", "owner_tier", "shadow", "panel_split", "refused_by_code", "stale_head"];
 /** The model's "I can't tell": a second reviewer decides; both unsure, the card goes back to the agent with this code. */
 export const UNSURE = "reviewer_unsure";
+/** Rejection codes that name an attack (exfiltration, injected instructions): a panel's tiebreak never outvotes one. */
+const HARD_CODES = ["secret_exfiltration", "prompt_injection"];
 
 export const REVIEW_SCHEMA = {
   type: "object",
@@ -128,7 +130,8 @@ type Ask = ReturnType<typeof judgeAsk>;
 type Prompt = { system: string; user: string; tools?: Record<string, JudgeTool>; unread?: () => string[] };
 interface Finding { issue: string; quote: string }
 /** A usable verdict from one model call, in code's terms. */
-interface Judged { decision: "approve" | "reject" | "escalate"; code: string; reason: string; second: boolean; findings: Finding[]; /** An approval that left these checklist items unreported (askFirst asks once more). */ missing?: string[] }
+interface Judged { decision: "approve" | "reject" | "escalate"; code: string; reason: string; second: boolean; findings: Finding[]; /** An approval that left these checklist items unreported (askFirst asks once more). */ missing?: string[];
+  /** A security failure the vote stated explicitly (a checklist item false, an exfiltration or injection finding): no tiebreak outvotes it. */ security?: string[] }
 type Voted = Judged & { model: string };
 /** The first reviewer's verdict as review() carries it: its own `second_review` flag renamed `flag`. */
 /** A verdict as review() returns it: the kernel's Verdict plus the findings that quoted real code. */
@@ -572,14 +575,15 @@ function verdictOf(raw: { content?: unknown; refusal?: unknown } | undefined, sh
   // The flag only ever adds a reviewer: anything but an explicit false counts as true.
   const second = v.second_review !== false;
   const findings = keepQuoted(v.findings, shown);
-  if (v.decision === "approve" && failed.length) return { decision: "reject", code: "policy_other", reason: `A security checklist item fails (${failed.join(", ")}). ${reason}`.slice(0, 1500), second, findings };
+  // An explicit false fails whatever the decision said (an approve or an unsure); only an escalation stays the owner's call.
+  if (v.decision !== "escalate" && failed.length) return { decision: "reject", code: "policy_other", reason: `A security checklist item fails (${failed.join(", ")}). ${reason}`.slice(0, 1500), second, findings, security: failed };
   // Unsure (or an escalation the model coded as unsure) comes back as an escalation coded reviewer_unsure; review() asks a
   // second reviewer before anything reaches the owner.
   if (v.decision === "unsure" || (v.decision === "escalate" && v.reason_code === UNSURE)) return { decision: "escalate", code: UNSURE, reason, second, findings };
   // A missing or off-list code never voids a verdict: the decision is what counts; the code falls back to the generic one.
   const code = MODEL_CODES.includes(v.reason_code) && v.reason_code !== UNSURE ? v.reason_code : v.decision === "approve" ? "in_scope" : v.decision === "reject" ? "policy_other" : "owner_should_look";
   // Findings only inform: a verdict whose findings are all dropped keeps its decision (a reject stays a reject); never an approval.
-  return { decision: v.decision, code, reason, second, findings, ...(v.decision === "approve" && missing.length ? { missing } : {}) };
+  return { decision: v.decision, code, reason, second, findings, ...(v.decision === "approve" && missing.length ? { missing } : {}), ...(v.decision === "reject" && HARD_CODES.includes(code) ? { security: [code] } : {}) };
 }
 
 /**
@@ -759,12 +763,15 @@ async function panelVotes(v1: FirstVote, v2: Voted, flag: boolean, whole: boolea
   if (v2.code === UNSURE && !whole) return { flag, decision: "reject", code: UNSURE, reason: `The second reviewer couldn't judge it, and code couldn't verify the change and its request were shown whole. Make what it names clear and ask again. ${both("unsure")}`.slice(0, 1990), model: v2.model };
   if (v2.code === UNSURE) return { decision: "approve", code: "in_scope", reason: `Approved; the second reviewer was unsure (code verified the change and its request were shown whole). ${both("unsure")}`.slice(0, 1990), model: v1.model, second_unsure: v2.model, whole: true, flag };
   if (v2.decision !== "reject") return { flag, decision: "escalate", code: "panel_split", reason: `The two reviewers disagree. ${both(v2.decision)}`.slice(0, 1990), model: v1.model, second: v2.model };
+  // An explicit security failure (a checklist item false, an exfiltration or injection finding) rejects: no third vote.
+  if (v2.security?.length) return { flag, decision: "reject", code: v2.code, reason: `${cut(v2.reason, 1000)} (Second reviewer: an explicit security failure, ${v2.security.join(", ")}; the first approved: ${cut(v1.reason, 600)})`.slice(0, 1990), model: v2.model };
   const split = (why: string, model = v2.model): Result => ({ flag, decision: "reject", code: "panel_split", reason: `The reviewers split${why}: fix what the rejecting one names and ask again. ${both("reject")}`.slice(0, 1990), model });
   const v3 = await third(v2);
   if (v3 === "none") return split(" and no third reviewer was left");
   if (!v3) return split(" and the third reviewer refused");
   if (v3.failed) return { ...failedOf(v3.failed, v1.model, "the third reviewer"), flag };
-  const all = `${both("reject")} Third reviewer ${v3.model}: ${v3.code === UNSURE ? "unsure" : v3.decision} (${cut(v3.reason, 600)})`.slice(0, 1990);
+  // The deciding vote first, so the board's 2,000 characters always keep it.
+  const all = `Third reviewer ${v3.model}: ${v3.code === UNSURE ? "unsure" : v3.decision} (${cut(v3.reason, 800)}). Earlier: ${v1.model}: approve (${cut(v1.reason, 450)}) ${v2.model}: reject (${cut(v2.reason, 450)})`.slice(0, 1960);
   if (v3.decision === "approve") return { decision: "approve", code: "in_scope", reason: `Approved two to one. ${all}`.slice(0, 1990), model: v1.model, second: v3.model, flag };
   if (v3.code === UNSURE) return { ...split(", and the third reviewer was unsure", v3.model), reason: `The reviewers split and the third was unsure: fix what the rejecting one names and ask again. ${all}`.slice(0, 1990) };
   return { flag, decision: v3.decision, code: v3.code, reason: `${v3.decision === "reject" ? "Rejected two to one" : "The third reviewer escalated"}. ${all}`.slice(0, 1990), model: v3.model };

@@ -101,11 +101,13 @@ test("the rejection that parks a task wakes its delegator once, with the reviewe
     assert.equal(told.length, n === MAX_REJECTS - 1 ? 1 : 0, `told only at the rejection that parks it (after ${n + 1})`);
   }
   assert.equal(told[0].task, "TASK-0", "the delegator: the task's parent, blocked on it");
-  assert.match(told[0].body, new RegExp(`^\\*\\*WOR-1 is parked:\\*\\* the AI reviewer rejected acme\\.post on this task ${MAX_REJECTS} times, so it waits 30 minutes and then a panel reviews it again[^]*comment on WOR-1 with your decision[^]*close it[^]*\\x60{3}\\nkeep the shim out \\(${notes.at(-1)}\\)\\n\\x60{3}[^]*<!-- aidenhq-wake -->$`), "a wake notice: never read as the owner's words");
+  assert.match(told[0].body, new RegExp(`^\\*\\*WOR-1 is parked:\\*\\* the AI reviewer rejected acme\\.post on this task ${MAX_REJECTS} times\\. Its agent was told to file it again after 30 minutes, when a panel reviews it[^]*comment on WOR-1 with your decision[^]*close it[^]*\\x60{3}\\nkeep the shim out \\(${notes.at(-1)}\\)\\n\\x60{3}[^]*<!-- aidenhq-wake -->$`), "a wake notice: never read as the owner's words");
   // Filed again within the cooldown: refused as parked by code (no model), and the delegator isn't told twice.
   const again = fileRecord(k.records, { args: { note: "z" } });
   await k.loop.tick();
   assert.match(k.records.get(again.id).review ?? "", /^parked until \S+Z: /);
+  // The requester is told when to file it again (nothing re-reviews a closed record by itself).
+  assert.match(k.notices.at(-1).text, /\*\*Parked:\*\* file it again after \S+Z[^]*a panel of two reviewers reviews it then/);
   assert.deepEqual([told.length, owner.length, mod.seen.length], [1, 0, MAX_REJECTS]);
 });
 
