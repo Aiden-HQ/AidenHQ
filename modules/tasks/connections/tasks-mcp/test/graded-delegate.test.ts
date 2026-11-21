@@ -100,6 +100,53 @@ test("a deliverable ref is one strict token: no forged markers", async () => {
   for (const ref of ["https://github.com/acme/app/pull/12", "acme/app#12", "roadmap-keeper"]) assert.equal((await call("task_delegate", { ...ask, deliverable: { kind: "pr", ref }, rubric })).r.result?.isError, undefined, ref);
 });
 
+// A retired repo takes no changes: a pr deliverable or rubric naming it can never pass, so it is refused where the brief is
+// filed, for every assignee and in every ref shape DELIVERABLE_REF accepts, with no network lookup.
+const retired = "retired repo: modules live in Aiden-HQ/AidenHQ under modules/";
+
+test("a pr deliverable naming a retired repo is refused in every ref shape, by task_delegate and task_create", async () => {
+  for (const ref of [
+    "Aiden-HQ/aidenhq-modules",
+    "Aiden-HQ/aidenhq-modules#1159",
+    "https://github.com/Aiden-HQ/aidenhq-modules",
+    "https://github.com/Aiden-HQ/aidenhq-modules/pull/1159",
+    "aiden-hq/AIDENHQ-MODULES",
+  ]) {
+    const delegated = await call("task_delegate", { ...ask, deliverable: { kind: "pr", ref }, rubric });
+    assert.equal(delegated.r.result?.isError, true, ref);
+    assert.equal(delegated.text, retired, ref);
+    assert.equal(delegated.created.length, 0, ref);
+
+    // task_create, for a graded assignee and for one whose work isn't graded: any assignee.
+    for (const assignee of ["Kai", "fleet-ops"]) {
+      const created = await call("task_create", { title: "Security fix: image", description: "Bump the base image.", marker: "security:target:repo:product", assignee, deliverable: { kind: "pr", ref } });
+      assert.equal(created.r.result?.isError, true, `${ref} to ${assignee}`);
+      assert.equal(created.text, retired, `${ref} to ${assignee}`);
+      assert.equal(created.created.length, 0, `${ref} to ${assignee}`);
+    }
+  }
+});
+
+test("a pr rubric naming a retired repo is refused, and a live repo files normally", async () => {
+  for (const c of [
+    "the PR is merged into Aiden-HQ/aidenhq-modules",
+    "a test in the diff covers the check in aiden-hq/AIDENHQ-MODULES#12",
+    "https://github.com/Aiden-HQ/aidenhq-modules/pull/1159 is merged",
+  ]) {
+    const bad = await call("task_delegate", { ...ask, deliverable: { kind: "pr", ref: "Aiden-HQ/AidenHQ" }, rubric: [...rubric, c] });
+    assert.equal(bad.r.result?.isError, true, c);
+    assert.equal(bad.text, retired, c);
+    assert.equal(bad.created.length, 0, c);
+  }
+
+  // The same shapes for the live repo still file.
+  for (const ref of ["Aiden-HQ/AidenHQ", "Aiden-HQ/AidenHQ#1188", "https://github.com/Aiden-HQ/AidenHQ/pull/1188"]) {
+    const ok = await call("task_delegate", { ...ask, deliverable: { kind: "pr", ref }, rubric });
+    assert.equal(ok.r.result?.isError, undefined, `${ref}: ${ok.text}`);
+    assert.deepEqual(ok.filed, [{ issue: "new", rubric, deliverable: { kind: "pr", ref }, as: "caller" }]);
+  }
+});
+
 test("task_finish on a held task posts the result as a comment and leaves the status to the grader", async () => {
   const held = await call("task_finish", { comment: "Merged acme/app#12." }, { finish: { status: 202, body: { held: { state: "pending", reason: "The grader checks this task against its rubric." } } } });
   assert.equal(held.r.result?.isError, undefined, held.text);
