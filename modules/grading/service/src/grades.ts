@@ -275,8 +275,8 @@ export class Grades {
 
   /**
    * One grading pass's outcome. Only a criterion the grader shows unmet (`met: "no"`) sends the work back to its assignee
-   * (needs_revision); each distinct rejected version counts once, and the MAX_LOOPS-th (or the 2 * MAX_LOOPS-th rejection of
-   * any version) settles the row satisfied, so the task closes done,
+   * (needs_revision); each distinct rejected version counts once, and the MAX_LOOPS-th, or a rejected version handed in again
+   * unchanged, settles the row satisfied, so the task closes done,
    * ungraded, with the unmet criteria in the note. Anything else that isn't still waiting settles it satisfied too: a verdict
    * with nothing shown unmet (unverified, cannot_judge, evidence that never came). A grader that failed or returned no usable
    * criteria (grading_failed) is retried on the 1-5-15-60 minute ladder and settles the same way after MAX_GRADER_FAILURES passes
@@ -296,11 +296,11 @@ export class Grades {
       return set("grading_failed", g.attempts, verdicts, failures, new Date(now).toISOString());
     }
     if (!unmet) return set("satisfied", g.attempts, verdicts, 0, null);
-    // A version rejected before and handed in again unchanged is no new attempt; only a bound on every rejection (twice the
-    // distinct budget) keeps an unchanged resubmission from looping for ever.
-    const attempts = g.attempts + (g.verdicts.some((x) => x.verdict === "needs_revision" && x.version === v.version) ? 0 : 1);
-    const rejections = verdicts.filter((x) => x.verdict === "needs_revision").length;
-    return set(attempts >= MAX_LOOPS || rejections >= 2 * MAX_LOOPS ? "satisfied" : "needs_revision", attempts, verdicts, 0, null);
+    // A version rejected before and handed in again unchanged spends no attempt, and sending it back once more would change
+    // nothing: it closes ungraded at once.
+    if (g.verdicts.some((x) => x.verdict === "needs_revision" && x.version === v.version)) return set("satisfied", g.attempts, verdicts, 0, null);
+    const attempts = g.attempts + 1;
+    return set(attempts >= MAX_LOOPS ? "satisfied" : "needs_revision", attempts, verdicts, 0, null);
   }
 }
 
