@@ -122,19 +122,21 @@ function docker(args: string[], opts: { stdin?: string; timeoutMs?: number } = {
 }
 // "missing" only when Docker says so: a daemon that doesn't answer is not a box that is gone (a job's release waits on this).
 const jobState = async (name: string) => {
-  const r = await docker(["inspect", "-f", "{{.State.Status}}", name]);
+  const r = await docker(["inspect", "-f", "{{.State.Status}}", name], { timeoutMs: 15_000 });
   if (r.exitCode === 0) return r.stdout.trim();
   return /no such (object|container)/i.test(r.stderr) ? "missing" : "unknown";
 };
 const ours = (name: unknown): name is string => typeof name === "string" && name.startsWith(CFG.prefix) && /^[a-z0-9-]+$/.test(name);
 const fail = (status: number, msg: string) => Object.assign(new Error(msg), { status });
 
-// A box Docker didn't remove keeps its records: its lease (the kernel's release retries) or, lapsed, its idle reaping. While it
-// is being removed it counts as busy, so no other admission picks it to evict.
+// A box Docker didn't remove keeps its records: its lease (the kernel's release retries) or, lapsed, its idle reaping. Its
+// token opens nothing from the start, and while it is being removed it counts as busy, so no other admission picks it to evict.
 async function destroy(name: string, why: string) {
   const b = boxes.get(name);
   if (b) b.busy++;
-  const r = await docker(["rm", "-f", name]);
+  const j = jobs.get(name);
+  if (j?.tokenHash) { delete j.tokenHash; saveJobs(); }
+  const r = await docker(["rm", "-f", name], { timeoutMs: 60_000 });
   if (r.exitCode !== 0 && (await jobState(name)) !== "missing") {
     if (b) b.busy--;
     log("couldn't destroy", name, why, r.stderr.trim());
@@ -225,6 +227,7 @@ const jobControl = {
       // A launcher draining for its successor hands out no box the successor may not know: it goes back, and the kernel asks again.
       if (draining) throw fail(503, "the launcher is restarting; ask the next one");
     } catch (e) {
+      boxes.get(name)!.busy = 0; // the start is over: a box Docker keeps is reaped as idle
       await destroy(name, "job box failed to start");
       throw e;
     }
@@ -272,6 +275,7 @@ const jobControl = {
       if (r.exitCode !== 0) throw fail(500, `docker run failed: ${r.stderr.trim()}`);
       if (draining) throw fail(503, "the launcher is restarting; ask the next one");
     } catch (e) {
+      boxes.get(name)!.busy = 0; // the start is over: a box Docker keeps is reaped as idle
       await destroy(name, "check box failed to start");
       throw e;
     }

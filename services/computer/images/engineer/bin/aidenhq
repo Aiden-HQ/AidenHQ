@@ -65,7 +65,7 @@ const fixes = [];
 for (let i = 0; i < rest.length; i++) {
   if (rest[i] === "--fixes") fixes.push(rest[++i]);
   else if (["--title", "--body-file", "--file"].includes(rest[i])) flags[rest[i].slice(2)] = rest[++i];
-  else if (rest[i] === "--keep") flags.keep = true;
+  else if (rest[i] === "--keep" && command === "clone") flags.keep = true;
   else if (rest[i].startsWith("--")) fail(`unknown option ${rest[i]}\n${usage}`, 2);
   else words.push(rest[i]);
 }

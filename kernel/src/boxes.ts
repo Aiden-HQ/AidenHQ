@@ -198,10 +198,11 @@ export function createBoxes({ db, cfg, jobs, call, secret, whoami, connections, 
    * (`aidenhq cleanup`), unless a later job on the task is already admitted or running in it.
    */
   async function release(id: string) {
-    const r = db.prepare("SELECT task, box FROM jobs WHERE id = ? AND authority IS NOT NULL AND released IS NULL").get(id) as { task: string; box: string | null } | undefined;
+    const r = db.prepare("SELECT task, box, state FROM jobs WHERE id = ? AND authority IS NOT NULL AND released IS NULL").get(id) as { task: string; box: string | null; state: string } | undefined;
     if (!r?.box || db.prepare("UPDATE jobs SET released = -1 WHERE id = ? AND released IS NULL").run(id).changes !== 1) return;
     const { container, workspace } = JSON.parse(r.box) as Box & { workspace?: string };
-    if (workspace) await shareOutFiles(id, r.task, workspace);
+    // A job that never ran (still admitted: its launch failed or was abandoned) made no output; what is there is an earlier job's.
+    if (workspace && r.state !== "admitted") await shareOutFiles(id, r.task, workspace);
     try {
       // A 2xx with the box still there (Docker didn't remove it) is no release: the claim goes back for the next tend.
       const { state } = await call("/job/release", { container });
