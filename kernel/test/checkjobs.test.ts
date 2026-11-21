@@ -199,43 +199,68 @@ test("checks: an eval that writes no result is an error with the box's output, n
 });
 
 test("checks: a judged run the eval-day cap cut short ends in error with no receipt and a budget reason, and the same head runs again later", async () => {
-  // The eval scores a case whose call hit the spend cap `escalate review_cap` (the gateway's 402 cap_reached): that case was
-  // never judged, so the run is an eval error (no fail receipt cached for the head), not a verdict; and it doesn't use up a try.
+  // The eval names the cases the spend cap cut before the reviewer judged them (review_cap, the gateway's 402 cap_reached):
+  // the run is an eval error (no fail receipt cached for the head), not a verdict, and it doesn't use up a try.
   let capped = true, calls = 0;
   const { checks, done } = setup(evalTree(), undefined, {}, (o) => {
     calls++;
     const cases = readdirSync(join(o.workspace, CASES)).sort();
-    // Step 1 in the eval's shape: the capped case is named in `capped`, and its failure line says review_cap (the shape a
-    // judge from before the list wrote, too), never a scored miss.
-    const cap = { file: cases[0], want: "approve", got: "escalate review_cap", reason: 'OpenRouter 402: {"type":"cap_reached","scope":"eval-day"}' };
     writeFileSync(join(o.out, "result.json"), capped
-      ? JSON.stringify({ total: cases.length, passed: cases.length - 1, pass: false, failed: [cap], capped: [cases[0]] })
+      ? JSON.stringify({ total: cases.length, passed: cases.length - 1, pass: false, failed: [], capped: [cases[0]] })
       : JSON.stringify({ total: cases.length, passed: cases.length, pass: true, failed: [], capped: [] }));
     return { exit: 0, out: "402 cap_reached", timedOut: false };
   });
   const first = await done(checks.start("github", { repo: "acme/product", head: A, run: "eval", spec: evalSpec }));
   assert.deepEqual([first.state, first.receipt], ["error", null], "a capped eval is an error, never a fail receipt");
+  assert.equal(first.capped, "eval-day", "the view names the budget outcome, so the merge gate waits instead of counting an ask");
   assert.match(first.error, /eval-day cap reached; retry when it frees/);
-  assert.match(first.error, /before it judged 1 of its 3 case/);
+  assert.match(first.error, /judged 2 of its 3 case/);
   assert.equal(calls, 1, "a second pass would only spend into the same exhausted cap");
   // The same head and spec is judged again on a later ask, once the cap has freed.
   capped = false;
   const second = await done(checks.start("github", { repo: "acme/product", head: A, run: "eval", spec: evalSpec }));
   assert.equal(second.id, first.id);
   assert.equal(calls, 2);
-  assert.deepEqual([second.state, second.receipt.verdict], ["done", "pass"]);
+  assert.deepEqual([second.state, second.receipt.verdict, second.capped], ["done", "pass", null]);
 });
 
-test("checks: a judged result whose failure line names review_cap is a cap too, not a scored miss", async () => {
-  // A judge from before the `capped` list wrote only the failure line: it must not become a fail receipt either.
+test("checks: the budget reason survives the error row's 300-character cut, however many cases the cap cut", async () => {
+  // The row keeps the first 300 characters of the error: with many capped cases named, the reason must still be there.
   const { checks, done } = setup(evalTree(), undefined, {}, (o) => {
     const cases = readdirSync(join(o.workspace, CASES)).sort();
-    writeFileSync(join(o.out, "result.json"), JSON.stringify({ total: cases.length, passed: cases.length - 1, pass: false, failed: [{ file: cases[0], want: "approve", got: "escalate review_cap", reason: 'OpenRouter 402: {"type":"cap_reached","scope":"eval-day"}' }] }));
+    writeFileSync(join(o.out, "result.json"), JSON.stringify({ total: cases.length, passed: 0, pass: false, failed: [], capped: cases }));
     return { exit: 0, out: "", timedOut: false };
   });
   const v = await done(checks.start("github", { repo: "acme/product", head: A, run: "eval", spec: evalSpec }));
-  assert.deepEqual([v.state, v.receipt], ["error", null]);
-  assert.match(v.error, /eval-day cap reached; retry when it frees/);
+  assert.equal(v.state, "error");
+  assert.match(v.error, /^eval-day cap reached; retry when it frees/);
+  assert.equal(v.capped, "eval-day");
+});
+
+test("checks: a cap the eval names as the install's daily one is the budget the error names, not eval-day", async () => {
+  // Check tokens spend against the install's cap as well as the eval day's (kernel/src/gateway/lib.ts): when the install's
+  // cap is what stopped the eval, the operator must wait on that one, and the row carries it for the merge gate's wait.
+  const { checks, done } = setup(evalTree(), undefined, {}, (o) => {
+    const cases = readdirSync(join(o.workspace, CASES)).sort();
+    writeFileSync(join(o.out, "result.json"), JSON.stringify({ total: cases.length, passed: 0, pass: false, failed: [], capped: cases, capScope: "install" }));
+    return { exit: 0, out: "", timedOut: false };
+  });
+  const v = await done(checks.start("github", { repo: "acme/product", head: A, run: "eval", spec: evalSpec }));
+  assert.deepEqual([v.state, v.receipt, v.capped], ["error", null, "install"]);
+  assert.match(v.error, /^install's daily cap reached; retry when it frees/);
+  assert.doesNotMatch(v.error, /eval-day/);
+});
+
+test("checks: a result that lists one failed case twice is malformed, never counted twice into the pass rule", async () => {
+  const { checks, done } = setup(evalTree(), undefined, {}, (o) => {
+    const cases = readdirSync(join(o.workspace, CASES)).sort();
+    const line = { file: cases[0], want: "reject", got: "approve", reason: "said yes" };
+    writeFileSync(join(o.out, "result.json"), JSON.stringify({ total: cases.length, passed: cases.length - 1, pass: true, failed: [line, { ...line }], capped: [] }));
+    return { exit: 0, out: "", timedOut: false };
+  });
+  const v = await done(checks.start("github", { repo: "acme/product", head: A, run: "eval", spec: evalSpec }));
+  assert.deepEqual([v.state, v.receipt], ["error", null], "no receipt for a malformed result");
+  assert.match(v.error, /counts don't match/);
 });
 
 test("checks: a restart's re-run never shares the draining kernel's folder, and the old run's late end doesn't overwrite it", async () => {

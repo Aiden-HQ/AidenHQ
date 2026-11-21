@@ -95,6 +95,13 @@ export function createEvalGate(d: {
     // A failed read throws (the merge waits); only a check the kernel no longer knows (404) is asked for again.
     let v = had ? await d.kernel("GET", `/v1/checks/${had.id}`).catch((e) => { if ((e as { status?: number })?.status === 404) return undefined; throw e; }) : undefined;
     if (!v || !["running", "done"].includes(v.state)) {
+      // A check a spend cap cut short is a budget outcome, not the change's failure: it isn't counted as an ask (asking again
+      // would only spend into the same cap) and this merge waits for that cap to free, up to its own eval wait, then a new
+      // merge request asks again. The kernel runs the same head again on that ask. `capped` names the cap the eval reported.
+      if (had && v?.capped) {
+        const cap = v.capped === "eval-day" ? "the eval-day spend cap" : v.capped === "install" ? "the install's daily spend cap" : "a spend cap";
+        return { wait: `${what} is waiting for ${cap} to free (the reviewer eval never judged it): the same head is judged again` };
+      }
       // Never asked, or it couldn't run (no box: counted, asked again a few times at most); one the kernel lost at a restart
       // never ran to a verdict, so it is asked again without counting.
       const lost = Boolean(had) && (!v || v.state === "lost");

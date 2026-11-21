@@ -8,7 +8,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, it } from "node:test";
-import { CAP_CODE, judgeCase, tally } from "../scripts/reviewer-eval.ts";
+import { CAP_CODE, capScope, checkExpectCodes, judgeCase, tally } from "../scripts/reviewer-eval.ts";
 
 const CASE = "clean-add-only-critical-paths-push.json";
 
@@ -24,11 +24,37 @@ it("a review_cap case is capped: never a pass, a false block or any scored miss"
   assert.deepEqual([block.failed.length, block.capped.length, block.pass], [1, 0, false]);
 });
 
+it("a capped run names the cap that actually stopped it, so the operator waits on the right budget", () => {
+  const case_ = { file: CASE, expect: "approve" };
+  const cap = (reason: string) => tally([case_], [judgeCase(case_, { decision: "escalate", code: CAP_CODE, reason })]).cap;
+  assert.equal(cap("the review reached its spend cap before the reviewer finished (OpenRouter 402: {\"error\":{\"type\":\"cap_reached\",\"message\":\"spend cap reached: eval-day $0.30 of $0.20\"}})"), "eval-day");
+  assert.equal(cap("the review reached its spend cap before the reviewer finished (OpenRouter 402: {\"error\":{\"type\":\"cap_reached\",\"message\":\"spend cap reached: the install's daily $0.06 of $0.05\"}})"), "install");
+  assert.equal(cap("the review reached its spend cap before the reviewer finished (OpenRouter 402: {\"error\":{\"type\":\"cap_reached\"}})"), "unknown", "OpenRouter's own 402 names no cap");
+  assert.equal(capScope("something else entirely"), "unknown");
+});
+
+it("the tool-round limit (review_turns) is a scored miss, never a budget error; only the spend cap (review_cap) is capped", () => {
+  // review.ts splits the two: review_cap is spend exhaustion (retry once the budget frees), review_turns is MAX_TURNS, which
+  // waiting never fixes, so it follows the pass rule (a false block on an approvable case) and never stalls the run.
+  const case_ = { file: CASE, expect: "approve" };
+  const turns = judgeCase(case_, { decision: "escalate", code: "review_turns", reason: "the judge asked for more than 30 rounds of tool calls" });
+  assert.equal(turns.verdict, "miss");
+  assert.equal((turns as { kind: string }).kind, "false block");
+  const t = tally([case_], [turns]);
+  assert.deepEqual([t.failed.length, t.capped.length, t.pass], [1, 0, false], "a tool-round miss is scored, not capped");
+});
+
+it("a case that expects review_cap or review_turns is refused at load: it could never pass", () => {
+  assert.throws(() => checkExpectCodes([{ file: "capped.json", expect_code: CAP_CODE }]), /capped\.json: expect_code can't be review_cap or review_turns/);
+  assert.throws(() => checkExpectCodes([{ file: "turns.json", expect_code: ["escalate", "review_turns"] }]), /turns\.json/);
+  assert.doesNotThrow(() => checkExpectCodes([{ file: "ok.json", expect_code: ["escalate", "reviewer_failed"] }]));
+});
+
 let server: http.Server, base = "", dir = "";
 before(async () => {
   dir = mkdtempSync(join(tmpdir(), "eval-cap-"));
   // Every call is the eval-day cap: the gateway's answer when the day's spend is used up.
-  server = http.createServer((req, res) => { req.resume(); req.on("end", () => res.writeHead(402, { "content-type": "application/json" }).end(JSON.stringify({ error: { type: "cap_reached", message: "spend cap reached: eval-day" } }))); });
+  server = http.createServer((req, res) => { req.resume(); req.on("end", () => res.writeHead(402, { "content-type": "application/json" }).end(JSON.stringify({ error: { type: "cap_reached", message: "spend cap reached: eval-day $0.30 of $0.20", scope: "eval-day", cap: 0.2, spent: 0.3 } }))); });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
   base = `http://127.0.0.1:${(server.address() as { port: number }).port}/api/v1`;
 });
@@ -50,4 +76,5 @@ it("a capped eval run reports the case as CAPPED, writes no PASS and records no 
   assert.doesNotMatch(run.stdout, /PASS\b/);
   const r = JSON.parse(readFileSync(result, "utf8"));
   assert.deepEqual([r.capped, r.failed, r.pass], [[CASE], [], false]);
+  assert.equal(r.capScope, "eval-day", "the gateway's message names the cap that stopped it");
 });

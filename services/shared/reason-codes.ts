@@ -30,8 +30,10 @@ export const REVIEW_CODES = [
   "no_independent_model",
   "no_diff",
   "files_not_shown",
-  // the review reached a spend cap before it finished: the owner decides
+  // the review reached its spend cap before it finished: the owner decides
   "review_cap",
+  // the review asked for more tool rounds than the judge allows: the owner decides, as for a spend cap
+  "review_turns",
   // ai_review_code skips the AI review of this push or PR (code review owns it): code approved it
   "code_review_owns",
   "check_failed",
