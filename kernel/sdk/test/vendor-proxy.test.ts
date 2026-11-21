@@ -188,6 +188,8 @@ describe("sign-in", () => {
     const dir = tmp();
     writeFileSync(join(dir, "token.json"), JSON.stringify({ access_token: "a", expires_at: Date.now() + 3_600_000 }));
     expect(oauth({ name: "Acme", mcpUrl: "https://mcp.example.com/mcp", stateDir: dir }).status().state).toBe("ok");
+    writeFileSync(join(dir, "token.json"), JSON.stringify({ access_token: "a", expires_at: 1 })); // expired, no refresh token: unusable
+    expect(oauth({ name: "Acme", mcpUrl: "https://mcp.example.com/mcp", stateDir: dir }).status().state).toBe("unknown");
   });
 
   it("keeps a sign-in whose refresh hit the vendor's 5xx: the next request tries again", async () => {
