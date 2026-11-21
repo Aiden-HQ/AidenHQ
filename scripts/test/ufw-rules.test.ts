@@ -22,13 +22,17 @@ test("ufw-rules: an inactive or absent ufw changes nothing", () => {
   assert.deepEqual(run({ mode: "tailscale", active: false }).calls, []);
 });
 
-test("ufw-rules: every mode opens the two narrow bridge rules, and nothing on the public interface", () => {
-  for (const mode of ["tailscale", "local", "cloudflare"]) {
-    assert.deepEqual(run({ mode }).calls, [
-      "allow in on br+ to 10.231.0.0/16 comment AidenHQ containers to host services",
-      "allow in on ahq-computers to 10.231.2.1 comment AidenHQ computers to host",
-    ], mode);
-  }
+// The host listeners containers use, and only those: the kernel's backplane, the launcher and the model gateway on the
+// compose bridges' gateway, and the model gateway on the computers' bridge gateway.
+const HOST_SERVICES = [
+  "allow in on br+ to 10.231.0.1 port 3130 proto tcp comment AidenHQ containers to host services",
+  "allow in on br+ to 10.231.0.1 port 8199 proto tcp comment AidenHQ containers to host services",
+  "allow in on br+ to 10.231.0.1 port 8201 proto tcp comment AidenHQ containers to host services",
+  "allow in on ahq-computers to 10.231.2.1 port 8200 proto tcp comment AidenHQ computers to host",
+];
+
+test("ufw-rules: every mode opens the host listeners containers use, and nothing on the public interface", () => {
+  for (const mode of ["tailscale", "local", "cloudflare"]) assert.deepEqual(run({ mode }).calls, HOST_SERVICES, mode);
 });
 
 test("ufw-rules: public keeps its front door's ports and adds the bridge rules", () => {
@@ -36,13 +40,17 @@ test("ufw-rules: public keeps its front door's ports and adds the bridge rules",
     "allow 443/tcp",
     "allow 8446/tcp",
     "allow 8447/tcp",
-    "allow in on br+ to 10.231.0.0/16 comment AidenHQ containers to host services",
-    "allow in on ahq-computers to 10.231.2.1 comment AidenHQ computers to host",
+    ...HOST_SERVICES,
   ]);
 });
 
 test("ufw-rules: a rule already listed is not added again", () => {
-  const status = "10.231.0.0/16 on br+ ALLOW IN Anywhere # AidenHQ containers to host services\n10.231.2.1 on ahq-computers ALLOW IN Anywhere # AidenHQ computers to host";
+  const status = [
+    "10.231.0.1 3130/tcp on br+            ALLOW IN    Anywhere   # AidenHQ containers to host services",
+    "10.231.0.1 8199/tcp on br+            ALLOW IN    Anywhere   # AidenHQ containers to host services",
+    "10.231.0.1 8201/tcp on br+            ALLOW IN    Anywhere   # AidenHQ containers to host services",
+    "10.231.2.1 8200/tcp on ahq-computers  ALLOW IN    Anywhere   # AidenHQ computers to host",
+  ].join("\n");
   assert.deepEqual(run({ mode: "tailscale", status }).calls, []);
   assert.deepEqual(run({ mode: "public", status }).calls, ["allow 443/tcp", "allow 8446/tcp", "allow 8447/tcp"]);
 });
@@ -54,5 +62,5 @@ test("ufw-rules: a rule it can't add warns that sign-in will fail, with the comm
   const r = spawnSync("bash", [script, "tailscale"], { encoding: "utf8", env: { PATH: `${dir}:${process.env.PATH}` } });
   assert.equal(r.status, 0);
   assert.match(r.stderr, /cannot reach the kernel, and sign-in will fail/);
-  assert.match(r.stderr, /ufw allow in on br\+ to 10\.231\.0\.0\/16/);
+  assert.match(r.stderr, /ufw allow in on br\+ to 10\.231\.0\.1 port 3130 proto tcp/);
 });

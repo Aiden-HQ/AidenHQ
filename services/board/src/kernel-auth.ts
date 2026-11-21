@@ -85,7 +85,7 @@ export function createKernelAuth(o: KernelAuthOptions) {
   const unreachable = (res: ServerResponse, cookies: string[] = []) =>
     void res
       .writeHead(502, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff", ...(cookies.length ? { "set-cookie": cookies } : {}) })
-      .end("The board can't reach the AidenHQ kernel, so sign-in didn't finish.\n\nCheck the host firewall: it must allow AidenHQ's containers to reach the kernel on the host's private addresses (10.231.0.0/16). Setup adds those rules when ufw is active and warns when it can't.\n");
+      .end("The board can't reach the AidenHQ kernel, so sign-in didn't finish.\n\nCheck the host firewall: it must allow this container to reach the kernel's host listener (10.231.0.1:3130). Setup adds that rule when ufw is active and warns when it can't.\n");
 
   const auth = {
     /** The signed-in admin behind the request's board cookie, or null (none, ended, or not a ready admin any more). */

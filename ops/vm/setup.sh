@@ -255,8 +255,8 @@ else
   echo "WARNING: AIDENHQ_PUBLIC_IF=none: no public firewall installed; only right on a host with no public address" >&2
 fi
 # An active ufw (never installed here) drops everything by default. Public mode with its front door opens 443, 8446 and
-# 8447; in every mode the containers must reach the kernel's host listeners on the Docker bridges' private addresses
-# (10.231.0.0/16), or the board can't exchange its sign-in code and sign-in loops. Nothing on the public interface opens.
+# 8447; in every mode the containers must reach the kernel's host listeners (10.231.0.1 and the computers' gateway), or the
+# board can't exchange its sign-in code and sign-in loops. Nothing on the public interface opens.
 bash "$src/ufw-rules.sh" "$fw_mode"
 
 # SSH: keys only and no root login, from a drop-in that sorts before 50-cloud-init.conf (sshd keeps the first value it
