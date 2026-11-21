@@ -148,6 +148,12 @@ test("a cross-task finish whose check service is unavailable parks in review, an
   assert.ok(s.k.records.db.prepare("SELECT 1 FROM check_holds WHERE task = ? AND check_id = 'judge.finish'").get(DELEGATED), "the hold is recorded");
 });
 
+test("a cross-task finish whose check errors (5xx) is held, never passed", async (t) => {
+  const s = await setup(t, () => ({ http: 500, body: { error: "boom" } }));
+  const r = await s.finish({ status: "done" }, DELEGATED);
+  assert.deepEqual([r.status, s.writes.some((w) => w.body.status === "done")], [202, false]);
+});
+
 test("a check that answers deny or reopen is not retried: one ask, and the close still refuses or reopens", async (t) => {
   const resolver = flakyResolver(0);
   let answer = { verdict: "deny", status: 403, reason: "not yet" };
