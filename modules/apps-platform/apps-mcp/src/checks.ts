@@ -256,7 +256,8 @@ export const PORT_PROBE_MS = 3_000;
  * process of this pid namespace holds it: its inode appears as a `socket:[<inode>]` fd of some /proc/<pid>/fd. A listener
  * no fd attributes (it vanished between the two reads) is dropped too; the registry's required doors are still checked.
  * stdin { ports: number[] (exposed or required), ips: string[] (the container's addresses), probes: { method, path,
- * headers }[], postgresProbe: whether to identify a silent socket as PostgreSQL (an app with no HTTP surface) }, and `proc`,
+ * headers }[], postgresProbe: whether to identify a silent socket as PostgreSQL (an app with no HTTP surface), sni: the names
+ * to offer a TLS listener }, and `proc`,
  * the proc root those pids and net tables are read from (the platform leaves it unset: /proc; a test passes a fixture tree).
  * Every such socket (but Docker's DNS on 127.0.0.11) is probed on the address it is bound to; a wildcard bind on loopback and
  * every container address; a given port nothing listens on, on the same. Every probe is sent to every socket; one that
@@ -309,12 +310,15 @@ const pgFrame = (b) => {
     return [0, 3, 7, 8, 9, 11, 12].includes(code) ? "postgres" : "invalid";
   }
   // ErrorResponse and NoticeResponse carry null-terminated fields, each starting with a type byte and ending with the
-  // single zero-length terminator field.
+  // single zero-length terminator field. PostgreSQL always sends severity (S, or V in 9.6+), SQLSTATE (C) and a message
+  // (M), so a reply without all three is malformed and not identification.
   if (!body.length || body[body.length - 1] !== 0) return "invalid";
+  const fields = new Set();
   for (let i = 0; i < body.length;) {
-    if (body[i] === 0) return i === body.length - 1 ? "postgres" : "invalid";
+    if (body[i] === 0) return i === body.length - 1 && fields.has("C") && fields.has("M") && (fields.has("S") || fields.has("V")) ? "postgres" : "invalid";
     const z = body.indexOf(0, i + 1);
     if (z < 0) return "invalid"; // a field with no terminator
+    fields.add(String.fromCharCode(body[i]));
     i = z + 1;
   }
   return "invalid";
@@ -348,22 +352,37 @@ const postgres = (host, port) => new Promise((done) => {
 // A multiplexer can serve PostgreSQL and HTTPS on one port: the plaintext probes never see that HTTP, so a socket identified as
 // PostgreSQL gets a TLS ClientHello as well. A TLS record back (a handshake, or the alert of an HTTPS server that rejects this
 // hello) means the port speaks TLS too, so it could be HTTP and stays hard. The hello is hand-built: no certificate is needed
-// to see the answer, only its record header.
-const TLS_HELLO = Buffer.concat([
-  Buffer.from([0x16, 0x03, 0x01, 0x00, 0x2f, 0x01, 0x00, 0x00, 0x2b, 0x03, 0x03]),
-  Buffer.alloc(32, 7), // random
-  Buffer.from([0x00, 0x00, 0x02, 0x00, 0x2f, 0x01, 0x00, 0x00, 0x00]), // no session, one suite, null compression, no extensions
-]);
+// to see the answer, only its record header. It names the app (and any share host) in SNI, so a listener that serves HTTPS
+// only for a recognized name still answers instead of closing the connection.
+const hello = (names) => {
+  const ext = [];
+  const list = names.filter((n) => n.length <= 255).map((n) => Buffer.from(n, "ascii"));
+  if (list.length) {
+    const entry = (n) => Buffer.concat([Buffer.from([0]), Buffer.from([n.length]), n]);
+    const body = Buffer.concat(list.map(entry));
+    ext.push(Buffer.from([0, 0, (body.length + 2) >> 8, (body.length + 2) & 255, body.length >> 8, body.length & 255]), body);
+  }
+  const extensions = Buffer.concat(ext);
+  const body = Buffer.concat([
+    Buffer.from([0x03, 0x03]),
+    Buffer.alloc(32, 7), // random
+    Buffer.from([0x00, 0x00, 0x02, 0x00, 0x2f, 0x01, 0x00]), // no session, one suite, null compression
+    Buffer.from([extensions.length >> 8, extensions.length & 255]),
+    extensions,
+  ]);
+  const hand = Buffer.concat([Buffer.from([0x01, body.length >> 16, (body.length >> 8) & 255, body.length & 255]), body]);
+  return Buffer.concat([Buffer.from([0x16, 0x03, 0x01, hand.length >> 8, hand.length & 255]), hand]);
+};
 // The record header can arrive in pieces: hold what came until the five-byte header is complete, then a handshake (0x16) or
 // alert (0x15) on TLS 0x03 says the port speaks TLS too. A connection that ends or stalls mid-header after a TLS opening byte
 // still counts: the port began a TLS record, so it could serve HTTPS. Anything short of that is not TLS, and Postgres alone
 // gets no such bytes back from a hello it does not understand.
 const TLS_PREFIX = (b) => b.length >= 1 && (b[0] === 0x16 || b[0] === 0x15) && (b.length < 2 || b[1] === 0x03);
-const tls = (host, port) => new Promise((done) => {
+const tls = (host, port, names) => new Promise((done) => {
   let got = Buffer.alloc(0);
   const end = (r) => { s.destroy(); done(r); };
   const s = net.connect({ host, port, timeout: ${PORT_PROBE_MS} });
-  s.on("connect", () => s.write(TLS_HELLO));
+  s.on("connect", () => s.write(hello(names)));
   s.on("data", (d) => { got = Buffer.concat([got, d]); if (got.length >= 5) end(TLS_PREFIX(got) ? "https" : ""); });
   s.on("timeout", () => end(TLS_PREFIX(got) ? "https" : ""));
   s.on("end", () => end(TLS_PREFIX(got) ? "https" : ""));
@@ -424,7 +443,7 @@ process.stdin.on("data", (c) => (s += c)).on("end", async () => {
       let seen = look;
       if (r.postgresProbe && (look === "closed" || look === "silent")) {
         seen = (await postgres(k.host, k.port)) || look;
-        if (seen === "postgres" && (await tls(k.host, k.port))) seen = "https";
+        if (seen === "postgres" && (await tls(k.host, k.port, r.sni ?? []))) seen = "https";
       }
       out.push({ ...k, statuses, raw: seen });
     }

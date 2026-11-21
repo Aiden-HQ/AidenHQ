@@ -55,7 +55,7 @@ async function gate(app: typeof tailnet, base: string, node = true) {
 function scan(app: typeof tailnet, exposed: number[], o: { required?: Door[]; ips?: string[]; keep?: number[]; proc?: string } = {}) {
   const probes = identityProbes(app, true, app.health.url ? new URL(app.health.url).pathname : undefined);
   const forged = forgedIdentity(app.name, noKey);
-  const input = { ports: exposed, ips: o.ips ?? [], postgresProbe: noHttpSurface(app), ...(o.proc ? { proc: o.proc } : {}), probes: probes.map((p) => ({ method: p.method, path: p.path, headers: p.forged ? { [IDENTITY_HEADER]: forged } : {} })) };
+  const input = { ports: exposed, ips: o.ips ?? [], postgresProbe: noHttpSurface(app), sni: [app.name, app.share?.host].filter(Boolean), ...(o.proc ? { proc: o.proc } : {}), probes: probes.map((p) => ({ method: p.method, path: p.path, headers: p.forged ? { [IDENTITY_HEADER]: forged } : {} })) };
   return new Promise<ReturnType<typeof identityPorts>>((ok, fail) => {
     // Sockets off unless `keep`: here /proc/net/tcp is the test host's, not one app container's.
     const script = o.keep || o.proc ? IDENTITY_SCRIPT : IDENTITY_SCRIPT.replace('[[proc + "/net/tcp", v4], [proc + "/net/tcp6", v6]]', "[]");
@@ -336,6 +336,43 @@ describe("identity gate", () => {
     expect(await hard([0x52, 0, 0, 0, 8, 0, 0, 0, 5])).toBe(false); // MD5 without its salt
     expect(await hard([0x52, 0, 0, 0, 14, 0, 0, 0, 10, 0x53, 0x43, 0x52, 0x41, 0x4d])).toBe(false); // SASL, unterminated list
   }, 90_000);
+
+  it.runIf(process.platform === "linux")("requires the mandatory fields of a PostgreSQL error or notice reply", async () => {
+    // PostgreSQL always sends severity (S/V), SQLSTATE (C) and a message (M). A terminated field list without them is not an
+    // ErrorResponse a server sends, so it must not identify the port.
+    const db = parseApp({ name: "warehouse", repo: "example-org/x", owner: "a", description: "d", port: 5433, expose: false });
+    const frame = (bytes: number[]) => `(s) => { let stage = 0; s.on("data", (d) => { if (stage === 0 && d[0] === 0x47) return s.destroy(); if (stage === 0) { stage = 1; return s.write("N"); } s.end(Buffer.from(${JSON.stringify(bytes)})); }); }`;
+    const hard = async (bytes: number[]) => (await scan(db, [await tcp(frame(bytes))])).ok;
+    const err = (fields: number[]) => [0x45, 0, 0, 0, 5 + fields.length, ...fields, 0];
+    expect(await hard(err([0x53, 0x46, 0x41, 0x54, 0x41, 0x4c, 0, 0x43, 0x32, 0x38, 0x50, 0x30, 0x31, 0, 0x4d, 0x62, 0x6f, 0x6f, 0]))).toBe(true); // S C M
+    expect(await hard(err([0x56, 0x45, 0x52, 0x52, 0x4f, 0x52, 0, 0x43, 0x32, 0x38, 0x50, 0x30, 0x31, 0, 0x4d, 0x62, 0x6f, 0x6f, 0]))).toBe(true); // V C M
+    expect(await hard(err([0x53, 0x46, 0x41, 0x54, 0x41, 0x4c, 0]))).toBe(false); // severity alone
+    expect(await hard(err([0x53, 0x46, 0x41, 0x54, 0x41, 0x4c, 0, 0x4d, 0x62, 0x6f, 0x6f, 0]))).toBe(false); // no SQLSTATE
+  }, 90_000);
+
+  it.runIf(process.platform === "linux")("finds an HTTPS listener that serves only the app's name: the TLS hello carries SNI", async () => {
+    // A listener that serves HTTPS only for a recognized hostname closes a hello without SNI. The probe offers the app's
+    // name, so such a port is still found and stays hard instead of passing as a database.
+    const db = parseApp({ name: "warehouse", repo: "example-org/x", owner: "a", description: "d", port: 5433, expose: false });
+    // Each probe opens its own connection: the HTTP GET, the SSLRequest then startup, and the TLS hello.
+    const sniOnly = await tcp(`(s) => {
+      let stage = 0, got = Buffer.alloc(0);
+      s.on("data", (d) => {
+        got = Buffer.concat([got, d]);
+        if (stage === 0 && got[0] === 0x16) { // the TLS hello, on its own connection
+          if (got.includes(Buffer.from("warehouse"))) s.end(Buffer.from([0x15, 0x03, 0x03, 0, 2, 2, 40]));
+          else s.destroy();
+          return;
+        }
+        if (stage === 0 && got[0] === 0x47) return s.destroy(); // the HTTP GET
+        if (stage === 0) { stage = 1; return s.write("N"); } // the SSLRequest
+        if (stage === 1) s.end(Buffer.from([0x52, 0, 0, 0, 8, 0, 0, 0, 0])); // the startup message
+      });
+    }`);
+    const r = await scan(db, [sniOnly]);
+    expect(r.ok).toBe(false);
+    expect(r.findings[0]).toMatchObject({ hard: true, what: expect.stringMatching(/answers HTTPS/) });
+  }, 60_000);
 
   it.runIf(process.platform === "linux")("keeps a stalled TLS reply hard: a prefix that never completes still marks the port HTTPS", async () => {
     // A multiplexer answers the PostgreSQL handshake, then begins a TLS record and stalls. The probe must not fall back to
