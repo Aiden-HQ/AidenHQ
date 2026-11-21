@@ -95,7 +95,7 @@ export function history(ws: string, out: string, spec: Spec) {
   const env = { PATH: process.env.PATH, HOME: "/nonexistent", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0" };
   const flags = ["-c", "user.name=aidenhq-review", "-c", "user.email=review@aidenhq.invalid", "-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", "-c", "core.autocrlf=false"];
   const g = (args: string[], extra: Record<string, string> = {}) => execFileSync("git", [...flags, ...args], { cwd: ws, env: { ...env, ...extra }, encoding: "utf8", maxBuffer: 1 << 30 }).trim();
-  /** Whether any line git prints for `args` passes `test`: its output goes to a file read in 1 MB chunks, since a whole tree's diff
+  /** Whether any diff line git prints for `args` passes `test`: its output goes to a file read in 1 MB chunks, since a whole tree's diff
    * (binaries and left-out files included) can be larger than a string holds. */
   const anyLine = (args: string[], test: (line: string) => boolean) => {
     const file = join(out, `git-${randomBytes(6).toString("hex")}`);
@@ -109,8 +109,12 @@ export function history(ws: string, out: string, spec: Spec) {
           const lines = (rest + buf.toString("utf8", 0, n)).split("\n");
           rest = lines.pop()!;
           if (lines.some(test)) return true;
-          // One huge line: judged so far, then kept as its first character (its +) and its last 4 KB, so text across the cut is still seen.
-          if (rest.length > 1 << 20) { if (test(rest)) return true; rest = rest[0]! + rest.slice(-4096); }
+          // One huge diff line: judged so far, then kept as its kind (an added line "+ ", anything else, a +++ header included, "  ")
+          // and its last 4 KB, so text across the cut is still seen and the line is classed as it was.
+          if (rest.length > 1 << 20) {
+            if (test(rest)) return true;
+            rest = (rest.startsWith("+") && !rest.startsWith("+++") ? "+ " : "  ") + rest.slice(-4096);
+          }
         }
         return test(rest);
       } finally { closeSync(r); }
