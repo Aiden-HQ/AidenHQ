@@ -25,6 +25,7 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
 }) {
   const grading = new Set<string>();
   const GRADE_WAIT_MS = 24 * 60 * 60_000; // evidence still missing a day after the close: it escalates to the delegator
+  const RESUBMIT_WAIT_MS = 24 * 60 * 60_000; // an escalated task finished again, its evidence still moving a day later: no new version
   const MISSING_WAIT_MS = 10 * 60_000; // finished with no deliverable at all and nothing moving: the delegator decides now
   const WAKE_GRACE_MS = 2 * 60_000; // a run's own follow-through (an auto-deploy, a merge) lands before its task is woken
   const MAX_WAKES = 2; // evidence wakes per task, whatever their reasons: the next stall escalates
@@ -94,7 +95,7 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
           const ev = await gather(g.deliverable, gradeDeps(issue));
           // Still moving (checks, merges, a card): the mark stays and the next look decides, for a day. Then it is no new version:
           // the row stays escalated and its hold goes back to the delegator (server.ts tick).
-          if (ev.awaiting && Date.now() - Date.parse(g.resubmittedAt) < GRADE_WAIT_MS) continue;
+          if (ev.awaiting && Date.now() - Date.parse(g.resubmittedAt) < RESUBMIT_WAIT_MS) continue;
           version = ev.awaiting ? "" : ev.version ?? "";
         }
         await api.post(`/internal/grades/${encodeURIComponent(g.issueId)}/resubmit`, { version });

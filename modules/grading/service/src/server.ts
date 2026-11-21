@@ -21,7 +21,7 @@ export type Kernel = {
   issue: (ref: string) => Promise<Issue>;
   repos: () => Promise<KnownRepos>;
   /** True when the kernel held the task and released it to its delegator (false: nothing held it). */
-  release: (task: string) => Promise<boolean>;
+  release: (task: string, before?: string) => Promise<boolean>;
 };
 class HttpError extends Error { status: number; constructor(status: number, message: string) { super(message); this.status = status; } }
 /** Tools that hand a task to an agent and file its rubric: task_delegate, task_create with an assignee. */
@@ -192,9 +192,11 @@ export function createGrading({ db, kernel, keys, kernelUrl = "", jwks = kernelJ
     } catch (err) {
       log("settling closed grades failed", { err: String((err as Error).message ?? err) });
     }
+    // Only holds placed by the time the rows were read: a finish after it marks its row and holds again, for the runner's check.
+    const read = new Date().toISOString();
     for (const g of grades.escalatedUnmarked()) {
       try {
-        if (await kernel.release(g.issueId)) log("escalated grade's hold released to its delegator", { task: g.issueId });
+        if (await kernel.release(g.issueId, read)) log("escalated grade's hold released to its delegator", { task: g.issueId });
       } catch (err) {
         log("escalated grade's hold not released", { task: g.issueId, err: String((err as Error).message ?? err).slice(0, 200) });
       }

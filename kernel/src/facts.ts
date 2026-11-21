@@ -237,16 +237,13 @@ export function backfillLocal(db: DatabaseSync, facts: Facts, { agentKey = () =>
   // (its row deleted, its job.queued never ended), and a comment wake a job consumed (done, or delivered into its live job) with
   // no fact. Each gets its end once; a job or wake already ended, or a job still on its row, gets nothing.
   if (have.has("jobs")) {
-    for (const f of db.prepare("SELECT subject, task, at, actor FROM facts f WHERE type = 'job.queued' AND NOT EXISTS (SELECT 1 FROM facts g WHERE g.subject = f.subject AND g.type IN ('job.started', 'job.ended')) AND NOT EXISTS (SELECT 1 FROM jobs WHERE 'job:' || id = f.subject)").all() as any[])
+    for (const f of db.prepare("SELECT subject, task, at, actor FROM facts f WHERE type = 'job.queued' AND NOT EXISTS (SELECT 1 FROM facts g WHERE g.subject = f.subject AND g.type IN ('job.started', 'job.ended')) AND NOT EXISTS (SELECT 1 FROM jobs WHERE id = substr(f.subject, 5))").all() as any[])
       fill({ type: "job.ended", subject: f.subject, version: "deferred", task: f.task, at: f.at, actor: f.actor, data: { state: "deferred", exit: null, why: "deferred: no computer for it; its wake went back to its dispatcher" } });
   }
-  if (have.has("wakes") && have.has("jobs")) {
-    const after = db.prepare("SELECT id, at FROM jobs WHERE task = ? AND at >= ? ORDER BY at LIMIT 1");
-    const before = db.prepare("SELECT id, at FROM jobs WHERE task = ? AND at < ? ORDER BY at DESC LIMIT 1");
-    for (const w of db.prepare("SELECT key, task, at FROM wakes w WHERE state IN ('done', 'delivered') AND NOT EXISTS (SELECT 1 FROM facts f WHERE f.subject = 'wake:' || w.key AND f.type IN ('wake.bound', 'wake.dropped'))").all() as any[]) {
-      const j = (after.get(w.task, w.at) ?? before.get(w.task, w.at)) as { id: string; at: number } | undefined;
-      if (j) fill({ type: "wake.bound", subject: `wake:${w.key}`, version: `bound:${j.id}`, task: w.task, at: iso(Math.max(w.at, j.at)), actor: "kernel", data: { job: j.id } });
-    }
+  // The job that consumed such a wake was never kept: it is bound to none, at its own time (never a guessed job or time).
+  if (have.has("wakes")) {
+    for (const w of db.prepare("SELECT key, task, at FROM wakes w WHERE state IN ('done', 'delivered') AND NOT EXISTS (SELECT 1 FROM facts f WHERE f.subject = 'wake:' || w.key AND f.type IN ('wake.bound', 'wake.dropped'))").all() as any[])
+      fill({ type: "wake.bound", subject: `wake:${w.key}`, version: "bound:unkept", task: w.task, at: iso(w.at), actor: "kernel", data: { job: null } });
   }
   return n;
 }

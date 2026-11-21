@@ -289,9 +289,13 @@ export class Grades {
       .map((r) => ({ ...fromRow(r), resubmittedAt: r.resubmitted_at }));
   }
 
-  /** Escalated rows not finished again since (or whose new version was checked): the delegator's alone, held by nothing. */
+  /**
+   * Escalated rows not finished again since (or whose new version was checked), with no verdict move still owed (the grade loop's
+   * `owed:` rows: a grader-failure block needs its hold): the delegator's alone, held by nothing.
+   */
   escalatedUnmarked(): Grade[] {
-    return (this.db.prepare("SELECT g.* FROM grades g WHERE g.state = 'escalated' AND NOT EXISTS (SELECT 1 FROM grade_resubmits r WHERE r.issue_id = g.issue_id) ORDER BY updated_at").all() as unknown as Row[]).map(fromRow);
+    this.db.exec("CREATE TABLE IF NOT EXISTS loop_state (k TEXT PRIMARY KEY, v TEXT NOT NULL)"); // the grade loop's (kernel-loop.ts)
+    return (this.db.prepare("SELECT g.* FROM grades g WHERE g.state = 'escalated' AND NOT EXISTS (SELECT 1 FROM grade_resubmits r WHERE r.issue_id = g.issue_id) AND NOT EXISTS (SELECT 1 FROM loop_state l WHERE l.k = 'owed:' || g.issue_id AND l.v != '') ORDER BY updated_at").all() as unknown as Row[]).map(fromRow);
   }
 
   /** Marks an escalated task as finished again (the completion gate); its state stays the delegator's. */

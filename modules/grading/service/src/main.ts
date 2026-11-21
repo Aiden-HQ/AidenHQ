@@ -26,7 +26,7 @@ async function appsCall(method: string, path: string, body?: unknown) {
 const kernel: Kernel = {
   issue: (ref) => kernelCall("GET", `/v1/cp/read/api/issues/${encodeURIComponent(ref)}`),
   repos: async () => (await kernelCall("GET", "/v1/agents")).repos ?? {},
-  release: async (task) => (await kernelCall("POST", `/v1/checks/${encodeURIComponent(task)}`, { verdict: "release" }))?.held !== false,
+  release: async (task, before) => (await kernelCall("POST", `/v1/checks/${encodeURIComponent(task)}`, { verdict: "release", ...(before ? { before } : {}) }))?.held !== false,
 };
 
 const db = new DatabaseSync(process.env.GRADES_DB ?? "/data/grades.sqlite");

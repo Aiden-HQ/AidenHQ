@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { createJobs } from "../src/jobs.ts";
+import { createJobs, queueFacts } from "../src/jobs.ts";
 import { openFacts } from "../src/facts.ts";
 import { createAdmission, wakeInbox } from "../src/admission.ts";
 import { createPool } from "../src/pool.ts";
@@ -42,7 +42,8 @@ function setup({ capacity = 12, spend = () => [], launch = async () => {}, grant
     mayDispatch: (module, agent) => module === "acme-dispatch" && agent !== "agent-3",
     cp: { task: async (id) => (tasks[id] ? { id, identifier: id.toUpperCase(), assigneeAgentId: tasks[id], status: "todo", ...origins[id] } : undefined) },
     wakes: wakeInbox(db),
-    launch: async (job) => { launched.push(job); await launch(job); },
+    // A launch that returns started the job: its first start writes the queue facts (jobs.ts start).
+    launch: async (job) => { launched.push(job); await launch(job); queueFacts(db, (f) => facts.record(f), job.id, grants[job.agent]?.key ?? job.agent); },
     log: () => {},
   });
   return { db, facts, adm, jobs, grants, wake, wakes, inbox, launched, origins, provenance, caps };

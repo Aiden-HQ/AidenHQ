@@ -223,6 +223,8 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
     for (const w of waiters.get(id) ?? []) w();
     waiters.delete(id);
   };
+  /** The job's queue and its wake's binding, as of its admission (its row's own time and wake): with its first start (queueFacts). */
+  const queued = (r: Record<string, any>) => facts && queueFacts(db, strictFact(facts), r.id, agentKey(r.agent));
   /**
    * job.started / job.ended. An ended job carries what the gateway billed for it (its calls' run id is the job id: gateway/lib.ts
    * identify) and whether it acted: it filed a record, commented (outcomes.ts, cp.ts record who) or changed its task's status.
@@ -496,6 +498,7 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
     // couldn't-start path ends the job).
     try {
       inTx(db, "job_start", () => {
+        if (r.state === "admitted") queued(r);
         // `resumed`: this run started by resuming a stored session (a run restarted after a kernel reboot needs to know).
         db.prepare("UPDATE jobs SET pid = ?, log = ?, dir = ?, at = ?, box = ?, session = ?, resumed = ?, offset = 0, final = '', progress = '{}', usage = NULL, observing = ?, live_input = ?, state = 'running' WHERE id = ?")
           .run(pid, logPath, jobDir, at, JSON.stringify(box), resumed ? session! : null, resumed ? 1 : 0, observes(engine) ? 1 : 0, entry.live_input ? 1 : 0, id);
@@ -594,4 +597,17 @@ export type Jobs = ReturnType<typeof createJobs>;
 export function admittedJob(db: DatabaseSync, id: string) {
   const r = db.prepare("SELECT agent, task, state, authority, identifier FROM jobs WHERE id = ? AND authority IS NOT NULL").get(id) as { agent: string; task: string; state: string; authority: string; identifier: string | null } | undefined;
   return r && { agent: r.agent, task: r.task, state: r.state, authority: JSON.parse(r.authority), identifier: r.identifier ?? "" };
+}
+
+/**
+ * A job's queue (from its wake's time) and its wake's binding, as of its admission: written with the job's first start, or with its
+ * end when it couldn't start, inside that move. A job deferred for want of a computer (its row deleted, its wake given back)
+ * never had either, so nothing reads it as queued. Call it before the start rewrites the row's `at`.
+ */
+export function queueFacts(db: DatabaseSync, fact: (f: { type: string; subject: string; version: string; at: string; actor: string; task: string; data: Record<string, unknown> }) => void, id: string, key: string) {
+  const r = db.prepare("SELECT task, wake, at FROM jobs WHERE id = ?").get(id) as { task: string; wake: string | null; at: number } | undefined;
+  if (!r?.wake) return;
+  const w = db.prepare("SELECT at FROM wakes WHERE key = ?").get(r.wake) as { at: number } | undefined;
+  fact({ type: "job.queued", subject: `job:${id}`, version: "queued", at: iso(r.at), actor: `agent:${key}`, task: r.task, data: { wake: r.wake, wake_at: iso(w?.at ?? r.at), agent: key } });
+  fact({ type: "wake.bound", subject: `wake:${r.wake}`, version: `bound:${id}`, at: iso(r.at), actor: "kernel", task: r.task, data: { job: id } });
 }
