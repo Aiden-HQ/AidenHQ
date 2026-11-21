@@ -197,13 +197,14 @@ test("a repo listed twice is not ambiguous; a bare citation refused everywhere i
   assert.match(out.facts.join("\n"), /could not be read \(no grant on acme\/a\)/);
 });
 
-test("a bare job citation tries every candidate repo: found, all 404, a refusal, or a rate limit", async () => {
+test("a bare job citation tries every candidate repo: found, none, a refusal (403 or 404), or a rate limit", async () => {
   const err = (status: number, message: string, headers?: object) => Object.assign(new Error(message), { status, headers });
   const ok = { name: "ci", state: "completed", conclusion: "success" };
   const cases: { name: string; answers: any[]; want: RegExp; awaiting?: boolean }[] = [
-    { name: "found after a refusal and a 404", answers: [err(403, "no grant"), err(404, "Not Found"), ok], want: /cited Actions job 424242 in acme\/c: exists/ },
-    { name: "404 everywhere is no such job", answers: [err(404, "Not Found"), null, err(404, "Not Found")], want: /no such Actions job/ },
-    { name: "a refusal and no find is unreadable", answers: [err(404, "Not Found"), err(403, "Resource not accessible by integration"), null], want: /could not be read \(Resource not accessible by integration\)/ },
+    { name: "found after a refusal and a 404", answers: [err(403, "no grant"), err(404, "no code host"), ok], want: /cited Actions job 424242 in acme\/c: exists/ },
+    { name: "null everywhere is no such job", answers: [null, null, null], want: /no such Actions job/ },
+    { name: "a refusal and no find is unreadable", answers: [null, err(403, "Resource not accessible by integration"), null], want: /could not be read \(Resource not accessible by integration\)/ },
+    { name: "a 404 from the code host is a refusal, not no such job", answers: [null, err(404, "no GitHub code host here"), null], want: /could not be read \(no GitHub code host here\)/ },
     { name: "a rate limit is retried", answers: [err(403, "no grant"), err(403, "forbidden", { "retry-after": "60" })], want: /could not be read yet/, awaiting: true },
   ];
   for (const k of cases) {

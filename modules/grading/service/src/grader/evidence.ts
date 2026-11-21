@@ -717,18 +717,16 @@ export async function resolveCitation(c: Citation, deps: any, repos: string[] = 
     try {
       j = await deps.citedJob(repo, c.id);
     } catch (err: any) {
-      // One rule for a cited and a bare job alike: a rate limit (message, x-ratelimit-remaining: 0 or a retry-after header) and any
-      // other failure are rethrown so the next look retries them; a 404 is "no such job there" (as a null); a 403 (no grant,
-      // "Resource not accessible by integration") is a permission refusal that waiting never changes. A bare citation tries
-      // every candidate and keeps the first refusal; a cited repo answers with it at once.
+      // What the code host answers (modules/github ops.ts "job": GitHub's 404 for a job is a 200 with null, so "no such job" is
+      // null, never a status; the kernel's POST /v1/codehost/:op (codehost.ts) answers 403 for a missing grant and 404 for an
+      // unknown repo or no code host). So a 403 or 404 here is a refusal, never "no such job". A rate limit (message,
+      // x-ratelimit-remaining: 0 or a retry-after header) and any other failure are rethrown: the next look retries them.
       const status = Number(err?.status ?? err?.statusCode ?? err?.response?.status);
-      if (!rateLimited(err) && status === 404) continue;
-      if (!rateLimited(err) && status === 403) {
-        if (c.repo) return { citation: c, id: c.id, exists: false, unreadable: String(err.message ?? err), repo };
-        refused ??= { repo, message: String(err.message ?? err) };
-        continue;
-      }
-      throw err;
+      if (rateLimited(err) || ![403, 404].includes(status)) throw err;
+      // A cited repo answers with its refusal at once. A bare citation records the first refusal and tries the next candidate.
+      if (c.repo) return { citation: c, id: c.id, exists: false, unreadable: String(err.message ?? err), repo };
+      refused ??= { repo, message: String(err.message ?? err) };
+      continue;
     }
     if (!j) continue;
     return { citation: c, id: c.id, exists: true, state: String(j.state ?? j.status ?? "unknown"), conclusion: String(j.conclusion ?? ""), name: String(j.name ?? ""), repo };
