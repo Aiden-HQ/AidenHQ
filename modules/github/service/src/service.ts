@@ -38,7 +38,7 @@ import { LOCAL_ORG, plan as planRules } from "./plan.ts";
 import { fileContext, numstat } from "./review-files.ts";
 /** One changed file as git counts it (review-files.ts numstat; a binary file has no line counts). */
 type Changed = { path: string; add?: number; del?: number };
-import { SOURCE_EXCEPTIONS_FILE, readCardSourceExceptions } from "./sources.ts";
+import { SOURCE_EXCEPTIONS_FILE, readCardSourceExceptions, sectionHeading } from "./sources.ts";
 import { candidatesOf, readSiblings } from "./siblings.ts";
 import { notePrTask } from "./pr-watch.ts";
 import { createDesignReviews, startDesignReviewSweep } from "./design-review.ts";
@@ -261,7 +261,7 @@ export function createService(o: Options) {
           const head = await fetchRemote(s, String(pr.head?.sha));
           const into = await fetchRemote(s, String(pr.base?.sha));
           const mb = await git(head.dir, ["merge-base", into.sha, head.sha]).catch(() => "");
-          diff += `${await diffOf(head.dir, mb || EMPTY_TREE, head.sha)}\n`;
+          diff += `${sectionHeading(s.slug, String(pr.head?.ref ?? ""), head.sha, String(pr.base?.ref ?? ""))}\n${await diffOf(head.dir, mb || EMPTY_TREE, head.sha)}\n`;
           changed.push(...(await numstatOf(head.dir, mb || EMPTY_TREE, head.sha)));
           // Every changed file, from git itself (GitHub lists at most 100 a page): no renames, so a file moved counts at both paths.
           files = (await git(head.dir, ["diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--name-only", "-z", mb || EMPTY_TREE, head.sha])).split("\0").filter(Boolean);
@@ -291,7 +291,7 @@ export function createService(o: Options) {
       const mb = empty ? "" : await git(dir, ["merge-base", b.sha, `refs/remote/${def}`]).catch(() => "");
       // No renames: a file moved counts at both paths (one moved out of kernel/ still changes kernel/).
       const files = (await git(dir, ["diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--name-only", "-z", mb || EMPTY_TREE, b.sha])).split("\0").filter(Boolean);
-      diff += `${await diffOf(dir, mb || EMPTY_TREE, b.sha)}\n`;
+      diff += `${sectionHeading(s.slug, b.branch, b.sha, empty ? "" : def)}\n${await diffOf(dir, mb || EMPTY_TREE, b.sha)}\n`;
       changed.push(...(await numstatOf(dir, mb || EMPTY_TREE, b.sha)));
       // Outside our own repos (the agents org, the product) the PR's text and the branch's commit messages name none of our tooling.
       if (!ownRepo(s.slug, o.fleetOrg, o.productRepo)) {
