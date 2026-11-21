@@ -92,7 +92,7 @@ export function appsExecutor(p: Platform): Executor {
         case "apps-platform.rollback": { const r = await p.engine.rollback(a, { by }); return { ok: r.status === "healthy", text: JSON.stringify(r) }; }
         case "apps-platform.api_write": {
           const r = await callApi(a, args.caller, { method: args.method, path: args.path, body: args.body }, { sign: p.sign, send: p.sendApi, resolve: p.resolveApi, audit: p.auditApi });
-          return { ok: true, text: JSON.stringify(r) };
+          return { ok: r.status >= 200 && r.status < 300, text: JSON.stringify(r) };
         }
       }
       throw new Error(`no write kind ${kind} here`);

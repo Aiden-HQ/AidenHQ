@@ -46,16 +46,16 @@ export const CODEX_CONFIG_SCRUB = [
 export const BOX_EXEC_WRAP = CODEX_CONFIG_SCRUB;
 
 /**
- * compile publishes a new image tag before ops/computer-images.sh has built it. Until it exists, run the newest built image
- * of the same name (never a pull) rather than failing the agent's run.
+ * compile publishes a new image tag before ops/computer-images.sh has built it (the same apply builds it next). The launch
+ * waits for exactly that tag, never another one, and fails if it is still missing after five minutes.
  */
-export async function builtImage(tag: string, docker: (args: string[]) => Promise<{ exitCode?: number | null; stdout: string }>, log: (...a: unknown[]) => void = () => {}) {
-  if ((await docker(["image", "inspect", tag])).exitCode === 0) return tag;
-  const r = await docker(["images", "--filter", `reference=${tag.split(":")[0]}`, "--format", "{{.Repository}}:{{.Tag}}"]); // newest first
-  const older = r.stdout.split("\n").find((t: string) => t && !t.endsWith(":<none>"));
-  if (!older) throw Object.assign(new Error(`image ${tag} is not built yet (ops/computer-images.sh)`), { status: 500 });
-  log("image", tag, "not built yet; using", older);
-  return older;
+export async function builtImage(tag: string, docker: (args: string[]) => Promise<{ exitCode?: number | null; stdout: string }>, log: (...a: unknown[]) => void = () => {}, waitMs = 300_000) {
+  for (let waited = 0; ; waited += 2000) {
+    if ((await docker(["image", "inspect", tag])).exitCode === 0) return tag;
+    if (waited >= waitMs) throw Object.assign(new Error(`image ${tag} is not built yet (ops/computer-images.sh)`), { status: 500 });
+    if (!waited) log("image", tag, "not built yet; waiting for it");
+    await new Promise((r) => setTimeout(r, 2000));
+  }
 }
 
 /** `docker run` arguments: image, limits, network and mounts all come from the launcher's own config. */
