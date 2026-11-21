@@ -278,8 +278,9 @@ function buildServer(caller?: Caller): McpServer {
       const out = await projects.reportIssue(owner, name, report, agent);
       log.info({ number: out.number, deduplicated: out.deduplicated }, "product issue written as the owner");
       const issue = `github:${owner.toLowerCase()}/${name.toLowerCase()}#${out.number}`;
-      // Only what this filing made is ours: the new issue, or the comment on an existing one (maybe a person's).
-      return { ...out, objects: ["comment" in out ? `${issue}/comment/${out.comment}` : issue] };
+      // Only the comment is ours (the issue may be a person's). A new issue is a report for the Maintainer to triage like any
+      // stranger's, so it stays out of AidenHQ's records: `untriaged` skips what they hold.
+      return "comment" in out ? { ...out, objects: [`${issue}/comment/${out.comment}`] } : out;
     }),
   );
   server.registerTool(
