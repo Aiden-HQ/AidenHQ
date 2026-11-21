@@ -28,6 +28,7 @@ import { pathToFileURL } from "node:url";
 import { atReviewer } from "./code-review.ts";
 import { checklistText, globRe, matchChecklist } from "./review-checklist.ts";
 import { asker, comboProblem, plan, runEngine } from "./engines.ts";
+import { page, tools } from "./review-tools.ts";
 import type { Combo, EngineResult } from "./engines.ts";
 
 type Severity = "important" | "nit" | "pre_existing";
@@ -100,6 +101,36 @@ export function history(ws: string, out: string, spec: Spec) {
   const b = base ?? head; // the base is the head itself (an empty PR)
   const f = spec.incremental_from === spec.base ? b : spec.incremental_from === spec.head ? head : from ?? b;
   return { base: b, from: f, head, git: (args: string[]) => g(args) };
+}
+
+/**
+ * The reviewed files whose diff no finder read to its end. Code pages the whole diff and each file's as the diff tool does: a
+ * file counts as read when some finder fetched every page of its own diff, or every page of the whole diff its lines are on.
+ * A finder that never looked can't make a review clean.
+ */
+export function unreadDiffs(answers: EngineResult[], reviewed: string[], t: ReturnType<typeof tools>, rel: (p: string) => string) {
+  const calls = answers.flatMap((a) => a.calls ?? []).filter((c) => c.tool === "diff" && !c.stat);
+  // Each page's first line, from the tool's own paging.
+  const starts = (text: string) => {
+    const s = [1];
+    for (let m; (m = /call again with from: (\d+) for the rest\]$/.exec(page(text, s.at(-1)))); ) s.push(Number(m[1]));
+    return s;
+  };
+  const fetched = (path?: string) => new Set(calls.filter((c) => (path === undefined ? !c.path || c.path === "." : c.path && rel(c.path) === path)).map((c) => c.from ?? 1));
+  const whole = String(t.diff!.run({}));
+  const pages = starts(whole), tree = fetched();
+  // The whole diff's lines as the pages count them (a line over a page is several), and where each file's part begins.
+  const lines = whole.split("\n").flatMap((l) => (l.length > 100_000 ? l.match(/[^]{1,100000}/g)! : [l])); // review-tools' page size
+  const heads = lines.flatMap((l, i) => (/^diff --git a\//.test(l) ? [{ i: i + 1, path: /^diff --git a\/(.+) b\/\1$/.exec(l)?.[1] ?? /^diff --git a\/\S+ b\/(\S+)/.exec(l)?.[1] }] : []));
+  const viaTree = (p: string) => {
+    const k = heads.findIndex((h) => h.path === p);
+    if (k < 0) return false;
+    const from = heads[k]!.i, to = (heads[k + 1]?.i ?? lines.length + 1) - 1;
+    return pages.every((s, j) => (pages[j + 1] ?? lines.length + 1) - 1 < from || s > to || tree.has(s));
+  };
+  // A file the tool can't diff by path (one the head deleted) is read only through the whole diff.
+  const own = (p: string) => { try { return starts(String(t.diff!.run({ path: p }))); } catch { return undefined; } };
+  return reviewed.filter((p) => { if (viaTree(p)) return false; const got = fetched(p), s = own(p); return !s || !s.every((x) => got.has(x)); });
 }
 
 /** The changed files from `from` to the head with their line counts: [{ path, added, removed, binary }]. */
@@ -324,6 +355,8 @@ export async function review({ spec, ws, out, run = runEngine }: { spec: Spec; w
   if (failed.length === n) throw new Error(`no finder finished: ${failed[0]!.cause ?? (failed[0]!.read ? "an answer that isn't the JSON asked for" : "it never read the diff")}`);
   if (failed.length) gaps.push(`${failed.length} of ${n} finders didn't finish (${failed[0]!.cause ?? "no usable answer"})`);
   for (const a of answers) if (a.incomplete) gaps.push(a.incomplete);
+  const unread = unreadDiffs(answers, reviewed, tools(ws, h.from), (p) => (p.startsWith(`${ws.replace(/\/$/, "")}/`) ? p.slice(ws.replace(/\/$/, "").length + 1) : p));
+  if (unread.length) gaps.push(`${unread.length} reviewed file${unread.length > 1 ? "s" : ""} whose diff no finder read to the end (${unread.slice(0, 10).join(", ")}${unread.length > 10 ? ", …" : ""})`);
   const root = ws.replace(/\/$/, "");
   const reviewedSet = new Set(reviewed);
   let candidates = dedupe(place(good.filter(Boolean).flatMap((j) => clean(j.findings, root)), ws, reviewedSet));

@@ -239,7 +239,7 @@ fi
     r = await runEngine("claude-code", { prompt: "Review: answer JSON", instructions: "brief", model: "anthropic/claude-sonnet-5.5", effort: "high", root: "/workspace", base: A, minutes: 1, scratch: mkdtempSync(join(tmpdir(), "cr-s-")), own: true });
   } finally { process.env = old; }
   assert.equal(JSON.parse(r.message).findings[0].title, "Off by one");
-  assert.deepEqual([r.read, r.calls], [true, [{ tool: "diff", path: undefined }, { tool: "read_file", path: "a.js" }]]);
+  assert.deepEqual([r.read, r.calls], [true, [{ tool: "diff" }, { tool: "read_file", path: "a.js" }]]);
   const [t1, t2] = [readFileSync(join(bin, "turn-0"), "utf8"), readFileSync(join(bin, "turn-1"), "utf8")];
   assert.match(t1, new RegExp(`ARG:/code-review high ${A}\\.\\.HEAD --max-findings all`));
   assert.match(t2, /ARG:--resume\nARG:s-1/);
@@ -294,4 +294,24 @@ JSON
   assert.match(seen, /ARG:--depth\nARG:normal\n/);
   assert.match(seen, /^CODEGENIE_GATEWAY=http:\/\/10\.0\.0\.1:8201\/api\/v1$/m);
   assert.match(seen, /^NODE_OPTIONS=--import=.*gateway-fetch\.ts$/m);
+});
+
+test("a review whose finders didn't page through a big file's diff is incomplete and names it; read to the end, it isn't", async () => {
+  const base = { "a.js": "1\n" }, head = { "a.js": "1\n2\n", "big.js": "const row = 'x';\n".repeat(12_000) };
+  const once = async () => ({ read: true, calls: [{ tool: "diff" }], message: JSON.stringify({ findings: [] }) });
+  const r = await review({ spec: spec({ combo: combo({ effort: "low" }) }), ...box({ head, base }), run: once });
+  assert.match(r.coverage.incomplete, /1 reviewed file whose diff no finder read to the end \(big\.js\)/);
+  // Every page of big.js's diff fetched: covered.
+  const all = async (_e, o) => {
+    const calls = [{ tool: "diff" }, { tool: "diff", path: "big.js" }];
+    for (let from = 1, t = tools(o.root, o.base); ; ) {
+      const m = /call again with from: (\d+) for the rest\]$/.exec(page(t.diff.run({ path: "big.js" }), from));
+      if (!m) break;
+      from = Number(m[1]);
+      calls.push({ tool: "diff", path: "big.js", from });
+    }
+    return { read: true, calls, message: JSON.stringify({ findings: [] }) };
+  };
+  const read = await review({ spec: spec({ combo: combo({ effort: "low" }) }), ...box({ head, base }), run: all });
+  assert.equal(read.coverage.incomplete, null);
 });
