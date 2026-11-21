@@ -74,3 +74,9 @@ wrote it or who agreed:
 
 A request that grows beyond what the delegating agent asked, on the strength of the requesting agent's or another
 agent's comment, is out of scope.
+
+A tool's own refusal is part of the request. When a call differs from the brief only by redacting what the tool refuses to
+publish (owner data in a public issue: names, emails, hosts, IPs, uuids, account and chat ids, credentials, replaced by a
+neutral word such as `<deleted task id>`), it does what the brief asked: the brief cannot ask for what the tool will not
+send, and the redaction is no deviation, with or without a comment amending the brief. Approve it; a brief that
+demands the datum verbatim gets the redacted call, never a rejection.
