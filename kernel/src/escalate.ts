@@ -185,8 +185,8 @@ export function createEscalate({ db, issue, state, asker, notice, owner, chief, 
       const to: AskTo = who === "owner" ? (fromChief || (await conversing(t.id)) ? "owner" : "chief_of_staff") : (await delegatorOf(t)) ? "delegator" : fromChief ? "owner" : "chief_of_staff";
       const open = openAsk(t.id);
       if (open === "unknown") return { sent: "open" };
-      // A question whose old delegator no longer exists goes where it now belongs; any other recipient change waits for its answer.
-      if (open && open.to !== to && !(open.to === "delegator")) return { sent: "open", to: open.to };
+      // One open ask at a time: only the same routed recipient may be replaced; any other change waits for its answer.
+      if (open && open.to !== to) return { sent: "open", to: open.to };
       if (asked && to === "owner") return { sent: "recorded", to };
       // A looping agent can't fill the chief of staff's list: at most CHIEF_ASKS a day per agent, whatever requested the ask.
       const asker = to === "chief_of_staff" ? (await agentOf(t))?.key : undefined;

@@ -342,19 +342,15 @@ test("a genuinely unanswered ask is replaced when the same recipient is asked ag
   assert.match(w.asked.notices[1].body, /Which path is current now\?/);
 });
 
-test("a question whose delegator closed moves to the chief of staff; any other recipient change is refused", async (t) => {
+test("a second question routed to a different recipient is refused, not replaced", async (t) => {
   const w = world(t);
   assert.equal((await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "which path", for: "delegator", question: "Which path is current?" })).to, "delegator");
   w.tick(MIN);
   w.issues.t0.status = "done";
-  assert.equal((await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "which path", for: "delegator", question: "Or this one?" })).to, "chief_of_staff", "the closed delegator is no recipient; the chief settles it");
-  assert.equal(w.asked.chief.length, 1);
-  // An owner question while the chief still owes the answer must wait for it.
-  w.tick(MIN);
-  w.who.conversing = true;
-  await assert.rejects(w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "which path", for: "owner", question: "Owner instead?" }), { status: 409 });
+  await assert.rejects(w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "which path", for: "delegator", question: "Or this one?" }), { status: 409 });
+  assert.equal(w.asked.chief.length, 0, "nothing was sent to the new recipient");
   const fact = w.db.prepare("SELECT data FROM facts WHERE type = 'work.waiting' AND subject = 'wait:t1' ORDER BY seq DESC LIMIT 1").get();
-  assert.equal(JSON.parse(fact.data).question, "Or this one?", "the chief's wait stands");
+  assert.equal(JSON.parse(fact.data).question, "Which path is current?", "the first wait stands");
 });
 
 test("a chat awaiting the owner's next message is never swept", async (t) => {
