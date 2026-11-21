@@ -531,14 +531,17 @@ process.stdin.on("data", (c) => (s += c)).on("end", async () => {
       // The cheap HTTP look first; only its silence is worth identifying as a database's own protocol.
       const look = await raw(k.host, k.port);
       let seen = look;
-      if (r.postgresProbe && k.port === r.postgresProbe && (look === "closed" || look === "silent")) {
-        seen = (await postgres(k.host, k.port)) || look;
-        // One hello per name, then one without: a TLS router may only answer its default route without SNI or only a
-        // recognized name with it, and any answer means the port could serve HTTPS. Names are only strings; a name over
-        // 255 bytes cannot be a hostname in SNI and is skipped.
-        if (seen === "postgres") {
+      if (r.postgresProbe && k.port === r.postgresProbe) {
+        if (look === "closed" || look === "silent") seen = (await postgres(k.host, k.port)) || look;
+        // A TLS listener answers the plaintext GET with a TLS alert, which reads as a non-HTTP banner; skipping that would
+        // let a TLS listener evade the TLS probes. So the declared database socket gets the TLS probes whatever its
+        // plaintext look was, and stays hard if it speaks TLS: the port is exempt only when the PostgreSQL handshake
+        // identified it and no TLS hello got an answer. One hello per name, then one without: a TLS router may only answer
+        // its default route without SNI or only a recognized name with it, and any answer means the port could serve HTTPS.
+        // Names are only strings; a name over 255 bytes cannot be a hostname in SNI and is skipped.
+        if (seen === "postgres" || seen === "banner") {
           for (const name of (r.sni ?? []).filter((n) => n && n.length <= 255)) if (await tls(k.host, k.port, name)) { seen = "https"; break; }
-          if (seen === "postgres" && (await tls(k.host, k.port))) seen = "https";
+          if (seen !== "https" && (await tls(k.host, k.port))) seen = "https";
         }
       }
       out.push({ ...k, statuses, raw: seen });

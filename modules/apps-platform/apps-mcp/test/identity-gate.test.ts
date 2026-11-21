@@ -310,6 +310,22 @@ describe("identity gate", () => {
     expect(r.findings[0]).toMatchObject({ hard: true, what: expect.stringMatching(/answers HTTPS/) });
   }, 60_000);
 
+  it.runIf(process.platform === "linux")("keeps a TLS listener hard when it answers the plaintext GET with a TLS alert", async () => {
+    // A TLS listener that answers the plaintext GET with a TLS alert reads as a non-HTTP banner, and the banner skip would
+    // end the probe before the TLS hellos run. The declared database socket gets the TLS probes whatever its plaintext
+    // look was, so a listener that speaks TLS stays hard and cannot evade the gate behind a banner.
+    const db = parseApp({ name: "warehouse", repo: "example-org/x", owner: "a", description: "d", port: 5433, expose: false, protocol: "postgres" });
+    const alert = await tcp(`(s) => {
+      s.on("data", (d) => {
+        if (d[0] === 0x16) return s.end(Buffer.from([0x15, 0x03, 0x03, 0, 2, 2, 40])); // a TLS hello gets a TLS alert
+        s.end(Buffer.from([0x15, 0x03, 0x03, 0, 2, 2, 40])); // the plaintext GET gets a TLS alert too: a non-HTTP banner
+      });
+    }`);
+    const r = await scan(db, [alert]);
+    expect(r.ok).toBe(false);
+    expect(r.findings[0]).toMatchObject({ hard: true, what: expect.stringMatching(/answers HTTPS/) });
+  }, 60_000);
+
   it.runIf(process.platform === "linux")("keeps a listener that offers SSL hard, even on an app the registry says serves no HTTP", async () => {
     // An SSLRequest reply alone is not identification: a TLS listener offers SSL too, and a multiprotocol one can serve
     // HTTPS on the same port without answering the plaintext probes. Only a server that declines SSL and then speaks the
