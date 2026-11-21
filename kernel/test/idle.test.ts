@@ -330,22 +330,21 @@ test("a genuinely unanswered ask is replaced when the same recipient is asked ag
   assert.match(w.asked.notices[1].body, /Which path is current now\?/);
 });
 
-test("an ask whose delegator closed moves to the chief of staff; an open delegator's ask is never rerouted", async (t) => {
+test("a second question routed to a different recipient is refused, not replaced", async (t) => {
   const w = world(t);
   assert.equal((await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "which path", for: "delegator", question: "Which path is current?" })).to, "delegator");
   w.tick(MIN);
-  // While the delegator is still open, an owner question routed to the chief of staff waits for its answer.
+  // An owner question routed to the chief of staff is another recipient: the first ask stands.
   w.who.conversing = true;
   await assert.rejects(w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "which path", for: "owner", question: "Owner instead?" }), { status: 409 });
   w.who.conversing = false;
-  assert.equal(w.asked.chief.length, 0, "nothing was sent to another recipient");
-  // Once the delegator has closed, the same task's question moves on to the chief of staff.
+  // A closed delegator doesn't hand the open ask to somebody else either.
   w.issues.t0.status = "done";
   w.tick(MIN);
-  assert.equal((await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "which path", for: "delegator", question: "Or this one?" })).to, "chief_of_staff");
-  assert.equal(w.asked.chief.length, 1);
+  await assert.rejects(w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "which path", for: "delegator", question: "Or this one?" }), { status: 409 });
+  assert.equal(w.asked.chief.length, 0, "nothing was sent to the new recipient");
   const fact = w.db.prepare("SELECT data FROM facts WHERE type = 'work.waiting' AND subject = 'wait:t1' ORDER BY seq DESC LIMIT 1").get();
-  assert.equal(JSON.parse(fact.data).question, "Or this one?");
+  assert.equal(JSON.parse(fact.data).question, "Which path is current?", "the first wait stands");
 });
 
 test("a legacy ask marker whose recipient can't be told is refused, not replaced", async (t) => {
