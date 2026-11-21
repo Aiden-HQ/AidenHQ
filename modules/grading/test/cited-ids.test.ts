@@ -1,6 +1,6 @@
 // A report's cited ids (WOR-9047): a report that cites a task, an approval card and an Actions job is graded from what code
-// resolves, not from "not shown". An id that resolves to nothing is a real answer ("no such id"); a genuinely unreadable
-// read still waits, and another task's files are still refused with notAvailable.
+// resolves, not from "not shown". An id that resolves to nothing is a real answer ("no such id"), and a genuinely unreadable
+// read still waits: a named task's file list is read (kernel-loop.ts otherTask), so only a transient failure is a wait.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { citedEvidence, citedIds, MAX_CITED, resolveCitation } from "../service/src/grader/evidence.ts";
@@ -106,9 +106,9 @@ test("a citation read that fails is a wait, and the card, task and job reads are
   assert.equal(down.facts, undefined, "a failed read never becomes 'no such task'");
 });
 
-test("another task's files stay notAvailable for the rubric's named task, while its cited ids still resolve", async () => {
+test("a named task's unreadable file list is a transient wait, while the report's cited ids still resolve", async () => {
   const report = "The mockups are on WOR-101; the card k-0123456789abcdef landed them.";
-  const unavailable = async () => { throw new Error("another task's files is not available to the grading module yet"); };
+  const unavailable = async () => { throw Object.assign(new Error("kernel GET → 502: upstream down"), { status: 502 }); };
   const deps = (rubric: string[]) => ({
     approvals: async () => [],
     comments: async () => [{ id: "c1", authorType: "agent", authorAgentId: "eng", body: report, createdAt: "2026-11-20T09:00:00Z" }],
@@ -125,9 +125,10 @@ test("another task's files stay notAvailable for the rubric's named task, while 
   assert.match(citedOnly.facts.join("\n"), /cited card k-0123456789abcdef: exists/);
   assert.equal(citedOnly.awaiting, undefined, "the citation path does not go through the named task's files");
 
-  // Named by the rubric, the same report still waits on the files that cannot be read: notAvailable is kept.
+  // Named by the rubric, the same report waits on a read that failed for a transient reason (a 5xx/network error): the wait is
+  // for the next look, never "not met", and the file list itself is read from the task through cp-read (kernel-loop.test.ts).
   const rubric = ["the mockup files on WOR-101 are the ones used"];
   const named = await gather({ kind: "report", ref: "" }, deps(rubric), rubric);
-  assert.match(named.awaiting, /another tasks files is not available to the grading module yet/);
+  assert.match(named.awaiting, /the files on WOR-101 could not be read yet \(kernel GET +502: upstream down\)/);
   assert.equal(named.facts, undefined, "an unreadable named task is a wait, never evidence");
 });

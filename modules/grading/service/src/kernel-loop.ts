@@ -9,7 +9,7 @@ import { forOthers } from "./aidenhq-sdk/for-others.ts";
 import { GRADE_SCHEMA, escalationFor, gather, grade, gradeNote, template } from "./grader/grade.ts";
 import { findPrs, stripHidden } from "./grader/text.ts";
 import { openRouterAsk } from "./aidenhq-sdk/judge.ts";
-import { taskPrRows } from "./grader/evidence.ts";
+import { MAX_OTHER_FILES, taskPrRows } from "./grader/evidence.ts";
 import { createGithub } from "./github.ts";
 import type { FactIn } from "./aidenhq-sdk/kernel-client.ts";
 import { appsEvidence, type AppsCall } from "./apps-evidence.ts";
@@ -21,7 +21,6 @@ type Runner = (method: string, path: string, body: unknown) => Promise<Json>;
 
 /** The code host modules (the kernel's list, kernel/src/codehost.ts CODEHOSTS; this service is its own build context). */
 const CODEHOSTS = ["github", "codehost-local"];
-const notAvailable = (what: string) => async () => { throw new Error(`${what} is not available to the grading module yet`); };
 const q = (o: Record<string, string>) => `?${new URLSearchParams(o)}`;
 
 /**
@@ -69,6 +68,9 @@ export function createKernelGradeLoop({ db, runner, due, kernel, kernelBytes, ap
   const pc = {
     company: "",
     issue: async (ref: string) => { const i = await kernel("GET", `/v1/cp/read/api/issues/${encodeURIComponent(ref)}`); await prime(i.id); return i; },
+    // The task as cp-read has it, with no work prime: a rubric-named task is checked against the graded task's company before
+    // anything on it (its work, its records, its files) is read.
+    taskOnly: (ref: string) => read(`/api/issues/${encodeURIComponent(ref)}`),
     comments: (id: string) => read(`/api/issues/${encodeURIComponent(id)}/comments`),
     children: async (parentId: string) => (await read(`/api/companies/${(await kernel("GET", `/v1/cp/read/api/issues/${encodeURIComponent(parentId)}`)).companyId}/issues${q({ parentId, limit: "200" })}`)).filter((i: Json) => i.parentId === parentId),
     // The task's own agent, whatever its company (work or personal).
@@ -126,7 +128,32 @@ export function createKernelGradeLoop({ db, runner, due, kernel, kernelBytes, ap
       comments: () => (thread ??= pc.comments(issue.id)),
       attachments: () => pc.attachments(issue.id), content: (id: string) => pc.attachmentContent(issue.id, id),
       identifier: issue.identifier,
-      otherTask: async (ident: string) => (await pc.issue(ident).catch(() => null)) && notAvailable("another task's files")(),
+      // Another task the rubric or the ref names (evidence.ts otherTaskEvidence): its task and its attachment rows, read as the
+      // owner through cp-read and never its files' contents. The task read carries no work prime, so another company's task is
+      // refused before its work or its files are touched. A 404 is a fact ("no such task"); so is a task of another company,
+      // which is never read. Any other failure throws, so the evidence waits for a real transient read failure instead of
+      // becoming "not met".
+      otherTask: async (ident: string) => {
+        let task: Json;
+        try {
+          task = await pc.taskOnly(ident);
+        } catch (err: Json) {
+          if (Number(err?.status) === 404) return null;
+          throw err;
+        }
+        if (!task?.companyId || task.companyId !== issue.companyId) return null;
+        const listed = await pc.attachments(task.id);
+        const files = Array.isArray(listed) ? listed : [];
+        // Only the newest files otherTaskEvidence states get an uploader name: the agents read is one call each. A 404 is
+        // "another agent" (pc.agent returns undefined); any other failure throws, so a transient read is never a wrong name.
+        const newest = [...files].sort((a: Json, b: Json) => String(a?.createdAt ?? "").localeCompare(String(b?.createdAt ?? ""))).slice(-MAX_OTHER_FILES);
+        const agents: Record<string, string> = {};
+        for (const id of new Set(newest.map((f: Json) => f?.createdByAgentId).filter(Boolean))) {
+          const a = await pc.agent(id as string);
+          if (a?.name) agents[id as string] = a.name;
+        }
+        return { identifier: task.identifier ?? ident, files, agents };
+      },
       // The ids a report cites, read one at a time (evidence.ts citedEvidence): a task's identifier, title and state as the
       // control plane has them; a card's state and outcome from the kernel's write record; an Actions job from GitHub.
       citedTask: async (ident: string) => {

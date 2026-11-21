@@ -311,3 +311,114 @@ test("a verdict's reopen and its parent's notice that hit a kernel 5xx land on t
   await loop2.runGrades();
   assert.deepEqual(calls.wake, ["p1"], "the next pass tells the parent");
 });
+
+/**
+ * A fake kernel for a grade whose rubric names another task: the graded task, the named task's read and attachments, and the
+ * agents read. `named` and `attachments` are what those reads answer, so a test can make them a 404, a 5xx or another company.
+ */
+async function namedTaskHarness(t, { id, identifier, rubric, named, attachments = [], agentRead = async (aid) => ({ id: aid, name: aid === "art" ? "Ada" : "Dana" }), other = [], comment }) {
+  const prompts = [];
+  const gateway = http.createServer(async (req, res) => {
+    let body = "";
+    for await (const c of req) body += c;
+    prompts.push(JSON.parse(body).messages.at(-1).content);
+    res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify(answer(["yes"])) } }] }));
+  }).listen(0);
+  t.after(() => gateway.close());
+  const task = (tid, ident, companyId = "co") => ({ id: tid, identifier: ident, title: "report", description: "", status: "in_review", companyId, assigneeAgentId: "eng", createdByAgentId: "cos", parentId: null });
+  const calls = { resolve: [], attachments: [], work: [] };
+  const kernel = async (method, path, body) => {
+    const namedId = named?.id ?? "t101";
+    for (const [p, answer] of other) if (path === p) return answer();
+    if (path === `/v1/cp/read/api/issues/${id}`) return task(id, identifier);
+    if (path === `/v1/cp/read/api/issues/${id}/comments`) return [{ id: "c1", authorType: "agent", authorAgentId: "eng", body: comment ?? `Done; the mockup is on ${named?.identifier ?? "WOR-101"}.`, createdAt: "2026-11-20T11:00:00Z" }];
+    if (path === `/v1/cp/read/api/issues/${id}/attachments`) return [];
+    if (path === `/v1/cp/read/api/issues/${named?.identifier ?? "WOR-101"}`) return named;
+    if (path === `/v1/cp/read/api/issues/${namedId}/attachments`) return calls.attachments.push(path), attachments;
+    if (path.startsWith("/v1/cp/read/api/agents/")) return agentRead(path.split("/").at(-1));
+    if (path.startsWith("/v1/cp/read/api/companies/co/issues")) return [];
+    if (path.startsWith("/v1/work?task=")) return calls.work.push(path), { busy: false, jobs: [], records: [] };
+    if (path === "/v1/work/grader-token") return { token: "tok" };
+    if (path === `/v1/checks/${id}`) return calls.resolve.push(body), {};
+    if (path === "/v1/wakes") return { posted: true };
+    throw new Error(`unexpected ${method} ${path}`);
+  };
+  const db = new DatabaseSync(":memory:");
+  const byRef = { [id]: task(id, identifier), [identifier]: task(id, identifier) };
+  const { runner, grades } = createGrading({ db, kernel: { issue: async (ref) => byRef[ref], settings: async () => ({}), release: async () => {} }, keys: { check: "c", runner: "r", board: "b" } });
+  grades.file(id, [rubric], { kind: "report", ref: "" });
+  const loop = () => createKernelGradeLoop({ db, runner, due: () => ({ grades: grades.due(), resubmitted: [] }), kernel, kernelBytes: async () => { throw new Error("no bytes"); }, apps: async () => { throw new Error("no apps"); }, gatewayUrl: `http://127.0.0.1:${gateway.address().port}`, github: noGithub, log: () => {} });
+  completionGate(grades, id, "finish_turn");
+  const realNow = Date.now;
+  Date.now = () => realNow() + 10_000;
+  t.after(() => { Date.now = realNow; });
+  return { prompts, calls, grades, loop };
+}
+
+test("a rubric naming another task reads its file list as evidence, not a wait", async (t) => {
+  const mockup = { id: "f1", originalFilename: "mockup.png", contentType: "image/png", byteSize: 1200, createdByAgentId: "art", createdAt: "2026-11-20T10:00:00Z" };
+  const h = await namedTaskHarness(t, {
+    id: "t9", identifier: "WOR-9", rubric: "the mockup on WOR-101 is the one applied here",
+    named: { id: "t101", identifier: "WOR-101", title: "the mockups", status: "done", companyId: "co" }, attachments: [mockup],
+  });
+  await h.loop().runGrades();
+  assert.deepEqual(h.calls.resolve.map((c) => c.verdict), ["ok"], "the grade completes: the named read is not a wait");
+  assert.equal(h.grades.get("t9").state, "satisfied");
+  assert.ok(h.calls.attachments.length > 0 && h.calls.attachments.every((p) => p === "/v1/cp/read/api/issues/t101/attachments"), "the named task's file list is read from cp-read");
+  const prompt = h.prompts[0];
+  assert.match(prompt, /WOR-101 \(another task the rubric names; its file list read now, not the files' contents\): 1 file attached/);
+  assert.match(prompt, /agent Ada/, "the uploader is named from the agents read");
+  assert.match(prompt, /mockup\.png \(image\/png\)/, "the file's name and type are in OTHER_TASK_FILES");
+});
+
+test("a rubric-named task that 404s is a fact, not a wait", async (t) => {
+  const notFound = () => { throw Object.assign(new Error("kernel GET → 404: no task WOR-404"), { status: 404 }); };
+  const h = await namedTaskHarness(t, {
+    id: "t10", identifier: "WOR-10", rubric: "WOR-404 says where the mockup came from",
+    named: { identifier: "WOR-404" },
+    other: [["/v1/cp/read/api/issues/WOR-404", notFound]],
+  });
+  await h.loop().runGrades();
+  assert.deepEqual(h.calls.resolve.map((c) => c.verdict), ["ok"], "a 404 completes the grade");
+  assert.equal(h.grades.get("t10").state, "satisfied");
+  assert.deepEqual(h.calls.attachments, [], "nothing is read from a task that does not exist");
+  assert.match(h.prompts[0], /WOR-404: no such task in this company \(nothing read from it\)/, "a 404 is a fact, not a wait");
+});
+
+test("a rubric-named task in another company is no such task, and its files are not read", async (t) => {
+  const h = await namedTaskHarness(t, {
+    id: "t11", identifier: "WOR-11", rubric: "the mockup on WOR-101 is the one applied here",
+    named: { id: "t101", identifier: "WOR-101", title: "someone else's", status: "done", companyId: "other" },
+    attachments: [{ id: "f2", originalFilename: "secret.png", contentType: "image/png", byteSize: 1, createdAt: "2026-11-20T10:00:00Z" }],
+    comment: "Done; the mockups are attached.",
+  });
+  await h.loop().runGrades();
+  assert.equal(h.grades.get("t11").state, "satisfied", "the grade settles instead of reading across companies");
+  assert.deepEqual(h.calls.attachments, [], "another company's files are never read");
+  assert.deepEqual(h.calls.work.filter((p) => !p.startsWith("/v1/work?task=t11")), [], "another company's task is never primed: no work read for it");
+  assert.match(h.prompts[0], /WOR-101: no such task in this company \(nothing read from it\)/);
+});
+
+test("a rubric-named task's transient read failure leaves the row awaiting, never not met", async (t) => {
+  const down = () => { throw Object.assign(new Error("kernel 502"), { status: 502 }); };
+  const h = await namedTaskHarness(t, {
+    id: "t12", identifier: "WOR-12", rubric: "the mockup on WOR-101 is the one applied here",
+    named: { id: "t101", identifier: "WOR-101", title: "the mockups", status: "done", companyId: "co" },
+    other: [["/v1/cp/read/api/issues/WOR-101", down]],
+  });
+  await h.loop().runGrades();
+  assert.deepEqual(h.calls.resolve, [], "a 502 on the named task's read passes no verdict");
+  assert.equal(h.grades.get("t12").state, "awaiting_evidence", "a 502 waits for the next look");
+});
+
+test("a transient agent-name read failure is a wait, not 'another agent'", async (t) => {
+  const mockup = { id: "f1", originalFilename: "mockup.png", contentType: "image/png", byteSize: 1200, createdByAgentId: "art", createdAt: "2026-11-20T10:00:00Z" };
+  const h = await namedTaskHarness(t, {
+    id: "t13", identifier: "WOR-13", rubric: "the mockup on WOR-101 is the one applied here",
+    named: { id: "t101", identifier: "WOR-101", title: "the mockups", status: "done", companyId: "co" }, attachments: [mockup],
+    agentRead: async (aid) => { if (aid === "art") throw Object.assign(new Error("kernel 502"), { status: 502 }); return { id: aid, name: "Dana" }; },
+  });
+  await h.loop().runGrades();
+  assert.deepEqual(h.calls.resolve, [], "a failed uploader read passes no verdict");
+  assert.equal(h.grades.get("t13").state, "awaiting_evidence", "it waits instead of naming an unknown agent");
+});

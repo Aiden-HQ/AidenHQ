@@ -560,7 +560,7 @@ export async function wordsEvidence(deps: any, rubric: string[] = []): Promise<a
 }
 
 const MAX_OTHER_TASKS = 3;
-const MAX_OTHER_FILES = 20; // per task, the newest
+export const MAX_OTHER_FILES = 20; // per task, the newest
 
 /**
  * The other tasks a rubric or a deliverable's ref names by identifier ("put the mockups onto ACME-12"): the graded task's own
