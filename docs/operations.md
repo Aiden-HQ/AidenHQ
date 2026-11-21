@@ -329,7 +329,8 @@ exact email match only).
   "Fleet issues" task (its handbook, "Shared sources").
 - Slack's gap sync needs the owner's user token of the Slack live app in `slack_live_user_token` (scopes in
   `modules/slack/module.yaml`); without it src_slack gets live events only.
-- Each pass writes `src_meta.ingest_run` (source, scope, rows, error). src_docs has two scopes: `drive` (code) and
+- Each pass writes `src_meta.ingest_run` (source, scope, rows, error; `status` holds a non-error marker, e.g. `retired`
+  for a security target whose replacement was scanned). src_docs has two scopes: `drive` (code) and
   `summaries` (OpenRouter, the root `openrouter_key`; model `DOCS_SUMMARY_MODEL`, default `~deepseek/deepseek-flash-latest`,
   ZDR). Without the key it stores metadata only.
 - Confluence pages are `src_jira.confluence_pages` (jira-mcp; ingest_run source `jira`, scopes `confluence` and

@@ -45,9 +45,9 @@ All writers share one `SourceStore` (a byte-identical copy lives in each connect
 - **Baseline.** The first sync of a source, channel, org or board writes rows with `baseline = true` and no change-log entries.
   Consumers skip baseline rows unless they ask for them, so backfill never looks like news.
 - **Text caps.** Long text is cut to about 4 KB with a `*_truncated` flag and a URL for the rest.
-- **Ingest runs.** Each pass writes a `src_meta.ingest_run` row (source, scope, rows written, error, and for a repo target the
-  commit scanned). apps-mcp reports each source's last good pass and whether the latest failed, and the board's fleet-ops
-  detector raises a stale or failing source.
+- **Ingest runs.** Each pass writes a `src_meta.ingest_run` row (source, scope, rows written, error, for a repo target the
+  commit scanned, and `status` for a non-error marker such as a retired security target). apps-mcp reports each source's
+  last good pass and whether the latest failed, and the board's fleet-ops detector raises a stale or failing source.
 
 ## Reading
 

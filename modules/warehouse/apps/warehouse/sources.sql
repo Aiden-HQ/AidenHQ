@@ -66,11 +66,15 @@ CREATE TABLE IF NOT EXISTS src_meta.ingest_run (
   finished_at timestamptz NOT NULL DEFAULT now(),
   rows integer NOT NULL DEFAULT 0,
   error text,
-  commit text
+  commit text,
+  status text
 );
 ALTER TABLE src_meta.ingest_run ADD COLUMN IF NOT EXISTS commit text;
+-- A non-error marker for a scope that was not a normal pass (e.g. security's "retired": a target no longer in the
+-- inventory whose replacement was scanned cleanly). status is null for a normal pass; error stays the failure signal.
+ALTER TABLE src_meta.ingest_run ADD COLUMN IF NOT EXISTS status text;
 CREATE INDEX IF NOT EXISTS ingest_run_source ON src_meta.ingest_run (source, finished_at DESC);
-COMMENT ON TABLE src_meta.ingest_run IS 'One row per ingest pass of a source writer: source (slack, github, jira, hubspot, meetings, docs, security, app-auditor), scope (what it covered), rows written with a difference, error when it failed, commit for a repo target (the checkout''s git HEAD, so the row says which tree the pass read).';
+COMMENT ON TABLE src_meta.ingest_run IS 'One row per ingest pass of a source writer: source (slack, github, jira, hubspot, meetings, docs, security, app-auditor), scope (what it covered), rows written with a difference, error when it failed, commit for a repo target (the checkout''s git HEAD, so the row says which tree the pass read), status for a non-error marker (e.g. retired).';
 GRANT INSERT ON src_meta.ingest_run TO writers;
 GRANT USAGE ON SEQUENCE src_meta.ingest_run_id_seq TO writers;
 GRANT SELECT ON src_meta.ingest_run TO agents_open;
