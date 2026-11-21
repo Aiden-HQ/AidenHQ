@@ -47,7 +47,7 @@ test("gateway: attribution, billed cost, the task cap, the delegator told once, 
     });
   });
   const issues = { iss1: { labels: [] }, chat1: { labels: [{ name: "chat" }] } };
-  const runs = { run1: "iss1", run2: "iss1", c1: "chat1", c2: "chat1", c3: "chat1" };
+  const runs = { run1: "iss1", run2: "iss1", h1: "iss1", c1: "chat1", c2: "chat1", c3: "chat1" };
   const paperclip = await serve((req, res) => {
     const auth = String(req.headers.authorization).slice(7);
     if (auth !== "pc-board") return json(res, 403, {});
@@ -114,6 +114,9 @@ test("gateway: attribution, billed cost, the task cap, the delegator told once, 
   assert.match(told[0][1], /^Task spend cap reached: .*\$0\.09 of \$0\.08/);
   assert.equal((await usage()).filter((r) => r.status === "cap_reached").length, 2); // one per run key
   assert.deepEqual(gw.exhausted("ag1", "iss1").map((o) => o.scope), ["task"]);
+  // Handed to another agent, the task keeps what it spent.
+  assert.equal((await call(jobToken("ag2", "h1"))).status, 402);
+  assert.deepEqual(gw.exhausted("ag2", "iss1").map((o) => o.scope), ["task"]);
 
   // The monitoring module's metrics (a textfile gateway.ts writes; no route): agent keys as labels.
   assert.equal((await fetch(`${front.url}/metrics`)).status, 404);
@@ -141,6 +144,7 @@ test("gateway: attribution, billed cost, the task cap, the delegator told once, 
   const chatRefused = await call(jobToken("ag1", "c3"));
   assert.equal(chatRefused.status, 402);
   assert.equal(told.at(-1)[0], "chat1");
+  assert.deepEqual(gw.exhausted("ag1", "chat1").map((o) => o.scope), ["task"], "admission reads a chat task's cap by the day too");
   now += 864e5;
   assert.equal((await call(jobToken("ag1", "c3"))).status, 200);
   for (const r of [refused, chatRefused]) assert.doesNotMatch(JSON.parse(r.text).error.message, /usage limit|rate[- ]?limit|try again|quota|capacity|429|service unavailable|temporary|spawn|ENOENT|\d{4}-\d{2}-\d{2}|\d+:\d\d/i);
@@ -227,6 +231,7 @@ test("gateway: the install's day and month limits count every call, every caller
   for (let i = 0; i < 5; i++) assert.equal((await call(reviewer())).status, 200, `$${(0.06 + i * 0.03).toFixed(2)} spent this month`);
   // The last call crossed it: admission's check tells the owner already, before any call is refused (and only once).
   assert.deepEqual(gw.exhausted("ag1", "iss1").map((o) => o.scope), ["month"]);
+  await new Promise((r) => setImmediate(r)); // told after the caller's transaction
   assert.equal(told.length, 2);
   const month = await call(reviewer());
   assert.equal(month.status, 402);

@@ -147,6 +147,7 @@ export function openLedger(file: string, legacy?: string): { db: DatabaseSync; m
       cached INTEGER NOT NULL DEFAULT 0, output INTEGER NOT NULL DEFAULT 0, cost_usd REAL, ms INTEGER, status TEXT NOT NULL);
     CREATE INDEX IF NOT EXISTS calls_run ON calls (run_key);
     CREATE INDEX IF NOT EXISTS calls_task ON calls (agent_id, task_subject);
+    CREATE INDEX IF NOT EXISTS calls_subject ON calls (task_subject);
     CREATE INDEX IF NOT EXISTS calls_day ON calls (agent_id, day);
     CREATE INDEX IF NOT EXISTS calls_all_day ON calls (day);
     CREATE INDEX IF NOT EXISTS calls_at ON calls (at);
@@ -306,7 +307,8 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
     add: db.prepare("INSERT OR IGNORE INTO calls (key, at, day, run_key, run_id, agent_id, issue_id, task_subject, rev, kind, component, model, input, cached, output, cost_usd, ms, status, owner) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"),
     spentRun: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE run_key = ?"),
     tokensRun: db.prepare("SELECT COALESCE(SUM(input), 0) AS input, COALESCE(SUM(cached), 0) AS cached, COALESCE(SUM(output), 0) AS output FROM calls WHERE run_key = ?"),
-    spentTask: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE agent_id = ? AND task_subject = ?"),
+    // A task's spend, whoever held it (a hand-off or a re-route keeps what it spent).
+    spentTask: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE task_subject = ? AND agent_id IS NOT NULL"),
     spentDay: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE agent_id = ? AND day = ?"),
     spentAll: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE day = ?"),
     // A month's days, on the day index (`day` is YYYY-MM-DD; the ledger keeps 40 days).
@@ -449,7 +451,7 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
   function limits(who: { agentId: string | null; issueId: string | null; perpetual: boolean }, t: number): Limit[] {
     const set = limitsSet(), d = day(t), m = month(t), task = who.agentId ? taskSubject(who, t) : null;
     return [
-      ...(set.task && task ? [{ scope: "task" as const, subject: task, cap: set.task, spent: (q.spentTask.get(who.agentId, task) as Sum).s }] : []),
+      ...(set.task && task ? [{ scope: "task" as const, subject: task, cap: set.task, spent: (q.spentTask.get(task) as Sum).s }] : []),
       ...(set.day ? [{ scope: "day" as const, subject: d, cap: set.day, spent: (q.spentAll.get(d) as Sum).s }] : []),
       ...(set.month ? [{ scope: "month" as const, subject: m, cap: set.month, spent: (q.spentMonth.get(`${m}-01`, `${m}-31`) as Sum).s }] : []),
     ];
@@ -536,13 +538,13 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
   async function tell(who: { agentId: string | null; issueId: string | null }, over: Limit) {
     const task = over.scope === "task";
     const to = task ? (tellDelegator && who.issueId ? (text: string) => tellDelegator(who.issueId!, text) : undefined) : notifyOwner;
-    const key = [over.scope, task ? who.agentId! : "install", over.subject, over.cap] as const;
-    if (!to || !q.file.run(...key, new Date(now()).toISOString()).changes) return;
+    const key = [over.scope, task ? "task" : "install", over.subject, over.cap] as const;
     try {
+      if (!to || !q.file.run(...key, new Date(now()).toISOString()).changes) return;
       if (task) await to(`Task spend cap reached: this task's calls have spent $${over.spent.toFixed(2)} of $${over.cap.toFixed(2)} (settings.task_usd), so its agent stops here. Split what is left into new tasks, or the owner can raise task_usd in Settings.`);
       else await to(`AidenHQ reached its ${over.scope === "day" ? "daily" : "monthly"} spend limit ($${over.spent.toFixed(2)} of $${over.cap.toFixed(2)}, settings.spend_${over.scope}_usd), so every model call is refused until the ${over.scope === "day" ? "next UTC day" : "next month (UTC)"}. Raise it in Settings to carry on now.`);
     } catch (e) {
-      q.unfile.run(...key); // the next refusal tells again
+      try { q.unfile.run(...key); } catch {} // the next refusal tells again
       log("spend limit notice failed", { err: String((e as Error).message).slice(0, 300) });
     }
   }
@@ -751,8 +753,12 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
    * month. Each is told as a refused call's is (once), so a limit a last call crossed is never silent.
    */
   const exhausted = (agentId: string, task: string) => {
-    const over = limits({ agentId, issueId: task, perpetual: false }, now()).filter((o) => o.spent >= o.cap);
-    for (const o of over) void tell({ agentId, issueId: task }, o);
+    // Admission doesn't know whether the task is a chat or routine one (its cap by the UTC day): both subjects are read.
+    const t = now(), who = { agentId, issueId: task };
+    const all = [...limits({ ...who, perpetual: false }, t), ...limits({ ...who, perpetual: true }, t).filter((o) => o.scope === "task")];
+    const over = all.filter((o) => o.spent >= o.cap);
+    // After the caller's transaction (admission's) is over: the notice's row is a write on the same file.
+    if (over.length) setImmediate(() => { for (const o of over) void tell(who, o); });
     return over;
   };
   /** What a run key (a credential's sha256) has spent; spentBy: the same, by the credential. */
@@ -760,5 +766,5 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
   const spentBy = (cred: string) => spentByKey(sha256(cred));
   /** A run key's tokens (settled calls' input, cached input and output). */
   const tokensByKey = (runKey: string) => ({ ...(q.tokensRun.get(runKey) as { input: number; cached: number; output: number }) });
-  return { handle, db, metricsText, exhausted, trueUp, spentBy, spentByKey, tokensByKey, inflight: () => live, ciEnabled: () => Boolean(ciConf()), close: () => { clearInterval(pruner); clearInterval(trueUps); prices.close(); db.close(); } };
+  return { handle, db, metricsText, exhausted, dayLimit: () => limitsSet().day, trueUp, spentBy, spentByKey, tokensByKey, inflight: () => live, ciEnabled: () => Boolean(ciConf()), close: () => { clearInterval(pruner); clearInterval(trueUps); prices.close(); db.close(); } };
 }

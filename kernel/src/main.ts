@@ -531,13 +531,12 @@ const firstRun = {
 // PKCE and a 1-token check on the gateway's upstream, against the module's default model (CHECK_MODEL). Its readiness is
 // model_ready and the first-run redirects.
 const upstream = env("AIDENHQ_GATEWAY_UPSTREAM", "https://openrouter.ai/api/v1");
-const gatewaySettings = watched(path.join(configDir, "gateway.json"), (j) => j as { install_day_usd?: unknown }, {});
 const model = createModelStep({
   upstream,
   model: () => CHECK_MODEL,
   vault: { get: secret, exists: (n) => existsSync(path.join(secretsDir, n)), save: firstRun.save },
   fits: (key) => { const f = firstRun.fields().find((x) => x.secret === MODEL_KEY); return !f || secretFits(f, key); },
-  dayCap: () => { const n = Number(gatewaySettings().install_day_usd); return n > 0 ? n : undefined; },
+  dayCap: () => gw.dayLimit(), // the limit the gateway enforces, its default included
   log,
 });
 // A module's declared setup secrets from the board (save_secret, setup_status): the same vault writes, then that module's
