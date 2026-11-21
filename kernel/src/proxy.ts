@@ -299,7 +299,7 @@ export function createProxy({ whoami, connections, asserter, resolver, secret, w
             const state = call ? needs() : undefined;
             if (need && state) {
               // Only the owner can fix it: the connection state routes it, and the agent reads the kernel's words, unfenced.
-              const said = await state.hit(who, conn.module, need).catch((e: Error) => { log("connection need not routed", { connection, err: e.message }); return `${connection} isn't connected: only the owner can fix it. Don't retry.`; });
+              const said = await state.hit(who, connection, need).catch((e: Error) => { log("connection need not routed", { connection, err: e.message }); return `${connection} isn't connected: only the owner can fix it. Don't retry.`; });
               done(false, said);
               const out = JSON.stringify({ jsonrpc: "2.0", id: reqId, result: { content: [{ type: "text", text: said }], isError: true } });
               res.writeHead(200, { "content-type": "application/json", "content-length": Buffer.byteLength(out) }).end(out);
@@ -308,7 +308,7 @@ export function createProxy({ whoami, connections, asserter, resolver, secret, w
             if (rec) done(okAnswer, text);
             // A call the connection's sign-in served (its answer says so: needs.ts SIGNED_IN) proves the module connected: a full
             // need it had clears, and the tasks waiting on it wake. A tool that works signed out proves nothing.
-            try { if (success && state?.down(conn.module, account)) state.ok(conn.module, { account, fullOnly: true }); } catch (e) { log("connection state not cleared", { connection, err: (e as Error).message }); }
+            try { if (success && state?.down(connection, account)) state.ok(connection, { account, fullOnly: true }); } catch (e) { log("connection state not cleared", { connection, err: (e as Error).message }); }
             if (asIs) res.writeHead(status, { ...hdrs, "content-length": String(raw.length) }).end(raw);
             else res.writeHead(status, { ...hdrs, "content-length": Buffer.byteLength(answer!) }).end(answer);
             resolve();

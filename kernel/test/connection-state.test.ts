@@ -22,8 +22,8 @@ function world(issues: Record<string, Record<string, unknown>>, comments: Record
     comments: async (id) => (comments[id] ?? []) as never,
     agentName: async () => "Aiden",
     label: (m) => m[0]!.toUpperCase() + m.slice(1),
-    connections: () => ({ google_workspace: { module: "google" }, github: { module: "github" } }) as never,
-    grants: () => ({ a1: { tools: { google_workspace: ["gmail_search"], github: ["x"] } } }),
+    connections: () => ({ google: { module: "google" }, github: { module: "github" }, slack: { module: "slack" }, slack_live: { module: "slack" } }) as never,
+    grants: () => ({ a1: { tools: { google: ["gmail_search"], github: ["x"], slack: ["x"], slack_live: ["x"] } } }),
     boardUrl: () => "http://board.example",
     now: () => clock,
   });
@@ -55,7 +55,7 @@ test("an owner-asked hit sends one decision with the board link and records a 7-
   assert.match(text, /the owner has the link/);
   assert.ok(!text.includes("no account"));
   assert.equal(w.s.down("google"), true);
-  assert.deepEqual(w.s.downFor("a1"), [{ connection: "google_workspace", module: "google", cause: "not_connected", since: new Date(w.now()).toISOString() }]);
+  assert.deepEqual(w.s.downFor("a1"), [{ connection: "google", module: "google", cause: "not_connected", since: new Date(w.now()).toISOString() }]);
 });
 
 test("a second hit on a told need records the wait and sends nothing", async () => {
@@ -124,7 +124,7 @@ test("an account's success keeps another account's expired need and its waiter",
   assert.equal(w.s.down("google", "a@example.com"), true);
   assert.equal(w.db.prepare("SELECT COUNT(*) AS n FROM connection_waits").get()!.n, 1, "w3 still waits");
   assert.equal(w.opened.length, 0, "no connected wake");
-  assert.deepEqual(w.s.downFor("a1"), [{ connection: "google_workspace", module: "google", cause: "expired", account: "a@example.com", since: new Date(w.now()).toISOString() }]);
+  assert.deepEqual(w.s.downFor("a1"), [{ connection: "google", module: "google", cause: "expired", account: "a@example.com", since: new Date(w.now()).toISOString() }]);
   // a@ answers: its row clears and only its waiter wakes.
   assert.equal(w.s.ok("google", { account: "a@example.com", fullOnly: true }), 1);
   assert.equal(w.s.down("google"), false);
@@ -204,4 +204,16 @@ test("tick lists a still-waiting connection once a day", async () => {
   w.tick(DAY);
   w.s.tick();
   assert.equal(w.queued.length, 2, "nothing once connected");
+});
+
+test("a down user sign-in does not mark a sibling connection of the same module down", async () => {
+  const w = world(ownerChain(), { w1: [OWNER_COMMENT] });
+  await w.s.hit(w.who("w3"), "slack", { cause: "expired", detail: "" });
+  assert.equal(w.s.down("slack"), true);
+  assert.equal(w.s.down("slack_live"), false);
+  assert.deepEqual(w.s.downFor("a1").map((d) => [d.connection, d.module]), [["slack", "slack"]]);
+  assert.match(w.queued[0].text, /board\.example\/connect\/slack/);
+  // The board's Connect names the module and clears every connection of it.
+  assert.equal(w.s.okModule("slack"), 1, "the one waiting task wakes");
+  assert.equal(w.s.down("slack"), false);
 });

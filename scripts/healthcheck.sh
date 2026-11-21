@@ -167,7 +167,7 @@ else
   printf '  skip  clickhouse (off, or its address is not set: its setup on the board)\n'
 fi
 
-gh_health="$(curl -s -m 10 "$(svc github-mcp 8086)/healthz" 2>&1)"
+gh_health="$(curl -s -m 10 "$(svc github 8086)/healthz" 2>&1)"
 if echo "$gh_health" | grep -q '"ok":true'; then
   probe_check "github (whoami; if GitHub rejected the token, paste a new one in the GitHub setup on the board)" github
 else
