@@ -45,6 +45,7 @@ test("aidenhq: writes, task reads and next-turn requests go to the kernel with t
   t.after(() => rmSync(ws, { recursive: true, force: true }));
   const git = (...a) => execFileSync("git", ["-C", join(ws, "app"), "-c", "user.name=t", "-c", "user.email=t@example.com", ...a], { encoding: "utf8" }).trim();
   execFileSync("git", ["init", "-q", "-b", "fix-login", join(ws, "app")]);
+  execFileSync("git", ["-C", join(ws, "app"), "remote", "add", "origin", "aidenhq://acme/app"]);
   git("commit", "-q", "--allow-empty", "-m", "fix(login): stop the loop");
   const sha = git("rev-parse", "HEAD");
   writeFileSync(join(ws, "body.md"), "Why.");

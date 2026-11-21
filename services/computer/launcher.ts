@@ -129,10 +129,20 @@ const jobState = async (name: string) => {
 const ours = (name: unknown): name is string => typeof name === "string" && name.startsWith(CFG.prefix) && /^[a-z0-9-]+$/.test(name);
 const fail = (status: number, msg: string) => Object.assign(new Error(msg), { status });
 
-// A box Docker didn't remove keeps its records (it still holds a slot) and is tried again every minute until it goes. Its token
-// opens nothing from the start, and while it is being removed it counts as busy, so no other admission picks it to evict.
+// A box Docker didn't remove keeps its records (it still holds a slot, never picked to evict) and is tried again every minute
+// until it goes. Its token opens nothing from the start; while it is being removed it counts as busy, and every caller shares
+// the one removal in flight.
 const unremoved = new Set<string>();
-async function destroy(name: string, why: string) {
+const removing = new Map<string, Promise<boolean>>();
+function destroy(name: string, why: string) {
+  let p = removing.get(name);
+  if (!p) {
+    p = remove(name, why).finally(() => removing.delete(name));
+    removing.set(name, p);
+  }
+  return p;
+}
+async function remove(name: string, why: string) {
   const b = boxes.get(name);
   if (b) b.busy++;
   const j = jobs.get(name);
@@ -164,15 +174,11 @@ async function imageNamed(name: unknown) {
  * tried); all busy → wait. 45 s in all, so the kernel (120 s a call) is still waiting for the box this frees.
  */
 async function makeRoom() {
-  const stuck = new Set<string>();
   for (const end = Date.now() + 45_000; ;) {
     const max = maxBoxes();
-    const evict = admit(boxes, max, (n) => held(n) || stuck.has(n));
+    const evict = admit(boxes, max, (n) => held(n) || unremoved.has(n));
     if (evict === null) return;
-    if (evict !== "wait") {
-      if (await destroy(evict, "evicted (computers full)")) return;
-      stuck.add(evict);
-    }
+    if (evict !== "wait" && (await destroy(evict, "evicted (computers full)"))) return;
     if (Date.now() >= end) throw fail(503, `all ${max} computers are busy; try again shortly`);
     if (evict === "wait") await new Promise((r) => setTimeout(r, 1000));
   }

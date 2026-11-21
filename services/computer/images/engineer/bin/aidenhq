@@ -117,17 +117,17 @@ const pr = (link) => {
   return { repo: m[1], number: Number(m[2]) };
 };
 /**
- * This workspace's clone of org/repo: the first of <name> and <org>--<name> whose origin names it (any transport, any case) or
- * that has no origin (`have`), and every clone at those paths (`there`).
+ * This workspace's clone of org/repo: the first of <name> and <org>--<name> whose origin, as configured (its first URL, no
+ * rewrites), is this repository's on the code host (`have`: aidenhq://, as aidenhq clone sets it, or GitHub's, any case), and
+ * every clone at those paths (`there`). A clone with no origin, or one git can't read, is none.
  */
 const cloneOf = (repo) => {
   const [org, name] = repo.split("/");
   const want = repo.toLowerCase();
-  // git exits 2 for no origin; any other failure (an unreadable clone) names no repository.
   const names = (d) => {
-    let o;
-    try { o = execFileSync("git", ["-C", d, "remote", "get-url", "origin"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim().toLowerCase().replace(/\/+$/, "").replace(/\.git$/, ""); } catch (e) { return e.status === 2; }
-    return !o || o.endsWith(`/${want}`) || o.endsWith(`:${want}`);
+    let o = "";
+    try { o = execFileSync("git", ["-C", d, "config", "--get-all", "remote.origin.url"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).split("\n")[0].trim().toLowerCase().replace(/\/+$/, "").replace(/\.git$/, ""); } catch {}
+    return ["aidenhq://", "https://github.com/", "git@github.com:", "ssh://git@github.com/"].some((p) => o === p + want);
   };
   const there = [name, `${org}--${name}`].map((d) => join(workspace, d)).filter((d) => existsSync(join(d, ".git")));
   return { have: there.find(names), there };
@@ -229,7 +229,7 @@ if (command === "publish" || command === "review") {
   // The clone already here (as the job's start made it) is refreshed; else a new one at <name>. A clone of another
   // repository (another org's <name>) is never fetched into.
   const { have, there } = cloneOf(words[0]);
-  if (!have && there.length) fail(`${there[0]} is a clone of another repository, not ${words[0]}`, 2);
+  if (!have && there.length) fail(`${there[0]} isn't a clone of ${words[0]} (its origin names another repository, or none)`, 2);
   if (have && flags.keep) { console.log(`${words[0]}: kept as it is in ${have}`); process.exit(0); }
   const dest = have ?? join(workspace, name);
   if (!have && existsSync(dest)) fail(`${dest} is already there and isn't a clone`, 2);
@@ -246,11 +246,15 @@ if (command === "publish" || command === "review") {
     } else {
       // origin names the repo with no transport: publishing goes through aidenhq, refreshing through aidenhq clone. Set before
       // the clone takes its place, so a box stopped half way never leaves one whose origin names something else.
-      const part = join(workspace, `.${name}.cloning`);
-      rmSync(part, { recursive: true, force: true });
-      execFileSync("git", ["clone", "--quiet", file, part], { stdio: ["ignore", "ignore", "inherit"] });
-      execFileSync("git", ["-C", part, "remote", "set-url", "origin", `aidenhq://${words[0]}`]);
-      renameSync(part, dest);
+      const part = mkdtempSync(join(workspace, `.${name}.cloning-`));
+      try {
+        execFileSync("git", ["clone", "--quiet", file, part], { stdio: ["ignore", "ignore", "inherit"] });
+        execFileSync("git", ["-C", part, "remote", "set-url", "origin", `aidenhq://${words[0]}`]);
+        renameSync(part, dest);
+      } catch (e) {
+        rmSync(part, { recursive: true, force: true });
+        throw e;
+      }
       lines.push(`${words[0]}: cloned into ${dest}`);
     }
   } finally {
