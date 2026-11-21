@@ -11,9 +11,13 @@ export function Button({ variant, size, className, type = "button", ...rest }: B
   return <button type={type} className={`${buttonClass(variant, size)}${className ? ` ${className}` : ""}`} {...rest} />;
 }
 
-/** A link from server data runs nothing: web, in-page and same-origin addresses only. */
+/** A link from server data runs no script: only web addresses (as the browser parses them) and in-page links. */
 export function safeHref(href: string) {
-  return /^(https?:\/\/|#|\/(?![\/\\]))/i.test(href) ? href : "#";
+  try {
+    return /^https?:$/.test(new URL(href, location.href).protocol) ? href : "#";
+  } catch {
+    return "#";
+  }
 }
 
 export function LinkButton({ variant, size, href, children, external }: { variant?: ButtonVariant; size?: "sm"; href: string; children: React.ReactNode; external?: boolean }) {
