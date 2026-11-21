@@ -214,3 +214,20 @@ test("a database from before combos starts fresh (data version 1)", () => {
   assert.equal(db.prepare("SELECT COUNT(*) n FROM runs").get().n, 0);
   assert.equal(db.prepare("PRAGMA user_version").get().user_version, 1);
 });
+
+test("a one-off of a merged PR runs and posts on a task of its own, closed once settled; one closed unmerged is refused", async () => {
+  const w = world();
+  await w.tick();
+  w.pr(7, sha("7"), { open: false, merged: true });
+  w.pr(8, sha("8"), { open: false, merged: false });
+  await assert.rejects(w.engine.oneoff({ pr_url: `https://github.com/${REPO}/pull/8` }), /closed without merging/);
+  const [r] = await w.engine.oneoff({ pr_url: `https://github.com/${REPO}/pull/7`, combos: [CODEX] });
+  w.later(1000); await w.tick(); // a poll doesn't take the merged PR for one that just closed
+  assert.equal(w.started.length, 1);
+  w.finish(0, {}, 0.2);
+  await w.tick();
+  assert.deepEqual(w.posted.map((p) => p.target), [{ repo: REPO, number: 7, head: sha("7"), once: true }]);
+  w.outcomes.set("k-1", { state: "posted", url: "https://github.com/x" });
+  await w.tick();
+  assert.deepEqual(w.closed.map((c) => [c[1], c[3]]), [[7, r.id]]);
+});
