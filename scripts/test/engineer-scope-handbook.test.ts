@@ -1,6 +1,7 @@
 // A publish stays inside the brief: the Engineer handbook says the diff carries the change the task names, and an
-// access rule, a config change or an unrelated file comes in only when the brief asks for it by name. A fix that seems to need
-// one is raised on the task so its delegator can widen the brief first.
+// access rule, a config change or an unrelated file comes in only when the brief asks for it by name. A fix that cannot
+// work without one is asked about with the tool the Engineer actually holds (`task_wait` for its delegator), which keeps
+// the task open for the widened brief.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
@@ -26,10 +27,26 @@ function compiled() {
   return readInstructions(r.paperclip, r.paperclip.agents.engineer, { repo: product, instanceDir: dir });
 }
 
+/** The scope paragraph, whitespace collapsed: from "Change only what the brief asks" to the next paragraph. */
+function scopeParagraph(text = compiled()) {
+  const at = text.indexOf("Change only what the brief asks");
+  assert.notEqual(at, -1, "the handbook has the scope rule");
+  const rest = text.slice(at);
+  const end = rest.indexOf("\n\n");
+  return rest.slice(0, end === -1 ? undefined : end).replace(/\s+/g, " ");
+}
+
 test("the Engineer's handbook keeps a publish to the brief's scope", () => {
-  const text = compiled().replace(/\s+/g, " ");
-  assert.match(text, /Change only what the brief asks/);
-  assert.match(text, /the diff carries the change the task names/);
-  assert.match(text, /An access rule, a config change or an unrelated file comes in only when the brief asks for it by name/);
-  assert.match(text, /say so on the task and let its delegator widen the brief first/);
+  const rule = scopeParagraph();
+  assert.match(rule, /the diff carries the change the task names/, "the diff is the task's change");
+  for (const outside of [/access rule/i, /config/i, /unrelated file/i]) assert.match(rule, outside, `${outside} is named as out of scope`);
+  assert.match(rule, /brief asks for it by name/i, "each one needs the brief to name it");
+});
+
+test("a fix that needs something outside the brief asks with task_wait and leaves the task open", () => {
+  const rule = scopeParagraph();
+  assert.match(rule, /`task_wait`/, "the run ends with the tool it holds");
+  assert.match(rule, /delegator/i, "the question goes to the delegator");
+  assert.match(rule, /(instead of|rather than)\b[^.]*\badd/i, "the change is not added");
+  assert.match(rule, /(task|it) (stays|remains|is left) open/i, "the task stays open for the widened brief");
 });
