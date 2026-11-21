@@ -112,7 +112,11 @@ advisory) is for when waiting would block a release of code already running else
 value.
 
 A fix that needs a **new registry, URL or git source** (a vendor's apt repository, say, because the distro's package is too
-old) is the owner's call. When they approve one for one package and one source, record it in
+old) is the owner's call. A base image from Docker Hub's official-images repository (`library/<name>`), named as
+`docker.io/library/<name>`, as the bare `<name>`, or through a registry that mirrors Docker Hub (such as `mirror.gcr.io`),
+is the default registry and not a new source: it needs no record in `.github/supply-chain-source-exceptions.yaml`, and
+it is a pin only at a version and digest, as any image is; a record is for a package moved to some other vendor's
+registry, URL or apt/git source. When they approve one for one package and one source, record it in
 `.github/supply-chain-source-exceptions.yaml`, in the same flow style, in a PR of its own:
 `- { ecosystem: apt, package: gh, from: "Debian sid main", to: "https://cli.github.com/packages stable main", version: 2.104.0, approved_by: owner, reference: "where the owner said so", reason: "CVE-…" }`.
 The AI reviewer reads that file from the base branch, and a change to the file itself is the owner's own tap in every repo
