@@ -353,16 +353,16 @@ jobs:
               REVIEW_MINUTES="$1" node "$rv/code-review.ts" "$from" "$HEAD_SHA" > "$RUNNER_TEMP/review.json"
             code=$?
           }
-          # No verdict is never a pass: the gate fails it (fail closed, whatever the size). One retry only after a confirmed
-          # provider error (exit 1: HTTP 429 or 5xx, a provider quota 402, a dropped connection), when time is left; never after
-          # a timeout or an answer that isn't a review (exit 3: the PR's content can cause it), nor after a refusal (exit 2:
-          # the gateway's 401-403 or our own spend cap, which a retry can't fix).
+          # No verdict is neutral: the gate passes it with a comment (fail open, whatever the size). One retry after a provider
+          # error (exit 1: HTTP 429 or 5xx, a provider quota 402, a dropped connection) or a run without a verdict (exit 3: a
+          # timeout, an answer that isn't a review), when time is left; never after a refusal (exit 2: the gateway's 401-403 or
+          # our own spend cap, which a retry can't fix).
           review 40
           attempts=1
-          if [ "$code" = 1 ]; then
+          if [ "$code" = 1 ] || [ "$code" = 3 ]; then
             left=$(( (85 * 60 - SECONDS) / 60 - 1 ))
             if [ "$left" -ge 10 ]; then
-              echo "::warning::The model provider failed: retrying in 60 seconds."
+              echo "::warning::The review gave no verdict: retrying in 60 seconds."
               sleep 60
               review $(( left < 40 ? left : 40 ))
               attempts=2
@@ -398,7 +398,7 @@ jobs:
           node "$RUNNER_TEMP/codegenie-gate.ts" "$RUNNER_TEMP/review.json" "${CODEGENIE_EXIT:-1}"
       # Only once the job has passed: what this head's review covered, for the next push's Prior review step. A commit
       # status, not a comment: only this workflow's token sets it, and it points at this run, which that step checks.
-      # None after a partial review (its uncovered hunks must be reviewed again). Failing to set it costs only a full
+      # None after a partial review or a run without a verdict (its uncovered hunks must be reviewed again). Failing to set it costs only a full
       # review next time, never this verdict.
       - name: Record
         env:

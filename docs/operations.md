@@ -435,12 +435,13 @@ nothing else: nothing of the PR runs, writes or connects, and its
 environment holds only the CI token (never the job's GitHub tokens). It runs from an empty directory with a config the
 job writes (hooks, plugins and apps off), so nothing in the PR is loaded as codex config or instructions; a PR that adds
 `.codex/`, `codex.toml` or `AGENTS.override.md` fails the check, and AGENTS.md is a critical path. Its answer must match
-an output schema: anything else is no verdict, which fails the check. The gate is fail-closed (operator ruling 2026-11-17,
-replacing #144's pass for PRs over 2,000 counted lines that got no verdict): no verdict fails the check whatever its size,
-and past 2,000 counted lines the comment gives the size as the reason ("too large to review in one pass; split into PRs
-under ~2,000 counted lines"). Only a confirmed provider error (HTTP 429 or 5xx, a dropped connection, seen in codex's events)
-is transient and gets one retry. If the retry also fails, the check fails. A timeout or an answer that isn't a review is
-never retried. A package-lock.json change that adds a package, changes a version or source, or adds an install script is a
+an output schema: anything else is no verdict, which passes the check with a comment saying so ("Code review: no verdict on
+`abc1234` (not blocking)"; the system fails open rather than stalls, owner ruling 2026-11-21, replacing the fail-closed ruling of
+2026-11-17). A run without a verdict (a provider error, a timeout, an answer that isn't a review) gets one
+retry when time is left (an incomplete review is not retried); a gateway refusal (bad token, our spend cap) isn't retried. The review target of 2,000 counted lines is
+advisory: past it, a run without a verdict says the change is large and suggests stacked PRs. Findings that did come out still
+decide (high or critical block). A run without a verdict records no baseline for the next push's delta review, so the next
+push reviews the whole PR. A package-lock.json change that adds a package, changes a version or source, or adds an install script is a
 critical path, and the reviewer gets a summary of it. Its scripts and the house rules (`.github/code-review-rules.md`) come
 from the base commit. Its brief: the house rules, the app's critical paths and its AGENTS.md (base commit), and the PR's
 title and description fenced as data, so it judges scope. P0 and P1 findings block (critical, high); P2 and P3 are listed.
