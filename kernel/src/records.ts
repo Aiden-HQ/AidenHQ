@@ -58,7 +58,7 @@ export type Rec = {
 };
 const JSON_COLS = ["args", "targets", "executor", "card", "requester", "outcome", "cap", "context"] as const;
 const OPEN: State[] = ["review", "owner", "approved"];
-/** Open records past this are expired: decided within a week or not at all. */
+/** Records past this are expired: decided within a week of filing, and run within a week of the approval (an approved record retries a transient failure meanwhile). */
 export const TTL_MS = 7 * 86_400_000;
 /** Decided by the owner: never the reviewer, a stale close, the code (kernel) or a Tier 0 run. */
 export const OWNER_SQL ="decided_by IS NOT NULL AND decided_by NOT LIKE 'reviewer:%' AND decided_by NOT LIKE 'stale:%' AND decided_by NOT LIKE 'kernel%'";
@@ -134,22 +134,22 @@ export function openRecords(file: string, now = () => new Date()) {
    */
   const move = (id: string, from: State[], to: State, set: { review?: string; review_code?: string | null; decided_by?: string; via?: string; owner_reason?: string; tier?: number; outcome?: unknown; decided_at?: string; chain?: string | null; cap?: string; review_first?: string } = {}, fresh = false): boolean => {
     const cols = Object.keys(set);
-    const r = db.prepare(`UPDATE records SET state = ?, updated_at = ?${OPEN.includes(to) ? "" : ", context = NULL"}${cols.map((c) => `, ${c} = ?`).join("")} WHERE id = ? AND state IN (${from.map(() => "?").join(",")})${fresh ? " AND created_at > ?" : ""}`)
+    const r = db.prepare(`UPDATE records SET state = ?, updated_at = ?${OPEN.includes(to) ? "" : ", context = NULL"}${cols.map((c) => `, ${c} = ?`).join("")} WHERE id = ? AND state IN (${from.map(() => "?").join(",")})${fresh ? " AND COALESCE(decided_at, created_at) > ?" : ""}`)
       .run(to, iso(), ...cols.map((c) => (c === "outcome" ? JSON.stringify((set as any)[c]) : (set as any)[c] ?? null)), id, ...from, ...(fresh ? [cutoff()] : []));
     return r.changes === 1;
   };
   /** The code closed an open record (expired, replaced): its closing fact, written in the same transaction. */
   const cancelled = (id: string, via: "expired" | "replaced") => fact(id, "record.decided", "code:cancelled", "kernel", () => ({ decision: "cancelled", decider: "code", via }));
-  /** Open records past their 7 days: cancelled as expired (a decided one keeps who decided it), each with its closing fact. */
+  /** Open records past their 7 days (an approved one counted from its decision): cancelled as expired, each with its closing fact. */
   const expire = () => {
-    const ids = (db.prepare("SELECT id FROM records WHERE state IN ('review','owner','approved') AND created_at <= ?").all(cutoff()) as { id: string }[]).map((r) => r.id);
+    const ids = (db.prepare("SELECT id FROM records WHERE state IN ('review','owner','approved') AND COALESCE(decided_at, created_at) <= ?").all(cutoff()) as { id: string }[]).map((r) => r.id);
     if (!ids.length) return;
     const at = iso(), outcome = JSON.stringify({ ok: false, text: "expired: not decided and run within 7 days" });
     inTx(db, "records_expire", () => {
       for (const id of ids) if (db.prepare("UPDATE records SET state = 'cancelled', updated_at = ?, outcome = ?, context = NULL WHERE id = ? AND state IN ('review','owner','approved')").run(at, outcome, id).changes) cancelled(id, "expired");
     });
   };
-  const shownState = (r: Rec) => (OPEN.includes(r.state) && r.created_at <= cutoff() ? "expired" : r.state);
+  const shownState = (r: Rec) => (OPEN.includes(r.state) && (r.decided_at ?? r.created_at) <= cutoff() ? "expired" : r.state);
 
   return {
     db,
@@ -197,14 +197,14 @@ export function openRecords(file: string, now = () => new Date()) {
       return {
         created: q("SELECT tier, COUNT(*) AS n FROM records WHERE created_at >= ? AND tier > 0 GROUP BY tier", at) as { tier: number; n: number }[],
         decided: q("SELECT tier, state, COUNT(*) AS n FROM records WHERE decided_at >= ? GROUP BY tier, state", at) as { tier: number; state: string; n: number }[],
-        pending: q("SELECT CASE state WHEN 'review' THEN 1 ELSE 2 END AS tier, COUNT(*) AS n FROM records WHERE state IN ('review','owner') AND created_at > ? GROUP BY 1", cutoff()) as { tier: number; n: number }[],
+        pending: q("SELECT CASE state WHEN 'review' THEN 1 ELSE 2 END AS tier, COUNT(*) AS n FROM records WHERE state IN ('review','owner') AND COALESCE(decided_at, created_at) > ? GROUP BY 1", cutoff()) as { tier: number; n: number }[],
       };
     },
     shownState,
     /** The open records of this content on this task (a repeated request returns its own, never a second card). */
     /** The same request that is running or already ran (done or failed) since `since`: a repeat of it is not a new write. */
     ran: (task: string, kind: string, digest: string, since: string): Rec[] => rows(db.prepare("SELECT * FROM records WHERE task = ? AND kind = ? AND digest = ? AND state IN ('claimed','done','failed') AND created_at > ? ORDER BY created_at DESC").all(task, kind, digest, since)),
-    open: (task: string, kind: string, digest: string): Rec[] => rows(db.prepare("SELECT * FROM records WHERE task = ? AND kind = ? AND digest = ? AND state IN ('review','owner','approved') AND created_at > ?").all(task, kind, digest, cutoff())),
+    open: (task: string, kind: string, digest: string): Rec[] => rows(db.prepare("SELECT * FROM records WHERE task = ? AND kind = ? AND digest = ? AND state IN ('review','owner','approved') AND COALESCE(decided_at, created_at) > ?").all(task, kind, digest, cutoff())),
     /** A claimed record of a module its successor absorbed (`replaces`) moves to the successor's kind, so the successor reports its outcome. */
     carry(id: string, kind: string, module: string, executor: Rec["executor"]): boolean {
       return db.prepare("UPDATE records SET kind = ?, module = ?, executor = ? WHERE id = ? AND state = 'claimed'").run(kind, module, JSON.stringify(executor), id).changes === 1;
@@ -275,7 +275,7 @@ export function openRecords(file: string, now = () => new Date()) {
      */
     hold(id: string, cap: Cap, why: string): boolean {
       const r = get(id);
-      return Boolean(r) && moved(() => move(id, ["approved"], "owner", { tier: 2, review_first: "final", cap: JSON.stringify(cap), review: `${r!.review ?? ""}\n\nHeld for the owner before it ran: ${why}`.trim() }, true),
+      return Boolean(r) && moved(() => move(id, ["approved"], "owner", { tier: 2, review_first: "final", cap: JSON.stringify(cap), decided_at: iso(), review: `${r!.review ?? ""}\n\nHeld for the owner before it ran: ${why}`.trim() }, true),
         () => fact(id, "record.held", "held", "kernel", () => ({ why })));
     },
     /** approved → claimed, once, within its 7 days. */
