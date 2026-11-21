@@ -72,13 +72,20 @@ export async function syncDrive(store: SourceStore, drive: Drive, now = Date.now
   await store.migrate(DDL);
   const st = await store.scope("drive");
   const baseline = !st.baselined;
-  const since = st.cursor ?? new Date(now - BASELINE_DAYS * DAY).toISOString();
-  let cursor = since;
+  // A pass that hit the cap saves "<since>#<page token>#<newest seen>": the next one resumes that exact query, so any number of files with one timestamp still gets through.
+  let [since, resume, newest] = (st.cursor ?? new Date(now - BASELINE_DAYS * DAY).toISOString()).split("#") as [string, string | undefined, string | undefined];
+  let cursor = newest ?? since;
   let written = 0;
   let seen = 0;
-  let page: string | undefined;
+  let page = resume;
   do {
-    const r = await drive.changedFiles(since, page);
+    // Drive answers 400 to an expired page token: the query restarts from the newest timestamp seen (rows already written are no-ops). Any other failure keeps the token and retries next pass.
+    const r = await drive.changedFiles(since, page).catch((err) => {
+      if (!resume || page !== resume || !/^Google API 400\b/.test(String(err?.message ?? err))) throw err;
+      page = undefined;
+      since = cursor;
+      return drive.changedFiles(since);
+    });
     for (const f of r.files) {
       if ((await store.upsert(DOC, docRow(f), { baseline })) !== "same") written++;
       if (f.modifiedTime && f.modifiedTime > cursor) cursor = f.modifiedTime;
@@ -87,7 +94,7 @@ export async function syncDrive(store: SourceStore, drive: Drive, now = Date.now
     page = r.nextPageToken;
   } while (page && seen < MAX_FILES);
   // The baseline is done once a pass got to the end; until then later passes continue it, still as baseline.
-  await store.saveScope("drive", cursor, !page);
+  await store.saveScope("drive", page ? `${since}#${page}#${cursor}` : cursor, !page);
   return written;
 }
 
