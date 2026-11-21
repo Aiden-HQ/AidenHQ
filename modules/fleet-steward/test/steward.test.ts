@@ -532,20 +532,18 @@ test("a capacity queue over an hour fires only while computers sit idle; a revie
   assert.match(s[0].reason, /card c1 \(github-merge\) on task wor-1 has been with the AI reviewer for 90 min/);
 });
 
-test("a PR held for code review over 90 minutes with no job fires; an answered wait that never resumed fires an hour after the answer; the owner hears at two hours", async () => {
+test("a PR held for code review over 90 minutes with no job fires; an answered wait that never resumed fires an hour after the answer; the owner hears at two hours open", async () => {
   const row = (task, o = {}) => ({ task, identifier: `WOR-${task.toUpperCase()}`, since: minsAgo(100), reason: "module_wait", ref: "code_review", holder: "a1", attention: [], idle_wakes: 0, ...o });
-  const mk = (rows, tasks = {}, comments = {}, notify) => {
+  const mk = (rows, tasks = {}, comments = {}, openKeys = []) => {
     const w = world({ tasks, records: [] });
     const call = w.call, read = w.read;
     w.call = async (m, p) => (p.startsWith("/v1/tasks/state?open=1") ? { tasks: rows } : call(m, p));
     w.read = async (p) => { const m = /^\/api\/issues\/(\w+)\/comments/.exec(p); return m ? comments[m[1]] ?? [] : read(p); };
-    return checks({ kernel: w, apps: async () => [], alerts: async () => [], openKeys: () => [], now: () => NOW, kv: kvOf(), notify });
+    return checks({ kernel: w, apps: async () => [], alerts: async () => [], openKeys: () => openKeys, now: () => NOW, kv: kvOf() });
   };
-  const told = [];
-  const gated = await mk([row("a"), row("b", { reason: "job_running" }), row("c", { since: minsAgo(60) }), row("d", { ref: "checks" }), row("e", { since: minsAgo(300) })], {}, {}, async (text, key) => void told.push(key)).gate();
+  const gated = await mk([row("a"), row("b", { reason: "job_running" }), row("c", { since: minsAgo(60) }), row("d", { ref: "checks" }), row("e", { since: minsAgo(300) })]).gate();
   assert.deepEqual(gated.map((i) => i.key), ["a", "e"]);
   assert.match(gated[0].reason, /WOR-A: its PR has waited 100 min on code review's verdict/);
-  assert.deepEqual(told, ["gate:e"], "only the one open over 90 min + 2 h reaches the owner");
 
   const wait = (task, why, o = {}) => ({ task, identifier: `WOR-${task.toUpperCase()}`, since: minsAgo(240), wait_since: minsAgo(240), reason: why, holder: "ada", attention: [{ who: "x", why, ref: `wait:${task}` }], idle_wakes: 0, ...o });
   const owner = { authorType: "user", body: "Go ahead.", createdAt: minsAgo(90) };
@@ -566,9 +564,25 @@ test("a PR held for code review over 90 minutes with no job fires; an answered w
 
   // A bounded pass reaches every eligible wait over successive runs.
   const many = Array.from({ length: 25 }, (_, n) => wait(`t${n}`, "owner_wait"));
-  const c = mk(many, Object.fromEntries(many.map((r) => [r.task, task(r.task)])), { t24: [owner] });
-  assert.deepEqual(await c.unresumed(), []);
-  assert.deepEqual((await c.unresumed()).map((i) => i.key), ["t24"]);
+  const c = mk(many, Object.fromEntries(many.map((r) => [r.task, task(r.task)])), { t24: [owner], t3: [owner] }, ["unresumed:t3", "unresumed:t7"]);
+  assert.deepEqual((await c.unresumed()).map((i) => i.key), ["t3"], "an incident open for a task this pass did not reach (t7 is past the 20) stays open; t3 is found");
+  assert.deepEqual((await c.unresumed()).map((i) => i.key), ["t24", "t3"], "the next pass starts after the first batch, so t24 is reached");
+});
+
+test("a jammed gate's flag open over two hours tells the owner once, in one fixed line, and not while the Steward is off", async () => {
+  const kv = kvOf(), told = [];
+  const groups = { gate: async () => [{ key: "a", reason: "x" }], unresumed: async () => [{ key: "b", reason: "x" }], run: async () => [{ key: "c", reason: "x" }] };
+  const at = (h, on = true) => tick(kv, groups, async () => true, async (t) => void told.push(t), new Date(NOW + h * 3600_000), 0, on);
+  await at(-3);
+  assert.equal(told.length, 0, "just raised");
+  await at(-1, false);
+  await at(-1);
+  assert.equal(told.length, 0, "open 2 h at most, or the Steward is off");
+  await at(0);
+  assert.equal(told.length, 1);
+  assert.match(told[0], /A gate has been jammed for over two hours/);
+  await at(1);
+  assert.equal(told.length, 1, "once per flag");
 });
 
 test("quiet start: the detector still checks but files and notifies nothing until the Steward's digest routine is on", async () => {
