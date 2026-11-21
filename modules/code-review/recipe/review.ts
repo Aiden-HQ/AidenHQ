@@ -286,7 +286,7 @@ const KEYS = /\bahq[a-z]{0,3}_[A-Za-z0-9._-]{8,}|\bsk-[A-Za-z0-9_-]{16,}/g;
  * engine's output passes before it is mapped and posted.
  */
 export function scrub(r: EngineResult, secrets: unknown[] = [process.env.OPENROUTER_API_KEY]): EngineResult {
-  const known = secrets.map(String).filter((k) => k.length >= 8);
+  const known = secrets.filter((k) => typeof k === "string" && k.length >= 8) as string[];
   const s = (t: string) => known.reduce((acc, k) => acc.replaceAll(k, "[redacted]"), t).replace(KEYS, "[redacted]");
   return { ...r, message: s(String(r.message ?? "")), ...(r.cause ? { cause: s(r.cause) } : {}), ...(r.incomplete ? { incomplete: s(r.incomplete) } : {}), ...(r.untracked ? { untracked: s(r.untracked) } : {}) };
 }

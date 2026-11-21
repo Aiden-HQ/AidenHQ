@@ -1,9 +1,9 @@
 // deepsec (Vercel's scanner, Apache-2.0, installed pinned in the engineer image) as a review engine: it sets a repo up or scans it.
 //
-// `.deepsec/` at the commit (or the files of a pending setup branch, `setupFiles`) → scan: `scan`, then `process` and `revalidate`
-// over the whole tree, or `process --diff <base>` for a change. No `.deepsec/` → `init` sets it up in the box (it writes the repo
+// Any file under `.deepsec/` at the commit (or the files of a pending setup branch, `setupFiles`) → scan: `scan`, then `process` and `revalidate`
+// over the whole tree, or `process --diff <base>` for a change. No file under `.deepsec/` → `init` sets it up in the box (it writes the repo
 // summary INFO.md, the config and the generated matchers) and scans; the files deepsec means to be committed come back as `setup`
-// (the service files them as one reviewed setup PR). Nothing else deepsec writes ever leaves the box.
+// (the service files them as one reviewed setup PR; a file already committed is never part of it). Nothing else deepsec writes ever leaves the box.
 //
 // State: DEEPSEC_DATA_ROOT is a folder in the run's scratch (INFO.md and the finding records), so the repo's checkout takes no
 // scan data; a committed INFO.md is copied in first. Model: deepsec's pi backend through our gateway's OpenAI-compatible route
@@ -12,7 +12,7 @@
 // and pi reads its provider from that models.json. Spend: `init` gets --max-cost-usd = budget_usd; `process` has no such flag, so
 // the run's token cap is the hard stop there (a run that hits it reports the budget ran out, and what was analysed so far).
 // Install scripts never run (npm_config_ignore_scripts): a repo's `.deepsec/package.json` is the PR's.
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync, cpSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync, cpSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { run, stopped } from "./proc.ts";
 
@@ -89,11 +89,14 @@ export async function deepsec({ root, target, base, model, effort, budget_usd, s
     writeFileSync(join(root, path), text);
   }
   const dataIn = join(ws, "data");
-  const known = existsSync(dataIn) ? readdirSync(dataIn, { withFileTypes: true }).filter((e) => e.isDirectory() && existsSync(join(dataIn, e.name, "INFO.md"))).map((e) => e.name) : [];
-  const pid = known[0] ?? id ?? "repo";
+  // Set up already: any committed file of deepsec's (never node_modules).
+  let setUp = false;
+  try { setUp = readdirSync(ws, { recursive: true }).some((f) => !String(f).split("/").includes("node_modules") && lstatSync(join(ws, String(f))).isFile()); } catch {}
+  const dirs = existsSync(dataIn) ? readdirSync(dataIn, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name) : [];
+  const pid = dirs.find((d) => existsSync(join(dataIn, d, "INFO.md"))) ?? dirs[0] ?? id ?? "repo";
   let setup: Record<string, string> | undefined;
 
-  if (known.length) {
+  if (setUp) {
     // Set up already: scan. INFO.md (and a project config.json) come in from the commit; data lives in scratch.
     mkdirSync(join(data, pid), { recursive: true });
     for (const f of ["INFO.md", "config.json"]) if (existsSync(join(dataIn, pid, f))) cpSync(join(dataIn, pid, f), join(data, pid, f));
@@ -121,6 +124,7 @@ export async function deepsec({ root, target, base, model, effort, budget_usd, s
     const info = join(data, pid, "INFO.md");
     if (!existsSync(info)) throw new Error("deepsec init wrote no INFO.md");
     setup[`.deepsec/data/${pid}/INFO.md`] = readFileSync(info, "utf8");
+    // init ran only because no file of deepsec's was committed, so every file here was missing: none overwrites a committed one.
     const local = join(ws, "node_modules", ".bin", "deepsec");
     await analyse(existsSync(local) ? local : "deepsec");
   }
