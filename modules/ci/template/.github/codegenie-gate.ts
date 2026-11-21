@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // The `code-review` check's verdict: reads the review's JSON (code-review.ts: codex's review, its P0 and P1 as critical
 // and high; codegenie's `--format json` from repos on the older template has the same shape) and fails the check when any
-// finding is critical or high, or the review didn't complete (failed, no coverage, unreadable): missing evidence never
-// passes.
+// finding is critical or high, or the PR changes codex config (a policy refusal). A run without a verdict (failed, no
+// coverage, unreadable) passes with a note (owner, 2026-11-21: fail open); findings it published still decide.
 // Keeps one PR comment with every finding, updated in place on each push. No dependencies; Node 22+.
 //   node codegenie-gate.ts <review.json> <reviewer exit code>
 // Env: GITHUB_TOKEN (pull-requests: write), GITHUB_REPOSITORY, PR_NUMBER, HEAD_SHA, REVIEW_COUNTED_LINES (the workflow's
@@ -78,8 +78,8 @@ function judge(exitCode: number, stdout: string, sha: string, { failure, cause, 
   // No verdict passes with its own headline, never "failed"/"incomplete" (the runner re-runs a check whose comment says that:
   // modules/github/service/src/merge-gate.ts codeReviewInfra). partial: it is no baseline for the next push's delta.
   const noVerdict = (why: unknown) => {
-    const size = counted > TARGET_LINES ? ` The change is large (${counted.toLocaleString("en-US")} counted changed lines; package-lock.json doesn't count): split it into stacked PRs under ~${TARGET_LINES.toLocaleString("en-US")} each to get a review.` : "";
-    return { block: false, partial: true, short: true, body: `${MARKER}\n**Code review: no verdict${at}** (not blocking: review exit ${exitCode}${tries}${why ? `: ${clip(why, 300)}` : ""}). ${NEXT[failure!] ?? FALLBACK} ${size ? `${size.trim()} ` : ""}A re-run or the next push reviews it.` };
+    const size = counted > TARGET_LINES ? `The change is large (${counted.toLocaleString("en-US")} counted changed lines; package-lock.json doesn't count): split it into stacked PRs under ~${TARGET_LINES.toLocaleString("en-US")} each to get a review. ` : "";
+    return { block: false, partial: true, short: true, body: `${MARKER}\n**Code review: no verdict${at}** (not blocking: review exit ${exitCode}${tries}${why ? `: ${clip(why, 300)}` : ""}). ${NEXT[failure!] ?? FALLBACK} ${size}A re-run or the next push reviews it.` };
   };
   // A policy refusal (the PR changes codex config: a prompt-injection guard, not a review verdict) always blocks.
   if (failure === "policy") return { block: true, short: true, body: `${MARKER}\n**Code review: refused${at}**: ${clip(cause, 400)}` };

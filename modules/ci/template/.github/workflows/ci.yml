@@ -312,7 +312,7 @@ jobs:
             exit 0
           fi
           echo "Changed lines: $lines, review depth: $depth${critical:+ (touches $critical)}"
-          gave_up() { # $1: cause. No review, permanent: the gate fails the check.
+          gave_up() { # $1: cause. No review, permanent: the gate passes it as no verdict, naming the cause.
             echo "::error::$1"
             printf 'CODEGENIE_EXIT=1\nCODEGENIE_ATTEMPTS=0\nCODEGENIE_FAILURE=permanent\nCODEGENIE_CAUSE=%s\n' "$1" >> "$GITHUB_ENV"
             exit 0
@@ -370,15 +370,20 @@ jobs:
             left=$(( (85 * 60 - SECONDS) / 60 - 1 ))
             if [ "$left" -ge 10 ]; then
               echo "::warning::The review gave no verdict: retrying in 60 seconds."
-              # Findings the first attempt published still decide: kept when the retry didn't complete and published none.
+              # Findings the first attempt published still decide, whatever the retry did: merged into a retry that left a
+              # readable result (its completion and coverage stand), else the first result is restored.
               cp "$RUNNER_TEMP/review.json" "$RUNNER_TEMP/review.1.json"; code1=$code
               sleep 60
               review $(( left < 40 ? left : 40 ))
               attempts=2
-              found='((.findings // []) + (.summaryOnlyFindings // [])) | length > 0'
-              # A retry that completed (exit 0) is the verdict: its finished coverage stands, with or without findings.
-              if [ "$code" != 0 ] && ! jq -e "$found" "$RUNNER_TEMP/review.json" >/dev/null 2>&1 && jq -e "$found" "$RUNNER_TEMP/review.1.json" >/dev/null 2>&1; then
-                cp "$RUNNER_TEMP/review.1.json" "$RUNNER_TEMP/review.json"; code=$code1
+              pub='((.findings // []) + (.summaryOnlyFindings // [])) | length > 0'
+              if jq -e "$pub" "$RUNNER_TEMP/review.1.json" >/dev/null 2>&1; then
+                if jq -e '.findings | type == "array"' "$RUNNER_TEMP/review.json" >/dev/null 2>&1; then
+                  jq -s '.[1] + { findings: (.[1].findings + (.[0].findings // [])), summaryOnlyFindings: ((.[1].summaryOnlyFindings // []) + (.[0].summaryOnlyFindings // [])) }' \
+                    "$RUNNER_TEMP/review.1.json" "$RUNNER_TEMP/review.json" > "$RUNNER_TEMP/review.m.json" && mv "$RUNNER_TEMP/review.m.json" "$RUNNER_TEMP/review.json"
+                else
+                  cp "$RUNNER_TEMP/review.1.json" "$RUNNER_TEMP/review.json"; code=$code1
+                fi
               fi
             fi
           fi
