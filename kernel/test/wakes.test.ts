@@ -152,6 +152,20 @@ test("a blocked task is released once when every blocker is done or cancelled: t
   assert.equal(w.wakes.claim("dispatch").filter((x) => x.task === "t8").length, 1, "this wake and the scan's move to todo coalesce into one job start");
 });
 
+test("a delegator blocked on its sub-task is woken by that sub-task's question, and stays blocked", async () => {
+  const w = world();
+  w.issue("child", { assigneeAgentId: OTHER, parentId: "parent" });
+  w.issue("parent", { status: "blocked", blockedBy: [{ id: "child", identifier: "WOR-child", status: "todo" }] });
+  await w.wakes.poll();
+  w.tick();
+  // escalate.ts ask → send: a kernel notice on the delegator's task, posted with the owner's key, carrying the wake-notice marker.
+  w.comment("parent", "ask1", { body: "**WOR-child asks you:** which way?\n\n<!-- aidenhq-approval -->\n<!-- aidenhq-wake -->\n\n<!-- aidenhq-kernel-notice:n1 -->" });
+  await w.wakes.poll();
+  assert.equal(w.issues.parent.status, "blocked");
+  assert.deepEqual(w.rows("parent"), ["comment:ask1 open"]);
+  assert.deepEqual(w.wakes.claim("dispatch").map((x) => x.key), ["comment:ask1"]);
+});
+
 test("a dispatcher cancels only an open or blocked routine run of an agent it dispatches, as that agent", async () => {
   const w = world();
   w.issue("r1", { originKind: "routine_execution", originId: "rt" });
