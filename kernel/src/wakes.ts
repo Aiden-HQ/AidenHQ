@@ -37,7 +37,7 @@ CREATE TABLE IF NOT EXISTS dispatch_since (agent TEXT PRIMARY KEY, at INTEGER NO
 CREATE TABLE IF NOT EXISTS team_routes (task TEXT PRIMARY KEY, team TEXT NOT NULL, member TEXT, repos TEXT NOT NULL, at INTEGER NOT NULL,
   state TEXT NOT NULL, done INTEGER NOT NULL DEFAULT 0, record TEXT NOT NULL DEFAULT '', snapshot TEXT);`;
 /** What a decision was made from (team_routes.snapshot): the learning loop replays it with other weights or repos (routing-tune.ts). */
-export type RouteSnapshot = { weights: Weights; overBudget: boolean; candidates: Candidate[] };
+export type RouteSnapshot = { weights: Weights; candidates: Candidate[] };
 /** A grants-table entry as the router reads it (compile's grantEntry): a team record lists its members; a member names its record. */
 type TeamGrant = { key?: string; max_parallel?: number; team?: { name: string; members: string[]; weights?: Partial<Weights> }; member_of?: string; repos?: string[] };
 
@@ -61,7 +61,7 @@ type Log = (msg: string, f?: Record<string, unknown>) => void;
 const ms = (t?: string) => (t ? Date.parse(t) || 0 : 0);
 const str = (v: unknown) => (typeof v === "string" && v ? v : null);
 
-export function createWakes({ db, owner, post, dispatches, containers = () => new Set(), routineKey = () => undefined, grants = () => ({}), knownRepo = () => false, teamDayUsedUp = () => false, tellBlocked = async () => {}, facts, log = () => {}, now = Date.now }: {
+export function createWakes({ db, owner, post, dispatches, containers = () => new Set(), routineKey = () => undefined, grants = () => ({}), knownRepo = () => false, tellBlocked = async () => {}, facts, log = () => {}, now = Date.now }: {
   /** Flow's fact log (facts.ts): task changes the scan sees, and each wake's opening, binding and dropping. */
   facts?: Facts;
   db: DatabaseSync;
@@ -82,8 +82,6 @@ export function createWakes({ db, owner, post, dispatches, containers = () => ne
   grants?: () => Record<string, TeamGrant | undefined>;
   /** Whether a repo (owner/name, lower case) is one the instance's code hosts have: a task's text names only those for routing. */
   knownRepo?: (repo: string) => boolean;
-  /** Whether the team of this member has used up its day cap (the gateway's own day scope, gateway/lib.ts dayHolder). */
-  teamDayUsedUp?: (member: string, task: string) => boolean;
   /** A team task no member can take, blocked: whoever delegated it hears why (its open parent's wake notice, else the owner). */
   tellBlocked?: (task: Issue, text: string) => Promise<void>;
   log?: Log; now?: () => number;
@@ -381,7 +379,7 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
         if (!decision.pick) {
           const r = await owner("PATCH", `/api/issues/${encodeURIComponent(issue.id)}`, { status: "blocked", comment: record + tag });
           if (r.status >= 300) throw new Error(`control plane PATCH issue → ${r.status}`);
-          await tellBlocked(issue, `**${issue.identifier ?? issue.id} is blocked:** no member of team ${team.team!.name} can take it.\n\n${record}\n\nUnpause a member, raise the team's day cap, or re-route it.`);
+          await tellBlocked(issue, `**${issue.identifier ?? issue.id} is blocked:** no member of team ${team.team!.name} can take it.\n\n${record}\n\nUnpause a member, or re-route it.`);
           return;
         }
         row = { member: decision.pick.id, state: "placing" };
@@ -404,7 +402,6 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
   async function gather(team: TeamGrant, task: string, repos: string[], from?: string) {
     const snap = await snapshot(team, task, repos);
     const weights = weightsOf(team.team);
-    const over = snap.length > 0 && teamDayUsedUp(snap[0]!.id, task);
     const revision = createHash("sha256").update(JSON.stringify([team.team, snap.map((m) => [m.key, m.g.repos ?? [], m.g.max_parallel ?? 1])])).digest("hex").slice(0, 12);
     return () => {
       const candidates: Candidate[] = snap.map((m) => {
@@ -414,9 +411,9 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
         waiting.delete(task);
         return { id: m.id, key: m.key, repos: m.g.repos ?? [], maxParallel: m.g.max_parallel ?? 1, paused: m.paused, running: live.size, queued: waiting.size, done: m.done };
       });
-      const decision = pickMember({ repos, candidates, weights, overBudget: over });
+      const decision = pickMember({ repos, candidates, weights });
       const record = decisionText({ team: team.team!.name, revision, repos, weights, decision, from });
-      const snapshot: RouteSnapshot = { weights, overBudget: over, candidates };
+      const snapshot: RouteSnapshot = { weights, candidates };
       return { decision, record, snapshot };
     };
   }

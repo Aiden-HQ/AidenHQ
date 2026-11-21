@@ -217,7 +217,7 @@ export function createAdmin(d: Deps) {
       connect = `<div class="card"><h2>Connect your account</h2><p class="muted">Sign in to OpenRouter (or make an account) and approve; you come straight back here.</p><a class="b" href="${esc(url)}">Connect OpenRouter</a></div>`;
     }
     const field = d.firstRun?.fields().find((f) => f.secret === MODEL_KEY);
-    // A pasted key keeps whatever limit it has; the install cap (a new install's) stops spend first.
+    // A pasted key keeps whatever limit it has; the install's daily spend limit stops spend first.
     const cap = d.model?.dayCap();
     const capLine = cap ? `<p class="muted">This key's own limit applies; AidenHQ also stops at $${cap}/day (change it in Settings).</p>` : "";
     const paste = `<div class="card"><h2>Use your API key</h2><p class="muted">Paste a key you have, or make one at <a href="https://openrouter.ai/settings/keys" target="_blank" rel="noopener">openrouter.ai/settings/keys</a>.</p>${form("/setup/model", `<input type="hidden" name="action" value="paste"><label>${esc(field?.label ?? "OpenRouter API key")}<input name="${MODEL_KEY}" type="password" autocomplete="off" maxlength="300" placeholder="sk-or-…" required></label><button class="b">Save</button>`, s)}${capLine}</div>`;

@@ -5,7 +5,7 @@
 //   compose.modules.yaml       → docker compose (COMPOSE_FILE in .env)
 //   config/modules.json        → the module catalog (setup adds it to the capabilities catalog)
 //   config/computers.json      → the computer launcher (images by content hash, connections it may proxy; services/computer)
-//   config/gateway.json        → the model gateway (kernel/src/gateway): CI review and the day caps
+//   config/gateway.json        → the model gateway (kernel/src/gateway): CI review, the install spend limits and the task cap
 //   config/engines.json        → the runner: each engine kind's module, bin and data (modules' providers.engine)
 //   config/jobcaps.json        → the kernel (job tokens on /c/<connection>/mcp) and the runner: what jobs may read (modules' jobcaps:)
 //   config/kernel/connections.json → the kernel's tool proxy: each connection's endpoint, service key secret, module and tool tags

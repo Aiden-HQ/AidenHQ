@@ -68,7 +68,7 @@ export function createModelStep(o: {
   vault: { get: (name: string) => string; exists: (name: string) => boolean; save: (name: string, value: string) => void };
   /** Whether a key fits the module's setup pattern. */
   fits: (key: string) => boolean;
-  /** The install-wide daily cap (settings.spend_day_usd), if set. */
+  /** The install's daily spend limit (settings.spend_day_usd). */
   dayCap?: () => number | undefined;
   fetchImpl?: typeof fetch;
   log?: (msg: string, f?: Record<string, unknown>) => void;

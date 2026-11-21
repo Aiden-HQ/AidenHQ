@@ -76,11 +76,10 @@ export type ReviewSpec = {
   mandatory: boolean;
   /** A dispute's judge (the recipe's judge mode): the finding and the reply disputing it (a stranger's words). */
   judge?: { finding: { id: string; path: string; line: number; title: string; why: string; evidence: string }; reply: { author: string; body: string } };
-  /** The most the run may spend (its run_usd): the cap on its box's model token. */
-  budget_usd: number; ignore: string[]; max_nits: number;
+  ignore: string[]; max_nits: number;
 };
 /** `box_at`: when its check job got its box (ISO; queueing before it is not the run's work), once it has one. `billed_usd`: what the kernel billed the run's check job (its gateway calls), never anything the box wrote. Absent: unknown, and
- * the run is charged its whole run_usd. `waiting`: its check job has no computer yet. A running one's is its spend so far (what the day budget counts). */
+ * the run is charged nothing. `waiting`: its check job has no computer yet. A running one's is its spend so far. */
 export type RunResult =
   | { state: "running"; billed_usd?: number; waiting?: boolean; box_at?: string }
   | { state: "done"; review: Review; billed_usd?: number; box_at?: string }

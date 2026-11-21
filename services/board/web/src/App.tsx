@@ -693,8 +693,8 @@ export function App() {
               </button>
             )}
             {board.spend && (
-              <a className={`spend-today${board.spend.spent >= board.spend.cap ? " over" : ""}`} href="#/costs" title="Today's model spend against the daily cap">
-                ${board.spend.spent.toFixed(2)}
+              <a className={`spend-today${board.spend.day.spent >= board.spend.day.cap || board.spend.month.spent >= board.spend.month.cap ? " over" : ""}`} href="#/costs" title={`Today's model spend against the day limit; $${board.spend.month.spent.toFixed(2)} of $${board.spend.month.cap} this month`}>
+                ${board.spend.day.spent.toFixed(2)}
               </a>
             )}
             {board.brief && (

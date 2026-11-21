@@ -126,7 +126,7 @@ async function run(cmd: string, args: string[], o: { cwd: string; env: Record<st
   return { code, stdout, stderr, timedOut };
 }
 const stopped = (r: { code: number | null; stderr: string; timedOut: boolean }, said = "") =>
-  r.timedOut ? "timed out" : /\b402\b|cap_reached|budget/i.test(said + r.stderr) ? "the run's budget ran out" : `the engine stopped (exit ${r.code})`;
+  r.timedOut ? "timed out" : /\b402\b|cap_reached/i.test(said + r.stderr) ? "the install's spend limit was reached" : `the engine stopped (exit ${r.code})`;
 
 // Claude Code's repo tools are ours (the same read-only MCP server codex gets), named mcp__repo__<tool>.
 const REPO_TOOLS = ["diff", "log", "show", "blame", "read_file", "list_files", "search", "definition", "references", "diagnostics"];

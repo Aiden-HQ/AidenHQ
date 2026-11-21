@@ -63,7 +63,7 @@ export function replay(rows: { task: string; repos: string[]; snapshot: RouteSna
   const changed: { task: string; was: string | null; now: string | null }[] = [];
   for (const r of rows) {
     const candidates: Candidate[] = r.snapshot.candidates.map((c) => (change.repos && Object.hasOwn(change.repos, c.key) ? { ...c, repos: change.repos[c.key] ?? [] } : c));
-    const now = pickMember({ repos: r.repos, candidates, weights: { ...r.snapshot.weights, ...change.weights }, overBudget: r.snapshot.overBudget }).pick?.key ?? null;
+    const now = pickMember({ repos: r.repos, candidates, weights: { ...r.snapshot.weights, ...change.weights } }).pick?.key ?? null;
     if (now !== r.pick) changed.push({ task: r.task, was: r.pick, now });
   }
   return { decisions: rows.length, changed: changed.length, picks: changed.slice(0, 50) };

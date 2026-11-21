@@ -160,8 +160,8 @@ describe("posting", () => {
   it("a notice is the acknowledgement alone, from fixed words", async () => {
     const w = world();
     const p = poster(w);
-    const n = { repo: "acme/payments", pr: 12, head: HEAD, phase: "skipped", reason: "budget_repo" };
-    expect(p.preview("notice", n).facts.details).toMatch(/daily review budget/);
+    const n = { repo: "acme/payments", pr: 12, head: HEAD, phase: "skipped", reason: "draft" };
+    expect(p.preview("notice", n).facts.details).toMatch(/draft/);
     await p.execute("notice", n);
     expect(w.state.ack?.body).toMatch(/skipped/);
     expect(w.calls.some((c) => c.path.includes("/statuses/"))).toBe(false);

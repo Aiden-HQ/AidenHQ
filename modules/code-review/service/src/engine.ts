@@ -2,8 +2,7 @@
 //
 // Every tick: each watched repo's open PRs and new comments are read (PrSource); a new PR is reviewed with each of the repo's
 // on_open combos, a push with each on_push combo (incrementally), and `@aiden review …` from someone with write access now does
-// what it says. One trigger is a batch: one run per combo (engine, model, effort), each posting its own review; only its first run rechecks the PR's still-open findings. Queued runs start when due, each
-// starting while the day's real spend is under the repo's and the instance's day caps, in one transaction; running ones are polled, and
+// what it says. One trigger is a batch: one run per combo (engine, model, effort), each posting its own review; only its first run rechecks the PR's still-open findings. Queued runs start when due; running ones are polled, and
 // a finished one is posted (Poster) unless its PR has moved on (superseded). Every run starts and ends with a flow fact on its PR.
 //
 // Each run keeps what an analysis of reviewers needs as plain columns: engine, model, effort, the kernel's billed cost and the
@@ -11,9 +10,9 @@
 // open_at_merge or open_at_close (still open when the PR closed).
 //
 // A PR open at the first look at a repo (or seen before any run existed) gets its on_open batch like a new one: every open,
-// non-draft PR is reviewed once. Only the day budget bounds how many.
+// non-draft PR is reviewed once.
 // A push debounces (DEBOUNCE): another push in the window replaces the queued batch, so a burst of pushes is one review each.
-// A skip is a run too (status skipped, why), acknowledged once per PR and reason (a budget skip once per head), never silent.
+// A skip is a run too (status skipped, why), acknowledged once per PR and reason never silent.
 import type { DatabaseSync } from "node:sqlite";
 import { randomBytes } from "node:crypto";
 import { parseCommand, type Command } from "./commands.ts";
@@ -23,16 +22,14 @@ import { EFFORT as JUDGE_EFFORT, judgeModels, LUNA, secondModels } from "./aiden
 import type { FactIn } from "./aidenhq-sdk/kernel-client.ts";
 
 export const DEBOUNCE = 3 * 60_000;
-/** What one dispute's judge run may spend (its model token's cap). */
-export const JUDGE_USD = 1;
-/** A run that couldn't run is tried this many times in all, on the same reservation. */
+/** A run that couldn't run is tried this many times in all. */
 const ATTEMPTS = 2;
 const WRITERS = new Set(["admin", "maintain", "write"]);
 
 export type Kind = "auto" | "command" | "oneoff";
 export type Status = "queued" | "running" | "done" | "skipped" | "failed";
 export type RunRow = {
-  id: string; repo: string; number: number; head: string; base: string; engine: string; model: string; effort: string; run_usd: number;
+  id: string; repo: string; number: number; head: string; base: string; engine: string; model: string; effort: string;
   kind: Kind; status: Status; why: string | null;
   cost_usd: number; important: number; nit: number; pre_existing: number; started: string | null; ended: string | null; check_job: string | null;
   /** When its check job got its box (ISO): a review's wall time runs from here, excluding queueing. */
@@ -48,8 +45,6 @@ export type RunRow = {
   complete: number | null;
   /** The ledger's tokens for its model token (the kernel's figure), and how long it ran. */
   tokens_in: number | null; tokens_cached: number | null; tokens_out: number | null; duration_ms: number | null;
-  /** What earlier attempts of this run were billed (the kernel's figure): the retry gets only what's left. */
-  billed_prior: number;
   /** The kernel write record of its post, while its outcome is pending. */
   write_id: string | null;
   /** The merge base of its base and head (what the review diffed against), set when it starts. */
@@ -64,11 +59,11 @@ CREATE TABLE IF NOT EXISTS prs (repo TEXT NOT NULL, number INTEGER NOT NULL, hea
   author TEXT NOT NULL DEFAULT '', draft INTEGER NOT NULL DEFAULT 0, fork INTEGER NOT NULL DEFAULT 0, open INTEGER NOT NULL DEFAULT 1,
   last_reviewed_base TEXT, title TEXT, close_due INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (repo, number));
 CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, repo TEXT NOT NULL, number INTEGER NOT NULL, head TEXT NOT NULL, base TEXT NOT NULL,
-  engine TEXT NOT NULL, model TEXT NOT NULL, effort TEXT NOT NULL, run_usd REAL NOT NULL DEFAULT 0, kind TEXT NOT NULL, status TEXT NOT NULL, why TEXT,
+  engine TEXT NOT NULL, model TEXT NOT NULL, effort TEXT NOT NULL, kind TEXT NOT NULL, status TEXT NOT NULL, why TEXT,
   cost_usd REAL NOT NULL DEFAULT 0, tokens_in INTEGER, tokens_cached INTEGER, tokens_out INTEGER, duration_ms INTEGER,
   important INTEGER NOT NULL DEFAULT 0, nit INTEGER NOT NULL DEFAULT 0, pre_existing INTEGER NOT NULL DEFAULT 0, started TEXT, ended TEXT, check_job TEXT,
   focus TEXT, full INTEGER NOT NULL DEFAULT 0, incremental_from TEXT, due INTEGER NOT NULL, created INTEGER NOT NULL,
-  posted TEXT, author TEXT NOT NULL DEFAULT '', attempts INTEGER NOT NULL DEFAULT 0, billed_prior REAL NOT NULL DEFAULT 0, write_id TEXT,
+  posted TEXT, author TEXT NOT NULL DEFAULT '', attempts INTEGER NOT NULL DEFAULT 0, write_id TEXT,
   merge_base TEXT, review_url TEXT, resolved INTEGER, identity TEXT, batch TEXT NOT NULL, recheck INTEGER NOT NULL DEFAULT 0);
 CREATE INDEX IF NOT EXISTS runs_pr ON runs (repo, number, created);
 CREATE INDEX IF NOT EXISTS runs_status ON runs (status, due);
@@ -119,7 +114,7 @@ export function createEngine(d: EngineDeps) {
   for (const [table, col, type] of [["runs", "box_at", "TEXT"], ["prs", "close_due", "INTEGER NOT NULL DEFAULT 0"], ["runs", "mandatory", "INTEGER NOT NULL DEFAULT 0"], ["runs", "complete", "INTEGER"], ["findings", "why", "TEXT"], ["findings", "evidence", "TEXT"]] as const)
     if (!(db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).some((c) => c.name === col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${type}`);
   // A start a restart cut off (running, no check job yet) is queued again.
-  db.prepare("UPDATE runs SET status = 'queued', started = NULL, attempts = 0, billed_prior = 0 WHERE status = 'running' AND check_job IS NULL").run();
+  db.prepare("UPDATE runs SET status = 'queued', started = NULL, attempts = 0 WHERE status = 'running' AND check_job IS NULL").run();
   const iso = () => new Date(now()).toISOString();
   const one = <T>(sql: string, ...a: unknown[]) => db.prepare(sql).get(...(a as never[])) as T | undefined;
   const all = <T>(sql: string, ...a: unknown[]) => db.prepare(sql).all(...(a as never[])) as T[];
@@ -161,17 +156,17 @@ export function createEngine(d: EngineDeps) {
         if (same) return runRow(same.id)!;
       }
       const id = `cr-${randomBytes(6).toString("hex")}`;
-      run(`INSERT INTO runs (id, repo, number, head, base, engine, model, effort, run_usd, kind, status, focus, full, due, created, author, batch, recheck, mandatory)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?)`, id, p.repo, p.number, p.head, p.base, c.engine, c.model, c.effort, c.run_usd, kind,
+      run(`INSERT INTO runs (id, repo, number, head, base, engine, model, effort, kind, status, focus, full, due, created, author, batch, recheck, mandatory)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?)`, id, p.repo, p.number, p.head, p.base, c.engine, c.model, c.effort, kind,
         o.focus ?? null, o.full ? 1 : 0, due, now(), p.author.toLowerCase(), batch, i === checker ? 1 : 0, mand(c) ? 1 : 0);
       return runRow(id)!;
     });
   }
 
-  /** A skip, as a run with its reason, acknowledged on the PR once per reason (`perHead`: once per head). */
-  function skip(p: Target, c: Combo, kind: Kind, why: string, perHead = false) {
+  /** A skip, as a run with its reason, acknowledged on the PR once per reason. */
+  function skip(p: Target, c: Combo, kind: Kind, why: string) {
     const key = why.split(":")[0];
-    const had = one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND status = 'skipped' AND why LIKE ? || '%'" + (perHead ? " AND head = ?" : ""), p.repo, p.number, key, ...(perHead ? [p.head] : []));
+    const had = one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND status = 'skipped' AND why LIKE ? || '%'", p.repo, p.number, key);
     if (had) return;
     const id = `cr-${randomBytes(6).toString("hex")}`;
     run(`INSERT INTO runs (id, repo, number, head, base, engine, model, effort, kind, status, why, due, created, ended, author, batch) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'skipped', ?, ?, ?, ?, ?, ?)`,
@@ -180,51 +175,17 @@ export function createEngine(d: EngineDeps) {
     void ack({ repo: p.repo, number: p.number, head: p.head, state: "skipped", run: id, combo: c, why });
   }
 
-  /** What each running run's check job has spent so far (the kernel's figure, read each tick), by run id. A run with no figure
-   * (not read yet, the kernel unreachable) counts at its whole run_usd: unknown spend is never 0. */
-  const live = new Map<string, number>();
   /** Running runs whose check job still waits for a computer (the kernel says so each tick). */
   const waiting = new Set<string>();
 
-  /** Spent today (UTC), real money only: ended runs' billed cost plus what running ones have spent so far, for one repo or the whole instance. */
+  /** Spent today (UTC), as the kernel billed it: ended runs' and disputes' cost, for one repo or the whole instance (shown only). */
   function spent(repo?: string) {
     const m = day(now());
     const where = repo ? " AND repo = ?" : "";
-    const ended = one<{ s: number }>(`SELECT COALESCE(SUM(cost_usd), 0) s FROM runs WHERE substr(ended, 1, 10) = ?${where}`, m, ...(repo ? [repo] : []))!.s;
-    const running = all<RunRow>(`SELECT * FROM runs WHERE status = 'running'${where}`, ...(repo ? [repo] : []));
-    // Disputes' judges count too: ended at their billed cost, running at their spend so far (unknown: their whole cap).
-    const judged = one<{ s: number }>(`SELECT COALESCE(SUM(cost_usd), 0) s FROM judges WHERE substr(ended, 1, 10) = ?${where}`, m, ...(repo ? [repo] : []))!.s;
-    const judging = all<{ id: string }>(`SELECT id FROM judges WHERE status = 'running'${where}`, ...(repo ? [repo] : [])).reduce((n, j) => n + Math.min(live.get(j.id) ?? JUDGE_USD, JUDGE_USD), 0);
-    return ended + judged + judging + running.reduce((n, r) => n + (live.has(r.id) ? Math.min(r.billed_prior + live.get(r.id)!, r.run_usd) : r.run_usd), 0);
-  }
-
-  /**
-   * Moves a due queued run to running while the day's real spend is under the caps, in one transaction with the checks. Nothing is
-   * reserved: runs in flight may overshoot a cap by at most their own run_usd each (so by concurrent runs x run_usd in all,
-   * which the launcher's computers_max bounds). Undefined when it may not start (and it is
-   * then skipped with why).
-   */
-  function admit(r: RunRow): RunRow | undefined {
-    const c = d.config();
-    const why = tx(() => {
-      const cfg = repoCfg(r.repo);
-      // A mandatory run is never skipped for budget (its repo's merges wait on it); its spend still counts and shows.
-      if (r.mandatory) return void run("UPDATE runs SET status = 'running', started = ? WHERE id = ? AND status = 'queued'", iso(), r.id);
-      const inst = spent();
-      if (inst >= c.day_usd) return `budget: the instance has spent $${inst.toFixed(2)} of its $${c.day_usd} today`;
-      if (cfg) {
-        const mine = spent(r.repo);
-        if (mine >= cfg.day_usd) return `budget: ${r.repo} has spent $${mine.toFixed(2)} of its $${cfg.day_usd} today`;
-      }
-      run("UPDATE runs SET status = 'running', started = ? WHERE id = ? AND status = 'queued'", iso(), r.id);
-      return undefined;
-    });
-    if (!why) return runRow(r.id);
-    run("UPDATE runs SET status = 'skipped', why = ?, ended = ? WHERE id = ?", why, iso(), r.id);
-    end(runRow(r.id)!);
-    const had = one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND head = ? AND status = 'skipped' AND why LIKE 'budget%' AND id != ?", r.repo, r.number, r.head, r.id);
-    if (!had) void ack({ repo: r.repo, number: r.number, head: r.head, state: "skipped", run: r.id, combo: comboOf(r), why });
-    return undefined;
+    const args = repo ? [repo] : [];
+    const runs = one<{ s: number }>(`SELECT COALESCE(SUM(cost_usd), 0) s FROM runs WHERE substr(ended, 1, 10) = ?${where}`, m, ...args)!.s;
+    const judged = one<{ s: number }>(`SELECT COALESCE(SUM(cost_usd), 0) s FROM judges WHERE substr(ended, 1, 10) = ?${where}`, m, ...args)!.s;
+    return runs + judged;
   }
 
   /** The baseline a run reviews from, unless it is full: on a gated repo the last covered head (so every incremental range starts
@@ -283,7 +244,7 @@ export function createEngine(d: EngineDeps) {
       run("UPDATE runs SET incremental_from = ?, merge_base = ? WHERE id = ?", incremental_from, merge_base, r.id);
       const previous = r.recheck ? recheckList(r.repo, r.number) : [];
       const { check } = await d.runner.start({ repo: r.repo, number: r.number, base: r.base, head: r.head, merge_base, combo: comboOf(r), focus: r.focus,
-        incremental_from, full: incremental_from === null, previous, mandatory: !!r.mandatory, budget_usd: Math.max(0, r.run_usd - r.billed_prior), ignore: cfg?.ignore ?? [], max_nits: cfg?.max_nits ?? 5 });
+        incremental_from, full: incremental_from === null, previous, mandatory: !!r.mandatory, ignore: cfg?.ignore ?? [], max_nits: cfg?.max_nits ?? 5 });
       run("UPDATE runs SET check_job = ? WHERE id = ?", check, r.id);
     } catch (e) {
       // Nothing ran (no check job), so nothing was billed. One GitHub or the kernel couldn't answer now (a kernel restart, a 5xx)
@@ -302,14 +263,14 @@ export function createEngine(d: EngineDeps) {
       data: { status: r.status, ...(r.why ? { why: r.why.slice(0, 300) } : {}), important: r.important, nit: r.nit, pre_existing: r.pre_existing, cost_usd: r.cost_usd, ...comboOf(r), kind: r.kind, run: r.id } });
   }
 
-  /** What a run is charged: the kernel's billing of its check job, within its run_usd; unknown or invalid is the whole of it. */
-  const charge = (r: RunRow, billed: unknown) => (typeof billed === "number" && Number.isFinite(billed) && billed >= 0 ? Math.min(r.billed_prior + billed, r.run_usd) : r.run_usd);
+  /** What the kernel billed a check job (0 when it says nothing valid), and a run's cost: earlier attempts' plus this one's. */
+  const billed = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : 0);
+  const charge = (r: RunRow, v: unknown) => r.cost_usd + billed(v);
 
   /** A run posts on a task of its own (closed once its post settles) unless its PR is open on a watched repo (the PR's task, closed with the PR). */
   const ownTask = (r: RunRow) => !repoCfg(r.repo) || !prRow(r.repo, r.number)?.open;
 
   async function finish(r: RunRow, res: { state: "failed"; why: string; billed_usd?: number } | { state: "done"; review: Review; billed_usd?: number }) {
-    live.delete(r.id);
     // A result is bound to its run: one for another repo, PR, head or base (what a box could claim) is refused, never posted.
     if (res.state === "done") {
       const v = res.review as Partial<Review>;
@@ -317,13 +278,10 @@ export function createEngine(d: EngineDeps) {
         res = { state: "failed", why: "the review's result isn't for this run (repo, PR, head or base differ)", billed_usd: res.billed_usd };
     }
     if (res.state === "failed") {
-      // Once more on what is left of the run's run_usd, when the kernel says what the failed attempt cost (else it may have
-      // spent it all) and the result wasn't a wrong one.
-      const left = r.run_usd - r.billed_prior - (res.billed_usd ?? Infinity);
-      if (r.attempts < ATTEMPTS && left >= 0.05 && !res.why.startsWith("couldn't start") && !res.why.startsWith("the review's result")) {
-        log("review run failed, trying once more on what is left of its run_usd", { run: r.id, why: res.why.slice(0, 200) });
-        run("UPDATE runs SET billed_prior = billed_prior + ? WHERE id = ?", res.billed_usd!, r.id);
-        live.delete(r.id);
+      // Once more, unless it never started or the result was a wrong one.
+      if (r.attempts < ATTEMPTS && !res.why.startsWith("couldn't start") && !res.why.startsWith("the review's result")) {
+        log("review run failed, trying once more", { run: r.id, why: res.why.slice(0, 200) });
+        run("UPDATE runs SET cost_usd = ? WHERE id = ?", charge(r, res.billed_usd), r.id);
         return startRun(runRow(r.id)!);
       }
       run("UPDATE runs SET status = 'failed', why = ?, cost_usd = ?, ended = ? WHERE id = ?", res.why.slice(0, 500), charge(r, res.billed_usd), iso(), r.id);
@@ -588,17 +546,15 @@ export function createEngine(d: EngineDeps) {
       if (res.state !== "running") await finish(r, res);
       else {
         if (res.waiting && !("err" in res)) waiting.add(r.id);
-        if (res.billed_usd !== undefined && !("err" in res)) live.set(r.id, res.billed_usd);
-        else live.delete(r.id); // no figure this tick: back to the whole run_usd
       }
     }
     for (const r of all<RunRow>("SELECT * FROM runs WHERE status = 'queued' AND due <= ? ORDER BY created", now())) {
-      const started = admit(r);
-      if (started) await startRun(started);
+      run("UPDATE runs SET status = 'running', started = ? WHERE id = ? AND status = 'queued'", iso(), r.id);
+      await startRun(runRow(r.id)!);
     }
     for (const j of all<Judge>("SELECT * FROM judges WHERE status = 'running' AND check_job IS NOT NULL")) {
       const res = await d.runner.result(j.check_job!).catch(() => ({ state: "running" as const }));
-      if (res.state === "running") { if (res.billed_usd !== undefined) live.set(j.id, res.billed_usd); else live.delete(j.id); continue; }
+      if (res.state === "running") continue;
       await ruled(j, res);
     }
     for (const j of all<Judge>("SELECT * FROM judges WHERE status = 'queued' ORDER BY created")) await startJudge(j);
@@ -657,7 +613,7 @@ export function createEngine(d: EngineDeps) {
       if (!model) return void (await ruled({ ...j, head: p.head }, { state: "failed", why: "every judge model is of a family the PR's authors use" }));
       const { merge_base } = await d.source.mergeBase(j.repo, j.number, p.head);
       const { check } = await d.runner.start({ repo: j.repo, number: j.number, base: p.base, head: p.head, merge_base, combo: { engine: "codex", model, effort: JUDGE_EFFORT[model] ?? "high" },
-        focus: null, incremental_from: null, full: true, previous: [], mandatory: true, budget_usd: JUDGE_USD, ignore: [], max_nits: 0,
+        focus: null, incremental_from: null, full: true, previous: [], mandatory: true, ignore: [], max_nits: 0,
         judge: { finding: { id: j.finding, path: f.path, line: f.line, title: f.title, why: f.why ?? "", evidence: f.evidence ?? "" }, reply: { author: j.author, body: j.body } } });
       run("UPDATE judges SET check_job = ?, model = ? WHERE id = ?", check, model, j.id);
     } catch (e) {
@@ -669,8 +625,7 @@ export function createEngine(d: EngineDeps) {
   /** A judge's answer applied: dismissed closes the finding (one transaction, at the head it judged); anything else upholds it. The
    * ruling is posted on the thread either way. A PR that moved meanwhile is judged again at its new head. */
   async function ruled(j: Judge, res: RunResult) {
-    live.delete(j.id);
-    const cost = typeof res.billed_usd === "number" && res.billed_usd >= 0 ? Math.min(res.billed_usd, JUDGE_USD) : JUDGE_USD;
+    const cost = billed(res.billed_usd);
     const p = prRow(j.repo, j.number);
     if (p?.open && p.head !== j.head) return void run("UPDATE judges SET status = 'queued', check_job = NULL, cost_usd = cost_usd + ? WHERE id = ?", cost, j.id);
     const a = res.state === "done" ? (res.review as unknown as { verdict?: unknown; reason?: unknown }) : undefined;
@@ -794,7 +749,7 @@ export function createEngine(d: EngineDeps) {
     },
     repos() {
       const c = d.config();
-      return { day_usd: c.day_usd, day_spent_usd: round(spent()), errors: c.errors,
+      return { day_spent_usd: round(spent()), errors: c.errors,
         repos: c.repos.map((r) => {
           // Who posts there: the identity its last posted review went out as (the owner's sign-in).
           const identity = one<{ identity: string }>("SELECT identity FROM runs WHERE repo = ? AND identity IS NOT NULL ORDER BY ended DESC LIMIT 1", r.repo)?.identity ?? null;
@@ -805,7 +760,7 @@ export function createEngine(d: EngineDeps) {
     async available(q: string) {
       try { return await d.source.repos(q.slice(0, 100)); } catch (e) { throw new RequestError(`GitHub can't list repos: ${String((e as Error).message).slice(0, 200)}`); }
     },
-    /** The engines a combo may name, with their efforts, offered models and default run cap. */
+    /** The engines a combo may name, with their efforts, and offered models. */
     engines() { return ENGINES; },
   };
 }

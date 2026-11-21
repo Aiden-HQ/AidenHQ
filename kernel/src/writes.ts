@@ -9,7 +9,7 @@
 // channel token or the kernel's page). Approved: claimed once → revalidated (a module kind: the same executor and policy,
 // and plan again: the same digest, else stale and refiled) → executed. Before the tier, the modules' write.filed checks on the
 // kind run (config/kernel/checks.json, in process: filedRaises): each raises or refuses the write, never lowers it. A conn.tool record is executed by the proxy itself;
-// kernel.raise_cap and kernel.apply by the kernel.
+// kernel.apply by the kernel.
 import http from "node:http";
 import { createHash } from "node:crypto";
 import { neutral } from "./channels.ts";
@@ -130,7 +130,7 @@ export function createWrites({ records, registry, connections, secret, resolver,
   };
   /** Executes an approved conn.tool record: the stored call, through the proxy, as its requester. */
   replay: (r: Rec) => Promise<{ ok: boolean; text: string }>;
-  /** The kernel's own executors, by kind (kernel.raise_cap). */
+  /** The kernel's own executors, by kind (kernel.apply). */
   native?: { [kind: string]: (r: Rec) => Promise<{ ok: boolean; text: string }> };
   /** The kernel's planners for its own kinds (kernel.apply): filed through request() like a module kind, planned here. */
   planners?: { [kind: string]: Planner };
@@ -560,16 +560,6 @@ export function createWrites({ records, registry, connections, secret, resolver,
       log("merge filed for its task", { record: r.id, kind, task: pr.task, pr: `${repo}#${number}`, head, tier: r.tier, state: r.state });
       if (r.state === "claimed") await execute(r, k);
       return { filed: r };
-    },
-    /** kernel.raise_cap, filed by the kernel itself (the model gateway): the owner's tap alone, with no reviewer call (the cap it raises would refuse one). */
-    fileNative(kind: string, b: { task: string; identifier?: string; args: unknown; card: Card; reason: string; rule: string }): Rec {
-      const k = kindOf_(kind)!;
-      if (k.args) validate(k.args, b.args);
-      const base = { kind, module: k.module, args: b.args, targets: {}, executor: { module: k.module }, policy: policy(k), card: { ...b.card, reason: b.reason }, requester: { agent: "", key: "", name: "the kernel", roles: [], kind: "kernel" }, task: b.task };
-      const open = records.open(b.task, kind, digestOf(base))[0];
-      if (open) return open;
-      const t = computeTier({ floor: k.floor, reviewFirst: null });
-      return records.file({ ...base, tier: t.tier, merit: t.merit, panel: false, review_first: t.reviewFirst, rule: b.rule, identifier: b.identifier ?? null, target: b.card.target ?? null, state: t.state });
     },
     /**
      * The proxy's record for a conn.tool call. Tier 0 comes back claimed: the proxy forwards it and reports with `outcome`.

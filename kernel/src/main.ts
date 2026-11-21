@@ -19,7 +19,7 @@ import http from "node:http";
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { configDir, dataDir, env, repo, secret } from "./env.ts";
-import { INSTALL_CAP, createGateway, watched } from "./gateway/lib.ts";
+import { createGateway, watched } from "./gateway/lib.ts";
 import { createAdmin, type SetupField } from "./admin.ts";
 import { createAuthApi, OPERATOR_KEY } from "./auth-api.ts";
 import { createModuleValidate } from "./module-validate.ts";
@@ -72,7 +72,7 @@ import { inventoryOf } from "./paths.ts";
 import { taskRoutineCap, type Verdict } from "./tier.ts";
 import { logTasks, scopeOf } from "./task-scope.ts";
 import { createProvenance } from "./provenance.ts";
-import { KERNEL_KINDS, LOCAL_ORG, raiseCapCard } from "./kinds.ts";
+import { KERNEL_KINDS, LOCAL_ORG } from "./kinds.ts";
 import { JobError, admittedJob, createJobs, dispatchesFrom } from "./jobs.ts";
 import { createAdmission, wakeInbox } from "./admission.ts";
 import { createPool } from "./pool.ts";
@@ -200,11 +200,8 @@ renameKinds(records.db, catalog(), registry());
 const baseRepos = { product: env("AIDENHQ_PRODUCT_REPO") || undefined, instance: env("AIDENHQ_INSTANCE_REPO") || undefined };
 const repos = () => ({ ...baseRepos, agentsOrg: fleetOrg(), agentsOrgs: [fleetOrg(), ...(localHost() ? [LOCAL_ORG] : [])].filter((o): o is string => Boolean(o)) });
 log(baseRepos.product && baseRepos.instance ? "repositories" : "AIDENHQ_PRODUCT_REPO or AIDENHQ_INSTANCE_REPO isn't set", repos());
-// The bound reviewer module (reviewer@1): its model calls go through this gateway on a reviewer token minted per review, capped
-// at REVIEW_USD (a change of any size is read whole, so its spend is bounded per review; at the cap it goes to the owner).
-const REVIEW_USD = 10;
-const reviews = createReviews({ slot: () => modulesFile().reviewer, secret, resolver, log, modelToken: (component) => mintToken(secret("gateway_job_secret"), { kind: "reviewer", component, ttlMs: 3600_000, capUsd: REVIEW_USD }) });
-let raiseCap: (r: { scope: string; agentId: string; subject: string; cap: number; spent: number; to: number }) => Promise<string> = async () => { throw new Error("the model gateway isn't up"); };
+// The bound reviewer module (reviewer@1): its model calls go through this gateway on a reviewer token minted per review.
+const reviews = createReviews({ slot: () => modulesFile().reviewer, secret, resolver, log, modelToken: (component) => mintToken(secret("gateway_job_secret"), { kind: "reviewer", component, ttlMs: 3600_000 }) });
 // kernel.apply's executor (apply.ts): the code host lands the commit, a transient unit runs the apply; a restart resumes it.
 const instanceDir = env("AIDENHQ_INSTANCE_DIR", path.join(process.env.HOME ?? "", "aidenhq-instance"));
 const applyHost = hostApply({ repo, instanceDir, stateDir: env("AIDENHQ_STATE_DIR", path.join(process.env.HOME ?? "", ".local/state/aidenhq")), resolver, codehost: () => { const e = moduleKinds()["github.push"]?.executor; return e && { url: e.url, key: secret(e.auth_secret) }; },
@@ -222,8 +219,7 @@ const writes = createWrites({
   // The write.filed checks' code, run in process: the platform check (a hard gate, gates.ts) on the code hosts' git writes.
   checks: checksRegistry, filedChecks: { "platform.product-gate": productGate },
   autonomy: () => (["off", "tier0", "full"].includes(grantsTable().autonomy as string) ? grantsTable().autonomy : "off") as never,
-  // An approved raise_cap: the gateway's cap for that scope and subject becomes the card's doubled cap.
-  native: { "kernel.raise_cap": async (r) => ({ ok: true, text: await raiseCap(r.args as never) }), "kernel.apply": applies.execute },
+  native: { "kernel.apply": applies.execute },
   planners: { "kernel.apply": applyPlanner },
   executors: (): Record<string, Executor> => (localHost() ? { "codehost-local": localCode.executor } : {}),
   resume: ["kernel.apply"],
@@ -439,12 +435,11 @@ const wakes = createWakes({
   containers: () => logTasks(grantsTable() as never),
   routineKey: (id) => (grantsTable().routine_keys as Record<string, string> | undefined)?.[id],
   dispatches: { may: mayDispatch, agents: (module) => Object.keys(grantsTable().agents ?? {}).filter((id) => mayDispatch(module, id)) },
-  // Teams (team-routing.ts): a task on a team record goes to a member; the team's day cap is the gateway's own day scope.
+  // Teams (team-routing.ts): a task on a team record goes to a member.
   grants: () => (grantsTable().agents ?? {}) as never,
   // A repo the instance's code hosts have (codehostRepos: the agents orgs, the product, the instance, github_orgs and the
   // maintained repos; a local/… one only once it exists). A branch, a path or a library named like owner/name is none.
   knownRepo: (repo) => (repo.startsWith(`${LOCAL_ORG}/`) ? localHost() && localRepoExists(repo) : covers(repo, KNOWN_REPOS, codehostRepos())),
-  teamDayUsedUp: (member, task) => gw.exhausted(member, task).some((o) => o.scope === "day" && !o.install),
   // No member can take it: an open parent hears it as a wake notice (as asker.tell does), else the owner.
   tellBlocked: async (task, text) => {
     if (task.parentId && (await wakeNotice(ownerApi, task.parentId, text)) === "posted") return;
@@ -500,7 +495,7 @@ syncDeploys();
 every(syncDeploys, 60_000);
 // One live grader token per task, reused while it has time left and dropped when the task's hold resolves. Kind grader (never an
 // agent's identity: whoami and every agent check refuse it) that names the assignee, so the gateway charges its calls to that
-// agent's task and day caps (gateway/lib.ts).
+// agent on that task (its task cap, gateway/lib.ts).
 const graderTokens = new Map<string, { token: string; exp: number }>();
 const graderToken = (task: string, agent: string) => {
   const live = graderTokens.get(task);
@@ -708,38 +703,16 @@ const gw = createGateway({
   secret,
   upstream,
   paperclipUrl: controlUrl,
-  // The numbers are the gateway's ledger; the task's identifier and the agent's name are looked up here.
-  // The install cap's card (agent INSTALL_CAP, no task) goes on a task of the owner's own, so no agent wakes.
-  fileRaiseCap: async ({ task, ...r }) => {
-    const install = r.agentId === INSTALL_CAP;
-    const [issue, agent] = await Promise.all([task ? issueOf(task) : installCapTask(r.subject), install ? { name: "AidenHQ" } : cpApi(`/api/agents/${encodeURIComponent(r.agentId)}`).then((x) => (x.ok ? (x.json() as Promise<{ name?: string }>) : {}))]);
-    if (!issue) throw new Error(`no task ${task ?? "for the install cap"}`);
-    const args = { ...r, to: Math.round(r.cap * 200) / 100 };
-    writes.fileNative("kernel.raise_cap", { task: issue.id, identifier: issue.identifier, args, card: raiseCapCard(args, String((agent as { name?: string }).name ?? ""), issue.identifier ?? issue.id), reason: install ? "the install-wide daily spend cap is the owner's to raise" : `a ${r.scope} spend cap is the owner's to raise`, rule: "raise-cap" });
+  // Past a spend limit (no model call: the owner's notice path); past a task's cap, whoever asked for the task hears it.
+  notifyOwner: (text) => toOwner("alert")(text),
+  tellDelegator: async (task, text) => {
+    const issue = await issueOf(task);
+    if (issue?.parentId && (await wakeNotice(ownerApi, issue.parentId, `**${issue.identifier ?? task}:** ${text}`)) === "posted") return;
+    toOwner("alert")(`${issue?.identifier ?? task}: ${text}`);
   },
   jobLive: (id) => ["admitted", "running"].includes(String(admittedJob(records.db, id)?.state)),
   log,
 });
-
-/** A new task of the owner's for the install cap's raise card, in the company of the instance's agents. */
-async function installCapTask(day: string) {
-  const someAgent = Object.keys(grantsTable().agents ?? {})[0];
-  const a = someAgent ? await cpApi(`/api/agents/${encodeURIComponent(someAgent)}`) : undefined;
-  const company = a?.ok ? String(((await a.json()) as { companyId?: string }).companyId ?? "") : "";
-  if (!company) throw new Error("no company to file the install cap's card in");
-  // Held by the owner (every open task has a holder: cp.ts leavesNoHolder), so no agent wakes.
-  const co = await cpApi(`/api/companies/${company}`);
-  const ownerUser = co.ok ? String(((await co.json()) as { defaultResponsibleUserId?: string }).defaultResponsibleUserId ?? "") : "";
-  if (!ownerUser) throw new Error("no owner to hold the install cap's task");
-  const r = await cpApi(`/api/companies/${company}/issues`, { method: "POST", body: JSON.stringify({ assigneeUserId: ownerUser, title: `Daily spend cap reached (${day})`, description: "AidenHQ reached its daily spend cap (settings.spend_day_usd), so model calls are paused until tomorrow (UTC). Approve the card to double today's cap, or change the setting in Settings.", status: "todo" }) });
-  if (!r.ok) throw new Error(`Paperclip answered ${r.status} creating the install cap's task`);
-  return (await r.json()) as { id: string; identifier?: string };
-}
-
-raiseCap = async (r) => {
-  gw.setCap(r.scope, r.agentId, r.subject, r.to);
-  return `Raised the ${r.scope} spend cap from $${r.cap.toFixed(2)} to $${r.to.toFixed(2)} ($${r.spent.toFixed(2)} spent). Carry on where the cap stopped you.`;
-};
 
 // host:port pairs. Each binds on its own: the backplane address exists only once compose is up, so a failed bind is retried
 // (backoff up to a minute) while the others keep serving (a draining kernel's ports included). One process owns a port at a

@@ -43,7 +43,7 @@ test("an agent's spend raise, wider reach or combo change is the owner's; other 
   assert.equal(fleet("acme", "ACME").tier, 1);
 });
 
-test("the shipped modules declare these rules: an agent's new fleet org or maintained repo, or a new repo at $500 a day, is the owner's", async () => {
+test("the shipped modules declare these rules: an agent's new fleet org or maintained repo is the owner's", async () => {
   const { readFileSync } = await import("node:fs");
   const { checkTyped } = await import("../src/settings-change.ts");
   const decl = (m, k) => YAML.parse(readFileSync(new URL(`../../modules/${m}/module.yaml`, import.meta.url), "utf8")).settings[k];
@@ -63,9 +63,14 @@ test("the shipped modules declare these rules: an agent's new fleet org or maint
   const dflt = shipped.code_review.owner.find((r) => r.path === "repos.*.on_open").default;
   assert.equal(t("code_review", { repos: [{ repo: "acme/api" }] }, { repos: [{ repo: "acme/api", on_open: dflt }] }), 1);
   assert.equal(t("code_review", { repos: [{ repo: "acme/api" }] }, { repos: [{ repo: "acme/api", on_open: [{ ...dflt[0], model: "anthropic/claude-opus-5.5" }] }] }), 2);
-  assert.equal(t("code_review", { repos: [{ repo: "acme/api" }] }, { repos: [{ repo: "acme/api", on_push: [{ engine: "codex", model: "~deepseek/deepseek-flash-latest", effort: "low", run_usd: 1 }, { engine: "codegenie", model: "~deepseek/deepseek-flash-latest", effort: "low", run_usd: 1 }] }] }), 2);
-  assert.equal(t("code_review", { repos: [{ repo: "acme/api" }] }, { repos: [{ repo: "acme/api" }, { repo: "acme/web", day_usd: 500 }] }), 2);
+  assert.equal(t("code_review", { repos: [{ repo: "acme/api" }] }, { repos: [{ repo: "acme/api", on_push: [{ engine: "codex", model: "~deepseek/deepseek-flash-latest", effort: "low" }, { engine: "codegenie", model: "~deepseek/deepseek-flash-latest", effort: "low" }] }] }), 2);
   assert.equal(t("code_review", { repos: [{ repo: "acme/api" }] }, { repos: [{ repo: "acme/api" }, { repo: "acme/web" }] }), 1);
   // The owner's board still sets the list as a typed change.
   checkTyped({ kind: "setting", key: "github_fleet_org", value: "othercorp" }, { compiled: { settings: {}, agents: {} }, catalog: [{ name: "github", enabled: true, settings: { github_fleet_org: {} } }] });
+});
+
+test("raising a spend limit or the task cap is the owner's under every autonomy; unset is the default, and tightening is the panel's", () => {
+  const owner = (b, h) => applyParts({ files: ["instance.yaml"], base: { "instance.yaml": YAML.stringify({ settings: b }) }, head: { "instance.yaml": YAML.stringify({ settings: h }) } }).some((p) => p.rule === "spend-cap" && p.ownerOnly);
+  for (const [b, h] of [[{}, { spend_month_usd: 2000 }], [{}, { task_usd: 30 }], [{ spend_day_usd: 10 }, {}]]) assert.equal(owner(b, h), true, JSON.stringify([b, h]));
+  for (const [b, h] of [[{}, { spend_day_usd: 50 }], [{}, { spend_month_usd: 500 }], [{ task_usd: 30 }, {}]]) assert.equal(owner(b, h), false, JSON.stringify([b, h]));
 });

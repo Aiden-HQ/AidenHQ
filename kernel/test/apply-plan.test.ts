@@ -114,7 +114,7 @@ test("under full autonomy the owner approves only loosening autonomy, raising sp
   assert.deepEqual(await tierOf({ modules: role(true), autonomy: "off" }), [2, false, false]);
   // A module that isn't official asking for it: the owner's at any autonomy.
   assert.deepEqual(await tierOf({ modules: role(false) }), [2, false, true]);
-  // Loosening autonomy, raising the install's spend cap: the owner's; with an official role in the same change too.
+  // Loosening autonomy, raising the install's spend limit: the owner's; with an official role in the same change too.
   assert.deepEqual((await tierOf({ texts: settings("{ autonomy: tier0 }", "{ autonomy: full }") }))[0], 2);
   assert.deepEqual((await tierOf({ texts: settings("{ spend_day_usd: 10 }", "{ spend_day_usd: 20 }") }))[0], 2);
   assert.deepEqual((await tierOf({ modules: role(true), texts: settings("{ spend_day_usd: 10 }", "{ spend_day_usd: 20 }") }))[0], 2);
@@ -175,15 +175,14 @@ test("a release move is the reviewer's only as the updater's verified move under
   assert.equal(filed.args.release, "2026.11.3");
   // The reviewer reads both after the diff (its request's diff is the card's details), every authority line whole.
   assert.match(filed.card.details, /Release update \(computed by code\): the kernel's updater moves this instance to release 2026\.11\.3[^\n]*auto-updates are on[\s\S]*Module changes \(the authority diff[^\n]*\nacme: adds write kind post \(owner\)/);
-  // The owner's auto-update takes the official release's new authority and spend (owner, 2026-11-20): under any autonomy the
-  // AI reviewer (the panel of two when code changed, never the owner) judges only whether the update is malicious or
-  // compromised; every line reaches it whole, a spend increase marked as one.
+  // The owner's auto-update takes the official release's new authority (owner, 2026-11-20): under any autonomy the AI
+  // reviewer (the panel of two when code changed, never the owner) judges only whether the update is malicious or
+  // compromised; every line reaches it whole.
   const tools = Array.from({ length: 30 }, (_, i) => `primer_tool_number_${i}`);
-  const official = { modules: { acme: { base: { name: "acme", connections: { primer: { tools: { write: [] } } } }, head: { name: "acme", writes: { post: {} }, connections: { primer: { tools: { write: tools } } }, agents: { bot: { connections: { primer: tools }, caps: { day_usd: 50 } } } }, codeChanged: true, official: true } }, marketplaces: [] };
+  const official = { modules: { acme: { base: { name: "acme", connections: { primer: { tools: { write: [] } } } }, head: { name: "acme", writes: { post: {} }, connections: { primer: { tools: { write: tools } } }, agents: { bot: { connections: { primer: tools } } } }, codeChanged: true, official: true } }, marketplaces: [] };
   const taken = await kernel({ texts, verifyRelease: verified, modules: official, autonomy: "tier0" }).writes.fileKernel("kernel.apply", { args: BUMP, task: "TASK-1", requester: UPDATER });
   assert.deepEqual([taken.tier, taken.rule, taken.panel, taken.args.ownerRequired], [1, "release-update", true, undefined]);
-  assert.ok(taken.card.reason.length <= 300 && /1 spend increases/.test(taken.card.reason), taken.card.reason);
-  assert.ok(taken.args.authority.some((l) => /^acme: spend increase: agent bot: day_usd up to 50 \(owner\)$/.test(l)), "the spend line says so");
+  assert.ok(taken.card.reason.length <= 300, taken.card.reason);
   const noCode = { modules: { acme: { ...official.modules.acme, codeChanged: false } }, marketplaces: [] };
   const plain = await kernel({ texts, verifyRelease: verified, modules: noCode, autonomy: "tier0" }).writes.fileKernel("kernel.apply", { args: BUMP, task: "TASK-1", requester: UPDATER });
   assert.deepEqual([plain.tier, plain.rule, plain.panel], [1, "release-update", false], "one reviewer when no code changed");
@@ -199,7 +198,7 @@ test("a release move is the reviewer's only as the updater's verified move under
   // Beside an official one, a module that isn't official keeps today's tiering for the whole update, even with no owner line.
   const mixed = { modules: { ...noCode.modules, other: { base: { name: "other" }, head: { name: "other" }, codeChanged: true } }, marketplaces: [] };
   const both = await kernel({ texts, verifyRelease: verified, modules: mixed, autonomy: "tier0" }).writes.fileKernel("kernel.apply", { args: BUMP, task: "TASK-1", requester: UPDATER });
-  assert.deepEqual([both.tier, both.rule, both.args.ownerRequired], [2, "module-authority", true]);
+  assert.deepEqual([both.tier, both.rule, both.args.ownerRequired], [2, "module-authority", undefined]); // no line is owner-only: an official one's new authority
   const other = await kernel({ texts, verifyRelease: verified, modules: withAuthority }).writes.request(codehost, { kind: "kernel.apply", args: BUMP, task: "TASK-1" });
   assert.match(other.card.details, /Module changes[^\n]*\nacme: adds write kind post \(owner\)/);
   assert.doesNotMatch(other.card.details, /Release update/);

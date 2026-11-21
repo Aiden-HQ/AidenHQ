@@ -37,7 +37,6 @@ test("the role template compiles as an instance agent in trial (tap 1): read-onl
   assert.equal(a.module, "instance");
   assert.equal(a.trial, true);
   assert.equal(a.reports_to, "architect");
-  assert.equal(a.budget, 10);
   assert.match(a.title, /^Chases pull requests/);
   assert.match(a.instructions, /agents\/review-chaser\/AGENTS\.md$/);
   assert.deepEqual(a.roles, []);
@@ -102,7 +101,7 @@ test("instance agents are validated like module agents, and can't take roles or 
   assert.throws(() => compile(product, withAgents({ x: { yaml: { roles: ["fleet-admin"] } } })), /x: an instance agent may not have roles/);
   assert.throws(() => compile(product, withAgents({ x: { yaml: { roles: ["architect"] } } })), /x: an instance agent may not have roles/);
   assert.throws(() => compile(product, withAgents({ architect: {} })), /duplicate agent: architect/);
-  assert.throws(() => compile(product, withAgents({ x: { yaml: { budget: undefined } } })), /x: budget is required/);
+  assert.throws(() => compile(product, withAgents({ x: { yaml: { budget: 10 } } })), /agent x: budget is gone: one install limit/);
   assert.throws(() => compile(product, withAgents({ x: { yaml: { reports_to: "nobody", trial: undefined } } })), /x: reports_to nobody, which is not enabled/);
   assert.throws(() => compile(product, withAgents({ x: { yaml: { routines: { s: { title: "Prepare daily brief", schedules: [] } } } } })), /routine s needs a title no other routine has/);
   // Webhooks and their secrets come from modules only (an instance routine could otherwise take another's secret).

@@ -31,6 +31,8 @@ export const PANEL = (rule: string, reason: string): Part => ({ tier: 1, rule, r
  */
 const OWNER_AFTER_REVIEW = (rule: string, reason: string, panel?: boolean, ownerOnly?: boolean): Part => ({ tier: 2, rule, reason, reviewFirst: true, ...(panel ? { panel: true } : {}), ...(ownerOnly ? { ownerOnly: true } : {}) });
 const OWNER_ONLY = (rule: string, reason: string): Part => OWNER_AFTER_REVIEW(rule, reason, false, true);
+/** The spend settings and their defaults (kernel/settings.json): raising one is the owner's. */
+const SPEND_DEFAULTS: Record<string, number> = Object.fromEntries(["spend_day_usd", "spend_month_usd", "task_usd"].map((k) => [k, JSON.parse(readFileSync(new URL("../settings.json", import.meta.url), "utf8"))[k].default]));
 
 export const parse = (text: any) => {
   try {
@@ -65,7 +67,7 @@ export function newGrants(base: any = {}, head: any = {}, conns: any = {}) {
 /** Routines whose `autonomy` (their cap on approvals) is set, changed or dropped: always the owner's. */
 export const routineAutonomyChanges = (b: any = {}, h: any = {}) => [...new Set([...Object.keys(b ?? {}), ...Object.keys(h ?? {})])].filter((r) => (b?.[r]?.autonomy != null || h?.[r]?.autonomy != null) && !eq(b?.[r]?.autonomy, h?.[r]?.autonomy) && h?.[r]);
 
-const AGENT_SAFE = new Set(["name", "description", "model", "reasoning_effort", "timeout_sec", "routines", "budget", "max_parallel", "heartbeat"]);
+const AGENT_SAFE = new Set(["name", "description", "model", "reasoning_effort", "timeout_sec", "routines", "max_parallel", "heartbeat"]);
 const OVERRIDE_SAFE: Record<string, Set<string>> = { agents: new Set(["model", "reasoning_effort", "timeout_sec", "heartbeat"]), routines: new Set(["schedules", "status", "model"]) };
 
 export function applyParts(s: any) {
@@ -183,15 +185,14 @@ function moduleAuthorityParts(s: any, base: any, head: any, release?: string) {
   if (!diffs.length) return [...extra, ...(changedKeys(base, head).includes("marketplaces") ? [T(1, "marketplace-same-trees", "the official marketplace moves; every module's folder tree id is unchanged")] : [])];
   // The owner's auto-updates taking an official release (owner, 2026-11-20: "auto update implies you are accepting new
   // authority and anything else not actively malicious from the official releases"): when every change is an official
-  // module's, all of them are accepted, new spend included (the card names each spend increase), and the AI reviewer judges
+  // module's, all of them are accepted, and the AI reviewer judges
   // only whether the update is malicious or compromised, reading every line: the panel of two when any code changed, never
   // the owner. Anything else (a module that isn't official, a marketplace or fork line, an unjudged grants override) goes
   // as below.
-  if (release && !extra.length && diffs.every((d) => d.official && d.changes.every((c) => !c.ownerOnly || c.spend))) {
+  if (release && !extra.length && diffs.every((d) => d.official && d.changes.every((c) => !c.ownerOnly))) {
     const all = diffs.flatMap((d) => d.changes);
-    const spent = all.filter((c) => c.spend).length;
     // Short enough that the record's reason (writes.ts, 300 characters) is never cut: the lines carry the detail.
-    const part = T(1, "release-update", `official release ${release}, verified by the updater, under the owner's auto-updates: ${all.length} module changes, ${all.filter((c) => c.owner).length} new authority, ${spent} spend increases (marked "spend increase"), every line after the diff; check it is not malicious or compromised`);
+    const part = T(1, "release-update", `official release ${release}, verified by the updater, under the owner's auto-updates: ${all.length} module changes, ${all.filter((c) => c.owner).length} new authority, every line after the diff; check it is not malicious or compromised`);
     return [diffs.some((d) => d.code) ? { ...part, panel: true } : part];
   }
   const c = classifyModules(diffs);
@@ -309,12 +310,14 @@ function instanceParts(s: any) {
         const raised = s.byAgent && Array.isArray(def?.owner) ? ownerRaises(sk, def.owner, def.default, base.settings?.[sk], head.settings?.[sk]) : [];
         if (raised.length) parts.push(OWNER_ONLY("setting-owner", `an agent's change the owner decides: ${raised.join("; ")}`.slice(0, 600)));
       }
-      // Spend is the owner's authority under every autonomy: raising or removing the install cap. Only a finite positive number
-      // at or under the old cap tightens it; unset was no cap at all (the gateway's default). Ending quiet start and turning
-      // auto-updates back on are the owner's below full autonomy, the panel's at full (computeTier).
-      const [was, now] = [base.settings?.spend_day_usd ?? Infinity, head.settings?.spend_day_usd];
-      const tighter = typeof now === "number" && Number.isFinite(now) && now > 0 && now <= Number(was);
-      if (!eq(base.settings?.spend_day_usd, now) && !tighter) parts.push(OWNER_ONLY("spend-cap", `raises or removes the install's daily spend cap (${base.settings?.spend_day_usd ?? "none"} → ${now == null ? "none" : JSON.stringify(now).slice(0, 40)}): the owner's authority`));
+      // Spend is the owner's authority under every autonomy: raising the install's limits or the task cap. Only a finite positive
+      // number at or under the old value tightens it; unset is the default (SPEND_DEFAULTS, kernel/settings.json). Ending quiet
+      // start and turning auto-updates back on are the owner's below full autonomy, the panel's at full (computeTier).
+      for (const [sk, dflt] of Object.entries(SPEND_DEFAULTS)) {
+        const [was, now] = [base.settings?.[sk] ?? dflt, head.settings?.[sk] ?? dflt];
+        const tighter = typeof now === "number" && Number.isFinite(now) && now > 0 && now <= Number(was);
+        if (!eq(was, now) && !tighter) parts.push(OWNER_ONLY("spend-cap", `raises ${sk} (${JSON.stringify(was).slice(0, 40)} → ${JSON.stringify(now).slice(0, 40)}): spend is the owner's authority`));
+      }
       if (base.settings?.quiet_start === "on" && head.settings?.quiet_start !== "on") parts.push(OWNER_AFTER_REVIEW("quiet-start", "turns quiet start off, so every module schedule and heartbeat starts: the owner's authority"));
       // Release updates (docs/design/release-updates.md): auto-updates on is the owner's standing authority to install releases.
       if (base.settings?.auto_update === "off" && head.settings?.auto_update !== "off") parts.push(OWNER_AFTER_REVIEW("auto-update", "turns release auto-updates back on, so each new release installs itself at night: the owner's authority"));
@@ -330,8 +333,6 @@ function instanceParts(s: any) {
           const fields = kind === "agents" ? all.filter((x) => x !== "connections" && x !== "handbook_fork") : all;
           if (kind === "agents" && all.includes("handbook_fork")) parts.push((s.roles?.[name] ?? []).length ? T(1, "role-handbook", `handbook fork of ${name}, which holds a role`) : T(1, "module-handbook", `handbook fork of ${name}, an agent without a role`));
           if (!fields.length) continue;
-          if (kind === "agents" && fields.includes("caps")) parts.push(OWNER_ONLY("agent-caps", `overrides agents ${name}: spend caps are the owner's authority`));
-          if (kind === "agents" && fields.includes("caps") && fields.length === 1) continue;
           // Under quiet start, what the owner hasn't turned on stays off until they tap: a routine to active, a heartbeat on.
           const [b, h] = [base.overrides?.[kind]?.[name] ?? {}, head.overrides?.[kind]?.[name] ?? {}];
           if (head.settings?.quiet_start === "on" && (kind === "routines" ? fields.includes("status") && h.status === "active" && b.status !== "active" : kind === "agents" && fields.includes("heartbeat") && h.heartbeat != null && h.heartbeat !== false))
@@ -341,11 +342,11 @@ function instanceParts(s: any) {
       }
     } else if (k === "teams") {
       // The routing learning loop's own commit (the kernel wrote it: `s.routingTune`), proven by the one routing gate to move
-      // only members' repos and routing weights: routing data, the reviewer's; anything more is refused. Any other change:
-      // a team's day cap is a spend cap, the owner's authority; members, repos, weights and the rest, the panel's.
+      // only members' repos and routing weights: routing data, the reviewer's; anything more is refused. Any other change is
+      // the panel's.
       const routing = s.routingTune ? routingDiff(s.base?.["instance.yaml"], s.head?.["instance.yaml"]) : undefined;
       if (routing) parts.push("leaves" in routing ? T(1, "routing-only", `team routing only: ${routing.leaves.map((l) => l.path.slice(1).join(".")).join(", ")}`.slice(0, 300)) : REJECT("routing-scope", `a routing change moves only members' repos and routing weights: ${routing.problem}`));
-      else for (const t of changedKeys(base.teams, head.teams)) parts.push(!eq(base.teams?.[t]?.caps, head.teams?.[t]?.caps) ? OWNER_ONLY("team-caps", `teams ${t}: its day cap is the owner's authority`) : PANEL("teams", `changes team ${t}`));
+      else for (const t of changedKeys(base.teams, head.teams)) parts.push(PANEL("teams", `changes team ${t}`));
     } else parts.push(PANEL("instance-key", `changes ${k} in instance.yaml`));
   }
   return parts;
@@ -493,18 +494,17 @@ export function reviewerFacts(a: { authority?: string[]; release?: string }): st
 /**
  * The authority lines an apply's args carry (so its card lists them, the reviewer reads every one and its digest covers them),
  * owner changes first, each whole: never cut (a change too large to review is refused by the details cap instead). Each
- * module's `code changes` line folds into one; a spend or limit increase is marked as one. `release`: the release the owner's
- * auto-updates take (standingRelease): when every change is an official module's, its new spend needs no owner tap.
+ * module's `code changes` line folds into one. `release`: the release the owner's auto-updates take (standingRelease): when
+ * every change is an official module's, it needs no owner tap.
  */
 export function authorityArgs(st: { modules?: Record<string, ModuleInput>; marketplaces?: ReturnType<typeof marketplaceChanges> }, release?: string): { authority?: string[]; ownerRequired?: true } {
   const diffs = st.modules ? [...(st.marketplaces ?? []), ...diffAll(st.modules)] : [];
   const code = diffs.filter((d) => d.changes.some((c) => c.what === "code changes" && !c.owner)).map((d) => d.module);
-  // A spend or limit increase says so on its line, so the reviewer weighs it whoever decides after.
-  const all = authorityLines(diffs.map((d) => ({ ...d, changes: d.changes.filter((c) => !(c.what === "code changes" && !c.owner)).map((c) => (c.spend ? { ...c, what: `spend increase: ${c.what}` } : c)) })));
+  const all = authorityLines(diffs.map((d) => ({ ...d, changes: d.changes.filter((c) => !(c.what === "code changes" && !c.owner)) })));
   const isOwner = (l: string) => l.endsWith("(owner)");
   const lines = [...all.filter(isOwner), ...all.filter((l) => !isOwner(l)), ...(code.length ? [`code changes in ${code.join(", ")} (review)`] : [])];
-  // The owner's under every autonomy (a non-official module's new authority, new spend): the reviewer's yes never runs it (records.ts).
-  const taken = Boolean(release) && diffs.every((d) => d.official && d.changes.every((c) => !c.ownerOnly || c.spend));
+  // The owner's under every autonomy (a non-official module's new authority): the reviewer's yes never runs it (records.ts).
+  const taken = Boolean(release) && diffs.every((d) => d.official && d.changes.every((c) => !c.ownerOnly));
   const ownerRequired = !taken && diffs.some((d) => d.changes.some((c) => c.ownerOnly));
   return { ...(lines.length ? { authority: lines } : {}), ...(ownerRequired ? { ownerRequired: true as const } : {}) };
 }

@@ -50,10 +50,6 @@
   "computers_max": {
     "doc": "How many computers run at once, 1 to 64: the computer launcher's pool and the kernel's job admission both read it (config/computers.json max). Unset: the host's RAM in GB divided by 1.5, within 4 to 64 (8 GB: 5, 16 GB: 10, 32 GB: 21, 64 GB: 42), worked out when the config is compiled. Agent jobs and check jobs (code review, CI checks) are each guaranteed half the pool and may borrow the other's idle computers."
   },
-  "eval_day_usd": {
-    "default": 5,
-    "doc": "The reviewer eval's spend cap, USD per UTC day, across every eval check job (the model gateway refuses its calls past it)."
-  },
   "auto_update": {
     "default": "on",
     "values": [
@@ -63,6 +59,15 @@
     "doc": "Release installs only (instance.yaml release: from the official distro repo): on, a newer release is verified and installed at night (02:00-05:00, settings.timezone), and rolled back if its health check fails; off, the owner is only told and installs it with Update now (Settings > Instance). An instance that pins product by hand never updates itself. docs/design/release-updates.md."
   },
   "spend_day_usd": {
-    "doc": "The install-wide spend cap on every model call, USD per UTC day (a new install: 10). Past it, calls are refused and the owner gets one card to raise today's cap. Unset = no install-wide cap (per-agent caps still apply)."
+    "default": 50,
+    "doc": "The install's spend limit on every model call (agents, checks, reviews, CI, everything the gateway meters), USD per UTC day. Past it every call is refused and the owner is told once. Raising it is the owner's."
+  },
+  "spend_month_usd": {
+    "default": 1000,
+    "doc": "The install's spend limit on every model call, USD per calendar month (UTC). Past it every call is refused and the owner is told once. Raising it is the owner's."
+  },
+  "task_usd": {
+    "default": 20,
+    "doc": "The most an agent's model calls on one task may spend, USD (a chat or routine task: per UTC day). Past it the task's calls are refused and whoever asked for the task is told. Raising it is the owner's."
   }
 }
