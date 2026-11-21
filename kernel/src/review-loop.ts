@@ -267,7 +267,9 @@ export async function reviewInput(r: Rec, { records, task, decisions, product, g
     previous: (input.previous as string[] | undefined) ?? [],
     component: "AI reviewer",
   };
-  return { input, request, prior, lifted: split.by, chain: chainHash, parkPanel: veto?.rule === "retries-panel" };
+  // The retry state once a verdict on this record is posted, computed exactly as the next filing's (for its notices).
+  const after = (done: Rec) => priorDecisions([...split.records, asPrior(done)], action, [], requestKey(action, { ...args, digest: r.digest }), undefined, chainHash, aimed);
+  return { input, request, prior, lifted: split.by, chain: chainHash, after };
 }
 
 /**
@@ -312,9 +314,9 @@ export function createReviewLoop({ records, writes, task, decisions, product, gr
   };
 
   async function reviewOne(r: Rec, digest: { where: string; text: string } | undefined, at: string): Promise<void> {
-    let input: ReviewInput, request: Record<string, unknown>, prior: ReturnType<typeof priorDecisions> | undefined, lifted: string[] = [], chain: string | undefined, parkPanel = false;
+    let input: ReviewInput, request: Record<string, unknown>, prior: ReturnType<typeof priorDecisions> | undefined, lifted: string[] = [], chain: string | undefined, after: ((done: Rec) => ReturnType<typeof priorDecisions>) | undefined;
     try {
-      ({ input, request, prior, lifted, chain, parkPanel } = await reviewInput(r, { records, task, decisions: digest, product: product(), grade: noteOf, pin: at, settings: settings() }));
+      ({ input, request, prior, lifted, chain, after } = await reviewInput(r, { records, task, decisions: digest, product: product(), grade: noteOf, pin: at, settings: settings() }));
       // Who lifted which rejections (a park, the same content refused): the owner, or the delegator or chief of staff by key.
       if (lifted.length) log("rejections answered", { record: r.id, task: r.task, by: lifted });
     } catch (e) {
@@ -328,10 +330,10 @@ export function createReviewLoop({ records, writes, task, decisions, product, gr
     // A target that is parked now (this rejection parks it, or it was refused as parked): nothing re-reviews a closed record,
     // so the requester is told when to file it again, when a panel reviews it.
     // A post-park panel that rejected for the PANEL_TRIES-th time sends the next filing to the owner instead (tier.ts priorPart).
-    // Counted exactly as tier.ts counts a panel: a panel record filed once the park's cooldown ended (parkedUntil).
-    const counts = parkPanel && Boolean(records.get(r.id)?.panel) && Date.parse(r.created_at) >= (prior?.parkedUntil ?? Infinity);
-    const toOwner = judged && Boolean(prior) && counts && prior!.panels + 1 >= PANEL_TRIES;
-    const refile = toOwner ? undefined : judged && prior && prior.rejects + 1 >= MAX_REJECTS ? Date.now() + REVIEW_COOLDOWN_MS : input.rule === "retries-exhausted" ? prior?.parkedUntil : undefined;
+    // The notices follow the retry state the next filing will meet (tier.ts priorDecisions with this rejection in it).
+    const next = judged && after ? after(records.get(r.id) ?? out.record) : prior;
+    const toOwner = judged && (next?.panels ?? 0) >= PANEL_TRIES;
+    const refile = toOwner ? undefined : (next?.rejects ?? 0) >= MAX_REJECTS ? next?.parkedUntil : undefined;
     await rejected(out.record, out.posted, refile, toOwner).catch((e: Error) => log("reject note failed", { record: r.id, err: e.message.slice(0, 200) }));
     // The rejection that reaches MAX_REJECTS parks the target for the cooldown (tier.ts priorPart): whoever delegated the task
     // hears it once per park and may lift it with a decision on the task. The chief of staff's own task (escalate.ts would
