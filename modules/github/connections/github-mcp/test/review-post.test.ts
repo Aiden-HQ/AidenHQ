@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { GitHub, GitHubRefused, guard } from "../src/github.js";
 import { ReviewPoster } from "../src/review-post.js";
 import { accessFor } from "./fake-access.js";
-import { anchors, modelName, plain, redact, renderReview, renderStatus, rightLines, type Review } from "../src/review-render.js";
+import { SCALES, anchors, modelName, plain, redact, renderFinding, renderReview, renderStatus, rightLines, type Review } from "../src/review-render.js";
 
 const HEAD = "a".repeat(40);
 const BASE = "b".repeat(40);
@@ -77,6 +77,21 @@ describe("rendering model text", () => {
     expect(renderStatus({ repo: "a/b", pr: 1, head: HEAD, reason: "running", important: 2, running: [{ model: "anthropic/claude-haiku-5.5", effort: "medium" }] })).toEqual({ state: "pending", description: "Reviewing with Haiku 5.5 (medium) · 2 important findings open" });
     expect(renderStatus({ repo: "a/b", pr: 1, head: HEAD, reason: "findings", important: 1, running: [] }).state).toBe("failure");
     expect(renderStatus({ repo: "a/b", pr: 1, head: HEAD, reason: "pass", important: 0, running: [] }).state).toBe("success");
+  });
+
+  it("redacts a long multi-line secret whole at every text scale, in the card and the post: never a cut that slips past", async () => {
+    const tok = "ghp_" + "Z".repeat(40);
+    const kind = ["RSA", "PRIVATE", "KEY"].join(" "); // built here, so a secret scanner never takes this test for a key
+    const pem = `-----BEGIN ${kind}-----\n` + Array.from({ length: 50 }, () => "Q".repeat(64)).join("\n") + `\n-----END ${kind}-----`;
+    // Tokens at many positions a scale's cut could fall on, and a key longer than any cut.
+    const lines = (n: number, step: number) => Array.from({ length: n }, (_, i) => "w".repeat(20 + i * step) + " " + tok).join("\n");
+    const f = finding("f_secret_1", "src/pay.ts", 2, { why: lines(18, 9), evidence: pem, fix_brief: lines(14, 7) });
+    const leaked = (t: string) => /ghp_Z{6}|Q{20}/.test(t);
+    for (const scale of SCALES) expect(leaked(renderFinding(f, review([f]), undefined, scale)), String(scale)).toBe(false);
+    const w = world();
+    expect(leaked(poster(w).preview("post", postArgs(review([f]))).facts.details!)).toBe(false);
+    await poster(w).execute("post", postArgs(review([f])));
+    expect(w.calls.filter((c) => c.method !== "GET").some((c) => leaked(JSON.stringify(c.body)))).toBe(false);
   });
 
   it("redacts credentials and finds the changed lines of a patch", () => {

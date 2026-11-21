@@ -161,6 +161,16 @@ const EVIDENCE_MAX = 500;
 const ASSIGNMENT = /\b((?:pass(?:word|wd)?|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|authorization|credential)s?)(["']?\s*[:=]\s*["']?)[^\s"',;]{4,}/gi;
 /** Credentials and secret-looking values replaced by a marker (scrub.ts's token patterns, assignments, bearer values, URL logins). */
 export function redact(text: string): string {
+  const had = redacted.get(text);
+  if (had !== undefined) return had;
+  const out = redactOnce(text);
+  // The whole text, redacted once and remembered: a review rendered at several text scales (its card) trims this, never a cut.
+  if (redacted.size > 5000) redacted.clear();
+  redacted.set(text, out);
+  return out;
+}
+const redacted = new Map<string, string>();
+function redactOnce(text: string): string {
   let t = text;
   for (const [what, re] of SECRETS) t = t.replace(re, `[redacted ${what}]`);
   return t
@@ -176,8 +186,7 @@ const ZWSP = "​";
  * `@name` broken so nobody is pinged.
  */
 export function plain(text: string, max: number): string {
-  // Only what can show is scanned (a secret cut at the far end is past `max`, so never shown).
-  const t = redact(text.slice(0, max * 2 + 400))
+  const t = redact(text)
     .replace(/[\p{Cc}\p{Cf}]/gu, (c) => (c === "\n" || c === "\t" ? c : ""))
     .replace(/</g, "&lt;")
     .replace(/!\[[^\]]{0,200}\]\([^)]{0,500}\)/g, "[image removed]")
@@ -223,7 +232,7 @@ export function renderFinding(f: Finding, r: Pick<Review, "repo" | "pr" | "head"
   // its title alone.
   if (!scale) return head.join("\n");
   const n = (x: number) => Math.max(40, Math.floor(x * scale));
-  const evidence = redact(f.evidence.slice(0, n(EVIDENCE_MAX) + 400)).slice(0, n(EVIDENCE_MAX));
+  const evidence = redact(f.evidence).slice(0, n(EVIDENCE_MAX));
   const brief = [`Fix ${where} (${r.repo} PR #${r.pr} at ${short(r.head)})`, `Problem: ${plain(f.title, 200)}`, ...(evidence ? [`Evidence: ${evidence}`] : []), `Wanted: ${plain(f.fix_brief, n(500))}`].join("\n");
   return [
     ...head,
@@ -313,7 +322,7 @@ export function renderReview(r: Review, run: string, opts: { place?: ReadonlyMap
   }
   // Without a thread (in no changed file): the first few with their reasoning, the rest named, so the post stays within GitHub's
   // and the card's size.
-  for (const f of listed.slice(0, LISTED_MAX)) lines.push("", `<details><summary>${ICON[f.severity]} ${plain(f.title, 160)} ${code(`${f.path}:${f.line}`)}</summary>\n\n${plain(f.why, 800)}${f.evidence ? `\n\n${fence(redact(f.evidence.slice(0, EVIDENCE_MAX + 400)).slice(0, EVIDENCE_MAX))}` : ""}\n\n**Fix brief:** ${plain(f.fix_brief, 500)}\n\n</details>`);
+  for (const f of listed.slice(0, LISTED_MAX)) lines.push("", `<details><summary>${ICON[f.severity]} ${plain(f.title, 160)} ${code(`${f.path}:${f.line}`)}</summary>\n\n${plain(f.why, 800)}${f.evidence ? `\n\n${fence(redact(f.evidence).slice(0, EVIDENCE_MAX))}` : ""}\n\n**Fix brief:** ${plain(f.fix_brief, 500)}\n\n</details>`);
   if (listed.length > LISTED_MAX) lines.push("", `<details><summary>${listed.length - LISTED_MAX} more without a thread</summary>\n\n${listed.slice(LISTED_MAX, LISTED_MAX + 40).map((f) => `- ${ICON[f.severity]} ${plain(f.title, 160)} ${code(`${f.path}:${f.line}`)}`).join("\n")}${listed.length > LISTED_MAX + 40 ? "\n- \u2026" : ""}\n\n</details>`);
   if (r.stale_guidance.length) lines.push("", `<details><summary>Guidance this change may make stale</summary>\n\n${r.stale_guidance.map((s) => `- ${plain(s, 300)}`).join("\n")}\n\n</details>`);
   lines.push("", opts.card ? "[AidenHQ's fixed Commands help: the comments people on the pull request may write to ask for another review]" : commandsBlock(), "", `<sub>${code(short(r.head))} · ${r.full || !r.incremental_from ? "whole PR" : `changes since ${code(short(r.incremental_from))}`} · ${r.engine} · $${r.cost_usd.toFixed(2)}</sub>`);
