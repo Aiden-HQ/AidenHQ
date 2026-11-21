@@ -76,7 +76,7 @@ A request that grows beyond what the delegating agent asked, on the strength of 
 agent's comment, is out of scope.
 
 A redaction asks for less. When a call differs from the brief only by replacing owner data inside the text it publishes (a closed list: names, emails,
-hosts, IPs, uuids, account and chat ids, credentials) with a neutral word such as `<deleted task id>`, and adds nothing
+hosts, IPs, uuids, credentials, and account or chat ids that sit in the text, not ones that pick where it goes) with a neutral word such as `<deleted task id>`, and adds nothing
 else, it narrows the request and cannot widen it: judge it as the brief's request with every other check unchanged, and
 do not reject it for the missing datum, because a public tool may refuse to publish it. A datum that selects the target (a recipient, repository or account) is not publication text: replacing it is a different call, judged by normal scope matching. A brief that says "this exact
 text or nothing" keeps that condition.
