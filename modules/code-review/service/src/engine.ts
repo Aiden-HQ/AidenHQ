@@ -431,6 +431,7 @@ export function createEngine(d: EngineDeps) {
       // Its review task held only its posts' approvals: done with the PR. The close is retried after the tick's main work (closeTasks).
       run("UPDATE prs SET open = 0, close_due = EXISTS (SELECT 1 FROM runs WHERE repo = ? AND number = ? AND write_id IS NOT NULL) WHERE repo = ? AND number = ?", cfg.repo, gone.number, cfg.repo, gone.number);
     }
+    reconciled.add(cfg.repo);
     if (!cursor) return void run("INSERT INTO cursors (repo, comments) VALUES (?, ?)", cfg.repo, iso());
     const got = await d.source.comments(cfg.repo, cursor.comments);
     for (const c of got.comments) {
@@ -452,9 +453,10 @@ export function createEngine(d: EngineDeps) {
   const runsOn = (p: PullRequest) => !!one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND status != 'skipped'", p.repo, p.number);
 
   const CLOSE_MS = 10_000;
-  /** Closes the review tasks of PRs a poll just found closed, side by side and each bounded; one that fails or hangs is tried again next tick. */
-  async function closeTasks(polled: Set<string>) {
-    await Promise.all(all<{ repo: string; number: number }>("SELECT repo, number FROM prs WHERE open = 0 AND close_due = 1").filter((g) => polled.has(g.repo)).map(async (g) => {
+  /** Closes the review tasks of PRs a poll found closed, side by side and each bounded; one that fails or hangs is tried again next tick. */
+  const reconciled = new Set<string>(); // repos whose open and closed PRs this tick's poll has read
+  async function closeTasks() {
+    await Promise.all(all<{ repo: string; number: number }>("SELECT repo, number FROM prs WHERE open = 0 AND close_due = 1").filter((g) => reconciled.has(g.repo)).map(async (g) => {
       let timer: ReturnType<typeof setTimeout> | undefined;
       try {
         await Promise.race([d.poster.close(g.repo, g.number, "The pull request is closed."), new Promise((_, no) => { timer = setTimeout(() => no(new Error("close timed out")), CLOSE_MS); })]);
@@ -470,18 +472,17 @@ export function createEngine(d: EngineDeps) {
 
   const errors = new Map<string, string>();
   async function tick() {
-    const polled = new Set<string>();
+    reconciled.clear();
     try {
-      await tickWork(polled);
+      await tickWork();
     } finally {
-      await closeTasks(polled);
+      await closeTasks();
     }
   }
-  async function tickWork(polled: Set<string>) {
+  async function tickWork() {
     for (const cfg of d.config().repos) {
       try {
         await poll(cfg);
-        polled.add(cfg.repo);
         errors.delete(cfg.repo);
       } catch (e) {
         const msg = String((e as Error).message).slice(0, 200);
