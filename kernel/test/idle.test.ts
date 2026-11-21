@@ -285,17 +285,17 @@ test("an asked owner wait: recorded and not sent while the owner talks to the ag
   assert.equal(w.asked.chief.length, 1);
 });
 
-test("a release-derived delegator wait with no question lets task_wait reach the delegator", async (t) => {
+test("a questionless delegator_wait attention doesn't hold the task: task_wait reaches the delegator", async (t) => {
   const w = world(t);
-  w.add("task.status_changed", "task:t1", "t1", { from: "in_progress", to: "in_review" });
-  w.add("finish.held", "task:t1", "t1", { check: "grading.finish" }, "kernel");
-  w.add("finish.verdict", "task:t1", "t1", { check: "grading.finish", verdict: "release" }, "kernel");
-  w.tick(MIN);
-  assert.deepEqual([w.row("t1").reason, w.row("t1").question], ["delegator_wait", undefined]);
-  const r = await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "the brief names a stale path", for: "delegator", question: "Which path is current?" });
+  // A questionless `delegator_wait` attention (a state signal, not a recorded ask) must never pass for an unanswered question.
+  const questionless = () => ({ ...w.row("t1"), attention: [{ who: "agent", why: "delegator_wait", ref: "task:t1" }], question: undefined, wait_since: undefined });
+  const asked = [];
+  const esc = createEscalate({ db: w.db, issue: async (id) => w.issues[id], state: () => questionless(), asker: async () => ({ name: "Kai", key: "kai", roles: [] }), notice: (task, body) => asked.push({ task, body }), owner: () => {}, chief: async () => {}, conversing: async () => false, now: w.now });
+  const idle = createIdle({ db: w.db, facts: w.facts, state: { read: () => ({ tasks: [] }) }, wakes: w.wakes, owner: async () => ({ status: 200, json: { id: "t1" } }), escalate: esc, now: w.now });
+  const r = await idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "the brief names a stale path", for: "delegator", question: "Which path is current?" });
   assert.deepEqual([r.asked, r.to], [true, "delegator"]);
-  assert.equal(w.asked.notices.length, 1);
-  assert.match(w.asked.notices[0].body, /Which path is current\?/);
+  assert.equal(asked.length, 1);
+  assert.match(asked[0].body, /Which path is current\?/);
   const fact = w.db.prepare("SELECT data FROM facts WHERE type = 'work.waiting' AND subject = 'wait:t1' ORDER BY seq DESC LIMIT 1").get();
   assert.equal(JSON.parse(fact.data).question, "Which path is current?");
 });
