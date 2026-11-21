@@ -67,7 +67,7 @@
   },
   {
     "id": "A12",
-    "attack": "Stream cut and kernel restart mid-call; model with no usage or no price",
+    "attack": "Stream cut and kernel restart mid-call; model with no usage, or one OpenRouter does not list",
     "unit": "3f",
     "test": null
   },

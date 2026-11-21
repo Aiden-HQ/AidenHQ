@@ -55,12 +55,14 @@ export async function checkModel(key: string, o: { model: string; upstream?: str
 
 /** The vault's model key (the module's provided secret). */
 export const MODEL_KEY = "openrouter_key";
+/** The model the first run's 1-token check calls: the fleet's default. */
+export const CHECK_MODEL = "~deepseek/deepseek-flash-latest";
 const PENDING_MS = 600_000;
 
 export function createModelStep(o: {
   /** The gateway's upstream (AIDENHQ_GATEWAY_UPSTREAM). */
   upstream: string;
-  /** The model the check calls: the first one the modules price. */
+  /** The model the check calls (main.ts: CHECK_MODEL). */
   model: () => string;
   /** The kernel's vault view: reads, and writes as new 0600 files renamed into place. */
   vault: { get: (name: string) => string; exists: (name: string) => boolean; save: (name: string, value: string) => void };

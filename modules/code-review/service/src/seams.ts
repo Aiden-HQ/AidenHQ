@@ -61,13 +61,13 @@ export type ReviewSpec = {
   focus: string | null; incremental_from: string | null; full: boolean;
   /** The PR's still-open findings, rechecked at this head (an incremental review's batch's first run). */
   previous: { id: string; path: string; line: number; title: string }[];
-  /** The most the run may spend (its reservation): the cap on its box's model token. */
+  /** The most the run may spend (its run_usd): the cap on its box's model token. */
   budget_usd: number; ignore: string[]; max_nits: number;
 };
 /** `billed_usd`: what the kernel billed the run's check job (its gateway calls), never anything the box wrote. Absent: unknown, and
- * the run is charged its whole reservation. */
+ * the run is charged its whole run_usd. A running one's is its spend so far (what the day budget counts). */
 export type RunResult =
-  | { state: "running" }
+  | { state: "running"; billed_usd?: number }
   | { state: "done"; review: Review; billed_usd?: number }
   | { state: "failed"; why: string; billed_usd?: number };
 export interface ReviewRunner {

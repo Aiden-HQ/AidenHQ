@@ -22,7 +22,7 @@ import { INSTALL_CAP, createGateway, watched } from "./gateway/lib.ts";
 import { createAdmin, type SetupField } from "./admin.ts";
 import { createAuthApi, OPERATOR_KEY } from "./auth-api.ts";
 import { createModuleValidate } from "./module-validate.ts";
-import { MODEL_KEY, createModelStep } from "../../modules/models-openrouter/src/model-step.ts";
+import { CHECK_MODEL, MODEL_KEY, createModelStep } from "../../modules/models-openrouter/src/model-step.ts";
 import { composeRecreate, createModuleSecrets, secretFits, vaultWriter } from "./module-secrets.ts";
 import { doorSource, readGate } from "./accounts.ts";
 import { routineWake, webhookWake, type Manifest } from "../../modules/apps-platform/src/app-access.ts";
@@ -529,13 +529,13 @@ const firstRun = {
   forgetRecoveryKey: () => rmSync(path.join(secretsDir, "vault_recovery_key"), { force: true }),
 };
 // The first run's model step (/setup/model; the models-openrouter module's flow, served on the admin listener): OpenRouter's
-// PKCE and a 1-token check on the gateway's upstream, against the first model the modules price (config/gateway.json, in the
-// order the modules list them: the default first). Its readiness is model_ready and the first-run redirects.
+// PKCE and a 1-token check on the gateway's upstream, against the module's default model (CHECK_MODEL). Its readiness is
+// model_ready and the first-run redirects.
 const upstream = env("AIDENHQ_GATEWAY_UPSTREAM", "https://openrouter.ai/api/v1");
-const gatewaySettings = watched(path.join(configDir, "gateway.json"), (j) => j as { models?: Record<string, unknown>; install_day_usd?: unknown }, {});
+const gatewaySettings = watched(path.join(configDir, "gateway.json"), (j) => j as { install_day_usd?: unknown }, {});
 const model = createModelStep({
   upstream,
-  model: () => Object.keys(gatewaySettings().models ?? {})[0] ?? "~deepseek/deepseek-flash-latest",
+  model: () => CHECK_MODEL,
   vault: { get: secret, exists: (n) => existsSync(path.join(secretsDir, n)), save: firstRun.save },
   fits: (key) => { const f = firstRun.fields().find((x) => x.secret === MODEL_KEY); return !f || secretFits(f, key); },
   dayCap: () => { const n = Number(gatewaySettings().install_day_usd); return n > 0 ? n : undefined; },

@@ -1,36 +1,5 @@
 name: models-openrouter
-description: "The OpenRouter models the gateway may call, with their prices. A model not listed here (by the id an agent sends) is refused."
-# models: what the kernel's gateway reserves and settles each call at (spec §5.12), written to config/gateway.json by compile.
-# Prices are USD per million tokens and are the least any provider OpenRouter routes to charges (its cheapest listing, a
-# little under): a call is settled at max(what OpenRouter reported, tokens x these prices), so these only catch an under-report
-# or a missing one and never inflate a normal call. peak: the most a call can cost, as a multiple of these prices (the ledger's
-# p99 cost/floor ratio, 2026-11-16); a reservation is (estimated input x in + max_output x out) x peak. max_output: the most
-# output tokens (reasoning included) a call may ask for, within what most of the model's ZDR providers take (OpenRouter
-# routes around one that takes less). Every model an agent, routine or CI review names must be here
-# (compile), and the runner's own (reviewer, grader, intake, advisor, fan-out) too.
-models:
-  - { id: "~deepseek/deepseek-flash-latest", in: 0.04, cached_in: 0.0008, out: 0.16, peak: 8, max_output: 131072 }
-  - { id: "deepseek/deepseek-v4.1-flash", in: 0.04, cached_in: 0.0008, out: 0.16, peak: 8, max_output: 131072 }
-  - { id: "deepseek/deepseek-v4-pro", in: 0.9, cached_in: 0.25, out: 1.5, peak: 4, max_output: 131072 }
-  - { id: "~openai/gpt-luna-latest", in: 0.1, cached_in: 0.01, out: 0.5, peak: 2, max_output: 128000 }
-  - { id: "~openai/gpt-sol-latest", in: 2, cached_in: 0.1, out: 10, peak: 2, max_output: 65536 }
-  - { id: "~openai/gpt-terra-latest", in: 1, cached_in: 0.05, out: 5, peak: 2, max_output: 65536 }
-  - { id: "~openai/gpt-astra-latest", in: 8, cached_in: 0.4, out: 40, peak: 2, max_output: 65536 }
-  # Gemini 4 has no latest alias: exact ids.
-  - { id: "google/gemini-4-neon", in: 3, cached_in: 0.15, out: 15, peak: 2, max_output: 65536 }
-  - { id: "google/gemini-4-carbon", in: 2, cached_in: 0.1, out: 10, peak: 2, max_output: 65536 }
-  - { id: "~z-ai/glm-flash-latest", in: 0.0399, cached_in: 0.03, out: 0.0784, peak: 6, max_output: 128000 }
-  - { id: "z-ai/glm-5.3-flash", in: 0.0399, cached_in: 0.03, out: 0.0784, peak: 6, max_output: 128000 }
-  - { id: "z-ai/glm-5.3", in: 0.0699, cached_in: 0.0689, out: 1.4, peak: 12, max_output: 128000 }
-  - { id: "moonshotai/kimi-k3.1-pro", in: 0.2403, cached_in: 0.2, out: 8.4023, peak: 8, max_output: 131072 }
-  - { id: "moonshotai/kimi-k3", in: 0.192, cached_in: 0.182, out: 16, peak: 4, max_output: 131072 }
-  - { id: "qwen/qwen3-coder-next", in: 0.12, cached_in: 0.07, out: 0.8, peak: 4, max_output: 131072 }
-  # Claude, for code review's claude-code engine (Claude Code through the gateway's Anthropic-format route), pinned to exact ids
-  # (an alias could move to a dearer model): OpenRouter's list prices (its models API, 2026-11-20). peak 2: a cache write bills
-  # 1.25x input.
-  - { id: "anthropic/claude-opus-5.5", in: 4, cached_in: 0.2, out: 20, peak: 2, max_output: 128000 }
-  - { id: "anthropic/claude-sonnet-5.5", in: 2, cached_in: 0.1, out: 10, peak: 2, max_output: 128000 }
-  - { id: "anthropic/claude-haiku-5.5", in: 0.1, cached_in: 0.01, out: 0.5, peak: 2, max_output: 64000 }
+description: "OpenRouter as the model provider: its key, set up on the first run. The gateway prices every call from OpenRouter's own models list, so any model OpenRouter lists works by its id."
 # The model key, asked for on the first-run page (/setup) while the vault has none; only the kernel's model gateway reads it.
 secrets:
   provided:

@@ -399,23 +399,6 @@ function resolveEnabled(all: Map<string, Obj>, wanted: string[]) {
 const codehostOrgs = (enabled: Obj, settings: Obj) => [...(enabled.includes("github") && settings.agents_org ? [{ org: settings.agents_org, host: "github" }] : []), ...(enabled.includes("codehost-local") ? [{ org: "local", host: "local" }] : [])];
 
 /**
- * config/gateway.json `models`, by id: every enabled module's `models:` entries (spec §5.12). USD per million tokens, each the
- * least a provider charges; peak (>= 1) the most a call can cost as a multiple of them; max_output the most output tokens.
- */
-export function modelPrices(defs: Obj) {
-  const out: Obj = {};
-  for (const [name, def] of Object.entries(defs)) {
-    for (const m of def.models ?? []) {
-      const ok = typeof m?.id === "string" && m.id && ["in", "cached_in", "out"].every((k) => Number.isFinite(m[k]) && m[k] >= 0) && (m.peak ?? 1) >= 1 && Number.isInteger(m.max_output) && m.max_output > 0;
-      if (!ok) fail(`${name}: models entries are {id, in, cached_in, out (USD per million tokens), max_output, peak?}`);
-      if (out[m.id]) fail(`${name}: model ${m.id} is priced twice`);
-      out[m.id] = { in: m.in, cached_in: m.cached_in, out: m.out, peak: m.peak ?? 1, max_output: m.max_output };
-    }
-  }
-  return out;
-}
-
-/**
  * The gateway's CI code review switches (config/gateway.json `ci`, kernel/src/gateway/ci.ts): only the agents org's app repos;
  * models as the gateway sees them (codegenie's `openrouter/` provider and `:<reasoning>` suffix dropped); the review model and
  * effort the code-review job gets with its CI token (always one of the allowed models).
@@ -1232,15 +1215,11 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   }
   // engines: the engines a kernel job may ask its next turn to run on (`aidenhq engine`); absent, only its own.
   for (const [key, a] of Object.entries<Obj>(paperclip.agents)) if (a.engines != null && (!Array.isArray(a.engines) || a.engines.some((k: string) => !engines[k]))) fail(`agent ${key}: engines is a list of enabled engine kinds (${Object.keys(engines).sort().join(", ") || "none"})`);
-  // The model gateway's prices and CI review (config/gateway.json, re-read per call).
+  // The model gateway's CI review and day caps (config/gateway.json, re-read per call; prices come from OpenRouter itself).
   // spend_day_usd: the install-wide daily cap on every model call (docs/design/quiet-start.md); unset, none.
   if (settings.spend_day_usd != null && !(typeof settings.spend_day_usd === "number" && settings.spend_day_usd > 0 && settings.spend_day_usd <= 10_000)) fail("settings.spend_day_usd: USD a day, above 0 (unset for no cap)");
   if (!(typeof settings.eval_day_usd === "number" && settings.eval_day_usd >= 0 && settings.eval_day_usd <= 10_000)) fail("settings.eval_day_usd: USD a day, 0 or more");
-  const gateway = { models: modelPrices(enabledDefs), ...(enabled.includes("ci") ? { ci: ciReview(settings) } : {}), ...(settings.spend_day_usd != null ? { install_day_usd: settings.spend_day_usd } : {}), eval_day_usd: settings.eval_day_usd };
-  const named = [...Object.entries<Obj>(paperclip.agents).flatMap(([key, a]) => grantEntry(key, a, paperclip.routines).models), ...(gateway.ci?.models ?? [])];
-  // Checked once some module prices models (the default bundle has models-openrouter); with none, the gateway refuses every call.
-  const unpriced = Object.keys(gateway.models).length ? [...new Set(named.filter((m) => !gateway.models[m]))] : [];
-  if (unpriced.length) fail(`no declared price for ${unpriced.join(", ")} (a module's models:, e.g. modules/models-openrouter): the gateway refuses a model it can't price`);
+  const gateway = { ...(enabled.includes("ci") ? { ci: ciReview(settings) } : {}), ...(settings.spend_day_usd != null ? { install_day_usd: settings.spend_day_usd } : {}), eval_day_usd: settings.eval_day_usd };
   // Last, after the specific checks above: nothing may be left dangling (spec §5.7.1): an agent's engine, grants, jobcaps and roles, a module's requires, grants,
   // joins and shares, the instance's reviewer and write floors all name something an enabled module declares.
   const dangling = danglingBindings(enabledDefs, { reviewer: instance.reviewer, writes: instance.writes, agents: Object.fromEntries(Object.entries<Obj>(paperclip.agents).filter(([, a]) => a.module === "instance")) });

@@ -95,7 +95,7 @@ export type Receipt = { v: 1; check: string; repo: string; head: string; run: Ru
  * check's "nothing to run" (the repo's base declares no check); without it, a receipt of a check that didn't run is refused. */
 export type Binding = { repo: string; head: string; run: Run; judge?: string; policy?: string; none?: boolean; result?: string };
 /** `result`: the recipe's result object (data: made from the repo's text); `billed_usd`: its model token's spend by the gateway's
- * ledger (a failed run's too); both null for other recipes. */
+ * ledger (a failed run's too; a running check's so far); both null for other recipes. */
 export type CheckView = { id: string; repo: string; head: string; run: Run; state: string; receipt: Receipt | null; error: string | null; version: number; result: Record<string, unknown> | null; billed_usd: number | null };
 
 /** Where a check's folders are in its box: the snapshot (read-write, thrown away after) and the kernel's out folder. */
@@ -314,7 +314,7 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
     for (const w of waiters.get(id) ?? []) w();
     waiters.delete(id);
   };
-  const view = (r: Record<string, any>): CheckView => ({ id: r.id, repo: r.repo, head: r.head, run: r.run, state: r.state, receipt: r.receipt ? JSON.parse(r.receipt) : null, error: r.error ?? null, version: versions.get(r.id) ?? 0, result: r.result ? JSON.parse(r.result) : null, billed_usd: r.cost_usd ?? null });
+  const view = (r: Record<string, any>): CheckView => ({ id: r.id, repo: r.repo, head: r.head, run: r.run, state: r.state, receipt: r.receipt ? JSON.parse(r.receipt) : null, error: r.error ?? null, version: versions.get(r.id) ?? 0, result: r.result ? JSON.parse(r.result) : null, billed_usd: r.state === "running" && r.run_key ? Math.round((Number(r.cost_usd ?? 0) + spent(r.run_key)) * 10_000) / 10_000 : r.cost_usd ?? null });
 
   /** One run in a fresh box: its exit and its output's tail. `trees`: commit trees by spec field, moved into the out folder (the
    * recipe's history); `spec`: written to the out folder's spec.json. */

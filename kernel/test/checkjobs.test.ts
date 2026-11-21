@@ -10,6 +10,7 @@ import { basename, dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { createChecks, resultHash } from "../src/checkjobs.ts";
 import { createGateway } from "../src/gateway/lib.ts";
+import { modelsList } from "./models-list.ts";
 import { mintToken, verifyToken } from "../src/gateway/token.ts";
 import { createIdentity } from "../src/identity.ts";
 import { recipes } from "./helpers.ts";
@@ -146,11 +147,11 @@ test("checks: the eval runs by the judging rules and its receipt binds judge and
 
 test("checks: the eval's model calls stop at the eval day cap", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "gw-check-"));
-  const price = { in: 1, cached_in: 0.1, out: 1, peak: 1, max_output: 4096 };
+  const { url: modelsUrl } = await modelsList({ m: { in: 1, cached_in: 0.1, out: 1, max_output: 4096 } });
   writeFileSync(join(dir, "grants.json"), JSON.stringify({ agents: {} }));
-  writeFileSync(join(dir, "gateway.json"), JSON.stringify({ models: { m: price }, eval_day_usd: 0.05 }));
+  writeFileSync(join(dir, "gateway.json"), JSON.stringify({ eval_day_usd: 0.05 }));
   const upstream = await new Promise((r) => { const s = http.createServer((req, res) => { req.resume(); req.on("end", () => res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ id: `g${Math.random()}`, model: "m", usage: { prompt_tokens: 10, completion_tokens: 5, cost: 0.03 } }))); }).listen(0, "127.0.0.1", () => r(s)); });
-  const gw = createGateway({ dbFile: join(dir, "kernel.db"), grantsFile: join(dir, "grants.json"), settingsFile: join(dir, "gateway.json"), secret: (n) => ({ openrouter_key: "sk", gateway_job_secret: "job-secret" })[n] ?? "", upstream: `http://127.0.0.1:${upstream.address().port}` });
+  const gw = createGateway({ dbFile: join(dir, "kernel.db"), grantsFile: join(dir, "grants.json"), settingsFile: join(dir, "gateway.json"), secret: (n) => ({ openrouter_key: "sk", gateway_job_secret: "job-secret" })[n] ?? "", upstream: `http://127.0.0.1:${upstream.address().port}`, modelsUrl });
   const front = await new Promise((r) => { const s = http.createServer((q, s2) => gw.handle(q, s2)).listen(0, "127.0.0.1", () => r(s)); });
   t.after(() => { upstream.close(); front.close(); gw.close(); });
   const token = mintToken("job-secret", { kind: "check", component: `eval:${A}` });
@@ -313,11 +314,11 @@ test("checks: a model recipe gets its own capped token, its spec and commits as 
 
 test("checks: a model recipe's token stops at its own cap, apart from the eval day cap", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "gw-review-"));
-  const price = { in: 1, cached_in: 0.1, out: 1, peak: 1, max_output: 4096 };
+  const { url: modelsUrl } = await modelsList({ m: { in: 1, cached_in: 0.1, out: 1, max_output: 4096 } });
   writeFileSync(join(dir, "grants.json"), JSON.stringify({ agents: {} }));
-  writeFileSync(join(dir, "gateway.json"), JSON.stringify({ models: { m: price }, eval_day_usd: 0.01 }));
+  writeFileSync(join(dir, "gateway.json"), JSON.stringify({ eval_day_usd: 0.01 }));
   const upstream = await new Promise((r) => { const s = http.createServer((req, res) => { req.resume(); req.on("end", () => res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ id: `g${Math.random()}`, model: "m", usage: { prompt_tokens: 10, completion_tokens: 5, cost: 0.03 } }))); }).listen(0, "127.0.0.1", () => r(s)); });
-  const gw = createGateway({ dbFile: join(dir, "kernel.db"), grantsFile: join(dir, "grants.json"), settingsFile: join(dir, "gateway.json"), secret: (n) => ({ openrouter_key: "sk", gateway_job_secret: "job-secret" })[n] ?? "", upstream: `http://127.0.0.1:${upstream.address().port}` });
+  const gw = createGateway({ dbFile: join(dir, "kernel.db"), grantsFile: join(dir, "grants.json"), settingsFile: join(dir, "gateway.json"), secret: (n) => ({ openrouter_key: "sk", gateway_job_secret: "job-secret" })[n] ?? "", upstream: `http://127.0.0.1:${upstream.address().port}`, modelsUrl });
   const front = await new Promise((r) => { const s = http.createServer((q, s2) => gw.handle(q, s2)).listen(0, "127.0.0.1", () => r(s)); });
   t.after(() => { upstream.close(); front.close(); gw.close(); });
   const call = (token) => fetch(`http://127.0.0.1:${front.address().port}/api/v1/chat/completions`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify({ model: "m", messages: [] }) });

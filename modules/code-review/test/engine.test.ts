@@ -143,19 +143,37 @@ test("commands: only a writer's count, our own posts and quoted lines never do, 
   assert.equal(parseCommand("```\n@aiden review\n```"), undefined);
 });
 
-test("budgets are reserved atomically against the repo cap; drafts and forks skip with a reason", async () => {
+test("the day budget counts real spend only: a running run at its spend so far; a queued run starts while spent is under the cap; drafts and forks skip with a reason", async () => {
   const w = world({ repos: [{ repo: REPO, day_usd: 2.5, on_open: [CODEX, CLAUDE] }] });
   await w.tick();
   w.pr(1, sha("1"));
   w.pr(4, sha("4"), { draft: true });
   w.pr(5, sha("5"), { fork: true });
   await w.tick();
-  // One batch of two combos: codex ($1) fits, claude-code ($2) doesn't fit in what's left.
-  const runs = w.engine.runs({ repo: REPO });
-  assert.deepEqual(runs.filter((r) => r.status === "running").map((r) => r.engine), ["codex"]);
-  assert.ok(runs.some((r) => r.status === "skipped" && r.engine === "claude-code" && r.why.startsWith("budget")));
-  assert.deepEqual(w.acks.filter((a) => a.state === "skipped").map((a) => [a.number, a.why.split(":")[0]]).sort(), [[1, "budget"], [4, "draft"], [5, "fork"]]);
-  assert.equal(w.engine.repos().repos[0].day_reserved_usd, 1);
+  // Nothing is reserved: both combos ($1 + $2 caps, over the $2.5 cap together) start, nothing is spent yet.
+  assert.deepEqual(w.engine.runs({ repo: REPO }).filter((r) => r.status === "running").map((r) => r.engine).sort(), ["claude-code", "codex"]);
+  // No figure read yet: a running run counts at its whole run_usd (fail closed), never 0.
+  assert.equal(w.engine.repos().repos[0].day_spent_usd, 3);
+  // The kernel's live figure for a running check is what counts: $3 spent so far (each within its run_usd) passes the cap.
+  w.results.set("c-1", { state: "running", billed_usd: 1 });
+  w.results.set("c-2", { state: "running", billed_usd: 2 });
+  await w.tick();
+  assert.equal(w.engine.repos().repos[0].day_spent_usd, 3);
+  // A readable figure replaces the cap: $0.5 and $0.25 so far; then the kernel can't be reached: both back at their run_usd.
+  w.results.set("c-1", { state: "running", billed_usd: 0.5 });
+  w.results.set("c-2", { state: "running", billed_usd: 0.25 });
+  await w.tick();
+  assert.equal(w.engine.repos().repos[0].day_spent_usd, 0.75);
+  w.results.set("c-1", { state: "running" });
+  w.results.set("c-2", { state: "running", billed_usd: 2 });
+  await w.tick();
+  assert.equal(w.engine.repos().repos[0].day_spent_usd, 3, "c-1 has no figure: its whole $1");
+  w.later(1000);
+  w.pr(2, sha("2"));
+  await w.tick();
+  assert.ok(w.engine.runs({ repo: REPO }).some((r) => r.number === 2 && r.status === "skipped" && r.why.startsWith("budget")));
+  assert.deepEqual(w.acks.filter((a) => a.state === "skipped").map((a) => [a.number, a.why.split(":")[0]]).sort(), [[2, "budget"], [4, "draft"], [5, "fork"]]);
+  assert.equal("day_reserved_usd" in w.engine.repos(), false);
 });
 
 test("a run is charged what the kernel billed (never what the box says), and a result for another head is refused", async () => {
@@ -170,14 +188,14 @@ test("a run is charged what the kernel billed (never what the box says), and a r
   assert.equal(runs.length, 3);
   await w.tick();
   w.finish(0, { cost_usd: 0.001 }, 0.7);     // billed $0.70: charged that, whatever the box claims
-  w.finish(1, { cost_usd: 0 });              // no billing known: the whole $2 reservation
+  w.finish(1, { cost_usd: 0 });              // no billing known: the whole $2 run_usd
   w.finish(2, { head: sha("9"), repo: "acme/other", cost_usd: 0 }, 99); // a result for another head: refused, charged at most its $1
   await w.tick();
   const by = Object.fromEntries(w.engine.runs({ repo: REPO }).filter((r) => r.status !== "skipped").map((r) => [`${r.engine}/${r.effort}`, r]));
   assert.deepEqual([by["codex/medium"].cost_usd, by["claude-code/high"].cost_usd, by["codex/low"].cost_usd], [0.7, 2, 1]);
   assert.equal(by["codex/low"].status, "failed");
-  // Today spend is the billed costs (0.7 + 2 + 1), and nothing is still held at a reservation.
-  assert.deepEqual([w.engine.repos().day_spent_usd, w.engine.repos().day_reserved_usd], [3.7, 0]);
+  // Today spend is the billed costs (0.7 + 2 + 1).
+  assert.equal(w.engine.repos().day_spent_usd, 3.7);
   // GET /reviews/:id carries the run's combo, cost, tokens, duration and its findings in full.
   const one = w.engine.run(by["codex/medium"].id)!;
   assert.ok(one.run.model && one.run.cost_usd === 0.7 && "duration_ms" in one.run && "tokens_in" in one.run && Array.isArray(one.review!.findings) && Array.isArray(one.findings));

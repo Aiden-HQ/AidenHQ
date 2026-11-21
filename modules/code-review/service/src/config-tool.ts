@@ -31,7 +31,7 @@ export interface Change {
  * the owner-readable reason when the result wouldn't validate.
  */
 export function applyChange(raw: Dict, ch: Change): { value: Dict; summary: string[] } {
-  const value: Dict = { repos: [...((raw.repos as Dict[]) ?? [])], day_usd: raw.day_usd ?? 100 };
+  const value: Dict = { repos: [...((raw.repos as Dict[]) ?? [])], day_usd: raw.day_usd ?? 200 };
   let repos = value.repos as Dict[];
   const summary: string[] = [];
   const key = (r: unknown) => String(r).toLowerCase();
@@ -88,7 +88,7 @@ export function agentCombos(raw: unknown, repos: () => unknown) {
 
 const COMBOS = {
   type: "array", maxItems: 4,
-  description: `Combos, each its own review run and post: { engine, model, effort, run_usd? }. Engines: ${Object.entries(ENGINES).map(([e, v]) => `${e} (efforts ${v.efforts.join("|")}; models such as ${v.models.join(", ")}; run_usd default ${v.run_usd})`).join("; ")}. Any OpenRouter model id the gateway prices may be typed. [] runs none.`,
+  description: `Combos, each its own review run and post: { engine, model, effort, run_usd? }. Engines: ${Object.entries(ENGINES).map(([e, v]) => `${e} (efforts ${v.efforts.join("|")}; models such as ${v.models.join(", ")}; run_usd default ${v.run_usd})`).join("; ")}. Any model id OpenRouter lists may be typed. [] runs none.`,
   items: { type: "object", properties: { engine: { type: "string", enum: Object.keys(ENGINES) }, model: { type: "string" }, effort: { type: "string" }, run_usd: { type: "number" } }, required: ["engine", "model", "effort"], additionalProperties: false },
 };
 const REPO_ENTRY = {
