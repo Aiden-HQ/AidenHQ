@@ -146,7 +146,16 @@ export function oauth(o: OAuthOptions): Auth {
   const pending = new Map<string, { verifier: string; redirectUri: string; ep: Endpoints; client: { id: string; secret?: string }; expires: number }>();
   let token: StoredToken | undefined;
   let refreshing: Promise<StoredToken> | undefined;
-  let status: AuthStatus = { state: "unknown", since: new Date().toISOString() };
+  // A stored token that nothing has refused is signed in: "unknown" after every restart read as "Needs setup" on the board.
+  const usable = () => {
+    try {
+      const t = JSON.parse(readFileSync(tokenPath, "utf8")) as StoredToken;
+      return Boolean(t.access_token) && (Boolean(t.refresh_token) || !t.expires_at || t.expires_at > Date.now());
+    } catch {
+      return false;
+    }
+  };
+  let status: AuthStatus = { state: usable() ? "ok" : "unknown", since: new Date().toISOString() };
 
   // JSON asked for explicitly: GitHub's OAuth endpoints answer form-encoded otherwise.
   const json = async (url: string, init?: RequestInit) => {
