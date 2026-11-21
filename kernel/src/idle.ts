@@ -8,7 +8,7 @@
 //   and its `question` goes once to whoever settles it (escalate.ts): the owner directly (reason owner_wait) only from the
 //   chief of staff or on a task the owner is talking to its agent on; otherwise the open delegator or the chief of staff
 //   (reason delegator_wait: an agent answers). The steward raises either left too long.
-// - sweep(): every few minutes, each open (todo, in_progress) task an agent holds that the task state reports `orphaned` (a
+// - sweep(): every few minutes, each open (todo, in_progress) task an agent holds (in_review: see below) that the task state reports `orphaned` (a
 //   chat is `chat_turn`, never orphaned), `unknown` (its holder's wake aged out) or `unpolled` (no enabled dispatcher runs its
 //   holder: the sweep skips it too, since its wake would never be taken, but the state names why) for 15 minutes
 //   gets one wake for its holder, cause `idle` (dispatch words it), once each time it becomes idle (the key is when: a wake
@@ -104,10 +104,7 @@ export function createIdle({ db, facts, state, wakes, owner, team = () => false,
     return "in_progress";
   };
   /** The status the fact log last recorded for a task. */
-  const lastStatus = (task: string) => {
-    const r = q("SELECT json_extract(data, '$.to') AS to_ FROM facts WHERE subject = ? AND type = 'task.status_changed' ORDER BY at DESC, seq DESC LIMIT 1").get(`task:${task}`) as { to_?: string } | undefined;
-    return r?.to_;
-  };
+  const lastStatus = (task: string) => q("SELECT json_extract(data, '$.to') AS to_, at FROM facts WHERE subject = ? AND type = 'task.status_changed' ORDER BY at DESC, seq DESC LIMIT 1").get(`task:${task}`) as { to_?: string; at: string } | undefined;
   const issue = async (task: string) => {
     const r = await owner("GET", `/api/issues/${encodeURIComponent(task)}`).catch((e: Error) => ({ status: 503, json: { error: e.message } }));
     return r.status === 404 ? null : r.status === 200 ? (r.json as ParkedIssue) : undefined;
@@ -377,7 +374,7 @@ export function createIdle({ db, facts, state, wakes, owner, team = () => false,
       return { waiting: true, until: iso(until), ...(who ? { to } : {}), ...(r?.sent === "asked" ? { asked: true } : {}), ...chief };
     },
 
-    /** One sweep: the tasks whose holders it woke. */
+    /** One sweep: the tasks whose holders it woke, and those idle in review it sent to their delegator. */
     async sweep() {
       // First the waits: a task whose wait is armed stays out of the sweep's eligible set, and one whose wait ended is restored
       // once (settle). A failure here never stops the idle sweep below.
@@ -391,9 +388,11 @@ export function createIdle({ db, facts, state, wakes, owner, team = () => false,
           const task = r.json as { status?: string; assigneeAgentId?: string | null };
           // In review with nothing running, filed or waiting on it (an escalated grade the finish gate never held, a merge that
           // landed after the last job): the holder has nothing left to do, so the one who delegated it decides, once per stretch.
-          // Only once the fact log shows the review (its `since` is then this stretch's), and never against the holder's wake cap.
+          // Only once the state read the sweep started from includes the review (its `since` is then this stretch's), never while an
+          // agent reviewer is pending on it, and never against the holder's wake cap.
           if (r.status === 200 && String(task.status) === "in_review" && task.assigneeAgentId && escalate) {
-            if (lastStatus(i.task) !== "in_review") continue;
+            const s = lastStatus(i.task);
+            if (s?.to_ !== "in_review" || s.at > i.since || reviewParkable(task as ParkedIssue)) continue;
             const to = await escalate.delegator(i.task, `idle-review:${i.task}:${i.since}`, (id) => ({
               body: `**${id} sits in review with nothing running, filed or waiting on it** (${Math.round((t - Date.parse(i.since)) / 3600_000)} hours). Read its thread and its result, then decide: finish it when the work meets what was asked, comment on it with the exact changes still needed, or cancel it only when the work should not proceed.`,
               ownerText: `**${id} sits in review with nothing running, filed or waiting on it.** It is yours: finish it if the work is right, comment on ${id} with what its agent changes, or cancel it.`,
