@@ -227,6 +227,7 @@ export function createProxy({ whoami, connections, asserter, resolver, secret, w
     const key = secret(conn.auth_secret);
     if (!key) { done(false, "the service key is missing"); throw fail(503, "no_service_key", `${connection}'s service key is missing`); }
     headers.authorization = `Bearer ${key}`;
+    const to = await resolver.resolve(conn.url).catch((e: Error) => { done(false, e.message); throw fail(502, "bad_upstream", e.message); });
     let jti: string | undefined;
     if (tool) {
       const signed = asserter.signCaller({ agent: who.agent ?? "", key: who.key ?? "", name: who.name ?? "", roles: who.roles, ...(who.task ? { task: who.task } : {}), ...(who.run ? { run: who.run } : {}), tool: `${connection}.${tool}`, aud: conn.module, kind: who.kind });
@@ -234,7 +235,6 @@ export function createProxy({ whoami, connections, asserter, resolver, secret, w
       headers["x-aidenhq-caller"] = signed.jwt;
       asserter.begin(jti, { credential: who.credential, ...(who.kind === "run" ? { bearer: callerToken } : {}), aud: conn.module, kind: who.kind, ...(who.run ? { run: who.run } : {}) }, timeout + 30);
     }
-    const to = await resolver.resolve(conn.url).catch((e: Error) => { done(false, e.message); throw fail(502, "bad_upstream", e.message); });
     headers.host = new URL(conn.url).host;
     const timeoutMs = (timeout + 30) * 1000;
     try {

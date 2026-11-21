@@ -48,7 +48,7 @@ export function engineState(cfg: Pick<SandboxConfig, "enginesFile" | "stateDir">
   const e = engineEntry(cfg, kind);
   if (!e.state) return undefined;
   if (skills.length && e.state !== "task") throw new Error(`engine ${kind}: skills need a per-task state folder (state: task)`);
-  const dir = join(cfg.stateDir, kind, ...(e.state === "task" ? [String(task ?? "none").replace(/[^\w.-]/g, "_")] : []));
+  const dir = join(cfg.stateDir, kind, ...(e.state === "task" ? [String(task ?? "none").replace(/[^\w.-]/g, "_").replace(/^\.*$/, "_")] : []));
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   for (const f of e.reset ?? []) rmSync(join(dir, f), { recursive: true, force: true });
   const built = skills.length ? buildSkills(cfg.stateDir, skills) : undefined;

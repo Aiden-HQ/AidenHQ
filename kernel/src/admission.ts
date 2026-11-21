@@ -45,9 +45,11 @@ export type Wake = { task: string; agent: string; cause: string; at?: number };
 export type Wakes = {
   /** The wake, if this module claimed it and no job is bound to it yet. Synchronous: it runs inside the admission transaction. */
   claimed(module: string, key: string): Wake | undefined;
-  /** The admitted job is this wake's (at most one job per wake). A job starting on the task ends the agent's own wait
-   * (idle.ts): its open timed wakes are dropped, and their keys returned. */
-  bind(key: string, job: string): string[];
+  /** The admitted job is this wake's (at most one job per wake). */
+  bind(key: string, job: string): void;
+  /** A job that started on the task ends the agent's own wait (idle.ts): its open timed wakes are dropped, and their keys
+   * returned. Only once the job is running: a deferred job leaves the waits armed. */
+  endWaits(key: string): string[];
   /** No job came of it (deferred): no job bound, claimable again by the same module at once. */
   unclaim(key: string): void;
 };
@@ -55,8 +57,8 @@ export type Wakes = {
 /** The kernel's wake inbox (wakes.ts's table) as admission uses it. */
 export const wakeInbox = (db: DatabaseSync): Wakes => ({
   claimed: (module, key) => db.prepare("SELECT task, agent, cause, at FROM wakes WHERE key = ? AND state = 'claimed' AND claimed_by = ? AND job IS NULL").get(key, module) as Wake | undefined,
-  bind: (key, job) => {
-    db.prepare("UPDATE wakes SET job = ? WHERE key = ?").run(job, key);
+  bind: (key, job) => { db.prepare("UPDATE wakes SET job = ? WHERE key = ?").run(job, key); },
+  endWaits: (key) => {
     const waits = db.prepare("SELECT key FROM wakes WHERE task = (SELECT task FROM wakes WHERE key = ?) AND state = 'open' AND key LIKE 'wait:%' AND key != ?").all(key, key) as { key: string }[];
     for (const w of waits) db.prepare("UPDATE wakes SET state = 'dropped', until = NULL WHERE key = ?").run(w.key);
     return waits.map((w) => w.key);
@@ -188,9 +190,8 @@ export function createAdmission({ db, grants, kinds, capacity, pool, spend, mayD
       const fresh = asked?.fresh === true;
       db.prepare("INSERT INTO jobs (id, module, agent, task, engine, pid, log, dir, at, jobcaps, observing, live_input, state, profile, wake, authority, routine, routine_cap, identifier) VALUES (?, ?, ?, ?, ?, 0, '', '', ?, ?, 0, 0, 'admitted', ?, ?, ?, ?, ?, ?)")
         .run(id, module, agent, task, authority.engine, Date.now(), JSON.stringify(authority.jobcaps), authority.profile, b.wake, JSON.stringify(authority), cap?.routine ?? null, cap?.cap ?? null, identifier);
-      const ended = wakes.bind(b.wake, id);
+      wakes.bind(b.wake, id);
       const at = Date.now();
-      for (const k of ended) fact({ type: "wake.dropped", subject: `wake:${k}`, version: "dropped", at: iso(at), actor: "kernel", task, data: { why: "the task's next job started" } });
       fact({ type: "job.queued", subject: `job:${id}`, version: "queued", at: iso(at), actor: `agent:${keyOf(agent)}`, task, data: { wake: b.wake, wake_at: iso(w.at ?? at), agent: keyOf(agent) } });
       fact({ type: "wake.bound", subject: `wake:${b.wake}`, version: `bound:${id}`, at: iso(at), actor: "kernel", task, data: { job: id } });
       db.exec("COMMIT");
@@ -230,6 +231,12 @@ export function createAdmission({ db, grants, kinds, capacity, pool, spend, mayD
     }
     launching.delete(id);
     nextTurn.taken(task);
+    // The job is running: its waits and their facts end together, and a failure here never fails the admission.
+    try {
+      inTx(db, "waits_end", () => { for (const k of wakes.endWaits(b.wake)) fact({ type: "wake.dropped", subject: `wake:${k}`, version: "dropped", at: iso(Date.now()), actor: "kernel", task, data: { why: "the task's next job started" } }); });
+    } catch (e) {
+      log("a started job's waits stay armed", { job: id, task, err: (e as Error).message });
+    }
     return view(id);
   }
 

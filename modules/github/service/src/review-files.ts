@@ -4,7 +4,8 @@
 // Canonical copy: services/shared/review-files.ts. Byte-identical copies (scripts/sync-shared.ts): the reviewer module's
 // (modules/ai-reviewer/service/src/review-files.ts) and the code host's, whose plan reads the files (codehost-local's too).
 
-/** Inert media: named to the reviewer with type and size, never escalated for being unseen. */
+/** Inert media: named to the reviewer with type and size, never escalated for being unseen. Only a file that decodes as binary
+ * (a NUL or invalid UTF-8) counts: plain text under a media name is shown like any other file. */
 const MEDIA = /\.(png|jpe?g|gif|webp|avif|bmp|ico|tiff?|heic|woff2?|ttf|otf|eot|mp3|wav|ogg|oga|flac|aac|m4a|mp4|m4v|mov|webm|avi|mkv|pdf)$/i;
 /** Executables and opaque containers: always escalated, whatever their content looks like. */
 const OPAQUE = /\.(so|dylib|dll|exe|bin|wasm|jar|war|class|node|o|a|pyc|zip|tar|gz|tgz|bz2|xz|zst|7z|rar|whl|deb|rpm|dmg|apk)$/i;
@@ -29,7 +30,7 @@ export function fileContext(files: ChangedFile[]): { list: FileEntry[]; leftOut:
     if (OPAQUE.test(f.name) || EXECUTABLE.test(f.text) || (f.text.includes("\u0000") && !MEDIA.test(f.name))) {
       list.push({ name: f.name, note: `(${f.name}: executable or opaque binary, not shown)` });
       leftOut.push(`${f.name} (binary, ${Buffer.byteLength(f.text)} bytes)`);
-    } else if (MEDIA.test(f.name)) list.push({ name: f.name, note: `(${f.name}: binary, not shown; ${f.name.match(MEDIA)![1]!.toLowerCase()} file, about ${Math.ceil(Buffer.byteLength(f.text) / 1024)} KB)` });
+    } else if (MEDIA.test(f.name) && /[\u0000\uFFFD]/.test(f.text)) list.push({ name: f.name, note: `(${f.name}: binary, not shown; ${f.name.match(MEDIA)![1]!.toLowerCase()} file, about ${Math.ceil(Buffer.byteLength(f.text) / 1024)} KB)` });
     else list.push({ name: f.name, text: f.text });
   }
   return { list, leftOut };

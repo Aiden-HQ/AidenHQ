@@ -63,6 +63,7 @@ function invalid(p) {
   if (!SCOPES.includes(scope)) return `scope is one of ${SCOPES.join(", ")}`;
   if (p.body === undefined && p.status === undefined && p.child === undefined && p.patch === undefined) return "send a body, a status, a patch or a child";
   if ((scope === "admin" || scope === "listed") && (p.status !== undefined || p.patch !== undefined || p.child !== undefined)) return `scope ${scope} writes a comment only`;
+  if (scope === "part" && (p.body !== undefined || p.status !== undefined || p.patch !== undefined)) return "scope part makes a task (child) only";
   if (scope === "part" && p.child?.assigneeAgentId === undefined) return "scope part makes a task assigned to the caller";
   if (p.body !== undefined && (typeof p.body !== "string" || !p.body.trim())) return "body must be text";
   if (p.status !== undefined && !STATUSES.includes(p.status)) return `status must be one of ${STATUSES.join(", ")}`;

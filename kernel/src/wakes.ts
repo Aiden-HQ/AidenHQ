@@ -215,7 +215,7 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
     const agent = box.has(issue.id) || (issue.identifier && box.has(issue.identifier)) ? null : issue.assigneeAgentId;
     const joined = agent ? polled().get(agent) : undefined;
     if (!agent || joined === undefined || grants()[agent]?.team) {
-      q("INSERT INTO wake_tasks (task, agent, status, blocked, polled) VALUES (?, ?, ?, ?, 0) ON CONFLICT(task) DO UPDATE SET agent = excluded.agent, status = excluded.status, blocked = COALESCE(excluded.blocked, blocked)").run(issue.id, agent ?? null, String(issue.status ?? ""), blockedKey(issue));
+      q("INSERT INTO wake_tasks (task, agent, status, blocked, polled) VALUES (?, ?, ?, ?, 0) ON CONFLICT(task) DO UPDATE SET agent = excluded.agent, status = excluded.status, blocked = COALESCE(excluded.blocked, blocked), polled = 0").run(issue.id, agent ?? null, String(issue.status ?? ""), blockedKey(issue));
       if (agent && joined !== undefined) return serial(() => place(issue, agent));
       return;
     }

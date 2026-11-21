@@ -612,8 +612,13 @@ export async function openAccounts(o: AccountsOptions) {
       const ownerEmail = o.ownerEmail?.()?.trim().toLowerCase();
       if (ownerEmail && input.email.trim().toLowerCase() !== ownerEmail) throw new AccountError(400, "the owner's account is settings.owner_email");
       if (!accounts.setupOpen(token)) throw new AccountError(410, "this setup link was used or has expired");
+      const spent = db.prepare("SELECT hash, expires FROM setup_token").get() as { hash: string; expires: number };
       db.exec("DELETE FROM setup_token");
-      const account = await create({ ...input, role: "admin", owner: true });
+      // A refused account (a weak password, a taken email) hands the link back.
+      const account = await create({ ...input, role: "admin", owner: true }).catch((e: unknown) => {
+        if (!accounts.hasAdmin() && !db.prepare("SELECT 1 FROM setup_token").get()) db.prepare("INSERT INTO setup_token (hash, expires) VALUES (?, ?)").run(spent.hash, spent.expires);
+        throw e;
+      });
       log.info({ account: account.id }, "owner account created on the first-run page");
       return account;
     },
