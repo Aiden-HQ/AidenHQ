@@ -6,7 +6,8 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { admit, dockerRunArgs, mcpBlock, stale, CODEX_CONFIG_SCRUB, checkoutDest, UNTAR_SCRIPT } from "../lib.ts";
+import { admit, dockerRunArgs, mcpBlock, stale, CODEX_CONFIG_SCRUB, checkoutDest, UNTAR_SCRIPT, forwardModel } from "../lib.ts";
+import http from "node:http";
 
 test("the box's Codex config lists only granted connections, through the gateway, keyed by the job token", () => {
   const conns = { apps: { tool_timeout_sec: 600 }, slack: { tool_timeout_sec: 300 }, paperclip_tasks: { tool_timeout_sec: 300 } };
@@ -95,4 +96,16 @@ test("repo-checkout sends the job's own token to the gateway", () => {
   assert.notEqual(none.status, 0);
   assert.match(none.stderr, /no job token/);
   rmSync(dir, { recursive: true, force: true });
+});
+
+test("a model call goes on with the box's token, and the Anthropic format's version and beta headers (Claude Code)", async () => {
+  const seen: http.IncomingHttpHeaders[] = [];
+  const up = http.createServer((q, r) => { seen.push(q.headers); q.resume(); q.on("end", () => r.writeHead(200).end("{}")); });
+  await new Promise<void>((ok) => up.listen(0, "127.0.0.1", ok));
+  const front = http.createServer((q, r) => void forwardModel(q, r, `http://127.0.0.1:${(up.address() as { port: number }).port}/api/v1/messages`, "ahqj_t"));
+  await new Promise<void>((ok) => front.listen(0, "127.0.0.1", ok));
+  const res = await fetch(`http://127.0.0.1:${(front.address() as { port: number }).port}/api/v1/messages?beta=true`, { method: "POST", headers: { authorization: "Bearer x", "anthropic-version": "2023-06-01", "anthropic-beta": "claude-code-20250219", "x-other": "1" }, body: "{}" });
+  assert.equal(res.status, 200);
+  assert.deepEqual([seen[0]!.authorization, seen[0]!["anthropic-version"], seen[0]!["anthropic-beta"], seen[0]!["x-other"]], ["Bearer ahqj_t", "2023-06-01", "claude-code-20250219", undefined]);
+  up.close(); front.close();
 });
