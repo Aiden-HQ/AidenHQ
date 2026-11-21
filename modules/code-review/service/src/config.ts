@@ -6,17 +6,17 @@
 // `models`: the short list the board and the Reviewer Manager offer for each (any other OpenRouter id may be typed; the gateway
 // refuses one models-openrouter doesn't price).
 export const ENGINES = {
-  codex: { label: "Codex", efforts: ["minimal", "low", "medium", "high", "xhigh"], run_usd: 1,
+  codex: { label: "Codex", efforts: ["minimal", "low", "medium", "high", "xhigh"], run_usd: 5,
     models: ["~deepseek/deepseek-flash-latest", "~openai/gpt-luna-latest", "~openai/gpt-sol-latest", "deepseek/deepseek-v4-pro", "z-ai/glm-5.3"] },
-  "claude-code": { label: "Claude Code", efforts: ["low", "medium", "high", "xhigh", "max"], run_usd: 2,
+  "claude-code": { label: "Claude Code", efforts: ["low", "medium", "high", "xhigh", "max"], run_usd: 5,
     models: ["anthropic/claude-sonnet-5.5", "anthropic/claude-opus-5.5", "anthropic/claude-haiku-5.5"] },
-  codegenie: { label: "Codegenie", efforts: ["low", "medium", "high", "xhigh", "max"], run_usd: 1,
+  codegenie: { label: "Codegenie", efforts: ["low", "medium", "high", "xhigh", "max"], run_usd: 5,
     models: ["~deepseek/deepseek-flash-latest", "~openai/gpt-luna-latest", "~openai/gpt-sol-latest", "z-ai/glm-5.3"] },
 } as const;
 export type Engine = keyof typeof ENGINES;
 
-/** One review run's reviewer: its engine, model and effort, and the most the run may spend (its reservation and its model token's
- * cap; the engine's default when unset: codex and codegenie $1, claude-code $2). */
+/** One review run's reviewer: its engine, model and effort, and the most the run may spend (its model token's hard
+ * cap; the engine's default when unset: $5). */
 export type Combo = { engine: Engine; model: string; effort: string; run_usd: number };
 /** The moments a repo is reviewed at. */
 export const MOMENTS = ["on_open", "on_push"] as const;
@@ -33,11 +33,11 @@ export type Config = { repos: Repo[]; day_usd: number; errors: string[] };
 
 export const DEFAULT_MODEL = "~deepseek/deepseek-flash-latest";
 export const REPO_DEFAULTS: Omit<Repo, "repo"> = {
-  on_open: [{ engine: "codex", model: DEFAULT_MODEL, effort: "medium", run_usd: 1 }],
-  on_push: [{ engine: "codex", model: DEFAULT_MODEL, effort: "low", run_usd: 1 }],
-  drafts: false, forks: "manual", day_usd: 100, ignore: [], max_nits: 5,
+  on_open: [{ engine: "codex", model: DEFAULT_MODEL, effort: "medium", run_usd: 5 }],
+  on_push: [{ engine: "codex", model: DEFAULT_MODEL, effort: "low", run_usd: 5 }],
+  drafts: false, forks: "manual", day_usd: 200, ignore: [], max_nits: 5,
 };
-export const INSTANCE_DAY_USD = 100;
+export const INSTANCE_DAY_USD = 200;
 /** The most combos one moment (or one ask) runs. */
 export const MAX_COMBOS = 4;
 
