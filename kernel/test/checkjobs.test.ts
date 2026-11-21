@@ -115,7 +115,7 @@ test("checks: a recipe is the installed module's: unknown runs and bad specs are
 
 test("checks: the eval runs by the judging rules and its receipt binds judge and policy", async () => {
   const ok = (expect) => JSON.stringify({ expect });
-  const base = { "modules/ai-reviewer/scripts/reviewer-eval.ts": "JUDGE", "modules/ai-reviewer/test/case-pad.ts": "pad", "modules/ai-reviewer/service/src/aidenhq-sdk/pass-rule.ts": "rule" };
+  const base = { "modules/ai-reviewer/scripts/reviewer-eval.ts": "JUDGE", "modules/ai-reviewer/test/case-pad.ts": "pad", "modules/ai-reviewer/service/src/aidenhq-sdk/pass-rule.ts": "rule", "modules/ai-reviewer/test/retired-cases.json": "[]" };
   for (let i = 0; i < 20; i++) base[`${CASES}/c${i}.json`] = ok(i ? "approve" : "reject");
   const subject = { ...base, "modules/ai-reviewer/scripts/reviewer-eval.ts": "FORGED", [`${CASES}/c0.json`]: ok("approve"), [`${CASES}/new.json`]: ok("reject") };
   delete subject[`${CASES}/c1.json`];
@@ -176,7 +176,7 @@ test("checks: each end of a check is a check.ended fact, a re-run's too", async 
 
 const evalSpec = { repo: "acme/aidenhq", judge_commit: J, subject_commit: J, cases_from: J, policy_hash: "abc1234" };
 const evalTree = () => {
-  const t = { "modules/ai-reviewer/scripts/reviewer-eval.ts": "JUDGE", "modules/ai-reviewer/test/case-pad.ts": "pad", "modules/ai-reviewer/service/src/aidenhq-sdk/pass-rule.ts": "rule" };
+  const t = { "modules/ai-reviewer/scripts/reviewer-eval.ts": "JUDGE", "modules/ai-reviewer/test/case-pad.ts": "pad", "modules/ai-reviewer/service/src/aidenhq-sdk/pass-rule.ts": "rule", "modules/ai-reviewer/test/retired-cases.json": "[]" };
   for (let i = 0; i < 3; i++) t[`${CASES}/c${i}.json`] = JSON.stringify({ expect: "approve" });
   return { [J]: t };
 };

@@ -3,7 +3,7 @@
 // at the missing key).
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { appendFileSync, cpSync, mkdtempSync, rmSync } from "node:fs";
+import { appendFileSync, cpSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, it } from "node:test";
@@ -30,4 +30,14 @@ it("a passing run covers the same content; a changed file or --force runs it aga
   const changed = run();
   assert.equal(changed.status, 2);
   assert.match(changed.stderr, /OPENROUTER_API_KEY is not set/);
+});
+
+it("a case the owner retired (the base's test/retired-cases.json) doesn't run, in either version; the list must be well-formed", async () => {
+  const { isRetired, retiredCases } = await import("../scripts/reviewer-eval.ts");
+  const r = retiredCases(JSON.stringify([{ case: "data-mount-hides-image-folders", reason: "reliability moved to code review", approved_by: "owner", date: "2026-11-21" }]));
+  assert.equal(isRetired("data-mount-hides-image-folders.json", r), true);
+  assert.equal(isRetired("data-mount-hides-image-folders.head.json", r), true);
+  assert.equal(isRetired("data-mount-hides-image-folders-2.json", r), false);
+  assert.throws(() => retiredCases(JSON.stringify([{ case: "x", reason: "r", approved_by: "agent", date: "2026-11-21" }])), /approved_by: "owner"/);
+  assert.equal(retiredCases(readFileSync(join(import.meta.dirname, "retired-cases.json"), "utf8")).size >= 0, true);
 });

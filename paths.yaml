@@ -74,6 +74,11 @@ paths:
     repo: any
     owner_role: platform-engineer
     patterns: [ .github/supply-chain-source-exceptions.yaml ]
+  # The reviewer eval's retired cases (modules/ai-reviewer/test/retired-cases.json): a retired case no longer guards the gate,
+  # so retiring one is the owner's decision alone; the judge reads the list from the base, so it lands in its own PR first.
+  - sensitivity: 2
+    owner_role: platform-engineer
+    patterns: [ modules/ai-reviewer/test/retired-cases.json ]
   # The board's screens: a change here gets a design review (no tier of its own).
   - sensitivity: 0
     owner_role: platform-engineer
