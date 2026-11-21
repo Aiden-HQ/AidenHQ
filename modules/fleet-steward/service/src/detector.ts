@@ -43,7 +43,7 @@ type QualityRow = { name: string; state: "none" | "ok" | "unknown"; checks?: { n
 /** An app-supplied name reduced to a short slug (a-z, 0-9, - and _). */
 const slug = (v: unknown) => String(v ?? "").toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "unnamed";
 
-/** A routine's title for a line the owner reads: its own words, minus anything but letters, digits and light punctuation, at most 60. */
+/** A routine's title for a line the chief of staff reads: its own words, minus anything but letters, digits and light punctuation, at most 60. */
 const plain = (v: unknown) => String(v ?? "").replace(/[^\w .:-]+/g, " ").trim().slice(0, 60);
 
 export function qualityFindings(apps: QualityRow[], openKeys: string[]): Incident[] {
@@ -98,7 +98,7 @@ export function failingRoutines(jobs: JobRow[], since: Record<string, string> = 
 
 /** `critical`: an outage or a critical alert, which wakes Fleet Ops at once; the rest wait for the next quiet-gap fire. */
 export interface Incident { key: string; reason: string; critical?: boolean }
-/** `told`: the owner was told the Steward is unreachable (unfiled a day); `jammed`: told the gate stayed jammed (open two hours). Each once, apart. */
+/** `told`: the owner was told the Steward is unreachable (unfiled a day); `jammed`: the chief of staff was told the gate stayed jammed (open two hours). Each once, apart. */
 interface Open { reason: string; at: string; fired: boolean; told?: boolean; jammed?: boolean; critical?: boolean }
 interface State { open: Record<string, Open>; recovered: { key: string; reason: string; at: string; fired: boolean }[] }
 
@@ -221,7 +221,7 @@ const QUEUE_MS = HOUR_MS; // an agent's tasks held on capacity this long (the ol
 const REVIEW_STALL_MS = 15 * MIN; // a card with the AI reviewer, undecided this long (a review normally takes seconds to a few minutes)
 const REVIEW_GATE_MS = 90 * MIN; // a PR the merge queue holds for code review's verdict with no job on the task, twice a review run's 45-minute limit
 const UNRESUMED_MS = HOUR_MS; // a task still waiting on an answer that arrived this long ago
-const GATE_ESCALATE_MS = 2 * HOUR_MS; // a jammed gate's flag still open this long after it was raised goes to the owner (tick's own line)
+const GATE_ESCALATE_MS = 2 * HOUR_MS; // a jammed gate's flag still open this long after it was raised goes to the chief of staff (tick's `jam`)
 const JAMMED = /^(gate|unresumed|review-stall):/;
 const MAX_LOOKUPS = 20;
 /**
@@ -472,7 +472,7 @@ export function checks(d: { kernel: KernelClient; kv: Kv; pause: (routine: strin
   };
   /** Tasks a component incident explains this run: their own incidents are not raised anew (one already open stays until it recovers). */
   let explained = new Set<string>();
-  // An owner notice per incident, recorded as told only once it went out: a failed send is tried again on the next check, and
+  // A notice per incident (a task for the chief of staff, main.ts toChief), recorded as told only once it went out: a failed send is tried again on the next check, and
   // forgotten when the incident is gone, so its next occurrence is told again.
   const told = (): string[] => JSON.parse(d.kv.get("owner_told") ?? "[]");
   const announce = async (key: string, text: string) => {
@@ -577,7 +577,7 @@ export function checks(d: { kernel: KernelClient; kv: Kv; pause: (routine: strin
           await d.pause(routine);
           since[routine] = new Date(t).toISOString();
           d.kv.set("routine_paused_at", JSON.stringify(since));
-          await d.notify?.(`Routine paused: ${plain(row.title)} failed ${failures} runs in a row. Ask Aiden to resume it once it's fixed.`, `routine-paused:${routine}`).catch(() => {});
+          await d.notify?.(`Routine paused: ${plain(row.title)} failed ${failures} runs in a row. Resume it once its cause is fixed.`, `routine-paused:${routine}`).catch(() => {});
         }
         out.push({ key: routine, reason: `routine ${plain(row.title)}: its last ${failures} runs failed${row.status === "paused" ? " (paused until the owner resumes it)" : ""}` });
       }

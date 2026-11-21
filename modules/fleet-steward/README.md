@@ -7,7 +7,8 @@ down, and settles stuck work itself (role `fleet-settle`): it answers a wait nob
 fixes why it got stuck (a handbook rule, a product bug, a capability to build). It reviews other agents' outcomes (the
 Agent Coach), keeps your notes, the people directory and agents' memory tidy (the Librarian), and tunes routing. Code,
 handbook and config fixes go through the usual approval tiers. You hear from it only for a sign-in or credential only you
-hold, or a security signal.
+hold, a security signal, or the Steward itself unreachable for a day; every other fleet notice (a stalled dispatch, a
+paused routine, a component down, a critical alert, a jammed gate) is a task for your chief of staff.
 
 ## Connect
 

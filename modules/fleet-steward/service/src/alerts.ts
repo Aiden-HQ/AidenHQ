@@ -1,7 +1,7 @@
 // Monitoring alerts (modules/monitoring, docs/design/monitoring.md). Alertmanager posts its webhook here (POST /alerts, on the
 // network only it and this service share); firing alerts are kept until resolved, and the detector's `alert` group opens one
-// incident per alert and recovers it on resolve. A newly firing `severity: critical` alert also tells the owner in one fixed line.
-// An alert's label and annotation text is free text: it reaches the Steward only inside fence(), never the owner.
+// incident per alert and recovers it on resolve. A newly firing `severity: critical` alert also files one fixed line for the chief of staff (main.ts toChief).
+// An alert's label and annotation text is free text: it reaches the Steward only inside fence(), never the chief of staff's task.
 import { fence } from "./aidenhq-sdk/fence.ts";
 import type { Incident, Kv } from "./detector.ts";
 
@@ -33,8 +33,8 @@ export function firing(kv: Pick<Kv, "get">): Firing {
 }
 
 /**
- * What the owner reads for each critical rule (modules/monitoring/prometheus/rules.yml): fixed sentences, never alert text.
- * Label and annotation values can carry names an agent's app chose, so none of them reaches the owner's channel.
+ * What the chief of staff reads for each critical rule (modules/monitoring/prometheus/rules.yml): fixed sentences, never alert text.
+ * Label and annotation values can carry names an agent's app chose, so none of them reaches its task.
  */
 const OWNER_SENTENCE: Record<string, string> = {
   disknearlyfull: "a disk on the host is nearly full",
@@ -44,7 +44,7 @@ const OWNER_SENTENCE: Record<string, string> = {
 
 /** Alertmanager's webhook body: firing alerts are kept (or updated), resolved ones dropped. */
 export function receiveAlerts(kv: Kv, alerts: Alert[], notify: (text: string) => Promise<void>, now = new Date()): Promise<{ firing: number }> {
-  // One call at a time (it reads the map, awaits the owner notices, writes the map back): overlapping calls would drop each
+  // One call at a time (it reads the map, awaits the notices, writes the map back): overlapping calls would drop each
   // other's alerts. The call's notices share one NOTICE_MS budget; one still unsent when it runs out counts as failed and is
   // tried again on the next webhook or tick, so a slow kernel can't hold the chain.
   const run = serial.then(() => {
@@ -67,7 +67,7 @@ async function applyAlerts(kv: Kv, alerts: Alert[], notify: (text: string) => Pr
     const severity = slug(a.labels.severity, 20) || "warning";
     // Free text (the rule's summary with label values in it): bounded here, fenced as data in the incident's reason.
     const summary = String(a.annotations.summary ?? a.annotations.description ?? "").slice(0, 300);
-    // The owner hears of a critical alert once, when it starts firing; the Steward works every alert. Marked told only once the
+    // The chief of staff hears of a critical alert once, when it starts firing; the Steward works every alert. Marked told only once the
     // notice went out: a kernel that was down is tried again on the next webhook or tick.
     let told = f[a.fingerprint]?.told;
     if (!told && severity === "critical") told = await notify(`Monitoring: ${name} (critical): ${OWNER_SENTENCE[name] ?? "a critical alert fired"}. The Fleet Steward is on it.`).then(() => true, () => false);
