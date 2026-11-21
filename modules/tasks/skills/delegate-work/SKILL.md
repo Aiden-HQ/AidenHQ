@@ -32,6 +32,9 @@ plus what to publish (`pr`). An Engineer's task tools reach its own task only, s
 - **Exact names.** Naming a repository never creates it: give the exact names (`local/<name>` for one on this server).
   A new app's repository is asked for explicitly: "create the repository `<agents org>/<app-name>` with
   `aidenhq create-repo`" (an approval card two AI reviewers check against the task). It holds the app starter on main.
+- **A writable target.** Before a `pr` brief names a repository, confirm it accepts a branch and a PR: an archived
+  repository is read-only and refuses the push, so a `pr` task aimed at one cannot finish. When the content has moved,
+  name the live copy and the path inside it.
 - **Only checks the repository runs.** Before a brief names a CI check, read that repository's workflows on its default
   branch and name a job that is there (`sed -n '/^jobs:/,$p' .github/workflows/*.yml | rg -N '^  [a-z][a-z0-9_-]*:$'`):
   the product repo runs `ci-required` (its `modules` job for the official modules), where `image-scan` is the product repo's and the app repos' that copied
