@@ -71,7 +71,7 @@ export type Admitted = { id: string; module: string; agent: string; task: string
 const LIVE = "state IN ('admitted', 'running')";
 const ID = /^[\w.:-]{1,200}$/;
 
-export function createAdmission({ db, grants, kinds, capacity, pool, spend, mayDispatch, cp, wakes, provenance, routineCap, nextTurn, launch, facts, log }: {
+export function createAdmission({ db, grants, kinds, capacity, pool, spend, mayDispatch, cp, wakes, provenance, routineCap, nextTurn, launch, release, facts, log }: {
   /** Flow's fact log (facts.ts): job.queued and wake.bound with a job's first start (jobs.ts queueFacts) or its couldn't-start end, job.held when it is refused or deferred. */
   facts?: Facts;
   /** What the task's last job asked of this turn (jobtools.ts): read in the transaction, spent once the job has started. */
@@ -97,6 +97,8 @@ export function createAdmission({ db, grants, kinds, capacity, pool, spend, mayD
   wakes: Wakes;
   /** Gets the job its computer and starts it (boxes.ts); a 503 means the computers are full: the job waits for the next tick. */
   launch: (job: Admitted) => Promise<void>;
+  /** Gives a job's box back (boxes.ts); a box the launcher can't take back now lapses with its lease. */
+  release: (job: string) => Promise<void>;
   log: (msg: string, fields?: Record<string, unknown>) => void;
 }) {
   // Strict: each fact is written in the transaction of the change it describes, which fails with it.
@@ -264,10 +266,15 @@ export function createAdmission({ db, grants, kinds, capacity, pool, spend, mayD
     },
     /**
      * Once the previous kernel has exited (main.ts afterPrevious: a draining kernel may still be launching what it admitted): a
-     * job admitted but never started by it never runs; its wake is given back. This process's own launches are never touched.
+     * job admitted but never started by it never runs; its box (it may have been cloning) goes back, then its wake. This
+     * process's own launches are never touched.
      */
-    recover() {
-      for (const r of db.prepare("SELECT id, wake FROM jobs WHERE state = 'admitted'").all() as { id: string; wake: string }[]) if (!launching.has(r.id)) defer(r.id, r.wake);
+    async recover() {
+      const rows = db.prepare("SELECT id, wake FROM jobs WHERE state = 'admitted'").all() as { id: string; wake: string }[];
+      await Promise.all(rows.filter((r) => !launching.has(r.id)).map(async (r) => {
+        await release(r.id).catch((e: Error) => log("couldn't release an abandoned launch's computer", { job: r.id, err: e.message }));
+        defer(r.id, r.wake);
+      }));
     },
     /** Launches in flight in this process (a drain waits for them). */
     inflight: () => launching.size,

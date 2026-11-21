@@ -141,7 +141,8 @@ export function createBoxes({ db, cfg, jobs, call, secret, whoami, connections, 
   /**
    * An engineer job's repositories: each one its task names that its dispatcher may clone, cloned by its box itself from the
    * code host's bundle (`aidenhq clone <org/name>` in the box, as the job) into /workspace/<name> on its default branch, before
-   * the run starts; one already there (<name> or <org>--<name>) is kept as it is. Host git and host fs writes never run in the
+   * the run starts; one already there (`--keep`: <name> or <org>--<name>, its origin this repo) is kept as it is; one
+   * whose origin is another repo, or none, is refused. Host git and host fs writes never run in the
    * workspace. A refusal is told to the job (its notes); a kernel or code host that can't answer now makes the launch a 503, so
    * admission tries again.
    */
@@ -149,8 +150,7 @@ export function createBoxes({ db, cfg, jobs, call, secret, whoami, connections, 
     const named = mentionedRepos(await clones.text(job.task)).filter((r) => clones.may(job.module, r)).slice(0, MAX_CLONES);
     const notes: string[] = [];
     for (const repo of named) {
-      const [org, name] = repo.split("/");
-      const r = await boxExec(box, ["sh", "-c", 'test -d "$1/.git" || test -d "$2/.git" || exec aidenhq clone "$3"', "sh", `/workspace/${name}`, `/workspace/${org}--${name}`, repo]);
+      const r = await boxExec(box, ["aidenhq", "clone", "--keep", repo]);
       const said = r.out.replace(/^aidenhq: /, "").slice(0, 200);
       if (r.code === 0) { log("repository cloned into the job's workspace", { job: job.id, repo }); continue; }
       if (r.code === CLONE_UNAVAILABLE) throw new JobError(503, "clone-failed", `${repo} couldn't be cloned now (${said})`);
@@ -198,17 +198,20 @@ export function createBoxes({ db, cfg, jobs, call, secret, whoami, connections, 
    * (`aidenhq cleanup`), unless a later job on the task is already admitted or running in it.
    */
   async function release(id: string) {
-    const r = db.prepare("SELECT task, box FROM jobs WHERE id = ? AND authority IS NOT NULL AND released IS NULL").get(id) as { task: string; box: string | null } | undefined;
+    const r = db.prepare("SELECT task, box, state FROM jobs WHERE id = ? AND authority IS NOT NULL AND released IS NULL").get(id) as { task: string; box: string | null; state: string } | undefined;
     if (!r?.box || db.prepare("UPDATE jobs SET released = -1 WHERE id = ? AND released IS NULL").run(id).changes !== 1) return;
     const { container, workspace } = JSON.parse(r.box) as Box & { workspace?: string };
-    if (workspace) await shareOutFiles(id, r.task, workspace);
+    // A job that never ran (still admitted: its launch failed or was abandoned) made no output; what is there is an earlier job's.
+    if (workspace && r.state !== "admitted") await shareOutFiles(id, r.task, workspace);
     try {
-      await call("/job/release", { container });
+      // A 2xx with the box still there (Docker didn't remove it) is no release: the claim goes back for the next tend.
+      const { state } = await call("/job/release", { container });
+      if (state !== "missing") throw new Error(`the computer launcher left ${container} ${String(state)}`);
     } catch (e) {
       db.prepare("UPDATE jobs SET released = NULL WHERE id = ? AND released = -1").run(id);
       throw e;
     }
-    if (workspace && cleanup(id) && existsSync(workspace) && !db.prepare("SELECT 1 FROM jobs WHERE task = ? AND state IN ('admitted', 'running')").get(r.task)) {
+    if (workspace && cleanup(id) && existsSync(workspace) && !db.prepare("SELECT 1 FROM jobs WHERE task = ? AND id != ? AND state IN ('admitted', 'running')").get(r.task, id)) {
       insideNoLinks(join(cfg.workDir, "tasks"), workspace, "workspace");
       rmSync(workspace, { recursive: true, force: true, maxRetries: 2 });
       log("job's workspace removed (aidenhq cleanup)", { job: id, workspace });
@@ -217,12 +220,15 @@ export function createBoxes({ db, cfg, jobs, call, secret, whoami, connections, 
     log("job's computer released", { job: id, container });
   }
 
-  /** Every few minutes and at start: live jobs' leases renewed, ended jobs' boxes released (retried until the launcher agrees). */
+  /**
+   * Every few minutes and at start: live jobs' leases renewed (an admitted one's too: its box is cloning before the run),
+   * ended jobs' boxes released (retried until the launcher agrees).
+   */
   async function tend() {
     const rows = db.prepare("SELECT id, task, state, box, renewed FROM jobs WHERE authority IS NOT NULL AND box IS NOT NULL AND released IS NULL").all() as { id: string; task: string; state: string; box: string; renewed: number | null }[];
     for (const r of rows) {
       try {
-        if (r.state !== "running") await release(r.id);
+        if (r.state !== "running" && r.state !== "admitted") await release(r.id);
         else if (now() - (r.renewed ?? 0) >= RENEW_MS) {
           await call("/job/renew", { container: (JSON.parse(r.box) as Box).container, issueId: r.task });
           db.prepare("UPDATE jobs SET renewed = ? WHERE id = ?").run(now(), r.id);
@@ -235,6 +241,8 @@ export function createBoxes({ db, cfg, jobs, call, secret, whoami, connections, 
 
   return {
     launch,
+    /** admission.ts recover: an abandoned launch's box goes (a launcher that can't answer throws). */
+    release,
     /** jobs.ts onEnd: the job is over, its box goes. */
     ended: (id: string) => void release(id).catch((e: Error) => log("couldn't release a job's computer", { job: id, err: e.message })),
     tend,

@@ -122,20 +122,45 @@ function docker(args: string[], opts: { stdin?: string; timeoutMs?: number } = {
 }
 // "missing" only when Docker says so: a daemon that doesn't answer is not a box that is gone (a job's release waits on this).
 const jobState = async (name: string) => {
-  const r = await docker(["inspect", "-f", "{{.State.Status}}", name]);
+  const r = await docker(["inspect", "-f", "{{.State.Status}}", name], { timeoutMs: 15_000 });
   if (r.exitCode === 0) return r.stdout.trim();
   return /no such (object|container)/i.test(r.stderr) ? "missing" : "unknown";
 };
 const ours = (name: unknown): name is string => typeof name === "string" && name.startsWith(CFG.prefix) && /^[a-z0-9-]+$/.test(name);
 const fail = (status: number, msg: string) => Object.assign(new Error(msg), { status });
 
-async function destroy(name: string, why: string) {
+// A box Docker didn't remove keeps its records (it still holds a slot, never picked to evict) and is tried again every minute
+// until it goes. Its token opens nothing from the start; while it is being removed it counts as busy, and every caller shares
+// the one removal in flight.
+const unremoved = new Set<string>();
+const removing = new Map<string, Promise<boolean>>();
+function destroy(name: string, why: string) {
+  let p = removing.get(name);
+  if (!p) {
+    p = remove(name, why).finally(() => removing.delete(name));
+    removing.set(name, p);
+  }
+  return p;
+}
+async function remove(name: string, why: string) {
+  const b = boxes.get(name);
+  if (b) b.busy++;
+  const j = jobs.get(name);
+  if (j?.tokenHash) { delete j.tokenHash; saveJobs(); }
+  const r = await docker(["rm", "-f", name], { timeoutMs: 30_000 });
+  if (r.exitCode !== 0 && (await jobState(name)) !== "missing") {
+    if (b) b.busy--;
+    unremoved.add(name);
+    log("couldn't destroy", name, why, r.stderr.trim());
+    return false;
+  }
+  unremoved.delete(name);
   boxes.delete(name);
   if (jobs.delete(name)) saveJobs();
   rmSync(path.join(jobEnvDir, `${name}.env`), { force: true });
   rmSync(path.join(jobEnvDir, name), { recursive: true, force: true });
-  await docker(["rm", "-f", name]);
   log("destroyed", name, why);
+  return true;
 }
 
 /** A kernel job's image, by the name its admission froze: one compile tagged (computers.json). */
@@ -144,15 +169,18 @@ async function imageNamed(name: unknown) {
   if (!tag) throw fail(400, `no computer image ${name} (computers.json)`);
   return builtImage(tag, docker, log);
 }
-/** A free slot for a new box: the least recently used idle box goes (never a leased job's); all busy → wait up to 45 s. */
+/**
+ * A free slot for a new box: the least recently used idle box goes (never a leased job's; one Docker didn't remove, the next is
+ * tried); all busy → wait. 45 s in all, so the kernel (120 s a call) is still waiting for the box this frees.
+ */
 async function makeRoom() {
-  for (let waited = 0; ; waited += 1000) {
+  for (const end = Date.now() + 45_000; ;) {
     const max = maxBoxes();
-    const evict = admit(boxes, max, held);
+    const evict = admit(boxes, max, (n) => held(n) || unremoved.has(n));
     if (evict === null) return;
-    if (evict !== "wait") return destroy(evict, "evicted (computers full)");
-    if (waited >= 45_000) throw fail(503, `all ${max} computers are busy; try again shortly`);
-    await new Promise((r) => setTimeout(r, 1000));
+    if (evict !== "wait" && (await destroy(evict, "evicted (computers full)"))) return;
+    if (Date.now() >= end) throw fail(503, `all ${max} computers are busy; try again shortly`);
+    if (evict === "wait") await new Promise((r) => setTimeout(r, 1000));
   }
 }
 const newName = () => CFG.prefix + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -426,6 +454,7 @@ const reaper = setInterval(() => {
   if (lapsed.length) saveJobs();
   for (const n of lapsed) destroy(n, "lease lapsed");
   for (const n of stale(boxes, CFG.idleMs, Date.now(), held)) destroy(n, "idle");
+  for (const n of unremoved) destroy(n, "removal retried");
 }, 60_000).unref();
 // A restart (ops/run-draining.sh): the next launcher is starting. This one stops reaping and saving (the next one adopts the
 // boxes from jobs.json) and closes its listeners so the next one can bind them; it serves only the calls it holds (a box's model
