@@ -76,6 +76,19 @@ function filingAskProblems(text) {
 
 const filingAskMessage = (file, section) => `${file}: the product-bug step "${section}" must tell the Steward to open the Maintainer task with an explicit 'File one GitHub issue on the product repository' ask — the filing card is refused without it.`;
 
+/**
+ * Every memory-proposal step that asks for a `task_propose_rule` without naming the instance repository: the Engineer job
+ * clones only the repositories its task names, so the proposal closes with the memory file untouched.
+ */
+function memoryProposalProblems(text) {
+  return sections(text)
+    .filter((section) => section.includes("task_propose_rule") && /memory:/.test(section))
+    .filter((section) => !(/(agents org|instance repo|instance's)/i.test(section) && /aidenhq-instance/.test(section)))
+    .map((section) => section.split("\n").find((line) => line.trim())?.replace(/^\W+\s*/, "").slice(0, 60) ?? "section");
+}
+
+const memoryProposalMessage = (file, section) => `${file}: the memory-proposal step "${section}" must name the instance repository (\`<agents org>/aidenhq-instance\`): a job clones only the repositories its task names, so the proposal closes with the memory file unchanged.`;
+
 const nudgeMessage = (file, p) => `${file}: the section "${p.section}" nudges an open task's agent without ${p.missing.join(" and ")}: state that work reaches an Engineer only through a status write on its own task (handed to the chief of staff or its assignee when the board refuses), and that a second task is never filed for the same PR because the branch exists only in the task that pushed it`;
 
 const message = (file, p) => `${file}: the section "${p.section}" names \`aidenhq close\` without ${p.missing.join(" and ")}: state that aidenhq close reaches only the agents org, the repos listed in maintainer_repos and the product repo's Dependabot PRs, and that an outside-scope PR is the owner's (no close task; the digest and one \`outside-close-scope\` log line)`;
@@ -139,6 +152,21 @@ test("the lint bites: the old nudge, with no reachable path, fails with the fix;
 test("a fleet skill's product-bug step must ask for the issue to be filed", () => {
   const problems = filingAskProblems(fleetCheck).map((s) => filingAskMessage("fleet-check/SKILL.md", s));
   assert.deepEqual(problems, []);
+});
+
+test("a fleet skill's memory-proposal step must name the instance repository", () => {
+  const daily = readFileSync(new URL("knowledge-daily/SKILL.md", skills), "utf8");
+  const problems = memoryProposalProblems(daily).map((s) => memoryProposalMessage("knowledge-daily/SKILL.md", s));
+  assert.deepEqual(problems, []);
+});
+
+test("the memory-repository lint bites: the old bullet fails with the fix", () => {
+  const old = "- The new memory is one fact per line, each ending `(source, date)`, at most 4 KB (4096 bytes). Propose it with one\n  `task_propose_rule` per agent (marker `memory:<agent key>:<date>`, title \"Memory update: <agent>\"), the description\n  holding the agent key and the exact full new text of `agents/<key>/memory.md`, fact lines only (compile adds the\n  heading). Nothing changed, no proposal.\n";
+  const problems = memoryProposalProblems(old);
+  assert.equal(problems.length, 1);
+  assert.match(memoryProposalMessage("old", problems[0]), /must name the instance repository/);
+  const replacement = old.replace("holding the agent key", "holding the agent key, the target repository `<agents org>/aidenhq-instance`");
+  assert.deepEqual(memoryProposalProblems(replacement), []);
 });
 
 test("the filing-ask lint bites: the step without the ask fails with the fix", () => {

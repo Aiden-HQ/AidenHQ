@@ -28,7 +28,7 @@ export const SERVICE_KEY = process.env.MCP_TOKEN || fileSecret(process.env.MCP_T
 
 /** The call in flight: { caller, assertion, dir, company, memo }. */
 export const als = new AsyncLocalStorage<Ctx>();
-interface Dir { agents: Record<string, Json>; log_tasks: string[] }
+interface Dir { agents: Record<string, Json>; log_tasks: string[]; repos?: { instance?: string } }
 interface Ctx { caller: Caller; assertion: string; dir: Dir; company?: string; memo: Map<string, Json> }
 const cx = () => {
   const c = als.getStore();
@@ -53,7 +53,7 @@ export async function directory(): Promise<Dir> {
     const res = await fetch(`${KERNEL}/v1/agents`, { headers: { authorization: `Bearer ${SERVICE_KEY}` }, signal: AbortSignal.timeout(10_000) });
     if (!res.ok) throw new Error(String(res.status));
     const j = await res.json();
-    dirCache = { agents: j.agents ?? {}, log_tasks: j.log_tasks ?? [] };
+    dirCache = { agents: j.agents ?? {}, log_tasks: j.log_tasks ?? [], ...(j.repos && typeof j.repos === "object" ? { repos: j.repos } : {}) };
     dirAt = Date.now();
   } catch (err) {
     if (!dirCache) throw new Error(`Refused: the agent directory is unavailable (${String((err as Error).message ?? err).slice(0, 100)}).`);
@@ -1040,6 +1040,14 @@ const TOOLS: Record<string, Tool> = {
     run: async ({ title, description, marker }: Args) => {
       await requireRole("librarian", "propose rules");
       if (!COMPANY()) throw new Error("no company for this agent");
+      // A memory proposal names the instance repo: an Engineer job clones only the repositories its task names, and the
+      // memory file lives nowhere else, so a proposal without it closes with the file unchanged.
+      if (/^memory:/i.test(String(marker ?? "").trim().replace(/^(source:)+/i, ""))) {
+        const instance = cx().dir.repos?.instance;
+        if (!instance) throw new Error("a memory proposal needs the instance repository, and this kernel's directory names none");
+        if (!String(description ?? "").toLowerCase().includes(instance.toLowerCase()))
+          throw new Error(`A memory proposal must name ${instance} so the job clones it; otherwise the file is never written.`);
+      }
       const me = await api("GET", "/api/agents/me");
       const all = await api("GET", `/api/companies/${encodeURIComponent(COMPANY())}/agents`);
       const engineer = all.find((a: Json) => a.status !== "terminated" && (dirAgents()[a.id]?.roles ?? []).includes("platform-engineer"));

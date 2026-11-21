@@ -13,7 +13,7 @@ const listen = (handler) => new Promise((ok) => { const s = createServer(handler
 const url = (s) => `http://127.0.0.1:${s.address().port}`;
 const read = async (req) => { let b = ""; for await (const c of req) b += c; return b; };
 
-let current = { handler: () => {}, board: undefined, directory: { agents: {} }, states: {} };
+let current = { handler: () => {}, board: undefined, directory: { agents: {} }, states: {}, repos: undefined };
 /** Requests the kernel forwarded to the control plane, with the assertion and module key they came with. */
 export const cpSeen = [];
 
@@ -34,7 +34,7 @@ const kernel = await listen(async (req, res) => {
   if (u === "/v1/agents") {
     if (!moduleKey) return send(401, {});
     const agents = Object.fromEntries(Object.entries(current.directory.agents).map(([id, g]) => [id, Object.fromEntries(DIRECTORY.filter((k) => g[k] !== undefined).map((k) => [k, g[k]]))]));
-    return send(200, { agents });
+    return send(200, { agents, ...(current.repos ? { repos: current.repos } : {}) });
   }
   if (u.startsWith("/v1/tasks/state?ids=")) {
     if (!moduleKey) return send(401, {});
@@ -81,8 +81,8 @@ export async function rpc(msg, headers = {}) {
  * every gate passes), `agents` the grants table the directory comes from, `states` the kernel's task state rows by task id, `agent` the caller (its key, roles and trial from
  * `agents`), `task`/`run` what the kernel knows of its run. call(name, args) resolves with the JSON-RPC reply ({ result }).
  */
-export function bridge({ handler, board, agents = {}, agent = "me", task, run, states = {} }) {
-  current = { handler, board, directory: { agents }, states };
+export function bridge({ handler, board, agents = {}, agent = "me", task, run, states = {}, repos }) {
+  current = { handler, board, directory: { agents }, states, repos };
   forget();
   const g = agents[agent] ?? {};
   const caller = { agent, key: g.key ?? agent, roles: [...(g.roles ?? []), ...(g.trial ? ["kernel.trial"] : [])], task, run };
