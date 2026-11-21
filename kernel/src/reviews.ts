@@ -143,9 +143,9 @@ export function createReviews({ slot, secret, resolver, modelToken, timeoutMs = 
             const chunks: Buffer[] = [];
             res.on("data", (c: Buffer) => chunks.push(c));
             res.on("end", () => {
-              let j: { instance?: unknown } = {};
-              try { j = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}") as { instance?: unknown }; } catch {}
-              ok((res.statusCode ?? 500) < 300 && typeof j.instance === "string" ? j.instance : undefined);
+              let j: { instance?: unknown } | null = null;
+              try { j = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}"); } catch {}
+              ok((res.statusCode ?? 500) < 300 && typeof j?.instance === "string" ? j.instance : undefined);
             });
             res.on("error", () => ok(undefined));
           });

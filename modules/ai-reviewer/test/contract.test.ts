@@ -123,17 +123,17 @@ test("a working review reports progress: the service beats the kernel as the rev
   assert.ok(beats.length > before, "the kernel saw a keepalive when the work advanced");
 });
 
-test("a hung model call reports no progress: no keepalive beats while the call waits", async () => {
+test("a hung model call stops reporting progress: one beat when the call starts, none while it waits", async () => {
   // Let the previous review's keepalive land, so only this call's progress can move the count.
   await new Promise((ok) => setTimeout(ok, 60));
   const before = beats.length;
   answers.push({ decision: "approve", reason_code: "in_scope", reason: "as asked", second_review: false });
-  // The gateway hangs for 140 ms: two beat intervals (40 ms each) pass with no answer at all.
+  // The gateway hangs for 140 ms: three beat intervals (40 ms each) pass with no answer at all.
   slowMs = 140;
   try {
     const asking = ask({ card, diff: "+x" });
     await new Promise((ok) => setTimeout(ok, 110));
-    assert.equal(beats.length, before, "the clock alone never keeps a hung call alive");
+    assert.equal(beats.length - before, 1, "the call starting is progress; the clock alone never keeps it alive");
     assert.equal((await asking).status, 200);
   } finally {
     slowMs = 0;

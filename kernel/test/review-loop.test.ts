@@ -46,12 +46,12 @@ async function side(t, file, module, { comments = [], grade, escalate, delegator
 /** The reviewer module: each review it accepts is kept ({ id, token, request }); `instance` is what its /healthz says now. */
 async function reviewer(t) {
   const seen = [];
-  const mod = { instance: "instance-1", healthDelay: 0, health: [] };
+  const mod = { instance: "instance-1", healthDelay: 0, health: [], healthBody: undefined };
   const m = await serve(async (req, res) => {
     if (req.method === "GET" && String(req.url).endsWith("/healthz")) {
       mod.health.push(req.url);
       if (mod.healthDelay) await new Promise((ok) => setTimeout(ok, mod.healthDelay));
-      return void res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ok: true, instance: mod.instance }));
+      return void res.writeHead(200, { "content-type": "application/json" }).end(mod.healthBody ?? JSON.stringify({ ok: true, instance: mod.instance }));
     }
     seen.push(JSON.parse(await readBody(req)));
     res.writeHead(202, { "content-type": "application/json" }).end(JSON.stringify({ accepted: true, instance: mod.instance }));
@@ -229,6 +229,22 @@ test("the restart probe asks the service's own /healthz, and a probe in flight n
   assert.ok(k.writes.retryAt(r.id) > Date.now(), "the lost one is retried by its backoff");
   await sweep;
   assert.deepEqual([...new Set(mod.mod.health)], ["/healthz"], "the service root, not the provider's review route");
+});
+
+test("a health answer that is no instance (null, a text ok) fails nothing: the stall window still carries the review", async (t) => {
+  const mod = await reviewer(t);
+  const k = await side(t, db(), mod, { timeoutMs: 60_000, stallMs: 30_000, probeMs: 0 });
+  const r = fileRecord(k.records);
+  const sweep = k.loop.tick();
+  await until(() => mod.seen.length === 1);
+  for (const body of ["null", "ok", '{"ok":true}']) {
+    mod.mod.healthBody = body;
+    assert.equal(await k.reviews.check(), 0, `a body of ${body} names no instance, so it is no restart signal`);
+  }
+  assert.equal(k.records.get(r.id).state, "review", "the live review is untouched");
+  assert.equal(k.reviews.verdict(mod.seen[0].id, mod.seen[0].token, OK), true);
+  await sweep;
+  await until(() => k.records.get(r.id).state === "done");
 });
 
 test("a reviewer service recreated mid-review fails its lost reviews at once, so the record is retried instead of waited out", async (t) => {
