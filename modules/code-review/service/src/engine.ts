@@ -626,7 +626,7 @@ export function createEngine(d: EngineDeps) {
       log("deepsec setup PR not asked for", { repo: r.repo, err: String((e as Error).message).slice(0, 300) });
       return `refused: ${String((e as Error).message).slice(0, 300)}`;
     });
-    const p = answer.then((a) => void run("UPDATE setups SET answer = ? WHERE repo = ?", a, r.repo));
+    const p = answer.then((a) => void run("UPDATE setups SET answer = ? WHERE repo = ?", a, r.repo)).catch((e) => log("deepsec setup answer not saved", { repo: r.repo, err: String((e as Error).message).slice(0, 200) }));
     setups.add(p);
     void p.finally(() => setups.delete(p));
   }
@@ -1146,7 +1146,8 @@ export function createEngine(d: EngineDeps) {
     },
     repos() {
       const c = d.config();
-      return { day_usd: c.day_usd, day_spent_usd: round(spent()), errors: c.errors,
+      // lenses: repo reviews are on (the board shows its New repo review form only then).
+      return { day_usd: c.day_usd, day_spent_usd: round(spent()), errors: c.errors, lenses: c.lenses,
         repos: c.repos.map((r) => {
           // Who posts there: the identity its last posted review went out as (the owner's sign-in).
           const identity = one<{ identity: string }>("SELECT identity FROM runs WHERE repo = ? AND identity IS NOT NULL ORDER BY ended DESC LIMIT 1", r.repo)?.identity ?? null;

@@ -10,7 +10,7 @@
 //                                        review of the whole tree at a commit (default: the default branch's head, resolved now)
 //   GET  /reviews/:batch/report          → the repo review's report (text/markdown), once it ended
 //   GET  /catalog?repo=&commit=          → { sha, options, recommended }   the options the repo's tree fits, and the commit
-//   GET  /repos                          → { repos (with today spend), day_usd, day_spent_usd, … }
+//   GET  /repos                          → { repos (with today spend), day_usd, day_spent_usd, lenses, … }
 //   GET  /engines                        → { engines }  each engine's efforts, offered models and default run cap
 //   GET  /github/repos?q=                → { repos }   repos the GitHub identity can read (the board's picker)
 //   POST /findings/dismiss { repo, number, id, reason, by? } → { dismissed }   the owner dismisses an open finding (the board)
