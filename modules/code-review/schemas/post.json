@@ -180,6 +180,11 @@
         "type": "string",
         "maxLength": 4000
        },
+       "evidence_from": {
+        "enum": [
+         "change"
+        ]
+       },
        "fix_brief": {
         "type": "string",
         "maxLength": 2000

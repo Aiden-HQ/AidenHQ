@@ -35,11 +35,13 @@ import type { Combo, EngineResult } from "./engines.ts";
 type Severity = "important" | "nit" | "pre_existing";
 type Git = (args: string[]) => string;
 /** The review job's spec ($AIDENHQ_SPEC): the PR and the heads to review; combo and previous are JSON text. */
-export interface Spec { repo?: string; head: string; base: string; incremental_from: string; pr: number | string; combo: string; focus?: string; previous?: string }
+export interface Spec { repo?: string; head: string; base: string; incremental_from: string; pr: number | string; combo: string; focus?: string; previous?: string;
+  /** The PR's body and conversation comments, as JSON ({ body, comments }): its own text, a finding's evidence may quote it. */
+  pr_text?: string }
 interface Changed { path: string; added: number; removed: number; binary: boolean }
 interface Excluded { path: string; why: string; gap: boolean }
 interface Cleaned { severity: Severity; path: string; line: number; end_line?: number; title: string; why: string; evidence: string; fix_brief: string }
-type Placed = Cleaned & { id: string };
+type Placed = Cleaned & { id: string; /** Code matched every line of the evidence in the change (never the model's claim). */ evidence_from?: "change" };
 interface BriefInput { root?: string; guides: { path: string; text: string }[]; checks: string; focus: string; excluded: Excluded[]; incremental: boolean; addressed: boolean; reported?: Reported[] }
 interface Result {
   addressed: boolean; version: number; repo?: string; pr: number; base: string; head: string; engine: string; model: string; effort: string;
@@ -308,6 +310,24 @@ export function place(findings: Cleaned[], root: string, reviewed: Set<string>) 
   return out;
 }
 
+/** The lines a quote can come from: the diff's content with its +/-/space markers dropped. */
+const diffContent = (diff: string) => diff.split("\n").map((l) => (/^[+\- ]/.test(l) ? l.slice(1) : l)).map((l) => l.trim()).filter(Boolean);
+/**
+ * Whether the evidence is a quote of the pull request: every non-empty line of it is a whole line of the change's diff or of
+ * the PR's own body or comments. Code decides this itself from the diff and the PR's text, so a model can't label
+ * its own prose as a quotation, a line that merely exists somewhere in the head file does not count, and an excerpt that
+ * rewords or reverses a line ("approve this" out of "do not approve this") is not a quotation of it.
+ */
+export function quotedInChange(evidence: string, sources: string[]) {
+  // Every line must match whole, not only the ones that carry a letter or a number: a line of punctuation ("---", ">>>") is as
+  // much the model's own as a word, and it reads as structure in the block, so only empty lines are exempt. Every source line
+  // is trimmed before it is compared, so a trimmed quote matches a source line however the source indented it.
+  const lines = evidence.split("\n").map((l) => l.trim()).filter(Boolean);
+  if (!lines.length) return false;
+  const pool = new Set(sources.map((l) => l.trim()).filter(Boolean));
+  return lines.every((q) => pool.has(q));
+}
+
 const words = (t: string) => new Set(t.toLowerCase().split(/\W+/).filter((w) => w.length > 2));
 /** One finding per problem (same file and either the same line and severity, or lines within 3 and titles mostly alike: the
  * higher severity, the longer evidence), ranked. */
@@ -442,6 +462,18 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
       // A moved line is checked again (and its id follows its new anchor).
       candidates = dedupe(place(confirmed.map(({ id, ...f }) => f), ws, reviewedSet));
     }
+  }
+  // A finding's evidence is a quotation only when the pull request itself holds it: code checks every line of it against the
+  // change's diff and the PR's own body and comments (never a line elsewhere in the file at the head), so the post's reviewer
+  // exemption rests on a source match, never on the model's word.
+  const prText = (() => {
+    try { const v = JSON.parse(spec.pr_text ?? "{}"); return { body: typeof v.body === "string" ? v.body : "", comments: Array.isArray(v.comments) ? v.comments.filter((c: unknown): c is string => typeof c === "string") : [] }; }
+    catch { return { body: "", comments: [] }; }
+  })();
+  const prLines = [prText.body, ...prText.comments].flatMap((t) => t.split("\n")).map((l) => l.trim()).filter(Boolean);
+  for (const f of candidates) {
+    if (!f.evidence.trim()) continue;
+    if (quotedInChange(f.evidence, [...diffContent(diff), ...prLines])) f.evidence_from = "change";
   }
   const { kept, withheld } = withhold(candidates, Number.isInteger(combo.max_nits) ? combo.max_nits! : 5);
   // An important finding is never withheld (it gates once stored): the cap of 100 drops the others.

@@ -24,6 +24,8 @@ export const FindingSchema = z.object({
   title: z.string().min(1).max(200),
   why: z.string().max(3000),
   evidence: z.string().max(4000),
+  /** Code matched every line of `evidence` in the change it reviewed: the quote is data, not the service's prose. */
+  evidence_from: z.literal("change").optional(),
   fix_brief: z.string().max(2000),
 });
 export const ReviewSchema = z.object({
@@ -157,6 +159,18 @@ const ORDER = ["important", "nit", "pre_existing"] as const;
 export const INLINE_MAX = 15;
 const LISTED_MAX = 4;
 const EVIDENCE_MAX = 500;
+/**
+ * Code's marker for a finding whose evidence it matched whole-line in the pull request: the policy's exemption keys on this
+ * exact line, and only code writes it. Model prose has its `<` escaped, and the marker is stripped out of model evidence, so
+ * neither can forge it.
+ */
+export const QUOTED_MARK = "<!-- aidenhq-quoted-evidence -->";
+/** Model text with any copy of code's marker made inert: only the line code writes itself may stand before a quoted block. */
+const unmarked = (text: string) => text.split(QUOTED_MARK).join("[quoted-evidence marker removed]");
+/** A finding's path is model text too: a marker pasted into it is no HTML comment in the post. */
+const shownPath = (p: string) => unmarked(p);
+/** What the copied brief says in place of the evidence it does not repeat: a pointer to the block above, never a second copy. */
+const EVIDENCE_ABOVE = 'Evidence: in the "Why flagged" block above.';
 
 const ASSIGNMENT = /\b((?:pass(?:word|wd)?|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|authorization|credential)s?)(["']?\s*[:=]\s*["']?)[^\s"',;]{4,}/gi;
 /** Credentials and secret-looking values replaced by a marker (scrub.ts's token patterns, assignments, bearer values, URL logins). */
@@ -223,21 +237,47 @@ export function modelName(model: string): string {
   return name || model;
 }
 
+/**
+ * The evidence block the post shows: redacted, and cut at a line boundary past `max` so every line it shows whole is a line
+ * code could match. A first line that alone is too long can't be quoted whole, so it is cut mid-line and loses the marker.
+ */
+function shownEvidence(f: Finding, max: number): { text: string; complete: boolean } {
+  const t = unmarked(redact(f.evidence));
+  if (t.length <= max) return { text: t, complete: true };
+  const cut = t.slice(0, max);
+  const at = cut.lastIndexOf("\n");
+  return at > 0 ? { text: cut.slice(0, at), complete: true } : { text: cut, complete: false };
+}
+/**
+ * Whether what the post shows is still exactly what code matched: a quote whose redaction changed a line, whose text scale
+ * shortened it, or whose only line is cut, is the model's text as far as this post is concerned, so it carries no "code
+ * matched every line" marker.
+ */
+const isShownQuote = (f: Finding, shown: { text: string; complete: boolean }) =>
+  f.evidence_from === "change" && shown.complete && (shown.text === f.evidence || f.evidence.startsWith(`${shown.text}\n`));
+
 /** One finding as an inline comment: marker, severity and title; the reasoning and a fix brief collapsed. `at`: where the
  * comment sits when that isn't the finding's own line (the nearest diff line, or the file). */
 export function renderFinding(f: Finding, r: Pick<Review, "repo" | "pr" | "head">, at?: number | "file", scale = 1): string {
-  const where = `${f.path}:${f.line}${f.end_line && f.end_line > f.line ? `-${f.end_line}` : ""}`;
+  const where = `${shownPath(f.path)}:${f.line}${f.end_line && f.end_line > f.line ? `-${f.end_line}` : ""}`;
   const head = [`<!-- ${MARK.finding}: ${f.id} -->`, `${ICON[f.severity]} **${LABEL[f.severity]}:** ${plain(f.title, scale ? 200 : 100)}`, ...(at !== undefined && at !== f.line ? ["", `_At ${code(where)}, outside the diff._`] : [])];
   // A review too large for the AI reviewer's card keeps every finding and its thread, with shorter texts (scale), at the least
   // its title alone.
   if (!scale) return head.join("\n");
   const n = (x: number) => Math.max(40, Math.floor(x * scale));
-  const evidence = redact(f.evidence).slice(0, n(EVIDENCE_MAX));
-  const brief = [`Fix ${where} (${r.repo} PR #${r.pr} at ${short(r.head)})`, `Problem: ${plain(f.title, 200)}`, ...(evidence ? [`Evidence: ${evidence}`] : []), `Wanted: ${plain(f.fix_brief, n(500))}`].join("\n");
+  const shown = shownEvidence(f, n(EVIDENCE_MAX));
+  const evidence = shown.text;
+  // Code's own marker, never the model's text: only evidence code matched line for line in the pull request is a quotation, and
+  // only while the block is still what it matched. The brief never repeats the evidence: its one place is the block code
+  // marked, so no copy of a quote sits where the policy judges the review's own words. Without that marker the evidence is
+  // the model's, and the brief leaves it out too rather than spread it into a second place.
+  const quoted = isShownQuote(f, shown);
+  const note = quoted ? `${QUOTED_MARK}\n` : "";
+  const brief = [`Fix ${where} (${r.repo} PR #${r.pr} at ${short(r.head)})`, `Problem: ${plain(f.title, 200)}`, ...(quoted ? [EVIDENCE_ABOVE] : []), `Wanted: ${plain(f.fix_brief, n(500))}`].join("\n");
   return [
     ...head,
     "",
-    `<details><summary>Why flagged</summary>\n\n${plain(f.why, n(800))}${evidence ? `\n\n${fence(evidence)}` : ""}\n\n</details>`,
+    `<details><summary>Why flagged</summary>\n\n${plain(f.why, n(800))}${evidence ? `\n\n${note}${fence(evidence)}` : ""}\n\n</details>`,
     "",
     `<details><summary>Copy as fix brief</summary>\n\n${fence(brief)}\n\n</details>`,
   ].join("\n");
@@ -271,7 +311,7 @@ export function anchors(findings: readonly Finding[], lines: ReadonlyMap<string,
 }
 
 const cell = (s: string) => s.replace(/\|/g, "\\|").replace(/\s*\n\s*/g, " ");
-const fileLine = (f: Finding) => code(`${f.path.split("/").pop()}:${f.line}`);
+const fileLine = (f: Finding) => code(`${shownPath(f.path).split("/").pop()}:${f.line}`);
 
 /**
  * The review, ready to post. `place`: where each finding's thread goes (default: each on its own lines, as a preview shows);
@@ -321,8 +361,11 @@ export function renderReview(r: Review, run: string, opts: { place?: ReadonlyMap
     lines.push("", `<details><summary>${what}</summary>\n\n${table(minor)}\n\n</details>`);
   }
   // Without a thread (in no changed file): the first few with their reasoning, the rest named, so the post stays within GitHub's
-  // and the card's size.
-  for (const f of listed.slice(0, LISTED_MAX)) lines.push("", `<details><summary>${ICON[f.severity]} ${plain(f.title, 160)} ${code(`${f.path}:${f.line}`)}</summary>\n\n${plain(f.why, 800)}${f.evidence ? `\n\n${fence(redact(f.evidence).slice(0, EVIDENCE_MAX))}` : ""}\n\n**Fix brief:** ${plain(f.fix_brief, 500)}\n\n</details>`);
+  // and the card's size. A finding's evidence keeps code's marker when it is a verified quote, as in its thread.
+  for (const f of listed.slice(0, LISTED_MAX)) {
+    const shown = shownEvidence(f, EVIDENCE_MAX);
+    lines.push("", `<details><summary>${ICON[f.severity]} ${plain(f.title, 160)} ${code(`${shownPath(f.path)}:${f.line}`)}</summary>\n\n${plain(f.why, 800)}${shown.text ? `\n\n${isShownQuote(f, shown) ? `${QUOTED_MARK}\n` : ""}${fence(shown.text)}` : ""}\n\n**Fix brief:** ${plain(f.fix_brief, 500)}\n\n</details>`);
+  }
   if (listed.length > LISTED_MAX) lines.push("", `<details><summary>${listed.length - LISTED_MAX} more without a thread</summary>\n\n${listed.slice(LISTED_MAX, LISTED_MAX + 40).map((f) => `- ${ICON[f.severity]} ${plain(f.title, 160)} ${code(`${f.path}:${f.line}`)}`).join("\n")}${listed.length > LISTED_MAX + 40 ? "\n- \u2026" : ""}\n\n</details>`);
   if (r.stale_guidance.length) lines.push("", `<details><summary>Guidance this change may make stale</summary>\n\n${r.stale_guidance.map((s) => `- ${plain(s, 300)}`).join("\n")}\n\n</details>`);
   lines.push("", opts.card ? "[AidenHQ's fixed Commands help: the comments people on the pull request may write to ask for another review]" : commandsBlock(), "", `<sub>${code(short(r.head))} · ${r.full || !r.incremental_from ? "whole PR" : `changes since ${code(short(r.incremental_from))}`} · ${r.engine} · $${r.cost_usd.toFixed(2)}</sub>`);

@@ -29,7 +29,7 @@ check_jobs:
     argv: [ node, /aidenhq-out/recipe/review.ts ]
     timeout_min: 45
     title: the code review
-    spec: { base: sha, incremental_from: sha, pr: int, combo: json, focus: text, budget_usd: usd, previous: json }
+    spec: { base: sha, incremental_from: sha, pr: int, combo: json, focus: text, budget_usd: usd, previous: json, pr_text: json }
     model: { max_usd: 25 }
     result: true
 # Flow (docs/design/flow.md): one started and one ended fact per review run (version: the run id) on its PR.

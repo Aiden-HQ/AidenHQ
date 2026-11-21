@@ -36,6 +36,7 @@ function world(settings = {}) {
       mergeBase: async () => { const f = fails.shift(); if (f) throw Object.assign(new Error(`github-mcp merge-base: ${f}`), { status: f }); return { merge_base: sha("m") }; },
       repos: async () => [],
       threads: async (_r, n) => threads.get(n) ?? [],
+      prText: async () => ({ body: "Retries default to 3.", comments: [] }),
       postable: async (repo) => ({ identity: repo.startsWith("acme/") ? "owner" : null, org: repo.split("/")[0] }), // null: GitHub not connected
     },
     runner: {

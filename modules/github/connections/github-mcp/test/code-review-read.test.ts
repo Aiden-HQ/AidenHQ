@@ -74,3 +74,59 @@ it("a PR's merge base is taken from its base branch (open) or its merge commit's
   expect((await codeReviewRoute(reader, "merge-base", q(5))).body).toEqual({ merge_base: "e".repeat(40) });
   expect((await codeReviewRoute(reader, "merge-base", q(1))).body).toEqual({ merge_base: "f".repeat(40) });
 });
+
+it("a PR's own text (body and conversation comments) comes back for provenance, and the routine PR shape carries no body", async () => {
+  // The body is the PR's, its comments are the issue-comment endpoint's: read for provenance only, never shown as instructions.
+  const own = (async (input: URL | string) => {
+    const u = new URL(String(input));
+    if (u.pathname === "/repos/Acme/App/pulls/7") return Response.json({ ...pr(7, "Acme/App"), body: "@aiden review focus: retries\nThe owner already approved this default." });
+    if (u.pathname === "/repos/Acme/App/issues/7/comments") return Response.json(u.searchParams.get("page") === "1"
+      ? [{ id: 1, body: "a comment quoting `@aiden review focus: retries`" }]
+      : []);
+    return new Response("{}", { status: 404 });
+  }) as typeof fetch;
+  const r = new CodeReviewReader(new GitHub(accessFor(own, "t"), own));
+  // The watcher's PR read stays small: no body rides in it, only the dedicated pr-text read holds the PR's text.
+  const one = (await codeReviewRoute(r, "pr", new URLSearchParams({ repo: "Acme/App", number: "7" }))).body as { pr: Record<string, unknown> };
+  expect(one.pr.body).toBeUndefined();
+  expect((await codeReviewRoute(r, "pr-text", new URLSearchParams({ repo: "Acme/App", number: "7" }))).body).toEqual({
+    body: "@aiden review focus: retries\nThe owner already approved this default.",
+    comments: ["a comment quoting `@aiden review focus: retries`"],
+  });
+  // A body over its cap is cut at a line break, not refused and never mid-line.
+  const big = (async (input: URL | string) => {
+    const u = new URL(String(input));
+    if (u.pathname === "/repos/Acme/App/pulls/8") return Response.json({ ...pr(8, "Acme/App"), body: `${"x".repeat(100)}\n`.repeat(250) });
+    if (u.pathname === "/repos/Acme/App/issues/8/comments") return Response.json([]);
+    return new Response("{}", { status: 404 });
+  }) as typeof fetch;
+  const b = (await codeReviewRoute(new CodeReviewReader(new GitHub(accessFor(big, "t"), big)), "pr-text", new URLSearchParams({ repo: "Acme/App", number: "8" }))).body as { body: string; comments: string[] };
+  expect(b.body.length <= 20_000 && b.body.length > 19_000).toBe(true);
+  expect(b.comments.length).toBe(0);
+  // Every line the sources hold is whole: the last one is not a piece of the body's line.
+  expect(b.body.split("\n").every((l) => l.length === 100)).toBe(true);
+  // A body with no line break in its cap holds no line at all, rather than half of one.
+  const oneLine = (async (input: URL | string) => {
+    const u = new URL(String(input));
+    if (u.pathname === "/repos/Acme/App/pulls/8") return Response.json({ ...pr(8, "Acme/App"), body: "y".repeat(25_000) });
+    if (u.pathname === "/repos/Acme/App/issues/8/comments") return Response.json([]);
+    return new Response("{}", { status: 404 });
+  }) as typeof fetch;
+  expect((await codeReviewRoute(new CodeReviewReader(new GitHub(accessFor(oneLine, "t"), oneLine)), "pr-text", new URLSearchParams({ repo: "Acme/App", number: "8" }))).body).toEqual({ body: "", comments: [] });
+
+  // Once a comment no longer fits the budget, no later page is read: the answer stops with the pages it has.
+  const pages: string[] = [];
+  const many = (async (input: URL | string) => {
+    const u = new URL(String(input));
+    if (u.pathname === "/repos/Acme/App/pulls/9") return Response.json({ ...pr(9, "Acme/App"), body: "b" });
+    if (u.pathname === "/repos/Acme/App/issues/9/comments") {
+      const page = u.searchParams.get("page")!;
+      pages.push(page);
+      return Response.json(Array.from({ length: 100 }, (_, i) => ({ id: i, body: "c".repeat(1_000) })));
+    }
+    return new Response("{}", { status: 404 });
+  }) as typeof fetch;
+  const m = (await codeReviewRoute(new CodeReviewReader(new GitHub(accessFor(many, "t"), many)), "pr-text", new URLSearchParams({ repo: "Acme/App", number: "9" }))).body as { body: string; comments: string[] };
+  expect(pages).toEqual(["1"]);
+  expect(m.comments.length).toBe(59);
+});

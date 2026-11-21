@@ -38,7 +38,7 @@ export function sinceArg(v: string | null): string {
 }
 
 type GhPr = {
-  number: number; state: string; merged_at?: string | null; merge_commit_sha?: string | null; title?: string; draft?: boolean; html_url: string; user?: { login?: string } | null;
+  number: number; state: string; merged_at?: string | null; merge_commit_sha?: string | null; title?: string; draft?: boolean; html_url: string; body?: string | null; user?: { login?: string } | null;
   head?: { sha?: string; repo?: { full_name?: string } | null }; base?: { sha?: string; ref?: string; repo?: { full_name?: string } | null };
 };
 
@@ -51,6 +51,13 @@ function shape(repo: string, p: GhPr): PullRequest {
     // A stranger's words: shown as plain text on the board, never in a task title or a prompt.
     title: String(p.title ?? "").slice(0, 200),
   };
+}
+
+/** At most `max` characters of `text`, cut at the last line break that fits: a cap never leaves half a line behind. */
+function wholeLines(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const at = text.lastIndexOf("\n", max);
+  return at >= 0 ? text.slice(0, at) : "";
 }
 
 export class CodeReviewReader {
@@ -125,6 +132,32 @@ export class CodeReviewReader {
     return { merge_base: (await this.compare(repo, base, head)).merge_base };
   }
 
+  /**
+   * The PR's body and its conversation comments, as text a finding's evidence may quote (a stranger's words: data). Read for
+   * provenance only, never shown to a model as instructions.
+   */
+  async prText(repo: string, number: number): Promise<{ body: string; comments: string[] }> {
+    const p = await this.github.request<GhPr>("GET", `/repos/${repo}/pulls/${number}`);
+    const comments: string[] = [];
+    // Only whole lines: a body cut mid-line would put half a line among the sources a quote is matched against, and a quote of
+    // that half line would look like a quotation of the pull request.
+    const body = wholeLines(String(p.body ?? ""), 20_000);
+    let total = body.length;
+    for (let page = 1; page <= MAX_PAGES; page++) {
+      const rows = await this.github.request<{ id: number; body?: string | null }[]>("GET", `/repos/${repo}/issues/${number}/comments`, { query: { per_page: 100, page } });
+      // The budget is spent once a comment no longer fits: stop reading pages too, not only this one.
+      let full = false;
+      for (const c of rows) {
+        const text = String(c.body ?? "");
+        if (total + text.length > 60_000) { full = true; break; }
+        total += text.length;
+        comments.push(text);
+      }
+      if (full || rows.length < 100) break;
+    }
+    return { body, comments };
+  }
+
   /** The repos the owner's sign-in can read whose name contains `q` (at most 30). */
   async repos(q: string): Promise<{ repo: string; private: boolean; url: string }[]> {
     const out: { repo: string; private: boolean; url: string }[] = [];
@@ -160,6 +193,7 @@ export async function codeReviewRoute(reader: CodeReviewReader, op: string, q: U
     if (op === "compare") return { status: 200, body: await reader.compare(repo, shaArg(q.get("base")), shaArg(q.get("head"))) };
     if (op === "merge-base") return { status: 200, body: await reader.mergeBase(repo, numberArg(q.get("number")), shaArg(q.get("head"))) };
     if (op === "postable") return { status: 200, body: await reader.postable(repo) };
+    if (op === "pr-text") return { status: 200, body: await reader.prText(repo, numberArg(q.get("number"))) };
     // A login that isn't one (a bot's, an empty or deleted user's) has no permission: an answer, never an error to retry.
     if (op === "permission") {
       let login: string;

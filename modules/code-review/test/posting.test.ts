@@ -29,14 +29,35 @@ test("the executor posts only this service's own record for its run; the poster 
 test("the check job's spec is exactly the recipe's fields, base the merge base, a full review from it, rechecking the open findings", async () => {
   const { checkSpec } = await import("../service/src/adapters.ts");
   const s = { repo: "acme/x", number: 9, base: "b".repeat(40), head: "h".repeat(40), merge_base: "m".repeat(40), combo: { engine: "codex", model: "~a/b", effort: "high" },
-    focus: null, incremental_from: null, full: true, previous: [{ id: "f1", severity: "nit", path: "a", line: 1, title: "t" }], mandatory: false, budget_usd: 1.5, ignore: ["*.lock"], max_nits: 3 };
+    focus: null, incremental_from: null, full: true, previous: [{ id: "f1", severity: "nit", path: "a", line: 1, title: "t" }], mandatory: false, budget_usd: 1.5, ignore: ["*.lock"], max_nits: 3,
+    pr_text: { body: "A PR body.", comments: ["a comment"] } };
   const spec = checkSpec(s);
-  assert.deepEqual(Object.keys(spec).sort(), ["base", "budget_usd", "combo", "focus", "incremental_from", "pr", "previous"]);
+  assert.deepEqual(Object.keys(spec).sort(), ["base", "budget_usd", "combo", "focus", "incremental_from", "pr", "pr_text", "previous"]);
   assert.equal(spec.base, "m".repeat(40));
   assert.equal(spec.incremental_from, spec.base);
   assert.equal(spec.budget_usd, "1.5000");
   assert.deepEqual(JSON.parse(spec.combo), { ...s.combo, ignore: ["*.lock"], max_nits: 3, mandatory: false });
   assert.deepEqual(JSON.parse(spec.previous), { findings: s.previous });
+  assert.deepEqual(JSON.parse(spec.pr_text), s.pr_text);
+});
+
+test("the PR text in the spec is cut at line boundaries and measured as the JSON it rides in", async () => {
+  const { checkSpec } = await import("../service/src/adapters.ts");
+  const s = { repo: "acme/x", number: 9, base: "b".repeat(40), head: "h".repeat(40), merge_base: "m".repeat(40), combo: { engine: "codex", model: "~a/b", effort: "high" },
+    focus: null, incremental_from: null, full: true, previous: [], mandatory: false, budget_usd: 1, ignore: [], max_nits: 5,
+    // Each line is 100 characters; the body's 8,000-character cap lands mid-line unless the cut is at a line break.
+    pr_text: { body: Array.from({ length: 200 }, () => "b".repeat(100)).join("\n"), comments: [`${"c".repeat(99)}\n`.repeat(80)] } };
+  const t = JSON.parse(checkSpec(s).pr_text) as { body: string; comments: string[] };
+  // No line is cut: the body ends where a line ends, and stays at or under its 8,000-character cap.
+  assert.ok(JSON.stringify(t.body).length - 2 <= 8_000 && t.body.length > 7_000);
+  assert.equal(t.body.split("\n").every((l) => l.length === 100), true);
+  // The comments fit only while the escaped JSON fits 15,500 characters, never by raw length alone.
+  assert.ok(checkSpec(s).pr_text.length <= 15_500);
+  for (const c of t.comments) assert.equal(c.split("\n").filter(Boolean).every((l) => l.length === 99), true);
+  // Quotes escape to two characters each: raw lengths would let the escaped JSON overflow the cap.
+  const escaped = { ...s, pr_text: { body: "\n".repeat(9_000), comments: [] } };
+  assert.ok(checkSpec(escaped).pr_text.length <= 15_500);
+  assert.equal(JSON.parse(checkSpec(escaped).pr_text).body.includes("\\n"), false);
 });
 
 test("a check that failed before it got a box spent nothing, so its run retries; one that ran with no figure counts whole", async () => {

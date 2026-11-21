@@ -35,6 +35,7 @@ export function githubSource(base: string, token: () => string, fetcher: typeof 
     mergeBase: async (repo, number, head) => (await get("merge-base", { repo, number, head })) as { merge_base: string },
     postable: async (repo) => (await get("postable", { repo })) as { identity: "owner" | null; org: string },
     repos: async (q) => ((await get("repos", { q })) as { repos: { repo: string; private: boolean; url?: string }[] }).repos,
+    prText: async (repo, number) => (await get("pr-text", { repo, number })) as { body: string; comments: string[] },
     threads: async (repo, number) => {
       const r = await fetcher(`${base.replace(/\/+$/, "")}/internal/review/threads`, { method: "POST", headers: { authorization: `Bearer ${token()}`, "content-type": "application/json" }, body: JSON.stringify({ repo, number }), signal: AbortSignal.timeout(30_000) });
       if (!r.ok) throw Object.assign(new Error(`github-mcp threads: ${r.status} ${(await r.text()).slice(0, 200)}`), { status: r.status });
@@ -48,11 +49,47 @@ export function githubSource(base: string, token: () => string, fetcher: typeof 
  * review's incremental_from is that base too; the repo's ignore globs and max_nits ride in the combo; the previous findings are
  * those the recipe rechecks (and the finders take as already reported), full reviews included.
  */
+/** At most `max` characters of `text`, cut at the last line break that fits: a cap never leaves half a line behind. */
+function linesUpTo(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const at = text.lastIndexOf("\n", max);
+  return at > 0 ? text.slice(0, at) : "";
+}
+/** `text` cut at a line break so that its JSON-escaped form is at most `max` characters: a quote or newline takes two. */
+function escapedUpTo(text: string, max: number): string {
+  const fits = (n: number) => JSON.stringify(text.slice(0, n)).length - 2 <= max;
+  if (fits(text.length)) return text;
+  let low = 0, high = text.length;
+  while (low < high) {
+    const mid = Math.ceil((low + high) / 2);
+    if (fits(mid)) low = mid; else high = mid - 1;
+  }
+  const at = text.lastIndexOf("\n", low);
+  return at > 0 ? text.slice(0, at) : "";
+}
+/**
+ * The PR's own text for provenance (body and comments), inside the spec's 16 KB: the body and each comment are cut at a line
+ * boundary (a half line could be quoted and match nothing), and whole comments newest last are kept while they fit. What is
+ * measured is the JSON the spec carries, escaped quotes and newlines included, never the raw lengths.
+ */
+function prTextSpec(t: { body: string; comments: string[] } | undefined): { body: string; comments: string[] } {
+  const body = escapedUpTo(String(t?.body ?? ""), 8_000);
+  const comments: string[] = [];
+  const fits = (body: string, comments: string[]) => JSON.stringify({ body, comments }).length <= 15_500;
+  for (const c of t?.comments ?? []) {
+    const one = escapedUpTo(String(c), 4_000);
+    if (!one || !fits(body, [...comments, one])) break;
+    comments.push(one);
+  }
+  return { body, comments };
+}
+
 export function checkSpec(s: ReviewSpec): Record<string, string> {
   return {
     base: s.merge_base, incremental_from: s.incremental_from ?? s.merge_base, pr: String(s.number),
     combo: JSON.stringify({ ...s.combo, ignore: s.ignore, max_nits: s.max_nits, mandatory: s.mandatory }), focus: s.focus ?? "",
     budget_usd: Math.max(0.0001, s.budget_usd).toFixed(4), previous: JSON.stringify({ findings: s.previous }),
+    pr_text: JSON.stringify(prTextSpec(s.pr_text)),
   };
 }
 

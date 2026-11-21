@@ -329,8 +329,10 @@ export function createEngine(d: EngineDeps) {
       }
       run("UPDATE runs SET incremental_from = ?, merge_base = ? WHERE id = ?", incremental_from, merge_base, r.id);
       const previous = r.recheck ? recheckList(r.repo, r.number) : [];
+      // The PR's own text, for provenance only: a finding's evidence is a quotation when code finds it there or in the diff.
+      const prText = await d.source.prText(r.repo, r.number).catch(() => ({ body: "", comments: [] }));
       const { check } = await d.runner.start({ repo: r.repo, number: r.number, base: r.base, head: r.head, merge_base, combo: comboOf(r), focus: r.focus,
-        incremental_from, full: incremental_from === null, previous, mandatory: !!r.mandatory, budget_usd: Math.max(0, r.run_usd - r.billed_prior), ignore: cfg?.ignore ?? [], max_nits: cfg?.max_nits ?? 5 });
+        incremental_from, full: incremental_from === null, previous, mandatory: !!r.mandatory, budget_usd: Math.max(0, r.run_usd - r.billed_prior), ignore: cfg?.ignore ?? [], max_nits: cfg?.max_nits ?? 5, pr_text: prText });
       run("UPDATE runs SET check_job = ? WHERE id = ?", check, r.id);
     } catch (e) {
       // Nothing ran (no check job), so nothing was billed. One GitHub or the kernel couldn't answer now (a kernel restart, a 5xx)

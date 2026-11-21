@@ -8,6 +8,8 @@ export type ComboRef = { engine: string; model: string; effort: string };
 export type Finding = {
   id: string; severity: "important" | "nit" | "pre_existing"; path: string; line: number; end_line?: number;
   title: string; why: string; evidence: string; fix_brief: string;
+  /** Code matched every line of `evidence` in the change it reviewed (the recipe sets it; the model can't). */
+  evidence_from?: "change";
 };
 export type Review = {
   version: 1; repo: string; pr: number; base: string; head: string; engine: string; model: string; effort: string;
@@ -58,6 +60,8 @@ export interface PrSource {
   /** The PR's review threads: the finding its marker names, its first comment's id and the replies (strangers' text). Whether a
    * thread is Aiden's own is the service's record (its comments table), never this. */
   threads(repo: string, number: number): Promise<Thread[]>;
+  /** The PR's body and its conversation comments: the PR's own text a finding's evidence may quote (data). */
+  prText(repo: string, number: number): Promise<{ body: string; comments: string[] }>;
 }
 export type Thread = { finding: string | null; comment: number; replies: { id: number; author: string; body: string }[] };
 
@@ -75,6 +79,8 @@ export type ReviewSpec = {
   mandatory: boolean;
   /** The most the run may spend (its run_usd): the cap on its box's model token. */
   budget_usd: number; ignore: string[]; max_nits: number;
+  /** The PR's body and its conversation comments, as JSON: text a finding's evidence may quote. Read only for provenance. */
+  pr_text: { body: string; comments: string[] };
 };
 /** `box_at`: when its check job got its box (ISO; queueing before it is not the run's work), once it has one. `billed_usd`: what the kernel billed the run's check job (its gateway calls), never anything the box wrote. Absent: unknown, and
  * the run is charged its whole run_usd. `waiting`: its check job has no computer yet. A running one's is its spend so far (what the day budget counts). */
