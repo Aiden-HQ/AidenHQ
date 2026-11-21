@@ -316,7 +316,7 @@ test("a verdict's reopen and its parent's notice that hit a kernel 5xx land on t
  * A fake kernel for a grade whose rubric names another task: the graded task, the named task's read and attachments, and the
  * agents read. `named` and `attachments` are what those reads answer, so a test can make them a 404, a 5xx or another company.
  */
-async function namedTaskHarness(t, { id, identifier, rubric, named, attachments = [], agentRead = async (aid) => ({ id: aid, name: aid === "art" ? "Ada" : "Dana" }), other = [] }) {
+async function namedTaskHarness(t, { id, identifier, rubric, named, attachments = [], agentRead = async (aid) => ({ id: aid, name: aid === "art" ? "Ada" : "Dana" }), other = [], comment }) {
   const prompts = [];
   const gateway = http.createServer(async (req, res) => {
     let body = "";
@@ -326,18 +326,18 @@ async function namedTaskHarness(t, { id, identifier, rubric, named, attachments 
   }).listen(0);
   t.after(() => gateway.close());
   const task = (tid, ident, companyId = "co") => ({ id: tid, identifier: ident, title: "report", description: "", status: "in_review", companyId, assigneeAgentId: "eng", createdByAgentId: "cos", parentId: null });
-  const calls = { resolve: [], attachments: [] };
+  const calls = { resolve: [], attachments: [], work: [] };
   const kernel = async (method, path, body) => {
     const namedId = named?.id ?? "t101";
     for (const [p, answer] of other) if (path === p) return answer();
     if (path === `/v1/cp/read/api/issues/${id}`) return task(id, identifier);
-    if (path === `/v1/cp/read/api/issues/${id}/comments`) return [{ id: "c1", authorType: "agent", authorAgentId: "eng", body: `Done; the mockup is on ${named?.identifier ?? "WOR-101"}.`, createdAt: "2026-11-20T11:00:00Z" }];
+    if (path === `/v1/cp/read/api/issues/${id}/comments`) return [{ id: "c1", authorType: "agent", authorAgentId: "eng", body: comment ?? `Done; the mockup is on ${named?.identifier ?? "WOR-101"}.`, createdAt: "2026-11-20T11:00:00Z" }];
     if (path === `/v1/cp/read/api/issues/${id}/attachments`) return [];
     if (path === `/v1/cp/read/api/issues/${named?.identifier ?? "WOR-101"}`) return named;
     if (path === `/v1/cp/read/api/issues/${namedId}/attachments`) return calls.attachments.push(path), attachments;
     if (path.startsWith("/v1/cp/read/api/agents/")) return agentRead(path.split("/").at(-1));
     if (path.startsWith("/v1/cp/read/api/companies/co/issues")) return [];
-    if (path === `/v1/work?task=${id}` || path === `/v1/work?task=${namedId}`) return { busy: false, jobs: [], records: [] };
+    if (path.startsWith("/v1/work?task=")) return calls.work.push(path), { busy: false, jobs: [], records: [] };
     if (path === "/v1/work/grader-token") return { token: "tok" };
     if (path === `/v1/checks/${id}`) return calls.resolve.push(body), {};
     if (path === "/v1/wakes") return { posted: true };
@@ -390,10 +390,12 @@ test("a rubric-named task in another company is no such task, and its files are 
     id: "t11", identifier: "WOR-11", rubric: "the mockup on WOR-101 is the one applied here",
     named: { id: "t101", identifier: "WOR-101", title: "someone else's", status: "done", companyId: "other" },
     attachments: [{ id: "f2", originalFilename: "secret.png", contentType: "image/png", byteSize: 1, createdAt: "2026-11-20T10:00:00Z" }],
+    comment: "Done; the mockups are attached.",
   });
   await h.loop().runGrades();
   assert.equal(h.grades.get("t11").state, "satisfied", "the grade settles instead of reading across companies");
   assert.deepEqual(h.calls.attachments, [], "another company's files are never read");
+  assert.deepEqual(h.calls.work.filter((p) => !p.startsWith("/v1/work?task=t11")), [], "another company's task is never primed: no work read for it");
   assert.match(h.prompts[0], /WOR-101: no such task in this company \(nothing read from it\)/);
 });
 

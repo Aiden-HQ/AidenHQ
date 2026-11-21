@@ -68,6 +68,9 @@ export function createKernelGradeLoop({ db, runner, due, kernel, kernelBytes, ap
   const pc = {
     company: "",
     issue: async (ref: string) => { const i = await kernel("GET", `/v1/cp/read/api/issues/${encodeURIComponent(ref)}`); await prime(i.id); return i; },
+    // The task as cp-read has it, with no work prime: a rubric-named task is checked against the graded task's company before
+    // anything on it (its work, its records, its files) is read.
+    taskOnly: (ref: string) => read(`/api/issues/${encodeURIComponent(ref)}`),
     comments: (id: string) => read(`/api/issues/${encodeURIComponent(id)}/comments`),
     children: async (parentId: string) => (await read(`/api/companies/${(await kernel("GET", `/v1/cp/read/api/issues/${encodeURIComponent(parentId)}`)).companyId}/issues${q({ parentId, limit: "200" })}`)).filter((i: Json) => i.parentId === parentId),
     // The task's own agent, whatever its company (work or personal).
@@ -126,13 +129,14 @@ export function createKernelGradeLoop({ db, runner, due, kernel, kernelBytes, ap
       attachments: () => pc.attachments(issue.id), content: (id: string) => pc.attachmentContent(issue.id, id),
       identifier: issue.identifier,
       // Another task the rubric or the ref names (evidence.ts otherTaskEvidence): its task and its attachment rows, read as the
-      // owner through cp-read and never its files' contents. A 404 is a fact ("no such task"); so is a task of another company,
+      // owner through cp-read and never its files' contents. The task read carries no work prime, so another company's task is
+      // refused before its work or its files are touched. A 404 is a fact ("no such task"); so is a task of another company,
       // which is never read. Any other failure throws, so the evidence waits for a real transient read failure instead of
       // becoming "not met".
       otherTask: async (ident: string) => {
         let task: Json;
         try {
-          task = await pc.issue(ident);
+          task = await pc.taskOnly(ident);
         } catch (err: Json) {
           if (Number(err?.status) === 404) return null;
           throw err;
