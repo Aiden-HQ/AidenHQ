@@ -260,5 +260,5 @@ export function stageOf(status: string, cards: Pick<Approval, "action" | "state"
   }
   if (status === "done" || status === "cancelled") return { stage: "closed" };
   // No card yet: the kernel is still writing the change, until it plainly never filed one (a lost response); then the owner can save again.
-  return Date.now() - Date.parse(createdAt) > UNFILED_MS ? { stage: "failed", detail: "The kernel never filed this change. Save it again." } : { stage: "working" };
+  return Date.now() - Date.parse(createdAt) > UNFILED_MS ? { stage: "failed", detail: "No apply record was found for this change after 10 minutes. Saving again files a new one." } : { stage: "working" };
 }
