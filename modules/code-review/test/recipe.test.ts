@@ -298,7 +298,7 @@ JSON
   assert.match(seen, /^NODE_OPTIONS=--import=.*gateway-fetch\.ts$/m);
 });
 
-test("the codex-native engine: codex's own review in the checkout, read-only sandbox, through the gateway; its real output mapped to ours", async () => {
+test("the codex-native engine: codex's own review in the checkout, full access in the box, through the gateway; its real output mapped to ours", async () => {
   const fx = join(import.meta.dirname, "fixtures", "codex-native"); // a real `codex exec review` run (codex 0.166.0), its root renamed /workspace
   assert.deepEqual(nativeFindings(nativeReview([readFileSync(join(fx, "rollout.jsonl"), "utf8")]), ["/workspace"]).map((f) => [f.severity, f.path, f.line, f.title]), [
     ["important", "lib.js", 12, "Keep filenames out of the shell in lineCount"],
@@ -336,7 +336,7 @@ cat "${events}"
   assert.match(seen, new RegExp(`ARG:exec\nARG:review\nARG:--base\nARG:${B}\nARG:--ignore-rules\n`));
   assert.match(seen, /^CI_REVIEW_KEY=ahqj_run$/m);
   assert.ok(!/OPENROUTER_API_KEY/.test(seen), "only the model key, under codex's own name");
-  for (const line of ['sandbox_mode = "read-only"', 'base_url = "http://10.0.0.1:8201/api/v1"', 'developer_instructions = "the brief"', "project_doc_max_bytes = 0", "include_instructions = false", 'inherit = "none"', 'exclude = ["CI_REVIEW_KEY"', "hooks = false"]) assert.ok(seen.includes(line), line);
+  for (const line of ['sandbox_mode = "danger-full-access"', 'base_url = "http://10.0.0.1:8201/api/v1"', 'developer_instructions = "the brief"', "project_doc_max_bytes = 0", "include_instructions = false", 'inherit = "none"', 'exclude = ["CI_REVIEW_KEY"', "hooks = false"]) assert.ok(seen.includes(line), line);
   // A run with no review in its rollout (codex couldn't read the model's answer) is no review, never a clean one.
   assert.deepEqual(await run(false), { message: "", read: true, cause: "codex review gave no review" });
   // A review whose commands never printed the diff didn't read it (the recipe counts it as no answer).
