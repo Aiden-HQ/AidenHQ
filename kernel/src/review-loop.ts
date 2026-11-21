@@ -17,7 +17,7 @@ import type { Rec, Records, State } from "./records.ts";
 import { CODE_REJECTS, MAX_REJECTS, afterReview, codeVerdict, heldInput, meritOwner, priorDecisions, priorPart, requestHash, requestKey, requestTargets, type Prior, type ReviewInput, type Verdict } from "./tier.ts";
 import { CHIEF } from "./escalate.ts";
 import { MARKER, fenced, type Writes } from "./writes.ts";
-import { UNSURE } from "../sdk/src/reviewer.ts";
+import { UNSURE, type ToolCall } from "../sdk/src/reviewer.ts";
 import { siblingBlock } from "./siblings.ts";
 import { graderBlock, type GraderNote } from "./grader-note.ts";
 
@@ -191,6 +191,23 @@ export function cardDiff(action: string, details: string): string {
   return i < 0 ? details : details.slice(0, i);
 }
 
+/**
+ * A `conn.tool` record as the reviewer reads it: the connection, the tool, and the call's own argument object, read from the
+ * record's args (`fileTool` files `{ connection, tool, arguments }`), every key as the tool takes it. It never parses the
+ * card's prose; a record whose args it can't read is not a tool call block (the card's details then reach the reviewer as
+ * before). `unreadable` names each argument code could not give as a value: the reviewer is told which field is missing,
+ * never that the whole call was body-only.
+ */
+export function toolCallOf(action: string, args: unknown): ToolCall | undefined {
+  if (action !== "conn.tool" || !args || typeof args !== "object" || Array.isArray(args)) return undefined;
+  const { connection, tool, arguments: call } = args as { connection?: unknown; tool?: unknown; arguments?: unknown };
+  if (typeof connection !== "string" || !connection || typeof tool !== "string" || !tool) return undefined;
+  const read = call && typeof call === "object" && !Array.isArray(call) ? (call as Record<string, unknown>) : {};
+  const unreadable = call === undefined || call === null ? ["arguments"]
+    : !call || typeof call !== "object" || Array.isArray(call) ? ["arguments"] : [];
+  return { connection, tool, arguments: read, ...(unreadable.length ? { unreadable } : {}) };
+}
+
 /** One record's tier input and what the reviewer reads, from the record, the task's other records and the task itself. */
 export async function reviewInput(r: Rec, { records, task, decisions, product, grade = async () => undefined }: { records: Records; task: TaskApi; decisions?: { where: string; text: string }; product: string[];
   /** The task's latest sent-back grade (checks.ts grade); undefined: none, no grading module, or unread. */
@@ -215,10 +232,14 @@ export async function reviewInput(r: Rec, { records, task, decisions, product, g
   // Tier 2 on its merits (the owner's veto here, or the record's own merit tier): reviewed, then the owner's.
   const merit = veto ?? (r.merit === 2 ? { rule: action, reason: r.card.reason || "the kernel's tier on its merits is 2" } : undefined);
   const input: ReviewInput = veto?.reject ? veto : merit ? meritOwner({ ...reviewed, tier: 2, rule: merit.rule, reason: merit.reason }) : reviewed;
+  const toolCall = toolCallOf(action, r.args);
   const request = {
     card: { action, rule: input.rule, target: r.card.target ?? "", sentence: r.card.sentence, reason: input.reason, ...(product.length ? { product } : {}) },
-    // A planned write's whole diff rides in its context (writes.ts, set by the kernel); a tool call's card details are its input.
+    // A planned write's whole diff rides in its context (writes.ts, set by the kernel). A conn.tool call also carries its
+    // arguments structured (tool_call): the reviewer reads them by name, never as a DIFF. `diff` keeps the card's details, so a
+    // reviewer@1 provider that doesn't read tool_call yet still receives the call's evidence, as it did before.
     diff: cardDiff(action, r.context?.diff ?? r.card.details),
+    ...(toolCall ? { tool_call: toolCall } : {}),
     // The changed files at the reviewed head, as the code host's plan read them at filing.
     ...(r.context?.files ? { files: r.context.files } : {}),
     // The owner-approved source exceptions at each base the change targets, as the code host read them at filing.

@@ -28,9 +28,18 @@ export interface ReviewCard { action: string; rule: string; target?: string; sen
  */
 export interface Files { list: { name: string; text?: string; note?: string }[]; leftOut: string[]; changed?: { path: string; add?: number; del?: number }[] }
 export interface SourceRecords { where: string; records: Record<string, unknown>[] }
+/**
+ * A connection tool call's arguments, structured, as the reviewer reads them instead of a diff: code read them from the record
+ * (`args.connection`, `args.tool`, `args.arguments`), never parsed out of the card's prose. `arguments` is the call's own
+ * argument object, key for key as the tool takes them. `unreadable` names each argument code could not read (a value that
+ * isn't there), so the reviewer is told which field is missing rather than that the whole call is body-only.
+ */
+export interface ToolCall { connection: string; tool: string; arguments: Record<string, unknown>; unreadable?: string[] }
 /** One Tier 1 request as the reviewer reads it. Everything but `card.action`, `card.rule` and `panel` is data an agent or a stranger wrote. */
 export interface ReviewRequest {
   card: ReviewCard; diff: string; files?: Files; chain?: string; siblings?: string; sources?: SourceRecords;
+  /** A `conn.tool` call's arguments, structured: present, the prompt shows a TOOL_CALL block and no DIFF. */
+  tool_call?: ToolCall;
   requesterModel?: string; panel?: boolean; previous?: string[];
   /**
    * The task grader's latest verdict that sent the work back, rendered by the kernel from the grading store: each rubric
@@ -57,7 +66,7 @@ export interface Verdict { decision: "approve" | "reject" | "escalate"; code?: s
 /** The model's "I can't tell" (a second reviewer is asked; both unsure, or unsure over missing input, the request goes back to the agent). */
 export const UNSURE = "reviewer_unsure";
 /** The request fields a reviewer reads; anything else in a request (a policy, a model) is dropped. */
-export const REQUEST_FIELDS = ["card", "diff", "files", "chain", "siblings", "sources", "decisions", "requesterModel", "panel", "previous", "grader_note", "comments"] as const;
+export const REQUEST_FIELDS = ["card", "diff", "tool_call", "files", "chain", "siblings", "sources", "decisions", "requesterModel", "panel", "previous", "grader_note", "comments"] as const;
 
 /** The module's reviewer: one request in, one verdict out. `onPanel` records that the change needs a second reviewer. */
 export type Review = (req: ReviewRequest, ctx: { modelToken: string; onPanel: () => Promise<void> }) => Promise<Verdict>;
