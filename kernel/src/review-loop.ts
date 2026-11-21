@@ -332,14 +332,16 @@ export function createReviewLoop({ records, writes, task, decisions, product, gr
     // A post-park panel that rejected for the PANEL_TRIES-th time sends the next filing to the owner instead (tier.ts priorPart).
     // The notices follow the retry state the next filing will meet (tier.ts priorDecisions with this rejection in it).
     const next = judged && after ? after(records.get(r.id) ?? out.record) : prior;
-    const toOwner = judged && (next?.panels ?? 0) >= PANEL_TRIES;
-    const refile = toOwner ? undefined : (next?.rejects ?? 0) >= MAX_REJECTS ? next?.parkedUntil : undefined;
+    const nextPart = priorPart(next, Date.now());
+    const toOwner = judged && nextPart?.rule === "retries-owner";
+    // Parked only while the cooldown holds (priorPart's own rule); a lapsed one goes straight to the panel.
+    const refile = nextPart?.rule === "retries-exhausted" ? next?.parkedUntil : undefined;
     await rejected(out.record, out.posted, refile, toOwner).catch((e: Error) => log("reject note failed", { record: r.id, err: e.message.slice(0, 200) }));
     // The rejection that reaches MAX_REJECTS parks the target for the cooldown (tier.ts priorPart): whoever delegated the task
     // hears it once per park and may lift it with a decision on the task. The chief of staff's own task (escalate.ts would
     // tell the owner) just waits out the cooldown: a park moves on by itself.
     const chiefs = (task.agent?.(r.requester.agent)?.roles ?? []).includes(CHIEF);
-    if (prior && !chiefs && judged && !toOwner && prior.rejects + 1 >= MAX_REJECTS) {
+    if (prior && !chiefs && judged && refile !== undefined) {
       await parked(out.record, prior, out.posted.reason).catch((e: Error) => log("park escalation failed", { record: r.id, err: e.message.slice(0, 200) }));
     }
   }
