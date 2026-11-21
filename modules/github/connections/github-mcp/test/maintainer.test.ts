@@ -316,6 +316,8 @@ it("a close whose note cites a PR only as a bare PR #N is refused before anythin
     // Malformed: a space between the slash and PR is not owner/name#N, and findPrs reads no PR in these.
     "Fixed by acme/ PR#12, merge 0ba0db1.",
     "Fixed by acme/  PR#12, merge 0ba0db1.",
+    // A real citation beside a bare one does not launder the bare one.
+    "acme/product#1 and PR #2",
   ]) {
     await expect(m.state(PRODUCT, 1, "closed", "completed", note)).rejects.toThrow(/bare 'PR #N'/);
   }
@@ -330,15 +332,21 @@ it("a close's note citing a PR as owner/name#number or its /pull/ URL is accepte
     "Fixed by acme/product#722, merge 0ba0db1.",
     "Fixed by https://github.com/acme/product/pull/722, merge 0ba0db1.",
     "Fixed by https://github.com/acme/product/pull/722 and acme/product#733.",
-    // A repository actually named PR: owner/PR#N is the owner/name#N form the parser reads, so it is not the bare form.
+    // A repo actually named PR: owner/PR#N is the owner/name#N form the parser reads, so it is not the bare form.
     "Fixed by acme/PR#12, merge 0ba0db1.",
     "acme/product#1 and abc/PR#2.",
+    // The same holds when the repo's name merely ends in PR: findPrs reads one citation in each of these, so the word
+    // PR inside it is the citation's own name, not a bare "PR #N".
+    "Fixed by acme/foo-PR#12, merge 0ba0db1.",
+    "Fixed by acme/foo.PR#12, merge 0ba0db1.",
+    "Fixed by acme/myPR#12.",
+    "Fixed by acme/a-PR#1 and abc/PR#2.",
     // No PR cited at all (a not_planned close names the line or path that disproves it): nothing to refuse.
     "Not a bug: the PRs are only read, never written, so `PRs #1` is not a citation and none is needed here.",
   ]) {
     expect(await m.state(PRODUCT, 1, "closed", "completed", note)).toMatchObject({ state: "closed" });
   }
-  expect(f.posted.filter((p) => p.path.endsWith("/comments"))).toHaveLength(6);
+  expect(f.posted.filter((p) => p.path.endsWith("/comments"))).toHaveLength(10);
 });
 
 it("a quiet PR (no fix label) closes as not_planned with the close note, through the issues endpoint", async () => {
