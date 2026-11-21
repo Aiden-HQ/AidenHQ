@@ -177,6 +177,12 @@ export function createConnectionState(o: {
       return `${label} isn't connected (${agentWords[n.cause]}): the owner has the link. Don't retry; this task is woken when it is connected. End your turn.`;
     },
 
+    /** A module's own call that only the owner can fix (not through the proxy): the same record and routing as a tool call's, as background work. */
+    async report(module: string, connection: string, need: Need): Promise<void> {
+      if (o.connections()[connection]?.module !== module) throw new Error(`${module} has no connection ${connection}`);
+      await this.hit({ kind: "module", module, roles: [], tools: {}, credential: "" }, connection, need);
+    },
+
     /**
      * The connection connected: drops its rows and opens a `connected` wake per waiting task; returns how many it woke. `fullOnly`
      * (a successful call) clears only the full causes; `account` (a multi-account answer) only that account's rows and waits.

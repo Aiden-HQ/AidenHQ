@@ -18,7 +18,7 @@ import { kernelJwks, verifyCaller, type Caller } from "./aidenhq-sdk/caller.js";
 import { GitHub, GitHubRefused, parseRef } from "./github.js";
 import { Maintainer } from "./maintainer.js";
 import { describeRepos, parseRepos } from "./aidenhq-sdk/maintained-repos.js";
-import { isModule } from "./module-caller.js";
+import { isModule, reportNeed } from "./module-caller.js";
 import { CodeReviewReader, codeReviewRoute } from "./code-review-read.js";
 import { createAccess, GitHubNeed, needResult, type GitHubAccess } from "./client.js";
 import { officialProxy, signIn } from "./official.js";
@@ -629,6 +629,7 @@ const http = createServer(async (req, res) => {
       }
       return send(404, { error: "no such operation" });
     } catch (err) {
+      await reportNeed(kernelUrl, codehostKey(), err);
       const f = failure(err);
       return send(f.error === "refused" ? 400 : 502, f);
     }
@@ -637,7 +638,7 @@ const http = createServer(async (req, res) => {
   if (url.pathname.startsWith("/internal/code-review/")) {
     { const ok = await isModule(kernelUrl, String(req.headers.authorization ?? ""), "code-review"); if (!ok) return void res.writeHead(ok === undefined ? 503 : 401).end(); }
     if (req.method !== "GET") return void res.writeHead(405).end();
-    const { status, body } = await codeReviewRoute(crReader, url.pathname.slice("/internal/code-review/".length), url.searchParams);
+    const { status, body } = await codeReviewRoute(crReader, url.pathname.slice("/internal/code-review/".length), url.searchParams, (err) => reportNeed(kernelUrl, codehostKey(), err));
     return void res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
   }
   if (url.pathname !== "/mcp") return void res.writeHead(404).end();

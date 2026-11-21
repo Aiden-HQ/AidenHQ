@@ -1,3 +1,5 @@
+import { GitHubNeed } from "./client.js";
+
 // Whether a bearer is the named module's own token, asked of the kernel (GET /v1/whoami): the issue read for the Maintainer's
 // watcher is opened to that module alone, so no secret is shared with it. undefined: the kernel couldn't answer now (a restart,
 // a timeout, a 5xx), which a caller answers as 503 (try again), never as the 401 of a token the kernel refused.
@@ -12,4 +14,15 @@ export async function isModule(kernelUrl: string, authorization: string, module:
   } catch {
     return undefined;
   }
+}
+
+/**
+ * A GitHub need only the owner can fix, met outside a tool call (code review's post reaches this process directly), told to the
+ * kernel as the connection's need (POST /v1/connections/need) so it is routed like any tool call's. Never throws.
+ */
+export async function reportNeed(kernelUrl: string, key: string, err: unknown, fetcher: typeof fetch = fetch): Promise<void> {
+  if (!(err instanceof GitHubNeed) || !err.ownerFixable) return;
+  const n = err.need;
+  const need = { cause: n.cause, detail: err.message, ...(n.cause === "scope" ? { scope: n.scope } : {}), ...(n.cause === "sso" || n.cause === "restricted" ? { org: n.org, url: n.url } : {}) };
+  await fetcher(new URL("/v1/connections/need", kernelUrl), { method: "POST", headers: { authorization: `Bearer ${key}`, "content-type": "application/json" }, body: JSON.stringify({ connection: "github", need }), signal: AbortSignal.timeout(5_000) }).catch(() => {});
 }
