@@ -63,7 +63,7 @@
    "padTo": 94000
   }
  ],
- "chain": "Owner (2026-11-21): show each run's cost on the board's runs table, in dollars.\n\nAiden (task for the Platform Engineer): Add a Cost column to the board's runs table: read cost_usd with the runs, format it as dollars (under a cent as <$0.01, none as a dash), with tests. Open a product PR.",
+ "chain": "Owner (2026-11-21): show each run's cost on the board's runs table, in dollars.\n\nAiden (task for the Platform Engineer): Add the pieces for a Cost column on the board's runs table, as five new files: a dollar formatter (services/board/src/format.ts: under a cent as <$0.01, none as a dash), the runs table's columns and row with Cost (services/board/src/runs.ts), the runs query reading cost_usd (services/board/src/api/runs.ts), and a test for each of the first two. Wiring them into the page is a later task. Open a product PR.",
  "claim": "Adds the Cost column, a dollar formatter and their tests.",
  "expect": "approve",
  "expect_second": true
