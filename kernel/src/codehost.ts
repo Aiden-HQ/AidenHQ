@@ -32,6 +32,7 @@ import { LOCAL_ORG } from "./kinds.ts";
 import type { Resolver } from "./net.ts";
 import type { Facts } from "./facts.ts";
 import type { Kind } from "./writes.ts";
+import { OWNER_CAUSES, type Cause, type Need } from "../sdk/src/vendor/needs.ts";
 
 export const CODEHOST = "github";
 /** The code host modules: their write kinds are an Engineer's (admission.ts), each for the repos it owns. */
@@ -101,6 +102,20 @@ const GRANT_KEY: Record<string, "snapshot" | "clone" | "fetch" | "read" | "comme
 };
 const FETCH_REF = /^(refs\/heads\/\*|refs\/heads\/(?!-)(?!.*\.\.)(?!.*@\{)[\w./-]{1,200}|refs\/pull\/\d{1,9}\/head)$/;
 const READ_KINDS = ["pr", "issue", "diff", "job", "prs"];
+/**
+ * The owner-fixable need in the code host's error answer (`{error, need}`, modules/github/service/src/ops.ts serveOps): an
+ * unreachable or rate-limited cause is not one (the MCP proxy's readNeed reads the same five causes). Only known string
+ * fields are kept, as connection-state.ts's normalise keeps them.
+ */
+function ownerNeed(body: string): Need | undefined {
+  let j: { error?: unknown; need?: Record<string, unknown> } | undefined;
+  try { j = JSON.parse(body) as typeof j; } catch { return undefined; }
+  const n = j?.need;
+  if (!n || typeof n !== "object" || !(OWNER_CAUSES as readonly unknown[]).includes(n.cause)) return undefined;
+  const out: Need = { cause: n.cause as Cause, detail: typeof j!.error === "string" ? j!.error : "" };
+  for (const k of ["scope", "org", "url", "account"] as const) if (typeof n[k] === "string") out[k] = n[k] as string;
+  return out;
+}
 const int = (v: unknown, what: string) => {
   const n = Number(v);
   if (!Number.isSafeInteger(n) || n < 1) throw fail(400, `${what} must be a positive integer`);
@@ -142,7 +157,7 @@ function shape(op: string, b: Record<string, unknown>, paths: string[] = []): Re
 /** codehost-local's ops, in process (modules/codehost-local/src). */
 export type LocalOps = { snapshot(repo: string, ref: string): Promise<Answer>; bundle(repo: string): Promise<{ file: string; done: () => void }> };
 
-export function createCodehost({ grants, repos, kind, secret, resolver, local = () => undefined, noteObject = () => {} }: {
+export function createCodehost({ grants, repos, kind, secret, resolver, local = () => undefined, noteObject = () => {}, recordNeed = () => {} }: {
   grants: () => OpsGrant[];
   /** The kernel's own repos (AIDENHQ_INSTANCE_REPO, AIDENHQ_PRODUCT_REPO, the agents org): what @ names in grants resolve to. */
   repos: () => KernelRepos;
@@ -153,6 +168,8 @@ export function createCodehost({ grants, repos, kind, secret, resolver, local = 
   local?: () => LocalOps | undefined;
   /** Remembers a GitHub object a module's op made (`record` names who), so a later edit of it is known as ours (objects.ts). */
   noteObject?: (ref: string, record: string) => void;
+  /** A code host op's needs_owner answer: the module that asked, and the need, recorded as connection state (main.ts). */
+  recordNeed?: (module: string, need: Need) => void;
 }) {
   /** Checks `module`'s grant and asks the code host: its answer as it came (JSON, a bundle, or a snapshot's tarball). */
   async function ask(module: string, op: string, b: Record<string, unknown>): Promise<Answer> {
@@ -242,6 +259,19 @@ export function createCodehost({ grants, repos, kind, secret, resolver, local = 
     async op(module: string, op: string, b: Record<string, unknown>, res: ServerResponse): Promise<void> {
       if (op === "bundle") throw fail(404, "no codehost operation bundle");
       const r = await ask(module, op, b);
+      // A typed need (a refusal only the owner can fix) is connection state, as an MCP's needs_owner answer is (connection-state.ts):
+      // without this a runner registration refused for a missing scope reached nobody. The answer still goes back as it came.
+      let need: Need | undefined;
+      let body: Buffer | undefined;
+      if ((r.statusCode ?? 500) >= 400 && String(r.headers["content-type"] ?? "").startsWith("application/json")) {
+        const chunks: Buffer[] = [];
+        for await (const c of r) chunks.push(c as Buffer);
+        body = Buffer.concat(chunks);
+        need = ownerNeed(body.toString("utf8"));
+        if (need) {
+          try { recordNeed(module, need); } catch { /* a need never fails the op */ }
+        }
+      }
       // A new comment is ours: remembered by its ref, so editing it (the comment op with `id`) is allowed and no other is.
       if (op === "comment" && b.id == null && r.statusCode === 200) {
         const chunks: Buffer[] = [];
@@ -252,6 +282,7 @@ export function createCodehost({ grants, repos, kind, secret, resolver, local = 
         return;
       }
       res.writeHead(r.statusCode ?? 502, { "content-type": String(r.headers["content-type"] ?? "application/json"), ...(r.headers["x-aidenhq-commit"] ? { "x-aidenhq-commit": String(r.headers["x-aidenhq-commit"]) } : {}) });
+      if (body) return void res.end(body);
       await new Promise<void>((ok, reject) => { r.pipe(res); r.on("end", ok).on("error", reject); });
     },
   };

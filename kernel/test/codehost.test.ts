@@ -285,3 +285,26 @@ test("no op answer carries the token", async (t) => {
   for (const a of answers) assert.ok(!a.text.includes(TOKEN) && !a.headers.includes(TOKEN), a.text);
   assert.match(answers.at(-1).text, /\*\*\*/, "scrubbed, not dropped");
 });
+
+// A refusal only the owner can fix (`{error, need}`, modules/github/service/src/ops.ts serveOps) is recorded as connection
+// state on the path the MCP proxy uses, and the module's answer still goes back byte for byte: the runner registration's
+// missing `admin:org` reached nobody before this.
+test("a codehost needs_owner answer is recorded, and the answer is unchanged", async (t) => {
+  const answer = JSON.stringify({ error: "GitHub needs the `admin:org` permission: reconnect GitHub on the board", need: { cause: "scope", scope: "admin:org" } });
+  const host = createServer((req, res) => { req.resume().on("end", () => res.writeHead(403, { "content-type": "application/json" }).end(answer)); });
+  await new Promise((ok) => host.listen(0, "127.0.0.1", ok));
+  t.after(() => host.close());
+  const url = `http://127.0.0.1:${host.address().port}`;
+  const needs = [];
+  const op = createCodehost({
+    grants: () => [{ module: "ci", runner: { orgs: ["acme"] } }],
+    repos: () => ({}), kind: () => ({ module: "github", floor: 0, tools: [], executor: { url: `${url}/aidenhq/v1/executor`, auth_secret: "k" } }),
+    secret: () => "ch-key", resolver: { resolve: async (u) => ({ host: "127.0.0.1", port: Number(new URL(u).port), path: new URL(u).pathname }), forget: () => {} },
+    recordNeed: (module, need) => needs.push([module, need]),
+  });
+  const sent: { head?: number; body?: string } = {};
+  const res = { writeHead(c) { sent.head = c; return this; }, write(c) { sent.body = (sent.body ?? "") + c; }, end(b) { if (b) sent.body = (sent.body ?? "") + b; }, on() { return this; }, once() { return this; }, emit() {} };
+  await op.op("ci", "runner_token", { org: "acme" }, res);
+  assert.deepEqual(needs, [["ci", { cause: "scope", scope: "admin:org", detail: "GitHub needs the `admin:org` permission: reconnect GitHub on the board" }]]);
+  assert.deepEqual([sent.head, sent.body], [403, answer], "the module's answer goes back as it came");
+});
