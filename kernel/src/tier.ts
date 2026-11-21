@@ -236,7 +236,7 @@ export function recordKey(r: Prior): string | undefined {
 }
 
 /** One branch or PR a request changes, as the retry bound counts it, and its patch key (the change's content key). */
-export type Target = { key: string; patch?: string; /** A run's own: other records' rejections and notes on the task are not this request's (reviewInput scopes them). */ own?: true };
+export type Target = { key: string; patch?: string; /** The target alone, for a notice that names the one that parked (not the whole request). */ label?: string; /** A run's own: other records' rejections and notes on the task are not this request's (reviewInput scopes them). */ own?: true };
 /** The arguments that say where a connection tool call is aimed (never its text): an issue, a PR, a channel, a thread. */
 const AIM = ["repo", "number", "issue_number", "pull_number", "channel", "thread_ts", "id"];
 /**
@@ -250,17 +250,17 @@ export function requestTargets(action: string, s: any, service = false): { targe
   if (action === "conn.tool" && s?.connection && s?.tool) {
     const aim = AIM.filter((k) => ["string", "number"].includes(typeof s.arguments?.[k])).map((k) => `${k}=${String(s.arguments[k]).toLowerCase()}`);
     const label = `${s.connection}.${s.tool}${aim.length ? ` (${aim.join(", ")})` : ""}`;
-    return { targets: [{ key: label }], label };
+    return { targets: [{ key: label, label }], label };
   }
-  const of = (x: any, key: string): Target => ({ key, ...(typeof x?.patch === "string" ? { patch: x.patch } : {}) });
+  const of = (x: any, key: string, label: string): Target => ({ key, label, ...(typeof x?.patch === "string" ? { patch: x.patch } : {}) });
   const branches = action === "push" || action === "pr" ? (s?.branches ?? s?.only ?? []).filter((b: any) => b?.repo && b?.branch) : [];
-  if (branches.length) return { targets: branches.map((b: any) => of(b, `${String(b.repo).toLowerCase()}|${b.branch}`)), label: `branch${branches.length > 1 ? "es" : ""} ${branches.map((b: any) => `\`${b.branch}\``).join(", ")}` };
+  if (branches.length) return { targets: branches.map((b: any) => of(b, `${String(b.repo).toLowerCase()}|${b.branch}`, `branch \`${b.branch}\``)), label: `branch${branches.length > 1 ? "es" : ""} ${branches.map((b: any) => `\`${b.branch}\``).join(", ")}` };
   const prs = action === "merge" ? (s?.prs ?? []).filter((p: any) => p?.repo && p?.number !== undefined) : [];
-  if (prs.length) return { targets: prs.map((p: any) => of(p, `${String(p.repo).toLowerCase()}#${p.number}`)), label: `PR${prs.length > 1 ? "s" : ""} ${prs.map((p: any) => `#${p.number}`).join(", ")}` };
+  if (prs.length) return { targets: prs.map((p: any) => of(p, `${String(p.repo).toLowerCase()}#${p.number}`, `PR #${p.number}`)), label: `PR${prs.length > 1 ? "s" : ""} ${prs.map((p: any) => `#${p.number}`).join(", ")}` };
   // A record no agent filed (`service`: a module's own write) that names the run it reports on (a review's post, one per run) is
   // aimed at that run: sibling runs of a task are different requests, never retries of each other. An agent's request never
   // is: it could mint fresh run ids to dodge the park.
-  if (service && typeof s?.run === "string" && s.run) return { targets: [{ key: `${action}|run=${s.run}`, own: true }], label: `run ${s.run}` };
+  if (service && typeof s?.run === "string" && s.run) return { targets: [{ key: `${action}|run=${s.run}`, own: true, label: `run ${s.run}` }], label: `run ${s.run}` };
   return undefined;
 }
 /** The targets a record was raised against (its card's args), for a rejection to be counted on. */
@@ -320,11 +320,9 @@ export function priorDecisions(records: Prior[], action: string, also: string[] 
   const count = new Map<string, number>();
   const held = new Map<string, number>();
   const splitCount = new Map<string, number>();
-  // Each target's held rejections in order, and the park episode that opened its current park (the MAX_REJECTS-th held
-  // rejection is park 1, the 2*MAX_REJECTS-th park 2, ...), as `<number>:<the record that opened it>`: a second park is its
-  // own episode, and a request refused as parked after one keeps that episode (review-loop.ts parked).
-  const ordinal = new Map<string, number>();
-  const opened = new Map<string, string>();
+  // Each target's current park: the MAX_REJECTS-th held rejection opens park 1, the 2*MAX_REJECTS-th park 2, and so on, so a
+  // second park is its own escalation and a request refused as parked after one keeps that park (review-loop.ts parked).
+  const parkNo = new Map<string, number>();
   // Without targets the task is the one target (`""`), as `rejects` counts it below.
   for (const r of judged) {
     // Each rejection counts once per target: the branch it names, and this request's target carrying its patch key. A record
@@ -337,23 +335,24 @@ export function priorDecisions(records: Prior[], action: string, also: string[] 
     // A panel split (approve + reject) has its own bound (MAX_SPLITS), never the park bound's.
     const bounds = r.reviewCode === "panel_split" ? [splitCount] : [...(r.answered ? [] : [count]), ...(r.answered === "owner" ? [] : [held])];
     const keys = targets?.targets.length ? new Set([...named, ...byPatch, ...byContent]) : new Set([""]);
-    for (const k of keys) for (const bound of bounds) bound.set(k, (bound.get(k) ?? 0) + 1);
-    if (r.reviewCode !== "panel_split" && r.answered !== "owner") for (const k of keys) {
-      const o = (ordinal.get(k) ?? 0) + 1;
-      ordinal.set(k, o);
-      if (o % MAX_REJECTS === 0) opened.set(k, `${o / MAX_REJECTS}:${String(r.id ?? r.decidedAt ?? o)}`);
+    // The held count is the park's own: it keeps the rejections an agent answered, and each boundary opens the next park.
+    const heldHere = r.reviewCode !== "panel_split" && r.answered !== "owner";
+    for (const k of keys) {
+      for (const bound of bounds) bound.set(k, (bound.get(k) ?? 0) + 1);
+      const n = held.get(k) ?? 0;
+      if (heldHere && n % MAX_REJECTS === 0) parkNo.set(k, n / MAX_REJECTS);
     }
   }
   const parks = (n: number[]) => Math.max(0, ...n);
   const unanswered = judged.filter((r) => r.reviewCode !== "panel_split");
   const [open, agentHeld] = targets?.targets.length ? [parks([...count.values()]), parks([...held.values()])] : [unanswered.filter((r) => !r.answered).length, unanswered.filter((r) => r.answered !== "owner").length];
   const rejects = agentHeld >= MAX_REJECTS * (AGENT_LIFTS + 1) ? agentHeld : open;
-  // The busiest target (whose park this is), the rejection that opened its park episode, and the held count: the park notice
-  // keys each episode once and tells a delegator whether the agents' once-lift is still theirs (review-loop.ts parked).
-  const busiest = [...held.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
-  const park = targets?.targets.length ? opened.get(busiest ?? "") : opened.get("");
-  // Per target too, so the park notice reads the target the new rejection landed on (review-loop.ts parked), not the busiest.
-  const heldBy = Object.fromEntries(held), parkBy = Object.fromEntries(opened);
+  // Per target, so the park notice reads the target the rejection landed on and tells a delegator whether the agents'
+  // once-lift is still theirs (review-loop.ts parked); the label names that target, never the whole request. `since` is the
+  // owner's last yes: a park after it is a new episode with its own lift, so the notice key includes it.
+  const heldBy = Object.fromEntries(held), parkBy = Object.fromEntries(parkNo);
+  const labels = targets?.targets.length ? Object.fromEntries(targets.targets.map((t) => [t.key, t.label ?? t.key])) : { "": "this task" };
+  const since = ownerYes ? String(ownerYes.id ?? ownerYes.decidedAt ?? "") : "";
   const splits = targets?.targets.length ? Math.max(0, ...splitCount.values()) : judged.filter((r) => r.reviewCode === "panel_split").length;
   // Two reviewers unsure (reviewer_unsure) is about the request: the fix is often the brief or an authorisation, so the
   // same commits may come back once, after the request chain changed (`chain`, its hash now; `requestChain`, its hash
@@ -375,7 +374,7 @@ export function priorDecisions(records: Prior[], action: string, also: string[] 
   // (null) fail closed: any owner rejection of the action on the task makes it theirs.
   const sameContent = (r: Prior) => (key !== undefined && recordKey(r) === key) || (typeof patches === "string" && recordPatches(r) === patches);
   const ownerNo = mine.some((r) => byOwner(r) && r.state === "rejected" && (patches === null || (sameContent(r) && !mine.some((y) => byOwner(y) && y.state !== "rejected" && sameContent(y) && String(y.decidedAt) > String(r.decidedAt)))));
-  return { ownerVeto: lastOwner?.state === "rejected" || ownerNo, same: sameOne ? sameOne.review || "no note" : undefined, rejects, held: agentHeld, park, heldBy, parkBy, splits, findings: judged.filter((r) => !r.answered).map((r) => r.review).filter(Boolean) as string[], ...(targets?.targets.length ? { scope: targets.label } : {}) };
+  return { ownerVeto: lastOwner?.state === "rejected" || ownerNo, same: sameOne ? sameOne.review || "no note" : undefined, rejects, held: agentHeld, heldBy, parkBy, labels, since, splits, findings: judged.filter((r) => !r.answered).map((r) => r.review).filter(Boolean) as string[], ...(targets?.targets.length ? { scope: targets.label } : {}) };
 }
 
 /** What earlier decisions do to a request: the owner's veto (their card), a rejected change resent, a retry past the bound. */

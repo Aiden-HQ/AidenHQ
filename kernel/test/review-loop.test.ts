@@ -387,14 +387,46 @@ test("a second park on the same target files its own delegator escalation, and s
   for (let i = 0; i < MAX_REJECTS - 1; i++) assert.equal(await file(), true);
   assert.equal(told.length, 2, "the second park files its own escalation");
   assert.equal(told[1].task, "TASK-0");
-  assert.deepEqual([keys[0].startsWith("park:TASK-1:this task:1:"), keys[1].startsWith("park:TASK-1:this task:2:"), keys[0] === keys[1]], [true, true, false], "each park has its own key");
+  assert.deepEqual([keys[0].endsWith(":1"), keys[1].endsWith(":2"), keys[0] === keys[1]], [true, true, false], "each park has its own key");
   assert.match(told[1].body, new RegExp(`rejected acme\\.post on this task ${MAX_REJECTS * (AGENT_LIFTS + 1)} times[^]*The agents' lift on this target is spent[^]*only the owner's own reply or yes moves it now[^]*report the finding or change the request`));
   assert.doesNotMatch(told[1].body, /your comment lifts the park once/);
+  // The rejection note past the agents' lift says the same: it never tells the agent to ask for a lift that is spent.
+  assert.match(k.notices.at(-1).text, /Rejected by the AI reviewer[^]*The agents' lift on this target is spent[^]*only the owner's own reply or yes moves the park now/);
+  assert.doesNotMatch(k.notices.at(-1).text, /until whoever delegated this task or the chief of staff decides on it in a comment here/);
   // Filed again: refused as parked by code (no model), and neither park is repeated.
   const again = fileRecord(k.records, { args: { note: "z" } });
   await k.loop.tick();
   assert.match(k.records.get(again.id).review ?? "", /^parked:[^]*agents' lift is spent/);
   assert.deepEqual([told.length, owner.length, mod.seen.length], [2, 0, MAX_REJECTS * (AGENT_LIFTS + 1)]);
+});
+
+test("two reviews of one target that cross the same park boundary file one delegator notice, not one each", async (t) => {
+  const mod = await reviewer(t);
+  const told = [], keys = [];
+  const tasks = { "TASK-1": { id: "TASK-1", identifier: "WOR-1", status: "in_progress", parentId: "TASK-0" }, "TASK-0": { id: "TASK-0", identifier: "WOR-0", status: "blocked" } };
+  const k = await side(t, db(), mod, { escalate: (records) => {
+    const e = createEscalate({ db: records.db, issue: async (id) => tasks[id], asker: async () => ({ name: "Kai", key: "kai", roles: [] }), notice: (task, body) => told.push({ task, body }), owner: () => {} });
+    return (task, key, text) => (keys.push(key), e.delegator(task, key, text));
+  } });
+  // Four rejections stand on the target; two more records are reviewed at once and both cross the fifth-rejection boundary.
+  for (let i = 0; i < MAX_REJECTS - 1; i++) {
+    fileRecord(k.records, { args: { note: `old ${i}` } });
+    const sweep = k.loop.tick();
+    await until(() => mod.seen.length === i + 1);
+    k.reviews.verdict(mod.seen[i].id, mod.seen[i].token, { decision: "reject", reason: `keep the shim out (${i})`, model: "~acme/model-a" });
+    await sweep;
+  }
+  assert.equal(told.length, 0, "no park before the boundary");
+  const before = mod.seen.length;
+  fileRecord(k.records, { args: { note: "race a" } });
+  fileRecord(k.records, { args: { note: "race b" } });
+  const sweep = k.loop.tick();
+  await until(() => mod.seen.length === before + 2);
+  for (const s of mod.seen.slice(before)) k.reviews.verdict(s.id, s.token, { decision: "reject", reason: "keep the shim out (race)", model: "~acme/model-a" });
+  await sweep;
+  assert.equal(told.length, 1, "one park, one notice, though two reviews crossed it");
+  assert.equal(keys[0], keys[keys.length - 1], "the same park is one escalation key");
+  assert.match(told[0].body, new RegExp(`rejected acme\\.post on this task ${MAX_REJECTS} times`));
 });
 
 test("the reviewer reads an agent's form with its options spelled out, so the owner's \"1A, 2A\" reads against them", async () => {
