@@ -285,7 +285,8 @@ async function claudeCode({ prompt, instructions, model, effort, root, base, min
     // findings then restated as our JSON.
     const first = await turn(sk ? `${sk.invocation} ${base}..HEAD` : `/code-review ${effort} ${base}..HEAD --max-findings all`);
     if (!first.ok) return { message: "", read: false, calls, cause: stopped(first.r, first.end?.result ?? "") };
-    session = first.end?.session_id;
+    if (!first.end?.session_id) return { message: "", read: false, calls, cause: "claude gave no session to continue" };
+    session = first.end.session_id;
     prompt = `Now restate every finding of that ${sk ? "run" : "review"} in this shape (and any problem you confirm while checking them). Check each one's line in the file at the head with the repo tools first.\n${prompt}`;
   }
   const last = await turn(prompt, session);
