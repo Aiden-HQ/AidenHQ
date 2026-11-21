@@ -18,7 +18,7 @@ import type { Resolver } from "./net.ts";
 import { UPDATER, canonical, isUpdater, digestOf, type Card, type Rec, type Records, type Requester } from "./records.ts";
 import type { Reviews } from "./reviews.ts";
 import { LOCAL_ORG, repoKey, type Repos } from "./kinds.ts";
-import { REFUSALS_DDL } from "./jobs.ts";
+import { openRefusals, markRefusal } from "./refusals.ts";
 import { CODEHOSTS, routeKind } from "./codehost.ts";
 import type { Executor, ReviewContext } from "../sdk/src/executor.ts";
 import { writeRaise, type Inventory } from "./paths.ts";
@@ -46,7 +46,7 @@ export const CONN_TOOL = "conn.tool";
  * carded payload is always reviewable whole.
  */
 export const CONN_TOOL_ARGS_MAX = 100_000;
-const fail = (status: number, type: string, message: string) => Object.assign(new Error(message), { status, type });
+const fail = (status: number, type: string, message: string, code?: string) => Object.assign(new Error(message), { status, type, ...(code ? { code } : {}) });
 
 /** The kind's strict args schema: a small subset of JSON Schema, enough for tool arguments and the kernel's kinds. Throws with the first problem. */
 export function validate(s: Schema, v: unknown, at = "args"): void {
@@ -122,7 +122,7 @@ export function createWrites({ records, registry, connections, secret, resolver,
   resume?: string[];
   log?: (msg: string, f?: { [k: string]: unknown }) => void;
 }) {
-  records.db.exec(REFUSALS_DDL);
+  openRefusals(records.db);
   const waiters = new Map<string, ((r: Rec) => void)[]>();
   const settled = (r: Rec) => { for (const w of waiters.get(r.id) ?? []) w(r); waiters.delete(r.id); };
   const policy = (k: Kind) => createHash("sha256").update(canonical({ ...k, executor: undefined })).digest("hex").slice(0, 32);
@@ -131,7 +131,7 @@ export function createWrites({ records, registry, connections, secret, resolver,
   const inProcess = (k: Kind | undefined) => (k && Object.hasOwn(executors(), k.module) ? executors()[k.module] : undefined);
   async function call(k: Kind, op: "plan" | "execute" | "status", body: unknown): Promise<any> {
     const own = inProcess(k);
-    if (own && op === "plan") return own.plan(body as never).catch((e: Error & { status?: number }) => { throw e.status && e.status >= 500 ? e : fail(422, "refused", String(e.message).slice(0, 1000)); });
+    if (own && op === "plan") return own.plan(body as never).catch((e: Error & { status?: number; code?: string }) => { throw e.status && e.status >= 500 ? e : fail(422, "refused", String(e.message).slice(0, 1000), e.code); });
     if (own) throw fail(500, "no_executor", `${k.module} runs in process: no ${op} call`);
     if (!k.executor) throw fail(500, "no_executor", `${k.module} declares no executor`);
     const key = secret(k.executor.auth_secret);
@@ -146,7 +146,8 @@ export function createWrites({ records, registry, connections, secret, resolver,
           try { j = JSON.parse(text); } catch { return reject(fail(502, "bad_executor", `${k.module}'s ${op} answered ${res.statusCode} with no JSON`)); }
           // A 4xx is the executor's refusal; a 5xx (a module starting, or failing) is no answer yet.
           if ((res.statusCode ?? 500) >= 500) return reject(fail(502, "bad_executor", String(j?.error ?? `${k.module}'s ${op} answered ${res.statusCode}`).slice(0, 1000)));
-          if ((res.statusCode ?? 500) >= 300) return reject(fail(422, "refused", String(j?.error ?? `${k.module}'s ${op} answered ${res.statusCode}`).slice(0, 1000)));
+          // A refusal carries its rule's stable code beside its words when the executor sends one (the plan's `rule`/`code`).
+          if ((res.statusCode ?? 500) >= 300) return reject(fail(422, "refused", String(j?.error ?? `${k.module}'s ${op} answered ${res.statusCode}`).slice(0, 1000), typeof j?.code === "string" && j.code ? j.code.slice(0, 80) : undefined));
           resolve(j);
         });
       });
@@ -452,8 +453,10 @@ export function createWrites({ records, registry, connections, secret, resolver,
       const { kind, k, t, args } = admit(who, asked, given, task);
       // A kernel job's last write attempt is on its row: the reason it was refused at plan time, or nothing once one went through
       // (dispatch blocks the task of a run that ended on a refusal).
-      const mark = (why: string | null) => { if (who.job) (why ? records.db.prepare("INSERT INTO job_refusals (job, why) VALUES (?, ?) ON CONFLICT DO UPDATE SET why = excluded.why").run(who.job, why) : records.db.prepare("DELETE FROM job_refusals WHERE job = ?").run(who.job)); };
-      const r = await file(kind, k, requesterOf(who, t), args, t, evidence, who.workspace || undefined).catch((e: { status?: number; message?: string }) => { if (e?.status === 422) mark(`${kind}: ${e.message}`.slice(0, 1000)); throw e; });
+      // The refusal's kind and source are the kernel's own, as it routed them: a code an executor sends never vouches for itself,
+      // and the module alone is too broad (another of its kinds could return the same code).
+      const mark = (why: string | null, code?: string, at?: string, source?: string) => { if (who.job) markRefusal(records.db, who.job, why, code, at, source); };
+      const r = await file(kind, k, requesterOf(who, t), args, t, evidence, who.workspace || undefined).catch((e: { status?: number; message?: string; code?: string }) => { if (e?.status === 422) mark(`${kind}: ${e.message}`.slice(0, 1000), e.code, kind, k.module); throw e; });
       mark(null);
       if (r.state === "claimed") await execute(r, k);
       return r;
