@@ -90,9 +90,10 @@ export function createEscalate({ db, issue, state, asker, notice, owner, chief, 
   /**
    * The task's recorded ask while it is still open: the `ask:<task>` marker and the state's open, question-carrying wait that
    * began with it. The state applies the answer rule, so an answered question or a questionless release is no open ask. A
-   * marker from before a reopen or a questionless wait never arms the gate. `undefined`: no open ask; `"unknown"`: unreadable.
+   * marker from before a reopen or a questionless wait never arms the gate. `undefined`: no open ask; `"unknown"`: unreadable;
+   * `"ambiguous"`: a legacy marker whose recipient can't be told, so it is never replaced.
    */
-  async function openAsk(t: Issue): Promise<{ to: AskTo } | "unknown" | undefined> {
+  async function openAsk(t: Issue): Promise<{ to: AskTo } | "ambiguous" | "unknown" | undefined> {
     const task = t.id;
     const row = state(task);
     if (!row) return "unknown";
@@ -105,12 +106,18 @@ export function createEscalate({ db, issue, state, asker, notice, owner, chief, 
     const reopen = db.prepare("SELECT MAX(at) AS at FROM facts WHERE type = 'task.status_changed' AND subject = ? AND at > ? AND json_extract(data, '$.from') IN ('done', 'cancelled')").get(`task:${task}`, new Date(marker.at).toISOString()) as { at: string | null } | undefined;
     if (reopen?.at) return undefined;
     if (!(Number.isFinite(Date.parse(row.wait_since)) && Date.parse(row.wait_since) >= marker.at)) return undefined;
-    // Older markers stored the resolved recipient by the old two-value scheme; a "delegator" one may now have no delegator.
-    const to: AskTo | undefined = marker.kind === "owner" && answeredBy === "delegator" ? "chief_of_staff"
-      : marker.kind === "delegator" ? (await delegatorOf(t)) ? "delegator" : (await agentOf(t))?.roles.includes(CHIEF) ? "owner" : "chief_of_staff"
-      : marker.kind === "owner" || marker.kind === "chief_of_staff" ? marker.kind : undefined;
-    if (!to) return undefined;
-    return { to };
+    // `to:<recipient>` is this code's exact destination. Older markers stored the requested category instead: "owner" was the
+    // owner directly, but "delegator" was written for the chief of staff too (there was no other kind), so who waits on one
+    // can't be told from the row: it is `"ambiguous"`, never replaced.
+    if (marker.kind.startsWith("to:")) {
+      const to = marker.kind.slice(3);
+      if (to !== "owner" && to !== "delegator" && to !== "chief_of_staff") return undefined;
+      // The wait fact and the marker are written together: a "chief of staff" or "delegator" ask is a delegator wait. A row
+      // that disagrees with its own wait is not this ask's destination either.
+      return answeredBy === "owner" ? (to === "owner" ? { to } : "ambiguous") : to === "owner" ? "ambiguous" : { to };
+    }
+    if (marker.kind === "owner") return { to: "owner" };
+    return "ambiguous";
   }
 
   async function toOwner(t: Issue, text: string, dedupe = `escalate:${t.id}`) {
@@ -131,7 +138,9 @@ export function createEscalate({ db, issue, state, asker, notice, owner, chief, 
   const api = {
     /** The ask's durable marker, written with the wait fact (one transaction: no awaiting); each recorded ask is a new episode. */
     record(task: string, to: AskTo, at = now()) {
-      db.prepare("INSERT OR REPLACE INTO escalations (key, task, kind, at) VALUES (?, ?, ?, ?)").run(`ask:${task}`, task, to, at);
+      // `to:<recipient>`: the exact destination, so the next ask can tell a replacement from another recipient's open ask. Legacy
+      // rows (the bare kind) stay readable but ambiguous (openAsk).
+      db.prepare("INSERT OR REPLACE INTO escalations (key, task, kind, at) VALUES (?, ?, ?, ?)").run(`ask:${task}`, task, `to:${to}`, at);
       // A replacement can come in the same millisecond as the ask it replaces: the episode rows must still be distinct, or the
       // chief of staff's task (keyed by the episode) would be the old one and the new question never filed.
       let n = 0;
@@ -179,7 +188,7 @@ export function createEscalate({ db, issue, state, asker, notice, owner, chief, 
      * otherwise it goes to the chief of staff. One open ask per task: a question for the same recipient replaces it (a new
      * episode, sent again); one for another recipient is `open`, nothing sent.
      */
-    async ask(task: string, who: "owner" | "delegator", question: string, asked = false): Promise<{ sent: "asked" | "recorded" | "open" | "gone" | "limit"; to?: AskTo }> {
+    async ask(task: string, who: "owner" | "delegator", question: string, asked = false): Promise<{ sent: "asked" | "recorded" | "open" | "ambiguous" | "gone" | "limit"; to?: AskTo }> {
       const q = neutral(question).trim().slice(0, 1500);
       const t = await issue(task);
       if (!q || !t || CLOSED.includes(String(t.status))) return { sent: "gone" };
@@ -187,6 +196,8 @@ export function createEscalate({ db, issue, state, asker, notice, owner, chief, 
       const to: AskTo = who === "owner" ? (fromChief || (await conversing(t.id)) ? "owner" : "chief_of_staff") : (await delegatorOf(t)) ? "delegator" : fromChief ? "owner" : "chief_of_staff";
       const open = await openAsk(t);
       if (open === "unknown") return { sent: "open" };
+      // A legacy marker doesn't say which recipient waits: never replace it on a guess; the caller refuses, actionably.
+      if (open === "ambiguous") return { sent: "ambiguous" };
       // One open ask at a time. The same routed recipient may be replaced; a recipient change waits, except that an ask whose
       // delegator has since closed may move on to whoever now settles it (the chief of staff, or the owner for the chief's task).
       if (open && open.to !== to && !(open.to === "delegator" && !(await delegatorOf(t)))) return { sent: "open", to: open.to };

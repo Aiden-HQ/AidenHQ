@@ -360,6 +360,34 @@ test("an ask whose delegator closed moves to the chief of staff; an open delegat
   assert.equal(JSON.parse(fact.data).question, "Or this one?");
 });
 
+test("a legacy ask marker whose recipient can't be told is refused, not replaced", async (t) => {
+  const w = world(t);
+  const ask = { reason: "which path", for: "delegator", question: "Which path is current?" };
+  assert.equal((await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, ask)).to, "delegator");
+  w.tick(MIN);
+  // Before this change every ask's marker was the bare kind, where "delegator" also meant the chief of staff: who waits is
+  // not in the row, so a question that would route to the delegator must not replace it on a guess.
+  w.db.prepare("UPDATE escalations SET kind = 'delegator' WHERE key = 'ask:t1'").run();
+  await assert.rejects(w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { ...ask, question: "Or this one?" }), { status: 409 });
+  assert.equal(w.asked.notices.length, 1, "nothing was sent");
+  const fact = w.db.prepare("SELECT data FROM facts WHERE type = 'work.waiting' AND subject = 'wait:t1' ORDER BY seq DESC LIMIT 1").get();
+  assert.equal(JSON.parse(fact.data).question, "Which path is current?", "the first wait stands");
+});
+
+test("a replacement with the same until gets its own wait wake", async (t) => {
+  const w = world(t);
+  const until = new Date(w.now() + 2 * 60 * MIN).toISOString();
+  const ask = { reason: "which path", until, for: "delegator", question: "Which path is current?" };
+  assert.equal((await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, ask)).to, "delegator");
+  const first = w.db.prepare("SELECT key FROM wakes WHERE task = 't1' AND state = 'open' AND key LIKE 'wait:%'").get().key;
+  w.tick(MIN);
+  await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { ...ask, question: "Which path is current now?" });
+  const open = w.db.prepare("SELECT key FROM wakes WHERE task = 't1' AND state = 'open' AND key LIKE 'wait:%'").all();
+  assert.equal(open.length, 1, "the newer wait replaced the older");
+  assert.notEqual(open[0].key, first, "the same until in another millisecond is another wake");
+  assert.equal(JSON.parse(w.db.prepare("SELECT data FROM facts WHERE type = 'work.waiting' AND subject = 'wait:t1' ORDER BY seq DESC LIMIT 1").get().data).question, "Which path is current now?");
+});
+
 test("a chat awaiting the owner's next message is never swept", async (t) => {
   const w = world(t);
   w.add("task.created", "task:t3", "t3", { parent: null, identifier: "T3", chat: true });
