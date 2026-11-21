@@ -542,9 +542,15 @@ function Conversation({ refId, row, mobile, crew, prefix, go, onSignIn, toast, p
 
   const notRight = useCallback(
     async (text: string) => {
-      await api.notRight(refId, text);
+      try {
+        await api.notRight(refId, text);
+      } catch (e) {
+        toast(`Couldn't send the correction: ${(e as Error).message}`);
+        return false;
+      }
       toast("Sent back as a correction");
       await load();
+      return true;
     },
     [refId, toast, load],
   );
@@ -792,11 +798,19 @@ function dayLabel(iso: string): string {
 }
 const clock = (iso: string) => new Date(iso).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
 
-const MessageView = memo(function MessageView({ m, crew, prefix, lastReply, asking, open, notRight, answer }: { m: ChatMessage; crew: Assignee[]; prefix: string; lastReply: boolean; asking: boolean; open: boolean; notRight: (t: string) => Promise<void>; answer: (t: string) => void }) {
+const MessageView = memo(function MessageView({ m, crew, prefix, lastReply, asking, open, notRight, answer }: { m: ChatMessage; crew: Assignee[]; prefix: string; lastReply: boolean; asking: boolean; open: boolean; notRight: (t: string) => Promise<boolean>; answer: (t: string) => void }) {
   const [fixing, setFixing] = useState(false);
   const [fix, setFix] = useState("");
   const [busy, setBusy] = useState(false);
   const [expanded, setExpanded] = useState(false);
+  // The box closes and clears only when the correction went; a failure keeps the text.
+  const sendFix = () => {
+    setBusy(true);
+    void notRight(fix.trim()).then((sent) => {
+      setBusy(false);
+      if (sent) (setFixing(false), setFix(""));
+    });
+  };
   if (m.kind === "owner")
     return (
       <div className="msg owner">
@@ -871,10 +885,10 @@ const MessageView = memo(function MessageView({ m, crew, prefix, lastReply, aski
             value={fix}
             maxLength={500}
             onChange={(e) => setFix(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && fix.trim() && void (setBusy(true), notRight(fix.trim()).finally(() => (setBusy(false), setFixing(false), setFix(""))))}
+            onKeyDown={(e) => e.key === "Enter" && fix.trim() && !busy && sendFix()}
             aria-label="What's not right"
           />
-          <button className="btn primary" disabled={!fix.trim() || busy} onClick={() => void (setBusy(true), notRight(fix.trim()).finally(() => (setBusy(false), setFixing(false), setFix(""))))}>
+          <button className="btn primary" disabled={!fix.trim() || busy} onClick={() => sendFix()}>
             Send
           </button>
         </div>

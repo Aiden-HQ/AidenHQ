@@ -380,7 +380,7 @@ export function App() {
     }
     try {
       await api.schedule(id, { date, bucket: "today", park: "backlog" });
-      toast(`Snoozed until ${dayDate(date)}`, from ? { label: "Undo", run: () => void api.move(id, from).then(() => refresh(true)) } : undefined);
+      toast(`Snoozed until ${dayDate(date)}`, from ? { label: "Undo", run: () => void api.move(id, from).then(() => refresh(true), (e) => toast(`Couldn't undo: ${(e as Error).message}`)) } : undefined);
       void refresh(true);
     } catch (e) {
       toast(`Couldn't snooze: ${(e as Error).message}`);
@@ -410,7 +410,7 @@ export function App() {
       await api.update(card.id, { status: "done" });
       toast(`${card.identifier} done`, {
         label: "Undo",
-        run: () => void api.update(card.id, { status: card.status === "in_progress" ? "in_progress" : "todo" }).then(() => refresh(true)),
+        run: () => void api.update(card.id, { status: card.status === "in_progress" ? "in_progress" : "todo" }).then(() => refresh(true), (e) => toast(`Couldn't undo: ${(e as Error).message}`)),
       });
       void refresh();
     } catch (e) {
@@ -832,7 +832,7 @@ export function App() {
             <header className="drawer-head">
               <span className="ident">{board.brief.identifier}</span>
               <span className="spacer" />
-              <button className="btn" onClick={() => void api.update(board.brief!.id, { status: "done" }).then(() => (go("#/"), refresh(true)))}>
+              <button className="btn" onClick={() => void api.update(board.brief!.id, { status: "done" }).then(() => (go("#/"), refresh(true)), (e) => toast(`Couldn't update: ${(e as Error).message}`))}>
                 Mark read
               </button>
               <a className="icon-btn" href="#/" aria-label="Close">
@@ -1052,6 +1052,7 @@ function NewTask({ board, onClose, onCreated, toast }: { board: Board; onClose: 
   const [pick, setPick] = useState<string | null>(null);
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
+  const [created, setCreated] = useState<{ id: string; identifier: string } | null>(null); // locks the title once the task exists
   const crew = board.assignees.filter((a) => a.kind !== "me");
   const agent = crew.find((a) => a.key === pick);
   const name = agent?.name;
@@ -1060,7 +1061,9 @@ function NewTask({ board, onClose, onCreated, toast }: { board: Board; onClose: 
     if (!t || busy) return;
     setBusy(true);
     try {
-      const task = await api.create(t, "triage");
+      // A retry after addAgent failed reuses the task already made.
+      const task = created ?? (await api.create(t, "triage"));
+      setCreated(task);
       if (agent) await api.addAgent(task.id, agent.key, text.trim() || t);
       onCreated(task.identifier, name);
     } catch (e) {
@@ -1080,7 +1083,7 @@ function NewTask({ board, onClose, onCreated, toast }: { board: Board; onClose: 
         }}
       >
         <h2>New task</h2>
-        <input className="new-title" autoFocus value={title} placeholder="What needs doing?" onChange={(e) => setTitle(e.target.value)} />
+        <input className="new-title" autoFocus value={title} readOnly={busy || !!created} placeholder="What needs doing?" onChange={(e) => setTitle(e.target.value)} />
         <CrewPicker crew={crew} pick={pick} setPick={setPick} me />
         {agent && (
           <textarea

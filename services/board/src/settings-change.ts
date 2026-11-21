@@ -245,9 +245,12 @@ export function changesOf(description: string | null | undefined): Change[] | un
 
 export type Stage = "working" | "waiting" | "applying" | "applied" | "failed" | "rejected" | "closed";
 
+/** A task the kernel filed no apply card on within this long never will: its outcome stays unknown. */
+const UNFILED_MS = 10 * 60_000;
+
 /** Where a settings task stands, from its task status and its newest apply card. */
-export function stageOf(status: string, cards: Pick<Approval, "action" | "state" | "outcome" | "tier" | "outcomeText" | "id">[]): { stage: Stage; tier?: number; approval?: string; detail?: string } {
-  const a = cards.find((c) => c.action === "apply");
+export function stageOf(status: string, cards: Pick<Approval, "action" | "state" | "outcome" | "tier" | "outcomeText" | "id">[] | undefined, createdAt: string): { stage: Stage; tier?: number; approval?: string; detail?: string } {
+  const a = cards?.find((c) => c.action === "apply");
   if (a) {
     if (a.outcome === "applied") return { stage: "applied", approval: a.id };
     if (a.outcome === "failed") return { stage: "failed", approval: a.id, ...(a.outcomeText ? { detail: a.outcomeText.slice(-300) } : {}) };
@@ -255,5 +258,9 @@ export function stageOf(status: string, cards: Pick<Approval, "action" | "state"
     if (a.state === "approved" || a.state === "used") return { stage: "applying", approval: a.id };
     if (a.state === "rejected" || a.state === "stale" || a.state === "expired") return { stage: "rejected", approval: a.id };
   }
-  return status === "done" || status === "cancelled" ? { stage: "closed" } : { stage: "working" };
+  if (status === "done" || status === "cancelled") return { stage: "closed" };
+  // No card yet: the kernel is still writing the change, until it plainly never filed one (a lost response); then the owner can save again.
+  // Records that couldn't be read (`undefined`) prove nothing, so the change stays working.
+  if (!cards) return { stage: "working" };
+  return Date.now() - Date.parse(createdAt) > UNFILED_MS ? { stage: "failed", detail: "No apply record was found for this change after 10 minutes. Saving again files a new one." } : { stage: "working" };
 }

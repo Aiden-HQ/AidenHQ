@@ -360,7 +360,13 @@ export function DeviceSignIn({ c, label, onClose }: { c: Connectable; label: str
         if (p.state === "pending") return;
         setCode(null);
         setProblem(p.state === "expired" ? "The code expired before it was entered. Get a new one." : `${p.detail ?? "The sign-in stopped."} Get a new code to try again.`);
-      }, () => {});
+      }, (e) => {
+        // A blip keeps polling while the code is good; an ended session or an expired code stops.
+        const ended = e instanceof SignInRequired;
+        if (!ended && Date.now() < code.until) return;
+        setCode(null);
+        setProblem(ended ? "Your session ended. Sign in again, then press Connect." : "Couldn't check the sign-in before the code expired. Get a new code to try again.");
+      });
     }, Math.max(2, code.interval) * 1000);
     return () => clearInterval(t);
   }, [code, c.id]);
