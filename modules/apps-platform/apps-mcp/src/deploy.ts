@@ -183,6 +183,10 @@ export function createEngine(d: Deps) {
   const confirmedOpen = (id: ProbeResult | undefined) => !!id?.findings.some((f) => f.hard && f.what.includes(NO_SIGN_IN));
   /** A hard identity finding that is not a confirmed open answer (the probe errored, or got 5xx): never a safe rollback. */
   const unconfirmedIdentity = (id: ProbeResult | undefined) => !!id?.findings.some((f) => f.hard && !f.what.includes(NO_SIGN_IN));
+  /** A target whose identity could not be confirmed is never recorded or reused as a healthy rollback target. */
+  const disqualifyTarget = (good: Deploy[], sha: string, why: string) => {
+    for (const g of good) if (g.sha === sha) d.store.disqualify(g.id, why);
+  };
 
   async function stopIfOpen(app: App, id: ProbeResult | undefined, good: Deploy[], sha: string, note: string): Promise<string | undefined> {
     if (!confirmedOpen(id)) return undefined;
@@ -252,6 +256,7 @@ export function createEngine(d: Deps) {
       const refused = !!checks?.some((c) => c.probe === "identity" && !c.ok);
       const open = refused && back.ok ? await identity(app) : undefined;
       const unconfirmed = unconfirmedIdentity(open);
+      if (unconfirmed) disqualifyTarget(d.store.goodDeploys(app.name), prev.sha, `identity unconfirmed on rollback target`);
       const stopped = await stopIfOpen(app, open, d.store.goodDeploys(app.name), prev.sha, ` (found when ${next.sha.slice(0, 8)} was refused)`);
       const accepted = back.ok && !stopped && !unconfirmed;
       // A commit whose `up` failed never got running: `build_failed` says the build or host failed, so the loop tries it again.
@@ -259,7 +264,7 @@ export function createEngine(d: Deps) {
       const r: Result = { sha: next.sha, status: !next.built ? "build_failed" : accepted ? "rolled_back" : "failed", images: next.images, ...(accepted || stopped ? { previous: prev.sha } : {}), ...(checks ? { checks } : {}), ...(stopped ? { stopped } : {}) };
       const after = stopped ? `${stopped} (as does the rollback target ${prev.sha.slice(0, 8)})` : unconfirmed ? `rollback target ${prev.sha.slice(0, 8)} could not confirm its identity` : back.ok ? `rolled back to ${prev.sha.slice(0, 8)}` : `rollback to ${prev.sha.slice(0, 8)} also unhealthy`;
       record(app, r, o.by, stopped ? `${after}; ${next.err ?? ""}` : `${next.err ?? "health check failed"}; ${after}; ${NOTE}`);
-      if (back.ok && !stopped) record(app, { sha: back.sha, status: "healthy", images: back.images }, "auto-rollback");
+      if (accepted) record(app, { sha: back.sha, status: "healthy", images: back.images }, "auto-rollback");
       return r;
     });
   }
@@ -287,6 +292,7 @@ export function createEngine(d: Deps) {
       // never a rollback target again. The checks' findings are reported with it.
       const checks = await verify(app, back.ok, back.declared);
       const id = checks.find((c) => c.probe === "identity");
+      if (unconfirmedIdentity(id)) disqualifyTarget(good, prev.sha, `identity unconfirmed on rollback target`);
       const stopped = back.ok ? await stopIfOpen(app, id, good, prev.sha, "") : undefined;
       const r: Result = { sha: back.sha, status: back.ok && !stopped && !unconfirmedIdentity(id) ? "healthy" : "failed", images: back.images, previous: good[0]!.sha, checks, ...(stopped ? { stopped } : {}) };
       record(app, r, o.by, `rollback; ${[summary(checks), NOTE].filter(Boolean).join("; ")}`);

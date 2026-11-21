@@ -143,6 +143,8 @@ describe("deploy engine", () => {
     expect(r.status).toBe("failed");
     expect(r.stopped).toBeUndefined();
     expect(r.previous).toBeUndefined();
+    expect(r0.store.recentDeploys("demo").filter((d) => d.by === "auto-rollback")).toHaveLength(0); // never recorded healthy
+    expect(r0.store.goodDeploys("demo").find((g) => g.sha === "v1")?.disqualified).toBe(1); // never reused as a target
   });
   it("an unconfirmed identity check on a manual rollback target is not reported as healthy", async () => {
     let id = 0;
@@ -152,6 +154,7 @@ describe("deploy engine", () => {
     const r = await r0.engine.rollback(app(), { by: "t" });
     expect(r.status).toBe("failed");
     expect(r.stopped).toBeUndefined();
+    expect(r0.store.goodDeploys("demo").find((g) => g.sha === "v1")?.disqualified).toBe(1); // never reused as a target
   });
   it("a rollback that could not start reports the teardown failure and keeps no previous revision", async () => {
     const { engine, st, store } = setup(["v1", "v2"]);
