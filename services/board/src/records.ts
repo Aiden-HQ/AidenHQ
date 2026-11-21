@@ -79,7 +79,7 @@ export type Records = {
    * [] when the kernel is unreachable or not configured (logged once until it answers again): a page never fails on it.
    * `tier0`: Tier 0 runs too (the history's audit rows), else only the records that went to the reviewer or the owner.
    */
-  list(state: "owner" | "pending" | "recent" | "finished", opts?: { task?: string; limit?: number; tier0?: boolean }): Promise<Approval[]>;
+  list(state: "owner" | "pending" | "recent" | "finished", opts?: { task?: string; limit?: number; tier0?: boolean; strict?: boolean }): Promise<Approval[]>;
   /** Marketplace advisories open against installed modules (plan unit 4e): Settings > Modules shows them as a banner. [] when unreachable. */
   advisories(): Promise<Advisory[]>;
   /** Every connection's /healthz as the kernel reaches it (the one place connection health is probed). {} when the kernel can't be asked. */
@@ -103,7 +103,7 @@ const neverConnected = (c?: Cause): boolean => !!c && (c.errors?.length ? c.erro
 
 export function kernelRecords(k: { url: string; token: string } | undefined, log?: { warn(o: object, m: string): void }): Records {
   let down = false;
-  const list: Records["list"] = async (state, { task, limit, tier0 } = {}) => {
+  const list: Records["list"] = async (state, { task, limit, tier0, strict } = {}) => {
     if (!k) return [];
     try {
       const res = await fetch(`${k.url}/v1/writes?state=${state}${task ? `&task=${encodeURIComponent(task)}` : ""}${limit ? `&limit=${limit}` : ""}${tier0 ? "&tier0=1" : ""}`, { headers: { authorization: `Bearer ${k.token}` }, signal: AbortSignal.timeout(15_000) });
@@ -114,6 +114,7 @@ export function kernelRecords(k: { url: string; token: string } | undefined, log
     } catch (err) {
       if (!down) log?.warn({ err: String(err) }, "kernel records unavailable");
       down = true;
+      if (strict) throw err;
       return [];
     }
   };

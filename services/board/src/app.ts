@@ -1721,7 +1721,7 @@ export function createApp(opts: AppOptions): Server {
             full.map(async (i) => {
               const kept = store.meta(`settings-change:${i.id}`);
               const items = kept ? (JSON.parse(kept) as Change[]) : changesOf(i.description);
-              return items ? [{ identifier: i.identifier, title: i.title, createdAt: i.createdAt, items, ...stageOf(i.status, await records.list("recent", { task: i.id, limit: 50 }), i.createdAt) }] : [];
+              return items ? [{ identifier: i.identifier, title: i.title, createdAt: i.createdAt, items, ...stageOf(i.status, await records.list("recent", { task: i.id, limit: 50, strict: true }).catch(() => undefined), i.createdAt) }] : [];
             }),
           )
         ).flat();

@@ -144,6 +144,7 @@ describe("where a settings change stands", () => {
   it("follows the task, then its apply card", () => {
     expect(stageOf("in_progress", [], new Date().toISOString()).stage).toBe("working");
     expect(stageOf("in_progress", [], new Date(Date.now() - 3_600_000).toISOString()).stage).toBe("failed");
+    expect(stageOf("in_progress", undefined, new Date(Date.now() - 3_600_000).toISOString()).stage).toBe("working");
     expect(stageOf("in_progress", [card({})], new Date().toISOString())).toMatchObject({ stage: "waiting", tier: 2 });
     expect(stageOf("done", [card({ state: "used" })], new Date().toISOString()).stage).toBe("applying");
     expect(stageOf("done", [card({ state: "used", outcome: "applied" })], new Date().toISOString()).stage).toBe("applied");
