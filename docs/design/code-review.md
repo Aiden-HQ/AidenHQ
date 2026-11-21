@@ -41,8 +41,8 @@ code_review:
       max_nits: 5
 ```
 
-A combo is an engine, a model (an OpenRouter id), an effort the engine accepts (codex minimal to xhigh; claude-code and
-codegenie low to max) and `run_usd` (what one run may spend: its model token's hard cap, never a reservation; default $5 for each engine), stored whole. The engine catalog (`ENGINES` in `config.ts`, served at `GET /engines`) offers a
+A combo is an engine, a model (an OpenRouter id), an effort the engine accepts (codex and codex-native minimal to xhigh;
+claude-code and codegenie low to max) and `run_usd` (what one run may spend: its model token's hard cap, never a reservation; default $5 for each engine), stored whole. The engine catalog (`ENGINES` in `config.ts`, served at `GET /engines`) offers a
 short model list per engine; any other OpenRouter id may be typed, and the gateway refuses one `models-openrouter` doesn't
 price. A deeper review is asked for (Review again, `@aiden review`), never a moment of its own. A repo that does not validate is
 dropped loudly (listed in the config tool's errors and the board's banner), never half-used; a repo listed twice is refused
@@ -56,6 +56,7 @@ the final message out; fan-out, verification, dedupe and the schema are `review.
 | `codex` | our finder prompt; 2 finders and a verifier past low effort, 1 and none at minimal/low | our prompts | the repo tools (MCP), shell off, empty cwd |
 | `claude-code` | Claude Code's own `/code-review <effort>` over the change, then our finder prompt in the same session restates its findings as our JSON | our prompts | `claude -p` through the gateway's Anthropic route; built-in tools off but Agent, the repo tools (MCP); empty cwd, user settings only, CLAUDE.md off |
 | `codegenie` | `codegenie review --format json` (Polygon's harness, its own planning and verification), mapped to our findings | recheck by codex on the same model | a worktree of the trusted base (its `codegenie.toml` and `.codegenie/skills` are the base's), the head as review data; its OpenRouter calls rewritten to the gateway (`gateway-fetch.ts`) |
+| `codex-native` | `codex exec review --base <base>` (OpenAI's built-in reviewer and its own prompt; the brief as its developer instructions), its findings mapped to ours (P0-P2 important, P3 nit) | recheck by codex on the same model | the box's checkout (base and head commits) as its cwd; its shell on under codex's read-only sandbox (no writes, no network) with no inherited environment but PATH (never the run's token), so it can run anything already in the box, the PR's code included, without writing or connecting; project docs, skills' instructions, hooks, plugins, apps, memories and exec rules off, the project never trusted. It reads git itself, so coverage isn't tracked: every review says so (`coverage.incomplete`). Every engine's output has the run's token and any key-shaped text (`ahq*_`, `sk-`) redacted before it is mapped (`review.ts` scrub) |
 
 The box image (`services/computer/images/agent-base`) pins `@anthropic-ai/claude-code` 2.1.323 and `@0xsequence/codegenie`
 0.7.0, dependencies resolved as of 2026-11-13. Repo context is the repo's own `REVIEW.md`, `AGENTS.md` and `CLAUDE.md` at the

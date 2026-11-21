@@ -238,6 +238,19 @@ ${fence(JSON.stringify(previous, null, 1), marker)}
 When you are done, your final message is only this JSON: {"fixed": ["<id>", ...], "still": ["<id>", ...]}`;
 }
 
+// Credential shapes no review may carry out of the box: our tokens (ahqj_, ahqci_, ahqu_) and sk- style keys.
+const KEYS = /\bahq[a-z]{0,3}_[A-Za-z0-9._-]{8,}|\bsk-[A-Za-z0-9_-]{16,}/g;
+/**
+ * An engine's result with credentials taken out of everything it hands back (its message, cause and coverage note): the run's
+ * own token (`secrets`; an engine with a shell could read it from the process tree) and any key-shaped text. The one point every
+ * engine's output passes before it is mapped and posted.
+ */
+export function scrub(r: EngineResult, secrets: unknown[] = [process.env.OPENROUTER_API_KEY]): EngineResult {
+  const known = secrets.map(String).filter((k) => k.length >= 8);
+  const s = (t: string) => known.reduce((acc, k) => acc.replaceAll(k, "[redacted]"), t).replace(KEYS, "[redacted]");
+  return { ...r, message: s(String(r.message ?? "")), ...(r.cause ? { cause: s(r.cause) } : {}), ...(r.incomplete ? { incomplete: s(r.incomplete) } : {}) };
+}
+
 /** An engine's answer as JSON (a ```json fence around it allowed), or undefined. */
 export function answer(message: unknown) {
   try { const j = JSON.parse(String(message ?? "").trim().replace(/^```(?:json)?\s*\n([\s\S]*)\n```$/, "$1")); return j && typeof j === "object" && !Array.isArray(j) ? j : undefined; } catch { return undefined; }
@@ -308,7 +321,8 @@ export function withhold(findings: Placed[], maxNits = 5) {
 }
 
 /** The whole review from the spec, the head checkout `ws` and the out folder; `run` is the engine (tests fake it). */
-export async function review({ spec, ws, out, run = runEngine }: { spec: Spec; ws: string; out: string; run?: typeof runEngine }) {
+export async function review({ spec, ws, out, run: engine = runEngine }: { spec: Spec; ws: string; out: string; run?: typeof runEngine }) {
+  const run: typeof runEngine = async (name, i) => scrub(await engine(name, i));
   const combo = JSON.parse(spec.combo) as Combo;
   const problem = comboProblem(combo);
   if (problem) throw new Error(`combo: ${problem}`);

@@ -39,8 +39,8 @@ stages:
 settings:
   # repos: [{ repo: owner/name, on_open: [combo], on_push: [combo], drafts: false, forks: manual|auto, day_usd: 200, ignore: [globs],
   # max_nits: 5, mandatory: false }]. mandatory: code review is a required merge step for this repo (nothing enforces it as a
-  # merge gate yet: a later change does; today it is read by ai_review_code's unless_code_review_mandatory). A combo is { engine: codex|claude-code|codegenie, model (an OpenRouter
-  # id), effort (the engine's: codex minimal-xhigh, the others low-max), run_usd (what one run may spend: its model token's hard
+  # merge gate yet: a later change does; today it is read by ai_review_code's unless_code_review_mandatory). A combo is { engine: codex|claude-code|codegenie|codex-native, model (an OpenRouter
+  # id), effort (the engine's: codex and codex-native minimal-xhigh, the others low-max), run_usd (what one run may spend: its model token's hard
   # cap, not a reservation; default $5 for each engine) }; each moment runs every combo it lists (at most 4, each its
   # own review), [] none. on_push reviews only the new changes. day_usd: the instance-wide cap across repos, a UTC day's real spend (a run starts while spent is under it; runs in flight may overshoot by their run_usd each, bounded by the launcher's computers_max; a run whose spend can't be read counts at its whole run_usd). Read by the service
   # (service/src/config.ts).
