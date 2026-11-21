@@ -3,6 +3,8 @@
 // a verdict's task move (done, todo + note) is the finish check's own resolve (POST /v1/checks/:task). Its per-task memory
 // (evidence-woken) is rows in the grades database (kernel-loop.ts). Unstarted until the switch.
 // The injected collaborators (the kernel's api client, Paperclip's client, the grade store) and the rows they return are loosely typed.
+import { openCard } from "./grader/evidence.ts";
+
 type Json = any;
 export function createGradeLoop({ api, pc, log, state, gather, grade, escalationFor, gradeNote, template, gradeDeps, tellParent, recordsOn, graderAsk, stripHidden, graderSpeaks, emit = () => {} }: {
   api: Json;
@@ -55,7 +57,7 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
           const seen = now.status === "done" || now.status !== s.status ? undefined : await gather(s.deliverable, gradeDeps(now), s.rubric);
           const found = seen?.version ?? "";
           // A versionless close also waits out work that has started since: an open sub-task or a card on the task.
-          const active = !s.version && now.status !== "done" && (Boolean(seen?.busy) || (await pc.children(now.id)).some((c: Json) => !["done", "cancelled"].includes(c.status)) || (await recordsOn(now).catch(() => [])).some((a: Json) => ["pending", "approved"].includes(a.state) || (a.state === "used" && !a.outcome)));
+          const active = !s.version && now.status !== "done" && (Boolean(seen?.busy) || (await pc.children(now.id)).some((c: Json) => !["done", "cancelled"].includes(c.status)) || (await recordsOn(now).catch(() => [])).some(openCard));
           if (now.status !== "done" && (now.status !== s.status || active || (s.version ? found !== s.version : Boolean(found)))) {
             log("a satisfied verdict is stale: not closed", { issue: task });
             await api.post(`/internal/grades/${encodeURIComponent(task)}/verdict`, { version: "", outcome: "awaiting_evidence" });
@@ -126,7 +128,7 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
     if (issue.status === "in_progress") return "";
     if (Object.values(JSON.parse(state.get(`breaker:${issue.id}`) || "{}")).some((e: Json) => e?.tripped)) return "";
     const cards = await recordsOn(issue).catch(() => []);
-    if (cards.some((a: Json) => ["pending", "approved"].includes(a.state) || (a.state === "used" && !a.outcome))) return "";
+    if (cards.some(openCard)) return "";
     const woken = JSON.parse(state.get(`evidence-woken:${issue.id}`) || "null") ?? { codes: [], at: "" };
     if (Date.now() - Math.max(await lastMoved(issue, g), Date.parse(woken.at) || 0) < WAKE_GRACE_MS) return "";
     return woken.codes.includes(reasonCode(why)) || woken.codes.length >= MAX_WAKES ? "give_up" : "wake";
