@@ -125,7 +125,7 @@ export interface CatalogOption {
   kind: "tool" | "skill" | "engine";
   recommended: boolean;
   runs_code: boolean;
-  cost: "low" | "medium" | "high";
+  cost: "free" | "low" | "high";
   source: { repo: string; version: string; licence: string };
 }
 export interface Catalog {
