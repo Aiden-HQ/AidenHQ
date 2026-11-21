@@ -903,15 +903,15 @@ export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, l
     const pg = a.auth && (req.method === "GET" || req.method === "HEAD") ? signinPage(a.path) : undefined;
     if (pg) return void res.writeHead(pg.status, pg.headers).end(req.method === "HEAD" ? undefined : pg.body);
     if (a.mine && a.access) return access(req, res, a.email);
-    if (a.mine) return void res.writeHead(200, PAGE).end(req.method === "HEAD" ? undefined : myAppsPage(a.email, appsFor(config(), a.roleOf)));
+    if (a.mine) return void res.writeHead(200, PAGE).end(req.method === "HEAD" ? undefined : myAppsPage(a.email, appsFor(cfg0, a.roleOf)));
     if (a.request) return inAppRequest(req, res, a);
     if (a.requests) return myRequests(req, res, a);
     if (a.notify) return notifyOwner(req, res, a);
     let target: { host: string; port: number; headers: OutgoingHttpHeaders };
     if (a.auth) {
-      const u = new URL(config().auth_url);
-      target = { host: u.hostname, port: Number(u.port) || 80, headers: authHeaders(req, boardSecret(config()), fromTunnel) };
-    } else if (a.site) target = { host: "127.0.0.1", port: a.site.port, headers: upstreamHeaders(req, a.token, { strip: config().identity?.header, proto: config().origin?.scheme }) };
+      const u = new URL(cfg0.auth_url);
+      target = { host: u.hostname, port: Number(u.port) || 80, headers: authHeaders(req, boardSecret(cfg0), fromTunnel) };
+    } else if (a.site) target = { host: "127.0.0.1", port: a.site.port, headers: upstreamHeaders(req, a.token, { strip: cfg0.identity?.header, proto: cfg0.origin?.scheme }) };
     else return void res.writeHead(a.status, { "content-type": "text/plain", ...(a.location ? { location: a.location, "cache-control": "no-store" } : {}), ...(a.cookie ? { "set-cookie": a.cookie } : {}) }).end(`${a.msg}\n`);
     const up = httpRequest({ ...target, method: req.method, path: a.auth ? a.path : req.url });
     up.on("response", (r) => {
@@ -919,7 +919,7 @@ export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, l
       for (const k of HOP) delete h[k];
       delete h["set-auth-token"]; // Better Auth's bearer header: the session token never leaves through the gate
       // An app can't set (or overwrite) any auth cookie; the auth listener's must be host-only (no Domain).
-      const kept = [h["set-cookie"] ?? []].flat().filter((c) => !AUTH_COOKIE.test(cookieName(c)) || (a.auth && !/;\s*domain\s*=/i.test(c))).map((c) => (a.site && (config().previews || config().login === "header-jwt" || a.site.door) ? hostOnly(c) : c));
+      const kept = [h["set-cookie"] ?? []].flat().filter((c) => !AUTH_COOKIE.test(cookieName(c)) || (a.auth && !/;\s*domain\s*=/i.test(c))).map((c) => (a.site && (cfg0.previews || cfg0.login === "header-jwt" || a.site.door) ? hostOnly(c) : c));
       if (kept.length) h["set-cookie"] = kept;
       else delete h["set-cookie"];
       if (a.auth && (/json/i.test(String(h["content-type"] ?? "")) || a.path.startsWith(`${AUTH_PATH}api/`))) return void tokenless(r, res, h);
@@ -942,18 +942,19 @@ export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, l
 
   const upgrade = async (req: IncomingMessage, socket: Duplex, head: Buffer) => {
     socket.on("error", () => socket.destroy());
+    const cfg = config(); // read once, here: the callbacks below run outside the .catch
     const a = await authorize(req, { upgrade: true });
     // An upgrade is refused or proxied: authorize() returns no other kind for one.
     if (!a.site) {
       const r = a as Refusal;
       return void socket.end(`HTTP/1.1 ${r.status} ${({ 400: "Bad Request", 401: "Unauthorized", 404: "Not Found", 503: "Service Unavailable" } as Record<number, string>)[r.status] ?? "Forbidden"}\r\nConnection: close\r\nContent-Type: text/plain\r\nContent-Length: ${r.msg.length + 1}\r\n\r\n${r.msg}\n`);
     }
-    const up = httpRequest({ host: "127.0.0.1", port: a.site.port, method: req.method, path: req.url, headers: upstreamHeaders(req, a.token!, { upgrade: true, strip: config().identity?.header, proto: config().origin?.scheme }) });
+    const up = httpRequest({ host: "127.0.0.1", port: a.site.port, method: req.method, path: req.url, headers: upstreamHeaders(req, a.token!, { upgrade: true, strip: cfg.identity?.header, proto: cfg.origin?.scheme }) });
     const raw = (status: number | undefined, message: string | undefined, rawHeaders: string[]) => {
       let s = `HTTP/1.1 ${status} ${message}\r\n`;
       for (let i = 0; i < rawHeaders.length; i += 2) {
         if (rawHeaders[i]!.toLowerCase() === "set-cookie" && AUTH_COOKIE.test(cookieName(rawHeaders[i + 1]!))) continue; // as for responses
-        s += `${rawHeaders[i]}: ${rawHeaders[i]!.toLowerCase() === "set-cookie" && (config().previews || config().login === "header-jwt" || a.site!.door) ? hostOnly(rawHeaders[i + 1]!) : rawHeaders[i + 1]}\r\n`;
+        s += `${rawHeaders[i]}: ${rawHeaders[i]!.toLowerCase() === "set-cookie" && (cfg.previews || cfg.login === "header-jwt" || a.site!.door) ? hostOnly(rawHeaders[i + 1]!) : rawHeaders[i + 1]}\r\n`;
       }
       return `${s}\r\n`;
     };
