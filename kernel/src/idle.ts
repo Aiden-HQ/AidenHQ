@@ -16,15 +16,11 @@
 //   task. Past that cap nothing more wakes it: the Fleet Steward reads the count (`idle_wakes`) and raises the task as a critical
 //   incident. An owner-held task is never swept (the steward's stale follow-up check has it), and isn't read: the state's
 //   holder says no agent holds it.
-// - parked waits: Paperclip's pinned recovery sweep blocks every `todo`, `in_progress` or `in_review` issue whose assignee
-//   agent is not invokable, and escalates a board decision for each, so a settled wait on a paused holder is re-blocked within
-//   a minute or two. An armed wait is parked in `backlog` instead — outside that sweep's candidate set, and inert to
-//   comments and recovery resolution there — and reconciled back once when the wait ends: `in_progress`, or `in_review` for
-//   a review task (parked only in the one `in_review` shape the sweep escalates; the finish gate's own is left to it). A
-//   comment or manual restore into a scanned status is re-parked at once from the task's own event (wakes.ts event →
-//   settleOne), the settle tick only as a backstop: both ticks are 60–90 s, so a poll-only pass could race the sweep. A hold
-//   the loop left behind is released once, and only when that is safe. Paperclip's liveness read only annotates a task
-//   *blocked by* a parked one; no issue is filed and no comment posted.
+// - parked waits: the pinned sweep blocks any `todo`/`in_progress`/`in_review` issue whose assignee is not invokable, so a
+//   settled wait is parked in `backlog` (outside its candidate set, inert to comments and recovery) and reconciled back once
+//   when the wait ends: `in_progress`, or `in_review` for a review task, and only in the `in_review` shape the sweep acts on.
+//   A restore into a scanned status is re-parked at once from the task's own event (wakes.ts event → settleOne), the settle
+//   tick only as a backstop. A hold the loop left is released once, when that is safe.
 import type { Api } from "./channels.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { inTx, iso, strictFact, type Log } from "./factlog.ts";
@@ -45,8 +41,11 @@ const SWEPT = new Set(["todo", "in_progress"]);
 const IDLE_REASONS = new Set(["orphaned", "unknown", "unpolled"]);
 /** The statuses a park always moves: the sweep's plain agent-assigned candidates, blocked on the holder's invokability. */
 const PARKABLE = new Set(["todo", "in_progress"]);
-/** Paperclip's invokable agent statuses (packages/shared/src/agent-eligibility.ts, INVOKABLE_AGENT_STATUSES). */
-const INVOKABLE = new Set(["active", "idle", "running", "error"]);
+/**
+ * What a restore treats as invokable: Paperclip's own set (agent-eligibility.ts) without `error`. The pinned build counts
+ * `error` invokable; this is narrower on purpose, and parking costs nothing while the wait's wake is open.
+ */
+const INVOKABLE = new Set(["active", "idle", "running"]);
 /** The status an ended wait goes back to. Never `todo`: that move files a status wake, a second job beside the wait's. */
 const RESUMED = "in_progress";
 const CLOSED = new Set(["done", "cancelled"]);
@@ -112,11 +111,9 @@ export function createIdle({ db, facts, state, wakes, owner, team = () => false,
     return r.json as ParkedIssue;
   };
   /**
-   * Whether Paperclip's pinned recovery sweep would leave this agent's work alone: an invokable status and no lifecycle hold
-   * (the product's one definition, sdk/src/agent-paused.ts, widened to the status set its eligibility check reads), and a
-   * healthy org chain (a missing manager, a terminated ancestor or a cycle also reads as not invokable there; a paused
-   * ancestor only warns). A read that fails counts as not invokable: then the safer answer is to leave the hold to the board.
-   * `company` is the issue's company, whose agent list is read once per pass (agentsIn).
+   * Whether the pinned sweep would leave this agent's work alone: an invokable status, no lifecycle hold, and a healthy org
+   * chain (a missing manager, terminated ancestor or cycle also reads as not invokable). A failed read counts as not
+   * invokable: then the hold is left to the board. `company`'s agent list is read once per pass (agentsIn).
    */
   // One company's agent list per pass (a status change mid-pass must not be missed: the next pass reads it again).
   let agentsFor = "", agentsIn: Map<string, AgentRow> | undefined;
@@ -176,11 +173,9 @@ export function createIdle({ db, facts, state, wakes, owner, team = () => false,
       const from = p ? p.from_status : adoptedFrom(task);
       if (!p) remember(task, agent, from);
       if ((await resolveStale(i, agent)) !== "resolved") {
-        // A hold this loop leaves behind keeps its row: the reconciliation has not happened, so the next pass retries it —
-        // and resolveStale makes no call until releasing it is safe (its holder invokable again, or its own wait armed), so
-        // that is a cadence, not a loop. Dropping the row there would leave a task we parked with nothing that owes it a
-        // restore once the board or the holder moves it on. A hold of another cause is not the loop's at all, and neither is
-        // the restore: the board keeps it; the row no longer has a park to guard, so it goes.
+        // A hold this loop leaves behind keeps its row, so the next pass retries it (resolveStale makes no call until that
+        // is safe: a cadence, not a loop); dropping it would leave a task we parked owing a restore. A hold of another cause
+        // is the board's, and the row it no longer guards goes.
         if (i.activeRecoveryAction?.cause !== "stranded_assigned_issue") forget(task);
         // The answer was an error: the call may still have landed. If the issue is no longer blocked, the release is done and
         // the move on from `todo` is the rest of this pass's work; if it is still blocked (or unreadable) it stays for the
@@ -188,12 +183,13 @@ export function createIdle({ db, facts, state, wakes, owner, team = () => false,
         const after = await issue(task).catch(() => undefined);
         if (!after || after.status === "blocked") return undefined;
       }
-      if (armed(task)) { await park(task, agent, keyOf(agent), false); return "resolved"; }
+      // Re-parked while it still waits: `from` is where the wait's end must put it, not the `todo` the release left.
+      if (armed(task)) { await park(task, agent, keyOf(agent), false, from); return "resolved"; }
       // The wait can end while the release is in flight (it was armed when this pass read it, and the resolve is a round
       // trip). Restoring is only safe then if the holder is invokable *now*: a pause that landed meanwhile would put the
       // task back in `in_progress` for the sweep to block at its next tick — the loop this change exists to prevent. The
       // release left the issue in `todo`, a status the sweep scans, so it is parked instead, with its row, until the first
-      // pass that finds the holder invokable restores it once (`from` keeps a review task's origin across the re-park).
+      // pass that finds the holder invokable restores it once (the row keeps its origin across the re-park).
       if (!(await invokable(agent, company))) {
         if (!(await park(task, agent, keyOf(agent), false, from))) remember(task, agent, from);
         return "resolved";
@@ -268,12 +264,10 @@ export function createIdle({ db, facts, state, wakes, owner, team = () => false,
     return true;
   }
   /**
-   * A `stranded_assigned_issue` hold left by this loop's own blocks, resolved once through the route that exists for it
-   * (`recovery-actions/resolve`, restored → todo, one of the statuses it accepts), and only when resolving it does not drop the
-   * issue straight back into the sweep: its wait is armed (the pass parks it again at once) or its holder is invokable again.
-   * Any other hold, or a holder still not invokable with no wait to park for, is left to the board: it makes no call
-   * (`held`), and the caller keeps the park row so a later pass retries once releasing it is safe. A call that failed is
-   * `failed`: the release may still have landed, so the caller reads the issue before deciding.
+   * A `stranded_assigned_issue` hold this loop left, released once through `recovery-actions/resolve` (restored → todo), and
+   * only when that is safe: its wait is armed (parked again at once) or its holder is invokable. Any other hold, or a holder
+   * not invokable with no wait, is `held`: no call, and the caller keeps its row to retry later. A failed call is `failed`:
+   * the release may have landed, so the caller reads the issue before deciding.
    */
   async function resolveStale(i: ParkedIssue, agent: string): Promise<"resolved" | "held" | "failed"> {
     const a = i.activeRecoveryAction;

@@ -26,18 +26,18 @@ function world(t, { polls = true } = {}) {
   db.exec("CREATE TABLE jobs (id TEXT PRIMARY KEY, task TEXT, agent TEXT, state TEXT, at INTEGER)");
   const facts = openFacts(db, () => new Date(clock));
   const issues = { t0: { id: "t0", identifier: "T0", status: "blocked" }, t1: { id: "t1", identifier: "T1", status: "todo", assigneeAgentId: AGENT, parentId: "t0", companyId: "co" }, t2: { id: "t2", status: "todo", assigneeAgentId: null, assigneeUserId: "owner" } };
-  // Paperclip's agents (statuses + org chain: the sweep's invokability check), by id, and what the owner API saw.
+  // Paperclip's agents (status + org chain: the sweep's invokability check), by id.
   const agents = { [AGENT]: { id: AGENT, companyId: "co", status: "idle", lifecycleHolds: [], reportsTo: null }, boss: { id: "boss", companyId: "co", status: "idle", lifecycleHolds: [], reportsTo: null } };
   const reads = [];
   const writes = [];
   const seen = [];
   const resolved = [];
   let down = false;
-  // A status the control plane refuses (a PATCH that fails): the park must leave nothing behind and be tried again.
+  // A status the control plane refuses (a failed PATCH).
   let refusePatch;
   let refuseResolveAfterApply = false;
   let dropWaitOnResolve = false;
-  // A PATCH that applies and then answers with an error, and a read that fails once: together, "did the park land?" is unknown.
+  // A PATCH that lands but answers with an error, and a read that fails: unknown.
   let refuseAfterApply = false;
   let blindNext = 0;
   const parks = () => db.prepare("SELECT task, agent, from_status FROM wait_parks").all();
@@ -52,13 +52,12 @@ function world(t, { polls = true } = {}) {
       if (!issues[m[1]]) return { status: 404, json: {} };
       if (refusePatch && body.status === refusePatch) {
         if (!refuseAfterApply) return { status: 409, json: { error: "refused (test)" } };
-        // The write lands and the answer is lost: the control plane is now parked, the kernel only knows it failed.
+        // The write lands and the answer is lost.
         if (body.status) issues[m[1]] = { ...issues[m[1]], status: body.status };
         blindNext = 1;
         return { status: 504, json: { error: "gateway timeout (test)" } };
       }
-      // What the kernel's db held at the instant of the write: a park's row must already be there, so no crash after the write
-      // can leave a parked issue nothing knows about.
+      // The rows at the instant of the write: a park's row must already be there.
       seen.push({ task: m[1], status: body.status, rows: db.prepare("SELECT task FROM wait_parks").all().map((r) => r.task) });
       writes.push({ task: m[1], body });
       if (body.status) issues[m[1]] = { ...issues[m[1]], status: body.status };
@@ -67,10 +66,10 @@ function world(t, { polls = true } = {}) {
     const res = /^\/api\/issues\/([^/?]+)\/recovery-actions\/resolve$/.exec(path);
     if (res && method === "POST") {
       resolved.push({ task: res[1], body });
-      // The wait can stop being armed while the resolution is in flight: drop it here, before the answer goes back.
+      // The wait can stop being armed while the resolution is in flight.
       if (dropWaitOnResolve) db.prepare("UPDATE wakes SET state = 'dropped' WHERE task = ? AND key LIKE 'wait:%'").run(res[1]);
       issues[res[1]] = { ...issues[res[1]], status: body.sourceIssueStatus, activeRecoveryAction: null };
-      // A resolve that takes effect, then answers with an error: the control plane is restored, the kernel only sees a failure.
+      // A resolve that takes effect, then answers with an error.
       if (refuseResolveAfterApply) return { status: 504, json: { error: "gateway timeout (test)" } };
       return { status: 200, json: { issue: issues[res[1]] } };
     }
@@ -329,7 +328,7 @@ test("a task whose agent no enabled dispatcher polls reads unpolled, and the swe
 });
 
 // ---- A settled wait is not the sweep's work (WOR-9033, Aiden-HQ/AidenHQ#1004) ----
-/** Paperclip's pinned recovery sweep's own candidate test: todo/in_progress/in_review, an agent assignee, no user assignee. */
+/** The pinned sweep's candidate test: todo/in_progress/in_review, an agent assignee, no user assignee. */
 const sweepWouldScan = (i) => ["todo", "in_progress", "in_review"].includes(i.status) && Boolean(i.assigneeAgentId) && !i.assigneeUserId;
 
 test("an armed wait parks the issue in backlog: outside the pinned sweep's eligible set, however the holder's status changes", async (t) => {
@@ -341,12 +340,12 @@ test("an armed wait parks the issue in backlog: outside the pinned sweep's eligi
   assert.ok(!sweepWouldScan(w.issues.t1), "an armed wait's issue is never in the sweep's eligible set");
   assert.deepEqual(w.writes.map((x) => [x.task, x.body.status]), [["t1", "backlog"]]);
   assert.match(w.writes[0].body.comment, /<!-- aidenhq:job=kernel kind=wait-park -->/);
-  // The holder pauses while the wait is armed (the live repro): the park is what keeps the issue out, not the holder's status.
+  // The holder pauses while the wait is armed (the live repro).
   w.agents[AGENT] = { ...w.agents[AGENT], status: "paused", lifecycleHolds: ["manual"] };
   w.tick(MIN);
   assert.deepEqual(await w.idle.settle(), { parked: [], resumed: [], resolved: [] }, "already parked: nothing written");
   assert.equal(w.issues.t1.status, "backlog");
-  // A supported comment or a status restore that puts it back in todo/in_progress while the wait is armed: parked again, once.
+  // A restore puts it back in todo: parked again, once.
   w.issues.t1 = { ...w.issues.t1, status: "in_progress" };
   assert.deepEqual(await w.idle.settle(), { parked: ["t1"], resumed: [], resolved: [] });
   assert.equal(w.issues.t1.status, "backlog");
@@ -360,7 +359,7 @@ test("a wake ends the wait and reconciles the issue exactly once (backlog → in
   await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "PR #12 merges", until });
   assert.equal(w.issues.t1.status, "backlog");
   w.tick(62 * MIN);
-  // The wait's wake is due and the dispatcher claims it: the wait is no longer open, so the pass restores the issue once.
+  // The wait's wake is claimed: the pass restores the issue once.
   assert.deepEqual(w.wakes.claim("dispatch").map((r) => [r.task, r.cause]), [["t1", "wait: PR #12 merges"]]);
   assert.deepEqual(await w.idle.settle(), { parked: [], resumed: ["t1"], resolved: [] });
   assert.equal(w.issues.t1.status, "in_progress");
@@ -379,7 +378,7 @@ test("a cancelled wait (its wake dropped by a dispatcher, or replaced by a super
   w.wakes.open({ key: "comment:c1", task: "t1", agent: AGENT, cause: "comment" });
   w.wakes.drop("dispatch", w.wakes.claim("dispatch")[0].key, "another agent's comment");
   assert.equal(w.issues.t1.status, "backlog", "the wait is still armed");
-  // A superseding wait replaces the first: the issue stays parked, and the row remembers what to restore.
+  // A superseding wait replaces the first: the issue stays parked, the row remembers the restore.
   w.tick(MIN);
   const until2 = new Date(w.now() + 3 * 60 * MIN).toISOString();
   await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "the reviewer answers", until: until2 });
@@ -394,7 +393,7 @@ test("a cancelled wait (its wake dropped by a dispatcher, or replaced by a super
 
 test("a wait on a task with no wait to restore for stays parked until its holder is invokable again", async (t) => {
   const w = world(t);
-  // A paused holder: its task is parked while it waits, and the wait's wake is dropped with no restore (the holder can't run it).
+  // A paused holder: the wait's wake is dropped with no restore (the holder can't run it).
   w.agents[AGENT] = { ...w.agents[AGENT], status: "paused", lifecycleHolds: ["manual"] };
   const until = new Date(w.now() + 2 * 60 * MIN).toISOString();
   await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "the owner unpauses me", until });
@@ -408,18 +407,51 @@ test("a wait on a task with no wait to restore for stays parked until its holder
 
 test("a stale stranded_assigned_issue hold is resolved once through recovery-actions/resolve, and parked again if the wait is armed", async (t) => {
   const w = world(t);
-  // The live symptom: Paperclip blocked the task and left its board-owned hold behind; the agent re-armed its wait after.
+  // The live symptom: Paperclip blocked the task, left its hold, and the agent re-armed its wait.
   w.issues.t1 = { ...w.issues.t1, status: "blocked", activeRecoveryAction: { id: "ra-1", cause: "stranded_assigned_issue", status: "active", ownerType: "board" } };
   const until = new Date(w.now() + 2 * 60 * MIN).toISOString();
-  // A wait on a blocked task: reconcileOne has no row yet, so the pass sees the hold and leaves a task it did not park alone.
   w.db.prepare("INSERT OR REPLACE INTO wakes (key, task, agent, cause, at, state) VALUES (?, 't1', ?, 'wait: x', ?, 'open')").run(`wait:t1:${Date.parse(until)}`, AGENT, Date.parse(until));
-  // Its own park row (as the loop leaves one before Paperclip blocks it) is what makes the hold the kernel's to release.
+  // Its own park row is what makes the hold the kernel's to release.
   w.db.prepare("INSERT OR REPLACE INTO wait_parks (task, agent, from_status, at) VALUES ('t1', ?, 'todo', ?)").run(AGENT, w.now());
   assert.deepEqual(await w.idle.settle(), { parked: [], resumed: [], resolved: ["t1"] });
   assert.deepEqual(w.resolved.map((r) => [r.task, r.body.actionId, r.body.outcome, r.body.sourceIssueStatus]), [["t1", "ra-1", "restored", "todo"]]);
   assert.equal(w.issues.t1.status, "backlog", "resolved, then parked again at once: never dropped back into the sweep");
   assert.deepEqual(await w.idle.settle(), { parked: [], resumed: [], resolved: [] }, "one pass, no retry loop");
   assert.equal(w.resolved.length, 1);
+});
+
+test("a hold released while the wait is still armed keeps a review task's origin: its wake returns it to review, not to fresh work", async (t) => {
+  const w = world(t);
+  // A review task whose wait is armed through the release: a row from the issue (`todo`) would lose `in_review`.
+  w.issues.t1 = { ...w.issues.t1, status: "blocked", activeRecoveryAction: { id: "ra-7", cause: "stranded_assigned_issue", status: "active", ownerType: "board" } };
+  const until = new Date(w.now() + 2 * 60 * MIN).toISOString();
+  w.db.prepare("INSERT OR REPLACE INTO wakes (key, task, agent, cause, at, state) VALUES (?, 't1', ?, 'wait: x', ?, 'open')").run(`wait:t1:${Date.parse(until)}`, AGENT, Date.parse(until));
+  w.db.prepare("INSERT OR REPLACE INTO wait_parks (task, agent, from_status, at) VALUES ('t1', ?, 'in_review', ?)").run(AGENT, w.now());
+  assert.deepEqual(await w.idle.settle(), { parked: [], resumed: [], resolved: ["t1"] });
+  assert.equal(w.issues.t1.status, "backlog", "released, then parked again: the wait is still armed");
+  assert.deepEqual(w.parks().map((r) => [r.task, r.from_status]), [["t1", "in_review"]], "the origin survives the re-park");
+  // The wait ends: back to review, never in_progress (which restarts the work) and never todo.
+  w.db.prepare("UPDATE wakes SET state = 'dropped' WHERE task = 't1' AND key LIKE 'wait:%'").run();
+  assert.deepEqual(await w.idle.settle(), { parked: [], resumed: ["t1"], resolved: [] });
+  assert.equal(w.issues.t1.status, "in_review");
+  assert.deepEqual(w.parks(), []);
+});
+
+test("an errored holder is not restored into: the task stays parked until it is idle again", async (t) => {
+  const w = world(t);
+  // The pinned sweep counts `error` invokable; this restores into a failing holder only once it is idle again.
+  const until = new Date(w.now() + 2 * 60 * MIN).toISOString();
+  await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "the retry window", until });
+  assert.equal(w.issues.t1.status, "backlog");
+  w.agents[AGENT] = { ...w.agents[AGENT], status: "error", lifecycleHolds: [] };
+  w.db.prepare("UPDATE wakes SET state = 'dropped' WHERE task = 't1' AND key LIKE 'wait:%'").run();
+  assert.deepEqual(await w.idle.settle(), { parked: [], resumed: [], resolved: [] }, "not restored into a failing holder");
+  assert.equal(w.issues.t1.status, "backlog");
+  assert.deepEqual(w.parks().map((r) => r.task), ["t1"], "the row is what restores it once it can");
+  w.agents[AGENT] = { ...w.agents[AGENT], status: "idle" };
+  assert.deepEqual(await w.idle.settle(), { parked: [], resumed: ["t1"], resolved: [] });
+  assert.equal(w.issues.t1.status, "in_progress");
+  assert.deepEqual(w.parks(), []);
 });
 
 test("a hold that cannot be released yet keeps its row, and the first pass that can releases it and moves on", async (t) => {
@@ -430,20 +462,19 @@ test("a hold that cannot be released yet keeps its row, and the first pass that 
   assert.deepEqual(await w.idle.settle(), { parked: [], resumed: [], resolved: [] });
   assert.equal(w.resolved.length, 0, "resolving would drop it straight back into the sweep");
   assert.equal(w.issues.t1.status, "blocked");
-  // The reconciliation has not happened, so the row stays (the reviewer's `progress-after-success` finding: nothing would
-  // otherwise owe this task a restore once the hold is released).
+  // The reconciliation has not happened, so the row stays for the next pass.
   assert.deepEqual(w.parks().map((r) => r.task), ["t1"], "the row is kept: the retry is the next pass's");
   assert.deepEqual(await w.idle.settle(), { parked: [], resumed: [], resolved: [] });
   assert.equal(w.resolved.length, 0, "no call while releasing it is still unsafe");
   assert.deepEqual(w.parks().map((r) => r.task), ["t1"]);
-  // The holder is invokable again: the kept row is what makes this pass release the hold and finish the move, once.
+  // The holder is invokable again: the kept row releases the hold and finishes the move, once.
   w.agents[AGENT] = { ...w.agents[AGENT], status: "idle", lifecycleHolds: [] };
   assert.deepEqual(await w.idle.settle(), { parked: [], resumed: [], resolved: ["t1"] });
   assert.deepEqual(w.resolved.map((r) => [r.task, r.body.actionId]), [["t1", "ra-2"]]);
   assert.equal(w.issues.t1.status, "in_progress", "released and moved on in the same pass: never left in todo");
   assert.deepEqual(w.parks(), [], "the reconciliation happened, so the row goes");
   assert.deepEqual(await w.idle.settle(), { parked: [], resumed: [], resolved: [] }, "exactly once");
-  // A hold of another cause is never the loop's, and the row it no longer guards goes with it.
+  // A hold of another cause is never the loop's: the row goes.
   w.issues.t1 = { ...w.issues.t1, status: "blocked", activeRecoveryAction: { id: "ra-3", cause: "provider_quota", status: "active", ownerType: "board" } };
   w.db.prepare("INSERT OR REPLACE INTO wait_parks (task, agent, from_status, at) VALUES ('t1', ?, 'todo', ?)").run(AGENT, w.now());
   assert.deepEqual(await w.idle.settle(), { parked: [], resumed: [], resolved: [] });
@@ -453,8 +484,7 @@ test("a hold that cannot be released yet keeps its row, and the first pass that 
 
 test("a release that lands while the wait ends and the holder is paused keeps the task parked, and restores it once it is invokable", async (t) => {
   const w = world(t);
-  // The reviewer's sequence: the wait is armed when the pass reads the task (so the hold is released), ends while the release
-  // is in flight, and the holder is paused by the time a restore would be due. Restoring then is the loop this fixes.
+  // The wait is armed at read (the hold is released), ends mid-release, and the holder is paused at the restore.
   w.issues.t1 = { ...w.issues.t1, status: "blocked", activeRecoveryAction: { id: "ra-6", cause: "stranded_assigned_issue", status: "active", ownerType: "board" } };
   const until = new Date(w.now() + 2 * 60 * MIN).toISOString();
   w.db.prepare("INSERT OR REPLACE INTO wakes (key, task, agent, cause, at, state) VALUES (?, 't1', ?, 'wait: x', ?, 'open')").run(`wait:t1:${Date.parse(until)}`, AGENT, Date.parse(until));
@@ -464,10 +494,10 @@ test("a release that lands while the wait ends and the holder is paused keeps th
   assert.deepEqual(await w.idle.settle(), { parked: [], resumed: [], resolved: ["t1"] });
   assert.deepEqual(w.resolved.map((r) => [r.task, r.body.actionId]), [["t1", "ra-6"]]);
   assert.equal(w.issues.t1.status, "backlog", "the release left it in todo: parked again, never restored to a paused holder");
-  // The row keeps where the task came from, so a review task is not restarted as progress.
+  // The row keeps the origin, so a review task is not restarted as progress.
   assert.deepEqual(w.parks().map((r) => [r.task, r.from_status]), [["t1", "in_review"]]);
   assert.deepEqual(await w.idle.settle(), { parked: [], resumed: [], resolved: [] }, "still paused: nothing restored");
-  // The holder is invokable again: the row is what restores it, once, to where it came from.
+  // The holder is invokable again: the row restores it, once, to where it came from.
   w.agents[AGENT] = { ...w.agents[AGENT], status: "idle", lifecycleHolds: [] };
   assert.deepEqual(await w.idle.settle(), { parked: [], resumed: ["t1"], resolved: [] });
   assert.equal(w.issues.t1.status, "in_review", "back to review, not in_progress: the work is not restarted");
@@ -479,12 +509,12 @@ test("a release that lands but answers with an error is finished in the same pas
   const w = world(t);
   w.issues.t1 = { ...w.issues.t1, status: "blocked", activeRecoveryAction: { id: "ra-4", cause: "stranded_assigned_issue", status: "active", ownerType: "board" } };
   w.db.prepare("INSERT OR REPLACE INTO wait_parks (task, agent, from_status, at) VALUES ('t1', ?, 'todo', ?)").run(AGENT, w.now());
-  // The control plane applies the release, then the answer is lost: the issue is no longer blocked, the kernel only sees a 504.
+  // The release applies, then the answer is lost (a 504).
   w.refuseResolveAfterApply(true);
   assert.deepEqual(await w.idle.settle(), { parked: [], resumed: [], resolved: ["t1"] }, "the re-read proves it landed, so it is finished");
   assert.equal(w.issues.t1.status, "in_progress", "never left in the todo the release landed it in");
   assert.deepEqual(w.parks(), [], "nothing left to reconcile");
-  // The same failure with the release not applied: the issue is still blocked, so the row stays for the next pass.
+  // The same failure with the release not applied: the row stays.
   w.issues.t1 = { ...w.issues.t1, status: "blocked", activeRecoveryAction: { id: "ra-5", cause: "stranded_assigned_issue", status: "active", ownerType: "board" } };
   w.db.prepare("INSERT OR REPLACE INTO wait_parks (task, agent, from_status, at) VALUES ('t1', ?, 'todo', ?)").run(AGENT, w.now());
   w.refuseResolveAfterApply(false);
@@ -505,7 +535,7 @@ test("a park the control plane refuses leaves no row, and the next pass parks it
   await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "PR #12 merges", until });
   assert.equal(w.issues.t1.status, "todo", "the failed park changed nothing");
   assert.deepEqual(w.parks(), [], "no row for a park that never happened");
-  // The wait is armed, so the sweep's set is not where the issue may stay: the next pass tries the park again.
+  // The wait is armed: the next pass tries the park again.
   assert.deepEqual(await w.idle.settle(), { parked: [], resumed: [], resolved: [] }, "still refused");
   assert.deepEqual(w.parks(), []);
   assert.equal(w.issues.t1.status, "todo", "never restored off a park that never happened (todo is not a restore target anyway)");
@@ -513,7 +543,7 @@ test("a park the control plane refuses leaves no row, and the next pass parks it
   assert.deepEqual(await w.idle.settle(), { parked: ["t1"], resumed: [], resolved: [] });
   assert.equal(w.issues.t1.status, "backlog");
   assert.deepEqual(w.parks().map((r) => [r.task, r.agent]), [["t1", AGENT]], "the row exists only now that the issue is parked");
-  // And with the row in place the restore still lands once, on the wake.
+  // With the row in place the restore lands once, on the wake.
   w.tick(3 * 60 * MIN);
   assert.deepEqual(w.wakes.claim("dispatch").map((r) => r.task), ["t1"]);
   assert.deepEqual(await w.idle.settle(), { parked: [], resumed: ["t1"], resolved: [] });
@@ -525,13 +555,13 @@ test("a crash between the park's PATCH and its row is recovered: an armed backlo
   const until = new Date(w.now() + 2 * 60 * MIN).toISOString();
   await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "PR #12 merges", until });
   assert.equal(w.issues.t1.status, "backlog");
-  // The park landed but the kernel died before recording it: the issue is parked, the wait is armed, the row is gone.
+  // The park landed but the kernel died before recording it.
   w.db.prepare("DELETE FROM wait_parks").run();
   assert.deepEqual(w.parks(), []);
   assert.deepEqual(await w.idle.settle(), { parked: [], resumed: [], resolved: [] }, "adopted, not written: nothing to change on the issue");
   assert.deepEqual(w.parks().map((r) => [r.task, r.agent]), [["t1", AGENT]], "the next pass takes the park back");
   assert.equal(w.writes.filter((x) => x.body.status === "backlog").length, 1, "a review of the parked task writes no second park");
-  // From there it settles as any parked wait does: the wake restores it exactly once, and never to todo.
+  // It settles as any parked wait does: once, never to todo.
   w.tick(3 * 60 * MIN);
   assert.deepEqual(w.wakes.claim("dispatch").map((r) => r.task), ["t1"]);
   assert.deepEqual(await w.idle.settle(), { parked: [], resumed: ["t1"], resolved: [] });
@@ -543,7 +573,7 @@ test("a task the sweep blocked before the park landed is released once, because 
   const w = world(t);
   const until = new Date(w.now() + 2 * 60 * MIN).toISOString();
   await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "PR #12 merges", until });
-  // The same loop: Paperclip's tick won the race before the park's PATCH, so there is no row to say the block was ours.
+  // Paperclip's tick won the race before the park's PATCH: no row says the block was ours.
   w.issues.t1 = { ...w.issues.t1, status: "blocked", activeRecoveryAction: { id: "ra-9", cause: "stranded_assigned_issue", status: "active", ownerType: "board" } };
   w.db.prepare("DELETE FROM wait_parks").run();
   w.writes.length = 0;
@@ -789,7 +819,7 @@ test("a follow-up PATCH that fails after the resolve keeps the row, so the next 
   assert.deepEqual(await w.idle.settle(), { parked: [], resumed: [], resolved: ["t1"] }, "the hold was released");
   assert.equal(w.issues.t1.status, "todo", "the resolve landed it in todo; the move on failed");
   assert.deepEqual(w.parks().map((r) => r.task), ["t1"], "the row stays: the issue is still in a status the sweep scans");
-  // The failure passes and the next pass finishes the transition, then the row goes.
+  // The failure passes: the next pass finishes the transition, then the row goes.
   w.refusePatch(undefined);
   assert.deepEqual(await w.idle.settle(), { parked: [], resumed: ["t1"], resolved: [] });
   assert.equal(w.issues.t1.status, "in_progress", "never left in todo: no second dispatch beside the wait's");
@@ -799,16 +829,15 @@ test("a follow-up PATCH that fails after the resolve keeps the row, so the next 
 
 test("a hold released with no row and the wait ending mid-pass: the row is recorded before the move, so a failed PATCH retries", async (t) => {
   const w = world(t);
-  // The reviewer's sequence: a task Paperclip blocked before any park row existed, its wait still armed when the pass reads
-  // it, and the wait gone by the time the resolve has landed the issue in `todo`. Nothing else would select the task again.
+  // A task blocked before any row existed, its wait gone by the time the resolve landed it in `todo`.
   w.issues.t1 = { ...w.issues.t1, status: "blocked", activeRecoveryAction: { id: "ra-13", cause: "stranded_assigned_issue", status: "active", ownerType: "board" } };
   const until = new Date(w.now() + 2 * 60 * MIN).toISOString();
   w.db.prepare("INSERT OR REPLACE INTO wakes (key, task, agent, cause, at, state) VALUES (?, 't1', ?, 'wait: x', ?, 'open')").run(`wait:t1:${Date.parse(until)}`, AGENT, Date.parse(until));
-  // The wait stops being armed while the resolution is in flight, and the follow-up PATCH fails.
+  // The wait ends mid-resolve and the follow-up PATCH fails.
   w.dropWaitOnResolve(true);
   w.refusePatch("in_progress");
   await w.idle.settle();
-  // The task must not be left in `todo` with no row: the row was recorded before the hold was resolved.
+  // Never `todo` with no row: the row was recorded before the hold was resolved.
   assert.equal(w.issues.t1.status, "todo", "the resolve landed it in todo; the move on failed");
   assert.deepEqual(w.parks().map((r) => r.task), ["t1"], "the retryable state is recorded before the move");
   // The next pass finishes it, then the row goes.
