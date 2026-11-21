@@ -60,8 +60,6 @@ export const PostArgsSchema = z.object({
   /** The comment ids the code-review service recorded as its own posts on this PR (its database, never a marker read back):
    * only their threads are ever resolved. */
   own: z.array(z.number().int().min(1)).max(1000).default([]),
-  /** The acknowledgement comment the service recorded (edited in place; absent: a new one). */
-  ack: z.number().int().min(1).optional(),
 });
 export type PostArgs = z.infer<typeof PostArgsSchema>;
 
@@ -103,13 +101,15 @@ export const NoticeArgsSchema = z.object({
   run: RUN.optional(),
   /** The acknowledgement comment the service recorded (edited in place; absent: a new one). */
   ack: z.number().int().min(1).optional(),
+  /** The posted review a done notice links. */
+  review: z.string().regex(/^https:\/\/github\.com\/[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.-]{1,100}\/pull\/\d{1,9}#pullrequestreview-\d{1,15}$/).optional(),
 });
 export type NoticeArgs = z.infer<typeof NoticeArgsSchema>;
 
 /** The commit status code review mirrors its merge verdict to (code-review computes it, per PR head, from its /v1/verdict). */
 export const STATUS_CONTEXT = "aidenhq/review";
 /** The verdict's reason (code-review engine.ts's verdict codes; "pass" when there is none) and the commit state each one is. */
-const STATUS_STATE = { pass: "success", queued: "pending", running: "pending", not_started: "pending", moved: "pending", findings: "failure", failed: "failure", incomplete: "failure", not_reviewed: "failure", config: "failure" } as const;
+const STATUS_STATE = { pass: "success", ungated: "success", queued: "pending", running: "pending", not_started: "pending", moved: "pending", findings: "failure", failed: "failure", incomplete: "failure", not_reviewed: "failure", config: "failure" } as const;
 export const StatusArgsSchema = z.object({
   repo: z.string().regex(new RegExp(`^${NAME}/${NAME}$`)),
   pr: z.number().int().min(1),
@@ -119,6 +119,8 @@ export const StatusArgsSchema = z.object({
   important: z.number().int().min(0).max(9999),
   /** The mandatory reviewers still queued or running at this head. */
   running: z.array(z.object({ model: MODEL, effort: EFFORT })).max(8).default([]),
+  /** A mandatory review at this head covered only part of it: said, never waited on. */
+  partial: z.boolean().optional(),
 });
 export type StatusArgs = z.infer<typeof StatusArgsSchema>;
 /** The commit status's state and description (at most 140 characters), in fixed words: what runs, or how to unblock. */
@@ -127,18 +129,19 @@ export function renderStatus(a: StatusArgs): { state: "pending" | "failure" | "s
   const who = a.running.map((r) => `${modelName(r.model)} (${r.effort})`).join(", ");
   const text: Record<StatusArgs["reason"], string> = {
     pass: "Reviewed: no important finding open",
+    ungated: "Code review no longer gates this repository",
     queued: `Review queued${who ? `: ${who}` : ""}`,
     running: `Reviewing${who ? ` with ${who}` : ""}`,
     not_started: "Review starting",
     moved: "A newer commit is being reviewed",
-    findings: `${open}: fix and push, or reply on its thread to dispute`,
+    findings: `${open}: fix and push, or answer on its thread (fixed / disputed …)`,
     failed: `Review failed: comment "aiden review" to run it again`,
     incomplete: `Partial review: comment "aiden review full"`,
     not_reviewed: `Not reviewed: comment "aiden review"`,
     config: "The code review setting has errors",
   };
   const t = text[a.reason];
-  const d = open && a.reason !== "findings" ? `${t} · ${open}` : t;
+  const d = [open && a.reason !== "findings" ? `${t} · ${open}` : t, ...(a.partial ? ["partial coverage"] : [])].join(" · ");
   return { state: STATUS_STATE[a.reason], description: d.length > 140 ? `${d.slice(0, 139)}…` : d };
 }
 
@@ -146,28 +149,6 @@ export const MARK = { review: "aidenhq-review", finding: "aidenhq-finding", run:
 export const FINDING_MARK = /<!-- aidenhq-finding: ([A-Za-z0-9_-]{6,64}) -->/;
 export const RUN_MARK = (run: string) => `<!-- ${MARK.run}: ${run} -->`;
 export const ACK_MARK = `<!-- ${MARK.ack} -->`;
-/** Marks a ruling's reply on a finding's thread, so the state service never takes Aiden's own answer for a dispute. */
-export const RULING_MARK = "<!-- aidenhq-ruling -->";
-
-/** A dispute's ruling, posted as a reply on the finding's thread: the judge's verdict and its reason (model text, made plain). */
-export const RulingArgsSchema = z.object({
-  repo: z.string().regex(new RegExp(`^${NAME}/${NAME}$`)),
-  pr: z.number().int().min(1),
-  head: z.string().regex(SHA),
-  /** The judge run: the idempotency key. */
-  run: RUN,
-  finding: z.string().regex(/^[A-Za-z0-9_-]{6,64}$/),
-  /** The thread's first comment (Aiden's finding), which the reply answers. */
-  comment: z.number().int().min(1),
-  verdict: z.enum(["dismissed", "upheld"]),
-  reason: z.string().min(1).max(1500),
-});
-export type RulingArgs = z.infer<typeof RulingArgsSchema>;
-export function renderRuling(a: RulingArgs): string {
-  const head = a.verdict === "dismissed" ? "**Dismissed** after review of the dispute: this finding no longer holds the merge." : "**Upheld** after review of the dispute: this finding still holds the merge until it is fixed or the owner dismisses it.";
-  return `${RULING_MARK}\n${head}\n\n${plain(a.reason, 1500)}\n\n<sub>Judged at ${code(short(a.head))} (run ${code(a.run)}).</sub>`;
-}
-
 const ICON = { important: "\u{1F534}", nit: "\u{1F7E1}", pre_existing: "\u{1F7E3}" } as const;
 const LABEL = { important: "Important", nit: "Nit", pre_existing: "Pre-existing" } as const;
 const ORDER = ["important", "nit", "pre_existing"] as const;

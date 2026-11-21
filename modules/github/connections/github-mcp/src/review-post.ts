@@ -10,8 +10,8 @@ import { withFooter } from "./aidenhq-sdk/attribution.js";
 import type { GitHubAccess } from "./client.js";
 import { GitHub, GitHubRefused, objectRef, type Ref } from "./github.js";
 import {
-  FINDING_MARK, RULING_MARK, comboText, NoticeArgsSchema, PostArgsSchema, RulingArgsSchema, RUN_MARK, STATUS_CONTEXT, StatusArgsSchema, anchors, counts, renderNotice,
-  renderReview, renderRuling, renderStatus, rightLines, type NoticeArgs, type PostArgs, type StatusArgs,
+  FINDING_MARK, comboText, NoticeArgsSchema, PostArgsSchema, RUN_MARK, STATUS_CONTEXT, StatusArgsSchema, anchors, counts, renderNotice,
+  renderReview, renderStatus, rightLines, type NoticeArgs, type PostArgs, type StatusArgs,
 } from "./review-render.js";
 
 /** The card's details are cut at this many characters by the kernel: a review that can't be shown whole is refused. */
@@ -29,7 +29,7 @@ export interface Thread {
   line: number | null;
   /** The finding id Aiden's marker names in the first comment, or null (a person's thread). */
   finding: string | null;
-  /** The first comment's id (a ruling replies to it). */
+  /** The first comment's id (what the code-review service records as its own thread). */
   comment: number;
   /** The first comment carries a finding marker and is by the posting identity: Aiden's own thread. */
   ours: boolean;
@@ -37,12 +37,12 @@ export interface Thread {
   url: string;
   /** The run whose file comment this is (its run marker), or null. */
   run: string | null;
-  /** Replies, oldest first, as data (untrusted text); `ruling`: Aiden's own answer to a dispute (its marker, posted as the owner). */
-  replies: { id: number; author: string; body: string; ruling: boolean }[];
+  /** Replies, oldest first, as data (untrusted text). */
+  replies: { id: number; author: string; body: string }[];
 }
 type RawThread = { id: string; isResolved: boolean; isOutdated: boolean; path: string; line: number | null; comments: { nodes: { databaseId: number; url: string; body: string; author: { login: string } | null }[] } };
 type GhPr = { state: string; merged?: boolean; draft?: boolean; head: { sha: string }; base: { sha: string } };
-type Kind = "post" | "notice" | "ruling" | "status";
+type Kind = "post" | "notice" | "status";
 
 /** The explicit target must be the review's own: a review of another repo, pull request or commit is refused. */
 function target(a: PostArgs): PostArgs {
@@ -79,7 +79,7 @@ export class ReviewPoster {
         const author = first.author?.login ?? "";
         out.push({
           id: n.id, comment: first.databaseId, run: RUN_RE.exec(first.body)?.[1] ?? null, resolved: n.isResolved, outdated: n.isOutdated, path: n.path, line: n.line, finding, ours: finding !== null && norm(author) === me, author, url: first.url,
-          replies: rest.map((c) => ({ id: c.databaseId, author: c.author?.login ?? "", body: c.body.slice(0, 2000), ruling: c.body.includes(RULING_MARK) && norm(c.author?.login ?? "") === norm(author) })),
+          replies: rest.map((c) => ({ id: c.databaseId, author: c.author?.login ?? "", body: c.body.slice(0, 2000) })),
         });
       }
       if (!t.pageInfo.hasNextPage) break;
@@ -158,18 +158,6 @@ export class ReviewPoster {
         targets: { [`${a.repo}#${a.pr}`]: { repo: a.repo, ref: `pull/${a.pr}`, commit: a.head, base_sha: null } },
       };
     }
-    if (kind === "ruling") {
-      const a = RulingArgsSchema.parse(args);
-      return {
-        facts: {
-          target: `${a.repo}#${a.pr} @ ${a.head.slice(0, 7)}`,
-          sentence: `Reply on Aiden's finding ${a.finding} on ${a.repo}#${a.pr}: the dispute is ${a.verdict}.`,
-          changes: `One reply on the finding's review thread, as the owner, signed by AidenHQ${a.verdict === "dismissed" ? ", and the thread resolved (Aiden's own only)" : ""}. The reason is the judge's text, made plain.`,
-          details: renderRuling(a),
-        },
-        targets: { [`${a.repo}#${a.pr}`]: { repo: a.repo, ref: `pull/${a.pr}`, commit: a.head, base_sha: null } },
-      };
-    }
     if (kind === "notice") {
       const n = NoticeArgsSchema.parse(args);
       return {
@@ -209,29 +197,15 @@ export class ReviewPoster {
 
   /** Posts what `preview` showed. Throws (a failed outcome) when the pull request is closed unmerged. */
   async execute(kind: Kind, args: unknown): Promise<{ ok: boolean; text: string; objects: string[] }> {
-    if (kind === "ruling") return this.ruling(RulingArgsSchema.parse(args));
     if (kind === "status") return this.status(StatusArgsSchema.parse(args));
     return kind === "post" ? this.post(target(PostArgsSchema.parse(args))) : this.notice(NoticeArgsSchema.parse(args));
-  }
-
-  /** The ruling, once per run (found again by its run id): a reply on the finding's thread; a dismissal resolves the thread. */
-  private async ruling(a: z.infer<typeof RulingArgsSchema>): Promise<{ ok: boolean; text: string; objects: string[] }> {
-    const ref = { ...split(a.repo), number: a.pr };
-    const who = await this.identity();
-    const t = (await this.threads(ref)).find((x) => x.comment === a.comment && x.finding === a.finding && x.ours);
-    if (!t) throw new GitHubRefused(`no thread of Aiden's for finding ${a.finding} on ${a.repo}#${a.pr}`);
-    const body = renderRuling(a);
-    const had = t.replies.find((r) => r.ruling && r.body.includes(`run \`${a.run}\``));
-    const made = had ? { id: had.id } : await this.gh.request<{ id: number }>("POST", `${api(ref)}/pulls/${a.pr}/comments/${a.comment}/replies`, { body: { body: withFooter(body, AGENT) } });
-    if (a.verdict === "dismissed" && !t.resolved) await this.gh.graphql("resolveThread", { thread: t.id });
-    return { ok: true, text: JSON.stringify({ identity: "owner", login: who.login, verdict: a.verdict, resolved: a.verdict === "dismissed" }), objects: [`${objectRef(ref)}/comment/${made.id}`] };
   }
 
   private async notice(n: NoticeArgs): Promise<{ ok: boolean; text: string; objects: string[] }> {
     const ref = { ...split(n.repo), number: n.pr };
     const who = await this.identity();
     await this.pull(ref, who);
-    const ack = await this.ack(ref, renderNotice(n), n.ack);
+    const ack = await this.ack(ref, `${renderNotice(n)}${n.review ? `\n[The review](${n.review})` : ""}`, n.ack);
     return { ok: true, text: JSON.stringify({ identity: "owner", login: who.login, ack: ack.url, ack_id: ack.id }), objects: [ack.object] };
   }
 
@@ -248,7 +222,10 @@ export class ReviewPoster {
    * The review of the commit it reviewed, even when the PR has moved on since (its comments then show as outdated where the
    * lines changed). Every finding gets one thread: its lines, the nearest diff line of its file, or a file comment. Once posted,
    * the summary is updated so each finding's row links to its thread. A retry finds what it posted by the run's and the
-   * findings' markers, so nothing is posted twice.
+   * findings' markers, so nothing is posted twice (markers only dedupe: the comment ids it reports, the service's record of its
+   * own threads, are only those GitHub answered this attempt with). Once the review exists, the rest is done as far as it goes:
+   * a file comment GitHub refuses leaves its finding in the summary, and the outcome still reports what was made. The
+   * acknowledgement is the service's notice, never this post.
    */
   private async post(a: PostArgs): Promise<{ ok: boolean; text: string; objects: string[] }> {
     const r = a.review;
@@ -277,23 +254,23 @@ export class ReviewPoster {
     // Its inline comments (each thread's first comment) by finding, for the links and AidenHQ's records.
     const mine = await this.gh.request<{ id: number; html_url: string; body?: string }[]>("GET", `${api(ref)}/pulls/${ref.number}/reviews/${review.id}/comments`, { query: { per_page: 100 } });
     const made = mine.map((c) => ({ id: c.id, url: c.html_url, finding: FINDING_MARK.exec(c.body ?? "")?.[1] }));
-    // File comments an earlier attempt of this run made (its run marker): theirs to report again, so the service records them.
-    for (const t of threads) if (t.run === a.run && t.finding && norm(t.author) === norm(who.login)) made.push({ id: t.comment, url: t.url, finding: t.finding });
+    const problems: string[] = [];
+    const tryTo = async <T>(what: string, f: () => Promise<T>) => f().catch((e: Error) => void problems.push(`${what}: ${String(e.message).slice(0, 150)}`));
     // A finding on a file without diff lines takes a file comment (its own thread, outside the review).
+    const unthreaded = new Set<string>();
     for (const c of first.comments.filter((x) => x.file)) {
-      const f = await this.gh.request<{ id: number; html_url: string }>("POST", `${api(ref)}/pulls/${ref.number}/comments`, { body: { commit_id: r.head, path: c.path, subject_type: "file", body: withFooter(`${RUN_MARK(a.run)}\n${c.body}`, AGENT) } });
-      made.push({ id: f.id, url: f.html_url, finding: c.id });
+      const f = await tryTo(`file comment on ${c.path}`, () => this.gh.request<{ id: number; html_url: string }>("POST", `${api(ref)}/pulls/${ref.number}/comments`, { body: { commit_id: r.head, path: c.path, subject_type: "file", body: withFooter(`${RUN_MARK(a.run)}\n${c.body}`, AGENT) } }));
+      if (f) made.push({ id: f.id, url: f.html_url, finding: c.id });
+      else unthreaded.add(c.id);
     }
     const links = new Map(made.filter((m) => m.finding).map((m) => [m.finding!, m.url]));
-    await this.gh.request("PUT", `${api(ref)}/pulls/${ref.number}/reviews/${review.id}`, { body: { body: withFooter(renderReview(r, a.run, { place, earlier, links, gated: a.gated }).summary, AGENT) } });
+    const placed = new Map([...place].filter(([id]) => !unthreaded.has(id)));
+    await tryTo("summary links", () => this.gh.request("PUT", `${api(ref)}/pulls/${ref.number}/reviews/${review!.id}`, { body: { body: withFooter(renderReview(r, a.run, { place: placed, earlier, links, gated: a.gated }).summary, AGENT) } }));
     // A missing finding isn't proof of a fix: the state service names the ids its recheck confirmed, and only the threads it
-    // recorded as its own posts (`own`, its database) for findings the review no longer reports are resolved. The resolves and the
-    // acknowledgement speak for the PR's current head: a review of an older one leaves them to the newer head's review.
-    const current = pr.head.sha === r.head;
+    // recorded as its own posts (`own`, its database) for findings the review no longer reports are resolved, and only for the
+    // PR's current head (a review of an older one leaves them to the newer head's review).
     const present = new Set(r.findings.map((f) => f.id));
-    const done = current ? await this.resolve(ref, { finding_ids: a.resolve.filter((id) => !present.has(id)) }, (t) => own.has(t.comment)) : { resolved: [], skipped: [] };
-    const c = counts(r.findings);
-    const ack = current ? await this.ack(ref, `${renderNotice({ repo: r.repo, pr: r.pr, head: r.head, phase: "done", engine: r.engine, model: r.model, effort: r.effort, ...c, cost_usd: r.cost_usd, run: a.run })}\n[The review](${review.html_url})`, a.ack) : undefined;
-    return { ok: true, text: JSON.stringify({ identity: "owner", login: who.login, review: review.html_url, inline: made.length, listed: first.listed.length, earlier: earlier.size, resolved: done.resolved.length, skipped: done.skipped.slice(0, 10), ...(ack ? { ack: ack.url, ack_id: ack.id } : {}), comments: made.map((m) => m.id) }), objects: [...made.map((m) => `${objectRef(ref)}/comment/${m.id}`), ...(ack ? [ack.object] : [])] };
+    const done = pr.head.sha === r.head ? (await tryTo("resolving threads", () => this.resolve(ref, { finding_ids: a.resolve.filter((id) => !present.has(id)) }, (t) => own.has(t.comment)))) ?? { resolved: [], skipped: [] } : { resolved: [], skipped: [] };
+    return { ok: true, text: JSON.stringify({ identity: "owner", login: who.login, review: review.html_url, comments: made.map((m) => m.id), inline: made.length, listed: first.listed.length + unthreaded.size, earlier: earlier.size, resolved: done.resolved.length, ...(problems.length ? { problems: problems.slice(0, 5) } : {}) }), objects: made.map((m) => `${objectRef(ref)}/comment/${m.id}`) };
   }
 }

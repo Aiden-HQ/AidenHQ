@@ -58,11 +58,9 @@ export const ROUTES: { method: Method; path: RegExp }[] = [
   { method: "POST", path: new RegExp(`^/repos/${NAME}/${NAME}/issues/${NUM}/assignees$`) },
   { method: "DELETE", path: new RegExp(`^/repos/${NAME}/${NAME}/issues/${NUM}/assignees$`) },
   { method: "POST", path: new RegExp(`^/repos/${NAME}/${NAME}/pulls/${NUM}/reviews$`) },
-  // Code review's posting (review-post.ts): the acknowledgement comment edited in place, a ruling's reply on a finding's thread,
-  // a review's summary updated with its threads' links, a file comment for a finding on a file without diff lines, and the one
-  // commit status it mirrors its verdict to.
+  // Code review's posting (review-post.ts): the acknowledgement comment edited in place, a review's summary updated with its
+  // threads' links, a file comment for a finding on a file without diff lines, and the one commit status it mirrors its verdict to.
   { method: "PATCH", path: new RegExp(`^/repos/${NAME}/${NAME}/issues/comments/${NUM}$`) },
-  { method: "POST", path: new RegExp(`^/repos/${NAME}/${NAME}/pulls/${NUM}/comments/${NUM}/replies$`) },
   { method: "PUT", path: new RegExp(`^/repos/${NAME}/${NAME}/pulls/${NUM}/reviews/${RUN}$`) },
   { method: "POST", path: new RegExp(`^/repos/${NAME}/${NAME}/pulls/${NUM}/comments$`) },
   { method: "POST", path: new RegExp(`^/repos/${NAME}/${NAME}/statuses/[0-9a-f]{40}$`) },
@@ -76,7 +74,6 @@ const BODY_FIELDS: { path: RegExp; method: Method; fields: string[] }[] = [
   { method: "PATCH", path: /\/issues\/[0-9]+$/, fields: ["state", "state_reason"] },
   { method: "POST", path: /\/pulls\/[0-9]+\/reviews$/, fields: ["event", "body", "commit_id", "comments"] },
   { method: "PATCH", path: /\/issues\/comments\/[0-9]+$/, fields: ["body"] },
-  { method: "POST", path: /\/comments\/[0-9]+\/replies$/, fields: ["body"] },
   { method: "PUT", path: /\/pulls\/[0-9]+\/reviews\/[0-9]+$/, fields: ["body"] },
   { method: "POST", path: /\/pulls\/[0-9]+\/comments$/, fields: ["commit_id", "path", "subject_type", "body"] },
   { method: "POST", path: /\/statuses\/[0-9a-f]{40}$/, fields: ["state", "context", "description", "target_url"] },

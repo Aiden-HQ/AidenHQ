@@ -3,18 +3,17 @@
 //   as the Maintainer's issue read is), as the owner's GitHub sign-in github-mcp holds.
 // - Review runs: the kernel's credential-free check job `code-review` (POST /v1/checks; the recipe is lane E's), its Review read
 //   from the finished check.
-// - Posting: kernel write records (POST /v1/writes) of this module's kinds code-review.post and .ruling (Tier 1, the AI reviewer
+// - Posting: kernel write records (POST /v1/writes) of this module's kind code-review.post (Tier 1, the AI reviewer
 //   decides), code-review.notice and .status (Tier 0, fixed words), which this service executes (executor@1) through github-mcp's
 //   /internal/review routes.
 import type { KernelClient } from "./aidenhq-sdk/kernel-client.ts";
 import type { Executor } from "./aidenhq-sdk/executor.ts";
-import type { Ack, Permission, Posted, Poster, PrComment, PrSource, PullRequest, Review, ReviewRunner, ReviewSpec, RunResult, Status, Thread } from "./seams.ts";
+import type { Permission, Posted, Poster, PrComment, PrSource, PullRequest, Review, ReviewRunner, ReviewSpec, RunResult, Status, Thread } from "./seams.ts";
 
 export const RECIPE = "code-review";
 /** This module's write kinds (module.yaml writes), executed by this service through github-mcp's review routes. */
 export const POST_KIND = "code-review.post";
 export const ACK_KIND = "code-review.notice";
-export const RULING_KIND = "code-review.ruling";
 export const STATUS_KIND = "code-review.status";
 /** The role whose agent (the Reviewer Manager) holds each PR's task, where its posts' approvals land. */
 export const ROLE = "reviewer-manager";
@@ -36,7 +35,6 @@ export function githubSource(base: string, token: () => string, fetcher: typeof 
     mergeBase: async (repo, number, head) => (await get("merge-base", { repo, number, head })) as { merge_base: string },
     postable: async (repo) => (await get("postable", { repo })) as { identity: "owner" | null; org: string },
     repos: async (q) => ((await get("repos", { q })) as { repos: { repo: string; private: boolean; url?: string }[] }).repos,
-    messages: async (repo, number) => ((await get("messages", { repo, number })) as { messages: string[] }).messages,
     threads: async (repo, number) => {
       const r = await fetcher(`${base.replace(/\/+$/, "")}/internal/review/threads`, { method: "POST", headers: { authorization: `Bearer ${token()}`, "content-type": "application/json" }, body: JSON.stringify({ repo, number }), signal: AbortSignal.timeout(30_000) });
       if (!r.ok) throw Object.assign(new Error(`github-mcp threads: ${r.status} ${(await r.text()).slice(0, 200)}`), { status: r.status });
@@ -54,7 +52,7 @@ export function checkSpec(s: ReviewSpec): Record<string, string> {
   return {
     base: s.merge_base, incremental_from: s.incremental_from ?? s.merge_base, pr: String(s.number),
     combo: JSON.stringify({ ...s.combo, ignore: s.ignore, max_nits: s.max_nits, mandatory: s.mandatory }), focus: s.focus ?? "",
-    budget_usd: Math.max(0.0001, s.budget_usd).toFixed(4), previous: JSON.stringify({ findings: s.previous }), judge: JSON.stringify(s.judge ?? {}),
+    budget_usd: Math.max(0.0001, s.budget_usd).toFixed(4), previous: JSON.stringify({ findings: s.previous }),
   };
 }
 
@@ -129,17 +127,12 @@ export function kernelPoster(kernel: KernelClient, log: (m: string, f?: Record<s
       // (`addressed`, `guidance`) that no post renders, so what is sent is picked, never what is left after stripping.
       const { fixed } = p.review;
       const review = { ...Object.fromEntries(REVIEW_FIELDS.filter((k) => k in p.review).map((k) => [k, p.review[k]])), repo: t.repo, pr: t.number, head: t.head };
-      const args = { repo: t.repo, pr: t.number, head: t.head, run: p.run, review, resolve: (fixed ?? []).filter((id) => typeof id === "string").slice(0, 100), gated: !!p.gated, own: (p.own ?? []).slice(0, 1000), ...(p.ack ? { ack: p.ack } : {}) };
+      const args = { repo: t.repo, pr: t.number, head: t.head, run: p.run, review, resolve: (fixed ?? []).filter((id) => typeof id === "string").slice(0, 100), gated: !!p.gated, own: (p.own ?? []).slice(0, 1000) };
       const r = (await kernel.call("POST", "/v1/writes", { kind: POST_KIND, args, task: await taskOf(t.repo, t.number, t.once ? p.run : undefined) })) as { id: string; state: string };
       return { ...settled(r), write: r.id };
     },
     async status(s: Status) {
-      const r = (await kernel.call("POST", "/v1/writes", { kind: STATUS_KIND, args: { repo: s.repo, pr: s.number, head: s.head, reason: s.reason, important: s.important, running: s.running.slice(0, 8) } })) as { id: string; state: string; outcome?: { ok: boolean; text: string } | null };
-      return { ...settled(r), write: r.id };
-    },
-    async ruling(g) {
-      const args = { repo: g.repo, pr: g.number, head: g.head, run: g.run, finding: g.finding, comment: g.comment, verdict: g.verdict, reason: g.reason.slice(0, 1500) };
-      const r = (await kernel.call("POST", "/v1/writes", { kind: RULING_KIND, args, task: await taskOf(g.repo, g.number) })) as { id: string; state: string };
+      const r = (await kernel.call("POST", "/v1/writes", { kind: STATUS_KIND, args: { repo: s.repo, pr: s.number, head: s.head, reason: s.reason, important: s.important, running: s.running.slice(0, 8), ...(s.partial ? { partial: true } : {}) } })) as { id: string; state: string; outcome?: { ok: boolean; text: string } | null };
       return { ...settled(r), write: r.id };
     },
     async outcome(write) {
@@ -149,7 +142,7 @@ export function kernelPoster(kernel: KernelClient, log: (m: string, f?: Record<s
       // The notice speaks only in its fixed words: a phase (with a reason), or a command's answer (help, always, focus).
       const reason = reasonOf(a.why);
       if (a.state === "skipped" && !reason) return undefined;
-      const r = (await kernel.call("POST", "/v1/writes", { kind: ACK_KIND, args: { ...(a.ack ? { ack: a.ack } : {}), repo: a.repo, pr: a.number, head: a.head, phase: a.state, ...(a.state === "answered" ? { answer: a.answer ?? "help" } : {}), ...(reason ? { reason } : {}), ...(a.combo ? { engine: a.combo.engine, model: a.combo.model, effort: a.combo.effort } : {}), ...(a.run ? { run: a.run } : {}), ...(a.counts ?? {}) } })) as { id: string; state: string; outcome?: { ok: boolean; text: string } | null };
+      const r = (await kernel.call("POST", "/v1/writes", { kind: ACK_KIND, args: { ...(a.ack ? { ack: a.ack } : {}), repo: a.repo, pr: a.number, head: a.head, phase: a.state, ...(a.state === "answered" ? { answer: a.answer ?? "help" } : {}), ...(reason ? { reason } : {}), ...(a.combo ? { engine: a.combo.engine, model: a.combo.model, effort: a.combo.effort } : {}), ...(a.run ? { run: a.run } : {}), ...(a.review ? { review: a.review } : {}), ...(a.counts ?? {}) } })) as { id: string; state: string; outcome?: { ok: boolean; text: string } | null };
       return { ...settled(r), write: r.id };
     },
     async close(repo, n, why, run) {
@@ -167,7 +160,7 @@ export function kernelPoster(kernel: KernelClient, log: (m: string, f?: Record<s
  * no other requester can post a review through these kinds.
  */
 export function reviewExecutor(github: (op: "preview" | "execute", body: unknown) => Promise<any>, runOf: (id: string) => { repo: string; number: number; head: string } | undefined): Executor {
-  const kindOf = (k: string) => (k === POST_KIND ? "post" : k === ACK_KIND ? "notice" : k === RULING_KIND ? "ruling" : k === STATUS_KIND ? "status" : undefined);
+  const kindOf = (k: string) => (k === POST_KIND ? "post" : k === ACK_KIND ? "notice" : k === STATUS_KIND ? "status" : undefined);
   return {
     async plan(req) {
       const kind = kindOf(req.kind);

@@ -32,7 +32,8 @@
     "failed",
     "incomplete",
     "not_reviewed",
-    "config"
+    "config",
+    "ungated"
    ]
   },
   "important": {
@@ -67,6 +68,9 @@
      }
     }
    }
+  },
+  "partial": {
+   "type": "boolean"
   }
  }
 }

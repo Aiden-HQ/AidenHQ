@@ -88,8 +88,11 @@ PR state, not config.
 The service reads the watched repos every `code_review_poll_seconds` (default 60); finished checks, filed posts, due runs and the status mirror move every 10 seconds (only the kernel is asked), so a review posts within seconds of its check ending. A new PR (or one leaving draft, or one already open when the repo is first watched) runs each `on_open`
 combo; a push runs each `on_push` combo incrementally, debounced 1 minute (a burst is one batch; another push replaces the
 queued batch). One trigger is a batch: one run per combo, each posting its own review; its first mandatory run (else its first)
-rechecks the PR's still-open findings (whichever combo found them). On a gated repo a new head is a push only once an earlier head
-was covered; a PR pushed to before its first review finished gets its first review (`on_open`) at the newest head. A run starts only while the day's real spend is under the
+rechecks the PR's still-open findings (whichever combo found them). A new head is a push once any review of the PR's opening
+moment (`on_open`, or `aiden review`) finished, whole or partial; a PR pushed to before that gets its first review (`on_open`)
+at the newest head. A skipped or superseded run never counts, so the opening batch never runs twice for one PR. A failed run
+retries by itself (a mandatory one up to three times, 1, 4 and 16 minutes later; any other once, a minute later), each retry on
+what is left of its `run_usd`; a check that failed before it got a computer spent nothing. A run starts only while the day's real spend is under the
 repo's and the instance's day caps (checked in one transaction); a run whose PR moved on or closed while it ran is
 superseded and never posts (one that merged while it ran still posts; one closed unmerged does not). A skip is a run too, acknowledged once per PR and reason (a budget skip once per head), never
 silent: draft, fork, budget, closed, stopped, superseded.
@@ -120,8 +123,7 @@ model gateway. The service accepts what the recipe runs: each engine's own effor
 ## Posting
 
 The service files a `post` write (Tier 1: the AI reviewer reads the whole rendered review, which is exactly what is posted) or
-a `notice` (Tier 0, fixed words) per run, a `ruling` (Tier 1: the judge's text) per judged dispute and a `status` (Tier 0, fixed
-words) per verdict change; the github module's poster executes it. One GitHub review per head and combo, always a `COMMENT` on the
+a `notice` (Tier 0, fixed words) per run and a `status` (Tier 0, fixed words) per verdict change; the github module's poster executes it. One GitHub review per head and combo, always a `COMMENT` on the
 commit it reviewed: a review that finished before the PR moved on still posts (its comments show as outdated where lines
 changed; the acknowledgement is left to the newer head), while a run whose PR moved on while it ran is superseded (Triggers):
 
@@ -143,13 +145,15 @@ Our own markers (`<!-- aidenhq-... -->`) mark every post so the next run and the
 finding is gone on the next run are resolved, only when Aiden posted them. The acknowledgement comment is one per PR: with
 several combos it shows the latest run to finish (each review names its own combo).
 
-Identity: the owner's own GitHub sign-in, COMMENT reviews only, each review, file comment, ruling and notice ending with the
+Identity: the owner's own GitHub sign-in, COMMENT reviews only, each review, file comment and notice ending with the
 AidenHQ footer (a review's inline comments carry it once, in its summary; each post still a Tier 1 write). Every fleet write posts as
 that same login, so nothing that decides anything is read back from GitHub text: findings, coverage, dispositions and the verdict
-live in the service's database, and a thread is Aiden's own (a reply on it is a dispute; it may be resolved) only when its first
+live in the service's database, and a thread is Aiden's own (a reply on it may answer its finding; it may be resolved) only when its first
 comment's id is one the service recorded from its own post's outcome (table `comments`), and the acknowledgement is the comment
 id it recorded (`prs.ack`). Markers serve display, dedupe and mapping a reply to its finding only. Threads posted before this
-record existed aren't Aiden's own to it (no dispute or resolve on them): the next review's threads are.
+record existed aren't Aiden's own to it (no answer or resolve on them): the next review's threads are. The acknowledgement is
+made only by the notice (one in flight per PR until its comment id is recorded); a post never touches it, and a done notice
+follows each settled post of the PR's current head.
 
 **The status `aidenhq/review`.** On a gated repo, each open non-draft PR's head carries the commit status `aidenhq/review`, so
 people and `gh pr checks --watch` see the verdict: pending while the head's mandatory review is queued or running (naming the
@@ -166,37 +170,42 @@ rulesets) knowing that; the merge queue's gate is the verdict.
 A combo marked `mandatory` gates its repo's merges (the compile lists the gated repos for the github module and the kernel's
 `ai_review_code: unless_code_review_mandatory`). The parts:
 
-- **Coverage.** A head is covered once a batch that reviewed it has every mandatory run's review stored whole (no
-  `coverage.incomplete`, no important finding withheld), each over a range that starts at the merge base (a full review) or at a
-  covered head: `on_open` covers a PR's first head, `on_push` each push after it, `aiden review` any head; a one-off never does.
-  On a gated repo an incremental run starts from the last covered head (else it is full), so a force-push or a failed review is
-  reviewed over the whole range. A non-mandatory combo still running or failing doesn't hold anything; its findings are advice.
-- **Findings.** A finding stays open (`findings.outcome` null) until a mandatory run's recheck confirms it fixed, a judge
-  dismisses it on a dispute, or the owner dismisses it on the board; reported again later, it opens again. Every new head's first
-  mandatory run gets every open gating finding with its evidence (full reviews and force-pushes included, all of them, whatever
-  the change touched; `spec.previous` fits 16 KB by shrinking texts first) and the finders get the open findings as already
-  reported: one that restates an open one on the same file at no higher severity is dropped (a mandatory review's important one
-  only by a gating one). A result for a head the PR moved on from is discarded. Each change is a row in `dispositions` (finding,
-  head, state, reason, evidence, who decided).
-- **Verdict.** `GET /v1/verdict?repo=&pr=&head=` (only the github module's own token, which the service checks with the kernel's `/v1/whoami`: no shared secret): `pass`, or `wait` with each
-  reason and how it unblocks (review not started, the PR moved, review queued or running, failed: `aiden review`, partial:
-  `aiden review full`, important findings open). There is no fail.
+- **Policy.** The repo's mandatory reviewers (each moment's mandatory combos) are one key (`policyOf`), stamped on each run and
+  each covered head. Coverage and incremental baselines count only under the current key, so when the owner adds a mandatory
+  reviewer, an open PR gets that reviewer's run at its head (the next poll queues each one a head lacks) and doesn't pass on the
+  old coverage.
+- **Coverage (baselines).** A head is covered once a batch that reviewed it has every mandatory run's review stored whole (no
+  `coverage.incomplete`, no important finding withheld), each over a range that starts at the merge base or at a covered head.
+  On a gated repo an incremental run starts from the last covered head (else it is full), so a partial or failed review, a
+  force-push or a policy change is followed by a whole review. A non-mandatory combo never holds anything; its findings are
+  advice.
+- **Findings.** A finding stays open (`findings.outcome` null) until a mandatory run's recheck confirms it fixed, it is answered
+  on its thread, or the owner dismisses it on the board. Old and new findings gate alike. Every new head's first mandatory run gets
+  every open gating finding with its evidence (whatever the change touched; `spec.previous` fits 16 KB by shrinking texts first)
+  and the finders get the open findings as already reported: one that restates an open one on the same file at no higher severity
+  is dropped (a mandatory review's important one only by a gating one). A result for a head the PR moved on from is discarded. Each
+  change is a row in `dispositions` (finding, head, state, reason, evidence, who decided).
+- **Answers (owner, 2026-11-21).** A reply on Aiden's own thread (the service's record) for an open gating finding, from the PR's
+  author (not a fork's) or someone with write access now, whose first word is `fixed`, `disputed`, `by design` or `won't fix`
+  followed by a reason, closes it (`fixed`, else `dismissed`, keeping the answer as `claim`). Any other reply is conversation.
+  The next mandatory recheck reads each answered finding with its claim and opens it again only when it read the code and finds
+  the fix or the reason unsafe (`unsafe`: it hides a real problem or adds one); unsure, still present or silent never reopens one,
+  and a finding answered and reported again stays answered. There is no judge.
+- **Verdict.** `GET /v1/verdict?repo=&pr=&head=` (only the github module's own token, which the service checks with the kernel's
+  `/v1/whoami`: no shared secret): `pass` once each mandatory reviewer of the head's moment has a run at the head that is done
+  (whole or partial) or failed past its retries, and no gating finding is open; else `wait` with each reason and how it unblocks
+  (not started, the PR moved, queued or running, skipped, findings open). There is no fail.
 - **Merge gate.** `modules/github/service/src/review-gate.ts`: before the merge call at the bound head, a gated repo's PR asks
-  the verdict; anything but pass (the service unreachable too) waits, with no time limit, until it passes or the PR moves or
-  closes. A repo not on the list never asks, so an install without code review merges as before. The owner's own merges on
-  GitHub are not gated.
-- **Fail closed.** A mandatory run is never skipped for budget (its spend still counts, at its whole `run_usd` while unread),
-  reviews a fork's PR by itself, and retries once like any run.
-- **Disputes.** A reply on Aiden's own finding thread (one the service recorded as its post) for an open gating finding, from the PR's author or someone with
-  write access now, starts one judge: the recipe's judge mode (the same credential-free box at the head, $1 cap, counted in the
-  day's spend), on a model of no family any `Co-authored-by: AidenHQ …` trailer on the PR's commits names (none named: the checker
-  model, GPT Luna; `kernel/sdk/src/judge.ts`). Everything it reads is fenced data. It dismisses only after opening the code;
-  anything else (no answer, a failure) upholds. One judge per finding per head: after a ruling, a new dispute needs a new head
-  or the owner's Dismiss. The ruling is posted as a marked reply (`code-review.ruling`, Tier 1), never read back as a dispute; a
-  dismissal resolves the thread.
+  the verdict; a wait waits with no time limit, until it passes or the PR moves or closes. Infrastructure never stalls it: code
+  review unreachable (or answering 5xx) for over 10 minutes lets the merge go, recorded as the Flow fact `pr.review_bypassed`
+  (the Fleet Steward sees it in its flow report). A repo not on the list never asks, so an install without code review merges as
+  before. The owner's own merges on GitHub are not gated.
+- **Fail closed where it counts.** A mandatory run is never skipped for budget (its spend still counts), reviews a fork's PR by
+  itself, and `aiden review stop` never stops it (anyone posting as the owner can write a command).
 - **Owner.** The Reviews page shows each gated PR's verdict and reasons on its review, with a Dismiss (and a reason) per open
-  gating finding: the owner's signed-in session, through the board's key. The owner's GitHub login alone never dismisses (fleet
-  comments post as it).
+  gating finding: the owner's signed-in session, through the board's key. Turning a reviewer mandatory is the Reviewer Manager's
+  to do (it only adds a gate); turning one off, removing its combo or removing a gated repo is the owner's (`owner:` rules;
+  an entry removed holds its default, kernel/src/apply-tier.ts).
 
 ## Reviewer Manager
 
