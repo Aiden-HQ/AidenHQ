@@ -79,6 +79,15 @@ which drops it. In every other mode (`local`, `public`, `cloudflare`, or tailsca
 app's port are the host's loopback and Docker bridges, so the app requires a signed identity and the deploy's identity
 probe requires it to refuse a token-less request.
 
+**An app with no HTTP surface** — not exposed, no `share.host`, no `health.url` (a database, like the warehouse) — is
+probed the same way, and a socket that answers HTTP is still judged. A database answers silence to an HTTP request, so
+such an app's socket is identified positively as PostgreSQL: it must decline SSL and then answer a startup message with
+a PostgreSQL protocol message. An SSLRequest reply alone is not enough — a TLS listener offers SSL too, and a
+multiprotocol listener could serve HTTPS on the same port — so a socket that offers SSL stays closed, and a socket
+identified as PostgreSQL is also sent a TLS hello: one that answers TLS is a web app and stays closed too. Only a socket
+identified as a database alone is skipped, with a non-hard finding; silence alone is never enough. On any other app, or for any
+socket not identified that way, the same silence — `closed`, `silent` — fails closed.
+
 ## Agents (app_api, app_view)
 
 apps-mcp mints the agent's token itself (`modules/apps-platform/apps-mcp/src/identity.ts`) with its own Ed25519 key

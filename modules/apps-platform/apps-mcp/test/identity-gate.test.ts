@@ -6,7 +6,7 @@ import { createServer } from "node:net";
 import { networkInterfaces, tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
-import { finishedJob, IDENTITY_SCRIPT, identityDoors, identityPorts, identityProbeArgs, mergeScans, processUids, identityProbes, judgeIdentity, NO_SIGN_IN, unprobedServices, type Door } from "../src/checks.js";
+import { finishedJob, IDENTITY_SCRIPT, identityDoors, identityPorts, identityProbeArgs, mergeScans, noHttpSurface, processUids, identityProbes, judgeIdentity, NO_SIGN_IN, unprobedServices, type Door } from "../src/checks.js";
 import { agentSigner, forgedIdentity, IDENTITY_HEADER } from "../src/identity.js";
 import { parseApp } from "../src/registry.js";
 
@@ -55,14 +55,14 @@ async function gate(app: typeof tailnet, base: string, node = true) {
 function scan(app: typeof tailnet, exposed: number[], o: { required?: Door[]; ips?: string[]; keep?: number[]; proc?: string } = {}) {
   const probes = identityProbes(app, true, app.health.url ? new URL(app.health.url).pathname : undefined);
   const forged = forgedIdentity(app.name, noKey);
-  const input = { ports: exposed, ips: o.ips ?? [], ...(o.proc ? { proc: o.proc } : {}), probes: probes.map((p) => ({ method: p.method, path: p.path, headers: p.forged ? { [IDENTITY_HEADER]: forged } : {} })) };
+  const input = { ports: exposed, ips: o.ips ?? [], postgresProbe: noHttpSurface(app), ...(o.proc ? { proc: o.proc } : {}), probes: probes.map((p) => ({ method: p.method, path: p.path, headers: p.forged ? { [IDENTITY_HEADER]: forged } : {} })) };
   return new Promise<ReturnType<typeof identityPorts>>((ok, fail) => {
     // Sockets off unless `keep`: here /proc/net/tcp is the test host's, not one app container's.
     const script = o.keep || o.proc ? IDENTITY_SCRIPT : IDENTITY_SCRIPT.replace('[[proc + "/net/tcp", v4], [proc + "/net/tcp6", v6]]', "[]");
     const c = execFile(process.execPath, ["-e", script], (err, out) => {
       if (err) return fail(err);
       const sockets = (JSON.parse(out) as { sockets: any[] }).sockets.filter((k) => o.proc || (o.keep ?? exposed).includes(k.port)); // only this test's servers
-      ok(identityPorts(sockets.map((k) => ({ service: "app", port: k.port, host: k.host, listening: k.listening, raw: k.raw, answers: k.statuses.map((status: number, i: number) => ({ probe: probes[i]!, status })) })), o.required ?? []));
+      ok(identityPorts(sockets.map((k) => ({ service: "app", port: k.port, host: k.host, listening: k.listening, raw: k.raw, answers: k.statuses.map((status: number, i: number) => ({ probe: probes[i]!, status })) })), o.required ?? [], [], noHttpSurface(app)));
     });
     c.stdin!.end(JSON.stringify(input));
   });
@@ -211,6 +211,103 @@ describe("identity gate", () => {
     expect(denied.ok).toBe(false);
     expect(denied.findings[0]).toMatchObject({ hard: true, what: expect.stringMatching(/couldn't read the sockets of process app:7/) });
   }, 120_000);
+
+  it("treats only an app the registry says serves no HTTP as a database, never one with a door", () => {
+    const db = parseApp({ name: "warehouse", repo: "example-org/x", owner: "a", description: "d", port: 5433, expose: false });
+    expect(noHttpSurface(db)).toBe(true);
+    // An exposed app is reachable, and a health.url or share.host is HTTP the gate must judge: none is a database.
+    expect(noHttpSurface(parseApp({ ...db, expose: true }))).toBe(false);
+    expect(noHttpSurface(parseApp({ ...db, health: { url: "http://pg:5432/health" } }))).toBe(false);
+    expect(noHttpSurface(parseApp({ ...db, share: { host: "db.example.com" } }))).toBe(false);
+    // The warehouse's own compose: one published database port, no door the gate has to knock on.
+    expect(identityDoors(db, { services: { postgres: { ports: [{ target: 5432, published: "5433" }] } } })).toEqual([]);
+  });
+
+  // A PostgreSQL server's first bytes, as the gate sees them: an HTTP GET makes it hang up (raw: closed); an SSLRequest gets
+  // `N` (SSL is off, as in the official image); the StartupMessage then gets AuthenticationRequest (`R`). The startup message
+  // must be well-formed: its length covers the whole packet and its protocol is 3.0, so a broken emission fails the test.
+  const PG = `(s) => {
+    let stage = 0;
+    s.on("data", (d) => {
+      if (stage === 0 && d[0] === 0x47) return s.destroy();
+      if (stage === 0) { stage = 1; return s.write("N"); }
+      const len = d.readUInt32BE(0), proto = d.readUInt32BE(4);
+      if (len !== d.length || proto !== 196608) return s.destroy();
+      s.end(Buffer.from([0x52, 0, 0, 0, 8, 0, 0, 0, 0]));
+    });
+  }`;
+
+  it.runIf(process.platform === "linux")("lets a database app deploy past the gate: a socket confirmed as PostgreSQL is a recorded skip, not a hard finding", async () => {
+    // The warehouse's shape: not exposed, no health.url, one published database port. Postgres hangs up on an HTTP GET and
+    // completes a startup handshake: the gate identifies it positively and says so, instead of failing closed on `closed`.
+    const db = parseApp({ name: "warehouse", repo: "example-org/x", owner: "a", description: "d", port: 5433, expose: false });
+    const r = await scan(db, [await tcp(PG)]);
+    expect(r.ok).toBe(true);
+    expect(r.findings).toEqual([{ hard: false, what: expect.stringMatching(/speaks PostgreSQL/) }]);
+    // The same database on an app that is exposed, or has a health.url, is judged and fails closed.
+    const exposed = parseApp({ ...db, expose: true });
+    const healthy = parseApp({ ...db, health: { url: "http://pg:5432/health" } });
+    for (const app of [exposed, healthy]) {
+      const judged = await scan(app, [await tcp(PG)]);
+      expect(judged.ok).toBe(false);
+      expect(judged.findings[0]).toMatchObject({ hard: true, what: expect.stringMatching(/no HTTP answer/) });
+    }
+  }, 60_000);
+
+  it.runIf(process.platform === "linux")("keeps a listener that speaks PostgreSQL and TLS hard, even on an app the registry says serves no HTTP", async () => {
+    // The reviewer's case: a multiplexer answers the PostgreSQL handshake on plaintext and also serves TLS on the same port.
+    // The plaintext probes never see its HTTP, so a TLS hello must still find it: a port that speaks TLS could be HTTP.
+    const db = parseApp({ name: "warehouse", repo: "example-org/x", owner: "a", description: "d", port: 5433, expose: false });
+    const both = await tcp(`(s) => {
+      let stage = 0;
+      s.on("data", (d) => {
+        if (stage === 0 && d[0] === 0x16) return s.end(Buffer.from([0x15, 0x03, 0x03, 0, 2, 2, 40])); // a TLS alert
+        if (stage === 0 && d[0] === 0x47) return s.destroy();
+        if (stage === 0) { stage = 1; return s.write("N"); }
+        s.end(Buffer.from([0x52, 0, 0, 0, 8, 0, 0, 0, 0]));
+      });
+    }`);
+    const r = await scan(db, [both]);
+    expect(r.ok).toBe(false);
+    expect(r.findings[0]).toMatchObject({ hard: true, what: expect.stringMatching(/answers HTTPS/) });
+  }, 60_000);
+
+  it.runIf(process.platform === "linux")("keeps a listener that offers SSL hard, even on an app the registry says serves no HTTP", async () => {
+    // An SSLRequest reply alone is not identification: a TLS listener offers SSL too, and a multiprotocol one can serve
+    // HTTPS on the same port without answering the plaintext probes. Only a server that declines SSL and then speaks the
+    // PostgreSQL protocol is a database; one that offers SSL (`S`) stays closed, so the gate never skips a port that could be HTTP.
+    const db = parseApp({ name: "warehouse", repo: "example-org/x", owner: "a", description: "d", port: 5433, expose: false });
+    const tls = await tcp(`(s) => {
+      s.on("data", (d) => {
+        if (d[0] === 0x47) return s.destroy();
+        s.end("S");
+      });
+    }`);
+    const r = await scan(db, [tls]);
+    expect(r.ok).toBe(false);
+    expect(r.findings[0]).toMatchObject({ hard: true, what: expect.stringMatching(/no HTTP answer/) });
+  }, 60_000);
+
+  it.runIf(process.platform === "linux")("keeps an unconfirmed silent socket hard even on an app the registry says serves no HTTP", async () => {
+    // Silence is not identification: a server that hangs up on plaintext (an HTTPS listener, say) or never answers is still
+    // judged, so the no-HTTP exemption cannot hide a listener that never showed it speaks a database's protocol.
+    const db = parseApp({ name: "warehouse", repo: "example-org/x", owner: "a", description: "d", port: 5433, expose: false });
+    for (const code of [`(s) => s.destroy()`, `() => {}`]) {
+      const r = await scan(db, [await tcp(code)]);
+      expect(r.ok).toBe(false);
+      expect(r.findings[0]).toMatchObject({ hard: true, what: expect.stringMatching(/no HTTP answer/) });
+    }
+  }, 60_000);
+
+  it.runIf(process.platform === "linux")("still judges a socket that answers HTTP, even on an app the registry says serves no HTTP", async () => {
+    const db = parseApp({ name: "warehouse", repo: "example-org/x", owner: "a", description: "d", port: 5433, expose: false });
+    // An HTTP server without the identity middleware: the skip may not cover a socket that speaks HTTP.
+    const open = await scan(db, [portOf(await starter({}))]);
+    expect(open.ok).toBe(false);
+    expect(open.findings[0]!.what).toContain(NO_SIGN_IN);
+    // With the middleware it is judged and passes, as any other app's socket does.
+    expect(await scan(db, [portOf(await starter({ AIDENHQ_APP: "warehouse" }))])).toMatchObject({ ok: true, findings: [] });
+  }, 60_000);
 
   it.runIf(process.platform === "linux")("probes a socket the app's own process holds, wherever a peer listener sits on the same network", async () => {
     // Real listeners: the app's own HTTP server (a starter) and a peer's, both in this host's network namespace. The proc tree
