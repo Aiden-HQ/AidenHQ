@@ -373,6 +373,20 @@ test("a legacy ask marker whose recipient can't be told is refused, not replaced
   assert.equal(JSON.parse(fact.data).question, "Which path is current?", "the first wait stands");
 });
 
+test("a marker naming the chief of staff explicitly is replaced by a question for the chief of staff", async (t) => {
+  const w = world(t);
+  const ask = { reason: "which path", for: "owner", question: "Keep v1?" };
+  assert.equal((await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, ask)).to, "chief_of_staff");
+  w.tick(MIN);
+  // The revision before this one wrote the resolved destination as the bare kind, so `chief_of_staff` is exact (unlike
+  // `delegator`, which the older scheme also used for the chief of staff).
+  w.db.prepare("UPDATE escalations SET kind = 'chief_of_staff' WHERE key = 'ask:t1'").run();
+  const again = await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { ...ask, question: "Or rename it?" });
+  assert.deepEqual([again.asked, again.to], [true, "chief_of_staff"]);
+  assert.equal(w.asked.chief.length, 2);
+  assert.match(w.asked.chief[1].description, /Or rename it\?/);
+});
+
 test("a replacement with the same until gets its own wait wake", async (t) => {
   const w = world(t);
   const until = new Date(w.now() + 2 * 60 * MIN).toISOString();
