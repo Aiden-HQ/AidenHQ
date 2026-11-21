@@ -87,10 +87,11 @@ protocol does not define or without the payload that code carries (Authenticatio
 MD5 a four-byte salt; SASL a non-empty mechanism list, each name NUL-terminated and ended by a separate NUL), or an error
 without its severity, SQLSTATE and message is not identification. An SSLRequest
 reply alone is not enough — a TLS listener offers SSL too, and a multiprotocol listener could serve HTTPS on the same
-port — so a socket that offers SSL stays closed, and a socket identified as PostgreSQL is also sent a TLS hello both
-naming the app (and its share host) in SNI and without a name: a listener that serves HTTPS only for a recognized name
-answers the named hello, and a router that serves its default route when SNI is absent and closes an unknown name answers
-the unnamed one. Either answer means the port speaks TLS, so it is a web app and stays closed too. Only a socket identified
+port — so a socket that offers SSL stays closed, and a socket identified as PostgreSQL is also sent TLS hellos: one per
+hostname (the app's, and its share host's when distinct), each a valid single-name SNI list, and one with no name. A
+listener that serves HTTPS only for a recognized name answers that name's hello, and a router that serves its default
+route when SNI is absent and closes an unknown name answers the unnamed one. Either answer means the port speaks TLS, so
+it is a web app and stays closed too. Only a socket identified
 as a database alone is skipped, with a non-hard finding; silence alone is never enough. On any other app, or for any socket
 not identified that way, the same silence — `closed`, `silent` — fails closed.
 

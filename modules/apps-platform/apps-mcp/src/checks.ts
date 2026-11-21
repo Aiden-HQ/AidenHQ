@@ -364,15 +364,17 @@ const postgres = (host, port) => new Promise((done) => {
 // PostgreSQL gets a TLS ClientHello as well. A TLS record back (a handshake, or the alert of an HTTPS server that rejects this
 // hello) means the port speaks TLS too, so it could be HTTP and stays hard. The hello is hand-built: no certificate is needed
 // to see the answer, only its record header. A listener that serves HTTPS only for a recognized name needs the hello to name
-// the app (and any share host) in SNI, but a router that serves its default endpoint when SNI is absent and silently closes
-// an unknown name only answers a hello without SNI, so both are tried and either answer keeps the socket hard.
-const hello = (names) => {
+// that host in SNI; a router that serves its default endpoint when SNI is absent and silently closes an unknown name only
+// answers a hello without SNI. RFC 6066 allows one host_name per server_name list, so each host gets its own hello rather
+// than a list of several, and the unnamed hello is tried too. Any answer keeps the socket hard.
+const hello = (name) => {
   const ext = [];
-  const list = names.filter((n) => n.length <= 255).map((n) => Buffer.from(n, "ascii"));
-  if (list.length) {
-    const entry = (n) => Buffer.concat([Buffer.from([0]), Buffer.from([n.length >> 8, n.length & 255]), n]);
-    const body = Buffer.concat(list.map(entry));
-    ext.push(Buffer.from([0, 0, (body.length + 2) >> 8, (body.length + 2) & 255, body.length >> 8, body.length & 255]), body);
+  if (name) {
+    // One server_name list holding one host_name: the name type (0), its two-byte length and the name. A list of several
+    // host_names is invalid per RFC 6066, so each host gets its own ClientHello.
+    const n = Buffer.from(name, "ascii");
+    const entry = Buffer.concat([Buffer.from([0]), Buffer.from([n.length >> 8, n.length & 255]), n]);
+    ext.push(Buffer.from([0, 0, (entry.length + 2) >> 8, (entry.length + 2) & 255, entry.length >> 8, entry.length & 255]), entry);
   }
   const extensions = Buffer.concat(ext);
   const body = Buffer.concat([
@@ -390,11 +392,11 @@ const hello = (names) => {
 // still counts: the port began a TLS record, so it could serve HTTPS. Anything short of that is not TLS, and Postgres alone
 // gets no such bytes back from a hello it does not understand.
 const TLS_PREFIX = (b) => b.length >= 1 && (b[0] === 0x16 || b[0] === 0x15) && (b.length < 2 || b[1] === 0x03);
-const tls = (host, port, names) => new Promise((done) => {
+const tls = (host, port, name) => new Promise((done) => {
   let got = Buffer.alloc(0);
   const end = (r) => { s.destroy(); done(r); };
   const s = net.connect({ host, port, timeout: ${PORT_PROBE_MS} });
-  s.on("connect", () => s.write(hello(names)));
+  s.on("connect", () => s.write(hello(name)));
   s.on("data", (d) => { got = Buffer.concat([got, d]); if (got.length >= 5) end(TLS_PREFIX(got) ? "https" : ""); });
   s.on("timeout", () => end(TLS_PREFIX(got) ? "https" : ""));
   s.on("end", () => end(TLS_PREFIX(got) ? "https" : ""));
@@ -455,9 +457,13 @@ process.stdin.on("data", (c) => (s += c)).on("end", async () => {
       let seen = look;
       if (r.postgresProbe && (look === "closed" || look === "silent")) {
         seen = (await postgres(k.host, k.port)) || look;
-        // Both a named and an unnamed hello: a TLS router may only answer its default route without SNI or only the app's
-        // name with it, and either answer means the port could serve HTTPS.
-        if (seen === "postgres" && ((await tls(k.host, k.port, r.sni ?? [])) || (await tls(k.host, k.port, [])))) seen = "https";
+        // One hello per name, then one without: a TLS router may only answer its default route without SNI or only a
+        // recognized name with it, and any answer means the port could serve HTTPS. Names are only strings; a name over
+        // 255 bytes cannot be a hostname in SNI and is skipped.
+        if (seen === "postgres") {
+          for (const name of (r.sni ?? []).filter((n) => n && n.length <= 255)) if (await tls(k.host, k.port, name)) { seen = "https"; break; }
+          if (seen === "postgres" && (await tls(k.host, k.port))) seen = "https";
+        }
       }
       out.push({ ...k, statuses, raw: seen });
     }

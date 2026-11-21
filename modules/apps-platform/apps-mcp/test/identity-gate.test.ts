@@ -52,10 +52,10 @@ async function gate(app: typeof tailnet, base: string, node = true) {
  * `proc` replays a container's proc tree (a real one's topology needs Docker's pid namespace); without it the host's /proc
  * stands in, and sockets are off unless `keep`.
  */
-function scan(app: typeof tailnet, exposed: number[], o: { required?: Door[]; ips?: string[]; keep?: number[]; proc?: string } = {}) {
+function scan(app: typeof tailnet, exposed: number[], o: { required?: Door[]; ips?: string[]; keep?: number[]; proc?: string; sni?: string[] } = {}) {
   const probes = identityProbes(app, true, app.health.url ? new URL(app.health.url).pathname : undefined);
   const forged = forgedIdentity(app.name, noKey);
-  const input = { ports: exposed, ips: o.ips ?? [], postgresProbe: noHttpSurface(app), sni: [app.name, app.share?.host].filter(Boolean), ...(o.proc ? { proc: o.proc } : {}), probes: probes.map((p) => ({ method: p.method, path: p.path, headers: p.forged ? { [IDENTITY_HEADER]: forged } : {} })) };
+  const input = { ports: exposed, ips: o.ips ?? [], postgresProbe: noHttpSurface(app), sni: o.sni ?? [app.name, app.share?.host].filter(Boolean), ...(o.proc ? { proc: o.proc } : {}), probes: probes.map((p) => ({ method: p.method, path: p.path, headers: p.forged ? { [IDENTITY_HEADER]: forged } : {} })) };
   return new Promise<ReturnType<typeof identityPorts>>((ok, fail) => {
     // Sockets off unless `keep`: here /proc/net/tcp is the test host's, not one app container's.
     const script = o.keep || o.proc ? IDENTITY_SCRIPT : IDENTITY_SCRIPT.replace('[[proc + "/net/tcp", v4], [proc + "/net/tcp6", v6]]', "[]");
@@ -357,6 +357,31 @@ describe("identity gate", () => {
     expect(await hard(err([0x53, 0x46, 0x41, 0x54, 0x41, 0x4c, 0, 0x4d, 0x62, 0x6f, 0x6f, 0]))).toBe(false); // no SQLSTATE
   }, 90_000);
 
+  // A ClientHello's SNI hostname, read from its structure: record header (5), handshake header (4), version (2), random
+  // (32), session id (1 + n), cipher suites (2 + n), compression (1 + n), extensions (2 + n), then each extension's type
+  // (2) and length (2). Inside SNI (type 0): list length (2), name type (1), name length (2), name. Null while the hello
+  // has not all arrived (a partial read must not be judged), "" when it carries no SNI. A one-byte hostname length lands
+  // the name in the wrong place and reads as a different host.
+  const SNI_HOST = `(b) => {
+    try {
+      if (b.length < 5) return null;
+      const need = 5 + b.readUInt16BE(3);
+      if (b.length < need) return null;
+      let i = 5 + 4 + 2 + 32;
+      i += 1 + b[i]; // session id
+      i += 2 + b.readUInt16BE(i); // cipher suites
+      i += 1 + b[i]; // compression
+      const end = i + 2 + b.readUInt16BE(i);
+      i += 2;
+      while (i + 4 <= end) {
+        const type = b.readUInt16BE(i), len = b.readUInt16BE(i + 2), at = i + 4;
+        if (type === 0 && len >= 5) return b.subarray(at + 5, at + 5 + b.readUInt16BE(at + 3)).toString("ascii");
+        i = at + len;
+      }
+      return "";
+    } catch { return null; }
+  }`;
+
   it.runIf(process.platform === "linux")("finds an HTTPS listener that serves only the app's name: the TLS hello carries SNI", async () => {
     // A listener that serves HTTPS only for a recognized hostname closes a hello without SNI. The probe offers the app's
     // name, so such a port is still found and stays hard instead of passing as a database. The server parses the
@@ -364,32 +389,13 @@ describe("identity gate", () => {
     const db = parseApp({ name: "warehouse", repo: "example-org/x", owner: "a", description: "d", port: 5433, expose: false });
     const sniOnly = await tcp(`(s) => {
       let stage = 0, got = Buffer.alloc(0);
+      const host = ${SNI_HOST};
       s.on("data", (d) => {
         got = Buffer.concat([got, d]);
         if (stage === 0 && got[0] === 0x16) { // the TLS hello, on its own connection
-          // Parse the ClientHello's SNI extension from its structure: record header (5), handshake header (4), version
-          // (2), random (32), session id (1 + n), cipher suites (2 + n), compression (1 + n), extensions (2 + n), then
-          // each extension's type (2) and length (2). Inside SNI (type 0): list length (2), name type (1), name length
-          // (2), name. A one-byte hostname length would land the name in the wrong place and read as a different host.
-          let host = "";
-          try {
-            let i = 5 + 4 + 2 + 32;
-            i += 1 + got[i]; // session id
-            i += 2 + got.readUInt16BE(i); // cipher suites
-            i += 1 + got[i]; // compression
-            const end = i + 2 + got.readUInt16BE(i);
-            i += 2;
-            while (i + 4 <= end) {
-              const type = got.readUInt16BE(i), len = got.readUInt16BE(i + 2);
-              const at = i + 4;
-              if (type === 0 && len >= 5) {
-                const nameLen = got.readUInt16BE(at + 3);
-                host = got.subarray(at + 5, at + 5 + nameLen).toString("ascii");
-              }
-              i = at + len;
-            }
-          } catch {}
-          if (host === "warehouse") s.end(Buffer.from([0x15, 0x03, 0x03, 0, 2, 2, 40]));
+          const name = host(got);
+          if (name === null) return; // not all arrived yet: judge only the whole hello
+          if (name === "warehouse") s.end(Buffer.from([0x15, 0x03, 0x03, 0, 2, 2, 40]));
           else s.destroy();
           return;
         }
@@ -409,12 +415,14 @@ describe("identity gate", () => {
     const db = parseApp({ name: "warehouse", repo: "example-org/x", owner: "a", description: "d", port: 5433, expose: false });
     const unnamed = await tcp(`(s) => {
       let stage = 0, got = Buffer.alloc(0);
+      const host = ${SNI_HOST};
       s.on("data", (d) => {
         got = Buffer.concat([got, d]);
         if (stage === 0 && got[0] === 0x16) { // the TLS hello, on its own connection
-          const names = got.includes(Buffer.from("warehouse"));
-          if (names) s.destroy(); // an unknown name: close silently, as a strict router does
-          else s.end(Buffer.from([0x15, 0x03, 0x03, 0, 2, 2, 40])); // the default route answers TLS
+          const name = host(got);
+          if (name === null) return; // not all arrived yet: judge only the whole hello
+          if (name) s.destroy(); // a named hello: an unknown name, closed silently as a strict router does
+          else s.end(Buffer.from([0x15, 0x03, 0x03, 0, 2, 2, 40])); // no SNI: the default route answers TLS
           return;
         }
         if (stage === 0 && got[0] === 0x47) return s.destroy(); // the HTTP GET
@@ -423,6 +431,34 @@ describe("identity gate", () => {
       });
     }`);
     const r = await scan(db, [unnamed]);
+    expect(r.ok).toBe(false);
+    expect(r.findings[0]).toMatchObject({ hard: true, what: expect.stringMatching(/answers HTTPS/) });
+  }, 60_000);
+
+  it.runIf(process.platform === "linux")("sends one TLS hello per hostname, so a second name is still probed", async () => {
+    // RFC 6066 allows one host_name per server_name list, so two names get separate hellos rather than one invalid list.
+    // A listener that drops the multi-name list and serves only the second name still answers that hello and stays hard,
+    // where a single combined hello would have missed it. The scan carries both names, as the platform does for an app and
+    // its share host; the app itself stays one the registry says serves no HTTP, so the database probe runs.
+    const app = parseApp({ name: "warehouse", repo: "example-org/x", owner: "a", description: "d", port: 5433, expose: false });
+    const shareOnly = await tcp(`(s) => {
+      let stage = 0, got = Buffer.alloc(0);
+      const host = ${SNI_HOST};
+      s.on("data", (d) => {
+        got = Buffer.concat([got, d]);
+        if (stage === 0 && got[0] === 0x16) { // the TLS hello, on its own connection
+          const name = host(got);
+          if (name === null) return; // not all arrived yet: judge only the whole hello
+          if (name === "db.example.com") s.end(Buffer.from([0x15, 0x03, 0x03, 0, 2, 2, 40]));
+          else s.destroy(); // the app's name, or no name: close silently
+          return;
+        }
+        if (stage === 0 && got[0] === 0x47) return s.destroy(); // the HTTP GET
+        if (stage === 0) { stage = 1; return s.write("N"); } // the SSLRequest
+        if (stage === 1) s.end(Buffer.from([0x52, 0, 0, 0, 8, 0, 0, 0, 0])); // the startup message
+      });
+    }`);
+    const r = await scan(app, [shareOnly], { sni: ["warehouse", "db.example.com"] });
     expect(r.ok).toBe(false);
     expect(r.findings[0]).toMatchObject({ hard: true, what: expect.stringMatching(/answers HTTPS/) });
   }, 60_000);
