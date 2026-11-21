@@ -88,3 +88,18 @@ test("an approve + unsure on a record that is the owner's on its merits reaches 
   assert.match(refused.refused, /attests the input was verified whole/);
   assert.equal(k.records.get(bare.id).state, "review");
 });
+
+test("a post's rejections and panel splits count per run: other runs of the task never park it, and splits of one run still reach the owner", () => {
+  const post = (run, at, extra = {}) => ({ id: `k-${run}-${at}`, action: "code-review.post", args: { repo: REPO, pr: 7, head: "a".repeat(40), run }, state: "rejected", decidedBy: "reviewer:~acme/model-b", decidedAt: `2026-11-20T${at}:00:00.000Z`, reviewCode: "out_of_scope", review: "no", digest: `d-${run}-${at}`, ...extra });
+  const priorOf = (records, run) => priorDecisions(records, "code-review.post", [], undefined, undefined, "chain", requestTargets("code-review.post", { run }));
+  const others = ["01", "02", "03", "04", "05", "06"].map((at) => post(`run-${at}`, at));
+  const sibling = priorOf(others, "run-new");
+  assert.deepEqual([sibling.rejects, priorPart(sibling)], [0, undefined], "six rejected posts of other runs park nothing");
+  assert.equal(priorOf(others, "run-01").rejects, 1, "a run counts its own rejections");
+  const same = ["01", "02", "03", "04", "05"].map((at) => post("run-x", at, { digest: `d-x-${at}` }));
+  assert.equal(priorPart(priorOf(same, "run-x"))?.rule, "retries-exhausted", "one run retried five times is parked");
+  const splits = ["01", "02", "03"].map((at) => post("run-s", at, { reviewCode: "panel_split" }));
+  const p = priorOf(splits, "run-s");
+  assert.equal(splitToOwner({ tier: 1, splits: p.splits }, verdict).decision, "escalate", "the fourth split of a run goes to the owner");
+  assert.equal(priorOf(splits, "run-other").splits, 0);
+});

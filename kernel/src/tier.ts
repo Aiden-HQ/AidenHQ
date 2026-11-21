@@ -243,7 +243,7 @@ const AIM = ["repo", "number", "issue_number", "pull_number", "channel", "thread
  * Where a request is aimed, for MAX_REJECTS: every branch (`repo|branch`, its patch key) or PR (`repo#number`, its patch
  * key) it changes, and a label for the agent. `s` is either the verified request state (`branches`, `prs`) or an approval
  * record's args (`only`, `prs`). A connection tool call (conn.tool) is aimed at its tool and the AIM arguments it names, so
- * rejected comments on one issue never park a close on another. A request of an action that names none of these (apply,
+ * rejected comments on one issue never park a close on another. A request whose args carry a `run` is aimed at that run. A request of an action that names none of these (apply,
  * create_repo, a module digest) has the task as its target.
  */
 export function requestTargets(action: string, s: any): { targets: Target[]; label: string } | undefined {
@@ -257,6 +257,9 @@ export function requestTargets(action: string, s: any): { targets: Target[]; lab
   if (branches.length) return { targets: branches.map((b: any) => of(b, `${String(b.repo).toLowerCase()}|${b.branch}`)), label: `branch${branches.length > 1 ? "es" : ""} ${branches.map((b: any) => `\`${b.branch}\``).join(", ")}` };
   const prs = action === "merge" ? (s?.prs ?? []).filter((p: any) => p?.repo && p?.number !== undefined) : [];
   if (prs.length) return { targets: prs.map((p: any) => of(p, `${String(p.repo).toLowerCase()}#${p.number}`)), label: `PR${prs.length > 1 ? "s" : ""} ${prs.map((p: any) => `#${p.number}`).join(", ")}` };
+  // A request that names the run it reports on (a review's post, one per run) is aimed at that run: sibling runs of one task
+  // are different requests, never retries of each other.
+  if (typeof s?.run === "string" && s.run) return { targets: [{ key: `${action}|run=${s.run}` }], label: `run ${s.run}` };
   return undefined;
 }
 /** The targets a record was raised against (its card's args), for a rejection to be counted on. */

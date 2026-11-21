@@ -49,9 +49,9 @@ async function reviewer(t) {
   t.after(() => m.s.close());
   return { url: `${m.url}/aidenhq/v1/reviewer`, seen };
 }
-const fileRecord = (records, { panel = false, args = { note: "hello" }, model, requester } = {}) => records.file({
+const fileRecord = (records, { panel = false, args = { note: "hello" }, model } = {}) => records.file({
   kind: KIND, module: "acme", args, targets: {}, executor: { module: "acme" }, policy: "p", card: { sentence: "Post a note.", changes: "c", reads: "r", cost: "none", details: "note: hello" },
-  requester: requester ?? { agent: "ag-ada", key: "ada", name: "Ada", roles: [], kind: "job", ...(model ? { model } : {}) }, task: "TASK-1", tier: 1, merit: 1, panel, review_first: null, rule: null, state: "review",
+  requester: { agent: "ag-ada", key: "ada", name: "Ada", roles: [], kind: "job", ...(model ? { model } : {}) }, task: "TASK-1", tier: 1, merit: 1, panel, review_first: null, rule: null, state: "review",
 });
 const db = () => join(mkdtempSync(join(tmpdir(), "review-loop-")), "kernel.db");
 
@@ -334,21 +334,6 @@ test("the reviewer reads an agent's form with its options spelled out, so the ow
 });
 
 
-test("rejections of a service's own writes never park the task: each post is reviewed", async (t) => {
-  const mod = await reviewer(t);
-  const k = await side(t, db(), mod);
-  const service = { agent: "", key: "", name: "", roles: [], kind: "service", module: "" };
-  for (let n = 0; n < MAX_REJECTS + 2; n++) {
-    const r = fileRecord(k.records, { args: { note: `run ${n}` }, requester: service });
-    const sweep = k.loop.tick();
-    await until(() => mod.seen.length === n + 1);
-    const last = mod.seen.at(-1);
-    k.reviews.verdict(last.id, last.token, { decision: "reject", reason: `no (${n})`, model: "~acme/model-a" });
-    await sweep;
-    assert.notEqual(k.records.get(r.id).review_code, "refused_by_code", `post ${n + 1} reached the reviewer`);
-  }
-  assert.equal(mod.seen.length, MAX_REJECTS + 2);
-});
 test("the owner's short answer to a form is read by code against that form's options", async () => {
   const { readAnswer } = await import("../src/review-loop.ts");
   const form = [{ question: "Anything missing?", options: ["That's right", "Something's missing"] }, { question: "Where do you want to review the design?", options: ["On Primer", "Here in chat"] }];
