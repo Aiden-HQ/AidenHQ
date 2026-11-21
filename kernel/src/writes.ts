@@ -676,7 +676,7 @@ export function createWrites({ records, registry, connections, secret, resolver,
         const chain = post.decision === "reject" && (post.code === UNSURE || post.code === "panel_split") && typeof b.request?.chain === "string" && b.request.chain ? requestHash(b.request.chain, typeof b.request.comments === "string" ? b.request.comments : "") : undefined;
         // `+`: two approvals (the panel); `;unsure:`: one approval and the other reviewer unsure (owner, 2026-11-20).
         const by = `reviewer:${post.model}${post.decision === "approve" && post.second ? `+${post.second}` : post.decision === "approve" && post.second_unsure ? `;unsure:${post.second_unsure}` : ""}`;
-        const out = records.review(id, r.digest, { decision: post.decision, by, note: post.reason, code: post.code, chain });
+        const out = records.review(id, r.digest, { decision: post.decision, by, note: post.reason, code: post.code, chain, codeOwned: post.code === "code_review_owns" && codeReviewOwns(r, reviewCode()) });
         if (typeof out === "string") return { record: records.get(id)!, posted: post, refused: out };
         log("reviewed", { record: id, kind: r.kind, decision: post.decision, code: post.code, model: post.model, second: post.second, second_unsure: post.second_unsure });
         if (out.state === "approved") void run(id);
