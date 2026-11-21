@@ -13,7 +13,7 @@ import { createGateway } from "../src/gateway/lib.ts";
 import { modelsList } from "./models-list.ts";
 import { mintToken, verifyToken } from "../src/gateway/token.ts";
 import { createIdentity } from "../src/identity.ts";
-import { recipes } from "./helpers.ts";
+import { fakeBox, recipes } from "./helpers.ts";
 import { checkJobs as compileCheckJobs } from "../../scripts/modules.ts";
 
 const A = "a".repeat(40), B = "b".repeat(40), J = "1".repeat(40), S = "2".repeat(40);
@@ -22,8 +22,7 @@ const CASES = "modules/ai-reviewer/test/reviewer-cases";
 function setup(trees, judge = () => ({ failed: [] }), extra = {}, onRun) {
   const dir = mkdtempSync(join(tmpdir(), "checks-"));
   const runs = [];
-  const box = {
-    async run(o) {
+  const box = fakeBox(async (o) => {
       runs.push(o);
       if (onRun) return onRun(o);
       if (o.argv.includes("scripts/reviewer-eval.ts")) {
@@ -35,8 +34,7 @@ function setup(trees, judge = () => ({ failed: [] }), extra = {}, onRun) {
         return { exit: 0, out: "", timedOut: false };
       }
       return { exit: trees.exit ?? 0, out: "lint: 1 error", timedOut: false };
-    },
-  };
+  });
   const snapshot = async (repo, ref, into) => {
     for (const [f, text] of Object.entries(trees[ref] ?? {})) (mkdirSync(dirname(join(into, f)), { recursive: true }), writeFileSync(join(into, f), text));
   };
@@ -185,7 +183,7 @@ test("checks: an eval that writes no result is an error with the box's output, n
   const dir = mkdtempSync(join(tmpdir(), "checks-"));
   const logs = [];
   let runs = 0;
-  const box = { async run() { runs++; return { exit: 1, out: "Error: Cannot find module 'yaml'", timedOut: false }; } };
+  const box = fakeBox(async () => { runs++; return { exit: 1, out: "Error: Cannot find module 'yaml'", timedOut: false }; });
   const snapshot = async (repo, ref, into) => { for (const [f, text] of Object.entries(evalTree()[ref] ?? {})) (mkdirSync(dirname(join(into, f)), { recursive: true }), writeFileSync(join(into, f), text)); };
   const checks = createChecks({ db: new DatabaseSync(":memory:"), secret: () => "s", recipes, box, snapshot: () => snapshot, modelToken: () => "t", gatewayUrl: "http://gw", workDir: dir, log: (m, f) => logs.push({ m, ...f }) });
   let v = checks.start("codehost-github", { repo: "acme/product", head: A, run: "eval", spec: evalSpec });
@@ -201,7 +199,8 @@ test("checks: an eval that writes no result is an error with the box's output, n
 });
 
 test("checks: a restart's re-run never shares the draining kernel's folder, and the old run's late end doesn't overwrite it", async () => {
-  // Two kernels on one db and work dir, as during a drained restart: the old one's box is still running when the new one starts.
+  // Two kernels on one db and work dir, as during a drained restart: the old one's run is still going when the new one finds its
+  // box gone (a restart that keeps the box is checkbox.test.ts's adoption case).
   const dir = mkdtempSync(join(tmpdir(), "checks-"));
   const db = new DatabaseSync(join(dir, "kernel.db"));
   const pkg = JSON.stringify({ scripts: { "aidenhq:fast-check": "eslint ." } });
@@ -211,14 +210,14 @@ test("checks: a restart's re-run never shares the draining kernel's folder, and 
   let release;
   const held = new Promise((r) => (release = r));
   const seen = [];
-  const kernel = (run) => createChecks({ db, secret: () => "s", recipes, box: { run }, snapshot: () => snapshot, modelToken: () => "t", gatewayUrl: "http://gw", workDir: dir, log: () => {}, now });
+  const kernel = (run) => createChecks({ db, secret: () => "s", recipes, box: fakeBox(run), snapshot: () => snapshot, modelToken: () => "t", gatewayUrl: "http://gw", workDir: dir, log: () => {}, now });
   const oldK = kernel(async (o) => { seen.push(o.workspace); await held; return { exit: 1, out: "old", timedOut: false }; });
   const ask = { repo: "acme/app", head: A, run: "fast", spec: { base: B } };
   const first = oldK.start("codehost-github", ask);
   while (seen.length === 0) await new Promise((r) => setTimeout(r, 5));
-  const newK = kernel(async (o) => { seen.push(o.workspace); assert.ok(existsSync(seen[0]), "the old run's folder is untouched"); return { exit: 0, out: "", timedOut: false }; });
+  const newK = kernel(async (o) => { seen.push(o.workspace); return { exit: 0, out: "", timedOut: false }; });
   assert.equal(newK.find("codehost-github", ask).state, "running", "the old kernel's run is its own while it drains");
-  newK.recover(); // its drain limit passed with the box still running
+  await newK.recover(); // the old kernel's box run is one the new kernel's box can't find: gone, so lost
   assert.equal(newK.find("codehost-github", ask).state, "lost");
   let v = newK.start("codehost-github", ask);
   assert.equal(v.id, first.id);
@@ -231,7 +230,7 @@ test("checks: a restart's re-run never shares the draining kernel's folder, and 
   assert.deepEqual([after.state, after.receipt.verdict, after.receipt.at], ["done", "pass", v.receipt.at]);
 });
 
-test("checks: a model recipe's run lost to a restart doesn't use up a try, but its spend counts and lost runs are capped", async () => {
+test("checks: a model recipe's run lost to a restart (its box gone) doesn't use up a try, but its spend counts and lost runs are capped", async () => {
   const review = { module: "code-review", argv: ["node", "x"], timeout_min: 30, title: "the review", spec: { base: "sha", budget_usd: "usd" }, files: {}, model: { max_usd: 2 }, result: true };
   const dir = mkdtempSync(join(tmpdir(), "checks-"));
   const db = new DatabaseSync(join(dir, "kernel.db"));
@@ -240,7 +239,7 @@ test("checks: a model recipe's run lost to a restart doesn't use up a try, but i
   const caps = [];
   // Each run's model token spends $0.10 by the ledger (keyed by the token's sha256, never the token).
   const tokens = new Map();
-  const kernel = (run) => createChecks({ db, secret: () => "s", recipes: () => ({ "code-review": review }), box: { run }, snapshot: () => snapshot,
+  const kernel = (run) => createChecks({ db, secret: () => "s", recipes: () => ({ "code-review": review }), box: fakeBox(run), snapshot: () => snapshot,
     modelToken: (c, o) => { caps.push(o.capUsd); const tok = `tok-${++n}`; tokens.set(createHash("sha256").update(tok).digest("hex"), 0.1); return tok; },
     spent: (key) => tokens.get(key) ?? 0, gatewayUrl: "http://gw", workDir: dir, log: () => {}, now: () => t++ });
   const ask = { repo: "acme/app", head: A, run: "code-review", spec: { base: B, budget_usd: "1" } };
@@ -249,7 +248,7 @@ test("checks: a model recipe's run lost to a restart doesn't use up a try, but i
     const k = kernel(() => (runs++, new Promise(() => {})));
     assert.equal(k.start("github", ask).state, "running");
     while (runs < want) await new Promise((r) => setTimeout(r, 5));
-    kernel(() => {}).recover(); // the next kernel, once the old one has exited mid-run
+    await kernel(() => {}).recover(); // the next kernel, once the old one has exited mid-run, finds its box gone
   };
   // Two restarts mid-run: neither uses up one of its two tries, and what each spent counts.
   await lose(); await lose();

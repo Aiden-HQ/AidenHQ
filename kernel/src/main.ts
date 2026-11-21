@@ -6,7 +6,8 @@
 // - The backplane listener (10.231.0.1:3130, backplane.ts): the tool proxy in front of every connection, caller identity
 //   and assertions, the control plane as the calling agent, and the records of every write (writes.ts, kernel.db).
 // - Jobs (jobs.ts, sandbox.ts): engine runs in the sandbox, detached, so a restart (KillMode=process) leaves them running;
-//   this process adopts them at start and stops following them (offsets saved) on SIGTERM, SIGINT or SIGUSR2.
+//   this process adopts them at start and stops following them (offsets saved) on SIGTERM, SIGINT or SIGUSR2. Check jobs'
+//   box runs (checkjobs.ts) are detached the same way: a drain hands them on and the next kernel follows them to their end.
 // - A restart drains (SIGUSR2, sent by kernel/run.sh, the unit's main process, which exits at once so the next kernel starts):
 //   this kernel stops its jobs' watchers, timers and listeners at once (the next one binds them as it starts: a gap of its
 //   start-up, which callers retry), lets the model calls in flight finish (at most DRAIN_MS) and exits.
@@ -604,8 +605,9 @@ const codehost = createCodehost({ repos: codehostRepos, grants: codehostGrants, 
   local: () => (localHost() ? { snapshot: localSnapshot({ bare: localCode.bare }), bundle: (repo) => localCode.bundle(repo) } : undefined) , noteObject: (ref, record) => records.addObjects(record, [ref]) });
 // Check jobs (checkjobs.ts): credential-free boxes of the launcher's, snapshots from the module that provides them.
 const checkJobs = checkJobsFrom({ db: records.db, secret, recipes: () => modulesFile().check_jobs ?? {}, ask: codehost.ask, call: launcherClient(launcherUrl, () => secret("launcher_kernel_key")), workDir: sandbox.workDir, gatewayUrl: `${sandbox.boxGatewayUrl}/api/v1`, spent: (runKey) => gw.spentByKey(runKey), tokens: (runKey) => gw.tokensByKey(runKey), log });
-// The previous kernel's check runs are its own until it has exited (it finishes them while it drains); then what is left is lost.
-afterPrevious(() => checkJobs.recover());
+// The previous kernel's check runs are its own until it has exited (it hands their box runs on as it drains); then this one
+// follows those again to their end, and what never reached its box is lost.
+afterPrevious(() => void checkJobs.recover().catch((e: Error) => log("WARNING: adopted checks failed outside their own handling", { err: String(e?.message ?? e).slice(0, 300) })));
 const lane = createLane({ once: outcomes.once, owner: ownerApi, grantsFile: grantsTable, facts, log, postAsAgent: lanePoster(outcomes) });
 // The board's reads of module services that declare a board API (providers.board), through the kernel.
 const moduleBoardApi = createBoardApi({ decl: (m) => (modulesFile().modules?.[m] as { board?: { url: string; auth_secret: string } } | undefined)?.board, secret, resolver });
@@ -790,8 +792,9 @@ every(() => {
 }, 30_000);
 
 // A restart (kernel/run.sh): the next kernel is starting. This one stops its jobs' watchers (offsets saved: the next one adopts
-// them), its timers and its listeners, so the next one can bind them; then it serves only the calls it holds (idle connections
-// closed, so callers reconnect to the next one) and exits when its model calls, its check runs and the job launches it had in
+// them), stops following its checks' box runs (the next one follows them from their rows), its timers and its listeners, so
+// the next one can bind them; then it serves only the calls it holds (idle connections
+// closed, so callers reconnect to the next one) and exits when its model calls, the checks still before or after their box run and the job launches it had in
 // flight have finished (a launch that gets its box now gives it back: boxes.ts `stopping`), or at DRAIN_MS (the next kernel settles what
 // is left: lib.ts sweep and true-up, afterPrevious above).
 drain = () => {
@@ -800,6 +803,7 @@ drain = () => {
   const t0 = Date.now();
   log("draining: the next kernel takes new calls; model calls in flight finish here", { inflight: gw.inflight(), jobs: jobs.running() });
   jobs.detach();
+  checkJobs.detach();
   stopTending();
   for (const t of timers) clearTimeout(t);
   for (const s of servers) if (s.listening) s.close();

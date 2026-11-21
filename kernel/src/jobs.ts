@@ -47,7 +47,22 @@ const POLL_MS = 250;
 // Setup's retry on a lock another opener holds, while it makes the same schema (below): about five seconds in all.
 const SETUP_TRIES = 200;
 const SETUP_RETRY_MS = 25;
-const exitStatus = (file: string) => { try { return readFileSync(file, "utf8").trim(); } catch { return ""; } };
+/** A detached run's recorded exit status ("" while it runs, or when it died without its shell). */
+export const exitStatus = (file: string) => { try { return readFileSync(file, "utf8").trim(); } catch { return ""; } };
+/**
+ * `argv` as a detached run that outlives the kernel (a restart's next kernel follows it again: jobs' adopt, a check's follow):
+ * its own process group under WRAP, output appended to `logPath`, its exit status written to `${logPath}.exit`, and only
+ * BOX_ENV of the kernel's environment. Its pid.
+ */
+export function spawnDetached(argv: string[], logPath: string): number {
+  const env = Object.fromEntries(BOX_ENV.filter((k) => process.env[k] !== undefined).map((k) => [k, process.env[k]!]));
+  const out = openSync(logPath, "a");
+  const child = spawn("/bin/sh", ["-c", WRAP, `${logPath}.exit`, ...argv], { cwd: "/", env, detached: true, stdio: ["ignore", out, out] });
+  closeSync(out);
+  child.on("error", (e: NodeJS.ErrnoException) => { try { writeFileSync(`${logPath}.exit`, "1\n"); appendFileSync(logPath, `# couldn't start /bin/sh: ${e.code ?? e.message}\n`); } catch {} });
+  child.unref();
+  return child.pid ?? 0;
+}
 /**
  * A failed run's cause as its log tells it: the first line that is neither the kernel's header (`# ...`) nor the engine's JSON
  * output, i.e. what the engine wrote to stderr (e.g. Codex's "Error: thread/resume failed: ..."), its secret shapes blanked: it
@@ -70,7 +85,7 @@ export function logTail(logPath: string, bytes = 64 * 1024): string {
     return "";
   }
 }
-const alive = (pid: number) => {
+export const alive = (pid: number) => {
   try { process.kill(pid, 0); return true; } catch (e) { return (e as NodeJS.ErrnoException).code === "EPERM"; }
 };
 /** True while the run's shell is alive and is still that run (a reused pid isn't): for adopting it. */
@@ -464,27 +479,22 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
     for (let n = 2; existsSync(`${logPath}.exit`) || existsSync(logPath); n++) logPath = `${stem}-${n}.log`;
     const jobDir = newJobDir(box.outDir);
     const built = buildJob({ cfg, engine, worktree, jobDir, sessionId: session, prompt, job: { agentId: r.agent, issueId: r.task, at }, box, boxWrap });
-    const env = Object.fromEntries(BOX_ENV.filter((k) => process.env[k] !== undefined).map((k) => [k, process.env[k]!]));
     appendFileSync(logPath, `# ${new Date(at).toISOString()} ${engine.kind}${engine.model ? ` (${engine.model})` : ""} in box ${box.container} (${worktree})\n`);
-    const out = openSync(logPath, "a");
-    const child = spawn("/bin/sh", ["-c", WRAP, `${logPath}.exit`, ...built.argv], { cwd: "/", env, detached: true, stdio: ["ignore", out, out] });
-    closeSync(out);
-    child.on("error", (e: NodeJS.ErrnoException) => { try { writeFileSync(`${logPath}.exit`, "1\n"); appendFileSync(logPath, `# couldn't start /bin/sh: ${e.code ?? e.message}\n`); } catch {} });
-    child.unref();
+    const pid = spawnDetached(built.argv, logPath);
     // Running and its fact in one transaction; if they can't be written the run is stopped and the start fails (admission's
     // couldn't-start path ends the job).
     try {
       inTx(db, "job_start", () => {
         // `resumed`: this run started by resuming a stored session (a run restarted after a kernel reboot needs to know).
         db.prepare("UPDATE jobs SET pid = ?, log = ?, dir = ?, at = ?, box = ?, session = ?, resumed = ?, offset = 0, final = '', progress = '{}', usage = NULL, observing = ?, live_input = ?, state = 'running' WHERE id = ?")
-          .run(child.pid ?? 0, logPath, jobDir, at, JSON.stringify(box), resumed ? session! : null, resumed ? 1 : 0, observes(engine) ? 1 : 0, entry.live_input ? 1 : 0, id);
+          .run(pid, logPath, jobDir, at, JSON.stringify(box), resumed ? session! : null, resumed ? 1 : 0, observes(engine) ? 1 : 0, entry.live_input ? 1 : 0, id);
         jobFact(r, "job.started");
       });
     } catch (e) {
-      try { if (child.pid) process.kill(-child.pid, "SIGKILL"); } catch {}
+      try { if (pid) process.kill(-pid, "SIGKILL"); } catch {}
       throw e;
     }
-    log("job started", { job: id, module: r.module, agent: r.agent, task: r.task, engine: engine.kind, pid: child.pid, box: box.container });
+    log("job started", { job: id, module: r.module, agent: r.agent, task: r.task, engine: engine.kind, pid, box: box.container });
     watch(id, {
       resumed,
       restart: () => start(id, { box, worktree, prompt: firstTurn, label }),
