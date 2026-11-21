@@ -167,6 +167,9 @@ async function putIssue(put: (t: Table, row: Row, baseline: boolean) => Promise<
     await put(USERS, { user_id: u.accountId, display_name: u.displayName ?? null, ...(u.emailAddress ? { email: u.emailAddress } : {}), is_bot: u.accountType === "app" }, false);
 }
 
+/** The weekly delete check refused an answer too short to trust. */
+class Refused extends Error {}
+
 /** One pass: issues updated since the cursor (minute-relative JQL, so Jira's timezone never matters), and the weekly delete check. */
 export async function syncJira(store: SourceStore, call: CallJira, site: string, now = Date.now()): Promise<number> {
   await store.migrate(DDL);
@@ -188,7 +191,7 @@ export async function syncJira(store: SourceStore, call: CallJira, site: string,
   if (rec.baselined && now - Date.parse(rec.cursor ?? "") < 7 * DAY) return written;
   let checked = true;
   if (rec.baselined) {
-    // Its own ingest_run: a refused check is visible there and doesn't fail the issue sync; its cursor stays, so the next pass retries it.
+    // Its own ingest_run: a refused check is visible there and doesn't fail the issue sync; a failed search keeps its cursor and is retried next pass; a refusal waits for the next week.
     await store
       .run("jira", "reconcile", async () => {
         const live = new Set<string>();
@@ -196,11 +199,11 @@ export async function syncJira(store: SourceStore, call: CallJira, site: string,
         const ours = await store.pool.query(`SELECT key FROM src_jira.issue WHERE NOT deleted AND source_updated_at > now() - interval '28 days'`);
         const gone = ours.rows.map((r: { key: string }) => r.key).filter((k: string) => !live.has(k));
         // Deletes are rare: an empty or short answer (paging not followed, a permission change) must not tombstone the site.
-        if (ours.rows.length && (!live.size || gone.length > Math.max(5, ours.rows.length * 0.1))) throw new Error(`delete check refused: ${gone.length} of ${ours.rows.length} recent issues missing from Jira's answer (${live.size} returned)`);
+        if (ours.rows.length && (!live.size || gone.length > Math.max(5, ours.rows.length * 0.1))) throw new Refused(`delete check refused: ${gone.length} of ${ours.rows.length} recent issues missing from Jira's answer (${live.size} returned)`);
         for (const key of gone) await put(ISSUE, { key, deleted: true }, false);
         return gone.length;
       })
-      .catch(() => void (checked = false));
+      .catch((err) => void (checked = err instanceof Refused));
   }
   if (checked) await store.saveScope("reconcile", new Date(now).toISOString(), true);
   return written;

@@ -79,11 +79,11 @@ export async function syncDrive(store: SourceStore, drive: Drive, now = Date.now
   let seen = 0;
   let page = resume;
   do {
-    // Drive rejects an expired page token: that query starts over from the cursor (rows already written are no-ops).
+    // Drive answers 400 to an expired page token: the query restarts from the newest timestamp seen (rows already written are no-ops). Any other failure keeps the token and retries next pass.
     const r = await drive.changedFiles(since, page).catch((err) => {
-      if (!resume || page !== resume) throw err;
+      if (!resume || page !== resume || !/^Google API 400\b/.test(String(err?.message ?? err))) throw err;
       page = undefined;
-      return drive.changedFiles(since);
+      return drive.changedFiles(cursor);
     });
     for (const f of r.files) {
       if ((await store.upsert(DOC, docRow(f), { baseline })) !== "same") written++;
