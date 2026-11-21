@@ -434,6 +434,9 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
   if (setup) result.setup = Object.fromEntries(Object.entries(setup).filter(([p, t]) => setupPath(p) && typeof t === "string"));
   const unread = untracked || covered ? [] : unreadDiffs(answers, reviewed, tools(ws, h.from), (p) => (p.startsWith(`${ws.replace(/\/$/, "")}/`) ? p.slice(ws.replace(/\/$/, "").length + 1) : p));
   if (unread.length) gaps.push(`${unread.length} reviewed file${unread.length > 1 ? "s" : ""} whose diff no finder read to the end (${unread.slice(0, 10).join(", ")}${unread.length > 10 ? ", …" : ""})`);
+  // A change's file the engine says it never analysed (deepsec's ignore filter, a cut-off run) is a gap; a tree lists what was covered.
+  const missed = covered && !tree ? reviewed.filter((p) => !covered.includes(p)) : [];
+  if (missed.length) gaps.push(`${missed.length} reviewed file${missed.length > 1 ? "s" : ""} the engine didn't analyse (${missed.slice(0, 10).join(", ")}${missed.length > 10 ? ", …" : ""})`);
   const root = ws.replace(/\/$/, "");
   const reviewedSet = new Set(reviewed);
   // A finding that restates one already reported (the finder says so, or it has the same id) isn't reported again: it is still there.

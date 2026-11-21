@@ -447,3 +447,10 @@ test("tool arguments of the wrong type are refused and never count as a read; fi
   assert.match(odd, /\+odd/);
   assert.doesNotMatch(odd, /a\.js/);
 });
+
+test("an engine that reports what it analysed (deepsec): a change's file it didn't analyse is a gap", async () => {
+  const { ws, out } = box({ head: { "src/a.js": "a\nb\n", "src/b.js": "c\n" }, base: { "src/a.js": "a\n" } });
+  const r = await review({ spec: spec({ combo: JSON.stringify({ engine: "deepsec", model: "~deepseek/deepseek-flash-latest", effort: "low" }) }), ws, out,
+    run: async () => ({ read: true, covered: ["src/a.js"], message: JSON.stringify({ findings: [], stale_guidance: [] }) }) });
+  assert.match(r.coverage.incomplete, /1 reviewed file the engine didn't analyse \(src\/b\.js\)/);
+});
