@@ -14,7 +14,7 @@ export type Finding = {
 export type Review = {
   version: 1; repo: string; pr: number; base: string; head: string; engine: string; model: string; effort: string;
   incremental_from: string | null; full: boolean;
-  coverage: { reviewed: string[]; excluded: string[]; incomplete: string | null; /** tools that failed in a tools run */ failed?: { id: string; why: string }[] };
+  coverage: { reviewed: string[]; excluded: string[]; incomplete: string | null; /** a tools run's: the tool options that ran, and those that failed */ options?: string[]; failed?: { id: string; why: string }[] };
   findings: Finding[];
   withheld: { important: number; nit: number; pre_existing: number };
   cost_usd: number; stale_guidance: string[];
@@ -145,6 +145,8 @@ export interface Poster {
   outcome(write: string): Promise<Posted>;
   /** Closes the PR's review task (it only holds its posts' approvals) once the PR is closed or a one-off's post is settled. */
   close(repo: string, number: number, why: string, run?: string): Promise<void>;
+  /** The repo's repo-reviews task (one per repo, quiet): where a repo review's own write records (the setup PR) are filed. */
+  task(repo: string): Promise<string>;
 }
 
 /** The code host through the kernel (/v1/codehost/:op, this module's grant). */
@@ -153,8 +155,9 @@ export interface CodeHost {
   tree(repo: string, ref: string): Promise<{ sha: string; paths: string[] }>;
   /** The deepsec setup branch's tip and its allowlisted files; undefined when there is no such branch. */
   setupBranch(repo: string): Promise<{ tip: string; files: Record<string, string> } | undefined>;
-  /** Asks for the deepsec setup PR (codehost.setup): github files its own Tier 1 write, based on the default branch's head. */
-  setup(b: { repo: string; branch: string; expected_tip: string | null; files: Record<string, string> }): Promise<unknown>;
+  /** Asks for the deepsec setup PR (codehost.setup) on `task` (this module's repo-reviews task for the repo): github files its
+   * own Tier 1 write, based on the default branch's head, and answers {pr_url, tip}, {nothing_to_add} or (202) {pending, write}. */
+  setup(b: { repo: string; branch: string; expected_tip: string | null; files: Record<string, string>; task: string }): Promise<unknown>;
 }
 /** A report to Primer (a `primer.publish` write record): a new private document, or a version of `documentId`; filed, then its outcome. */
 export type ReportIn = { repo: string; title: string; content: string; documentId?: string; versionNote: string };

@@ -143,6 +143,36 @@
          "minimum": 0
         }
        }
+      },
+      "options": {
+       "type": "array",
+       "maxItems": 200,
+       "items": {
+        "type": "string",
+        "pattern": "^[a-z]+\\.[a-z0-9-]{1,60}$"
+       }
+      },
+      "failed": {
+       "type": "array",
+       "maxItems": 200,
+       "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+         "id",
+         "why"
+        ],
+        "properties": {
+         "id": {
+          "type": "string",
+          "maxLength": 100
+         },
+         "why": {
+          "type": "string",
+          "maxLength": 2000
+         }
+        }
+       }
       }
      }
     },

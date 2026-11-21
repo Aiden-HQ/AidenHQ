@@ -24,7 +24,7 @@ function world({ db = new DatabaseSync(":memory:"), primer = true, lenses = true
     db, config: () => readConfig(JSON.stringify({ repos: [], lenses })), now: () => t,
     source: { open: async () => [], repos: async () => [] },
     runner: { start: async (s) => (started.push(s), { check: `c-${started.length}` }), result: async (c) => results.get(c) ?? { state: "running" } },
-    poster: {},
+    poster: { task: async (repo) => `T-${repo}` },
     codehost: { tree: async (_r, ref) => ({ sha: ref === "HEAD" ? heads.HEAD : ref, paths: ["package.json", "src/a.ts"] }), setupBranch: async () => branch.setup, setup: async (b) => (setups.push(b), { write: `w-${setups.length}` }) },
     catalog: () => CATALOG,
     // Primer's publish record: approved on the next look, or refused (Primer not connected).
@@ -33,7 +33,7 @@ function world({ db = new DatabaseSync(":memory:"), primer = true, lenses = true
   });
   const finding = (id, o = {}) => ({ id, severity: "important", path: "src/a.ts", line: 3, title: `t ${id}`, why: "w", evidence: "e", fix_brief: "b", ...o });
   const finish = (i, o = {}, billed = 0) => results.set(`c-${i + 1}`, { state: "done", billed_usd: billed,
-    review: { version: 1, repo: REPO, pr: 0, base: started[i].head, head: started[i].head, coverage: { reviewed: [], excluded: [], incomplete: null }, findings: [], withheld: { important: 0, nit: 0, pre_existing: 0 }, cost_usd: 0, stale_guidance: [], ...o } });
+    review: { version: 1, repo: REPO, pr: 0, base: started[i].head, head: started[i].head, coverage: { reviewed: [], excluded: [], incomplete: null, ...(started[i].tools ? { options: Object.keys(started[i].tools) } : {}) }, findings: [], withheld: { important: 0, nit: 0, pre_existing: 0 }, cost_usd: 0, stale_guidance: [], ...o } });
   return { db, engine, heads, started, results, published, setups, branch, finish, finding, tick: () => engine.tick({ github: false }), later: (ms) => (t += ms) };
 }
 
@@ -90,10 +90,18 @@ test("display groups the same lens, file and overlapping lines, but storage keep
   // Two tools report the same id on one line: two observations, one per option.
   w.finish(0, { findings: [w.finding("x1", { option: "sec.gitleaks", lens: "security", line: 3, end_line: 5 }), w.finding("x1", { option: "maint.knip", lens: "security", line: 4 })] });
   await w.tick();
-  assert.deepEqual(w.db.prepare("SELECT option FROM findings WHERE id = 'x1' ORDER BY option").all().map((r) => r.option), ["maint.knip", "sec.gitleaks"]);
+  // Each stored under the option it names, with that option's lens from the catalog (never the box's word for it).
+  assert.deepEqual(w.db.prepare("SELECT option, lens FROM findings WHERE id = 'x1' ORDER BY option").all().map((r) => [r.option, r.lens]), [["maint.knip", "maintainability"], ["sec.gitleaks", "security"]]);
   const groups = display([{ ...w.finding("a", { line: 3, end_line: 5 }), option: "o1", lens: "security" }, { ...w.finding("b", { line: 4 }), option: "o2", lens: "security" }, { ...w.finding("c", { line: 9 }), option: "o2", lens: "security" }]);
   assert.deepEqual(groups.map((g) => g.options), [["o1", "o2"], ["o2"]]);
-  assert.match(w.engine.report(b.batch), /found by sec\.gitleaks, maint\.knip/);
+  assert.match(w.engine.report(b.batch), /sec\.gitleaks/);
+  // A tools run's finding naming an option the run didn't run fails the run; it is never filed under another option.
+  const v = world();
+  await v.engine.repoReview({ target: { repo: REPO }, options: ["maint.knip"] });
+  await v.tick();
+  v.finish(0, { findings: [v.finding("y1", { option: "sec.gitleaks" })] });
+  await v.tick();
+  assert.match(v.engine.runs({ repo: REPO })[0].why, /names an option the run didn't run/);
 });
 
 test("verdict: blocked by an important security finding, concerns for any other, incomplete on partial coverage, else clean", () => {
@@ -134,10 +142,10 @@ test("a second repo review of the repo adds a version to the same Primer documen
 test("deepsec's set-up files are asked for once as a setup PR through the code host; while its branch exists runs scan with its files and nothing is asked again", async () => {
   const w = world();
   const files = { ".deepsec/data/app/INFO.md": "# app", ".deepsec/deepsec.config.ts": "export default {}", "src/evil.ts": "x" };
-  const review = async () => { await w.engine.repoReview({ target: { repo: REPO }, options: ["sec.deepsec"] }); await w.tick(); w.finish(w.started.length - 1, { setup: files }); await w.tick(); };
+  const review = async () => { await w.engine.repoReview({ target: { repo: REPO }, options: ["sec.deepsec"] }); await w.tick(); w.finish(w.started.length - 1, { setup: files }); await w.tick(); await w.engine.idle(); };
   await review();
   assert.equal(w.started[0].setup_files, undefined);
-  assert.deepEqual(w.setups.map((s) => [s.repo, s.branch, s.expected_tip, Object.keys(s.files)]), [[REPO, "aidenhq/deepsec-setup", null, [".deepsec/data/app/INFO.md", ".deepsec/deepsec.config.ts"]]]);
+  assert.deepEqual(w.setups.map((s) => [s.repo, s.branch, s.expected_tip, Object.keys(s.files), s.task]), [[REPO, "aidenhq/deepsec-setup", null, [".deepsec/data/app/INFO.md", ".deepsec/deepsec.config.ts"], `T-${REPO}`]]);
   await review(); // asked for, not on the code host yet: not asked again within the day
   assert.equal(w.setups.length, 1);
   w.branch.setup = { tip: sha("9"), files: { ".deepsec/data/app/INFO.md": "# app", ".deepsec/package-lock.json": "{}" } };

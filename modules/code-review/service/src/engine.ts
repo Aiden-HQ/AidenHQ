@@ -461,6 +461,9 @@ export function createEngine(d: EngineDeps) {
       // A repo review's findings come from many tools' mappers: one not in the shared shape fails the run with that reason.
       else if (r.target === "tree" && !v.findings!.every((f) => f && typeof f.id === "string" && f.id && ["important", "nit", "pre_existing"].includes(f.severity) && typeof f.path === "string" && Number.isInteger(f.line) && typeof f.title === "string"))
         res = { state: "failed", why: "the review's result isn't for this run: a finding isn't in the shared shape (id, severity, path, line, title)", billed_usd: res.billed_usd };
+      // A tools run's finding names one of the options this run was asked to run; it is stored under that option, never another.
+      else if (r.profile === "code-review-tools" && !v.findings!.every((f) => typeof f.option === "string" && r.option!.split(",").includes(f.option)))
+        res = { state: "failed", why: "the review's result isn't for this run: a finding names an option the run didn't run", billed_usd: res.billed_usd };
     }
     if (res.state === "failed") {
       // Once more on what is left of the run's run_usd, when the kernel says what the failed attempt cost (else it may have
@@ -546,12 +549,13 @@ export function createEngine(d: EngineDeps) {
       run("UPDATE runs SET status = 'done', why = NULL, cost_usd = ?, ended = ?, important = ?, nit = ?, pre_existing = ?, tokens_in = ?, tokens_cached = ?, tokens_out = ?, complete = ?, duration_ms = ? WHERE id = ?",
         cost, iso(), count("important"), count("nit"), count("pre_existing"), t("input"), t("cached"), t("output"), review.withheld?.important === 0 && !review.coverage?.incomplete && !review.coverage?.failed?.length ? 1 : 0, r.started ? now() - Date.parse(r.started) : null, r.id);
       for (const f of review.findings) {
-        const option = typeof f.option === "string" ? f.option.slice(0, 80) : r.option!;
+        // The option is the run's (a tools run's: the one of its options the finding names, checked in finish); its lens the catalog's.
+        const option = r.profile === "code-review-tools" ? f.option! : r.option!;
         run("INSERT OR IGNORE INTO findings (run, id, repo, number, severity, path, line, title, why, evidence, option, lens) VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)",
-          r.id, f.id, r.repo, f.severity, f.path, f.line, f.title, String(f.why ?? "").slice(0, 1500), String(f.evidence ?? "").slice(0, 1500), option, (typeof f.lens === "string" ? f.lens : lens.get(option)) ?? null);
+          r.id, f.id, r.repo, f.severity, f.path, f.line, f.title, String(f.why ?? "").slice(0, 1500), String(f.evidence ?? "").slice(0, 1500), option, lens.get(option) ?? null);
       }
     });
-    if (setup && r.engine === "deepsec") await fileSetup(r, setup);
+    if (setup && r.engine === "deepsec") fileSetup(r, setup);
     await batchEnded(r.batch);
   }
 
@@ -600,21 +604,34 @@ export function createEngine(d: EngineDeps) {
 
   /**
    * deepsec set the repo up in a run: its set-up files (deepsec's allowlisted `.deepsec/` files only) are asked for as one setup PR
-   * through the code host (github files and reviews its own write, on a branch from the default branch's head). Never while the
-   * setup branch exists (its PR is pending or open: runs scan with its files), and once a day at most while it doesn't yet.
+   * through the code host (github files and reviews its own write, on a branch from the default branch's head, and makes it only
+   * once approved). Once a day at most per repo: the slot is taken before anything is awaited, so concurrent reviews ask once.
+   * The setup branch is read at that moment: while it exists (its PR pending or open) nothing is asked. Runs in the background:
+   * the code host may wait minutes for the write's approval, and the tick never waits on it.
    */
-  async function fileSetup(r: RunRow, raw: Record<string, string>) {
+  function fileSetup(r: RunRow, raw: Record<string, string>) {
     const files = Object.fromEntries(Object.entries(raw ?? {}).filter(([p, c]) => SETUP_PATH.test(p) && typeof c === "string"));
-    if (!Object.keys(files).length || batchRow(r.batch)?.setup_tip) return;
-    const asked = one<{ asked: number }>("SELECT asked FROM setups WHERE repo = ?", r.repo)?.asked;
-    if (asked !== undefined && now() - asked < SETUP_RETRY) return;
-    let answer: string;
-    try { answer = JSON.stringify(await d.codehost.setup({ repo: r.repo, branch: SETUP_BRANCH, expected_tip: null, files })).slice(0, 1000); } catch (e) {
-      answer = `refused: ${String((e as Error).message).slice(0, 300)}`;
-      log("deepsec setup PR not asked for", { repo: r.repo, err: answer });
-    }
-    run("INSERT INTO setups (repo, asked, answer) VALUES (?, ?, ?) ON CONFLICT (repo) DO UPDATE SET asked = excluded.asked, answer = excluded.answer", r.repo, now(), answer);
+    if (!Object.keys(files).length) return;
+    const taken = tx(() => {
+      const asked = one<{ asked: number }>("SELECT asked FROM setups WHERE repo = ?", r.repo)?.asked;
+      if (asked !== undefined && now() - asked < SETUP_RETRY) return false;
+      run("INSERT INTO setups (repo, asked, answer) VALUES (?, ?, 'asking') ON CONFLICT (repo) DO UPDATE SET asked = excluded.asked, answer = excluded.answer", r.repo, now());
+      return true;
+    });
+    if (!taken) return;
+    const answer = (async () => {
+      if (await d.codehost.setupBranch(r.repo)) return "the setup branch exists: its PR is pending or open";
+      return JSON.stringify(await d.codehost.setup({ repo: r.repo, branch: SETUP_BRANCH, expected_tip: null, files, task: await d.poster.task(r.repo) })).slice(0, 1000);
+    })().catch((e) => {
+      log("deepsec setup PR not asked for", { repo: r.repo, err: String((e as Error).message).slice(0, 300) });
+      return `refused: ${String((e as Error).message).slice(0, 300)}`;
+    });
+    const p = answer.then((a) => void run("UPDATE setups SET answer = ? WHERE repo = ?", a, r.repo));
+    setups.add(p);
+    void p.finally(() => setups.delete(p));
   }
+  /** Setup PRs being asked for (tests and a clean stop await them). */
+  const setups = new Set<Promise<void>>();
 
   const retries = (r: RunRow, o: Posted) => o.state === "refused" && !!o.retry && !r.post_tries;
 
@@ -1193,6 +1210,8 @@ export function createEngine(d: EngineDeps) {
           started: new Date(b.created).toISOString(), ended: b.ended, options: JSON.parse(b.options) as string[], combo: JSON.parse(b.combo),
           ...(b.status === "done" ? { report_url: `/reviews/${b.id}/report` } : {}), ...(b.report_url ? { primer_url: b.report_url } : {}) }));
     },
+    /** Resolves once the setup PRs being asked for have their answers. */
+    idle: () => Promise.all([...setups]).then(() => {}),
     /** A finished repo review's report (markdown), as Primer has it. */
     report(id: string) { return batchRow(id)?.report ?? undefined; },
   };

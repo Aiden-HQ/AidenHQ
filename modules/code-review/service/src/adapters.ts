@@ -163,6 +163,14 @@ export function kernelPoster(kernel: KernelClient, log: (m: string, f?: Record<s
       const r = (await kernel.call("POST", "/v1/writes", { kind: ACK_KIND, args: { ...(a.ack ? { ack: a.ack } : {}), repo: a.repo, pr: a.number, head: a.head, phase: a.state, ...(a.state === "answered" ? { answer: a.answer ?? "help" } : {}), ...(reason ? { reason } : {}), ...(a.combo ? { engine: a.combo.engine, model: a.combo.model, effort: a.combo.effort } : {}), ...(a.run ? { run: a.run } : {}), ...(a.review ? { review: a.review } : {}), ...(a.counts ?? {}) } })) as { id: string; state: string; outcome?: { ok: boolean; text: string } | null };
       return { ...settled(r), write: r.id };
     },
+    async task(repo) {
+      const key = `${repo} repo reviews`;
+      if (!tasks.has(key)) {
+        const t = await kernel.call("POST", "/v1/tasks", { title: `Code review: ${key}`, description: `${repo}\n\nThe approvals of this repo's repo reviews (its deepsec setup PR) land here; its reports are on the board's Reviews page and in Primer.`, role: ROLE, source: `code-review:${repo}:repo-reviews`, quiet: true });
+        tasks.set(key, String(t.id));
+      }
+      return tasks.get(key)!;
+    },
     async close(repo, n, why, run) {
       // The engine closes only a PR that had a post, so its task exists: filing the same source again finds it after a restart.
       const id = await taskOf(repo, n, run);

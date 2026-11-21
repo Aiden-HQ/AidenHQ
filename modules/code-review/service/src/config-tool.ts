@@ -132,6 +132,11 @@ export function configTools(d: {
           if (a.pr_url !== undefined) throw new Error("give pr_url (a pull request) or repo (a whole repository), not both");
           // An agent's repo review stays within the default cap: a bigger one is the owner's, from the board (as a combo's run cap is).
           if (a.run_usd !== undefined && !(typeof a.run_usd === "number" && a.run_usd <= RUN_USD.default)) throw new Error(`a repo review above $${RUN_USD.default} is the owner's to start from the board's Reviews page`);
+          // As a PR's combos: an agent picks an offered model at an engine's effort; any other is the owner's, from the board.
+          const c = (a.combo ?? {}) as { model?: unknown; effort?: unknown };
+          const offered = Object.values(ENGINES).filter((e) => c.model === undefined || (e.models as readonly string[]).includes(String(c.model)));
+          if (!offered.length || (c.effort !== undefined && !offered.some((e) => (e.efforts as readonly string[]).includes(String(c.effort)))))
+            throw new Error(`a repo review with ${String(c.model ?? "the default model")} at ${String(c.effort ?? "medium")} effort is the owner's to start from the board's Reviews page; an agent picks an offered model (${[...new Set(Object.values(ENGINES).flatMap((e) => e.models))].join(", ")}) at one of its engine's efforts`);
           return d.repoReview({ target: { repo: a.repo, ...(a.commit ? { commit: a.commit } : {}) }, ...(a.options ? { options: a.options } : {}), ...(a.combo ? { combo: a.combo } : {}), ...(a.run_usd !== undefined ? { run_usd: a.run_usd } : {}) });
         }
         if (typeof a.pr_url !== "string") throw new Error("give pr_url (a pull request) or repo (a whole repository)");

@@ -32,7 +32,9 @@ export function coverageOf(runs: ReportRun[]): Coverage {
     if (r.status === "skipped") { for (const id of ids) c.skipped.push({ id, why: r.why ?? "skipped" }); continue; }
     if (r.status !== "done" || !r.review) { for (const id of ids) c.failed.push({ id, why: r.why ?? r.status }); continue; }
     const failed = new Map((r.review.coverage?.failed ?? []).map((f) => [f.id, f.why]));
-    for (const id of ids) failed.has(id) ? c.failed.push({ id, why: failed.get(id)! }) : c.ran.push(id);
+    // A tools run names the options that ran (coverage.options): any other is failed, never counted as ran.
+    const ran = r.options ? new Set(r.review.coverage?.options ?? []) : new Set(ids);
+    for (const id of ids) ran.has(id) && !failed.has(id) ? c.ran.push(id) : c.failed.push({ id, why: failed.get(id) ?? "the tools run didn't report it ran" });
     if (r.review.coverage?.incomplete) c.partial.push({ id: r.option, why: r.review.coverage.incomplete });
     // Findings a run left out (a tool's output capped, nits past the cap) are coverage the report doesn't show whole.
     const w = r.review.withheld ?? { important: 0, nit: 0, pre_existing: 0 };
@@ -44,9 +46,10 @@ export function coverageOf(runs: ReportRun[]): Coverage {
 
 /** The batch's findings, each tagged with the option that found it and its lens. */
 export function findingsOf(b: Pick<ReportBatch, "runs" | "lensOf">): Shown[] {
+  // The option and lens are the run's (a tools run's: one of the options it was asked to run), never the box's word for them.
   return b.runs.flatMap((r) => (r.status === "done" && r.review ? r.review.findings : []).map((f) => {
-    const option = f.option ?? r.option;
-    return { ...f, option, lens: f.lens ?? r.lens ?? b.lensOf(option) };
+    const option = r.options && typeof f.option === "string" && r.options.includes(f.option) ? f.option : r.option;
+    return { ...f, option, lens: r.options ? b.lensOf(option) : r.lens ?? b.lensOf(option) };
   }));
 }
 

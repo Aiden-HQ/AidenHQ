@@ -11,12 +11,14 @@ type Rec = { id: string; state: string; outcome?: { ok: boolean; text: string } 
 /** A publish record's state: done with the document it made (id, url, version), refused, or pending. */
 function settled(r: Rec): ReportOut {
   if (r.state === "done" && r.outcome?.ok) {
-    let o: Record<string, unknown> = {};
-    try { o = JSON.parse(r.outcome.text); } catch {}
-    const doc = o.documentId ?? o.document_id ?? o.id;
-    const url = typeof o.url === "string" && /^https?:\/\//.test(o.url) ? o.url : undefined;
-    if (typeof doc !== "string" || !doc) return { state: "refused", write: r.id, why: `Primer's answer named no document: ${r.outcome.text.slice(0, 200)}` };
-    return { state: "done", write: r.id, documentId: doc, ...(url ? { url } : {}), ...(Number.isInteger(o.version) ? { version: o.version as number } : {}) };
+    // Primer's executor answers in words (publish.ts): "Published on Primer: <url> (document <id>)" or "New version vN on Primer
+    // (document <id>, version ...): <url>", with a note after either.
+    const text = r.outcome.text;
+    const doc = /\(document ([A-Za-z0-9-]+)/.exec(text)?.[1];
+    const url = /https?:\/\/[^\s)]+/.exec(text)?.[0];
+    const n = Number(/\bversion v(\d+)\b/i.exec(text)?.[1]);
+    if (!doc) return { state: "refused", write: r.id, why: `Primer's answer named no document: ${text.slice(0, 200)}` };
+    return { state: "done", write: r.id, documentId: doc, ...(url ? { url } : {}), ...(Number.isInteger(n) && n > 0 ? { version: n } : {}) };
   }
   if (r.state === "done" || ["failed", "rejected", "stale", "cancelled", "unknown"].includes(r.state)) return { state: "refused", write: r.id, why: `write ${r.id} ${r.state}${r.outcome?.text ? `: ${r.outcome.text.slice(0, 200)}` : ""}` };
   return { state: "pending", write: r.id };
