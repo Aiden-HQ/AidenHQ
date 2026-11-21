@@ -247,8 +247,9 @@ A marketplace itself is never a checkbox.
   temp directory first, and the network stays open. Model-holding checks (skills and engines) keep today's read-only
   policy and never execute repo code.
 - **Fork PRs never run `runs_code` options**, whatever the repo's `forks` setting: a stranger's PR runs no code here.
-- The model token never reaches repo processes. Deterministic tools and repo commands run with an environment that holds
-  no token. Output is redacted for key-shaped text before anything is mapped, as today.
+- Repo code runs only in the token-free tools check. Model checks hold a capped, time-limited token under today's
+  read-only policy and run no repo code (see "The token and repo code" below). Output is redacted for key-shaped text
+  before anything is mapped, as today.
 - Each tool runs once per run, even when two lenses list it. Findings are stored per option; the report groups matching
   findings for display only (see the settled decisions).
 - A failed, timed-out or skipped option is listed under coverage. A run never reports clean when coverage was partial.
@@ -271,14 +272,11 @@ each option. Recommended marks change by that measure, through a catalog PR, nev
 - **Runs and spend.** There is one run lifecycle for both modes. The existing batches, runs, findings, `kernelRunner` and
   `/reviews` API gain a PR-or-tree target through a forward-only migration. One recipe has two check profiles:
   - `code-review-tools`: token-free, running the selected tool options.
-  - `code-review`: one metered check per model option, run in sequence, each with `budget_usd = run_usd - spent`.
+  - `code-review`: one metered check per model option, run in sequence, each with `budget_usd = min(100, run_usd - spent)`.
 
   The kernel attributes spend per check, so each option's cost is that check's bill. A single check stays under the
   compiler's existing ceiling (`max_usd` 100); the $150 maximum is the run's total across its checks. Continuous checks
   keep their combo's `run_usd` as `budget_usd`, as today. Only the timeout limit rises, to 180 minutes. A failed or timed-out check becomes a coverage gap.
-
-  The recipe's `max_usd` is a fixed ceiling of 150, and `run_usd` is the real cap. The timeout is 180 minutes per job. A
-  failed or timed-out job becomes a coverage gap, and the run carries on.
 - **The image.** The tools are added to the existing `engineer` image, which already has Go, Rust, Python and Node.
   Engineers benefit from them too, and the kernel's image list doesn't change. The box has no Docker daemon, so options
   that need a database or a served app are **left out of v1**: the MongoDB optimizer, dexter, web vitals, Lighthouse
@@ -345,7 +343,7 @@ each option. Recommended marks change by that measure, through a catalog PR, nev
 
 ## Build order
 
-1. One-off mode end to end: the run request, the `repo-review` job, the quick scan, the maintainability tools, the
+1. One-off mode end to end: the run request, the two check profiles, the quick scan, the maintainability tools, the
    performance linters and the Primer report.
 2. deepsec (set up or scan, and the setup PR) and the Cloudflare audit skill.
 3. The remaining one-off options, and pilots for whole-tree correctness, measured on two repos.
