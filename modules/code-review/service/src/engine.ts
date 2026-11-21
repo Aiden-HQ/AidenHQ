@@ -397,6 +397,9 @@ export function createEngine(d: EngineDeps) {
     // A claim the mandatory recheck found unsafe opens again (below) and goes in this run's post, saying so, so GitHub shows why
     // it came back (its row links its earlier thread), at the severity it gates at (a mandatory run's important row first).
     const unsafe = r.mandatory && !stale ? [...new Set((review.unsafe ?? []).filter((x) => typeof x === "string"))] : [];
+    // Reopened findings this run only carries for its post: never stored as this run's own row, so each reopens at the severity
+    // and gating its own rows have (an advisory combo's finding stays advice).
+    const carried = new Set<string>();
     for (const id of unsafe) {
       const f = one<Omit<Finding, "fix_brief">>(`SELECT f.id, f.severity, f.path, f.line, f.title, COALESCE(f.why, '') AS why, COALESCE(f.evidence, '') AS evidence FROM findings f
         JOIN runs x ON x.id = f.run WHERE f.repo = ? AND f.number = ? AND f.id = ? AND f.claim IS NOT NULL ORDER BY (f.severity = 'important' AND x.mandatory = 1) DESC, f.rowid DESC LIMIT 1`, r.repo, r.number, id);
@@ -407,7 +410,7 @@ export function createEngine(d: EngineDeps) {
       // At the post's 200, the lowest-ranked advice makes room (withheld): a reopened finding always says why on GitHub.
       const cut = review.findings.length >= 200 ? review.findings.findLastIndex((x) => x.severity !== "important") : -1;
       if (cut >= 0) review.withheld[review.findings.splice(cut, 1)[0]!.severity]++;
-      if (review.findings.length < 200) review.findings.push(reopened);
+      if (review.findings.length < 200) { review.findings.push(reopened); carried.add(id); }
     }
     tx(() => {
       run("INSERT OR REPLACE INTO reviews (run, json) VALUES (?, ?)", r.id, JSON.stringify(review));
@@ -415,6 +418,7 @@ export function createEngine(d: EngineDeps) {
         cost, iso(), count("important"), count("nit"), count("pre_existing"), review.incremental_from, t("input"), t("cached"), t("output"), stale ? null : review.withheld.important === 0 && !review.coverage?.incomplete ? 1 : 0, r.id);
       if (stale) return;
       for (const f of review.findings) {
+        if (carried.has(f.id)) continue;
         // Reported again: a finding a recheck found fixed opens again; one its author answered (a claim) stays closed: only a
         // recheck that flags the claim unsafe reopens it.
         const claimed = one<{ outcome: string; claim: string }>("SELECT outcome, claim FROM findings WHERE repo = ? AND number = ? AND id = ? AND claim IS NOT NULL AND outcome IS NOT NULL ORDER BY rowid DESC LIMIT 1", r.repo, r.number, f.id);

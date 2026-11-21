@@ -463,7 +463,9 @@ test("an answer on a gating finding's thread closes it: fixed, disputed, by desi
   w.finish(1); await w.tick();
   assert.equal(w.engine.verdict(REPO, 2, sha("3")).verdict, "pass", "reported again, still answered");
   w.pr(2, sha("4")); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
+  const rows = () => w.db.prepare("SELECT count(*) n FROM findings WHERE id = 'f1'").get().n, before = rows();
   w.finish(2, { findings: [], unsafe: ["f1"] }); await w.tick();
+  assert.equal(rows(), before, "reopened through its own rows (their severity and gating), never stored again as this run's");
   assert.deepEqual(codes(w.engine.verdict(REPO, 2, sha("4"))), ["findings"], "the recheck found the answer unsafe: open again");
   assert.deepEqual(w.posted.at(-1).review.findings.map((f) => [f.id, f.title]), [["f1", "Reopened, its answer found unsafe: t"]], "its post shows why it came back");
 });
