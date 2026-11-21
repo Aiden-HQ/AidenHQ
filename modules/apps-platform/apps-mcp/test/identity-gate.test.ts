@@ -241,6 +241,7 @@ describe("identity gate", () => {
     let stage = 0;
     s.on("data", (d) => {
       if (stage === 0 && d[0] === 0x47) return s.destroy();
+      if (stage === 0 && d[0] === 0x16) return s.destroy(); // a TLS hello: not a startup packet, so Postgres hangs up
       if (stage === 0) { stage = 1; return s.write("N"); }
       const len = d.readUInt32BE(0), proto = d.readUInt32BE(4);
       if (len !== d.length || proto !== 196608) return s.destroy();
@@ -317,15 +318,15 @@ describe("identity gate", () => {
     // sends, then hangs up. A header is not a message: the gate must wait for the whole frame and stay closed when it never
     // arrives, or a multiplexer could answer one plausible type byte and be exempted on the strength of it.
     const db = parseApp({ name: "warehouse", repo: "example-org/x", owner: "a", description: "d", port: 5433, expose: false, protocol: "postgres" });
-    const truncated = await tcp(`(s) => { let stage = 0; s.on("data", (d) => { if (stage === 0 && d[0] === 0x47) return s.destroy(); if (stage === 0) { stage = 1; return s.write("N"); } s.end(Buffer.from([0x52, 0, 0, 0, 100])); }); }`);
+    const truncated = await tcp(`(s) => { let stage = 0; s.on("data", (d) => { if (stage === 0 && d[0] === 0x47) return s.destroy(); if (stage === 0 && d[0] === 0x16) return s.destroy(); if (stage === 0) { stage = 1; return s.write("N"); } s.end(Buffer.from([0x52, 0, 0, 0, 100])); }); }`);
     const r = await scan(db, [truncated]);
     expect(r.ok).toBe(false);
     expect(r.findings[0]).toMatchObject({ hard: true, what: expect.stringMatching(/no HTTP answer/) });
     // A frame whose body is not the type's structure (an ErrorResponse with no terminator field) is not identification either.
-    const malformed = await tcp(`(s) => { let stage = 0; s.on("data", (d) => { if (stage === 0 && d[0] === 0x47) return s.destroy(); if (stage === 0) { stage = 1; return s.write("N"); } s.end(Buffer.from([0x45, 0, 0, 0, 6, 0x53, 0x41])); }); }`);
+    const malformed = await tcp(`(s) => { let stage = 0; s.on("data", (d) => { if (stage === 0 && d[0] === 0x47) return s.destroy(); if (stage === 0 && d[0] === 0x16) return s.destroy(); if (stage === 0) { stage = 1; return s.write("N"); } s.end(Buffer.from([0x45, 0, 0, 0, 6, 0x53, 0x41])); }); }`);
     expect(await scan(db, [malformed])).toMatchObject({ ok: false, findings: [{ hard: true, what: expect.stringMatching(/no HTTP answer/) }] });
     // The same frame, sent whole, is identified: it is the completeness, not the type byte, that decides.
-    const whole = await tcp(`(s) => { let stage = 0; s.on("data", (d) => { if (stage === 0 && d[0] === 0x47) return s.destroy(); if (stage === 0) { stage = 1; return s.write("N"); } s.end(Buffer.from([0x52, 0, 0, 0, 8, 0, 0, 0, 0])); }); }`);
+    const whole = await tcp(`(s) => { let stage = 0; s.on("data", (d) => { if (stage === 0 && d[0] === 0x47) return s.destroy(); if (stage === 0 && d[0] === 0x16) return s.destroy(); if (stage === 0) { stage = 1; return s.write("N"); } s.end(Buffer.from([0x52, 0, 0, 0, 8, 0, 0, 0, 0])); }); }`);
     expect(await scan(db, [whole])).toMatchObject({ ok: true, findings: [{ hard: false, what: expect.stringMatching(/speaks PostgreSQL/) }] });
   }, 60_000);
 
@@ -351,7 +352,7 @@ describe("identity gate", () => {
     // A complete frame is not enough: the AuthenticationRequest's code must be one PostgreSQL sends, with the payload that
     // code requires. An unknown code, or MD5 without its four-byte salt, is a malformed message and not identification.
     const db = parseApp({ name: "warehouse", repo: "example-org/x", owner: "a", description: "d", port: 5433, expose: false, protocol: "postgres" });
-    const frame = (bytes: number[]) => `(s) => { let stage = 0; s.on("data", (d) => { if (stage === 0 && d[0] === 0x47) return s.destroy(); if (stage === 0) { stage = 1; return s.write("N"); } s.end(Buffer.from(${JSON.stringify(bytes)})); }); }`;
+    const frame = (bytes: number[]) => `(s) => { let stage = 0; s.on("data", (d) => { if (stage === 0 && d[0] === 0x47) return s.destroy(); if (stage === 0 && d[0] === 0x16) return s.destroy(); if (stage === 0) { stage = 1; return s.write("N"); } s.end(Buffer.from(${JSON.stringify(bytes)})); }); }`;
     const hard = async (bytes: number[]) => (await scan(db, [await tcp(frame(bytes))])).ok;
     expect(await hard([0x52, 0, 0, 0, 8, 0, 0, 0, 0])).toBe(true); // AuthenticationOk
     expect(await hard([0x52, 0, 0, 0, 8, 0, 0, 0, 3])).toBe(true); // cleartext password
@@ -372,7 +373,7 @@ describe("identity gate", () => {
     // PostgreSQL always sends severity (S/V), SQLSTATE (C) and a message (M). A terminated field list without them is not an
     // ErrorResponse a server sends, so it must not identify the port.
     const db = parseApp({ name: "warehouse", repo: "example-org/x", owner: "a", description: "d", port: 5433, expose: false, protocol: "postgres" });
-    const frame = (bytes: number[]) => `(s) => { let stage = 0; s.on("data", (d) => { if (stage === 0 && d[0] === 0x47) return s.destroy(); if (stage === 0) { stage = 1; return s.write("N"); } s.end(Buffer.from(${JSON.stringify(bytes)})); }); }`;
+    const frame = (bytes: number[]) => `(s) => { let stage = 0; s.on("data", (d) => { if (stage === 0 && d[0] === 0x47) return s.destroy(); if (stage === 0 && d[0] === 0x16) return s.destroy(); if (stage === 0) { stage = 1; return s.write("N"); } s.end(Buffer.from(${JSON.stringify(bytes)})); }); }`;
     const hard = async (bytes: number[]) => (await scan(db, [await tcp(frame(bytes))])).ok;
     const err = (fields: number[]) => [0x45, 0, 0, 0, 5 + fields.length, ...fields, 0];
     expect(await hard(err([0x53, 0x46, 0x41, 0x54, 0x41, 0x4c, 0, 0x43, 0x32, 0x38, 0x50, 0x30, 0x31, 0, 0x4d, 0x62, 0x6f, 0x6f, 0]))).toBe(true); // S C M
