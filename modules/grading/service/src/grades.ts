@@ -145,6 +145,9 @@ export class Grades {
       // Who filed each row's rubric, in its own table rather than a column on `grades`. A fresh start, not a migration: a row
       // written before this table existed has no record and is treated as such by file() below.
       db.exec("CREATE TABLE IF NOT EXISTS grade_filers (issue_id TEXT PRIMARY KEY, filer TEXT NOT NULL)");
+      // The retired `escalated` state (2026-11-22): such a row's last verdict sent the work back, so it is needs_revision, and
+      // its assignee finishing again grades it afresh. Idempotent.
+      db.exec("UPDATE grades SET state = 'needs_revision' WHERE state = 'escalated'");
       db.exec("COMMIT");
     } catch (err) {
       db.exec("ROLLBACK");

@@ -15,7 +15,7 @@ interface PaperclipAgent { id: string; name?: string; metadata?: { setupKey?: st
 interface Issue { id: string; status: string; assigneeAgentId?: string; completedAt?: string; updatedAt: string }
 interface Paperclip { agents(): Promise<PaperclipAgent[]>; closed(since: string): Promise<Issue[]> }
 interface Stats { runs: number; costUsd: number; tasksDone: number; tasksCancelled: number; costPerDone: number | null; records: { filed: number; rejected: number; failed: number; ownerDecided: number }; grades: { satisfied: number; failed: number }; reopened: number }
-interface Grade { issue_id: string; state: string; failures: number; attempts: number }
+interface Grade { issue_id: string; state: string; failures: number; attempts: number; verdicts: string }
 
 export async function baseline({ days, now = new Date() }: { days: number; now?: Date }, { kernelDb, gradesDb, paperclip }: { kernelDb: DatabaseSync; gradesDb: DatabaseSync; paperclip: Paperclip }) {
   const from = new Date(Date.parse(now.toISOString().slice(0, 10)) - (days - 1) * DAY);
@@ -35,7 +35,7 @@ export async function baseline({ days, now = new Date() }: { days: number; now?:
       FROM records WHERE created_at >= ? AND json_extract(requester, '$.agent') IS NOT NULL GROUP BY 1`).all(fromIso) as unknown as { agent: string; filed: number; rejected: number; failed: number; owner: number }[]) {
     of(r.agent).records = { filed: r.filed, rejected: r.rejected, failed: r.failed, ownerDecided: r.owner };
   }
-  const grade = new Map((gradesDb.prepare("SELECT issue_id, state, failures, attempts FROM grades").all() as unknown as Grade[]).map((g): [string, Grade] => [g.issue_id, g]));
+  const grade = new Map((gradesDb.prepare("SELECT issue_id, state, failures, attempts, verdicts FROM grades").all() as unknown as Grade[]).map((g): [string, Grade] => [g.issue_id, g]));
   for (const i of await paperclip.closed(fromIso)) {
     if (!i.assigneeAgentId || (i.completedAt ?? i.updatedAt) < fromIso) continue;
     const a = of(i.assigneeAgentId);
@@ -44,7 +44,8 @@ export async function baseline({ days, now = new Date() }: { days: number; now?:
     a.tasksDone++;
     const g = grade.get(i.id);
     if (!g) continue;
-    if (g.state === "satisfied") a.grades.satisfied++;
+    // Satisfied by the grader's own last verdict: a fail-open ungraded close is no grading success.
+    if (g.state === "satisfied" && (JSON.parse(g.verdicts || "[]") as { verdict?: string }[]).at(-1)?.verdict === "satisfied") a.grades.satisfied++;
     if (g.state === "grading_failed") a.grades.failed++;
     if (g.attempts > 0) a.reopened++;
   }

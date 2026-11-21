@@ -100,8 +100,8 @@ task done with an "ungraded: <reason>" note, and you hear it as done. Reopen it 
 
 - **Deliverable:** `pr` (the repo or PR link), `app` (the app name), `apply` or `file`. `report` (read-only work: a
   diagnosis, research) and `none` (a question) are not graded: read the answer and close the task. A brief whose honest
-  answer may be "no release carries the fix, record that and park" is a `report` (the tools refuse it as a `pr`: that
-  rubric can only pass with a merged PR that may never exist).
+  answer may be "no release carries the fix, record that and park" is a `report`: a `pr` rubric can only pass with a
+  merged PR that may never exist, so it would close ungraded.
 - **Rubric:** 3-8 criteria, each naming a fact the grader is given for that deliverable. For a `pr`: the PR's diff, its
   head and merge commit, its named checks, and for an app repo its deploys, newest first ("deployed at the merged commit"
   is checkable; a `by: auto-deploy` deploy is the platform's). Standard criteria, made specific to the request:

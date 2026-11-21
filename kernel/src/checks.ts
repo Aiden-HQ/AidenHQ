@@ -201,11 +201,11 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
     // An enforcing check whose service is still unavailable (a container being replaced) holds the task in review instead of
     // refusing the close: the scheduled re-check asks again once it is back, and a real verdict is never invented here.
     const [verdicts] = await Promise.all([Promise.all(mine.map(async ([id, c]) => {
-      try { return { id, c, v: await ask(id, c, body), down: false }; }
+      try { return { id, c, v: await ask(id, c, body) }; }
       catch (e) {
         const why = String((e as { cause?: unknown }).cause ?? (e as Error).message);
         log("finish check unavailable, holding", { task: i.identifier, check: id, err: why });
-        return { id, c, down: true, v: { verdict: "pending", state: "pending", reason: `the finish check ${id} couldn't be reached (${why}): the task waits in review while its service comes back` } as Verdict };
+        return { id, c, v: { verdict: "pending", state: "pending", reason: `the finish check ${id} couldn't be reached (${why}): the task waits in review while its service comes back` } as Verdict };
       }
     })), watched]);
     const deny = verdicts.find((x) => x.v.verdict === "deny");

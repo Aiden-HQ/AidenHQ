@@ -198,7 +198,7 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
     log("graded", { issue: issue.identifier, outcome: v.outcome, state: row.state, attempts: row.attempts, failures: row.failures, model: v.model, version: ev.version.slice(0, 40), ...(v.reason ? { reason: String(v.reason).slice(0, 300) } : {}) });
     // A satisfied row without a satisfied verdict is a close the grader could not check: done, with "ungraded: <reason>".
     const unmet = (v.criteria ?? []).some((c: Json) => c.met === "no");
-    const ungraded = row.state === "satisfied" && v.outcome !== "satisfied" ? (unmet ? `criteria were still unmet after ${row.attempts} rejected versions` : v.outcome === "needs_revision" ? "its criteria were not shown by the evidence" : v.outcome === "cannot_judge" ? "the grader couldn't judge it" : String(v.reason || "the grader failed").slice(0, 300)) : "";
+    const ungraded = row.state === "satisfied" && (v.outcome !== "satisfied" || unmet) ? (unmet ? `criteria were still unmet after ${row.attempts} rejected versions` : v.outcome === "needs_revision" ? "its criteria were not shown by the evidence" : v.outcome === "cannot_judge" ? "the grader couldn't judge it" : String(v.reason || "the grader failed").slice(0, 300)) : "";
     const note = gradeNote(v, rubric, ungraded ? "ungraded" : row.state, { version: ev.version, reason: ungraded || undefined });
     if (row.state === "satisfied") {
       // The row is satisfied now, so the close and the notice are owed steps: retried until they land, even across a restart.

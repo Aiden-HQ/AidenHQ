@@ -125,10 +125,7 @@ export function taskState(task: string, facts: FactRow[], now: number, stages: S
       case "job.queued": job!.queued = f; failure = silent = undefined; queuedAt.push(ms(f.at)); break;
       case "job.started":
         job!.started = f; failure = silent = undefined;
-        // The task's next job ends an agent's own wait and a delegator wait: it reads the thread, and asks again if it still
-        // needs to. A delegator's answer can wake the task without a comment fact the state reads (WOR-9335). An owner wait
-        // ends only on the owner's words.
-        if (wait && !wait.end && wait.f.data.reason !== "owner_wait") wait.end = ms(f.at);
+        if (wait && !wait.end && wait.f.data.reason === "agent_wait") wait.end = ms(f.at);
         mwaits.clear();
         break;
       case "job.ended":
@@ -160,6 +157,12 @@ export function taskState(task: string, facts: FactRow[], now: number, stages: S
     }
   }
 
+  // A delegator's answer can reach the task as a comment wake with no comment fact the state reads (WOR-9335, #1326): a comment
+  // wake opened after the wait by anyone but its holder and the kernel ends it, as the comment would have.
+  if (wait && !wait.end && wait.f.data.reason === "delegator_wait") {
+    const answer = own.find((f) => f.type === "wake.opened" && f.subject.startsWith("wake:comment:") && ms(f.at) > ms(wait!.f.at) && ms(f.at) <= now && f.actor !== "kernel" && f.actor !== `agent:${who}`);
+    if (answer) { wait.end = ms(answer.at); quiet = Math.max(quiet, wait.end); }
+  }
   const open: Open[] = [];
   for (const [subject, j] of jobs) {
     if (j.ended) continue;
