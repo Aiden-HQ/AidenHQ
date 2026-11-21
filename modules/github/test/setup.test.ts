@@ -15,7 +15,7 @@ const ALLOW = [".deepsec/data/*/INFO.md", ".deepsec/deepsec.config.ts", ".deepse
 const args = (over = {}) => ({ repo: "acme/widgets", branch: "aidenhq/deepsec-setup", expected_tip: null, files: { ".deepsec/data/w/INFO.md": "# widgets\n", ".deepsec/deepsec.config.ts": "export default {};\n" }, allow: ALLOW, title: "Add deepsec", body: "Setup.", ...over });
 
 /** A fake GitHub: the default branch, the setup branch's tip, the files each commit has, what the branch's diff carries, the open PRs. */
-function github(o: { tip?: string | null; has?: string[]; diff?: string[]; open?: { html_url: string }[] } = {}) {
+function github(o: { tip?: string | null; has?: string[]; diff?: string[]; open?: { html_url: string; base?: { ref: string } }[] } = {}) {
   const writes: { method: string; path: string; body: any }[] = [];
   const api = async (method: string, path: string, body?: any) => {
     if (method !== "GET") writes.push({ method, path, body });
@@ -24,7 +24,7 @@ function github(o: { tip?: string | null; has?: string[]; diff?: string[]; open?
     if (path === "/repos/acme/widgets/branches/main") return { commit: { sha: HEAD } };
     if (path === "/repos/acme/widgets/branches/aidenhq/deepsec-setup") return o.tip ? { commit: { sha: o.tip } } : miss();
     if (path.startsWith("/repos/acme/widgets/contents/")) return (o.has ?? []).includes(decodeURIComponent(path.slice("/repos/acme/widgets/contents/".length).split("?")[0]!)) ? { sha: "x" } : miss();
-    if (path.startsWith("/repos/acme/widgets/compare/")) return { files: (o.diff ?? []).map((filename) => ({ filename })) };
+    if (path.startsWith("/repos/acme/widgets/compare/")) return { files: (o.diff ?? []).map((filename) => ({ filename, status: "modified", patch: `@@ -1 +1 @@\n-old ${filename}\n+new ${filename}` })) };
     if (path.startsWith("/repos/acme/widgets/commits/")) return { commit: { tree: { sha: "t".repeat(40) } } };
     if (path.endsWith("/git/trees")) return { sha: "e".repeat(40) };
     if (path.endsWith("/git/commits")) return { sha: "d".repeat(40) };
@@ -80,12 +80,20 @@ test("the PR's whole diff against the default branch must hold allowed paths onl
 });
 
 test("an existing branch moves forward from its tip; an open PR is reused, never a second one", async () => {
-  const g = github({ tip: TIP, diff: [".deepsec/package.json"], open: [{ html_url: "https://github.com/acme/widgets/pull/4" }] });
+  const g = github({ tip: TIP, diff: [".deepsec/package.json"], open: [{ html_url: "https://github.com/acme/widgets/pull/4", base: { ref: "main" } }] });
   const out = await setup.run(g.api, args({ expected_tip: TIP }));
   assert.deepEqual(JSON.parse(out.text), { pr_url: "https://github.com/acme/widgets/pull/4", tip: "d".repeat(40) });
   assert.deepEqual(g.writes[1]!.body.parents, [TIP]);
   assert.equal(g.writes.find((w) => w.method === "PATCH")!.body.force, undefined);
   assert.equal(g.writes.some((w) => w.path.endsWith("/pulls")), false);
+  // The reviewer reads what the branch already carries; a PR into another base refuses before anything is pushed.
+  const p = await setup.plan(github({ tip: TIP, diff: [".deepsec/package.json"] }).api, args({ expected_tip: TIP }));
+  assert.match(p.facts.diff, /already on aidenhq\/deepsec-setup: \.deepsec\/package\.json \(modified\) ---\n@@ -1 \+1 @@\n-old/);
+  const other = github({ tip: TIP, open: [{ html_url: "https://github.com/acme/widgets/pull/5", base: { ref: "release" } }] });
+  const refused = await setup.run(other.api, args({ expected_tip: TIP }));
+  assert.equal(refused.ok, false);
+  assert.match(refused.text, /pull request into release, not main/);
+  assert.deepEqual(other.writes, []);
 });
 
 test("the plan shows the files to add whole and binds the branch's tip and the base's head", async () => {
