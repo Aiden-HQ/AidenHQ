@@ -320,22 +320,40 @@ export function priorDecisions(records: Prior[], action: string, also: string[] 
   const count = new Map<string, number>();
   const held = new Map<string, number>();
   const splitCount = new Map<string, number>();
-  for (const r of targets?.targets.length ? judged : []) {
+  // Each target's held rejections in order, and the park episode that opened its current park (the MAX_REJECTS-th held
+  // rejection is park 1, the 2*MAX_REJECTS-th park 2, ...), as `<number>:<the record that opened it>`: a second park is its
+  // own episode, and a request refused as parked after one keeps that episode (review-loop.ts parked).
+  const ordinal = new Map<string, number>();
+  const opened = new Map<string, string>();
+  // Without targets the task is the one target (`""`), as `rejects` counts it below.
+  for (const r of judged) {
     // Each rejection counts once per target: the branch it names, and this request's target carrying its patch key. A record
     // matching both is still one rejection on that branch (the Set).
-    const named = new Set(recordTargets(r).map((t) => t.key).filter((k) => targets!.targets.some((x) => x.key === k)));
+    const named = new Set(targets?.targets.length ? recordTargets(r).map((t) => t.key).filter((k) => targets!.targets.some((x) => x.key === k)) : []);
     const byPatch = new Set<string>((r.args?.only ?? r.args?.prs ?? []).flatMap((x: any) => (typeof x?.patch === "string" ? [...asked].filter(([, p]) => p === x.patch).map(([k]) => k) : [])));
     // The same content as this whole request (its commits, or its patch keys) counts on every target it names, so renaming
     // the branch never resets the bound, even when a patch key couldn't be computed.
-    const byContent = (key !== undefined && recordKey(r) === key) || (typeof patches === "string" && recordPatches(r) === patches) ? targets!.targets.map((t) => t.key) : [];
+    const byContent = targets?.targets.length && ((key !== undefined && recordKey(r) === key) || (typeof patches === "string" && recordPatches(r) === patches)) ? targets.targets.map((t) => t.key) : [];
     // A panel split (approve + reject) has its own bound (MAX_SPLITS), never the park bound's.
     const bounds = r.reviewCode === "panel_split" ? [splitCount] : [...(r.answered ? [] : [count]), ...(r.answered === "owner" ? [] : [held])];
-    for (const k of new Set([...named, ...byPatch, ...byContent])) for (const bound of bounds) bound.set(k, (bound.get(k) ?? 0) + 1);
+    const keys = targets?.targets.length ? new Set([...named, ...byPatch, ...byContent]) : new Set([""]);
+    for (const k of keys) for (const bound of bounds) bound.set(k, (bound.get(k) ?? 0) + 1);
+    if (r.reviewCode !== "panel_split" && r.answered !== "owner") for (const k of keys) {
+      const o = (ordinal.get(k) ?? 0) + 1;
+      ordinal.set(k, o);
+      if (o % MAX_REJECTS === 0) opened.set(k, `${o / MAX_REJECTS}:${String(r.id ?? r.decidedAt ?? o)}`);
+    }
   }
   const parks = (n: number[]) => Math.max(0, ...n);
   const unanswered = judged.filter((r) => r.reviewCode !== "panel_split");
   const [open, agentHeld] = targets?.targets.length ? [parks([...count.values()]), parks([...held.values()])] : [unanswered.filter((r) => !r.answered).length, unanswered.filter((r) => r.answered !== "owner").length];
   const rejects = agentHeld >= MAX_REJECTS * (AGENT_LIFTS + 1) ? agentHeld : open;
+  // The busiest target (whose park this is), the rejection that opened its park episode, and the held count: the park notice
+  // keys each episode once and tells a delegator whether the agents' once-lift is still theirs (review-loop.ts parked).
+  const busiest = [...held.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+  const park = targets?.targets.length ? opened.get(busiest ?? "") : opened.get("");
+  // Per target too, so the park notice reads the target the new rejection landed on (review-loop.ts parked), not the busiest.
+  const heldBy = Object.fromEntries(held), parkBy = Object.fromEntries(opened);
   const splits = targets?.targets.length ? Math.max(0, ...splitCount.values()) : judged.filter((r) => r.reviewCode === "panel_split").length;
   // Two reviewers unsure (reviewer_unsure) is about the request: the fix is often the brief or an authorisation, so the
   // same commits may come back once, after the request chain changed (`chain`, its hash now; `requestChain`, its hash
@@ -357,7 +375,7 @@ export function priorDecisions(records: Prior[], action: string, also: string[] 
   // (null) fail closed: any owner rejection of the action on the task makes it theirs.
   const sameContent = (r: Prior) => (key !== undefined && recordKey(r) === key) || (typeof patches === "string" && recordPatches(r) === patches);
   const ownerNo = mine.some((r) => byOwner(r) && r.state === "rejected" && (patches === null || (sameContent(r) && !mine.some((y) => byOwner(y) && y.state !== "rejected" && sameContent(y) && String(y.decidedAt) > String(r.decidedAt)))));
-  return { ownerVeto: lastOwner?.state === "rejected" || ownerNo, same: sameOne ? sameOne.review || "no note" : undefined, rejects, splits, findings: judged.filter((r) => !r.answered).map((r) => r.review).filter(Boolean) as string[], ...(targets?.targets.length ? { scope: targets.label } : {}) };
+  return { ownerVeto: lastOwner?.state === "rejected" || ownerNo, same: sameOne ? sameOne.review || "no note" : undefined, rejects, held: agentHeld, park, heldBy, parkBy, splits, findings: judged.filter((r) => !r.answered).map((r) => r.review).filter(Boolean) as string[], ...(targets?.targets.length ? { scope: targets.label } : {}) };
 }
 
 /** What earlier decisions do to a request: the owner's veto (their card), a rejected change resent, a retry past the bound. */
@@ -365,7 +383,13 @@ export function priorPart(p: ReturnType<typeof priorDecisions> | undefined): Par
   if (!p) return undefined;
   if (p.ownerVeto) return T(2, "owner-veto", "the owner rejected this action on this task, and only their own yes lifts it");
   if (p.same !== undefined) return REJECT("rejected-content", `the AI reviewer already rejected exactly this request on this task, so it isn't reviewed again unchanged (its note: ${String(p.same).slice(0, 400)}). Change what it found and file the changed request, or report back to whoever asked why it can't change`);
-  if (p.rejects >= MAX_REJECTS) return REJECT("retries-exhausted", `parked: the AI reviewer rejected this action ${p.rejects} times on ${(p as { scope?: string }).scope ?? "this task"}, so it isn't reviewed again here until a decision on the task lifts it (whoever delegated the task, or the chief of staff, once; after that, only the owner). A different branch, PR or tool target of the task is reviewed on its own; report what it found to whoever asked for this work`);
+  if (p.rejects >= MAX_REJECTS) {
+    const scope = (p as { scope?: string }).scope ?? "this task";
+    const tail = "A different branch, PR or tool target of the task is reviewed on its own; report what it found to whoever asked for this work";
+    // Past the agents' lifts, the old "once; after that, only the owner" reads as an offer that is already spent (AidenHQ#1256).
+    if (p.rejects >= MAX_REJECTS * (AGENT_LIFTS + 1)) return REJECT("retries-exhausted", `parked: the AI reviewer rejected this action ${p.rejects} times on ${scope}, so it isn't reviewed again here. The agents' lift is spent (whoever delegated the task, or the chief of staff, lifts a park once), so only the owner's own reply or yes moves it now. ${tail}, or change the request`);
+    return REJECT("retries-exhausted", `parked: the AI reviewer rejected this action ${p.rejects} times on ${scope}, so it isn't reviewed again here until a decision on the task lifts it (whoever delegated the task, or the chief of staff, once; after that, only the owner). ${tail}`);
+  }
   return undefined;
 }
 
