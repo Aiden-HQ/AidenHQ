@@ -36,10 +36,11 @@ export type TaskApi = { issue(id: string): Promise<Issue>; comments(id: string):
 
 /** The module kinds the reviewer has always read by their card names. */
 const LEGACY: Record<string, string> = { "apps-platform.deploy": "deploy_app", "apps-platform.run": "app_run" };
-// A code host's write kinds are the bare actions its own plan reads (`codehost-github.pr` is a `pr`, not a module digest):
-// the retry bound, the rejected-content check and the merge carry all key on the action, as the code hosts' plan.ts does.
+// A code host's write kinds are the bare actions its own plan reads (`github.pr` is a `pr`, not a module digest): the retry
+// bound, the rejected-content check and the merge carry all key on the action, as the code hosts' plan.ts does.
+const CODEHOST_KIND = /^(github|codehost-local)\.(push|pr|merge|close|create_repo)$/;
 export const actionOf = (kind: string) =>
-  LEGACY[kind] ?? (/^codehost-(github|local)\.(push|pr|merge|close|create_repo)$/.test(kind) ? kind.replace(/^codehost-(github|local)\./, "") : kind.replace(/^(runner|kernel)\./, ""));
+  LEGACY[kind] ?? (CODEHOST_KIND.test(kind) ? kind.replace(/^[^.]+\./, "") : kind.replace(/^(runner|kernel)\./, ""));
 const STATE: Partial<Record<State, string>> = { review: "pending", owner: "pending", approved: "approved", claimed: "used", done: "used", failed: "used", unknown: "used", rejected: "rejected", stale: "stale", cancelled: "expired" };
 const ALL: State[] = ["review", "owner", "approved", "claimed", "done", "failed", "unknown", "rejected", "stale", "cancelled"];
 
@@ -92,8 +93,11 @@ function authorOf(c: Comment, { owner, requester, delegator, agent }: { owner: s
   return own ? { who: "owner" } : undefined;
 }
 
-/** An agent's visible-reply marks: a job's final reply (kernel outcomes.ts), and notify's reply mark, buttons and questions (owner-channel notify.ts replyBody). */
-const REPLY_MARKS = /<!-- aidenhq(?::job=[\w-]+ kind=reply|-reply|-actions:\[[^\n]*?\]|-questions:\[[^\n]*?\]) -->/g;
+/**
+ * An agent's own-text marks: a job's final reply (kernel outcomes.ts), its comment through the control plane (cp.ts tagOf: the
+ * job tag or `op=` on another agent's task), and notify's reply mark, buttons and questions (owner-channel notify.ts replyBody).
+ */
+const REPLY_MARKS = /<!-- aidenhq(?::job=[\w-]+ kind=(?:reply|cp)|:op=[\w-]+|-reply|-actions:\[[^\n]*?\]|-questions:\[[^\n]*?\]) -->/g;
 
 /**
  * The multiple-choice questions a reply's form asked, spelled out as the owner saw them (numbers and letters as notify's
