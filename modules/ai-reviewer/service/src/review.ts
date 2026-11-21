@@ -788,11 +788,8 @@ async function secondOpinion({ v1, whole, panel, requesterModel, ask, onPanel, p
 }): Promise<Result> {
   const flag = v1.flag;
   const seconds = last(secondModels(requesterModel, v1.model));
-  // No second family: back to the agent when code couldn't verify the input whole; otherwise code's no_independent_model,
-  // which the kernel approves on a Tier 1 card (tier.ts failOpen).
-  if (!seconds.length) return whole ? { ...v1, decision: "escalate", code: "no_independent_model", reason: `the first reviewer was unsure and no second reviewer is independent of the requester and the first. First reviewer: ${v1.reason}`.slice(0, 1990) } : { flag, decision: "reject", code: UNSURE, reason: `The reviewer was unsure, no second reviewer was left, and code couldn't verify the change and its request were shown whole: make what it names clear and ask again. ${cut(v1.reason)}`.slice(0, 1990), model: v1.model };
   // A requirement a reviewer added (authority-expanding) is recorded on the card before anything else, as on the panel path,
-  // so a retry can't drop it.
+  // so a retry can't drop it, and code never fails a card open that a reviewer said needs two.
   const mark = async (): Promise<Result | undefined> => {
     try {
       await onPanel();
@@ -804,6 +801,9 @@ async function secondOpinion({ v1, whole, panel, requesterModel, ask, onPanel, p
     const failed = await mark();
     if (failed) return failed;
   }
+  // No second family: back to the agent when code couldn't verify the input whole; otherwise code's no_independent_model,
+  // which the kernel approves on a Tier 1 card (tier.ts failOpen).
+  if (!seconds.length) return whole ? { ...v1, decision: "escalate", code: "no_independent_model", reason: `the first reviewer was unsure and no second reviewer is independent of the requester and the first. First reviewer: ${v1.reason}`.slice(0, 1990) } : { flag, decision: "reject", code: UNSURE, reason: `The reviewer was unsure, no second reviewer was left, and code couldn't verify the change and its request were shown whole: make what it names clear and ask again. ${cut(v1.reason)}`.slice(0, 1990), model: v1.model };
   const v2 = await askFirst(seconds, () => prompt(panel || flag), ask, checks);
   if (!v2) return { ...v1, decision: "escalate", code: "reviewer_refused", reason: `the first reviewer was unsure and the second refused. First reviewer (unsure): ${v1.reason}`.slice(0, 1990) };
   if (v2.failed) return { ...failedOf(v2.failed, v1.model, "the second reviewer"), flag };

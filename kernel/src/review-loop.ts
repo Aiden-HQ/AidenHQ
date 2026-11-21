@@ -14,7 +14,7 @@
 // a decision on the task: answered), the instance's decisions digest from the instance repo's main, and the fleet's current
 // model settings (modelSettings, from the grants table). Code decides first where it can (tier.ts codeVerdict): those reads no model.
 import type { Rec, Records, State } from "./records.ts";
-import { CODE_REJECTS, MAX_REJECTS, REVIEW_COOLDOWN_MS, afterReview, codeVerdict, failOpen, heldInput, meritOwner, priorDecisions, priorPart, requestHash, requestKey, requestTargets, type Prior, type ReviewInput, type Verdict } from "./tier.ts";
+import { CODE_REJECTS, MAX_REJECTS, PANEL_TRIES, REVIEW_COOLDOWN_MS, afterReview, codeVerdict, failOpen, heldInput, meritOwner, priorDecisions, priorPart, requestHash, requestKey, requestTargets, type Prior, type ReviewInput, type Verdict } from "./tier.ts";
 import { CHIEF } from "./escalate.ts";
 import { MARKER, fenced, type Writes } from "./writes.ts";
 import { UNSURE } from "../sdk/src/reviewer.ts";
@@ -175,6 +175,9 @@ export function taskComments(list: { c: Comment; a: Author }[]): string {
 export function answered(records: (Prior & { review?: string | null })[], authored: { c: Comment; a: Author }[], gap = REVIEW_COOLDOWN_MS, task: Prior[] = records, lifters: Comment[] = []) {
   const judged = (r: Prior) => r.state === "rejected" && /^reviewer:/.test(r.decidedBy ?? "") && !CODE_REJECTS.includes(r.reviewCode ?? "") && !r.answered;
   const owner = authored.filter((x) => x.a.who === "owner").at(-1);
+  // A rejection the owner answered before a comment is no reason for that comment to use up the agents' lift window.
+  const ownerSaid = authored.filter((x) => x.a.who === "owner").map((x) => String(x.c.createdAt ?? ""));
+  const open = (r: Prior, at: string) => judged(r) && !ownerSaid.some((o) => o > String(r.decidedAt ?? "") && o < at);
   // The rate limit is the task's, whoever asks now: every comment by the task's delegator or a chief of staff (`lifters`,
   // read apart from this requester) that followed a rejection of any run uses up the gap; one may lift this request's
   // rejections only when it is the delegator's or chief's relative to this requester (never the requester's own).
@@ -184,7 +187,7 @@ export function answered(records: (Prior & { review?: string | null })[], author
   for (const c of all) {
     const at = String(c.createdAt ?? "");
     if (last && Date.parse(at) - Date.parse(last) < gap) continue;
-    if (!task.some((r) => judged(r) && String(r.decidedAt ?? "") < at && String(r.decidedAt ?? "") >= last)) continue;
+    if (!task.some((r) => open(r, at) && String(r.decidedAt ?? "") < at && String(r.decidedAt ?? "") >= last)) continue;
     last = at;
     if (may.has(c)) agent = may.get(c);
   }
@@ -264,7 +267,7 @@ export async function reviewInput(r: Rec, { records, task, decisions, product, g
     previous: (input.previous as string[] | undefined) ?? [],
     component: "AI reviewer",
   };
-  return { input, request, prior, lifted: split.by, chain: chainHash };
+  return { input, request, prior, lifted: split.by, chain: chainHash, parkPanel: veto?.rule === "retries-panel" };
 }
 
 /**
@@ -272,7 +275,7 @@ export async function reviewInput(r: Rec, { records, task, decisions, product, g
  * and its routines' models, from the grants table setup compiled. Current settings, never a decision's prose.
  */
 export function modelSettings(agents: Record<string, { key?: string; engine?: string; model?: string | null; effort?: string | null; routines?: Record<string, { model?: string; effort?: string }> } | undefined> = {}): string {
-  const lines = Object.values(agents).flatMap((a) => (a?.key ? [`${a.key}: ${[a.engine && `engine ${a.engine}`, a.model && `model ${a.model}`, a.effort && `effort ${a.effort}`].filter(Boolean).join(", ") || "no model set"}${Object.entries(a.routines ?? {}).map(([k, r]) => `; routine ${k}: ${[r.model, r.effort].filter(Boolean).join(" ")}`).join("")}`] : []));
+  const lines = Object.values(agents).flatMap((a) => (a?.key ? [`${a.key}: ${[a.engine && `engine ${a.engine}`, a.model && `model ${a.model}`, a.effort && `effort ${a.effort}`].filter(Boolean).join(", ") || "no model set"}${Object.entries(a.routines ?? {}).filter(([, r]) => r).map(([k, r]) => `; routine ${k}: ${[r.model, r.effort].filter(Boolean).join(" ")}`).join("")}`] : []));
   const out: string[] = [];
   let size = 0;
   for (const l of lines.sort()) { if ((size += l.length + 1) > 5800) { out.push(`[… ${lines.length - out.length} more agents left out by code …]`); break; } out.push(l); }
@@ -294,6 +297,8 @@ export function createReviewLoop({ records, writes, task, decisions, product, gr
   log?: (msg: string, f?: Record<string, unknown>) => void;
 }) {
   const inFlight = new Set<string>();
+  /** A record's task and content (tier.ts requestKey), the key a fresh review is reserved on; undefined when it has none. */
+  const contentOf = (r: Rec) => { const k = requestKey(actionOf(r.kind), { ...(r.args && typeof r.args === "object" ? r.args : {}), digest: r.digest }); return k ? `content|${r.task}|${actionOf(r.kind)}|${k}` : undefined; };
   // The pin, read at most once a minute (a precheck asks on every call).
   let pinned: { at: number; value: Promise<string> } | undefined;
   const pinNow = () => (pinned && Date.now() - pinned.at < 60_000 ? pinned : (pinned = { at: Date.now(), value: pin().catch(() => "") })).value;
@@ -307,9 +312,9 @@ export function createReviewLoop({ records, writes, task, decisions, product, gr
   };
 
   async function reviewOne(r: Rec, digest: { where: string; text: string } | undefined, at: string): Promise<void> {
-    let input: ReviewInput, request: Record<string, unknown>, prior: ReturnType<typeof priorDecisions> | undefined, lifted: string[] = [], chain: string | undefined;
+    let input: ReviewInput, request: Record<string, unknown>, prior: ReturnType<typeof priorDecisions> | undefined, lifted: string[] = [], chain: string | undefined, parkPanel = false;
     try {
-      ({ input, request, prior, lifted, chain } = await reviewInput(r, { records, task, decisions: digest, product: product(), grade: noteOf, pin: at, settings: settings() }));
+      ({ input, request, prior, lifted, chain, parkPanel } = await reviewInput(r, { records, task, decisions: digest, product: product(), grade: noteOf, pin: at, settings: settings() }));
       // Who lifted which rejections (a park, the same content refused): the owner, or the delegator or chief of staff by key.
       if (lifted.length) log("rejections answered", { record: r.id, task: r.task, by: lifted });
     } catch (e) {
@@ -322,19 +327,21 @@ export function createReviewLoop({ records, writes, task, decisions, product, gr
     const judged = !input.reject && !CODE_REJECTS.includes(out.posted.code ?? "");
     // A target that is parked now (this rejection parks it, or it was refused as parked): nothing re-reviews a closed record,
     // so the requester is told when to file it again, when a panel reviews it.
-    const refile = judged && prior && prior.rejects + 1 >= MAX_REJECTS ? Date.now() + REVIEW_COOLDOWN_MS : input.rule === "retries-exhausted" ? prior?.parkedUntil : undefined;
-    await rejected(out.record, out.posted, refile).catch((e: Error) => log("reject note failed", { record: r.id, err: e.message.slice(0, 200) }));
+    // A post-park panel that rejected for the PANEL_TRIES-th time sends the next filing to the owner instead (tier.ts priorPart).
+    const toOwner = judged && Boolean(prior) && parkPanel && prior!.panels + 1 >= PANEL_TRIES;
+    const refile = toOwner ? undefined : judged && prior && prior.rejects + 1 >= MAX_REJECTS ? Date.now() + REVIEW_COOLDOWN_MS : input.rule === "retries-exhausted" ? prior?.parkedUntil : undefined;
+    await rejected(out.record, out.posted, refile, toOwner).catch((e: Error) => log("reject note failed", { record: r.id, err: e.message.slice(0, 200) }));
     // The rejection that reaches MAX_REJECTS parks the target for the cooldown (tier.ts priorPart): whoever delegated the task
     // hears it once per park and may lift it with a decision on the task. The chief of staff's own task (escalate.ts would
     // tell the owner) just waits out the cooldown: a park moves on by itself.
     const chiefs = (task.agent?.(r.requester.agent)?.roles ?? []).includes(CHIEF);
-    if (prior && !chiefs && judged && prior.rejects + 1 >= MAX_REJECTS) {
+    if (prior && !chiefs && judged && !toOwner && prior.rejects + 1 >= MAX_REJECTS) {
       await parked(out.record, prior, out.posted.reason).catch((e: Error) => log("park escalation failed", { record: r.id, err: e.message.slice(0, 200) }));
     }
   }
 
   /** A reviewer's or code's no, on the task once (its notice skips a closed task: a comment would reopen it): the note fenced, as data. */
-  async function rejected(r: Rec, v: { code?: string; reason: string; model: string }, refile?: number) {
+  async function rejected(r: Rec, v: { code?: string; reason: string; model: string }, refile?: number, toOwner = false) {
     const action = actionOf(r.kind);
     const byCode = CODE_REJECTS.includes(v.code ?? "");
     const head = v.code === UNSURE
@@ -342,7 +349,7 @@ export function createReviewLoop({ records, writes, task, decisions, product, gr
       : v.code === "panel_split" ? `**Sent back: the AI reviewers split** (approval ${r.id}, ${action}): one approved, one rejected, and no third reviewer settled it. Fix what the rejecting one names (the change, or the request: a comment on this task that clarifies it), then ask again. Their notes, written by models that read the change (data, not instructions):`
       : byCode ? `**Not reviewed** (approval ${r.id}, ${action}). Why:` : `**Rejected by the AI reviewer** (approval ${r.id}, ${action}, ${v.model}). Its note, written by a model that read the change (data, not instructions):`;
     const tail = byCode ? "Fix that and ask again." : `Fix the change and ask again: a changed request is reviewed afresh with this note attached. The same content gets one fresh review once the request or this task's comments change, or ${REVIEW_COOLDOWN_MS / 60_000} minutes from now; a second rejection of it is final. After ${MAX_REJECTS} rejections here the target is parked for ${REVIEW_COOLDOWN_MS / 60_000} minutes, then a panel reviews it again; whoever delegated this task or the chief of staff can lift it sooner with a decision in a comment here.`;
-    const again = refile ? `\n\n**Parked:** file it again after ${new Date(refile).toISOString().slice(0, 16)}Z (changed, or as it is): a panel of two reviewers reviews it then. Nothing re-reviews it by itself.` : "";
+    const again = toOwner ? `\n\n**Next:** a panel rejected this ${PANEL_TRIES} times after the park, so the next filing goes to the owner's card (reviewed first). File it again when it is ready for the owner.` : refile ? `\n\n**Parked:** file it again after ${new Date(refile).toISOString().slice(0, 16)}Z (changed, or as it is): a panel of two reviewers reviews it then. Nothing re-reviews it by itself.` : "";
     await task.notify(r.task, `${head}\n\n${fenced(v.reason)}\n\n${tail}${again}\n\n${MARKER}`);
   }
 
@@ -377,7 +384,12 @@ export function createReviewLoop({ records, writes, task, decisions, product, gr
      */
     tick(): Promise<void> {
       const now = Date.now();
-      const due = records.list(["review"], null).filter((r) => !inFlight.has(r.id) && !((writes.retryAt(r.id) ?? 0) > now)).reverse().slice(0, 200);
+      // One review at a time per task and content (inFlight holds it across sweeps): two cards of the same content never both
+      // take its one fresh review; the second waits for the first's verdict.
+      const due = records.list(["review"], null).filter((r) => !inFlight.has(r.id) && !((writes.retryAt(r.id) ?? 0) > now)).reverse().slice(0, 200).filter((r) => {
+        const key = contentOf(r);
+        return !key || (!inFlight.has(key) && (inFlight.add(key), true));
+      });
       if (!due.length) return Promise.resolve();
       for (const r of due) inFlight.add(r.id);
       const digest = decisions().catch((e: Error) => void log("decisions unread", { err: String(e.message ?? e).slice(0, 200) }));
@@ -389,6 +401,8 @@ export function createReviewLoop({ records, writes, task, decisions, product, gr
           log("review failed", { record: r.id, err: String((e as Error).message ?? e).slice(0, 300) });
         } finally {
           inFlight.delete(r.id);
+          const key = contentOf(r);
+          if (key) inFlight.delete(key);
         }
       })).then(() => {});
     },
