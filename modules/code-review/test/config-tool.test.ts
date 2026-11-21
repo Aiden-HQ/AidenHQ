@@ -41,8 +41,17 @@ test("an agent's one-off takes an engine's offered model at its default cap, or 
   assert.equal(asked.length, 1);
 });
 
-test("a repo's mandatory flag (code review is a required merge step) is false by default and only true or false", () => {
-  const c = readConfig(JSON.stringify({ repos: [{ repo: "acme/x", mandatory: true }, { repo: "acme/y" }, { repo: "acme/z", mandatory: "yes" }] }));
-  assert.deepEqual(c.repos.map((r) => [r.repo, r.mandatory]), [["acme/x", true], ["acme/y", false]]);
-  assert.ok(c.errors.some((e) => /mandatory is true or false/.test(e)));
+test("mandatory is a combo's (false by default); a gated repo has one at both moments; a repo-level flag is refused", () => {
+  const c = (mandatory) => ({ engine: "codex", model: "~a/b", effort: "low", ...(mandatory === undefined ? {} : { mandatory }) });
+  const r = readConfig(JSON.stringify({ repos: [
+    { repo: "acme/x", on_open: [c(true)], on_push: [c(), c(true)] },
+    { repo: "acme/y" },
+    { repo: "acme/z", on_open: [c(true)], on_push: [c()] },
+    { repo: "acme/w", mandatory: true },
+    { repo: "acme/v", on_open: [c("yes")] },
+  ] }));
+  assert.deepEqual(r.repos.map((x) => [x.repo, x.on_open.map((k) => k.mandatory), x.on_push.map((k) => k.mandatory)]), [["acme/x", [true], [false, true]], ["acme/y", [false], [false]]]);
+  assert.match(r.errors.join("\n"), /repos\[2\]: a mandatory combo goes in both on_open and on_push/);
+  assert.match(r.errors.join("\n"), /repos\[3\]: a repo's mandatory is gone/);
+  assert.match(r.errors.join("\n"), /repos\[4\]: on_open\[0\]: mandatory is true or false/);
 });

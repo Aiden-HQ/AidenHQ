@@ -311,3 +311,98 @@ test("a review that finishes on a closed PR whose merged state can't be read now
   await w.tick();
   assert.equal(w.posted.length, 1);
 });
+
+// ---- mandatory combos: coverage, the finding lifecycle and the merge verdict -------------------------------------------------
+
+const MUST = { ...CODEX, mandatory: true };
+const MUST_PUSH = { ...CODEX, effort: "low", mandatory: true };
+const NONE = { findings: [] };
+const gatedWorld = (o = {}) => world({ repos: [{ repo: REPO, on_open: [MUST], on_push: [MUST_PUSH], ...o }] });
+async function opened(w, n, head) { await w.tick(); w.later(1000); w.pr(n, head); await w.tick(); }
+const codes = (v) => v.reasons.map((r) => r.code);
+
+test("single-commit PR: on_open mandatory combos done, nothing open → pass; a non-mandatory combo still running doesn't hold it", async () => {
+  const w = world({ repos: [{ repo: REPO, on_open: [MUST, CLAUDE], on_push: [MUST_PUSH] }] });
+  await opened(w, 2, sha("2"));
+  assert.deepEqual(codes(w.engine.verdict(REPO, 2, sha("2"))), ["running"]);
+  w.finish(0, NONE); // the mandatory codex run; claude-code (advice) still runs
+  await w.tick();
+  assert.deepEqual(w.engine.verdict(REPO, 2, sha("2")), { verdict: "pass", reasons: [] });
+  assert.deepEqual(codes(w.engine.verdict(REPO, 2, sha("9"))), ["moved"]);
+  assert.deepEqual(codes(w.engine.verdict(REPO, 3, sha("3"))), ["not_started"]);
+  // Its findings are advice: an important one from claude-code never gates.
+  w.finish(1);
+  await w.tick();
+  assert.equal(w.engine.verdict(REPO, 2, sha("2")).verdict, "pass");
+});
+
+test("push before the first review finished → the newest head gets the first review (on_open), and only it covers", async () => {
+  const w = gatedWorld();
+  await opened(w, 2, sha("2"));
+  w.pr(2, sha("3"));
+  await w.tick();
+  assert.deepEqual(w.started.map((s) => [s.head, s.combo.effort]), [[sha("2"), "medium"], [sha("3"), "medium"]], "on_open at once, no debounce");
+  w.finish(0, NONE); w.finish(1, NONE);
+  await w.tick();
+  assert.equal(w.engine.verdict(REPO, 2, sha("3")).verdict, "pass");
+  // The next push is on_push, incremental from the covered head.
+  w.pr(2, sha("4")); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
+  assert.deepEqual([w.started[2].combo.effort, w.started[2].incremental_from], ["low", sha("3")]);
+});
+
+test("an important finding gates until a mandatory recheck confirms it fixed; a force-push rechecks it in full; an unsure recheck and a superseded result change nothing", async () => {
+  const w = gatedWorld();
+  await opened(w, 2, sha("2"));
+  w.finish(0); // f1, important
+  await w.tick();
+  const v = w.engine.verdict(REPO, 2, sha("2"));
+  assert.deepEqual(codes(v), ["findings"]);
+  assert.match(v.reasons[0].text, /1 important finding open: t \(a\.ts:3\)/);
+  // A force-push: the review is full, and still gets f1 to recheck (with its evidence).
+  w.rewritten.add(sha("2"));
+  w.pr(2, sha("3")); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
+  assert.deepEqual([w.started[1].combo.effort, w.started[1].full, w.started[1].previous], ["low", true, [{ id: "f1", path: "a.ts", line: 3, title: "t", gating: true, why: "w", evidence: "e" }]]);
+  // Unsure (not in fixed, not found again): still open.
+  w.finish(1, NONE); await w.tick();
+  assert.deepEqual(codes(w.engine.verdict(REPO, 2, sha("3"))), ["findings"]);
+  // A result for a head the PR moved on from is discarded.
+  w.pr(2, sha("4")); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
+  w.pr(2, sha("5")); await w.tick();
+  w.finish(2, { findings: [], fixed: ["f1"] }); await w.tick();
+  assert.equal(w.engine.run(w.engine.runs({ repo: REPO })[0].id).gate.open.length, 1, "f1 still open");
+  w.later(DEBOUNCE + 1); await w.tick();
+  w.finish(3, { findings: [], fixed: ["f1"] }); await w.tick();
+  assert.equal(w.engine.verdict(REPO, 2, sha("5")).verdict, "pass");
+  // Reported again later: it opens again.
+  w.pr(2, sha("6")); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
+  w.finish(4); await w.tick();
+  assert.deepEqual(codes(w.engine.verdict(REPO, 2, sha("6"))), ["findings"]);
+});
+
+test("two mandatory combos: coverage needs both; one failing (after its retry) waits for @aiden review; an incremental head counts only from a covered one", async () => {
+  const w = world({ repos: [{ repo: REPO, on_open: [MUST, { ...CLAUDE, mandatory: true }], on_push: [MUST_PUSH] }] });
+  await opened(w, 2, sha("2"));
+  w.finish(0, NONE);
+  w.results.set("c-2", { state: "failed", why: "engine crashed" }); // spend unknown: a mandatory run still retries
+  await w.tick();
+  assert.equal(w.started.length, 3, "retried once");
+  w.results.set("c-3", { state: "failed", why: "engine crashed again" });
+  await w.tick();
+  const v = w.engine.verdict(REPO, 2, sha("2"));
+  assert.deepEqual(codes(v), ["failed"]);
+  assert.match(v.reasons[0].unblock, /@aiden review/);
+  // A push now: nothing is covered, so it is a first review (on_open), full.
+  w.pr(2, sha("3")); await w.tick();
+  assert.deepEqual(w.started.slice(3).map((s) => [s.head, s.combo.engine, s.incremental_from]), [[sha("3"), "codex", null], [sha("3"), "claude-code", null]]);
+});
+
+test("a mandatory run is never skipped for budget; the owner dismisses an open finding and the merge may go", async () => {
+  const w = world({ repos: [{ repo: REPO, on_open: [MUST], on_push: [MUST_PUSH], day_usd: 0.01 }], day_usd: 0.01 });
+  await opened(w, 2, sha("2"));
+  w.finish(0, {}, 1); await w.tick();
+  w.pr(3, sha("3")); await w.tick(); // $1 spent of $0.01: its mandatory review starts anyway
+  assert.deepEqual(w.started.map((s) => s.number), [2, 3]);
+  assert.throws(() => w.engine.dismiss({ repo: REPO, number: 2, id: "f1" }), /say why/);
+  assert.deepEqual(w.engine.dismiss({ repo: REPO, number: 2, id: "f1", reason: "intended: the lock is held by the caller", by: "owner" }), { dismissed: "f1" });
+  assert.equal(w.engine.verdict(REPO, 2, sha("2")).verdict, "pass");
+});

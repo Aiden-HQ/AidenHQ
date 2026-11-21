@@ -93,7 +93,7 @@ export const MARKER = "<!-- aidenhq-approval -->";
 const UNSURE = "reviewer_unsure";
 const MODEL = /^~?[\w.-]+\/[\w.:-]+$/;
 
-/** The setting ai_review_code (the ai-reviewer module's) and the repos whose code_review entry is `mandatory`, as compiled. */
+/** The setting ai_review_code (the ai-reviewer module's) and the repos code review gates (a mandatory combo), as compiled. */
 export type ReviewCode = { mode?: string; mandatory?: string[] };
 /**
  * Whether code review owns a write instead of the AI reviewer (ai_review_code): only a code host's push or PR, and only when

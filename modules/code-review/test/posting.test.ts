@@ -26,7 +26,7 @@ test("the executor posts only this service's own record for its run; the poster 
   assert.deepEqual(calls.at(-1)[1].args, { repo: "acme/x", pr: 3, head, phase: "skipped", reason: "budget_instance" });
 });
 
-test("the check job's spec is exactly the recipe's fields, base the merge base, a full review from it", async () => {
+test("the check job's spec is exactly the recipe's fields, base the merge base, a full review from it, rechecking the open findings", async () => {
   const { checkSpec } = await import("../service/src/adapters.ts");
   const s = { repo: "acme/x", number: 9, base: "b".repeat(40), head: "h".repeat(40), merge_base: "m".repeat(40), combo: { engine: "codex", model: "~a/b", effort: "high" },
     focus: null, incremental_from: null, full: true, previous: [{ id: "f1", path: "a", line: 1, title: "t" }], budget_usd: 1.5, ignore: ["*.lock"], max_nits: 3 };
@@ -36,6 +36,5 @@ test("the check job's spec is exactly the recipe's fields, base the merge base, 
   assert.equal(spec.incremental_from, spec.base);
   assert.equal(spec.budget_usd, "1.5000");
   assert.deepEqual(JSON.parse(spec.combo), { ...s.combo, ignore: ["*.lock"], max_nits: 3 });
-  assert.deepEqual(JSON.parse(spec.previous), { findings: [] });
-  assert.deepEqual(JSON.parse(checkSpec({ ...s, full: false, incremental_from: "i".repeat(40) }).previous).findings.length, 1);
+  assert.deepEqual(JSON.parse(spec.previous), { findings: s.previous });
 });

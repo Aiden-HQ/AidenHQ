@@ -39,13 +39,13 @@ export function githubSource(base: string, token: () => string, fetcher: typeof 
 /**
  * The check job's spec (module.yaml check_jobs.code-review; every field a string of its kind): base is the merge base, and a full
  * review's incremental_from is that base too; the repo's ignore globs and max_nits ride in the combo; the previous findings are
- * those the recipe rechecks.
+ * those the recipe rechecks (and the finders take as already reported), full reviews included.
  */
 export function checkSpec(s: ReviewSpec): Record<string, string> {
   return {
     base: s.merge_base, incremental_from: s.incremental_from ?? s.merge_base, pr: String(s.number),
     combo: JSON.stringify({ ...s.combo, ignore: s.ignore, max_nits: s.max_nits }), focus: s.focus ?? "",
-    budget_usd: Math.max(0.0001, s.budget_usd).toFixed(4), previous: JSON.stringify({ findings: s.full ? [] : s.previous }),
+    budget_usd: Math.max(0.0001, s.budget_usd).toFixed(4), previous: JSON.stringify({ findings: s.previous }),
   };
 }
 

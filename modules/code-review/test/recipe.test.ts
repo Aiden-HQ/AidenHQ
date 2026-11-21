@@ -187,6 +187,24 @@ test("a review: earlier findings are fixed only where the change touched them, a
   assert.deepEqual((await review({ spec: spec({ incremental_from: C, previous, combo: one }), ...box({ head: steer, base, from }), run })).fixed, []);
 });
 
+test("a review: a gating finding is rechecked in a full review too, wherever it is; a finding that restates an open one isn't reported again", async () => {
+  const base = { "a.js": "1\n" };
+  const head = { "a.js": "1\nlock()\nwork()\n" };
+  const ids = ["5", "6"].map((c) => c.repeat(16));
+  const previous = JSON.stringify({ findings: [{ id: ids[0], path: "a.js", line: 3, title: "unlocked work", why: "w", evidence: "work()", gating: true }, { id: ids[1], path: "a.js", line: 2, title: "advice" }] });
+  let asked = "", told = "";
+  const run = async (engine, o) => {
+    if (o.prompt.startsWith("These findings")) return (asked = o.prompt), { read: true, calls: [{ tool: "read_file", path: `${o.root}/a.js` }], message: JSON.stringify({ fixed: [ids[0]], still: [] }) };
+    told = o.prompt;
+    return { read: true, calls: [{ tool: "diff" }], message: JSON.stringify({ findings: [F({ path: "a.js", line: 2, title: "Lock is never released", same_as: ids[1] })] }) };
+  };
+  const r = await review({ spec: spec({ previous, combo: combo({ effort: "low" }) }), ...box({ head, base }), run });
+  assert.match(told, /already reported on this pull request/);
+  assert.deepEqual(r.findings, [], "restated, so not reported again");
+  assert.deepEqual(r.fixed, [ids[0]], "the gating one is rechecked in a full review; the advice one isn't");
+  assert.ok(asked.includes("work()") && !asked.includes(ids[1]));
+});
+
 test("a review: the PR's .gitattributes can't hide code, and generated paths it changes since its base are gaps", async () => {
   const base = { "a.js": "1\n", "dist/app.js": "old\n" };
   // The PR marks its code binary and changes a bundled file in an earlier push; the incremental diff only touches a.js again.

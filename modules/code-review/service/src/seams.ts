@@ -18,7 +18,7 @@ export type Review = {
   cost_usd: number; stale_guidance: string[];
   /** The run's model token's tokens, stamped by the kernel from the gateway's ledger (the result as read back; never posted). */
   tokens?: { input: number; cached: number; output: number };
-  /** Earlier findings (the last posted review's, by id) a recheck found gone at this head: their threads are resolved. */
+  /** Earlier findings (the PR's open ones, by id) a recheck found gone at this head: their threads are resolved. */
   fixed?: string[];
 };
 
@@ -61,8 +61,9 @@ export type ReviewSpec = {
   /** The merge base of the PR's base and head: what a full review diffs against. */
   merge_base: string;
   focus: string | null; incremental_from: string | null; full: boolean;
-  /** The PR's still-open findings, rechecked at this head (an incremental review's batch's first run). */
-  previous: { id: string; path: string; line: number; title: string }[];
+  /** The PR's still-open findings, rechecked at this head and given to the finders as already reported (the batch's first
+   * mandatory run, else its first). `gating`: an important one a mandatory run found, rechecked whatever the change touched. */
+  previous: { id: string; path: string; line: number; title: string; why?: string; evidence?: string; gating?: boolean }[];
   /** The most the run may spend (its run_usd): the cap on its box's model token. */
   budget_usd: number; ignore: string[]; max_nits: number;
 };
