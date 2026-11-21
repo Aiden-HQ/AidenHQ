@@ -291,24 +291,33 @@ const raw = (host, port) => new Promise((done) => {
 // ErrorResponse or NoticeResponse). A truncated header, a frame whose length runs past what arrived, or a malformed body is
 // not identification: a half-answer must not exempt a port. No credentials are sent: the handshake is dropped at the
 // server's first answer. A server that offers SSL (\"S\") is not identified: the port may be HTTPS, so it stays closed.
-// One complete frame, validated against its own type, or nothing.
+// "postgres" identifies the socket, "invalid" is a definitive no (stop reading), "" needs more bytes. One complete frame,
+// validated against its own type, or nothing.
 const pgFrame = (b) => {
   if (b.length < 5) return "";
   const type = String.fromCharCode(b[0]), len = b.readUInt32BE(1);
-  if (len < 4 || len > 1 << 20 || !"REN".includes(type)) return "";
+  if (len < 4 || len > 1 << 20 || !"REN".includes(type)) return "invalid";
   if (b.length < 1 + len) return ""; // the frame has not all arrived
   const body = b.subarray(5, 1 + len);
-  // AuthenticationRequest carries an int32 authentication code; ErrorResponse and NoticeResponse carry null-terminated
-  // fields, each starting with a type byte and ending with the single zero-length terminator field.
-  if (type === "R") return body.length >= 4 ? "postgres" : "";
-  if (!body.length || body[body.length - 1] !== 0) return "";
+  // AuthenticationRequest carries an int32 code and the payload that code requires: MD5 a four-byte salt, SASL a
+  // null-terminated mechanism list, the rest none. Codes PostgreSQL no longer sends are not identification.
+  if (type === "R") {
+    if (body.length < 4) return "invalid";
+    const code = body.readUInt32BE(0), rest = body.length - 4;
+    if (code === 5) return rest === 4 ? "postgres" : "invalid";
+    if (code === 10) return rest >= 2 && body[body.length - 1] === 0 ? "postgres" : "invalid";
+    return [0, 3, 7, 8, 9, 11, 12].includes(code) ? "postgres" : "invalid";
+  }
+  // ErrorResponse and NoticeResponse carry null-terminated fields, each starting with a type byte and ending with the
+  // single zero-length terminator field.
+  if (!body.length || body[body.length - 1] !== 0) return "invalid";
   for (let i = 0; i < body.length;) {
-    if (body[i] === 0) return i === body.length - 1 ? "postgres" : "";
+    if (body[i] === 0) return i === body.length - 1 ? "postgres" : "invalid";
     const z = body.indexOf(0, i + 1);
-    if (z < 0) return ""; // a field with no terminator
+    if (z < 0) return "invalid"; // a field with no terminator
     i = z + 1;
   }
-  return "";
+  return "invalid";
 };
 const postgres = (host, port) => new Promise((done) => {
   let stage = 0, got = Buffer.alloc(0);
@@ -326,10 +335,14 @@ const postgres = (host, port) => new Promise((done) => {
       const head = Buffer.alloc(8); head.writeUInt32BE(8 + user.length, 0); head.writeUInt32BE(196608, 4);
       s.write(Buffer.concat([head, user])); // a startup message, protocol 3.0
     }
-    if (stage === 1) { const r = pgFrame(got); if (r) end(r); }
+    if (stage === 1) {
+      const r = pgFrame(got);
+      if (r) return end(r === "postgres" ? r : ""); // an invalid frame is a no: stop reading at once
+      if (got.length > 1 << 20) return end(""); // still incomplete, and past any frame a header may declare
+    }
   });
   s.on("timeout", () => end(""));
-  s.on("end", () => end(stage === 1 ? pgFrame(got) : ""));
+  s.on("end", () => end(stage === 1 && pgFrame(got) === "postgres" ? "postgres" : ""));
   s.on("error", () => end(""));
 });
 // A multiplexer can serve PostgreSQL and HTTPS on one port: the plaintext probes never see that HTTP, so a socket identified as
