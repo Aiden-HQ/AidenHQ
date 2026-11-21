@@ -39,7 +39,7 @@ are fine; `AppsCpuStarved` fires only when deployed apps are starved. Network co
 namespace's (no host networking); disk, memory, CPU, pressure and OOM kills are the host's.
 
 Images (pinned by digest in each folder's Dockerfile; Dependabot bumps them; release dates per `scripts/supply-chain/best-version.ts`):
-`prom/prometheus:v3.16.0` (2026-11-05), `prom/node-exporter:v1.12.1` (2026-07-14), `prom/alertmanager:v0.35.0` (2026-11-09),
+`prom/prometheus:v3.16.0` (2026-11-05), `prom/node-exporter:v1.13.1` (2026-11-19), `prom/alertmanager:v0.35.0` (2026-11-09),
 `grafana/grafana:13.3.1` (release date not recorded here), `ghcr.io/google/cadvisor:v0.60.6` (GitHub release 2026-09-18),
 `grafana/mcp-grafana:2.3.0` (2026-11-10).
 
