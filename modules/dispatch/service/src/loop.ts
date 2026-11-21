@@ -21,7 +21,6 @@ CREATE TABLE IF NOT EXISTS greeted (task TEXT PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS summarized (parent TEXT PRIMARY KEY, batch INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS stopped (job TEXT PRIMARY KEY, why TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS escalated (task TEXT PRIMARY KEY, episode TEXT NOT NULL, card TEXT NOT NULL DEFAULT '');
-CREATE TABLE IF NOT EXISTS platform_blocked (task TEXT PRIMARY KEY, reason TEXT NOT NULL, at INTEGER NOT NULL);
 DROP TABLE IF EXISTS jobs; DROP TABLE IF EXISTS starting; DROP TABLE IF EXISTS ended; DROP TABLE IF EXISTS sessions;`;
 // A job's end states (kernel jobs.ts); any other state is still live.
 const ENDED = new Set(["done", "failed", "cancelled", "timeout", "lost"]);
@@ -72,24 +71,6 @@ type Log = (msg: string, f?: Record<string, unknown>) => void;
  * is a new one.
  */
 const blockedEpisode = (task: Issue) => `blocked:${(task.blockedBy ?? []).filter((b) => !CLOSED.has(b.status)).map((b) => b.id).sort().join(",")}`;
-
-/**
- * The GitHub code host's fixed rule code for a change only the platform line may publish (modules/github/service/src/plan.ts
- * `PLATFORM_ONLY`): a product PR that changes `.github/`, or a bare product push. Retrying cannot fix it — the task's
- * provenance decides the role (kernel admission.ts) — so a run ending on it blocks its task here instead of drawing another.
- * Matched on the kernel's own facts together — the code, the kind asked for and the module whose kind it is — never on the
- * refusal's words: a code an executor made up blocks nothing, the module alone is too broad (another of its kinds could return
- * the same code), and every other refusal keeps today's course.
- */
-const PLATFORM_ONLY = "platform-only";
-/** The module that owns `github.pr`/`github.push` (its module.yaml kinds): the only source a platform-only block answers. */
-const PLATFORM_SOURCE = "github";
-/** The publish kinds that rule refuses: a product PR that changes `.github/`, and a bare product push. */
-const PLATFORM_KINDS = new Set(["github.pr", "github.push"]);
-const platformOnly = (v: JobView) => v.refusedCode === PLATFORM_ONLY && v.refusedSource === PLATFORM_SOURCE && PLATFORM_KINDS.has(String(v.refusedKind ?? ""));
-/** What a run that ended on that refusal says once, on its task: the refusal, and that it is the task's last run until someone moves it. */
-const blockedNote = (why: string) =>
-  `**Blocked, and not retried:** ${why}\n\nThis task draws no further runs until a person or another task changes it: only the platform line may publish that change.`;
 
 /** A kernel answer that retrying never changes: a refusal (4xx, except 429's "busy") or an agent the kernel holds no key for. */
 const permanent = (e: unknown): e is KernelError => e instanceof KernelError && ((e.status >= 400 && e.status < 500 && e.status !== 429) || /no-agent-key/.test(e.message));
@@ -163,12 +144,8 @@ export function createDispatch({ kernel, db, owner, log = () => {}, now = Date.n
     const job = v.id;
     // A run that ended on a refused write says so on its task; its asker (told below) decides. The task's status is left as it
     // is: Paperclip takes "blocked" only with the tasks that block it, and a refusal is not another task.
-    // The platform line's refusal is the exception, recorded and said in `follow` where the run ends: no job without that role
-    // may publish the change, so the task is blocked once (whatever filed it) and `handle` drops its wakes until a person or
-    // another task changes it. Its status is never set. Other refusals (a moved head, red checks, a namespace) stay the agent's.
-    const platform = platformOnly(v);
     if (!agentMade(task)) return;
-    if (!platform && v.refused && task.status !== "blocked" && task.parentId) await kernel.post(job, { kind: "notice", body: `**Blocked:** ${v.refused}` });
+    if (v.refused && task.status !== "blocked" && task.parentId) await kernel.post(job, { kind: "notice", body: `**Blocked:** ${v.refused}` });
     if (task.status === "blocked" || v.refused) {
       const episode = blockedEpisode(task);
       const reason = fence("AGENT", (v.refused ?? said ?? stopped ?? "its run ended without saying why.").slice(0, 600));
@@ -242,24 +219,7 @@ export function createDispatch({ kernel, db, owner, log = () => {}, now = Date.n
           }
         }
         const o = outcome({ ...v, stopped });
-        // A run that ended on the github module's platform-line refusal leaves its task blocked, once: no job without that
-        // role may publish the change, so the next run would end the same way. Its words ride the run's own outcome post — a
-        // job posts one notice, so a second `notice` here would be dropped — and the record follows them, so a post that fails
-        // is retried with its words still ahead of it. `handle` drops the task's wakes until a person, or the task that asked
-        // for this one, re-scopes it. Every other refusal (a moved head, red checks, a namespace) stays the agent's to fix.
-        // A later refusal (a run that started before the block, or one a way out let through that ended the same way) says its
-        // words again but is not a second block; it moves the block's date forward, so a word that came between the two does not
-        // clear a refusal it predates.
-        const platform = platformOnly(v);
-        const blocked = platform && !q("SELECT 1 FROM platform_blocked WHERE task = ?").get(v.task);
-        const block = blocked ? blockedNote(v.refused!) : undefined;
-        if (o && block) await kernel.post(v.id, { ...o, body: `${o.body}\n\n${block}` });
-        else if (o) await kernel.post(v.id, o);
-        else if (block) await kernel.post(v.id, { kind: "notice", body: block });
-        // Dated when the run ended (the latest moment it could not publish): only a word that comes after it is news the refusal
-        // was not made under. One the run took as live input is older than this, so it settles nothing — the run already tried
-        // after it and still could not publish — and a later one wakes the task, finds the block dated before it, and clears it.
-        if (platform) q("INSERT INTO platform_blocked (task, reason, at) VALUES (?, ?, ?) ON CONFLICT (task) DO UPDATE SET reason = excluded.reason, at = excluded.at").run(v.task, v.refused!.slice(0, 1000), v.ended ?? now());
+        if (o) await kernel.post(v.id, o);
         const task = await kernel.task(v.task);
         if (!CLOSED.has(String(task.status))) await report(task, v, o?.kind === "notice" ? o.body : undefined, o?.body);
         await kernel.ack(v.id);
@@ -297,34 +257,6 @@ export function createDispatch({ kernel, db, owner, log = () => {}, now = Date.n
     const dir = (tick.dir ??= await kernel.directory());
     const agents = tick.agents;
     for (const id of new Set([task.assigneeAgentId, task.createdByAgentId, ...comments.map((c) => c.authorAgentId)])) if (id && !agents.has(id)) { const a = await kernel.agent(id); if (a) agents.set(id, a); }
-
-    // A task a run left on the platform line's refusal draws no run until the change it needs is established. Three things
-    // establish one, each attributed to who said it: the owner's own comment newer than the refusal; a comment by the task that
-    // asked for this one (its asker) or a fleet overseer — the "another task" that may re-scope the work — and the task being
-    // closed (nothing is left to run). The blocked assignee's own words settle nothing: it cannot publish that change, and its
-    // comment would only spend another run on the same refusal. Neither does an unrelated agent's comment, or a status or holder
-    // that merely looks different: those fields say what the task is now, never who moved them, so a person or the task that
-    // delegated it settles it instead.
-    const blocked = q("SELECT reason, at FROM platform_blocked WHERE task = ?").get(task.id) as { reason: string; at: number } | undefined;
-    if (blocked) {
-      const clearing = comments.some((c) => {
-        if (c.deletedAt) return false; // a deleted (or hidden) comment is no one's word any more
-        // Strictly after the run's end, where the block is dated: a word the run already had is not news it could not publish under.
-        if (Date.parse(String(c.createdAt ?? "")) <= blocked.at) return false;
-        const who = speaker(c, task, dir);
-        // "agent" is the asker's words on a task it filed, or a fleet overseer's; "ours" is the blocked assignee's own.
-        return who === "owner" || who === "agent";
-      });
-      // Still no way out and still open: the block stands and this wake draws nothing. The holder is read now, not when the
-      // run ended, so a wake for an agent the task has since left says so rather than implying the block stopped it.
-      if (!clearing && !CLOSED.has(String(task.status))) {
-        const stale = Boolean(task.assigneeAgentId) && w.agent !== task.assigneeAgentId;
-        await kernel.drop(w.key, stale ? `blocked: the task is no longer ${w.agent}'s to run` : `blocked: ${blocked.reason}`);
-        log("wake dropped: the task waits on the platform line", { task: task.identifier, wake: w.key, status: task.status, stale });
-        return;
-      }
-      q("DELETE FROM platform_blocked WHERE task = ?").run(task.id);
-    }
 
     if (/^routine(:|$)/.test(w.cause) && (await routines.coalesce(task))) return kernel.drop(w.key, "folded into an earlier run of its routine");
     if (w.cause === "comment") {

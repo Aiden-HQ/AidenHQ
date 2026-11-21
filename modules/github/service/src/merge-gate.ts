@@ -1,8 +1,8 @@
 // The code host's merge gate: whether an approved merge record's PR merges now, from GitHub's view of it. One decision per PR
 // (`decide`); merges.ts polls, merges and reports. A PR merges only when it is open on the default branch, at the head the
 // record bound (only our own repos: agents org and product; the approved record is the review), every named
-// check is green on that head, GitHub can merge it, the default branch is green (or this PR already holds its red tip: the fix
-// must land) and, where required, the reviewer-eval receipt verifies (merges.ts asks evalgate.ts last). Anything else waits (with no
+// check is green on that head, GitHub can merge it and the default branch isn't red (or this PR already holds its red tip: the
+// fix must land). CI still running on the default branch is no wait: the PR's own checks proved it. Anything else waits (with no
 // time limit: merges.ts) or fails with the reason: nothing here updates, rebases, retargets,
 // re-runs or forces. A moved head, a moved base (behind, conflicts) or a red check goes back to the PR's own path, which asks
 // for a new merge at its new head. Missing evidence (no checks, a truncated page of checks, the base's aggregate gate
@@ -91,14 +91,13 @@ export function withGate(data: Json) {
 }
 
 /**
- * The default branch's CI at its tip: "red", "pending" or "green" (no checks: green). A cancelled check never judged the commit
- * (a newer push superseded its run), and the aggregate gate check fails along with it, so neither makes the base red.
+ * Whether the default branch's CI at its tip has failed (no checks, or still running: not red). A cancelled check never judged
+ * the commit (a newer push superseded its run), and the aggregate gate check fails along with it, so neither makes the base red.
  */
-function baseCi(rollup: Json) {
+function baseRed(rollup: Json) {
   const named = namedChecks(rollup);
   const cancelled = named.some((c) => c.status === "CANCELLED");
-  if (named.some((c) => !c.ok && !c.pending && c.status !== "CANCELLED" && !(cancelled && c.name === GATE_CHECK))) return "red";
-  return named.some((c) => c.pending) ? "pending" : "green";
+  return named.some((c) => !c.ok && !c.pending && c.status !== "CANCELLED" && !(cancelled && c.name === GATE_CHECK));
 }
 
 /** The merge method: squash, then merge commit, then rebase, as the repository allows. */
@@ -145,11 +144,9 @@ export function decide(data: Json, head: string, { uiReview, designAdvisory }: {
     case "UNSTABLE": { // only an advisory context isn't green: every named one is, above
       // A red default branch takes no merges on top, except a PR that already holds its tip: its own green checks prove the tree
       // after the merge, so the fix for a red base can land.
-      // A base that never ran CI (an app repo whose CI runs on PRs only) has nothing to judge: green. The tip is in the reason, so
-      // each new tip's CI gets its own wait.
-      const base = baseCi(pr.baseRef?.target?.statusCheckRollup), tip = String(pr.baseRef?.target?.oid ?? "").slice(0, 12);
-      if (base === "pending") return { do: "wait", why: `CI is running on \`${def}\` at \`${tip}\`` };
-      if (base === "red" && pr.baseRef?.compare?.behindBy !== 0) return { do: "wait", why: `\`${def}\` is red at \`${tip}\`: merged once it is green again` };
+      // The tip is in the reason, so each new tip gets its own wait.
+      const tip = String(pr.baseRef?.target?.oid ?? "").slice(0, 12);
+      if (baseRed(pr.baseRef?.target?.statusCheckRollup) && pr.baseRef?.compare?.behindBy !== 0) return { do: "wait", why: `\`${def}\` is red at \`${tip}\`: merged once it is green again` };
       return { do: "merge" };
     }
     case "DIRTY":

@@ -9,10 +9,10 @@
 // `plan` is these rules in executor@1's shape (kernel/sdk/src/executor.ts) for the github kinds, with the targets the kernel
 // revalidates. codehost-local (the org `local`, repos on this server) tiers through these same rules: it only adds `local-merge`.
 
-interface Part { tier: 0 | 1 | 2; rule: string; reason: string; panel?: boolean; reject?: boolean; code?: string }
+interface Part { tier: 0 | 1 | 2; rule: string; reason: string; panel?: boolean; reject?: boolean }
 interface Check { ok?: boolean; pending?: boolean; skipped?: boolean }
 interface Branch { repo: string; branch: string; files?: string[]; empty?: boolean; defaultBranch?: string; deployBranch?: string; ciTemplate?: boolean; sha?: string; base?: string }
-interface Pr { repo: string; number?: number; files?: string[]; headMatches?: boolean; checks: Check[]; ciTemplate?: boolean; sensitive?: boolean; ownHead?: boolean; platformHead?: boolean; pushedBy?: string; dependabot?: boolean; head?: string; base?: string }
+interface Pr { repo: string; number?: number; files?: string[]; headMatches?: boolean; checks: Check[]; ciTemplate?: boolean; sensitive?: boolean; ownHead?: boolean; dependabot?: boolean; head?: string; base?: string }
 interface State {
   agentsOrgs?: string | string[];
   agentsOrg?: string;
@@ -22,7 +22,6 @@ interface State {
   maintained?: string[];
   requester?: { platform?: boolean };
   workspace?: string;
-  task?: string;
   branches?: Branch[];
   prs?: Pr[];
   repo?: string;
@@ -33,15 +32,6 @@ const T = (tier: 0 | 1 | 2, rule: string, reason: string): Part => ({ tier, rule
 /** Authority-expanding: the reviewer and a second reviewer on another model family must both approve. */
 const PANEL = (rule: string, reason: string): Part => ({ tier: 1, rule, reason, panel: true });
 const REJECT = (rule: string, reason: string): Part => ({ tier: 2, rule, reason, reject: true });
-/**
- * The platform line's refusals: a product PR that changes `.github/`, and a bare product push. No job without the
- * platform-engineer role may fix one by retrying — the task's provenance decides the role (kernel admission.ts) — so both
- * carry one fixed code (`PLATFORM_ONLY`) beside their own rule name. A caller matches the code, never the message's prose, to
- * record the refusal on the task instead of drawing another run that ends the same way. Widening who may publish is the
- * owner's call, never a retry's.
- */
-export const PLATFORM_ONLY = "platform-only";
-const PLATFORM = (rule: string, reason: string): Part => ({ tier: 2, rule, reason, reject: true, code: PLATFORM_ONLY });
 const same = (a: unknown, b: unknown) => String(a ?? "").toLowerCase() === String(b ?? "").toLowerCase();
 const orgOf = (repo: unknown) => String(repo).split("/")[0];
 const GITHUB = /(^|\/)\.github\//;
@@ -80,12 +70,10 @@ function publishParts(action: string, b: Branch, s: State): Part[] {
   const namespace = () => REJECT("branch-namespace", `\`${b.branch}\` isn't this task's branch: name it \`agent/${s.workspace}/<topic>\` and publish again`);
   if (same(b.repo, s.productRepo)) {
     if (b.empty || b.branch === b.defaultBranch) return [REJECT("product-default-branch", `\`${b.branch}\` is the product repo's default branch: publish a branch and open a PR`)];
-    // A PR is a proposal: any job that may file one (an Engineer's) opens it, on any task, and may ask to merge it
-    // (productMergePart). A bare branch push, or a PR that changes `.github/`, stays the platform line's.
-    const workflow = b.files.find((f) => GITHUB.test(f));
-    if (!s.requester?.platform && (action !== "pr" || workflow)) return [PLATFORM(action === "pr" ? "product-pr-workflow" : "product-push", `only a job holding the platform-engineer role (a task the owner, the Agent Architect or the Fleet Steward filed) ${action === "pr" ? `opens a product PR that changes ${workflow}` : "pushes a branch to the product repo without a PR"}; file this change on a task the owner, the Agent Architect or the Fleet Steward filed`)];
+    // A PR or a branch is a proposal: any job that may file one opens it, on any task, and may ask to merge it
+    // (productMergePart). The merge waits for ci-required and the mandatory code review on GitHub.
     if (foreign) return [namespace()];
-    return [T(1, action === "pr" ? "product-pr" : "product-push-branch", `${action === "pr" ? "a PR" : "a branch push"} to the product repo${s.requester?.platform ? " from the Platform Engineer's line" : ", not from the Platform Engineer's line"}`)];
+    return [T(1, action === "pr" ? "product-pr" : "product-push-branch", `${action === "pr" ? "a PR" : "a branch push"} to the product repo`)];
   }
   const workflow = b.files.find((f) => GITHUB.test(f));
   const parts: Part[] = [];
@@ -108,13 +96,11 @@ function publishParts(action: string, b: Branch, s: State): Part[] {
 /**
  * close: prs [{ repo, dependabot? }]. Tier 0 in the agents org and on a maintained repo (reversible, no code changes); the
  * instance repo's PRs are the owner's. On the product repo (listed or not) only a Dependabot PR (its author verified as
- * dependabot[bot] from the GitHub API by the runner, never from text) may be closed, by the Platform Engineer's line, at
- * Tier 0 (owner, 2026-11-13): closing changes no code, the reason is posted on the PR, and reopening it undoes it.
+ * dependabot[bot] from the GitHub API by the runner, never from text) may be closed, at Tier 0 (owner, 2026-11-13): closing changes no code, the reason is posted on the PR, and reopening it undoes it.
  */
 function closePart(p: Pr, s: State) {
   if (same(p.repo, s.productRepo)) {
     if (p.dependabot !== true) return REJECT("core-repo-close", `${p.repo} is the product repo: only its Dependabot PRs may be closed`);
-    if (!s.requester?.platform) return REJECT("product-close-requester", "only the Platform Engineer's line may close the product repo's Dependabot PRs");
     return T(0, "product-dependabot-close", "closing a Dependabot PR of the product repo is reversible (reopen) and changes no code");
   }
   if (same(p.repo, s.instanceRepo)) return REJECT("core-repo-close", `${p.repo} is the instance repo: its PRs are the owner's`);
@@ -178,7 +164,7 @@ function mergeParts(p: Pr, s: State): Part[] {
   const ref = `${p.repo}#${p.number ?? "?"}`;
   // The instance repo is refused before anything reads its files: it changes only through apply, whatever it touches.
   if (same(p.repo, s.instanceRepo)) return [REJECT("core-repo-merge", `${ref} is the instance repo: it changes only through apply`)];
-  if (same(p.repo, s.productRepo)) return [productMergePart(p, ref, s)];
+  if (same(p.repo, s.productRepo)) return [productMergePart(p, ref)];
   if (!Array.isArray(p.files)) return [REJECT("unknown-files", `couldn't list every file ${ref} changes; try again`)];
   // A maintained repo outside the agents org merges like an agents-org repo, under its own rule names (the reviewer sees
   // where it is). Anywhere else the code host only opens PRs: the merge queue refuses it too (merges.ts).
@@ -207,26 +193,17 @@ function mergeParts(p: Pr, s: State): Part[] {
 }
 
 /**
- * A product PR's merge (owner, 2026-11-13): the reviewer's when its head is one the runner pushed (no fork, no one else's
- * push), it is the card's head. The Platform Engineer's line asks for any such PR; any other
- * Engineer job only for a PR whose head its own task pushed (the task the code host recorded with that head, `pushedBy`)
- * and that changes nothing under `.github/`. Still running is not red: a reviewer-approved merge runs the strict queue, which
- * merges only once every named check is green on that exact head. Never Tier 0: the product reaches every instance through
- * the pin. Its files are the platform check's.
+ * A product PR's merge (owner, 2026-11-13; any requester since 2026-11-22: every product PR gets ci-required and the
+ * mandatory code review before GitHub merges it, and agents are trusted). Still running is not red: a reviewer-approved merge
+ * runs the strict queue, which merges only once every named check is green on that exact head. Never Tier 0: the product
+ * reaches every instance through the pin. Its files are the platform check's.
  */
-function productMergePart(p: Pr, ref: string, s: State) {
+function productMergePart(p: Pr, ref: string) {
   if (!Array.isArray(p.files)) return REJECT("unknown-files", `couldn't list every file ${ref} changes; try again`);
-  if (!s.requester?.platform) {
-    const workflow = p.files.find((f) => GITHUB.test(f));
-    if (workflow) return REJECT("product-merge-workflow", `${ref} changes ${workflow}: only the Platform Engineer's line merges a product PR that changes \`.github/\``);
-    if (!p.ownHead || !s.task || p.pushedBy !== s.task) return REJECT("product-merge-requester", `${ref}: its head wasn't pushed by this task; only the Platform Engineer's line merges another requester's product PR`);
-  }
   const friction = mergeFriction(p, ref);
   if (friction) return friction;
   const gates = `On its head: ${checkCounts(p.checks)}. Code merges it only at that head, once every named check has passed (skipped counts as passed)`;
-  // Who pushed the head (recorded at the push): only a head the platform line pushed is its own.
-  if (p.ownHead && p.platformHead) return T(1, "product-merge", `${ref}: a product PR from the Platform Engineer's line. ${gates}`);
-  if (p.ownHead) return T(1, "product-merge-engineer-head", `${ref}: its head was pushed by an Engineer job that is NOT the Platform Engineer's line (a PR, a proposal). ${gates}`);
+  if (p.ownHead) return T(1, "product-merge", `${ref}: a product PR whose head the code host pushed. ${gates}`);
   return T(1, "product-merge-foreign-head", `${ref}: its head isn't a commit the runner pushed to a branch of the product repo (the reviewer reads that exact head)`);
 }
 
@@ -246,7 +223,7 @@ export function plan({ kind, args }: { kind: unknown; args?: unknown }, state: S
   const parts = planParts(action, state).flat();
   if (!parts.length) throw Object.assign(new Error("nothing recognised in the request"), { rule: "unrecognised" });
   const refused = parts.find((p) => p.reject);
-  if (refused) throw Object.assign(new Error(refused.reason), { rule: refused.rule, ...(refused.code ? { code: refused.code } : {}) });
+  if (refused) throw Object.assign(new Error(refused.reason), { rule: refused.rule });
   const top = parts.reduce((a, b) => (rank(b) > rank(a) ? b : a));
   const targets = action === "merge" || action === "close"
     ? Object.fromEntries((state.prs ?? []).map((p) => [`${p.repo}#${p.number}`, { repo: p.repo, ref: isLocal(p.repo) ? `change/${p.number}` : `pull/${p.number}`, commit: p.head ?? null, base_sha: p.base ?? null }]))

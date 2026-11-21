@@ -29,7 +29,6 @@ import { promisify } from "node:util";
 import { serveExecutor, type Executor, type PlanRequest } from "./aidenhq-sdk/executor.ts";
 import { CREDENTIAL_ARGS, disconnected, hasTrailer, identityEnv, inOrg, needOf, ownRepo, withFooter, withTrailer, type Gh } from "./git-auth.ts";
 import type { GitHubAccess } from "../../connections/github-mcp/src/client.ts";
-import { createEvalGate } from "./evalgate.ts";
 import { createMerges } from "./merges.ts";
 import type { ReviewGate } from "./review-gate.ts";
 import { createFlow } from "./flow.ts";
@@ -204,20 +203,8 @@ export function createService(o: Options) {
   const pushedHeads = (): string[] => (existsSync(pushed) ? JSON.parse(readFileSync(pushed, "utf8")) : []);
   const pushedKey = (repo: string, sha: string) => `${repo.toLowerCase()} ${sha}`;
   const notePushed = (repo: string, sha: string) => writeFileSync(pushed, JSON.stringify([...pushedHeads().slice(-4999), pushedKey(repo, sha)]));
-  // Who asked to publish each commit (the kernel's task and whether it was the Platform Engineer's line), noted once its push
-  // or PR has planned (execute carries no requester, and a plan comes before its push), and never reassigned: another task
-  // re-publishing a head, noted or already pushed without a note, doesn't take it. A product merge's head is a requester's
-  // own only when it noted it (plan.ts productMergePart).
   // Which task opened each PR this code host opened (pr-watch.ts notePrTask): the task's sibling PRs for the reviewer.
   const prTasks = (): Record<string, { task?: string; branch?: string }> => { try { return JSON.parse(readFileSync(join(o.cacheDir, "pr-tasks.json"), "utf8")); } catch { return {}; } };
-  const pushedByFile = join(o.cacheDir, "pushed-by.json");
-  const pushedBy = (): Record<string, { task: string; platform: boolean }> => (existsSync(pushedByFile) ? JSON.parse(readFileSync(pushedByFile, "utf8")) : {});
-  const notePushedBy = (shas: string[], who: { task: string; platform: boolean }) => {
-    const all = pushedBy();
-    const pushedAlready = pushedHeads().map((k) => k.split(" ").pop());
-    const fresh = shas.filter((sha) => !all[sha] && !pushedAlready.includes(sha));
-    if (fresh.length) writeFileSync(pushedByFile, JSON.stringify(Object.fromEntries([...Object.entries(all).slice(-(5000 - fresh.length)), ...fresh.map((sha) => [sha, who])])));
-  };
   const isPlatform = (requester?: { roles?: string[] }) => (requester?.roles ?? []).includes("platform-engineer");
 
   const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
@@ -228,9 +215,10 @@ export function createService(o: Options) {
    * The verified state plan.ts tiers a request on (its `s`) and the card's facts (target, sentence, the diff the reviewer
    * reads): read from the workspace, the cache and GitHub, never the args.
    */
-  async function stateFor(kind: string, a: any, requester?: { roles?: string[] }, task = "") {
-    // The Platform Engineer's line: a requester holding the platform-engineer role (the kernel's record of who asked, never the args).
-    const base = { agentsOrg: o.fleetOrg, allowedOrgs: o.allowedOrgs, instanceRepo: o.instanceRepo, productRepo: o.productRepo, maintained: o.maintained ?? [], requester: { platform: isPlatform(requester) }, task, workspace: String(a.workspace ?? ""), also: [] as string[] };
+  async function stateFor(kind: string, a: any, requester?: { roles?: string[] }) {
+    // The Platform Engineer's line: a requester holding the platform-engineer role (the kernel's record of who asked, never the
+    // args); it may push to any branch, others to their own task's (plan.ts branch-namespace).
+    const base = { agentsOrg: o.fleetOrg, allowedOrgs: o.allowedOrgs, instanceRepo: o.instanceRepo, productRepo: o.productRepo, maintained: o.maintained ?? [], requester: { platform: isPlatform(requester) }, workspace: String(a.workspace ?? ""), also: [] as string[] };
     if (kind.endsWith(".create_repo")) {
       const repo = slugOf(a.repo).slug;
       // Never a quiet switch to `local`: a repo for GitHub while GitHub is signed out is refused, saying so.
@@ -272,7 +260,7 @@ export function createService(o: Options) {
         prs.push({
           repo: s.slug, number: Number(p.number), head: pr.head?.sha, base: pr.base?.sha, headMatches: !p.head || p.head === pr.head?.sha,
           files, checks: await checksAt(s, pr.head?.sha),
-          ownHead: pushedHeads().includes(pushedKey(s.slug, String(pr.head?.sha))), pushedBy: pushedBy()[pr.head?.sha]?.task, platformHead: pushedBy()[pr.head?.sha]?.platform === true, dependabot: pr.user?.login === "dependabot[bot]",
+          ownHead: pushedHeads().includes(pushedKey(s.slug, String(pr.head?.sha))), dependabot: pr.user?.login === "dependabot[bot]",
         });
       }
       const urls = prs.map((p) => `https://github.com/${p.repo}/pull/${p.number}`).join(", ");
@@ -323,7 +311,7 @@ export function createService(o: Options) {
 
   const executor: Executor = {
     async plan(req: PlanRequest) {
-      const { state, facts, reads, changed, bases, own, task } = (await stateFor(req.kind, req.args ?? {}, req.requester, req.task)) as Awaited<ReturnType<typeof stateFor>> & { reads?: { name: string; read: () => Promise<string> }[]; changed?: Changed[]; bases?: Base[]; own?: Set<string>; task?: string };
+      const { state, facts, reads, changed, bases, own, task } = (await stateFor(req.kind, req.args ?? {}, req.requester)) as Awaited<ReturnType<typeof stateFor>> & { reads?: { name: string; read: () => Promise<string> }[]; changed?: Changed[]; bases?: Base[]; own?: Set<string>; task?: string };
       const planned = planRules({ kind: req.kind, args: req.args }, state, facts);
       // Who asked, by the request's exact kind and args (the revalidating plan carries the record's own args, as execute
       // does): a write held while GitHub is disconnected is re-checked as them, and its PR is signed with their name.
@@ -333,8 +321,6 @@ export function createService(o: Options) {
       // The task's other PRs already merged into these bases; a read that fails leaves them out, never the plan.
       const siblings = req.revalidate || !bases?.length ? [] : await readSiblings({ candidates: candidatesOf(prTasks(), task, own), bases, pr: async (repo: string, n: number) => api("GET", `/repos/${repo}/pulls/${n}`), git }).catch((e: Error) => (log("siblings unread", { err: String(e.message ?? e).slice(0, 200) }), []));
       const out = req.revalidate || (!reads?.length && !changed?.length && !sources && !siblings.length) ? planned : { ...planned, review: { ...(reads?.length || changed?.length ? { files: { ...(reads?.length ? await readFiles(reads) : { list: [], leftOut: [] }), ...(changed?.length ? { changed } : {}) } } : {}), ...(sources ? { sources } : {}), ...(siblings.length ? { siblings } : {}) } };
-      // Its commits were read from this task's workspace (stateFor), so the task is who asked to publish them.
-      if (/\.(push|pr)$/.test(req.kind) && req.task) notePushedBy((req.args?.only ?? []).map((b: any) => String(b.sha)), { task: req.task, platform: isPlatform(req.requester) });
       return out;
     },
     async execute(rec) {
@@ -494,7 +480,7 @@ export function createService(o: Options) {
    */
   async function stillApproved(r: Held): Promise<boolean> {
     if (!r.asker) return false;
-    const targets = await stateFor(r.kind, r.args ?? {}, r.asker.requester, r.asker.task)
+    const targets = await stateFor(r.kind, r.args ?? {}, r.asker.requester)
       .then(({ state, facts }) => planRules({ kind: r.kind, args: r.args }, state, facts).targets as Record<string, { commit?: string | null }>)
       .catch((e) => { if (disconnected(e)) throw e; return undefined; });
     if (!targets) return false;
@@ -517,14 +503,6 @@ export function createService(o: Options) {
     if (!r.ok) throw new Error(`the kernel's ${path.split("/").slice(0, 3).join("/")} answered ${r.status}: ${String(j?.error?.message ?? j?.error ?? "").slice(0, 200)}`);
     return j;
   }
-  // The product's PRs that bring the AI reviewer's own code merge only on a passing
-  // reviewer-eval receipt for their head (evalgate.ts; the eval is a kernel check job).
-  const evalGate = createEvalGate({
-    productRepo: o.productRepo, dir: join(o.cacheDir, "merges"), kernel, log,
-    fetch: async (repo, ref) => fetchRemote(slugOf(repo), ref),
-    git: (dir, args) => git(dir, args),
-    defaultBranch: async (repo) => defaultBranch(slugOf(repo).slug),
-  });
   // The design reviewer's tasks (design-review.ts): for a fleet-org PR's UI head when it opens, and for each head the merge
   // queue waits on for its verdict.
   const designReviews = createDesignReviews({ kernelUrl: o.kernelUrl, key: o.key, cacheDir: o.cacheDir, selfName: o.selfName || "the owner", gh: (m, p, b) => gh(m, p, b, { background: true }), log });
@@ -562,7 +540,6 @@ export function createService(o: Options) {
     dir: join(o.cacheDir, "merges"), gh: (method, path, body) => gh(method, path, body, { background: true }), connected: () => access.connected() && !o.holdMerges?.(),
     fleetOrg: o.fleetOrg, productRepo: o.productRepo, maintained: o.maintained,
     report, log, now: o.now, everyMs: o.mergeEveryMs,
-    evalGate: (repo, pr) => evalGate(repo, pr),
     reviewGate: o.reviewGate,
   });
   const keyed = (req: IncomingMessage) => {
@@ -669,7 +646,7 @@ export function createService(o: Options) {
     if (c.base === c.sha) return { landed: c.main, already: true };
     if (c.base !== c.main) throw fail(409, `the instance's ${c.def} moved on since this commit's base; it needs a rebase and a new approval`);
     // The official modules are the product's modules/: their reviewer code reaches this host only with the product pin, whose
-    // reviewer changes merged on a passing reviewer-eval receipt (evalgate.ts). An `aidenhq` marketplace pin an apply adds or
+    // reviewer changes merged on CI's reviewer eval (ci-required). An `aidenhq` marketplace pin an apply adds or
     // moves would bring reviewer code past that gate, so it never lands; dropping one (a pre-monorepo install) does. The kernel reads the pin structurally from both sides
     // (apply.ts officialMove) and names it; without it nothing lands.
     const pin = (x: any) => x === null || (x && typeof x.repo === "string" && SLUG.test(x.repo) && /^[0-9a-f]{40}$/.test(String(x.sha)));
@@ -823,7 +800,6 @@ export function createService(o: Options) {
   const train = o.productRepo && o.instanceRepo && slugOf(o.instanceRepo).org.toLowerCase() !== LOCAL_ORG ? createReleaseTrain({
     dir: join(o.cacheDir, "release"), productRepo: o.productRepo, instanceRepo: o.instanceRepo, windowMinutes: o.releaseWindowMinutes ?? 15, kernel, log, now: o.now,
     commit: trainCommit,
-    evalBump: (from, to) => evalGate.bump(from, to),
     github: {
       async tip(repo) {
         const s = slugOf(repo);

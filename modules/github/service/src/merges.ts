@@ -4,10 +4,9 @@
 //
 // One queue per repository: a poll merges at most one PR per repository, records in the order they were approved, so two merges
 // never race on a base. A PR merges only at the head the record bound (the merge call carries that sha, so GitHub refuses any
-// other), once the gate says so, the reviewer-eval gate (evalgate.ts) has a verified receipt where it requires one and, last, on a
-// repo code review gates, code review's verdict for that head is pass (review-gate.ts). A review wait has no time limit: it
-// resumes when the verdict passes, and ends only when the PR moves or closes. So does every other wait (running checks, a red
-// base, mergeability, GitHub's errors, a reviewer eval that couldn't run): waiting is never failing, and a PR fails only on a
+// other), once the gate says so and, last, on a repo code review gates, code review's verdict for that head is pass
+// (review-gate.ts). A review wait has no time limit: it resumes when the verdict passes, and ends only when the PR moves or
+// closes. So does every other wait (running checks, a red base, mergeability, GitHub's errors): waiting is never failing, and a PR fails only on a
 // terminal state (closed, head moved, red checks on the head, changes requested).
 // A UI head in the agents org that waits on its design review gets the UI Reviewer's task for it (design-review.ts), once per
 // head, beside its checks; with no verdict in time it is asked once more, then the design review is advisory for that head.
@@ -23,7 +22,6 @@ import type { ReviewGate } from "./review-gate.ts";
 type Gh = (method: string, path: string, body?: unknown) => Promise<{ status: number; body: any }>;
 /** `objects`: what the queue made, for the kernel's records (each merge commit; a merged PR stays whoever's it was). */
 type Outcome = { ok: boolean; text: string; objects?: string[] };
-export type EvalGate = (repo: string, pr: any) => Promise<undefined | { wait: string } | { stop: string }>;
 type Pr = { repo: string; number: number; head: string; url: string; status: string; note?: string; sha?: string; wait?: { key: string; since: string }; reviewAsked?: string; reviewAskedAgain?: string; reviewExpired?: string; checked?: string; unanswered?: boolean; /** Code review's verdict was bypassed (unreachable too long): recorded once the merge is confirmed. */ bypass?: string; fw?: { reason: string; since: string } };
 type Queue = { state: string; prs: Pr[]; said: string[]; startedAt: string; finishedAt?: string; outcome?: Outcome; reported?: boolean };
 
@@ -41,7 +39,6 @@ export function createMerges(d: {
   fleetOrg: string; productRepo?: string;
   /** maintainer_repos ("owner/name"): merged here as in the agents org, read when each PR is polled. */
   maintained?: string[];
-  evalGate: EvalGate;
   /** Code review's verdict for a PR head (undefined: may merge; wait: why not yet). */
   reviewGate: ReviewGate;
   /** Flow facts (flow.ts): CI done on a head, merges, and each wait with its reason. */
@@ -155,9 +152,6 @@ export function createMerges(d: {
       if (v.do === "fail") return fail(v.why);
       if (v.do === "wait") return wait(v.why);
       if (v.do !== "merge") return;
-      const gate = await d.evalGate(p.repo, data.repository.pullRequest);
-      if (gate && "stop" in gate) return fail(gate.stop);
-      if (gate) return wait("eval");
       const review = await d.reviewGate(p.repo, p.number, p.head);
       if (review && "bypass" in review) p.bypass = review.bypass;
       else delete p.bypass;

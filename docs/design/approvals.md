@@ -92,26 +92,26 @@ a change too large to read) goes back to the agent, never to the owner.
   - A capped Tier 0 write waits for the owner's tap without a review.
 
 Code refuses some requests before any review, with the reason to the agent: a request on a cancelled or done task; a product
-write from outside the Platform Engineer's line, or to a default branch; a push to the instance repo (it changes through apply);
+write to its default branch; a push to the instance repo (it changes through apply);
 a merge whose head moved or whose named checks are red or missing; unreadable files; content the reviewer already rejected, or a
 fourth rejected try; a close outside the agents org or of a product or instance PR (except a Dependabot PR on the product repo).
 
 **The Platform Engineer's line** (`requester.platform`): a job holding the `platform-engineer` role, which admission
 (`kernel/src/admission.ts`) freezes onto a job only on a task no agent filed, or one filed by an agent holding `architect` or
-`fleet-audit`. A product PR is a proposal: any Engineer job opens one (Tier 1) and may ask to merge it when its own task pushed
-the head (Tier 1, `product-merge-engineer-head`). Bare branch pushes, PRs that change `.github/`, and merges of another
-requester's head or of a `.github/` change on the product repo are this line's only.
+`fleet-audit`. It may push any branch; other jobs push only their own task's (`agent/<task>/…`). Any job may open a product PR,
+push a product branch, or ask to merge a product PR (Tier 1 each, owner 2026-11-22): every product PR waits for `ci-required`
+and the mandatory code review before it merges, and agents are trusted.
 
 Typical git assignments (`plan.ts`; read it for the full rules):
 
 | Request | Tier |
 |---|---|
 | Push or draft PR of an ordinary branch (`agent/<task>/...`) in the agents org; `.github/` exactly the product's CI template | 0 |
-| Close a PR in the agents org; the Platform line closing a product Dependabot PR; create_repo in an allowed org | 0 |
+| Close a PR in the agents org; closing a product Dependabot PR; create_repo in an allowed org | 0 |
 | Merge in the agents org: every named check green (or running, merged only once green) on the exact head, head pushed by the code host, no other `.github/` change, app not sensitive | 0 |
 | Same merge with a foreign head, other `.github/` change or sensitive app; any other `.github/` change; an empty repo's first push; push or PR outside the agents org; a change request on `local` | 1 |
 | Push to an agents-org repo's default or deploy branch | 1 + panel |
-| Product repo: PR, branch push (Platform line), or merge of a head the code host pushed with no red check | 1 (+ panel for paths the inventory marks) |
+| Product repo: PR, branch push, or merge of a head the code host pushed with no red check | 1 (+ panel for paths the inventory marks) |
 | Merge with no named checks, red checks or a moved head; the instance repo; outside the agents org; product default branch | refused |
 
 Fleet applies (`kernel.apply`, floor 1, planned by `apply-tier.ts`): a new trial agent, a handbook or memory change, a
@@ -222,20 +222,11 @@ it from the base branch, never from the change: a retirement merges to main firs
 or flips the case lands after it. The path inventory makes any change to the list the owner's (Tier 2). A retired case does
 not run in either version (`<case>.json`, the judge's `<case>.head.json`); every other case runs as before.
 
-**The eval-receipt gate** (`modules/github/service/src/evalgate.ts`, owner 2026-11-16). Reviewer code reaches the fleet only on
-a passing receipt. The reviewer's own code is the paths `REVIEWER_CODE` lists there (the single list; its files' git object ids
-are the reviewer's content, which decides when a passing receipt is reused). What is judged is always a product commit, by an earlier one:
-
-- a product PR that changes the reviewer's code: its head, judged by its base branch's tip; receipt for its head. When the
-  base moves without changing the judging content, the eval already run stands, and a new head (a rebase) with the reviewer
-  and judging content of one that passed is already covered;
-- the release train's bump of `product:` whose reviewer content differs: the new commit, judged by the pinned one; a passing
-  receipt for the same reviewer content from any head already covers it.
-
-The eval itself is a kernel check job (`POST /v1/checks`, run `eval`, in an agent computer): the kernel lays it out by the
-judging rules, applies the pass rule and signs a receipt bound to the head, the judging commit and the policy hash; the code
-host verifies it at the merge (`POST /v1/receipts/verify`). A running check waits, a transient error is asked again, a failed
-check or a receipt that doesn't hold stops the merge and wakes the agent with the failing cases.
+**The reviewer eval** (owner 2026-11-16; CI only since 2026-11-22). Reviewer code reaches the fleet only on a passing eval.
+The reviewer's own code is the paths `REVIEWER_CODE` lists (`modules/github/service/src/evalgate.ts`, the single list). CI's
+`reviewer-eval` job runs the eval on a same-repo PR or a push to main that touches one of them, and it is part of
+`ci-required`, so the PR merges only on its pass; a passing run is reused for the same content of every listed file. The code
+host runs no eval of its own: every product commit the release train pins already merged through it.
 
 - **What judges what.** The eval script comes from the base; every base case runs at its base version, including one the PR
   deletes; a case the PR adds runs as written; a case the PR changes runs twice (base version, and the PR's fixture held to
