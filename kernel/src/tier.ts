@@ -274,6 +274,8 @@ export const MAX_REJECTS = 5;
  * retry a reviewer without end.
  */
 export const AGENT_LIFTS = 1;
+/** Whether the agents' lifts (the delegator's or the chief of staff's) are spent on a target: only the owner moves it then. */
+export const liftsSpent = (held: number) => held >= MAX_REJECTS * (AGENT_LIFTS + 1);
 /** The key of what the reviewer read as the request: the chain and the agents' task comments (an unsure or a split lifts once it changes). */
 export const requestHash = (chain: string | undefined, comments?: string) => (chain ? createHash("sha256").update(comments ? `${chain}\n\n${comments}` : chain).digest("hex").slice(0, 32) : "");
 /** Panel splits (approve + reject) sent back to the agent on one target before the next goes to the owner (owner, 2026-11-20). */
@@ -357,7 +359,9 @@ export function priorDecisions(records: Prior[], action: string, also: string[] 
   // (null) fail closed: any owner rejection of the action on the task makes it theirs.
   const sameContent = (r: Prior) => (key !== undefined && recordKey(r) === key) || (typeof patches === "string" && recordPatches(r) === patches);
   const ownerNo = mine.some((r) => byOwner(r) && r.state === "rejected" && (patches === null || (sameContent(r) && !mine.some((y) => byOwner(y) && y.state !== "rejected" && sameContent(y) && String(y.decidedAt) > String(r.decidedAt)))));
-  return { ownerVeto: lastOwner?.state === "rejected" || ownerNo, same: sameOne ? sameOne.review || "no note" : undefined, rejects, splits, findings: judged.filter((r) => !r.answered).map((r) => r.review).filter(Boolean) as string[], ...(targets?.targets.length ? { scope: targets.label } : {}) };
+  // `held` too: the rejections that stand including the ones only an agent answered, which the park notice and the rejection
+  // note read to know when the agents' once-lift is spent (review-loop.ts).
+  return { ownerVeto: lastOwner?.state === "rejected" || ownerNo, same: sameOne ? sameOne.review || "no note" : undefined, rejects, held: agentHeld, splits, findings: judged.filter((r) => !r.answered).map((r) => r.review).filter(Boolean) as string[], ...(targets?.targets.length ? { scope: targets.label } : {}) };
 }
 
 /** What earlier decisions do to a request: the owner's veto (their card), a rejected change resent, a retry past the bound. */
@@ -365,7 +369,13 @@ export function priorPart(p: ReturnType<typeof priorDecisions> | undefined): Par
   if (!p) return undefined;
   if (p.ownerVeto) return T(2, "owner-veto", "the owner rejected this action on this task, and only their own yes lifts it");
   if (p.same !== undefined) return REJECT("rejected-content", `the AI reviewer already rejected exactly this request on this task, so it isn't reviewed again unchanged (its note: ${String(p.same).slice(0, 400)}). Change what it found and file the changed request, or report back to whoever asked why it can't change`);
-  if (p.rejects >= MAX_REJECTS) return REJECT("retries-exhausted", `parked: the AI reviewer rejected this action ${p.rejects} times on ${(p as { scope?: string }).scope ?? "this task"}, so it isn't reviewed again here until a decision on the task lifts it (whoever delegated the task, or the chief of staff, once; after that, only the owner). A different branch, PR or tool target of the task is reviewed on its own; report what it found to whoever asked for this work`);
+  if (p.rejects >= MAX_REJECTS) {
+    const scope = (p as { scope?: string }).scope ?? "this task";
+    // The agents' once-lift is spent at MAX_REJECTS * (AGENT_LIFTS + 1): saying "once; after that, only the owner" then offers
+    // a lift that no longer works (AidenHQ#1256).
+    if (liftsSpent(p.rejects)) return REJECT("retries-exhausted", `parked: the AI reviewer rejected this action ${p.rejects} times on ${scope}, so it isn't reviewed again here. The agents' lift is spent (whoever delegated the task, or the chief of staff, lifts a park once), so only the owner's own reply or yes moves it now. A different branch, PR or tool target of the task is reviewed on its own; report what it found to whoever asked for this work, or change the request`);
+    return REJECT("retries-exhausted", `parked: the AI reviewer rejected this action ${p.rejects} times on ${scope}, so it isn't reviewed again here until a decision on the task lifts it (whoever delegated the task, or the chief of staff, once; after that, only the owner). A different branch, PR or tool target of the task is reviewed on its own; report what it found to whoever asked for this work`);
+  }
   return undefined;
 }
 

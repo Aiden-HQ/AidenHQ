@@ -12,7 +12,7 @@ import { createWrites } from "../src/writes.ts";
 import { createReviewLoop } from "../src/review-loop.ts";
 import { createEscalate } from "../src/escalate.ts";
 import { createResolver } from "../src/net.ts";
-import { MAX_REJECTS, RETRY_CAP_MS } from "../src/tier.ts";
+import { AGENT_LIFTS, MAX_REJECTS, RETRY_CAP_MS, priorDecisions, priorPart, requestKey, requestTargets } from "../src/tier.ts";
 import { readBody, serve } from "./helpers.ts";
 import { judgeModels as reviewerModels, secondModels } from "../sdk/src/judge.ts";
 
@@ -322,6 +322,83 @@ test("the reviewer reads the task's comments under code's labels; a park lifts o
   await say("owner", "Yes, publish it.");
   assert.equal(await file(), true, "the owner's reply lifts it");
   assert.match(mod.seen.at(-1).request.comments, /the chief of staff \(aiden\), [^\n]+:\n> Decided: go on\.\n\nthe owner, [^\n]+:\n> Yes, publish it\.$/);
+});
+
+test("9 held rejections plus an agent answer stay unparked with the once-lift wording; 10 park and the refusal says the lift is spent", () => {
+  const REPO = "acme/aidenhq";
+  const at = (i) => `2026-11-20T${String(i).padStart(2, "0")}:00:00.000Z`;
+  const held = (n) => Array.from({ length: n }, (_, i) => ({
+    id: `k-${n}-${i}`, action: "pr", args: { only: [{ repo: REPO, branch: "b1", sha: String(i).padStart(40, "0") }] },
+    state: "rejected", decidedBy: "reviewer:~acme/model-a", decidedAt: at(i), reviewCode: null, review: `keep the shim out (${i})`, digest: `d-${n}-${i}`, answered: "agent",
+  }));
+  const next = { only: [{ repo: REPO, branch: "b1", sha: "f".repeat(40) }] };
+  const priorOf = (records) => priorDecisions(records, "pr", [], requestKey("pr", next), undefined, "chain", requestTargets("pr", next));
+  // Nine held rejections plus an agent answer: the agents' lift still stands, so the target is reviewed.
+  const nine = priorOf(held(9));
+  assert.deepEqual([nine.rejects, priorPart(nine)], [0, undefined]);
+  // The same answer at ten held rejections is a no-op: parked, and the refusal no longer offers a lift the agents have spent.
+  const refusal = priorPart(priorOf(held(10)));
+  assert.deepEqual([refusal?.rule, refusal?.reject], ["retries-exhausted", true]);
+  assert.match(refusal!.reason!, /The agents' lift is spent[^]*only the owner's own reply or yes moves it now[^]*report what it found[^]*change the request/);
+  assert.doesNotMatch(refusal!.reason!, /once; after that, only the owner/, "no offer of a lift that is already spent");
+  // The first park (5..9) still promises the agents' once-lift.
+  const first = priorPart(priorOf(held(5).map((r) => ({ ...r, answered: undefined }))));
+  assert.equal(first?.rule, "retries-exhausted");
+  assert.match(first!.reason!, /whoever delegated the task, or the chief of staff, once; after that, only the owner/);
+  assert.doesNotMatch(first!.reason!, /spent/);
+});
+
+test("a second park on the same target files a second delegator escalation, and says the agents' lift is spent", async (t) => {
+  const mod = await reviewer(t);
+  const comments = [];
+  const agents = { "ag-kai": { key: "kai", roles: [] }, "ag-ada": { key: "ada", roles: [] } };
+  const told = [], owner = [], keys = [];
+  const tasks = { "TASK-1": { id: "TASK-1", identifier: "WOR-1", status: "in_progress", parentId: "TASK-0" }, "TASK-0": { id: "TASK-0", identifier: "WOR-0", status: "blocked", assigneeAgentId: "a-boss" } };
+  const k = await side(t, db(), mod, { comments, delegator: "ag-kai", agents, escalate: (records) => {
+    const e = createEscalate({ db: records.db, issue: async (id) => tasks[id], asker: async () => ({ name: "Kai", key: "kai", roles: [] }), notice: (task, body) => told.push({ task, body }), owner: (n) => owner.push(n) });
+    return (task, key, text) => (keys.push(key), e.delegator(task, key, text));
+  } });
+  const say = async (who, body) => { await new Promise((r) => setTimeout(r, 5)); comments.push({ body, createdAt: new Date().toISOString(), ...(who === "owner" ? { authorType: "user", authorUserId: "u-owner" } : { authorType: "agent", authorAgentId: who }) }); };
+  let n = 0;
+  /** Files one more request; true when the reviewer was asked (it rejects), false when code refused it as parked. */
+  const file = async () => {
+    const r = fileRecord(k.records, { args: { note: `try ${n}` } });
+    n++;
+    const sweep = k.loop.tick();
+    await until(() => mod.seen.length === k.records.list(["rejected"], 100).filter((x) => /^reviewer:~/.test(x.decided_by)).length + 1 || k.records.get(r.id).state === "rejected");
+    if (k.records.get(r.id).state === "rejected") return (await sweep, false);
+    const last = mod.seen.at(-1);
+    k.reviews.verdict(last.id, last.token, { decision: "reject", reason: `keep the shim out (${n})`, model: "~acme/model-a" });
+    await sweep;
+    return true;
+  };
+  // The first park (5 rejections): the delegator hears it and is offered the once-lift.
+  for (let i = 0; i < MAX_REJECTS; i++) assert.equal(await file(), true);
+  assert.equal(told.length, 1, "the first park reaches the delegator");
+  assert.deepEqual([told[0].task, owner.length, keys[0].endsWith(":1")], ["TASK-0", 0, true]);
+  assert.match(told[0].body, new RegExp(`rejected acme\\.post on this task ${MAX_REJECTS} times[^]*your comment lifts the park once`));
+  assert.doesNotMatch(told[0].body, /spent/);
+  // The delegator's decision lifts it; five more rejections park the target again (10 held), and the next request files
+  // that park's own escalation, saying the agents' lift is spent.
+  await say("ag-kai", "Authorised: publish the single-escape version.");
+  assert.equal(await file(), true, "the delegator's lift still works at 6");
+  for (let i = 0; i < MAX_REJECTS - 2; i++) assert.equal(await file(), true);
+  assert.equal(told.length, 1, "6..9 do not repeat the first park");
+  // The 10th rejection is still reviewed; its note says the lift is spent, and it opens the second park.
+  assert.equal(await file(), true, "10 held: still reviewed, and it parks again");
+  assert.match(k.notices.at(-1).text, /Rejected by the AI reviewer[^]*The agents' lift on this target is spent[^]*only the owner's own reply or yes moves the park now/);
+  assert.doesNotMatch(k.notices.at(-1).text, /until whoever delegated this task or the chief of staff decides on it in a comment here/);
+  assert.equal(told.length, 2, "the second park files its own escalation");
+  assert.equal(told[1].task, "TASK-0");
+  assert.deepEqual([keys[0].endsWith(":1"), keys.at(-1).endsWith(":2"), keys[0] === keys.at(-1)], [true, true, false], "each park has its own key");
+  assert.deepEqual([...new Set(keys)], [keys[0], keys.at(-1)], "6..9 and 11+ repeat neither park's key");
+  assert.match(told[1].body, /The agents' lift on this target is spent[^]*only the owner's own reply or yes moves it now[^]*report the finding or change the request/);
+  assert.doesNotMatch(told[1].body, /your comment lifts the park once/);
+  // Filed again: refused as parked by code, and neither park is repeated.
+  assert.equal(await file(), false, "11th: refused as parked by code");
+  assert.match(k.records.list(["rejected"], 100)[0].review ?? "", /^parked:[^]*agents' lift is spent/);
+  assert.deepEqual([told.length, owner.length, new Set(keys).size], [2, 0, 2], "the refused request reuses the second park's key");
+  assert.equal(keys.at(-1), keys.at(-2));
 });
 
 test("the reviewer reads an agent's form with its options spelled out, so the owner's \"1A, 2A\" reads against them", async () => {
