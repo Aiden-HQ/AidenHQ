@@ -34,6 +34,100 @@ const latestCard = (cards: any[]) => cards.reduce((last: any, a: any) => {
 
 const hash = (s: string) => createHash("sha256").update(s).digest("hex").slice(0, 16);
 
+const COMMAND_TIMEOUT_MS = 90_000;
+const CI_WORKFLOW = ".github/workflows/ci.yml";
+const CI_AREAS = ".github/ci/areas.json";
+
+type CiMap = { everything: string[]; markdown: string[]; suites: any[] };
+
+function ciMap(text: string | null): CiMap | undefined {
+  let json: any;
+  try {
+    json = JSON.parse(text ?? "");
+  } catch {
+    return undefined;
+  }
+  if (!Array.isArray(json?.suites) || !Array.isArray(json?.everything) || !Array.isArray(json?.markdown)) return;
+  return {
+    everything: json.everything.map(String),
+    markdown: json.markdown.map(String),
+    suites: json.suites.filter((s: any) => typeof s?.name === "string" && typeof s?.run === "string" && s.run)
+      .map((s: any) => ({ ...s, dir: s.name.split("#")[0]!, run: s.run })),
+  };
+}
+
+const withTimeout = <T>(p: Promise<T>, ms: number): Promise<T | undefined> =>
+  Promise.race([p, new Promise<undefined>((r) => setTimeout(() => r(undefined), ms).unref())]);
+
+/**
+ * A fact for a suite comes from a completed `success` check whose name is exactly the suite **and** whose `databaseId` is a
+ * real Actions job. A check alone proves nothing: GitHub's check API answers any App token, so a PR's own code, running in
+ * the job that holds the workflow token, can post a check for any suite on any head. A job record cannot be posted — the
+ * `/actions/jobs/{id}` read answers only for a job the runner ran — so a check with no job behind its `databaseId`, or a job
+ * of another name, is exactly a posted check, and no fact.
+ *
+ * The job must be the repository's own CI on the graded head: `.github/workflows/ci.yml`, active, from a `pull_request` run
+ * whose `head_sha` is that head, and with `ci.yml` byte-identical at the run's head and at the run's base. The execution
+ * inputs are the workflow, the suite runner (`run-suites.sh`) and the map (`areas.json`) that decides what a suite command
+ * is, and a PR that edits anything under `.github/` may have changed one of them, so such a PR mints no fact at all: what CI
+ * ran there is not provably the repository's. The command and
+ * directory come from `areas.json` at the run's base — the map CI itself read — and the directory must be **present** at the
+ * graded head, read from the repository itself: `run-suites.sh` writes `gone:` and exits 0 over a missing one, so a green
+ * job there ran nothing. Proving that positively (not inferring it from a diff) also covers a directory that was already
+ * absent at the run's base, not only one this PR removed.
+ */
+async function commandFacts(pr: any, repo: string, deps: any): Promise<string[]> {
+  if (!deps.file || !deps.dir || !deps.job) return [];
+  const head = String(pr.headRefOid ?? "");
+  if (!/^[0-9a-f]{40}$/.test(head)) return [];
+  const files = (pr.files?.nodes ?? []).map((f: any) => ({ path: String(f?.path ?? "") })).filter((f) => f.path);
+  if (!files.length || pr.files?.pageInfo?.hasNextPage) return [];
+  // The execution inputs — the workflow, `run-suites.sh`, the map and selector — all live under `.github/`: a PR that
+  // edits any of them may have changed what CI ran, so nothing it shows is evidence.
+  if (files.some((f) => f.path.startsWith(".github/"))) return [];
+  // A truncated check list may be missing the job that would vouch for a suite, so it is no evidence at all.
+  const rollup = pr.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts;
+  if (rollup?.pageInfo?.hasNextPage) return [];
+  const candidates = (rollup?.nodes ?? []).filter((n: any) => n.__typename === "CheckRun" && n.status === "COMPLETED" && n.conclusion === "SUCCESS" && n.databaseId && n.name);
+  if (!candidates.length) return [];
+  const found = await Promise.all(candidates.map(async (c: any) => {
+    const j = await withTimeout(deps.job(repo, String(c.databaseId)).catch(() => null), COMMAND_TIMEOUT_MS);
+    // No Actions job behind this check (the 404 a posted check gets), or a job of another name: never a fact.
+    if (!j || j.name !== String(c.name)) return undefined;
+    const ok = j.state === "completed" && j.conclusion === "success" && j.workflow_path === CI_WORKFLOW && j.workflow_state === "active"
+      && j.event === "pull_request" && j.head_sha === head && /^[0-9a-f]{40}$/.test(String(j.run_base ?? "")) && j.run_id != null;
+    return ok ? { name: String(c.name), base: String(j.run_base) } : undefined;
+  }));
+  const green = found.filter(Boolean) as { name: string; base: string }[];
+  if (!green.length) return [];
+  const bases = [...new Set(green.map((g) => g.base))];
+  const paths = [[CI_WORKFLOW, head], ...bases.flatMap((b) => [[CI_AREAS, b], [CI_WORKFLOW, b]])];
+  const texts = await withTimeout(Promise.all(paths.map(([p, r]) => deps.file(repo, p!, r!).catch(() => null))), COMMAND_TIMEOUT_MS) ?? [];
+  const headCi = texts[0];
+  const maps = new Map<string, CiMap>();
+  for (const [i, b] of bases.entries()) {
+    const [at, ci] = texts.slice(1 + i * 2, 3 + i * 2) as (string | null | undefined)[];
+    const map = ciMap(at ?? null);
+    // The run's ci.yml against the graded head's, byte for byte: a rewritten workflow is not the repository's.
+    if (!map || !ci || ci !== headCi) continue;
+    maps.set(b, map);
+  }
+  if (!maps.size) return [];
+  const claimed = new Map<string, { run: string; dir: string }>();
+  for (const { name, base } of green) {
+    const suite = maps.get(base)?.suites.find((s: any) => s.name === name);
+    if (suite && !claimed.has(name)) claimed.set(name, { run: String(suite.run), dir: String(suite.dir) });
+  }
+  // Proved present at the graded head, from the repository: a missing directory ran nothing (CI exits 0 over `gone:`).
+  // One batch with one deadline, so a long candidate list cannot multiply the bound.
+  const dirs = [...new Set([...claimed.values()].map((c) => c.dir))];
+  const probes = await withTimeout(Promise.all(dirs.map((d) => deps.dir(repo, d, head).catch(() => null))), COMMAND_TIMEOUT_MS);
+  if (!probes) return [];
+  const present = new Set(dirs.filter((_, i) => probes[i]?.present));
+  return [...claimed].filter(([, c]) => present.has(c.dir))
+    .map(([name, c]) => `${name} green on head ${head}: ran "${c.run}" in ${c.dir}/ — passed`);
+}
+
 const nameOf = (f: any) => String(f.originalFilename ?? f.name ?? "");
 
 /**
@@ -300,7 +394,6 @@ const PR_TEXT_TOTAL = 20_000;
 /**
  * The task's PRs as evidence: { awaiting } or { version, facts, data }. `prs` are the runner's own PRs for the task, narrowed
  * by the ref (a PR named only in the ref is never read), each with the branch or branches its records name (`heads`).
- * deps: pr(repo, n) (merges.PR_QUERY's data), diff(repo, n), ownRepo(slug).
  * Each PR's title and description are the author's own text, so they go to the grader fenced (PR_DESCRIPTION), never as facts:
  * a rubric may ask what the PR records, which only that text can show.
  */
@@ -369,6 +462,7 @@ export async function prEvidence(prs: any[], ref: string, deps: any): Promise<an
     const shows = { commits: [pr.headRefOid, merged ? pr.mergeCommit?.oid : "", own?.oid].filter(Boolean), trees: [history.find((c: any) => c.oid === pr.headRefOid)?.tree?.oid, own?.tree?.oid].filter(Boolean) };
     prs_.push({ repo: p.repo, number: p.number, merge: merged ? (pr.mergeCommit?.oid ?? "") : "", mergedAt: pr.mergedAt ?? "", shows });
     facts.push(`${p.url}: ${pr.state.toLowerCase()}${merged ? ` into ${pr.baseRefName}` : ` (base ${pr.baseRefName})`}, head ${pr.headRefOid}${merged && pr.mergeCommit?.oid ? `, merge commit ${pr.mergeCommit.oid}` : ""}; checks: ${checks.length ? checks.map((c: any) => `${c.name} ${checkState(pr, c, gate)}`).join(", ") : "none"}${byRecord ? "; named by the runner's own record for this task, which is how its number was told from another change" : ""}`);
+    facts.push(...(await commandFacts(pr, p.repo, deps)));
     // The author's own words: code labels them and says whether they were cut; the text itself goes fenced, as data.
     const kept = text.slice(0, Math.max(0, left - head.length)).trim();
     left -= head.length + kept.length + 2;

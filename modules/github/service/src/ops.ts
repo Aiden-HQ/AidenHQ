@@ -35,15 +35,15 @@ const slugOf = (repo: unknown) => {
   return { slug: `${m[1]}/${m[2]}`, org: m[1]!, name: m[2]! };
 };
 
-// A PR and an issue as the grader reads them (modules/grading/service/src/evidence.ts).
+// A PR and an issue as the grader reads them.
 const PR_QUERY = `query($owner: String!, $repo: String!, $number: Int!) {
   repository(owner: $owner, name: $repo) {
     pullRequest(number: $number) {
       number title body url state headRefOid headRefName baseRefName mergedAt mergeCommit { oid }
       files(first: 100) { pageInfo { hasNextPage } nodes { path } }
       history: commits(last: 30) { nodes { commit { oid tree { oid } parents(first: 1) { totalCount } } } }
-      commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes { __typename ... on CheckRun { name status conclusion } ... on StatusContext { context state } } } } } } }
-      baseRef { target { ... on Commit { statusCheckRollup { contexts(first: 100) { nodes { __typename ... on CheckRun { name status conclusion } ... on StatusContext { context state } } } } } } }
+      commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { pageInfo { hasNextPage } nodes { __typename ... on CheckRun { databaseId name status conclusion externalId } ... on StatusContext { context state } } } } } } }
+      baseRef { target { oid ... on Commit { statusCheckRollup { contexts(first: 100) { nodes { __typename ... on CheckRun { name status conclusion externalId } ... on StatusContext { context state } } } } } } }
     }
   }
 }`;
@@ -122,7 +122,17 @@ async function read(ctx: OpsContext, s: ReturnType<typeof slugOf>, b: Body): Pro
     if (r.status === 404) return { status: 200, json: null };
     if (r.status >= 300) throw fail(502, `GitHub GET /repos/${s.slug}/actions/jobs/${b.id}: ${r.status}`);
     const j = r.body;
-    return { status: 200, json: { id: j.id, name: j.name, state: j.status, conclusion: j.conclusion, run_id: j.run_id, url: j.html_url } };
+    // The job's Test step, its run's base and the workflow that owns it; unreadable is no evidence.
+    const get = async (path: string) => {
+      try { const a = await ctx.access.rest("GET", path); return a.status < 300 ? a.body : undefined; } catch { return undefined; }
+    };
+    const run = j.run_id ? await get(`/repos/${s.slug}/actions/runs/${j.run_id}`) : undefined;
+    const workflow = run?.workflow_id ? await get(`/repos/${s.slug}/actions/workflows/${run.workflow_id}`) : undefined;
+    const bases = new Set((run?.pull_requests ?? []).filter((p: any) => p?.head?.sha === run?.head_sha && p?.base?.sha).map((p: any) => String(p.base.sha)));
+    const base = bases.size === 1 ? String([...bases][0]) : null;
+    return { status: 200, json: { id: j.id, name: j.name, state: j.status, conclusion: j.conclusion, run_id: j.run_id, run_base: base,
+      workflow_path: workflow?.path ?? null, workflow_state: workflow?.state ?? null, event: run?.event ?? null, head_sha: run?.head_sha ?? null, url: j.html_url,
+      steps: (Array.isArray(j.steps) ? j.steps : []).map((s: any) => ({ name: String(s?.name ?? ""), state: String(s?.status ?? ""), conclusion: String(s?.conclusion ?? "") })) } };
   }
   // prs: every open PR, newest page first up to 500.
   const prs: { number: number; sha: string; base: string; head_repo: string | null }[] = [];
@@ -132,6 +142,28 @@ async function read(ctx: OpsContext, s: ReturnType<typeof slugOf>, b: Body): Pro
     if (r.length < 100) break;
   }
   return { status: 200, json: prs };
+}
+
+async function file(ctx: OpsContext, s: ReturnType<typeof slugOf>, b: Body): Promise<Answer> {
+  const r = await ctx.access.rest("GET", `/repos/${s.slug}/contents/${enc(String(b.path))}?ref=${String(b.ref)}`, undefined, { accept: "application/vnd.github.raw+json" });
+  if (r.status === 404) return { status: 404, json: { error: `${s.slug} has no ${String(b.path)} at ${String(b.ref)}` } };
+  if (r.status >= 300) throw fail(502, `GitHub GET /repos/${s.slug}/contents/${String(b.path)}: ${r.status}`);
+  // A non-JSON file (a script, a plain text file) stays text. A JSON one (areas.json) is parsed by the client, so it goes back
+  // out as JSON: `String(obj)` would be "[object Object]", which the grader's ciMap can never parse.
+  return { status: 200, text: typeof r.body === "string" ? r.body : JSON.stringify(r.body ?? null) };
+}
+
+/**
+ * Whether the repository has a directory at that exact commit: GitHub's contents API answers a directory with a JSON list
+ * (a file with its object). A 404 is "no such directory"; anything else unreadable throws, so the caller waits rather than
+ * treating a transient failure as absence.
+ */
+async function dir(ctx: OpsContext, s: ReturnType<typeof slugOf>, b: Body): Promise<Answer> {
+  const r = await ctx.access.rest("GET", `/repos/${s.slug}/contents/${enc(String(b.path))}?ref=${String(b.ref)}`);
+  // A 404 is an answer ("not there"); anything else short of 300 is a transient failure the caller must not read as absence.
+  if (r.status === 404) return { status: 200, json: { path: String(b.path), present: false } };
+  if (r.status >= 300) throw fail(502, `GitHub GET /repos/${s.slug}/contents/${String(b.path)}: ${r.status}`);
+  return { status: 200, json: { path: String(b.path), present: Array.isArray(r.body) } };
 }
 
 async function commit(ctx: OpsContext, s: ReturnType<typeof slugOf>, b: Body): Promise<Answer> {
@@ -158,6 +190,8 @@ export async function answerOp(op: string, b: Body, ctx: OpsContext): Promise<An
   const s = slugOf(b.repo);
   if (op === "fetch") return bundleOf(ctx, s, String(b.ref));
   if (op === "head") return { status: 200, json: { sha: String((await ok(ctx, "GET", `/repos/${s.slug}/branches/${enc(String(b.ref))}`)).body?.commit?.sha ?? "") } };
+  if (op === "read" && b.kind === "file") return file(ctx, s, b);
+  if (op === "read" && b.kind === "dir") return dir(ctx, s, b);
   if (op === "read") return read(ctx, s, b);
   if (op === "comment") {
     const body = withFooter(String(b.body), String(b.module ?? "AidenHQ"));

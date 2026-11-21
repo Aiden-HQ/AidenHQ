@@ -43,6 +43,29 @@ A successful answer a connection's sign-in served is marked `signedIn(result, ac
 clears a full need (`not_connected`, `expired`), and with `account` it clears that account alone. Mark only the account
 that actually served the call: an answer from one account proves nothing about another whose sign-in failed.
 
+## `POST /v1/codehost/<op>` — a module's typed code host operations
+
+Grant: the module's `module.yaml` `codehost:` block, per op. The kernel checks the grant and every field's shape, then
+calls the code host module, which holds the GitHub sign-in: no op returns a token.
+
+```yaml
+codehost:
+  read:     { repos: [ "@product" ] }                 # a PR, issue, diff, job, open PRs
+  evidence: { repos: [ "@product" ], paths: [ ".github/ci/areas.json", ".github/workflows/ci.yml" ] }
+  probe:    { repos: [ "@product" ] }                 # whether a directory exists at a commit, never its contents
+```
+
+`evidence` is narrower than `read`: `file` (`{path, ref}`, a listed path at a commit sha), and nothing else. `probe` is
+narrower still: a `dir` read (`{path, ref}` → whether the repository has that directory at the commit) answers a boolean and
+never returns contents. A job's log is
+never evidence: a PR's test output can print any line. A command fact comes from a completed `success` check named the
+suite **and** the Actions job behind its `databaseId` (`/actions/jobs/{id}`): a job record cannot be posted, so a check a PR
+posted itself — which any step holding the workflow token can — has no job behind it and mints nothing. The job must be
+`.github/workflows/ci.yml` on the graded head, active, from a `pull_request` run whose `ci.yml` is byte-identical at the
+run's head and base. Because the workflow, `run-suites.sh`, `select.ts` and `areas.json` are the inputs that decide what a
+suite's command is, a PR that changes anything under `.github/` mints no command fact at all. The suite's directory must be
+proved present at head with that `dir` read: CI exits 0 on a missing one, so a green job over an absent folder ran nothing.
+
 ## `POST /v1/tasks` — file a task
 
 Grant: `kernel.tasks`.

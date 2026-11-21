@@ -418,6 +418,9 @@ test("a codehost grant is taken literally: settings are refused, the kernel's @ 
   assert.throws(() => kernelModuleTable({ m: { codehost: { fetch: { repos: ["${settings.fleet_org}/*"] } } } }), /names no settings/);
   assert.deepEqual(kernelModuleTable({ m: { codehost: { fetch: { repos: ["@instance", "@agents/*"] } } } }).m.codehost.fetch.repos, ["@instance", "@agents/*"]);
   assert.throws(() => kernelModuleTable({ m: { codehost: { token: { repos: ["@instance"], perms: { contents: "read" } } } } }), /no field token/);
+  assert.deepEqual(kernelModuleTable({ m: { codehost: { evidence: { repos: ["@product"], paths: [".github/ci/areas.json"] } } } }).m.codehost.evidence.paths, [".github/ci/areas.json"]);
+  assert.throws(() => kernelModuleTable({ m: { codehost: { evidence: { repos: ["@product"] } } } }), /paths/);
+  assert.deepEqual(kernelModuleTable({ m: { codehost: { probe: { repos: ["@product"] } } } }).m.codehost.probe.repos, ["@product"]);
 });
 test("teams: any module agent becomes a team record over named members (template, then defaults, then member)", () => {
   const teams = { research: { template: "chief-of-staff.assistant", defaults: { max_parallel: 2, reasoning_effort: "high", handbook: "Cite every source." }, caps: { day_usd: 40 }, routing: { weights: { repo: 2 } },
