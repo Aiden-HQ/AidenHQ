@@ -8,34 +8,35 @@ import { display, render, verdict, REPORT_MAX } from "../service/src/report.ts";
 const sha = (c) => c.repeat(40);
 const REPO = "acme/app";
 const CATALOG = [
-  { id: "maint.knip", lens: "maintainability", modes: ["one_off"], recommended: ["one_off"], kind: "tool", source: { repo: "webpro-nl/knip", version: "5.0.0", licence: "ISC" }, run: {}, when: ["package.json"], output: "knip", runs_code: false, cost: "free" },
-  { id: "sec.gitleaks", lens: "security", modes: ["one_off"], recommended: ["one_off"], kind: "tool", source: { repo: "gitleaks/gitleaks", version: "8.0.0", licence: "MIT" }, run: {}, when: [], output: "sarif", runs_code: false, cost: "free" },
-  { id: "sec.cloudflare", lens: "security", modes: ["one_off"], recommended: ["one_off"], kind: "skill", source: { repo: "cloudflare/security-audit-skill", version: "1.0.0", licence: "MIT" }, run: { harness: "claude-code" }, when: [], output: "findings", runs_code: false, cost: "low" },
+  { id: "maint.knip", lens: "maintainability", modes: ["one_off"], recommended: ["one_off"], kind: "tool", source: { repo: "webpro-nl/knip", version: "5.0.0", licence: "ISC" }, run: { cmd: "knip" }, when: ["package.json"], output: "knip", runs_code: false, cost: "free" },
+  { id: "sec.gitleaks", lens: "security", modes: ["one_off"], recommended: ["one_off"], kind: "tool", source: { repo: "gitleaks/gitleaks", version: "8.0.0", licence: "MIT" }, run: { cmd: "gitleaks" }, when: [], output: "sarif", runs_code: false, cost: "free" },
+  { id: "sec.cloudflare", lens: "security", modes: ["one_off"], recommended: ["one_off"], kind: "skill", source: { repo: "cloudflare/security-audit-skill", version: "1.0.0", licence: "MIT" }, run: { harness: "claude-code", skill: "security-audit" }, when: [], output: "findings", runs_code: false, cost: "low" },
   { id: "sec.deepsec", lens: "security", modes: ["one_off"], recommended: [], kind: "engine", source: { repo: "vercel-labs/deepsec", version: "1.0.0", licence: "Apache-2.0" }, run: { engine: "deepsec" }, when: [], output: "findings", runs_code: true, cost: "high" },
   { id: "maint.vulture", lens: "maintainability", modes: ["one_off"], recommended: ["one_off"], kind: "tool", source: { repo: "jendrikseipp/vulture", version: "2.0", licence: "MIT" }, run: {}, when: ["**/*.py"], output: "vulture", runs_code: false, cost: "free" },
 ];
 
 /** The engine over fakes, for repo reviews: a code host whose default branch can move, a runner finished by hand, a Primer that records. */
-function world({ db = new DatabaseSync(":memory:"), primer = true } = {}) {
+function world({ db = new DatabaseSync(":memory:"), primer = true, lenses = true } = {}) {
   let t = Date.parse("2026-11-22T10:00:00Z");
   const heads = { HEAD: sha("1") };
-  const started = [], results = new Map(), published = [], setups = [], outcomes = new Map();
+  const started = [], results = new Map(), published = [], setups = [], branch = { setup: undefined };
   const engine = createEngine({
-    db, config: () => readConfig(JSON.stringify({ repos: [] })), now: () => t,
+    db, config: () => readConfig(JSON.stringify({ repos: [], lenses })), now: () => t,
     source: { open: async () => [], repos: async () => [] },
     runner: { start: async (s) => (started.push(s), { check: `c-${started.length}` }), result: async (c) => results.get(c) ?? { state: "running" } },
-    poster: { setup: async (a) => (setups.push(a), { state: "pending", write: `w-${setups.length}` }), setupOutcome: async (w) => outcomes.get(w) ?? { state: "pending" } },
-    snapshots: { tree: async (_r, ref) => ({ sha: ref === "HEAD" ? heads.HEAD : ref, paths: ["package.json", "src/a.ts"] }) },
+    poster: {},
+    codehost: { tree: async (_r, ref) => ({ sha: ref === "HEAD" ? heads.HEAD : ref, paths: ["package.json", "src/a.ts"] }), setupBranch: async () => branch.setup, setup: async (b) => (setups.push(b), { write: `w-${setups.length}` }) },
     catalog: () => CATALOG,
     ...(primer ? { publisher: async (r) => (published.push(r), { documentId: "doc-1", version: published.length, url: "https://primer.example.com/d/doc-1" }) } : {}),
   });
   const finding = (id, o = {}) => ({ id, severity: "important", path: "src/a.ts", line: 3, title: `t ${id}`, why: "w", evidence: "e", fix_brief: "b", ...o });
   const finish = (i, o = {}, billed = 0) => results.set(`c-${i + 1}`, { state: "done", billed_usd: billed,
     review: { version: 1, repo: REPO, pr: 0, base: started[i].head, head: started[i].head, coverage: { reviewed: [], excluded: [], incomplete: null }, findings: [], withheld: { important: 0, nit: 0, pre_existing: 0 }, cost_usd: 0, stale_guidance: [], ...o } });
-  return { db, engine, heads, started, results, published, setups, outcomes, finish, finding, tick: () => engine.tick({ github: false }), later: (ms) => (t += ms) };
+  return { db, engine, heads, started, results, published, setups, branch, finish, finding, tick: () => engine.tick({ github: false }), later: (ms) => (t += ms) };
 }
 
-test("run_usd defaults to 25 and runs from 1 to 150; options must fit the tree", async () => {
+test("repo reviews are off until lenses is on; run_usd defaults to 25 and runs from 1 to 150; options must fit the tree", async () => {
+  await assert.rejects(world({ lenses: false }).engine.repoReview({ target: { repo: REPO } }), /repo reviews are off/);
   const w = world();
   const b = await w.engine.repoReview({ target: { repo: REPO } });
   assert.equal(b.run_usd, 25);
@@ -52,12 +53,13 @@ test("the commit is resolved once at start: the default branch moving mid-run ch
   assert.equal(b.sha, sha("1"));
   await w.tick();
   assert.equal(w.started.length, 1); // the tools run alone first
-  assert.deepEqual([w.started[0].profile, w.started[0].options, w.started[0].target, w.started[0].head], ["code-review-tools", ["maint.knip", "sec.gitleaks"], "tree", sha("1")]);
+  assert.deepEqual([w.started[0].profile, Object.keys(w.started[0].tools), w.started[0].target, w.started[0].head], ["code-review-tools", ["maint.knip", "sec.gitleaks"], "tree", sha("1")]);
   w.heads.HEAD = sha("2");
   w.finish(0, { findings: [w.finding("k1", { option: "maint.knip", severity: "nit" })] });
   await w.tick();
   assert.equal(w.started.length, 2);
-  assert.deepEqual([w.started[1].profile, w.started[1].combo.engine, w.started[1].head, w.started[1].budget_usd], ["code-review", "skill:sec.cloudflare", sha("1"), 10]);
+  assert.deepEqual([w.started[1].profile, w.started[1].combo.engine, w.started[1].combo.harness, w.started[1].combo.skill, w.started[1].option, w.started[1].lens, w.started[1].head, w.started[1].budget_usd],
+    ["code-review", "skill:sec.cloudflare", "claude-code", "security-audit", "sec.cloudflare", "security", sha("1"), 10]);
   w.finish(1, {}, 1.5);
   await w.tick();
   const [batch] = w.engine.batches({});
@@ -119,28 +121,28 @@ test("a second repo review of the repo adds a version to the same Primer documen
     await w.tick(); w.finish(i); await w.tick();
   }
   assert.deepEqual(w.published.map((p) => [p.title, p.documentId]), [["Repo review: acme/app", undefined], ["Repo review: acme/app", "doc-1"]]);
-  assert.equal(w.engine.batches({})[0].report_url, "https://primer.example.com/d/doc-1");
+  assert.deepEqual([w.engine.batches({})[0].primer_url, w.engine.batches({})[0].report_url.endsWith("/report")], ["https://primer.example.com/d/doc-1", true]);
   // Without Primer the report stays on the board, saying why.
   const v = world({ primer: false });
   await v.engine.repoReview({ target: { repo: REPO }, options: ["sec.gitleaks"] });
   await v.tick(); v.finish(0); await v.tick();
-  assert.match(v.engine.batches({})[0].report_why, /Primer can't be reached/);
+  assert.match(v.engine.batches({})[0].why, /Primer can.t be reached/);
 });
 
-test("deepsec's set-up files are filed once per branch tip, never while the setup PR is open, and later runs read them at its tip", async () => {
+test("deepsec's set-up files are asked for once as a setup PR through the code host; while its branch exists runs scan with its files and nothing is asked again", async () => {
   const w = world();
-  const files = { ".deepsec/INFO.md": "# app", ".deepsec/deepsec.config.ts": "export default {}", "src/evil.ts": "x" };
-  const review = async (i) => { await w.engine.repoReview({ target: { repo: REPO }, options: ["sec.deepsec"] }); await w.tick(); w.finish(i, { setup: files }); await w.tick(); };
-  await review(0);
-  assert.equal(w.started[0].setup_tip, null);
-  assert.deepEqual(w.setups.map((s) => [s.repo, s.base, s.branch, s.expected_tip, Object.keys(s.files)]), [[REPO, sha("1"), "aidenhq/deepsec-setup", null, [".deepsec/INFO.md", ".deepsec/deepsec.config.ts"]]]);
-  await review(1); // still pending: not filed again for the same tip
+  const files = { ".deepsec/data/app/INFO.md": "# app", ".deepsec/deepsec.config.ts": "export default {}", "src/evil.ts": "x" };
+  const review = async () => { await w.engine.repoReview({ target: { repo: REPO }, options: ["sec.deepsec"] }); await w.tick(); w.finish(w.started.length - 1, { setup: files }); await w.tick(); };
+  await review();
+  assert.equal(w.started[0].setup_files, undefined);
+  assert.deepEqual(w.setups.map((s) => [s.repo, s.branch, s.expected_tip, Object.keys(s.files)]), [[REPO, "aidenhq/deepsec-setup", null, [".deepsec/data/app/INFO.md", ".deepsec/deepsec.config.ts"]]]);
+  await review(); // asked for, not on the code host yet: not asked again within the day
   assert.equal(w.setups.length, 1);
-  w.outcomes.set("w-1", { state: "done", pr_url: "https://github.com/acme/app/pull/9", tip: sha("9") });
-  await w.tick();
-  await review(2); // the PR is open: not filed again, and the run reads the files at its tip
+  w.branch.setup = { tip: sha("9"), files: { ".deepsec/data/app/INFO.md": "# app" } };
+  w.later(2 * 24 * 3600_000);
+  await review(); // the branch exists (its PR pending or open): scanned with, never asked again
   assert.equal(w.setups.length, 1);
-  assert.equal(w.started[2].setup_tip, sha("9"));
+  assert.deepEqual(w.started[2].setup_files, { ".deepsec/data/app/INFO.md": "# app" });
 });
 
 test("a data version 1 database keeps its PR runs, reviews and findings readable", () => {

@@ -1,14 +1,14 @@
 // The option catalog (modules/code-review/catalog.json): every ready-made reviewer a run may pick, by lens and mode, with the
 // stack it needs (`when`: path globs on the snapshot; none: always). The service reads it to offer and check a run's options.
-// The canonical is the recipe's (recipe/catalog.ts, which the recipe's tools runner imports too); this copy is the service's.
+// The canonical is the recipe's (recipe/catalog.ts, lane R1); this file follows its interface until it is that file's sync-shared copy.
 
 export type Lens = "correctness" | "security" | "maintainability" | "performance";
 export type Mode = "one_off" | "continuous";
 export type Option = {
   id: string; lens: Lens; modes: Mode[]; recommended: Mode[]; kind: "tool" | "skill" | "engine";
   source: { repo: string; version: string; licence: string };
-  run: { cmd?: string[] | string; harness?: string; skill?: string; engine?: string };
-  when: string[]; output: "sarif" | "knip" | "jscpd" | "vulture" | "scc" | "findings"; runs_code: boolean; cost: "free" | "low" | "high"; hidden?: boolean;
+  run: { cmd?: string; harness?: string; skill?: string; engine?: string };
+  when: string[]; output: "sarif" | "knip" | "jscpd" | "vulture" | "scc" | "gcc" | "findings"; runs_code: boolean; cost: "free" | "low" | "high"; hidden?: boolean; severity?: "nit";
 };
 
 const LENSES = ["correctness", "security", "maintainability", "performance"];
@@ -54,4 +54,10 @@ function globRe(glob: string) {
 export function detect(paths: string[], catalog: Option[], mode: Mode): { available: Option[]; recommended: string[] } {
   const available = catalog.filter((o) => !o.hidden && o.modes.includes(mode) && (!o.when.length || o.when.map(globRe).some((re) => paths.some((p) => re.test(p)))));
   return { available, recommended: available.filter((o) => o.recommended.includes(mode)).map((o) => o.id) };
+}
+
+/** What a tools check carries per selected tool option (its `options` spec field, by id): just what the recipe runs. */
+export type ToolSpec = Record<string, { lens: Lens; cmd: string; output: Exclude<Option["output"], "findings">; severity?: "nit" }>;
+export function toolSpec(options: Option[]): ToolSpec {
+  return Object.fromEntries(options.filter((o) => o.kind === "tool").map((o) => [o.id, { lens: o.lens, cmd: o.run.cmd!, output: o.output as ToolSpec[string]["output"], ...(o.severity ? { severity: o.severity } : {}) }]));
 }

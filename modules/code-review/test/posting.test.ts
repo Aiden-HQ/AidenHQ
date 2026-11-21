@@ -31,14 +31,15 @@ test("the check job's spec is exactly the recipe's fields, base the merge base, 
   const s = { repo: "acme/x", number: 9, base: "b".repeat(40), head: "h".repeat(40), merge_base: "m".repeat(40), combo: { engine: "codex", model: "~a/b", effort: "high" },
     focus: null, incremental_from: null, full: true, previous: [{ id: "f1", severity: "nit", path: "a", line: 1, title: "t" }], mandatory: false, budget_usd: 1.5, ignore: ["*.lock"], max_nits: 3 };
   const spec = checkSpec(s);
-  assert.deepEqual(Object.keys(spec).sort(), ["base", "budget_usd", "combo", "focus", "incremental_from", "pr", "previous", "setup_tip", "target"]);
+  assert.deepEqual(Object.keys(spec).sort(), ["base", "budget_usd", "combo", "focus", "incremental_from", "lens", "option", "pr", "previous", "setup_files", "target"]);
   assert.equal(spec.base, "m".repeat(40));
-  // No pending deepsec setup: setup_tip is the base (the kernel snapshots that commit once).
-  assert.deepEqual([spec.target, spec.setup_tip, spec.pr], ["pr", spec.base, "9"]);
-  // A tree: base is the head, pr empty; the tools check carries only its own fields.
-  const t = checkSpec({ ...s, number: 0, target: "tree", profile: "code-review", merge_base: s.head });
-  assert.deepEqual([t.base, t.incremental_from, t.pr, t.target], [s.head, s.head, "", "tree"]);
-  assert.deepEqual(checkSpec({ ...s, target: "tree", profile: "code-review-tools", options: ["maint.knip"] }), { repo: "acme/x", commit: s.head, base: s.head, options: JSON.stringify({ options: ["maint.knip"] }) });
+  // A combo on a PR: no option, no pending setup.
+  assert.deepEqual([spec.target, spec.option, spec.lens, spec.setup_files, spec.pr], ["pr", "", "", "{}", "9"]);
+  // A tree: base is the head, pr empty; the tools check carries only its base (the commit itself) and the options it runs.
+  const t = checkSpec({ ...s, number: 0, target: "tree", profile: "code-review", merge_base: s.head, option: "sec.deepsec", lens: "security", setup_files: { ".deepsec/package.json": "{}" } });
+  assert.deepEqual([t.base, t.incremental_from, t.pr, t.target, t.option, t.setup_files], [s.head, s.head, "", "tree", "sec.deepsec", JSON.stringify({ ".deepsec/package.json": "{}" })]);
+  const tools = { "maint.knip": { lens: "maintainability", cmd: "knip", output: "knip" } };
+  assert.deepEqual(checkSpec({ ...s, target: "tree", profile: "code-review-tools", tools }), { base: s.head, options: JSON.stringify(tools) });
   assert.equal(spec.incremental_from, spec.base);
   assert.equal(spec.budget_usd, "1.5000");
   assert.deepEqual(JSON.parse(spec.combo), { ...s.combo, ignore: ["*.lock"], max_nits: 3, mandatory: false });
@@ -62,18 +63,3 @@ test("a done notice's review link is a field the notice kind takes (schemas/noti
   assert.equal(args.review, "https://github.com/acme/x/pull/3#pullrequestreview-9");
 });
 
-test("a setup write holds only deepsec's own files on its branch (schema and plan), and executes through github's setup op", async () => {
-  const { readFileSync } = await import("node:fs");
-  const { validate } = await import("../../../kernel/src/writes.ts");
-  const schema = JSON.parse(readFileSync(new URL("../schemas/setup.json", import.meta.url), "utf8"));
-  const args = { repo: "acme/x", base: head, branch: "aidenhq/deepsec-setup", expected_tip: null, files: { ".deepsec/INFO.md": "# x" } };
-  validate(schema, args);
-  assert.throws(() => validate(schema, { ...args, files: { ".github/workflows/x.yml": "on: push" } }), /has no field/);
-  const sent = [];
-  const ex = reviewExecutor(async () => ({}), () => undefined, async (b) => (sent.push(b), { pr_url: "https://github.com/acme/x/pull/2", tip: "c".repeat(40) }));
-  assert.match((await ex.plan({ kind: "code-review.setup", args, requester: me })).facts.changes, /\.deepsec\/INFO\.md/);
-  await assert.rejects(ex.plan({ kind: "code-review.setup", args: { ...args, files: { "../x": "y" } }, requester: me }), /isn't one of deepsec's set-up files/);
-  await assert.rejects(ex.plan({ kind: "code-review.setup", args, requester: { kind: "run", agent: "x" } }), /only the code-review service/);
-  assert.deepEqual(JSON.parse((await ex.execute({ kind: "code-review.setup", args })).text), { pr_url: "https://github.com/acme/x/pull/2", tip: "c".repeat(40) });
-  assert.deepEqual([sent[0].branch, Object.keys(sent[0].files), typeof sent[0].title], ["aidenhq/deepsec-setup", [".deepsec/INFO.md"], "string"]);
-});
