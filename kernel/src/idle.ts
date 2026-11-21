@@ -354,12 +354,14 @@ export function createIdle({ db, facts, state, wakes, owner, team = () => false,
       // on them as before.
       const r = who && escalate && b.handoff !== true ? await escalate.ask(caller.task, who, question, asked) : undefined;
       if (r?.sent === "limit") throw fail(429, "rate_limited", "You have asked the chief of staff too many questions today: nothing was sent and this task isn't waiting. Decide with your handbook, brief and advisor, and note the assumption in your result.");
-      // One open ask per task: a second question while the first is unanswered isn't sent and the first wait stands.
-      if (r?.sent === "open") return { waiting: true, asked: false, to: r.to, note: "Your earlier question on this task is still unanswered, so this one wasn't sent: the task waits for that answer." };
+      // One open ask per task, for one recipient: a question for the same recipient replaces the recorded ask (escalate.ask).
+      // Another recipient, or a state that can't be read now, fails the call instead of reporting a wait nothing recorded.
+      if (r?.sent === "open" && r.to) throw fail(409, "conflict", `This task's earlier question is still open with ${r.to}: tell that recipient to answer it, or finish the work that asks, then ask again. Nothing was sent and this task's wait is unchanged.`);
+      if (r?.sent === "open") throw fail(503, "unavailable", "This task's ask state can't be read now, so nothing was sent and this task isn't waiting. Try again.");
       const to = r?.to ?? (who === "owner" ? "owner" : "delegator");
       // The wait's fact and its wake in one transaction: a wait that can't be recorded fails the call (the agent tries again).
       inTx(db, "task_wait", () => {
-        if (who && escalate) escalate.record(caller.task, to === "owner" ? "owner" : "delegator");
+        if (who && escalate) escalate.record(caller.task, who, t);
         fact({ type: "work.waiting", subject: `wait:${caller.task}`, version: `wait@${t}`, at: iso(t), actor: `agent:${caller.key}`, task: caller.task, data: { reason: who ? (to === "owner" ? "owner_wait" : "delegator_wait") : "agent_wait", note: reason, until: iso(until), ...(on ? { on } : {}), ...(question ? { question } : {}), ...(b.handoff === true ? { handoff: true } : {}) } });
         wakes.open({ key: `wait:${caller.task}:${until}`, task: caller.task, agent: caller.agent, cause: `wait: ${reason}`.slice(0, 200), at: until, replaces: `wait:${caller.task}:`, author: `agent:${caller.key}` });
       });

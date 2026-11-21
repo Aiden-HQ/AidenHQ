@@ -1,6 +1,6 @@
 // A judgement call a task can't make for itself reaches whoever can make it, once per episode (durable: escalations in
-// kernel.db). Its callers: an agent's own wait on its delegator or the owner (task_wait `for`, notify's decision, a
-// handback of an agent's task: idle.ts), and an idle in-review task (idle.ts).
+// kernel.db). Two callers: the review loop when the AI reviewer parks a target (MAX_REJECTS), and an agent's own wait on
+// its delegator or the owner (task_wait `for`, notify's decision; idle.ts).
 // - The delegator: the task's parent, else the task of the job that created it (provenance), heard as a kernel notice on
 //   that task (notices.ts; a parent blocked on the asking task stays blocked and still wakes: wakes.ts scans blocked tasks). It carries the wake-notice marker, so the delegator's dispatcher reads it
 //   as a notice that wakes it, never as the owner's words, although the board key posts it.
@@ -11,10 +11,12 @@
 // - The owner directly: only the chief of staff's own asks, and an agent's question on a task the owner is talking to it on
 //   (the owner wrote there in the last day). A decision message headed by the waiting agent and its task, so the owner's reply
 //   lands on that task and wakes it. It names that agent as its asker, so the owner channel applies its mutes and the brake.
-// An agent's ask is one open ask per task: another isn't sent while the task's state has an open owner or delegator wait, nor
-// when the state can't be read (fail closed). The ask's durable marker (`ask:<task>`) is written with the wait fact, in its
-// transaction (record(), idle.ts), and cleared once the state shows no wait. No chief of staff installed: filing its task
-// fails, so the ask fails loudly and is tried again (the agent's call errors).
+// An agent's ask is one open ask per task: another isn't sent while the recorded ask (the durable `ask:<task>` marker) still
+// has a wait fact for that question with no answer since, nor when the state can't be read (fail closed). A questionless wait
+// such as a finish check's release to the delegator is no ask and never suppresses one. The marker is written with the wait
+// fact, in its transaction (record(), idle.ts). A new question for the same recipient replaces the recorded ask (a new
+// episode, sent again); one for a different recipient is refused. No chief of staff installed: filing its task fails, so the
+// ask fails loudly and is tried again (the agent's call errors; the review loop's park isn't marked).
 import { createHash, randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { neutral } from "./channels.ts";
@@ -58,7 +60,7 @@ export function createEscalate({ db, issue, state, asker, notice, owner, chief, 
   db: DatabaseSync;
   /** A task as the control plane has it now; undefined when it is gone. Throws when it can't be read now. */
   issue: (id: string) => Promise<Issue | undefined>;
-  /** A task's state (task-state-read.ts): an ask is open while it has an owner or delegator wait. No row (an unreadable or unknown task) reads as open. */
+  /** A task's state (task-state-read.ts): no row (an unreadable or unknown task) fails an ask closed. */
   state: (task: string) => Pick<StateRow, "attention"> | undefined;
   /** An agent as the owner channel's attention reads it: its name, key and roles. */
   asker: (id: string) => Promise<{ name: string; key: string; roles: string[] }>;
@@ -87,13 +89,32 @@ export function createEscalate({ db, issue, state, asker, notice, owner, chief, 
   /** The task's agent, as the owner channel reads it; undefined when it has none or can't be read (never the chief then). */
   const agentOf = async (t: Issue) => (t.assigneeAgentId ? await asker(t.assigneeAgentId).catch(() => undefined) : undefined);
 
-  /** The task's open ask: its state has an owner or delegator wait; an unreadable state counts as open. */
-  function openAsk(task: string): boolean {
-    const row = state(task);
-    if (!row) return true;
-    if (row.attention.some((a) => a.why === "owner_wait" || a.why === "delegator_wait")) return true;
-    db.prepare("DELETE FROM escalations WHERE key = ?").run(`ask:${task}`);
-    return false;
+  /**
+   * The task's recorded ask while it is still open: the `ask:<task>` marker, the latest `wait:<task>` fact that began with it,
+   * its question, and no answering comment since. A questionless wait (a finish check's release) is not an ask. The state is
+   * read only so an unreadable task fails closed. `undefined`: no open ask; `"unknown"`: the state or facts can't be read now.
+   */
+  function openAsk(task: string): { who: "owner" | "delegator" } | "unknown" | undefined {
+    if (!state(task)) return "unknown";
+    const marker = db.prepare("SELECT kind, at FROM escalations WHERE key = ?").get(`ask:${task}`) as { kind: string; at: number } | undefined;
+    if (!marker) return undefined;
+    const who = marker.kind === "owner" || marker.kind === "delegator" ? marker.kind : undefined;
+    if (!who) { db.prepare("DELETE FROM escalations WHERE key = ?").run(`ask:${task}`); return undefined; }
+    let w: { seq: number; at: string; actor: string; data: string } | undefined;
+    try { w = db.prepare("SELECT seq, at, actor, data FROM facts WHERE type = 'work.waiting' AND subject = ? ORDER BY at DESC, seq DESC LIMIT 1").get(`wait:${task}`) as { seq: number; at: string; actor: string; data: string } | undefined; }
+    catch { return "unknown"; }
+    if (!w) return undefined;
+    let data: { reason?: unknown; question?: unknown };
+    try { data = JSON.parse(w.data) as { reason?: unknown; question?: unknown }; } catch { return "unknown"; }
+    const delegated = data.reason === "delegator_wait";
+    if ((!delegated && data.reason !== "owner_wait") || typeof data.question !== "string" || !data.question.trim()) return undefined;
+    if (!(Number.isFinite(Date.parse(w.at)) && Date.parse(w.at) >= marker.at)) return undefined;
+    let comments: { seq: number; at: string; actor: string }[];
+    try { comments = db.prepare("SELECT seq, at, actor FROM facts WHERE type = 'task.commented' AND task = ? AND (at > ? OR (at = ? AND seq > ?)) ORDER BY at, seq").all(task, w.at, w.at, w.seq) as { seq: number; at: string; actor: string }[]; }
+    catch { return "unknown"; }
+    const answered = comments.some((c) => delegated ? c.actor !== "kernel" && c.actor !== w.actor : c.actor.startsWith("account:"));
+    if (answered) return undefined;
+    return { who };
   }
 
   async function toOwner(t: Issue, text: string) {
@@ -113,9 +134,12 @@ export function createEscalate({ db, issue, state, asker, notice, owner, chief, 
   }
   const api = {
     /** The ask's durable marker, written with the wait fact (one transaction: no awaiting); each recorded ask is a new episode. */
-    record(task: string, who: "owner" | "delegator") {
-      db.prepare("INSERT OR REPLACE INTO escalations (key, task, kind, at) VALUES (?, ?, ?, ?)").run(`ask:${task}`, task, who, now());
-      db.prepare("INSERT OR IGNORE INTO escalations (key, task, kind, at) VALUES (?, ?, ?, ?)").run(`asked:${task}:${now()}`, task, who, now());
+    record(task: string, who: "owner" | "delegator", at = now()) {
+      db.prepare("INSERT OR REPLACE INTO escalations (key, task, kind, at) VALUES (?, ?, ?, ?)").run(`ask:${task}`, task, who, at);
+      // A replacement can come in the same millisecond as the ask it replaces: the episode rows must still be distinct, or the
+      // chief of staff's task (keyed by the episode) would be the old one and the new question never filed.
+      let n = 0;
+      while (db.prepare("INSERT OR IGNORE INTO escalations (key, task, kind, at) VALUES (?, ?, ?, ?)").run(`asked:${task}:${at}${n ? `:${n}` : ""}`, task, who, at).changes === 0) n++;
     },
     /**
      * The agent that delegated `t`, as nothing its assignee can change records it: the agent of the job that created it (the
@@ -144,7 +168,8 @@ export function createEscalate({ db, issue, state, asker, notice, owner, chief, 
      * task the owner is talking to its agent on; every other owner question goes to the chief of staff. A delegator question
      * goes to the open delegator, else the chief of staff (else the owner, for the chief of staff's own task). `asked`: the
      * question reached the owner already (the agent's reply, notify): recorded, not sent, when it may go to them directly;
-     * otherwise it goes to the chief of staff. One open ask per task: `open` while the last one is unanswered, nothing sent.
+     * otherwise it goes to the chief of staff. One open ask per task: a question for the same recipient replaces it (a new
+     * episode, sent again); one for another recipient is `open`, nothing sent.
      */
     async ask(task: string, who: "owner" | "delegator", question: string, asked = false): Promise<{ sent: "asked" | "recorded" | "open" | "gone" | "limit"; to?: AskTo }> {
       const q = neutral(question).trim().slice(0, 1500);
@@ -153,7 +178,9 @@ export function createEscalate({ db, issue, state, asker, notice, owner, chief, 
       const fromChief = Boolean((await agentOf(t))?.roles.includes(CHIEF));
       const to: AskTo = who === "owner" ? (fromChief || (await conversing(t.id)) ? "owner" : "chief_of_staff") : (await delegatorOf(t)) ? "delegator" : fromChief ? "owner" : "chief_of_staff";
       if (asked && to === "owner") return { sent: "recorded", to };
-      if (openAsk(t.id)) return { sent: "open", to };
+      const open = openAsk(t.id);
+      if (open === "unknown") return { sent: "open" };
+      if (open && open.who !== who) return { sent: "open" };
       // A looping agent can't fill the chief of staff's list: at most CHIEF_ASKS asks a day per agent, then the call is refused.
       const asker = who === "owner" && to === "chief_of_staff" ? (await agentOf(t))?.key : undefined;
       const kind = `chief-ask:${asker}`;
