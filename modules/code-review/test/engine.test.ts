@@ -56,9 +56,7 @@ const label = (s) => `${s.combo.engine}/${s.combo.effort}`;
 
 test("a new PR runs each on_open combo, each posted with its combo; a push debounces into one incremental batch whose first run rechecks; cost, tokens and findings are kept", async () => {
   const w = world({ repos: [{ repo: REPO, on_open: [CODEX, CLAUDE] }] });
-  w.pr(1, sha("1"));
-  await w.tick(); // first look: what is already open waits
-  assert.equal(w.started.length, 0);
+  await w.tick(); // first look: nothing open
   w.later(1000);
   w.pr(2, sha("2"));
   await w.tick();
@@ -92,6 +90,21 @@ test("a new PR runs each on_open combo, each posted with its combo; a push debou
   assert.deepEqual(w.closed.map((c) => c.slice(0, 2)), [[REPO, 2]]);
 });
 
+test("a PR open at the first look, or seen before any run, gets its on_open review once; a draft waits; a merge while the review ran still posts, a close does not", async () => {
+  const w = world({ repos: [{ repo: REPO, on_open: [CODEX] }] });
+  w.pr(1, sha("1")); w.pr(2, sha("2"), { draft: true }); w.pr(3, sha("3"), { author: "dependabot[bot]" });
+  await w.tick(); // first look
+  assert.deepEqual(w.started.map((s) => s.number), [1, 3]);
+  await w.tick(); w.later(1000); await w.tick();
+  assert.equal(w.started.length, 2); // once each
+  // Merged while its review ran: the finished review posts. Closed unmerged: it doesn't.
+  w.prs.set(1, { ...w.prs.get(1), open: false, merged: true });
+  w.prs.set(3, { ...w.prs.get(3), open: false, merged: false });
+  await w.tick(); w.finish(0); w.finish(1); await w.tick();
+  assert.deepEqual(w.posted.map((p) => p.review.pr), [1]);
+  assert.deepEqual(w.engine.runs({ repo: REPO }).filter((r) => r.number === 3).map((r) => [r.status, r.why]), [["skipped", "closed"]]);
+});
+
 test("a force-push past the last reviewed head reviews in full", async () => {
   const w = world({ repos: [{ repo: REPO, on_open: [CODEX] }] });
   await w.tick();
@@ -105,7 +118,8 @@ test("a force-push past the last reviewed head reviews in full", async () => {
 
 test("commands: only a writer's count, our own posts and quoted lines never do, repeats are one batch; stop stops", async () => {
   const w = world();
-  w.pr(7, sha("7"));
+  await w.tick();
+  w.pr(7, sha("7"), { draft: true }); // a draft waits: no automatic review in the way
   await w.tick();
   w.later(1000);
   w.say(7, "mallory", "@aiden review");
@@ -149,7 +163,9 @@ test("budgets are reserved atomically against the repo cap; drafts, forks and th
 
 test("a run is charged what the kernel billed (never what the box says), and a result for another head is refused", async () => {
   const w = world();
-  w.pr(1, sha("1"));
+  await w.tick();
+  w.later(1000);
+  w.pr(1, sha("1"), { draft: true });
   await w.tick();
   w.later(1000);
   w.prs.set(1, w.prs.get(1));
@@ -160,7 +176,7 @@ test("a run is charged what the kernel billed (never what the box says), and a r
   w.finish(1, { cost_usd: 0 });              // no billing known: the whole $2 reservation
   w.finish(2, { head: sha("9"), repo: "acme/other", cost_usd: 0 }, 99); // a result for another head: refused, charged at most its $1
   await w.tick();
-  const by = Object.fromEntries(w.engine.runs({ repo: REPO }).map((r) => [`${r.engine}/${r.effort}`, r]));
+  const by = Object.fromEntries(w.engine.runs({ repo: REPO }).filter((r) => r.status !== "skipped").map((r) => [`${r.engine}/${r.effort}`, r]));
   assert.deepEqual([by["codex/medium"].cost_usd, by["claude-code/high"].cost_usd, by["codex/low"].cost_usd], [0.7, 2, 1]);
   assert.equal(by["codex/low"].status, "failed");
   assert.equal(w.posted.length, 2);
@@ -171,9 +187,10 @@ test("a run is charged what the kernel billed (never what the box says), and a r
 
 test("a one-off only where a review can post; a refused read passes the comment over, a transient one is asked again", async () => {
   const w = world();
-  w.prs.set(9, { repo: "othercorp/api", number: 9, head: sha("9"), base: sha("b"), base_ref: "main", draft: false, fork: false, author: "bob", open: true, url: "" });
+  await w.tick();
+  w.prs.set(9, { repo: "othercorp/api", number: 9, head: sha("9"), base: sha("b"), base_ref: "main", draft: true, fork: false, author: "bob", open: true, url: "" });
   await assert.rejects(w.engine.oneoff({ pr_url: "https://github.com/othercorp/api/pull/9" }), /GitHub isn't connected/);
-  w.pr(5, sha("5")); await w.tick(); w.later(1000);
+  w.pr(5, sha("5"), { draft: true }); await w.tick(); w.later(1000);
   w.perms.refuse = true;
   w.say(5, "alice", "@aiden review");
   await w.tick();

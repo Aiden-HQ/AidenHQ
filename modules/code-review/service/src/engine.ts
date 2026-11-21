@@ -11,7 +11,8 @@
 // ledger's tokens, duration, and its findings (table findings) with their later outcome: fixed (a later recheck found it gone),
 // open_at_merge or open_at_close (still open when the PR closed).
 //
-// The first look at a repo only records its open PRs and the comment cursor: what was already open waits for a push or a command.
+// A PR open at the first look at a repo (or seen before any run existed) gets its on_open batch like a new one: every open,
+// non-draft PR is reviewed once. The daily limits bound a repo with many open PRs.
 // A push debounces (DEBOUNCE): another push in the window replaces the queued batch, so a burst of pushes is one review each.
 // A skip is a run too (status skipped, why), acknowledged once per PR and reason (a budget skip once per head), never silent.
 import type { DatabaseSync } from "node:sqlite";
@@ -283,8 +284,10 @@ export function createEngine(d: EngineDeps) {
       run("UPDATE runs SET status = ?, why = ?, posted = ?, ended = ?, duration_ms = ? WHERE id = ?", status, why, posted ?? null, iso(), r.started ? now() - Date.parse(r.started) : null, r.id);
       end(runRow(r.id)!);
     };
-    // A run whose PR moved on (a push, a close) while it ran is superseded: it never posts over the newer head.
-    if (pr && (pr.head !== r.head || !pr.open)) return done("skipped", pr.open ? "superseded: a newer head is being reviewed" : "closed");
+    // A run whose PR moved on (a push) while it ran is superseded: it never posts over the newer head. One closed unmerged is
+    // dropped; a merged one is still reviewed and posted (a review of merged code is useful, and was paid for).
+    if (pr && pr.open && pr.head !== r.head) return done("skipped", "superseded: a newer head is being reviewed");
+    if (pr && !pr.open && !(await d.source.get(r.repo, r.number).then((c) => c.merged, () => false))) return done("skipped", "closed");
     const previous = lastPosted(r);
     let posted: Posted;
     try {
@@ -382,7 +385,7 @@ export function createEngine(d: EngineDeps) {
     }
   }
 
-  /** One watched repo: its PRs' heads and its new comments. The first look only records what is there. */
+  /** One watched repo: its PRs' heads and its new comments. The first look reviews what is open like a new PR. */
   async function poll(cfg: Repo) {
     const cursor = one<{ comments: string }>("SELECT comments FROM cursors WHERE repo = ?", cfg.repo);
     const open = await d.source.open(cfg.repo);
@@ -390,10 +393,10 @@ export function createEngine(d: EngineDeps) {
     for (const p of open) {
       const was = prRow(p.repo, p.number);
       upsertPr(p);
-      if (!cursor) continue;
       if (!was) trigger(cfg, p, "open");
       else if (was.head !== p.head) trigger(cfg, p, was.last_reviewed_head || runsOn(p) ? "push" : "open");
       else if (was.draft && !p.draft && !runsOn(p)) trigger(cfg, p, "open");
+      else if (!p.draft && !anyRun(p)) trigger(cfg, p, "open");
     }
     for (const gone of all<{ number: number }>("SELECT number FROM prs WHERE repo = ? AND open = 1", cfg.repo)) {
       if (seenNow.has(gone.number)) continue;
@@ -428,6 +431,7 @@ export function createEngine(d: EngineDeps) {
     }
     run("UPDATE cursors SET comments = ? WHERE repo = ?", got.cursor, cfg.repo);
   }
+  const anyRun = (p: PullRequest) => !!one("SELECT 1 FROM runs WHERE repo = ? AND number = ?", p.repo, p.number);
   const runsOn = (p: PullRequest) => !!one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND status != 'skipped'", p.repo, p.number);
 
   const errors = new Map<string, string>();

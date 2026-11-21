@@ -35,7 +35,7 @@ export interface Thread {
   replies: { author: string; body: string }[];
 }
 type RawThread = { id: string; isResolved: boolean; isOutdated: boolean; path: string; line: number | null; comments: { nodes: { databaseId: number; url: string; body: string; author: { login: string } | null }[] } };
-type GhPr = { state: string; draft?: boolean; head: { sha: string }; base: { sha: string } };
+type GhPr = { state: string; merged?: boolean; draft?: boolean; head: { sha: string }; base: { sha: string } };
 
 /** The explicit target must be the review's own: a review of another repo, pull request or commit is refused. */
 function target(a: PostArgs): PostArgs {
@@ -111,7 +111,8 @@ export class ReviewPoster {
 
   private async pull(ref: Ref, who: Who): Promise<GhPr> {
     const pr = await this.gh.request<GhPr>("GET", `${api(ref)}/pulls/${ref.number}`, {});
-    if (pr.state !== "open") throw new GitHubRefused(`${ref.owner}/${ref.repo}#${ref.number} isn't open`);
+    // A merged PR still takes its review (GitHub accepts one); a closed one doesn't.
+    if (pr.state !== "open" && !pr.merged) throw new GitHubRefused(`${ref.owner}/${ref.repo}#${ref.number} isn't open or merged`);
     return pr;
   }
 

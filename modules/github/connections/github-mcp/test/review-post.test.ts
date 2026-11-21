@@ -54,7 +54,7 @@ describe("rendering model text", () => {
 });
 
 /** A fake GitHub for one pull request: records writes, keeps the ack comment and threads. Everyone posts as the owner. */
-function world(opts: { threads?: unknown[]; headSha?: string } = {}) {
+function world(opts: { threads?: unknown[]; headSha?: string; pr?: { state: string; merged?: boolean } } = {}) {
   const calls: { method: string; path: string; auth: string; body?: any }[] = [];
   const state = { ack: undefined as { id: number; body: string } | undefined, threads: opts.threads ?? [], reviews: [] as { id: number; body: string; user: { login: string }; html_url: string }[] };
   const impl = (async (input: URL | string, init?: RequestInit) => {
@@ -69,7 +69,7 @@ function world(opts: { threads?: unknown[]; headSha?: string } = {}) {
       if (String(body.query).includes("resolveReviewThread")) return ok({ data: { resolveReviewThread: { thread: { id: body.variables.thread, isResolved: true } } } });
       return ok({ data: { repository: { pullRequest: { reviewThreads: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: state.threads } } } } });
     }
-    if (method === "GET" && url.pathname.endsWith("/pulls/12")) return ok({ state: "open", head: { sha: opts.headSha ?? HEAD }, base: { sha: BASE } });
+    if (method === "GET" && url.pathname.endsWith("/pulls/12")) return ok({ state: "open", ...opts.pr, head: { sha: opts.headSha ?? HEAD }, base: { sha: BASE } });
     if (method === "GET" && url.pathname.endsWith("/pulls/12/files")) return ok([{ filename: "src/pay.ts", patch: PATCH }]);
     if (method === "GET" && url.pathname.endsWith("/pulls/12/reviews")) return ok(state.reviews);
     if (method === "GET" && /\/pulls\/12\/reviews\/\d+\/comments$/.test(url.pathname)) return ok([{ id: 501 }]);
@@ -124,6 +124,14 @@ describe("posting", () => {
       await expect(p.execute("post", postArgs(review([]), wrong))).rejects.toBeInstanceOf(GitHubRefused);
     }
     expect(w.calls).toHaveLength(0);
+  });
+
+  it("posts on a merged pull request and refuses a closed one", async () => {
+    const merged = world({ pr: { state: "closed", merged: true } });
+    await poster(merged).execute("post", postArgs(review([])));
+    expect(merged.calls.some((c) => c.method === "POST" && c.path.endsWith("/pulls/12/reviews"))).toBe(true);
+    const closed = world({ pr: { state: "closed", merged: false } });
+    await expect(poster(closed).execute("post", postArgs(review([])))).rejects.toThrow(/isn't open or merged/);
   });
 
   it("refuses a review of a head that moved, and never repeats a finding it already commented", async () => {
