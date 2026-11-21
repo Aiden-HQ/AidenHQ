@@ -275,11 +275,11 @@ export function openRecords(file: string, now = () => new Date()) {
      */
     hold(id: string, cap: Cap, why: string): boolean {
       const r = get(id);
-      return Boolean(r) && moved(() => move(id, ["approved"], "owner", { tier: 2, review_first: "final", cap: JSON.stringify(cap), review: `${r!.review ?? ""}\n\nHeld for the owner before it ran: ${why}`.trim() }),
+      return Boolean(r) && moved(() => move(id, ["approved"], "owner", { tier: 2, review_first: "final", cap: JSON.stringify(cap), decided_at: iso(), review: `${r!.review ?? ""}\n\nHeld for the owner before it ran: ${why}`.trim() }, true),
         () => fact(id, "record.held", "held", "kernel", () => ({ why })));
     },
     /** approved → claimed, once, within its 7 days. */
-    claim: (id: string) => moved(() => move(id, ["approved"], "claimed", {}), () => fact(id, "record.claimed", "claimed", "kernel", (r) => ({ kind: r.kind }))),
+    claim: (id: string) => moved(() => move(id, ["approved"], "claimed", {}, true), () => fact(id, "record.claimed", "claimed", "kernel", (r) => ({ kind: r.kind }))),
     /** GitHub objects the outcome of record `id` made (objects.ts). */
     addObjects: (id: string, refs: unknown) => addObjects(db, id, refs, iso()),
     objectOf: (ref: string) => objectOf(db, ref),

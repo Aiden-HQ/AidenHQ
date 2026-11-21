@@ -388,6 +388,10 @@ export function codeVerdict(input: ReviewInput, model: string): Verdict | undefi
 }
 /** A failed review (the reviewer unreachable, failing or slow) waits 1, 2, 4 … minutes, never more than this, and is never rejected for it. */
 export const RETRY_CAP_MS = 15 * 60_000;
+/** Failed reviews of a record that is Tier 2 on its merits before the owner's card, with the failure on it, replaces the retries. */
+export const OWNER_AFTER_TRIES = 6;
+export const ownerAfterFailure = (input: ReviewInput, v: Verdict, n: number): Verdict =>
+  ({ ...v, decision: "escalate", code: "owner_tier", reason: `The AI reviewer couldn't read it (${v.reason}, ${n} times). It is Tier 2 on its merits, so the owner decides: ${input.reason}` });
 /** The wait before try `n` (1-based) of a failed review or of an approved record's pre-run reads. */
 export const retryWait = (n: number) => Math.min(60_000 * 2 ** (n - 1), RETRY_CAP_MS);
 /**

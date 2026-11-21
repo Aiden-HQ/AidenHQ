@@ -23,7 +23,7 @@ import { CODEHOSTS, routeKind } from "./codehost.ts";
 import type { Executor, ReviewContext } from "../sdk/src/executor.ts";
 import { writeRaise, type Inventory } from "./paths.ts";
 import { gateMode } from "./gates.ts";
-import { retryWait, afterReview, requestHash, capText, codeVerdict, computeTier, heldInput, requestTargets, shadowed, splitToOwner, type Autonomy, type Raise, type ReviewFirst, type ReviewInput, type Cap, type RoutineCap, type Tier, type Verdict } from "./tier.ts";
+import { OWNER_AFTER_TRIES, ownerAfterFailure, retryWait, afterReview, requestHash, capText, codeVerdict, computeTier, heldInput, requestTargets, shadowed, splitToOwner, type Autonomy, type Raise, type ReviewFirst, type ReviewInput, type Cap, type RoutineCap, type Tier, type Verdict } from "./tier.ts";
 
 export type Schema = { type?: string; properties?: { [k: string]: Schema }; required?: string[]; additionalProperties?: boolean; enum?: unknown[]; pattern?: string; minLength?: number; maxLength?: number; items?: Schema; minItems?: number; maxItems?: number; minimum?: number; maximum?: number; exclusiveMinimum?: number };
 /** One kind (config/kernel/writes.json and kinds.ts, keyed `<module>.<kind>`); `tools` are `connection.tool`. */
@@ -370,8 +370,13 @@ export function createWrites({ records, registry, connections, secret, resolver,
         stale = !again || digestOf({ ...pre, args: again.args, targets: again.targets ?? {} }) !== pre.digest;
       }
     } catch (e) {
-      const n = (runRetries.get(id)?.n ?? 0) + 1;
       const why = String((e as Error).message ?? e).slice(0, 300);
+      if (!transient(e)) {
+        runRetries.delete(id);
+        if (records.claim(id)) outcomeOf(id, false, `not executed: what it needs before it runs was refused (${why})`);
+        return;
+      }
+      const n = (runRetries.get(id)?.n ?? 0) + 1;
       runRetries.set(id, { n, next: Date.now() + retryWait(n) });
       return void log("approved write waits to run", { record: id, tries: n, err: why });
     }
@@ -647,12 +652,16 @@ export function createWrites({ records, registry, connections, secret, resolver,
         const model = typeof b.input?.model === "string" && MODEL.test(b.input.model) ? b.input.model : "kernel/code";
         // The cap is the record's, as it was tiered at filing: the label of a capped approve never depends on a second trace.
         const input = heldInput({ ...(b.input ?? { tier: 1 }), cap: r.cap ?? null }, r.review_first);
-        const v = codeVerdict(input, model) ?? afterReview(input, splitToOwner(input, await ask(r, b.request ?? {}, model)));
+        let v = codeVerdict(input, model) ?? afterReview(input, splitToOwner(input, await ask(r, b.request ?? {}, model)));
         if (v.code === "reviewer_failed") {
           const n = (wait?.n ?? 0) + 1;
-          retries.set(id, { n, next: Date.now() + retryWait(n) });
-          log("review deferred", { record: id, tries: n, reason: v.reason.slice(0, 200) });
-          return { record: r, deferred: retries.get(id)!.next };
+          // Tier 2 on its merits: the owner's card still reaches them after bounded tries, with the failure on it.
+          if (input.byMerit && n >= OWNER_AFTER_TRIES) v = ownerAfterFailure(input, v, n);
+          else {
+            retries.set(id, { n, next: Date.now() + retryWait(n) });
+            log("review deferred", { record: id, tries: n, reason: v.reason.slice(0, 200) });
+            return { record: r, deferred: retries.get(id)!.next };
+          }
         }
         retries.delete(id);
         // The autonomy cap holds every requester but the release updater (computeTier `uncapped`), whose record takes the verdict as given.

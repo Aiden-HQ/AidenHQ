@@ -2,12 +2,11 @@
 // /v1/cp/agent (cp.ts) and the runner's own closes through /v1/finish. A module declares its checks (`checks:`, compiled
 // into config/kernel/checks.json); all that match run in parallel and none sees another's verdict. Any deny refuses the
 // close and moves nothing; any reopen reopens; any hold or pending holds the task in review with the check's label and a
-// scheduled check; otherwise it passes. A check never marks a task done. Fail closed: a check that errors, answers non-2xx
-// or malformed, or takes over 10 s refuses the close, and so do a checks file that is missing or won't load, and a graded
-// agent's task (the grants table's `graded`) that no check covers: the gate never fails open. The one exception is a service
-// being replaced: a check whose address doesn't resolve yet or whose socket refuses is asked again a few times, and if it is
-// still down an enforcing check holds the task in review for its scheduled re-check rather than refusing a finish that would
-// be lost. The check's module later
+// scheduled check; otherwise it passes. A check never marks a task done. Fail open on infrastructure: a check that errors,
+// answers non-2xx or malformed, takes over 10 s or can't be reached (a socket that refuses is asked again a few times first)
+// holds the task in review for its scheduled re-check rather than refusing a finish that would be lost; only an explicit deny
+// or reopen refuses. A graded agent's task that no check covers passes, recorded as a would-block note (owner, 2026-11-21).
+// A checks file that is missing or won't load still refuses. The check's module later
 // releases its label, or resolves a hold it placed (POST /v1/checks/:task). A check in observe mode (`mode: observe`, gates.ts)
 // is asked like the others, but a verdict other than ok, or its failure, is only recorded as a would-block: it never moves,
 // holds or refuses the task, and it doesn't count as covering a graded agent's task. A task with an undecided approval card
@@ -301,7 +300,9 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
     // The move first, in one PATCH with the label's removal: the hold goes only once the task has moved, so a failed call leaves
     // it for the module's retry (and a retry never posts its comment twice).
     const comment = typeof b.comment === "string" && b.comment ? { comment: b.comment.slice(0, 60_000) } : {};
-    if (to) {
+    // An ok clears only this check's hold: while another check still holds the task it stays in review.
+    const others = b.verdict === "ok" && db.prepare("SELECT 1 FROM check_holds WHERE task = ? AND check_id <> ?").get(i.id, id) !== undefined;
+    if (to && !others) {
       const l = c.label ? await label(i, c.label) : undefined;
       const ids = labelIds(i);
       await patch(i, { status: to, ...(l && ids.includes(l.id) ? { labelIds: ids.filter((x) => x !== l.id) } : {}), ...comment });
