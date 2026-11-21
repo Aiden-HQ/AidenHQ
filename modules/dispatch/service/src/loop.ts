@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS greeted (task TEXT PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS summarized (parent TEXT PRIMARY KEY, batch INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS stopped (job TEXT PRIMARY KEY, why TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS escalated (task TEXT PRIMARY KEY, episode TEXT NOT NULL, card TEXT NOT NULL DEFAULT '');
-DROP TABLE IF EXISTS jobs; DROP TABLE IF EXISTS starting; DROP TABLE IF EXISTS ended; DROP TABLE IF EXISTS sessions;`;
+DROP TABLE IF EXISTS jobs; DROP TABLE IF EXISTS starting; DROP TABLE IF EXISTS ended; DROP TABLE IF EXISTS sessions; DROP TABLE IF EXISTS platform_blocked;`;
 // A job's end states (kernel jobs.ts); any other state is still live.
 const ENDED = new Set(["done", "failed", "cancelled", "timeout", "lost"]);
 // A comment on a finished or blocked task would reopen it: those get no note.

@@ -287,7 +287,7 @@ test("a merge call that times out after GitHub merged is reported merged, and an
   assert.equal(reports.length, 2, "taken: not delivered a third time");
 });
 
-test("a red default branch takes no merge on top, except the PR that already holds its tip; running base CI is no wait", () => {
+test("a red default branch takes no merge on top, except the PR that already holds its tip; running base CI waits only for a PR behind it", () => {
   const data = (base, behindBy) => ({ repository: { defaultBranchRef: { name: "main" }, pullRequest: {
     number: 1, state: "OPEN", isDraft: false, baseRefName: "main", headRefOid: HEAD, mergeStateStatus: "CLEAN", latestOpinionatedReviews: { nodes: [] },
     files: { pageInfo: { hasNextPage: false }, nodes: [{ path: "lib/x.mjs" }] }, commits: { nodes: [{ commit: { statusCheckRollup: rollup("SUCCESS") } }] },
@@ -295,7 +295,8 @@ test("a red default branch takes no merge on top, except the PR that already hol
   } } });
   assert.deepEqual(decide(data(rollup("FAILURE"), 2), HEAD, { uiReview: false }), { do: "wait", why: "`main` is red at `bbbbbbbbbbbb`: merged once it is green again" });
   assert.deepEqual(decide(data(rollup("FAILURE"), 0), HEAD, { uiReview: false }), { do: "merge" }, "the fix for a red base lands");
-  assert.deepEqual(decide(data(rollup("PENDING"), 2), HEAD, { uiReview: false }), { do: "merge" }, "the PR's own green checks proved it");
+  assert.equal(decide(data(rollup("PENDING"), 2), HEAD, { uiReview: false }).do, "wait");
+  assert.deepEqual(decide(data(rollup("PENDING"), 0), HEAD, { uiReview: false }), { do: "merge" }, "at the tip, its own green checks proved the tree");
   assert.deepEqual(decide(data(rollup("CANCELLED", { names: ["build", "ci-required"] }), 2), HEAD, { uiReview: false }), { do: "merge" }, "a cancelled run never judged the base");
   assert.deepEqual(decide(data(rollup("SUCCESS"), 2), HEAD, { uiReview: false }), { do: "merge" });
   assert.deepEqual(decide(data(rollup("SUCCESS", { names: [] }), 2), HEAD, { uiReview: false }), { do: "merge" }, "a base whose CI runs on PRs only");

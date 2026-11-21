@@ -73,7 +73,7 @@ describe("plan: maintained repos (maintainer_repos)", () => {
     assert.match(planParts("merge", { ...m, prs: [pr("globex/payments", { checks: [] })] })[0][0].reason, /none registered yet/);
     assert.equal(rules("merge", m, pr("globex/payments", { headMatches: false }))[0][0], "head-moved");
     // Listing the product or instance repo changes nothing: their own rules come first.
-    assert.deepEqual(rules("merge", { ...m, requester: { platform: true } }, pr(s.productRepo, { platformHead: true })), [["product-merge", 1]]);
+    assert.deepEqual(rules("merge", m, pr(s.productRepo)), [["product-merge", 1]]);
     assert.equal(rules("merge", m, pr(s.instanceRepo))[0][0], "core-repo-merge");
   });
 
@@ -81,6 +81,7 @@ describe("plan: maintained repos (maintainer_repos)", () => {
     assert.deepEqual(rules("close", m, { repo: "globex/payments", number: 4 }), [["maintained-close", 0]]);
     assert.deepEqual(rules("close", { ...m, requester: { platform: true } }, { repo: "globex/payments", number: 4, dependabot: true }), [["maintained-close", 0]]);
     assert.equal(rules("close", m, { repo: s.productRepo, number: 4 })[0][0], "core-repo-close");
+    assert.deepEqual(rules("close", { ...m, requester: { platform: false } }, { repo: s.productRepo, number: 4, dependabot: true }), [["product-dependabot-close", 0]], "any job closes a product Dependabot PR");
     assert.equal(rules("close", m, { repo: s.instanceRepo, number: 4 })[0][0], "core-repo-close");
   });
 
