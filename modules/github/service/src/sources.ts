@@ -5,6 +5,14 @@ import { readExceptions } from "./best-version.ts";
 export const SOURCE_EXCEPTIONS_FILE = ".github/supply-chain-source-exceptions.yaml";
 
 /**
+ * The `### <repo> <branch> (<sha>) base <base>` heading one part of a combined diff carries to the reviewer (review.ts
+ * diffSections): the code hosts write bare git diffs, so each part names the repository, the branch and commit it is, and the
+ * base its owner-approved source records were read from. A change with no base names none, and so matches no record.
+ */
+export const sectionHeading = (repo: string, branch: string, sha: string, base: string) =>
+  `### ${repo} ${branch} (${sha.slice(0, 12)})${base ? ` base ${base}` : ""}`;
+
+/**
  * The owner-approved source records: the same flow style, one per line, the version exceptions use, kept only when one says
  * `approved_by: owner` and names a package and the source it moves to. Anything else is not an approval; an absent file is no
  * records.

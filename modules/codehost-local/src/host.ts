@@ -14,7 +14,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { join } from "node:path";
 import { planParts, plan as planRules } from "../../github/service/src/plan.ts";
 import { fileContext, numstat } from "../../github/service/src/review-files.ts";
-import { SOURCE_EXCEPTIONS_FILE, readCardSourceExceptions } from "../../github/service/src/sources.ts";
+import { SOURCE_EXCEPTIONS_FILE, readCardSourceExceptions, sectionHeading } from "../../github/service/src/sources.ts";
 import { DEFAULT_CHURN_EXCLUDE, churnFromGit } from "../../../kernel/sdk/src/churn.ts";
 import type { FactIn } from "../../../kernel/sdk/src/kernel-client.ts";
 import { IDENTITY, bareOf, fail, git, ingest } from "./git.ts";
@@ -161,10 +161,12 @@ export function localHost({ root, sources = {}, tasksDir, scratchDir, instanceRe
         const c = await readChange(p.repo, Number(p.number));
         if (c.state !== "open") throw fail(409, `${changeUrl(p.repo, c.n)} is ${c.state}`);
         if (action === "merge") {
-          diff += await diffText(p.repo, c.base || "4b825dc642cb6eb9a060e54bf8d69288fbee4904", c.head);
+          // The records are read from the default branch (bases, below), so that is the base the heading names.
+          const into = c.main ? await defaultBranch(p.repo) : "";
+          diff += `${sectionHeading(p.repo, String((c.meta as { branch?: unknown }).branch ?? ""), c.head, into)}\n${await diffText(p.repo, c.base || "4b825dc642cb6eb9a060e54bf8d69288fbee4904", c.head)}\n`;
           changed.push(...(await numstatOf(p.repo, c.base || "4b825dc642cb6eb9a060e54bf8d69288fbee4904", c.head)));
           for (const f of c.files) reads.push({ name: `${p.repo} ${f}`, read: () => git(["--git-dir", bare(p.repo), "show", `${c.head}:${f}`], { raw: true }) });
-          bases.push({ repo: p.repo, base: c.main ? await defaultBranch(p.repo) : "", read: (path) => g(p.repo, ["show", `${c.main}:${path}`]) });
+          bases.push({ repo: p.repo, base: into, read: (path) => g(p.repo, ["show", `${c.main}:${path}`]) });
         }
         prs.push({ repo: p.repo, number: c.n, head: c.head, base: c.base, headMatches: !p.head || p.head === c.head, files: c.files, ownHead: true, dependabot: false, checks: action === "merge" ? (await checks(p.repo, c.head, c.base, true)).map(({ ok, pending }) => ({ ok, pending })) : [] });
       }
@@ -190,7 +192,7 @@ export function localHost({ root, sources = {}, tasksDir, scratchDir, instanceRe
         const p = (args: string[]) => git(["--git-dir", dir, ...args]);
         const mb = main ? await p(["merge-base", main, ref]).catch(() => "") : "";
         const files = (await p(["diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--name-only", "-z", mb || "4b825dc642cb6eb9a060e54bf8d69288fbee4904", b.sha])).split("\0").filter(Boolean);
-        diff += await diffText(b.repo, mb || "4b825dc642cb6eb9a060e54bf8d69288fbee4904", b.sha, dir);
+        diff += `${sectionHeading(b.repo, b.branch, b.sha, main ? def : "")}\n${await diffText(b.repo, mb || "4b825dc642cb6eb9a060e54bf8d69288fbee4904", b.sha, dir)}\n`;
         changed.push(...(await numstatOf(b.repo, mb || "4b825dc642cb6eb9a060e54bf8d69288fbee4904", b.sha, dir)));
         bases.push({ repo: b.repo, base: main ? def : "", read: (path) => g(b.repo, ["show", `${main}:${path}`]) });
         // Read now: the throwaway repo goes below.

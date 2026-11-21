@@ -193,14 +193,18 @@ test("a PR's card carries the branch's diff for the reviewer (#744): every kind 
   const template = Object.fromEntries([.../(\w+): "(\{\{\w+\}\})"/g[Symbol.matchAll](/card: &card \{([^}]*\}\}[^}]*)*\}/.exec(manifest)[0])].map((m) => [m[1], m[2]]));
   const card = render(template, { ...args, ...plan.json.facts });
   assert.equal(card.target, "acme-agents/widget `feature`");
+  // The reviewer binds an owner-approved source record to a part of the diff by its `### <repo> <branch> (<sha>) base <base>`
+  // heading (ai-reviewer review.ts diffSections): a push or PR's bare git diff carries one, naming the default branch it is off.
+  assert.match(card.details, new RegExp(`^### acme-agents/widget feature \\(${sha.slice(0, 12)}\\) base main$`, "m"));
   assert.match(card.details, /^\+export const x = 1;$/m);
 
   // Its merge's card carries the PR's diff at its head, read from GitHub.
   sh(origin, "fetch", "--quiet", ws, `${sha}:refs/heads/feature`);
   const main = sh(origin, "rev-parse", "main");
-  pulls = { "/repos/acme-agents/widget/pulls/1": { number: 1, head: { sha }, base: { sha: main }, changed_files: 2, user: { login: "acme-app[bot]" } }, "/repos/acme-agents/widget/pulls/1/files?per_page=100": [{ filename: "app.js" }, { filename: ".gitattributes" }] };
+  pulls = { "/repos/acme-agents/widget/pulls/1": { number: 1, head: { sha, ref: "feature" }, base: { sha: main, ref: "main" }, changed_files: 2, user: { login: "acme-app[bot]" } }, "/repos/acme-agents/widget/pulls/1/files?per_page=100": [{ filename: "app.js" }, { filename: ".gitattributes" }] };
   const merge = await call("/aidenhq/v1/executor/plan", { kind: "github.merge", args: { prs: [{ repo: "acme-agents/widget", number: 1, head: sha }] }, requester: { kind: "job", roles: [] }, task: "t1" });
   assert.equal(merge.status, 200, JSON.stringify(merge.json));
+  assert.match(merge.json.facts.diff, new RegExp(`^### acme-agents/widget feature \\(${sha.slice(0, 12)}\\) base main$`, "m"));
   assert.match(merge.json.facts.diff, /^\+export const x = 1;$/m);
 });
 
