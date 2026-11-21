@@ -160,14 +160,12 @@
 .rv-sample figcaption { font-size: var(--text-xs); color: var(--faint); }
 .rv-stats .ui-card { align-content: start; }
 
-
 /* Repo review: a whole repo at a commit. Options sit in four lens columns; each lens keeps its own hue. */
 .rv-split { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 16px; align-items: start; }
 @media (max-width: 760px) { .rv-split { grid-template-columns: minmax(0, 1fr); } }
 .rv-loading-sm { min-height: 96px; }
 .rv-lenses { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
 .rv-lens { --lens: var(--accent); display: grid; align-content: start; gap: 4px; padding: 10px 12px; border: 1px solid var(--border); border-top: 3px solid var(--lens); border-radius: var(--radius-md); background: var(--surface); }
-.rv-lens-correctness { --lens: var(--accent); }
 .rv-lens-security { --lens: var(--sev-important); }
 .rv-lens-maintainability { --lens: var(--sev-nit); }
 .rv-lens-performance { --lens: var(--sev-pre); }

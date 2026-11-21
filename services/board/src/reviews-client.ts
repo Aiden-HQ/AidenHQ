@@ -15,7 +15,7 @@ export interface Reviews {
   catalog(q: { repo: string; commit?: string }): Promise<Catalog>;
   /** A whole-repo review at a commit with the ticked catalog options; one shared cap. */
   runTree(body: TreeRequest): Promise<{ batch: string }>;
-  /** A batch's report, as markdown. */
+  /** A batch's report: the service answers raw markdown. */
   report(batch: string): Promise<{ markdown: string }>;
   get(id: string): Promise<{ run: Run; review: Review | null; findings: FindingRow[]; gate: Gate | null }>;
   /** The owner dismisses an open finding (it no longer holds the PR's merge). */

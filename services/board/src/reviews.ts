@@ -137,9 +137,12 @@ export type Verdict = "blocked" | "concerns" | "incomplete" | "clean";
 export interface TreeBatch {
   id: string;
   repo: string;
+  sha: string;
   sha7: string;
   verdict: Verdict | null;
   cost_usd: number;
+  /** The batch's one shared cap. */
+  run_usd: number;
   status: RunStatus;
   why?: string | null;
   started: string | null;
@@ -204,6 +207,8 @@ export const CodeReviewSchema = z
   .object({
     repos: z.array(RepoSchema).max(100),
     day_usd: z.number().positive().max(100_000),
+    /** Repo reviews and the option catalog are on (the service refuses both while this is off). */
+    lenses: z.boolean().optional(),
   })
   .strict()
   .superRefine((v, ctx) => {
@@ -236,7 +241,7 @@ export function upgradeConfig(raw: unknown): CodeReview | null {
     if (use.success && !repos.some((x) => x.repo.toLowerCase() === use.data.repo.toLowerCase())) repos.push(use.data);
   }
   const m = v.day_usd;
-  return { repos, day_usd: typeof m === "number" && m > 0 ? m : 100 };
+  return { repos, day_usd: typeof m === "number" && m > 0 ? m : 100, ...(typeof v.lenses === "boolean" ? { lenses: v.lenses } : {}) };
 }
 /** A combo's short label: "Codex · deepseek-flash-latest · medium". */
 export const comboLabel = (c: Pick<Combo, "engine" | "model" | "effort">, catalog?: EngineCatalog) =>

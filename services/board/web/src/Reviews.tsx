@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { SignInRequired, api, type ReviewsSetup } from "./api";
 import { IN_FLIGHT } from "./settings-ui";
 import type { FiledChange } from "./types";
-import { LENSES, MAX_COMBOS, REPO_DEFAULTS, TREE_RUN_USD, comboLabel, type CatalogOption, type CodeReview, type Combo, type EngineCatalog, type Finding, type FindingRow, type Gate, type Outcome, type RepoConfig, type ReposView, type Review, type ReviewInsights, type Run, type Severity, type TreeBatch, type Verdict } from "../../src/reviews";
+import { LENSES, MAX_COMBOS, REPO_DEFAULTS, TREE_RUN_USD, comboLabel, type CatalogOption, type CodeReview, type Combo, type EngineCatalog, type Finding, type FindingRow, type Gate, type Outcome, type RepoConfig, type ReposView, type Review, type ReviewInsights, type Run, type RunStatus, type Severity, type TreeBatch, type Verdict } from "../../src/reviews";
 import { Banner, Button, Card, Dialog, EmptyState, Facts, Field, Input, LinkButton, Meter, Page, PageHeader, Section, Segmented, Select, StatBlock, StatusDot, Switch, Tabs, Tag, Tags, Tile, TileGrid, hueClass, type StatusTone } from "./ui";
 import { agoLabel, elapsed } from "./util";
 import { Markdown } from "./markdown";
@@ -43,7 +43,7 @@ const prUrl = (repo: string, n: number) => `https://github.com/${repo}/pull/${n}
 /** A link the service gave, only when it points at GitHub. */
 const githubLink = (u?: string | null) => (u && /^https:\/\/github\.com\//.test(u) ? u : undefined);
 const STATUS: Record<Run["status"], [StatusTone, string]> = { queued: ["idle", "Queued"], running: ["busy", "Reviewing"], done: ["done", "Reviewed"], skipped: ["idle", "Skipped"], failed: ["failed", "Failed"] };
-const live = (r: Run) => r.status === "queued" || r.status === "running";
+const live = (r: { status: RunStatus }) => r.status === "queued" || r.status === "running";
 const OUTCOMES: Record<Outcome, [string, "ok" | "needs" | "neutral"]> = { fixed: ["Fixed", "ok"], dismissed: ["Dismissed", "neutral"], open_at_merge: ["Open at merge", "needs"], open_at_close: ["Open at close", "neutral"] };
 const tokens = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(n >= 10_000 ? 0 : 1)}k` : String(n));
 const took = (r: Run) => (r.duration_ms != null ? (r.duration_ms >= 60_000 ? `${Math.floor(r.duration_ms / 60_000)}m ${Math.round((r.duration_ms % 60_000) / 1000)}s` : `${Math.max(1, Math.round(r.duration_ms / 1000))}s`) : r.started && r.ended ? elapsed(r.started, Date.parse(r.ended)) : null);
@@ -177,7 +177,7 @@ export function ReviewsView({ onSignIn }: { onSignIn: () => void }) {
     void loadEngines();
   }, [ready, loadRuns, loadRepos, loadEngines]);
   // A run under way: the list follows it.
-  const anyLive = (runs?.some(live) ?? false) || batches.some(batchLive);
+  const anyLive = (runs?.some(live) ?? false) || batches.some(live);
   useEffect(() => {
     if (!anyLive) return;
     const t = setInterval(() => void loadRuns(), 8_000);
@@ -199,8 +199,8 @@ export function ReviewsView({ onSignIn }: { onSignIn: () => void }) {
   const spent = repos?.day_spent_usd ?? 0;
   const tab = "tab" in route ? route.tab : "reviews";
 
-  if ("create" in route) return engines ? <RepoReviewPage config={config} engines={engines} /> : <Page className="rv-page" label="New repo review"><PageHeader crumb={<a href="#/reviews/reviews">Code review</a>} title="New repo review" /><div className="rv-loading" aria-busy="true" /></Page>;
-  if ("batch" in route) return <BatchPage id={route.batch} onSignIn={onSignIn} />;
+  if ("create" in route) return !config?.lenses ? <RepoReviewsOff /> : engines ? <RepoReviewPage config={config} engines={engines} /> : <Page className="rv-page" label="New repo review"><PageHeader crumb={<a href="#/reviews/reviews">Code review</a>} title="New repo review" /><div className="rv-loading" aria-busy="true" /></Page>;
+  if ("batch" in route) return <BatchPage id={route.batch} batch={batches.find((b) => b.id === route.batch)} onSignIn={onSignIn} />;
   if ("run" in route) return <RunPage id={route.run} config={config} engines={engines} onSignIn={onSignIn} />;
 
   const header = (
@@ -244,7 +244,7 @@ export function ReviewsView({ onSignIn }: { onSignIn: () => void }) {
         </EmptyState>
       ) : ready && runs === null ? (
         !error && <div className="rv-loading" aria-busy="true" />
-      ) : !ready || (!config?.repos.length && !runs?.length) ? (
+      ) : !ready || (!config?.repos.length && !runs?.length && !batches.length) ? (
         <Start setup={setup} onWatch={() => setDialog({ kind: "repo" })} onOneOff={(url) => setDialog({ kind: "oneoff", url })} />
       ) : (
         <>
@@ -333,16 +333,17 @@ type Filter = "all" | "important" | "skipped";
 function RunsTab({ runs, batches, engines, onOneOff }: { runs: Run[] | null; batches: TreeBatch[]; engines: EngineCatalog | null; onOneOff: () => void }) {
   const [filter, setFilter] = useState<Filter>("all");
   const [repo, setRepo] = useState("");
-  const repoNames = useMemo(() => [...new Set((runs ?? []).map((r) => r.repo))].sort(), [runs]);
+  const repoNames = useMemo(() => [...new Set([...(runs ?? []).map((r) => r.repo), ...batches.map((b) => b.repo)])].sort(), [runs, batches]);
   if (!runs) return <div className="rv-loading" aria-busy="true" />;
   const shown = runs.filter((r) => (!repo || r.repo === repo) && (filter === "all" || (filter === "important" ? r.important > 0 : r.status === "skipped" || r.status === "failed")));
+  const shownBatches = batches.filter((b) => (!repo || b.repo === repo) && (filter === "all" || (filter === "important" ? b.verdict === "blocked" || b.verdict === "concerns" : b.status === "skipped" || b.status === "failed")));
   const counts = { important: runs.filter((r) => r.important > 0).length, skipped: runs.filter((r) => (r.status === "skipped" || r.status === "failed")).length };
   return (
     <>
-    {batches.length > 0 && (
-      <Section title="Repo reviews" count={batches.length}>
+    {shownBatches.length > 0 && (
+      <Section title="Repo reviews" count={shownBatches.length}>
         <div className="rv-runs" role="list">
-          {batches.map((b) => (
+          {shownBatches.map((b) => (
             <BatchRow key={b.id} b={b} />
           ))}
         </div>
@@ -359,7 +360,7 @@ function RunsTab({ runs, batches, engines, onOneOff }: { runs: Run[] | null; bat
       }
     >
       {!shown.length ? (
-        <EmptyState action={<Button onClick={onOneOff}>Review a PR</Button>}>{runs.length ? "No reviews match this filter." : "No reviews yet. The first one starts when a watched repo gets a pull request, or paste a PR link to review one now."}</EmptyState>
+        <EmptyState action={<Button onClick={onOneOff}>Review a PR</Button>}>{runs.length || batches.length ? "No reviews match this filter." : "No reviews yet. The first one starts when a watched repo gets a pull request, or paste a PR link to review one now."}</EmptyState>
       ) : (
         <div className="rv-runs" role="list">
           {shown.map((r) => (
@@ -373,7 +374,6 @@ function RunsTab({ runs, batches, engines, onOneOff }: { runs: Run[] | null; bat
 }
 
 const VERDICTS: Record<Verdict, [string, "failed" | "needs" | "ok" | "neutral"]> = { blocked: ["Blocked", "failed"], concerns: ["Concerns", "needs"], incomplete: ["Incomplete", "neutral"], clean: ["Clean", "ok"] };
-const batchLive = (b: TreeBatch) => b.status === "queued" || b.status === "running";
 function BatchRow({ b }: { b: TreeBatch }) {
   const [tone, word] = STATUS[b.status];
   const at = b.started ?? b.ended ?? new Date().toISOString();
@@ -389,19 +389,43 @@ function BatchRow({ b }: { b: TreeBatch }) {
       <span className="rv-run-who">{b.verdict ? <Tag tone={VERDICTS[b.verdict][1]}>{VERDICTS[b.verdict][0]}</Tag> : null}</span>
       <span className="rv-run-sev" />
       <span className="rv-run-cost">{b.cost_usd ? usd(b.cost_usd) : ""}</span>
-      <time className="rv-run-time" dateTime={at} title={new Date(at).toLocaleString()}>{b.status === "queued" ? "queued" : batchLive(b) ? elapsed(at) : agoLabel(b.ended ?? at)}</time>
+      <time className="rv-run-time" dateTime={at} title={new Date(at).toLocaleString()}>{b.status === "queued" ? "queued" : live(b) ? elapsed(at) : agoLabel(b.ended ?? at)}</time>
     </a>
   );
 }
 
-/** One whole-repo review's report, as the service rendered it (untrusted text: the Markdown part sanitises it). */
-function BatchPage({ id, onSignIn }: { id: string; onSignIn: () => void }) {
+/** One whole-repo review's report, as the service rendered it (untrusted text: the Markdown part sanitises it). The list's polling refreshes `batch`; the report is read again when the batch's state moves. */
+function BatchPage({ id, batch, onSignIn }: { id: string; batch: TreeBatch | undefined; onSignIn: () => void }) {
   const [md, setMd] = useState<string | null>(null);
   const [error, setError] = useState("");
-  useEffect(() => void api.reviewReport(id).then((r) => setMd(r.markdown), (e) => (e instanceof SignInRequired ? onSignIn() : setError((e as Error).message))), [id, onSignIn]);
+  const state = `${batch?.status}|${batch?.ended}`;
+  useEffect(() => {
+    let stale = false;
+    api.reviewReport(id).then(
+      (r) => !stale && (setMd(r.markdown), setError("")),
+      (e) => !stale && (e instanceof SignInRequired ? onSignIn() : setError((e as Error).message)),
+    );
+    return () => {
+      stale = true;
+    };
+  }, [id, state, onSignIn]);
+  useEffect(() => setMd(null), [id]);
+  const [tone, word] = batch ? STATUS[batch.status] : (["idle", ""] as const);
+  const link = (u?: string) => (u && /^https:\/\//.test(u) ? u : undefined);
   return (
     <Page className="rv-page" label="Repo review">
-      <PageHeader crumb={<a href="#/reviews/reviews">Code review</a>} title="Repo review" />
+      <PageHeader
+        crumb={<a href="#/reviews/reviews">Code review</a>}
+        title={batch ? `${batch.repo} ${batch.sha7}` : "Repo review"}
+        status={batch ? <span className="rv-head-status"><StatusDot tone={tone}>{batch.status === "done" ? "Reported" : word}</StatusDot>{batch.verdict && <Tag tone={VERDICTS[batch.verdict][1]}>{VERDICTS[batch.verdict][0]}</Tag>}</span> : undefined}
+        actions={
+          <>
+            {link(batch?.primer_url) && <LinkButton href={link(batch?.primer_url)!} external>Open in Primer</LinkButton>}
+            {link(batch?.report_url) && <LinkButton href={link(batch?.report_url)!} external>Open the report</LinkButton>}
+          </>
+        }
+      />
+      {batch && (batch.status === "failed" || batch.status === "skipped") && batch.why && <Banner tone="danger">{batch.why}</Banner>}
       {error ? <Banner tone="danger">Couldn't load this report: {error}</Banner> : md === null ? <div className="rv-loading" aria-busy="true" /> : <Card className="rv-report"><Markdown text={md} prefix="" className="md" /></Card>}
     </Page>
   );
@@ -733,6 +757,15 @@ const LENS_WORDS: Record<(typeof LENSES)[number], [string, string]> = {
   performance: ["Performance", "Slow paths, wasted work, heavy dependencies"],
 };
 const SHA = /^[0-9a-f]{7,40}$/i;
+/** The service refuses repo reviews until settings.code_review.lenses is on; the page says so instead of failing. */
+function RepoReviewsOff() {
+  return (
+    <Page className="rv-page" label="New repo review">
+      <PageHeader crumb={<a href="#/reviews/reviews">Code review</a>} title="New repo review" />
+      <EmptyState action={<LinkButton href="#/modules/code-review">Open Code review settings</LinkButton>}>Repo reviews are off until enabled in Code review settings.</EmptyState>
+    </Page>
+  );
+}
 function RepoReviewPage({ config, engines }: { config: CodeReview | null; engines: EngineCatalog }) {
   const [repo, setRepo] = useState("");
   const [commit, setCommit] = useState("");
@@ -745,24 +778,30 @@ function RepoReviewPage({ config, engines }: { config: CodeReview | null; engine
   const [err, setErr] = useState("");
   const commitOk = !commit.trim() || SHA.test(commit.trim());
   const edited = useRef(false);
-  const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
   // The catalog for this repo and commit: what applies there, with the recommended ones ticked (until the owner ticks their own).
   useEffect(() => {
     setOptions(null);
+    setSha("");
     setErr("");
     if (!repo || !commitOk) return;
-    clearTimeout(timer.current);
-    timer.current = setTimeout(() => {
+    let stale = false;
+    const timer = setTimeout(() => {
       void api.reviewCatalog(repo, commit.trim() || undefined).then(
         (c) => {
+          if (stale) return;
+          const ids = new Set(c.options.map((o) => o.id));
           setOptions(c.options);
           setSha(c.sha);
-          if (!edited.current) setTicked(new Set(c.options.filter((o) => o.recommended).map((o) => o.id)));
+          // The owner's own ticks stay across a new commit (those the commit still offers); otherwise the recommended ones.
+          setTicked((t) => (edited.current ? new Set([...t].filter((id) => ids.has(id))) : new Set(c.options.filter((o) => o.recommended).map((o) => o.id))));
         },
-        (e) => setErr((e as Error).message),
+        (e) => !stale && setErr((e as Error).message),
       );
     }, 300);
-    return () => clearTimeout(timer.current);
+    return () => {
+      stale = true;
+      clearTimeout(timer);
+    };
   }, [repo, commit, commitOk]);
   const capN = Number(cap);
   const capOk = Number.isFinite(capN) && capN >= TREE_RUN_USD.min && capN <= TREE_RUN_USD.max;
@@ -775,12 +814,13 @@ function RepoReviewPage({ config, engines }: { config: CodeReview | null; engine
     });
   };
   const c = combos[0];
+  const chosen = options ? options.filter((o) => ticked.has(o.id)).map((o) => o.id) : [];
   const run = async () => {
-    if (!c) return;
+    if (!c || !sha || !chosen.length) return;
     setBusy(true);
     setErr("");
     try {
-      const r = await api.reviewTreeRun({ target: { tree: true, repo, ...(commit.trim() ? { commit: commit.trim() } : {}) }, options: [...ticked], combo: { model: c.model, effort: c.effort }, run_usd: capN });
+      const r = await api.reviewTreeRun({ target: { tree: true, repo, commit: sha }, options: chosen, combo: { model: c.model, effort: c.effort }, run_usd: capN });
       location.hash = `#/reviews/b/${encodeURIComponent(r.batch)}`;
     } catch (e) {
       setErr((e as Error).message);
@@ -793,15 +833,17 @@ function RepoReviewPage({ config, engines }: { config: CodeReview | null; engine
       {err && <Banner tone="danger">{err}</Banner>}
       <Card className="rv-form">
       <div className="rv-split">
-        <RepoPicker repo={repo} onPick={(r) => ((edited.current = false), setRepo(r))} />
+        <RepoPicker repo={repo} onPick={(r) => ((edited.current = false), setTicked(new Set()), setRepo(r))} />
         <Field label="Commit" help={options && sha ? <>Reviewing <b className="rv-mono">{sha.slice(0, 7)}</b></> : "Optional. A commit SHA; the default branch's head when empty."} error={commitOk ? null : "A commit SHA, 7 to 40 hex characters"}>
-          {(id, d) => <Input id={id} aria-describedby={d} className="rv-mono" placeholder="default branch head" value={commit} onChange={(e) => ((edited.current = false), setCommit(e.target.value))} spellCheck={false} />}
+          {(id, d) => <Input id={id} aria-describedby={d} className="rv-mono" placeholder="default branch head" value={commit} onChange={(e) => setCommit(e.target.value)} spellCheck={false} />}
         </Field>
       </div>
       <Field label="Options" help="Ready-made checks in four lenses. Recommended ones for this repo are ticked.">
         {() =>
           !repo ? (
             <span className="rv-muted">Pick a repo to see what applies to it.</span>
+          ) : !commitOk ? (
+            <span className="rv-muted">Fix the commit to see what applies.</span>
           ) : options === null ? (
             err ? null : <div className="rv-loading rv-loading-sm" aria-busy="true" />
           ) : (
@@ -844,7 +886,7 @@ function RepoReviewPage({ config, engines }: { config: CodeReview | null; engine
       </Card>
       <div className="rv-form-actions">
         <Button variant="quiet" onClick={() => (location.hash = "#/reviews/reviews")}>Cancel</Button>
-        <Button variant="primary" disabled={!repo || !commitOk || !ticked.size || !c || !MODEL_ID.test(c.model) || !capOk || busy} onClick={() => void run()}>{busy ? "Starting…" : "Run review"}</Button>
+        <Button variant="primary" disabled={!repo || !commitOk || !sha || !chosen.length || !c || !MODEL_ID.test(c.model) || !capOk || busy} onClick={() => void run()}>{busy ? "Starting…" : "Run review"}</Button>
       </div>
     </Page>
   );
