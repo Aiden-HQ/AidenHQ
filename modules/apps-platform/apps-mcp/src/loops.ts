@@ -82,6 +82,7 @@ async function watchRollback(p: Platform, app: App, last: Deploy, s: Streak, now
   p.store.markRolledBack(last.id, `${s.why} on ${s.count} probes; rolled back by the post-deploy watch to ${r.sha.slice(0, 8)}`);
   p.store.closeIncident(app.name, ["unhealthy", "exited"]); // the outage incident its first failures opened: this one says more
   if (r.stopped) await p.raise(app.name, "unhealthy", `${what}; rollback target ${r.sha.slice(0, 8)} ${r.stopped}`);
+  else if (r.status === "build_failed") await p.raise(app.name, "unhealthy", `${what}; rollback to ${r.sha.slice(0, 8)} could not start; the app is stopped`);
   else if (r.status !== "healthy") await p.raise(app.name, "unhealthy", `${what}; rollback to ${r.sha.slice(0, 8)} also unhealthy`);
   else await p.raise(app.name, "rolled_back", `${what}; rolled back to ${r.sha.slice(0, 8)} (app_deploy redeploys it); ${NOTE}`);
   return true;

@@ -242,7 +242,12 @@ export function createEngine(d: Deps) {
       if (!prev) throw new Error(`no previous good deploy of ${app.name} to roll back to`);
       const back = await apply(app, prev.sha);
       // A failed `up` may have replaced only some containers: stop it all, as the deploy path does.
-      if (!back.built) await halt(app);
+      if (!back.built) {
+        await halt(app);
+        const r: Result = { sha: back.sha, status: "build_failed", images: back.images, previous: good[0]!.sha };
+        record(app, r, o.by, `rollback could not start: ${back.err ?? ""}; stopped`);
+        return r;
+      }
       // Health sets its status, as for the auto-rollback, except after an answer without sign-in: that target is stopped and
       // never a rollback target again. The checks' findings are reported with it.
       const checks = await verify(app, back.ok, back.declared);
