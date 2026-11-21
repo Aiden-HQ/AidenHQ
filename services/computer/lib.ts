@@ -47,7 +47,7 @@ export const BOX_EXEC_WRAP = CODEX_CONFIG_SCRUB;
 
 /**
  * compile publishes a new image tag before ops/computer-images.sh has built it (the same apply builds it next). Until it
- * exists the launch is refused with a 503: the kernel defers a launch the launcher can't answer and retries on its next tick.
+ * exists the launch is refused with a 503: the kernel retries it (an agent job on its next tick, a check every 30s up to its busy wait).
  */
 export async function builtImage(tag: string, docker: (args: string[]) => Promise<{ exitCode?: number | null; stdout: string }>, log: (...a: unknown[]) => void = () => {}) {
   if ((await docker(["image", "inspect", tag])).exitCode === 0) return tag;

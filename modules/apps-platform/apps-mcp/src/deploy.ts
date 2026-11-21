@@ -234,21 +234,10 @@ export function createEngine(d: Deps) {
       const prev = good.find((g) => g.sha !== good[0]?.sha);
       if (!prev) throw new Error(`no previous good deploy of ${app.name} to roll back to`);
       const back = await apply(app, prev.sha);
-      if (!back.built) {
-        // A failed `up` may have replaced only some containers: stop it all, as the deploy path does.
-        await compose(app, ["down", "--remove-orphans"]).catch(() => "");
-        d.store.clearRunning(app.name);
-      }
-      // Health sets its status, as for the auto-rollback, except after an answer without sign-in: that target is stopped and
-      // never a rollback target again. The checks' findings are reported with it.
+      // Health alone sets its status, as for the auto-rollback: the previous good commit may predate a newer check. The
+      // checks' findings are reported with it.
       const checks = await verify(app, back.ok, back.declared);
-      const stopped = back.ok && checks.some((c) => c.probe === "identity" && c.findings.some((f) => f.hard && f.what.includes(NO_SIGN_IN))) ? STOPPED_OPEN : undefined;
-      if (stopped) {
-        await compose(app, ["down", "--remove-orphans"]).catch(() => "");
-        d.store.clearRunning(app.name);
-        for (const g of good) if (g.sha === prev.sha) d.store.markRolledBack(g.id, stopped);
-      }
-      const r: Result = { sha: back.sha, status: back.ok && !stopped ? "healthy" : "failed", images: back.images, previous: good[0]!.sha, checks, ...(stopped ? { stopped } : {}) };
+      const r: Result = { sha: back.sha, status: back.ok ? "healthy" : "failed", images: back.images, previous: good[0]!.sha, checks };
       record(app, r, o.by, `rollback; ${[summary(checks), NOTE].filter(Boolean).join("; ")}`);
       return r;
     });
