@@ -115,7 +115,7 @@ main() {
   # After an auto-revert the instance checkout sits detached at the last known good: back onto main before moving it.
   git -C "$inst" symbolic-ref -q HEAD >/dev/null || git -C "$inst" checkout --quiet main
   git -C "$inst" merge --quiet --ff-only "$want"
-  [ "$(git -C "$inst" rev-parse HEAD)" = "$want" ] || { echo "refusing: instance main is at $(git -C "$inst" rev-parse HEAD), not $want (unpushed local commits?)" >&2; exit 1; }
+  [ "$(git -C "$inst" rev-parse HEAD)" = "$want" ] || { [ -z "${AIDENHQ_APPLY_BEFORE:-}" ] || git checkout --quiet --detach "$AIDENHQ_APPLY_BEFORE"; echo "refusing: instance main is at $(git -C "$inst" rev-parse HEAD), not $want (unpushed local commits?)" >&2; exit 1; }
   lap instance
 
   # The product commit the instance pins. It must be on product main: nothing unmerged runs here.
@@ -358,10 +358,9 @@ recoverDead() {
   fi
   echo "generation $n: $why, and no apply is finishing it: reverting"
   # Recorded once the revert has an outcome: a recovery killed mid-revert is found unsettled again.
-  local rc=0
-  revertTo "$target" "$why" "$GEN_DIR/apply-$target.log" || rc=$?
+  revertTo "$target" "$why" "$GEN_DIR/apply-$target.log" || :
   genJs recovered "$n"
-  return "$rc"
+  return 1
 }
 
 # recoverDead with its lines in the dead generation's log too (sets recovered=1 when there was one to finish).

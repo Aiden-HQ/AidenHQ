@@ -403,7 +403,7 @@ refresh
 while read -r id service; do
   [ -n "$id" ] || continue
   stale=1
-  docker rm -f "$id" >/dev/null 2>&1 || ! docker container inspect "$id" >/dev/null 2>&1 || { echo "compose: $service ($id) could not be removed" >&2; exit 1; }
+  err="$(docker rm -f "$id" 2>&1)" || grep -qE "$race" <<< "$err" || ! docker container inspect "$id" >/dev/null 2>&1 || { printf '%s\n' "$err" >&2; exit 1; }
   echo "compose: $service removed (no longer in the config)"
 done <<< "$(dropped)"
 refresh
