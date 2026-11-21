@@ -738,6 +738,22 @@ switchOver() {
     systemctl --user disable --now --quiet aidenhq-host-metrics.timer
     rm -f "$units/aidenhq-host-metrics.service" "$units/aidenhq-host-metrics.timer" "$HOME/.config/aidenhq-host-metrics.env" && systemctl --user daemon-reload && echo "host metrics timer removed (monitoring off)"
   fi
+  # The security module's daily SBOM batch (ops/security-sbom.sh): its timer runs while the module's security-scanner service
+  # is in the compiled compose, and is removed once the module is off. Its last EnvironmentFile= names the checkout this apply
+  # applied, written every apply: an unchanged unit would otherwise keep running whatever ~/.config/aidenhq-checkout.env
+  # recorded at install time, so the batch would scan with a checkout the applies no longer move.
+  if grep -q '^  security-scanner:' compose.modules.yaml 2>/dev/null; then
+    local sbom_env="$HOME/.config/aidenhq-security-sbom.env"
+    mkdir -p "$(dirname "$sbom_env")"
+    printf 'AIDENHQ_DIR=%s\n' "$(realpath "$product_dir")" > "$sbom_env.tmp" && mv -f "$sbom_env.tmp" "$sbom_env"
+    if ! cmp -s ops/units/aidenhq-security-sbom.service "$units/aidenhq-security-sbom.service" || ! cmp -s ops/units/aidenhq-security-sbom.timer "$units/aidenhq-security-sbom.timer"; then
+      cp ops/units/aidenhq-security-sbom.service ops/units/aidenhq-security-sbom.timer "$units/" && systemctl --user daemon-reload && echo "security sbom timer installed/updated"
+    fi
+    systemctl --user enable --now --quiet aidenhq-security-sbom.timer
+  elif [ -e "$units/aidenhq-security-sbom.timer" ]; then
+    systemctl --user disable --now --quiet aidenhq-security-sbom.timer
+    rm -f "$units/aidenhq-security-sbom.service" "$units/aidenhq-security-sbom.timer" "$HOME/.config/aidenhq-security-sbom.env" && systemctl --user daemon-reload && echo "security sbom timer removed (security off)"
+  fi
   # The CI runner units the config declares (the instances systemd has enabled) that are failed, and the ones a recorded
   # drain stopped (data/fleet-paused.json, modules/ci): running again after an apply, each start limit cleared before its
   # start (ops/ci-runner-units.sh).
@@ -776,11 +792,14 @@ health() {
         [ -n "$name" ] || continue
         grep -qF -- "  FAIL  $name  " <<< "$out" && regress+="${regress:+, }$name"
       done <<< "$(sed -n 's/^  ok    //p' "$base")"
-      # The apply installs this unit itself: a mismatch after the switch is never excused by a baseline that had one too.
-      if grep -qF -- "  FAIL  host metrics timer runs the applied checkout  " <<< "$out"; then
-        HEALTH_WHY="$(grep -F -- "  FAIL  host metrics timer runs the applied checkout  " <<< "$out" | tail -1 | sed 's/^  FAIL  host metrics timer runs the applied checkout  //')"
-        return 1
-      fi
+      # The apply installs these units itself: a mismatch after the switch is never excused by a baseline that had one too.
+      local hard
+      for hard in "host metrics timer runs the applied checkout" "security sbom timer runs the applied checkout"; do
+        if grep -qF -- "  FAIL  $hard  " <<< "$out"; then
+          HEALTH_WHY="$(grep -F -- "  FAIL  $hard  " <<< "$out" | tail -1 | sed "s/^  FAIL  $hard  //")"
+          return 1
+        fi
+      done
       [ -n "$regress" ] || break
       [ "$(date +%s)" -lt "$deadline" ] || { HEALTH_WHY="checks that passed before the apply fail now: $regress"; return 1; }
       echo "health: waiting on $regress"

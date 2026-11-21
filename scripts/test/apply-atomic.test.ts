@@ -42,7 +42,8 @@ fs.writeFileSync(out + "/paperclip.yaml", inst + v);
 fs.writeFileSync(out + "/kernel/connections.json", "{}\\n");
 fs.writeFileSync(out + "/modules.json", JSON.stringify({ modules: /^modules: (.*)$/m.exec(inst)?.[1] ?? "" }) + "\\n");
 fs.writeFileSync(stage ? "compose.modules.next.yaml" : "compose.modules.yaml",
-  (inst.includes("monitoring") ? "services:\\n  monitoring-node-exporter:\\n    image: x\\n" : "services: {}\\n") + "# " + v);
+  "services:\\n" + (inst.includes("monitoring") ? "  monitoring-node-exporter:\\n    image: x\\n" : "")
+    + (inst.includes("security") ? "  security-scanner:\\n    image: x\\n" : "") + "# " + v);
 const dv = fs.existsSync("DATA_VERSION") ? Number(fs.readFileSync("DATA_VERSION", "utf8")) : 0;
 fs.writeFileSync(out + "/module-data.json", JSON.stringify({ acme: { data_version: dv } }));
 const acme = "data/modules/acme";
@@ -135,10 +136,10 @@ function world() {
   for (const f of REAL) exe(d("pw", f), readFileSync(join(repo, f), "utf8"));
   for (const [f, t] of Object.entries(FAKES)) { mkdirSync(dirname(d("pw", f)), { recursive: true }); writeFileSync(d("pw", f), t); }
   for (const [f, t] of Object.entries(SCRIPTS)) exe(d("pw", f), t);
-  for (const u of ["aidenhq-kernel.service", "aidenhq-apply-recover.service", "aidenhq-backup.service", "aidenhq-backup.timer", "aidenhq-host-metrics.service", "aidenhq-host-metrics.timer"]) {
+  for (const u of ["aidenhq-kernel.service", "aidenhq-apply-recover.service", "aidenhq-backup.service", "aidenhq-backup.timer", "aidenhq-host-metrics.service", "aidenhq-host-metrics.timer", "aidenhq-security-sbom.service", "aidenhq-security-sbom.timer"]) {
     mkdirSync(d("pw", "ops/units"), { recursive: true });
-    // The host-metrics unit is the product's own: the apply compares the installed copy with it.
-    writeFileSync(d("pw", "ops/units", u), u.startsWith("aidenhq-host-metrics.") ? readFileSync(join(repo, "ops/units", u), "utf8") : `[Unit]\nDescription=${u}\n`);
+    // The host-metrics and security-sbom units are the product's own: the apply compares the installed copy with them.
+    writeFileSync(d("pw", "ops/units", u), /^aidenhq-(host-metrics|security-sbom)\./.test(u) ? readFileSync(join(repo, "ops/units", u), "utf8") : `[Unit]\nDescription=${u}\n`);
   }
   // The one service image the product builds, from svc/ (the fake compose config names it as the build context).
   mkdirSync(d("pw", "svc"));
@@ -318,6 +319,58 @@ test("a product_fork on top of the pin is what runs (and is recorded); one off t
   const local = await w.run();
   assert.equal(local.status, 1, local.out);
   assert.match(local.out, /refusing: couldn't fetch product_fork/);
+});
+
+// The security module's SBOM timer runs the checkout this apply applied, not the one setup recorded: every apply writes the
+// unit's last EnvironmentFile= (AIDENHQ_DIR=realpath of the applied checkout) and installs/enables the timer; a module the
+// instance no longer has removes it. The unit's AIDENHQ_DIR is therefore the applied checkout even while
+// ~/.config/aidenhq-checkout.env still names the one setup installed from.
+// A unit's AIDENHQ_DIR as systemd resolves it: Environment= first, then each EnvironmentFile= in order (a later one wins).
+function resolvedAidenhqDir(unit, home) {
+  let dir;
+  for (const line of readFileSync(unit, "utf8").split("\n")) {
+    const m = /^(Environment|EnvironmentFile)=(.*)$/.exec(line);
+    if (!m) continue;
+    const value = m[2].replaceAll("%h", home);
+    if (m[1] === "Environment") {
+      for (const kv of value.split(/\s+/)) if (kv.startsWith("AIDENHQ_DIR=")) dir = kv.slice("AIDENHQ_DIR=".length);
+    } else {
+      const file = value.replace(/^-/, "");
+      if (!existsSync(file)) continue;
+      const v = readFileSync(file, "utf8").split("\n").filter((l) => l.startsWith("AIDENHQ_DIR=")).at(-1);
+      if (v) dir = v.slice("AIDENHQ_DIR=".length);
+    }
+  }
+  return dir;
+}
+
+test("the security sbom timer follows the applied checkout and is removed when the security module is off", async () => {
+  const w = world();
+  const units = w.d("home/.config/systemd/user");
+  mkdirSync(units, { recursive: true });
+  // Setup's record from another checkout, and the timer already installed the way setup leaves it (no per-apply file).
+  const old = w.d("old-checkout");
+  mkdirSync(old, { recursive: true });
+  writeFileSync(w.d("home/.config/aidenhq-checkout.env"), `AIDENHQ_DIR=${old}\n`);
+  copyFileSync(join(repo, "ops/units/aidenhq-security-sbom.service"), join(units, "aidenhq-security-sbom.service"));
+  writeFileSync(join(units, "aidenhq-security-sbom.timer"), "[Timer]\n");
+  w.commitInstance(w.p1, "modules: [security]\n");
+  const r = await w.run();
+  assert.equal(r.status, 0, r.out);
+  // The per-apply file names this checkout, realpath'd; the unit and timer are the product's own.
+  assert.equal(readFileSync(w.d("home/.config/aidenhq-security-sbom.env"), "utf8"), `AIDENHQ_DIR=${realpathSync(w.d("prod"))}\n`);
+  assert.equal(readFileSync(join(units, "aidenhq-security-sbom.service"), "utf8"), readFileSync(join(repo, "ops/units/aidenhq-security-sbom.service"), "utf8"));
+  assert.equal(readFileSync(join(units, "aidenhq-security-sbom.timer"), "utf8"), readFileSync(join(repo, "ops/units/aidenhq-security-sbom.timer"), "utf8"));
+  assert.match(w.calls(), /systemctl --user enable --now --quiet aidenhq-security-sbom\.timer/);
+  // Resolved the way systemd does: the per-apply file is read after ~/.config/aidenhq-checkout.env, so it wins.
+  assert.equal(resolvedAidenhqDir(join(units, "aidenhq-security-sbom.service"), w.d("home")), realpathSync(w.d("prod")));
+  // The module off: the timer is disabled and removed, and so is the per-apply file.
+  w.commitInstance(w.p1, "modules: []\n");
+  const off = await w.run();
+  assert.equal(off.status, 0, off.out);
+  assert.match(w.calls(), /systemctl --user disable --now --quiet aidenhq-security-sbom\.timer/);
+  assert.ok(!existsSync(join(units, "aidenhq-security-sbom.service")) && !existsSync(join(units, "aidenhq-security-sbom.timer")));
+  assert.ok(!existsSync(w.d("home/.config/aidenhq-security-sbom.env")));
 });
 
 test("a staged compile failure leaves the running config byte-identical, both checkouts restored and nothing restarted", async () => {
