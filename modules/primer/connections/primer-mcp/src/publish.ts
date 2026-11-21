@@ -28,7 +28,7 @@ export function normalise(a: any, fromRunner = false): Publish {
   if (a?.private === true) {
     if (!str(a.repo_key)) throw new Error("a private publish names its repo_key");
     args.private = true;
-    args.repo_key = str(a.repo_key)!.trim();
+    args.repo_key = str(a.repo_key)!.trim().toLowerCase();
   } else if (str(a?.repo_key)) throw new Error("repo_key goes with private");
   if (!args.content) throw new Error("the document is empty: nothing to publish");
   if (!args.documentId && !args.title) throw new Error("a new document needs a title");
@@ -68,13 +68,26 @@ const byOf = (r: { agent?: string }, task: string): Owner | undefined => (r.agen
 /** What publishing a private report needs of Primer beyond its MCP tools: narrowing a new document to the owner, and the repo→document map. */
 export interface Private { makePrivate(documentId: string): Promise<void>; reports: Reports }
 
-/** Whether a document's answer says it is private to its owner alone: private, and no collaborator. Anything unreadable is "no". */
+/**
+ * Whether a document is private to its owner alone: private, and no collaborator. A read that fails throws (the publish fails
+ * and is asked again), so a transient error never passes for "shared" and never starts a second document.
+ */
 export async function ownerOnly(call: Call, documentId: string): Promise<boolean> {
-  const json = async (tool: string) => { try { return JSON.parse((await call(tool, { documentId })).text); } catch { return undefined; } };
+  const json = async (tool: string) => {
+    const r = await call(tool, { documentId });
+    if (r.isError && /not.?found|\b404\b|no such document/i.test(r.text)) return null; // gone: a new document takes its place
+    if (r.isError) throw new Error(`${tool} failed: ${r.text.slice(0, 200)}`);
+    return JSON.parse(r.text);
+  };
   const doc = await json("primer_get_document");
+  if (doc === null) return false;
+  const visibility = doc?.document?.visibility ?? doc?.visibility;
+  if (typeof visibility !== "string") throw new Error(`primer_get_document didn't say the visibility of ${documentId}`);
+  if (visibility !== "private") return false;
   const who = await json("primer_list_collaborators");
   const list = Array.isArray(who) ? who : Array.isArray(who?.collaborators) ? who.collaborators : undefined;
-  return doc?.visibility === "private" && Array.isArray(list) && list.length === 0;
+  if (!list) throw new Error(`primer_list_collaborators didn't list the collaborators of ${documentId}`);
+  return list.length === 0;
 }
 
 /** First publications on one repo_key never overlap, so concurrent ones share the one document. */
@@ -96,7 +109,9 @@ export function publisher(call: Call, owners: Owners = fileOwners(), priv: Priva
       if (owner && by && owner.agent === by.agent && owner.task === by.task) args.own = true;
       // A module's private report (module.yaml filed_by): its versions are the one report document's, never another's, so they
       // stay at the floor. Only a module identity, which no agent can hold, counts.
-      const report = Boolean(args.private && req.requester?.kind === "module");
+      // Only a module files a private report (primer's module.yaml filed_by names which): an agent never repoints a repo's report.
+      if (args.private && req.requester?.kind !== "module") throw new Error("a private report is filed by a module only");
+      const report = Boolean(args.private);
       const sha = createHash("sha256").update(args.content).digest("hex");
       return {
         args,
@@ -122,18 +137,21 @@ export function publisher(call: Call, owners: Owners = fileOwners(), priv: Priva
       // private to the owner alone, else a new private document in its place; first publications on a repo_key are serialised.
       return serial(a.repo_key!, async () => {
         const known = priv.reports.get(a.repo_key!);
-        const keep = known !== undefined && (await ownerOnly(call, known));
-        const out = await write(keep ? { ...a, documentId: known } : { ...a, documentId: undefined, title: a.title ?? `Repo review: ${a.repo_key}` }, undefined);
-        if (keep || !out.ok) return out;
-        const id = /\(document ([A-Za-z0-9-]+)\)/.exec(out.text)?.[1];
-        if (!id) return { ok: false, text: `${out.text}: its id wasn't in Primer's answer, so it couldn't be made private: make it private on Primer by hand` };
+        if (known !== undefined && (await ownerOnly(call, known))) return write({ ...a, documentId: known }, undefined);
+        // A new document: created with a placeholder, made private, and only then given the report, so the report is never
+        // readable by the organization, not even for a moment.
+        const made = await write({ ...a, documentId: undefined, content: "This private report is being prepared.", title: a.title ?? `Repo review: ${a.repo_key}` }, undefined);
+        if (!made.ok) return made;
+        const id = /\(document ([A-Za-z0-9-]+)\)/.exec(made.text)?.[1];
+        if (!id) return { ok: false, text: `${made.text}: its id wasn't in Primer's answer, so the report wasn't added` };
         try {
           await priv.makePrivate(id);
         } catch (e) {
-          return { ok: false, text: `${out.text}, but it couldn't be made private (${(e as Error).message.slice(0, 200)}): make it private on Primer before anything else` };
+          return { ok: false, text: `${made.text} (a placeholder), but it couldn't be made private (${(e as Error).message.slice(0, 200)}), so the report wasn't added` };
         }
         priv.reports.set(a.repo_key!, id);
-        return { ok: true, text: `${out.text}${known ? ` (the earlier report ${known} is shared wider or gone, so this is a new private document)` : ""}` };
+        const out = await write({ ...a, documentId: id }, undefined);
+        return out.ok && known ? { ...out, text: `${out.text} (the earlier report ${known} is shared wider or gone, so this is a new private document)` } : out;
       });
     },
   };

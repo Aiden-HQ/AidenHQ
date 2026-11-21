@@ -12,7 +12,7 @@
 //   read         {repo, kind: pr | issue | diff | job | prs, number?, id?} → that object (a PR or issue as the grader reads it, a diff, a job, the open PRs)
 //   comment      {repo, number, body, id?} → {id}: posts (or edits comment `id`) with the "via AidenHQ" footer
 //   commit       {repo, branch, path, content, parent, message} → {sha}: one file as the owner, with the trailer; 409 when the branch moved off parent
-//   setup        {repo, branch, expected_tip, files, title, body, task?} → {pr_url, tip}: files the code host's own Tier 1 `github.setup` write
+//   setup        {repo, branch, expected_tip, files, title, body, task} → {pr_url, tip}: files the code host's own Tier 1 `github.setup` write
 //                (the AI reviewer reads the files), which runs only once approved: one commit adding the missing allowlisted files on an
 //                aidenhq/ branch off the default branch's head, and its PR. Answers {pending, write} while the record waits.
 //   runner_token {org} → {token, expires_at}: an org's runner registration token, and nothing else
@@ -146,9 +146,10 @@ function shape(op: string, b: Record<string, unknown>, paths: string[] = [], set
       if (typeof content !== "string" || content.length > 1_000_000) throw fail(400, `${path}: content must be a string of at most 1,000,000 characters`);
       files[path] = content;
     }
-    const task = b.task == null ? undefined : String(b.task);
-    if (task !== undefined && !/^[\w.:-]{1,100}$/.test(task)) throw fail(400, "task is a task id");
-    return { branch, expected_tip: tip, files, allow: setupPaths, title: text(b.title, "title", 200), body: text(b.body, "body", 20_000), ...(task ? { task } : {}) };
+    if (Object.values(files).reduce((n, c) => n + c.length, 0) > 3_000_000) throw fail(413, "the setup files are at most 3,000,000 characters in all");
+    const task = String(b.task ?? "");
+    if (!/^[\w.:-]{1,100}$/.test(task)) throw fail(400, "task is the id of the task the setup's approval belongs to");
+    return { branch, expected_tip: tip, files, allow: setupPaths, title: text(b.title, "title", 200), body: text(b.body, "body", 20_000), task };
   }
   // commit
   const path = text(b.path, "path", 500), branch = String(b.branch ?? ""), parent = String(b.parent ?? "");
