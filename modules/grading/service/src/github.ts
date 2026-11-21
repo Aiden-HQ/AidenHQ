@@ -29,6 +29,15 @@ export function createGithub({ kernel, text }: { kernel: KernelCall; text: Kerne
       });
     },
     /**
+     * Whether `repo` has the directory `path` at the commit `ref`: `kind: dir` behind the evidence grant, so a suite's
+     * folder can be proved present at the graded head rather than inferred from a diff that may be cut.
+     */
+    async dir(repo: string, path: string, ref: string): Promise<{ path: string; present: boolean }> {
+      if (!/^[\w./-]{1,500}$/.test(path) || path.split("/").some((s) => s === ".." || s === "." || !s)) throw new Error(`${repo} with ${path}@${ref} is not a readable directory`);
+      if (!/^[0-9a-f]{40}$/.test(ref)) throw new Error(`${repo} with ${path}@${ref} is not a readable directory`);
+      return read(repo, { kind: "dir", path, ref });
+    },
+    /**
      * One Actions job by id in `repo`, as the command facts read it: its state and conclusion, its steps, the run that owns
      * it (`run_id`, `run_base`, `event`, `head_sha`) and that run's workflow (`workflow_path`, `workflow_state`); null when
      * the repo has no such job.

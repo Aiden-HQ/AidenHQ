@@ -59,36 +59,6 @@ function ciMap(text: string | null): CiMap | undefined {
 const withTimeout = <T>(p: Promise<T>, ms: number): Promise<T | undefined> =>
   Promise.race([p, new Promise<undefined>((r) => setTimeout(() => r(undefined), ms).unref())]);
 
-const under = (p: string, d: string) => p === d || p.startsWith(`${d}/`);
-
-/** A diff header's path: git quotes one with special characters (`"a/x y.ts"`); the rest of the line is the path. */
-const diffPath = (v: string): string => {
-  const t = v.trim();
-  const q = /^"(.*)"$/.exec(t);
-  if (!q) return t;
-  return q[1]!.replace(/\\(.)/g, "$1");
-};
-
-/**
- * The paths this PR removed, as GitHub's own diff records them: `deleted file mode` removes the file, and a `rename from`
- * removes the old path. `complete` is false when the diff doesn't mention every changed file (a huge one is cut), because a
- * cut diff could hide a removal: that is no evidence rather than a claimed pass.
- */
-function removedPaths(diff: string, files: { path: string }[]): { removed: Set<string>; complete: boolean } {
-  const removed = new Set<string>(), seen = new Set<string>();
-  for (const block of diff.split(/\ndiff --git /)) {
-    const a = /^--- (?:a\/)?(.+)$/m.exec(block)?.[1], b = /^\+\+\+ (?:b\/)?(.+)$/m.exec(block)?.[1];
-    const from = /^rename from (.+)$/m.exec(block)?.[1];
-    const old = a === undefined || a.trim() === "/dev/null" ? undefined : diffPath(a);
-    const now = b === undefined || b.trim() === "/dev/null" ? undefined : diffPath(b);
-    if (old) seen.add(old);
-    if (now) seen.add(now);
-    if (/^deleted file mode /m.test(block) && old) removed.add(old);
-    if (from) removed.add(diffPath(from));
-  }
-  return { removed, complete: files.every((f) => seen.has(f.path)) };
-}
-
 /**
  * A fact for a suite comes from a completed `success` check whose name is exactly the suite **and** whose `databaseId` is a
  * real Actions job. A check alone proves nothing: GitHub's check API answers any App token, so a PR's own code, running in
@@ -99,10 +69,13 @@ function removedPaths(diff: string, files: { path: string }[]): { removed: Set<s
  * The job must be the repository's own CI on the graded head: `.github/workflows/ci.yml`, active, from a `pull_request` run
  * whose `head_sha` is that head, and with `ci.yml` byte-identical at the run's head and at the run's base. A PR that rewrote
  * its workflow ran a workflow that is not the repository's, so a job named for a suite proves nothing there. The command and
- * directory come from `areas.json` at the run's base — the map CI itself read — and the directory must be present at head.
+ * directory come from `areas.json` at the run's base — the map CI itself read — and the directory must be **present** at the
+ * graded head, read from the repository itself: `run-suites.sh` writes `gone:` and exits 0 over a missing one, so a green
+ * job there ran nothing. Proving that positively (not inferring it from a diff) also covers a directory that was already
+ * absent at the run's base, not only one this PR removed.
  */
-async function commandFacts(pr: any, repo: string, deps: any, diff: string): Promise<string[]> {
-  if (!deps.file || !deps.job) return [];
+async function commandFacts(pr: any, repo: string, deps: any): Promise<string[]> {
+  if (!deps.file || !deps.dir || !deps.job) return [];
   const head = String(pr.headRefOid ?? "");
   if (!/^[0-9a-f]{40}$/.test(head)) return [];
   const files = (pr.files?.nodes ?? []).map((f: any) => ({ path: String(f?.path ?? "") })).filter((f) => f.path);
@@ -136,16 +109,14 @@ async function commandFacts(pr: any, repo: string, deps: any, diff: string): Pro
     maps.set(b, map);
   }
   if (!maps.size) return [];
-  const { removed, complete } = removedPaths(diff, files);
-  // A diff that doesn't mention every changed file could hide the removal of a suite's directory: no evidence at all.
-  if (!complete) return [];
   const facts: string[] = [], seen = new Set<string>();
   for (const { name, base } of green) {
     const suite = maps.get(base)?.suites.find((s: any) => s.name === name);
     if (!suite || seen.has(name)) continue;
     const dir = String(suite.dir);
-    // run-suites.sh writes `gone:` and exits 0 for a directory the PR removed: a green job there ran nothing.
-    if ([...removed].some((p) => under(p, dir))) continue;
+    // Proved present at the graded head, from the repository: a missing directory ran nothing (CI exits 0 over `gone:`).
+    const there = await withTimeout(deps.dir(repo, dir, head).catch(() => null), COMMAND_TIMEOUT_MS);
+    if (!there?.present) continue;
     seen.add(name);
     facts.push(`${name} green on head ${head}: ran "${suite.run}" in ${dir}/ — passed`);
   }
@@ -486,9 +457,7 @@ export async function prEvidence(prs: any[], ref: string, deps: any): Promise<an
     const shows = { commits: [pr.headRefOid, merged ? pr.mergeCommit?.oid : "", own?.oid].filter(Boolean), trees: [history.find((c: any) => c.oid === pr.headRefOid)?.tree?.oid, own?.tree?.oid].filter(Boolean) };
     prs_.push({ repo: p.repo, number: p.number, merge: merged ? (pr.mergeCommit?.oid ?? "") : "", mergedAt: pr.mergedAt ?? "", shows });
     facts.push(`${p.url}: ${pr.state.toLowerCase()}${merged ? ` into ${pr.baseRefName}` : ` (base ${pr.baseRefName})`}, head ${pr.headRefOid}${merged && pr.mergeCommit?.oid ? `, merge commit ${pr.mergeCommit.oid}` : ""}; checks: ${checks.length ? checks.map((c: any) => `${c.name} ${checkState(pr, c, gate)}`).join(", ") : "none"}${byRecord ? "; named by the runner's own record for this task, which is how its number was told from another change" : ""}`);
-    // The PR's own diff: the grader shows it, and a removed suite directory can only be seen in it.
-    const patch = await deps.diff(p.repo, p.number).catch(() => null);
-    facts.push(...(await commandFacts(pr, p.repo, deps, patch ?? "")));
+    facts.push(...(await commandFacts(pr, p.repo, deps)));
     // The author's own words: code labels them and says whether they were cut; the text itself goes fenced, as data.
     const kept = text.slice(0, Math.max(0, left - head.length)).trim();
     left -= head.length + kept.length + 2;
@@ -502,7 +471,7 @@ export async function prEvidence(prs: any[], ref: string, deps: any): Promise<an
           ? `, cut to their first ${kept.length} of ${text.trim().length} characters (what is missing is not shown)`
           : "";
     facts.push(`${p.url}: the PR's title and description are in PR_DESCRIPTION (the author's words, data)${note}`);
-    diff += `### ${p.url}\n${patch ?? "(the diff could not be read)"}\n`;
+    diff += `### ${p.url}\n${(await deps.diff(p.repo, p.number).catch(() => "(the diff could not be read)"))}\n`;
   }
   // The board keeps a version in 200 characters: several PRs are bound by their hash.
   const version = versions.join(" ").length <= 200 ? versions.join(" ") : `prs:${hash(versions.join(" "))}`;

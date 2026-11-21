@@ -93,15 +93,14 @@ const WORKFLOW = "name: ci\njobs:\n  packages:\n    steps:\n      - name: Test\n
 /**
  * The command facts' dependencies. `job` answers `/actions/jobs/{id}` — null is the 404 a check with no job behind it gets
  * (a check a PR posted itself); a job is a runner's own record. `file` answers the two evidence paths at the head and at the
- * run's base. No log read exists at all.
+ * run's base; `dir` proves a suite's directory is present at the graded head (`absent` names dirs it reports missing). No log
+ * read exists at all.
  */
-const PATCH = (path) => `diff --git a/${path} b/${path}\nnew file mode 100644\n--- a/${path}\n+++ b/${path}\n+x\n`;
-const commandDeps = (prs, { base = AREAS, headWorkflow = WORKFLOW, baseWorkflow = WORKFLOW, jobs = {}, bases = [SHA("f")], patch } = {}) => {
+const commandDeps = (prs, { base = AREAS, headWorkflow = WORKFLOW, baseWorkflow = WORKFLOW, jobs = {}, bases = [SHA("f")], absent = [], dirResult } = {}) => {
   const head = prs[0].headRefOid;
-  const diff = patch ?? prs[0].files.nodes.map((f) => PATCH(f.path)).join("");
   return {
     ...depsFor(prs),
-    diff: async () => diff,
+    dir: async (_repo, path, ref) => dirResult ? dirResult(path, ref) : { path, present: !absent.includes(path) },
     file: async (_repo, path, ref) => {
       if (path === ".github/ci/areas.json") return ref === head ? base : bases.includes(ref) ? base : null;
       if (path === ".github/workflows/ci.yml") return ref === head ? headWorkflow : bases.includes(ref) ? baseWorkflow : null;
@@ -171,34 +170,23 @@ test("a head whose ci.yml differs from the run's base claims nothing", async () 
   }
 });
 
-test("a suite whose directory the PR deleted at head mints nothing", async () => {
+test("a suite whose directory is absent at the graded head mints nothing", async () => {
   // run-suites.sh exits 0 over a missing directory: a green job there ran nothing.
-  const prs = [withJobs(238, "a", "b", [check("kernel#1", 120)], ["kernel/src/x.ts"])];
-  const patch = "diff --git a/kernel/src/x.ts b/kernel/src/x.ts\ndeleted file mode 100644\n--- a/kernel/src/x.ts\n+++ /dev/null\n-x\n";
-  const ev = await graded(238, commandDeps(prs, { patch }));
+  const prs = [withJobs(238, "a", "b", [check("kernel#1", 120)])];
+  const ev = await graded(238, commandDeps(prs, { absent: ["kernel"] }));
   assert.ok(!ev.facts.some((f) => f.includes('ran "')), ev.facts.join("\n"));
 });
 
-test("a suite whose directory a rename carried away mints nothing", async () => {
-  const prs = [withJobs(243, "a", "b", [check("kernel#1", 126)], ["modules/grading/x.ts"])];
-  const patch = "diff --git a/kernel/src/x.ts b/modules/grading/x.ts\nsimilarity index 100%\nrename from kernel/src/x.ts\nrename to modules/grading/x.ts\n";
-  const ev = await graded(243, commandDeps(prs, { patch }));
-  // kernel#1's directory is `kernel`, and its file moved out of it: the directory is gone at head.
+test("a suite whose directory was already absent at the run's base mints nothing", async () => {
+  // Not a removal this PR made: the folder is simply not at head, so the job that ran it ran nothing.
+  const prs = [withJobs(249, "a", "b", [check("kernel#1", 127)])];
+  const ev = await graded(249, commandDeps(prs, { dirResult: () => ({ path: "kernel", present: false }) }));
   assert.ok(!ev.facts.some((f) => f.includes('ran "')), ev.facts.join("\n"));
 });
 
-test("a quoted path in the diff is read as its real name", async () => {
-  const prs = [withJobs(250, "a", "b", [check("kernel#1", 132)], ["kernel/src/x.ts"])];
-  const patch = 'diff --git "a/kernel/src/x y.ts" "b/kernel/src/x y.ts"\ndeleted file mode 100644\n--- "a/kernel/src/x y.ts"\n+++ /dev/null\n-x\n';
-  prs[0].files.nodes = [{ path: "kernel/src/x y.ts" }];
-  const ev = await graded(250, commandDeps(prs, { patch }));
-  assert.ok(!ev.facts.some((f) => f.includes('ran "')), ev.facts.join("\n"));
-});
-
-test("a diff that doesn't mention every changed file claims nothing", async () => {
-  // A cut diff could hide the removal of a suite's directory, so a partial one is no evidence.
-  const prs = [withJobs(249, "a", "b", [check("kernel#1", 127)], ["kernel/src/x.ts", "kernel/src/y.ts"])];
-  const ev = await graded(249, commandDeps(prs, { patch: PATCH("kernel/src/x.ts") }));
+test("an unreadable directory check claims nothing", async () => {
+  const prs = [withJobs(250, "a", "b", [check("kernel#1", 128)])];
+  const ev = await graded(250, commandDeps(prs, { dirResult: () => null }));
   assert.ok(!ev.facts.some((f) => f.includes('ran "')), ev.facts.join("\n"));
 });
 

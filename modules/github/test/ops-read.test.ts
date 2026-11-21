@@ -45,6 +45,15 @@ test("a job's record carries its steps, its run's base and the workflow that ran
   assert.equal(again.json.run_base, null);
 });
 
+test("a directory probe answers whether the folder is there, never its contents", async () => {
+  const c = ctx();
+  const at = (status: number, body: unknown) => ({ ...c, access: { ...c.access, rest: async () => ({ status, body, headers: new Headers() }) } as unknown as OpsContext["access"] });
+  // GitHub answers a directory with a JSON list; a file is an object, so a file path is not a directory.
+  assert.deepEqual((await read(at(200, [{ name: "a" }]), { kind: "dir", path: "kernel", ref: "a".repeat(40) })).json, { path: "kernel", present: true });
+  assert.deepEqual((await read(at(200, { name: "x", type: "file" }), { kind: "dir", path: "kernel", ref: "a".repeat(40) })).json, { path: "kernel", present: false });
+  assert.deepEqual((await read(at(404, {}), { kind: "dir", path: "gone", ref: "a".repeat(40) })).json, { path: "gone", present: false });
+});
+
 test("a job GitHub has no answer for is null, never an error", async () => {
   const a = await read(ctx(), { kind: "job", id: 42 });
   assert.equal(a.status, 200);

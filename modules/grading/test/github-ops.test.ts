@@ -32,3 +32,16 @@ test("a file goes through the read op at the exact commit, and a missing one is 
   await assert.rejects(() => github.file("acme/app", "../etc/passwd", "a".repeat(40)));
   await assert.rejects(() => github.file("acme/app", ".github/ci/areas.json", "main"));
 });
+
+test("a directory probe goes through the read op at the exact commit, and answers a boolean", async () => {
+  const calls = [];
+  const github = createGithub({
+    kernel: async (_method, path, body) => (calls.push([path, body]), { path: body.path, present: body.path !== "gone" }),
+    text: async () => { throw new Error("a dir probe is a JSON read, never text"); },
+  });
+  assert.deepEqual(await github.dir("acme/app", "kernel", "a".repeat(40)), { path: "kernel", present: true });
+  assert.deepEqual(calls.at(-1), ["/v1/codehost/read", { repo: "acme/app", kind: "dir", path: "kernel", ref: "a".repeat(40) }]);
+  assert.equal((await github.dir("acme/app", "gone", "a".repeat(40))).present, false);
+  await assert.rejects(() => github.dir("acme/app", "../etc", "a".repeat(40)));
+  await assert.rejects(() => github.dir("acme/app", "kernel", "main"));
+});

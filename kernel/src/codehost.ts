@@ -9,7 +9,7 @@
 //                fetches it itself, so host git never runs in a workspace a box can write
 //   fetch        {repo, ref: refs/heads/* | refs/heads/<b> | refs/pull/<n>/head} → a git bundle of those refs
 //   head         {repo, ref: <branch>} → {sha}
-//   read         {repo, kind: pr | issue | diff | job | prs | file, ...} → that object; file is `evidence`
+//   read         {repo, kind: pr | issue | diff | job | prs | file | dir, ...} → that object; file is `evidence`, dir a `probe`
 //   comment      {repo, number, body, id?} → {id}: posts (or edits comment `id`) with the "via AidenHQ" footer
 //   commit       {repo, branch, path, content, parent, message} → {sha}: one file as the owner, with the trailer; 409 when the branch moved off parent
 //   runner_token {org} → {token, expires_at}: an org's runner registration token, and nothing else
@@ -55,8 +55,9 @@ export type Answer = Readable & { statusCode?: number; headers: http.IncomingHtt
 // A module's grant (its `codehost:`, taken literally): repos are owner/name, owner/*, */* (anything the owner's account reaches), or
 // @instance, @product, @agents/<name|*> (in the fleet org: github_fleet_org), @orgs (every repo of each owner the instance allows,
 // github_orgs) and @maintained (the repos it maintains, maintainer_repos), which resolve from the kernel's own configuration (its
-// repos), never from a module's settings. A commit grant names the paths it writes, an evidence grant those it reads.
-export type OpsGrant = { module: string; snapshot?: { repos: string[] }; clone?: { repos: string[] }; fetch?: { repos: string[] }; read?: { repos: string[] }; evidence?: { repos: string[]; paths: string[] }; comment?: { repos: string[] }; commit?: { repos: string[]; paths: string[] }; runner?: { orgs: string[] } };
+// repos), never from a module's settings. A commit grant names the paths it writes, an evidence grant those it reads,
+// and a probe grant only lets a `dir` read answer whether a folder exists (a boolean, no contents).
+export type OpsGrant = { module: string; snapshot?: { repos: string[] }; clone?: { repos: string[] }; fetch?: { repos: string[] }; read?: { repos: string[] }; evidence?: { repos: string[]; paths: string[] }; probe?: { repos: string[] }; comment?: { repos: string[] }; commit?: { repos: string[]; paths: string[] }; runner?: { orgs: string[] } };
 
 const SLUG = /^([\w.-]+)\/([\w.-]+|\*)$/;
 const DOTS = /^\.+$/;
@@ -96,12 +97,13 @@ export function covers(slug: string, repos: string[] = [], r: KernelRepos = {}):
 
 const NO_HOST = "no GitHub code host here (the github module isn't enabled)";
 /** Each op's grant: the key of the module's `codehost:` it needs. */
-const GRANT_KEY: Record<string, "snapshot" | "clone" | "fetch" | "read" | "evidence" | "comment" | "commit" | "runner"> = {
+const GRANT_KEY: Record<string, "snapshot" | "clone" | "fetch" | "read" | "evidence" | "probe" | "comment" | "commit" | "runner"> = {
   snapshot: "snapshot", bundle: "clone", fetch: "fetch", head: "fetch", read: "read", comment: "comment", commit: "commit", runner_token: "runner",
 };
 const FETCH_REF = /^(refs\/heads\/\*|refs\/heads\/(?!-)(?!.*\.\.)(?!.*@\{)[\w./-]{1,200}|refs\/pull\/\d{1,9}\/head)$/;
-const READ_KINDS = ["pr", "issue", "diff", "job", "prs", "file"];
-const EVIDENCE_KINDS = ["file"];
+const READ_KINDS = ["pr", "issue", "diff", "job", "prs", "file", "dir"];
+const EVIDENCE_KINDS = ["file", "dir"];
+const PROBE_KINDS = ["dir"];
 const int = (v: unknown, what: string) => {
   const n = Number(v);
   if (!Number.isSafeInteger(n) || n < 1) throw fail(400, `${what} must be a positive integer`);
@@ -128,7 +130,7 @@ function shape(op: string, b: Record<string, unknown>, paths: string[] = []): Re
     if (!READ_KINDS.includes(kind)) throw fail(400, `kind is one of ${READ_KINDS.join(", ")}`);
     if (kind === "prs") return { kind };
     if (kind === "job") return { kind, id: int(b.id, "id") };
-    if (kind === "file") {
+    if (kind === "file" || kind === "dir") {
       const path = String(b.path ?? ""), ref = String(b.ref ?? "");
       if (!/^[\w./-]{1,500}$/.test(path) || path.split("/").some((s) => s === ".." || s === "." || !s)) throw fail(400, `${path.slice(0, 100)} is not a path in the repository`);
       if (!/^[0-9a-f]{40}$/.test(ref)) throw fail(400, "ref is a full commit sha");
@@ -179,9 +181,10 @@ export function createCodehost({ grants, repos, kind, secret, resolver, local = 
     if (!onLocal && !k?.executor) throw fail(404, NO_HOST);
     if (!m || DOTS.test(m[1]!) || DOTS.test(m[2]!) || m[2] === "*") throw fail(400, `${repo} is not owner/name`);
     const kindOf = op === "read" ? String(b?.kind ?? "") : "";
-    const key = EVIDENCE_KINDS.includes(kindOf) ? "evidence" : GRANT_KEY[op]!;
+    // A `dir` probe asks only whether a folder exists (a boolean), so it has its own narrow grant; a `file` is `evidence`.
+    const key = PROBE_KINDS.includes(kindOf) ? "probe" : EVIDENCE_KINDS.includes(kindOf) ? "evidence" : GRANT_KEY[op]!;
     const grant = g?.[key as "snapshot"];
-    if (!covers(repo, grant?.repos, repos())) throw fail(403, `${module} has no ${key === "evidence" ? "evidence" : op} grant on ${repo}`);
+    if (!covers(repo, grant?.repos, repos())) throw fail(403, `${module} has no ${key === "evidence" || key === "probe" ? key : op} grant on ${repo}`);
     if (onLocal) {
       const ref = String(b.ref ?? "");
       if (op !== "snapshot" && op !== "bundle") throw fail(404, `codehost-local has no ${op} operation`);

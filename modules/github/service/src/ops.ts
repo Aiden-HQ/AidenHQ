@@ -151,6 +151,19 @@ async function file(ctx: OpsContext, s: ReturnType<typeof slugOf>, b: Body): Pro
   return { status: 200, text: typeof r.body === "string" ? r.body : String(r.body ?? "") };
 }
 
+/**
+ * Whether the repository has a directory at that exact commit: GitHub's contents API answers a directory with a JSON list
+ * (a file with its object). A 404 is "no such directory"; anything else unreadable throws, so the caller waits rather than
+ * treating a transient failure as absence.
+ */
+async function dir(ctx: OpsContext, s: ReturnType<typeof slugOf>, b: Body): Promise<Answer> {
+  const r = await ctx.access.rest("GET", `/repos/${s.slug}/contents/${enc(String(b.path))}?ref=${String(b.ref)}`);
+  // A 404 is an answer ("not there"); anything else short of 300 is a transient failure the caller must not read as absence.
+  if (r.status === 404) return { status: 200, json: { path: String(b.path), present: false } };
+  if (r.status >= 300) throw fail(502, `GitHub GET /repos/${s.slug}/contents/${String(b.path)}: ${r.status}`);
+  return { status: 200, json: { path: String(b.path), present: Array.isArray(r.body) } };
+}
+
 async function commit(ctx: OpsContext, s: ReturnType<typeof slugOf>, b: Body): Promise<Answer> {
   const tip = String((await ok(ctx, "GET", `/repos/${s.slug}/branches/${enc(b.branch)}`)).body?.commit?.sha ?? "");
   if (tip !== b.parent) throw fail(409, `${s.slug} \`${b.branch}\` is at ${tip.slice(0, 12)}, not ${String(b.parent).slice(0, 12)}`);
@@ -176,6 +189,7 @@ export async function answerOp(op: string, b: Body, ctx: OpsContext): Promise<An
   if (op === "fetch") return bundleOf(ctx, s, String(b.ref));
   if (op === "head") return { status: 200, json: { sha: String((await ok(ctx, "GET", `/repos/${s.slug}/branches/${enc(String(b.ref))}`)).body?.commit?.sha ?? "") } };
   if (op === "read" && b.kind === "file") return file(ctx, s, b);
+  if (op === "read" && b.kind === "dir") return dir(ctx, s, b);
   if (op === "read") return read(ctx, s, b);
   if (op === "comment") {
     const body = withFooter(String(b.body), String(b.module ?? "AidenHQ"));

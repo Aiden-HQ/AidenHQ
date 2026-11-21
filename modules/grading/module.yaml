@@ -34,6 +34,9 @@ codehost:
   evidence:
     repos: [ "@agents/*", "@product", "@orgs", "@maintained" ]
     paths: [ ".github/ci/areas.json", ".github/workflows/ci.yml" ]
+  # Whether a suite's directory exists at the graded head (a boolean, never its contents): CI exits 0 over a missing one.
+  probe:
+    repos: [ "@agents/*", "@product", "@orgs", "@maintained" ]
 labels:
   - { name: grading, color: "#7c3aed" }
 # The board's reads (held parts, wake-ups, rollover, Fleet Ops' stale grades), with its own key, until the board is a module.
