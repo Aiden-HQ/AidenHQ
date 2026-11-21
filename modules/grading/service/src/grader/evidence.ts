@@ -113,18 +113,19 @@ async function commandFacts(pr: any, repo: string, deps: any): Promise<string[]>
     maps.set(b, map);
   }
   if (!maps.size) return [];
-  const facts: string[] = [], seen = new Set<string>();
+  const claimed = new Map<string, { run: string; dir: string }>();
   for (const { name, base } of green) {
     const suite = maps.get(base)?.suites.find((s: any) => s.name === name);
-    if (!suite || seen.has(name)) continue;
-    const dir = String(suite.dir);
-    // Proved present at the graded head, from the repository: a missing directory ran nothing (CI exits 0 over `gone:`).
-    const there = await withTimeout(deps.dir(repo, dir, head).catch(() => null), COMMAND_TIMEOUT_MS);
-    if (!there?.present) continue;
-    seen.add(name);
-    facts.push(`${name} green on head ${head}: ran "${suite.run}" in ${dir}/ — passed`);
+    if (suite && !claimed.has(name)) claimed.set(name, { run: String(suite.run), dir: String(suite.dir) });
   }
-  return facts;
+  // Proved present at the graded head, from the repository: a missing directory ran nothing (CI exits 0 over `gone:`).
+  // One batch with one deadline, so a long candidate list cannot multiply the bound.
+  const dirs = [...new Set([...claimed.values()].map((c) => c.dir))];
+  const probes = await withTimeout(Promise.all(dirs.map((d) => deps.dir(repo, d, head).catch(() => null))), COMMAND_TIMEOUT_MS);
+  if (!probes) return [];
+  const present = new Set(dirs.filter((_, i) => probes[i]?.present));
+  return [...claimed].filter(([, c]) => present.has(c.dir))
+    .map(([name, c]) => `${name} green on head ${head}: ran "${c.run}" in ${c.dir}/ — passed`);
 }
 
 const nameOf = (f: any) => String(f.originalFilename ?? f.name ?? "");
