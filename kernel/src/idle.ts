@@ -389,10 +389,10 @@ export function createIdle({ db, facts, state, wakes, owner, team = () => false,
           // In review with nothing running, filed or waiting on it (an escalated grade the finish gate never held, a merge that
           // landed after the last job): the holder has nothing left to do, so the one who delegated it decides, once per stretch.
           // Only once the state read the sweep started from includes the review (its `since` is then this stretch's), never while an
-          // agent reviewer is pending on it, and never against the holder's wake cap.
+          // agent reviewer is pending on it or the control plane monitors it, and never against the holder's wake cap.
           if (r.status === 200 && String(task.status) === "in_review" && task.assigneeAgentId && escalate) {
             const s = lastStatus(i.task);
-            if (s?.to_ !== "in_review" || s.at > i.since || reviewParkable(task as ParkedIssue)) continue;
+            if (s?.to_ !== "in_review" || s.at > i.since || reviewParkable(task as ParkedIssue) || (task as ParkedIssue).monitorNextCheckAt) continue;
             const to = await escalate.delegator(i.task, `idle-review:${i.task}:${i.since}`, (id) => ({
               body: `**${id} sits in review with nothing running, filed or waiting on it** (${Math.round((t - Date.parse(i.since)) / 3600_000)} hours). Read its thread and its result, then decide: finish it when the work meets what was asked, comment on it with the exact changes still needed, or cancel it only when the work should not proceed.`,
               ownerText: `**${id} sits in review with nothing running, filed or waiting on it.** It is yours: finish it if the work is right, comment on ${id} with what its agent changes, or cancel it.`,
