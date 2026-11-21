@@ -1,0 +1,76 @@
+{
+ "type": "object",
+ "additionalProperties": false,
+ "required": [
+  "repo",
+  "pr",
+  "head",
+  "reason",
+  "important"
+ ],
+ "properties": {
+  "repo": {
+   "type": "string",
+   "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$"
+  },
+  "pr": {
+   "type": "integer",
+   "minimum": 1
+  },
+  "head": {
+   "type": "string",
+   "pattern": "^[0-9a-f]{40}$"
+  },
+  "reason": {
+   "enum": [
+    "pass",
+    "queued",
+    "running",
+    "not_started",
+    "moved",
+    "findings",
+    "failed",
+    "incomplete",
+    "not_reviewed",
+    "config",
+    "ungated"
+   ]
+  },
+  "important": {
+   "type": "integer",
+   "minimum": 0,
+   "maximum": 9999
+  },
+  "running": {
+   "type": "array",
+   "maxItems": 8,
+   "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "model",
+     "effort"
+    ],
+    "properties": {
+     "model": {
+      "type": "string",
+      "pattern": "^~?[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.:~-]{1,100}$"
+     },
+     "effort": {
+      "enum": [
+       "minimal",
+       "low",
+       "medium",
+       "high",
+       "xhigh",
+       "max"
+      ]
+     }
+    }
+   }
+  },
+  "partial": {
+   "type": "boolean"
+  }
+ }
+}

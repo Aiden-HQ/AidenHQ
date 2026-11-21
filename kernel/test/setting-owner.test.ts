@@ -60,11 +60,18 @@ test("the shipped modules declare these rules: an agent's new fleet org or maint
   assert.equal(t("maintainer_repos", ["acme/api"], "acme/api,evil/x"), 2);
   // Weakening a review quietly: a repo's ignore globs. Another model, or one more combo (more spend), on a moment.
   assert.equal(t("code_review", { repos: [{ repo: "acme/api" }] }, { repos: [{ repo: "acme/api", ignore: ["**"] }] }), 2);
-  const dflt = shipped.code_review.owner.find((r) => r.path === "repos.*.on_open").default;
+  const dflt = [{ engine: "codex", model: "~deepseek/deepseek-flash-latest", effort: "medium", run_usd: 5 }];
   assert.equal(t("code_review", { repos: [{ repo: "acme/api" }] }, { repos: [{ repo: "acme/api", on_open: dflt }] }), 1);
   assert.equal(t("code_review", { repos: [{ repo: "acme/api" }] }, { repos: [{ repo: "acme/api", on_open: [{ ...dflt[0], model: "anthropic/claude-opus-5.5" }] }] }), 2);
   assert.equal(t("code_review", { repos: [{ repo: "acme/api" }] }, { repos: [{ repo: "acme/api", on_push: [{ engine: "codex", model: "~deepseek/deepseek-flash-latest", effort: "low" }, { engine: "codegenie", model: "~deepseek/deepseek-flash-latest", effort: "low" }] }] }), 2);
   assert.equal(t("code_review", { repos: [{ repo: "acme/api" }] }, { repos: [{ repo: "acme/api" }, { repo: "acme/web" }] }), 1);
+  // A mandatory reviewer: turning one on only adds a gate (the panel's); turning it off, removing its combo or its repo, the owner's.
+  const must = { repos: [{ repo: "acme/api", on_open: [{ ...dflt[0], mandatory: true }], on_push: [{ ...dflt[0], effort: "low", mandatory: true }] }] };
+  assert.equal(t("code_review", { repos: [{ repo: "acme/api", on_open: dflt }] }, { repos: [{ repo: "acme/api", on_open: [{ ...dflt[0], mandatory: true }] }] }), 1);
+  assert.equal(t("code_review", must, { repos: [{ ...must.repos[0], on_open: dflt }] }), 2);
+  assert.equal(t("code_review", must, { repos: [{ ...must.repos[0], on_push: [] }] }), 2);
+  assert.equal(t("code_review", { repos: [...must.repos, { repo: "acme/web" }] }, { repos: [{ repo: "acme/web" }] }), 2);
+  assert.equal(t("code_review", { repos: [{ repo: "acme/api" }, { repo: "acme/web" }] }, { repos: [{ repo: "acme/web" }] }), 1, "an ungated repo leaves freely");
   // The owner's board still sets the list as a typed change.
   checkTyped({ kind: "setting", key: "github_fleet_org", value: "othercorp" }, { compiled: { settings: {}, agents: {} }, catalog: [{ name: "github", enabled: true, settings: { github_fleet_org: {} } }] });
 });

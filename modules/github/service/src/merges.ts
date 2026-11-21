@@ -22,7 +22,7 @@ type Gh = (method: string, path: string, body?: unknown) => Promise<{ status: nu
 /** `objects`: what the queue made, for the kernel's records (each merge commit; a merged PR stays whoever's it was). */
 type Outcome = { ok: boolean; text: string; objects?: string[] };
 export type EvalGate = (repo: string, pr: any) => Promise<undefined | { wait: string } | { stop: string }>;
-type Pr = { repo: string; number: number; head: string; url: string; status: string; note?: string; sha?: string; wait?: { key: string; since: string }; reviewAsked?: string; reviewAskedAgain?: string; checked?: string; unanswered?: boolean; fw?: { reason: string; since: string } };
+type Pr = { repo: string; number: number; head: string; url: string; status: string; note?: string; sha?: string; wait?: { key: string; since: string }; reviewAsked?: string; reviewAskedAgain?: string; checked?: string; unanswered?: boolean; /** Code review's verdict was bypassed (unreachable too long): recorded once the merge is confirmed. */ bypass?: string; fw?: { reason: string; since: string } };
 type Queue = { state: string; prs: Pr[]; said: string[]; startedAt: string; finishedAt?: string; outcome?: Outcome; reported?: boolean };
 
 const same = (a?: string, b?: string) => Boolean(a && b) && a!.toLowerCase() === b!.toLowerCase();
@@ -92,6 +92,12 @@ export function createMerges(d: {
     if (p.fw) d.flow?.waiting(p.repo, p.number, p.fw.reason, p.fw.since);
   }
   /** One poll of one PR; `merged` holds the repositories that merged a PR this poll. */
+  /** A merge that went without code review's verdict (code review unreachable too long), recorded once it is confirmed. */
+  const bypassed = (p: Pr) => {
+    if (!p.bypass) return;
+    log("merged without code review's verdict", { pr: p.url, why: p.bypass.slice(0, 300) });
+    d.flow?.reviewBypassed(p.repo, p.number, p.head, p.bypass);
+  };
   async function poll(q: Queue, p: Pr, merged: Set<string>) {
     const t = now().getTime();
     const fail = (why: string) => {
@@ -127,7 +133,7 @@ export function createMerges(d: {
       if (v.do === "done") {
         // Merged after a merge call that got no answer: that call merged it.
         const ours = p.unanswered && pull?.mergeCommit?.oid;
-        if (ours) Object.assign(p, { status: "merged", sha: pull.mergeCommit.oid, mergedAt: pull.mergedAt ?? now().toISOString() });
+        if (ours) { Object.assign(p, { status: "merged", sha: pull.mergeCommit.oid, mergedAt: pull.mergedAt ?? now().toISOString() }); bypassed(p); }
         else Object.assign(p, { status: "skipped", note: v.why });
         if (pull?.mergeCommit?.oid) d.flow?.merged(p.repo, p.number, p.head, pull.mergeCommit.oid, pull.mergedAt ?? undefined, String(pull.title ?? ""), String(pull.body ?? ""));
         delete p.wait;
@@ -147,7 +153,9 @@ export function createMerges(d: {
       if (gate && "stop" in gate) return fail(gate.stop);
       if (gate) return wait("eval", gate.wait, EVAL_WAIT_MINUTES);
       const review = await d.reviewGate(p.repo, p.number, p.head);
-      if (review) {
+      if (review && "bypass" in review) p.bypass = review.bypass;
+      else delete p.bypass;
+      if (review && "wait" in review) {
         if (p.note !== review.wait) log("merge waits for code review", { pr: p.url, why: review.wait.slice(0, 500) });
         p.note = review.wait;
         return wait("review", review.wait, Infinity);
@@ -168,6 +176,7 @@ export function createMerges(d: {
       }
       const mergedAt = now().toISOString();
       Object.assign(p, { status: "merged", mergedAt });
+      bypassed(p);
       d.flow?.merged(p.repo, p.number, p.head, String(p.sha ?? ""), mergedAt, String(pull?.title ?? ""), String(pull?.body ?? ""));
       delete p.wait;
       merged.add(p.repo.toLowerCase());

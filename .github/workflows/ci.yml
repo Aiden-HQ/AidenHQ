@@ -158,6 +158,107 @@ jobs:
           path: ~/.npm
           key: npm-${{ runner.os }}-${{ github.job }}-${{ strategy.job-index }}-${{ hashFiles('**/package-lock.json') }}
 
+  # One GitHub check per suite a shard's plan ran, on the PR head: the base-map plan says which suites, and the shard's own
+  # Actions job conclusion says they passed. Nothing here reads a log or the Test step's output: the shard jobs run `npm ci`
+  # (PR lifecycle scripts) and print their results into the log, so log text is not evidence. This job runs only the posting
+  # script and checks out no PR code. A fork PR or a push posts nothing. A posting failure (logged, `continue-on-error`) leaves the suites without a check
+  # (fail closed) and stays out of `ci-required`'s gate, so it cannot make `ci-required` red.
+  post-checks:
+    needs: [checks, packages, modules]
+    if: ${{ always() && needs.checks.result == 'success' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read # the run's job instances and the head tree's directories
+      checks: write # the one check per suite, on the PR head
+    steps:
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.x
+      - name: Post a check run for each suite a shard ran
+        # Publishing is best effort: a failure here is logged (the ::warning below) and never turns the PR red or blocks a merge.
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          TESTED_SHA: ${{ github.sha }}
+          PACKAGES: ${{ needs.checks.outputs.packages }}
+          MODULES: ${{ needs.checks.outputs.modules }}
+        run: |
+          node --input-type=module <<'EOF'
+          const { REPO, RUN_ID, HEAD_SHA, TESTED_SHA, PACKAGES, MODULES } = process.env;
+          const base = "https://api.github.com";
+          const headers = { authorization: `Bearer ${process.env.GH_TOKEN}`, accept: "application/vnd.github+json", "content-type": "application/json" };
+          const get = async (path) => {
+            const res = await fetch(`${base}${path}`, { headers });
+            if (!res.ok) throw new Error(`GET ${path} failed: ${res.status}`);
+            return res.json();
+          };
+          // Every job instance this run has, across pages (`filter=latest` keeps the latest instance of each job name, so a shard that passed in an earlier attempt
+          // and was not re-run still appears, with that attempt's `run_attempt`).
+          const jobs = [];
+          for (let page = 1; ; page++) {
+            const data = await get(`/repos/${REPO}/actions/runs/${RUN_ID}/jobs?filter=latest&per_page=100&page=${page}`);
+            jobs.push(...(data.jobs ?? []));
+            if (jobs.length >= (data.total_count ?? 0) || (data.jobs ?? []).length === 0) break;
+          }
+          // A suite's directory exists in the tree the shards tested (their checkout is `github.sha`, the PR merge commit): the contents API answers 404 for a missing one (run-suites.sh writes
+          // `gone: <dir>` and exits 0 for it, so it did not run).
+          const dirs = new Map();
+          const exists = async (dir) => {
+            if (dirs.has(dir)) return dirs.get(dir);
+            const path = dir.split("/").map(encodeURIComponent).join("/");
+            const res = await fetch(`${base}/repos/${REPO}/contents/${path}?ref=${encodeURIComponent(TESTED_SHA)}`, { headers });
+            if (res.status === 404) dirs.set(dir, false);
+            else if (!res.ok) throw new Error(`GET contents/${dir} failed: ${res.status}`);
+            else dirs.set(dir, Array.isArray(await res.json())); // a directory lists as an array, a file as an object (run-suites.sh tests -d)
+            return dirs.get(dir);
+          };
+          const post = async (body) => {
+            const res = await fetch(`${base}/repos/${REPO}/check-runs`, { method: "POST", headers, body: JSON.stringify(body) });
+            if (!res.ok) throw new Error(`POST check-runs failed: ${res.status} ${await res.text()}`);
+          };
+          // Check runs already on the head, so a failed-job re-run (which sees the same passing shard jobs again) posts nothing twice.
+          const have = new Set();
+          for (let page = 1; ; page++) {
+            const data = await get(`/repos/${REPO}/commits/${HEAD_SHA}/check-runs?filter=all&per_page=100&page=${page}`);
+            for (const c of data.check_runs ?? []) have.add(`${c.name}\t${c.external_id}`);
+            if (have.size >= (data.total_count ?? 0) || (data.check_runs ?? []).length === 0) break;
+          }
+          let posted = 0;
+          try {
+          for (const [prefix, plan] of [["packages", PACKAGES], ["modules", MODULES]]) {
+            for (const shard of JSON.parse(plan || "[]")) {
+              const name = `${prefix} (${shard.shard})`;
+              const matches = jobs.filter((j) => j.name === name);
+              if (matches.length !== 1) { console.log(`no single ${name} job instance in this run: posting nothing for this shard`); continue; }
+              const job = matches[0];
+              if (job.conclusion !== "success" || job.head_sha !== HEAD_SHA) { console.log(`${name} did not conclude success on the head: posting nothing for this shard`); continue; }
+              for (const entry of shard.entries) {
+                if (have.has(`${entry.name}\t${RUN_ID}/${job.id}/${shard.shard}`)) continue;
+                if (!(await exists(entry.dir))) { console.log(`${entry.name}: ${entry.dir} is gone in the tested tree: posting no check`); continue; }
+                await post({
+                  name: entry.name,
+                  head_sha: HEAD_SHA,
+                  status: "completed",
+                  conclusion: "success",
+                  external_id: `${RUN_ID}/${job.id}/${shard.shard}`,
+                  output: { title: `${entry.name} passed`, summary: `Suite ${entry.name} ran in ${name} and passed.` },
+                });
+                posted++;
+              }
+            }
+          }
+          } catch (err) {
+            console.log(`::warning::could not post every check run (${posted} posted): ${err.message}`);
+            process.exitCode = 1;
+          }
+          console.log(`Posted ${posted} check run(s).`);
+          EOF
+
   board:
     needs: checks
     if: contains(fromJSON(needs.checks.outputs.tests).*.name, 'services/board')
