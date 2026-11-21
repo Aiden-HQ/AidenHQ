@@ -37,6 +37,9 @@
 // Each run attempt (the row's start time `at`) has its own folder and lands its end only while the row is still that attempt's;
 // a re-run asked meanwhile supersedes it.
 // A judge that writes no usable result is the harness's failure, never the change's: the check ends in error, with no receipt.
+// A judged run the eval-day spend cap cut short (a case the reviewer returns `review_cap`, or the eval's `capped` list) is the
+// same: the reviewer never judged it, so the check ends in error with a budget reason and no receipt, the run does not use up a
+// try (the same head is judged again once the cap frees), and it never runs the partial second pass into an exhausted cap.
 // Missing evidence never counts as passing: whether a recipe's declared check is due is read from the base commit, and a receipt
 // says whether a check ran (`ran`); verify refuses one that didn't unless the caller's policy accepts "none" (product and
 // modules repos never do).
@@ -126,6 +129,9 @@ type Step = { prior: number } | { n: 1 | 2; names: string[]; added: string[]; fi
 /** A run that a draining kernel stopped following (the next one does), or whose box is gone (lost). */
 class Detached extends Error {}
 class Gone extends Error {}
+/** A judged run the eval-day spend cap cut short: the reviewer didn't judge its cases, so it is no verdict on the change, and
+ * the attempt doesn't use up a try (the same head is judged again once the cap frees). */
+class CapReached extends Error {}
 /** codehost-github's snapshot op: `repo` at commit `ref`, extracted into the empty folder `into` (no .git, no credentials). */
 export type Snapshot = (repo: string, ref: string, into: string) => Promise<void>;
 
@@ -231,17 +237,26 @@ export function judgedCases(base: Map<string, string>, head: Map<string, string>
   return out;
 }
 type Failure = { file: string; want?: string; got?: string; reason?: string };
-type EvalResult = { total: number; passed: number; failed: Failure[]; broken?: true };
+/** A case the reviewer never judged: its call stopped at a spend cap (`review_cap`), so it is neither a pass nor a miss. */
+type EvalResult = { total: number; passed: number; failed: Failure[]; capped: string[]; broken?: true };
+/** Whether a failure line is a cap, not a verdict: the reviewer's reason code in `got` is `review_cap` (never its `reason`,
+ * the model's own words). */
+const cappedCase = (f: Failure) => (f.got ?? "").split(/\s+/).includes("review_cap");
 /** The shared pass rule (kernel/sdk/src/pass-rule.ts) over a run's failures, each named by the kind of miss it is. */
 const evalPasses = (failed: Failure[], total: number, added: string[]) =>
   passes(total, failed.map((f) => ({ file: f.file, kind: missKind((f.want ?? "").split("|"), (f.got ?? "").split(" ")[0]!) })), added);
 /** The judge's result, checked against the cases it was given; missing, malformed or miscounted, every case failed (broken). */
 function readResult(file: string, cases: string[]): EvalResult {
   let r: any;
-  try { r = JSON.parse(smallFile(file) ?? ""); } catch { return { total: cases.length, passed: 0, failed: cases.map((f) => ({ file: f, reason: "the eval wrote no result" })), broken: true }; }
+  try { r = JSON.parse(smallFile(file) ?? ""); } catch { return { total: cases.length, passed: 0, failed: cases.map((f) => ({ file: f, reason: "the eval wrote no result" })), capped: [], broken: true }; }
   const failed: Failure[] = (Array.isArray(r?.failed) ? r.failed : []).filter((f: any) => cases.includes(f?.file)).map((f: any) => ({ file: f.file, want: String(f.want ?? "").slice(0, 80), got: String(f.got ?? "").slice(0, 80), reason: String(f.reason ?? "").slice(0, 600) }));
-  if (r?.total !== cases.length || r?.passed !== cases.length - failed.length) return { total: cases.length, passed: 0, failed: cases.map((f) => ({ file: f, reason: `the eval's counts don't match its ${cases.length} cases` })), broken: true };
-  return { total: cases.length, passed: r.passed, failed };
+  // The eval names the cases a spend cap cut before the reviewer judged them; a failure line that says review_cap counts too,
+  // so a judge from before the `capped` list can never score a capped case as a miss either.
+  const capped = [...new Set([...(Array.isArray(r?.capped) ? r.capped : []).filter((f: any) => cases.includes(f)), ...failed.filter(cappedCase).map((f) => f.file)])];
+  // Each case counts once, capped or failed: a capped case's line may sit in `failed` beside the `capped` list.
+  const notPassed = new Set([...failed.map((f) => f.file), ...capped]);
+  if (r?.total !== cases.length || r?.passed !== cases.length - notPassed.size) return { total: cases.length, passed: 0, failed: cases.map((f) => ({ file: f, reason: `the eval's counts don't match its ${cases.length} cases` })), capped: [], broken: true };
+  return { total: cases.length, passed: r.passed, failed, capped };
 }
 /** A case folder's JSON files, read as small regular files (a link or a special file is a case that can't be read: its text is empty). */
 function casesIn(dir: string): Map<string, string> {
@@ -307,14 +322,16 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
   const facts = openFacts(db);
   /** The end of the attempt that started at `started` and its check.ended fact, in one transaction (a re-run reuses the id: its
    * start time is the version). False when a newer attempt has taken the row: this one's end is dropped. */
-  const end = (id: string, started: number, state: "done" | "error" | "lost", set: { receipt?: string; error?: string; result?: string; cost?: number; retry?: boolean }) => {
+  const end = (id: string, started: number, state: "done" | "error" | "lost", set: { receipt?: string; error?: string; result?: string; cost?: number; retry?: boolean; cap?: boolean }) => {
     const r = row(id)!;
     const at = now();
     db.exec("SAVEPOINT check_end");
     try {
-      // A lost run gives its try back (a restart isn't the check's failure) and is counted against MAX_LOST.
+      // A lost run gives its try back (a restart isn't the check's failure) and is counted against MAX_LOST; so does a run the
+      // eval-day cap cut short (the cap is the eval's limit, not the change's failure), which isn't a lost run.
       const lost = state === "lost" ? 1 : 0;
-      if (db.prepare("UPDATE checks SET state = ?, receipt = ?, error = ?, ended = ?, result = ?, cost_usd = COALESCE(?, cost_usd), retry = ?, tries = MAX(tries - ?, 0), lost = lost + ? WHERE id = ? AND at = ?").run(state, set.receipt ?? null, set.error ?? null, at, set.result ?? null, set.cost ?? null, set.retry ? 1 : 0, lost, lost, id, started).changes === 0) {
+      const give = lost || set.cap ? 1 : 0;
+      if (db.prepare("UPDATE checks SET state = ?, receipt = ?, error = ?, ended = ?, result = ?, cost_usd = COALESCE(?, cost_usd), retry = ?, tries = MAX(tries - ?, 0), lost = lost + ? WHERE id = ? AND at = ?").run(state, set.receipt ?? null, set.error ?? null, at, set.result ?? null, set.cost ?? null, set.retry ? 1 : 0, give, lost, id, started).changes === 0) {
         db.exec("RELEASE check_end");
         return false;
       }
@@ -452,6 +469,10 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
     const res = readResult(join(out, "result.json"), step.names);
     // The harness broke, not the change: no receipt (asking again runs it again), and the box's output says why.
     if (res.broken) throw new Error(`${r.title} wrote no usable result (${res.failed[0]?.reason ?? "no cases"})\n${tail(o)}`);
+    // A spend cap cut the run short: the reviewer didn't judge those cases, so it is no verdict on the change. No receipt,
+    // the check ends in error with a budget reason, and asking again runs it again once the cap frees. A second pass would
+    // only spend into the same exhausted cap, so the run ends here, at step 1.
+    if (res.capped.length) throw new CapReached(`${r.title} reached the eval-day cap before it judged ${res.capped.length} of its ${res.total} case(s) (${res.capped.slice(0, 8).join(", ")}${res.capped.length > 8 ? ", …" : ""}); eval-day cap reached; retry when it frees`);
     const first = step.first ?? { passed: res.passed, total: res.total };
     const score = `${first.passed}/${first.total}`;
     if (step.n === 1) {
@@ -478,7 +499,7 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
     const dir = join(workDir, "checks", attempt);
     const ids = { check: id, attempt, repo: r.repo, head: r.head, run: r.run };
     // Its end, tried again a few times (a busy database): a run that can't record its end stays `running` until a restart.
-    const ended = async (state: "done" | "error" | "lost", set: { receipt?: string; error?: string; result?: string; cost?: number; retry?: boolean }) => {
+    const ended = async (state: "done" | "error" | "lost", set: { receipt?: string; error?: string; result?: string; cost?: number; retry?: boolean; cap?: boolean }) => {
       for (let n = 0; ; n++) {
         try {
           const landed = end(id, r.at, state, set);
@@ -522,8 +543,11 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
       // It couldn't run (no snapshot, no box, no result from the judge): no receipt; asking again runs it again.
       const msg = String((e as Error).message ?? e);
       const why = msg.split("\n")[0]!.slice(0, 300);
+      // A judged run the eval-day cap cut short: no receipt (a fail receipt would cache the head as unmergeable), the same
+      // error path, its try given back so the same head runs again once the cap frees.
+      const cap = e instanceof CapReached;
       // What its model token spent before it broke counts, as a lost run's does (a caller charges unknown spend at its whole cap).
-      if (await ended("error", { error: why, ...(cost !== undefined ? { cost } : {}) })) log("WARNING: check couldn't run", { ...ids, err: msg.slice(0, TAIL + 600) });
+      if (await ended("error", { error: why, ...(cap ? { cap: true } : {}), ...(cost !== undefined ? { cost } : {}) })) log(cap ? "WARNING: check ended at the eval-day cap, no receipt" : "WARNING: check couldn't run", { ...ids, err: msg.slice(0, TAIL + 600) });
     } finally {
       mine.delete(id);
       if (!kept) rmSync(dir, { recursive: true, force: true });
