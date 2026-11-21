@@ -99,8 +99,8 @@ main() {
   # checkouts, so a hand-over's record of what ran before no longer holds: it is read again below.
   local recovered=0
   recoverLogged || true
-  if [ "$recover" = 1 ]; then # the boot unit fails, and keeps failing on each retry, while the newest generation is failed
-    [ "$(genGet "$(( $(genJs next) - 1 ))" health)" != failed ] || { echo "apply alert: the newest generation failed and was not recovered; see its log in $GEN_DIR" >&2; exit 1; }
+  if [ "$recover" = 1 ]; then # the boot unit fails, and keeps failing on each retry, while the newest generation is failed or pending
+    case "$(genGet "$(( $(genJs next) - 1 ))" health)" in failed|pending) echo "apply alert: the newest generation is $(genGet "$(( $(genJs next) - 1 ))" health) and was not recovered; see its log in $GEN_DIR" >&2; exit 1 ;; esac
     return 0
   fi
   [ "$recovered" = 0 ] || unset AIDENHQ_APPLY_BEFORE AIDENHQ_APPLY_INST_BEFORE
