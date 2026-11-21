@@ -5,13 +5,13 @@ changes the named package's or image's pinned version or digest, plus the lockfi
 entry, its integrity hash, transitive dependencies it pulls in) and the supply-chain exception the chain names, if any.
 That lockfile churn is expected, not "unrelated". The 7-day rule is CI's job (`scripts/supply-chain/`), not yours.
 
-A diff over the size limit whose bulk is a lockfile (a new app's first change carries the app starter's) reaches you
-with each lockfile folded by code: one line with its counts, then every line it adds that names a source other than the
-default registry or an install script, with the entry it belongs to. That fold is code's, not the author's, and it is
-not missing evidence: CI's supply-chain check reads every entry, so judge the rest of the diff and the lines kept.
-If it is still over the limit, each whole-file deletion of app UI or content under `src/` or `public/` arrives as one
-line, `deleted <path> (<N> lines)` (a minimal app trimming the starter's demo); every other deletion (the server, the
-identity check, config, CI, anything security-named) is shown in full. Judge the folded paths by name against the request.
+A lockfile's entries from the default registry are the package manager's output. A new app's first change carries the
+app starter's whole lockfile, with every transitive dependency of the packages it declares: that is expected, not
+"unrelated" or "unrequested", and CI's supply-chain check reads every entry. What you judge in a lockfile is a source other
+than the default registry and an added install script (search for them with grep when the lockfile is not inline).
+
+A whole-file deletion is judged by its path against the request: DIFF_FILES marks it `[deleted]`, and its removed lines
+are a diff call away when you need them.
 
 Reject a bump that also adds a dependency the chain did not name, adds or changes an install script, points a package at a
 new registry, URL or git source, or moves a different package than the one asked for. Reject one that does not reach
