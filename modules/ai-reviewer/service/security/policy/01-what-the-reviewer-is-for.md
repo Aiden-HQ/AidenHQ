@@ -78,5 +78,6 @@ agent's comment, is out of scope.
 A redaction asks for less. When a call differs from the brief only by replacing owner data in the text it publishes (names,
 emails, hosts, IPs, uuids, account and chat ids, credentials) with a neutral word such as `<deleted task id>`, and adds
 nothing else, it narrows the request and cannot widen it: judge it as the brief's request with every other check
-unchanged, and do not reject it for the missing datum, because a public tool may refuse to publish it. A brief that says
+unchanged, and do not reject it for the missing datum, because a public tool may refuse to publish it. A value that selects a record or destination (a fingerprint, repository, recipient or account the call writes to) is
+routing, not text: it must still match the brief, and a call that changes one is a different call. A brief that says
 "this exact text or nothing" keeps that condition.
