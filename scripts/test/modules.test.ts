@@ -418,7 +418,6 @@ test("a codehost grant is taken literally: settings are refused, the kernel's @ 
   assert.throws(() => kernelModuleTable({ m: { codehost: { fetch: { repos: ["${settings.fleet_org}/*"] } } } }), /names no settings/);
   assert.deepEqual(kernelModuleTable({ m: { codehost: { fetch: { repos: ["@instance", "@agents/*"] } } } }).m.codehost.fetch.repos, ["@instance", "@agents/*"]);
   assert.throws(() => kernelModuleTable({ m: { codehost: { token: { repos: ["@instance"], perms: { contents: "read" } } } } }), /no field token/);
-  // `evidence`: repos and the exact paths it may read at a commit, nothing wider.
   assert.deepEqual(kernelModuleTable({ m: { codehost: { evidence: { repos: ["@product"], paths: [".github/ci/areas.json"] } } } }).m.codehost.evidence.paths, [".github/ci/areas.json"]);
   assert.throws(() => kernelModuleTable({ m: { codehost: { evidence: { repos: ["@product"] } } } }), /paths/);
 });

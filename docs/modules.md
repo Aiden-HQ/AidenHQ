@@ -50,14 +50,12 @@ calls the code host module, which holds the GitHub sign-in: no op returns a toke
 
 ```yaml
 codehost:
-  read:     { repos: [ "@product" ] }                                 # a PR, issue, diff, job, open PRs
-  evidence:                                                           # a graded head's own CI evidence, only
-    repos: [ "@product" ]
-    paths: [ ".github/ci/areas.json", ".github/ci/run-suites.sh", ".github/ci/select.ts", ".github/workflows/ci.yml" ]
+  read:     { repos: [ "@product" ] }                 # a PR, issue, diff, job, open PRs
+  evidence: { repos: [ "@product" ], paths: [ ".github/ci/areas.json", ".github/ci/select.ts", ".github/ci/run-suites.sh", ".github/workflows/ci.yml" ] }
 ```
 
-`evidence` is narrower than `read`: `file` (`{path, ref}`, a listed path at a full commit sha) and `log` (`{id, bytes}`,
-a job's own log, GitHub's ZIP unpacked and bounded). `read` alone reaches neither.
+`evidence` is narrower than `read`: `file` (`{path, ref}`, a listed path at a commit sha) and `log` (`{id, bytes}`, only a
+`ci.yml` `pull_request` job, else 404; ZIP unpacked, bounded, marked `[cut: …]` if truncated).
 
 ## `POST /v1/tasks` — file a task
 

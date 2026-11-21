@@ -1,5 +1,5 @@
 // A PR's facts and diff for the grader, read through the kernel's typed code host operation (POST /v1/codehost/read, under
-// this module's `codehost: read` grant): the github module runs the queries as the owner's sign-in, so no token reaches here.
+// this module's `codehost: read` grant): the github module holds the sign-in, so no token reaches here.
 type Json = any;
 type KernelCall = (method: string, path: string, body?: unknown) => Promise<Json>;
 type KernelText = (path: string, body: unknown) => Promise<string>;
@@ -20,7 +20,6 @@ export function createGithub({ kernel, text }: { kernel: KernelCall; text: Kerne
       if (!SLUG.test(repo)) throw new Error(`${repo} is not owner/name`);
       return text("/v1/codehost/read", { repo, kind: "diff", number });
     },
-    /** A file's text at an exact commit (a graded head's CI map); null when that commit has none. */
     async file(repo: string, path: string, ref: string): Promise<string | null> {
       if (!/^[\w./-]{1,500}$/.test(path) || path.split("/").some((s) => s === ".." || s === "." || !s)) throw new Error(`${repo} with ${path}@${ref} is not a readable file`);
       if (!/^[0-9a-f]{40}$/.test(ref)) throw new Error(`${repo} with ${path}@${ref} is not a readable file`);
@@ -29,7 +28,6 @@ export function createGithub({ kernel, text }: { kernel: KernelCall; text: Kerne
         throw e;
       });
     },
-    /** A job's own log as text, unpacked and bounded; null when GitHub no longer has the job. */
     async jobLog(repo: string, id: string | number, bytes = 512_000): Promise<string | null> {
       if (!/^\d{1,20}$/.test(String(id))) throw new Error(`${repo} with job ${id} is not a readable Actions job`);
       return text("/v1/codehost/read", { repo, kind: "log", id: Number(id), bytes }).catch((e) => {

@@ -9,8 +9,7 @@
 //                fetches it itself, so host git never runs in a workspace a box can write
 //   fetch        {repo, ref: refs/heads/* | refs/heads/<b> | refs/pull/<n>/head} → a git bundle of those refs
 //   head         {repo, ref: <branch>} → {sha}
-//   read         {repo, kind: pr | issue | diff | job | prs | file | log, ...} → that object; `file` (a listed path at a
-//                commit) and `log` (a job's log) are the narrower `evidence` grant
+//   read         {repo, kind: pr | issue | diff | job | prs | file | log, ...} → that object; file/log are `evidence`
 //   comment      {repo, number, body, id?} → {id}: posts (or edits comment `id`) with the "via AidenHQ" footer
 //   commit       {repo, branch, path, content, parent, message} → {sha}: one file as the owner, with the trailer; 409 when the branch moved off parent
 //   runner_token {org} → {token, expires_at}: an org's runner registration token, and nothing else
@@ -56,7 +55,7 @@ export type Answer = Readable & { statusCode?: number; headers: http.IncomingHtt
 // A module's grant (its `codehost:`, taken literally): repos are owner/name, owner/*, */* (anything the owner's account reaches), or
 // @instance, @product, @agents/<name|*> (in the fleet org: github_fleet_org), @orgs (every repo of each owner the instance allows,
 // github_orgs) and @maintained (the repos it maintains, maintainer_repos), which resolve from the kernel's own configuration (its
-// repos), never from a module's settings. A commit grant names the paths it may write, an evidence grant those it may read.
+// repos), never from a module's settings. A commit grant names the paths it writes, an evidence grant those it reads.
 export type OpsGrant = { module: string; snapshot?: { repos: string[] }; clone?: { repos: string[] }; fetch?: { repos: string[] }; read?: { repos: string[] }; evidence?: { repos: string[]; paths: string[] }; comment?: { repos: string[] }; commit?: { repos: string[]; paths: string[] }; runner?: { orgs: string[] } };
 
 const SLUG = /^([\w.-]+)\/([\w.-]+|\*)$/;
@@ -102,9 +101,7 @@ const GRANT_KEY: Record<string, "snapshot" | "clone" | "fetch" | "read" | "evide
 };
 const FETCH_REF = /^(refs\/heads\/\*|refs\/heads\/(?!-)(?!.*\.\.)(?!.*@\{)[\w./-]{1,200}|refs\/pull\/\d{1,9}\/head)$/;
 const READ_KINDS = ["pr", "issue", "diff", "job", "prs", "file", "log"];
-/** A job log is read up to this many bytes; a cut log is no evidence. */
 export const LOG_MAX = 30_000_000;
-/** A graded head's CI evidence: the narrower `evidence` grant, never the general `read`. */
 const EVIDENCE_KINDS = ["file", "log"];
 const int = (v: unknown, what: string) => {
   const n = Number(v);

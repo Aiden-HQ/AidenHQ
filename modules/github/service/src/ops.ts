@@ -24,7 +24,6 @@ export type OpsContext = {
   initBare: (dir: string) => Promise<void>;
   /** Whether the kernel's records name this GitHub object (a ref like `github:o/r#1/comment/2`) as made by AidenHQ. */
   ours: (ref: string) => Promise<boolean>;
-  /** The fetch a job's log download is made with: the service's own, or a test's fake. */
   fetch?: typeof fetch;
 };
 type Body = Record<string, any>;
@@ -38,44 +37,34 @@ const slugOf = (repo: unknown) => {
   return { slug: `${m[1]}/${m[2]}`, org: m[1]!, name: m[2]! };
 };
 
-// A job's log is a ZIP (older: plain text), read with a cap.
 const LOG_MAX = 30_000_000;
 const ZIP_ENTRIES = 200;
 const ZIP_OUT = 4_000_000;
 
-/** A ZIP's entry text (stored or deflated, capped); undefined when not a ZIP. */
 function zipText(buf: Buffer): string | undefined {
   if (buf.length < 22 || buf.readUInt32LE(0) !== 0x04034b50) return undefined;
   let eocd = -1;
   for (let i = buf.length - 22; i >= Math.max(0, buf.length - 65_557); i--) if (buf.readUInt32LE(i) === 0x06054b50) { eocd = i; break; }
   if (eocd < 0) return undefined;
-  const count = buf.readUInt16LE(eocd + 10);
-  let at = buf.readUInt32LE(eocd + 16);
-  const parts: string[] = [];
-  let out = 0;
+  const count = buf.readUInt16LE(eocd + 10), parts: string[] = [];
+  let at = buf.readUInt32LE(eocd + 16), out = 0, cut = count > ZIP_ENTRIES;
   for (let n = 0; n < Math.min(count, ZIP_ENTRIES) && at + 46 <= buf.length; n++) {
     if (buf.readUInt32LE(at) !== 0x02014b50) break;
     const method = buf.readUInt16LE(at + 10), size = buf.readUInt32LE(at + 20), nameLen = buf.readUInt16LE(at + 28), extraLen = buf.readUInt16LE(at + 30), commentLen = buf.readUInt16LE(at + 32);
-    const local = buf.readUInt32LE(at + 42);
+    const local = buf.readUInt32LE(at + 42), start = local + 30 + buf.readUInt16LE(local + 26) + buf.readUInt16LE(local + 28);
     at += 46 + nameLen + extraLen + commentLen;
-    if (local + 30 > buf.length || buf.readUInt32LE(local) !== 0x04034b50) continue;
-    const start = local + 30 + buf.readUInt16LE(local + 26) + buf.readUInt16LE(local + 28);
-    if (start + size > buf.length) continue;
+    if (local + 30 > buf.length || buf.readUInt32LE(local) !== 0x04034b50 || start + size > buf.length) continue;
     let entry: Buffer;
-    try {
-      entry = method === 0 ? buf.subarray(start, start + size) : method === 8 ? inflateRawSync(buf.subarray(start, start + size), { maxOutputLength: ZIP_OUT - out }) : Buffer.alloc(0);
-    } catch {
-      continue;
-    }
+    try { entry = method === 0 ? buf.subarray(start, start + size) : method === 8 ? inflateRawSync(buf.subarray(start, start + size), { maxOutputLength: ZIP_OUT - out }) : Buffer.alloc(0); }
+    catch { cut = true; continue; }
     if (!entry.length) continue;
-    out += entry.length;
-    parts.push(entry.toString("utf8"));
-    if (out >= ZIP_OUT) break;
+    out += entry.length; parts.push(entry.toString("utf8"));
+    if (out >= ZIP_OUT) { cut = true; break; }
   }
-  return parts.length ? parts.join("\n") : undefined;
+  if (!parts.length) return undefined;
+  return cut ? `${parts.join("\n")}\n[cut: log unpacked only to ${ZIP_OUT} bytes]` : parts.join("\n");
 }
 
-/** The hosts GitHub redirects a job's log to. */
 const LOG_HOSTS = [/(^|\.)actions\.githubusercontent\.com$/, /^productionresultssa\d*\.blob\.core\.windows\.net$/];
 function logHostAllowed(to: string): boolean {
   try {
@@ -85,15 +74,13 @@ function logHostAllowed(to: string): boolean {
     return false;
   }
 }
-/** A log kept to `bytes`: its start (the shard list) and its end (the groups). */
 function bounded(text: string, bytes: number): string {
   if (text.length <= bytes) return text;
   const head = Math.floor(bytes / 4);
   return `${text.slice(0, head)}\n[cut: ${text.length - bytes} bytes not shown]\n${text.slice(-(bytes - head))}`;
 }
 
-// A PR and an issue as the grader reads them. A check run carries its Actions job id (databaseId) and the base oid is
-// the CI map CI executes.
+// A PR and an issue as the grader reads them.
 const PR_QUERY = `query($owner: String!, $repo: String!, $number: Int!) {
   repository(owner: $owner, name: $repo) {
     pullRequest(number: $number) {
@@ -180,14 +167,12 @@ async function read(ctx: OpsContext, s: ReturnType<typeof slugOf>, b: Body): Pro
     if (r.status === 404) return { status: 200, json: null };
     if (r.status >= 300) throw fail(502, `GitHub GET /repos/${s.slug}/actions/jobs/${b.id}: ${r.status}`);
     const j = r.body;
-    // A fact needs the job's own Test step, its run's base and the workflow that owns it: another workflow's
-    // `packages (1)` is another CI. An unreadable one is no evidence, not an error.
+    // The job's Test step, its run's base and the workflow that owns it; unreadable is no evidence.
     const get = async (path: string) => {
       try { const a = await ctx.access.rest("GET", path); return a.status < 300 ? a.body : undefined; } catch { return undefined; }
     };
     const run = j.run_id ? await get(`/repos/${s.slug}/actions/runs/${j.run_id}`) : undefined;
     const workflow = run?.workflow_id ? await get(`/repos/${s.slug}/actions/workflows/${run.workflow_id}`) : undefined;
-    // The run's own base: the PR entries on that head must name one base; two is ambiguous, so no fact.
     const bases = new Set((run?.pull_requests ?? []).filter((p: any) => p?.head?.sha === run?.head_sha && p?.base?.sha).map((p: any) => String(p.base.sha)));
     const base = bases.size === 1 ? String([...bases][0]) : null;
     return { status: 200, json: { id: j.id, name: j.name, state: j.status, conclusion: j.conclusion, run_id: j.run_id, run_base: base,
@@ -204,7 +189,6 @@ async function read(ctx: OpsContext, s: ReturnType<typeof slugOf>, b: Body): Pro
   return { status: 200, json: prs };
 }
 
-/** A file's text at an exact commit; a commit without it is null. */
 async function file(ctx: OpsContext, s: ReturnType<typeof slugOf>, b: Body): Promise<Answer> {
   const r = await ctx.access.rest("GET", `/repos/${s.slug}/contents/${enc(String(b.path))}?ref=${String(b.ref)}`, undefined, { accept: "application/vnd.github.raw+json" });
   if (r.status === 404) return { status: 404, json: { error: `${s.slug} has no ${String(b.path)} at ${String(b.ref)}` } };
@@ -212,33 +196,30 @@ async function file(ctx: OpsContext, s: ReturnType<typeof slugOf>, b: Body): Pro
   return { status: 200, text: typeof r.body === "string" ? r.body : String(r.body ?? "") };
 }
 
-/** A job's own log: GitHub's signed ZIP redirect, unpacked and kept to its start and end. */
 async function jobLog(ctx: OpsContext, s: ReturnType<typeof slugOf>, b: Body, bytes: number): Promise<Answer> {
+  // Only ci.yml's own pull_request runs are evidence.
+  const notEvidence = (): Answer => ({ status: 404, json: { error: `${s.slug} job ${b.id} is not a ci.yml pull request job` } });
+  const job = (await ctx.access.rest("GET", `/repos/${s.slug}/actions/jobs/${b.id}`)).body;
+  const run = job?.run_id ? (await ctx.access.rest("GET", `/repos/${s.slug}/actions/runs/${job.run_id}`)).body : undefined;
+  if (!job?.run_id || run?.path !== ".github/workflows/ci.yml" || run?.event !== "pull_request") return notEvidence();
   const url = new URL(`/repos/${s.slug}/actions/jobs/${b.id}/logs`, "https://api.github.com");
   const doFetch = ctx.fetch ?? fetch;
-  const res = await doFetch(url, {
-    method: "GET",
-    redirect: "manual",
-    headers: { authorization: `Bearer ${await ctx.access.token()}`, accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28", "user-agent": "aidenhq-codehost" },
-    signal: AbortSignal.timeout(30_000),
-  });
+  const headers = { authorization: `Bearer ${await ctx.access.token()}`, accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28", "user-agent": "aidenhq-codehost" };
+  const res = await doFetch(url, { method: "GET", redirect: "manual", headers, signal: AbortSignal.timeout(30_000) });
   if (res.status === 404) return { status: 404, json: { error: `GitHub has no job ${b.id} in ${s.slug}` } };
   if (res.status !== 302) throw fail(502, `GitHub GET /repos/${s.slug}/actions/jobs/${b.id}/logs: ${res.status}`);
-  // Pre-signed: followed once, only to a GitHub log host, never with our token.
   const to = res.headers.get("location") ?? "";
   if (!logHostAllowed(to)) throw fail(502, `GitHub job ${b.id} log points somewhere other than GitHub's log hosts`);
   const dl = await doFetch(to, { redirect: "error", signal: AbortSignal.timeout(30_000) });
   if (!dl.ok) throw fail(502, `the job ${b.id} log download answered ${dl.status}`);
   if (Number(dl.headers.get("content-length") ?? 0) > LOG_MAX) throw fail(502, `GitHub job ${b.id} log is over ${LOG_MAX} bytes`);
-  // Refused while streaming, so a huge log never lands in memory.
   const chunks: Buffer[] = [];
   let total = 0;
-  const reader = dl.body?.getReader();
-  for (;;) {
-    const part = await reader?.read();
-    if (!part || part.done) break;
+  for (const reader = dl.body!.getReader();;) {
+    const part = await reader.read();
+    if (part.done) break;
     total += part.value.length;
-    if (total > LOG_MAX) { await reader?.cancel(); throw fail(502, `GitHub job ${b.id} log is over ${LOG_MAX} bytes`); }
+    if (total > LOG_MAX) { await reader.cancel(); throw fail(502, `GitHub job ${b.id} log is over ${LOG_MAX} bytes`); }
     chunks.push(Buffer.from(part.value));
   }
   const raw = Buffer.concat(chunks);
