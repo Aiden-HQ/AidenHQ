@@ -103,6 +103,11 @@ export function createIdle({ db, facts, state, wakes, owner, team = () => false,
     }
     return "in_progress";
   };
+  /** The status the fact log last recorded for a task. */
+  const lastStatus = (task: string) => {
+    const r = q("SELECT json_extract(data, '$.to') AS to_ FROM facts WHERE subject = ? AND type = 'task.status_changed' ORDER BY at DESC, seq DESC LIMIT 1").get(`task:${task}`) as { to_?: string } | undefined;
+    return r?.to_;
+  };
   const issue = async (task: string) => {
     const r = await owner("GET", `/api/issues/${encodeURIComponent(task)}`).catch((e: Error) => ({ status: 503, json: { error: e.message } }));
     return r.status === 404 ? null : r.status === 200 ? (r.json as ParkedIssue) : undefined;
@@ -380,20 +385,23 @@ export function createIdle({ db, facts, state, wakes, owner, team = () => false,
       const t = now(), opened: string[] = [];
       for (const i of state.read({ open: true }).tasks) {
         // Idle with nothing pending (or a wake nothing took) and an agent holds it; an owner's or unassigned task is not read.
-        if (!IDLE_REASONS.has(i.reason) || !i.holder || i.holder === "owner" || t - Date.parse(i.since) < IDLE_AFTER_MS || i.idle_wakes >= IDLE_CAP) continue;
+        if (!IDLE_REASONS.has(i.reason) || !i.holder || i.holder === "owner" || t - Date.parse(i.since) < IDLE_AFTER_MS) continue;
         try {
           const r = await owner("GET", `/api/issues/${encodeURIComponent(i.task)}`);
           const task = r.json as { status?: string; assigneeAgentId?: string | null };
           // In review with nothing running, filed or waiting on it (an escalated grade the finish gate never held, a merge that
           // landed after the last job): the holder has nothing left to do, so the one who delegated it decides, once per stretch.
+          // Only once the fact log shows the review (its `since` is then this stretch's), and never against the holder's wake cap.
           if (r.status === 200 && String(task.status) === "in_review" && task.assigneeAgentId && escalate) {
+            if (lastStatus(i.task) !== "in_review") continue;
             const to = await escalate.delegator(i.task, `idle-review:${i.task}:${i.since}`, (id) => ({
-              body: `**${id} sits in review with nothing running, filed or waiting on it** (${Math.round((t - Date.parse(i.since)) / 3600_000)} hours). Read its thread and its result, then comment on ${id} with what its agent does: finish what is missing, or cancel it if it is moot or its work has landed.`,
-              ownerText: `**${id} sits in review with nothing running, filed or waiting on it.** It is yours: comment on ${id} with what its agent does, or cancel it.`,
+              body: `**${id} sits in review with nothing running, filed or waiting on it** (${Math.round((t - Date.parse(i.since)) / 3600_000)} hours). Read its thread and its result, then decide: finish it when the work meets what was asked, comment on it with the exact changes still needed, or cancel it only when the work should not proceed.`,
+              ownerText: `**${id} sits in review with nothing running, filed or waiting on it.** It is yours: finish it if the work is right, comment on ${id} with what its agent changes, or cancel it.`,
             }));
             if (to !== "seen" && to !== "gone") opened.push(i.task);
             continue;
           }
+          if (i.idle_wakes >= IDLE_CAP) continue;
           // An agent no dispatcher runs would never take the wake (the steward's stuck-work rule has it; the state says `unpolled`).
           if (r.status !== 200 || !SWEPT.has(String(task.status)) || !task.assigneeAgentId || team(task.assigneeAgentId) || !wakes.polls(task.assigneeAgentId)) continue;
           // Keyed by when it became idle: a wake the dispatcher drops makes it orphaned again from then, so it is woken again
