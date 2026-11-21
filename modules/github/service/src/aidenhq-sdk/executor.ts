@@ -82,7 +82,9 @@ export function serveExecutor(ex: Executor, { key, kernelUrl = process.env.AIDEN
       }
       return send(res, 200, { accepted: true }), true;
     } catch (e) {
-      return send(res, 422, { error: String((e as Error).message ?? e).slice(0, 1000) }), true;
+      // A plan-time refusal carries its rule's stable code beside its words (kernel/src/writes.ts records both on the job).
+      const code = (e as { code?: unknown }).code;
+      return send(res, 422, { error: String((e as Error).message ?? e).slice(0, 1000), ...(typeof code === "string" && code ? { code: code.slice(0, 80) } : {}) }), true;
     }
   };
 }
