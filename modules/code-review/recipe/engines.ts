@@ -24,8 +24,11 @@
 //   but PATH (never the run's token; a command that reads it from the process tree anyway is scrubbed: review.ts scrub); project docs, skills' instructions, hooks, plugins, apps, memories and exec rules off, the project
 //   never trusted (so none of the PR's .codex config loads). Its review (the rollout's ExitedReviewMode) is mapped to ours; it
 //   doesn't use our repo tools, so which parts of the change it read isn't tracked (said as incomplete). Recheck goes to codex.
+//   Its output is advisory only: the PR's code runs with the shell's access and can shape what it reads (its session log), so
+//   a repo whose review is `mandatory` can't list it (service/src/config.ts).
 import { execFileSync, spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { config, runCodex } from "./code-review.ts";
@@ -284,7 +287,8 @@ persistence = "none"
 
 async function codexNative({ instructions, model, effort, root, base, minutes, scratch, own }: EngineInput): Promise<EngineResult> {
   if (!own) throw new Error("codex-native only reviews");
-  const tmp = mkdtempSync(join(scratch, "codex-native-"));
+  // Its own home per finder, outside the shared scratch and the checkout (no collisions; not a boundary: the shell has full access).
+  const tmp = mkdtempSync(join(tmpdir(), "codex-native-"));
   const home = join(tmp, "home");
   mkdirSync(home);
   writeFileSync(join(home, "config.toml"), nativeConfig({ model: String(model).replace(/^openrouter\//, ""), effort, url: gateway(), instructions }));

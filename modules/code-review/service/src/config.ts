@@ -92,6 +92,8 @@ function repo(raw: unknown): Repo | { error: string } {
   }
   if (typeof out.drafts !== "boolean") return { error: "drafts is true or false" };
   if (typeof out.mandatory !== "boolean") return { error: "mandatory is true or false" };
+  // codex-native's verdict is advisory only (the PR's code runs with its shell's full access and can shape its output): never a gate.
+  if (out.mandatory && MOMENTS.some((k) => out[k].some((c) => c.engine === "codex-native"))) return { error: "codex-native can't review a mandatory repo: the PR's own code can influence its output, so it can't be a gate (use codex, claude-code or codegenie)" };
   if (!["manual", "auto"].includes(out.forks)) return { error: "forks is manual or auto" };
   for (const k of ["day_usd", "max_nits"] as const) if (Number.isNaN(num(out[k], 0))) return { error: `${k} is a number` };
   if (!Array.isArray(out.ignore) || !out.ignore.every((g) => typeof g === "string" && g.length <= 200)) return { error: "ignore is a list of globs" };

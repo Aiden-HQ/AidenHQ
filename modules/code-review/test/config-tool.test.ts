@@ -21,6 +21,9 @@ test("watching a repo files the whole setting with its combos filled in", async 
 test("a change that wouldn't validate is refused whole; the old shape (named reviewers, string triggers, on_risk) is refused loudly", () => {
   assert.throws(() => applyChange({ repos: [] }, { watch: [{ repo: "acme/x", on_open: [{ engine: "codegenie", model: "~openai/gpt-luna-latest", effort: "minimal" }] }] }), /effort for codegenie/);
   assert.throws(() => applyChange({ repos: [] }, { watch: [{ repo: "acme/x", on_push: "quick" }] }), /named reviewers are gone/);
+  const native = [{ engine: "codex-native", model: "~openai/gpt-terra-latest", effort: "medium" }];
+  assert.throws(() => applyChange({ repos: [] }, { watch: [{ repo: "acme/x", mandatory: true, on_open: native }] }), /codex-native can't review a mandatory repo/);
+  assert.deepEqual(readConfig(JSON.stringify({ repos: [{ repo: "acme/x", on_open: native }] })).errors, []); // advisory: fine
   assert.throws(() => applyChange({ repos: [] }, { unwatch: ["acme/x"] }), /isn't watched/);
   assert.throws(() => applyChange({ repos: [{ repo: "acme/x" }, { repo: "ACME/x" }] }, { day_usd: 100 }), /listed more than once/);
   const old = readConfig(JSON.stringify({ reviewers: { quick: null }, repos: [{ repo: "acme/x", on_open: "standard", on_risk: "deep" }, { repo: "acme/y" }] }));
