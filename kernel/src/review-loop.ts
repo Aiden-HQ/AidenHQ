@@ -230,9 +230,10 @@ export async function reviewInput(r: Rec, { records, task, decisions, product, g
   const toolCall = toolCallOf(action, r.args);
   const request = {
     card: { action, rule: input.rule, target: r.card.target ?? "", sentence: r.card.sentence, reason: input.reason, ...(product.length ? { product } : {}) },
-    // A planned write's whole diff rides in its context (writes.ts, set by the kernel); for a conn.tool call a real diff never
-    // exists, so its arguments ride structured instead (toolCall) and the reviewer reads them by name, never as a DIFF.
-    diff: toolCall ? "" : cardDiff(action, r.context?.diff ?? r.card.details),
+    // A planned write's whole diff rides in its context (writes.ts, set by the kernel). A conn.tool call also carries its
+    // arguments structured (tool_call): the reviewer reads them by name, never as a DIFF. `diff` keeps the card's details, so a
+    // reviewer@1 provider that doesn't read tool_call yet still receives the call's evidence, as it did before.
+    diff: cardDiff(action, r.context?.diff ?? r.card.details),
     ...(toolCall ? { tool_call: toolCall } : {}),
     // The changed files at the reviewed head, as the code host's plan read them at filing.
     ...(r.context?.files ? { files: r.context.files } : {}),

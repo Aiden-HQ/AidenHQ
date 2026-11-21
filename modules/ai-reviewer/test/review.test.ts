@@ -5,7 +5,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { CODE_CODES, DEEPSEEK, GLM, LUNA, MAX_COMMENTS, MAX_DIFF, MAX_FILES, MODEL_CODES, changeTools, changeView, markComments, diffSections, policyVersion, readPolicy, openRouterAsk, review, reviewPrompt, sourcesInDiff, toolCallFromDetails, toolCallText } from "../service/src/review.ts";
+import { CODE_CODES, DEEPSEEK, GLM, LUNA, MAX_COMMENTS, MAX_DIFF, MAX_FILES, MAX_TOOL_CALL, MODEL_CODES, changeTools, changeView, markComments, diffSections, policyVersion, readPolicy, openRouterAsk, review, reviewPrompt, sourcesInDiff, toolCallFromDetails, toolCallText } from "../service/src/review.ts";
 import { fileContext } from "../service/src/review-files.ts";
 import { padCase } from "./case-pad.ts";
 import { REVIEW_CODES } from "../../../services/shared/reason-codes.ts";
@@ -641,6 +641,38 @@ test("a conn.tool call's arguments arrive as a labelled TOOL_CALL block by name,
   assert.match(user, /<<<REQUEST_CHAIN\nFile #1252 with its evidence\.\nREQUEST_CHAIN>>>/);
 });
 
+test("the instance-detail check reads every argument string, so a home path or IPv4 after a newline is still caught", async () => {
+  const body = "Repro logs:\n/home/sam/.local/state/runner.log\n203.0.113.41";
+  const tc = { connection: "github", tool: "github_app_issue_comment", arguments: { repo: "acme/product", body } };
+  const details = `tool: github.github_app_issue_comment\narguments (written by the requesting agent): ${JSON.stringify({ repo: "acme/product", body })}`;
+  for (const diff of ["", details]) {
+    let seen;
+    const v = await review({ card: { action: "conn.tool", rule: "conn_tool", target: "acme/product#1", sentence: "Call github.github_app_issue_comment." }, diff, tool_call: diff ? undefined : tc, policy: "p", ask: async (_m, p) => ((seen = p), ok) });
+    assert.equal(v.code, "secret_exfiltration", diff ? "the details path" : "the structured path");
+    assert.match(v.reason, /\/home\/sam\/\.local\/state\/runner\.log/);
+    assert.equal(seen, undefined, "code refuses it before a model reads it");
+  }
+});
+
+test("a tool call whose arguments don't fit the block whole goes back, never shown cut to a reviewer", async () => {
+  const big = { connection: "github", tool: "t", arguments: { body: "x".repeat(MAX_TOOL_CALL) } };
+  const v = await review({ card: { action: "conn.tool", rule: "conn_tool", target: "x", sentence: "s" }, diff: "", tool_call: big, policy: "p", ask: async () => assert.fail("not asked") });
+  assert.deepEqual([v.decision, v.code], ["reject", "no_diff"]);
+  assert.match(v.reason, /too long to show whole/);
+});
+
+test("an argument object nested past the walk depth is stated, never followed forever", async () => {
+  let deep: Record<string, unknown> = { leaf: "v" };
+  for (let i = 0; i < 40; i++) deep = { next: deep };
+  const text = toolCallText({ connection: "github", tool: "t", arguments: deep });
+  assert.match(text, /nested deeper than \d+ levels/);
+  assert.doesNotMatch(text, /leaf/);
+  // The prompt still fences it as one block.
+  let seen;
+  await review({ card: { action: "conn.tool", rule: "conn_tool", target: "x", sentence: "s" }, diff: "", tool_call: { connection: "github", tool: "t", arguments: deep }, chain: "c", policy: "p", ask: async (_m, p) => ((seen = p), ok) });
+  assert.equal((seen.user.match(/^<<<TOOL_CALL$/gm) ?? []).length, 1);
+});
+
 test("the kernel's older conn.tool details text (sent as the diff) still becomes TOOL_CALL, never a DIFF", async () => {
   const details = `tool: github.github_product_issue\narguments (written by the requesting agent): ${JSON.stringify(toolCall.arguments)}`;
   assert.deepEqual(toolCallFromDetails("conn.tool", details), toolCall, "the details text reads back to the same call");
@@ -664,10 +696,10 @@ test("a planned write still arrives as a DIFF with the DIFF_FILES shape, never a
 
 test("a conn.tool argument code cannot read is named, and does not make the whole call body-only", async () => {
   let seen;
-  await review({ card: { action: "conn.tool", rule: "conn_tool", target: "acme/product#1", sentence: "Call github.github_product_issue." }, diff: "", tool_call: { connection: "github", tool: "github_product_issue", arguments: { title: "A title" }, unreadable: ["fingerprint", "evidence.version"] }, chain: "c", policy: "p", ask: async (_m, p) => ((seen = p), ok) });
-  assert.match(seen.user, /^code could not read: fingerprint, evidence\.version$/m);
+  await review({ card: { action: "conn.tool", rule: "conn_tool", target: "acme/product#1", sentence: "Call github.github_product_issue." }, diff: "", tool_call: { connection: "github", tool: "github_product_issue", arguments: { title: "A title" }, unreadable: ["fingerprint"] }, chain: "c", policy: "p", ask: async (_m, p) => ((seen = p), ok) });
+  assert.match(seen.user, /^code could not read: fingerprint$/m);
   assert.match(seen.user, /^title: "A title"$/m);
-  assert.match(seen.system, /say which argument, and never report the whole call as body-only/);
+  assert.match(seen.system, /say which argument, exactly by name, and do not report the whole call as body-only when only one argument is/);
 });
 
 test("a tool call's argument name cannot add a line, forge a field or close the block", async () => {

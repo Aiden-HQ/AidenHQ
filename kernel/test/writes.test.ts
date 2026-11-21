@@ -323,9 +323,10 @@ test("a Tier 1 conn.tool record reaches the reviewer as a structured tool_call, 
   const rec = k.records.get(p.approval);
   const task = { issue: async (id) => ({ id, title: "Fix it", description: "Fix it." }), comments: async () => [], me: async () => "" };
   const { request } = await reviewInput(rec, { records: k.records, task, product: [] });
-  // The call arrives by name, each argument as the tool takes it, and the card's prose is not a diff.
+  // The call arrives by name, each argument as the tool takes it; the card's details stay in `diff` so a reviewer provider that
+  // doesn't read tool_call yet still gets the evidence (the reviewer module renders TOOL_CALL and no DIFF when it is present).
   assert.deepEqual(request.tool_call, { connection: "twin", tool: "note_drop", arguments: args });
-  assert.equal(request.diff, "", "a tool call has no diff for the reviewer to read");
+  assert.match(request.diff, /^tool: twin\.note_drop\narguments \(written by the requesting agent\): /);
   // A planned write's record (its diff in context) is unchanged: the whole diff still rides in request.diff.
   const planned = k.records.file({ kind: "twin.post", module: "twin", args: { note: "hello" }, targets: {}, executor: { module: "twin" }, policy: "", card: { sentence: "Post.", changes: "c", reads: "r", cost: "none", details: "note: hello" }, requester: { agent: "ag-ada", key: "ada", name: "Ada", roles: [], kind: "run" }, task: "TASK-1", tier: 1, panel: false, state: "review" });
   k.records.db.prepare("UPDATE records SET context = ? WHERE id = ?").run(JSON.stringify({ diff: "+the whole diff" }), planned.id);
@@ -339,6 +340,7 @@ test("a carded conn.tool call whose arguments code cannot read names the missing
   const task = { issue: async (id) => ({ id, title: "Fix it", description: "Fix it." }), comments: async () => [], me: async () => "" };
   const { request } = await reviewInput(k.records.get(rec.id)!, { records: k.records, task, product: [] });
   assert.deepEqual(request.tool_call, { connection: "twin", tool: "note_drop", arguments: {}, unreadable: ["arguments"] });
+  assert.match(request.diff, /^tool: twin\.note_drop/, "the details still ride in diff for a provider that doesn't read tool_call");
 });
 
 test("a carded conn.tool call over the limit is refused with its size and the limit: no record, nothing forwarded", async (t) => {
