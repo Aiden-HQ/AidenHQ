@@ -67,8 +67,10 @@ const withTimeout = <T>(p: Promise<T>, ms: number): Promise<T | undefined> =>
  * of another name, is exactly a posted check, and no fact.
  *
  * The job must be the repository's own CI on the graded head: `.github/workflows/ci.yml`, active, from a `pull_request` run
- * whose `head_sha` is that head, and with `ci.yml` byte-identical at the run's head and at the run's base. A PR that rewrote
- * its workflow ran a workflow that is not the repository's, so a job named for a suite proves nothing there. The command and
+ * whose `head_sha` is that head, and with `ci.yml` byte-identical at the run's head and at the run's base. The execution
+ * inputs are the workflow, the suite runner (`run-suites.sh`) and the map (`areas.json`) that decides what a suite command
+ * is, and a PR that edits anything under `.github/` may have changed one of them, so such a PR mints no fact at all: what CI
+ * ran there is not provably the repository's. The command and
  * directory come from `areas.json` at the run's base — the map CI itself read — and the directory must be **present** at the
  * graded head, read from the repository itself: `run-suites.sh` writes `gone:` and exits 0 over a missing one, so a green
  * job there ran nothing. Proving that positively (not inferring it from a diff) also covers a directory that was already
@@ -80,7 +82,9 @@ async function commandFacts(pr: any, repo: string, deps: any): Promise<string[]>
   if (!/^[0-9a-f]{40}$/.test(head)) return [];
   const files = (pr.files?.nodes ?? []).map((f: any) => ({ path: String(f?.path ?? "") })).filter((f) => f.path);
   if (!files.length || pr.files?.pageInfo?.hasNextPage) return [];
-  if (files.some((f) => f.path.startsWith(".github/workflows/"))) return [];
+  // The execution inputs — the workflow, `run-suites.sh`, the map and selector — all live under `.github/`: a PR that
+  // edits any of them may have changed what CI ran, so nothing it shows is evidence.
+  if (files.some((f) => f.path.startsWith(".github/"))) return [];
   // A truncated check list may be missing the job that would vouch for a suite, so it is no evidence at all.
   const rollup = pr.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts;
   if (rollup?.pageInfo?.hasNextPage) return [];

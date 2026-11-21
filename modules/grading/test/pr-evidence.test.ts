@@ -208,10 +208,18 @@ test("a check list or file list GitHub truncated claims nothing", async () => {
   assert.ok(!(await graded(240, commandDeps(truncatedFiles))).facts.some((f) => f.includes('ran "')), "a cut file list is no evidence");
 });
 
-test("a PR that edits a workflow claims nothing", async () => {
-  const prs = [withJobs(241, "a", "b", [check("kernel#1", 123)], ["kernel/src/x.ts", ".github/workflows/other.yml"])];
-  const ev = await graded(241, commandDeps(prs));
-  assert.ok(!ev.facts.some((f) => f.includes('ran "')), ev.facts.join("\n"));
+test("a PR that edits CI execution code claims nothing", async () => {
+  // The workflow, the suite runner, the selector and the map are the inputs that decide what CI runs and what a suite's
+  // command is: an edit to any of them means the fact could describe a run this PR shaped, so there is no fact.
+  for (const edited of [ ".github/workflows/other.yml", ".github/ci/run-suites.sh", ".github/ci/select.ts", ".github/ci/areas.json" ]) {
+    const prs = [withJobs(241, "a", "b", [check("kernel#1", 123)], ["kernel/src/x.ts", edited])];
+    const ev = await graded(241, commandDeps(prs));
+    assert.ok(!ev.facts.some((f) => f.includes('ran "')), `${edited}: ${ev.facts.join("\n")}`);
+  }
+  // The control: the same green job and check on a PR that touches nothing under `.github/` still mints the fact.
+  const plain = [withJobs(241, "a", "b", [check("kernel#1", 123)], ["kernel/src/x.ts"])];
+  const ev = await graded(241, commandDeps(plain));
+  assert.ok(ev.facts.includes(fact("kernel#1", KERNEL_RUN, "kernel")), ev.facts.join("\n"));
 });
 
 test("no job log is read at all: the fact comes from a suite's job record alone", async () => {

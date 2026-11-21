@@ -62,8 +62,9 @@ never evidence: a PR's test output can print any line. A command fact comes from
 suite **and** the Actions job behind its `databaseId` (`/actions/jobs/{id}`): a job record cannot be posted, so a check a PR
 posted itself — which any step holding the workflow token can — has no job behind it and mints nothing. The job must be
 `.github/workflows/ci.yml` on the graded head, active, from a `pull_request` run whose `ci.yml` is byte-identical at the
-run's head and base. The suite's directory must be proved present at head with that `dir` read: CI exits 0 on a missing one,
-so a green job over an absent folder ran nothing.
+run's head and base. Because the workflow, `run-suites.sh`, `select.ts` and `areas.json` are the inputs that decide what a
+suite's command is, a PR that changes anything under `.github/` mints no command fact at all. The suite's directory must be
+proved present at head with that `dir` read: CI exits 0 on a missing one, so a green job over an absent folder ran nothing.
 
 ## `POST /v1/tasks` — file a task
 
