@@ -9,7 +9,7 @@ import type { GitHubAccess } from "./client.js";
 import { GitHub, GitHubRefused, objectRef, type Ref } from "./github.js";
 import {
   FINDING_MARK, ACK_MARK, comboText, NoticeArgsSchema, PostArgsSchema, RUN_MARK, STATUS_CONTEXT, counts, renderNotice, renderReview, reviewStatus, rightLines,
-  type Finding, type NoticeArgs, type PostArgs,
+  commandsBlock, type Finding, type NoticeArgs, type PostArgs,
 } from "./review-render.js";
 
 /** The card's details are cut at this many characters by the kernel: a review that can't be shown whole is refused. */
@@ -159,7 +159,9 @@ export class ReviewPoster {
     const { summary, comments } = renderReview(r, a.run);
     const c = counts(r.findings);
     const details = [
-      `Review summary (event COMMENT, at commit ${r.head}):`, "", summary, "",
+      // The fixed Commands help is named, not shown: its `@aiden review` lines read like instructions to the reviewer, which then
+      // refused whole reviews as prompt injection (2 of 40 posts, 2026-11-21).
+      `Review summary (event COMMENT, at commit ${r.head}):`, "", summary.replace(commandsBlock(), "[AidenHQ's fixed Commands help: the `@aiden review` comments people on the pull request may write to ask for another review]"), "",
       ...comments.flatMap((m) => [`--- inline comment on ${m.path}:${m.line} ---`, "", m.body, ""]),
       `Commit status ${STATUS_CONTEXT}: ${reviewStatus(r).state}: ${reviewStatus(r).description}`, "",
       `Acknowledgement comment: ${renderNotice({ repo: r.repo, pr: r.pr, head: r.head, phase: "done", engine: r.engine, model: r.model, effort: r.effort, ...c, cost_usd: r.cost_usd, run: a.run }).text}`,
