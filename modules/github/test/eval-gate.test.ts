@@ -121,13 +121,13 @@ describe("the reviewer-eval gate", { concurrency: 1 }, () => {
     assert.match((await gate.bump(unseen, wip))?.stop ?? "", /isn't on acme\/aidenhq's default branch/);
   });
 
-  it("a check that couldn't run is asked again a few times, then stops the merge", async () => {
+  it("a check that couldn't run is asked again with backoff, and never stops the merge", async () => {
     const head = branch(prod, "fix/flaky-box", { "modules/ai-reviewer/service/src/review.ts": "// v7\n" });
-    for (let i = 0; i < 3; i++) {
-      assert.ok((await gate("acme/aidenhq", pr(9, head)))?.wait);
-      checks.at(-1).state = "error";
-    }
-    assert.match((await gate("acme/aidenhq", pr(9, head)))?.stop ?? "", /couldn't run 3 times/);
+    assert.ok((await gate("acme/aidenhq", pr(9, head)))?.wait);
+    checks.at(-1).state = "error";
+    const asked = checks.length;
+    for (let i = 0; i < 5; i++) assert.match((await gate("acme/aidenhq", pr(9, head)))?.wait ?? "", /couldn't run.*asking again at/);
+    assert.equal(checks.length, asked, "not asked again before its backoff ends");
   });
 
   it("a check the kernel lost at a restart never counts as couldn't run", async () => {

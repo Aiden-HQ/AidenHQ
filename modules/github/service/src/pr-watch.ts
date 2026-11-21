@@ -9,7 +9,7 @@
 // finished red on its own mergeable head (not only behind main) wakes it once per head to fix it. A check whose job never started (GitHub
 // refused it: billing, no runner; the runner's environmentFailure) is re-run once at that head, never rebased and never woken for. The PR of
 // a cancelled task is closed with its branch, once (the runner's abandoned PR), and so is a done task's unmerged PR once its head is half an hour old with no merge of it open. A PR behind main with no conflict is updated by GitHub
-// (update-branch, the runner's rebaseInCode) instead of waking its task, once per head and head of main. No PR gets more than MAX_WAKES wakes at one head (RED_WAKES).
+// (update-branch, the runner's rebaseInCode) instead of waking its task, once per head and head of main. No PR gets more than MAX_WAKES wakes at one head (RED_WAKES); the asker is told once when it is capped. A 4xx update-branch refusal is final; a 5xx or race retries.
 // The CI breaker: after 3 red rounds on an agent's PR (heads whose own checks finished red), or the same named check red on two
 // heads, its task is no longer woken for red checks; whoever asked for the task (its open parent, else the task) is told once,
 // with the failing checks and the last failure's summary fenced as data. A green head resets it.
@@ -126,8 +126,8 @@ export function startPrWatch(o: PrWatchOptions) {
     state.policyRan ??= {};  // `<pr url>:<head>:<sha256(title)>` -> when its red policy was re-run for that title
     state.abandoned ??= {};  // PR url -> when it was closed for its cancelled task
     state.headAt ??= {};     // PR url -> { head, at }: when this head was first seen
-    state.updated ??= {};    // `<pr url>:<head>:<main oid>` -> "ok" or "refused": GitHub was asked to update the branch
-    state.wakes ??= {};      // PR url -> { head, n }: wakes sent at this head
+    state.updated ??= {};    // `<pr url>:<head>:<main oid>` -> "ok" (GitHub updated it) or "final" (a 4xx refusal; a 5xx or race retries)
+    state.wakes ??= {};      // PR url -> { head, n, escalated? }: wakes sent at this head, and whether the asker was told it is capped
     state.breaker ??= {};    // PR url -> { rounds, failed: { check name -> head }, told? }: red rounds since its last green head
     const save = () => writeJson(stateFile, all);
     /**
@@ -137,7 +137,17 @@ export function startPrWatch(o: PrWatchOptions) {
      */
     async function wake(pr: Json, task: string, text?: string): Promise<"sent" | "capped" | "failed"> {
       const w = state.wakes[pr.url.toLowerCase()]?.head === pr.headRefOid ? state.wakes[pr.url.toLowerCase()] : { head: pr.headRefOid, n: 0 };
-      if (w.n >= MAX_WAKES) { log("wake cap reached", { pr: pr.url, head: pr.headRefOid }); return "capped"; }
+      if (w.n >= MAX_WAKES) {
+        log("wake cap reached", { pr: pr.url, head: pr.headRefOid });
+        // Told once per head, the way the CI breaker tells: whoever asked for the task decides the next step. A note the kernel
+        // didn't take is sent again next tick.
+        if (task && !w.escalated) {
+          const text = `**Wake cap on ${task}:** ${pr.url} woke ${task} ${MAX_WAKES} times at one head and is not woken again at it. Decide its next step: re-scope it, fix the cause another way, or tell the owner.`;
+          try { await kernel("POST", "/v1/wakes", { task, text, to: "asker" }); w.escalated = true; save(); }
+          catch (e) { log("wake cap note not delivered: retried next tick", { pr: pr.url, task, err: String((e as Error).message).slice(0, 200) }); return "failed"; }
+        }
+        return "capped";
+      }
       if (text) {
         try { await kernel("POST", "/v1/wakes", { task, text }); }
         catch (e) { log("wake not delivered: retried next tick", { pr: pr.url, task, err: String((e as Error).message).slice(0, 200) }); return "failed"; }
@@ -224,11 +234,11 @@ export function startPrWatch(o: PrWatchOptions) {
     /** Have GitHub update a behind, non-conflicting branch (rebase if the repo allows, else merge), at most once per head and head of main. True when it did. */
     async function updateBranch(pr: Json, base: string) {
       const key = `${pr.url.toLowerCase()}:${pr.headRefOid}:${base}`;
-      if (state.updated[key]) return state.updated[key] === "ok"; // an update GitHub has not shown yet is waited for, not asked about
-      state.updated[key] = "refused";
-      save();
+      if (state.updated[key] === "ok") return true; // an update GitHub has not shown yet is waited for, not asked about
+      if (state.updated[key] === "final") return false;
+      let last: Json;
       for (const update_method of ["rebase", "merge"]) {
-        const r = await gh("PUT", `/repos/${repo}/pulls/${pr.number}/update-branch`, { expected_head_sha: pr.headRefOid, update_method });
+        const r = last = await gh("PUT", `/repos/${repo}/pulls/${pr.number}/update-branch`, { expected_head_sha: pr.headRefOid, update_method });
         if (r.status < 300) {
           state.updated[key] = "ok";
           await wake(pr, "");
@@ -237,6 +247,8 @@ export function startPrWatch(o: PrWatchOptions) {
         }
         log("branch update refused", { pr: pr.url, update_method, status: r.status });
       }
+      // A 4xx answer (a conflict, no right to update a fork) is final for this head and main. A 5xx, a 429 or a race on expected_head_sha (a 422 too) is asked again next tick.
+      if (last.status >= 400 && last.status < 500 && last.status !== 429 && !/expected.*sha|sha.*expected/i.test(String(last.body?.message ?? ""))) { state.updated[key] = "final"; save(); }
       return false;
     }
     /** The breaker tripped: whoever asked for the task hears it once, the checks and the last failure's summary fenced as data. */
