@@ -47,6 +47,22 @@ export function recipes() {
   return out;
 }
 
+/** A check box (checkjobs.ts CheckBox) that runs `run(o)` in process: its runs are this box's own, so another kernel's box finds
+ * them gone. */
+export function fakeBox(run) {
+  const runs = new Map();
+  let n = 0;
+  return {
+    async launch(o) {
+      const container = `fake-${++n}`;
+      const p = Promise.resolve().then(() => run(o));
+      p.catch(() => {});
+      runs.set(container, p);
+      return { container, pid: 0, log: "", deadline: 0 };
+    },
+    async follow(h) { return runs.has(h.container) ? runs.get(h.container) : "gone"; },
+  };
+}
 export const serve = (handler) => new Promise((r) => { const s = http.createServer(handler).listen(0, "127.0.0.1", () => r({ s, url: `http://127.0.0.1:${s.address().port}` })); });
 export const readBody = (req) => new Promise((r) => { let b = ""; req.on("data", (d) => (b += d)); req.on("end", () => r(b)); });
 

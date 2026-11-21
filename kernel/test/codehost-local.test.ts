@@ -14,6 +14,7 @@ import { checkJobs as compileCheckJobs } from "../../scripts/modules.ts";
 import { localHost, LOCAL_KINDS } from "../../modules/codehost-local/src/host.ts";
 import { localMergePass } from "../src/localmerge.ts";
 import { createChecks } from "../src/checkjobs.ts";
+import { fakeBox } from "./helpers.ts";
 import { openRecords } from "../src/records.ts";
 import { createWrites } from "../src/writes.ts";
 import { pathInventory } from "../../scripts/paths.ts";
@@ -32,7 +33,7 @@ test("local-only: create a repo, publish a change request, merge it at its head 
   const ran = [];
   const checkJobs = createChecks({
     db: new DatabaseSync(":memory:"), secret: () => "receipt-secret", recipes: () => compileCheckJobs("codehost-local", YAML.parse(readFileSync(join(root, "module.yaml"), "utf8")), root),
-    box: { run: async (o) => (ran.push(o.argv), { exit: 0, out: "ok", timedOut: false }) }, snapshot: () => async () => {}, modelToken: () => "", gatewayUrl: "", workDir: join(dir, "checks"), log: () => {},
+    box: fakeBox(async (o) => (ran.push(o.argv), { exit: 0, out: "ok", timedOut: false })), snapshot: () => async () => {}, modelToken: () => "", gatewayUrl: "", workDir: join(dir, "checks"), log: () => {},
   });
   const localChecks = new Map();
   const flowFacts = [];
@@ -149,7 +150,7 @@ test("a green change asks for its merge itself, as the task's agent: Tier 1 loca
   for (const d of [join(tasks, "TASK-1"), join(dir, "scratch"), join(dir, "checks")]) mkdirSync(d, { recursive: true });
   const checkJobs = createChecks({
     db: new DatabaseSync(":memory:"), secret: () => "receipt-secret", recipes: () => compileCheckJobs("codehost-local", YAML.parse(readFileSync(join(root, "module.yaml"), "utf8")), root),
-    box: { run: async () => ({ exit: 0, out: "ok", timedOut: false }) }, snapshot: () => async () => {}, modelToken: () => "", gatewayUrl: "", workDir: join(dir, "checks"), log: () => {},
+    box: fakeBox(async () => ({ exit: 0, out: "ok", timedOut: false })), snapshot: () => async () => {}, modelToken: () => "", gatewayUrl: "", workDir: join(dir, "checks"), log: () => {},
   });
   const localChecks = new Map();
   const host = localHost({
