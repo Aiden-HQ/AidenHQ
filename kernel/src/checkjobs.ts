@@ -101,13 +101,17 @@ export type Binding = { repo: string; head: string; run: Run; judge?: string; po
  * ledger (a failed run's too; a running check's so far); both null for other recipes. */
 export type CheckView = { id: string; repo: string; head: string; run: Run; state: string; receipt: Receipt | null; error: string | null; version: number; result: Record<string, unknown> | null; billed_usd: number | null;
   /** Running, but still waiting for a computer (the pool is full): nothing is running in a box yet. */
-  waiting: boolean };
+  waiting: boolean;
+  /** When the check got its box (ISO), kept through restarts and retries of one attempt; null before. Wall time runs from here, queueing excluded. */
+  box_at: string | null };
 
 /** Where a check's folders are in its box: the snapshot (read-write, thrown away after) and the kernel's out folder. */
 export const BOX_WORKSPACE = "/workspace";
 export const BOX_OUT = "/aidenhq-out";
 /** A box's run as the row keeps it, so the next kernel can follow it: its box, its detached process, its log and its deadline. */
-export type BoxRun = { container: string; pid: number; log: string; deadline: number };
+export type BoxRun = { container: string; pid: number; log: string; deadline: number;
+  /** When `launch` obtained the box (epoch ms). */
+  at: number };
 export type BoxOut = { exit: number | null; out: string; timedOut: boolean };
 /** A credential-free computer for one check (the kernel's box client, checkbox.ts): `launch` starts `argv` in a fresh box, in
  * `cwd` (relative to the workspace) with exactly `env`, detached from the kernel; `readOnly`: the workspace is mounted read-only.
@@ -298,6 +302,8 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
   if (!cols.has("task")) db.exec("ALTER TABLE checks ADD COLUMN task TEXT");
   // The running attempt's box run and step (execute's `launched`): what the next kernel follows after a restart.
   if (!cols.has("follow")) db.exec("ALTER TABLE checks ADD COLUMN follow TEXT");
+  // When the running attempt got its box (epoch ms; the first box of its passes).
+  if (!cols.has("box_at")) db.exec("ALTER TABLE checks ADD COLUMN box_at INTEGER");
   const facts = openFacts(db);
   /** The end of the attempt that started at `started` and its check.ended fact, in one transaction (a re-run reuses the id: its
    * start time is the version). False when a newer attempt has taken the row: this one's end is dropped. */
@@ -334,7 +340,7 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
     for (const w of waiters.get(id) ?? []) w();
     waiters.delete(id);
   };
-  const view = (r: Record<string, any>): CheckView => ({ waiting: r.state === "running" && boxless.has(r.id), id: r.id, repo: r.repo, head: r.head, run: r.run, state: r.state, receipt: r.receipt ? JSON.parse(r.receipt) : null, error: r.error ?? null, version: versions.get(r.id) ?? 0, result: r.result ? JSON.parse(r.result) : null, billed_usd: r.state === "running" && r.run_key ? Math.round((Number(r.cost_usd ?? 0) + spent(r.run_key)) * 10_000) / 10_000 : r.cost_usd ?? null });
+  const view = (r: Record<string, any>): CheckView => ({ waiting: r.state === "running" && boxless.has(r.id), box_at: r.box_at ? new Date(r.box_at).toISOString() : null, id: r.id, repo: r.repo, head: r.head, run: r.run, state: r.state, receipt: r.receipt ? JSON.parse(r.receipt) : null, error: r.error ?? null, version: versions.get(r.id) ?? 0, result: r.result ? JSON.parse(r.result) : null, billed_usd: r.state === "running" && r.run_key ? Math.round((Number(r.cost_usd ?? 0) + spent(r.run_key)) * 10_000) / 10_000 : r.cost_usd ?? null });
 
   /** A run launched in a fresh box (its handle). `trees`: commit trees by spec field, moved into the out folder (the recipe's
    * history); `spec`: written to the out folder's spec.json. */
@@ -489,7 +495,7 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
       }
     };
     // The box run's handle on the row before it is followed: a restart's next kernel follows it from there.
-    const launched: Launch = (h, step) => (db.prepare("UPDATE checks SET follow = ? WHERE id = ? AND at = ?").run(JSON.stringify({ box: h, step }), id, r.at), follow(h));
+    const launched: Launch = (h, step) => (db.prepare("UPDATE checks SET follow = ?, box_at = COALESCE(box_at, ?) WHERE id = ? AND at = ?").run(JSON.stringify({ box: h, step }), h.at, id, r.at), follow(h));
     // What its model token has spent so far, with what earlier attempts spent.
     const spentSoFar = () => {
       const key = (db.prepare("SELECT run_key FROM checks WHERE id = ? AND at = ?").get(id, r.at) as { run_key: string | null } | undefined)?.run_key;
@@ -553,7 +559,7 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
       if (had && !again) return view(had);
       const id = had?.id ?? `c-${randomBytes(8).toString("hex")}`;
       // The task is the latest asker's: a re-run for another task is that task's evidence from here on.
-      if (had) db.prepare("UPDATE checks SET task = COALESCE(?, task), state = 'running', receipt = NULL, error = NULL, result = NULL, retry = 0, tries = tries + 1, run_key = NULL, follow = NULL, at = ?, ended = NULL WHERE id = ?").run((b.task as string | undefined) ?? null, now(), id);
+      if (had) db.prepare("UPDATE checks SET task = COALESCE(?, task), state = 'running', receipt = NULL, error = NULL, result = NULL, retry = 0, tries = tries + 1, run_key = NULL, follow = NULL, box_at = NULL, at = ?, ended = NULL WHERE id = ?").run((b.task as string | undefined) ?? null, now(), id);
       else db.prepare("INSERT INTO checks (id, module, repo, head, run, hash, spec, state, at, task) VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?, ?)").run(id, module, repo.toLowerCase(), head, run, hash, JSON.stringify(spec), now(), (b.task as string | undefined) ?? null);
       log("check started", { check: id, module, repo, head, run });
       execute(id, recipe).catch((e: Error) => log("WARNING: check run failed outside its own handling", { check: id, err: String(e?.message ?? e).slice(0, 300) }));

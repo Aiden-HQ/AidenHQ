@@ -275,10 +275,10 @@ test("a run whose check job has no computer yet shows as waiting, not running", 
   w.results.set("c-1", { state: "running", waiting: true });
   w.later(5000);
   await w.tick();
-  assert.deepEqual(w.engine.runs({ repo: REPO }).map((r) => r.status), ["waiting"]);
-  w.results.set("c-1", { state: "running" });
+  assert.deepEqual(w.engine.runs({ repo: REPO }).map((r) => [r.status, r.box_at]), [["waiting", null]]);
+  w.results.set("c-1", { state: "running", box_at: "2026-01-01T00:00:00.000Z" });
   await w.tick();
-  assert.deepEqual(w.engine.runs({ repo: REPO }).map((r) => r.status), ["running"]);
+  assert.deepEqual(w.engine.runs({ repo: REPO }).map((r) => [r.status, r.box_at]), [["running", "2026-01-01T00:00:00.000Z"]]);
 });
 
 test("a review that finishes on a closed PR whose merged state can't be read now waits for the next tick, then posts once it is known", async () => {

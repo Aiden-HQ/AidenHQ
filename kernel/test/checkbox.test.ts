@@ -160,11 +160,14 @@ test("check box: a restart adopts a running check, which ends with its result, r
   // The old kernel let go: the run is still running, its box not released and its folder kept.
   const attempt = dirname(boxes[0].out);
   assert.deepEqual([(await old.get("github", id)).state, calls.includes("/job/release"), existsSync(attempt)], ["running", false, true]);
+  const boxAt = (await old.get("github", id)).box_at;
+  assert.match(boxAt, /^\d{4}-\d\d-\d\dT/, "the check records when it got its box");
 
   const next = kernel();
   await next.recover();
   const v = await next.get("github", id);
   assert.equal(v.state, "done", v.error ?? "");
+  assert.equal(v.box_at, boxAt, "an adopted check keeps the box time its first kernel recorded");
   assert.deepEqual([v.receipt.verdict, v.result.findings, v.result.cost_usd, v.result.tokens.output, v.billed_usd], ["pass", [], 0.25, 5, 0.25]);
   assert.deepEqual(next.verify(v.receipt, { repo: "acme/app", head: A, run: "code-review", result: resultHash(JSON.stringify(v.result)) }), { ok: true });
   assert.deepEqual([calls.filter((c) => c === "/check").length, calls.filter((c) => c === "/job/release").length, existsSync(attempt)], [1, 1, false]);
