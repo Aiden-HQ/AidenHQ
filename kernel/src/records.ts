@@ -55,6 +55,8 @@ export type Rec = {
   cap?: Cap | null;
   /** What the reviewer reads beside the card, from the plan at filing (executor.ts ReviewContext): never part of the digest. */
   context?: ReviewContext | null;
+  /** Why its executor says a claimed record is still running (POST /v1/writes/:id/wait): shown while it is claimed, never after. */
+  wait?: string | null;
 };
 const JSON_COLS = ["args", "targets", "executor", "card", "requester", "outcome", "cap", "context"] as const;
 const OPEN: State[] = ["review", "owner", "approved"];
@@ -96,7 +98,7 @@ export function openRecords(file: string, now = () => new Date()) {
     CREATE INDEX IF NOT EXISTS records_task ON records (task, kind);`);
   // Columns added since 2d, each additive (older code ignores them, so a rollback keeps working).
   const have = new Set((db.prepare("PRAGMA table_info(records)").all() as { name: string }[]).map((c) => c.name));
-  for (const [c, t] of [["merit", "INTEGER"], ["review_first", "TEXT"], ["rule", "TEXT"], ["review_code", "TEXT"], ["decided_at", "TEXT"], ["owner_reason", "TEXT"], ["identifier", "TEXT"], ["replaced", "INTEGER NOT NULL DEFAULT 0"], ["chain", "TEXT"], ["target", "TEXT"], ["content", "TEXT"], ["cap", "TEXT"], ["context", "TEXT"]] as const) if (!have.has(c)) db.exec(`ALTER TABLE records ADD COLUMN ${c} ${t}`);
+  for (const [c, t] of [["merit", "INTEGER"], ["review_first", "TEXT"], ["rule", "TEXT"], ["review_code", "TEXT"], ["decided_at", "TEXT"], ["owner_reason", "TEXT"], ["identifier", "TEXT"], ["replaced", "INTEGER NOT NULL DEFAULT 0"], ["chain", "TEXT"], ["target", "TEXT"], ["content", "TEXT"], ["cap", "TEXT"], ["context", "TEXT"], ["wait", "TEXT"]] as const) if (!have.has(c)) db.exec(`ALTER TABLE records ADD COLUMN ${c} ${t}`);
   // a task by its identifier (a fact's task, facts.ts; a task's records)
   db.exec("CREATE INDEX IF NOT EXISTS records_identifier ON records (identifier)");
   const facts = openFacts(db, now);
@@ -134,7 +136,8 @@ export function openRecords(file: string, now = () => new Date()) {
    */
   const move = (id: string, from: State[], to: State, set: { review?: string; review_code?: string | null; decided_by?: string; via?: string; owner_reason?: string; tier?: number; outcome?: unknown; decided_at?: string; chain?: string | null; cap?: string; review_first?: string } = {}, fresh = false): boolean => {
     const cols = Object.keys(set);
-    const r = db.prepare(`UPDATE records SET state = ?, updated_at = ?${OPEN.includes(to) ? "" : ", context = NULL"}${cols.map((c) => `, ${c} = ?`).join("")} WHERE id = ? AND state IN (${from.map(() => "?").join(",")})${fresh ? " AND created_at > ?" : ""}`)
+    // A wait reason belongs to the claimed state alone: any move out of it clears it.
+    const r = db.prepare(`UPDATE records SET state = ?, updated_at = ?${OPEN.includes(to) ? "" : ", context = NULL"}${to === "claimed" ? "" : ", wait = NULL"}${cols.map((c) => `, ${c} = ?`).join("")} WHERE id = ? AND state IN (${from.map(() => "?").join(",")})${fresh ? " AND created_at > ?" : ""}`)
       .run(to, iso(), ...cols.map((c) => (c === "outcome" ? JSON.stringify((set as any)[c]) : (set as any)[c] ?? null)), id, ...from, ...(fresh ? [cutoff()] : []));
     return r.changes === 1;
   };
@@ -280,6 +283,13 @@ export function openRecords(file: string, now = () => new Date()) {
     },
     /** approved → claimed, once, within its 7 days. */
     claim: (id: string) => moved(() => move(id, ["approved"], "claimed", {}, true), () => fact(id, "record.claimed", "claimed", "kernel", (r) => ({ kind: r.kind }))),
+    /**
+     * A claimed record's live wait reason (its executor's, POST /v1/writes/:id/wait). Only while it is claimed; false when it
+     * has left that state. It never moves the record's state or its updated_at (a wait is not progress).
+     */
+    setWait(id: string, reason: string): boolean {
+      return db.prepare("UPDATE records SET wait = ? WHERE id = ? AND state = 'claimed'").run(reason, id).changes === 1;
+    },
     /** GitHub objects the outcome of record `id` made (objects.ts). */
     addObjects: (id: string, refs: unknown) => addObjects(db, id, refs, iso()),
     objectOf: (ref: string) => objectOf(db, ref),

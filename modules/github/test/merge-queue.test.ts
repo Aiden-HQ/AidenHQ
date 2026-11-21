@@ -363,6 +363,41 @@ test("merge queue waits while disconnected", async (t) => {
   assert.deepEqual(facts.filter((f) => f.type === "work.resumed").map((f) => f.data.reason), ["github"]);
 });
 
+test("a code review wait posts its reason to the kernel once per distinct reason, never per poll, and keeps its no-time-limit wait", async () => {
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS" } };
+  const github = fakeGitHub(prs);
+  let verdict = { status: 200, body: { verdict: "wait", reasons: [{ code: "findings", text: "1 important finding open: t (a.ts:3)", unblock: "fix and push" }] } };
+  const fetchFn = async () => new Response(JSON.stringify(verdict.body), { status: verdict.status });
+  const waits = [];
+  const clock = { t: Date.now() };
+  const merges = createMerges({
+    dir: mkdtempSync(join(tmpdir(), "merges-")), gh: github.gh, fleetOrg: "acme-agents", now: () => new Date(clock.t),
+    evalGate: async () => undefined, report: async () => {}, waiting: async (id, reason) => void waits.push({ id, reason }),
+    reviewGate: createReviewGate({ gated: ["Acme-Agents/Widget"], url: "http://code-review:8098", key: () => "github-module-token", fetchFn }),
+  });
+  void merges.enqueue("k-00000000000000h1", { prs: [{ repo: "acme-agents/widget", number: 1, head: HEAD }] });
+  await merges.step();
+  await merges.step();
+  await merges.step();
+  assert.deepEqual(waits.map((w) => w.reason), ["code review: 1 important finding open: t (a.ts:3) (fix and push)"], "once per distinct reason, not per poll");
+  assert.equal(merges.status("k-00000000000000h1").state, "running");
+  // A week later the same reason: still no second post, and the gate's Infinity limit never stops the wait.
+  clock.t += 7 * 24 * 3600_000;
+  await merges.step();
+  assert.equal(waits.length, 1);
+  assert.equal(merges.status("k-00000000000000h1").state, "running");
+  // A materially changed reason is posted once more.
+  verdict = { status: 200, body: { verdict: "wait", reasons: [{ code: "findings", text: "2 important findings open: t, u", unblock: "fix and push" }] } };
+  await merges.step();
+  await merges.step();
+  assert.deepEqual(waits.map((w) => w.reason), ["code review: 1 important finding open: t (a.ts:3) (fix and push)", "code review: 2 important findings open: t, u (fix and push)"]);
+  assert.equal(github.merges().length, 0, "never merged while the gate waits");
+  verdict = { status: 200, body: { verdict: "pass", reasons: [] } };
+  await merges.step();
+  assert.deepEqual(github.merges().map((w) => w.body.sha), [HEAD]);
+  assert.deepEqual(waits.map((w) => w.id), ["k-00000000000000h1", "k-00000000000000h1"]);
+});
+
 test("a repo code review gates merges only on its pass for the bound head; wait (unreachable too) keeps the merge queued with no time limit; other repos never ask", async () => {
   const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS" }, "acme-agents/other": { head: HEAD, checks: "SUCCESS" } };
   const github = fakeGitHub(prs);

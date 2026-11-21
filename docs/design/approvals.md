@@ -23,7 +23,9 @@ a change too large to read) goes back to the agent, never to the owner.
   server-side from the credential used (`owner:board`, `owner:telegram`, `owner:reply`, `account:<id>`, `reviewer:<model>`,
   `reviewer:<model>+<second>` for the panel, `auto:<rule>`), never from a caller-supplied field. Lifecycle: `review` or
   `owner` then `approved`, `claimed` (once), `done` / `failed` / `unknown`; also `rejected`, `stale`, `cancelled`. Open records
-  expire after 7 days.
+  expire after 7 days. `claimed` is live: its executor may report why it is still running (`POST /v1/writes/:id/wait`), the board
+  shows that state as `running` with the reason, and the record's task hears the reason once when the wait starts and again only
+  when it changes.
 - **Earlier decisions bind** (`tier.ts` `priorDecisions`). The owner's rejection of an action on a task is a veto: every later
   request of it there is the owner's until they approve one. The reviewer's rejection holds for exactly that content (the same
   commits or patch, under any branch name): such a request is refused by code before any review until a decision on the task

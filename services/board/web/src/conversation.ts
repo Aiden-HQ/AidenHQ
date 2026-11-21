@@ -57,6 +57,7 @@ type Outcome = { text: string; tone: "ok" | "bad" | "meh" | "needs" };
 /** One word for where an approval ended. */
 export function outcomeOf(a: Approval): Outcome {
   if (a.state === "pending") return a.tier === 1 ? { text: "With the reviewer", tone: "meh" } : { text: "Pending", tone: "needs" };
+  if (a.state === "running") return { text: "Running", tone: "meh" };
   if (a.state === "auto") return { text: a.outcome === "failed" ? "Ran, failed" : "Ran (Tier 0)", tone: a.outcome === "failed" ? "bad" : "ok" };
   if (a.outcome === "applied") return { text: "Applied", tone: "ok" };
   if (a.outcome === "failed") return { text: "Failed", tone: "bad" };
@@ -71,7 +72,7 @@ export function outcomeOf(a: Approval): Outcome {
  * A card in a conversation folds to one line once it is decided; a pending one stays whole with its buttons. A card
  * the owner decides while looking at it (`seenPending`) stays open so it doesn't jump away under the tap.
  */
-export const foldsInChat = (a: Approval, seenPending: boolean) => a.state !== "pending" && !seenPending;
+export const foldsInChat = (a: Approval, seenPending: boolean) => a.state !== "pending" && a.state !== "running" && !seenPending;
 
 /** Who decided a card, in words: a named admin, you (your tap or reply), code, the AI reviewer or the panel, or the stamp itself (watcher). */
 export function deciderOf(a: Pick<Approval, "decidedBy" | "decidedByName">): string {

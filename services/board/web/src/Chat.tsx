@@ -14,6 +14,7 @@ import { ago } from "./util";
 const OUTCOME: Record<Approval["state"], string> = {
   pending: "",
   approved: "Approved: applying…",
+  running: "Running…",
   used: "Applying…",
   rejected: "Rejected: nothing ran.",
   stale: "Closed: its head moved before review, so nothing ran.",
@@ -77,13 +78,13 @@ export function ApprovalCard({ a, open, inline, prefix = "", unfold }: { a: Appr
   );
   const top = !inline && forOwner(a);
   const label = a.outcome === "applied" ? "Applied." : a.outcome === "failed" ? "Failed:" : OUTCOME[a.state];
-  const text = a.outcome === "applied" ? (a.outcomeText ?? "") : a.outcome === "failed" ? (a.outcomeText ?? "no reason given") : "";
+  const text = a.outcome === "applied" ? (a.outcomeText ?? "") : a.outcome === "failed" ? (a.outcomeText ?? "no reason given") : a.state === "running" ? (a.wait ?? "") : "";
   return (
     <li className={`approval-card ap-${a.outcome ?? a.state}${inline ? " inline" : ""}`}>
       <div className="approval-head">
         <button className="chat-open" onClick={() => open(a.identifier)}>
           <span className="chat-agent">{a.requestedBy}</span>
-          <span className="chat-title">{!inline ? "Open the chat" : a.state === "auto" ? "ran it at once (Tier 0)" : a.tier === 1 && a.state === "pending" ? "asks the AI reviewer" : "asks for your approval"}</span>
+          <span className="chat-title">{!inline ? "Open the chat" : a.state === "auto" ? "ran it at once (Tier 0)" : a.state === "running" ? "is running" : a.tier === 1 && a.state === "pending" ? "asks the AI reviewer" : "asks for your approval"}</span>
         </button>
         <span className="muted small">{a.id}</span>
         {inline && shown && (
@@ -144,7 +145,7 @@ export function ApprovalCard({ a, open, inline, prefix = "", unfold }: { a: Appr
         <div className={`approval-outcome ${a.outcome === "failed" || a.state === "unknown" ? "bad" : ""}`}>
           {label && <b>{label}</b>}
           {a.decidedByName && <span className="by">by {a.decidedByName}</span>}
-          {text &&<Markdown text={text} prefix={prefix} />}
+          {text && (a.state === "running" ? <pre className="pre">{text}</pre> : <Markdown text={text} prefix={prefix} />)}
         </div>
       )}
     </li>

@@ -6,7 +6,7 @@ import pino from "pino";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
 import type { Paperclip } from "../src/paperclip.js";
-import { kernelRecords } from "../src/records.js";
+import { kernelRecords, recordApproval } from "../src/records.js";
 import { Store } from "../src/store.js";
 
 const KEY = "k".repeat(48);
@@ -16,11 +16,13 @@ const record = {
   decided_by: null, outcome: null, created_at: "2026-11-16T10:00:00.000Z", updated_at: "2026-11-16T10:00:00.000Z",
   card: { sentence: "Deploy crm", changes: "crm", reads: "", cost: "", details: "" }, requester: { agent: "a1", key: "devops", name: "DevOps Engineer" },
 };
+// A claimed record in flight (the merge queue waiting on code review): its state is its own, its reason carried to the card.
+const live = { ...record, id: "k-00000000000000b1", kind: "github.merge", tier: 1, state: "claimed", wait: "code review: 1 important finding open", card: { ...record.card, sentence: "Merge acme/widget#1" } };
 // A Tier 0 run (a connection's write tool, made at once): only a tier0=1 list has it.
 const ran = { ...record, id: "k-00000000000000aa", kind: "conn.tool", args: { connection: "slack", tool: "post_message", arguments: {} }, tier: 0, state: "done", review: null, outcome: { ok: true, text: "posted" }, card: { ...record.card, sentence: "Post in #general" } };
 const kernel = createServer((req, res) => {
   seen.push(`${req.headers.authorization} ${req.url}`);
-  res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ records: req.url!.includes("tier0=1") ? [ran, record] : [record] }));
+  res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ records: req.url!.includes("tier0=1") ? [ran, record, live] : [record, live] }));
 });
 let app: ReturnType<typeof createApp>;
 beforeAll(async () => {
@@ -42,6 +44,19 @@ it("shows the kernel's records read from /v1/writes, and Tier 0 runs after the f
   expect(seen.sort()).toEqual([`Bearer ${KEY} /v1/writes?state=recent&limit=100`, `Bearer ${KEY} /v1/writes?state=recent&limit=100&tier0=1`]);
   expect(json.approvals).toEqual([
     expect.objectContaining({ id: record.id, action: "deploy_app", state: "pending", tier: 2, sentence: "Deploy crm", digest: record.digest }),
+    // A claimed record is live, never a consumed `used` card, and carries its wait reason.
+    expect.objectContaining({ id: live.id, action: "github.merge", state: "running", outcome: null, wait: "code review: 1 important finding open", sentence: "Merge acme/widget#1" }),
     expect.objectContaining({ id: ran.id, action: "conn.tool", target: "slack.post_message", state: "auto", tier: 0, outcome: "applied", sentence: "Post in #general" }),
   ]);
+});
+
+it("a claimed record renders as running with its reason; a done one still renders applied", () => {
+  const claimed = recordApproval(live as never);
+  expect(claimed).toMatchObject({ state: "running", outcome: null, outcomeText: null, wait: "code review: 1 important finding open" });
+  expect(claimed.state).not.toBe("used");
+  // Once it ends, `used` and its outcome; the live reason is gone.
+  const done = recordApproval({ ...live, state: "done", wait: null, outcome: { ok: true, text: "merged" } } as never);
+  expect(done).toMatchObject({ state: "used", outcome: "applied", outcomeText: "merged", wait: null });
+  // A failed run is still `used` + failed, as before.
+  expect(recordApproval({ ...live, state: "failed", wait: null, outcome: { ok: false, text: "nope" } } as never)).toMatchObject({ state: "used", outcome: "failed" });
 });

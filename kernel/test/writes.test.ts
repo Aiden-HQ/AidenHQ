@@ -462,6 +462,38 @@ test("a revalidation plan the executor can't answer now leaves the record approv
   assert.equal(k.records.get(q.approval).state, "claimed");
 });
 
+test("a claimed record's wait reason comes from its own module only, and its task hears it once per change", async (t) => {
+  const k = await kernel(t, { repos: { product: "acme/aidenhq", instance: "acme/aidenhq-instance" }, modules: { modules: { github: { token: "github_token" }, other: { token: "other_token" } } }, secrets: { github_token: "github-key", other_token: "other-key" } });
+  const file = (module, executor = module) => k.records.file({ kind: `${module}.post`, module, args: { n: 1 }, targets: {}, executor: { module: executor, url: "http://127.0.0.1:9/aidenhq/v1/executor" }, policy: "p", tier: 1, panel: false, card: { sentence: "s", changes: "", reads: "", cost: "", details: "" }, requester: { agent: "ag-ada", key: "ada", name: "Ada", roles: [], kind: "run" }, task: "TASK-1", state: "claimed" });
+  const r = file("github");
+  const wait = (id, reason, key = "github-key") => k.v1("POST", `/v1/writes/${id}/wait`, { reason }, key);
+  // Its own module's key (the executor's connection key) reports the reason; the task hears it.
+  assert.equal((await wait(r.id, "code review: 1 important finding open")).status, 200, JSON.stringify(k.log.filter((l) => l.msg === "backplane error")));
+  assert.equal(k.records.get(r.id).wait, "code review: 1 important finding open");
+  assert.equal(k.records.get(r.id).state, "claimed");
+  await until(() => k.notices.length === 1);
+  assert.equal(k.notices[0].task, "TASK-1");
+  assert.match(k.notices[0].text, /^\*\*Still running\*\* \(approval k-[0-9a-f]{16}, github\.post\)[\s\S]*```\ncode review: 1 important finding open\n```/);
+  // A repeat of the same reason is idempotent and tells nobody again.
+  assert.deepEqual((await wait(r.id, "code review: 1 important finding open")).json, { ok: true, new: false });
+  await new Promise((res) => setTimeout(res, 20));
+  assert.equal(k.notices.length, 1, "a repeat of the same reason is not a new wait");
+  // A materially changed reason is told once more.
+  assert.equal((await wait(r.id, "code review: 2 important findings open")).json.new, true);
+  await until(() => k.notices.length === 2);
+  assert.match(k.notices[1].text, /2 important findings open/);
+  // Another module's key may not report it (the same guard as the outcome route).
+  assert.equal((await wait(r.id, "not mine", "other-key")).status, 403);
+  assert.equal(k.records.get(r.id).wait, "code review: 2 important findings open");
+  // A record that isn't claimed refuses a wait: an outcome's record, and one still open for review.
+  k.records.finish(r.id, true, "merged");
+  assert.equal((await wait(r.id, "late")).status, 409);
+  const open = k.records.file({ kind: "github.post", module: "github", args: { n: 2 }, targets: {}, executor: { module: "github", url: "http://127.0.0.1:9/aidenhq/v1/executor" }, policy: "p", tier: 1, panel: false, card: { sentence: "s", changes: "", reads: "", cost: "", details: "" }, requester: { agent: "ag-ada", key: "ada", name: "Ada", roles: [], kind: "run" }, task: "TASK-1", state: "review" });
+  assert.equal((await wait(open.id, "not yet claimed")).status, 409);
+  // It leaves `claimed`: the reason is dropped with the record's end.
+  assert.equal(k.records.get(r.id).wait, null);
+});
+
 test("a kernel job's write names its own workspace, whatever its args say", async (t) => {
   const plans = [];
   const ex = await serve(async (req, res) => {
