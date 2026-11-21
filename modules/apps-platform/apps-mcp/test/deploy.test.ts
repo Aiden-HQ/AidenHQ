@@ -1,8 +1,9 @@
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
-import { createEngine, type Deps, STOPPED_OPEN } from "../src/deploy.js";
+import { createEngine, type Deps, STOPPED_OPEN, TEARDOWN_FAILED } from "../src/deploy.js";
 import { NO_SIGN_IN, judgePage, probeResult } from "../src/checks.js";
+import { previewApp } from "../src/previews.js";
 import { parseApp } from "../src/registry.js";
 import { openStore } from "../src/store.js";
 
@@ -10,18 +11,21 @@ const app = (o: object = {}) => parseApp({ name: "demo", repo: "example-org/x", 
 
 // Fake docker: `config` returns a minimal compose file, `up` marks the checked-out sha as running. Health is true for "good" shas.
 function setup(good: string[], check?: Deps["check"], identity?: Deps["identity"]) {
-  const st = { out: "", running: "" };
+  const st = { out: "", running: "", downFails: false, broken: new Set<string>() };
   const t = { now: 0 };
   const src = mkdtempSync(`${tmpdir()}/src-`);
   writeFileSync(`${src}/compose.yaml`, "services:\n  web:\n    image: x\n");
+  const store = openStore(":memory:");
   const engine = createEngine({
-    store: openStore(":memory:"),
+    store,
     appsData: mkdtempSync(`${tmpdir()}/apps-`),
     secretsDir: "/none",
     hostSecretsDir: "/none",
     identityKeysHostFile: "/none/keys.json", tailnetNode: () => true,
     exec: async (args) => {
       if (args.includes("config")) return '{"services":{"web":{"image":"x"}}}';
+      if (args.includes("down") && st.downFails) throw new Error("docker compose down failed");
+      if (args.includes("up") && st.broken.has(st.out)) throw new Error("docker compose up failed");
       if (args.includes("up")) st.running = st.out;
       return "";
     },
@@ -32,7 +36,7 @@ function setup(good: string[], check?: Deps["check"], identity?: Deps["identity"
     now: () => t.now,
     sleep: async (ms) => void (t.now += ms),
   });
-  return { engine, st };
+  return { engine, st, store };
 }
 
 describe("deploy engine", () => {
@@ -94,6 +98,39 @@ describe("deploy engine", () => {
     expect(r).toMatchObject({ sha: "v1", status: "failed", stopped: STOPPED_OPEN });
     await expect(r0.engine.rollback(app(), { by: "t" })).rejects.toThrow(/no previous good deploy/);
   });
+  it("a rollback target whose down failed stays healthy history and says the teardown failed", async () => {
+    let open = false;
+    const r0 = setup(["v1", "v2"], undefined, async () => probeResult("identity", "/", open ? [{ hard: true, what: NO_SIGN_IN }] : []));
+    await r0.engine.deploy(app(), { sha: "v1", by: "t" });
+    await r0.engine.deploy(app(), { sha: "v2", by: "t" });
+    open = true; // v1 predates the gate: it answers without sign-in now
+    r0.st.downFails = true;
+    const r = await r0.engine.rollback(app(), { by: "t" });
+    expect(r).toMatchObject({ sha: "v1", status: "failed", stopped: `${STOPPED_OPEN}; ${TEARDOWN_FAILED}` });
+    expect(r0.store.goodDeploys("demo").find((g) => g.sha === "v1")?.status).toBe("healthy");
+    expect(r0.store.running("demo")).toBe("v1"); // the failed down may still be serving it
+  });
+  it("a rollback that could not start reports the teardown failure and keeps no previous revision", async () => {
+    const { engine, st, store } = setup(["v1", "v2"]);
+    await engine.deploy(app(), { sha: "v1", by: "t" });
+    await engine.deploy(app(), { sha: "v2", by: "t" });
+    st.broken.add("v1");
+    st.downFails = true;
+    const r = await engine.rollback(app(), { by: "t" });
+    expect(r).toMatchObject({ sha: "v1", status: "build_failed", stopped: TEARDOWN_FAILED });
+    expect(r.previous).toBeUndefined();
+    expect(store.running("demo")).toBeUndefined();
+    expect(store.lastDeploy("demo")?.detail).toContain(TEARDOWN_FAILED);
+  });
+  it("a failed preview whose compose down fails reports the teardown failure", async () => {
+    const { engine, st, store } = setup([]);
+    st.downFails = true;
+    const r = await engine.preview(previewApp(app({ port: 8080 }), 1, 39100), "v1");
+    expect(r).toMatchObject({ sha: "v1", ok: false, stopped: TEARDOWN_FAILED });
+    expect(r.why).toContain(TEARDOWN_FAILED);
+    expect(store.lastDeploy("demo-pr-1")?.detail).toContain(TEARDOWN_FAILED);
+    expect(store.running("demo-pr-1")).toBe("v1");
+  });
   it("a healthy deploy whose page answers 500 is rolled back, and says why", async () => {
     // v2 is healthy, but its render check finds the incident's signals: the deploy rolls back to v1.
     const { engine, st } = setup(["v1", "v2"], async () => [probeResult("render", "/", st.running === "v2" ? [{ hard: true, what: "the page answered 500" }] : [])]);
@@ -115,6 +152,15 @@ describe("deploy engine", () => {
   it("a first deploy that never gets healthy is stopped, not looped", async () => {
     const { engine } = setup([]);
     expect((await engine.deploy(app(), { sha: "v1", by: "t" })).status).toBe("failed");
+  });
+  it("a first deploy whose compose down fails keeps the running row and records the teardown failure", async () => {
+    const { engine, st, store } = setup([]);
+    st.downFails = true;
+    const r = await engine.deploy(app(), { sha: "v1", by: "t" });
+    expect(r).toMatchObject({ status: "failed", stopped: TEARDOWN_FAILED });
+    expect(store.running("demo")).toBe("v1");
+    expect(store.lastDeploy("demo")?.detail).toContain(TEARDOWN_FAILED);
+    expect(store.lastDeploy("demo")?.detail).not.toContain("stopped (no previous good deploy)");
   });
   it("refuses a concurrent deploy", async () => {
     const { engine } = setup(["v1"]);

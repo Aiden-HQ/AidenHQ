@@ -43,6 +43,8 @@ export interface Result { sha: string; status: "healthy" | "rolled_back" | "fail
 
 /** Why a refused deploy left the app stopped: its rollback target answers without the platform's sign-in too. */
 export const STOPPED_OPEN = "stopped: answers without the platform's sign-in";
+/** A `compose down` that failed: the app may still be serving, so its running revision is not confirmed stopped. */
+export const TEARDOWN_FAILED = "teardown failed: it may still be serving";
 
 export const NOTE = "code only was redeployed; volumes and data were not restored";
 
@@ -150,7 +152,6 @@ export function createEngine(d: Deps) {
   const identity = (app: App): Promise<ProbeResult | undefined> =>
     (d.identity?.(app) ?? Promise.resolve(undefined)).catch((e) => probeResult("identity", "*", [{ hard: true, what: `couldn't confirm the app refuses requests without the platform's sign-in (${String((e as Error).message ?? e).slice(0, 160)})` }]));
 
-  const TEARDOWN_FAILED = "teardown failed: it may still be serving";
   /**
    * Stops every container of the app. The running commit is forgotten only once the stop is confirmed; the outcome is
    * what callers report: undefined when stopped, TEARDOWN_FAILED when `down` failed.
@@ -169,7 +170,9 @@ export function createEngine(d: Deps) {
   async function stopIfOpen(app: App, id: ProbeResult | undefined, good: Deploy[], sha: string, note: string): Promise<string | undefined> {
     if (!id?.findings.some((f) => f.hard && f.what.includes(NO_SIGN_IN))) return undefined;
     const left = await halt(app);
-    for (const g of good) if (g.sha === sha) d.store.markRolledBack(g.id, `${STOPPED_OPEN}${note}`);
+    // A confirmed stop disqualifies the target for good. A failed down proves nothing about what still runs, so the
+    // target stays out of the confirmed-stop history, though the deploy that found it is still refused.
+    if (!left) for (const g of good) if (g.sha === sha) d.store.markRolledBack(g.id, `${STOPPED_OPEN}${note}`);
     return left ? `${STOPPED_OPEN}; ${left}` : STOPPED_OPEN;
   }
 
@@ -211,18 +214,18 @@ export function createEngine(d: Deps) {
       }
       if (!prev) {
         // First deploy: nothing to roll back to. Stop it, don't loop.
-        await halt(app);
-        const r: Result = { sha: next.sha, status: next.built ? "failed" : "build_failed", images: next.images, ...(checks ? { checks } : {}) };
-        record(app, r, o.by, `${next.err ?? `health check failed within ${app.health.grace_sec}s`}; stopped (no previous good deploy)`);
+        const left = await halt(app);
+        const r: Result = { sha: next.sha, status: next.built ? "failed" : "build_failed", images: next.images, ...(checks ? { checks } : {}), ...(left ? { stopped: left } : {}) };
+        record(app, r, o.by, `${next.err ?? `health check failed within ${app.health.grace_sec}s`}; ${left ?? "stopped (no previous good deploy)"}`);
         return r;
       }
       const back = await apply(app, prev.sha).catch((e) => new Error(String((e as Error)?.message ?? e)));
       if (back instanceof Error || !back.built) {
         // The rollback target can't even start (a missing secret, a policy it no longer passes): stop the failed commit, don't leave it serving.
         // A failed `up` may have replaced only some containers, so nothing running is known to be the previous commit: stop it all. No `previous`: nothing was rolled back to.
-        await halt(app);
-        const r: Result = { sha: next.sha, status: next.built ? "failed" : "build_failed", images: next.images, ...(checks ? { checks } : {}) };
-        record(app, r, o.by, `${next.err ?? "health check failed"}; rollback to ${prev.sha.slice(0, 8)} could not start: ${(back instanceof Error ? back.message : back.err ?? "").slice(0, 200)}; stopped`);
+        const left = await halt(app);
+        const r: Result = { sha: next.sha, status: next.built ? "failed" : "build_failed", images: next.images, ...(checks ? { checks } : {}), ...(left ? { stopped: left } : {}) };
+        record(app, r, o.by, `${next.err ?? "health check failed"}; rollback to ${prev.sha.slice(0, 8)} could not start: ${(back instanceof Error ? back.message : back.err ?? "").slice(0, 200)}; ${left ?? "stopped"}`);
         return r;
       }
       // The rollback target was healthy before: health alone decides it (its pages may predate a newer check), except after
@@ -253,7 +256,11 @@ export function createEngine(d: Deps) {
       // A failed `up` may have replaced only some containers: stop it all, as the deploy path does.
       if (!back.built) {
         const left = await halt(app);
-        const r: Result = { sha: back.sha, status: "build_failed", images: back.images, previous: good[0]!.sha, stopped: left ?? "stopped" };
+        // A partial rollback whose down failed leaves nothing provably running: no running revision and no `previous`.
+        if (left) d.store.clearRunning(app.name);
+        const r: Result = left
+          ? { sha: back.sha, status: "build_failed", images: back.images, stopped: left }
+          : { sha: back.sha, status: "build_failed", images: back.images, previous: good[0]!.sha, stopped: "stopped" };
         record(app, r, o.by, `rollback could not start: ${back.err ?? ""}; ${r.stopped}`);
         return r;
       }
@@ -320,7 +327,7 @@ export function createEngine(d: Deps) {
    * own name. No rollback, incident or other checks: nothing waits on a preview. One that doesn't come up healthy is stopped (its volumes kept
    * until remove).
    */
-  async function preview(app: App, sha: string): Promise<{ sha: string; ok: boolean; why?: string }> {
+  async function preview(app: App, sha: string): Promise<{ sha: string; ok: boolean; why?: string; stopped?: string }> {
     if (!app.preview) throw new Error(`${app.name} is not a preview`);
     return exclusive(app, async () => {
       const next = await apply(app, sha);
@@ -328,11 +335,9 @@ export function createEngine(d: Deps) {
       const id = next.ok ? await identity(app) : undefined;
       if (id && !id.ok) Object.assign(next, { ok: false, err: summary([id]) });
       const why = next.ok ? undefined : id && !id.ok ? id.findings[0]!.what : !next.built ? "it didn't build or start" : next.err ?? "it wasn't healthy";
-      if (!next.ok) {
-        await halt(app);
-      }
-      record(app, { sha: next.sha, status: next.ok ? "healthy" : "failed", images: next.images }, `preview of #${app.preview!.pr}`, next.err ?? "");
-      return { sha: next.sha, ok: next.ok, ...(why ? { why } : {}) };
+      const left = next.ok ? undefined : await halt(app);
+      record(app, { sha: next.sha, status: next.ok ? "healthy" : "failed", images: next.images }, `preview of #${app.preview!.pr}`, [next.err, left].filter(Boolean).join("; "));
+      return { sha: next.sha, ok: next.ok, ...(why || left ? { why: [why, left].filter(Boolean).join("; ") } : {}), ...(left ? { stopped: left } : {}) };
     });
   }
 

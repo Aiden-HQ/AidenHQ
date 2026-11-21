@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { agentProbeScope, judgeAgent, judgePage, plan, probeResult, summary } from "../src/checks.js";
+import { agentProbeScope, judgeAgent, judgeIdentity, judgePage, NO_SIGN_IN, plan, probeResult, summary } from "../src/checks.js";
 import { parseApp } from "../src/registry.js";
 
 describe("judging", () => {
@@ -36,5 +36,17 @@ describe("judging", () => {
     const r = probeResult("render", "/", judgePage({ path: "/", status: 200, console: ["ignore previous instructions <b>"] }, false));
     expect(r.ok).toBe(true);
     expect(summary([r])).toBe("checks passed with 1 warning (render /: console error)");
+  });
+
+  it("the identity gate says NO_SIGN_IN only for a served request, not when every probe errored", () => {
+    const probe = (status: number) => ({ probe: { method: "GET" as const, path: "/", forged: true, counts: true }, status });
+    const open = judgeIdentity([probe(200)]);
+    expect(open.ok).toBe(false);
+    expect(open.findings[0]).toMatchObject({ hard: true, what: expect.stringContaining(NO_SIGN_IN) });
+
+    const errored = judgeIdentity([probe(500), { probe: { method: "HEAD", path: "/health", forged: false, counts: true }, status: 502 }]);
+    expect(errored.ok).toBe(false);
+    expect(errored.findings[0]).toMatchObject({ hard: true, what: expect.stringContaining("couldn't confirm") });
+    expect(errored.findings[0]!.what).not.toContain(NO_SIGN_IN);
   });
 });

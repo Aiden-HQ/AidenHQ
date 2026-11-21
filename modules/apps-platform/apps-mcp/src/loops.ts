@@ -123,7 +123,7 @@ export async function reconcileTick(p: Platform, log: Log): Promise<void> {
       // A stopped app says so first (the incident keeps 200 characters), and replaces an incident an earlier refused commit
       // opened ("rolled back"): the app is down now.
       if (r.stopped) p.store.closeIncident(app.name);
-      if (r.stopped) await p.raise(app.name, "deploy_failed", `deploy of ${head.slice(0, 8)} refused; ${r.stopped} (as does the rollback target ${r.previous?.slice(0, 8)})${why}`);
+      if (r.stopped) await p.raise(app.name, "deploy_failed", `deploy of ${head.slice(0, 8)} refused; ${r.stopped}${r.previous ? ` (as does the rollback target ${r.previous.slice(0, 8)})` : ""}${why}`);
       else if (r.status !== "healthy") await p.raise(app.name, "deploy_failed", `deploy of ${head.slice(0, 8)} ${r.status}${r.previous ? `, rolled back to ${r.previous.slice(0, 8)}` : ""}${why}; ${NOTE}`);
     } catch (err) {
       // Nothing started (fetch, checkout, policy, secrets): retried next tick, not recorded as a deploy, paged once per commit.

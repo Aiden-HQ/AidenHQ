@@ -193,7 +193,10 @@ export function judgeIdentity(answers: { probe: IdentityProbe; status: number }[
   if (served.length) return probeResult("identity", where, [{ hard: true, what: `${NO_SIGN_IN} (${served.slice(0, 2).map(say).join("; ")})` }]);
   const silent = answers.filter((a) => !a.status);
   if (silent.length) return probeResult("identity", where, [{ hard: true, what: `${UNCONFIRMED}: ${silent[0]!.probe.method} ${silent[0]!.probe.path} got no answer` }]);
-  if (!counted.some((a) => REFUSED.has(a.status))) return probeResult("identity", where, [{ hard: true, what: `${NO_SIGN_IN} (no request without a valid identity was refused: ${counted.slice(0, 2).map(say).join("; ")})` }]);
+  // Only a request actually served without a valid identity is an app that answers without sign-in. Requests that all
+  // errored (5xx, 404, ...) prove nothing either way: unconfirmed, never a confirmed-open verdict.
+  if (!counted.some((a) => REFUSED.has(a.status)))
+    return probeResult("identity", where, [{ hard: true, what: counted.length ? `${UNCONFIRMED}: every request without a valid identity errored (${counted.slice(0, 2).map(say).join("; ")})` : `${UNCONFIRMED}: no request without a valid identity was counted` }]);
   return probeResult("identity", where, []);
 }
 
