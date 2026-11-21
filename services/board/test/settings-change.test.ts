@@ -146,8 +146,11 @@ describe("where a settings change stands", () => {
     expect(stageOf("in_progress", [], new Date(Date.now() - 3_600_000).toISOString()).stage).toBe("failed");
     expect(stageOf("in_progress", undefined, new Date(Date.now() - 3_600_000).toISOString()).stage).toBe("working");
     expect(stageOf("in_progress", [card({})], new Date().toISOString())).toMatchObject({ stage: "waiting", tier: 2 });
-    expect(stageOf("done", [card({ state: "used" })], new Date().toISOString()).stage).toBe("applying");
+    expect(stageOf("done", [card({ state: "running" })], new Date().toISOString()).stage).toBe("applying");
+    expect(stageOf("done", [card({ state: "approved" })], new Date().toISOString()).stage).toBe("applying");
     expect(stageOf("done", [card({ state: "used", outcome: "applied" })], new Date().toISOString()).stage).toBe("applied");
+    // A `used` record with no outcome is an end, not a live edit: only a claimed (`running`) record is in flight.
+    expect(stageOf("done", [card({ state: "used" })], new Date().toISOString()).stage).toBe("closed");
     expect(stageOf("done", [card({ state: "rejected" })], new Date().toISOString()).stage).toBe("rejected");
   });
 });

@@ -25,7 +25,7 @@ import { AccountError, forwardedProto, type AccountSession, type KernelAuth } fr
 import { INLINE_TYPES, MAX_UPLOAD_BODY, UploadSchema, decode, fileType, fileViews, isPdf, pdfText, safeName } from "./files.js";
 import { ControlSchema, CostsSchema, RelaySchema, Refused, holdsRole, appsApi, assertMeantTask, boundedFleetStatus, fleetControl, fleetCosts, fleetStatus, relayableWords, requireAgent, requireFleetRole } from "./fleet.js";
 import { metricsText } from "./monitoring.js";
-import { kernelRecords, type Approval, type Records, type SettingsCredential } from "./records.js";
+import { isLive, kernelRecords, type Approval, type Records, type SettingsCredential } from "./records.js";
 import { gatherFacts, scorecard, statusSummary } from "./fleet-stats.js";
 import type { AuthorKind, Flow } from "./flow.js";
 import { moduleAuthority, moduleStates } from "./modules.js";
@@ -1454,7 +1454,9 @@ export function createApp(opts: AppOptions): Server {
       handle: async () => {
         const names = await bylines();
         const [cards, all] = await Promise.all([cardsOf("recent", { limit: 100 }), cardsOf("recent", { limit: 100, tier0: true })]);
-        const ran = all.filter((a) => a.state === "auto" && !cards.some((c) => c.id === a.id));
+        // A Tier 0 record that has ended, and one still in flight (`running`, its wait shown on the card), which only this
+        // wider list has: a claimed record is never folded into the `auto` audit word.
+        const ran = all.filter((a) => (a.state === "auto" || isLive(a.state)) && !cards.some((c) => c.id === a.id));
         return { approvals: [...cards, ...ran].map((a) => shownApproval(names, a)) };
       },
     },

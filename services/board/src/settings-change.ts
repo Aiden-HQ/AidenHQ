@@ -255,7 +255,7 @@ export function stageOf(status: string, cards: Pick<Approval, "action" | "state"
     if (a.outcome === "applied") return { stage: "applied", approval: a.id };
     if (a.outcome === "failed") return { stage: "failed", approval: a.id, ...(a.outcomeText ? { detail: a.outcomeText.slice(-300) } : {}) };
     if (a.state === "pending") return { stage: "waiting", tier: a.tier, approval: a.id };
-    if (a.state === "approved" || a.state === "used") return { stage: "applying", approval: a.id };
+    if (a.state === "approved" || a.state === "running") return { stage: "applying", approval: a.id };
     if (a.state === "rejected" || a.state === "stale" || a.state === "expired") return { stage: "rejected", approval: a.id };
   }
   if (status === "done" || status === "cancelled") return { stage: "closed" };

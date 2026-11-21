@@ -422,3 +422,54 @@ test("a transient agent-name read failure is a wait, not 'another agent'", async
   assert.deepEqual(h.calls.resolve, [], "a failed uploader read passes no verdict");
   assert.equal(h.grades.get("t13").state, "awaiting_evidence", "it waits instead of naming an unknown agent");
 });
+
+test("a claimed record keeps its task's grade open, and the grade runs once it ends", async (t) => {
+  // The kernel's `claimed` state is a live record (the board's `running`): the grade must wait on it rather than read it as a
+  // consumed card, which is what folding `claimed` into `used` with no outcome did.
+  const prompts = [];
+  const gateway = http.createServer(async (req, res) => {
+    let body = "";
+    for await (const c of req) body += c;
+    prompts.push(JSON.parse(body).messages.at(-1).content);
+    res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify(answer(["yes"])) } }] }));
+  }).listen(0);
+  t.after(() => gateway.close());
+  const issue = { id: "t12", identifier: "WOR-12", title: "report", description: "Report.", status: "in_review", companyId: "co", assigneeAgentId: "eng", createdByAgentId: "cos", parentId: null };
+  const calls = { resolve: [], wake: [] };
+  const record = { id: "k-claim1", kind: "github.merge", state: "claimed", ok: null, args: {}, wait: "code review: 1 important finding open", updated_at: "2026-11-20T16:00:00Z", created_at: "2026-11-20T15:58:00Z" };
+  const kernel = async (method, path, body) => {
+    if (path === `/v1/cp/read/api/issues/${issue.id}`) return issue;
+    if (path.endsWith("/comments")) return [{ id: "c1", authorType: "agent", authorAgentId: "eng", body: "Done.", createdAt: "2026-11-18T09:00:00Z" }];
+    if (path.endsWith("/attachments")) return [];
+    if (path === "/v1/cp/read/api/agents/eng") return { id: "eng", name: "Dana" };
+    if (path.startsWith("/v1/cp/read/api/companies/co/issues")) return [];
+    if (path === `/v1/work?task=${issue.id}`) return { busy: false, jobs: [{ id: "j", state: "done", engine: "codex", ended_at: new Date(Date.now() - 60_000).toISOString() }], records: [record] };
+    if (path === "/v1/work/grader-token") return { token: "tok" };
+    if (path === `/v1/checks/${issue.id}`) return calls.resolve.push(body.verdict), (issue.status = body.verdict === "ok" ? "done" : "todo"), {};
+    if (path === "/v1/wakes") return calls.wake.push(body), { posted: true };
+    throw new Error(`unexpected ${method} ${path}`);
+  };
+  const db = new DatabaseSync(":memory:");
+  const { runner, grades } = createGrading({ db, kernel: { issue: async () => issue, settings: async () => ({}), release: async () => {} }, keys: { check: "c", runner: "r", board: "b" } });
+  grades.file(issue.id, ["it says it"], { kind: "report", ref: "" });
+  const loop = createKernelGradeLoop({ db, runner, due: () => ({ grades: grades.due(), resubmitted: [] }), kernel, kernelBytes: async () => Buffer.alloc(0), apps: async () => ({}), gatewayUrl: `http://127.0.0.1:${gateway.address().port}`, github: noGithub, log: () => {} });
+  completionGate(grades, issue.id, "finish_turn");
+  const realNow = Date.now;
+  let skew = 10_000;
+  Date.now = () => realNow() + skew;
+  t.after(() => { Date.now = realNow; });
+  await loop.runGrades();
+  // The row's own state is the wait: an awaiting verdict goes to the grade store, never a resolve on the task.
+  assert.equal(grades.get(issue.id).state, "awaiting_evidence", "a claimed record holds the grade open");
+  assert.equal(prompts.length, 0, "nothing is graded while the record is still claimed");
+  assert.deepEqual(calls.wake, [], "a live record is never a stalled wait");
+  assert.deepEqual(calls.resolve, [], "a live record is not a verdict on the task");
+
+  record.state = "done"; record.ok = true; record.updated_at = "2026-11-20T17:00:00Z";
+  issue.status = "in_review";
+  completionGate(grades, issue.id, "finish_turn");
+  skew += 2 * 60_000; // an awaiting row is looked at again a minute later
+  await loop.runGrades();
+  assert.deepEqual(calls.resolve, ["ok"], "the grade runs once the record ends");
+  assert.equal(prompts.length, 1);
+});

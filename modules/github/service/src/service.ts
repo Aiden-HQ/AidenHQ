@@ -511,6 +511,12 @@ export function createService(o: Options) {
     const r = await fetch(`${o.kernelUrl}/v1/writes/${id}/outcome`, { method: "POST", headers: { authorization: `Bearer ${o.key}`, "content-type": "application/json" }, body: JSON.stringify(out), signal: AbortSignal.timeout(15_000) });
     if (!r.ok && r.status !== 409) throw new Error(`the kernel answered ${r.status}`);
   }
+  // Why a claimed record is still running, to the kernel (its task hears it, once per distinct reason): 409 is a record no
+  // longer claimed, which is not an error here.
+  async function waiting(id: string, reason: string) {
+    const r = await fetch(`${o.kernelUrl}/v1/writes/${id}/wait`, { method: "POST", headers: { authorization: `Bearer ${o.key}`, "content-type": "application/json" }, body: JSON.stringify({ reason }), signal: AbortSignal.timeout(15_000) });
+    if (!r.ok && r.status !== 409) throw new Error(`the kernel answered ${r.status}`);
+  }
   async function kernel(method: "GET" | "POST", path: string, b?: unknown) {
     const r = await fetch(`${o.kernelUrl}${path}`, { method, headers: { authorization: `Bearer ${o.key}`, ...(b ? { "content-type": "application/json" } : {}) }, ...(b ? { body: JSON.stringify(b) } : {}), signal: AbortSignal.timeout(30_000) });
     const j = await r.json().catch(() => ({}));
@@ -561,7 +567,7 @@ export function createService(o: Options) {
     designReview: async (ask) => designReviews?.fileDesignReview(ask),
     dir: join(o.cacheDir, "merges"), gh: (method, path, body) => gh(method, path, body, { background: true }), connected: () => access.connected() && !o.holdMerges?.(),
     fleetOrg: o.fleetOrg, productRepo: o.productRepo, maintained: o.maintained,
-    report, log, now: o.now, everyMs: o.mergeEveryMs,
+    report, waiting, log, now: o.now, everyMs: o.mergeEveryMs,
     evalGate: (repo, pr) => evalGate(repo, pr),
     reviewGate: o.reviewGate,
   });

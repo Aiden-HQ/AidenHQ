@@ -50,6 +50,8 @@ export function createMerges(d: {
   designReview?: (ask: { repo: string; number: number; head: string; again?: boolean }) => Promise<unknown>;
   /** Delivers a record's outcome to the kernel (POST /v1/writes/:id/outcome). */
   report(id: string, o: Outcome): Promise<void>;
+  /** Tells the kernel why a claimed record is still running (POST /v1/writes/:id/wait), so its task hears the reason. */
+  waiting?(id: string, reason: string): Promise<void>;
   log?: (msg: string, f?: Record<string, unknown>) => void;
   now?: () => Date;
   everyMs?: number;
@@ -80,8 +82,8 @@ export function createMerges(d: {
   }
 
   /** One poll of one PR, then its wait as facts: a wait and its end (a new reason, a merge, a failure) are work.waiting and work.resumed. */
-  async function pollAndTime(q: Queue, p: Pr, merged: Set<string>) {
-    await poll(q, p, merged);
+  async function pollAndTime(id: string, q: Queue, p: Pr, merged: Set<string>) {
+    await poll(id, q, p, merged);
     timeWait(p, p.status === "pending" && p.wait ? waitReason(p.wait.key) : undefined);
   }
   function timeWait(p: Pr, reason: string | undefined) {
@@ -92,7 +94,7 @@ export function createMerges(d: {
     if (p.fw) d.flow?.waiting(p.repo, p.number, p.fw.reason, p.fw.since);
   }
   /** One poll of one PR; `merged` holds the repositories that merged a PR this poll. */
-  async function poll(q: Queue, p: Pr, merged: Set<string>) {
+  async function poll(id: string, q: Queue, p: Pr, merged: Set<string>) {
     const t = now().getTime();
     const fail = (why: string) => {
       Object.assign(p, { status: "failed", note: why });
@@ -148,8 +150,12 @@ export function createMerges(d: {
       if (gate) return wait("eval", gate.wait, EVAL_WAIT_MINUTES);
       const review = await d.reviewGate(p.repo, p.number, p.head);
       if (review) {
-        if (p.note !== review.wait) log("merge waits for code review", { pr: p.url, why: review.wait.slice(0, 500) });
-        p.note = review.wait;
+        // The kernel hears the review wait once per distinct reason (not once per poll): a claimed record's task reads its wait.
+        if (p.note !== review.wait) {
+          log("merge waits for code review", { pr: p.url, why: review.wait.slice(0, 500) });
+          p.note = review.wait;
+          await d.waiting?.(id, review.wait).catch((e: Error) => log("merge wait not delivered", { record: id, err: says(e).slice(0, 300) }));
+        }
         return wait("review", review.wait, Infinity);
       }
       const method = mergeMethod(data.repository);
@@ -223,7 +229,7 @@ export function createMerges(d: {
       const merged = new Set<string>();
       for (const [id, q] of Object.entries(s.queues)) {
         if (q.state !== "running" || q.outcome) continue;
-        for (const p of q.prs) if (p.status === "pending" && !merged.has(p.repo.toLowerCase())) await pollAndTime(q, p, merged);
+        for (const p of q.prs) if (p.status === "pending" && !merged.has(p.repo.toLowerCase())) await pollAndTime(id, q, p, merged);
         if (!q.prs.some((p) => p.status === "pending")) finish(id, q);
       }
     } finally {
