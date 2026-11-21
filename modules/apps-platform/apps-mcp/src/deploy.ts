@@ -194,7 +194,16 @@ export function createEngine(d: Deps) {
         record(app, r, o.by, `${next.err ?? `health check failed within ${app.health.grace_sec}s`}; stopped (no previous good deploy)`);
         return r;
       }
-      const back = await apply(app, prev.sha);
+      const back = await apply(app, prev.sha).catch((e) => new Error(String((e as Error)?.message ?? e)));
+      if (back instanceof Error || !back.built) {
+        // The rollback target can't even start (a missing secret, a policy it no longer passes): stop the failed commit, don't leave it serving.
+        // A failed `up` may have replaced only some containers, so nothing running is known to be the previous commit: stop it all. No `previous`: nothing was rolled back to.
+        await compose(app, ["down", "--remove-orphans"]).catch(() => "");
+        d.store.clearRunning(app.name);
+        const r: Result = { sha: next.sha, status: next.built ? "failed" : "build_failed", images: next.images, ...(checks ? { checks } : {}) };
+        record(app, r, o.by, `${next.err ?? "health check failed"}; rollback to ${prev.sha.slice(0, 8)} could not start: ${(back instanceof Error ? back.message : back.err ?? "").slice(0, 200)}; stopped`);
+        return r;
+      }
       // The rollback target was healthy before: health alone decides it (its pages may predate a newer check), except after
       // an identity refusal. Then the target is probed too: one deployed before the gate may answer without sign-in as well,
       // and is stopped rather than left serving, and is never a rollback target again. Only an answer without sign-in stops
@@ -321,8 +330,10 @@ export function createEngine(d: Deps) {
   };
 
   /** `npm run <script>` once in the running service (an approved app_run), never alongside a deploy. Output is untrusted. */
-  async function run(app: App, o: { script: string; service: string; timeoutMs: number }): Promise<{ ok: boolean; timed_out: boolean; output: string }> {
+  async function run(app: App, o: { script: string; service: string; sha: string; timeoutMs: number }): Promise<{ ok: boolean; timed_out: boolean; output: string }> {
     return exclusive(app, async () => {
+      const running = d.store.running(app.name);
+      if (running !== o.sha) throw new Error(`${app.name} now runs ${running?.slice(0, 8) ?? "nothing"}, not the approved ${o.sha.slice(0, 8)}: ask for the run again`);
       const service = pickService(services(app), o.service);
       try {
         return { ok: true, timed_out: false, output: (await compose(app, runArgv(service, o.script), { timeout: o.timeoutMs, both: true })).slice(-8000) };

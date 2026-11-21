@@ -352,8 +352,8 @@ export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: 
   /** One run of a renderer script (view.ts's image and hardening) on a docker network: its stdout. */
   const renderWith = async (network: string, script: string, input: object, timeout: number): Promise<string> => {
     if (!(await haveImage())) throw new Error(NO_IMAGE);
-    if (renders >= 2) await new Promise<void>((ok) => queue.push(ok));
-    renders++;
+    if (renders >= 2) await new Promise<void>((ok) => queue.push(ok)); // a finishing render hands its slot over
+    else renders++;
     const name = `aidenhq-view-${randomBytes(6).toString("hex")}`;
     try {
       const args = renderArgs(network, BROWSER_IMAGE, script);
@@ -363,8 +363,9 @@ export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: 
       await exec(["rm", "-f", name]).catch(() => undefined); // a killed `docker run` leaves its container running
       throw e;
     } finally {
-      renders--;
-      queue.shift()?.();
+      const next = queue.shift();
+      if (next) next();
+      else renders--;
     }
   };
   const render: Render = async (network, req) => {

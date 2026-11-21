@@ -119,9 +119,9 @@ export function checkConnects(apps: App[]): void {
   }
 }
 
-/** Sets access, share, panel, stateful, untrusted, caps or database, or connects to paperclip, a restricted app or a shared one: only the owner's "apply" adds these. */
+/** Sets access, share, panel, stateful, untrusted, caps or database, is or connects to the warehouse, or connects to paperclip, sources, a restricted app or a shared one: only the owner's "apply" adds these. */
 export function isSensitive(app: App, all: App[]): boolean {
-  return !!app.access || !!app.share || !!app.panel || !!app.database || app.stateful || app.untrusted || app.caps.length > 0 || app.connects.some((c) => { const t = all.find((a) => a.name === c); return c === "paperclip" || c === "sources" || t?.access || t?.share; });
+  return app.name === "warehouse" || !!app.access || !!app.share || !!app.panel || !!app.database || app.stateful || app.untrusted || app.caps.length > 0 || app.connects.some((c) => { const t = all.find((a) => a.name === c); return c === "paperclip" || c === "sources" || c === "warehouse" || t?.access || t?.share; });
 }
 
 /** Module apps come and go with their module, never through app_remove. */

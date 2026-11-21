@@ -84,7 +84,7 @@ export function appsExecutor(p: Platform): Executor {
           return { ok: r.status === "healthy", text: JSON.stringify(r) };
         }
         case "apps-platform.run": {
-          const r = await p.engine.run(a, { script: args.script, service: args.service, timeoutMs: RUN_TIMEOUT_MS });
+          const r = await p.engine.run(a, { script: args.script, service: args.service, sha: args.sha, timeoutMs: RUN_TIMEOUT_MS });
           const what = `\`npm run ${args.script}\` in app ${a.name} at ${String(args.sha).slice(0, 8)}`;
           return { ok: r.ok, text: `${r.ok ? `Ran ${what}.` : `${what} did not succeed${r.timed_out ? " (timed out after 10 minutes; the process may still be running in the container)" : ""}.`}\n\nOutput tail (written by the app):\n${String(r.output ?? "").slice(-3000)}` };
         }
