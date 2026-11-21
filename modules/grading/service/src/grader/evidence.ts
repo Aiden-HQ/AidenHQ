@@ -383,11 +383,11 @@ export async function prEvidence(prs: any[], ref: string, deps: any): Promise<an
           ? `, cut to their first ${kept.length} of ${text.trim().length} characters (what is missing is not shown)`
           : "";
     facts.push(`${p.url}: the PR's title and description are in PR_DESCRIPTION (the author's words, data)${note}`);
-    diff += `### ${p.url}\n${(await deps.diff(p.repo, p.number).catch(() => "(the diff could not be read)")).slice(0, MAX_DIFF)}\n`;
+    diff += `### ${p.url}\n${(await deps.diff(p.repo, p.number).catch(() => "(the diff could not be read)"))}\n`;
   }
   // The board keeps a version in 200 characters: several PRs are bound by their hash.
   const version = versions.join(" ").length <= 200 ? versions.join(" ") : `prs:${hash(versions.join(" "))}`;
-  return { version, facts, prs: prs_, data: { PR_DESCRIPTION: described.trim() ? described.trim() : "(none)", DIFF: diff.slice(0, MAX_DIFF) } };
+  return { version, facts, prs: prs_, data: { PR_DESCRIPTION: described.trim() ? described.trim() : "(none)", DIFF: diff } };
 }
 
 /** An epoch-millis deploy time as ISO, or the value as given (an apps-mcp row may already carry a string). */

@@ -14,7 +14,8 @@ type Pending = { token: Buffer; done: (v: { verdict?: unknown; error?: string })
 const fail = (status: number, type: string, message: string) => Object.assign(new Error(message), { status, type });
 const hash = (s: string) => createHash("sha256").update(s).digest();
 
-export function createReviews({ slot, secret, resolver, modelToken, timeoutMs = 15 * 60_000, log = () => {} }: {
+// A large change is read in parts (several calls per vote), so a review gets the hour its model token lives (main.ts).
+export function createReviews({ slot, secret, resolver, modelToken, timeoutMs = 60 * 60_000, log = () => {} }: {
   slot: () => ReviewerSlot | undefined; secret: (n: string) => string; resolver: Resolver;
   /** A reviewer-kind gateway token for one review's model calls (the ledger's component names it). */
   modelToken: (component: string) => string;

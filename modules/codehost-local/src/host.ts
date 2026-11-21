@@ -196,9 +196,9 @@ export function localHost({ root, sources = {}, tasksDir, scratchDir, instanceRe
         diff += await diffText(b.repo, mb || "4b825dc642cb6eb9a060e54bf8d69288fbee4904", b.sha, dir);
         changed.push(...(await numstatOf(b.repo, mb || "4b825dc642cb6eb9a060e54bf8d69288fbee4904", b.sha, dir)));
         bases.push({ repo: b.repo, base: main ? def : "", read: (path) => g(b.repo, ["show", `${main}:${path}`]) });
-        // Read now: the throwaway repo goes below. A file past 300 is never read (fileContext names it).
+        // Read now: the throwaway repo goes below.
         for (const f of files) {
-          const text = reads.length < 300 ? await p(["show", `${b.sha}:${f}`]).catch(() => undefined) : undefined;
+          const text = await p(["show", `${b.sha}:${f}`]).catch(() => undefined);
           reads.push({ name: `${b.repo} ${f}`, read: async () => { if (text === undefined) throw new Error("not read"); return text; } });
         }
         branches.push({ repo: b.repo, branch: b.branch, sha: b.sha, base: mb || undefined, files, defaultBranch: def, empty: !main });
@@ -231,12 +231,12 @@ export function localHost({ root, sources = {}, tasksDir, scratchDir, instanceRe
       const s = await stateFor(action, req.args ?? {}, req.requester);
       // plan.ts's rules, as codehost-github's: the bare action, so it reads the same parts.
       const planned = planRules({ kind: action, args: req.args }, s.state, { target: s.target, sentence: s.sentence, diff: s.diff });
-      // The reviewer's context goes with the filing only, as codehost-github's (the runner's readFiles: past 300 files not read).
+      // The reviewer's context goes with the filing only, as codehost-github's (every changed file read whole).
       if (req.revalidate) return planned;
       const sources = await readCardSourceExceptions(s.bases ?? [], (repo: string, base: string) => s.bases!.find((b) => b.repo === repo && b.base === base)!.read(SOURCE_EXCEPTIONS_FILE));
       if (!s.reads?.length && !s.changed?.length && s.evidence === undefined && !sources) return planned;
       const files = [];
-      for (const [i, f] of (s.reads ?? []).entries()) files.push({ name: f.name, text: i < 300 ? await f.read().catch(() => undefined) : null });
+      for (const f of s.reads ?? []) files.push({ name: f.name, text: await f.read().catch(() => undefined) });
       return { ...planned, review: { ...(files.length || s.changed?.length ? { files: { ...fileContext(files), ...(s.changed?.length ? { changed: s.changed } : {}) } } : {}), ...(s.evidence !== undefined ? { evidence: s.evidence } : {}), ...(sources ? { sources } : {}) } };
     },
     async execute(rec: { kind: string; args: any }) {

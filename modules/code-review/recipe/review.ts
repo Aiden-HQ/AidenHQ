@@ -7,7 +7,8 @@
 // base), incremental_from (= base for a full review), pr, combo (engine, model and effort, JSON), focus, budget_usd }. It makes its own
 // history from them (base, then the last reviewed head, then the head), so the repo tools' diff is exactly the change.
 //
-// A run: the changed files minus excluded ones (the repo's ignore globs, binary, lockfiles and generated files, huge files);
+// A run: the changed files minus excluded ones (the repo's ignore globs, binary, lockfiles and generated files), whatever the
+// change's size: the tools page every answer, so any file and any diff is read in full;
 // the guidance (REVIEW.md, AGENTS.md, CLAUDE.md at the root and in every folder above a changed file, and the repo's
 // .github/code-review-checklist.json items the diff triggers), from the base tree only, never the PR's;
 // N finders in parallel, each with its own lens (engines.ts plan: codex fans out; claude-code and codegenie run their own
@@ -52,8 +53,6 @@ const GUIDES = ["REVIEW.md", "AGENTS.md", "CLAUDE.md"];
 // the change adds it (a place to hide code).
 const LOCKS = ["**/package-lock.json", "**/npm-shrinkwrap.json", "**/*.lock", "**/*-lock.json", "**/*-lock.yaml", "**/go.sum", "**/bun.lockb"];
 const GENERATED = ["**/generated/**", "**/__generated__/**", "**/vendor/**", "**/node_modules/**", "**/dist/**", "**/*.min.js", "**/*.min.css", "**/*.map", "**/*.snap"];
-const HUGE = 3000; // changed lines past which a file is excluded (a dump, not a change to read)
-const MAX_FILES = 300;
 const MAX_PRE = 5;
 const LENSES = [
   "correctness: logic errors, wrong results, edge cases and inputs the code mishandles",
@@ -114,8 +113,8 @@ export function changed(git: Git, from: string): Changed[] {
 
 /**
  * Which files a review reports on and which it leaves out, with why. Left out means "no findings there", never unread: the tools
- * still read and search them. `gap`: a left-out file the change could hide code in (huge, past the file limit, or a new file
- * under a generated or vendored path), so the review is incomplete and never reads as a clean pass. The repo's own ignore globs
+ * still read and search them. `gap`: a left-out file the change could hide code in (a new file under a generated or vendored
+ * path), so the review is incomplete and never reads as a clean pass. Size never leaves a file out. The repo's own ignore globs
  * (its config) and binary files are no gap. `added`: the paths this change adds.
  */
 export function scope(files: Changed[], ignore: unknown[] = [], prChanged = new Set<string>()) {
@@ -124,8 +123,8 @@ export function scope(files: Changed[], ignore: unknown[] = [], prChanged = new 
   for (const f of files) {
     // A change to how git reads files is always reviewed, whatever the globs say.
     const attrs = posix.basename(f.path) === ".gitattributes";
-    const why = attrs ? undefined : f.binary ? "binary" : mine.some((re) => re.test(f.path)) ? "ignored" : locks.some((re) => re.test(f.path)) ? "lockfile" : gen.some((re) => re.test(f.path)) ? (prChanged.has(f.path) ? "generated, changed by this PR" : "generated") : f.added + f.removed > HUGE ? "huge" : reviewed.length >= MAX_FILES ? "over the file limit" : undefined;
-    ((why ? excluded : reviewed) as (Excluded | string)[]).push(why ? { path: f.path, why, gap: ["huge", "over the file limit", "generated, changed by this PR"].includes(why) } : f.path);
+    const why = attrs ? undefined : f.binary ? "binary" : mine.some((re) => re.test(f.path)) ? "ignored" : locks.some((re) => re.test(f.path)) ? "lockfile" : gen.some((re) => re.test(f.path)) ? (prChanged.has(f.path) ? "generated, changed by this PR" : "generated") : undefined;
+    ((why ? excluded : reviewed) as (Excluded | string)[]).push(why ? { path: f.path, why, gap: why === "generated, changed by this PR" } : f.path);
   }
   return { reviewed, excluded };
 }

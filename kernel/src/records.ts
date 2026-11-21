@@ -128,10 +128,13 @@ export function openRecords(file: string, now = () => new Date()) {
       throw e;
     }
   };
-  /** One state move, only from `from` (and, from an open state, only within its 7 days); false when someone moved it first. */
+  /**
+   * One state move, only from `from` (and, from an open state, only within its 7 days); false when someone moved it first.
+   * The reviewer's input (context: the whole diff and files) lives only while the record is open: a move out drops it.
+   */
   const move = (id: string, from: State[], to: State, set: { review?: string; review_code?: string | null; decided_by?: string; via?: string; owner_reason?: string; tier?: number; outcome?: unknown; decided_at?: string; chain?: string | null; cap?: string; review_first?: string } = {}, fresh = false): boolean => {
     const cols = Object.keys(set);
-    const r = db.prepare(`UPDATE records SET state = ?, updated_at = ?${cols.map((c) => `, ${c} = ?`).join("")} WHERE id = ? AND state IN (${from.map(() => "?").join(",")})${fresh ? " AND created_at > ?" : ""}`)
+    const r = db.prepare(`UPDATE records SET state = ?, updated_at = ?${OPEN.includes(to) ? "" : ", context = NULL"}${cols.map((c) => `, ${c} = ?`).join("")} WHERE id = ? AND state IN (${from.map(() => "?").join(",")})${fresh ? " AND created_at > ?" : ""}`)
       .run(to, iso(), ...cols.map((c) => (c === "outcome" ? JSON.stringify((set as any)[c]) : (set as any)[c] ?? null)), id, ...from, ...(fresh ? [cutoff()] : []));
     return r.changes === 1;
   };
@@ -143,7 +146,7 @@ export function openRecords(file: string, now = () => new Date()) {
     if (!ids.length) return;
     const at = iso(), outcome = JSON.stringify({ ok: false, text: "expired: not decided and run within 7 days" });
     inTx(db, "records_expire", () => {
-      for (const id of ids) if (db.prepare("UPDATE records SET state = 'cancelled', updated_at = ?, outcome = ? WHERE id = ? AND state IN ('review','owner','approved')").run(at, outcome, id).changes) cancelled(id, "expired");
+      for (const id of ids) if (db.prepare("UPDATE records SET state = 'cancelled', updated_at = ?, outcome = ?, context = NULL WHERE id = ? AND state IN ('review','owner','approved')").run(at, outcome, id).changes) cancelled(id, "expired");
     });
   };
   const shownState = (r: Rec) => (OPEN.includes(r.state) && r.created_at <= cutoff() ? "expired" : r.state);
@@ -160,7 +163,7 @@ export function openRecords(file: string, now = () => new Date()) {
         // A changed request on the same task, kind and target replaces the open one (the requester's own target key).
         const old = r.target ? (db.prepare("SELECT id FROM records WHERE task = ? AND kind = ? AND target = ? AND digest != ? AND state IN ('review','owner','approved')").all(r.task, r.kind, r.target, digest) as { id: string }[]).map((o) => o.id) : [];
         for (const o of old) {
-          db.prepare("UPDATE records SET state = 'cancelled', updated_at = ?, outcome = ? WHERE id = ?").run(at, JSON.stringify({ ok: false, text: "replaced by a newer request" }), o);
+          db.prepare("UPDATE records SET state = 'cancelled', updated_at = ?, outcome = ?, context = NULL WHERE id = ?").run(at, JSON.stringify({ ok: false, text: "replaced by a newer request" }), o);
           cancelled(o, "replaced");
         }
         const replaced = old.length;

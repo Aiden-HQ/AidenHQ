@@ -31,6 +31,8 @@ export const REVIEW_CODES = [
   "no_diff",
   "too_large",
   "files_not_shown",
+  // the review reached a spend cap before it finished: the owner decides
+  "review_cap",
   "check_failed",
   "tier_raised",
   // the reviewer approved a module change that adds authority: the owner decides next, with that verdict on the card

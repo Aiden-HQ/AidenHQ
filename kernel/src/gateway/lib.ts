@@ -35,7 +35,7 @@
 // the old kernel (main.ts drain), so the next kernel never closes a live peer's reservation.
 // Caps: run / task / agent-day (grants caps, defaults 2/10/30 USD), always enforced; only the owner raises one (raise_cap). A
 // task labelled `chat` or a routine's execution task is perpetual: its task cap counts the UTC day only. System kinds
-// (reviewer, grader, source) are never capped. CI caps (config/gateway.json `ci`: per repo per UTC day, all CI per day) are
+// (reviewer, grader, source) are never capped, but a reviewer token may carry its review's own cap (`u`, main.ts). CI caps (config/gateway.json `ci`: per repo per UTC day, all CI per day) are
 // never filed for raising. The install cap (config/gateway.json `install_day_usd`, settings.spend_day_usd; absent, none)
 // counts every call of the UTC day, every kind and CI included; its raise_cap is filed as agent INSTALL_CAP, scope day.
 // A check job's token (kind check, ../checkjobs.ts) is the reviewer eval's, capped by the eval day cap (config/gateway.json
@@ -58,7 +58,7 @@ export type RunKey = Brand<string, "RunKey">;
  */
 export type Caller = Brand<{
   runKey: RunKey; agentId: string | null; runId: string | null; issueId: string | null; perpetual: boolean; rev: string | null;
-  kind: string; component: string; capped: boolean; ci?: { repo: string; subject: string }; check?: { subject: string; cap?: number };
+  kind: string; component: string; capped: boolean; ci?: { repo: string; subject: string }; check?: { subject: string; cap?: number }; review?: { cap: number };
 }, "Caller">;
 type GatewayError = Error & { status?: number; type?: string; extra?: Record<string, unknown> };
 type Caps = { run_usd: number; task_usd: number; day_usd: number };
@@ -436,7 +436,9 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
       const row = (q.run.get(runKey) as RunRow | undefined) ?? settle(runKey, { agentId: p.a, issueId: p.i });
       // A grader token that names an agent (the grading module's, minted per held task) is capped as that agent's; the reviewer's
       // and the others name none and stay system calls.
-      return as(row, p.k, String(p.c ?? SYSTEM[p.k]).slice(0, 80), p.k === "grader" && Boolean(p.a));
+      // A reviewer token carries its review's own spend cap (`u`, main.ts): that token's run key alone, never filed for raising.
+      const who = as(row, p.k, String(p.c ?? SYSTEM[p.k]).slice(0, 80), p.k === "grader" && Boolean(p.a));
+      return (p.k === "reviewer" && Number(p.u) > 0 ? { ...who, review: { cap: Number(p.u) } } : who) as Caller;
     }
     throw fail(401, "unauthorized", "not a credential this gateway knows");
   }
@@ -480,6 +482,7 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
     }
     if (who.check?.cap) return [{ scope: "check-run", subject: who.check.subject, cap: who.check.cap, spent: (q.spentRun.get(who.runKey) as Sum).s }, ...installScope(today)];
     if (who.check) return [{ scope: "eval-day", subject: today, cap: evalDay(), spent: (q.checkSpent.get(today) as Sum).s }, ...installScope(today)];
+    if (who.review) return [{ scope: "run", subject: who.runKey, cap: who.review.cap, spent: (q.spentRun.get(who.runKey) as Sum).s }, ...installScope(today)];
     if (!who.capped) return installScope(today);
     const subject = taskSubject(who, t);
     const scopes: [string, string, number][] = [["run", who.runKey, (q.spentRun.get(who.runKey) as Sum).s]];

@@ -68,7 +68,6 @@ export const SKIP_REASONS = {
   stopped: "reviews are stopped on this pull request (`@aiden review always` starts them again)",
   unchanged: "nothing changed since the last review",
   ignored: "every changed file is ignored by this repository's review settings",
-  too_large: "the change is too large to review",
   no_access: "the pull request can't be read",
   daily_limit: "the daily limit of automatic reviews is reached; ask with `@aiden review`",
 } as const;

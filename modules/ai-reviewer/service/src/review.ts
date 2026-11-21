@@ -92,7 +92,7 @@ export const CHECKLIST_FILE = join(import.meta.dirname, "../security/checklist.j
  * ones the model picks from, and the ones code sets when it escalates without, or despite, a usable verdict.
  */
 export const MODEL_CODES = ["in_scope", "out_of_scope", "secret_exfiltration", "gate_change", "prompt_injection", "stale_request", "destructive_change", "supply_chain", "policy_other", "owner_should_look", "reviewer_unsure"];
-export const CODE_CODES = ["reviewer_failed", "reviewer_refused", "no_independent_model", "no_diff", "too_large", "files_not_shown", "check_failed", "tier_raised", "new_authority", "autonomy_off", "routine_autonomy", "owner_tier", "shadow", "panel_split", "refused_by_code", "stale_head"];
+export const CODE_CODES = ["reviewer_failed", "reviewer_refused", "no_independent_model", "no_diff", "too_large", "files_not_shown", "review_cap", "check_failed", "tier_raised", "new_authority", "autonomy_off", "routine_autonomy", "owner_tier", "shadow", "panel_split", "refused_by_code", "stale_head"];
 /** The model's "I can't tell": a second reviewer decides; both unsure, the card goes back to the agent with this code. */
 export const UNSURE = "reviewer_unsure";
 
@@ -579,7 +579,7 @@ async function judge({ card, diff, files = { text: "", leftOut: [], oversized: [
   const fromDiff = files.oversized?.length ? ` Judged from the DIFF, not in full: ${files.oversized.join(", ")} did not fit the ${MAX_FILES}-character budget for changed files.` : "";
   const first = await askFirst(models, prompt, ask, checks);
   if (!first) return byCode("escalate", `reviewer refused${fromDiff ? `.${fromDiff}` : ""}`, "reviewer_refused");
-  if (first.failed) return { decision: "escalate", code: "reviewer_failed", reason: `the reviewer failed (${first.failed})`, model: first.model };
+  if (first.failed) return failedOf(first.failed, first.model);
   const { second: flagged, ...rest } = first;
   // `flag`: the first reviewer called it authority-expanding (shown in the eval and the log; it only ever adds a reviewer).
   const v1 = { ...rest, reason: (rest.reason + fromDiff).slice(0, 1990), flag: flagged };
@@ -598,9 +598,17 @@ async function judge({ card, diff, files = { text: "", leftOut: [], oversized: [
   if (!seconds.length) return { ...v1, decision: "escalate", code: "no_independent_model", reason: `no second reviewer independent of the requester and the first reviewer. First reviewer: ${v1.reason}` };
   const v2 = await askFirst(seconds, panel ? prompt : reviewPrompt({ policy, card, diff, whole, files: files.text ?? "", chain, comments, panel: true, previous, siblings, sources, checks, evidence, decisions, graderNote }), ask, checks);
   if (!v2) return { ...v1, decision: "escalate", code: "reviewer_refused", reason: `the second reviewer refused. First reviewer (approve): ${v1.reason}` };
-  if (v2.failed) return { decision: "escalate", code: "reviewer_failed", reason: `the second reviewer failed (${v2.failed})`, model: v1.model };
+  if (v2.failed) return failedOf(v2.failed, v1.model, "the second reviewer");
   return panelVotes(v1, v2, flagged, whole);
 }
+
+/**
+ * A vote whose call failed: retried later (reviewer_failed), except a call the gateway refused at a spend cap (the review's own,
+ * REVIEW_USD in the kernel, or the install's): it goes to the owner (review_cap), never approved unread.
+ */
+const failedOf = (failed: string, model: string, who = "the reviewer"): Result => /cap_reached/.test(failed)
+  ? { decision: "escalate", code: "review_cap", reason: `the review reached a spend cap before ${who} finished (${failed}): the owner decides`, model }
+  : { decision: "escalate", code: "reviewer_failed", reason: `${who} failed (${failed})`, model };
 
 /** The panel's outcome after a first approve (see review()): the second's vote decides how. */
 function panelVotes(v1: FirstVote, v2: Voted, flag: boolean, whole: boolean): Result {
@@ -637,7 +645,7 @@ async function secondOpinion({ v1, whole, panel, requesterModel, ask, onPanel, p
   }
   const v2 = await askFirst(seconds, prompt(panel || flag), ask, checks);
   if (!v2) return { ...v1, decision: "escalate", code: "reviewer_refused", reason: `the first reviewer was unsure and the second refused. First reviewer (unsure): ${v1.reason}`.slice(0, 1990) };
-  if (v2.failed) return { decision: "escalate", code: "reviewer_failed", reason: `the second reviewer failed (${v2.failed})`, model: v1.model, flag };
+  if (v2.failed) return { ...failedOf(v2.failed, v1.model, "the second reviewer"), flag };
   const notes = (n: number) => `${v1.model} (unsure): ${cut(v1.reason, n)} ${v2.model} (${v2.decision === "approve" ? "approve" : "unsure"}): ${cut(v2.reason, n)}`;
   if (!panel && !flag && v2.second) {
     const failed = await mark();

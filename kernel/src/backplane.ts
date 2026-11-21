@@ -901,7 +901,9 @@ export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boar
             // asks for every record (the board's history shows Tier 0 runs after the fact); the review list says which wait out a
             // failed review's backoff.
             const rows = records.list(list, Math.min(Number(p.get("limit")) || 100, 1000), { reviewed: p.get("tier0") !== "1", ...(task ? { task } : {}) });
-            return send(res, 200, { records: rows.map((r) => ({ ...r, state: records.shownState(r), ...(writes.retryAt(r.id) ? { retry_at: writes.retryAt(r.id) } : {}) })) });
+            // An open record's card shows the whole diff the reviewer reads (context.diff), so the owner decides on all of it; the
+            // reviewer's other input (the files' text) stays in the kernel.
+            return send(res, 200, { records: rows.map(({ context, ...r }) => ({ ...r, card: context?.diff ? { ...r.card, details: context.diff } : r.card, state: records.shownState(r), ...(writes.retryAt(r.id) ? { retry_at: writes.retryAt(r.id) } : {}) })) });
           }
           case "GET /v1/writes/:id": {
             if (isBoard(req)) return send(res, 200, record(id));

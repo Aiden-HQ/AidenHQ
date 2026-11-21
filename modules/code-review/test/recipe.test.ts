@@ -6,7 +6,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { bound, review } from "../recipe/review.ts";
-import { tools } from "../recipe/review-tools.ts";
+import { page, tools } from "../recipe/review-tools.ts";
 import { execFileSync } from "node:child_process";
 import { runEngine } from "../recipe/engines.ts";
 
@@ -121,9 +121,11 @@ test("a review: text addressed to a reviewer in a left-out file still flags it; 
   const r = await review({ spec: spec(), ws, out, run });
   assert.equal(r.addressed, true);
   assert.ok(seen[0].instructions.includes("addressed to a reviewer"));
-  // A new vendored file and a huge one got no findings pass: listed with why, and the review is incomplete, never clean.
-  assert.deepEqual(r.coverage.excluded, ["big.js (huge)", "docs/notes.md (ignored)", "img.bin (binary)", "vendor/evil.js (generated, changed by this PR)"]);
-  assert.match(r.coverage.incomplete, /2 changed files got no findings pass \(big\.js: huge; vendor\/evil\.js: generated, changed by this PR\)/);
+  // A new vendored file got no findings pass: listed with why, and the review is incomplete, never clean. A huge file is
+  // reviewed like any other: size never leaves a file out.
+  assert.deepEqual(r.coverage.excluded, ["docs/notes.md (ignored)", "img.bin (binary)", "vendor/evil.js (generated, changed by this PR)"]);
+  assert.ok(r.coverage.reviewed.includes("big.js"));
+  assert.match(r.coverage.incomplete, /1 changed file got no findings pass \(vendor\/evil\.js: generated, changed by this PR\)/);
   // The confirmed finding survives an absolute tool path; the finder with no findings list is a failed finder, not a clean one.
   assert.deepEqual(r.findings.map((f) => [f.path, f.line]), [["a.js", 2]]);
   assert.match(r.coverage.incomplete, /1 of 2 finders didn't finish/);
@@ -133,6 +135,23 @@ test("a review: text addressed to a reviewer in a left-out file still flags it; 
   assert.match(t.read_file.run({ path: "vendor/evil.js" }), /steal\(\)/);
   assert.match(t.search.run({ pattern: "steal" }), /vendor\/evil\.js/);
   assert.throws(() => t.read_file.run({ path: "img.bin" }), /binary/);
+  // A tool answer over its page size is paged, never cut: every line is a call away.
+  const whole = t.diff.run({ path: "big.js" });
+  const first = page(whole.repeat(30));
+  const next = Number(/call again with from: (\d+)/.exec(first)[1]);
+  assert.ok(first.length < whole.repeat(30).length && next > 1);
+  assert.equal(page(whole.repeat(30), next).split("\n")[0], whole.repeat(30).split("\n")[next - 1]);
+  // A line longer than a page is paged too, by pieces: every character is reachable, none cut.
+  const long = "x".repeat(250_000) + "END";
+  let text = "", from = 1;
+  for (let n = 0; n < 10; n++) {
+    const p = page(long, from);
+    const m = /\n\[answer lines \d+-\d+ of \d+ .*call again with from: (\d+) for the rest\]$/.exec(p);
+    text += m ? p.slice(0, m.index) : p;
+    if (!m) break;
+    from = Number(m[1]);
+  }
+  assert.equal(text, long);
   // A result past the kernel's limit: the lowest-ranked findings are withheld to fit.
   const big = bound({ coverage: { reviewed: [], excluded: [], incomplete: null }, withheld: { important: 0, nit: 0, pre_existing: 0 }, findings: Array.from({ length: 100 }, () => F({ severity: "nit", evidence: "x".repeat(4000) })) });
   assert.ok(Buffer.byteLength(JSON.stringify(big)) <= 200_000 && big.withheld.nit > 0 && big.findings.length + big.withheld.nit === 100);

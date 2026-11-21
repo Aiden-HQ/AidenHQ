@@ -310,12 +310,12 @@ export function createService(o: Options) {
   }
 
   /**
-   * The changed files' text for the reviewer (fileContext, as the runner read them): in order, a file that can't be read at the
-   * head (deleted) skipped, past 300 not read.
+   * The changed files' text for the reviewer (fileContext, as the runner read them): every one in order, a file that can't be
+   * read at the head (deleted) skipped.
    */
   async function readFiles(list: { name: string; read: () => Promise<string> }[]) {
-    const files: { name: string; text: string | null | undefined }[] = [];
-    for (const [i, f] of list.entries()) files.push({ name: f.name, text: i < 300 ? await f.read().catch(() => undefined) : null });
+    const files: { name: string; text: string | undefined }[] = [];
+    for (const f of list) files.push({ name: f.name, text: await f.read().catch(() => undefined) });
     return fileContext(files);
   }
 
