@@ -7,8 +7,9 @@ import type { DatabaseSync } from "node:sqlite";
  * open: filed with the delegation, the task not finished yet. pending: a completion path hit the gate, waiting for the
  * runner. awaiting_evidence: checks, a deploy or an approval still running. Then satisfied, needs_revision (back to the
  * assignee), grading_failed (the grader failed or returned no usable criteria: retried on a bounded ladder, never the
- * owner's) or escalated (3 rejected versions, cannot_judge, or 5 failed grader passes: the delegator decides, accepting
- * by closing the task or reopening it with what to change). not_graded: the task was cancelled or otherwise closed before
+ * owner's) or escalated (3 rejected versions, or one resubmitted unchanged: the delegator decides, accepting by closing the task
+ * or reopening it with what to change). A grader that is down, can't judge or can't verify settles the row satisfied: the task
+ * closes done, ungraded. not_graded: the task was cancelled or otherwise closed before
  * the grader settled it, so there is nothing left to grade.
  */
 export type GradeState = "open" | "pending" | "awaiting_evidence" | "satisfied" | "needs_revision" | "grading_failed" | "escalated" | "not_graded";
@@ -365,28 +366,29 @@ export class Grades {
 
   /**
    * One grading pass's outcome. A rejected version counts once (loops are distinct versions). A version rejected before and
-   * handed in again unchanged, the MAX_LOOPS-th rejected version, a verdict with criteria unverified but none unmet,
-   * cannot_judge, a grader refusal and evidence that never came (error) escalate to the delegator. A grader that failed or returned no usable criteria (grading_failed) is retried on the
-   * 1-5-15-60 minute ladder and escalates after MAX_GRADER_FAILURES passes in a row (the grade loop then blocks the task); any
-   * real verdict, or a new round, clears that count.
+   * handed in again unchanged, and the MAX_LOOPS-th rejected version, escalate to the delegator: criteria explicitly unmet are
+   * the only escalation. A verdict with criteria unverified but none unmet, cannot_judge, a grader refusal and evidence that
+   * never came (error) settle the row satisfied (the task closes done, ungraded). A grader that failed or returned no usable
+   * criteria (grading_failed) is retried on the 1-5-15-60 minute ladder and settles the same way after MAX_GRADER_FAILURES passes
+   * in a row; any real verdict, or a new round, clears that count.
    */
   record(issueId: string, v: VerdictInput, now = Date.now(), delegators?: string[]): Grade {
     const set = (state: GradeState, attempts: number, verdicts: Verdict[], failures: number, failedAt: string | null, at: number) => this.set(issueId, state, attempts, verdicts, failures, failedAt, at, delegators);
     const g = this.get(issueId);
     if (!g) throw new Error("no grade for this task");
     if (v.outcome === "awaiting_evidence") return set("awaiting_evidence", g.attempts, g.verdicts, g.failures, g.failedAt, now);
-    const verdict: Verdict = { at: new Date(now).toISOString(), version: v.version, model: v.model, verdict: ["error", "grading_failed"].includes(v.outcome) ? "cannot_judge" : (v.outcome as Verdict["verdict"]), criteria: v.criteria };
+    // A verdict that marks a criterion unmet is a rejection whatever its outcome says, in the history too.
+    const unmet = ["cannot_judge", "error"].includes(v.outcome) && v.criteria.some((c) => c.met === "no");
+    const verdict: Verdict = { at: new Date(now).toISOString(), version: v.version, model: v.model, verdict: unmet ? "needs_revision" : ["error", "grading_failed"].includes(v.outcome) ? "cannot_judge" : (v.outcome as Verdict["verdict"]), criteria: v.criteria };
     const verdicts = [...g.verdicts, verdict].slice(-20);
     if (v.outcome === "satisfied") return set("satisfied", g.attempts, verdicts, 0, null, now);
+    // Grader infrastructure failing, cannot_judge, missing evidence and unverified-only close the task done, ungraded (the loop's note says why).
     if (v.outcome === "grading_failed") {
       const failures = g.failures + 1;
-      const state = failures >= MAX_GRADER_FAILURES ? "escalated" : "grading_failed";
-      return set(state, g.attempts, verdicts, failures, new Date(now).toISOString(), now);
+      if (failures >= MAX_GRADER_FAILURES) return set("satisfied", g.attempts, verdicts, 0, null, now);
+      return set("grading_failed", g.attempts, verdicts, failures, new Date(now).toISOString(), now);
     }
-    if (v.outcome !== "needs_revision") return set("escalated", g.attempts, verdicts, 0, null, now);
-    // Nothing shown unmet, only unverified: no rework (the assignee can't make evidence the grader isn't given). The delegator
-    // gets one question about what couldn't be verified, and closing the task accepts it (accept()).
-    if (unverifiedOnly(v.criteria)) return set("escalated", g.attempts, verdicts, 0, null, now);
+    if ((v.outcome !== "needs_revision" && !unmet) || unverifiedOnly(v.criteria)) return set("satisfied", g.attempts, verdicts, 0, null, now);
     if (g.verdicts.some((x) => x.verdict === "needs_revision" && x.version === v.version)) return set("escalated", g.attempts, verdicts, 0, null, now);
     const attempts = g.attempts + 1;
     return set(attempts >= MAX_LOOPS ? "escalated" : "needs_revision", attempts, verdicts, 0, null, now);

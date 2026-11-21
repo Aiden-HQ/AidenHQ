@@ -17,7 +17,7 @@ function setup(row, over = {}) {
       comment: async () => calls.push(["comment"]), block: async () => {}, children: async () => [],
     },
     log: () => {}, state,
-    gather: async () => ({ facts: [], version: over.version ?? "v1" }), grade: async () => ({ outcome: row, model: "m", criteria: [] }),
+    gather: async () => ({ facts: [], version: over.version ?? "v1" }), grade: async () => ({ outcome: over.outcome ?? row, model: "m", criteria: [] }),
     escalationFor: async () => ({}), gradeNote: () => "note", template: () => [], gradeDeps: () => ({}),
     tellParent: async (_i, kind) => { if (failing.tell-- > 0) throw err(); calls.push(["tell", kind]); return true; },
     recordsOn: async () => [], graderAsk: () => undefined, stripHidden: (x) => x, graderSpeaks: () => false, isUserInstruction: () => false,
@@ -31,6 +31,12 @@ describe("grade loop owed moves", () => {
     await loop.runGrades(); // close fails with a 502: the owed step stays
     assert.deepEqual(calls, []);
     await loop.runGrades(); // next pass settles it
+    assert.deepEqual(calls, [["setStatus", "done"], ["tell", "done"]]);
+  });
+  it("a grader that could not judge closes the task done, ungraded, with no version to go stale", async () => {
+    const { loop, calls, failing } = setup("satisfied", { outcome: "cannot_judge", version: "" });
+    failing.done = 0;
+    await loop.runGrades();
     assert.deepEqual(calls, [["setStatus", "done"], ["tell", "done"]]);
   });
   it("an owed close is dropped, with its notice, when the task moved on or its evidence changed", async () => {

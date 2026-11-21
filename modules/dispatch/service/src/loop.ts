@@ -40,12 +40,15 @@ const RESUME: Record<string, string> = {
   // follow() below: the retry of a run that didn't get to finish (kernel wakes.ts schedule prefixes a module's cause).
   "scheduled: retry": "Your last run on this task ended before finishing (its computer or the kernel went away)",
 };
-// A job that didn't get to finish for want of its machinery is retried this many times in a row, a little later each time,
-// before whoever asked is told: one that never started (the kernel couldn't launch it: no box, a launcher error), one lost while
+// A job that didn't get to finish for want of its machinery is retried each time later (doubling, up to MAX_RETRY_MS), and whoever asked is not told, for as long as its task is open when it
+// never started (that costs nothing), else up to MAX_RAN_TRIES: one that never started (the kernel couldn't launch it: no box, a launcher error), one lost while
 // no kernel followed it (a reboot), or one killed by a signal it didn't send itself (its computer went away, an OOM kill). A run
 // that exited with an error of its own is not: the same run would fail the same way, so its notice goes out at once.
-const START_TRIES = 3;
 const RETRY_MS = 2 * 60_000;
+const MAX_RETRY_MS = 30 * 60_000;
+// A run that ran costs model spend: one that keeps ending unfinished is retried this many times, then its notice goes out and it is dropped.
+const MAX_RAN_TRIES = 6;
+const retryIn = (tries: number) => Math.min(RETRY_MS * 2 ** (tries - 1), MAX_RETRY_MS);
 /** A job the kernel couldn't start: it ended failed with no exit code (admission.ts); a run that ran always has one. */
 const neverStarted = (j: { state: string; exit: number | null }) => j.state === "failed" && j.exit == null;
 /** A job its machinery ended (above): never started, lost, or killed by a signal (an exit above 128, jobs.ts adopt's rule). */
@@ -90,7 +93,7 @@ const blockedNote = (why: string) =>
 const permanent = (e: unknown): e is KernelError => e instanceof KernelError && ((e.status >= 400 && e.status < 500 && e.status !== 429) || /no-agent-key/.test(e.message));
 /**
  * Refusals a recompile or a re-queue clears (admission.ts: grants, profile or dispatcher list replaced under an older table,
- * provenance not settled, the task moved under the wake): the wake is kept and tried `START_TRIES` times, each after its lease.
+ * provenance not settled, the task moved under the wake): the wake is kept and tried again for as long as its task is open, each time later (retryIn).
  */
 const TRIES_AGAIN = new Set(["no-grants", "not-your-agent", "bad-profile", "task-not-assigned", "provenance-unsettled"]);
 const clears = (e: unknown) => e instanceof KernelError && (e.status === 403 || e.status === 409) && TRIES_AGAIN.has(e.body?.type ?? "");
@@ -100,6 +103,8 @@ const clears = (e: unknown) => e instanceof KernelError && (e.status === 403 || 
  * missing job). Nobody needs to act (the new assignee has its own wake), so such a wake is dropped with a log line and no notice.
  */
 const STALE = new Set(["task-not-assigned", "task-closed"]);
+// A stale-looking refusal may be a reassignment still landing: tried this many times, then dropped.
+const STALE_TRIES = 3;
 const stale = (e: KernelError) => STALE.has(e.body?.type ?? "") || (e.status === 404 && e.body?.type !== "no-job");
 
 /** The kernel's refusal type and words, kept in the sentence so a reader sees what stopped it, not `idle · orphaned`. */
@@ -141,9 +146,11 @@ export function createDispatch({ kernel, db, owner, log = () => {}, now = Date.n
   const judges = new Map<string, ReturnType<typeof progressTracker>>();
   // Jobs whose follow failed with an error worth retrying: how often, and not before when (a restart starts fresh).
   const backoff = new Map<string, { fails: number; next: number }>();
-  // A refused wake start: how many tries so far, and whether its notice went out. Kept until the drop is confirmed, never
+  // A refused wake start: how many tries so far, not before when, and whether its notice went out. Kept until the drop is confirmed, never
   // cleared ahead of it, so a wake that comes back on its lease neither restarts the retries nor says the same thing twice.
-  const refusals = new Map<string, { tries: number; noticed: boolean }>();
+  const refusals = new Map<string, { tries: number; noticed: boolean; next: number }>();
+  // A wake the kernel handed back (no computer free, the launcher unreachable): how many times, and not before when.
+  const deferred = new Map<string, { tries: number; next: number }>();
 
   /**
    * After a run of an agent's task ends, whoever asked hears what it needs: a task left blocked, with the run's reply as the reason;
@@ -225,8 +232,8 @@ export function createDispatch({ kernel, db, owner, log = () => {}, now = Date.n
           // left blocked or handed back to the owner waits on them, not on a retry.
           const t = await kernel.task(v.task);
           const open = neverStarted(v) ? !CLOSED.has(String(t.status)) : ["todo", "in_progress"].includes(String(t.status)) && Boolean(t.assigneeAgentId);
-          if (tries < START_TRIES && open) {
-            await kernel.schedule({ task: v.task, at: Date.now() + RETRY_MS * tries, cause: "retry", id: `retry.${v.id}` });
+          if (open && (neverStarted(v) || tries < MAX_RAN_TRIES)) {
+            await kernel.schedule({ task: v.task, at: Date.now() + retryIn(tries), cause: "retry", id: `retry.${v.id}` });
             await kernel.ack(v.id);
             log("job didn't finish: retried later", { job: v.id, task: v.task, state: v.state, exit: v.exit, tries, why: v.final.slice(0, 200) });
             continue;
@@ -378,7 +385,12 @@ export function createDispatch({ kernel, db, owner, log = () => {}, now = Date.n
     const build = (resumed: boolean) => buildPrompt({ user: owner, task, parent, down, profile: dir[w.agent]?.profile ?? "crew", agentName: assignee?.name, thread: threadSection(owner, entries, { resumed }), words, resumed });
     const r = await kernel.start({ wake: w.key, prompt: build(ran), ...(ran ? { full_prompt: build(false) } : {}) });
     // Busy (429), or admitted but deferred for want of a computer (the kernel handed the wake back): nothing ran, so nothing is seen.
-    if ("busy" in r || r.job.state === "deferred") return log("busy: the wake comes back", { task: task.identifier, wake: w.key });
+    if ("busy" in r || r.job.state === "deferred") {
+      const tries = (deferred.get(w.key)?.tries ?? 0) + 1;
+      deferred.set(w.key, { tries, next: now() + retryIn(tries) });
+      return log("busy: the wake comes back later", { task: task.identifier, wake: w.key, tries, retry_in_s: retryIn(tries) / 1000 });
+    }
+    deferred.delete(w.key);
     q("INSERT INTO seen (task, comment) VALUES (?, ?) ON CONFLICT DO UPDATE SET comment = excluded.comment").run(w.task, comments.at(-1)?.id ?? "");
     log("job started", { job: r.job.id, task: task.identifier, wake: w.key, cause: w.cause });
   }
@@ -404,19 +416,21 @@ export function createDispatch({ kernel, db, owner, log = () => {}, now = Date.n
       await routines.sweep(async () => Object.keys(await kernel.directory()));
       const tick = { agents: new Map<string, Agent>(), redirected: new Set<string>() };
       for (const w of await kernel.claim(20)) {
+        // A wake refused for a reason a recompile clears waits out its backoff: left alone, its lease runs out and it comes back.
+        if (Math.max(refusals.get(w.key)?.next ?? 0, deferred.get(w.key)?.next ?? 0) > now()) continue;
         // A claim whose handling was lost (the answer never came) leaves the row claimed: its lease brings it back if no job came of
-        // it, and a job that did is in the open list. A refusal that a recompile or a re-queue clears is retried a few times that
-        // way first; any other refusal is final, and says so on the task before the row goes, so it is never a silent
+        // it, and a job that did is in the open list. A refusal that a recompile or a re-queue clears is retried that way, later each
+        // time; any other refusal is final, and says so on the task before the row goes, so it is never a silent
         // `idle · orphaned`.
         await handle(w, tick).then(() => refusals.delete(w.key)).catch(async (e: Error) => {
           if (!permanent(e)) return log("wake failed", { wake: w.key, err: e.message });
           // Kept until the drop is confirmed: a wake that comes back on its lease neither restarts the tries nor says its piece twice.
-          const had = refusals.get(w.key) ?? { tries: 0, noticed: false };
-          const next = { tries: had.tries + 1, noticed: had.noticed };
+          const had = refusals.get(w.key) ?? { tries: 0, noticed: false, next: 0 };
+          const next = { tries: had.tries + 1, noticed: had.noticed, next: clears(e) && !stale(e) ? now() + retryIn(had.tries + 1) : 0 };
           refusals.set(w.key, next);
           const dropped = () => kernel.drop(w.key, e.message).then(() => true, (err: Error) => (log("wake refused: its drop failed, kept for its lease", { wake: w.key, task: w.task, err: err.message }), false));
           const gone = async () => (await dropped()) && (refusals.delete(w.key), log("wake dropped: the kernel refused it", { wake: w.key, task: w.task, err: e.message.slice(0, 200) }), true);
-          if (clears(e) && next.tries < START_TRIES) return log("wake refused: retried when its lease runs out", { wake: w.key, task: w.task, refusal: e.body?.type ?? e.status, tries: next.tries, err: e.message.slice(0, 200) });
+          if (clears(e) && (!stale(e) || next.tries < STALE_TRIES)) return log("wake refused: retried later", { wake: w.key, task: w.task, refusal: e.body?.type ?? e.status, tries: next.tries, retry_in_s: retryIn(next.tries) / 1000, err: e.message.slice(0, 200) });
           if (stale(e)) return void (await gone(), log("wake stale: dropped without a notice", { wake: w.key, task: w.task, refusal: e.body?.type ?? e.status }));
           // The word goes out before the row — every dropped wake, including one another run answers or that left this dispatcher's
           // hands (the notice says which). The task's notice first, else the owner's. Neither landed: keep the row for its lease.

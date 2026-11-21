@@ -228,7 +228,7 @@ test("a model with no route grades with the next one, and the hold lasts until t
   assert.equal(grades.get("t3").verdicts.at(-1).model, "~z-ai/glm-flash-latest");
 });
 
-test("a grader that keeps failing keeps its hold, then blocks the task with the error and tells its delegator", async (t) => {
+test("a grader that keeps failing keeps its hold, then closes the task done, ungraded, and tells its parent", async (t) => {
   let n = 0;
   const gateway = http.createServer(async (req, res) => {
     for await (const _ of req);
@@ -250,13 +250,13 @@ test("a grader that keeps failing keeps its hold, then blocks the task with the 
   t.after(() => { Date.now = realNow; });
   for (let i = 0; i < 5; i++) { await loop.runGrades(); skew += 2 * 60 * 60_000; }
   assert.equal(n, 5, "a 5xx is never retried on the next model, and every pass got its token");
-  assert.deepEqual(calls.resolve, ["block"]);
-  assert.equal(issue.status, "blocked");
+  assert.deepEqual(calls.resolve, ["ok"]);
+  assert.equal(issue.status, "done");
   assert.equal(calls.wake.length, 1);
   assert.equal(calls.wake[0].task, "p1");
-  assert.match(calls.wake[0].text, /WOR-4 is blocked: its grader failed 5 times/);
+  assert.match(calls.wake[0].text, /WOR-4 .* is done, ungraded: /);
   await loop.runGrades();
-  assert.equal(n, 5, "a blocked task is not graded again");
+  assert.equal(n, 5, "a closed task is not graded again");
 });
 
 test("a verdict's reopen and its parent's notice that hit a kernel 5xx land on the next pass, never lost", async (t) => {
