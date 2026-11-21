@@ -115,6 +115,7 @@ main() {
   # After an auto-revert the instance checkout sits detached at the last known good: back onto main before moving it.
   git -C "$inst" symbolic-ref -q HEAD >/dev/null || git -C "$inst" checkout --quiet main
   git -C "$inst" merge --quiet --ff-only "$want"
+  [ "$(git -C "$inst" rev-parse HEAD)" = "$want" ] || { echo "refusing: instance main is at $(git -C "$inst" rev-parse HEAD), not $want (unpushed local commits?)" >&2; exit 1; }
   lap instance
 
   # The product commit the instance pins. It must be on product main: nothing unmerged runs here.
@@ -350,13 +351,17 @@ recoverDead() {
   read -r n target <<< "$d"
   why="$(genGet "$n" reason)"
   if [ "$(genGet "$n" health)" = pending ]; then why="the apply died mid-run"; genMark "$n" failed "$why"; fi
-  genJs recovered "$n"
   if [ "$target" = - ]; then
+    genJs recovered "$n"
     echo "apply alert: generation $n (a rollback) died mid-run; run ops/rollback.sh again"
     return 1
   fi
   echo "generation $n: $why, and no apply is finishing it: reverting"
-  revertTo "$target" "$why" "$GEN_DIR/apply-$target.log"
+  # Recorded once the revert has an outcome: a recovery killed mid-revert is found unsettled again.
+  local rc=0
+  revertTo "$target" "$why" "$GEN_DIR/apply-$target.log" || rc=$?
+  genJs recovered "$n"
+  return "$rc"
 }
 
 # recoverDead with its lines in the dead generation's log too (sets recovered=1 when there was one to finish).
@@ -643,7 +648,8 @@ switchOver() {
   # the board stopped so the old board writes nothing mid-move; compose then starts the grading service on them.
   if [ -f ops/grades-move.ts ] && [ ! -f "$data/modules/grading/grades/.moved-from-board" ]; then
     stopBoard
-    echo "grades: $(node ops/grades-move.ts "$data") (data/board/board.sqlite -> data/modules/grading/grades/)"
+    moved="$(node ops/grades-move.ts "$data")"
+    echo "grades: $moved (data/board/board.sqlite -> data/modules/grading/grades/)"
   fi
   # codehost-github became the github module's code host part (docs/design/connections-simple.md): its data dir (cache clones,
   # merge queue, PR-task map, release train) moves once, its old container stopped first so nothing writes mid-move; compose
@@ -663,7 +669,8 @@ switchOver() {
   # SQLite isn't open while the folder moves; compose then starts the listener as slack-live on the moved data.
   if [ -f ops/slack-live-move.ts ] && [ -d "$data/modules/channel-slack/slack-live" ]; then
     docker ps -q --filter label=aidenhq.module=channel-slack | xargs -r docker stop >/dev/null
-    echo "slack-live: $(node ops/slack-live-move.ts "$data") (data/modules/channel-slack/ -> data/modules/slack/)"
+    moved="$(node ops/slack-live-move.ts "$data")"
+    echo "slack-live: $moved (data/modules/channel-slack/ -> data/modules/slack/)"
   fi
   if ! cmp -s ops/units/aidenhq-kernel.service "$kn"; then
     cp ops/units/aidenhq-kernel.service "$kn"
