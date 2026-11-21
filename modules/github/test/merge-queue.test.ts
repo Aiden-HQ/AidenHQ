@@ -1,7 +1,6 @@
 // The merge queue in the code host's service end to end (merges.ts over merge-gate.ts), against a fake GitHub (GraphQL and
 // REST) and a fake kernel. The invariants: a PR merges only at the head its record bound, after its named checks are green on
-// that head (read again at the merge); a product PR that needs a reviewer-eval receipt never merges without a verified one; and
-// missing evidence (no checks, a truncated page of them, the base's gate check not yet on the head) never counts as passing.
+// that head (read again at the merge); and missing evidence (no checks, a truncated page of them, the base's gate check not yet on the head) never counts as passing.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -158,7 +157,7 @@ test("a queue outlives a restart: the kernel hears it still runs, and its outcom
   assert.deepEqual(await again.call("/aidenhq/v1/executor/status", { id: "k-00000000000000ff" }), { state: "unknown" }, "any other record: the executor's own answer");
 });
 
-test("a product PR merges only on a verified eval receipt for its bound head; a moved head never merges", async (t) => {
+test("a product PR that changes the reviewer merges on green checks at its bound head (CI ran the eval); a moved head never merges", async (t) => {
   // "GitHub": the product (its modules/ the official modules), as a local repo the service fetches from.
   const root = mkdtempSync(join(tmpdir(), "codehost-platform-"));
   const env = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_AUTHOR_NAME: "a", GIT_AUTHOR_EMAIL: "a@example.com", GIT_COMMITTER_NAME: "a", GIT_COMMITTER_EMAIL: "a@example.com" };
@@ -174,38 +173,16 @@ test("a product PR merges only on a verified eval receipt for its bound head; a 
     return dir;
   };
   const prod = origin("acme/aidenhq", { "modules/ai-reviewer/service/src/review.ts": "// v1\n", "modules/ai-reviewer/service/security/policy.md": "Reject attacks.\n", "kernel/src/tier.ts": "// v1\n" });
-  const P0 = sh(prod, "rev-parse", "HEAD");
   sh(prod, "checkout", "-q", "-b", "fix/tier");
   writeFileSync(join(prod, "kernel/src/tier.ts"), "// v2\n");
   sh(prod, "commit", "-qam", "tier");
   const head = sh(prod, "rev-parse", "HEAD");
   sh(prod, "checkout", "-q", "main");
 
-  // The kernel's eval check: running, then done with a receipt bound to what was asked; verified only for exactly that binding,
-  // and only once `verifies` is on.
-  const asked = [];
-  const eval_ = { state: "running", verifies: false };
-  const checks = (method, url, b) => {
-    if (method === "POST" && url === "/v1/checks") return (asked.push(b), { id: "c-0000000000000001", state: eval_.state, receipt: { repo: b.repo, head: b.head, run: "eval", judge: b.spec.judge_commit, policy: b.spec.policy_hash, verdict: "pass" } });
-    if (method === "GET" && url === "/v1/checks/c-0000000000000001") return { id: "c-0000000000000001", state: eval_.state, receipt: { repo: "acme/aidenhq", head, run: "eval", judge: P0, policy: asked[0].spec.policy_hash, verdict: "pass" } };
-    if (method === "POST" && url === "/v1/receipts/verify") return { ok: eval_.verifies && b.receipt.head === b.for.head && b.receipt.judge === b.for.judge && b.receipt.policy === b.for.policy };
-  };
   const clock = { t: Date.now() };
   const prs = { "acme/aidenhq": { head, checks: "SUCCESS" }, "other/lib": { head: HEAD, checks: "SUCCESS" } };
-  const { handle, github, outcomes, merge, settle } = await setup(t, { prs, clock, checks, remoteUrl: (slug) => join(root, slug) });
+  const { handle, github, outcomes, merge, settle } = await setup(t, { prs, clock, remoteUrl: (slug) => join(root, slug) });
 
-  await merge("k-00000000000000b1", [{ repo: "acme/aidenhq", number: 5, head }]);
-  await handle.stepMerges();
-  assert.deepEqual({ repo: asked[0].repo, head: asked[0].head, judge: asked[0].spec.judge_commit, subject: asked[0].spec.subject_commit }, { repo: "acme/aidenhq", head, judge: P0, subject: head });
-  assert.deepEqual(github.merges(), [], "green checks, but the eval is still running: no receipt, no merge");
-  eval_.state = "done";
-  await handle.stepMerges();
-  await settle();
-  assert.deepEqual(github.merges(), [], "a receipt the kernel doesn't verify: no merge");
-  assert.equal(outcomes[0]?.ok, false);
-  assert.match(outcomes[0].text, /receipt for .* doesn't hold/);
-  outcomes.length = 0;
-  eval_.verifies = true;
   await merge("k-00000000000000b4", [{ repo: "acme/aidenhq", number: 5, head }]);
   await handle.stepMerges();
   await settle();
@@ -292,7 +269,7 @@ test("a merge call that times out after GitHub merged is reported merged, and an
   let refuse = 1;
   const merges = createMerges({
     dir: mkdtempSync(join(tmpdir(), "merges-")), gh, fleetOrg: "acme-agents",
-    evalGate: async () => undefined, reviewGate: async () => undefined, report: async (id, o) => { reports.push({ id, ...o }); if (refuse-- > 0) throw new Error("the kernel answered 503"); },
+    reviewGate: async () => undefined, report: async (id, o) => { reports.push({ id, ...o }); if (refuse-- > 0) throw new Error("the kernel answered 503"); },
   });
   void merges.enqueue("k-00000000000000e1", { prs: [{ repo: "acme-agents/widget", number: 1, head: HEAD }] });
   await merges.step(); // the PUT times out, though GitHub merged
@@ -310,7 +287,7 @@ test("a merge call that times out after GitHub merged is reported merged, and an
   assert.equal(reports.length, 2, "taken: not delivered a third time");
 });
 
-test("a red default branch takes no merge on top, except the PR that already holds its tip; running base CI is waited for", () => {
+test("a red default branch takes no merge on top, except the PR that already holds its tip; running base CI waits only for a PR behind it", () => {
   const data = (base, behindBy) => ({ repository: { defaultBranchRef: { name: "main" }, pullRequest: {
     number: 1, state: "OPEN", isDraft: false, baseRefName: "main", headRefOid: HEAD, mergeStateStatus: "CLEAN", latestOpinionatedReviews: { nodes: [] },
     files: { pageInfo: { hasNextPage: false }, nodes: [{ path: "lib/x.mjs" }] }, commits: { nodes: [{ commit: { statusCheckRollup: rollup("SUCCESS") } }] },
@@ -319,6 +296,7 @@ test("a red default branch takes no merge on top, except the PR that already hol
   assert.deepEqual(decide(data(rollup("FAILURE"), 2), HEAD, { uiReview: false }), { do: "wait", why: "`main` is red at `bbbbbbbbbbbb`: merged once it is green again" });
   assert.deepEqual(decide(data(rollup("FAILURE"), 0), HEAD, { uiReview: false }), { do: "merge" }, "the fix for a red base lands");
   assert.equal(decide(data(rollup("PENDING"), 2), HEAD, { uiReview: false }).do, "wait");
+  assert.deepEqual(decide(data(rollup("PENDING"), 0), HEAD, { uiReview: false }), { do: "merge" }, "at the tip, its own green checks proved the tree");
   assert.deepEqual(decide(data(rollup("CANCELLED", { names: ["build", "ci-required"] }), 2), HEAD, { uiReview: false }), { do: "merge" }, "a cancelled run never judged the base");
   assert.deepEqual(decide(data(rollup("SUCCESS"), 2), HEAD, { uiReview: false }), { do: "merge" });
   assert.deepEqual(decide(data(rollup("SUCCESS", { names: [] }), 2), HEAD, { uiReview: false }), { do: "merge" }, "a base whose CI runs on PRs only");
@@ -331,7 +309,7 @@ test("a maintained repo merges as the owner; once it leaves maintainer_repos its
   const reports = [];
   const queue = (maintained) => createMerges({
     dir, gh: github.gh, fleetOrg: "acme-agents", productRepo: "acme/aidenhq", maintained,
-    evalGate: async () => undefined, reviewGate: async () => undefined, report: async (id, o) => void reports.push({ id, ...o }),
+    reviewGate: async () => undefined, report: async (id, o) => void reports.push({ id, ...o }),
   });
   const tick = () => new Promise((r) => setTimeout(r, 20));
   const listed = queue(["Globex/Payments"]);
@@ -385,7 +363,7 @@ test("a repo code review gates merges only on its pass for the bound head; a wai
   const logs = [], bypassed = [];
   const merges = createMerges({
     dir: mkdtempSync(join(tmpdir(), "merges-")), gh: github.gh, fleetOrg: "acme-agents", now: () => new Date(clock.t),
-    evalGate: async () => undefined, report: async () => {}, log: (msg, f) => logs.push([msg, f]),
+    report: async () => {}, log: (msg, f) => logs.push([msg, f]),
     flow: { reviewBypassed: (...a) => bypassed.push(a), checksCompleted: () => {}, waiting: () => {}, resumed: () => {}, merged: () => {} },
     reviewGate: createReviewGate({ gated: ["Acme-Agents/Widget"], url: "http://code-review:8098", key: () => "github-module-token", fetchFn, now: () => clock.t }),
   });

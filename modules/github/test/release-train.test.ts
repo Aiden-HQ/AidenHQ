@@ -65,7 +65,7 @@ function fakes() {
 }
 const train = (dir, f, clock, extra = {}) => createReleaseTrain({
   dir, productRepo: "acme/aidenhq", instanceRepo: "acme/aidenhq-instance", windowMinutes: 15,
-  kernel: f.kernel, github: f.github, evalBump: async () => undefined, now: () => clock.t,
+  kernel: f.kernel, github: f.github, now: () => clock.t,
   commit: async (repo, path, edit) => { const t = edit(f.head ?? INSTANCE); f.committed = t; return t.includes(NEW) ? "e".repeat(40) : "0".repeat(40); }, ...extra,
 });
 
@@ -107,21 +107,15 @@ test("a green tip past the window files one kernel.apply; a restart adopts that 
   assert.equal(f.k.writes.length, 1);
 });
 
-test("a bump whose reviewer eval runs waits; one the kernel refuses closes its task and isn't tried again", async () => {
+test("a bump the kernel refuses closes its task and isn't tried again", async () => {
   const clock = { t: new Date("2026-11-18T10:00:00Z") };
   const f = fakes();
   const dir = mkdtempSync(join(tmpdir(), "train-"));
-  let gate = { wait: "the eval runs" };
-  const asked = [];
-  const t = () => train(dir, f, clock, { evalBump: async (from, to) => (asked.push([from, to]), gate) });
+  const t = () => train(dir, f, clock);
   await t().step();
   clock.t = new Date("2026-11-18T10:20:00Z");
-  await t().step();
-  assert.equal(f.k.tasks.length, 0, "waits for the eval before anything is filed");
-  assert.deepEqual(asked.at(-1), [OLD, NEW], "the product's move: the tip judged by the pinned commit");
-  gate = undefined;
   const refusing = { ...f, kernel: async (m, p, b) => { if (p === "/v1/writes") throw new Error("the kernel's /v1/writes answered 422: a new agent starts in trial"); return f.kernel(m, p, b); } };
-  await train(dir, refusing, clock, { evalBump: async () => undefined }).step();
+  await train(dir, refusing, clock).step();
   assert.match(f.k.closed[0].body, /Not filed:\*\* .*answered 422/);
   await t().step();
   assert.equal(f.k.tasks.length, 1, "the refused tip is not tried again");

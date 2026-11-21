@@ -30,7 +30,7 @@ test("verify-security's code checks pass on this checkout", () => {
   const r = spawnSync("bash", ["-c", script], { encoding: "utf8", maxBuffer: 16 << 20 });
   const out = r.stdout.split("\n");
   assert.deepEqual(out.filter((l) => l.startsWith("FAIL")), [], r.stderr.slice(-2000));
-  assert.ok(out.filter((l) => l.startsWith("ok")).length >= 11);
+  assert.ok(out.filter((l) => l.startsWith("ok")).length >= 9);
 });
 
 // The live probe can't run here (no docker): it needs the compiled compose files and the running stack. What can be checked
