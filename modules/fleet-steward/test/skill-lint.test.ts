@@ -1,11 +1,13 @@
 // A stale PR outside the agents org cost two days of dead work: the `fleet-check` bullet told the Steward to have an
 // Engineer close it with `aidenhq close`, but that command reaches only the agents org, the repos on maintainer_repos and the
 // product repo's Dependabot PRs, so the close was refused and the same stale PR filed another close task the next pass. The lint keeps the caveat:
-// a fleet skill section that names `aidenhq close` must also state its scope and the owner path, in that same section.
+// a fleet skill section that names `aidenhq close` must also state its scope and where an outside-scope PR goes (the
+// Maintainer, never the owner), in that same section.
 // The stale-PR nudge had the same shape: "nudge its agent" had no reachable form, a comment does not dispatch an Engineer,
-// and the Steward's status write on another agent's task is refused, so the nudge turned into a second task for the same
+// and the Steward's status write on another agent's task was refused, so the nudge turned into a second task for the same
 // PR — whose branch exists only in the workspace of the task that pushed it. Two runs died on that (a default-branch
-// clone cannot fetch the branch). The second lint keeps the reachable path in the section that nudge lives in.
+// clone cannot fetch the branch). The Steward now makes that status write itself (task_route, role fleet-settle); the second
+// lint keeps the reachable path in the section that nudge lives in.
 // The Maintainer's `github_product_issue` card reads the delegating task's text as the request chain and refuses a write it
 // does not ask for: the product-bug step told the Steward to create the task with the evidence but never to ask for the
 // issue to be filed, so every report was refused and the bug went unfiled (or cost a second task whose own brief was
@@ -40,24 +42,24 @@ function closeScopeProblems(text) {
       const scope = /outside the agents org/.test(section) || (/outside that scope/.test(section) && /reaches only the agents org/.test(section) && /maintainer_repos/.test(section) && /Dependabot PRs/.test(section));
       const missing = [];
       if (!scope) missing.push("the close scope (`outside the agents org`)");
-      if (!/is the owner's/.test(section)) missing.push("the owner path (`is the owner's`)");
+      if (!/goes to the Maintainer/.test(section)) missing.push("the outside-scope path (`goes to the Maintainer`)");
       return missing.length ? [{ section: first, missing }] : [];
     });
 }
 
 /**
  * Every stale-PR section that tells the Steward to nudge an open task's agent without saying how the nudge reaches that
- * agent: a status write on its own task (handed to the chief of staff or the assignee when the board refuses) and never a
- * second task for the same PR (whose branch only that task's workspace has).
+ * agent: a status write on its own task (the Steward's `task_route`) and never a second task for the same PR (whose branch
+ * only that task's workspace has).
  */
 function stalePrNudgeProblems(text) {
   return sections(text)
     .filter((section) => section.includes("A stale PR"))
     .flatMap((section) => {
       const flat = section.replace(/\s+/g, " ");
-      if (!(/still open/i.test(flat) && /nudge/i.test(flat))) return [];
+      if (!(/still open/i.test(flat) && /(nudge|status write)/i.test(flat))) return [];
       const missing = [];
-      if (!(/status write/i.test(flat) && /board refuses the status write/i.test(flat))) missing.push("the status-write sentence");
+      if (!(/status write/i.test(flat) && /task_route/.test(flat))) missing.push("the status-write sentence");
       if (!/never file a second task for the same PR/i.test(flat)) missing.push("the \"never file a second task for the same PR\" sentence");
       return missing.length ? [{ section: flat.slice(0, 60), missing }] : [];
     });
@@ -89,11 +91,11 @@ function memoryProposalProblems(text) {
 
 const memoryProposalMessage = (file, section) => `${file}: the memory-proposal step "${section}" must name the instance repository (\`<agents org>/aidenhq-instance\`): a job clones only the repositories its task names, so the proposal closes with the memory file unchanged.`;
 
-const nudgeMessage = (file, p) => `${file}: the section "${p.section}" nudges an open task's agent without ${p.missing.join(" and ")}: state that work reaches an Engineer only through a status write on its own task (handed to the chief of staff or its assignee when the board refuses), and that a second task is never filed for the same PR because the branch exists only in the task that pushed it`;
+const nudgeMessage = (file, p) => `${file}: the section "${p.section}" nudges an open task's agent without ${p.missing.join(" and ")}: state that work reaches an Engineer only through a status write on its own task (task_route), and that a second task is never filed for the same PR because the branch exists only in the task that pushed it`;
 
-const message = (file, p) => `${file}: the section "${p.section}" names \`aidenhq close\` without ${p.missing.join(" and ")}: state that aidenhq close reaches only the agents org, the repos listed in maintainer_repos and the product repo's Dependabot PRs, and that an outside-scope PR is the owner's (no close task; the digest and one \`outside-close-scope\` log line)`;
+const message = (file, p) => `${file}: the section "${p.section}" names \`aidenhq close\` without ${p.missing.join(" and ")}: state that aidenhq close reaches only the agents org, the repos listed in maintainer_repos and the product repo's Dependabot PRs, and that an outside-scope PR goes to the Maintainer (no close task for an Engineer; one \`outside-close-scope\` log line)`;
 
-test("a fleet skill section naming `aidenhq close` must state its scope and the owner path", () => {
+test("a fleet skill section naming `aidenhq close` must state its scope and the outside-scope path", () => {
   const problems = closeScopeProblems(fleetCheck).map((p) => message("fleet-check/SKILL.md", p));
   assert.deepEqual(problems, []);
 });
@@ -104,20 +106,20 @@ test("the lint bites: the old bullet, with no scope sentence, fails with the fix
   assert.equal(problems.length, 1);
   assert.match(problems[0].missing.join(), /outside the agents org/);
   assert.match(message("old", problems[0]), /state that aidenhq close reaches only the agents org/);
-  // A scope sentence alone is not enough: the owner path has to be there too.
+  // A scope sentence alone is not enough: the outside-scope path has to be there too.
   assert.equal(closeScopeProblems(old.replace("Log `pr", "`aidenhq close` reaches only the agents org. Log `pr")).length, 1);
   // "outside that scope" only reads with the scope named: on its own it is still a missing caveat.
-  assert.equal(closeScopeProblems(old.replace("Log `pr", "a PR outside that scope is the owner's. Log `pr")).length, 1);
+  assert.equal(closeScopeProblems(old.replace("Log `pr", "a PR outside that scope goes to the Maintainer. Log `pr")).length, 1);
 });
 
 test("the merged bullet keeps the actions it had and the outside-scope line", () => {
   const found = sections(fleetCheck).find((s) => s.includes("A stale PR"));
   assert.ok(found, "the stale-PR bullet is present");
   const bullet = found.replace(/\s+/g, " ");
-  for (const kept of ["one line with what to do (merge, fix the named check, or close)", "Never the same nudge twice"]) {
+  for (const kept of ["one line with what to do (merge, fix the named check, or close)", "Never the same nudge twice", "task_route"]) {
     assert.ok(bullet.includes(kept), `still says "${kept}"`);
   }
-  for (const added of ["reaches only the agents org", "maintainer_repos", "Dependabot PRs", "outside that scope", "is the owner's", "file no close task", "outside-close-scope"]) {
+  for (const added of ["reaches only the agents org", "maintainer_repos", "Dependabot PRs", "outside that scope", "goes to the Maintainer", "file no close task", "outside-close-scope"]) {
     assert.ok(bullet.includes(added), `states "${added}"`);
   }
 });
@@ -141,9 +143,9 @@ test("the lint bites: the old nudge, with no reachable path, fails with the fix;
   assert.match(problems[0].missing.join(), /status-write sentence/);
   assert.match(problems[0].missing.join(), /never file a second task for the same PR/);
   assert.match(nudgeMessage("old", problems[0]), /a second task is never filed for the same PR/);
-  const withStatusWriteOnly = old.replace("If that task is still open", "Work reaches an Engineer only through a status write on its own task; when the board refuses the status write, hand it on. If that task is still open");
+  const withStatusWriteOnly = old.replace("If that task is still open", "Work reaches an Engineer only through a status write on its own task: `task_route` it. If that task is still open");
   assert.equal(stalePrNudgeProblems(withStatusWriteOnly).length, 1, "the status-write sentence alone is not enough");
-  const replacement = "- **A stale PR** (`pr:<repo>#<n>`): find the task that opened it (`task_search`). Work reaches an Engineer only through a\n  status write on its own task, so never file a second task for the same PR. If that task is still open, nudge its own\n  agent once, and when the board refuses the status write, hand *that* task to the chief of staff.\n";
+  const replacement = "- **A stale PR** (`pr:<repo>#<n>`): find the task that opened it (`task_search`). Work reaches an Engineer only through a\n  status write on its own task, so never file a second task for the same PR. If that task is still open, make the status\n  write yourself: `task_route` *that* task with what to do.\n";
   assert.deepEqual(stalePrNudgeProblems(replacement), []);
   // A section that does not nudge an open task is out of scope.
   assert.deepEqual(stalePrNudgeProblems("- **A stale PR**: if the task is done, `task_create` to the app's owner.\n"), []);

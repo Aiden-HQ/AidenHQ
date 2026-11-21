@@ -133,7 +133,7 @@ const task = (id, o = {}) => ({ id, identifier: `WOR-${id.toUpperCase()}`, title
 const detect = (w, now = NOW) => checks({ kernel: w, kv: kvOf(), apps: async (p) => (p === "/internal/open-prs" ? { prs: w.prs } : []), alerts: async () => [], openKeys: () => [], now: () => now });
 const minsAgo = (m) => new Date(NOW - m * 60_000).toISOString();
 
-test("a branch parked by five judged rejections (MAX_REJECTS) that nothing moved for 6h is a loop; refiles refused as parked or aimed elsewhere move nothing; an approval on it, a re-brief or the owner's word does", async () => {
+test("a branch parked by five judged rejections (MAX_REJECTS) that nothing moved for an hour is a loop; refiles refused as parked or aimed elsewhere move nothing; an approval on it, a re-brief or the owner's word does", async () => {
   const rej = (task, target, at, judged = true) => ({ task, identifier: null, state: "rejected", judged, targets: [target], decided_at: at, created_at: at });
   const filed = (task, target, state) => ({ task, identifier: null, state, judged: false, targets: [target], decided_at: ago(2), created_at: ago(2) });
   const parked = (task, target) => [7, 8, 9, 10, 11].map((h) => rej(task, target, ago(h)));
@@ -145,7 +145,7 @@ test("a branch parked by five judged rejections (MAX_REJECTS) that nothing moved
       ...parked("t3", "acme/app|x"), ...parked("t4", "acme/app|x"),
       ...parked("t5", "acme/app|y"), filed("t5", "acme/app|y", "rejected"), filed("t5", "acme/app|z", "done"), // refused as parked; approved elsewhere
       ...parked("t6", "acme/app|y"), // closed
-      ...[1, 2, 3, 4, 5].map((h) => rej("t7", "acme/app|y", ago(h))), // parked only an hour ago: its delegator has it
+      ...[10, 20, 30, 40, 50].map((m) => rej("t7", "acme/app|y", minsAgo(m))), // parked only 10 minutes ago: its delegator has it
       ...parked("t8", "acme/app|y"), // re-briefed by its delegator
       ...parked("t9", "acme/app|y"), // its own agent's notes and the kernel's notices only
       ...parked("ta", "acme/app|y"), filed("ta", "acme/app|y", "done"), // the owner approved it since
@@ -160,18 +160,25 @@ test("a branch parked by five judged rejections (MAX_REJECTS) that nothing moved
   assert.match(found[0].reason, /WOR-T1: the AI reviewer rejected acme-app-feat-a 5 times \(parked at 5\) and nothing has moved for 420 min/);
 });
 
-test("a task waiting on the owner's answer over a day, or its delegator's over 6 hours, is raised", async () => {
+test("a task waiting over an hour on its delegator's call or an agent's task handed back to the owner is raised for the Steward to settle; the owner's own conversation is not", async () => {
   const items = [
-    { task: "a", identifier: "WOR-A", reason: "owner_wait", since: minsAgo(25 * 60), attention: [{ who: "owner", why: "owner_wait" }] },
-    { task: "b", identifier: "WOR-B", reason: "owner_wait", since: minsAgo(20 * 60), attention: [{ who: "owner", why: "owner_wait" }] },
-    { task: "c", identifier: "WOR-C", reason: "delegator_wait", since: minsAgo(7 * 60), attention: [{ who: "agent", why: "delegator_wait" }] },
+    { task: "a", identifier: "WOR-A", reason: "owner_wait", since: minsAgo(90), attention: [{ who: "owner", why: "owner_wait" }] },
+    { task: "b", identifier: "WOR-B", reason: "owner_wait", since: minsAgo(40), attention: [{ who: "owner", why: "owner_wait" }] },
+    { task: "c", identifier: "WOR-C", reason: "delegator_wait", since: minsAgo(70), attention: [{ who: "agent", why: "delegator_wait" }] },
     { task: "d", identifier: "WOR-D", reason: "agent_wait", since: minsAgo(50 * 60), attention: [] },
     { task: "e", identifier: "WOR-E", reason: "job_running", since: minsAgo(1), wait_since: minsAgo(30 * 60), attention: [{ who: "owner", why: "owner_wait" }] }, // running, still waiting on the owner
+    // An agent handed its task to the owner two hours ago (WOR-9318).
+    { task: "g", identifier: "WOR-G", reason: "handback", since: minsAgo(120), holder: "owner", attention: [{ who: "owner", why: "handback", ref: "task:g" }] },
+    { task: "h", identifier: "WOR-H", reason: "handback", since: minsAgo(20), holder: "owner", attention: [{ who: "owner", why: "handback", ref: "task:h" }] },
+    // A task the owner made, handed back with its result two hours ago: theirs to read.
+    { task: "i", identifier: "WOR-I", reason: "handback", since: minsAgo(120), holder: "owner", attention: [{ who: "owner", why: "handback", ref: "task:i" }] },
   ];
-  const c = checks({ kernel: { read: async () => ({}), call: async () => ({ tasks: items }) }, apps: async () => [], alerts: async () => [], openKeys: () => [], now: () => NOW });
+  const made = { g: { id: "g", createdByAgentId: "reviewer-manager" }, i: { id: "i", createdByUserId: "u-owner" } };
+  const c = checks({ kernel: { read: async (p) => made[decodeURIComponent(p.split("/").pop())] ?? {}, call: async () => ({ tasks: items }) }, apps: async () => [], alerts: async () => [], openKeys: () => [], now: () => NOW });
   const found = await c.judgement();
-  assert.deepEqual(found.map((i) => i.key), ["a", "c", "e"]);
-  assert.match(found[0].reason, /WOR-A has waited 1500 min on its owner's answer/);
+  assert.deepEqual(found.map((i) => i.key), ["c", "g"]);
+  assert.match(found[0].reason, /WOR-C has waited on its delegator's call for 70 min \(delegator_wait\)/);
+  assert.match(found[1].reason, /WOR-G has sat handed back to the owner for 120 min \(handback\)/);
 });
 
 test("a failed task lookup still raises the incident with the raw id, and is not remembered: the next run reads it again", async () => {
@@ -481,11 +488,11 @@ test("owner notices are marked told only once sent: a failed critical alert, sta
   assert.equal(msgs.length, 1);
 });
 
-test("the Later detectors: an unstarted delegation, a merge or blocker deadlock, ping-pong, duplicates and a Tier 2 card over 24h fire; healthy state is quiet", async () => {
+test("the Later detectors: an unstarted delegation, a merge or blocker deadlock, ping-pong and duplicates fire; healthy state is quiet", async () => {
   const mk = (tasks, o = {}) => {
     const w = world({ tasks, ...o });
     const call = w.call;
-    w.call = async (m, p) => (p.startsWith("/v1/tasks/state?open=1") ? { tasks: o.idle ?? [] } : p.startsWith("/v1/work?since=") && o.cards ? { records: o.cards, usage: [] } : call(m, p));
+    w.call = async (m, p) => (p.startsWith("/v1/tasks/state?open=1") ? { tasks: o.idle ?? [] } : call(m, p));
     return detect(w);
   };
   const delegated = (id, o = {}) => task(id, { parentId: "p", assigneeAgentId: "a1", createdAt: ago(3), ...o });
@@ -507,8 +514,6 @@ test("the Later detectors: an unstarted delegation, a merge or blocker deadlock,
   assert.equal((await mk({ a: open("a", "Fix the login redirect"), b: open("b", "fix the login redirect!"), c: open("c", "Fix the login redirect", { assigneeAgentId: "a2" }) }, { todo: ["a", "b", "c"] }).duplicate()).length, 1);
   assert.deepEqual(await mk({ a: open("a", "Fix the login redirect"), b: open("b", "Fix the logout redirect") }, { todo: ["a", "b"] }).duplicate(), []);
 
-  const card = (id, state, h) => ({ id, kind: "github.merge", state, tier: 2, task: "t", identifier: "WOR-1", created_at: ago(h) });
-  assert.deepEqual((await mk({}, { cards: [card("c1", "owner", 30), card("c2", "owner", 2), card("c3", "approved", 30)] }).card()).map((i) => i.key), ["c1"]);
 });
 
 test("a capacity queue over an hour fires only while computers sit idle; a review stall fires for a card with the AI reviewer over 15 minutes", async () => {
@@ -532,7 +537,7 @@ test("a capacity queue over an hour fires only while computers sit idle; a revie
   assert.match(s[0].reason, /card c1 \(github-merge\) on task wor-1 has been with the AI reviewer for 90 min/);
 });
 
-test("a PR held for code review over 90 minutes with no job fires; an answered wait that never resumed fires an hour after the answer; the owner hears at two hours open", async () => {
+test("a PR held for code review over 90 minutes with no job fires; an answered wait that never resumed fires an hour after the answer; the chief of staff hears at two hours open", async () => {
   const row = (task, o = {}) => ({ task, identifier: `WOR-${task.toUpperCase()}`, since: minsAgo(100), reason: "module_wait", ref: "code_review", holder: "a1", attention: [], idle_wakes: 0, ...o });
   const mk = (rows, tasks = {}, comments = {}, openKeys = []) => {
     const w = world({ tasks, records: [] });
@@ -569,10 +574,10 @@ test("a PR held for code review over 90 minutes with no job fires; an answered w
   assert.deepEqual((await c.unresumed()).map((i) => i.key), ["t24", "t3"], "the next pass starts after the first batch, so t24 is reached; t22 is scanned, unanswered, and recovers");
 });
 
-test("a jammed gate's flag open over two hours tells the owner once, in one fixed line, and not while the Steward is off", async () => {
-  const kv = kvOf(), told = [];
+test("a jammed gate's flag open over two hours goes to the chief of staff once, naming its keys, never to the owner, and not while the Steward is off", async () => {
+  const kv = kvOf(), told = [], owner = [];
   const groups = { gate: async () => [{ key: "a", reason: "x" }], unresumed: async () => [{ key: "b", reason: "x" }], run: async () => [{ key: "c", reason: "x" }] };
-  const at = (h, on = true) => tick(kv, groups, async () => true, async (t) => void told.push(t), new Date(NOW + h * 3600_000), 0, on);
+  const at = (h, on = true) => tick(kv, groups, async () => true, async (t) => void owner.push(t), new Date(NOW + h * 3600_000), 0, on, undefined, async (keys) => void told.push(keys));
   await at(-3);
   assert.equal(told.length, 0, "just raised");
   await at(-1);
@@ -581,24 +586,25 @@ test("a jammed gate's flag open over two hours tells the owner once, in one fixe
   assert.equal(told.length, 0, "past 2 h but the Steward is off");
   await at(0);
   assert.equal(told.length, 1, "on again: told once");
-  assert.match(told[0], /A gate has been jammed for over two hours/);
+  assert.deepEqual(told[0], ["gate:a", "unresumed:b"]);
   await at(1);
   assert.equal(told.length, 1, "once per flag");
+  assert.deepEqual(owner, [], "the owner hears nothing of it");
 });
 
-test("a gate flag open over two hours pages the owner only when nothing acts on its task: a running job or an agent comment restarts the clock", async () => {
+test("a gate flag open over two hours goes to the chief of staff only when nothing acts on its task: a running job or an agent comment restarts the clock", async () => {
   const told = [], kv = kvOf();
   const groups = { gate: async () => ["idle", "running", "held", "spoke", "old"].map((key) => ({ key, reason: "x" })) };
   const w = {
     call: async (_m, p) => ({ tasks: [{ task: "t", since: minsAgo(30), reason: p.includes("ids=running") ? "job_running" : p.includes("ids=held") ? "job_held" : "module_wait", holder: "a1", attention: [], idle_wakes: 0 }] }),
     read: async (p) => (p.includes("/spoke/") ? [{ authorType: "agent", body: "Re-tasked.", createdAt: minsAgo(20) }] : p.includes("/old/") ? [{ authorType: "agent", body: "Looking.", createdAt: minsAgo(150) }] : []),
   };
-  const at = (h) => tick(kv, groups, async () => true, async (t) => void told.push(t), new Date(NOW + h * 3600_000), 0, true, gateActivity({ kernel: w, now: () => NOW + h * 3600_000 }));
+  const at = (h) => tick(kv, groups, async () => true, async () => {}, new Date(NOW + h * 3600_000), 0, true, gateActivity({ kernel: w, now: () => NOW + h * 3600_000 }), async (keys) => void told.push(keys));
   await at(-3);
   await at(0);
   assert.equal(told.length, 1);
   const open = detectorState(kv).open;
-  assert.deepEqual(["idle", "running", "held", "spoke", "old"].filter((k) => open[`gate:${k}`].jammed), ["idle", "held", "old"], "no job and no comment inside the window pages (a capacity hold is no work); a running job or a 20-minute-old comment does not");
+  assert.deepEqual(["idle", "running", "held", "spoke", "old"].filter((k) => open[`gate:${k}`].jammed), ["idle", "held", "old"], "no job and no comment inside the window goes to the chief of staff (a capacity hold is no work); a running job or a 20-minute-old comment does not");
 });
 
 test("quiet start: the detector still checks but files and notifies nothing until the Steward's digest routine is on", async () => {

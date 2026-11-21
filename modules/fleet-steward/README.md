@@ -2,9 +2,12 @@
 
 ## What it does
 
-Keeps the fleet healthy. It watches for stuck or failing runs and for sources and apps going down, reviews other agents'
-outcomes (the Agent Coach), and keeps your notes, the people directory and agents' memory tidy (the Librarian). It
-tunes routing. Every fix goes through the usual approval tiers.
+Keeps the fleet running and unblocked on its own. It watches for stuck or failing runs and for sources and apps going
+down, and settles stuck work itself (role `fleet-settle`): it answers a wait nobody answered, closes finished work, cancels stale or duplicate tasks and hands a task given back to you to the agent that does it. Then it
+fixes why it got stuck (a handbook rule, a product bug, a capability to build). It reviews other agents' outcomes (the
+Agent Coach), keeps your notes, the people directory and agents' memory tidy (the Librarian), and tunes routing. Code,
+handbook and config fixes go through the usual approval tiers. You hear from it only for a sign-in or credential only you
+hold, or a security signal.
 
 ## Connect
 

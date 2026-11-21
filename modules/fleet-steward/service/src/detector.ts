@@ -136,9 +136,10 @@ export const QUIET_MS = 30 * MIN;
 /**
  * One tick: run the checks, open what newly tripped, close what recovered, and file once for whatever is new (incidents and
  * recovery notes together). Marked filed only when the kernel took it; otherwise the next tick tries again. Within `quietMs`
- * of the last filing only a new critical incident files; the rest wait (still unfiled) for a later tick.
+ * of the last filing only a new critical incident files; the rest wait (still unfiled) for a later tick. `jam`: a task for the
+ * chief of staff naming the jammed gates' keys (the Steward didn't clear them), never the owner.
  */
-export async function tick(kv: Kv, checks: Record<string, Check>, file: (body: { incidents: { key: string }[]; recovered: { key: string }[] }) => Promise<boolean>, notify: (text: string) => Promise<void>, now = new Date(), quietMs = 0, stewardOn = true, acting?: (task: string) => Promise<string | undefined>): Promise<void> {
+export async function tick(kv: Kv, checks: Record<string, Check>, file: (body: { incidents: { key: string }[]; recovered: { key: string }[] }) => Promise<boolean>, notify: (text: string) => Promise<void>, now = new Date(), quietMs = 0, stewardOn = true, acting?: (task: string) => Promise<string | undefined>, jam?: (keys: string[]) => Promise<void>): Promise<void> {
   const s = detectorState(kv);
   const at = now.toISOString();
   for (const [group, check] of Object.entries(checks)) {
@@ -161,7 +162,8 @@ export async function tick(kv: Kv, checks: Record<string, Check>, file: (body: {
     if (await notify("The Fleet Steward is unreachable: its health flags have not reached it for a day. Ask Aiden to check the fleet-steward module.").then(() => true, () => false)) for (const o of unheard) o.told = true;
   }
   // A jammed gate (a PR on code review, an approval card with the AI reviewer, an answered wait that never resumed) stays closed for
-  // everyone while it is open, so two hours after it was raised the owner hears one fixed line, whether or not a task carried it.
+  // everyone while it is open, so two hours after it was raised the chief of staff gets a task naming it (the Steward didn't clear
+  // it), whether or not a check task carried it. The owner is not told: an agent settles it.
   // A gate someone is acting on is not jammed: its two hours restart from the last job or agent comment (`acting`).
   const jammed: [string, Open][] = [];
   if (stewardOn) for (const [key, o] of Object.entries(s.open)) {
@@ -170,7 +172,7 @@ export async function tick(kv: Kv, checks: Record<string, Check>, file: (body: {
     const last = task && acting ? await acting(task).catch(() => undefined) : undefined; // an unreadable task has no known activity: the clock decides, as it did before activity counted
     if (Date.parse(at) - Math.max(Date.parse(o.at), Date.parse(last ?? "") || 0) > GATE_ESCALATE_MS) jammed.push([key, o]);
   }
-  if (jammed.length && (await notify("A gate has been jammed for over two hours (a pull request waiting on code review, an approval card with the AI reviewer, or a task that never resumed after its answer) and the Fleet Steward has not cleared it. Ask Aiden to look at the fleet detector.").then(() => true, () => false))) for (const [, o] of jammed) o.jammed = true;
+  if (jammed.length && jam && (await jam(jammed.map(([k]) => k)).then(() => true, () => false))) for (const [, o] of jammed) o.jammed = true;
   const incidents = Object.entries(s.open).filter(([, o]) => !o.fired).map(([key, o]) => ({ key, ...(o.critical ? { critical: true } : {}) }));
   const recovered = s.recovered.filter((r) => !r.fired).map(({ key }) => ({ key }));
   const due = incidents.some((i) => i.critical) || !(Date.parse(at) - Date.parse(kv.get("last_filed") ?? "") < quietMs);
@@ -188,18 +190,20 @@ interface Company { id: string }
 interface AgentRow { id: string; name: string; status: string; lifecycleState?: string; adapterConfig?: { timeoutSec?: number } }
 interface JobRow { id: string; agent: string; task?: string; routine?: string | null; state: string; started_at: string | null; ended_at: string | null; exit?: number | null; timed_out?: boolean; steps?: number; has_final?: boolean }
 interface RoutineRow { id: string; title: string; status: string; triggers?: { kind?: string; enabled?: boolean; label?: string | null; nextRunAt?: string | null }[] }
-interface IssueRow { id: string; identifier?: string; title?: string; status: string; createdAt?: string; parentId?: string | null; priority?: string; updatedAt: string; assigneeUserId?: string | null; assigneeAgentId?: string | null; originKind?: string | null; labels?: ({ name?: string } | null)[] }
+interface IssueRow { id: string; identifier?: string; title?: string; status: string; createdAt?: string; parentId?: string | null; priority?: string; updatedAt: string; assigneeUserId?: string | null; assigneeAgentId?: string | null; createdByAgentId?: string | null; createdByUserId?: string | null; originKind?: string | null; labels?: ({ name?: string } | null)[] }
 interface CommentRow { authorType?: string; authorAgentId?: string | null; body?: string; createdAt: string; deletedAt?: string | null }
 interface WorkRecord { task: string | null; identifier: string | null; state?: string; judged?: boolean; targets?: string[]; decided_at: string | null; created_at?: string }
 
 const HOUR_MS = 60 * MIN;
 // n = the kernel's MAX_REJECTS (tier.ts): the point where a branch is parked and the kernel wakes the task's delegator
-// (escalate.ts); a park nothing moved for quietMs (no new request on the task) is the Steward's.
-const REJECT_LOOP = { n: 5, windowMs: 7 * DAY_MS, quietMs: 6 * HOUR_MS };
+// (escalate.ts); a park nothing moved for quietMs (no new request on the task) is the Steward's to settle.
+const REJECT_LOOP = { n: 5, windowMs: 7 * DAY_MS, quietMs: HOUR_MS };
 /** A record someone said yes to (the kernel's record states past approval). */
 const APPROVED = ["approved", "claimed", "done", "failed", "unknown"];
-// A task waiting on a judgement (task_wait `for`, kernel idle.ts) longer than this: the owner's answer, or its delegator's.
-const JUDGEMENT_WAIT_MS: Record<string, number> = { owner_wait: 24 * HOUR_MS, delegator_wait: 6 * HOUR_MS };
+// A task waiting on someone else's call longer than this is the Steward's to settle: an agent's question to its delegator or the
+// chief of staff (task_wait `for`, kernel idle.ts), or a task an agent made that was handed to the owner. An owner wait is the owner's own conversation (or a part's handoff on their task), never stuck.
+const JUDGEMENT_WAIT_MS = HOUR_MS;
+const JUDGEMENTS: Record<string, string> = { delegator_wait: "waited on its delegator's call", handback: "sat handed back to the owner" };
 const REPEAT_FAILS = { n: 3, spanMs: 30 * MIN, freshMs: HOUR_MS }; // same category on one task within spanMs, the newest within freshMs
 const MERGE_WAIT_MS = 6 * HOUR_MS; // a task waiting on a module (a module_wait: CI, a merge queue, a finish check's hold) this long
 const IDLE_MS = 120 * MIN;
@@ -212,7 +216,6 @@ const SILENT_LOOKBACK_MS = 6 * HOUR_MS; // older than this, the owner has long s
 
 const UNSTARTED_MS = HOUR_MS; // a delegated task assigned to an agent, still todo with no job ever, this long after it was created
 const PING_PONG = { n: 5, spanMs: 12 * HOUR_MS }; // runs of one task that alternate between two agents, all started within spanMs
-const CARD_WAIT_MS = DAY_MS; // a Tier 2 card waiting on the owner this long gets the Steward's one reminder a day
 const QUEUE_MS = HOUR_MS; // an agent's tasks held on capacity this long (the oldest hold), while computers sit idle
 const REVIEW_STALL_MS = 15 * MIN; // a card with the AI reviewer, undecided this long (a review normally takes seconds to a few minutes)
 const REVIEW_GATE_MS = 90 * MIN; // a PR the merge queue holds for code review's verdict with no job on the task, twice a review run's 45-minute limit
@@ -686,15 +689,25 @@ export function checks(d: { kernel: KernelClient; kv: Kv; pause: (routine: strin
       }
       return out;
     },
-    // A task waiting on a judgement past its limit (a day on the owner, 6 hours on its delegator): the ask went unanswered.
+    // A task waiting on someone else's call over an hour (a delegator wait, or an agent's task handed to the
+    // owner): the Steward settles it. A handback is raised only on a task an agent made (read once each, at most MAX_LOOKUPS a
+    // pass): a task the owner made and got back is their own result to read.
     async judgement() {
       const t = now();
+      const read = taskReads();
+      let looked = 0;
       // By attention, not the representative reason: a task also running, queued or on a card still waits on the answer.
       const out: Incident[] = [];
       for (const i of await openStates()) {
-        const why = i.attention.map((a) => a.why).find((w) => JUDGEMENT_WAIT_MS[w] !== undefined);
+        const why = i.attention.map((a) => a.why).find((w) => JUDGEMENTS[w] !== undefined);
         const since = i.wait_since ?? i.since;
-        if (why && age(since, t) > JUDGEMENT_WAIT_MS[why]! && !exempt({ identifier: i.identifier, originKind: null })) out.push({ key: i.task, reason: `task ${i.identifier ?? i.task} has waited ${mins(age(since, t))} on its ${why === "owner_wait" ? "owner's" : "delegator's"} answer` });
+        if (!why || age(since, t) <= JUDGEMENT_WAIT_MS || exempt({ identifier: i.identifier, originKind: null })) continue;
+        if (why === "handback") {
+          if (looked++ >= MAX_LOOKUPS) continue;
+          const task = await read(i.task);
+          if (!task?.createdByAgentId || task.createdByUserId) continue;
+        }
+        out.push({ key: i.task, reason: `task ${i.identifier ?? i.task} has ${JUDGEMENTS[why]} for ${mins(age(since, t))} (${why})` });
       }
       return out;
     },
@@ -734,12 +747,6 @@ export function checks(d: { kernel: KernelClient; kv: Kv; pause: (routine: strin
     async duplicate() {
       const open = (await Promise.all((await companies()).map(async (c) => (await d.kernel.read(`/api/companies/${c.id}/issues?status=todo,in_progress,in_review,blocked&limit=200&excludeRoutineExecutions=true`)) as IssueRow[]))).flat();
       return duplicateTasks(open).map((g) => ({ key: g.key, reason: `tasks ${g.ids.map(slug).join(", ")} are open for the same agent with the same title` }));
-    },
-    // A Tier 2 card on the owner for over 24 hours: the Steward sends the owner one reminder per card per 24 hours (fleet-check).
-    async card() {
-      const t = now();
-      const r = (await d.kernel.call("GET", `/v1/work?since=${encodeURIComponent(new Date(t - 7 * DAY_MS).toISOString())}`)) as { records?: (WorkRecord & { id?: string; kind?: string; tier?: number })[] };
-      return (r.records ?? []).filter((x) => x.state === "owner" && x.tier === 2 && x.id && age(x.created_at, t) > CARD_WAIT_MS).map((x) => ({ key: slug(x.id), reason: `Tier 2 card ${slug(x.kind)} on task ${slug(x.identifier ?? x.task)} has waited ${mins(age(x.created_at, t))} on the owner` }));
     },
     // An agent whose tasks sit held on capacity over an hour while computers idle: the router or admission is misplacing work.
     async queue() {

@@ -11,7 +11,9 @@
 //   write on it; what this action can see it checks again: `own` (assigned to the agent), `child` (its parent is), `created`
 //   (the agent created it), `part` (a new task assigned to the agent itself, under any task). `admin` (the chief of staff's
 //   comment anywhere) and `listed` (a task the grants table names for the agent: its memory inbox, review log or chat) are
-//   the kernel's word alone: a comment, nothing else.
+//   the kernel's word alone: a comment, nothing else. `settle` (a fleet settler, role fleet-settle, on a task an agent made) is
+//   the kernel's word too: a comment, a status or a patch on that task (handing it to the one agent in `delegateTo`), never a
+//   new task.
 // - Writes: a comment; a status from STATUSES (`blocked` names its blockers, as the REST route requires; `done` only with
 //   `gated`, the kernel's word that its finish gate passed); a `patch` of PATCH_KEYS; a new task (`child`: under `issueId`,
 //   or top-level without one) assigned to the caller, to an agent in `delegateTo`, or to a user.
@@ -25,7 +27,7 @@ import { HOST_PARAMS, SKEW_MS, verify } from "./sign.js";
 
 export const STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const PARAMS = ["sig", "ts", "tag", "again", "scope", "issueId", "body", "status", "blockedBy", "gated", "patch", "child", "delegateTo"];
-const SCOPES = ["own", "child", "created", "part", "admin", "listed"];
+const SCOPES = ["own", "child", "created", "part", "admin", "listed", "settle"];
 const PATCH_KEYS = ["title", "description", "priority", "assigneeAgentId", "assigneeUserId", "blockedByIssueIds", "labelIds"];
 const CHILD_KEYS = ["title", "description", "priority", "status", "assigneeAgentId", "assigneeUserId", "labelIds"];
 /** The origin kind of every task this action makes (Paperclip allows a plugin only its own, `plugin:<id>`): the kernel's provenance keys on it. */
@@ -63,6 +65,7 @@ function invalid(p) {
   if (!SCOPES.includes(scope)) return `scope is one of ${SCOPES.join(", ")}`;
   if (p.body === undefined && p.status === undefined && p.child === undefined && p.patch === undefined) return "send a body, a status, a patch or a child";
   if ((scope === "admin" || scope === "listed") && (p.status !== undefined || p.patch !== undefined || p.child !== undefined)) return `scope ${scope} writes a comment only`;
+  if (scope === "settle" && p.child !== undefined) return "scope settle changes a task; it makes none";
   if (scope === "part" && (p.body !== undefined || p.status !== undefined || p.patch !== undefined)) return "scope part makes a task (child) only";
   if (scope === "part" && p.child?.assigneeAgentId === undefined) return "scope part makes a task assigned to the caller";
   if (p.body !== undefined && (typeof p.body !== "string" || !p.body.trim())) return "body must be text";
