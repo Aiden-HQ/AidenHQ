@@ -1368,7 +1368,7 @@ const TOOLS: Record<string, Tool> = {
   },
   task_route: {
     description:
-      "fleet-settle role: put a stuck task back in work. Sets it to todo with your `comment` (what is decided and what to do next), held by `to` (an agent's key or name) or, without `to`, by the agent that holds it now. The comment wakes that agent. Use it to hand a task the owner was handed back to the agent that does the work, or to restart an agent's own task.",
+      "fleet-settle role: put a stuck open task back in work (a closed one, done or cancelled, stays closed). Sets it to todo with your `comment` (what is decided and what to do next), held by `to` (an agent's key or name) or, without `to`, by the agent that holds it now. The comment wakes that agent. Use it to hand a task the owner was handed back to the agent that does the work, or to restart an agent's own task.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1382,8 +1382,9 @@ const TOOLS: Record<string, Tool> = {
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     run: async ({ issue, to, comment }: Args) => {
       await requireRole(SETTLE, "route another agent's task");
-      await refuseMemoryInbox(issue);
       const t = await api("GET", `/api/issues/${issueRef(issue)}`);
+      if (memoryInboxes().has(t.id)) throw new Error("Refused: that task is a memory inbox; only memory_note writes there.");
+      if (["done", "cancelled"].includes(t.status)) throw new Error(`Refused: ${t.identifier ?? issue} is ${t.status}: task_route moves open work only. New work is a new task.`);
       let agent = t.assigneeAgentId;
       if (to) {
         const want = String(to).trim().toLowerCase();

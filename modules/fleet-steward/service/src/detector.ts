@@ -196,7 +196,8 @@ interface WorkRecord { task: string | null; identifier: string | null; state?: s
 
 const HOUR_MS = 60 * MIN;
 // n = the kernel's MAX_REJECTS (tier.ts): the point where a branch is parked and the kernel wakes the task's delegator
-// (escalate.ts); a park nothing moved for quietMs (no new request on the task) is the Steward's to settle.
+// (escalate.ts); a park nothing moved for quietMs (no new request on the task) is the Steward's to settle. An hour is the
+// judgement rule's window too: a delegator that re-briefs does so within its own woken run, so an hour of quiet means nobody will.
 const REJECT_LOOP = { n: 5, windowMs: 7 * DAY_MS, quietMs: HOUR_MS };
 /** A record someone said yes to (the kernel's record states past approval). */
 const APPROVED = ["approved", "claimed", "done", "failed", "unknown"];
@@ -703,9 +704,10 @@ export function checks(d: { kernel: KernelClient; kv: Kv; pause: (routine: strin
         const since = i.wait_since ?? i.since;
         if (!why || age(since, t) <= JUDGEMENT_WAIT_MS || exempt({ identifier: i.identifier, originKind: null })) continue;
         if (why === "handback") {
-          if (looked++ >= MAX_LOOKUPS) continue;
+          // Past the pass's lookups, a handback already open stays open unread; a failed read is unknown, so it is raised.
+          if (looked++ >= MAX_LOOKUPS) { if (d.openKeys().includes(`judgement:${i.task}`)) out.push({ key: i.task, reason: "" }); continue; }
           const task = await read(i.task);
-          if (!task?.createdByAgentId || task.createdByUserId) continue;
+          if (task && !(task.createdByAgentId && !task.createdByUserId)) continue;
         }
         out.push({ key: i.task, reason: `task ${i.identifier ?? i.task} has ${JUDGEMENTS[why]} for ${mins(age(since, t))} (${why})` });
       }
@@ -754,7 +756,7 @@ export function checks(d: { kernel: KernelClient; kv: Kv; pause: (routine: strin
       if (!Array.isArray(w.running) || !(Number(w.capacity) > 0)) return undefined; // not readable: its open incidents stay open
       return capacityQueues((await openStates()).filter((i) => !exempt({ identifier: i.identifier, originKind: null })), w.running.length, Number(w.capacity), now());
     },
-    // A card with the AI reviewer over 15 minutes (Tier 1; a Tier 2 card on the owner is the `card` group's).
+    // A card with the AI reviewer over 15 minutes (Tier 1; a Tier 2 card on the owner is theirs, on their card).
     async "review-stall"() {
       const t = now();
       const r = (await d.kernel.call("GET", `/v1/work?since=${encodeURIComponent(new Date(t - 7 * DAY_MS).toISOString())}`)) as { records?: Parameters<typeof reviewStalls>[0] };

@@ -172,11 +172,13 @@ test("a task waiting over an hour on its delegator's call or an agent's task han
     { task: "h", identifier: "WOR-H", reason: "handback", since: minsAgo(20), holder: "owner", attention: [{ who: "owner", why: "handback", ref: "task:h" }] },
     // A task the owner made, handed back with its result two hours ago: theirs to read.
     { task: "i", identifier: "WOR-I", reason: "handback", since: minsAgo(120), holder: "owner", attention: [{ who: "owner", why: "handback", ref: "task:i" }] },
+    // A handback whose task can't be read now: unknown, so it is raised rather than hidden.
+    { task: "j", identifier: "WOR-J", reason: "handback", since: minsAgo(120), holder: "owner", attention: [{ who: "owner", why: "handback", ref: "task:j" }] },
   ];
   const made = { g: { id: "g", createdByAgentId: "reviewer-manager" }, i: { id: "i", createdByUserId: "u-owner" } };
-  const c = checks({ kernel: { read: async (p) => made[decodeURIComponent(p.split("/").pop())] ?? {}, call: async () => ({ tasks: items }) }, apps: async () => [], alerts: async () => [], openKeys: () => [], now: () => NOW });
+  const c = checks({ kernel: { read: async (p) => { const id = decodeURIComponent(p.split("/").pop()); if (id === "j") throw new Error("control plane 502"); return made[id] ?? {}; }, call: async () => ({ tasks: items }) }, apps: async () => [], alerts: async () => [], openKeys: () => [], now: () => NOW });
   const found = await c.judgement();
-  assert.deepEqual(found.map((i) => i.key), ["c", "g"]);
+  assert.deepEqual(found.map((i) => i.key), ["c", "g", "j"]);
   assert.match(found[0].reason, /WOR-C has waited on its delegator's call for 70 min \(delegator_wait\)/);
   assert.match(found[1].reason, /WOR-G has sat handed back to the owner for 120 min \(handback\)/);
 });

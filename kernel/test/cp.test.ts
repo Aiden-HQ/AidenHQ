@@ -158,6 +158,7 @@ test("the Fleet Steward comments on any task of its company, heard by that task'
 
 test("a fleet settler settles another agent's stuck task: answers its delegator wait, cancels it, re-routes a handback to an agent; never a person's own task, a log task or a non-agent", async (t) => {
   const { h, act, plugin } = await setup(t);
+  h.issues[OTHER].createdByAgentId = LEAD; // another agent's delegation
   // A delegator wait nobody answered (WOR-9094): the settler's comment is the delegator's answer. It ends the wait in the task's
   // state and wakes the task's agent (the op tag).
   let r = await act("settler", "POST", "/api/issues/WOR-2/comments", { body: "Decided: ship it as is; the reviewer's note is out of scope." });
@@ -184,7 +185,10 @@ test("a fleet settler settles another agent's stuck task: answers its delegator 
   assert.equal(mine.status, 201);
   r = await act("settler", "PATCH", `/api/issues/${mine.json.id}`, { status: "todo", assigneeAgentId: BO, comment: "Yours: the queue is your team's." });
   assert.deepEqual([r.status, h.issues[mine.json.id].assigneeAgentId], [200, BO]);
-  // Finished work of another agent is closed by the settler, through the finish gate (its own close otherwise refused).
+  // Work still in progress is never closed over its agent; once it waits in review, the settler closes it through the finish gate.
+  r = await act("settler", "PATCH", `/api/issues/${mine.json.id}`, { status: "done", comment: "Landed: the queue drained." });
+  assert.deepEqual([r.status, h.issues[mine.json.id].status], [403, "todo"]);
+  h.issues[mine.json.id].status = "in_review";
   r = await act("settler", "PATCH", `/api/issues/${mine.json.id}`, { status: "done", comment: "Landed: the queue drained." });
   assert.deepEqual([r.status, h.issues[mine.json.id].status], [200, "done"]);
   assert.equal((await act("ada", "PATCH", "/api/issues/WOR-5", { status: "done" })).status, 403);
@@ -192,6 +196,8 @@ test("a fleet settler settles another agent's stuck task: answers its delegator 
   r = await act("settler", "PATCH", "/api/issues/WOR-5", { assigneeAgentId: "99999999-9999-4999-8999-999999999999" });
   assert.equal(r.status, 400);
   // A task a person made stays theirs, and a log task takes comments only.
+  // A task no agent made (no creator on record) is not the settler's either.
+  assert.equal((await act("settler", "PATCH", "/api/issues/WOR-1", { status: "cancelled" })).status, 403);
   r = await act("settler", "PATCH", "/api/issues/WOR-6", { status: "cancelled" });
   assert.equal(r.status, 403);
   assert.equal(h.issues[MINE].status, "todo");

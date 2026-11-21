@@ -12,8 +12,8 @@
 //   task of its company; an agent comments on the tasks the
 //   grants table names for it (memory inbox, review log, chat), on the shared "Fleet issues" log task (grants `fleet_issues`),
 //   and a librarian on every memory inbox. A fleet settler (role fleet-settle, the Fleet Steward) settles stuck work on any
-//   task of its company an agent made (scope `settle`): a comment, a status (done through the finish gate, heard as the task's
-//   own close), and handing the task to any agent; never a task a person
+//   task of its company an agent made (scope `settle`): a comment, a status (done only on a task in review, through the finish
+//   gate, heard as the task's own close), and handing the task to any agent; never a task a person
 //   made (the owner's own task or chat) and never a log task. Anything else is
 //   refused, naming whom to ask. Each write carries a tag (the plugin's once-only key): on the job's own task and the tasks its
 //   grants list the job tag (wakes.ts SELF_TAG: it wakes nobody), elsewhere `aidenhq:op=`, which wakes the task's assignee as any
@@ -148,7 +148,7 @@ export function createCp({ whoami, asserter, plugin, once, agentKey, grants, fle
       return roles.includes("fleet-admin") || roles.includes("fleet-audit") ? "admin" : undefined;
     };
     /** A task a fleet settler may change: one an agent made (never a person's own task or chat), and not a log task. */
-    const settleScope = (t: Issue) => (roles.includes(SETTLE) && !isLogTask(t, logs) && !t.createdByUserId ? "settle" : undefined);
+    const settleScope = (t: Issue) => (roles.includes(SETTLE) && !isLogTask(t, logs) && t.createdByAgentId && !t.createdByUserId ? "settle" : undefined);
     const refuse = (t: Issue): never => {
       const who = t.assigneeAgentId ? `its assignee (${keyOf(t.assigneeAgentId)})` : "the owner";
       throw fail(403, "forbidden", `${t.identifier ?? t.id} isn't yours to change: ask ${who} or the chief of staff to pass it on`);
@@ -243,8 +243,10 @@ export function createCp({ whoami, asserter, plugin, once, agentKey, grants, fle
     let gated = false;
     if (status === "done") {
       // The finish gate. Only this job's own task, one this job's agent holds (an orphaned routine run's), or, for a fleet settler,
-      // a task it may settle is finished here; the checks hear the close as the task's own.
-      if (t.id !== task && t.assigneeAgentId !== agent && !settling) throw fail(403, "forbidden", `only this job's own task is finished here; ${t.identifier ?? t.id} is finished by its assignee`);
+      // a task it may settle that waits in review (finished work nobody closed; work still in progress is cancelled or routed,
+      // never closed over its agent) is finished here; the checks hear the close as the task's own.
+      const own = t.id === task || t.assigneeAgentId === agent;
+      if (!own && !(settling && t.status === "in_review")) throw fail(403, "forbidden", `only this job's own task is finished here; ${t.identifier ?? t.id} is finished by its assignee${settling ? " (a settler closes another agent's task only once it waits in review)" : ""}`);
       if (checks) {
         const tool = String(c.tool ?? "").split(".").pop()!;
         const f = await checks.finish(t.id, { agent, tool, via: tool });
