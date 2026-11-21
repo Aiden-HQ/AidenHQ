@@ -73,7 +73,9 @@ export async function plan(api: Api, input: SetupArgs, leak?: (text: string) => 
       target: `${a.repo} ${a.branch}`,
       sentence: add.length
         ? `Add ${add.length} setup file${add.length === 1 ? "" : "s"} (${add.join(", ")}) to ${a.repo} on \`${a.branch}\` (${s.tip ? `from its tip ${s.tip.slice(0, 12)}` : `new, off ${s.def} at ${s.head.slice(0, 12)}`}) and open a pull request "${a.title}" into ${s.def}. Nothing is merged; files the repo already has are never overwritten.`
-        : `Open a pull request "${a.title}" from \`${a.branch}\` into ${s.def} on ${a.repo}: every setup file is already there, so no commit is made.`,
+        : s.tip
+        ? `Open a pull request "${a.title}" from \`${a.branch}\` into ${s.def} on ${a.repo}: every setup file is already there, so no commit is made.`
+        : `Nothing to do on ${a.repo}: ${s.def} already has every setup file, so no branch and no pull request are made.`,
       diff,
     },
   };
