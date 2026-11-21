@@ -53,7 +53,9 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
           // Replayed later: still the task and evidence the grader saw? Else the verdict is stale: drop the close and the notice,
           // and send the row back to waiting so the next pass grades what is there now.
           const now = await pc.issue(task);
-          if (now.status !== "done" && (now.status !== s.status || (s.version && (await gather(s.deliverable, gradeDeps(now), s.rubric)).version !== s.version))) {
+          // An empty recorded version (no deliverable then) is stale once one appears.
+          const found = now.status === "done" || now.status !== s.status ? "" : (await gather(s.deliverable, gradeDeps(now), s.rubric)).version ?? "";
+          if (now.status !== "done" && (now.status !== s.status || (s.version ? found !== s.version : Boolean(found)))) {
             log("a satisfied verdict is stale: not closed", { issue: task });
             await api.post(`/internal/grades/${encodeURIComponent(task)}/verdict`, { version: "", outcome: "awaiting_evidence" });
             steps.length = 1;

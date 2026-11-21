@@ -40,12 +40,14 @@ const RESUME: Record<string, string> = {
   // follow() below: the retry of a run that didn't get to finish (kernel wakes.ts schedule prefixes a module's cause).
   "scheduled: retry": "Your last run on this task ended before finishing (its computer or the kernel went away)",
 };
-// A job that didn't get to finish for want of its machinery is retried for as long as its task is open, each time later (doubling,
-// up to MAX_RETRY_MS), and whoever asked is not told: one that never started (the kernel couldn't launch it: no box, a launcher error), one lost while
+// A job that didn't get to finish for want of its machinery is retried each time later (doubling, up to MAX_RETRY_MS), and whoever asked is not told, for as long as its task is open when it
+// never started (that costs nothing), else up to MAX_RAN_TRIES: one that never started (the kernel couldn't launch it: no box, a launcher error), one lost while
 // no kernel followed it (a reboot), or one killed by a signal it didn't send itself (its computer went away, an OOM kill). A run
 // that exited with an error of its own is not: the same run would fail the same way, so its notice goes out at once.
 const RETRY_MS = 2 * 60_000;
 const MAX_RETRY_MS = 30 * 60_000;
+// A run that ran costs model spend: one that keeps ending unfinished is retried this many times, then its notice goes out and it is dropped.
+const MAX_RAN_TRIES = 6;
 const retryIn = (tries: number) => Math.min(RETRY_MS * 2 ** (tries - 1), MAX_RETRY_MS);
 /** A job the kernel couldn't start: it ended failed with no exit code (admission.ts); a run that ran always has one. */
 const neverStarted = (j: { state: string; exit: number | null }) => j.state === "failed" && j.exit == null;
@@ -228,7 +230,7 @@ export function createDispatch({ kernel, db, owner, log = () => {}, now = Date.n
           // left blocked or handed back to the owner waits on them, not on a retry.
           const t = await kernel.task(v.task);
           const open = neverStarted(v) ? !CLOSED.has(String(t.status)) : ["todo", "in_progress"].includes(String(t.status)) && Boolean(t.assigneeAgentId);
-          if (open) {
+          if (open && (neverStarted(v) || tries < MAX_RAN_TRIES)) {
             await kernel.schedule({ task: v.task, at: Date.now() + retryIn(tries), cause: "retry", id: `retry.${v.id}` });
             await kernel.ack(v.id);
             log("job didn't finish: retried later", { job: v.id, task: v.task, state: v.state, exit: v.exit, tries, why: v.final.slice(0, 200) });

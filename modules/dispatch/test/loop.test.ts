@@ -984,6 +984,18 @@ test("a job that couldn't start is retried later and later, with no cap, and nob
   assert.deepEqual(k.posts, []);
 });
 
+test("a run that ran and was lost is tried six times at most, then its notice goes out", async () => {
+  const k = fake({ task: { id: "t1", identifier: "WOR-1", title: "Fix", description: "Do it", status: "in_progress", assigneeAgentId: "eng", createdByUserId: "u1" } });
+  for (let n = 1; n <= 6; n++) {
+    k.inbox.push(wake(`issue:t1:${n}`, "assigned"));
+    await k.dispatch.tick();
+    Object.assign(k.jobs.get(`j${n}`), { state: "lost", exit: null, final: "", ended: Date.now() });
+    await k.dispatch.tick();
+  }
+  assert.equal(k.scheduled.length, 5);
+  assert.equal(k.posts.length, 1, "the notice, once");
+});
+
 test("a run its machinery ended (lost, or killed by a signal) comes back as a resumed run; a run's own error doesn't", async () => {
   const comments = [];
   const k = fake({ task: { id: "t1", identifier: "WOR-1", title: "Fix", description: "Do it", status: "in_progress", assigneeAgentId: "eng", createdByUserId: "u1" }, comments });
