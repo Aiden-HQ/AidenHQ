@@ -10,7 +10,7 @@ import { withFooter } from "./aidenhq-sdk/attribution.js";
 import type { GitHubAccess } from "./client.js";
 import { GitHub, GitHubRefused, objectRef, type Ref } from "./github.js";
 import {
-  FINDING_MARK, ACK_MARK, RULING_MARK, comboText, NoticeArgsSchema, PostArgsSchema, RulingArgsSchema, RUN_MARK, STATUS_CONTEXT, StatusArgsSchema, anchors, counts, renderNotice,
+  FINDING_MARK, RULING_MARK, comboText, NoticeArgsSchema, PostArgsSchema, RulingArgsSchema, RUN_MARK, STATUS_CONTEXT, StatusArgsSchema, anchors, counts, renderNotice,
   renderReview, renderRuling, renderStatus, rightLines, type NoticeArgs, type PostArgs, type StatusArgs,
 } from "./review-render.js";
 
@@ -35,6 +35,8 @@ export interface Thread {
   ours: boolean;
   author: string;
   url: string;
+  /** The run whose file comment this is (its run marker), or null. */
+  run: string | null;
   /** Replies, oldest first, as data (untrusted text); `ruling`: Aiden's own answer to a dispute (its marker, posted as the owner). */
   replies: { id: number; author: string; body: string; ruling: boolean }[];
 }
@@ -48,6 +50,7 @@ function target(a: PostArgs): PostArgs {
   if (r.repo.toLowerCase() !== a.repo.toLowerCase() || r.pr !== a.pr || r.head !== a.head) throw new GitHubRefused(`the review is of ${r.repo}#${r.pr} at ${r.head.slice(0, 12)}, not ${a.repo}#${a.pr} at ${a.head.slice(0, 12)}`);
   return a;
 }
+const RUN_RE = /<!-- aidenhq-review-run: ([A-Za-z0-9_.-]{1,64}) -->/;
 const norm = (login: string) => login.toLowerCase().replace(/\[bot\]$/, "");
 const split = (repo: string): Ref => { const [owner, name] = repo.split("/"); return { owner: owner!, repo: name!, number: 0 }; };
 const api = (r: Ref) => `/repos/${r.owner}/${r.repo}`;
@@ -75,7 +78,7 @@ export class ReviewPoster {
         const finding = FINDING_MARK.exec(first.body)?.[1] ?? null;
         const author = first.author?.login ?? "";
         out.push({
-          id: n.id, comment: first.databaseId, resolved: n.isResolved, outdated: n.isOutdated, path: n.path, line: n.line, finding, ours: finding !== null && norm(author) === me, author, url: first.url,
+          id: n.id, comment: first.databaseId, run: RUN_RE.exec(first.body)?.[1] ?? null, resolved: n.isResolved, outdated: n.isOutdated, path: n.path, line: n.line, finding, ours: finding !== null && norm(author) === me, author, url: first.url,
           replies: rest.map((c) => ({ id: c.databaseId, author: c.author?.login ?? "", body: c.body.slice(0, 2000), ruling: c.body.includes(RULING_MARK) && norm(c.author?.login ?? "") === norm(author) })),
         });
       }
@@ -85,8 +88,8 @@ export class ReviewPoster {
     return out;
   }
 
-  /** Resolves the listed threads that are Aiden's own and still open; the others are reported, never touched. */
-  async resolve(ref: Ref, wanted: { thread_ids?: string[]; finding_ids?: string[] }, mine: (t: Thread) => boolean = (t) => t.ours): Promise<{ resolved: string[]; skipped: { thread: string; why: string }[] }> {
+  /** Resolves the listed threads that are Aiden's own (`mine`: the service's record) and still open; the others are reported, never touched. */
+  async resolve(ref: Ref, wanted: { thread_ids?: string[]; finding_ids?: string[] }, mine: (t: Thread) => boolean): Promise<{ resolved: string[]; skipped: { thread: string; why: string }[] }> {
     const all = (await this.threads(ref)).map((t) => ({ ...t, ours: mine(t) }));
     const resolved: string[] = [];
     const skipped: { thread: string; why: string }[] = [];
@@ -96,7 +99,7 @@ export class ReviewPoster {
     for (const [id, missing] of picks) {
       const t = all.find((x) => x.id === id);
       if (!t) skipped.push({ thread: id, why: missing });
-      else if (!t.ours) skipped.push({ thread: id, why: "not Aiden's thread (a person's)" });
+      else if (!t.ours) skipped.push({ thread: id, why: "not a thread code review recorded as its own" });
       else if (t.resolved) skipped.push({ thread: id, why: "already resolved" });
       else { await this.gh.graphql("resolveThread", { thread: id }); resolved.push(id); }
     }
@@ -118,22 +121,17 @@ export class ReviewPoster {
   }
 
   /**
-   * The acknowledgement comment, edited in place (found by its marker among the owner's comments AidenHQ's records hold), or
-   * made: its link and its ref for the records.
+   * The acknowledgement comment: the one the code-review service recorded from an earlier outcome (`id`, its database, never a
+   * marker read back: every fleet write posts as the same login), edited in place; else (none yet, or deleted) a new one.
    */
-  private async ack(ref: Ref, who: Who, text: string): Promise<{ url: string; object: string }> {
+  private async ack(ref: Ref, text: string, id?: number): Promise<{ id: number; url: string; object: string }> {
     const signed = withFooter(text, AGENT);
-    for (let page = 1; page <= 10; page++) {
-      const cs = await this.gh.request<{ id: number; html_url: string; body?: string; user?: { login: string } }[]>("GET", `${api(ref)}/issues/${ref.number}/comments`, { query: { per_page: 100, page } });
-      for (const c of cs) {
-        if (!c.body?.includes(ACK_MARK) || norm(c.user?.login ?? "") !== norm(who.login)) continue;
-        await this.gh.request("PATCH", `${api(ref)}/issues/comments/${c.id}`, { body: { body: signed } });
-        return { url: c.html_url, object: `${objectRef(ref)}/comment/${c.id}` };
-      }
-      if (cs.length < 100) break;
+    if (id) {
+      const ok = await this.gh.request<{ html_url: string }>("PATCH", `${api(ref)}/issues/comments/${id}`, { body: { body: signed } }).catch((e: Error) => { if (/\b404\b/.test(e.message)) return undefined; throw e; });
+      if (ok) return { id, url: ok.html_url, object: `${objectRef(ref)}/comment/${id}` };
     }
     const made = await this.gh.request<{ id: number; html_url: string }>("POST", `${api(ref)}/issues/${ref.number}/comments`, { body: { body: signed } });
-    return { url: made.html_url, object: `${objectRef(ref)}/comment/${made.id}` };
+    return { id: made.id, url: made.html_url, object: `${objectRef(ref)}/comment/${made.id}` };
   }
 
   /** What the card shows and the record binds to, from the args alone (no GitHub call: the plan must come out the same each time). */
@@ -224,8 +222,8 @@ export class ReviewPoster {
     const ref = { ...split(n.repo), number: n.pr };
     const who = await this.identity();
     await this.pull(ref, who);
-    const ack = await this.ack(ref, who, renderNotice(n));
-    return { ok: true, text: JSON.stringify({ identity: "owner", login: who.login, ack: ack.url }), objects: [ack.object] };
+    const ack = await this.ack(ref, renderNotice(n), n.ack);
+    return { ok: true, text: JSON.stringify({ identity: "owner", login: who.login, ack: ack.url, ack_id: ack.id }), objects: [ack.object] };
   }
 
   /** The commit status `aidenhq/review` on the head: code review's verdict mirrored (the service writes only on a change). */
@@ -265,9 +263,11 @@ export class ReviewPoster {
     // Its inline comments (each thread's first comment) by finding, for the links and AidenHQ's records.
     const mine = await this.gh.request<{ id: number; html_url: string; body?: string }[]>("GET", `${api(ref)}/pulls/${ref.number}/reviews/${review.id}/comments`, { query: { per_page: 100 } });
     const made = mine.map((c) => ({ id: c.id, url: c.html_url, finding: FINDING_MARK.exec(c.body ?? "")?.[1] }));
+    // File comments an earlier attempt of this run made (its run marker): theirs to report again, so the service records them.
+    for (const t of threads) if (t.run === a.run && t.finding && norm(t.author) === norm(who.login)) made.push({ id: t.comment, url: t.url, finding: t.finding });
     // A finding on a file without diff lines takes a file comment (its own thread, outside the review).
     for (const c of first.comments.filter((x) => x.file)) {
-      const f = await this.gh.request<{ id: number; html_url: string }>("POST", `${api(ref)}/pulls/${ref.number}/comments`, { body: { commit_id: r.head, path: c.path, subject_type: "file", body: withFooter(c.body, AGENT) } });
+      const f = await this.gh.request<{ id: number; html_url: string }>("POST", `${api(ref)}/pulls/${ref.number}/comments`, { body: { commit_id: r.head, path: c.path, subject_type: "file", body: withFooter(`${RUN_MARK(a.run)}\n${c.body}`, AGENT) } });
       made.push({ id: f.id, url: f.html_url, finding: c.id });
     }
     const links = new Map(made.filter((m) => m.finding).map((m) => [m.finding!, m.url]));
@@ -280,7 +280,7 @@ export class ReviewPoster {
     const own = new Set(a.own);
     const done = current ? await this.resolve(ref, { finding_ids: a.resolve.filter((id) => !present.has(id)) }, (t) => own.has(t.comment)) : { resolved: [], skipped: [] };
     const c = counts(r.findings);
-    const ack = current ? await this.ack(ref, who, `${renderNotice({ repo: r.repo, pr: r.pr, head: r.head, phase: "done", engine: r.engine, model: r.model, effort: r.effort, ...c, cost_usd: r.cost_usd, run: a.run })}\n[The review](${review.html_url})`) : undefined;
-    return { ok: true, text: JSON.stringify({ identity: "owner", login: who.login, review: review.html_url, inline: made.length, listed: first.listed.length, earlier: earlier.size, resolved: done.resolved.length, skipped: done.skipped, ...(ack ? { ack: ack.url } : {}), comments: made.map((m) => m.id) }), objects: [...made.map((m) => `${objectRef(ref)}/comment/${m.id}`), ...(ack ? [ack.object] : [])] };
+    const ack = current ? await this.ack(ref, `${renderNotice({ repo: r.repo, pr: r.pr, head: r.head, phase: "done", engine: r.engine, model: r.model, effort: r.effort, ...c, cost_usd: r.cost_usd, run: a.run })}\n[The review](${review.html_url})`, a.ack) : undefined;
+    return { ok: true, text: JSON.stringify({ identity: "owner", login: who.login, review: review.html_url, inline: made.length, listed: first.listed.length, earlier: earlier.size, resolved: done.resolved.length, skipped: done.skipped.slice(0, 10), ...(ack ? { ack: ack.url, ack_id: ack.id } : {}), comments: made.map((m) => m.id) }), objects: [...made.map((m) => `${objectRef(ref)}/comment/${m.id}`), ...(ack ? [ack.object] : [])] };
   }
 }

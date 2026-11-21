@@ -105,6 +105,10 @@
     "focus_cleared",
     "no_review"
    ]
+  },
+  "ack": {
+   "type": "integer",
+   "minimum": 1
   }
  }
 }

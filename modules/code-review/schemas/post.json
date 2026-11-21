@@ -257,6 +257,10 @@
     "type": "integer",
     "minimum": 1
    }
+  },
+  "ack": {
+   "type": "integer",
+   "minimum": 1
   }
  }
 }

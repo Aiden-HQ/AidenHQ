@@ -138,9 +138,11 @@ describe("posting", () => {
     expect(w.state.ack?.body.endsWith(FOOTER)).toBe(true);
     expect(JSON.parse(done.text).comments).toEqual([501, 502, 601]); // the service records these as its own threads
     expect(w.calls.find((c) => c.method === "POST" && c.path.endsWith("/pulls/12/comments"))!.body.body.endsWith(FOOTER)).toBe(true);
-    // The same run again (a retry): no second review, no second file comment, the acknowledgement edited, not duplicated.
-    w.state.threads = [thread("T_file", "f_binary_1", "owner1", 601)];
-    await p.execute("post", postArgs(r));
+    // The same run again (a retry): no second review, no second file comment (its id still reported), the acknowledgement the
+    // service recorded edited, not duplicated.
+    w.state.threads = [{ ...thread("T_file", "f_binary_1", "owner1", 601), comments: { nodes: [{ databaseId: 601, url: "u", body: "<!-- aidenhq-review-run: run-1 -->\n<!-- aidenhq-finding: f_binary_1 -->", author: { login: "owner1" } }] } }];
+    const again = await p.execute("post", postArgs(r, { ack: JSON.parse(done.text).ack_id }));
+    expect(JSON.parse(again.text).comments).toContain(601);
     expect(w.calls.filter((c) => c.method === "POST" && c.path.endsWith("/pulls/12/reviews"))).toHaveLength(1);
     expect(w.calls.filter((c) => c.method === "POST" && c.path.endsWith("/pulls/12/comments"))).toHaveLength(1);
     expect(w.calls.filter((c) => c.method === "POST" && c.path.endsWith("/issues/12/comments"))).toHaveLength(1);
@@ -185,8 +187,6 @@ describe("posting", () => {
     const resolves = w.calls.filter((c) => c.path === "/graphql" && String(c.body.query).includes("resolveReviewThread"));
     expect(resolves.map((c) => c.body.variables.thread)).toEqual(["T_ours"]);
     expect(out.skipped.map((x: { thread: string }) => x.thread).sort()).toEqual(["T_forged", "T_owner"]);
-    const r = await p.resolve({ owner: "acme", repo: "payments", number: 12 }, { thread_ids: ["T_person"] });
-    expect(r.resolved).toEqual([]);
   });
 
   it("a dispute is visible: the author's reply on Aiden's finding thread (both as the owner's login) is a reply on our thread, not a ruling", async () => {

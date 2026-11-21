@@ -125,7 +125,7 @@ export function createEngine(d: EngineDeps) {
   }
   db.exec(DDL);
   // Columns added after data_version 1, kept on the data there is.
-  for (const [table, col, type] of [["runs", "box_at", "TEXT"], ["prs", "close_due", "INTEGER NOT NULL DEFAULT 0"], ["runs", "mandatory", "INTEGER NOT NULL DEFAULT 0"], ["runs", "complete", "INTEGER"], ["findings", "why", "TEXT"], ["findings", "evidence", "TEXT"], ["runs", "post_tries", "INTEGER NOT NULL DEFAULT 0"], ["runs", "post_due", "INTEGER"], ["prs", "status_key", "TEXT"]] as const)
+  for (const [table, col, type] of [["runs", "box_at", "TEXT"], ["prs", "close_due", "INTEGER NOT NULL DEFAULT 0"], ["runs", "mandatory", "INTEGER NOT NULL DEFAULT 0"], ["runs", "complete", "INTEGER"], ["findings", "why", "TEXT"], ["findings", "evidence", "TEXT"], ["runs", "post_tries", "INTEGER NOT NULL DEFAULT 0"], ["runs", "post_due", "INTEGER"], ["prs", "status_key", "TEXT"], ["prs", "ack", "INTEGER"]] as const)
     if (!(db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).some((c) => c.name === col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${type}`);
   // A start a restart cut off (running, no check job yet) is queued again.
   db.prepare("UPDATE runs SET status = 'queued', started = NULL, attempts = 0, billed_prior = 0 WHERE status = 'running' AND check_job IS NULL").run();
@@ -141,7 +141,14 @@ export function createEngine(d: EngineDeps) {
   const prRow = (repo: string, n: number) => one<{ repo: string; number: number; head: string; base: string; last_reviewed_head: string | null; mode: string; focus: string | null; author: string; draft: number; fork: number; open: number; last_reviewed_base: string | null; title: string | null }>("SELECT * FROM prs WHERE repo = ? AND number = ?", repo, n);
   const runRow = (id: string) => one<RunRow>("SELECT * FROM runs WHERE id = ?", id);
   const subject = (repo: string, n: number) => `pr:${repo}#${n}`;
-  const ack = (a: Ack) => d.poster.ack(a).catch((e) => log("ack not posted", { repo: a.repo, pr: a.number, state: a.state, err: String((e as Error).message).slice(0, 200) }));
+  /** The acknowledgement comment each PR has (recorded from an outcome, never found by its marker), and notices still settling. */
+  const ackOf = (repo: string, n: number) => one<{ ack: number | null }>("SELECT ack FROM prs WHERE repo = ? AND number = ?", repo, n)?.ack ?? undefined;
+  const acked = (repo: string, n: number, o: Posted | undefined) => {
+    if (o?.state === "pending" && o.write) acking.set(o.write, { repo, number: n });
+    if (o?.state === "posted" && o.ack) run("UPDATE prs SET ack = ? WHERE repo = ? AND number = ?", o.ack, repo, n);
+  };
+  const acking = new Map<string, { repo: string; number: number }>();
+  const ack = (a: Ack) => d.poster.ack({ ...a, ack: ackOf(a.repo, a.number) }).then((o) => acked(a.repo, a.number, o)).catch((e) => log("ack not posted", { repo: a.repo, pr: a.number, state: a.state, err: String((e as Error).message).slice(0, 200) }));
 
   function upsertPr(p: PullRequest) {
     run(`INSERT INTO prs (repo, number, head, base, updated, author, draft, fork, open, title) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -161,7 +168,10 @@ export function createEngine(d: EngineDeps) {
     const due = o.due ?? now();
     if (kind === "auto") {
       // The push they were for is superseded; a retry that already spent keeps its charge, as a skipped run.
-      run("UPDATE runs SET status = 'skipped', why = 'superseded: a newer push', ended = ?, cost_usd = billed_prior WHERE repo = ? AND number = ? AND kind = 'auto' AND status = 'queued' AND billed_prior > 0", iso(), p.repo, p.number);
+      for (const q of all<RunRow>("SELECT * FROM runs WHERE repo = ? AND number = ? AND kind = 'auto' AND status = 'queued' AND billed_prior > 0", p.repo, p.number)) {
+        run("UPDATE runs SET status = 'skipped', why = 'superseded: a newer push', ended = ?, cost_usd = billed_prior WHERE id = ?", iso(), q.id);
+        end(runRow(q.id)!);
+      }
       run("DELETE FROM runs WHERE repo = ? AND number = ? AND kind = 'auto' AND status = 'queued'", p.repo, p.number);
     }
     const batch = `b-${randomBytes(6).toString("hex")}`;
@@ -354,7 +364,13 @@ export function createEngine(d: EngineDeps) {
     // A result for a head the PR has moved on from is kept for analysis, never applied: its findings and fixes belong to an old head.
     // The PR's head as GitHub has it now (a push since the last poll supersedes this result too); the last poll's when it can't say.
     const pr = prRow(r.repo, r.number);
-    const now_ = pr?.open ? await d.source.get(r.repo, r.number).then((x) => (x.open ? x.head : pr.head)).catch(() => pr.head) : pr?.head;
+    // Unreadable now: the run stays running and the next tick finishes it again (nothing is applied on a guess).
+    let now_ = pr?.head;
+    if (pr?.open) {
+      const x = await d.source.get(r.repo, r.number).catch(() => undefined);
+      if (!x) return void log("finished review not applied yet: its PR's head can't be read now; the next tick asks again", { run: r.id });
+      if (x.open) now_ = x.head;
+    }
     const stale = !!pr && pr.open && now_ !== r.head;
     tx(() => {
       run("INSERT OR REPLACE INTO reviews (run, json) VALUES (?, ?)", r.id, JSON.stringify(review));
@@ -391,9 +407,12 @@ export function createEngine(d: EngineDeps) {
       if (!merged) return done("skipped", "closed");
     }
     const posted = await publish(r, review);
-    done(posted.state === "refused" ? "failed" : "done", posted.state === "refused" ? `not posted: ${posted.why ?? "refused"}` : null, posted.state);
+    // A refusal it files again ends as done (its review is complete; only its post is pending again), never failed then done.
+    const again = retries(r, posted);
+    done(posted.state === "refused" && !again ? "failed" : "done", posted.state === "refused" && !again ? `not posted: ${posted.why ?? "refused"}` : null, posted.state);
     afterPost(runRow(r.id)!, posted);
   }
+  const retries = (r: RunRow, o: Posted) => o.state === "refused" && !!o.retry && !r.post_tries;
 
   /** Files the run's post (a Tier 1 write): its review, on the head it reviewed. */
   async function publish(r: RunRow, review: Review): Promise<Posted> {
@@ -401,8 +420,9 @@ export function createEngine(d: EngineDeps) {
     const cfg = repoCfg(r.repo);
     let posted: Posted;
     try {
+      const ack = ackOf(r.repo, r.number);
       const own = all<{ comment: number }>("SELECT comment FROM comments WHERE repo = ? AND number = ? ORDER BY comment DESC LIMIT 1000", r.repo, r.number).map((c) => c.comment);
-      posted = await d.poster.post({ run: r.id, target: { repo: r.repo, number: r.number, head: r.head, once: ownTask(r) }, review, previous: previous ? JSON.parse(previous.json) : null, gated: !!cfg && gated(cfg) && !!r.mandatory, own });
+      posted = await d.poster.post({ run: r.id, target: { repo: r.repo, number: r.number, head: r.head, once: ownTask(r) }, review, previous: previous ? JSON.parse(previous.json) : null, gated: !!cfg && gated(cfg) && !!r.mandatory, own, ...(ack ? { ack } : {}) });
     } catch (e) {
       posted = { state: "refused", why: String((e as Error).message).slice(0, 200), retry: true };
     }
@@ -414,7 +434,7 @@ export function createEngine(d: EngineDeps) {
    * dropped for a restart or a GitHub hiccup); otherwise it is settled. */
   function afterPost(r: RunRow, o: Posted) {
     if (o.state === "pending") return;
-    if (o.state === "refused" && o.retry && !r.post_tries) {
+    if (retries(r, o)) {
       log("review post refused; filing it once more", { run: r.id, why: String(o.why ?? "").slice(0, 200) });
       return void run("UPDATE runs SET status = 'done', posted = 'retry', why = ?, post_tries = 1, post_due = ? WHERE id = ?", `posting again: ${String(o.why ?? "refused").slice(0, 300)}`, now() + POST_RETRY, r.id);
     }
@@ -450,6 +470,7 @@ export function createEngine(d: EngineDeps) {
   function settled(r: RunRow, o: Posted) {
     if (o.state === "posted") {
       // The comments it opened: what makes a thread Aiden's own (a dispute, a resolve), never a marker read back from GitHub.
+      if (o.ack) run("UPDATE prs SET ack = ? WHERE repo = ? AND number = ?", o.ack, r.repo, r.number);
       for (const c of o.comments ?? []) run("INSERT OR IGNORE INTO comments (repo, number, comment, run) VALUES (?, ?, ?, ?)", r.repo, r.number, c, r.id);
       run("UPDATE runs SET review_url = ?, resolved = ?, identity = ? WHERE id = ?", o.url ?? null, o.resolved ?? null, o.identity ?? null, r.id);
       landed(r);
@@ -635,6 +656,12 @@ export function createEngine(d: EngineDeps) {
     }
     for (const r of all<RunRow>("SELECT * FROM runs WHERE posted = 'pending' AND write_id IS NOT NULL")) await settle(r);
     for (const r of all<RunRow>("SELECT * FROM runs WHERE posted = 'retry' AND post_due <= ?", now())) await repost(r);
+    for (const [write, t] of [...acking]) {
+      const o = await d.poster.outcome(write).catch(() => ({ state: "pending" as const }));
+      if (o.state === "pending") continue;
+      acking.delete(write);
+      acked(t.repo, t.number, o);
+    }
     for (const r of all<RunRow>("SELECT * FROM runs WHERE status = 'running' AND check_job IS NOT NULL")) {
       waiting.delete(r.id);
       const res = await d.runner.result(r.check_job!).catch((e) => ({ state: "running" as const, err: e }));

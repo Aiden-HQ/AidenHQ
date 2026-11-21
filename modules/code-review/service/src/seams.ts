@@ -113,16 +113,19 @@ export type Posted = {
   url?: string; resolved?: number; identity?: "owner";
   /** The comment ids it opened (its threads' first comments): what makes a thread Aiden's own. */
   comments?: number[];
+  /** The acknowledgement comment it wrote. */
+  ack?: number;
 };
 export interface Poster {
   /** One GitHub review for the run's head: a thread per finding, the summary with the severity line and commands;
    * `target`: where it goes, from the run itself (the poster never takes its target from the review body); `previous`: the last
    * review posted on this PR (its threads are the ones Aiden may resolve). */
-  post(p: { run: string; target: { repo: string; number: number; head: string; once?: boolean }; review: Review; previous: Review | null; gated: boolean; own?: number[] }): Promise<Posted>;
+  post(p: { run: string; target: { repo: string; number: number; head: string; once?: boolean }; review: Review; previous: Review | null; gated: boolean; own?: number[]; ack?: number }): Promise<Posted>;
   /** The commit status aidenhq/review on a gated repo's PR head: its merge verdict's reason, the open important findings and the
    * mandatory reviewers still queued or running (a Tier 0 write: fixed words). */
   status(s: Status): Promise<Posted>;
-  ack(a: Ack): Promise<void>;
+  /** The one acknowledgement (a Tier 0 write; `ack`: the comment the service recorded, edited in place). Undefined: nothing filed. */
+  ack(a: Ack & { ack?: number }): Promise<Posted | undefined>;
   /** A filed post's outcome now (pending until the AI reviewer and the executor are done). */
   outcome(write: string): Promise<Posted>;
   /** Files a dispute's ruling (a Tier 1 write: the judge's text). */

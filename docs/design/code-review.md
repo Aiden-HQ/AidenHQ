@@ -147,17 +147,19 @@ Identity: the owner's own GitHub sign-in, COMMENT reviews only, each review, fil
 AidenHQ footer (a review's inline comments carry it once, in its summary; each post still a Tier 1 write). Every fleet write posts as
 that same login, so nothing that decides anything is read back from GitHub text: findings, coverage, dispositions and the verdict
 live in the service's database, and a thread is Aiden's own (a reply on it is a dispute; it may be resolved) only when its first
-comment's id is one the service recorded from its own post's outcome (table `comments`). Markers serve display, dedupe and mapping
-a reply to its finding only.
+comment's id is one the service recorded from its own post's outcome (table `comments`), and the acknowledgement is the comment
+id it recorded (`prs.ack`). Markers serve display, dedupe and mapping a reply to its finding only. Threads posted before this
+record existed aren't Aiden's own to it (no dispute or resolve on them): the next review's threads are.
 
 **The status `aidenhq/review`.** On a gated repo, each open non-draft PR's head carries the commit status `aidenhq/review`, so
 people and `gh pr checks --watch` see the verdict: pending while the head's mandatory review is queued or running (naming the
 reviewers), failure while important findings are open or the review failed or was partial (with the count and how to unblock),
 success when the verdict passes. The service computes it from the same `verdict()` the merge queue asks and writes it only when
 it changes (one writer). It is a mirror: the merge queue still asks the service, and `kernel/sdk/src/checks.ts` leaves the
-status out of the named checks, so it never becomes a second gate. A repo admin may add `aidenhq/review` as a required status
-in a ruleset, to hold merges made on GitHub too; that is the admin's choice per repo (AidenHQ never changes rulesets), and an
-admin's bypass still applies.
+status out of the named checks, so it never becomes a second gate. It is advice for people and agents watching a PR, not a gate:
+a status belongs to a commit, not a PR, so a new PR at a head another PR already passed shows that pass until the next poll. A
+repo admin may still add `aidenhq/review` as a required status in a ruleset (the admin's choice per repo; AidenHQ never changes
+rulesets) knowing that; the merge queue's gate is the verdict.
 
 ## Mandatory reviewers (the merge gate)
 

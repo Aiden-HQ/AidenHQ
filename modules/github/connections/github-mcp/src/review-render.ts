@@ -60,6 +60,8 @@ export const PostArgsSchema = z.object({
   /** The comment ids the code-review service recorded as its own posts on this PR (its database, never a marker read back):
    * only their threads are ever resolved. */
   own: z.array(z.number().int().min(1)).max(1000).default([]),
+  /** The acknowledgement comment the service recorded (edited in place; absent: a new one). */
+  ack: z.number().int().min(1).optional(),
 });
 export type PostArgs = z.infer<typeof PostArgsSchema>;
 
@@ -99,6 +101,8 @@ export const NoticeArgsSchema = z.object({
   pre_existing: z.number().int().min(0).max(9999).optional(),
   cost_usd: z.number().min(0).max(100_000).optional(),
   run: RUN.optional(),
+  /** The acknowledgement comment the service recorded (edited in place; absent: a new one). */
+  ack: z.number().int().min(1).optional(),
 });
 export type NoticeArgs = z.infer<typeof NoticeArgsSchema>;
 
