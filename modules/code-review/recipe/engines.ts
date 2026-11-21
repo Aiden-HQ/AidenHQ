@@ -217,7 +217,7 @@ async function codex({ prompt, instructions, model, effort, root, base, minutes,
     const first = await turn(`${sk.invocation} ${base}..HEAD`);
     if (!first.done || !first.thread) return { message: "", read: false, calls, cause: first.done ? "codex gave no thread to continue" : stopped(first.r, first.said) };
     session = first.thread;
-    prompt = `Now restate every finding of that run, and only those, in this shape. Check each one's line in the file at the head with the repo tools first.\n${prompt}`;
+    prompt = `Now restate every finding of that run in this shape (and any problem you confirm while checking them). Check each one's line in the file at the head with the repo tools first.\n${prompt}`;
   }
   const last = await turn(prompt, session);
   let message = "";
@@ -286,7 +286,7 @@ async function claudeCode({ prompt, instructions, model, effort, root, base, min
     const first = await turn(sk ? `${sk.invocation} ${base}..HEAD` : `/code-review ${effort} ${base}..HEAD --max-findings all`);
     if (!first.ok) return { message: "", read: false, calls, cause: stopped(first.r, first.end?.result ?? "") };
     session = first.end?.session_id;
-    prompt = `Now restate every finding of that ${sk ? "run" : "review"}, and only those, in this shape. Check each one's line in the file at the head with the repo tools first.\n${prompt}`;
+    prompt = `Now restate every finding of that ${sk ? "run" : "review"} in this shape (and any problem you confirm while checking them). Check each one's line in the file at the head with the repo tools first.\n${prompt}`;
   }
   const last = await turn(prompt, session);
   if (!last.ok) return { message: "", read: calls.some((c) => c.tool === "diff"), calls, cause: stopped(last.r, last.end?.result ?? "") };
