@@ -14,6 +14,9 @@ go to a `judge` mode of the existing review recipe; the owner dismisses on the b
 **Spec:** `docs/superpowers/specs/2026-11-21-mandatory-code-review-design.md` (read it in full; its "Calls made" section
 is binding).
 
+**Owner changes during the build:** the spec's "Owner changes during the build" section supersedes the tasks below where they
+differ (mandatory is a combo's, coverage per head by the batch that reviewed it, one judge per finding per head).
+
 ## Global Constraints
 
 - Product `CLAUDE.md` "Conventions" is the full rulebook: one way, no fallbacks, delete what's replaced, minimal tests.

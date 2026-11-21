@@ -367,7 +367,8 @@ cat "${events}"
   };
   const r = await run(true);
   assert.equal(r.read, true);
-  assert.match(r.incomplete, /isn't tracked/);
+  assert.equal(r.incomplete, undefined, "untracked isn't partial coverage");
+  assert.match(r.untracked, /isn't tracked/);
   assert.deepEqual(JSON.parse(r.message).findings.map((f) => [f.path, f.line]), [["lib.js", 12], ["lib.js", 8], ["lib.js", 4], ["lib.js", 15]]);
   const seen = readFileSync(join(bin, "seen"), "utf8");
   assert.equal(seen.split("\n")[0], realpathSync(repo)); // it reviews the box's checkout itself

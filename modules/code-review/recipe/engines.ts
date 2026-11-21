@@ -24,7 +24,8 @@
 // codex-native: OpenAI's built-in reviewer, `codex exec review --base <base>` (its own prompt; the brief as its developer
 //   instructions), in the box's checkout (review.ts history: base, head). It reads the change with git through the shell; its
 //   review (the session's ExitedReviewMode, which the shell can't write) is mapped to ours. It doesn't use our repo tools, so which
-//   parts of the change it read isn't tracked (said as incomplete). Recheck goes to codex.
+//   parts of the change it read isn't tracked (said as a note, `untracked`: real partial coverage, a failed or cut-off run, is
+//   still incomplete). Recheck goes to codex.
 import { execFileSync, spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -50,7 +51,9 @@ export interface EngineInput {
   trusted?: string;
 }
 /** `calls`: the repo tools a run called, with the arguments code checks coverage by (path, the page `from`, `stat`). */
-export interface EngineResult { message: string; read: boolean; calls?: Call[]; cause?: string; incomplete?: string }
+/** `incomplete`: the engine covered only part of the change. `untracked`: it reads the change its own way, so which parts it read
+ * isn't tracked (its tool calls aren't reported): a note, never partial coverage. */
+export interface EngineResult { message: string; read: boolean; calls?: Call[]; cause?: string; incomplete?: string; untracked?: string }
 export type Call = { tool: string; path?: string; from?: number; stat?: boolean };
 /**
  * A tool call's coverage arguments, as code reads them from the call's own input; undefined for one with a wrong-typed
@@ -327,5 +330,5 @@ async function codexNative({ instructions, model, effort, root, base, minutes, s
     const last = String(cmds.at(-1)?.item?.aggregated_output ?? "").replace(/\s+/g, " ").trim().slice(-300);
     return { message: "", read, cause: `it never read the diff: ${cmds.length} command${cmds.length === 1 ? "" : "s"} ran${last ? `; the last printed: ${last}` : ""}` };
   }
-  return { message: JSON.stringify({ findings: nativeFindings(v!, [root.replace(/\/$/, ""), realpathSync(root)]), stale_guidance: [] }), read, incomplete: "codex review read the change with git itself, so which parts it read isn't tracked" };
+  return { message: JSON.stringify({ findings: nativeFindings(v!, [root.replace(/\/$/, ""), realpathSync(root)]), stale_guidance: [] }), read, untracked: "codex review read the change with git itself, so which parts it read isn't tracked" };
 }

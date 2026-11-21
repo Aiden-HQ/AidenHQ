@@ -144,6 +144,27 @@ Then watch the next PRs end to end and fix what misbehaves.
   refused for a mandatory repo; omitted takes the defaults). Checked where `scripts/modules.ts` compiles
   `code_review_mandatory`, failing the apply.
 
+## Owner changes during the build (binding; they supersede the text above where they differ)
+
+- **Mandatory is per reviewer, not per repo.** `mandatory` is a combo's (`{ engine, model, effort, run_usd?, mandatory? }`,
+  default false); a repo is gated when any combo is. A gated repo has a mandatory combo at both moments (else refused by the
+  service, the board and the compile); a repo-level `mandatory` is refused. Turning one on is owner-tier (a change to a moment's
+  combos already is).
+- **Only mandatory combos count.** Coverage needs the mandatory runs of the batch that reviewed the head; only important findings
+  from mandatory runs gate; other combos' findings stay advice. The recheck runs in the batch's first mandatory run. Budget,
+  fork and retry rules apply to mandatory runs only.
+- **Coverage per head, by the batch that reviewed it.** A single-commit PR is covered by its on_open batch alone; on_push never
+  has to run at a head on_open covered. On a gated repo a new head is a push only once an earlier head was covered, so a PR
+  pushed to before its first review finished gets on_open at the newest head; an incremental range starts at a covered head.
+- **Complete means whole.** A run counts only with no `coverage.incomplete` and no important finding withheld; a partial one
+  waits with its reason (`@aiden review full`). `incomplete` means real partial coverage only: codex-native's "which parts it
+  read isn't tracked" is a note (`coverage_note`), not a gap.
+- **No repeats, safely.** A finding restates an open one only on the same file at no higher severity, and a mandatory review's
+  important one only a gating one.
+- **The judge.** One judge per finding per head (after a ruling, a new dispute needs a new head or the owner's Dismiss); its
+  model is of no family any `Co-authored-by: AidenHQ …` trailer on any of the PR's commits names (none named: the checker
+  model); everything it reads is fenced data. A single dismissal suffices. Its spend counts in the day total.
+
 ## Left to the builder
 
 The verdict cache and polling cadence, the judge prompt, the board's verdict and Dismiss UI (match the Reviews page),

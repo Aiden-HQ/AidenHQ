@@ -47,6 +47,8 @@ interface Result {
   incremental_from: string | null; full: boolean;
   coverage: { reviewed: string[]; excluded: string[]; incomplete: string | null };
   findings: Placed[]; fixed: string[]; withheld: Record<Severity, number>; cost_usd: number; stale_guidance: string[]; guidance: string[];
+  /** A note on coverage that isn't a gap (an engine that doesn't report what it read); never posted, never incomplete. */
+  coverage_note?: string;
 }
 const SEVERITIES = ["important", "nit", "pre_existing"];
 const RANK: Record<Severity, number> = { important: 0, nit: 1, pre_existing: 2 };
@@ -255,7 +257,7 @@ const KEYS = /\bahq[a-z]{0,3}_[A-Za-z0-9._-]{8,}|\bsk-[A-Za-z0-9_-]{16,}/g;
 export function scrub(r: EngineResult, secrets: unknown[] = [process.env.OPENROUTER_API_KEY]): EngineResult {
   const known = secrets.map(String).filter((k) => k.length >= 8);
   const s = (t: string) => known.reduce((acc, k) => acc.replaceAll(k, "[redacted]"), t).replace(KEYS, "[redacted]");
-  return { ...r, message: s(String(r.message ?? "")), ...(r.cause ? { cause: s(r.cause) } : {}), ...(r.incomplete ? { incomplete: s(r.incomplete) } : {}) };
+  return { ...r, message: s(String(r.message ?? "")), ...(r.cause ? { cause: s(r.cause) } : {}), ...(r.incomplete ? { incomplete: s(r.incomplete) } : {}), ...(r.untracked ? { untracked: s(r.untracked) } : {}) };
 }
 
 /** An engine's answer as JSON (a ```json fence around it allowed), or undefined. */
@@ -388,7 +390,10 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
   if (failed.length === n) throw new Error(`no finder finished: ${failed[0]!.cause ?? (failed[0]!.read ? "an answer that isn't the JSON asked for" : "it never read the diff")}`);
   if (failed.length) gaps.push(`${failed.length} of ${n} finders didn't finish (${failed[0]!.cause ?? "no usable answer"})`);
   for (const a of answers) if (a.incomplete) gaps.push(a.incomplete);
-  const unread = unreadDiffs(answers, reviewed, tools(ws, h.from), (p) => (p.startsWith(`${ws.replace(/\/$/, "")}/`) ? p.slice(ws.replace(/\/$/, "").length + 1) : p));
+  // An engine that reads the change its own way (untracked) reports no tool calls to count; it says so as a note.
+  const untracked = answers.find((a) => a.untracked)?.untracked;
+  if (untracked) result.coverage_note = cap(untracked, 300);
+  const unread = untracked ? [] : unreadDiffs(answers, reviewed, tools(ws, h.from), (p) => (p.startsWith(`${ws.replace(/\/$/, "")}/`) ? p.slice(ws.replace(/\/$/, "").length + 1) : p));
   if (unread.length) gaps.push(`${unread.length} reviewed file${unread.length > 1 ? "s" : ""} whose diff no finder read to the end (${unread.slice(0, 10).join(", ")}${unread.length > 10 ? ", …" : ""})`);
   const root = ws.replace(/\/$/, "");
   const reviewedSet = new Set(reviewed);
