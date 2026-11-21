@@ -270,7 +270,9 @@ export const UNTAR_SCRIPT = 'rm -rf "$1" && mkdir -p "$1" && tar -xz --no-same-o
 export function forwardModel(req: http.IncomingMessage, res: http.ServerResponse, url: string, token: string) {
   return new Promise<void>((resolve) => {
     const u = new URL(url);
-    const headers = { "content-type": req.headers["content-type"] ?? "application/json", accept: req.headers.accept ?? "*/*", authorization: `Bearer ${token}` };
+    // anthropic-version and anthropic-beta go on for the Anthropic format (the gateway keeps only the betas it allows).
+    const anthropic = Object.fromEntries((["anthropic-version", "anthropic-beta"] as const).filter((h) => typeof req.headers[h] === "string").map((h) => [h, req.headers[h] as string]));
+    const headers = { "content-type": req.headers["content-type"] ?? "application/json", accept: req.headers.accept ?? "*/*", authorization: `Bearer ${token}`, ...anthropic };
     const up = http.request({ host: u.hostname, port: u.port, path: u.pathname, method: "POST", headers }, (ur) => {
       res.writeHead(ur.statusCode ?? 502, ur.headers);
       ur.pipe(res);

@@ -7,7 +7,8 @@
 //   GET /health (no auth)
 // Gateway, on the computers network gateway (only boxes reach it; ops/vm/computer-net.sh). A box's only credential is its
 // kernel job's token (ahqj_), which the launcher knows by its hash (the job record):
-//   POST /api/v1/responses | /api/v1/chat/completions   model calls, passed on to the kernel's model gateway with that token
+//   POST /api/v1/responses | /api/v1/chat/completions | /api/v1/messages   model calls (messages: Claude Code's Anthropic format),
+//                             passed on to the kernel's model gateway with that token
 //   /c/<connection>/mcp       tool calls to a connection (X-Agent-Key = the job token), passed on to the kernel's proxy
 //                             (aidenhq-kernel) with that token as the bearer: the kernel checks the grants and holds the keys
 //   POST /repo {repo, sha}    the box's `repo-checkout`: the kernel's code host snapshot (no .git, no credentials) of an agents-org
@@ -332,13 +333,14 @@ const liveBox = (token: string) => jobs.byKernelToken(token);
 const gatewayServer = http.createServer(async (req, res) => {
   const deny = (status: number, msg: string) => { log("gateway", req.method, req.url, status, msg); res.writeHead(status, { "content-type": "text/plain" }).end(`gateway: ${msg}`); };
   try {
-    if (req.method === "POST" && (req.url === "/api/v1/responses" || req.url === "/api/v1/chat/completions")) {
+    const model = /^\/api\/v1\/(responses|chat\/completions|messages)$/.exec((req.url ?? "").split("?")[0]!);
+    if (req.method === "POST" && model) {
       // The model: the box's "API key" is its job token; the model gateway, not a box or the launcher, holds the real key.
       const token = bearer(req);
       const who = liveBox(token);
       if (!who) return deny(401, "not a live computer");
       boxes.get(who.container) && (boxes.get(who.container)!.lastUsed = Date.now());
-      return await forwardModel(req, res, `${MODEL_GATEWAY_URL}${req.url}`, token);
+      return await forwardModel(req, res, `${MODEL_GATEWAY_URL}/api/v1/${model[1]}`, token);
     }
     if (req.method === "POST" && req.url === "/repo") {
       const who = liveBox(String(req.headers["x-agent-key"] ?? ""));
