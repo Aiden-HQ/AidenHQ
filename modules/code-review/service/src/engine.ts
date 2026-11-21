@@ -395,10 +395,11 @@ export function createEngine(d: EngineDeps) {
     if (pr && !gh) return void log("finished review not applied yet: its PR can't be read now; the next tick asks again", { run: r.id });
     const stale = !!gh && gh.open && gh.head !== r.head;
     // A claim the mandatory recheck found unsafe opens again (below) and goes in this run's post, saying so, so GitHub shows why
-    // it came back (its row links its earlier thread).
+    // it came back (its row links its earlier thread), at the severity it gates at (a mandatory run's important row first).
     const unsafe = r.mandatory && !stale ? [...new Set((review.unsafe ?? []).filter((x) => typeof x === "string"))] : [];
     for (const id of unsafe) {
-      const f = one<Omit<Finding, "fix_brief">>("SELECT id, severity, path, line, title, COALESCE(why, '') AS why, COALESCE(evidence, '') AS evidence FROM findings WHERE repo = ? AND number = ? AND id = ? AND claim IS NOT NULL ORDER BY severity = 'important' DESC, rowid DESC LIMIT 1", r.repo, r.number, id);
+      const f = one<Omit<Finding, "fix_brief">>(`SELECT f.id, f.severity, f.path, f.line, f.title, COALESCE(f.why, '') AS why, COALESCE(f.evidence, '') AS evidence FROM findings f
+        JOIN runs x ON x.id = f.run WHERE f.repo = ? AND f.number = ? AND f.id = ? AND f.claim IS NOT NULL ORDER BY (f.severity = 'important' AND x.mandatory = 1) DESC, f.rowid DESC LIMIT 1`, r.repo, r.number, id);
       if (!f) continue;
       const at = review.findings.findIndex((x) => x.id === id), was = at >= 0 ? review.findings[at]! : { ...f, fix_brief: "Fix it and push, or answer on its thread again with a reason that holds." };
       const reopened = { ...was, title: `${REOPENED.title}${was.title.replace(REOPENED.title, "")}`.slice(0, 200), why: `${REOPENED.why}${was.why.replace(REOPENED.why, "")}`.slice(0, 3000) };
