@@ -415,18 +415,22 @@ test("two waits with the same until get their own wake, one per episode", async 
   assert.equal(JSON.parse(w.db.prepare("SELECT data FROM facts WHERE type = 'work.waiting' AND subject = 'wait:t1' ORDER BY seq DESC LIMIT 1").get().data).question, "Which path is current now?");
 });
 
-test("a notify replay (asked: true) is recorded even when another recipient's question is open", async (t) => {
+test("a notify replay (asked: true) never replaces another recipient's open ask; a retry of that question still stands", async (t) => {
   const w = world(t);
   // A delegator question stands unanswered.
   assert.equal((await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "which path", for: "delegator", question: "Which path?" })).to, "delegator");
   w.tick(MIN);
-  // notify's decision already put a different question in front of the owner: nothing is sent, but the wait is recorded.
+  // notify's decision already put a different question in front of the owner: it is not sent, and it doesn't replace the live ask.
   w.who.conversing = true;
-  const r = await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "the owner's answer", for: "owner", asked: true, question: "Keep v1?" });
-  assert.deepEqual([r.asked, r.to], [undefined, "owner"]);
+  await assert.rejects(w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "the owner's answer", for: "owner", asked: true, question: "Keep v1?" }), { status: 409 });
   assert.equal(w.asked.owner.length, 0, "nothing was sent again");
+  assert.equal(w.asked.notices.length, 1, "and nothing reached the delegator either");
   const fact = w.db.prepare("SELECT data FROM facts WHERE type = 'work.waiting' AND subject = 'wait:t1' ORDER BY seq DESC LIMIT 1").get();
-  assert.equal(JSON.parse(fact.data).question, "Keep v1?");
+  assert.equal(JSON.parse(fact.data).question, "Which path?", "the live ask keeps its question");
+  // The replay of the question that is open is idempotent: answered already, nothing sent, the wait as it was.
+  const same = await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "the owner's answer", for: "owner", asked: true, question: "Which path?" });
+  assert.deepEqual([same.asked, same.to], [true, "delegator"]);
+  assert.deepEqual([w.asked.owner.length, w.asked.notices.length], [0, 1]);
 });
 
 test("a handoff records no ask marker, so it can't block a later question", async (t) => {
@@ -437,6 +441,35 @@ test("a handoff records no ask marker, so it can't block a later question", asyn
   // The question that comes after it reaches the chief of staff, not a 409 naming a recipient nobody wrote to.
   assert.equal((await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "which path", for: "owner", question: "Keep v1?" })).to, "chief_of_staff");
   assert.equal(w.asked.chief.length, 1);
+});
+
+test("a retry is compared with the same normalization as the stored question", async (t) => {
+  const w = world(t);
+  const ask = { reason: "which path", for: "delegator", question: "Is this --> the path?" };
+  assert.equal((await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, ask)).to, "delegator");
+  w.tick(MIN);
+  // The wait fact holds the question as it was sent; the comparison normalises it the same way the new question is normalised
+  // (neutral(), which rewrites `-->`), or the very same question reads as a different one and is refused.
+  const again = await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, ask);
+  assert.deepEqual([again.asked, again.to], [true, "delegator"]);
+  assert.equal(w.asked.notices.length, 1, "a retry sends nothing");
+  const fact = w.db.prepare("SELECT data FROM facts WHERE type = 'work.waiting' AND subject = 'wait:t1' ORDER BY seq DESC LIMIT 1").get();
+  assert.equal(JSON.parse(fact.data).question, "Is this --> the path?", "the wait as it was");
+});
+
+test("a handoff clears the earlier ask marker, so its own question can't hold the task", async (t) => {
+  const w = world(t);
+  assert.equal((await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "which path", for: "delegator", question: "Which path is current?" })).to, "delegator");
+  w.tick(MIN);
+  // The agent hands back to the owner: a report on the owner's task, not a question, and no ask of its own.
+  assert.equal((await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "handed back", for: "owner", handoff: true, question: "Done: see the PR." })).to, "owner");
+  assert.equal(w.db.prepare("SELECT 1 FROM escalations WHERE key = 'ask:t1'").get(), undefined, "the earlier ask marker is gone with its wait");
+  w.tick(MIN);
+  // A real question now reaches the delegator: the handoff's question, paired with the earlier delegator marker, must not read as
+  // an ambiguous open ask and fail every question after it.
+  assert.equal((await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "which path", for: "delegator", question: "Which path now?" })).to, "delegator");
+  assert.equal(w.asked.notices.length, 2);
+  assert.match(w.asked.notices[1].body, /Which path now\?/);
 });
 
 test("a legacy marker written after its wait still holds its open ask", async (t) => {

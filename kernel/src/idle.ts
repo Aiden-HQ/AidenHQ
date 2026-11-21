@@ -370,6 +370,9 @@ export function createIdle({ db, facts, state, wakes, owner, team = () => false,
       // The wait's fact and its wake in one transaction: a wait that can't be recorded fails the call (the agent tries again).
       inTx(db, "task_wait", () => {
         if (askedOf) escalate!.record(caller.task, askedOf, t);
+        // A wait the kernel didn't ask (a handoff, or an ask that found the task gone) leaves no ask for a later gate to read: the
+        // marker of an earlier ask would otherwise pair with this wait's own question and hold the task against a real question.
+        else if (escalate && who) db.prepare("DELETE FROM escalations WHERE key = ?").run(`ask:${caller.task}`);
         // A replacement can arrive in the same millisecond as the wait it replaces: give its fact and wake their own id, or
         // both are dropped as duplicates and the task keeps the old question. The suffix also makes the wake replace the old one.
         let n = 0;

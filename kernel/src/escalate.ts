@@ -14,9 +14,11 @@
 // An agent's ask is one open ask per task: another isn't sent while the recorded ask (the durable `ask:<task>` marker) still
 // has a wait fact for that question with no answer since, nor when the state can't be read (fail closed). A questionless wait
 // such as a finish check's release to the delegator is no ask and never suppresses one. The marker is written with the wait
-// fact, in its transaction (record(), idle.ts). A new question for the same recipient replaces the recorded ask (a new
-// episode, sent again); one for a different recipient is refused. No chief of staff installed: filing its task fails, so the
-// ask fails loudly and is tried again (the agent's call errors; the review loop's park isn't marked).
+// fact, in its transaction (record(), idle.ts). A different question while one is open is refused, whatever its recipient (a
+// 409 the agent acts on); only a retry of the open question goes through, and it changes nothing. The marker records the exact
+// destination (`to:owner` and so on), so a legacy marker whose recipient can't be told (bare `delegator`, which also meant the
+// chief of staff) is refused rather than guessed. No chief of staff installed: filing its task fails, so the ask fails loudly
+// and is tried again (the agent's call errors; the review loop's park isn't marked).
 import { createHash, randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { neutral } from "./channels.ts";
@@ -187,19 +189,21 @@ export function createEscalate({ db, issue, state, asker, notice, owner, chief, 
       if (!q || !t || CLOSED.includes(String(t.status))) return { sent: "gone" };
       const fromChief = Boolean((await agentOf(t))?.roles.includes(CHIEF));
       const to: AskTo = who === "owner" ? (fromChief || (await conversing(t.id)) ? "owner" : "chief_of_staff") : (await delegatorOf(t)) ? "delegator" : fromChief ? "owner" : "chief_of_staff";
-      // `asked`: the question already reached the owner (notify's decision, the agent's reply). Nothing is sent here, and the
-      // owner already has it, so the one-open-ask gate can't refuse to record it.
-      if (asked && to === "owner") return { sent: "recorded", to };
       const open = await openAsk(t);
       if (open === "unknown") return { sent: "open" };
       // A legacy marker doesn't say which recipient waits; the caller refuses, actionably.
       if (open === "ambiguous") return { sent: "ambiguous" };
       if (open) {
-        // A retry of the question already open is idempotent: nothing is sent twice and the recorded wait stands as it is.
-        if (open.question === q) return { sent: "same", to: open.to };
-        // One open ask per task: a different question waits for the answer, and the caller fails actionably (idle.ts).
+        // A retry of the question already open is idempotent: nothing is sent twice and the recorded wait stands as it is. The
+        // wait fact holds the question as the caller sent it; the comparison normalises both the same way `q` was.
+        if (neutral(open.question).trim().slice(0, 1500) === q) return { sent: "same", to: open.to };
+        // One open ask per task: a different question waits for the answer, and the caller fails actionably (idle.ts). This holds
+        // for an `asked` replay too: the owner got that different question, but it doesn't replace a live ask either.
         return { sent: "open", to: open.to };
       }
+      // `asked`: the question already reached the owner (notify's decision, the agent's reply). Nothing is sent here, and with no
+      // ask open nothing is replaced: the wait is recorded.
+      if (asked && to === "owner") return { sent: "recorded", to };
       // A looping agent can't fill the chief of staff's list: at most CHIEF_ASKS a day per agent, whatever requested the ask.
       const asker = to === "chief_of_staff" ? (await agentOf(t))?.key : undefined;
       const kind = `chief-ask:${asker}`;
