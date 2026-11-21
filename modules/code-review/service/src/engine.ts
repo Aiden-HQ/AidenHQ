@@ -854,7 +854,7 @@ export function createEngine(d: EngineDeps) {
   };
   /**
    * A gated repo's open PRs with open gating findings: a reply on Aiden's own thread for one (the service recorded the thread's
-   * first comment from its post) from the PR's author (not a fork's: an outsider) or someone with write access now, starting
+   * first comment from its post, or from the marker of a thread posted before it recorded them) from the PR's author (not a fork's: an outsider) or someone with write access now, starting
    * with fixed, disputed, by design or won't fix and giving a reason, closes the finding (fixed, else dismissed) with that claim.
    * The next mandatory recheck reads each claim and opens the finding again only if it finds the fix or the reason unsafe. Any
    * other reply is conversation. Each reply is read once.
@@ -864,7 +864,14 @@ export function createEngine(d: EngineDeps) {
       const open = new Set(openGating(cfg.repo, p.number).map((f) => f.id));
       if (!open.size) continue;
       for (const t of await d.source.threads(cfg.repo, p.number)) {
-        if (!t.finding || !open.has(t.finding) || !one("SELECT 1 FROM comments WHERE repo = ? AND comment = ?", cfg.repo, t.comment)) continue;
+        if (!t.finding || !open.has(t.finding)) continue;
+        // A thread posted before the service recorded its posts' comments (deployed 2026-11-21): its first comment's marker names
+        // an open finding of this PR, so it is recorded as that finding's thread. The marker only maps a reply to its finding: who
+        // may answer is still the author or a writer. Its replies were never read (never seen), so each is handled below.
+        if (!one("SELECT 1 FROM comments WHERE repo = ? AND comment = ?", cfg.repo, t.comment)) {
+          const by = one<{ run: string }>("SELECT run FROM findings WHERE repo = ? AND number = ? AND id = ? ORDER BY rowid DESC LIMIT 1", cfg.repo, p.number, t.finding);
+          run("INSERT OR IGNORE INTO comments (repo, number, comment, run) VALUES (?, ?, ?, ?)", cfg.repo, p.number, t.comment, by!.run);
+        }
         for (const r of t.replies) {
           const key = `reply:${r.id}`;
           if (one("SELECT 1 FROM seen WHERE repo = ? AND comment = ?", cfg.repo, key)) continue;
