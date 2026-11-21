@@ -379,7 +379,7 @@ test("a change over one call's budget: what fits is inline, the rest is named fo
   assert.equal(text, `### acme/app feat base main\n${fileDiff("src/b.ts", 1200)}`, "paged to the end, nothing cut");
   assert.deepEqual(t.unread(), [], "read to the end");
   assert.match(t.tools.read_file.run({ path: "src/c.ts" }), /     1\tC/);
-  assert.match(t.tools.grep.run({ pattern: "row1199 =" }), /diff of acme\/app src\/a\.ts:\d+: \+export const row1199/);
+  assert.match(t.tools.grep.run({ text: "row1199 =" }), /diff of acme\/app src\/a\.ts:\d+: \+export const row1199/);
   // A change that fits is shown as it always was: the diff itself and every file whole.
   const small = changeView(`${fileDiff("src/a.ts", 3)}\n`, [{ name: "src/a.ts", text: "A" }]);
   assert.deepEqual(small, { diff: `${fileDiff("src/a.ts", 3)}\n`, files: "#### src/a.ts\nA", rest: [] });
@@ -680,4 +680,27 @@ test("openRouterAsk answers the model's tool calls with the caller's tools until
   // A review whose call stops at the limit goes to the owner, never approved.
   const v = await review({ card, diff: "+x", policy: "p", ask: async () => { throw new Error("max_turns: the judge asked for more than 30 rounds of tool calls"); } });
   assert.deepEqual([v.decision, v.code], ["escalate", "review_cap"]);
+});
+
+test("the same path in two repos is two files to the tools: reading one never marks the other read, and a bare path is ambiguous", () => {
+  const one = (repo) => `### ${repo} feat base main\n${fileDiff("src/x.ts", 1500)}`;
+  const diff = `${one("acme/app")}\n${one("acme/app")}\n${one("acme/lib")}`;
+  const view = changeView(diff, []);
+  assert.deepEqual(view.rest.length, 2);
+  const t = changeTools(diff, [], view.rest);
+  assert.match(t.tools.diff.run({}), /acme\/app src\/x\.ts \(\+1500 -0\)[^\n]*\nacme\/app src\/x\.ts \[2\] \(\+1500 -0\)/, "unique names in the index");
+  assert.match(t.tools.diff.run({ path: "src/x.ts" }), /2 changed files end with src\/x\.ts: name one as DIFF_FILES does/);
+  for (const name of view.rest.slice(0, 1)) for (let from = 1; ; ) {
+    const m = /call again with from: (\d+)/.exec(t.tools.diff.run({ path: name, from }));
+    if (!m) break;
+    from = Number(m[1]);
+  }
+  assert.deepEqual(t.unread(), view.rest.slice(1), "only the file read counts as read");
+});
+
+test("grep is a literal search, never a pattern: regex text matches only itself, and the scan is bounded", () => {
+  const t = changeTools("+x", [{ name: "a.ts", text: "const re = /(a+)+$/;\naaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa!" }], []);
+  assert.match(t.tools.grep.run({ text: "(a+)+$" }), /a\.ts:1: const re/);
+  assert.match(t.tools.grep.run({ text: "AAAA", ignore_case: true }), /a\.ts:2:/);
+  assert.match(t.tools.grep.run({ text: ".*" }), /no matches/);
 });

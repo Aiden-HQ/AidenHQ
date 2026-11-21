@@ -182,7 +182,11 @@ export const MAX_FILES = 200_000;
 /** The most one tool answer carries; a longer one is paged (`from`), never cut. */
 const TOOL_PAGE = 50_000;
 
-/** A diff's files: each `diff --git` part (or the text before the first) with the `### ` heading it sits under and its name. */
+/**
+ * A diff's files: each `diff --git` part (or the text before the first) with the `### ` heading it sits under and its name,
+ * unique within the change (the same path under two headings is `<name> [2]`): the tools, the index and code's count of what
+ * was read all go by it.
+ */
 export function diffUnits(diff: string) {
   const units: { heading?: string; name: string; path?: string; lines: string[] }[] = [];
   let heading: string | undefined;
@@ -197,6 +201,14 @@ export function diffUnits(diff: string) {
       units.push({ heading, path, name: path ? (repo ? `${repo} ${path}` : path) : "(the change's text)", lines: [] });
     }
     units.at(-1)!.lines.push(line);
+  }
+  const seen = new Map<string, number>();
+  for (const u of units) {
+    let n = (seen.get(u.name) ?? 0) + 1, name = n > 1 ? `${u.name} [${n}]` : u.name;
+    while (n > 1 && seen.has(name)) name = `${u.name} [${++n}]`;
+    seen.set(u.name, n);
+    seen.set(name, seen.get(name) ?? 1);
+    u.name = name;
   }
   return units;
 }
@@ -236,6 +248,9 @@ export function changeView(diff: string, list: FileEntry[]) {
   return { diff: shown, files, rest };
 }
 
+/** The most text one grep call scans; past it the answer says where it stopped, and `path` narrows the search. */
+const GREP_SCAN = 5_000_000;
+
 /** One page of a tool's answer: its lines from `from` (1-based) up to TOOL_PAGE characters (a longer line counts as several). */
 function page(text: string, from: unknown = 1) {
   const lines = text.split("\n").flatMap((l) => (l.length > TOOL_PAGE ? l.match(new RegExp(`[^]{1,${TOOL_PAGE}}`, "g"))! : [l]));
@@ -257,7 +272,14 @@ export function changeTools(diff: string, list: FileEntry[], rest: string[]) {
   const seen = new Map<string, Set<number>>();
   const name = { type: "string", description: "a name as DIFF_FILES or the FILES block gives it (`<repo> <path>`, or the path)" };
   const from = { type: "integer", description: "the answer's line to start at, for a long answer (it names the next one)" };
-  const pick = <T extends { name: string }>(xs: T[], path: unknown) => xs.filter((x) => x.name === String(path)).concat(xs.filter((x) => x.name !== String(path) && x.name.endsWith(` ${String(path)}`)));
+  // A name as the index gives it, or a path only one changed file ends with; an ambiguous one names nothing.
+  const pick = <T extends { name: string }>(xs: T[], path: unknown): T | string => {
+    const exact = xs.find((x) => x.name === String(path));
+    if (exact) return exact;
+    const ends = xs.filter((x) => x.name.endsWith(` ${String(path)}`));
+    if (ends.length === 1) return ends[0]!;
+    return ends.length ? `${ends.length} changed files end with ${String(path).slice(0, 200)}: name one as DIFF_FILES does (${ends.slice(0, 5).map((x) => x.name).join(", ")})` : `no changed file named ${String(path).slice(0, 200)}`;
+  };
   const index = () => units.filter((u) => u.path).map((u) => {
     const f = diffFiles(u.lines.join("\n"))[0];
     return `${u.name} (+${f?.add ?? 0} -${f?.del ?? 0})${rest.includes(u.name) ? " [not inline]" : ""}`;
@@ -268,8 +290,8 @@ export function changeTools(diff: string, list: FileEntry[], rest: string[]) {
       parameters: { type: "object", properties: { path: name, from }, additionalProperties: false },
       run: ({ path, from: at }) => {
         if (!path) return fence("TOOL_RESULT", page(index(), at).body);
-        const u = pick(units, path)[0];
-        if (!u) return fence("TOOL_RESULT", `no changed file named ${String(path).slice(0, 200)}: call diff with no path for the index`);
+        const u = pick(units, path);
+        if (typeof u === "string") return fence("TOOL_RESULT", `${u}: call diff with no path for the index`);
         const p = page([...(u.heading ? [u.heading] : []), ...u.lines].join("\n"), at);
         const got = seen.get(u.name) ?? new Set<number>();
         for (let l = p.start; l <= p.end; l++) got.add(l);
@@ -282,21 +304,31 @@ export function changeTools(diff: string, list: FileEntry[], rest: string[]) {
       description: "A changed file's full text at the reviewed head, with line numbers (paged).",
       parameters: { type: "object", properties: { path: name, from }, required: ["path"], additionalProperties: false },
       run: ({ path, from: at }) => {
-        const e = pick(list, path)[0];
-        if (!e) return fence("TOOL_RESULT", `no changed file named ${String(path).slice(0, 200)} (only the change's files can be read)`);
+        const e = pick(list, path);
+        if (typeof e === "string") return fence("TOOL_RESULT", `${e} (only the change's files can be read)`);
         return fence("TOOL_RESULT", e.text === undefined ? (e.note ?? "") : page(e.text.split("\n").map((l, i) => `${String(i + 1).padStart(6)}\t${l}`).join("\n"), at).body);
       },
     },
     grep: {
-      description: "Lines matching a regular expression (JavaScript syntax) in the changed files' text and the diff, as `<name>:<line>: <text>` (paged).",
-      parameters: { type: "object", properties: { pattern: { type: "string" }, ignore_case: { type: "boolean" }, from }, required: ["pattern"], additionalProperties: false },
-      run: ({ pattern, ignore_case, from: at }) => {
-        const re = new RegExp(String(pattern), ignore_case ? "i" : "");
-        const hits = [
-          ...list.flatMap((e) => (e.text ?? "").split("\n").flatMap((l, i) => (re.test(l) ? [`${e.name}:${i + 1}: ${l.slice(0, 400)}`] : []))),
-          ...units.flatMap((u) => u.lines.flatMap((l, i) => (re.test(l) ? [`diff of ${u.name}:${i + 1}: ${l.slice(0, 400)}`] : []))),
-        ];
-        return fence("TOOL_RESULT", page(hits.join("\n") || "no matches", at).body);
+      description: "Lines containing a text (a literal substring, not a pattern) in the changed files' text and the diff, as `<name>:<line>: <text>` (paged); `path` searches one file.",
+      parameters: { type: "object", properties: { text: { type: "string" }, ignore_case: { type: "boolean" }, path: name, from }, required: ["text"], additionalProperties: false },
+      run: ({ text, ignore_case, path, from: at }) => {
+        const fold = (x: string) => (ignore_case ? x.toLowerCase() : x);
+        const needle = fold(String(text ?? ""));
+        if (!needle) return fence("TOOL_RESULT", "give the text to search for");
+        const sources = [...list.map((e) => ({ name: e.name, lines: (e.text ?? "").split("\n") })), ...units.map((u) => ({ name: `diff of ${u.name}`, lines: u.lines }))]
+          .filter((x) => path === undefined || x.name === String(path) || x.name === `diff of ${String(path)}`);
+        const hits: string[] = [];
+        let scanned = 0, stopped = "";
+        for (const src of sources) {
+          for (const [i, l] of src.lines.entries()) {
+            if ((scanned += l.length + 1) > GREP_SCAN) { stopped = `${src.name}:${i + 1}`; break; }
+            if (fold(l).includes(needle)) hits.push(`${src.name}:${i + 1}: ${l.slice(0, 400)}`);
+          }
+          if (stopped) break;
+        }
+        const note = stopped ? `\n[the search stopped at ${stopped}, after ${GREP_SCAN} characters: search one file with path]` : "";
+        return fence("TOOL_RESULT", page((hits.join("\n") || "no matches") + note, at).body);
       },
     },
   };
