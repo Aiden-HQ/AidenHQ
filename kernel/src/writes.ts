@@ -98,10 +98,10 @@ export type ReviewCode = { mode?: string; mandatory?: string[] };
 /**
  * Whether code review owns a write instead of the AI reviewer (ai_review_code): only a code host's push or PR, and only when
  * every repo it names is skipped, `none` for every repo, `unless_code_review_mandatory` for those whose code review is
- * mandatory. Everything else (merges, closes, create_repo, sends, settings, deploys, tool calls) is always reviewed.
+ * mandatory. An authority-expanding (panel) record is never skipped: two models decide it. Everything else (merges, closes, create_repo, sends, settings, deploys, tool calls) is always reviewed.
  */
-export function codeReviewOwns(r: Pick<Rec, "kind" | "targets">, { mode = "all", mandatory = [] }: ReviewCode) {
-  if (!/^(github|codehost-local)\.(push|pr)$/.test(r.kind) || mode === "all") return false;
+export function codeReviewOwns(r: Pick<Rec, "kind" | "targets" | "panel">, { mode = "all", mandatory = [] }: ReviewCode) {
+  if (r.panel || !/^(github|codehost-local)\.(push|pr)$/.test(r.kind) || mode === "all") return false;
   const repos = Object.values(r.targets ?? {}).map((t) => String((t as { repo?: unknown })?.repo ?? "").toLowerCase());
   return repos.length > 0 && repos.every((repo) => repo && (mode === "none" || (mode === "unless_code_review_mandatory" && mandatory.includes(repo))));
 }

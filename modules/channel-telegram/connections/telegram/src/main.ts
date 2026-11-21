@@ -78,7 +78,8 @@ async function pair(req: IncomingMessage, res: ServerResponse): Promise<void> {
 }
 
 const http = createServer(async (req, res) => {
-  const url = new URL(req.url ?? "/", "http://localhost");
+  let url: URL;
+  try { url = new URL(req.url ?? "/", "http://localhost"); } catch { return void res.writeHead(400).end(); }
   if (url.pathname === "/healthz") return void res.writeHead(200, { "content-type": "application/json" }).end(health());
   if (url.pathname === "/pair") return void (await pair(req, res));
   // The paired chat's id for chat-lane (its lane bots answer only that chat). Not a secret: Telegram, not the sender, says

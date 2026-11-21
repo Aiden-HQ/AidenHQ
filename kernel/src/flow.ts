@@ -503,9 +503,11 @@ export function createFlow({ db, file, stages, journeys = () => [], now = () => 
     // fleet
     const w = rows.filter(inWin);
     const done = new Set(w.filter((f) => f.type === "task.status_changed" && f.data.to === "done").map((f) => taskOf(f)!));
-    const ended = w.filter((f) => f.type === "job.ended");
+    const ended = w.filter((f) => f.type === "job.ended" && f.data.state !== "deferred"); // a deferred job never ran (facts.ts backfill)
     const cost = (fs: FactRow[]) => fs.reduce((a, f) => a + (Number(f.data.cost_usd) || 0), 0);
+    // Each wake a job took that did nothing; its cost once per job (a job takes several wakes: its starter and the comments it consumed).
     const noAction = w.filter((f) => f.type === "wake.bound").map((f) => jobEnd.get(`job:${f.data.job}`) ?? jobEnd.get(String(f.data.job))).filter((j): j is FactRow => j?.data.acted === false);
+    const noActionJobs = [...new Set(noAction)];
     const held: Record<string, number> = {};
     for (const [s, fs] of x.bySubject) if (s.startsWith("job:")) for (const h of spans(fs, "job.held", ["job.started"], t1)) {
       const v = Math.min(h.e, t1) - Math.max(h.s, t0); if (v > 0) held[h.reason] = (held[h.reason] ?? 0) + sec(v);
@@ -526,7 +528,7 @@ export function createFlow({ db, file, stages, journeys = () => [], now = () => 
       completions: done.size,
       retries_per_outcome: ratio(Math.max(0, ended.filter((f) => f.task && done.has(f.task)).length - done.size), done.size),
       no_action_wakes: noAction.length + w.filter((f) => f.type === "wake.dropped").length,
-      no_action_cost: cost(noAction),
+      no_action_cost: cost(noActionJobs),
       held_seconds_by_reason: held,
       first_pass_grade: firstBy("grade.verdict", (f) => f.data.pass === true),
       first_pass_review: firstBy("record.decided", (f) => /^approve/.test(String(f.data.decision)), (f) => f.data.decider === "reviewer"),

@@ -10,7 +10,7 @@ import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import YAML from "yaml";
-import { Refused, candidateMarked, check, compareRelease, createUpdates, pinText, pinTo, readState, verify, verifyMain, writeState } from "../src/updates.ts";
+import { Refused, candidateMarked, check, compareRelease, createUpdates, pinText, pinTo, readState, updateTask, verify, verifyMain, writeState } from "../src/updates.ts";
 import { localApply } from "../../modules/codehost-local/src/apply.ts";
 
 // The owner's own git config (signing, hooks) never reaches the fixtures or the updater's commits.
@@ -118,6 +118,16 @@ function kernelSide(w, { lines = [], filed = [], now = DAY } = {}) {
   });
   return Object.assign(u, { checkNow: () => { due = true; } });
 }
+
+test("the update task is filed quiet: a holder for its apply's record, for the platform engineer, keyed by release and commit", async () => {
+  const r = { release: "2026.11.3", kernel: "a".repeat(40), from: "2026.11.2", branch: "release/2026.11.3", sha: "b".repeat(40), by: "auto-update", notes: [], compare: "https://github.com/Aiden-HQ/AidenHQ/compare/1...2" };
+  const t = updateTask(r);
+  assert.equal(t.quiet, true);
+  assert.deepEqual([t.role, t.source, t.title], ["platform-engineer", `release:${r.release}:${r.sha}`, "Update AidenHQ to 2026.11.3"]);
+  assert.match(t.description, /No agent works on this task/);
+  const { readFileSync } = await import("node:fs");
+  assert.match(readFileSync(new URL("kernel/src/main.ts", new URL("../../", import.meta.url)), "utf8"), /moduleTasks\.file\("kernel", updateTask\(r\)\)/, "the kernel files exactly this descriptor");
+});
 
 test("nightly names sort by date, and a day's second cut between that day and the next", () => {
   const names = ["2026.11.19", "2026.11.18.1", "2026.11", "2026.11.18", "2026.12.1", "2026.11.2", "2026.11.18.2"];

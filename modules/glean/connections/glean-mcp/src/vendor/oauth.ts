@@ -146,7 +146,16 @@ export function oauth(o: OAuthOptions): Auth {
   const pending = new Map<string, { verifier: string; redirectUri: string; ep: Endpoints; client: { id: string; secret?: string }; expires: number }>();
   let token: StoredToken | undefined;
   let refreshing: Promise<StoredToken> | undefined;
-  let status: AuthStatus = { state: "unknown", since: new Date().toISOString() };
+  // A stored token that nothing has refused is signed in: "unknown" after every restart read as "Needs setup" on the board.
+  const usable = () => {
+    try {
+      const t = JSON.parse(readFileSync(tokenPath, "utf8")) as StoredToken;
+      return Boolean(t.access_token) && (Boolean(t.refresh_token) || !t.expires_at || t.expires_at > Date.now());
+    } catch {
+      return false;
+    }
+  };
+  let status: AuthStatus = { state: usable() ? "ok" : "unknown", since: new Date().toISOString() };
 
   // JSON asked for explicitly: GitHub's OAuth endpoints answer form-encoded otherwise.
   const json = async (url: string, init?: RequestInit) => {
@@ -205,6 +214,8 @@ export function oauth(o: OAuthOptions): Auth {
     if (t.resource) body.set("resource", t.resource);
     const res = await fetchImpl(endpoint, { method: "POST", body, headers: { accept: "application/json" }, signal: AbortSignal.timeout(15_000) });
     const answer = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    // A reconnect saved a newer grant while this refresh was in flight: its answer, good or bad, is stale.
+    if (token !== t) return token!;
     let next;
     try {
       if (!res.ok && typeof answer.error !== "string") throw new AuthError(`${o.name} token endpoint answered ${res.status}`);
@@ -214,7 +225,7 @@ export function oauth(o: OAuthOptions): Auth {
       if (res.status < 500) mark("expired", String((err as Error).message));
       throw err;
     }
-    save({ ...t, ...next, refresh_token: next.refresh_token ?? t.refresh_token });
+    save({ ...t, ...next, refresh_token: next.refresh_token ?? t.refresh_token, scope: next.scope ?? t.scope });
     return token!;
   }
 

@@ -45,6 +45,7 @@ test("aidenhq: writes, task reads and next-turn requests go to the kernel with t
   t.after(() => rmSync(ws, { recursive: true, force: true }));
   const git = (...a) => execFileSync("git", ["-C", join(ws, "app"), "-c", "user.name=t", "-c", "user.email=t@example.com", ...a], { encoding: "utf8" }).trim();
   execFileSync("git", ["init", "-q", "-b", "fix-login", join(ws, "app")]);
+  execFileSync("git", ["-C", join(ws, "app"), "remote", "add", "origin", "aidenhq://acme/app"]);
   git("commit", "-q", "--allow-empty", "-m", "fix(login): stop the loop");
   const sha = git("rev-parse", "HEAD");
   writeFileSync(join(ws, "body.md"), "Why.");
@@ -123,4 +124,11 @@ test("aidenhq clone: clones a repo from the kernel's bundle, then refreshes it w
   assert.equal(git(clone, "rev-parse", "origin/main"), tip);
   assert.equal(git(clone, "rev-parse", "HEAD"), mine, "the job's branch and checkout stay as they were");
   assert.equal(git(clone, "rev-parse", "main"), git(up, "rev-parse", "HEAD~1"), "local main isn't moved");
+  // The job's start keeps a clone there as it is, whatever transport its origin names.
+  const before = asked.length;
+  git(clone, "remote", "set-url", "origin", "https://github.com/Acme-Agents/aidenhq-instance.git/");
+  assert.match(await aidenhq("clone", "--keep", "acme-agents/aidenhq-instance"), /kept as it is/);
+  // Another org's repo of the same name is refused, never fetched into this clone.
+  assert.equal(await run(process.execPath, [CLI, "clone", "other-org/aidenhq-instance"], { env }).then(() => 0, (e) => e.code), 2);
+  assert.equal(asked.length, before);
 });

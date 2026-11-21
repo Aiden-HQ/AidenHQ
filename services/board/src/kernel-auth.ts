@@ -44,11 +44,18 @@ function cookie(req: Pick<IncomingMessage, "headers">, n: string): string | unde
   const want = named(req, n);
   const hits = String(req.headers.cookie ?? "").split(";").map((c) => c.trim()).filter((c) => c.startsWith(`${want}=`));
   // Two of one name (one planted beside the real one): neither counts.
-  return hits.length === 1 ? decodeURIComponent(hits[0]!.slice(want.length + 1)) : undefined;
+  try {
+    return hits.length === 1 ? decodeURIComponent(hits[0]!.slice(want.length + 1)) : undefined;
+  } catch {
+    return undefined;
+  }
 }
 const setCookie = (req: Pick<IncomingMessage, "headers">, n: string, v: string, maxAge?: number) =>
   `${named(req, n)}=${encodeURIComponent(v)}; Path=/; HttpOnly; SameSite=Lax${https(req) ? "; Secure" : ""}${maxAge !== undefined ? `; Max-Age=${maxAge}` : ""}`;
-const same = (a: string, b: string) => a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
+const same = (a: string, b: string) => {
+  const x = Buffer.from(a), y = Buffer.from(b);
+  return x.length === y.length && timingSafeEqual(x, y);
+};
 
 export interface KernelAuthOptions {
   /** The kernel's backplane (AIDENHQ_KERNEL_URL) and the board's key there (gateway_board_key). */

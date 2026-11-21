@@ -45,7 +45,8 @@ paperclip_running=no; echo "$running" | grep -qx paperclip && paperclip_running=
 
 # Volumes to copy: a Postgres cluster that a running container uses is skipped.
 vols=()
-for v in $(docker volume ls -q --filter name='^app-'); do
+app_vols="$(docker volume ls -q --filter name='^app-')"
+for v in $app_vols; do
   if [ -n "$(docker ps -q --filter volume="$v")" ] && docker run --rm -v "$v:/v:ro" "$IMG" test -f /v/PG_VERSION; then
     echo "  volume $v: a live Postgres cluster, skipped (its app's dumps carry it)"
   else vols+=("$v"); fi

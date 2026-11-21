@@ -79,7 +79,7 @@ export type Records = {
    * [] when the kernel is unreachable or not configured (logged once until it answers again): a page never fails on it.
    * `tier0`: Tier 0 runs too (the history's audit rows), else only the records that went to the reviewer or the owner.
    */
-  list(state: "owner" | "pending" | "recent" | "finished", opts?: { task?: string; limit?: number; tier0?: boolean }): Promise<Approval[]>;
+  list(state: "owner" | "pending" | "recent" | "finished", opts?: { task?: string; limit?: number; tier0?: boolean; strict?: boolean }): Promise<Approval[]>;
   /** Marketplace advisories open against installed modules (plan unit 4e): Settings > Modules shows them as a banner. [] when unreachable. */
   advisories(): Promise<Advisory[]>;
   /** Every connection's /healthz as the kernel reaches it (the one place connection health is probed). {} when the kernel can't be asked. */
@@ -97,9 +97,13 @@ export type Records = {
 export type Validation = { ok: true; unchecked?: string } | { ok: false; errors: { field: string; message: string }[] };
 export type Advisory = { id: string; module: string; severity: string; fixed: string; summary: string; url: string };
 
+type Cause = { code?: string; errors?: Cause[] };
+/** A connect failure on every address tried: the request never reached the kernel. */
+const neverConnected = (c?: Cause): boolean => !!c && (c.errors?.length ? c.errors.every(neverConnected) : c.code === "ECONNREFUSED" || c.code === "ENOTFOUND");
+
 export function kernelRecords(k: { url: string; token: string } | undefined, log?: { warn(o: object, m: string): void }): Records {
   let down = false;
-  const list: Records["list"] = async (state, { task, limit, tier0 } = {}) => {
+  const list: Records["list"] = async (state, { task, limit, tier0, strict } = {}) => {
     if (!k) return [];
     try {
       const res = await fetch(`${k.url}/v1/writes?state=${state}${task ? `&task=${encodeURIComponent(task)}` : ""}${limit ? `&limit=${limit}` : ""}${tier0 ? "&tier0=1" : ""}`, { headers: { authorization: `Bearer ${k.token}` }, signal: AbortSignal.timeout(15_000) });
@@ -110,6 +114,7 @@ export function kernelRecords(k: { url: string; token: string } | undefined, log
     } catch (err) {
       if (!down) log?.warn({ err: String(err) }, "kernel records unavailable");
       down = true;
+      if (strict) throw err;
       return [];
     }
   };
@@ -129,10 +134,11 @@ export function kernelRecords(k: { url: string; token: string } | undefined, log
     if (!res.ok) throw new Error(`POST /v1/connections/${module}/ok -> ${res.status}`);
   };
   const settingsChange: Records["settingsChange"] = async (task, changes, credential) => {
-    if (!k) throw new Error("the board has no kernel to write the change");
-    const res = await fetch(`${k.url}/v1/settings/change`, { method: "POST", headers: { authorization: `Bearer ${k.token}`, "content-type": "application/json" }, body: JSON.stringify({ task, changes, ...(credential ? { credential } : {}) }), signal: AbortSignal.timeout(180_000) });
+    if (!k) throw Object.assign(new Error("the board has no kernel to write the change"), { refused: true });
+    // Only the kernel's own 4xx says nothing was written; a refused connection never reached it, but a lost response, a timeout or a 5xx may follow a write.
+    const res = await fetch(`${k.url}/v1/settings/change`, { method: "POST", headers: { authorization: `Bearer ${k.token}`, "content-type": "application/json" }, body: JSON.stringify({ task, changes, ...(credential ? { credential } : {}) }), signal: AbortSignal.timeout(180_000) }).catch((e: Error & { cause?: Cause }) => { throw Object.assign(e, { refused: neverConnected(e.cause) }); });
     const j = (await res.json().catch(() => ({}))) as { record?: string; tier?: number; state?: string; message?: string; error?: string };
-    if (!res.ok) throw new Error(String(j.message ?? j.error ?? `the kernel answered ${res.status}`));
+    if (!res.ok) throw Object.assign(new Error(String(j.message ?? j.error ?? `the kernel answered ${res.status}`)), { refused: res.status < 500 });
     return { record: String(j.record), tier: Number(j.tier), state: String(j.state) };
   };
   const validate: Records["validate"] = async (module, settings) => {

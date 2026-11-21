@@ -283,9 +283,19 @@ export class Grades {
     return Number(r.changes) > 0;
   }
 
-  /** Escalated rows finished again since: the runner checks each for a new deliverable version. */
-  resubmitted(): Grade[] {
-    return (this.db.prepare("SELECT g.* FROM grades g JOIN grade_resubmits r ON r.issue_id = g.issue_id WHERE g.state = 'escalated'").all() as unknown as Row[]).map(fromRow);
+  /** Escalated rows finished again since, with when: the runner checks each for a new deliverable version. */
+  resubmitted(): (Grade & { resubmittedAt: string })[] {
+    return (this.db.prepare("SELECT g.*, r.at AS resubmitted_at FROM grades g JOIN grade_resubmits r ON r.issue_id = g.issue_id WHERE g.state = 'escalated'").all() as unknown as (Row & { resubmitted_at: string })[])
+      .map((r) => ({ ...fromRow(r), resubmittedAt: r.resubmitted_at }));
+  }
+
+  /**
+   * Escalated rows not finished again since (or whose new version was checked), with no verdict move still owed (the grade loop's
+   * `owed:` rows: a grader-failure block needs its hold): the delegator's alone, held by nothing.
+   */
+  escalatedUnmarked(): Grade[] {
+    this.db.exec("CREATE TABLE IF NOT EXISTS loop_state (k TEXT PRIMARY KEY, v TEXT NOT NULL)"); // the grade loop's (kernel-loop.ts)
+    return (this.db.prepare("SELECT g.* FROM grades g WHERE g.state = 'escalated' AND NOT EXISTS (SELECT 1 FROM grade_resubmits r WHERE r.issue_id = g.issue_id) AND NOT EXISTS (SELECT 1 FROM loop_state l WHERE l.k = 'owed:' || g.issue_id AND l.v != '') ORDER BY updated_at").all() as unknown as Row[]).map(fromRow);
   }
 
   /** Marks an escalated task as finished again (the completion gate); its state stays the delegator's. */

@@ -74,7 +74,9 @@ describe("mcp end to end", () => {
       if (path === "/auth/check") return Response.json({ ok: true });
       return Response.json({}, { status: 404 });
     }) as typeof fetch);
-    app = createApp({ signIns: [{ id: "jira", label: "Jira", connect: "/jira/connect", callback: "/jira/callback", missing: "m", stopped: "s", fields: [], auth: jira }], paperclip: new Paperclip("http://paperclip", CO, KEY, fakeFetch), store: new Store(":memory:"), records, log: pino({ level: "silent" }), staticDir: "/nonexistent", timezone: "UTC", accounts, adminUrl: "https://admin.example.com", allowedHosts: ["board.example.com"], mode: "lan" });
+    app = createApp({ signIns: [{ id: "jira", label: "Jira", connect: "/jira/connect", callback: "/jira/callback", missing: "m", stopped: "s", fields: [], auth: jira }], paperclip: new Paperclip("http://paperclip", CO, KEY, fakeFetch), store: new Store(":memory:"), records, log: pino({ level: "silent" }), staticDir: "/nonexistent", timezone: "UTC", accounts, adminUrl: "https://admin.example.com", allowedHosts: ["board.example.com"], mode: "lan",
+      // beta is paired (done), acme is not: status lists only acme.
+      setupFlows: { flows: ["acme", "beta"].map((module) => ({ module, title: module, why: "w", effort: "1 min", steps: "s", pair_url: `http://${module}/pair`, token: "t" }) as never), fetchImpl: (async (u: string) => Response.json({ paired: String(u).includes("beta") })) as typeof fetch } });
     await new Promise<void>((r) => app.listen(0, "127.0.0.1", r));
     port = (app.address() as AddressInfo).port;
   });
@@ -120,6 +122,13 @@ describe("mcp end to end", () => {
     const { json } = await call("status", {});
     expect(json.result.isError).toBeFalsy();
     expect(json.result.structuredContent).toMatchObject({ approvals_pending: 2, approvals: [{ id: "k-0000000000000001", digest: "a".repeat(40) }, { id: "k-0000000000000002" }] });
+  });
+
+  it("status lists only setup flows the setup page counts as not done", async () => {
+    const { json } = await call("status", {});
+    const todo = json.result.structuredContent.setup_todo as { module: string }[];
+    expect(todo).toHaveLength(1);
+    expect(todo[0]!.module).toContain("acme");
   });
 
   it("fences free text by default: an agent's words and an upstream error come back as data", async () => {

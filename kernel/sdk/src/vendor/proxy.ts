@@ -298,7 +298,8 @@ export function createVendorProxy(o: ProxyOptions): VendorProxy {
   }
 
   const http = createServer(async (req, res) => {
-    const url = new URL(req.url ?? "/", "http://localhost");
+    let url: URL;
+    try { url = new URL(req.url ?? "/", "http://localhost"); } catch { return void res.writeHead(400).end(); }
     try {
       if (url.pathname === "/healthz") {
         const s = auth.status();

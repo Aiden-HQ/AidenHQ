@@ -19,10 +19,10 @@
 //
 // A PR link is a GitHub pull request's (https://github.com/<org>/<repo>/pull/<n>) or a change request's on this server
 // (codehost:local/<name>/change/<n>), as publish printed it.
-//   aidenhq clone <org/name>                         a repository its dispatcher's clone grant covers, cloned here from the bundle
-//                                                    the kernel serves (the job's start runs it for each repo its task names); run again, it
-//                                                    fetches the code host's current branches into the clone's origin/*
-//                                                    (the working tree and local branches stay as they are)
+//   aidenhq clone [--keep] <org/name>                a repository its dispatcher's clone grant covers, cloned here from the bundle
+//                                                    the kernel serves; run again, it fetches the code host's current branches into
+//                                                    the clone's origin/* (the working tree and local branches stay as they are);
+//                                                    --keep (the job's start, for each repo its task names) leaves a clone there as it is
 //   aidenhq apply <org/repo> <branch>                apply the instance repo's branch at its commit here: one kernel.apply write
 //   aidenhq task <PEN-N>                             read a task (tasks-mcp task_get, when the job's profile grants it)
 //   aidenhq tasks <words>                            search open tasks (tasks-mcp task_search)
@@ -39,11 +39,11 @@
 // names the job: the kernel takes the job, its task and its workspace from it, never from the request) and
 // AIDENHQ_TASK_WORKTREE (the task's workspace folder, whose clones <name> or <org>--<name> the code host pushes from).
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const usage = `usage: aidenhq publish <org/repo> <branch>... [--title <title>] [--body-file <file>] [--fixes <owner/repo#n>]... | review <org/repo> <branch>... [--title <title>] [--body-file <file>] | merge <PR link> <head sha>... | close <PR link>... | create-repo [<org>/]<name> | clone <org/name> | apply <org/repo> <branch> | task <PEN-N> | tasks <words> | advise "<question>" [--file <brief>] | reset | engine <kind> [model] | cleanup`;
+const usage = `usage: aidenhq publish <org/repo> <branch>... [--title <title>] [--body-file <file>] [--fixes <owner/repo#n>]... | review <org/repo> <branch>... [--title <title>] [--body-file <file>] | merge <PR link> <head sha>... | close <PR link>... | create-repo [<org>/]<name> | clone [--keep] <org/name> | apply <org/repo> <branch> | task <PEN-N> | tasks <words> | advise "<question>" [--file <brief>] | reset | engine <kind> [model] | cleanup`;
 const COMMANDS = ["publish", "review", "merge", "close", "create-repo", "clone", "apply", "task", "tasks", "advise", "reset", "engine", "cleanup"];
 const [command, ...rest] = process.argv.slice(2);
 const fail = (msg, code = 1) => {
@@ -65,6 +65,7 @@ const fixes = [];
 for (let i = 0; i < rest.length; i++) {
   if (rest[i] === "--fixes") fixes.push(rest[++i]);
   else if (["--title", "--body-file", "--file"].includes(rest[i])) flags[rest[i].slice(2)] = rest[++i];
+  else if (rest[i] === "--keep" && command === "clone") flags.keep = true;
   else if (rest[i].startsWith("--")) fail(`unknown option ${rest[i]}\n${usage}`, 2);
   else words.push(rest[i]);
 }
@@ -116,12 +117,28 @@ const pr = (link) => {
   return { repo: m[1], number: Number(m[2]) };
 };
 /**
- * A branch's commit in this workspace's clone of org/repo (<name> or <org>--<name>), the one the code host takes, with the
- * branch's bundle beside it (.aidenhq/bundles/<sha>.bundle): a host-side code host reads that one file, never the clone's .git.
+ * This workspace's clone of org/repo: the first of <name> and <org>--<name> whose origin, as configured (its first URL, no
+ * rewrites), is this repository's on the code host (`have`: aidenhq://, as aidenhq clone sets it, or GitHub's, any case), and
+ * every clone at those paths (`there`). A clone with no origin, or one git can't read, is none.
+ */
+const cloneOf = (repo) => {
+  const [org, name] = repo.split("/");
+  const want = repo.toLowerCase();
+  const names = (d) => {
+    let o = "";
+    try { o = execFileSync("git", ["-C", d, "config", "--get-all", "remote.origin.url"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).split("\n")[0].trim().toLowerCase().replace(/\/+$/, "").replace(/\.git$/, ""); } catch {}
+    return ["aidenhq://", "https://github.com/", "git@github.com:", "ssh://git@github.com/"].some((p) => o === p + want);
+  };
+  const there = [name, `${org}--${name}`].map((d) => join(workspace, d)).filter((d) => existsSync(join(d, ".git")));
+  return { have: there.find(names), there };
+};
+/**
+ * A branch's commit in this workspace's clone of org/repo (cloneOf), the one the code host takes, with the branch's bundle
+ * beside it (.aidenhq/bundles/<sha>.bundle): a host-side code host reads that one file, never the clone's .git.
  */
 const commitOf = (repo, branch) => {
   const [org, name] = repo.split("/");
-  const dir = [name, `${org}--${name}`].map((d) => join(workspace, d)).find((d) => existsSync(join(d, ".git")));
+  const dir = cloneOf(repo).have;
   if (!dir) fail(`this workspace has no clone of ${repo} (${name} or ${org}--${name})`, 2);
   let sha;
   try {
@@ -136,8 +153,7 @@ const commitOf = (repo, branch) => {
 const CONVENTIONAL = /^(feat|fix|docs|chore|test|refactor|perf|ci|build|style|revert)(\([a-z0-9][a-z0-9._\/-]*\))?!?: \S/;
 /** The subject of the branch's first commit (the oldest one no remote branch has), the one a squash merge would carry. */
 const firstSubject = (repo, branch) => {
-  const [org, name] = repo.split("/");
-  const dir = [name, `${org}--${name}`].map((d) => join(workspace, d)).find((d) => existsSync(join(d, ".git")));
+  const dir = cloneOf(repo).have;
   return execFileSync("git", ["-C", dir, "log", "--reverse", "--format=%s", `refs/heads/${branch}`, "--not", "--remotes"], { encoding: "utf8" }).split("\n")[0];
 };
 /** One tool of tasks-mcp, through the kernel's tool proxy as this job (its frozen tools), as the box's own MCP config calls it. */
@@ -208,10 +224,13 @@ if (command === "publish" || command === "review") {
   if (words.length !== 1) fail("usage: aidenhq create-repo [<org>/]<name>", 2);
   lines.push(`${words[0]}: ${(await write("codehost.create_repo", { repo: words[0] }))}`);
 } else if (command === "clone") {
-  if (words.length !== 1 || !/^[\w.-]+\/[\w.-]+$/.test(words[0])) fail("usage: aidenhq clone <org/name>", 2);
+  if (words.length !== 1 || !/^[\w.-]+\/[\w.-]+$/.test(words[0])) fail("usage: aidenhq clone [--keep] <org/name>", 2);
   const [org, name] = words[0].split("/");
-  // The clone already here (as the job's start made it, <name> or <org>--<name>) is refreshed; else a new one at <name>.
-  const have = [name, `${org}--${name}`].map((d) => join(workspace, d)).find((d) => existsSync(join(d, ".git")));
+  // The clone already here (as the job's start made it) is refreshed; else a new one at <name>. A clone of another
+  // repository (another org's <name>) is never fetched into.
+  const { have, there } = cloneOf(words[0]);
+  if (!have && there.length) fail(`${there[0]} isn't a clone of ${words[0]} (its origin names another repository, or none)`, 2);
+  if (have && flags.keep) { console.log(`${words[0]}: kept as it is in ${have}`); process.exit(0); }
   const dest = have ?? join(workspace, name);
   if (!have && existsSync(dest)) fail(`${dest} is already there and isn't a clone`, 2);
   // Exit 75 when the kernel or the code host can't answer now: the kernel's job start (boxes.ts) then tries again later.
@@ -225,9 +244,17 @@ if (command === "publish" || command === "review") {
       const tips = execFileSync("git", ["-C", dest, "bundle", "list-heads", file], { encoding: "utf8" }).split("\n").filter((l) => / refs\/heads\//.test(l));
       lines.push(...tips.map((l) => { const [sha, ref] = l.split(" "); return `${words[0]}: origin/${ref.slice("refs/heads/".length)} is at ${sha.slice(0, 12)} in ${dest}`; }));
     } else {
-      execFileSync("git", ["clone", "--quiet", file, dest], { stdio: ["ignore", "ignore", "inherit"] });
-      // origin names the repo with no transport: publishing goes through aidenhq, refreshing through aidenhq clone.
-      execFileSync("git", ["-C", dest, "remote", "set-url", "origin", `aidenhq://${words[0]}`]);
+      // origin names the repo with no transport: publishing goes through aidenhq, refreshing through aidenhq clone. Set before
+      // the clone takes its place, so a box stopped half way never leaves one whose origin names something else.
+      const part = mkdtempSync(join(workspace, `.${name}.cloning-`));
+      try {
+        execFileSync("git", ["clone", "--quiet", file, part], { stdio: ["ignore", "ignore", "inherit"] });
+        execFileSync("git", ["-C", part, "remote", "set-url", "origin", `aidenhq://${words[0]}`]);
+        renameSync(part, dest);
+      } catch (e) {
+        rmSync(part, { recursive: true, force: true });
+        throw e;
+      }
       lines.push(`${words[0]}: cloned into ${dest}`);
     }
   } finally {

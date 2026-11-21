@@ -9,7 +9,7 @@ import { CODEHOSTS } from "./codehost.ts";
 import { heldRoles, rolesOf } from "./identity.ts";
 import { inTx, iso, strictFact } from "./factlog.ts";
 import type { Facts } from "./facts.ts";
-import { JobError } from "./jobs.ts";
+import { JobError, queueFacts } from "./jobs.ts";
 import type { JobTools } from "./jobtools.ts";
 import type { RoutineCap } from "./tier.ts";
 import type { Skill } from "./sandbox.ts";
@@ -71,8 +71,8 @@ export type Admitted = { id: string; module: string; agent: string; task: string
 const LIVE = "state IN ('admitted', 'running')";
 const ID = /^[\w.:-]{1,200}$/;
 
-export function createAdmission({ db, grants, kinds, capacity, pool, spend, mayDispatch, cp, wakes, provenance, routineCap, nextTurn, launch, facts, log }: {
-  /** Flow's fact log (facts.ts): job.queued and wake.bound at admission, job.held when it is refused or deferred. */
+export function createAdmission({ db, grants, kinds, capacity, pool, spend, mayDispatch, cp, wakes, provenance, routineCap, nextTurn, launch, release, facts, log }: {
+  /** Flow's fact log (facts.ts): job.queued and wake.bound with a job's first start (jobs.ts queueFacts) or its couldn't-start end, job.held when it is refused or deferred. */
   facts?: Facts;
   /** What the task's last job asked of this turn (jobtools.ts): read in the transaction, spent once the job has started. */
   nextTurn: Pick<JobTools, "pending" | "taken" | "refusal">;
@@ -97,9 +97,11 @@ export function createAdmission({ db, grants, kinds, capacity, pool, spend, mayD
   wakes: Wakes;
   /** Gets the job its computer and starts it (boxes.ts); a 503 means the computers are full: the job waits for the next tick. */
   launch: (job: Admitted) => Promise<void>;
+  /** Gives a job's box back (boxes.ts); a box the launcher can't take back now lapses with its lease. */
+  release: (job: string) => Promise<void>;
   log: (msg: string, fields?: Record<string, unknown>) => void;
 }) {
-  // Strict: each fact is written in the admission's transaction, which fails with it.
+  // Strict: each fact is written in the transaction of the change it describes, which fails with it.
   const fact = facts ? strictFact(facts) : () => {};
   /** The jobs this process admitted and is launching now: its drain waits for them, and recover() never takes them. */
   const launching = new Set<string>();
@@ -161,6 +163,7 @@ export function createAdmission({ db, grants, kinds, capacity, pool, spend, mayD
     // From here to COMMIT nothing awaits: two admits never interleave.
     const id = `j-${randomBytes(8).toString("hex")}`;
     let job: Admitted;
+
     db.exec("BEGIN IMMEDIATE");
     try {
       const w = wakes.claimed(module, b.wake);
@@ -191,9 +194,6 @@ export function createAdmission({ db, grants, kinds, capacity, pool, spend, mayD
       db.prepare("INSERT INTO jobs (id, module, agent, task, engine, pid, log, dir, at, jobcaps, observing, live_input, state, profile, wake, authority, routine, routine_cap, identifier) VALUES (?, ?, ?, ?, ?, 0, '', '', ?, ?, 0, 0, 'admitted', ?, ?, ?, ?, ?, ?)")
         .run(id, module, agent, task, authority.engine, Date.now(), JSON.stringify(authority.jobcaps), authority.profile, b.wake, JSON.stringify(authority), cap?.routine ?? null, cap?.cap ?? null, identifier);
       wakes.bind(b.wake, id);
-      const at = Date.now();
-      fact({ type: "job.queued", subject: `job:${id}`, version: "queued", at: iso(at), actor: `agent:${keyOf(agent)}`, task, data: { wake: b.wake, wake_at: iso(w.at ?? at), agent: keyOf(agent) } });
-      fact({ type: "wake.bound", subject: `wake:${b.wake}`, version: `bound:${id}`, at: iso(at), actor: "kernel", task, data: { job: id } });
       db.exec("COMMIT");
       job = { id, module, agent, task, identifier, profile: authority.profile, authority, prompt: b.prompt, ...(b.full_prompt ? { fullPrompt: b.full_prompt } : {}), fresh, wake: b.wake };
     } catch (e) {
@@ -214,8 +214,10 @@ export function createAdmission({ db, grants, kinds, capacity, pool, spend, mayD
         // until the next kernel's recover() gives its wake back.
         try {
           inTx(db, "job_unstarted", () => {
-            if (db.prepare("UPDATE jobs SET state = 'failed', final = ?, ended = ? WHERE id = ? AND state = 'admitted'").run(why, Date.now(), id).changes)
+            if (db.prepare("UPDATE jobs SET state = 'failed', final = ?, ended = ? WHERE id = ? AND state = 'admitted'").run(why, Date.now(), id).changes) {
+              queueFacts(db, fact, id, keyOf(agent));
               fact({ type: "job.ended", subject: `job:${id}`, version: "ended", at: iso(Date.now()), actor: `agent:${keyOf(agent)}`, task, data: { state: "failed", exit: null, why, model: "", cost_usd: 0, input: 0, cached: 0, output: 0, acted: false } });
+            }
           });
         } catch (fe) {
           log("a job that couldn't start isn't recorded as ended", { job: id, task, err: (fe as Error).message });
@@ -264,10 +266,15 @@ export function createAdmission({ db, grants, kinds, capacity, pool, spend, mayD
     },
     /**
      * Once the previous kernel has exited (main.ts afterPrevious: a draining kernel may still be launching what it admitted): a
-     * job admitted but never started by it never runs; its wake is given back. This process's own launches are never touched.
+     * job admitted but never started by it never runs; its box (it may have been cloning) goes back, then its wake. This
+     * process's own launches are never touched.
      */
-    recover() {
-      for (const r of db.prepare("SELECT id, wake FROM jobs WHERE state = 'admitted'").all() as { id: string; wake: string }[]) if (!launching.has(r.id)) defer(r.id, r.wake);
+    async recover() {
+      const rows = db.prepare("SELECT id, wake FROM jobs WHERE state = 'admitted'").all() as { id: string; wake: string }[];
+      await Promise.all(rows.filter((r) => !launching.has(r.id)).map(async (r) => {
+        await release(r.id).catch((e: Error) => log("couldn't release an abandoned launch's computer", { job: r.id, err: e.message }));
+        defer(r.id, r.wake);
+      }));
     },
     /** Launches in flight in this process (a drain waits for them). */
     inflight: () => launching.size,

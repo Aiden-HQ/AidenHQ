@@ -543,8 +543,8 @@ export class Maintainer {
   }
 
   /**
-   * One repo's open issues opened after `since` that carry no repo label and weren't filed by the fleet (in AidenHQ's
-   * records): the reports the Maintainer triages one by one. Oldest first, at most TRIAGE_BATCH; `triage_cursor`
+   * One repo's open issues opened after `since` that carry no repo label (the fleet's own product bugs
+   * included): the reports the Maintainer triages one by one. Oldest first, at most TRIAGE_BATCH; `triage_cursor`
    * is the newest one read (the last one handed over when the batch is full). With no `since` (the first look) nothing is
    * handed over and the cursor is now: reports already open are the daily triage's, never a burst of runs. Each carries its
  * author's login, which the board counts toward its per-author triage limit.
@@ -562,11 +562,8 @@ export class Maintainer {
       newer.push(...pageIssues.filter(after));
       if (pageIssues.length < 100 || !pageIssues.every(after)) break;
     }
-    // The fleet's own filings (in AidenHQ's records) are never triaged as a new report.
-    const filed = new Set<number>();
-    for (const i of newer) if (await this.ours(this.ref(r, i.number))) filed.add(i.number);
     const fresh = newer
-      .filter((i) => !i.pull_request && !filed.has(i.number) && !labelNames(i).some((l) => same(l, r.label) || l === FEATURE_LABEL || l === BUILD_LABEL))
+      .filter((i) => !i.pull_request && !labelNames(i).some((l) => same(l, r.label) || l === FEATURE_LABEL || l === BUILD_LABEL))
       .sort((a, b) => Date.parse(String(a.created_at)) - Date.parse(String(b.created_at)))
       .slice(0, TRIAGE_BATCH)
       .map((i) => ({ number: i.number, created_at: String(i.created_at), author: String(i.user?.login ?? "") }));

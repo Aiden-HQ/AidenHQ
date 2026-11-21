@@ -403,7 +403,8 @@ refresh
 while read -r id service; do
   [ -n "$id" ] || continue
   stale=1
-  docker rm -f "$id" >/dev/null && echo "compose: $service removed (no longer in the config)"
+  err="$(docker rm -f "$id" 2>&1)" || grep -qE "$race" <<< "$err" || { printf '%s\n' "$err" >&2; exit 1; }
+  echo "compose: $service removed (no longer in the config)"
 done <<< "$(dropped)"
 refresh
 summary

@@ -37,12 +37,13 @@ async function body(req: IncomingMessage): Promise<Record<string, unknown>> {
 
 export function handler(engine: Engine, token: () => string, isGithub: (authorization: string) => Promise<boolean | undefined>) {
   const authorized = (req: IncomingMessage) => {
-    const want = token();
-    const got = String(req.headers.authorization ?? "").replace(/^Bearer\s+/i, "");
-    return !!want && got.length === want.length && timingSafeEqual(Buffer.from(got), Buffer.from(want));
+    const want = Buffer.from(token());
+    const got = Buffer.from(String(req.headers.authorization ?? "").replace(/^Bearer\s+/i, ""));
+    return want.length > 0 && got.length === want.length && timingSafeEqual(got, want);
   };
   return async (req: IncomingMessage, res: ServerResponse) => {
-    const url = new URL(req.url ?? "/", "http://localhost");
+    let url: URL;
+    try { url = new URL(req.url ?? "/", "http://localhost"); } catch { return send(res, 400, { error: "bad request" }); }
     const route = `${req.method} ${url.pathname.replace(/\/+$/, "")}`;
     if (route === "GET /healthz") return send(res, 200, { ok: true });
     if (route === "GET /v1/verdict") {

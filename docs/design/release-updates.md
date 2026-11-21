@@ -36,9 +36,10 @@ is `kernel/src/updates.ts`.
   and this release never failed here. Maintenance, not agent work: quiet start does not hold it.
 - **Preparing it.** The kernel commit is put on the product checkout's `origin/main`, where the planner reads the product move;
   one commit moving `product:` and `release.{name,sha}` is made on the instance repo's branch `release/<name>`, built on its main.
-- **Filing it.** The kernel files a task of its own for the platform engineer (no agent works on it) and a `kernel.apply` of that
-  commit on it (`writes.fileKernel` with UPDATER: requester kind `kernel`, which no token yields). The planner tiers it like any
-  apply. Only the updater's own filing, while auto-updates are on, whose head is exactly the pin its own verification writes for
+- **Filing it.** The kernel files a task of its own for the platform engineer, quiet (the backlog: no agent works on it, and its
+  assignment wakes nobody), and a `kernel.apply` of it (`writes.fileKernel` with UPDATER: requester kind `kernel`, which no
+  token yields). The planner tiers it like any apply. Only the updater's own filing, while auto-updates are on, whose head is
+  exactly the pin its own verification writes for
   this base (`verify`: tag on the distro's main, newer than the current release, the tested stamp, the kernel descending), is the
   AI reviewer's (`release-pin`, Tier 1: the owner's standing authority). Every other release move is the owner's after the
   reviewer. The autonomy and routine caps limit what agents do, so they don't hold a write the kernel itself requests: with

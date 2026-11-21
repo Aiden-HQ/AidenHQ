@@ -21,6 +21,8 @@ export interface McpDeps {
   decide: KernelAuth["mcpDecide"];
   update: KernelAuth["mcpUpdate"];
   flows: () => SetupFlowPoint[];
+  /** Each flow's done and dismissed state as the setup page counts it (setup-flows.ts). */
+  setupStates: (module?: string) => Promise<{ module: string; title: string; done: boolean; dismissed: boolean }[]>;
 }
 
 /** The tools that change something: the HTTP layer asks the kernel afresh about the bearer before running one. */
@@ -177,21 +179,20 @@ export function createMcp(d: McpDeps) {
       "read",
       async () => {
         const unavailable: string[] = [];
-        const [needs, approvals, apps, conns, settings] = await Promise.all([
+        const [needs, approvals, apps, conns, settings, setup] = await Promise.all([
           safe("needs-you", unavailable, () => call("GET", "/api/needs-you")),
           safe("approvals", unavailable, () => call("GET", "/api/approvals")),
           safe("apps", unavailable, () => call("GET", "/api/apps")),
           safe("connections", unavailable, () => call("GET", "/api/settings/connections")),
           safe("settings", unavailable, () => call("GET", "/api/settings")),
+          safe("setup", unavailable, async () => (await d.setupStates()).filter((f) => !f.done && !f.dismissed)),
         ]);
         const pending = ((approvals?.approvals ?? []) as any[]).filter((a) => a.state === "pending");
         const failing = ((apps?.apps ?? []) as any[]).filter((a) => !a.healthy && ["unhealthy", "failed"].includes(a.state));
         const rowsOf = (conns?.connections ?? []) as any[];
         const down = rowsOf.filter((r) => r.probe && !r.probe.ok).map((r) => ({ connection: r.name, module: r.module, problem: r.probe.detail ?? r.probe.state ?? "not answering" }));
-        const todo = [
-          ...down,
-          ...d.flows().filter((f) => rowsOf.some((r) => r.module === f.module && (r.signIn?.state === "missing" || r.setup))).map((f) => ({ module: f.module, problem: f.title, link: `${ctx.origin}/#/setup/${f.module}` })),
-        ];
+        // The setup page's own verdict (not done, not dismissed), so a connected module is never listed.
+        const todo = [...down, ...(setup ?? []).map((f) => ({ module: f.module, problem: f.title, link: `${ctx.origin}/#/setup/${f.module}` }))];
         const text = `${needs?.counts?.needs_you ?? 0} waiting on you, ${pending.length} pending cards, ${failing.length} apps failing, ${todo.length} to set up or fix.`;
         return out(text, { needs_you: needs ?? {}, approvals_pending: pending.length, approvals: (pending.slice(0, 10).map(cardRow)) as object[], apps_failing: failing, setup_todo: todo, instance: settings ? { ...settings.instance, spend: settings.spend } : null, unavailable });
       },
@@ -205,27 +206,25 @@ export function createMcp(d: McpDeps) {
       "write",
       async (a) => {
         const lane = (id: string) => (id.startsWith("lane:") ? id.slice(5) : null);
-        const read = async (id: string): Promise<{ n: number; replies: string[] }> => {
+        // A lane's reply is an agent message after the owner's newest (ours, once posted); a task chat's is a reply after the newest message seen before posting.
+        const read = async (id: string, after?: string): Promise<{ last?: string; replies: string[] }> => {
           const key = lane(id);
-          if (key) {
-            const { messages } = await call("GET", `/api/lane/${encodeURIComponent(key)}/messages`);
-            const last = (messages as any[]).map((m) => m.role).lastIndexOf("owner");
-            return { n: messages.length, replies: (messages as any[]).slice(last + 1).filter((m) => m.role === "agent").map((m) => m.text) };
-          }
-          const { messages } = await call("GET", `/api/chats/${encodeURIComponent(id)}?peek=1`);
-          return { n: messages.length, replies: (messages as any[]).filter((m) => m.kind === "reply").map((m) => m.text) };
+          const { messages } = (key ? await call("GET", `/api/lane/${encodeURIComponent(key)}/messages`) : await call("GET", `/api/chats/${encodeURIComponent(id)}?peek=1`)) as { messages: any[] };
+          const last = messages.at(-1)?.id as string | undefined;
+          if (key) return { last, replies: messages.slice(messages.map((m) => m.role).lastIndexOf("owner") + 1).filter((m) => m.role === "agent").map((m) => m.text) };
+          return { last, replies: messages.slice(after ? messages.findIndex((m) => m.id === after) + 1 : 0).filter((m) => m.kind === "reply").map((m) => m.text) };
         };
         let id = a.chat as string | undefined;
-        let seen = 0;
+        let after: string | undefined;
         if (id) {
-          seen = (await read(id)).replies.length;
+          after = (await read(id)).last;
           if (lane(id)) await call("POST", `/api/lane/${encodeURIComponent(lane(id)!)}/messages`, { text: a.text });
           else await call("POST", `/api/issues/${encodeURIComponent(id)}/comments`, { body: a.text, brief: true });
         } else id = (await call("POST", "/api/chats", { text: a.text, ...(a.agent ? { agent: (await agentRef(a.agent)).id } : {}) })).identifier as string;
         const until = Date.now() + a.wait_seconds * 1000;
         for (;;) {
-          const { replies } = await read(id);
-          if (replies.length > seen) return out(`Reply in ${id}.`, { chat: id, replied: true, reply: replies.at(-1)! });
+          const { replies } = await read(id, after);
+          if (replies.length) return out(`Reply in ${id}.`, { chat: id, replied: true, reply: replies.join("\n\n") });
           const left = until - Date.now();
           if (left <= 0) return out(`${id}: still working. Call get_task with this id to read the reply.`, { chat: id, replied: false, reply: null });
           await new Promise((r) => setTimeout(r, Math.min(1000, left)));
@@ -446,8 +445,8 @@ export function createMcp(d: McpDeps) {
       { flows: rows },
       "read",
       async (a) => {
-        const [setup, conns] = await Promise.all([call("GET", "/api/setup-flows").catch(() => ({ flows: [] })), call("GET", "/api/settings/connections").catch(() => ({ connections: [] }))]);
-        const done = new Set<string>((setup.flows as { module: string; done?: boolean }[]).filter((f) => f.done).map((f) => f.module));
+        const [setup, conns] = await Promise.all([d.setupStates(a.module), call("GET", "/api/settings/connections").catch(() => ({ connections: [] }))]);
+        const done = new Set(setup.filter((f) => f.done).map((f) => f.module));
         const all = d.flows();
         const flows = await Promise.all(all.filter((f) => !a.module || f.module === a.module).map((f) => flowState(call, ctx.origin, f, done.has(f.module))));
         // A sign-in no setup flow fronts (a bare board.signins entry): its own state, Connect link and live check.

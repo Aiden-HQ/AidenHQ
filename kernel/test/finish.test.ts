@@ -243,7 +243,11 @@ test("/v1/checks/:task: only the check's module; release drops its label; ok and
   assert.equal((await resolve({ verdict: "release" })).status, 200);
   assert.equal(writes.length, before, "a task the check never held is not touched");
   await finish({ status: "done" });
-  assert.equal((await resolve({ verdict: "release" })).status, 200);
+  // A release naming a time before the hold (the module read its state earlier) leaves that newer hold alone.
+  const kept = writes.length;
+  assert.deepEqual((await resolve({ verdict: "release", before: "2000-01-01T00:00:00.000Z" })).json, { ok: true, held: false });
+  assert.equal(writes.length, kept);
+  assert.equal((await resolve({ verdict: "release", before: new Date(Date.now() + 1000).toISOString() })).status, 200);
   assert.deepEqual(writes.at(-1), { as: "board-key", body: { labelIds: ["lbl-x"] } });
   await finish({ status: "done" });
   assert.equal((await resolve({ verdict: "ok", comment: "Graded: satisfied." })).status, 200);

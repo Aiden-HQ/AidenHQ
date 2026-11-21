@@ -104,7 +104,7 @@ export type SetupRoute = { method: string; path: RegExp; handle: (m: RegExpMatch
 
 const DISMISSED = "setup_dismissed";
 
-export function setupFlowRoutes(d: SetupFlowDeps): SetupRoute[] {
+export function setupFlowRoutes(d: SetupFlowDeps): { routes: SetupRoute[]; states: (module?: string) => Promise<{ module: string; title: string; done: boolean; dismissed: boolean }[]> } {
   const doFetch = d.fetchImpl ?? fetch;
   const dismissed = (): string[] => {
     try {
@@ -150,6 +150,16 @@ export function setupFlowRoutes(d: SetupFlowDeps): SetupRoute[] {
   };
   const pairedOf = async (f: SetupFlowPoint & { token?: string }) => (f.pair_url ?? f.advanced?.pair_url ? Boolean((await pairCall(f, "GET").catch(() => ({ paired: false }))).paired) : true);
 
+  /** The one completion rule, the setup page's: a connection's real state when the flow has one (sign-in, connect path or pairing), else its secrets (`present`, unknown without a session: not done). */
+  const flowDone = (f: SetupFlowPoint, signedIn: boolean, paired: boolean, present: Record<string, boolean> = {}) =>
+    f.signin || f.connect_url || f.pair_url ? signedIn && (f.pair_url ? paired : true) : (f.secrets ?? []).every((x) => present[x]);
+  const signedInOf = async (f: SetupFlowPoint, connected?: boolean) => (f.signin ? await d.signedIn(f.signin) : f.connect_url ? connected === true : true);
+  /** Each flow's done and dismissed state as the setup page counts it: the owner MCP's `status` lists the open ones, `connect` marks the done ones. */
+  const states = async (module?: string) => {
+    const gone = new Set(dismissed());
+    return Promise.all(d.flows.filter((f) => !module || f.module === module).map(async (f) => ({ module: f.module, title: f.title, done: flowDone(f, await signedInOf(f, f.connect_url ? await d.connected(f.connect_url) : undefined), await pairedOf(f)), dismissed: gone.has(f.module) })));
+  };
+
   const routes: SetupRoute[] = [
     {
       method: "GET",
@@ -162,14 +172,13 @@ export function setupFlowRoutes(d: SetupFlowDeps): SetupRoute[] {
             const present = f.secrets?.length || advanced?.secrets?.length ? (await d.accounts.call<{ secrets: Record<string, boolean> }>("setup_status", who, { module: f.module })).secrets : {};
             // A connect path counts only if the board serves it; then its connection's state is the sign-in's.
             const connected = connect_url ? await d.connected(connect_url) : undefined;
-            const signedIn = f.signin ? await d.signedIn(f.signin) : connect_url ? connected === true : true;
+            const signedIn = await signedInOf(full, connected);
             const paired = await pairedOf(full);
             // Basic is done once it is connected (and paired, when the basic flow pairs); advanced once its secrets exist (and paired).
-            const basicPaired = f.pair_url ? paired : true;
             const scopes = f.signin ? await d.scopeChoice(f.signin) : false;
             // A connection's real state decides when it has one (an upgraded instance keeps values outside the vault and works);
             // only a flow with no sign-in, connect path or pairing is done by its secrets.
-            const done = f.signin || connect_url || f.pair_url ? signedIn && basicPaired : (f.secrets ?? []).every((s) => present[s]);
+            const done = flowDone(full, signedIn, paired, present);
             const adv = advanced && (({ pair_token: _a, ...a }) => ({ ...a, done: (a.secrets ?? []).every((s) => present[s]) && (a.pair_url ? paired : true) }))(advanced);
             const redirect_url = f.signin ? d.redirectUrl(f.signin, host) : undefined;
             const choose = full.choose ? { choose: chooseView(full.choose, f.module) } : {};
@@ -251,5 +260,5 @@ export function setupFlowRoutes(d: SetupFlowDeps): SetupRoute[] {
       },
     },
   ];
-  return routes.map((r) => ({ ...r, handle: async (m, b, who, host) => (ready(who), r.handle(m, b, who, host)) }));
+  return { routes: routes.map((r) => ({ ...r, handle: async (m, b, who, host) => (ready(who), r.handle(m, b, who, host)) })), states };
 }

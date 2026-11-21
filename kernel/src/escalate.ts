@@ -54,7 +54,7 @@ export function creatorTask(db: DatabaseSync, task: string): string | undefined 
   try { return (db.prepare("SELECT j.task FROM provenance p JOIN jobs j ON j.id = p.created_by_job WHERE p.task = ?").get(task) as { task: string } | undefined)?.task; } catch { return undefined; }
 }
 
-export function createEscalate({ db, issue, state, asker, notice, owner, chief, conversing, log = () => {}, now = Date.now }: {
+export function createEscalate({ db, issue, state, asker, notice, owner, chief, conversing, reachable = () => true, log = () => {}, now = Date.now }: {
   db: DatabaseSync;
   /** A task as the control plane has it now; undefined when it is gone. Throws when it can't be read now. */
   issue: (id: string) => Promise<Issue | undefined>;
@@ -70,17 +70,19 @@ export function createEscalate({ db, issue, state, asker, notice, owner, chief, 
   chief: (b: { title: string; description: string; source: string }) => Promise<unknown>;
   /** Whether the owner is talking to the task's agent there: they wrote on it within CONVERSING_MS. */
   conversing: (task: string) => Promise<boolean>;
+  /** Whether an agent id's wakes are taken (an enabled dispatcher runs it): a notice to a task nobody runs would never be read. */
+  reachable?: (agent: string) => boolean;
   log?: (msg: string, f?: Record<string, unknown>) => void;
   now?: () => number;
 }) {
   db.exec("CREATE TABLE IF NOT EXISTS escalations (key TEXT PRIMARY KEY, task TEXT NOT NULL, kind TEXT NOT NULL, at INTEGER NOT NULL)");
   const seen = (key: string) => Boolean(db.prepare("SELECT 1 FROM escalations WHERE key = ?").get(key));
   const mark = (key: string, task: string, kind: string) => db.prepare("INSERT OR IGNORE INTO escalations (key, task, kind, at) VALUES (?, ?, ?, ?)").run(key, task, kind, now());
-  /** The task's open delegator task, if any. */
+  /** The task's open delegator task whose agent takes wakes, if any (else the chief of staff hears it). */
   async function delegatorOf(t: Issue) {
     const up = t.parentId ?? creatorTask(db, t.id);
     const d = up ? await issue(up) : undefined;
-    return d && !CLOSED.includes(String(d.status)) ? d : undefined;
+    return d && !CLOSED.includes(String(d.status)) && d.assigneeAgentId && reachable(d.assigneeAgentId) ? d : undefined;
   }
   /** The task's agent, as the owner channel reads it; undefined when it has none or can't be read (never the chief then). */
   const agentOf = async (t: Issue) => (t.assigneeAgentId ? await asker(t.assigneeAgentId).catch(() => undefined) : undefined);

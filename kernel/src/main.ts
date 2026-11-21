@@ -92,7 +92,7 @@ import { createWork } from "./work.ts";
 import { readEngines } from "./sandbox.ts";
 import { sandboxConfig } from "./sandbox-config.ts";
 import { createCertWatch } from "./front-door.ts";
-import { createUpdates, labelOf, runCheck, runMain, runVerify } from "./updates.ts";
+import { createUpdates, runCheck, runMain, runVerify, updateTask } from "./updates.ts";
 import { BOX_EXEC_WRAP } from "../../services/computer/lib.ts";
 import { TYPED, limitIssueLists, markCode } from "./cplimit.ts";
 
@@ -257,7 +257,7 @@ const escalateIssue = async (id: string) => {
   return (await r.json()) as never;
 };
 const escalate = createEscalate({
-  db: records.db, log,
+  db: records.db, log, reachable: (id) => wakes.polls(id),
   issue: escalateIssue,
   state: (id) => taskStates.read({ ids: [id] }).tasks[0],
   // The owner channel's attention reads the agent's key and roles (the grants table), as it does for the agent's own notify.
@@ -315,7 +315,7 @@ const updates = createUpdates({
   db: records.db, dir: path.join(dataDir, "updates"), inst: env("AIDENHQ_INSTANCE_DIR", path.join(process.env.HOME ?? "", "aidenhq-instance")), board: path.join(env("AIDENHQ_STATE_DIR", path.join(process.env.HOME ?? "", ".local/state/aidenhq")), "board/updates.json"),
   ownerLine: toOwner("done"), check: runCheck(repo), main: runMain(repo), log,
   file: async (r) => {
-    const task = await moduleTasks.file("kernel", { title: `Update AidenHQ to ${labelOf(r.release)}`, role: "platform-engineer", source: `release:${r.release}:${r.sha}`, description: `Installs AidenHQ ${labelOf(r.release)} (from ${r.from}), filed by the release updater as one apply. No agent works on this task; it closes when the apply ends.\n\nWhat changed: ${r.compare}` });
+    const task = await moduleTasks.file("kernel", updateTask(r));
     try {
       return { record: (await writes.fileKernel("kernel.apply", { args: { repo: repos().instance, branch: r.branch, sha: r.sha }, task: task.id, requester: UPDATER })).id, task: task.id };
     } catch (e) {
@@ -592,7 +592,7 @@ boxes = createBoxes({
 const pool = createPool({ capacity: () => Number(computers().max) || 0, agentLive: () => (records.db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE state IN ('admitted', 'running')").get() as { n: number }).n });
 const admission = createAdmission({
   pool, db: records.db, facts, grants: () => (grantsTable().agents ?? {}) as never, kinds: registry, capacity: () => Number(computers().max) || 0,
-  spend: (agent, task) => gw.exhausted(agent, task), mayDispatch, wakes: wakeInbox(records.db), nextTurn: jobTools, launch: (job) => boxes!.launch(job), log,
+  spend: (agent, task) => gw.exhausted(agent, task), mayDispatch, wakes: wakeInbox(records.db), nextTurn: jobTools, launch: (job) => boxes!.launch(job), release: (id) => boxes!.release(id), log,
   provenance, routineCap: (task) => taskRoutineCap(cpTrace, task, routinesTable()),
   // A task gone is none (a refusal dispatch drops); a read that fails otherwise is a 503, so the wake comes back.
   cp: { task: async (id) => {
@@ -602,7 +602,7 @@ const admission = createAdmission({
     return (await r.json()) as never;
   } },
 });
-afterPrevious(() => admission.recover());
+afterPrevious(() => void admission.recover().catch((e: Error) => log("WARNING: couldn't recover the previous kernel's admitted jobs", { err: e.message })));
 const stopTending = boxes.start();
 // The GitHub code host's operations, brokered for modules under their own codehost grants (codehost.ts).
 const codehost = createCodehost({ repos: codehostRepos, grants: codehostGrants, kind: () => Object.values(moduleKinds()).find((k) => k.module === CODEHOST && k.executor), secret, resolver,

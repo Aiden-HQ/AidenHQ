@@ -514,7 +514,8 @@ function authorized(req: IncomingMessage): boolean {
 // kernel vouches for (module-caller.ts, at kernelUrl).
 
 const http = createServer(async (req, res) => {
-  const url = new URL(req.url ?? "/", "http://localhost");
+  let url: URL;
+  try { url = new URL(req.url ?? "/", "http://localhost"); } catch { return void res.writeHead(400).end(); }
   if (url.pathname === "/healthz") {
     // No token: not set up yet (state "missing"), which the apply's live agent check notes rather than fails.
     const ok = github.available();

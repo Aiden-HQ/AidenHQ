@@ -261,6 +261,7 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
     return Boolean(l) && labelIds(i).includes(l!.id);
   }
   /** Whether the finish gate recorded its hold of the task: the `check_holds` row `finish()` wrote, which resolving a hold requires. */
+  const heldAt = (id: string, i: Issue) => (db.prepare("SELECT at FROM check_holds WHERE task = ? AND check_id = ?").get(i.id, id) as { at: string } | undefined)?.at ?? "";
   const recorded = (id: string, i: Issue) => Boolean(i.id) && db.prepare("SELECT 1 FROM check_holds WHERE task = ? AND check_id = ?").get(i.id, id) !== undefined;
   /**
    * Whether `id` holds the task for the grader's token: the recorded row, or — without one — a task still waiting in review
@@ -277,7 +278,7 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
    * `ok`, `reopen` and `block` resolve a hold this check placed, moving the task to done, todo or blocked as the owner. Only
    * the check's own module, and ok/reopen/block only on a task it holds.
    */
-  async function resolve(module: string, ref: string, b: { check?: unknown; verdict?: unknown; comment?: unknown }) {
+  async function resolve(module: string, ref: string, b: { check?: unknown; verdict?: unknown; comment?: unknown; before?: unknown }) {
     const mine = finishing().filter(([id, c]) => c.module === module && (b.check === undefined || id === `${module}.${String(b.check)}`));
     if (mine.length !== 1) throw fail(403, "forbidden", `${module} has ${mine.length ? "several finish checks: name one (check)" : "no finish check"}`);
     const [id, c] = mine[0]!;
@@ -288,6 +289,8 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
     // A release hands the task to its delegator: only a task this check holds (its row, or in review under its label). On any
     // other task it changes nothing and records nothing, so a module can't move a task it never held.
     if (b.verdict === "release" && !(await holds(id, c, i))) return { ok: true, held: false };
+    // `before`: release only a hold placed by then (the module read its own state at that time); a newer one is a later finish.
+    if (b.verdict === "release" && typeof b.before === "string" && heldAt(id, i) > b.before) return { ok: true, held: false };
     // A module's ok moves the task to done as the owner: the same hold as an agent's finish, so a change still open on this
     // server stops it too, before the hold is released.
     if (b.verdict === "ok") await noOpenChange(i, "the grader or the module that held it can move it on once the merge lands");
@@ -301,10 +304,16 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
     } else await unlabel(i, c);
     // The hold ends with its verdict's fact; `release` is one too: the check hands the decision to the task's delegator
     // (grading's escalation), so task state reads the task, still in review, as waiting on its delegator.
-    inTx(db, "finish_resolved", () => {
+    // A release with `before` deletes only a hold placed by then: a finish that held the task again meanwhile keeps its hold
+    // (the row is what the grader resolves; the label the release took is only the view), and nothing is recorded.
+    const cutoff = b.verdict === "release" && typeof b.before === "string" ? b.before : undefined;
+    const ended = inTx(db, "finish_resolved", () => {
+      if (cutoff && heldAt(id, i) > cutoff) return false;
       db.prepare("DELETE FROM check_holds WHERE task = ? AND check_id = ?").run(i.id, id);
       strict(verdictFact(i.id, id, String(b.verdict)));
+      return true;
     });
+    if (!ended) return { ok: true, held: false };
     log("finish check resolved", { task: i.identifier, check: id, verdict: b.verdict });
     // Released with nobody to decide it: the chief of staff gets it. A failure is logged loudly; the release itself stands.
     if (b.verdict === "release") await released(i.id, id).catch((e: Error) => log("released hold reached nobody: the chief of staff wasn't told", { task: i.identifier, check: id, err: String(e.message).slice(0, 300) }));

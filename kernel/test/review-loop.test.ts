@@ -49,9 +49,9 @@ async function reviewer(t) {
   t.after(() => m.s.close());
   return { url: `${m.url}/aidenhq/v1/reviewer`, seen };
 }
-const fileRecord = (records, { panel = false, args = { note: "hello" }, model } = {}) => records.file({
+const fileRecord = (records, { panel = false, args = { note: "hello" }, model, requester } = {}) => records.file({
   kind: KIND, module: "acme", args, targets: {}, executor: { module: "acme" }, policy: "p", card: { sentence: "Post a note.", changes: "c", reads: "r", cost: "none", details: "note: hello" },
-  requester: { agent: "ag-ada", key: "ada", name: "Ada", roles: [], kind: "job", ...(model ? { model } : {}) }, task: "TASK-1", tier: 1, merit: 1, panel, review_first: null, rule: null, state: "review",
+  requester: requester ?? { agent: "ag-ada", key: "ada", name: "Ada", roles: [], kind: "job", ...(model ? { model } : {}) }, task: "TASK-1", tier: 1, merit: 1, panel, review_first: null, rule: null, state: "review",
 });
 const db = () => join(mkdtempSync(join(tmpdir(), "review-loop-")), "kernel.db");
 
@@ -86,7 +86,7 @@ test("a Tier 1 record is reviewed by the module and then executed; a reviewer's 
 test("the rejection that parks a task wakes its delegator once, with the reviewer's last note; a request refused as parked after it wakes nobody again", async (t) => {
   const mod = await reviewer(t);
   const told = [], owner = [];
-  const tasks = { "TASK-1": { id: "TASK-1", identifier: "WOR-1", status: "in_progress", parentId: "TASK-0" }, "TASK-0": { id: "TASK-0", identifier: "WOR-0", status: "blocked" } };
+  const tasks = { "TASK-1": { id: "TASK-1", identifier: "WOR-1", status: "in_progress", parentId: "TASK-0" }, "TASK-0": { id: "TASK-0", identifier: "WOR-0", status: "blocked", assigneeAgentId: "a-boss" } };
   const k = await side(t, db(), mod, { escalate: (records) => {
     const e = createEscalate({ db: records.db, issue: async (id) => tasks[id], comments: async () => [], asker: async () => ({ name: "Kai", key: "kai", roles: [] }), notice: (task, body) => told.push({ task, body }), owner: (n) => owner.push(n) });
     return (task, key, text) => e.delegator(task, key, text);
@@ -331,6 +331,26 @@ test("the reviewer reads an agent's form with its options spelled out, so the ow
   const out = spellQuestions(body);
   assert.match(out, /1\. Where do you want to review the design\?\nA\) On Primer\nB\) Here in chat/);
   assert.equal(spellQuestions("plain"), "plain");
+});
+
+
+test("a run's post is reviewed with no sibling run's rejection notes, answered or not", async (t) => {
+  const mod = await reviewer(t);
+  const comments = [];
+  const k = await side(t, db(), mod, { comments, delegator: "ag-kai", agents: { "ag-kai": { key: "kai", roles: [] } } });
+  const service = { agent: "", key: "", name: "", roles: [], kind: "service", module: "" };
+  for (let n = 0; n < MAX_REJECTS + 1; n++) {
+    await new Promise((r) => setTimeout(r, 5));
+    if (n === 2) comments.push({ body: "Decided: go on.", createdAt: new Date().toISOString(), authorType: "agent", authorAgentId: "ag-kai" });
+    fileRecord(k.records, { args: { note: `run ${n}`, run: `run-${n}` }, requester: service });
+    const sweep = k.loop.tick();
+    await until(() => mod.seen.length === n + 1);
+    const last = mod.seen.at(-1);
+    assert.deepEqual(last.request.previous, [], `run ${n + 1} carries no sibling notes`);
+    k.reviews.verdict(last.id, last.token, { decision: "reject", reason: `no (${n})`, model: "~acme/model-a" });
+    await sweep;
+    assert.notEqual(k.records.list(["rejected"], 100).at(-1).review_code, "refused_by_code", `run ${n + 1} reached the reviewer`);
+  }
 });
 
 test("the owner's short answer to a form is read by code against that form's options", async () => {

@@ -46,16 +46,13 @@ export const CODEX_CONFIG_SCRUB = [
 export const BOX_EXEC_WRAP = CODEX_CONFIG_SCRUB;
 
 /**
- * compile publishes a new image tag before ops/computer-images.sh has built it. Until it exists, run the newest built image
- * of the same name (never a pull) rather than failing the agent's run.
+ * compile publishes a new image tag before ops/computer-images.sh has built it (the same apply builds it next). Until it
+ * exists the launch is refused with a 503: the kernel retries it (an agent job on its next tick, a check every 30s up to its busy wait).
  */
 export async function builtImage(tag: string, docker: (args: string[]) => Promise<{ exitCode?: number | null; stdout: string }>, log: (...a: unknown[]) => void = () => {}) {
   if ((await docker(["image", "inspect", tag])).exitCode === 0) return tag;
-  const r = await docker(["images", "--filter", `reference=${tag.split(":")[0]}`, "--format", "{{.Repository}}:{{.Tag}}"]); // newest first
-  const older = r.stdout.split("\n").find((t: string) => t && !t.endsWith(":<none>"));
-  if (!older) throw Object.assign(new Error(`image ${tag} is not built yet (ops/computer-images.sh)`), { status: 500 });
-  log("image", tag, "not built yet; using", older);
-  return older;
+  log("image", tag, "not built yet; launch deferred");
+  throw Object.assign(new Error(`image ${tag} is not built yet (ops/computer-images.sh)`), { status: 503 });
 }
 
 /** `docker run` arguments: image, limits, network and mounts all come from the launcher's own config. */

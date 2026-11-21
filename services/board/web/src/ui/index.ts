@@ -1,7 +1,7 @@
 // The board's design system: import every part from here. What to use for what: docs/design/board-ui.md; all of it on
 // one page, in both themes: #/design.
 export { Banner } from "./Banner";
-export { Button, LinkButton, buttonClass, type ButtonVariant } from "./Button";
+export { Button, LinkButton, safeHref, buttonClass, type ButtonVariant } from "./Button";
 export { Card, Facts, Meter } from "./Card";
 export { Dialog } from "./Dialog";
 export { EmptyState } from "./EmptyState";

@@ -75,7 +75,7 @@ describe.runIf(process.env.AIDENHQ_BROWSER_E2E)("the browser image renders (end 
     const [home, csp] = out.pages;
     expect(home).toMatchObject({ path: "/", status: 200, contentType: "text/html", console: ["boom"], sheets: [{ href: "http://127.0.0.1:8080/style.css", applied: true }] });
     expect(home!.failed).toContainEqual({ type: "script", url: "http://127.0.0.1:8080/missing.js", why: "404" });
-    expect(judgePage(home!, true).filter((f) => f.hard).map((f) => f.what)).toEqual(["a script failed to load (404)", "console error"]);
+    expect(judgePage(home!, true).filter((f) => !f.hard).map((f) => f.what)).toEqual(["a script failed to load (404)", "console error"]);
     expect(csp!.csp!.join(" ")).toMatch(/Content Security Policy/);
   });
 

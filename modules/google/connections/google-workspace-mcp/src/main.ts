@@ -263,7 +263,8 @@ async function handleAuth(req: IncomingMessage, path: string): Promise<[number, 
 }
 
 const http = createServer(async (req, res) => {
-  const url = new URL(req.url ?? "/", "http://localhost");
+  let url: URL;
+  try { url = new URL(req.url ?? "/", "http://localhost"); } catch { return void res.writeHead(400).end(); }
   if (url.pathname === "/healthz") {
     res.writeHead(workspace ? 200 : 503, { "content-type": "application/json" }).end(JSON.stringify(healthBody(!!workspace, authError)));
     return;
