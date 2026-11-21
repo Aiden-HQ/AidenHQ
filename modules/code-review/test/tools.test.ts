@@ -133,19 +133,17 @@ test("a tool that leaves a process holding stderr doesn't hold the run; tools pa
   assert.ok(TOTAL_MINUTES < 180 - 10, "the run's time stays under the check's timeout_min with room for the box");
 });
 
-test("a PR target: findings in files the PR didn't change are pre_existing; runs_code tools run last", async () => {
-  const { ws, out } = checkout({ "old.txt": "same\n", "new.txt": "changed\n" });
-  mkdirSync(join(out, "base"), { recursive: true });
-  writeFileSync(join(out, "base", "old.txt"), "same\n");
-  writeFileSync(join(out, "base", "new.txt"), "before\n");
+test("the tools check reviews a whole tree only; runs_code tools run last", async () => {
+  const { ws, out } = checkout({ "new.txt": "changed\n" });
+  await assert.rejects(runTools({ ws, out, spec: { repo: "acme/app", head: A, base: "b".repeat(40), options: "{}" } }), /whole tree/);
   const r = await runTools({
     ws, out,
-    spec: { repo: "acme/app", head: A, base: "b".repeat(40), options: JSON.stringify({
+    spec: spec({
       "x.code": { lens: "maintainability", cmd: "echo 'new.txt:1:1: second [Error/x]'; exit 1", output: "gcc", exits: [0, 1], runs_code: true },
-      "x.lint": { lens: "correctness", cmd: "printf 'old.txt:1:1: debt [Error/x]\\nnew.txt:1:1: fresh [Error/x]\\n'", output: "gcc" },
-    }) },
+      "x.lint": { lens: "correctness", cmd: "printf 'new.txt:1:1: fresh [Error/x]\\n'", output: "gcc" },
+    }),
   });
-  assert.equal(r.target, "pr");
-  assert.deepEqual(r.findings.map((f) => [f.option, f.path, f.severity]), [["x.lint", "new.txt", "important"], ["x.lint", "old.txt", "pre_existing"], ["x.code", "new.txt", "important"]]);
+  assert.equal(r.target, "tree");
+  assert.deepEqual(r.findings.map((f) => [f.option, f.path, f.severity]), [["x.lint", "new.txt", "important"], ["x.code", "new.txt", "important"]]);
   assert.equal(r.coverage.incomplete, null);
 });

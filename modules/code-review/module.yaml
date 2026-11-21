@@ -34,7 +34,7 @@ check_jobs:
     model: { max_usd: 100 }
     result: true
   # The selected tool options of the option catalog (catalog.json), run token-free over one commit (recipe/tools.ts): `options` is
-  # the JSON object recipe/catalog.ts toolSpec builds, `base` the PR's base, or the commit itself for a whole-tree review. No model.
+  # the JSON object recipe/catalog.ts toolSpec builds, `base` the commit itself (a whole tree only, for now). No model.
   code-review-tools:
     dir: recipe
     argv: [ node, /aidenhq-out/recipe/tools.ts ]

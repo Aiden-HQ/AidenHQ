@@ -14,12 +14,13 @@
 // A tool counts as failed (listed under coverage.failed with the tail of its stderr, the run carrying on) when it times out, can't
 // start, exits with a code not in its `exits` (default [0]: a scan error, even with a partial report), exits non-zero (a "found
 // something" code) with no finding, or leaves output that isn't its format. A failed tool or a cut list of findings makes the
-// review incomplete, never clean. Findings are placed at real lines (review.ts `place`), tagged with `option` and `lens`; on a PR
-// target, one in a file the PR didn't change (its bytes the same as the base's) is pre_existing, never a new one. Every important
-// one and at most MAX_PER_OPTION others are kept per option, the rest counted in coverage.dropped. The result is the review.ts
-// result shape ($AIDENHQ_RESULT) with target "tree" (base is the head) or "pr", engine "tools" and no cost; exit 0.
+// review incomplete, never clean. Findings are placed at real lines (review.ts `place`), tagged with `option` and `lens`. Every
+// important one and at most MAX_PER_OPTION others are kept per option, the rest counted in coverage.dropped. The result is the
+// review.ts result shape ($AIDENHQ_RESULT) with target "tree", engine "tools" and no cost; exit 0. It reviews a whole tree only
+// (spec.base is the commit itself): telling a PR's new findings from old ones needs a scan of the base too, which continuous
+// options bring (the plan's lane F).
 import { spawn } from "node:child_process";
-import { closeSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, cpSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { LENSES, OUTPUTS } from "./catalog.ts";
@@ -80,13 +81,8 @@ function exec(cmd: string, cwd: string, env: Record<string, string>, tmp: string
   });
 }
 
-/** Whether `path` is the same file in the head checkout `ws` as in the base tree `base` (a file the PR didn't change). */
-function unchanged(ws: string, base: string, path: string) {
-  try { return readFileSync(join(base, path)).equals(readFileSync(join(ws, path))); } catch { return false; }
-}
-
 export interface RunInput { spec: ToolsSpec; ws: string; out: string; env?: NodeJS.ProcessEnv; minutes?: number; totalMinutes?: number }
-/** The review of the selected tools over the checkout `ws`; `out`: the box's out folder (a writable HOME lives in it, the base tree at out/base). */
+/** The review of the selected tools over the checkout `ws`; `out`: the box's out folder (a writable HOME lives in it). */
 export async function runTools({ spec, ws, out, env = process.env, minutes = TOOL_MINUTES, totalMinutes = TOTAL_MINUTES }: RunInput) {
   const deadline = Date.now() + totalMinutes * 60_000;
   const options = JSON.parse(spec.options) as ToolSpec;
@@ -100,9 +96,7 @@ export async function runTools({ spec, ws, out, env = process.env, minutes = TOO
   // Tools may write beside the code (caches, reports): they get a copy, regular files and folders only.
   cpSync(ws, work, { recursive: true, filter: (src) => { const st = lstatSync(src); return st.isFile() || st.isDirectory(); } });
   const toolEnvVars = toolEnv(env, tmp);
-  // A PR target: a finding in a file the PR left as the base has it is pre_existing. A tree target: every file is the review's.
-  const base = join(out, "base"), pr = spec.base !== spec.head;
-  if (pr && !existsSync(base)) throw new Error("no base tree for a PR target");
+  if (spec.base !== spec.head) throw new Error("the tools check reviews a whole tree: spec.base is the commit itself");
 
   const failed: Failed[] = [], dropped: Record<string, number> = {}, counts: Record<string, number> = {};
   const findings: (ReturnType<typeof place>[number] & { option: string; lens: Lens })[] = [];
@@ -120,20 +114,18 @@ export async function runTools({ spec, ws, out, env = process.env, minutes = TOO
     if (r.exit !== 0 && !raw.length) { fail(`exit ${r.exit} with no finding`, r.stderr); continue; }
     // Each at a real place; one per id. What can't be placed (no file, a line past its end) is dropped and counted.
     const cleaned = clean(raw.map((f) => ({ ...f, evidence: redact(f.evidence), why: redact(f.why) })), work);
-    const marked = cleaned.map((f) => (pr && unchanged(ws, base, f.path) ? { ...f, severity: "pre_existing" as const } : f));
-    const placed = place(marked, work, new Set(marked.filter((f) => f.severity !== "pre_existing").map((f) => f.path)));
+    const placed = place(cleaned, work, new Set(cleaned.map((f) => f.path)));
     const byId = [...new Map(placed.map((f) => [f.id, f])).values()];
-    // Every important finding is kept; nits and pre-existing ones are capped. Only the PR's own (new) ones cut count as a gap.
-    const of = (s: string) => byId.filter((f) => f.severity === s);
-    const imp = of("important"), nits = of("nit").slice(0, MAX_PER_OPTION), kept = [...imp, ...nits, ...of("pre_existing").slice(0, MAX_PER_OPTION)];
+    // Every important finding is kept; nits are capped, and what is cut or unplaceable counts as a gap.
+    const imp = byId.filter((f) => f.severity === "important"), nits = byId.filter((f) => f.severity === "nit").slice(0, MAX_PER_OPTION), kept = [...imp, ...nits];
     counts[id] = kept.length;
-    const lost = raw.length - cleaned.length + marked.filter((f) => f.severity !== "pre_existing").length - imp.length - nits.length;
+    const lost = raw.length - imp.length - nits.length;
     if (lost > 0) dropped[id] = lost;
     findings.push(...kept.map((f) => ({ ...f, option: id, lens: o.lens })));
   }
 
   const result = {
-    version: 1, repo: spec.repo, target: spec.base === spec.head ? "tree" : "pr", base: spec.base, head: spec.head, engine: "tools", model: "", effort: "", incremental_from: null, full: true, addressed: false,
+    version: 1, repo: spec.repo, target: "tree", base: spec.base, head: spec.head, engine: "tools", model: "", effort: "", incremental_from: null, full: true, addressed: false,
     coverage: { reviewed: [] as string[], excluded: [] as string[], incomplete: null as string | null, options: Object.keys(options).filter((id) => !failed.some((f) => f.id === id)), failed, dropped, counts },
     findings, fixed: [] as string[], withheld: { important: 0, nit: 0, pre_existing: 0 }, cost_usd: 0, stale_guidance: [] as string[], guidance: [] as string[],
   };
