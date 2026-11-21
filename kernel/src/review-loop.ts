@@ -204,7 +204,11 @@ export async function reviewInput(r: Rec, { records, task, decisions, product, g
   const chainHash = requestHash(chain, said);
   const split = answered(records.list(ALL, 500, { task: r.task, reviewed: true }).filter((x) => x.id !== r.id).map(asPrior), authored.slice(-COMMENTS));
   const args = r.args && typeof r.args === "object" ? (r.args as Record<string, unknown>) : {};
-  const prior = priorDecisions(split.records, action, [], requestKey(action, { ...args, digest: r.digest }), undefined, chainHash, requestTargets(action, r.args));
+  const earlier = priorDecisions(split.records, action, [], requestKey(action, { ...args, digest: r.digest }), undefined, chainHash, requestTargets(action, r.args));
+  // The park bounds an agent retrying a rejected action. A record no agent filed (a module's own write: a review's post, one
+  // per run on a task that lives as long as its PR) has no retries to bound: each stands on its own, so rejections of its
+  // siblings never park it and their notes aren't its findings. The owner's veto and a rejected exact repeat still hold.
+  const prior = r.requester.agent ? earlier : { ...earlier, rejects: 0, splits: 0, findings: [] };
   const veto = priorPart(prior);
   const reviewed: ReviewInput = { tier: 1, rule: action, reason: r.card.reason ?? "", previous: [...split.answers, ...prior.findings], splits: prior.splits, panel: r.panel };
   // Tier 2 on its merits (the owner's veto here, or the record's own merit tier): reviewed, then the owner's.
