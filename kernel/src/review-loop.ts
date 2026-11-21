@@ -323,9 +323,10 @@ export function createReviewLoop({ records, writes, task, decisions, product, gr
      * One sweep: the oldest 200 records in review not already being reviewed nor waiting out a failed review's backoff, so a
      * burst never starves its first records. Resolves when they are done.
      */
-    async tick(): Promise<void> {
-      // A reviewer service recreated since a review went out (an apply) lost it: failed now, so the record is retried by its backoff.
-      await reviews?.check().catch((e: Error) => void log("reviewer health unread", { err: String(e.message ?? e).slice(0, 200) }));
+    tick(): Promise<void> {
+      // A reviewer service recreated since a review went out (an apply) lost it: failed now, so the record is retried by its own
+      // backoff once this sweep lets go of it. Asked alongside the sweep, never ahead of it.
+      void reviews?.check().catch((e: Error) => log("reviewer health unread", { err: String(e.message ?? e).slice(0, 200) }));
       const now = Date.now();
       const due = records.list(["review"], null).filter((r) => !inFlight.has(r.id) && !((writes.retryAt(r.id) ?? 0) > now)).reverse().slice(0, 200);
       if (!due.length) return Promise.resolve();

@@ -70,8 +70,10 @@ async function fetchRetrying(fetchFn: typeof fetch, delays: number[], url: strin
  * what they return) until it answers, at most MAX_TURNS rounds. The services pass the model gateway's url and the token the
  * kernel minted for the call; an eval passes OpenRouter's key.
  */
-export function openRouterAsk(key: string, { timeoutMs = 600_000, fetchFn = fetch, schema, url = "https://openrouter.ai/api/v1/chat/completions", retryDelaysMs = [] as number[] }: {
+export function openRouterAsk(key: string, { timeoutMs = 600_000, fetchFn = fetch, schema, url = "https://openrouter.ai/api/v1/chat/completions", retryDelaysMs = [], onProgress = () => {} }: {
   timeoutMs?: number; fetchFn?: typeof fetch; schema: unknown; url?: string; retryDelaysMs?: number[];
+  /** Each round that advances the call (a model answer, a tool round): a call that hangs reports nothing. */
+  onProgress?: () => void;
 }) {
   return async (model: string, { system, user, tools = {} }: { system: string; user: string; tools?: Record<string, JudgeTool> }) => {
     const messages: Record<string, unknown>[] = [{ role: "system", content: system }, { role: "user", content: user }];
@@ -97,6 +99,7 @@ export function openRouterAsk(key: string, { timeoutMs = 600_000, fetchFn = fetc
       for (const k of ["prompt_tokens", "completion_tokens", "cost"] as const) usage[k] += Number(json?.usage?.[k]) || 0;
       const msg = json?.choices?.[0]?.message ?? {};
       const calls: any[] = Array.isArray(msg.tool_calls) ? msg.tool_calls : [];
+      onProgress();
       if (!calls.length || !defs.length) return { content: msg.content ?? "", refusal: msg.refusal ?? null, usage, turns: turn };
       if (turn >= MAX_TURNS) throw new Error(`max_turns: the judge asked for more than ${MAX_TURNS} rounds of tool calls`);
       // The model's own turn goes back as it came (its reasoning too, which a reasoning model needs to continue).

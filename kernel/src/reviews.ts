@@ -41,12 +41,12 @@ export function createReviews({ slot, secret, resolver, modelToken, timeoutMs = 
   let probed = 0;
 
   /** What the module's dispatch answer said: accepted, and its service instance when it names one. */
-  async function dispatch(s: ReviewerSlot, body: unknown): Promise<{ instance?: string }> {
+  async function dispatch(s: ReviewerSlot, body: unknown): Promise<{ instance: string }> {
     const key = secret(s.auth_secret);
     if (!key) throw fail(503, "no_service_key", `${s.module}'s reviewer key is missing`);
     const to = await resolver.resolve(`${s.url.replace(/\/$/, "")}/review`);
     const data = Buffer.from(JSON.stringify(body));
-    return new Promise<{ instance?: string }>((resolve, reject) => {
+    return new Promise<{ instance: string }>((resolve, reject) => {
       const req = http.request({ host: to.host, port: to.port, path: to.path, method: "POST", timeout: 30_000, headers: { host: new URL(s.url).host, authorization: `Bearer ${key}`, "content-type": "application/json", "content-length": data.length } }, (res) => {
         const chunks: Buffer[] = [];
         let n = 0;
@@ -55,7 +55,9 @@ export function createReviews({ slot, secret, resolver, modelToken, timeoutMs = 
           if ((res.statusCode ?? 500) >= 300) return reject(fail(502, "bad_reviewer", `${s.module} answered ${res.statusCode}`));
           let a: { instance?: unknown } = {};
           try { a = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}") as { instance?: unknown }; } catch {}
-          resolve({ instance: typeof a?.instance === "string" && /^[\w.-]{1,64}$/.test(a.instance) ? a.instance : undefined });
+          // Every service names the instance that took the review; one that doesn't can't be told apart from a restart.
+          if (typeof a?.instance !== "string" || !/^[\w.-]{1,64}$/.test(a.instance)) return reject(fail(502, "bad_reviewer", `${s.module} named no service instance`));
+          resolve({ instance: a.instance });
         });
       });
       req.on("timeout", () => req.destroy(fail(504, "timeout", `${s.module} didn't accept the review in 30 s`)));
@@ -136,11 +138,22 @@ export function createReviews({ slot, secret, resolver, modelToken, timeoutMs = 
       let instance: string | undefined;
       try {
         const to = await resolver.resolve(s.url);
-        const r = await fetch(`http://${to.host}:${to.port}/healthz`, { signal: AbortSignal.timeout(4_000) });
-        const j = (await r.json().catch(() => ({}))) as { instance?: unknown };
-        if (r.ok && typeof j.instance === "string") instance = j.instance;
+        instance = await new Promise<string | undefined>((ok) => {
+          const req = http.request({ host: to.host, port: to.port, path: "/healthz", method: "GET", timeout: 4_000, headers: { host: new URL(s.url).host } }, (res) => {
+            const chunks: Buffer[] = [];
+            res.on("data", (c: Buffer) => chunks.push(c));
+            res.on("end", () => {
+              let j: { instance?: unknown } = {};
+              try { j = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}") as { instance?: unknown }; } catch {}
+              ok((res.statusCode ?? 500) < 300 && typeof j.instance === "string" ? j.instance : undefined);
+            });
+            res.on("error", () => ok(undefined));
+          });
+          req.on("timeout", () => req.destroy());
+          req.on("error", () => { resolver.forget(s.url); ok(undefined); });
+          req.end();
+        });
       } catch {
-        resolver.forget(s.url);
         return 0;
       }
       if (!instance) return 0;

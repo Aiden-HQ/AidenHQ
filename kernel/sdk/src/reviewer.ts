@@ -61,14 +61,18 @@ export const REQUEST_FIELDS = ["card", "diff", "files", "chain", "siblings", "so
 
 /** The handler POST `<path>/review` (serveReviewer), and the service instance it answers as (its /healthz). */
 export type ReviewerHandler = ((req: IncomingMessage, res: ServerResponse) => Promise<boolean>) & { instance: string };
-/** The module's reviewer: one request in, one verdict out. `onPanel` records that the change needs a second reviewer. */
-export type Review = (req: ReviewRequest, ctx: { modelToken: string; onPanel: () => Promise<void> }) => Promise<Verdict>;
+/**
+ * The module's reviewer: one request in, one verdict out. `onPanel` records that the change needs a second reviewer; `progress`
+ * is called as the review's work advances (each model answer and tool round), so a review that hangs reports none.
+ */
+export type Review = (req: ReviewRequest, ctx: { modelToken: string; onPanel: () => Promise<void>; progress: () => void }) => Promise<Verdict>;
 
 /**
  * A handler for POST `<path>/review`: answers and returns true, or returns false for any other path. It accepts at once, naming
  * the service instance that took the review (a fresh one each start, so the kernel fails what a recreated service lost), and
  * sends the verdict to the kernel with the review's token (retried; a verdict the kernel no longer waits for is dropped). While
- * it works, it keeps the review alive every BEAT_MS: the kernel bounds a review by progress, not only by its hour. A reviewer
+ * the review's work advances, it keeps the review alive (≤ once per BEAT_MS): the kernel bounds a review by progress, not only
+ * by its hour, so a call that hangs (and reports nothing) still stalls. A reviewer
  * that throws sends `{ error }`: the requester counts it as a failed review (reviewer_failed) and tries again later.
  */
 const BEAT_MS = 60_000;
@@ -91,8 +95,19 @@ export function serveReviewer(review: Review, { key, kernelUrl = process.env.AID
     }
     log("verdict not delivered", { id });
   }
-  /** A keepalive: the review is still working (the kernel's stall window is measured between them). */
-  const beat = (id: string, token: string) => fetch(`${kernelUrl}/v1/reviews/${id}`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: '{"keepalive":true}', signal: AbortSignal.timeout(10_000) }).catch(() => {});
+  /**
+   * A review's progress: its work moving (in-process, free) and a keepalive to the kernel at most every BEAT_MS. A review that
+   * hangs reports nothing, so the kernel's stall window runs out, as it should.
+   */
+  const progressOf = (id: string, token: string) => {
+    let until = Date.now();
+    return () => {
+      const now = Date.now();
+      if (now < until) return;
+      until = now + beatMs;
+      void fetch(`${kernelUrl}/v1/reviews/${id}`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: '{"keepalive":true}', signal: AbortSignal.timeout(10_000) }).catch(() => {});
+    };
+  };
   const handle: ReviewerHandler = Object.assign(async (req: IncomingMessage, res: ServerResponse): Promise<boolean> => {
     if (String(req.url ?? "") !== `${path}/review`) return false;
     if (req.method !== "POST") return send(res, 405, { error: "POST only" }), true;
@@ -110,11 +125,10 @@ export function serveReviewer(review: Review, { key, kernelUrl = process.env.AID
     // Only the fields a reviewer reads, each only when the requester sent it: an absent field keeps the reviewer's default.
     const request = Object.fromEntries(REQUEST_FIELDS.filter((k) => body.request![k] !== undefined).map((k) => [k, body.request![k]])) as unknown as ReviewRequest;
     send(res, 202, { accepted: true, instance });
-    const keep = setInterval(() => void beat(id, token), beatMs);
-    keep.unref();
     let marked = false;
-    const v = await review(request, { modelToken, onPanel: async () => { marked = true; } }).catch((e: Error) => ({ error: String(e.message ?? e).slice(0, 300) }));
-    clearInterval(keep);
+    // A synchronous throw from the reviewer still sends its error back (a failed review), never a review left waiting.
+    const progress = progressOf(id, token);
+    const v = await (async () => review(request, { modelToken, onPanel: async () => { marked = true; }, progress }))().catch((e: Error) => ({ error: String(e.message ?? e).slice(0, 300) }));
     await deliver(id, token, "error" in v ? v : { ...v, ...(marked ? { panel_marked: true } : {}) });
     return true;
   }, { instance });

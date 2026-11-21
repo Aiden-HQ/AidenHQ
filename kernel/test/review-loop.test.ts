@@ -17,7 +17,7 @@ import { MAX_REJECTS, REVIEW_TRIES } from "../src/tier.ts";
 import { readBody, serve } from "./helpers.ts";
 import { judgeModels as reviewerModels, secondModels } from "../sdk/src/judge.ts";
 
-const until = async (fn) => { for (let i = 0; i < 300 && !fn(); i++) await new Promise((r) => setTimeout(r, 10)); assert.ok(fn()); };
+const until = async (fn, n = 300) => { for (let i = 0; i < n && !fn(); i++) await new Promise((r) => setTimeout(r, 10)); assert.ok(fn()); };
 const KIND = "acme.post";
 const OK = { decision: "approve", reason: "fine", model: "~acme/model-a" };
 
@@ -46,15 +46,15 @@ async function side(t, file, module, { comments = [], grade, escalate, delegator
 /** The reviewer module: each review it accepts is kept ({ id, token, request }); `instance` is what its /healthz says now. */
 async function reviewer(t) {
   const seen = [];
-  const mod = { instance: undefined, healthDelay: 0, health: [] };
+  const mod = { instance: "instance-1", healthDelay: 0, health: [] };
   const m = await serve(async (req, res) => {
     if (req.method === "GET" && String(req.url).endsWith("/healthz")) {
       mod.health.push(req.url);
       if (mod.healthDelay) await new Promise((ok) => setTimeout(ok, mod.healthDelay));
-      return void res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ok: true, ...(mod.instance ? { instance: mod.instance } : {}) }));
+      return void res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ok: true, instance: mod.instance }));
     }
     seen.push(JSON.parse(await readBody(req)));
-    res.writeHead(202, { "content-type": "application/json" }).end(JSON.stringify({ accepted: true, ...(mod.instance ? { instance: mod.instance } : {}) }));
+    res.writeHead(202, { "content-type": "application/json" }).end(JSON.stringify({ accepted: true, instance: mod.instance }));
   });
   t.after(() => m.s.close());
   return { url: `${m.url}/aidenhq/v1/reviewer`, seen, mod };
@@ -243,6 +243,7 @@ test("a reviewer service recreated mid-review fails its lost reviews at once, so
   mod.mod.instance = "instance-2";
   const at = Date.now();
   await k.loop.tick();
+  await until(() => k.writes.retryAt(r.id) > 0, 100);
   assert.ok(Date.now() - at < 5_000, "failed at once, not after the stall window");
   const next = k.writes.retryAt(r.id);
   assert.ok(next > Date.now(), "writes.ts retries the record by its backoff");

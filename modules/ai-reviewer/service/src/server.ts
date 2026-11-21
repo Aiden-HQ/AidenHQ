@@ -11,7 +11,7 @@ const gateway = process.env.AIDENHQ_GATEWAY_URL ?? "http://10.231.0.1:8201";
 const log = (msg: string, f = {}) => console.log(new Date().toISOString(), msg, JSON.stringify(f));
 
 /** One request through the reviewer, with the review's model token: the reviewer's own defaults for anything not sent. */
-export const reviewWith = (url: string): Review => (request, { modelToken, onPanel }) => review({ ...request, ask: openRouterAsk(modelToken, { url, retryDelaysMs: [] }) /* the gateway retries transient failures */, onPanel });
+export const reviewWith = (url: string): Review => (request, { modelToken, onPanel, progress }) => review({ ...request, ask: openRouterAsk(modelToken, { url, retryDelaysMs: [], onProgress: progress }) /* the gateway retries transient failures */, onPanel });
 
 if (import.meta.main) {
   const handle = serveReviewer(reviewWith(`${gateway}/api/v1/chat/completions`), { key: readFileSync(process.env.REVIEWER_KEY_FILE!, "utf8").trim(), log });

@@ -149,11 +149,12 @@ screenshot nit left the reviewer.
 to the record's review-first. A panel record (authority-expanding: gate-core paths, a default or deploy branch head) is never skipped. Merges, closes, create_repo, sends, settings, deploys and tool calls are always reviewed. The
 one predicate is `codeReviewOwns` (`kernel/src/writes.ts`), on the record's kind and the repos its targets name.
 `kernel/src/review-loop.ts` builds the review from the record and sends it through `kernel/src/reviews.ts` with a single-use
-token. A review is bounded by progress, not only by its hour: the service beats its review every minute while it works
-(`kernel/sdk/src/reviewer.ts`), and one that goes 15 minutes without a keepalive or a verdict is a failed review
-(`reviewer_failed`), which `writes.ts` retries by `REVIEW_TRIES`. The service also names its instance on each dispatch and in
-its `/healthz`, so a reviewer recreated by an apply (its in-flight reviews lost) fails those reviews at the next sweep instead
-of their waiting out any window. It returns `{decision: approve | reject | escalate | unsure, reason_code, reason, second_review}`.
+token. A review is bounded by progress, not only by its hour: the service reports each step of the review's work as it
+happens — a model answer, a tool round — and the kernel counts a review that goes 15 minutes without a report as a failed
+review (`reviewer_failed`), which `writes.ts` retries by `REVIEW_TRIES`. A hung call reports nothing, so it still stalls; a
+review that keeps working keeps its hour. The service names its instance on each dispatch and in its `/healthz` (asked at the
+service root), so a reviewer recreated by an apply — its in-flight reviews lost — fails those reviews at the next sweep
+instead of their waiting out any window. It returns `{decision: approve | reject | escalate | unsure, reason_code, reason, second_review}`.
 
 - **Models** (`service/src/aidenhq-sdk/judge.ts`). GPT Luna (medium) then DeepSeek Flash (high) as fallback, on OpenRouter with
   zero data retention; the requester's own model family is excluded and the requester can never choose the reviewer. The
