@@ -211,7 +211,7 @@ export function createBoxes({ db, cfg, jobs, call, secret, whoami, connections, 
       db.prepare("UPDATE jobs SET released = NULL WHERE id = ? AND released = -1").run(id);
       throw e;
     }
-    if (workspace && cleanup(id) && existsSync(workspace) && !db.prepare("SELECT 1 FROM jobs WHERE task = ? AND state IN ('admitted', 'running')").get(r.task)) {
+    if (workspace && cleanup(id) && existsSync(workspace) && !db.prepare("SELECT 1 FROM jobs WHERE task = ? AND id != ? AND state IN ('admitted', 'running')").get(r.task, id)) {
       insideNoLinks(join(cfg.workDir, "tasks"), workspace, "workspace");
       rmSync(workspace, { recursive: true, force: true, maxRetries: 2 });
       log("job's workspace removed (aidenhq cleanup)", { job: id, workspace });

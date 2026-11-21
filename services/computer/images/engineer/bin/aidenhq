@@ -39,7 +39,7 @@
 // names the job: the kernel takes the job, its task and its workspace from it, never from the request) and
 // AIDENHQ_TASK_WORKTREE (the task's workspace folder, whose clones <name> or <org>--<name> the code host pushes from).
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -123,10 +123,10 @@ const pr = (link) => {
 const cloneOf = (repo) => {
   const [org, name] = repo.split("/");
   const want = repo.toLowerCase();
-  // git config exits 1 for no origin; any other failure (an unreadable clone) names no repository.
+  // git exits 2 for no origin; any other failure (an unreadable clone) names no repository.
   const names = (d) => {
     let o;
-    try { o = execFileSync("git", ["-C", d, "config", "--get", "remote.origin.url"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim().toLowerCase().replace(/\/+$/, "").replace(/\.git$/, ""); } catch (e) { return e.status === 1; }
+    try { o = execFileSync("git", ["-C", d, "remote", "get-url", "origin"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim().toLowerCase().replace(/\/+$/, "").replace(/\.git$/, ""); } catch (e) { return e.status === 2; }
     return !o || o.endsWith(`/${want}`) || o.endsWith(`:${want}`);
   };
   const there = [name, `${org}--${name}`].map((d) => join(workspace, d)).filter((d) => existsSync(join(d, ".git")));
@@ -244,9 +244,13 @@ if (command === "publish" || command === "review") {
       const tips = execFileSync("git", ["-C", dest, "bundle", "list-heads", file], { encoding: "utf8" }).split("\n").filter((l) => / refs\/heads\//.test(l));
       lines.push(...tips.map((l) => { const [sha, ref] = l.split(" "); return `${words[0]}: origin/${ref.slice("refs/heads/".length)} is at ${sha.slice(0, 12)} in ${dest}`; }));
     } else {
-      execFileSync("git", ["clone", "--quiet", file, dest], { stdio: ["ignore", "ignore", "inherit"] });
-      // origin names the repo with no transport: publishing goes through aidenhq, refreshing through aidenhq clone.
-      execFileSync("git", ["-C", dest, "remote", "set-url", "origin", `aidenhq://${words[0]}`]);
+      // origin names the repo with no transport: publishing goes through aidenhq, refreshing through aidenhq clone. Set before
+      // the clone takes its place, so a box stopped half way never leaves one whose origin names something else.
+      const part = join(workspace, `.${name}.cloning`);
+      rmSync(part, { recursive: true, force: true });
+      execFileSync("git", ["clone", "--quiet", file, part], { stdio: ["ignore", "ignore", "inherit"] });
+      execFileSync("git", ["-C", part, "remote", "set-url", "origin", `aidenhq://${words[0]}`]);
+      renameSync(part, dest);
       lines.push(`${words[0]}: cloned into ${dest}`);
     }
   } finally {

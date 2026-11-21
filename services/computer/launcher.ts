@@ -129,19 +129,22 @@ const jobState = async (name: string) => {
 const ours = (name: unknown): name is string => typeof name === "string" && name.startsWith(CFG.prefix) && /^[a-z0-9-]+$/.test(name);
 const fail = (status: number, msg: string) => Object.assign(new Error(msg), { status });
 
-// A box Docker didn't remove keeps its records: its lease (the kernel's release retries) or, lapsed, its idle reaping. Its
-// token opens nothing from the start, and while it is being removed it counts as busy, so no other admission picks it to evict.
+// A box Docker didn't remove keeps its records (it still holds a slot) and is tried again every minute until it goes. Its token
+// opens nothing from the start, and while it is being removed it counts as busy, so no other admission picks it to evict.
+const unremoved = new Set<string>();
 async function destroy(name: string, why: string) {
   const b = boxes.get(name);
   if (b) b.busy++;
   const j = jobs.get(name);
   if (j?.tokenHash) { delete j.tokenHash; saveJobs(); }
-  const r = await docker(["rm", "-f", name], { timeoutMs: 60_000 });
+  const r = await docker(["rm", "-f", name], { timeoutMs: 30_000 });
   if (r.exitCode !== 0 && (await jobState(name)) !== "missing") {
     if (b) b.busy--;
+    unremoved.add(name);
     log("couldn't destroy", name, why, r.stderr.trim());
     return false;
   }
+  unremoved.delete(name);
   boxes.delete(name);
   if (jobs.delete(name)) saveJobs();
   rmSync(path.join(jobEnvDir, `${name}.env`), { force: true });
@@ -156,20 +159,22 @@ async function imageNamed(name: unknown) {
   if (!tag) throw fail(400, `no computer image ${name} (computers.json)`);
   return builtImage(tag, docker, log);
 }
-/** A free slot for a new box: the least recently used idle box goes (never a leased job's); all busy → wait up to 45 s. */
+/**
+ * A free slot for a new box: the least recently used idle box goes (never a leased job's; one Docker didn't remove, the next is
+ * tried); all busy → wait. 45 s in all, so the kernel (120 s a call) is still waiting for the box this frees.
+ */
 async function makeRoom() {
-  const stuck = new Set<string>(); // idle boxes Docker didn't remove this time: the next one is tried
-  for (let waited = 0; ; waited += 1000) {
+  const stuck = new Set<string>();
+  for (const end = Date.now() + 45_000; ;) {
     const max = maxBoxes();
     const evict = admit(boxes, max, (n) => held(n) || stuck.has(n));
     if (evict === null) return;
     if (evict !== "wait") {
       if (await destroy(evict, "evicted (computers full)")) return;
       stuck.add(evict);
-      continue;
     }
-    if (waited >= 45_000) throw fail(503, `all ${max} computers are busy; try again shortly`);
-    await new Promise((r) => setTimeout(r, 1000));
+    if (Date.now() >= end) throw fail(503, `all ${max} computers are busy; try again shortly`);
+    if (evict === "wait") await new Promise((r) => setTimeout(r, 1000));
   }
 }
 const newName = () => CFG.prefix + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -227,7 +232,6 @@ const jobControl = {
       // A launcher draining for its successor hands out no box the successor may not know: it goes back, and the kernel asks again.
       if (draining) throw fail(503, "the launcher is restarting; ask the next one");
     } catch (e) {
-      boxes.get(name)!.busy = 0; // the start is over: a box Docker keeps is reaped as idle
       await destroy(name, "job box failed to start");
       throw e;
     }
@@ -275,7 +279,6 @@ const jobControl = {
       if (r.exitCode !== 0) throw fail(500, `docker run failed: ${r.stderr.trim()}`);
       if (draining) throw fail(503, "the launcher is restarting; ask the next one");
     } catch (e) {
-      boxes.get(name)!.busy = 0; // the start is over: a box Docker keeps is reaped as idle
       await destroy(name, "check box failed to start");
       throw e;
     }
@@ -445,6 +448,7 @@ const reaper = setInterval(() => {
   if (lapsed.length) saveJobs();
   for (const n of lapsed) destroy(n, "lease lapsed");
   for (const n of stale(boxes, CFG.idleMs, Date.now(), held)) destroy(n, "idle");
+  for (const n of unremoved) destroy(n, "removal retried");
 }, 60_000).unref();
 // A restart (ops/run-draining.sh): the next launcher is starting. This one stops reaping and saving (the next one adopts the
 // boxes from jobs.json) and closes its listeners so the next one can bind them; it serves only the calls it holds (a box's model
