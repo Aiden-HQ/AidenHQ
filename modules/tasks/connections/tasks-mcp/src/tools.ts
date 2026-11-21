@@ -481,17 +481,15 @@ function refuseParkedPr(description: Json, deliverable: Json) {
 // reopens. Checked against this static list at filing time, with no network call, so a delegation stays fast and works offline.
 const RETIRED_REPOS = ["Aiden-HQ/aidenhq-modules"];
 const RETIRED_REPO_ERROR = "retired repo: modules live in Aiden-HQ/AidenHQ under modules/";
-/** The `owner/name` a deliverable ref or a criterion names, lowercased, in any reference shape. */
-const repoOf = (s: Json) => {
-  const m = /^(?:https?:\/\/[^/]+\/)?([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)/.exec(String(s ?? "").trim());
-  return m ? `${m[1]}/${m[2]}`.toLowerCase() : undefined;
-};
-const namesRepo = (c: Json, repo: string) => new RegExp(`(?:^|[^A-Za-z0-9_.-])${repo.replace(/[.]/g, "\\.")}(?![A-Za-z0-9_.-])`, "i").test(String(c ?? ""));
-/** Refuses a `pr` deliverable or rubric that names a retired repo. */
-function refuseRetiredRepo(deliverable: Json, list: string[]) {
+// Every repo reference, in any shape DELIVERABLE_REF accepts and the shapes a brief writes: owner/name, owner/name#123, an
+// https link, or a clone URL (`git@host:owner/name.git`, `https://host/owner/name.git`), any case.
+const REPO_REF = /(?:(?:https?|git)(?:\+ssh)?:\/\/(?:[^@/\s]+@)?[^/\s]+\/|git@[^:\s]+:)?([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?(?![A-Za-z0-9_.-])/gi;
+const reposIn = (text: Json) => [...String(text ?? "").matchAll(REPO_REF)].map((m) => `${m[1]}/${String(m[2]).replace(/\.+$/, "")}`.toLowerCase());
+/** Refuses a `pr` deliverable, rubric or brief that names a retired repo. */
+function refuseRetiredRepo(deliverable: Json, list: string[], description: Json) {
   if (deliverable?.kind !== "pr") return;
-  const ref = String(deliverable.ref ?? "").trim();
-  if (RETIRED_REPOS.some((r) => repoOf(ref) === r.toLowerCase() || list.some((c) => namesRepo(c, r)))) throw new Error(RETIRED_REPO_ERROR);
+  const named = [deliverable.ref ?? "", ...list, description].flatMap(reposIn);
+  if (RETIRED_REPOS.some((r) => named.includes(r.toLowerCase()))) throw new Error(RETIRED_REPO_ERROR);
 }
 // A criterion that is purely a negative ("No app code ... change was made", "the live sha is unchanged") can never be shown,
 // so it fails grading every time: one that starts with No/Nothing/Never or claims something unchanged is refused, unless it
@@ -554,7 +552,7 @@ function gradeFor(target: Json, rubric: Json, deliverable: Json, description: Js
   if (kind != null && !DELIVERABLES.includes(kind)) throw new Error(`deliverable.kind is one of ${DELIVERABLES.join(", ")}`);
   refuseParkedPr(description, deliverable);
   const list = (Array.isArray(rubric) ? rubric : []).map((c) => String(c).trim()).filter(Boolean);
-  refuseRetiredRepo(deliverable, list);
+  refuseRetiredRepo(deliverable, list, description);
   if (list.length && (list.length < 3 || list.length > 8 || list.some((c) => c.length > 200))) throw new Error("rubric: 3-8 checkable criteria, each at most 200 characters");
   const negative = list.find(unprovable);
   if (negative) throw new Error(`rubric: "${negative.slice(0, 120)}" is a negative no evidence can show (the grader sees only what exists, so it fails every time): name what was delivered instead (e.g. "the PR changes only docs/plan.md", not "no code changed"). Checkable negatives such as "no console errors" or "no open incident" are fine.`);

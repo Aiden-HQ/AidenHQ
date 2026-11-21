@@ -111,6 +111,9 @@ test("a pr deliverable naming a retired repo is refused in every ref shape, by t
     "https://github.com/Aiden-HQ/aidenhq-modules",
     "https://github.com/Aiden-HQ/aidenhq-modules/pull/1159",
     "aiden-hq/AIDENHQ-MODULES",
+    "https://github.com/Aiden-HQ/aidenhq-modules.git",
+    "git+https://github.com/Aiden-HQ/aidenhq-modules.git",
+    "git@github.com:Aiden-HQ/aidenhq-modules.git",
   ]) {
     const delegated = await call("task_delegate", { ...ask, deliverable: { kind: "pr", ref }, rubric });
     assert.equal(delegated.r.result?.isError, true, ref);
@@ -137,6 +140,18 @@ test("a pr rubric naming a retired repo is refused, and a live repo files normal
     assert.equal(bad.r.result?.isError, true, c);
     assert.equal(bad.text, retired, c);
     assert.equal(bad.created.length, 0, c);
+  }
+
+  // A brief that names the retired repo only in its text is refused too: the brief and the grade must agree.
+  for (const description of [
+    "Open the PR in Aiden-HQ/aidenhq-modules against main.",
+    "Bump the base image there: https://github.com/Aiden-HQ/aidenhq-modules/pull/1159 is the earlier attempt.",
+    "Clone git@github.com:Aiden-HQ/aidenhq-modules.git and change the Dockerfile.",
+  ]) {
+    const bad = await call("task_delegate", { agent: "Kai", title: "Security fix: image", description, deliverable: { kind: "pr", ref: "Aiden-HQ/AidenHQ" }, rubric });
+    assert.equal(bad.r.result?.isError, true, description);
+    assert.equal(bad.text, retired, description);
+    assert.equal(bad.created.length, 0, description);
   }
 
   // The same shapes for the live repo still file.
